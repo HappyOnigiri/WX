@@ -1,0 +1,5 @@
+# Exact repository-relative path<TAB>reason
+cmd/wx/main.go	Process entrypoint and stdio dispatch adapter; command behavior is exercised by binary and RPC integration tests.
+internal/cli/client.go	Agent process, signal, and terminal adapter; lifecycle behavior is exercised by real child-process integration tests.
+internal/daemon/server.go	Daemon process, filesystem, lock, and Unix-socket adapter; behavior is exercised by real-process integration tests.
+internal/launchd/launchd.go	macOS launchd adapter; plist and launchctl behavior is exercised by Darwin integration tests.

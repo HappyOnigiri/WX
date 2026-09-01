@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/HappyOnigiri/WX/tools/internal/coverageconfig"
 )
 
 func TestReadProfileMergesDuplicateBlocksAndComputesScopes(t *testing.T) {
@@ -20,10 +25,10 @@ func TestReadProfileMergesDuplicateBlocksAndComputesScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := percentage(blocks, "/internal/state/"); got != 100 {
+	if got := percentage(blocks, "/internal/state/", nil); got != 100 {
 		t.Fatalf("core percentage=%v", got)
 	}
-	if got := percentage(blocks, ""); got != 50 {
+	if got := percentage(blocks, "", nil); got != 50 {
 		t.Fatalf("overall percentage=%v", got)
 	}
 }
@@ -41,7 +46,7 @@ func TestReadProfileRejectsMalformedLines(t *testing.T) {
 	if blocks, err := readProfile(path); err == nil || blocks != nil {
 		t.Fatal("malformed profile unexpectedly returned blocks")
 	}
-	if got := percentage(map[string]block{}, ""); got != 0 {
+	if got := percentage(map[string]block{}, "", nil); got != 0 {
 		t.Fatalf("empty percentage=%v", got)
 	}
 }
@@ -52,7 +57,61 @@ func TestRejectZeroCoreFunctionsUsesGoCoverageReport(t *testing.T) {
 	if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := rejectZeroCoreFunctions(path); err == nil {
+	if err := rejectZeroCoreFunctions(context.Background(), path, nil); err == nil {
 		t.Fatal("zero-coverage core function was accepted")
 	}
 }
+
+func TestRunCoverageGate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "coverage.out")
+	profile := "mode: set\n" +
+		"github.com/HappyOnigiri/WX/cmd/wx/main.go:1.1,1.2 1 1\n"
+	if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	exclusionsFile := filepath.Join(t.TempDir(), "exclusions.txt")
+	if err := os.WriteFile(exclusionsFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"-profile", path, "-exclusions", exclusionsFile, "-overall", "100", "-core", "0"}, &output); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"-profile", path, "-exclusions", exclusionsFile, "-overall", "100", "-core", "0"}, brokenWriter{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("output error=%v", err)
+	}
+	var errorOutput strings.Builder
+	arguments := []string{"-profile", path, "-exclusions", exclusionsFile, "-overall", "100", "-core", "0"}
+	if code := commandMain(context.Background(), arguments, &output, &errorOutput); code != 0 || errorOutput.Len() != 0 {
+		t.Fatalf("command success code=%d stderr=%q", code, errorOutput.String())
+	}
+	errorOutput.Reset()
+	if code := commandMain(context.Background(), nil, &output, &errorOutput); code != 1 || !strings.Contains(errorOutput.String(), "-profile is required") {
+		t.Fatalf("command failure code=%d stderr=%q", code, errorOutput.String())
+	}
+	if !strings.Contains(output.String(), "overall 100.0%") {
+		t.Fatalf("output=%q", output.String())
+	}
+	if err := run(context.Background(), []string{"-profile", path, "-exclusions", exclusionsFile, "-overall", "101"}, &output); err == nil {
+		t.Fatal("impossible threshold succeeded")
+	}
+	if err := run(context.Background(), nil, &output); err == nil {
+		t.Fatal("missing profile succeeded")
+	}
+	if err := run(context.Background(), []string{"-unknown"}, &output); err == nil {
+		t.Fatal("unknown flag succeeded")
+	}
+	if err := run(context.Background(), []string{"-profile", filepath.Join(t.TempDir(), "missing")}, &output); err == nil {
+		t.Fatal("missing coverage file succeeded")
+	}
+	if err := run(context.Background(), []string{"-profile", path, "-exclusions", filepath.Join(t.TempDir(), "missing")}, &output); err == nil {
+		t.Fatal("missing exclusions file succeeded")
+	}
+	if got := percentage(map[string]block{"github.com/HappyOnigiri/WX/cmd/wx/main.go:1": {statements: 1}}, "", []coverageconfig.Exclusion{{Path: "cmd/wx/main.go", Reason: "adapter"}}); got != 0 {
+		t.Fatalf("excluded-only percentage=%v", got)
+	}
+}
+
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, context.Canceled }

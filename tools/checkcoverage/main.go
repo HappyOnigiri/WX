@@ -2,12 +2,16 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/HappyOnigiri/WX/tools/internal/coverageconfig"
 )
 
 type block struct {
@@ -16,26 +20,50 @@ type block struct {
 }
 
 func main() {
-	profile := flag.String("profile", "", "Go coverage profile")
-	overallMin := flag.Float64("overall", 85, "minimum whole-project line coverage")
-	coreMin := flag.Float64("core", 90, "minimum core-package line coverage")
-	flag.Parse()
+	os.Exit(commandMain(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func commandMain(ctx context.Context, arguments []string, output, errorOutput io.Writer) int {
+	if err := run(ctx, arguments, output); err != nil {
+		_, _ = fmt.Fprintln(errorOutput, "coverage gate:", err)
+		return 1
+	}
+	return 0
+}
+
+func run(ctx context.Context, arguments []string, output io.Writer) error {
+	flags := flag.NewFlagSet("checkcoverage", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	profile := flags.String("profile", "", "Go coverage profile")
+	exclusionsFile := flags.String("exclusions", "coverage-exclusions.txt", "coverage exclusion file with a reason for every exact path")
+	overallMin := flags.Float64("overall", 85, "minimum whole-project line coverage")
+	coreMin := flags.Float64("core", 90, "minimum core-package line coverage")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
 	if *profile == "" {
-		fatal("-profile is required")
+		return fmt.Errorf("-profile is required")
 	}
 	blocks, err := readProfile(*profile)
 	if err != nil {
-		fatal(err.Error())
+		return err
 	}
-	overall := percentage(blocks, "")
-	core := percentage(blocks, "/internal/config/|/internal/state/|/internal/pool/|/internal/gitx/|/internal/workspace/|/internal/archive/|/internal/rpc/")
-	fmt.Printf("coverage: overall %.1f%% (minimum %.1f%%), core %.1f%% (minimum %.1f%%)\n", overall, *overallMin, core, *coreMin)
+	exclusions, err := coverageconfig.Load(*exclusionsFile)
+	if err != nil {
+		return err
+	}
+	overall := percentage(blocks, "", exclusions)
+	core := percentage(blocks, "/internal/config/|/internal/state/|/internal/pool/|/internal/gitx/|/internal/workspace/|/internal/archive/|/internal/rpc/", exclusions)
+	if _, err := fmt.Fprintf(output, "coverage: overall %.1f%% (minimum %.1f%%), core %.1f%% (minimum %.1f%%)\n", overall, *overallMin, core, *coreMin); err != nil {
+		return err
+	}
 	if overall < *overallMin || core < *coreMin {
-		os.Exit(1)
+		return fmt.Errorf("coverage thresholds were not met")
 	}
-	if err := rejectZeroCoreFunctions(*profile); err != nil {
-		fatal(err.Error())
+	if err := rejectZeroCoreFunctions(ctx, *profile, exclusions); err != nil {
+		return err
 	}
+	return nil
 }
 
 func readProfile(path string) (map[string]block, error) {
@@ -70,12 +98,12 @@ func readProfile(path string) (map[string]block, error) {
 	return blocks, scanner.Err()
 }
 
-func percentage(blocks map[string]block, corePatterns string) float64 {
+func percentage(blocks map[string]block, corePatterns string, exclusions []coverageconfig.Exclusion) float64 {
 	var total, covered int
 	patterns := strings.Split(corePatterns, "|")
 	for location, item := range blocks {
 		file := strings.SplitN(location, ":", 2)[0]
-		if strings.HasSuffix(file, "/migrations/embed.go") {
+		if strings.HasSuffix(file, "/migrations/embed.go") || coverageconfig.Matches(file, exclusions) {
 			continue
 		}
 		if corePatterns != "" {
@@ -98,8 +126,8 @@ func percentage(blocks map[string]block, corePatterns string) float64 {
 	return float64(covered) * 100 / float64(total)
 }
 
-func rejectZeroCoreFunctions(profile string) error {
-	command := exec.Command("go", "tool", "cover", "-func="+profile)
+func rejectZeroCoreFunctions(ctx context.Context, profile string, exclusions []coverageconfig.Exclusion) error {
+	command := exec.CommandContext(ctx, "go", "tool", "cover", "-func="+profile)
 	output, err := command.Output()
 	if err != nil {
 		return err
@@ -109,14 +137,13 @@ func rejectZeroCoreFunctions(profile string) error {
 		if len(fields) == 0 || fields[len(fields)-1] != "0.0%" {
 			continue
 		}
+		fileName := strings.SplitN(line, ":", 2)[0]
+		if coverageconfig.Matches(fileName, exclusions) {
+			continue
+		}
 		if strings.Contains(line, "/internal/config/") || strings.Contains(line, "/internal/state/") || strings.Contains(line, "/internal/pool/") || strings.Contains(line, "/internal/gitx/") || strings.Contains(line, "/internal/workspace/") || strings.Contains(line, "/internal/archive/") || strings.Contains(line, "/internal/rpc/") {
 			return fmt.Errorf("core function has zero coverage: %s", strings.TrimSpace(line))
 		}
 	}
 	return nil
-}
-
-func fatal(message string) {
-	fmt.Fprintln(os.Stderr, "coverage gate:", message)
-	os.Exit(1)
 }

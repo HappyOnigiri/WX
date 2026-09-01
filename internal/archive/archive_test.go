@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -250,6 +251,180 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	}
 	_, _ = runner.Run(context.Background(), repository, "worktree", "unlock", target)
 	_, _ = runner.Run(context.Background(), repository, "worktree", "remove", "--force", target)
+}
+
+func TestSnapshotPropagatesGitStageFailures(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		pattern    func(head string) string
+		occurrence int
+	}{
+		{name: "index tree", pattern: func(string) string { return " write-tree " }, occurrence: 1},
+		{name: "temporary index read", pattern: func(head string) string { return " read-tree " + head + " " }, occurrence: 1},
+		{name: "temporary index add", pattern: func(string) string { return " add -A -- . " }, occurrence: 1},
+		{name: "worktree tree", pattern: func(string) string { return " write-tree " }, occurrence: 2},
+		{name: "worktree commit", pattern: func(string) string { return " commit-tree " }, occurrence: 1},
+		{name: "recovery ref creation", pattern: func(string) string { return " update-ref --create-reflog " }, occurrence: 1},
+		{name: "recovery ref verification", pattern: func(string) string { return " rev-parse --verify refs/wx/recovery/" }, occurrence: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, repo, manager, _ := archiveFixture(t)
+			head := gitCommand(t, repository, "rev-parse", "HEAD")
+			installGitFault(t, test.pattern(head), test.occurrence)
+			if _, err := manager.Snapshot(context.Background(), repo, repository, "fault", time.Now().Add(time.Hour)); err == nil {
+				t.Fatal("snapshot succeeded despite injected Git failure")
+			}
+		})
+	}
+}
+
+func TestRestorePropagatesGitVerificationFailures(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		pattern    func(state.Snapshot) string
+		occurrence int
+	}{
+		{name: "worktree reset", pattern: func(state.Snapshot) string { return " read-tree --reset -u " }, occurrence: 1},
+		{name: "index restore", pattern: func(snapshot state.Snapshot) string { return " read-tree " + snapshot.IndexTreeOID + " " }, occurrence: 1},
+		{name: "index verification", pattern: func(state.Snapshot) string { return " write-tree " }, occurrence: 1},
+		{name: "verification index read", pattern: func(snapshot state.Snapshot) string { return " read-tree " + snapshot.HeadOID + " " }, occurrence: 1},
+		{name: "verification index add", pattern: func(state.Snapshot) string { return " add -A -- . " }, occurrence: 1},
+		{name: "worktree verification tree", pattern: func(state.Snapshot) string { return " write-tree " }, occurrence: 2},
+		{name: "expected tree lookup", pattern: func(snapshot state.Snapshot) string { return " rev-parse " + snapshot.WorktreeOID + "^{tree} " }, occurrence: 1},
+		{name: "status verification", pattern: func(state.Snapshot) string { return " status --porcelain=v2 " }, occurrence: 1},
+		{name: "restored head lookup", pattern: func(state.Snapshot) string { return " rev-parse HEAD " }, occurrence: 2},
+		{name: "ready ownership validation", pattern: func(state.Snapshot) string { return " worktree list --porcelain -z " }, occurrence: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, repo, manager, worktreeRoot := archiveFixture(t)
+			snapshot, err := manager.Snapshot(context.Background(), repo, repository, "source", time.Now().Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			installGitFault(t, test.pattern(snapshot), test.occurrence)
+			target := filepath.Join(worktreeRoot, "fault", "root")
+			if err := manager.Restore(context.Background(), repo, target, "fault", snapshot); err == nil {
+				t.Fatal("restore succeeded despite injected Git failure")
+			}
+		})
+	}
+}
+
+func TestDeleteSnapshotRefsPropagatesGitFailures(t *testing.T) {
+	for _, pattern := range []string{" show-ref --verify --hash ", " update-ref -d "} {
+		t.Run(strings.TrimSpace(pattern), func(t *testing.T) {
+			repository, repo, manager, _ := archiveFixture(t)
+			snapshot, err := manager.Snapshot(context.Background(), repo, repository, "source", time.Now().Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			installGitFault(t, pattern, 1)
+			if err := manager.DeleteSnapshotRefs(context.Background(), repo, snapshot); err == nil {
+				t.Fatal("snapshot ref deletion succeeded despite injected Git failure")
+			}
+		})
+	}
+}
+
+func TestRemoveWorktreePropagatesGitFailures(t *testing.T) {
+	for _, pattern := range []string{
+		" worktree list --porcelain -z ",
+		" rev-parse --path-format=absolute --git-common-dir ",
+		" worktree remove --force ",
+	} {
+		t.Run(strings.TrimSpace(pattern), func(t *testing.T) {
+			repository, repo, manager, worktreeRoot := archiveFixture(t)
+			head := gitCommand(t, repository, "rev-parse", "HEAD")
+			target := filepath.Join(worktreeRoot, "slot", "root")
+			mustMkdir(t, filepath.Dir(target))
+			gitCommand(t, repository, "worktree", "add", "--detach", target, head)
+			installGitFault(t, pattern, 1)
+			if err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, target, head); err == nil {
+				t.Fatal("worktree removal succeeded despite injected Git failure")
+			}
+		})
+	}
+}
+
+func TestRemoveWorktreePropagatesFilesystemOwnershipFailures(t *testing.T) {
+	t.Run("non-directory path component", func(t *testing.T) {
+		_, repo, manager, worktreeRoot := archiveFixture(t)
+		mustMkdir(t, worktreeRoot)
+		blocker := filepath.Join(worktreeRoot, "file")
+		if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, filepath.Join(blocker, "child"), ""); err == nil {
+			t.Fatal("removal through a non-directory path component succeeded")
+		}
+	})
+
+	t.Run("missing expected common directory", func(t *testing.T) {
+		repository, repo, manager, worktreeRoot := archiveFixture(t)
+		head := gitCommand(t, repository, "rev-parse", "HEAD")
+		target := filepath.Join(worktreeRoot, "slot", "root")
+		mustMkdir(t, filepath.Dir(target))
+		gitCommand(t, repository, "worktree", "add", "--detach", target, head)
+		repo.CommonDir = domain.CanonicalPath(filepath.Join(t.TempDir(), "missing-common-dir"))
+		if err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, target, head); err == nil {
+			t.Fatal("removal with missing ownership directory succeeded")
+		}
+	})
+}
+
+func archiveFixture(t *testing.T) (string, discovery.Repository, *Manager, string) {
+	t.Helper()
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	mustMkdir(t, repository)
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	common := gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	worktreeRoot := filepath.Join(root, "worktrees")
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = worktreeRoot
+	runner := &gitx.Runner{Timeout: 5 * time.Second}
+	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg}}
+	return repository, repo, manager, worktreeRoot
+}
+
+func installGitFault(t *testing.T, pattern string, occurrence int) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "matches")
+	wrapper := filepath.Join(bin, "git")
+	script := `#!/bin/sh
+if case " $* " in *"$WX_FAULT_PATTERN"*) true;; *) false;; esac; then
+  count=0
+  if [ -f "$WX_FAULT_MARKER" ]; then read -r count < "$WX_FAULT_MARKER"; fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$WX_FAULT_MARKER"
+  if [ "$count" -eq "$WX_FAULT_OCCURRENCE" ]; then
+    printf 'injected git failure\n' >&2
+    exit 2
+  fi
+fi
+exec "$WX_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_REAL_GIT", realGit)
+	t.Setenv("WX_FAULT_PATTERN", pattern)
+	t.Setenv("WX_FAULT_MARKER", marker)
+	t.Setenv("WX_FAULT_OCCURRENCE", strconv.Itoa(occurrence))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func mustMkdir(t *testing.T, path string) {
