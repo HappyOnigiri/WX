@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -42,6 +43,10 @@ type Client struct {
 }
 
 func (c Client) Call(ctx context.Context, method string, params, result any) error {
+	return c.CallWithKey(ctx, method, "", params, result)
+}
+
+func (c Client) CallWithKey(ctx context.Context, method, idempotencyKey string, params, result any) error {
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
@@ -58,7 +63,7 @@ func (c Client) Call(ctx context.Context, method string, params, result any) err
 	if err != nil {
 		return err
 	}
-	req := Request{Version: ProtocolVersion, ID: id, Method: method, Params: payload}
+	req := Request{Version: ProtocolVersion, ID: id, Method: method, IdempotencyKey: idempotencyKey, Params: payload}
 	if hasDeadline {
 		req.Deadline = deadline.UTC().Format(time.RFC3339Nano)
 	}
@@ -88,15 +93,33 @@ type Server struct {
 	Socket   string
 	Handler  Handler
 	listener net.Listener
+	idemMu   sync.Mutex
+	idem     map[string]*idempotentEntry
+}
+
+type idempotentEntry struct {
+	method string
+	params string
+	done   chan struct{}
+	result json.RawMessage
+	err    *RPCError
 }
 
 func (s *Server) Serve(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(s.Socket), 0700); err != nil {
 		return err
 	}
+	if err := os.Chmod(filepath.Dir(s.Socket), 0700); err != nil {
+		return err
+	}
 	if info, err := os.Lstat(s.Socket); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
 			return fmt.Errorf("refusing to replace non-socket path %s", s.Socket)
+		}
+		probe, dialErr := net.DialTimeout("unix", s.Socket, 100*time.Millisecond)
+		if dialErr == nil {
+			_ = probe.Close()
+			return fmt.Errorf("RPC server is already listening on %s", s.Socket)
 		}
 		if err := os.Remove(s.Socket); err != nil {
 			return err
@@ -151,13 +174,57 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 			defer cancel()
 		}
 	}
-	result, err := s.Handler.Handle(ctx, req.Method, req.Params)
-	if err != nil {
-		resp.Error = &RPCError{Code: "REQUEST_FAILED", Message: err.Error()}
+	if req.IdempotencyKey != "" {
+		entry, owner := s.idempotencyEntry(req)
+		if entry == nil {
+			resp.Error = &RPCError{Code: "IDEMPOTENCY_KEY_REUSE", Message: "idempotency key was reused with a different method or payload"}
+		} else if !owner {
+			select {
+			case <-entry.done:
+				resp.Result, resp.Error = entry.result, entry.err
+			case <-ctx.Done():
+				resp.Error = &RPCError{Code: "DEADLINE", Message: ctx.Err().Error()}
+			}
+		} else {
+			resp.Result, resp.Error = s.invoke(ctx, req)
+			s.idemMu.Lock()
+			entry.result, entry.err = resp.Result, resp.Error
+			close(entry.done)
+			s.idemMu.Unlock()
+		}
 	} else {
-		resp.Result, _ = json.Marshal(result)
+		resp.Result, resp.Error = s.invoke(ctx, req)
 	}
 	_ = writeFrame(conn, resp)
+}
+
+func (s *Server) invoke(ctx context.Context, req Request) (json.RawMessage, *RPCError) {
+	result, err := s.Handler.Handle(ctx, req.Method, req.Params)
+	if err != nil {
+		return nil, &RPCError{Code: "REQUEST_FAILED", Message: err.Error()}
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, &RPCError{Code: "ENCODE_FAILED", Message: err.Error()}
+	}
+	return encoded, nil
+}
+
+func (s *Server) idempotencyEntry(req Request) (*idempotentEntry, bool) {
+	s.idemMu.Lock()
+	defer s.idemMu.Unlock()
+	if s.idem == nil {
+		s.idem = map[string]*idempotentEntry{}
+	}
+	if existing, ok := s.idem[req.IdempotencyKey]; ok {
+		if existing.method != req.Method || existing.params != string(req.Params) {
+			return nil, false
+		}
+		return existing, false
+	}
+	entry := &idempotentEntry{method: req.Method, params: string(req.Params), done: make(chan struct{})}
+	s.idem[req.IdempotencyKey] = entry
+	return entry, true
 }
 func writeFrame(w io.Writer, v any) error {
 	data, err := json.Marshal(v)

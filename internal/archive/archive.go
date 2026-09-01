@@ -120,12 +120,104 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if head != s.HeadOID {
 			return errors.New("restored HEAD does not match snapshot")
 		}
+		if !gitx.IsDetached(ctx, m.Git, target) {
+			return errors.New("restored worktree is not detached")
+		}
+		indexTree, err := m.gitValue(ctx, target, nil, "write-tree")
+		if err != nil || indexTree != s.IndexTreeOID {
+			return errors.New("restored index does not match snapshot")
+		}
+		tmp := filepath.Join(filepath.Dir(target), ".wx-verify-index-"+slotID)
+		_ = os.Remove(tmp)
+		defer os.Remove(tmp)
+		env := []string{"GIT_INDEX_FILE=" + tmp}
+		if _, err := m.Git.RunEnv(ctx, target, env, "read-tree", s.HeadOID); err != nil {
+			return err
+		}
+		if _, err := m.Git.RunEnv(ctx, target, env, "add", "-A", "--", "."); err != nil {
+			return err
+		}
+		actualWorktreeTree, err := m.gitValue(ctx, target, env, "write-tree")
+		if err != nil {
+			return err
+		}
+		expectedWorktreeTree, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", s.WorktreeOID+"^{tree}")
+		if err != nil || actualWorktreeTree != expectedWorktreeTree {
+			return errors.New("restored working tree does not match snapshot")
+		}
+		if _, err := m.Git.Run(ctx, target, "status", "--porcelain=v2", "--untracked-files=all"); err != nil {
+			return fmt.Errorf("validate restored status: %w", err)
+		}
+		if err := m.Preparer.ValidateReady(ctx, repo, target, s.HeadOID); err != nil {
+			return fmt.Errorf("validate restored worktree ownership: %w", err)
+		}
 		return nil
 	})
 }
 
 func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository, root, path, expectedHead string) error {
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+		// Check the path exactly as recorded in SQLite before resolving anything.
+		// Resolving first would hide a symlink that redirects deletion to another
+		// registered worktree.
+		absoluteRoot, err := filepath.Abs(root)
+		if err != nil {
+			return err
+		}
+		absolutePath, err := filepath.Abs(path)
+		if err != nil {
+			return err
+		}
+		absoluteRoot, absolutePath = filepath.Clean(absoluteRoot), filepath.Clean(absolutePath)
+		if !domain.IsWithin(absoluteRoot, absolutePath) {
+			return errors.New("worktree path is outside wx root")
+		}
+		listed, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "list", "--porcelain", "-z")
+		if err != nil {
+			return err
+		}
+		registered := false
+		for _, field := range strings.Split(listed.Stdout, "\x00") {
+			if !strings.HasPrefix(field, "worktree ") {
+				continue
+			}
+			registeredPath := filepath.Clean(strings.TrimPrefix(field, "worktree "))
+			if registeredPath == absolutePath {
+				registered = true
+				break
+			}
+		}
+		if _, statErr := os.Lstat(absolutePath); errors.Is(statErr, os.ErrNotExist) {
+			if !registered {
+				return nil // A prior attempt completed physical and Git metadata removal.
+			}
+			_, _ = m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", absolutePath)
+			_, removeErr := m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", absolutePath)
+			return removeErr
+		} else if statErr != nil {
+			return statErr
+		}
+		relative, err := filepath.Rel(absoluteRoot, absolutePath)
+		if err != nil {
+			return err
+		}
+		current := absoluteRoot
+		components := []string{"."}
+		if relative != "." {
+			components = strings.Split(relative, string(filepath.Separator))
+		}
+		for _, component := range components {
+			if component != "." {
+				current = filepath.Join(current, component)
+			}
+			info, statErr := os.Lstat(current)
+			if statErr != nil {
+				return statErr
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("symlink component in removal path %s", current)
+			}
+		}
 		canonicalRoot, err := filepath.EvalSymlinks(root)
 		if err != nil {
 			return err
@@ -136,15 +228,6 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		}
 		if !domain.IsWithin(canonicalRoot, canonicalPath) {
 			return errors.New("worktree path is outside canonical wx root")
-		}
-		for current := canonicalPath; current != canonicalRoot; current = filepath.Dir(current) {
-			info, err := os.Lstat(current)
-			if err != nil {
-				return err
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("symlink component in removal path %s", current)
-			}
 		}
 		common, err := m.gitValue(ctx, path, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
 		if err != nil {
@@ -167,23 +250,10 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 				return errors.New("worktree HEAD does not match SQLite ownership metadata")
 			}
 		}
-		listed, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "list", "--porcelain", "-z")
-		if err != nil {
-			return err
-		}
-		registered := false
-		for _, field := range strings.Split(listed.Stdout, "\x00") {
-			if strings.TrimPrefix(field, "worktree ") == canonicalPath && strings.HasPrefix(field, "worktree ") {
-				registered = true
-				break
-			}
-		}
 		if !registered {
 			return errors.New("worktree is not registered at expected path")
 		}
-		if _, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", path); err != nil {
-			return err
-		}
+		_, _ = m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", path)
 		_, err = m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", path)
 		return err
 	})

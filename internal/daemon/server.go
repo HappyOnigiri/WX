@@ -2,9 +2,12 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/rpc"
@@ -46,6 +49,11 @@ func Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	lock, err := acquireDaemonLock(socket + ".lock")
+	if err != nil {
+		return err
+	}
+	defer releaseDaemonLock(lock)
 	store, openErr := state.Open(dbPath)
 	var rpcHandler rpc.Handler
 	if openErr != nil {
@@ -53,7 +61,9 @@ func Serve(ctx context.Context) error {
 		logger.Error("daemon entered read-only degraded mode", "database", dbPath, "error", openErr)
 	} else {
 		defer store.Close()
-		rpcHandler = Handler{Manager: New(cfg, store, logger)}
+		manager := New(cfg, store, logger, true)
+		defer manager.Close()
+		rpcHandler = Handler{Manager: manager}
 	}
 	server := &rpc.Server{Socket: socket, Handler: rpcHandler}
 	logger.Info("daemon started", "socket", socket, "protocol_version", rpc.ProtocolVersion, "degraded", openErr != nil)
@@ -61,6 +71,36 @@ func Serve(ctx context.Context) error {
 		return fmt.Errorf("serve daemon: %w", err)
 	}
 	return nil
+}
+
+func acquireDaemonLock(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepathDir(path), 0700); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		file.Close()
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return nil, errors.New("wx daemon is already running")
+		}
+		return nil, fmt.Errorf("lock daemon runtime: %w", err)
+	}
+	return file, nil
+}
+
+func releaseDaemonLock(file *os.File) {
+	if file == nil {
+		return
+	}
+	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	_ = file.Close()
 }
 func filepathDir(path string) string {
 	for i := len(path) - 1; i >= 0; i-- {

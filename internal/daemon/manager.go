@@ -43,27 +43,43 @@ type Manager struct {
 	backupError string
 	roots       map[string]bool
 	jobs        chan jobWork
+	reclaimAll  bool
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 type jobWork struct {
 	id string
 }
 
-func New(cfg config.Config, store *state.Store, logger *slog.Logger) *Manager {
+type retryableJobError struct{ error }
+
+func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {
 	git := &gitx.Runner{Timeout: cfg.Readiness.Timeout.Duration}
 	started := time.Now()
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, jobs: make(chan jobWork, 256)}
+	managerCtx, managerCancel := context.WithCancel(context.Background())
+	reclaimAll := len(exclusiveStartup) > 0 && exclusiveStartup[0]
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, jobs: make(chan jobWork, 256), reclaimAll: reclaimAll, ctx: managerCtx, cancel: managerCancel}
 	if root, err := config.ExpandHome(cfg.Storage.WorktreeRoot); err == nil {
 		m.roots[filepath.Clean(root)] = true
 	}
 	for workerID := range cfg.Pool.PreparationConcurrency {
 		owner := fmt.Sprintf("%d:%d", os.Getpid(), workerID)
+		m.wg.Add(1)
 		go func() {
-			for work := range m.jobs {
+			defer m.wg.Done()
+			for {
+				var work jobWork
+				select {
+				case <-m.ctx.Done():
+					return
+				case work = <-m.jobs:
+				}
 				job, err := m.store.ClaimJob(context.Background(), work.id, owner)
 				if err != nil {
 					continue
 				}
-				jobCtx, cancel := context.WithCancel(context.Background())
+				jobCtx, cancel := context.WithCancel(m.ctx)
 				done := make(chan struct{})
 				go func() {
 					ticker := time.NewTicker(10 * time.Second)
@@ -84,15 +100,33 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger) *Manager {
 				err = m.runRecoveredJob(jobCtx, job)
 				close(done)
 				cancel()
+				var retryable retryableJobError
+				if errors.As(err, &retryable) {
+					delay := time.Duration(1<<min(job.Attempt, 6)) * time.Second
+					if retryErr := m.store.RetryJob(context.Background(), work.id, owner, delay, "DEPENDENCY_PENDING"); retryErr != nil {
+						m.log.Error("reschedule job failed", "job_id", work.id, "error", retryErr)
+					} else {
+						m.scheduleDelayed(job, delay)
+					}
+					continue
+				}
 				if finishErr := m.store.FinishJob(context.Background(), work.id, owner, err); finishErr != nil {
 					m.log.Error("finish job failed", "job_id", work.id, "error", finishErr)
 				}
 			}
 		}()
 	}
-	go m.maintainJobs()
-	go m.maintainLifecycle()
+	m.wg.Add(2)
+	go func() { defer m.wg.Done(); m.maintainJobs() }()
+	go func() { defer m.wg.Done(); m.maintainLifecycle() }()
 	return m
+}
+
+func (m *Manager) Close() {
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.wg.Wait()
 }
 
 func (m *Manager) Config() config.Config { m.mu.RLock(); defer m.mu.RUnlock(); return m.cfg }
@@ -107,10 +141,25 @@ func (m *Manager) enqueue(kind, workspaceID, slotID, sessionID string) error {
 
 func (m *Manager) schedule(job state.Job) {
 	select {
+	case <-m.ctx.Done():
 	case m.jobs <- jobWork{id: job.ID}:
 	default:
 		// The durable PENDING row is picked up by maintainJobs once capacity frees up.
 	}
+}
+
+func (m *Manager) scheduleDelayed(job state.Job, delay time.Duration) {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-m.ctx.Done():
+		case <-timer.C:
+			m.schedule(job)
+		}
+	}()
 }
 
 func (m *Manager) recoverJobs(reclaimAll bool) {
@@ -124,30 +173,82 @@ func (m *Manager) recoverJobs(reclaimAll bool) {
 	}
 }
 func (m *Manager) maintainJobs() {
-	m.recoverJobs(true)
+	m.recoverJobs(m.reclaimAll)
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		m.recoverJobs(false)
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			m.recoverJobs(false)
+		}
 	}
 }
 
 func (m *Manager) maintainLifecycle() {
-	m.reconcileOrphans(context.Background())
-	m.maybeBackup(context.Background())
-	_, _ = m.GC(context.Background(), false)
+	m.reconcileRegistry(m.ctx)
+	m.reconcileOrphans(m.ctx)
+	m.maybeBackup(m.ctx)
+	_, _ = m.GC(m.ctx, false)
 	interval := m.Config().Discovery.ReconcileInterval.Duration
 	if interval <= 0 {
 		interval = 10 * time.Minute
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		_ = m.reloadConfig(false)
-		m.reconcileOrphans(context.Background())
-		m.maybeBackup(context.Background())
-		if _, err := m.GC(context.Background(), false); err != nil {
-			m.log.Error("automatic GC failed", "error", err)
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			_ = m.reloadConfig(false)
+			m.reconcileRegistry(m.ctx)
+			m.reconcileOrphans(m.ctx)
+			m.maybeBackup(m.ctx)
+			if _, err := m.GC(m.ctx, false); err != nil && m.ctx.Err() == nil {
+				m.log.Error("automatic GC failed", "error", err)
+			}
+		}
+	}
+}
+
+func (m *Manager) reconcileRegistry(ctx context.Context) {
+	roots, err := m.store.WorkspaceRoots(ctx)
+	if err != nil {
+		m.log.Error("workspace registry reconcile failed", "error", err)
+		return
+	}
+	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
+	for _, root := range roots {
+		workspaceRecord, err := discoverer.Resolve(ctx, root)
+		if err != nil {
+			m.log.Error("workspace rediscovery failed", "workspace_root", root, "error", err)
+			continue
+		}
+		if _, err := m.store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
+			m.log.Error("workspace registry update failed", "workspace_id", workspaceRecord.ID, "error", err)
+			continue
+		}
+		resolved, err := pool.ResolveBranches(ctx, m.git, workspaceRecord, nil)
+		if err != nil {
+			m.log.Error("workspace base reconcile failed", "workspace_id", workspaceRecord.ID, "error", err)
+			continue
+		}
+		readySlots, err := m.store.ReadySlots(ctx, string(workspaceRecord.ID))
+		if err != nil {
+			m.log.Error("READY registry read failed", "workspace_id", workspaceRecord.ID, "error", err)
+			continue
+		}
+		for _, slot := range readySlots {
+			valid, validationErr := m.readyMatches(ctx, slot, resolved)
+			if validationErr != nil || !valid {
+				_ = m.store.SetSlotState(ctx, slot.ID, []string{"READY"}, "STALE", "READY_RECONCILE_FAILED")
+				m.log.Warn("READY slot failed startup reconciliation", "slot_id", slot.ID, "error", validationErr)
+			}
+		}
+		if err := m.ensureStandby(ctx, workspaceRecord); err != nil {
+			m.log.Error("workspace standby reconcile failed", "workspace_id", workspaceRecord.ID, "error", err)
 		}
 	}
 }
@@ -227,6 +328,16 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 		return m.snapshotSession(ctx, s)
 	case "RESTORE":
 		return m.resumeRestoreJob(ctx, job.SessionID)
+	case "REMOVE":
+		if err := m.removeSlotJob(ctx, job); err != nil {
+			return retryableJobError{err}
+		}
+		return nil
+	case "REMOVE_REPOSITORY":
+		if err := m.removeColdRepositoryJob(ctx, job); err != nil {
+			return retryableJobError{err}
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown persistent job kind %s", job.Kind)
 	}
@@ -254,6 +365,21 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 	if s.ParentSessionID == "" {
 		return errors.New("restore session has no parent snapshot")
 	}
+	parent, err := m.store.SessionByID(ctx, s.ParentSessionID)
+	if err != nil {
+		return err
+	}
+	snapshots, err := m.store.Snapshots(ctx, s.ParentSessionID)
+	if err != nil {
+		return err
+	}
+	if !snapshotsUsable(snapshots, time.Now()) {
+		if parent.State == "RELEASING" || parent.State == "SNAPSHOTTING" {
+			return retryableJobError{errors.New("parent snapshot is still being archived")}
+		}
+		_ = m.store.SetSlotState(ctx, s.SlotID, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_UNAVAILABLE")
+		return errors.New("parent recovery snapshot is expired or incomplete")
+	}
 	w, err := m.store.Workspace(ctx, s.WorkspaceID)
 	if err != nil {
 		return err
@@ -262,20 +388,40 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 	if err != nil {
 		return err
 	}
-	resolved, err := m.resolvedFromStored(ctx, w, repos)
-	if err != nil {
-		return err
-	}
-	snapshots, err := m.store.Snapshots(ctx, s.ParentSessionID)
-	if err != nil {
-		return err
-	}
 	by := map[string]state.Snapshot{}
 	for _, snapshot := range snapshots {
 		by[snapshot.RepositoryID] = snapshot
 	}
-	m.restoreSlot(ctx, s.SlotID, w, resolved, repos, by)
-	return nil
+	if len(repos) == 0 {
+		resolved := make([]pool.Resolved, 0, len(w.Repositories))
+		for _, repo := range w.Repositories {
+			snapshot, ok := by[string(repo.ID)]
+			if !ok {
+				_ = m.store.SetSlotState(ctx, s.SlotID, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
+				return fmt.Errorf("snapshot missing repository %s", repo.RelativePath)
+			}
+			resolved = append(resolved, pool.Resolved{Repository: repo, RequestedRef: snapshot.HeadRef, OID: snapshot.HeadOID})
+		}
+		slot, err := m.store.Slot(ctx, s.SlotID)
+		if err != nil {
+			return err
+		}
+		repos, err = m.slotRepos(slot.Path, w, resolved, slot.Generation)
+		if err != nil {
+			return err
+		}
+		for i := range repos {
+			repos[i].State = "RESTORING"
+		}
+		if err := m.store.AddRestoringRepositories(ctx, s.SlotID, repos); err != nil {
+			return err
+		}
+	}
+	resolved, err := m.resolvedFromStored(ctx, w, repos)
+	if err != nil {
+		return err
+	}
+	return m.restoreSlot(ctx, s.SlotID, w, resolved, repos, by)
 }
 
 func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []string, agent string, pid int) (Lease, error) {
@@ -293,9 +439,14 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 		return Lease{}, err
 	}
 	if len(branches) == 0 {
-		if ready, ok, err := m.store.ReadySlot(ctx, string(w.ID)); err != nil {
-			return Lease{}, err
-		} else if ok {
+		for attempts := 0; attempts < m.Config().Pool.WarmPerWorkspace+1; attempts++ {
+			ready, ok, err := m.store.ReadySlot(ctx, string(w.ID))
+			if err != nil {
+				return Lease{}, err
+			}
+			if !ok {
+				break
+			}
 			valid, err := m.readyMatches(ctx, ready, resolved)
 			if err != nil {
 				return Lease{}, err
@@ -305,12 +456,35 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 				if err != nil {
 					return Lease{}, err
 				}
-				session := state.Session{ID: ready.ID, WorkspaceID: string(w.ID), SlotID: ready.ID, State: "ACTIVE", AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
+				repositories, err := m.store.SlotRepositories(ctx, ready.ID)
+				if err != nil {
+					return Lease{}, err
+				}
+				hasCold := false
+				for _, repository := range repositories {
+					hasCold = hasCold || repository.State == "COLD"
+				}
+				sessionState := "ACTIVE"
+				if hasCold {
+					sessionState = "STARTING"
+				}
+				session := state.Session{ID: ready.ID, WorkspaceID: string(w.ID), SlotID: ready.ID, State: sessionState, AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
+				if hasCold {
+					job, leaseErr := m.store.LeaseReadyWithCold(ctx, ready.ID, session)
+					if leaseErr == nil {
+						m.schedule(job)
+						_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
+						return Lease{SessionID: session.ID, Token: token, Path: ready.Path, SourceWorkspace: string(w.Root), Ready: false}, nil
+					}
+					continue
+				}
 				if err := m.store.LeaseReady(ctx, ready.ID, session); err == nil {
 					_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 					return Lease{SessionID: session.ID, Token: token, Path: ready.Path, SourceWorkspace: string(w.Root), Ready: true}, nil
 				}
+				continue
 			}
+			_ = m.store.SetSlotState(ctx, ready.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
 		}
 	}
 	return m.allocate(ctx, w, resolved, generation, agent, pid, "STARTING", "")
@@ -330,6 +504,9 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 		return Lease{}, err
 	}
 	if err := os.MkdirAll(root, 0700); err != nil {
+		return Lease{}, err
+	}
+	if err := os.Chmod(root, 0700); err != nil {
 		return Lease{}, err
 	}
 	repos, err := m.slotRepos(root, w, resolved, generation)
@@ -439,6 +616,10 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 	return nil
 }
 func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []pool.Resolved) (bool, error) {
+	rootInfo, err := os.Lstat(s.Path)
+	if err != nil || rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return false, nil
+	}
 	repos, err := m.store.SlotRepositories(ctx, s.ID)
 	if err != nil {
 		return false, err
@@ -450,9 +631,10 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 	for _, r := range repos {
 		byID[r.RepositoryID] = r
 	}
+	preparer := workspace.Preparer{Git: m.git, Config: m.Config()}
 	for _, r := range resolved {
 		stored, ok := byID[string(r.Repository.ID)]
-		if !ok || stored.BaseOID != r.OID {
+		if !ok || (stored.State != "READY" && stored.State != "COLD") || stored.BaseOID != r.OID {
 			return false, nil
 		}
 		fp, err := workspace.Fingerprint(s.Generation, r.OID, r.Repository, m.Config())
@@ -460,6 +642,19 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 			return false, err
 		}
 		if fp != stored.Fingerprint {
+			return false, nil
+		}
+		if stored.State == "COLD" {
+			if _, err := os.Lstat(stored.WorktreePath); !errors.Is(err, os.ErrNotExist) {
+				return false, nil
+			}
+			continue
+		}
+		info, err := os.Lstat(stored.WorktreePath)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return false, nil
+		}
+		if err := preparer.ValidateReady(ctx, r.Repository, stored.WorktreePath, r.OID); err != nil {
 			return false, nil
 		}
 	}
@@ -496,6 +691,9 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 		if err := os.MkdirAll(root, 0700); err != nil {
 			return err
 		}
+		if err := os.Chmod(root, 0700); err != nil {
+			return err
+		}
 		repos, err := m.slotRepos(root, w, resolved, generation)
 		if err != nil {
 			return err
@@ -523,6 +721,9 @@ func (m *Manager) AllocateResumeSlot(ctx context.Context, agent string, pid int)
 		return Lease{}, err
 	}
 	if err := os.MkdirAll(root, 0700); err != nil {
+		return Lease{}, err
+	}
+	if err := os.Chmod(root, 0700); err != nil {
 		return Lease{}, err
 	}
 	session := state.Session{ID: id, SlotID: id, State: "UNBOUND", AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
@@ -594,35 +795,27 @@ func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID s
 	if err != nil {
 		return err
 	}
-	if prior.State == "EXPIRED" || !snapshotsUsable(snaps, time.Now()) {
+	switch prior.State {
+	case "RELEASING", "SNAPSHOTTING":
+		// The durable RESTORE job waits for the parent SNAPSHOT job to commit.
+	case "ARCHIVED":
+		if !snapshotsUsable(snaps, time.Now()) {
+			return fmt.Errorf("wx recovery snapshot is expired or unavailable; stop this session and run wx resume %s %s resume %s, or rerun the native resume with --fresh only if local workspace state may be discarded", prior.ID, current.AgentKind, agentID)
+		}
+	case "EXPIRED":
 		return fmt.Errorf("wx recovery snapshot is expired or unavailable; stop this session and run wx resume %s %s resume %s, or rerun the native resume with --fresh only if local workspace state may be discarded", prior.ID, current.AgentKind, agentID)
+	default:
+		return fmt.Errorf("wx session %s is %s and cannot be resumed without first completing release", prior.ID, prior.State)
 	}
 	w, err := m.store.Workspace(ctx, prior.WorkspaceID)
 	if err != nil {
 		return err
 	}
-	resolved := make([]pool.Resolved, 0, len(w.Repositories))
-	snapByRepo := map[string]state.Snapshot{}
-	for _, s := range snaps {
-		snapByRepo[s.RepositoryID] = s
-	}
-	for _, repo := range w.Repositories {
-		s, ok := snapByRepo[string(repo.ID)]
-		if !ok {
-			return fmt.Errorf("snapshot missing repository %s", repo.RelativePath)
-		}
-		resolved = append(resolved, pool.Resolved{Repository: repo, RequestedRef: s.HeadRef, OID: s.HeadOID})
-	}
-	slot, _ := m.store.Slot(ctx, id)
 	generation, err := m.store.WorkspaceGeneration(ctx, string(w.ID))
 	if err != nil {
 		return err
 	}
-	repos, err := m.slotRepos(slot.Path, w, resolved, generation)
-	if err != nil {
-		return err
-	}
-	job, err := m.store.BindResumeSlot(ctx, id, prior.ID, string(w.ID), agentID, generation, repos)
+	job, err := m.store.BindResumeSlot(ctx, id, prior.ID, string(w.ID), agentID, generation, nil)
 	if err != nil {
 		return err
 	}
@@ -689,8 +882,9 @@ func (m *Manager) ResumeStatus(ctx context.Context, oldID string) (map[string]an
 	if err != nil {
 		return nil, err
 	}
-	expired := old.State == "EXPIRED" || !snapshotsUsable(snaps, time.Now())
-	return map[string]any{"state": old.State, "expired": expired, "workspace_id": old.WorkspaceID}, nil
+	pending := old.State == "RELEASING" || old.State == "SNAPSHOTTING"
+	expired := !pending && (old.State == "EXPIRED" || !snapshotsUsable(snaps, time.Now()))
+	return map[string]any{"state": old.State, "expired": expired, "pending": pending, "workspace_id": old.WorkspaceID}, nil
 }
 
 func snapshotsUsable(snaps []state.Snapshot, at time.Time) bool {
@@ -714,6 +908,12 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, allo
 	snaps, err := m.store.Snapshots(ctx, oldID)
 	if err != nil {
 		return Lease{}, err
+	}
+	if old.State == "RELEASING" || old.State == "SNAPSHOTTING" {
+		old, snaps, err = m.waitForSnapshot(ctx, oldID)
+		if err != nil {
+			return Lease{}, err
+		}
 	}
 	w, err := m.store.Workspace(ctx, old.WorkspaceID)
 	if err != nil {
@@ -756,6 +956,38 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, allo
 		return Lease{}, err
 	}
 	return lease, nil
+}
+
+func (m *Manager) waitForSnapshot(ctx context.Context, sessionID string) (state.Session, []state.Snapshot, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, m.Config().Readiness.Timeout.Duration)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		session, err := m.store.SessionByID(waitCtx, sessionID)
+		if err != nil {
+			return state.Session{}, nil, err
+		}
+		snapshots, err := m.store.Snapshots(waitCtx, sessionID)
+		if err != nil {
+			return state.Session{}, nil, err
+		}
+		if session.State == "ARCHIVED" && snapshotsUsable(snapshots, time.Now()) {
+			return session, snapshots, nil
+		}
+		if session.State == "EXPIRED" {
+			return session, snapshots, errors.New("session recovery snapshot expired while waiting for archive")
+		}
+		slot, err := m.store.Slot(waitCtx, session.SlotID)
+		if err == nil && (slot.State == "FAILED" || slot.State == "QUARANTINED") {
+			return session, snapshots, fmt.Errorf("session archive failed: slot is %s", slot.State)
+		}
+		select {
+		case <-waitCtx.Done():
+			return session, snapshots, waitCtx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
@@ -825,6 +1057,13 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	var cold []state.ColdRepositoryCandidate
+	if cfg.Pool.WarmPerWorkspace > 0 {
+		cold, err = m.store.ColdRepositoryCandidates(ctx, nowTime.Add(-cfg.Retention.HotStandby.Duration).Format(time.RFC3339Nano))
+		if err != nil {
+			return 0, err
+		}
+	}
 	expired, err := m.store.ExpiredSnapshots(ctx, nowTime.Format(time.RFC3339Nano))
 	if err != nil {
 		return 0, err
@@ -833,38 +1072,64 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	for _, snapshot := range expired {
 		expiredSessions[snapshot.SessionID] = append(expiredSessions[snapshot.SessionID], snapshot)
 	}
-	total := len(items) + len(standbys) + len(expiredSessions)
+	wholeSlotRemoval := map[string]bool{}
+	for _, standby := range standbys {
+		wholeSlotRemoval[standby.SlotID] = true
+	}
+	totalCold := 0
+	for _, candidate := range cold {
+		if !wholeSlotRemoval[candidate.SlotID] {
+			totalCold++
+		}
+	}
+	total := len(items) + len(standbys) + len(expiredSessions) + totalCold
 	if dry {
 		return total, nil
 	}
 	count := 0
-	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: cfg}}
+	for _, candidate := range cold {
+		if wholeSlotRemoval[candidate.SlotID] {
+			continue
+		}
+		job, changed, scheduleErr := m.store.ScheduleColdRepositoryRemoval(ctx, candidate)
+		if scheduleErr != nil {
+			m.log.Error("cold repository removal scheduling failed", "slot_id", candidate.SlotID, "repository_id", candidate.RepositoryID, "error", scheduleErr)
+			continue
+		}
+		if changed {
+			m.schedule(job)
+			count++
+		}
+	}
 	for _, item := range standbys {
-		root, ok := m.rootForPath(item.Path)
-		if !ok {
+		if _, ok := m.rootForPath(item.Path); !ok {
 			continue
 		}
-		if err := m.removeSlotWorktrees(ctx, archiveManager, root, item.SlotID, "", item.Path); err != nil {
-			m.log.Error("standby GC failed", "slot_id", item.SlotID, "error", err)
+		job, changed, err := m.store.ScheduleRemoval(ctx, item.SlotID, "")
+		if err != nil {
+			m.log.Error("standby removal scheduling failed", "slot_id", item.SlotID, "error", err)
 			continue
 		}
-		if err := m.store.MarkStandbyArchived(ctx, item.SlotID); err == nil {
+		if changed {
+			m.schedule(job)
 			count++
 		}
 	}
 	for _, item := range items {
-		root, ok := m.rootForPath(item.Path)
-		if !ok {
+		if _, ok := m.rootForPath(item.Path); !ok {
 			continue
 		}
-		if err := m.removeSlotWorktrees(ctx, archiveManager, root, item.SlotID, item.SessionID, item.Path); err != nil {
-			m.log.Error("ended worktree GC failed", "slot_id", item.SlotID, "error", err)
+		job, changed, err := m.store.ScheduleRemoval(ctx, item.SlotID, item.SessionID)
+		if err != nil {
+			m.log.Error("ended worktree removal scheduling failed", "slot_id", item.SlotID, "error", err)
 			continue
 		}
-		if err := m.store.MarkSlotArchived(ctx, item.SlotID); err == nil {
+		if changed {
+			m.schedule(job)
 			count++
 		}
 	}
+	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: cfg}}
 	for sessionID, snapshots := range expiredSessions {
 		ok := true
 		for _, snapshot := range snapshots {
@@ -884,6 +1149,58 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 		return count, err
 	}
 	return count, nil
+}
+
+func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
+	slot, err := m.store.Slot(ctx, job.SlotID)
+	if err != nil {
+		return err
+	}
+	if slot.State == "ARCHIVED" {
+		return nil
+	}
+	if slot.State != "REMOVING" {
+		return fmt.Errorf("slot %s cannot be removed from %s", slot.ID, slot.State)
+	}
+	root, ok := m.rootForPath(slot.Path)
+	if !ok {
+		return errors.New("slot path is outside every current or retired wx root")
+	}
+	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: m.Config()}}
+	if err := m.removeSlotWorktrees(ctx, archiveManager, root, slot.ID, job.SessionID, slot.Path); err != nil {
+		return err
+	}
+	return m.store.FinishRemoval(ctx, slot.ID)
+}
+
+func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) error {
+	slot, err := m.store.Slot(ctx, job.SlotID)
+	if err != nil {
+		return err
+	}
+	repositoryState, err := m.store.SlotRepository(ctx, job.SlotID, job.RepositoryID)
+	if err != nil {
+		return err
+	}
+	if repositoryState.State == "COLD" {
+		return nil
+	}
+	if repositoryState.State != "RETIRING" || slot.State != "RETIRING" {
+		return fmt.Errorf("repository %s/%s cannot retire from %s/%s", slot.ID, job.RepositoryID, slot.State, repositoryState.State)
+	}
+	root, ok := m.rootForPath(slot.Path)
+	if !ok || !domain.IsWithin(root, repositoryState.WorktreePath) {
+		return errors.New("cold repository path is outside wx ownership root")
+	}
+	repository, err := m.store.Repository(ctx, job.RepositoryID)
+	if err != nil {
+		return err
+	}
+	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: m.Config()}}
+	if err := archiveManager.RemoveWorktree(ctx, repository, root, repositoryState.WorktreePath, repositoryState.BaseOID); err != nil {
+		return err
+	}
+	return m.store.FinishColdRepositoryRemoval(ctx, slot.ID, job.RepositoryID)
 }
 
 func (m *Manager) rootForPath(path string) (string, bool) {
@@ -997,6 +1314,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		return err
 	}
 	m.mu.Lock()
+	oldRoot := filepath.Clean(m.cfg.Storage.WorktreeRoot)
 	m.cfg = cfg
 	m.lastReload = time.Now()
 	m.reloadError = ""
@@ -1004,8 +1322,20 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		m.roots[filepath.Clean(root)] = true
 	}
 	m.mu.Unlock()
+	newRoot := filepath.Clean(cfg.Storage.WorktreeRoot)
+	if oldRoot != newRoot {
+		if err := m.store.DrainRoot(context.Background(), oldRoot); err != nil {
+			m.mu.Lock()
+			m.reloadError = err.Error()
+			m.mu.Unlock()
+			return fmt.Errorf("drain retired worktree root: %w", err)
+		}
+	}
 	if runGC {
-		go func() { _, _ = m.GC(context.Background(), false) }()
+		go func() {
+			m.reconcileRegistry(context.Background())
+			_, _ = m.GC(context.Background(), false)
+		}()
 	}
 	return nil
 }

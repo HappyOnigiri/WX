@@ -135,10 +135,73 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	effective := Merge(Defaults(), raw)
+	if err := NormalizePaths(&effective); err != nil {
+		return Config{}, err
+	}
 	if err := Validate(&effective); err != nil {
 		return Config{}, err
 	}
 	return effective, nil
+}
+
+func NormalizePaths(c *Config) error {
+	root, err := canonicalPath(c.Storage.WorktreeRoot)
+	if err != nil {
+		return fmt.Errorf("storage.worktree_root: %w", err)
+	}
+	c.Storage.WorktreeRoot = root
+	workspaces := make(map[string]Workspace, len(c.Workspaces))
+	for path, override := range c.Workspaces {
+		canonical, err := canonicalPath(path)
+		if err != nil {
+			return fmt.Errorf("workspace override %q: %w", path, err)
+		}
+		if _, exists := workspaces[canonical]; exists {
+			return fmt.Errorf("workspace overrides collide at canonical path %s", canonical)
+		}
+		workspaces[canonical] = override
+	}
+	c.Workspaces = workspaces
+	repositories := make(map[string]Repository, len(c.Repositories))
+	for path, override := range c.Repositories {
+		canonical, err := canonicalPath(path)
+		if err != nil {
+			return fmt.Errorf("repository override %q: %w", path, err)
+		}
+		if _, exists := repositories[canonical]; exists {
+			return fmt.Errorf("repository overrides collide at canonical path %s", canonical)
+		}
+		repositories[canonical] = override
+	}
+	c.Repositories = repositories
+	return nil
+}
+
+func canonicalPath(path string) (string, error) {
+	expanded, err := ExpandHome(path)
+	if err != nil {
+		return "", err
+	}
+	current := expanded
+	var suffix []string
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(current)
+		if resolveErr == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !errors.Is(resolveErr, os.ErrNotExist) {
+			return "", resolveErr
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", resolveErr
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
 }
 
 func LoadRaw() (Config, error) {

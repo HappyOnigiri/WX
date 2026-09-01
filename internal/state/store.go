@@ -32,6 +32,9 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
+	if err := os.Chmod(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
 	dsn := (&url.URL{Scheme: "file", Path: path}).String() + "?_defensive=1&_journal_mode=wal&_foreign_keys=on&_busy_timeout=5000&_synchronous=normal"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -285,7 +288,7 @@ func newJob(kind, workspaceID, slotID, sessionID string) (Job, error) {
 }
 
 func insertJob(ctx context.Context, tx *sql.Tx, job Job) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,kind,workspace_id,slot_id,session_id,state,attempt,not_before) VALUES(?,?,?,?,?,'PENDING',0,?)`, job.ID, job.Kind, nullString(job.WorkspaceID), nullString(job.SlotID), nullString(job.SessionID), now())
+	_, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,kind,workspace_id,slot_id,session_id,repository_id,state,attempt,not_before) VALUES(?,?,?,?,?,?,'PENDING',0,?)`, job.ID, job.Kind, nullString(job.WorkspaceID), nullString(job.SlotID), nullString(job.SessionID), nullString(job.RepositoryID), now())
 	return err
 }
 
@@ -361,6 +364,19 @@ func (s *Store) FinishJob(ctx context.Context, id, owner string, runErr error) e
 	}
 	return nil
 }
+
+func (s *Store) RetryJob(ctx context.Context, id, owner string, delay time.Duration, code string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET state='PENDING',not_before=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, time.Now().Add(delay).UTC().Format(time.RFC3339Nano), code, id, owner)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errors.New("job cannot be retried without its active lease")
+	}
+	return nil
+}
 func (s *Store) RecoverJobs(ctx context.Context, reclaimAll bool) ([]Job, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -396,6 +412,23 @@ func (s *Store) ReadySlot(ctx context.Context, workspaceID string) (Slot, bool, 
 		return Slot{}, false, nil
 	}
 	return x, err == nil, err
+}
+
+func (s *Store) ReadySlots(ctx context.Context, workspaceID string) ([]Slot, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,workspace_id,generation,path,state,COALESCE(owner_session_id,''),created_at,COALESCE(ready_at,'') FROM slots WHERE workspace_id=? AND state='READY' AND owner_session_id IS NULL ORDER BY ready_at,id`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var slots []Slot
+	for rows.Next() {
+		var slot Slot
+		if err := rows.Scan(&slot.ID, &slot.WorkspaceID, &slot.Generation, &slot.Path, &slot.State, &slot.OwnerSessionID, &slot.CreatedAt, &slot.ReadyAt); err != nil {
+			return nil, err
+		}
+		slots = append(slots, slot)
+	}
+	return slots, rows.Err()
 }
 
 func (s *Store) HasStandby(ctx context.Context, workspaceID string) bool {
@@ -508,6 +541,44 @@ func (s *Store) LeaseReady(ctx context.Context, slotID string, session Session) 
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) LeaseReadyWithCold(ctx context.Context, slotID string, session Session) (Job, error) {
+	job, err := newJob("PREPARE", session.WorkspaceID, slotID, session.ID)
+	if err != nil {
+		return Job{}, err
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',owner_session_id=?,last_used_at=?,updated_at=? WHERE id=? AND state='READY' AND owner_session_id IS NULL`, session.ID, now(), now(), slotID)
+	if err != nil {
+		return Job{}, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return Job{}, errors.New("slot is no longer READY")
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE slot_repositories SET state='PREPARING' WHERE slot_id=? AND state='COLD'`, slotID)
+	if err != nil {
+		return Job{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Job{}, errors.New("slot has no COLD repositories")
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,state,agent_kind,client_pid,session_token_hash,created_at) VALUES(?,?,?,?,?,?,?,?)`, session.ID, session.WorkspaceID, slotID, "STARTING", session.AgentKind, session.ClientPID, session.TokenHash, now()); err != nil {
+		return Job{}, err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id IN (SELECT repository_id FROM workspace_repositories WHERE workspace_id=?)`, now(), session.WorkspaceID); err != nil {
+		return Job{}, err
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, err
+	}
+	return job, tx.Commit()
 }
 
 func (s *Store) RecordLease(ctx context.Context, workspaceID string) error {
@@ -776,6 +847,39 @@ func (s *Store) SlotRepositories(ctx context.Context, slotID string) ([]SlotRepo
 	return out, rows.Err()
 }
 
+func (s *Store) AddRestoringRepositories(ctx context.Context, slotID string, repos []SlotRepository) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var slotState string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM slots WHERE id=?`, slotID).Scan(&slotState); err != nil {
+		return err
+	}
+	if slotState != "RESTORING" {
+		return errors.New("resume slot is no longer RESTORING")
+	}
+	var existing int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM slot_repositories WHERE slot_id=?`, slotID).Scan(&existing); err != nil {
+		return err
+	}
+	if existing != 0 {
+		if existing == len(repos) {
+			return nil
+		}
+		return errors.New("resume repository metadata is incomplete")
+	}
+	for _, repo := range repos {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slotID, repo.RepositoryID, repo.WorktreePath, "RESTORING", repo.RequestedRef, repo.BaseOID, repo.Fingerprint); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SlotRepository(ctx context.Context, slotID, repositoryID string) (SlotRepository, error) {
 	var x SlotRepository
 	err := s.db.QueryRowContext(ctx, `SELECT repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint FROM slot_repositories WHERE slot_id=? AND repository_id=?`, slotID, repositoryID).Scan(&x.RepositoryID, &x.WorktreePath, &x.State, &x.RequestedRef, &x.BaseOID, &x.Fingerprint)
@@ -866,6 +970,23 @@ func (s *Store) Workspace(ctx context.Context, id string) (discovery.Workspace, 
 		w.Repositories = append(w.Repositories, r)
 	}
 	return w, rows.Err()
+}
+
+func (s *Store) WorkspaceRoots(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT root_path FROM workspaces ORDER BY root_path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var roots []string
+	for rows.Next() {
+		var root string
+		if err := rows.Scan(&root); err != nil {
+			return nil, err
+		}
+		roots = append(roots, root)
+	}
+	return roots, rows.Err()
 }
 
 type Status struct{ Workspaces, Repositories, Ready, Leased, Failed, Active, Snapshots, Jobs, Quarantined int }
@@ -1028,6 +1149,77 @@ type GCCandidate struct{ SlotID, SessionID, Path string }
 
 type StandbyGCCandidate struct{ SlotID, WorkspaceID, Path, State string }
 
+type ColdRepositoryCandidate struct{ SlotID, WorkspaceID, RepositoryID, WorktreePath string }
+
+func (s *Store) ColdRepositoryCandidates(ctx context.Context, hotBefore string) ([]ColdRepositoryCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sr.repository_id,sr.worktree_path FROM slots sl JOIN slot_repositories sr ON sr.slot_id=sl.id JOIN repositories r ON r.id=sr.repository_id WHERE sl.owner_session_id IS NULL AND sl.state='READY' AND sr.state='READY' AND (r.last_leased_at IS NULL OR r.last_leased_at<=?) ORDER BY sl.id,sr.repository_id`, hotBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ColdRepositoryCandidate
+	for rows.Next() {
+		var candidate ColdRepositoryCandidate
+		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.RepositoryID, &candidate.WorktreePath); err != nil {
+			return nil, err
+		}
+		out = append(out, candidate)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ScheduleColdRepositoryRemoval(ctx context.Context, candidate ColdRepositoryCandidate) (Job, bool, error) {
+	job, err := newJob("REMOVE_REPOSITORY", candidate.WorkspaceID, candidate.SlotID, "")
+	if err != nil {
+		return Job{}, false, err
+	}
+	job.RepositoryID = candidate.RepositoryID
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE slot_repositories SET state='RETIRING' WHERE slot_id=? AND repository_id=? AND state='READY' AND EXISTS (SELECT 1 FROM slots WHERE id=? AND owner_session_id IS NULL AND state IN ('READY','RETIRING'))`, candidate.SlotID, candidate.RepositoryID, candidate.SlotID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Job{}, false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE slots SET state='RETIRING',updated_at=? WHERE id=? AND state IN ('READY','RETIRING')`, now(), candidate.SlotID); err != nil {
+		return Job{}, false, err
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, false, err
+	}
+	return job, true, tx.Commit()
+}
+
+func (s *Store) FinishColdRepositoryRemoval(ctx context.Context, slotID, repositoryID string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE slot_repositories SET state='COLD' WHERE slot_id=? AND repository_id=? AND state IN ('RETIRING','COLD')`, slotID, repositoryID); err != nil {
+		return err
+	}
+	var remaining int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM slot_repositories WHERE slot_id=? AND state='RETIRING'`, slotID).Scan(&remaining); err != nil {
+		return err
+	}
+	if remaining == 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE slots SET state='READY',updated_at=? WHERE id=? AND state='RETIRING'`, now(), slotID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm int) ([]StandbyGCCandidate, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sl.path,sl.state,COALESCE(sl.ready_at,sl.created_at),COALESCE(MIN(r.last_leased_at),'') FROM slots sl LEFT JOIN slot_repositories sr ON sr.slot_id=sl.id LEFT JOIN repositories r ON r.id=sr.repository_id WHERE sl.owner_session_id IS NULL AND sl.state IN ('READY','STALE') GROUP BY sl.id ORDER BY sl.workspace_id,COALESCE(sl.ready_at,sl.created_at) DESC,sl.id`)
 	if err != nil {
@@ -1042,8 +1234,8 @@ func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm 
 		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.Path, &candidate.State, &readyAt, &lastLeased); err != nil {
 			return nil, err
 		}
-		cold := lastLeased == "" || lastLeased <= hotBefore
-		if candidate.State == "STALE" || cold || kept[candidate.WorkspaceID] >= warm {
+		_ = lastLeased
+		if candidate.State == "STALE" || kept[candidate.WorkspaceID] >= warm {
 			out = append(out, candidate)
 			continue
 		}
@@ -1056,8 +1248,51 @@ func (s *Store) MarkStandbyArchived(ctx context.Context, slotID string) error {
 	return s.SetSlotState(ctx, slotID, []string{"READY", "STALE"}, "ARCHIVED", "")
 }
 
+func (s *Store) ScheduleRemoval(ctx context.Context, slotID, sessionID string) (Job, bool, error) {
+	job, err := newJob("REMOVE", "", slotID, sessionID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, false, err
+	}
+	defer tx.Rollback()
+	var workspaceID string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(workspace_id,'') FROM slots WHERE id=?`, slotID).Scan(&workspaceID); err != nil {
+		return Job{}, false, err
+	}
+	job.WorkspaceID = workspaceID
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=? AND ((owner_session_id IS NULL AND state IN ('READY','STALE')) OR state='SNAPSHOTTED')`, now(), slotID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	changed, _ := res.RowsAffected()
+	if changed == 0 {
+		return Job{}, false, nil
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, false, err
+	}
+	return job, true, tx.Commit()
+}
+
+func (s *Store) FinishRemoval(ctx context.Context, slotID string) error {
+	return s.SetSlotState(ctx, slotID, []string{"REMOVING", "ARCHIVED"}, "ARCHIVED", "")
+}
+
+func (s *Store) DrainRoot(ctx context.Context, root string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	prefix := strings.TrimSuffix(filepath.Clean(root), string(filepath.Separator)) + string(filepath.Separator) + "%"
+	_, err := s.db.ExecContext(ctx, `UPDATE slots SET state='STALE',failure_code='CONFIG_ROOT_RETIRED',updated_at=? WHERE owner_session_id IS NULL AND path LIKE ? ESCAPE '\' AND state IN ('PREPARING','READY')`, now(), prefix)
+	return err
+}
+
 func (s *Store) ExpiredSnapshots(ctx context.Context, before string) ([]Snapshot, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sn.id,sn.session_id,sn.repository_id,sn.head_oid,sn.head_recovery_ref,sn.index_tree_oid,sn.worktree_snapshot_oid,sn.worktree_recovery_ref,sn.status,sn.created_at,sn.expires_at FROM snapshots sn JOIN sessions se ON se.id=sn.session_id WHERE se.state='ARCHIVED' AND sn.status='ARCHIVED' AND sn.expires_at<=? AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING')) ORDER BY sn.session_id,sn.repository_id`, before)
+	rows, err := s.db.QueryContext(ctx, `SELECT sn.id,sn.session_id,sn.repository_id,sn.head_oid,sn.head_recovery_ref,sn.index_tree_oid,sn.worktree_snapshot_oid,sn.worktree_recovery_ref,sn.status,sn.created_at,sn.expires_at FROM snapshots sn JOIN sessions se ON se.id=sn.session_id JOIN slots sl ON sl.id=se.slot_id WHERE se.state='ARCHIVED' AND sl.state='ARCHIVED' AND sn.status='ARCHIVED' AND sn.expires_at<=? AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING')) ORDER BY sn.session_id,sn.repository_id`, before)
 	if err != nil {
 		return nil, err
 	}

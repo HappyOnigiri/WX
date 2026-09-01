@@ -142,6 +142,43 @@ func (p *Preparer) validateExistingWorktree(ctx context.Context, repo discovery.
 	return errors.New("worktree is not registered")
 }
 
+// ValidateReady verifies the physical and Git-administrative invariants that
+// make a stored READY worktree safe to lease.
+func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository, target, oid string) error {
+	if err := p.validateExistingWorktree(ctx, repo, target, oid); err != nil {
+		return err
+	}
+	canonicalTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return err
+	}
+	listed, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return err
+	}
+	matched, locked := false, false
+	for _, field := range strings.Split(listed.Stdout, "\x00") {
+		if strings.HasPrefix(field, "worktree ") {
+			if matched {
+				break
+			}
+			registered, resolveErr := filepath.EvalSymlinks(strings.TrimPrefix(field, "worktree "))
+			matched = resolveErr == nil && registered == canonicalTarget
+			continue
+		}
+		if matched && (field == "locked" || strings.HasPrefix(field, "locked ")) {
+			locked = true
+		}
+	}
+	if !matched {
+		return errors.New("READY worktree is not registered at its recorded path")
+	}
+	if !locked {
+		return errors.New("READY worktree is not protected by git worktree lock")
+	}
+	return nil
+}
+
 func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error {
 	patterns, err := discovery.ReadPatterns(filepath.Join(string(repo.MainPath), ".worktreeinclude"))
 	if err != nil {

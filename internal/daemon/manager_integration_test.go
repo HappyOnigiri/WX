@@ -164,6 +164,7 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	}
 	defer store.Close()
 	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer m.Close()
 	ctx := context.Background()
 	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
 	if err != nil {
@@ -207,6 +208,25 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, 10*time.Second, func() bool { snaps, _ := store.Snapshots(ctx, lease.SessionID); return len(snaps) == 1 })
+	native, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(native.Path, string(filepath.Separator)+"unbound"+string(filepath.Separator)) {
+		t.Fatalf("native resume path is not unbound: %s", native.Path)
+	}
+	if entries, err := os.ReadDir(native.Path); err != nil || len(entries) != 0 {
+		t.Fatalf("unbound root must start empty: entries=%v err=%v", entries, err)
+	}
+	if err := m.BindAndRestoreResume(ctx, native.SessionID, native.Token, "agent-session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WaitReady(waitCtx, native.SessionID, native.Token); err != nil {
+		t.Fatal(err)
+	}
+	if status := gitOutput(t, native.Path, "status", "--porcelain"); !strings.Contains(status, "MM tracked.txt") || !strings.Contains(status, "?? untracked.txt") {
+		t.Fatalf("native restored status:\n%s", status)
+	}
 	resumed, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), false)
 	if err != nil {
 		t.Fatal(err)
@@ -253,6 +273,7 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 	}
 	defer store.Close()
 	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer m.Close()
 	ctx := context.Background()
 	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
 	if err != nil {
@@ -278,6 +299,14 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 	if _, err := m.GC(ctx, false); err != nil {
 		t.Fatal(err)
 	}
+	waitUntil(t, 10*time.Second, func() bool {
+		slot, _ := store.Slot(ctx, lease.SessionID)
+		_, pathErr := os.Stat(lease.Path)
+		return slot.State == "ARCHIVED" && os.IsNotExist(pathErr)
+	})
+	if _, err := m.GC(ctx, false); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(lease.Path); !os.IsNotExist(err) {
 		t.Fatalf("ended worktree still exists: %v", err)
 	}
@@ -297,6 +326,298 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 	}
 }
 
+func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "repo")
+	initGitRepo(t, repoPath)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 0
+	runner := &gitx.Runner{Timeout: 10 * time.Second}
+	ctx := context.Background()
+	discoverer := discovery.Discoverer{Git: runner, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := pool.ResolveBranches(ctx, runner, w, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := domain.NewID()
+	slotRoot := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(w.ID), "slots", id, "root")
+	repos := []state.SlotRepository{{RepositoryID: string(w.Repositories[0].ID), WorktreePath: slotRoot, State: "READY", RequestedRef: resolved[0].RequestedRef, BaseOID: resolved[0].OID, Fingerprint: "test"}}
+	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	job, err := store.CreateSlotSession(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: 1, Path: slotRoot, State: "PREPARING"}, repos, session, "PREPARE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparer := workspace.Preparer{Git: runner, Config: cfg}
+	if err := preparer.Prepare(ctx, w.Repositories[0], slotRoot, resolved[0].OID, id); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimJob(ctx, job.ID, "setup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}}
+	if err := m.prepareSlot(ctx, id, w, resolved, repos); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, claimed.ID, "setup", nil); err != nil {
+		t.Fatal(err)
+	}
+	snapshotJob, changed, err := store.Release(ctx, id, string(w.ID), id)
+	if err != nil || !changed {
+		t.Fatalf("release changed=%v err=%v", changed, err)
+	}
+	claimedSnapshot, err := store.ClaimJob(ctx, snapshotJob.ID, "setup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveManager := archive.Manager{Git: runner, Preparer: &preparer}
+	expires := time.Now().Add(time.Hour)
+	snapshot, err := archiveManager.Snapshot(ctx, w.Repositories[0], slotRoot, id, expires)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkArchived(ctx, id, id, expires.Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, claimedSnapshot.ID, "setup", nil); err != nil {
+		t.Fatal(err)
+	}
+	removeJob, changed, err := store.ScheduleRemoval(ctx, id, id)
+	if err != nil || !changed {
+		t.Fatalf("schedule removal changed=%v err=%v", changed, err)
+	}
+	if _, err := store.ClaimJob(ctx, removeJob.ID, "crashed-daemon"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.removeSlotWorktrees(ctx, archiveManager, cfg.Storage.WorktreeRoot, id, id, slotRoot); err != nil {
+		t.Fatal(err)
+	}
+	if slot, _ := store.Slot(ctx, id); slot.State != "REMOVING" {
+		t.Fatalf("state was committed before simulated crash: %s", slot.State)
+	}
+	recovered, err := store.RecoverJobs(ctx, true)
+	if err != nil || len(recovered) != 1 {
+		t.Fatalf("recovered removal jobs=%+v err=%v", recovered, err)
+	}
+	if err := m.runRecoveredJob(ctx, recovered[0]); err != nil {
+		t.Fatalf("replay removal: %v", err)
+	}
+	if slot, _ := store.Slot(ctx, id); slot.State != "ARCHIVED" {
+		t.Fatalf("replayed removal state=%s", slot.State)
+	}
+}
+
+func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	initGitRepo(t, repo)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 2
+	cfg.Pool.PreparationConcurrency = 3
+	cfg.Retention.HotStandby.Duration = time.Hour
+	cfg.Discovery.ReconcileInterval.Duration = time.Hour
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer m.Close()
+	ctx := context.Background()
+	first, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := m.WaitReady(waitCtx, first.SessionID, first.Token); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		status, _ := store.Status(ctx)
+		return status.Ready == 2
+	})
+
+	leases := make(chan Lease, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+			leases <- lease
+			errs <- err
+		}()
+	}
+	a, b := <-leases, <-leases
+	if errA, errB := <-errs, <-errs; errA != nil || errB != nil {
+		t.Fatalf("concurrent leases errors: %v, %v", errA, errB)
+	}
+	if a.SessionID == b.SessionID || a.Path == b.Path || a.SessionID == first.SessionID || b.SessionID == first.SessionID {
+		t.Fatalf("slots were reused: first=%+v a=%+v b=%+v", first, a, b)
+	}
+	if !a.Ready || !b.Ready {
+		t.Fatalf("warm leases were not ready: a=%+v b=%+v", a, b)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		status, _ := store.Status(ctx)
+		return status.Ready == 2
+	})
+}
+
+func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	initGitRepo(t, repo)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 0
+	cfg.Pool.PreparationConcurrency = 2
+	cfg.Discovery.ReconcileInterval.Duration = time.Hour
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer m.Close()
+	ctx := context.Background()
+	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := m.WaitReady(waitCtx, lease.SessionID, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.BindAgentSession(ctx, lease.SessionID, lease.Token, "in-flight-agent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lease.Path, "pending.txt"), []byte("recover me\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Release(ctx, lease.SessionID, lease.Token, "test"); err != nil {
+		t.Fatal(err)
+	}
+	native, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.BindAndRestoreResume(ctx, native.SessionID, native.Token, "in-flight-agent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WaitReady(waitCtx, native.SessionID, native.Token); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(native.Path, "pending.txt"))
+	if err != nil || string(data) != "recover me\n" {
+		t.Fatalf("restored pending file=%q err=%v", data, err)
+	}
+}
+
+func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	initGitRepo(t, repo)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 0
+	cfg.Retention.EndedWorktree.Duration = 0
+	cfg.Retention.RecoverySnapshot.Duration = time.Millisecond
+	cfg.Discovery.ReconcileInterval.Duration = time.Hour
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer m.Close()
+	ctx := context.Background()
+	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := m.WaitReady(waitCtx, lease.SessionID, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.BindAgentSession(ctx, lease.SessionID, lease.Token, "expired-agent-session"); err != nil {
+		t.Fatal(err)
+	}
+	refusedFresh, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ValidateFreshResume(ctx, refusedFresh.SessionID, refusedFresh.Token, "expired-agent-session"); err == nil {
+		t.Fatal("--fresh was accepted while the mapped session was active")
+	}
+	if err := os.WriteFile(filepath.Join(lease.Path, "uncommitted.txt"), []byte("discarded\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Release(ctx, lease.SessionID, lease.Token, "test"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		session, _ := store.SessionByID(ctx, lease.SessionID)
+		return session.State == "ARCHIVED"
+	})
+	time.Sleep(5 * time.Millisecond)
+	if _, err := m.GC(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		slot, _ := store.Slot(ctx, lease.SessionID)
+		return slot.State == "ARCHIVED"
+	})
+	if _, err := m.GC(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	status, err := m.ResumeStatus(ctx, lease.SessionID)
+	if err != nil || status["expired"] != true {
+		t.Fatalf("resume status=%v err=%v", status, err)
+	}
+	if _, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), false); err == nil {
+		t.Fatal("expired resume proceeded without confirmation")
+	}
+	fresh, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WaitReady(waitCtx, fresh.SessionID, fresh.Token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(fresh.Path, "uncommitted.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expired local state leaked into fresh workspace: %v", err)
+	}
+	if got := gitOutput(t, fresh.Path, "rev-parse", "HEAD"); got != gitOutput(t, repo, "rev-parse", "refs/heads/main") {
+		t.Fatalf("fresh base=%s main=%s", got, gitOutput(t, repo, "rev-parse", "refs/heads/main"))
+	}
+	nativeFresh, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ValidateFreshResume(ctx, nativeFresh.SessionID, nativeFresh.Token, "expired-agent-session"); err != nil {
+		t.Fatalf("--fresh rejected expired mapping: %v", err)
+	}
+}
+
 func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, filepath.Join(root, "service"))
@@ -310,7 +631,8 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
-	cfg.Pool.WarmPerWorkspace = 0
+	cfg.Pool.WarmPerWorkspace = 1
+	cfg.Discovery.ReconcileInterval.Duration = time.Hour
 	cfg.Workspaces = map[string]config.Workspace{root: {Link: []string{"audit"}}}
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -318,6 +640,7 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	}
 	defer store.Close()
 	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer m.Close()
 	lease, err := m.ResolveAndLease(context.Background(), root, nil, "codex", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -340,6 +663,79 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	info, err := os.Lstat(filepath.Join(lease.Path, "audit"))
 	if err != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("audit link=%v err=%v", info, err)
+	}
+	activeRepos, err := store.SlotRepositories(context.Background(), lease.SessionID)
+	if err != nil || len(activeRepos) != 2 {
+		t.Fatalf("active repository count=%d err=%v", len(activeRepos), err)
+	}
+	initGitRepo(t, filepath.Join(root, "api"))
+	m.reconcileRegistry(context.Background())
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	updated, err := discoverer.Resolve(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation, err := store.WorkspaceGeneration(context.Background(), string(updated.ID))
+	if err != nil || generation != 2 {
+		t.Fatalf("updated generation=%d err=%v", generation, err)
+	}
+	activeRepos, err = store.SlotRepositories(context.Background(), lease.SessionID)
+	if err != nil || len(activeRepos) != 2 {
+		t.Fatalf("active session membership changed: count=%d err=%v", len(activeRepos), err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		ready, ok, _ := store.ReadySlot(context.Background(), string(updated.ID))
+		if !ok || ready.Generation != 2 {
+			return false
+		}
+		repos, _ := store.SlotRepositories(context.Background(), ready.ID)
+		return len(repos) == 3
+	})
+	if _, err := m.GC(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	var coldSlot state.Slot
+	waitUntil(t, 10*time.Second, func() bool {
+		ready, ok, _ := store.ReadySlot(context.Background(), string(updated.ID))
+		if !ok || ready.Generation != 2 {
+			return false
+		}
+		repositories, _ := store.SlotRepositories(context.Background(), ready.ID)
+		states := map[string]string{}
+		for _, repository := range repositories {
+			states[repository.RepositoryID] = repository.State
+		}
+		apiID := string(updated.Repositories[0].ID)
+		for _, repository := range updated.Repositories {
+			if repository.RelativePath == "api" {
+				apiID = string(repository.ID)
+			}
+		}
+		if states[apiID] != "COLD" {
+			return false
+		}
+		for _, repository := range updated.Repositories {
+			if repository.RelativePath != "api" && states[string(repository.ID)] != "READY" {
+				return false
+			}
+		}
+		coldSlot = ready
+		return true
+	})
+	coldLease, err := m.ResolveAndLease(context.Background(), root, nil, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coldLease.SessionID != coldSlot.ID || coldLease.Ready {
+		t.Fatalf("cold bundle lease=%+v slot=%+v", coldLease, coldSlot)
+	}
+	if err := m.WaitReady(ctx, coldLease.SessionID, coldLease.Token); err != nil {
+		t.Fatal(err)
+	}
+	for _, repository := range updated.Repositories {
+		if _, err := os.Stat(filepath.Join(coldLease.Path, repository.RelativePath, ".git")); err != nil {
+			t.Fatalf("repository %s was not rematerialized: %v", repository.RelativePath, err)
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 )
@@ -90,7 +92,12 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		fmt.Fprintln(os.Stderr, "error: native resume requires global wx SessionStart, UserPromptSubmit, and PreToolUse hooks; use wx resume <wx-session-id> for the safe foreground fallback")
 		return 1
 	}
-	if err := c.RPC.Call(ctx, method, params, &lease); err != nil {
+	operationKey, err := domain.NewID()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: create operation identity:", err)
+		return 1
+	}
+	if err := c.RPC.CallWithKey(ctx, method, "launch:"+operationKey, params, &lease); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
@@ -163,7 +170,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	}
 	close(heartbeatDone)
 	releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = c.RPC.Call(releaseCtx, "Release", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": "client-exit"}, nil)
+	_ = c.RPC.CallWithKey(releaseCtx, "Release", "release:"+lease.SessionID+":client-exit", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": "client-exit"}, nil)
 	cancel()
 	if runErr == nil {
 		return 0
@@ -187,16 +194,71 @@ func readinessHooksAvailable(agent string) bool {
 	} else {
 		paths = []string{filepath.Join(home, ".claude", "settings.json"), filepath.Join(home, ".claude", "settings.local.json")}
 	}
-	var combined strings.Builder
+	required := map[string]string{
+		"SessionStart":     "session-start",
+		"UserPromptSubmit": "user-prompt-submit",
+		"PreToolUse":       "pre-tool-use",
+	}
+	found := map[string]bool{}
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
-		if err == nil && len(data) <= 4<<20 {
-			combined.Write(data)
-			combined.WriteByte('\n')
+		if err != nil || len(data) > 4<<20 {
+			continue
+		}
+		var document struct {
+			Hooks map[string]any `json:"hooks"`
+		}
+		if json.Unmarshal(data, &document) != nil {
+			continue
+		}
+		for event, command := range required {
+			if hookTreeContainsCommand(document.Hooks[event], command) {
+				found[event] = true
+			}
 		}
 	}
-	configured := combined.String()
-	return strings.Contains(configured, "wx hook session-start") && strings.Contains(configured, "wx hook user-prompt-submit") && strings.Contains(configured, "wx hook pre-tool-use")
+	for event := range required {
+		if !found[event] {
+			return false
+		}
+	}
+	return true
+}
+
+func hookTreeContainsCommand(value any, event string) bool {
+	switch typed := value.(type) {
+	case []any:
+		for _, child := range typed {
+			if hookTreeContainsCommand(child, event) {
+				return true
+			}
+		}
+	case map[string]any:
+		if disabled, _ := typed["disabled"].(bool); disabled {
+			return false
+		}
+		if command, ok := typed["command"].(string); ok {
+			typeName, _ := typed["type"].(string)
+			if (typeName == "" || typeName == "command") && isExactWXHookCommand(command, event) {
+				return true
+			}
+		}
+		for key, child := range typed {
+			if key != "command" && hookTreeContainsCommand(child, event) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isExactWXHookCommand(command, event string) bool {
+	fields := strings.Fields(command)
+	if len(fields) != 3 {
+		return false
+	}
+	executable := strings.Trim(fields[0], `"'`)
+	return filepath.Base(executable) == "wx" && fields[1] == "hook" && fields[2] == event
 }
 
 func confirmExpiredResume(sessionID string) bool {

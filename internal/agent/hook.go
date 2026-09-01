@@ -47,7 +47,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 			return errors.New("hook payload does not contain session_id")
 		}
 		if os.Getenv("WX_FRESH") == "1" {
-			if err := client.Call(ctx, "ValidateFreshResume", map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil); err != nil {
+			if err := client.CallWithKey(ctx, "ValidateFreshResume", "fresh:"+wxID+":"+payload.SessionID, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil); err != nil {
 				return err
 			}
 			writeRecoveryDiscardedNotice()
@@ -57,7 +57,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		if os.Getenv("WX_EXPLICIT_RESUME") != "1" && (os.Getenv("WX_NATIVE_RESUME") == "1" || payload.Source == "resume") {
 			method = "BindAndRestoreResume"
 		}
-		if err := client.Call(ctx, method, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil); err != nil {
+		if err := client.CallWithKey(ctx, method, "bind:"+wxID+":"+payload.SessionID, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil); err != nil {
 			return err
 		}
 		if os.Getenv("WX_RECOVERY_DISCARDED") == "1" {
@@ -77,7 +77,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	case "session-end":
 		releaseCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 		defer cancel()
-		return client.Call(releaseCtx, "Release", map[string]any{"session_id": wxID, "token": token, "reason": "session-end-hook"}, nil)
+		return client.CallWithKey(releaseCtx, "Release", "release:"+wxID+":session-end-hook", map[string]any{"session_id": wxID, "token": token, "reason": "session-end-hook"}, nil)
 	default:
 		return fmt.Errorf("unknown hook event %q", event)
 	}
