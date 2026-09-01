@@ -13,17 +13,22 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
-type commandHandler struct{}
+type commandHandler struct{ workspace string }
 
-func (commandHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+func (h commandHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	switch method {
 	case "Sessions":
 		return []map[string]any{{"id": "session", "state": "ACTIVE", "agent": "codex"}}, nil
 	case "GC":
 		return map[string]int{"candidates": 0}, nil
+	case "ResolveAndLease", "Resume":
+		return daemon.Lease{SessionID: "session", Token: "token", Path: h.workspace, SourceWorkspace: h.workspace, Ready: true}, nil
+	case "ResumeStatus":
+		return map[string]bool{"expired": false}, nil
 	default:
 		return map[string]any{"ok": true}, nil
 	}
@@ -87,12 +92,25 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"wx", "launchctl"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	socket, err := config.SocketPath()
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	server := &rpc.Server{Socket: socket, Handler: commandHandler{}}
+	server := &rpc.Server{Socket: socket, Handler: commandHandler{workspace: home}}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
 	for deadline := time.Now().Add(time.Second); ; {
@@ -111,18 +129,25 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"status", "--json"},
+		{"status"},
 		{"doctor"},
+		{"doctor", "--json"},
 		{"gc", "--dry-run"},
 		{"sessions", "--all", "--json"},
+		{"sessions"},
 		{"forget", home},
 		{"config"},
 		{"config", "logging.level", "warn"},
+		{"codex", "exec"},
+		{"resume", "session", "codex"},
+		{"daemon", "install"},
+		{"daemon", "uninstall"},
 	} {
 		if exit := run(ctx, args); exit != 0 {
 			t.Fatalf("run(%v) exit=%d", args, exit)
 		}
 	}
-	for _, args := range [][]string{{}, {"unknown"}, {"gc", "extra"}, {"sessions", "extra"}, {"forget"}, {"resume"}, {"daemon", "unknown"}, {"hook"}} {
+	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"sessions", "extra"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
 		if exit := run(ctx, args); exit != 2 {
 			t.Fatalf("misuse run(%v) exit=%d", args, exit)
 		}
@@ -132,6 +157,18 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 			t.Fatalf("informational run(%v) exit=%d", args, exit)
 		}
 	}
+	t.Setenv("WX_SESSION_ID", "session")
+	t.Setenv("WX_SESSION_TOKEN", "token")
+	t.Setenv("WX_DAEMON_SOCKET", socket)
+	if exit := run(ctx, []string{"hook", "unknown"}); exit != 1 {
+		t.Fatalf("unknown hook exit=%d", exit)
+	}
+	oldBuildMeta := buildMeta
+	buildMeta = ""
+	if versionString() != version {
+		t.Fatalf("version without metadata=%q", versionString())
+	}
+	buildMeta = oldBuildMeta
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
@@ -148,6 +185,54 @@ func TestAgentArgumentsPassThrough(t *testing.T) {
 	}
 }
 
+func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx := context.Background()
+	for _, args := range [][]string{
+		{"status"},
+		{"gc", "--dry-run"},
+		{"sessions", "--all"},
+		{"forget", home},
+	} {
+		if exit := run(ctx, args); exit != 1 {
+			t.Fatalf("missing daemon run(%v) exit=%d", args, exit)
+		}
+	}
+	for _, args := range [][]string{
+		{"config", "unknown.key", "value"},
+		{"config", "logging.level", "verbose"},
+	} {
+		if exit := run(ctx, args); exit != 1 {
+			t.Fatalf("invalid config run(%v) exit=%d", args, exit)
+		}
+	}
+	configPath, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("unknown: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"config"},
+		{"codex"},
+		{"resume", "session", "codex"},
+	} {
+		if exit := run(ctx, args); exit != 1 {
+			t.Fatalf("invalid persisted config run(%v) exit=%d", args, exit)
+		}
+	}
+	t.Setenv("WX_SESSION_ID", "session")
+	t.Setenv("WX_SESSION_TOKEN", "")
+	if exit := run(ctx, []string{"hook", "session-start"}); exit != 1 {
+		t.Fatalf("incomplete hook environment exit=%d", exit)
+	}
+}
+
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
 	for _, command := range []string{"status", "doctor", "gc", "sessions", "config", "resume", "forget", "daemon"} {
 		t.Run(command, func(t *testing.T) {
@@ -155,6 +240,9 @@ func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
 			commandUsage(&output, command)
 			if want := "Usage: wx " + command; !strings.HasPrefix(output.String(), want) {
 				t.Fatalf("help=%q, want prefix %q", output.String(), want)
+			}
+			if strings.Count(output.String(), "\n") < 2 {
+				t.Fatalf("command help lacks a description: %q", output.String())
 			}
 		})
 	}

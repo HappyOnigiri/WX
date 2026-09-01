@@ -31,21 +31,50 @@ Commands:
 func commandUsage(w io.Writer, name string) {
 	switch name {
 	case "status":
-		_, _ = fmt.Fprintln(w, "Usage: wx status [--json]")
+		_, _ = fmt.Fprintln(w, `Usage: wx status [--json]
+
+Show daemon health, pool state, active sessions, retention, and disk usage.
+
+Options:
+  --json  print machine-readable JSON`)
 	case "doctor":
-		_, _ = fmt.Fprintln(w, "Usage: wx doctor [--json]")
+		_, _ = fmt.Fprintln(w, `Usage: wx doctor [--json]
+
+Run read-only checks for configuration, storage, Git, launchd, and hooks.
+
+Options:
+  --json  print machine-readable JSON`)
 	case "gc":
-		_, _ = fmt.Fprintln(w, "Usage: wx gc [--dry-run]")
+		_, _ = fmt.Fprintln(w, `Usage: wx gc [--dry-run]
+
+Run retention cleanup without deleting unarchived workspace data.
+
+Options:
+  --dry-run  report candidates without removing them`)
 	case "config":
-		_, _ = fmt.Fprintln(w, "Usage: wx config [<key> <value>]")
+		_, _ = fmt.Fprintln(w, `Usage: wx config [<key> <value>]
+
+Show effective configuration, or atomically update one supported scalar key.`)
 	case "resume":
-		_, _ = fmt.Fprintln(w, "Usage: wx resume <wx-session-id> <claude|codex> [agent-arguments...]")
+		_, _ = fmt.Fprintln(w, `Usage: wx resume <wx-session-id> <claude|codex> [agent-arguments...]
+
+Restore an archived wx session into a new managed workspace.`)
 	case "sessions":
-		_, _ = fmt.Fprintln(w, "Usage: wx sessions [--all] [--json]")
+		_, _ = fmt.Fprintln(w, `Usage: wx sessions [--all] [--json]
+
+List managed wx sessions and their recovery state.
+
+Options:
+  --all   include expired sessions
+  --json  print machine-readable JSON`)
 	case "forget":
-		_, _ = fmt.Fprintln(w, "Usage: wx forget <workspace-path>")
+		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path>
+
+Forget an inactive workspace after all managed slots are safely archived.`)
 	case "daemon":
-		_, _ = fmt.Fprintln(w, "Usage: wx daemon <serve|install|uninstall>")
+		_, _ = fmt.Fprintln(w, `Usage: wx daemon <serve|install|uninstall>
+
+Serve internally, or install and remove the per-user LaunchAgent.`)
 	default:
 		topUsage(w)
 	}
