@@ -198,7 +198,7 @@ sbom:
 
 mutation-check:
 	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned mutation tool is missing; run make setup"; exit 1; }
-	@packages="$$(git diff --name-only "$(MUTATION_BASE)...HEAD" -- 'internal/**/*.go' | awk -F/ 'NF >= 3 && $$2 ~ /^(config|state|pool|gitx|workspace|archive|rpc)$$/ { print "./" $$1 "/" $$2 }' | sort -u)"; \
+	@packages="$$(git diff --name-only "$(MUTATION_BASE)...HEAD" -- 'internal/**/*.go' | awk -F/ 'NF >= 3 && $$2 ~ /^(config|state|pool|gitx|workspace|archive|rpc)$$/ { print "./" $$1 "/" $$2 }' | sort -u | tr '\n' ' ')"; \
 	if [ -z "$$packages" ]; then echo "no changed core packages"; exit 0; fi; \
 	$(MAKE) mutation-run MUTATION_PACKAGES="$$packages"
 
@@ -207,13 +207,13 @@ mutation-full-check:
 
 mutation-run:
 	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned mutation tool is missing; run make setup"; exit 1; }
-	@set -eu; scratch="$$(mktemp -d)"; trap 'rm -rf "$$scratch"' EXIT; \
-	git archive HEAD | tar -x -C "$$scratch"; \
+	@set -eu; scratch="$$(mktemp -d)"; trap 'rm -rf "$$scratch"' EXIT; worktree="$$scratch/repository"; \
+	git clone --quiet --no-local . "$$worktree"; \
 	for package in $(MUTATION_PACKAGES); do \
 	  name="$$(printf '%s' "$$package" | tr '/.' '__')"; result="$$scratch/mutation-$$name.json"; \
 	  echo "mutation testing $$package"; \
-	  (cd "$$scratch" && "$(TOOLS_BIN)/gremlins" unleash "$$package" --integration --threshold-efficacy "$(MUTATION_MIN)" --output "$$result"); \
-	  scripts/check-mutation-survivors.sh "$$package" "$$result"; \
+	  (cd "$$worktree" && $(GO) clean -testcache && "$(TOOLS_BIN)/gremlins" unleash "$$package" --integration --timeout-coefficient 10 --threshold-efficacy "$(MUTATION_MIN)" --output "$$result"); \
+	  scripts/check-mutation-survivors.sh "$$package" "$$result" "$(MUTATION_MIN)"; \
 	done
 
 security-local: govulncheck gosec license-check secret-check
