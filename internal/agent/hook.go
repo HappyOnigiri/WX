@@ -47,7 +47,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 			return errors.New("hook payload does not contain session_id")
 		}
 		if os.Getenv("WX_FRESH") == "1" {
-			return nil
+			return client.Call(ctx, "ValidateFreshResume", map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil)
 		}
 		method := "BindAgentSession"
 		if os.Getenv("WX_NATIVE_RESUME") == "1" || payload.Source == "resume" {

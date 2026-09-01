@@ -76,7 +76,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		args = codexResumeArgs(args)
 	}
 	env := append(os.Environ(), "WX_SESSION_ID="+lease.SessionID, "WX_SESSION_TOKEN="+lease.Token, "WX_DAEMON_SOCKET="+c.RPC.Socket, "WX_WORKSPACE_ROOT="+lease.Path, "WX_SOURCE_WORKSPACE="+lease.SourceWorkspace, "WX_READINESS_TIMEOUT="+c.Config.Readiness.Timeout.String())
-	if native && !fresh {
+	if native && !fresh && explicitResume == "" {
 		env = append(env, "WX_NATIVE_RESUME=1")
 	}
 	if fresh {

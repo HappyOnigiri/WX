@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,33 +39,140 @@ type Manager struct {
 	archive  *archive.Manager
 	log      *slog.Logger
 	started  time.Time
-	jobs     chan func()
+	jobs     chan jobWork
+}
+type jobWork struct {
+	id  string
+	run func() error
 }
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger) *Manager {
 	git := &gitx.Runner{Timeout: cfg.Readiness.Timeout.Duration}
 	p := &workspace.Preparer{Git: git, Config: cfg}
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: time.Now(), jobs: make(chan func(), 256)}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: time.Now(), jobs: make(chan jobWork, 256)}
 	m.discover = &discovery.Discoverer{Git: git, Config: cfg}
 	m.prepare = p
 	m.archive = &archive.Manager{Git: git, Preparer: p}
 	for range cfg.Pool.PreparationConcurrency {
 		go func() {
-			for job := range m.jobs {
-				job()
+			for work := range m.jobs {
+				if _, err := m.store.ClaimJob(context.Background(), work.id, fmt.Sprintf("%d", os.Getpid())); err != nil {
+					continue
+				}
+				err := work.run()
+				if finishErr := m.store.FinishJob(context.Background(), work.id, err); finishErr != nil {
+					m.log.Error("finish job failed", "job_id", work.id, "error", finishErr)
+				}
 			}
 		}()
 	}
+	go m.recoverJobs()
 	return m
 }
 
 func (m *Manager) Config() config.Config { m.mu.RLock(); defer m.mu.RUnlock(); return m.cfg }
-func (m *Manager) enqueue(fn func()) {
-	select {
-	case m.jobs <- fn:
-	default:
-		go fn()
+func (m *Manager) enqueue(kind, workspaceID, slotID, sessionID string, fn func() error) error {
+	job, err := m.store.CreateJob(context.Background(), kind, workspaceID, slotID, sessionID)
+	if err != nil {
+		return err
 	}
+	m.jobs <- jobWork{id: job.ID, run: fn}
+	return nil
+}
+
+func (m *Manager) recoverJobs() {
+	jobs, err := m.store.RecoverJobs(context.Background())
+	if err != nil {
+		m.log.Error("recover jobs failed", "error", err)
+		return
+	}
+	for _, job := range jobs {
+		j := job
+		m.jobs <- jobWork{id: j.ID, run: func() error { return m.runRecoveredJob(context.Background(), j) }}
+	}
+}
+func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
+	switch job.Kind {
+	case "PREPARE":
+		w, err := m.store.Workspace(ctx, job.WorkspaceID)
+		if err != nil {
+			return err
+		}
+		repos, err := m.store.SlotRepositories(ctx, job.SlotID)
+		if err != nil {
+			return err
+		}
+		resolved, err := m.resolvedFromStored(ctx, w, repos)
+		if err != nil {
+			return err
+		}
+		m.prepareSlot(ctx, job.SlotID, w, resolved, repos)
+		return nil
+	case "ENSURE_STANDBY":
+		w, err := m.store.Workspace(ctx, job.WorkspaceID)
+		if err != nil {
+			return err
+		}
+		m.ensureStandby(ctx, w)
+		return nil
+	case "SNAPSHOT":
+		s, err := m.store.SessionByID(ctx, job.SessionID)
+		if err != nil {
+			return err
+		}
+		m.snapshotSession(ctx, s)
+		return nil
+	case "RESTORE":
+		return m.resumeRestoreJob(ctx, job.SessionID)
+	default:
+		return fmt.Errorf("unknown persistent job kind %s", job.Kind)
+	}
+}
+func (m *Manager) resolvedFromStored(ctx context.Context, w discovery.Workspace, repos []state.SlotRepository) ([]pool.Resolved, error) {
+	by := map[string]discovery.Repository{}
+	for _, r := range w.Repositories {
+		by[string(r.ID)] = r
+	}
+	out := make([]pool.Resolved, 0, len(repos))
+	for _, sr := range repos {
+		repo, ok := by[sr.RepositoryID]
+		if !ok {
+			return nil, fmt.Errorf("repository %s left workspace", sr.RepositoryID)
+		}
+		out = append(out, pool.Resolved{Repository: repo, RequestedRef: sr.RequestedRef, OID: sr.BaseOID})
+	}
+	return out, nil
+}
+func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error {
+	s, err := m.store.SessionByID(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if s.ParentSessionID == "" {
+		return errors.New("restore session has no parent snapshot")
+	}
+	w, err := m.store.Workspace(ctx, s.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	repos, err := m.store.SlotRepositories(ctx, s.SlotID)
+	if err != nil {
+		return err
+	}
+	resolved, err := m.resolvedFromStored(ctx, w, repos)
+	if err != nil {
+		return err
+	}
+	snapshots, err := m.store.Snapshots(ctx, s.ParentSessionID)
+	if err != nil {
+		return err
+	}
+	by := map[string]state.Snapshot{}
+	for _, snapshot := range snapshots {
+		by[snapshot.RepositoryID] = snapshot
+	}
+	m.restoreSlot(ctx, s.SlotID, w, resolved, repos, by)
+	return nil
 }
 
 func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []string, agent string, pid int) (Lease, error) {
@@ -94,7 +202,7 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 				}
 				session := state.Session{ID: ready.ID, WorkspaceID: string(w.ID), SlotID: ready.ID, State: "ACTIVE", AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
 				if err := m.store.LeaseReady(ctx, ready.ID, session); err == nil {
-					m.enqueue(func() { m.ensureStandby(context.Background(), w) })
+					_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "", func() error { m.ensureStandby(context.Background(), w); return nil })
 					return Lease{SessionID: session.ID, Token: token, Path: ready.Path, SourceWorkspace: string(w.Root), Ready: true}, nil
 				}
 			}
@@ -135,9 +243,11 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 		return Lease{}, err
 	}
 	if sessionState != "RESTORING" {
-		m.enqueue(func() { m.prepareSlot(context.Background(), id, w, resolved, repos) })
+		if err := m.enqueue("PREPARE", string(w.ID), id, id, func() error { m.prepareSlot(context.Background(), id, w, resolved, repos); return nil }); err != nil {
+			return Lease{}, err
+		}
 	}
-	m.enqueue(func() { m.ensureStandby(context.Background(), w) })
+	_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "", func() error { m.ensureStandby(context.Background(), w); return nil })
 	return Lease{SessionID: id, Token: token, Path: root, SourceWorkspace: string(w.Root), Ready: false}, nil
 }
 
@@ -305,6 +415,31 @@ func (m *Manager) BindAgentSession(ctx context.Context, id, token, agentID strin
 	return m.store.BindAgentSession(ctx, id, agentID)
 }
 
+func (m *Manager) ValidateFreshResume(ctx context.Context, id, token, agentID string) error {
+	current, err := m.store.Session(ctx, id, token)
+	if err != nil {
+		return err
+	}
+	prior, err := m.store.FindByAgentSession(ctx, current.AgentKind, agentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	snapshots, err := m.store.Snapshots(ctx, prior.ID)
+	if err != nil {
+		return err
+	}
+	for _, snapshot := range snapshots {
+		expiry, parseErr := time.Parse(time.RFC3339Nano, snapshot.ExpiresAt)
+		if parseErr == nil && expiry.After(time.Now()) {
+			return errors.New("--fresh is refused because a valid wx recovery snapshot exists; resume without --fresh")
+		}
+	}
+	return nil
+}
+
 func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID string) error {
 	current, err := m.store.Session(ctx, id, token)
 	if err != nil {
@@ -342,11 +477,10 @@ func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID s
 	if err != nil {
 		return err
 	}
-	if err := m.store.BindResumeSlot(ctx, id, string(w.ID), agentID, repos); err != nil {
+	if err := m.store.BindResumeSlot(ctx, id, prior.ID, string(w.ID), agentID, repos); err != nil {
 		return err
 	}
-	m.enqueue(func() { m.restoreSlot(context.Background(), id, w, resolved, repos, snapByRepo) })
-	return nil
+	return m.enqueue("RESTORE", string(w.ID), id, id, func() error { m.restoreSlot(context.Background(), id, w, resolved, repos, snapByRepo); return nil })
 }
 func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, snaps map[string]state.Snapshot) {
 	for i, r := range resolved {
@@ -407,9 +541,12 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int) (Lea
 	for _, s := range snaps {
 		snapMap[s.RepositoryID] = s
 	} // Replace the generic preparation with restore; state CAS ensures only one succeeds.
-	m.enqueue(func() {
+	if err := m.enqueue("RESTORE", string(w.ID), lease.SessionID, lease.SessionID, func() error {
 		m.restoreSlot(context.Background(), lease.SessionID, w, resolved, mustRepos(m.store.SlotRepositories(context.Background(), lease.SessionID)), snapMap)
-	})
+		return nil
+	}); err != nil {
+		return Lease{}, err
+	}
 	return lease, nil
 }
 func mustRepos(v []state.SlotRepository, e error) []state.SlotRepository {
@@ -428,8 +565,7 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 	if err != nil || !changed {
 		return err
 	}
-	m.enqueue(func() { m.snapshotSession(context.Background(), session) })
-	return nil
+	return m.enqueue("SNAPSHOT", session.WorkspaceID, session.SlotID, session.ID, func() error { m.snapshotSession(context.Background(), session); return nil })
 }
 func (m *Manager) snapshotSession(ctx context.Context, s state.Session) {
 	_ = m.store.SetSlotState(ctx, s.SlotID, []string{"DRAINING"}, "SNAPSHOTTING", "")

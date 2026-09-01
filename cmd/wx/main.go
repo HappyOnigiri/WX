@@ -36,6 +36,13 @@ func run(ctx context.Context, args []string) int {
 		topUsage(os.Stderr)
 		return 2
 	}
+	if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+		switch args[0] {
+		case "status", "doctor", "gc", "sessions", "config", "resume", "forget", "daemon":
+			commandUsage(os.Stdout, args[0])
+			return 0
+		}
+	}
 	switch args[0] {
 	case "-h", "--help", "help":
 		topUsage(os.Stdout)

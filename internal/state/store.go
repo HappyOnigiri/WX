@@ -140,6 +140,79 @@ type Session struct {
 	ClientPID                                                                                                                int
 }
 type Snapshot struct{ ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string }
+type Job struct {
+	ID, Kind, WorkspaceID, SlotID, SessionID, RepositoryID, State string
+	Attempt                                                       int
+}
+
+func (s *Store) CreateJob(ctx context.Context, kind, workspaceID, slotID, sessionID string) (Job, error) {
+	id, err := domain.NewID()
+	if err != nil {
+		return Job{}, err
+	}
+	job := Job{ID: id, Kind: kind, WorkspaceID: workspaceID, SlotID: slotID, SessionID: sessionID, State: "PENDING"}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	_, err = s.db.ExecContext(ctx, `INSERT INTO jobs(id,kind,workspace_id,slot_id,session_id,state,attempt,not_before) VALUES(?,?,?,?,?,'PENDING',0,?)`, id, kind, nullString(workspaceID), nullString(slotID), nullString(sessionID), now())
+	return job, err
+}
+
+func (s *Store) ClaimJob(ctx context.Context, id, owner string) (Job, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='RUNNING',attempt=attempt+1,started_at=?,lease_owner=?,lease_expires_at=? WHERE id=? AND state='PENDING'`, now(), owner, time.Now().Add(5*time.Minute).UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return Job{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return Job{}, errors.New("job is not pending")
+	}
+	var j Job
+	if err := tx.QueryRowContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt); err != nil {
+		return Job{}, err
+	}
+	return j, tx.Commit()
+}
+
+func (s *Store) FinishJob(ctx context.Context, id string, runErr error) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	stateName := "SUCCEEDED"
+	var code any
+	if runErr != nil {
+		stateName = "FAILED"
+		code = "JOB_FAILED"
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET state=?,finished_at=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING'`, stateName, now(), code, id)
+	return err
+}
+func (s *Store) RecoverJobs(ctx context.Context) ([]Job, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	if _, err := s.db.ExecContext(ctx, `UPDATE jobs SET state='PENDING',lease_owner=NULL,lease_expires_at=NULL WHERE state='RUNNING'`); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt FROM jobs WHERE state='PENDING' ORDER BY not_before,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Job
+	for rows.Next() {
+		var j Job
+		if err := rows.Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt); err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
 
 func (s *Store) ReadySlot(ctx context.Context, workspaceID string) (Slot, bool, error) {
 	var x Slot
@@ -363,7 +436,7 @@ func (s *Store) FindByAgentSession(ctx context.Context, kind, agentID string) (S
 	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE agent_kind=? AND agent_session_id=?`, kind, agentID).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
 	return x, err
 }
-func (s *Store) BindResumeSlot(ctx context.Context, sessionID, workspaceID, agentID string, repos []SlotRepository) error {
+func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, workspaceID, agentID string, repos []SlotRepository) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -378,7 +451,7 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, workspaceID, agen
 	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE agent_kind=? AND agent_session_id=? AND id<>?`, kind, agentID, sessionID); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=?,agent_session_id=?,state='RESTORING' WHERE id=? AND state='UNBOUND'`, workspaceID, agentID, sessionID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=?,parent_session_id=?,agent_session_id=?,state='RESTORING' WHERE id=? AND state='UNBOUND'`, workspaceID, parentSessionID, agentID, sessionID); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE slots SET workspace_id=?,state='RESTORING',updated_at=? WHERE id=? AND state='UNBOUND'`, workspaceID, now(), sessionID); err != nil {
