@@ -64,7 +64,9 @@ for path in $paths; do
           echo "$path is not gofumpt-formatted; run make fmt" >&2
           exit 1
         fi
-        "$tools/gci" diff -s standard -s default -s "prefix(github.com/HappyOnigiri/WX)" "$path"
+        # pre-push receives ref updates on stdin. gci treats any piped stdin as
+        # another Go source, so isolate it after the ref update has been read.
+        "$tools/gci" diff -s standard -s default -s "prefix(github.com/HappyOnigiri/WX)" "$path" </dev/null
       fi
       ;;
     go.mod|go.sum) module_changed=true ;;
