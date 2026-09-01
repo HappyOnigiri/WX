@@ -45,3 +45,14 @@ func TestReadProfileRejectsMalformedLines(t *testing.T) {
 		t.Fatalf("empty percentage=%v", got)
 	}
 }
+
+func TestRejectZeroCoreFunctionsUsesGoCoverageReport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "coverage.out")
+	profile := "mode: set\ngithub.com/HappyOnigiri/WX/internal/state/store.go:171.1,171.2 1 0\n"
+	if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rejectZeroCoreFunctions(path); err == nil {
+		t.Fatal("zero-coverage core function was accepted")
+	}
+}

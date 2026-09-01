@@ -1,6 +1,9 @@
 package domain
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestIDsAndContainment(t *testing.T) {
 	id, err := NewID()
@@ -9,6 +12,15 @@ func TestIDsAndContainment(t *testing.T) {
 	}
 	if err := ValidateID(id); err != nil {
 		t.Fatal(err)
+	}
+	if err := ValidateID("not-an-id"); err == nil {
+		t.Fatal("malformed ID was accepted")
+	}
+	if _, err := Canonicalize(""); err == nil {
+		t.Fatal("empty path was canonicalized")
+	}
+	if _, err := Canonicalize(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("missing path was canonicalized")
 	}
 	if !IsWithin("/tmp/wx", "/tmp/wx/a/root") {
 		t.Fatal("expected descendant")
@@ -26,5 +38,11 @@ func TestSlotTransitions(t *testing.T) {
 	}
 	if CanTransitionSlot(SlotArchived, SlotReady) {
 		t.Fatal("ARCHIVED -> READY accepted")
+	}
+	if !CanTransitionSlot(SlotReady, SlotFailed) || !CanTransitionSlot(SlotLeased, SlotQuarantined) {
+		t.Fatal("fail-safe slot transitions were rejected")
+	}
+	if CanTransitionSlot(SlotArchived, SlotFailed) {
+		t.Fatal("archived slot transitioned back to a failure state")
 	}
 }

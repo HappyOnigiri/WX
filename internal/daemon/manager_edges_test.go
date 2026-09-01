@@ -2,15 +2,20 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -47,6 +52,8 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(home, "old-root")
 	m := testManager(t, cfg, store)
+	var dynamicLevel slog.LevelVar
+	m.logLevel = &dynamicLevel
 	t.Cleanup(m.Close)
 
 	repository := filepath.Join(home, "repository")
@@ -94,7 +101,8 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte("version: 1\nstorage:\n  worktree_root: "+newRoot+"\n"), 0o600); err != nil {
+	validConfig := "version: 1\nstorage:\n  worktree_root: " + newRoot + "\npool:\n  preparation_concurrency: 3\nreadiness:\n  timeout: 1s\nlogging:\n  level: debug\n"
+	if err := os.WriteFile(configPath, []byte(validConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.reloadConfig(false); err != nil {
@@ -103,11 +111,65 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if got := m.Config().Storage.WorktreeRoot; got != newRoot {
 		t.Fatalf("reloaded root=%q", got)
 	}
+	if info, err := os.Stat(newRoot); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("new root permissions=%v err=%v", info, err)
+	}
+	if len(m.workerStops) != 3 || m.git.GetTimeout() != time.Second || dynamicLevel.Level() != slog.LevelDebug {
+		t.Fatalf("dynamic reload workers=%d timeout=%s level=%s", len(m.workerStops), m.git.GetTimeout(), dynamicLevel.Level())
+	}
+	m.resizeWorkers(1)
+	if len(m.workerStops) != 1 {
+		t.Fatalf("worker shrink left %d workers", len(m.workerStops))
+	}
 	if _, ok := m.rootForPath(filepath.Join(cfg.Storage.WorktreeRoot, "retired", "slot")); !ok {
 		t.Fatal("retired root was not retained for safe draining")
 	}
 	if _, ok := m.rootForPath(filepath.Join(home, "outside")); ok {
 		t.Fatal("outside path was accepted as wx-owned")
+	}
+	unknownPath := filepath.Join(newRoot, "workspaces", "unknown", "slots", "orphan", "root")
+	if err := os.MkdirAll(unknownPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	missing, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(missing.Path); err != nil {
+		t.Fatal(err)
+	}
+	head := gitOutput(t, repository, "rev-parse", "HEAD")
+	gitRun(t, repository, "update-ref", "refs/wx/recovery/unregistered", head)
+	repositories, err := store.Repositories(ctx)
+	if err != nil || len(repositories) != 1 {
+		t.Fatalf("registered repositories=%+v err=%v", repositories, err)
+	}
+	if err := store.SaveSnapshot(ctx, state.Snapshot{
+		ID: "missing-ref-snapshot", SessionID: lease.SessionID, RepositoryID: string(repositories[0].ID),
+		HeadOID: head, HeadRef: "refs/wx/recovery/missing-head", IndexTreeOID: head,
+		WorktreeOID: head, WorktreeRef: "refs/wx/recovery/missing-worktree", Status: "ARCHIVED",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	artifacts := m.artifactDiagnostics(ctx)
+	if len(artifacts["unknown_paths"].([]string)) != 1 || len(artifacts["missing_paths"].([]string)) == 0 || len(artifacts["unknown_refs"].([]string)) != 1 || len(artifacts["missing_refs"].([]string)) != 2 {
+		t.Fatalf("artifact diagnostics=%v", artifacts)
+	}
+	m.reconcileArtifacts(ctx)
+	blockedRoot := filepath.Join(home, "blocked-root")
+	if err := os.WriteFile(blockedRoot, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalidRootConfig := "version: 1\nstorage:\n  worktree_root: " + blockedRoot + "\n"
+	if err := os.WriteFile(configPath, []byte(invalidRootConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReloadConfig(); err == nil {
+		t.Fatal("non-directory worktree root reload succeeded")
+	}
+	if got := m.Config().Storage.WorktreeRoot; got != newRoot {
+		t.Fatalf("failed reload replaced active root with %q", got)
 	}
 	if err := os.WriteFile(configPath, []byte("unknown: true\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -122,11 +184,84 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if status["config_reload_error"] == "" || status["config_last_reload"] == "" {
 		t.Fatalf("reload diagnostics=%v", status)
 	}
+	encoded, err := json.Marshal(status["worktree_roots"])
+	if err != nil || !strings.Contains(string(encoded), `"active":false`) || !strings.Contains(string(encoded), `"active":true`) {
+		t.Fatalf("root drain diagnostics=%s err=%v", encoded, err)
+	}
+	doctor := m.Doctor(ctx)
+	checks := doctor["checks"].(map[string]any)
+	if _, ok := checks["hooks"]; !ok {
+		t.Fatalf("doctor checks=%v", checks)
+	}
 	if formatOptionalTime(time.Time{}) != "" || formatOptionalTime(time.Unix(1, 0)) == "" {
 		t.Fatal("optional time formatting is inconsistent")
 	}
 	if must("", errors.New("expected")) != "" || must("value", nil) != "value" {
 		t.Fatal("must helper result is inconsistent")
+	}
+}
+
+func TestDiagnosticFilesystemAndHookChecks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	regular := filepath.Join(home, "regular")
+	if err := os.WriteFile(regular, []byte("1234"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := diagnosticPath(regular, 0, 0o600); got != "ok" {
+		t.Fatalf("regular diagnostic=%q", got)
+	}
+	if got := diagnosticPath(regular, os.ModeDir, 0o700); got != "not a directory" {
+		t.Fatalf("directory diagnostic=%q", got)
+	}
+	if err := os.Chmod(regular, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := diagnosticPath(regular, 0, 0o600); !strings.Contains(got, "permissions") {
+		t.Fatalf("permission diagnostic=%q", got)
+	}
+	link := filepath.Join(home, "link")
+	if err := os.Symlink(regular, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := diagnosticPath(link, 0, 0o600); got != "unsafe symlink" {
+		t.Fatalf("symlink diagnostic=%q", got)
+	}
+	if got := diagnosticPath(filepath.Join(home, "missing"), 0, 0o600); !strings.Contains(got, "no such file") {
+		t.Fatalf("missing diagnostic=%q", got)
+	}
+	if got := diagnosticPath("", 0, 0o600); got != "path unavailable" {
+		t.Fatalf("empty diagnostic=%q", got)
+	}
+	if got := diagnosticPath(regular, os.ModeSocket, 0o600); got != "not a Unix socket" {
+		t.Fatalf("socket diagnostic=%q", got)
+	}
+	if got := diagnosticPath(home, 0, 0o700); got != "not a regular file" {
+		t.Fatalf("regular-file diagnostic=%q", got)
+	}
+	usage, err := directoryUsage(home)
+	if err != nil || usage != 4 {
+		t.Fatalf("directory usage=%d err=%v", usage, err)
+	}
+
+	for _, agentKind := range []string{"claude", "codex"} {
+		path := filepath.Join(home, ".claude", "settings.json")
+		if agentKind == "codex" {
+			path = filepath.Join(home, ".codex", "hooks.json")
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		document := `{"hooks":{"SessionStart":[{"type":"command","command":"wx hook session-start"}],"UserPromptSubmit":[{"command":"wx hook user-prompt-submit"}],"PreToolUse":[{"command":"wx hook pre-tool-use"}]}}`
+		if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !diagnosticHooksAvailable(agentKind) {
+			t.Fatalf("%s hooks were not detected", agentKind)
+		}
+	}
+	if diagnosticHookTreeContainsCommand(map[string]any{"disabled": true, "command": "wx hook session-start"}, "session-start") {
+		t.Fatal("disabled diagnostic hook was accepted")
 	}
 }
 
@@ -163,6 +298,9 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	if err := store.SetSlotState(ctx, lease.SessionID, []string{"UNBOUND"}, "QUARANTINED", "test"); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := m.waitForSnapshot(ctx, lease.SessionID); err == nil || !strings.Contains(err.Error(), "archive failed") {
+		t.Fatalf("quarantined archive wait error=%v", err)
+	}
 	if err := m.WaitReady(ctx, lease.SessionID, lease.Token); err == nil {
 		t.Fatal("quarantined slot reported ready")
 	}
@@ -187,6 +325,20 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	if _, _, err := m.waitForSnapshot(ctx, "missing"); err == nil {
 		t.Fatal("missing snapshot wait succeeded")
 	}
+	expired := state.Session{ID: "expired", SlotID: "expired", State: "EXPIRED", AgentKind: "codex", TokenHash: state.HashToken("expired")}
+	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "expired", Path: filepath.Join(root, "expired"), State: "SNAPSHOTTED"}, nil, expired, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.waitForSnapshot(ctx, "expired"); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired archive wait error=%v", err)
+	}
+	waiting := state.Session{ID: "waiting", SlotID: "waiting", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("waiting")}
+	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "waiting", Path: filepath.Join(root, "waiting"), State: "LEASED"}, nil, waiting, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.waitForSnapshot(ctx, "waiting"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("archive wait timeout error=%v", err)
+	}
 
 	missing := state.Slot{ID: "missing", Path: filepath.Join(root, "does-not-exist")}
 	if ok, err := m.readyMatches(ctx, missing, nil); err != nil || ok {
@@ -205,5 +357,282 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	}
 	if ok, err := m.readyMatches(ctx, state.Slot{ID: "link", Path: link}, nil); err != nil || ok {
 		t.Fatalf("symlink READY root ok=%v err=%v", ok, err)
+	}
+}
+
+func TestManagerIdempotentJobsAndOwnershipRejections(t *testing.T) {
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: discoveryPath(filepath.Join(root, "repository")), CommonDir: discoveryPath(filepath.Join(root, "repository", ".git")), DefaultBranch: "main"}}}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+
+	readyJob, err := store.CreateStandby(ctx, state.Slot{ID: "ready", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, "ready"), State: "PREPARING"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlotState(ctx, "ready", []string{"PREPARING"}, "READY", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.prepareSlot(ctx, "ready", discovery.Workspace{}, nil, nil); err != nil {
+		t.Fatalf("READY prepare replay: %v", err)
+	}
+	if err := m.restoreSlot(ctx, "ready", discovery.Workspace{}, nil, nil, nil); err != nil {
+		t.Fatalf("READY restore replay: %v", err)
+	}
+	claimed, err := store.ClaimJob(ctx, readyJob.ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, claimed.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlotState(ctx, "ready", []string{"READY"}, "FAILED", "TEST"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.prepareSlot(ctx, "ready", discovery.Workspace{}, nil, nil); err == nil {
+		t.Fatal("FAILED slot preparation replay succeeded")
+	}
+	if err := m.restoreSlot(ctx, "ready", discovery.Workspace{}, nil, nil, nil); err == nil {
+		t.Fatal("FAILED slot restore replay succeeded")
+	}
+	if _, err := m.resolvedFromStored(ctx, discovery.Workspace{}, []state.SlotRepository{{RepositoryID: "removed"}}); err == nil {
+		t.Fatal("removed repository resolved from stored state")
+	}
+
+	coldRepo := state.SlotRepository{RepositoryID: "repository", WorktreePath: filepath.Join(cfg.Storage.WorktreeRoot, "cold", "repo"), State: "COLD"}
+	if _, err := store.CreateStandby(ctx, state.Slot{ID: "cold", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, "cold"), State: "PREPARING"}, []state.SlotRepository{coldRepo}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.removeColdRepositoryJob(ctx, state.Job{SlotID: "cold", RepositoryID: "repository"}); err != nil {
+		t.Fatalf("COLD removal replay: %v", err)
+	}
+	if err := m.removeColdRepositoryJob(ctx, state.Job{SlotID: "cold", RepositoryID: "missing"}); err == nil {
+		t.Fatal("missing cold repository removal succeeded")
+	}
+	if err := m.removeSlotWorktrees(ctx, archive.Manager{}, filepath.Join(root, "owned"), "cold", "", filepath.Join(root, "outside")); err == nil {
+		t.Fatal("outside slot worktree removal succeeded")
+	}
+	if snapshotsUsable([]state.Snapshot{{ExpiresAt: "invalid"}}, time.Now()) {
+		t.Fatal("invalid snapshot expiry was usable")
+	}
+}
+
+func TestManagerResumeAndArchiveFailureStates(t *testing.T) {
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "multi_repository", Repositories: []discovery.Repository{
+		{ID: "repository-1", MainPath: discoveryPath(filepath.Join(root, "repository-1")), CommonDir: discoveryPath(filepath.Join(root, "repository-1", ".git")), RelativePath: "repository-1", DefaultBranch: "main"},
+		{ID: "repository-2", MainPath: discoveryPath(filepath.Join(root, "repository-2")), CommonDir: discoveryPath(filepath.Join(root, "repository-2", ".git")), RelativePath: "repository-2", DefaultBranch: "main"},
+	}}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	createSession := func(id, sessionState, slotState, parent string) (state.Session, string) {
+		t.Helper()
+		token := id + "-token"
+		session := state.Session{ID: id, WorkspaceID: "workspace", SlotID: id, ParentSessionID: parent, State: sessionState, AgentKind: "codex", TokenHash: state.HashToken(token)}
+		if sessionState == "UNBOUND" {
+			session.WorkspaceID = ""
+		}
+		if _, err := store.CreateSlotSession(ctx, state.Slot{ID: id, WorkspaceID: session.WorkspaceID, Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, id), State: slotState}, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		return session, token
+	}
+
+	missing, missingToken := createSession("missing-current", "UNBOUND", "UNBOUND", "")
+	if err := m.BindAndRestoreResume(ctx, missing.ID, missingToken, "unmapped-agent"); err == nil || !strings.Contains(err.Error(), "no wx recovery mapping") {
+		t.Fatalf("missing mapping error=%v", err)
+	}
+	if err := m.BindAndRestoreResume(ctx, missing.ID, "wrong", "unmapped-agent"); err == nil {
+		t.Fatal("resume binding accepted a wrong token")
+	}
+	for _, priorState := range []string{"EXPIRED", "ACTIVE", "ARCHIVED"} {
+		id := strings.ToLower(priorState)
+		prior, _ := createSession(id+"-prior", priorState, "SNAPSHOTTED", "")
+		agentID := id + "-agent"
+		if err := store.BindAgentSession(ctx, prior.ID, agentID); err != nil {
+			t.Fatal(err)
+		}
+		current, token := createSession(id+"-current", "UNBOUND", "UNBOUND", "")
+		if err := m.BindAndRestoreResume(ctx, current.ID, token, agentID); err == nil {
+			t.Fatalf("%s prior unexpectedly resumed without a usable snapshot", priorState)
+		}
+	}
+
+	noParent, _ := createSession("no-parent", "RESTORING", "RESTORING", "")
+	if err := m.resumeRestoreJob(ctx, noParent.ID); err == nil || !strings.Contains(err.Error(), "no parent") {
+		t.Fatalf("parentless restore error=%v", err)
+	}
+	expiredParent, _ := createSession("expired-parent", "EXPIRED", "SNAPSHOTTED", "")
+	expiredChild, _ := createSession("expired-child", "RESTORING", "RESTORING", expiredParent.ID)
+	if err := m.resumeRestoreJob(ctx, expiredChild.ID); err == nil || !strings.Contains(err.Error(), "expired or incomplete") {
+		t.Fatalf("expired snapshot restore error=%v", err)
+	}
+	expiredSlot, err := store.Slot(ctx, expiredChild.ID)
+	if err != nil || expiredSlot.State != "QUARANTINED" {
+		t.Fatalf("expired restore slot=%+v err=%v", expiredSlot, err)
+	}
+
+	incompleteParent, _ := createSession("incomplete-parent", "ARCHIVED", "SNAPSHOTTED", "")
+	snapshot := state.Snapshot{ID: "incomplete-snapshot", SessionID: incompleteParent.ID, RepositoryID: "repository-1", HeadOID: "head", HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/worktree", Status: "ARCHIVED", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}
+	if err := store.SaveSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	incompleteChild, _ := createSession("incomplete-child", "RESTORING", "RESTORING", incompleteParent.ID)
+	if err := m.resumeRestoreJob(ctx, incompleteChild.ID); err == nil || !strings.Contains(err.Error(), "snapshot missing repository") {
+		t.Fatalf("incomplete snapshot restore error=%v", err)
+	}
+
+	archived, _ := createSession("archived", "ARCHIVED", "SNAPSHOTTED", "")
+	if err := m.snapshotSession(ctx, archived); err != nil {
+		t.Fatalf("archived snapshot replay: %v", err)
+	}
+	active, _ := createSession("active", "ACTIVE", "LEASED", "")
+	if err := m.snapshotSession(ctx, active); err == nil || !strings.Contains(err.Error(), "cannot be snapshotted") {
+		t.Fatalf("invalid snapshot state error=%v", err)
+	}
+}
+
+func discoveryPath(path string) domain.CanonicalPath {
+	return domain.CanonicalPath(filepath.Clean(path))
+}
+
+func TestWorkerStopsRetryingAfterBoundedAttempts(t *testing.T) {
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	job, err := store.CreateJob(ctx, "REMOVE", "", "missing-slot", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt < maxJobAttempts; attempt++ {
+		claimed, err := store.ClaimJob(ctx, job.ID, "seed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RetryJob(ctx, claimed.ID, "seed", 0, "TEST_RETRY"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.wg.Add(1)
+	go m.runWorker(0, make(chan struct{}))
+	m.schedule(job)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status, err := store.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Jobs == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("exhausted removal job remained retryable")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestManagerFailsClosedWhenStateStoreBecomesUnavailable(t *testing.T) {
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	m := testManager(t, cfg, store)
+	ctx := context.Background()
+	job, err := store.CreateJob(ctx, "ENSURE_STANDBY", "missing", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.recoverJobs(false)
+	select {
+	case queued := <-m.jobs:
+		if queued.id != job.ID {
+			t.Fatalf("recovered job=%+v", queued)
+		}
+	default:
+		t.Fatal("pending durable job was not recovered")
+	}
+	m.maybeBackup(ctx)
+	m.maybeBackup(ctx)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Status(ctx); err == nil {
+		t.Fatal("status succeeded after state store closure")
+	}
+	doctor := m.Doctor(ctx)
+	checks := doctor["checks"].(map[string]any)
+	if checks["sqlite"] == "ok" {
+		t.Fatalf("doctor did not report SQLite failure: %v", checks)
+	}
+	if diagnostics := m.artifactDiagnostics(ctx); len(diagnostics["errors"].([]string)) == 0 {
+		t.Fatalf("artifact diagnostics did not report state failure: %v", diagnostics)
+	}
+	m.reconcileRegistry(ctx)
+	m.reconcileOrphans(ctx)
+	m.recoverJobs(false)
+	m.mu.Lock()
+	m.lastBackup = time.Time{}
+	m.mu.Unlock()
+	m.maybeBackup(ctx)
+	if err := m.enqueue("ENSURE_STANDBY", "", "", ""); err == nil {
+		t.Fatal("job enqueue succeeded after state store closure")
+	}
+	for _, job := range []state.Job{{Kind: "PREPARE", WorkspaceID: "missing"}, {Kind: "ENSURE_STANDBY", WorkspaceID: "missing"}, {Kind: "SNAPSHOT", SessionID: "missing"}} {
+		if err := m.runRecoveredJob(ctx, job); err == nil {
+			t.Fatalf("%s job succeeded after state store closure", job.Kind)
+		}
+	}
+	if _, err := m.GC(ctx, false); err == nil {
+		t.Fatal("GC succeeded after state store closure")
+	}
+	m.cancel()
+	m.schedule(state.Job{ID: "cancelled"})
+	m.scheduleDelayed(state.Job{ID: "cancelled"}, time.Millisecond)
+	m.Close()
+	m.resizeWorkers(1)
+}
+
+func TestScheduleLeavesOverflowForDurableRecovery(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := &Manager{jobs: make(chan jobWork, 1), ctx: ctx, cancel: cancel}
+	m.schedule(state.Job{ID: "first"})
+	m.schedule(state.Job{ID: "overflow"})
+	if queued := <-m.jobs; queued.id != "first" {
+		t.Fatalf("queued work=%+v", queued)
 	}
 }

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,55 @@ func TestDaemonRuntimeLockAllowsOnlyOneOwner(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second lock error = %v", err)
+	}
+}
+
+func TestServerPathLevelAndWorktreeRootHelpers(t *testing.T) {
+	for value, want := range map[string]slog.Level{
+		"debug": slog.LevelDebug,
+		"info":  slog.LevelInfo,
+		"warn":  slog.LevelWarn,
+		"error": slog.LevelError,
+	} {
+		if got := slogLevel(value); got != want {
+			t.Errorf("slogLevel(%q)=%s, want %s", value, got, want)
+		}
+	}
+	if filepathDir("name") != "." || filepathDir("/one/two") != "/one" {
+		t.Fatal("filepathDir did not preserve its path contract")
+	}
+	releaseDaemonLock(nil)
+
+	root := filepath.Join(t.TempDir(), "worktrees")
+	created, err := ensureWorktreeRoot(root)
+	if err != nil || created != root {
+		t.Fatalf("create worktree root=%q err=%v", created, err)
+	}
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if existing, err := ensureWorktreeRoot(root); err != nil || existing != root {
+		t.Fatalf("reuse worktree root=%q err=%v", existing, err)
+	}
+	if info, err := os.Stat(root); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("worktree root permissions=%v err=%v", info, err)
+	}
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureWorktreeRoot(file); err == nil {
+		t.Fatal("regular file was accepted as worktree root")
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureWorktreeRoot(link); err == nil {
+		t.Fatal("symlink was accepted as worktree root")
+	}
+	if _, err := ensureWorktreeRoot("$UNSUPPORTED/worktrees"); err == nil {
+		t.Fatal("unsupported path expansion succeeded")
 	}
 }
 

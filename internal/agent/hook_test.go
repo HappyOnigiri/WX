@@ -54,6 +54,18 @@ func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WX_NATIVE_RESUME", "")
+	t.Setenv("WX_SESSION_ID", "wx-fresh")
+	t.Setenv("WX_FRESH", "1")
+	if err := RunHook(ctx, "session-start", strings.NewReader(`{"session_id":"agent-fresh","source":"resume"}`)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_FRESH", "")
+	t.Setenv("WX_SESSION_ID", "wx-recovery-notice")
+	t.Setenv("WX_RECOVERY_DISCARDED", "1")
+	if err := RunHook(ctx, "session-start", strings.NewReader(`{"session_id":"agent-notice","source":"startup"}`)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_RECOVERY_DISCARDED", "")
 	for _, event := range []string{"user-prompt-submit", "pre-tool-use", "session-end"} {
 		if err := RunHook(ctx, event, strings.NewReader("")); err != nil {
 			t.Fatalf("%s: %v", event, err)
@@ -62,7 +74,7 @@ func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
 	handler.mu.Lock()
 	got := strings.Join(handler.methods, ",")
 	handler.mu.Unlock()
-	for _, method := range []string{"BindAgentSession", "BindAndRestoreResume", "WaitReady", "Release"} {
+	for _, method := range []string{"BindAgentSession", "BindAndRestoreResume", "ValidateFreshResume", "WaitReady", "Release"} {
 		if !strings.Contains(got, method) {
 			t.Fatalf("methods=%s, missing %s", got, method)
 		}

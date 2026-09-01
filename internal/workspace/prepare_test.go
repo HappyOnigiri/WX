@@ -65,6 +65,9 @@ func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
 	if err := MaterializeRoot(source, target, config.Workspace{Copy: []string{"../outside"}}); err == nil {
 		t.Fatal("unsafe copy succeeded")
 	}
+	if err := MaterializeRoot(source, target, config.Workspace{Link: []string{"../outside"}}); err == nil {
+		t.Fatal("unsafe link succeeded")
+	}
 	linkSource := filepath.Join(source, "link")
 	if err := os.Symlink(filepath.Join(source, "shared"), linkSource); err != nil {
 		t.Fatal(err)
@@ -81,6 +84,16 @@ func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
 	}
 	if err := copyPath(regular, filepath.Join(target, "directory")); err == nil {
 		t.Fatal("copyPath overwrote a directory")
+	}
+	recursive := filepath.Join(source, "recursive")
+	if err := os.Mkdir(recursive, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(regular, filepath.Join(recursive, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyPath(recursive, filepath.Join(target, "recursive-copy")); err == nil {
+		t.Fatal("recursive copy followed a child symlink")
 	}
 }
 
@@ -162,6 +175,104 @@ func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
 	}
 	if err := preparer.createLinks(context.Background(), repo, target); err == nil || !strings.Contains(err.Error(), "unsafe") {
 		t.Fatalf("unsafe link error=%v", err)
+	}
+}
+
+func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	worktreeRoot := filepath.Join(root, "worktrees")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("tracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	head := gitOutput(t, repository, "rev-parse", "HEAD")
+	common := gitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = worktreeRoot
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+	target := filepath.Join(worktreeRoot, "slot", "root")
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "tracked path") {
+		t.Fatalf("tracked include error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("partial Git worktree remains after policy failure: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("tracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkTarget := filepath.Join(worktreeRoot, "link-failure", "root")
+	if err := preparer.Prepare(context.Background(), repo, linkTarget, head, "link-failure"); err == nil || !strings.Contains(err.Error(), "not ignored") {
+		t.Fatalf("prepare link policy error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(linkTarget, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("link-policy partial worktree remains: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failingCfg := cfg
+	failingCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/usr/bin/false"}, Timeout: config.Duration{Duration: time.Second}}}}
+	preparer.Config = failingCfg
+	commandTarget := filepath.Join(worktreeRoot, "command-failure", "root")
+	if err := preparer.Prepare(context.Background(), repo, commandTarget, head, "command-failure"); err == nil {
+		t.Fatal("failed prepare command completed a worktree")
+	}
+	if _, err := os.Stat(filepath.Join(commandTarget, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("command-failure partial worktree remains: %v", err)
+	}
+
+	cfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/usr/bin/true"}, Version: "v1"}}}
+	cfg.Readiness.Timeout.Duration = time.Second
+	preparer.Config = cfg
+	if err := preparer.runPrepare(context.Background(), repo, repository); err != nil {
+		t.Fatal(err)
+	}
+	if fingerprint, err := Fingerprint(1, head, repo, cfg); err != nil || fingerprint == "" {
+		t.Fatalf("fingerprint=%q err=%v", fingerprint, err)
+	}
+	if err := copyPath(filepath.Join(root, "missing"), filepath.Join(root, "copy")); err == nil {
+		t.Fatal("copyPath accepted a missing source")
+	}
+	badRoot := preparer
+	badRoot.Config.Storage.WorktreeRoot = "$UNSUPPORTED/worktrees"
+	if err := badRoot.Prepare(context.Background(), repo, target, head, "bad-root"); err == nil {
+		t.Fatal("unsupported worktree root expansion succeeded")
+	}
+	if err := preparer.ValidateReady(context.Background(), repo, filepath.Join(root, "missing-ready"), head); err == nil {
+		t.Fatal("missing READY worktree validated")
+	}
+}
+
+func TestPatternFilesThatAreDirectoriesAreRejected(t *testing.T) {
+	repository, target := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(repository, ".worktreeinclude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: config.Defaults()}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	if err := preparer.copyIncludes(repo, target); err == nil {
+		t.Fatal("directory .worktreeinclude was accepted")
+	}
+	if err := os.Mkdir(filepath.Join(repository, ".worktreelink"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.createLinks(context.Background(), repo, target); err == nil {
+		t.Fatal("directory .worktreelink was accepted")
 	}
 }
 

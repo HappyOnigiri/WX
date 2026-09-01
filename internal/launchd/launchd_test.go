@@ -40,6 +40,39 @@ func TestRenderInstallUninstallAndKickstart(t *testing.T) {
 	if err := Uninstall(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("plist remains after uninstall: %v", err)
+	}
+}
+
+func TestUninstallRemovesPlistWhenServiceIsAlreadyMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	launchctl := filepath.Join(bin, "launchctl")
+	if err := os.WriteFile(launchctl, []byte("#!/bin/sh\necho 'Could not find service' >&2\nexit 3\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	path, err := PlistPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Uninstall(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("plist remains after missing service uninstall: %v", err)
+	}
 }
 
 func TestLaunchctlFailuresAreReported(t *testing.T) {

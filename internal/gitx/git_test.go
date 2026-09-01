@@ -1,0 +1,46 @@
+package gitx
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestRunStopsLockConflictRetryWhenContextExpires(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	marker := filepath.Join(bin, "invoked")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\n: > \"$WX_GIT_TEST_MARKER\"\nprintf 'fatal: could not lock index.lock\\n' >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("WX_GIT_TEST_MARKER", marker)
+	runner := &Runner{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				time.Sleep(10 * time.Millisecond)
+				cancel()
+				return
+			}
+			if time.Now().After(deadline) {
+				cancel()
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	result, err := runner.Run(ctx, t.TempDir(), "status")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("lock retry error=%v result=%+v", err, result)
+	}
+	if result.ExitCode != 1 || result.Stderr == "" {
+		t.Fatalf("lock retry result=%+v", result)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -106,6 +107,45 @@ func TestServerRefusesNonSocket(t *testing.T) {
 
 func TestServerCloseWithoutListenerIsSafe(t *testing.T) {
 	if err := (&Server{}).Close(); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", filepath.Join(t.TempDir(), "close.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Server{listener: listener}).Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServerReplacesOnlyAStaleUnixSocket(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "stale.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &Server{Socket: socket, Handler: echoHandler{}}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	client := Client{Socket: socket, Timeout: time.Second}
+	deadline := time.Now().Add(time.Second)
+	for {
+		var output map[string]any
+		if err := client.Call(context.Background(), "ready", nil, &output); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("server did not replace stale socket")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 }
@@ -291,4 +331,63 @@ func TestIdempotencyKeyReplaysResponseWithoutRepeatingHandler(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestIdempotencyCacheIsBoundedAndExpiresCompletedEntries(t *testing.T) {
+	server := &Server{idem: map[string]*idempotentEntry{}}
+	now := time.Now()
+	for i := range maxIdempotency {
+		server.idem[fmt.Sprintf("key-%d", i)] = &idempotentEntry{done: closedChannel(), ended: now.Add(-time.Duration(i) * time.Second)}
+	}
+	server.idem["expired"] = &idempotentEntry{done: closedChannel(), ended: now.Add(-idempotencyTTL)}
+	server.pruneIdempotencyLocked(now)
+	if len(server.idem) >= maxIdempotency {
+		t.Fatalf("idempotency cache was not bounded: %d", len(server.idem))
+	}
+	if _, ok := server.idem["expired"]; ok {
+		t.Fatal("expired idempotency entry was retained")
+	}
+	entry, owner := server.idempotencyEntry(Request{Method: "test", IdempotencyKey: "replacement", Params: json.RawMessage(`{}`)})
+	if entry == nil || !owner {
+		t.Fatal("bounded cache did not accept a replacement entry")
+	}
+}
+
+func TestIdempotencyWaitHonorsDeadlineAndRejectsInflightOverflow(t *testing.T) {
+	server := &Server{Handler: echoHandler{}, idem: map[string]*idempotentEntry{}}
+	params := json.RawMessage(`{"value":1}`)
+	server.idem["waiting"] = &idempotentEntry{method: "mutate", params: string(params), done: make(chan struct{})}
+	serverSide, clientSide := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		server.serveConn(context.Background(), serverSide)
+		close(done)
+	}()
+	request := Request{Version: ProtocolVersion, ID: "request", Method: "mutate", IdempotencyKey: "waiting", Params: params, Deadline: time.Now().Add(10 * time.Millisecond).UTC().Format(time.RFC3339Nano)}
+	if err := writeFrame(clientSide, request); err != nil {
+		t.Fatal(err)
+	}
+	var response Response
+	if err := readFrame(clientSide, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error == nil || response.Error.Code != "DEADLINE" {
+		t.Fatalf("deadline response=%+v", response)
+	}
+	_ = clientSide.Close()
+	<-done
+
+	server.idem = map[string]*idempotentEntry{}
+	for i := range maxIdempotency {
+		server.idem[fmt.Sprintf("inflight-%d", i)] = &idempotentEntry{done: make(chan struct{})}
+	}
+	if entry, _ := server.idempotencyEntry(Request{Method: "overflow", IdempotencyKey: "overflow"}); entry != nil {
+		t.Fatal("in-flight idempotency cache exceeded its bound")
+	}
+}
+
+func closedChannel() chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
 }
