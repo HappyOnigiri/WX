@@ -22,15 +22,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [fmt-check, vet, mod-tidy-check, test-race]
+        target: [fmt-check, lint, deadcode, mod-tidy-check, reproducible-build, smoke]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
+      - uses: ./.github/actions/setup-go
+        with: { cache-name: "${{ matrix.target }}" }
       - run: make ${{ matrix.target }}
       - run: git diff --exit-code
 
@@ -46,16 +44,34 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version-file: go.mod
+      - uses: ./.github/actions/setup-go
+        with: { cache-name: "darwin-${{ matrix.arch }}" }
       - run: CGO_ENABLED=0 GOOS=darwin GOARCH=${{ matrix.arch }} go build -trimpath -o wx ./cmd/wx
-      - run: ./wx --help && ./wx --version
+      - run: if [ "$(go env GOARCH)" = "${{ matrix.arch }}" ]; then ./wx --help && ./wx --version; fi
+
+  integration:
+    name: Race, integration, and coverage
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with: { cache-name: integration-coverage }
+      - run: make coverage-check
+      - run: git diff --exit-code
+      - if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: coverage
+          path: coverage/all.out
+          retention-days: 7
 
   required:
     name: CI required
     if: always()
-    needs: [check, darwin]
+    needs: [check, darwin, integration]
     runs-on: ubuntu-latest
     steps:
-      - run: test '${{ needs.check.result }}' = success -a '${{ needs.darwin.result }}' = success
+      - run: test '${{ needs.check.result }}' = success -a '${{ needs.darwin.result }}' = success -a '${{ needs.integration.result }}' = success

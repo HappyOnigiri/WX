@@ -1,0 +1,34 @@
+version: "2"
+
+linters:
+  default: standard
+  disable:
+    # Cleanup-only Close/Rollback calls are intentionally ignored throughout
+    # the SQLite transaction layer; substantive write/sync errors are checked.
+    - errcheck
+  enable:
+    - asciicheck
+    - bidichk
+    - durationcheck
+    - errorlint
+    - misspell
+    - nilerr
+    - nolintlint
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - wastedassign
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+formatters:
+  enable: [gofumpt, gci]
+  settings:
+    gci:
+      sections: [standard, default, localmodule]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

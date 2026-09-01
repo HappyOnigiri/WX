@@ -23,10 +23,33 @@ jobs:
           go-version-file: go.mod
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
+  static-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with: { cache-name: static-security }
+      - run: go run github.com/securego/gosec/v2/cmd/gosec@v2.22.10 ./...
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low
+
   required:
     name: Security required
     if: always()
-    needs: [vulnerability]
+    needs: [vulnerability, static-security, dependency-review]
     runs-on: ubuntu-latest
     steps:
-      - run: test '${{ needs.vulnerability.result }}' = success
+      - run: test '${{ needs.vulnerability.result }}' = success -a '${{ needs.static-security.result }}' = success -a \( '${{ needs.dependency-review.result }}' = success -o '${{ needs.dependency-review.result }}' = skipped \)
