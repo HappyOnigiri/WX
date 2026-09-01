@@ -2,6 +2,7 @@ package launchd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -42,7 +43,7 @@ func Render(binary, home, logPath string) ([]byte, error) {
 	return b.Bytes(), err
 }
 
-func Install(binary, logPath string) error {
+func Install(ctx context.Context, binary, logPath string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -81,20 +82,20 @@ func Install(binary, logPath string) error {
 		return err
 	}
 	domain := fmt.Sprintf("gui/%d", os.Getuid())
-	_ = exec.Command("launchctl", "bootout", domain, path).Run()
-	if out, err := exec.Command("launchctl", "bootstrap", domain, path).CombinedOutput(); err != nil {
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", domain, path).Run()
+	if out, err := exec.CommandContext(ctx, "launchctl", "bootstrap", domain, path).CombinedOutput(); err != nil {
 		return fmt.Errorf("launchctl bootstrap: %s", bytes.TrimSpace(out))
 	}
 	return nil
 }
 
-func Uninstall() error {
+func Uninstall(ctx context.Context) error {
 	path, err := PlistPath()
 	if err != nil {
 		return err
 	}
 	domain := fmt.Sprintf("gui/%d", os.Getuid())
-	if out, err := exec.Command("launchctl", "bootout", domain, path).CombinedOutput(); err != nil && !launchctlServiceMissing(out) {
+	if out, err := exec.CommandContext(ctx, "launchctl", "bootout", domain, path).CombinedOutput(); err != nil && !launchctlServiceMissing(out) {
 		return fmt.Errorf("launchctl bootout: %s", bytes.TrimSpace(out))
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -116,9 +117,9 @@ func launchctlServiceMissing(output []byte) bool {
 	return strings.Contains(message, "could not find service") || strings.Contains(message, "no such process") || strings.Contains(message, "service not found")
 }
 
-func Kickstart() error {
+func Kickstart(ctx context.Context) error {
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), Label)
-	out, err := exec.Command("launchctl", "kickstart", "-k", target).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "launchctl", "kickstart", "-k", target).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("launchctl kickstart: %s", bytes.TrimSpace(out))
 	}

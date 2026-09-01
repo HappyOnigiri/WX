@@ -684,7 +684,7 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 	}
 	m.schedule(job)
 	_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
-	go func() { _, _ = m.GC(context.Background(), false) }()
+	go func() { _, _ = m.GC(m.ctx, false) }()
 	return Lease{SessionID: id, Token: token, Path: root, SourceWorkspace: string(w.Root), Ready: false}, nil
 }
 
@@ -727,7 +727,10 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 		return fmt.Errorf("slot %s cannot be prepared from %s", id, slot.State)
 	}
 	preparer := workspace.Preparer{Git: m.git, Config: m.Config()}
-	for i, r := range resolved {
+	if len(repos) != len(resolved) {
+		return errors.New("slot repository metadata does not match resolved workspace")
+	}
+	for _, r := range resolved {
 		stored, err := m.store.SlotRepository(ctx, id, string(r.Repository.ID))
 		if err != nil {
 			return err
@@ -744,7 +747,7 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 		} else if err := m.store.SetSlotRepositoryState(ctx, id, string(r.Repository.ID), []string{"PREPARING", "RESTORING"}, "PREPARE_RUNNING"); err != nil {
 			return err
 		}
-		if err := preparer.Prepare(ctx, r.Repository, repos[i].WorktreePath, r.OID, id); err != nil {
+		if err := preparer.Prepare(ctx, r.Repository, stored.WorktreePath, r.OID, id); err != nil {
 			m.log.Error("slot preparation failed", "slot_id", id, "repository_id", r.Repository.ID, "error", err)
 			_ = m.store.SetSlotState(ctx, id, []string{"PREPARING", "RESTORING"}, "FAILED", "PREPARE_FAILED")
 			return err
@@ -1006,6 +1009,9 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 		return fmt.Errorf("slot %s cannot be restored from %s", id, slotState.State)
 	}
 	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: m.Config()}}
+	if len(repos) != len(resolved) {
+		return errors.New("restore repository metadata does not match resolved workspace")
+	}
 	for i, r := range resolved {
 		stored, err := m.store.SlotRepository(ctx, id, string(r.Repository.ID))
 		if err != nil {
@@ -1023,7 +1029,8 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 		} else if err := m.store.SetSlotRepositoryState(ctx, id, string(r.Repository.ID), []string{"RESTORING"}, "RESTORE_RUNNING"); err != nil {
 			return err
 		}
-		if err := archiveManager.Restore(ctx, r.Repository, repos[i].WorktreePath, id, snaps[string(r.Repository.ID)]); err != nil {
+		repositoryPath := repos[i].WorktreePath // #nosec G602 -- equal slice lengths are checked before the loop.
+		if err := archiveManager.Restore(ctx, r.Repository, repositoryPath, id, snaps[string(r.Repository.ID)]); err != nil {
 			m.log.Error("restore failed", "slot_id", id, "repository_id", r.Repository.ID, "error", err)
 			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "RESTORE_FAILED")
 			return err
@@ -1725,8 +1732,8 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	}
 	if runGC {
 		go func() {
-			m.reconcileRegistry(context.Background())
-			_, _ = m.GC(context.Background(), false)
+			m.reconcileRegistry(m.ctx)
+			_, _ = m.GC(m.ctx, false)
 		}()
 	}
 	return nil

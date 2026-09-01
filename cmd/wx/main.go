@@ -249,14 +249,14 @@ func runDaemon(ctx context.Context, args []string) int {
 			return 1
 		}
 		logPath, _ := config.LogPath()
-		if err := launchd.Install(binary, logPath); err != nil {
+		if err := launchd.Install(ctx, binary, logPath); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
 		fmt.Println("installed", launchd.Label)
 		return 0
 	case "uninstall":
-		if err := launchd.Uninstall(); err != nil {
+		if err := launchd.Uninstall(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}

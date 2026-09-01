@@ -22,7 +22,9 @@ func TestRunStopsLockConflictRetryWhenContextExpires(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		deadline := time.Now().Add(2 * time.Second)
+		// Race-enabled all-package coverage can delay process startup on loaded CI
+		// runners, so keep this watchdog well above the normal millisecond path.
+		deadline := time.Now().Add(10 * time.Second)
 		for {
 			if _, err := os.Stat(marker); err == nil {
 				time.Sleep(10 * time.Millisecond)

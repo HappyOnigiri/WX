@@ -46,7 +46,8 @@ func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, workt
 		if err != nil {
 			return err
 		}
-		commitEnv := append(env,
+		commitEnv := append([]string(nil), env...)
+		commitEnv = append(commitEnv,
 			"GIT_AUTHOR_NAME=wx", "GIT_AUTHOR_EMAIL=wx@localhost",
 			"GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost",
 			"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",

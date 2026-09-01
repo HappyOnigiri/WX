@@ -1,6 +1,7 @@
 package launchd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +25,7 @@ func TestRenderInstallUninstallAndKickstart(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), Label) || !strings.Contains(string(data), "/usr/local/bin/wx") {
 		t.Fatalf("rendered plist=%q err=%v", data, err)
 	}
-	if err := Install("/usr/local/bin/wx", logPath); err != nil {
+	if err := Install(context.Background(), "/usr/local/bin/wx", logPath); err != nil {
 		t.Fatal(err)
 	}
 	path, err := PlistPath()
@@ -34,10 +35,10 @@ func TestRenderInstallUninstallAndKickstart(t *testing.T) {
 	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("plist info=%v err=%v", info, err)
 	}
-	if err := Kickstart(); err != nil {
+	if err := Kickstart(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := Uninstall(); err != nil {
+	if err := Uninstall(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -67,7 +68,7 @@ func TestUninstallRemovesPlistWhenServiceIsAlreadyMissing(t *testing.T) {
 	if err := os.WriteFile(path, []byte("plist"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Uninstall(); err != nil {
+	if err := Uninstall(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -86,13 +87,13 @@ func TestLaunchctlFailuresAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
-	if err := Install("/wx", filepath.Join(home, "daemon.log")); err == nil {
+	if err := Install(context.Background(), "/wx", filepath.Join(home, "daemon.log")); err == nil {
 		t.Fatal("failed bootstrap succeeded")
 	}
-	if err := Uninstall(); err == nil {
+	if err := Uninstall(context.Background()); err == nil {
 		t.Fatal("failed bootout succeeded")
 	}
-	if err := Kickstart(); err == nil {
+	if err := Kickstart(context.Background()); err == nil {
 		t.Fatal("failed kickstart succeeded")
 	}
 }

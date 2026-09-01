@@ -39,7 +39,7 @@ func (c Client) ensureDaemon(ctx context.Context) error {
 	if err := c.RPC.Call(ctx, "Status", struct{}{}, &status); err == nil {
 		return nil
 	}
-	if err := launchd.Kickstart(); err != nil {
+	if err := launchd.Kickstart(ctx); err != nil {
 		return fmt.Errorf("wx daemon is unavailable (%w); run wx doctor", err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
@@ -138,7 +138,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 			return 1
 		}
 	}
-	cmd := exec.Command(agent, args...)
+	cmd := exec.CommandContext(ctx, agent, args...)
 	cmd.Dir = lease.Path
 	cmd.Env = env
 	cmd.Stdin = os.Stdin
@@ -160,7 +160,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		for {
 			select {
 			case <-ticker.C:
-				heartbeatCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				heartbeatCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 				_ = c.RPC.Call(heartbeatCtx, "Heartbeat", map[string]string{"session_id": lease.SessionID, "token": lease.Token}, nil)
 				cancel()
 			case <-heartbeatDone:

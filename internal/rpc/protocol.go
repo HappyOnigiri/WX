@@ -123,7 +123,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		if info.Mode()&os.ModeSocket == 0 {
 			return fmt.Errorf("refusing to replace non-socket path %s", s.Socket)
 		}
-		probe, dialErr := net.DialTimeout("unix", s.Socket, 100*time.Millisecond)
+		probe, dialErr := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "unix", s.Socket)
 		if dialErr == nil {
 			_ = probe.Close()
 			return fmt.Errorf("RPC server is already listening on %s", s.Socket)
@@ -134,7 +134,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	ln, err := net.Listen("unix", s.Socket)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "unix", s.Socket)
 	if err != nil {
 		return err
 	}
@@ -185,16 +185,17 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 	}
 	if req.IdempotencyKey != "" {
 		entry, owner := s.idempotencyEntry(req)
-		if entry == nil {
+		switch {
+		case entry == nil:
 			resp.Error = &RPCError{Code: "IDEMPOTENCY_KEY_REUSE", Message: "idempotency key was reused with a different method or payload"}
-		} else if !owner {
+		case !owner:
 			select {
 			case <-entry.done:
 				resp.Result, resp.Error = entry.result, entry.err
 			case <-ctx.Done():
 				resp.Error = &RPCError{Code: "DEADLINE", Message: ctx.Err().Error()}
 			}
-		} else {
+		default:
 			resp.Result, resp.Error = s.invoke(ctx, req)
 			s.idemMu.Lock()
 			entry.result, entry.err = resp.Result, resp.Error
