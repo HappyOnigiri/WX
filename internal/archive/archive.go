@@ -109,12 +109,61 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 	})
 }
 
-func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository, path string) error {
+func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository, root, path string) error {
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+		canonicalRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return err
+		}
+		canonicalPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return err
+		}
+		if !domain.IsWithin(canonicalRoot, canonicalPath) {
+			return errors.New("worktree path is outside canonical wx root")
+		}
+		for current := canonicalPath; current != canonicalRoot; current = filepath.Dir(current) {
+			info, err := os.Lstat(current)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("symlink component in removal path %s", current)
+			}
+		}
+		common, err := m.gitValue(ctx, path, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if err != nil {
+			return err
+		}
+		expected, err := filepath.EvalSymlinks(string(repo.CommonDir))
+		if err != nil {
+			return err
+		}
+		actual, err := filepath.EvalSymlinks(common)
+		if err != nil {
+			return err
+		}
+		if actual != expected {
+			return errors.New("worktree common directory does not match repository ownership")
+		}
+		listed, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "list", "--porcelain", "-z")
+		if err != nil {
+			return err
+		}
+		registered := false
+		for _, field := range strings.Split(listed.Stdout, "\x00") {
+			if strings.TrimPrefix(field, "worktree ") == canonicalPath && strings.HasPrefix(field, "worktree ") {
+				registered = true
+				break
+			}
+		}
+		if !registered {
+			return errors.New("worktree is not registered at expected path")
+		}
 		if _, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", path); err != nil {
 			return err
 		}
-		_, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", path)
+		_, err = m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", path)
 		return err
 	})
 }

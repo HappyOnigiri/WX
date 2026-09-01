@@ -176,7 +176,8 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 }
 
 func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []string, agent string, pid int) (Lease, error) {
-	w, err := m.discover.Resolve(ctx, cwd)
+	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
+	w, err := discoverer.Resolve(ctx, cwd)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -277,8 +278,9 @@ func (m *Manager) slotRepos(root string, w discovery.Workspace, resolved []pool.
 	return out, nil
 }
 func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository) {
+	preparer := workspace.Preparer{Git: m.git, Config: m.Config()}
 	for i, r := range resolved {
-		if err := m.prepare.Prepare(ctx, r.Repository, repos[i].WorktreePath, r.OID, id); err != nil {
+		if err := preparer.Prepare(ctx, r.Repository, repos[i].WorktreePath, r.OID, id); err != nil {
 			m.log.Error("slot preparation failed", "slot_id", id, "repository_id", r.Repository.ID, "error", err)
 			_ = m.store.SetSlotState(ctx, id, []string{"PREPARING", "RESTORING"}, "FAILED", "PREPARE_FAILED")
 			return
@@ -422,22 +424,15 @@ func (m *Manager) ValidateFreshResume(ctx context.Context, id, token, agentID st
 	}
 	prior, err := m.store.FindByAgentSession(ctx, current.AgentKind, agentID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return m.store.BindFreshSession(ctx, id, "", agentID)
 	}
 	if err != nil {
 		return err
 	}
-	snapshots, err := m.store.Snapshots(ctx, prior.ID)
-	if err != nil {
-		return err
+	if prior.State != "EXPIRED" {
+		return fmt.Errorf("--fresh is refused because wx session %s is %s, not EXPIRED", prior.ID, prior.State)
 	}
-	for _, snapshot := range snapshots {
-		expiry, parseErr := time.Parse(time.RFC3339Nano, snapshot.ExpiresAt)
-		if parseErr == nil && expiry.After(time.Now()) {
-			return errors.New("--fresh is refused because a valid wx recovery snapshot exists; resume without --fresh")
-		}
-	}
-	return nil
+	return m.store.BindFreshSession(ctx, id, prior.ID, agentID)
 }
 
 func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID string) error {
@@ -483,8 +478,9 @@ func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID s
 	return m.enqueue("RESTORE", string(w.ID), id, id, func() error { m.restoreSlot(context.Background(), id, w, resolved, repos, snapByRepo); return nil })
 }
 func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, snaps map[string]state.Snapshot) {
+	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: m.Config()}}
 	for i, r := range resolved {
-		if err := m.archive.Restore(ctx, r.Repository, repos[i].WorktreePath, id, snaps[string(r.Repository.ID)]); err != nil {
+		if err := archiveManager.Restore(ctx, r.Repository, repos[i].WorktreePath, id, snaps[string(r.Repository.ID)]); err != nil {
 			m.log.Error("restore failed", "slot_id", id, "repository_id", r.Repository.ID, "error", err)
 			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "RESTORE_FAILED")
 			return
@@ -618,7 +614,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 				ok = false
 				break
 			}
-			if err := m.archive.RemoveWorktree(ctx, repo, sr.WorktreePath); err != nil {
+			if err := m.archive.RemoveWorktree(ctx, repo, root, sr.WorktreePath); err != nil {
 				ok = false
 				break
 			}
@@ -674,8 +670,6 @@ func (m *Manager) ReloadConfig() error {
 	}
 	m.mu.Lock()
 	m.cfg = cfg
-	m.discover.Config = cfg
-	m.prepare.Config = cfg
 	m.mu.Unlock()
 	return nil
 }

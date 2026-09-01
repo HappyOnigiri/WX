@@ -431,6 +431,34 @@ func (s *Store) BindAgentSession(ctx context.Context, id, agentID string) error 
 	}
 	return tx.Commit()
 }
+
+func (s *Store) BindFreshSession(ctx context.Context, id, parentID, agentID string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var kind string
+	if err := tx.QueryRowContext(ctx, `SELECT agent_kind FROM sessions WHERE id=?`, id).Scan(&kind); err != nil {
+		return err
+	}
+	if parentID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND state='EXPIRED'`, parentID); err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE sessions SET parent_session_id=?,agent_session_id=?,state='ACTIVE',started_at=COALESCE(started_at,?) WHERE id=? AND state IN ('STARTING','ACTIVE')`, nullString(parentID), agentID, now(), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return errors.New("fresh session state changed")
+	}
+	return tx.Commit()
+}
 func (s *Store) FindByAgentSession(ctx context.Context, kind, agentID string) (Session, error) {
 	var x Session
 	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE agent_kind=? AND agent_session_id=?`, kind, agentID).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
@@ -451,11 +479,18 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, 
 	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE agent_kind=? AND agent_session_id=? AND id<>?`, kind, agentID, sessionID); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=?,parent_session_id=?,agent_session_id=?,state='RESTORING' WHERE id=? AND state='UNBOUND'`, workspaceID, parentSessionID, agentID, sessionID); err != nil {
+	res, err := tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=?,parent_session_id=?,agent_session_id=?,state='RESTORING' WHERE id=? AND state='UNBOUND'`, workspaceID, parentSessionID, agentID, sessionID)
+	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE slots SET workspace_id=?,state='RESTORING',updated_at=? WHERE id=? AND state='UNBOUND'`, workspaceID, now(), sessionID); err != nil {
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errors.New("resume session is no longer UNBOUND")
+	}
+	if res, err = tx.ExecContext(ctx, `UPDATE slots SET workspace_id=?,state='RESTORING',updated_at=? WHERE id=? AND state='UNBOUND'`, workspaceID, now(), sessionID); err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errors.New("resume slot is no longer UNBOUND")
 	}
 	for _, r := range repos {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, sessionID, r.RepositoryID, r.WorktreePath, "RESTORING", r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {

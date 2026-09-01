@@ -50,7 +50,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 			return client.Call(ctx, "ValidateFreshResume", map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil)
 		}
 		method := "BindAgentSession"
-		if os.Getenv("WX_NATIVE_RESUME") == "1" || payload.Source == "resume" {
+		if os.Getenv("WX_EXPLICIT_RESUME") != "1" && (os.Getenv("WX_NATIVE_RESUME") == "1" || payload.Source == "resume") {
 			method = "BindAndRestoreResume"
 		}
 		return client.Call(ctx, method, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil)

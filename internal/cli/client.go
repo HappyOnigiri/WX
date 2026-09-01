@@ -79,6 +79,9 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	if native && !fresh && explicitResume == "" {
 		env = append(env, "WX_NATIVE_RESUME=1")
 	}
+	if explicitResume != "" {
+		env = append(env, "WX_EXPLICIT_RESUME=1")
+	}
 	if fresh {
 		env = append(env, "WX_FRESH=1")
 	}
