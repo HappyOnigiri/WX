@@ -1,0 +1,47 @@
+package main
+
+import (
+	"fmt"
+	"io"
+)
+
+func topUsage(w io.Writer) {
+	fmt.Fprintln(w, `Usage: wx [wx-options] <claude|codex> [agent-arguments...]
+       wx <command> [options]
+
+Global options:
+  --branch <branch|repo=branch>  choose a detached base (repeatable)
+  --fresh                        resume conversation without wx recovery state
+  -h, --help                     show help
+  -v, --version                  show version
+
+Commands:
+  claude [arguments...]           launch Claude Code in a wx workspace
+  codex [arguments...]            launch Codex in a wx workspace
+  status [--json]                show daemon and pool state
+  doctor [--json]                check configuration and dependencies
+  gc [--dry-run]                 run retention cleanup
+  sessions [--all] [--json]     list managed sessions
+  config [<key> <value>]         show or update configuration
+  resume <id> <agent> [args...] restore a wx session
+  forget <workspace-path>        forget an inactive workspace
+  daemon install|uninstall       manage the LaunchAgent`)
+}
+func commandUsage(w io.Writer, name string) {
+	switch name {
+	case "status":
+		fmt.Fprintln(w, "Usage: wx status [--json]")
+	case "doctor":
+		fmt.Fprintln(w, "Usage: wx doctor [--json]")
+	case "gc":
+		fmt.Fprintln(w, "Usage: wx gc [--dry-run]")
+	case "config":
+		fmt.Fprintln(w, "Usage: wx config [<key> <value>]")
+	case "resume":
+		fmt.Fprintln(w, "Usage: wx resume <wx-session-id> <claude|codex> [agent-arguments...]")
+	case "daemon":
+		fmt.Fprintln(w, "Usage: wx daemon <serve|install|uninstall>")
+	default:
+		topUsage(w)
+	}
+}
