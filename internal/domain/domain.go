@@ -11,10 +11,12 @@ import (
 	"strings"
 )
 
-type WorkspaceID string
-type RepositoryID string
-type SlotID string
-type SessionID string
+type (
+	WorkspaceID  string
+	RepositoryID string
+	SlotID       string
+	SessionID    string
+)
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 

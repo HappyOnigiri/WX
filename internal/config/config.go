@@ -114,6 +114,7 @@ func StatePath() (string, error) {
 	}
 	return filepath.Join(h, "Library", "Application Support", "wx", "state.db"), nil
 }
+
 func SocketPath() (string, error) {
 	h, e := os.UserHomeDir()
 	if e != nil {
@@ -121,6 +122,7 @@ func SocketPath() (string, error) {
 	}
 	return filepath.Join(h, "Library", "Application Support", "wx", "run", "wxd.sock"), nil
 }
+
 func LogPath() (string, error) {
 	h, e := os.UserHomeDir()
 	if e != nil {
@@ -223,7 +225,7 @@ func LoadRaw() (Config, error) {
 		return Config{}, fmt.Errorf("decode %s: %w", p, err)
 	}
 	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return Config{}, errors.New("config contains multiple YAML documents")
 	}
 	var doc yaml.Node
@@ -367,7 +369,7 @@ func Save(c Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
 	data, err := yaml.Marshal(c)
@@ -379,17 +381,17 @@ func Save(c Config) error {
 		return err
 	}
 	name := tmp.Name()
-	defer os.Remove(name)
-	if err := tmp.Chmod(0600); err != nil {
-		tmp.Close()
+	defer func() { _ = os.Remove(name) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
 		return err
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

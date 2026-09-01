@@ -77,6 +77,7 @@ func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 	}
 	return out, nil
 }
+
 func matchRepositories(repos []discovery.Repository, selector string) []discovery.Repository {
 	clean := filepath.Clean(selector)
 	var exact []discovery.Repository

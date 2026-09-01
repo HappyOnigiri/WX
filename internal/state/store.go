@@ -16,10 +16,11 @@ import (
 	"sync"
 	"time"
 
+	sqlite "modernc.org/sqlite"
+
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/migrations"
-	sqlite "modernc.org/sqlite"
 )
 
 type Store struct {
@@ -29,10 +30,10 @@ type Store struct {
 }
 
 func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(filepath.Dir(path), 0700); err != nil {
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	dsn := (&url.URL{Scheme: "file", Path: path}).String() + "?_defensive=1&_journal_mode=wal&_foreign_keys=on&_busy_timeout=5000&_synchronous=normal"
@@ -45,11 +46,11 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(8)
 	s := &Store{db: db, path: path}
 	if err := s.init(context.Background()); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
-	if err := os.Chmod(path, 0600); err != nil {
-		db.Close()
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
@@ -61,7 +62,7 @@ func (s *Store) Backup(ctx context.Context, generations int, retention time.Dura
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	dir := s.path + ".backups"
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	destination := filepath.Join(dir, time.Now().UTC().Format("20060102T150405.000000000Z")+".db")
@@ -69,7 +70,7 @@ func (s *Store) Backup(ctx context.Context, generations int, retention time.Dura
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	err = conn.Raw(func(driverConn any) error {
 		backuper, ok := driverConn.(interface {
 			NewBackup(string) (*sqlite.Backup, error)
@@ -90,7 +91,7 @@ func (s *Store) Backup(ctx context.Context, generations int, retention time.Dura
 	if err != nil {
 		return "", err
 	}
-	if err := os.Chmod(destination, 0600); err != nil {
+	if err := os.Chmod(destination, 0o600); err != nil {
 		return "", err
 	}
 	entries, err := os.ReadDir(dir)
@@ -99,7 +100,8 @@ func (s *Store) Backup(ctx context.Context, generations int, retention time.Dura
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
 	cutoff := time.Now().Add(-retention)
-	for i, entry := range entries {
+	backupIndex := 0
+	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".db" {
 			continue
 		}
@@ -107,11 +109,12 @@ func (s *Store) Backup(ctx context.Context, generations int, retention time.Dura
 		if infoErr != nil {
 			return "", infoErr
 		}
-		if i >= generations || (retention > 0 && info.ModTime().Before(cutoff)) {
+		if backupIndex >= generations || (retention > 0 && info.ModTime().Before(cutoff)) {
 			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
 				return "", err
 			}
 		}
+		backupIndex++
 	}
 	return destination, nil
 }
@@ -201,14 +204,19 @@ func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Works
 		if err != nil {
 			return 0, err
 		}
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			var id string
 			var member membership
 			if err := rows.Scan(&id, &member.rel, &member.ordinal); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return 0, err
 			}
 			oldMembers[id] = member
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return 0, err
 		}
 		if err := rows.Close(); err != nil {
 			return 0, err
@@ -265,17 +273,22 @@ type Slot struct {
 	Generation                                   int
 	CreatedAt, ReadyAt                           string
 }
-type SlotRepository struct{ RepositoryID, WorktreePath, State, RequestedRef, BaseOID, Fingerprint string }
-type Session struct {
-	ID, WorkspaceID, SlotID, ParentSessionID, State, AgentKind, AgentSessionID, CreatedAt, ReleasedAt, ArchivedAt, ExpiresAt string
-	TokenHash                                                                                                                []byte
-	ClientPID                                                                                                                int
-}
-type Snapshot struct{ ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string }
-type Job struct {
-	ID, Kind, WorkspaceID, SlotID, SessionID, RepositoryID, State string
-	Attempt                                                       int
-}
+type (
+	SlotRepository struct{ RepositoryID, WorktreePath, State, RequestedRef, BaseOID, Fingerprint string }
+	Session        struct {
+		ID, WorkspaceID, SlotID, ParentSessionID, State, AgentKind, AgentSessionID, CreatedAt, ReleasedAt, ArchivedAt, ExpiresAt string
+		TokenHash                                                                                                                []byte
+		ClientPID                                                                                                                int
+	}
+)
+
+type (
+	Snapshot struct{ ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string }
+	Job      struct {
+		ID, Kind, WorkspaceID, SlotID, SessionID, RepositoryID, State string
+		Attempt                                                       int
+	}
+)
 
 const jobLease = 30 * time.Second
 
@@ -288,7 +301,7 @@ func newJob(kind, workspaceID, slotID, sessionID string) (Job, error) {
 }
 
 func insertJob(ctx context.Context, tx *sql.Tx, job Job) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,kind,workspace_id,slot_id,session_id,repository_id,state,attempt,not_before) VALUES(?,?,?,?,?,?,'PENDING',0,?)`, job.ID, job.Kind, nullString(job.WorkspaceID), nullString(job.SlotID), nullString(job.SessionID), nullString(job.RepositoryID), now())
+	_, err := tx.ExecContext(ctx, `INSERT INTO jobs(id,kind,workspace_id,slot_id,session_id,repository_id,state,attempt,not_before) VALUES(?,?,?,?,?,?,'PENDING',0,NULL)`, job.ID, job.Kind, nullString(job.WorkspaceID), nullString(job.SlotID), nullString(job.SessionID), nullString(job.RepositoryID))
 	return err
 }
 
@@ -377,6 +390,7 @@ func (s *Store) RetryJob(ctx context.Context, id, owner string, delay time.Durat
 	}
 	return nil
 }
+
 func (s *Store) RecoverJobs(ctx context.Context, reclaimAll bool) ([]Job, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -606,6 +620,7 @@ func (s *Store) SetSlotState(ctx context.Context, id string, from []string, to, 
 	}
 	return nil
 }
+
 func (s *Store) MarkReady(ctx context.Context, id string) error {
 	if err := s.SetSlotState(ctx, id, []string{"PREPARING", "RESTORING"}, "READY", ""); err != nil {
 		return err
@@ -613,6 +628,7 @@ func (s *Store) MarkReady(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE slots SET ready_at=? WHERE id=?`, now(), id)
 	return err
 }
+
 func (s *Store) FinishPreparation(ctx context.Context, id string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -635,6 +651,7 @@ func (s *Store) FinishPreparation(ctx context.Context, id string) error {
 	}
 	return tx.Commit()
 }
+
 func (s *Store) MarkSessionState(ctx context.Context, id string, from []string, to string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -674,11 +691,13 @@ func (s *Store) Session(ctx context.Context, id, token string) (Session, error) 
 	}
 	return x, nil
 }
+
 func (s *Store) SessionByID(ctx context.Context, id string) (Session, error) {
 	var x Session
 	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
 	return x, err
 }
+
 func equalHash(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
@@ -745,6 +764,7 @@ func (s *Store) BindFreshSession(ctx context.Context, id, parentID, agentID stri
 	}
 	return tx.Commit()
 }
+
 func (s *Store) FindByAgentSession(ctx context.Context, kind, agentID string) (Session, error) {
 	var x Session
 	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE agent_kind=? AND agent_session_id=?`, kind, agentID).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
@@ -788,6 +808,7 @@ func (s *Store) OrphanCandidates(ctx context.Context, heartbeatBefore string) ([
 	}
 	return out, rows.Err()
 }
+
 func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, workspaceID, agentID string, generation int, repos []SlotRepository) (Job, error) {
 	job, err := newJob("RESTORE", workspaceID, sessionID, sessionID)
 	if err != nil {
@@ -830,6 +851,7 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, 
 	}
 	return job, tx.Commit()
 }
+
 func (s *Store) SlotRepositories(ctx context.Context, slotID string) ([]SlotRepository, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint FROM slot_repositories WHERE slot_id=? ORDER BY repository_id`, slotID)
 	if err != nil {
@@ -903,6 +925,7 @@ func (s *Store) SetSlotRepositoryState(ctx context.Context, slotID, repositoryID
 	}
 	return nil
 }
+
 func (s *Store) Slot(ctx context.Context, id string) (Slot, error) {
 	var x Slot
 	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),generation,path,state,COALESCE(owner_session_id,''),created_at,COALESCE(ready_at,'') FROM slots WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.Path, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt)
@@ -930,6 +953,7 @@ func (s *Store) SaveSnapshot(ctx context.Context, x Snapshot) error {
 	}
 	return tx.Commit()
 }
+
 func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at FROM snapshots WHERE session_id=? ORDER BY repository_id`, sessionID)
 	if err != nil {
@@ -946,11 +970,13 @@ func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, er
 	}
 	return out, rows.Err()
 }
+
 func (s *Store) Repository(ctx context.Context, id string) (discovery.Repository, error) {
 	var r discovery.Repository
 	err := s.db.QueryRowContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch FROM repositories WHERE id=?`, id).Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.DefaultBranch)
 	return r, err
 }
+
 func (s *Store) Workspace(ctx context.Context, id string) (discovery.Workspace, error) {
 	var w discovery.Workspace
 	err := s.db.QueryRowContext(ctx, `SELECT id,root_path,kind FROM workspaces WHERE id=?`, id).Scan(&w.ID, &w.Root, &w.Kind)
@@ -1042,6 +1068,15 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 	}
 	if unsafe > 0 {
 		return errors.New("workspace has active, ready, or unarchived slots")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE slots SET workspace_id=NULL WHERE workspace_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=NULL WHERE workspace_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET workspace_id=NULL WHERE workspace_id=?`, id); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM workspace_repositories WHERE workspace_id=?`, id); err != nil {
 		return err
@@ -1372,6 +1407,7 @@ func (s *Store) GCCandidates(ctx context.Context, before string) ([]GCCandidate,
 	}
 	return out, rows.Err()
 }
+
 func (s *Store) MarkSlotArchived(ctx context.Context, id string) error {
 	return s.SetSlotState(ctx, id, []string{"SNAPSHOTTED"}, "ARCHIVED", "")
 }
@@ -1382,6 +1418,7 @@ func nullString(v string) any {
 	}
 	return v
 }
+
 func TokenHex() (string, error) {
 	v, err := domain.NewID()
 	if err != nil {

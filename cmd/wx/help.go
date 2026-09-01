@@ -6,7 +6,7 @@ import (
 )
 
 func topUsage(w io.Writer) {
-	fmt.Fprintln(w, `Usage: wx [wx-options] <claude|codex> [agent-arguments...]
+	_, _ = fmt.Fprintln(w, `Usage: wx [wx-options] <claude|codex> [agent-arguments...]
        wx <command> [options]
 
 Global options:
@@ -27,24 +27,25 @@ Commands:
   forget <workspace-path>        forget an inactive workspace
   daemon install|uninstall       manage the LaunchAgent`)
 }
+
 func commandUsage(w io.Writer, name string) {
 	switch name {
 	case "status":
-		fmt.Fprintln(w, "Usage: wx status [--json]")
+		_, _ = fmt.Fprintln(w, "Usage: wx status [--json]")
 	case "doctor":
-		fmt.Fprintln(w, "Usage: wx doctor [--json]")
+		_, _ = fmt.Fprintln(w, "Usage: wx doctor [--json]")
 	case "gc":
-		fmt.Fprintln(w, "Usage: wx gc [--dry-run]")
+		_, _ = fmt.Fprintln(w, "Usage: wx gc [--dry-run]")
 	case "config":
-		fmt.Fprintln(w, "Usage: wx config [<key> <value>]")
+		_, _ = fmt.Fprintln(w, "Usage: wx config [<key> <value>]")
 	case "resume":
-		fmt.Fprintln(w, "Usage: wx resume <wx-session-id> <claude|codex> [agent-arguments...]")
+		_, _ = fmt.Fprintln(w, "Usage: wx resume <wx-session-id> <claude|codex> [agent-arguments...]")
 	case "sessions":
-		fmt.Fprintln(w, "Usage: wx sessions [--all] [--json]")
+		_, _ = fmt.Fprintln(w, "Usage: wx sessions [--all] [--json]")
 	case "forget":
-		fmt.Fprintln(w, "Usage: wx forget <workspace-path>")
+		_, _ = fmt.Fprintln(w, "Usage: wx forget <workspace-path>")
 	case "daemon":
-		fmt.Fprintln(w, "Usage: wx daemon <serve|install|uninstall>")
+		_, _ = fmt.Fprintln(w, "Usage: wx daemon <serve|install|uninstall>")
 	default:
 		topUsage(w)
 	}

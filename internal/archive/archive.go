@@ -34,7 +34,7 @@ func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, workt
 		}
 		tmp := filepath.Join(filepath.Dir(worktree), ".wx-index-"+sessionID)
 		_ = os.Remove(tmp)
-		defer os.Remove(tmp)
+		defer func() { _ = os.Remove(tmp) }()
 		env := []string{"GIT_INDEX_FILE=" + tmp}
 		if _, err := m.Git.RunEnv(ctx, worktree, env, "read-tree", head); err != nil {
 			return err
@@ -129,7 +129,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		}
 		tmp := filepath.Join(filepath.Dir(target), ".wx-verify-index-"+slotID)
 		_ = os.Remove(tmp)
-		defer os.Remove(tmp)
+		defer func() { _ = os.Remove(tmp) }()
 		env := []string{"GIT_INDEX_FILE=" + tmp}
 		if _, err := m.Git.RunEnv(ctx, target, env, "read-tree", s.HeadOID); err != nil {
 			return err
@@ -262,10 +262,13 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 func (m *Manager) DeleteSnapshotRefs(ctx context.Context, repo discovery.Repository, snapshot state.Snapshot) error {
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
 		for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+			if _, err := m.Git.Run(ctx, string(repo.MainPath), "check-ref-format", ref); err != nil {
+				return fmt.Errorf("invalid recovery ref %q: %w", ref, err)
+			}
 			got, err := m.gitValue(ctx, string(repo.MainPath), nil, "show-ref", "--verify", "--hash", ref)
 			if err != nil {
 				var gitErr *gitx.Error
-				if errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 {
+				if errors.As(err, &gitErr) && (gitErr.Result.ExitCode == 1 || gitErr.Result.ExitCode == 128) {
 					continue // A prior interrupted GC may already have removed this ref.
 				}
 				return err

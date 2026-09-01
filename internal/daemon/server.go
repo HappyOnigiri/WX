@@ -27,14 +27,14 @@ func Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepathDir(logPath), 0700); err != nil {
+	if err := os.MkdirAll(filepathDir(logPath), 0o700); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	level := slog.LevelInfo
 	switch cfg.Logging.Level {
 	case "debug":
@@ -60,7 +60,7 @@ func Serve(ctx context.Context) error {
 		rpcHandler = DegradedHandler{DatabasePath: dbPath, OpenError: openErr}
 		logger.Error("daemon entered read-only degraded mode", "database", dbPath, "error", openErr)
 	} else {
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 		manager := New(cfg, store, logger, true)
 		defer manager.Close()
 		rpcHandler = Handler{Manager: manager}
@@ -74,19 +74,19 @@ func Serve(ctx context.Context) error {
 }
 
 func acquireDaemonLock(path string) (*os.File, error) {
-	if err := os.MkdirAll(filepathDir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepathDir(path), 0o700); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0600); err != nil {
-		file.Close()
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = file.Close()
 		return nil, err
 	}
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		file.Close()
+		_ = file.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) {
 			return nil, errors.New("wx daemon is already running")
 		}
@@ -102,6 +102,7 @@ func releaseDaemonLock(file *os.File) {
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 	_ = file.Close()
 }
+
 func filepathDir(path string) string {
 	for i := len(path) - 1; i >= 0; i-- {
 		if path[i] == '/' {

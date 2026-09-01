@@ -33,13 +33,14 @@ func New(cfg config.Config) (Client, error) {
 	}
 	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second}, Config: cfg}, nil
 }
+
 func (c Client) ensureDaemon(ctx context.Context) error {
 	var status map[string]any
 	if err := c.RPC.Call(ctx, "Status", struct{}{}, &status); err == nil {
 		return nil
 	}
 	if err := launchd.Kickstart(); err != nil {
-		return fmt.Errorf("wx daemon is unavailable (%v); run wx doctor", err)
+		return fmt.Errorf("wx daemon is unavailable (%w); run wx doctor", err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -275,6 +276,7 @@ func confirmExpiredResume(sessionID string) bool {
 	answer = strings.ToLower(strings.TrimSpace(answer))
 	return answer == "y" || answer == "yes"
 }
+
 func isNativeResume(agent string, args []string) bool {
 	if agent == "codex" {
 		return len(args) > 0 && args[0] == "resume"
@@ -288,6 +290,7 @@ func isNativeResume(agent string, args []string) bool {
 	}
 	return false
 }
+
 func codexResumeArgs(args []string) []string {
 	hasTarget := false
 	for _, a := range args[1:] {

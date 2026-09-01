@@ -12,17 +12,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/pflag"
+
 	"github.com/HappyOnigiri/WX/internal/agent"
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
-	"github.com/spf13/pflag"
 )
 
-var version = "undefined"
-var buildMeta = "dev"
+var (
+	version   = "undefined"
+	buildMeta = "dev"
+)
 
 func versionString() string {
 	if buildMeta == "" {
@@ -97,6 +100,7 @@ func rpcClient() (rpc.Client, error) {
 	socket, err := config.SocketPath()
 	return rpc.Client{Socket: socket, Timeout: 5 * time.Second}, err
 }
+
 func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	fs := pflag.NewFlagSet(strings.ToLower(method), pflag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print JSON")
@@ -128,11 +132,16 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	}
 	return 0
 }
+
 func runGC(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("gc", pflag.ContinueOnError)
 	dry := fs.Bool("dry-run", false, "show candidates without deleting")
 	fs.Usage = func() { commandUsage(os.Stderr, "gc") }
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
 		return 2
 	}
 	c, _ := rpcClient()
@@ -144,6 +153,7 @@ func runGC(ctx context.Context, args []string) int {
 	fmt.Printf("candidates: %d\n", out["candidates"])
 	return 0
 }
+
 func runConfig(ctx context.Context, args []string) int {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
 		commandUsage(os.Stdout, "config")
@@ -192,6 +202,7 @@ func runConfig(ctx context.Context, args []string) int {
 	}
 	return 0
 }
+
 func runResume(ctx context.Context, args []string) int {
 	if len(args) < 2 {
 		commandUsage(os.Stderr, "resume")
@@ -213,6 +224,7 @@ func runResume(ctx context.Context, args []string) int {
 	}
 	return c.RunAgent(ctx, agentName, args[2:], nil, false, id)
 }
+
 func runDaemon(ctx context.Context, args []string) int {
 	if len(args) != 1 {
 		commandUsage(os.Stderr, "daemon")
@@ -255,6 +267,7 @@ func runDaemon(ctx context.Context, args []string) int {
 		return 2
 	}
 }
+
 func runHook(ctx context.Context, args []string) int {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "error: hook event is required")

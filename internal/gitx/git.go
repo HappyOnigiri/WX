@@ -34,9 +34,11 @@ type Runner struct {
 func (r *Runner) Run(ctx context.Context, dir string, args ...string) (Result, error) {
 	return r.RunEnvInput(ctx, dir, nil, nil, args...)
 }
+
 func (r *Runner) RunEnv(ctx context.Context, dir string, env []string, args ...string) (Result, error) {
 	return r.RunEnvInput(ctx, dir, env, nil, args...)
 }
+
 func (r *Runner) RunEnvInput(ctx context.Context, dir string, env []string, input []byte, args ...string) (Result, error) {
 	if r.Timeout > 0 {
 		var cancel context.CancelFunc

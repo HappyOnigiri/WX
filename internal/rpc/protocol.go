@@ -15,8 +15,10 @@ import (
 	"time"
 )
 
-const ProtocolVersion = 1
-const maxFrame = 8 << 20
+const (
+	ProtocolVersion = 1
+	maxFrame        = 8 << 20
+)
 
 type Request struct {
 	Version        int             `json:"version"`
@@ -32,10 +34,12 @@ type Response struct {
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *RPCError       `json:"error,omitempty"`
 }
-type RPCError struct{ Code, Message string }
-type Handler interface {
-	Handle(context.Context, string, json.RawMessage) (any, error)
-}
+type (
+	RPCError struct{ Code, Message string }
+	Handler  interface {
+		Handle(context.Context, string, json.RawMessage) (any, error)
+	}
+)
 
 type Client struct {
 	Socket  string
@@ -56,7 +60,7 @@ func (c Client) CallWithKey(ctx context.Context, method, idempotencyKey string, 
 	if err != nil {
 		return fmt.Errorf("connect to wx daemon: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	deadline, hasDeadline := ctx.Deadline()
 	payload, err := json.Marshal(params)
@@ -106,10 +110,10 @@ type idempotentEntry struct {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
-	if err := os.MkdirAll(filepath.Dir(s.Socket), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.Socket), 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(filepath.Dir(s.Socket), 0700); err != nil {
+	if err := os.Chmod(filepath.Dir(s.Socket), 0o700); err != nil {
 		return err
 	}
 	if info, err := os.Lstat(s.Socket); err == nil {
@@ -132,30 +136,32 @@ func (s *Server) Serve(ctx context.Context) error {
 		return err
 	}
 	s.listener = ln
-	if err := os.Chmod(s.Socket, 0600); err != nil {
-		ln.Close()
+	if err := os.Chmod(s.Socket, 0o600); err != nil {
+		_ = ln.Close()
 		return err
 	}
 	go func() { <-ctx.Done(); _ = ln.Close() }()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
+			if ctx.Err() == nil {
+				return err
 			}
-			return err
+			return nil
 		}
 		go s.serveConn(ctx, conn)
 	}
 }
+
 func (s *Server) Close() error {
 	if s.listener != nil {
 		return s.listener.Close()
 	}
 	return nil
 }
+
 func (s *Server) serveConn(parent context.Context, conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	var req Request
 	if err := readFrame(bufio.NewReader(conn), &req); err != nil {
 		return
@@ -226,6 +232,7 @@ func (s *Server) idempotencyEntry(req Request) (*idempotentEntry, bool) {
 	s.idem[req.IdempotencyKey] = entry
 	return entry, true
 }
+
 func writeFrame(w io.Writer, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -242,6 +249,7 @@ func writeFrame(w io.Writer, v any) error {
 	_, err = w.Write(data)
 	return err
 }
+
 func readFrame(r io.Reader, v any) error {
 	var size [4]byte
 	if _, err := io.ReadFull(r, size[:]); err != nil {

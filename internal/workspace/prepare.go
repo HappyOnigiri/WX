@@ -50,7 +50,7 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err
 	}
 	return p.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
@@ -220,7 +220,7 @@ func (p *Preparer) createLinks(ctx context.Context, repo discovery.Repository, t
 			return fmt.Errorf(".worktreelink path %q is not ignored", rel)
 		}
 		dst := filepath.Join(target, clean)
-		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 			return err
 		}
 		source := filepath.Join(string(repo.MainPath), clean)
@@ -260,7 +260,7 @@ func (p *Preparer) runPrepare(ctx context.Context, repo discovery.Repository, ta
 
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	h := sha256.New()
-	fmt.Fprintf(h, "schema=1\ngeneration=%d\noid=%s\n", generation, oid)
+	_, _ = fmt.Fprintf(h, "schema=1\ngeneration=%d\noid=%s\n", generation, oid)
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
 		data, err := os.ReadFile(filepath.Join(string(repo.MainPath), name))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -269,7 +269,7 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 		h.Write(data)
 	}
 	if o, ok := c.Repositories[string(repo.MainPath)]; ok {
-		fmt.Fprint(h, o.Prepare.Command, o.Prepare.Version)
+		_, _ = fmt.Fprint(h, o.Prepare.Command, o.Prepare.Version)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
@@ -315,7 +315,7 @@ func MaterializeRoot(source, target string, rules config.Workspace) error {
 			}
 			return fmt.Errorf("workspace root link collision %s", clean)
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 			return err
 		}
 		if err := os.Symlink(src, dst); err != nil {
@@ -342,7 +342,7 @@ func copyPath(src, dst string) error {
 		return errors.New("include symlinks are not followed")
 	}
 	if info.IsDir() {
-		if err := os.MkdirAll(dst, 0700); err != nil {
+		if err := os.MkdirAll(dst, 0o700); err != nil {
 			return err
 		}
 		entries, err := os.ReadDir(src)
@@ -356,7 +356,7 @@ func copyPath(src, dst string) error {
 		}
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
 	if existing, err := os.Lstat(dst); err == nil {
@@ -370,7 +370,7 @@ func copyPath(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
 	if err != nil {
 		return err

@@ -9,8 +9,9 @@ import (
 	"text/template"
 )
 
-const Label = "com.user.wx"
-const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
+const (
+	Label         = "com.user.wx"
+	plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>{{.Label}}</string>
@@ -19,6 +20,7 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <key>EnvironmentVariables</key><dict><key>HOME</key><string>{{.Home}}</string><key>PATH</key><string>{{.Path}}</string></dict>
 <key>StandardOutPath</key><string>{{.Log}}</string><key>StandardErrorPath</key><string>{{.Log}}</string>
 </dict></plist>`
+)
 
 func PlistPath() (string, error) {
 	h, e := os.UserHomeDir()
@@ -27,6 +29,7 @@ func PlistPath() (string, error) {
 	}
 	return filepath.Join(h, "Library", "LaunchAgents", Label+".plist"), nil
 }
+
 func Render(binary, home, logPath string) ([]byte, error) {
 	t, err := template.New("plist").Parse(plistTemplate)
 	if err != nil {
@@ -36,6 +39,7 @@ func Render(binary, home, logPath string) ([]byte, error) {
 	err = t.Execute(&b, map[string]string{"Label": Label, "Binary": binary, "Home": home, "Path": filepath.Join(home, ".local", "bin") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "Log": logPath})
 	return b.Bytes(), err
 }
+
 func Install(binary, logPath string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -45,10 +49,10 @@ func Install(binary, logPath string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return err
 	}
 	data, err := Render(binary, home, logPath)
@@ -60,15 +64,15 @@ func Install(binary, logPath string) error {
 		return err
 	}
 	name := tmp.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }()
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(name, 0600); err != nil {
+	if err := os.Chmod(name, 0o600); err != nil {
 		return err
 	}
 	if err := os.Rename(name, path); err != nil {
@@ -81,6 +85,7 @@ func Install(binary, logPath string) error {
 	}
 	return nil
 }
+
 func Uninstall() error {
 	path, err := PlistPath()
 	if err != nil {
@@ -92,6 +97,7 @@ func Uninstall() error {
 	}
 	return nil
 }
+
 func Kickstart() error {
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), Label)
 	out, err := exec.Command("launchctl", "kickstart", "-k", target).CombinedOutput()

@@ -172,6 +172,7 @@ func (m *Manager) recoverJobs(reclaimAll bool) {
 		m.schedule(job)
 	}
 }
+
 func (m *Manager) maintainJobs() {
 	m.recoverJobs(m.reclaimAll)
 	ticker := time.NewTicker(10 * time.Second)
@@ -298,6 +299,7 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 func (m *Manager) Heartbeat(ctx context.Context, id, token string) error {
 	return m.store.Heartbeat(ctx, id, token)
 }
+
 func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 	switch job.Kind {
 	case "PREPARE":
@@ -342,6 +344,7 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 		return fmt.Errorf("unknown persistent job kind %s", job.Kind)
 	}
 }
+
 func (m *Manager) resolvedFromStored(ctx context.Context, w discovery.Workspace, repos []state.SlotRepository) ([]pool.Resolved, error) {
 	by := map[string]discovery.Repository{}
 	for _, r := range w.Repositories {
@@ -357,6 +360,7 @@ func (m *Manager) resolvedFromStored(ctx context.Context, w discovery.Workspace,
 	}
 	return out, nil
 }
+
 func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error {
 	s, err := m.store.SessionByID(ctx, sessionID)
 	if err != nil {
@@ -503,10 +507,10 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 	if err != nil {
 		return Lease{}, err
 	}
-	if err := os.MkdirAll(root, 0700); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return Lease{}, err
 	}
-	if err := os.Chmod(root, 0700); err != nil {
+	if err := os.Chmod(root, 0o700); err != nil {
 		return Lease{}, err
 	}
 	repos, err := m.slotRepos(root, w, resolved, generation)
@@ -545,6 +549,7 @@ func (m *Manager) slotRoot(workspaceID, id string, unbound bool) (string, error)
 	}
 	return filepath.Join(root, "workspaces", workspaceID, "slots", id, "root"), nil
 }
+
 func (m *Manager) slotRepos(root string, w discovery.Workspace, resolved []pool.Resolved, generation int) ([]state.SlotRepository, error) {
 	out := make([]state.SlotRepository, 0, len(resolved))
 	for _, r := range resolved {
@@ -560,6 +565,7 @@ func (m *Manager) slotRepos(root string, w discovery.Workspace, resolved []pool.
 	}
 	return out, nil
 }
+
 func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository) error {
 	slot, err := m.store.Slot(ctx, id)
 	if err != nil {
@@ -615,9 +621,16 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 	}
 	return nil
 }
+
 func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []pool.Resolved) (bool, error) {
 	rootInfo, err := os.Lstat(s.Path)
-	if err != nil || rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
 		return false, nil
 	}
 	repos, err := m.store.SlotRepositories(ctx, s.ID)
@@ -645,17 +658,25 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 			return false, nil
 		}
 		if stored.State == "COLD" {
-			if _, err := os.Lstat(stored.WorktreePath); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Lstat(stored.WorktreePath); err == nil {
 				return false, nil
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return false, err
 			}
 			continue
 		}
 		info, err := os.Lstat(stored.WorktreePath)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
 			return false, nil
 		}
 		if err := preparer.ValidateReady(ctx, r.Repository, stored.WorktreePath, r.OID); err != nil {
-			return false, nil
+			return false, err
 		}
 	}
 	return true, nil
@@ -688,10 +709,10 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(root, 0700); err != nil {
+		if err := os.MkdirAll(root, 0o700); err != nil {
 			return err
 		}
-		if err := os.Chmod(root, 0700); err != nil {
+		if err := os.Chmod(root, 0o700); err != nil {
 			return err
 		}
 		repos, err := m.slotRepos(root, w, resolved, generation)
@@ -720,10 +741,10 @@ func (m *Manager) AllocateResumeSlot(ctx context.Context, agent string, pid int)
 	if err != nil {
 		return Lease{}, err
 	}
-	if err := os.MkdirAll(root, 0700); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return Lease{}, err
 	}
-	if err := os.Chmod(root, 0700); err != nil {
+	if err := os.Chmod(root, 0o700); err != nil {
 		return Lease{}, err
 	}
 	session := state.Session{ID: id, SlotID: id, State: "UNBOUND", AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
@@ -757,6 +778,7 @@ func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
 		}
 	}
 }
+
 func (m *Manager) BindAgentSession(ctx context.Context, id, token, agentID string) error {
 	if _, err := m.store.Session(ctx, id, token); err != nil {
 		return err
@@ -822,6 +844,7 @@ func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID s
 	m.schedule(job)
 	return nil
 }
+
 func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, snaps map[string]state.Snapshot) error {
 	slotState, err := m.store.Slot(ctx, id)
 	if err != nil {
@@ -1002,6 +1025,7 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 	m.schedule(job)
 	return nil
 }
+
 func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 	slot, err := m.store.Slot(ctx, s.SlotID)
 	if err != nil {
@@ -1267,12 +1291,14 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	m.mu.RUnlock()
 	return map[string]any{"schema_version": 2, "protocol_version": 1, "uptime_seconds": int(time.Since(m.started).Seconds()), "config_path": must(config.Path()), "config_last_reload": reloadAt.UTC().Format(time.RFC3339Nano), "config_reload_error": reloadError, "sqlite_last_backup": formatOptionalTime(backupAt), "sqlite_backup_error": backupError, "workspaces": s.Workspaces, "repositories": s.Repositories, "slots": map[string]int{"ready": s.Ready, "leased": s.Leased, "failed": s.Failed, "quarantined": s.Quarantined}, "active_sessions": s.Active, "snapshots": s.Snapshots, "queued_jobs": s.Jobs}, nil
 }
+
 func formatOptionalTime(value time.Time) string {
 	if value.IsZero() {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
 }
+
 func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	checks := map[string]any{}
 	checks["config"] = "ok"
@@ -1300,6 +1326,7 @@ func (m *Manager) Forget(ctx context.Context, path string) error {
 	}
 	return m.store.ForgetWorkspace(ctx, string(canonical))
 }
+
 func (m *Manager) ReloadConfig() error {
 	return m.reloadConfig(true)
 }
@@ -1339,6 +1366,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	}
 	return nil
 }
+
 func must(v string, e error) string {
 	if e != nil {
 		return ""

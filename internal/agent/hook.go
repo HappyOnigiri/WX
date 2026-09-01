@@ -84,5 +84,5 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 }
 
 func writeRecoveryDiscardedNotice() {
-	fmt.Fprintln(os.Stdout, "wx recovery notice: this conversation is running from the current base branch; prior uncommitted local workspace state was not restored.")
+	_, _ = fmt.Fprintln(os.Stdout, "wx recovery notice: this conversation is running from the current base branch; prior uncommitted local workspace state was not restored.")
 }
