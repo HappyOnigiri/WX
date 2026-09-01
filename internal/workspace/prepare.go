@@ -32,13 +32,20 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 	if !domain.IsWithin(root, target) {
 		return fmt.Errorf("target %s is outside wx worktree root", target)
 	}
+	existingWorktree := false
 	if info, err := os.Lstat(target); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("target is a symlink")
 		}
 		entries, e := os.ReadDir(target)
-		if e != nil || len(entries) > 0 {
-			return errors.New("target is not an empty directory")
+		if e != nil {
+			return e
+		}
+		if len(entries) > 0 {
+			if err := p.validateExistingWorktree(ctx, repo, target, oid); err != nil {
+				return fmt.Errorf("non-empty target is not the expected worktree: %w", err)
+			}
+			existingWorktree = true
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -47,15 +54,20 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 		return err
 	}
 	return p.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
-		if _, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "add", "--detach", target, oid); err != nil {
-			return err
+		if !existingWorktree {
+			if _, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "add", "--detach", target, oid); err != nil {
+				return err
+			}
 		}
-		cleanup := true
+		cleanup := !existingWorktree
 		defer func() {
 			if cleanup {
 				_, _ = p.Git.Run(context.Background(), string(repo.MainPath), "worktree", "remove", "--force", target)
 			}
 		}()
+		if existingWorktree {
+			_, _ = p.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", target)
+		}
 		if _, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "lock", "--reason", "wx:"+slotID+":PREPARING", target); err != nil {
 			return err
 		}
@@ -88,6 +100,46 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 		cleanup = false
 		return nil
 	})
+}
+
+func (p *Preparer) validateExistingWorktree(ctx context.Context, repo discovery.Repository, target, oid string) error {
+	gitMarker, err := os.Lstat(filepath.Join(target, ".git"))
+	if err != nil || gitMarker.Mode()&os.ModeSymlink != 0 {
+		return errors.New("missing or unsafe .git marker")
+	}
+	common, err := p.Git.Run(ctx, target, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	expectedCommon, err := filepath.EvalSymlinks(string(repo.CommonDir))
+	if err != nil {
+		return err
+	}
+	actualCommon, err := filepath.EvalSymlinks(strings.TrimSpace(common.Stdout))
+	if err != nil || actualCommon != expectedCommon {
+		return errors.New("common Git directory does not match")
+	}
+	head, err := p.Git.Run(ctx, target, "rev-parse", "HEAD")
+	if err != nil || strings.TrimSpace(head.Stdout) != oid || !gitx.IsDetached(ctx, p.Git, target) {
+		return errors.New("HEAD is not the expected detached commit")
+	}
+	canonicalTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return err
+	}
+	listed, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return err
+	}
+	for _, field := range strings.Split(listed.Stdout, "\x00") {
+		if strings.HasPrefix(field, "worktree ") {
+			registered, resolveErr := filepath.EvalSymlinks(strings.TrimPrefix(field, "worktree "))
+			if resolveErr == nil && registered == canonicalTarget {
+				return nil
+			}
+		}
+	}
+	return errors.New("worktree is not registered")
 }
 
 func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error {
@@ -217,7 +269,13 @@ func MaterializeRoot(source, target string, rules config.Workspace) error {
 			return fmt.Errorf("link workspace root path %s: %w", clean, err)
 		}
 		dst := filepath.Join(target, clean)
-		if _, err := os.Lstat(dst); err == nil {
+		if info, err := os.Lstat(dst); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				existing, readErr := os.Readlink(dst)
+				if readErr == nil && existing == src {
+					continue
+				}
+			}
 			return fmt.Errorf("workspace root link collision %s", clean)
 		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {

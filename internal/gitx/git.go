@@ -43,28 +43,43 @@ func (r *Runner) RunEnvInput(ctx context.Context, dir string, env []string, inpu
 		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
-	if input != nil {
-		cmd.Stdin = bytes.NewReader(input)
-	}
-	var out, stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
 	start := time.Now()
-	err := cmd.Run()
-	res := Result{Stdout: out.String(), Stderr: stderr.String(), Elapsed: time.Since(start)}
-	if err == nil {
-		return res, nil
+	for attempt := 0; ; attempt++ {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), env...)
+		if input != nil {
+			cmd.Stdin = bytes.NewReader(input)
+		}
+		var out, stderr bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		res := Result{Stdout: out.String(), Stderr: stderr.String(), Elapsed: time.Since(start)}
+		if err == nil {
+			return res, nil
+		}
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			res.ExitCode = ee.ExitCode()
+		} else {
+			res.ExitCode = -1
+		}
+		if attempt >= 3 || !isLockConflict(res.Stderr) {
+			return res, &Error{Args: append([]string(nil), args...), Result: res}
+		}
+		delay := time.Duration(25*(1<<attempt)) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return res, ctx.Err()
+		case <-time.After(delay):
+		}
 	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		res.ExitCode = ee.ExitCode()
-	} else {
-		res.ExitCode = -1
-	}
-	return res, &Error{Args: append([]string(nil), args...), Result: res}
+}
+
+func isLockConflict(stderr string) bool {
+	message := strings.ToLower(stderr)
+	return strings.Contains(message, "could not lock") || strings.Contains(message, "unable to create") && strings.Contains(message, ".lock") || strings.Contains(message, "another git process")
 }
 
 func (r *Runner) WithCommonDirLock(common string, fn func() error) error {

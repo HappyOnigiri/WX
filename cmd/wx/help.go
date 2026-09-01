@@ -39,6 +39,10 @@ func commandUsage(w io.Writer, name string) {
 		fmt.Fprintln(w, "Usage: wx config [<key> <value>]")
 	case "resume":
 		fmt.Fprintln(w, "Usage: wx resume <wx-session-id> <claude|codex> [agent-arguments...]")
+	case "sessions":
+		fmt.Fprintln(w, "Usage: wx sessions [--all] [--json]")
+	case "forget":
+		fmt.Fprintln(w, "Usage: wx forget <workspace-path>")
 	case "daemon":
 		fmt.Fprintln(w, "Usage: wx daemon <serve|install|uninstall>")
 	default:

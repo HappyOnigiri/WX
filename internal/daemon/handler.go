@@ -5,10 +5,28 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
 type Handler struct{ Manager *Manager }
+
+type DegradedHandler struct {
+	DatabasePath string
+	OpenError    error
+}
+
+func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	message := fmt.Sprintf("SQLite state is unavailable: %v; restore a verified backup from %s.backups or preserve the database for wx doctor", h.OpenError, h.DatabasePath)
+	switch method {
+	case "Status":
+		return map[string]any{"schema_version": 2, "protocol_version": 1, "degraded": true, "database_path": h.DatabasePath, "error": message}, nil
+	case "Doctor":
+		return map[string]any{"schema_version": 2, "degraded": true, "checks": map[string]any{"sqlite": message}}, nil
+	default:
+		return nil, errors.New("wx daemon is read-only degraded: " + message)
+	}
+}
 
 func decode(raw json.RawMessage, v any) error {
 	if len(raw) == 0 {
@@ -104,18 +122,26 @@ func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		_, err := h.Manager.store.Session(ctx, p.SessionID, p.Token)
-		return map[string]bool{"ok": true}, err
+		return map[string]bool{"ok": true}, h.Manager.Heartbeat(ctx, p.SessionID, p.Token)
 	case "Resume":
 		var p struct {
 			WXSessionID string `json:"wx_session_id"`
 			Agent       string `json:"agent"`
 			ClientPID   int    `json:"client_pid"`
+			AllowFresh  bool   `json:"allow_fresh"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		return h.Manager.Resume(ctx, p.WXSessionID, p.Agent, p.ClientPID)
+		return h.Manager.Resume(ctx, p.WXSessionID, p.Agent, p.ClientPID, p.AllowFresh)
+	case "ResumeStatus":
+		var p struct {
+			WXSessionID string `json:"wx_session_id"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return h.Manager.ResumeStatus(ctx, p.WXSessionID)
 	case "Status":
 		return h.Manager.Status(ctx)
 	case "Doctor":

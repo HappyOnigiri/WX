@@ -25,3 +25,15 @@ func TestAgentArgumentsPassThrough(t *testing.T) {
 		t.Fatalf("agent=%s args=%v flags=%+v", agent, args, f)
 	}
 }
+
+func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
+	for _, command := range []string{"status", "doctor", "gc", "sessions", "config", "resume", "forget", "daemon"} {
+		t.Run(command, func(t *testing.T) {
+			var output bytes.Buffer
+			commandUsage(&output, command)
+			if want := "Usage: wx " + command; !strings.HasPrefix(output.String(), want) {
+				t.Fatalf("help=%q, want prefix %q", output.String(), want)
+			}
+		})
+	}
+}

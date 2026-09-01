@@ -20,11 +20,6 @@ func Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	store, err := state.Open(dbPath)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
 	logPath, err := config.LogPath()
 	if err != nil {
 		return err
@@ -47,13 +42,21 @@ func Serve(ctx context.Context) error {
 		level = slog.LevelError
 	}
 	logger := slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{Level: level}))
-	manager := New(cfg, store, logger)
 	socket, err := config.SocketPath()
 	if err != nil {
 		return err
 	}
-	server := &rpc.Server{Socket: socket, Handler: Handler{Manager: manager}}
-	logger.Info("daemon started", "socket", socket, "protocol_version", rpc.ProtocolVersion)
+	store, openErr := state.Open(dbPath)
+	var rpcHandler rpc.Handler
+	if openErr != nil {
+		rpcHandler = DegradedHandler{DatabasePath: dbPath, OpenError: openErr}
+		logger.Error("daemon entered read-only degraded mode", "database", dbPath, "error", openErr)
+	} else {
+		defer store.Close()
+		rpcHandler = Handler{Manager: New(cfg, store, logger)}
+	}
+	server := &rpc.Server{Socket: socket, Handler: rpcHandler}
+	logger.Info("daemon started", "socket", socket, "protocol_version", rpc.ProtocolVersion, "degraded", openErr != nil)
 	if err := server.Serve(ctx); err != nil {
 		return fmt.Errorf("serve daemon: %w", err)
 	}

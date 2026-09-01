@@ -47,13 +47,23 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 			return errors.New("hook payload does not contain session_id")
 		}
 		if os.Getenv("WX_FRESH") == "1" {
-			return client.Call(ctx, "ValidateFreshResume", map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil)
+			if err := client.Call(ctx, "ValidateFreshResume", map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil); err != nil {
+				return err
+			}
+			writeRecoveryDiscardedNotice()
+			return nil
 		}
 		method := "BindAgentSession"
 		if os.Getenv("WX_EXPLICIT_RESUME") != "1" && (os.Getenv("WX_NATIVE_RESUME") == "1" || payload.Source == "resume") {
 			method = "BindAndRestoreResume"
 		}
-		return client.Call(ctx, method, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil)
+		if err := client.Call(ctx, method, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil); err != nil {
+			return err
+		}
+		if os.Getenv("WX_RECOVERY_DISCARDED") == "1" {
+			writeRecoveryDiscardedNotice()
+		}
+		return nil
 	case "user-prompt-submit", "pre-tool-use":
 		timeout := 10 * time.Minute
 		if raw := os.Getenv("WX_READINESS_TIMEOUT"); raw != "" {
@@ -71,4 +81,8 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	default:
 		return fmt.Errorf("unknown hook event %q", event)
 	}
+}
+
+func writeRecoveryDiscardedNotice() {
+	fmt.Fprintln(os.Stdout, "wx recovery notice: this conversation is running from the current base branch; prior uncommitted local workspace state was not restored.")
 }

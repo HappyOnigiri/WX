@@ -46,7 +46,11 @@ func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, workt
 		if err != nil {
 			return err
 		}
-		commitEnv := append(env, "GIT_AUTHOR_NAME=wx", "GIT_AUTHOR_EMAIL=wx@localhost", "GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost")
+		commitEnv := append(env,
+			"GIT_AUTHOR_NAME=wx", "GIT_AUTHOR_EMAIL=wx@localhost",
+			"GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost",
+			"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
+		)
 		commitRes, err := m.Git.RunEnvInput(ctx, worktree, commitEnv, []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
 		if err != nil {
 			return err
@@ -54,10 +58,10 @@ func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, workt
 		worktreeCommit := strings.TrimSpace(commitRes.Stdout)
 		headRef := fmt.Sprintf("refs/wx/recovery/%s/%s/head", sessionID, repo.ID)
 		worktreeRef := fmt.Sprintf("refs/wx/recovery/%s/%s/worktree", sessionID, repo.ID)
-		if _, err := m.Git.Run(ctx, string(repo.MainPath), "update-ref", "--create-reflog", headRef, head); err != nil {
+		if err := m.ensureRecoveryRef(ctx, repo, headRef, head); err != nil {
 			return err
 		}
-		if _, err := m.Git.Run(ctx, string(repo.MainPath), "update-ref", "--create-reflog", worktreeRef, worktreeCommit); err != nil {
+		if err := m.ensureRecoveryRef(ctx, repo, worktreeRef, worktreeCommit); err != nil {
 			return err
 		}
 		for ref, want := range map[string]string{headRef: head, worktreeRef: worktreeCommit} {
@@ -66,15 +70,26 @@ func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, workt
 				return fmt.Errorf("verify recovery ref %s", ref)
 			}
 		}
-		id, err := domain.NewID()
-		if err != nil {
-			return err
-		}
+		id := domain.StableID("snapshot", sessionID, string(repo.ID))
 		created := time.Now().UTC()
 		snapshot = state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: created.Format(time.RFC3339Nano), ExpiresAt: expiry.UTC().Format(time.RFC3339Nano)}
 		return nil
 	})
 	return snapshot, err
+}
+
+func (m *Manager) ensureRecoveryRef(ctx context.Context, repo discovery.Repository, ref, oid string) error {
+	existing, err := m.gitValue(ctx, string(repo.MainPath), nil, "show-ref", "--verify", "--hash", ref)
+	if err == nil {
+		if existing != oid {
+			return fmt.Errorf("recovery ref %s already points to unexpected object", ref)
+		}
+		return nil
+	}
+	if _, err := m.Git.Run(ctx, string(repo.MainPath), "update-ref", "--create-reflog", ref, oid); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target, slotID string, s state.Snapshot) error {
@@ -109,7 +124,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 	})
 }
 
-func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository, root, path string) error {
+func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository, root, path, expectedHead string) error {
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
 		canonicalRoot, err := filepath.EvalSymlinks(root)
 		if err != nil {
@@ -146,6 +161,12 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if actual != expected {
 			return errors.New("worktree common directory does not match repository ownership")
 		}
+		if expectedHead != "" {
+			head, err := m.gitValue(ctx, path, nil, "rev-parse", "HEAD")
+			if err != nil || head != expectedHead {
+				return errors.New("worktree HEAD does not match SQLite ownership metadata")
+			}
+		}
 		listed, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "list", "--porcelain", "-z")
 		if err != nil {
 			return err
@@ -165,6 +186,28 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		}
 		_, err = m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", path)
 		return err
+	})
+}
+
+func (m *Manager) DeleteSnapshotRefs(ctx context.Context, repo discovery.Repository, snapshot state.Snapshot) error {
+	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+		for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+			got, err := m.gitValue(ctx, string(repo.MainPath), nil, "show-ref", "--verify", "--hash", ref)
+			if err != nil {
+				var gitErr *gitx.Error
+				if errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 {
+					continue // A prior interrupted GC may already have removed this ref.
+				}
+				return err
+			}
+			if got != want {
+				return fmt.Errorf("refuse to delete recovery ref %s with unexpected OID", ref)
+			}
+			if _, err := m.Git.Run(ctx, string(repo.MainPath), "update-ref", "-d", ref, want); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

@@ -42,7 +42,9 @@ type Config struct {
 	present      map[string]bool
 }
 type Storage struct {
-	WorktreeRoot string `yaml:"worktree_root,omitempty"`
+	WorktreeRoot      string   `yaml:"worktree_root,omitempty"`
+	BackupGenerations int      `yaml:"backup_generations,omitempty"`
+	BackupRetention   Duration `yaml:"backup_retention,omitempty"`
 }
 type Pool struct {
 	WarmPerWorkspace            int `yaml:"warm_per_workspace,omitempty"`
@@ -88,7 +90,7 @@ type Field struct{ Key, Value string }
 
 func Defaults() Config {
 	return Config{
-		Version: 1, Storage: Storage{WorktreeRoot: "$HOME/dev/worktrees/wx"},
+		Version: 1, Storage: Storage{WorktreeRoot: "$HOME/dev/worktrees/wx", BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2, GitConcurrencyPerRepository: 1},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
@@ -200,7 +202,13 @@ func Merge(d, raw Config) Config {
 		r.Version = raw.Version
 	}
 	if raw.has("storage.worktree_root", raw.Storage.WorktreeRoot != "") {
-		r.Storage = raw.Storage
+		r.Storage.WorktreeRoot = raw.Storage.WorktreeRoot
+	}
+	if raw.has("storage.backup_generations", raw.Storage.BackupGenerations != 0) {
+		r.Storage.BackupGenerations = raw.Storage.BackupGenerations
+	}
+	if raw.has("storage.backup_retention", raw.Storage.BackupRetention.Duration != 0) {
+		r.Storage.BackupRetention = raw.Storage.BackupRetention
 	}
 	if raw.has("pool.warm_per_workspace", raw.Pool.WarmPerWorkspace != 0) {
 		r.Pool.WarmPerWorkspace = raw.Pool.WarmPerWorkspace
@@ -270,6 +278,9 @@ func Validate(c *Config) error {
 	}
 	if _, err := ExpandHome(c.Storage.WorktreeRoot); err != nil {
 		return fmt.Errorf("storage.worktree_root: %w", err)
+	}
+	if c.Storage.BackupGenerations < 1 || c.Storage.BackupRetention.Duration < 0 {
+		return errors.New("storage backup_generations must be positive and backup_retention must not be negative")
 	}
 	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 || c.Pool.GitConcurrencyPerRepository < 1 {
 		return errors.New("pool counts must be non-negative and concurrency must be at least 1")
@@ -349,6 +360,8 @@ func (c Config) MarshalYAML() (any, error) {
 		out["version"] = c.Version
 	}
 	put("storage", "worktree_root", c.Storage.WorktreeRoot)
+	put("storage", "backup_generations", c.Storage.BackupGenerations)
+	put("storage", "backup_retention", c.Storage.BackupRetention.String())
 	put("pool", "warm_per_workspace", c.Pool.WarmPerWorkspace)
 	put("pool", "preparation_concurrency", c.Pool.PreparationConcurrency)
 	put("pool", "git_concurrency_per_repository", c.Pool.GitConcurrencyPerRepository)
@@ -375,7 +388,7 @@ func (c Config) MarshalYAML() (any, error) {
 }
 
 func Fields(c Config) []Field {
-	return []Field{{"storage.worktree_root", c.Storage.WorktreeRoot}, {"pool.warm_per_workspace", strconv.Itoa(c.Pool.WarmPerWorkspace)}, {"pool.preparation_concurrency", strconv.Itoa(c.Pool.PreparationConcurrency)}, {"pool.git_concurrency_per_repository", strconv.Itoa(c.Pool.GitConcurrencyPerRepository)}, {"retention.hot_standby", c.Retention.HotStandby.String()}, {"retention.ended_worktree", c.Retention.EndedWorktree.String()}, {"retention.recovery_snapshot", c.Retention.RecoverySnapshot.String()}, {"retention.expired_session_tombstone", c.Retention.ExpiredSessionTombstone.String()}, {"retention.failed_job", c.Retention.FailedJob.String()}, {"retention.event_log", c.Retention.EventLog.String()}, {"discovery.max_depth", strconv.Itoa(c.Discovery.MaxDepth)}, {"discovery.max_entries", strconv.Itoa(c.Discovery.MaxEntries)}, {"discovery.timeout", c.Discovery.Timeout.String()}, {"discovery.reconcile_interval", c.Discovery.ReconcileInterval.String()}, {"readiness.timeout", c.Readiness.Timeout.String()}, {"logging.level", c.Logging.Level}}
+	return []Field{{"storage.worktree_root", c.Storage.WorktreeRoot}, {"storage.backup_generations", strconv.Itoa(c.Storage.BackupGenerations)}, {"storage.backup_retention", c.Storage.BackupRetention.String()}, {"pool.warm_per_workspace", strconv.Itoa(c.Pool.WarmPerWorkspace)}, {"pool.preparation_concurrency", strconv.Itoa(c.Pool.PreparationConcurrency)}, {"pool.git_concurrency_per_repository", strconv.Itoa(c.Pool.GitConcurrencyPerRepository)}, {"retention.hot_standby", c.Retention.HotStandby.String()}, {"retention.ended_worktree", c.Retention.EndedWorktree.String()}, {"retention.recovery_snapshot", c.Retention.RecoverySnapshot.String()}, {"retention.expired_session_tombstone", c.Retention.ExpiredSessionTombstone.String()}, {"retention.failed_job", c.Retention.FailedJob.String()}, {"retention.event_log", c.Retention.EventLog.String()}, {"discovery.max_depth", strconv.Itoa(c.Discovery.MaxDepth)}, {"discovery.max_entries", strconv.Itoa(c.Discovery.MaxEntries)}, {"discovery.timeout", c.Discovery.Timeout.String()}, {"discovery.reconcile_interval", c.Discovery.ReconcileInterval.String()}, {"readiness.timeout", c.Readiness.Timeout.String()}, {"logging.level", c.Logging.Level}}
 }
 
 func SetField(c *Config, key, value string) error {
@@ -384,6 +397,18 @@ func SetField(c *Config, key, value string) error {
 	switch key {
 	case "storage.worktree_root":
 		c.Storage.WorktreeRoot = value
+	case "storage.backup_generations":
+		v, e := n()
+		if e != nil {
+			return e
+		}
+		c.Storage.BackupGenerations = v
+	case "storage.backup_retention":
+		v, e := d()
+		if e != nil {
+			return e
+		}
+		c.Storage.BackupRetention = v
 	case "pool.warm_per_workspace":
 		v, e := n()
 		if e != nil {
