@@ -2,10 +2,12 @@ package launchd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"text/template"
 )
 
@@ -92,10 +94,26 @@ func Uninstall() error {
 		return err
 	}
 	domain := fmt.Sprintf("gui/%d", os.Getuid())
-	if out, err := exec.Command("launchctl", "bootout", domain, path).CombinedOutput(); err != nil && !os.IsNotExist(err) {
+	if out, err := exec.Command("launchctl", "bootout", domain, path).CombinedOutput(); err != nil && !launchctlServiceMissing(out) {
 		return fmt.Errorf("launchctl bootout: %s", bytes.TrimSpace(out))
 	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove LaunchAgent plist: %w", err)
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("sync LaunchAgent directory: %w", err)
+	}
 	return nil
+}
+
+func launchctlServiceMissing(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "could not find service") || strings.Contains(message, "no such process") || strings.Contains(message, "service not found")
 }
 
 func Kickstart() error {

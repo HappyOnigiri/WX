@@ -19,6 +19,9 @@ func Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if _, err := ensureWorktreeRoot(cfg.Storage.WorktreeRoot); err != nil {
+		return fmt.Errorf("prepare worktree root: %w", err)
+	}
 	dbPath, err := config.StatePath()
 	if err != nil {
 		return err
@@ -35,16 +38,9 @@ func Serve(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = file.Close() }()
-	level := slog.LevelInfo
-	switch cfg.Logging.Level {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	}
-	logger := slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{Level: level}))
+	var level slog.LevelVar
+	level.Set(slogLevel(cfg.Logging.Level))
+	logger := slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{Level: &level}))
 	socket, err := config.SocketPath()
 	if err != nil {
 		return err
@@ -62,6 +58,7 @@ func Serve(ctx context.Context) error {
 	} else {
 		defer func() { _ = store.Close() }()
 		manager := New(cfg, store, logger, true)
+		manager.logLevel = &level
 		defer manager.Close()
 		rpcHandler = Handler{Manager: manager}
 	}
@@ -71,6 +68,19 @@ func Serve(ctx context.Context) error {
 		return fmt.Errorf("serve daemon: %w", err)
 	}
 	return nil
+}
+
+func slogLevel(value string) slog.Level {
+	switch value {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 func acquireDaemonLock(path string) (*os.File, error) {

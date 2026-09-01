@@ -28,7 +28,20 @@ func (e *Error) Error() string {
 
 type Runner struct {
 	Timeout time.Duration
+	timeout sync.RWMutex
 	locks   sync.Map
+}
+
+func (r *Runner) SetTimeout(timeout time.Duration) {
+	r.timeout.Lock()
+	r.Timeout = timeout
+	r.timeout.Unlock()
+}
+
+func (r *Runner) GetTimeout() time.Duration {
+	r.timeout.RLock()
+	defer r.timeout.RUnlock()
+	return r.Timeout
 }
 
 func (r *Runner) Run(ctx context.Context, dir string, args ...string) (Result, error) {
@@ -40,9 +53,9 @@ func (r *Runner) RunEnv(ctx context.Context, dir string, env []string, args ...s
 }
 
 func (r *Runner) RunEnvInput(ctx context.Context, dir string, env []string, input []byte, args ...string) (Result, error) {
-	if r.Timeout > 0 {
+	if timeout := r.GetTimeout(); timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	start := time.Now()

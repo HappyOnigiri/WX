@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 type Handler struct{ Manager *Manager }
@@ -20,9 +22,9 @@ func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMess
 	message := fmt.Sprintf("SQLite state is unavailable: %v; restore a verified backup from %s.backups or preserve the database for wx doctor", h.OpenError, h.DatabasePath)
 	switch method {
 	case "Status":
-		return map[string]any{"schema_version": 2, "protocol_version": 1, "degraded": true, "database_path": h.DatabasePath, "error": message}, nil
+		return map[string]any{"schema_version": state.SchemaVersion, "protocol_version": 1, "degraded": true, "database_path": h.DatabasePath, "error": message}, nil
 	case "Doctor":
-		return map[string]any{"schema_version": 2, "degraded": true, "checks": map[string]any{"sqlite": message}}, nil
+		return map[string]any{"schema_version": state.SchemaVersion, "degraded": true, "checks": map[string]any{"sqlite": message}}, nil
 	default:
 		return nil, errors.New("wx daemon is read-only degraded: " + message)
 	}

@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
@@ -43,10 +46,16 @@ type Manager struct {
 	backupError string
 	roots       map[string]bool
 	jobs        chan jobWork
+	reloads     chan struct{}
 	reclaimAll  bool
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
+	workersMu   sync.Mutex
+	workerStops []chan struct{}
+	workerSeq   int
+	closed      bool
+	logLevel    *slog.LevelVar
 }
 type jobWork struct {
 	id string
@@ -54,68 +63,20 @@ type jobWork struct {
 
 type retryableJobError struct{ error }
 
+const maxJobAttempts = 8
+
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {
 	git := &gitx.Runner{Timeout: cfg.Readiness.Timeout.Duration}
 	started := time.Now()
 	managerCtx, managerCancel := context.WithCancel(context.Background())
 	reclaimAll := len(exclusiveStartup) > 0 && exclusiveStartup[0]
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, jobs: make(chan jobWork, 256), reclaimAll: reclaimAll, ctx: managerCtx, cancel: managerCancel}
-	if root, err := config.ExpandHome(cfg.Storage.WorktreeRoot); err == nil {
-		m.roots[filepath.Clean(root)] = true
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, jobs: make(chan jobWork, 256), reloads: make(chan struct{}, 1), reclaimAll: reclaimAll, ctx: managerCtx, cancel: managerCancel}
+	if root, err := ensureWorktreeRoot(cfg.Storage.WorktreeRoot); err == nil {
+		m.roots[root] = true
+	} else {
+		logger.Error("worktree root is unavailable", "path", cfg.Storage.WorktreeRoot, "error", err)
 	}
-	for workerID := range cfg.Pool.PreparationConcurrency {
-		owner := fmt.Sprintf("%d:%d", os.Getpid(), workerID)
-		m.wg.Add(1)
-		go func() {
-			defer m.wg.Done()
-			for {
-				var work jobWork
-				select {
-				case <-m.ctx.Done():
-					return
-				case work = <-m.jobs:
-				}
-				job, err := m.store.ClaimJob(context.Background(), work.id, owner)
-				if err != nil {
-					continue
-				}
-				jobCtx, cancel := context.WithCancel(m.ctx)
-				done := make(chan struct{})
-				go func() {
-					ticker := time.NewTicker(10 * time.Second)
-					defer ticker.Stop()
-					for {
-						select {
-						case <-ticker.C:
-							if err := m.store.RenewJob(context.Background(), job.ID, owner); err != nil {
-								m.log.Error("renew job lease failed", "job_id", job.ID, "error", err)
-								cancel()
-								return
-							}
-						case <-done:
-							return
-						}
-					}
-				}()
-				err = m.runRecoveredJob(jobCtx, job)
-				close(done)
-				cancel()
-				var retryable retryableJobError
-				if errors.As(err, &retryable) {
-					delay := time.Duration(1<<min(job.Attempt, 6)) * time.Second
-					if retryErr := m.store.RetryJob(context.Background(), work.id, owner, delay, "DEPENDENCY_PENDING"); retryErr != nil {
-						m.log.Error("reschedule job failed", "job_id", work.id, "error", retryErr)
-					} else {
-						m.scheduleDelayed(job, delay)
-					}
-					continue
-				}
-				if finishErr := m.store.FinishJob(context.Background(), work.id, owner, err); finishErr != nil {
-					m.log.Error("finish job failed", "job_id", work.id, "error", finishErr)
-				}
-			}
-		}()
-	}
+	m.resizeWorkers(cfg.Pool.PreparationConcurrency)
 	m.wg.Add(2)
 	go func() { defer m.wg.Done(); m.maintainJobs() }()
 	go func() { defer m.wg.Done(); m.maintainLifecycle() }()
@@ -123,10 +84,99 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 }
 
 func (m *Manager) Close() {
+	m.workersMu.Lock()
+	m.closed = true
+	m.workersMu.Unlock()
 	if m.cancel != nil {
 		m.cancel()
 	}
 	m.wg.Wait()
+}
+
+func (m *Manager) resizeWorkers(target int) {
+	m.workersMu.Lock()
+	defer m.workersMu.Unlock()
+	if m.closed {
+		return
+	}
+	for len(m.workerStops) < target {
+		stop := make(chan struct{})
+		workerID := m.workerSeq
+		m.workerSeq++
+		m.workerStops = append(m.workerStops, stop)
+		m.wg.Add(1)
+		go m.runWorker(workerID, stop)
+	}
+	for len(m.workerStops) > target {
+		last := len(m.workerStops) - 1
+		close(m.workerStops[last])
+		m.workerStops = m.workerStops[:last]
+	}
+}
+
+func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
+	defer m.wg.Done()
+	owner := fmt.Sprintf("%d:%d", os.Getpid(), workerID)
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		var work jobWork
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-stop:
+			return
+		case work = <-m.jobs:
+		}
+		job, err := m.store.ClaimJob(context.Background(), work.id, owner)
+		if err != nil {
+			continue
+		}
+		jobCtx, cancel := context.WithCancel(m.ctx)
+		done := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if err := m.store.RenewJob(context.Background(), job.ID, owner); err != nil {
+						m.log.Error("renew job lease failed", "job_id", job.ID, "error", err)
+						cancel()
+						return
+					}
+				case <-done:
+					return
+				}
+			}
+		}()
+		err = m.runRecoveredJob(jobCtx, job)
+		close(done)
+		cancel()
+		var retryable retryableJobError
+		if errors.As(err, &retryable) {
+			if job.Attempt >= maxJobAttempts {
+				m.log.Error("job exhausted retry limit", "job_id", job.ID, "attempt", job.Attempt, "error", err)
+				if finishErr := m.store.FinishJob(context.Background(), work.id, owner, err); finishErr != nil {
+					m.log.Error("finish exhausted job failed", "job_id", work.id, "error", finishErr)
+				}
+				continue
+			}
+			delay := time.Duration(1<<min(job.Attempt, 6)) * time.Second
+			if retryErr := m.store.RetryJob(context.Background(), work.id, owner, delay, "DEPENDENCY_PENDING"); retryErr != nil {
+				m.log.Error("reschedule job failed", "job_id", work.id, "error", retryErr)
+			} else {
+				m.scheduleDelayed(job, delay)
+			}
+			continue
+		}
+		if finishErr := m.store.FinishJob(context.Background(), work.id, owner, err); finishErr != nil {
+			m.log.Error("finish job failed", "job_id", work.id, "error", finishErr)
+		}
+	}
 }
 
 func (m *Manager) Config() config.Config { m.mu.RLock(); defer m.mu.RUnlock(); return m.cfg }
@@ -189,28 +239,127 @@ func (m *Manager) maintainJobs() {
 
 func (m *Manager) maintainLifecycle() {
 	m.reconcileRegistry(m.ctx)
+	m.reconcileArtifacts(m.ctx)
 	m.reconcileOrphans(m.ctx)
 	m.maybeBackup(m.ctx)
 	_, _ = m.GC(m.ctx, false)
-	interval := m.Config().Discovery.ReconcileInterval.Duration
-	if interval <= 0 {
-		interval = 10 * time.Minute
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 	for {
+		interval := m.Config().Discovery.ReconcileInterval.Duration
+		if interval <= 0 {
+			interval = 10 * time.Minute
+		}
+		timer := time.NewTimer(interval)
 		select {
 		case <-m.ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-m.reloads:
+			timer.Stop()
+			continue
+		case <-timer.C:
 			_ = m.reloadConfig(false)
 			m.reconcileRegistry(m.ctx)
+			m.reconcileArtifacts(m.ctx)
 			m.reconcileOrphans(m.ctx)
 			m.maybeBackup(m.ctx)
 			if _, err := m.GC(m.ctx, false); err != nil && m.ctx.Err() == nil {
 				m.log.Error("automatic GC failed", "error", err)
 			}
 		}
+	}
+}
+
+func (m *Manager) reconcileArtifacts(ctx context.Context) {
+	diagnostics := m.artifactDiagnostics(ctx)
+	for _, category := range []string{"unknown_paths", "missing_paths", "unknown_refs", "missing_refs", "errors"} {
+		items, _ := diagnostics[category].([]string)
+		for _, item := range items {
+			m.log.Warn("startup artifact reconciliation requires manual inspection", "category", category, "artifact", item)
+		}
+	}
+}
+
+func (m *Manager) artifactDiagnostics(ctx context.Context) map[string]any {
+	unknownPaths, missingPaths := []string{}, []string{}
+	unknownRefs, missingRefs := []string{}, []string{}
+	diagnosticErrors := []string{}
+	artifacts, err := m.store.SlotArtifacts(ctx)
+	if err != nil {
+		return map[string]any{"errors": []string{err.Error()}}
+	}
+	expectedPaths := map[string]state.SlotArtifact{}
+	for _, artifact := range artifacts {
+		clean := filepath.Clean(artifact.Path)
+		expectedPaths[clean] = artifact
+		if artifact.State == "ARCHIVED" || artifact.State == "REMOVING" {
+			continue
+		}
+		if _, statErr := os.Lstat(clean); errors.Is(statErr, os.ErrNotExist) {
+			missingPaths = append(missingPaths, fmt.Sprintf("%s (%s, %s)", clean, artifact.ID, artifact.State))
+		} else if statErr != nil {
+			diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("inspect slot %s: %v", artifact.ID, statErr))
+		}
+	}
+	m.mu.RLock()
+	roots := make([]string, 0, len(m.roots))
+	for root := range m.roots {
+		roots = append(roots, root)
+	}
+	m.mu.RUnlock()
+	for _, root := range roots {
+		for _, pattern := range []string{filepath.Join(root, "workspaces", "*", "slots", "*", "root"), filepath.Join(root, "unbound", "*", "root")} {
+			matches, globErr := filepath.Glob(pattern)
+			if globErr != nil {
+				diagnosticErrors = append(diagnosticErrors, globErr.Error())
+				continue
+			}
+			for _, path := range matches {
+				clean := filepath.Clean(path)
+				if _, exists := expectedPaths[clean]; !exists {
+					unknownPaths = append(unknownPaths, clean)
+				}
+			}
+		}
+	}
+	repositories, err := m.store.Repositories(ctx)
+	if err != nil {
+		diagnosticErrors = append(diagnosticErrors, err.Error())
+	} else {
+		for _, repository := range repositories {
+			expectedList, refsErr := m.store.RecoveryRefs(ctx, string(repository.ID))
+			if refsErr != nil {
+				diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("read recovery refs for %s: %v", repository.ID, refsErr))
+				continue
+			}
+			expected := map[string]bool{}
+			for _, ref := range expectedList {
+				expected[ref] = true
+			}
+			listed, listErr := m.git.Run(ctx, string(repository.MainPath), "for-each-ref", "--format=%(refname)", "refs/wx/recovery")
+			if listErr != nil {
+				diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("list recovery refs for %s: %v", repository.ID, listErr))
+				continue
+			}
+			actual := map[string]bool{}
+			for _, ref := range strings.Fields(listed.Stdout) {
+				actual[ref] = true
+				if !expected[ref] {
+					unknownRefs = append(unknownRefs, fmt.Sprintf("%s:%s", repository.ID, ref))
+				}
+			}
+			for ref := range expected {
+				if !actual[ref] {
+					missingRefs = append(missingRefs, fmt.Sprintf("%s:%s", repository.ID, ref))
+				}
+			}
+		}
+	}
+	for _, values := range [][]string{unknownPaths, missingPaths, unknownRefs, missingRefs, diagnosticErrors} {
+		sort.Strings(values)
+	}
+	return map[string]any{
+		"unknown_paths": unknownPaths, "missing_paths": missingPaths,
+		"unknown_refs": unknownRefs, "missing_refs": missingRefs, "errors": diagnosticErrors,
 	}
 }
 
@@ -275,7 +424,7 @@ func (m *Manager) maybeBackup(ctx context.Context) {
 }
 
 func (m *Manager) reconcileOrphans(ctx context.Context) {
-	candidates, err := m.store.OrphanCandidates(ctx, time.Now().Add(-45*time.Second).UTC().Format(time.RFC3339Nano))
+	candidates, err := m.store.OrphanCandidates(ctx, state.FormatTime(time.Now().Add(-45*time.Second)))
 	if err != nil {
 		m.log.Error("orphan reconciliation failed", "error", err)
 		return
@@ -1066,29 +1215,29 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 			return err
 		}
 	}
-	return m.store.MarkArchived(ctx, s.ID, s.SlotID, expiry.Format(time.RFC3339Nano))
+	return m.store.MarkArchived(ctx, s.ID, s.SlotID, state.FormatTime(expiry))
 }
 
 func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	cfg := m.Config()
 	nowTime := time.Now().UTC()
-	before := nowTime.Add(-cfg.Retention.EndedWorktree.Duration).Format(time.RFC3339Nano)
+	before := state.FormatTime(nowTime.Add(-cfg.Retention.EndedWorktree.Duration))
 	items, err := m.store.GCCandidates(ctx, before)
 	if err != nil {
 		return 0, err
 	}
-	standbys, err := m.store.StandbyGCCandidates(ctx, nowTime.Add(-cfg.Retention.HotStandby.Duration).Format(time.RFC3339Nano), cfg.Pool.WarmPerWorkspace)
+	standbys, err := m.store.StandbyGCCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)), cfg.Pool.WarmPerWorkspace)
 	if err != nil {
 		return 0, err
 	}
 	var cold []state.ColdRepositoryCandidate
 	if cfg.Pool.WarmPerWorkspace > 0 {
-		cold, err = m.store.ColdRepositoryCandidates(ctx, nowTime.Add(-cfg.Retention.HotStandby.Duration).Format(time.RFC3339Nano))
+		cold, err = m.store.ColdRepositoryCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)))
 		if err != nil {
 			return 0, err
 		}
 	}
-	expired, err := m.store.ExpiredSnapshots(ctx, nowTime.Format(time.RFC3339Nano))
+	expired, err := m.store.ExpiredSnapshots(ctx, state.FormatTime(nowTime))
 	if err != nil {
 		return 0, err
 	}
@@ -1169,7 +1318,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			}
 		}
 	}
-	if err := m.store.PruneMetadata(ctx, nowTime.Add(-cfg.Retention.FailedJob.Duration).Format(time.RFC3339Nano), nowTime.Add(-cfg.Retention.EventLog.Duration).Format(time.RFC3339Nano), nowTime.Add(-cfg.Retention.ExpiredSessionTombstone.Duration).Format(time.RFC3339Nano)); err != nil {
+	if err := m.store.PruneMetadata(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.FailedJob.Duration)), state.FormatTime(nowTime.Add(-cfg.Retention.EventLog.Duration)), state.FormatTime(nowTime.Add(-cfg.Retention.ExpiredSessionTombstone.Duration))); err != nil {
 		return count, err
 	}
 	return count, nil
@@ -1288,8 +1437,55 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	}
 	m.mu.RLock()
 	reloadAt, reloadError, backupAt, backupError := m.lastReload, m.reloadError, m.lastBackup, m.backupError
+	cfg := m.cfg
+	roots := make(map[string]bool, len(m.roots))
+	for root, active := range m.roots {
+		roots[root] = active
+	}
 	m.mu.RUnlock()
-	return map[string]any{"schema_version": 2, "protocol_version": 1, "uptime_seconds": int(time.Since(m.started).Seconds()), "config_path": must(config.Path()), "config_last_reload": reloadAt.UTC().Format(time.RFC3339Nano), "config_reload_error": reloadError, "sqlite_last_backup": formatOptionalTime(backupAt), "sqlite_backup_error": backupError, "workspaces": s.Workspaces, "repositories": s.Repositories, "slots": map[string]int{"ready": s.Ready, "leased": s.Leased, "failed": s.Failed, "quarantined": s.Quarantined}, "active_sessions": s.Active, "snapshots": s.Snapshots, "queued_jobs": s.Jobs}, nil
+	type rootStatus struct {
+		Path   string `json:"path"`
+		Active bool   `json:"active"`
+		Bytes  int64  `json:"bytes"`
+		Error  string `json:"error,omitempty"`
+	}
+	rootStatuses := make([]rootStatus, 0, len(roots))
+	for root, active := range roots {
+		bytes, usageErr := directoryUsage(root)
+		item := rootStatus{Path: root, Active: active, Bytes: bytes}
+		if usageErr != nil && !errors.Is(usageErr, os.ErrNotExist) {
+			item.Error = usageErr.Error()
+		}
+		rootStatuses = append(rootStatuses, item)
+	}
+	sort.Slice(rootStatuses, func(i, j int) bool { return rootStatuses[i].Path < rootStatuses[j].Path })
+	return map[string]any{
+		"schema_version": state.SchemaVersion, "protocol_version": 1, "uptime_seconds": int(time.Since(m.started).Seconds()),
+		"config_path": must(config.Path()), "config_last_reload": reloadAt.UTC().Format(time.RFC3339Nano), "config_reload_error": reloadError,
+		"sqlite_last_backup": formatOptionalTime(backupAt), "sqlite_backup_error": backupError,
+		"workspaces": s.Workspaces, "repositories": s.Repositories,
+		"slots":           map[string]int{"ready": s.Ready, "leased": s.Leased, "failed": s.Failed, "quarantined": s.Quarantined},
+		"active_sessions": s.Active, "snapshots": s.Snapshots, "queued_jobs": s.Jobs, "worktree_roots": rootStatuses,
+		"retention_seconds": map[string]int64{
+			"hot_standby": cfg.Retention.HotStandby.Milliseconds() / 1000, "ended_worktree": cfg.Retention.EndedWorktree.Milliseconds() / 1000,
+			"recovery_snapshot": cfg.Retention.RecoverySnapshot.Milliseconds() / 1000, "expired_session_tombstone": cfg.Retention.ExpiredSessionTombstone.Milliseconds() / 1000,
+			"failed_job": cfg.Retention.FailedJob.Milliseconds() / 1000, "event_log": cfg.Retention.EventLog.Milliseconds() / 1000,
+		},
+	}, nil
+}
+
+func directoryUsage(root string) (int64, error) {
+	var total int64
+	err := filepath.Walk(root, func(_ string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.Mode().IsRegular() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total, err
 }
 
 func formatOptionalTime(value time.Time) string {
@@ -1301,7 +1497,14 @@ func formatOptionalTime(value time.Time) string {
 
 func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	checks := map[string]any{}
-	checks["config"] = "ok"
+	m.mu.RLock()
+	reloadError := m.reloadError
+	m.mu.RUnlock()
+	if reloadError == "" {
+		checks["config"] = "ok"
+	} else {
+		checks["config"] = reloadError
+	}
 	if _, err := m.git.Run(ctx, "", "--version"); err != nil {
 		checks["git"] = err.Error()
 	} else {
@@ -1312,7 +1515,153 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	} else {
 		checks["sqlite"] = "ok"
 	}
-	return map[string]any{"schema_version": 1, "checks": checks}
+	checks["socket"] = diagnosticPath(must(config.SocketPath()), os.ModeSocket, 0o600)
+	checks["state_database"] = diagnosticPath(must(config.StatePath()), 0, 0o600)
+	checks["launch_agent"] = diagnosticPath(must(launchd.PlistPath()), 0, 0o600)
+	root, rootErr := config.ExpandHome(m.Config().Storage.WorktreeRoot)
+	if rootErr != nil {
+		checks["worktree_root"] = rootErr.Error()
+	} else {
+		checks["worktree_root"] = diagnosticPath(root, os.ModeDir, 0o700)
+	}
+	hooks := map[string]string{}
+	for _, agentKind := range []string{"claude", "codex"} {
+		if diagnosticHooksAvailable(agentKind) {
+			hooks[agentKind] = "ok"
+		} else {
+			hooks[agentKind] = "missing or invalid readiness hooks; foreground readiness remains required"
+		}
+	}
+	checks["hooks"] = hooks
+	checks["worktree_registration"] = m.registrationDiagnostics(ctx)
+	checks["artifact_ownership"] = m.artifactDiagnostics(ctx)
+	return map[string]any{"schema_version": state.SchemaVersion, "checks": checks}
+}
+
+func diagnosticHooksAvailable(agentKind string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	paths := []string{filepath.Join(home, ".claude", "settings.json"), filepath.Join(home, ".claude", "settings.local.json")}
+	if agentKind == "codex" {
+		paths = []string{filepath.Join(home, ".codex", "hooks.json")}
+	}
+	required := map[string]string{"SessionStart": "session-start", "UserPromptSubmit": "user-prompt-submit", "PreToolUse": "pre-tool-use"}
+	found := map[string]bool{}
+	for _, path := range paths {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || len(data) > 4<<20 {
+			continue
+		}
+		var document struct {
+			Hooks map[string]any `json:"hooks"`
+		}
+		if json.Unmarshal(data, &document) != nil {
+			continue
+		}
+		for event, command := range required {
+			if diagnosticHookTreeContainsCommand(document.Hooks[event], command) {
+				found[event] = true
+			}
+		}
+	}
+	return found["SessionStart"] && found["UserPromptSubmit"] && found["PreToolUse"]
+}
+
+func diagnosticHookTreeContainsCommand(value any, event string) bool {
+	switch typed := value.(type) {
+	case []any:
+		for _, child := range typed {
+			if diagnosticHookTreeContainsCommand(child, event) {
+				return true
+			}
+		}
+	case map[string]any:
+		if disabled, _ := typed["disabled"].(bool); disabled {
+			return false
+		}
+		if command, ok := typed["command"].(string); ok {
+			fields := strings.Fields(command)
+			if len(fields) == 3 && filepath.Base(strings.Trim(fields[0], `"'`)) == "wx" && fields[1] == "hook" && fields[2] == event {
+				return true
+			}
+		}
+		for key, child := range typed {
+			if key != "command" && diagnosticHookTreeContainsCommand(child, event) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func diagnosticPath(path string, requiredType os.FileMode, requiredPerm os.FileMode) string {
+	if path == "" {
+		return "path unavailable"
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err.Error()
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "unsafe symlink"
+	}
+	if requiredType == os.ModeDir && !info.IsDir() {
+		return "not a directory"
+	}
+	if requiredType == os.ModeSocket && info.Mode()&os.ModeSocket == 0 {
+		return "not a Unix socket"
+	}
+	if requiredType == 0 && !info.Mode().IsRegular() {
+		return "not a regular file"
+	}
+	if info.Mode().Perm() != requiredPerm {
+		return fmt.Sprintf("unsafe permissions %04o; expected %04o", info.Mode().Perm(), requiredPerm)
+	}
+	return "ok"
+}
+
+func (m *Manager) registrationDiagnostics(ctx context.Context) map[string]any {
+	result := map[string]any{"checked": 0, "invalid": []map[string]string{}}
+	invalid := []map[string]string{}
+	checked := 0
+	roots, err := m.store.WorkspaceRoots(ctx)
+	if err != nil {
+		return map[string]any{"checked": 0, "error": err.Error()}
+	}
+	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
+	for _, root := range roots {
+		workspaceRecord, resolveErr := discoverer.Resolve(ctx, root)
+		if resolveErr != nil {
+			invalid = append(invalid, map[string]string{"workspace_root": root, "error": resolveErr.Error()})
+			continue
+		}
+		resolved, resolveErr := pool.ResolveBranches(ctx, m.git, workspaceRecord, nil)
+		if resolveErr != nil {
+			invalid = append(invalid, map[string]string{"workspace_root": root, "error": resolveErr.Error()})
+			continue
+		}
+		slots, slotsErr := m.store.ReadySlots(ctx, string(workspaceRecord.ID))
+		if slotsErr != nil {
+			invalid = append(invalid, map[string]string{"workspace_root": root, "error": slotsErr.Error()})
+			continue
+		}
+		for _, slot := range slots {
+			checked++
+			valid, validationErr := m.readyMatches(ctx, slot, resolved)
+			if validationErr != nil || !valid {
+				detail := "READY invariants do not match current repository state"
+				if validationErr != nil {
+					detail = validationErr.Error()
+				}
+				invalid = append(invalid, map[string]string{"workspace_root": root, "slot_id": slot.ID, "path": slot.Path, "error": detail})
+			}
+		}
+	}
+	result["checked"] = checked
+	result["invalid"] = invalid
+	return result
 }
 
 func (m *Manager) Sessions(ctx context.Context, all bool) ([]state.SessionSummary, error) {
@@ -1340,23 +1689,39 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		m.mu.Unlock()
 		return err
 	}
+	newRoot, err := ensureWorktreeRoot(cfg.Storage.WorktreeRoot)
+	if err != nil {
+		m.mu.Lock()
+		m.lastReload = time.Now()
+		m.reloadError = err.Error()
+		m.mu.Unlock()
+		return fmt.Errorf("validate worktree root: %w", err)
+	}
 	m.mu.Lock()
 	oldRoot := filepath.Clean(m.cfg.Storage.WorktreeRoot)
-	m.cfg = cfg
-	m.lastReload = time.Now()
-	m.reloadError = ""
-	if root, err := config.ExpandHome(cfg.Storage.WorktreeRoot); err == nil {
-		m.roots[filepath.Clean(root)] = true
-	}
-	m.mu.Unlock()
-	newRoot := filepath.Clean(cfg.Storage.WorktreeRoot)
 	if oldRoot != newRoot {
 		if err := m.store.DrainRoot(context.Background(), oldRoot); err != nil {
-			m.mu.Lock()
+			m.lastReload = time.Now()
 			m.reloadError = err.Error()
 			m.mu.Unlock()
 			return fmt.Errorf("drain retired worktree root: %w", err)
 		}
+		m.roots[oldRoot] = false
+		m.roots[newRoot] = true
+	}
+	m.cfg = cfg
+	m.git.SetTimeout(cfg.Readiness.Timeout.Duration)
+	if m.logLevel != nil {
+		m.logLevel.Set(slogLevel(cfg.Logging.Level))
+	}
+	m.lastReload = time.Now()
+	m.reloadError = ""
+	m.roots[newRoot] = true
+	m.mu.Unlock()
+	m.resizeWorkers(cfg.Pool.PreparationConcurrency)
+	select {
+	case m.reloads <- struct{}{}:
+	default:
 	}
 	if runGC {
 		go func() {
@@ -1365,6 +1730,31 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		}()
 	}
 	return nil
+}
+
+func ensureWorktreeRoot(value string) (string, error) {
+	root, err := config.ExpandHome(value)
+	if err != nil {
+		return "", err
+	}
+	root = filepath.Clean(root)
+	info, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			return "", err
+		}
+		info, err = os.Lstat(root)
+	}
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("%s is not a physical directory", root)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return "", err
+	}
+	return root, nil
 }
 
 func must(v string, e error) string {

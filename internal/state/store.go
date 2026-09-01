@@ -29,6 +29,8 @@ type Store struct {
 	path   string
 }
 
+const SchemaVersion = 4
+
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -168,7 +170,14 @@ func (s *Store) init(ctx context.Context) error {
 	return nil
 }
 
-func now() string                   { return time.Now().UTC().Format(time.RFC3339Nano) }
+const timestampFormat = "2006-01-02T15:04:05.000000000Z07:00"
+
+// FormatTime returns a fixed-width RFC 3339 timestamp. SQLite stores wx times
+// as TEXT, so a fixed fractional width is required for lexical comparisons to
+// preserve chronological order.
+func FormatTime(value time.Time) string { return value.UTC().Format(timestampFormat) }
+
+func now() string                   { return FormatTime(time.Now()) }
 func HashToken(token string) []byte { sum := sha256.Sum256([]byte(token)); return sum[:] }
 
 func (s *Store) UpsertWorkspace(ctx context.Context, w discovery.Workspace) error {
@@ -331,7 +340,7 @@ func (s *Store) ClaimJob(ctx context.Context, id, owner string) (Job, error) {
 		return Job{}, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='RUNNING',attempt=attempt+1,started_at=?,lease_owner=?,lease_expires_at=? WHERE id=? AND state='PENDING' AND (not_before IS NULL OR not_before<=?)`, now(), owner, time.Now().Add(jobLease).UTC().Format(time.RFC3339Nano), id, now())
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='RUNNING',attempt=attempt+1,started_at=?,lease_owner=?,lease_expires_at=? WHERE id=? AND state='PENDING' AND (not_before IS NULL OR not_before<=?)`, now(), owner, FormatTime(time.Now().Add(jobLease)), id, now())
 	if err != nil {
 		return Job{}, err
 	}
@@ -349,7 +358,7 @@ func (s *Store) ClaimJob(ctx context.Context, id, owner string) (Job, error) {
 func (s *Store) RenewJob(ctx context.Context, id, owner string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET lease_expires_at=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, time.Now().Add(jobLease).UTC().Format(time.RFC3339Nano), id, owner)
+	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET lease_expires_at=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, FormatTime(time.Now().Add(jobLease)), id, owner)
 	if err != nil {
 		return err
 	}
@@ -381,7 +390,7 @@ func (s *Store) FinishJob(ctx context.Context, id, owner string, runErr error) e
 func (s *Store) RetryJob(ctx context.Context, id, owner string, delay time.Duration, code string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET state='PENDING',not_before=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, time.Now().Add(delay).UTC().Format(time.RFC3339Nano), code, id, owner)
+	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET state='PENDING',not_before=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, FormatTime(time.Now().Add(delay)), code, id, owner)
 	if err != nil {
 		return err
 	}
@@ -451,7 +460,7 @@ func (s *Store) HasStandby(ctx context.Context, workspaceID string) bool {
 
 func (s *Store) StandbyCount(ctx context.Context, workspaceID string) int {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL AND sl.state IN ('PREPARING','READY')`, workspaceID).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL AND sl.state IN ('PREPARING','READY','FAILED','QUARANTINED','RETIRING','REMOVING')`, workspaceID).Scan(&n)
 	if err != nil {
 		return 0
 	}
@@ -646,6 +655,32 @@ func (s *Store) FinishPreparation(ctx context.Context, id string) error {
 	if n != 1 {
 		return fmt.Errorf("slot %s preparation state changed", id)
 	}
+	var sessionID, kind, parentID, pendingAgentID string
+	err = tx.QueryRowContext(ctx, `SELECT id,agent_kind,COALESCE(parent_session_id,''),COALESCE(pending_agent_session_id,'') FROM sessions WHERE slot_id=? AND state='RESTORING'`, id).Scan(&sessionID, &kind, &parentID, &pendingAgentID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		if pendingAgentID != "" {
+			if parentID == "" {
+				return errors.New("restoring session has no parent for its pending agent mapping")
+			}
+			res, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND agent_kind=? AND agent_session_id=?`, parentID, kind, pendingAgentID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				return errors.New("resume parent agent mapping changed before restore completed")
+			}
+			res, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=?,pending_agent_session_id=NULL WHERE id=? AND state='RESTORING'`, pendingAgentID, sessionID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				return errors.New("restoring session changed before activation")
+			}
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET state='ACTIVE',started_at=COALESCE(started_at,?) WHERE slot_id=? AND state IN ('STARTING','RESTORING')`, t, id); err != nil {
 		return err
 	}
@@ -777,7 +812,7 @@ func (s *Store) Heartbeat(ctx context.Context, id, token string) error {
 	}
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_heartbeat_at=? WHERE id=? AND state IN ('STARTING','ACTIVE','RESTORING')`, now(), id)
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_heartbeat_at=? WHERE id=? AND state IN ('STARTING','ACTIVE','UNBOUND','RESTORING')`, now(), id)
 	if err != nil {
 		return err
 	}
@@ -793,7 +828,7 @@ type OrphanCandidate struct {
 }
 
 func (s *Store) OrphanCandidates(ctx context.Context, heartbeatBefore string) ([]OrphanCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(client_pid,0) FROM sessions WHERE state IN ('STARTING','ACTIVE') AND COALESCE(last_heartbeat_at,created_at)<=?`, heartbeatBefore)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(client_pid,0) FROM sessions WHERE state IN ('STARTING','ACTIVE','UNBOUND','RESTORING') AND COALESCE(last_heartbeat_at,created_at)<=?`, heartbeatBefore)
 	if err != nil {
 		return nil, err
 	}
@@ -825,10 +860,14 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, 
 	if err := tx.QueryRowContext(ctx, `SELECT agent_kind FROM sessions WHERE id=?`, sessionID).Scan(&kind); err != nil {
 		return Job{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE agent_kind=? AND agent_session_id=? AND id<>?`, kind, agentID, sessionID); err != nil {
+	var mappedParent string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM sessions WHERE id=? AND agent_kind=? AND agent_session_id=?`, parentSessionID, kind, agentID).Scan(&mappedParent); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Job{}, errors.New("resume parent agent mapping changed")
+		}
 		return Job{}, err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=?,parent_session_id=?,agent_session_id=?,state='RESTORING' WHERE id=? AND state='UNBOUND'`, workspaceID, parentSessionID, agentID, sessionID)
+	res, err := tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=?,parent_session_id=?,pending_agent_session_id=?,state='RESTORING' WHERE id=? AND state='UNBOUND'`, workspaceID, parentSessionID, agentID, sessionID)
 	if err != nil {
 		return Job{}, err
 	}
@@ -1163,6 +1202,35 @@ func (s *Store) Release(ctx context.Context, sessionID, workspaceID, slotID stri
 		return Job{}, false, err
 	}
 	defer tx.Rollback()
+	var sessionState string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM sessions WHERE id=?`, sessionID).Scan(&sessionState); err != nil {
+		return Job{}, false, err
+	}
+	if sessionState == "UNBOUND" || sessionState == "RESTORING" {
+		job, err = newJob("REMOVE", workspaceID, slotID, "")
+		if err != nil {
+			return Job{}, false, err
+		}
+		timestamp := now()
+		res, updateErr := tx.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED',pending_agent_session_id=NULL,released_at=?,archived_at=?,expires_at=? WHERE id=? AND state IN ('UNBOUND','RESTORING')`, timestamp, timestamp, timestamp, sessionID)
+		if updateErr != nil {
+			return Job{}, false, updateErr
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return Job{}, false, nil
+		}
+		res, err = tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=? AND state IN ('UNBOUND','RESTORING')`, timestamp, slotID)
+		if err != nil {
+			return Job{}, false, err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return Job{}, false, errors.New("unbound slot state changed before release")
+		}
+		if err := insertJob(ctx, tx, job); err != nil {
+			return Job{}, false, err
+		}
+		return job, true, tx.Commit()
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE sessions SET state='RELEASING',released_at=COALESCE(released_at,?) WHERE id=? AND state IN ('STARTING','ACTIVE')`, now(), sessionID)
 	if err != nil {
 		return Job{}, false, err
@@ -1181,6 +1249,59 @@ func (s *Store) Release(ctx context.Context, sessionID, workspaceID, slotID stri
 }
 
 type GCCandidate struct{ SlotID, SessionID, Path string }
+
+type SlotArtifact struct{ ID, Path, State string }
+
+func (s *Store) SlotArtifacts(ctx context.Context) ([]SlotArtifact, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,path,state FROM slots ORDER BY path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var artifacts []SlotArtifact
+	for rows.Next() {
+		var artifact SlotArtifact
+		if err := rows.Scan(&artifact.ID, &artifact.Path, &artifact.State); err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	return artifacts, rows.Err()
+}
+
+func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch FROM repositories ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var repositories []discovery.Repository
+	for rows.Next() {
+		var repository discovery.Repository
+		if err := rows.Scan(&repository.ID, &repository.MainPath, &repository.CommonDir, &repository.DefaultBranch); err != nil {
+			return nil, err
+		}
+		repositories = append(repositories, repository)
+	}
+	return repositories, rows.Err()
+}
+
+func (s *Store) RecoveryRefs(ctx context.Context, repositoryID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT head_recovery_ref FROM snapshots WHERE repository_id=? UNION SELECT worktree_recovery_ref FROM snapshots WHERE repository_id=? ORDER BY 1`, repositoryID, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var refs []string
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
+}
 
 type StandbyGCCandidate struct{ SlotID, WorkspaceID, Path, State string }
 

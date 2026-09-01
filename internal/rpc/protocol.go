@@ -18,6 +18,8 @@ import (
 const (
 	ProtocolVersion = 1
 	maxFrame        = 8 << 20
+	maxIdempotency  = 2048
+	idempotencyTTL  = 24 * time.Hour
 )
 
 type Request struct {
@@ -107,6 +109,7 @@ type idempotentEntry struct {
 	done   chan struct{}
 	result json.RawMessage
 	err    *RPCError
+	ended  time.Time
 }
 
 func (s *Server) Serve(ctx context.Context) error {
@@ -195,6 +198,7 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 			resp.Result, resp.Error = s.invoke(ctx, req)
 			s.idemMu.Lock()
 			entry.result, entry.err = resp.Result, resp.Error
+			entry.ended = time.Now()
 			close(entry.done)
 			s.idemMu.Unlock()
 		}
@@ -228,9 +232,35 @@ func (s *Server) idempotencyEntry(req Request) (*idempotentEntry, bool) {
 		}
 		return existing, false
 	}
+	s.pruneIdempotencyLocked(time.Now())
+	if len(s.idem) >= maxIdempotency {
+		return nil, false
+	}
 	entry := &idempotentEntry{method: req.Method, params: string(req.Params), done: make(chan struct{})}
 	s.idem[req.IdempotencyKey] = entry
 	return entry, true
+}
+
+func (s *Server) pruneIdempotencyLocked(now time.Time) {
+	for key, entry := range s.idem {
+		if !entry.ended.IsZero() && now.Sub(entry.ended) >= idempotencyTTL {
+			delete(s.idem, key)
+		}
+	}
+	for len(s.idem) >= maxIdempotency {
+		var oldestKey string
+		var oldest time.Time
+		for key, entry := range s.idem {
+			if entry.ended.IsZero() || !oldest.IsZero() && !entry.ended.Before(oldest) {
+				continue
+			}
+			oldestKey, oldest = key, entry.ended
+		}
+		if oldestKey == "" {
+			return
+		}
+		delete(s.idem, oldestKey)
+	}
 }
 
 func writeFrame(w io.Writer, v any) error {

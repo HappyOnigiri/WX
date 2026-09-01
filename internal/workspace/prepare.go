@@ -62,6 +62,7 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 		cleanup := !existingWorktree
 		defer func() {
 			if cleanup {
+				_, _ = p.Git.Run(context.Background(), string(repo.MainPath), "worktree", "unlock", target)
 				_, _ = p.Git.Run(context.Background(), string(repo.MainPath), "worktree", "remove", "--force", target)
 			}
 		}()

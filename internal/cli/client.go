@@ -63,6 +63,10 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		return 1
 	}
 	native := isNativeResume(agent, args)
+	if fresh && (!native || explicitResume != "") {
+		fmt.Fprintln(os.Stderr, "error: --fresh is only valid for an agent-native resume")
+		return 2
+	}
 	recoveryDiscarded := false
 	var lease daemon.Lease
 	method := "ResolveAndLease"
@@ -102,6 +106,11 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = c.RPC.CallWithKey(releaseCtx, "Release", "release:"+lease.SessionID+":client-exit", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": "client-exit"}, nil)
+	}()
 	if agent == "codex" && native {
 		args = codexResumeArgs(args)
 	}
@@ -170,9 +179,6 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		runErr = <-done
 	}
 	close(heartbeatDone)
-	releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = c.RPC.CallWithKey(releaseCtx, "Release", "release:"+lease.SessionID+":client-exit", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": "client-exit"}, nil)
-	cancel()
 	if runErr == nil {
 		return 0
 	}
