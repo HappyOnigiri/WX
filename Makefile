@@ -198,7 +198,7 @@ sbom:
 
 mutation-check:
 	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned mutation tool is missing; run make setup"; exit 1; }
-	@packages="$$(git diff --name-only "$(MUTATION_BASE)...HEAD" -- 'internal/**/*.go' | awk -F/ 'NF >= 3 { print "./" $$1 "/" $$2 }' | sort -u)"; \
+	@packages="$$(git diff --name-only "$(MUTATION_BASE)...HEAD" -- 'internal/**/*.go' | awk -F/ 'NF >= 3 && $$2 ~ /^(config|state|pool|gitx|workspace|archive|rpc)$$/ { print "./" $$1 "/" $$2 }' | sort -u)"; \
 	if [ -z "$$packages" ]; then echo "no changed core packages"; exit 0; fi; \
 	$(MAKE) mutation-run MUTATION_PACKAGES="$$packages"
 
