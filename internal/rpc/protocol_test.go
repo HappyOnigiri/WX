@@ -68,20 +68,28 @@ func TestClientServerRoundTripWithoutParentDeadline(t *testing.T) {
 	server := &Server{Socket: socket, Handler: echoHandler{}}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if time.Now().After(deadline) {
 			t.Fatal("socket was not created")
 		}
-		var out map[string]any
-		err := (Client{Socket: socket, Timeout: time.Second}).Call(context.Background(), "Echo", map[string]string{"x": "y"}, &out)
-		if err == nil {
-			if out["method"] != "Echo" {
-				t.Fatalf("result=%v", out)
-			}
+		info, err := os.Lstat(socket)
+		if err == nil && info.Mode()&os.ModeSocket != 0 {
 			break
 		}
+		select {
+		case err := <-done:
+			t.Fatalf("server stopped before creating socket: %v", err)
+		default:
+		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	var out map[string]any
+	if err := (Client{Socket: socket, Timeout: time.Second}).Call(context.Background(), "Echo", map[string]string{"x": "y"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["method"] != "Echo" {
+		t.Fatalf("result=%v", out)
 	}
 	cancel()
 	select {
