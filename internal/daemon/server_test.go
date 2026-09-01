@@ -1,8 +1,15 @@
 package daemon
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
 func TestDaemonRuntimeLockAllowsOnlyOneOwner(t *testing.T) {
@@ -19,5 +26,63 @@ func TestDaemonRuntimeLockAllowsOnlyOneOwner(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second lock error = %v", err)
+	}
+}
+
+func TestServeStartsRPCAndStopsWithContext(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wx-serve-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx) }()
+
+	socket, err := config.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case serveErr := <-done:
+			t.Fatalf("daemon exited before creating socket: %v", serveErr)
+		default:
+		}
+		if info, statErr := os.Stat(socket); statErr == nil && info.Mode()&os.ModeSocket != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("daemon socket was not created at %s", socket)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	client := rpc.Client{Socket: socket, Timeout: time.Second}
+	var status map[string]any
+	if err := client.Call(context.Background(), "Status", nil, &status); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if status["protocol_version"] != float64(rpc.ProtocolVersion) {
+		t.Fatalf("status=%v", status)
+	}
+	if info, err := os.Stat(filepath.Dir(socket)); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("runtime directory mode=%v err=%v", info, err)
+	}
+	if info, err := os.Stat(socket); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("socket mode=%v err=%v", info, err)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not stop after context cancellation")
 	}
 }

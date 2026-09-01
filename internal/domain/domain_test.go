@@ -19,6 +19,7 @@ func TestIDsAndContainment(t *testing.T) {
 		}
 	}
 }
+
 func TestSlotTransitions(t *testing.T) {
 	if !CanTransitionSlot(SlotReady, SlotLeased) {
 		t.Fatal("READY -> LEASED rejected")

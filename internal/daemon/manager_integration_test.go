@@ -52,7 +52,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	slotRoot := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(w.ID), "slots", id, "root")
-	if err := os.MkdirAll(slotRoot, 0700); err != nil {
+	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -130,27 +130,27 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	initGitRepo(t, repo)
-	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("shared/\nlocal.cfg\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("shared/\nlocal.cfg\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, ".worktreeinclude"), []byte("local.cfg\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, ".worktreeinclude"), []byte("local.cfg\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, ".worktreelink"), []byte("shared\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, ".worktreelink"), []byte("shared\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(repo, "shared"), 0700); err != nil {
+	if err := os.Mkdir(filepath.Join(repo, "shared"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "shared", "data"), []byte("shared\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "shared", "data"), []byte("shared\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "local.cfg"), []byte("local\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "local.cfg"), []byte("local\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	gitRun(t, repo, "add", ".gitignore", ".worktreeinclude", ".worktreelink")
 	gitRun(t, repo, "commit", "-m", "worktree metadata")
-	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("dirty main\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("dirty main\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
@@ -194,14 +194,14 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	if err := m.BindAgentSession(ctx, lease.SessionID, lease.Token, "agent-session-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(lease.Path, "tracked.txt"), []byte("staged\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(lease.Path, "tracked.txt"), []byte("staged\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	gitRun(t, lease.Path, "add", "tracked.txt")
-	if err := os.WriteFile(filepath.Join(lease.Path, "tracked.txt"), []byte("working\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(lease.Path, "tracked.txt"), []byte("working\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(lease.Path, "untracked.txt"), []byte("untracked\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(lease.Path, "untracked.txt"), []byte("untracked\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Release(ctx, lease.SessionID, lease.Token, "test"); err != nil {
@@ -254,6 +254,55 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	}
 	if string(data) != "dirty main\n" {
 		t.Fatalf("source main changed: %q", data)
+	}
+}
+
+func TestHandlerPublicLifecycleSurface(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repo")
+	initGitRepo(t, repository)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 0
+	cfg.Discovery.ReconcileInterval.Duration = time.Hour
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	manager := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer manager.Close()
+	handler := Handler{Manager: manager}
+	ctx := context.Background()
+	result, err := handler.Handle(ctx, "ResolveAndLease", JSON(map[string]any{"cwd": repository, "agent": "codex", "client_pid": os.Getpid()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := result.(Lease)
+	if _, err := handler.Handle(ctx, "WaitReady", JSON(map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": 10000})); err != nil {
+		t.Fatal(err)
+	}
+	for method, params := range map[string]any{
+		"BindAgentSession": map[string]any{"session_id": lease.SessionID, "token": lease.Token, "agent_session_id": "agent-session"},
+		"Heartbeat":        map[string]any{"session_id": lease.SessionID, "token": lease.Token},
+		"ResumeStatus":     map[string]any{"wx_session_id": lease.SessionID},
+		"GC":               map[string]any{"dry_run": true},
+		"Sessions":         map[string]any{"all": true},
+	} {
+		if _, err := handler.Handle(ctx, method, JSON(params)); err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+	}
+	for _, method := range []string{"Status", "Doctor"} {
+		if _, err := handler.Handle(ctx, method, nil); err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+	}
+	if _, err := handler.Handle(ctx, "Release", JSON(map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": "test"})); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := handler.Handle(ctx, "AllocateResumeSlot", JSON(map[string]any{"agent": "codex", "client_pid": os.Getpid()})); err != nil || result == nil {
+		t.Fatalf("allocate resume result=%v err=%v", result, err)
 	}
 }
 
@@ -509,7 +558,7 @@ func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
 	if err := m.BindAgentSession(ctx, lease.SessionID, lease.Token, "in-flight-agent"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(lease.Path, "pending.txt"), []byte("recover me\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(lease.Path, "pending.txt"), []byte("recover me\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Release(ctx, lease.SessionID, lease.Token, "test"); err != nil {
@@ -568,7 +617,7 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	if err := m.ValidateFreshResume(ctx, refusedFresh.SessionID, refusedFresh.Token, "expired-agent-session"); err == nil {
 		t.Fatal("--fresh was accepted while the mapped session was active")
 	}
-	if err := os.WriteFile(filepath.Join(lease.Path, "uncommitted.txt"), []byte("discarded\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(lease.Path, "uncommitted.txt"), []byte("discarded\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Release(ctx, lease.SessionID, lease.Token, "test"); err != nil {
@@ -622,11 +671,11 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, filepath.Join(root, "service"))
 	initGitRepo(t, filepath.Join(root, "web"))
-	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("root rules\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("root rules\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	shared := filepath.Join(root, "audit")
-	if err := os.Mkdir(shared, 0700); err != nil {
+	if err := os.Mkdir(shared, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
@@ -741,18 +790,19 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 
 func initGitRepo(t *testing.T, path string) {
 	t.Helper()
-	if err := os.MkdirAll(path, 0700); err != nil {
+	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	gitRun(t, path, "init", "-b", "main")
 	gitRun(t, path, "config", "user.name", "test")
 	gitRun(t, path, "config", "user.email", "test@example.com")
-	if err := os.WriteFile(filepath.Join(path, "tracked.txt"), []byte("base\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(path, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	gitRun(t, path, "add", ".")
 	gitRun(t, path, "commit", "-m", "initial")
 }
+
 func gitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -761,6 +811,7 @@ func gitRun(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
+
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -771,6 +822,7 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
 func waitUntil(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
