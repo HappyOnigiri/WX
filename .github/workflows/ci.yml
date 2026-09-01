@@ -9,69 +9,186 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'schedule' }}
 
 permissions:
   contents: read
 
 jobs:
-  check:
+  static:
     name: ${{ matrix.target }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        target: [fmt-check, lint, deadcode, mod-tidy-check, reproducible-build, smoke]
+        target: [fmt-check, lint, deadcode, mod-tidy-check, generated-check, docs-check, workflow-check, shell-check, portable-test]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: static-${{ matrix.target }}
+      - name: Install pinned Go tools
+        run: make setup-go-tools
+      - name: Install markdown checker
+        if: matrix.target == 'docs-check'
+        run: make setup-markdownlint
+      - name: Install workflow checker
+        if: matrix.target == 'workflow-check'
+        run: make setup-zizmor
+      - name: Install pinned ShellCheck
+        if: matrix.target == 'shell-check'
+        env:
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            --output /tmp/shellcheck.tar.xz
+          echo "$SHELLCHECK_SHA256  /tmp/shellcheck.tar.xz" | sha256sum --check
+          tar -C /tmp -xf /tmp/shellcheck.tar.xz
+          sudo install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
+      - name: Run check
+        env:
+          CHECK_TARGET: ${{ matrix.target }}
+        run: make "$CHECK_TARGET"
+      - name: Verify read-only check
+        run: git diff --exit-code
+
+  darwin-build:
+    name: Darwin ${{ matrix.arch }} build and smoke
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15, arch: arm64}
+          - {runner: macos-15-intel, arch: amd64}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        with: { cache-name: "${{ matrix.target }}" }
-      - run: make ${{ matrix.target }}
+        with:
+          cache-name: darwin-build-${{ matrix.arch }}
+      - name: Verify native architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: test "$(go env GOARCH)" = "$EXPECTED_ARCH"
+      - run: make build smoke
+      - name: Verify install from a temporary prefix
+        run: |
+          destination=$(mktemp -d)
+          make install INSTALL_DIR="$destination"
+          "$destination/wx" --help >/dev/null
+          "$destination/wx" --version | grep -q '^wx version '
+      - run: go version -m bin/wx
       - run: git diff --exit-code
 
-  darwin:
-    name: Darwin build (${{ matrix.arch }})
-    runs-on: macos-15
-    timeout-minutes: 15
+  integration:
+    name: ${{ matrix.arch }} integration (${{ matrix.shard }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        arch: [arm64, amd64]
+        include:
+          - {runner: macos-15, arch: arm64, shard: state}
+          - {runner: macos-15, arch: arm64, shard: git}
+          - {runner: macos-15, arch: arm64, shard: daemon}
+          - {runner: macos-15, arch: arm64, shard: launchd}
+          - {runner: macos-15-intel, arch: amd64, shard: state}
+          - {runner: macos-15-intel, arch: amd64, shard: git}
+          - {runner: macos-15-intel, arch: amd64, shard: daemon}
+          - {runner: macos-15-intel, arch: amd64, shard: launchd}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/setup-go
-        with: { cache-name: "darwin-${{ matrix.arch }}" }
-      - run: CGO_ENABLED=0 GOOS=darwin GOARCH=${{ matrix.arch }} go build -trimpath -o wx ./cmd/wx
-      - run: if [ "$(go env GOARCH)" = "${{ matrix.arch }}" ]; then ./wx --help && ./wx --version; fi
+        with:
+          cache-name: integration-${{ matrix.arch }}-${{ matrix.shard }}
+      - name: Verify native architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: test "$(go env GOARCH)" = "$EXPECTED_ARCH"
+      - name: Run integration shard
+        env:
+          INTEGRATION_SHARD: ${{ matrix.shard }}
+        run: make "integration-$INTEGRATION_SHARD"
+      - run: git diff --exit-code
 
-  integration:
-    name: Race, integration, and coverage
-    runs-on: macos-15
-    timeout-minutes: 30
+  quality:
+    name: ${{ matrix.arch }} ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: macos-15, arch: arm64, target: changed-coverage-check}
+          - {runner: macos-15-intel, arch: amd64, target: changed-coverage-check}
+          - {runner: macos-15, arch: arm64, target: concurrency-test}
+          - {runner: macos-15-intel, arch: amd64, target: concurrency-test}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/setup-go
-        with: { cache-name: integration-coverage }
-      - run: make coverage-check
+        with:
+          cache-name: quality-${{ matrix.arch }}-${{ matrix.target }}
+      - name: Verify native architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: test "$(go env GOARCH)" = "$EXPECTED_ARCH"
+      - name: Run quality gate
+        env:
+          QUALITY_TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p artifacts
+          make "$QUALITY_TARGET" 2>&1 | tee "artifacts/$QUALITY_TARGET.log"
       - run: git diff --exit-code
       - if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
-          name: coverage
-          path: coverage/all.out
+          name: quality-${{ matrix.arch }}-${{ matrix.target }}
+          path: |
+            artifacts/
+            coverage/all.out
+          if-no-files-found: ignore
           retention-days: 7
+
+  mutation:
+    name: Changed core mutation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: mutation
+      - run: make setup-go-tools mutation-check
+      - run: git diff --exit-code
 
   required:
     name: CI required
     if: always()
-    needs: [check, darwin, integration]
-    runs-on: ubuntu-latest
+    needs: [static, darwin-build, integration, quality, mutation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      RESULTS: ${{ join(needs.*.result, ',') }}
     steps:
-      - run: test '${{ needs.check.result }}' = success -a '${{ needs.darwin.result }}' = success -a '${{ needs.integration.result }}' = success
+      - name: Require every CI job
+        run: |
+          case ",$RESULTS," in
+            *,failure,*|*,cancelled,*) exit 1 ;;
+          esac

@@ -1,3 +1,4 @@
 #!/bin/sh
 set -eu
-exec perl -e 'alarm 30; exec @ARGV' make hook-pre-commit
+root=$(git rev-parse --show-toplevel)
+exec "$root/scripts/run-with-timeout.sh" 30 make -C "$root" hook-pre-commit
