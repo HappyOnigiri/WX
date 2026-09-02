@@ -21,7 +21,15 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
+func requireDaemonIntegration(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping daemon integration test in short mode")
+	}
+}
+
 func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repo")
 	initGitRepo(t, repoPath)
@@ -127,6 +135,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 }
 
 func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repo")
 	initGitRepo(t, repoPath)
@@ -200,6 +209,7 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 }
 
 func TestFreshNativeResumeWithoutPriorMappingUsesSourceWorkspace(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repo")
 	initGitRepo(t, repoPath)
@@ -250,6 +260,7 @@ func TestFreshNativeResumeWithoutPriorMappingUsesSourceWorkspace(t *testing.T) {
 }
 
 func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	initGitRepo(t, repo)
@@ -381,6 +392,7 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 }
 
 func TestHandlerPublicLifecycleSurface(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
 	initGitRepo(t, repository)
@@ -430,6 +442,7 @@ func TestHandlerPublicLifecycleSurface(t *testing.T) {
 }
 
 func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	initGitRepo(t, repo)
@@ -500,6 +513,7 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 }
 
 func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repo")
 	initGitRepo(t, repoPath)
@@ -597,6 +611,7 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 }
 
 func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	initGitRepo(t, repo)
@@ -654,6 +669,7 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 }
 
 func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	initGitRepo(t, repo)
@@ -705,6 +721,7 @@ func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
 }
 
 func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	initGitRepo(t, repo)
@@ -800,6 +817,7 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 }
 
 func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
+	requireDaemonIntegration(t)
 	root := t.TempDir()
 	initGitRepo(t, filepath.Join(root, "service"))
 	initGitRepo(t, filepath.Join(root, "web"))
