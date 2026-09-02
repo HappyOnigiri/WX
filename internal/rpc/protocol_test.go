@@ -139,6 +139,13 @@ func (h errorHandler) Handle(_ context.Context, method string, _ json.RawMessage
 	return h.result, nil
 }
 
+type countingErrorHandler struct{ calls atomic.Int32 }
+
+func (h *countingErrorHandler) Handle(_ context.Context, _ string, _ json.RawMessage) (any, error) {
+	h.calls.Add(1)
+	return nil, errors.New("handler failed")
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
@@ -459,8 +466,9 @@ func TestServerPropagatesSocketSetupAndAddressFailures(t *testing.T) {
 
 func TestDurableIdempotencyPersistsHandlerErrors(t *testing.T) {
 	durable := &memoryDurableStore{}
-	server := &Server{Handler: errorHandler{}, Durable: durable}
+	handler := &countingErrorHandler{}
 	call := func() Response {
+		server := &Server{Handler: handler, Durable: durable}
 		serverSide, clientSide := net.Pipe()
 		done := make(chan struct{})
 		go func() {
@@ -484,6 +492,9 @@ func TestDurableIdempotencyPersistsHandlerErrors(t *testing.T) {
 		if response.Error == nil || response.Error.Code != "REQUEST_FAILED" {
 			t.Fatalf("durable error response=%+v", response)
 		}
+	}
+	if calls := handler.calls.Load(); calls != 1 {
+		t.Fatalf("durable replay invoked handler %d times, want 1", calls)
 	}
 }
 

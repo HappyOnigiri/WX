@@ -87,10 +87,25 @@ func TestHandlerRoutesAgentRegistrationAndConfigReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := Handler{Manager: manager}
-	if _, err := handler.Handle(context.Background(), "RegisterAgentProcess", json.RawMessage(`{"session_id":"session","token":"token","agent_pid":1}`)); err != nil {
+	registered, err := handler.Handle(context.Background(), "RegisterAgentProcess", json.RawMessage(`{"session_id":"session","token":"token","agent_pid":1}`))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := handler.Handle(context.Background(), "ReloadConfig", nil); err != nil {
+	if result, ok := registered.(map[string]bool); !ok || !result["registered"] {
+		t.Fatalf("registration result=%v", registered)
+	}
+	session, err := store.SessionByID(context.Background(), "session")
+	if err != nil || session.AgentPID != 1 {
+		t.Fatalf("registered agent PID=%d err=%v", session.AgentPID, err)
+	}
+	reloaded, err := handler.Handle(context.Background(), "ReloadConfig", nil)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result, ok := reloaded.(map[string]bool); !ok || !result["reloaded"] {
+		t.Fatalf("reload result=%v", reloaded)
+	}
+	if got, want := manager.Config().Storage.WorktreeRoot, filepath.Join(root, "dev", "worktrees", "wx"); got != want {
+		t.Fatalf("reloaded worktree root=%q, want %q", got, want)
 	}
 }
