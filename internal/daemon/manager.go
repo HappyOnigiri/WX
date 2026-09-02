@@ -226,6 +226,12 @@ func (m *Manager) Config() config.Config { m.mu.RLock(); defer m.mu.RUnlock(); r
 // callers always provide the state store so those operations cannot fall back
 // to a forgeable marker/Git-lock-only proof.
 func (m *Manager) newPreparer(cfg config.Config, slotPath string) *workspace.Preparer {
+	// A preparation job may outlive a config reload. Keep its filesystem
+	// namespace tied to the active or retired root that contains the durable
+	// slot path, while still using the newly loaded config for repository rules.
+	if root, ok := m.rootForPath(slotPath); ok {
+		cfg.Storage.WorktreeRoot = root
+	}
 	root, err := config.ExpandHome(cfg.Storage.WorktreeRoot)
 	var ownedRoot *os.Root
 	if err == nil {

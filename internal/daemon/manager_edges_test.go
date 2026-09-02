@@ -54,6 +54,34 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
+func TestNewPreparerKeepsRetiredRootForInFlightSlot(t *testing.T) {
+	base := t.TempDir()
+	oldRoot := filepath.Join(base, "old-root")
+	newRoot := filepath.Join(base, "new-root")
+	if err := os.Mkdir(oldRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(newRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = newRoot
+	m := &Manager{
+		cfg:         cfg,
+		roots:       map[string]bool{oldRoot: false, newRoot: true},
+		rootHandles: map[string]*os.Root{},
+	}
+	t.Cleanup(m.Close)
+
+	preparer := m.newPreparer(cfg, filepath.Join(oldRoot, "workspaces", "workspace", "slots", "slot", "root"))
+	if preparer.RootPath != oldRoot {
+		t.Fatalf("in-flight slot preparer root=%q want retired root %q", preparer.RootPath, oldRoot)
+	}
+	if preparer.OwnedRoot == nil {
+		t.Fatal("in-flight slot preparer did not retain retired root descriptor")
+	}
+}
+
 func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
