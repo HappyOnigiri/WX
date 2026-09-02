@@ -355,6 +355,11 @@ func Validate(c *Config) error {
 			return fmt.Errorf("%s must not be negative", k)
 		}
 	}
+	for k, v := range map[string]time.Duration{"discovery.timeout": c.Discovery.Timeout.Duration, "readiness.timeout": c.Readiness.Timeout.Duration} {
+		if v <= 0 {
+			return fmt.Errorf("%s must be positive", k)
+		}
+	}
 	if c.Discovery.MaxDepth < 1 || c.Discovery.MaxEntries < 1 {
 		return errors.New("discovery limits must be positive")
 	}

@@ -186,6 +186,10 @@ func runConfig(ctx context.Context, args []string) int {
 		return 1
 	}
 	effective := config.Merge(config.Defaults(), raw)
+	if err := config.NormalizePaths(&effective); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
 	if err := config.Validate(&effective); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
