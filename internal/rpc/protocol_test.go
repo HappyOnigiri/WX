@@ -29,6 +29,16 @@ func FuzzReadFrame(f *testing.F) {
 
 type echoHandler struct{}
 
+func shortSocketPath(t *testing.T, name string) string {
+	t.Helper()
+	directory, err := os.MkdirTemp("", "wx-rpc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	return filepath.Join(directory, name)
+}
+
 func (echoHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
 	return map[string]any{"method": method, "size": len(raw)}, nil
 }
@@ -109,7 +119,7 @@ func (w *headerOnlyWriter) Write(p []byte) (int, error) {
 }
 
 func TestClientServerRoundTripWithoutParentDeadline(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	socket := shortSocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server := &Server{Socket: socket, Handler: echoHandler{}}
@@ -174,8 +184,8 @@ func TestDurableIdempotencySurvivesServerRestart(t *testing.T) {
 		}
 		return result
 	}
-	first := call(filepath.Join(t.TempDir(), "first.sock"))
-	second := call(filepath.Join(t.TempDir(), "second.sock"))
+	first := call(shortSocketPath(t, "first.sock"))
+	second := call(shortSocketPath(t, "second.sock"))
 	if first["call"] != 1 || second["call"] != 1 || handler.calls.Load() != 1 {
 		t.Fatalf("first=%v second=%v handler_calls=%d", first, second, handler.calls.Load())
 	}
@@ -216,7 +226,7 @@ func TestDurableIdempotencyStorageFailuresFailClosed(t *testing.T) {
 }
 
 func TestServerRefusesNonSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "wxd.sock")
+	path := shortSocketPath(t, "wxd.sock")
 	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +240,7 @@ func TestServerCloseWithoutListenerIsSafe(t *testing.T) {
 	if err := (&Server{}).Close(); err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("unix", filepath.Join(t.TempDir(), "close.sock"))
+	listener, err := net.Listen("unix", shortSocketPath(t, "close.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +250,7 @@ func TestServerCloseWithoutListenerIsSafe(t *testing.T) {
 }
 
 func TestServerReplacesOnlyAStaleUnixSocket(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "stale.sock")
+	socket := shortSocketPath(t, "stale.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +327,7 @@ func TestClientValidatesEveryResponseBoundary(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			socket := filepath.Join(t.TempDir(), "server.sock")
+			socket := shortSocketPath(t, "server.sock")
 			listener, err := net.Listen("unix", socket)
 			if err != nil {
 				t.Fatal(err)
@@ -380,14 +390,14 @@ func TestServeConnRejectsProtocolVersion(t *testing.T) {
 }
 
 func TestClientReportsMissingSocket(t *testing.T) {
-	client := Client{Socket: filepath.Join(t.TempDir(), "missing.sock"), Timeout: time.Millisecond}
+	client := Client{Socket: shortSocketPath(t, "missing.sock"), Timeout: time.Millisecond}
 	if err := client.Call(context.Background(), "missing", nil, nil); err == nil {
 		t.Fatal("missing server call succeeded")
 	}
 }
 
 func TestServerRefusesToUnlinkLiveSocket(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	socket := shortSocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	first := &Server{Socket: socket, Handler: echoHandler{}}
 	done := make(chan error, 1)
@@ -417,7 +427,7 @@ func TestServerRefusesToUnlinkLiveSocket(t *testing.T) {
 }
 
 func TestIdempotencyKeyReplaysResponseWithoutRepeatingHandler(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	socket := shortSocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	handler := &countingHandler{}
 	server := &Server{Socket: socket, Handler: handler}

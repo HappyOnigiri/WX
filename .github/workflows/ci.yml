@@ -68,6 +68,8 @@ jobs:
     name: Darwin ${{ matrix.arch }} build and smoke
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    env:
+      TMPDIR: /private/tmp
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +101,8 @@ jobs:
     name: ${{ matrix.arch }} integration (${{ matrix.shard }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
+    env:
+      TMPDIR: /private/tmp
     strategy:
       fail-fast: false
       matrix:
@@ -133,6 +137,8 @@ jobs:
     name: ${{ matrix.arch }} ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    env:
+      TMPDIR: /private/tmp
     strategy:
       fail-fast: false
       matrix:

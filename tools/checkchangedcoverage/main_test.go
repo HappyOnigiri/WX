@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -158,7 +159,11 @@ func TestCommandsAndRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	output.Reset()
-	if err := run(ctx, []string{"-profile", profile, "-exclusions", configuredExclusions, "-base", "origin/main", "-minimum", "100"}, &output); err != nil {
+	base := "origin/main"
+	if err := exec.CommandContext(ctx, "git", "rev-parse", "--verify", base).Run(); err != nil {
+		base = "HEAD~1"
+	}
+	if err := run(ctx, []string{"-profile", profile, "-exclusions", configuredExclusions, "-base", base, "-minimum", "100"}, &output); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "5/5 statements") {
@@ -167,7 +172,7 @@ func TestCommandsAndRun(t *testing.T) {
 	if err := os.WriteFile(profile, []byte(strings.Replace(changedProfile, "5 1", "5 0", 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(ctx, []string{"-profile", profile, "-exclusions", configuredExclusions, "-base", "origin/main", "-minimum", "1"}, &output); err == nil {
+	if err := run(ctx, []string{"-profile", profile, "-exclusions", configuredExclusions, "-base", base, "-minimum", "1"}, &output); err == nil {
 		t.Fatal("uncovered changed statements passed")
 	}
 }

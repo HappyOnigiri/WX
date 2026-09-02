@@ -62,8 +62,13 @@ setup-markdownlint:
 	npm install --silent --no-audit --no-fund --prefix "$(TOOLS_DIR)/npm" markdownlint-cli2@$(MARKDOWNLINT_VERSION)
 
 setup-zizmor:
-	command -v uv >/dev/null
-	UV_TOOL_BIN_DIR="$(TOOLS_BIN)" uv tool install --force zizmor==$(ZIZMOR_VERSION)
+	@if command -v uv >/dev/null; then \
+	  UV_TOOL_BIN_DIR="$(TOOLS_BIN)" uv tool install --force zizmor==$(ZIZMOR_VERSION); \
+	elif command -v pipx >/dev/null; then \
+	  PIPX_BIN_DIR="$(TOOLS_BIN)" pipx install --force zizmor==$(ZIZMOR_VERSION); \
+	else \
+	  echo "uv or pipx is required to install zizmor"; exit 1; \
+	fi
 
 check-shellcheck:
 	command -v shellcheck >/dev/null
@@ -79,12 +84,12 @@ install: build
 
 fmt:
 	"$(TOOLS_BIN)/gofumpt" -w cmd internal migrations tools
-	"$(TOOLS_BIN)/gci" write -s standard -s default -s "prefix(github.com/HappyOnigiri/WX)" cmd internal tools
+	find cmd internal tools -type f -name '*.go' -print0 | xargs -0 "$(TOOLS_BIN)/gci" write -s standard -s default -s "prefix(github.com/HappyOnigiri/WX)"
 
 fmt-check:
 	@test -x "$(TOOLS_BIN)/gofumpt" -a -x "$(TOOLS_BIN)/gci" || { echo "pinned formatters are missing; run make setup"; exit 1; }
 	@test -z "$$($(TOOLS_BIN)/gofumpt -l cmd internal migrations tools)" || { $(TOOLS_BIN)/gofumpt -l cmd internal migrations tools; echo "run make fmt"; exit 1; }
-	"$(TOOLS_BIN)/gci" diff -s standard -s default -s "prefix(github.com/HappyOnigiri/WX)" cmd internal tools
+	find cmd internal tools -type f -name '*.go' -print0 | xargs -0 "$(TOOLS_BIN)/gci" diff -s standard -s default -s "prefix(github.com/HappyOnigiri/WX)"
 
 vet:
 	$(GO) vet ./...
