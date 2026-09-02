@@ -113,6 +113,98 @@ func TestReadPatternsIgnoresWhitespaceAndComments(t *testing.T) {
 	}
 }
 
+func TestInspectRepositoryFailsClosedAtGitMetadataBoundaries(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "main")
+	common := filepath.Join(main, ".git")
+	if err := os.MkdirAll(common, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	script := `#!/bin/sh
+case "$WX_DISCOVERY_MODE" in
+  worktree-fail) exit 1 ;;
+  empty) exit 0 ;;
+esac
+if [ "$1 $2" = "worktree list" ]; then
+  printf 'worktree %s\000' "$WX_DISCOVERY_MAIN"
+  exit 0
+fi
+if [ "$WX_DISCOVERY_MODE" = "common-fail" ]; then
+  exit 1
+fi
+printf '%s\n' "$WX_DISCOVERY_COMMON"
+`
+	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("WX_DISCOVERY_MAIN", main)
+	t.Setenv("WX_DISCOVERY_COMMON", common)
+	discoverer := Discoverer{Git: &gitx.Runner{Timeout: time.Second}, Config: config.Defaults()}
+
+	t.Setenv("WX_DISCOVERY_MODE", "worktree-fail")
+	if _, err := discoverer.repositoryWorkspace(context.Background(), main); err == nil {
+		t.Fatal("repository workspace ignored worktree-list failure")
+	}
+	for _, test := range []struct {
+		name, mode, mainPath, commonPath string
+	}{
+		{name: "worktree command", mode: "worktree-fail", mainPath: main, commonPath: common},
+		{name: "missing main record", mode: "empty", mainPath: main, commonPath: common},
+		{name: "missing main path", mainPath: filepath.Join(root, "missing-main"), commonPath: common},
+		{name: "common command", mode: "common-fail", mainPath: main, commonPath: common},
+		{name: "missing common path", mainPath: main, commonPath: filepath.Join(root, "missing-common")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("WX_DISCOVERY_MODE", test.mode)
+			t.Setenv("WX_DISCOVERY_MAIN", test.mainPath)
+			t.Setenv("WX_DISCOVERY_COMMON", test.commonPath)
+			if _, err := discoverer.inspectRepo(context.Background(), main, "."); err == nil {
+				t.Fatal("invalid Git metadata was accepted")
+			}
+		})
+	}
+}
+
+func TestMultiRepositoryDiscoveryPropagatesTraversalContextAndRepositoryErrors(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Discovery.Timeout.Duration = time.Second
+	discoverer := Discoverer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg}
+	root := t.TempDir()
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := discoverer.multiWorkspace(canceled, root); err == nil {
+		t.Fatal("canceled discovery succeeded")
+	}
+	if _, err := discoverer.multiWorkspace(context.Background(), filepath.Join(root, "missing")); err == nil {
+		t.Fatal("missing discovery root succeeded")
+	}
+
+	repository := filepath.Join(root, "repository")
+	if err := os.MkdirAll(filepath.Join(repository, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if _, err := discoverer.multiWorkspace(context.Background(), root); err == nil {
+		t.Fatal("repository inspection failure was ignored")
+	}
+
+	loop := filepath.Join(root, "pattern-loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadPatterns(loop); err == nil {
+		t.Fatal("pattern symlink loop was treated as a missing file")
+	}
+}
+
 func initDiscoveryRepository(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o700); err != nil {

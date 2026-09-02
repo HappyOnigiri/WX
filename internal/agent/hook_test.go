@@ -30,8 +30,18 @@ func (h *recordingHandler) Handle(_ context.Context, method string, _ json.RawMe
 	return map[string]bool{"ok": true}, nil
 }
 
+func shortHookSocketPath(t *testing.T) string {
+	t.Helper()
+	directory, err := os.MkdirTemp("/tmp", "wx-agent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	return filepath.Join(directory, "wxd.sock")
+}
+
 func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	socket := shortHookSocketPath(t)
 	handler := &recordingHandler{}
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &rpc.Server{Socket: socket, Handler: handler}
@@ -129,7 +139,7 @@ func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
 }
 
 func TestRecordedClaudeAndCodexHookPayloads(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	socket := shortHookSocketPath(t)
 	handler := &recordingHandler{}
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &rpc.Server{Socket: socket, Handler: handler}

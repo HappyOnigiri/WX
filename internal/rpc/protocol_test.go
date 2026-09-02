@@ -385,6 +385,7 @@ func TestClientValidatesEveryResponseBoundary(t *testing.T) {
 		result any
 	}{
 		{name: "request marshal", params: make(chan int)},
+		{name: "missing response", params: map[string]int{"value": 1}},
 		{name: "protocol", reply: func(req Request) any { return Response{Version: ProtocolVersion + 1, ID: req.ID} }},
 		{name: "id", reply: func(Request) any { return Response{Version: ProtocolVersion, ID: "different"} }},
 		{name: "rpc error", reply: func(req Request) any {
@@ -433,6 +434,56 @@ func TestInvokeReportsHandlerAndEncodingErrors(t *testing.T) {
 	}
 	if _, rpcErr := server.invoke(context.Background(), Request{Method: "encode"}); rpcErr == nil || rpcErr.Code != "ENCODE_FAILED" {
 		t.Fatalf("encoding RPC error=%+v", rpcErr)
+	}
+}
+
+func TestServerPropagatesSocketSetupAndAddressFailures(t *testing.T) {
+	blockingParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingParent, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Server{Socket: filepath.Join(blockingParent, "wxd.sock"), Handler: echoHandler{}}).Serve(context.Background()); err == nil {
+		t.Fatal("server created a socket beneath a regular file")
+	}
+
+	directory, err := os.MkdirTemp("/tmp", "wx-rpc-long-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	tooLong := filepath.Join(directory, strings.Repeat("s", 180))
+	if err := (&Server{Socket: tooLong, Handler: echoHandler{}}).Serve(context.Background()); err == nil {
+		t.Fatal("server accepted a Unix socket path beyond platform limits")
+	}
+}
+
+func TestDurableIdempotencyPersistsHandlerErrors(t *testing.T) {
+	durable := &memoryDurableStore{}
+	server := &Server{Handler: errorHandler{}, Durable: durable}
+	call := func() Response {
+		serverSide, clientSide := net.Pipe()
+		done := make(chan struct{})
+		go func() {
+			server.serveConn(context.Background(), serverSide)
+			close(done)
+		}()
+		request := Request{Version: ProtocolVersion, ID: "request", Method: "error", IdempotencyKey: "error-key", Params: json.RawMessage(`{}`)}
+		if err := writeFrame(clientSide, request); err != nil {
+			t.Fatal(err)
+		}
+		var response Response
+		if err := readFrame(clientSide, &response); err != nil {
+			t.Fatal(err)
+		}
+		_ = clientSide.Close()
+		<-done
+		return response
+	}
+	for range 2 {
+		response := call()
+		if response.Error == nil || response.Error.Code != "REQUEST_FAILED" {
+			t.Fatalf("durable error response=%+v", response)
+		}
 	}
 }
 

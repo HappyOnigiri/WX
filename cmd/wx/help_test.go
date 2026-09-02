@@ -247,3 +247,14 @@ func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentPrefixAndCommandUsageFallbacks(t *testing.T) {
+	if _, _, _, err := parseAgentPrefix(nil); err == nil {
+		t.Fatal("missing agent command was accepted")
+	}
+	var output strings.Builder
+	commandUsage(&output, "not-a-command")
+	if !strings.Contains(output.String(), "Usage: wx") {
+		t.Fatalf("unknown command usage=%q", output.String())
+	}
+}

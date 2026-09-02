@@ -70,3 +70,27 @@ func TestDegradedHandlerAllowsOnlyReadOnlyDiagnostics(t *testing.T) {
 		t.Fatal("degraded mutating method succeeded")
 	}
 }
+
+func TestHandlerRoutesAgentRegistrationAndConfigReload(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	if _, err := store.CreateSlotSession(context.Background(), state.Slot{ID: "slot", Path: filepath.Join(root, "slot"), State: "LEASED"}, nil, state.Session{ID: "session", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	handler := Handler{Manager: manager}
+	if _, err := handler.Handle(context.Background(), "RegisterAgentProcess", json.RawMessage(`{"session_id":"session","token":"token","agent_pid":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.Handle(context.Background(), "ReloadConfig", nil); err != nil {
+		t.Fatal(err)
+	}
+}

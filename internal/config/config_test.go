@@ -334,3 +334,63 @@ func TestLoadReportsNormalizationAndValidationErrors(t *testing.T) {
 		t.Fatalf("empty YAML keys=%v", keys)
 	}
 }
+
+func TestDerivedPathsFailClosedWithoutHome(t *testing.T) {
+	previousHome, hadHome := os.LookupEnv("HOME")
+	if err := os.Unsetenv("HOME"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadHome {
+			_ = os.Setenv("HOME", previousHome)
+		} else {
+			_ = os.Unsetenv("HOME")
+		}
+	})
+	for name, operation := range map[string]func() error{
+		"config path": func() error { _, err := Path(); return err },
+		"state path":  func() error { _, err := StatePath(); return err },
+		"socket path": func() error { _, err := SocketPath(); return err },
+		"log path":    func() error { _, err := LogPath(); return err },
+		"expand home": func() error { _, err := ExpandHome("$HOME/wx"); return err },
+		"load raw":    func() error { _, err := LoadRaw(); return err },
+		"save":        func() error { return Save(Config{}) },
+	} {
+		if err := operation(); err == nil {
+			t.Errorf("%s succeeded without HOME", name)
+		}
+	}
+}
+
+func TestConfigPathShapeAndWorkspaceCollisionFailures(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(configPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRaw(); err == nil {
+		t.Fatal("config directory was read as a regular config file")
+	}
+	if err := Save(Config{}); err == nil {
+		t.Fatal("config directory was replaced by a config file")
+	}
+
+	real := filepath.Join(home, "real-workspace")
+	alias := filepath.Join(home, "workspace-alias")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Defaults()
+	cfg.Storage.WorktreeRoot = home
+	cfg.Workspaces = map[string]Workspace{real: {}, alias: {}}
+	if err := NormalizePaths(&cfg); err == nil || !strings.Contains(err.Error(), "workspace overrides collide") {
+		t.Fatalf("workspace collision error=%v", err)
+	}
+}

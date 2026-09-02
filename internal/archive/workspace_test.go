@@ -508,6 +508,20 @@ func writeWorkspaceArchive(t *testing.T, ownershipRoot, sessionID string, header
 	}
 }
 
+func TestPruneWorkspaceRootPropagatesClosedRootFailure(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneWorkspaceRoot(root, ".", nil); err == nil {
+		t.Fatal("pruning through a closed root succeeded")
+	}
+}
+
 func writeWorkspaceTestFile(t *testing.T, name, contents string, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {

@@ -2148,6 +2148,98 @@ func TestRestoreActivationPreservesParentMappingAtEveryHandoffFailure(t *testing
 	}
 }
 
+func TestRPCIdempotencyPropagatesReservationAndCompletionStorageFaults(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	expiry := time.Now().Add(time.Hour)
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_rpc_reservation BEFORE INSERT ON rpc_idempotency BEGIN SELECT RAISE(ABORT,'reservation fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := store.BeginRPCRequest(ctx, "reservation", "Mutate", `{}`, expiry); err == nil {
+		t.Fatal("RPC reservation storage fault was ignored")
+	}
+	if _, err := store.db.Exec(`DROP TRIGGER fail_rpc_reservation`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "completion", "Mutate", `{}`, expiry); err != nil || !execute {
+		t.Fatalf("begin completion execute=%v err=%v", execute, err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_rpc_completion BEFORE UPDATE ON rpc_idempotency BEGIN SELECT RAISE(ABORT,'completion fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompleteRPCRequest(ctx, "completion", "Mutate", `{}`, nil, "", "", expiry); err == nil {
+		t.Fatal("RPC completion storage fault was ignored")
+	}
+	if _, err := store.db.Exec(`DROP TRIGGER fail_rpc_completion`); err != nil {
+		t.Fatal(err)
+	}
+
+	paramsHash := rpcParamsHash(`{}`)
+	if _, err := store.db.Exec(`INSERT INTO rpc_idempotency(idempotency_key,method,params,result,error_code,error_message,completed_at,expires_at,state) VALUES('unknown','Mutate',?,NULL,NULL,NULL,?,?, 'UNKNOWN')`, paramsHash, now(), FormatTime(expiry)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := store.BeginRPCRequest(ctx, "unknown", "Mutate", `{}`, expiry); err == nil || !strings.Contains(err.Error(), "unknown idempotency reservation state") {
+		t.Fatalf("unknown reservation state error=%v", err)
+	}
+
+	blockingBackupDirectory := store.path + ".backups"
+	if err := os.WriteFile(blockingBackupDirectory, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Backup(ctx, 1, time.Hour); err == nil {
+		t.Fatal("backup succeeded through a regular-file backup directory")
+	}
+}
+
+func TestJobClaimRollsBackWhenClaimedRowOrAuditEventChanges(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		trigger string
+	}{
+		{
+			name:    "claimed row disappears",
+			trigger: `CREATE TRIGGER remove_claimed_job AFTER UPDATE OF state ON jobs WHEN NEW.state='RUNNING' BEGIN DELETE FROM jobs WHERE id=NEW.id; END`,
+		},
+		{
+			name:    "audit event fails",
+			trigger: `CREATE TRIGGER fail_claim_event BEFORE INSERT ON events WHEN NEW.kind='job_started' BEGIN SELECT RAISE(ABORT,'event fault'); END`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			job, err := store.CreateJob(context.Background(), "PREPARE", "", "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(test.trigger); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ClaimJob(context.Background(), job.ID, "worker"); err == nil {
+				t.Fatal("fault-injected job claim succeeded")
+			}
+			var state string
+			if err := store.db.QueryRow(`SELECT state FROM jobs WHERE id=?`, job.ID).Scan(&state); err != nil || state != "PENDING" {
+				t.Fatalf("failed claim did not roll back job: state=%q err=%v", state, err)
+			}
+		})
+	}
+}
+
+func TestReadySlotsRejectsCorruptGenerationType(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	job, err := store.CreateStandby(context.Background(), Slot{ID: "ready-corrupt", WorkspaceID: "workspace", Generation: 1, Path: "/ready-corrupt", State: "READY"}, nil)
+	if err != nil || job.ID == "" {
+		t.Fatalf("create standby job=%+v err=%v", job, err)
+	}
+	if _, err := store.db.Exec(`UPDATE slots SET generation='not-an-integer' WHERE id='ready-corrupt'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadySlots(context.Background(), "workspace"); err == nil {
+		t.Fatal("READY slot with corrupt generation type was decoded")
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"))

@@ -1219,3 +1219,30 @@ func TestScheduleLeavesOverflowForDurableRecovery(t *testing.T) {
 		t.Fatalf("queued work=%+v", queued)
 	}
 }
+
+func TestManagerHandlesUnavailableRootAndZeroLifecycleInterval(t *testing.T) {
+	root := t.TempDir()
+	blockedRoot := filepath.Join(root, "blocked-root")
+	if err := os.WriteFile(blockedRoot, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = blockedRoot
+	cfg.Pool.PreparationConcurrency = 0
+	manager := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if len(manager.roots) != 0 {
+		t.Fatalf("unavailable worktree root was registered: %v", manager.roots)
+	}
+	manager.Close()
+
+	lifecycle := testManager(t, cfg, store)
+	lifecycle.cfg.Discovery.ReconcileInterval.Duration = 0
+	lifecycle.cancel()
+	lifecycle.maintainLifecycle()
+	lifecycle.Close()
+}
