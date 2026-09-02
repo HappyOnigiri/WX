@@ -7,8 +7,28 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+    - id: setup-go
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
       with:
         go-version-file: go.mod
-        cache: true
-        cache-dependency-path: go.sum
+        # setup-go's built-in key has no caller-provided namespace. Use the
+        # official setup action for toolchain installation and an explicit
+        # cache action below so each check owns a distinct cache key.
+        cache: false
+    - id: go-cache-paths
+      name: Locate Go caches
+      shell: bash
+      run: |
+        {
+          echo "module=$(go env GOMODCACHE)"
+          echo "build=$(go env GOCACHE)"
+        } >> "$GITHUB_OUTPUT"
+    - name: Restore and save job-scoped Go cache
+      uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # v4.2.2
+      with:
+        path: |
+          ${{ steps.go-cache-paths.outputs.module }}
+          ${{ steps.go-cache-paths.outputs.build }}
+        key: wx-go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ inputs.cache-name }}-${{ hashFiles('go.sum') }}
+        restore-keys: |
+          wx-go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ inputs.cache-name }}-

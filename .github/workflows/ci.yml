@@ -198,10 +198,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
-      RESULTS: ${{ join(needs.*.result, ',') }}
+      STATIC_RESULT: ${{ needs.static.result }}
+      DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
+      INTEGRATION_RESULT: ${{ needs.integration.result }}
+      QUALITY_RESULT: ${{ needs.quality.result }}
+      MUTATION_RESULT: ${{ needs.mutation.result }}
     steps:
       - name: Require every CI job
         run: |
-          case ",$RESULTS," in
-            *,failure,*|*,cancelled,*) exit 1 ;;
-          esac
+          # Every job listed in needs is required. There is no optional
+          # availability branch for this aggregate check.
+          for result in "$STATIC_RESULT" "$DARWIN_BUILD_RESULT" "$INTEGRATION_RESULT" "$QUALITY_RESULT" "$MUTATION_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "required CI dependency did not succeed: $result" >&2
+              exit 1
+            fi
+          done

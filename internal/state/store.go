@@ -369,7 +369,47 @@ func (s *Store) UpsertWorkspace(ctx context.Context, w discovery.Workspace) erro
 	return err
 }
 
+// CanonicalWorkspace returns the workspace identity already registered for a
+// repository common directory. Repository workspace IDs are derived from the
+// common directory for new registrations, but older databases may contain an
+// ID derived from the former main-worktree path. Keeping that existing ID is
+// important: slot paths contain it, and changing it would strand the existing
+// pool and create a second workspace after a main-worktree move.
+func (s *Store) CanonicalWorkspace(ctx context.Context, w discovery.Workspace) (discovery.Workspace, error) {
+	if w.Kind != "repository" || len(w.Repositories) != 1 {
+		return w, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT w.id FROM workspaces w JOIN workspace_repositories wr ON wr.workspace_id=w.id JOIN repositories r ON r.id=wr.repository_id WHERE w.kind='repository' AND r.common_git_dir=? ORDER BY w.id`, w.Repositories[0].CommonDir)
+	if err != nil {
+		return w, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return w, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return w, err
+	}
+	if len(ids) > 1 {
+		return w, fmt.Errorf("Git common directory %s belongs to multiple registered workspaces", w.Repositories[0].CommonDir)
+	}
+	if len(ids) == 1 {
+		w.ID = domain.WorkspaceID(ids[0])
+	}
+	return w, nil
+}
+
 func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Workspace) (int, error) {
+	canonical, err := s.CanonicalWorkspace(ctx, w)
+	if err != nil {
+		return 0, err
+	}
+	w = canonical
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -503,6 +543,11 @@ func insertCurrentSessionRepositories(ctx context.Context, tx *sql.Tx, sessionID
 
 func copySessionRepositories(ctx context.Context, tx *sql.Tx, sessionID, parentSessionID string) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal) SELECT ?,repository_id,relative_path,ordinal FROM session_repositories WHERE session_id=? ORDER BY ordinal`, sessionID, parentSessionID)
+	return err
+}
+
+func updateWorkspaceLeaseTimestamps(ctx context.Context, tx *sql.Tx, workspaceID, leasedAt string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id IN (SELECT repository_id FROM workspace_repositories WHERE workspace_id=?)`, leasedAt, workspaceID)
 	return err
 }
 
@@ -1224,6 +1269,9 @@ func (s *Store) BindFreshResumeSlot(ctx context.Context, sessionID, parentSessio
 	if err := insertCurrentSessionRepositories(ctx, tx, sessionID, workspaceID, sessionID); err != nil {
 		return Job{}, err
 	}
+	if err := updateWorkspaceLeaseTimestamps(ctx, tx, workspaceID, now()); err != nil {
+		return Job{}, err
+	}
 	if err := insertJob(ctx, tx, job); err != nil {
 		return Job{}, err
 	}
@@ -1316,6 +1364,9 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, 
 		}
 	}
 	if err := copySessionRepositories(ctx, tx, sessionID, parentSessionID); err != nil {
+		return Job{}, err
+	}
+	if err := updateWorkspaceLeaseTimestamps(ctx, tx, workspaceID, now()); err != nil {
 		return Job{}, err
 	}
 	if err := insertJob(ctx, tx, job); err != nil {
@@ -1501,6 +1552,14 @@ func (s *Store) Workspace(ctx context.Context, id string) (discovery.Workspace, 
 	return w, rows.Err()
 }
 
+func (s *Store) WorkspaceByRoot(ctx context.Context, root string) (discovery.Workspace, error) {
+	var id string
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM workspaces WHERE root_path=?`, root).Scan(&id); err != nil {
+		return discovery.Workspace{}, err
+	}
+	return s.Workspace(ctx, id)
+}
+
 func (s *Store) SessionWorkspace(ctx context.Context, sessionID string) (discovery.Workspace, error) {
 	var w discovery.Workspace
 	err := s.db.QueryRowContext(ctx, `SELECT w.id,w.root_path,w.kind FROM sessions se JOIN workspaces w ON w.id=se.workspace_id WHERE se.id=?`, sessionID).Scan(&w.ID, &w.Root, &w.Kind)
@@ -1648,6 +1707,31 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 	}
 	if unsafe > 0 {
 		return errors.New("workspace has active, ready, or unarchived slots")
+	}
+	var liveRecovery int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sessions WHERE workspace_id=? AND state<>'EXPIRED'`, id).Scan(&liveRecovery); err != nil {
+		return err
+	}
+	if liveRecovery > 0 {
+		return errors.New("workspace has live session mappings; expire recovery state before forgetting it")
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM snapshots sn JOIN sessions se ON se.id=sn.session_id WHERE se.workspace_id=?`, id).Scan(&liveRecovery); err != nil {
+		return err
+	}
+	if liveRecovery > 0 {
+		return errors.New("workspace has recovery snapshots; expire recovery state before forgetting it")
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM workspace_snapshots ws JOIN sessions se ON se.id=ws.session_id WHERE se.workspace_id=?`, id).Scan(&liveRecovery); err != nil {
+		return err
+	}
+	if liveRecovery > 0 {
+		return errors.New("workspace has a workspace recovery snapshot; expire recovery state before forgetting it")
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM jobs j WHERE j.state IN ('PENDING','RUNNING') AND (j.workspace_id=? OR EXISTS (SELECT 1 FROM sessions se WHERE se.id=j.session_id AND se.workspace_id=?))`, id, id).Scan(&liveRecovery); err != nil {
+		return err
+	}
+	if liveRecovery > 0 {
+		return errors.New("workspace has pending recovery jobs; wait for them before forgetting it")
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE slots SET workspace_id=NULL WHERE workspace_id=?`, id); err != nil {
 		return err

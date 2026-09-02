@@ -51,8 +51,39 @@ func (d *Discoverer) repositoryWorkspace(ctx context.Context, root string) (Work
 		return Workspace{}, err
 	}
 	w := Workspace{Root: repo.MainPath, Kind: "repository", Repositories: []Repository{repo}}
-	w.ID = domain.WorkspaceID(domain.StableID(string(w.Root)))
+	// A repository workspace must survive a move of its main worktree. The
+	// canonical common directory is the Git identity that remains stable while
+	// the worktree path changes (for example, for a bare repository with linked
+	// worktrees), so do not derive the workspace ID from the display path.
+	w.ID = domain.WorkspaceID(domain.StableID("repository-workspace", string(repo.CommonDir)))
 	return w, nil
+}
+
+// ResolveFromCommonDir rediscovers a repository whose main worktree path may
+// have moved. Git keeps the worktree registry rooted at its common directory,
+// so asking Git from that directory lets the daemon find the current main path
+// without trusting the path stored in SQLite.
+func (d *Discoverer) ResolveFromCommonDir(ctx context.Context, commonDir string) (Workspace, error) {
+	common, err := domain.Canonicalize(commonDir)
+	if err != nil {
+		return Workspace{}, err
+	}
+	res, err := d.Git.Run(ctx, string(common), "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return Workspace{}, err
+	}
+	main := firstWorktreePath(res.Stdout)
+	if main == "" {
+		return Workspace{}, errors.New("git did not report a main worktree from its common directory")
+	}
+	workspace, err := d.repositoryWorkspace(ctx, main)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if len(workspace.Repositories) != 1 || workspace.Repositories[0].CommonDir != common {
+		return Workspace{}, errors.New("Git common directory identity changed during rediscovery")
+	}
+	return workspace, nil
 }
 
 func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Repository, error) {
@@ -60,14 +91,7 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 	if err != nil {
 		return Repository{}, err
 	}
-	fields := strings.Split(res.Stdout, "\x00")
-	var main string
-	for _, field := range fields {
-		if strings.HasPrefix(field, "worktree ") {
-			main = strings.TrimPrefix(field, "worktree ")
-			break
-		}
-	}
+	main := firstWorktreePath(res.Stdout)
 	if main == "" {
 		return Repository{}, errors.New("git did not report a main worktree")
 	}
@@ -88,6 +112,15 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 		branch = override.DefaultBranch
 	}
 	return Repository{ID: domain.RepositoryID(domain.StableID(string(common))), MainPath: mainPath, CommonDir: common, RelativePath: filepath.Clean(relative), DefaultBranch: branch}, nil
+}
+
+func firstWorktreePath(output string) string {
+	for _, field := range strings.Split(output, "\x00") {
+		if strings.HasPrefix(field, "worktree ") {
+			return strings.TrimPrefix(field, "worktree ")
+		}
+	}
+	return ""
 }
 
 func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace, error) {

@@ -407,6 +407,33 @@ func (m *Manager) artifactDiagnostics(ctx context.Context) map[string]any {
 	}
 }
 
+func (m *Manager) resolveRegisteredWorkspace(ctx context.Context, root string, discoverer *discovery.Discoverer) (discovery.Workspace, error) {
+	workspaceRecord, err := discoverer.Resolve(ctx, root)
+	if err == nil {
+		return m.store.CanonicalWorkspace(ctx, workspaceRecord)
+	}
+
+	// The stored root is a cache of the last observed main-worktree path. If it
+	// moved, rediscover a repository from its canonical Git common directory
+	// before treating the registry entry as lost. This keeps existing slots and
+	// session mappings attached to the same workspace identity.
+	registered, lookupErr := m.store.WorkspaceByRoot(ctx, root)
+	if lookupErr != nil {
+		return discovery.Workspace{}, err
+	}
+	if registered.Kind != "repository" || len(registered.Repositories) != 1 {
+		return discovery.Workspace{}, err
+	}
+	recovered, commonErr := discoverer.ResolveFromCommonDir(ctx, string(registered.Repositories[0].CommonDir))
+	if commonErr != nil {
+		return discovery.Workspace{}, fmt.Errorf("rediscover workspace root %s: %w; common-directory recovery failed: %v", root, err, commonErr)
+	}
+	if len(recovered.Repositories) != 1 || recovered.Repositories[0].CommonDir != registered.Repositories[0].CommonDir {
+		return discovery.Workspace{}, fmt.Errorf("rediscover workspace root %s: %w; common-directory identity did not match", root, err)
+	}
+	return m.store.CanonicalWorkspace(ctx, recovered)
+}
+
 func (m *Manager) reconcileRegistry(ctx context.Context) {
 	roots, err := m.store.WorkspaceRoots(ctx)
 	if err != nil {
@@ -415,7 +442,7 @@ func (m *Manager) reconcileRegistry(ctx context.Context) {
 	}
 	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 	for _, root := range roots {
-		workspaceRecord, err := discoverer.Resolve(ctx, root)
+		workspaceRecord, err := m.resolveRegisteredWorkspace(ctx, root, &discoverer)
 		if err != nil {
 			m.log.Error("workspace rediscovery failed", "workspace_root", root, "error", err)
 			continue
@@ -651,6 +678,10 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []string, agent string, pid int) (Lease, error) {
 	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 	w, err := discoverer.Resolve(ctx, cwd)
+	if err != nil {
+		return Lease{}, err
+	}
+	w, err = m.store.CanonicalWorkspace(ctx, w)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -1036,6 +1067,9 @@ func (m *Manager) PrepareFreshResume(ctx context.Context, id, token, agentID, cw
 		}
 		discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 		w, err = discoverer.Resolve(ctx, cwd)
+		if err == nil {
+			w, err = m.store.CanonicalWorkspace(ctx, w)
+		}
 	case err != nil:
 		return fail("FRESH_LOOKUP_FAILED", err)
 	case prior.State != "EXPIRED":
@@ -2017,7 +2051,7 @@ func (m *Manager) registrationDiagnostics(ctx context.Context) map[string]any {
 	}
 	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 	for _, root := range roots {
-		workspaceRecord, resolveErr := discoverer.Resolve(ctx, root)
+		workspaceRecord, resolveErr := m.resolveRegisteredWorkspace(ctx, root, &discoverer)
 		if resolveErr != nil {
 			invalid = append(invalid, map[string]string{"workspace_root": root, "error": resolveErr.Error()})
 			continue

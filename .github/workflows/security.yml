@@ -62,10 +62,17 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
-      RESULTS: ${{ join(needs.*.result, ',') }}
+      LOCAL_SECURITY_RESULT: ${{ needs.local-security.result }}
+      CODEQL_RESULT: ${{ needs.codeql.result }}
     steps:
-      - name: Require every available security job
+      - name: Require every security job
         run: |
-          case ",$RESULTS," in
-            *,failure,*|*,cancelled,*) exit 1 ;;
-          esac
+          # Both dependencies are required for this workflow. Availability
+          # exceptions must be represented by a separate, explicitly allowed
+          # job instead of turning a skipped dependency into success here.
+          for result in "$LOCAL_SECURITY_RESULT" "$CODEQL_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "required security dependency did not succeed: $result" >&2
+              exit 1
+            fi
+          done

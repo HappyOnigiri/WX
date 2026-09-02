@@ -125,6 +125,148 @@ func TestSessionRepositoryMembershipSurvivesWorkspaceReconciliation(t *testing.T
 	}
 }
 
+func TestCanonicalWorkspaceKeepsSlotsWhenMainWorktreeMoves(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	oldMain := filepath.Join(t.TempDir(), "old-main")
+	newMain := filepath.Join(t.TempDir(), "new-main")
+	common := filepath.Join(t.TempDir(), "common.git")
+	registered := discovery.Workspace{
+		ID:   "old-workspace-id",
+		Root: domain.CanonicalPath(oldMain), Kind: "repository",
+		Repositories: []discovery.Repository{{
+			ID: "repository", MainPath: domain.CanonicalPath(oldMain), CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main",
+		}},
+	}
+	if err := store.UpsertWorkspace(ctx, registered); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateStandby(ctx, Slot{ID: "standby", WorkspaceID: string(registered.ID), Generation: 1, Path: filepath.Join(t.TempDir(), "standby"), State: "READY"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	discovered := registered
+	discovered.ID = "new-workspace-id"
+	discovered.Root = domain.CanonicalPath(newMain)
+	discovered.Repositories[0].MainPath = domain.CanonicalPath(newMain)
+	canonical, err := store.CanonicalWorkspace(ctx, discovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical.ID != registered.ID || canonical.Root != discovered.Root {
+		t.Fatalf("canonical workspace=%+v, want existing ID with moved root", canonical)
+	}
+	if _, err := store.UpsertWorkspaceGeneration(ctx, discovered); err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Workspaces != 1 {
+		t.Fatalf("workspace count=%d, want one registered identity", status.Workspaces)
+	}
+	updated, err := store.Workspace(ctx, string(registered.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Root != discovered.Root || updated.Repositories[0].MainPath != discovered.Repositories[0].MainPath {
+		t.Fatalf("updated workspace=%+v", updated)
+	}
+	if slots, err := store.ReadySlots(ctx, string(registered.ID)); err != nil || len(slots) != 1 || slots[0].ID != "standby" {
+		t.Fatalf("existing slots=%+v err=%v", slots, err)
+	}
+	if slots, err := store.ReadySlots(ctx, string(discovered.ID)); err != nil || len(slots) != 0 {
+		t.Fatalf("new identity unexpectedly has slots=%+v err=%v", slots, err)
+	}
+}
+
+func TestResumeBindingsUpdateAllRepositoryLeaseTimestamps(t *testing.T) {
+	tests := []struct {
+		name string
+		bind func(*testing.T, *Store, context.Context, string) error
+	}{
+		{
+			name: "native fresh resume",
+			bind: func(t *testing.T, store *Store, ctx context.Context, old string) error {
+				parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("parent")}
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
+					t.Fatal(err)
+				}
+				current := Session{ID: "current", SlotID: "current", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("current")}
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", Path: "/workspace/current", State: "UNBOUND"}, nil, current, ""); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, old); err != nil {
+					t.Fatal(err)
+				}
+				_, err := store.BindFreshResumeSlot(ctx, "current", "parent", "workspace", "agent", 1, []SlotRepository{{RepositoryID: "repository", WorktreePath: "/workspace/current/repository", State: "PREPARING", RequestedRef: "main", BaseOID: "head", Fingerprint: "fingerprint"}})
+				return err
+			},
+		},
+		{
+			name: "snapshot resume",
+			bind: func(t *testing.T, store *Store, ctx context.Context, old string) error {
+				parentRepos := []SlotRepository{{RepositoryID: "repository", WorktreePath: "/workspace/parent/repository", State: "READY", RequestedRef: "main", BaseOID: "head", Fingerprint: "fingerprint"}}
+				parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("parent")}
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/parent", State: "ARCHIVED"}, parentRepos, parent, ""); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
+					t.Fatal(err)
+				}
+				child := Session{ID: "child", SlotID: "child", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child")}
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", Path: "/workspace/child", State: "UNBOUND"}, nil, child, ""); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, old); err != nil {
+					t.Fatal(err)
+				}
+				_, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, nil)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			seedWorkspace(t, store)
+			ctx := context.Background()
+			secondSeen := now()
+			if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?)`, "repository-two", "/workspace/two", "/workspace/two.git", "main", secondSeen, secondSeen); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES(?,?,?,?)`, "workspace", "repository-two", "two", 1); err != nil {
+				t.Fatal(err)
+			}
+			oldTime := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+			old := FormatTime(oldTime)
+			if err := test.bind(t, store, ctx, old); err != nil {
+				t.Fatal(err)
+			}
+			for _, repositoryID := range []string{"repository", "repository-two"} {
+				var value sql.NullString
+				if err := store.db.QueryRowContext(ctx, `SELECT last_leased_at FROM repositories WHERE id=?`, repositoryID).Scan(&value); err != nil {
+					t.Fatal(err)
+				}
+				if !value.Valid {
+					t.Fatalf("resume binding did not lease repository %s", repositoryID)
+				}
+				leasedAt, err := time.Parse(time.RFC3339Nano, value.String)
+				if err != nil {
+					t.Fatalf("repository %s last_leased_at=%q: %v", repositoryID, value.String, err)
+				}
+				if !leasedAt.After(oldTime) {
+					t.Fatalf("repository %s last_leased_at=%s, want after %s", repositoryID, leasedAt, oldTime)
+				}
+			}
+		})
+	}
+}
+
 func TestWorkspaceSnapshotMetadataGatesMultiRepositoryArchive(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -924,6 +1066,11 @@ func TestBindFreshResumeSlotRollsBackAtEveryPersistenceBoundary(t *testing.T) {
 			}
 		}},
 		{name: "repository insert", repos: []SlotRepository{{RepositoryID: "missing", WorktreePath: "/wx/current/repo", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}}},
+		{name: "lease timestamp", repos: []SlotRepository{{RepositoryID: "repository", WorktreePath: "/wx/current/repo", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}}, mutate: func(t *testing.T, store *Store) {
+			if _, err := store.db.Exec(`CREATE TRIGGER fail_fresh_lease_timestamp BEFORE UPDATE OF last_leased_at ON repositories BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{name: "job insert", mutate: func(t *testing.T, store *Store) {
 			if _, err := store.db.Exec(`CREATE TRIGGER fail_fresh_job BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
 				t.Fatal(err)
@@ -1301,6 +1448,85 @@ func TestDrainArchiveAndForgetAdministrativePaths(t *testing.T) {
 	}
 	if _, err := store.Workspace(ctx, "workspace"); err == nil {
 		t.Fatal("forgotten workspace still exists")
+	}
+}
+
+func TestForgetWorkspaceRefusesLiveRecoveryMappings(t *testing.T) {
+	tests := []struct {
+		name  string
+		seed  func(*testing.T, *Store, context.Context)
+		want  string
+		clear func(*testing.T, *Store, context.Context)
+	}{
+		{
+			name: "session mapping",
+			seed: func(t *testing.T, store *Store, ctx context.Context) {
+				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("token")}
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "live session mappings",
+			clear: func(t *testing.T, store *Store, ctx context.Context) {
+				if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED' WHERE id='session'`); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "repository snapshot",
+			seed: func(t *testing.T, store *Store, ctx context.Context) {
+				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("token")}
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.SaveSnapshot(ctx, Snapshot{ID: "snapshot", SessionID: "session", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "recovery snapshots",
+			clear: func(t *testing.T, store *Store, ctx context.Context) {
+				if err := store.ExpireSessionSnapshots(ctx, "session"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "workspace snapshot",
+			seed: func(t *testing.T, store *Store, ctx context.Context) {
+				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("token")}
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.SaveWorkspaceSnapshot(ctx, WorkspaceSnapshot{SessionID: "session", ArchivePath: "/workspace/snapshot.tar", SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "a workspace recovery snapshot",
+			clear: func(t *testing.T, store *Store, ctx context.Context) {
+				if err := store.ExpireSessionSnapshots(ctx, "session"); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			seedWorkspace(t, store)
+			ctx := context.Background()
+			test.seed(t, store, ctx)
+			if err := store.ForgetWorkspace(ctx, "/workspace"); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("forget error=%v, want refusal containing %q", err, test.want)
+			}
+			if _, err := store.Workspace(ctx, "workspace"); err != nil {
+				t.Fatalf("refused forget removed workspace: %v", err)
+			}
+			test.clear(t, store, ctx)
+			if err := store.ForgetWorkspace(ctx, "/workspace"); err != nil {
+				t.Fatalf("forget after recovery cleanup: %v", err)
+			}
+		})
 	}
 }
 
@@ -2060,6 +2286,7 @@ func TestResumeBindingRollsBackAtEveryPersistenceBoundary(t *testing.T) {
 		{name: "session update", trigger: `CREATE TRIGGER fail_resume_session_update BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT,'fault'); END`},
 		{name: "slot update", trigger: `CREATE TRIGGER fail_resume_slot_update BEFORE UPDATE ON slots BEGIN SELECT RAISE(ABORT,'fault'); END`},
 		{name: "repository insert", trigger: `CREATE TRIGGER fail_resume_repository_insert BEFORE INSERT ON slot_repositories BEGIN SELECT RAISE(ABORT,'fault'); END`},
+		{name: "lease timestamp", trigger: `CREATE TRIGGER fail_resume_lease_timestamp BEFORE UPDATE OF last_leased_at ON repositories BEGIN SELECT RAISE(ABORT,'fault'); END`},
 		{name: "job insert", trigger: `CREATE TRIGGER fail_resume_job_insert BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'fault'); END`},
 	}
 	for _, test := range tests {
