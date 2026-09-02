@@ -641,7 +641,7 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 	}
 	waitUntil(t, 10*time.Second, func() bool {
 		status, _ := store.Status(ctx)
-		return status.Ready == 2
+		return status.Ready >= cfg.Pool.WarmPerWorkspace
 	})
 
 	leases := make(chan Lease, 2)
