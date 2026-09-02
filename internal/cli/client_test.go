@@ -127,7 +127,11 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 	})
 	waitForPath(t, pidFile)
 	var agentPID int
-	waitUntilCLI(t, 3*time.Second, func() bool {
+	// Coverage, race, and mutation jobs execute this helper while the machine is
+	// saturated. The agent may already be running before the helper process gets
+	// enough CPU to complete its registration RPC, so allow the same bounded
+	// startup window used by the other process-level tests.
+	waitUntilCLI(t, 10*time.Second, func() bool {
 		handler.mu.Lock()
 		defer handler.mu.Unlock()
 		agentPID = handler.agentPID
