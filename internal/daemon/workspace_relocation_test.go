@@ -69,6 +69,9 @@ exit 1
 	cfg.Readiness.Timeout.Duration = time.Second
 	m := testManager(t, cfg, store)
 	defer m.Close()
+	// The fake Git path is exercised by coverage and race instrumentation; leave
+	// enough room for process startup while keeping the production timeout intact.
+	m.git.SetTimeout(5 * time.Second)
 	ctx := context.Background()
 	oldWorkspaceID := domain.WorkspaceID("old-workspace-id")
 	repositoryID := domain.RepositoryID(domain.StableID(common))

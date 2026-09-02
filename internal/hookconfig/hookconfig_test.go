@@ -250,6 +250,25 @@ func TestReadinessHookDocumentRejectsMalformedAndDisabledHooks(t *testing.T) {
 	}
 }
 
+func TestReadinessHookDocumentRequiresEachConfiguredEvent(t *testing.T) {
+	executable, err := CurrentExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := `{"disableAllHooks":false,"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"` + executable + ` hook SessionStart","disabled":false,"async":false,"once":false}]}]}}`
+	required := map[string]string{"SessionStart": "SessionStart", "UserPromptSubmit": "UserPromptSubmit"}
+	if readinessHookDocumentMatches([]byte(data), required, executable) {
+		t.Fatal("readiness hook document missing a required event was accepted")
+	}
+}
+
+func TestResolveHookExecutableRejectsBareWXWhenUnavailable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	if resolved, ok := resolveHookExecutable("wx"); ok || resolved != "" {
+		t.Fatalf("unavailable bare wx executable resolved to %q, ok=%v", resolved, ok)
+	}
+}
+
 func TestRegularHookPathRejectsUnsafeEntries(t *testing.T) {
 	root := t.TempDir()
 	regular := filepath.Join(root, "hooks.json")

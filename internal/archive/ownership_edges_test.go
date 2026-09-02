@@ -258,6 +258,12 @@ func TestRestoreRevalidatesOwnershipAtHandoffs(t *testing.T) {
 			if err == nil {
 				t.Fatal("restore succeeded after ownership proof was invalidated")
 			}
+			if !errors.Is(err, state.ErrOwnership) {
+				t.Fatalf("restore ownership error=%v", err)
+			}
+			if validator.calls < test.failAt {
+				t.Fatalf("ownership validator stopped at call %d, want at least %d", validator.calls, test.failAt)
+			}
 		})
 	}
 }
@@ -267,9 +273,10 @@ func TestRemoveMissingWorktreeReportsEveryHandoffFailure(t *testing.T) {
 		name       string
 		fault      string
 		occurrence int
+		want       string
 		setup      func(*testing.T, *Manager, discovery.Repository, string)
 	}{
-		{name: "common directory marker mismatch", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
+		{name: "common directory marker mismatch", want: "ownership marker", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
 			marker := filepath.Join(filepath.Dir(target), ".wx-owner-"+domain.StableID("worktree", filepath.Clean(target)))
 			if err := os.Remove(marker); err != nil {
 				t.Fatal(err)
@@ -283,19 +290,19 @@ func TestRemoveMissingWorktreeReportsEveryHandoffFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{name: "foreign lock reason", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
+		{name: "foreign lock reason", want: "lock reason", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
 			gitCommand(t, string(repo.MainPath), "worktree", "unlock", target)
 			gitCommand(t, string(repo.MainPath), "worktree", "lock", "--reason", "foreign", target)
 		}},
-		{name: "state proof before unlock", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
+		{name: "state proof before unlock", want: "state changed", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
 			manager.Ownership = rejectingOwnershipValidator{err: errors.New("state changed")}
 		}},
-		{name: "unlock failure", fault: " worktree unlock ", occurrence: 1},
-		{name: "post-unlock listing failure", fault: " worktree list --porcelain -z ", occurrence: 2},
-		{name: "revalidation state proof", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
+		{name: "unlock failure", fault: " worktree unlock ", occurrence: 1, want: "git worktree failed"},
+		{name: "post-unlock listing failure", fault: " worktree list --porcelain -z ", occurrence: 2, want: "git worktree failed"},
+		{name: "revalidation state proof", want: "state proof changed", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
 			manager.Ownership = &countingOwnershipValidator{failAt: 2}
 		}},
-		{name: "remove failure", fault: " worktree remove --force ", occurrence: 1},
+		{name: "remove failure", fault: " worktree remove --force ", occurrence: 1, want: "git worktree failed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository, repo, manager, worktreeRoot := archiveFixture(t)
@@ -313,8 +320,12 @@ func TestRemoveMissingWorktreeReportsEveryHandoffFailure(t *testing.T) {
 			if err := os.RemoveAll(target); err != nil {
 				t.Fatal(err)
 			}
-			if err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, target, head); err == nil {
+			err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, target, head)
+			if err == nil {
 				t.Fatal("missing worktree failure was ignored")
+			}
+			if test.want != "" && !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("missing worktree error=%v, want substring %q", err, test.want)
 			}
 		})
 	}

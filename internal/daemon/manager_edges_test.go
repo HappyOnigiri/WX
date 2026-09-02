@@ -54,6 +54,24 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
+func TestScheduleDropsWorkWhenCanceledQueueIsFull(t *testing.T) {
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	m := testManager(t, config.Defaults(), store)
+	defer m.Close()
+	for index := 0; index < cap(m.jobs); index++ {
+		m.jobs <- jobWork{id: fmt.Sprintf("queued-%d", index)}
+	}
+	m.cancel()
+	m.schedule(state.Job{ID: "dropped"})
+	if got := len(m.jobs); got != cap(m.jobs) {
+		t.Fatalf("canceled schedule changed queue length=%d, want %d", got, cap(m.jobs))
+	}
+}
+
 func TestNewPreparerKeepsRetiredRootForInFlightSlot(t *testing.T) {
 	base := t.TempDir()
 	oldRoot := filepath.Join(base, "old-root")

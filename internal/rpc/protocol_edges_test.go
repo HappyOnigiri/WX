@@ -1,9 +1,11 @@
 package rpc
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -11,6 +13,17 @@ import (
 type deadlineFaultConn struct {
 	net.Conn
 	readErr, deadlineErr error
+}
+
+type delayedJSON struct {
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (p delayedJSON) MarshalJSON() ([]byte, error) {
+	close(p.started)
+	<-p.release
+	return []byte(`{}`), nil
 }
 
 func (c deadlineFaultConn) SetReadDeadline(time.Time) error { return c.readErr }
@@ -59,24 +72,96 @@ func TestIdempotentCallStopsRetryAfterConnectedPeerCloses(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	accepted := make(chan struct{})
+	requestRead := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
+	serverErr := make(chan error, 1)
 	go func() {
 		conn, acceptErr := listener.Accept()
 		if acceptErr != nil {
+			serverErr <- acceptErr
 			return
 		}
-		close(accepted)
-		_ = conn.Close()
+		defer conn.Close()
+		var request Request
+		if err := readFrame(bufio.NewReader(conn), &request); err != nil {
+			serverErr <- err
+			return
+		}
+		if request.Method != "mutate" || request.IdempotencyKey != "stable-key" {
+			serverErr <- errors.New("unexpected idempotent request")
+			return
+		}
+		close(requestRead)
+		<-release
+		serverErr <- nil
+	}()
+	defer releaseNow()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- (Client{Socket: socket, Timeout: time.Second}).CallWithKey(ctx, "mutate", "stable-key", map[string]int{"value": 1}, nil)
+	}()
+	select {
+	case <-requestRead:
+	case err := <-serverErr:
+		t.Fatalf("server failed before request read: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive idempotent request")
+	}
+	cancel()
+	releaseNow()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("connected peer cancellation error=%v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("server request handling: %v", err)
+	}
+}
+
+func TestCallReturnsParentCancellationWhenRequestEncodingOutlivesIt(t *testing.T) {
+	socket := shortSocketPath(t, "deadline-during-encoding.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseNow()
+	serverDone := make(chan struct{})
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			defer conn.Close()
+			<-release
+		}
+		close(serverDone)
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	started := make(chan struct{})
+	result := make(chan error, 1)
 	go func() {
-		<-accepted
-		time.Sleep(5 * time.Millisecond)
-		cancel()
+		result <- (Client{Socket: socket, Timeout: time.Second}).Call(ctx, "mutate", delayedJSON{started: started, release: release}, nil)
 	}()
-	if err := (Client{Socket: socket, Timeout: time.Second}).CallWithKey(ctx, "mutate", "stable-key", map[string]int{"value": 1}, nil); !errors.Is(err, context.Canceled) {
-		t.Fatalf("connected peer cancellation error=%v", err)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request encoding did not start")
+	}
+	cancel()
+	releaseNow()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("encoding cancellation error=%v", err)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept deadline test connection")
 	}
 }
 

@@ -222,3 +222,16 @@ func TestPrepareRejectsUnsafeConfiguredWorktreeRoot(t *testing.T) {
 		t.Fatal("prepare beneath a regular configured root succeeded")
 	}
 }
+
+func TestPrepareRejectsStateOwnershipBeforeWritingMarker(t *testing.T) {
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	preparer.Ownership = edgeOwnershipValidator{err: errors.New("ownership changed")}
+	err := preparer.prepareLocked(context.Background(), repo, target, head, "slot", preparePhaseCreate, root)
+	if err == nil || !strings.Contains(err.Error(), "before marker") || !strings.Contains(err.Error(), "ownership changed") {
+		t.Fatalf("state ownership failure=%v", err)
+	}
+}

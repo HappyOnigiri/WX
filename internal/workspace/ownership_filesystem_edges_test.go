@@ -287,6 +287,9 @@ func TestPhysicalFilesystemRejectsNondirectoryAndInvalidTraversal(t *testing.T) 
 	}
 	socketRoot, err := os.MkdirTemp("/private/tmp", "wx-")
 	if err != nil {
+		socketRoot, err = os.MkdirTemp("/tmp", "wx-")
+	}
+	if err != nil {
 		socketRoot, err = os.MkdirTemp("", "wx-")
 	}
 	if err != nil {
