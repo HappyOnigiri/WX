@@ -74,3 +74,89 @@ func TestGitErrorRedactsStderrAndWritesOwnerOnlyDetail(t *testing.T) {
 		t.Fatalf("detail mode=%v err=%v", info, err)
 	}
 }
+
+func TestErrorFormattingUsesFallbackAndFirstArgument(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *Error
+		want string
+	}{
+		{
+			name: "fallback",
+			err:  &Error{Result: Result{ExitCode: -1}, FailureID: "fallback-id"},
+			want: "git command failed with exit -1 (failure fallback-id)",
+		},
+		{
+			name: "first argument",
+			err:  &Error{Args: []string{"status", "--short"}, Result: Result{ExitCode: 7}, FailureID: "status-id"},
+			want: "git status failed with exit 7 (failure status-id)",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.err.Error(); got != test.want {
+				t.Fatalf("Error()=%q want=%q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRunEnvInputPassesEnvironmentAndStdin(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nIFS= read -r value\nprintf '%s|%s' \"$WX_GIT_TEST_VALUE\" \"$value\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	runner := &Runner{}
+	result, err := runner.RunEnvInput(
+		context.Background(),
+		t.TempDir(),
+		[]string{"WX_GIT_TEST_VALUE=from-env"},
+		[]byte("from-stdin\n"),
+		"status",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stdout != "from-env|from-stdin" || result.Stderr != "" || result.ExitCode != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestRunRetriesLockConflictExactlyFourTimes(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	counter := filepath.Join(bin, "counter")
+	script := `#!/bin/sh
+count=0
+if [ -f "$WX_GIT_TEST_COUNTER" ]; then
+  IFS= read -r count < "$WX_GIT_TEST_COUNTER"
+fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$WX_GIT_TEST_COUNTER"
+printf 'fatal: could not lock index.lock\n' >&2
+exit 1
+`
+	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("WX_GIT_TEST_COUNTER", counter)
+	runner := &Runner{}
+	result, err := runner.Run(context.Background(), t.TempDir(), "status")
+	var gitError *Error
+	if !errors.As(err, &gitError) {
+		t.Fatalf("error=%v", err)
+	}
+	if result.ExitCode != 1 || !strings.Contains(result.Stderr, "could not lock") {
+		t.Fatalf("result=%+v", result)
+	}
+	data, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "4" {
+		t.Fatalf("attempts=%s want=4", got)
+	}
+}
