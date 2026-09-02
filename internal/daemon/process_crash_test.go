@@ -29,7 +29,7 @@ func TestDaemonCrashProcessHelper(t *testing.T) {
 
 func TestDaemonProcessCrashMatrix(t *testing.T) {
 	requireDaemonIntegration(t)
-	for _, boundary := range []string{"preparing", "leased", "snapshot", "remove", "restore"} {
+	for _, boundary := range []string{"preparing", "leased", "snapshot", "snapshot-ref", "remove", "restore"} {
 		t.Run(boundary, func(t *testing.T) {
 			testDaemonProcessCrashBoundary(t, boundary)
 		})
@@ -100,7 +100,7 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 	case "leased":
 		process = restartAfterCrash(t, process, client, "")
 		assertCrashSessionState(t, store, lease.SessionID, "ACTIVE")
-	case "snapshot":
+	case "snapshot", "snapshot-ref":
 		writeCrashWorkspace(t, lease.Path)
 		armCrashGate(t, gate)
 		releaseCrashLease(t, client, lease)
@@ -166,7 +166,7 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 		if strings.Contains(registrations, lease.Path) {
 			t.Fatalf("removed worktree remains registered after crash: %s", lease.Path)
 		}
-	} else if boundary != "snapshot" && !strings.Contains(registrations, expectedRegistration) {
+	} else if boundary != "snapshot" && boundary != "snapshot-ref" && !strings.Contains(registrations, expectedRegistration) {
 		t.Fatalf("owned worktree registration was lost after %s crash: %s", boundary, expectedRegistration)
 	}
 	stopCrashDaemon(process)
@@ -189,7 +189,7 @@ func writeCrashConfig(t *testing.T, home string) {
 
 func installCrashGitWrapper(t *testing.T, home, realGit, gate, boundary string) {
 	t.Helper()
-	pattern := map[string]string{"preparing": " worktree add ", "snapshot": " commit-tree ", "remove": " worktree remove --force ", "restore": " worktree add "}[boundary]
+	pattern := map[string]string{"preparing": " worktree add ", "snapshot": " commit-tree ", "snapshot-ref": " update-ref --create-reflog ", "remove": " worktree remove --force ", "restore": " worktree add "}[boundary]
 	bin := filepath.Join(home, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
