@@ -70,11 +70,11 @@ func TestRunAgentFailsClosedWhenAgentRegistrationFails(t *testing.T) {
 	go func() { done <- server.Serve(ctx) }()
 	waitForPath(t, socket)
 	agentScript := filepath.Join(temp, "agent")
-	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o700); err != nil {
+	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nexec </dev/null >/dev/null 2>&1\nwhile kill -0 \"$1\" 2>/dev/null; do sleep 0.05; done\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
-	if exit := client.RunAgent(ctx, agentScript, nil, nil, false, ""); exit != 1 {
+	if exit := client.RunAgent(ctx, agentScript, []string{strconv.Itoa(os.Getpid())}, nil, false, ""); exit != 1 {
 		t.Fatalf("RunAgent exit=%d", exit)
 	}
 	cancel()
@@ -88,7 +88,7 @@ func TestRunAgentHelperProcess(t *testing.T) {
 		return
 	}
 	client := Client{RPC: rpc.Client{Socket: os.Getenv("WX_HELPER_SOCKET"), Timeout: time.Second}, Config: config.Defaults()}
-	os.Exit(client.RunAgent(context.Background(), os.Getenv("WX_HELPER_AGENT"), []string{os.Getenv("WX_HELPER_PID_FILE")}, nil, false, ""))
+	os.Exit(client.RunAgent(context.Background(), os.Getenv("WX_HELPER_AGENT"), []string{os.Getenv("WX_HELPER_PID_FILE"), os.Getenv("WX_HELPER_GUARDIAN_PID")}, nil, false, ""))
 }
 
 func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
@@ -104,17 +104,18 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 	}
 	handler := &launcherHandler{lease: daemon.Lease{SessionID: "session", Token: "token", Path: workspace, SourceWorkspace: temp, Ready: true}}
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
 	waitForPath(t, socket)
 	agentScript := filepath.Join(temp, "agent")
 	pidFile := filepath.Join(temp, "agent.pid")
-	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nprintf '%s' $$ > \"$1\"\nwhile :; do sleep 1; done\n"), 0o700); err != nil {
+	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nexec </dev/null >/dev/null 2>&1\nprintf '%s' $$ > \"$1\"\nwhile kill -0 \"$2\" 2>/dev/null; do sleep 0.05; done\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	supervisor := exec.Command(os.Args[0], "-test.run=^TestRunAgentHelperProcess$")
-	supervisor.Env = append(os.Environ(), "WX_RUN_AGENT_HELPER=1", "WX_HELPER_SOCKET="+socket, "WX_HELPER_AGENT="+agentScript, "WX_HELPER_PID_FILE="+pidFile)
+	supervisor.Env = append(os.Environ(), "WX_RUN_AGENT_HELPER=1", "WX_HELPER_SOCKET="+socket, "WX_HELPER_AGENT="+agentScript, "WX_HELPER_PID_FILE="+pidFile, "WX_HELPER_GUARDIAN_PID="+strconv.Itoa(os.Getpid()))
 	if err := supervisor.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +127,7 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 	})
 	waitForPath(t, pidFile)
 	var agentPID int
-	waitUntilCLI(t, 10*time.Second, func() bool {
+	waitUntilCLI(t, 3*time.Second, func() bool {
 		handler.mu.Lock()
 		defer handler.mu.Unlock()
 		agentPID = handler.agentPID
@@ -153,7 +154,7 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 
 func waitForPath(t *testing.T, path string) {
 	t.Helper()
-	waitUntilCLI(t, 10*time.Second, func() bool {
+	waitUntilCLI(t, 3*time.Second, func() bool {
 		_, err := os.Lstat(path)
 		return err == nil
 	})
