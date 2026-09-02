@@ -512,6 +512,36 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 		}
 	})
 
+	t.Run("begin snapshot storage failure", func(t *testing.T) {
+		ctx, manager, store, workspaceRecord, _, databasePath := managerCoverageFixture(t)
+		id := domain.StableID("late-fault", "begin-snapshot")
+		path := filepath.Join(manager.Config().Storage.WorktreeRoot, "fault", id, "root")
+		if _, err := store.CreateSlotSession(ctx,
+			state.Slot{ID: id, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: path, State: "DRAINING"}, nil,
+			state.Session{ID: id, WorkspaceID: string(workspaceRecord.ID), SlotID: id, State: "RELEASING", AgentKind: "coverage", TokenHash: state.HashToken(id)}, ""); err != nil {
+			t.Fatal(err)
+		}
+		raw := openManagerCoverageDB(t, databasePath)
+		if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_begin_snapshot BEFORE UPDATE OF state ON sessions WHEN NEW.state='SNAPSHOTTING' BEGIN SELECT RAISE(ABORT,'injected snapshot failure'); END`); err != nil {
+			t.Fatal(err)
+		}
+		session, err := store.SessionByID(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.snapshotSession(ctx, session); err == nil {
+			t.Fatal("injected snapshot persistence failure succeeded")
+		}
+		storedSession, err := store.SessionByID(ctx, id)
+		if err != nil || storedSession.State != "RELEASING" {
+			t.Fatalf("failed snapshot advanced session: session=%+v err=%v", storedSession, err)
+		}
+		slot, err := store.Slot(ctx, id)
+		if err != nil || slot.State != "DRAINING" {
+			t.Fatalf("failed snapshot advanced slot: slot=%+v err=%v", slot, err)
+		}
+	})
+
 	t.Run("artifact recovery refs", func(t *testing.T) {
 		ctx, manager, _, _, _, databasePath := managerCoverageFixture(t)
 		raw := openManagerCoverageDB(t, databasePath)
