@@ -47,7 +47,13 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 			return errors.New("hook payload does not contain session_id")
 		}
 		if os.Getenv("WX_FRESH") == "1" {
-			if err := client.CallWithKey(ctx, "ValidateFreshResume", "fresh:"+wxID+":"+payload.SessionID, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil); err != nil {
+			var branches []string
+			if raw := os.Getenv("WX_BRANCHES_JSON"); raw != "" {
+				if err := json.Unmarshal([]byte(raw), &branches); err != nil {
+					return fmt.Errorf("decode fresh resume branch selection: %w", err)
+				}
+			}
+			if err := client.CallWithKey(ctx, "ValidateFreshResume", "fresh:"+wxID+":"+payload.SessionID, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID, "cwd": os.Getenv("WX_SOURCE_CWD"), "branches": branches}, nil); err != nil {
 				return err
 			}
 			writeRecoveryDiscardedNotice()

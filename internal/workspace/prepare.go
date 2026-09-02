@@ -28,12 +28,23 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 	if err != nil {
 		return err
 	}
+	if err := ensurePhysicalRoot(root); err != nil {
+		return err
+	}
 	target = filepath.Clean(target)
 	if !domain.IsWithin(root, target) {
 		return fmt.Errorf("target %s is outside wx worktree root", target)
 	}
+	ownedRoot, relativeTarget, err := domain.OpenOwnedRoot(root, target)
+	if err != nil {
+		return fmt.Errorf("open wx worktree root: %w", err)
+	}
+	defer func() { _ = ownedRoot.Close() }()
+	if err := ownedRoot.MkdirAll(filepath.Dir(relativeTarget), 0o700); err != nil {
+		return fmt.Errorf("create worktree parent safely: %w", err)
+	}
 	existingWorktree := false
-	if info, err := os.Lstat(target); err == nil {
+	if info, err := ownedRoot.Lstat(relativeTarget); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("target is a symlink")
 		}
@@ -50,13 +61,19 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return err
-	}
 	return p.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
 		if !existingWorktree {
+			if err := domain.ValidatePhysicalPath(filepath.Dir(target), false); err != nil {
+				return fmt.Errorf("worktree parent contains a symlink: %w", err)
+			}
+			if _, err := ownedRoot.Lstat(filepath.Dir(relativeTarget)); err != nil {
+				return fmt.Errorf("worktree parent ownership changed: %w", err)
+			}
 			if _, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "add", "--detach", target, oid); err != nil {
 				return err
+			}
+			if _, err := ownedRoot.Lstat(relativeTarget); err != nil {
+				return fmt.Errorf("prepared worktree escaped ownership root: %w", err)
 			}
 		}
 		cleanup := !existingWorktree
@@ -101,6 +118,23 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 		cleanup = false
 		return nil
 	})
+}
+
+func ensurePhysicalRoot(path string) error {
+	if err := domain.EnsurePhysicalDirectory(path, 0o700); err != nil {
+		return fmt.Errorf("create wx worktree root safely: %w", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("wx worktree root is not a physical directory")
+	}
+	if err := domain.ValidatePhysicalPath(path, false); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *Preparer) validateExistingWorktree(ctx context.Context, repo discovery.Repository, target, oid string) error {

@@ -52,17 +52,20 @@ func Serve(ctx context.Context) error {
 	defer releaseDaemonLock(lock)
 	store, openErr := state.Open(dbPath)
 	var rpcHandler rpc.Handler
+	var durable rpc.DurableIdempotency
 	if openErr != nil {
 		rpcHandler = DegradedHandler{DatabasePath: dbPath, OpenError: openErr}
 		logger.Error("daemon entered read-only degraded mode", "database", dbPath, "error", openErr)
 	} else {
 		defer func() { _ = store.Close() }()
 		manager := New(cfg, store, logger, true)
+		manager.git.SetDetailDir(filepathDir(logPath) + string(os.PathSeparator) + "details")
 		manager.logLevel = &level
 		defer manager.Close()
 		rpcHandler = Handler{Manager: manager}
+		durable = store
 	}
-	server := &rpc.Server{Socket: socket, Handler: rpcHandler}
+	server := &rpc.Server{Socket: socket, Handler: rpcHandler, Durable: durable}
 	logger.Info("daemon started", "socket", socket, "protocol_version", rpc.ProtocolVersion, "degraded", openErr != nil)
 	if err := server.Serve(ctx); err != nil {
 		return fmt.Errorf("serve daemon: %w", err)

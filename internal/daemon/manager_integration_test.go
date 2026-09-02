@@ -658,12 +658,20 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	if got := gitOutput(t, fresh.Path, "rev-parse", "HEAD"); got != gitOutput(t, repo, "rev-parse", "refs/heads/main") {
 		t.Fatalf("fresh base=%s main=%s", got, gitOutput(t, repo, "rev-parse", "refs/heads/main"))
 	}
-	nativeFresh, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	nativeFresh, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := m.ValidateFreshResume(ctx, nativeFresh.SessionID, nativeFresh.Token, "expired-agent-session"); err != nil {
 		t.Fatalf("--fresh rejected expired mapping: %v", err)
+	}
+	nativeWait, nativeCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer nativeCancel()
+	if err := m.WaitReady(nativeWait, nativeFresh.SessionID, nativeFresh.Token); err != nil {
+		t.Fatalf("native --fresh workspace did not become ready: %v", err)
+	}
+	if got := gitOutput(t, nativeFresh.Path, "rev-parse", "HEAD"); got != gitOutput(t, repo, "rev-parse", "refs/heads/main") {
+		t.Fatalf("native fresh base=%s main=%s", got, gitOutput(t, repo, "rev-parse", "refs/heads/main"))
 	}
 }
 

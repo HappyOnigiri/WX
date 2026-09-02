@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -64,6 +65,126 @@ func Canonicalize(path string) (CanonicalPath, error) {
 func IsWithin(root, path string) bool {
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && rel != ".." && rel != "." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// OpenOwnedRoot binds subsequent filesystem operations to the filesystem root
+// and returns the owned path relative to that descriptor. Starting from the
+// filesystem root avoids a check/open race on the configured ownership root;
+// os.Root then rejects any descendant symlink swapped into the path.
+func OpenOwnedRoot(root, path string) (*os.Root, string, error) {
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve ownership root: %w", err)
+	}
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve owned path: %w", err)
+	}
+	absoluteRoot, absolutePath = filepath.Clean(absoluteRoot), filepath.Clean(absolutePath)
+	if !IsWithin(absoluteRoot, absolutePath) {
+		return nil, "", errors.New("path is outside wx ownership root")
+	}
+	rootHandle, rootRelative, err := openFilesystemRoot(absoluteRoot)
+	if err != nil {
+		return nil, "", err
+	}
+	info, err := rootHandle.Lstat(rootRelative)
+	if err != nil {
+		_ = rootHandle.Close()
+		return nil, "", fmt.Errorf("validate wx ownership root: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		_ = rootHandle.Close()
+		return nil, "", errors.New("wx ownership root is not a physical directory")
+	}
+	volumeRoot := filepath.VolumeName(absolutePath) + string(filepath.Separator)
+	relative := strings.TrimPrefix(absolutePath, volumeRoot)
+	if relative == "" {
+		relative = "."
+	}
+	return rootHandle, relative, nil
+}
+
+func openFilesystemRoot(absolute string) (*os.Root, string, error) {
+	volumeRoot := filepath.VolumeName(absolute) + string(filepath.Separator)
+	handle, err := os.OpenRoot(volumeRoot)
+	if err != nil {
+		return nil, "", err
+	}
+	relative := strings.TrimPrefix(filepath.Clean(absolute), volumeRoot)
+	if relative == "" {
+		relative = "."
+	}
+	return handle, relative, nil
+}
+
+// ValidatePhysicalPath rejects symbolic links in every existing path
+// component. A missing final component may be allowed for safe creation.
+func ValidatePhysicalPath(path string, allowMissingLeaf bool) error {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	volume := filepath.VolumeName(absolute)
+	current := volume + string(filepath.Separator)
+	components := strings.Split(strings.TrimPrefix(absolute, current), string(filepath.Separator))
+	for index, component := range components {
+		if component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if allowMissingLeaf && errors.Is(err, os.ErrNotExist) && index == len(components)-1 {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink component in physical path %s", current)
+		}
+	}
+	return nil
+}
+
+// EnsurePhysicalDirectory creates a directory one component at a time beneath
+// a filesystem-root descriptor, rejecting symlinks at every component.
+func EnsurePhysicalDirectory(path string, perm os.FileMode) error {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	root, relative, err := openFilesystemRoot(filepath.Clean(absolute))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	current := "."
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		if info, statErr := root.Lstat(current); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("physical directory component %s is unsafe", current)
+			}
+			continue
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		if err := root.Mkdir(current, perm); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+	}
+	info, err := root.Lstat(relative)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("created path is not a physical directory")
+	}
+	return nil
 }
 
 type SlotState string

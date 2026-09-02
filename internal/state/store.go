@@ -29,7 +29,7 @@ type Store struct {
 	path   string
 }
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -59,6 +59,29 @@ func Open(path string) (*Store, error) {
 }
 func (s *Store) Close() error                   { return s.db.Close() }
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
+func (s *Store) LoadRPCResult(ctx context.Context, key, method, params string) ([]byte, string, string, bool, error) {
+	var storedMethod, storedParams, errorCode, errorMessage string
+	var result []byte
+	err := s.db.QueryRowContext(ctx, `SELECT method,params,result,COALESCE(error_code,''),COALESCE(error_message,'') FROM rpc_idempotency WHERE idempotency_key=? AND expires_at>?`, key, now()).Scan(&storedMethod, &storedParams, &result, &errorCode, &errorMessage)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", "", false, nil
+	}
+	if err != nil {
+		return nil, "", "", false, err
+	}
+	if storedMethod != method || storedParams != params {
+		return nil, "IDEMPOTENCY_KEY_REUSE", "idempotency key was reused with a different method or payload", true, nil
+	}
+	return result, errorCode, errorMessage, true, nil
+}
+
+func (s *Store) SaveRPCResult(ctx context.Context, key, method, params string, result []byte, errorCode, errorMessage string, expiresAt time.Time) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO rpc_idempotency(idempotency_key,method,params,result,error_code,error_message,completed_at,expires_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, key, method, params, result, nullString(errorCode), nullString(errorMessage), now(), FormatTime(expiresAt))
+	return err
+}
 
 func (s *Store) Backup(ctx context.Context, generations int, retention time.Duration) (string, error) {
 	s.writer.Lock()
@@ -352,6 +375,9 @@ func (s *Store) ClaimJob(ctx context.Context, id, owner string) (Job, error) {
 	if err := tx.QueryRowContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt); err != nil {
 		return Job{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,session_id,repository_id,message) VALUES(?,?,?,?,?,?,?,?)`, now(), "info", "job_started", nullString(j.WorkspaceID), nullString(j.SlotID), nullString(j.SessionID), nullString(j.RepositoryID), fmt.Sprintf("kind=%s attempt=%d", j.Kind, j.Attempt)); err != nil {
+		return Job{}, err
+	}
 	return j, tx.Commit()
 }
 
@@ -371,33 +397,64 @@ func (s *Store) RenewJob(ctx context.Context, id, owner string) error {
 func (s *Store) FinishJob(ctx context.Context, id, owner string, runErr error) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	stateName := "SUCCEEDED"
+	level := "info"
 	var code any
 	if runErr != nil {
 		stateName = "FAILED"
+		level = "error"
 		code = "JOB_FAILED"
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET state=?,finished_at=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, stateName, now(), code, id, owner)
+	var startedAt string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(started_at,'') FROM jobs WHERE id=? AND state='RUNNING' AND lease_owner=?`, id, owner).Scan(&startedAt); err != nil {
+		return errors.New("job cannot be finished without its active lease")
+	}
+	finishedAt := time.Now()
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state=?,finished_at=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, stateName, FormatTime(finishedAt), code, id, owner)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return errors.New("job cannot be finished without its active lease")
 	}
-	return nil
+	elapsed := time.Duration(0)
+	if started, parseErr := time.Parse(timestampFormat, startedAt); parseErr == nil {
+		elapsed = finishedAt.Sub(started)
+	}
+	message := fmt.Sprintf("state=%s elapsed=%s", stateName, elapsed)
+	if code != nil {
+		message += " failure_code=" + fmt.Sprint(code)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,session_id,repository_id,message) SELECT ?,?,kind,workspace_id,slot_id,session_id,repository_id,? FROM jobs WHERE id=?`, FormatTime(finishedAt), level, message, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RetryJob(ctx context.Context, id, owner string, delay time.Duration, code string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET state='PENDING',not_before=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, FormatTime(time.Now().Add(delay)), code, id, owner)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='PENDING',not_before=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, FormatTime(time.Now().Add(delay)), code, id, owner)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return errors.New("job cannot be retried without its active lease")
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,session_id,repository_id,message) SELECT ?,'warn','job_retry',workspace_id,slot_id,session_id,repository_id,? FROM jobs WHERE id=?`, now(), fmt.Sprintf("delay=%s failure_code=%s", delay, code), id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RecoverJobs(ctx context.Context, reclaimAll bool) ([]Job, error) {
@@ -426,6 +483,50 @@ func (s *Store) RecoverJobs(ctx context.Context, reclaimAll bool) ([]Job, error)
 		out = append(out, j)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) EnsureRecoveryJobs(ctx context.Context) ([]Job, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT CASE sl.state WHEN 'PREPARING' THEN 'PREPARE' WHEN 'RESTORING' THEN 'RESTORE' WHEN 'DRAINING' THEN 'SNAPSHOT' WHEN 'SNAPSHOTTING' THEN 'SNAPSHOT' WHEN 'REMOVING' THEN 'REMOVE' END,COALESCE(sl.workspace_id,''),sl.id,COALESCE(se.id,''),'' FROM slots sl LEFT JOIN sessions se ON se.slot_id=sl.id AND se.state IN ('STARTING','RESTORING','RELEASING','SNAPSHOTTING') WHERE sl.state IN ('PREPARING','RESTORING','DRAINING','SNAPSHOTTING','REMOVING') AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.state IN ('PENDING','RUNNING')) UNION ALL SELECT 'REMOVE_REPOSITORY',COALESCE(sl.workspace_id,''),sl.id,'',sr.repository_id FROM slots sl JOIN slot_repositories sr ON sr.slot_id=sl.id WHERE sl.state='RETIRING' AND sr.state='RETIRING' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.repository_id=sr.repository_id AND j.kind='REMOVE_REPOSITORY' AND j.state IN ('PENDING','RUNNING'))`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var candidates []Job
+	for rows.Next() {
+		var candidate Job
+		if err := rows.Scan(&candidate.Kind, &candidate.WorkspaceID, &candidate.SlotID, &candidate.SessionID, &candidate.RepositoryID); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range candidates {
+		job, err := newJob(candidates[index].Kind, candidates[index].WorkspaceID, candidates[index].SlotID, candidates[index].SessionID)
+		if err != nil {
+			return nil, err
+		}
+		job.RepositoryID = candidates[index].RepositoryID
+		if err := insertJob(ctx, tx, job); err != nil {
+			return nil, err
+		}
+		candidates[index] = job
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return candidates, nil
 }
 
 func (s *Store) ReadySlot(ctx context.Context, workspaceID string) (Slot, bool, error) {
@@ -627,7 +728,25 @@ func (s *Store) SetSlotState(ctx context.Context, id string, from []string, to, 
 	if n != 1 {
 		return fmt.Errorf("slot %s state compare-and-swap failed", id)
 	}
-	return nil
+	_, err = s.db.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,message) SELECT ?,'info','slot_transition',workspace_id,id,? FROM slots WHERE id=?`, now(), "state="+to+" failure_code="+code, id)
+	return err
+}
+
+func (s *Store) ResetPreparationForRetry(ctx context.Context, id string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',failure_code=NULL,updated_at=? WHERE id=? AND state='FAILED'`, now(), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE slot_repositories SET state='PREPARING' WHERE slot_id=? AND state='PREPARE_RUNNING'`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) MarkReady(ctx context.Context, id string) error {
@@ -798,6 +917,52 @@ func (s *Store) BindFreshSession(ctx context.Context, id, parentID, agentID stri
 		return errors.New("fresh session state changed")
 	}
 	return tx.Commit()
+}
+
+func (s *Store) BindFreshResumeSlot(ctx context.Context, sessionID, parentSessionID, workspaceID, agentID string, generation int, repos []SlotRepository) (Job, error) {
+	job, err := newJob("PREPARE", workspaceID, sessionID, sessionID)
+	if err != nil {
+		return Job{}, err
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, err
+	}
+	defer tx.Rollback()
+	if parentSessionID != "" {
+		res, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND state='EXPIRED' AND agent_session_id=?`, parentSessionID, agentID)
+		if err != nil {
+			return Job{}, err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return Job{}, errors.New("fresh resume parent mapping changed")
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=?,parent_session_id=?,agent_session_id=?,state='STARTING',started_at=COALESCE(started_at,?),last_heartbeat_at=? WHERE id=? AND state='UNBOUND'`, workspaceID, nullString(parentSessionID), agentID, now(), now(), sessionID)
+	if err != nil {
+		return Job{}, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return Job{}, errors.New("fresh resume session is no longer UNBOUND")
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE slots SET workspace_id=?,generation=?,state='PREPARING',updated_at=? WHERE id=? AND state='UNBOUND'`, workspaceID, generation, now(), sessionID)
+	if err != nil {
+		return Job{}, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return Job{}, errors.New("fresh resume slot is no longer UNBOUND")
+	}
+	for _, repository := range repos {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, sessionID, repository.RepositoryID, repository.WorktreePath, "PREPARING", repository.RequestedRef, repository.BaseOID, repository.Fingerprint); err != nil {
+			return Job{}, err
+		}
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, err
+	}
+	return job, tx.Commit()
 }
 
 func (s *Store) FindByAgentSession(ctx context.Context, kind, agentID string) (Session, error) {
@@ -1056,6 +1221,56 @@ func (s *Store) WorkspaceRoots(ctx context.Context) ([]string, error) {
 
 type Status struct{ Workspaces, Repositories, Ready, Leased, Failed, Active, Snapshots, Jobs, Quarantined int }
 
+type (
+	WorkspaceDiagnostic struct {
+		ID           string `json:"id"`
+		Root         string `json:"root"`
+		Generation   int    `json:"generation"`
+		Repositories int    `json:"repositories"`
+		Ready        int    `json:"ready"`
+		Leased       int    `json:"leased"`
+		Failed       int    `json:"failed"`
+	}
+	SessionDiagnostic struct {
+		ID         string `json:"id"`
+		Agent      string `json:"agent"`
+		State      string `json:"state"`
+		CreatedAt  string `json:"created_at"`
+		BaseOIDs   string `json:"base_oids"`
+		AgeSeconds int64  `json:"age_seconds"`
+	}
+	RepositoryDiagnostic struct {
+		ID               string `json:"id"`
+		MainPath         string `json:"main_path"`
+		LastUsedAt       string `json:"last_used_at,omitempty"`
+		StandbyReadyAt   string `json:"standby_ready_at,omitempty"`
+		StandbyExpiresAt string `json:"standby_expires_at,omitempty"`
+		Hot              bool   `json:"hot"`
+	}
+	JobDiagnostic struct {
+		Pending int `json:"pending"`
+		Running int `json:"running"`
+		Failed  int `json:"failed"`
+	}
+	SnapshotDiagnostic struct {
+		Count          int    `json:"count"`
+		EarliestExpiry string `json:"earliest_expiry,omitempty"`
+	}
+	QuarantineDiagnostic struct {
+		ID          string `json:"id"`
+		Path        string `json:"path"`
+		FailureCode string `json:"failure_code,omitempty"`
+	}
+	StatusDiagnostics struct {
+		Workspaces   []WorkspaceDiagnostic  `json:"workspaces"`
+		Sessions     []SessionDiagnostic    `json:"sessions"`
+		Repositories []RepositoryDiagnostic `json:"repositories"`
+		Jobs         JobDiagnostic          `json:"jobs"`
+		Snapshots    SnapshotDiagnostic     `json:"snapshots"`
+		Quarantine   []QuarantineDiagnostic `json:"quarantine"`
+	}
+)
+
 type SessionSummary struct {
 	ID             string `json:"id"`
 	WorkspaceID    string `json:"workspace_id,omitempty"`
@@ -1138,6 +1353,83 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 		}
 	}
 	return x, nil
+}
+
+func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error) {
+	var out StatusDiagnostics
+	workspaceRows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,(SELECT count(*) FROM workspace_repositories wr WHERE wr.workspace_id=w.id),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='READY'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='LEASED'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state IN ('FAILED','QUARANTINED')) FROM workspaces w ORDER BY w.root_path`)
+	if err != nil {
+		return out, err
+	}
+	defer workspaceRows.Close()
+	for workspaceRows.Next() {
+		var item WorkspaceDiagnostic
+		if err := workspaceRows.Scan(&item.ID, &item.Root, &item.Generation, &item.Repositories, &item.Ready, &item.Leased, &item.Failed); err != nil {
+			return out, err
+		}
+		out.Workspaces = append(out.Workspaces, item)
+	}
+	if err := workspaceRows.Err(); err != nil {
+		return out, err
+	}
+	if err := workspaceRows.Close(); err != nil {
+		return out, err
+	}
+	sessionRows, err := s.db.QueryContext(ctx, `SELECT se.id,se.agent_kind,se.state,se.created_at,COALESCE(group_concat(sr.base_oid,','),'') FROM sessions se LEFT JOIN slot_repositories sr ON sr.slot_id=se.slot_id WHERE se.state<>'EXPIRED' GROUP BY se.id ORDER BY se.created_at DESC`)
+	if err != nil {
+		return out, err
+	}
+	defer sessionRows.Close()
+	for sessionRows.Next() {
+		var item SessionDiagnostic
+		if err := sessionRows.Scan(&item.ID, &item.Agent, &item.State, &item.CreatedAt, &item.BaseOIDs); err != nil {
+			return out, err
+		}
+		out.Sessions = append(out.Sessions, item)
+	}
+	if err := sessionRows.Err(); err != nil {
+		return out, err
+	}
+	if err := sessionRows.Close(); err != nil {
+		return out, err
+	}
+	repositoryRows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,COALESCE(r.last_leased_at,''),COALESCE(MAX(CASE WHEN sl.owner_session_id IS NULL AND sl.state='READY' AND sr.state='READY' THEN sl.ready_at END),''),CASE WHEN count(CASE WHEN sl.state IN ('READY','LEASED') AND sr.state IN ('READY','LEASED') THEN 1 END)>0 THEN 1 ELSE 0 END FROM repositories r LEFT JOIN slot_repositories sr ON sr.repository_id=r.id LEFT JOIN slots sl ON sl.id=sr.slot_id GROUP BY r.id ORDER BY r.main_worktree_path`)
+	if err != nil {
+		return out, err
+	}
+	defer repositoryRows.Close()
+	for repositoryRows.Next() {
+		var item RepositoryDiagnostic
+		if err := repositoryRows.Scan(&item.ID, &item.MainPath, &item.LastUsedAt, &item.StandbyReadyAt, &item.Hot); err != nil {
+			return out, err
+		}
+		out.Repositories = append(out.Repositories, item)
+	}
+	if err := repositoryRows.Err(); err != nil {
+		return out, err
+	}
+	if err := repositoryRows.Close(); err != nil {
+		return out, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(CASE WHEN state='PENDING' THEN 1 END),count(CASE WHEN state='RUNNING' THEN 1 END),count(CASE WHEN state='FAILED' THEN 1 END) FROM jobs`).Scan(&out.Jobs.Pending, &out.Jobs.Running, &out.Jobs.Failed); err != nil {
+		return out, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*),COALESCE(MIN(expires_at),'') FROM snapshots WHERE status='ARCHIVED'`).Scan(&out.Snapshots.Count, &out.Snapshots.EarliestExpiry); err != nil {
+		return out, err
+	}
+	quarantineRows, err := s.db.QueryContext(ctx, `SELECT id,path,COALESCE(failure_code,'') FROM slots WHERE state='QUARANTINED' UNION ALL SELECT '',path,reason FROM quarantined_artifacts ORDER BY path`)
+	if err != nil {
+		return out, err
+	}
+	defer quarantineRows.Close()
+	for quarantineRows.Next() {
+		var item QuarantineDiagnostic
+		if err := quarantineRows.Scan(&item.ID, &item.Path, &item.FailureCode); err != nil {
+			return out, err
+		}
+		out.Quarantine = append(out.Quarantine, item)
+	}
+	return out, quarantineRows.Err()
 }
 
 func (s *Store) MarkArchived(ctx context.Context, sessionID, slotID, expiry string) error {
@@ -1267,6 +1559,58 @@ func (s *Store) SlotArtifacts(ctx context.Context) ([]SlotArtifact, error) {
 		artifacts = append(artifacts, artifact)
 	}
 	return artifacts, rows.Err()
+}
+
+func (s *Store) QuarantineMissingSlot(ctx context.Context, id, reason string) error {
+	return s.SetSlotState(ctx, id, []string{"PREPARING", "READY", "LEASED", "DRAINING", "SNAPSHOTTING", "SNAPSHOTTED", "UNBOUND", "RESTORING", "RETIRING", "REMOVING", "FAILED", "STALE"}, "QUARANTINED", reason)
+}
+
+func (s *Store) QuarantineArtifact(ctx context.Context, kind, path, reason string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO quarantined_artifacts(path,kind,reason,detected_at) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET kind=excluded.kind,reason=excluded.reason,detected_at=excluded.detected_at`, path, kind, reason, now())
+	return err
+}
+
+func (s *Store) QuarantineMissingRecoveryRef(ctx context.Context, ref string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT session_id FROM snapshots WHERE head_recovery_ref=? OR worktree_recovery_ref=?`, ref, ref)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var sessions []string
+	for rows.Next() {
+		var sessionID string
+		if err := rows.Scan(&sessionID); err != nil {
+			return err
+		}
+		sessions = append(sessions, sessionID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE snapshots SET status='QUARANTINED' WHERE head_recovery_ref=? OR worktree_recovery_ref=?`, ref, ref); err != nil {
+		return err
+	}
+	for _, sessionID := range sessions {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state='QUARANTINED' WHERE id=? AND state<>'EXPIRED'`, sessionID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE slots SET state='QUARANTINED',failure_code='RECOVERY_REF_MISSING',updated_at=? WHERE id=(SELECT slot_id FROM sessions WHERE id=?) AND state<>'ARCHIVED'`, now(), sessionID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error) {
@@ -1507,6 +1851,9 @@ func (s *Store) PruneMetadata(ctx context.Context, failedBefore, eventBefore, to
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE state='EXPIRED' AND expires_at<=?`, tombstoneBefore); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM rpc_idempotency WHERE expires_at<=?`, now()); err != nil {
 		return err
 	}
 	return tx.Commit()

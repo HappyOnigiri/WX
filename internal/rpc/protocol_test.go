@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,6 +37,39 @@ type countingHandler struct{ calls atomic.Int32 }
 
 func (h *countingHandler) Handle(_ context.Context, _ string, _ json.RawMessage) (any, error) {
 	return map[string]int32{"call": h.calls.Add(1)}, nil
+}
+
+type memoryDurableStore struct {
+	mu      sync.Mutex
+	records map[string]durableRecord
+}
+
+type durableRecord struct {
+	method, params, code, message string
+	result                        []byte
+}
+
+func (s *memoryDurableStore) LoadRPCResult(_ context.Context, key, method, params string) ([]byte, string, string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[key]
+	if !ok {
+		return nil, "", "", false, nil
+	}
+	if record.method != method || record.params != params {
+		return nil, "IDEMPOTENCY_KEY_REUSE", "mismatch", true, nil
+	}
+	return append([]byte(nil), record.result...), record.code, record.message, true, nil
+}
+
+func (s *memoryDurableStore) SaveRPCResult(_ context.Context, key, method, params string, result []byte, code, message string, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.records == nil {
+		s.records = map[string]durableRecord{}
+	}
+	s.records[key] = durableRecord{method: method, params: params, result: append([]byte(nil), result...), code: code, message: message}
+	return nil
 }
 
 type errorHandler struct{ result any }
@@ -99,6 +133,38 @@ func TestClientServerRoundTripWithoutParentDeadline(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("server did not stop")
+	}
+}
+
+func TestDurableIdempotencySurvivesServerRestart(t *testing.T) {
+	durable := &memoryDurableStore{}
+	handler := &countingHandler{}
+	call := func(socket string) map[string]int32 {
+		ctx, cancel := context.WithCancel(context.Background())
+		server := &Server{Socket: socket, Handler: handler, Durable: durable}
+		done := make(chan error, 1)
+		go func() { done <- server.Serve(ctx) }()
+		client := Client{Socket: socket, Timeout: time.Second}
+		deadline := time.Now().Add(5 * time.Second)
+		var result map[string]int32
+		for {
+			if err := client.CallWithKey(context.Background(), "mutate", "stable-key", map[string]string{"value": "same"}, &result); err == nil {
+				break
+			} else if time.Now().After(deadline) {
+				t.Fatal(err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	first := call(filepath.Join(t.TempDir(), "first.sock"))
+	second := call(filepath.Join(t.TempDir(), "second.sock"))
+	if first["call"] != 1 || second["call"] != 1 || handler.calls.Load() != 1 {
+		t.Fatalf("first=%v second=%v handler_calls=%d", first, second, handler.calls.Load())
 	}
 }
 

@@ -137,6 +137,17 @@ func TestPrepareRejectsPathsOutsideRootSymlinksAndForeignContents(t *testing.T) 
 	if err := preparer.Prepare(context.Background(), repo, target, "oid", "slot"); err == nil {
 		t.Fatal("symlink target succeeded")
 	}
+	descendant := filepath.Join(root, "descendant")
+	outside := t.TempDir()
+	if err := os.Symlink(outside, descendant); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.Prepare(context.Background(), repo, filepath.Join(descendant, "root"), "oid", "slot"); err == nil {
+		t.Fatal("descendant symlink escaping the worktree root succeeded")
+	}
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("outside directory changed: entries=%v err=%v", entries, err)
+	}
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}

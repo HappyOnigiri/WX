@@ -88,7 +88,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		}
 		method = "Resume"
 		params = map[string]any{"wx_session_id": explicitResume, "agent": agent, "client_pid": os.Getpid(), "allow_fresh": recoveryDiscarded}
-	} else if native && !fresh {
+	} else if native {
 		method = "AllocateResumeSlot"
 		params = map[string]any{"agent": agent, "client_pid": os.Getpid()}
 	}
@@ -115,6 +115,9 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		args = codexResumeArgs(args)
 	}
 	env := append(os.Environ(), "WX_SESSION_ID="+lease.SessionID, "WX_SESSION_TOKEN="+lease.Token, "WX_DAEMON_SOCKET="+c.RPC.Socket, "WX_WORKSPACE_ROOT="+lease.Path, "WX_SOURCE_WORKSPACE="+lease.SourceWorkspace, "WX_READINESS_TIMEOUT="+c.Config.Readiness.Timeout.String())
+	if encodedBranches, marshalErr := json.Marshal(branches); marshalErr == nil {
+		env = append(env, "WX_SOURCE_CWD="+cwd, "WX_BRANCHES_JSON="+string(encodedBranches))
+	}
 	if native && !fresh && explicitResume == "" {
 		env = append(env, "WX_NATIVE_RESUME=1")
 	}
@@ -144,7 +147,6 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)
@@ -174,7 +176,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	case runErr = <-done:
 	case sig := <-signals:
 		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, sig.(syscall.Signal))
+			_ = cmd.Process.Signal(sig)
 		}
 		runErr = <-done
 	}

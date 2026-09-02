@@ -98,14 +98,16 @@ func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage)
 		return map[string]bool{"bound": true}, h.Manager.BindAndRestoreResume(ctx, p.SessionID, p.Token, p.AgentSessionID)
 	case "ValidateFreshResume":
 		var p struct {
-			SessionID      string `json:"session_id"`
-			Token          string `json:"token"`
-			AgentSessionID string `json:"agent_session_id"`
+			SessionID      string   `json:"session_id"`
+			Token          string   `json:"token"`
+			AgentSessionID string   `json:"agent_session_id"`
+			CWD            string   `json:"cwd"`
+			Branches       []string `json:"branches"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		return map[string]bool{"allowed": true}, h.Manager.ValidateFreshResume(ctx, p.SessionID, p.Token, p.AgentSessionID)
+		return map[string]bool{"allowed": true}, h.Manager.PrepareFreshResume(ctx, p.SessionID, p.Token, p.AgentSessionID, p.CWD, p.Branches)
 	case "Release":
 		var p struct {
 			SessionID string `json:"session_id"`

@@ -173,6 +173,13 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if !domain.IsWithin(absoluteRoot, absolutePath) {
 			return errors.New("worktree path is outside wx root")
 		}
+		relative, err := filepath.Rel(absoluteRoot, absolutePath)
+		if err != nil {
+			return err
+		}
+		if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
+			return err
+		}
 		listed, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "list", "--porcelain", "-z")
 		if err != nil {
 			return err
@@ -192,32 +199,14 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 			if !registered {
 				return nil // A prior attempt completed physical and Git metadata removal.
 			}
+			if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
+				return err
+			}
 			_, _ = m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", absolutePath)
 			_, removeErr := m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", absolutePath)
 			return removeErr
 		} else if statErr != nil {
 			return statErr
-		}
-		relative, err := filepath.Rel(absoluteRoot, absolutePath)
-		if err != nil {
-			return err
-		}
-		current := absoluteRoot
-		components := []string{"."}
-		if relative != "." {
-			components = strings.Split(relative, string(filepath.Separator))
-		}
-		for _, component := range components {
-			if component != "." {
-				current = filepath.Join(current, component)
-			}
-			info, statErr := os.Lstat(current)
-			if statErr != nil {
-				return statErr
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("symlink component in removal path %s", current)
-			}
 		}
 		canonicalRoot, err := filepath.EvalSymlinks(root)
 		if err != nil {
@@ -254,10 +243,35 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if !registered {
 			return errors.New("worktree is not registered at expected path")
 		}
+		if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
+			return err
+		}
 		_, _ = m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", path)
 		_, err = m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", path)
 		return err
 	})
+}
+
+func validateRemovalPathComponents(root, relative string) error {
+	current := root
+	components := strings.Split(relative, string(filepath.Separator))
+	for index, component := range components {
+		if component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) && index == len(components)-1 {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink component in removal path %s", current)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) DeleteSnapshotRefs(ctx context.Context, repo discovery.Repository, snapshot state.Snapshot) error {

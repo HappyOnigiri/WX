@@ -376,13 +376,22 @@ func Save(c Config) error {
 	if err != nil {
 		return err
 	}
+	mode := os.FileMode(0o600)
+	if info, statErr := os.Lstat(p); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("config path is not a regular file")
+		}
+		mode = info.Mode().Perm()
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(p), ".config-*.yaml")
 	if err != nil {
 		return err
 	}
 	name := tmp.Name()
 	defer func() { _ = os.Remove(name) }()
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}

@@ -41,6 +41,10 @@ type (
 	Handler  interface {
 		Handle(context.Context, string, json.RawMessage) (any, error)
 	}
+	DurableIdempotency interface {
+		LoadRPCResult(context.Context, string, string, string) ([]byte, string, string, bool, error)
+		SaveRPCResult(context.Context, string, string, string, []byte, string, string, time.Time) error
+	}
 )
 
 type Client struct {
@@ -53,6 +57,22 @@ func (c Client) Call(ctx context.Context, method string, params, result any) err
 }
 
 func (c Client) CallWithKey(ctx context.Context, method, idempotencyKey string, params, result any) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = c.callOnce(ctx, method, idempotencyKey, params, result)
+		if err == nil || idempotencyKey == "" || !transientTransportError(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(25*(1<<attempt)) * time.Millisecond):
+		}
+	}
+	return err
+}
+
+func (c Client) callOnce(ctx context.Context, method, idempotencyKey string, params, result any) error {
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
@@ -95,9 +115,15 @@ func (c Client) CallWithKey(ctx context.Context, method, idempotencyKey string, 
 	return nil
 }
 
+func transientTransportError(err error) bool {
+	var networkError *net.OpError
+	return errors.As(err, &networkError) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
 type Server struct {
 	Socket   string
 	Handler  Handler
+	Durable  DurableIdempotency
 	listener net.Listener
 	idemMu   sync.Mutex
 	idem     map[string]*idempotentEntry
@@ -183,6 +209,22 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 			defer cancel()
 		}
 	}
+	if req.IdempotencyKey != "" && s.Durable != nil {
+		result, errorCode, errorMessage, found, err := s.Durable.LoadRPCResult(ctx, req.IdempotencyKey, req.Method, string(req.Params))
+		if err != nil {
+			resp.Error = &RPCError{Code: "IDEMPOTENCY_STORE", Message: "durable idempotency lookup failed"}
+			_ = writeFrame(conn, resp)
+			return
+		}
+		if found {
+			resp.Result = result
+			if errorCode != "" {
+				resp.Error = &RPCError{Code: errorCode, Message: errorMessage}
+			}
+			_ = writeFrame(conn, resp)
+			return
+		}
+	}
 	if req.IdempotencyKey != "" {
 		entry, owner := s.idempotencyEntry(req)
 		switch {
@@ -197,6 +239,19 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 			}
 		default:
 			resp.Result, resp.Error = s.invoke(ctx, req)
+			if s.Durable != nil {
+				errorCode, errorMessage := "", ""
+				if resp.Error != nil {
+					errorCode, errorMessage = resp.Error.Code, resp.Error.Message
+				}
+				persistCtx, cancel := context.WithTimeout(parent, 2*time.Second)
+				err := s.Durable.SaveRPCResult(persistCtx, req.IdempotencyKey, req.Method, string(req.Params), resp.Result, errorCode, errorMessage, time.Now().Add(idempotencyTTL))
+				cancel()
+				if err != nil {
+					resp.Result = nil
+					resp.Error = &RPCError{Code: "IDEMPOTENCY_STORE", Message: "durable idempotency result could not be committed"}
+				}
+			}
 			s.idemMu.Lock()
 			entry.result, entry.err = resp.Result, resp.Error
 			entry.ended = time.Now()

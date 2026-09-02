@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -108,7 +111,7 @@ func TestRunAgentSupervisesChildAndReleasesLease(t *testing.T) {
 	}
 	script := filepath.Join(temp, "agent")
 	result := filepath.Join(temp, "result")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n%s\\n' \"$PWD\" \"$WX_SESSION_ID\" > \"$1\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$PWD\" \"$WX_SESSION_ID\" \"$(ps -o pgid= -p $$)\" > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
@@ -117,7 +120,8 @@ func TestRunAgentSupervisesChildAndReleasesLease(t *testing.T) {
 	}
 	data, err := os.ReadFile(result)
 	canonicalWorkspace, _ := filepath.EvalSymlinks(workspace)
-	if err != nil || string(data) != canonicalWorkspace+"\nsession\n" {
+	want := canonicalWorkspace + "\nsession\n" + strconv.Itoa(syscall.Getpgrp()) + "\n"
+	if err != nil || strings.Join(strings.Fields(string(data)), "\n")+"\n" != want {
 		t.Fatalf("child environment=%q err=%v", data, err)
 	}
 	handler.mu.Lock()

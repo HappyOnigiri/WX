@@ -157,6 +157,18 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 		t.Fatalf("artifact diagnostics=%v", artifacts)
 	}
 	m.reconcileArtifacts(ctx)
+	missingSlot, err := store.Slot(ctx, missing.SessionID)
+	if err != nil || missingSlot.State != "QUARANTINED" {
+		t.Fatalf("missing owned slot was not quarantined: slot=%+v err=%v", missingSlot, err)
+	}
+	quarantinedSession, err := store.SessionByID(ctx, lease.SessionID)
+	if err != nil || quarantinedSession.State != "QUARANTINED" {
+		t.Fatalf("missing recovery refs did not quarantine session: session=%+v err=%v", quarantinedSession, err)
+	}
+	diagnostics, err := store.StatusDiagnostics(ctx)
+	if err != nil || len(diagnostics.Quarantine) < 4 {
+		t.Fatalf("reconciliation quarantine diagnostics=%+v err=%v", diagnostics.Quarantine, err)
+	}
 	blockedRoot := filepath.Join(home, "blocked-root")
 	if err := os.WriteFile(blockedRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
@@ -185,8 +197,11 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 		t.Fatalf("reload diagnostics=%v", status)
 	}
 	encoded, err := json.Marshal(status["worktree_roots"])
-	if err != nil || !strings.Contains(string(encoded), `"active":false`) || !strings.Contains(string(encoded), `"active":true`) {
+	if err != nil || !strings.Contains(string(encoded), `"active":false`) || !strings.Contains(string(encoded), `"active":true`) || !strings.Contains(string(encoded), `"allocated_bytes":`) || !strings.Contains(string(encoded), `"measurement":"st_blocks_x_512"`) {
 		t.Fatalf("root drain diagnostics=%s err=%v", encoded, err)
+	}
+	if status["daemon_version"] == "" || status["workspace_details"] == nil || status["session_details"] == nil || status["repository_details"] == nil || status["job_details"] == nil || status["snapshot_details"] == nil {
+		t.Fatalf("status detail fields are incomplete: %v", status)
 	}
 	doctor := m.Doctor(ctx)
 	checks := doctor["checks"].(map[string]any)
@@ -295,7 +310,7 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	if err := m.ValidateFreshResume(ctx, lease.SessionID, lease.Token, "new-agent"); err == nil {
 		t.Fatal("UNBOUND slot unexpectedly accepted fresh resume")
 	}
-	if err := store.SetSlotState(ctx, lease.SessionID, []string{"UNBOUND"}, "QUARANTINED", "test"); err != nil {
+	if err := store.SetSlotState(ctx, lease.SessionID, []string{"FAILED"}, "QUARANTINED", "test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := m.waitForSnapshot(ctx, lease.SessionID); err == nil || !strings.Contains(err.Error(), "archive failed") {
@@ -357,6 +372,63 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	}
 	if ok, err := m.readyMatches(ctx, state.Slot{ID: "link", Path: link}, nil); err != nil || ok {
 		t.Fatalf("symlink READY root ok=%v err=%v", ok, err)
+	}
+}
+
+func TestRemoveEmptySlotRejectsDescendantSymlinkSwap(t *testing.T) {
+	root := t.TempDir()
+	worktreeRoot := filepath.Join(root, "worktrees")
+	if err := os.MkdirAll(filepath.Join(worktreeRoot, "unbound", "slot"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "keep")
+	if err := os.WriteFile(outsideFile, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	slotPath := filepath.Join(worktreeRoot, "unbound", "slot", "root")
+	if err := os.Symlink(outside, slotPath); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateSlotSession(context.Background(), state.Slot{ID: "slot", Path: slotPath, State: "REMOVING"}, nil, state.Session{ID: "slot", SlotID: "slot", State: "EXPIRED", AgentKind: "codex", TokenHash: state.HashToken("token")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{store: store}
+	if err := manager.removeSlotWorktrees(context.Background(), archive.Manager{}, worktreeRoot, "slot", "", slotPath); err == nil {
+		t.Fatal("symlinked empty slot was removed")
+	}
+	if data, err := os.ReadFile(outsideFile); err != nil || string(data) != "keep" {
+		t.Fatalf("outside file changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestSessionEndWaitsForForegroundClientExit(t *testing.T) {
+	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "live", Path: filepath.Join(t.TempDir(), "root"), State: "LEASED"}, nil, state.Session{ID: "live", SlotID: "live", State: "ACTIVE", AgentKind: "codex", ClientPID: os.Getpid(), TokenHash: state.HashToken("token")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{store: store, jobs: make(chan jobWork, 1), ctx: context.Background()}
+	if err := manager.Release(ctx, "live", "token", "session-end-hook"); err != nil {
+		t.Fatal(err)
+	}
+	if session, err := store.SessionByID(ctx, "live"); err != nil || session.State != "ACTIVE" {
+		t.Fatalf("live SessionEnd changed session: state=%s err=%v", session.State, err)
+	}
+	if err := manager.Release(ctx, "live", "token", "client-exit"); err != nil {
+		t.Fatal(err)
+	}
+	if session, err := store.SessionByID(ctx, "live"); err != nil || session.State != "RELEASING" {
+		t.Fatalf("client exit did not release session: state=%s err=%v", session.State, err)
 	}
 }
 

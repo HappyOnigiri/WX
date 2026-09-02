@@ -597,6 +597,102 @@ func TestRecoverJobsReclaimsOnlyExpiredLease(t *testing.T) {
 	}
 }
 
+func TestEnsureRecoveryJobsReconstructsInterruptedSlotAndRepositoryWork(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	root := t.TempDir()
+	for _, slot := range []struct {
+		id, state, sessionState string
+	}{
+		{id: "prepare", state: "PREPARING", sessionState: "STARTING"},
+		{id: "snapshot", state: "SNAPSHOTTING", sessionState: "SNAPSHOTTING"},
+		{id: "remove", state: "REMOVING"},
+	} {
+		if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,path,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, slot.id, "workspace", 1, filepath.Join(root, slot.id), slot.state, now(), now()); err != nil {
+			t.Fatal(err)
+		}
+		if slot.sessionState != "" {
+			if _, err := store.db.Exec(`INSERT INTO sessions(id,workspace_id,slot_id,state,agent_kind,session_token_hash,created_at) VALUES(?,?,?,?,?,?,?)`, slot.id, "workspace", slot.id, slot.sessionState, "codex", HashToken(slot.id), now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,path,state,created_at,updated_at) VALUES('retire','workspace',1,?,'RETIRING',?,?)`, filepath.Join(root, "retire"), now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES('retire','repository',?,'RETIRING','main','abc','fp')`, filepath.Join(root, "retire", "repo")); err != nil {
+		t.Fatal(err)
+	}
+
+	jobs, err := store.EnsureRecoveryJobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"prepare": "PREPARE", "snapshot": "SNAPSHOT", "remove": "REMOVE", "retire": "REMOVE_REPOSITORY"}
+	if len(jobs) != len(want) {
+		t.Fatalf("recovery jobs=%+v", jobs)
+	}
+	for _, job := range jobs {
+		if want[job.SlotID] != job.Kind {
+			t.Fatalf("unexpected recovery job=%+v", job)
+		}
+		if job.Kind == "REMOVE_REPOSITORY" && job.RepositoryID != "repository" {
+			t.Fatalf("repository recovery job lost repository identity: %+v", job)
+		}
+	}
+	if duplicate, err := store.EnsureRecoveryJobs(ctx); err != nil || len(duplicate) != 0 {
+		t.Fatalf("duplicate recovery jobs=%+v err=%v", duplicate, err)
+	}
+}
+
+func TestJobEventsRecordAttemptsRetriesAndElapsedTime(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	job, err := store.CreateJob(ctx, "PREPARE", "", "slot", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ClaimJob(ctx, job.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetryJob(ctx, job.ID, "owner", time.Millisecond, "TRANSIENT"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE jobs SET not_before=? WHERE id=?`, now(), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimJob(ctx, job.ID, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Attempt != 2 {
+		t.Fatalf("attempt=%d", claimed.Attempt)
+	}
+	if err := store.FinishJob(ctx, job.ID, "owner", nil); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.db.Query(`SELECT kind,message FROM events WHERE slot_id='slot' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var events []string
+	for rows.Next() {
+		var kind, message string
+		if err := rows.Scan(&kind, &message); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, kind+" "+message)
+	}
+	joined := strings.Join(events, "\n")
+	for _, fragment := range []string{"job_started kind=PREPARE attempt=1", "job_retry delay=1ms failure_code=TRANSIENT", "job_started kind=PREPARE attempt=2", "PREPARE state=SUCCEEDED elapsed="} {
+		if !strings.Contains(joined, fragment) {
+			t.Fatalf("event log missing %q:\n%s", fragment, joined)
+		}
+	}
+}
+
 func TestAdministrativeStateTransitionsAndQueries(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
@@ -956,6 +1052,7 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 	_ = store.FinishJob(ctx, "j", "owner", nil)
 	_ = store.RetryJob(ctx, "j", "owner", time.Second, "retry")
 	_, _ = store.RecoverJobs(ctx, false)
+	_, _ = store.EnsureRecoveryJobs(ctx)
 	_, _, _ = store.ReadySlot(ctx, "w")
 	_, _ = store.ReadySlots(ctx, "w")
 	_ = store.HasStandby(ctx, "w")
@@ -965,6 +1062,7 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 	_, _ = store.LeaseReadyWithCold(ctx, "s", session)
 	_ = store.RecordLease(ctx, "w")
 	_ = store.SetSlotState(ctx, "s", []string{"READY"}, "STALE", "test")
+	_ = store.ResetPreparationForRetry(ctx, "s")
 	_ = store.MarkReady(ctx, "s")
 	_ = store.FinishPreparation(ctx, "s")
 	_ = store.MarkSessionState(ctx, "s", []string{"ACTIVE"}, "RELEASING")
@@ -986,12 +1084,18 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 	_, _ = store.Workspace(ctx, "w")
 	_, _ = store.WorkspaceRoots(ctx)
 	_, _ = store.Status(ctx)
+	_, _ = store.StatusDiagnostics(ctx)
 	_, _ = store.ListSessions(ctx, true)
 	_ = store.ForgetWorkspace(ctx, "/w")
 	_ = store.MarkArchived(ctx, "s", "s", now())
 	_ = store.BeginSnapshot(ctx, "s", "s")
 	_, _, _ = store.Release(ctx, "s", "w", "s")
 	_, _ = store.SlotArtifacts(ctx)
+	_ = store.QuarantineMissingSlot(ctx, "s", "test")
+	_ = store.QuarantineArtifact(ctx, "path", "/tmp/test", "test")
+	_ = store.QuarantineMissingRecoveryRef(ctx, "refs/wx/recovery/missing")
+	_, _, _, _, _ = store.LoadRPCResult(ctx, "key", "method", "params")
+	_ = store.SaveRPCResult(ctx, "key", "method", "params", []byte("{}"), "", "", time.Now().Add(time.Hour))
 	_, _ = store.Repositories(ctx)
 	_, _ = store.RecoveryRefs(ctx, "r")
 	_, _ = store.StandbyGCCandidates(ctx, now(), 1)
@@ -1011,7 +1115,7 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 
 func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 	store := openTestStore(t)
-	for _, table := range []string{"snapshots", "jobs", "sessions", "slot_repositories", "slots", "workspace_repositories", "repositories", "workspaces", "events", "schema_migrations"} {
+	for _, table := range []string{"rpc_idempotency", "quarantined_artifacts", "snapshots", "jobs", "sessions", "slot_repositories", "slots", "workspace_repositories", "repositories", "workspaces", "events", "schema_migrations"} {
 		if _, err := store.db.Exec(`DROP TABLE ` + table); err != nil {
 			t.Fatalf("drop %s: %v", table, err)
 		}
@@ -1121,6 +1225,44 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 	}
 	if _, _, err := store.ScheduleRemoval(ctx, "s", "s"); err == nil {
 		t.Error("removal scheduling succeeded against damaged schema")
+	}
+}
+
+func TestRPCIdempotencyResultSurvivesStoreRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := store.SaveRPCResult(ctx, "key", "Mutate", `{"value":1}`, []byte(`{"ok":true}`), "", "", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	result, code, message, found, err := store.LoadRPCResult(ctx, "key", "Mutate", `{"value":1}`)
+	if err != nil || !found || string(result) != `{"ok":true}` || code != "" || message != "" {
+		t.Fatalf("result=%s code=%q message=%q found=%v err=%v", result, code, message, found, err)
+	}
+	_, code, _, found, err = store.LoadRPCResult(ctx, "key", "Mutate", `{"value":2}`)
+	if err != nil || !found || code != "IDEMPOTENCY_KEY_REUSE" {
+		t.Fatalf("mismatch code=%q found=%v err=%v", code, found, err)
+	}
+	if err := store.SaveRPCResult(ctx, "expired", "Mutate", `{}`, []byte(`{}`), "", "", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PruneMetadata(ctx, FormatTime(time.Now().Add(-time.Hour)), FormatTime(time.Now().Add(-time.Hour)), FormatTime(time.Now().Add(-time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	var expired int
+	if err := store.db.QueryRow(`SELECT count(*) FROM rpc_idempotency WHERE idempotency_key='expired'`).Scan(&expired); err != nil || expired != 0 {
+		t.Fatalf("expired idempotency rows=%d err=%v", expired, err)
 	}
 }
 

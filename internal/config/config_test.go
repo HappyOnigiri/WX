@@ -63,6 +63,24 @@ func TestDefaultsAndZeroDurationOverride(t *testing.T) {
 	}
 }
 
+func TestSavePreservesExistingPermissions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".config", "wx", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(Config{Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o400 {
+		t.Fatalf("mode=%v err=%v", info, err)
+	}
+}
+
 func TestStrictDecode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
