@@ -14,7 +14,14 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
+
+type allowOwnershipValidator struct{}
+
+func (allowOwnershipValidator) ValidateWorktreeOwnership(context.Context, state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error) {
+	return state.WorktreeOwnership{}, nil
+}
 
 func TestMaterializeRootCopiesLinksAndIsIdempotent(t *testing.T) {
 	source, target := t.TempDir(), t.TempDir()
@@ -255,7 +262,7 @@ func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testi
 	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}}
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "ownership marker") {
 		t.Fatalf("foreign worktree prepare error=%v", err)
 	}
@@ -416,7 +423,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}}
 	target := filepath.Join(worktreeRoot, "slot", "root")
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "tracked path") {
 		t.Fatalf("tracked include error=%v", err)
@@ -896,7 +903,7 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}}
 	target := filepath.Join(worktreeRoot, "slot", "root")
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
 		t.Fatal(err)

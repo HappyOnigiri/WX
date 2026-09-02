@@ -17,8 +17,9 @@ import (
 )
 
 type Manager struct {
-	Git      *gitx.Runner
-	Preparer *workspace.Preparer
+	Git       *gitx.Runner
+	Preparer  *workspace.Preparer
+	Ownership state.OwnershipValidator
 }
 
 func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, error) {
@@ -165,7 +166,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if _, err := m.Git.Run(ctx, target, "status", "--porcelain=v2", "--untracked-files=all"); err != nil {
 			return fmt.Errorf("validate restored status: %w", err)
 		}
-		if err := m.Preparer.ValidateOwnership(ctx, repo, target, s.HeadOID); err != nil {
+		if err := m.Preparer.ValidateRestoringOwnership(ctx, repo, target, s.HeadOID, slotID); err != nil {
 			return fmt.Errorf("validate restored worktree ownership: %w", err)
 		}
 		if err := m.Preparer.FinishRestore(ctx, repo, target, s.HeadOID, slotID); err != nil {
@@ -218,6 +219,9 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 			if err := validateWxLockReason(lockReason, slotID); err != nil {
 				return err
 			}
+			if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+				return fmt.Errorf("validate missing worktree SQLite ownership: %w", err)
+			}
 			if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
 				return err
 			}
@@ -236,6 +240,9 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 			}
 			if _, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, common); err != nil {
 				return fmt.Errorf("revalidate missing worktree ownership: %w", err)
+			}
+			if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+				return fmt.Errorf("revalidate missing worktree SQLite ownership: %w", err)
 			}
 			if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
 				return err
@@ -256,18 +263,21 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if err := validateWxLockReason(lockReason, slotID); err != nil {
 			return err
 		}
-		canonicalRoot, err := filepath.EvalSymlinks(root)
+		if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+			return fmt.Errorf("validate worktree SQLite ownership: %w", err)
+		}
+		canonicalRoot, err := filepath.EvalSymlinks(absoluteRoot)
 		if err != nil {
 			return err
 		}
-		canonicalPath, err := filepath.EvalSymlinks(path)
+		canonicalPath, err := filepath.EvalSymlinks(absolutePath)
 		if err != nil {
 			return err
 		}
 		if !domain.IsWithin(canonicalRoot, canonicalPath) {
 			return errors.New("worktree path is outside canonical wx root")
 		}
-		commonOutput, err := m.gitValue(ctx, path, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		commonOutput, err := m.gitValue(ctx, absolutePath, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
 		if err != nil {
 			return err
 		}
@@ -279,7 +289,7 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 			return errors.New("worktree common directory does not match repository ownership")
 		}
 		if expectedHead != "" {
-			head, err := m.gitValue(ctx, path, nil, "rev-parse", "HEAD")
+			head, err := m.gitValue(ctx, absolutePath, nil, "rev-parse", "HEAD")
 			if err != nil || head != expectedHead {
 				return errors.New("worktree HEAD does not match SQLite ownership metadata")
 			}
@@ -290,7 +300,7 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
 			return err
 		}
-		if _, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", path); err != nil {
+		if _, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", absolutePath); err != nil {
 			return err
 		}
 		postReason, postLocked, found, err := workspace.RegisteredWorktreeLockStatus(ctx, m.Git, string(repo.MainPath), absolutePath)
@@ -306,10 +316,13 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if _, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, common); err != nil {
 			return fmt.Errorf("revalidate worktree ownership: %w", err)
 		}
+		if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+			return fmt.Errorf("revalidate worktree SQLite ownership: %w", err)
+		}
 		if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
 			return err
 		}
-		commonOutput, err = m.gitValue(ctx, path, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		commonOutput, err = m.gitValue(ctx, absolutePath, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
 		if err != nil {
 			return err
 		}
@@ -318,14 +331,40 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 			return errors.New("worktree common directory changed before removal")
 		}
 		if expectedHead != "" {
-			head, err := m.gitValue(ctx, path, nil, "rev-parse", "HEAD")
+			head, err := m.gitValue(ctx, absolutePath, nil, "rev-parse", "HEAD")
 			if err != nil || head != expectedHead {
 				return errors.New("worktree HEAD changed before removal")
 			}
 		}
-		_, err = m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", path)
+		// This is the last durable ownership check before the destructive Git
+		// operation. The common-directory lock remains held throughout the
+		// physical/Git checks and this state read, so a forged marker/lock can
+		// never authorize deletion without the matching SQLite rows.
+		if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+			return fmt.Errorf("worktree SQLite ownership changed before removal: %w", err)
+		}
+		_, err = m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", absolutePath)
 		return err
 	})
+}
+
+func (m *Manager) validateStateOwnership(ctx context.Context, repo discovery.Repository, target, slotID string, slotStates, repositoryStates []string) error {
+	validator := m.Ownership
+	if validator == nil && m.Preparer != nil {
+		validator = m.Preparer.Ownership
+	}
+	if validator == nil {
+		return fmt.Errorf("%w: state-backed worktree ownership validator is required", state.ErrOwnership)
+	}
+	_, err := validator.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
+		SlotID:                  slotID,
+		RepositoryID:            string(repo.ID),
+		WorktreePath:            target,
+		CommonDir:               string(repo.CommonDir),
+		AllowedSlotStates:       slotStates,
+		AllowedRepositoryStates: repositoryStates,
+	})
+	return err
 }
 
 func validateWxLockReason(reason, slotID string) error {

@@ -76,7 +76,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 	if _, err := store.ClaimJob(ctx, prepareJob.ID, "crashed-daemon"); err != nil {
 		t.Fatal(err)
 	}
-	preparer := workspace.Preparer{Git: runner, Config: cfg}
+	preparer := workspace.Preparer{Git: runner, Config: cfg, Ownership: store}
 	if err := preparer.Prepare(ctx, resolved[0].Repository, repos[0].WorktreePath, resolved[0].OID, id); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	archiveManager := archive.Manager{Git: runner, Preparer: &preparer}
+	archiveManager := archive.Manager{Git: runner, Preparer: &preparer, Ownership: store}
 	first, err := archiveManager.Snapshot(ctx, resolved[0].Repository, repos[0].WorktreePath, id, releasedAt.Add(cfg.Retention.RecoverySnapshot.Duration))
 	if err != nil {
 		t.Fatal(err)
@@ -543,13 +543,13 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	}
 	id, _ := domain.NewID()
 	slotRoot := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(w.ID), "slots", id, "root")
-	repos := []state.SlotRepository{{RepositoryID: string(w.Repositories[0].ID), WorktreePath: slotRoot, State: "READY", RequestedRef: resolved[0].RequestedRef, BaseOID: resolved[0].OID, Fingerprint: "test"}}
+	repos := []state.SlotRepository{{RepositoryID: string(w.Repositories[0].ID), WorktreePath: slotRoot, State: "PREPARING", RequestedRef: resolved[0].RequestedRef, BaseOID: resolved[0].OID, Fingerprint: "test"}}
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken("token")}
 	job, err := store.CreateSlotSession(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: 1, Path: slotRoot, State: "PREPARING"}, repos, session, "PREPARE")
 	if err != nil {
 		t.Fatal(err)
 	}
-	preparer := workspace.Preparer{Git: runner, Config: cfg}
+	preparer := workspace.Preparer{Git: runner, Config: cfg, Ownership: store}
 	if err := preparer.Prepare(ctx, w.Repositories[0], slotRoot, resolved[0].OID, id); err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	archiveManager := archive.Manager{Git: runner, Preparer: &preparer}
+	archiveManager := archive.Manager{Git: runner, Preparer: &preparer, Ownership: store}
 	expires := time.Now().Add(time.Hour)
 	snapshot, err := archiveManager.Snapshot(ctx, w.Repositories[0], slotRoot, id, expires)
 	if err != nil {

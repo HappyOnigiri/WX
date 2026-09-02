@@ -18,6 +18,12 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
+type allowOwnershipValidator struct{}
+
+func (allowOwnershipValidator) ValidateWorktreeOwnership(context.Context, state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error) {
+	return state.WorktreeOwnership{}, nil
+}
+
 func TestRemoveWorktreeRejectsSymlinkInRecordedPath(t *testing.T) {
 	temp := t.TempDir()
 	repository := filepath.Join(temp, "repository")
@@ -53,7 +59,7 @@ func TestRemoveWorktreeRejectsSymlinkInRecordedPath(t *testing.T) {
 		MainPath:  domain.CanonicalPath(repository),
 		CommonDir: domain.CanonicalPath(filepath.Join(repository, ".git")),
 	}
-	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}}
+	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}, Ownership: allowOwnershipValidator{}}
 	err := manager.RemoveWorktree(context.Background(), repo, root, first, head)
 	if err == nil || !strings.Contains(err.Error(), "symlink component") {
 		t.Fatalf("RemoveWorktree error = %v, want symlink rejection", err)
@@ -76,7 +82,7 @@ func TestSnapshotRefsAreIdempotentAndDeletionChecksOwnership(t *testing.T) {
 	gitCommand(t, repository, "add", ".")
 	gitCommand(t, repository, "commit", "-m", "initial")
 	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(filepath.Join(repository, ".git"))}
-	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}}
+	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}, Ownership: allowOwnershipValidator{}}
 	expires := time.Now().Add(time.Hour)
 	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "session", expires)
 	if err != nil {
@@ -125,7 +131,7 @@ func TestArchiveRejectsUnownedAndMismatchedWorktrees(t *testing.T) {
 	head := gitCommand(t, repository, "rev-parse", "HEAD")
 	common := gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
-	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}}
+	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}, Ownership: allowOwnershipValidator{}}
 	ctx := context.Background()
 
 	if err := manager.RemoveWorktree(ctx, repo, root, repository, head); err == nil || !strings.Contains(err.Error(), "outside") {
@@ -187,7 +193,7 @@ func TestRemovalReconcilesMissingRegistrationAndRejectsWrongRepository(t *testin
 	firstRepo := discovery.Repository{ID: "first", MainPath: domain.CanonicalPath(first), CommonDir: domain.CanonicalPath(gitCommand(t, first, "rev-parse", "--path-format=absolute", "--git-common-dir"))}
 	secondRepo := discovery.Repository{ID: "second", MainPath: domain.CanonicalPath(second), CommonDir: domain.CanonicalPath(gitCommand(t, second, "rev-parse", "--path-format=absolute", "--git-common-dir"))}
 	markOwnedWorktree(t, wxRoot, target, "slot", firstRepo.CommonDir)
-	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}}
+	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}, Ownership: allowOwnershipValidator{}}
 	if err := manager.RemoveWorktree(context.Background(), secondRepo, wxRoot, target, ""); err == nil || !strings.Contains(err.Error(), "common directory") {
 		t.Fatalf("wrong repository removal error=%v", err)
 	}
@@ -256,7 +262,7 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
-	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg}}
+	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}}, Ownership: allowOwnershipValidator{}}
 	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "session", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -309,7 +315,7 @@ func TestRestoreRunsPrepareCommandAfterSnapshotTreeAndIndex(t *testing.T) {
 		repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", `test "$(cat state.txt)" = "snapshot" && printf ran > "$WX_RESTORE_PREPARE_MARKER"`}, Timeout: config.Duration{Duration: time.Second}}},
 	}
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
-	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg}}
+	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}}, Ownership: allowOwnershipValidator{}}
 	snapshot, err := manager.Snapshot(context.Background(), repo, source, "source-session", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -471,7 +477,7 @@ func archiveFixture(t *testing.T) (string, discovery.Repository, *Manager, strin
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
-	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg}}
+	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}}, Ownership: allowOwnershipValidator{}}
 	return repository, repo, manager, worktreeRoot
 }
 

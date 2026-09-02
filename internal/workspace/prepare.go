@@ -20,11 +20,14 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 type Preparer struct {
-	Git    *gitx.Runner
-	Config config.Config
+	Git       *gitx.Runner
+	Config    config.Config
+	Ownership state.OwnershipValidator
+	SlotPath  string
 }
 
 func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
@@ -46,6 +49,7 @@ const (
 )
 
 func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase) error {
+	prepareSlotStates, prepareRepositoryStates := preparationOwnershipStates(phase)
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
 		return err
@@ -80,9 +84,12 @@ func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, targe
 		if _, err := lockedRoot.Lstat(lockedRelativeTarget); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		existingWorktree, err := p.existingTargetState(ctx, repo, target, oid, slotID, root, lockedRoot, lockedRelativeTarget)
+		existingWorktree, err := p.existingTargetState(ctx, repo, target, oid, slotID, phase, root, lockedRoot, lockedRelativeTarget)
 		if err != nil {
 			return err
+		}
+		if err := p.validateStateOwnership(ctx, repo, target, slotID, prepareSlotStates, prepareRepositoryStates); err != nil {
+			return fmt.Errorf("wx worktree ownership changed before marker: %w", err)
 		}
 		if err := EnsureOwnershipMarker(root, target, slotID, string(repo.CommonDir)); err != nil {
 			return fmt.Errorf("prepare wx ownership marker: %w", err)
@@ -93,6 +100,9 @@ func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, targe
 			}
 			if _, err := lockedRoot.Lstat(filepath.Dir(lockedRelativeTarget)); err != nil {
 				return fmt.Errorf("worktree parent ownership changed: %w", err)
+			}
+			if err := p.validateStateOwnership(ctx, repo, target, slotID, prepareSlotStates, prepareRepositoryStates); err != nil {
+				return fmt.Errorf("wx worktree ownership changed before creation: %w", err)
 			}
 			if _, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "add", "--detach", target, oid); err != nil {
 				return err
@@ -108,7 +118,7 @@ func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, targe
 				// A failed preparation is removable only while ownership can still
 				// be proved. If a command or concurrent filesystem change invalidated
 				// that proof, leave the locked target and marker for quarantine/reconcile.
-				if err := p.validateExistingWorktreeOwned(context.Background(), repo, target, oid, slotID); err != nil {
+				if err := p.validateExistingWorktreeOwnedForPhase(context.Background(), repo, target, oid, slotID, phase); err != nil {
 					return
 				}
 				if _, err := p.Git.Run(context.Background(), string(repo.MainPath), "worktree", "unlock", target); err != nil {
@@ -135,17 +145,30 @@ func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, targe
 		// This validation is deliberately after the new lock is acquired. It
 		// proves that the marker, physical path, Git registration, OID, and
 		// lock reason still describe the same slot before any file operation.
-		if err := p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID); err != nil {
+		if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, phase); err != nil {
 			return fmt.Errorf("wx worktree ownership changed after lock: %w", err)
 		}
 		ownedAfterLock = true
+		// Revalidate the durable owner immediately before each operation that
+		// writes into or reuses the worktree. A common-directory lock protects
+		// Git metadata, while this read-only state proof protects the slot/path
+		// association and state machine independently.
+		if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, phase); err != nil {
+			return fmt.Errorf("wx worktree ownership changed before includes: %w", err)
+		}
 		if err := p.copyIncludes(repo, target); err != nil {
 			return err
+		}
+		if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, phase); err != nil {
+			return fmt.Errorf("wx worktree ownership changed before links: %w", err)
 		}
 		if err := p.createLinks(ctx, repo, target); err != nil {
 			return err
 		}
 		if phase == preparePhaseCreate {
+			if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, phase); err != nil {
+				return fmt.Errorf("wx worktree ownership changed before prepare command: %w", err)
+			}
 			if err := p.runPrepare(ctx, repo, target); err != nil {
 				return err
 			}
@@ -178,7 +201,7 @@ func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, targe
 		if err != nil {
 			return err
 		}
-		if err := p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID); err != nil {
+		if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, phase); err != nil {
 			return fmt.Errorf("wx worktree ownership changed before READY: %w", err)
 		}
 		cleanup = false
@@ -190,13 +213,13 @@ func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, targe
 // caller invokes it after restoring the snapshot tree and index, so commands
 // can inspect the recovered files and their staged state.
 func (p *Preparer) PrepareResume(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
-	if err := p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID); err != nil {
+	if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore); err != nil {
 		return fmt.Errorf("validate restoring worktree before resume prepare: %w", err)
 	}
 	if err := p.runPrepare(ctx, repo, target); err != nil {
 		return err
 	}
-	if err := p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID); err != nil {
+	if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore); err != nil {
 		return fmt.Errorf("wx worktree ownership changed during resume prepare: %w", err)
 	}
 	return nil
@@ -206,7 +229,7 @@ func (p *Preparer) PrepareResume(ctx context.Context, repo discovery.Repository,
 // RESTORING lock to the READY lock. The final ownership check occurs while the
 // restore lock is still held and again after the READY lock is acquired.
 func (p *Preparer) FinishRestore(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
-	if err := p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID); err != nil {
+	if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore); err != nil {
 		return err
 	}
 	if _, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", target); err != nil {
@@ -215,13 +238,13 @@ func (p *Preparer) FinishRestore(ctx context.Context, repo discovery.Repository,
 	if _, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "lock", "--reason", "wx:"+slotID+":READY", target); err != nil {
 		return err
 	}
-	if err := p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID); err != nil {
+	if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore); err != nil {
 		return fmt.Errorf("validate restored READY worktree: %w", err)
 	}
 	return nil
 }
 
-func (p *Preparer) existingTargetState(ctx context.Context, repo discovery.Repository, target, oid, slotID, root string, ownedRoot *os.Root, relativeTarget string) (bool, error) {
+func (p *Preparer) existingTargetState(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, root string, ownedRoot *os.Root, relativeTarget string) (bool, error) {
 	info, err := ownedRoot.Lstat(relativeTarget)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -244,7 +267,7 @@ func (p *Preparer) existingTargetState(ctx context.Context, repo discovery.Repos
 		}
 		return false, nil
 	}
-	if err := p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID); err != nil {
+	if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, phase); err != nil {
 		return false, fmt.Errorf("non-empty target is not the expected worktree: %w", err)
 	}
 	return true, nil
@@ -281,6 +304,10 @@ func (p *Preparer) validateExistingWorktree(ctx context.Context, repo discovery.
 }
 
 func (p *Preparer) validateExistingWorktreeOwned(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
+	return p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseCreate)
+}
+
+func (p *Preparer) validateExistingWorktreeOwnedForPhase(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase) error {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
 		return err
@@ -318,13 +345,38 @@ func (p *Preparer) validateExistingWorktreeOwned(ctx context.Context, repo disco
 	if err != nil || strings.TrimSpace(head.Stdout) != oid || !gitx.IsDetached(ctx, p.Git, target) {
 		return errors.New("HEAD is not the expected detached commit")
 	}
-	return ValidateRegisteredWorktree(ctx, p.Git, string(repo.MainPath), target, slotID, slotID != "")
+	if err := ValidateRegisteredWorktree(ctx, p.Git, string(repo.MainPath), target, slotID, slotID != ""); err != nil {
+		return err
+	}
+	if slotID == "" {
+		return nil
+	}
+	slotStates, repositoryStates := preparationOwnershipStates(phase)
+	if err := p.validateStateOwnership(ctx, repo, target, slotID, slotStates, repositoryStates); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ValidateReady verifies the physical and Git-administrative invariants that
 // make a stored READY worktree safe to lease.
 func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository, target, oid string) error {
 	if err := p.ValidateOwnership(ctx, repo, target, oid); err != nil {
+		return err
+	}
+	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	if err != nil {
+		return err
+	}
+	common, err := filepath.EvalSymlinks(string(repo.CommonDir))
+	if err != nil {
+		return err
+	}
+	slotID, err := ValidateRemovalOwnership(root, target, common)
+	if err != nil {
+		return err
+	}
+	if err := p.validateStateOwnership(ctx, repo, target, slotID, []string{"READY"}, []string{"READY"}); err != nil {
 		return err
 	}
 	return p.validateTrackedClean(ctx, target)
@@ -349,14 +401,49 @@ func (p *Preparer) ValidateOwnership(ctx context.Context, repo discovery.Reposit
 	if err != nil {
 		return err
 	}
-	return ValidateRegisteredWorktree(ctx, p.Git, string(repo.MainPath), target, slotID, true)
+	if err := ValidateRegisteredWorktree(ctx, p.Git, string(repo.MainPath), target, slotID, true); err != nil {
+		return err
+	}
+	return p.validateStateOwnership(ctx, repo, target, slotID, allOwnershipSlotStates, allOwnershipRepositoryStates)
 }
 
 // ValidateRestoringOwnership is the slot-bound ownership check used while a
 // restore lock is held. Keeping the slot ID in this check prevents a restore
 // handoff from accepting a different wx lock reason at the same path.
 func (p *Preparer) ValidateRestoringOwnership(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
-	return p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID)
+	return p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore)
+}
+
+var (
+	allOwnershipSlotStates       = []string{"PREPARING", "RESTORING", "READY", "LEASED", "DRAINING", "SNAPSHOTTING", "SNAPSHOTTED", "ARCHIVED", "REMOVING", "RETIRING"}
+	allOwnershipRepositoryStates = []string{"PREPARING", "PREPARE_RUNNING", "RESTORING", "RESTORE_RUNNING", "READY", "LEASED", "RETIRING"}
+)
+
+func preparationOwnershipStates(phase preparePhase) ([]string, []string) {
+	if phase == preparePhaseRestore {
+		return []string{"RESTORING"}, []string{"RESTORING", "RESTORE_RUNNING"}
+	}
+	return []string{"PREPARING"}, []string{"PREPARING", "PREPARE_RUNNING"}
+}
+
+func (p *Preparer) validateStateOwnership(ctx context.Context, repo discovery.Repository, target, slotID string, slotStates, repositoryStates []string) error {
+	if slotID == "" {
+		return nil
+	}
+	if p.Ownership == nil {
+		return fmt.Errorf("%w: state-backed worktree ownership validator is required", state.ErrOwnership)
+	}
+	_, err := p.Ownership.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
+		SlotID:                  slotID,
+		RepositoryID:            string(repo.ID),
+		WorkspaceID:             "",
+		SlotPath:                p.SlotPath,
+		WorktreePath:            target,
+		CommonDir:               string(repo.CommonDir),
+		AllowedSlotStates:       slotStates,
+		AllowedRepositoryStates: repositoryStates,
+	})
+	return err
 }
 
 func (p *Preparer) validateTrackedClean(ctx context.Context, target string) error {

@@ -198,6 +198,20 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 }
 
 func (m *Manager) Config() config.Config { m.mu.RLock(); defer m.mu.RUnlock(); return m.cfg }
+
+// newPreparer and newArchiveManager are the single construction points for
+// filesystem operations that can reuse or remove a worktree. Production
+// callers always provide the state store so those operations cannot fall back
+// to a forgeable marker/Git-lock-only proof.
+func (m *Manager) newPreparer(cfg config.Config, slotPath string) *workspace.Preparer {
+	return &workspace.Preparer{Git: m.git, Config: cfg, Ownership: m.store, SlotPath: slotPath}
+}
+
+func (m *Manager) newArchiveManager(cfg config.Config, slotPath string) archive.Manager {
+	preparer := m.newPreparer(cfg, slotPath)
+	return archive.Manager{Git: m.git, Preparer: preparer, Ownership: m.store}
+}
+
 func (m *Manager) enqueue(kind, workspaceID, slotID, sessionID string) error {
 	job, err := m.store.CreateJob(context.Background(), kind, workspaceID, slotID, sessionID)
 	if err != nil {
@@ -553,6 +567,9 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 			return err
 		}
 		if err := m.prepareSlot(ctx, job.SlotID, w, resolved, repos); err != nil {
+			if errors.Is(err, state.ErrOwnership) {
+				return err
+			}
 			return retryableJobError{err}
 		}
 		return nil
@@ -572,11 +589,17 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 		return m.resumeRestoreJob(ctx, job.SessionID)
 	case "REMOVE":
 		if err := m.removeSlotJob(ctx, job); err != nil {
+			if errors.Is(err, state.ErrOwnership) {
+				return err
+			}
 			return retryableJobError{err}
 		}
 		return nil
 	case "REMOVE_REPOSITORY":
 		if err := m.removeColdRepositoryJob(ctx, job); err != nil {
+			if errors.Is(err, state.ErrOwnership) {
+				return err
+			}
 			return retryableJobError{err}
 		}
 		return nil
@@ -829,7 +852,7 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 	if slot.State != "PREPARING" && slot.State != "RESTORING" {
 		return fmt.Errorf("slot %s cannot be prepared from %s", id, slot.State)
 	}
-	preparer := workspace.Preparer{Git: m.git, Config: m.Config()}
+	preparer := m.newPreparer(m.Config(), slot.Path)
 	if len(repos) != len(resolved) {
 		return errors.New("slot repository metadata does not match resolved workspace")
 	}
@@ -852,7 +875,11 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 		}
 		if err := preparer.Prepare(ctx, r.Repository, stored.WorktreePath, r.OID, id); err != nil {
 			m.log.Error("slot preparation failed", "slot_id", id, "repository_id", r.Repository.ID, "error", err)
-			_ = m.store.SetSlotState(ctx, id, []string{"PREPARING", "RESTORING"}, "FAILED", "PREPARE_FAILED")
+			if errors.Is(err, state.ErrOwnership) {
+				_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING", "RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
+			} else {
+				_ = m.store.SetSlotState(ctx, id, []string{"PREPARING", "RESTORING"}, "FAILED", "PREPARE_FAILED")
+			}
 			return err
 		}
 		if err := m.store.SetSlotRepositoryState(ctx, id, string(r.Repository.ID), []string{"PREPARE_RUNNING"}, "READY"); err != nil {
@@ -862,6 +889,12 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 	if w.Kind == "multi_repository" {
 		slot, err := m.store.Slot(ctx, id)
 		if err != nil {
+			return err
+		}
+		if _, err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, Path: slot.Path, AllowedSlotStates: []string{"PREPARING", "RESTORING"}}); err != nil {
+			if errors.Is(err, state.ErrOwnership) {
+				_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING", "RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
+			}
 			return err
 		}
 		if err := workspace.MaterializeRoot(string(w.Root), slot.Path, m.Config().Workspaces[string(w.Root)]); err != nil {
@@ -903,7 +936,7 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 	for _, r := range repos {
 		byID[r.RepositoryID] = r
 	}
-	preparer := workspace.Preparer{Git: m.git, Config: m.Config()}
+	preparer := m.newPreparer(m.Config(), s.Path)
 	for _, r := range resolved {
 		stored, ok := byID[string(r.Repository.ID)]
 		if !ok || (stored.State != "READY" && stored.State != "COLD") || stored.BaseOID != r.OID {
@@ -1167,7 +1200,7 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 	if slotState.State != "RESTORING" {
 		return fmt.Errorf("slot %s cannot be restored from %s", id, slotState.State)
 	}
-	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: m.Config()}}
+	archiveManager := m.newArchiveManager(m.Config(), slotState.Path)
 	if len(repos) != len(resolved) {
 		return errors.New("restore repository metadata does not match resolved workspace")
 	}
@@ -1201,6 +1234,12 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 	if w.Kind == "multi_repository" {
 		slot, err := m.store.Slot(ctx, id)
 		if err != nil {
+			return err
+		}
+		if _, err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, Path: slot.Path, AllowedSlotStates: []string{"RESTORING"}}); err != nil {
+			if errors.Is(err, state.ErrOwnership) {
+				_ = m.store.SetSlotState(context.Background(), id, []string{"RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
+			}
 			return err
 		}
 		if err := workspace.MaterializeRoot(string(w.Root), slot.Path, m.Config().Workspaces[string(w.Root)]); err != nil {
@@ -1461,7 +1500,7 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 		return fmt.Errorf("session %s has invalid release time: %w", s.ID, err)
 	}
 	expiry := releasedAt.Add(m.Config().Retention.RecoverySnapshot.Duration)
-	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: m.Config()}}
+	archiveManager := m.newArchiveManager(m.Config(), slot.Path)
 	for _, sr := range repos {
 		repo, err := m.store.Repository(ctx, sr.RepositoryID)
 		if err != nil {
@@ -1594,7 +1633,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			count++
 		}
 	}
-	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: cfg}}
+	archiveManager := m.newArchiveManager(cfg, "")
 	for sessionID, snapshots := range expiredSessions {
 		ok := true
 		var rootSnapshot state.WorkspaceSnapshot
@@ -1663,8 +1702,9 @@ func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
 	if !ok {
 		return errors.New("slot path is outside every current or retired wx root")
 	}
-	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: m.Config()}}
+	archiveManager := m.newArchiveManager(m.Config(), slot.Path)
 	if err := m.removeSlotWorktrees(ctx, archiveManager, root, slot.ID, job.SessionID, slot.Path); err != nil {
+		m.quarantineOwnershipFailure(slot.ID, []string{"REMOVING"}, err)
 		return err
 	}
 	return m.store.FinishRemoval(ctx, slot.ID)
@@ -1693,11 +1733,16 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 	if err != nil {
 		return err
 	}
-	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: m.Config()}}
+	archiveManager := m.newArchiveManager(m.Config(), slot.Path)
 	if err := archiveManager.RemoveWorktree(ctx, repository, root, repositoryState.WorktreePath, repositoryState.BaseOID); err != nil {
+		m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
 		return err
 	}
 	if filepath.Clean(repositoryState.WorktreePath) == filepath.Clean(slot.Path) {
+		if _, err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slot.ID, WorkspaceID: slot.WorkspaceID, Path: slot.Path, AllowedSlotStates: []string{"RETIRING"}}); err != nil {
+			m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
+			return err
+		}
 		ownedRoot, relativeSlot, err := domain.OpenOwnedRoot(root, slot.Path)
 		if err != nil {
 			return err
@@ -1708,6 +1753,15 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 		}
 	}
 	return m.store.FinishColdRepositoryRemoval(ctx, slot.ID, job.RepositoryID)
+}
+
+func (m *Manager) quarantineOwnershipFailure(slotID string, from []string, runErr error) {
+	if !errors.Is(runErr, state.ErrOwnership) || m.store == nil {
+		return
+	}
+	if err := m.store.SetSlotState(context.Background(), slotID, from, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN"); err != nil && m.log != nil {
+		m.log.Error("quarantine uncertain worktree ownership failed", "slot_id", slotID, "error", err)
+	}
 }
 
 func (m *Manager) rootForPath(path string) (string, bool) {
@@ -1775,6 +1829,9 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 		if err := archiveManager.RemoveWorktree(ctx, repo, root, sr.WorktreePath, expectedHead); err != nil {
 			return err
 		}
+	}
+	if _, err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slotID, Path: slotPath, AllowedSlotStates: []string{"REMOVING"}}); err != nil {
+		return err
 	}
 	ownedRoot, relativeSlot, err := domain.OpenOwnedRoot(root, slotPath)
 	if err != nil {

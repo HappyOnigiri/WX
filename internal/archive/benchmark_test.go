@@ -95,7 +95,7 @@ func benchmarkArchive(b *testing.B) (string, discovery.Repository, *Manager, str
 	cfg := config.Defaults()
 	worktreeRoot := filepath.Join(b.TempDir(), "worktrees")
 	cfg.Storage.WorktreeRoot = worktreeRoot
-	return repository, repo, &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg}}, worktreeRoot
+	return repository, repo, &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}}, Ownership: allowOwnershipValidator{}}, worktreeRoot
 }
 
 func benchmarkGitCommand(b *testing.B, directory string, arguments ...string) string {
