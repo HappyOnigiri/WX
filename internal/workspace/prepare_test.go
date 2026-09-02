@@ -173,6 +173,41 @@ func TestPrepareRejectsPathsOutsideRootSymlinksAndForeignContents(t *testing.T) 
 	}
 }
 
+// Finding 1: a matching Git worktree is not reusable without wx ownership proof.
+func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	worktreeRoot := filepath.Join(root, "worktrees")
+	if err := os.MkdirAll(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	head := gitOutput(t, repository, "rev-parse", "HEAD")
+	common := gitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	target := filepath.Join(worktreeRoot, "slot", "root")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "worktree", "add", "--detach", target, head)
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = worktreeRoot
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "ownership marker") {
+		t.Fatalf("foreign worktree prepare error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".git")); err != nil {
+		t.Fatalf("foreign worktree was removed or changed: %v", err)
+	}
+}
+
 func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
 	repository, target := t.TempDir(), t.TempDir()
 	gitCommand(t, repository, "init", "-b", "main")
@@ -203,6 +238,102 @@ func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
 	}
 	if err := preparer.createLinks(context.Background(), repo, target); err == nil || !strings.Contains(err.Error(), "unsafe") {
 		t.Fatalf("unsafe link error=%v", err)
+	}
+}
+
+// Finding 4: source and destination symlink ancestors must not escape their roots.
+func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	outside := filepath.Join(root, "outside")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("must not escape\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repository, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("linked/*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: config.Defaults()}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	if err := preparer.copyIncludes(repo, target); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("include through symlink ancestor succeeded: %v", err)
+	}
+	if _, err := Fingerprint(1, "oid", repo, config.Defaults()); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("fingerprint through symlink ancestor succeeded: %v", err)
+	}
+
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("source\ndest/child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(outside, "source"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "source"), filepath.Join(repository, "source")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.createLinks(context.Background(), discovery.Repository{MainPath: domain.CanonicalPath(repository)}, target); err == nil || !strings.Contains(err.Error(), "physical") {
+		t.Fatalf("link source through symlink ancestor succeeded: %v", err)
+	}
+
+	linkSource := filepath.Join(repository, "real-source")
+	if err := os.Mkdir(linkSource, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("dest/child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repository, "dest"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "dest", "child"), []byte("child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(target, "dest")); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.createLinks(context.Background(), discovery.Repository{MainPath: domain.CanonicalPath(repository)}, target); err == nil || !strings.Contains(err.Error(), "destination") {
+		t.Fatalf("link destination through symlink ancestor succeeded: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "child")); !os.IsNotExist(err) {
+		t.Fatalf("outside destination was modified: %v", err)
+	}
+
+	materializedTarget := filepath.Join(root, "materialized")
+	if err := os.Mkdir(materializedTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(materializedTarget, "nested")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repository, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "nested", "value"), []byte("value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MaterializeRoot(repository, materializedTarget, config.Workspace{Copy: []string{"nested/value"}}); err == nil || !strings.Contains(err.Error(), "destination") {
+		t.Fatalf("copy destination through symlink ancestor succeeded: %v", err)
 	}
 }
 
@@ -475,7 +606,9 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 		MainPath:  domain.CanonicalPath(repository),
 		CommonDir: domain.CanonicalPath(filepath.Join(repository, ".git")),
 	}
-	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: config.Defaults()}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg}
 
 	if err := preparer.validateTrackedClean(context.Background(), filepath.Join(root, "missing")); err == nil {
 		t.Fatal("tracked-clean validation of a missing worktree succeeded")
@@ -566,6 +699,9 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 	}
 	unregistered := repo
 	unregistered.MainPath = domain.CanonicalPath(other)
+	if err := EnsureOwnershipMarker(root, repository, "slot", string(repo.CommonDir)); err != nil {
+		t.Fatal(err)
+	}
 	if err := preparer.validateExistingWorktree(context.Background(), unregistered, repository, gitOutput(t, repository, "rev-parse", "HEAD")); err == nil || !strings.Contains(err.Error(), "not registered") {
 		t.Fatalf("unregistered worktree error=%v", err)
 	}

@@ -138,6 +138,16 @@ func TestArchiveRejectsUnownedAndMismatchedWorktrees(t *testing.T) {
 	registered := filepath.Join(root, "slot", "repo")
 	mustMkdir(t, filepath.Dir(registered))
 	gitCommand(t, repository, "worktree", "add", "--detach", registered, head)
+	unowned := filepath.Join(root, "foreign", "root")
+	mustMkdir(t, filepath.Dir(unowned))
+	gitCommand(t, repository, "worktree", "add", "--detach", unowned, head)
+	if err := manager.RemoveWorktree(ctx, repo, root, unowned, head); err == nil || !strings.Contains(err.Error(), "ownership marker") {
+		t.Fatalf("unowned registered worktree removal error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(unowned, ".git")); err != nil {
+		t.Fatalf("unowned registered worktree was removed: %v", err)
+	}
+	markOwnedWorktree(t, root, registered, "slot", repo.CommonDir)
 	if err := manager.RemoveWorktree(ctx, repo, root, registered, strings.Repeat("0", 40)); err == nil || !strings.Contains(err.Error(), "HEAD") {
 		t.Fatalf("mismatched HEAD removal error=%v", err)
 	}
@@ -176,6 +186,7 @@ func TestRemovalReconcilesMissingRegistrationAndRejectsWrongRepository(t *testin
 	gitCommand(t, first, "worktree", "add", "--detach", target, head)
 	firstRepo := discovery.Repository{ID: "first", MainPath: domain.CanonicalPath(first), CommonDir: domain.CanonicalPath(gitCommand(t, first, "rev-parse", "--path-format=absolute", "--git-common-dir"))}
 	secondRepo := discovery.Repository{ID: "second", MainPath: domain.CanonicalPath(second), CommonDir: domain.CanonicalPath(gitCommand(t, second, "rev-parse", "--path-format=absolute", "--git-common-dir"))}
+	markOwnedWorktree(t, wxRoot, target, "slot", firstRepo.CommonDir)
 	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}}
 	if err := manager.RemoveWorktree(context.Background(), secondRepo, wxRoot, target, ""); err == nil || !strings.Contains(err.Error(), "common directory") {
 		t.Fatalf("wrong repository removal error=%v", err)
@@ -263,6 +274,59 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	_, _ = runner.Run(context.Background(), repository, "worktree", "remove", "--force", target)
 }
 
+// Finding 5: resume preparation observes the restored snapshot tree and index.
+func TestRestoreRunsPrepareCommandAfterSnapshotTreeAndIndex(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	source := filepath.Join(root, "source")
+	worktreeRoot := filepath.Join(root, "worktrees")
+	mustMkdir(t, repository)
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "state.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "state.txt")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	head := gitCommand(t, repository, "rev-parse", "HEAD")
+	gitCommand(t, repository, "worktree", "add", "--detach", source, head)
+	if err := os.WriteFile(filepath.Join(source, "state.txt"), []byte("snapshot\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	common := gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	marker := filepath.Join(root, "resume-prepare-ran")
+	t.Setenv("WX_RESTORE_PREPARE_MARKER", marker)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = worktreeRoot
+	cfg.Repositories = map[string]config.Repository{
+		repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", `test "$(cat state.txt)" = "snapshot" && printf ran > "$WX_RESTORE_PREPARE_MARKER"`}, Timeout: config.Duration{Duration: time.Second}}},
+	}
+	runner := &gitx.Runner{Timeout: 5 * time.Second}
+	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg}}
+	snapshot, err := manager.Snapshot(context.Background(), repo, source, "source-session", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(worktreeRoot, "slot", "root")
+	if err := manager.Restore(context.Background(), repo, target, "slot", snapshot); err != nil {
+		t.Fatalf("restore failed: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "state.txt")); err != nil || string(data) != "snapshot\n" {
+		t.Fatalf("restored state=%q err=%v", data, err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "ran" {
+		t.Fatalf("resume prepare marker=%q err=%v", data, err)
+	}
+	if staged := gitCommand(t, target, "diff", "--cached", "--name-only"); staged != "" {
+		t.Fatalf("unexpected staged paths after restore: %s", staged)
+	}
+	if diff := gitCommand(t, target, "diff", "--name-only"); diff != "state.txt" {
+		t.Fatalf("unexpected unstaged paths after restore: %s", diff)
+	}
+}
+
 func TestSnapshotPropagatesGitStageFailures(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -348,6 +412,7 @@ func TestRemoveWorktreePropagatesGitFailures(t *testing.T) {
 			target := filepath.Join(worktreeRoot, "slot", "root")
 			mustMkdir(t, filepath.Dir(target))
 			gitCommand(t, repository, "worktree", "add", "--detach", target, head)
+			markOwnedWorktree(t, worktreeRoot, target, "slot", repo.CommonDir)
 			installGitFault(t, pattern, 1)
 			if err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, target, head); err == nil {
 				t.Fatal("worktree removal succeeded despite injected Git failure")
@@ -442,6 +507,14 @@ func mustMkdir(t *testing.T, path string) {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func markOwnedWorktree(t *testing.T, root, target, slotID string, commonDir domain.CanonicalPath) {
+	t.Helper()
+	if err := workspace.EnsureOwnershipMarker(root, target, slotID, string(commonDir)); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, filepath.Dir(string(commonDir)), "worktree", "lock", "--reason", "wx:"+slotID+":READY", target)
 }
 
 func gitCommand(t *testing.T, dir string, args ...string) string {

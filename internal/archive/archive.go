@@ -103,8 +103,12 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 			return fmt.Errorf("recovery ref %s does not match snapshot metadata", ref)
 		}
 	}
-	// Preparer obtains the repository lock while creating and locking the worktree.
-	if err := m.Preparer.Prepare(ctx, repo, target, s.HeadOID, slotID); err != nil {
+	// Create and lock the clean base first. Resume-phase preparation is deferred
+	// until the snapshot tree and saved index have been restored below.
+	if m.Preparer == nil {
+		return errors.New("restore requires a workspace preparer")
+	}
+	if err := m.Preparer.PrepareForRestore(ctx, repo, target, s.HeadOID, slotID); err != nil {
 		return err
 	}
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
@@ -113,6 +117,9 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		}
 		if _, err := m.Git.Run(ctx, target, "read-tree", s.IndexTreeOID); err != nil {
 			return err
+		}
+		if err := m.Preparer.PrepareResume(ctx, repo, target, s.HeadOID, slotID); err != nil {
+			return fmt.Errorf("resume prepare: %w", err)
 		}
 		head, err := m.gitValue(ctx, target, nil, "rev-parse", "HEAD")
 		if err != nil {
@@ -152,6 +159,9 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err := m.Preparer.ValidateOwnership(ctx, repo, target, s.HeadOID); err != nil {
 			return fmt.Errorf("validate restored worktree ownership: %w", err)
 		}
+		if err := m.Preparer.FinishRestore(ctx, repo, target, s.HeadOID, slotID); err != nil {
+			return err
+		}
 		return nil
 	})
 }
@@ -180,33 +190,54 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
 			return err
 		}
-		listed, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "list", "--porcelain", "-z")
+		lockReason, registered, err := workspace.RegisteredWorktreeLockReason(ctx, m.Git, string(repo.MainPath), absolutePath)
 		if err != nil {
 			return err
-		}
-		registered := false
-		for _, field := range strings.Split(listed.Stdout, "\x00") {
-			if !strings.HasPrefix(field, "worktree ") {
-				continue
-			}
-			registeredPath := filepath.Clean(strings.TrimPrefix(field, "worktree "))
-			if registeredPath == absolutePath {
-				registered = true
-				break
-			}
 		}
 		if _, statErr := os.Lstat(absolutePath); errors.Is(statErr, os.ErrNotExist) {
 			if !registered {
 				return nil // A prior attempt completed physical and Git metadata removal.
 			}
+			common, err := filepath.EvalSymlinks(string(repo.CommonDir))
+			if err != nil {
+				return err
+			}
+			slotID, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, common)
+			if err != nil {
+				return fmt.Errorf("validate missing worktree ownership: %w", err)
+			}
+			if err := validateWxLockReason(lockReason, slotID); err != nil {
+				return err
+			}
 			if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
 				return err
 			}
-			_, _ = m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", absolutePath)
+			if _, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", absolutePath); err != nil {
+				return err
+			}
+			if _, found, err := workspace.RegisteredWorktreeLockReason(ctx, m.Git, string(repo.MainPath), absolutePath); err != nil {
+				return err
+			} else if !found {
+				return nil
+			}
+			if _, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, common); err != nil {
+				return fmt.Errorf("revalidate missing worktree ownership: %w", err)
+			}
 			_, removeErr := m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", absolutePath)
 			return removeErr
 		} else if statErr != nil {
 			return statErr
+		}
+		common, err := filepath.EvalSymlinks(string(repo.CommonDir))
+		if err != nil {
+			return err
+		}
+		slotID, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, common)
+		if err != nil {
+			return fmt.Errorf("validate worktree ownership: %w", err)
+		}
+		if err := validateWxLockReason(lockReason, slotID); err != nil {
+			return err
 		}
 		canonicalRoot, err := filepath.EvalSymlinks(root)
 		if err != nil {
@@ -219,19 +250,15 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if !domain.IsWithin(canonicalRoot, canonicalPath) {
 			return errors.New("worktree path is outside canonical wx root")
 		}
-		common, err := m.gitValue(ctx, path, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		commonOutput, err := m.gitValue(ctx, path, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
 		if err != nil {
 			return err
 		}
-		expected, err := filepath.EvalSymlinks(string(repo.CommonDir))
+		actual, err := filepath.EvalSymlinks(commonOutput)
 		if err != nil {
 			return err
 		}
-		actual, err := filepath.EvalSymlinks(common)
-		if err != nil {
-			return err
-		}
-		if actual != expected {
+		if actual != common {
 			return errors.New("worktree common directory does not match repository ownership")
 		}
 		if expectedHead != "" {
@@ -246,10 +273,30 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
 			return err
 		}
-		_, _ = m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", path)
+		if _, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", path); err != nil {
+			return err
+		}
+		if _, found, err := workspace.RegisteredWorktreeLockReason(ctx, m.Git, string(repo.MainPath), absolutePath); err != nil {
+			return err
+		} else if !found {
+			return nil
+		}
+		if _, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, common); err != nil {
+			return fmt.Errorf("revalidate worktree ownership: %w", err)
+		}
+		if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
+			return err
+		}
 		_, err = m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", path)
 		return err
 	})
+}
+
+func validateWxLockReason(reason, slotID string) error {
+	if reason != "wx:"+slotID+":READY" && reason != "wx:"+slotID+":PREPARING" && reason != "wx:"+slotID+":RESTORING" {
+		return fmt.Errorf("worktree lock reason does not belong to wx slot %s", slotID)
+	}
+	return nil
 }
 
 func validateRemovalPathComponents(root, relative string) error {
