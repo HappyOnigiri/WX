@@ -36,6 +36,18 @@ type Lease struct {
 	SourceWorkspace string `json:"source_workspace,omitempty"`
 	Ready           bool   `json:"ready"`
 }
+
+// managedRoot is the lifetime record for one descriptor-bound wx root. A
+// retired root remains open while an operation or lease still owns a
+// reference; the final release closes it and removes it from the manager's
+// handle set.
+type managedRoot struct {
+	root    *os.Root
+	refs    int
+	retired bool
+	closed  bool
+}
+
 type Manager struct {
 	mu          sync.RWMutex
 	cfg         config.Config
@@ -49,22 +61,37 @@ type Manager struct {
 	backupError string
 	roots       map[string]bool
 	rootHandles map[string]*os.Root
+	rootRefs    map[string]*managedRoot
+	retiredRefs map[string][]*managedRoot
+	rootCond    *sync.Cond
+	rootClosing bool
+	leases      map[string]func()
 	// beforeSlotRootCreate is a deterministic adversarial-test barrier. It is
 	// invoked after the pinned root descriptor and relative namespace are ready
 	// but before the first descriptor-relative mkdir. Production managers leave
 	// it nil.
 	beforeSlotRootCreate func()
-	jobs                 chan jobWork
-	reloads              chan struct{}
-	reclaimAll           bool
-	ctx                  context.Context
-	cancel               context.CancelFunc
-	wg                   sync.WaitGroup
-	workersMu            sync.Mutex
-	workerStops          []chan struct{}
-	workerSeq            int
-	closed               bool
-	logLevel             *slog.LevelVar
+	// beforeRootClose is a deterministic shutdown barrier for lifecycle tests.
+	// Production managers leave it nil.
+	beforeRootClose   func()
+	jobs              chan jobWork
+	reloads           chan struct{}
+	reclaimAll        bool
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	workersMu         sync.Mutex
+	workerStops       []chan struct{}
+	workerSeq         int
+	closed            bool
+	logLevel          *slog.LevelVar
+	backgroundMu      sync.Mutex
+	backgroundWG      sync.WaitGroup
+	backgroundClosing bool
+	reloadMu          sync.Mutex
+	closeOnce         sync.Once
+	closeDoneMu       sync.Mutex
+	closeDone         chan struct{}
 }
 type jobWork struct {
 	id string
@@ -85,10 +112,12 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 	started := time.Now()
 	managerCtx, managerCancel := context.WithCancel(context.Background())
 	reclaimAll := len(exclusiveStartup) > 0 && exclusiveStartup[0]
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootHandles: map[string]*os.Root{}, jobs: make(chan jobWork, 256), reloads: make(chan struct{}, 1), reclaimAll: reclaimAll, ctx: managerCtx, cancel: managerCancel}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootHandles: map[string]*os.Root{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), reloads: make(chan struct{}, 1), reclaimAll: reclaimAll, ctx: managerCtx, cancel: managerCancel}
+	m.rootCond = sync.NewCond(&m.mu)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {
 		m.roots[root] = true
 		m.rootHandles[root] = ownedRoot
+		m.rootRefs[root] = &managedRoot{root: ownedRoot}
 	} else {
 		logger.Error("worktree root is unavailable", "path", cfg.Storage.WorktreeRoot, "error", err)
 	}
@@ -103,21 +132,123 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 }
 
 func (m *Manager) Close() {
-	m.workersMu.Lock()
-	m.closed = true
-	m.workersMu.Unlock()
-	if m.cancel != nil {
-		m.cancel()
+	m.closeDoneMu.Lock()
+	if m.closeDone == nil {
+		m.closeDone = make(chan struct{})
 	}
-	m.wg.Wait()
+	done := m.closeDone
+	m.closeDoneMu.Unlock()
+	m.closeOnce.Do(func() {
+		m.workersMu.Lock()
+		m.closed = true
+		m.workersMu.Unlock()
+		m.backgroundMu.Lock()
+		m.backgroundClosing = true
+		m.backgroundMu.Unlock()
+		m.mu.RLock()
+		beforeRootClose := m.beforeRootClose
+		m.mu.RUnlock()
+		if beforeRootClose != nil {
+			beforeRootClose()
+		}
+		m.beginRootClose()
+		if m.cancel != nil {
+			m.cancel()
+		}
+		m.wg.Wait()
+		m.backgroundWG.Wait()
+		m.closeRootHandles()
+		close(done)
+	})
+	<-done
+}
+
+// beginRootClose prevents new descriptor acquisitions before cancellation is
+// broadcast. Existing references are deliberately left alive until their
+// operations return, while durable lease references are released because a
+// closing daemon cannot service those leases anymore.
+func (m *Manager) beginRootClose() {
 	m.mu.Lock()
-	for root, handle := range m.rootHandles {
+	m.ensureRootStateLocked()
+	m.rootClosing = true
+	leases := make([]func(), 0, len(m.leases))
+	for id, release := range m.leases {
+		leases = append(leases, release)
+		delete(m.leases, id)
+	}
+	m.mu.Unlock()
+	for _, release := range leases {
+		if release != nil {
+			release()
+		}
+	}
+}
+
+func (m *Manager) closeRootHandles() {
+	m.mu.Lock()
+	m.ensureRootStateLocked()
+	for m.rootReferenceCountLocked() > 0 {
+		m.rootCond.Wait()
+	}
+	for path, entry := range m.rootRefs {
+		if entry != nil && !entry.closed && entry.root != nil {
+			entry.closed = true
+			_ = entry.root.Close()
+		}
+		delete(m.rootRefs, path)
+		delete(m.rootHandles, path)
+	}
+	for path, entries := range m.retiredRefs {
+		for _, entry := range entries {
+			if entry != nil && !entry.closed && entry.root != nil {
+				entry.closed = true
+				_ = entry.root.Close()
+			}
+		}
+		delete(m.retiredRefs, path)
+	}
+	// A manually constructed test/recovery Manager may populate only the
+	// compatibility map. Close those handles too, without double-closing a
+	// descriptor already represented by rootRefs.
+	for path, handle := range m.rootHandles {
 		if handle != nil {
 			_ = handle.Close()
 		}
-		delete(m.rootHandles, root)
+		delete(m.rootHandles, path)
 	}
 	m.mu.Unlock()
+}
+
+func (m *Manager) rootReferenceCountLocked() int {
+	count := 0
+	for _, entry := range m.rootRefs {
+		if entry != nil && !entry.closed {
+			count += entry.refs
+		}
+	}
+	for _, entries := range m.retiredRefs {
+		for _, entry := range entries {
+			if entry != nil && !entry.closed {
+				count += entry.refs
+			}
+		}
+	}
+	return count
+}
+
+func (m *Manager) startBackground(fn func()) bool {
+	m.backgroundMu.Lock()
+	if m.backgroundClosing {
+		m.backgroundMu.Unlock()
+		return false
+	}
+	m.backgroundWG.Add(1)
+	m.backgroundMu.Unlock()
+	go func() {
+		defer m.backgroundWG.Done()
+		fn()
+	}()
+	return true
 }
 
 func (m *Manager) resizeWorkers(target int) {
@@ -165,7 +296,7 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 		}
 		jobCtx, cancel := context.WithCancel(m.ctx)
 		done := make(chan struct{})
-		go func() {
+		m.startBackground(func() {
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -180,7 +311,7 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 					return
 				}
 			}
-		}()
+		})
 		err = m.runRecoveredJob(jobCtx, job)
 		close(done)
 		cancel()
@@ -235,11 +366,17 @@ func (m *Manager) newPreparer(cfg config.Config, slotPath string) *workspace.Pre
 	root, err := config.ExpandHome(cfg.Storage.WorktreeRoot)
 	var ownedRoot *os.Root
 	if err == nil {
+		var release func()
 		m.mu.RLock()
-		ownedRoot = m.rootHandles[filepath.Clean(root)]
+		active, known := m.roots[filepath.Clean(root)]
 		m.mu.RUnlock()
-		if ownedRoot == nil {
-			ownedRoot, _, _ = m.rootDescriptor(root)
+		if known && !active {
+			ownedRoot, release, err = m.existingRootDescriptor(root)
+		} else {
+			ownedRoot, release, err = m.rootDescriptor(root)
+		}
+		if err == nil {
+			release()
 		}
 	}
 	return &workspace.Preparer{Git: m.git, Config: cfg, Ownership: m.store, SlotPath: slotPath, OwnedRoot: ownedRoot, RootPath: filepath.Clean(root), RequireOwnedRoot: true}
@@ -269,9 +406,7 @@ func (m *Manager) schedule(job state.Job) {
 }
 
 func (m *Manager) scheduleDelayed(job state.Job, delay time.Duration) {
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
+	m.startBackground(func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		select {
@@ -279,7 +414,7 @@ func (m *Manager) scheduleDelayed(job state.Job, delay time.Duration) {
 		case <-timer.C:
 			m.schedule(job)
 		}
-	}()
+	})
 }
 
 func (m *Manager) recoverJobs(reclaimAll bool) {
@@ -571,6 +706,7 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 			m.log.Error("orphan release failed", "session_id", candidate.ID, "error", err)
 			continue
 		}
+		m.releaseLease(candidate.ID)
 		if changed {
 			m.schedule(job)
 		}
@@ -811,6 +947,9 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 					sessionState = "STARTING"
 				}
 				session := state.Session{ID: ready.ID, WorkspaceID: string(w.ID), SlotID: ready.ID, State: sessionState, AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
+				if err := m.retainLease(session.ID, ready.Path); err != nil {
+					return Lease{}, err
+				}
 				if hasCold {
 					job, leaseErr := m.store.LeaseReadyWithCold(ctx, ready.ID, session)
 					if leaseErr == nil {
@@ -818,12 +957,14 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 						_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 						return Lease{SessionID: session.ID, Token: token, Path: ready.Path, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, nil
 					}
+					m.releaseLease(session.ID)
 					continue
 				}
 				if err := m.store.LeaseReady(ctx, ready.ID, session); err == nil {
 					_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 					return Lease{SessionID: session.ID, Token: token, Path: ready.Path, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true}, nil
 				}
+				m.releaseLease(session.ID)
 				continue
 			}
 			_ = m.store.SetSlotState(ctx, ready.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
@@ -861,17 +1002,21 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 		}
 	}
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, ParentSessionID: parent, State: sessionState, AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
+	if err := m.retainLease(id, root); err != nil {
+		return Lease{}, err
+	}
 	jobKind := "PREPARE"
 	if sessionState == "RESTORING" {
 		jobKind = "RESTORE"
 	}
 	job, err := m.store.CreateSlotSession(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, Path: root, State: slotState}, repos, session, jobKind)
 	if err != nil {
+		m.releaseLease(id)
 		return Lease{}, err
 	}
 	m.schedule(job)
 	_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
-	go func() { _, _ = m.GC(m.ctx, false) }()
+	m.startBackground(func() { _, _ = m.GC(m.ctx, false) })
 	return Lease{SessionID: id, Token: token, Path: root, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, nil
 }
 
@@ -886,38 +1031,182 @@ func (m *Manager) slotRoot(workspaceID, id string, unbound bool) (string, error)
 	return filepath.Join(root, "workspaces", workspaceID, "slots", id, "root"), nil
 }
 
-func (m *Manager) rootDescriptor(root string) (*os.Root, func(), error) {
-	root = filepath.Clean(root)
-	m.mu.RLock()
-	ownedRoot := m.rootHandles[root]
-	m.mu.RUnlock()
-	if ownedRoot != nil {
-		return ownedRoot, func() {}, nil
-	}
-	_, ownedRoot, err := ensureWorktreeRootDescriptor(root)
-	if err != nil {
-		return nil, func() {}, err
-	}
-	// Keep the first descriptor for the manager lifetime. This also covers
-	// managers constructed by tests/recovery code without going through New;
-	// returning a short-lived descriptor here would reopen the root on every
-	// operation and reintroduce the rename/replacement window between calls.
-	m.mu.Lock()
+var errManagerClosed = errors.New("daemon manager is closed")
+
+func (m *Manager) ensureRootStateLocked() {
 	if m.rootHandles == nil {
 		m.rootHandles = map[string]*os.Root{}
+	}
+	if m.rootRefs == nil {
+		m.rootRefs = map[string]*managedRoot{}
+	}
+	if m.retiredRefs == nil {
+		m.retiredRefs = map[string][]*managedRoot{}
 	}
 	if m.roots == nil {
 		m.roots = map[string]bool{}
 	}
-	if existing := m.rootHandles[root]; existing != nil {
-		m.mu.Unlock()
-		_ = ownedRoot.Close()
-		return existing, func() {}, nil
+	if m.leases == nil {
+		m.leases = map[string]func(){}
 	}
-	m.rootHandles[root] = ownedRoot
-	m.roots[root] = true
+	if m.rootCond == nil {
+		m.rootCond = sync.NewCond(&m.mu)
+	}
+}
+
+func (m *Manager) acquireRootLocked(root string, includeRetired bool) (*os.Root, *managedRoot, bool, error) {
+	m.ensureRootStateLocked()
+	if m.rootClosing {
+		return nil, nil, false, errManagerClosed
+	}
+	if entry := m.rootRefs[root]; entry != nil && !entry.closed && !entry.retired && entry.root != nil {
+		entry.refs++
+		return entry.root, entry, true, nil
+	}
+	// Tests and recovery constructors from before descriptor lifetime tracking
+	// may populate only rootHandles. Adopt that descriptor on first use so the
+	// compatibility shape still receives the same reference accounting.
+	if handle := m.rootHandles[root]; handle != nil {
+		current, known := m.roots[root]
+		entry := &managedRoot{root: handle, refs: 1, retired: known && !current}
+		if entry.retired {
+			delete(m.rootHandles, root)
+			m.retiredRefs[root] = append(m.retiredRefs[root], entry)
+		} else {
+			m.rootRefs[root] = entry
+		}
+		return handle, entry, true, nil
+	}
+	if includeRetired {
+		retired := m.retiredRefs[root]
+		for index := len(retired) - 1; index >= 0; index-- {
+			entry := retired[index]
+			if entry != nil && !entry.closed && entry.root != nil {
+				entry.refs++
+				return entry.root, entry, true, nil
+			}
+		}
+	}
+	return nil, nil, false, nil
+}
+
+func rootReleaseOnce(m *Manager, path string, entry *managedRoot) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() { m.releaseRoot(path, entry) })
+	}
+}
+
+func (m *Manager) releaseRoot(path string, entry *managedRoot) {
+	if entry == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if entry.closed || entry.refs <= 0 {
+		return
+	}
+	entry.refs--
+	if entry.refs == 0 && (entry.retired || m.rootClosing) {
+		m.closeRootLocked(path, entry)
+	}
+	if m.rootCond != nil {
+		m.rootCond.Broadcast()
+	}
+}
+
+func (m *Manager) closeRootLocked(path string, entry *managedRoot) {
+	if entry == nil || entry.closed {
+		return
+	}
+	entry.closed = true
+	if m.rootRefs[path] == entry {
+		delete(m.rootRefs, path)
+	}
+	if m.rootHandles[path] == entry.root {
+		delete(m.rootHandles, path)
+	}
+	if entry.root != nil {
+		_ = entry.root.Close()
+	}
+	if retired := m.retiredRefs[path]; len(retired) > 0 {
+		kept := retired[:0]
+		for _, candidate := range retired {
+			if candidate != entry {
+				kept = append(kept, candidate)
+			}
+		}
+		if len(kept) == 0 {
+			delete(m.retiredRefs, path)
+		} else {
+			m.retiredRefs[path] = kept
+		}
+	}
+}
+
+// adoptRoot registers an opened descriptor and returns one reference to its
+// caller. The descriptor is closed if another caller won the registration
+// race or if shutdown started while it was being opened.
+func (m *Manager) adoptRoot(path string, opened *os.Root, active bool) (*os.Root, func(), error) {
+	path = filepath.Clean(path)
+	m.mu.Lock()
+	m.ensureRootStateLocked()
+	if m.rootClosing {
+		m.mu.Unlock()
+		_ = opened.Close()
+		return nil, func() {}, errManagerClosed
+	}
+	if existing := m.rootRefs[path]; existing != nil && !existing.closed && !existing.retired && existing.root != nil {
+		existing.refs++
+		m.mu.Unlock()
+		_ = opened.Close()
+		return existing.root, rootReleaseOnce(m, path, existing), nil
+	}
+	if existing := m.rootHandles[path]; existing != nil {
+		current, known := m.roots[path]
+		isActive := active && (!known || current)
+		entry := &managedRoot{root: existing, refs: 1, retired: !isActive}
+		if isActive {
+			m.rootRefs[path] = entry
+			m.roots[path] = true
+		} else {
+			delete(m.rootHandles, path)
+			m.retiredRefs[path] = append(m.retiredRefs[path], entry)
+		}
+		m.mu.Unlock()
+		_ = opened.Close()
+		return existing, rootReleaseOnce(m, path, entry), nil
+	}
+	current, known := m.roots[path]
+	isActive := active && (!known || current)
+	entry := &managedRoot{root: opened, refs: 1, retired: !isActive}
+	if isActive {
+		m.rootRefs[path] = entry
+		m.rootHandles[path] = opened
+		m.roots[path] = true
+	} else {
+		m.retiredRefs[path] = append(m.retiredRefs[path], entry)
+	}
 	m.mu.Unlock()
-	return ownedRoot, func() {}, nil
+	return opened, rootReleaseOnce(m, path, entry), nil
+}
+
+func (m *Manager) rootDescriptor(root string) (*os.Root, func(), error) {
+	root = filepath.Clean(root)
+	m.mu.Lock()
+	ownedRoot, entry, found, err := m.acquireRootLocked(root, false)
+	m.mu.Unlock()
+	if err != nil {
+		return nil, func() {}, err
+	}
+	if found {
+		return ownedRoot, rootReleaseOnce(m, root, entry), nil
+	}
+	_, opened, err := ensureWorktreeRootDescriptor(root)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return m.adoptRoot(root, opened, true)
 }
 
 // existingRootDescriptor pins an already-created root without creating it.
@@ -926,32 +1215,41 @@ func (m *Manager) rootDescriptor(root string) (*os.Root, func(), error) {
 // create a new root namespace.
 func (m *Manager) existingRootDescriptor(root string) (*os.Root, func(), error) {
 	root = filepath.Clean(root)
-	m.mu.RLock()
-	ownedRoot := m.rootHandles[root]
-	m.mu.RUnlock()
-	if ownedRoot != nil {
-		return ownedRoot, func() {}, nil
-	}
-	ownedRoot, _, err := domain.OpenOwnedRoot(root, root)
+	m.mu.Lock()
+	ownedRoot, entry, found, err := m.acquireRootLocked(root, true)
+	m.mu.Unlock()
 	if err != nil {
 		return nil, func() {}, err
 	}
-	m.mu.Lock()
-	if m.rootHandles == nil {
-		m.rootHandles = map[string]*os.Root{}
+	if found {
+		return ownedRoot, rootReleaseOnce(m, root, entry), nil
 	}
-	if existing := m.rootHandles[root]; existing != nil {
-		m.mu.Unlock()
-		_ = ownedRoot.Close()
-		return existing, func() {}, nil
+	ownedRoot, _, err = domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		return nil, func() {}, err
 	}
-	m.rootHandles[root] = ownedRoot
-	if m.roots == nil {
-		m.roots = map[string]bool{}
+	return m.adoptRoot(root, ownedRoot, false)
+}
+
+func (m *Manager) retireRootLocked(path string) {
+	entry := m.rootRefs[path]
+	if entry == nil {
+		if handle := m.rootHandles[path]; handle != nil {
+			entry = &managedRoot{root: handle}
+			m.rootRefs[path] = entry
+		}
 	}
-	m.roots[root] = true
-	m.mu.Unlock()
-	return ownedRoot, func() {}, nil
+	if entry == nil || entry.closed {
+		return
+	}
+	delete(m.rootRefs, path)
+	delete(m.rootHandles, path)
+	entry.retired = true
+	if entry.refs == 0 {
+		m.closeRootLocked(path, entry)
+		return
+	}
+	m.retiredRefs[path] = append(m.retiredRefs[path], entry)
 }
 
 // createSlotRoot performs allocation through the manager's pinned worktree
@@ -1076,6 +1374,11 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 	if slot.State != "PREPARING" && slot.State != "RESTORING" {
 		return fmt.Errorf("slot %s cannot be prepared from %s", id, slot.State)
 	}
+	releaseRoot, err := m.holdRootForPath(slot.Path)
+	if err != nil {
+		return err
+	}
+	defer releaseRoot()
 	preparer := m.newPreparer(m.Config(), slot.Path)
 	if len(repos) != len(resolved) {
 		return errors.New("slot repository metadata does not match resolved workspace")
@@ -1191,7 +1494,6 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 		if configuredErr != nil || !domain.IsWithin(configured, s.Path) {
 			return false, nil
 		}
-		root = filepath.Clean(configured)
 	}
 	owner, closeOwner, err := m.existingRootDescriptor(root)
 	if err != nil {
@@ -1352,8 +1654,12 @@ func (m *Manager) AllocateResumeSlot(ctx context.Context, agent string, pid int)
 	if err != nil {
 		return Lease{}, err
 	}
+	if err := m.retainLease(id, root); err != nil {
+		return Lease{}, err
+	}
 	session := state.Session{ID: id, SlotID: id, State: "UNBOUND", AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
 	if _, err := m.store.CreateSlotSession(ctx, state.Slot{ID: id, Generation: 0, Path: root, State: "UNBOUND"}, nil, session, ""); err != nil {
+		m.releaseLease(id)
 		return Lease{}, err
 	}
 	return Lease{SessionID: id, Token: token, Path: root, RootIdentity: rootIdentity}, nil
@@ -1513,6 +1819,11 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 	if slotState.State != "RESTORING" {
 		return fmt.Errorf("slot %s cannot be restored from %s", id, slotState.State)
 	}
+	releaseRoot, err := m.holdRootForPath(slotState.Path)
+	if err != nil {
+		return err
+	}
+	defer releaseRoot()
 	archiveManager := m.newArchiveManager(m.Config(), slotState.Path)
 	if len(repos) != len(resolved) {
 		return errors.New("restore repository metadata does not match resolved workspace")
@@ -1658,10 +1969,11 @@ func (m *Manager) recoveryUsable(ctx context.Context, sessionID string, w discov
 	if !ok {
 		return false, errors.New("workspace snapshot archive is outside known wx roots")
 	}
-	owner, _, err := m.existingRootDescriptor(root)
+	owner, releaseOwner, err := m.existingRootDescriptor(root)
 	if err != nil {
 		return false, fmt.Errorf("open workspace snapshot owner: %w", err)
 	}
+	defer releaseOwner()
 	if err := archive.ValidateWorkspaceSnapshotAt(root, owner, rootSnapshot, at); err != nil {
 		return false, err
 	}
@@ -1803,10 +2115,15 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 		return nil
 	}
 	job, changed, err := m.store.Release(ctx, id, session.WorkspaceID, session.SlotID)
-	if err != nil || !changed {
+	if err != nil {
 		return err
 	}
+	if !changed {
+		m.releaseLease(id)
+		return nil
+	}
 	m.schedule(job)
+	m.releaseLease(id)
 	return nil
 }
 
@@ -1837,6 +2154,11 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 		return fmt.Errorf("session %s has invalid release time: %w", s.ID, err)
 	}
 	expiry := releasedAt.Add(m.Config().Retention.RecoverySnapshot.Duration)
+	releaseRoot, err := m.holdRootForPath(slot.Path)
+	if err != nil {
+		return err
+	}
+	defer releaseRoot()
 	archiveManager := m.newArchiveManager(m.Config(), slot.Path)
 	for _, sr := range repos {
 		repo, err := m.store.Repository(ctx, sr.RepositoryID)
@@ -1980,6 +2302,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 		var rootSnapshot state.WorkspaceSnapshot
 		var rootSnapshotOwner string
 		var rootSnapshotOwnerHandle *os.Root
+		var rootSnapshotOwnerRelease func()
 		w, workspaceErr := m.store.SessionWorkspace(ctx, sessionID)
 		if workspaceErr != nil {
 			ok = false
@@ -1992,7 +2315,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 				ok = false
 			} else {
 				rootSnapshotOwner = owner
-				rootSnapshotOwnerHandle, _, workspaceErr = m.existingRootDescriptor(owner)
+				rootSnapshotOwnerHandle, rootSnapshotOwnerRelease, workspaceErr = m.existingRootDescriptor(owner)
 				if workspaceErr != nil {
 					ok = false
 				} else {
@@ -2001,6 +2324,9 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			}
 		}
 		if !ok {
+			if rootSnapshotOwnerRelease != nil {
+				rootSnapshotOwnerRelease()
+			}
 			continue
 		}
 		for _, snapshot := range snapshots {
@@ -2017,6 +2343,9 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			if err := m.store.ExpireSessionSnapshots(ctx, sessionID); err == nil {
 				count++
 			}
+		}
+		if rootSnapshotOwnerRelease != nil {
+			rootSnapshotOwnerRelease()
 		}
 	}
 	if err := m.store.PruneMetadata(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.FailedJob.Duration)), state.FormatTime(nowTime.Add(-cfg.Retention.EventLog.Duration)), state.FormatTime(nowTime.Add(-cfg.Retention.ExpiredSessionTombstone.Duration))); err != nil {
@@ -2049,6 +2378,11 @@ func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
 	if !ok {
 		return fmt.Errorf("%w: slot path is outside every current or retired wx root", state.ErrOwnership)
 	}
+	releaseRoot, err := m.holdRootForPath(slot.Path)
+	if err != nil {
+		return err
+	}
+	defer releaseRoot()
 	archiveManager := m.newArchiveManager(m.Config(), slot.Path)
 	if err := m.removeSlotWorktrees(ctx, archiveManager, root, slot.ID, job.SessionID, slot.Path); err != nil {
 		m.quarantineOwnershipFailure(slot.ID, []string{"REMOVING"}, err)
@@ -2076,6 +2410,11 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 	if !ok || !domain.IsWithin(root, repositoryState.WorktreePath) {
 		return fmt.Errorf("%w: cold repository path is outside wx ownership root", state.ErrOwnership)
 	}
+	releaseRoot, err := m.holdRootForPath(slot.Path)
+	if err != nil {
+		return err
+	}
+	defer releaseRoot()
 	repository, err := m.store.Repository(ctx, job.RepositoryID)
 	if err != nil {
 		return err
@@ -2142,6 +2481,87 @@ func (m *Manager) rootForPath(path string) (string, bool) {
 	return best, best != ""
 }
 
+// holdRootForPath acquires a reference for the complete lifetime of one
+// synchronous operation. In particular, a worker that starts before reload
+// keeps the retired root alive until its preparer/archive call returns.
+func (m *Manager) holdRootForPath(path string) (func(), error) {
+	root, ok := m.rootForPath(path)
+	if !ok {
+		configured, expandErr := config.ExpandHome(m.Config().Storage.WorktreeRoot)
+		if expandErr != nil {
+			return func() {}, fmt.Errorf("%w: resolve configured wx root: %v", state.ErrOwnership, expandErr)
+		}
+		if !domain.IsWithin(configured, path) {
+			// Repository worktrees and other archive inputs may intentionally live
+			// outside wx's managed root. Such path-based callers do not need a root
+			// reference; their own ownership checks decide whether they are usable.
+			return func() {}, nil
+		}
+		root = filepath.Clean(configured)
+	}
+	m.mu.RLock()
+	active, known := m.roots[root]
+	m.mu.RUnlock()
+	var release func()
+	var err error
+	if known && !active {
+		_, release, err = m.existingRootDescriptor(root)
+	} else {
+		_, release, err = m.rootDescriptor(root)
+	}
+	if err != nil {
+		if errors.Is(err, errManagerClosed) {
+			return func() {}, errManagerClosed
+		}
+		return func() {}, fmt.Errorf("%w: hold wx root descriptor: %v", state.ErrOwnership, err)
+	}
+	return release, nil
+}
+
+// retainLease transfers one root reference from the allocation/validation
+// operation to the durable foreground lease. A retired root therefore remains
+// pinned while the client can still release or use that session.
+func (m *Manager) retainLease(sessionID, path string) error {
+	_, ok := m.rootForPath(path)
+	if !ok {
+		configured, err := config.ExpandHome(m.Config().Storage.WorktreeRoot)
+		if err != nil || !domain.IsWithin(configured, path) {
+			if err == nil {
+				err = errors.New("lease path is outside known wx roots")
+			}
+			return fmt.Errorf("%w: %v", state.ErrOwnership, err)
+		}
+	}
+	release, err := m.holdRootForPath(path)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.ensureRootStateLocked()
+	if m.rootClosing {
+		m.mu.Unlock()
+		release()
+		return errManagerClosed
+	}
+	previous := m.leases[sessionID]
+	m.leases[sessionID] = release
+	m.mu.Unlock()
+	if previous != nil {
+		previous()
+	}
+	return nil
+}
+
+func (m *Manager) releaseLease(sessionID string) {
+	m.mu.Lock()
+	release := m.leases[sessionID]
+	delete(m.leases, sessionID)
+	m.mu.Unlock()
+	if release != nil {
+		release()
+	}
+}
+
 func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archive.Manager, root, slotID, sessionID, slotPath string) error {
 	if !domain.IsWithin(root, slotPath) {
 		return fmt.Errorf("%w: slot path is outside wx root", state.ErrOwnership)
@@ -2168,10 +2588,11 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 			if !ok {
 				return removalMetadataFailure("workspace root snapshot is outside known wx roots", errors.New("archive path is not owned"))
 			}
-			archiveRootHandle, _, rootErr := m.existingRootDescriptor(archiveRoot)
+			archiveRootHandle, closeArchiveRoot, rootErr := m.existingRootDescriptor(archiveRoot)
 			if rootErr != nil {
 				return removalMetadataFailure("open workspace root snapshot owner", rootErr)
 			}
+			defer closeArchiveRoot()
 			if err := archive.ValidateWorkspaceSnapshotAt(archiveRoot, archiveRootHandle, rootSnapshot, time.Now()); err != nil {
 				return removalMetadataFailure("validate workspace root snapshot before removal", err)
 			}
@@ -2523,6 +2944,8 @@ func (m *Manager) ReloadConfig() error {
 }
 
 func (m *Manager) reloadConfig(runGC bool) error {
+	m.reloadMu.Lock()
+	defer m.reloadMu.Unlock()
 	cfg, err := config.Load()
 	if err != nil {
 		m.mu.Lock()
@@ -2547,18 +2970,23 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		m.mu.Unlock()
 		return fmt.Errorf("validate worktree root: %w", err)
 	}
-	m.mu.RLock()
-	existingHandle := m.rootHandles[filepath.Clean(newRoot)]
-	m.mu.RUnlock()
-	if existingHandle != nil {
+	m.mu.Lock()
+	m.ensureRootStateLocked()
+	if m.rootClosing {
+		m.mu.Unlock()
+		_ = newHandle.Close()
+		return errManagerClosed
+	}
+	oldRoot := oldConfiguredRoot
+	var compatibilityHandle *os.Root
+	if existing := m.rootRefs[newRoot]; existing != nil && !existing.closed && !existing.retired {
+		_ = newHandle.Close()
+		newHandle = nil
+	} else if existing := m.rootHandles[newRoot]; existing != nil {
+		compatibilityHandle = existing
 		_ = newHandle.Close()
 		newHandle = nil
 	}
-	m.mu.Lock()
-	if m.roots == nil {
-		m.roots = map[string]bool{}
-	}
-	oldRoot := oldConfiguredRoot
 	if oldRoot != newRoot {
 		if err := m.store.DrainRoot(context.Background(), oldRoot); err != nil {
 			if newHandle != nil {
@@ -2571,11 +2999,13 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		}
 		m.roots[oldRoot] = false
 		m.roots[newRoot] = true
+		m.retireRootLocked(oldRoot)
+	}
+	if compatibilityHandle != nil {
+		m.rootRefs[newRoot] = &managedRoot{root: compatibilityHandle}
 	}
 	if newHandle != nil {
-		if m.rootHandles == nil {
-			m.rootHandles = map[string]*os.Root{}
-		}
+		m.rootRefs[newRoot] = &managedRoot{root: newHandle}
 		m.rootHandles[newRoot] = newHandle
 	}
 	m.cfg = cfg
@@ -2593,10 +3023,10 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	default:
 	}
 	if runGC {
-		go func() {
+		m.startBackground(func() {
 			m.reconcileRegistry(m.ctx)
 			_, _ = m.GC(m.ctx, false)
-		}()
+		})
 	}
 	return nil
 }
