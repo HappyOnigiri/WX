@@ -1,0 +1,8 @@
+{
+  "session_id": "claude-prompt-session",
+  "prompt_id": "prompt-1",
+  "transcript_path": "/tmp/claude-prompt.jsonl",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "inspect the workspace",
+  "cwd": "/tmp/wx-session/root"
+}

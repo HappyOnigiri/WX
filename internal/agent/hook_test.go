@@ -107,3 +107,78 @@ func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
 		t.Fatal("unknown event succeeded")
 	}
 }
+
+func TestRecordedClaudeAndCodexHookPayloads(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	handler := &recordingHandler{}
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &rpc.Server{Socket: socket, Handler: handler}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	for deadline := time.Now().Add(time.Second); ; {
+		if _, err := os.Lstat(socket); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RPC server did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	})
+	t.Setenv("WX_DAEMON_SOCKET", socket)
+	t.Setenv("WX_SESSION_TOKEN", "token")
+	t.Setenv("WX_READINESS_TIMEOUT", "2s")
+
+	tests := []struct {
+		name, fixture, event, method string
+	}{
+		{name: "claude startup", fixture: "claude-2.1.258-session-start-startup.json", event: "session-start", method: "BindAgentSession"},
+		{name: "claude resume", fixture: "claude-2.1.258-session-start-resume.json", event: "session-start", method: "BindAndRestoreResume"},
+		{name: "claude prompt", fixture: "claude-2.1.258-user-prompt-submit.json", event: "user-prompt-submit", method: "WaitReady"},
+		{name: "claude tool", fixture: "claude-2.1.258-pre-tool-use.json", event: "pre-tool-use", method: "WaitReady"},
+		{name: "claude end", fixture: "claude-2.1.258-session-end.json", event: "session-end", method: "Release"},
+		{name: "codex native resume", fixture: "codex-0.151.0-session-start-resume.json", event: "session-start", method: "BindAndRestoreResume"},
+		{name: "codex exec", fixture: "codex-0.151.0-pre-tool-use-exec.json", event: "pre-tool-use", method: "WaitReady"},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("testdata", test.fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var recorded map[string]any
+			if err := json.Unmarshal(data, &recorded); err != nil {
+				t.Fatalf("invalid recorded payload: %v", err)
+			}
+			if recorded["hook_event_name"] == "" || recorded["session_id"] == "" {
+				t.Fatalf("recorded payload lacks lifecycle identity: %s", data)
+			}
+			if test.fixture == "codex-0.151.0-pre-tool-use-exec.json" {
+				if _, exists := recorded["workdir"]; exists {
+					t.Fatal("Codex 0.151.0 fixture unexpectedly exposes exec workdir")
+				}
+				if recorded["cwd"] != "/tmp/wx-session/root" {
+					t.Fatalf("Codex exec fixture cwd=%v", recorded["cwd"])
+				}
+			}
+			handler.mu.Lock()
+			handler.methods = nil
+			handler.mu.Unlock()
+			t.Setenv("WX_SESSION_ID", "wx-recorded-"+string(rune('a'+index)))
+			if err := RunHook(ctx, test.event, strings.NewReader(string(data))); err != nil {
+				t.Fatal(err)
+			}
+			handler.mu.Lock()
+			methods := append([]string(nil), handler.methods...)
+			handler.mu.Unlock()
+			if len(methods) != 1 || methods[0] != test.method {
+				t.Fatalf("recorded payload routed to %v, want [%s]", methods, test.method)
+			}
+		})
+	}
+}

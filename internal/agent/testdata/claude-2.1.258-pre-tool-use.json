@@ -1,0 +1,11 @@
+{
+  "session_id": "claude-tool-session",
+  "transcript_path": "/tmp/claude-tool.jsonl",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "git status --short"
+  },
+  "tool_use_id": "tool-1",
+  "cwd": "/tmp/wx-session/root"
+}
