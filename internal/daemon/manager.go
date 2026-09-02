@@ -862,6 +862,10 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 			return err
 		}
 		if stored.State == "READY" {
+			if err := preparer.ValidateSlotWorktreeOwnership(ctx, r.Repository, stored.WorktreePath, r.OID, id); err != nil {
+				m.quarantineOwnershipFailure(id, []string{"PREPARING", "RESTORING"}, err)
+				return err
+			}
 			continue
 		}
 		if stored.State == "PREPARE_RUNNING" {
@@ -1210,6 +1214,10 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			return err
 		}
 		if stored.State == "READY" {
+			if err := archiveManager.Preparer.ValidateRestoringSlotWorktreeOwnership(ctx, r.Repository, stored.WorktreePath, r.OID, id); err != nil {
+				m.quarantineOwnershipFailure(id, []string{"RESTORING"}, err)
+				return err
+			}
 			continue
 		}
 		if stored.State == "RESTORE_RUNNING" {
@@ -1700,7 +1708,7 @@ func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
 	}
 	root, ok := m.rootForPath(slot.Path)
 	if !ok {
-		return errors.New("slot path is outside every current or retired wx root")
+		return fmt.Errorf("%w: slot path is outside every current or retired wx root", state.ErrOwnership)
 	}
 	archiveManager := m.newArchiveManager(m.Config(), slot.Path)
 	if err := m.removeSlotWorktrees(ctx, archiveManager, root, slot.ID, job.SessionID, slot.Path); err != nil {
@@ -1727,7 +1735,7 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 	}
 	root, ok := m.rootForPath(slot.Path)
 	if !ok || !domain.IsWithin(root, repositoryState.WorktreePath) {
-		return errors.New("cold repository path is outside wx ownership root")
+		return fmt.Errorf("%w: cold repository path is outside wx ownership root", state.ErrOwnership)
 	}
 	repository, err := m.store.Repository(ctx, job.RepositoryID)
 	if err != nil {
@@ -1745,7 +1753,7 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 		}
 		ownedRoot, relativeSlot, err := domain.OpenOwnedRoot(root, slot.Path)
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: recreate cold workspace shell: %v", state.ErrOwnership, err)
 		}
 		defer func() { _ = ownedRoot.Close() }()
 		if err := ownedRoot.MkdirAll(relativeSlot, 0o700); err != nil {
@@ -1777,7 +1785,7 @@ func (m *Manager) rootForPath(path string) (string, bool) {
 
 func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archive.Manager, root, slotID, sessionID, slotPath string) error {
 	if !domain.IsWithin(root, slotPath) {
-		return errors.New("slot path is outside wx root")
+		return fmt.Errorf("%w: slot path is outside wx root", state.ErrOwnership)
 	}
 	repos, err := m.store.SlotRepositories(ctx, slotID)
 	if err != nil {
@@ -1787,27 +1795,27 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	if sessionID != "" {
 		w, err := m.store.SessionWorkspace(ctx, sessionID)
 		if err != nil {
-			return err
+			return removalMetadataFailure("resolve session workspace before removal", err)
 		}
 		if w.Kind == "multi_repository" {
 			rootSnapshot, found, err := m.store.WorkspaceSnapshot(ctx, sessionID)
 			if err != nil {
-				return err
+				return removalMetadataFailure("read workspace root snapshot before removal", err)
 			}
 			if !found {
-				return errors.New("workspace root snapshot metadata is incomplete for worktree removal")
+				return removalMetadataFailure("workspace root snapshot metadata is incomplete for worktree removal", errors.New("metadata row is missing"))
 			}
 			archiveRoot, ok := m.rootForPath(rootSnapshot.ArchivePath)
 			if !ok {
-				return errors.New("workspace root snapshot is outside known wx roots")
+				return removalMetadataFailure("workspace root snapshot is outside known wx roots", errors.New("archive path is not owned"))
 			}
 			if err := archive.ValidateWorkspaceSnapshot(archiveRoot, rootSnapshot, time.Now()); err != nil {
-				return fmt.Errorf("validate workspace root snapshot before removal: %w", err)
+				return removalMetadataFailure("validate workspace root snapshot before removal", err)
 			}
 		}
 		snapshots, err := m.store.Snapshots(ctx, sessionID)
 		if err != nil {
-			return err
+			return removalMetadataFailure("read repository snapshots before removal", err)
 		}
 		for _, snapshot := range snapshots {
 			expected[snapshot.RepositoryID] = snapshot.HeadOID
@@ -1816,14 +1824,14 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	for _, sr := range repos {
 		repo, err := m.store.Repository(ctx, sr.RepositoryID)
 		if err != nil || !domain.IsWithin(root, sr.WorktreePath) {
-			return errors.New("slot repository ownership validation failed")
+			return fmt.Errorf("%w: slot repository ownership validation failed", state.ErrOwnership)
 		}
 		expectedHead := sr.BaseOID
 		if sessionID != "" {
 			var ok bool
 			expectedHead, ok = expected[sr.RepositoryID]
 			if !ok {
-				return errors.New("snapshot metadata is incomplete for worktree removal")
+				return removalMetadataFailure("snapshot metadata is incomplete for worktree removal", errors.New("repository snapshot row is missing"))
 			}
 		}
 		if err := archiveManager.RemoveWorktree(ctx, repo, root, sr.WorktreePath, expectedHead); err != nil {
@@ -1835,22 +1843,29 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	}
 	ownedRoot, relativeSlot, err := domain.OpenOwnedRoot(root, slotPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: open slot root for removal: %v", state.ErrOwnership, err)
 	}
 	defer func() { _ = ownedRoot.Close() }()
 	info, err := ownedRoot.Lstat(relativeSlot)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
-		return err
+		return fmt.Errorf("%w: inspect slot root for removal: %v", state.ErrOwnership, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return errors.New("slot root is not a physical directory")
+		return fmt.Errorf("%w: slot root is not a physical directory", state.ErrOwnership)
 	}
 	// Root.RemoveAll does not follow symlink leaves and cannot traverse outside
 	// the descriptor-owned root. It also removes bundle rules and empty nested
 	// repository parents left after the registered worktrees are removed.
 	return ownedRoot.RemoveAll(relativeSlot)
+}
+
+func removalMetadataFailure(message string, err error) error {
+	if err == nil || errors.Is(err, state.ErrOwnership) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("%w: %s: %v", state.ErrOwnership, message, err)
 }
 
 func (m *Manager) Status(ctx context.Context) (map[string]any, error) {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,6 +74,10 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 			SlotID: "slot", RepositoryID: string(repo.ID), SlotPath: filepath.Join(worktreeRoot, "stale-slot"), WorktreePath: ownedPath, CommonDir: common,
 			AllowedSlotStates: []string{"REMOVING"}, AllowedRepositoryStates: []string{"READY"},
 		},
+		"wrong workspace-relative path": {
+			SlotID: "slot", RepositoryID: string(repo.ID), SlotPath: ownedPath, WorktreePath: filepath.Join(ownedPath, "misplaced"), CommonDir: common,
+			AllowedSlotStates: []string{"REMOVING"}, AllowedRepositoryStates: []string{"READY"},
+		},
 		"wrong common directory": {
 			SlotID: "slot", RepositoryID: string(repo.ID), WorktreePath: ownedPath, CommonDir: filepath.Join(root, "other-common.git"),
 			AllowedSlotStates: []string{"REMOVING"}, AllowedRepositoryStates: []string{"READY"},
@@ -91,16 +96,37 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 
 	mustMkdir(t, filepath.Dir(ownedPath))
 	gitCommand(t, repositoryPath, "worktree", "add", "--detach", ownedPath, head)
+	gitCommand(t, repositoryPath, "worktree", "lock", "--reason", "wx:slot:READY", ownedPath)
+	if err := manager.RemoveWorktree(ctx, repo, worktreeRoot, ownedPath, head); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("missing ownership marker authorized removal or wrong error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ownedPath, ".git")); err != nil {
+		t.Fatalf("unmarked worktree was removed or changed: %v", err)
+	}
 	if err := workspace.EnsureOwnershipMarker(worktreeRoot, ownedPath, "slot", common); err != nil {
 		t.Fatal(err)
 	}
-	gitCommand(t, repositoryPath, "worktree", "lock", "--reason", "wx:slot:READY", ownedPath)
 	if _, err := store.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
 		SlotID: "slot", RepositoryID: string(repo.ID), SlotPath: ownedPath, WorktreePath: ownedPath, CommonDir: common,
 		AllowedSlotStates: []string{"REMOVING"}, AllowedRepositoryStates: []string{"READY"},
 	}); err != nil {
 		t.Fatalf("owned removal proof failed: %v", err)
 	}
+	transitionValidator := &transitionOwnershipValidator{store: store}
+	transitionManager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}, Ownership: transitionValidator}
+	if err := transitionManager.RemoveWorktree(ctx, repo, worktreeRoot, ownedPath, head); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("state transition during removal was not rejected: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ownedPath, ".git")); err != nil {
+		t.Fatalf("worktree was removed after state transition race: %v", err)
+	}
+	if slot, err := store.Slot(ctx, "slot"); err != nil || slot.State != "READY" {
+		t.Fatalf("transition race did not leave durable state unchanged by the guard: slot=%+v err=%v", slot, err)
+	}
+	if err := store.SetSlotState(ctx, "slot", []string{"READY"}, "REMOVING", "test-reset"); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repositoryPath, "worktree", "lock", "--reason", "wx:slot:READY", ownedPath)
 	if err := manager.RemoveWorktree(ctx, repo, worktreeRoot, ownedPath, head); err != nil {
 		t.Fatalf("owned worktree removal failed: %v", err)
 	}
@@ -110,4 +136,20 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 	if list := gitCommand(t, repositoryPath, "worktree", "list", "--porcelain"); strings.Contains(list, ownedPath) {
 		t.Fatalf("owned worktree registration remains: %s", list)
 	}
+}
+
+type transitionOwnershipValidator struct {
+	store *state.Store
+	once  sync.Once
+}
+
+func (v *transitionOwnershipValidator) ValidateWorktreeOwnership(ctx context.Context, req state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error) {
+	proof, err := v.store.ValidateWorktreeOwnership(ctx, req)
+	if err != nil {
+		return proof, err
+	}
+	v.once.Do(func() {
+		_ = v.store.SetSlotState(context.Background(), req.SlotID, []string{"REMOVING"}, "READY", "test-transition")
+	})
+	return proof, nil
 }

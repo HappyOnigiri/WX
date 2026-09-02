@@ -308,6 +308,49 @@ func (p *Preparer) validateExistingWorktreeOwned(ctx context.Context, repo disco
 }
 
 func (p *Preparer) validateExistingWorktreeOwnedForPhase(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase) error {
+	slotStates, repositoryStates := preparationOwnershipStates(phase)
+	err := p.validateExistingWorktreeOwnedForStates(ctx, repo, target, oid, slotID, slotStates, repositoryStates)
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, state.ErrOwnership) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", state.ErrOwnership, err)
+}
+
+// ValidateSlotWorktreeOwnership verifies a worktree that was already marked
+// READY at the repository level before the enclosing prepare/restore job
+// committed its slot state. A daemon crash can leave that durable intermediate
+// state behind; replay must prove the exact slot/path/registration before
+// promoting the slot instead of treating the READY row as sufficient.
+func (p *Preparer) ValidateSlotWorktreeOwnership(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
+	return p.validateSlotWorktreeOwnershipForPhase(ctx, repo, target, oid, slotID, preparePhaseCreate)
+}
+
+// ValidateRestoringSlotWorktreeOwnership is the replay check for a repository
+// that was durably marked READY during restore. It keeps the enclosing slot in
+// RESTORING instead of widening the proof to unrelated lifecycle states.
+func (p *Preparer) ValidateRestoringSlotWorktreeOwnership(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
+	return p.validateSlotWorktreeOwnershipForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore)
+}
+
+func (p *Preparer) validateSlotWorktreeOwnershipForPhase(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase) error {
+	if slotID == "" {
+		return fmt.Errorf("%w: slot ID is required for replay validation", state.ErrOwnership)
+	}
+	slotStates, repositoryStates := preparationOwnershipStates(phase)
+	// The repository row is already READY at this crash-replay boundary, while
+	// the enclosing slot is still in its phase state. Keep that one durable
+	// intermediate state eligible without accepting unrelated lifecycle states.
+	repositoryStates = append(repositoryStates, "READY")
+	if err := p.validateExistingWorktreeOwnedForStates(ctx, repo, target, oid, slotID, slotStates, repositoryStates); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return fmt.Errorf("%w: validate replayed slot worktree: %v", state.ErrOwnership, err)
+	}
+	return nil
+}
+
+func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, repo discovery.Repository, target, oid, slotID string, slotStates, repositoryStates []string) error {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
 		return err
@@ -351,7 +394,6 @@ func (p *Preparer) validateExistingWorktreeOwnedForPhase(ctx context.Context, re
 	if slotID == "" {
 		return nil
 	}
-	slotStates, repositoryStates := preparationOwnershipStates(phase)
 	if err := p.validateStateOwnership(ctx, repo, target, slotID, slotStates, repositoryStates); err != nil {
 		return err
 	}

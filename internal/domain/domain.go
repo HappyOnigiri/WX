@@ -67,10 +67,11 @@ func IsWithin(root, path string) bool {
 	return err == nil && rel != ".." && rel != "." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// OpenOwnedRoot binds subsequent filesystem operations to the filesystem root
-// and returns the owned path relative to that descriptor. Starting from the
-// filesystem root avoids a check/open race on the configured ownership root;
-// os.Root then rejects any descendant symlink swapped into the path.
+// OpenOwnedRoot binds subsequent filesystem operations to the validated
+// ownership root and returns the owned path relative to that descriptor.
+// Starting from the filesystem root lets us reject symlinks while opening the
+// configured root; reopening that component as its own Root also pins the
+// directory across renames/replacements after this function returns.
 func OpenOwnedRoot(root, path string) (*os.Root, string, error) {
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -84,25 +85,37 @@ func OpenOwnedRoot(root, path string) (*os.Root, string, error) {
 	if !IsWithin(absoluteRoot, absolutePath) {
 		return nil, "", errors.New("path is outside wx ownership root")
 	}
-	rootHandle, rootRelative, err := openFilesystemRoot(absoluteRoot)
+	filesystemRoot, rootRelative, err := openFilesystemRoot(absoluteRoot)
 	if err != nil {
 		return nil, "", err
 	}
-	info, err := rootHandle.Lstat(rootRelative)
+	info, err := filesystemRoot.Lstat(rootRelative)
 	if err != nil {
-		_ = rootHandle.Close()
+		_ = filesystemRoot.Close()
 		return nil, "", fmt.Errorf("validate wx ownership root: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		_ = rootHandle.Close()
+		_ = filesystemRoot.Close()
 		return nil, "", errors.New("wx ownership root is not a physical directory")
 	}
-	volumeRoot := filepath.VolumeName(absolutePath) + string(filepath.Separator)
-	relative := strings.TrimPrefix(absolutePath, volumeRoot)
+	ownedRoot, err := filesystemRoot.OpenRoot(rootRelative)
+	closeErr := filesystemRoot.Close()
+	if err != nil {
+		return nil, "", fmt.Errorf("open wx ownership root: %w", err)
+	}
+	if closeErr != nil {
+		_ = ownedRoot.Close()
+		return nil, "", closeErr
+	}
+	relative, err := filepath.Rel(absoluteRoot, absolutePath)
+	if err != nil {
+		_ = ownedRoot.Close()
+		return nil, "", err
+	}
 	if relative == "" {
 		relative = "."
 	}
-	return rootHandle, relative, nil
+	return ownedRoot, relative, nil
 }
 
 func openFilesystemRoot(absolute string) (*os.Root, string, error) {

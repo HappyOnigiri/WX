@@ -163,20 +163,28 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 	if !sameOrWithin(canonicalSlot, canonicalWorktree) {
 		return WorktreeOwnership{}, ownershipFailure("SQLite worktree path is outside its slot path")
 	}
+	cleanRelativePath := filepath.Clean(relativePath)
+	expectedWorktree, err := canonicalOwnershipPath(filepath.Join(canonicalSlot, cleanRelativePath))
+	if err != nil {
+		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("expected workspace-relative worktree path: %v", err))
+	}
+	if canonicalWorktree != expectedWorktree {
+		return WorktreeOwnership{}, ownershipFailure("SQLite worktree path does not match the workspace repository relative path")
+	}
 
-	canonicalWorkspaceRoot, err := canonicalOwnershipPath(workspaceRoot)
+	canonicalWorkspaceRoot, err := canonicalExistingDirectory(workspaceRoot)
 	if err != nil {
 		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("recorded workspace root: %v", err))
 	}
-	canonicalMain, err := canonicalOwnershipPath(mainWorktreePath)
+	canonicalMain, err := canonicalExistingDirectory(mainWorktreePath)
 	if err != nil {
 		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("recorded repository main path: %v", err))
 	}
-	canonicalCommon, err := canonicalOwnershipPath(commonDir)
+	canonicalCommon, err := canonicalExistingDirectory(commonDir)
 	if err != nil {
 		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("recorded repository common directory: %v", err))
 	}
-	requestedCommon, err := canonicalOwnershipPath(req.CommonDir)
+	requestedCommon, err := canonicalExistingDirectory(req.CommonDir)
 	if err != nil {
 		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("requested repository common directory: %v", err))
 	}
@@ -194,7 +202,7 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 	out.WorkspaceRoot = canonicalWorkspaceRoot
 	out.MainWorktreePath = canonicalMain
 	out.CommonDir = canonicalCommon
-	out.RelativePath = filepath.Clean(relativePath)
+	out.RelativePath = cleanRelativePath
 	out.SlotState = slotState
 	out.RepositoryState = repositoryState
 	return out, nil
@@ -246,7 +254,7 @@ func (s *Store) ValidateSlotOwnership(ctx context.Context, req SlotOwnershipRequ
 	if canonicalPath != requestedPath {
 		return SlotOwnership{}, ownershipFailure("requested slot path does not match the SQLite slot path")
 	}
-	canonicalRoot, err := canonicalOwnershipPath(rawRoot)
+	canonicalRoot, err := canonicalExistingDirectory(rawRoot)
 	if err != nil {
 		return SlotOwnership{}, ownershipFailure(fmt.Sprintf("recorded workspace root: %v", err))
 	}
@@ -330,6 +338,21 @@ func canonicalOwnershipPath(raw string) (string, error) {
 		missing = append(missing, filepath.Base(current))
 		current = parent
 	}
+}
+
+func canonicalExistingDirectory(raw string) (string, error) {
+	if raw == "" || !filepath.IsAbs(raw) {
+		return "", errors.New("path is not absolute")
+	}
+	absolute := filepath.Clean(raw)
+	info, err := os.Lstat(absolute)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", errors.New("path is not an existing physical directory")
+	}
+	return canonicalOwnershipPath(absolute)
 }
 
 func ownershipFailure(message string) error {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 const ownershipMarkerPrefix = ".wx-owner-"
@@ -83,26 +84,26 @@ func EnsureOwnershipMarker(root, target, slotID, commonDir string) error {
 // after an interrupted physical deletion.
 func ValidateOwnershipMarker(root, target, slotID, commonDir string) error {
 	if strings.ContainsAny(slotID, `/\`) {
-		return errors.New("invalid wx ownership slot id")
+		return markerOwnershipFailure(errors.New("invalid wx ownership slot id"))
 	}
 	marker, err := newOwnershipMarker(target, slotID, commonDir, false)
 	if err != nil {
-		return err
+		return markerOwnershipFailure(err)
 	}
 	owner, markerRelative, err := openMarkerRoot(root, target)
 	if err != nil {
-		return err
+		return markerOwnershipFailure(err)
 	}
 	defer func() { _ = owner.Close() }()
 	actual, err := readOwnershipMarker(owner, markerRelative)
 	if err != nil {
-		return err
+		return markerOwnershipFailure(err)
 	}
 	if actual.Target != marker.Target || actual.CommonDir != marker.CommonDir {
-		return errors.New("wx ownership marker does not match expected worktree")
+		return markerOwnershipFailure(errors.New("wx ownership marker does not match expected worktree"))
 	}
 	if slotID != "" && actual.SlotID != slotID {
-		return errors.New("wx ownership marker does not match expected slot")
+		return markerOwnershipFailure(errors.New("wx ownership marker does not match expected slot"))
 	}
 	return nil
 }
@@ -112,24 +113,31 @@ func ValidateOwnershipMarker(root, target, slotID, commonDir string) error {
 func ValidateRemovalOwnership(root, target, commonDir string) (string, error) {
 	marker, err := newOwnershipMarker(target, "", commonDir, true)
 	if err != nil {
-		return "", err
+		return "", markerOwnershipFailure(err)
 	}
 	owner, markerRelative, err := openMarkerRoot(root, target)
 	if err != nil {
-		return "", err
+		return "", markerOwnershipFailure(err)
 	}
 	defer func() { _ = owner.Close() }()
 	actual, err := readOwnershipMarker(owner, markerRelative)
 	if err != nil {
-		return "", err
+		return "", markerOwnershipFailure(err)
 	}
 	if actual.Target != marker.Target || actual.CommonDir != marker.CommonDir {
 		if actual.Target == marker.Target && actual.CommonDir != marker.CommonDir {
-			return "", errors.New("wx ownership marker common directory does not match recorded worktree")
+			return "", markerOwnershipFailure(errors.New("wx ownership marker common directory does not match recorded worktree"))
 		}
-		return "", errors.New("wx ownership marker does not match recorded worktree")
+		return "", markerOwnershipFailure(errors.New("wx ownership marker does not match recorded worktree"))
 	}
 	return actual.SlotID, nil
+}
+
+func markerOwnershipFailure(err error) error {
+	if err == nil || errors.Is(err, state.ErrOwnership) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", state.ErrOwnership, err)
 }
 
 func newOwnershipMarker(target, slotID, commonDir string, allowMissingTarget bool) (ownershipMarker, error) {

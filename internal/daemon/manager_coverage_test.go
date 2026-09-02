@@ -114,6 +114,11 @@ func TestReadyMatchesRejectsEveryUnsafeRepresentation(t *testing.T) {
 func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	workspaceRecord.Kind = "repository"
+	workspaceRecord.Repositories[0].RelativePath = "."
+	resolved[0].Repository.RelativePath = "."
+	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+		t.Fatal(err)
+	}
 	if err := manager.prepareSlot(ctx, "missing", workspaceRecord, resolved, nil); err == nil {
 		t.Fatal("missing slot preparation succeeded")
 	}
@@ -144,8 +149,31 @@ func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: readyRoot, State: "READY", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.prepareSlot(ctx, readyID, workspaceRecord, resolved, []state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID)}}); err != nil {
+	if err := manager.prepareSlot(ctx, readyID, workspaceRecord, resolved, []state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID)}}); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("unowned READY replay error=%v", err)
+	}
+	if slot, err := store.Slot(ctx, readyID); err != nil || slot.State != "QUARANTINED" {
+		t.Fatalf("unowned READY replay slot=%+v err=%v", slot, err)
+	}
+
+	validID := domain.StableID("prepare-coverage", "ready-replay-owned")
+	validRoot := filepath.Join(manager.Config().Storage.WorktreeRoot, "coverage", validID, "root")
+	if _, err := store.CreateStandby(ctx,
+		state.Slot{ID: validID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: validRoot, State: "PREPARING"},
+		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: validRoot, State: "PREPARING", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
+	}
+	if err := manager.newPreparer(manager.Config(), validRoot).Prepare(ctx, resolved[0].Repository, validRoot, resolved[0].OID, validID); err != nil {
+		t.Fatalf("create worktree for valid READY replay: %v", err)
+	}
+	if err := store.SetSlotRepositoryState(ctx, validID, string(resolved[0].Repository.ID), []string{"PREPARING"}, "READY"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.prepareSlot(ctx, validID, workspaceRecord, resolved, []state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID)}}); err != nil {
+		t.Fatalf("owned READY replay: %v", err)
+	}
+	if slot, err := store.Slot(ctx, validID); err != nil || slot.State != "READY" {
+		t.Fatalf("owned READY replay slot=%+v err=%v", slot, err)
 	}
 
 	missingRepoID := domain.StableID("prepare-coverage", "missing-repository")
@@ -201,6 +229,11 @@ func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 func TestRestoreSlotFailureAndReplayBoundaries(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	workspaceRecord.Kind = "repository"
+	workspaceRecord.Repositories[0].RelativePath = "."
+	resolved[0].Repository.RelativePath = "."
+	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+		t.Fatal(err)
+	}
 	if err := manager.restoreSlot(ctx, "missing", workspaceRecord, resolved, nil, nil); err == nil {
 		t.Fatal("missing restore slot succeeded")
 	}
@@ -251,8 +284,31 @@ func TestRestoreSlotFailureAndReplayBoundaries(t *testing.T) {
 		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: completeRoot, State: "READY", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.restoreSlot(ctx, completeID, workspaceRecord, resolved, []state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID)}}, nil); err != nil {
+	if err := manager.restoreSlot(ctx, completeID, workspaceRecord, resolved, []state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID)}}, nil); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("unowned READY restore replay error=%v", err)
+	}
+	if slot, err := store.Slot(ctx, completeID); err != nil || slot.State != "QUARANTINED" {
+		t.Fatalf("unowned READY restore replay slot=%+v err=%v", slot, err)
+	}
+
+	validID := domain.StableID("restore-coverage", "ready-replay-owned")
+	validRoot := filepath.Join(manager.Config().Storage.WorktreeRoot, "restore", validID, "root")
+	if _, err := store.CreateStandby(ctx,
+		state.Slot{ID: validID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: validRoot, State: "RESTORING"},
+		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: validRoot, State: "RESTORING", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
+	}
+	if err := manager.newPreparer(manager.Config(), validRoot).PrepareForRestore(ctx, resolved[0].Repository, validRoot, resolved[0].OID, validID); err != nil {
+		t.Fatalf("create worktree for valid READY restore replay: %v", err)
+	}
+	if err := store.SetSlotRepositoryState(ctx, validID, string(resolved[0].Repository.ID), []string{"RESTORING"}, "READY"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.restoreSlot(ctx, validID, workspaceRecord, resolved, []state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID)}}, nil); err != nil {
+		t.Fatalf("owned READY restore replay: %v", err)
+	}
+	if slot, err := store.Slot(ctx, validID); err != nil || slot.State != "READY" {
+		t.Fatalf("owned READY restore replay slot=%+v err=%v", slot, err)
 	}
 
 	ambiguousID := domain.StableID("restore-coverage", "ambiguous-command")

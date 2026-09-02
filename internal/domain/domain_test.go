@@ -69,6 +69,34 @@ func TestOpenOwnedRootRejectsInvalidOwnershipRoots(t *testing.T) {
 	}
 }
 
+func TestOpenOwnedRootPinsRootAcrossReplacement(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "owned")
+	target := filepath.Join(root, "slot", "root")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owned, relative, err := OpenOwnedRoot(root, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owned.Close() }()
+
+	replaced := filepath.Join(parent, "owned-old")
+	if err := os.Rename(root, replaced); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "slot", "root"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owned.Lstat(relative); err != nil {
+		t.Fatalf("pinned ownership root lost after path replacement: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(replaced, "slot", "root")); err != nil {
+		t.Fatalf("original ownership root is unavailable: %v", err)
+	}
+}
+
 func TestValidatePhysicalPathRejectsParentSymlink(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
