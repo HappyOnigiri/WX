@@ -163,9 +163,15 @@ func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: validRoot, State: "PREPARING", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
 	}
+	releaseRoot, err := manager.holdRootForPath(validRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := manager.newPreparer(manager.Config(), validRoot).Prepare(ctx, resolved[0].Repository, validRoot, resolved[0].OID, validID); err != nil {
+		releaseRoot()
 		t.Fatalf("create worktree for valid READY replay: %v", err)
 	}
+	releaseRoot()
 	if err := store.SetSlotRepositoryState(ctx, validID, string(resolved[0].Repository.ID), []string{"PREPARING"}, "READY"); err != nil {
 		t.Fatal(err)
 	}
@@ -298,9 +304,15 @@ func TestRestoreSlotFailureAndReplayBoundaries(t *testing.T) {
 		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: validRoot, State: "RESTORING", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
 	}
+	releaseRoot, err := manager.holdRootForPath(validRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := manager.newPreparer(manager.Config(), validRoot).PrepareForRestore(ctx, resolved[0].Repository, validRoot, resolved[0].OID, validID); err != nil {
+		releaseRoot()
 		t.Fatalf("create worktree for valid READY restore replay: %v", err)
 	}
+	releaseRoot()
 	if err := store.SetSlotRepositoryState(ctx, validID, string(resolved[0].Repository.ID), []string{"RESTORING"}, "READY"); err != nil {
 		t.Fatal(err)
 	}

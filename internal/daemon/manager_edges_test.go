@@ -72,6 +72,11 @@ func TestNewPreparerKeepsRetiredRootForInFlightSlot(t *testing.T) {
 		rootHandles: map[string]*os.Root{},
 	}
 	t.Cleanup(m.Close)
+	if _, release, err := m.existingRootDescriptor(oldRoot); err != nil {
+		t.Fatal(err)
+	} else {
+		t.Cleanup(release)
+	}
 
 	preparer := m.newPreparer(cfg, filepath.Join(oldRoot, "workspaces", "workspace", "slots", "slot", "root"))
 	if preparer.RootPath != oldRoot {
@@ -79,6 +84,9 @@ func TestNewPreparerKeepsRetiredRootForInFlightSlot(t *testing.T) {
 	}
 	if preparer.OwnedRoot == nil {
 		t.Fatal("in-flight slot preparer did not retain retired root descriptor")
+	}
+	if _, err := preparer.OwnedRoot.Lstat("."); err != nil {
+		t.Fatalf("in-flight slot preparer returned unusable root descriptor: %v", err)
 	}
 }
 

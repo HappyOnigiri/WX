@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -81,9 +82,10 @@ func TestReloadUniqueRootsRetiresDescriptorsWithinBound(t *testing.T) {
 		manager.mu.RLock()
 		handleCount := len(manager.rootHandles)
 		retiredCount := len(manager.retiredRefs)
+		rootPathCount := len(manager.roots)
 		manager.mu.RUnlock()
-		if handleCount != 1 || retiredCount != 0 {
-			t.Fatalf("reload %d retained handles=%d retired roots=%d", index, handleCount, retiredCount)
+		if handleCount != 1 || retiredCount != 0 || rootPathCount != 1 {
+			t.Fatalf("reload %d retained handles=%d retired roots=%d root paths=%d", index, handleCount, retiredCount, rootPathCount)
 		}
 	}
 	if got := openDescriptorCount(t); got > baseline+3 {
@@ -271,5 +273,233 @@ func TestConcurrentCloseReloadAndAllocationHasNoUseAfterClose(t *testing.T) {
 	manager.mu.RUnlock()
 	if active != 0 || retired != 0 || refs != 0 {
 		t.Fatalf("shutdown left descriptors active=%d retired=%d refs=%d", active, retired, refs)
+	}
+}
+
+// A same-path inode replacement must not be silently accepted as the same
+// generation. Reload remains atomic and keeps the old descriptor/configuration
+// so subsequent allocation can fail closed instead of mixing namespaces.
+func TestReloadRejectsSamePathRootInodeReplacementAtomically(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "worktrees")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	manager := rootLifetimeManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	if _, release, err := manager.rootDescriptor(root); err != nil {
+		t.Fatal(err)
+	} else {
+		release()
+	}
+	manager.mu.RLock()
+	entry := manager.rootRefs[root]
+	manager.mu.RUnlock()
+	if entry == nil {
+		t.Fatal("manager did not register the current root descriptor")
+	}
+	oldRoot := root + "-old"
+	if err := os.Rename(root, oldRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRootLifetimeConfig(t, home, root)
+	if err := manager.reloadConfig(false); err == nil {
+		t.Fatal("reload accepted a same-path inode replacement")
+	}
+	if got := manager.Config().Storage.WorktreeRoot; got != root {
+		t.Fatalf("failed reload changed config root to %q, want %q", got, root)
+	}
+	manager.mu.RLock()
+	current := manager.rootRefs[root]
+	retired := len(manager.retiredRefs[root])
+	closed := entry.closed
+	manager.mu.RUnlock()
+	if current != entry || retired != 0 || closed {
+		t.Fatalf("failed reload changed descriptor state: current=%p want=%p retired=%d closed=%v", current, entry, retired, closed)
+	}
+}
+
+func TestReloadRejectsReplacementOfClosedHistoricalRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	oldRoot := filepath.Join(home, "root-old")
+	newRoot := filepath.Join(home, "root-new")
+	if err := os.Mkdir(oldRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(newRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = oldRoot
+	manager := rootLifetimeManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	if _, release, err := manager.rootDescriptor(oldRoot); err != nil {
+		t.Fatal(err)
+	} else {
+		release()
+	}
+	writeRootLifetimeConfig(t, home, newRoot)
+	if err := manager.reloadConfig(false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldRoot); err != nil {
+		t.Fatal(err)
+	}
+	originalRoot := oldRoot + "-original"
+	if err := os.Rename(oldRoot, originalRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(oldRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRootLifetimeConfig(t, home, oldRoot)
+	if err := manager.reloadConfig(false); err == nil {
+		t.Fatal("reload accepted a replacement of a closed historical root")
+	}
+	if got := manager.Config().Storage.WorktreeRoot; got != newRoot {
+		t.Fatalf("failed historical-root reload changed config to %q, want %q", got, newRoot)
+	}
+	if _, release, err := manager.existingRootDescriptor(oldRoot); err == nil {
+		release()
+		t.Fatal("historical slot lookup accepted a replacement root inode")
+	}
+}
+
+func TestRootStatusRejectsReplacedRootGeneration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "worktrees")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "owned.txt"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	manager := rootLifetimeManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	if _, release, err := manager.rootDescriptor(root); err != nil {
+		t.Fatal(err)
+	} else {
+		release()
+	}
+	if err := os.Rename(root, root+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "replacement.txt"), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := manager.rootDirectoryUsage(root); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("status accepted replaced root generation: %v", err)
+	}
+}
+
+func TestReloadRejectsOverlappingRootWhileGenerationIsHeld(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	oldRoot := filepath.Join(home, "worktrees")
+	nestedRoot := filepath.Join(oldRoot, "nested")
+	if err := os.MkdirAll(nestedRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = oldRoot
+	manager := rootLifetimeManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	_, release, err := manager.rootDescriptor(oldRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRootLifetimeConfig(t, home, nestedRoot)
+	if err := manager.reloadConfig(false); err == nil {
+		release()
+		t.Fatal("reload accepted an overlapping root while the old generation was held")
+	}
+	if got := manager.Config().Storage.WorktreeRoot; got != oldRoot {
+		t.Fatalf("failed overlapping reload changed config root to %q, want %q", got, oldRoot)
+	}
+	release()
+	if err := manager.reloadConfig(false); err != nil {
+		t.Fatalf("reload after old generation release failed: %v", err)
+	}
+}
+
+func TestConcurrentCloseIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "worktrees")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	manager := rootLifetimeManager(t, cfg, store)
+	if _, release, err := manager.rootDescriptor(root); err != nil {
+		t.Fatal(err)
+	} else {
+		release()
+	}
+	const callers = 16
+	start := make(chan struct{})
+	done := make(chan struct{}, callers)
+	for range callers {
+		go func() {
+			<-start
+			manager.Close()
+			done <- struct{}{}
+		}()
+	}
+	close(start)
+	for range callers {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("concurrent Manager.Close did not return")
+		}
+	}
+	manager.mu.RLock()
+	active := len(manager.rootRefs)
+	compatibility := len(manager.rootHandles)
+	retired := len(manager.retiredRefs)
+	refs := manager.rootReferenceCountLocked()
+	manager.mu.RUnlock()
+	if active != 0 || compatibility != 0 || retired != 0 || refs != 0 {
+		t.Fatalf("concurrent close left root state active=%d compatibility=%d retired=%d refs=%d", active, compatibility, retired, refs)
 	}
 }
