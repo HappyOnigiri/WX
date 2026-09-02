@@ -791,6 +791,7 @@ func TestManagerFailsClosedWhenStateStoreBecomesUnavailable(t *testing.T) {
 	if diagnostics := m.artifactDiagnostics(ctx); len(diagnostics["errors"].([]string)) == 0 {
 		t.Fatalf("artifact diagnostics did not report state failure: %v", diagnostics)
 	}
+	m.reconcileArtifacts(ctx)
 	m.reconcileRegistry(ctx)
 	m.reconcileOrphans(ctx)
 	m.recoverJobs(false)

@@ -82,6 +82,12 @@ func TestValidatePhysicalPathRejectsParentSymlink(t *testing.T) {
 	if err := ValidatePhysicalPath(filepath.Join(root, "missing"), true); err != nil {
 		t.Fatalf("safe missing leaf was rejected: %v", err)
 	}
+	if err := ValidatePhysicalPath(filepath.Join(root, "missing", "child"), true); !os.IsNotExist(err) {
+		t.Fatalf("missing intermediate component was not rejected: %v", err)
+	}
+	if err := ValidatePhysicalPath(string(filepath.Separator), false); err != nil {
+		t.Fatalf("filesystem root was rejected: %v", err)
+	}
 }
 
 func TestEnsurePhysicalDirectoryCreatesMissingSuffixWithoutFollowingSymlinks(t *testing.T) {
