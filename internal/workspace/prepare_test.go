@@ -95,6 +95,16 @@ func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
 	if err := copyPath(recursive, filepath.Join(target, "recursive-copy")); err == nil {
 		t.Fatal("recursive copy followed a child symlink")
 	}
+	blockedParent := filepath.Join(target, "blocked-parent")
+	if err := os.WriteFile(blockedParent, []byte("block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyPath(regular, filepath.Join(blockedParent, "child")); err == nil {
+		t.Fatal("file copy created a child beneath a regular file")
+	}
+	if err := copyPath(recursive, filepath.Join(blockedParent, "directory")); err == nil {
+		t.Fatal("directory copy created a child beneath a regular file")
+	}
 }
 
 func TestPrepareCommandSuccessFailureAndTimeout(t *testing.T) {

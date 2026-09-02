@@ -49,6 +49,19 @@ type durableRecord struct {
 	result                        []byte
 }
 
+type failingDurableStore struct{ failLoad bool }
+
+func (s failingDurableStore) LoadRPCResult(context.Context, string, string, string) ([]byte, string, string, bool, error) {
+	if s.failLoad {
+		return nil, "", "", false, errors.New("load fault")
+	}
+	return nil, "", "", false, nil
+}
+
+func (failingDurableStore) SaveRPCResult(context.Context, string, string, string, []byte, string, string, time.Time) error {
+	return errors.New("save fault")
+}
+
 func (s *memoryDurableStore) LoadRPCResult(_ context.Context, key, method, params string) ([]byte, string, string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -165,6 +178,40 @@ func TestDurableIdempotencySurvivesServerRestart(t *testing.T) {
 	second := call(filepath.Join(t.TempDir(), "second.sock"))
 	if first["call"] != 1 || second["call"] != 1 || handler.calls.Load() != 1 {
 		t.Fatalf("first=%v second=%v handler_calls=%d", first, second, handler.calls.Load())
+	}
+}
+
+func TestDurableIdempotencyStorageFailuresFailClosed(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		durable  DurableIdempotency
+		wantCode string
+	}{
+		{name: "load", durable: failingDurableStore{failLoad: true}, wantCode: "IDEMPOTENCY_STORE"},
+		{name: "save", durable: failingDurableStore{}, wantCode: "IDEMPOTENCY_STORE"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			serverSide, clientSide := net.Pipe()
+			server := &Server{Handler: echoHandler{}, Durable: test.durable}
+			done := make(chan struct{})
+			go func() {
+				server.serveConn(context.Background(), serverSide)
+				close(done)
+			}()
+			request := Request{Version: ProtocolVersion, ID: "request", Method: "mutate", IdempotencyKey: "key", Params: json.RawMessage(`{}`)}
+			if err := writeFrame(clientSide, request); err != nil {
+				t.Fatal(err)
+			}
+			var response Response
+			if err := readFrame(clientSide, &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Error == nil || response.Error.Code != test.wantCode || len(response.Result) != 0 {
+				t.Fatalf("response=%+v", response)
+			}
+			_ = clientSide.Close()
+			<-done
+		})
 	}
 }
 

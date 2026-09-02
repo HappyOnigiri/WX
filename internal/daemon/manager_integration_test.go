@@ -126,6 +126,129 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 	}
 }
 
+func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "repo")
+	initGitRepo(t, repoPath)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 1
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 || jobs[0].Kind != "PREPARE" {
+		t.Fatalf("standby jobs=%+v err=%v", jobs, err)
+	}
+	prepared, err := store.ClaimJob(ctx, jobs[0].ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, prepared.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	ready, ok, err := store.ReadySlot(ctx, string(w.ID))
+	if err != nil || !ok {
+		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
+	}
+	candidates, err := store.ColdRepositoryCandidates(ctx, state.FormatTime(time.Now().Add(time.Hour)))
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("cold candidates=%+v err=%v", candidates, err)
+	}
+	job, changed, err := store.ScheduleColdRepositoryRemoval(ctx, candidates[0])
+	if err != nil || !changed {
+		t.Fatalf("schedule cold job=%+v changed=%v err=%v", job, changed, err)
+	}
+	claimed, err := store.ClaimJob(ctx, job.ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, claimed.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	slot, err := store.Slot(ctx, ready.ID)
+	repository, repositoryErr := store.SlotRepository(ctx, ready.ID, candidates[0].RepositoryID)
+	if err != nil || repositoryErr != nil || slot.State != "READY" || repository.State != "COLD" {
+		t.Fatalf("cold state slot=%+v repository=%+v err=%v repositoryErr=%v", slot, repository, err, repositoryErr)
+	}
+	entries, err := os.ReadDir(ready.Path)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("single-repository slot root was not recreated empty: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestFreshNativeResumeWithoutPriorMappingUsesSourceWorkspace(t *testing.T) {
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "repo")
+	initGitRepo(t, repoPath)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 0
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	lease, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PrepareFreshResume(ctx, lease.SessionID, lease.Token, "new-agent-session", repoPath, []string{"main"}); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if job.Kind != "PREPARE" {
+			continue
+		}
+		claimed, err := store.ClaimJob(ctx, job.ID, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := m.runRecoveredJob(ctx, claimed); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.FinishJob(ctx, claimed.ID, "test", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.WaitReady(ctx, lease.SessionID, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.FindByAgentSession(ctx, "codex", "new-agent-session")
+	if err != nil || session.ID != lease.SessionID || session.WorkspaceID == "" {
+		t.Fatalf("fresh source mapping session=%+v err=%v", session, err)
+	}
+}
+
 func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")

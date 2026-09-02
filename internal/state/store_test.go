@@ -693,6 +693,254 @@ func TestJobEventsRecordAttemptsRetriesAndElapsedTime(t *testing.T) {
 	}
 }
 
+func TestBindFreshResumeSlotRollsBackAtEveryPersistenceBoundary(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*testing.T, *Store)
+		repos  []SlotRepository
+	}{
+		{name: "parent mapping", mutate: func(t *testing.T, store *Store) {
+			if _, err := store.db.Exec(`UPDATE sessions SET state='ACTIVE' WHERE id='parent'`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "session update", mutate: func(t *testing.T, store *Store) {
+			if _, err := store.db.Exec(`UPDATE sessions SET state='ACTIVE' WHERE id='current'`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "slot update", mutate: func(t *testing.T, store *Store) {
+			if _, err := store.db.Exec(`UPDATE slots SET state='FAILED' WHERE id='current'`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "repository insert", repos: []SlotRepository{{RepositoryID: "missing", WorktreePath: "/wx/current/repo", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}}},
+		{name: "job insert", mutate: func(t *testing.T, store *Store) {
+			if _, err := store.db.Exec(`CREATE TRIGGER fail_fresh_job BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			seedWorkspace(t, store)
+			ctx := context.Background()
+			parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "EXPIRED", AgentKind: "codex", AgentSessionID: "agent", TokenHash: HashToken("parent")}
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: "/wx/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(`UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
+				t.Fatal(err)
+			}
+			current := Session{ID: "current", SlotID: "current", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("current")}
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", Path: "/wx/current", State: "UNBOUND"}, nil, current, ""); err != nil {
+				t.Fatal(err)
+			}
+			if test.mutate != nil {
+				test.mutate(t, store)
+			}
+			if _, err := store.BindFreshResumeSlot(ctx, "current", "parent", "workspace", "agent", 1, test.repos); err == nil {
+				t.Fatal("fault-injected fresh resume binding succeeded")
+			}
+			storedParent, err := store.SessionByID(ctx, "parent")
+			if err != nil || storedParent.AgentSessionID != "agent" {
+				t.Fatalf("parent mapping was not rolled back: session=%+v err=%v", storedParent, err)
+			}
+			var jobs int
+			if err := store.db.QueryRow(`SELECT count(*) FROM jobs WHERE slot_id='current'`).Scan(&jobs); err != nil || jobs != 0 {
+				t.Fatalf("partial fresh resume job count=%d err=%v", jobs, err)
+			}
+		})
+	}
+}
+
+func TestBindFreshSessionCommitsOrRollsBackAtomically(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		currentState string
+		trigger      string
+		wantError    bool
+	}{
+		{name: "success", currentState: "STARTING"},
+		{name: "state changed", currentState: "UNBOUND", wantError: true},
+		{name: "parent update fault", currentState: "STARTING", trigger: `CREATE TRIGGER fail_parent_update BEFORE UPDATE ON sessions WHEN OLD.id='parent' BEGIN SELECT RAISE(ABORT,'fault'); END`, wantError: true},
+		{name: "current update fault", currentState: "STARTING", trigger: `CREATE TRIGGER fail_current_update BEFORE UPDATE ON sessions WHEN OLD.id='current' BEGIN SELECT RAISE(ABORT,'fault'); END`, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			ctx := context.Background()
+			parent := Session{ID: "parent", SlotID: "parent", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("parent")}
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", Path: "/wx/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(`UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
+				t.Fatal(err)
+			}
+			current := Session{ID: "current", SlotID: "current", State: test.currentState, AgentKind: "codex", TokenHash: HashToken("current")}
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", Path: "/wx/current", State: test.currentState}, nil, current, ""); err != nil {
+				t.Fatal(err)
+			}
+			if test.trigger != "" {
+				if _, err := store.db.Exec(test.trigger); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := store.BindFreshSession(ctx, "current", "parent", "agent")
+			if (err != nil) != test.wantError {
+				t.Fatalf("BindFreshSession error=%v wantError=%v", err, test.wantError)
+			}
+			storedParent, err := store.SessionByID(ctx, "parent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wantError && storedParent.AgentSessionID != "agent" {
+				t.Fatalf("parent mapping was not rolled back: %+v", storedParent)
+			}
+			if !test.wantError {
+				storedCurrent, err := store.SessionByID(ctx, "current")
+				if err != nil || storedCurrent.State != "ACTIVE" || storedCurrent.ParentSessionID != "parent" || storedCurrent.AgentSessionID != "agent" || storedParent.AgentSessionID != "" {
+					t.Fatalf("fresh binding current=%+v parent=%+v err=%v", storedCurrent, storedParent, err)
+				}
+			}
+		})
+	}
+}
+
+func TestStatusDiagnosticsFailsAtEachSchemaBoundary(t *testing.T) {
+	for _, table := range []string{"workspaces", "sessions", "repositories", "jobs", "snapshots", "quarantined_artifacts"} {
+		t.Run(table, func(t *testing.T) {
+			store := openTestStore(t)
+			if _, err := store.db.Exec(`DROP TABLE ` + table); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.StatusDiagnostics(context.Background()); err == nil {
+				t.Fatalf("status diagnostics succeeded without %s", table)
+			}
+		})
+	}
+}
+
+func TestStatusDiagnosticsRejectsMalformedRows(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		sql  []string
+	}{
+		{name: "workspace", sql: []string{`DROP TABLE workspaces`, `CREATE VIEW workspaces AS SELECT 'id' AS id,'/root' AS root_path,'bad' AS generation`}},
+		{name: "session", sql: []string{`DROP TABLE sessions`, `CREATE VIEW sessions AS SELECT 'id' AS id,NULL AS agent_kind,'ACTIVE' AS state,'now' AS created_at,'slot' AS slot_id`}},
+		{name: "repository", sql: []string{`DROP TABLE repositories`, `CREATE VIEW repositories AS SELECT NULL AS id,'/repo' AS main_worktree_path,NULL AS last_leased_at`}},
+		{name: "quarantine", sql: []string{`DROP TABLE quarantined_artifacts`, `CREATE VIEW quarantined_artifacts AS SELECT '/path' AS path,NULL AS reason`}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			for _, statement := range test.sql {
+				if _, err := store.db.Exec(statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.StatusDiagnostics(context.Background()); err == nil {
+				t.Fatal("malformed diagnostic row was accepted")
+			}
+		})
+	}
+}
+
+func TestNewJobPersistenceRollsBackOnLateDatabaseFaults(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		trigger string
+		retry   bool
+	}{
+		{name: "finish update", trigger: `CREATE TRIGGER fail_finish_update BEFORE UPDATE OF state ON jobs WHEN NEW.state='SUCCEEDED' BEGIN SELECT RAISE(ABORT,'fault'); END`},
+		{name: "finish ignored update", trigger: `CREATE TRIGGER ignore_finish_update BEFORE UPDATE OF state ON jobs WHEN NEW.state='SUCCEEDED' BEGIN SELECT RAISE(IGNORE); END`},
+		{name: "finish event", trigger: `CREATE TRIGGER fail_finish_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'fault'); END`},
+		{name: "retry event", trigger: `CREATE TRIGGER fail_retry_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'fault'); END`, retry: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			ctx := context.Background()
+			job, err := store.CreateJob(ctx, "PREPARE", "", "slot", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ClaimJob(ctx, job.ID, "owner"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.Exec(test.trigger); err != nil {
+				t.Fatal(err)
+			}
+			if test.retry {
+				err = store.RetryJob(ctx, job.ID, "owner", time.Second, "TRANSIENT")
+			} else {
+				err = store.FinishJob(ctx, job.ID, "owner", nil)
+			}
+			if err == nil {
+				t.Fatal("fault-injected job transition succeeded")
+			}
+			var stateName string
+			if err := store.db.QueryRow(`SELECT state FROM jobs WHERE id=?`, job.ID).Scan(&stateName); err != nil || stateName != "RUNNING" {
+				t.Fatalf("job transition was not rolled back: state=%s err=%v", stateName, err)
+			}
+		})
+	}
+	t.Run("invalid start time", func(t *testing.T) {
+		store := openTestStore(t)
+		ctx := context.Background()
+		job, err := store.CreateJob(ctx, "PREPARE", "", "slot", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.ClaimJob(ctx, job.ID, "owner"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`UPDATE jobs SET started_at='invalid' WHERE id=?`, job.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.FinishJob(ctx, job.ID, "owner", nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestEnsureRecoveryJobsReportsQueryAndInsertFaults(t *testing.T) {
+	t.Run("query", func(t *testing.T) {
+		store := openTestStore(t)
+		if _, err := store.db.Exec(`DROP TABLE slots`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.EnsureRecoveryJobs(context.Background()); err == nil {
+			t.Fatal("recovery reconstruction succeeded without slots")
+		}
+	})
+	t.Run("insert", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,path,state,created_at,updated_at) VALUES('slot','workspace',1,'/wx/slot','PREPARING',?,?)`, now(), now()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_recovery_job BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.EnsureRecoveryJobs(context.Background()); err == nil {
+			t.Fatal("recovery reconstruction succeeded despite job insert fault")
+		}
+	})
+}
+
+func TestPruneMetadataReportsLateSchemaFaults(t *testing.T) {
+	for _, table := range []string{"sessions", "rpc_idempotency"} {
+		t.Run(table, func(t *testing.T) {
+			store := openTestStore(t)
+			if _, err := store.db.Exec(`DROP TABLE ` + table); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.PruneMetadata(context.Background(), now(), now(), now()); err == nil {
+				t.Fatalf("metadata pruning succeeded without %s", table)
+			}
+		})
+	}
+}
+
 func TestAdministrativeStateTransitionsAndQueries(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)

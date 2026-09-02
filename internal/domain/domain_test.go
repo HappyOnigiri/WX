@@ -49,6 +49,26 @@ func TestOpenOwnedRootRejectsEscapingDescendantSymlink(t *testing.T) {
 	}
 }
 
+func TestOpenOwnedRootRejectsInvalidOwnershipRoots(t *testing.T) {
+	root := t.TempDir()
+	if owned, _, err := OpenOwnedRoot(root, t.TempDir()); err == nil {
+		_ = owned.Close()
+		t.Fatal("outside path was accepted")
+	}
+	if owned, _, err := OpenOwnedRoot(filepath.Join(root, "missing"), filepath.Join(root, "missing", "slot")); err == nil {
+		_ = owned.Close()
+		t.Fatal("missing ownership root was accepted")
+	}
+	regular := filepath.Join(root, "file")
+	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if owned, _, err := OpenOwnedRoot(regular, filepath.Join(regular, "slot")); err == nil {
+		_ = owned.Close()
+		t.Fatal("regular file ownership root was accepted")
+	}
+}
+
 func TestValidatePhysicalPathRejectsParentSymlink(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -83,6 +103,16 @@ func TestEnsurePhysicalDirectoryCreatesMissingSuffixWithoutFollowingSymlinks(t *
 	}
 	if _, err := os.Lstat(filepath.Join(outside, "escape")); !os.IsNotExist(err) {
 		t.Fatalf("outside directory was modified: %v", err)
+	}
+	regular := filepath.Join(root, "regular")
+	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsurePhysicalDirectory(regular, 0o700); err == nil {
+		t.Fatal("regular file was accepted as a physical directory")
+	}
+	if err := EnsurePhysicalDirectory(string(filepath.Separator), 0o700); err != nil {
+		t.Fatalf("filesystem root was rejected: %v", err)
 	}
 }
 

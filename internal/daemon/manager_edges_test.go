@@ -169,6 +169,20 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if err != nil || len(diagnostics.Quarantine) < 4 {
 		t.Fatalf("reconciliation quarantine diagnostics=%+v err=%v", diagnostics.Quarantine, err)
 	}
+	brokenRoot := filepath.Join(home, "missing-workspace")
+	brokenRepository := filepath.Join(home, "missing-repository")
+	if err := store.UpsertWorkspace(ctx, discovery.Workspace{ID: "broken-workspace", Root: discoveryPath(brokenRoot), Kind: "repository", Repositories: []discovery.Repository{{ID: "broken-repository", MainPath: discoveryPath(brokenRepository), CommonDir: discoveryPath(filepath.Join(brokenRepository, ".git")), DefaultBranch: "main"}}}); err != nil {
+		t.Fatal(err)
+	}
+	brokenArtifacts := m.artifactDiagnostics(ctx)
+	if len(brokenArtifacts["errors"].([]string)) == 0 {
+		t.Fatalf("missing registered repository was absent from diagnostics: %v", brokenArtifacts)
+	}
+	m.reconcileRegistry(ctx)
+	registration := m.registrationDiagnostics(ctx)
+	if invalid := registration["invalid"].([]map[string]string); len(invalid) == 0 {
+		t.Fatalf("missing registered workspace was absent from diagnostics: %v", registration)
+	}
 	blockedRoot := filepath.Join(home, "blocked-root")
 	if err := os.WriteFile(blockedRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
@@ -339,6 +353,19 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	}
 	if _, _, err := m.waitForSnapshot(ctx, "missing"); err == nil {
 		t.Fatal("missing snapshot wait succeeded")
+	}
+	w := discovery.Workspace{ID: "pending-workspace", Root: discoveryPath(root), Kind: "repository"}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	pending := state.Session{ID: "pending", WorkspaceID: "pending-workspace", SlotID: "pending", State: "RELEASING", AgentKind: "codex", TokenHash: state.HashToken("pending")}
+	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "pending", WorkspaceID: "pending-workspace", Generation: 1, Path: filepath.Join(root, "pending"), State: "DRAINING"}, nil, pending, ""); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancelWaiting := context.WithCancel(ctx)
+	cancelWaiting()
+	if _, err := m.Resume(cancelled, "pending", "codex", os.Getpid(), false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled pending resume error=%v", err)
 	}
 	expired := state.Session{ID: "expired", SlotID: "expired", State: "EXPIRED", AgentKind: "codex", TokenHash: state.HashToken("expired")}
 	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "expired", Path: filepath.Join(root, "expired"), State: "SNAPSHOTTED"}, nil, expired, ""); err != nil {
@@ -631,6 +658,97 @@ func TestWorkerStopsRetryingAfterBoundedAttempts(t *testing.T) {
 			t.Fatal("exhausted removal job remained retryable")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestSnapshotFailureQuarantinesSlotWithoutRemovingWorktreeMetadata(t *testing.T) {
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "repository")
+	initGitRepo(t, repoPath)
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(repoPath), Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: discoveryPath(repoPath), CommonDir: discoveryPath(filepath.Join(repoPath, ".git")), DefaultBranch: "main"}}}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	slotPath := filepath.Join(cfg.Storage.WorktreeRoot, "slot")
+	session := state.Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	repository := state.SlotRepository{RepositoryID: "repository", WorktreePath: filepath.Join(slotPath, "missing"), State: "LEASED", RequestedRef: "main", BaseOID: gitOutput(t, repoPath, "rev-parse", "HEAD"), Fingerprint: "fp"}
+	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: slotPath, State: "LEASED"}, []state.SlotRepository{repository}, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := store.Release(ctx, "session", "workspace", "slot"); err != nil || !changed {
+		t.Fatalf("release changed=%v err=%v", changed, err)
+	}
+	released, err := store.SessionByID(ctx, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.snapshotSession(ctx, released); err == nil {
+		t.Fatal("snapshot of missing worktree succeeded")
+	}
+	slot, err := store.Slot(ctx, "slot")
+	if err != nil || slot.State != "QUARANTINED" {
+		t.Fatalf("snapshot failure slot=%+v err=%v", slot, err)
+	}
+	if repositories, err := store.SlotRepositories(ctx, "slot"); err != nil || len(repositories) != 1 {
+		t.Fatalf("snapshot failure discarded metadata: repositories=%+v err=%v", repositories, err)
+	}
+}
+
+func TestMultiRepositoryRootMaterializationFailurePersistsFailedState(t *testing.T) {
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Workspaces[root] = config.Workspace{Link: []string{"missing-root-entry"}}
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "multi_repository"}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	slotPath := filepath.Join(cfg.Storage.WorktreeRoot, "slot")
+	if err := os.MkdirAll(slotPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateStandby(ctx, state.Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: slotPath, State: "PREPARING"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.prepareSlot(ctx, "slot", w, nil, nil); err == nil {
+		t.Fatal("root materialization with a missing link succeeded")
+	}
+	slot, err := store.Slot(ctx, "slot")
+	if err != nil || slot.State != "FAILED" {
+		t.Fatalf("materialization failure slot=%+v err=%v", slot, err)
+	}
+	restorePath := filepath.Join(cfg.Storage.WorktreeRoot, "restore")
+	if err := os.MkdirAll(restorePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	restoreSession := state.Session{ID: "restore", WorkspaceID: "workspace", SlotID: "restore", State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken("restore")}
+	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "restore", WorkspaceID: "workspace", Generation: 1, Path: restorePath, State: "RESTORING"}, nil, restoreSession, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.restoreSlot(ctx, "restore", w, nil, nil, nil); err == nil {
+		t.Fatal("restore root materialization with a missing link succeeded")
+	}
+	restoredSlot, err := store.Slot(ctx, "restore")
+	if err != nil || restoredSlot.State != "FAILED" {
+		t.Fatalf("restore materialization failure slot=%+v err=%v", restoredSlot, err)
 	}
 }
 
