@@ -2359,11 +2359,20 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 		return total, nil
 	}
 	count := 0
+	quarantineCleanupFailure := func(slotID string, runErr error) {
+		if !errors.Is(runErr, state.ErrOwnership) {
+			return
+		}
+		if quarantineErr := m.store.QuarantineMissingSlot(context.Background(), slotID, "WORKTREE_OWNERSHIP_UNCERTAIN"); quarantineErr != nil {
+			m.log.Error("quarantine cleanup ownership failure", "slot_id", slotID, "error", quarantineErr)
+		}
+	}
 	for _, candidate := range cold {
 		if wholeSlotRemoval[candidate.SlotID] {
 			continue
 		}
 		if _, release, err := m.holdVerifiedRootForPath(candidate.WorktreePath); err != nil {
+			quarantineCleanupFailure(candidate.SlotID, err)
 			continue
 		} else {
 			release()
@@ -2380,6 +2389,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	}
 	for _, item := range standbys {
 		if _, release, err := m.holdVerifiedRootForPath(item.Path); err != nil {
+			quarantineCleanupFailure(item.SlotID, err)
 			continue
 		} else {
 			release()
@@ -2396,6 +2406,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	}
 	for _, item := range items {
 		if _, release, err := m.holdVerifiedRootForPath(item.Path); err != nil {
+			quarantineCleanupFailure(item.SlotID, err)
 			continue
 		} else {
 			release()
@@ -2426,6 +2437,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			if workspaceErr != nil || !found {
 				ok = false
 			} else if owner, releaseOwner, ownerErr := m.holdVerifiedRootForPath(rootSnapshot.ArchivePath); ownerErr != nil {
+				_ = m.store.QuarantineArtifact(context.Background(), "workspace_snapshot", rootSnapshot.ArchivePath, "ownership could not be proven during cleanup")
 				ok = false
 			} else {
 				rootSnapshotOwner = owner
