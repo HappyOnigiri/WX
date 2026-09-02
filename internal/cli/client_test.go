@@ -254,7 +254,7 @@ func TestRunAgentSupervisesChildAndReleasesLease(t *testing.T) {
 	}
 	script := filepath.Join(temp, "agent")
 	result := filepath.Join(temp, "result")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$PWD\" \"$WX_SESSION_ID\" \"$(ps -o pgid= -p $$)\" > \"$1\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n%s\\n%s\\n%s\\n' \"$PWD\" \"$WX_SESSION_ID\" \"$$\" \"$(ps -o pgid= -p $$)\" > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
@@ -263,9 +263,14 @@ func TestRunAgentSupervisesChildAndReleasesLease(t *testing.T) {
 	}
 	data, err := os.ReadFile(result)
 	canonicalWorkspace, _ := filepath.EvalSymlinks(workspace)
-	want := canonicalWorkspace + "\nsession\n" + strconv.Itoa(syscall.Getpgrp()) + "\n"
-	if err != nil || strings.Join(strings.Fields(string(data)), "\n")+"\n" != want {
+	fields := strings.Fields(string(data))
+	if err != nil || len(fields) != 4 || fields[0] != canonicalWorkspace || fields[1] != "session" {
 		t.Fatalf("child environment=%q err=%v", data, err)
+	}
+	pid, pidErr := strconv.Atoi(fields[2])
+	pgid, pgidErr := strconv.Atoi(fields[3])
+	if pidErr != nil || pgidErr != nil || pgid != pid || pgid == syscall.Getpgrp() {
+		t.Fatalf("child process group: pid=%d pgid=%d parent_pgid=%d pid_err=%v pgid_err=%v", pid, pgid, syscall.Getpgrp(), pidErr, pgidErr)
 	}
 	handler.mu.Lock()
 	methods := append([]string(nil), handler.methods...)

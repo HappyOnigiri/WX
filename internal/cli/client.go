@@ -20,6 +20,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"golang.org/x/sys/unix"
 )
 
 type Client struct {
@@ -150,6 +151,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	foreground := configureAgentProcess(cmd, int(os.Stdin.Fd()))
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)
@@ -157,6 +159,9 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
+	}
+	if foreground {
+		defer restoreForeground(int(os.Stdin.Fd()))
 	}
 	registerCtx, registerCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	registerErr := c.RPC.CallWithKey(registerCtx, "RegisterAgentProcess", "agent-process:"+lease.SessionID+":"+strconv.Itoa(cmd.Process.Pid), map[string]any{"session_id": lease.SessionID, "token": lease.Token, "agent_pid": cmd.Process.Pid}, nil)
@@ -187,9 +192,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	select {
 	case runErr = <-done:
 	case sig := <-signals:
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(sig)
-		}
+		forwardAgentSignal(cmd, sig)
 		runErr = <-done
 	}
 	close(heartbeatDone)
@@ -202,6 +205,28 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	}
 	fmt.Fprintln(os.Stderr, "error:", runErr)
 	return 1
+}
+
+func configureAgentProcess(cmd *exec.Cmd, ttyFD int) bool {
+	foreground := isTerminal(ttyFD)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Foreground: foreground, Ctty: ttyFD}
+	return foreground
+}
+
+func forwardAgentSignal(cmd *exec.Cmd, sig os.Signal) {
+	if cmd.Process == nil {
+		return
+	}
+	unixSignal, ok := sig.(syscall.Signal)
+	if !ok || syscall.Kill(-cmd.Process.Pid, unixSignal) != nil {
+		_ = cmd.Process.Signal(sig)
+	}
+}
+
+func restoreForeground(ttyFD int) {
+	signal.Ignore(syscall.SIGTTOU)
+	_ = unix.IoctlSetPointerInt(ttyFD, unix.TIOCSPGRP, syscall.Getpgrp())
+	signal.Reset(syscall.SIGTTOU)
 }
 
 func readinessHooksAvailable(agent string) bool {
