@@ -72,6 +72,13 @@ func Handle(args []string) (handled bool, exitCode int) {
 		fmt.Fprintf(os.Stderr, "wx descriptor exec: fchdir: %v\n", err)
 		return true, 1
 	}
+	// The directory FD is only needed to establish the child's CWD. Do not
+	// expose it to the requested process or retain it for the lifetime of a
+	// long-running agent.
+	if err := unix.Close(FD); err != nil {
+		fmt.Fprintf(os.Stderr, "wx descriptor exec: close directory fd: %v\n", err)
+		return true, 1
+	}
 	if err := unix.Exec(args[1], args[1:], os.Environ()); err != nil {
 		fmt.Fprintf(os.Stderr, "wx descriptor exec: exec %s: %v\n", args[1], err)
 		return true, 1
