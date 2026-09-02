@@ -81,6 +81,9 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 	} else {
 		logger.Error("worktree root is unavailable", "path", cfg.Storage.WorktreeRoot, "error", err)
 	}
+	// Reclaim durable jobs before workers and lifecycle reconciliation can race
+	// over stale RUNNING leases or snapshot-ref ownership.
+	m.recoverJobs(reclaimAll)
 	m.resizeWorkers(cfg.Pool.PreparationConcurrency)
 	m.wg.Add(2)
 	go func() { defer m.wg.Done(); m.maintainJobs() }()
@@ -256,7 +259,6 @@ func (m *Manager) recoverJobs(reclaimAll bool) {
 }
 
 func (m *Manager) maintainJobs() {
-	m.recoverJobs(m.reclaimAll)
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
