@@ -18,6 +18,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
 const workspaceSnapshotDirectory = "recovery/workspace-snapshots"
@@ -39,7 +40,7 @@ func SnapshotWorkspace(ctx context.Context, bundleRoot, ownershipRoot, sessionID
 	if err := domain.EnsurePhysicalDirectory(filepath.Join(ownershipRoot, filepath.FromSlash(workspaceSnapshotDirectory)), 0o700); err != nil {
 		return state.WorkspaceSnapshot{}, fmt.Errorf("create workspace recovery directory: %w", err)
 	}
-	owner, err := os.OpenRoot(ownershipRoot)
+	owner, err := workspace.OpenPhysicalRoot(ownershipRoot)
 	if err != nil {
 		return state.WorkspaceSnapshot{}, err
 	}
@@ -59,7 +60,7 @@ func SnapshotWorkspace(ctx context.Context, bundleRoot, ownershipRoot, sessionID
 	}()
 	hasher := sha256.New()
 	writer := tar.NewWriter(io.MultiWriter(output, hasher))
-	root, err := os.OpenRoot(bundleRoot)
+	root, err := workspace.OpenPhysicalRoot(bundleRoot)
 	if err != nil {
 		return state.WorkspaceSnapshot{}, err
 	}
@@ -191,7 +192,7 @@ func RestoreWorkspace(ctx context.Context, bundleRoot, targetOwnershipRoot, arch
 		return err
 	}
 	defer func() { _ = archiveFile.Close() }()
-	root, err := os.OpenRoot(bundleRoot)
+	root, err := workspace.OpenPhysicalRoot(bundleRoot)
 	if err != nil {
 		return err
 	}
@@ -289,7 +290,7 @@ func DeleteWorkspaceSnapshot(ownershipRoot string, snapshot state.WorkspaceSnaps
 	if filepath.Clean(snapshot.ArchivePath) != filepath.Clean(expected) {
 		return errors.New("workspace snapshot path does not match its session")
 	}
-	owner, err := os.OpenRoot(ownershipRoot)
+	owner, err := workspace.OpenPhysicalRoot(ownershipRoot)
 	if err != nil {
 		return err
 	}
@@ -328,7 +329,7 @@ func openVerifiedWorkspaceSnapshot(ownershipRoot string, snapshot state.Workspac
 	if filepath.Clean(snapshot.ArchivePath) != filepath.Clean(expected) {
 		return nil, errors.New("workspace snapshot path does not match its session")
 	}
-	owner, err := os.OpenRoot(ownershipRoot)
+	owner, err := workspace.OpenPhysicalRoot(ownershipRoot)
 	if err != nil {
 		return nil, err
 	}

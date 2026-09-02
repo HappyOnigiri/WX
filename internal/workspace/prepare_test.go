@@ -108,6 +108,62 @@ func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
 	}
 }
 
+func TestRuleConflictsAreRejectedBeforeMaterialization(t *testing.T) {
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, "shared", "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "copy"), []byte("copy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name  string
+		rules config.Workspace
+	}{
+		{name: "copy ancestor of link", rules: config.Workspace{Copy: []string{"shared"}, Link: []string{"shared/child"}}},
+		{name: "link ancestor of copy", rules: config.Workspace{Copy: []string{"shared/child"}, Link: []string{"shared"}}},
+		{name: "link ancestor of link", rules: config.Workspace{Link: []string{"shared", "shared/child"}}},
+		{name: "exact copy and link overlap", rules: config.Workspace{Copy: []string{"copy"}, Link: []string{"copy"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			target := t.TempDir()
+			if err := MaterializeRoot(source, target, test.rules); err == nil {
+				t.Fatal("conflicting rules succeeded")
+			}
+			entries, err := os.ReadDir(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("conflicting rules partially materialized %v", entries)
+			}
+		})
+	}
+}
+
+func TestSafeGlobRejectsMalformedPatternWithoutMatches(t *testing.T) {
+	root := t.TempDir()
+	if _, err := safeGlob(root, "["); err == nil {
+		t.Fatal("malformed glob unexpectedly succeeded")
+	}
+}
+
+func TestPhysicalManifestRejectsSymlinkRoot(t *testing.T) {
+	physical := t.TempDir()
+	if err := os.WriteFile(filepath.Join(physical, ".worktreeinclude"), []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(filepath.Dir(physical), "manifest-alias")
+	if err := os.Symlink(physical, alias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPhysicalPatterns(alias, ".worktreeinclude"); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("manifest through symlink root succeeded: %v", err)
+	}
+}
+
 func TestPrepareCommandSuccessFailureAndTimeout(t *testing.T) {
 	repository, target := t.TempDir(), t.TempDir()
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
@@ -442,6 +498,19 @@ func TestPatternFilesThatAreDirectoriesAreRejected(t *testing.T) {
 	}
 	if err := preparer.createLinks(context.Background(), repo, target); err == nil {
 		t.Fatal("directory .worktreelink was accepted")
+	}
+	if err := os.Remove(filepath.Join(repository, ".worktreeinclude")); err != nil {
+		t.Fatal(err)
+	}
+	physicalManifest := filepath.Join(repository, "physical-include")
+	if err := os.WriteFile(physicalManifest, []byte("value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(physicalManifest, filepath.Join(repository, ".worktreeinclude")); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.copyIncludes(repo, target); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink .worktreeinclude was accepted: %v", err)
 	}
 }
 

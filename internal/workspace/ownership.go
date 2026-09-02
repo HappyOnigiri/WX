@@ -273,6 +273,7 @@ func validatePhysicalPathAllowMissingLeaf(path string) error {
 type worktreeRecord struct {
 	Path       string
 	LockReason string
+	Locked     bool
 }
 
 // ValidateRegisteredWorktree verifies that Git still points at the physical
@@ -308,22 +309,35 @@ func ValidateRegisteredWorktree(ctx context.Context, runner *gitx.Runner, mainPa
 // found result is false when Git has no registration at that path, including
 // the idempotent post-removal case.
 func RegisteredWorktreeLockReason(ctx context.Context, runner *gitx.Runner, mainPath, target string) (reason string, found bool, err error) {
+	reason, _, found, err = RegisteredWorktreeLockStatus(ctx, runner, mainPath, target)
+	return reason, found, err
+}
+
+// RegisteredWorktreeLockStatus is the strict form of
+// RegisteredWorktreeLockReason. It distinguishes an unlocked worktree from a
+// lock with an empty reason, which matters during the remove handoff.
+func RegisteredWorktreeLockStatus(ctx context.Context, runner *gitx.Runner, mainPath, target string) (reason string, locked, found bool, err error) {
 	listed, err := runner.Run(ctx, mainPath, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	want, err := canonicalPathAllowMissing(target)
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
 	for _, record := range parseWorktreeRecords(listed.Stdout) {
+		if err := validatePhysicalPathAllowMissingLeaf(record.Path); err != nil {
+			// A Git registration reached through a symlink alias is not an
+			// ownership match. Resolving it first would hide a path replacement.
+			continue
+		}
 		got, resolveErr := canonicalPathAllowMissing(record.Path)
 		if resolveErr != nil || got != want {
 			continue
 		}
-		return record.LockReason, true, nil
+		return record.LockReason, record.Locked, true, nil
 	}
-	return "", false, nil
+	return "", false, false, nil
 }
 
 func parseWorktreeRecords(output string) []worktreeRecord {
@@ -341,8 +355,10 @@ func parseWorktreeRecords(output string) []worktreeRecord {
 			continue
 		}
 		if field == "locked" {
+			current.Locked = true
 			current.LockReason = ""
 		} else if strings.HasPrefix(field, "locked ") {
+			current.Locked = true
 			current.LockReason = strings.TrimPrefix(field, "locked ")
 		}
 	}

@@ -1,11 +1,14 @@
 package workspace
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -13,29 +16,80 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
+// OpenPhysicalRoot opens path through a descriptor rooted at the filesystem
+// root, then reopens the validated directory as its own Root. os.OpenRoot(path)
+// follows a symlink in path before returning, so using it after a separate
+// Lstat/physical-path check would leave a check/open race at the root itself.
+// The filesystem-root descriptor keeps the path lookup inside the validated
+// namespace and Root's Unix openat traversal rejects a swapped-out ancestor.
+func OpenPhysicalRoot(path string) (*os.Root, error) {
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	if err := domain.ValidatePhysicalPath(absolute, false); err != nil {
+		return nil, fmt.Errorf("physical root %s is unsafe: %w", absolute, err)
+	}
+	filesystemRoot, relative, err := domain.OpenOwnedRoot(filepath.Dir(absolute), absolute)
+	if err != nil {
+		return nil, err
+	}
+	info, err := rootPhysicalInfo(filesystemRoot, relative)
+	if err != nil {
+		_ = filesystemRoot.Close()
+		return nil, fmt.Errorf("validate physical root %s: %w", absolute, err)
+	}
+	if !info.IsDir() {
+		_ = filesystemRoot.Close()
+		return nil, fmt.Errorf("physical root %s is not a directory", absolute)
+	}
+	root, err := filesystemRoot.OpenRoot(relative)
+	closeErr := filesystemRoot.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		_ = root.Close()
+		return nil, closeErr
+	}
+	// Check the descriptor itself as well. This catches a path that was
+	// replaced between the initial physical check and OpenRoot.
+	if _, err := rootPhysicalInfo(root, "."); err != nil {
+		_ = root.Close()
+		return nil, fmt.Errorf("revalidate physical root %s: %w", absolute, err)
+	}
+	return root, nil
+}
+
 // safeGlob walks a pattern below a physical root without ever descending
 // through a symlink. filepath.Glob is intentionally not used here: it follows
 // a symlink ancestor before the matching result can be checked.
 func safeGlob(root, pattern string) ([]string, error) {
-	if err := domain.ValidatePhysicalPath(root, false); err != nil {
-		return nil, fmt.Errorf("glob root is not physical: %w", err)
+	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return nil, err
 	}
 	pattern = filepath.Clean(pattern)
 	if pattern == "." || filepath.IsAbs(pattern) {
 		return nil, errors.New("unsafe glob pattern")
 	}
-	owner, err := os.OpenRoot(root)
+	parts := strings.Split(pattern, string(filepath.Separator))
+	for _, part := range parts {
+		if _, err := filepath.Match(part, ""); err != nil {
+			return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
+		}
+	}
+	owner, err := OpenPhysicalRoot(absoluteRoot)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = owner.Close() }()
-	parts := strings.Split(pattern, string(filepath.Separator))
 	var matches []string
 	if err := walkSafeGlob(owner, ".", parts, 0, &matches); err != nil {
 		return nil, err
 	}
 	for index := range matches {
-		matches[index] = filepath.Join(root, matches[index])
+		matches[index] = filepath.Join(absoluteRoot, matches[index])
 	}
 	return matches, nil
 }
@@ -48,6 +102,7 @@ func walkSafeGlob(owner *os.Root, current string, parts []string, index int, mat
 		*matches = append(*matches, current)
 		return nil
 	}
+	var expectedInfo os.FileInfo
 	if current != "." {
 		info, err := owner.Lstat(current)
 		if err != nil {
@@ -62,19 +117,36 @@ func walkSafeGlob(owner *os.Root, current string, parts []string, index int, mat
 		if !info.IsDir() {
 			return nil
 		}
+		expectedInfo = info
 	}
-	directory, err := owner.Open(current)
+	directory, err := owner.OpenFile(current, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
+	if expectedInfo != nil {
+		openedInfo, statErr := directory.Stat()
+		if statErr != nil || !openedInfo.IsDir() || !os.SameFile(expectedInfo, openedInfo) {
+			_ = directory.Close()
+			return fmt.Errorf("glob directory %s changed while opening", current)
+		}
+		currentInfo, lstatErr := owner.Lstat(current)
+		if lstatErr != nil || currentInfo.Mode()&os.ModeSymlink != 0 {
+			_ = directory.Close()
+			if lstatErr != nil {
+				return lstatErr
+			}
+			return fmt.Errorf("symlink ancestor in glob path %s", current)
+		}
+	}
 	names, readErr := directory.Readdirnames(-1)
 	_ = directory.Close()
 	if readErr != nil {
 		return readErr
 	}
+	sort.Strings(names)
 	for _, name := range names {
 		matched, matchErr := filepath.Match(parts[index], name)
 		if matchErr != nil {
@@ -124,12 +196,12 @@ func copyPathFromRoots(sourceRoot, sourceRelative, destinationRoot, destinationR
 	if err != nil {
 		return err
 	}
-	sourceHandle, err := os.OpenRoot(sourceRoot)
+	sourceHandle, err := OpenPhysicalRoot(sourceRoot)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = sourceHandle.Close() }()
-	destinationHandle, err := os.OpenRoot(destinationRoot)
+	destinationHandle, err := OpenPhysicalRoot(destinationRoot)
 	if err != nil {
 		return err
 	}
@@ -146,15 +218,21 @@ func copyRootEntry(sourceRoot *os.Root, source string, destinationRoot *os.Root,
 		if err := ensureRootDirectory(destinationRoot, destination); err != nil {
 			return err
 		}
-		directory, err := sourceRoot.Open(source)
+		directory, err := sourceRoot.OpenFile(source, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 		if err != nil {
 			return err
+		}
+		openedInfo, statErr := directory.Stat()
+		if statErr != nil || !openedInfo.IsDir() || !os.SameFile(sourceInfo, openedInfo) {
+			_ = directory.Close()
+			return fmt.Errorf("copy source directory %s changed while opening", source)
 		}
 		names, readErr := directory.Readdirnames(-1)
 		_ = directory.Close()
 		if readErr != nil {
 			return readErr
 		}
+		sort.Strings(names)
 		for _, name := range names {
 			if err := copyRootEntry(sourceRoot, filepath.Join(source, name), destinationRoot, filepath.Join(destination, name)); err != nil {
 				return err
@@ -180,6 +258,10 @@ func copyRootEntry(sourceRoot *os.Root, source string, destinationRoot *os.Root,
 		return err
 	}
 	defer func() { _ = in.Close() }()
+	openedInfo, err := in.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, openedInfo) {
+		return fmt.Errorf("copy source %s changed while opening", source)
+	}
 	out, err := destinationRoot.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|unix.O_NOFOLLOW, sourceInfo.Mode().Perm())
 	if err != nil {
 		return err
@@ -246,6 +328,54 @@ func ensureRootDirectory(root *os.Root, relative string) error {
 	return nil
 }
 
+// validateRuleConflicts rejects ambiguous copy/link layouts before either
+// rule starts mutating the destination. Duplicate rules of the same kind are
+// intentionally allowed for idempotent manifests, but a link cannot be an
+// ancestor or descendant of another link, nor overlap a copy rule. Otherwise
+// the result would depend on manifest order and a failed preparation could
+// leave a partially materialized bundle.
+func validateRuleConflicts(copyRules, linkRules []string) error {
+	clean := func(kind string, rules []string) ([]string, error) {
+		out := make([]string, 0, len(rules))
+		for _, rule := range rules {
+			path, err := safeRelative(rule)
+			if err != nil {
+				return nil, fmt.Errorf("unsafe %s rule %q: %w", kind, rule, err)
+			}
+			out = append(out, path)
+		}
+		return out, nil
+	}
+	copies, err := clean("copy", copyRules)
+	if err != nil {
+		return err
+	}
+	links, err := clean("link", linkRules)
+	if err != nil {
+		return err
+	}
+	for i, left := range links {
+		for _, right := range links[i+1:] {
+			if left != right && (ruleContains(left, right) || ruleContains(right, left)) {
+				return fmt.Errorf("link rules have an ancestor/descendant conflict: %s and %s", left, right)
+			}
+		}
+	}
+	for _, copyRule := range copies {
+		for _, linkRule := range links {
+			if copyRule == linkRule || ruleContains(copyRule, linkRule) || ruleContains(linkRule, copyRule) {
+				return fmt.Errorf("copy and link rules overlap: %s and %s", copyRule, linkRule)
+			}
+		}
+	}
+	return nil
+}
+
+func ruleContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	return err == nil && rel != "." && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func removeOwnershipMarker(root, target string) error {
 	owner, relative, err := openMarkerRoot(root, target)
 	if err != nil {
@@ -258,4 +388,71 @@ func removeOwnershipMarker(root, target string) error {
 		return err
 	}
 	return owner.Remove(relative)
+}
+
+// readPhysicalManifest reads a manifest through a descriptor rooted at the
+// repository directory. The ordinary os.ReadFile(path) sequence would let a
+// swapped manifest or ancestor symlink redirect the read after a prior check.
+func readPhysicalManifest(root, name string) ([]byte, error) {
+	owner, err := OpenPhysicalRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = owner.Close() }()
+	relative, err := safeRelative(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := rootPhysicalInfo(owner, relative)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("manifest %s is not a physical regular file", name)
+	}
+	file, err := owner.OpenFile(relative, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("manifest %s changed while opening", name)
+	}
+	if current, lstatErr := owner.Lstat(relative); lstatErr != nil || current.Mode()&os.ModeSymlink != 0 {
+		_ = file.Close()
+		if lstatErr != nil {
+			return nil, lstatErr
+		}
+		return nil, fmt.Errorf("manifest %s changed to a symlink", name)
+	}
+	data, readErr := io.ReadAll(file)
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	return data, closeErr
+}
+
+func readPhysicalPatterns(root, name string) ([]string, error) {
+	data, err := readPhysicalManifest(root, name)
+	if err != nil || data == nil {
+		return nil, err
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	var patterns []string
+	for scanner.Scan() {
+		value := strings.TrimSpace(scanner.Text())
+		if value != "" && !strings.HasPrefix(value, "#") {
+			patterns = append(patterns, value)
+		}
+	}
+	return patterns, scanner.Err()
 }

@@ -112,6 +112,15 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		return err
 	}
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+		for ref, want := range map[string]string{s.HeadRef: s.HeadOID, s.WorktreeRef: s.WorktreeOID} {
+			got, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", "--verify", ref)
+			if err != nil || got != want {
+				return fmt.Errorf("recovery ref %s changed during restore", ref)
+			}
+		}
+		if err := m.Preparer.ValidateRestoringOwnership(ctx, repo, target, s.HeadOID, slotID); err != nil {
+			return fmt.Errorf("validate restore worktree before snapshot: %w", err)
+		}
 		if _, err := m.Git.Run(ctx, target, "read-tree", "--reset", "-u", s.WorktreeOID+"^{tree}"); err != nil {
 			return err
 		}
@@ -215,13 +224,21 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 			if _, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", absolutePath); err != nil {
 				return err
 			}
-			if _, found, err := workspace.RegisteredWorktreeLockReason(ctx, m.Git, string(repo.MainPath), absolutePath); err != nil {
+			postReason, postLocked, found, err := workspace.RegisteredWorktreeLockStatus(ctx, m.Git, string(repo.MainPath), absolutePath)
+			if err != nil {
 				return err
-			} else if !found {
+			}
+			if !found {
 				return nil
+			}
+			if postLocked || postReason != "" {
+				return errors.New("worktree lock changed before removal")
 			}
 			if _, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, common); err != nil {
 				return fmt.Errorf("revalidate missing worktree ownership: %w", err)
+			}
+			if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
+				return err
 			}
 			_, removeErr := m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", absolutePath)
 			return removeErr
@@ -276,16 +293,35 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if _, err := m.Git.Run(ctx, string(repo.MainPath), "worktree", "unlock", path); err != nil {
 			return err
 		}
-		if _, found, err := workspace.RegisteredWorktreeLockReason(ctx, m.Git, string(repo.MainPath), absolutePath); err != nil {
+		postReason, postLocked, found, err := workspace.RegisteredWorktreeLockStatus(ctx, m.Git, string(repo.MainPath), absolutePath)
+		if err != nil {
 			return err
-		} else if !found {
+		}
+		if !found {
 			return nil
+		}
+		if postLocked || postReason != "" {
+			return errors.New("worktree lock changed before removal")
 		}
 		if _, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, common); err != nil {
 			return fmt.Errorf("revalidate worktree ownership: %w", err)
 		}
 		if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
 			return err
+		}
+		commonOutput, err = m.gitValue(ctx, path, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if err != nil {
+			return err
+		}
+		actual, err = filepath.EvalSymlinks(commonOutput)
+		if err != nil || actual != common {
+			return errors.New("worktree common directory changed before removal")
+		}
+		if expectedHead != "" {
+			head, err := m.gitValue(ctx, path, nil, "rev-parse", "HEAD")
+			if err != nil || head != expectedHead {
+				return errors.New("worktree HEAD changed before removal")
+			}
 		}
 		_, err = m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", path)
 		return err

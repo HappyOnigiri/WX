@@ -11,7 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -349,6 +352,13 @@ func (p *Preparer) ValidateOwnership(ctx context.Context, repo discovery.Reposit
 	return ValidateRegisteredWorktree(ctx, p.Git, string(repo.MainPath), target, slotID, true)
 }
 
+// ValidateRestoringOwnership is the slot-bound ownership check used while a
+// restore lock is held. Keeping the slot ID in this check prevents a restore
+// handoff from accepting a different wx lock reason at the same path.
+func (p *Preparer) ValidateRestoringOwnership(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
+	return p.validateExistingWorktreeOwned(ctx, repo, target, oid, slotID)
+}
+
 func (p *Preparer) validateTrackedClean(ctx context.Context, target string) error {
 	status, err := p.Git.Run(ctx, target, "status", "--porcelain=v1", "--untracked-files=no")
 	if err != nil {
@@ -361,11 +371,7 @@ func (p *Preparer) validateTrackedClean(ctx context.Context, target string) erro
 }
 
 func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error {
-	manifest := filepath.Join(string(repo.MainPath), ".worktreeinclude")
-	if err := validateOptionalManifest(manifest); err != nil {
-		return err
-	}
-	patterns, err := discovery.ReadPatterns(manifest)
+	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreeinclude")
 	if err != nil {
 		return err
 	}
@@ -400,12 +406,11 @@ func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error 
 }
 
 func (p *Preparer) createLinks(ctx context.Context, repo discovery.Repository, target string) error {
-	manifest := filepath.Join(string(repo.MainPath), ".worktreelink")
-	if err := validateOptionalManifest(manifest); err != nil {
+	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreelink")
+	if err != nil {
 		return err
 	}
-	patterns, err := discovery.ReadPatterns(manifest)
-	if err != nil {
+	if err := validateRuleConflicts(nil, patterns); err != nil {
 		return err
 	}
 	for _, rel := range patterns {
@@ -423,7 +428,7 @@ func (p *Preparer) createLinks(ctx context.Context, repo discovery.Repository, t
 		if err := domain.ValidatePhysicalPath(target, false); err != nil {
 			return fmt.Errorf(".worktreelink target is not physical: %w", err)
 		}
-		destinationRoot, err := os.OpenRoot(target)
+		destinationRoot, err := OpenPhysicalRoot(target)
 		if err != nil {
 			return err
 		}
@@ -486,17 +491,13 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "schema=2\ngeneration=%d\noid=%s\n", generation, oid)
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
-		manifest := filepath.Join(string(repo.MainPath), name)
-		if err := validateOptionalManifest(manifest); err != nil {
-			return "", err
-		}
-		data, err := os.ReadFile(manifest)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
+		data, err := readPhysicalManifest(string(repo.MainPath), name)
+		if err != nil {
 			return "", err
 		}
 		_, _ = fmt.Fprintf(h, "manifest=%s:%x\n", name, sha256.Sum256(data))
 	}
-	patterns, err := discovery.ReadPatterns(filepath.Join(string(repo.MainPath), ".worktreeinclude"))
+	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreeinclude")
 	if err != nil {
 		return "", err
 	}
@@ -592,14 +593,15 @@ func repositoryWorkspaceRoot(repo discovery.Repository) (string, error) {
 }
 
 func fingerprintPath(h hash.Hash, root, path string) error {
-	if err := domain.ValidatePhysicalPath(path, false); err != nil {
-		return err
-	}
-	info, err := os.Lstat(path)
+	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
 		return err
 	}
-	rel, err := filepath.Rel(root, path)
+	absolutePath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(absoluteRoot, absolutePath)
 	if err != nil {
 		return err
 	}
@@ -607,25 +609,59 @@ func fingerprintPath(h hash.Hash, root, path string) error {
 	if err != nil {
 		return err
 	}
+	rootHandle, err := OpenPhysicalRoot(absoluteRoot)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rootHandle.Close() }()
+	return fingerprintRootPath(h, rootHandle, rel, rel)
+}
+
+func fingerprintRootPath(h hash.Hash, root *os.Root, relative, display string) error {
+	info, err := rootPhysicalInfo(root, relative)
+	if err != nil {
+		return err
+	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("include symlinks are not followed")
 	}
-	_, _ = fmt.Fprintf(h, "path=%s mode=%s size=%d\n", rel, info.Mode(), info.Size())
+	_, _ = fmt.Fprintf(h, "path=%s mode=%s size=%d\n", display, info.Mode(), info.Size())
 	if info.IsDir() {
-		entries, err := os.ReadDir(path)
+		directory, err := root.OpenFile(relative, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 		if err != nil {
 			return err
 		}
-		for _, entry := range entries {
-			if err := fingerprintPath(h, root, filepath.Join(path, entry.Name())); err != nil {
+		openedInfo, statErr := directory.Stat()
+		if statErr != nil || !openedInfo.IsDir() || !os.SameFile(info, openedInfo) {
+			_ = directory.Close()
+			return fmt.Errorf("fingerprint directory %s changed while opening", display)
+		}
+		entries, readErr := directory.Readdirnames(-1)
+		closeErr := directory.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		sort.Strings(entries)
+		for _, name := range entries {
+			child := filepath.Join(relative, name)
+			childDisplay := filepath.Join(display, name)
+			if err := fingerprintRootPath(h, root, child, childDisplay); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	file, err := os.Open(path)
+	file, err := root.OpenFile(relative, os.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return fmt.Errorf("fingerprint file %s changed while opening", display)
 	}
 	_, copyErr := io.Copy(h, file)
 	closeErr := file.Close()
@@ -636,6 +672,15 @@ func fingerprintPath(h hash.Hash, root, path string) error {
 }
 
 func MaterializeRoot(source, target string, rules config.Workspace) error {
+	var err error
+	source, err = filepath.Abs(filepath.Clean(source))
+	if err != nil {
+		return err
+	}
+	target, err = filepath.Abs(filepath.Clean(target))
+	if err != nil {
+		return err
+	}
 	if err := domain.ValidatePhysicalPath(source, false); err != nil {
 		return fmt.Errorf("workspace source is not physical: %w", err)
 	}
@@ -643,6 +688,9 @@ func MaterializeRoot(source, target string, rules config.Workspace) error {
 		return fmt.Errorf("workspace target is not physical: %w", err)
 	}
 	copyNames := append([]string{"AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md"}, rules.Copy...)
+	if err := validateRuleConflicts(copyNames, rules.Link); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, rel := range copyNames {
 		clean, err := safeRelative(rel)
@@ -675,7 +723,7 @@ func MaterializeRoot(source, target string, rules config.Workspace) error {
 		if err := domain.ValidatePhysicalPath(src, false); err != nil {
 			return fmt.Errorf("workspace link source %s is not physical: %w", clean, err)
 		}
-		destinationRoot, err := os.OpenRoot(target)
+		destinationRoot, err := OpenPhysicalRoot(target)
 		if err != nil {
 			return err
 		}
@@ -714,23 +762,6 @@ func safeRelative(path string) (string, error) {
 		return "", fmt.Errorf("unsafe workspace root path %q", path)
 	}
 	return clean, nil
-}
-
-func validateOptionalManifest(path string) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("manifest %s is not a physical regular file", path)
-	}
-	if err := domain.ValidatePhysicalPath(path, false); err != nil {
-		return err
-	}
-	return nil
 }
 
 func copyPath(src, dst string) error {

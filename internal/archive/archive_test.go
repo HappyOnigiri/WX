@@ -270,6 +270,11 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	if err := manager.Restore(context.Background(), repo, target, "bad-index", badIndex); err == nil {
 		t.Fatal("restore with invalid index tree succeeded")
 	}
+	for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+		if got := gitCommand(t, repository, "rev-parse", "--verify", ref); got != want {
+			t.Fatalf("restore failure changed snapshot ref %s: got %s want %s", ref, got, want)
+		}
+	}
 	_, _ = runner.Run(context.Background(), repository, "worktree", "unlock", target)
 	_, _ = runner.Run(context.Background(), repository, "worktree", "remove", "--force", target)
 }
