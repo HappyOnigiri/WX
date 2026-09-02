@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -300,6 +301,57 @@ func TestAddWorktreeUsesReservedNamespaceAcrossRootReplacement(t *testing.T) {
 	registered := gitOutput(t, repository, "worktree", "list", "--porcelain")
 	if strings.Contains(registered, outside) || !strings.Contains(registered, oldTarget) {
 		t.Fatalf("Git registration escaped reserved namespace: %q", registered)
+	}
+}
+
+func TestPrepareClassifiesReplacedRootAsOwnershipUncertain(t *testing.T) {
+	base := t.TempDir()
+	repository := filepath.Join(base, "repository")
+	root := filepath.Join(base, "worktrees")
+	outside := filepath.Join(base, "outside")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "tracked")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	head := gitOutput(t, repository, "rev-parse", "HEAD")
+	common := gitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root}
+	target := filepath.Join(root, "slot", "root")
+	oldRoot := root + "-old"
+	if err := os.Rename(root, oldRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+
+	err = preparer.Prepare(context.Background(), repo, target, head, "slot")
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replaced root returned non-ownership error: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "slot")); !os.IsNotExist(err) {
+		t.Fatalf("replaced root escaped into outside directory: %v", err)
 	}
 }
 

@@ -113,11 +113,12 @@ func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, targe
 			return fmt.Errorf("prepare wx ownership marker: %w", err)
 		}
 		if !existingWorktree {
-			if err := domain.ValidatePhysicalPath(filepath.Dir(target), false); err != nil {
-				return fmt.Errorf("worktree parent contains a symlink: %w", err)
+			parentDirectory, _, parentErr := domain.OpenDirectoryAt(lockedRoot, filepath.Dir(lockedRelativeTarget))
+			if parentErr != nil {
+				return fmt.Errorf("%w: worktree parent ownership changed: %v", state.ErrOwnership, parentErr)
 			}
-			if _, err := lockedRoot.Lstat(filepath.Dir(lockedRelativeTarget)); err != nil {
-				return fmt.Errorf("worktree parent ownership changed: %w", err)
+			if closeErr := parentDirectory.Close(); closeErr != nil {
+				return fmt.Errorf("%w: close worktree parent descriptor: %v", state.ErrOwnership, closeErr)
 			}
 			if err := p.validateStateOwnership(ctx, repo, target, slotID, prepareSlotStates, prepareRepositoryStates); err != nil {
 				return fmt.Errorf("wx worktree ownership changed before creation: %w", err)
