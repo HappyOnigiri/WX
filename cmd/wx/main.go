@@ -18,6 +18,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/fdexec"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 )
@@ -33,7 +34,14 @@ func versionString() string {
 	}
 	return version + "-" + buildMeta
 }
-func main() { os.Exit(run(context.Background(), os.Args[1:])) }
+
+func main() {
+	if handled, code := fdexec.Handle(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+	os.Exit(run(context.Background(), os.Args[1:]))
+}
+
 func run(ctx context.Context, args []string) int {
 	if len(args) == 0 {
 		topUsage(os.Stderr)

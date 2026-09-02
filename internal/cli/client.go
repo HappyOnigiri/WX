@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/fdexec"
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
@@ -27,6 +29,11 @@ import (
 type Client struct {
 	RPC    rpc.Client
 	Config config.Config
+
+	// beforeAgentStart is a deterministic test barrier used to replace the
+	// lexical root after the lease directory descriptor is opened. Production
+	// clients leave it nil; the child still starts through fdexec below.
+	beforeAgentStart func()
 }
 
 func New(cfg config.Config) (Client, error) {
@@ -147,11 +154,28 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 			return 1
 		}
 	}
-	// #nosec G702 -- agent is selected by the fixed claude/codex CLI subcommands;
-	// arguments are passed directly to exec without shell interpretation.
-	cmd := exec.CommandContext(ctx, agent, args...)
-	cmd.Dir = lease.Path
-	cmd.Env = env
+	leaseDirectory, err := openLeaseDirectory(c.Config, lease)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: pin workspace CWD:", err)
+		return 1
+	}
+	defer func() { _ = leaseDirectory.Close() }()
+	if c.beforeAgentStart != nil {
+		c.beforeAgentStart()
+	}
+	// The descriptor-bound trampoline calls fchdir(2) in the child immediately
+	// before exec(2). This keeps agent CWD on the lease inode across a rename or
+	// symlink/physical replacement of the lexical wx root.
+	helper, helperErr := os.Executable()
+	if helperErr != nil {
+		fmt.Fprintln(os.Stderr, "error: locate wx descriptor helper:", helperErr)
+		return 1
+	}
+	cmd, err := fdexec.Start(ctx, helper, leaseDirectory, env, append([]string{agent}, args...)...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: prepare agent:", err)
+		return 1
+	}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -231,6 +255,40 @@ func restoreForeground(ttyFD int) {
 	signal.Ignore(syscall.SIGTTOU)
 	_ = unix.IoctlSetPointerInt(ttyFD, unix.TIOCSPGRP, syscall.Getpgrp())
 	signal.Reset(syscall.SIGTTOU)
+}
+
+func openLeaseDirectory(cfg config.Config, lease daemon.Lease) (*os.File, error) {
+	root, err := config.ExpandHome(cfg.Storage.WorktreeRoot)
+	if err != nil {
+		return nil, err
+	}
+	if !domain.IsWithin(root, lease.Path) && lease.RootIdentity == "" {
+		// Test-only/in-process RPC handlers from older callers do not carry the
+		// daemon's durable inode identity. Keep that compatibility path physical
+		// and fail closed on symlink components. Canonicalize first so Darwin's
+		// /tmp -> /private/tmp alias is not rejected as an unsafe component, then
+		// open through the filesystem-root descriptor. Daemon-issued leases always
+		// carry RootIdentity and never take this compatibility branch.
+		canonical, err := domain.Canonicalize(lease.Path)
+		if err != nil {
+			return nil, err
+		}
+		volumeRoot := filepath.VolumeName(string(canonical)) + string(filepath.Separator)
+		directory, _, err := domain.OpenOwnedDirectory(volumeRoot, string(canonical))
+		if err != nil {
+			return nil, err
+		}
+		return directory, nil
+	}
+	directory, identity, err := domain.OpenOwnedDirectory(root, lease.Path)
+	if err != nil {
+		return nil, err
+	}
+	if lease.RootIdentity != "" && identity != lease.RootIdentity {
+		_ = directory.Close()
+		return nil, fmt.Errorf("lease root identity changed (expected %s, got %s)", lease.RootIdentity, identity)
+	}
+	return directory, nil
 }
 
 var wxChildEnvironmentKeys = map[string]struct{}{

@@ -236,6 +236,73 @@ func TestPrepareRejectsPathsOutsideRootSymlinksAndForeignContents(t *testing.T) 
 	}
 }
 
+// NEW-2: the Git add syscall must use the descriptor-reserved target
+// namespace. The barrier replaces the lexical root after the parent has been
+// opened and before Git starts; neither files nor Git registration may escape.
+func TestAddWorktreeUsesReservedNamespaceAcrossRootReplacement(t *testing.T) {
+	base := t.TempDir()
+	repository := filepath.Join(base, "repository")
+	root := filepath.Join(base, "worktrees")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "tracked")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	head := gitOutput(t, repository, "rev-parse", "HEAD")
+	common := gitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := owner.MkdirAll("slot", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := &gitx.Runner{Timeout: 5 * time.Second}
+	p := Preparer{Git: runner, Config: func() config.Config { cfg := config.Defaults(); cfg.Storage.WorktreeRoot = root; return cfg }(), OwnedRoot: owner, RootPath: root}
+	target := filepath.Join(root, "slot", "root")
+	runner.SetBeforeRunAtHook(func(args []string) {
+		if len(args) < 3 || args[0] != "--git-dir" {
+			return
+		}
+		old := root + "-old"
+		if err := os.Rename(root, old); err != nil {
+			t.Fatalf("replace worktree root: %v", err)
+		}
+		if err := os.Symlink(outside, root); err != nil {
+			t.Fatalf("install replacement root: %v", err)
+		}
+	})
+	if err := p.addWorktree(context.Background(), repo, owner, target, filepath.Join("slot", "root"), head); err != nil {
+		t.Fatalf("descriptor-bound worktree add failed: %v", err)
+	}
+	oldTarget := filepath.Join(root+"-old", "slot", "root")
+	if info, err := os.Stat(oldTarget); err != nil || !info.IsDir() {
+		t.Fatalf("worktree was not created in reserved namespace: info=%v err=%v", info, err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "slot", "root")); !os.IsNotExist(err) {
+		t.Fatalf("Git created worktree outside wx root: %v", err)
+	}
+	registered := gitOutput(t, repository, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, outside) || !strings.Contains(registered, oldTarget) {
+		t.Fatalf("Git registration escaped reserved namespace: %q", registered)
+	}
+}
+
 // Finding 1: a matching Git worktree is not reusable without wx ownership proof.
 func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testing.T) {
 	root := t.TempDir()

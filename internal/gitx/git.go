@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/fdexec"
 )
 
 type Result struct {
@@ -38,9 +40,36 @@ func (e *Error) Error() string {
 type Runner struct {
 	Timeout   time.Duration
 	DetailDir string
-	timeout   sync.RWMutex
-	detail    sync.RWMutex
-	locks     sync.Map
+	// FDHelper is the wx executable used to fchdir to a descriptor before
+	// execing Git. Production managers set it to their own executable. Keeping
+	// it injectable lets tests use a built helper without weakening the
+	// descriptor-bound path.
+	FDHelper    string
+	timeout     sync.RWMutex
+	detail      sync.RWMutex
+	runAt       sync.RWMutex
+	beforeRunAt func([]string)
+	locks       sync.Map
+}
+
+// SetBeforeRunAtHook installs a test/diagnostic barrier invoked after a
+// descriptor-bound command has been constructed and immediately before its
+// child starts. Production callers leave it nil. The hook is intentionally
+// synchronized because descriptor-bound commands may run concurrently across
+// preparation workers.
+func (r *Runner) SetBeforeRunAtHook(hook func([]string)) {
+	r.runAt.Lock()
+	r.beforeRunAt = hook
+	r.runAt.Unlock()
+}
+
+func (r *Runner) invokeBeforeRunAt(args []string) {
+	r.runAt.RLock()
+	hook := r.beforeRunAt
+	r.runAt.RUnlock()
+	if hook != nil {
+		hook(append([]string(nil), args...))
+	}
 }
 
 func (r *Runner) SetDetailDir(path string) {
@@ -76,6 +105,18 @@ func (r *Runner) RunEnv(ctx context.Context, dir string, env []string, args ...s
 }
 
 func (r *Runner) RunEnvInput(ctx context.Context, dir string, env []string, input []byte, args ...string) (Result, error) {
+	return r.runEnvInput(ctx, dir, nil, env, input, args...)
+}
+
+// RunAt executes Git with dirFile as its current directory. The descriptor is
+// inherited by a tiny wx trampoline which calls fchdir before exec. Relative
+// arguments therefore resolve in the pinned inode even if its pathname is
+// renamed or replaced while Git is starting.
+func (r *Runner) RunAt(ctx context.Context, dirFile *os.File, env []string, input []byte, args ...string) (Result, error) {
+	return r.runEnvInput(ctx, string(filepath.Separator), dirFile, env, input, args...)
+}
+
+func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, env []string, input []byte, args ...string) (Result, error) {
 	if timeout := r.GetTimeout(); timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -83,9 +124,22 @@ func (r *Runner) RunEnvInput(ctx context.Context, dir string, env []string, inpu
 	}
 	start := time.Now()
 	for attempt := 0; ; attempt++ {
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), env...)
+		var cmd *exec.Cmd
+		if dirFile == nil {
+			cmd = exec.CommandContext(ctx, "git", args...)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), env...)
+		} else {
+			var err error
+			cmd, err = fdexec.Start(ctx, r.FDHelper, dirFile, append(os.Environ(), env...), append([]string{"git"}, args...)...)
+			if err != nil {
+				res := Result{ExitCode: -1, Elapsed: time.Since(start)}
+				failureID := newFailureID()
+				r.writeFailureDetail(failureID, args, res)
+				return res, &Error{Args: append([]string(nil), args...), Result: res, FailureID: failureID}
+			}
+			r.invokeBeforeRunAt(args)
+		}
 		if input != nil {
 			cmd.Stdin = bytes.NewReader(input)
 		}

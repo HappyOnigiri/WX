@@ -97,6 +97,42 @@ func TestOpenOwnedRootPinsRootAcrossReplacement(t *testing.T) {
 	}
 }
 
+// NEW-1: allocation must continue in the descriptor-pinned root when the
+// configured pathname is replaced after the root check.
+func TestOpenOwnedRootAllocationSurvivesRootReplacement(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "owned")
+	outside := filepath.Join(parent, "outside")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "workspaces", "slot", "root")
+	owned, relative, err := OpenOwnedRoot(root, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owned.Close() }()
+	old := filepath.Join(parent, "owned-old")
+	if err := os.Rename(root, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+	if err := owned.MkdirAll(relative, 0o700); err != nil {
+		t.Fatalf("descriptor-relative allocation failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(old, "workspaces", "slot", "root")); err != nil {
+		t.Fatalf("pinned root was not allocated: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "workspaces")); !os.IsNotExist(err) {
+		t.Fatalf("replacement target was modified outside ownership root: %v", err)
+	}
+}
+
 func TestValidatePhysicalPathRejectsParentSymlink(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

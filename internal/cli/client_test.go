@@ -17,6 +17,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
@@ -632,6 +633,85 @@ func TestRunAgentSupervisesChildAndReleasesLease(t *testing.T) {
 		if !found {
 			t.Fatalf("methods=%v missing %s", methods, required)
 		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// NEW-1: replacing the configured root after the lease directory is opened
+// must not redirect the agent CWD to the replacement directory.
+func TestRunAgentKeepsDescriptorBoundCWDAcrossRootReplacement(t *testing.T) {
+	base, err := os.MkdirTemp("", "wx-cwd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err = filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	root := filepath.Join(base, "worktrees")
+	workspace := filepath.Join(root, "workspace")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(outside, "workspace"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	directory, identity, err := domain.OpenOwnedDirectory(root, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.Close(); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(base, "wxd.sock")
+	handler := &launcherHandler{lease: daemon.Lease{SessionID: "session", Token: "token", Path: workspace, RootIdentity: identity, Ready: true}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	server := &rpc.Server{Socket: socket, Handler: handler}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForPath(t, socket)
+	agent := filepath.Join(base, "agent")
+	result := filepath.Join(base, "agent-pwd")
+	if err := os.WriteFile(agent, []byte("#!/bin/sh\npwd -P > \"$1\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := root + "-old"
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	client := Client{
+		RPC:    rpc.Client{Socket: socket, Timeout: time.Second},
+		Config: cfg,
+		beforeAgentStart: func() {
+			if err := os.Rename(root, oldRoot); err != nil {
+				t.Fatalf("replace configured root: %v", err)
+			}
+			if err := os.Symlink(outside, root); err != nil {
+				t.Fatalf("install replacement root: %v", err)
+			}
+		},
+	}
+	if exit := client.RunAgent(ctx, agent, []string{result}, nil, false, ""); exit != 0 {
+		t.Fatalf("RunAgent exit=%d", exit)
+	}
+	data, err := os.ReadFile(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(filepath.Join(oldRoot, "workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != want {
+		t.Fatalf("agent CWD=%q want pinned %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "workspace", "agent-pwd")); !os.IsNotExist(err) {
+		t.Fatalf("replacement directory received agent output: %v", err)
 	}
 	cancel()
 	if err := <-done; err != nil {

@@ -40,6 +40,31 @@ func EnsureOwnershipMarker(root, target, slotID, commonDir string) error {
 		return err
 	}
 	defer func() { _ = owner.Close() }()
+	return ensureOwnershipMarkerAt(owner, markerRelative, marker)
+}
+
+// EnsureOwnershipMarkerAt is the descriptor-bound variant used while a
+// daemon-held worktree root is pinned. It keeps marker creation in the same
+// inode namespace as allocation and worktree preparation.
+func EnsureOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string) error {
+	if slotID == "" || strings.ContainsAny(slotID, `/\`) {
+		return errors.New("invalid wx ownership slot id")
+	}
+	marker, err := newOwnershipMarkerAt(owner, root, target, slotID, commonDir, true)
+	if err != nil {
+		return err
+	}
+	markerRelative, err := ownershipMarkerRelative(root, target)
+	if err != nil {
+		return err
+	}
+	return ensureOwnershipMarkerAt(owner, markerRelative, marker)
+}
+
+func ensureOwnershipMarkerAt(owner *os.Root, markerRelative string, marker ownershipMarker) error {
+	if owner == nil {
+		return errors.New("wx ownership root is nil")
+	}
 	if err := owner.MkdirAll(filepath.Dir(markerRelative), 0o700); err != nil {
 		return fmt.Errorf("create wx ownership marker parent: %w", err)
 	}
@@ -108,6 +133,34 @@ func ValidateOwnershipMarker(root, target, slotID, commonDir string) error {
 	return nil
 }
 
+// ValidateOwnershipMarkerAt verifies a marker through a previously pinned
+// root descriptor. Pathnames may be replaced after the caller obtained the
+// descriptor without redirecting this read to an outside directory.
+func ValidateOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string) error {
+	if strings.ContainsAny(slotID, `/\`) {
+		return markerOwnershipFailure(errors.New("invalid wx ownership slot id"))
+	}
+	marker, err := newOwnershipMarkerAt(owner, root, target, slotID, commonDir, false)
+	if err != nil {
+		return markerOwnershipFailure(err)
+	}
+	markerRelative, err := ownershipMarkerRelative(root, target)
+	if err != nil {
+		return markerOwnershipFailure(err)
+	}
+	actual, err := readOwnershipMarker(owner, markerRelative)
+	if err != nil {
+		return markerOwnershipFailure(err)
+	}
+	if actual.Target != marker.Target || actual.CommonDir != marker.CommonDir {
+		return markerOwnershipFailure(errors.New("wx ownership marker does not match expected worktree"))
+	}
+	if slotID != "" && actual.SlotID != slotID {
+		return markerOwnershipFailure(errors.New("wx ownership marker does not match expected slot"))
+	}
+	return nil
+}
+
 // ValidateRemovalOwnership verifies the marker even when the physical
 // worktree leaf is missing and returns the slot id encoded by the marker.
 func ValidateRemovalOwnership(root, target, commonDir string) (string, error) {
@@ -128,6 +181,28 @@ func ValidateRemovalOwnership(root, target, commonDir string) (string, error) {
 		if actual.Target == marker.Target && actual.CommonDir != marker.CommonDir {
 			return "", markerOwnershipFailure(errors.New("wx ownership marker common directory does not match recorded worktree"))
 		}
+		return "", markerOwnershipFailure(errors.New("wx ownership marker does not match recorded worktree"))
+	}
+	return actual.SlotID, nil
+}
+
+// ValidateRemovalOwnershipAt is the descriptor-bound counterpart used by the
+// daemon while a configured wx root is pinned. It avoids resolving target
+// through the mutable lexical root while constructing the expected marker.
+func ValidateRemovalOwnershipAt(owner *os.Root, root, target, commonDir string) (string, error) {
+	marker, err := newOwnershipMarkerAt(owner, root, target, "", commonDir, true)
+	if err != nil {
+		return "", markerOwnershipFailure(err)
+	}
+	markerRelative, err := ownershipMarkerRelative(root, target)
+	if err != nil {
+		return "", markerOwnershipFailure(err)
+	}
+	actual, err := readOwnershipMarker(owner, markerRelative)
+	if err != nil {
+		return "", markerOwnershipFailure(err)
+	}
+	if actual.Target != marker.Target || actual.CommonDir != marker.CommonDir {
 		return "", markerOwnershipFailure(errors.New("wx ownership marker does not match recorded worktree"))
 	}
 	return actual.SlotID, nil
@@ -175,6 +250,69 @@ func newOwnershipMarker(target, slotID, commonDir string, allowMissingTarget boo
 	return ownershipMarker{Version: 1, SlotID: slotID, Target: filepath.Clean(absoluteTarget), CommonDir: filepath.Clean(absoluteCommon)}, nil
 }
 
+// newOwnershipMarkerAt constructs a marker expectation without following the
+// target pathname. The target is first proven to be the directory represented
+// by owner (or to have a descriptor-safe parent when it is the missing leaf),
+// then its absolute lexical spelling is retained as the canonical wx path.
+// This is important after the configured root has been renamed: evaluating
+// target through the replacement pathname could otherwise bind a marker to an
+// unrelated outside directory.
+func newOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string, allowMissingTarget bool) (ownershipMarker, error) {
+	if owner == nil {
+		return ownershipMarker{}, errors.New("wx ownership root is nil")
+	}
+	if slotID != "" && strings.ContainsAny(slotID, `/\`) {
+		return ownershipMarker{}, errors.New("invalid wx ownership slot id")
+	}
+	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return ownershipMarker{}, err
+	}
+	absoluteTarget, err := filepath.Abs(filepath.Clean(target))
+	if err != nil {
+		return ownershipMarker{}, err
+	}
+	if !domain.IsWithin(absoluteRoot, absoluteTarget) {
+		return ownershipMarker{}, errors.New("worktree target is outside wx ownership root")
+	}
+	relative, err := filepath.Rel(absoluteRoot, absoluteTarget)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		if err == nil {
+			err = errors.New("worktree target is not a descendant of wx ownership root")
+		}
+		return ownershipMarker{}, err
+	}
+	info, statErr := owner.Lstat(relative)
+	if statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return ownershipMarker{}, errors.New("worktree target is not a physical directory")
+		}
+		if directory, _, openErr := domain.OpenDirectoryAt(owner, relative); openErr != nil {
+			return ownershipMarker{}, openErr
+		} else if closeErr := directory.Close(); closeErr != nil {
+			return ownershipMarker{}, closeErr
+		}
+	} else if !allowMissingTarget || !errors.Is(statErr, os.ErrNotExist) {
+		return ownershipMarker{}, statErr
+	} else {
+		parent := filepath.Dir(relative)
+		if directory, _, openErr := domain.OpenDirectoryAt(owner, parent); openErr != nil {
+			return ownershipMarker{}, fmt.Errorf("worktree target parent is not physical: %w", openErr)
+		} else if closeErr := directory.Close(); closeErr != nil {
+			return ownershipMarker{}, closeErr
+		}
+	}
+	absoluteCommon, err := filepath.Abs(filepath.Clean(commonDir))
+	if err != nil {
+		return ownershipMarker{}, err
+	}
+	absoluteCommon, err = filepath.EvalSymlinks(absoluteCommon)
+	if err != nil {
+		return ownershipMarker{}, fmt.Errorf("canonicalize Git common directory: %w", err)
+	}
+	return ownershipMarker{Version: 1, SlotID: slotID, Target: filepath.Clean(absoluteTarget), CommonDir: filepath.Clean(absoluteCommon)}, nil
+}
+
 func openMarkerRoot(root, target string) (*os.Root, string, error) {
 	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
@@ -196,6 +334,22 @@ func openMarkerRoot(root, target string) (*os.Root, string, error) {
 		return nil, "", err
 	}
 	return owner, relative, nil
+}
+
+func ownershipMarkerRelative(root, target string) (string, error) {
+	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return "", err
+	}
+	absoluteTarget, err := filepath.Abs(filepath.Clean(target))
+	if err != nil {
+		return "", err
+	}
+	marker := filepath.Join(ownershipMarkerBase(absoluteRoot, absoluteTarget), ownershipMarkerNameForTarget(absoluteTarget))
+	if !domain.IsWithin(absoluteRoot, marker) {
+		return "", errors.New("wx ownership marker is outside ownership root")
+	}
+	return filepath.Rel(absoluteRoot, marker)
 }
 
 func ownershipMarkerNameForTarget(target string) string {
@@ -344,6 +498,81 @@ func RegisteredWorktreeLockStatus(ctx context.Context, runner *gitx.Runner, main
 			continue
 		}
 		return record.LockReason, record.Locked, true, nil
+	}
+	return "", false, false, nil
+}
+
+// ValidateRegisteredWorktreeAt verifies Git's registration against the inode
+// held by a descriptor-bound target. Unlike RegisteredWorktreeLockStatus, it
+// never canonicalizes a mutable target pathname, so a root replacement cannot
+// turn an outside directory into an apparent wx match.
+func ValidateRegisteredWorktreeAt(ctx context.Context, runner *gitx.Runner, mainPath string, owner *os.Root, root, relativeTarget, targetIdentity string, slotID string, requireLock bool) error {
+	reason, _, found, err := RegisteredWorktreeLockStatusAt(ctx, runner, mainPath, owner, root, relativeTarget, targetIdentity)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("worktree is not registered at its recorded path")
+	}
+	if !requireLock {
+		return nil
+	}
+	if reason == "" {
+		return errors.New("worktree is not protected by git worktree lock")
+	}
+	if slotID == "" {
+		if !strings.HasPrefix(reason, "wx:") {
+			return errors.New("worktree lock is not owned by wx")
+		}
+		return nil
+	}
+	if reason != "wx:"+slotID+":READY" && reason != "wx:"+slotID+":PREPARING" && reason != "wx:"+slotID+":RESTORING" {
+		return fmt.Errorf("worktree lock reason does not belong to wx slot %s", slotID)
+	}
+	return nil
+}
+
+// RegisteredWorktreeLockStatusAt compares every Git registration with the
+// expected target inode through owner. A registration outside root is ignored
+// rather than resolved through a symlink alias.
+func RegisteredWorktreeLockStatusAt(ctx context.Context, runner *gitx.Runner, mainPath string, owner *os.Root, root, relativeTarget, targetIdentity string) (reason string, locked, found bool, err error) {
+	if owner == nil {
+		return "", false, false, errors.New("wx ownership root is nil")
+	}
+	if targetIdentity == "" {
+		return "", false, false, errors.New("worktree target identity is unavailable")
+	}
+	listed, err := runner.Run(ctx, mainPath, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", false, false, err
+	}
+	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return "", false, false, err
+	}
+	for _, record := range parseWorktreeRecords(listed.Stdout) {
+		absoluteRecord, absErr := filepath.Abs(filepath.Clean(record.Path))
+		if absErr != nil || !domain.IsWithin(absoluteRoot, absoluteRecord) {
+			continue
+		}
+		relativeRecord, relErr := filepath.Rel(absoluteRoot, absoluteRecord)
+		if relErr != nil || relativeRecord == "." || relativeRecord == ".." || strings.HasPrefix(relativeRecord, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeRecord) {
+			continue
+		}
+		if filepath.Clean(relativeRecord) != filepath.Clean(relativeTarget) {
+			continue
+		}
+		directory, identity, openErr := domain.OpenDirectoryAt(owner, relativeRecord)
+		if openErr != nil {
+			continue
+		}
+		closeErr := directory.Close()
+		if closeErr != nil {
+			return "", false, false, closeErr
+		}
+		if identity == targetIdentity {
+			return record.LockReason, record.Locked, true, nil
+		}
 	}
 	return "", false, false, nil
 }

@@ -54,9 +54,14 @@ func OpenPhysicalRoot(path string) (*os.Root, error) {
 	}
 	// Check the descriptor itself as well. This catches a path that was
 	// replaced between the initial physical check and OpenRoot.
-	if _, err := rootPhysicalInfo(root, "."); err != nil {
+	reopenedInfo, err := rootPhysicalInfo(root, ".")
+	if err != nil {
 		_ = root.Close()
 		return nil, fmt.Errorf("revalidate physical root %s: %w", absolute, err)
+	}
+	if !os.SameFile(info, reopenedInfo) {
+		_ = root.Close()
+		return nil, fmt.Errorf("physical root %s changed while opening", absolute)
 	}
 	return root, nil
 }
@@ -206,7 +211,25 @@ func copyPathFromRoots(sourceRoot, sourceRelative, destinationRoot, destinationR
 		return err
 	}
 	defer func() { _ = destinationHandle.Close() }()
-	return copyRootEntry(sourceHandle, source, destinationHandle, destination)
+	return copyPathFromOwnedRoot(sourceHandle, source, destinationHandle, destination)
+}
+
+// copyPathFromOwnedRoot copies a validated source entry into an already pinned
+// destination Root. Keeping the destination descriptor supplied by the caller
+// is what makes writes survive a rename/replacement of the lexical wx root.
+func copyPathFromOwnedRoot(sourceRoot *os.Root, sourceRelative string, destinationRoot *os.Root, destinationRelative string) error {
+	if sourceRoot == nil || destinationRoot == nil {
+		return errors.New("copy roots must not be nil")
+	}
+	source, err := safeRelative(sourceRelative)
+	if err != nil {
+		return err
+	}
+	destination, err := safeRelative(destinationRelative)
+	if err != nil {
+		return err
+	}
+	return copyRootEntry(sourceRoot, source, destinationRoot, destination)
 }
 
 func copyRootEntry(sourceRoot *os.Root, source string, destinationRoot *os.Root, destination string) error {
@@ -382,6 +405,25 @@ func removeOwnershipMarker(root, target string) error {
 		return err
 	}
 	defer func() { _ = owner.Close() }()
+	if _, err := owner.Lstat(relative); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return owner.Remove(relative)
+}
+
+// removeOwnershipMarkerAt removes a marker through an already pinned wx root.
+// It is used only after the caller has proved ownership and therefore must not
+// reopen the mutable root pathname during failure cleanup.
+func removeOwnershipMarkerAt(owner *os.Root, root, target string) error {
+	relative, err := ownershipMarkerRelative(root, target)
+	if err != nil {
+		return err
+	}
+	if owner == nil {
+		return errors.New("wx ownership root is nil")
+	}
 	if _, err := owner.Lstat(relative); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
