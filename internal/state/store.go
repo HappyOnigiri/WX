@@ -155,7 +155,9 @@ func (s *Store) encryptRPCResult(key, method, paramsHash string, result []byte, 
 		return nil, err
 	}
 	associated := []byte(key + "\x00" + method + "\x00" + paramsHash)
-	return append(nonce, aead.Seal(nil, nonce, plain, associated)...), nil
+	encrypted := make([]byte, len(nonce), len(nonce)+len(plain)+aead.Overhead())
+	copy(encrypted, nonce)
+	return aead.Seal(encrypted, nonce, plain, associated), nil
 }
 
 func (s *Store) decryptRPCResult(key, method, paramsHash string, encrypted []byte) ([]byte, string, string, error) {
