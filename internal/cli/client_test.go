@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,11 +184,15 @@ func waitUntilCLI(t *testing.T, timeout time.Duration, predicate func() bool) {
 func TestReadinessHooksRequireCommandsUnderMatchingEvents(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	executable, err := currentWXExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(home, ".codex", "hooks.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	valid := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"/usr/local/bin/wx hook session-start"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"wx hook user-prompt-submit"}]}],"PreToolUse":[{"hooks":[{"type":"command","command":"wx hook pre-tool-use"}]}]}}`
+	valid := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":%q}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":%q}]}],"PreToolUse":[{"hooks":[{"type":"command","command":%q}]}]}}`, executable+" hook session-start", executable+" hook user-prompt-submit", executable+" hook pre-tool-use")
 	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -224,6 +229,270 @@ func TestReadinessHooksRejectDisabledSubstringAndMalformedConfigurations(t *test
 		if readinessHooksAvailable("codex") {
 			t.Fatalf("unsafe hook configuration was accepted: %s", document)
 		}
+	}
+}
+
+func TestReadinessHooksFailClosedForMatcherPrecedenceAndExecutableIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	executable, err := currentWXExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeHooks := func(t *testing.T, path, document string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := func(event string) string {
+		return fmt.Sprintf(`{"type":"command","command":%q}`, executable+" hook "+event)
+	}
+	valid := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, command("session-start"), command("user-prompt-submit"), command("pre-tool-use"))
+	codexPath := filepath.Join(home, ".codex", "hooks.json")
+	writeHooks(t, codexPath, valid)
+	if !readinessHooksAvailable("codex") {
+		t.Fatal("valid canonical hook configuration was rejected")
+	}
+	if !isExactWXHookCommand(executable+" hook session-start", "session-start") {
+		t.Fatal("canonical wx hook command was rejected")
+	}
+	wildcardMatcher := fmt.Sprintf(`{"hooks":{"SessionStart":[{"matcher":"*","hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, command("session-start"), command("user-prompt-submit"), command("pre-tool-use"))
+	writeHooks(t, codexPath, wildcardMatcher)
+	if !readinessHooksAvailable("codex") {
+		t.Fatal("match-all hook matcher was rejected")
+	}
+
+	withMatcher := fmt.Sprintf(`{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, command("session-start"), command("user-prompt-submit"), command("pre-tool-use"))
+	writeHooks(t, codexPath, withMatcher)
+	if readinessHooksAvailable("codex") {
+		t.Fatal("event-specific matcher was treated as universally applicable")
+	}
+
+	globalClaude := filepath.Join(home, ".claude", "settings.json")
+	localClaude := filepath.Join(home, ".claude", "settings.local.json")
+	writeHooks(t, globalClaude, valid)
+	if err := os.Remove(codexPath); err != nil {
+		t.Fatal(err)
+	}
+	if !readinessHooksAvailable("claude") {
+		t.Fatal("valid global Claude hook configuration was rejected")
+	}
+	localOverride := `{"hooks":{"SessionStart":[{"disabled":true,"hooks":[{"type":"command","command":"ignored hook session-start"}]}],"UserPromptSubmit":[],"PreToolUse":[]}}`
+	writeHooks(t, localClaude, localOverride)
+	if readinessHooksAvailable("claude") {
+		t.Fatal("lower-precedence global hooks were used despite local settings")
+	}
+	if err := os.Remove(localClaude); err != nil {
+		t.Fatal(err)
+	}
+
+	other := filepath.Join(home, "other-wx")
+	if err := os.WriteFile(other, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wrongExecutable := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":%q}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":%q}]}],"PreToolUse":[{"hooks":[{"type":"command","command":%q}]}]}}`, other+" hook session-start", other+" hook user-prompt-submit", other+" hook pre-tool-use")
+	writeHooks(t, codexPath, wrongExecutable)
+	if readinessHooksAvailable("codex") {
+		t.Fatal("different executable identity was accepted")
+	}
+	if err := os.Symlink(executable, filepath.Join(home, "wx")); err != nil {
+		t.Fatal(err)
+	}
+	literalHome := func(event string) string {
+		return fmt.Sprintf(`{"type":"command","command":"'$HOME/wx' hook %s"}`, event)
+	}
+	literalHomeDocument := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, literalHome("session-start"), literalHome("user-prompt-submit"), literalHome("pre-tool-use"))
+	writeHooks(t, codexPath, literalHomeDocument)
+	if readinessHooksAvailable("codex") {
+		t.Fatal("single-quoted HOME expansion was treated as executable identity")
+	}
+	doubleQuotedTilde := func(event string) string {
+		return fmt.Sprintf(`{"type":"command","command":"\"~/wx\" hook %s"}`, event)
+	}
+	doubleQuotedTildeDocument := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, doubleQuotedTilde("session-start"), doubleQuotedTilde("user-prompt-submit"), doubleQuotedTilde("pre-tool-use"))
+	writeHooks(t, codexPath, doubleQuotedTildeDocument)
+	if readinessHooksAvailable("codex") {
+		t.Fatal("double-quoted tilde expansion was treated as executable identity")
+	}
+
+	async := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","async":true,"command":%q}]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, executable+" hook session-start", command("user-prompt-submit"), command("pre-tool-use"))
+	writeHooks(t, codexPath, async)
+	if readinessHooksAvailable("codex") {
+		t.Fatal("asynchronous readiness hook was accepted")
+	}
+}
+
+func TestReadinessHooksRejectUnknownAndInvalidSchemaFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	executable, err := currentWXExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := func(event, options string) string {
+		return fmt.Sprintf(`{"type":"command","command":%q%s}`, executable+" hook "+event, options)
+	}
+	document := func(options string) string {
+		return fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, command("session-start", options), command("user-prompt-submit", options), command("pre-tool-use", options))
+	}
+	validOptions := `,"disabled":false,"async":false,"once":false,"timeout":10,"statusMessage":"waiting","additionalContextLimit":32768`
+	cases := []struct {
+		name   string
+		config string
+		valid  bool
+	}{
+		{name: "supported optional fields", config: document(validOptions), valid: true},
+		{name: "disabled wrong type", config: document(`,"disabled":"false"`)},
+		{name: "async wrong type", config: document(`,"async":0`)},
+		{name: "timeout wrong type", config: document(`,"timeout":"10"`)},
+		{name: "status message wrong type", config: document(`,"statusMessage":10`)},
+		{name: "context limit fractional", config: document(`,"additionalContextLimit":1.5`)},
+		{name: "unknown command field", config: document(`,"untrusted":true`)},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(test.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := readinessHooksAvailable("codex")
+			if got != test.valid {
+				t.Fatalf("readiness detection=%v for %s", got, test.name)
+			}
+		})
+	}
+
+	unknownGroup := strings.Replace(document(validOptions), `[{"hooks":[`, `[{"untrusted":true,"hooks":[`, 1)
+	if err := os.WriteFile(path, []byte(unknownGroup), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if readinessHooksAvailable("codex") {
+		t.Fatal("unknown hook-group field was accepted")
+	}
+
+	disabledHooks := strings.Replace(document(validOptions), `{"hooks":`, `{"disableAllHooks":true,"hooks":`, 1)
+	if err := os.WriteFile(path, []byte(disabledHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if readinessHooksAvailable("codex") {
+		t.Fatal("globally disabled hooks were accepted")
+	}
+
+	invalidDisableOption := strings.Replace(document(validOptions), `{"hooks":`, `{"disableAllHooks":"false","hooks":`, 1)
+	if err := os.WriteFile(path, []byte(invalidDisableOption), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if readinessHooksAvailable("codex") {
+		t.Fatal("invalid global hook disable option was accepted")
+	}
+
+	enabledHooks := strings.Replace(document(validOptions), `{"hooks":`, `{"disableAllHooks":false,"hooks":`, 1)
+	if err := os.WriteFile(path, []byte(enabledHooks), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !readinessHooksAvailable("codex") {
+		t.Fatal("explicitly enabled hooks were rejected")
+	}
+}
+
+func TestChildEnvironmentScrubsInheritedWXInvocationState(t *testing.T) {
+	base := []string{
+		"PATH=/bin",
+		"WX_SESSION_ID=parent",
+		"WX_SESSION_TOKEN=parent-token",
+		"WX_NATIVE_RESUME=1",
+		"WX_EXPLICIT_RESUME=1",
+		"WX_FRESH=1",
+		"WX_RECOVERY_DISCARDED=1",
+		"KEEP=present",
+	}
+	child := childEnvironment(base, []string{"WX_SESSION_ID=child", "WX_SESSION_TOKEN=child-token"})
+	values := make(map[string]string)
+	for _, entry := range child {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, exists := values[key]; exists {
+				t.Fatalf("environment contains duplicate key %q: %v", key, child)
+			}
+			values[key] = value
+		}
+	}
+	if values["WX_SESSION_ID"] != "child" || values["WX_SESSION_TOKEN"] != "child-token" || values["KEEP"] != "present" {
+		t.Fatalf("current child environment was not applied: %v", values)
+	}
+	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED"} {
+		if _, exists := values[key]; exists {
+			t.Fatalf("parent invocation mode %s leaked into child: %v", key, values)
+		}
+	}
+}
+
+func TestRunAgentUsesForegroundReadyFallbackWhenHooksAreUnavailable(t *testing.T) {
+	temp, err := os.MkdirTemp("/tmp", "wx-cli-fallback-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(temp) })
+	t.Setenv("HOME", filepath.Join(temp, "home"))
+	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED"} {
+		t.Setenv(key, "1")
+	}
+	socket := filepath.Join(temp, "wxd.sock")
+	workspace := filepath.Join(temp, "workspace")
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	handler := &launcherHandler{lease: daemon.Lease{SessionID: "fallback-session", Token: "fallback-token", Path: workspace, Ready: false}}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	server := &rpc.Server{Socket: socket, Handler: handler}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitUntilCLI(t, 3*time.Second, func() bool {
+		if _, err := os.Lstat(socket); err == nil {
+			return true
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("fallback test server stopped before listening: %v", err)
+			return false
+		default:
+			return false
+		}
+	})
+	agentScript := filepath.Join(temp, "agent")
+	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
+	if exit := client.RunAgent(ctx, agentScript, nil, nil, false, ""); exit != 0 {
+		t.Fatalf("RunAgent exit=%d", exit)
+	}
+	handler.mu.Lock()
+	methods := append([]string(nil), handler.methods...)
+	handler.mu.Unlock()
+	waitIndex, registerIndex := -1, -1
+	for index, method := range methods {
+		if method == "WaitReady" {
+			waitIndex = index
+		}
+		if method == "RegisterAgentProcess" {
+			registerIndex = index
+		}
+	}
+	if waitIndex < 0 || registerIndex < 0 || waitIndex > registerIndex {
+		t.Fatalf("unavailable hooks did not gate child startup: methods=%v", methods)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -3,8 +3,10 @@ package launchd
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,9 +40,53 @@ func Render(binary, home, logPath string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	escapedBinary, err := escapeXMLText(binary)
+	if err != nil {
+		return nil, fmt.Errorf("escape LaunchAgent binary path: %w", err)
+	}
+	escapedHome, err := escapeXMLText(home)
+	if err != nil {
+		return nil, fmt.Errorf("escape LaunchAgent home path: %w", err)
+	}
+	pathValue := filepath.Join(home, ".local", "bin") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+	escapedPath, err := escapeXMLText(pathValue)
+	if err != nil {
+		return nil, fmt.Errorf("escape LaunchAgent PATH: %w", err)
+	}
+	escapedLog, err := escapeXMLText(logPath)
+	if err != nil {
+		return nil, fmt.Errorf("escape LaunchAgent log path: %w", err)
+	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{"Label": Label, "Binary": binary, "Home": home, "Path": filepath.Join(home, ".local", "bin") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "Log": logPath})
-	return b.Bytes(), err
+	err = t.Execute(&b, map[string]string{"Label": Label, "Binary": escapedBinary, "Home": escapedHome, "Path": escapedPath, "Log": escapedLog})
+	if err != nil {
+		return nil, err
+	}
+	if err := validateXML(b.Bytes()); err != nil {
+		return nil, fmt.Errorf("validate LaunchAgent plist: %w", err)
+	}
+	return b.Bytes(), nil
+}
+
+func escapeXMLText(value string) (string, error) {
+	var escaped bytes.Buffer
+	if err := xml.EscapeText(&escaped, []byte(value)); err != nil {
+		return "", err
+	}
+	return escaped.String(), nil
+}
+
+func validateXML(data []byte) error {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	for {
+		_, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
 
 func Install(ctx context.Context, binary, logPath string) error {

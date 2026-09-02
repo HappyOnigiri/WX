@@ -2,10 +2,12 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 
@@ -117,22 +120,25 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	if agent == "codex" && native {
 		args = codexResumeArgs(args)
 	}
-	env := append(os.Environ(), "WX_SESSION_ID="+lease.SessionID, "WX_SESSION_TOKEN="+lease.Token, "WX_DAEMON_SOCKET="+c.RPC.Socket, "WX_WORKSPACE_ROOT="+lease.Path, "WX_SOURCE_WORKSPACE="+lease.SourceWorkspace, "WX_READINESS_TIMEOUT="+c.Config.Readiness.Timeout.String())
-	if encodedBranches, marshalErr := json.Marshal(branches); marshalErr == nil {
-		env = append(env, "WX_SOURCE_CWD="+cwd, "WX_BRANCHES_JSON="+string(encodedBranches))
+	encodedBranches, marshalErr := json.Marshal(branches)
+	if marshalErr != nil {
+		fmt.Fprintln(os.Stderr, "error: encode branch selection:", marshalErr)
+		return 1
 	}
-	if native && !fresh && explicitResume == "" {
-		env = append(env, "WX_NATIVE_RESUME=1")
+	envOverrides := []string{"WX_SESSION_ID=" + lease.SessionID, "WX_SESSION_TOKEN=" + lease.Token, "WX_DAEMON_SOCKET=" + c.RPC.Socket, "WX_WORKSPACE_ROOT=" + lease.Path, "WX_SOURCE_WORKSPACE=" + lease.SourceWorkspace, "WX_READINESS_TIMEOUT=" + c.Config.Readiness.Timeout.String(), "WX_SOURCE_CWD=" + cwd, "WX_BRANCHES_JSON=" + string(encodedBranches)}
+	if native && explicitResume == "" {
+		envOverrides = append(envOverrides, "WX_NATIVE_RESUME=1")
 	}
 	if explicitResume != "" {
-		env = append(env, "WX_EXPLICIT_RESUME=1")
+		envOverrides = append(envOverrides, "WX_EXPLICIT_RESUME=1")
 	}
 	if fresh {
-		env = append(env, "WX_FRESH=1")
+		envOverrides = append(envOverrides, "WX_FRESH=1")
 	}
 	if recoveryDiscarded {
-		env = append(env, "WX_RECOVERY_DISCARDED=1")
+		envOverrides = append(envOverrides, "WX_RECOVERY_DISCARDED=1")
 	}
+	env := childEnvironment(os.Environ(), envOverrides)
 	// When hooks are installed, preparation overlaps agent startup and prompt entry.
 	// Otherwise normal starts and explicit resumes safely wait in the foreground.
 	if !lease.Ready && !hooksReady {
@@ -230,68 +236,163 @@ func restoreForeground(ttyFD int) {
 	signal.Reset(syscall.SIGTTOU)
 }
 
+var wxChildEnvironmentKeys = map[string]struct{}{
+	"WX_SESSION_ID":         {},
+	"WX_SESSION_TOKEN":      {},
+	"WX_DAEMON_SOCKET":      {},
+	"WX_WORKSPACE_ROOT":     {},
+	"WX_SOURCE_WORKSPACE":   {},
+	"WX_READINESS_TIMEOUT":  {},
+	"WX_SOURCE_CWD":         {},
+	"WX_BRANCHES_JSON":      {},
+	"WX_NATIVE_RESUME":      {},
+	"WX_EXPLICIT_RESUME":    {},
+	"WX_FRESH":              {},
+	"WX_RECOVERY_DISCARDED": {},
+}
+
+func childEnvironment(base, overrides []string) []string {
+	env := make([]string, 0, len(base)+len(overrides))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, internal := wxChildEnvironmentKeys[key]; internal {
+				continue
+			}
+		}
+		env = append(env, entry)
+	}
+	return append(env, overrides...)
+}
+
 func readinessHooksAvailable(agent string) bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	paths, ok := readinessHookPaths(agent)
+	if !ok {
 		return false
 	}
-	var paths []string
-	if agent == "codex" {
-		paths = []string{filepath.Join(home, ".codex", "hooks.json")}
-	} else {
-		paths = []string{filepath.Join(home, ".claude", "settings.json"), filepath.Join(home, ".claude", "settings.local.json")}
+	executable, err := currentWXExecutable()
+	if err != nil {
+		return false
 	}
 	required := map[string]string{
 		"SessionStart":     "session-start",
 		"UserPromptSubmit": "user-prompt-submit",
 		"PreToolUse":       "pre-tool-use",
 	}
-	found := map[string]bool{}
 	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil || len(data) > 4<<20 {
-			continue
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || len(data) == 0 || len(data) > 4<<20 {
+			return false
 		}
-		var document struct {
-			Hooks map[string]any `json:"hooks"`
+		if readinessHookDocumentMatches(data, required, executable) {
+			return true
 		}
-		if json.Unmarshal(data, &document) != nil {
-			continue
-		}
-		for event, command := range required {
-			if hookTreeContainsCommand(document.Hooks[event], command) {
-				found[event] = true
-			}
-		}
+		return false
 	}
-	for event := range required {
-		if !found[event] {
+	return false
+}
+
+func readinessHookPaths(agent string) ([]string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, false
+	}
+	switch agent {
+	case "codex":
+		path, err := regularHookPath(filepath.Join(home, ".codex", "hooks.json"))
+		return []string{path}, err == nil
+	case "claude":
+		local := filepath.Join(home, ".claude", "settings.local.json")
+		if _, err := regularHookPath(local); err == nil {
+			// Claude's local settings have higher precedence than settings.json.
+			// Do not merge two files when the effective hook set is ambiguous.
+			return []string{local}, true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, false
+		}
+		path, err := regularHookPath(filepath.Join(home, ".claude", "settings.json"))
+		return []string{path}, err == nil
+	default:
+		return nil, false
+	}
+}
+
+func regularHookPath(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("hook configuration is not a regular file: %s", path)
+	}
+	return path, nil
+}
+
+type readinessHookGroup struct {
+	Matcher  json.RawMessage        `json:"matcher"`
+	Disabled json.RawMessage        `json:"disabled"`
+	Hooks    []readinessHookCommand `json:"hooks"`
+}
+
+type readinessHookCommand struct {
+	Type                   string          `json:"type"`
+	Command                string          `json:"command"`
+	Disabled               json.RawMessage `json:"disabled"`
+	Async                  json.RawMessage `json:"async"`
+	Once                   json.RawMessage `json:"once"`
+	Timeout                json.RawMessage `json:"timeout"`
+	StatusMessage          json.RawMessage `json:"statusMessage"`
+	AdditionalContextLimit json.RawMessage `json:"additionalContextLimit"`
+}
+
+func readinessHookDocumentMatches(data []byte, required map[string]string, executable string) bool {
+	var document map[string]json.RawMessage
+	if decodeJSON(data, &document) != nil {
+		return false
+	}
+	if disabled, valid := boolOption(document["disableAllHooks"]); !valid || disabled {
+		return false
+	}
+	hooksRaw, ok := document["hooks"]
+	if !ok {
+		return false
+	}
+	var hooks map[string]json.RawMessage
+	if decodeJSON(hooksRaw, &hooks) != nil {
+		return false
+	}
+	for event, command := range required {
+		eventRaw, ok := hooks[event]
+		if !ok {
+			return false
+		}
+		var groups []readinessHookGroup
+		if decodeStrictJSON(eventRaw, &groups) != nil || !readinessHookGroupsMatch(groups, command, event, executable) {
 			return false
 		}
 	}
 	return true
 }
 
-func hookTreeContainsCommand(value any, event string) bool {
-	switch typed := value.(type) {
-	case []any:
-		for _, child := range typed {
-			if hookTreeContainsCommand(child, event) {
-				return true
+func readinessHookGroupsMatch(groups []readinessHookGroup, command, event, executable string) bool {
+	for _, group := range groups {
+		if !readinessHookGroupValid(group) {
+			continue
+		}
+		for _, hook := range group.Hooks {
+			if hook.Type != "command" {
+				continue
 			}
-		}
-	case map[string]any:
-		if disabled, _ := typed["disabled"].(bool); disabled {
-			return false
-		}
-		if command, ok := typed["command"].(string); ok {
-			typeName, _ := typed["type"].(string)
-			if (typeName == "" || typeName == "command") && isExactWXHookCommand(command, event) {
-				return true
+			disabled, _ := boolOption(hook.Disabled)
+			if disabled {
+				continue
 			}
-		}
-		for key, child := range typed {
-			if key != "command" && hookTreeContainsCommand(child, event) {
+			async, _ := boolOption(hook.Async)
+			once, _ := boolOption(hook.Once)
+			if async || once {
+				continue
+			}
+			if isExactWXHookCommandForExecutable(hook.Command, command, executable) {
 				return true
 			}
 		}
@@ -299,13 +400,265 @@ func hookTreeContainsCommand(value any, event string) bool {
 	return false
 }
 
-func isExactWXHookCommand(command, event string) bool {
-	fields := strings.Fields(command)
-	if len(fields) != 3 {
+func readinessHookGroupValid(group readinessHookGroup) bool {
+	disabled, valid := boolOption(group.Disabled)
+	if !valid || disabled {
 		return false
 	}
-	executable := strings.Trim(fields[0], `"'`)
-	return filepath.Base(executable) == "wx" && fields[1] == "hook" && fields[2] == event
+	if !matcherAppliesToEveryEvent(group.Matcher) || len(group.Hooks) == 0 {
+		return false
+	}
+	for _, hook := range group.Hooks {
+		if !readinessHookCommandValid(hook) {
+			return false
+		}
+	}
+	return true
+}
+
+func readinessHookCommandValid(hook readinessHookCommand) bool {
+	if hook.Type != "command" && hook.Type != "prompt" && hook.Type != "agent" {
+		return false
+	}
+	if hook.Type == "command" && hook.Command == "" {
+		return false
+	}
+	for _, raw := range []json.RawMessage{hook.Disabled, hook.Async, hook.Once} {
+		if _, valid := boolOption(raw); !valid {
+			return false
+		}
+	}
+	if !optionalNumberValid(hook.Timeout) || !optionalStringValid(hook.StatusMessage) || !optionalIntegerValid(hook.AdditionalContextLimit) {
+		return false
+	}
+	return true
+}
+
+func matcherAppliesToEveryEvent(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	var matcher string
+	if json.Unmarshal(raw, &matcher) != nil {
+		return false
+	}
+	switch matcher {
+	case "", "*", ".*", "^.*$", "^.+$":
+		return true
+	default:
+		return false
+	}
+}
+
+func boolOption(raw json.RawMessage) (bool, bool) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false, len(raw) == 0
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false, false
+	}
+	return value, true
+}
+
+func optionalStringValid(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	var value string
+	return json.Unmarshal(raw, &value) == nil
+}
+
+func optionalNumberValid(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	var value float64
+	return json.Unmarshal(raw, &value) == nil
+}
+
+func optionalIntegerValid(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	var value int
+	return json.Unmarshal(raw, &value) == nil
+}
+
+func decodeJSON(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func decodeStrictJSON(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func isExactWXHookCommand(command, event string) bool {
+	executable, err := currentWXExecutable()
+	return err == nil && isExactWXHookCommandForExecutable(command, event, executable)
+}
+
+func isExactWXHookCommandForExecutable(command, event, executable string) bool {
+	fields, ok := splitHookCommand(command)
+	if !ok || len(fields) != 3 || fields[1] != "hook" || fields[2] != event {
+		return false
+	}
+	// A quoted variable or tilde is literal to the shell. Reject it instead of
+	// treating the token as an expansion and claiming a gate exists.
+	if strings.ContainsAny(command, "'\"") && (strings.Contains(fields[0], "$HOME") || strings.HasPrefix(fields[0], "~")) {
+		return false
+	}
+	commandExecutable, ok := resolveHookExecutable(fields[0])
+	if !ok {
+		return false
+	}
+	return sameExecutable(commandExecutable, executable)
+}
+
+func splitHookCommand(command string) ([]string, bool) {
+	var fields []string
+	var field strings.Builder
+	var quote byte
+	escaped := false
+	started := false
+	for i := 0; i < len(command); i++ {
+		char := command[i]
+		if escaped {
+			field.WriteByte(char)
+			escaped = false
+			started = true
+			continue
+		}
+		if quote != 0 {
+			if char == quote {
+				quote = 0
+				continue
+			}
+			if quote == '"' && char == '\\' {
+				escaped = true
+				continue
+			}
+			field.WriteByte(char)
+			started = true
+			continue
+		}
+		switch {
+		case char == '\\':
+			escaped = true
+			started = true
+		case char == '\'' || char == '"':
+			quote = char
+			started = true
+		case unicode.IsSpace(rune(char)):
+			if started {
+				fields = append(fields, field.String())
+				field.Reset()
+				started = false
+			}
+		case strings.ContainsRune("|;&><`", rune(char)):
+			return nil, false
+		default:
+			field.WriteByte(char)
+			started = true
+		}
+	}
+	if quote != 0 || escaped {
+		return nil, false
+	}
+	if started {
+		fields = append(fields, field.String())
+	}
+	return fields, true
+}
+
+func resolveHookExecutable(value string) (string, bool) {
+	if value == "wx" {
+		path, err := exec.LookPath(value)
+		if err != nil {
+			return "", false
+		}
+		value = path
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", false
+		}
+		switch {
+		case value == "$HOME":
+			value = home
+		case strings.HasPrefix(value, "$HOME/"):
+			value = filepath.Join(home, strings.TrimPrefix(value, "$HOME/"))
+		case value == "~":
+			value = home
+		case strings.HasPrefix(value, "~/"):
+			value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
+		}
+		if !filepath.IsAbs(value) {
+			return "", false
+		}
+	}
+	canonical, err := filepath.EvalSymlinks(value)
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(canonical)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
+		return "", false
+	}
+	return canonical, true
+}
+
+func currentWXExecutable() (string, error) {
+	path, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	canonical, ok := resolveHookExecutable(path)
+	if !ok {
+		return "", errors.New("current wx executable is not a regular executable")
+	}
+	return canonical, nil
+}
+
+func sameExecutable(left, right string) bool {
+	leftInfo, leftErr := os.Stat(left)
+	rightInfo, rightErr := os.Stat(right)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
 }
 
 func confirmExpiredResume(sessionID string) bool {

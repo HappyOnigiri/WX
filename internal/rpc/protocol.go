@@ -16,10 +16,14 @@ import (
 )
 
 const (
-	ProtocolVersion = 1
-	maxFrame        = 8 << 20
-	maxIdempotency  = 2048
-	idempotencyTTL  = 24 * time.Hour
+	ProtocolVersion             = 1
+	maxFrame                    = 8 << 20
+	maxIdempotency              = 2048
+	idempotencyTTL              = 24 * time.Hour
+	defaultClientTimeout        = 10 * time.Second
+	defaultServerFrameTimeout   = 10 * time.Second
+	defaultServerHandlerTimeout = 10 * time.Second
+	serverResponseGrace         = 100 * time.Millisecond
 )
 
 type Request struct {
@@ -75,16 +79,34 @@ func (c Client) CallWithKey(ctx context.Context, method, idempotencyKey string, 
 func (c Client) callOnce(ctx context.Context, method, idempotencyKey string, params, result any) error {
 	timeout := c.Timeout
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = defaultClientTimeout
 	}
+	ioCtx := ctx
+	stopTimeout := func() {}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ioCtx, cancel = context.WithTimeout(ctx, timeout)
+		stopTimeout = cancel
+	}
+	defer stopTimeout()
 	d := net.Dialer{Timeout: timeout}
-	conn, err := d.DialContext(ctx, "unix", c.Socket)
+	conn, err := d.DialContext(ioCtx, "unix", c.Socket)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("connect to wx daemon: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
+	stopConnection := watchContext(ioCtx, conn)
+	defer stopConnection()
+	if deadline, ok := ioCtx.Deadline(); ok {
+		if err := conn.SetDeadline(deadline); err != nil {
+			return err
+		}
+	}
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
-	deadline, hasDeadline := ctx.Deadline()
+	deadline, hasDeadline := ioCtx.Deadline()
 	payload, err := json.Marshal(params)
 	if err != nil {
 		return err
@@ -94,10 +116,16 @@ func (c Client) callOnce(ctx context.Context, method, idempotencyKey string, par
 		req.Deadline = deadline.UTC().Format(time.RFC3339Nano)
 	}
 	if err := writeFrame(conn, req); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
 	}
 	var resp Response
 	if err := readFrame(bufio.NewReader(conn), &resp); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
 	}
 	if resp.Version != ProtocolVersion {
@@ -115,18 +143,35 @@ func (c Client) callOnce(ctx context.Context, method, idempotencyKey string, par
 	return nil
 }
 
+func watchContext(ctx context.Context, conn net.Conn) func() {
+	done := make(chan struct{})
+	if ctx.Done() == nil {
+		return func() {}
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
+}
+
 func transientTransportError(err error) bool {
 	var networkError *net.OpError
 	return errors.As(err, &networkError) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 type Server struct {
-	Socket   string
-	Handler  Handler
-	Durable  DurableIdempotency
-	listener net.Listener
-	idemMu   sync.Mutex
-	idem     map[string]*idempotentEntry
+	Socket         string
+	Handler        Handler
+	Durable        DurableIdempotency
+	FrameTimeout   time.Duration
+	HandlerTimeout time.Duration
+	listener       net.Listener
+	idemMu         sync.Mutex
+	idem           map[string]*idempotentEntry
 }
 
 type idempotentEntry struct {
@@ -191,6 +236,12 @@ func (s *Server) Close() error {
 
 func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 	defer func() { _ = conn.Close() }()
+	stopContext := watchContext(parent, conn)
+	defer stopContext()
+	frameDeadline := time.Now().Add(s.frameTimeout())
+	if err := conn.SetReadDeadline(frameDeadline); err != nil {
+		return
+	}
 	var req Request
 	if err := readFrame(bufio.NewReader(conn), &req); err != nil {
 		return
@@ -198,17 +249,24 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 	resp := Response{Version: ProtocolVersion, ID: req.ID}
 	if req.Version != ProtocolVersion {
 		resp.Error = &RPCError{Code: "PROTOCOL_VERSION", Message: "unsupported protocol version"}
+		_ = conn.SetWriteDeadline(time.Now().Add(s.frameTimeout()))
 		_ = writeFrame(conn, resp)
 		return
 	}
-	ctx := parent
-	if req.Deadline != "" {
-		if d, err := time.Parse(time.RFC3339Nano, req.Deadline); err == nil {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithDeadline(parent, d)
-			defer cancel()
-		}
+	handlerDeadline, err := s.requestDeadline(parent, req.Deadline)
+	if err != nil {
+		resp.Error = &RPCError{Code: "INVALID_DEADLINE", Message: "invalid request deadline"}
+		_ = conn.SetWriteDeadline(time.Now().Add(s.frameTimeout()))
+		_ = writeFrame(conn, resp)
+		return
 	}
+	if err := conn.SetDeadline(handlerDeadline.Add(serverResponseGrace)); err != nil {
+		return
+	}
+	ctx := parent
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithDeadline(parent, handlerDeadline)
+	defer cancel()
 	if req.IdempotencyKey != "" {
 		entry, owner := s.idempotencyEntry(req)
 		switch {
@@ -260,6 +318,36 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 		resp.Result, resp.Error = s.invoke(ctx, req)
 	}
 	_ = writeFrame(conn, resp)
+}
+
+func (s *Server) frameTimeout() time.Duration {
+	if s.FrameTimeout > 0 {
+		return s.FrameTimeout
+	}
+	return defaultServerFrameTimeout
+}
+
+func (s *Server) handlerTimeout() time.Duration {
+	if s.HandlerTimeout > 0 {
+		return s.HandlerTimeout
+	}
+	return defaultServerHandlerTimeout
+}
+
+func (s *Server) requestDeadline(parent context.Context, requested string) (time.Time, error) {
+	now := time.Now()
+	deadline := now.Add(s.handlerTimeout())
+	if requested != "" {
+		requestedDeadline, err := time.Parse(time.RFC3339Nano, requested)
+		if err != nil {
+			return time.Time{}, err
+		}
+		deadline = requestedDeadline
+	}
+	if parentDeadline, ok := parent.Deadline(); ok && parentDeadline.Before(deadline) {
+		deadline = parentDeadline
+	}
+	return deadline, nil
 }
 
 func (s *Server) finishIdempotencyEntry(key string, entry *idempotentEntry, response Response, retain bool) {

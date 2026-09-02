@@ -160,6 +160,173 @@ func (w *headerOnlyWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+type blockingRPCHandler struct{}
+
+func (blockingRPCHandler) Handle(ctx context.Context, _ string, _ json.RawMessage) (any, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestClientBoundsConnectedPeerReadWithDefaultTimeout(t *testing.T) {
+	socket := shortSocketPath(t, "unresponsive.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- connection
+		}
+	}()
+	started := time.Now()
+	err = (Client{Socket: socket, Timeout: 40 * time.Millisecond}).Call(context.Background(), "blocked", nil, nil)
+	if err == nil {
+		t.Fatal("unresponsive peer call succeeded")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("connected peer was not bounded: %v", elapsed)
+	}
+	select {
+	case connection := <-accepted:
+		_ = connection.Close()
+	case <-time.After(time.Second):
+		t.Fatal("client did not connect to test peer")
+	}
+}
+
+func TestClientCancellationClosesConnectedPeer(t *testing.T) {
+	socket := shortSocketPath(t, "cancel.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- connection
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- (Client{Socket: socket, Timeout: time.Second}).Call(ctx, "blocked", nil, nil) }()
+	var connection net.Conn
+	select {
+	case connection = <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("client did not connect to test peer")
+	}
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled call error=%v", err)
+		}
+		if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			t.Fatalf("cancellation did not close connected peer: %v", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled connected call remained blocked")
+	}
+	_ = connection.Close()
+}
+
+func TestServerBoundsUnframedConnection(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	server := &Server{FrameTimeout: 30 * time.Millisecond, Handler: echoHandler{}}
+	done := make(chan struct{})
+	go func() {
+		server.serveConn(context.Background(), serverSide)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("server retained an unframed connection past its deadline")
+	}
+	_ = clientSide.Close()
+}
+
+func TestServerBoundsHandlerWithIndependentDeadline(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	server := &Server{HandlerTimeout: 30 * time.Millisecond, Handler: blockingRPCHandler{}}
+	done := make(chan struct{})
+	go func() {
+		server.serveConn(context.Background(), serverSide)
+		close(done)
+	}()
+	if err := writeFrame(clientSide, Request{Version: ProtocolVersion, ID: "request", Method: "blocked", Params: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	var response Response
+	if err := readFrame(clientSide, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error == nil || response.Error.Code != "REQUEST_FAILED" {
+		t.Fatalf("bounded handler response=%+v", response)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("server handler connection did not finish")
+	}
+	_ = clientSide.Close()
+}
+
+func TestServerRejectsInvalidRequestDeadline(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	server := &Server{FrameTimeout: 100 * time.Millisecond, Handler: echoHandler{}}
+	done := make(chan struct{})
+	go func() {
+		server.serveConn(context.Background(), serverSide)
+		close(done)
+	}()
+	if err := writeFrame(clientSide, Request{Version: ProtocolVersion, ID: "request", Method: "echo", Deadline: "not-a-timestamp", Params: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	var response Response
+	if err := readFrame(clientSide, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error == nil || response.Error.Code != "INVALID_DEADLINE" {
+		t.Fatalf("invalid deadline response=%+v", response)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("server did not finish after rejecting invalid deadline")
+	}
+	_ = clientSide.Close()
+}
+
+func TestServerBoundsResponseWriteToUnresponsivePeer(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	server := &Server{HandlerTimeout: 30 * time.Millisecond, Handler: echoHandler{}}
+	done := make(chan struct{})
+	go func() {
+		server.serveConn(context.Background(), serverSide)
+		close(done)
+	}()
+	if err := writeFrame(clientSide, Request{Version: ProtocolVersion, ID: "request", Method: "echo", Params: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	select {
+	case <-done:
+		if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			t.Fatalf("response write was not bounded: %v", elapsed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server retained an unresponsive response peer")
+	}
+	_ = clientSide.Close()
+}
+
 func TestClientServerRoundTripWithoutParentDeadline(t *testing.T) {
 	socket := shortSocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())

@@ -41,6 +41,9 @@ func shortHookSocketPath(t *testing.T) string {
 }
 
 func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
+	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED", "WX_BRANCHES_JSON"} {
+		t.Setenv(key, "")
+	}
 	socket := shortHookSocketPath(t)
 	handler := &recordingHandler{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -70,11 +73,14 @@ func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
 	}
 	t.Setenv("WX_NATIVE_RESUME", "")
 	t.Setenv("WX_SESSION_ID", "wx-fresh")
+	t.Setenv("WX_NATIVE_RESUME", "1")
 	t.Setenv("WX_FRESH", "1")
 	if err := RunHook(ctx, "session-start", strings.NewReader(`{"session_id":"agent-fresh","source":"resume"}`)); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WX_FRESH", "")
+	t.Setenv("WX_NATIVE_RESUME", "")
+	t.Setenv("WX_EXPLICIT_RESUME", "1")
 	t.Setenv("WX_SESSION_ID", "wx-recovery-notice")
 	t.Setenv("WX_RECOVERY_DISCARDED", "1")
 	if err := RunHook(ctx, "session-start", strings.NewReader(`{"session_id":"agent-notice","source":"startup"}`)); err != nil {
@@ -101,6 +107,9 @@ func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
 }
 
 func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
+	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED", "WX_BRANCHES_JSON"} {
+		t.Setenv(key, "")
+	}
 	t.Setenv("WX_SESSION_ID", "")
 	t.Setenv("WX_SESSION_TOKEN", "")
 	if err := RunHook(context.Background(), "unknown", strings.NewReader("")); err != nil {
@@ -128,17 +137,21 @@ func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
 		t.Fatal("binding through missing daemon socket succeeded")
 	}
 	t.Setenv("WX_FRESH", "1")
+	t.Setenv("WX_NATIVE_RESUME", "1")
 	t.Setenv("WX_BRANCHES_JSON", "{")
-	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent"}`)); err == nil || !strings.Contains(err.Error(), "branch selection") {
+	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent","source":"resume"}`)); err == nil || !strings.Contains(err.Error(), "branch selection") {
 		t.Fatalf("invalid fresh branches error=%v", err)
 	}
 	t.Setenv("WX_BRANCHES_JSON", `[]`)
-	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent"}`)); err == nil {
+	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent","source":"resume"}`)); err == nil {
 		t.Fatal("fresh validation through missing daemon socket succeeded")
 	}
 }
 
 func TestRecordedClaudeAndCodexHookPayloads(t *testing.T) {
+	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED", "WX_BRANCHES_JSON"} {
+		t.Setenv(key, "")
+	}
 	socket := shortHookSocketPath(t)
 	handler := &recordingHandler{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -177,6 +190,11 @@ func TestRecordedClaudeAndCodexHookPayloads(t *testing.T) {
 	}
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("WX_NATIVE_RESUME", "")
+			t.Setenv("WX_EXPLICIT_RESUME", "")
+			if test.method == "BindAndRestoreResume" {
+				t.Setenv("WX_NATIVE_RESUME", "1")
+			}
 			data, err := os.ReadFile(filepath.Join("testdata", test.fixture))
 			if err != nil {
 				t.Fatal(err)
@@ -210,5 +228,63 @@ func TestRecordedClaudeAndCodexHookPayloads(t *testing.T) {
 				t.Fatalf("recorded payload routed to %v, want [%s]", methods, test.method)
 			}
 		})
+	}
+}
+
+func TestHookRejectsContradictoryInvocationModes(t *testing.T) {
+	t.Setenv("WX_SESSION_ID", "wx")
+	t.Setenv("WX_SESSION_TOKEN", "token")
+	t.Setenv("WX_DAEMON_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	t.Setenv("WX_NATIVE_RESUME", "1")
+	t.Setenv("WX_EXPLICIT_RESUME", "1")
+	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent","source":"resume"}`)); err == nil || !strings.Contains(err.Error(), "contradictory") {
+		t.Fatalf("contradictory mode flags were accepted: %v", err)
+	}
+	t.Setenv("WX_NATIVE_RESUME", "")
+	t.Setenv("WX_EXPLICIT_RESUME", "")
+	t.Setenv("WX_FRESH", "1")
+	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent","source":"resume"}`)); err == nil || !strings.Contains(err.Error(), "contradictory") {
+		t.Fatalf("fresh mode without native flag was accepted: %v", err)
+	}
+	for _, key := range []string{"WX_FRESH", "WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME"} {
+		t.Setenv(key, "")
+	}
+	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent","source":"resume"}`)); err == nil || !strings.Contains(err.Error(), "no native") {
+		t.Fatalf("resume payload without mode was accepted: %v", err)
+	}
+}
+
+func TestHookRejectsInvalidModesAndReadinessTimeouts(t *testing.T) {
+	t.Setenv("WX_SESSION_ID", "wx")
+	t.Setenv("WX_SESSION_TOKEN", "token")
+	t.Setenv("WX_DAEMON_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED"} {
+		t.Setenv(key, "")
+	}
+
+	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED"} {
+		t.Run("invalid "+key, func(t *testing.T) {
+			t.Setenv(key, "true")
+			if _, err := readHookModes(); err == nil || !strings.Contains(err.Error(), "invalid "+key) {
+				t.Fatalf("invalid mode %s was accepted: %v", key, err)
+			}
+			t.Setenv(key, "")
+		})
+	}
+
+	for _, timeout := range []string{"not-a-duration", "0s", "-1s"} {
+		t.Run("invalid readiness timeout "+timeout, func(t *testing.T) {
+			t.Setenv("WX_READINESS_TIMEOUT", timeout)
+			err := RunHook(context.Background(), "user-prompt-submit", strings.NewReader(""))
+			if err == nil || !strings.Contains(err.Error(), "invalid WX_READINESS_TIMEOUT") {
+				t.Fatalf("invalid readiness timeout %q was accepted: %v", timeout, err)
+			}
+			t.Setenv("WX_READINESS_TIMEOUT", "")
+		})
+	}
+
+	t.Setenv("WX_NATIVE_RESUME", "1")
+	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent","source":"startup"}`)); err == nil || !strings.Contains(err.Error(), "does not identify a resume") {
+		t.Fatalf("native hook accepted a non-resume payload: %v", err)
 	}
 }

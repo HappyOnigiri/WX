@@ -1,7 +1,10 @@
 package launchd
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +46,45 @@ func TestRenderInstallUninstallAndKickstart(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("plist remains after uninstall: %v", err)
+	}
+}
+
+func TestRenderEscapesAndPreservesSpecialCharacterPaths(t *testing.T) {
+	binaryPath := `/tmp/wx & <binary> "quoted"`
+	home := `/tmp/home & <user> "quoted"`
+	logPath := `/tmp/logs & <wx> "daemon".log`
+	data, err := Render(binaryPath, home, logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "&amp;") || !strings.Contains(string(data), "&lt;") || !strings.Contains(string(data), "&gt;") {
+		t.Fatalf("special characters were not XML escaped: %s", data)
+	}
+	values := make([]string, 0)
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	for {
+		token, decodeErr := decoder.Token()
+		if decodeErr == io.EOF {
+			break
+		}
+		if decodeErr != nil {
+			t.Fatalf("rendered plist is not well-formed XML: %v", decodeErr)
+		}
+		if text, ok := token.(xml.CharData); ok {
+			values = append(values, string(text))
+		}
+	}
+	joined := strings.Join(values, "\n")
+	for _, expected := range []string{binaryPath, home, filepath.Join(home, ".local", "bin") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", logPath} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("decoded plist does not preserve %q: %s", expected, joined)
+		}
+	}
+}
+
+func TestValidateXMLRejectsMalformedPlist(t *testing.T) {
+	if err := validateXML([]byte(`<plist><dict>`)); err == nil {
+		t.Fatal("malformed plist XML was accepted")
 	}
 }
 
