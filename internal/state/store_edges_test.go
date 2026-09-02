@@ -60,6 +60,20 @@ func TestRPCKeyLoaderHandlesReadAndCreateBoundaries(t *testing.T) {
 	if err != nil || string(loaded) != string(key) {
 		t.Fatalf("existing RPC key=%x err=%v", loaded, err)
 	}
+	invalidLength := filepath.Join(root, "invalid-length.key")
+	if err := os.WriteFile(invalidLength, []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadOrCreateRPCKey(invalidLength); err == nil {
+		t.Fatal("short RPC key was accepted")
+	}
+	symlinkPath := filepath.Join(root, "symlink.key")
+	if err := os.Symlink(validPath, symlinkPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadOrCreateRPCKey(symlinkPath); err == nil {
+		t.Fatal("symlink RPC key was accepted")
+	}
 	readDenied := filepath.Join(root, "read-denied.key")
 	if err := os.WriteFile(readDenied, key, 0o600); err != nil {
 		t.Fatal(err)
@@ -74,6 +88,453 @@ func TestRPCKeyLoaderHandlesReadAndCreateBoundaries(t *testing.T) {
 	if _, err := loadOrCreateRPCKey(filepath.Join(root, "missing", "key")); err == nil {
 		t.Fatal("RPC key beneath missing parent was created")
 	}
+	blockingParent := filepath.Join(root, "blocking-parent")
+	if err := os.WriteFile(blockingParent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(filepath.Join(blockingParent, "state.db")); err == nil {
+		t.Fatal("state database opened beneath a regular-file parent")
+	}
+}
+
+func TestRPCKeyLoaderCreatesAndReusesOwnerOnlyKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "created.key")
+	first, err := loadOrCreateRPCKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 32 {
+		t.Fatalf("created RPC key length=%d, want 32", len(first))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("created RPC key mode=%#o, want 0600", info.Mode().Perm())
+	}
+	second, err := loadOrCreateRPCKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(second) != string(first) {
+		t.Fatal("RPC key changed when the existing owner-only file was reopened")
+	}
+}
+
+func TestReadModelsRejectRowsWithUnscannableFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		sql   []string
+		check func(*Store) error
+	}{
+		{
+			name: "workspace roots",
+			sql: []string{
+				"DROP TABLE workspaces",
+				"CREATE VIEW workspaces AS SELECT NULL AS root_path",
+			},
+			check: func(store *Store) error {
+				_, err := store.WorkspaceRoots(context.Background())
+				return err
+			},
+		},
+		{
+			name: "slot artifacts",
+			sql: []string{
+				"DROP TABLE slots",
+				"CREATE VIEW slots AS SELECT NULL AS id,NULL AS path,NULL AS state",
+			},
+			check: func(store *Store) error {
+				_, err := store.SlotArtifacts(context.Background())
+				return err
+			},
+		},
+		{
+			name: "repositories",
+			sql: []string{
+				"DROP TABLE repositories",
+				"CREATE VIEW repositories AS SELECT NULL AS id,NULL AS main_worktree_path,NULL AS common_git_dir,NULL AS default_branch",
+			},
+			check: func(store *Store) error {
+				_, err := store.Repositories(context.Background())
+				return err
+			},
+		},
+		{
+			name: "recovery refs",
+			sql: []string{
+				"DROP TABLE snapshots",
+				"CREATE VIEW snapshots AS SELECT 'session' AS session_id,NULL AS head_recovery_ref,NULL AS worktree_recovery_ref, 'repository' AS repository_id",
+			},
+			check: func(store *Store) error {
+				_, err := store.RecoveryRefs(context.Background(), "repository")
+				return err
+			},
+		},
+		{
+			name: "snapshots",
+			sql: []string{
+				"DROP TABLE snapshots",
+				"CREATE VIEW snapshots AS SELECT NULL AS id,'session' AS session_id,'repository' AS repository_id,'head' AS head_oid,'head-ref' AS head_recovery_ref,'index' AS index_tree_oid,'tree' AS worktree_snapshot_oid,'tree-ref' AS worktree_recovery_ref,'ARCHIVED' AS status,'created' AS created_at,'expires' AS expires_at",
+			},
+			check: func(store *Store) error {
+				_, err := store.Snapshots(context.Background(), "session")
+				return err
+			},
+		},
+		{
+			name: "slot repositories",
+			sql: []string{
+				"DROP TABLE slot_repositories",
+				"CREATE VIEW slot_repositories AS SELECT NULL AS repository_id,'/worktree' AS worktree_path,'READY' AS state,'main' AS requested_ref,'head' AS base_oid,'fingerprint' AS prepare_fingerprint",
+			},
+			check: func(store *Store) error {
+				_, err := store.SlotRepositories(context.Background(), "slot")
+				return err
+			},
+		},
+		{
+			name: "orphan candidates",
+			sql: []string{
+				"DROP TABLE sessions",
+				"CREATE VIEW sessions AS SELECT NULL AS id,NULL AS workspace_id,'slot' AS slot_id,'ACTIVE' AS state,'created' AS created_at,NULL AS last_heartbeat_at,NULL AS client_pid,NULL AS agent_pid",
+			},
+			check: func(store *Store) error {
+				_, err := store.OrphanCandidates(context.Background(), "later")
+				return err
+			},
+		},
+		{
+			name: "cold repository candidates",
+			sql: []string{
+				"DROP TABLE slots",
+				"CREATE VIEW slots AS SELECT 'slot' AS id,'workspace' AS workspace_id,NULL AS owner_session_id,'READY' AS state",
+				"DROP TABLE slot_repositories",
+				"CREATE VIEW slot_repositories AS SELECT 'slot' AS slot_id,'repository' AS repository_id,NULL AS worktree_path,'READY' AS state",
+				"DROP TABLE repositories",
+				"CREATE VIEW repositories AS SELECT 'repository' AS id,NULL AS last_leased_at",
+			},
+			check: func(store *Store) error {
+				_, err := store.ColdRepositoryCandidates(context.Background(), "later")
+				return err
+			},
+		},
+		{
+			name: "standby GC candidates",
+			sql: []string{
+				"DROP TABLE slots",
+				"CREATE VIEW slots AS SELECT NULL AS id,'workspace' AS workspace_id,'/slot' AS path,'READY' AS state,NULL AS owner_session_id,NULL AS ready_at,'created' AS created_at",
+				"DROP TABLE slot_repositories",
+				"CREATE VIEW slot_repositories AS SELECT 'slot' AS slot_id,'repository' AS repository_id",
+				"DROP TABLE repositories",
+				"CREATE VIEW repositories AS SELECT 'repository' AS id,NULL AS last_leased_at",
+			},
+			check: func(store *Store) error {
+				_, err := store.StandbyGCCandidates(context.Background(), "later", 1)
+				return err
+			},
+		},
+		{
+			name: "expired snapshots",
+			sql: []string{
+				"DROP TABLE snapshots",
+				"CREATE VIEW snapshots AS SELECT NULL AS id,'session' AS session_id,'repository' AS repository_id,'head' AS head_oid,'head-ref' AS head_recovery_ref,'index' AS index_tree_oid,'tree' AS worktree_snapshot_oid,'tree-ref' AS worktree_recovery_ref,'ARCHIVED' AS status,'created' AS created_at,'expired' AS expires_at",
+				"DROP TABLE sessions",
+				"CREATE VIEW sessions AS SELECT 'session' AS id,'slot' AS slot_id,NULL AS parent_session_id,'ARCHIVED' AS state",
+				"DROP TABLE slots",
+				"CREATE VIEW slots AS SELECT 'slot' AS id,'ARCHIVED' AS state",
+			},
+			check: func(store *Store) error {
+				_, err := store.ExpiredSnapshots(context.Background(), "later")
+				return err
+			},
+		},
+		{
+			name: "GC candidates",
+			sql: []string{
+				"DROP TABLE slots",
+				"CREATE VIEW slots AS SELECT 'slot' AS id,'SNAPSHOTTED' AS state,NULL AS path",
+				"DROP TABLE sessions",
+				"CREATE VIEW sessions AS SELECT 'session' AS id,'slot' AS slot_id,'archived' AS archived_at",
+			},
+			check: func(store *Store) error {
+				_, err := store.GCCandidates(context.Background(), "later")
+				return err
+			},
+		},
+		{
+			name: "workspace repositories",
+			sql: []string{
+				"DROP TABLE workspaces",
+				"CREATE VIEW workspaces AS SELECT 'workspace' AS id,'/workspace' AS root_path,'repository' AS kind",
+				"DROP TABLE workspace_repositories",
+				"CREATE VIEW workspace_repositories AS SELECT 'workspace' AS workspace_id,'repository' AS repository_id,'.' AS relative_path,0 AS ordinal",
+				"DROP TABLE repositories",
+				"CREATE VIEW repositories AS SELECT 'repository' AS id,NULL AS main_worktree_path,'/common' AS common_git_dir,'main' AS default_branch",
+			},
+			check: func(store *Store) error {
+				_, err := store.Workspace(context.Background(), "workspace")
+				return err
+			},
+		},
+		{
+			name: "session summaries",
+			sql: []string{
+				"DROP TABLE sessions",
+				"CREATE VIEW sessions AS SELECT NULL AS id,NULL AS workspace_id,'ACTIVE' AS state,'codex' AS agent_kind,NULL AS agent_session_id,'created' AS created_at,NULL AS archived_at,NULL AS expires_at",
+			},
+			check: func(store *Store) error {
+				_, err := store.ListSessions(context.Background(), true)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			for _, statement := range test.sql {
+				if _, err := store.db.Exec(statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := test.check(store); err == nil {
+				t.Fatal("unscannable database row was accepted")
+			}
+		})
+	}
+}
+
+func TestSessionWorkspaceRejectsMissingHistoricalMembership(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "without-membership", WorkspaceID: "workspace", SlotID: "without-membership", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: session.WorkspaceID, Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "LEASED"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SessionWorkspace(ctx, session.ID); err == nil {
+		t.Fatal("session without durable repository membership was accepted")
+	}
+}
+
+func TestSessionWorkspaceRejectsUnscannableHistoricalMembership(t *testing.T) {
+	store := openTestStore(t)
+	statements := []string{
+		"DROP TABLE sessions",
+		"CREATE VIEW sessions AS SELECT 'session' AS id,'workspace' AS workspace_id",
+		"DROP TABLE workspaces",
+		"CREATE VIEW workspaces AS SELECT 'workspace' AS id,'/workspace' AS root_path,'repository' AS kind",
+		"DROP TABLE session_repositories",
+		"CREATE VIEW session_repositories AS SELECT 'session' AS session_id,'repository' AS repository_id,'.' AS relative_path,0 AS ordinal",
+		"DROP TABLE repositories",
+		"CREATE VIEW repositories AS SELECT 'repository' AS id,NULL AS main_worktree_path,'/common' AS common_git_dir,'main' AS default_branch",
+	}
+	for _, statement := range statements {
+		if _, err := store.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.SessionWorkspace(context.Background(), "session"); err == nil {
+		t.Fatal("unscannable historical repository membership was accepted")
+	}
+}
+
+func TestStatusDiagnosticsRejectsUnscannableRows(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  []string
+	}{
+		{
+			name: "workspace",
+			sql: []string{
+				"DROP TABLE workspaces",
+				"CREATE VIEW workspaces AS SELECT NULL AS id,'/workspace' AS root_path,1 AS generation",
+			},
+		},
+		{
+			name: "session",
+			sql: []string{
+				"DROP TABLE sessions",
+				"CREATE VIEW sessions AS SELECT NULL AS id,'codex' AS agent_kind,'ACTIVE' AS state,'created' AS created_at,'slot' AS slot_id",
+			},
+		},
+		{
+			name: "repository",
+			sql: []string{
+				"DROP TABLE repositories",
+				"CREATE VIEW repositories AS SELECT NULL AS id,'/repository' AS main_worktree_path,NULL AS last_leased_at",
+			},
+		},
+		{
+			name: "quarantine",
+			sql: []string{
+				"DROP TABLE slots",
+				"CREATE VIEW slots AS SELECT NULL AS id,'/slot' AS path,'QUARANTINED' AS state,NULL AS failure_code,NULL AS workspace_id,NULL AS owner_session_id,NULL AS ready_at,'created' AS created_at",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			for _, statement := range test.sql {
+				if _, err := store.db.Exec(statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.StatusDiagnostics(context.Background()); err == nil {
+				t.Fatal("unscannable diagnostics row was accepted")
+			}
+		})
+	}
+}
+
+func TestClosedStoreOperationsFailClosed(t *testing.T) {
+	store := openTestStore(t)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	requireError := func(name string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("closed store operation %s succeeded", name)
+		}
+	}
+	w := discovery.Workspace{
+		ID: "workspace", Root: "/workspace", Kind: "repository",
+		Repositories: []discovery.Repository{{ID: "repository", MainPath: "/workspace", CommonDir: "/workspace/.git", RelativePath: ".", DefaultBranch: "main"}},
+	}
+	workspaceID := string(w.ID)
+	workspaceRoot := string(w.Root)
+	slot := Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/slot", State: "READY"}
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+
+	_, _, _, _, err := store.BeginRPCRequest(ctx, "key", "method", "{}", time.Now().Add(time.Hour))
+	requireError("BeginRPCRequest", err)
+	requireError("CompleteRPCRequest", store.CompleteRPCRequest(ctx, "key", "method", "{}", nil, "", "", time.Now().Add(time.Hour)))
+	_, err = store.Backup(ctx, 1, time.Hour)
+	requireError("Backup", err)
+	requireError("UpsertWorkspace", store.UpsertWorkspace(ctx, w))
+	_, err = store.CanonicalWorkspace(ctx, w)
+	requireError("CanonicalWorkspace", err)
+	_, err = store.UpsertWorkspaceGeneration(ctx, w)
+	requireError("UpsertWorkspaceGeneration", err)
+	_, err = store.WorkspaceGeneration(ctx, workspaceID)
+	requireError("WorkspaceGeneration", err)
+	_, err = store.CreateJob(ctx, "PREPARE", workspaceID, slot.ID, session.ID)
+	requireError("CreateJob", err)
+	_, err = store.ClaimJob(ctx, "job", "owner")
+	requireError("ClaimJob", err)
+	requireError("RenewJob", store.RenewJob(ctx, "job", "owner"))
+	requireError("FinishJob", store.FinishJob(ctx, "job", "owner", nil))
+	requireError("RetryJob", store.RetryJob(ctx, "job", "owner", time.Second, "code"))
+	requireError("DeferJob", store.DeferJob(ctx, "job", "owner", time.Second, "code"))
+	_, err = store.RecoverJobs(ctx, false)
+	requireError("RecoverJobs", err)
+	_, err = store.EnsureRecoveryJobs(ctx)
+	requireError("EnsureRecoveryJobs", err)
+	_, _, err = store.ReadySlot(ctx, workspaceID)
+	requireError("ReadySlot", err)
+	_, err = store.ReadySlots(ctx, workspaceID)
+	requireError("ReadySlots", err)
+	if store.HasStandby(ctx, workspaceID) || store.StandbyCount(ctx, workspaceID) != 0 {
+		t.Fatal("closed store reported standby data")
+	}
+	_, err = store.CreateSlotSession(ctx, slot, nil, session, "PREPARE")
+	requireError("CreateSlotSession", err)
+	_, err = store.CreateStandby(ctx, slot, nil)
+	requireError("CreateStandby", err)
+	requireError("LeaseReady", store.LeaseReady(ctx, slot.ID, session))
+	_, err = store.LeaseReadyWithCold(ctx, slot.ID, session)
+	requireError("LeaseReadyWithCold", err)
+	requireError("RecordLease", store.RecordLease(ctx, workspaceID))
+	requireError("SetSlotState", store.SetSlotState(ctx, slot.ID, []string{"READY"}, "STALE", "code"))
+	requireError("ResetPreparationForRetry", store.ResetPreparationForRetry(ctx, slot.ID))
+	requireError("MarkReady", store.MarkReady(ctx, slot.ID))
+	requireError("FinishPreparation", store.FinishPreparation(ctx, slot.ID))
+	_, _, err = store.FinishPreparationWithRelease(ctx, slot.ID)
+	requireError("FinishPreparationWithRelease", err)
+	requireError("MarkSessionState", store.MarkSessionState(ctx, session.ID, []string{"ACTIVE"}, "RELEASING"))
+	_, err = store.Session(ctx, session.ID, "token")
+	requireError("Session", err)
+	_, err = store.SessionByID(ctx, session.ID)
+	requireError("SessionByID", err)
+	requireError("RegisterAgentProcess", store.RegisterAgentProcess(ctx, session.ID, "token", 1))
+	requireError("BindAgentSession", store.BindAgentSession(ctx, session.ID, "agent"))
+	requireError("BindFreshSession", store.BindFreshSession(ctx, session.ID, "parent", "agent"))
+	_, err = store.BindFreshResumeSlot(ctx, session.ID, "parent", workspaceID, "agent", 1, nil)
+	requireError("BindFreshResumeSlot", err)
+	_, err = store.FindByAgentSession(ctx, "codex", "agent")
+	requireError("FindByAgentSession", err)
+	requireError("Heartbeat", store.Heartbeat(ctx, session.ID, "token"))
+	_, err = store.OrphanCandidates(ctx, "before")
+	requireError("OrphanCandidates", err)
+	_, err = store.BindResumeSlot(ctx, session.ID, "parent", workspaceID, "agent", 1, nil)
+	requireError("BindResumeSlot", err)
+	_, err = store.SlotRepositories(ctx, slot.ID)
+	requireError("SlotRepositories", err)
+	requireError("AddRestoringRepositories", store.AddRestoringRepositories(ctx, slot.ID, nil))
+	_, err = store.SlotRepository(ctx, slot.ID, "repository")
+	requireError("SlotRepository", err)
+	requireError("SetSlotRepositoryState", store.SetSlotRepositoryState(ctx, slot.ID, "repository", []string{"READY"}, "COLD"))
+	_, err = store.Slot(ctx, slot.ID)
+	requireError("Slot", err)
+	requireError("SaveSnapshot", store.SaveSnapshot(ctx, Snapshot{ID: "snapshot", SessionID: session.ID, RepositoryID: "repository"}))
+	_, err = store.Snapshots(ctx, session.ID)
+	requireError("Snapshots", err)
+	requireError("SaveWorkspaceSnapshot", store.SaveWorkspaceSnapshot(ctx, WorkspaceSnapshot{SessionID: session.ID}))
+	_, _, err = store.WorkspaceSnapshot(ctx, session.ID)
+	requireError("WorkspaceSnapshot", err)
+	_, err = store.Repository(ctx, "repository")
+	requireError("Repository", err)
+	_, err = store.Workspace(ctx, workspaceID)
+	requireError("Workspace", err)
+	_, err = store.WorkspaceByRoot(ctx, workspaceRoot)
+	requireError("WorkspaceByRoot", err)
+	_, err = store.SessionWorkspace(ctx, session.ID)
+	requireError("SessionWorkspace", err)
+	_, err = store.WorkspaceRoots(ctx)
+	requireError("WorkspaceRoots", err)
+	_, err = store.ListSessions(ctx, false)
+	requireError("ListSessions", err)
+	requireError("ForgetWorkspace", store.ForgetWorkspace(ctx, workspaceRoot))
+	_, err = store.Status(ctx)
+	requireError("Status", err)
+	_, err = store.StatusDiagnostics(ctx)
+	requireError("StatusDiagnostics", err)
+	requireError("MarkArchived", store.MarkArchived(ctx, session.ID, slot.ID, "expiry"))
+	requireError("BeginSnapshot", store.BeginSnapshot(ctx, session.ID, slot.ID))
+	_, _, err = store.Release(ctx, session.ID, workspaceID, slot.ID)
+	requireError("Release", err)
+	_, err = store.SlotArtifacts(ctx)
+	requireError("SlotArtifacts", err)
+	requireError("QuarantineMissingSlot", store.QuarantineMissingSlot(ctx, slot.ID, "reason"))
+	requireError("QuarantineArtifact", store.QuarantineArtifact(ctx, "slot", slot.Path, "reason"))
+	requireError("QuarantineMissingRecoveryRef", store.QuarantineMissingRecoveryRef(ctx, "refs/wx/missing"))
+	_, err = store.Repositories(ctx)
+	requireError("Repositories", err)
+	_, err = store.RecoveryRefs(ctx, "repository")
+	requireError("RecoveryRefs", err)
+	_, err = store.ColdRepositoryCandidates(ctx, "before")
+	requireError("ColdRepositoryCandidates", err)
+	_, _, err = store.ScheduleColdRepositoryRemoval(ctx, ColdRepositoryCandidate{SlotID: slot.ID, WorkspaceID: workspaceID, RepositoryID: "repository"})
+	requireError("ScheduleColdRepositoryRemoval", err)
+	requireError("FinishColdRepositoryRemoval", store.FinishColdRepositoryRemoval(ctx, slot.ID, "repository"))
+	_, err = store.StandbyGCCandidates(ctx, "before", 1)
+	requireError("StandbyGCCandidates", err)
+	requireError("MarkStandbyArchived", store.MarkStandbyArchived(ctx, slot.ID))
+	_, _, err = store.ScheduleRemoval(ctx, slot.ID, session.ID)
+	requireError("ScheduleRemoval", err)
+	requireError("FinishRemoval", store.FinishRemoval(ctx, slot.ID))
+	requireError("DrainRoot", store.DrainRoot(ctx, workspaceRoot))
+	_, err = store.ExpiredSnapshots(ctx, "before")
+	requireError("ExpiredSnapshots", err)
+	requireError("ExpireSessionSnapshots", store.ExpireSessionSnapshots(ctx, session.ID))
+	requireError("PruneMetadata", store.PruneMetadata(ctx, "failed", "events", "tombstones"))
+	_, err = store.GCCandidates(ctx, "before")
+	requireError("GCCandidates", err)
+	requireError("MarkSlotArchived", store.MarkSlotArchived(ctx, slot.ID))
 }
 
 func TestFinishPreparationSchedulesSnapshotAfterRelease(t *testing.T) {
@@ -242,6 +703,9 @@ func TestLeaseReadyWithColdPromotesRepositoriesAndStartsPreparation(t *testing.T
 	}
 	if repositoryID != "repository" || relativePath != "" || ordinal != 0 {
 		t.Fatalf("cold lease membership=%q %q %d", repositoryID, relativePath, ordinal)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 }
 

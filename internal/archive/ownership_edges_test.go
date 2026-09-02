@@ -137,6 +137,102 @@ func TestArchiveGitValueAndRestorePreconditions(t *testing.T) {
 	}
 }
 
+func TestWorkspaceSnapshotPreconditionsAndPruneFailures(t *testing.T) {
+	ctx := context.Background()
+	ownershipRoot := t.TempDir()
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if _, err := SnapshotWorkspace(ctx, outside, ownershipRoot, "outside", nil, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("workspace snapshot accepted a bundle outside the ownership root")
+	}
+	missing := filepath.Join(ownershipRoot, "missing")
+	if _, err := SnapshotWorkspace(ctx, missing, ownershipRoot, "missing", nil, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("workspace snapshot accepted a missing bundle root")
+	}
+	fileRoot := filepath.Join(ownershipRoot, "file-root")
+	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SnapshotWorkspace(ctx, fileRoot, ownershipRoot, "file", nil, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("workspace snapshot accepted a regular-file bundle root")
+	}
+	if _, err := SnapshotWorkspace(ctx, bundleRoot, ownershipRoot, "unsafe", []string{"../escape"}, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("workspace snapshot accepted an unsafe exclusion")
+	}
+
+	invalid := state.WorkspaceSnapshot{SessionID: "session", ArchivePath: filepath.Join(ownershipRoot, "wrong.tar"), Status: "READY"}
+	if err := ValidateWorkspaceSnapshot(ownershipRoot, invalid, time.Now()); err == nil {
+		t.Fatal("non-archived workspace snapshot was accepted")
+	}
+	invalid.Status = "ARCHIVED"
+	invalid.ExpiresAt = "not-a-time"
+	if err := ValidateWorkspaceSnapshot(ownershipRoot, invalid, time.Now()); err == nil {
+		t.Fatal("workspace snapshot with malformed expiry was accepted")
+	}
+	invalid.ExpiresAt = time.Now().Add(time.Hour).Format(time.RFC3339Nano)
+	if err := ValidateWorkspaceSnapshot(ownershipRoot, invalid, time.Now()); err == nil {
+		t.Fatal("workspace snapshot with mismatched path was accepted")
+	}
+	invalid.ArchivePath = filepath.Join(ownershipRoot, filepath.FromSlash(workspaceSnapshotRelativePath(invalid.SessionID)))
+	if err := ValidateWorkspaceSnapshot(ownershipRoot, invalid, time.Now()); err == nil {
+		t.Fatal("missing workspace snapshot artifact was accepted")
+	}
+	if err := DeleteWorkspaceSnapshot(ownershipRoot, state.WorkspaceSnapshot{SessionID: "session", ArchivePath: filepath.Join(ownershipRoot, "wrong.tar")}); err == nil {
+		t.Fatal("snapshot deletion accepted a mismatched artifact path")
+	}
+	if err := DeleteWorkspaceSnapshot(filepath.Join(ownershipRoot, "missing-root"), invalid); err == nil {
+		t.Fatal("snapshot deletion accepted a missing ownership root")
+	}
+
+	pruneRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pruneRoot, "repository"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := workspace.OpenPhysicalRoot(pruneRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneWorkspaceRoot(owner, ".", []string{"repository/file"}); err == nil {
+		t.Fatal("pruning accepted a non-directory exclusion ancestor")
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneWorkspaceRoot(owner, ".", nil); err == nil {
+		t.Fatal("pruning a closed root succeeded")
+	}
+
+	recursiveRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(recursiveRoot, "repository", "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(recursiveRoot, "repository", "nested", "keep"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(recursiveRoot, "repository", "remove"), []byte("remove"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recursiveOwner, err := workspace.OpenPhysicalRoot(recursiveRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pruneWorkspaceRoot(recursiveOwner, ".", []string{"repository/nested/keep"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recursiveOwner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(recursiveRoot, "repository", "nested", "keep")); err != nil {
+		t.Fatalf("excluded descendant was pruned: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(recursiveRoot, "repository", "remove")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("non-excluded sibling remains, err=%v", err)
+	}
+}
+
 func TestRestoreRevalidatesOwnershipAtHandoffs(t *testing.T) {
 	for _, test := range []struct {
 		name   string

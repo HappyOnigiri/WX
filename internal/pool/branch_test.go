@@ -71,6 +71,20 @@ func TestResolveBranchesPropagatesGlobalResolutionFailure(t *testing.T) {
 	}
 }
 
+func TestResolveBranchesPropagatesContextCancellationAtEachResolutionStage(t *testing.T) {
+	root := t.TempDir()
+	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(filepath.Join(root, "missing")), RelativePath: "repository", DefaultBranch: "main"}
+	w := discovery.Workspace{Repositories: []discovery.Repository{repo}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ResolveBranches(ctx, &gitx.Runner{}, w, []string{"feature"}); err == nil {
+		t.Fatal("canceled global branch resolution succeeded")
+	}
+	if _, err := ResolveBranches(ctx, &gitx.Runner{}, w, nil); err == nil {
+		t.Fatal("canceled default branch resolution succeeded")
+	}
+}
+
 func initRepo(t *testing.T, path string) string {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o700); err != nil {

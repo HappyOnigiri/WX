@@ -192,6 +192,9 @@ func TestValidateWorktreeOwnershipRejectsEveryIdentityBoundary(t *testing.T) {
 	if _, err := f.store.ValidateWorktreeOwnership(ctx, WorktreeOwnershipRequest{SlotID: f.slotID, RepositoryID: f.repository, WorktreePath: f.worktree, CommonDir: f.common, AllowedSlotStates: []string{"READY"}}); !errors.Is(err, ErrOwnership) {
 		t.Fatalf("missing repository state set error=%v", err)
 	}
+	if _, err := f.store.ValidateWorktreeOwnership(ctx, WorktreeOwnershipRequest{SlotID: f.slotID, RepositoryID: f.repository, WorktreePath: f.worktree, CommonDir: f.common, AllowedRepositoryStates: []string{"READY"}}); !errors.Is(err, ErrOwnership) {
+		t.Fatalf("missing slot state set error=%v", err)
+	}
 	if _, err := f.store.ValidateWorktreeOwnership(ctx, WorktreeOwnershipRequest{SlotID: "missing", RepositoryID: f.repository, WorktreePath: f.worktree, CommonDir: f.common, AllowedSlotStates: []string{"READY"}, AllowedRepositoryStates: []string{"READY"}}); !errors.Is(err, ErrOwnership) {
 		t.Fatalf("missing row error=%v", err)
 	}
@@ -281,13 +284,19 @@ func TestValidateSlotOwnershipBoundaries(t *testing.T) {
 	}{
 		{name: "missing row", mutate: func(r SlotOwnershipRequest) SlotOwnershipRequest { r.SlotID = "missing"; return r }},
 		{name: "workspace mismatch", mutate: func(r SlotOwnershipRequest) SlotOwnershipRequest { r.WorkspaceID = "other"; return r }},
+		{name: "workspace association", edit: `UPDATE slots SET workspace_id=NULL WHERE id='slot'`},
 		{name: "state mismatch", edit: `UPDATE slots SET state='FAILED' WHERE id='slot'`},
 		{name: "path mismatch", mutate: func(r SlotOwnershipRequest) SlotOwnershipRequest {
 			r.Path = filepath.Join(filepath.Dir(r.Path), "other")
 			return r
 		}},
+		{name: "requested path", mutate: func(r SlotOwnershipRequest) SlotOwnershipRequest {
+			r.Path = "relative"
+			return r
+		}},
 		{name: "recorded path", edit: `UPDATE slots SET path='relative' WHERE id='slot'`},
 		{name: "workspace root", edit: `UPDATE workspaces SET root_path='relative' WHERE id='workspace'`},
+		{name: "missing workspace root", edit: `UPDATE workspaces SET root_path='/missing/workspace' WHERE id='workspace'`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newOwnershipFixture(t)
@@ -304,5 +313,25 @@ func TestValidateSlotOwnershipBoundaries(t *testing.T) {
 				t.Fatalf("invalid slot proof succeeded: %v", err)
 			}
 		})
+	}
+}
+
+func TestCanonicalWorkspaceKeepsNewRepositoryIdentity(t *testing.T) {
+	store := openTestStore(t)
+	common := t.TempDir()
+	w := discovery.Workspace{
+		ID:   "derived-from-main",
+		Root: domain.CanonicalPath(t.TempDir()),
+		Kind: "repository",
+		Repositories: []discovery.Repository{{
+			ID: "repository", MainPath: domain.CanonicalPath(t.TempDir()), CommonDir: domain.CanonicalPath(common), DefaultBranch: "main",
+		}},
+	}
+	canonical, err := store.CanonicalWorkspace(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical.ID != w.ID {
+		t.Fatalf("unregistered repository workspace identity=%q, want %q", canonical.ID, w.ID)
 	}
 }

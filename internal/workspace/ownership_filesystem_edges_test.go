@@ -68,6 +68,15 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	if err := ValidateOwnershipMarker(root, target, "slot", t.TempDir()); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("wrong common directory error=%v", err)
 	}
+	if err := ValidateOwnershipMarker(root, target, "bad/slot", common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("invalid validation slot error=%v", err)
+	}
+	if err := ValidateOwnershipMarker(root, target, "slot", filepath.Join(root, "missing-common")); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("missing validation common directory error=%v", err)
+	}
+	if err := ValidateOwnershipMarker(root, outsideTarget, "slot", common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("outside validation target error=%v", err)
+	}
 
 	markerPath := filepath.Join(filepath.Dir(target), ownershipMarkerNameForTarget(target))
 	writeMarker := func(value string, mode os.FileMode) {
@@ -186,7 +195,7 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	if _, err := newOwnershipMarker(target, "slot", filepath.Join(root, "missing-common"), true); err == nil {
 		t.Fatal("missing common directory accepted")
 	}
-	if got := markerOwnershipFailure(state.ErrOwnership); got != state.ErrOwnership {
+	if got := markerOwnershipFailure(state.ErrOwnership); !errors.Is(got, state.ErrOwnership) {
 		t.Fatalf("ownership sentinel was rewrapped: %v", got)
 	}
 	if got := markerOwnershipFailure(nil); got != nil {
@@ -205,6 +214,12 @@ func TestPhysicalFilesystemRejectsNondirectoryAndInvalidTraversal(t *testing.T) 
 	}
 	if _, err := OpenPhysicalRoot(filepath.Join(file, "child")); err == nil {
 		t.Fatal("physical root below a regular file was opened")
+	}
+	if _, err := OpenPhysicalRoot(filepath.Join(root, "missing-root")); err == nil {
+		t.Fatal("missing physical root was opened")
+	}
+	if _, err := safeGlob(filepath.Join(root, "missing-root"), "*"); err == nil {
+		t.Fatal("glob below a missing physical root succeeded")
 	}
 
 	owner, err := os.OpenRoot(root)
@@ -237,6 +252,12 @@ func TestPhysicalFilesystemRejectsNondirectoryAndInvalidTraversal(t *testing.T) 
 	if err := copyPathFromRoots(root, "file", destination, "copy"); err != nil {
 		t.Fatalf("copy over an existing regular file: %v", err)
 	}
+	if err := copyPathFromRoots(file, "entry", destination, "invalid-source-root"); err == nil {
+		t.Fatal("copy accepted a regular-file source root")
+	}
+	if err := copyPathFromRoots(root, "entry", file, "invalid-destination-root"); err == nil {
+		t.Fatal("copy accepted a regular-file destination root")
+	}
 	linkedRoot := filepath.Join(t.TempDir(), "linked-root")
 	if err := os.Symlink(root, linkedRoot); err != nil {
 		t.Fatal(err)
@@ -258,7 +279,13 @@ func TestPhysicalFilesystemRejectsNondirectoryAndInvalidTraversal(t *testing.T) 
 	if _, err := readPhysicalManifest(root, "manifest-directory"); err == nil {
 		t.Fatal("directory was accepted as a physical manifest")
 	}
-	socketRoot := filepath.Join("/private/tmp", "wx-socket-root-"+domain.StableID(root))
+	if data, err := readPhysicalManifest(root, "missing-manifest"); err != nil || data != nil {
+		t.Fatalf("missing physical manifest data=%q err=%v", data, err)
+	}
+	if _, err := readPhysicalManifest(root, "../escape"); err == nil {
+		t.Fatal("physical manifest accepted an unsafe relative path")
+	}
+	socketRoot := filepath.Join(t.TempDir(), "wx-socket-root-"+domain.StableID(root))
 	if err := os.Mkdir(socketRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +708,7 @@ func TestFilesystemAndMarkerHelpersPropagateClosedDescriptorErrors(t *testing.T)
 		t.Fatal("copy below a regular source component succeeded")
 	}
 
-	if markerOwnershipFailure(nil) != nil || markerOwnershipFailure(state.ErrOwnership) != state.ErrOwnership {
+	if markerOwnershipFailure(nil) != nil || !errors.Is(markerOwnershipFailure(state.ErrOwnership), state.ErrOwnership) {
 		t.Fatal("marker ownership sentinel handling changed")
 	}
 	if err := markerOwnershipFailure(errors.New("marker fault")); !errors.Is(err, state.ErrOwnership) || !strings.Contains(err.Error(), "marker fault") {

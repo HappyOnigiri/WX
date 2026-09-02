@@ -395,6 +395,18 @@ func TestWorkspaceRestoreRejectsUnsafeTargetsAndArchiveShapes(t *testing.T) {
 		t.Fatal("non-directory exclusion ancestor accepted")
 	}
 
+	directoryTarget := filepath.Join(ownershipRoot, "directory-entry")
+	if err := os.Mkdir(directoryTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	directoryArchive := writeWorkspaceArchive(t, ownershipRoot, "directory-entry", []tar.Header{{Name: "created", Typeflag: tar.TypeDir, Mode: 0o700}})
+	if err := RestoreWorkspace(context.Background(), directoryTarget, ownershipRoot, ownershipRoot, directoryArchive, nil); err != nil {
+		t.Fatalf("restore explicit directory entry: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(directoryTarget, "created")); err != nil || !info.IsDir() {
+		t.Fatalf("restored directory info=%v err=%v", info, err)
+	}
+
 	childTarget := filepath.Join(ownershipRoot, "child-collision")
 	if err := os.Mkdir(childTarget, 0o700); err != nil {
 		t.Fatal(err)
