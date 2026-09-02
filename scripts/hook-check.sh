@@ -95,9 +95,16 @@ if [ "$shell_changed" = true ]; then
   shellcheck .githooks/pre-commit .githooks/pre-push scripts/*.sh
 fi
 if [ "$go_changed" = true ]; then
-  go test -short -shuffle=on -count=1 ./...
   if [ "$mode" = pre-push ]; then
     require_tool "$tools/golangci-lint"
-    "$tools/golangci-lint" run ./...
+    go test -short -shuffle=on -count=1 ./... &
+    test_pid=$!
+    "$tools/golangci-lint" run ./... &
+    lint_pid=$!
+    status=0
+    wait "$test_pid" || status=$?
+    wait "$lint_pid" || status=$?
+    exit "$status"
   fi
+  go test -short -shuffle=on -count=1 ./...
 fi
