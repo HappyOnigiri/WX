@@ -185,6 +185,12 @@ func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
 	if err := preparer.copyIncludes(repo, target); err == nil || !strings.Contains(err.Error(), "unsafe") {
 		t.Fatalf("unsafe include error=%v", err)
 	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("..\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.copyIncludes(repo, target); err == nil || !strings.Contains(err.Error(), "unsafe") {
+		t.Fatalf("parent include error=%v", err)
+	}
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("not-ignored\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -256,6 +262,16 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(commandTarget, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("command-failure partial worktree remains: %v", err)
 	}
+	dirtyCfg := cfg
+	dirtyCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf changed > tracked"}, Timeout: config.Duration{Duration: time.Second}}}}
+	preparer.Config = dirtyCfg
+	dirtyTarget := filepath.Join(worktreeRoot, "dirty-command", "root")
+	if err := preparer.Prepare(context.Background(), repo, dirtyTarget, head, "dirty-command"); err == nil || !strings.Contains(err.Error(), "tracked changes") {
+		t.Fatalf("dirty prepare command error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dirtyTarget, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("dirty-command partial worktree remains: %v", err)
+	}
 
 	cfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/usr/bin/true"}, Version: "v1"}}}
 	cfg.Readiness.Timeout.Duration = time.Second
@@ -297,6 +313,49 @@ func TestPatternFilesThatAreDirectoriesAreRejected(t *testing.T) {
 	}
 }
 
+func TestFingerprintTracksMaterializedCopyInputs(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("local.env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(repository, "local.env")
+	if err := os.WriteFile(local, []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository), RelativePath: "repository"}
+	cfg := config.Defaults()
+	first, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil || second == first {
+		t.Fatalf("include content fingerprint first=%s second=%s err=%v", first, second, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	third, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil || third == second {
+		t.Fatalf("workspace copy fingerprint second=%s third=%s err=%v", second, third, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "custom.txt"), []byte("custom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Workspaces[root] = config.Workspace{Copy: []string{"custom.txt"}}
+	fourth, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil || fourth == third {
+		t.Fatalf("workspace rule fingerprint third=%s fourth=%s err=%v", third, fourth, err)
+	}
+}
+
 func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
@@ -328,6 +387,13 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	if err := preparer.ValidateReady(context.Background(), repo, target, head); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(target, "tracked"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.ValidateReady(context.Background(), repo, target, head); err == nil || !strings.Contains(err.Error(), "tracked changes") {
+		t.Fatalf("dirty READY validation error=%v", err)
+	}
+	gitCommand(t, target, "checkout", "--", "tracked")
 	gitCommand(t, repository, "worktree", "unlock", target)
 	if err := preparer.ValidateReady(context.Background(), repo, target, head); err == nil || !strings.Contains(err.Error(), "lock") {
 		t.Fatalf("unlocked READY validation error=%v", err)

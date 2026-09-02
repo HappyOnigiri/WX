@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"os/exec"
@@ -98,6 +99,9 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 		if err := p.runPrepare(ctx, repo, target); err != nil {
 			return err
 		}
+		if err := p.validateTrackedClean(ctx, target); err != nil {
+			return err
+		}
 		head, err := p.Git.Run(ctx, target, "rev-parse", "HEAD")
 		if err != nil {
 			return err
@@ -180,6 +184,16 @@ func (p *Preparer) validateExistingWorktree(ctx context.Context, repo discovery.
 // ValidateReady verifies the physical and Git-administrative invariants that
 // make a stored READY worktree safe to lease.
 func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository, target, oid string) error {
+	if err := p.ValidateOwnership(ctx, repo, target, oid); err != nil {
+		return err
+	}
+	return p.validateTrackedClean(ctx, target)
+}
+
+// ValidateOwnership verifies the physical and Git-administrative ownership
+// invariants without requiring a clean index or working tree. Restored leased
+// sessions intentionally contain the archived user's tracked changes.
+func (p *Preparer) ValidateOwnership(ctx context.Context, repo discovery.Repository, target, oid string) error {
 	if err := p.validateExistingWorktree(ctx, repo, target, oid); err != nil {
 		return err
 	}
@@ -214,13 +228,25 @@ func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository,
 	return nil
 }
 
+func (p *Preparer) validateTrackedClean(ctx context.Context, target string) error {
+	status, err := p.Git.Run(ctx, target, "status", "--porcelain=v1", "--untracked-files=no")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(status.Stdout) != "" {
+		return errors.New("prepared worktree has tracked changes")
+	}
+	return nil
+}
+
 func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error {
 	patterns, err := discovery.ReadPatterns(filepath.Join(string(repo.MainPath), ".worktreeinclude"))
 	if err != nil {
 		return err
 	}
 	for _, pattern := range patterns {
-		if filepath.IsAbs(pattern) || strings.HasPrefix(filepath.Clean(pattern), ".."+string(filepath.Separator)) {
+		clean := filepath.Clean(pattern)
+		if filepath.IsAbs(pattern) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("unsafe .worktreeinclude pattern %q", pattern)
 		}
 		matches, err := filepath.Glob(filepath.Join(string(repo.MainPath), pattern))
@@ -228,7 +254,14 @@ func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error 
 			return err
 		}
 		for _, src := range matches {
-			rel, _ := filepath.Rel(string(repo.MainPath), src)
+			rel, err := filepath.Rel(string(repo.MainPath), src)
+			if err != nil {
+				return err
+			}
+			rel, err = safeRelative(rel)
+			if err != nil {
+				return fmt.Errorf("unsafe .worktreeinclude match %q: %w", src, err)
+			}
 			tracked, err := p.Git.Run(context.Background(), string(repo.MainPath), "ls-files", "--error-unmatch", "--", rel)
 			if err == nil && strings.TrimSpace(tracked.Stdout) != "" {
 				return fmt.Errorf(".worktreeinclude would overwrite tracked path %s", rel)
@@ -295,18 +328,144 @@ func (p *Preparer) runPrepare(ctx context.Context, repo discovery.Repository, ta
 
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=1\ngeneration=%d\noid=%s\n", generation, oid)
+	_, _ = fmt.Fprintf(h, "schema=2\ngeneration=%d\noid=%s\n", generation, oid)
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
 		data, err := os.ReadFile(filepath.Join(string(repo.MainPath), name))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", err
 		}
-		h.Write(data)
+		_, _ = fmt.Fprintf(h, "manifest=%s:%x\n", name, sha256.Sum256(data))
+	}
+	patterns, err := discovery.ReadPatterns(filepath.Join(string(repo.MainPath), ".worktreeinclude"))
+	if err != nil {
+		return "", err
+	}
+	seenIncludes := map[string]bool{}
+	for _, pattern := range patterns {
+		clean := filepath.Clean(pattern)
+		if filepath.IsAbs(pattern) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("unsafe .worktreeinclude pattern %q", pattern)
+		}
+		matches, err := filepath.Glob(filepath.Join(string(repo.MainPath), pattern))
+		if err != nil {
+			return "", err
+		}
+		for _, match := range matches {
+			rel, err := filepath.Rel(string(repo.MainPath), match)
+			if err != nil {
+				return "", err
+			}
+			rel, err = safeRelative(rel)
+			if err != nil {
+				return "", err
+			}
+			if seenIncludes[rel] {
+				continue
+			}
+			seenIncludes[rel] = true
+			if err := fingerprintPath(h, string(repo.MainPath), match); err != nil {
+				return "", err
+			}
+		}
+	}
+	workspaceRoot, err := repositoryWorkspaceRoot(repo)
+	if err != nil {
+		return "", err
+	}
+	rules := c.Workspaces[workspaceRoot]
+	_, _ = fmt.Fprintf(h, "workspace-root=%s\ncopy-rules=%q\nlink-rules=%q\n", workspaceRoot, rules.Copy, rules.Link)
+	copyNames := append([]string{"AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md"}, rules.Copy...)
+	seenCopies := map[string]bool{}
+	for _, name := range copyNames {
+		clean, err := safeRelative(name)
+		if err != nil {
+			return "", err
+		}
+		if seenCopies[clean] {
+			continue
+		}
+		seenCopies[clean] = true
+		path := filepath.Join(workspaceRoot, clean)
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return "", err
+		}
+		if err := fingerprintPath(h, workspaceRoot, path); err != nil {
+			return "", err
+		}
+	}
+	for _, name := range rules.Link {
+		clean, err := safeRelative(name)
+		if err != nil {
+			return "", err
+		}
+		info, err := os.Lstat(filepath.Join(workspaceRoot, clean))
+		if err != nil {
+			return "", err
+		}
+		_, _ = fmt.Fprintf(h, "workspace-link=%s:%s\n", clean, info.Mode())
 	}
 	if o, ok := c.Repositories[string(repo.MainPath)]; ok {
 		_, _ = fmt.Fprint(h, o.Prepare.Command, o.Prepare.Version)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func repositoryWorkspaceRoot(repo discovery.Repository) (string, error) {
+	if repo.RelativePath == "" || filepath.Clean(repo.RelativePath) == "." {
+		return string(repo.MainPath), nil
+	}
+	rel, err := safeRelative(repo.RelativePath)
+	if err != nil {
+		return "", err
+	}
+	root := string(repo.MainPath)
+	for range strings.Split(rel, string(filepath.Separator)) {
+		root = filepath.Dir(root)
+	}
+	return root, nil
+}
+
+func fingerprintPath(h hash.Hash, root, path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	rel, err = safeRelative(rel)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("include symlinks are not followed")
+	}
+	_, _ = fmt.Fprintf(h, "path=%s mode=%s size=%d\n", rel, info.Mode(), info.Size())
+	if info.IsDir() {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := fingerprintPath(h, root, filepath.Join(path, entry.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(h, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 func MaterializeRoot(source, target string, rules config.Workspace) error {
@@ -362,7 +521,7 @@ func MaterializeRoot(source, target string, rules config.Workspace) error {
 
 func safeRelative(path string) (string, error) {
 	clean := filepath.Clean(path)
-	if path == "" || filepath.IsAbs(path) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if path == "" || filepath.IsAbs(path) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("unsafe workspace root path %q", path)
 	}
 	return clean, nil

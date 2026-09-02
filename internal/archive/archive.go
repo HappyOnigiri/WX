@@ -149,7 +149,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if _, err := m.Git.Run(ctx, target, "status", "--porcelain=v2", "--untracked-files=all"); err != nil {
 			return fmt.Errorf("validate restored status: %w", err)
 		}
-		if err := m.Preparer.ValidateReady(ctx, repo, target, s.HeadOID); err != nil {
+		if err := m.Preparer.ValidateOwnership(ctx, repo, target, s.HeadOID); err != nil {
 			return fmt.Errorf("validate restored worktree ownership: %w", err)
 		}
 		return nil
