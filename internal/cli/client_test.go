@@ -125,7 +125,7 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 		}
 		_ = supervisor.Wait()
 	})
-	waitForPath(t, pidFile)
+	waitForPathWithin(t, pidFile, 10*time.Second)
 	var agentPID int
 	// Coverage, race, and mutation jobs execute this helper while the machine is
 	// saturated. The agent may already be running before the helper process gets
@@ -158,7 +158,12 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 
 func waitForPath(t *testing.T, path string) {
 	t.Helper()
-	waitUntilCLI(t, 3*time.Second, func() bool {
+	waitForPathWithin(t, path, 3*time.Second)
+}
+
+func waitForPathWithin(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	waitUntilCLI(t, timeout, func() bool {
 		_, err := os.Lstat(path)
 		return err == nil
 	})
