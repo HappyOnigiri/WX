@@ -437,7 +437,9 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Pool.WarmPerWorkspace = 0
 	cfg.Retention.EndedWorktree.Duration = 0
-	cfg.Retention.RecoverySnapshot.Duration = time.Millisecond
+	// Keep the snapshot unambiguously expired; this test verifies that slot
+	// archival, rather than a near-now clock boundary, gates ref deletion.
+	cfg.Retention.RecoverySnapshot.Duration = -time.Hour
 	cfg.Discovery.ReconcileInterval.Duration = time.Hour
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -467,7 +469,6 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 	if err != nil || len(snapshots) != 1 {
 		t.Fatalf("snapshots=%+v err=%v", snapshots, err)
 	}
-	time.Sleep(5 * time.Millisecond)
 	if _, err := m.GC(ctx, false); err != nil {
 		t.Fatal(err)
 	}
