@@ -115,10 +115,23 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 }
 
 func firstWorktreePath(output string) string {
+	var path string
+	bare := false
 	for _, field := range strings.Split(output, "\x00") {
-		if strings.HasPrefix(field, "worktree ") {
-			return strings.TrimPrefix(field, "worktree ")
+		switch {
+		case field == "":
+			if path != "" && !bare {
+				return path
+			}
+			path, bare = "", false
+		case strings.HasPrefix(field, "worktree "):
+			path = strings.TrimPrefix(field, "worktree ")
+		case field == "bare":
+			bare = true
 		}
+	}
+	if path != "" && !bare {
+		return path
 	}
 	return ""
 }

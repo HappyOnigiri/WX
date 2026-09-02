@@ -181,6 +181,106 @@ func TestCanonicalWorkspaceKeepsSlotsWhenMainWorktreeMoves(t *testing.T) {
 	}
 }
 
+func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("duplicate common directory identity", func(t *testing.T) {
+		store := openTestStore(t)
+		common := "/repository/common.git"
+		registered := discovery.Workspace{ID: "registered", Root: "/registered", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/registered", CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main"}}}
+		if err := store.UpsertWorkspace(ctx, registered); err != nil {
+			t.Fatal(err)
+		}
+		// This models a pre-existing inconsistent registry. The common directory
+		// is unique per repository, but a damaged registry can still attach that
+		// repository to multiple workspace rows.
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO workspaces(id,root_path,kind,generation,discovery_state,first_seen_at,last_seen_at,last_reconciled_at) VALUES(?,?,?,?,?,?,?,?)`, "conflict", "/conflict", "repository", 1, "READY", now(), now(), now()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES(?,?,?,?)`, "conflict", "repository", ".", 0); err != nil {
+			t.Fatal(err)
+		}
+		candidate := registered
+		candidate.ID = "new-identity"
+		candidate.Root = "/new-root"
+		candidate.Repositories[0].MainPath = "/new-root"
+		if _, err := store.CanonicalWorkspace(ctx, candidate); err == nil || !strings.Contains(err.Error(), "multiple registered workspaces") {
+			t.Fatalf("conflicting common directory accepted: %v", err)
+		}
+		if _, err := store.UpsertWorkspaceGeneration(ctx, candidate); err == nil {
+			t.Fatal("upsert proceeded through conflicting common directory")
+		}
+		status, err := store.Status(ctx)
+		if err != nil || status.Workspaces != 2 {
+			t.Fatalf("conflict changed registry: status=%+v err=%v", status, err)
+		}
+		loaded, err := store.Workspace(ctx, string(registered.ID))
+		if err != nil || loaded.Root != registered.Root {
+			t.Fatalf("registered workspace changed after conflict: workspace=%+v err=%v", loaded, err)
+		}
+	})
+
+	t.Run("root uniqueness conflict", func(t *testing.T) {
+		store := openTestStore(t)
+		old := discovery.Workspace{ID: "old", Root: "/old", Kind: "repository", Repositories: []discovery.Repository{{ID: "old-repository", MainPath: "/old", CommonDir: "/old/common.git", RelativePath: ".", DefaultBranch: "main"}}}
+		other := discovery.Workspace{ID: "other", Root: "/new", Kind: "repository", Repositories: []discovery.Repository{{ID: "other-repository", MainPath: "/new", CommonDir: "/new/common.git", RelativePath: ".", DefaultBranch: "main"}}}
+		if err := store.UpsertWorkspace(ctx, old); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpsertWorkspace(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+		session := Session{ID: "session", WorkspaceID: string(old.ID), SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: string(old.ID), Generation: 1, Path: "/wx/slot", State: "LEASED"}, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		oldRoot, oldMain := old.Root, old.Repositories[0].MainPath
+		candidate := old
+		candidate.Repositories = append([]discovery.Repository(nil), old.Repositories...)
+		candidate.ID = "new-identity"
+		candidate.Root = "/new"
+		candidate.Repositories[0].MainPath = "/new"
+		if _, err := store.UpsertWorkspaceGeneration(ctx, candidate); err == nil {
+			t.Fatal("root uniqueness conflict was accepted")
+		}
+		loaded, err := store.Workspace(ctx, string(old.ID))
+		if err != nil || loaded.Root != oldRoot || loaded.Repositories[0].MainPath != oldMain {
+			t.Fatalf("root conflict partially moved workspace: workspace=%+v err=%v", loaded, err)
+		}
+		storedSession, err := store.SessionByID(ctx, session.ID)
+		if err != nil || storedSession.WorkspaceID != string(old.ID) {
+			t.Fatalf("root conflict detached session: session=%+v err=%v", storedSession, err)
+		}
+	})
+
+	t.Run("storage failure", func(t *testing.T) {
+		store := openTestStore(t)
+		old := discovery.Workspace{ID: "old", Root: "/old", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/old", CommonDir: "/old/common.git", RelativePath: ".", DefaultBranch: "main"}}}
+		if err := store.UpsertWorkspace(ctx, old); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_relocation_repository_update BEFORE UPDATE OF main_worktree_path ON repositories BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		oldRoot, oldMain := old.Root, old.Repositories[0].MainPath
+		candidate := old
+		candidate.Repositories = append([]discovery.Repository(nil), old.Repositories...)
+		candidate.ID = "new-identity"
+		candidate.Root = "/new"
+		candidate.Repositories[0].MainPath = "/new"
+		if _, err := store.UpsertWorkspaceGeneration(ctx, candidate); err == nil {
+			t.Fatal("storage failure was ignored")
+		}
+		loaded, err := store.Workspace(ctx, string(old.ID))
+		if err != nil || loaded.Root != oldRoot || loaded.Repositories[0].MainPath != oldMain {
+			t.Fatalf("storage failure partially moved workspace: workspace=%+v err=%v", loaded, err)
+		}
+		if _, err := store.Workspace(ctx, string(candidate.ID)); err == nil {
+			t.Fatal("storage failure created a duplicate workspace")
+		}
+	})
+}
+
 func TestResumeBindingsUpdateAllRepositoryLeaseTimestamps(t *testing.T) {
 	tests := []struct {
 		name string

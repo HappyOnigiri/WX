@@ -376,6 +376,12 @@ func (s *Store) UpsertWorkspace(ctx context.Context, w discovery.Workspace) erro
 // important: slot paths contain it, and changing it would strand the existing
 // pool and create a second workspace after a main-worktree move.
 func (s *Store) CanonicalWorkspace(ctx context.Context, w discovery.Workspace) (discovery.Workspace, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	return s.canonicalWorkspace(ctx, w)
+}
+
+func (s *Store) canonicalWorkspace(ctx context.Context, w discovery.Workspace) (discovery.Workspace, error) {
 	if w.Kind != "repository" || len(w.Repositories) != 1 {
 		return w, nil
 	}
@@ -405,13 +411,13 @@ func (s *Store) CanonicalWorkspace(ctx context.Context, w discovery.Workspace) (
 }
 
 func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Workspace) (int, error) {
-	canonical, err := s.CanonicalWorkspace(ctx, w)
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	canonical, err := s.canonicalWorkspace(ctx, w)
 	if err != nil {
 		return 0, err
 	}
 	w = canonical
-	s.writer.Lock()
-	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err

@@ -11,6 +11,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -143,6 +144,110 @@ exit 1
 	}
 	resumedSession, err := store.SessionByID(ctx, resumed.SessionID)
 	if err != nil || resumedSession.WorkspaceID != string(oldWorkspaceID) {
+		t.Fatalf("resumed session=%+v err=%v, want existing workspace identity", resumedSession, err)
+	}
+}
+
+func TestMainWorktreeRelocationWithGitRegistryPreservesIdentityAndSessions(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	common := filepath.Join(root, "common.git")
+	oldMain := filepath.Join(root, "old-main")
+	newMain := filepath.Join(root, "new-main")
+	initGitRepo(t, source)
+	gitRun(t, root, "clone", "--bare", source, common)
+	gitRun(t, common, "worktree", "add", oldMain, "main")
+
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 0
+	cfg.Readiness.Timeout.Duration = time.Second
+	runner := &gitx.Runner{Timeout: 5 * time.Second}
+	discoverer := discovery.Discoverer{Git: runner, Config: cfg}
+	ctx := context.Background()
+	discovered, err := discoverer.Resolve(ctx, oldMain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discovered.Repositories[0].CommonDir != discoveryPath(common) {
+		t.Fatalf("discovered common directory=%q, want %q", discovered.Repositories[0].CommonDir, common)
+	}
+
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	// Seed the pre-common-directory identity used by an older database. The
+	// repository common directory is real, so the post-move reconciliation must
+	// retain this ID and its existing slot namespace.
+	legacy := discovered
+	legacy.ID = domain.WorkspaceID(domain.StableID(string(discovered.Root)))
+	if err := store.UpsertWorkspace(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	m := testManager(t, cfg, store)
+	defer m.Close()
+	oldSlotPath := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(legacy.ID), "slots", "old-slot", "root")
+	if err := os.MkdirAll(oldSlotPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateStandby(ctx, state.Slot{ID: "old-slot", WorkspaceID: string(legacy.ID), Generation: 1, Path: oldSlotPath, State: "FAILED"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	gitRun(t, common, "worktree", "move", oldMain, newMain)
+	if _, err := os.Stat(oldMain); !os.IsNotExist(err) {
+		t.Fatalf("old main worktree still exists: %v", err)
+	}
+	if _, err := os.Stat(newMain); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.resolveRegisteredWorkspace(ctx, oldMain, &discoverer); err != nil {
+		t.Fatalf("common-directory recovery failed: %v", err)
+	}
+	m.reconcileRegistry(ctx)
+	updated, err := store.Workspace(ctx, string(legacy.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ID != legacy.ID || updated.Root != discoveryPath(newMain) || updated.Repositories[0].MainPath != discoveryPath(newMain) {
+		t.Fatalf("relocated workspace=%+v, want legacy identity at new main path", updated)
+	}
+	if _, err := store.Workspace(ctx, string(discovered.ID)); err == nil {
+		t.Fatalf("relocation created a duplicate common-derived workspace %q", discovered.ID)
+	}
+	if slot, err := store.Slot(ctx, "old-slot"); err != nil || slot.WorkspaceID != string(legacy.ID) {
+		t.Fatalf("relocated slot=%+v err=%v", slot, err)
+	}
+
+	lease, err := m.ResolveAndLease(ctx, newMain, nil, "codex", os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(legacy.ID), "slots") + string(os.PathSeparator)
+	if !strings.HasPrefix(lease.Path, wantPrefix) {
+		t.Fatalf("new-path lease=%q, want existing workspace namespace %q", lease.Path, wantPrefix)
+	}
+	leasedSession, err := store.SessionByID(ctx, lease.SessionID)
+	if err != nil || leasedSession.WorkspaceID != string(legacy.ID) {
+		t.Fatalf("new-path session=%+v err=%v, want existing workspace identity", leasedSession, err)
+	}
+
+	parent := state.Session{ID: "expired-parent", WorkspaceID: string(legacy.ID), SlotID: "expired-parent", State: "EXPIRED", AgentKind: "codex", TokenHash: state.HashToken("parent")}
+	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: parent.SlotID, WorkspaceID: parent.WorkspaceID, Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(legacy.ID), "slots", parent.SlotID, "root"), State: "ARCHIVED"}, nil, parent, ""); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := m.Resume(ctx, parent.ID, "codex", os.Getpid(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(resumed.Path, wantPrefix) {
+		t.Fatalf("resumed lease=%q, want existing workspace namespace %q", resumed.Path, wantPrefix)
+	}
+	resumedSession, err := store.SessionByID(ctx, resumed.SessionID)
+	if err != nil || resumedSession.WorkspaceID != string(legacy.ID) {
 		t.Fatalf("resumed session=%+v err=%v, want existing workspace identity", resumedSession, err)
 	}
 }
