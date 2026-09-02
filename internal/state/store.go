@@ -2094,6 +2094,7 @@ func (s *Store) RecoveryRefs(ctx context.Context, repositoryID string) ([]string
 // those missing refs while still quarantining every ref whose name or object
 // ID is not exactly accounted for.
 func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string) ([]RecoveryRefExpectation, error) {
+	at := now()
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT sn.head_recovery_ref,sn.head_oid,sn.session_id,se.state,
 		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND (j.state='PENDING' OR (j.state='RUNNING' AND j.lease_expires_at>?))) THEN 1 ELSE 0 END
@@ -2104,7 +2105,7 @@ func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string
 		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND (j.state='PENDING' OR (j.state='RUNNING' AND j.lease_expires_at>?))) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
-		ORDER BY 1`, now(), repositoryID, now(), repositoryID)
+		ORDER BY 1`, at, repositoryID, at, repositoryID)
 	if err != nil {
 		return nil, err
 	}

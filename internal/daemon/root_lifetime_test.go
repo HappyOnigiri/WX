@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -37,6 +38,18 @@ func writeRootLifetimeConfig(t *testing.T, home, root string) {
 	}
 }
 
+func writeRootLifetimeGCConfig(t *testing.T, home, root string) {
+	t.Helper()
+	path := filepath.Join(home, ".config", "wx", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	document := fmt.Sprintf("version: 1\nstorage:\n  worktree_root: %s\nretention:\n  ended_worktree: 0s\n", root)
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func openDescriptorCount(t *testing.T) int {
 	t.Helper()
 	directory, err := os.Open("/dev/fd")
@@ -49,6 +62,69 @@ func openDescriptorCount(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return len(entries)
+}
+
+// A retired root that still owns an archived slot must remain discoverable by
+// GC after its last live descriptor reference is released. This reproduces a
+// reload followed by archival cleanup without starting lifecycle workers.
+func TestGCDiscoversArchivedSlotOnClosedRetiredRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	oldRoot := filepath.Join(home, "root-old")
+	newRoot := filepath.Join(home, "root-new")
+	if err := os.Mkdir(oldRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(newRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(oldRoot, "slot"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	if err := store.UpsertWorkspace(ctx, discovery.Workspace{ID: "workspace", Root: discoveryPath(home), Kind: "repository"}); err != nil {
+		t.Fatal(err)
+	}
+	session := state.Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(oldRoot, "slot"), State: "SNAPSHOTTED"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkArchived(ctx, session.ID, session.SlotID, state.FormatTime(time.Now().Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = oldRoot
+	cfg.Retention.EndedWorktree.Duration = 0
+	manager := rootLifetimeManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	if _, release, err := manager.rootDescriptor(oldRoot); err != nil {
+		t.Fatal(err)
+	} else {
+		release()
+	}
+	writeRootLifetimeGCConfig(t, home, newRoot)
+	if err := manager.reloadConfig(false); err != nil {
+		t.Fatal(err)
+	}
+	count, err := manager.GC(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("GC count=%d, want one archived candidate", count)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].Kind != "REMOVE" {
+		t.Fatalf("GC did not schedule retired-root removal: jobs=%+v", jobs)
+	}
 }
 
 // NEW-5: unique root rotations must close unused retired descriptors instead
@@ -379,6 +455,66 @@ func TestReloadRejectsReplacementOfClosedHistoricalRoot(t *testing.T) {
 	if _, release, err := manager.existingRootDescriptor(oldRoot); err == nil {
 		release()
 		t.Fatal("historical slot lookup accepted a replacement root inode")
+	}
+	if _, release, err := manager.holdVerifiedRootForPath(filepath.Join(oldRoot, "slot")); err == nil {
+		release()
+		t.Fatal("cleanup accepted a replacement historical root inode")
+	}
+}
+
+func TestRootReplacementQuarantinesPreparationBeforeDescriptorAcquire(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	oldRoot := filepath.Join(home, "root-old")
+	newRoot := filepath.Join(home, "root-new")
+	if err := os.Mkdir(oldRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(newRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = oldRoot
+	manager := rootLifetimeManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	if _, release, err := manager.rootDescriptor(oldRoot); err != nil {
+		t.Fatal(err)
+	} else {
+		release()
+	}
+	if err := store.UpsertWorkspace(context.Background(), discovery.Workspace{ID: "workspace", Root: discoveryPath(home), Kind: "repository"}); err != nil {
+		t.Fatal(err)
+	}
+	const slotID = "preparing-slot"
+	slotPath := filepath.Join(oldRoot, "workspaces", "workspace", "slots", slotID, "root")
+	writeRootLifetimeConfig(t, home, newRoot)
+	if err := manager.reloadConfig(false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateStandby(context.Background(), state.Slot{ID: slotID, WorkspaceID: "workspace", Generation: 1, Path: slotPath, State: "PREPARING"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	originalRoot := oldRoot + "-original"
+	if err := os.Rename(oldRoot, originalRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(oldRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.prepareSlot(context.Background(), slotID, discovery.Workspace{}, nil, nil); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("preparation accepted replaced historical root: %v", err)
+	}
+	slot, err := store.Slot(context.Background(), slotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slot.State != "QUARANTINED" {
+		t.Fatalf("replaced historical root left slot in %s, want QUARANTINED", slot.State)
 	}
 }
 

@@ -949,6 +949,7 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 			lease, leased, leaseErr := func() (Lease, bool, error) {
 				releaseRoot, holdErr := m.holdRootForPath(ready.Path)
 				if holdErr != nil {
+					m.quarantineOwnershipFailure(ready.ID, []string{"READY"}, holdErr)
 					return Lease{}, false, holdErr
 				}
 				defer releaseRoot()
@@ -1473,6 +1474,7 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 	}
 	releaseRoot, err := m.holdRootForPath(slot.Path)
 	if err != nil {
+		m.quarantineOwnershipFailure(id, []string{"PREPARING", "RESTORING"}, err)
 		return err
 	}
 	defer releaseRoot()
@@ -1923,6 +1925,7 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 	}
 	releaseRoot, err := m.holdRootForPath(slotState.Path)
 	if err != nil {
+		m.quarantineOwnershipFailure(id, []string{"RESTORING"}, err)
 		return err
 	}
 	defer releaseRoot()
@@ -2257,6 +2260,7 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 	expiry := releasedAt.Add(m.Config().Retention.RecoverySnapshot.Duration)
 	releaseRoot, err := m.holdRootForPath(slot.Path)
 	if err != nil {
+		m.quarantineOwnershipFailure(s.SlotID, []string{"SNAPSHOTTING"}, err)
 		return err
 	}
 	defer releaseRoot()
@@ -2359,6 +2363,11 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 		if wholeSlotRemoval[candidate.SlotID] {
 			continue
 		}
+		if _, release, err := m.holdVerifiedRootForPath(candidate.WorktreePath); err != nil {
+			continue
+		} else {
+			release()
+		}
 		job, changed, scheduleErr := m.store.ScheduleColdRepositoryRemoval(ctx, candidate)
 		if scheduleErr != nil {
 			m.log.Error("cold repository removal scheduling failed", "slot_id", candidate.SlotID, "repository_id", candidate.RepositoryID, "error", scheduleErr)
@@ -2370,8 +2379,10 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 		}
 	}
 	for _, item := range standbys {
-		if _, ok := m.rootForPath(item.Path); !ok {
+		if _, release, err := m.holdVerifiedRootForPath(item.Path); err != nil {
 			continue
+		} else {
+			release()
 		}
 		job, changed, err := m.store.ScheduleRemoval(ctx, item.SlotID, "")
 		if err != nil {
@@ -2384,8 +2395,10 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 		}
 	}
 	for _, item := range items {
-		if _, ok := m.rootForPath(item.Path); !ok {
+		if _, release, err := m.holdVerifiedRootForPath(item.Path); err != nil {
 			continue
+		} else {
+			release()
 		}
 		job, changed, err := m.store.ScheduleRemoval(ctx, item.SlotID, item.SessionID)
 		if err != nil {
@@ -2412,12 +2425,14 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			rootSnapshot, found, workspaceErr = m.store.WorkspaceSnapshot(ctx, sessionID)
 			if workspaceErr != nil || !found {
 				ok = false
-			} else if owner, owned := m.rootForPath(rootSnapshot.ArchivePath); !owned {
+			} else if owner, releaseOwner, ownerErr := m.holdVerifiedRootForPath(rootSnapshot.ArchivePath); ownerErr != nil {
 				ok = false
 			} else {
 				rootSnapshotOwner = owner
-				rootSnapshotOwnerHandle, rootSnapshotOwnerRelease, workspaceErr = m.existingRootDescriptor(owner)
-				if workspaceErr != nil {
+				rootSnapshotOwnerRelease = releaseOwner
+				rootSnapshotOwnerHandle = m.rootHandleForRoot(owner)
+				if rootSnapshotOwnerHandle == nil {
+					workspaceErr = errors.New("root descriptor is unavailable")
 					ok = false
 				} else {
 					ok = archive.ValidateWorkspaceSnapshotAt(owner, rootSnapshotOwnerHandle, rootSnapshot, time.Time{}) == nil
@@ -2475,12 +2490,9 @@ func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
 	if slot.State != "REMOVING" {
 		return fmt.Errorf("slot %s cannot be removed from %s", slot.ID, slot.State)
 	}
-	root, ok := m.rootForPath(slot.Path)
-	if !ok {
-		return fmt.Errorf("%w: slot path is outside every current or retired wx root", state.ErrOwnership)
-	}
-	releaseRoot, err := m.holdRootForPath(slot.Path)
+	root, releaseRoot, err := m.holdVerifiedRootForPath(slot.Path)
 	if err != nil {
+		m.quarantineOwnershipFailure(slot.ID, []string{"REMOVING"}, err)
 		return err
 	}
 	defer releaseRoot()
@@ -2507,12 +2519,15 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 	if repositoryState.State != "RETIRING" || slot.State != "RETIRING" {
 		return fmt.Errorf("repository %s/%s cannot retire from %s/%s", slot.ID, job.RepositoryID, slot.State, repositoryState.State)
 	}
-	root, ok := m.rootForPath(slot.Path)
-	if !ok || !domain.IsWithin(root, repositoryState.WorktreePath) {
-		return fmt.Errorf("%w: cold repository path is outside wx ownership root", state.ErrOwnership)
-	}
-	releaseRoot, err := m.holdRootForPath(slot.Path)
+	root, releaseRoot, err := m.holdVerifiedRootForPath(slot.Path)
 	if err != nil {
+		m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
+		return err
+	}
+	if !domain.IsWithin(root, repositoryState.WorktreePath) {
+		releaseRoot()
+		err := fmt.Errorf("%w: cold repository path is outside wx ownership root", state.ErrOwnership)
+		m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
 		return err
 	}
 	defer releaseRoot()
@@ -2577,6 +2592,18 @@ func (m *Manager) rootForPath(path string) (string, bool) {
 			if best == "" || len(root) > len(best) {
 				best = root
 			}
+		}
+	}
+	// A closed retired descriptor is removed from m.roots to keep the active
+	// pathname registry bounded, but its inode tombstone remains durable for
+	// this manager lifetime. Recovery archives and delayed removal jobs can
+	// outlive the lease that kept their root open, so retain the historical
+	// pathname as a candidate. Callers that need filesystem access still go
+	// through existingRootDescriptor, which reopens it only if the pathname
+	// names the same physical inode; a replacement therefore fails closed.
+	for root := range m.rootIdentities {
+		if domain.IsWithin(root, path) && (best == "" || len(root) > len(best)) {
+			best = root
 		}
 	}
 	return best, best != ""
@@ -2656,17 +2683,30 @@ func (m *Manager) ownedPathExists(path string) (bool, error) {
 }
 
 func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
-	probe := filepath.Join(filepath.Clean(root), "workspaces")
-	release, err := m.holdRootForPath(probe)
+	root = filepath.Clean(root)
+	m.mu.RLock()
+	active, known := m.roots[root]
+	m.mu.RUnlock()
+	var release func()
+	var err error
+	if known && active {
+		_, release, err = m.rootDescriptor(root)
+	} else {
+		// This function is invoked once per exact root-generation entry from
+		// artifactDiagnostics. Do not resolve the probe through rootForPath:
+		// an overlapping nested root could otherwise pin a different generation
+		// while rootHandleForRoot below borrows this one.
+		_, release, err = m.existingRootDescriptor(root)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	owner := m.rootHandleForRoot(filepath.Clean(root))
+	owner := m.rootHandleForRoot(root)
 	if owner == nil {
 		return nil, fmt.Errorf("%w: root descriptor is unavailable", state.ErrOwnership)
 	}
-	if err := verifyRootDescriptorPath(filepath.Clean(root), owner); err != nil {
+	if err := verifyRootDescriptorPath(root, owner); err != nil {
 		return nil, err
 	}
 	entries, err := fs.ReadDir(owner.FS(), "workspaces")
@@ -2751,13 +2791,14 @@ func (m *Manager) holdRootForPath(path string) (func(), error) {
 	m.mu.RLock()
 	active, known := m.roots[root]
 	m.mu.RUnlock()
-	if !known && ok {
-		return func() {}, fmt.Errorf("%w: root generation is no longer registered", state.ErrOwnership)
-	}
 	var release func()
 	var err error
-	if known && !active {
-		_, release, err = m.existingRootDescriptor(root)
+	if ok {
+		if !known || !active {
+			_, release, err = m.existingRootDescriptor(root)
+		} else {
+			_, release, err = m.rootDescriptor(root)
+		}
 	} else {
 		_, release, err = m.rootDescriptor(root)
 	}
@@ -2768,6 +2809,31 @@ func (m *Manager) holdRootForPath(path string) (func(), error) {
 		return func() {}, fmt.Errorf("%w: hold wx root descriptor: %w", state.ErrOwnership, err)
 	}
 	return release, nil
+}
+
+// holdVerifiedRootForPath is used by delayed cleanup jobs. A path may still
+// belong to a closed historical generation, so rootForPath alone is not
+// sufficient; the descriptor and its current lexical pathname must both be
+// validated before a job is allowed to transition durable state to REMOVING.
+func (m *Manager) holdVerifiedRootForPath(path string) (string, func(), error) {
+	root, ok := m.rootForPath(path)
+	if !ok {
+		return "", func() {}, fmt.Errorf("%w: path is outside known wx roots", state.ErrOwnership)
+	}
+	release, err := m.holdRootForPath(path)
+	if err != nil {
+		return "", func() {}, err
+	}
+	owner := m.rootHandleForRoot(root)
+	if owner == nil {
+		release()
+		return "", func() {}, fmt.Errorf("%w: root descriptor is unavailable", state.ErrOwnership)
+	}
+	if err := verifyRootDescriptorPath(root, owner); err != nil {
+		release()
+		return "", func() {}, err
+	}
+	return root, release, nil
 }
 
 // retainLease transfers one root reference from the allocation/validation
