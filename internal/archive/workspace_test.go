@@ -6,12 +6,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -83,6 +85,42 @@ func TestWorkspaceSnapshotRestorePreservesOnlyOwnedRootState(t *testing.T) {
 	}
 	if err := ValidateWorkspaceSnapshot(ownershipRoot, snapshot, time.Now()); err == nil {
 		t.Fatal("tampered workspace archive passed checksum validation")
+	}
+}
+
+func TestSnapshotWorkspaceAtUsesPinnedRootAcrossReplacement(t *testing.T) {
+	parent := t.TempDir()
+	ownershipRoot := filepath.Join(parent, "wx")
+	outside := filepath.Join(parent, "outside")
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.MkdirAll(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "notes.txt"), "old root\n", 0o600)
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := os.Rename(ownershipRoot, ownershipRoot+"-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, ownershipRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "replaced-root", nil, time.Now().Add(time.Hour))
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replaced workspace root returned non-ownership error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ownershipRoot+"-old", "recovery")); !os.IsNotExist(err) {
+		t.Fatalf("workspace archive was written after root replacement: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "recovery")); !os.IsNotExist(err) {
+		t.Fatalf("workspace archive escaped into replacement root: %v", err)
 	}
 }
 

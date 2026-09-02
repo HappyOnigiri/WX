@@ -1030,7 +1030,7 @@ func (m *Manager) leaseRootIdentity(path string) (string, error) {
 	if !domain.IsWithin(root, path) {
 		return "", fmt.Errorf("lease path %s is outside wx worktree root", path)
 	}
-	owner, closeOwner, err := m.rootDescriptor(root)
+	owner, closeOwner, err := m.existingRootDescriptor(root)
 	if err != nil {
 		return "", err
 	}
@@ -1155,11 +1155,14 @@ func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules config
 	if !ok {
 		return fmt.Errorf("%w: slot path is outside known wx roots", state.ErrOwnership)
 	}
-	owner, closeOwner, err := m.rootDescriptor(root)
+	owner, closeOwner, err := m.existingRootDescriptor(root)
 	if err != nil {
 		return fmt.Errorf("%w: open slot root namespace: %v", state.ErrOwnership, err)
 	}
 	defer closeOwner()
+	if err := verifyRootDescriptorPath(root, owner); err != nil {
+		return err
+	}
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(slotPath))
 	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
 		if err == nil {
@@ -1173,6 +1176,9 @@ func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules config
 	}
 	defer func() { _ = destination.Close() }()
 	if err := workspace.MaterializeRootAt(source, destination, rules); err != nil {
+		return err
+	}
+	if err := verifyRootDescriptorPath(root, owner); err != nil {
 		return err
 	}
 	return nil
@@ -1579,7 +1585,19 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
 			return errors.New("workspace root recovery paths are outside known wx roots")
 		}
-		if err := archive.RestoreWorkspace(ctx, slot.Path, targetRoot, archiveRoot, rootSnapshot, workspaceRecoveryExclusions(w, m.Config())); err != nil {
+		targetRootHandle, closeTargetRoot, targetRootErr := m.existingRootDescriptor(targetRoot)
+		if targetRootErr != nil {
+			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
+			return fmt.Errorf("open workspace restore target root: %w", targetRootErr)
+		}
+		defer closeTargetRoot()
+		archiveRootHandle, closeArchiveRoot, archiveRootErr := m.existingRootDescriptor(archiveRoot)
+		if archiveRootErr != nil {
+			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
+			return fmt.Errorf("open workspace archive root: %w", archiveRootErr)
+		}
+		defer closeArchiveRoot()
+		if err := archive.RestoreWorkspaceAt(ctx, slot.Path, targetRoot, targetRootHandle, archiveRoot, archiveRootHandle, rootSnapshot, workspaceRecoveryExclusions(w, m.Config())); err != nil {
 			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "RESTORE_FAILED")
 			return fmt.Errorf("restore workspace root: %w", err)
 		}
@@ -1640,7 +1658,11 @@ func (m *Manager) recoveryUsable(ctx context.Context, sessionID string, w discov
 	if !ok {
 		return false, errors.New("workspace snapshot archive is outside known wx roots")
 	}
-	if err := archive.ValidateWorkspaceSnapshot(root, rootSnapshot, at); err != nil {
+	owner, _, err := m.existingRootDescriptor(root)
+	if err != nil {
+		return false, fmt.Errorf("open workspace snapshot owner: %w", err)
+	}
+	if err := archive.ValidateWorkspaceSnapshotAt(root, owner, rootSnapshot, at); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -1839,17 +1861,22 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 		if !ok {
 			return errors.New("workspace bundle is outside known wx roots")
 		}
+		ownershipRootHandle, closeOwnershipRoot, rootErr := m.existingRootDescriptor(ownershipRoot)
+		if rootErr != nil {
+			return fmt.Errorf("open workspace archive root: %w", rootErr)
+		}
+		defer closeOwnershipRoot()
 		rootSnapshot, found, err := m.store.WorkspaceSnapshot(ctx, s.ID)
 		if err != nil {
 			return err
 		}
 		if found {
-			if err := archive.ValidateWorkspaceSnapshot(ownershipRoot, rootSnapshot, time.Now()); err != nil {
+			if err := archive.ValidateWorkspaceSnapshotAt(ownershipRoot, ownershipRootHandle, rootSnapshot, time.Now()); err != nil {
 				_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
 				return fmt.Errorf("validate workspace root snapshot: %w", err)
 			}
 		} else {
-			rootSnapshot, err = archive.SnapshotWorkspace(ctx, slot.Path, ownershipRoot, s.ID, workspaceRecoveryExclusions(w, m.Config()), expiry)
+			rootSnapshot, err = archive.SnapshotWorkspaceAt(ctx, slot.Path, ownershipRoot, ownershipRootHandle, s.ID, workspaceRecoveryExclusions(w, m.Config()), expiry)
 			if err != nil {
 				m.log.Error("workspace root snapshot failed", "session_id", s.ID, "error", err)
 				_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
@@ -1952,6 +1979,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 		ok := true
 		var rootSnapshot state.WorkspaceSnapshot
 		var rootSnapshotOwner string
+		var rootSnapshotOwnerHandle *os.Root
 		w, workspaceErr := m.store.SessionWorkspace(ctx, sessionID)
 		if workspaceErr != nil {
 			ok = false
@@ -1964,7 +1992,12 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 				ok = false
 			} else {
 				rootSnapshotOwner = owner
-				ok = archive.ValidateWorkspaceSnapshot(owner, rootSnapshot, time.Time{}) == nil
+				rootSnapshotOwnerHandle, _, workspaceErr = m.existingRootDescriptor(owner)
+				if workspaceErr != nil {
+					ok = false
+				} else {
+					ok = archive.ValidateWorkspaceSnapshotAt(owner, rootSnapshotOwnerHandle, rootSnapshot, time.Time{}) == nil
+				}
 			}
 		}
 		if !ok {
@@ -1978,7 +2011,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			}
 		}
 		if ok && rootSnapshot.SessionID != "" {
-			ok = archive.DeleteWorkspaceSnapshot(rootSnapshotOwner, rootSnapshot) == nil
+			ok = archive.DeleteWorkspaceSnapshotAt(rootSnapshotOwner, rootSnapshotOwnerHandle, rootSnapshot) == nil
 		}
 		if ok {
 			if err := m.store.ExpireSessionSnapshots(ctx, sessionID); err == nil {
@@ -2057,13 +2090,26 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 			m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
 			return err
 		}
-		ownedRoot, relativeSlot, err := domain.OpenOwnedRoot(root, slot.Path)
+		ownedRoot, closeOwnedRoot, err := m.existingRootDescriptor(root)
 		if err != nil {
 			return fmt.Errorf("%w: recreate cold workspace shell: %v", state.ErrOwnership, err)
 		}
-		defer func() { _ = ownedRoot.Close() }()
+		defer closeOwnedRoot()
+		if err := verifyRootDescriptorPath(root, ownedRoot); err != nil {
+			return err
+		}
+		relativeSlot, relativeErr := filepath.Rel(filepath.Clean(root), filepath.Clean(slot.Path))
+		if relativeErr != nil || relativeSlot == "." || relativeSlot == ".." || strings.HasPrefix(relativeSlot, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeSlot) {
+			if relativeErr == nil {
+				relativeErr = errors.New("slot path is outside wx root")
+			}
+			return fmt.Errorf("%w: recreate cold workspace shell: %v", state.ErrOwnership, relativeErr)
+		}
 		if err := ownedRoot.MkdirAll(relativeSlot, 0o700); err != nil {
 			return fmt.Errorf("recreate cold workspace shell: %w", err)
+		}
+		if err := verifyRootDescriptorPath(root, ownedRoot); err != nil {
+			return err
 		}
 	}
 	return m.store.FinishColdRepositoryRemoval(ctx, slot.ID, job.RepositoryID)
@@ -2122,7 +2168,11 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 			if !ok {
 				return removalMetadataFailure("workspace root snapshot is outside known wx roots", errors.New("archive path is not owned"))
 			}
-			if err := archive.ValidateWorkspaceSnapshot(archiveRoot, rootSnapshot, time.Now()); err != nil {
+			archiveRootHandle, _, rootErr := m.existingRootDescriptor(archiveRoot)
+			if rootErr != nil {
+				return removalMetadataFailure("open workspace root snapshot owner", rootErr)
+			}
+			if err := archive.ValidateWorkspaceSnapshotAt(archiveRoot, archiveRootHandle, rootSnapshot, time.Now()); err != nil {
 				return removalMetadataFailure("validate workspace root snapshot before removal", err)
 			}
 		}
@@ -2154,11 +2204,21 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	if _, err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slotID, Path: slotPath, AllowedSlotStates: []string{"REMOVING"}}); err != nil {
 		return err
 	}
-	ownedRoot, relativeSlot, err := domain.OpenOwnedRoot(root, slotPath)
+	ownedRoot, closeOwnedRoot, err := m.existingRootDescriptor(root)
 	if err != nil {
 		return fmt.Errorf("%w: open slot root for removal: %v", state.ErrOwnership, err)
 	}
-	defer func() { _ = ownedRoot.Close() }()
+	defer closeOwnedRoot()
+	if err := verifyRootDescriptorPath(root, ownedRoot); err != nil {
+		return err
+	}
+	relativeSlot, relativeErr := filepath.Rel(filepath.Clean(root), filepath.Clean(slotPath))
+	if relativeErr != nil || relativeSlot == "." || relativeSlot == ".." || strings.HasPrefix(relativeSlot, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeSlot) {
+		if relativeErr == nil {
+			relativeErr = errors.New("slot path is outside wx root")
+		}
+		return fmt.Errorf("%w: open slot root for removal: %v", state.ErrOwnership, relativeErr)
+	}
 	info, err := ownedRoot.Lstat(relativeSlot)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -2171,7 +2231,38 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	// Root.RemoveAll does not follow symlink leaves and cannot traverse outside
 	// the descriptor-owned root. It also removes bundle rules and empty nested
 	// repository parents left after the registered worktrees are removed.
-	return ownedRoot.RemoveAll(relativeSlot)
+	if err := ownedRoot.RemoveAll(relativeSlot); err != nil {
+		return err
+	}
+	return verifyRootDescriptorPath(root, ownedRoot)
+}
+
+// verifyRootDescriptorPath ensures a descriptor-bound operation has not
+// detached its durable lexical root from the inode the manager owns. The
+// descriptor keeps a replacement from redirecting the syscall; this check
+// keeps the caller from committing state for a pathname that now names a
+// different namespace.
+func verifyRootDescriptorPath(path string, owner *os.Root) error {
+	if owner == nil {
+		return fmt.Errorf("%w: wx root descriptor is unavailable", state.ErrOwnership)
+	}
+	current, _, err := domain.OpenOwnedRoot(path, path)
+	if err != nil {
+		return fmt.Errorf("%w: wx root path changed: %v", state.ErrOwnership, err)
+	}
+	defer func() { _ = current.Close() }()
+	heldInfo, err := owner.Lstat(".")
+	if err != nil {
+		return fmt.Errorf("%w: inspect pinned wx root: %v", state.ErrOwnership, err)
+	}
+	currentInfo, err := current.Lstat(".")
+	if err != nil {
+		return fmt.Errorf("%w: inspect wx root path: %v", state.ErrOwnership, err)
+	}
+	if !os.SameFile(heldInfo, currentInfo) {
+		return fmt.Errorf("%w: wx root path names a different directory", state.ErrOwnership)
+	}
+	return nil
 }
 
 func removalMetadataFailure(message string, err error) error {

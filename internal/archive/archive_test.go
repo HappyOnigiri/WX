@@ -137,6 +137,80 @@ func TestRemoveWorktreeUsesPinnedDescriptorAcrossRootReplacement(t *testing.T) {
 	}
 }
 
+// The archive snapshot must read the leased worktree through the same pinned
+// descriptor as preparation. Replacing the lexical root immediately before
+// the first Git read must not make the snapshot consume the replacement path.
+func TestSnapshotUsesPinnedDescriptorAcrossRootReplacement(t *testing.T) {
+	temp := t.TempDir()
+	repository := filepath.Join(temp, "repository")
+	root := filepath.Join(temp, "wx")
+	outside := filepath.Join(temp, "outside")
+	mustMkdir(t, repository)
+	mustMkdir(t, root)
+	mustMkdir(t, outside)
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	head := gitCommand(t, repository, "rev-parse", "HEAD")
+	target := filepath.Join(root, "slot", "root")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "worktree", "add", "--detach", target, head)
+	if err := os.WriteFile(filepath.Join(target, "tracked"), []byte("leased\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	common := gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	runner := &gitx.Runner{Timeout: 5 * time.Second}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	preparer := &workspace.Preparer{Git: runner, Config: cfg, OwnedRoot: owner, RootPath: root}
+	manager := &Manager{Git: runner, Preparer: preparer}
+	replaced := false
+	runner.SetBeforeRunAtHook(func(args []string) {
+		if replaced {
+			return
+		}
+		if err := os.Rename(root, root+"-old"); err != nil {
+			t.Fatalf("replace snapshot root: %v", err)
+		}
+		if err := os.Symlink(outside, root); err != nil {
+			t.Fatalf("install snapshot root replacement: %v", err)
+		}
+		replaced = true
+	})
+	snapshot, err := manager.Snapshot(context.Background(), repo, target, "snapshot", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("descriptor-bound snapshot failed: %v", err)
+	}
+	if !replaced {
+		t.Fatal("snapshot descriptor barrier was not reached")
+	}
+	oldTarget := filepath.Join(root+"-old", "slot", "root")
+	if data, readErr := os.ReadFile(filepath.Join(oldTarget, "tracked")); readErr != nil || string(data) != "leased\n" {
+		t.Fatalf("pinned snapshot did not read original worktree: data=%q err=%v", data, readErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(outside, "slot")); !os.IsNotExist(statErr) {
+		t.Fatalf("snapshot escaped into replacement root: %v", statErr)
+	}
+	for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+		if got := gitCommand(t, repository, "rev-parse", "--verify", ref); got != want {
+			t.Fatalf("snapshot ref %s=%s want %s", ref, got, want)
+		}
+	}
+}
+
 func TestSnapshotRefsAreIdempotentAndDeletionChecksOwnership(t *testing.T) {
 	temp := t.TempDir()
 	repository := filepath.Join(temp, "repository")

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
@@ -67,25 +68,62 @@ func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, workt
 }
 
 func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, error) {
-	head, err := m.gitValue(ctx, worktree, nil, "rev-parse", "HEAD")
+	worktreeDescriptorBound := false
+	if m.Preparer != nil {
+		if root, rootErr := config.ExpandHome(m.Preparer.Config.Storage.WorktreeRoot); rootErr == nil {
+			worktreeDescriptorBound = domain.IsWithin(root, worktree)
+		}
+	}
+	worktreeIdentity := ""
+	if worktreeDescriptorBound {
+		var identityErr error
+		worktreeIdentity, identityErr = m.Preparer.WorktreeIdentity(worktree)
+		if identityErr != nil {
+			return state.Snapshot{}, fmt.Errorf("%w: capture worktree identity before snapshot: %v", state.ErrOwnership, identityErr)
+		}
+	}
+	worktreeValue := func(env []string, args ...string) (string, error) {
+		if !worktreeDescriptorBound {
+			return m.gitValue(ctx, worktree, env, args...)
+		}
+		result, runErr := m.Preparer.RunGitInWorktree(ctx, worktree, worktreeIdentity, env, nil, args...)
+		if runErr != nil {
+			return "", runErr
+		}
+		return strings.TrimSpace(result.Stdout), nil
+	}
+	worktreeRun := func(env []string, input []byte, args ...string) (gitx.Result, error) {
+		if !worktreeDescriptorBound {
+			return m.Git.RunEnvInput(ctx, worktree, env, input, args...)
+		}
+		return m.Preparer.RunGitInWorktree(ctx, worktree, worktreeIdentity, env, input, args...)
+	}
+	head, err := worktreeValue(nil, "rev-parse", "HEAD")
 	if err != nil {
 		return state.Snapshot{}, err
 	}
-	indexTree, err := m.gitValue(ctx, worktree, nil, "write-tree")
+	indexTree, err := worktreeValue(nil, "write-tree")
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("write index tree: %w", err)
 	}
-	tmp := filepath.Join(filepath.Dir(worktree), ".wx-index-"+sessionID)
-	_ = os.Remove(tmp)
+	tmpFile, err := os.CreateTemp("", ".wx-index-*")
+	if err != nil {
+		return state.Snapshot{}, fmt.Errorf("create temporary snapshot index: %w", err)
+	}
+	tmp := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return state.Snapshot{}, fmt.Errorf("close temporary snapshot index: %w", err)
+	}
 	defer func() { _ = os.Remove(tmp) }()
 	env := []string{"GIT_INDEX_FILE=" + tmp}
-	if _, err := m.Git.RunEnv(ctx, worktree, env, "read-tree", head); err != nil {
+	if _, err := worktreeRun(env, nil, "read-tree", head); err != nil {
 		return state.Snapshot{}, err
 	}
-	if _, err := m.Git.RunEnv(ctx, worktree, env, "add", "-A", "--", "."); err != nil {
+	if _, err := worktreeRun(env, nil, "add", "-A", "--", "."); err != nil {
 		return state.Snapshot{}, err
 	}
-	worktreeTree, err := m.gitValue(ctx, worktree, env, "write-tree")
+	worktreeTree, err := worktreeValue(env, "write-tree")
 	if err != nil {
 		return state.Snapshot{}, err
 	}
@@ -95,7 +133,7 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 		"GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost",
 		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
 	)
-	commitRes, err := m.Git.RunEnvInput(ctx, worktree, commitEnv, []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
+	commitRes, err := worktreeRun(commitEnv, []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
 	if err != nil {
 		return state.Snapshot{}, err
 	}
@@ -154,7 +192,21 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 	if err := m.Preparer.PrepareForRestore(ctx, repo, target, s.HeadOID, slotID); err != nil {
 		return err
 	}
+	targetIdentity, err := m.Preparer.WorktreeIdentity(target)
+	if err != nil {
+		return fmt.Errorf("%w: capture restored worktree identity: %v", state.ErrOwnership, err)
+	}
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+		targetValue := func(env []string, args ...string) (string, error) {
+			result, runErr := m.Preparer.RunGitInWorktree(ctx, target, targetIdentity, env, nil, args...)
+			if runErr != nil {
+				return "", runErr
+			}
+			return strings.TrimSpace(result.Stdout), nil
+		}
+		targetRun := func(env []string, input []byte, args ...string) (gitx.Result, error) {
+			return m.Preparer.RunGitInWorktree(ctx, target, targetIdentity, env, input, args...)
+		}
 		for ref, want := range map[string]string{s.HeadRef: s.HeadOID, s.WorktreeRef: s.WorktreeOID} {
 			got, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", "--verify", ref)
 			if err != nil || got != want {
@@ -164,40 +216,49 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err := m.Preparer.ValidateRestoringOwnership(ctx, repo, target, s.HeadOID, slotID); err != nil {
 			return fmt.Errorf("validate restore worktree before snapshot: %w", err)
 		}
-		if _, err := m.Git.Run(ctx, target, "read-tree", "--reset", "-u", s.WorktreeOID+"^{tree}"); err != nil {
+		if _, err := targetRun(nil, nil, "read-tree", "--reset", "-u", s.WorktreeOID+"^{tree}"); err != nil {
 			return err
 		}
-		if _, err := m.Git.Run(ctx, target, "read-tree", s.IndexTreeOID); err != nil {
+		if _, err := targetRun(nil, nil, "read-tree", s.IndexTreeOID); err != nil {
 			return err
 		}
-		if err := m.Preparer.PrepareResume(ctx, repo, target, s.HeadOID, slotID); err != nil {
+		if err := m.Preparer.PrepareResumeWithIdentity(ctx, repo, target, s.HeadOID, slotID, targetIdentity); err != nil {
 			return fmt.Errorf("resume prepare: %w", err)
 		}
-		head, err := m.gitValue(ctx, target, nil, "rev-parse", "HEAD")
+		head, err := targetValue(nil, "rev-parse", "HEAD")
 		if err != nil {
 			return err
 		}
 		if head != s.HeadOID {
 			return errors.New("restored HEAD does not match snapshot")
 		}
-		if !gitx.IsDetached(ctx, m.Git, target) {
+		if _, detachedErr := targetRun(nil, nil, "symbolic-ref", "-q", "HEAD"); detachedErr == nil {
 			return errors.New("restored worktree is not detached")
+		} else if errors.Is(detachedErr, state.ErrOwnership) {
+			return detachedErr
 		}
-		indexTree, err := m.gitValue(ctx, target, nil, "write-tree")
+		indexTree, err := targetValue(nil, "write-tree")
 		if err != nil || indexTree != s.IndexTreeOID {
 			return errors.New("restored index does not match snapshot")
 		}
-		tmp := filepath.Join(filepath.Dir(target), ".wx-verify-index-"+slotID)
-		_ = os.Remove(tmp)
+		tmpFile, err := os.CreateTemp("", ".wx-verify-index-*")
+		if err != nil {
+			return fmt.Errorf("create temporary restore index: %w", err)
+		}
+		tmp := tmpFile.Name()
+		if err := tmpFile.Close(); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("close temporary restore index: %w", err)
+		}
 		defer func() { _ = os.Remove(tmp) }()
 		env := []string{"GIT_INDEX_FILE=" + tmp}
-		if _, err := m.Git.RunEnv(ctx, target, env, "read-tree", s.HeadOID); err != nil {
+		if _, err := targetRun(env, nil, "read-tree", s.HeadOID); err != nil {
 			return err
 		}
-		if _, err := m.Git.RunEnv(ctx, target, env, "add", "-A", "--", "."); err != nil {
+		if _, err := targetRun(env, nil, "add", "-A", "--", "."); err != nil {
 			return err
 		}
-		actualWorktreeTree, err := m.gitValue(ctx, target, env, "write-tree")
+		actualWorktreeTree, err := targetValue(env, "write-tree")
 		if err != nil {
 			return err
 		}
@@ -205,13 +266,16 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err != nil || actualWorktreeTree != expectedWorktreeTree {
 			return errors.New("restored working tree does not match snapshot")
 		}
-		if _, err := m.Git.Run(ctx, target, "status", "--porcelain=v2", "--untracked-files=all"); err != nil {
+		if _, err := targetRun(nil, nil, "status", "--porcelain=v2", "--untracked-files=all"); err != nil {
 			return fmt.Errorf("validate restored status: %w", err)
+		}
+		if err := m.Preparer.VerifyWorktreeIdentity(target, targetIdentity); err != nil {
+			return fmt.Errorf("validate restored worktree identity: %w", err)
 		}
 		if err := m.Preparer.ValidateRestoringOwnership(ctx, repo, target, s.HeadOID, slotID); err != nil {
 			return fmt.Errorf("validate restored worktree ownership: %w", err)
 		}
-		if err := m.Preparer.FinishRestore(ctx, repo, target, s.HeadOID, slotID); err != nil {
+		if err := m.Preparer.FinishRestoreWithIdentity(ctx, repo, target, s.HeadOID, slotID, targetIdentity); err != nil {
 			return err
 		}
 		return nil
@@ -234,6 +298,11 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		absoluteRoot, absolutePath = filepath.Clean(absoluteRoot), filepath.Clean(absolutePath)
 		if !domain.IsWithin(absoluteRoot, absolutePath) {
 			return removalOwnershipFailure(errors.New("worktree path is outside wx root"))
+		}
+		if m.Preparer != nil && m.Preparer.RequireOwnedRoot {
+			if m.Preparer.OwnedRoot == nil || filepath.Clean(m.Preparer.RootPath) != absoluteRoot {
+				return removalOwnershipFailure(errors.New("descriptor-bound worktree removal is unavailable"))
+			}
 		}
 		relative, err := filepath.Rel(absoluteRoot, absolutePath)
 		if err != nil {
