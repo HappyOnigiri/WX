@@ -244,6 +244,21 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	}
 }
 
+func TestRootForPathChoosesMostSpecificOverlappingRoot(t *testing.T) {
+	parent := t.TempDir()
+	outer := filepath.Join(parent, "outer")
+	inner := filepath.Join(outer, "inner")
+	path := filepath.Join(inner, "workspace", "slot")
+	m := &Manager{roots: map[string]bool{outer: true, inner: true}}
+
+	for range 100 {
+		got, ok := m.rootForPath(path)
+		if !ok || got != inner {
+			t.Fatalf("rootForPath(%q)=%q,%v want nested root %q", path, got, ok, inner)
+		}
+	}
+}
+
 func TestDiagnosticFilesystemAndHookChecks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -2075,12 +2075,19 @@ func (m *Manager) quarantineOwnershipFailure(slotID string, from []string, runEr
 func (m *Manager) rootForPath(path string) (string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	path = filepath.Clean(path)
+	// Retired and active roots may overlap after a configuration reload. Pick
+	// the most-specific root so a slot below a nested root uses that root's
+	// pinned descriptor instead of depending on randomized map iteration.
+	best := ""
 	for root := range m.roots {
 		if domain.IsWithin(root, path) {
-			return root, true
+			if best == "" || len(root) > len(best) {
+				best = root
+			}
 		}
 	}
-	return "", false
+	return best, best != ""
 }
 
 func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archive.Manager, root, slotID, sessionID, slotPath string) error {
