@@ -449,6 +449,9 @@ func TestReadinessHooksRejectCodexFeatureDisable(t *testing.T) {
 	if !readinessHooksAvailable("codex") {
 		t.Fatal("enabled Codex hook feature was rejected")
 	}
+	if codexHooksConfigEnabled([]byte("allow_managed_hooks_only = true\n"), true) {
+		t.Fatal("managed-hooks-only policy was accepted for user hooks")
+	}
 }
 
 func TestChildEnvironmentScrubsInheritedWXInvocationState(t *testing.T) {

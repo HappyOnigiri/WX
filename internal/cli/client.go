@@ -295,27 +295,39 @@ func readinessHooksAvailable(agent string) bool {
 	return false
 }
 
-// codexHooksEnabled checks the user feature switch which can disable every
-// hook source, including an otherwise valid hooks.json. The detector only
-// needs this small, stable part of TOML; unknown config is treated as
-// unavailable by the caller when it cannot be read or is structurally
-// malformed.
+// codexHooksEnabled checks local Codex feature and managed-hook policy files
+// which can disable user hooks, including an otherwise valid hooks.json. The
+// detector only needs this small, stable part of TOML; unreadable or
+// structurally malformed policy is treated as unavailable.
 func codexHooksEnabled() bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
-	if errors.Is(err, os.ErrNotExist) {
-		return true
+	configs := []struct {
+		path        string
+		requirement bool
+	}{
+		{path: filepath.Join(home, ".codex", "config.toml")},
+		{path: "/etc/codex/config.toml"},
+		{path: "/etc/codex/requirements.toml", requirement: true},
+		{path: "/etc/codex/managed_config.toml", requirement: true},
 	}
-	if err != nil || len(data) > 4<<20 {
-		return false
+	for _, config := range configs {
+		if _, err := regularHookPath(config.path); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return false
+		}
+		data, err := os.ReadFile(config.path)
+		if err != nil || len(data) > 4<<20 || !codexHooksConfigEnabled(data, config.requirement) {
+			return false
+		}
 	}
-	return codexHooksFeatureEnabled(data)
+	return true
 }
 
-func codexHooksFeatureEnabled(data []byte) bool {
+func codexHooksConfigEnabled(data []byte, requirement bool) bool {
 	table := ""
 	for _, rawLine := range strings.Split(string(data), "\n") {
 		line := strings.TrimSpace(stripTOMLComment(rawLine))
@@ -339,8 +351,15 @@ func codexHooksFeatureEnabled(data []byte) bool {
 			// unavailable so a malformed config cannot enable the fast path.
 			return false
 		}
-		key = strings.TrimSpace(key)
+		key = normalizeTOMLKey(key)
 		if table == "" {
+			if requirement && key == "allow_managed_hooks_only" {
+				value = strings.TrimSpace(value)
+				if value != "false" {
+					return false
+				}
+				continue
+			}
 			key = strings.ReplaceAll(key, " ", "")
 			if key != "features.hooks" && key != "features.codex_hooks" {
 				continue
@@ -354,6 +373,14 @@ func codexHooksFeatureEnabled(data []byte) bool {
 		}
 	}
 	return true
+}
+
+func normalizeTOMLKey(key string) string {
+	key = strings.TrimSpace(key)
+	if len(key) >= 2 && ((key[0] == '"' && key[len(key)-1] == '"') || (key[0] == '\'' && key[len(key)-1] == '\'')) {
+		return key[1 : len(key)-1]
+	}
+	return key
 }
 
 func stripTOMLComment(line string) string {
