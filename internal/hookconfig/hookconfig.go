@@ -501,27 +501,28 @@ func decodeStrictJSON(data []byte, value any) error {
 
 func isExactWXHookCommandForExecutable(command, event, executable string) bool {
 	fields, ok := splitHookCommand(command)
-	if !ok || len(fields) != 3 || fields[1] != "hook" || fields[2] != event {
+	if !ok || len(fields) != 3 || fields[0].literalExpansion || fields[1].value != "hook" || fields[2].value != event {
 		return false
 	}
-	// A quoted variable or tilde is literal to the shell. Reject it instead of
-	// treating it as an expansion and claiming a gate exists.
-	if strings.ContainsAny(command, "'\"") && (strings.Contains(fields[0], "$HOME") || strings.HasPrefix(fields[0], "~")) {
-		return false
-	}
-	commandExecutable, ok := resolveHookExecutable(fields[0])
+	commandExecutable, ok := resolveHookExecutable(fields[0].value)
 	if !ok {
 		return false
 	}
 	return sameExecutable(commandExecutable, executable)
 }
 
-func splitHookCommand(command string) ([]string, bool) {
-	var fields []string
+type hookCommandField struct {
+	value            string
+	literalExpansion bool
+}
+
+func splitHookCommand(command string) ([]hookCommandField, bool) {
+	var fields []hookCommandField
 	var field strings.Builder
 	var quote byte
 	escaped := false
 	started := false
+	literalExpansion := false
 	for i := 0; i < len(command); i++ {
 		char := command[i]
 		// Newlines and carriage returns are shell command separators, not
@@ -531,6 +532,9 @@ func splitHookCommand(command string) ([]string, bool) {
 			return nil, false
 		}
 		if escaped {
+			if (char == '~' && field.Len() == 0) || (char == '$' && strings.HasPrefix(command[i:], "$HOME")) {
+				literalExpansion = true
+			}
 			field.WriteByte(char)
 			escaped = false
 			started = true
@@ -541,7 +545,21 @@ func splitHookCommand(command string) ([]string, bool) {
 				quote = 0
 				continue
 			}
+			if quote == '"' && char == '`' {
+				// Backticks are command substitution in double quotes. Do not
+				// classify a command whose executable depends on shell execution.
+				return nil, false
+			}
+			if (char == '~' && field.Len() == 0) || (quote == '\'' && char == '$' && strings.HasPrefix(command[i:], "$HOME")) {
+				literalExpansion = true
+			}
 			if quote == '"' && char == '\\' {
+				if i+1 >= len(command) || !strings.ContainsRune("$`\"\\", rune(command[i+1])) {
+					// Inside double quotes, backslash only escapes $, `, ", \\,
+					// or a newline. Treating other escapes as removed would
+					// mistake a non-existent shell path for the wx executable.
+					return nil, false
+				}
 				escaped = true
 				continue
 			}
@@ -558,9 +576,10 @@ func splitHookCommand(command string) ([]string, bool) {
 			started = true
 		case unicode.IsSpace(rune(char)):
 			if started {
-				fields = append(fields, field.String())
+				fields = append(fields, hookCommandField{value: field.String(), literalExpansion: literalExpansion})
 				field.Reset()
 				started = false
+				literalExpansion = false
 			}
 		case strings.ContainsRune("|;&><`", rune(char)):
 			return nil, false
@@ -573,7 +592,7 @@ func splitHookCommand(command string) ([]string, bool) {
 		return nil, false
 	}
 	if started {
-		fields = append(fields, field.String())
+		fields = append(fields, hookCommandField{value: field.String(), literalExpansion: literalExpansion})
 	}
 	return fields, true
 }

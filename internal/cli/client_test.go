@@ -318,6 +318,30 @@ func TestReadinessHooksFailClosedForMatcherPrecedenceAndExecutableIdentity(t *te
 	if readinessHooksAvailable("codex") {
 		t.Fatal("double-quoted tilde expansion was treated as executable identity")
 	}
+	doubleQuotedHome := func(event string) string {
+		return fmt.Sprintf(`{"type":"command","command":"\"$HOME/wx\" hook %s"}`, event)
+	}
+	doubleQuotedHomeDocument := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, doubleQuotedHome("session-start"), doubleQuotedHome("user-prompt-submit"), doubleQuotedHome("pre-tool-use"))
+	writeHooks(t, codexPath, doubleQuotedHomeDocument)
+	if !readinessHooksAvailable("codex") {
+		t.Fatal("double-quoted HOME expansion was rejected despite being valid shell syntax")
+	}
+	escapedHome := func(event string) string {
+		return fmt.Sprintf(`{"type":"command","command":"\\$HOME/wx hook %s"}`, event)
+	}
+	escapedHomeDocument := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, escapedHome("session-start"), escapedHome("user-prompt-submit"), escapedHome("pre-tool-use"))
+	writeHooks(t, codexPath, escapedHomeDocument)
+	if readinessHooksAvailable("codex") {
+		t.Fatal("escaped HOME was treated as executable expansion")
+	}
+	invalidDoubleQuoteEscape := func(event string) string {
+		return fmt.Sprintf(`{"type":"command","command":%q}`, `"$HOME/wx\x" hook `+event)
+	}
+	invalidDoubleQuoteEscapeDocument := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, invalidDoubleQuoteEscape("session-start"), invalidDoubleQuoteEscape("user-prompt-submit"), invalidDoubleQuoteEscape("pre-tool-use"))
+	writeHooks(t, codexPath, invalidDoubleQuoteEscapeDocument)
+	if readinessHooksAvailable("codex") {
+		t.Fatal("unsupported double-quoted escape was treated as a canonical executable")
+	}
 
 	async := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","async":true,"command":%q}]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, executable+" hook session-start", command("user-prompt-submit"), command("pre-tool-use"))
 	writeHooks(t, codexPath, async)
