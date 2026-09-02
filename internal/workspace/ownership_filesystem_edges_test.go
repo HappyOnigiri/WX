@@ -285,8 +285,11 @@ func TestPhysicalFilesystemRejectsNondirectoryAndInvalidTraversal(t *testing.T) 
 	if _, err := readPhysicalManifest(root, "../escape"); err == nil {
 		t.Fatal("physical manifest accepted an unsafe relative path")
 	}
-	socketRoot := filepath.Join(t.TempDir(), "wx-socket-root-"+domain.StableID(root))
-	if err := os.Mkdir(socketRoot, 0o700); err != nil {
+	socketRoot, err := os.MkdirTemp("/private/tmp", "wx-")
+	if err != nil {
+		socketRoot, err = os.MkdirTemp("", "wx-")
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
