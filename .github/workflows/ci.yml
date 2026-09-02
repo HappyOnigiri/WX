@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [fmt-check, lint, deadcode, mod-tidy-check, generated-check, docs-check, workflow-check, shell-check, portable-test]
+        target: [fmt-check, lint, deadcode, mod-tidy-check, generated-check, docs-check, workflow-check, shell-check, portable-test, reproducible-build, sbom]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -56,6 +56,13 @@ jobs:
         run: make "$CHECK_TARGET"
       - name: Verify read-only check
         run: git diff --exit-code
+      - if: matrix.target == 'sbom'
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: sbom
+          path: artifacts/sbom.json
+          if-no-files-found: error
+          retention-days: 7
 
   darwin-build:
     name: Darwin ${{ matrix.arch }} build and smoke

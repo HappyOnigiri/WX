@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [govulncheck, gosec, license-check, secret-check]
+        target: [govulncheck, dependency-check, gosec, license-check, secret-check]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

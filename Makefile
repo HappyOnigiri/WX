@@ -13,6 +13,7 @@ GOFUMPT_VERSION ?= v0.11.0
 GCI_VERSION ?= v0.14.0
 ACTIONLINT_VERSION ?= v1.7.12
 GOVULNCHECK_VERSION ?= v1.7.0
+OSV_SCANNER_VERSION ?= v2.3.8
 GOSEC_VERSION ?= v2.29.0
 GITLEAKS_VERSION ?= v8.30.1
 GO_LICENSES_VERSION ?= v2.0.1
@@ -35,7 +36,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # trust boundaries; G118/G602 and the remaining security rules stay enabled.
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check test test-race test-race-coverage coverage-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck gosec license-check secret-check sbom mutation-check mutation-full-check mutation-run security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check benchmark-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check test test-race test-race-coverage coverage-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom mutation-check mutation-full-check mutation-run security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check benchmark-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -47,6 +48,7 @@ setup-go-tools:
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/daixiang0/gci@$(GCI_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/google/osv-scanner/v2/cmd/osv-scanner@$(OSV_SCANNER_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/google/go-licenses/v2@$(GO_LICENSES_VERSION)
@@ -175,6 +177,10 @@ govulncheck:
 	@test -x "$(TOOLS_BIN)/govulncheck" || { echo "pinned govulncheck is missing; run make setup"; exit 1; }
 	"$(TOOLS_BIN)/govulncheck" ./...
 
+dependency-check:
+	@test -x "$(TOOLS_BIN)/osv-scanner" || { echo "pinned OSV scanner is missing; run make setup"; exit 1; }
+	"$(TOOLS_BIN)/osv-scanner" scan source --lockfile=go.mod --all-vulns .
+
 gosec:
 	@test -x "$(TOOLS_BIN)/gosec" || { echo "pinned gosec is missing; run make setup"; exit 1; }
 	"$(TOOLS_BIN)/gosec" -quiet -exclude="$(GOSEC_EXCLUDES)" -nosec-require-justification -nosec-require-rules ./...
@@ -216,12 +222,12 @@ mutation-run:
 	  scripts/check-mutation-survivors.sh "$$package" "$$result" "$(MUTATION_MIN)"; \
 	done
 
-security-local: govulncheck gosec license-check secret-check
+security-local: govulncheck dependency-check gosec license-check secret-check
 
 ci:
 	$(MAKE) $(CI_MAKEFLAGS) ci-checks
 
-ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck gosec license-check secret-check mutation-check hooks-test
+ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom mutation-check hooks-test
 
 hooks-install:
 	git config --local core.hooksPath .githooks
