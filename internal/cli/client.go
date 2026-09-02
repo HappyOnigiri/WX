@@ -338,8 +338,17 @@ func codexHooksConfigEnabled(data []byte, requirement bool) bool {
 			// A small parser cannot safely reason about multiline strings.
 			return false
 		}
+		if strings.HasPrefix(line, "[[") {
+			if !strings.HasSuffix(line, "]]") {
+				return false
+			}
+			// Array-of-table entries are valid TOML (and common for hooks),
+			// but never represent the singular [features] table.
+			table = "array:" + strings.TrimSpace(line[2:len(line)-2])
+			continue
+		}
 		if strings.HasPrefix(line, "[") {
-			if !strings.HasSuffix(line, "]") || strings.HasPrefix(line, "[[") {
+			if !strings.HasSuffix(line, "]") {
 				return false
 			}
 			table = strings.TrimSpace(line[1 : len(line)-1])
@@ -361,6 +370,12 @@ func codexHooksConfigEnabled(data []byte, requirement bool) bool {
 				continue
 			}
 			key = strings.ReplaceAll(key, " ", "")
+			if key == "features" {
+				if !inlineTOMLFeatureTableEnabled(value) {
+					return false
+				}
+				continue
+			}
 			if key != "features.hooks" && key != "features.codex_hooks" {
 				continue
 			}
@@ -373,6 +388,70 @@ func codexHooksConfigEnabled(data []byte, requirement bool) bool {
 		}
 	}
 	return true
+}
+
+func inlineTOMLFeatureTableEnabled(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if len(raw) < 2 || raw[0] != '{' || raw[len(raw)-1] != '}' {
+		return false
+	}
+	fields, ok := splitTOMLInlineFields(raw[1 : len(raw)-1])
+	if !ok {
+		return false
+	}
+	for _, field := range fields {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			return false
+		}
+		key = normalizeTOMLKey(key)
+		if key != "hooks" && key != "codex_hooks" {
+			continue
+		}
+		if strings.TrimSpace(value) != "true" {
+			return false
+		}
+	}
+	return true
+}
+
+func splitTOMLInlineFields(raw string) ([]string, bool) {
+	var fields []string
+	start := 0
+	var quote byte
+	depth := 0
+	for index := 0; index < len(raw); index++ {
+		char := raw[index]
+		if quote != 0 {
+			if char == quote && (quote != '"' || index == 0 || raw[index-1] != '\\') {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '\'', '"':
+			quote = char
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth == 0 {
+				return nil, false
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				fields = append(fields, strings.TrimSpace(raw[start:index]))
+				start = index + 1
+			}
+		}
+	}
+	if quote != 0 || depth != 0 {
+		return nil, false
+	}
+	if tail := strings.TrimSpace(raw[start:]); tail != "" {
+		fields = append(fields, tail)
+	}
+	return fields, true
 }
 
 func normalizeTOMLKey(key string) string {

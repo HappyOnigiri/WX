@@ -435,6 +435,7 @@ func TestReadinessHooksRejectCodexFeatureDisable(t *testing.T) {
 		"[features]\nhooks = false\n",
 		"[features]\ncodex_hooks = false\n",
 		"features.hooks = false\n",
+		"features = { hooks = false }\n",
 	} {
 		if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 			t.Fatal(err)
@@ -451,6 +452,9 @@ func TestReadinessHooksRejectCodexFeatureDisable(t *testing.T) {
 	}
 	if codexHooksConfigEnabled([]byte("allow_managed_hooks_only = true\n"), true) {
 		t.Fatal("managed-hooks-only policy was accepted for user hooks")
+	}
+	if !codexHooksConfigEnabled([]byte("[[hooks.SessionStart]]\nmatcher = \"*\"\n"), false) {
+		t.Fatal("unrelated inline hook table disabled the readiness fast path")
 	}
 }
 
