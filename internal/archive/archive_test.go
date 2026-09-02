@@ -219,6 +219,16 @@ func TestSnapshotRejectsConflictingExistingRecoveryRef(t *testing.T) {
 	}
 }
 
+func TestEnsureRecoveryRefPropagatesCreationFailure(t *testing.T) {
+	repository, repo, manager, _ := archiveFixture(t)
+	head := gitCommand(t, repository, "rev-parse", "HEAD")
+	installGitFault(t, " update-ref --create-reflog ", 1)
+	ref := "refs/wx/recovery/fault/repository/head"
+	if err := manager.ensureRecoveryRef(context.Background(), repo, ref, head); err == nil {
+		t.Fatal("recovery ref creation succeeded despite injected Git failure")
+	}
+}
+
 func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
