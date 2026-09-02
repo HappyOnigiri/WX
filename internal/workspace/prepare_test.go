@@ -355,6 +355,71 @@ func TestPrepareClassifiesReplacedRootAsOwnershipUncertain(t *testing.T) {
 	}
 }
 
+// A target leaf can be replaced with another physical worktree after the
+// descriptor-bound Git add has completed. The replacement must not be treated
+// as the worktree whose identity was reserved for this prepare job.
+func TestPrepareRejectsTargetReplacementAfterGitAdd(t *testing.T) {
+	base := t.TempDir()
+	repository := filepath.Join(base, "repository")
+	root := filepath.Join(base, "worktrees")
+	if err := os.MkdirAll(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "tracked")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	head := gitOutput(t, repository, "rev-parse", "HEAD")
+	common := gitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	replacement := filepath.Join(root, "replacement")
+	gitCommand(t, repository, "worktree", "add", "--detach", replacement, head)
+	runner := &gitx.Runner{Timeout: 5 * time.Second}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	preparer := Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root}
+	target := filepath.Join(root, "slot", "root")
+	targetOld := target + "-old"
+	replaced := false
+	runner.SetBeforeRunAtHook(func(args []string) {
+		if replaced || !strings.Contains(strings.Join(args, " "), "worktree lock") {
+			return
+		}
+		if err := os.Rename(target, targetOld); err != nil {
+			t.Fatalf("move reserved target: %v", err)
+		}
+		if err := os.Rename(replacement, target); err != nil {
+			t.Fatalf("install replacement target: %v", err)
+		}
+		replaced = true
+	})
+	err = preparer.Prepare(context.Background(), repo, target, head, "slot")
+	if !replaced {
+		t.Fatal("post-add target replacement barrier was not reached")
+	}
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replaced target returned non-ownership error: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(target, ".git")); statErr != nil {
+		t.Fatalf("replacement worktree was removed or changed: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(targetOld, ".git")); statErr != nil {
+		t.Fatalf("reserved worktree was removed after ownership failure: %v", statErr)
+	}
+}
+
 // Finding 1: a matching Git worktree is not reusable without wx ownership proof.
 func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testing.T) {
 	root := t.TempDir()
