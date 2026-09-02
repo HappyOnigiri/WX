@@ -33,10 +33,11 @@ MUTATION_CORE_PACKAGES := ./internal/config ./internal/state ./internal/pool ./i
 LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicode-3.0,Unlicense
 # wx intentionally executes Git, launchctl, and user-configured prepare commands
 # against ownership-validated paths. These generic rules cannot model those
-# trust boundaries; G118/G602 and the remaining security rules stay enabled.
+# trust boundaries; this exclusion list is used only by the explicitly invoked
+# `gosec` target, which is paused out of default setup, CI, and hooks.
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom mutation-check mutation-full-check mutation-run security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check benchmark-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-mutation-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom mutation-check mutation-full-check mutation-run security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check benchmark-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -47,21 +48,34 @@ setup-go-tools:
 	GOBIN="$(TOOLS_BIN)" $(GO) install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/daixiang0/gci@$(GCI_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+
+setup-external-tools: setup-markdownlint check-shellcheck
+
+# These setup targets are intentionally not dependencies of `setup`, CI, or
+# hooks. Invoke the corresponding check explicitly only after the user grants
+# permission to opt back into the paused security, SBOM, or mutation tooling.
+setup-security-tools:
+	mkdir -p "$(TOOLS_BIN)"
 	GOBIN="$(TOOLS_BIN)" $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/google/osv-scanner/v2/cmd/osv-scanner@$(OSV_SCANNER_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/zricethezav/gitleaks/v8@$(GITLEAKS_VERSION)
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/google/go-licenses/v2@$(GO_LICENSES_VERSION)
-	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@$(CYCLONEDX_VERSION)
-	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/go-gremlins/gremlins/cmd/gremlins@$(GREMLINS_VERSION)
 
-setup-external-tools: setup-markdownlint setup-zizmor check-shellcheck
+setup-sbom-tools:
+	mkdir -p "$(TOOLS_BIN)"
+	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@$(CYCLONEDX_VERSION)
+
+setup-mutation-tools:
+	mkdir -p "$(TOOLS_BIN)"
+	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/go-gremlins/gremlins/cmd/gremlins@$(GREMLINS_VERSION)
 
 setup-markdownlint:
 	command -v npm >/dev/null
 	npm install --silent --no-audit --no-fund --prefix "$(TOOLS_DIR)/npm" markdownlint-cli2@$(MARKDOWNLINT_VERSION)
 
 setup-zizmor:
+	mkdir -p "$(TOOLS_BIN)"
 	@if command -v uv >/dev/null; then \
 	  UV_TOOL_BIN_DIR="$(TOOLS_BIN)" uv tool install --force zizmor==$(ZIZMOR_VERSION); \
 	elif command -v pipx >/dev/null; then \
@@ -121,8 +135,8 @@ workflow-lint:
 	@test -x "$(TOOLS_BIN)/actionlint" || { echo "pinned actionlint is missing; run make setup"; exit 1; }
 	"$(TOOLS_BIN)/actionlint"
 
-workflow-security-audit:
-	@test -x "$(TOOLS_BIN)/zizmor" || { echo "pinned zizmor is missing; run make setup"; exit 1; }
+workflow-security-audit: setup-zizmor
+	@test -x "$(TOOLS_BIN)/zizmor" || { echo "pinned zizmor is missing; run make setup-zizmor"; exit 1; }
 	"$(TOOLS_BIN)/zizmor" --pedantic --min-severity medium .github
 
 shell-check:
@@ -183,46 +197,46 @@ smoke: build
 	$(GO) test ./internal/rpc -run TestClientServerRoundTripWithoutParentDeadline -count=1
 	@destination="$$(mktemp -d)"; $(MAKE) install INSTALL_DIR="$$destination"; "$$destination/wx" --version >/dev/null
 
-govulncheck:
-	@test -x "$(TOOLS_BIN)/govulncheck" || { echo "pinned govulncheck is missing; run make setup"; exit 1; }
+govulncheck: setup-security-tools
+	@test -x "$(TOOLS_BIN)/govulncheck" || { echo "pinned govulncheck is missing; run make setup-security-tools"; exit 1; }
 	"$(TOOLS_BIN)/govulncheck" ./...
 
-dependency-check:
-	@test -x "$(TOOLS_BIN)/osv-scanner" || { echo "pinned OSV scanner is missing; run make setup"; exit 1; }
+dependency-check: setup-security-tools
+	@test -x "$(TOOLS_BIN)/osv-scanner" || { echo "pinned OSV scanner is missing; run make setup-security-tools"; exit 1; }
 	"$(TOOLS_BIN)/osv-scanner" scan source --lockfile=go.mod --all-vulns .
 
-gosec:
-	@test -x "$(TOOLS_BIN)/gosec" || { echo "pinned gosec is missing; run make setup"; exit 1; }
+gosec: setup-security-tools
+	@test -x "$(TOOLS_BIN)/gosec" || { echo "pinned gosec is missing; run make setup-security-tools"; exit 1; }
 	"$(TOOLS_BIN)/gosec" -quiet -exclude="$(GOSEC_EXCLUDES)" -nosec-require-justification -nosec-require-rules ./...
 
-license-check:
-	@test -x "$(TOOLS_BIN)/go-licenses" || { echo "pinned license checker is missing; run make setup"; exit 1; }
+license-check: setup-security-tools
+	@test -x "$(TOOLS_BIN)/go-licenses" || { echo "pinned license checker is missing; run make setup-security-tools"; exit 1; }
 	@# go-licenses v2 misclassifies Go 1.26 standard packages as modules;
 	@# ignore the explicit `go list std` set while still resolving their dependencies.
 	@$(GO) list std | sed 's/^/--ignore=/' | xargs "$(TOOLS_BIN)/go-licenses" check ./... \
 	  --ignore=github.com/HappyOnigiri/WX --allowed_licenses="$(LICENSE_ALLOWLIST)"
 
-secret-check:
-	@test -x "$(TOOLS_BIN)/gitleaks" || { echo "pinned secret scanner is missing; run make setup"; exit 1; }
+secret-check: setup-security-tools
+	@test -x "$(TOOLS_BIN)/gitleaks" || { echo "pinned secret scanner is missing; run make setup-security-tools"; exit 1; }
 	"$(TOOLS_BIN)/gitleaks" git --redact --no-banner .
 	"$(TOOLS_BIN)/gitleaks" dir --redact --no-banner .
 
-sbom:
-	@test -x "$(TOOLS_BIN)/cyclonedx-gomod" || { echo "pinned SBOM generator is missing; run make setup"; exit 1; }
+sbom: setup-sbom-tools
+	@test -x "$(TOOLS_BIN)/cyclonedx-gomod" || { echo "pinned SBOM generator is missing; run make setup-sbom-tools"; exit 1; }
 	mkdir -p artifacts
 	"$(TOOLS_BIN)/cyclonedx-gomod" mod -json -output artifacts/sbom.json
 
-mutation-check:
-	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned mutation tool is missing; run make setup"; exit 1; }
+mutation-check: setup-mutation-tools
+	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned mutation tool is missing; run make setup-mutation-tools"; exit 1; }
 	@packages="$$(git diff --name-only "$(MUTATION_BASE)...HEAD" -- 'internal/**/*.go' | awk -F/ 'NF >= 3 && $$2 ~ /^(config|state|pool|gitx|workspace|archive|rpc)$$/ { print "./" $$1 "/" $$2 }' | sort -u | tr '\n' ' ')"; \
 	if [ -z "$$packages" ]; then echo "no changed core packages"; exit 0; fi; \
 	$(MAKE) mutation-run MUTATION_PACKAGES="$$packages"
 
-mutation-full-check:
+mutation-full-check: setup-mutation-tools
 	@$(MAKE) mutation-run MUTATION_PACKAGES="$(MUTATION_CORE_PACKAGES)"
 
-mutation-run:
-	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned mutation tool is missing; run make setup"; exit 1; }
+mutation-run: setup-mutation-tools
+	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned mutation tool is missing; run make setup-mutation-tools"; exit 1; }
 	@set -eu; scratch="$$(mktemp -d)"; trap 'rm -rf "$$scratch"' EXIT; worktree="$$scratch/repository"; \
 	git clone --quiet --no-local . "$$worktree"; \
 	for package in $(MUTATION_PACKAGES); do \
@@ -234,7 +248,7 @@ mutation-run:
 
 # Security, SBOM, and mutation targets are manual opt-in checks. Keep them out
 # of CI and hooks until the user explicitly authorizes re-enabling automation.
-security-local: govulncheck dependency-check gosec license-check secret-check
+security-local: setup-security-tools govulncheck dependency-check gosec license-check secret-check
 
 ci:
 	$(MAKE) $(CI_MAKEFLAGS) ci-checks

@@ -67,8 +67,9 @@ content and are readable by processes with access to that repository.
 
 Run `make setup` once to install the pinned development tools, then `make ci`
 for the local quality gate. Security, SBOM, and mutation checks are paused in
-the initial phase and are not part of `make ci` or the Git hooks. They remain
-available as manual, explicit opt-in targets:
+the initial phase and are not part of `make setup`, `make ci`, or the Git hooks.
+They remain available as manual, explicit opt-in targets; each target installs
+its paused tool only when you invoke that target:
 
 ```sh
 make security-local             # govulncheck, dependency, gosec, license, secrets
