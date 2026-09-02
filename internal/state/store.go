@@ -2089,21 +2089,22 @@ func (s *Store) RecoveryRefs(ctx context.Context, repositoryID string) ([]string
 
 // RecoveryRefExpectations returns the durable ownership proof for each
 // published recovery ref. A snapshot job that has already committed its
-// metadata but has not finished publishing refs is marked InFlight; reconcile
-// may wait for those missing refs while still quarantining every ref whose
-// name or object ID is not exactly accounted for.
+// metadata but has not finished publishing refs is marked InFlight while its
+// pending job or unexpired worker lease is present; reconcile may wait for
+// those missing refs while still quarantining every ref whose name or object
+// ID is not exactly accounted for.
 func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string) ([]RecoveryRefExpectation, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT sn.head_recovery_ref,sn.head_oid,sn.session_id,se.state,
-		       CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND j.state IN ('PENDING','RUNNING')) THEN 1 ELSE 0 END
+		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND (j.state='PENDING' OR (j.state='RUNNING' AND j.lease_expires_at>?))) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
 		UNION ALL
 		SELECT sn.worktree_recovery_ref,sn.worktree_snapshot_oid,sn.session_id,se.state,
-		       CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND j.state IN ('PENDING','RUNNING')) THEN 1 ELSE 0 END
+		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND (j.state='PENDING' OR (j.state='RUNNING' AND j.lease_expires_at>?))) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
-		ORDER BY 1`, repositoryID, repositoryID)
+		ORDER BY 1`, now(), repositoryID, now(), repositoryID)
 	if err != nil {
 		return nil, err
 	}

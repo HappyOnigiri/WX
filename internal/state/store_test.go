@@ -636,6 +636,18 @@ func TestRecoveryRefExpectationsMarkActiveSnapshotJobInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.db.Exec(`UPDATE jobs SET lease_expires_at=? WHERE id=?`, FormatTime(time.Now().Add(-time.Minute)), claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	expectations, err = store.RecoveryRefExpectations(ctx, "repository")
+	if err != nil || len(expectations) != 2 {
+		t.Fatalf("expired-lease expectations=%+v err=%v", expectations, err)
+	}
+	for _, expectation := range expectations {
+		if expectation.InFlight {
+			t.Fatalf("expired snapshot job remained in-flight: %+v", expectation)
+		}
+	}
 	if err := store.FinishJob(ctx, claimed.ID, "test", errors.New("simulated archive failure")); err != nil {
 		t.Fatal(err)
 	}
