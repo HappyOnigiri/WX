@@ -66,5 +66,18 @@ content and are readable by processes with access to that repository.
 ## Development
 
 Run `make setup` once to install the pinned development tools, then `make ci`
-for the complete local quality gate. Run `make hooks-install` to enable the
-bounded pre-commit and pre-push checks.
+for the local quality gate. Security, SBOM, and mutation checks are paused in
+the initial phase and are not part of `make ci` or the Git hooks. They remain
+available as manual, explicit opt-in targets:
+
+```sh
+make security-local             # govulncheck, dependency, gosec, license, secrets
+make workflow-security-audit    # zizmor
+make sbom
+make mutation-check             # changed core packages
+make mutation-full-check        # all core packages
+```
+
+Do not re-enable these checks in CI, workflows, or hooks without the user's
+explicit permission. Run `make hooks-install` to enable the bounded
+pre-commit and pre-push checks.

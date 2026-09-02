@@ -36,7 +36,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # trust boundaries; G118/G602 and the remaining security rules stay enabled.
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check test test-race test-race-coverage coverage-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom mutation-check mutation-full-check mutation-run security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check benchmark-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom mutation-check mutation-full-check mutation-run security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check benchmark-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -115,9 +115,14 @@ docs-check:
 	@test -x "$(NPM_BIN)/markdownlint-cli2" || { echo "pinned markdownlint is missing; run make setup"; exit 1; }
 	"$(NPM_BIN)/markdownlint-cli2" README.md '**/*.md' '#.tools/**' '#tmp/**'
 
-workflow-check:
-	@test -x "$(TOOLS_BIN)/actionlint" -a -x "$(TOOLS_BIN)/zizmor" || { echo "pinned workflow tools are missing; run make setup"; exit 1; }
+workflow-check: workflow-lint
+
+workflow-lint:
+	@test -x "$(TOOLS_BIN)/actionlint" || { echo "pinned actionlint is missing; run make setup"; exit 1; }
 	"$(TOOLS_BIN)/actionlint"
+
+workflow-security-audit:
+	@test -x "$(TOOLS_BIN)/zizmor" || { echo "pinned zizmor is missing; run make setup"; exit 1; }
 	"$(TOOLS_BIN)/zizmor" --pedantic --min-severity medium .github
 
 shell-check:
@@ -227,12 +232,14 @@ mutation-run:
 	  scripts/check-mutation-survivors.sh "$$package" "$$result" "$(MUTATION_MIN)"; \
 	done
 
+# Security, SBOM, and mutation targets are manual opt-in checks. Keep them out
+# of CI and hooks until the user explicitly authorizes re-enabling automation.
 security-local: govulncheck dependency-check gosec license-check secret-check
 
 ci:
 	$(MAKE) $(CI_MAKEFLAGS) ci-checks
 
-ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom mutation-check hooks-test
+ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke hooks-test
 
 hooks-install:
 	git config --local core.hooksPath .githooks

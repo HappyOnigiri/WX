@@ -86,9 +86,7 @@ if [ "$docs_changed" = true ]; then
 fi
 if [ "$workflow_changed" = true ]; then
   require_tool "$tools/actionlint"
-  require_tool "$tools/zizmor"
   "$tools/actionlint"
-  "$tools/zizmor" --pedantic --min-severity medium .github
 fi
 if [ "$shell_changed" = true ]; then
   command -v shellcheck >/dev/null 2>&1 || { echo "ShellCheck is missing; run make setup" >&2; exit 1; }

@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [fmt-check, lint, deadcode, mod-tidy-check, generated-check, docs-check, workflow-check, shell-check, portable-test, reproducible-build, sbom]
+        target: [fmt-check, lint, deadcode, mod-tidy-check, generated-check, docs-check, workflow-check, shell-check, portable-test, reproducible-build]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -36,9 +36,6 @@ jobs:
       - name: Install markdown checker
         if: matrix.target == 'docs-check'
         run: make setup-markdownlint
-      - name: Install workflow checker
-        if: matrix.target == 'workflow-check'
-        run: make setup-zizmor
       - name: Install pinned ShellCheck
         if: matrix.target == 'shell-check'
         env:
@@ -56,14 +53,6 @@ jobs:
         run: make "$CHECK_TARGET"
       - name: Verify read-only check
         run: git diff --exit-code
-      - if: matrix.target == 'sbom'
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
-        with:
-          name: sbom
-          path: artifacts/sbom.json
-          if-no-files-found: error
-          retention-days: 7
-
   darwin-build:
     name: Darwin ${{ matrix.arch }} build and smoke
     runs-on: ${{ matrix.runner }}
@@ -176,25 +165,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  mutation:
-    name: Changed core mutation
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: ./.github/actions/setup-go
-        with:
-          cache-name: mutation
-      - run: make setup-go-tools mutation-check
-      - run: git diff --exit-code
-
   required:
     name: CI required
     if: always()
-    needs: [static, darwin-build, integration, quality, mutation]
+    needs: [static, darwin-build, integration, quality]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
@@ -202,13 +176,12 @@ jobs:
       DARWIN_BUILD_RESULT: ${{ needs.darwin-build.result }}
       INTEGRATION_RESULT: ${{ needs.integration.result }}
       QUALITY_RESULT: ${{ needs.quality.result }}
-      MUTATION_RESULT: ${{ needs.mutation.result }}
     steps:
       - name: Require every CI job
         run: |
           # Every job listed in needs is required. There is no optional
           # availability branch for this aggregate check.
-          for result in "$STATIC_RESULT" "$DARWIN_BUILD_RESULT" "$INTEGRATION_RESULT" "$QUALITY_RESULT" "$MUTATION_RESULT"; do
+          for result in "$STATIC_RESULT" "$DARWIN_BUILD_RESULT" "$INTEGRATION_RESULT" "$QUALITY_RESULT"; do
             if [ "$result" != success ]; then
               echo "required CI dependency did not succeed: $result" >&2
               exit 1

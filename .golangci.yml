@@ -14,7 +14,6 @@ linters:
     - errorlint
     - exhaustive
     - gocritic
-    - gosec
     - makezero
     - misspell
     - nilerr
@@ -63,15 +62,6 @@ linters:
     gocritic:
       enabled-tags:
         - diagnostic
-    gosec:
-      excludes:
-        - G104
-        - G115
-        - G202
-        - G204
-        - G302
-        - G304
-        - G306
     nolintlint:
       require-explanation: true
       require-specific: true
@@ -81,7 +71,6 @@ linters:
         linters:
           - cyclop
           - errcheck
-          - gosec
           - noctx
 
 formatters:
