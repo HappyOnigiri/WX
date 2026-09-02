@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,6 +112,51 @@ func TestSnapshotRefsAreIdempotentAndDeletionChecksOwnership(t *testing.T) {
 	unavailable.ExpiresAt = expires.Format(time.RFC3339Nano)
 	if err := manager.Restore(context.Background(), repo, filepath.Join(temp, "restore"), "slot", unavailable); err == nil {
 		t.Fatal("restore with deleted refs succeeded")
+	}
+}
+
+func TestSnapshotWithPersistenceCommitsMetadataBeforePublishingRefs(t *testing.T) {
+	repository, repo, manager, _ := archiveFixture(t)
+	ctx := context.Background()
+	persisted := false
+	snapshot, err := manager.SnapshotWithPersistence(ctx, repo, repository, "durable-boundary", time.Now().Add(time.Hour), func(snapshot state.Snapshot) error {
+		persisted = true
+		listed, listErr := manager.Git.Run(ctx, repository, "for-each-ref", "--format=%(refname)", "refs/wx/recovery")
+		if listErr != nil {
+			return listErr
+		}
+		if strings.TrimSpace(listed.Stdout) != "" {
+			return errors.New("recovery refs were visible before metadata persistence")
+		}
+		if snapshot.HeadRef == "" || snapshot.WorktreeRef == "" || snapshot.HeadOID == "" || snapshot.WorktreeOID == "" {
+			return errors.New("persistence callback received incomplete snapshot")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted {
+		t.Fatal("snapshot persistence callback was not called")
+	}
+	for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+		if got := gitCommand(t, repository, "rev-parse", "--verify", ref); got != want {
+			t.Fatalf("published recovery ref %s=%s, want %s", ref, got, want)
+		}
+	}
+}
+
+func TestSnapshotWithPersistenceDoesNotPublishRefsWhenMetadataPersistenceFails(t *testing.T) {
+	repository, repo, manager, _ := archiveFixture(t)
+	wantErr := errors.New("metadata transaction rolled back")
+	_, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "persistence-failure", time.Now().Add(time.Hour), func(state.Snapshot) error {
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("persistence error=%v, want %v", err, wantErr)
+	}
+	if refs := gitCommand(t, repository, "for-each-ref", "--format=%(refname)", "refs/wx/recovery"); refs != "" {
+		t.Fatalf("recovery refs published after persistence failure: %s", refs)
 	}
 }
 

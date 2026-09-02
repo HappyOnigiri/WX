@@ -385,29 +385,39 @@ func (m *Manager) artifactDiagnostics(ctx context.Context) map[string]any {
 		diagnosticErrors = append(diagnosticErrors, err.Error())
 	} else {
 		for _, repository := range repositories {
-			expectedList, refsErr := m.store.RecoveryRefs(ctx, string(repository.ID))
+			expectedList, refsErr := m.store.RecoveryRefExpectations(ctx, string(repository.ID))
 			if refsErr != nil {
 				diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("read recovery refs for %s: %v", repository.ID, refsErr))
 				continue
 			}
-			expected := map[string]bool{}
+			expected := map[string]state.RecoveryRefExpectation{}
 			for _, ref := range expectedList {
-				expected[ref] = true
+				expected[ref.Ref] = ref
 			}
-			listed, listErr := m.git.Run(ctx, string(repository.MainPath), "for-each-ref", "--format=%(refname)", "refs/wx/recovery")
+			listed, listErr := m.git.Run(ctx, string(repository.MainPath), "for-each-ref", "--format=%(refname) %(objectname)", "refs/wx/recovery")
 			if listErr != nil {
 				diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("list recovery refs for %s: %v", repository.ID, listErr))
 				continue
 			}
 			actual := map[string]bool{}
-			for _, ref := range strings.Fields(listed.Stdout) {
+			for _, line := range strings.Split(strings.TrimSpace(listed.Stdout), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) == 0 {
+					continue
+				}
+				if len(fields) != 2 {
+					diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("parse recovery ref listing for %s: %q", repository.ID, line))
+					continue
+				}
+				ref, oid := fields[0], fields[1]
 				actual[ref] = true
-				if !expected[ref] {
+				want, known := expected[ref]
+				if !known || want.OID != oid {
 					unknownRefs = append(unknownRefs, fmt.Sprintf("%s:%s", repository.ID, ref))
 				}
 			}
-			for ref := range expected {
-				if !actual[ref] {
+			for ref, expectation := range expected {
+				if !actual[ref] && !expectation.InFlight {
 					missingRefs = append(missingRefs, fmt.Sprintf("%s:%s", repository.ID, ref))
 				}
 			}
@@ -640,10 +650,18 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 	if err != nil {
 		return err
 	}
-	if !snapshotsUsable(snapshots, time.Now()) {
-		if parent.State == "RELEASING" || parent.State == "SNAPSHOTTING" {
-			return dependencyPendingError{errors.New("parent snapshot is still being archived")}
+	if parent.State == "RELEASING" || parent.State == "SNAPSHOTTING" {
+		parentSlot, slotErr := m.store.Slot(ctx, parent.SlotID)
+		if slotErr != nil {
+			return slotErr
 		}
+		if parentSlot.State == "FAILED" || parentSlot.State == "QUARANTINED" {
+			_ = m.store.SetSlotState(ctx, s.SlotID, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_UNAVAILABLE")
+			return fmt.Errorf("parent snapshot job failed with slot state %s", parentSlot.State)
+		}
+		return dependencyPendingError{errors.New("parent snapshot is still being archived")}
+	}
+	if !snapshotsUsable(snapshots, time.Now()) {
 		_ = m.store.SetSlotState(ctx, s.SlotID, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_UNAVAILABLE")
 		return errors.New("parent recovery snapshot is expired or incomplete")
 	}
@@ -1514,13 +1532,12 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 		if err != nil {
 			return err
 		}
-		snap, err := archiveManager.Snapshot(ctx, repo, sr.WorktreePath, s.ID, expiry)
+		_, err = archiveManager.SnapshotWithPersistence(ctx, repo, sr.WorktreePath, s.ID, expiry, func(snapshot state.Snapshot) error {
+			return m.store.SaveSnapshot(ctx, snapshot)
+		})
 		if err != nil {
 			m.log.Error("snapshot failed", "session_id", s.ID, "repository_id", repo.ID, "error", err)
 			_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
-			return err
-		}
-		if err := m.store.SaveSnapshot(ctx, snap); err != nil {
 			return err
 		}
 	}

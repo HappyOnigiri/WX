@@ -600,6 +600,54 @@ func TestRecoveryRefQueriesAndPendingMappingFailure(t *testing.T) {
 	if err != nil || strings.Join(refs, ",") != "refs/wx/recovery/head,refs/wx/recovery/worktree" {
 		t.Fatalf("recovery refs=%v err=%v", refs, err)
 	}
+	expectations, err := store.RecoveryRefExpectations(ctx, "repository")
+	if err != nil || len(expectations) != 2 {
+		t.Fatalf("recovery ref expectations=%+v err=%v", expectations, err)
+	}
+	if expectations[0].OID != "head" || expectations[1].OID != "worktree" || expectations[0].InFlight || expectations[1].InFlight {
+		t.Fatalf("archived recovery ref expectations=%+v", expectations)
+	}
+}
+
+func TestRecoveryRefExpectationsMarkActiveSnapshotJobInFlight(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	root := t.TempDir()
+	session := Session{ID: "snapshotting", WorkspaceID: "workspace", SlotID: "snapshotting", State: "SNAPSHOTTING", AgentKind: "codex", TokenHash: HashToken("snapshotting")}
+	job, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: session.WorkspaceID, Generation: 1, Path: filepath.Join(root, session.SlotID), State: "SNAPSHOTTING"}, nil, session, "SNAPSHOT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := Snapshot{ID: "snapshotting-snapshot", SessionID: session.ID, RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/snapshotting/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/snapshotting/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}
+	if err := store.SaveSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	expectations, err := store.RecoveryRefExpectations(ctx, "repository")
+	if err != nil || len(expectations) != 2 {
+		t.Fatalf("in-flight expectations=%+v err=%v", expectations, err)
+	}
+	for _, expectation := range expectations {
+		if !expectation.InFlight || expectation.SessionID != session.ID || expectation.SessionState != session.State {
+			t.Fatalf("in-flight expectation=%+v", expectation)
+		}
+	}
+	claimed, err := store.ClaimJob(ctx, job.ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, claimed.ID, "test", errors.New("simulated archive failure")); err != nil {
+		t.Fatal(err)
+	}
+	expectations, err = store.RecoveryRefExpectations(ctx, "repository")
+	if err != nil || len(expectations) != 2 {
+		t.Fatalf("failed-job expectations=%+v err=%v", expectations, err)
+	}
+	for _, expectation := range expectations {
+		if expectation.InFlight {
+			t.Fatalf("failed snapshot job remained in-flight: %+v", expectation)
+		}
+	}
 }
 
 func TestActiveRestoreProtectsSnapshotAndParentBindingCanTransfer(t *testing.T) {

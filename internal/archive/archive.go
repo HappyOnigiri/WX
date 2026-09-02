@@ -22,62 +22,104 @@ type Manager struct {
 	Ownership state.OwnershipValidator
 }
 
+// SnapshotWithPersistence publishes recovery refs only after persist has
+// durably recorded the exact ref names and object IDs. This ordering closes
+// the reconcile window in which a normal archive looked like an unknown ref.
+// If persistence fails, no recovery ref has been made visible. If ref
+// publication fails afterwards, the durable row remains and reconciliation
+// can distinguish the incomplete archive from an unrelated ref.
+func (m *Manager) SnapshotWithPersistence(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time, persist func(state.Snapshot) error) (state.Snapshot, error) {
+	var snapshot state.Snapshot
+	if err := m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+		var err error
+		snapshot, err = m.snapshotObjects(ctx, repo, worktree, sessionID, expiry)
+		return err
+	}); err != nil {
+		return state.Snapshot{}, err
+	}
+	if persist != nil {
+		if err := persist(snapshot); err != nil {
+			return state.Snapshot{}, err
+		}
+	}
+	if err := m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+		return m.publishSnapshotRefs(ctx, repo, snapshot)
+	}); err != nil {
+		return state.Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
 func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, error) {
 	var snapshot state.Snapshot
 	err := m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
-		head, err := m.gitValue(ctx, worktree, nil, "rev-parse", "HEAD")
+		var err error
+		snapshot, err = m.snapshotObjects(ctx, repo, worktree, sessionID, expiry)
 		if err != nil {
 			return err
 		}
-		indexTree, err := m.gitValue(ctx, worktree, nil, "write-tree")
-		if err != nil {
-			return fmt.Errorf("write index tree: %w", err)
-		}
-		tmp := filepath.Join(filepath.Dir(worktree), ".wx-index-"+sessionID)
-		_ = os.Remove(tmp)
-		defer func() { _ = os.Remove(tmp) }()
-		env := []string{"GIT_INDEX_FILE=" + tmp}
-		if _, err := m.Git.RunEnv(ctx, worktree, env, "read-tree", head); err != nil {
-			return err
-		}
-		if _, err := m.Git.RunEnv(ctx, worktree, env, "add", "-A", "--", "."); err != nil {
-			return err
-		}
-		worktreeTree, err := m.gitValue(ctx, worktree, env, "write-tree")
-		if err != nil {
-			return err
-		}
-		commitEnv := append([]string(nil), env...)
-		commitEnv = append(commitEnv,
-			"GIT_AUTHOR_NAME=wx", "GIT_AUTHOR_EMAIL=wx@localhost",
-			"GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost",
-			"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
-		)
-		commitRes, err := m.Git.RunEnvInput(ctx, worktree, commitEnv, []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
-		if err != nil {
-			return err
-		}
-		worktreeCommit := strings.TrimSpace(commitRes.Stdout)
-		headRef := fmt.Sprintf("refs/wx/recovery/%s/%s/head", sessionID, repo.ID)
-		worktreeRef := fmt.Sprintf("refs/wx/recovery/%s/%s/worktree", sessionID, repo.ID)
-		if err := m.ensureRecoveryRef(ctx, repo, headRef, head); err != nil {
-			return err
-		}
-		if err := m.ensureRecoveryRef(ctx, repo, worktreeRef, worktreeCommit); err != nil {
-			return err
-		}
-		for ref, want := range map[string]string{headRef: head, worktreeRef: worktreeCommit} {
-			got, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", "--verify", ref)
-			if err != nil || got != want {
-				return fmt.Errorf("verify recovery ref %s", ref)
-			}
-		}
-		id := domain.StableID("snapshot", sessionID, string(repo.ID))
-		created := time.Now().UTC()
-		snapshot = state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}
-		return nil
+		return m.publishSnapshotRefs(ctx, repo, snapshot)
 	})
-	return snapshot, err
+	if err != nil {
+		return state.Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, error) {
+	head, err := m.gitValue(ctx, worktree, nil, "rev-parse", "HEAD")
+	if err != nil {
+		return state.Snapshot{}, err
+	}
+	indexTree, err := m.gitValue(ctx, worktree, nil, "write-tree")
+	if err != nil {
+		return state.Snapshot{}, fmt.Errorf("write index tree: %w", err)
+	}
+	tmp := filepath.Join(filepath.Dir(worktree), ".wx-index-"+sessionID)
+	_ = os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
+	env := []string{"GIT_INDEX_FILE=" + tmp}
+	if _, err := m.Git.RunEnv(ctx, worktree, env, "read-tree", head); err != nil {
+		return state.Snapshot{}, err
+	}
+	if _, err := m.Git.RunEnv(ctx, worktree, env, "add", "-A", "--", "."); err != nil {
+		return state.Snapshot{}, err
+	}
+	worktreeTree, err := m.gitValue(ctx, worktree, env, "write-tree")
+	if err != nil {
+		return state.Snapshot{}, err
+	}
+	commitEnv := append([]string(nil), env...)
+	commitEnv = append(commitEnv,
+		"GIT_AUTHOR_NAME=wx", "GIT_AUTHOR_EMAIL=wx@localhost",
+		"GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost",
+		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
+	)
+	commitRes, err := m.Git.RunEnvInput(ctx, worktree, commitEnv, []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
+	if err != nil {
+		return state.Snapshot{}, err
+	}
+	worktreeCommit := strings.TrimSpace(commitRes.Stdout)
+	headRef := fmt.Sprintf("refs/wx/recovery/%s/%s/head", sessionID, repo.ID)
+	worktreeRef := fmt.Sprintf("refs/wx/recovery/%s/%s/worktree", sessionID, repo.ID)
+	id := domain.StableID("snapshot", sessionID, string(repo.ID))
+	created := time.Now().UTC()
+	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+}
+
+func (m *Manager) publishSnapshotRefs(ctx context.Context, repo discovery.Repository, snapshot state.Snapshot) error {
+	for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+		if err := m.ensureRecoveryRef(ctx, repo, ref, want); err != nil {
+			return err
+		}
+	}
+	for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+		got, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", "--verify", ref)
+		if err != nil || got != want {
+			return fmt.Errorf("verify recovery ref %s", ref)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) ensureRecoveryRef(ctx context.Context, repo discovery.Repository, ref, oid string) error {

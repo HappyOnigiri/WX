@@ -522,7 +522,11 @@ type (
 )
 
 type (
-	Snapshot          struct{ ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string }
+	Snapshot               struct{ ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string }
+	RecoveryRefExpectation struct {
+		Ref, OID, SessionID, SessionState string
+		InFlight                          bool
+	}
 	WorkspaceSnapshot struct {
 		SessionID, ArchivePath, SHA256, Status, CreatedAt, ExpiresAt string
 	}
@@ -2078,6 +2082,40 @@ func (s *Store) RecoveryRefs(ctx context.Context, repositoryID string) ([]string
 		if err := rows.Scan(&ref); err != nil {
 			return nil, err
 		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
+}
+
+// RecoveryRefExpectations returns the durable ownership proof for each
+// published recovery ref. A snapshot job that has already committed its
+// metadata but has not finished publishing refs is marked InFlight; reconcile
+// may wait for those missing refs while still quarantining every ref whose
+// name or object ID is not exactly accounted for.
+func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string) ([]RecoveryRefExpectation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT sn.head_recovery_ref,sn.head_oid,sn.session_id,se.state,
+		       CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND j.state IN ('PENDING','RUNNING')) THEN 1 ELSE 0 END
+		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
+		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
+		UNION ALL
+		SELECT sn.worktree_recovery_ref,sn.worktree_snapshot_oid,sn.session_id,se.state,
+		       CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND j.state IN ('PENDING','RUNNING')) THEN 1 ELSE 0 END
+		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
+		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
+		ORDER BY 1`, repositoryID, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var refs []RecoveryRefExpectation
+	for rows.Next() {
+		var ref RecoveryRefExpectation
+		var inFlight int
+		if err := rows.Scan(&ref.Ref, &ref.OID, &ref.SessionID, &ref.SessionState, &inFlight); err != nil {
+			return nil, err
+		}
+		ref.InFlight = inFlight != 0
 		refs = append(refs, ref)
 	}
 	return refs, rows.Err()
