@@ -614,8 +614,8 @@ func TestRecoveredJobAndRestoreParentFailures(t *testing.T) {
 	createSession(releasingParent, "RELEASING", "")
 	releasingChild := domain.StableID("restore-parent", "releasing-child")
 	createSession(releasingChild, "RESTORING", releasingParent)
-	var retryable retryableJobError
-	if err := manager.resumeRestoreJob(ctx, releasingChild); !errors.As(err, &retryable) {
+	var pending dependencyPendingError
+	if err := manager.resumeRestoreJob(ctx, releasingChild); !errors.As(err, &pending) {
 		t.Fatalf("releasing parent error=%v", err)
 	}
 
@@ -629,6 +629,37 @@ func TestRecoveredJobAndRestoreParentFailures(t *testing.T) {
 	slot, err := store.Slot(ctx, archivedChild)
 	if err != nil || slot.State != "QUARANTINED" {
 		t.Fatalf("incomplete restore child=%+v err=%v", slot, err)
+	}
+}
+
+func TestStatusHotStandbyUsesRepositoryLastLease(t *testing.T) {
+	ctx, manager, _, _, _, databasePath := managerCoverageFixture(t)
+	manager.mu.Lock()
+	manager.cfg.Retention.HotStandby.Duration = time.Hour
+	manager.mu.Unlock()
+	raw := openManagerCoverageDB(t, databasePath)
+	oldLease := time.Now().Add(-2 * time.Hour)
+	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(oldLease)); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := status["repository_details"].([]state.RepositoryDiagnostic)
+	if len(details) != 1 || details[0].Hot || details[0].StandbyExpiresAt != state.FormatTime(oldLease.Add(time.Hour)) {
+		t.Fatalf("expired hot standby=%+v", details)
+	}
+	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	status, err = manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details = status["repository_details"].([]state.RepositoryDiagnostic)
+	if len(details) != 1 || !details[0].Hot {
+		t.Fatalf("recently leased repository was not hot: %+v", details)
 	}
 }
 

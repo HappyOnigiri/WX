@@ -29,7 +29,7 @@ type Store struct {
 	path   string
 }
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -310,7 +310,7 @@ type (
 	Session        struct {
 		ID, WorkspaceID, SlotID, ParentSessionID, State, AgentKind, AgentSessionID, CreatedAt, ReleasedAt, ArchivedAt, ExpiresAt string
 		TokenHash                                                                                                                []byte
-		ClientPID                                                                                                                int
+		ClientPID, AgentPID                                                                                                      int
 	}
 )
 
@@ -457,6 +457,28 @@ func (s *Store) RetryJob(ctx context.Context, id, owner string, delay time.Durat
 	return tx.Commit()
 }
 
+// DeferJob waits for a durable dependency without consuming the retry budget.
+func (s *Store) DeferJob(ctx context.Context, id, owner string, delay time.Duration, code string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state='PENDING',attempt=CASE WHEN attempt>0 THEN attempt-1 ELSE 0 END,not_before=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, FormatTime(time.Now().Add(delay)), code, id, owner)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errors.New("job cannot be deferred without its active lease")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,session_id,repository_id,message) SELECT ?,'info','job_dependency_wait',workspace_id,slot_id,session_id,repository_id,? FROM jobs WHERE id=?`, now(), fmt.Sprintf("delay=%s dependency=%s", delay, code), id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) RecoverJobs(ctx context.Context, reclaimAll bool) ([]Job, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -493,7 +515,7 @@ func (s *Store) EnsureRecoveryJobs(ctx context.Context) ([]Job, error) {
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT CASE sl.state WHEN 'PREPARING' THEN 'PREPARE' WHEN 'RESTORING' THEN 'RESTORE' WHEN 'DRAINING' THEN 'SNAPSHOT' WHEN 'SNAPSHOTTING' THEN 'SNAPSHOT' WHEN 'REMOVING' THEN 'REMOVE' END,COALESCE(sl.workspace_id,''),sl.id,COALESCE(se.id,''),'' FROM slots sl LEFT JOIN sessions se ON se.slot_id=sl.id AND se.state IN ('STARTING','RESTORING','RELEASING','SNAPSHOTTING') WHERE sl.state IN ('PREPARING','RESTORING','DRAINING','SNAPSHOTTING','REMOVING') AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.state IN ('PENDING','RUNNING')) UNION ALL SELECT 'REMOVE_REPOSITORY',COALESCE(sl.workspace_id,''),sl.id,'',sr.repository_id FROM slots sl JOIN slot_repositories sr ON sr.slot_id=sl.id WHERE sl.state='RETIRING' AND sr.state='RETIRING' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.repository_id=sr.repository_id AND j.kind='REMOVE_REPOSITORY' AND j.state IN ('PENDING','RUNNING'))`)
+	rows, err := tx.QueryContext(ctx, `SELECT CASE sl.state WHEN 'PREPARING' THEN 'PREPARE' WHEN 'RESTORING' THEN 'RESTORE' WHEN 'DRAINING' THEN 'SNAPSHOT' WHEN 'SNAPSHOTTING' THEN 'SNAPSHOT' WHEN 'REMOVING' THEN 'REMOVE' END,COALESCE(sl.workspace_id,''),sl.id,COALESCE(se.id,''),'' FROM slots sl LEFT JOIN sessions se ON se.slot_id=sl.id AND (se.state IN ('STARTING','RESTORING','RELEASING','SNAPSHOTTING') OR (sl.state='REMOVING' AND se.state='ARCHIVED')) WHERE sl.state IN ('PREPARING','RESTORING','DRAINING','SNAPSHOTTING','REMOVING') AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.state IN ('PENDING','RUNNING')) UNION ALL SELECT 'REMOVE_REPOSITORY',COALESCE(sl.workspace_id,''),sl.id,'',sr.repository_id FROM slots sl JOIN slot_repositories sr ON sr.slot_id=sl.id WHERE sl.state='RETIRING' AND sr.state='RETIRING' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.repository_id=sr.repository_id AND j.kind='REMOVE_REPOSITORY' AND j.state IN ('PENDING','RUNNING'))`)
 	if err != nil {
 		return nil, err
 	}
@@ -836,7 +858,7 @@ func stringsToAny(v []string) []any {
 
 func (s *Store) Session(ctx context.Context, id, token string) (Session, error) {
 	var x Session
-	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
 	if err != nil {
 		return Session{}, err
 	}
@@ -848,8 +870,27 @@ func (s *Store) Session(ctx context.Context, id, token string) (Session, error) 
 
 func (s *Store) SessionByID(ctx context.Context, id string) (Session, error) {
 	var x Session
-	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
 	return x, err
+}
+
+func (s *Store) RegisterAgentProcess(ctx context.Context, id, token string, pid int) error {
+	if pid <= 0 {
+		return errors.New("agent process ID must be positive")
+	}
+	if _, err := s.Session(ctx, id, token); err != nil {
+		return err
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET agent_pid=? WHERE id=? AND state IN ('STARTING','ACTIVE','UNBOUND','RESTORING')`, pid, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errors.New("session is no longer active")
+	}
+	return nil
 }
 
 func equalHash(a, b []byte) bool {
@@ -967,7 +1008,7 @@ func (s *Store) BindFreshResumeSlot(ctx context.Context, sessionID, parentSessio
 
 func (s *Store) FindByAgentSession(ctx context.Context, kind, agentID string) (Session, error) {
 	var x Session
-	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE agent_kind=? AND agent_session_id=?`, kind, agentID).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE agent_kind=? AND agent_session_id=?`, kind, agentID).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
 	return x, err
 }
 
@@ -989,11 +1030,11 @@ func (s *Store) Heartbeat(ctx context.Context, id, token string) error {
 
 type OrphanCandidate struct {
 	ID, WorkspaceID, SlotID string
-	ClientPID               int
+	ClientPID, AgentPID     int
 }
 
 func (s *Store) OrphanCandidates(ctx context.Context, heartbeatBefore string) ([]OrphanCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(client_pid,0) FROM sessions WHERE state IN ('STARTING','ACTIVE','UNBOUND','RESTORING') AND COALESCE(last_heartbeat_at,created_at)<=?`, heartbeatBefore)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(client_pid,0),COALESCE(agent_pid,0) FROM sessions WHERE state IN ('STARTING','ACTIVE','UNBOUND','RESTORING') AND COALESCE(last_heartbeat_at,created_at)<=?`, heartbeatBefore)
 	if err != nil {
 		return nil, err
 	}
@@ -1001,7 +1042,7 @@ func (s *Store) OrphanCandidates(ctx context.Context, heartbeatBefore string) ([
 	var out []OrphanCandidate
 	for rows.Next() {
 		var candidate OrphanCandidate
-		if err := rows.Scan(&candidate.ID, &candidate.WorkspaceID, &candidate.SlotID, &candidate.ClientPID); err != nil {
+		if err := rows.Scan(&candidate.ID, &candidate.WorkspaceID, &candidate.SlotID, &candidate.ClientPID, &candidate.AgentPID); err != nil {
 			return nil, err
 		}
 		out = append(out, candidate)

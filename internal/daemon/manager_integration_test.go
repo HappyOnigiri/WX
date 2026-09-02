@@ -813,6 +813,7 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Pool.WarmPerWorkspace = 1
 	cfg.Discovery.ReconcileInterval.Duration = time.Hour
+	cfg.Retention.EndedWorktree.Duration = 0
 	cfg.Workspaces = map[string]config.Workspace{root: {Link: []string{"audit"}}}
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -917,6 +918,21 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 			t.Fatalf("repository %s was not rematerialized: %v", repository.RelativePath, err)
 		}
 	}
+	if err := m.Release(context.Background(), lease.SessionID, lease.Token, "test"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		session, sessionErr := store.SessionByID(context.Background(), lease.SessionID)
+		return sessionErr == nil && session.State == "ARCHIVED"
+	})
+	if _, err := m.GC(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		slot, slotErr := store.Slot(context.Background(), lease.SessionID)
+		_, pathErr := os.Lstat(lease.Path)
+		return slotErr == nil && slot.State == "ARCHIVED" && os.IsNotExist(pathErr)
+	})
 }
 
 func initGitRepo(t *testing.T, path string) {

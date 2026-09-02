@@ -127,6 +127,16 @@ func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage)
 			return nil, err
 		}
 		return map[string]bool{"ok": true}, h.Manager.Heartbeat(ctx, p.SessionID, p.Token)
+	case "RegisterAgentProcess":
+		var p struct {
+			SessionID string `json:"session_id"`
+			Token     string `json:"token"`
+			AgentPID  int    `json:"agent_pid"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"registered": true}, h.Manager.RegisterAgentProcess(ctx, p.SessionID, p.Token, p.AgentPID)
 	case "Resume":
 		var p struct {
 			WXSessionID string `json:"wx_session_id"`

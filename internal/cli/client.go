@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -141,6 +142,8 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 			return 1
 		}
 	}
+	// #nosec G702 -- agent is selected by the fixed claude/codex CLI subcommands;
+	// arguments are passed directly to exec without shell interpretation.
 	cmd := exec.CommandContext(ctx, agent, args...)
 	cmd.Dir = lease.Path
 	cmd.Env = env
@@ -153,6 +156,15 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	registerCtx, registerCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	registerErr := c.RPC.CallWithKey(registerCtx, "RegisterAgentProcess", "agent-process:"+lease.SessionID+":"+strconv.Itoa(cmd.Process.Pid), map[string]any{"session_id": lease.SessionID, "token": lease.Token, "agent_pid": cmd.Process.Pid}, nil)
+	registerCancel()
+	if registerErr != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		fmt.Fprintln(os.Stderr, "error: register agent process:", registerErr)
 		return 1
 	}
 	heartbeatDone := make(chan struct{})

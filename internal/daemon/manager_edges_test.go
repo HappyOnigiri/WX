@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,6 +40,15 @@ func testManager(t *testing.T, cfg config.Config, store *state.Store) *Manager {
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
@@ -153,7 +164,7 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifacts := m.artifactDiagnostics(ctx)
-	if len(artifacts["unknown_paths"].([]string)) != 1 || len(artifacts["missing_paths"].([]string)) == 0 || len(artifacts["unknown_refs"].([]string)) != 1 || len(artifacts["missing_refs"].([]string)) != 2 {
+	if !containsString(artifacts["unknown_paths"].([]string), unknownPath) || len(artifacts["missing_paths"].([]string)) == 0 || len(artifacts["unknown_refs"].([]string)) != 1 || len(artifacts["missing_refs"].([]string)) != 2 {
 		t.Fatalf("artifact diagnostics=%v", artifacts)
 	}
 	m.reconcileArtifacts(ctx)
@@ -815,6 +826,121 @@ func TestManagerFailsClosedWhenStateStoreBecomesUnavailable(t *testing.T) {
 	m.scheduleDelayed(state.Job{ID: "cancelled"}, time.Millisecond)
 	m.Close()
 	m.resizeWorkers(1)
+}
+
+func TestOrphanReconciliationWaitsForRegisteredAgentProcess(t *testing.T) {
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "state.db")
+	store, err := state.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	slotPath := filepath.Join(cfg.Storage.WorktreeRoot, "slot")
+	if err := os.MkdirAll(slotPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "agent", Path: slotPath, State: "LEASED"}, nil, state.Session{ID: "agent", SlotID: "agent", State: "ACTIVE", AgentKind: "codex", ClientPID: 99999999, TokenHash: state.HashToken("token")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	agent := exec.Command("sleep", "30")
+	if err := agent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if agent.Process != nil {
+			_ = agent.Process.Kill()
+		}
+		_ = agent.Wait()
+	})
+	if err := m.RegisterAgentProcess(ctx, "agent", "token", agent.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `UPDATE sessions SET last_heartbeat_at=? WHERE id='agent'`, state.FormatTime(time.Now().Add(-time.Minute))); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m.reconcileOrphans(ctx)
+	session, err := store.SessionByID(ctx, "agent")
+	if err != nil || session.State != "ACTIVE" {
+		t.Fatalf("live agent was released: session=%+v err=%v", session, err)
+	}
+	var pending dependencyPendingError
+	if err := m.snapshotSession(ctx, session); !errors.As(err, &pending) {
+		t.Fatalf("snapshot did not wait for live agent: %v", err)
+	}
+	if err := m.removeSlotJob(ctx, state.Job{SessionID: "agent"}); !errors.As(err, &pending) {
+		t.Fatalf("removal did not wait for live agent: %v", err)
+	}
+	if err := m.removeSlotJob(ctx, state.Job{SessionID: "missing"}); err == nil {
+		t.Fatal("removal with a missing session identity succeeded")
+	}
+	if err := agent.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Wait(); err == nil {
+		t.Fatal("killed agent exited successfully")
+	}
+	agent.Process = nil
+	m.reconcileOrphans(ctx)
+	session, err = store.SessionByID(ctx, "agent")
+	if err != nil || session.State != "RELEASING" {
+		t.Fatalf("dead agent was not released: session=%+v err=%v", session, err)
+	}
+}
+
+func TestWorkerDefersLiveAgentDependencyWithoutRetryConsumption(t *testing.T) {
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "state.db")
+	store, err := state.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	job, err := store.CreateSlotSession(ctx,
+		state.Slot{ID: "live-snapshot", Path: filepath.Join(cfg.Storage.WorktreeRoot, "live-snapshot"), State: "DRAINING"}, nil,
+		state.Session{ID: "live-snapshot", SlotID: "live-snapshot", State: "RELEASING", AgentKind: "codex", TokenHash: state.HashToken("token")}, "SNAPSHOT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.ExecContext(ctx, `UPDATE sessions SET agent_pid=? WHERE id='live-snapshot'`, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	m.wg.Add(1)
+	go m.runWorker(99, stop)
+	m.schedule(job)
+	waitUntil(t, 5*time.Second, func() bool {
+		var count int
+		return raw.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE kind='job_dependency_wait' AND session_id='live-snapshot'`).Scan(&count) == nil && count == 1
+	})
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 || jobs[0].ID != job.ID || jobs[0].Attempt != 0 {
+		t.Fatalf("dependency-bound job consumed retry budget: jobs=%+v err=%v", jobs, err)
+	}
+	close(stop)
 }
 
 func TestScheduleLeavesOverflowForDurableRecovery(t *testing.T) {

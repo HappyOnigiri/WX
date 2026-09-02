@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,15 +20,28 @@ import (
 )
 
 type launcherHandler struct {
-	mu      sync.Mutex
-	methods []string
-	lease   daemon.Lease
+	mu           sync.Mutex
+	methods      []string
+	lease        daemon.Lease
+	agentPID     int
+	failRegister bool
 }
 
-func (h *launcherHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
 	h.mu.Lock()
 	h.methods = append(h.methods, method)
+	if method == "RegisterAgentProcess" {
+		var params struct {
+			AgentPID int `json:"agent_pid"`
+		}
+		if json.Unmarshal(raw, &params) == nil {
+			h.agentPID = params.AgentPID
+		}
+	}
 	h.mu.Unlock()
+	if method == "RegisterAgentProcess" && h.failRegister {
+		return nil, errors.New("injected registration failure")
+	}
 	switch method {
 	case "ResolveAndLease", "Resume", "AllocateResumeSlot":
 		return h.lease, nil
@@ -34,6 +49,124 @@ func (h *launcherHandler) Handle(_ context.Context, method string, _ json.RawMes
 		return map[string]bool{"expired": false}, nil
 	default:
 		return map[string]bool{"ok": true}, nil
+	}
+}
+
+func TestRunAgentFailsClosedWhenAgentRegistrationFails(t *testing.T) {
+	temp, err := os.MkdirTemp("/tmp", "wx-cli-register-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(temp) })
+	socket := filepath.Join(temp, "wxd.sock")
+	workspace := filepath.Join(temp, "workspace")
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	handler := &launcherHandler{lease: daemon.Lease{SessionID: "session", Token: "token", Path: workspace, Ready: true}, failRegister: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &rpc.Server{Socket: socket, Handler: handler}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForPath(t, socket)
+	agentScript := filepath.Join(temp, "agent")
+	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
+	if exit := client.RunAgent(ctx, agentScript, nil, nil, false, ""); exit != 1 {
+		t.Fatalf("RunAgent exit=%d", exit)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunAgentHelperProcess(t *testing.T) {
+	if os.Getenv("WX_RUN_AGENT_HELPER") != "1" {
+		return
+	}
+	client := Client{RPC: rpc.Client{Socket: os.Getenv("WX_HELPER_SOCKET"), Timeout: time.Second}, Config: config.Defaults()}
+	os.Exit(client.RunAgent(context.Background(), os.Getenv("WX_HELPER_AGENT"), []string{os.Getenv("WX_HELPER_PID_FILE")}, nil, false, ""))
+}
+
+func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
+	temp, err := os.MkdirTemp("/tmp", "wx-cli-kill-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(temp) })
+	socket := filepath.Join(temp, "wxd.sock")
+	workspace := filepath.Join(temp, "workspace")
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	handler := &launcherHandler{lease: daemon.Lease{SessionID: "session", Token: "token", Path: workspace, SourceWorkspace: temp, Ready: true}}
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &rpc.Server{Socket: socket, Handler: handler}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	waitForPath(t, socket)
+	agentScript := filepath.Join(temp, "agent")
+	pidFile := filepath.Join(temp, "agent.pid")
+	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nprintf '%s' $$ > \"$1\"\nwhile :; do sleep 1; done\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	supervisor := exec.Command(os.Args[0], "-test.run=^TestRunAgentHelperProcess$")
+	supervisor.Env = append(os.Environ(), "WX_RUN_AGENT_HELPER=1", "WX_HELPER_SOCKET="+socket, "WX_HELPER_AGENT="+agentScript, "WX_HELPER_PID_FILE="+pidFile)
+	if err := supervisor.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if supervisor.Process != nil {
+			_ = supervisor.Process.Kill()
+		}
+		_ = supervisor.Wait()
+	})
+	waitForPath(t, pidFile)
+	var agentPID int
+	waitUntilCLI(t, 10*time.Second, func() bool {
+		handler.mu.Lock()
+		defer handler.mu.Unlock()
+		agentPID = handler.agentPID
+		return agentPID > 0
+	})
+	if err := supervisor.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Wait(); err == nil {
+		t.Fatal("killed supervisor exited successfully")
+	}
+	supervisor.Process = nil
+	if err := syscall.Kill(agentPID, 0); err != nil {
+		t.Fatalf("registered agent did not survive supervisor kill: %v", err)
+	}
+	if err := syscall.Kill(agentPID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForPath(t *testing.T, path string) {
+	t.Helper()
+	waitUntilCLI(t, 10*time.Second, func() bool {
+		_, err := os.Lstat(path)
+		return err == nil
+	})
+}
+
+func waitUntilCLI(t *testing.T, timeout time.Duration, predicate func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !predicate() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition did not become true")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -127,7 +260,7 @@ func TestRunAgentSupervisesChildAndReleasesLease(t *testing.T) {
 	handler.mu.Lock()
 	methods := append([]string(nil), handler.methods...)
 	handler.mu.Unlock()
-	for _, required := range []string{"Status", "ResolveAndLease", "Release"} {
+	for _, required := range []string{"Status", "ResolveAndLease", "RegisterAgentProcess", "Release"} {
 		found := false
 		for _, method := range methods {
 			found = found || method == required

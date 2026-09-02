@@ -607,7 +607,7 @@ func TestEnsureRecoveryJobsReconstructsInterruptedSlotAndRepositoryWork(t *testi
 	}{
 		{id: "prepare", state: "PREPARING", sessionState: "STARTING"},
 		{id: "snapshot", state: "SNAPSHOTTING", sessionState: "SNAPSHOTTING"},
-		{id: "remove", state: "REMOVING"},
+		{id: "remove", state: "REMOVING", sessionState: "ARCHIVED"},
 	} {
 		if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,path,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, slot.id, "workspace", 1, filepath.Join(root, slot.id), slot.state, now(), now()); err != nil {
 			t.Fatal(err)
@@ -637,12 +637,89 @@ func TestEnsureRecoveryJobsReconstructsInterruptedSlotAndRepositoryWork(t *testi
 		if want[job.SlotID] != job.Kind {
 			t.Fatalf("unexpected recovery job=%+v", job)
 		}
+		if job.Kind == "REMOVE" && job.SessionID != "remove" {
+			t.Fatalf("remove recovery job lost archived session identity: %+v", job)
+		}
 		if job.Kind == "REMOVE_REPOSITORY" && job.RepositoryID != "repository" {
 			t.Fatalf("repository recovery job lost repository identity: %+v", job)
 		}
 	}
 	if duplicate, err := store.EnsureRecoveryJobs(ctx); err != nil || len(duplicate) != 0 {
 		t.Fatalf("duplicate recovery jobs=%+v err=%v", duplicate, err)
+	}
+}
+
+func TestAgentProcessRegistrationAndDependencyDeferral(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "agent", Path: filepath.Join(t.TempDir(), "agent"), State: "LEASED"}, nil, Session{ID: "agent", SlotID: "agent", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterAgentProcess(ctx, "agent", "token", 0); err == nil {
+		t.Fatal("agent process registration accepted a non-positive PID")
+	}
+	if err := store.RegisterAgentProcess(ctx, "agent", "wrong", os.Getpid()); err == nil {
+		t.Fatal("agent process registration accepted an invalid token")
+	}
+	if err := store.RegisterAgentProcess(ctx, "agent", "token", os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.SessionByID(ctx, "agent")
+	if err != nil || session.AgentPID != os.Getpid() {
+		t.Fatalf("registered agent process=%d err=%v", session.AgentPID, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_agent_pid BEFORE UPDATE OF agent_pid ON sessions BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterAgentProcess(ctx, "agent", "token", os.Getpid()); err == nil {
+		t.Fatal("agent process registration ignored a storage failure")
+	}
+	if _, err := store.db.ExecContext(ctx, `DROP TRIGGER fail_agent_pid`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state='ARCHIVED' WHERE id='agent'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterAgentProcess(ctx, "agent", "token", os.Getpid()); err == nil {
+		t.Fatal("agent process registration accepted an archived session")
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state='ACTIVE' WHERE id='agent'`); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := store.CreateJob(ctx, "RESTORE", "", "agent", "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimJob(ctx, job.ID, "worker")
+	if err != nil || claimed.Attempt != 1 {
+		t.Fatalf("claimed job=%+v err=%v", claimed, err)
+	}
+	if err := store.DeferJob(ctx, job.ID, "wrong-worker", 0, "SNAPSHOT_PENDING"); err == nil {
+		t.Fatal("dependency deferral accepted the wrong lease owner")
+	}
+	if err := store.DeferJob(ctx, job.ID, "worker", 0, "SNAPSHOT_PENDING"); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = store.ClaimJob(ctx, job.ID, "worker")
+	if err != nil || claimed.Attempt != 1 {
+		t.Fatalf("dependency wait consumed retry budget: job=%+v err=%v", claimed, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_defer_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeferJob(ctx, job.ID, "worker", 0, "SNAPSHOT_PENDING"); err == nil {
+		t.Fatal("dependency deferral ignored event persistence failure")
+	}
+	if _, err := store.db.ExecContext(ctx, `DROP TRIGGER fail_defer_event`); err != nil {
+		t.Fatal(err)
+	}
+	closed := openTestStore(t)
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.DeferJob(ctx, "missing", "worker", 0, "SNAPSHOT_PENDING"); err == nil {
+		t.Fatal("dependency deferral succeeded after store closure")
 	}
 }
 

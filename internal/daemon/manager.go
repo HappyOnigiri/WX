@@ -62,7 +62,10 @@ type jobWork struct {
 	id string
 }
 
-type retryableJobError struct{ error }
+type (
+	retryableJobError      struct{ error }
+	dependencyPendingError struct{ error }
+)
 
 const maxJobAttempts = 8
 
@@ -157,11 +160,21 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 		err = m.runRecoveredJob(jobCtx, job)
 		close(done)
 		cancel()
+		var pending dependencyPendingError
+		if errors.As(err, &pending) {
+			delay := 5 * time.Second
+			if deferErr := m.store.DeferJob(context.Background(), work.id, owner, delay, "DEPENDENCY_PENDING"); deferErr != nil {
+				m.log.Error("defer dependency-bound job failed", "job_id", work.id, "error", deferErr)
+			} else {
+				m.scheduleDelayed(job, delay)
+			}
+			continue
+		}
 		var retryable retryableJobError
 		if errors.As(err, &retryable) {
 			if job.Attempt >= maxJobAttempts {
 				m.log.Error("job exhausted retry limit", "job_id", job.ID, "attempt", job.Attempt, "error", err)
-				_ = m.store.SetSlotState(context.Background(), job.SlotID, []string{"PREPARING", "FAILED", "REMOVING", "RETIRING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED")
+				_ = m.store.SetSlotState(context.Background(), job.SlotID, []string{"PREPARING", "RESTORING", "FAILED", "REMOVING", "RETIRING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED")
 				if finishErr := m.store.FinishJob(context.Background(), work.id, owner, err); finishErr != nil {
 					m.log.Error("finish exhausted job failed", "job_id", work.id, "error", finishErr)
 				}
@@ -459,8 +472,7 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 		return
 	}
 	for _, candidate := range candidates {
-		alive := candidate.ClientPID > 0 && syscall.Kill(candidate.ClientPID, 0) == nil
-		if alive {
+		if processAlive(candidate.ClientPID) || processAlive(candidate.AgentPID) {
 			continue
 		}
 		job, changed, err := m.store.Release(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
@@ -476,6 +488,18 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 
 func (m *Manager) Heartbeat(ctx context.Context, id, token string) error {
 	return m.store.Heartbeat(ctx, id, token)
+}
+
+func (m *Manager) RegisterAgentProcess(ctx context.Context, id, token string, pid int) error {
+	return m.store.RegisterAgentProcess(ctx, id, token, pid)
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
@@ -565,7 +589,7 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 	}
 	if !snapshotsUsable(snapshots, time.Now()) {
 		if parent.State == "RELEASING" || parent.State == "SNAPSHOTTING" {
-			return retryableJobError{errors.New("parent snapshot is still being archived")}
+			return dependencyPendingError{errors.New("parent snapshot is still being archived")}
 		}
 		_ = m.store.SetSlotState(ctx, s.SlotID, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_UNAVAILABLE")
 		return errors.New("parent recovery snapshot is expired or incomplete")
@@ -1256,7 +1280,7 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 	// session switch). The foreground client is the authoritative process
 	// owner; its client-exit notification or orphan reconciliation confirms that
 	// no writer remains before snapshotting.
-	if reason == "session-end-hook" && session.ClientPID > 0 && syscall.Kill(session.ClientPID, 0) == nil {
+	if reason == "session-end-hook" && (processAlive(session.ClientPID) || processAlive(session.AgentPID)) {
 		return nil
 	}
 	job, changed, err := m.store.Release(ctx, id, session.WorkspaceID, session.SlotID)
@@ -1268,6 +1292,9 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 }
 
 func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
+	if processAlive(s.AgentPID) {
+		return dependencyPendingError{fmt.Errorf("agent process %d is still active", s.AgentPID)}
+	}
 	slot, err := m.store.Slot(ctx, s.SlotID)
 	if err != nil {
 		return err
@@ -1417,6 +1444,15 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 }
 
 func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
+	if job.SessionID != "" {
+		session, err := m.store.SessionByID(ctx, job.SessionID)
+		if err != nil {
+			return err
+		}
+		if processAlive(session.AgentPID) {
+			return dependencyPendingError{fmt.Errorf("agent process %d is still active", session.AgentPID)}
+		}
+	}
 	slot, err := m.store.Slot(ctx, job.SlotID)
 	if err != nil {
 		return err
@@ -1538,9 +1574,10 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return errors.New("slot root is not a physical directory")
 	}
-	// A no-repository slot must be empty. Descriptor-relative removal cannot
-	// escape root if a descendant is replaced concurrently.
-	return ownedRoot.Remove(relativeSlot)
+	// Root.RemoveAll does not follow symlink leaves and cannot traverse outside
+	// the descriptor-owned root. It also removes bundle rules and empty nested
+	// repository parents left after the registered worktrees are removed.
+	return ownedRoot.RemoveAll(relativeSlot)
 }
 
 func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
@@ -1561,8 +1598,11 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	}
 	m.mu.RUnlock()
 	for index := range details.Repositories {
-		if readyAt, parseErr := time.Parse(time.RFC3339Nano, details.Repositories[index].StandbyReadyAt); parseErr == nil {
-			details.Repositories[index].StandbyExpiresAt = state.FormatTime(readyAt.Add(cfg.Retention.HotStandby.Duration))
+		details.Repositories[index].Hot = false
+		if leasedAt, parseErr := time.Parse(time.RFC3339Nano, details.Repositories[index].LastUsedAt); parseErr == nil {
+			expiresAt := leasedAt.Add(cfg.Retention.HotStandby.Duration)
+			details.Repositories[index].StandbyExpiresAt = state.FormatTime(expiresAt)
+			details.Repositories[index].Hot = time.Now().Before(expiresAt)
 		}
 	}
 	for index := range details.Sessions {
