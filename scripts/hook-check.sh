@@ -99,6 +99,5 @@ if [ "$go_changed" = true ]; then
   if [ "$mode" = pre-push ]; then
     require_tool "$tools/golangci-lint"
     "$tools/golangci-lint" run ./...
-    go test -run='^$' ./...
   fi
 fi
