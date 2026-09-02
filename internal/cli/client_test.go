@@ -324,6 +324,16 @@ func TestReadinessHooksFailClosedForMatcherPrecedenceAndExecutableIdentity(t *te
 	if readinessHooksAvailable("codex") {
 		t.Fatal("asynchronous readiness hook was accepted")
 	}
+	for _, separator := range []string{"\n", "\r"} {
+		multiline := func(event string) string {
+			return fmt.Sprintf(`{"type":"command","command":%q}`, executable+separator+"hook "+event)
+		}
+		multilineDocument := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, multiline("session-start"), multiline("user-prompt-submit"), multiline("pre-tool-use"))
+		writeHooks(t, codexPath, multilineDocument)
+		if readinessHooksAvailable("codex") {
+			t.Fatalf("shell command separator %q was accepted", separator)
+		}
+	}
 }
 
 func TestReadinessHooksRejectUnknownAndInvalidSchemaFields(t *testing.T) {
@@ -399,6 +409,45 @@ func TestReadinessHooksRejectUnknownAndInvalidSchemaFields(t *testing.T) {
 	}
 	if !readinessHooksAvailable("codex") {
 		t.Fatal("explicitly enabled hooks were rejected")
+	}
+}
+
+func TestReadinessHooksRejectCodexFeatureDisable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	executable, err := currentWXExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := func(event string) string {
+		return fmt.Sprintf(`{"type":"command","command":%q}`, executable+" hook "+event)
+	}
+	document := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, command("session-start"), command("user-prompt-submit"), command("pre-tool-use"))
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(home, ".codex", "config.toml")
+	for _, config := range []string{
+		"[features]\nhooks = false\n",
+		"[features]\ncodex_hooks = false\n",
+		"features.hooks = false\n",
+	} {
+		if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if readinessHooksAvailable("codex") {
+			t.Fatalf("disabled Codex hook feature was accepted: %q", config)
+		}
+	}
+	if err := os.WriteFile(configPath, []byte("[features]\nhooks = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !readinessHooksAvailable("codex") {
+		t.Fatal("enabled Codex hook feature was rejected")
 	}
 }
 

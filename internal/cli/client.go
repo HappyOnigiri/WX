@@ -270,6 +270,9 @@ func readinessHooksAvailable(agent string) bool {
 	if !ok {
 		return false
 	}
+	if agent == "codex" && !codexHooksEnabled() {
+		return false
+	}
 	executable, err := currentWXExecutable()
 	if err != nil {
 		return false
@@ -290,6 +293,88 @@ func readinessHooksAvailable(agent string) bool {
 		return false
 	}
 	return false
+}
+
+// codexHooksEnabled checks the user feature switch which can disable every
+// hook source, including an otherwise valid hooks.json. The detector only
+// needs this small, stable part of TOML; unknown config is treated as
+// unavailable by the caller when it cannot be read or is structurally
+// malformed.
+func codexHooksEnabled() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	if err != nil || len(data) > 4<<20 {
+		return false
+	}
+	return codexHooksFeatureEnabled(data)
+}
+
+func codexHooksFeatureEnabled(data []byte) bool {
+	table := ""
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(stripTOMLComment(rawLine))
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "\"\"\"") || strings.Contains(line, "'''") {
+			// A small parser cannot safely reason about multiline strings.
+			return false
+		}
+		if strings.HasPrefix(line, "[") {
+			if !strings.HasSuffix(line, "]") || strings.HasPrefix(line, "[[") {
+				return false
+			}
+			table = strings.TrimSpace(line[1 : len(line)-1])
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			// TOML permits no bare statements. Treat an unrecognised shape as
+			// unavailable so a malformed config cannot enable the fast path.
+			return false
+		}
+		key = strings.TrimSpace(key)
+		if table == "" {
+			key = strings.ReplaceAll(key, " ", "")
+			if key != "features.hooks" && key != "features.codex_hooks" {
+				continue
+			}
+		} else if table != "features" || (key != "hooks" && key != "codex_hooks") {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value != "true" {
+			return false
+		}
+	}
+	return true
+}
+
+func stripTOMLComment(line string) string {
+	var quote byte
+	for index := 0; index < len(line); index++ {
+		char := line[index]
+		if quote != 0 {
+			if char == quote && (quote != '"' || index == 0 || line[index-1] != '\\') {
+				quote = 0
+			}
+			continue
+		}
+		if char == '\'' || char == '"' {
+			quote = char
+			continue
+		}
+		if char == '#' {
+			return line[:index]
+		}
+	}
+	return line
 }
 
 func readinessHookPaths(agent string) ([]string, bool) {
@@ -558,6 +643,12 @@ func splitHookCommand(command string) ([]string, bool) {
 	started := false
 	for i := 0; i < len(command); i++ {
 		char := command[i]
+		// Newlines and carriage returns are shell command separators, not
+		// ordinary argument whitespace. Reject them even inside quotes so a
+		// multiline command can never be mistaken for a synchronous wx hook.
+		if char == '\n' || char == '\r' {
+			return nil, false
+		}
 		if escaped {
 			field.WriteByte(char)
 			escaped = false

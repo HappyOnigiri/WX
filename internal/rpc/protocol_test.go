@@ -167,6 +167,19 @@ func (blockingRPCHandler) Handle(ctx context.Context, _ string, _ json.RawMessag
 	return nil, ctx.Err()
 }
 
+type delayedRPCHandler struct{ delay time.Duration }
+
+func (h delayedRPCHandler) Handle(ctx context.Context, _ string, _ json.RawMessage) (any, error) {
+	timer := time.NewTimer(h.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return map[string]string{"status": "completed"}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func TestClientBoundsConnectedPeerReadWithDefaultTimeout(t *testing.T) {
 	socket := shortSocketPath(t, "unresponsive.sock")
 	listener, err := net.Listen("unix", socket)
@@ -276,6 +289,39 @@ func TestServerBoundsHandlerWithIndependentDeadline(t *testing.T) {
 		t.Fatal("server handler connection did not finish")
 	}
 	_ = clientSide.Close()
+}
+
+func TestServerHonorsExplicitDeadlineForLongHandler(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	server := &Server{HandlerTimeout: 30 * time.Millisecond, Handler: delayedRPCHandler{delay: 70 * time.Millisecond}}
+	done := make(chan struct{})
+	go func() {
+		server.serveConn(context.Background(), serverSide)
+		close(done)
+	}()
+	request := Request{
+		Version:  ProtocolVersion,
+		ID:       "request",
+		Method:   "delayed",
+		Deadline: time.Now().Add(250 * time.Millisecond).UTC().Format(time.RFC3339Nano),
+		Params:   json.RawMessage(`{}`),
+	}
+	if err := writeFrame(clientSide, request); err != nil {
+		t.Fatal(err)
+	}
+	var response Response
+	if err := readFrame(clientSide, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != nil || string(response.Result) != `{"status":"completed"}` {
+		t.Fatalf("explicit long-handler response=%+v", response)
+	}
+	_ = clientSide.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("server did not finish explicit long-handler request")
+	}
 }
 
 func TestServerRejectsInvalidRequestDeadline(t *testing.T) {
