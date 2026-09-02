@@ -215,6 +215,13 @@ func EnsurePhysicalDirectoryRoot(path string, perm os.FileMode) (*os.Root, error
 	if err != nil {
 		return nil, err
 	}
+	return ensurePhysicalDirectoryRootPlatform(filepath.Clean(absolute), perm)
+}
+
+// ensurePhysicalDirectoryRootLegacy is the fallback for platforms without the
+// Unix openat implementation. It is kept separate so Unix callers never use a
+// filesystem-root Root that may follow a swapped intermediate symlink.
+func ensurePhysicalDirectoryRootLegacy(absolute string, perm os.FileMode) (*os.Root, error) {
 	root, relative, err := openFilesystemRoot(filepath.Clean(absolute))
 	if err != nil {
 		return nil, err

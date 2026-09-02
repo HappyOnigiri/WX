@@ -186,6 +186,41 @@ func TestEnsurePhysicalDirectoryCreatesMissingSuffixWithoutFollowingSymlinks(t *
 	}
 }
 
+func TestEnsurePhysicalDirectoryRootPinsFinalDirectoryAcrossReplacement(t *testing.T) {
+	parent := t.TempDir()
+	path := filepath.Join(parent, "root", "nested")
+	outside := filepath.Join(parent, "outside")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owned, err := EnsurePhysicalDirectoryRoot(path, 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owned.Close() }()
+
+	oldPath := filepath.Join(parent, "root-old", "nested")
+	if err := os.Rename(filepath.Dir(path), filepath.Dir(oldPath)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	}
+	file, err := owned.OpenFile("marker", os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(oldPath, "marker")); err != nil {
+		t.Fatalf("pinned directory was not used after replacement: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "marker")); !os.IsNotExist(err) {
+		t.Fatalf("replacement directory was modified: %v", err)
+	}
+}
+
 func TestSlotTransitions(t *testing.T) {
 	if !CanTransitionSlot(SlotReady, SlotLeased) {
 		t.Fatal("READY -> LEASED rejected")
