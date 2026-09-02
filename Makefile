@@ -113,7 +113,7 @@ generated-check:
 
 docs-check:
 	@test -x "$(NPM_BIN)/markdownlint-cli2" || { echo "pinned markdownlint is missing; run make setup"; exit 1; }
-	"$(NPM_BIN)/markdownlint-cli2" README.md '**/*.md' '#.tools/**'
+	"$(NPM_BIN)/markdownlint-cli2" README.md '**/*.md' '#.tools/**' '#tmp/**'
 
 workflow-check:
 	@test -x "$(TOOLS_BIN)/actionlint" -a -x "$(TOOLS_BIN)/zizmor" || { echo "pinned workflow tools are missing; run make setup"; exit 1; }
