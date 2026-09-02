@@ -685,6 +685,9 @@ func TestJobEventsRecordAttemptsRetriesAndElapsedTime(t *testing.T) {
 		}
 		events = append(events, kind+" "+message)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	joined := strings.Join(events, "\n")
 	for _, fragment := range []string{"job_started kind=PREPARE attempt=1", "job_retry delay=1ms failure_code=TRANSIENT", "job_started kind=PREPARE attempt=2", "PREPARE state=SUCCEEDED elapsed="} {
 		if !strings.Contains(joined, fragment) {
