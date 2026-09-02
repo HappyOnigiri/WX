@@ -27,6 +27,18 @@ func FuzzReadFrame(f *testing.F) {
 	})
 }
 
+func TestIdempotentCallStopsRetryingWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := Client{Socket: shortSocketPath(t, "missing.sock"), Timeout: time.Second}
+	if err := client.CallWithKey(ctx, "mutate", "stable-key", map[string]int{"value": 1}, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled idempotent call error=%v", err)
+	}
+	if !transientTransportError(io.EOF) || !transientTransportError(io.ErrUnexpectedEOF) || transientTransportError(errors.New("permanent")) {
+		t.Fatal("transient transport error classification is inconsistent")
+	}
+}
+
 type echoHandler struct{}
 
 func shortSocketPath(t *testing.T, name string) string {

@@ -1498,6 +1498,7 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 	repository := SlotRepository{RepositoryID: "r", WorktreePath: "/wx/s/r", State: "PREPARING"}
 	session := Session{ID: "s", WorkspaceID: "w", SlotID: "s", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
 	snapshot := Snapshot{ID: "snapshot", SessionID: "s", RepositoryID: "r"}
+	workspaceSnapshot := WorkspaceSnapshot{SessionID: "s", ArchivePath: "/wx/recovery/s.tar", SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: now()}
 	_ = store.Ping(ctx)
 	_, _ = store.Backup(ctx, 1, time.Hour)
 	_ = store.UpsertWorkspace(ctx, w)
@@ -1522,6 +1523,7 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 	_ = store.ResetPreparationForRetry(ctx, "s")
 	_ = store.MarkReady(ctx, "s")
 	_ = store.FinishPreparation(ctx, "s")
+	_, _, _ = store.FinishPreparationWithRelease(ctx, "s")
 	_ = store.MarkSessionState(ctx, "s", []string{"ACTIVE"}, "RELEASING")
 	_, _ = store.Session(ctx, "s", "token")
 	_, _ = store.SessionByID(ctx, "s")
@@ -1536,9 +1538,12 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 	_ = store.SetSlotRepositoryState(ctx, "s", "r", []string{"READY"}, "COLD")
 	_, _ = store.Slot(ctx, "s")
 	_ = store.SaveSnapshot(ctx, snapshot)
+	_ = store.SaveWorkspaceSnapshot(ctx, workspaceSnapshot)
 	_, _ = store.Snapshots(ctx, "s")
+	_, _, _ = store.WorkspaceSnapshot(ctx, "s")
 	_, _ = store.Repository(ctx, "r")
 	_, _ = store.Workspace(ctx, "w")
+	_, _ = store.SessionWorkspace(ctx, "s")
 	_, _ = store.WorkspaceRoots(ctx)
 	_, _ = store.Status(ctx)
 	_, _ = store.StatusDiagnostics(ctx)
@@ -1743,6 +1748,171 @@ func TestRPCIdempotencyResultSurvivesStoreRestart(t *testing.T) {
 	var expired int
 	if err := store.db.QueryRow(`SELECT count(*) FROM rpc_idempotency WHERE idempotency_key='expired'`).Scan(&expired); err != nil || expired != 0 {
 		t.Fatalf("expired idempotency rows=%d err=%v", expired, err)
+	}
+}
+
+func TestRPCIdempotencyRejectsInvalidReservationTransitionsAndCiphertexts(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	expiry := time.Now().Add(time.Hour)
+
+	if err := store.CompleteRPCRequest(ctx, "missing", "Mutate", `{}`, nil, "", "", expiry); err == nil {
+		t.Fatal("completion without a reservation succeeded")
+	}
+	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "complete", "Mutate", `{}`, expiry); err != nil || !execute {
+		t.Fatalf("begin execute=%v err=%v", execute, err)
+	}
+	if err := store.CompleteRPCRequest(ctx, "complete", "Mutate", `{}`, nil, "EXPECTED", "details", expiry); err != nil {
+		t.Fatal(err)
+	}
+	result, code, message, execute, err := store.BeginRPCRequest(ctx, "complete", "Mutate", `{}`, expiry)
+	if err != nil || execute || result != nil || code != "EXPECTED" || message != "details" {
+		t.Fatalf("replay result=%v code=%q message=%q execute=%v err=%v", result, code, message, execute, err)
+	}
+	if err := store.CompleteRPCRequest(ctx, "complete", "Mutate", `{}`, nil, "", "", expiry); err == nil {
+		t.Fatal("completed reservation was completed twice")
+	}
+	if err := store.CompleteRPCRequest(ctx, "complete", "Other", `{}`, nil, "", "", expiry); err == nil {
+		t.Fatal("reservation completed with a different method")
+	}
+
+	for _, test := range []struct {
+		name    string
+		stored  []byte
+		wantErr string
+		state   string
+	}{
+		{name: "unknown state", state: "UNKNOWN", wantErr: "unknown idempotency reservation state"},
+		{name: "truncated ciphertext", state: "COMPLETED", stored: []byte("short"), wantErr: "truncated"},
+		{name: "unauthenticated ciphertext", state: "COMPLETED", stored: make([]byte, 32), wantErr: "authentication failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			key := "invalid-" + test.name
+			if _, _, _, execute, err := store.BeginRPCRequest(ctx, key, "Mutate", `{}`, expiry); err != nil || !execute {
+				t.Fatalf("begin execute=%v err=%v", execute, err)
+			}
+			if _, err := store.db.ExecContext(ctx, `UPDATE rpc_idempotency SET state=?,result=? WHERE idempotency_key=?`, test.state, test.stored, key); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, _, err := store.BeginRPCRequest(ctx, key, "Mutate", `{}`, expiry); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error=%v, want substring %q", err, test.wantErr)
+			}
+		})
+	}
+
+	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "expired", "Mutate", `{}`, time.Now().Add(-time.Minute)); err != nil || !execute {
+		t.Fatalf("begin expired execute=%v err=%v", execute, err)
+	}
+	_, code, _, execute, err = store.BeginRPCRequest(ctx, "expired", "Mutate", `{}`, expiry)
+	if err != nil || execute || code != "IDEMPOTENCY_EXPIRED" {
+		t.Fatalf("expired replay code=%q execute=%v err=%v", code, execute, err)
+	}
+}
+
+func TestOpenRejectsUnsafeRPCIdempotencyKeyFiles(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T, string)
+	}{
+		{
+			name: "insecure permissions",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, make([]byte, 32), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "invalid length",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				target := filepath.Join(filepath.Dir(path), "target")
+				if err := os.WriteFile(target, make([]byte, 32), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			databasePath := filepath.Join(t.TempDir(), "state.db")
+			test.setup(t, databasePath+".rpc-key")
+			if store, err := Open(databasePath); err == nil {
+				_ = store.Close()
+				t.Fatal("store opened with unsafe RPC key file")
+			}
+		})
+	}
+}
+
+func TestRPCIdempotencyRejectsInvalidInMemoryKeyAndMissingSessionMembership(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	expiry := time.Now().Add(time.Hour)
+	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "key", "Mutate", `{}`, expiry); err != nil || !execute {
+		t.Fatalf("begin execute=%v err=%v", execute, err)
+	}
+	originalKey := store.rpcKey
+	store.rpcKey = []byte("invalid")
+	if err := store.CompleteRPCRequest(ctx, "key", "Mutate", `{}`, nil, "", "", expiry); err == nil {
+		t.Fatal("RPC result encrypted with invalid key")
+	}
+	store.rpcKey = originalKey
+	if err := store.CompleteRPCRequest(ctx, "key", "Mutate", `{}`, []byte(`{}`), "", "", expiry); err != nil {
+		t.Fatal(err)
+	}
+	store.rpcKey = []byte("invalid")
+	if _, _, _, _, err := store.BeginRPCRequest(ctx, "key", "Mutate", `{}`, expiry); err == nil {
+		t.Fatal("RPC result decrypted with invalid key")
+	}
+	store.rpcKey = originalKey
+
+	w := discovery.Workspace{ID: "empty-workspace", Root: "/empty", Kind: "repository"}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	session := Session{ID: "empty-session", WorkspaceID: string(w.ID), SlotID: "empty-slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: string(w.ID), Path: "/empty/slot", State: "LEASED"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SessionWorkspace(ctx, session.ID); err == nil || !strings.Contains(err.Error(), "no recorded repository") {
+		t.Fatalf("session workspace error=%v", err)
+	}
+	if _, err := store.SessionWorkspace(ctx, "missing-session"); err == nil {
+		t.Fatal("missing session workspace lookup succeeded")
+	}
+
+	blockingParent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingParent, []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := Open(filepath.Join(blockingParent, "state.db")); err == nil {
+		_ = opened.Close()
+		t.Fatal("store opened beneath a regular file")
 	}
 }
 

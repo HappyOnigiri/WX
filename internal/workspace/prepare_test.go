@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -356,6 +357,317 @@ func TestFingerprintTracksMaterializedCopyInputs(t *testing.T) {
 	}
 }
 
+func TestFingerprintCoversRecursiveDuplicateAndWorkspaceLinkInputs(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "nested", "repository")
+	if err := os.MkdirAll(filepath.Join(repository, "included", "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "included", "child", "value"), []byte("one\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("included\nincluded\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "custom.txt"), []byte("custom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "shared"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository), RelativePath: filepath.Join("nested", "repository")}
+	cfg := config.Defaults()
+	cfg.Workspaces[root] = config.Workspace{
+		Copy: []string{"custom.txt", "custom.txt"},
+		Link: []string{"shared"},
+	}
+	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"true"}, Version: "v2"}}
+	first, err := Fingerprint(2, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "included", "child", "value"), []byte("two\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Fingerprint(2, "oid", repo, cfg)
+	if err != nil || first == second {
+		t.Fatalf("recursive fingerprint first=%s second=%s err=%v", first, second, err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(repository, "included")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, filepath.Join(repository, "included")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Fingerprint(2, "oid", repo, cfg); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("include symlink error=%v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("../outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Fingerprint(2, "oid", repo, cfg); err == nil || !strings.Contains(err.Error(), "unsafe") {
+		t.Fatalf("unsafe fingerprint include error=%v", err)
+	}
+
+	cleanRepo := discovery.Repository{MainPath: domain.CanonicalPath(repository), RelativePath: "../outside"}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Fingerprint(2, "oid", cleanRepo, cfg); err == nil {
+		t.Fatal("unsafe repository relative path was fingerprinted")
+	}
+
+	unsafeCopy := cfg
+	unsafeCopy.Workspaces[root] = config.Workspace{Copy: []string{"../outside"}}
+	if _, err := Fingerprint(2, "oid", repo, unsafeCopy); err == nil {
+		t.Fatal("unsafe workspace copy path was fingerprinted")
+	}
+	unsafeLink := cfg
+	unsafeLink.Workspaces[root] = config.Workspace{Link: []string{"../outside"}}
+	if _, err := Fingerprint(2, "oid", repo, unsafeLink); err == nil {
+		t.Fatal("unsafe workspace link path was fingerprinted")
+	}
+	missingLink := cfg
+	missingLink.Workspaces[root] = config.Workspace{Link: []string{"missing"}}
+	if _, err := Fingerprint(2, "oid", repo, missingLink); err == nil {
+		t.Fatal("missing workspace link path was fingerprinted")
+	}
+}
+
+func TestEnsurePhysicalRootRejectsFileAndSymlink(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePhysicalRoot(file); err == nil {
+		t.Fatal("regular file accepted as physical root")
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePhysicalRoot(link); err == nil {
+		t.Fatal("symlink accepted as physical root")
+	}
+}
+
+func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	repo := discovery.Repository{
+		MainPath:  domain.CanonicalPath(repository),
+		CommonDir: domain.CanonicalPath(filepath.Join(repository, ".git")),
+	}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: config.Defaults()}
+
+	if err := preparer.validateTrackedClean(context.Background(), filepath.Join(root, "missing")); err == nil {
+		t.Fatal("tracked-clean validation of a missing worktree succeeded")
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("[\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.copyIncludes(repo, target); err == nil {
+		t.Fatal("invalid include glob succeeded")
+	}
+	include := filepath.Join(repository, "included")
+	if err := os.Symlink(filepath.Join(repository, "tracked"), include); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("included\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.copyIncludes(repo, target); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("include copy error=%v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("blocked/child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("blocked/child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "blocked"), []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.createLinks(context.Background(), repo, target); err == nil {
+		t.Fatal("link beneath regular file succeeded")
+	}
+
+	missingCommon := repo
+	missingCommon.CommonDir = domain.CanonicalPath(filepath.Join(root, "missing-common"))
+	if err := preparer.validateExistingWorktree(context.Background(), missingCommon, repository, gitOutput(t, repository, "rev-parse", "HEAD")); err == nil {
+		t.Fatal("worktree with missing expected common directory validated")
+	}
+	other := filepath.Join(root, "other")
+	if err := os.Mkdir(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, other, "init", "-b", "main")
+	mismatchedCommon := repo
+	mismatchedCommon.CommonDir = domain.CanonicalPath(filepath.Join(other, ".git"))
+	if err := preparer.validateExistingWorktree(context.Background(), mismatchedCommon, repository, gitOutput(t, repository, "rev-parse", "HEAD")); err == nil {
+		t.Fatal("worktree with mismatched common directory validated")
+	}
+
+	gitMarkerTarget := filepath.Join(root, "git-marker-target")
+	if err := os.Mkdir(gitMarkerTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(repository, ".git"), filepath.Join(gitMarkerTarget, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.validateExistingWorktree(context.Background(), repo, gitMarkerTarget, "oid"); err == nil {
+		t.Fatal("symlink .git marker validated")
+	}
+	invalidGitTarget := filepath.Join(root, "invalid-git-target")
+	if err := os.Mkdir(invalidGitTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(invalidGitTarget, ".git"), []byte("not a git marker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.validateExistingWorktree(context.Background(), repo, invalidGitTarget, "oid"); err == nil {
+		t.Fatal("invalid .git marker validated")
+	}
+
+	h := sha256.New()
+	if err := fingerprintPath(h, root, filepath.Join(root, "missing-fingerprint")); err == nil {
+		t.Fatal("missing path was fingerprinted")
+	}
+	if err := fingerprintPath(h, root, root); err == nil {
+		t.Fatal("fingerprint root itself was accepted as a relative input")
+	}
+	if err := fingerprintPath(h, repository, root); err == nil {
+		t.Fatal("fingerprint path outside root was accepted")
+	}
+
+	gitCommand(t, repository, "checkout", "--detach")
+	missingMain := repo
+	missingMain.MainPath = domain.CanonicalPath(filepath.Join(root, "missing-main"))
+	if err := preparer.validateExistingWorktree(context.Background(), missingMain, repository, gitOutput(t, repository, "rev-parse", "HEAD")); err == nil {
+		t.Fatal("worktree validation with missing main repository succeeded")
+	}
+	unregistered := repo
+	unregistered.MainPath = domain.CanonicalPath(other)
+	if err := preparer.validateExistingWorktree(context.Background(), unregistered, repository, gitOutput(t, repository, "rev-parse", "HEAD")); err == nil || !strings.Contains(err.Error(), "not registered") {
+		t.Fatalf("unregistered worktree error=%v", err)
+	}
+}
+
+func TestWorkspaceHelpersRejectUnreadableInputsAndUnwritableTargets(t *testing.T) {
+	root := t.TempDir()
+	h := sha256.New()
+
+	unreadableFile := filepath.Join(root, "unreadable-file")
+	if err := os.WriteFile(unreadableFile, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unreadableFile, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadableFile, 0o600) })
+	if err := fingerprintPath(h, root, unreadableFile); err == nil {
+		t.Fatal("unreadable file was fingerprinted")
+	}
+	if err := copyPath(unreadableFile, filepath.Join(root, "copy")); err == nil {
+		t.Fatal("unreadable file was copied")
+	}
+
+	unreadableDirectory := filepath.Join(root, "unreadable-directory")
+	if err := os.Mkdir(unreadableDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unreadableDirectory, "child"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unreadableDirectory, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadableDirectory, 0o700) })
+	if err := fingerprintPath(h, root, unreadableDirectory); err == nil {
+		t.Fatal("unreadable directory was fingerprinted")
+	}
+	if err := copyPath(unreadableDirectory, filepath.Join(root, "directory-copy")); err == nil {
+		t.Fatal("unreadable directory was copied")
+	}
+
+	source := filepath.Join(root, "source")
+	if err := os.WriteFile(source, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readOnly := filepath.Join(root, "read-only")
+	if err := os.Mkdir(readOnly, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(readOnly, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(readOnly, 0o700) })
+	if err := copyPath(source, filepath.Join(readOnly, "target")); err == nil {
+		t.Fatal("file copied into unwritable directory")
+	}
+
+	manifestRoot := filepath.Join(root, "manifest")
+	if err := os.Mkdir(manifestRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(manifestRoot, ".worktreeinclude")
+	if err := os.WriteFile(manifest, []byte("value\n"), 0); err != nil {
+		t.Fatal(err)
+	}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(manifestRoot)}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: config.Defaults()}
+	if _, err := Fingerprint(1, "oid", repo, config.Defaults()); err == nil {
+		t.Fatal("unreadable fingerprint manifest succeeded")
+	}
+	if err := preparer.copyIncludes(repo, root); err == nil {
+		t.Fatal("unreadable include manifest succeeded")
+	}
+	if err := os.Remove(manifest); err != nil {
+		t.Fatal(err)
+	}
+	linkManifest := filepath.Join(manifestRoot, ".worktreelink")
+	if err := os.WriteFile(linkManifest, []byte("value\n"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.createLinks(context.Background(), repo, root); err == nil {
+		t.Fatal("unreadable link manifest succeeded")
+	}
+
+	linkSource := filepath.Join(root, "link-source")
+	if err := os.Mkdir(linkSource, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkTarget := filepath.Join(root, "link-target")
+	if err := os.Mkdir(linkTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(linkTarget, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(linkTarget, 0o700) })
+	if err := MaterializeRoot(root, linkTarget, config.Workspace{Link: []string{"link-source"}}); err == nil {
+		t.Fatal("workspace link created in unwritable target")
+	}
+}
+
 func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
@@ -386,6 +698,9 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	}
 	if err := preparer.ValidateReady(context.Background(), repo, target, head); err != nil {
 		t.Fatal(err)
+	}
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
+		t.Fatalf("idempotent prepare: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(target, "tracked"), []byte("changed\n"), 0o600); err != nil {
 		t.Fatal(err)

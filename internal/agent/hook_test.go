@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,10 @@ type recordingHandler struct {
 	mu      sync.Mutex
 	methods []string
 }
+
+type failingHookReader struct{}
+
+func (failingHookReader) Read([]byte) (int, error) { return 0, errors.New("read fault") }
 
 func (h *recordingHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	h.mu.Lock()
@@ -105,6 +110,21 @@ func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
 	}
 	if err := RunHook(context.Background(), "unknown", strings.NewReader("")); err == nil {
 		t.Fatal("unknown event succeeded")
+	}
+	if err := RunHook(context.Background(), "session-start", failingHookReader{}); err == nil || !strings.Contains(err.Error(), "read fault") {
+		t.Fatalf("input read error=%v", err)
+	}
+	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent"}`)); err == nil {
+		t.Fatal("binding through missing daemon socket succeeded")
+	}
+	t.Setenv("WX_FRESH", "1")
+	t.Setenv("WX_BRANCHES_JSON", "{")
+	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent"}`)); err == nil || !strings.Contains(err.Error(), "branch selection") {
+		t.Fatalf("invalid fresh branches error=%v", err)
+	}
+	t.Setenv("WX_BRANCHES_JSON", `[]`)
+	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent"}`)); err == nil {
+		t.Fatal("fresh validation through missing daemon socket succeeded")
 	}
 }
 
