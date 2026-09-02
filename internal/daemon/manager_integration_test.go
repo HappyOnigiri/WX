@@ -148,6 +148,7 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	m := testManager(t, cfg, store)
+	m.git.SetTimeout(10 * time.Second)
 	t.Cleanup(m.Close)
 	ctx := context.Background()
 	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
