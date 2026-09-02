@@ -389,6 +389,28 @@ func (p *Preparer) runWorktreeAdmin(ctx context.Context, repo discovery.Reposito
 	return p.runWorktreeAdminOwned(ctx, repo, owner, relativeTarget, target, "", args...)
 }
 
+// RemoveWorktreeAt performs the destructive worktree removal from the
+// descriptor-bound target inode. The caller must have completed its ownership
+// checks while holding the Git common-directory lock. A failure after those
+// checks is ownership-uncertain because the target may have been renamed or
+// replaced while Git was being started, so it is returned as ErrOwnership.
+func (p *Preparer) RemoveWorktreeAt(ctx context.Context, repo discovery.Repository, root, target, expectedIdentity string) error {
+	if !p.usesPinnedRoot(root) {
+		return fmt.Errorf("%w: descriptor-bound worktree removal requires the pinned root", state.ErrOwnership)
+	}
+	relativeTarget, err := filepath.Rel(filepath.Clean(root), filepath.Clean(target))
+	if err != nil || relativeTarget == "." || relativeTarget == ".." || strings.HasPrefix(relativeTarget, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeTarget) {
+		if err == nil {
+			err = errors.New("worktree target is outside the pinned root")
+		}
+		return fmt.Errorf("%w: %v", state.ErrOwnership, err)
+	}
+	if _, err := p.runWorktreeAdminOwned(ctx, repo, p.OwnedRoot, relativeTarget, target, expectedIdentity, "remove", "--force"); err != nil {
+		return fmt.Errorf("%w: descriptor-bound worktree removal is uncertain: %v", state.ErrOwnership, err)
+	}
+	return nil
+}
+
 func (p *Preparer) runWorktreeAdminOwned(ctx context.Context, repo discovery.Repository, owner *os.Root, relativeTarget, target, expectedIdentity string, args ...string) (gitx.Result, error) {
 	if !p.usesPinnedRoot(p.RootPath) {
 		command := append([]string{"worktree"}, args...)

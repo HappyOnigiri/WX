@@ -70,6 +70,73 @@ func TestRemoveWorktreeRejectsSymlinkInRecordedPath(t *testing.T) {
 	}
 }
 
+func TestRemoveWorktreeUsesPinnedDescriptorAcrossRootReplacement(t *testing.T) {
+	temp := t.TempDir()
+	repository := filepath.Join(temp, "repository")
+	root := filepath.Join(temp, "wx")
+	outside := filepath.Join(temp, "outside")
+	mustMkdir(t, repository)
+	mustMkdir(t, root)
+	mustMkdir(t, outside)
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	head := gitCommand(t, repository, "rev-parse", "HEAD")
+	common := gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	target := filepath.Join(root, "slot", "root")
+	foreign := filepath.Join(outside, "foreign")
+	mustMkdir(t, filepath.Dir(target))
+	gitCommand(t, repository, "worktree", "add", "--detach", target, head)
+	gitCommand(t, repository, "worktree", "add", "--detach", foreign, head)
+	if err := workspace.EnsureOwnershipMarker(root, target, "slot", common); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "worktree", "lock", "--reason", "wx:slot:READY", target)
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	runner := &gitx.Runner{Timeout: 5 * time.Second}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	preparer := &workspace.Preparer{Git: runner, Config: cfg, OwnedRoot: owner, RootPath: root}
+	manager := &Manager{Git: runner, Preparer: preparer, Ownership: allowOwnershipValidator{}}
+	replaced := false
+	runner.SetBeforeRunAtHook(func(args []string) {
+		if replaced || !strings.Contains(strings.Join(args, " "), "worktree remove") {
+			return
+		}
+		oldRoot := root + "-old"
+		if err := os.Rename(root, oldRoot); err != nil {
+			t.Fatalf("replace configured root: %v", err)
+		}
+		if err := os.Symlink(outside, root); err != nil {
+			t.Fatalf("install replacement root: %v", err)
+		}
+		replaced = true
+	})
+	err = manager.RemoveWorktree(context.Background(), repo, root, target, head)
+	if !replaced {
+		t.Fatal("descriptor-bound removal barrier was not reached")
+	}
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("root replacement returned non-ownership error: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root+"-old", "slot", "root", ".git")); statErr != nil {
+		t.Fatalf("original worktree was removed after root replacement: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "foreign", ".git")); statErr != nil {
+		t.Fatalf("foreign worktree was removed after root replacement: %v", statErr)
+	}
+}
+
 func TestSnapshotRefsAreIdempotentAndDeletionChecksOwnership(t *testing.T) {
 	temp := t.TempDir()
 	repository := filepath.Join(temp, "repository")

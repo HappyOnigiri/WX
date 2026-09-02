@@ -294,6 +294,17 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		} else if statErr != nil {
 			return removalOwnershipFailure(statErr)
 		}
+		targetIdentity := ""
+		if m.Preparer != nil && m.Preparer.OwnedRoot != nil && filepath.Clean(m.Preparer.RootPath) == absoluteRoot {
+			directory, identity, identityErr := domain.OpenDirectoryAt(m.Preparer.OwnedRoot, relative)
+			if identityErr != nil {
+				return fmt.Errorf("%w: capture worktree identity before removal: %v", state.ErrOwnership, identityErr)
+			}
+			targetIdentity = identity
+			if closeErr := directory.Close(); closeErr != nil {
+				return fmt.Errorf("%w: close worktree identity descriptor: %v", state.ErrOwnership, closeErr)
+			}
+		}
 		common, err := filepath.EvalSymlinks(string(repo.CommonDir))
 		if err != nil {
 			return removalOwnershipFailure(err)
@@ -384,6 +395,9 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		// never authorize deletion without the matching SQLite rows.
 		if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
 			return fmt.Errorf("worktree SQLite ownership changed before removal: %w", err)
+		}
+		if targetIdentity != "" {
+			return m.Preparer.RemoveWorktreeAt(ctx, repo, absoluteRoot, absolutePath, targetIdentity)
 		}
 		_, err = m.Git.Run(ctx, string(repo.MainPath), "worktree", "remove", "--force", absolutePath)
 		return err
