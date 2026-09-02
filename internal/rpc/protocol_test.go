@@ -55,44 +55,67 @@ type memoryDurableStore struct {
 }
 
 type durableRecord struct {
-	method, params, code, message string
-	result                        []byte
+	method, params, code, message, state string
+	result                               []byte
 }
 
-type failingDurableStore struct{ failLoad bool }
+type failingDurableStore struct{ failBegin bool }
 
-func (s failingDurableStore) LoadRPCResult(context.Context, string, string, string) ([]byte, string, string, bool, error) {
-	if s.failLoad {
-		return nil, "", "", false, errors.New("load fault")
+type interruptedDurableStore struct {
+	memoryDurableStore
+	failComplete atomic.Bool
+}
+
+func (s failingDurableStore) BeginRPCRequest(context.Context, string, string, string, time.Time) ([]byte, string, string, bool, error) {
+	if s.failBegin {
+		return nil, "", "", false, errors.New("begin fault")
 	}
-	return nil, "", "", false, nil
+	return nil, "", "", true, nil
 }
 
-func (failingDurableStore) SaveRPCResult(context.Context, string, string, string, []byte, string, string, time.Time) error {
-	return errors.New("save fault")
-}
-
-func (s *memoryDurableStore) LoadRPCResult(_ context.Context, key, method, params string) ([]byte, string, string, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record, ok := s.records[key]
-	if !ok {
-		return nil, "", "", false, nil
+func (s failingDurableStore) CompleteRPCRequest(context.Context, string, string, string, []byte, string, string, time.Time) error {
+	if !s.failBegin {
+		return errors.New("complete fault")
 	}
-	if record.method != method || record.params != params {
-		return nil, "IDEMPOTENCY_KEY_REUSE", "mismatch", true, nil
-	}
-	return append([]byte(nil), record.result...), record.code, record.message, true, nil
+	return nil
 }
 
-func (s *memoryDurableStore) SaveRPCResult(_ context.Context, key, method, params string, result []byte, code, message string, _ time.Time) error {
+func (s *memoryDurableStore) BeginRPCRequest(_ context.Context, key, method, params string, _ time.Time) ([]byte, string, string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.records == nil {
 		s.records = map[string]durableRecord{}
 	}
-	s.records[key] = durableRecord{method: method, params: params, result: append([]byte(nil), result...), code: code, message: message}
+	record, ok := s.records[key]
+	if !ok {
+		s.records[key] = durableRecord{method: method, params: params, state: "PENDING"}
+		return nil, "", "", true, nil
+	}
+	if record.method != method || record.params != params {
+		return nil, "IDEMPOTENCY_KEY_REUSE", "mismatch", false, nil
+	}
+	if record.state == "PENDING" {
+		return nil, "IDEMPOTENCY_INDETERMINATE", "pending", false, nil
+	}
+	return append([]byte(nil), record.result...), record.code, record.message, false, nil
+}
+
+func (s *memoryDurableStore) CompleteRPCRequest(_ context.Context, key, method, params string, result []byte, code, message string, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[key]
+	if !ok || record.method != method || record.params != params || record.state != "PENDING" {
+		return errors.New("reservation is not pending")
+	}
+	s.records[key] = durableRecord{method: method, params: params, result: append([]byte(nil), result...), code: code, message: message, state: "COMPLETED"}
 	return nil
+}
+
+func (s *interruptedDurableStore) CompleteRPCRequest(ctx context.Context, key, method, params string, result []byte, code, message string, expires time.Time) error {
+	if s.failComplete.Swap(false) {
+		return errors.New("simulated crash before durable response commit")
+	}
+	return s.memoryDurableStore.CompleteRPCRequest(ctx, key, method, params, result, code, message, expires)
 }
 
 type errorHandler struct{ result any }
@@ -197,8 +220,8 @@ func TestDurableIdempotencyStorageFailuresFailClosed(t *testing.T) {
 		durable  DurableIdempotency
 		wantCode string
 	}{
-		{name: "load", durable: failingDurableStore{failLoad: true}, wantCode: "IDEMPOTENCY_STORE"},
-		{name: "save", durable: failingDurableStore{}, wantCode: "IDEMPOTENCY_STORE"},
+		{name: "begin", durable: failingDurableStore{failBegin: true}, wantCode: "IDEMPOTENCY_STORE"},
+		{name: "complete", durable: failingDurableStore{}, wantCode: "IDEMPOTENCY_STORE"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			serverSide, clientSide := net.Pipe()
@@ -222,6 +245,40 @@ func TestDurableIdempotencyStorageFailuresFailClosed(t *testing.T) {
 			_ = clientSide.Close()
 			<-done
 		})
+	}
+}
+
+func TestDurableReservationPreventsMutationReplayAfterResponseCommitGap(t *testing.T) {
+	durable := &interruptedDurableStore{}
+	durable.failComplete.Store(true)
+	handler := &countingHandler{}
+	call := func() Response {
+		serverSide, clientSide := net.Pipe()
+		server := &Server{Handler: handler, Durable: durable}
+		done := make(chan struct{})
+		go func() {
+			server.serveConn(context.Background(), serverSide)
+			close(done)
+		}()
+		request := Request{Version: ProtocolVersion, ID: "request", Method: "mutate", IdempotencyKey: "crash-gap", Params: json.RawMessage(`{"token":"secret"}`)}
+		if err := writeFrame(clientSide, request); err != nil {
+			t.Fatal(err)
+		}
+		var response Response
+		if err := readFrame(clientSide, &response); err != nil {
+			t.Fatal(err)
+		}
+		_ = clientSide.Close()
+		<-done
+		return response
+	}
+	first := call()
+	if first.Error == nil || first.Error.Code != "IDEMPOTENCY_STORE" || handler.calls.Load() != 1 {
+		t.Fatalf("first response=%+v calls=%d", first, handler.calls.Load())
+	}
+	second := call()
+	if second.Error == nil || second.Error.Code != "IDEMPOTENCY_INDETERMINATE" || handler.calls.Load() != 1 {
+		t.Fatalf("second response=%+v calls=%d", second, handler.calls.Load())
 	}
 }
 

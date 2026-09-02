@@ -356,7 +356,8 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := m.WaitReady(waitCtx, native.SessionID, native.Token); err != nil {
-		t.Fatal(err)
+		details, detailsErr := store.StatusDiagnostics(ctx)
+		t.Fatalf("wait for native resume: %v; diagnostics=%+v diagnostics_error=%v", err, details, detailsErr)
 	}
 	if status := gitOutput(t, native.Path, "status", "--porcelain"); !strings.Contains(status, "MM tracked.txt") || !strings.Contains(status, "?? untracked.txt") {
 		t.Fatalf("native restored status:\n%s", status)
@@ -848,7 +849,8 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := m.WaitReady(ctx, lease.SessionID, lease.Token); err != nil {
-		t.Fatal(err)
+		details, detailsErr := store.StatusDiagnostics(context.Background())
+		t.Fatalf("wait for multi-repository bundle: %v; diagnostics=%+v diagnostics_error=%v", err, details, detailsErr)
 	}
 	for _, name := range []string{"service", "web"} {
 		path := filepath.Join(lease.Path, name)
@@ -937,6 +939,15 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 			t.Fatalf("repository %s was not rematerialized: %v", repository.RelativePath, err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(lease.Path, "AGENTS.md"), []byte("session-specific rules\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(lease.Path, "notes"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lease.Path, "notes", "todo.txt"), []byte("preserve root state\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
 	if err := m.Release(context.Background(), lease.SessionID, lease.Token, "test"); err != nil {
 		t.Fatal(err)
 	}
@@ -952,6 +963,35 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 		_, pathErr := os.Lstat(lease.Path)
 		return slotErr == nil && slot.State == "ARCHIVED" && os.IsNotExist(pathErr)
 	})
+	rootSnapshot, found, err := store.WorkspaceSnapshot(context.Background(), lease.SessionID)
+	if err != nil || !found {
+		t.Fatalf("workspace root snapshot found=%v snapshot=%+v err=%v", found, rootSnapshot, err)
+	}
+	resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer resumeCancel()
+	resumed, err := m.Resume(resumeCtx, lease.SessionID, "codex", os.Getpid(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WaitReady(resumeCtx, resumed.SessionID, resumed.Token); err != nil {
+		t.Fatal(err)
+	}
+	assertWorkspaceTestFile(t, filepath.Join(resumed.Path, "AGENTS.md"), "session-specific rules\n")
+	assertWorkspaceTestFile(t, filepath.Join(resumed.Path, "notes", "todo.txt"), "preserve root state\n")
+	if _, err := os.Lstat(filepath.Join(resumed.Path, "api")); !os.IsNotExist(err) {
+		t.Fatalf("repository added after the archived session leaked into Resume: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(resumed.Path, "audit")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("shared root link was not rematerialized: info=%v err=%v", info, err)
+	}
+}
+
+func assertWorkspaceTestFile(t *testing.T, path, expected string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != expected {
+		t.Fatalf("workspace file %s=%q err=%v", path, data, err)
+	}
 }
 
 func initGitRepo(t *testing.T, path string) {

@@ -1,0 +1,3 @@
+DELETE FROM rpc_idempotency;
+
+ALTER TABLE rpc_idempotency ADD COLUMN state TEXT NOT NULL DEFAULT 'COMPLETED';

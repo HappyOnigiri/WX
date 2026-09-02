@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
 func TestCreateSlotSessionCommitsJobAtomically(t *testing.T) {
@@ -80,6 +81,134 @@ func TestReleaseCreatesExactlyOneSnapshotJob(t *testing.T) {
 	}
 	if jobs != 1 {
 		t.Fatalf("snapshot jobs=%d, want 1", jobs)
+	}
+}
+
+func TestSessionRepositoryMembershipSurvivesWorkspaceReconciliation(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	workspace := discovery.Workspace{
+		ID:   "workspace",
+		Root: domain.CanonicalPath(root),
+		Kind: "multi_repository",
+		Repositories: []discovery.Repository{
+			{ID: "repository-a", MainPath: domain.CanonicalPath(filepath.Join(root, "a")), CommonDir: domain.CanonicalPath(filepath.Join(root, "a.git")), RelativePath: "a", DefaultBranch: "main"},
+			{ID: "repository-b", MainPath: domain.CanonicalPath(filepath.Join(root, "b")), CommonDir: domain.CanonicalPath(filepath.Join(root, "b.git")), RelativePath: "nested/b", DefaultBranch: "main"},
+		},
+	}
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+	repositories := []SlotRepository{
+		{RepositoryID: "repository-a", WorktreePath: filepath.Join(root, "slot", "a"), State: "READY", RequestedRef: "main", BaseOID: "a", Fingerprint: "a"},
+		{RepositoryID: "repository-b", WorktreePath: filepath.Join(root, "slot", "nested", "b"), State: "READY", RequestedRef: "main", BaseOID: "b", Fingerprint: "b"},
+	}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "slot"), State: "LEASED"}, repositories, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	workspace.Repositories = workspace.Repositories[:1]
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	historical, err := store.SessionWorkspace(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(historical.Repositories) != 2 || historical.Repositories[0].RelativePath != "a" || historical.Repositories[1].RelativePath != "nested/b" {
+		t.Fatalf("historical membership=%+v", historical.Repositories)
+	}
+	current, err := store.Workspace(ctx, "workspace")
+	if err != nil || len(current.Repositories) != 1 {
+		t.Fatalf("current membership=%+v err=%v", current.Repositories, err)
+	}
+}
+
+func TestWorkspaceSnapshotMetadataGatesMultiRepositoryArchive(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	workspace := discovery.Workspace{ID: "workspace", Root: domain.CanonicalPath(root), Kind: "multi_repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: domain.CanonicalPath(filepath.Join(root, "repository")), CommonDir: domain.CanonicalPath(filepath.Join(root, "repository.git")), RelativePath: "repository", DefaultBranch: "main"}}}
+	if err := store.UpsertWorkspace(ctx, workspace); err != nil {
+		t.Fatal(err)
+	}
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "RELEASING", AgentKind: "codex", TokenHash: HashToken("token")}
+	repositories := []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "slot", "repository"), State: "LEASED", RequestedRef: "main", BaseOID: "base", Fingerprint: "fingerprint"}}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "slot"), State: "SNAPSHOTTING"}, repositories, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	expires := FormatTime(time.Now().Add(time.Hour))
+	if err := store.MarkArchived(ctx, "session", "slot", expires); err == nil {
+		t.Fatal("multi-repository session archived without a workspace root snapshot")
+	}
+	snapshot := WorkspaceSnapshot{SessionID: "session", ArchivePath: filepath.Join(root, "recovery", "snapshot.tar"), SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: expires}
+	if err := store.SaveWorkspaceSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err := store.WorkspaceSnapshot(ctx, "session")
+	if err != nil || !found || loaded != snapshot {
+		t.Fatalf("workspace snapshot found=%v loaded=%+v err=%v", found, loaded, err)
+	}
+	conflict := snapshot
+	conflict.SHA256 = strings.Repeat("b", 64)
+	if err := store.SaveWorkspaceSnapshot(ctx, conflict); err == nil {
+		t.Fatal("conflicting workspace snapshot metadata was accepted")
+	}
+	if err := store.MarkArchived(ctx, "session", "slot", expires); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ExpireSessionSnapshots(ctx, "session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.WorkspaceSnapshot(ctx, "session"); err != nil || found {
+		t.Fatalf("expired workspace snapshot found=%v err=%v", found, err)
+	}
+}
+
+func TestReleaseDuringPreparationDefersSnapshotUntilPreparationFinishes(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "PREPARING"}, nil, session, "PREPARE"); err != nil {
+		t.Fatal(err)
+	}
+	if job, scheduled, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID); err != nil || scheduled || job.ID != "" {
+		t.Fatalf("release during preparation: scheduled=%v job=%+v err=%v", scheduled, job, err)
+	}
+	storedSession, err := store.SessionByID(ctx, session.ID)
+	if err != nil || storedSession.State != "RELEASING" {
+		t.Fatalf("session=%+v err=%v", storedSession, err)
+	}
+	slot, err := store.Slot(ctx, session.SlotID)
+	if err != nil || slot.State != "PREPARING" {
+		t.Fatalf("slot=%+v err=%v", slot, err)
+	}
+	var snapshots int
+	if err := store.db.QueryRow(`SELECT count(*) FROM jobs WHERE session_id=? AND kind='SNAPSHOT'`, session.ID).Scan(&snapshots); err != nil {
+		t.Fatal(err)
+	}
+	if snapshots != 0 {
+		t.Fatalf("snapshot jobs before preparation=%d", snapshots)
+	}
+
+	job, scheduled, err := store.FinishPreparationWithRelease(ctx, session.SlotID)
+	if err != nil || !scheduled || job.Kind != "SNAPSHOT" || job.SessionID != session.ID || job.WorkspaceID != session.WorkspaceID {
+		t.Fatalf("finish preparation: scheduled=%v job=%+v err=%v", scheduled, job, err)
+	}
+	slot, err = store.Slot(ctx, session.SlotID)
+	if err != nil || slot.State != "DRAINING" {
+		t.Fatalf("finished slot=%+v err=%v", slot, err)
+	}
+	if err := store.db.QueryRow(`SELECT count(*) FROM jobs WHERE session_id=? AND kind='SNAPSHOT'`, session.ID).Scan(&snapshots); err != nil {
+		t.Fatal(err)
+	}
+	if snapshots != 1 {
+		t.Fatalf("snapshot jobs after preparation=%d", snapshots)
+	}
+	if _, changed, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID); err != nil || changed {
+		t.Fatalf("duplicate release: changed=%v err=%v", changed, err)
 	}
 }
 
@@ -1422,8 +1551,8 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 	_ = store.QuarantineMissingSlot(ctx, "s", "test")
 	_ = store.QuarantineArtifact(ctx, "path", "/tmp/test", "test")
 	_ = store.QuarantineMissingRecoveryRef(ctx, "refs/wx/recovery/missing")
-	_, _, _, _, _ = store.LoadRPCResult(ctx, "key", "method", "params")
-	_ = store.SaveRPCResult(ctx, "key", "method", "params", []byte("{}"), "", "", time.Now().Add(time.Hour))
+	_, _, _, _, _ = store.BeginRPCRequest(ctx, "key", "method", "params", time.Now().Add(time.Hour))
+	_ = store.CompleteRPCRequest(ctx, "key", "method", "params", []byte("{}"), "", "", time.Now().Add(time.Hour))
 	_, _ = store.Repositories(ctx)
 	_, _ = store.RecoveryRefs(ctx, "r")
 	_, _ = store.StandbyGCCandidates(ctx, now(), 1)
@@ -1443,7 +1572,7 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 
 func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 	store := openTestStore(t)
-	for _, table := range []string{"rpc_idempotency", "quarantined_artifacts", "snapshots", "jobs", "sessions", "slot_repositories", "slots", "workspace_repositories", "repositories", "workspaces", "events", "schema_migrations"} {
+	for _, table := range []string{"rpc_idempotency", "quarantined_artifacts", "workspace_snapshots", "snapshots", "jobs", "session_repositories", "sessions", "slot_repositories", "slots", "workspace_repositories", "repositories", "workspaces", "events", "schema_migrations"} {
 		if _, err := store.db.Exec(`DROP TABLE ` + table); err != nil {
 			t.Fatalf("drop %s: %v", table, err)
 		}
@@ -1563,8 +1692,27 @@ func TestRPCIdempotencyResultSurvivesStoreRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := store.SaveRPCResult(ctx, "key", "Mutate", `{"value":1}`, []byte(`{"ok":true}`), "", "", time.Now().Add(time.Hour)); err != nil {
+	params := `{"token":"plaintext-secret"}`
+	resultPayload := []byte(`{"token":"response-secret"}`)
+	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "key", "Mutate", params, time.Now().Add(time.Hour)); err != nil || !execute {
+		t.Fatalf("begin execute=%v err=%v", execute, err)
+	}
+	if err := store.CompleteRPCRequest(ctx, "key", "Mutate", params, resultPayload, "", "", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
+	}
+	var storedParams string
+	var storedResult []byte
+	if err := store.db.QueryRow(`SELECT params,result FROM rpc_idempotency WHERE idempotency_key='key'`).Scan(&storedParams, &storedResult); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedParams, "plaintext-secret") || bytes.Contains(storedResult, []byte("response-secret")) {
+		t.Fatalf("RPC secret persisted in plaintext: params=%q result=%x", storedParams, storedResult)
+	}
+	if info, err := os.Lstat(path + ".rpc-key"); err != nil || info.Mode().Perm() != 0o600 || !info.Mode().IsRegular() {
+		t.Fatalf("RPC key permissions=%v err=%v", info, err)
+	}
+	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "pending", "Mutate", `{}`, time.Now().Add(time.Hour)); err != nil || !execute {
+		t.Fatalf("pending begin execute=%v err=%v", execute, err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -1574,16 +1722,20 @@ func TestRPCIdempotencyResultSurvivesStoreRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	result, code, message, found, err := store.LoadRPCResult(ctx, "key", "Mutate", `{"value":1}`)
-	if err != nil || !found || string(result) != `{"ok":true}` || code != "" || message != "" {
-		t.Fatalf("result=%s code=%q message=%q found=%v err=%v", result, code, message, found, err)
+	result, code, message, execute, err := store.BeginRPCRequest(ctx, "key", "Mutate", params, time.Now().Add(time.Hour))
+	if err != nil || execute || string(result) != string(resultPayload) || code != "" || message != "" {
+		t.Fatalf("result=%s code=%q message=%q execute=%v err=%v", result, code, message, execute, err)
 	}
-	_, code, _, found, err = store.LoadRPCResult(ctx, "key", "Mutate", `{"value":2}`)
-	if err != nil || !found || code != "IDEMPOTENCY_KEY_REUSE" {
-		t.Fatalf("mismatch code=%q found=%v err=%v", code, found, err)
+	_, code, _, execute, err = store.BeginRPCRequest(ctx, "key", "Mutate", `{"value":2}`, time.Now().Add(time.Hour))
+	if err != nil || execute || code != "IDEMPOTENCY_KEY_REUSE" {
+		t.Fatalf("mismatch code=%q execute=%v err=%v", code, execute, err)
 	}
-	if err := store.SaveRPCResult(ctx, "expired", "Mutate", `{}`, []byte(`{}`), "", "", time.Now().Add(-time.Hour)); err != nil {
-		t.Fatal(err)
+	_, code, _, execute, err = store.BeginRPCRequest(ctx, "pending", "Mutate", `{}`, time.Now().Add(time.Hour))
+	if err != nil || execute || code != "IDEMPOTENCY_INDETERMINATE" {
+		t.Fatalf("pending code=%q execute=%v err=%v", code, execute, err)
+	}
+	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "expired", "Mutate", `{}`, time.Now().Add(-time.Hour)); err != nil || !execute {
+		t.Fatalf("expired begin execute=%v err=%v", execute, err)
 	}
 	if err := store.PruneMetadata(ctx, FormatTime(time.Now().Add(-time.Hour)), FormatTime(time.Now().Add(-time.Hour)), FormatTime(time.Now().Add(-time.Hour))); err != nil {
 		t.Fatal(err)

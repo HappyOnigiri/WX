@@ -137,6 +137,7 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 		}
 		job, err := m.store.ClaimJob(context.Background(), work.id, owner)
 		if err != nil {
+			m.log.Debug("claim job skipped", "job_id", work.id, "worker", owner, "error", err)
 			continue
 		}
 		jobCtx, cancel := context.WithCancel(m.ctx)
@@ -172,6 +173,7 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 		}
 		var retryable retryableJobError
 		if errors.As(err, &retryable) {
+			m.log.Debug("job attempt failed and will be retried", "job_id", job.ID, "kind", job.Kind, "attempt", job.Attempt, "error", err)
 			if job.Attempt >= maxJobAttempts {
 				m.log.Error("job exhausted retry limit", "job_id", job.ID, "attempt", job.Attempt, "error", err)
 				_ = m.store.SetSlotState(context.Background(), job.SlotID, []string{"PREPARING", "RESTORING", "FAILED", "REMOVING", "RETIRING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED")
@@ -594,9 +596,17 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 		_ = m.store.SetSlotState(ctx, s.SlotID, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_UNAVAILABLE")
 		return errors.New("parent recovery snapshot is expired or incomplete")
 	}
-	w, err := m.store.Workspace(ctx, s.WorkspaceID)
+	w, err := m.store.SessionWorkspace(ctx, s.ParentSessionID)
 	if err != nil {
 		return err
+	}
+	usable, err := m.recoveryUsable(ctx, s.ParentSessionID, w, snapshots, time.Now())
+	if err != nil || !usable {
+		_ = m.store.SetSlotState(ctx, s.SlotID, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_UNAVAILABLE")
+		if err != nil {
+			return fmt.Errorf("validate parent recovery snapshot: %w", err)
+		}
+		return errors.New("parent recovery snapshot is expired or incomplete")
 	}
 	repos, err := m.store.SlotRepositories(ctx, s.SlotID)
 	if err != nil {
@@ -828,9 +838,13 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 			return err
 		}
 	}
-	if err := m.store.FinishPreparation(ctx, id); err != nil {
+	releaseJob, released, err := m.store.FinishPreparationWithRelease(ctx, id)
+	if err != nil {
 		m.log.Error("finish preparation failed", "slot_id", id, "error", err)
 		return err
+	}
+	if released {
+		m.schedule(releaseJob)
 	}
 	return nil
 }
@@ -1075,7 +1089,15 @@ func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID s
 	case "RELEASING", "SNAPSHOTTING":
 		// The durable RESTORE job waits for the parent SNAPSHOT job to commit.
 	case "ARCHIVED":
-		if !snapshotsUsable(snaps, time.Now()) {
+		w, workspaceErr := m.store.SessionWorkspace(ctx, prior.ID)
+		if workspaceErr != nil {
+			return workspaceErr
+		}
+		usable, usableErr := m.recoveryUsable(ctx, prior.ID, w, snaps, time.Now())
+		if usableErr != nil {
+			return fmt.Errorf("validate wx recovery snapshot: %w", usableErr)
+		}
+		if !usable {
 			return fmt.Errorf("wx recovery snapshot is expired or unavailable; stop this session and run wx resume %s %s resume %s, or rerun the native resume with --fresh only if local workspace state may be discarded", prior.ID, current.AgentKind, agentID)
 		}
 	case "EXPIRED":
@@ -1083,7 +1105,7 @@ func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID s
 	default:
 		return fmt.Errorf("wx session %s is %s and cannot be resumed without first completing release", prior.ID, prior.State)
 	}
-	w, err := m.store.Workspace(ctx, prior.WorkspaceID)
+	w, err := m.store.SessionWorkspace(ctx, prior.ID)
 	if err != nil {
 		return err
 	}
@@ -1150,6 +1172,28 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "FAILED", "ROOT_MATERIALIZATION_FAILED")
 			return err
 		}
+		session, err := m.store.SessionByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		rootSnapshot, found, err := m.store.WorkspaceSnapshot(ctx, session.ParentSessionID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
+			return errors.New("multi-repository recovery snapshot has no workspace root archive")
+		}
+		targetRoot, targetOK := m.rootForPath(slot.Path)
+		archiveRoot, archiveOK := m.rootForPath(rootSnapshot.ArchivePath)
+		if !targetOK || !archiveOK {
+			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
+			return errors.New("workspace root recovery paths are outside known wx roots")
+		}
+		if err := archive.RestoreWorkspace(ctx, slot.Path, targetRoot, archiveRoot, rootSnapshot, workspaceRecoveryExclusions(w, m.Config())); err != nil {
+			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "RESTORE_FAILED")
+			return fmt.Errorf("restore workspace root: %w", err)
+		}
 	}
 	return m.store.FinishPreparation(ctx, id)
 }
@@ -1164,7 +1208,18 @@ func (m *Manager) ResumeStatus(ctx context.Context, oldID string) (map[string]an
 		return nil, err
 	}
 	pending := old.State == "RELEASING" || old.State == "SNAPSHOTTING"
-	expired := !pending && (old.State == "EXPIRED" || !snapshotsUsable(snaps, time.Now()))
+	expired := old.State == "EXPIRED"
+	if !pending && !expired {
+		w, err := m.store.SessionWorkspace(ctx, oldID)
+		if err != nil {
+			return nil, err
+		}
+		usable, err := m.recoveryUsable(ctx, oldID, w, snaps, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		expired = !usable
+	}
 	return map[string]any{"state": old.State, "expired": expired, "pending": pending, "workspace_id": old.WorkspaceID}, nil
 }
 
@@ -1179,6 +1234,36 @@ func snapshotsUsable(snaps []state.Snapshot, at time.Time) bool {
 		}
 	}
 	return true
+}
+
+func (m *Manager) recoveryUsable(ctx context.Context, sessionID string, w discovery.Workspace, snapshots []state.Snapshot, at time.Time) (bool, error) {
+	if !snapshotsUsable(snapshots, at) {
+		return false, nil
+	}
+	if w.Kind != "multi_repository" {
+		return true, nil
+	}
+	rootSnapshot, found, err := m.store.WorkspaceSnapshot(ctx, sessionID)
+	if err != nil || !found {
+		return false, err
+	}
+	root, ok := m.rootForPath(rootSnapshot.ArchivePath)
+	if !ok {
+		return false, errors.New("workspace snapshot archive is outside known wx roots")
+	}
+	if err := archive.ValidateWorkspaceSnapshot(root, rootSnapshot, at); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func workspaceRecoveryExclusions(w discovery.Workspace, cfg config.Config) []string {
+	excluded := make([]string, 0, len(w.Repositories)+len(cfg.Workspaces[string(w.Root)].Link))
+	for _, repository := range w.Repositories {
+		excluded = append(excluded, repository.RelativePath)
+	}
+	excluded = append(excluded, cfg.Workspaces[string(w.Root)].Link...)
+	return excluded
 }
 
 func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, allowFresh bool) (Lease, error) {
@@ -1196,13 +1281,25 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, allo
 			return Lease{}, err
 		}
 	}
-	w, err := m.store.Workspace(ctx, old.WorkspaceID)
-	if err != nil {
-		return Lease{}, err
+	usable := false
+	var archivedWorkspace discovery.Workspace
+	if old.State != "EXPIRED" {
+		archivedWorkspace, err = m.store.SessionWorkspace(ctx, oldID)
+		if err != nil {
+			return Lease{}, err
+		}
+		usable, err = m.recoveryUsable(ctx, oldID, archivedWorkspace, snaps, time.Now())
+		if err != nil {
+			return Lease{}, fmt.Errorf("validate recovery snapshot: %w", err)
+		}
 	}
-	if old.State == "EXPIRED" || !snapshotsUsable(snaps, time.Now()) {
+	if old.State == "EXPIRED" || !usable {
 		if !allowFresh {
 			return Lease{}, errors.New("session snapshot is EXPIRED; confirmation is required before creating a workspace from the current base")
+		}
+		w, err := m.store.Workspace(ctx, old.WorkspaceID)
+		if err != nil {
+			return Lease{}, err
 		}
 		resolved, err := pool.ResolveBranches(ctx, m.git, w, nil)
 		if err != nil {
@@ -1214,6 +1311,7 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, allo
 		}
 		return m.allocate(ctx, w, resolved, generation, agent, pid, "STARTING", oldID)
 	}
+	w := archivedWorkspace
 	resolved := make([]pool.Resolved, 0, len(w.Repositories))
 	for _, repo := range w.Repositories {
 		var found *state.Snapshot
@@ -1253,8 +1351,18 @@ func (m *Manager) waitForSnapshot(ctx context.Context, sessionID string) (state.
 		if err != nil {
 			return state.Session{}, nil, err
 		}
-		if session.State == "ARCHIVED" && snapshotsUsable(snapshots, time.Now()) {
-			return session, snapshots, nil
+		if session.State == "ARCHIVED" {
+			w, workspaceErr := m.store.SessionWorkspace(waitCtx, sessionID)
+			if workspaceErr != nil {
+				return session, snapshots, workspaceErr
+			}
+			usable, usableErr := m.recoveryUsable(waitCtx, sessionID, w, snapshots, time.Now())
+			if usableErr != nil {
+				return session, snapshots, usableErr
+			}
+			if usable {
+				return session, snapshots, nil
+			}
 		}
 		if session.State == "EXPIRED" {
 			return session, snapshots, errors.New("session recovery snapshot expired while waiting for archive")
@@ -1332,6 +1440,36 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 		}
 		if err := m.store.SaveSnapshot(ctx, snap); err != nil {
 			return err
+		}
+	}
+	w, err := m.store.SessionWorkspace(ctx, s.ID)
+	if err != nil {
+		return err
+	}
+	if w.Kind == "multi_repository" {
+		ownershipRoot, ok := m.rootForPath(slot.Path)
+		if !ok {
+			return errors.New("workspace bundle is outside known wx roots")
+		}
+		rootSnapshot, found, err := m.store.WorkspaceSnapshot(ctx, s.ID)
+		if err != nil {
+			return err
+		}
+		if found {
+			if err := archive.ValidateWorkspaceSnapshot(ownershipRoot, rootSnapshot, time.Now()); err != nil {
+				_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
+				return fmt.Errorf("validate workspace root snapshot: %w", err)
+			}
+		} else {
+			rootSnapshot, err = archive.SnapshotWorkspace(ctx, slot.Path, ownershipRoot, s.ID, workspaceRecoveryExclusions(w, m.Config()), expiry)
+			if err != nil {
+				m.log.Error("workspace root snapshot failed", "session_id", s.ID, "error", err)
+				_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
+				return err
+			}
+			if err := m.store.SaveWorkspaceSnapshot(ctx, rootSnapshot); err != nil {
+				return err
+			}
 		}
 	}
 	return m.store.MarkArchived(ctx, s.ID, s.SlotID, state.FormatTime(expiry))
@@ -1424,12 +1562,35 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	archiveManager := archive.Manager{Git: m.git, Preparer: &workspace.Preparer{Git: m.git, Config: cfg}}
 	for sessionID, snapshots := range expiredSessions {
 		ok := true
+		var rootSnapshot state.WorkspaceSnapshot
+		var rootSnapshotOwner string
+		w, workspaceErr := m.store.SessionWorkspace(ctx, sessionID)
+		if workspaceErr != nil {
+			ok = false
+		} else if w.Kind == "multi_repository" {
+			var found bool
+			rootSnapshot, found, workspaceErr = m.store.WorkspaceSnapshot(ctx, sessionID)
+			if workspaceErr != nil || !found {
+				ok = false
+			} else if owner, owned := m.rootForPath(rootSnapshot.ArchivePath); !owned {
+				ok = false
+			} else {
+				rootSnapshotOwner = owner
+				ok = archive.ValidateWorkspaceSnapshot(owner, rootSnapshot, time.Time{}) == nil
+			}
+		}
+		if !ok {
+			continue
+		}
 		for _, snapshot := range snapshots {
 			repo, err := m.store.Repository(ctx, snapshot.RepositoryID)
 			if err != nil || archiveManager.DeleteSnapshotRefs(ctx, repo, snapshot) != nil {
 				ok = false
 				break
 			}
+		}
+		if ok && rootSnapshot.SessionID != "" {
+			ok = archive.DeleteWorkspaceSnapshot(rootSnapshotOwner, rootSnapshot) == nil
 		}
 		if ok {
 			if err := m.store.ExpireSessionSnapshots(ctx, sessionID); err == nil {
@@ -1535,6 +1696,26 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	}
 	expected := map[string]string{}
 	if sessionID != "" {
+		w, err := m.store.SessionWorkspace(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		if w.Kind == "multi_repository" {
+			rootSnapshot, found, err := m.store.WorkspaceSnapshot(ctx, sessionID)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return errors.New("workspace root snapshot metadata is incomplete for worktree removal")
+			}
+			archiveRoot, ok := m.rootForPath(rootSnapshot.ArchivePath)
+			if !ok {
+				return errors.New("workspace root snapshot is outside known wx roots")
+			}
+			if err := archive.ValidateWorkspaceSnapshot(archiveRoot, rootSnapshot, time.Now()); err != nil {
+				return fmt.Errorf("validate workspace root snapshot before removal: %w", err)
+			}
+		}
 		snapshots, err := m.store.Snapshots(ctx, sessionID)
 		if err != nil {
 			return err

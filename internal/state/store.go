@@ -2,11 +2,16 @@ package state
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -27,15 +32,20 @@ type Store struct {
 	db     *sql.DB
 	writer sync.Mutex
 	path   string
+	rpcKey []byte
 }
 
-const SchemaVersion = 6
+const SchemaVersion = 9
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	rpcKey, err := loadOrCreateRPCKey(path + ".rpc-key")
+	if err != nil {
 		return nil, err
 	}
 	dsn := (&url.URL{Scheme: "file", Path: path}).String() + "?_defensive=1&_journal_mode=wal&_foreign_keys=on&_busy_timeout=5000&_synchronous=normal"
@@ -46,7 +56,7 @@ func Open(path string) (*Store, error) {
 	// Connection-local policies are encoded in the DSN, so status readers can
 	// use WAL concurrently while writes remain serialized by writer.
 	db.SetMaxOpenConns(8)
-	s := &Store{db: db, path: path}
+	s := &Store{db: db, path: path, rpcKey: rpcKey}
 	if err := s.init(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -60,27 +70,176 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error                   { return s.db.Close() }
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
-func (s *Store) LoadRPCResult(ctx context.Context, key, method, params string) ([]byte, string, string, bool, error) {
-	var storedMethod, storedParams, errorCode, errorMessage string
-	var result []byte
-	err := s.db.QueryRowContext(ctx, `SELECT method,params,result,COALESCE(error_code,''),COALESCE(error_message,'') FROM rpc_idempotency WHERE idempotency_key=? AND expires_at>?`, key, now()).Scan(&storedMethod, &storedParams, &result, &errorCode, &errorMessage)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, "", "", false, nil
-	}
+func (s *Store) BeginRPCRequest(ctx context.Context, key, method, params string, expiresAt time.Time) ([]byte, string, string, bool, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, "", "", false, err
 	}
-	if storedMethod != method || storedParams != params {
-		return nil, "IDEMPOTENCY_KEY_REUSE", "idempotency key was reused with a different method or payload", true, nil
+	defer tx.Rollback()
+	paramsHash := rpcParamsHash(params)
+	res, err := tx.ExecContext(ctx, `INSERT INTO rpc_idempotency(idempotency_key,method,params,result,error_code,error_message,completed_at,expires_at,state) VALUES(?,?,?,NULL,NULL,NULL,?,?,'PENDING') ON CONFLICT(idempotency_key) DO NOTHING`, key, method, paramsHash, now(), FormatTime(expiresAt))
+	if err != nil {
+		return nil, "", "", false, err
 	}
-	return result, errorCode, errorMessage, true, nil
+	inserted, _ := res.RowsAffected()
+	if inserted == 1 {
+		return nil, "", "", true, tx.Commit()
+	}
+	var storedMethod, storedParams, requestState string
+	var encrypted []byte
+	if err := tx.QueryRowContext(ctx, `SELECT method,params,state,result FROM rpc_idempotency WHERE idempotency_key=? AND expires_at>?`, key, now()).Scan(&storedMethod, &storedParams, &requestState, &encrypted); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "IDEMPOTENCY_EXPIRED", "idempotency reservation expired before it could be reused", false, nil
+		}
+		return nil, "", "", false, err
+	}
+	if storedMethod != method || storedParams != paramsHash {
+		return nil, "IDEMPOTENCY_KEY_REUSE", "idempotency key was reused with a different method or payload", false, nil
+	}
+	if requestState == "PENDING" {
+		return nil, "IDEMPOTENCY_INDETERMINATE", "a prior request crossed the durable mutation boundary without committing its response; wx will not execute it again", false, nil
+	}
+	if requestState != "COMPLETED" {
+		return nil, "", "", false, fmt.Errorf("unknown idempotency reservation state %q", requestState)
+	}
+	result, errorCode, errorMessage, err := s.decryptRPCResult(key, method, paramsHash, encrypted)
+	return result, errorCode, errorMessage, false, err
 }
 
-func (s *Store) SaveRPCResult(ctx context.Context, key, method, params string, result []byte, errorCode, errorMessage string, expiresAt time.Time) error {
+func (s *Store) CompleteRPCRequest(ctx context.Context, key, method, params string, result []byte, errorCode, errorMessage string, expiresAt time.Time) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO rpc_idempotency(idempotency_key,method,params,result,error_code,error_message,completed_at,expires_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING`, key, method, params, result, nullString(errorCode), nullString(errorMessage), now(), FormatTime(expiresAt))
-	return err
+	paramsHash := rpcParamsHash(params)
+	encrypted, err := s.encryptRPCResult(key, method, paramsHash, result, errorCode, errorMessage)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE rpc_idempotency SET result=?,error_code=NULL,error_message=NULL,completed_at=?,expires_at=?,state='COMPLETED' WHERE idempotency_key=? AND method=? AND params=? AND state='PENDING'`, encrypted, now(), FormatTime(expiresAt), key, method, paramsHash)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return errors.New("idempotency reservation is not pending for this request")
+	}
+	return nil
+}
+
+type rpcResultEnvelope struct {
+	Result       []byte `json:"result,omitempty"`
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+func rpcParamsHash(params string) string {
+	digest := sha256.Sum256([]byte(params))
+	return hex.EncodeToString(digest[:])
+}
+
+func (s *Store) encryptRPCResult(key, method, paramsHash string, result []byte, errorCode, errorMessage string) ([]byte, error) {
+	block, err := aes.NewCipher(s.rpcKey)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := cryptorand.Read(nonce); err != nil {
+		return nil, err
+	}
+	plain, err := json.Marshal(rpcResultEnvelope{Result: result, ErrorCode: errorCode, ErrorMessage: errorMessage})
+	if err != nil {
+		return nil, err
+	}
+	associated := []byte(key + "\x00" + method + "\x00" + paramsHash)
+	return append(nonce, aead.Seal(nil, nonce, plain, associated)...), nil
+}
+
+func (s *Store) decryptRPCResult(key, method, paramsHash string, encrypted []byte) ([]byte, string, string, error) {
+	block, err := aes.NewCipher(s.rpcKey)
+	if err != nil {
+		return nil, "", "", err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if len(encrypted) < aead.NonceSize() {
+		return nil, "", "", errors.New("encrypted RPC result is truncated")
+	}
+	nonce, ciphertext := encrypted[:aead.NonceSize()], encrypted[aead.NonceSize():]
+	associated := []byte(key + "\x00" + method + "\x00" + paramsHash)
+	plain, err := aead.Open(nil, nonce, ciphertext, associated)
+	if err != nil {
+		return nil, "", "", errors.New("encrypted RPC result authentication failed")
+	}
+	var envelope rpcResultEnvelope
+	if err := json.Unmarshal(plain, &envelope); err != nil {
+		return nil, "", "", err
+	}
+	return envelope.Result, envelope.ErrorCode, envelope.ErrorMessage, nil
+}
+
+func loadOrCreateRPCKey(path string) ([]byte, error) {
+	for {
+		info, err := os.Lstat(path)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+				return nil, errors.New("RPC idempotency key file is not an owner-only regular file")
+			}
+			key, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			if len(key) != 32 {
+				return nil, errors.New("RPC idempotency key file has an invalid length")
+			}
+			return key, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		key := make([]byte, 32)
+		if _, err := cryptorand.Read(key); err != nil {
+			return nil, err
+		}
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		written, writeErr := file.Write(key)
+		if writeErr == nil && written != len(key) {
+			writeErr = io.ErrShortWrite
+		}
+		if writeErr == nil {
+			writeErr = file.Sync()
+		}
+		closeErr := file.Close()
+		if writeErr != nil {
+			_ = os.Remove(path)
+			return nil, writeErr
+		}
+		if closeErr != nil {
+			_ = os.Remove(path)
+			return nil, closeErr
+		}
+		if directory, err := os.Open(filepath.Dir(path)); err == nil {
+			syncErr := directory.Sync()
+			_ = directory.Close()
+			if syncErr != nil {
+				return nil, syncErr
+			}
+		} else {
+			return nil, err
+		}
+		return key, nil
+	}
 }
 
 func (s *Store) Backup(ctx context.Context, generations int, retention time.Duration) (string, error) {
@@ -315,8 +474,11 @@ type (
 )
 
 type (
-	Snapshot struct{ ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string }
-	Job      struct {
+	Snapshot          struct{ ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string }
+	WorkspaceSnapshot struct {
+		SessionID, ArchivePath, SHA256, Status, CreatedAt, ExpiresAt string
+	}
+	Job struct {
 		ID, Kind, WorkspaceID, SlotID, SessionID, RepositoryID, State string
 		Attempt                                                       int
 	}
@@ -330,6 +492,16 @@ func newJob(kind, workspaceID, slotID, sessionID string) (Job, error) {
 		return Job{}, err
 	}
 	return Job{ID: id, Kind: kind, WorkspaceID: workspaceID, SlotID: slotID, SessionID: sessionID, State: "PENDING"}, nil
+}
+
+func insertCurrentSessionRepositories(ctx context.Context, tx *sql.Tx, sessionID, workspaceID, slotID string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal) SELECT ?,sr.repository_id,wr.relative_path,wr.ordinal FROM slot_repositories sr JOIN workspace_repositories wr ON wr.workspace_id=? AND wr.repository_id=sr.repository_id WHERE sr.slot_id=? ORDER BY wr.ordinal`, sessionID, workspaceID, slotID)
+	return err
+}
+
+func copySessionRepositories(ctx context.Context, tx *sql.Tx, sessionID, parentSessionID string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal) SELECT ?,repository_id,relative_path,ordinal FROM session_repositories WHERE session_id=? ORDER BY ordinal`, sessionID, parentSessionID)
+	return err
 }
 
 func insertJob(ctx context.Context, tx *sql.Tx, job Job) error {
@@ -621,6 +793,15 @@ func (s *Store) CreateSlotSession(ctx context.Context, slot Slot, repos []SlotRe
 	if err != nil {
 		return Job{}, err
 	}
+	if jobKind == "RESTORE" && session.ParentSessionID != "" {
+		if err := copySessionRepositories(ctx, tx, session.ID, session.ParentSessionID); err != nil {
+			return Job{}, err
+		}
+	} else if session.WorkspaceID != "" {
+		if err := insertCurrentSessionRepositories(ctx, tx, session.ID, session.WorkspaceID, session.SlotID); err != nil {
+			return Job{}, err
+		}
+	}
 	if jobKind != "" {
 		if err := insertJob(ctx, tx, job); err != nil {
 			return Job{}, err
@@ -682,6 +863,9 @@ func (s *Store) LeaseReady(ctx context.Context, slotID string, session Session) 
 	if err != nil {
 		return err
 	}
+	if err := insertCurrentSessionRepositories(ctx, tx, session.ID, session.WorkspaceID, slotID); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id IN (SELECT repository_id FROM workspace_repositories WHERE workspace_id=?)`, now(), session.WorkspaceID)
 	if err != nil {
 		return err
@@ -716,6 +900,9 @@ func (s *Store) LeaseReadyWithCold(ctx context.Context, slotID string, session S
 		return Job{}, errors.New("slot has no COLD repositories")
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,state,agent_kind,client_pid,session_token_hash,created_at) VALUES(?,?,?,?,?,?,?,?)`, session.ID, session.WorkspaceID, slotID, "STARTING", session.AgentKind, session.ClientPID, session.TokenHash, now()); err != nil {
+		return Job{}, err
+	}
+	if err := insertCurrentSessionRepositories(ctx, tx, session.ID, session.WorkspaceID, slotID); err != nil {
 		return Job{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id IN (SELECT repository_id FROM workspace_repositories WHERE workspace_id=?)`, now(), session.WorkspaceID); err != nil {
@@ -780,52 +967,84 @@ func (s *Store) MarkReady(ctx context.Context, id string) error {
 }
 
 func (s *Store) FinishPreparation(ctx context.Context, id string) error {
+	_, _, err := s.FinishPreparationWithRelease(ctx, id)
+	return err
+}
+
+func (s *Store) FinishPreparationWithRelease(ctx context.Context, id string) (Job, bool, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return Job{}, false, err
 	}
 	defer tx.Rollback()
 	t := now()
-	res, err := tx.ExecContext(ctx, `UPDATE slots SET state=CASE WHEN owner_session_id IS NULL THEN 'READY' ELSE 'LEASED' END,ready_at=?,updated_at=? WHERE id=? AND state IN ('PREPARING','RESTORING')`, t, t, id)
+	var sessionID, sessionState, kind, parentID, pendingAgentID string
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(se.id,''),COALESCE(se.state,''),COALESCE(se.agent_kind,''),COALESCE(se.parent_session_id,''),COALESCE(se.pending_agent_session_id,'') FROM slots sl LEFT JOIN sessions se ON se.id=sl.owner_session_id WHERE sl.id=?`, id).Scan(&sessionID, &sessionState, &kind, &parentID, &pendingAgentID)
 	if err != nil {
-		return err
+		return Job{}, false, err
+	}
+	targetState := "READY"
+	if sessionID != "" {
+		switch sessionState {
+		case "STARTING", "RESTORING":
+			targetState = "LEASED"
+		case "RELEASING":
+			targetState = "DRAINING"
+		default:
+			return Job{}, false, fmt.Errorf("slot %s has owner session %s in unexpected state %s", id, sessionID, sessionState)
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state=?,ready_at=?,updated_at=? WHERE id=? AND state IN ('PREPARING','RESTORING')`, targetState, t, t, id)
+	if err != nil {
+		return Job{}, false, err
 	}
 	n, _ := res.RowsAffected()
 	if n != 1 {
-		return fmt.Errorf("slot %s preparation state changed", id)
+		return Job{}, false, fmt.Errorf("slot %s preparation state changed", id)
 	}
-	var sessionID, kind, parentID, pendingAgentID string
-	err = tx.QueryRowContext(ctx, `SELECT id,agent_kind,COALESCE(parent_session_id,''),COALESCE(pending_agent_session_id,'') FROM sessions WHERE slot_id=? AND state='RESTORING'`, id).Scan(&sessionID, &kind, &parentID, &pendingAgentID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil {
+	if sessionState == "RESTORING" {
 		if pendingAgentID != "" {
 			if parentID == "" {
-				return errors.New("restoring session has no parent for its pending agent mapping")
+				return Job{}, false, errors.New("restoring session has no parent for its pending agent mapping")
 			}
 			res, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND agent_kind=? AND agent_session_id=?`, parentID, kind, pendingAgentID)
 			if err != nil {
-				return err
+				return Job{}, false, err
 			}
 			if n, _ := res.RowsAffected(); n != 1 {
-				return errors.New("resume parent agent mapping changed before restore completed")
+				return Job{}, false, errors.New("resume parent agent mapping changed before restore completed")
 			}
 			res, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=?,pending_agent_session_id=NULL WHERE id=? AND state='RESTORING'`, pendingAgentID, sessionID)
 			if err != nil {
-				return err
+				return Job{}, false, err
 			}
 			if n, _ := res.RowsAffected(); n != 1 {
-				return errors.New("restoring session changed before activation")
+				return Job{}, false, errors.New("restoring session changed before activation")
 			}
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET state='ACTIVE',started_at=COALESCE(started_at,?) WHERE slot_id=? AND state IN ('STARTING','RESTORING')`, t, id); err != nil {
-		return err
+		return Job{}, false, err
 	}
-	return tx.Commit()
+	if targetState != "DRAINING" {
+		return Job{}, false, tx.Commit()
+	}
+	job, err := newJob("SNAPSHOT", "", id, sessionID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(workspace_id,'') FROM sessions WHERE id=?`, sessionID).Scan(&job.WorkspaceID); err != nil {
+		return Job{}, false, err
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Job{}, false, err
+	}
+	return job, true, nil
 }
 
 func (s *Store) MarkSessionState(ctx context.Context, id string, from []string, to string) error {
@@ -1000,6 +1219,9 @@ func (s *Store) BindFreshResumeSlot(ctx context.Context, sessionID, parentSessio
 			return Job{}, err
 		}
 	}
+	if err := insertCurrentSessionRepositories(ctx, tx, sessionID, workspaceID, sessionID); err != nil {
+		return Job{}, err
+	}
 	if err := insertJob(ctx, tx, job); err != nil {
 		return Job{}, err
 	}
@@ -1090,6 +1312,9 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, 
 		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, sessionID, r.RepositoryID, r.WorktreePath, "RESTORING", r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
 			return Job{}, err
 		}
+	}
+	if err := copySessionRepositories(ctx, tx, sessionID, parentSessionID); err != nil {
+		return Job{}, err
 	}
 	if err := insertJob(ctx, tx, job); err != nil {
 		return Job{}, err
@@ -1216,6 +1441,37 @@ func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, er
 	return out, rows.Err()
 }
 
+func (s *Store) SaveWorkspaceSnapshot(ctx context.Context, x WorkspaceSnapshot) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO workspace_snapshots(session_id,archive_path,sha256,status,created_at,expires_at) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id) DO NOTHING`, x.SessionID, x.ArchivePath, x.SHA256, x.Status, x.CreatedAt, x.ExpiresAt)
+	if err != nil {
+		return err
+	}
+	var existing WorkspaceSnapshot
+	if err := tx.QueryRowContext(ctx, `SELECT session_id,archive_path,sha256,status,created_at,expires_at FROM workspace_snapshots WHERE session_id=?`, x.SessionID).Scan(&existing.SessionID, &existing.ArchivePath, &existing.SHA256, &existing.Status, &existing.CreatedAt, &existing.ExpiresAt); err != nil {
+		return err
+	}
+	if existing.ArchivePath != x.ArchivePath || existing.SHA256 != x.SHA256 || existing.Status != x.Status || existing.ExpiresAt != x.ExpiresAt {
+		return errors.New("workspace snapshot metadata conflicts with an existing recovery snapshot")
+	}
+	return tx.Commit()
+}
+
+func (s *Store) WorkspaceSnapshot(ctx context.Context, sessionID string) (WorkspaceSnapshot, bool, error) {
+	var x WorkspaceSnapshot
+	err := s.db.QueryRowContext(ctx, `SELECT session_id,archive_path,sha256,status,created_at,expires_at FROM workspace_snapshots WHERE session_id=?`, sessionID).Scan(&x.SessionID, &x.ArchivePath, &x.SHA256, &x.Status, &x.CreatedAt, &x.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkspaceSnapshot{}, false, nil
+	}
+	return x, err == nil, err
+}
+
 func (s *Store) Repository(ctx context.Context, id string) (discovery.Repository, error) {
 	var r discovery.Repository
 	err := s.db.QueryRowContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch FROM repositories WHERE id=?`, id).Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.DefaultBranch)
@@ -1241,6 +1497,33 @@ func (s *Store) Workspace(ctx context.Context, id string) (discovery.Workspace, 
 		w.Repositories = append(w.Repositories, r)
 	}
 	return w, rows.Err()
+}
+
+func (s *Store) SessionWorkspace(ctx context.Context, sessionID string) (discovery.Workspace, error) {
+	var w discovery.Workspace
+	err := s.db.QueryRowContext(ctx, `SELECT w.id,w.root_path,w.kind FROM sessions se JOIN workspaces w ON w.id=se.workspace_id WHERE se.id=?`, sessionID).Scan(&w.ID, &w.Root, &w.Kind)
+	if err != nil {
+		return w, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,sr.relative_path,r.default_branch FROM session_repositories sr JOIN repositories r ON r.id=sr.repository_id WHERE sr.session_id=? ORDER BY sr.ordinal`, sessionID)
+	if err != nil {
+		return w, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r discovery.Repository
+		if err := rows.Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.RelativePath, &r.DefaultBranch); err != nil {
+			return w, err
+		}
+		w.Repositories = append(w.Repositories, r)
+	}
+	if err := rows.Err(); err != nil {
+		return w, err
+	}
+	if len(w.Repositories) == 0 {
+		return w, errors.New("session has no recorded repository membership")
+	}
+	return w, nil
 }
 
 func (s *Store) WorkspaceRoots(ctx context.Context) ([]string, error) {
@@ -1481,6 +1764,13 @@ func (s *Store) MarkArchived(ctx context.Context, sessionID, slotID, expiry stri
 		return err
 	}
 	defer tx.Rollback()
+	var missingWorkspaceSnapshot int
+	if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN w.kind='multi_repository' AND NOT EXISTS (SELECT 1 FROM workspace_snapshots ws WHERE ws.session_id=se.id AND ws.status='ARCHIVED') THEN 1 ELSE 0 END FROM sessions se JOIN workspaces w ON w.id=se.workspace_id WHERE se.id=?`, sessionID).Scan(&missingWorkspaceSnapshot); err != nil {
+		return err
+	}
+	if missingWorkspaceSnapshot != 0 {
+		return errors.New("multi-repository session has no archived workspace snapshot")
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE sessions SET state='ARCHIVED',archived_at=COALESCE(archived_at,?),expires_at=COALESCE(expires_at,?) WHERE id=? AND state IN ('RELEASING','SNAPSHOTTING','ARCHIVED')`, now(), expiry, sessionID)
 	if err != nil {
 		return err
@@ -1574,6 +1864,19 @@ func (s *Store) Release(ctx context.Context, sessionID, workspaceID, slotID stri
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE slots SET state='DRAINING',updated_at=? WHERE owner_session_id=? AND state='LEASED'`, now(), sessionID); err != nil {
 		return Job{}, false, err
+	}
+	var slotState string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM slots WHERE id=? AND owner_session_id=?`, slotID, sessionID).Scan(&slotState); err != nil {
+		return Job{}, false, err
+	}
+	if slotState == "PREPARING" {
+		if err := tx.Commit(); err != nil {
+			return Job{}, false, err
+		}
+		return Job{}, false, nil
+	}
+	if slotState != "DRAINING" {
+		return Job{}, false, fmt.Errorf("slot %s cannot be released from %s", slotID, slotState)
 	}
 	if err := insertJob(ctx, tx, job); err != nil {
 		return Job{}, false, err
@@ -1865,6 +2168,9 @@ func (s *Store) ExpireSessionSnapshots(ctx context.Context, sessionID string) er
 		return errors.New("recovery snapshot has an active restore job")
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM snapshots WHERE session_id=?`, sessionID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM workspace_snapshots WHERE session_id=?`, sessionID); err != nil {
 		return err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED' WHERE id=? AND state IN ('ARCHIVED','EXPIRED')`, sessionID)

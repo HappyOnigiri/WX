@@ -564,7 +564,14 @@ func TestManagerResumeAndArchiveFailureStates(t *testing.T) {
 		if sessionState == "UNBOUND" {
 			session.WorkspaceID = ""
 		}
-		if _, err := store.CreateSlotSession(ctx, state.Slot{ID: id, WorkspaceID: session.WorkspaceID, Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, id), State: slotState}, nil, session, ""); err != nil {
+		var repositories []state.SlotRepository
+		if session.WorkspaceID != "" && parent == "" {
+			repositories = []state.SlotRepository{
+				{RepositoryID: "repository-1", WorktreePath: filepath.Join(cfg.Storage.WorktreeRoot, id, "repository-1"), State: slotState},
+				{RepositoryID: "repository-2", WorktreePath: filepath.Join(cfg.Storage.WorktreeRoot, id, "repository-2"), State: slotState},
+			}
+		}
+		if _, err := store.CreateSlotSession(ctx, state.Slot{ID: id, WorkspaceID: session.WorkspaceID, Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, id), State: slotState}, repositories, session, ""); err != nil {
 			t.Fatal(err)
 		}
 		return session, token
@@ -610,7 +617,7 @@ func TestManagerResumeAndArchiveFailureStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	incompleteChild, _ := createSession("incomplete-child", "RESTORING", "RESTORING", incompleteParent.ID)
-	if err := m.resumeRestoreJob(ctx, incompleteChild.ID); err == nil || !strings.Contains(err.Error(), "snapshot missing repository") {
+	if err := m.resumeRestoreJob(ctx, incompleteChild.ID); err == nil || !strings.Contains(err.Error(), "expired or incomplete") {
 		t.Fatalf("incomplete snapshot restore error=%v", err)
 	}
 
