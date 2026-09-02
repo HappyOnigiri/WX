@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/hookconfig"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -285,24 +287,76 @@ func TestDiagnosticFilesystemAndHookChecks(t *testing.T) {
 		t.Fatalf("directory usage=%d err=%v", usage, err)
 	}
 
-	for _, agentKind := range []string{"claude", "codex"} {
-		path := filepath.Join(home, ".claude", "settings.json")
-		if agentKind == "codex" {
-			path = filepath.Join(home, ".codex", "hooks.json")
-		}
+	executable, err := hookconfig.CurrentExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeHooks := func(t *testing.T, path, document string) {
+		t.Helper()
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		document := `{"hooks":{"SessionStart":[{"type":"command","command":"wx hook session-start"}],"UserPromptSubmit":[{"command":"wx hook user-prompt-submit"}],"PreToolUse":[{"command":"wx hook pre-tool-use"}]}}`
 		if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if !diagnosticHooksAvailable(agentKind) {
-			t.Fatalf("%s hooks were not detected", agentKind)
+	}
+	canonical := func(event string) string {
+		return fmt.Sprintf(`{"type":"command","command":%q}`, executable+" hook "+event)
+	}
+	valid := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[%s]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, canonical("session-start"), canonical("user-prompt-submit"), canonical("pre-tool-use"))
+	claudePath := filepath.Join(home, ".claude", "settings.json")
+	codexPath := filepath.Join(home, ".codex", "hooks.json")
+	for _, test := range []struct {
+		name     string
+		document string
+		want     bool
+	}{
+		{name: "valid canonical hooks", document: valid, want: true},
+		{name: "matcher applies to one event", document: strings.Replace(valid, `[{"hooks":[`, `[{"matcher":"startup","hooks":[`, 1), want: false},
+		{name: "disable all hooks", document: strings.Replace(valid, `{"hooks":`, `{"disableAllHooks":true,"hooks":`, 1), want: false},
+		{name: "wrong executable", document: strings.ReplaceAll(valid, executable, filepath.Join(home, "other-wx")), want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			other := filepath.Join(home, "other-wx")
+			if test.name == "wrong executable" {
+				if err := os.WriteFile(other, []byte("#!/bin/sh\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeHooks(t, claudePath, test.document)
+			if got := diagnosticHooksAvailable("claude"); got != test.want {
+				t.Fatalf("claude diagnostic=%v, want %v", got, test.want)
+			}
+		})
+	}
+	writeHooks(t, claudePath, valid)
+	localPath := filepath.Join(home, ".claude", "settings.local.json")
+	writeHooks(t, localPath, strings.Replace(valid, `[{"hooks":[`, `[{"disabled":true,"hooks":[`, 1))
+	if diagnosticHooksAvailable("claude") {
+		t.Fatal("invalid local Claude hooks were ignored in favor of global hooks")
+	}
+	if err := os.Remove(localPath); err != nil {
+		t.Fatal(err)
+	}
+	if !diagnosticHooksAvailable("claude") {
+		t.Fatal("valid global Claude hooks were not detected")
+	}
+
+	for _, separator := range []string{"\n", "\r"} {
+		document := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":%q}]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, executable+separator+"hook session-start", canonical("user-prompt-submit"), canonical("pre-tool-use"))
+		writeHooks(t, codexPath, document)
+		if diagnosticHooksAvailable("codex") {
+			t.Fatalf("shell separator %q was accepted", separator)
 		}
 	}
-	if diagnosticHookTreeContainsCommand(map[string]any{"disabled": true, "command": "wx hook session-start"}, "session-start") {
-		t.Fatal("disabled diagnostic hook was accepted")
+	wrapper := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":%q}]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, "sh -c '"+executable+" hook session-start'", canonical("user-prompt-submit"), canonical("pre-tool-use"))
+	writeHooks(t, codexPath, wrapper)
+	if diagnosticHooksAvailable("codex") {
+		t.Fatal("shell wrapper was accepted as a canonical readiness hook")
+	}
+	writeHooks(t, codexPath, valid)
+	if !diagnosticHooksAvailable("codex") {
+		t.Fatal("valid canonical Codex hooks were not detected")
 	}
 }
 

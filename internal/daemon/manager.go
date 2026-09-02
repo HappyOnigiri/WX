@@ -21,6 +21,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/hookconfig"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -1958,61 +1959,7 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 }
 
 func diagnosticHooksAvailable(agentKind string) bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	paths := []string{filepath.Join(home, ".claude", "settings.json"), filepath.Join(home, ".claude", "settings.local.json")}
-	if agentKind == "codex" {
-		paths = []string{filepath.Join(home, ".codex", "hooks.json")}
-	}
-	required := map[string]string{"SessionStart": "session-start", "UserPromptSubmit": "user-prompt-submit", "PreToolUse": "pre-tool-use"}
-	found := map[string]bool{}
-	for _, path := range paths {
-		data, readErr := os.ReadFile(path)
-		if readErr != nil || len(data) > 4<<20 {
-			continue
-		}
-		var document struct {
-			Hooks map[string]any `json:"hooks"`
-		}
-		if json.Unmarshal(data, &document) != nil {
-			continue
-		}
-		for event, command := range required {
-			if diagnosticHookTreeContainsCommand(document.Hooks[event], command) {
-				found[event] = true
-			}
-		}
-	}
-	return found["SessionStart"] && found["UserPromptSubmit"] && found["PreToolUse"]
-}
-
-func diagnosticHookTreeContainsCommand(value any, event string) bool {
-	switch typed := value.(type) {
-	case []any:
-		for _, child := range typed {
-			if diagnosticHookTreeContainsCommand(child, event) {
-				return true
-			}
-		}
-	case map[string]any:
-		if disabled, _ := typed["disabled"].(bool); disabled {
-			return false
-		}
-		if command, ok := typed["command"].(string); ok {
-			fields := strings.Fields(command)
-			if len(fields) == 3 && filepath.Base(strings.Trim(fields[0], `"'`)) == "wx" && fields[1] == "hook" && fields[2] == event {
-				return true
-			}
-		}
-		for key, child := range typed {
-			if key != "command" && diagnosticHookTreeContainsCommand(child, event) {
-				return true
-			}
-		}
-	}
-	return false
+	return hookconfig.Available(agentKind)
 }
 
 func diagnosticPath(path string, requiredType os.FileMode, requiredPerm os.FileMode) string {
