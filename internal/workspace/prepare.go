@@ -56,237 +56,249 @@ const (
 )
 
 func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase) error {
-	prepareSlotStates, prepareRepositoryStates := preparationOwnershipStates(phase)
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, target, err := p.prepareTarget(target)
 	if err != nil {
 		return err
 	}
+	return p.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+		return p.prepareLocked(ctx, repo, target, oid, slotID, phase, root)
+	})
+}
+
+func (p *Preparer) prepareTarget(target string) (string, string, error) {
+	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	if err != nil {
+		return "", "", err
+	}
 	target = filepath.Clean(target)
 	if !domain.IsWithin(root, target) {
-		return fmt.Errorf("target %s is outside wx worktree root", target)
+		return "", "", fmt.Errorf("target %s is outside wx worktree root", target)
 	}
 	if p.RequireOwnedRoot && p.OwnedRoot == nil && filepath.Clean(p.RootPath) == filepath.Clean(root) {
-		return errors.New("wx worktree root descriptor is unavailable")
+		return "", "", errors.New("wx worktree root descriptor is unavailable")
 	}
 	if !p.usesPinnedRoot(root) {
 		if err := ensurePhysicalRoot(root); err != nil {
-			return err
+			return "", "", err
 		}
 	}
 	ownedRoot, relativeTarget, closeOwnedRoot, err := p.openOwnedRoot(root, target)
 	if err != nil {
-		return fmt.Errorf("open wx worktree root: %w", err)
+		return "", "", fmt.Errorf("open wx worktree root: %w", err)
 	}
 	defer closeOwnedRoot()
 	if err := ownedRoot.MkdirAll(filepath.Dir(relativeTarget), 0o700); err != nil {
+		return "", "", fmt.Errorf("create worktree parent safely: %w", err)
+	}
+	return root, target, nil
+}
+
+func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, root string) error {
+	prepareSlotStates, prepareRepositoryStates := preparationOwnershipStates(phase)
+	// Re-open the descriptor after taking the common-directory lock and
+	// repeat the physical/ownership checks. A pre-lock check alone would
+	// allow a path replacement between validation and the Git operation.
+	lockedRoot, lockedRelativeTarget, closeLockedRoot, err := p.openOwnedRoot(root, target)
+	if err != nil {
+		return fmt.Errorf("revalidate wx worktree root: %w", err)
+	}
+	defer closeLockedRoot()
+	if err := lockedRoot.MkdirAll(filepath.Dir(lockedRelativeTarget), 0o700); err != nil {
 		return fmt.Errorf("create worktree parent safely: %w", err)
 	}
-	return p.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
-		// Re-open the descriptor after taking the common-directory lock and
-		// repeat the physical/ownership checks. A pre-lock check alone would
-		// allow a path replacement between validation and the Git operation.
-		lockedRoot, lockedRelativeTarget, closeLockedRoot, err := p.openOwnedRoot(root, target)
-		if err != nil {
-			return fmt.Errorf("revalidate wx worktree root: %w", err)
+	if _, err := lockedRoot.Lstat(lockedRelativeTarget); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	existingWorktree, err := p.existingTargetState(ctx, repo, target, oid, slotID, phase, root, lockedRoot, lockedRelativeTarget)
+	if err != nil {
+		return err
+	}
+	targetIdentity := ""
+	if existingWorktree {
+		identityDirectory, identity, identityErr := domain.OpenDirectoryAt(lockedRoot, lockedRelativeTarget)
+		if identityDirectory != nil {
+			_ = identityDirectory.Close()
 		}
-		defer closeLockedRoot()
-		if err := lockedRoot.MkdirAll(filepath.Dir(lockedRelativeTarget), 0o700); err != nil {
-			return fmt.Errorf("create worktree parent safely: %w", err)
+		if identityErr != nil {
+			return fmt.Errorf("%w: capture existing worktree identity: %v", state.ErrOwnership, identityErr)
 		}
-		if _, err := lockedRoot.Lstat(lockedRelativeTarget); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		existingWorktree, err := p.existingTargetState(ctx, repo, target, oid, slotID, phase, root, lockedRoot, lockedRelativeTarget)
-		if err != nil {
-			return err
-		}
-		targetIdentity := ""
-		if existingWorktree {
-			identityDirectory, identity, identityErr := domain.OpenDirectoryAt(lockedRoot, lockedRelativeTarget)
-			if identityDirectory != nil {
-				_ = identityDirectory.Close()
-			}
-			if identityErr != nil {
-				return fmt.Errorf("%w: capture existing worktree identity: %v", state.ErrOwnership, identityErr)
-			}
-			targetIdentity = identity
-		}
-		verifyTargetIdentity := func() error {
-			if targetIdentity == "" || !p.usesPinnedRoot(root) {
-				return nil
-			}
-			currentDirectory, currentIdentity, identityErr := domain.OpenDirectoryAt(lockedRoot, lockedRelativeTarget)
-			if currentDirectory != nil {
-				_ = currentDirectory.Close()
-			}
-			if identityErr != nil {
-				return fmt.Errorf("%w: worktree target identity is unavailable: %v", state.ErrOwnership, identityErr)
-			}
-			if currentIdentity != targetIdentity {
-				return fmt.Errorf("%w: worktree target identity changed (expected %s, got %s)", state.ErrOwnership, targetIdentity, currentIdentity)
-			}
+		targetIdentity = identity
+	}
+	verifyTargetIdentity := func() error {
+		if targetIdentity == "" || !p.usesPinnedRoot(root) {
 			return nil
 		}
-		validateOwnedTarget := func(validateCtx context.Context, stage string) error {
-			if identityErr := verifyTargetIdentity(); identityErr != nil {
-				return fmt.Errorf("%s: %w", stage, identityErr)
-			}
-			if validationErr := p.validateExistingWorktreeOwnedForPhase(validateCtx, repo, target, oid, slotID, phase); validationErr != nil {
-				return validationErr
-			}
-			if identityErr := verifyTargetIdentity(); identityErr != nil {
-				return fmt.Errorf("%s after validation: %w", stage, identityErr)
-			}
-			return nil
+		currentDirectory, currentIdentity, identityErr := domain.OpenDirectoryAt(lockedRoot, lockedRelativeTarget)
+		if currentDirectory != nil {
+			_ = currentDirectory.Close()
+		}
+		if identityErr != nil {
+			return fmt.Errorf("%w: worktree target identity is unavailable: %v", state.ErrOwnership, identityErr)
+		}
+		if currentIdentity != targetIdentity {
+			return fmt.Errorf("%w: worktree target identity changed (expected %s, got %s)", state.ErrOwnership, targetIdentity, currentIdentity)
+		}
+		return nil
+	}
+	validateOwnedTarget := func(validateCtx context.Context, stage string) error {
+		if identityErr := verifyTargetIdentity(); identityErr != nil {
+			return fmt.Errorf("%s: %w", stage, identityErr)
+		}
+		if validationErr := p.validateExistingWorktreeOwnedForPhase(validateCtx, repo, target, oid, slotID, phase); validationErr != nil {
+			return validationErr
+		}
+		if identityErr := verifyTargetIdentity(); identityErr != nil {
+			return fmt.Errorf("%s after validation: %w", stage, identityErr)
+		}
+		return nil
+	}
+	if err := p.validateStateOwnership(ctx, repo, target, slotID, prepareSlotStates, prepareRepositoryStates); err != nil {
+		return fmt.Errorf("wx worktree ownership changed before marker: %w", err)
+	}
+	var markerErr error
+	if p.usesPinnedRoot(root) {
+		markerErr = EnsureOwnershipMarkerAt(lockedRoot, root, target, slotID, string(repo.CommonDir))
+	} else {
+		markerErr = EnsureOwnershipMarker(root, target, slotID, string(repo.CommonDir))
+	}
+	if err := markerErr; err != nil {
+		return fmt.Errorf("prepare wx ownership marker: %w", err)
+	}
+	if !existingWorktree {
+		parentDirectory, _, parentErr := domain.OpenDirectoryAt(lockedRoot, filepath.Dir(lockedRelativeTarget))
+		if parentErr != nil {
+			return fmt.Errorf("%w: worktree parent ownership changed: %v", state.ErrOwnership, parentErr)
+		}
+		if closeErr := parentDirectory.Close(); closeErr != nil {
+			return fmt.Errorf("%w: close worktree parent descriptor: %v", state.ErrOwnership, closeErr)
 		}
 		if err := p.validateStateOwnership(ctx, repo, target, slotID, prepareSlotStates, prepareRepositoryStates); err != nil {
-			return fmt.Errorf("wx worktree ownership changed before marker: %w", err)
+			return fmt.Errorf("wx worktree ownership changed before creation: %w", err)
 		}
-		var markerErr error
-		if p.usesPinnedRoot(root) {
-			markerErr = EnsureOwnershipMarkerAt(lockedRoot, root, target, slotID, string(repo.CommonDir))
-		} else {
-			markerErr = EnsureOwnershipMarker(root, target, slotID, string(repo.CommonDir))
-		}
-		if err := markerErr; err != nil {
-			return fmt.Errorf("prepare wx ownership marker: %w", err)
-		}
-		if !existingWorktree {
-			parentDirectory, _, parentErr := domain.OpenDirectoryAt(lockedRoot, filepath.Dir(lockedRelativeTarget))
-			if parentErr != nil {
-				return fmt.Errorf("%w: worktree parent ownership changed: %v", state.ErrOwnership, parentErr)
-			}
-			if closeErr := parentDirectory.Close(); closeErr != nil {
-				return fmt.Errorf("%w: close worktree parent descriptor: %v", state.ErrOwnership, closeErr)
-			}
-			if err := p.validateStateOwnership(ctx, repo, target, slotID, prepareSlotStates, prepareRepositoryStates); err != nil {
-				return fmt.Errorf("wx worktree ownership changed before creation: %w", err)
-			}
-			targetIdentity, err = p.addWorktreeWithIdentity(ctx, repo, lockedRoot, target, lockedRelativeTarget, oid)
-			if err != nil {
-				return err
-			}
-			if err := verifyTargetIdentity(); err != nil {
-				return fmt.Errorf("prepared worktree escaped ownership root: %w", err)
-			}
-		}
-		cleanup := !existingWorktree
-		ownedAfterLock := false
-		defer func() {
-			if cleanup && ownedAfterLock {
-				// A failed preparation is removable only while ownership can still
-				// be proved. If a command or concurrent filesystem change invalidated
-				// that proof, leave the locked target and marker for quarantine/reconcile.
-				if err := validateOwnedTarget(context.Background(), "validate worktree before cleanup"); err != nil {
-					return
-				}
-				if _, err := p.runWorktreeAdminOwned(context.Background(), repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
-					return
-				}
-				if _, err := p.runWorktreeAdminOwned(context.Background(), repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "remove", "--force"); err != nil {
-					return
-				}
-				if p.usesPinnedRoot(root) {
-					_ = removeOwnershipMarkerAt(lockedRoot, root, target)
-				} else {
-					_ = removeOwnershipMarker(root, target)
-				}
-			}
-		}()
-		if existingWorktree {
-			if _, err := p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
-				return fmt.Errorf("unlock existing wx worktree: %w", err)
-			}
-		}
-		lockState := "PREPARING"
-		if phase == preparePhaseRestore {
-			lockState = "RESTORING"
-		}
-		if _, err := p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "lock", "--reason", "wx:"+slotID+":"+lockState); err != nil {
-			return err
-		}
-		// This validation is deliberately after the new lock is acquired. It
-		// proves that the marker, physical path, Git registration, OID, and
-		// lock reason still describe the same slot before any file operation.
-		if err := validateOwnedTarget(ctx, "wx worktree ownership changed after lock"); err != nil {
-			return fmt.Errorf("wx worktree ownership changed after lock: %w", err)
-		}
-		ownedAfterLock = true
-		// Revalidate the durable owner immediately before each operation that
-		// writes into or reuses the worktree. A common-directory lock protects
-		// Git metadata, while this read-only state proof protects the slot/path
-		// association and state machine independently.
-		if err := validateOwnedTarget(ctx, "wx worktree ownership changed before includes"); err != nil {
-			return fmt.Errorf("wx worktree ownership changed before includes: %w", err)
-		}
-		if err := p.copyIncludesAt(repo, target, lockedRoot, lockedRelativeTarget); err != nil {
-			return err
-		}
-		if err := validateOwnedTarget(ctx, "wx worktree ownership changed before links"); err != nil {
-			return fmt.Errorf("wx worktree ownership changed before links: %w", err)
-		}
-		if err := p.createLinksAt(ctx, repo, target, lockedRoot, lockedRelativeTarget); err != nil {
-			return err
-		}
-		if phase == preparePhaseCreate {
-			if err := validateOwnedTarget(ctx, "wx worktree ownership changed before prepare command"); err != nil {
-				return fmt.Errorf("wx worktree ownership changed before prepare command: %w", err)
-			}
-			if err := p.runPrepare(ctx, repo, target); err != nil {
-				return err
-			}
-			if err := verifyTargetIdentity(); err != nil {
-				return fmt.Errorf("wx worktree ownership changed during prepare command: %w", err)
-			}
-		}
-		if phase == preparePhaseCreate {
-			if err := verifyTargetIdentity(); err != nil {
-				return fmt.Errorf("wx worktree ownership changed before tracked status: %w", err)
-			}
-			if err := p.validateTrackedClean(ctx, target); err != nil {
-				return err
-			}
-			if err := verifyTargetIdentity(); err != nil {
-				return fmt.Errorf("wx worktree ownership changed during tracked status: %w", err)
-			}
-		}
-		targetRoot, currentIdentity, err := domain.OpenDirectoryAt(lockedRoot, lockedRelativeTarget)
-		if err != nil {
-			return fmt.Errorf("open prepared worktree: %w", err)
-		}
-		defer func() { _ = targetRoot.Close() }()
-		if targetIdentity != "" && currentIdentity != targetIdentity {
-			return fmt.Errorf("%w: prepared worktree identity changed (expected %s, got %s)", state.ErrOwnership, targetIdentity, currentIdentity)
-		}
-		head, err := p.runGitInDirectory(ctx, target, targetRoot, "rev-parse", "HEAD")
+		targetIdentity, err = p.addWorktreeWithIdentity(ctx, repo, lockedRoot, target, lockedRelativeTarget, oid)
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(head.Stdout) != oid {
-			return fmt.Errorf("prepared HEAD differs from requested OID")
+		if err := verifyTargetIdentity(); err != nil {
+			return fmt.Errorf("prepared worktree escaped ownership root: %w", err)
 		}
-		if _, err := p.runGitInDirectory(ctx, target, targetRoot, "symbolic-ref", "-q", "HEAD"); err == nil {
-			return errors.New("prepared worktree is not detached")
+	}
+	cleanup := !existingWorktree
+	ownedAfterLock := false
+	defer func() {
+		if cleanup && ownedAfterLock {
+			// A failed preparation is removable only while ownership can still
+			// be proved. If a command or concurrent filesystem change invalidated
+			// that proof, leave the locked target and marker for quarantine/reconcile.
+			if err := validateOwnedTarget(context.Background(), "validate worktree before cleanup"); err != nil {
+				return
+			}
+			if _, err := p.runWorktreeAdminOwned(context.Background(), repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
+				return
+			}
+			if _, err := p.runWorktreeAdminOwned(context.Background(), repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "remove", "--force"); err != nil {
+				return
+			}
+			if p.usesPinnedRoot(root) {
+				_ = removeOwnershipMarkerAt(lockedRoot, root, target)
+			} else {
+				_ = removeOwnershipMarker(root, target)
+			}
 		}
-		if phase == preparePhaseRestore {
-			// Keep the RESTORING lock until archive.Manager has restored the
-			// snapshot tree/index and run the resume-phase command.
-			cleanup = false
-			return nil
+	}()
+	if existingWorktree {
+		if _, err := p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
+			return fmt.Errorf("unlock existing wx worktree: %w", err)
 		}
-		if _, err = p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
+	}
+	lockState := "PREPARING"
+	if phase == preparePhaseRestore {
+		lockState = "RESTORING"
+	}
+	if _, err := p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "lock", "--reason", "wx:"+slotID+":"+lockState); err != nil {
+		return err
+	}
+	// This validation is deliberately after the new lock is acquired. It
+	// proves that the marker, physical path, Git registration, OID, and
+	// lock reason still describe the same slot before any file operation.
+	if err := validateOwnedTarget(ctx, "wx worktree ownership changed after lock"); err != nil {
+		return fmt.Errorf("wx worktree ownership changed after lock: %w", err)
+	}
+	ownedAfterLock = true
+	// Revalidate the durable owner immediately before each operation that
+	// writes into or reuses the worktree. A common-directory lock protects
+	// Git metadata, while this read-only state proof protects the slot/path
+	// association and state machine independently.
+	if err := validateOwnedTarget(ctx, "wx worktree ownership changed before includes"); err != nil {
+		return fmt.Errorf("wx worktree ownership changed before includes: %w", err)
+	}
+	if err := p.copyIncludesAt(repo, target, lockedRoot, lockedRelativeTarget); err != nil {
+		return err
+	}
+	if err := validateOwnedTarget(ctx, "wx worktree ownership changed before links"); err != nil {
+		return fmt.Errorf("wx worktree ownership changed before links: %w", err)
+	}
+	if err := p.createLinksAt(ctx, repo, target, lockedRoot, lockedRelativeTarget); err != nil {
+		return err
+	}
+	if phase == preparePhaseCreate {
+		if err := validateOwnedTarget(ctx, "wx worktree ownership changed before prepare command"); err != nil {
+			return fmt.Errorf("wx worktree ownership changed before prepare command: %w", err)
+		}
+		if err := p.runPrepare(ctx, repo, target); err != nil {
 			return err
 		}
-		_, err = p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "lock", "--reason", "wx:"+slotID+":READY")
-		if err != nil {
+		if err := verifyTargetIdentity(); err != nil {
+			return fmt.Errorf("wx worktree ownership changed during prepare command: %w", err)
+		}
+	}
+	if phase == preparePhaseCreate {
+		if err := verifyTargetIdentity(); err != nil {
+			return fmt.Errorf("wx worktree ownership changed before tracked status: %w", err)
+		}
+		if err := p.validateTrackedClean(ctx, target); err != nil {
 			return err
 		}
-		if err := validateOwnedTarget(ctx, "wx worktree ownership changed before READY"); err != nil {
-			return fmt.Errorf("wx worktree ownership changed before READY: %w", err)
+		if err := verifyTargetIdentity(); err != nil {
+			return fmt.Errorf("wx worktree ownership changed during tracked status: %w", err)
 		}
+	}
+	targetRoot, currentIdentity, err := domain.OpenDirectoryAt(lockedRoot, lockedRelativeTarget)
+	if err != nil {
+		return fmt.Errorf("open prepared worktree: %w", err)
+	}
+	defer func() { _ = targetRoot.Close() }()
+	if targetIdentity != "" && currentIdentity != targetIdentity {
+		return fmt.Errorf("%w: prepared worktree identity changed (expected %s, got %s)", state.ErrOwnership, targetIdentity, currentIdentity)
+	}
+	head, err := p.runGitInDirectory(ctx, target, targetRoot, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(head.Stdout) != oid {
+		return fmt.Errorf("prepared HEAD differs from requested OID")
+	}
+	if _, err := p.runGitInDirectory(ctx, target, targetRoot, "symbolic-ref", "-q", "HEAD"); err == nil {
+		return errors.New("prepared worktree is not detached")
+	}
+	if phase == preparePhaseRestore {
+		// Keep the RESTORING lock until archive.Manager has restored the
+		// snapshot tree/index and run the resume-phase command.
 		cleanup = false
 		return nil
-	})
+	}
+	if _, err = p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
+		return err
+	}
+	_, err = p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "lock", "--reason", "wx:"+slotID+":READY")
+	if err != nil {
+		return err
+	}
+	if err := validateOwnedTarget(ctx, "wx worktree ownership changed before READY"); err != nil {
+		return fmt.Errorf("wx worktree ownership changed before READY: %w", err)
+	}
+	cleanup = false
+	return nil
 }
 
 func (p *Preparer) usesPinnedRoot(root string) bool {

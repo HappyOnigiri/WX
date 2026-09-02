@@ -170,6 +170,30 @@ func TestWorkspaceRestoreRejectsArchiveOverlapAndTraversal(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRestoreAcceptsDirectoryCreatedByChildEntry(t *testing.T) {
+	ownershipRoot := t.TempDir()
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A tar writer is allowed to omit an explicit parent directory or emit it
+	// after a child. Restore must keep the parent physical and still materialize
+	// the regular file without following an attacker-controlled path.
+	snapshot := writeWorkspaceArchive(t, ownershipRoot, "directory-order", []tar.Header{
+		{Name: "nested/file.txt", Typeflag: tar.TypeReg, Mode: 0o640, Size: 4},
+		{Name: "nested", Typeflag: tar.TypeDir, Mode: 0o700},
+	})
+	if err := RestoreWorkspace(context.Background(), bundleRoot, ownershipRoot, ownershipRoot, snapshot, nil); err != nil {
+		t.Fatalf("restore directory-first archive: %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(bundleRoot, "nested")); err != nil || !info.IsDir() {
+		t.Fatalf("restored parent info=%v err=%v", info, err)
+	}
+	if info, err := os.Stat(filepath.Join(bundleRoot, "nested", "file.txt")); err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o640 {
+		t.Fatalf("restored child info=%v err=%v", info, err)
+	}
+}
+
 func TestDeleteWorkspaceSnapshotRequiresMatchingArtifact(t *testing.T) {
 	ownershipRoot := t.TempDir()
 	bundleRoot := filepath.Join(ownershipRoot, "bundle")

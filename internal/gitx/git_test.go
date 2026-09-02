@@ -75,6 +75,22 @@ func TestGitErrorRedactsStderrAndWritesOwnerOnlyDetail(t *testing.T) {
 	}
 }
 
+func TestGitErrorSurvivesUnavailableDetailDirectory(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf 'failure\n' >&2\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	detailPath := filepath.Join(t.TempDir(), "detail-blocker")
+	if err := os.WriteFile(detailPath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if _, err := (&Runner{DetailDir: detailPath}).Run(context.Background(), t.TempDir(), "status"); err == nil {
+		t.Fatal("Git failure was hidden when detail directory was unavailable")
+	}
+}
+
 func TestErrorFormattingUsesFallbackAndFirstArgument(t *testing.T) {
 	tests := []struct {
 		name string

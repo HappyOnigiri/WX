@@ -63,6 +63,14 @@ func TestResolveBranchesRejectsAmbiguousAndMissingSpecifications(t *testing.T) {
 	}
 }
 
+func TestResolveBranchesPropagatesGlobalResolutionFailure(t *testing.T) {
+	root := t.TempDir()
+	w := discovery.Workspace{Repositories: []discovery.Repository{{ID: "repository", MainPath: domain.CanonicalPath(filepath.Join(root, "missing")), RelativePath: "repository", DefaultBranch: "main"}}}
+	if _, err := ResolveBranches(context.Background(), &gitx.Runner{}, w, []string{"feature"}); err == nil {
+		t.Fatal("global branch resolution ignored Git failure")
+	}
+}
+
 func initRepo(t *testing.T, path string) string {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o700); err != nil {

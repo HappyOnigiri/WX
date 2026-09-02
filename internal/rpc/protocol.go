@@ -263,9 +263,7 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 	if err := conn.SetDeadline(handlerDeadline.Add(serverResponseGrace)); err != nil {
 		return
 	}
-	ctx := parent
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithDeadline(parent, handlerDeadline)
+	ctx, cancel := context.WithDeadline(parent, handlerDeadline)
 	defer cancel()
 	if req.IdempotencyKey != "" {
 		entry, owner := s.idempotencyEntry(req)

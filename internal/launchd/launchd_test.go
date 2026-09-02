@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -64,7 +65,7 @@ func TestRenderEscapesAndPreservesSpecialCharacterPaths(t *testing.T) {
 	decoder := xml.NewDecoder(bytes.NewReader(data))
 	for {
 		token, decodeErr := decoder.Token()
-		if decodeErr == io.EOF {
+		if errors.Is(decodeErr, io.EOF) {
 			break
 		}
 		if decodeErr != nil {

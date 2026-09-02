@@ -651,7 +651,7 @@ func (m *Manager) resolveRegisteredWorkspace(ctx context.Context, root string, d
 	}
 	recovered, commonErr := discoverer.ResolveFromCommonDir(ctx, string(registered.Repositories[0].CommonDir))
 	if commonErr != nil {
-		return discovery.Workspace{}, fmt.Errorf("rediscover workspace root %s: %w; common-directory recovery failed: %v", root, err, commonErr)
+		return discovery.Workspace{}, fmt.Errorf("rediscover workspace root %s: %w; common-directory recovery failed: %w", root, err, commonErr)
 	}
 	if len(recovered.Repositories) != 1 || recovered.Repositories[0].CommonDir != registered.Repositories[0].CommonDir {
 		return discovery.Workspace{}, fmt.Errorf("rediscover workspace root %s: %w; common-directory identity did not match", root, err)
@@ -2559,7 +2559,7 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 		}
 		ownedRoot, closeOwnedRoot, err := m.existingRootDescriptor(root)
 		if err != nil {
-			return fmt.Errorf("%w: recreate cold workspace shell: %v", state.ErrOwnership, err)
+			return fmt.Errorf("%w: recreate cold workspace shell: %w", state.ErrOwnership, err)
 		}
 		defer closeOwnedRoot()
 		if err := verifyRootDescriptorPath(root, ownedRoot); err != nil {
@@ -2957,7 +2957,7 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	}
 	ownedRoot, closeOwnedRoot, err := m.existingRootDescriptor(root)
 	if err != nil {
-		return fmt.Errorf("%w: open slot root for removal: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: open slot root for removal: %w", state.ErrOwnership, err)
 	}
 	defer closeOwnedRoot()
 	if err := verifyRootDescriptorPath(root, ownedRoot); err != nil {
@@ -2974,7 +2974,7 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
-		return fmt.Errorf("%w: inspect slot root for removal: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: inspect slot root for removal: %w", state.ErrOwnership, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("%w: slot root is not a physical directory", state.ErrOwnership)
@@ -3020,7 +3020,7 @@ func removalMetadataFailure(message string, err error) error {
 	if err == nil || errors.Is(err, state.ErrOwnership) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	return fmt.Errorf("%w: %s: %v", state.ErrOwnership, message, err)
+	return fmt.Errorf("%w: %s: %w", state.ErrOwnership, message, err)
 }
 
 func (m *Manager) Status(ctx context.Context) (map[string]any, error) {

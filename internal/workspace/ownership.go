@@ -212,7 +212,7 @@ func markerOwnershipFailure(err error) error {
 	if err == nil || errors.Is(err, state.ErrOwnership) {
 		return err
 	}
-	return fmt.Errorf("%w: %v", state.ErrOwnership, err)
+	return fmt.Errorf("%w: %w", state.ErrOwnership, err)
 }
 
 func newOwnershipMarker(target, slotID, commonDir string, allowMissingTarget bool) (ownershipMarker, error) {

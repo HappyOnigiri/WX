@@ -366,5 +366,5 @@ func ownershipDatabaseFailure(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return ownershipFailure("SQLite ownership row is missing")
 	}
-	return fmt.Errorf("%w: SQLite ownership query: %v", ErrOwnership, err)
+	return fmt.Errorf("%w: SQLite ownership query: %w", ErrOwnership, err)
 }

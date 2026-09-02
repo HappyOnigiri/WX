@@ -96,6 +96,21 @@ func TestStrictDecode(t *testing.T) {
 	}
 }
 
+func TestLoadRawRejectsMultipleYAMLDocuments(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".config", "wx", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\n---\nversion: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadRaw(); err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Fatalf("multiple YAML documents error=%v", err)
+	}
+}
+
 func TestExpandHomeRejectsImplicitExpansion(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, path := range []string{"~/worktrees", "$TMPDIR/worktrees", "relative"} {
