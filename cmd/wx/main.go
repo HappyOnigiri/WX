@@ -130,6 +130,11 @@ func finishFlagParse(fs *pflag.FlagSet, name string, args []string) (code int, d
 		if errors.Is(err, pflag.ErrHelp) {
 			return 0, true
 		}
+		// pflag under ContinueOnError returns the error without writing it
+		// anywhere (flag.go's Parse only prints for ExitOnError), so print it
+		// alongside the usage block: it is the only part of the output that
+		// names which argument was rejected.
+		fmt.Fprintln(os.Stderr, "error:", err)
 		commandUsage(os.Stderr, name)
 		return 2, true
 	}
@@ -351,6 +356,7 @@ func runHook(ctx context.Context, args []string) int {
 	fs.Usage = func() { commandUsage(os.Stderr, "hook") }
 	if err := fs.Parse(args); err != nil {
 		if !errors.Is(err, pflag.ErrHelp) {
+			fmt.Fprintln(os.Stderr, "error:", err)
 			fs.Usage()
 		}
 		return 2

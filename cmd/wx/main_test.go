@@ -200,6 +200,13 @@ func TestEverySubcommandHasAUniformPflagContract(t *testing.T) {
 			if want := "Usage: wx " + c.name; !strings.Contains(stderr, want) {
 				t.Fatalf("%s unrecognized-flag stderr=%q missing %q", c.name, stderr, want)
 			}
+			// The usage block alone does not say which argument was rejected,
+			// and pflag writes nothing itself under ContinueOnError, so the
+			// diagnostic has to name the flag or the user has no way to tell a
+			// typo from an unsupported option.
+			if !strings.Contains(stderr, "--this-flag-does-not-exist") {
+				t.Fatalf("%s unrecognized-flag stderr=%q does not name the rejected flag", c.name, stderr)
+			}
 		})
 	}
 }
