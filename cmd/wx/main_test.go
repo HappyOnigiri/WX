@@ -103,8 +103,13 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	original := os.Stdout
 	os.Stdout = write
+	// A deferred restore (rather than a plain assignment after fn()) keeps
+	// os.Stdout from staying redirected to a now-closed pipe for the rest of
+	// the test binary if fn calls t.Fatal/t.Fatalf: those call
+	// runtime.Goexit, which unwinds through defers but skips any code after
+	// fn() that isn't one.
+	defer func() { os.Stdout = original }()
 	fn()
-	os.Stdout = original
 	if err := write.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +144,66 @@ func TestRunHookRejectsUnknownFlag(t *testing.T) {
 	})
 }
 
+// TestEverySubcommandHasAUniformPflagContract verifies, for all 9 wx
+// subcommands, that each owns a pflag.NewFlagSet(..., pflag.ContinueOnError)
+// rather than a hand-rolled len(args) check: --help/-h prints usage and
+// exits with that command's existing contract (stdout+0 for every command
+// except hook, which is invoked by agent hook configuration rather than
+// typed interactively and so keeps its misuse-style stderr+2), and an
+// unrecognized flag is rejected with usage on stderr and a non-zero exit
+// rather than being silently accepted or misparsed as a positional
+// argument. None of these paths reach the daemon or touch the filesystem:
+// pflag rejects the input before any command-specific logic runs.
+func TestEverySubcommandHasAUniformPflagContract(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	type contract struct {
+		name         string
+		run          func(ctx context.Context, args []string) int
+		helpExit     int
+		helpOnStdout bool
+	}
+	contracts := []contract{
+		{name: "status", run: func(ctx context.Context, args []string) int { return runRPCDisplay(ctx, "Status", args) }, helpExit: 0, helpOnStdout: true},
+		{name: "doctor", run: func(ctx context.Context, args []string) int { return runRPCDisplay(ctx, "Doctor", args) }, helpExit: 0, helpOnStdout: true},
+		{name: "gc", run: runGC, helpExit: 0, helpOnStdout: true},
+		{name: "sessions", run: runSessions, helpExit: 0, helpOnStdout: true},
+		{name: "config", run: runConfig, helpExit: 0, helpOnStdout: true},
+		{name: "resume", run: runResume, helpExit: 0, helpOnStdout: true},
+		{name: "daemon", run: runDaemon, helpExit: 0, helpOnStdout: true},
+		{name: "forget", run: runForget, helpExit: 0, helpOnStdout: true},
+		{name: "hook", run: runHook, helpExit: 2, helpOnStdout: false},
+	}
+	for _, c := range contracts {
+		t.Run(c.name, func(t *testing.T) {
+			for _, helpFlag := range []string{"--help", "-h"} {
+				var code int
+				var output string
+				if c.helpOnStdout {
+					output = captureStdout(t, func() { code = c.run(context.Background(), []string{helpFlag}) })
+				} else {
+					output = captureStderr(t, func() { code = c.run(context.Background(), []string{helpFlag}) })
+				}
+				if code != c.helpExit {
+					t.Fatalf("%s %s exit=%d want=%d", c.name, helpFlag, code, c.helpExit)
+				}
+				if want := "Usage: wx " + c.name; !strings.Contains(output, want) {
+					t.Fatalf("%s %s output=%q missing %q", c.name, helpFlag, output, want)
+				}
+			}
+			var code int
+			stderr := captureStderr(t, func() {
+				code = c.run(context.Background(), []string{"--this-flag-does-not-exist"})
+			})
+			if code == 0 {
+				t.Fatalf("%s accepted an unrecognized flag", c.name)
+			}
+			if want := "Usage: wx " + c.name; !strings.Contains(stderr, want) {
+				t.Fatalf("%s unrecognized-flag stderr=%q missing %q", c.name, stderr, want)
+			}
+		})
+	}
+}
+
 // captureStderr redirects os.Stderr for the duration of fn and returns what
 // was written. Tests in this package do not run in parallel, so the process-
 // wide swap is safe.
@@ -150,8 +215,8 @@ func captureStderr(t *testing.T, fn func()) string {
 	}
 	original := os.Stderr
 	os.Stderr = write
+	defer func() { os.Stderr = original }()
 	fn()
-	os.Stderr = original
 	if err := write.Close(); err != nil {
 		t.Fatal(err)
 	}

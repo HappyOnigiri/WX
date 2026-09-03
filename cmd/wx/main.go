@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -47,13 +48,10 @@ func run(ctx context.Context, args []string) int {
 		topUsage(os.Stderr)
 		return 2
 	}
-	if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
-		switch args[0] {
-		case "status", "doctor", "gc", "sessions", "config", "resume", "forget", "daemon":
-			commandUsage(os.Stdout, args[0])
-			return 0
-		}
-	}
+	// Each subcommand below owns its own pflag.FlagSet and therefore its own
+	// --help/-h handling (see finishFlagParse), so there is no separate
+	// top-level pre-empt for "<command> --help" here: every command's own
+	// flagset already reproduces the desired exit code and usage destination.
 	switch args[0] {
 	case "-h", "--help", "help":
 		topUsage(os.Stdout)
@@ -116,15 +114,38 @@ func rpcClient() (rpc.Client, error) {
 // status/wx doctor never kickstart on failure, they only report the error.
 const statusDisplayTimeout = 40 * time.Second
 
-func runRPCDisplay(ctx context.Context, method string, args []string) int {
-	fs := pflag.NewFlagSet(strings.ToLower(method), pflag.ContinueOnError)
-	jsonOut := fs.Bool("json", false, "print JSON")
-	fs.Usage = func() { commandUsage(os.Stderr, strings.ToLower(method)) }
+// finishFlagParse applies wx's shared subcommand --help contract to a
+// ContinueOnError FlagSet whose fs.Usage prints to stdout: pflag calls
+// fs.Usage itself only for -h/--help (see the pflag.ErrHelp branches in
+// parseLongArg/parseSingleShortArg), so by the time Parse returns that
+// output already happened and this only needs to choose the exit code. Any
+// other parse failure (for example an unknown flag) is never auto-printed by
+// pflag under ContinueOnError, so this prints it to stderr itself. done is
+// true whenever the caller should return code immediately; it is false only
+// on a clean parse, when the caller still needs its own positional-argument
+// checks. `hook` is the one command whose --help contract is stderr+exit 2
+// rather than stdout+exit 0, so it does not use this helper.
+func finishFlagParse(fs *pflag.FlagSet, name string, args []string) (code int, done bool) {
 	if err := fs.Parse(args); err != nil {
-		return 2
+		if errors.Is(err, pflag.ErrHelp) {
+			return 0, true
+		}
+		commandUsage(os.Stderr, name)
+		return 2, true
+	}
+	return 0, false
+}
+
+func runRPCDisplay(ctx context.Context, method string, args []string) int {
+	name := strings.ToLower(method)
+	fs := pflag.NewFlagSet(name, pflag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "print JSON")
+	fs.Usage = func() { commandUsage(os.Stdout, name) }
+	if code, done := finishFlagParse(fs, name, args); done {
+		return code
 	}
 	if fs.NArg() != 0 {
-		fs.Usage()
+		commandUsage(os.Stderr, name)
 		return 2
 	}
 	c, err := rpcClient()
@@ -161,12 +182,12 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 func runGC(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("gc", pflag.ContinueOnError)
 	dry := fs.Bool("dry-run", false, "show candidates without deleting")
-	fs.Usage = func() { commandUsage(os.Stderr, "gc") }
-	if err := fs.Parse(args); err != nil {
-		return 2
+	fs.Usage = func() { commandUsage(os.Stdout, "gc") }
+	if code, done := finishFlagParse(fs, "gc", args); done {
+		return code
 	}
 	if fs.NArg() != 0 {
-		fs.Usage()
+		commandUsage(os.Stderr, "gc")
 		return 2
 	}
 	c, _ := rpcClient()
@@ -180,11 +201,17 @@ func runGC(ctx context.Context, args []string) int {
 }
 
 func runConfig(ctx context.Context, args []string) int {
-	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-		commandUsage(os.Stdout, "config")
-		return 0
+	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
+	// A config value can itself start with "-" (an option-like string is a
+	// legal, if unusual, scalar value), so stop treating arguments as flags
+	// once the first positional (the key) is seen.
+	fs.SetInterspersed(false)
+	fs.Usage = func() { commandUsage(os.Stdout, "config") }
+	if code, done := finishFlagParse(fs, "config", args); done {
+		return code
 	}
-	if len(args) == 0 {
+	rest := fs.Args()
+	if len(rest) == 0 {
 		cfg, err := config.Load()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -197,7 +224,7 @@ func runConfig(ctx context.Context, args []string) int {
 		}
 		return 0
 	}
-	if len(args) != 2 {
+	if len(rest) != 2 {
 		commandUsage(os.Stderr, "config")
 		return 2
 	}
@@ -206,7 +233,7 @@ func runConfig(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	if err := config.SetField(&raw, args[0], args[1]); err != nil {
+	if err := config.SetField(&raw, rest[0], rest[1]); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
@@ -233,11 +260,21 @@ func runConfig(ctx context.Context, args []string) int {
 }
 
 func runResume(ctx context.Context, args []string) int {
-	if len(args) < 2 {
+	fs := pflag.NewFlagSet("resume", pflag.ContinueOnError)
+	// Everything after <id> <agent> is the agent's own argv (it commonly
+	// includes agent flags such as --resume), so wx must stop parsing its own
+	// flags at the first positional rather than trying to recognize them.
+	fs.SetInterspersed(false)
+	fs.Usage = func() { commandUsage(os.Stdout, "resume") }
+	if code, done := finishFlagParse(fs, "resume", args); done {
+		return code
+	}
+	rest := fs.Args()
+	if len(rest) < 2 {
 		commandUsage(os.Stderr, "resume")
 		return 2
 	}
-	id, agentName := args[0], args[1]
+	id, agentName := rest[0], rest[1]
 	if agentName != "claude" && agentName != "codex" {
 		fmt.Fprintln(os.Stderr, "error: agent must be claude or codex")
 		return 2
@@ -251,15 +288,20 @@ func runResume(ctx context.Context, args []string) int {
 	if err != nil {
 		return 1
 	}
-	return c.RunAgent(ctx, agentName, args[2:], nil, false, id)
+	return c.RunAgent(ctx, agentName, rest[2:], nil, false, id)
 }
 
 func runDaemon(ctx context.Context, args []string) int {
-	if len(args) != 1 {
+	fs := pflag.NewFlagSet("daemon", pflag.ContinueOnError)
+	fs.Usage = func() { commandUsage(os.Stdout, "daemon") }
+	if code, done := finishFlagParse(fs, "daemon", args); done {
+		return code
+	}
+	if fs.NArg() != 1 {
 		commandUsage(os.Stderr, "daemon")
 		return 2
 	}
-	switch args[0] {
+	switch fs.Arg(0) {
 	case "serve":
 		signalCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer cancel()
@@ -298,9 +340,19 @@ func runDaemon(ctx context.Context, args []string) int {
 }
 
 func runHook(ctx context.Context, args []string) int {
+	// hook is invoked by agent hook configuration, not typed interactively, so
+	// unlike the other subcommands its --help contract is usage-on-stderr plus
+	// exit 2 (a misuse-style exit), not usage-on-stdout plus exit 0. pflag
+	// already prints via fs.Usage for -h/--help itself (see finishFlagParse's
+	// doc comment); printing again here would duplicate it, so this only
+	// prints for the parse failures pflag does not auto-print under
+	// ContinueOnError (for example an unknown flag).
 	fs := pflag.NewFlagSet("hook", pflag.ContinueOnError)
 	fs.Usage = func() { commandUsage(os.Stderr, "hook") }
 	if err := fs.Parse(args); err != nil {
+		if !errors.Is(err, pflag.ErrHelp) {
+			fs.Usage()
+		}
 		return 2
 	}
 	if fs.NArg() != 1 {
@@ -318,12 +370,12 @@ func runSessions(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("sessions", pflag.ContinueOnError)
 	all := fs.Bool("all", false, "include expired sessions")
 	jsonOut := fs.Bool("json", false, "print JSON")
-	fs.Usage = func() { commandUsage(os.Stderr, "sessions") }
-	if err := fs.Parse(args); err != nil {
-		return 2
+	fs.Usage = func() { commandUsage(os.Stdout, "sessions") }
+	if code, done := finishFlagParse(fs, "sessions", args); done {
+		return code
 	}
 	if fs.NArg() != 0 {
-		fs.Usage()
+		commandUsage(os.Stderr, "sessions")
 		return 2
 	}
 	c, _ := rpcClient()
@@ -344,15 +396,21 @@ func runSessions(ctx context.Context, args []string) int {
 }
 
 func runForget(ctx context.Context, args []string) int {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: wx forget <workspace-path>")
+	fs := pflag.NewFlagSet("forget", pflag.ContinueOnError)
+	fs.SetInterspersed(false)
+	fs.Usage = func() { commandUsage(os.Stdout, "forget") }
+	if code, done := finishFlagParse(fs, "forget", args); done {
+		return code
+	}
+	if fs.NArg() != 1 {
+		commandUsage(os.Stderr, "forget")
 		return 2
 	}
 	c, _ := rpcClient()
-	if err := c.Call(ctx, "Forget", map[string]string{"path": args[0]}, nil); err != nil {
+	if err := c.Call(ctx, "Forget", map[string]string{"path": fs.Arg(0)}, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	fmt.Println("forgotten", args[0])
+	fmt.Println("forgotten", fs.Arg(0))
 	return 0
 }
