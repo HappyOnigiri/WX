@@ -71,16 +71,30 @@ func TestResolveBranchesPropagatesGlobalResolutionFailure(t *testing.T) {
 	}
 }
 
-func TestResolveBranchesPropagatesContextCancellationAtEachResolutionStage(t *testing.T) {
+// TestResolveBranchesFailsClosedUnderACanceledContext uses a repository that
+// resolves successfully on a live context, so the failures below can only come
+// from the canceled context. Pointing the fixture at a nonexistent repository
+// instead — as TestResolveBranchesPropagatesGlobalResolutionFailure does
+// deliberately — would make both assertions hold whether or not cancellation
+// had any effect at all.
+func TestResolveBranchesFailsClosedUnderACanceledContext(t *testing.T) {
 	root := t.TempDir()
-	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(filepath.Join(root, "missing")), RelativePath: "repository", DefaultBranch: "main"}
+	main := initRepo(t, filepath.Join(root, "repository"))
+	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(main), RelativePath: "repository", DefaultBranch: "main"}
 	w := discovery.Workspace{Repositories: []discovery.Repository{repo}}
+	runner := &gitx.Runner{}
+	if _, err := ResolveBranches(context.Background(), runner, w, []string{"feature"}); err != nil {
+		t.Fatalf("global branch resolution on a live context: %v", err)
+	}
+	if _, err := ResolveBranches(context.Background(), runner, w, nil); err != nil {
+		t.Fatalf("default branch resolution on a live context: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := ResolveBranches(ctx, &gitx.Runner{}, w, []string{"feature"}); err == nil {
+	if _, err := ResolveBranches(ctx, runner, w, []string{"feature"}); err == nil {
 		t.Fatal("canceled global branch resolution succeeded")
 	}
-	if _, err := ResolveBranches(ctx, &gitx.Runner{}, w, nil); err == nil {
+	if _, err := ResolveBranches(ctx, runner, w, nil); err == nil {
 		t.Fatal("canceled default branch resolution succeeded")
 	}
 }

@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
@@ -83,16 +86,57 @@ func TestOpenLeaseDirectoryPinsAndValidatesRootIdentity(t *testing.T) {
 }
 
 func TestForwardAgentSignalHandlesMissingProcessAndProcessGroup(t *testing.T) {
+	// An unstarted command has no Process; forwarding must return rather than
+	// dereference it.
 	forwardAgentSignal(&exec.Cmd{}, syscall.SIGTERM)
-	cmd := exec.Command("/bin/sh", "-c", "trap 'exit 0' TERM; while :; do sleep 1; done")
+
+	// configureAgentProcess puts the child in its own process group, and the
+	// shell keeps a grandchild (`sleep`) alive in it, so the child only dies
+	// if the signal reached the group. Asserting the exact termination signal
+	// is what proves delivery: without it a forwardAgentSignal regression
+	// would leave the child running and surface as a package-wide timeout
+	// rather than as this test failing.
+	cmd := exec.Command("/bin/sh", "-c", "sleep 300 & wait")
 	configureAgentProcess(cmd, -1)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	forwardAgentSignal(cmd, syscall.SIGTERM)
-	_ = cmd.Wait()
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	select {
+	case err := <-exited:
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("agent process exited without a signal status: %v", err)
+		}
+		status, ok := exit.Sys().(syscall.WaitStatus)
+		if !ok || !status.Signaled() || status.Signal() != syscall.SIGTERM {
+			t.Fatalf("agent process was not terminated by SIGTERM: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		_ = cmd.Process.Kill()
+		<-exited
+		t.Fatal("forwardAgentSignal did not deliver SIGTERM to the agent process group")
+	}
 }
 
 func TestRestoreForegroundIgnoresInvalidTerminalDescriptor(t *testing.T) {
+	// restoreForeground brackets its TIOCSPGRP ioctl with signal.Ignore of
+	// SIGTTOU so that handing the terminal back cannot stop wx itself. With an
+	// invalid descriptor the ioctl fails and must be swallowed, and installing
+	// that guard is the only externally observable effect the call has without
+	// a controlling terminal, so assert it rather than only that the call did
+	// not panic. Go's signal.Reset undoes Notify registrations, not
+	// signal.Ignore, so the ignore disposition is what remains afterwards;
+	// checking the precondition keeps the assertion about this call. No other
+	// code in this package touches SIGTTOU, so the order -shuffle picks does
+	// not matter.
+	if signal.Ignored(syscall.SIGTTOU) {
+		t.Fatal("SIGTTOU was already ignored before restoreForeground ran")
+	}
 	restoreForeground(-1)
+	if !signal.Ignored(syscall.SIGTTOU) {
+		t.Fatal("restoreForeground returned without installing its SIGTTOU guard")
+	}
 }
