@@ -1024,15 +1024,26 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 			if err := manager.snapshotSession(ctx, released); err == nil {
 				t.Fatal("workspace root snapshot failure was ignored")
 			}
-			snapshots, err := store.Snapshots(ctx, session.ID)
-			if err != nil || len(snapshots) != 1 {
-				t.Fatalf("repository recovery snapshot lost: snapshots=%+v err=%v", snapshots, err)
+			// A slot inside the owned worktree root gets its repository
+			// snapshot persisted first, and only the workspace root step
+			// fails. A slot outside that root cannot be snapshotted at all:
+			// every git invocation now goes through the pinned root
+			// descriptor, so wx refuses to run git against a pathname whose
+			// ownership it cannot prove instead of taking a snapshot through
+			// a swappable path.
+			wantSnapshots := 1
+			if test.mode == "outside" {
+				wantSnapshots = 0
 			}
-			if test.mode != "outside" {
-				slot, err := store.Slot(ctx, session.SlotID)
-				if err != nil || slot.State != "QUARANTINED" {
-					t.Fatalf("unsafe root snapshot slot=%+v err=%v", slot, err)
-				}
+			snapshots, err := store.Snapshots(ctx, session.ID)
+			if err != nil || len(snapshots) != wantSnapshots {
+				t.Fatalf("repository recovery snapshot count=%d want %d: snapshots=%+v err=%v", len(snapshots), wantSnapshots, snapshots, err)
+			}
+			// Either failure point quarantines the slot, so nothing removes a
+			// worktree whose state was never captured.
+			slot, err := store.Slot(ctx, session.SlotID)
+			if err != nil || slot.State != "QUARANTINED" {
+				t.Fatalf("unsafe root snapshot slot=%+v err=%v", slot, err)
 			}
 		})
 	}

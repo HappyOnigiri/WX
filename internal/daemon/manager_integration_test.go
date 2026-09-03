@@ -27,6 +27,26 @@ import (
 // RPC arguments.
 func JSON(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 
+// descriptorBoundPreparerForTest builds a Preparer the way production's only
+// constructor (Manager.newPreparer) does: pinned to a descriptor for the
+// configured worktree root. Every git invocation now goes through that
+// descriptor, so a Preparer without one fails closed.
+func descriptorBoundPreparerForTest(t *testing.T, runner *gitx.Runner, cfg config.Config, store *state.Store) workspace.Preparer {
+	t.Helper()
+	root := cfg.Storage.WorktreeRoot
+	// Serve prepares the worktree root before opening its descriptor, so the
+	// directory always exists by the time production builds a Preparer.
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	return workspace.Preparer{Git: runner, Config: cfg, Ownership: store, OwnedRoot: owner, RootPath: root}
+}
+
 func requireDaemonIntegration(t *testing.T) {
 	t.Helper()
 	if testing.Short() {
@@ -82,7 +102,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 	if _, err := store.ClaimJob(ctx, prepareJob.ID, "crashed-daemon"); err != nil {
 		t.Fatal(err)
 	}
-	preparer := workspace.Preparer{Git: runner, Config: cfg, Ownership: store}
+	preparer := descriptorBoundPreparerForTest(t, runner, cfg, store)
 	if err := preparer.Prepare(ctx, resolved[0].Repository, repos[0].WorktreePath, resolved[0].OID, id); err != nil {
 		t.Fatal(err)
 	}
@@ -633,7 +653,7 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	preparer := workspace.Preparer{Git: runner, Config: cfg, Ownership: store}
+	preparer := descriptorBoundPreparerForTest(t, runner, cfg, store)
 	if err := preparer.Prepare(ctx, w.Repositories[0], slotRoot, resolved[0].OID, id); err != nil {
 		t.Fatal(err)
 	}
