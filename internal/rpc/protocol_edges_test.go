@@ -165,6 +165,34 @@ func TestCallReturnsParentCancellationWhenRequestEncodingOutlivesIt(t *testing.T
 	}
 }
 
+func TestRequestDeadlineClampsImplausibleClientRequestedDeadline(t *testing.T) {
+	requested := time.Now().Add(365 * 24 * time.Hour).UTC().Format(time.RFC3339Nano)
+	before := time.Now()
+	deadline, err := (&Server{HandlerTimeout: time.Hour}).requestDeadline(context.Background(), requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if max := before.Add(defaultMaxHandlerTimeout + time.Second); deadline.After(max) {
+		t.Fatalf("client-requested deadline was not clamped: got %v, want at most %v", deadline, max)
+	}
+	if deadline.Before(before.Add(defaultMaxHandlerTimeout - time.Second)) {
+		t.Fatalf("clamp was tighter than the documented ceiling: got %v", deadline)
+	}
+}
+
+func TestRequestDeadlineHonorsExplicitMaxHandlerTimeoutOverride(t *testing.T) {
+	requested := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	server := &Server{HandlerTimeout: time.Hour, MaxHandlerTimeout: time.Minute}
+	before := time.Now()
+	deadline, err := server.requestDeadline(context.Background(), requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if max := before.Add(90 * time.Second); deadline.After(max) {
+		t.Fatalf("configured MaxHandlerTimeout was not honored: got %v, want at most %v", deadline, max)
+	}
+}
+
 func TestRequestDeadlineHonorsEarlierParentDeadline(t *testing.T) {
 	parent, cancel := context.WithDeadline(context.Background(), time.Now().Add(50*time.Millisecond))
 	defer cancel()

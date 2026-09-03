@@ -23,7 +23,17 @@ const (
 	defaultClientTimeout        = 10 * time.Second
 	defaultServerFrameTimeout   = 10 * time.Second
 	defaultServerHandlerTimeout = 10 * time.Second
-	serverResponseGrace         = 100 * time.Millisecond
+	// defaultMaxHandlerTimeout bounds how far into the future a client-supplied
+	// Request.Deadline may push a handler deadline. Without this ceiling, any
+	// caller holding a valid session token can keep an RPC handler goroutine
+	// (and any root descriptor references or locks it holds) alive
+	// indefinitely by requesting an implausible deadline, which in turn blocks
+	// Manager.Close's WaitGroup drain during shutdown. The longest-lived
+	// legitimate caller today is WaitReady, bounded by the configurable
+	// readiness.timeout (10 minutes by default); this ceiling leaves it a wide
+	// margin while still bounding the worst case.
+	defaultMaxHandlerTimeout = 30 * time.Minute
+	serverResponseGrace      = 100 * time.Millisecond
 )
 
 type Request struct {
@@ -189,9 +199,13 @@ type Server struct {
 	Durable        DurableIdempotency
 	FrameTimeout   time.Duration
 	HandlerTimeout time.Duration
-	listener       net.Listener
-	idemMu         sync.Mutex
-	idem           map[string]*idempotentEntry
+	// MaxHandlerTimeout caps how far into the future a client-supplied
+	// Request.Deadline may push a handler deadline (see
+	// defaultMaxHandlerTimeout). Zero uses the default.
+	MaxHandlerTimeout time.Duration
+	listener          net.Listener
+	idemMu            sync.Mutex
+	idem              map[string]*idempotentEntry
 }
 
 type idempotentEntry struct {
@@ -352,6 +366,13 @@ func (s *Server) handlerTimeout() time.Duration {
 	return defaultServerHandlerTimeout
 }
 
+func (s *Server) maxHandlerTimeout() time.Duration {
+	if s.MaxHandlerTimeout > 0 {
+		return s.MaxHandlerTimeout
+	}
+	return defaultMaxHandlerTimeout
+}
+
 func (s *Server) requestDeadline(parent context.Context, requested string) (time.Time, error) {
 	now := time.Now()
 	deadline := now.Add(s.handlerTimeout())
@@ -361,6 +382,9 @@ func (s *Server) requestDeadline(parent context.Context, requested string) (time
 			return time.Time{}, err
 		}
 		deadline = requestedDeadline
+	}
+	if ceiling := now.Add(s.maxHandlerTimeout()); deadline.After(ceiling) {
+		deadline = ceiling
 	}
 	if parentDeadline, ok := parent.Deadline(); ok && parentDeadline.Before(deadline) {
 		deadline = parentDeadline
