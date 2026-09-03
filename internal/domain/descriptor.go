@@ -115,7 +115,12 @@ func OpenRootAt(owner *os.Root, relative string) (*os.Root, error) {
 // package builds only for darwin and linux (see physical_unix.go), so the
 // concrete type behind info.Sys() is always *syscall.Stat_t; a direct type
 // assertion replaces the reflection this used to need only to smooth over
-// Dev/Ino's differing integer widths between those two platforms. A failed
+// Dev/Ino's differing integer widths between those two platforms; %d formats
+// either width directly, so no explicit conversion is involved (Dev is int32
+// on darwin and uint64 on linux, and converting would be flagged as
+// unnecessary on linux). The identity only ever names a local inode and is
+// only compared against another identity captured by the same binary, so the
+// per-platform rendering does not have to agree across platforms. A failed
 // assertion is fail-closed: it returns an error rather than a zero identity,
 // since a zero identity would compare equal to another failure instead of
 // being treated as unavailable.
@@ -127,5 +132,5 @@ func FileIdentity(info os.FileInfo) (string, error) {
 	if !ok || stat == nil {
 		return "", fmt.Errorf("unsupported file identity type %T", info.Sys())
 	}
-	return fmt.Sprintf("%d:%d", uint64(stat.Dev), stat.Ino), nil
+	return fmt.Sprintf("%d:%d", stat.Dev, stat.Ino), nil
 }
