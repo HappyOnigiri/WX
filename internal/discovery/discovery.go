@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/domain"
@@ -165,12 +164,13 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 		if depth > d.Config.Discovery.MaxDepth && e.IsDir() {
 			return filepath.SkipDir
 		}
-		if e.Type()&os.ModeSymlink != 0 && e.IsDir() {
-			return filepath.SkipDir
-		}
 		if e.IsDir() && (exclude[e.Name()] || path == wtRoot) {
 			return filepath.SkipDir
 		}
+		// filepath.WalkDir does not follow symlinks, so a symlink DirEntry
+		// always reports IsDir()==false regardless of its target; this is
+		// what keeps symlink ancestries from being walked into (design's
+		// non-follow requirement), without a separate symlink check.
 		if !e.IsDir() {
 			return nil
 		}
@@ -217,5 +217,3 @@ func ReadPatterns(path string) ([]string, error) {
 	}
 	return out, s.Err()
 }
-
-var _ = time.Second
