@@ -118,6 +118,56 @@ func TestErrorFormattingUsesFallbackAndFirstArgument(t *testing.T) {
 	}
 }
 
+func TestRunStripsInheritedRepositoryScopedGitEnvironment(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf 'dir=%s work=%s index=%s obj=%s key=%s\\n' \"$GIT_DIR\" \"$GIT_WORK_TREE\" \"$GIT_INDEX_FILE\" \"$GIT_OBJECT_DIRECTORY\" \"$GIT_CONFIG_KEY_0\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("GIT_DIR", "/unrelated/.git")
+	t.Setenv("GIT_WORK_TREE", "/unrelated/worktree")
+	t.Setenv("GIT_INDEX_FILE", "/unrelated/index")
+	t.Setenv("GIT_OBJECT_DIRECTORY", "/unrelated/objects")
+	t.Setenv("GIT_CONFIG_KEY_0", "unrelated.key")
+	runner := &Runner{}
+	result, err := runner.Run(context.Background(), t.TempDir(), "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Stdout) != "dir= work= index= obj= key=" {
+		t.Fatalf("inherited Git-scoped environment leaked into child: %q", result.Stdout)
+	}
+}
+
+func TestRunAtStripsInheritedRepositoryScopedGitEnvironment(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf 'dir=%s index=%s\\n' \"$GIT_DIR\" \"$GIT_INDEX_FILE\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("GIT_DIR", "/unrelated/.git")
+	t.Setenv("GIT_INDEX_FILE", "/unrelated/index")
+	dirFile, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dirFile.Close()
+	wxExe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{FDHelper: wxExe}
+	result, err := runner.RunAt(context.Background(), dirFile, nil, nil, "status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Stdout) != "dir= index=" {
+		t.Fatalf("inherited Git-scoped environment leaked into descriptor-bound child: %q", result.Stdout)
+	}
+}
+
 func TestRunEnvInputPassesEnvironmentAndStdin(t *testing.T) {
 	bin := t.TempDir()
 	fakeGit := filepath.Join(bin, "git")

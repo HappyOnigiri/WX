@@ -128,10 +128,10 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 		if dirFile == nil {
 			cmd = exec.CommandContext(ctx, "git", args...)
 			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), env...)
+			cmd.Env = append(sanitizedEnviron(), env...)
 		} else {
 			var err error
-			cmd, err = fdexec.Start(ctx, r.FDHelper, dirFile, append(os.Environ(), env...), append([]string{"git"}, args...)...)
+			cmd, err = fdexec.Start(ctx, r.FDHelper, dirFile, append(sanitizedEnviron(), env...), append([]string{"git"}, args...)...)
 			if err != nil {
 				res := Result{ExitCode: -1, Elapsed: time.Since(start)}
 				failureID := newFailureID()
@@ -169,6 +169,56 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 		case <-time.After(delay):
 		}
 	}
+}
+
+// gitEnvDenylist names repository-scoped Git environment variables that must
+// never leak from the daemon's own process environment into a Git child
+// process. daemon startup paths (launchd session env via `launchctl setenv`,
+// a manual `wx daemon serve`, or invocation from inside a Git hook) can carry
+// GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointed at an unrelated repository.
+// Without stripping them, a snapshot's `git add -A` / `write-tree` would
+// silently operate on the wrong worktree or index, report success, and let
+// the caller remove a dirty worktree it never actually captured. Callers that
+// legitimately need one of these (for example archive's temporary
+// GIT_INDEX_FILE) still set it explicitly through the env parameter, which is
+// appended after this sanitized base and therefore wins.
+var gitEnvDenylist = map[string]bool{
+	"GIT_DIR":                          true,
+	"GIT_COMMON_DIR":                   true,
+	"GIT_WORK_TREE":                    true,
+	"GIT_INDEX_FILE":                   true,
+	"GIT_OBJECT_DIRECTORY":             true,
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+	"GIT_NAMESPACE":                    true,
+	"GIT_CEILING_DIRECTORIES":          true,
+	"GIT_CONFIG_GLOBAL":                true,
+	"GIT_CONFIG_SYSTEM":                true,
+	"GIT_CONFIG_COUNT":                 true,
+}
+
+// isGitConfigKeyValueVar reports whether name is one of Git's indexed
+// GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> pair used to inject config entries
+// without a config file. These are numbered, so they cannot be listed in
+// gitEnvDenylist by exact name.
+func isGitConfigKeyValueVar(name string) bool {
+	return strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")
+}
+
+// sanitizedEnviron returns the current process environment with
+// repository-scoped Git variables removed. See gitEnvDenylist for why this
+// matters; it mirrors the unset loop scripts/hook-check.sh already applies to
+// its own child Git invocations for the same reason.
+func sanitizedEnviron() []string {
+	environ := os.Environ()
+	sanitized := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && (gitEnvDenylist[name] || isGitConfigKeyValueVar(name)) {
+			continue
+		}
+		sanitized = append(sanitized, kv)
+	}
+	return sanitized
 }
 
 func newFailureID() string {
