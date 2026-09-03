@@ -175,7 +175,7 @@ integration-launchd:
 	$(GO) test -race -shuffle=on -count=1 ./internal/launchd ./cmd/wx
 
 concurrency-test:
-	$(GO) test -race -shuffle=on -count=10 ./internal/state ./internal/daemon -run 'Lease|Concurrent|Crash|Archive|Remove|Worker'
+	$(GO) test -race -shuffle=on -count=10 -timeout=15m ./internal/state ./internal/daemon -run 'Lease|Concurrent|Crash|Archive|Remove|Worker'
 
 build-darwin:
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -o bin/wx-darwin-arm64 ./cmd/wx
@@ -267,23 +267,27 @@ hook-pre-commit:
 hook-pre-push:
 	scripts/hook-check.sh pre-push
 
+# -timeout is explicit here (rather than Go's default 10m/package) because
+# -count=10 over the full module makes internal/daemon alone run well past 10
+# minutes; measured ~14-18 minutes standalone, so 45m leaves headroom while
+# still comfortably fitting the 90-minute nightly job budget.
 nightly-race:
-	$(GO) test -race -shuffle=on -count=10 ./...
+	$(GO) test -race -shuffle=on -count=10 -timeout=45m ./...
 
 fuzz:
 	$(GO) test -run=^$$ -fuzz=. -fuzztime=60s ./internal/config ./internal/rpc ./internal/agent ./internal/domain ./internal/archive
 
 fault-check:
-	$(GO) test -race ./internal/state ./internal/daemon -run 'Fault|FailsClosed|Damaged|Corrupt|Rollback' -count=5
+	$(GO) test -race ./internal/state ./internal/daemon -run 'Fault|FailsClosed|Damaged|Corrupt|Rollback' -count=5 -timeout=3m
 
 crash-check:
-	$(GO) test -race ./internal/daemon -run 'Crash|Reconcile|Recovery' -count=10
+	$(GO) test -race ./internal/daemon -run 'Crash|Reconcile|Recovery' -count=10 -timeout=10m
 
 soak-check:
-	WX_SOAK_SESSIONS=300 $(GO) test -race ./internal/daemon -run TestSessionLifecycleSoak -count=1
+	WX_SOAK_SESSIONS=300 $(GO) test -race ./internal/daemon -run TestSessionLifecycleSoak -count=1 -timeout=15m
 
 resource-leak-check:
-	$(GO) test -race ./internal/daemon ./internal/rpc -run 'Leak|Close|Stops' -count=20
+	$(GO) test -race ./internal/daemon ./internal/rpc -run 'Leak|Close|Stops' -count=20 -timeout=5m
 
 benchmark-check:
 	$(GO) test -run=^$$ -bench=. -benchmem ./internal/daemon ./internal/archive
