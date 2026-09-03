@@ -122,21 +122,30 @@ func TestForwardAgentSignalHandlesMissingProcessAndProcessGroup(t *testing.T) {
 }
 
 func TestRestoreForegroundIgnoresInvalidTerminalDescriptor(t *testing.T) {
-	// restoreForeground brackets its TIOCSPGRP ioctl with signal.Ignore of
-	// SIGTTOU so that handing the terminal back cannot stop wx itself. With an
-	// invalid descriptor the ioctl fails and must be swallowed, and installing
-	// that guard is the only externally observable effect the call has without
-	// a controlling terminal, so assert it rather than only that the call did
-	// not panic. Go's signal.Reset undoes Notify registrations, not
-	// signal.Ignore, so the ignore disposition is what remains afterwards;
-	// checking the precondition keeps the assertion about this call. No other
-	// code in this package touches SIGTTOU, so the order -shuffle picks does
-	// not matter.
-	if signal.Ignored(syscall.SIGTTOU) {
-		t.Fatal("SIGTTOU was already ignored before restoreForeground ran")
-	}
-	restoreForeground(-1)
-	if !signal.Ignored(syscall.SIGTTOU) {
-		t.Fatal("restoreForeground returned without installing its SIGTTOU guard")
+	// restoreForeground brackets its TIOCSPGRP ioctl with a SIGTTOU guard so
+	// that handing the terminal back cannot stop wx itself: a background
+	// process group attempting TIOCSPGRP is delivered SIGTTOU, whose default
+	// action stops the process. With an invalid descriptor the ioctl itself
+	// fails and must be swallowed, so the guard's own lifecycle is the only
+	// externally observable effect available here.
+	//
+	// The guard is built on signal.Notify/signal.Stop rather than
+	// signal.Ignore/signal.Reset specifically so this is a true bracket:
+	// signal.Reset only undoes Notify registrations, it does not clear the
+	// disposition signal.Ignore sets, so an Ignore/Reset pair leaves SIGTTOU
+	// permanently reported as ignored for the rest of the process's life
+	// after the very first call. That is a process-wide leak, and this test
+	// runs restoreForeground repeatedly in one process (mirroring `go test
+	// -count>1`, which reruns the whole binary without a fresh process) to
+	// prove no such state survives a call. No other code in this package
+	// touches SIGTTOU, so the order -shuffle picks does not matter.
+	for i := 0; i < 3; i++ {
+		if signal.Ignored(syscall.SIGTTOU) {
+			t.Fatalf("iteration %d: SIGTTOU was already ignored before restoreForeground ran", i)
+		}
+		restoreForeground(-1)
+		if signal.Ignored(syscall.SIGTTOU) {
+			t.Fatalf("iteration %d: restoreForeground leaked a permanent SIGTTOU-ignored disposition", i)
+		}
 	}
 }
