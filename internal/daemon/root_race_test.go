@@ -117,7 +117,7 @@ func TestPrepareQuarantinesUncertainGitAddAfterRootReplacement(t *testing.T) {
 	if _, err := m.createSlotRoot(slotRoot); err != nil {
 		t.Fatal(err)
 	}
-	repos, err := m.slotRepos(slotRoot, w, resolved, 1)
+	repos, err := m.slotRepos(slotRoot, w, resolved, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

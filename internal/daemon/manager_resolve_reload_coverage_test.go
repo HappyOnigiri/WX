@@ -109,6 +109,84 @@ func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 	}
 }
 
+// TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch verifies that
+// an explicit --branch request is no longer refused the READY pool outright:
+// when the requested branch resolves to exactly what a READY slot already
+// holds (here, --branch main against a slot built from main with nothing new
+// to fetch), ResolveAndLease reuses it instead of unconditionally cold
+// allocating a fresh slot.
+func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repository := filepath.Join(root, "repo")
+	initGitRepo(t, repository)
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 1
+	m := testManager(t, cfg, store)
+	m.git.SetTimeout(10 * time.Second)
+	defer m.Close()
+	ctx := context.Background()
+
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	// ensureStandby only checks out repositories used within hot_standby;
+	// mark this repository as previously leased so the standby it builds
+	// below is an actual hot checkout, not a COLD placeholder. That isolates
+	// this test to the exact-match reuse decision this test is about,
+	// independent of the cold-materialize path exercised elsewhere.
+	raw := openManagerCoverageDB(t, filepath.Join(root, "state.db"))
+	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 || jobs[0].Kind != "PREPARE" {
+		t.Fatalf("standby jobs=%+v err=%v", jobs, err)
+	}
+	prepared, err := store.ClaimJob(ctx, jobs[0].ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, prepared.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	ready, ok, err := store.ReadySlot(ctx, string(w.ID))
+	if err != nil || !ok {
+		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
+	}
+	if repositories, err := store.SlotRepositories(ctx, ready.ID); err != nil || len(repositories) != 1 || repositories[0].State != "READY" {
+		t.Fatalf("standby fixture is not a hot checkout: repositories=%+v err=%v", repositories, err)
+	}
+
+	lease, err := m.ResolveAndLease(ctx, repository, []string{"main"}, "codex", os.Getpid())
+	if err != nil {
+		t.Fatalf("resolve and lease with explicit branch: %v", err)
+	}
+	if lease.SessionID != ready.ID {
+		t.Fatalf("explicit --branch main did not reuse the matching READY slot: got session %s, want %s", lease.SessionID, ready.ID)
+	}
+	if !lease.Ready {
+		t.Fatalf("reused exact-match slot was not reported ready: %+v", lease)
+	}
+}
+
 // TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath
 // verifies that a READY slot whose recorded repository worktree path has
 // drifted outside every known wx root is quarantined and reported back to
@@ -165,5 +243,87 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 	}
 	if slot, err := store.Slot(ctx, badID); err != nil || slot.State != "QUARANTINED" {
 		t.Fatalf("unverifiable ready slot=%+v err=%v", slot, err)
+	}
+}
+
+// TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt verifies that
+// forgetting a workspace with a FAILED slot physically removes that slot's
+// worktree instead of merely clearing its workspace_id: once the link is
+// gone, ValidateWorktreeOwnership can never again prove ownership for that
+// path, which would otherwise leak it forever with no automatic recovery.
+func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repository := filepath.Join(root, "repo")
+	initGitRepo(t, repository)
+	databasePath := filepath.Join(root, "state.db")
+	store, err := state.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 1
+	m := testManager(t, cfg, store)
+	m.git.SetTimeout(10 * time.Second)
+	defer m.Close()
+	ctx := context.Background()
+
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	// A never-leased single-repository workspace's standby would otherwise
+	// register its sole repository COLD (see ensureStandby's hot_standby
+	// filter); mark it previously leased so this builds a real checkout to
+	// force into FAILED below.
+	raw := openManagerCoverageDB(t, databasePath)
+	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 || jobs[0].Kind != "PREPARE" {
+		t.Fatalf("standby jobs=%+v err=%v", jobs, err)
+	}
+	prepared, err := store.ClaimJob(ctx, jobs[0].ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, prepared.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	ready, ok, err := store.ReadySlot(ctx, string(w.ID))
+	if err != nil || !ok {
+		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
+	}
+	// Force the otherwise-healthy standby into FAILED: forget must treat it
+	// the same as any other genuinely failed preparation.
+	if _, err := raw.ExecContext(ctx, `UPDATE slots SET state='FAILED' WHERE id=?`, ready.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Forget(ctx, repository); err != nil {
+		t.Fatalf("forget with a FAILED slot: %v", err)
+	}
+	if _, err := store.Workspace(ctx, string(w.ID)); err == nil {
+		t.Fatal("workspace was not forgotten")
+	}
+	slot, err := store.Slot(ctx, ready.ID)
+	if err != nil || slot.State != "ARCHIVED" {
+		t.Fatalf("failed slot was not retired: slot=%+v err=%v", slot, err)
+	}
+	if _, statErr := os.Stat(ready.Path); !os.IsNotExist(statErr) {
+		t.Fatalf("failed slot worktree was not removed: err=%v", statErr)
 	}
 }

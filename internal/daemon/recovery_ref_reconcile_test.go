@@ -61,7 +61,7 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 	if err := os.MkdirAll(slotPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	repos, err := m.slotRepos(slotPath, w, resolved, 1)
+	repos, err := m.slotRepos(slotPath, w, resolved, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

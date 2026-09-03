@@ -465,8 +465,15 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	if _, _, err := m.waitForSnapshot(ctx, lease.SessionID); err == nil || !strings.Contains(err.Error(), "archive failed") {
 		t.Fatalf("quarantined archive wait error=%v", err)
 	}
-	if err := m.WaitReady(ctx, lease.SessionID, lease.Token); err == nil {
-		t.Fatal("quarantined slot reported ready")
+	// The readiness error must carry the slot's failure_code as a failure ID
+	// plus a pointer to `wx status`/`wx doctor`, not just the bare state
+	// name: an agent hook needs both pieces of design 672/961 to stop and
+	// tell the user where to look instead of retrying blind.
+	if err := m.WaitReady(ctx, lease.SessionID, lease.Token); err == nil ||
+		!strings.Contains(err.Error(), "failure_id=test") ||
+		!strings.Contains(err.Error(), "wx status") ||
+		!strings.Contains(err.Error(), "wx doctor") {
+		t.Fatalf("quarantined slot readiness error missing failure id or diagnostic guidance: %v", err)
 	}
 	if err := m.BindAgentSession(ctx, lease.SessionID, "wrong", "agent"); err == nil {
 		t.Fatal("wrong token bound agent session")
