@@ -102,6 +102,27 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if err != nil {
 		return state.Snapshot{}, err
 	}
+	headRef := fmt.Sprintf("refs/wx/recovery/%s/%s/head", sessionID, repo.ID)
+	worktreeRef := fmt.Sprintf("refs/wx/recovery/%s/%s/worktree", sessionID, repo.ID)
+	indexRef := fmt.Sprintf("refs/wx/recovery/%s/%s/index", sessionID, repo.ID)
+	id := domain.StableID("snapshot", sessionID, string(repo.ID))
+	created := time.Now().UTC()
+	// A clean worktree (nothing staged, unstaged, or untracked relative to
+	// HEAD) needs no new content objects: HEAD's own tree and commit already
+	// represent it exactly. Skip write-tree/read-tree/add/commit-tree
+	// entirely and record only the base OID and ref metadata, per the
+	// clean-session archive minimization the design calls for.
+	statusOutput, err := worktreeValue(nil, "status", "--porcelain=v1")
+	if err != nil {
+		return state.Snapshot{}, fmt.Errorf("check worktree cleanliness: %w", err)
+	}
+	if strings.TrimSpace(statusOutput) == "" {
+		headTree, err := worktreeValue(nil, "rev-parse", "HEAD^{tree}")
+		if err != nil {
+			return state.Snapshot{}, fmt.Errorf("resolve clean HEAD tree: %w", err)
+		}
+		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+	}
 	indexTree, err := worktreeValue(nil, "write-tree")
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("write index tree: %w", err)
@@ -138,20 +159,31 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 		return state.Snapshot{}, err
 	}
 	worktreeCommit := strings.TrimSpace(commitRes.Stdout)
-	headRef := fmt.Sprintf("refs/wx/recovery/%s/%s/head", sessionID, repo.ID)
-	worktreeRef := fmt.Sprintf("refs/wx/recovery/%s/%s/worktree", sessionID, repo.ID)
-	id := domain.StableID("snapshot", sessionID, string(repo.ID))
-	created := time.Now().UTC()
-	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+}
+
+// recoveryRefTargets maps every ref this snapshot publishes to the object it
+// must point at, including the index tree ref. The index tree is otherwise a
+// dangling object: without a ref keeping it reachable, `git gc`'s normal
+// prune grace period can collect it before `retention.recovery_snapshot`
+// elapses, leaving Resume unable to restore staged/unstaged content even
+// though the head and worktree refs are still intact.
+func recoveryRefTargets(snapshot state.Snapshot) map[string]string {
+	targets := map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID}
+	if snapshot.IndexRef != "" {
+		targets[snapshot.IndexRef] = snapshot.IndexTreeOID
+	}
+	return targets
 }
 
 func (m *Manager) publishSnapshotRefs(ctx context.Context, repo discovery.Repository, snapshot state.Snapshot) error {
-	for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+	targets := recoveryRefTargets(snapshot)
+	for ref, want := range targets {
 		if err := m.ensureRecoveryRef(ctx, repo, ref, want); err != nil {
 			return err
 		}
 	}
-	for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+	for ref, want := range targets {
 		got, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", "--verify", ref)
 		if err != nil || got != want {
 			return fmt.Errorf("verify recovery ref %s", ref)
@@ -178,7 +210,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 	if expiry, err := time.Parse(time.RFC3339Nano, s.ExpiresAt); err != nil || !expiry.After(time.Now()) {
 		return errors.New("recovery snapshot has expired")
 	}
-	for ref, want := range map[string]string{s.HeadRef: s.HeadOID, s.WorktreeRef: s.WorktreeOID} {
+	for ref, want := range recoveryRefTargets(s) {
 		got, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", "--verify", ref)
 		if err != nil || got != want {
 			return fmt.Errorf("recovery ref %s does not match snapshot metadata", ref)
@@ -207,7 +239,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		targetRun := func(env []string, input []byte, args ...string) (gitx.Result, error) {
 			return m.Preparer.RunGitInWorktree(ctx, target, targetIdentity, env, input, args...)
 		}
-		for ref, want := range map[string]string{s.HeadRef: s.HeadOID, s.WorktreeRef: s.WorktreeOID} {
+		for ref, want := range recoveryRefTargets(s) {
 			got, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", "--verify", ref)
 			if err != nil || got != want {
 				return fmt.Errorf("recovery ref %s changed during restore", ref)
@@ -536,7 +568,7 @@ func validateRemovalPathComponents(root, relative string) error {
 
 func (m *Manager) DeleteSnapshotRefs(ctx context.Context, repo discovery.Repository, snapshot state.Snapshot) error {
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
-		for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
+		for ref, want := range recoveryRefTargets(snapshot) {
 			if _, err := m.Git.Run(ctx, string(repo.MainPath), "check-ref-format", ref); err != nil {
 				return fmt.Errorf("invalid recovery ref %q: %w", ref, err)
 			}

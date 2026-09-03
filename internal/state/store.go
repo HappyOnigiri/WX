@@ -35,7 +35,15 @@ type Store struct {
 	rpcKey []byte
 }
 
-const SchemaVersion = 9
+const SchemaVersion = 10
+
+// JSONSchemaVersion is the stability contract for `wx status --json` and
+// `wx doctor --json` output shape. It is deliberately independent of
+// SchemaVersion (the SQLite migration count): bumping SchemaVersion only
+// adds or changes internal storage, and must not silently change the
+// version a scripted `--json` consumer sees. Bump this only when the JSON
+// output shape itself changes in a way consumers need to detect.
+const JSONSchemaVersion = 1
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -520,9 +528,9 @@ func (s *Store) WorkspaceGeneration(ctx context.Context, workspaceID string) (in
 }
 
 type Slot struct {
-	ID, WorkspaceID, Path, State, OwnerSessionID string
-	Generation                                   int
-	CreatedAt, ReadyAt                           string
+	ID, WorkspaceID, Path, State, OwnerSessionID, FailureCode string
+	Generation                                                int
+	CreatedAt, ReadyAt                                        string
 }
 type (
 	SlotRepository struct{ RepositoryID, WorktreePath, State, RequestedRef, BaseOID, Fingerprint string }
@@ -534,7 +542,9 @@ type (
 )
 
 type (
-	Snapshot               struct{ ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string }
+	Snapshot struct {
+		ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, IndexRef, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string
+	}
 	RecoveryRefExpectation struct {
 		Ref, OID, SessionID, SessionState string
 		InFlight                          bool
@@ -1473,7 +1483,7 @@ func (s *Store) SetSlotRepositoryState(ctx context.Context, slotID, repositoryID
 
 func (s *Store) Slot(ctx context.Context, id string) (Slot, error) {
 	var x Slot
-	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),generation,path,state,COALESCE(owner_session_id,''),created_at,COALESCE(ready_at,'') FROM slots WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.Path, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),generation,path,state,COALESCE(owner_session_id,''),created_at,COALESCE(ready_at,''),COALESCE(failure_code,'') FROM slots WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.Path, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt, &x.FailureCode)
 	return x, err
 }
 
@@ -1485,22 +1495,22 @@ func (s *Store) SaveSnapshot(ctx context.Context, x Snapshot) error {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id,repository_id) DO NOTHING`, x.ID, x.SessionID, x.RepositoryID, x.HeadOID, x.HeadRef, x.IndexTreeOID, x.WorktreeOID, x.WorktreeRef, x.Status, x.CreatedAt, x.ExpiresAt)
+	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id,repository_id) DO NOTHING`, x.ID, x.SessionID, x.RepositoryID, x.HeadOID, x.HeadRef, x.IndexTreeOID, x.IndexRef, x.WorktreeOID, x.WorktreeRef, x.Status, x.CreatedAt, x.ExpiresAt)
 	if err != nil {
 		return err
 	}
 	var existing Snapshot
-	if err := tx.QueryRowContext(ctx, `SELECT id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at FROM snapshots WHERE session_id=? AND repository_id=?`, x.SessionID, x.RepositoryID).Scan(&existing.ID, &existing.SessionID, &existing.RepositoryID, &existing.HeadOID, &existing.HeadRef, &existing.IndexTreeOID, &existing.WorktreeOID, &existing.WorktreeRef, &existing.Status, &existing.CreatedAt, &existing.ExpiresAt); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at FROM snapshots WHERE session_id=? AND repository_id=?`, x.SessionID, x.RepositoryID).Scan(&existing.ID, &existing.SessionID, &existing.RepositoryID, &existing.HeadOID, &existing.HeadRef, &existing.IndexTreeOID, &existing.IndexRef, &existing.WorktreeOID, &existing.WorktreeRef, &existing.Status, &existing.CreatedAt, &existing.ExpiresAt); err != nil {
 		return err
 	}
-	if existing.ID != x.ID || existing.HeadOID != x.HeadOID || existing.HeadRef != x.HeadRef || existing.IndexTreeOID != x.IndexTreeOID || existing.WorktreeOID != x.WorktreeOID || existing.WorktreeRef != x.WorktreeRef {
+	if existing.ID != x.ID || existing.HeadOID != x.HeadOID || existing.HeadRef != x.HeadRef || existing.IndexTreeOID != x.IndexTreeOID || existing.IndexRef != x.IndexRef || existing.WorktreeOID != x.WorktreeOID || existing.WorktreeRef != x.WorktreeRef {
 		return errors.New("snapshot metadata conflicts with an existing recovery snapshot")
 	}
 	return tx.Commit()
 }
 
 func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at FROM snapshots WHERE session_id=? ORDER BY repository_id`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at FROM snapshots WHERE session_id=? ORDER BY repository_id`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -1508,7 +1518,7 @@ func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, er
 	var out []Snapshot
 	for rows.Next() {
 		var x Snapshot
-		if err := rows.Scan(&x.ID, &x.SessionID, &x.RepositoryID, &x.HeadOID, &x.HeadRef, &x.IndexTreeOID, &x.WorktreeOID, &x.WorktreeRef, &x.Status, &x.CreatedAt, &x.ExpiresAt); err != nil {
+		if err := rows.Scan(&x.ID, &x.SessionID, &x.RepositoryID, &x.HeadOID, &x.HeadRef, &x.IndexTreeOID, &x.IndexRef, &x.WorktreeOID, &x.WorktreeRef, &x.Status, &x.CreatedAt, &x.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, x)
@@ -1582,6 +1592,26 @@ func (s *Store) WorkspaceByRoot(ctx context.Context, root string) (discovery.Wor
 	return s.Workspace(ctx, id)
 }
 
+// SessionWorkspaceKind resolves only the workspace kind ("repository" or
+// "multi_repository") for a session, without SessionWorkspace's
+// repository-membership requirement (see below). Several callers branch
+// purely on kind to decide whether multi-repository root-snapshot handling
+// applies and never touch the repository list; routing them through the
+// full SessionWorkspace lookup made them fail closed for any session whose
+// workspace happens to have zero recorded repositories, a case unrelated to
+// what they actually check.
+func (s *Store) SessionWorkspaceKind(ctx context.Context, sessionID string) (string, error) {
+	var kind string
+	err := s.db.QueryRowContext(ctx, `SELECT w.kind FROM sessions se JOIN workspaces w ON w.id=se.workspace_id WHERE se.id=?`, sessionID).Scan(&kind)
+	return kind, err
+}
+
+// SessionWorkspace additionally requires the session's workspace to have at
+// least one recorded repository membership row (session_repositories): a
+// session with none cannot have its repository set verified, and callers
+// that iterate w.Repositories depend on that proof. Callers that only need
+// w.Kind should use SessionWorkspaceKind instead, which carries no such
+// requirement.
 func (s *Store) SessionWorkspace(ctx context.Context, sessionID string) (discovery.Workspace, error) {
 	var w discovery.Workspace
 	err := s.db.QueryRowContext(ctx, `SELECT w.id,w.root_path,w.kind FROM sessions se JOIN workspaces w ON w.id=se.workspace_id WHERE se.id=?`, sessionID).Scan(&w.ID, &w.Root, &w.Kind)
@@ -1724,7 +1754,14 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 		return err
 	}
 	var unsafe int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM slots WHERE workspace_id=? AND state NOT IN ('ARCHIVED','FAILED')`, id).Scan(&unsafe); err != nil {
+	// FAILED is not treated as safe here: once workspace_id is cleared below,
+	// ValidateWorktreeOwnership can never again prove ownership for that
+	// slot's physical path (proof requires the workspace link), turning a
+	// FAILED slot's worktree into a permanent, un-collectible leak. The
+	// caller (Manager.Forget) retires FAILED slots via
+	// ScheduleFailedSlotRemoval before calling this, so a workspace with no
+	// other unsafe state is not permanently stuck.
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM slots WHERE workspace_id=? AND state NOT IN ('ARCHIVED')`, id).Scan(&unsafe); err != nil {
 		return err
 	}
 	if unsafe > 0 {
@@ -2032,7 +2069,7 @@ func (s *Store) QuarantineMissingRecoveryRef(ctx context.Context, ref string) er
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT session_id FROM snapshots WHERE head_recovery_ref=? OR worktree_recovery_ref=?`, ref, ref)
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT session_id FROM snapshots WHERE head_recovery_ref=? OR worktree_recovery_ref=? OR index_recovery_ref=?`, ref, ref, ref)
 	if err != nil {
 		return err
 	}
@@ -2051,7 +2088,7 @@ func (s *Store) QuarantineMissingRecoveryRef(ctx context.Context, ref string) er
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE snapshots SET status='QUARANTINED' WHERE head_recovery_ref=? OR worktree_recovery_ref=?`, ref, ref); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE snapshots SET status='QUARANTINED' WHERE head_recovery_ref=? OR worktree_recovery_ref=? OR index_recovery_ref=?`, ref, ref, ref); err != nil {
 		return err
 	}
 	for _, sessionID := range sessions {
@@ -2083,7 +2120,10 @@ func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error
 }
 
 func (s *Store) RecoveryRefs(ctx context.Context, repositoryID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT head_recovery_ref FROM snapshots WHERE repository_id=? UNION SELECT worktree_recovery_ref FROM snapshots WHERE repository_id=? ORDER BY 1`, repositoryID, repositoryID)
+	rows, err := s.db.QueryContext(ctx, `SELECT head_recovery_ref FROM snapshots WHERE repository_id=?
+		UNION SELECT worktree_recovery_ref FROM snapshots WHERE repository_id=?
+		UNION SELECT index_recovery_ref FROM snapshots WHERE repository_id=? AND index_recovery_ref<>''
+		ORDER BY 1`, repositoryID, repositoryID, repositoryID)
 	if err != nil {
 		return nil, err
 	}
@@ -2117,7 +2157,12 @@ func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string
 		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND (j.state='PENDING' OR (j.state='RUNNING' AND j.lease_expires_at>?))) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
-		ORDER BY 1`, at, repositoryID, at, repositoryID)
+		UNION ALL
+		SELECT sn.index_recovery_ref,sn.index_tree_oid,sn.session_id,se.state,
+		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND (j.state='PENDING' OR (j.state='RUNNING' AND j.lease_expires_at>?))) THEN 1 ELSE 0 END
+		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
+		WHERE sn.repository_id=? AND sn.status='ARCHIVED' AND sn.index_recovery_ref<>''
+		ORDER BY 1`, at, repositoryID, at, repositoryID, at, repositoryID)
 	if err != nil {
 		return nil, err
 	}
@@ -2136,6 +2181,28 @@ func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string
 }
 
 type StandbyGCCandidate struct{ SlotID, WorkspaceID, Path, State string }
+
+// HotRepositoryIDs reports which repositories were leased within the
+// hot_standby window, i.e. after hotBefore. A repository that has never been
+// leased (last_leased_at IS NULL) is excluded: it is not yet "used" in the
+// sense retention.hot_standby measures, so replacement standby prefetch must
+// not build it ahead of an actual lease.
+func (s *Store) HotRepositoryIDs(ctx context.Context, hotBefore string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM repositories WHERE last_leased_at IS NOT NULL AND last_leased_at>?`, hotBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
 
 type ColdRepositoryCandidate struct{ SlotID, WorkspaceID, RepositoryID, WorktreePath string }
 
@@ -2271,6 +2338,60 @@ func (s *Store) FinishRemoval(ctx context.Context, slotID string) error {
 	return s.SetSlotState(ctx, slotID, []string{"REMOVING", "ARCHIVED"}, "ARCHIVED", "")
 }
 
+// FailedSlotIDs returns the unowned FAILED slots belonging to a workspace.
+func (s *Store) FailedSlotIDs(ctx context.Context, workspaceID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM slots WHERE workspace_id=? AND owner_session_id IS NULL AND state='FAILED'`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// ScheduleFailedSlotRemoval retires a FAILED slot's physical worktree so its
+// row can reach ARCHIVED. Unlike ScheduleRemoval (READY/STALE/SNAPSHOTTED),
+// this exists specifically so ForgetWorkspace's refusal of any non-ARCHIVED
+// slot does not leave a permanently un-collectible FAILED worktree behind:
+// see ForgetWorkspace for why FAILED cannot be treated as already-safe.
+func (s *Store) ScheduleFailedSlotRemoval(ctx context.Context, slotID string) (Job, bool, error) {
+	job, err := newJob("REMOVE", "", slotID, "")
+	if err != nil {
+		return Job{}, false, err
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, false, err
+	}
+	defer tx.Rollback()
+	var workspaceID string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(workspace_id,'') FROM slots WHERE id=?`, slotID).Scan(&workspaceID); err != nil {
+		return Job{}, false, err
+	}
+	job.WorkspaceID = workspaceID
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=? AND owner_session_id IS NULL AND state='FAILED'`, now(), slotID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	changed, _ := res.RowsAffected()
+	if changed == 0 {
+		return Job{}, false, nil
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, false, err
+	}
+	return job, true, tx.Commit()
+}
+
 func (s *Store) DrainRoot(ctx context.Context, root string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -2280,7 +2401,7 @@ func (s *Store) DrainRoot(ctx context.Context, root string) error {
 }
 
 func (s *Store) ExpiredSnapshots(ctx context.Context, before string) ([]Snapshot, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sn.id,sn.session_id,sn.repository_id,sn.head_oid,sn.head_recovery_ref,sn.index_tree_oid,sn.worktree_snapshot_oid,sn.worktree_recovery_ref,sn.status,sn.created_at,sn.expires_at FROM snapshots sn JOIN sessions se ON se.id=sn.session_id JOIN slots sl ON sl.id=se.slot_id WHERE se.state='ARCHIVED' AND sl.state='ARCHIVED' AND sn.status='ARCHIVED' AND sn.expires_at<=? AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING')) ORDER BY sn.session_id,sn.repository_id`, before)
+	rows, err := s.db.QueryContext(ctx, `SELECT sn.id,sn.session_id,sn.repository_id,sn.head_oid,sn.head_recovery_ref,sn.index_tree_oid,sn.index_recovery_ref,sn.worktree_snapshot_oid,sn.worktree_recovery_ref,sn.status,sn.created_at,sn.expires_at FROM snapshots sn JOIN sessions se ON se.id=sn.session_id JOIN slots sl ON sl.id=se.slot_id WHERE se.state='ARCHIVED' AND sl.state='ARCHIVED' AND sn.status='ARCHIVED' AND sn.expires_at<=? AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING')) ORDER BY sn.session_id,sn.repository_id`, before)
 	if err != nil {
 		return nil, err
 	}
@@ -2288,7 +2409,7 @@ func (s *Store) ExpiredSnapshots(ctx context.Context, before string) ([]Snapshot
 	var out []Snapshot
 	for rows.Next() {
 		var snapshot Snapshot
-		if err := rows.Scan(&snapshot.ID, &snapshot.SessionID, &snapshot.RepositoryID, &snapshot.HeadOID, &snapshot.HeadRef, &snapshot.IndexTreeOID, &snapshot.WorktreeOID, &snapshot.WorktreeRef, &snapshot.Status, &snapshot.CreatedAt, &snapshot.ExpiresAt); err != nil {
+		if err := rows.Scan(&snapshot.ID, &snapshot.SessionID, &snapshot.RepositoryID, &snapshot.HeadOID, &snapshot.HeadRef, &snapshot.IndexTreeOID, &snapshot.IndexRef, &snapshot.WorktreeOID, &snapshot.WorktreeRef, &snapshot.Status, &snapshot.CreatedAt, &snapshot.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, snapshot)
@@ -2325,6 +2446,27 @@ func (s *Store) ExpireSessionSnapshots(ctx context.Context, sessionID string) er
 		return errors.New("session cannot expire from its current state")
 	}
 	return tx.Commit()
+}
+
+// CountMetadataCandidates reports how many rows PruneMetadata would remove or
+// tombstone for the given thresholds, without mutating anything. It backs
+// `wx gc --dry-run` so the reported total includes TTL-expired events and
+// finished job metadata, matching the highest GC priority tier.
+func (s *Store) CountMetadataCandidates(ctx context.Context, failedBefore, eventBefore, tombstoneBefore string) (int, error) {
+	var jobs, events, tombstones, idempotency int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE (state='SUCCEEDED' OR state='FAILED') AND COALESCE(finished_at,started_at,not_before)<=?`, failedBefore).Scan(&jobs); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE time<=?`, eventBefore).Scan(&events); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE state='EXPIRED' AND expires_at<=?`, tombstoneBefore).Scan(&tombstones); err != nil {
+		return 0, err
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rpc_idempotency WHERE expires_at<=?`, now()).Scan(&idempotency); err != nil {
+		return 0, err
+	}
+	return jobs + events + tombstones + idempotency, nil
 }
 
 func (s *Store) PruneMetadata(ctx context.Context, failedBefore, eventBefore, tombstoneBefore string) error {

@@ -256,6 +256,41 @@ func TestSnapshotRefsAreIdempotentAndDeletionChecksOwnership(t *testing.T) {
 	}
 }
 
+// TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects
+// exercises the clean-session archive minimization: when the worktree has
+// nothing staged, unstaged, or untracked relative to HEAD, snapshotObjects
+// must not fabricate a new recovery commit or write a new tree via a
+// temporary index. It records HEAD's own tree/commit directly, and restore
+// must still round-trip correctly from that.
+func TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects(t *testing.T) {
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
+	head := gitCommand(t, repository, "rev-parse", "HEAD")
+	headTree := gitCommand(t, repository, "rev-parse", "HEAD^{tree}")
+	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "clean-session", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.HeadOID != head {
+		t.Fatalf("head oid=%s, want %s", snapshot.HeadOID, head)
+	}
+	if snapshot.WorktreeOID != head {
+		t.Fatalf("clean snapshot fabricated a new recovery commit instead of reusing HEAD: worktree=%s head=%s", snapshot.WorktreeOID, head)
+	}
+	if snapshot.IndexTreeOID != headTree {
+		t.Fatalf("clean snapshot index tree=%s, want HEAD tree %s", snapshot.IndexTreeOID, headTree)
+	}
+	target := filepath.Join(worktreeRoot, "restore", "root")
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+		t.Fatalf("restore from clean snapshot: %v", err)
+	}
+	if status := gitCommand(t, target, "status", "--porcelain"); status != "" {
+		t.Fatalf("restored clean worktree is not clean: %q", status)
+	}
+	if restoredHead := gitCommand(t, target, "rev-parse", "HEAD"); restoredHead != head {
+		t.Fatalf("restored head=%s, want %s", restoredHead, head)
+	}
+}
+
 func TestSnapshotWithPersistenceCommitsMetadataBeforePublishingRefs(t *testing.T) {
 	repository, repo, manager, _ := archiveFixture(t)
 	ctx := context.Background()
@@ -542,6 +577,13 @@ func TestSnapshotPropagatesGitStageFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			repository, repo, manager, _ := archiveFixture(t)
 			head := gitCommand(t, repository, "rev-parse", "HEAD")
+			// A clean worktree takes the short-circuit that skips
+			// write-tree/read-tree/add/commit-tree entirely (see
+			// snapshotObjects); dirty it so every injected fault below still
+			// lands on a step the snapshot actually executes.
+			if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("dirty\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			installGitFault(t, test.pattern(head), test.occurrence)
 			if _, err := manager.Snapshot(context.Background(), repo, repository, "fault", time.Now().Add(time.Hour)); err == nil {
 				t.Fatal("snapshot succeeded despite injected Git failure")

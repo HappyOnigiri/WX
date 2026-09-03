@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/discovery"
 )
 
 func TestBackupRetentionSkipsNonDatabaseEntriesAndPrunesOldGenerations(t *testing.T) {
@@ -76,6 +78,39 @@ func TestLifecycleCandidateQueriesCoverWarmStaleAndColdTransitions(t *testing.T)
 	stored, err := store.Slot(ctx, ready.ID)
 	if err != nil || stored.State != "READY" {
 		t.Fatalf("finished cold removal slot=%+v err=%v", stored, err)
+	}
+}
+
+func TestHotRepositoryIDsExcludesNeverLeasedAndStaleRepositories(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	w := discovery.Workspace{ID: "workspace", Root: "/workspace", Kind: "multi_repository", Repositories: []discovery.Repository{
+		{ID: "never-leased", MainPath: "/workspace/never-leased", CommonDir: "/workspace/never-leased/.git", RelativePath: "never-leased", DefaultBranch: "main"},
+		{ID: "stale", MainPath: "/workspace/stale", CommonDir: "/workspace/stale/.git", RelativePath: "stale", DefaultBranch: "main"},
+		{ID: "hot", MainPath: "/workspace/hot", CommonDir: "/workspace/hot/.git", RelativePath: "hot", DefaultBranch: "main"},
+	}}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	hotBefore := FormatTime(time.Now().Add(-time.Hour))
+	if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id='stale'`, FormatTime(time.Now().Add(-2*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id='hot'`, FormatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	hot, err := store.HotRepositoryIDs(ctx, hotBefore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hot["never-leased"] {
+		t.Fatal("a repository with no recorded lease was reported hot")
+	}
+	if hot["stale"] {
+		t.Fatal("a repository last leased before the cutoff was reported hot")
+	}
+	if !hot["hot"] {
+		t.Fatal("a repository leased after the cutoff was not reported hot")
 	}
 }
 

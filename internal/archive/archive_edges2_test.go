@@ -2,6 +2,7 @@ package archive
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,6 +59,12 @@ func TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase(t *testing.T
 func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T) {
 	t.Run("snapshot temporary index", func(t *testing.T) {
 		repository, repo, manager, _ := archiveFixture(t)
+		// A clean worktree skips the temporary index entirely (see
+		// snapshotObjects's clean short-circuit); dirty it so this exercises
+		// the os.CreateTemp failure it is meant to test.
+		if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("dirty\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
 		if _, err := manager.Snapshot(context.Background(), repo, repository, "tmp-failure", time.Now().Add(time.Hour)); err == nil || !strings.Contains(err.Error(), "temporary snapshot index") {
 			t.Fatalf("snapshot succeeded despite an unusable TMPDIR: %v", err)
@@ -81,15 +88,16 @@ func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T)
 // TestRestorePropagatesRelockedRecoveryRefVerificationFailure exercises the
 // second recovery-ref verification loop inside Restore's locked closure
 // (distinct from the pre-lock check performed before PrepareForRestore):
-// occurrence 3 of the verify pattern lands on the first ref check taken after
-// the common-directory lock is acquired.
+// occurrence 4 of the verify pattern lands on the first ref check taken after
+// the common-directory lock is acquired (head/worktree/index each verify once
+// pre-lock, so the relocked loop starts at occurrence 4).
 func TestRestorePropagatesRelockedRecoveryRefVerificationFailure(t *testing.T) {
 	repository, repo, manager, worktreeRoot := archiveFixture(t)
 	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "source", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	installGitFault(t, " rev-parse --verify refs/wx/recovery", 3)
+	installGitFault(t, " rev-parse --verify refs/wx/recovery", 4)
 	target := filepath.Join(worktreeRoot, "relock-fault", "root")
 	if err := manager.Restore(context.Background(), repo, target, "relock-fault", snapshot); err == nil || !strings.Contains(err.Error(), "changed during restore") {
 		t.Fatalf("restore succeeded despite an injected relocked verification failure: %v", err)

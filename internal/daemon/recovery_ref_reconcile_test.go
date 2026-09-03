@@ -80,6 +80,15 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 	if err := store.FinishJob(ctx, claimedPrepare.ID, "test", nil); err != nil {
 		t.Fatal(err)
 	}
+	// A clean worktree now takes snapshotObjects's short-circuit and reuses
+	// HEAD as WorktreeOID (see the clean-session archive minimization);
+	// dirty both checkouts so the later mismatched-ref assertion below still
+	// has a WorktreeOID distinct from HeadOID to point a ref at.
+	for _, sr := range repos {
+		if err := os.WriteFile(filepath.Join(sr.WorktreePath, "session-change.txt"), []byte("dirty\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	snapshotJob, changed, err := store.Release(ctx, sessionID, string(w.ID), sessionID)
 	if err != nil || !changed {
 		t.Fatalf("release changed=%v job=%+v err=%v", changed, snapshotJob, err)
