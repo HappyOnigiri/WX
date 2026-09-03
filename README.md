@@ -85,3 +85,6 @@ removed rather than paused.
 Do not re-enable these checks in CI, workflows, or hooks without the user's
 explicit permission. Run `make hooks-install` to enable the bounded
 pre-commit and pre-push checks.
+
+Design decisions that the design doc called for but this repository does not
+implement, and why, are recorded in [`docs/design-deltas.md`](docs/design-deltas.md).
