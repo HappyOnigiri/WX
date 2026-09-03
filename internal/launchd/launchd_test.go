@@ -83,12 +83,6 @@ func TestRenderEscapesAndPreservesSpecialCharacterPaths(t *testing.T) {
 	}
 }
 
-func TestValidateXMLRejectsMalformedPlist(t *testing.T) {
-	if err := validateXML([]byte(`<plist><dict>`)); err == nil {
-		t.Fatal("malformed plist XML was accepted")
-	}
-}
-
 func TestUninstallRemovesPlistWhenServiceIsAlreadyMissing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

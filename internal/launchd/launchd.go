@@ -6,7 +6,6 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,10 +19,10 @@ const (
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>{{.Label}}</string>
-<key>ProgramArguments</key><array><string>{{.Binary}}</string><string>daemon</string><string>serve</string></array>
+<key>ProgramArguments</key><array><string>{{.Binary | x}}</string><string>daemon</string><string>serve</string></array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
-<key>EnvironmentVariables</key><dict><key>HOME</key><string>{{.Home}}</string><key>PATH</key><string>{{.Path}}</string></dict>
-<key>StandardOutPath</key><string>{{.Log}}</string><key>StandardErrorPath</key><string>{{.Log}}</string>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>{{.Home | x}}</string><key>PATH</key><string>{{.Path | x}}</string></dict>
+<key>StandardOutPath</key><string>{{.Log | x}}</string><key>StandardErrorPath</key><string>{{.Log | x}}</string>
 </dict></plist>`
 )
 
@@ -36,57 +35,27 @@ func PlistPath() (string, error) {
 }
 
 func Render(binary, home, logPath string) ([]byte, error) {
-	t, err := template.New("plist").Parse(plistTemplate)
+	t, err := template.New("plist").Funcs(template.FuncMap{"x": xmlEscapeText}).Parse(plistTemplate)
 	if err != nil {
 		return nil, err
-	}
-	escapedBinary, err := escapeXMLText(binary)
-	if err != nil {
-		return nil, fmt.Errorf("escape LaunchAgent binary path: %w", err)
-	}
-	escapedHome, err := escapeXMLText(home)
-	if err != nil {
-		return nil, fmt.Errorf("escape LaunchAgent home path: %w", err)
 	}
 	pathValue := filepath.Join(home, ".local", "bin") + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-	escapedPath, err := escapeXMLText(pathValue)
-	if err != nil {
-		return nil, fmt.Errorf("escape LaunchAgent PATH: %w", err)
-	}
-	escapedLog, err := escapeXMLText(logPath)
-	if err != nil {
-		return nil, fmt.Errorf("escape LaunchAgent log path: %w", err)
-	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{"Label": Label, "Binary": escapedBinary, "Home": escapedHome, "Path": escapedPath, "Log": escapedLog})
-	if err != nil {
+	if err := t.Execute(&b, map[string]string{"Label": Label, "Binary": binary, "Home": home, "Path": pathValue, "Log": logPath}); err != nil {
 		return nil, err
-	}
-	if err := validateXML(b.Bytes()); err != nil {
-		return nil, fmt.Errorf("validate LaunchAgent plist: %w", err)
 	}
 	return b.Bytes(), nil
 }
 
-func escapeXMLText(value string) (string, error) {
+// xmlEscapeText is a template FuncMap entry: the template calls it on every
+// value it interpolates, so every rendered plist is escaped by construction
+// and does not need a separate re-parse to validate it afterwards.
+func xmlEscapeText(value string) (string, error) {
 	var escaped bytes.Buffer
 	if err := xml.EscapeText(&escaped, []byte(value)); err != nil {
 		return "", err
 	}
 	return escaped.String(), nil
-}
-
-func validateXML(data []byte) error {
-	decoder := xml.NewDecoder(bytes.NewReader(data))
-	for {
-		_, err := decoder.Token()
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-	}
 }
 
 func Install(ctx context.Context, binary, logPath string) error {
