@@ -138,7 +138,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		method = "AllocateResumeSlot"
 		params = map[string]any{"agent": agent, "client_pid": os.Getpid()}
 	}
-	hooksReady := readinessHooksAvailable(agent)
+	hooksReady := hookconfig.Available(agent)
 	if native && explicitResume == "" && !hooksReady {
 		fmt.Fprintln(os.Stderr, "error: native resume requires global wx SessionStart, UserPromptSubmit, and PreToolUse hooks; use wx resume <wx-session-id> for the safe foreground fallback")
 		return 1
@@ -383,22 +383,6 @@ func childEnvironment(base, overrides []string) []string {
 		env = append(env, entry)
 	}
 	return append(env, overrides...)
-}
-
-func readinessHooksAvailable(agent string) bool {
-	return hookconfig.Available(agent)
-}
-
-func codexHooksConfigEnabled(data []byte, requirement bool) bool {
-	return hookconfig.CodexHooksConfigEnabled(data, requirement)
-}
-
-func currentWXExecutable() (string, error) {
-	return hookconfig.CurrentExecutable()
-}
-
-func isExactWXHookCommand(command, event string) bool {
-	return hookconfig.IsExactWXHookCommand(command, event)
 }
 
 func confirmExpiredResume(sessionID string) bool {
