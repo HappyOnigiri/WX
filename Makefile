@@ -117,30 +117,16 @@ mod-tidy-check:
 
 # No package in this repository currently declares a //go:generate directive:
 # help text, config schema, SQLite migrations, the LaunchAgent plist, and
-# shell completion are all hand-maintained. `go generate ./...` therefore has
-# nothing to run today, so this check is green by construction and does not
-# yet catch generated-artifact drift; it is kept as a required CI check
-# (rather than removed) so that adding a real //go:generate directive to any
-# of those sources starts enforcing it immediately, with no further wiring.
-#
-# The comparison itself runs entirely inside two temporary directories rather
-# than the working tree: `before` is an untouched `git archive HEAD` copy,
-# `after` is a duplicate of it with `go generate ./...` run inside. Neither
-# copy is the real checkout, so this never leaves the working tree dirty
-# (unlike running `go generate` in place and `git diff --exit-code`-ing it),
-# and the diff is limited to exactly what generation changed rather than
-# also picking up unrelated working-tree state (.tools, coverage output, a
-# developer's own uncommitted edits).
+# shell completion are all hand-maintained (see docs/design-deltas.md for why
+# the project keeps that no-generator stance instead of introducing one).
+# `go generate ./...` therefore has nothing to run today, so this check is
+# green by construction and does not yet catch generated-artifact drift; it
+# is kept as a required CI check (rather than removed) so that adding a real
+# //go:generate directive to any of those sources starts enforcing it
+# immediately, with no further wiring.
 generated-check:
-	@before="$$(mktemp -d)"; after="$$(mktemp -d)"; \
-	trap 'rm -rf "$$before" "$$after"' EXIT; \
-	git archive --format=tar HEAD | (cd "$$before" && tar -x); \
-	cp -a "$$before/." "$$after/"; \
-	(cd "$$after" && $(GO) generate ./...); \
-	if ! diff -rq "$$before" "$$after"; then \
-		echo "generated artifacts (help text, config schema, SQLite migrations, LaunchAgent plist, shell completion) are stale relative to their generators; run 'go generate ./...' and commit the result" >&2; \
-		exit 1; \
-	fi
+	$(GO) generate ./...
+	git diff --exit-code
 
 docs-check:
 	@test -x "$(NPM_BIN)/markdownlint-cli2" || { echo "pinned markdownlint is missing; run make setup"; exit 1; }
