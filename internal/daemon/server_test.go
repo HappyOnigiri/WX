@@ -98,27 +98,32 @@ func TestServeStartsRPCAndStopsWithContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	client := rpc.Client{Socket: socket, Timeout: time.Second}
+	var status map[string]any
+	// The socket file already exists between bind(2) and listen(2), and a dial
+	// landing in that window is refused. Waiting for the file alone therefore
+	// races the daemon on a loaded machine, so wait for an answered call
+	// instead and let any failure past the connect stage fail the test at once.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		select {
 		case serveErr := <-done:
-			t.Fatalf("daemon exited before creating socket: %v", serveErr)
+			t.Fatalf("daemon exited before answering RPC: %v", serveErr)
 		default:
 		}
-		if info, statErr := os.Stat(socket); statErr == nil && info.Mode()&os.ModeSocket != 0 {
+		callErr := client.Call(context.Background(), "Status", nil, &status)
+		if callErr == nil {
 			break
+		}
+		if !rpc.IsConnectError(callErr) {
+			cancel()
+			t.Fatal(callErr)
 		}
 		if time.Now().After(deadline) {
 			cancel()
-			t.Fatalf("daemon socket was not created at %s", socket)
+			t.Fatalf("daemon did not answer on %s: %v", socket, callErr)
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	client := rpc.Client{Socket: socket, Timeout: time.Second}
-	var status map[string]any
-	if err := client.Call(context.Background(), "Status", nil, &status); err != nil {
-		cancel()
-		t.Fatal(err)
 	}
 	if status["protocol_version"] != float64(rpc.ProtocolVersion) {
 		t.Fatalf("status=%v", status)
@@ -126,7 +131,7 @@ func TestServeStartsRPCAndStopsWithContext(t *testing.T) {
 	if info, err := os.Stat(filepath.Dir(socket)); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("runtime directory mode=%v err=%v", info, err)
 	}
-	if info, err := os.Stat(socket); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(socket); err != nil || info.Mode()&os.ModeSocket == 0 || info.Mode().Perm() != 0o600 {
 		t.Fatalf("socket mode=%v err=%v", info, err)
 	}
 
