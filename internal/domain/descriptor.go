@@ -34,7 +34,7 @@ func OpenDirectoryAt(owner *os.Root, relative string) (*os.File, string, error) 
 	if owner == nil {
 		return nil, "", errors.New("owned root is nil")
 	}
-	expected, err := physicalPathInfo(owner, relative)
+	expected, err := PhysicalPathInfo(owner, relative)
 	if err != nil {
 		return nil, "", err
 	}
@@ -54,7 +54,7 @@ func OpenDirectoryAt(owner *os.Root, relative string) (*os.File, string, error) 
 		_ = file.Close()
 		return nil, "", errors.New("owned path changed while opening")
 	}
-	current, err := physicalPathInfo(owner, relative)
+	current, err := PhysicalPathInfo(owner, relative)
 	if err != nil {
 		_ = file.Close()
 		return nil, "", err
@@ -79,7 +79,7 @@ func OpenRootAt(owner *os.Root, relative string) (*os.Root, error) {
 	if owner == nil {
 		return nil, errors.New("owned root is nil")
 	}
-	expected, err := physicalPathInfo(owner, relative)
+	expected, err := PhysicalPathInfo(owner, relative)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +99,7 @@ func OpenRootAt(owner *os.Root, relative string) (*os.Root, error) {
 		_ = child.Close()
 		return nil, errors.New("owned path changed while opening")
 	}
-	current, err := physicalPathInfo(owner, relative)
+	current, err := PhysicalPathInfo(owner, relative)
 	if err != nil {
 		_ = child.Close()
 		return nil, err

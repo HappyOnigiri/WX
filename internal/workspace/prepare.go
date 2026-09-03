@@ -1190,7 +1190,7 @@ func fingerprintPath(h hash.Hash, root, path string) error {
 }
 
 func fingerprintRootPath(h hash.Hash, root *os.Root, relative, display string) error {
-	info, err := rootPhysicalInfo(root, relative)
+	info, err := domain.PhysicalPathInfo(root, relative)
 	if err != nil {
 		return err
 	}
@@ -1296,7 +1296,7 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 			continue
 		}
 		seen[clean] = true
-		if _, err := rootPhysicalInfo(sourceRoot, clean); errors.Is(err, os.ErrNotExist) {
+		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
 			return err
@@ -1311,7 +1311,7 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 			return err
 		}
 		src := filepath.Join(source, clean)
-		if _, err := rootPhysicalInfo(sourceRoot, clean); err != nil {
+		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
 			return fmt.Errorf("link workspace root path %s: %w", clean, err)
 		}
 		if err := domain.ValidatePhysicalPath(src, false); err != nil {

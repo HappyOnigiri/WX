@@ -105,7 +105,7 @@ func OpenOwnedRoot(root, path string) (*os.Root, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	info, err := physicalPathInfo(filesystemRoot, rootRelative)
+	info, err := PhysicalPathInfo(filesystemRoot, rootRelative)
 	if err != nil {
 		_ = filesystemRoot.Close()
 		return nil, "", fmt.Errorf("validate wx ownership root: %w", err)
@@ -156,11 +156,11 @@ func openFilesystemRoot(absolute string) (*os.Root, string, error) {
 	return handle, relative, nil
 }
 
-// physicalPathInfo rejects symlinks in every component of a path relative to
+// PhysicalPathInfo rejects symlinks in every component of a path relative to
 // an already opened Root and returns the final component's metadata. Checking
 // the components through the same filesystem-root descriptor avoids treating a
 // separately evaluated lexical path as proof of physical containment.
-func physicalPathInfo(root *os.Root, relative string) (os.FileInfo, error) {
+func PhysicalPathInfo(root *os.Root, relative string) (os.FileInfo, error) {
 	current := "."
 	clean := filepath.Clean(relative)
 	for _, component := range strings.Split(clean, string(filepath.Separator)) {

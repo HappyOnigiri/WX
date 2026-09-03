@@ -34,7 +34,7 @@ func OpenPhysicalRoot(path string) (*os.Root, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := rootPhysicalInfo(filesystemRoot, relative)
+	info, err := domain.PhysicalPathInfo(filesystemRoot, relative)
 	if err != nil {
 		_ = filesystemRoot.Close()
 		return nil, fmt.Errorf("validate physical root %s: %w", absolute, err)
@@ -54,7 +54,7 @@ func OpenPhysicalRoot(path string) (*os.Root, error) {
 	}
 	// Check the descriptor itself as well. This catches a path that was
 	// replaced between the initial physical check and OpenRoot.
-	reopenedInfo, err := rootPhysicalInfo(root, ".")
+	reopenedInfo, err := domain.PhysicalPathInfo(root, ".")
 	if err != nil {
 		_ = root.Close()
 		return nil, fmt.Errorf("revalidate physical root %s: %w", absolute, err)
@@ -197,7 +197,7 @@ func copyPathFromOwnedRoot(sourceRoot *os.Root, sourceRelative string, destinati
 }
 
 func copyRootEntry(sourceRoot *os.Root, source string, destinationRoot *os.Root, destination string) error {
-	sourceInfo, err := rootPhysicalInfo(sourceRoot, source)
+	sourceInfo, err := domain.PhysicalPathInfo(sourceRoot, source)
 	if err != nil {
 		return err
 	}
@@ -259,27 +259,6 @@ func copyRootEntry(sourceRoot *os.Root, source string, destinationRoot *os.Root,
 		return copyErr
 	}
 	return closeErr
-}
-
-func rootPhysicalInfo(root *os.Root, relative string) (os.FileInfo, error) {
-	current := "."
-	for _, component := range strings.Split(filepath.Clean(relative), string(filepath.Separator)) {
-		if component == "" || component == "." {
-			continue
-		}
-		current = filepath.Join(current, component)
-		info, err := root.Lstat(current)
-		if err != nil {
-			return nil, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("symlink component in source path %s", current)
-		}
-		if !info.IsDir() && current != filepath.Clean(relative) {
-			return nil, fmt.Errorf("non-directory source component %s", current)
-		}
-	}
-	return root.Lstat(filepath.Clean(relative))
 }
 
 func ensureRootDirectory(root *os.Root, relative string) error {
@@ -390,7 +369,7 @@ func readPhysicalManifest(root, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := rootPhysicalInfo(owner, relative)
+	info, err := domain.PhysicalPathInfo(owner, relative)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

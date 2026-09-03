@@ -55,13 +55,13 @@ func TestPathValidationAndOwnedRootBoundaryMatrix(t *testing.T) {
 		t.Fatalf("root relative=%q", relative)
 	}
 	defer func() { _ = owned.Close() }()
-	if _, err := physicalPathInfo(owned, "."); err != nil {
+	if _, err := PhysicalPathInfo(owned, "."); err != nil {
 		t.Fatalf("physical root info: %v", err)
 	}
-	if _, err := physicalPathInfo(owned, "nested/missing"); err == nil {
+	if _, err := PhysicalPathInfo(owned, "nested/missing"); err == nil {
 		t.Fatal("missing nested path was accepted")
 	}
-	if _, err := physicalPathInfo(owned, "file/child"); err == nil {
+	if _, err := PhysicalPathInfo(owned, "file/child"); err == nil {
 		t.Fatal("regular path component was accepted")
 	}
 }

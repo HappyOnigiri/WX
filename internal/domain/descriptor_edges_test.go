@@ -59,7 +59,7 @@ func TestOpenDirectoryAtAndOpenRootAtRejectDirectRegularFileLeaf(t *testing.T) {
 	}
 }
 
-// TestPhysicalPathInfoRejectsSymlinkComponent exercises physicalPathInfo's
+// TestPhysicalPathInfoRejectsSymlinkComponent exercises PhysicalPathInfo's
 // own symlink rejection directly: every path callers resolve through it
 // (OpenDirectoryAt, OpenRootAt, OpenOwnedRoot) normally hits os.Root's own
 // symlink protection first, which never lets this defense-in-depth check run
@@ -79,8 +79,8 @@ func TestPhysicalPathInfoRejectsSymlinkComponent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if _, err := physicalPathInfo(owner, "link"); err == nil {
-		t.Fatal("physicalPathInfo accepted a symlink component")
+	if _, err := PhysicalPathInfo(owner, "link"); err == nil {
+		t.Fatal("PhysicalPathInfo accepted a symlink component")
 	}
 }
 
