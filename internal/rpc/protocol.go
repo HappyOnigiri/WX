@@ -56,6 +56,26 @@ type Client struct {
 	Timeout time.Duration
 }
 
+// ConnectError wraps a failure that happened while establishing the
+// connection to the daemon (socket missing, connection refused, or a dial
+// timeout before any byte was exchanged). It never wraps a failure that
+// happened after a connection was established, so callers can use
+// IsConnectError to distinguish "nothing is listening here" from "something
+// is listening but did not answer in time" — the latter means a live daemon
+// process exists and must not be assumed safe to kill.
+type ConnectError struct{ Err error }
+
+func (e *ConnectError) Error() string { return fmt.Sprintf("connect to wx daemon: %v", e.Err) }
+func (e *ConnectError) Unwrap() error { return e.Err }
+
+// IsConnectError reports whether err represents a failure to establish the
+// connection at all, as opposed to a failure while using an already
+// established connection.
+func IsConnectError(err error) bool {
+	var connectErr *ConnectError
+	return errors.As(err, &connectErr)
+}
+
 func (c Client) Call(ctx context.Context, method string, params, result any) error {
 	return c.CallWithKey(ctx, method, "", params, result)
 }
@@ -95,7 +115,7 @@ func (c Client) callOnce(ctx context.Context, method, idempotencyKey string, par
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("connect to wx daemon: %w", err)
+		return &ConnectError{Err: err}
 	}
 	defer func() { _ = conn.Close() }()
 	stopConnection := watchContext(ioCtx, conn)

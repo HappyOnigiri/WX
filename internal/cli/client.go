@@ -36,6 +36,28 @@ type Client struct {
 	beforeAgentStart func()
 }
 
+// defaultDiscoveryBudget mirrors config.Defaults().Discovery.Timeout. It is
+// used only as a floor when a caller's config was not loaded through
+// config.Load (for example in-process test clients), so discovery-bound RPCs
+// still get a generous budget rather than silently falling back to the
+// unrelated fixed client timeout below.
+const defaultDiscoveryBudget = 30 * time.Second
+
+// discoveryTimeout returns the time budget for RPCs whose server-side work is
+// bounded by the daemon's own repository discovery pass (ResolveAndLease,
+// Resume, AllocateResumeSlot), plus Status/Doctor whose disk usage
+// accounting walks the same worktree root. A fixed short client timeout here
+// would otherwise race the daemon's own discovery.timeout budget (default 30s,
+// but operator-configurable higher) and abandon a discovery pass that is
+// still succeeding on schedule.
+func (c Client) discoveryTimeout() time.Duration {
+	budget := c.Config.Discovery.Timeout.Duration
+	if budget <= 0 {
+		budget = defaultDiscoveryBudget
+	}
+	return budget + 10*time.Second
+}
+
 func New(cfg config.Config) (Client, error) {
 	socket, err := config.SocketPath()
 	if err != nil {
@@ -44,10 +66,24 @@ func New(cfg config.Config) (Client, error) {
 	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second}, Config: cfg}, nil
 }
 
+// ensureDaemon confirms a daemon is reachable, bootstrapping one through
+// launchd only when nothing answered the connection at all (no socket, or a
+// stale socket nobody is listening on). It must never kickstart -k on the
+// strength of a slow-but-successful connection: Status's disk usage walk
+// (rootDirectoryUsage) can legitimately take longer than a short fixed
+// timeout on a large worktree root, and launchctl kickstart -k kills a
+// running service, which would tear down a daemon that is still serving
+// other live sessions.
 func (c Client) ensureDaemon(ctx context.Context) error {
 	var status map[string]any
-	if err := c.RPC.Call(ctx, "Status", struct{}{}, &status); err == nil {
+	statusCtx, cancel := context.WithTimeout(ctx, c.discoveryTimeout())
+	err := c.RPC.Call(statusCtx, "Status", struct{}{}, &status)
+	cancel()
+	if err == nil {
 		return nil
+	}
+	if !rpc.IsConnectError(err) {
+		return fmt.Errorf("wx daemon is reachable but this request did not complete (%w); refusing to restart a socket that may still be serving other sessions, run wx doctor", err)
 	}
 	if err := launchd.Kickstart(ctx); err != nil {
 		return fmt.Errorf("wx daemon is unavailable (%w); run wx doctor", err)
@@ -112,7 +148,19 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		fmt.Fprintln(os.Stderr, "error: create operation identity:", err)
 		return 1
 	}
-	if err := c.RPC.CallWithKey(ctx, method, "launch:"+operationKey, params, &lease); err != nil {
+	// ResolveAndLease/Resume/AllocateResumeSlot run the daemon's own
+	// repository discovery synchronously (bounded by discovery.timeout, 30s by
+	// default but operator-configurable). Give the call the same generous
+	// budget instead of the RPC client's fixed default timeout, so a cold,
+	// multi-repository root does not get abandoned client-side while the
+	// daemon is still completing a discovery pass that is on schedule.
+	leaseCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		leaseCtx, cancel = context.WithTimeout(ctx, c.discoveryTimeout())
+		defer cancel()
+	}
+	if err := c.RPC.CallWithKey(leaseCtx, method, "launch:"+operationKey, params, &lease); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
@@ -259,9 +307,19 @@ func forwardAgentSignal(cmd *exec.Cmd, sig os.Signal) {
 }
 
 func restoreForeground(ttyFD int) {
-	signal.Ignore(syscall.SIGTTOU)
+	// TIOCSPGRP delivers SIGTTOU to a background process group that attempts
+	// it, which would stop wx itself while it is trying to hand the terminal
+	// back. Divert that one delivery through a Notify channel instead of
+	// signal.Ignore: Ignore's disposition cannot be fully undone by
+	// signal.Reset (Reset only removes Notify registrations), so it would
+	// leave SIGTTOU permanently reported as ignored for the rest of the
+	// process's life. Notify/Stop brackets the same window without that
+	// process-wide leak; the channel's buffer of 1 is enough since nothing
+	// ever reads from it and Stop discards it regardless.
+	sigttou := make(chan os.Signal, 1)
+	signal.Notify(sigttou, syscall.SIGTTOU)
 	_ = unix.IoctlSetPointerInt(ttyFD, unix.TIOCSPGRP, syscall.Getpgrp())
-	signal.Reset(syscall.SIGTTOU)
+	signal.Stop(sigttou)
 }
 
 func openLeaseDirectory(cfg config.Config, lease daemon.Lease) (*os.File, error) {

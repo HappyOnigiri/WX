@@ -109,6 +109,13 @@ func rpcClient() (rpc.Client, error) {
 	return rpc.Client{Socket: socket, Timeout: 5 * time.Second}, err
 }
 
+// statusDisplayTimeout bounds Status/Doctor, which additionally walk the
+// worktree root to report disk usage (rootDirectoryUsage) and so can take
+// longer than the RPC client's default fixed timeout on a large root. This
+// does not risk killing a live daemon: unlike cli.Client.ensureDaemon, wx
+// status/wx doctor never kickstart on failure, they only report the error.
+const statusDisplayTimeout = 40 * time.Second
+
 func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	fs := pflag.NewFlagSet(strings.ToLower(method), pflag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print JSON")
@@ -124,6 +131,11 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, statusDisplayTimeout)
+		defer cancel()
 	}
 	var out map[string]any
 	if err := c.Call(ctx, method, struct{}{}, &out); err != nil {

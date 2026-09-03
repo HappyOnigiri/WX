@@ -777,8 +777,53 @@ func TestServeConnRejectsProtocolVersion(t *testing.T) {
 
 func TestClientReportsMissingSocket(t *testing.T) {
 	client := Client{Socket: shortSocketPath(t, "missing.sock"), Timeout: time.Millisecond}
-	if err := client.Call(context.Background(), "missing", nil, nil); err == nil {
+	err := client.Call(context.Background(), "missing", nil, nil)
+	if err == nil {
 		t.Fatal("missing server call succeeded")
+	}
+	if !IsConnectError(err) {
+		t.Fatalf("a missing socket was not classified as a connect error: %v", err)
+	}
+}
+
+type alwaysFailingHandler struct{}
+
+func (alwaysFailingHandler) Handle(context.Context, string, json.RawMessage) (any, error) {
+	return nil, errors.New("handler intentionally failed")
+}
+
+func TestIsConnectErrorRejectsFailuresAfterConnectionEstablished(t *testing.T) {
+	socket := shortSocketPath(t, "connected-failure.sock")
+	server := &Server{Socket: socket, Handler: alwaysFailingHandler{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Lstat(socket); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("server did not create socket")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	client := Client{Socket: socket, Timeout: time.Second}
+	// A handler that returns an application error still means the connection
+	// itself succeeded: the daemon is alive and answered. This must not be
+	// mistaken for "nothing is listening" by callers such as
+	// cli.Client.ensureDaemon that decide whether it is safe to kickstart -k.
+	err := client.Call(ctx, "any-method", struct{}{}, nil)
+	if err == nil {
+		t.Fatal("call against an always-failing handler unexpectedly succeeded")
+	}
+	if IsConnectError(err) {
+		t.Fatalf("a response from a live server was classified as a connect error: %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
