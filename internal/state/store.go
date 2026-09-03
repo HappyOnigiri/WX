@@ -2,16 +2,11 @@ package state
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -32,7 +27,6 @@ type Store struct {
 	db     *sql.DB
 	writer sync.Mutex
 	path   string
-	rpcKey []byte
 }
 
 const SchemaVersion = 10
@@ -52,10 +46,6 @@ func Open(path string) (*Store, error) {
 	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	rpcKey, err := loadOrCreateRPCKey(path + ".rpc-key")
-	if err != nil {
-		return nil, err
-	}
 	dsn := (&url.URL{Scheme: "file", Path: path}).String() + "?_defensive=1&_journal_mode=wal&_foreign_keys=on&_busy_timeout=5000&_synchronous=normal"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -64,7 +54,7 @@ func Open(path string) (*Store, error) {
 	// Connection-local policies are encoded in the DSN, so status readers can
 	// use WAL concurrently while writes remain serialized by writer.
 	db.SetMaxOpenConns(8)
-	s := &Store{db: db, path: path, rpcKey: rpcKey}
+	s := &Store{db: db, path: path}
 	if err := s.init(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -95,9 +85,9 @@ func (s *Store) BeginRPCRequest(ctx context.Context, key, method, params string,
 	if inserted == 1 {
 		return nil, "", "", true, tx.Commit()
 	}
-	var storedMethod, storedParams, requestState string
-	var encrypted []byte
-	if err := tx.QueryRowContext(ctx, `SELECT method,params,state,result FROM rpc_idempotency WHERE idempotency_key=? AND expires_at>?`, key, now()).Scan(&storedMethod, &storedParams, &requestState, &encrypted); err != nil {
+	var storedMethod, storedParams, requestState, errorCode, errorMessage string
+	var result []byte
+	if err := tx.QueryRowContext(ctx, `SELECT method,params,state,result,COALESCE(error_code,''),COALESCE(error_message,'') FROM rpc_idempotency WHERE idempotency_key=? AND expires_at>?`, key, now()).Scan(&storedMethod, &storedParams, &requestState, &result, &errorCode, &errorMessage); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, "IDEMPOTENCY_EXPIRED", "idempotency reservation expired before it could be reused", false, nil
 		}
@@ -112,19 +102,14 @@ func (s *Store) BeginRPCRequest(ctx context.Context, key, method, params string,
 	if requestState != "COMPLETED" {
 		return nil, "", "", false, fmt.Errorf("unknown idempotency reservation state %q", requestState)
 	}
-	result, errorCode, errorMessage, err := s.decryptRPCResult(key, method, paramsHash, encrypted)
-	return result, errorCode, errorMessage, false, err
+	return result, errorCode, errorMessage, false, nil
 }
 
 func (s *Store) CompleteRPCRequest(ctx context.Context, key, method, params string, result []byte, errorCode, errorMessage string, expiresAt time.Time) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	paramsHash := rpcParamsHash(params)
-	encrypted, err := s.encryptRPCResult(key, method, paramsHash, result, errorCode, errorMessage)
-	if err != nil {
-		return err
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE rpc_idempotency SET result=?,error_code=NULL,error_message=NULL,completed_at=?,expires_at=?,state='COMPLETED' WHERE idempotency_key=? AND method=? AND params=? AND state='PENDING'`, encrypted, now(), FormatTime(expiresAt), key, method, paramsHash)
+	res, err := s.db.ExecContext(ctx, `UPDATE rpc_idempotency SET result=?,error_code=?,error_message=?,completed_at=?,expires_at=?,state='COMPLETED' WHERE idempotency_key=? AND method=? AND params=? AND state='PENDING'`, result, nullString(errorCode), nullString(errorMessage), now(), FormatTime(expiresAt), key, method, paramsHash)
 	if err != nil {
 		return err
 	}
@@ -134,134 +119,9 @@ func (s *Store) CompleteRPCRequest(ctx context.Context, key, method, params stri
 	return nil
 }
 
-type rpcResultEnvelope struct {
-	Result       []byte `json:"result,omitempty"`
-	ErrorCode    string `json:"error_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
-}
-
 func rpcParamsHash(params string) string {
 	digest := sha256.Sum256([]byte(params))
 	return hex.EncodeToString(digest[:])
-}
-
-func (s *Store) encryptRPCResult(key, method, paramsHash string, result []byte, errorCode, errorMessage string) ([]byte, error) {
-	block, err := aes.NewCipher(s.rpcKey)
-	if err != nil {
-		return nil, err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := cryptorand.Read(nonce); err != nil {
-		return nil, err
-	}
-	plain, err := json.Marshal(rpcResultEnvelope{Result: result, ErrorCode: errorCode, ErrorMessage: errorMessage})
-	if err != nil {
-		return nil, err
-	}
-	associated := []byte(key + "\x00" + method + "\x00" + paramsHash)
-	encrypted := make([]byte, len(nonce), len(nonce)+len(plain)+aead.Overhead())
-	copy(encrypted, nonce)
-	return aead.Seal(encrypted, nonce, plain, associated), nil
-}
-
-func (s *Store) decryptRPCResult(key, method, paramsHash string, encrypted []byte) ([]byte, string, string, error) {
-	block, err := aes.NewCipher(s.rpcKey)
-	if err != nil {
-		return nil, "", "", err
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, "", "", err
-	}
-	if len(encrypted) < aead.NonceSize() {
-		return nil, "", "", errors.New("encrypted RPC result is truncated")
-	}
-	nonce, ciphertext := encrypted[:aead.NonceSize()], encrypted[aead.NonceSize():]
-	associated := []byte(key + "\x00" + method + "\x00" + paramsHash)
-	plain, err := aead.Open(nil, nonce, ciphertext, associated)
-	if err != nil {
-		return nil, "", "", errors.New("encrypted RPC result authentication failed")
-	}
-	var envelope rpcResultEnvelope
-	if err := json.Unmarshal(plain, &envelope); err != nil {
-		return nil, "", "", err
-	}
-	return envelope.Result, envelope.ErrorCode, envelope.ErrorMessage, nil
-}
-
-func loadOrCreateRPCKey(path string) ([]byte, error) {
-	for {
-		info, err := os.Lstat(path)
-		if err == nil {
-			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-				return nil, errors.New("RPC idempotency key file is not an owner-only regular file")
-			}
-			key, err := os.ReadFile(path)
-			if err != nil {
-				return nil, err
-			}
-			if len(key) != 32 {
-				return nil, errors.New("RPC idempotency key file has an invalid length")
-			}
-			return key, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		key := make([]byte, 32)
-		if _, err := cryptorand.Read(key); err != nil {
-			return nil, err
-		}
-		// The key is written to a private temporary name first and only made
-		// visible at path via Link, which fails atomically if a concurrent
-		// caller already published one. Publishing through O_CREATE|O_EXCL at
-		// path directly would let another goroutine observe the filename via
-		// Lstat before Write/Sync/Close finished, reading a torn (partial or
-		// empty) key instead of retrying against the eventual winner.
-		temporary, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-		if err != nil {
-			return nil, err
-		}
-		temporaryPath := temporary.Name()
-		written, writeErr := temporary.Write(key)
-		if writeErr == nil && written != len(key) {
-			writeErr = io.ErrShortWrite
-		}
-		if writeErr == nil {
-			writeErr = temporary.Sync()
-		}
-		closeErr := temporary.Close()
-		if writeErr != nil {
-			_ = os.Remove(temporaryPath)
-			return nil, writeErr
-		}
-		if closeErr != nil {
-			_ = os.Remove(temporaryPath)
-			return nil, closeErr
-		}
-		linkErr := os.Link(temporaryPath, path)
-		_ = os.Remove(temporaryPath)
-		if errors.Is(linkErr, os.ErrExist) {
-			continue
-		}
-		if linkErr != nil {
-			return nil, linkErr
-		}
-		if directory, err := os.Open(filepath.Dir(path)); err == nil {
-			syncErr := directory.Sync()
-			_ = directory.Close()
-			if syncErr != nil {
-				return nil, syncErr
-			}
-		} else {
-			return nil, err
-		}
-		return key, nil
-	}
 }
 
 func (s *Store) Backup(ctx context.Context, generations int, retention time.Duration) (string, error) {

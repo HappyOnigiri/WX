@@ -2083,24 +2083,20 @@ func TestRPCIdempotencyResultSurvivesStoreRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	params := `{"token":"plaintext-secret"}`
-	resultPayload := []byte(`{"token":"response-secret"}`)
+	params := `{"value":1}`
+	resultPayload := []byte(`{"value":"response"}`)
 	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "key", "Mutate", params, time.Now().Add(time.Hour)); err != nil || !execute {
 		t.Fatalf("begin execute=%v err=%v", execute, err)
 	}
 	if err := store.CompleteRPCRequest(ctx, "key", "Mutate", params, resultPayload, "", "", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	var storedParams string
 	var storedResult []byte
-	if err := store.db.QueryRow(`SELECT params,result FROM rpc_idempotency WHERE idempotency_key='key'`).Scan(&storedParams, &storedResult); err != nil {
+	if err := store.db.QueryRow(`SELECT result FROM rpc_idempotency WHERE idempotency_key='key'`).Scan(&storedResult); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(storedParams, "plaintext-secret") || bytes.Contains(storedResult, []byte("response-secret")) {
-		t.Fatalf("RPC secret persisted in plaintext: params=%q result=%x", storedParams, storedResult)
-	}
-	if info, err := os.Lstat(path + ".rpc-key"); err != nil || info.Mode().Perm() != 0o600 || !info.Mode().IsRegular() {
-		t.Fatalf("RPC key permissions=%v err=%v", info, err)
+	if !bytes.Equal(storedResult, resultPayload) {
+		t.Fatalf("stored RPC result=%q want=%q", storedResult, resultPayload)
 	}
 	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "pending", "Mutate", `{}`, time.Now().Add(time.Hour)); err != nil || !execute {
 		t.Fatalf("pending begin execute=%v err=%v", execute, err)
@@ -2137,7 +2133,7 @@ func TestRPCIdempotencyResultSurvivesStoreRestart(t *testing.T) {
 	}
 }
 
-func TestRPCIdempotencyRejectsInvalidReservationTransitionsAndCiphertexts(t *testing.T) {
+func TestRPCIdempotencyRejectsInvalidReservationTransitions(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	expiry := time.Now().Add(time.Hour)
@@ -2162,28 +2158,15 @@ func TestRPCIdempotencyRejectsInvalidReservationTransitionsAndCiphertexts(t *tes
 		t.Fatal("reservation completed with a different method")
 	}
 
-	for _, test := range []struct {
-		name    string
-		stored  []byte
-		wantErr string
-		state   string
-	}{
-		{name: "unknown state", state: "UNKNOWN", wantErr: "unknown idempotency reservation state"},
-		{name: "truncated ciphertext", state: "COMPLETED", stored: []byte("short"), wantErr: "truncated"},
-		{name: "unauthenticated ciphertext", state: "COMPLETED", stored: make([]byte, 32), wantErr: "authentication failed"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			key := "invalid-" + test.name
-			if _, _, _, execute, err := store.BeginRPCRequest(ctx, key, "Mutate", `{}`, expiry); err != nil || !execute {
-				t.Fatalf("begin execute=%v err=%v", execute, err)
-			}
-			if _, err := store.db.ExecContext(ctx, `UPDATE rpc_idempotency SET state=?,result=? WHERE idempotency_key=?`, test.state, test.stored, key); err != nil {
-				t.Fatal(err)
-			}
-			if _, _, _, _, err := store.BeginRPCRequest(ctx, key, "Mutate", `{}`, expiry); err == nil || !strings.Contains(err.Error(), test.wantErr) {
-				t.Fatalf("error=%v, want substring %q", err, test.wantErr)
-			}
-		})
+	key := "invalid-state"
+	if _, _, _, execute, err := store.BeginRPCRequest(ctx, key, "Mutate", `{}`, expiry); err != nil || !execute {
+		t.Fatalf("begin execute=%v err=%v", execute, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE rpc_idempotency SET state=? WHERE idempotency_key=?`, "UNKNOWN", key); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err := store.BeginRPCRequest(ctx, key, "Mutate", `{}`, expiry); err == nil || !strings.Contains(err.Error(), "unknown idempotency reservation state") {
+		t.Fatalf("error=%v, want unknown reservation state", err)
 	}
 
 	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "expired", "Mutate", `{}`, time.Now().Add(-time.Minute)); err != nil || !execute {
@@ -2195,87 +2178,9 @@ func TestRPCIdempotencyRejectsInvalidReservationTransitionsAndCiphertexts(t *tes
 	}
 }
 
-func TestOpenRejectsUnsafeRPCIdempotencyKeyFiles(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		setup func(*testing.T, string)
-	}{
-		{
-			name: "insecure permissions",
-			setup: func(t *testing.T, path string) {
-				t.Helper()
-				if err := os.WriteFile(path, make([]byte, 32), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(path, 0o644); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "invalid length",
-			setup: func(t *testing.T, path string) {
-				t.Helper()
-				if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "symlink",
-			setup: func(t *testing.T, path string) {
-				t.Helper()
-				target := filepath.Join(filepath.Dir(path), "target")
-				if err := os.WriteFile(target, make([]byte, 32), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(target, path); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "directory",
-			setup: func(t *testing.T, path string) {
-				t.Helper()
-				if err := os.Mkdir(path, 0o700); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			databasePath := filepath.Join(t.TempDir(), "state.db")
-			test.setup(t, databasePath+".rpc-key")
-			if store, err := Open(databasePath); err == nil {
-				_ = store.Close()
-				t.Fatal("store opened with unsafe RPC key file")
-			}
-		})
-	}
-}
-
-func TestRPCIdempotencyRejectsInvalidInMemoryKeyAndMissingSessionMembership(t *testing.T) {
+func TestSessionWorkspaceRejectsEmptyMembershipAndMissingSession(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
-	expiry := time.Now().Add(time.Hour)
-	if _, _, _, execute, err := store.BeginRPCRequest(ctx, "key", "Mutate", `{}`, expiry); err != nil || !execute {
-		t.Fatalf("begin execute=%v err=%v", execute, err)
-	}
-	originalKey := store.rpcKey
-	store.rpcKey = []byte("invalid")
-	if err := store.CompleteRPCRequest(ctx, "key", "Mutate", `{}`, nil, "", "", expiry); err == nil {
-		t.Fatal("RPC result encrypted with invalid key")
-	}
-	store.rpcKey = originalKey
-	if err := store.CompleteRPCRequest(ctx, "key", "Mutate", `{}`, []byte(`{}`), "", "", expiry); err != nil {
-		t.Fatal(err)
-	}
-	store.rpcKey = []byte("invalid")
-	if _, _, _, _, err := store.BeginRPCRequest(ctx, "key", "Mutate", `{}`, expiry); err == nil {
-		t.Fatal("RPC result decrypted with invalid key")
-	}
-	store.rpcKey = originalKey
 
 	w := discovery.Workspace{ID: "empty-workspace", Root: "/empty", Kind: "repository"}
 	if err := store.UpsertWorkspace(ctx, w); err != nil {
@@ -2290,15 +2195,6 @@ func TestRPCIdempotencyRejectsInvalidInMemoryKeyAndMissingSessionMembership(t *t
 	}
 	if _, err := store.SessionWorkspace(ctx, "missing-session"); err == nil {
 		t.Fatal("missing session workspace lookup succeeded")
-	}
-
-	blockingParent := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(blockingParent, []byte("file"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if opened, err := Open(filepath.Join(blockingParent, "state.db")); err == nil {
-		_ = opened.Close()
-		t.Fatal("store opened beneath a regular file")
 	}
 }
 

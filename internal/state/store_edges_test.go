@@ -2,11 +2,7 @@ package state
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,130 +10,6 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
 )
-
-func TestRPCEnvelopeRejectsMalformedAuthenticatedPayloads(t *testing.T) {
-	store := openTestStore(t)
-	key := "key"
-	method := "Mutate"
-	paramsHash := rpcParamsHash(`{}`)
-	encrypted, err := store.encryptRPCResult(key, method, paramsHash, []byte(`{"ok":true}`), "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result, code, message, err := store.decryptRPCResult(key, method, paramsHash, encrypted); err != nil || string(result) != `{"ok":true}` || code != "" || message != "" {
-		t.Fatalf("valid envelope result=%q code=%q message=%q err=%v", result, code, message, err)
-	}
-
-	block, err := aes.NewCipher(store.rpcKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	aead, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonce := make([]byte, aead.NonceSize())
-	associated := []byte(key + "\x00" + method + "\x00" + paramsHash)
-	malformed := append(append([]byte(nil), nonce...), aead.Seal(nil, nonce, []byte("{"), associated)...)
-	if _, _, _, err := store.decryptRPCResult(key, method, paramsHash, malformed); err == nil {
-		t.Fatal("authenticated malformed envelope was accepted")
-	}
-	store.rpcKey = []byte("invalid")
-	if _, err := store.encryptRPCResult(key, method, paramsHash, nil, "", ""); err == nil {
-		t.Fatal("invalid RPC key encrypted an envelope")
-	}
-	if _, _, _, err := store.decryptRPCResult(key, method, paramsHash, encrypted); err == nil {
-		t.Fatal("invalid RPC key decrypted an envelope")
-	}
-}
-
-func TestRPCKeyLoaderHandlesReadAndCreateBoundaries(t *testing.T) {
-	root := t.TempDir()
-	validPath := filepath.Join(root, "valid.key")
-	key := []byte(strings.Repeat("k", 32))
-	if err := os.WriteFile(validPath, key, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := loadOrCreateRPCKey(validPath)
-	if err != nil || string(loaded) != string(key) {
-		t.Fatalf("existing RPC key=%x err=%v", loaded, err)
-	}
-	invalidLength := filepath.Join(root, "invalid-length.key")
-	if err := os.WriteFile(invalidLength, []byte("short"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadOrCreateRPCKey(invalidLength); err == nil {
-		t.Fatal("short RPC key was accepted")
-	}
-	symlinkPath := filepath.Join(root, "symlink.key")
-	if err := os.Symlink(validPath, symlinkPath); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadOrCreateRPCKey(symlinkPath); err == nil {
-		t.Fatal("symlink RPC key was accepted")
-	}
-	readDenied := filepath.Join(root, "read-denied.key")
-	if err := os.WriteFile(readDenied, key, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(readDenied, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(readDenied, 0o600) })
-	if _, err := loadOrCreateRPCKey(readDenied); err == nil {
-		t.Fatal("unreadable RPC key was accepted")
-	}
-	if _, err := loadOrCreateRPCKey(filepath.Join(root, "missing", "key")); err == nil {
-		t.Fatal("RPC key beneath missing parent was created")
-	}
-	blockingParent := filepath.Join(root, "blocking-parent")
-	if err := os.WriteFile(blockingParent, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(filepath.Join(blockingParent, "state.db")); err == nil {
-		t.Fatal("state database opened beneath a regular-file parent")
-	}
-	// A parent directory without execute permission makes Lstat itself fail
-	// with a permission error rather than os.ErrNotExist, which
-	// loadOrCreateRPCKey must propagate instead of treating as "missing".
-	unsearchableParent := filepath.Join(root, "unsearchable-parent")
-	if err := os.Mkdir(unsearchableParent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	blockedKey := filepath.Join(unsearchableParent, "key")
-	if err := os.Chmod(unsearchableParent, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(unsearchableParent, 0o700) })
-	if _, err := loadOrCreateRPCKey(blockedKey); err == nil || errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unsearchable parent directory error=%v, want a non-ErrNotExist error", err)
-	}
-}
-
-func TestRPCKeyLoaderCreatesAndReusesOwnerOnlyKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "created.key")
-	first, err := loadOrCreateRPCKey(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(first) != 32 {
-		t.Fatalf("created RPC key length=%d, want 32", len(first))
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("created RPC key mode=%#o, want 0600", info.Mode().Perm())
-	}
-	second, err := loadOrCreateRPCKey(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(second) != string(first) {
-		t.Fatal("RPC key changed when the existing owner-only file was reopened")
-	}
-}
 
 func TestReadModelsRejectRowsWithUnscannableFields(t *testing.T) {
 	tests := []struct {
