@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -99,36 +100,30 @@ func Defaults() Config {
 	}
 }
 
-func Path() (string, error) {
+// homePath joins parts onto the user's home directory, failing closed when
+// the home directory cannot be determined.
+func homePath(parts ...string) (string, error) {
 	h, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(h, ".config", "wx", "config.yaml"), nil
+	return filepath.Join(append([]string{h}, parts...)...), nil
+}
+
+func Path() (string, error) {
+	return homePath(".config", "wx", "config.yaml")
 }
 
 func StatePath() (string, error) {
-	h, e := os.UserHomeDir()
-	if e != nil {
-		return "", e
-	}
-	return filepath.Join(h, "Library", "Application Support", "wx", "state.db"), nil
+	return homePath("Library", "Application Support", "wx", "state.db")
 }
 
 func SocketPath() (string, error) {
-	h, e := os.UserHomeDir()
-	if e != nil {
-		return "", e
-	}
-	return filepath.Join(h, "Library", "Application Support", "wx", "run", "wxd.sock"), nil
+	return homePath("Library", "Application Support", "wx", "run", "wxd.sock")
 }
 
 func LogPath() (string, error) {
-	h, e := os.UserHomeDir()
-	if e != nil {
-		return "", e
-	}
-	return filepath.Join(h, "Library", "Logs", "wx", "wxd.log"), nil
+	return homePath("Library", "Logs", "wx", "wxd.log")
 }
 
 func Load() (Config, error) {
@@ -261,60 +256,81 @@ func (c Config) has(key string, fallback bool) bool {
 	return fallback
 }
 
+// durationType is the reflect.Type of Duration, used to recognise Duration
+// leaves during struct walks (they are structs, but scalar configuration
+// leaves rather than nested sections).
+var durationType = reflect.TypeOf(Duration{})
+
+// walkConfigLeaves visits every scalar (string, int, or Duration) field
+// reachable from v, in declaration order, along with its dotted yaml key.
+// It skips unexported fields, "version" (handled separately by every
+// caller), and any map or slice field (workspaces, repositories, and
+// discovery.exclude), which are not part of the uniform scalar key space
+// shared by Fields, SetField, Merge, and MarshalYAML.
+func walkConfigLeaves(v reflect.Value, prefix string, visit func(key string, field reflect.Value)) {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		sf := t.Field(i)
+		if sf.PkgPath != "" {
+			continue
+		}
+		tag, _, _ := strings.Cut(sf.Tag.Get("yaml"), ",")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		key := tag
+		if prefix != "" {
+			key = prefix + "." + tag
+		}
+		fv := v.Field(i)
+		switch {
+		case fv.Type() == durationType:
+			visit(key, fv)
+		case fv.Kind() == reflect.Struct:
+			walkConfigLeaves(fv, key, visit)
+		case key == "version" || fv.Kind() == reflect.Map || fv.Kind() == reflect.Slice:
+			continue
+		default:
+			visit(key, fv)
+		}
+	}
+}
+
+// configField locates the scalar field addressed by key within v, which
+// must be the same shape walkConfigLeaves would traverse. It returns the
+// zero Value if key does not address a scalar leaf.
+func configField(v reflect.Value, key string) reflect.Value {
+	var target reflect.Value
+	walkConfigLeaves(v, "", func(k string, fv reflect.Value) {
+		if k == key {
+			target = fv
+		}
+	})
+	return target
+}
+
 func Merge(d, raw Config) Config {
 	r := d
 	if raw.has("version", raw.Version != 0) {
 		r.Version = raw.Version
 	}
-	if raw.has("storage.worktree_root", raw.Storage.WorktreeRoot != "") {
-		r.Storage.WorktreeRoot = raw.Storage.WorktreeRoot
-	}
-	if raw.has("storage.backup_generations", raw.Storage.BackupGenerations != 0) {
-		r.Storage.BackupGenerations = raw.Storage.BackupGenerations
-	}
-	if raw.has("storage.backup_retention", raw.Storage.BackupRetention.Duration != 0) {
-		r.Storage.BackupRetention = raw.Storage.BackupRetention
-	}
-	if raw.has("pool.warm_per_workspace", raw.Pool.WarmPerWorkspace != 0) {
-		r.Pool.WarmPerWorkspace = raw.Pool.WarmPerWorkspace
-	}
-	if raw.has("pool.preparation_concurrency", raw.Pool.PreparationConcurrency != 0) {
-		r.Pool.PreparationConcurrency = raw.Pool.PreparationConcurrency
-	}
-	if raw.has("pool.git_concurrency_per_repository", raw.Pool.GitConcurrencyPerRepository != 0) {
-		r.Pool.GitConcurrencyPerRepository = raw.Pool.GitConcurrencyPerRepository
-	}
-	mergeDur := func(key string, dst *Duration, src Duration) {
-		if raw.has(key, src.Duration != 0) {
-			*dst = src
+	rawValue := reflect.ValueOf(raw)
+	resultValue := reflect.ValueOf(&r).Elem()
+	walkConfigLeaves(rawValue, "", func(key string, rawField reflect.Value) {
+		nonZero := !rawField.IsZero()
+		if !raw.has(key, nonZero) {
+			return
 		}
-	}
-	mergeDur("retention.hot_standby", &r.Retention.HotStandby, raw.Retention.HotStandby)
-	mergeDur("retention.ended_worktree", &r.Retention.EndedWorktree, raw.Retention.EndedWorktree)
-	mergeDur("retention.recovery_snapshot", &r.Retention.RecoverySnapshot, raw.Retention.RecoverySnapshot)
-	mergeDur("retention.expired_session_tombstone", &r.Retention.ExpiredSessionTombstone, raw.Retention.ExpiredSessionTombstone)
-	mergeDur("retention.failed_job", &r.Retention.FailedJob, raw.Retention.FailedJob)
-	mergeDur("retention.event_log", &r.Retention.EventLog, raw.Retention.EventLog)
-	if raw.has("discovery.max_depth", raw.Discovery.MaxDepth != 0) {
-		r.Discovery.MaxDepth = raw.Discovery.MaxDepth
-	}
-	if raw.has("discovery.max_entries", raw.Discovery.MaxEntries != 0) {
-		r.Discovery.MaxEntries = raw.Discovery.MaxEntries
-	}
-	mergeDur("discovery.timeout", &r.Discovery.Timeout, raw.Discovery.Timeout)
-	mergeDur("discovery.reconcile_interval", &r.Discovery.ReconcileInterval, raw.Discovery.ReconcileInterval)
+		configField(resultValue, key).Set(rawField)
+	})
 	if raw.has("discovery.exclude", raw.Discovery.Exclude != nil) {
 		r.Discovery.Exclude = raw.Discovery.Exclude
 	}
-	mergeDur("readiness.timeout", &r.Readiness.Timeout, raw.Readiness.Timeout)
 	if raw.has("workspaces", raw.Workspaces != nil) {
 		r.Workspaces = raw.Workspaces
 	}
 	if raw.has("repositories", raw.Repositories != nil) {
 		r.Repositories = raw.Repositories
-	}
-	if raw.has("logging.level", raw.Logging.Level != "") {
-		r.Logging = raw.Logging
 	}
 	return r
 }
@@ -422,41 +438,38 @@ func Save(c Config) error {
 	return err
 }
 
+// leafInterface returns the value held by a scalar config field as the
+// concrete type yaml.Marshal should encode it with. Duration already
+// implements yaml.Marshaler (as its string form), so it can be boxed as-is.
+func leafInterface(fv reflect.Value) any {
+	return fv.Interface()
+}
+
 func (c Config) MarshalYAML() (any, error) {
 	out := map[string]any{}
-	put := func(section, key string, value any) {
-		if !c.has(section+"."+key, false) {
+	if c.has("version", false) {
+		out["version"] = c.Version
+	}
+	walkConfigLeaves(reflect.ValueOf(c), "", func(key string, fv reflect.Value) {
+		if !c.has(key, false) {
 			return
 		}
+		section, name, _ := strings.Cut(key, ".")
 		m, _ := out[section].(map[string]any)
 		if m == nil {
 			m = map[string]any{}
 			out[section] = m
 		}
-		m[key] = value
+		m[name] = leafInterface(fv)
+	})
+	if c.has("discovery.exclude", false) {
+		m, _ := out["discovery"].(map[string]any)
+		if m == nil {
+			m = map[string]any{}
+			out["discovery"] = m
+		}
+		m["exclude"] = c.Discovery.Exclude
 	}
-	if c.has("version", false) {
-		out["version"] = c.Version
-	}
-	put("storage", "worktree_root", c.Storage.WorktreeRoot)
-	put("storage", "backup_generations", c.Storage.BackupGenerations)
-	put("storage", "backup_retention", c.Storage.BackupRetention.String())
-	put("pool", "warm_per_workspace", c.Pool.WarmPerWorkspace)
-	put("pool", "preparation_concurrency", c.Pool.PreparationConcurrency)
-	put("pool", "git_concurrency_per_repository", c.Pool.GitConcurrencyPerRepository)
-	put("retention", "hot_standby", c.Retention.HotStandby.String())
-	put("retention", "ended_worktree", c.Retention.EndedWorktree.String())
-	put("retention", "recovery_snapshot", c.Retention.RecoverySnapshot.String())
-	put("retention", "expired_session_tombstone", c.Retention.ExpiredSessionTombstone.String())
-	put("retention", "failed_job", c.Retention.FailedJob.String())
-	put("retention", "event_log", c.Retention.EventLog.String())
-	put("discovery", "max_depth", c.Discovery.MaxDepth)
-	put("discovery", "max_entries", c.Discovery.MaxEntries)
-	put("discovery", "timeout", c.Discovery.Timeout.String())
-	put("discovery", "reconcile_interval", c.Discovery.ReconcileInterval.String())
-	put("discovery", "exclude", c.Discovery.Exclude)
-	put("readiness", "timeout", c.Readiness.Timeout.String())
-	put("logging", "level", c.Logging.Level)
 	if c.has("workspaces", c.Workspaces != nil) {
 		out["workspaces"] = c.Workspaces
 	}
@@ -466,116 +479,49 @@ func (c Config) MarshalYAML() (any, error) {
 	return out, nil
 }
 
+// Fields lists every user-settable scalar configuration key with its
+// current effective value, in the same order SetField accepts them.
 func Fields(c Config) []Field {
-	return []Field{{"storage.worktree_root", c.Storage.WorktreeRoot}, {"storage.backup_generations", strconv.Itoa(c.Storage.BackupGenerations)}, {"storage.backup_retention", c.Storage.BackupRetention.String()}, {"pool.warm_per_workspace", strconv.Itoa(c.Pool.WarmPerWorkspace)}, {"pool.preparation_concurrency", strconv.Itoa(c.Pool.PreparationConcurrency)}, {"pool.git_concurrency_per_repository", strconv.Itoa(c.Pool.GitConcurrencyPerRepository)}, {"retention.hot_standby", c.Retention.HotStandby.String()}, {"retention.ended_worktree", c.Retention.EndedWorktree.String()}, {"retention.recovery_snapshot", c.Retention.RecoverySnapshot.String()}, {"retention.expired_session_tombstone", c.Retention.ExpiredSessionTombstone.String()}, {"retention.failed_job", c.Retention.FailedJob.String()}, {"retention.event_log", c.Retention.EventLog.String()}, {"discovery.max_depth", strconv.Itoa(c.Discovery.MaxDepth)}, {"discovery.max_entries", strconv.Itoa(c.Discovery.MaxEntries)}, {"discovery.timeout", c.Discovery.Timeout.String()}, {"discovery.reconcile_interval", c.Discovery.ReconcileInterval.String()}, {"readiness.timeout", c.Readiness.Timeout.String()}, {"logging.level", c.Logging.Level}}
+	var fields []Field
+	walkConfigLeaves(reflect.ValueOf(c), "", func(key string, fv reflect.Value) {
+		var value string
+		switch {
+		case fv.Type() == durationType:
+			value = fv.Interface().(Duration).String()
+		case fv.Kind() == reflect.String:
+			value = fv.String()
+		default:
+			value = strconv.FormatInt(fv.Int(), 10)
+		}
+		fields = append(fields, Field{key, value})
+	})
+	return fields
 }
 
+// SetField parses value for the type of the scalar field addressed by key
+// (a duration, an integer, or a plain string) and assigns it. Range and
+// enum validity for every key is enforced later by Validate; SetField only
+// performs the type-level parsing needed to store the value at all.
 func SetField(c *Config, key, value string) error {
-	n := func() (int, error) { return strconv.Atoi(value) }
-	d := func() (Duration, error) { v, e := time.ParseDuration(value); return Duration{v}, e }
-	switch key {
-	case "storage.worktree_root":
-		c.Storage.WorktreeRoot = value
-	case "storage.backup_generations":
-		v, e := n()
-		if e != nil {
-			return e
-		}
-		c.Storage.BackupGenerations = v
-	case "storage.backup_retention":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Storage.BackupRetention = v
-	case "pool.warm_per_workspace":
-		v, e := n()
-		if e != nil {
-			return e
-		}
-		c.Pool.WarmPerWorkspace = v
-	case "pool.preparation_concurrency":
-		v, e := n()
-		if e != nil {
-			return e
-		}
-		c.Pool.PreparationConcurrency = v
-	case "pool.git_concurrency_per_repository":
-		v, e := n()
-		if e != nil {
-			return e
-		}
-		c.Pool.GitConcurrencyPerRepository = v
-	case "retention.hot_standby":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Retention.HotStandby = v
-	case "retention.ended_worktree":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Retention.EndedWorktree = v
-	case "retention.recovery_snapshot":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Retention.RecoverySnapshot = v
-	case "retention.expired_session_tombstone":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Retention.ExpiredSessionTombstone = v
-	case "retention.failed_job":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Retention.FailedJob = v
-	case "retention.event_log":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Retention.EventLog = v
-	case "discovery.max_depth":
-		v, e := n()
-		if e != nil {
-			return e
-		}
-		c.Discovery.MaxDepth = v
-	case "discovery.max_entries":
-		v, e := n()
-		if e != nil {
-			return e
-		}
-		c.Discovery.MaxEntries = v
-	case "discovery.timeout":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Discovery.Timeout = v
-	case "discovery.reconcile_interval":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Discovery.ReconcileInterval = v
-	case "readiness.timeout":
-		v, e := d()
-		if e != nil {
-			return e
-		}
-		c.Readiness.Timeout = v
-	case "logging.level":
-		c.Logging.Level = value
-	default:
+	field := configField(reflect.ValueOf(c).Elem(), key)
+	if !field.IsValid() {
 		return fmt.Errorf("unknown config key %q; run wx config to list available keys", key)
+	}
+	switch {
+	case field.Type() == durationType:
+		d, err := time.ParseDuration(value)
+		if err != nil {
+			return err
+		}
+		field.Set(reflect.ValueOf(Duration{d}))
+	case field.Kind() == reflect.String:
+		field.SetString(value)
+	default:
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return err
+		}
+		field.SetInt(int64(n))
 	}
 	if c.present == nil {
 		c.present = map[string]bool{}
