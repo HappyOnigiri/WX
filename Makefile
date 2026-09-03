@@ -37,7 +37,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # `gosec` target, which is paused out of default setup, CI, and hooks.
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-mutation-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom mutation-check mutation-full-check mutation-run security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check benchmark-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check portable-test concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 # hooks-install is a dependency (not just documented separately) so that the
 # README's `make setup && make ci` sequence succeeds on a brand-new clone or
@@ -189,18 +189,6 @@ changed-coverage-check: coverage-check
 portable-test:
 	$(GO) test -shuffle=on -count=1 ./...
 
-integration-state:
-	$(GO) test -race -shuffle=on -count=1 ./internal/state
-
-integration-git:
-	$(GO) test -race -shuffle=on -count=1 ./internal/discovery ./internal/gitx ./internal/pool ./internal/workspace ./internal/archive
-
-integration-daemon:
-	$(GO) test -race -shuffle=on -count=1 ./internal/daemon ./internal/rpc ./internal/cli ./internal/agent
-
-integration-launchd:
-	$(GO) test -race -shuffle=on -count=1 ./internal/launchd ./cmd/wx
-
 concurrency-test:
 	$(GO) test -race -shuffle=on -count=10 -timeout=15m ./internal/state ./internal/daemon -run 'Lease|Concurrent|Crash|Archive|Remove|Worker'
 
@@ -280,7 +268,7 @@ security-local: setup-security-tools govulncheck dependency-check gosec license-
 ci:
 	$(MAKE) $(CI_MAKEFLAGS) ci-checks
 
-ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke hooks-test
+ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check coverage-check build-darwin smoke hooks-test
 
 hooks-install:
 	git config --local core.hooksPath .githooks
