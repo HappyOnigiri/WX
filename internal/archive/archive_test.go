@@ -291,6 +291,107 @@ func TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects(t *tes
 	}
 }
 
+// TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded pins the clean
+// shortcut to the safe side of the "never discard unsnapshotted work"
+// invariant. `git status` is configurable and deliberately hides content that
+// the dirty path's `read-tree HEAD` + `add -A` (a temporary index carrying
+// neither the assume-unchanged nor the skip-worktree bit) still records. If the
+// shortcut trusted a blinded status, the recovery snapshot would omit that
+// content and the slot worktree is physically removed afterwards.
+func TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		blind   func(t *testing.T, repository string)
+		path    string
+		content string
+	}{
+		{
+			name: "untracked hidden by status.showUntrackedFiles",
+			blind: func(t *testing.T, repository string) {
+				gitCommand(t, repository, "config", "status.showUntrackedFiles", "no")
+				if err := os.WriteFile(filepath.Join(repository, "untracked"), []byte("unsaved\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			path:    "untracked",
+			content: "unsaved\n",
+		},
+		{
+			name: "modification hidden by assume-unchanged",
+			blind: func(t *testing.T, repository string) {
+				if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("unsaved\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				gitCommand(t, repository, "update-index", "--assume-unchanged", "tracked")
+			},
+			path:    "tracked",
+			content: "unsaved\n",
+		},
+		{
+			name: "modification hidden by skip-worktree",
+			blind: func(t *testing.T, repository string) {
+				if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("unsaved\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				gitCommand(t, repository, "update-index", "--skip-worktree", "tracked")
+			},
+			path:    "tracked",
+			content: "unsaved\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, repo, manager, worktreeRoot := archiveFixture(t)
+			test.blind(t, repository)
+			if status := gitCommand(t, repository, "status", "--porcelain=v1"); status != "" {
+				t.Fatalf("fixture does not actually blind git status: %q", status)
+			}
+			head := gitCommand(t, repository, "rev-parse", "HEAD")
+			snapshot, err := manager.Snapshot(context.Background(), repo, repository, "blinded", time.Now().Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.WorktreeOID == head {
+				t.Fatal("clean shortcut was taken while git status was hiding worktree content")
+			}
+			target := filepath.Join(worktreeRoot, "restore", "root")
+			if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+				t.Fatalf("restore from snapshot: %v", err)
+			}
+			restored, err := os.ReadFile(filepath.Join(target, test.path))
+			if err != nil {
+				t.Fatalf("hidden content was not restored: %v", err)
+			}
+			if string(restored) != test.content {
+				t.Fatalf("restored %s=%q, want %q", test.path, restored, test.content)
+			}
+		})
+	}
+}
+
+// TestSnapshotFailsClosedWhenCleanlinessCannotBeDetermined verifies that a
+// failure of either cleanliness probe aborts the snapshot instead of falling
+// through to the clean shortcut, which would record HEAD as the whole session's
+// content.
+func TestSnapshotFailsClosedWhenCleanlinessCannotBeDetermined(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		pattern string
+		message string
+	}{
+		{name: "status", pattern: " status --porcelain=v1", message: "check worktree cleanliness"},
+		{name: "index stat flags", pattern: " ls-files -v", message: "inspect index stat flags"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, repo, manager, _ := archiveFixture(t)
+			installGitFault(t, test.pattern, 1)
+			_, err := manager.Snapshot(context.Background(), repo, repository, "fault", time.Now().Add(time.Hour))
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("snapshot did not fail closed on an unusable cleanliness probe: %v", err)
+			}
+		})
+	}
+}
+
 func TestSnapshotWithPersistenceCommitsMetadataBeforePublishingRefs(t *testing.T) {
 	repository, repo, manager, _ := archiveFixture(t)
 	ctx := context.Background()

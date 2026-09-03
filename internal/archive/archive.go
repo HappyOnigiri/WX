@@ -112,11 +112,26 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	// represent it exactly. Skip write-tree/read-tree/add/commit-tree
 	// entirely and record only the base OID and ref metadata, per the
 	// clean-session archive minimization the design calls for.
-	statusOutput, err := worktreeValue(nil, "status", "--porcelain=v1")
+	//
+	// The shortcut must never see more as clean than the dirty path below
+	// would capture, otherwise it silently discards unsnapshotted work. The
+	// explicit flags are therefore load-bearing, not cosmetic:
+	// status.showUntrackedFiles and submodule.<name>.ignore / diff.ignoreSubmodules
+	// are ordinary user settings that suppress exactly the content
+	// `add -A` on a freshly read index still records.
+	statusOutput, err := worktreeValue(nil, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none")
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("check worktree cleanliness: %w", err)
 	}
-	if strings.TrimSpace(statusOutput) == "" {
+	clean := strings.TrimSpace(statusOutput) == ""
+	if clean {
+		flagged, flagErr := indexHidesWorktreeChanges(worktreeValue)
+		if flagErr != nil {
+			return state.Snapshot{}, flagErr
+		}
+		clean = !flagged
+	}
+	if clean {
 		headTree, err := worktreeValue(nil, "rev-parse", "HEAD^{tree}")
 		if err != nil {
 			return state.Snapshot{}, fmt.Errorf("resolve clean HEAD tree: %w", err)
@@ -160,6 +175,34 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	}
 	worktreeCommit := strings.TrimSpace(commitRes.Stdout)
 	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+}
+
+// indexHidesWorktreeChanges reports whether the index carries an entry whose
+// worktree changes `git status` is contractually allowed to hide: the
+// assume-unchanged bit (rendered as a lower-case tag by `git ls-files -v`) and
+// the skip-worktree bit ("S"). Both suppress status output, but the dirty
+// snapshot path rebuilds the index from HEAD into a *temporary* index that
+// carries neither bit, so its `add -A` does record the current worktree
+// content of those paths. Taking the clean shortcut while either bit exists
+// would therefore drop content the previous behaviour preserved, so the
+// caller must fall through to the full snapshot instead.
+//
+// This costs one extra `git ls-files -v` pass, incurred only when the far
+// more expensive `git status` walk already reported a clean worktree.
+func indexHidesWorktreeChanges(worktreeValue func(env []string, args ...string) (string, error)) (bool, error) {
+	listing, err := worktreeValue(nil, "ls-files", "-v")
+	if err != nil {
+		return false, fmt.Errorf("inspect index stat flags: %w", err)
+	}
+	for _, line := range strings.Split(listing, "\n") {
+		if line == "" {
+			continue
+		}
+		if tag := line[0]; tag == 'S' || (tag >= 'a' && tag <= 'z') {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // recoveryRefTargets maps every ref this snapshot publishes to the object it
