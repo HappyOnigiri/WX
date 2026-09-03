@@ -75,6 +75,11 @@ Forget an inactive workspace after all managed slots are safely archived.`)
 		_, _ = fmt.Fprintln(w, `Usage: wx daemon <serve|install|uninstall>
 
 Serve internally, or install and remove the per-user LaunchAgent.`)
+	case "hook":
+		_, _ = fmt.Fprintln(w, `Usage: wx hook <event>
+
+Run a wx agent hook event read from stdin. Invoked by agent hook
+configuration, not normally run directly.`)
 	default:
 		topUsage(w)
 	}

@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -134,8 +134,13 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	if *jsonOut {
 		fmt.Println(string(data))
 	} else {
-		for k, v := range out {
-			fmt.Printf("%-20s %v\n", k, v)
+		keys := make([]string, 0, len(out))
+		for k := range out {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Printf("%-20s %v\n", k, out[k])
 		}
 	}
 	return 0
@@ -281,11 +286,16 @@ func runDaemon(ctx context.Context, args []string) int {
 }
 
 func runHook(ctx context.Context, args []string) int {
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "error: hook event is required")
+	fs := pflag.NewFlagSet("hook", pflag.ContinueOnError)
+	fs.Usage = func() { commandUsage(os.Stderr, "hook") }
+	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if err := agent.RunHook(ctx, args[0], os.Stdin); err != nil {
+	if fs.NArg() != 1 {
+		fs.Usage()
+		return 2
+	}
+	if err := agent.RunHook(ctx, fs.Arg(0), os.Stdin); err != nil {
 		fmt.Fprintln(os.Stderr, "wx readiness blocked operation:", err)
 		return 1
 	}
@@ -296,7 +306,12 @@ func runSessions(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("sessions", pflag.ContinueOnError)
 	all := fs.Bool("all", false, "include expired sessions")
 	jsonOut := fs.Bool("json", false, "print JSON")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+	fs.Usage = func() { commandUsage(os.Stderr, "sessions") }
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
 		return 2
 	}
 	c, _ := rpcClient()
@@ -329,5 +344,3 @@ func runForget(ctx context.Context, args []string) int {
 	fmt.Println("forgotten", args[0])
 	return 0
 }
-
-var _ = errors.New
