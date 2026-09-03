@@ -81,6 +81,12 @@ func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage)
 			SessionID      string `json:"session_id"`
 			Token          string `json:"token"`
 			AgentSessionID string `json:"agent_session_id"`
+			// Source is accepted (matching the hook's own SessionStart payload
+			// field) but not required: this RPC is the non-resume bind path, so a
+			// resume source belongs on BindAndRestoreResume instead. Decoding it
+			// here keeps the strict decoder from rejecting the field the hook
+			// always sends, even though this method does not act on it.
+			Source string `json:"source"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, err
@@ -91,9 +97,18 @@ func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage)
 			SessionID      string `json:"session_id"`
 			Token          string `json:"token"`
 			AgentSessionID string `json:"agent_session_id"`
+			Source         string `json:"source"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, err
+		}
+		// The hook only ever chooses this method when its own SessionStart
+		// payload identifies a resume (internal/agent/hook.go). Re-check that
+		// claim server-side instead of trusting method selection alone: a
+		// caller with a valid session token could otherwise invoke the restore
+		// path without a resume payload behind it.
+		if p.Source != "" && p.Source != "resume" {
+			return nil, fmt.Errorf("BindAndRestoreResume requires a resume source, got %q", p.Source)
 		}
 		return map[string]bool{"bound": true}, h.Manager.BindAndRestoreResume(ctx, p.SessionID, p.Token, p.AgentSessionID)
 	case "ValidateFreshResume":

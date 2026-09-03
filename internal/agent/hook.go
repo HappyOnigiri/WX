@@ -72,7 +72,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		} else if payload.Source == "resume" && !modes.explicit {
 			return errors.New("resume hook payload has no native resume mode")
 		}
-		if err := client.CallWithKey(ctx, method, "bind:"+wxID+":"+payload.SessionID, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID}, nil); err != nil {
+		if err := client.CallWithKey(ctx, method, "bind:"+wxID+":"+payload.SessionID, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID, "source": payload.Source}, nil); err != nil {
 			return err
 		}
 		if modes.recoveryDiscarded {

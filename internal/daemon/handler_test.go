@@ -59,6 +59,16 @@ func TestHandlerRoutesResumeAndFreshOperationsToManager(t *testing.T) {
 	}
 }
 
+func TestBindAndRestoreResumeRejectsNonResumeSource(t *testing.T) {
+	handler := Handler{}
+	for _, source := range []string{"start", "fresh", "resume-ish"} {
+		raw := json.RawMessage(`{"session_id":"missing","token":"token","agent_session_id":"agent","source":"` + source + `"}`)
+		if _, err := handler.Handle(context.Background(), "BindAndRestoreResume", raw); err == nil {
+			t.Fatalf("source=%q was accepted for the restore-resume path", source)
+		}
+	}
+}
+
 func TestDegradedHandlerAllowsOnlyReadOnlyDiagnostics(t *testing.T) {
 	handler := DegradedHandler{DatabasePath: "/state.db", OpenError: errors.New("corrupt")}
 	for _, method := range []string{"Status", "Doctor"} {

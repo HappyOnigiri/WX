@@ -17,17 +17,32 @@ import (
 type recordingHandler struct {
 	mu      sync.Mutex
 	methods []string
+	params  []json.RawMessage
 }
 
 type failingHookReader struct{}
 
 func (failingHookReader) Read([]byte) (int, error) { return 0, errors.New("read fault") }
 
-func (h *recordingHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+func (h *recordingHandler) Handle(_ context.Context, method string, params json.RawMessage) (any, error) {
 	h.mu.Lock()
 	h.methods = append(h.methods, method)
+	h.params = append(h.params, append(json.RawMessage(nil), params...))
 	h.mu.Unlock()
 	return map[string]bool{"ok": true}, nil
+}
+
+// paramsFor returns the raw request body of the first recorded call to
+// method, or nil if it was never called.
+func (h *recordingHandler) paramsFor(method string) json.RawMessage {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, m := range h.methods {
+		if m == method {
+			return h.params[i]
+		}
+	}
+	return nil
 }
 
 func shortHookSocketPath(t *testing.T) string {
@@ -99,6 +114,12 @@ func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
 		if !strings.Contains(got, method) {
 			t.Fatalf("methods=%s, missing %s", got, method)
 		}
+	}
+	if params := handler.paramsFor("BindAgentSession"); !strings.Contains(string(params), `"source":"startup"`) {
+		t.Fatalf("BindAgentSession did not forward the hook payload source: %s", params)
+	}
+	if params := handler.paramsFor("BindAndRestoreResume"); !strings.Contains(string(params), `"source":"resume"`) {
+		t.Fatalf("BindAndRestoreResume did not forward the hook payload source: %s", params)
 	}
 	cancel()
 	if err := <-done; err != nil {
