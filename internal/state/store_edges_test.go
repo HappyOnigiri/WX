@@ -51,17 +51,6 @@ func TestReadModelsRejectRowsWithUnscannableFields(t *testing.T) {
 			},
 		},
 		{
-			name: "recovery refs",
-			sql: []string{
-				"DROP TABLE snapshots",
-				"CREATE VIEW snapshots AS SELECT 'session' AS session_id,NULL AS head_recovery_ref,NULL AS worktree_recovery_ref, 'repository' AS repository_id",
-			},
-			check: func(store *Store) error {
-				_, err := store.RecoveryRefs(context.Background(), "repository")
-				return err
-			},
-		},
-		{
 			name: "snapshots",
 			sql: []string{
 				"DROP TABLE snapshots",
@@ -327,7 +316,7 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	requireError("ReadySlot", err)
 	_, err = store.ReadySlots(ctx, workspaceID)
 	requireError("ReadySlots", err)
-	if store.HasStandby(ctx, workspaceID) || store.StandbyCount(ctx, workspaceID) != 0 {
+	if store.StandbyCount(ctx, workspaceID) != 0 {
 		t.Fatal("closed store reported standby data")
 	}
 	_, err = store.CreateSlotSession(ctx, slot, nil, session, "PREPARE")
@@ -337,11 +326,11 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	requireError("LeaseReady", store.LeaseReady(ctx, slot.ID, session))
 	_, err = store.LeaseReadyWithCold(ctx, slot.ID, session)
 	requireError("LeaseReadyWithCold", err)
-	requireError("RecordLease", store.RecordLease(ctx, workspaceID))
 	requireError("SetSlotState", store.SetSlotState(ctx, slot.ID, []string{"READY"}, "STALE", "code"))
 	requireError("ResetPreparationForRetry", store.ResetPreparationForRetry(ctx, slot.ID))
 	requireError("MarkReady", store.MarkReady(ctx, slot.ID))
-	requireError("FinishPreparation", store.FinishPreparation(ctx, slot.ID))
+	_, _, finishPreparationErr := store.FinishPreparationWithRelease(ctx, slot.ID)
+	requireError("FinishPreparation", finishPreparationErr)
 	_, _, err = store.FinishPreparationWithRelease(ctx, slot.ID)
 	requireError("FinishPreparationWithRelease", err)
 	requireError("MarkSessionState", store.MarkSessionState(ctx, session.ID, []string{"ACTIVE"}, "RELEASING"))
@@ -403,8 +392,6 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	requireError("QuarantineMissingRecoveryRef", store.QuarantineMissingRecoveryRef(ctx, "refs/wx/missing"))
 	_, err = store.Repositories(ctx)
 	requireError("Repositories", err)
-	_, err = store.RecoveryRefs(ctx, "repository")
-	requireError("RecoveryRefs", err)
 	_, err = store.ColdRepositoryCandidates(ctx, "before")
 	requireError("ColdRepositoryCandidates", err)
 	_, _, err = store.ScheduleColdRepositoryRemoval(ctx, ColdRepositoryCandidate{SlotID: slot.ID, WorkspaceID: workspaceID, RepositoryID: "repository"})
@@ -412,7 +399,6 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	requireError("FinishColdRepositoryRemoval", store.FinishColdRepositoryRemoval(ctx, slot.ID, "repository"))
 	_, err = store.StandbyGCCandidates(ctx, "before", 1)
 	requireError("StandbyGCCandidates", err)
-	requireError("MarkStandbyArchived", store.MarkStandbyArchived(ctx, slot.ID))
 	_, _, err = store.ScheduleRemoval(ctx, slot.ID, session.ID)
 	requireError("ScheduleRemoval", err)
 	requireError("FinishRemoval", store.FinishRemoval(ctx, slot.ID))
@@ -453,7 +439,8 @@ func TestMissingLifecycleRowsFailClosed(t *testing.T) {
 	requireError("LeaseReadyWithCold", err)
 	requireError("SetSlotState", store.SetSlotState(ctx, missing, []string{"READY"}, "STALE", "missing"))
 	requireError("MarkReady", store.MarkReady(ctx, missing))
-	requireError("FinishPreparation", store.FinishPreparation(ctx, missing))
+	_, _, finishPreparationMissingErr := store.FinishPreparationWithRelease(ctx, missing)
+	requireError("FinishPreparation", finishPreparationMissingErr)
 	_, _, err = store.FinishPreparationWithRelease(ctx, missing)
 	requireError("FinishPreparationWithRelease", err)
 	requireError("MarkSessionState", store.MarkSessionState(ctx, missing, []string{"ACTIVE"}, "RELEASING"))
@@ -499,7 +486,6 @@ func TestMissingLifecycleRowsFailClosed(t *testing.T) {
 	requireError("QuarantineMissingSlot", store.QuarantineMissingSlot(ctx, missing, "missing"))
 	_, _, err = store.ScheduleRemoval(ctx, missing, missing)
 	requireError("ScheduleRemoval", err)
-	requireError("MarkStandbyArchived", store.MarkStandbyArchived(ctx, missing))
 	requireError("FinishRemoval", store.FinishRemoval(ctx, missing))
 	requireError("ExpireSessionSnapshots", store.ExpireSessionSnapshots(ctx, missing))
 	requireError("MarkSlotArchived", store.MarkSlotArchived(ctx, missing))
@@ -1199,7 +1185,6 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 		},
 		"lease ready":           func() error { return store.LeaseReady(ctx, "canceled", session) },
 		"lease ready with cold": func() error { _, err := store.LeaseReadyWithCold(ctx, "canceled", session); return err },
-		"record lease":          func() error { return store.RecordLease(ctx, "canceled") },
 		"set slot state":        func() error { return store.SetSlotState(ctx, "canceled", []string{"READY"}, "FAILED", "CANCELED") },
 		"reset preparation":     func() error { return store.ResetPreparationForRetry(ctx, "canceled") },
 		"mark ready":            func() error { return store.MarkReady(ctx, "canceled") },
@@ -1251,7 +1236,6 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 		"quarantine artifact":     func() error { return store.QuarantineArtifact(ctx, "test", "/canceled", "CANCELED") },
 		"quarantine recovery ref": func() error { return store.QuarantineMissingRecoveryRef(ctx, "refs/wx/canceled") },
 		"repositories":            func() error { _, err := store.Repositories(ctx); return err },
-		"recovery refs":           func() error { _, err := store.RecoveryRefs(ctx, "repository"); return err },
 		"cold candidates":         func() error { _, err := store.ColdRepositoryCandidates(ctx, now()); return err },
 		"schedule cold removal": func() error {
 			_, _, err := store.ScheduleColdRepositoryRemoval(ctx, ColdRepositoryCandidate{SlotID: "canceled", WorkspaceID: "canceled", RepositoryID: "repository"})
@@ -1259,7 +1243,6 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 		},
 		"finish cold removal":      func() error { return store.FinishColdRepositoryRemoval(ctx, "canceled", "repository") },
 		"standby GC candidates":    func() error { _, err := store.StandbyGCCandidates(ctx, now(), 1); return err },
-		"mark standby archived":    func() error { return store.MarkStandbyArchived(ctx, "canceled") },
 		"schedule removal":         func() error { _, _, err := store.ScheduleRemoval(ctx, "canceled", "canceled"); return err },
 		"finish removal":           func() error { return store.FinishRemoval(ctx, "canceled") },
 		"drain root":               func() error { return store.DrainRoot(ctx, "/canceled") },
@@ -1458,13 +1441,13 @@ func TestReadAndRestoreStateBoundaries(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state='RESTORING',parent_session_id=NULL,pending_agent_session_id='pending' WHERE id='child-copy'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishPreparation(ctx, child.SlotID); err == nil || !strings.Contains(err.Error(), "no parent") {
+	if _, _, err := store.FinishPreparationWithRelease(ctx, child.SlotID); err == nil || !strings.Contains(err.Error(), "no parent") {
 		t.Fatalf("pending mapping without parent error=%v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET parent_session_id='parent-copy' WHERE id='child-copy'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishPreparation(ctx, child.SlotID); err == nil || !strings.Contains(err.Error(), "mapping changed") {
+	if _, _, err := store.FinishPreparationWithRelease(ctx, child.SlotID); err == nil || !strings.Contains(err.Error(), "mapping changed") {
 		t.Fatalf("pending mapping with missing parent error=%v", err)
 	}
 }

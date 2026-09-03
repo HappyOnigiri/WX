@@ -2004,7 +2004,8 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			return fmt.Errorf("restore workspace root: %w", err)
 		}
 	}
-	return m.store.FinishPreparation(ctx, id)
+	_, _, err = m.store.FinishPreparationWithRelease(ctx, id)
+	return err
 }
 
 func (m *Manager) ResumeStatus(ctx context.Context, oldID string) (map[string]any, error) {

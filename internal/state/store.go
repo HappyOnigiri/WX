@@ -690,10 +690,6 @@ func (s *Store) ReadySlots(ctx context.Context, workspaceID string) ([]Slot, err
 	return slots, rows.Err()
 }
 
-func (s *Store) HasStandby(ctx context.Context, workspaceID string) bool {
-	return s.StandbyCount(ctx, workspaceID) > 0
-}
-
 func (s *Store) StandbyCount(ctx context.Context, workspaceID string) int {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL AND sl.state IN ('PREPARING','READY','FAILED','QUARANTINED','RETIRING','REMOVING')`, workspaceID).Scan(&n)
@@ -855,13 +851,6 @@ func (s *Store) LeaseReadyWithCold(ctx context.Context, slotID string, session S
 	return job, tx.Commit()
 }
 
-func (s *Store) RecordLease(ctx context.Context, workspaceID string) error {
-	s.writer.Lock()
-	defer s.writer.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id IN (SELECT repository_id FROM workspace_repositories WHERE workspace_id=?)`, now(), workspaceID)
-	return err
-}
-
 func (s *Store) SetSlotState(ctx context.Context, id string, from []string, to, code string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -900,11 +889,6 @@ func (s *Store) MarkReady(ctx context.Context, id string) error {
 		return err
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE slots SET ready_at=? WHERE id=?`, now(), id)
-	return err
-}
-
-func (s *Store) FinishPreparation(ctx context.Context, id string) error {
-	_, _, err := s.FinishPreparationWithRelease(ctx, id)
 	return err
 }
 
@@ -1961,26 +1945,6 @@ func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error
 	return repositories, rows.Err()
 }
 
-func (s *Store) RecoveryRefs(ctx context.Context, repositoryID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT head_recovery_ref FROM snapshots WHERE repository_id=?
-		UNION SELECT worktree_recovery_ref FROM snapshots WHERE repository_id=?
-		UNION SELECT index_recovery_ref FROM snapshots WHERE repository_id=? AND index_recovery_ref<>''
-		ORDER BY 1`, repositoryID, repositoryID, repositoryID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var refs []string
-	for rows.Next() {
-		var ref string
-		if err := rows.Scan(&ref); err != nil {
-			return nil, err
-		}
-		refs = append(refs, ref)
-	}
-	return refs, rows.Err()
-}
-
 // RecoveryRefExpectations returns the durable ownership proof for each
 // published recovery ref. A snapshot job that has already committed its
 // metadata but has not finished publishing refs is marked InFlight while its
@@ -2122,7 +2086,7 @@ func (s *Store) FinishColdRepositoryRemoval(ctx context.Context, slotID, reposit
 }
 
 func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm int) ([]StandbyGCCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sl.path,sl.state,COALESCE(sl.ready_at,sl.created_at),COALESCE(MIN(r.last_leased_at),'') FROM slots sl LEFT JOIN slot_repositories sr ON sr.slot_id=sl.id LEFT JOIN repositories r ON r.id=sr.repository_id WHERE sl.owner_session_id IS NULL AND sl.state IN ('READY','STALE') GROUP BY sl.id ORDER BY sl.workspace_id,COALESCE(sl.ready_at,sl.created_at) DESC,sl.id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sl.path,sl.state,COALESCE(sl.ready_at,sl.created_at) FROM slots sl WHERE sl.owner_session_id IS NULL AND sl.state IN ('READY','STALE') ORDER BY sl.workspace_id,COALESCE(sl.ready_at,sl.created_at) DESC,sl.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2131,11 +2095,10 @@ func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm 
 	var out []StandbyGCCandidate
 	for rows.Next() {
 		var candidate StandbyGCCandidate
-		var readyAt, lastLeased string
-		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.Path, &candidate.State, &readyAt, &lastLeased); err != nil {
+		var readyAt string
+		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.Path, &candidate.State, &readyAt); err != nil {
 			return nil, err
 		}
-		_ = lastLeased
 		if candidate.State == "STALE" || kept[candidate.WorkspaceID] >= warm {
 			out = append(out, candidate)
 			continue
@@ -2143,10 +2106,6 @@ func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm 
 		kept[candidate.WorkspaceID]++
 	}
 	return out, rows.Err()
-}
-
-func (s *Store) MarkStandbyArchived(ctx context.Context, slotID string) error {
-	return s.SetSlotState(ctx, slotID, []string{"READY", "STALE"}, "ARCHIVED", "")
 }
 
 func (s *Store) ScheduleRemoval(ctx context.Context, slotID, sessionID string) (Job, bool, error) {

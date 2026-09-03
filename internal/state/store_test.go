@@ -588,17 +588,13 @@ func TestRecoveryRefQueriesAndPendingMappingFailure(t *testing.T) {
 	if _, err := store.db.Exec(`UPDATE sessions SET agent_session_id=NULL WHERE id='parent'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishPreparation(ctx, "child"); err == nil || !strings.Contains(err.Error(), "mapping changed") {
+	if _, _, err := store.FinishPreparationWithRelease(ctx, "child"); err == nil || !strings.Contains(err.Error(), "mapping changed") {
 		t.Fatalf("changed parent mapping error=%v", err)
 	}
 
 	snapshot := Snapshot{ID: "snapshot", SessionID: "parent", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: now()}
 	if err := store.SaveSnapshot(ctx, snapshot); err != nil {
 		t.Fatal(err)
-	}
-	refs, err := store.RecoveryRefs(ctx, "repository")
-	if err != nil || strings.Join(refs, ",") != "refs/wx/recovery/head,refs/wx/recovery/worktree" {
-		t.Fatalf("recovery refs=%v err=%v", refs, err)
 	}
 	expectations, err := store.RecoveryRefExpectations(ctx, "repository")
 	if err != nil || len(expectations) != 2 {
@@ -965,7 +961,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 				if _, err := store.db.Exec(`DROP TABLE sessions`); err != nil {
 					t.Fatal(err)
 				}
-				if err := store.FinishPreparation(ctx, "slot"); err == nil {
+				if _, _, err := store.FinishPreparationWithRelease(ctx, "slot"); err == nil {
 					t.Fatal("preparation finish succeeded without sessions table")
 				}
 				return
@@ -1476,16 +1472,13 @@ func TestAdministrativeStateTransitionsAndQueries(t *testing.T) {
 	if err := store.MarkReady(ctx, "standby"); err != nil {
 		t.Fatal(err)
 	}
-	if !store.HasStandby(ctx, "workspace") {
+	if store.StandbyCount(ctx, "workspace") == 0 {
 		t.Fatal("ready standby was not counted")
 	}
 	if slots, err := store.ReadySlots(ctx, "workspace"); err != nil || len(slots) != 1 {
 		t.Fatalf("ready slots=%+v err=%v", slots, err)
 	}
 	if err := store.FinishJob(ctx, claimed.ID, "owner", nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordLease(ctx, "workspace"); err != nil {
 		t.Fatal(err)
 	}
 	session := Session{ID: "standby", WorkspaceID: "workspace", SlotID: "standby", State: "ACTIVE", AgentKind: "codex", ClientPID: os.Getpid(), TokenHash: HashToken("token")}
@@ -1552,7 +1545,7 @@ func TestOwnershipAndCompareAndSwapFailuresAreRejected(t *testing.T) {
 	if err := store.SetSlotState(ctx, "active", []string{"READY"}, "STALE", "test"); err == nil {
 		t.Fatal("slot state CAS mismatch succeeded")
 	}
-	if err := store.FinishPreparation(ctx, "active"); err == nil {
+	if _, _, err := store.FinishPreparationWithRelease(ctx, "active"); err == nil {
 		t.Fatal("leased slot finished preparation")
 	}
 	if err := store.MarkSessionState(ctx, "active", []string{"STARTING"}, "ACTIVE"); err == nil {
@@ -1584,7 +1577,7 @@ func TestDrainArchiveAndForgetAdministrativePaths(t *testing.T) {
 	if slot, err := store.Slot(ctx, "slot"); err != nil || slot.State != "STALE" {
 		t.Fatalf("drained slot=%+v err=%v", slot, err)
 	}
-	if err := store.MarkStandbyArchived(ctx, "slot"); err != nil {
+	if err := store.SetSlotState(ctx, "slot", []string{"READY", "STALE"}, "ARCHIVED", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetSlotState(ctx, "slot", []string{"ARCHIVED"}, "SNAPSHOTTED", ""); err != nil {
@@ -1835,94 +1828,6 @@ func TestCorruptDatabaseIsNotReplacedOrClaimed(t *testing.T) {
 	}
 }
 
-func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
-	store := openTestStore(t)
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	w := discovery.Workspace{ID: "w", Root: "/w", Kind: "repository"}
-	slot := Slot{ID: "s", WorkspaceID: "w", Path: "/wx/s", State: "PREPARING"}
-	repository := SlotRepository{RepositoryID: "r", WorktreePath: "/wx/s/r", State: "PREPARING"}
-	session := Session{ID: "s", WorkspaceID: "w", SlotID: "s", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
-	snapshot := Snapshot{ID: "snapshot", SessionID: "s", RepositoryID: "r"}
-	workspaceSnapshot := WorkspaceSnapshot{SessionID: "s", ArchivePath: "/wx/recovery/s.tar", SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: now()}
-	_ = store.Ping(ctx)
-	_, _ = store.Backup(ctx, 1, time.Hour)
-	_ = store.UpsertWorkspace(ctx, w)
-	_, _ = store.UpsertWorkspaceGeneration(ctx, w)
-	_, _ = store.WorkspaceGeneration(ctx, "w")
-	_, _ = store.CreateJob(ctx, "PREPARE", "w", "s", "s")
-	_, _ = store.ClaimJob(ctx, "j", "owner")
-	_ = store.RenewJob(ctx, "j", "owner")
-	_ = store.FinishJob(ctx, "j", "owner", nil)
-	_ = store.RetryJob(ctx, "j", "owner", time.Second, "retry")
-	_, _ = store.RecoverJobs(ctx, false)
-	_, _ = store.EnsureRecoveryJobs(ctx)
-	_, _, _ = store.ReadySlot(ctx, "w")
-	_, _ = store.ReadySlots(ctx, "w")
-	_ = store.HasStandby(ctx, "w")
-	_, _ = store.CreateSlotSession(ctx, slot, []SlotRepository{repository}, session, "PREPARE")
-	_, _ = store.CreateStandby(ctx, slot, []SlotRepository{repository})
-	_ = store.LeaseReady(ctx, "s", session)
-	_, _ = store.LeaseReadyWithCold(ctx, "s", session)
-	_ = store.RecordLease(ctx, "w")
-	_ = store.SetSlotState(ctx, "s", []string{"READY"}, "STALE", "test")
-	_ = store.ResetPreparationForRetry(ctx, "s")
-	_ = store.MarkReady(ctx, "s")
-	_ = store.FinishPreparation(ctx, "s")
-	_, _, _ = store.FinishPreparationWithRelease(ctx, "s")
-	_ = store.MarkSessionState(ctx, "s", []string{"ACTIVE"}, "RELEASING")
-	_, _ = store.Session(ctx, "s", "token")
-	_, _ = store.SessionByID(ctx, "s")
-	_ = store.BindAgentSession(ctx, "s", "agent")
-	_ = store.BindFreshSession(ctx, "s", "token", "agent")
-	_ = store.Heartbeat(ctx, "s", "token")
-	_, _ = store.OrphanCandidates(ctx, now())
-	_, _ = store.BindResumeSlot(ctx, "s", "parent", "w", "agent", 1, nil)
-	_, _ = store.SlotRepositories(ctx, "s")
-	_ = store.AddRestoringRepositories(ctx, "s", []SlotRepository{repository})
-	_, _ = store.SlotRepository(ctx, "s", "r")
-	_ = store.SetSlotRepositoryState(ctx, "s", "r", []string{"READY"}, "COLD")
-	_, _ = store.Slot(ctx, "s")
-	_ = store.SaveSnapshot(ctx, snapshot)
-	_ = store.SaveWorkspaceSnapshot(ctx, workspaceSnapshot)
-	_, _ = store.Snapshots(ctx, "s")
-	_, _, _ = store.WorkspaceSnapshot(ctx, "s")
-	_, _ = store.Repository(ctx, "r")
-	_, _ = store.Workspace(ctx, "w")
-	_, _ = store.SessionWorkspace(ctx, "s")
-	_, _ = store.WorkspaceRoots(ctx)
-	_, _ = store.Status(ctx)
-	_, _ = store.StatusDiagnostics(ctx)
-	_, _ = store.ListSessions(ctx, true)
-	_ = store.ForgetWorkspace(ctx, "/w")
-	_ = store.MarkArchived(ctx, "s", "s", now())
-	_ = store.BeginSnapshot(ctx, "s", "s")
-	_, _, _ = store.Release(ctx, "s", "w", "s")
-	_, _ = store.SlotArtifacts(ctx)
-	_ = store.QuarantineMissingSlot(ctx, "s", "test")
-	_ = store.QuarantineArtifact(ctx, "path", "/tmp/test", "test")
-	_ = store.QuarantineMissingRecoveryRef(ctx, "refs/wx/recovery/missing")
-	_, _, _, _, _ = store.BeginRPCRequest(ctx, "key", "method", "params", time.Now().Add(time.Hour))
-	_ = store.CompleteRPCRequest(ctx, "key", "method", "params", []byte("{}"), "", "", time.Now().Add(time.Hour))
-	_, _ = store.Repositories(ctx)
-	_, _ = store.RecoveryRefs(ctx, "r")
-	_, _ = store.StandbyGCCandidates(ctx, now(), 1)
-	_, _ = store.ColdRepositoryCandidates(ctx, now())
-	_, _, _ = store.ScheduleColdRepositoryRemoval(ctx, ColdRepositoryCandidate{SlotID: "s", WorkspaceID: "w", RepositoryID: "r"})
-	_ = store.FinishColdRepositoryRemoval(ctx, "s", "r")
-	_ = store.MarkStandbyArchived(ctx, "s")
-	_, _, _ = store.ScheduleRemoval(ctx, "s", "")
-	_ = store.FinishRemoval(ctx, "s")
-	_ = store.DrainRoot(ctx, "/wx")
-	_, _ = store.ExpiredSnapshots(ctx, now())
-	_ = store.ExpireSessionSnapshots(ctx, "s")
-	_ = store.PruneMetadata(ctx, now(), now(), now())
-	_, _ = store.GCCandidates(ctx, now())
-	_ = store.MarkSlotArchived(ctx, "s")
-}
-
 func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 	store := openTestStore(t)
 	for _, table := range []string{"rpc_idempotency", "quarantined_artifacts", "workspace_snapshots", "snapshots", "jobs", "session_repositories", "sessions", "slot_repositories", "slots", "workspace_repositories", "repositories", "workspaces", "events"} {
@@ -1975,9 +1880,8 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 	}
 	for name, operation := range map[string]func() error{
 		"lease":              func() error { return store.LeaseReady(ctx, "s", session) },
-		"record lease":       func() error { return store.RecordLease(ctx, "w") },
 		"set slot":           func() error { return store.SetSlotState(ctx, "s", []string{"READY"}, "STALE", "test") },
-		"finish preparation": func() error { return store.FinishPreparation(ctx, "s") },
+		"finish preparation": func() error { _, _, err := store.FinishPreparationWithRelease(ctx, "s"); return err },
 		"session state":      func() error { return store.MarkSessionState(ctx, "s", []string{"ACTIVE"}, "RELEASING") },
 		"bind agent":         func() error { return store.BindAgentSession(ctx, "s", "agent") },
 		"bind fresh":         func() error { return store.BindFreshSession(ctx, "s", "", "agent") },
@@ -2199,7 +2103,7 @@ func TestResumeOrphanAndBackupNontrivialPaths(t *testing.T) {
 	if _, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, nil); err == nil {
 		t.Fatal("bound resume slot was rebound")
 	}
-	if err := store.FinishPreparation(ctx, "child"); err != nil {
+	if _, _, err := store.FinishPreparationWithRelease(ctx, "child"); err != nil {
 		t.Fatalf("finish restore: %v", err)
 	}
 	mapped, err = store.FindByAgentSession(ctx, "codex", "agent")
@@ -2230,11 +2134,6 @@ func TestResumeOrphanAndBackupNontrivialPaths(t *testing.T) {
 	if err != nil || len(registeredRepositories) != 1 || registeredRepositories[0].ID != "repository" {
 		t.Fatalf("repositories=%+v err=%v", registeredRepositories, err)
 	}
-	refs, err := store.RecoveryRefs(ctx, "repository")
-	if err != nil || len(refs) != 0 {
-		t.Fatalf("recovery refs=%v err=%v", refs, err)
-	}
-
 	backupDir := store.path + ".backups"
 	if err := os.MkdirAll(filepath.Join(backupDir, "keep-directory"), 0o700); err != nil {
 		t.Fatal(err)
@@ -2378,7 +2277,7 @@ func TestRestoreActivationPreservesParentMappingAtEveryHandoffFailure(t *testing
 			if _, err := store.db.ExecContext(ctx, test.trigger); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.FinishPreparation(ctx, "child"); err == nil {
+			if _, _, err := store.FinishPreparationWithRelease(ctx, "child"); err == nil {
 				t.Fatal("fault-injected restore activation succeeded")
 			}
 			mapped, err := store.FindByAgentSession(ctx, "codex", "agent")

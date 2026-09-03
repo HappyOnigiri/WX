@@ -51,7 +51,7 @@ func TestSessionLifecycleSoak(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.FinishPreparation(ctx, id); err != nil {
+		if _, _, err := store.FinishPreparationWithRelease(ctx, id); err != nil {
 			t.Fatal(err)
 		}
 		job, changed, err := store.Release(ctx, id, string(workspace.ID), id)

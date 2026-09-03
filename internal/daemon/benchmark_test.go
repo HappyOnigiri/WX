@@ -33,7 +33,7 @@ func BenchmarkHotLease(b *testing.B) {
 		if _, err := store.CreateStandby(ctx, state.Slot{ID: slotID, WorkspaceID: string(workspace.ID), Generation: 1, Path: filepath.Join(root, slotID), State: "PREPARING"}, nil); err != nil {
 			b.Fatal(err)
 		}
-		if err := store.FinishPreparation(ctx, slotID); err != nil {
+		if _, _, err := store.FinishPreparationWithRelease(ctx, slotID); err != nil {
 			b.Fatal(err)
 		}
 	}
