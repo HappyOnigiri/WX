@@ -1068,7 +1068,7 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 	}
 	unregistered := repo
 	unregistered.MainPath = domain.CanonicalPath(other)
-	if err := EnsureOwnershipMarker(root, repository, "slot", string(repo.CommonDir)); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, repository, "slot", string(repo.CommonDir)); err != nil {
 		t.Fatal(err)
 	}
 	if err := preparer.validateExistingWorktree(context.Background(), unregistered, repository, gitOutput(t, repository, "rev-parse", "HEAD")); err == nil || !strings.Contains(err.Error(), "not registered") {

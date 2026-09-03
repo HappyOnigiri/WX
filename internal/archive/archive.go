@@ -50,22 +50,6 @@ func (m *Manager) SnapshotWithPersistence(ctx context.Context, repo discovery.Re
 	return snapshot, nil
 }
 
-func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, error) {
-	var snapshot state.Snapshot
-	err := m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
-		var err error
-		snapshot, err = m.snapshotObjects(ctx, repo, worktree, sessionID, expiry)
-		if err != nil {
-			return err
-		}
-		return m.publishSnapshotRefs(ctx, repo, snapshot)
-	})
-	if err != nil {
-		return state.Snapshot{}, err
-	}
-	return snapshot, nil
-}
-
 func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, error) {
 	if m.Preparer == nil {
 		return state.Snapshot{}, errors.New("snapshot requires a workspace preparer")

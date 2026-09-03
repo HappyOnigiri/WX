@@ -14,7 +14,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
-	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
 func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
@@ -341,9 +340,7 @@ func TestManagerColdRepositoryRemovalCompletesOwnedWorktree(t *testing.T) {
 	}
 	worktreePath := filepath.Join(slotPath, "repository")
 	gitRun(t, string(repository.MainPath), "worktree", "add", "--detach", worktreePath, head)
-	if err := workspace.EnsureOwnershipMarker(manager.Config().Storage.WorktreeRoot, worktreePath, slotID, string(repository.CommonDir)); err != nil {
-		t.Fatal(err)
-	}
+	ensureOwnershipMarkerForTest(t, manager.Config().Storage.WorktreeRoot, worktreePath, slotID, string(repository.CommonDir))
 	gitRun(t, string(repository.MainPath), "worktree", "lock", "--reason", "wx:"+slotID+":READY", worktreePath)
 	ownedWorkspace := workspaceRecord
 	ownedWorkspace.ID = domain.WorkspaceID(domain.StableID("cold-removal", "workspace"))

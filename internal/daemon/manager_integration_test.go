@@ -121,7 +121,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	archiveManager := archive.Manager{Git: runner, Preparer: &preparer, Ownership: store}
-	first, err := archiveManager.Snapshot(ctx, resolved[0].Repository, repos[0].WorktreePath, id, releasedAt.Add(cfg.Retention.RecoverySnapshot.Duration))
+	first, err := archiveManager.SnapshotWithPersistence(ctx, resolved[0].Repository, repos[0].WorktreePath, id, releasedAt.Add(cfg.Retention.RecoverySnapshot.Duration), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -658,7 +658,7 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	}
 	archiveManager := archive.Manager{Git: runner, Preparer: &preparer, Ownership: store}
 	expires := time.Now().Add(time.Hour)
-	snapshot, err := archiveManager.Snapshot(ctx, w.Repositories[0], slotRoot, id, expires)
+	snapshot, err := archiveManager.SnapshotWithPersistence(ctx, w.Repositories[0], slotRoot, id, expires, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,9 +40,7 @@ func TestRemoveColdRepositoryJobRecreatesSingleRepositorySlotShell(t *testing.T)
 		t.Fatal(err)
 	}
 	gitRun(t, string(repository.MainPath), "worktree", "add", "--detach", slotPath, head)
-	if err := workspace.EnsureOwnershipMarker(manager.Config().Storage.WorktreeRoot, slotPath, slotID, string(repository.CommonDir)); err != nil {
-		t.Fatal(err)
-	}
+	ensureOwnershipMarkerForTest(t, manager.Config().Storage.WorktreeRoot, slotPath, slotID, string(repository.CommonDir))
 	gitRun(t, string(repository.MainPath), "worktree", "lock", "--reason", "wx:"+slotID+":READY", slotPath)
 
 	// Kind "repository" canonicalizes to the workspace already registered for
@@ -99,9 +97,7 @@ func TestRemoveColdRepositoryJobQuarantinesOnUnlockedWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitRun(t, string(repository.MainPath), "worktree", "add", "--detach", slotPath, head)
-	if err := workspace.EnsureOwnershipMarker(manager.Config().Storage.WorktreeRoot, slotPath, slotID, string(repository.CommonDir)); err != nil {
-		t.Fatal(err)
-	}
+	ensureOwnershipMarkerForTest(t, manager.Config().Storage.WorktreeRoot, slotPath, slotID, string(repository.CommonDir))
 	// Deliberately do not lock the worktree with a recognized wx reason.
 
 	workspaceRecord.Root = domain.CanonicalPath(string(repository.MainPath))

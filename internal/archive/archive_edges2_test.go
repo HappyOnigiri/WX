@@ -66,14 +66,14 @@ func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T)
 			t.Fatal(err)
 		}
 		t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
-		if _, err := manager.Snapshot(context.Background(), repo, repository, "tmp-failure", time.Now().Add(time.Hour)); err == nil || !strings.Contains(err.Error(), "temporary snapshot index") {
+		if _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "tmp-failure", time.Now().Add(time.Hour), nil); err == nil || !strings.Contains(err.Error(), "temporary snapshot index") {
 			t.Fatalf("snapshot succeeded despite an unusable TMPDIR: %v", err)
 		}
 	})
 
 	t.Run("restore temporary index", func(t *testing.T) {
 		repository, repo, manager, worktreeRoot := archiveFixture(t)
-		snapshot, err := manager.Snapshot(context.Background(), repo, repository, "source", time.Now().Add(time.Hour))
+		snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,7 +93,7 @@ func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T)
 // pre-lock, so the relocked loop starts at occurrence 4).
 func TestRestorePropagatesRelockedRecoveryRefVerificationFailure(t *testing.T) {
 	repository, repo, manager, worktreeRoot := archiveFixture(t)
-	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "source", time.Now().Add(time.Hour))
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

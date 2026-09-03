@@ -123,7 +123,7 @@ func TestArchiveGitValueAndRestorePreconditions(t *testing.T) {
 	if _, err := manager.gitValue(context.Background(), repository, nil, "rev-parse", "not-a-ref"); err == nil {
 		t.Fatal("invalid Git value succeeded")
 	}
-	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "precondition", time.Now().Add(time.Hour))
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "precondition", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestRestoreRevalidatesOwnershipAtHandoffs(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository, repo, manager, worktreeRoot := archiveFixture(t)
-			snapshot, err := manager.Snapshot(context.Background(), repo, repository, "source", time.Now().Add(time.Hour))
+			snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -294,7 +294,12 @@ func TestRemoveMissingWorktreeReportsEveryHandoffFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			ownershipRoot := filepath.Dir(filepath.Dir(filepath.Dir(target)))
-			if err := workspace.EnsureOwnershipMarker(ownershipRoot, target, "slot", otherCommon); err != nil {
+			owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = owner.Close() }()
+			if err := workspace.EnsureOwnershipMarkerAt(owner, ownershipRoot, target, "slot", otherCommon); err != nil {
 				t.Fatal(err)
 			}
 		}},

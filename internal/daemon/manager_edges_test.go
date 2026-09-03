@@ -23,6 +23,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
 func testManager(t *testing.T, cfg config.Config, store *state.Store) *Manager {
@@ -760,6 +761,18 @@ func discoveryPath(path string) domain.CanonicalPath {
 	return domain.CanonicalPath(filepath.Clean(path))
 }
 
+func ensureOwnershipMarkerForTest(t *testing.T, root, target, slotID, commonDir string) {
+	t.Helper()
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := workspace.EnsureOwnershipMarkerAt(owner, root, target, slotID, commonDir); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWaitForSnapshotReportsTerminalAndTimeoutStates(t *testing.T) {
 	newFixture := func(t *testing.T, sessionState, slotState string) (*Manager, *state.Store, state.Session) {
 		t.Helper()
@@ -975,7 +988,14 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 				t.Fatal(err)
 			}
 			if test.mode == "missing-artifact" {
-				rootSnapshot, err := archive.SnapshotWorkspace(ctx, bundleRoot, cfg.Storage.WorktreeRoot, session.ID, []string{"repository"}, time.Now().Add(time.Hour))
+				snapshotOwner, _, err := domain.OpenOwnedRoot(cfg.Storage.WorktreeRoot, cfg.Storage.WorktreeRoot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rootSnapshot, err := archive.SnapshotWorkspaceAt(ctx, bundleRoot, cfg.Storage.WorktreeRoot, snapshotOwner, session.ID, []string{"repository"}, time.Now().Add(time.Hour))
+				if closeErr := snapshotOwner.Close(); closeErr != nil {
+					t.Fatal(closeErr)
+				}
 				if err != nil {
 					t.Fatal(err)
 				}

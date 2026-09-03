@@ -94,15 +94,15 @@ func TestRemoveWorktreeUsesPinnedDescriptorAcrossRootReplacement(t *testing.T) {
 	mustMkdir(t, filepath.Dir(target))
 	gitCommand(t, repository, "worktree", "add", "--detach", target, head)
 	gitCommand(t, repository, "worktree", "add", "--detach", foreign, head)
-	if err := workspace.EnsureOwnershipMarker(root, target, "slot", common); err != nil {
-		t.Fatal(err)
-	}
-	gitCommand(t, repository, "worktree", "lock", "--reason", "wx:slot:READY", target)
 	owner, _, err := domain.OpenOwnedRoot(root, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
+	if err := workspace.EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "worktree", "lock", "--reason", "wx:slot:READY", target)
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = root
@@ -190,7 +190,7 @@ func TestSnapshotUsesPinnedDescriptorAcrossRootReplacement(t *testing.T) {
 		}
 		replaced = true
 	})
-	snapshot, err := manager.Snapshot(context.Background(), repo, target, "snapshot", time.Now().Add(time.Hour))
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, target, "snapshot", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatalf("descriptor-bound snapshot failed: %v", err)
 	}
@@ -220,11 +220,11 @@ func TestSnapshotRefsAreIdempotentAndDeletionChecksOwnership(t *testing.T) {
 	gitCommand(t, repository, "commit", "-m", "content")
 	temp := filepath.Dir(worktreeRoot)
 	expires := time.Now().Add(time.Hour)
-	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "session", expires)
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "session", expires, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := manager.Snapshot(context.Background(), repo, repository, "session", expires)
+	replayed, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "session", expires, nil)
 	if err != nil || replayed.WorktreeOID != snapshot.WorktreeOID {
 		t.Fatalf("replayed snapshot=%+v err=%v", replayed, err)
 	}
@@ -260,7 +260,7 @@ func TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects(t *tes
 	repository, repo, manager, worktreeRoot := archiveFixture(t)
 	head := gitCommand(t, repository, "rev-parse", "HEAD")
 	headTree := gitCommand(t, repository, "rev-parse", "HEAD^{tree}")
-	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "clean-session", time.Now().Add(time.Hour))
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "clean-session", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded(t *testing.T) {
 				t.Fatalf("fixture does not actually blind git status: %q", status)
 			}
 			head := gitCommand(t, repository, "rev-parse", "HEAD")
-			snapshot, err := manager.Snapshot(context.Background(), repo, repository, "blinded", time.Now().Add(time.Hour))
+			snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "blinded", time.Now().Add(time.Hour), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -378,7 +378,7 @@ func TestSnapshotFailsClosedWhenCleanlinessCannotBeDetermined(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			repository, repo, manager, _ := archiveFixture(t)
 			installGitFault(t, test.pattern, 1)
-			_, err := manager.Snapshot(context.Background(), repo, repository, "fault", time.Now().Add(time.Hour))
+			_, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "fault", time.Now().Add(time.Hour), nil)
 			if err == nil || !strings.Contains(err.Error(), test.message) {
 				t.Fatalf("snapshot did not fail closed on an unusable cleanliness probe: %v", err)
 			}
@@ -474,7 +474,7 @@ func TestArchiveRejectsUnownedAndMismatchedWorktrees(t *testing.T) {
 	if err := manager.RemoveWorktree(ctx, repo, root, registered, strings.Repeat("0", 40)); err == nil || !strings.Contains(err.Error(), "HEAD") {
 		t.Fatalf("mismatched HEAD removal error=%v", err)
 	}
-	if _, err := manager.Snapshot(ctx, repo, filepath.Join(temp, "not-a-worktree"), "bad", time.Now().Add(time.Hour)); err == nil {
+	if _, err := manager.SnapshotWithPersistence(ctx, repo, filepath.Join(temp, "not-a-worktree"), "bad", time.Now().Add(time.Hour), nil); err == nil {
 		t.Fatal("snapshot of missing worktree succeeded")
 	}
 
@@ -527,7 +527,7 @@ func TestRemovalReconcilesMissingRegistrationAndRejectsWrongRepository(t *testin
 
 func TestSnapshotRejectsConflictingExistingRecoveryRef(t *testing.T) {
 	repository, repo, manager, _ := archiveFixture(t)
-	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "session", time.Now().Add(time.Hour))
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "session", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +538,7 @@ func TestSnapshotRejectsConflictingExistingRecoveryRef(t *testing.T) {
 	gitCommand(t, repository, "commit", "-m", "second")
 	newHead := gitCommand(t, repository, "rev-parse", "HEAD")
 	gitCommand(t, repository, "update-ref", snapshot.HeadRef, newHead)
-	if _, err := manager.Snapshot(context.Background(), repo, repository, "session", time.Now().Add(time.Hour)); err == nil || !strings.Contains(err.Error(), "unexpected object") {
+	if _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "session", time.Now().Add(time.Hour), nil); err == nil || !strings.Contains(err.Error(), "unexpected object") {
 		t.Fatalf("conflicting recovery ref error=%v", err)
 	}
 }
@@ -557,7 +557,7 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	repository, repo, manager, worktreeRoot := archiveFixture(t)
 	root := filepath.Dir(worktreeRoot)
 	runner := manager.Git
-	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "session", time.Now().Add(time.Hour))
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "session", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +617,7 @@ func TestRestoreRunsPrepareCommandAfterSnapshotTreeAndIndex(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	preparer := &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
 	manager := &Manager{Git: runner, Preparer: preparer, Ownership: allowOwnershipValidator{}}
-	snapshot, err := manager.Snapshot(context.Background(), repo, source, "source-session", time.Now().Add(time.Hour))
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, source, "source-session", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,7 +664,7 @@ func TestSnapshotPropagatesGitStageFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			installGitFault(t, test.pattern(head), test.occurrence)
-			if _, err := manager.Snapshot(context.Background(), repo, repository, "fault", time.Now().Add(time.Hour)); err == nil {
+			if _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "fault", time.Now().Add(time.Hour), nil); err == nil {
 				t.Fatal("snapshot succeeded despite injected Git failure")
 			}
 		})
@@ -690,7 +690,7 @@ func TestRestorePropagatesGitVerificationFailures(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository, repo, manager, worktreeRoot := archiveFixture(t)
-			snapshot, err := manager.Snapshot(context.Background(), repo, repository, "source", time.Now().Add(time.Hour))
+			snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -707,7 +707,7 @@ func TestDeleteSnapshotRefsPropagatesGitFailures(t *testing.T) {
 	for _, pattern := range []string{" show-ref --verify --hash ", " update-ref -d "} {
 		t.Run(strings.TrimSpace(pattern), func(t *testing.T) {
 			repository, repo, manager, _ := archiveFixture(t)
-			snapshot, err := manager.Snapshot(context.Background(), repo, repository, "source", time.Now().Add(time.Hour))
+			snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -906,7 +906,12 @@ func mustMkdir(t *testing.T, path string) {
 
 func markOwnedWorktree(t *testing.T, root, target, slotID string, commonDir domain.CanonicalPath) {
 	t.Helper()
-	if err := workspace.EnsureOwnershipMarker(root, target, slotID, string(commonDir)); err != nil {
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := workspace.EnsureOwnershipMarkerAt(owner, root, target, slotID, string(commonDir)); err != nil {
 		t.Fatal(err)
 	}
 	gitCommand(t, filepath.Dir(string(commonDir)), "worktree", "lock", "--reason", "wx:"+slotID+":READY", target)

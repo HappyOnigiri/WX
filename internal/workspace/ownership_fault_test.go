@@ -283,7 +283,12 @@ func TestValidateRemovalOwnershipRejectsMalformedMarkerContents(t *testing.T) {
 		t.Fatal(err)
 	}
 	common := t.TempDir()
-	if err := EnsureOwnershipMarker(root, target, "slot", common); err != nil {
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
 		t.Fatal(err)
 	}
 	markerPath := filepath.Join(filepath.Dir(target), ownershipMarkerNameForTarget(target))
@@ -298,11 +303,6 @@ func TestValidateRemovalOwnershipRejectsMalformedMarkerContents(t *testing.T) {
 	if err := os.MkdirAll(descriptorTarget, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	owner, _, err := domain.OpenOwnedRoot(root, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = owner.Close() }()
 	if err := EnsureOwnershipMarkerAt(owner, root, descriptorTarget, "slot2", common); err != nil {
 		t.Fatal(err)
 	}

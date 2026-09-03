@@ -220,11 +220,11 @@ func TestPhysicalManifestAndMarkerRemovalBoundaries(t *testing.T) {
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureOwnershipMarker(root, target, "s", root); err != nil {
-		t.Fatal(err)
-	}
 	owner, err := OpenPhysicalRoot(root)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureOwnershipMarkerAt(owner, root, target, "s", root); err != nil {
 		t.Fatal(err)
 	}
 	if err := removeOwnershipMarkerAt(owner, root, target); err != nil {

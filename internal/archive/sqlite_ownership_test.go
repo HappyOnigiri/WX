@@ -51,7 +51,15 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 	foreignPath := filepath.Join(worktreeRoot, "foreign", "root")
 	mustMkdir(t, filepath.Dir(foreignPath))
 	gitCommand(t, repositoryPath, "worktree", "add", "--detach", foreignPath, head)
-	if err := workspace.EnsureOwnershipMarker(worktreeRoot, foreignPath, "slot", common); err != nil {
+	foreignOwner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.EnsureOwnershipMarkerAt(foreignOwner, worktreeRoot, foreignPath, "slot", common); err != nil {
+		_ = foreignOwner.Close()
+		t.Fatal(err)
+	}
+	if err := foreignOwner.Close(); err != nil {
 		t.Fatal(err)
 	}
 	gitCommand(t, repositoryPath, "worktree", "lock", "--reason", "wx:slot:READY", foreignPath)
@@ -103,7 +111,15 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 	if _, err := os.Stat(filepath.Join(ownedPath, ".git")); err != nil {
 		t.Fatalf("unmarked worktree was removed or changed: %v", err)
 	}
-	if err := workspace.EnsureOwnershipMarker(worktreeRoot, ownedPath, "slot", common); err != nil {
+	ownedOwner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.EnsureOwnershipMarkerAt(ownedOwner, worktreeRoot, ownedPath, "slot", common); err != nil {
+		_ = ownedOwner.Close()
+		t.Fatal(err)
+	}
+	if err := ownedOwner.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{

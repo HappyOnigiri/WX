@@ -53,18 +53,18 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 		t.Fatal(err)
 	}
 	gitCommand(t, repositoryPath, "worktree", "add", "--detach", foreignPath, head)
-	if err := EnsureOwnershipMarker(worktreeRoot, foreignPath, "slot", common); err != nil {
+	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	if err := EnsureOwnershipMarkerAt(owner, worktreeRoot, foreignPath, "slot", common); err != nil {
 		t.Fatal(err)
 	}
 	gitCommand(t, repositoryPath, "worktree", "lock", "--reason", "wx:slot:READY", foreignPath)
 
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
-	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = owner.Close() })
 	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: store, SlotPath: slotPath, OwnedRoot: owner, RootPath: worktreeRoot}
 	err = preparer.Prepare(ctx, repo, foreignPath, head, "slot")
 	if !errors.Is(err, state.ErrOwnership) {

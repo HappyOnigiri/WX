@@ -23,26 +23,15 @@ import (
 
 const workspaceSnapshotDirectory = "recovery/workspace-snapshots"
 
-// SnapshotWorkspace preserves the non-repository portion of a
-// multi-repository bundle. Repository worktrees and explicitly shared root
-// links are excluded because their recovery contracts are handled elsewhere.
-func SnapshotWorkspace(ctx context.Context, bundleRoot, ownershipRoot, sessionID string, excluded []string, expiry time.Time) (state.WorkspaceSnapshot, error) {
-	return snapshotWorkspace(ctx, bundleRoot, ownershipRoot, nil, sessionID, excluded, expiry)
-}
-
 // SnapshotWorkspaceAt is the descriptor-bound form used by the daemon for a
-// multi-repository slot. ownershipRootHandle must be the manager-held root
-// descriptor corresponding to ownershipRoot. Bundle reads and archive writes
-// stay in that physical root, while a pathname replacement is rejected before
-// the returned ArchivePath can be committed to SQLite.
-func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot string, ownershipRootHandle *os.Root, sessionID string, excluded []string, expiry time.Time) (state.WorkspaceSnapshot, error) {
-	if ownershipRootHandle == nil {
+// multi-repository slot. owner must be the manager-held root descriptor
+// corresponding to ownershipRoot. Bundle reads and archive writes stay in
+// that physical root, while a pathname replacement is rejected before the
+// returned ArchivePath can be committed to SQLite.
+func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot string, owner *os.Root, sessionID string, excluded []string, expiry time.Time) (state.WorkspaceSnapshot, error) {
+	if owner == nil {
 		return state.WorkspaceSnapshot{}, errors.New("workspace ownership root descriptor is nil")
 	}
-	return snapshotWorkspace(ctx, bundleRoot, ownershipRoot, ownershipRootHandle, sessionID, excluded, expiry)
-}
-
-func snapshotWorkspace(ctx context.Context, bundleRoot, ownershipRoot string, pinnedOwner *os.Root, sessionID string, excluded []string, expiry time.Time) (state.WorkspaceSnapshot, error) {
 	if !domain.IsWithin(ownershipRoot, bundleRoot) {
 		return state.WorkspaceSnapshot{}, errors.New("workspace bundle is outside wx ownership root")
 	}
@@ -50,51 +39,28 @@ func snapshotWorkspace(ctx context.Context, bundleRoot, ownershipRoot string, pi
 	if err != nil {
 		return state.WorkspaceSnapshot{}, err
 	}
-	owner := pinnedOwner
-	closeOwner := func() {}
-	var bundle *os.Root
-	if owner == nil {
-		if err := domain.ValidatePhysicalPath(bundleRoot, false); err != nil {
-			return state.WorkspaceSnapshot{}, fmt.Errorf("validate workspace bundle root: %w", err)
-		}
-		if err := domain.EnsurePhysicalDirectory(filepath.Join(ownershipRoot, filepath.FromSlash(workspaceSnapshotDirectory)), 0o700); err != nil {
-			return state.WorkspaceSnapshot{}, fmt.Errorf("create workspace recovery directory: %w", err)
-		}
-		owner, err = workspace.OpenPhysicalRoot(ownershipRoot)
-		if err != nil {
-			return state.WorkspaceSnapshot{}, err
-		}
-		closeOwner = func() { _ = owner.Close() }
-		bundle, err = workspace.OpenPhysicalRoot(bundleRoot)
-		if err != nil {
-			closeOwner()
-			return state.WorkspaceSnapshot{}, err
-		}
-	} else {
-		if err := verifyPinnedRootPath(ownershipRoot, owner); err != nil {
-			return state.WorkspaceSnapshot{}, err
-		}
-		if err := owner.MkdirAll(filepath.FromSlash(workspaceSnapshotDirectory), 0o700); err != nil {
-			return state.WorkspaceSnapshot{}, fmt.Errorf("create workspace recovery directory safely: %w", err)
-		}
-		root, rootErr := filepath.Abs(filepath.Clean(ownershipRoot))
-		if rootErr != nil {
-			return state.WorkspaceSnapshot{}, rootErr
-		}
-		bundlePath, bundleErr := filepath.Abs(filepath.Clean(bundleRoot))
-		if bundleErr != nil {
-			return state.WorkspaceSnapshot{}, bundleErr
-		}
-		relative, relErr := domain.RelativeWithin(root, bundlePath)
-		if relErr != nil {
-			return state.WorkspaceSnapshot{}, errors.New("workspace bundle is outside pinned wx ownership root")
-		}
-		bundle, err = domain.OpenRootAt(owner, relative)
-		if err != nil {
-			return state.WorkspaceSnapshot{}, fmt.Errorf("open pinned workspace bundle: %w", err)
-		}
+	if err := verifyPinnedRootPath(ownershipRoot, owner); err != nil {
+		return state.WorkspaceSnapshot{}, err
 	}
-	defer closeOwner()
+	if err := owner.MkdirAll(filepath.FromSlash(workspaceSnapshotDirectory), 0o700); err != nil {
+		return state.WorkspaceSnapshot{}, fmt.Errorf("create workspace recovery directory safely: %w", err)
+	}
+	root, rootErr := filepath.Abs(filepath.Clean(ownershipRoot))
+	if rootErr != nil {
+		return state.WorkspaceSnapshot{}, rootErr
+	}
+	bundlePath, bundleErr := filepath.Abs(filepath.Clean(bundleRoot))
+	if bundleErr != nil {
+		return state.WorkspaceSnapshot{}, bundleErr
+	}
+	relative, relErr := domain.RelativeWithin(root, bundlePath)
+	if relErr != nil {
+		return state.WorkspaceSnapshot{}, errors.New("workspace bundle is outside pinned wx ownership root")
+	}
+	bundle, err := domain.OpenRootAt(owner, relative)
+	if err != nil {
+		return state.WorkspaceSnapshot{}, fmt.Errorf("open pinned workspace bundle: %w", err)
+	}
 	defer func() { _ = bundle.Close() }()
 	archiveRel := workspaceSnapshotRelativePath(sessionID)
 	temporaryRel := archiveRel + ".tmp-" + domain.StableID(sessionID, state.FormatTime(time.Now()))

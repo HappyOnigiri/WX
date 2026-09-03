@@ -24,25 +24,6 @@ type ownershipMarker struct {
 	CommonDir string `json:"common_dir"`
 }
 
-// EnsureOwnershipMarker creates the wx ownership proof outside the worktree
-// itself. A marker is only accepted when it binds the slot id, physical target,
-// and Git common directory that wx is about to use.
-func EnsureOwnershipMarker(root, target, slotID, commonDir string) error {
-	if slotID == "" || strings.ContainsAny(slotID, `/\`) {
-		return errors.New("invalid wx ownership slot id")
-	}
-	marker, err := newOwnershipMarker(target, slotID, commonDir, true)
-	if err != nil {
-		return err
-	}
-	owner, markerRelative, err := openMarkerRoot(root, target)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = owner.Close() }()
-	return ensureOwnershipMarkerAt(owner, markerRelative, marker)
-}
-
 // EnsureOwnershipMarkerAt is the descriptor-bound variant used while a
 // daemon-held worktree root is pinned. It keeps marker creation in the same
 // inode namespace as allocation and worktree preparation.

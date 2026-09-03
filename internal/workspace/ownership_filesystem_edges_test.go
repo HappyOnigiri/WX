@@ -453,7 +453,12 @@ func TestOwnershipMarkerCanBeCreatedBeforeGitAddsTheWorktree(t *testing.T) {
 	}
 	target := filepath.Join(slotRoot, "root")
 	common := t.TempDir()
-	if err := EnsureOwnershipMarker(root, target, "slot", common); err != nil {
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
 		t.Fatalf("pre-creation marker: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(slotRoot, ownershipMarkerNameForTarget(target))); err != nil {
