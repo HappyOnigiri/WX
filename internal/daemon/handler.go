@@ -103,11 +103,15 @@ func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage)
 			return nil, err
 		}
 		// The hook only ever chooses this method when its own SessionStart
-		// payload identifies a resume (internal/agent/hook.go). Re-check that
-		// claim server-side instead of trusting method selection alone: a
-		// caller with a valid session token could otherwise invoke the restore
-		// path without a resume payload behind it.
-		if p.Source != "" && p.Source != "resume" {
+		// payload identifies a resume (internal/agent/hook.go), and it always
+		// forwards that source: RunHook rejects the event outright unless
+		// payload.Source == "resume" before it can select this method.
+		// Re-check the claim server-side instead of trusting method selection
+		// alone, and require the field rather than merely rejecting a wrong
+		// value: treating an absent source as acceptable would let any caller
+		// holding a valid session token reach the restore path by simply
+		// omitting it, which is the easier thing to do, not the harder one.
+		if p.Source != "resume" {
 			return nil, fmt.Errorf("BindAndRestoreResume requires a resume source, got %q", p.Source)
 		}
 		return map[string]bool{"bound": true}, h.Manager.BindAndRestoreResume(ctx, p.SessionID, p.Token, p.AgentSessionID)

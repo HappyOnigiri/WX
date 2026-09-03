@@ -61,11 +61,20 @@ func TestHandlerRoutesResumeAndFreshOperationsToManager(t *testing.T) {
 
 func TestBindAndRestoreResumeRejectsNonResumeSource(t *testing.T) {
 	handler := Handler{}
-	for _, source := range []string{"start", "fresh", "resume-ish"} {
+	for _, source := range []string{"start", "fresh", "resume-ish", ""} {
 		raw := json.RawMessage(`{"session_id":"missing","token":"token","agent_session_id":"agent","source":"` + source + `"}`)
 		if _, err := handler.Handle(context.Background(), "BindAndRestoreResume", raw); err == nil {
 			t.Fatalf("source=%q was accepted for the restore-resume path", source)
 		}
+	}
+	// An omitted source must be rejected for the same reason an empty one is:
+	// the check exists so the restore path cannot be reached without a resume
+	// payload behind it, and omitting a field is easier than forging it. The
+	// nil Manager here also proves the rejection happens before the manager is
+	// reached — if it did not, this would panic rather than return an error.
+	raw := json.RawMessage(`{"session_id":"missing","token":"token","agent_session_id":"agent"}`)
+	if _, err := handler.Handle(context.Background(), "BindAndRestoreResume", raw); err == nil {
+		t.Fatal("an omitted source was accepted for the restore-resume path")
 	}
 }
 
