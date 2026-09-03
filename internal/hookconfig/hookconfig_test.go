@@ -9,10 +9,9 @@ import (
 
 func TestCodexHooksConfigEnabledBoundaries(t *testing.T) {
 	tests := []struct {
-		name        string
-		data        string
-		requirement bool
-		want        bool
+		name string
+		data string
+		want bool
 	}{
 		{name: "empty", data: "", want: true},
 		{name: "comments", data: "# hooks are enabled\nname = \"wx\" # inline comment", want: true},
@@ -20,8 +19,6 @@ func TestCodexHooksConfigEnabledBoundaries(t *testing.T) {
 		{name: "quoted keys", data: "[features]\n\"hooks\" = true\n'codex_hooks' = true", want: true},
 		{name: "inline features", data: `features = { hooks = true, codex_hooks = true, nested = { value = "#" } }`, want: true},
 		{name: "array of tables", data: "[[features.hooks]]\nname = \"wx\"", want: true},
-		{name: "managed hooks disabled", data: "allow_managed_hooks_only = false", requirement: true, want: true},
-		{name: "managed hooks required", data: "allow_managed_hooks_only = true", requirement: true, want: false},
 		{name: "feature disabled", data: "[features]\nhooks = false", want: false},
 		{name: "inline feature disabled", data: "features = { hooks = false }", want: false},
 		{name: "malformed table", data: "[features", want: false},
@@ -33,8 +30,8 @@ func TestCodexHooksConfigEnabledBoundaries(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := CodexHooksConfigEnabled([]byte(test.data), test.requirement); got != test.want {
-				t.Fatalf("CodexHooksConfigEnabled(%q, %v) = %v, want %v", test.data, test.requirement, got, test.want)
+			if got := codexHooksConfigEnabled([]byte(test.data)); got != test.want {
+				t.Fatalf("codexHooksConfigEnabled(%q) = %v, want %v", test.data, got, test.want)
 			}
 		})
 	}

@@ -19,7 +19,7 @@ import (
 // valid synchronous wx readiness hook for every required event. Any missing,
 // malformed, disabled, ambiguous, or unsafe configuration is unavailable.
 func Available(agent string) bool {
-	paths, ok := readinessHookPaths(agent)
+	path, ok := readinessHookPaths(agent)
 	if !ok {
 		return false
 	}
@@ -35,23 +35,11 @@ func Available(agent string) bool {
 		"UserPromptSubmit": "user-prompt-submit",
 		"PreToolUse":       "pre-tool-use",
 	}
-	for _, path := range paths {
-		data, readErr := os.ReadFile(path)
-		if readErr != nil || len(data) == 0 || len(data) > 4<<20 {
-			return false
-		}
-		if readinessHookDocumentMatches(data, required, executable) {
-			return true
-		}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || len(data) == 0 || len(data) > 4<<20 {
 		return false
 	}
-	return false
-}
-
-// CodexHooksConfigEnabled evaluates the small subset of TOML policy that can
-// disable user hooks. It is exported for the CLI's focused parser tests.
-func CodexHooksConfigEnabled(data []byte, requirement bool) bool {
-	return codexHooksConfigEnabled(data, requirement)
+	return readinessHookDocumentMatches(data, required, executable)
 }
 
 // CurrentExecutable returns the canonical executable identity of the running
@@ -68,46 +56,30 @@ func CurrentExecutable() (string, error) {
 	return canonical, nil
 }
 
-// IsExactWXHookCommand reports whether command is the current wx executable's
-// synchronous hook invocation for event.
-func IsExactWXHookCommand(command, event string) bool {
-	executable, err := CurrentExecutable()
-	return err == nil && isExactWXHookCommandForExecutable(command, event, executable)
-}
-
-// codexHooksEnabled checks local Codex feature and managed-hook policy files
-// which can disable user hooks, including an otherwise valid hooks.json. The
-// detector only needs this small, stable part of TOML; unreadable or
+// codexHooksEnabled checks the Codex feature configuration files, which can
+// disable user hooks even though an otherwise valid hooks.json is present.
+// The detector only needs this small, stable part of TOML; unreadable or
 // structurally malformed policy is treated as unavailable.
 func codexHooksEnabled() bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
 	}
-	configs := []struct {
-		path        string
-		requirement bool
-	}{
-		{path: filepath.Join(home, ".codex", "config.toml")},
-		{path: "/etc/codex/config.toml"},
-		{path: "/etc/codex/requirements.toml", requirement: true},
-		{path: "/etc/codex/managed_config.toml", requirement: true},
-	}
-	for _, config := range configs {
-		if _, err := regularHookPath(config.path); errors.Is(err, os.ErrNotExist) {
+	for _, path := range []string{filepath.Join(home, ".codex", "config.toml"), "/etc/codex/config.toml"} {
+		if _, err := regularHookPath(path); errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
 			return false
 		}
-		data, err := os.ReadFile(config.path)
-		if err != nil || len(data) > 4<<20 || !codexHooksConfigEnabled(data, config.requirement) {
+		data, err := os.ReadFile(path)
+		if err != nil || len(data) > 4<<20 || !codexHooksConfigEnabled(data) {
 			return false
 		}
 	}
 	return true
 }
 
-func codexHooksConfigEnabled(data []byte, requirement bool) bool {
+func codexHooksConfigEnabled(data []byte) bool {
 	table := ""
 	for _, rawLine := range strings.Split(string(data), "\n") {
 		line := strings.TrimSpace(stripTOMLComment(rawLine))
@@ -142,13 +114,6 @@ func codexHooksConfigEnabled(data []byte, requirement bool) bool {
 		}
 		key = normalizeTOMLKey(key)
 		if table == "" {
-			if requirement && key == "allow_managed_hooks_only" {
-				value = strings.TrimSpace(value)
-				if value != "false" {
-					return false
-				}
-				continue
-			}
 			key = strings.ReplaceAll(key, " ", "")
 			if key == "features" {
 				if !inlineTOMLFeatureTableEnabled(value) {
@@ -263,28 +228,28 @@ func stripTOMLComment(line string) string {
 	return line
 }
 
-func readinessHookPaths(agent string) ([]string, bool) {
+func readinessHookPaths(agent string) (string, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, false
+		return "", false
 	}
 	switch agent {
 	case "codex":
 		path, err := regularHookPath(filepath.Join(home, ".codex", "hooks.json"))
-		return []string{path}, err == nil
+		return path, err == nil
 	case "claude":
 		local := filepath.Join(home, ".claude", "settings.local.json")
 		if _, err := regularHookPath(local); err == nil {
 			// Claude's local settings have higher precedence than settings.json.
 			// Do not merge two files when the effective hook set is ambiguous.
-			return []string{local}, true
+			return local, true
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, false
+			return "", false
 		}
 		path, err := regularHookPath(filepath.Join(home, ".claude", "settings.json"))
-		return []string{path}, err == nil
+		return path, err == nil
 	default:
-		return nil, false
+		return "", false
 	}
 }
 

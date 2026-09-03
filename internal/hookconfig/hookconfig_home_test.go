@@ -48,9 +48,9 @@ func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 		t.Setenv("HOME", home)
 		hooks := filepath.Join(home, ".codex", "hooks.json")
 		writeHookConfigFile(t, hooks, "{}")
-		paths, ok := readinessHookPaths("codex")
-		if !ok || len(paths) != 1 || paths[0] != hooks {
-			t.Fatalf("readinessHookPaths(codex)=%v,%v want [%s],true", paths, ok, hooks)
+		path, ok := readinessHookPaths("codex")
+		if !ok || path != hooks {
+			t.Fatalf("readinessHookPaths(codex)=%v,%v want %s,true", path, ok, hooks)
 		}
 	})
 
@@ -68,9 +68,9 @@ func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 		shared := filepath.Join(home, ".claude", "settings.json")
 		writeHookConfigFile(t, local, "{}")
 		writeHookConfigFile(t, shared, "{}")
-		paths, ok := readinessHookPaths("claude")
-		if !ok || len(paths) != 1 || paths[0] != local {
-			t.Fatalf("readinessHookPaths(claude)=%v,%v want local settings", paths, ok)
+		path, ok := readinessHookPaths("claude")
+		if !ok || path != local {
+			t.Fatalf("readinessHookPaths(claude)=%v,%v want local settings", path, ok)
 		}
 	})
 
@@ -79,9 +79,9 @@ func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 		t.Setenv("HOME", home)
 		shared := filepath.Join(home, ".claude", "settings.json")
 		writeHookConfigFile(t, shared, "{}")
-		paths, ok := readinessHookPaths("claude")
-		if !ok || len(paths) != 1 || paths[0] != shared {
-			t.Fatalf("readinessHookPaths(claude)=%v,%v want shared settings", paths, ok)
+		path, ok := readinessHookPaths("claude")
+		if !ok || path != shared {
+			t.Fatalf("readinessHookPaths(claude)=%v,%v want shared settings", path, ok)
 		}
 	})
 
