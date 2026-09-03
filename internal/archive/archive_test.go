@@ -212,19 +212,13 @@ func TestSnapshotUsesPinnedDescriptorAcrossRootReplacement(t *testing.T) {
 }
 
 func TestSnapshotRefsAreIdempotentAndDeletionChecksOwnership(t *testing.T) {
-	temp := t.TempDir()
-	repository := filepath.Join(temp, "repository")
-	mustMkdir(t, repository)
-	gitCommand(t, repository, "init", "-b", "main")
-	gitCommand(t, repository, "config", "user.name", "test")
-	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
 	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("content\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	gitCommand(t, repository, "add", ".")
-	gitCommand(t, repository, "commit", "-m", "initial")
-	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(filepath.Join(repository, ".git"))}
-	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}, Ownership: allowOwnershipValidator{}}
+	gitCommand(t, repository, "commit", "-m", "content")
+	temp := filepath.Dir(worktreeRoot)
 	expires := time.Now().Add(time.Hour)
 	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "session", expires)
 	if err != nil {
@@ -532,17 +526,7 @@ func TestRemovalReconcilesMissingRegistrationAndRejectsWrongRepository(t *testin
 }
 
 func TestSnapshotRejectsConflictingExistingRecoveryRef(t *testing.T) {
-	repository := t.TempDir()
-	gitCommand(t, repository, "init", "-b", "main")
-	gitCommand(t, repository, "config", "user.name", "test")
-	gitCommand(t, repository, "config", "user.email", "test@example.com")
-	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("first\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	gitCommand(t, repository, "add", ".")
-	gitCommand(t, repository, "commit", "-m", "first")
-	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir"))}
-	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}}
+	repository, repo, manager, _ := archiveFixture(t)
 	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "session", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -570,22 +554,9 @@ func TestEnsureRecoveryRefPropagatesCreationFailure(t *testing.T) {
 }
 
 func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
-	root := t.TempDir()
-	repository := filepath.Join(root, "repository")
-	mustMkdir(t, repository)
-	gitCommand(t, repository, "init", "-b", "main")
-	gitCommand(t, repository, "config", "user.name", "test")
-	gitCommand(t, repository, "config", "user.email", "test@example.com")
-	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	gitCommand(t, repository, "add", ".")
-	gitCommand(t, repository, "commit", "-m", "initial")
-	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir"))}
-	runner := &gitx.Runner{Timeout: 5 * time.Second}
-	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
-	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}}, Ownership: allowOwnershipValidator{}}
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
+	root := filepath.Dir(worktreeRoot)
+	runner := manager.Git
 	snapshot, err := manager.Snapshot(context.Background(), repo, repository, "session", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +566,7 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	}
 	badIndex := snapshot
 	badIndex.IndexTreeOID = "not-an-object"
-	target := filepath.Join(cfg.Storage.WorktreeRoot, "bad-index", "root")
+	target := filepath.Join(worktreeRoot, "bad-index", "root")
 	if err := manager.Restore(context.Background(), repo, target, "bad-index", badIndex); err == nil {
 		t.Fatal("restore with invalid index tree succeeded")
 	}
@@ -612,8 +583,8 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 func TestRestoreRunsPrepareCommandAfterSnapshotTreeAndIndex(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
-	source := filepath.Join(root, "source")
 	worktreeRoot := filepath.Join(root, "worktrees")
+	source := filepath.Join(worktreeRoot, "source")
 	mustMkdir(t, repository)
 	gitCommand(t, repository, "init", "-b", "main")
 	gitCommand(t, repository, "config", "user.name", "test")
@@ -861,7 +832,15 @@ func TestRemoveWorktreePropagatesFilesystemOwnershipFailures(t *testing.T) {
 func archiveFixture(t *testing.T) (string, discovery.Repository, *Manager, string) {
 	t.Helper()
 	root := t.TempDir()
-	repository := filepath.Join(root, "repository")
+	// The repository lives inside worktreeRoot (rather than beside it) so
+	// that Snapshot/Restore calls in this fixture's tests that pass
+	// repository itself as the "worktree" being archived stay within the
+	// Preparer's pinned root and exercise the descriptor-bound path, matching
+	// production where Manager.Snapshot only ever runs on a worktree under
+	// the configured wx root.
+	worktreeRoot := filepath.Join(root, "worktrees")
+	mustMkdir(t, worktreeRoot)
+	repository := filepath.Join(worktreeRoot, "repository")
 	mustMkdir(t, repository)
 	gitCommand(t, repository, "init", "-b", "main")
 	gitCommand(t, repository, "config", "user.name", "test")
@@ -873,8 +852,6 @@ func archiveFixture(t *testing.T) (string, discovery.Repository, *Manager, strin
 	gitCommand(t, repository, "commit", "-m", "initial")
 	common := gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
-	worktreeRoot := filepath.Join(root, "worktrees")
-	mustMkdir(t, worktreeRoot)
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
 	runner := &gitx.Runner{Timeout: 5 * time.Second}

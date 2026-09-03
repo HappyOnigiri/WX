@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
@@ -68,24 +67,14 @@ func (m *Manager) Snapshot(ctx context.Context, repo discovery.Repository, workt
 }
 
 func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, error) {
-	worktreeDescriptorBound := false
-	if m.Preparer != nil {
-		if root, rootErr := config.ExpandHome(m.Preparer.Config.Storage.WorktreeRoot); rootErr == nil {
-			worktreeDescriptorBound = domain.IsWithin(root, worktree)
-		}
+	if m.Preparer == nil {
+		return state.Snapshot{}, errors.New("snapshot requires a workspace preparer")
 	}
-	worktreeIdentity := ""
-	if worktreeDescriptorBound {
-		var identityErr error
-		worktreeIdentity, identityErr = m.Preparer.WorktreeIdentity(worktree)
-		if identityErr != nil {
-			return state.Snapshot{}, fmt.Errorf("%w: capture worktree identity before snapshot: %w", state.ErrOwnership, identityErr)
-		}
+	worktreeIdentity, err := m.Preparer.WorktreeIdentity(worktree)
+	if err != nil {
+		return state.Snapshot{}, fmt.Errorf("%w: capture worktree identity before snapshot: %w", state.ErrOwnership, err)
 	}
 	worktreeValue := func(env []string, args ...string) (string, error) {
-		if !worktreeDescriptorBound {
-			return m.gitValue(ctx, worktree, env, args...)
-		}
 		result, runErr := m.Preparer.RunGitInWorktree(ctx, worktree, worktreeIdentity, env, nil, args...)
 		if runErr != nil {
 			return "", runErr
@@ -93,9 +82,6 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 		return strings.TrimSpace(result.Stdout), nil
 	}
 	worktreeRun := func(env []string, input []byte, args ...string) (gitx.Result, error) {
-		if !worktreeDescriptorBound {
-			return m.Git.RunEnvInput(ctx, worktree, env, input, args...)
-		}
 		return m.Preparer.RunGitInWorktree(ctx, worktree, worktreeIdentity, env, input, args...)
 	}
 	head, err := worktreeValue(nil, "rev-parse", "HEAD")
@@ -374,12 +360,13 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if !domain.IsWithin(absoluteRoot, absolutePath) {
 			return removalOwnershipFailure(errors.New("worktree path is outside wx root"))
 		}
-		// A Preparer holding a descriptor for a different root than the one
-		// requested here is a config/root-replacement bug: fail closed instead
-		// of silently falling through to the non-descriptor-bound removal path
-		// below. A Preparer with no descriptor at all keeps that fallback,
-		// which removeExistingWorktree already gates on the same condition.
-		if m.Preparer != nil && m.Preparer.OwnedRoot != nil && filepath.Clean(m.Preparer.RootPath) != absoluteRoot {
+		// Production's only Preparer constructor (internal/daemon/manager.go)
+		// always requires a root descriptor, so a Preparer with no descriptor,
+		// or one pinned to a different root than the one requested here, means
+		// the descriptor could not be obtained (or names a config/root-replacement
+		// bug). Fail closed instead of falling through to the non-descriptor-bound
+		// removal path below.
+		if m.Preparer != nil && (m.Preparer.OwnedRoot == nil || filepath.Clean(m.Preparer.RootPath) != absoluteRoot) {
 			return removalOwnershipFailure(errors.New("descriptor-bound worktree removal is unavailable"))
 		}
 		relative, err := filepath.Rel(absoluteRoot, absolutePath)
