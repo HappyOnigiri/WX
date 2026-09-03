@@ -1,7 +1,6 @@
 package discovery
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -113,24 +112,15 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 	return Repository{ID: domain.RepositoryID(domain.StableID(string(common))), MainPath: mainPath, CommonDir: common, RelativePath: filepath.Clean(relative), DefaultBranch: branch}, nil
 }
 
+// firstWorktreePath returns the first non-bare worktree's path. A repository
+// discovered from a bare main worktree with linked worktrees attached still
+// needs a real checkout to canonicalize against, so a bare entry is skipped
+// rather than treated as the answer.
 func firstWorktreePath(output string) string {
-	var path string
-	bare := false
-	for _, field := range strings.Split(output, "\x00") {
-		switch {
-		case field == "":
-			if path != "" && !bare {
-				return path
-			}
-			path, bare = "", false
-		case strings.HasPrefix(field, "worktree "):
-			path = strings.TrimPrefix(field, "worktree ")
-		case field == "bare":
-			bare = true
+	for _, record := range gitx.ParseWorktreeRecords(output) {
+		if !record.Bare {
+			return record.Path
 		}
-	}
-	if path != "" && !bare {
-		return path
 	}
 	return ""
 }
@@ -196,24 +186,4 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 		return Workspace{}, err
 	}
 	return Workspace{ID: domain.WorkspaceID(domain.StableID(string(canonical))), Root: canonical, Kind: "multi_repository", Repositories: repos}, nil
-}
-
-func ReadPatterns(path string) ([]string, error) {
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	var out []string
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		v := strings.TrimSpace(s.Text())
-		if v != "" && !strings.HasPrefix(v, "#") {
-			out = append(out, v)
-		}
-	}
-	return out, s.Err()
 }

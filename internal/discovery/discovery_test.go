@@ -96,23 +96,6 @@ func TestResolveMultiRepositoryFailsClosedOnLimitsAndMissingRepositories(t *test
 	}
 }
 
-func TestReadPatternsIgnoresWhitespaceAndComments(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "patterns")
-	if err := os.WriteFile(path, []byte("\n# comment\n first \n\tsecond\t\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	patterns, err := ReadPatterns(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(patterns, ",") != "first,second" {
-		t.Fatalf("patterns=%v", patterns)
-	}
-	if patterns, err := ReadPatterns(filepath.Join(t.TempDir(), "missing")); err != nil || patterns != nil {
-		t.Fatalf("missing patterns=%v err=%v", patterns, err)
-	}
-}
-
 func TestInspectRepositoryFailsClosedAtGitMetadataBoundaries(t *testing.T) {
 	root := t.TempDir()
 	main := filepath.Join(root, "main")
@@ -194,14 +177,6 @@ func TestMultiRepositoryDiscoveryPropagatesTraversalContextAndRepositoryErrors(t
 	t.Setenv("PATH", bin)
 	if _, err := discoverer.multiWorkspace(context.Background(), root); err == nil {
 		t.Fatal("repository inspection failure was ignored")
-	}
-
-	loop := filepath.Join(root, "pattern-loop")
-	if err := os.Symlink(loop, loop); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ReadPatterns(loop); err == nil {
-		t.Fatal("pattern symlink loop was treated as a missing file")
 	}
 }
 
