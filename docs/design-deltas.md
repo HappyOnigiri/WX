@@ -120,26 +120,7 @@
   cold startの待ちが体感上問題になった時点で、非同期refresh対象を
   LEASED状態のslotに限定した設計から着手する。
 
-## 8. standbyのhot期間判定をrepository単位で行うこと（設計書588行目・604行目付近）
-
-- 設計書の要求: standby slotのcheckout対象を、repositoryごとのhot期間
-  （直近の貸出からの経過時間）で判定する。hot期間を外れたrepositoryは
-  standbyのcheckout対象から外し、COLDとして退役させる。
-- 実装の判断: workspace単位の判定までで止める。`ENSURE_STANDBY`は
-  workspaceの最終貸出時刻でフィルタするので、貸出直後にstandbyを積む
-  通常の流れではフィルタが実質的に効かず、hot期間を外れたrepositoryも
-  checkout対象に残る。
-- 理由: 判定に使う列（`last_leased_at`）をworkspace単位で更新しており、
-  repository単位に分けるとGCのcold退役条件が同じ列を共有しているため、
-  永続化層とGCの両方に変更が及ぶ。個人利用の規模では、hot期間を外れた
-  repositoryをstandbyに含めても無駄なcheckoutが増えるだけで、データ安全性
-  には影響しない。
-- 将来必要になったときの入り口: workspaceあたりのrepository数が増えて
-  standby準備のコストが問題になった時点で、`session_repositories`側に
-  repository単位の最終貸出時刻を持たせ、`ENSURE_STANDBY`とGCの両方を
-  そこから読む形にする。
-
-## 9. CIゲートの構成とカバレッジの床（設計書1137行目付近のCI章）
+## 8. CIゲートの構成とカバレッジの床（設計書1137行目付近のCI章）
 
 - 設計書の要求: `coverage gate`、変更行coverage、mutation gateを含む
   複数のcoverage関連gateと、integration shard分割、amd64/arm64両matrixでの
@@ -164,7 +145,7 @@
   同時実行数が増えたら、integration shard分割とamd64 matrixを先に復元する
   （`coverage-check`と重複させないよう、対象を明示的に分ける設計に戻す）。
 
-## 10. git hookの検査範囲
+## 9. git hookの検査範囲
 
 - 設計書の要求: 明記なし（実装時の運用判断）。
 - 実装の判断: pre-commitは書式（`gofumpt`/`gci`のdiff検査）のみ、pre-push
@@ -177,7 +158,7 @@
   変更pathに応じた部分実行（変更packageだけの`go vet`など）を検討する。
   固定timeoutは導入しない方針を維持する。
 
-## 11. mutation testing
+## 10. mutation testing
 
 - 設計書の要求: coverage gate・変更行coverageと並ぶrequired checkとして
   mutation gateを持つ（設計書1137行目付近）。
@@ -192,7 +173,7 @@
   survivorが疑われる不具合が実際に発生した時点で、必要な範囲だけ手動で
   `gremlins`を導入し直す。
 
-## 12. 静的セキュリティ解析の自動化
+## 11. 静的セキュリティ解析の自動化
 
 - 設計書の要求: `golangci-lint`の`gosec`有効化、`govulncheck`、依存関係
   scan、secret scan、SBOM生成、Dependabotなどをrequired checkおよび
