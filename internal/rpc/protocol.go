@@ -23,7 +23,7 @@ const (
 	defaultClientTimeout        = 10 * time.Second
 	defaultServerFrameTimeout   = 10 * time.Second
 	defaultServerHandlerTimeout = 10 * time.Second
-	// defaultMaxHandlerTimeout bounds how far into the future a client-supplied
+	// DefaultMaxHandlerTimeout bounds how far into the future a client-supplied
 	// Request.Deadline may push a handler deadline. Without this ceiling, any
 	// caller holding a valid session token can keep an RPC handler goroutine
 	// (and any root descriptor references or locks it holds) alive
@@ -32,7 +32,7 @@ const (
 	// legitimate caller today is WaitReady, bounded by the configurable
 	// readiness.timeout (10 minutes by default); this ceiling leaves it a wide
 	// margin while still bounding the worst case.
-	defaultMaxHandlerTimeout = 30 * time.Minute
+	DefaultMaxHandlerTimeout = 30 * time.Minute
 	serverResponseGrace      = 100 * time.Millisecond
 )
 
@@ -201,7 +201,9 @@ type Server struct {
 	HandlerTimeout time.Duration
 	// MaxHandlerTimeout caps how far into the future a client-supplied
 	// Request.Deadline may push a handler deadline (see
-	// defaultMaxHandlerTimeout). Zero uses the default.
+	// DefaultMaxHandlerTimeout). Zero uses the default. Set it above the
+	// default when the configured readiness budget exceeds the ceiling, so a
+	// long readiness gate is not cut short server-side.
 	MaxHandlerTimeout time.Duration
 	listener          net.Listener
 	idemMu            sync.Mutex
@@ -370,7 +372,7 @@ func (s *Server) maxHandlerTimeout() time.Duration {
 	if s.MaxHandlerTimeout > 0 {
 		return s.MaxHandlerTimeout
 	}
-	return defaultMaxHandlerTimeout
+	return DefaultMaxHandlerTimeout
 }
 
 func (s *Server) requestDeadline(parent context.Context, requested string) (time.Time, error) {

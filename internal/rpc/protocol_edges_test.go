@@ -172,10 +172,10 @@ func TestRequestDeadlineClampsImplausibleClientRequestedDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if max := before.Add(defaultMaxHandlerTimeout + time.Second); deadline.After(max) {
+	if max := before.Add(DefaultMaxHandlerTimeout + time.Second); deadline.After(max) {
 		t.Fatalf("client-requested deadline was not clamped: got %v, want at most %v", deadline, max)
 	}
-	if deadline.Before(before.Add(defaultMaxHandlerTimeout - time.Second)) {
+	if deadline.Before(before.Add(DefaultMaxHandlerTimeout - time.Second)) {
 		t.Fatalf("clamp was tighter than the documented ceiling: got %v", deadline)
 	}
 }

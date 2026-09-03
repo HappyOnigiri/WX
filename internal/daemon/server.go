@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -13,6 +14,11 @@ import (
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
+
+// readinessCeilingMargin is the slack added to readiness.timeout when raising
+// the handler deadline ceiling, covering the client's own dial and framing time
+// so the server does not expire a request the client still considers in budget.
+const readinessCeilingMargin = 5 * time.Minute
 
 func Serve(ctx context.Context) error {
 	cfg, err := config.Load()
@@ -65,7 +71,7 @@ func Serve(ctx context.Context) error {
 		rpcHandler = Handler{Manager: manager}
 		durable = store
 	}
-	server := &rpc.Server{Socket: socket, Handler: rpcHandler, Durable: durable}
+	server := &rpc.Server{Socket: socket, Handler: rpcHandler, Durable: durable, MaxHandlerTimeout: handlerCeiling(cfg.Readiness.Timeout.Duration)}
 	logger.Info("daemon started", "socket", socket, "protocol_version", rpc.ProtocolVersion, "degraded", openErr != nil)
 	if err := server.Serve(ctx); err != nil {
 		return fmt.Errorf("serve daemon: %w", err)
@@ -114,6 +120,19 @@ func releaseDaemonLock(file *os.File) {
 	}
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 	_ = file.Close()
+}
+
+// handlerCeiling keeps the RPC handler deadline ceiling at or above the
+// configured readiness budget. WaitReady is the longest-lived legitimate
+// handler and its client-side budget follows readiness.timeout, so a readiness
+// timeout configured past rpc.DefaultMaxHandlerTimeout would otherwise be cut
+// short server-side. The ceiling never drops below the rpc default, because
+// handlers unrelated to readiness (cold preparation) are not bounded by it.
+func handlerCeiling(readiness time.Duration) time.Duration {
+	if ceiling := readiness + readinessCeilingMargin; ceiling > rpc.DefaultMaxHandlerTimeout {
+		return ceiling
+	}
+	return rpc.DefaultMaxHandlerTimeout
 }
 
 func filepathDir(path string) string {
