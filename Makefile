@@ -117,8 +117,8 @@ mod-tidy-check:
 
 # No package in this repository currently declares a //go:generate directive:
 # help text, config schema, SQLite migrations, the LaunchAgent plist, and
-# shell completion are all hand-maintained (see docs/design-deltas.md for why
-# the project keeps that no-generator stance instead of introducing one).
+# shell completion are all hand-maintained, and the project keeps that
+# no-generator stance rather than introducing one.
 # `go generate ./...` therefore has nothing to run today, so this check is
 # green by construction and does not yet catch generated-artifact drift; it
 # is kept as a required CI check (rather than removed) so that adding a real
