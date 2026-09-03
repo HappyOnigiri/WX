@@ -114,6 +114,73 @@ func TestHotRepositoryIDsExcludesNeverLeasedAndStaleRepositories(t *testing.T) {
 	}
 }
 
+// TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions pins the
+// dry-run accounting to work PruneMetadata would actually perform. Tombstoning
+// clears agent_session_id, so an already-tombstoned session is not a candidate
+// any more; counting it would make `wx gc --dry-run` report the same non-zero
+// total forever while nothing ever changes.
+func TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "LEASED"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	expired := FormatTime(time.Now().Add(-time.Hour))
+	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED',expires_at=?,agent_session_id='agent' WHERE id=?`, expired, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the other three tiers empty so the total is exactly the tombstone.
+	past := FormatTime(time.Now().Add(-24 * time.Hour))
+	tombstoneBefore := FormatTime(time.Now())
+	count, err := store.CountMetadataCandidates(ctx, past, past, tombstoneBefore)
+	if err != nil || count != 1 {
+		t.Fatalf("candidate count before pruning=%d err=%v, want 1", count, err)
+	}
+	if err := store.PruneMetadata(ctx, past, past, tombstoneBefore); err != nil {
+		t.Fatal(err)
+	}
+	count, err = store.CountMetadataCandidates(ctx, past, past, tombstoneBefore)
+	if err != nil || count != 0 {
+		t.Fatalf("candidate count after pruning=%d err=%v, want 0", count, err)
+	}
+}
+
+// TestSaveSnapshotBackfillsMissingIndexRecoveryRefButStillRejectsMismatch
+// covers the migration 010 upgrade path: a snapshot row committed before the
+// index_recovery_ref column existed carries an empty ref, so re-running its
+// snapshot job after the upgrade must backfill that one column instead of
+// reporting a metadata conflict (which would quarantine the slot). A row whose
+// index tree genuinely differs must still be refused.
+func TestSaveSnapshotBackfillsMissingIndexRecoveryRefButStillRejectsMismatch(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "LEASED"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	legacy := Snapshot{ID: "snapshot", SessionID: "session", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/session/repository/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/session/repository/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}
+	if err := store.SaveSnapshot(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := legacy
+	upgraded.IndexRef = "refs/wx/recovery/session/repository/index"
+	if err := store.SaveSnapshot(ctx, upgraded); err != nil {
+		t.Fatalf("re-saving a pre-migration snapshot with an index ref: %v", err)
+	}
+	stored, err := store.Snapshots(ctx, "session")
+	if err != nil || len(stored) != 1 || stored[0].IndexRef != upgraded.IndexRef {
+		t.Fatalf("index recovery ref was not backfilled: %+v err=%v", stored, err)
+	}
+	conflicting := upgraded
+	conflicting.IndexTreeOID = "different"
+	if err := store.SaveSnapshot(ctx, conflicting); err == nil {
+		t.Fatal("a snapshot with a different index tree was accepted")
+	}
+}
+
 func TestNullStringAndTokenBoundaries(t *testing.T) {
 	if nullString("") != nil || nullString("value") != "value" {
 		t.Fatal("nullString boundary failed")

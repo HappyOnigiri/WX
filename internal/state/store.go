@@ -1503,6 +1503,18 @@ func (s *Store) SaveSnapshot(ctx context.Context, x Snapshot) error {
 	if err := tx.QueryRowContext(ctx, `SELECT id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at FROM snapshots WHERE session_id=? AND repository_id=?`, x.SessionID, x.RepositoryID).Scan(&existing.ID, &existing.SessionID, &existing.RepositoryID, &existing.HeadOID, &existing.HeadRef, &existing.IndexTreeOID, &existing.IndexRef, &existing.WorktreeOID, &existing.WorktreeRef, &existing.Status, &existing.CreatedAt, &existing.ExpiresAt); err != nil {
 		return err
 	}
+	// A row written before migration 010 has no index_recovery_ref. Retrying
+	// its snapshot job after the upgrade recomputes the same objects but now
+	// also names an index ref, which would otherwise read as a metadata
+	// conflict and quarantine the slot. Backfill the one column the upgrade
+	// added instead, but only when every object ID already matches, so a
+	// genuine mismatch is still refused.
+	if existing.IndexRef == "" && x.IndexRef != "" && existing.IndexTreeOID == x.IndexTreeOID {
+		if _, err := tx.ExecContext(ctx, `UPDATE snapshots SET index_recovery_ref=? WHERE session_id=? AND repository_id=? AND index_recovery_ref=''`, x.IndexRef, x.SessionID, x.RepositoryID); err != nil {
+			return err
+		}
+		existing.IndexRef = x.IndexRef
+	}
 	if existing.ID != x.ID || existing.HeadOID != x.HeadOID || existing.HeadRef != x.HeadRef || existing.IndexTreeOID != x.IndexTreeOID || existing.IndexRef != x.IndexRef || existing.WorktreeOID != x.WorktreeOID || existing.WorktreeRef != x.WorktreeRef {
 		return errors.New("snapshot metadata conflicts with an existing recovery snapshot")
 	}
@@ -2460,7 +2472,11 @@ func (s *Store) CountMetadataCandidates(ctx context.Context, failedBefore, event
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE time<=?`, eventBefore).Scan(&events); err != nil {
 		return 0, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE state='EXPIRED' AND expires_at<=?`, tombstoneBefore).Scan(&tombstones); err != nil {
+	// PruneMetadata tombstones by clearing agent_session_id, so a session
+	// already tombstoned is not a candidate any more. Counting it would make
+	// `wx gc --dry-run` report the same work forever without anything ever
+	// changing.
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE state='EXPIRED' AND expires_at<=? AND agent_session_id IS NOT NULL`, tombstoneBefore).Scan(&tombstones); err != nil {
 		return 0, err
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rpc_idempotency WHERE expires_at<=?`, now()).Scan(&idempotency); err != nil {
