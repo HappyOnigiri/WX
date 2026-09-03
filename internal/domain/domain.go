@@ -210,71 +210,19 @@ func EnsurePhysicalDirectory(path string, perm os.FileMode) error {
 // filesystem-root descriptor is released and compared with the final Lstat,
 // so a rename/replacement between creation and the caller's first write
 // cannot redirect that write to an unrelated pathname.
+//
+// ensurePhysicalDirectoryRootPlatform is implemented only for darwin and
+// linux (see physical_unix.go): the design's non-goals explicitly exclude
+// initial Windows/other-platform support, and this package never shipped a
+// tested implementation for platforms outside that pair, so it intentionally
+// does not build there rather than carry an untested, never-exercised
+// fallback that only pretended to be portable.
 func EnsurePhysicalDirectoryRoot(path string, perm os.FileMode) (*os.Root, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
 	return ensurePhysicalDirectoryRootPlatform(filepath.Clean(absolute), perm)
-}
-
-// ensurePhysicalDirectoryRootLegacy is the fallback for platforms without the
-// Unix openat implementation. It is kept separate so Unix callers never use a
-// filesystem-root Root that may follow a swapped intermediate symlink.
-func ensurePhysicalDirectoryRootLegacy(absolute string, perm os.FileMode) (*os.Root, error) {
-	root, relative, err := openFilesystemRoot(filepath.Clean(absolute))
-	if err != nil {
-		return nil, err
-	}
-	current := "."
-	for _, component := range strings.Split(relative, string(filepath.Separator)) {
-		if component == "" || component == "." {
-			continue
-		}
-		current = filepath.Join(current, component)
-		if info, statErr := root.Lstat(current); statErr == nil {
-			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-				_ = root.Close()
-				return nil, fmt.Errorf("physical directory component %s is unsafe", current)
-			}
-			continue
-		} else if !errors.Is(statErr, os.ErrNotExist) {
-			_ = root.Close()
-			return nil, statErr
-		}
-		if err := root.Mkdir(current, perm); err != nil && !errors.Is(err, os.ErrExist) {
-			_ = root.Close()
-			return nil, err
-		}
-	}
-	info, err := root.Lstat(relative)
-	if err != nil {
-		_ = root.Close()
-		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		_ = root.Close()
-		return nil, errors.New("created path is not a physical directory")
-	}
-	ownedRoot, err := root.OpenRoot(relative)
-	closeErr := root.Close()
-	if err != nil {
-		return nil, err
-	}
-	if closeErr != nil {
-		_ = ownedRoot.Close()
-		return nil, closeErr
-	}
-	openedInfo, err := ownedRoot.Lstat(".")
-	if err != nil {
-		_ = ownedRoot.Close()
-		return nil, err
-	}
-	if openedInfo.Mode()&os.ModeSymlink != 0 || !openedInfo.IsDir() || !os.SameFile(info, openedInfo) {
-		_ = ownedRoot.Close()
-		return nil, errors.New("physical directory changed while opening")
-	}
-	return ownedRoot, nil
 }
 
 type SlotState string

@@ -221,51 +221,6 @@ func TestEnsurePhysicalDirectoryRootPinsFinalDirectoryAcrossReplacement(t *testi
 	}
 }
 
-func TestEnsurePhysicalDirectoryRootLegacyMatchesPlatformSemantics(t *testing.T) {
-	// ensurePhysicalDirectoryRootLegacy backs EnsurePhysicalDirectoryRoot on
-	// platforms without the Unix openat fallback. It is portable Go built on
-	// openFilesystemRoot, so it is exercised directly here to keep its
-	// component-by-component symlink rejection covered on every host.
-	parent := t.TempDir()
-	target := filepath.Join(parent, "one", "two", "three")
-	owned, err := ensurePhysicalDirectoryRootLegacy(target, 0o700)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info, statErr := os.Lstat(target); statErr != nil || !info.IsDir() {
-		t.Fatalf("target=%v err=%v", info, statErr)
-	}
-	if err := owned.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	if again, err := ensurePhysicalDirectoryRootLegacy(target, 0o700); err != nil {
-		t.Fatalf("idempotent creation: %v", err)
-	} else if err := again.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	outside := t.TempDir()
-	link := filepath.Join(parent, "link")
-	if err := os.Symlink(outside, link); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ensurePhysicalDirectoryRootLegacy(filepath.Join(link, "escape"), 0o700); err == nil {
-		t.Fatal("legacy directory creation followed a symlink outside the physical root")
-	}
-	if _, err := os.Lstat(filepath.Join(outside, "escape")); !os.IsNotExist(err) {
-		t.Fatalf("outside directory was modified: %v", err)
-	}
-
-	regular := filepath.Join(parent, "regular")
-	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ensurePhysicalDirectoryRootLegacy(regular, 0o700); err == nil {
-		t.Fatal("regular file was accepted as a legacy physical directory")
-	}
-}
-
 func TestSlotTransitions(t *testing.T) {
 	if !CanTransitionSlot(SlotReady, SlotLeased) {
 		t.Fatal("READY -> LEASED rejected")
