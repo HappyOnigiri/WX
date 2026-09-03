@@ -27,6 +27,13 @@ func TestCodexHooksConfigEnabledBoundaries(t *testing.T) {
 		{name: "multiline string", data: "name = \"\"\"hooks\"\"\"", want: false},
 		{name: "unbalanced inline table", data: "features = { hooks = true", want: false},
 		{name: "inline field without value", data: "features = { hooks }", want: false},
+		{name: "multiline array", data: "notify = [\n    \"/opt/Codex Client.app/Contents/MacOS/client\",\n    \"turn-ended\",\n]\n\n[features]\nhooks = true", want: true},
+		{name: "multiline array before disabled feature", data: "notify = [\n    \"turn-ended\",\n]\n\n[features]\nhooks = false", want: false},
+		{name: "multiline array of arrays", data: "matrix = [\n    [1, 2],\n    [3],\n]", want: true},
+		{name: "multiline inline table", data: "notify = { command = \"client\",\n    event = \"turn-ended\" }", want: true},
+		{name: "unclosed multiline array", data: "notify = [\n    \"turn-ended\",\n\n[features]\nhooks = false", want: false},
+		{name: "statement after closed array", data: "notify = [\n    \"turn-ended\",\n] hooks = false", want: false},
+		{name: "unopened array close", data: "notify = ]", want: false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
