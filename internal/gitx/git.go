@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -38,7 +37,11 @@ func (e *Error) Error() string {
 }
 
 type Runner struct {
-	Timeout   time.Duration
+	Timeout time.Duration
+	// DetailDir is set once during daemon startup, before any worker begins
+	// running Git commands (see internal/daemon/server.go), so plain field
+	// access is safe: there is no concurrent writer for getDetailDir's reads
+	// to race with.
 	DetailDir string
 	// FDHelper is the wx executable used to fchdir to a descriptor before
 	// execing Git. Production managers set it to their own executable. Keeping
@@ -46,7 +49,6 @@ type Runner struct {
 	// descriptor-bound path.
 	FDHelper    string
 	timeout     sync.RWMutex
-	detail      sync.RWMutex
 	runAt       sync.RWMutex
 	beforeRunAt func([]string)
 	locks       sync.Map
@@ -73,14 +75,10 @@ func (r *Runner) invokeBeforeRunAt(args []string) {
 }
 
 func (r *Runner) SetDetailDir(path string) {
-	r.detail.Lock()
 	r.DetailDir = path
-	r.detail.Unlock()
 }
 
 func (r *Runner) getDetailDir() string {
-	r.detail.RLock()
-	defer r.detail.RUnlock()
 	return r.DetailDir
 }
 
@@ -246,12 +244,13 @@ func sanitizedEnviron() []string {
 	return sanitized
 }
 
+// newFailureID uses crypto/rand.Text() directly: Go 1.26's crypto/rand.Read
+// does not fail on any supported platform, so the fallback this used to carry
+// for a read failure could never execute and is removed rather than kept
+// dead. Its 26-character output over a 32-symbol alphabet carries more
+// entropy than the 12 bytes of hex this replaces.
 func newFailureID() string {
-	var value [12]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
-	}
-	return hex.EncodeToString(value[:])
+	return rand.Text()
 }
 
 func (r *Runner) writeFailureDetail(id string, args []string, result Result) {
@@ -284,6 +283,47 @@ func (r *Runner) WithCommonDirLock(common string, fn func() error) error {
 	return fn()
 }
 
+// WorktreeRecord is one entry parsed from the NUL-separated output of
+// `git worktree list --porcelain -z`.
+type WorktreeRecord struct {
+	Path       string
+	Bare       bool
+	Locked     bool
+	LockReason string
+}
+
+// ParseWorktreeRecords parses the -z (NUL-separated) porcelain output of
+// `git worktree list --porcelain -z` into one record per worktree. Both
+// internal/discovery (to find the main worktree, skipping any that are bare)
+// and internal/workspace (to inspect lock state) parse this same format.
+func ParseWorktreeRecords(output string) []WorktreeRecord {
+	var records []WorktreeRecord
+	var current *WorktreeRecord
+	for _, field := range strings.Split(output, "\x00") {
+		switch {
+		case strings.HasPrefix(field, "worktree "):
+			if current != nil {
+				records = append(records, *current)
+			}
+			current = &WorktreeRecord{Path: strings.TrimPrefix(field, "worktree ")}
+		case current == nil:
+			continue
+		case field == "bare":
+			current.Bare = true
+		case field == "locked":
+			current.Locked = true
+			current.LockReason = ""
+		case strings.HasPrefix(field, "locked "):
+			current.Locked = true
+			current.LockReason = strings.TrimPrefix(field, "locked ")
+		}
+	}
+	if current != nil {
+		records = append(records, *current)
+	}
+	return records
+}
+
 func ResolveRef(ctx context.Context, r *Runner, repo, branch string) (string, bool, error) {
 	for _, ref := range []string{"refs/heads/" + branch, "refs/remotes/origin/" + branch} {
 		res, err := r.Run(ctx, repo, "rev-parse", "--verify", ref+"^{commit}")
@@ -296,9 +336,4 @@ func ResolveRef(ctx context.Context, r *Runner, repo, branch string) (string, bo
 		}
 	}
 	return "", false, nil
-}
-
-func IsDetached(ctx context.Context, r *Runner, dir string) bool {
-	_, err := r.Run(ctx, dir, "symbolic-ref", "-q", "HEAD")
-	return err != nil
 }
