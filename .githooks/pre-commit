@@ -1,4 +1,7 @@
 #!/bin/sh
 set -eu
 root=$(git rev-parse --show-toplevel)
-exec "$root/scripts/run-with-timeout.sh" 30 make -C "$root" hook-pre-commit
+# No fixed time budget: a hard timeout here would fail ordinary commits once
+# the repository or its test suite grows, rather than catching a regression.
+# Keep hook-pre-commit itself fast as a guideline instead of a hard limit.
+exec make -C "$root" hook-pre-commit

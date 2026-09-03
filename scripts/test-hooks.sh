@@ -18,28 +18,44 @@ fi
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-child="$scratch/child.sh"
-pid_file="$scratch/pid"
-cat >"$child" <<'EOF'
+mkdir -p "$scratch/bin"
+log="$scratch/make.log"
+
+# Stand in for `make` so we can assert which target each hook drives, without
+# paying for a real hook-check.sh run (that is exercised by hooks-install plus
+# an actual commit/push, not by this script).
+stub_make="$scratch/bin/make"
+cat >"$stub_make" <<'EOF'
 #!/bin/sh
-sleep 60 &
-echo $! >"$WX_HOOK_PID_FILE"
-wait
+printf '%s\n' "$*" >>"$WX_TEST_MAKE_LOG"
+exit "${WX_TEST_MAKE_EXIT:-0}"
 EOF
-chmod 700 "$child"
-if WX_HOOK_PID_FILE="$pid_file" "$root/scripts/run-with-timeout.sh" 1 "$child"; then
-  echo "timeout helper accepted an over-budget hook" >&2
-  exit 1
-fi
-if [ -s "$pid_file" ]; then
-  child_pid=$(sed -n '1p' "$pid_file")
-  attempts=0
-  while kill -0 "$child_pid" 2>/dev/null && [ "$attempts" -lt 20 ]; do
-    attempts=$((attempts + 1))
-    sleep 0.1
-  done
-  if kill -0 "$child_pid" 2>/dev/null; then
-    echo "timeout helper left a child process running" >&2
+chmod 700 "$stub_make"
+
+check_hook_drives_target() {
+  hook_name=$1
+  expected_target=$2
+
+  : >"$log"
+  if ! WX_TEST_MAKE_LOG="$log" WX_TEST_MAKE_EXIT=0 PATH="$scratch/bin:$PATH" "$root/.githooks/$hook_name" </dev/null; then
+    echo "$hook_name exited nonzero even though its check succeeded" >&2
     exit 1
   fi
-fi
+  invocation=$(cat "$log")
+  if [ "$invocation" != "-C $root $expected_target" ]; then
+    echo "$hook_name invoked make with unexpected arguments: $invocation" >&2
+    exit 1
+  fi
+
+  : >"$log"
+  if WX_TEST_MAKE_LOG="$log" WX_TEST_MAKE_EXIT=1 PATH="$scratch/bin:$PATH" "$root/.githooks/$hook_name" </dev/null; then
+    echo "$hook_name exited zero even though its check failed" >&2
+    exit 1
+  fi
+}
+
+# Each hook must dispatch to its matching hook-check.sh target (regression
+# guard for accidental target swaps) and must propagate that target's exit
+# status, since that propagation is what actually blocks a bad commit/push.
+check_hook_drives_target pre-commit hook-pre-commit
+check_hook_drives_target pre-push hook-pre-push

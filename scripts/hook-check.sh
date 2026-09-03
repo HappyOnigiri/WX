@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# The hooks that invoke this script (.githooks/pre-commit, .githooks/pre-push)
+# do not enforce a fixed time budget. Keep this script's own checks fast as a
+# guideline, but do not narrow what it checks in order to chase a budget.
 mode=${1:-}
 case "$mode" in
   pre-commit|pre-push) ;;
