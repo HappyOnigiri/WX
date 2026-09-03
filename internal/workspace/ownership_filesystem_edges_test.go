@@ -105,6 +105,7 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 		{name: "malformed trailing data", data: string(validJSON) + "{", mode: 0o600},
 		{name: "incomplete", data: `{"version":1,"slot_id":"slot"}`, mode: 0o600},
 		{name: "invalid slot", data: `{"version":1,"slot_id":"bad/slot","target":"` + target + `","common_dir":"` + common + `"}`, mode: 0o600},
+		{name: "write only", data: string(validJSON), mode: 0o200},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			writeMarker(test.data, test.mode)
