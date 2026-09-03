@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -172,14 +171,7 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	if *jsonOut {
 		fmt.Println(string(data))
 	} else {
-		keys := make([]string, 0, len(out))
-		for k := range out {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			fmt.Printf("%-20s %v\n", k, out[k])
-		}
+		printDisplay(os.Stdout, out)
 	}
 	return 0
 }
