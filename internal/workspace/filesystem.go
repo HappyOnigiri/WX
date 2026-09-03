@@ -178,42 +178,6 @@ func walkSafeGlob(owner *os.Root, current string, parts []string, index int, mat
 	return nil
 }
 
-func copyPathFromRoots(sourceRoot, sourceRelative, destinationRoot, destinationRelative string) error {
-	sourceRoot, err := filepath.Abs(filepath.Clean(sourceRoot))
-	if err != nil {
-		return err
-	}
-	destinationRoot, err = filepath.Abs(filepath.Clean(destinationRoot))
-	if err != nil {
-		return err
-	}
-	if err := domain.ValidatePhysicalPath(sourceRoot, false); err != nil {
-		return fmt.Errorf("copy source root is not physical: %w", err)
-	}
-	if err := domain.ValidatePhysicalPath(destinationRoot, false); err != nil {
-		return fmt.Errorf("copy destination root is not physical: %w", err)
-	}
-	source, err := safeRelative(sourceRelative)
-	if err != nil {
-		return err
-	}
-	destination, err := safeRelative(destinationRelative)
-	if err != nil {
-		return err
-	}
-	sourceHandle, err := OpenPhysicalRoot(sourceRoot)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sourceHandle.Close() }()
-	destinationHandle, err := OpenPhysicalRoot(destinationRoot)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = destinationHandle.Close() }()
-	return copyPathFromOwnedRoot(sourceHandle, source, destinationHandle, destination)
-}
-
 // copyPathFromOwnedRoot copies a validated source entry into an already pinned
 // destination Root. Keeping the destination descriptor supplied by the caller
 // is what makes writes survive a rename/replacement of the lexical wx root.
@@ -379,38 +343,19 @@ func validateRuleConflicts(copyRules, linkRules []string) error {
 	}
 	for i, left := range links {
 		for _, right := range links[i+1:] {
-			if left != right && (ruleContains(left, right) || ruleContains(right, left)) {
+			if left != right && (domain.IsWithin(left, right) || domain.IsWithin(right, left)) {
 				return fmt.Errorf("link rules have an ancestor/descendant conflict: %s and %s", left, right)
 			}
 		}
 	}
 	for _, copyRule := range copies {
 		for _, linkRule := range links {
-			if copyRule == linkRule || ruleContains(copyRule, linkRule) || ruleContains(linkRule, copyRule) {
+			if copyRule == linkRule || domain.IsWithin(copyRule, linkRule) || domain.IsWithin(linkRule, copyRule) {
 				return fmt.Errorf("copy and link rules overlap: %s and %s", copyRule, linkRule)
 			}
 		}
 	}
 	return nil
-}
-
-func ruleContains(parent, child string) bool {
-	rel, err := filepath.Rel(parent, child)
-	return err == nil && rel != "." && rel != ".." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-func removeOwnershipMarker(root, target string) error {
-	owner, relative, err := openMarkerRoot(root, target)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = owner.Close() }()
-	if _, err := owner.Lstat(relative); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	return owner.Remove(relative)
 }
 
 // removeOwnershipMarkerAt removes a marker through an already pinned wx root.

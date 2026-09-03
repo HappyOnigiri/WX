@@ -92,33 +92,13 @@ func TestValidateOwnershipMarkerRejectsNonDirectoryTargetWithRequiredLeaf(t *tes
 		t.Fatal(err)
 	}
 	common := t.TempDir()
-	if err := ValidateOwnershipMarker(root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("regular file target validation error=%v", err)
-	}
-}
-
-// TestValidateRegisteredWorktreeRejectsForeignLockReasonWithoutSlot covers the
-// unaffiliated-lock branch that is reachable only when the caller does not know
-// which slot to require: requireLock is true, no slot is supplied, and the
-// recorded lock reason does not carry the "wx:" prefix at all.
-func TestValidateRegisteredWorktreeRejectsForeignLockReasonWithoutSlot(t *testing.T) {
-	repository := t.TempDir()
-	gitCommand(t, repository, "init", "-b", "main")
-	gitCommand(t, repository, "config", "user.name", "test")
-	gitCommand(t, repository, "config", "user.email", "test@example.com")
-	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
 		t.Fatal(err)
 	}
-	gitCommand(t, repository, "add", ".")
-	gitCommand(t, repository, "commit", "-m", "initial")
-	target := filepath.Join(t.TempDir(), "worktree")
-	gitCommand(t, repository, "worktree", "add", "--detach", target, gitOutput(t, repository, "rev-parse", "HEAD"))
-	gitCommand(t, repository, "worktree", "lock", "--reason", "manual-lock", target)
-
-	runner := &gitx.Runner{Timeout: 5 * time.Second}
-	ctx := context.Background()
-	if err := ValidateRegisteredWorktree(ctx, runner, repository, target, "", true); err == nil {
-		t.Fatal("non-wx lock reason was accepted without a required slot")
+	defer func() { _ = owner.Close() }()
+	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("regular file target validation error=%v", err)
 	}
 }
 
@@ -238,32 +218,10 @@ func TestRegisteredWorktreeLockStatusAtSkipsRemovedWorktreeRegistration(t *testi
 	}
 }
 
-// TestRemoveOwnershipMarkerPropagatesPermissionFailures covers the Lstat
+// TestRemoveOwnershipMarkerAtPropagatesPermissionFailures covers the Lstat
 // error branch that is distinct from "already removed": the marker's
 // directory becomes unsearchable, so the lookup fails for a real reason
 // instead of os.ErrNotExist.
-func TestRemoveOwnershipMarkerPropagatesPermissionFailures(t *testing.T) {
-	root := t.TempDir()
-	target := filepath.Join(root, "slots", "slot", "root")
-	if err := os.MkdirAll(target, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	common := t.TempDir()
-	if err := EnsureOwnershipMarker(root, target, "slot", common); err != nil {
-		t.Fatal(err)
-	}
-	slotDirectory := filepath.Join(root, "slots", "slot")
-	if err := os.Chmod(slotDirectory, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(slotDirectory, 0o700) })
-	if err := removeOwnershipMarker(root, target); err == nil {
-		t.Fatal("marker removal below an unsearchable directory was accepted")
-	}
-}
-
-// TestRemoveOwnershipMarkerAtPropagatesPermissionFailures is the
-// descriptor-bound counterpart of TestRemoveOwnershipMarkerPropagatesPermissionFailures.
 func TestRemoveOwnershipMarkerAtPropagatesPermissionFailures(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "slots", "slot", "root")

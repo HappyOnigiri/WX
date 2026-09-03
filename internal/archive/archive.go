@@ -374,10 +374,13 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if !domain.IsWithin(absoluteRoot, absolutePath) {
 			return removalOwnershipFailure(errors.New("worktree path is outside wx root"))
 		}
-		if m.Preparer != nil && m.Preparer.RequireOwnedRoot {
-			if m.Preparer.OwnedRoot == nil || filepath.Clean(m.Preparer.RootPath) != absoluteRoot {
-				return removalOwnershipFailure(errors.New("descriptor-bound worktree removal is unavailable"))
-			}
+		// A Preparer holding a descriptor for a different root than the one
+		// requested here is a config/root-replacement bug: fail closed instead
+		// of silently falling through to the non-descriptor-bound removal path
+		// below. A Preparer with no descriptor at all keeps that fallback,
+		// which removeExistingWorktree already gates on the same condition.
+		if m.Preparer != nil && m.Preparer.OwnedRoot != nil && filepath.Clean(m.Preparer.RootPath) != absoluteRoot {
+			return removalOwnershipFailure(errors.New("descriptor-bound worktree removal is unavailable"))
 		}
 		relative, err := filepath.Rel(absoluteRoot, absolutePath)
 		if err != nil {
@@ -581,7 +584,7 @@ func (m *Manager) validateStateOwnership(ctx context.Context, repo discovery.Rep
 }
 
 func validateWxLockReason(reason, slotID string) error {
-	if reason != "wx:"+slotID+":READY" && reason != "wx:"+slotID+":PREPARING" && reason != "wx:"+slotID+":RESTORING" {
+	if !domain.ValidWxLockReason(reason, slotID) {
 		return fmt.Errorf("worktree lock reason does not belong to wx slot %s", slotID)
 	}
 	return nil

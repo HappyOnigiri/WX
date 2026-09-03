@@ -69,10 +69,10 @@ func TestRestorePreparationResumeAndFinishLifecycle(t *testing.T) {
 	if err := preparer.ValidateSlotWorktreeOwnership(ctx, repo, target, head, ""); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("empty replay slot ID error=%v", err)
 	}
-	if err := preparer.PrepareResume(ctx, repo, target, head, "slot"); err != nil {
+	if err := preparer.PrepareResumeWithIdentity(ctx, repo, target, head, "slot", ""); err != nil {
 		t.Fatalf("resume prepare: %v", err)
 	}
-	if err := preparer.FinishRestore(ctx, repo, target, head, "slot"); err != nil {
+	if err := preparer.FinishRestoreWithIdentity(ctx, repo, target, head, "slot", ""); err != nil {
 		t.Fatalf("finish restore: %v", err)
 	}
 	if err := preparer.ValidateOwnership(ctx, repo, target, head); err != nil {
@@ -91,7 +91,7 @@ func TestResumeAndFinishRestoreFailClosedAtBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 		preparer.Ownership = edgeOwnershipValidator{err: errors.New("ownership changed")}
-		if err := preparer.PrepareResume(ctx, repo, target, head, "slot"); !errors.Is(err, state.ErrOwnership) {
+		if err := preparer.PrepareResumeWithIdentity(ctx, repo, target, head, "slot", ""); !errors.Is(err, state.ErrOwnership) {
 			t.Fatalf("resume validation error=%v", err)
 		}
 	})
@@ -103,7 +103,7 @@ func TestResumeAndFinishRestoreFailClosedAtBoundaries(t *testing.T) {
 		cfg := preparer.Config
 		cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/false"}, Timeout: config.Duration{Duration: time.Second}}}
 		preparer.Config = cfg
-		if err := preparer.PrepareResume(ctx, repo, target, head, "slot"); err == nil {
+		if err := preparer.PrepareResumeWithIdentity(ctx, repo, target, head, "slot", ""); err == nil {
 			t.Fatal("failed resume command succeeded")
 		}
 	})
@@ -113,7 +113,7 @@ func TestResumeAndFinishRestoreFailClosedAtBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 		preparer.Ownership = &edgeCountingOwnershipValidator{failAt: 2}
-		if err := preparer.PrepareResume(ctx, repo, target, head, "slot"); !errors.Is(err, state.ErrOwnership) {
+		if err := preparer.PrepareResumeWithIdentity(ctx, repo, target, head, "slot", ""); !errors.Is(err, state.ErrOwnership) {
 			t.Fatalf("resume post-validation error=%v", err)
 		}
 	})
@@ -123,7 +123,7 @@ func TestResumeAndFinishRestoreFailClosedAtBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 		preparer.Ownership = edgeOwnershipValidator{err: errors.New("ownership changed")}
-		if err := preparer.FinishRestore(ctx, repo, target, head, "slot"); !errors.Is(err, state.ErrOwnership) {
+		if err := preparer.FinishRestoreWithIdentity(ctx, repo, target, head, "slot", ""); !errors.Is(err, state.ErrOwnership) {
 			t.Fatalf("finish initial proof error=%v", err)
 		}
 	})
@@ -134,7 +134,7 @@ func TestResumeAndFinishRestoreFailClosedAtBoundaries(t *testing.T) {
 		}
 		badRepo := repo
 		badRepo.MainPath = domain.CanonicalPath(filepath.Join(t.TempDir(), "missing-main"))
-		if err := preparer.FinishRestore(ctx, badRepo, target, head, "slot"); err == nil {
+		if err := preparer.FinishRestoreWithIdentity(ctx, badRepo, target, head, "slot", ""); err == nil {
 			t.Fatal("finish restore with missing main repository succeeded")
 		}
 	})
@@ -144,7 +144,7 @@ func TestResumeAndFinishRestoreFailClosedAtBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 		preparer.Ownership = &edgeCountingOwnershipValidator{failAt: 2}
-		if err := preparer.FinishRestore(ctx, repo, target, head, "slot"); !errors.Is(err, state.ErrOwnership) {
+		if err := preparer.FinishRestoreWithIdentity(ctx, repo, target, head, "slot", ""); !errors.Is(err, state.ErrOwnership) {
 			t.Fatalf("finish final validation error=%v", err)
 		}
 	})
@@ -185,9 +185,17 @@ func prepareEdgesFixture(t *testing.T) (string, discovery.Repository, *Preparer,
 	common := gitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
 	worktreeRoot := filepath.Join(root, "worktrees")
+	if err := os.Mkdir(worktreeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
-	preparer := &Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}}
+	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	preparer := &Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
 	target := filepath.Join(worktreeRoot, "slots", "slot", "root")
 	return repository, repo, preparer, head, target
 }
@@ -198,7 +206,7 @@ func TestPinnedPreparerLifecycleAndDescriptorBoundCommands(t *testing.T) {
 		t.Run(map[bool]string{false: "prepare", true: "restore"}[restore], func(t *testing.T) {
 			_, repo, preparer, head, target := prepareEdgesFixture(t)
 			root := preparer.Config.Storage.WorktreeRoot
-			if err := os.Mkdir(root, 0o700); err != nil {
+			if err := os.MkdirAll(root, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -208,7 +216,6 @@ func TestPinnedPreparerLifecycleAndDescriptorBoundCommands(t *testing.T) {
 			defer func() { _ = owner.Close() }()
 			preparer.OwnedRoot = owner
 			preparer.RootPath = root
-			preparer.RequireOwnedRoot = true
 
 			var prepareErr error
 			if restore {
@@ -267,7 +274,7 @@ func TestPreparerDescriptorOperationsRejectInvalidRootsAndIdentities(t *testing.
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.Mkdir(root, 0o700); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -277,7 +284,6 @@ func TestPreparerDescriptorOperationsRejectInvalidRootsAndIdentities(t *testing.
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 
 	if _, _, err := preparer.prepareTarget(filepath.Join(t.TempDir(), "outside")); err == nil {
 		t.Fatal("prepare target outside root was accepted")
@@ -499,7 +505,7 @@ func TestPrepareOnANewWorktreePropagatesLockFailure(t *testing.T) {
 func TestAddWorktreeWithIdentityRecognizesACleanFailedAdd(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.Mkdir(root, 0o700); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -509,7 +515,6 @@ func TestAddWorktreeWithIdentityRecognizesACleanFailedAdd(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 	// git fails before writing anything into the reserved leaf or registering
 	// the worktree, so addWorktreeWithIdentity must recognize the reserved
 	// namespace as clean and return the original Git error rather than an
@@ -526,7 +531,7 @@ func TestAddWorktreeWithIdentityRecognizesACleanFailedAdd(t *testing.T) {
 func TestAddWorktreeWithIdentityQuarantinesAnInterruptedAdd(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.Mkdir(root, 0o700); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -536,7 +541,6 @@ func TestAddWorktreeWithIdentityQuarantinesAnInterruptedAdd(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 	// Simulate Git being interrupted after it started writing into the
 	// reserved worktree namespace but before it reported success: the
 	// reserved leaf is left non-empty, which addWorktreeWithIdentity must

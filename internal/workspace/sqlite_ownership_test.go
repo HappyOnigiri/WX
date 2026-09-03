@@ -60,7 +60,12 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: store, SlotPath: slotPath}
+	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: store, SlotPath: slotPath, OwnedRoot: owner, RootPath: worktreeRoot}
 	err = preparer.Prepare(ctx, repo, foreignPath, head, "slot")
 	if !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("forged marker/lock accepted or wrong error: %v", err)

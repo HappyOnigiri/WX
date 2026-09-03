@@ -390,7 +390,7 @@ func (m *Manager) newPreparer(cfg config.Config, slotPath string) *workspace.Pre
 			ownedRoot = m.rootHandleForPath(root)
 		}
 	}
-	return &workspace.Preparer{Git: m.git, Config: cfg, Ownership: m.store, SlotPath: slotPath, OwnedRoot: ownedRoot, RootPath: filepath.Clean(root), RequireOwnedRoot: true}
+	return &workspace.Preparer{Git: m.git, Config: cfg, Ownership: m.store, SlotPath: slotPath, OwnedRoot: ownedRoot, RootPath: filepath.Clean(root)}
 }
 
 func (m *Manager) newArchiveManager(cfg config.Config, slotPath string) archive.Manager {

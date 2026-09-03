@@ -103,36 +103,6 @@ func ensureOwnershipMarkerAt(owner *os.Root, markerRelative string, marker owner
 	return validateMarkerContents(owner, markerRelative, marker)
 }
 
-// ValidateOwnershipMarker verifies a marker for an existing target and the
-// expected slot/common directory. It intentionally rejects a missing target;
-// removal has a separate helper because a registered worktree can be missing
-// after an interrupted physical deletion.
-func ValidateOwnershipMarker(root, target, slotID, commonDir string) error {
-	if strings.ContainsAny(slotID, `/\`) {
-		return markerOwnershipFailure(errors.New("invalid wx ownership slot id"))
-	}
-	marker, err := newOwnershipMarker(target, slotID, commonDir, false)
-	if err != nil {
-		return markerOwnershipFailure(err)
-	}
-	owner, markerRelative, err := openMarkerRoot(root, target)
-	if err != nil {
-		return markerOwnershipFailure(err)
-	}
-	defer func() { _ = owner.Close() }()
-	actual, err := readOwnershipMarker(owner, markerRelative)
-	if err != nil {
-		return markerOwnershipFailure(err)
-	}
-	if actual.Target != marker.Target || actual.CommonDir != marker.CommonDir {
-		return markerOwnershipFailure(errors.New("wx ownership marker does not match expected worktree"))
-	}
-	if slotID != "" && actual.SlotID != slotID {
-		return markerOwnershipFailure(errors.New("wx ownership marker does not match expected slot"))
-	}
-	return nil
-}
-
 // ValidateOwnershipMarkerAt verifies a marker through a previously pinned
 // root descriptor. Pathnames may be replaced after the caller obtained the
 // descriptor without redirecting this read to an outside directory.
@@ -276,10 +246,7 @@ func newOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string
 		return ownershipMarker{}, errors.New("worktree target is outside wx ownership root")
 	}
 	relative, err := filepath.Rel(absoluteRoot, absoluteTarget)
-	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		if err == nil {
-			err = errors.New("worktree target is not a descendant of wx ownership root")
-		}
+	if err != nil {
 		return ownershipMarker{}, err
 	}
 	info, statErr := owner.Lstat(relative)
@@ -433,41 +400,6 @@ func validatePhysicalPathAllowMissingLeaf(path string) error {
 	return domain.ValidatePhysicalPath(filepath.Dir(absolute), false)
 }
 
-type worktreeRecord struct {
-	Path       string
-	LockReason string
-	Locked     bool
-}
-
-// ValidateRegisteredWorktree verifies that Git still points at the physical
-// target. When required, the lock reason must bind the target to the same wx
-// slot that owns its marker.
-func ValidateRegisteredWorktree(ctx context.Context, runner *gitx.Runner, mainPath, target, slotID string, requireLock bool) error {
-	reason, found, err := RegisteredWorktreeLockReason(ctx, runner, mainPath, target)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return errors.New("worktree is not registered at its recorded path")
-	}
-	if !requireLock {
-		return nil
-	}
-	if reason == "" {
-		return errors.New("worktree is not protected by git worktree lock")
-	}
-	if slotID == "" {
-		if !strings.HasPrefix(reason, "wx:") {
-			return errors.New("worktree lock is not owned by wx")
-		}
-		return nil
-	}
-	if reason != "wx:"+slotID+":READY" && reason != "wx:"+slotID+":PREPARING" && reason != "wx:"+slotID+":RESTORING" {
-		return fmt.Errorf("worktree lock reason does not belong to wx slot %s", slotID)
-	}
-	return nil
-}
-
 // RegisteredWorktreeLockReason returns the Git lock reason for target. The
 // found result is false when Git has no registration at that path, including
 // the idempotent post-removal case.
@@ -488,7 +420,7 @@ func RegisteredWorktreeLockStatus(ctx context.Context, runner *gitx.Runner, main
 	if err != nil {
 		return "", false, false, err
 	}
-	for _, record := range parseWorktreeRecords(listed.Stdout) {
+	for _, record := range gitx.ParseWorktreeRecords(listed.Stdout) {
 		if err := validatePhysicalPathAllowMissingLeaf(record.Path); err != nil {
 			// A Git registration reached through a symlink alias is not an
 			// ownership match. Resolving it first would hide a path replacement.
@@ -527,7 +459,7 @@ func ValidateRegisteredWorktreeAt(ctx context.Context, runner *gitx.Runner, main
 		}
 		return nil
 	}
-	if reason != "wx:"+slotID+":READY" && reason != "wx:"+slotID+":PREPARING" && reason != "wx:"+slotID+":RESTORING" {
+	if !domain.ValidWxLockReason(reason, slotID) {
 		return fmt.Errorf("worktree lock reason does not belong to wx slot %s", slotID)
 	}
 	return nil
@@ -551,13 +483,13 @@ func RegisteredWorktreeLockStatusAt(ctx context.Context, runner *gitx.Runner, ma
 	if err != nil {
 		return "", false, false, err
 	}
-	for _, record := range parseWorktreeRecords(listed.Stdout) {
+	for _, record := range gitx.ParseWorktreeRecords(listed.Stdout) {
 		absoluteRecord, absErr := filepath.Abs(filepath.Clean(record.Path))
 		if absErr != nil || !domain.IsWithin(absoluteRoot, absoluteRecord) {
 			continue
 		}
 		relativeRecord, relErr := filepath.Rel(absoluteRoot, absoluteRecord)
-		if relErr != nil || relativeRecord == "." || relativeRecord == ".." || strings.HasPrefix(relativeRecord, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeRecord) {
+		if relErr != nil {
 			continue
 		}
 		if filepath.Clean(relativeRecord) != filepath.Clean(relativeTarget) {
@@ -576,34 +508,6 @@ func RegisteredWorktreeLockStatusAt(ctx context.Context, runner *gitx.Runner, ma
 		}
 	}
 	return "", false, false, nil
-}
-
-func parseWorktreeRecords(output string) []worktreeRecord {
-	var records []worktreeRecord
-	var current *worktreeRecord
-	for _, field := range strings.Split(output, "\x00") {
-		if strings.HasPrefix(field, "worktree ") {
-			if current != nil {
-				records = append(records, *current)
-			}
-			current = &worktreeRecord{Path: strings.TrimPrefix(field, "worktree ")}
-			continue
-		}
-		if current == nil {
-			continue
-		}
-		if field == "locked" {
-			current.Locked = true
-			current.LockReason = ""
-		} else if strings.HasPrefix(field, "locked ") {
-			current.Locked = true
-			current.LockReason = strings.TrimPrefix(field, "locked ")
-		}
-	}
-	if current != nil {
-		records = append(records, *current)
-	}
-	return records
 }
 
 func canonicalPathAllowMissing(path string) (string, error) {

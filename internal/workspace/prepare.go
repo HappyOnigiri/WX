@@ -9,7 +9,6 @@ import (
 	"hash"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -32,9 +31,8 @@ type Preparer struct {
 	// OwnedRoot is held by the daemon for its configured worktree root. When it
 	// is set, all target creation and descriptor-bound Git operations use this
 	// inode namespace rather than reopening a mutable pathname.
-	OwnedRoot        *os.Root
-	RootPath         string
-	RequireOwnedRoot bool
+	OwnedRoot *os.Root
+	RootPath  string
 }
 
 func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
@@ -74,13 +72,8 @@ func (p *Preparer) prepareTarget(target string) (string, string, error) {
 	if !domain.IsWithin(root, target) {
 		return "", "", fmt.Errorf("target %s is outside wx worktree root", target)
 	}
-	if p.RequireOwnedRoot && p.OwnedRoot == nil && filepath.Clean(p.RootPath) == filepath.Clean(root) {
-		return "", "", errors.New("wx worktree root descriptor is unavailable")
-	}
-	if !p.usesPinnedRoot(root) {
-		if err := ensurePhysicalRoot(root); err != nil {
-			return "", "", err
-		}
+	if err := p.requirePinnedRoot(root); err != nil {
+		return "", "", err
 	}
 	ownedRoot, relativeTarget, closeOwnedRoot, err := p.openOwnedRoot(root, target)
 	if err != nil {
@@ -111,7 +104,7 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 			// A failed preparation is removable only while ownership can still
 			// be proved. If a command or concurrent filesystem change invalidated
 			// that proof, leave the locked target and marker for quarantine/reconcile.
-			if err := p.validatePreparedTarget(context.Background(), repo, target, oid, slotID, phase, root, lockedRoot, lockedRelativeTarget, targetIdentity, "validate worktree before cleanup"); err != nil {
+			if err := p.validatePreparedTarget(context.Background(), repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "validate worktree before cleanup"); err != nil {
 				return
 			}
 			if _, err := p.runWorktreeAdminOwned(context.Background(), repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
@@ -120,11 +113,7 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 			if _, err := p.runWorktreeAdminOwned(context.Background(), repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "remove", "--force"); err != nil {
 				return
 			}
-			if p.usesPinnedRoot(root) {
-				_ = removeOwnershipMarkerAt(lockedRoot, root, target)
-			} else {
-				_ = removeOwnershipMarker(root, target)
-			}
+			_ = removeOwnershipMarkerAt(lockedRoot, root, target)
 		}
 	}()
 	if existingWorktree {
@@ -142,7 +131,7 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	// This validation is deliberately after the new lock is acquired. It
 	// proves that the marker, physical path, Git registration, OID, and
 	// lock reason still describe the same slot before any file operation.
-	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, root, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed after lock"); err != nil {
+	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed after lock"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed after lock: %w", err)
 	}
 	ownedAfterLock = true
@@ -150,37 +139,37 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	// writes into or reuses the worktree. A common-directory lock protects
 	// Git metadata, while this read-only state proof protects the slot/path
 	// association and state machine independently.
-	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, root, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before includes"); err != nil {
+	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before includes"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed before includes: %w", err)
 	}
-	if err := p.copyIncludesAt(repo, target, lockedRoot, lockedRelativeTarget); err != nil {
+	if err := p.copyIncludesAt(repo, lockedRoot, lockedRelativeTarget); err != nil {
 		return err
 	}
-	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, root, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before links"); err != nil {
+	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before links"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed before links: %w", err)
 	}
-	if err := p.createLinksAt(ctx, repo, target, lockedRoot, lockedRelativeTarget); err != nil {
+	if err := p.createLinksAt(ctx, repo, lockedRoot, lockedRelativeTarget); err != nil {
 		return err
 	}
 	if phase == preparePhaseCreate {
-		if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, root, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before prepare command"); err != nil {
+		if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before prepare command"); err != nil {
 			return fmt.Errorf("wx worktree ownership changed before prepare command: %w", err)
 		}
-		if err := p.runPrepare(ctx, repo, target); err != nil {
+		if err := p.runPrepareWithIdentity(ctx, repo, target, ""); err != nil {
 			return err
 		}
-		if err := p.verifyPreparedTargetIdentity(root, lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
+		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
 			return fmt.Errorf("wx worktree ownership changed during prepare command: %w", err)
 		}
 	}
 	if phase == preparePhaseCreate {
-		if err := p.verifyPreparedTargetIdentity(root, lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
+		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
 			return fmt.Errorf("wx worktree ownership changed before tracked status: %w", err)
 		}
 		if err := p.validateTrackedClean(ctx, target); err != nil {
 			return err
 		}
-		if err := p.verifyPreparedTargetIdentity(root, lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
+		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
 			return fmt.Errorf("wx worktree ownership changed during tracked status: %w", err)
 		}
 	}
@@ -192,14 +181,14 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	if targetIdentity != "" && currentIdentity != targetIdentity {
 		return fmt.Errorf("%w: prepared worktree identity changed (expected %s, got %s)", state.ErrOwnership, targetIdentity, currentIdentity)
 	}
-	head, err := p.runGitInDirectory(ctx, target, targetRoot, "rev-parse", "HEAD")
+	head, err := p.runGitInDirectory(ctx, targetRoot, "rev-parse", "HEAD")
 	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(head.Stdout) != oid {
 		return fmt.Errorf("prepared HEAD differs from requested OID")
 	}
-	if _, err := p.runGitInDirectory(ctx, target, targetRoot, "symbolic-ref", "-q", "HEAD"); err == nil {
+	if _, err := p.runGitInDirectory(ctx, targetRoot, "symbolic-ref", "-q", "HEAD"); err == nil {
 		return errors.New("prepared worktree is not detached")
 	}
 	if phase == preparePhaseRestore {
@@ -215,7 +204,7 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	if err != nil {
 		return err
 	}
-	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, root, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before READY"); err != nil {
+	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before READY"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed before READY: %w", err)
 	}
 	cleanup = false
@@ -269,14 +258,8 @@ func (p *Preparer) prepareLockedTarget(ctx context.Context, repo discovery.Repos
 	if err := p.validateStateOwnership(ctx, repo, target, slotID, prepareSlotStates, prepareRepositoryStates); err != nil {
 		return nil, fmt.Errorf("wx worktree ownership changed before marker: %w", err)
 	}
-	var markerErr error
-	if p.usesPinnedRoot(root) {
-		markerErr = EnsureOwnershipMarkerAt(lockedRoot, root, target, slotID, string(repo.CommonDir))
-	} else {
-		markerErr = EnsureOwnershipMarker(root, target, slotID, string(repo.CommonDir))
-	}
-	if markerErr != nil {
-		return nil, fmt.Errorf("prepare wx ownership marker: %w", markerErr)
+	if err := EnsureOwnershipMarkerAt(lockedRoot, root, target, slotID, string(repo.CommonDir)); err != nil {
+		return nil, fmt.Errorf("prepare wx ownership marker: %w", err)
 	}
 	if !existingWorktree {
 		parentDirectory, _, parentErr := domain.OpenDirectoryAt(lockedRoot, filepath.Dir(lockedRelativeTarget))
@@ -293,7 +276,7 @@ func (p *Preparer) prepareLockedTarget(ctx context.Context, repo discovery.Repos
 		if err != nil {
 			return nil, err
 		}
-		if err := p.verifyPreparedTargetIdentity(root, lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
+		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
 			return nil, fmt.Errorf("prepared worktree escaped ownership root: %w", err)
 		}
 	}
@@ -301,12 +284,18 @@ func (p *Preparer) prepareLockedTarget(ctx context.Context, repo discovery.Repos
 	return &lockedTarget{root: lockedRoot, relative: lockedRelativeTarget, identity: targetIdentity, existing: existingWorktree, close: closeLockedRoot}, nil
 }
 
-func (p *Preparer) usesPinnedRoot(root string) bool {
-	return (p.OwnedRoot != nil || p.RequireOwnedRoot) && filepath.Clean(p.RootPath) == filepath.Clean(root)
+// requirePinnedRoot fails closed unless the daemon-held root descriptor is
+// present and pinned to root. Production always constructs a Preparer this
+// way; there is no fallback to a mutable pathname.
+func (p *Preparer) requirePinnedRoot(root string) error {
+	if p.OwnedRoot == nil || filepath.Clean(p.RootPath) != filepath.Clean(root) {
+		return errors.New("wx worktree root descriptor is unavailable")
+	}
+	return nil
 }
 
-func (p *Preparer) verifyPreparedTargetIdentity(root string, lockedRoot *os.Root, relative, expected string) error {
-	if expected == "" || !p.usesPinnedRoot(root) {
+func (p *Preparer) verifyPreparedTargetIdentity(lockedRoot *os.Root, relative, expected string) error {
+	if expected == "" {
 		return nil
 	}
 	currentDirectory, currentIdentity, identityErr := domain.OpenDirectoryAt(lockedRoot, relative)
@@ -322,35 +311,28 @@ func (p *Preparer) verifyPreparedTargetIdentity(root string, lockedRoot *os.Root
 	return nil
 }
 
-func (p *Preparer) validatePreparedTarget(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, root string, lockedRoot *os.Root, relative, expected, stage string) error {
-	if identityErr := p.verifyPreparedTargetIdentity(root, lockedRoot, relative, expected); identityErr != nil {
+func (p *Preparer) validatePreparedTarget(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, lockedRoot *os.Root, relative, expected, stage string) error {
+	if identityErr := p.verifyPreparedTargetIdentity(lockedRoot, relative, expected); identityErr != nil {
 		return fmt.Errorf("%s: %w", stage, identityErr)
 	}
 	if validationErr := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, phase); validationErr != nil {
 		return validationErr
 	}
-	if identityErr := p.verifyPreparedTargetIdentity(root, lockedRoot, relative, expected); identityErr != nil {
+	if identityErr := p.verifyPreparedTargetIdentity(lockedRoot, relative, expected); identityErr != nil {
 		return fmt.Errorf("%s after validation: %w", stage, identityErr)
 	}
 	return nil
 }
 
 func (p *Preparer) openOwnedRoot(root, target string) (*os.Root, string, func(), error) {
-	if p.usesPinnedRoot(root) {
-		if p.OwnedRoot == nil {
-			return nil, "", func() {}, errors.New("wx worktree root descriptor is unavailable")
-		}
-		relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(target))
-		if err != nil {
-			return nil, "", func() {}, err
-		}
-		return p.OwnedRoot, relative, func() {}, nil
+	if err := p.requirePinnedRoot(root); err != nil {
+		return nil, "", func() {}, err
 	}
-	owned, relative, err := domain.OpenOwnedRoot(root, target)
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(target))
 	if err != nil {
 		return nil, "", func() {}, err
 	}
-	return owned, relative, func() { _ = owned.Close() }, nil
+	return p.OwnedRoot, relative, func() {}, nil
 }
 
 // addWorktree reserves the target namespace by creating/opening its final
@@ -364,10 +346,6 @@ func (p *Preparer) addWorktree(ctx context.Context, repo discovery.Repository, o
 }
 
 func (p *Preparer) addWorktreeWithIdentity(ctx context.Context, repo discovery.Repository, owner *os.Root, target, relativeTarget, oid string) (string, error) {
-	if !p.usesPinnedRoot(p.RootPath) {
-		_, err := p.Git.Run(ctx, string(repo.MainPath), "worktree", "add", "--detach", target, oid)
-		return "", err
-	}
 	parentRelative := filepath.Dir(relativeTarget)
 	parent, _, err := domain.OpenDirectoryAt(owner, parentRelative)
 	if err != nil {
@@ -437,15 +415,12 @@ func (p *Preparer) runWorktreeAdmin(ctx context.Context, repo discovery.Reposito
 // checks is ownership-uncertain because the target may have been renamed or
 // replaced while Git was being started, so it is returned as ErrOwnership.
 func (p *Preparer) RemoveWorktreeAt(ctx context.Context, repo discovery.Repository, root, target, expectedIdentity string) error {
-	if !p.usesPinnedRoot(root) || p.OwnedRoot == nil {
+	if err := p.requirePinnedRoot(root); err != nil {
 		return fmt.Errorf("%w: descriptor-bound worktree removal requires the pinned root", state.ErrOwnership)
 	}
-	relativeTarget, err := filepath.Rel(filepath.Clean(root), filepath.Clean(target))
-	if err != nil || relativeTarget == "." || relativeTarget == ".." || strings.HasPrefix(relativeTarget, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeTarget) {
-		if err == nil {
-			err = errors.New("worktree target is outside the pinned root")
-		}
-		return fmt.Errorf("%w: %w", state.ErrOwnership, err)
+	relativeTarget, err := domain.RelativeWithin(filepath.Clean(root), filepath.Clean(target))
+	if err != nil {
+		return fmt.Errorf("%w: worktree target is outside the pinned root: %w", state.ErrOwnership, err)
 	}
 	if _, err := p.runWorktreeAdminOwned(ctx, repo, p.OwnedRoot, relativeTarget, target, expectedIdentity, "remove", "--force"); err != nil {
 		return fmt.Errorf("%w: descriptor-bound worktree removal is uncertain: %w", state.ErrOwnership, err)
@@ -454,10 +429,8 @@ func (p *Preparer) RemoveWorktreeAt(ctx context.Context, repo discovery.Reposito
 }
 
 func (p *Preparer) runWorktreeAdminOwned(ctx context.Context, repo discovery.Repository, owner *os.Root, relativeTarget, target, expectedIdentity string, args ...string) (gitx.Result, error) {
-	if !p.usesPinnedRoot(p.RootPath) && expectedIdentity == "" {
-		command := append([]string{"worktree"}, args...)
-		command = append(command, target)
-		return p.Git.Run(ctx, string(repo.MainPath), command...)
+	if p.OwnedRoot == nil {
+		return gitx.Result{}, errors.New("wx worktree root descriptor is unavailable")
 	}
 	targetDirectory, identity, err := domain.OpenDirectoryAt(owner, relativeTarget)
 	if err != nil {
@@ -487,13 +460,6 @@ func (p *Preparer) runWorktreeAdminOwned(ctx context.Context, repo discovery.Rep
 	return result, runErr
 }
 
-// PrepareResume runs only the resume phase of a repository prepare. The
-// caller invokes it after restoring the snapshot tree and index, so commands
-// can inspect the recovered files and their staged state.
-func (p *Preparer) PrepareResume(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
-	return p.PrepareResumeWithIdentity(ctx, repo, target, oid, slotID, "")
-}
-
 // PrepareResumeWithIdentity is the descriptor-bound resume phase. The
 // identity is supplied by archive.Manager after the clean base is prepared and
 // remains attached through the resume command and its final ownership proof.
@@ -514,13 +480,6 @@ func (p *Preparer) PrepareResumeWithIdentity(ctx context.Context, repo discovery
 		return fmt.Errorf("wx worktree ownership changed during resume prepare: %w", err)
 	}
 	return nil
-}
-
-// FinishRestore transitions a successfully restored repository from its
-// RESTORING lock to the READY lock. The final ownership check occurs while the
-// restore lock is still held and again after the READY lock is acquired.
-func (p *Preparer) FinishRestore(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
-	return p.FinishRestoreWithIdentity(ctx, repo, target, oid, slotID, "")
 }
 
 // FinishRestoreWithIdentity transitions a restored worktree to READY while
@@ -603,24 +562,8 @@ func readOwnedDirectory(root *os.Root, relative string) ([]string, error) {
 	return directory.Readdirnames(-1)
 }
 
-func ensurePhysicalRoot(path string) error {
-	ownedRoot, err := domain.EnsurePhysicalDirectoryRoot(path, 0o700)
-	if err != nil {
-		return fmt.Errorf("open wx worktree root safely: %w", err)
-	}
-	defer func() { _ = ownedRoot.Close() }()
-	if err := ownedRoot.Chmod(".", 0o700); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (p *Preparer) validateExistingWorktree(ctx context.Context, repo discovery.Repository, target, oid string) error {
-	return p.validateExistingWorktreeOwned(ctx, repo, target, oid, "")
-}
-
-func (p *Preparer) validateExistingWorktreeOwned(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
-	return p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseCreate)
+	return p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, "", preparePhaseCreate)
 }
 
 func (p *Preparer) validateExistingWorktreeOwnedForPhase(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase) error {
@@ -680,11 +623,7 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 		return fmt.Errorf("open worktree ownership root: %w", err)
 	}
 	defer closeOwner()
-	if p.usesPinnedRoot(root) {
-		if err := ValidateOwnershipMarkerAt(owner, root, target, slotID, string(repo.CommonDir)); err != nil {
-			return err
-		}
-	} else if err := ValidateOwnershipMarker(root, target, slotID, string(repo.CommonDir)); err != nil {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, slotID, string(repo.CommonDir)); err != nil {
 		return err
 	}
 	ownedTarget, targetIdentity, err := domain.OpenDirectoryAt(owner, relativeTarget)
@@ -697,7 +636,7 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 	if err != nil || gitMarker.Mode()&os.ModeSymlink != 0 {
 		return errors.New("missing or unsafe .git marker")
 	}
-	common, err := p.runGitInDirectory(ctx, target, targetRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	common, err := p.runGitInDirectory(ctx, targetRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return err
 	}
@@ -709,20 +648,16 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 	if err != nil || actualCommon != expectedCommon {
 		return errors.New("common Git directory does not match")
 	}
-	head, err := p.runGitInDirectory(ctx, target, targetRoot, "rev-parse", "HEAD")
+	head, err := p.runGitInDirectory(ctx, targetRoot, "rev-parse", "HEAD")
 	detached := false
 	if err == nil {
-		_, detachedErr := p.runGitInDirectory(ctx, target, targetRoot, "symbolic-ref", "-q", "HEAD")
+		_, detachedErr := p.runGitInDirectory(ctx, targetRoot, "symbolic-ref", "-q", "HEAD")
 		detached = detachedErr != nil
 	}
 	if err != nil || strings.TrimSpace(head.Stdout) != oid || !detached {
 		return errors.New("HEAD is not the expected detached commit")
 	}
-	if p.usesPinnedRoot(root) {
-		if err := ValidateRegisteredWorktreeAt(ctx, p.Git, string(repo.MainPath), owner, root, relativeTarget, targetIdentity, slotID, slotID != ""); err != nil {
-			return err
-		}
-	} else if err := ValidateRegisteredWorktree(ctx, p.Git, string(repo.MainPath), target, slotID, slotID != ""); err != nil {
+	if err := ValidateRegisteredWorktreeAt(ctx, p.Git, string(repo.MainPath), owner, root, relativeTarget, targetIdentity, slotID, slotID != ""); err != nil {
 		return err
 	}
 	if slotID == "" {
@@ -734,11 +669,8 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 	return nil
 }
 
-func (p *Preparer) runGitInDirectory(ctx context.Context, target string, directory *os.File, args ...string) (gitx.Result, error) {
-	if p.usesPinnedRoot(p.RootPath) {
-		return p.Git.RunAt(ctx, directory, nil, nil, args...)
-	}
-	return p.Git.Run(ctx, target, args...)
+func (p *Preparer) runGitInDirectory(ctx context.Context, directory *os.File, args ...string) (gitx.Result, error) {
+	return p.Git.RunAt(ctx, directory, nil, nil, args...)
 }
 
 // WorktreeIdentity returns the device/inode identity of target through the
@@ -795,9 +727,6 @@ func (p *Preparer) RunGitInWorktree(ctx context.Context, target, expectedIdentit
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
 		return gitx.Result{}, err
-	}
-	if !p.usesPinnedRoot(root) && expectedIdentity == "" {
-		return p.Git.RunEnvInput(ctx, target, env, input, args...)
 	}
 	owner, relative, closeOwner, err := p.openOwnedRoot(root, filepath.Clean(target))
 	if err != nil {
@@ -864,39 +793,31 @@ func (p *Preparer) ValidateOwnership(ctx context.Context, repo discovery.Reposit
 	if err != nil {
 		return err
 	}
-	if p.usesPinnedRoot(root) {
-		owner, relativeTarget, closeOwner, openErr := p.openOwnedRoot(root, target)
-		if openErr != nil {
-			return openErr
-		}
-		defer closeOwner()
-		directory, targetIdentity, openErr := domain.OpenDirectoryAt(owner, relativeTarget)
-		if openErr != nil {
-			return openErr
-		}
-		closeErr := directory.Close()
-		if closeErr != nil {
-			return closeErr
-		}
-		if err := ValidateRegisteredWorktreeAt(ctx, p.Git, string(repo.MainPath), owner, root, relativeTarget, targetIdentity, slotID, true); err != nil {
-			return err
-		}
-	} else if err := ValidateRegisteredWorktree(ctx, p.Git, string(repo.MainPath), target, slotID, true); err != nil {
+	owner, relativeTarget, closeOwner, openErr := p.openOwnedRoot(root, target)
+	if openErr != nil {
+		return openErr
+	}
+	defer closeOwner()
+	directory, targetIdentity, openErr := domain.OpenDirectoryAt(owner, relativeTarget)
+	if openErr != nil {
+		return openErr
+	}
+	if closeErr := directory.Close(); closeErr != nil {
+		return closeErr
+	}
+	if err := ValidateRegisteredWorktreeAt(ctx, p.Git, string(repo.MainPath), owner, root, relativeTarget, targetIdentity, slotID, true); err != nil {
 		return err
 	}
 	return p.validateStateOwnership(ctx, repo, target, slotID, allOwnershipSlotStates, allOwnershipRepositoryStates)
 }
 
 func (p *Preparer) validateRemovalOwnership(root, target, common string) (string, error) {
-	if p.usesPinnedRoot(root) {
-		owner, _, closeOwner, err := p.openOwnedRoot(root, target)
-		if err != nil {
-			return "", err
-		}
-		defer closeOwner()
-		return ValidateRemovalOwnershipAt(owner, root, target, common)
+	owner, _, closeOwner, err := p.openOwnedRoot(root, target)
+	if err != nil {
+		return "", err
 	}
-	return ValidateRemovalOwnership(root, target, common)
+	defer closeOwner()
+	return ValidateRemovalOwnershipAt(owner, root, target, common)
 }
 
 // ValidateRestoringOwnership is the slot-bound ownership check used while a
@@ -939,23 +860,21 @@ func (p *Preparer) validateStateOwnership(ctx context.Context, repo discovery.Re
 }
 
 func (p *Preparer) validateTrackedClean(ctx context.Context, target string) error {
-	var status gitx.Result
-	var err error
-	if root, rootErr := config.ExpandHome(p.Config.Storage.WorktreeRoot); rootErr == nil && p.usesPinnedRoot(root) {
-		owner, relative, closeOwner, openErr := p.openOwnedRoot(root, target)
-		if openErr != nil {
-			return openErr
-		}
-		defer closeOwner()
-		directory, _, openErr := domain.OpenDirectoryAt(owner, relative)
-		if openErr != nil {
-			return openErr
-		}
-		defer func() { _ = directory.Close() }()
-		status, err = p.Git.RunAt(ctx, directory, nil, nil, "status", "--porcelain=v1", "--untracked-files=no")
-	} else {
-		status, err = p.Git.Run(ctx, target, "status", "--porcelain=v1", "--untracked-files=no")
+	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	if err != nil {
+		return err
 	}
+	owner, relative, closeOwner, err := p.openOwnedRoot(root, target)
+	if err != nil {
+		return err
+	}
+	defer closeOwner()
+	directory, _, err := domain.OpenDirectoryAt(owner, relative)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = directory.Close() }()
+	status, err := p.Git.RunAt(ctx, directory, nil, nil, "status", "--porcelain=v1", "--untracked-files=no")
 	if err != nil {
 		return err
 	}
@@ -967,34 +886,31 @@ func (p *Preparer) validateTrackedClean(ctx context.Context, target string) erro
 
 func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
-	if err == nil && p.usesPinnedRoot(root) {
-		owner, relativeTarget, closeOwner, openErr := p.openOwnedRoot(root, filepath.Clean(target))
-		if openErr != nil {
-			return openErr
-		}
-		defer closeOwner()
-		return p.copyIncludesAt(repo, target, owner, relativeTarget)
+	if err != nil {
+		return err
 	}
-	return p.copyIncludesAt(repo, target, nil, "")
+	owner, relativeTarget, closeOwner, err := p.openOwnedRoot(root, filepath.Clean(target))
+	if err != nil {
+		return err
+	}
+	defer closeOwner()
+	return p.copyIncludesAt(repo, owner, relativeTarget)
 }
 
-// copyIncludesAt is the descriptor-bound include materializer. When owner is
-// supplied, destinationRoot is opened from that already pinned namespace and
-// every write is relative to it; the lexical target pathname is never used for
-// a destination syscall.
-func (p *Preparer) copyIncludesAt(repo discovery.Repository, target string, owner *os.Root, relativeTarget string) error {
+// copyIncludesAt is the descriptor-bound include materializer. destinationRoot
+// is opened from the already pinned owner namespace and every write is
+// relative to it; the lexical target pathname is never used for a destination
+// syscall.
+func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, relativeTarget string) error {
 	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreeinclude")
 	if err != nil {
 		return err
 	}
-	var destinationRoot *os.Root
-	if owner != nil {
-		destinationRoot, err = domain.OpenRootAt(owner, relativeTarget)
-		if err != nil {
-			return fmt.Errorf("open include destination: %w", err)
-		}
-		defer func() { _ = destinationRoot.Close() }()
+	destinationRoot, err := domain.OpenRootAt(owner, relativeTarget)
+	if err != nil {
+		return fmt.Errorf("open include destination: %w", err)
 	}
+	defer func() { _ = destinationRoot.Close() }()
 	for _, pattern := range patterns {
 		clean := filepath.Clean(pattern)
 		if filepath.IsAbs(pattern) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
@@ -1017,17 +933,12 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, target string, owne
 			if err == nil && strings.TrimSpace(tracked.Stdout) != "" {
 				return fmt.Errorf(".worktreeinclude would overwrite tracked path %s", rel)
 			}
-			var copyErr error
-			if destinationRoot != nil {
-				sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
-				if sourceErr != nil {
-					return sourceErr
-				}
-				copyErr = copyPathFromOwnedRoot(sourceRoot, rel, destinationRoot, rel)
-				_ = sourceRoot.Close()
-			} else {
-				copyErr = copyPathFromRoots(string(repo.MainPath), rel, target, rel)
+			sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
+			if sourceErr != nil {
+				return sourceErr
 			}
+			copyErr := copyPathFromOwnedRoot(sourceRoot, rel, destinationRoot, rel)
+			_ = sourceRoot.Close()
 			if copyErr != nil {
 				return copyErr
 			}
@@ -1038,21 +949,21 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, target string, owne
 
 func (p *Preparer) createLinks(ctx context.Context, repo discovery.Repository, target string) error {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
-	if err == nil && p.usesPinnedRoot(root) {
-		owner, relativeTarget, closeOwner, openErr := p.openOwnedRoot(root, filepath.Clean(target))
-		if openErr != nil {
-			return openErr
-		}
-		defer closeOwner()
-		return p.createLinksAt(ctx, repo, target, owner, relativeTarget)
+	if err != nil {
+		return err
 	}
-	return p.createLinksAt(ctx, repo, target, nil, "")
+	owner, relativeTarget, closeOwner, err := p.openOwnedRoot(root, filepath.Clean(target))
+	if err != nil {
+		return err
+	}
+	defer closeOwner()
+	return p.createLinksAt(ctx, repo, owner, relativeTarget)
 }
 
 // createLinksAt mirrors createLinks while keeping the destination Root open
 // across all checks and symlink creation. This closes the root replacement
 // window between validating the worktree and writing an ignored link.
-func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository, target string, owner *os.Root, relativeTarget string) error {
+func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository, owner *os.Root, relativeTarget string) error {
 	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreelink")
 	if err != nil {
 		return err
@@ -1060,14 +971,11 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 	if err := validateRuleConflicts(nil, patterns); err != nil {
 		return err
 	}
-	var pinnedDestination *os.Root
-	if owner != nil {
-		pinnedDestination, err = domain.OpenRootAt(owner, relativeTarget)
-		if err != nil {
-			return fmt.Errorf("open link destination: %w", err)
-		}
-		defer func() { _ = pinnedDestination.Close() }()
+	destinationRoot, err := domain.OpenRootAt(owner, relativeTarget)
+	if err != nil {
+		return fmt.Errorf("open link destination: %w", err)
 	}
+	defer func() { _ = destinationRoot.Close() }()
 	for _, rel := range patterns {
 		clean := filepath.Clean(rel)
 		if filepath.IsAbs(rel) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
@@ -1080,52 +988,29 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		if err := domain.ValidatePhysicalPath(source, false); err != nil {
 			return fmt.Errorf(".worktreelink source %s is not physical: %w", rel, err)
 		}
-		destinationRoot := pinnedDestination
-		closeDestination := func() {}
-		if destinationRoot == nil {
-			if err := domain.ValidatePhysicalPath(target, false); err != nil {
-				return fmt.Errorf(".worktreelink target is not physical: %w", err)
-			}
-			destinationRoot, err = OpenPhysicalRoot(target)
-			if err != nil {
-				return err
-			}
-			closeDestination = func() { _ = destinationRoot.Close() }
-		}
 		destinationRelative, err := safeRelative(clean)
 		if err != nil {
-			closeDestination()
 			return err
 		}
 		if err := ensureRootDirectory(destinationRoot, filepath.Dir(destinationRelative)); err != nil {
-			closeDestination()
 			return err
 		}
 		if info, err := destinationRoot.Lstat(destinationRelative); err == nil {
 			if info.Mode()&os.ModeSymlink != 0 {
 				existing, readErr := destinationRoot.Readlink(destinationRelative)
 				if readErr == nil && existing == source {
-					closeDestination()
 					continue
 				}
 			}
-			closeDestination()
 			return fmt.Errorf(".worktreelink target collision %s", rel)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			closeDestination()
 			return err
 		}
 		if err := destinationRoot.Symlink(source, destinationRelative); err != nil {
-			closeDestination()
 			return err
 		}
-		closeDestination()
 	}
 	return nil
-}
-
-func (p *Preparer) runPrepare(ctx context.Context, repo discovery.Repository, target string) error {
-	return p.runPrepareWithIdentity(ctx, repo, target, "")
 }
 
 func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Repository, target, expectedIdentity string) error {
@@ -1139,39 +1024,36 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if root, rootErr := config.ExpandHome(p.Config.Storage.WorktreeRoot); rootErr == nil && (p.usesPinnedRoot(root) || expectedIdentity != "") {
-		owner, relative, closeOwner, err := p.openOwnedRoot(root, target)
-		if err != nil {
-			return fmt.Errorf("open prepare command directory: %w", err)
-		}
-		defer closeOwner()
-		directory, identity, err := domain.OpenDirectoryAt(owner, relative)
-		if err != nil {
-			return fmt.Errorf("open prepare command directory: %w", err)
-		}
-		defer func() { _ = directory.Close() }()
-		if expectedIdentity != "" && identity != expectedIdentity {
-			return fmt.Errorf("%w: worktree target identity changed before prepare command (expected %s, got %s)", state.ErrOwnership, expectedIdentity, identity)
-		}
-		cmd, err := fdexec.Start(cctx, p.Git.FDHelper, directory, os.Environ(), override.Prepare.Command...)
-		if err != nil {
-			return err
-		}
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		runErr := cmd.Run()
-		if expectedIdentity != "" {
-			if identityErr := p.VerifyWorktreeIdentity(target, expectedIdentity); identityErr != nil {
-				return fmt.Errorf("worktree target identity changed during prepare command: %w", identityErr)
-			}
-		}
-		return runErr
+	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	if err != nil {
+		return fmt.Errorf("open prepare command directory: %w", err)
 	}
-	cmd := exec.CommandContext(cctx, override.Prepare.Command[0], override.Prepare.Command[1:]...)
-	cmd.Dir = target
+	owner, relative, closeOwner, err := p.openOwnedRoot(root, target)
+	if err != nil {
+		return fmt.Errorf("open prepare command directory: %w", err)
+	}
+	defer closeOwner()
+	directory, identity, err := domain.OpenDirectoryAt(owner, relative)
+	if err != nil {
+		return fmt.Errorf("open prepare command directory: %w", err)
+	}
+	defer func() { _ = directory.Close() }()
+	if expectedIdentity != "" && identity != expectedIdentity {
+		return fmt.Errorf("%w: worktree target identity changed before prepare command (expected %s, got %s)", state.ErrOwnership, expectedIdentity, identity)
+	}
+	cmd, err := fdexec.Start(cctx, p.Git.FDHelper, directory, os.Environ(), override.Prepare.Command...)
+	if err != nil {
+		return err
+	}
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	return cmd.Run()
+	runErr := cmd.Run()
+	if expectedIdentity != "" {
+		if identityErr := p.VerifyWorktreeIdentity(target, expectedIdentity); identityErr != nil {
+			return fmt.Errorf("worktree target identity changed during prepare command: %w", identityErr)
+		}
+	}
+	return runErr
 }
 
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
@@ -1462,14 +1344,4 @@ func safeRelative(path string) (string, error) {
 		return "", fmt.Errorf("unsafe workspace root path %q", path)
 	}
 	return clean, nil
-}
-
-func copyPath(src, dst string) error {
-	if err := domain.ValidatePhysicalPath(src, false); err != nil {
-		return err
-	}
-	if err := domain.EnsurePhysicalDirectory(filepath.Dir(dst), 0o700); err != nil {
-		return err
-	}
-	return copyPathFromRoots(filepath.Dir(src), filepath.Base(src), filepath.Dir(dst), filepath.Base(dst))
 }

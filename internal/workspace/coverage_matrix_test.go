@@ -17,75 +17,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-func TestUnpinnedMaterializersAndOwnershipValidation(t *testing.T) {
-	repository, repo, preparer, _, target := prepareEdgesFixture(t)
-	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.MkdirAll(target, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("local.env\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repository, "local.env"), []byte("local\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("shared\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(repository, "shared"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("shared\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := preparer.copyIncludes(repo, target); err != nil {
-		t.Fatalf("unpinned include materialization: %v", err)
-	}
-	if err := preparer.copyIncludes(repo, target); err != nil {
-		t.Fatalf("idempotent unpinned include materialization: %v", err)
-	}
-	if data, err := os.ReadFile(filepath.Join(target, "local.env")); err != nil || string(data) != "local\n" {
-		t.Fatalf("included file=%q err=%v", data, err)
-	}
-	if err := preparer.createLinks(context.Background(), repo, target); err != nil {
-		t.Fatalf("unpinned link materialization: %v", err)
-	}
-	if err := preparer.createLinks(context.Background(), repo, target); err != nil {
-		t.Fatalf("idempotent unpinned link materialization: %v", err)
-	}
-	if link, err := os.Readlink(filepath.Join(target, "shared")); err != nil || link != filepath.Join(repository, "shared") {
-		t.Fatalf("materialized link=%q err=%v", link, err)
-	}
-
-	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("tracked\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := preparer.copyIncludes(repo, target); err == nil || !strings.Contains(err.Error(), "overwrite tracked path") {
-		t.Fatalf("tracked include error=%v", err)
-	}
-	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("../outside\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := preparer.copyIncludes(repo, target); err == nil {
-		t.Fatal("unsafe include pattern succeeded")
-	}
-
-	if err := os.Remove(filepath.Join(target, "shared")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(target, "shared"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := preparer.createLinks(context.Background(), repo, target); err == nil || !strings.Contains(err.Error(), "collision") {
-		t.Fatalf("link collision error=%v", err)
-	}
-
-	if _, err := os.Stat(root); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestWorktreeOwnershipValidationCoversPhysicalAndGitBoundaries(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -100,7 +31,6 @@ func TestWorktreeOwnershipValidationCoversPhysicalAndGitBoundaries(t *testing.T)
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 
 	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
 		t.Fatalf("prepare descriptor-bound worktree: %v", err)
@@ -162,8 +92,8 @@ func TestPreparationHelpersRejectMissingDescriptorsAndUnsupportedTargets(t *test
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
-	preparer.RequireOwnedRoot = true
 	preparer.RootPath = root
+	preparer.OwnedRoot = nil
 	if _, _, err := preparer.prepareTarget(target); err == nil {
 		t.Fatal("prepare target accepted a missing required descriptor")
 	}
@@ -187,10 +117,8 @@ func TestPreparationHelpersRejectMissingDescriptorsAndUnsupportedTargets(t *test
 		cfg.Storage.WorktreeRoot = plainRoot
 		return cfg
 	}()}
-	if _, _, _, err := plainPreparer.openOwnedRoot(plainRoot, filepath.Join(plainRoot, "target")); err != nil {
-		// A missing target is expected to fail only when the descriptor root itself
-		// cannot provide a safe parent; make the assertion explicit below instead.
-		t.Logf("missing target descriptor result: %v", err)
+	if _, _, _, err := plainPreparer.openOwnedRoot(plainRoot, filepath.Join(plainRoot, "target")); err == nil {
+		t.Fatal("openOwnedRoot accepted a preparer without a pinned root descriptor")
 	}
 	if err := plainPreparer.validateStateOwnership(ctx, repo, target, "", nil, nil); err != nil {
 		t.Fatalf("empty slot state validation should be a no-op: %v", err)
@@ -261,12 +189,6 @@ func TestFilesystemHelperMatrixCoversPhysicalGlobAndCopyBoundaries(t *testing.T)
 	if err := destinationRoot.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyPathFromRoots(filepath.Join(source, "missing"), "regular", destination, "copy"); err == nil {
-		t.Fatal("copy from missing root succeeded")
-	}
-	if err := copyPathFromRoots(source, "../regular", destination, "copy"); err == nil {
-		t.Fatal("copy with unsafe source path succeeded")
-	}
 }
 
 func TestPhysicalManifestAndMarkerRemovalBoundaries(t *testing.T) {
@@ -301,21 +223,18 @@ func TestPhysicalManifestAndMarkerRemovalBoundaries(t *testing.T) {
 	if err := EnsureOwnershipMarker(root, target, "s", root); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeOwnershipMarker(root, target); err != nil {
-		t.Fatal(err)
-	}
-	if err := removeOwnershipMarker(root, target); err != nil {
-		t.Fatal(err)
-	}
 	owner, err := OpenPhysicalRoot(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := removeOwnershipMarkerAt(nil, root, target); err == nil {
-		t.Fatal("nil marker removal root was accepted")
-	}
 	if err := removeOwnershipMarkerAt(owner, root, target); err != nil {
 		t.Fatal(err)
+	}
+	if err := removeOwnershipMarkerAt(owner, root, target); err != nil {
+		t.Fatalf("idempotent marker removal: %v", err)
+	}
+	if err := removeOwnershipMarkerAt(nil, root, target); err == nil {
+		t.Fatal("nil marker removal root was accepted")
 	}
 	if err := owner.Close(); err != nil {
 		t.Fatal(err)
@@ -326,7 +245,7 @@ func TestPinnedPrepareCommandRunsInsideValidatedWorktree(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.Mkdir(root, 0o700); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -336,7 +255,6 @@ func TestPinnedPrepareCommandRunsInsideValidatedWorktree(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 	if err := preparer.Prepare(ctx, repo, target, head, "prepare-command"); err != nil {
 		t.Fatal(err)
 	}
@@ -357,8 +275,8 @@ func TestPinnedPrepareCommandRunsInsideValidatedWorktree(t *testing.T) {
 	// budget, keeping the ordinary path covered as well.
 	cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{Command: []string{"/usr/bin/true"}}}
 	preparer.Config = cfg
-	plain := &Preparer{Config: cfg}
-	if err := plain.runPrepare(ctx, repo, target); err != nil {
+	plain := &Preparer{Git: preparer.Git, Config: cfg, OwnedRoot: owner, RootPath: root}
+	if err := plain.runPrepareWithIdentity(ctx, repo, target, ""); err != nil {
 		t.Fatalf("default prepare timeout: %v", err)
 	}
 }
@@ -420,217 +338,5 @@ func TestFingerprintAndRelativePathBoundaries(t *testing.T) {
 		if (value == "nested/file") == (err != nil) {
 			t.Fatalf("safeRelative(%q) err=%v", value, err)
 		}
-	}
-}
-
-func TestOwnershipDescriptorAndGitRecordBoundaryMatrix(t *testing.T) {
-	root := t.TempDir()
-	common := filepath.Join(root, "common")
-	target := filepath.Join(root, "workspaces", "w", "slots", "s", "root")
-	if err := os.MkdirAll(target, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(common, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	owner, _, err := domain.OpenOwnedRoot(root, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = owner.Close() }()
-
-	if err := EnsureOwnershipMarkerAt(nil, root, target, "s", common); err == nil {
-		t.Fatal("nil marker owner was accepted")
-	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "bad/slot", common); err == nil {
-		t.Fatal("unsafe marker slot was accepted")
-	}
-	if _, err := newOwnershipMarkerAt(nil, root, target, "s", common, true); err == nil {
-		t.Fatal("nil owner was accepted by newOwnershipMarkerAt")
-	}
-	// EnsureOwnershipMarkerAt/ValidateOwnershipMarkerAt already reject an
-	// unsafe slot id before calling newOwnershipMarkerAt, so exercise its own
-	// defense-in-depth guard directly: the helper must not trust a future
-	// caller to have validated its input.
-	if _, err := newOwnershipMarkerAt(owner, root, target, "bad/slot", common, true); err == nil {
-		t.Fatal("unsafe slot id was accepted by newOwnershipMarkerAt directly")
-	}
-	if _, err := newOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside"), "s", common, true); err == nil {
-		t.Fatal("outside marker target was accepted")
-	}
-	symlinkTarget := filepath.Join(root, "workspaces", "w", "slots", "s", "link")
-	if err := os.Symlink(target, symlinkTarget); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := newOwnershipMarkerAt(owner, root, symlinkTarget, "s", common, true); err == nil {
-		t.Fatal("symlink marker target was accepted")
-	}
-	missingTarget := filepath.Join(root, "workspaces", "w", "slots", "s", "missing")
-	if _, err := newOwnershipMarkerAt(owner, root, missingTarget, "s", common, true); err != nil {
-		t.Fatalf("missing marker target with physical parent: %v", err)
-	}
-	if _, err := newOwnershipMarkerAt(owner, root, filepath.Join(root, "missing", "target"), "s", common, true); err == nil {
-		t.Fatal("missing marker parent was accepted")
-	}
-	if _, err := newOwnershipMarkerAt(owner, root, target, "s", filepath.Join(root, "missing-common"), true); err == nil {
-		t.Fatal("missing common directory was accepted")
-	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "s", common); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "s", common); err != nil {
-		t.Fatalf("valid descriptor marker: %v", err)
-	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "other", common); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("wrong slot marker error=%v", err)
-	}
-	markerRelative, err := ownershipMarkerRelative(root, target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	file, err := owner.OpenFile(markerRelative, os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.Write([]byte("{} {}")); err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readOwnershipMarker(owner, markerRelative); err == nil {
-		t.Fatal("malformed marker was accepted")
-	}
-	if err := owner.Remove(markerRelative); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "s", common); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, test := range []struct {
-		name string
-		out  string
-		want int
-	}{
-		{name: "preamble and unlocked", out: "noise\x00worktree /tmp/a\x00locked\x00\x00", want: 1},
-		{name: "reason", out: "worktree /tmp/a\x00locked wx:s:READY\x00worktree /tmp/b\x00", want: 2},
-		{name: "empty", out: "", want: 0},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			records := parseWorktreeRecords(test.out)
-			if len(records) != test.want {
-				t.Fatalf("records=%+v want %d", records, test.want)
-			}
-		})
-	}
-	if base := ownershipMarkerBase(root, target); base != filepath.Join(root, "workspaces", "w", "slots", "s") {
-		t.Fatalf("slot marker base=%q", base)
-	}
-	if base := ownershipMarkerBase(root, filepath.Join(root, "misc", "target")); base != filepath.Join(root, "misc") {
-		t.Fatalf("ordinary marker base=%q", base)
-	}
-	for _, candidate := range []string{root, filepath.Join(root, "link"), filepath.Join(root, "missing", "leaf")} {
-		if candidate == filepath.Join(root, "link") {
-			if err := os.Symlink(root, candidate); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := canonicalPathAllowMissing(candidate); err != nil {
-			t.Fatalf("canonicalPathAllowMissing(%q): %v", candidate, err)
-		}
-	}
-	if _, _, _, err := RegisteredWorktreeLockStatusAt(context.Background(), &gitx.Runner{Timeout: time.Second}, filepath.Join(t.TempDir(), "missing-repository"), owner, root, "target", "identity"); err == nil {
-		t.Fatal("invalid Git main path was accepted")
-	}
-	if _, _, _, err := RegisteredWorktreeLockStatusAt(context.Background(), &gitx.Runner{}, "", nil, root, "target", "identity"); err == nil {
-		t.Fatal("nil status owner was accepted")
-	}
-	if _, _, _, err := RegisteredWorktreeLockStatusAt(context.Background(), &gitx.Runner{}, "", owner, root, "target", ""); err == nil {
-		t.Fatal("missing target identity was accepted")
-	}
-}
-
-// TestValidateRegisteredWorktreeAtCoversLockAndSlotBoundaries exercises the
-// descriptor-bound lock/slot matrix that ValidateRegisteredWorktreeAt shares
-// conceptually with the lexical-path ValidateRegisteredWorktree, but which is
-// tracked as separate code because it never resolves the mutable target
-// pathname (see RegisteredWorktreeLockStatusAt's doc comment).
-func TestValidateRegisteredWorktreeAtCoversLockAndSlotBoundaries(t *testing.T) {
-	root := t.TempDir()
-	repository := filepath.Join(root, "repository")
-	if err := os.MkdirAll(repository, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	gitCommand(t, repository, "init", "-b", "main")
-	gitCommand(t, repository, "config", "user.name", "test")
-	gitCommand(t, repository, "config", "user.email", "test@example.com")
-	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	gitCommand(t, repository, "add", ".")
-	gitCommand(t, repository, "commit", "-m", "initial")
-	worktreeRoot := filepath.Join(root, "worktrees")
-	target := filepath.Join(worktreeRoot, "slot", "root")
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	head := gitOutput(t, repository, "rev-parse", "HEAD")
-	gitCommand(t, repository, "worktree", "add", "--detach", target, head)
-	owner, relative, err := domain.OpenOwnedRoot(worktreeRoot, target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = owner.Close() }()
-	directory, identity, err := domain.OpenDirectoryAt(owner, relative)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := directory.Close(); err != nil {
-		t.Fatal(err)
-	}
-	runner := &gitx.Runner{Timeout: 5 * time.Second}
-	ctx := context.Background()
-
-	if err := ValidateRegisteredWorktreeAt(ctx, runner, repository, owner, worktreeRoot, relative, identity, "", false); err != nil {
-		t.Fatalf("unlocked descriptor-bound worktree without lock requirement: %v", err)
-	}
-	if err := ValidateRegisteredWorktreeAt(ctx, runner, repository, owner, worktreeRoot, relative, identity, "", true); err == nil {
-		t.Fatal("unlocked descriptor-bound worktree accepted when lock was required")
-	}
-	if err := ValidateRegisteredWorktreeAt(ctx, runner, repository, owner, worktreeRoot, filepath.Join(relative, "missing"), identity, "", false); err == nil {
-		t.Fatal("unregistered descriptor-bound path accepted")
-	}
-
-	gitCommand(t, repository, "worktree", "lock", "--reason", "unaffiliated-lock", target)
-	if err := ValidateRegisteredWorktreeAt(ctx, runner, repository, owner, worktreeRoot, relative, identity, "", true); err == nil {
-		t.Fatal("non-wx descriptor-bound lock reason accepted without a slot")
-	}
-	gitCommand(t, repository, "worktree", "unlock", target)
-
-	gitCommand(t, repository, "worktree", "lock", "--reason", "wx:slot:READY", target)
-	if err := ValidateRegisteredWorktreeAt(ctx, runner, repository, owner, worktreeRoot, relative, identity, "", true); err != nil {
-		t.Fatalf("wx descriptor-bound lock without slot requirement: %v", err)
-	}
-	if err := ValidateRegisteredWorktreeAt(ctx, runner, repository, owner, worktreeRoot, relative, identity, "slot", true); err != nil {
-		t.Fatalf("matching descriptor-bound wx lock rejected: %v", err)
-	}
-	if err := ValidateRegisteredWorktreeAt(ctx, runner, repository, owner, worktreeRoot, relative, identity, "other", true); err == nil {
-		t.Fatal("foreign descriptor-bound wx slot lock accepted")
-	}
-	gitCommand(t, repository, "worktree", "unlock", target)
-
-	for _, state := range []string{"PREPARING", "RESTORING"} {
-		t.Run(state, func(t *testing.T) {
-			gitCommand(t, repository, "worktree", "lock", "--reason", "wx:slot:"+state, target)
-			defer gitCommand(t, repository, "worktree", "unlock", target)
-			if err := ValidateRegisteredWorktreeAt(ctx, runner, repository, owner, worktreeRoot, relative, identity, "slot", true); err != nil {
-				t.Fatalf("wx slot lock reason %s rejected: %v", state, err)
-			}
-		})
-	}
-
-	if err := ValidateRegisteredWorktreeAt(ctx, runner, filepath.Join(t.TempDir(), "missing-repository"), owner, worktreeRoot, relative, identity, "", false); err == nil {
-		t.Fatal("descriptor-bound validation with an invalid Git main path succeeded")
 	}
 }

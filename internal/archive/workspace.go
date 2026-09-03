@@ -85,8 +85,8 @@ func snapshotWorkspace(ctx context.Context, bundleRoot, ownershipRoot string, pi
 		if bundleErr != nil {
 			return state.WorkspaceSnapshot{}, bundleErr
 		}
-		relative, relErr := filepath.Rel(root, bundlePath)
-		if relErr != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		relative, relErr := domain.RelativeWithin(root, bundlePath)
+		if relErr != nil {
 			return state.WorkspaceSnapshot{}, errors.New("workspace bundle is outside pinned wx ownership root")
 		}
 		bundle, err = domain.OpenRootAt(owner, relative)
@@ -369,8 +369,8 @@ func openWorkspaceRestoreRoots(bundleRoot, targetOwnershipRoot string, pinnedTar
 			_ = archiveFile.Close()
 			return nil, nil, absErr
 		}
-		relative, relErr := filepath.Rel(ownershipAbs, bundleAbs)
-		if relErr != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		relative, relErr := domain.RelativeWithin(ownershipAbs, bundleAbs)
+		if relErr != nil {
 			_ = archiveFile.Close()
 			return nil, nil, errors.New("workspace restore target is outside pinned wx ownership root")
 		}

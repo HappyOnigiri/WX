@@ -90,7 +90,6 @@ func TestRunGitInWorktreeUnpinnedFastPathAndDescriptorFaults(t *testing.T) {
 		t.Fatalf("unpinned no-identity fast path: %v", err)
 	}
 
-	preparer.RequireOwnedRoot = true
 	preparer.RootPath = root
 	preparer.OwnedRoot = nil
 	if _, err := preparer.RunGitInWorktree(ctx, target, "identity", nil, nil, "rev-parse", "HEAD"); err == nil {
@@ -160,7 +159,6 @@ func TestCopyIncludesAndCreateLinksPropagateDescriptorFaults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	preparer.RequireOwnedRoot = true
 	preparer.RootPath = root
 	preparer.OwnedRoot = nil
 	if err := preparer.copyIncludes(repo, target); err == nil {
@@ -198,7 +196,7 @@ func TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarker(t *testing.T
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.Mkdir(root, 0o700); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -208,7 +206,6 @@ func TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarker(t *testing.T
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 
 	cfg := preparer.Config
 	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "exit 1"}, Timeout: config.Duration{Duration: 5 * time.Second}}}}
@@ -582,7 +579,7 @@ func TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailures(t *testing.T) 
 			// not count toward the occurrence: FinishRestoreWithIdentity's
 			// own unlock/lock call is the first one seen here.
 			installGitFault(t, test.pattern, 1)
-			if err := preparer.FinishRestore(ctx, repo, target, head, "slot"); err == nil {
+			if err := preparer.FinishRestoreWithIdentity(ctx, repo, target, head, "slot", ""); err == nil {
 				t.Fatalf("finish restore succeeded despite a failing %q", test.pattern)
 			}
 		})
@@ -667,7 +664,6 @@ func TestAddWorktreeWithIdentityPropagatesLeafReservationFailure(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 	relativeTarget, err := filepath.Rel(root, target)
 	if err != nil {
 		t.Fatal(err)
@@ -721,7 +717,7 @@ func TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommand(t *t
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.Mkdir(root, 0o700); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -731,7 +727,6 @@ func TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommand(t *t
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
 		t.Fatal(err)
 	}
@@ -752,7 +747,7 @@ func TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability(t *testing
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.Mkdir(root, 0o700); err != nil {
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -762,7 +757,6 @@ func TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability(t *testing
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
 		t.Fatal(err)
 	}
@@ -770,13 +764,13 @@ func TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := preparer.verifyPreparedTargetIdentity(root, owner, relative, "not-the-real-identity"); !errors.Is(err, state.ErrOwnership) {
+	if err := preparer.verifyPreparedTargetIdentity(owner, relative, "not-the-real-identity"); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("mismatched identity error=%v", err)
 	}
 	if err := os.RemoveAll(target); err != nil {
 		t.Fatal(err)
 	}
-	if err := preparer.verifyPreparedTargetIdentity(root, owner, relative, "any-identity"); !errors.Is(err, state.ErrOwnership) {
+	if err := preparer.verifyPreparedTargetIdentity(owner, relative, "any-identity"); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("unavailable identity error=%v", err)
 	}
 }
@@ -802,7 +796,6 @@ func TestAddWorktreeWithIdentityRejectsAReservedLeafThatIsNotADirectory(t *testi
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	preparer.RequireOwnedRoot = true
 	relativeTarget, err := filepath.Rel(root, target)
 	if err != nil {
 		t.Fatal(err)

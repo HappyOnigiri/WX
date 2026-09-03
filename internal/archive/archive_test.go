@@ -638,7 +638,14 @@ func TestRestoreRunsPrepareCommandAfterSnapshotTreeAndIndex(t *testing.T) {
 		repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", `test "$(cat state.txt)" = "snapshot" && printf ran > "$WX_RESTORE_PREPARE_MARKER"`}, Timeout: config.Duration{Duration: time.Second}}},
 	}
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
-	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}}, Ownership: allowOwnershipValidator{}}
+	mustMkdir(t, worktreeRoot)
+	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	preparer := &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
+	manager := &Manager{Git: runner, Preparer: preparer, Ownership: allowOwnershipValidator{}}
 	snapshot, err := manager.Snapshot(context.Background(), repo, source, "source-session", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -867,10 +874,17 @@ func archiveFixture(t *testing.T) (string, discovery.Repository, *Manager, strin
 	common := gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
 	worktreeRoot := filepath.Join(root, "worktrees")
+	mustMkdir(t, worktreeRoot)
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
-	manager := &Manager{Git: runner, Preparer: &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}}, Ownership: allowOwnershipValidator{}}
+	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	preparer := &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
+	manager := &Manager{Git: runner, Preparer: preparer, Ownership: allowOwnershipValidator{}}
 	return repository, repo, manager, worktreeRoot
 }
 
