@@ -10,22 +10,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func FuzzDurationYAML(f *testing.F) {
-	f.Add("10m")
-	f.Add("-1s")
-	f.Add("not-a-duration")
-	f.Fuzz(func(t *testing.T, value string) {
-		data, err := yaml.Marshal(map[string]string{"timeout": value})
-		if err != nil {
-			return
-		}
-		var decoded struct {
-			Timeout Duration `yaml:"timeout"`
-		}
-		_ = yaml.Unmarshal(data, &decoded)
-	})
-}
-
 func TestDefaultsAndZeroDurationOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

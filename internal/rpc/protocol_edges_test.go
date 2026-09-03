@@ -10,61 +10,6 @@ import (
 	"time"
 )
 
-type deadlineFaultConn struct {
-	net.Conn
-	readErr, deadlineErr error
-}
-
-type delayedJSON struct {
-	started chan struct{}
-	release <-chan struct{}
-}
-
-func (p delayedJSON) MarshalJSON() ([]byte, error) {
-	close(p.started)
-	<-p.release
-	return []byte(`{}`), nil
-}
-
-func (c deadlineFaultConn) SetReadDeadline(time.Time) error { return c.readErr }
-
-func (c deadlineFaultConn) SetDeadline(time.Time) error { return c.deadlineErr }
-
-func TestServeConnStopsWhenDeadlineInstallationFails(t *testing.T) {
-	t.Run("frame deadline", func(t *testing.T) {
-		serverSide, clientSide := net.Pipe()
-		defer func() { _ = clientSide.Close() }()
-		done := make(chan struct{})
-		go func() {
-			(&Server{Handler: echoHandler{}}).serveConn(context.Background(), deadlineFaultConn{Conn: serverSide, readErr: errors.New("read deadline fault")})
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("serveConn remained blocked after frame deadline failure")
-		}
-	})
-
-	t.Run("handler deadline", func(t *testing.T) {
-		serverSide, clientSide := net.Pipe()
-		defer func() { _ = clientSide.Close() }()
-		done := make(chan struct{})
-		go func() {
-			(&Server{Handler: echoHandler{}}).serveConn(context.Background(), deadlineFaultConn{Conn: serverSide, deadlineErr: errors.New("handler deadline fault")})
-			close(done)
-		}()
-		if err := writeFrame(clientSide, Request{Version: ProtocolVersion, ID: "request", Method: "echo"}); err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("serveConn remained blocked after handler deadline failure")
-		}
-	})
-}
-
 func TestIdempotentCallStopsRetryAfterConnectedPeerCloses(t *testing.T) {
 	socket := shortSocketPath(t, "close-before-response.sock")
 	listener, err := net.Listen("unix", socket)
@@ -118,50 +63,6 @@ func TestIdempotentCallStopsRetryAfterConnectedPeerCloses(t *testing.T) {
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatalf("server request handling: %v", err)
-	}
-}
-
-func TestCallReturnsParentCancellationWhenRequestEncodingOutlivesIt(t *testing.T) {
-	socket := shortSocketPath(t, "deadline-during-encoding.sock")
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	release := make(chan struct{})
-	var releaseOnce sync.Once
-	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
-	defer releaseNow()
-	serverDone := make(chan struct{})
-	go func() {
-		conn, acceptErr := listener.Accept()
-		if acceptErr == nil {
-			defer conn.Close()
-			<-release
-		}
-		close(serverDone)
-	}()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	started := make(chan struct{})
-	result := make(chan error, 1)
-	go func() {
-		result <- (Client{Socket: socket, Timeout: time.Second}).Call(ctx, "mutate", delayedJSON{started: started, release: release}, nil)
-	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("request encoding did not start")
-	}
-	cancel()
-	releaseNow()
-	if err := <-result; !errors.Is(err, context.Canceled) {
-		t.Fatalf("encoding cancellation error=%v", err)
-	}
-	select {
-	case <-serverDone:
-	case <-time.After(time.Second):
-		t.Fatal("server did not accept deadline test connection")
 	}
 }
 

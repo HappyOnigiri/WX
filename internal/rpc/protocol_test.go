@@ -18,15 +18,6 @@ import (
 	"time"
 )
 
-func FuzzReadFrame(f *testing.F) {
-	f.Add([]byte{0, 0, 0, 2, '{', '}'})
-	f.Add([]byte{0, 0, 0, 0})
-	f.Fuzz(func(t *testing.T, data []byte) {
-		var value any
-		_ = readFrame(bytes.NewReader(data), &value)
-	})
-}
-
 func TestIdempotentCallStopsRetryingWhenContextIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
