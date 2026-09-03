@@ -36,13 +36,18 @@ func TestWorkspaceSnapshotRestorePreservesOnlyOwnedRootState(t *testing.T) {
 	if err := os.Symlink("notes/todo.txt", filepath.Join(bundleRoot, "shortcut")); err != nil {
 		t.Fatal(err)
 	}
-
-	expiry := time.Now().Add(time.Hour)
-	snapshot, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "session", []string{"repo", "audit"}, expiry)
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshot(ownershipRoot, snapshot, time.Now()); err != nil {
+	defer func() { _ = owner.Close() }()
+
+	expiry := time.Now().Add(time.Hour)
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "session", []string{"repo", "audit"}, expiry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,7 +61,7 @@ func TestWorkspaceSnapshotRestorePreservesOnlyOwnedRootState(t *testing.T) {
 	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "current-only.txt"), "remove me\n", 0o600)
 	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "repo", "tracked.txt"), "restored separately\n", 0o600)
 
-	if err := RestoreWorkspace(context.Background(), bundleRoot, ownershipRoot, ownershipRoot, snapshot, []string{"repo", "audit"}); err != nil {
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, []string{"repo", "audit"}); err != nil {
 		t.Fatal(err)
 	}
 	assertWorkspaceTestFile(t, filepath.Join(bundleRoot, "AGENTS.md"), "archived rules\n")
@@ -83,7 +88,7 @@ func TestWorkspaceSnapshotRestorePreservesOnlyOwnedRootState(t *testing.T) {
 	if err := os.WriteFile(snapshot.ArchivePath, archiveData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshot(ownershipRoot, snapshot, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err == nil {
 		t.Fatal("tampered workspace archive passed checksum validation")
 	}
 }
@@ -169,15 +174,15 @@ func TestPinnedWorkspaceOperationsRejectClosedAndMismatchedDescriptors(t *testin
 	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "boundary", nil, time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
 	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "boundary", nil, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, nil, ownershipRoot, owner, snapshot, nil); err == nil {
 		t.Fatal("restore accepted a nil target descriptor")
 	}
@@ -253,7 +258,12 @@ func TestWorkspaceRestoreRejectsArchiveOverlapAndTraversal(t *testing.T) {
 			}
 			digest := sha256.Sum256(content.Bytes())
 			snapshot := state.WorkspaceSnapshot{SessionID: "session", ArchivePath: archivePath, SHA256: hex.EncodeToString(digest[:]), Status: "ARCHIVED", ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))}
-			if err := RestoreWorkspace(context.Background(), bundleRoot, ownershipRoot, ownershipRoot, snapshot, test.exclusions); err == nil {
+			owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = owner.Close() }()
+			if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, test.exclusions); err == nil {
 				t.Fatal("unsafe workspace archive restored")
 			}
 			if _, err := os.Lstat(filepath.Join(ownershipRoot, "evil.txt")); !os.IsNotExist(err) {
@@ -276,7 +286,12 @@ func TestWorkspaceRestoreAcceptsDirectoryCreatedByChildEntry(t *testing.T) {
 		{Name: "nested/file.txt", Typeflag: tar.TypeReg, Mode: 0o640, Size: 4},
 		{Name: "nested", Typeflag: tar.TypeDir, Mode: 0o700},
 	})
-	if err := RestoreWorkspace(context.Background(), bundleRoot, ownershipRoot, ownershipRoot, snapshot, nil); err != nil {
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil); err != nil {
 		t.Fatalf("restore directory-first archive: %v", err)
 	}
 	if info, err := os.Stat(filepath.Join(bundleRoot, "nested")); err != nil || !info.IsDir() {
@@ -293,53 +308,72 @@ func TestDeleteWorkspaceSnapshotRequiresMatchingArtifact(t *testing.T) {
 	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "session", nil, time.Now().Add(time.Hour))
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "session", nil, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	tampered := snapshot
 	tampered.SHA256 = "00"
-	if err := DeleteWorkspaceSnapshot(ownershipRoot, tampered); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, tampered); err == nil {
 		t.Fatal("tampered workspace snapshot was deleted")
 	}
-	if err := DeleteWorkspaceSnapshot(ownershipRoot, snapshot); err != nil {
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(snapshot.ArchivePath); !os.IsNotExist(err) {
 		t.Fatalf("workspace snapshot still exists: %v", err)
 	}
-	if err := DeleteWorkspaceSnapshot(ownershipRoot, snapshot); err != nil {
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err != nil {
 		t.Fatalf("replayed workspace snapshot deletion: %v", err)
 	}
 }
 
 func TestWorkspaceSnapshotRejectsUnsafeInputsAndUnsupportedFiles(t *testing.T) {
-	ownershipRoot, err := os.MkdirTemp("/tmp", "wx-archive-")
+	// /tmp (rather than t.TempDir()) keeps the unix socket path below the
+	// platform's socket path length limit later in this test. It is resolved
+	// to its physical form immediately because /tmp itself is a symlink on
+	// macOS (-> /private/tmp) and the pinned root descriptor this test opens
+	// below rejects a symlink ancestor.
+	rawOwnershipRoot, err := os.MkdirTemp("/tmp", "wx-archive-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(ownershipRoot) })
+	t.Cleanup(func() { _ = os.RemoveAll(rawOwnershipRoot) })
+	ownershipRoot, err := filepath.EvalSymlinks(rawOwnershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	bundleRoot := filepath.Join(ownershipRoot, "bundle")
 	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "file.txt"), "data", 0o600)
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
 
-	if _, err := SnapshotWorkspace(context.Background(), t.TempDir(), ownershipRoot, "outside", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(context.Background(), t.TempDir(), ownershipRoot, owner, "outside", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot outside ownership root succeeded")
 	}
-	if _, err := SnapshotWorkspace(context.Background(), filepath.Join(ownershipRoot, "missing"), ownershipRoot, "missing", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(context.Background(), filepath.Join(ownershipRoot, "missing"), ownershipRoot, owner, "missing", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot of missing bundle succeeded")
 	}
 	for _, exclusion := range []string{"", "..", "a/../b", `/absolute`, `back\\slash`} {
-		if _, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "unsafe", []string{exclusion}, time.Now().Add(time.Hour)); err == nil {
+		if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "unsafe", []string{exclusion}, time.Now().Add(time.Hour)); err == nil {
 			t.Fatalf("unsafe exclusion %q accepted", exclusion)
 		}
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := SnapshotWorkspace(canceled, bundleRoot, ownershipRoot, "canceled", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(canceled, bundleRoot, ownershipRoot, owner, "canceled", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("canceled snapshot succeeded")
 	}
 
@@ -349,7 +383,7 @@ func TestWorkspaceSnapshotRejectsUnsafeInputsAndUnsupportedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
-	if _, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "socket", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "socket", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot containing a unix socket succeeded")
 	}
 	if err := listener.Close(); err != nil {
@@ -359,7 +393,7 @@ func TestWorkspaceSnapshotRejectsUnsafeInputsAndUnsupportedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWorkspaceTestFile(t, filepath.Join(ownershipRoot, "recovery"), "collision", 0o600)
-	if _, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "recovery-collision", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "recovery-collision", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot with a non-directory recovery path succeeded")
 	}
 }
@@ -370,7 +404,12 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "session", nil, time.Now().Add(time.Hour))
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "session", nil, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +422,7 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 	} {
 		invalid := snapshot
 		mutate(&invalid)
-		if err := ValidateWorkspaceSnapshot(ownershipRoot, invalid, time.Now()); err == nil {
+		if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, invalid, time.Now()); err == nil {
 			t.Fatalf("invalid snapshot metadata accepted: %+v", invalid)
 		}
 	}
@@ -391,13 +430,13 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 	if err := os.Remove(snapshot.ArchivePath); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshot(ownershipRoot, snapshot, time.Now()); !os.IsNotExist(err) {
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); !os.IsNotExist(err) {
 		t.Fatalf("missing artifact error=%v", err)
 	}
 	if err := os.Mkdir(snapshot.ArchivePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshot(ownershipRoot, snapshot, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err == nil {
 		t.Fatal("directory artifact accepted")
 	}
 	if err := os.Remove(snapshot.ArchivePath); err != nil {
@@ -406,18 +445,16 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 	if err := os.Symlink(bundleRoot, snapshot.ArchivePath); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshot(ownershipRoot, snapshot, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err == nil {
 		t.Fatal("symlink artifact accepted")
 	}
 
+	// A missing ownership root cannot even be opened as a pinned descriptor,
+	// so the *At entry points cannot be reached with one; the fail-closed
+	// behavior for a missing root is the descriptor open itself failing.
 	missingRoot := filepath.Join(t.TempDir(), "missing-root")
-	missingRootSnapshot := snapshot
-	missingRootSnapshot.ArchivePath = filepath.Join(missingRoot, filepath.FromSlash(workspaceSnapshotRelativePath(snapshot.SessionID)))
-	if err := ValidateWorkspaceSnapshot(missingRoot, missingRootSnapshot, time.Now()); err == nil {
-		t.Fatal("snapshot under missing ownership root validated")
-	}
-	if err := DeleteWorkspaceSnapshot(missingRoot, missingRootSnapshot); err == nil {
-		t.Fatal("snapshot under missing ownership root deleted")
+	if _, _, err := domain.OpenOwnedRoot(missingRoot, missingRoot); err == nil {
+		t.Fatal("missing ownership root was opened as a pinned descriptor")
 	}
 }
 
@@ -427,19 +464,24 @@ func TestWorkspaceRestoreRejectsUnsafeTargetsAndArchiveShapes(t *testing.T) {
 	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
 	empty := writeWorkspaceArchive(t, ownershipRoot, "empty", nil)
-	if err := RestoreWorkspace(context.Background(), t.TempDir(), ownershipRoot, ownershipRoot, empty, nil); err == nil {
+	if err := RestoreWorkspaceAt(context.Background(), t.TempDir(), ownershipRoot, owner, ownershipRoot, owner, empty, nil); err == nil {
 		t.Fatal("restore outside ownership root succeeded")
 	}
-	if err := RestoreWorkspace(context.Background(), bundleRoot, ownershipRoot, ownershipRoot, empty, []string{".."}); err == nil {
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, empty, []string{".."}); err == nil {
 		t.Fatal("restore with unsafe exclusion succeeded")
 	}
-	if err := RestoreWorkspace(context.Background(), filepath.Join(ownershipRoot, "missing-target"), ownershipRoot, ownershipRoot, empty, nil); err == nil {
+	if err := RestoreWorkspaceAt(context.Background(), filepath.Join(ownershipRoot, "missing-target"), ownershipRoot, owner, ownershipRoot, owner, empty, nil); err == nil {
 		t.Fatal("restore into missing target succeeded")
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := RestoreWorkspace(canceled, bundleRoot, ownershipRoot, ownershipRoot, empty, nil); err == nil {
+	if err := RestoreWorkspaceAt(canceled, bundleRoot, ownershipRoot, owner, ownershipRoot, owner, empty, nil); err == nil {
 		t.Fatal("canceled restore succeeded")
 	}
 
@@ -473,7 +515,7 @@ func TestWorkspaceRestoreRejectsUnsafeTargetsAndArchiveShapes(t *testing.T) {
 				t.Fatal(err)
 			}
 			snapshot := writeWorkspaceArchive(t, ownershipRoot, test.name, test.headers)
-			if err := RestoreWorkspace(context.Background(), target, ownershipRoot, ownershipRoot, snapshot, nil); err == nil {
+			if err := RestoreWorkspaceAt(context.Background(), target, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil); err == nil {
 				t.Fatal("unsafe archive shape restored")
 			}
 		})
@@ -484,7 +526,7 @@ func TestWorkspaceRestoreRejectsUnsafeTargetsAndArchiveShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeWorkspaceTestFile(t, filepath.Join(ancestorTarget, "parent"), "not a directory", 0o600)
-	if err := RestoreWorkspace(context.Background(), ancestorTarget, ownershipRoot, ownershipRoot, empty, []string{"parent/child"}); err == nil {
+	if err := RestoreWorkspaceAt(context.Background(), ancestorTarget, ownershipRoot, owner, ownershipRoot, owner, empty, []string{"parent/child"}); err == nil {
 		t.Fatal("non-directory exclusion ancestor accepted")
 	}
 
@@ -493,7 +535,7 @@ func TestWorkspaceRestoreRejectsUnsafeTargetsAndArchiveShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	directoryArchive := writeWorkspaceArchive(t, ownershipRoot, "directory-entry", []tar.Header{{Name: "created", Typeflag: tar.TypeDir, Mode: 0o700}})
-	if err := RestoreWorkspace(context.Background(), directoryTarget, ownershipRoot, ownershipRoot, directoryArchive, nil); err != nil {
+	if err := RestoreWorkspaceAt(context.Background(), directoryTarget, ownershipRoot, owner, ownershipRoot, owner, directoryArchive, nil); err != nil {
 		t.Fatalf("restore explicit directory entry: %v", err)
 	}
 	if info, err := os.Stat(filepath.Join(directoryTarget, "created")); err != nil || !info.IsDir() {
@@ -508,7 +550,7 @@ func TestWorkspaceRestoreRejectsUnsafeTargetsAndArchiveShapes(t *testing.T) {
 		{Name: "parent", Typeflag: tar.TypeReg, Mode: 0o600},
 		{Name: "parent/child", Typeflag: tar.TypeReg, Mode: 0o600},
 	})
-	if err := RestoreWorkspace(context.Background(), childTarget, ownershipRoot, ownershipRoot, childArchive, nil); err == nil {
+	if err := RestoreWorkspaceAt(context.Background(), childTarget, ownershipRoot, owner, ownershipRoot, owner, childArchive, nil); err == nil {
 		t.Fatal("archive created a child beneath a regular file")
 	}
 
@@ -525,7 +567,7 @@ func TestWorkspaceRestoreRejectsUnsafeTargetsAndArchiveShapes(t *testing.T) {
 		SessionID: "invalid-tar", ArchivePath: invalidPath, SHA256: hex.EncodeToString(digest[:]),
 		Status: "ARCHIVED", ExpiresAt: state.FormatTime(time.Now().Add(time.Hour)),
 	}
-	if err := RestoreWorkspace(context.Background(), invalidTarget, ownershipRoot, ownershipRoot, invalid, nil); err == nil {
+	if err := RestoreWorkspaceAt(context.Background(), invalidTarget, ownershipRoot, owner, ownershipRoot, owner, invalid, nil); err == nil {
 		t.Fatal("invalid tar archive restored")
 	}
 }
@@ -536,13 +578,18 @@ func TestDeleteWorkspaceSnapshotRejectsWrongPathAndNonRegularArtifact(t *testing
 	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "session", nil, time.Now().Add(time.Hour))
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "session", nil, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	wrongPath := snapshot
 	wrongPath.ArchivePath += ".other"
-	if err := DeleteWorkspaceSnapshot(ownershipRoot, wrongPath); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, wrongPath); err == nil {
 		t.Fatal("snapshot with wrong path deleted")
 	}
 	if err := os.Remove(snapshot.ArchivePath); err != nil {
@@ -551,7 +598,7 @@ func TestDeleteWorkspaceSnapshotRejectsWrongPathAndNonRegularArtifact(t *testing
 	if err := os.Mkdir(snapshot.ArchivePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := DeleteWorkspaceSnapshot(ownershipRoot, snapshot); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err == nil {
 		t.Fatal("directory snapshot artifact deleted")
 	}
 }
@@ -571,7 +618,12 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(file, 0o600) })
-		if _, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "unreadable-file", nil, time.Now().Add(time.Hour)); err == nil {
+		owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = owner.Close() }()
+		if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "unreadable-file", nil, time.Now().Add(time.Hour)); err == nil {
 			t.Fatal("snapshot read an unreadable file")
 		}
 	})
@@ -590,7 +642,12 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(directory, 0o700) })
-		if _, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "unreadable-directory", nil, time.Now().Add(time.Hour)); err == nil {
+		owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = owner.Close() }()
+		if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "unreadable-directory", nil, time.Now().Add(time.Hour)); err == nil {
 			t.Fatal("snapshot traversed an unreadable directory")
 		}
 	})
@@ -601,7 +658,12 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 		if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		snapshot, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "unreadable-archive", nil, time.Now().Add(time.Hour))
+		owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = owner.Close() }()
+		snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "unreadable-archive", nil, time.Now().Add(time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -609,13 +671,13 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(snapshot.ArchivePath, 0o600) })
-		if err := ValidateWorkspaceSnapshot(ownershipRoot, snapshot, time.Now()); err == nil {
+		if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err == nil {
 			t.Fatal("unreadable archive validated")
 		}
-		if err := RestoreWorkspace(context.Background(), bundleRoot, ownershipRoot, ownershipRoot, snapshot, nil); err == nil {
+		if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil); err == nil {
 			t.Fatal("unreadable archive restored")
 		}
-		if err := DeleteWorkspaceSnapshot(ownershipRoot, snapshot); err == nil {
+		if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err == nil {
 			t.Fatal("unreadable archive deleted")
 		}
 	})
@@ -630,7 +692,12 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 		if err := os.Mkdir(target, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		snapshot, err := SnapshotWorkspace(context.Background(), source, ownershipRoot, "unreadable-target", nil, time.Now().Add(time.Hour))
+		owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = owner.Close() }()
+		snapshot, err := SnapshotWorkspaceAt(context.Background(), source, ownershipRoot, owner, "unreadable-target", nil, time.Now().Add(time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -638,7 +705,7 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(target, 0o700) })
-		if err := RestoreWorkspace(context.Background(), target, ownershipRoot, ownershipRoot, snapshot, nil); err == nil {
+		if err := RestoreWorkspaceAt(context.Background(), target, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil); err == nil {
 			t.Fatal("archive restored into unreadable target")
 		}
 	})
@@ -704,7 +771,12 @@ func TestSnapshotWorkspacePropagatesPublishRenameFailure(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(collision, "occupied"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "collision", nil, time.Now().Add(time.Hour)); err == nil {
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "collision", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot publish succeeded despite a colliding archive destination")
 	}
 }

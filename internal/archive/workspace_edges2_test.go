@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
 // TestNormalizeWorkspaceExclusionsDeduplicatesAndSorts exercises the
@@ -26,9 +28,9 @@ func TestNormalizeWorkspaceExclusionsDeduplicatesAndSorts(t *testing.T) {
 }
 
 // TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure exercises
-// the EnsurePhysicalDirectory failure branch in the non-pinned snapshot path:
-// the deterministic "recovery" directory name is pre-occupied by a regular
-// file, so the recovery-snapshots directory can never be created.
+// the MkdirAll failure branch in the pinned snapshot path: the deterministic
+// "recovery" directory name is pre-occupied by a regular file, so the
+// recovery-snapshots directory can never be created.
 func TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure(t *testing.T) {
 	ownershipRoot := t.TempDir()
 	bundleRoot := filepath.Join(ownershipRoot, "bundle")
@@ -36,7 +38,12 @@ func TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure(t *testing.
 		t.Fatal(err)
 	}
 	writeWorkspaceTestFile(t, filepath.Join(ownershipRoot, "recovery"), "blocks directory creation", 0o600)
-	if _, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "recovery-blocked", nil, time.Now().Add(time.Hour)); err == nil || !strings.Contains(err.Error(), "create workspace recovery directory") {
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "recovery-blocked", nil, time.Now().Add(time.Hour)); err == nil || !strings.Contains(err.Error(), "create workspace recovery directory") {
 		t.Fatalf("snapshot succeeded despite a blocked recovery directory: %v", err)
 	}
 }
@@ -55,7 +62,12 @@ func TestPruneWorkspaceRootDescendsThroughNonExcludedAncestor(t *testing.T) {
 	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "outer", "kept", "file.txt"), "keep\n", 0o600)
 	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "outer", "extra.txt"), "remove me\n", 0o600)
 	empty := writeWorkspaceArchive(t, ownershipRoot, "descend", nil)
-	if err := RestoreWorkspace(context.Background(), bundleRoot, ownershipRoot, ownershipRoot, empty, []string{"outer/kept"}); err != nil {
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, empty, []string{"outer/kept"}); err != nil {
 		t.Fatalf("restore failed: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(bundleRoot, "outer", "kept", "file.txt")); err != nil {

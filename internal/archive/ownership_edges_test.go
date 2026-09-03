@@ -144,47 +144,55 @@ func TestWorkspaceSnapshotPreconditionsAndPruneFailures(t *testing.T) {
 	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	snapshotOwner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = snapshotOwner.Close() }()
 	outside := t.TempDir()
-	if _, err := SnapshotWorkspace(ctx, outside, ownershipRoot, "outside", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(ctx, outside, ownershipRoot, snapshotOwner, "outside", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("workspace snapshot accepted a bundle outside the ownership root")
 	}
 	missing := filepath.Join(ownershipRoot, "missing")
-	if _, err := SnapshotWorkspace(ctx, missing, ownershipRoot, "missing", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(ctx, missing, ownershipRoot, snapshotOwner, "missing", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("workspace snapshot accepted a missing bundle root")
 	}
 	fileRoot := filepath.Join(ownershipRoot, "file-root")
 	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SnapshotWorkspace(ctx, fileRoot, ownershipRoot, "file", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(ctx, fileRoot, ownershipRoot, snapshotOwner, "file", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("workspace snapshot accepted a regular-file bundle root")
 	}
-	if _, err := SnapshotWorkspace(ctx, bundleRoot, ownershipRoot, "unsafe", []string{"../escape"}, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(ctx, bundleRoot, ownershipRoot, snapshotOwner, "unsafe", []string{"../escape"}, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("workspace snapshot accepted an unsafe exclusion")
 	}
 
 	invalid := state.WorkspaceSnapshot{SessionID: "session", ArchivePath: filepath.Join(ownershipRoot, "wrong.tar"), Status: "READY"}
-	if err := ValidateWorkspaceSnapshot(ownershipRoot, invalid, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("non-archived workspace snapshot was accepted")
 	}
 	invalid.Status = "ARCHIVED"
 	invalid.ExpiresAt = "not-a-time"
-	if err := ValidateWorkspaceSnapshot(ownershipRoot, invalid, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("workspace snapshot with malformed expiry was accepted")
 	}
 	invalid.ExpiresAt = time.Now().Add(time.Hour).Format(time.RFC3339Nano)
-	if err := ValidateWorkspaceSnapshot(ownershipRoot, invalid, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("workspace snapshot with mismatched path was accepted")
 	}
 	invalid.ArchivePath = filepath.Join(ownershipRoot, filepath.FromSlash(workspaceSnapshotRelativePath(invalid.SessionID)))
-	if err := ValidateWorkspaceSnapshot(ownershipRoot, invalid, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("missing workspace snapshot artifact was accepted")
 	}
-	if err := DeleteWorkspaceSnapshot(ownershipRoot, state.WorkspaceSnapshot{SessionID: "session", ArchivePath: filepath.Join(ownershipRoot, "wrong.tar")}); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, state.WorkspaceSnapshot{SessionID: "session", ArchivePath: filepath.Join(ownershipRoot, "wrong.tar")}); err == nil {
 		t.Fatal("snapshot deletion accepted a mismatched artifact path")
 	}
-	if err := DeleteWorkspaceSnapshot(filepath.Join(ownershipRoot, "missing-root"), invalid); err == nil {
-		t.Fatal("snapshot deletion accepted a missing ownership root")
+	// A missing ownership root cannot be opened as a pinned descriptor at
+	// all, so the fail-closed behavior for it is the descriptor open itself
+	// failing rather than a *At entry point being reached with one.
+	if _, _, err := domain.OpenOwnedRoot(filepath.Join(ownershipRoot, "missing-root"), filepath.Join(ownershipRoot, "missing-root")); err == nil {
+		t.Fatal("missing ownership root was opened as a pinned descriptor")
 	}
 
 	pruneRoot := t.TempDir()
