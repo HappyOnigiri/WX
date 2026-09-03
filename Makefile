@@ -39,7 +39,11 @@ GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
 .PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-mutation-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check changed-coverage-check portable-test integration-state integration-git integration-daemon integration-launchd concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom mutation-check mutation-full-check mutation-run security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check benchmark-check clean
 
-setup: setup-go-tools setup-external-tools
+# hooks-install is a dependency (not just documented separately) so that the
+# README's `make setup && make ci` sequence succeeds on a brand-new clone or
+# worktree: `ci-checks` runs hooks-test, which hard-fails unless
+# core.hooksPath is already set to .githooks.
+setup: setup-go-tools setup-external-tools hooks-install
 
 setup-go-tools:
 	mkdir -p "$(TOOLS_BIN)"
@@ -121,6 +125,14 @@ mod-tidy-check:
 	$(GO) mod tidy -diff
 	$(GO) mod verify
 
+# No package in this repository currently declares a //go:generate directive:
+# help text, config schema, SQLite migrations, the LaunchAgent plist, and
+# shell completion are all hand-maintained. `go generate ./...` therefore has
+# nothing to run today, so this check is green by construction and does not
+# yet catch generated-artifact drift; it is kept as a required CI check
+# (rather than removed) so that adding a real //go:generate directive to any
+# of those sources starts enforcing it immediately, with no further wiring,
+# through the existing generate-then-diff pattern below.
 generated-check:
 	$(GO) generate ./...
 	git diff --exit-code
