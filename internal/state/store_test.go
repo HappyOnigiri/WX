@@ -1762,41 +1762,6 @@ func TestOnlineBackupContainsCommittedRegistry(t *testing.T) {
 	}
 }
 
-func TestTimestampMigrationNormalizesExistingVariablePrecisionValues(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const oldTimestamp = "2026-09-02T12:34:56.1Z"
-	if _, err := store.db.Exec(`INSERT INTO workspaces(id,root_path,kind,generation,discovery_state,first_seen_at,last_seen_at,last_reconciled_at) VALUES('legacy','/legacy','repository',1,'ACTIVE',?,?,?)`, oldTimestamp, oldTimestamp, oldTimestamp); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.db.Exec(`DELETE FROM schema_migrations WHERE version=4`); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	var firstSeen, lastSeen, reconciled string
-	if err := store.db.QueryRow(`SELECT first_seen_at,last_seen_at,last_reconciled_at FROM workspaces WHERE id='legacy'`).Scan(&firstSeen, &lastSeen, &reconciled); err != nil {
-		t.Fatal(err)
-	}
-	const normalized = "2026-09-02T12:34:56.100000000Z"
-	if firstSeen != normalized || lastSeen != normalized || reconciled != normalized {
-		t.Fatalf("normalized timestamps=(%q,%q,%q)", firstSeen, lastSeen, reconciled)
-	}
-	var applied int
-	if err := store.db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version=4`).Scan(&applied); err != nil || applied != 1 {
-		t.Fatalf("migration 4 applied=%d err=%v", applied, err)
-	}
-}
-
 func TestWALAllowsStatusReadWhileWriteTransactionIsOpen(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
@@ -1963,7 +1928,7 @@ func TestClosedStoreFailsDatabaseOperationsWithoutPanicking(t *testing.T) {
 
 func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 	store := openTestStore(t)
-	for _, table := range []string{"rpc_idempotency", "quarantined_artifacts", "workspace_snapshots", "snapshots", "jobs", "session_repositories", "sessions", "slot_repositories", "slots", "workspace_repositories", "repositories", "workspaces", "events", "schema_migrations"} {
+	for _, table := range []string{"rpc_idempotency", "quarantined_artifacts", "workspace_snapshots", "snapshots", "jobs", "session_repositories", "sessions", "slot_repositories", "slots", "workspace_repositories", "repositories", "workspaces", "events"} {
 		if _, err := store.db.Exec(`DROP TABLE ` + table); err != nil {
 			t.Fatalf("drop %s: %v", table, err)
 		}

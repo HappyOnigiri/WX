@@ -29,7 +29,7 @@ type Store struct {
 	path   string
 }
 
-const SchemaVersion = 10
+const SchemaVersion = 1
 
 // JSONSchemaVersion is the stability contract for `wx status --json` and
 // `wx doctor --json` output shape. It is deliberately independent of
@@ -196,21 +196,14 @@ func (s *Store) init(ctx context.Context) error {
 		return err
 	}
 	sort.Strings(entries)
+	var applied int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&applied); err != nil {
+		return err
+	}
 	for i, name := range entries {
 		version := i + 1
-		var exists int
-		err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='schema_migrations'").Scan(&exists)
-		if err != nil {
-			return err
-		}
-		if exists > 0 {
-			var applied int
-			if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM schema_migrations WHERE version=?", version).Scan(&applied); err != nil {
-				return err
-			}
-			if applied > 0 {
-				continue
-			}
+		if version <= applied {
+			continue
 		}
 		sqlText, err := migrations.FS.ReadFile(name)
 		if err != nil {
@@ -221,7 +214,7 @@ func (s *Store) init(ctx context.Context) error {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, string(sqlText)); err == nil {
-			_, err = tx.ExecContext(ctx, "INSERT INTO schema_migrations(version,applied_at) VALUES(?,?)", version, now())
+			_, err = tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version=%d", version))
 		}
 		if err != nil {
 			tx.Rollback()
@@ -1664,16 +1657,12 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 	if liveRecovery > 0 {
 		return errors.New("workspace has pending recovery jobs; wait for them before forgetting it")
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE slots SET workspace_id=NULL WHERE workspace_id=?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=NULL WHERE workspace_id=?`, id); err != nil {
-		return err
-	}
+	// jobs.workspace_id has no foreign key (jobs can reference removed
+	// workspaces after the fact for audit purposes), so it is the only
+	// reference that still needs a manual clear. slots.workspace_id and
+	// sessions.workspace_id cascade to NULL and workspace_repositories rows
+	// cascade to deletion via the foreign keys declared on those columns.
 	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET workspace_id=NULL WHERE workspace_id=?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM workspace_repositories WHERE workspace_id=?`, id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM workspaces WHERE id=?`, id); err != nil {

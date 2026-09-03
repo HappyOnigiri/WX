@@ -1,1 +1,0 @@
-ALTER TABLE sessions ADD COLUMN agent_pid INTEGER;
