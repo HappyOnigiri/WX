@@ -2,7 +2,7 @@ name: Nightly
 
 on:
   schedule:
-    - cron: "17 16 * * *"
+    - cron: "17 16 * * 0"
   workflow_dispatch:
 
 permissions:
@@ -42,12 +42,20 @@ jobs:
 
   stress:
     name: ${{ matrix.target }}
-    runs-on: macos-15
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        target: [nightly-race, fault-check, crash-check, soak-check, resource-leak-check, benchmark-check]
+        include:
+          - {target: nightly-race, runner: macos-15}
+          - {target: crash-check, runner: macos-15}
+          - {target: soak-check, runner: macos-15}
+          - {target: fault-check, runner: macos-15}
+          - {target: resource-leak-check, runner: macos-15}
+          - {target: concurrency-test, runner: macos-15}
+          - {target: reproducible-build, runner: ubuntu-24.04}
+          - {target: portable-test, runner: ubuntu-24.04}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

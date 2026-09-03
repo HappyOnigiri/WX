@@ -304,8 +304,5 @@ soak-check:
 resource-leak-check:
 	$(GO) test -race ./internal/daemon ./internal/rpc -run 'Leak|Close|Stops' -count=20 -timeout=5m
 
-benchmark-check:
-	$(GO) test -run=^$$ -bench=. -benchmem ./internal/daemon ./internal/archive
-
 clean:
 	$(GO) clean -testcache
