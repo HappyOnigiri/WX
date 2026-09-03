@@ -1,0 +1,95 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 16 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {package: ./internal/config, target: FuzzDurationYAML}
+          - {package: ./internal/rpc, target: FuzzReadFrame}
+          - {package: ./internal/agent, target: FuzzHookPayload}
+          - {package: ./internal/domain, target: FuzzPathAndIDValidation}
+          - {package: ./internal/archive, target: FuzzSnapshotMetadata}
+          - {package: ./internal/pool, target: FuzzBranchSpecifications}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: nightly-fuzz-${{ matrix.target }}
+      - name: Run one fuzz target
+        env:
+          FUZZ_PACKAGE: ${{ matrix.package }}
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: go test -run='^$' -fuzz="^$FUZZ_TARGET$" -fuzztime=5m "$FUZZ_PACKAGE"
+
+  stress:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {target: nightly-race, runner: macos-15}
+          - {target: crash-check, runner: macos-15}
+          - {target: soak-check, runner: macos-15}
+          - {target: fault-check, runner: macos-15}
+          - {target: resource-leak-check, runner: macos-15}
+          - {target: concurrency-test, runner: macos-15}
+          - {target: reproducible-build, runner: ubuntu-24.04}
+          - {target: portable-test, runner: ubuntu-24.04}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: nightly-${{ matrix.target }}
+      - name: Run stress target
+        env:
+          NIGHTLY_TARGET: ${{ matrix.target }}
+        run: make "$NIGHTLY_TARGET"
+      - if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: nightly-${{ matrix.target }}-failure
+          path: |
+            coverage/
+            artifacts/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  notify-failure:
+    name: Report nightly failure
+    if: failure()
+    needs: [fuzz, stress]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # Required to persist nightly failures on the default branch.
+    steps:
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const title = `Nightly validation failed: ${context.runId}`;
+            const body = `Nightly validation failed on ${context.ref}. Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({...context.repo, title, body});

@@ -1,0 +1,10 @@
+{
+  "session_id": "codex-exec-session",
+  "transcript_path": "/dev/null",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "pwd"
+  },
+  "cwd": "/tmp/wx-session/root"
+}

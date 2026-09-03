@@ -1,0 +1,7 @@
+{
+  "session_id": "claude-end-session",
+  "transcript_path": "/tmp/claude-end.jsonl",
+  "hook_event_name": "SessionEnd",
+  "reason": "logout",
+  "cwd": "/tmp/wx-session/root"
+}

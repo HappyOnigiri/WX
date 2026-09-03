@@ -1,0 +1,84 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - copyloopvar
+    - cyclop
+    - depguard
+    - durationcheck
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gocritic
+    - makezero
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+  settings:
+    cyclop:
+      max-complexity: 40
+      package-average: 15
+    depguard:
+      rules:
+        domain-boundary:
+          files:
+            - "**/internal/domain/**"
+          deny:
+            - pkg: github.com/HappyOnigiri/WX/internal
+              desc: domain must not depend on adapters or orchestration
+        state-boundary:
+          files:
+            - "**/internal/state/**"
+          deny:
+            - pkg: github.com/HappyOnigiri/WX/internal/cli
+              desc: state must not depend on CLI
+            - pkg: github.com/HappyOnigiri/WX/internal/daemon
+              desc: state must not depend on daemon orchestration
+            - pkg: github.com/HappyOnigiri/WX/internal/rpc
+              desc: state must not depend on RPC transport
+            - pkg: github.com/HappyOnigiri/WX/internal/gitx
+              desc: state must not depend on the Git adapter
+            - pkg: github.com/HappyOnigiri/WX/internal/workspace
+              desc: state must not depend on workspace preparation
+    errcheck:
+      exclude-functions:
+        - (*database/sql.Tx).Rollback
+        - (*database/sql.Rows).Close
+        - (*os.File).Close
+        - (io.Closer).Close
+    exhaustive:
+      check:
+        - switch
+    gocritic:
+      enabled-tags:
+        - diagnostic
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - cyclop
+          - errcheck
+          - noctx
+
+formatters:
+  enable: [gofumpt, gci]
+  settings:
+    gci:
+      sections: [standard, default, localmodule]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

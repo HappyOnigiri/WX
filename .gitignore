@@ -1,0 +1,6 @@
+/bin/
+*.prof
+/coverage/
+/.tools/
+/artifacts/
+/tmp/

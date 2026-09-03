@@ -1,0 +1,7 @@
+{
+  "session_id": "codex-resume-session",
+  "transcript_path": "/tmp/codex-resume.jsonl",
+  "cwd": "/tmp/wx-session/root",
+  "hook_event_name": "SessionStart",
+  "source": "resume"
+}

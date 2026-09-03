@@ -1,0 +1,9 @@
+{
+  "session_id": "claude-resume-session",
+  "transcript_path": "/tmp/claude-resume.jsonl",
+  "cwd": "/tmp/wx-session/root",
+  "permission_mode": "default",
+  "hook_event_name": "SessionStart",
+  "source": "resume",
+  "model": "claude-sonnet-5"
+}

@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+# No fixed time budget: a hard timeout here would fail ordinary commits once
+# the repository or its test suite grows, rather than catching a regression.
+# Keep hook-pre-commit itself fast as a guideline instead of a hard limit —
+# aim to stay within 30 seconds.
+exec make -C "$root" hook-pre-commit

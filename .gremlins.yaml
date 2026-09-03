@@ -1,0 +1,3 @@
+threshold-efficacy: 80.0
+exclude-files:
+  - "migrations/embed.go"

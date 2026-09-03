@@ -1,0 +1,80 @@
+name: Security
+
+# 初期フェーズではセキュリティ自動チェックを停止中。ユーザーの明示許可なしに
+# PR/push/merge_group/schedule のトリガーを再有効化しないこと。
+# Automatic security checks are paused during the initial phase. Do not re-enable
+# PR/push/merge_group/schedule triggers without explicit user permission.
+# workflow_dispatch is intentionally the sole trigger; run it only after the
+# user explicitly authorizes a manual security check.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  local-security:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [govulncheck, dependency-check, gosec, license-check, secret-check]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: security-${{ matrix.target }}
+      - name: Run local security gate
+        env:
+          SECURITY_TARGET: ${{ matrix.target }}
+        run: make setup-security-tools "$SECURITY_TARGET"
+      - run: git diff --exit-code
+
+  codeql:
+    name: CodeQL security-extended
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write # Required for CodeQL SARIF upload.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3.37.9
+        with:
+          languages: go
+          queries: security-extended
+      - uses: github/codeql-action/autobuild@6f5948dfacef28e207b48d0905cf90c03365536d # v3.37.9
+      - uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3.37.9
+
+  required:
+    name: Security required
+    if: always()
+    needs: [local-security, codeql]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      LOCAL_SECURITY_RESULT: ${{ needs.local-security.result }}
+      CODEQL_RESULT: ${{ needs.codeql.result }}
+    steps:
+      - name: Require every security job
+        run: |
+          # Both dependencies are required for this workflow. Availability
+          # exceptions must be represented by a separate, explicitly allowed
+          # job instead of turning a skipped dependency into success here.
+          for result in "$LOCAL_SECURITY_RESULT" "$CODEQL_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "required security dependency did not succeed: $result" >&2
+              exit 1
+            fi
+          done
