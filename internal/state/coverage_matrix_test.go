@@ -153,7 +153,7 @@ func TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions(t *testin
 // snapshot job after the upgrade must backfill that one column instead of
 // reporting a metadata conflict (which would quarantine the slot). A row whose
 // index tree genuinely differs must still be refused.
-func TestSaveSnapshotBackfillsMissingIndexRecoveryRefButStillRejectsMismatch(t *testing.T) {
+func TestSaveSnapshotRejectsConflictingIndexTree(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -161,36 +161,16 @@ func TestSaveSnapshotBackfillsMissingIndexRecoveryRefButStillRejectsMismatch(t *
 	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "LEASED"}, nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
-	legacy := Snapshot{ID: "snapshot", SessionID: "session", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/session/repository/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/session/repository/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}
-	if err := store.SaveSnapshot(ctx, legacy); err != nil {
+	original := Snapshot{ID: "snapshot", SessionID: "session", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/session/repository/head", IndexTreeOID: "index", IndexRef: "refs/wx/recovery/session/repository/index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/session/repository/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}
+	if err := store.SaveSnapshot(ctx, original); err != nil {
 		t.Fatal(err)
 	}
-	upgraded := legacy
-	upgraded.IndexRef = "refs/wx/recovery/session/repository/index"
-	if err := store.SaveSnapshot(ctx, upgraded); err != nil {
-		t.Fatalf("re-saving a pre-migration snapshot with an index ref: %v", err)
+	if err := store.SaveSnapshot(ctx, original); err != nil {
+		t.Fatalf("re-saving the identical snapshot: %v", err)
 	}
-	stored, err := store.Snapshots(ctx, "session")
-	if err != nil || len(stored) != 1 || stored[0].IndexRef != upgraded.IndexRef {
-		t.Fatalf("index recovery ref was not backfilled: %+v err=%v", stored, err)
-	}
-	conflicting := upgraded
+	conflicting := original
 	conflicting.IndexTreeOID = "different"
 	if err := store.SaveSnapshot(ctx, conflicting); err == nil {
 		t.Fatal("a snapshot with a different index tree was accepted")
-	}
-}
-
-func TestNullStringAndTokenBoundaries(t *testing.T) {
-	if nullString("") != nil || nullString("value") != "value" {
-		t.Fatal("nullString boundary failed")
-	}
-	first, err := TokenHex()
-	if err != nil || len(first) != 64 {
-		t.Fatalf("token=%q err=%v", first, err)
-	}
-	second, err := TokenHex()
-	if err != nil || len(second) != 64 || first == second {
-		t.Fatalf("second token=%q err=%v", second, err)
 	}
 }

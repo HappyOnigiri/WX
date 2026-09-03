@@ -475,6 +475,13 @@ func (s *Store) ClaimJob(ctx context.Context, id, owner string) (Job, error) {
 	if n != 1 {
 		return Job{}, errors.New("job is not pending")
 	}
+	// A separate SELECT (rather than RETURNING on the UPDATE) is required
+	// here: RETURNING reflects only the row image this statement itself
+	// wrote, not further changes made by AFTER triggers that run as its
+	// side effect. If a trigger deletes the row this UPDATE just claimed
+	// (simulating a concurrent actor finishing and cleaning it up), a
+	// separate SELECT correctly observes that the row is gone and fails the
+	// claim so the transaction rolls back; RETURNING would miss it.
 	var j Job
 	if err := tx.QueryRowContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt); err != nil {
 		return Job{}, err
@@ -856,12 +863,8 @@ func (s *Store) RecordLease(ctx context.Context, workspaceID string) error {
 func (s *Store) SetSlotState(ctx context.Context, id string, from []string, to, code string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(from)), ",")
-	args := []any{to, now(), nullString(code), id}
-	for _, v := range from {
-		args = append(args, v)
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE slots SET state=?,updated_at=?,failure_code=? WHERE id=? AND state IN (`+placeholders+`)`, args...)
+	args := append([]any{to, now(), nullString(code), id}, stringsToAny(from)...)
+	res, err := s.db.ExecContext(ctx, `UPDATE slots SET state=?,updated_at=?,failure_code=? WHERE id=? AND state IN (`+placeholders(len(from))+`)`, args...)
 	if err != nil {
 		return err
 	}
@@ -982,13 +985,8 @@ func (s *Store) FinishPreparationWithRelease(ctx context.Context, id string) (Jo
 func (s *Store) MarkSessionState(ctx context.Context, id string, from []string, to string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	ph := strings.TrimRight(strings.Repeat("?,", len(from)), ",")
-	args := []any{to, id}
-	for _, v := range from {
-		args = append(args, v)
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET state=?,started_at=CASE WHEN ?='ACTIVE' THEN COALESCE(started_at,`+quoteNow()+`) ELSE started_at END,released_at=CASE WHEN ?='RELEASING' THEN COALESCE(released_at,`+quoteNow()+`) ELSE released_at END WHERE id=? AND state IN (`+ph+`)`, append([]any{to, to, to, id}, stringsToAny(from)...)...)
-	_ = args
+	args := append([]any{to, to, now(), to, now(), id}, stringsToAny(from)...)
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET state=?,started_at=CASE WHEN ?='ACTIVE' THEN COALESCE(started_at,?) ELSE started_at END,released_at=CASE WHEN ?='RELEASING' THEN COALESCE(released_at,?) ELSE released_at END WHERE id=? AND state IN (`+placeholders(len(from))+`)`, args...)
 	if err != nil {
 		return err
 	}
@@ -998,7 +996,11 @@ func (s *Store) MarkSessionState(ctx context.Context, id string, from []string, 
 	}
 	return nil
 }
-func quoteNow() string { return "'" + now() + "'" }
+
+// placeholders returns n comma-separated "?" bind markers for an IN(...)
+// clause built from a caller-supplied slice.
+func placeholders(n int) string { return strings.TrimRight(strings.Repeat("?,", n), ",") }
+
 func stringsToAny(v []string) []any {
 	a := make([]any, len(v))
 	for i := range v {
@@ -1007,9 +1009,17 @@ func stringsToAny(v []string) []any {
 	return a
 }
 
-func (s *Store) Session(ctx context.Context, id, token string) (Session, error) {
+// sessionColumns is the column list shared by every full-row session read.
+const sessionColumns = `id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'')`
+
+func scanSession(row *sql.Row) (Session, error) {
 	var x Session
-	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
+	err := row.Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
+	return x, err
+}
+
+func (s *Store) Session(ctx context.Context, id, token string) (Session, error) {
+	x, err := scanSession(s.db.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE id=?`, id))
 	if err != nil {
 		return Session{}, err
 	}
@@ -1020,9 +1030,7 @@ func (s *Store) Session(ctx context.Context, id, token string) (Session, error) 
 }
 
 func (s *Store) SessionByID(ctx context.Context, id string) (Session, error) {
-	var x Session
-	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
-	return x, err
+	return scanSession(s.db.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE id=?`, id))
 }
 
 func (s *Store) RegisterAgentProcess(ctx context.Context, id, token string, pid int) error {
@@ -1164,9 +1172,7 @@ func (s *Store) BindFreshResumeSlot(ctx context.Context, sessionID, parentSessio
 }
 
 func (s *Store) FindByAgentSession(ctx context.Context, kind, agentID string) (Session, error) {
-	var x Session
-	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions WHERE agent_kind=? AND agent_session_id=?`, kind, agentID).Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
-	return x, err
+	return scanSession(s.db.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE agent_kind=? AND agent_session_id=?`, kind, agentID))
 }
 
 func (s *Store) Heartbeat(ctx context.Context, id, token string) error {
@@ -1319,12 +1325,8 @@ func (s *Store) SlotRepository(ctx context.Context, slotID, repositoryID string)
 func (s *Store) SetSlotRepositoryState(ctx context.Context, slotID, repositoryID string, from []string, to string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(from)), ",")
-	args := []any{to, slotID, repositoryID}
-	for _, value := range from {
-		args = append(args, value)
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE slot_repositories SET state=? WHERE slot_id=? AND repository_id=? AND state IN (`+placeholders+`)`, args...)
+	args := append([]any{to, slotID, repositoryID}, stringsToAny(from)...)
+	res, err := s.db.ExecContext(ctx, `UPDATE slot_repositories SET state=? WHERE slot_id=? AND repository_id=? AND state IN (`+placeholders(len(from))+`)`, args...)
 	if err != nil {
 		return err
 	}
@@ -1340,38 +1342,27 @@ func (s *Store) Slot(ctx context.Context, id string) (Slot, error) {
 	return x, err
 }
 
+// SaveSnapshot records a repository's recovery snapshot, or verifies that a
+// prior write for the same session/repository named the exact same objects
+// and refs. The comparison happens in SQL: ON CONFLICT only applies the
+// update (a no-op rewrite of status) when every immutable field already
+// matches, so a real mismatch leaves the existing row untouched and
+// RETURNING yields no row.
 func (s *Store) SaveSnapshot(ctx context.Context, x Snapshot) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO snapshots(id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id,repository_id) DO NOTHING`, x.ID, x.SessionID, x.RepositoryID, x.HeadOID, x.HeadRef, x.IndexTreeOID, x.IndexRef, x.WorktreeOID, x.WorktreeRef, x.Status, x.CreatedAt, x.ExpiresAt)
-	if err != nil {
-		return err
-	}
-	var existing Snapshot
-	if err := tx.QueryRowContext(ctx, `SELECT id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at FROM snapshots WHERE session_id=? AND repository_id=?`, x.SessionID, x.RepositoryID).Scan(&existing.ID, &existing.SessionID, &existing.RepositoryID, &existing.HeadOID, &existing.HeadRef, &existing.IndexTreeOID, &existing.IndexRef, &existing.WorktreeOID, &existing.WorktreeRef, &existing.Status, &existing.CreatedAt, &existing.ExpiresAt); err != nil {
-		return err
-	}
-	// A row written before migration 010 has no index_recovery_ref. Retrying
-	// its snapshot job after the upgrade recomputes the same objects but now
-	// also names an index ref, which would otherwise read as a metadata
-	// conflict and quarantine the slot. Backfill the one column the upgrade
-	// added instead, but only when every object ID already matches, so a
-	// genuine mismatch is still refused.
-	if existing.IndexRef == "" && x.IndexRef != "" && existing.IndexTreeOID == x.IndexTreeOID {
-		if _, err := tx.ExecContext(ctx, `UPDATE snapshots SET index_recovery_ref=? WHERE session_id=? AND repository_id=? AND index_recovery_ref=''`, x.IndexRef, x.SessionID, x.RepositoryID); err != nil {
-			return err
-		}
-		existing.IndexRef = x.IndexRef
-	}
-	if existing.ID != x.ID || existing.HeadOID != x.HeadOID || existing.HeadRef != x.HeadRef || existing.IndexTreeOID != x.IndexTreeOID || existing.IndexRef != x.IndexRef || existing.WorktreeOID != x.WorktreeOID || existing.WorktreeRef != x.WorktreeRef {
+	var ok int
+	err := s.db.QueryRowContext(ctx, `INSERT INTO snapshots(id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(session_id,repository_id) DO UPDATE SET status=excluded.status
+		WHERE snapshots.id=excluded.id AND snapshots.head_oid=excluded.head_oid AND snapshots.head_recovery_ref=excluded.head_recovery_ref
+		  AND snapshots.index_tree_oid=excluded.index_tree_oid AND snapshots.index_recovery_ref=excluded.index_recovery_ref
+		  AND snapshots.worktree_snapshot_oid=excluded.worktree_snapshot_oid AND snapshots.worktree_recovery_ref=excluded.worktree_recovery_ref
+		RETURNING 1`,
+		x.ID, x.SessionID, x.RepositoryID, x.HeadOID, x.HeadRef, x.IndexTreeOID, x.IndexRef, x.WorktreeOID, x.WorktreeRef, x.Status, x.CreatedAt, x.ExpiresAt).Scan(&ok)
+	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("snapshot metadata conflicts with an existing recovery snapshot")
 	}
-	return tx.Commit()
+	return err
 }
 
 func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, error) {
@@ -1391,26 +1382,23 @@ func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, er
 	return out, rows.Err()
 }
 
+// SaveWorkspaceSnapshot records a workspace bundle's recovery snapshot, or
+// verifies that a prior write for the same session named the exact same
+// archive. See SaveSnapshot for how the comparison is pushed into SQL.
 func (s *Store) SaveWorkspaceSnapshot(ctx context.Context, x WorkspaceSnapshot) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO workspace_snapshots(session_id,archive_path,sha256,status,created_at,expires_at) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id) DO NOTHING`, x.SessionID, x.ArchivePath, x.SHA256, x.Status, x.CreatedAt, x.ExpiresAt)
-	if err != nil {
-		return err
-	}
-	var existing WorkspaceSnapshot
-	if err := tx.QueryRowContext(ctx, `SELECT session_id,archive_path,sha256,status,created_at,expires_at FROM workspace_snapshots WHERE session_id=?`, x.SessionID).Scan(&existing.SessionID, &existing.ArchivePath, &existing.SHA256, &existing.Status, &existing.CreatedAt, &existing.ExpiresAt); err != nil {
-		return err
-	}
-	if existing.ArchivePath != x.ArchivePath || existing.SHA256 != x.SHA256 || existing.Status != x.Status || existing.ExpiresAt != x.ExpiresAt {
+	var ok int
+	err := s.db.QueryRowContext(ctx, `INSERT INTO workspace_snapshots(session_id,archive_path,sha256,status,created_at,expires_at) VALUES(?,?,?,?,?,?)
+		ON CONFLICT(session_id) DO UPDATE SET status=excluded.status
+		WHERE workspace_snapshots.archive_path=excluded.archive_path AND workspace_snapshots.sha256=excluded.sha256
+		  AND workspace_snapshots.status=excluded.status AND workspace_snapshots.expires_at=excluded.expires_at
+		RETURNING 1`,
+		x.SessionID, x.ArchivePath, x.SHA256, x.Status, x.CreatedAt, x.ExpiresAt).Scan(&ok)
+	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("workspace snapshot metadata conflicts with an existing recovery snapshot")
 	}
-	return tx.Commit()
+	return err
 }
 
 func (s *Store) WorkspaceSnapshot(ctx context.Context, sessionID string) (WorkspaceSnapshot, bool, error) {
@@ -1673,16 +1661,18 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 
 func (s *Store) Status(ctx context.Context) (Status, error) {
 	var x Status
-	queries := []struct {
-		dst *int
-		q   string
-	}{{&x.Workspaces, "SELECT count(*) FROM workspaces"}, {&x.Repositories, "SELECT count(*) FROM repositories"}, {&x.Ready, "SELECT count(*) FROM slots WHERE state='READY'"}, {&x.Leased, "SELECT count(*) FROM slots WHERE state='LEASED'"}, {&x.Failed, "SELECT count(*) FROM slots WHERE state='FAILED'"}, {&x.Active, "SELECT count(*) FROM sessions WHERE state='ACTIVE'"}, {&x.Snapshots, "SELECT count(*) FROM snapshots WHERE status='ARCHIVED'"}, {&x.Jobs, "SELECT count(*) FROM jobs WHERE state IN ('PENDING','RUNNING')"}, {&x.Quarantined, "SELECT count(*) FROM slots WHERE state='QUARANTINED'"}}
-	for _, q := range queries {
-		if err := s.db.QueryRowContext(ctx, q.q).Scan(q.dst); err != nil {
-			return x, err
-		}
-	}
-	return x, nil
+	err := s.db.QueryRowContext(ctx, `SELECT
+		(SELECT count(*) FROM workspaces),
+		(SELECT count(*) FROM repositories),
+		(SELECT count(*) FROM slots WHERE state='READY'),
+		(SELECT count(*) FROM slots WHERE state='LEASED'),
+		(SELECT count(*) FROM slots WHERE state='FAILED'),
+		(SELECT count(*) FROM sessions WHERE state='ACTIVE'),
+		(SELECT count(*) FROM snapshots WHERE status='ARCHIVED'),
+		(SELECT count(*) FROM jobs WHERE state IN ('PENDING','RUNNING')),
+		(SELECT count(*) FROM slots WHERE state='QUARANTINED')`).
+		Scan(&x.Workspaces, &x.Repositories, &x.Ready, &x.Leased, &x.Failed, &x.Active, &x.Snapshots, &x.Jobs, &x.Quarantined)
+	return x, err
 }
 
 func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error) {
@@ -2009,21 +1999,25 @@ func (s *Store) RecoveryRefs(ctx context.Context, repositoryID string) ([]string
 func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string) ([]RecoveryRefExpectation, error) {
 	at := now()
 	rows, err := s.db.QueryContext(ctx, `
+		WITH inflight AS (
+			SELECT session_id FROM jobs
+			WHERE kind='SNAPSHOT' AND (state='PENDING' OR (state='RUNNING' AND lease_expires_at>?))
+		)
 		SELECT sn.head_recovery_ref,sn.head_oid,sn.session_id,se.state,
-		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND (j.state='PENDING' OR (j.state='RUNNING' AND j.lease_expires_at>?))) THEN 1 ELSE 0 END
+		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM inflight i WHERE i.session_id=sn.session_id) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
 		UNION ALL
 		SELECT sn.worktree_recovery_ref,sn.worktree_snapshot_oid,sn.session_id,se.state,
-		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND (j.state='PENDING' OR (j.state='RUNNING' AND j.lease_expires_at>?))) THEN 1 ELSE 0 END
+		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM inflight i WHERE i.session_id=sn.session_id) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
 		UNION ALL
 		SELECT sn.index_recovery_ref,sn.index_tree_oid,sn.session_id,se.state,
-		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind='SNAPSHOT' AND j.session_id=sn.session_id AND (j.state='PENDING' OR (j.state='RUNNING' AND j.lease_expires_at>?))) THEN 1 ELSE 0 END
+		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM inflight i WHERE i.session_id=sn.session_id) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED' AND sn.index_recovery_ref<>''
-		ORDER BY 1`, at, repositoryID, at, repositoryID, at, repositoryID)
+		ORDER BY 1`, at, repositoryID, repositoryID, repositoryID)
 	if err != nil {
 		return nil, err
 	}
