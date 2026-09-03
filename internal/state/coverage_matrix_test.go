@@ -89,7 +89,7 @@ func TestHotRepositoryIDsExcludesNeverLeasedAndStaleRepositories(t *testing.T) {
 		{ID: "stale", MainPath: "/workspace/stale", CommonDir: "/workspace/stale/.git", RelativePath: "stale", DefaultBranch: "main"},
 		{ID: "hot", MainPath: "/workspace/hot", CommonDir: "/workspace/hot/.git", RelativePath: "hot", DefaultBranch: "main"},
 	}}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	hotBefore := FormatTime(time.Now().Add(-time.Hour))

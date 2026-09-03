@@ -239,11 +239,6 @@ func FormatTime(value time.Time) string { return value.UTC().Format(timestampFor
 func now() string                   { return FormatTime(time.Now()) }
 func HashToken(token string) []byte { sum := sha256.Sum256([]byte(token)); return sum[:] }
 
-func (s *Store) UpsertWorkspace(ctx context.Context, w discovery.Workspace) error {
-	_, err := s.UpsertWorkspaceGeneration(ctx, w)
-	return err
-}
-
 // CanonicalWorkspace returns the workspace identity already registered for a
 // repository common directory. Repository workspace IDs are derived from the
 // common directory for new registrations, but older databases may contain an

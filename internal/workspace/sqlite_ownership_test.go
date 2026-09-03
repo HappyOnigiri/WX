@@ -40,7 +40,7 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	slotPath := filepath.Join(worktreeRoot, "slots", "slot", "root")

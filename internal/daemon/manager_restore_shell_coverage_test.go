@@ -23,7 +23,7 @@ func TestRemoveColdRepositoryJobRecreatesSingleRepositorySlotShell(t *testing.T)
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	workspaceRecord.Kind = "repository"
 	workspaceRecord.Repositories[0].RelativePath = "."
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 	repository := resolved[0].Repository
@@ -47,7 +47,7 @@ func TestRemoveColdRepositoryJobRecreatesSingleRepositorySlotShell(t *testing.T)
 	// this common directory, so the workspace ID stays workspaceRecord.ID;
 	// only the recorded root needs to line up with the repository's own path.
 	workspaceRecord.Root = domain.CanonicalPath(string(repository.MainPath))
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateStandby(ctx,
@@ -82,7 +82,7 @@ func TestRemoveColdRepositoryJobQuarantinesOnUnlockedWorktree(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	workspaceRecord.Kind = "repository"
 	workspaceRecord.Repositories[0].RelativePath = "."
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 	repository := resolved[0].Repository
@@ -101,7 +101,7 @@ func TestRemoveColdRepositoryJobQuarantinesOnUnlockedWorktree(t *testing.T) {
 	// Deliberately do not lock the worktree with a recognized wx reason.
 
 	workspaceRecord.Root = domain.CanonicalPath(string(repository.MainPath))
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateStandby(ctx,
@@ -133,7 +133,7 @@ func TestRestoreSlotCompletesMultiRepositoryWorkspaceRootRecovery(t *testing.T) 
 	// ownership validation below rejects the association before the
 	// workspace-root recovery branch under test is ever reached.
 	workspaceRecord.Root = domain.CanonicalPath(filepath.Dir(string(repository.MainPath)))
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 

@@ -48,7 +48,7 @@ func TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable(t *testin
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	workspaceRecord.Kind = "repository"
 	workspaceRecord.Repositories[0].RelativePath = "."
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 	repository := resolved[0].Repository
@@ -126,7 +126,7 @@ func TestResumeReportsIncompleteRecoverySnapshotAcrossRepositories(t *testing.T)
 		{ID: "repository-1", MainPath: discoveryPath(filepath.Join(root, "repository-1")), CommonDir: discoveryPath(filepath.Join(root, "repository-1", ".git")), RelativePath: "repository-1", DefaultBranch: "main"},
 		{ID: "repository-2", MainPath: discoveryPath(filepath.Join(root, "repository-2")), CommonDir: discoveryPath(filepath.Join(root, "repository-2", ".git")), RelativePath: "repository-2", DefaultBranch: "main"},
 	}}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	sessionRepos := []state.SlotRepository{

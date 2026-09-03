@@ -138,7 +138,7 @@ func TestCanonicalWorkspaceKeepsSlotsWhenMainWorktreeMoves(t *testing.T) {
 			ID: "repository", MainPath: domain.CanonicalPath(oldMain), CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main",
 		}},
 	}
-	if err := store.UpsertWorkspace(ctx, registered); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, registered); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateStandby(ctx, Slot{ID: "standby", WorkspaceID: string(registered.ID), Generation: 1, Path: filepath.Join(t.TempDir(), "standby"), State: "READY"}, nil); err != nil {
@@ -188,7 +188,7 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 		store := openTestStore(t)
 		common := "/repository/common.git"
 		registered := discovery.Workspace{ID: "registered", Root: "/registered", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/registered", CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main"}}}
-		if err := store.UpsertWorkspace(ctx, registered); err != nil {
+		if _, err := store.UpsertWorkspaceGeneration(ctx, registered); err != nil {
 			t.Fatal(err)
 		}
 		// This models a pre-existing inconsistent registry. The common directory
@@ -224,10 +224,10 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 		store := openTestStore(t)
 		old := discovery.Workspace{ID: "old", Root: "/old", Kind: "repository", Repositories: []discovery.Repository{{ID: "old-repository", MainPath: "/old", CommonDir: "/old/common.git", RelativePath: ".", DefaultBranch: "main"}}}
 		other := discovery.Workspace{ID: "other", Root: "/new", Kind: "repository", Repositories: []discovery.Repository{{ID: "other-repository", MainPath: "/new", CommonDir: "/new/common.git", RelativePath: ".", DefaultBranch: "main"}}}
-		if err := store.UpsertWorkspace(ctx, old); err != nil {
+		if _, err := store.UpsertWorkspaceGeneration(ctx, old); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.UpsertWorkspace(ctx, other); err != nil {
+		if _, err := store.UpsertWorkspaceGeneration(ctx, other); err != nil {
 			t.Fatal(err)
 		}
 		session := Session{ID: "session", WorkspaceID: string(old.ID), SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
@@ -256,7 +256,7 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 	t.Run("storage failure", func(t *testing.T) {
 		store := openTestStore(t)
 		old := discovery.Workspace{ID: "old", Root: "/old", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/old", CommonDir: "/old/common.git", RelativePath: ".", DefaultBranch: "main"}}}
-		if err := store.UpsertWorkspace(ctx, old); err != nil {
+		if _, err := store.UpsertWorkspaceGeneration(ctx, old); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_relocation_repository_update BEFORE UPDATE OF main_worktree_path ON repositories BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
@@ -372,7 +372,7 @@ func TestWorkspaceSnapshotMetadataGatesMultiRepositoryArchive(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	workspace := discovery.Workspace{ID: "workspace", Root: domain.CanonicalPath(root), Kind: "multi_repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: domain.CanonicalPath(filepath.Join(root, "repository")), CommonDir: domain.CanonicalPath(filepath.Join(root, "repository.git")), RelativePath: "repository", DefaultBranch: "main"}}}
-	if err := store.UpsertWorkspace(ctx, workspace); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
 		t.Fatal(err)
 	}
 	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "RELEASING", AgentKind: "codex", TokenHash: HashToken("token")}
@@ -2049,7 +2049,7 @@ func TestSessionWorkspaceRejectsEmptyMembershipAndMissingSession(t *testing.T) {
 	ctx := context.Background()
 
 	w := discovery.Workspace{ID: "empty-workspace", Root: "/empty", Kind: "repository"}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	session := Session{ID: "empty-session", WorkspaceID: string(w.ID), SlotID: "empty-slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
@@ -2397,7 +2397,7 @@ func openTestStore(t *testing.T) *Store {
 func seedWorkspace(t *testing.T, store *Store) {
 	t.Helper()
 	w := discovery.Workspace{ID: "workspace", Root: "/workspace", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/workspace", CommonDir: "/workspace/.git", DefaultBranch: "main"}}}
-	if err := store.UpsertWorkspace(context.Background(), w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(context.Background(), w); err != nil {
 		t.Fatal(err)
 	}
 }

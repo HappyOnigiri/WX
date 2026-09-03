@@ -82,7 +82,7 @@ func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +138,7 @@ func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	// ensureStandby only checks out repositories used within hot_standby;
@@ -217,7 +217,7 @@ func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	raw := openManagerCoverageDB(t, databasePath)
@@ -294,7 +294,7 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := pool.ResolveBranches(ctx, m.git, w, nil)
@@ -356,7 +356,7 @@ func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	raw := openManagerCoverageDB(t, databasePath)
@@ -435,7 +435,7 @@ func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	// A never-leased single-repository workspace's standby would otherwise

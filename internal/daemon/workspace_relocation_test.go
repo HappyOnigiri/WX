@@ -81,7 +81,7 @@ exit 1
 			ID: repositoryID, MainPath: domain.CanonicalPath(oldMain), CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main",
 		}},
 	}
-	if err := store.UpsertWorkspace(ctx, registered); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, registered); err != nil {
 		t.Fatal(err)
 	}
 	oldSlotPath := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(oldWorkspaceID), "slots", "old-slot", "root")
@@ -186,7 +186,7 @@ func TestMainWorktreeRelocationWithGitRegistryPreservesIdentityAndSessions(t *te
 	// retain this ID and its existing slot namespace.
 	legacy := discovered
 	legacy.ID = domain.WorkspaceID(domain.StableID(string(discovered.Root)))
-	if err := store.UpsertWorkspace(ctx, legacy); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, legacy); err != nil {
 		t.Fatal(err)
 	}
 	m := testManager(t, cfg, store)

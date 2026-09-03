@@ -87,7 +87,7 @@ func TestGCDiscoversArchivedSlotOnClosedRetiredRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	ctx := context.Background()
-	if err := store.UpsertWorkspace(ctx, discovery.Workspace{ID: "workspace", Root: discoveryPath(home), Kind: "repository"}); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, discovery.Workspace{ID: "workspace", Root: discoveryPath(home), Kind: "repository"}); err != nil {
 		t.Fatal(err)
 	}
 	session := state.Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken("token")}
@@ -487,7 +487,7 @@ func TestRootReplacementQuarantinesPreparationBeforeDescriptorAcquire(t *testing
 	} else {
 		release()
 	}
-	if err := store.UpsertWorkspace(context.Background(), discovery.Workspace{ID: "workspace", Root: discoveryPath(home), Kind: "repository"}); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(context.Background(), discovery.Workspace{ID: "workspace", Root: discoveryPath(home), Kind: "repository"}); err != nil {
 		t.Fatal(err)
 	}
 	const slotID = "preparing-slot"

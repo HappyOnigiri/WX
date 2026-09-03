@@ -46,7 +46,7 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 	if len(w.Repositories) != 2 {
 		t.Fatalf("workspace repositories=%d, want 2", len(w.Repositories))
 	}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := resolveTestBranches(ctx, m, w)

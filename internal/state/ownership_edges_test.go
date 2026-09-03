@@ -168,7 +168,7 @@ func newOwnershipFixture(t *testing.T) ownershipFixture {
 		t.Fatal(err)
 	}
 	workspace := discoveryWorkspace(workspaceRoot, main, common)
-	if err := store.UpsertWorkspace(context.Background(), workspace); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(context.Background(), workspace); err != nil {
 		t.Fatal(err)
 	}
 	slotPath := filepath.Join(root, "slots", "slot")

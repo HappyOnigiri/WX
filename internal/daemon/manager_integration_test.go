@@ -54,7 +54,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := pool.ResolveBranches(ctx, runner, w, nil)
@@ -162,7 +162,7 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	// ensureStandby only checks out repositories used within hot_standby;
@@ -253,7 +253,7 @@ func TestEnsureStandbyOnlyChecksOutRecentlyUsedRepositories(t *testing.T) {
 		{ID: "hot", MainPath: discoveryPath(hotRepoPath), CommonDir: discoveryPath(filepath.Join(hotRepoPath, ".git")), RelativePath: "hot", DefaultBranch: "main"},
 		{ID: "cold", MainPath: discoveryPath(coldRepoPath), CommonDir: discoveryPath(filepath.Join(coldRepoPath, ".git")), RelativePath: "cold", DefaultBranch: "main"},
 	}}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	raw := openManagerCoverageDB(t, databasePath)
@@ -618,7 +618,7 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := pool.ResolveBranches(ctx, runner, w, nil)

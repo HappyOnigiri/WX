@@ -239,7 +239,7 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	}
 	brokenRoot := filepath.Join(home, "missing-workspace")
 	brokenRepository := filepath.Join(home, "missing-repository")
-	if err := store.UpsertWorkspace(ctx, discovery.Workspace{ID: "broken-workspace", Root: discoveryPath(brokenRoot), Kind: "repository", Repositories: []discovery.Repository{{ID: "broken-repository", MainPath: discoveryPath(brokenRepository), CommonDir: discoveryPath(filepath.Join(brokenRepository, ".git")), DefaultBranch: "main"}}}); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, discovery.Workspace{ID: "broken-workspace", Root: discoveryPath(brokenRoot), Kind: "repository", Repositories: []discovery.Repository{{ID: "broken-repository", MainPath: discoveryPath(brokenRepository), CommonDir: discoveryPath(filepath.Join(brokenRepository, ".git")), DefaultBranch: "main"}}}); err != nil {
 		t.Fatal(err)
 	}
 	brokenArtifacts := m.artifactDiagnostics(ctx)
@@ -492,7 +492,7 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 		t.Fatal("missing snapshot wait succeeded")
 	}
 	w := discovery.Workspace{ID: "pending-workspace", Root: discoveryPath(root), Kind: "repository"}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	pending := state.Session{ID: "pending", WorkspaceID: "pending-workspace", SlotID: "pending", State: "RELEASING", AgentKind: "codex", TokenHash: state.HashToken("pending")}
@@ -609,7 +609,7 @@ func TestManagerIdempotentJobsAndOwnershipRejections(t *testing.T) {
 	t.Cleanup(m.Close)
 	ctx := context.Background()
 	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: discoveryPath(filepath.Join(root, "repository")), CommonDir: discoveryPath(filepath.Join(root, "repository", ".git")), DefaultBranch: "main"}}}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 
@@ -680,7 +680,7 @@ func TestManagerResumeAndArchiveFailureStates(t *testing.T) {
 		{ID: "repository-1", MainPath: discoveryPath(filepath.Join(root, "repository-1")), CommonDir: discoveryPath(filepath.Join(root, "repository-1", ".git")), RelativePath: "repository-1", DefaultBranch: "main"},
 		{ID: "repository-2", MainPath: discoveryPath(filepath.Join(root, "repository-2")), CommonDir: discoveryPath(filepath.Join(root, "repository-2", ".git")), RelativePath: "repository-2", DefaultBranch: "main"},
 	}}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	createSession := func(id, sessionState, slotState, parent string) (state.Session, string) {
@@ -788,7 +788,7 @@ func TestWaitForSnapshotReportsTerminalAndTimeoutStates(t *testing.T) {
 		manager := testManager(t, cfg, store)
 		t.Cleanup(manager.Close)
 		workspaceRecord := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "repository"}
-		if err := store.UpsertWorkspace(context.Background(), workspaceRecord); err != nil {
+		if _, err := store.UpsertWorkspaceGeneration(context.Background(), workspaceRecord); err != nil {
 			t.Fatal(err)
 		}
 		session := state.Session{ID: "session", WorkspaceID: string(workspaceRecord.ID), SlotID: "slot", State: sessionState, AgentKind: "codex", TokenHash: state.HashToken("token")}
@@ -856,7 +856,7 @@ func TestGCRefusesIncompleteMultiRepositoryRecoveryMetadata(t *testing.T) {
 			ctx := context.Background()
 			repository := discovery.Repository{ID: "repository", MainPath: discoveryPath(filepath.Join(root, "repository")), CommonDir: discoveryPath(filepath.Join(root, "repository", ".git")), DefaultBranch: "main"}
 			workspaceRecord := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: test.kind, Repositories: []discovery.Repository{repository}}
-			if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+			if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 				t.Fatal(err)
 			}
 			var slotRepositories []state.SlotRepository
@@ -919,7 +919,7 @@ func TestRemoveSlotWorktreesRefusesIncompleteRecoveryMetadata(t *testing.T) {
 			ctx := context.Background()
 			repository := discovery.Repository{ID: "repository", MainPath: discoveryPath(filepath.Join(root, "repository")), CommonDir: discoveryPath(filepath.Join(root, "repository", ".git")), DefaultBranch: "main"}
 			workspaceRecord := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: test.kind, Repositories: []discovery.Repository{repository}}
-			if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+			if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 				t.Fatal(err)
 			}
 			slotPath := filepath.Join(cfg.Storage.WorktreeRoot, "slot")
@@ -979,7 +979,7 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 			commonDir := gitOutput(t, repositoryPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
 			repository := discovery.Repository{ID: "repository", MainPath: discoveryPath(repositoryPath), CommonDir: discoveryPath(commonDir), RelativePath: "repository", DefaultBranch: "main"}
 			workspaceRecord := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "multi_repository", Repositories: []discovery.Repository{repository}}
-			if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+			if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 				t.Fatal(err)
 			}
 			session := state.Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}
@@ -1097,7 +1097,7 @@ func TestSnapshotFailureQuarantinesSlotWithoutRemovingWorktreeMetadata(t *testin
 	t.Cleanup(m.Close)
 	ctx := context.Background()
 	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(repoPath), Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: discoveryPath(repoPath), CommonDir: discoveryPath(filepath.Join(repoPath, ".git")), DefaultBranch: "main"}}}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	slotPath := filepath.Join(cfg.Storage.WorktreeRoot, "slot")
@@ -1139,7 +1139,7 @@ func TestMultiRepositoryRootMaterializationFailurePersistsFailedState(t *testing
 	t.Cleanup(m.Close)
 	ctx := context.Background()
 	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "multi_repository"}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	slotPath := filepath.Join(cfg.Storage.WorktreeRoot, "slot")

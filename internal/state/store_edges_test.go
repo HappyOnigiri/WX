@@ -293,7 +293,6 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	requireError("CompleteRPCRequest", store.CompleteRPCRequest(ctx, "key", "method", "{}", nil, "", "", time.Now().Add(time.Hour)))
 	_, err = store.Backup(ctx, 1, time.Hour)
 	requireError("Backup", err)
-	requireError("UpsertWorkspace", store.UpsertWorkspace(ctx, w))
 	_, err = store.CanonicalWorkspace(ctx, w)
 	requireError("CanonicalWorkspace", err)
 	_, err = store.UpsertWorkspaceGeneration(ctx, w)
@@ -1163,7 +1162,6 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 		},
 		"backup":               func() error { _, err := store.Backup(ctx, 1, time.Hour); return err },
 		"canonical workspace":  func() error { _, err := store.CanonicalWorkspace(ctx, workspace); return err },
-		"upsert workspace":     func() error { return store.UpsertWorkspace(ctx, workspace) },
 		"upsert generation":    func() error { _, err := store.UpsertWorkspaceGeneration(ctx, workspace); return err },
 		"create job":           func() error { _, err := store.CreateJob(ctx, job.Kind, "", "", ""); return err },
 		"claim job":            func() error { _, err := store.ClaimJob(ctx, job.ID, "owner"); return err },

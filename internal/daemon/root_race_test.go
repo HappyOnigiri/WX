@@ -104,7 +104,7 @@ func TestPrepareQuarantinesUncertainGitAddAfterRootReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertWorkspace(ctx, w); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := pool.ResolveBranches(ctx, runner, w, nil)

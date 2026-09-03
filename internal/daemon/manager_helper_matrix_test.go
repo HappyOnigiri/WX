@@ -241,7 +241,7 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	repositoryWorkspace.ID = domain.WorkspaceID(domain.StableID("expiry-matrix", "repository-workspace"))
 	repositoryWorkspace.Kind = "repository"
 	repositoryWorkspace.Root = domain.CanonicalPath(filepath.Join(t.TempDir(), "repository-workspace"))
-	if err := store.UpsertWorkspace(ctx, repositoryWorkspace); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, repositoryWorkspace); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateSlotSession(ctx,
@@ -347,7 +347,7 @@ func TestManagerColdRepositoryRemovalCompletesOwnedWorktree(t *testing.T) {
 	ownedWorkspace.Root = domain.CanonicalPath(filepath.Dir(string(repository.MainPath)))
 	ownedWorkspace.Repositories = append([]discovery.Repository(nil), workspaceRecord.Repositories...)
 	ownedWorkspace.Repositories[0].RelativePath = filepath.Base(string(repository.MainPath))
-	if err := store.UpsertWorkspace(ctx, ownedWorkspace); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, ownedWorkspace); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateStandby(ctx,

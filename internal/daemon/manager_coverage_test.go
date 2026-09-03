@@ -117,7 +117,7 @@ func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 	workspaceRecord.Kind = "repository"
 	workspaceRecord.Repositories[0].RelativePath = "."
 	resolved[0].Repository.RelativePath = "."
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.prepareSlot(ctx, "missing", workspaceRecord, resolved, nil); err == nil {
@@ -238,7 +238,7 @@ func TestRestoreSlotFailureAndReplayBoundaries(t *testing.T) {
 	workspaceRecord.Kind = "repository"
 	workspaceRecord.Repositories[0].RelativePath = "."
 	resolved[0].Repository.RelativePath = "."
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.restoreSlot(ctx, "missing", workspaceRecord, resolved, nil, nil); err == nil {
@@ -420,7 +420,7 @@ func TestRegistryOrphanAndClosedStoreReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 	manager := testManager(t, cfg, store)
@@ -452,7 +452,7 @@ func TestRegistryOrphanAndClosedStoreReconciliation(t *testing.T) {
 	}
 
 	missingWorkspace := discovery.Workspace{ID: "missing-workspace", Root: domain.CanonicalPath(filepath.Join(root, "missing")), Kind: "repository"}
-	if err := store.UpsertWorkspace(ctx, missingWorkspace); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, missingWorkspace); err != nil {
 		t.Fatal(err)
 	}
 	manager.reconcileRegistry(ctx)
@@ -1079,7 +1079,7 @@ func managerCoverageFixture(t *testing.T) (context.Context, *Manager, *state.Sto
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if err := store.UpsertWorkspace(ctx, workspaceRecord); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := pool.ResolveBranches(ctx, runner, workspaceRecord, nil)

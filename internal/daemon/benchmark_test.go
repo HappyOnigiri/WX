@@ -23,7 +23,7 @@ func BenchmarkHotLease(b *testing.B) {
 	}
 	defer store.Close()
 	workspace := discovery.Workspace{ID: "workspace", Root: domain.CanonicalPath(root), Kind: "repository"}
-	if err := store.UpsertWorkspace(ctx, workspace); err != nil {
+	if _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
 		b.Fatal(err)
 	}
 
