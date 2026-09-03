@@ -35,12 +35,17 @@ func TestCreateSlotRootPinsAllocationAcrossRootReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pinnedIdentity, err := descriptorIdentity(pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
 	m := &Manager{
-		cfg:         func() config.Config { cfg := config.Defaults(); cfg.Storage.WorktreeRoot = root; return cfg }(),
-		git:         &gitx.Runner{},
-		log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		roots:       map[string]bool{root: true},
-		rootHandles: map[string]*os.Root{root: pinned},
+		cfg:            func() config.Config { cfg := config.Defaults(); cfg.Storage.WorktreeRoot = root; return cfg }(),
+		git:            &gitx.Runner{},
+		log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		roots:          map[string]bool{root: true},
+		rootRefs:       map[string]*managedRoot{root: {root: pinned, identity: pinnedIdentity}},
+		rootIdentities: map[string]string{root: pinnedIdentity},
 	}
 	m.beforeSlotRootCreate = func() {
 		old := root + "-old"

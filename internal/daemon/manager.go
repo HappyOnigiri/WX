@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -64,7 +63,6 @@ type Manager struct {
 	lastBackup  time.Time
 	backupError string
 	roots       map[string]bool
-	rootHandles map[string]*os.Root
 	rootRefs    map[string]*managedRoot
 	retiredRefs map[string][]*managedRoot
 	// rootIdentities keeps the physical identity of every root pathname that
@@ -86,7 +84,6 @@ type Manager struct {
 	beforeRootClose   func()
 	jobs              chan jobWork
 	reloads           chan struct{}
-	reclaimAll        bool
 	ctx               context.Context
 	cancel            context.CancelFunc
 	wg                sync.WaitGroup
@@ -122,11 +119,10 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 	started := time.Now()
 	managerCtx, managerCancel := context.WithCancel(context.Background())
 	reclaimAll := len(exclusiveStartup) > 0 && exclusiveStartup[0]
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootHandles: map[string]*os.Root{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), reloads: make(chan struct{}, 1), reclaimAll: reclaimAll, ctx: managerCtx, cancel: managerCancel}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {
 		m.roots[root] = true
-		m.rootHandles[root] = ownedRoot
 		identity, identityErr := descriptorIdentity(ownedRoot)
 		if identityErr != nil {
 			logger.Error("worktree root identity is unavailable", "path", root, "error", identityErr)
@@ -211,7 +207,6 @@ func (m *Manager) closeRootHandles() {
 			_ = entry.root.Close()
 		}
 		delete(m.rootRefs, path)
-		delete(m.rootHandles, path)
 	}
 	for path, entries := range m.retiredRefs {
 		for _, entry := range entries {
@@ -221,15 +216,6 @@ func (m *Manager) closeRootHandles() {
 			}
 		}
 		delete(m.retiredRefs, path)
-	}
-	// A manually constructed test/recovery Manager may populate only the
-	// compatibility map. Close those handles too, without double-closing a
-	// descriptor already represented by rootRefs.
-	for path, handle := range m.rootHandles {
-		if handle != nil {
-			_ = handle.Close()
-		}
-		delete(m.rootHandles, path)
 	}
 	m.mu.Unlock()
 }
@@ -1102,9 +1088,6 @@ func (m *Manager) slotRoot(workspaceID, id string, unbound bool) (string, error)
 var errManagerClosed = errors.New("daemon manager is closed")
 
 func (m *Manager) ensureRootStateLocked() {
-	if m.rootHandles == nil {
-		m.rootHandles = map[string]*os.Root{}
-	}
 	if m.rootRefs == nil {
 		m.rootRefs = map[string]*managedRoot{}
 	}
@@ -1133,25 +1116,6 @@ func (m *Manager) acquireRootLocked(root string, includeRetired bool) (*os.Root,
 	if entry := m.rootRefs[root]; entry != nil && !entry.closed && !entry.retired && entry.root != nil {
 		entry.refs++
 		return entry.root, entry, true, nil
-	}
-	// Tests and recovery constructors from before descriptor lifetime tracking
-	// may populate only rootHandles. Adopt that descriptor on first use so the
-	// compatibility shape still receives the same reference accounting.
-	if handle := m.rootHandles[root]; handle != nil {
-		current, known := m.roots[root]
-		identity := m.rootIdentities[root]
-		if identity == "" {
-			identity, _ = descriptorIdentity(handle)
-			m.rootIdentities[root] = identity
-		}
-		entry := &managedRoot{root: handle, identity: identity, refs: 1, retired: known && !current}
-		if entry.retired {
-			delete(m.rootHandles, root)
-			m.retiredRefs[root] = append(m.retiredRefs[root], entry)
-		} else {
-			m.rootRefs[root] = entry
-		}
-		return handle, entry, true, nil
 	}
 	if includeRetired {
 		retired := m.retiredRefs[root]
@@ -1198,9 +1162,6 @@ func (m *Manager) closeRootLocked(path string, entry *managedRoot) {
 	entry.closed = true
 	if m.rootRefs[path] == entry {
 		delete(m.rootRefs, path)
-	}
-	if m.rootHandles[path] == entry.root {
-		delete(m.rootHandles, path)
 	}
 	if entry.root != nil {
 		_ = entry.root.Close()
@@ -1255,33 +1216,12 @@ func (m *Manager) adoptRoot(path string, opened *os.Root, active bool) (*os.Root
 		_ = opened.Close()
 		return existing.root, rootReleaseOnce(m, path, existing), nil
 	}
-	if existing := m.rootHandles[path]; existing != nil {
-		current, known := m.roots[path]
-		isActive := active && (!known || current)
-		existingIdentity := m.rootIdentities[path]
-		if existingIdentity == "" {
-			existingIdentity = identity
-			m.rootIdentities[path] = existingIdentity
-		}
-		entry := &managedRoot{root: existing, identity: existingIdentity, refs: 1, retired: !isActive}
-		if isActive {
-			m.rootRefs[path] = entry
-			m.roots[path] = true
-		} else {
-			delete(m.rootHandles, path)
-			m.retiredRefs[path] = append(m.retiredRefs[path], entry)
-		}
-		m.mu.Unlock()
-		_ = opened.Close()
-		return existing, rootReleaseOnce(m, path, entry), nil
-	}
 	current, known := m.roots[path]
 	isActive := active && (!known || current)
 	entry := &managedRoot{root: opened, identity: identity, refs: 1, retired: !isActive}
 	m.rootIdentities[path] = identity
 	if isActive {
 		m.rootRefs[path] = entry
-		m.rootHandles[path] = opened
 		m.roots[path] = true
 	} else {
 		m.retiredRefs[path] = append(m.retiredRefs[path], entry)
@@ -1347,12 +1287,6 @@ func descriptorIdentity(root *os.Root) (string, error) {
 func (m *Manager) retireRootLocked(path string) {
 	entry := m.rootRefs[path]
 	if entry == nil {
-		if handle := m.rootHandles[path]; handle != nil {
-			entry = &managedRoot{root: handle, identity: m.rootIdentities[path]}
-			m.rootRefs[path] = entry
-		}
-	}
-	if entry == nil {
 		delete(m.roots, path)
 		return
 	}
@@ -1360,7 +1294,6 @@ func (m *Manager) retireRootLocked(path string) {
 		return
 	}
 	delete(m.rootRefs, path)
-	delete(m.rootHandles, path)
 	entry.retired = true
 	if entry.refs == 0 {
 		m.closeRootLocked(path, entry)
@@ -1878,10 +1811,6 @@ func (m *Manager) BindAgentSession(ctx context.Context, id, token, agentID strin
 		return err
 	}
 	return m.store.BindAgentSession(ctx, id, agentID)
-}
-
-func (m *Manager) ValidateFreshResume(ctx context.Context, id, token, agentID string) error {
-	return m.PrepareFreshResume(ctx, id, token, agentID, "", nil)
 }
 
 func (m *Manager) PrepareFreshResume(ctx context.Context, id, token, agentID, cwd string, branches []string) error {
@@ -2758,9 +2687,6 @@ func (m *Manager) rootHandleForRoot(root string) *os.Root {
 			return entry.root
 		}
 	}
-	if handle := m.rootHandles[root]; handle != nil {
-		return handle
-	}
 	return nil
 }
 
@@ -3259,20 +3185,6 @@ func daemonVersion() string {
 	return "devel"
 }
 
-func directoryUsage(root string) (int64, error) {
-	var total int64
-	err := filepath.Walk(root, func(_ string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.Mode().IsRegular() {
-			total += info.Size()
-		}
-		return nil
-	})
-	return total, err
-}
-
 func formatOptionalTime(value time.Time) string {
 	if value.IsZero() {
 		return ""
@@ -3311,7 +3223,7 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	}
 	hooks := map[string]string{}
 	for _, agentKind := range []string{"claude", "codex"} {
-		if diagnosticHooksAvailable(agentKind) {
+		if hookconfig.Available(agentKind) {
 			hooks[agentKind] = "ok"
 		} else {
 			hooks[agentKind] = "missing or invalid readiness hooks; foreground readiness remains required"
@@ -3321,10 +3233,6 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	checks["worktree_registration"] = m.registrationDiagnostics(ctx)
 	checks["artifact_ownership"] = m.artifactDiagnostics(ctx)
 	return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "checks": checks}
-}
-
-func diagnosticHooksAvailable(agentKind string) bool {
-	return hookconfig.Available(agentKind)
 }
 
 func diagnosticPath(path string, requiredType os.FileMode, requiredPerm os.FileMode) string {
@@ -3490,7 +3398,6 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		return errManagerClosed
 	}
 	oldRoot := oldConfiguredRoot
-	var compatibilityHandle *os.Root
 	if oldRoot != newRoot {
 		for existingPath := range m.roots {
 			if existingPath == newRoot || !rootPathsOverlap(existingPath, newRoot) || !m.rootHasReferencesLocked(existingPath) {
@@ -3504,7 +3411,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 			return fmt.Errorf("validate worktree root: %w", reloadErr)
 		}
 	}
-	existingHandle := m.rootHandles[newRoot]
+	var existingHandle *os.Root
 	if existing := m.rootRefs[newRoot]; existing != nil && !existing.closed && !existing.retired {
 		existingHandle = existing.root
 	}
@@ -3540,10 +3447,6 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	if existing := m.rootRefs[newRoot]; existing != nil && !existing.closed && !existing.retired {
 		_ = newHandle.Close()
 		newHandle = nil
-	} else if existing := m.rootHandles[newRoot]; existing != nil {
-		compatibilityHandle = existing
-		_ = newHandle.Close()
-		newHandle = nil
 	}
 	if oldRoot != newRoot {
 		if err := m.store.DrainRoot(context.Background(), oldRoot); err != nil {
@@ -3559,18 +3462,9 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		m.roots[newRoot] = true
 		m.retireRootLocked(oldRoot)
 	}
-	if compatibilityHandle != nil {
-		identity := m.rootIdentities[newRoot]
-		if identity == "" {
-			identity = newIdentity
-			m.rootIdentities[newRoot] = identity
-		}
-		m.rootRefs[newRoot] = &managedRoot{root: compatibilityHandle, identity: identity}
-	}
 	if newHandle != nil {
 		m.rootIdentities[newRoot] = newIdentity
 		m.rootRefs[newRoot] = &managedRoot{root: newHandle, identity: newIdentity}
-		m.rootHandles[newRoot] = newHandle
 	}
 	m.cfg = cfg
 	m.git.SetTimeout(cfg.Readiness.Timeout.Duration)
@@ -3629,4 +3523,3 @@ func must(v string, e error) string {
 	}
 	return v
 }
-func JSON(v any) json.RawMessage { b, _ := json.Marshal(v); return b }

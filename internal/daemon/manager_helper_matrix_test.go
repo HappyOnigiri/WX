@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -28,9 +27,6 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 	}
 	if identity == "" {
 		t.Fatal("created slot root has no identity")
-	}
-	if got, ok := manager.rootForPath(slotRoot); !ok || got != filepath.Clean(root) {
-		t.Fatalf("rootForPath=%q found=%v", got, ok)
 	}
 	if manager.rootHandleForPath(slotRoot) == nil || manager.rootHandleForRoot(root) == nil {
 		t.Fatal("created root handle is unavailable")
@@ -55,12 +51,6 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 	}
 	if _, _, err := manager.rootDirectoryUsage(filepath.Join(t.TempDir(), "unknown")); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("unknown root usage error=%v", err)
-	}
-	if got, err := directoryUsage(slotRoot); err != nil || got != int64(len("payload")) {
-		t.Fatalf("directory usage=%d err=%v", got, err)
-	}
-	if _, err := directoryUsage(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("missing directory usage succeeded")
 	}
 
 	paths, err := manager.ownedRootArtifactPaths(root)
@@ -114,9 +104,6 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 	}
 	if got := removalMetadataFailure("metadata", errors.New("database unavailable")); !errors.Is(got, state.ErrOwnership) || !strings.Contains(got.Error(), "metadata") {
 		t.Fatalf("ordinary metadata failure=%v", got)
-	}
-	if got := formatOptionalTime(time.Time{}); got != "" || formatOptionalTime(time.Now()) == "" {
-		t.Fatal("optional time formatting boundary failed")
 	}
 	if daemonVersion() == "" {
 		t.Fatal("daemon version is empty")
@@ -380,36 +367,5 @@ func TestManagerColdRepositoryRemovalCompletesOwnedWorktree(t *testing.T) {
 	slot, err := store.Slot(ctx, slotID)
 	if err != nil || slot.State != "READY" {
 		t.Fatalf("finished cold slot=%+v err=%v", slot, err)
-	}
-}
-
-func TestManagerCompatibilityRootHandleIsAdoptedAndClosed(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Clean(root)
-	existing, err := os.OpenRoot(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	opened, err := os.OpenRoot(path)
-	if err != nil {
-		_ = existing.Close()
-		t.Fatal(err)
-	}
-	m := &Manager{
-		roots:       map[string]bool{path: true},
-		rootHandles: map[string]*os.Root{path: existing},
-	}
-	m.rootCond = sync.NewCond(&m.mu)
-	adopted, release, err := m.adoptRoot(path, opened, true)
-	if err != nil || adopted != existing {
-		t.Fatalf("compatibility root adoption=%v adopted=%v", err, adopted)
-	}
-	release()
-	m.mu.Lock()
-	m.rootClosing = true
-	m.mu.Unlock()
-	m.closeRootHandles()
-	if _, err := existing.Lstat("."); err == nil {
-		t.Fatal("compatibility root handle remained open after shutdown")
 	}
 }

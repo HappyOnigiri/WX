@@ -14,14 +14,12 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-// TestCloseRootHandlesClosesRetiredAndCompatibilityDescriptors exercises the
-// branches of closeRootHandles that are not reached by adoptRoot-driven
-// tests: an active entry that is already closed (must not be double-closed
-// or panic), a nil descriptor recorded alongside live ones (must not panic
-// on a nil *os.Root.Close()), retired-generation entries with the same
-// shapes, and descriptors that live only in the legacy rootHandles
-// compatibility map (never promoted into rootRefs/retiredRefs).
-func TestCloseRootHandlesClosesRetiredAndCompatibilityDescriptors(t *testing.T) {
+// TestCloseRootHandlesClosesRetiredDescriptors exercises the branches of
+// closeRootHandles that are not reached by adoptRoot-driven tests: an active
+// entry that is already closed (must not be double-closed or panic), a nil
+// descriptor recorded alongside live ones (must not panic on a nil
+// *os.Root.Close()), and retired-generation entries with the same shapes.
+func TestCloseRootHandlesClosesRetiredDescriptors(t *testing.T) {
 	base := t.TempDir()
 	openDir := func(name string) *os.Root {
 		t.Helper()
@@ -46,7 +44,6 @@ func TestCloseRootHandlesClosesRetiredAndCompatibilityDescriptors(t *testing.T) 
 	if err := alreadyClosedRetired.Close(); err != nil {
 		t.Fatal(err)
 	}
-	compatHandle := openDir("compat-only")
 
 	m := &Manager{
 		rootRefs: map[string]*managedRoot{
@@ -62,9 +59,6 @@ func TestCloseRootHandlesClosesRetiredAndCompatibilityDescriptors(t *testing.T) 
 				nil,
 			},
 		},
-		rootHandles: map[string]*os.Root{
-			filepath.Join(base, "compat-only"): compatHandle,
-		},
 	}
 
 	m.closeRootHandles()
@@ -75,17 +69,11 @@ func TestCloseRootHandlesClosesRetiredAndCompatibilityDescriptors(t *testing.T) 
 	if _, err := liveRetired.Lstat("."); err == nil {
 		t.Fatal("retired live root descriptor was not closed")
 	}
-	if _, err := compatHandle.Lstat("."); err == nil {
-		t.Fatal("compatibility-only root handle was not closed")
-	}
 	if len(m.rootRefs) != 0 {
 		t.Fatalf("rootRefs not cleared: %v", m.rootRefs)
 	}
 	if len(m.retiredRefs) != 0 {
 		t.Fatalf("retiredRefs not cleared: %v", m.retiredRefs)
-	}
-	if len(m.rootHandles) != 0 {
-		t.Fatalf("rootHandles not cleared: %v", m.rootHandles)
 	}
 }
 
@@ -120,21 +108,10 @@ func TestRootHasReferencesLockedCountsActiveAndRetiredGenerations(t *testing.T) 
 	}
 }
 
-// TestRootHandleForRootFallsBackToCompatibilityHandle covers the branch that
-// serves a descriptor recorded only in the legacy rootHandles map (no
-// rootRefs/retiredRefs entry yet), and the branch that reports no descriptor
-// at all for an unknown root.
-func TestRootHandleForRootFallsBackToCompatibilityHandle(t *testing.T) {
-	root := t.TempDir()
-	handle, err := os.OpenRoot(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = handle.Close() })
-	m := &Manager{rootHandles: map[string]*os.Root{root: handle}}
-	if got := m.rootHandleForRoot(root); got != handle {
-		t.Fatalf("compatibility root handle=%v want=%v", got, handle)
-	}
+// TestRootHandleForRootReportsNoDescriptorForUnknownRoot covers the branch
+// that reports no descriptor at all for an unknown root.
+func TestRootHandleForRootReportsNoDescriptorForUnknownRoot(t *testing.T) {
+	m := &Manager{}
 	if got := m.rootHandleForRoot(filepath.Join(t.TempDir(), "unknown")); got != nil {
 		t.Fatalf("unknown root unexpectedly returned a handle: %v", got)
 	}
@@ -502,37 +479,6 @@ func TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries(t *test
 	}
 	if len(paths) != 0 {
 		t.Fatalf("incomplete/non-directory entries were reported as artifacts: %v", paths)
-	}
-}
-
-// TestRetireRootLockedPromotesCompatibilityHandleBeforeRetiring verifies
-// that retiring a root known only through the legacy rootHandles
-// compatibility map (no managedRoot entry created yet) still promotes it to
-// a proper entry and closes it once its reference count is zero, instead of
-// leaving the compatibility handle dangling because no rootRefs entry
-// existed to retire.
-func TestRetireRootLockedPromotesCompatibilityHandleBeforeRetiring(t *testing.T) {
-	dir := t.TempDir()
-	handle, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := &Manager{
-		rootHandles:    map[string]*os.Root{dir: handle},
-		roots:          map[string]bool{dir: true},
-		rootIdentities: map[string]string{},
-		rootRefs:       map[string]*managedRoot{},
-		retiredRefs:    map[string][]*managedRoot{},
-	}
-	m.mu.Lock()
-	m.retireRootLocked(dir)
-	m.mu.Unlock()
-
-	if _, ok := m.rootHandles[dir]; ok {
-		t.Fatal("compatibility handle was not removed from the active map")
-	}
-	if _, err := handle.Lstat("."); err == nil {
-		t.Fatal("compatibility handle with zero references was not closed on retirement")
 	}
 }
 

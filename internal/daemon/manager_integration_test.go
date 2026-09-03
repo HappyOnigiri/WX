@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
@@ -20,6 +21,11 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
+
+// JSON is a test-only encoding helper for driving Handler.Handle with
+// literal request bodies; production code never needs to marshal its own
+// RPC arguments.
+func JSON(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 
 func requireDaemonIntegration(t *testing.T) {
 	t.Helper()
@@ -829,7 +835,7 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ValidateFreshResume(ctx, refusedFresh.SessionID, refusedFresh.Token, "expired-agent-session"); err == nil {
+	if err := m.PrepareFreshResume(ctx, refusedFresh.SessionID, refusedFresh.Token, "expired-agent-session", "", nil); err == nil {
 		t.Fatal("--fresh was accepted while the mapped session was active")
 	}
 	if err := os.WriteFile(filepath.Join(lease.Path, "uncommitted.txt"), []byte("discarded\n"), 0o600); err != nil {
@@ -877,7 +883,7 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.ValidateFreshResume(ctx, nativeFresh.SessionID, nativeFresh.Token, "expired-agent-session"); err != nil {
+	if err := m.PrepareFreshResume(ctx, nativeFresh.SessionID, nativeFresh.Token, "expired-agent-session", "", nil); err != nil {
 		t.Fatalf("--fresh rejected expired mapping: %v", err)
 	}
 	nativeWait, nativeCancel := context.WithTimeout(ctx, 10*time.Second)

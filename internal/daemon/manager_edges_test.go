@@ -85,9 +85,8 @@ func TestNewPreparerKeepsRetiredRootForInFlightSlot(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = newRoot
 	m := &Manager{
-		cfg:         cfg,
-		roots:       map[string]bool{oldRoot: false, newRoot: true},
-		rootHandles: map[string]*os.Root{},
+		cfg:   cfg,
+		roots: map[string]bool{oldRoot: false, newRoot: true},
 	}
 	t.Cleanup(m.Close)
 	if _, release, err := m.existingRootDescriptor(oldRoot); err != nil {
@@ -351,11 +350,6 @@ func TestDiagnosticFilesystemAndHookChecks(t *testing.T) {
 	if got := diagnosticPath(home, 0, 0o700); got != "not a regular file" {
 		t.Fatalf("regular-file diagnostic=%q", got)
 	}
-	usage, err := directoryUsage(home)
-	if err != nil || usage != 4 {
-		t.Fatalf("directory usage=%d err=%v", usage, err)
-	}
-
 	executable, err := hookconfig.CurrentExecutable()
 	if err != nil {
 		t.Fatal(err)
@@ -393,7 +387,7 @@ func TestDiagnosticFilesystemAndHookChecks(t *testing.T) {
 				}
 			}
 			writeHooks(t, claudePath, test.document)
-			if got := diagnosticHooksAvailable("claude"); got != test.want {
+			if got := hookconfig.Available("claude"); got != test.want {
 				t.Fatalf("claude diagnostic=%v, want %v", got, test.want)
 			}
 		})
@@ -401,30 +395,30 @@ func TestDiagnosticFilesystemAndHookChecks(t *testing.T) {
 	writeHooks(t, claudePath, valid)
 	localPath := filepath.Join(home, ".claude", "settings.local.json")
 	writeHooks(t, localPath, strings.Replace(valid, `[{"hooks":[`, `[{"disabled":true,"hooks":[`, 1))
-	if diagnosticHooksAvailable("claude") {
+	if hookconfig.Available("claude") {
 		t.Fatal("invalid local Claude hooks were ignored in favor of global hooks")
 	}
 	if err := os.Remove(localPath); err != nil {
 		t.Fatal(err)
 	}
-	if !diagnosticHooksAvailable("claude") {
+	if !hookconfig.Available("claude") {
 		t.Fatal("valid global Claude hooks were not detected")
 	}
 
 	for _, separator := range []string{"\n", "\r"} {
 		document := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":%q}]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, executable+separator+"hook session-start", canonical("user-prompt-submit"), canonical("pre-tool-use"))
 		writeHooks(t, codexPath, document)
-		if diagnosticHooksAvailable("codex") {
+		if hookconfig.Available("codex") {
 			t.Fatalf("shell separator %q was accepted", separator)
 		}
 	}
 	wrapper := fmt.Sprintf(`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":%q}]}],"UserPromptSubmit":[{"hooks":[%s]}],"PreToolUse":[{"hooks":[%s]}]}}`, "sh -c '"+executable+" hook session-start'", canonical("user-prompt-submit"), canonical("pre-tool-use"))
 	writeHooks(t, codexPath, wrapper)
-	if diagnosticHooksAvailable("codex") {
+	if hookconfig.Available("codex") {
 		t.Fatal("shell wrapper was accepted as a canonical readiness hook")
 	}
 	writeHooks(t, codexPath, valid)
-	if !diagnosticHooksAvailable("codex") {
+	if !hookconfig.Available("codex") {
 		t.Fatal("valid canonical Codex hooks were not detected")
 	}
 }
@@ -456,7 +450,7 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 		t.Fatalf("unbound readiness error=%v", err)
 	}
 	cancel()
-	if err := m.ValidateFreshResume(ctx, lease.SessionID, lease.Token, "new-agent"); err == nil {
+	if err := m.PrepareFreshResume(ctx, lease.SessionID, lease.Token, "new-agent", "", nil); err == nil {
 		t.Fatal("UNBOUND slot unexpectedly accepted fresh resume")
 	}
 	if err := store.SetSlotState(ctx, lease.SessionID, []string{"FAILED"}, "QUARANTINED", "test"); err != nil {

@@ -933,7 +933,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		for name, operation := range map[string]func() error{
 			"wait ready":     func() error { return manager.WaitReady(ctx, "missing", "token") },
 			"bind agent":     func() error { return manager.BindAgentSession(ctx, "missing", "token", "agent") },
-			"validate fresh": func() error { return manager.ValidateFreshResume(ctx, "missing", "token", "agent") },
+			"validate fresh": func() error { return manager.PrepareFreshResume(ctx, "missing", "token", "agent", "", nil) },
 			"bind restore":   func() error { return manager.BindAndRestoreResume(ctx, "missing", "token", "agent") },
 			"release":        func() error { return manager.Release(ctx, "missing", "token", "coverage") },
 			"snapshot":       func() error { return manager.snapshotSession(ctx, state.Session{SlotID: "missing"}) },

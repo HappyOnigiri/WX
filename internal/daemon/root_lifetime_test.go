@@ -156,7 +156,7 @@ func TestReloadUniqueRootsRetiresDescriptorsWithinBound(t *testing.T) {
 			t.Fatalf("reload %d: %v", index, err)
 		}
 		manager.mu.RLock()
-		handleCount := len(manager.rootHandles)
+		handleCount := len(manager.rootRefs)
 		retiredCount := len(manager.retiredRefs)
 		rootPathCount := len(manager.roots)
 		manager.mu.RUnlock()
@@ -343,7 +343,7 @@ func TestConcurrentCloseReloadAndAllocationHasNoUseAfterClose(t *testing.T) {
 	}
 	<-closeDone
 	manager.mu.RLock()
-	active := len(manager.rootHandles)
+	active := len(manager.rootRefs)
 	retired := len(manager.retiredRefs)
 	refs := manager.rootReferenceCountLocked()
 	manager.mu.RUnlock()
@@ -631,12 +631,11 @@ func TestConcurrentCloseIsIdempotent(t *testing.T) {
 	}
 	manager.mu.RLock()
 	active := len(manager.rootRefs)
-	compatibility := len(manager.rootHandles)
 	retired := len(manager.retiredRefs)
 	refs := manager.rootReferenceCountLocked()
 	manager.mu.RUnlock()
-	if active != 0 || compatibility != 0 || retired != 0 || refs != 0 {
-		t.Fatalf("concurrent close left root state active=%d compatibility=%d retired=%d refs=%d", active, compatibility, retired, refs)
+	if active != 0 || retired != 0 || refs != 0 {
+		t.Fatalf("concurrent close left root state active=%d retired=%d refs=%d", active, retired, refs)
 	}
 }
 
@@ -644,7 +643,6 @@ func TestRootReferenceAccountingAndBackgroundAdmission(t *testing.T) {
 	root := t.TempDir()
 	manager := &Manager{
 		roots:          map[string]bool{root: true},
-		rootHandles:    map[string]*os.Root{},
 		rootRefs:       map[string]*managedRoot{},
 		retiredRefs:    map[string][]*managedRoot{},
 		rootIdentities: map[string]string{},
@@ -699,40 +697,6 @@ func TestRootReferenceAccountingAndBackgroundAdmission(t *testing.T) {
 	manager.mu.Unlock()
 	if !errors.Is(acquireErr, errManagerClosed) {
 		t.Fatalf("root acquire during shutdown error=%v", acquireErr)
-	}
-	manager.Close()
-}
-
-func TestRootCompatibilityHandleAndHistoricalPathLookup(t *testing.T) {
-	root := t.TempDir()
-	owner, err := os.OpenRoot(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager := &Manager{
-		roots:          map[string]bool{root: false},
-		rootHandles:    map[string]*os.Root{root: owner},
-		rootIdentities: map[string]string{},
-		retiredRefs:    map[string][]*managedRoot{},
-	}
-	manager.mu.Lock()
-	opened, entry, found, err := manager.acquireRootLocked(root, false)
-	manager.mu.Unlock()
-	if err != nil || !found || opened != owner || entry == nil || !entry.retired {
-		t.Fatalf("compatibility handle adoption=%v entry=%+v found=%v err=%v", opened, entry, found, err)
-	}
-	if manager.rootHandleForRoot(root) != owner {
-		t.Fatal("retired compatibility handle was not borrowed")
-	}
-	if got, ok := manager.rootForPath(filepath.Join(root, "historical", "slot")); !ok || got != root {
-		t.Fatalf("historical root lookup=%q,%v", got, ok)
-	}
-	manager.releaseRoot(root, entry)
-	manager.mu.RLock()
-	closed := entry.closed
-	manager.mu.RUnlock()
-	if !closed {
-		t.Fatal("retired compatibility descriptor remained open after release")
 	}
 	manager.Close()
 }
@@ -885,7 +849,7 @@ func TestAdoptRootRejectsShutdownAndIdentityChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := &Manager{rootRefs: map[string]*managedRoot{existingPath: {root: existing, refs: 0}}, rootHandles: map[string]*os.Root{}, rootIdentities: map[string]string{}}
+	manager := &Manager{rootRefs: map[string]*managedRoot{existingPath: {root: existing, refs: 0}}, rootIdentities: map[string]string{}}
 	other, err := os.OpenRoot(existingPath)
 	if err != nil {
 		t.Fatal(err)
@@ -901,7 +865,6 @@ func TestAdoptRootRejectsShutdownAndIdentityChanges(t *testing.T) {
 func TestReleaseRootAndCloseRootLockedGuardClauses(t *testing.T) {
 	manager := &Manager{
 		rootRefs:       map[string]*managedRoot{},
-		rootHandles:    map[string]*os.Root{},
 		retiredRefs:    map[string][]*managedRoot{},
 		rootIdentities: map[string]string{},
 	}
@@ -929,7 +892,6 @@ func TestReleaseRootAndCloseRootLockedGuardClauses(t *testing.T) {
 	other := &managedRoot{root: nil, refs: 1}
 	manager.retiredRefs[root] = []*managedRoot{entry, other}
 	manager.rootRefs[root] = entry
-	manager.rootHandles[root] = opened
 	manager.roots = map[string]bool{root: true}
 	manager.closeRootLocked(root, entry)
 	if !entry.closed {
@@ -940,9 +902,6 @@ func TestReleaseRootAndCloseRootLockedGuardClauses(t *testing.T) {
 	}
 	if _, stillTracked := manager.rootRefs[root]; stillTracked {
 		t.Fatal("closed entry remained the active root reference")
-	}
-	if _, stillTracked := manager.rootHandles[root]; stillTracked {
-		t.Fatal("closed entry remained the compatibility root handle")
 	}
 	if retired := manager.retiredRefs[root]; len(retired) != 1 || retired[0] != other {
 		t.Fatalf("closed entry was not filtered out of the retired list: %+v", retired)
