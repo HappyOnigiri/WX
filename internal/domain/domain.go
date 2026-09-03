@@ -12,11 +12,14 @@ import (
 	"strings"
 )
 
+// SlotID and SessionID were removed as unused: nothing outside this package
+// ever referenced them, and internal/state.Store already uses plain string
+// slot/session IDs at every boundary (see the design deviation note on
+// CanTransitionSlot below). WorkspaceID and RepositoryID remain because
+// discovery.Workspace/Repository and their callers use them throughout.
 type (
 	WorkspaceID  string
 	RepositoryID string
-	SlotID       string
-	SessionID    string
 )
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -225,51 +228,16 @@ func EnsurePhysicalDirectoryRoot(path string, perm os.FileMode) (*os.Root, error
 	return ensurePhysicalDirectoryRootPlatform(filepath.Clean(absolute), perm)
 }
 
-type SlotState string
-
-const (
-	SlotDiscovered   SlotState = "DISCOVERED"
-	SlotPreparing    SlotState = "PREPARING"
-	SlotReady        SlotState = "READY"
-	SlotLeased       SlotState = "LEASED"
-	SlotDraining     SlotState = "DRAINING"
-	SlotSnapshotting SlotState = "SNAPSHOTTING"
-	SlotSnapshotted  SlotState = "SNAPSHOTTED"
-	SlotArchived     SlotState = "ARCHIVED"
-	SlotUnbound      SlotState = "UNBOUND"
-	SlotRestoring    SlotState = "RESTORING"
-	SlotFailed       SlotState = "FAILED"
-	SlotQuarantined  SlotState = "QUARANTINED"
-)
-
-type SessionState string
-
-const (
-	SessionAllocating   SessionState = "ALLOCATING"
-	SessionStarting     SessionState = "STARTING"
-	SessionActive       SessionState = "ACTIVE"
-	SessionUnbound      SessionState = "UNBOUND"
-	SessionRestoring    SessionState = "RESTORING"
-	SessionReleasing    SessionState = "RELEASING"
-	SessionSnapshotting SessionState = "SNAPSHOTTING"
-	SessionArchived     SessionState = "ARCHIVED"
-	SessionExpired      SessionState = "EXPIRED"
-	SessionQuarantined  SessionState = "QUARANTINED"
-)
-
-func CanTransitionSlot(from, to SlotState) bool {
-	allowed := map[SlotState][]SlotState{
-		SlotDiscovered: {SlotPreparing}, SlotPreparing: {SlotReady}, SlotReady: {SlotLeased, SlotDraining},
-		SlotLeased: {SlotDraining}, SlotDraining: {SlotSnapshotting}, SlotSnapshotting: {SlotSnapshotted},
-		SlotSnapshotted: {SlotArchived}, SlotUnbound: {SlotRestoring}, SlotRestoring: {SlotLeased},
-	}
-	if to == SlotFailed || to == SlotQuarantined {
-		return from != SlotArchived
-	}
-	for _, candidate := range allowed[from] {
-		if candidate == to {
-			return true
-		}
-	}
-	return false
-}
+// Design deviation (see the design doc's state machine and package
+// structure sections): this package used to carry a parallel SlotState /
+// SessionState type set plus CanTransitionSlot as a second, unused
+// transition guard. internal/state.Store is the actual authority for both
+// state sets and already enforces every transition as a SQLite
+// compare-and-swap (state IN (...) plus RowsAffected()==1), including
+// states this package's old enum never had: STALE, REMOVING, RETIRING,
+// COLD, and slot_repositories' PREPARE_RUNNING/RESTORE_RUNNING. Keeping a
+// second, unenforced enum here that could not represent those states read
+// as if it were still guarding transitions when it was dead code (no
+// production caller referenced CanTransitionSlot, SlotState, SessionState,
+// SlotID, or SessionID). They have been removed; internal/state.Store's
+// string states and CAS updates are the single source of truth.

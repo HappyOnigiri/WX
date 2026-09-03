@@ -65,22 +65,3 @@ func TestPathValidationAndOwnedRootBoundaryMatrix(t *testing.T) {
 		t.Fatal("regular path component was accepted")
 	}
 }
-
-func TestEverySlotTransitionBoundary(t *testing.T) {
-	states := []SlotState{
-		SlotDiscovered, SlotPreparing, SlotReady, SlotLeased, SlotDraining,
-		SlotSnapshotting, SlotSnapshotted, SlotArchived, SlotUnbound,
-		SlotRestoring, SlotFailed, SlotQuarantined,
-	}
-	for _, from := range states {
-		for _, to := range states {
-			allowed := CanTransitionSlot(from, to)
-			if from == SlotArchived && (to == SlotFailed || to == SlotQuarantined) && allowed {
-				t.Fatalf("archived -> %s was accepted", to)
-			}
-			if from != SlotArchived && (to == SlotFailed || to == SlotQuarantined) && !allowed {
-				t.Fatalf("%s -> %s was rejected", from, to)
-			}
-		}
-	}
-}

@@ -220,18 +220,3 @@ func TestEnsurePhysicalDirectoryRootPinsFinalDirectoryAcrossReplacement(t *testi
 		t.Fatalf("replacement directory was modified: %v", err)
 	}
 }
-
-func TestSlotTransitions(t *testing.T) {
-	if !CanTransitionSlot(SlotReady, SlotLeased) {
-		t.Fatal("READY -> LEASED rejected")
-	}
-	if CanTransitionSlot(SlotArchived, SlotReady) {
-		t.Fatal("ARCHIVED -> READY accepted")
-	}
-	if !CanTransitionSlot(SlotReady, SlotFailed) || !CanTransitionSlot(SlotLeased, SlotQuarantined) {
-		t.Fatal("fail-safe slot transitions were rejected")
-	}
-	if CanTransitionSlot(SlotArchived, SlotFailed) {
-		t.Fatal("archived slot transitioned back to a failure state")
-	}
-}
