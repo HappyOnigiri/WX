@@ -81,6 +81,7 @@ func codexHooksEnabled() bool {
 
 func codexHooksConfigEnabled(data []byte) bool {
 	table := ""
+	depth := 0
 	for _, rawLine := range strings.Split(string(data), "\n") {
 		line := strings.TrimSpace(stripTOMLComment(rawLine))
 		if line == "" {
@@ -89,6 +90,17 @@ func codexHooksConfigEnabled(data []byte) bool {
 		if strings.Contains(line, "\"\"\"") || strings.Contains(line, "'''") {
 			// A small parser cannot safely reason about multiline strings.
 			return false
+		}
+		if depth > 0 {
+			// Continuation of an array or inline table opened on an earlier
+			// line. Its contents can never name a [features] key, so only the
+			// bracket depth matters here.
+			next, rest, ok := scanTOMLValueDepth(line, depth)
+			if !ok || rest != "" {
+				return false
+			}
+			depth = next
+			continue
 		}
 		if strings.HasPrefix(line, "[[") {
 			if !strings.HasSuffix(line, "]]") {
@@ -112,6 +124,14 @@ func codexHooksConfigEnabled(data []byte) bool {
 			// unavailable so a malformed config cannot enable the fast path.
 			return false
 		}
+		next, rest, ok := scanTOMLValueDepth(value, 0)
+		if !ok || rest != "" {
+			return false
+		}
+		// A value that leaves brackets open continues on the following lines.
+		// The key checks below still run: a [features] key whose value cannot
+		// be read on one line stays unavailable.
+		depth = next
 		key = normalizeTOMLKey(key)
 		if table == "" {
 			key = strings.ReplaceAll(key, " ", "")
@@ -132,7 +152,44 @@ func codexHooksConfigEnabled(data []byte) bool {
 			return false
 		}
 	}
-	return true
+	// An array or inline table that never closes means the file was truncated
+	// or malformed; the skipped lines could have held a [features] key.
+	return depth == 0
+}
+
+// scanTOMLValueDepth walks one line of a value and reports the bracket depth
+// still open at its end. rest holds whatever follows the bracket that closed
+// the value on this line, and ok is false when quotes or brackets are
+// unbalanced.
+func scanTOMLValueDepth(line string, depth int) (int, string, bool) {
+	var quote byte
+	for index := 0; index < len(line); index++ {
+		char := line[index]
+		if quote != 0 {
+			if char == quote && (quote != '"' || index == 0 || line[index-1] != '\\') {
+				quote = 0
+			}
+			continue
+		}
+		switch char {
+		case '\'', '"':
+			quote = char
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth == 0 {
+				return 0, "", false
+			}
+			depth--
+			if depth == 0 {
+				return 0, strings.TrimSpace(line[index+1:]), true
+			}
+		}
+	}
+	if quote != 0 {
+		return 0, "", false
+	}
+	return depth, "", true
 }
 
 func inlineTOMLFeatureTableEnabled(raw string) bool {
