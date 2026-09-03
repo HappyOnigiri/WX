@@ -66,18 +66,21 @@ content and are readable by processes with access to that repository.
 ## Development
 
 Run `make setup` once to install the pinned development tools, then `make ci`
-for the local quality gate. Security, SBOM, and mutation checks are paused in
-the initial phase and are not part of `make setup`, `make ci`, or the Git hooks.
-They remain available as manual, explicit opt-in targets; each target installs
-its paused tool only when you invoke that target:
+for the local quality gate. Security and SBOM checks are paused in the initial
+phase and are not part of `make setup`, `make ci`, or the Git hooks. They
+remain available as manual, explicit opt-in targets; each target installs its
+paused tool only when you invoke that target:
 
 ```sh
 make security-local             # govulncheck, dependency, gosec, license, secrets
 make workflow-security-audit    # zizmor
 make sbom
-make mutation-check             # changed core packages
-make mutation-full-check        # all core packages
 ```
+
+Mutation testing was tried and dropped: it drove test design from a threshold
+rather than from behavior, and the survivor triage cost outweighed its value
+at this project's scale. `gremlins` and the mutation targets have been
+removed rather than paused.
 
 Do not re-enable these checks in CI, workflows, or hooks without the user's
 explicit permission. Run `make hooks-install` to enable the bounded

@@ -18,16 +18,12 @@ GOSEC_VERSION ?= v2.29.0
 GITLEAKS_VERSION ?= v8.30.1
 GO_LICENSES_VERSION ?= v2.0.1
 CYCLONEDX_VERSION ?= v1.12.0
-GREMLINS_VERSION ?= v0.6.0
 MARKDOWNLINT_VERSION ?= 0.23.2
 ZIZMOR_VERSION ?= 1.30.0
 SHELLCHECK_VERSION ?= 0.11.0
 COVERAGE_MIN ?= 80
 CORE_COVERAGE_MIN ?= 85
 COVERAGE_EXCLUSIONS ?= coverage-exclusions.txt
-MUTATION_BASE ?= origin/main
-MUTATION_MIN ?= 80
-MUTATION_CORE_PACKAGES := ./internal/config ./internal/state ./internal/pool ./internal/gitx ./internal/workspace ./internal/archive ./internal/rpc
 LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicode-3.0,Unlicense
 # wx intentionally executes Git, launchctl, and user-configured prepare commands
 # against ownership-validated paths. These generic rules cannot model those
@@ -55,7 +51,7 @@ setup-external-tools: setup-markdownlint check-shellcheck
 
 # These setup targets are intentionally not dependencies of `setup`, CI, or
 # hooks. Invoke the corresponding check explicitly only after the user grants
-# permission to opt back into the paused security, SBOM, or mutation tooling.
+# permission to opt back into the paused security or SBOM tooling.
 setup-security-tools:
 	mkdir -p "$(TOOLS_BIN)"
 	GOBIN="$(TOOLS_BIN)" $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
@@ -67,10 +63,6 @@ setup-security-tools:
 setup-sbom-tools:
 	mkdir -p "$(TOOLS_BIN)"
 	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@$(CYCLONEDX_VERSION)
-
-setup-mutation-tools:
-	mkdir -p "$(TOOLS_BIN)"
-	GOBIN="$(TOOLS_BIN)" $(GO) install github.com/go-gremlins/gremlins/cmd/gremlins@$(GREMLINS_VERSION)
 
 setup-markdownlint:
 	command -v npm >/dev/null
@@ -236,28 +228,8 @@ sbom: setup-sbom-tools
 	mkdir -p artifacts
 	"$(TOOLS_BIN)/cyclonedx-gomod" mod -json -output artifacts/sbom.json
 
-mutation-check: setup-mutation-tools
-	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned mutation tool is missing; run make setup-mutation-tools"; exit 1; }
-	@packages="$$(git diff --name-only "$(MUTATION_BASE)...HEAD" -- 'internal/**/*.go' | awk -F/ 'NF >= 3 && $$2 ~ /^(config|state|pool|gitx|workspace|archive|rpc)$$/ { print "./" $$1 "/" $$2 }' | sort -u | tr '\n' ' ')"; \
-	if [ -z "$$packages" ]; then echo "no changed core packages"; exit 0; fi; \
-	$(MAKE) mutation-run MUTATION_PACKAGES="$$packages"
-
-mutation-full-check: setup-mutation-tools
-	@$(MAKE) mutation-run MUTATION_PACKAGES="$(MUTATION_CORE_PACKAGES)"
-
-mutation-run: setup-mutation-tools
-	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned mutation tool is missing; run make setup-mutation-tools"; exit 1; }
-	@set -eu; scratch="$$(mktemp -d)"; trap 'rm -rf "$$scratch"' EXIT; worktree="$$scratch/repository"; \
-	git clone --quiet --no-local . "$$worktree"; \
-	for package in $(MUTATION_PACKAGES); do \
-	  name="$$(printf '%s' "$$package" | tr '/.' '__')"; result="$$scratch/mutation-$$name.json"; \
-	  echo "mutation testing $$package"; \
-	  (cd "$$worktree" && $(GO) clean -testcache && "$(TOOLS_BIN)/gremlins" unleash "$$package" --integration --timeout-coefficient 10 --threshold-efficacy "$(MUTATION_MIN)" --output "$$result"); \
-	  scripts/check-mutation-survivors.sh "$$package" "$$result" "$(MUTATION_MIN)"; \
-	done
-
-# Security, SBOM, and mutation targets are manual opt-in checks. Keep them out
-# of CI and hooks until the user explicitly authorizes re-enabling automation.
+# Security and SBOM targets are manual opt-in checks. Keep them out of CI and
+# hooks until the user explicitly authorizes re-enabling automation.
 security-local: setup-security-tools govulncheck dependency-check gosec license-check secret-check
 
 ci:
