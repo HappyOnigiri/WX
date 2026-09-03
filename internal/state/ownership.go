@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/domain"
@@ -16,10 +17,6 @@ import (
 // as a fail-closed result: the filesystem artifact is left in place so that
 // reconciliation can quarantine it rather than guessing which owner it has.
 var ErrOwnership = errors.New("wx ownership validation failed")
-
-// ErrWorktreeOwnership is kept as a descriptive alias for callers that want
-// to distinguish a worktree proof from other state errors.
-var ErrWorktreeOwnership = ErrOwnership
 
 // OwnershipValidator is the small state contract required by workspace and
 // archive operations. Store implements it using a read-only transaction. The
@@ -64,15 +61,6 @@ type SlotOwnershipRequest struct {
 	WorkspaceID       string
 	Path              string
 	AllowedSlotStates []string
-}
-
-type SlotOwnership struct {
-	SlotID        string
-	WorkspaceID   string
-	Generation    int
-	Path          string
-	WorkspaceRoot string
-	State         string
 }
 
 var _ OwnershipValidator = (*Store)(nil)
@@ -129,10 +117,10 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 	if req.WorkspaceID != "" && req.WorkspaceID != workspaceID {
 		return WorktreeOwnership{}, ownershipFailure("slot belongs to a different workspace")
 	}
-	if !allowedState(slotState, req.AllowedSlotStates) {
+	if !slices.Contains(req.AllowedSlotStates, slotState) {
 		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("slot %s is in ineligible state %s", req.SlotID, slotState))
 	}
-	if !allowedState(repositoryState, req.AllowedRepositoryStates) {
+	if !slices.Contains(req.AllowedRepositoryStates, repositoryState) {
 		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("repository %s is in ineligible state %s", req.RepositoryID, repositoryState))
 	}
 
@@ -160,7 +148,7 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 			return WorktreeOwnership{}, ownershipFailure("requested slot path does not match the SQLite slot path")
 		}
 	}
-	if !sameOrWithin(canonicalSlot, canonicalWorktree) {
+	if filepath.Clean(canonicalSlot) != filepath.Clean(canonicalWorktree) && !domain.IsWithin(canonicalSlot, canonicalWorktree) {
 		return WorktreeOwnership{}, ownershipFailure("SQLite worktree path is outside its slot path")
 	}
 	cleanRelativePath := filepath.Clean(relativePath)
@@ -212,68 +200,51 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 // covers slots that have no repository worktree (and therefore cannot be
 // proven through ValidateWorktreeOwnership) while retaining the same
 // fail-closed path/state checks.
-func (s *Store) ValidateSlotOwnership(ctx context.Context, req SlotOwnershipRequest) (SlotOwnership, error) {
+func (s *Store) ValidateSlotOwnership(ctx context.Context, req SlotOwnershipRequest) error {
 	if s == nil || s.db == nil {
-		return SlotOwnership{}, ownershipFailure("state store is unavailable")
+		return ownershipFailure("state store is unavailable")
 	}
 	if req.SlotID == "" || req.Path == "" || len(req.AllowedSlotStates) == 0 {
-		return SlotOwnership{}, ownershipFailure("slot, path, and eligible states are required")
+		return ownershipFailure("slot, path, and eligible states are required")
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return SlotOwnership{}, ownershipDatabaseFailure(err)
+		return ownershipDatabaseFailure(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var out SlotOwnership
-	var rawPath, rawRoot string
+	var workspaceID, slotState, rawPath, rawRoot string
 	err = tx.QueryRowContext(ctx, `
-		SELECT sl.id,COALESCE(sl.workspace_id,''),sl.generation,sl.path,sl.state,w.root_path
+		SELECT COALESCE(sl.workspace_id,''),sl.path,sl.state,w.root_path
 		FROM slots sl LEFT JOIN workspaces w ON w.id=sl.workspace_id
 		WHERE sl.id=?`, req.SlotID).
-		Scan(&out.SlotID, &out.WorkspaceID, &out.Generation, &rawPath, &out.State, &rawRoot)
+		Scan(&workspaceID, &rawPath, &slotState, &rawRoot)
 	if err != nil {
-		return SlotOwnership{}, ownershipDatabaseFailure(err)
+		return ownershipDatabaseFailure(err)
 	}
 	if err := tx.Commit(); err != nil {
-		return SlotOwnership{}, ownershipDatabaseFailure(err)
+		return ownershipDatabaseFailure(err)
 	}
-	if out.WorkspaceID == "" || rawRoot == "" || (req.WorkspaceID != "" && req.WorkspaceID != out.WorkspaceID) {
-		return SlotOwnership{}, ownershipFailure("slot workspace association is incomplete or changed")
+	if workspaceID == "" || rawRoot == "" || (req.WorkspaceID != "" && req.WorkspaceID != workspaceID) {
+		return ownershipFailure("slot workspace association is incomplete or changed")
 	}
-	if !allowedState(out.State, req.AllowedSlotStates) {
-		return SlotOwnership{}, ownershipFailure(fmt.Sprintf("slot %s is in ineligible state %s", req.SlotID, out.State))
+	if !slices.Contains(req.AllowedSlotStates, slotState) {
+		return ownershipFailure(fmt.Sprintf("slot %s is in ineligible state %s", req.SlotID, slotState))
 	}
 	canonicalPath, err := canonicalOwnershipPath(rawPath)
 	if err != nil {
-		return SlotOwnership{}, ownershipFailure(fmt.Sprintf("recorded slot path: %v", err))
+		return ownershipFailure(fmt.Sprintf("recorded slot path: %v", err))
 	}
 	requestedPath, err := canonicalOwnershipPath(req.Path)
 	if err != nil {
-		return SlotOwnership{}, ownershipFailure(fmt.Sprintf("requested slot path: %v", err))
+		return ownershipFailure(fmt.Sprintf("requested slot path: %v", err))
 	}
 	if canonicalPath != requestedPath {
-		return SlotOwnership{}, ownershipFailure("requested slot path does not match the SQLite slot path")
+		return ownershipFailure("requested slot path does not match the SQLite slot path")
 	}
-	canonicalRoot, err := canonicalExistingDirectory(rawRoot)
-	if err != nil {
-		return SlotOwnership{}, ownershipFailure(fmt.Sprintf("recorded workspace root: %v", err))
+	if _, err := canonicalExistingDirectory(rawRoot); err != nil {
+		return ownershipFailure(fmt.Sprintf("recorded workspace root: %v", err))
 	}
-	out.Path = canonicalPath
-	out.WorkspaceRoot = canonicalRoot
-	return out, nil
-}
-
-func allowedState(actual string, allowed []string) bool {
-	for _, candidate := range allowed {
-		if actual == candidate {
-			return true
-		}
-	}
-	return false
-}
-
-func sameOrWithin(root, path string) bool {
-	return filepath.Clean(root) == filepath.Clean(path) || domain.IsWithin(root, path)
+	return nil
 }
 
 func validateWorkspaceRepositoryAssociation(workspaceRoot, mainPath, relative string) error {

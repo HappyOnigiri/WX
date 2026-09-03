@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -25,7 +26,11 @@ func Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err := ensureWorktreeRoot(cfg.Storage.WorktreeRoot); err != nil {
+	_, root, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot)
+	if err != nil {
+		return fmt.Errorf("prepare worktree root: %w", err)
+	}
+	if err := root.Close(); err != nil {
 		return fmt.Errorf("prepare worktree root: %w", err)
 	}
 	dbPath, err := config.StatePath()
@@ -36,7 +41,7 @@ func Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepathDir(logPath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return err
 	}
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -65,7 +70,7 @@ func Serve(ctx context.Context) error {
 	} else {
 		defer func() { _ = store.Close() }()
 		manager := New(cfg, store, logger, true)
-		manager.git.SetDetailDir(filepathDir(logPath) + string(os.PathSeparator) + "details")
+		manager.git.SetDetailDir(filepath.Dir(logPath) + string(os.PathSeparator) + "details")
 		manager.logLevel = &level
 		defer manager.Close()
 		rpcHandler = Handler{Manager: manager}
@@ -93,7 +98,7 @@ func slogLevel(value string) slog.Level {
 }
 
 func acquireDaemonLock(path string) (*os.File, error) {
-	if err := os.MkdirAll(filepathDir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
@@ -133,13 +138,4 @@ func handlerCeiling(readiness time.Duration) time.Duration {
 		return ceiling
 	}
 	return rpc.DefaultMaxHandlerTimeout
-}
-
-func filepathDir(path string) string {
-	for i := len(path) - 1; i >= 0; i-- {
-		if path[i] == '/' {
-			return path[:i]
-		}
-	}
-	return "."
 }

@@ -788,9 +788,6 @@ func TestTransactionalTransitionsRollBackOnCompanionStateChanges(t *testing.T) {
 	if err := store.ExpireSessionSnapshots(ctx, "missing"); err == nil {
 		t.Fatal("missing session snapshot expiration succeeded")
 	}
-	if equalHash([]byte{1}, []byte{1, 2}) {
-		t.Fatal("different hash lengths compared equal")
-	}
 }
 
 func TestStoreFilesystemCreationFailures(t *testing.T) {

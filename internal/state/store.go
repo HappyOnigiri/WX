@@ -2,7 +2,9 @@ package state
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -1023,7 +1025,7 @@ func (s *Store) Session(ctx context.Context, id, token string) (Session, error) 
 	if err != nil {
 		return Session{}, err
 	}
-	if !equalHash(x.TokenHash, HashToken(token)) {
+	if subtle.ConstantTimeCompare(x.TokenHash, HashToken(token)) != 1 {
 		return Session{}, errors.New("session authentication failed")
 	}
 	return x, nil
@@ -1050,17 +1052,6 @@ func (s *Store) RegisterAgentProcess(ctx context.Context, id, token string, pid 
 		return errors.New("session is no longer active")
 	}
 	return nil
-}
-
-func equalHash(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var v byte
-	for i := range a {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
 }
 
 func (s *Store) BindAgentSession(ctx context.Context, id, agentID string) error {
@@ -2380,10 +2371,9 @@ func nullString(v string) any {
 }
 
 func TokenHex() (string, error) {
-	v, err := domain.NewID()
-	if err != nil {
+	b := make([]byte, 32)
+	if _, err := cryptorand.Read(b); err != nil {
 		return "", err
 	}
-	b := sha256.Sum256([]byte(v + now()))
-	return hex.EncodeToString(b[:]), nil
+	return hex.EncodeToString(b), nil
 }

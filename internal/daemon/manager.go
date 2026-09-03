@@ -1323,28 +1323,12 @@ func (m *Manager) createSlotRoot(path string) (string, error) {
 	// the configured pathname still names the same root before returning a
 	// lease; if it was replaced, the client must not receive a path that could
 	// resolve to a different namespace.
-	currentRoot, _, currentErr := domain.OpenOwnedRoot(root, root)
-	if currentErr != nil {
-		return "", fmt.Errorf("configured worktree root changed: %w", currentErr)
-	}
-	defer func() { _ = currentRoot.Close() }()
-	heldInfo, heldErr := owner.Lstat(".")
-	currentInfo, currentInfoErr := currentRoot.Lstat(".")
-	if heldErr != nil || currentInfoErr != nil || !os.SameFile(heldInfo, currentInfo) {
-		if heldErr != nil {
-			return "", fmt.Errorf("inspect pinned worktree root: %w", heldErr)
-		}
-		if currentInfoErr != nil {
-			return "", fmt.Errorf("inspect configured worktree root: %w", currentInfoErr)
-		}
-		return "", errors.New("configured worktree root changed")
-	}
-	relative, err := filepath.Rel(root, filepath.Clean(path))
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		if err == nil {
-			err = errors.New("slot path is outside wx worktree root")
-		}
+	if err := verifyRootDescriptorPath(root, owner); err != nil {
 		return "", err
+	}
+	relative, ok := relativeWithinRoot(root, path)
+	if !ok {
+		return "", errors.New("slot path is outside wx worktree root")
 	}
 	m.mu.RLock()
 	barrier := m.beforeSlotRootCreate
@@ -1492,7 +1476,7 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 		if err != nil {
 			return err
 		}
-		if _, err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, Path: slot.Path, AllowedSlotStates: []string{"PREPARING", "RESTORING"}}); err != nil {
+		if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, Path: slot.Path, AllowedSlotStates: []string{"PREPARING", "RESTORING"}}); err != nil {
 			if errors.Is(err, state.ErrOwnership) {
 				_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING", "RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
 			}
@@ -1536,12 +1520,9 @@ func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules config
 	if err := verifyRootDescriptorPath(root, owner); err != nil {
 		return err
 	}
-	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(slotPath))
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		if err == nil {
-			err = errors.New("slot path is outside wx root")
-		}
-		return fmt.Errorf("%w: %w", state.ErrOwnership, err)
+	relative, ok := relativeWithinRoot(root, slotPath)
+	if !ok {
+		return fmt.Errorf("%w: slot path is outside wx root", state.ErrOwnership)
 	}
 	destination, err := domain.OpenRootAt(owner, relative)
 	if err != nil {
@@ -1573,12 +1554,9 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 		return false, fmt.Errorf("%w: open ready slot root: %w", state.ErrOwnership, err)
 	}
 	defer closeOwner()
-	relativeSlot, err := filepath.Rel(filepath.Clean(root), filepath.Clean(s.Path))
-	if err != nil || relativeSlot == ".." || strings.HasPrefix(relativeSlot, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeSlot) {
-		if err == nil {
-			err = errors.New("ready slot path is outside wx root")
-		}
-		return false, fmt.Errorf("%w: %w", state.ErrOwnership, err)
+	relativeSlot, ok := relativeWithinRoot(root, s.Path)
+	if !ok {
+		return false, fmt.Errorf("%w: ready slot path is outside wx root", state.ErrOwnership)
 	}
 	slotInfo, err := owner.Lstat(relativeSlot)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1629,8 +1607,8 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 			return false, nil
 		}
 		if stored.State == "COLD" {
-			relative, relErr := filepath.Rel(filepath.Clean(root), filepath.Clean(stored.WorktreePath))
-			if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			relative, ok := relativeWithinRoot(root, stored.WorktreePath)
+			if !ok {
 				return false, fmt.Errorf("%w: cold worktree path is outside wx root", state.ErrOwnership)
 			}
 			if filepath.Clean(stored.WorktreePath) == filepath.Clean(s.Path) {
@@ -1664,8 +1642,8 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 			}
 			continue
 		}
-		relative, relErr := filepath.Rel(filepath.Clean(root), filepath.Clean(stored.WorktreePath))
-		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+		relative, ok := relativeWithinRoot(root, stored.WorktreePath)
+		if !ok {
 			return false, fmt.Errorf("%w: ready worktree path is outside wx root", state.ErrOwnership)
 		}
 		info, err := owner.Lstat(relative)
@@ -1977,7 +1955,7 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 		if err != nil {
 			return err
 		}
-		if _, err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, Path: slot.Path, AllowedSlotStates: []string{"RESTORING"}}); err != nil {
+		if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, Path: slot.Path, AllowedSlotStates: []string{"RESTORING"}}); err != nil {
 			if errors.Is(err, state.ErrOwnership) {
 				_ = m.store.SetSlotState(context.Background(), id, []string{"RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
 			}
@@ -2590,7 +2568,7 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 		return err
 	}
 	if filepath.Clean(repositoryState.WorktreePath) == filepath.Clean(slot.Path) {
-		if _, err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slot.ID, WorkspaceID: slot.WorkspaceID, Path: slot.Path, AllowedSlotStates: []string{"RETIRING"}}); err != nil {
+		if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slot.ID, WorkspaceID: slot.WorkspaceID, Path: slot.Path, AllowedSlotStates: []string{"RETIRING"}}); err != nil {
 			m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
 			return err
 		}
@@ -2602,12 +2580,9 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 		if err := verifyRootDescriptorPath(root, ownedRoot); err != nil {
 			return err
 		}
-		relativeSlot, relativeErr := filepath.Rel(filepath.Clean(root), filepath.Clean(slot.Path))
-		if relativeErr != nil || relativeSlot == "." || relativeSlot == ".." || strings.HasPrefix(relativeSlot, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeSlot) {
-			if relativeErr == nil {
-				relativeErr = errors.New("slot path is outside wx root")
-			}
-			return fmt.Errorf("%w: recreate cold workspace shell: %w", state.ErrOwnership, relativeErr)
+		relativeSlot, ok := relativeWithinRoot(root, slot.Path)
+		if !ok || relativeSlot == "." {
+			return fmt.Errorf("%w: recreate cold workspace shell: slot path is outside wx root", state.ErrOwnership)
 		}
 		if err := ownedRoot.MkdirAll(relativeSlot, 0o700); err != nil {
 			return fmt.Errorf("recreate cold workspace shell: %w", err)
@@ -2711,12 +2686,9 @@ func (m *Manager) ownedPathExists(path string) (bool, error) {
 	if err := verifyRootDescriptorPath(root, owner); err != nil {
 		return false, err
 	}
-	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		if err == nil {
-			err = errors.New("path is outside root")
-		}
-		return false, fmt.Errorf("%w: %w", state.ErrOwnership, err)
+	relative, ok := relativeWithinRoot(root, path)
+	if !ok {
+		return false, fmt.Errorf("%w: path is outside root", state.ErrOwnership)
 	}
 	_, err = owner.Lstat(relative)
 	if errors.Is(err, os.ErrNotExist) {
@@ -2986,7 +2958,7 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 			return err
 		}
 	}
-	if _, err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slotID, Path: slotPath, AllowedSlotStates: []string{"REMOVING"}}); err != nil {
+	if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slotID, Path: slotPath, AllowedSlotStates: []string{"REMOVING"}}); err != nil {
 		return err
 	}
 	ownedRoot, closeOwnedRoot, err := m.existingRootDescriptor(root)
@@ -2997,12 +2969,9 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	if err := verifyRootDescriptorPath(root, ownedRoot); err != nil {
 		return err
 	}
-	relativeSlot, relativeErr := filepath.Rel(filepath.Clean(root), filepath.Clean(slotPath))
-	if relativeErr != nil || relativeSlot == "." || relativeSlot == ".." || strings.HasPrefix(relativeSlot, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeSlot) {
-		if relativeErr == nil {
-			relativeErr = errors.New("slot path is outside wx root")
-		}
-		return fmt.Errorf("%w: open slot root for removal: %w", state.ErrOwnership, relativeErr)
+	relativeSlot, ok := relativeWithinRoot(root, slotPath)
+	if !ok || relativeSlot == "." {
+		return fmt.Errorf("%w: open slot root for removal: slot path is outside wx root", state.ErrOwnership)
 	}
 	info, err := ownedRoot.Lstat(relativeSlot)
 	if errors.Is(err, os.ErrNotExist) {
@@ -3020,6 +2989,19 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 		return err
 	}
 	return verifyRootDescriptorPath(root, ownedRoot)
+}
+
+// relativeWithinRoot resolves path relative to root and reports whether the
+// result stays inside root. filepath.IsLocal rejects "..", an absolute
+// result, and any unclean input in one call, replacing the
+// rel == ".." || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) guard
+// this package used to repeat at every root-relative path computation.
+func relativeWithinRoot(root, path string) (relative string, ok bool) {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil || !filepath.IsLocal(relative) {
+		return "", false
+	}
+	return relative, true
 }
 
 // verifyRootDescriptorPath ensures a descriptor-bound operation has not
@@ -3487,17 +3469,6 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		})
 	}
 	return nil
-}
-
-func ensureWorktreeRoot(value string) (string, error) {
-	root, ownedRoot, err := ensureWorktreeRootDescriptor(value)
-	if err != nil {
-		return "", err
-	}
-	if err := ownedRoot.Close(); err != nil {
-		return "", err
-	}
-	return root, nil
 }
 
 func ensureWorktreeRootDescriptor(value string) (string, *os.Root, error) {

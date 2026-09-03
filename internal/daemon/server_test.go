@@ -41,21 +41,25 @@ func TestServerPathLevelAndWorktreeRootHelpers(t *testing.T) {
 			t.Errorf("slogLevel(%q)=%s, want %s", value, got, want)
 		}
 	}
-	if filepathDir("name") != "." || filepathDir("/one/two") != "/one" {
-		t.Fatal("filepathDir did not preserve its path contract")
-	}
 	releaseDaemonLock(nil)
 
 	root := filepath.Join(t.TempDir(), "worktrees")
-	created, err := ensureWorktreeRoot(root)
+	created, createdRoot, err := ensureWorktreeRootDescriptor(root)
 	if err != nil || created != root {
 		t.Fatalf("create worktree root=%q err=%v", created, err)
+	}
+	if err := createdRoot.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Chmod(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if existing, err := ensureWorktreeRoot(root); err != nil || existing != root {
+	existing, existingRoot, err := ensureWorktreeRootDescriptor(root)
+	if err != nil || existing != root {
 		t.Fatalf("reuse worktree root=%q err=%v", existing, err)
+	}
+	if err := existingRoot.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if info, err := os.Stat(root); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("worktree root permissions=%v err=%v", info, err)
@@ -64,17 +68,17 @@ func TestServerPathLevelAndWorktreeRootHelpers(t *testing.T) {
 	if err := os.WriteFile(file, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ensureWorktreeRoot(file); err == nil {
+	if _, _, err := ensureWorktreeRootDescriptor(file); err == nil {
 		t.Fatal("regular file was accepted as worktree root")
 	}
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(root, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ensureWorktreeRoot(link); err == nil {
+	if _, _, err := ensureWorktreeRootDescriptor(link); err == nil {
 		t.Fatal("symlink was accepted as worktree root")
 	}
-	if _, err := ensureWorktreeRoot("$UNSUPPORTED/worktrees"); err == nil {
+	if _, _, err := ensureWorktreeRootDescriptor("$UNSUPPORTED/worktrees"); err == nil {
 		t.Fatal("unsupported path expansion succeeded")
 	}
 }

@@ -230,7 +230,7 @@ func TestCreateSlotRootDetectsReplacedWorktreeRootDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := m.createSlotRoot(filepath.Join(cfg.Storage.WorktreeRoot, "slot2", "root")); err == nil || !strings.Contains(err.Error(), "configured worktree root changed") {
+	if _, err := m.createSlotRoot(filepath.Join(cfg.Storage.WorktreeRoot, "slot2", "root")); err == nil || !strings.Contains(err.Error(), "wx root path names a different directory") {
 		t.Fatalf("swapped worktree root was not detected: %v", err)
 	}
 }

@@ -37,15 +37,12 @@ func TestValidateSlotOwnershipRejectsAMissingRecordedWorkspaceRoot(t *testing.T)
 		t.Fatal(err)
 	}
 	request := SlotOwnershipRequest{SlotID: f.slotID, WorkspaceID: f.workspaceID, Path: f.slotPath, AllowedSlotStates: []string{"READY"}}
-	if _, err := f.store.ValidateSlotOwnership(ctx, request); err == nil || !strings.Contains(err.Error(), "recorded workspace root") {
+	if err := f.store.ValidateSlotOwnership(ctx, request); err == nil || !strings.Contains(err.Error(), "recorded workspace root") {
 		t.Fatalf("missing recorded workspace root error=%v", err)
 	}
 }
 
 func TestOwnershipPathHelpersRejectUnsafeInputs(t *testing.T) {
-	if !allowedState("READY", []string{"PREPARING", "READY"}) || allowedState("FAILED", []string{"READY"}) {
-		t.Fatal("allowed-state matching is incorrect")
-	}
 	tempRoot, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -57,9 +54,6 @@ func TestOwnershipPathHelpersRejectUnsafeInputs(t *testing.T) {
 	inside := filepath.Join(root, "inside")
 	if err := os.Mkdir(inside, 0o700); err != nil {
 		t.Fatal(err)
-	}
-	if !sameOrWithin(root, root) || !sameOrWithin(root, inside) || sameOrWithin(root, filepath.Join(t.TempDir(), "outside")) {
-		t.Fatal("same-or-within boundary is incorrect")
 	}
 
 	for _, raw := range []string{"", "/absolute", "../escape"} {
@@ -293,15 +287,14 @@ func TestValidateSlotOwnershipBoundaries(t *testing.T) {
 	f := newOwnershipFixture(t)
 	ctx := context.Background()
 	valid := SlotOwnershipRequest{SlotID: f.slotID, WorkspaceID: f.workspaceID, Path: f.slotPath, AllowedSlotStates: []string{"READY"}}
-	proof, err := f.store.ValidateSlotOwnership(ctx, valid)
-	if err != nil || proof.Path != f.slotPath {
-		t.Fatalf("valid slot proof=%+v err=%v", proof, err)
+	if err := f.store.ValidateSlotOwnership(ctx, valid); err != nil {
+		t.Fatalf("valid slot proof err=%v", err)
 	}
-	if _, err := (*Store)(nil).ValidateSlotOwnership(ctx, valid); !errors.Is(err, ErrOwnership) {
+	if err := (*Store)(nil).ValidateSlotOwnership(ctx, valid); !errors.Is(err, ErrOwnership) {
 		t.Fatalf("nil slot store error=%v", err)
 	}
 	for _, request := range []SlotOwnershipRequest{{}, {SlotID: f.slotID, Path: f.slotPath}} {
-		if _, err := f.store.ValidateSlotOwnership(ctx, request); !errors.Is(err, ErrOwnership) {
+		if err := f.store.ValidateSlotOwnership(ctx, request); !errors.Is(err, ErrOwnership) {
 			t.Fatalf("incomplete slot request error=%v", err)
 		}
 	}
@@ -338,7 +331,7 @@ func TestValidateSlotOwnershipBoundaries(t *testing.T) {
 			if test.mutate != nil {
 				request = test.mutate(request)
 			}
-			if _, err := fixture.store.ValidateSlotOwnership(ctx, request); !errors.Is(err, ErrOwnership) {
+			if err := fixture.store.ValidateSlotOwnership(ctx, request); !errors.Is(err, ErrOwnership) {
 				t.Fatalf("invalid slot proof succeeded: %v", err)
 			}
 		})
