@@ -82,7 +82,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-name: build
-      - run: make build smoke
+      - run: make build smoke build-darwin hooks-test
       - name: Verify install from a temporary prefix
         run: |
           destination=$(mktemp -d)
