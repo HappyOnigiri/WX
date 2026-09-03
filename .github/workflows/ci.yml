@@ -82,7 +82,13 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-name: build
-      - run: make build smoke build-darwin
+      # hooks-test asserts that .githooks/* dispatch to the matching
+      # hook-check.sh target and propagate its exit status. It requires
+      # core.hooksPath, which a fresh clone does not carry, so install the
+      # hooks first. Without this the target would run in `make ci` only and
+      # never in CI.
+      - run: make hooks-install
+      - run: make build smoke build-darwin hooks-test
       - name: Verify install from a temporary prefix
         run: |
           destination=$(mktemp -d)

@@ -120,7 +120,31 @@
   cold startの待ちが体感上問題になった時点で、非同期refresh対象を
   LEASED状態のslotに限定した設計から着手する。
 
-## 8. CIゲートの構成とカバレッジの床（設計書1137行目付近のCI章）
+## 8. standbyのhot期間判定をrepository単位で行うこと（設計書588行目・604行目付近）
+
+- 設計書の要求: standby slotのcheckout対象を、repositoryごとのhot期間
+  （直近の貸出からの経過時間）で判定する。hot期間を外れたrepositoryは
+  standbyのcheckout対象から外す。
+- 実装の判断: 判定の粒度はworkspace単位までで止める。`repositories`
+  テーブルは`last_leased_at`列をrepositoryごとに持ち、
+  `Store.HotRepositoryIDs`もその列で絞るのでクエリの形はrepository単位
+  だが、**更新側は5箇所すべてがworkspace単位**である
+  （`internal/state/store.go`の`UPDATE repositories SET last_leased_at=?
+  WHERE id IN (SELECT repository_id FROM workspace_repositories WHERE
+  workspace_id=?)`）。同じworkspaceに属するrepositoryは貸出のたびに同一の
+  時刻へ揃うため、貸出直後に走る`ENSURE_STANDBY`では全repositoryがhotと
+  判定され、フィルタが実質的に効かない。
+- 理由: 更新をrepository単位に分けるには、貸出時にどのrepositoryを実際に
+  使ったかを記録する必要があり、同じ`last_leased_at`列をGCのcold退役条件
+  （`Store.ColdRepositoryCandidates`）も読んでいるため、永続化層とGCの
+  両方に変更が及ぶ。個人利用の規模では、hot期間を外れたrepositoryが
+  standbyに含まれても無駄なcheckoutが増えるだけで、データ安全性には
+  影響しない。
+- 将来必要になったときの入り口: `session_repositories`側にrepository単位の
+  最終貸出時刻を持たせ、`HotRepositoryIDs`と`ColdRepositoryCandidates`の
+  両方をそこから読む形にする。
+
+## 9. CIゲートの構成とカバレッジの床（設計書1137行目付近のCI章）
 
 - 設計書の要求: `coverage gate`、変更行coverage、mutation gateを含む
   複数のcoverage関連gateと、integration shard分割、amd64/arm64両matrixでの
@@ -145,7 +169,7 @@
   同時実行数が増えたら、integration shard分割とamd64 matrixを先に復元する
   （`coverage-check`と重複させないよう、対象を明示的に分ける設計に戻す）。
 
-## 9. git hookの検査範囲
+## 10. git hookの検査範囲
 
 - 設計書の要求: 明記なし（実装時の運用判断）。
 - 実装の判断: pre-commitは書式（`gofumpt`/`gci`のdiff検査）のみ、pre-push
@@ -158,7 +182,7 @@
   変更pathに応じた部分実行（変更packageだけの`go vet`など）を検討する。
   固定timeoutは導入しない方針を維持する。
 
-## 10. mutation testing
+## 11. mutation testing
 
 - 設計書の要求: coverage gate・変更行coverageと並ぶrequired checkとして
   mutation gateを持つ（設計書1137行目付近）。
@@ -173,7 +197,7 @@
   survivorが疑われる不具合が実際に発生した時点で、必要な範囲だけ手動で
   `gremlins`を導入し直す。
 
-## 11. 静的セキュリティ解析の自動化
+## 12. 静的セキュリティ解析の自動化
 
 - 設計書の要求: `golangci-lint`の`gosec`有効化、`govulncheck`、依存関係
   scan、secret scan、SBOM生成、Dependabotなどをrequired checkおよび
