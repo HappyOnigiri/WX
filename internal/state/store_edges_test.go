@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -95,6 +96,21 @@ func TestRPCKeyLoaderHandlesReadAndCreateBoundaries(t *testing.T) {
 	}
 	if _, err := Open(filepath.Join(blockingParent, "state.db")); err == nil {
 		t.Fatal("state database opened beneath a regular-file parent")
+	}
+	// A parent directory without execute permission makes Lstat itself fail
+	// with a permission error rather than os.ErrNotExist, which
+	// loadOrCreateRPCKey must propagate instead of treating as "missing".
+	unsearchableParent := filepath.Join(root, "unsearchable-parent")
+	if err := os.Mkdir(unsearchableParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blockedKey := filepath.Join(unsearchableParent, "key")
+	if err := os.Chmod(unsearchableParent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unsearchableParent, 0o700) })
+	if _, err := loadOrCreateRPCKey(blockedKey); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsearchable parent directory error=%v, want a non-ErrNotExist error", err)
 	}
 }
 

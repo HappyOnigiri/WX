@@ -208,28 +208,40 @@ func loadOrCreateRPCKey(path string) ([]byte, error) {
 		if _, err := cryptorand.Read(key); err != nil {
 			return nil, err
 		}
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if errors.Is(err, os.ErrExist) {
-			continue
-		}
+		// The key is written to a private temporary name first and only made
+		// visible at path via Link, which fails atomically if a concurrent
+		// caller already published one. Publishing through O_CREATE|O_EXCL at
+		// path directly would let another goroutine observe the filename via
+		// Lstat before Write/Sync/Close finished, reading a torn (partial or
+		// empty) key instead of retrying against the eventual winner.
+		temporary, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
 		if err != nil {
 			return nil, err
 		}
-		written, writeErr := file.Write(key)
+		temporaryPath := temporary.Name()
+		written, writeErr := temporary.Write(key)
 		if writeErr == nil && written != len(key) {
 			writeErr = io.ErrShortWrite
 		}
 		if writeErr == nil {
-			writeErr = file.Sync()
+			writeErr = temporary.Sync()
 		}
-		closeErr := file.Close()
+		closeErr := temporary.Close()
 		if writeErr != nil {
-			_ = os.Remove(path)
+			_ = os.Remove(temporaryPath)
 			return nil, writeErr
 		}
 		if closeErr != nil {
-			_ = os.Remove(path)
+			_ = os.Remove(temporaryPath)
 			return nil, closeErr
+		}
+		linkErr := os.Link(temporaryPath, path)
+		_ = os.Remove(temporaryPath)
+		if errors.Is(linkErr, os.ErrExist) {
+			continue
+		}
+		if linkErr != nil {
+			return nil, linkErr
 		}
 		if directory, err := os.Open(filepath.Dir(path)); err == nil {
 			syncErr := directory.Sync()
