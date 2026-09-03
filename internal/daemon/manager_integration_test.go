@@ -305,9 +305,7 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := m.WaitReady(waitCtx, lease.SessionID, lease.Token); err != nil {
+	if err := waitReady(ctx, m, 10*time.Second, lease.SessionID, lease.Token); err != nil {
 		t.Fatal(err)
 	}
 	if got := gitOutput(t, lease.Path, "rev-parse", "--abbrev-ref", "HEAD"); got != "HEAD" {
@@ -356,7 +354,7 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	if err := m.BindAndRestoreResume(ctx, native.SessionID, native.Token, "agent-session-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.WaitReady(waitCtx, native.SessionID, native.Token); err != nil {
+	if err := waitReady(ctx, m, 10*time.Second, native.SessionID, native.Token); err != nil {
 		details, detailsErr := store.StatusDiagnostics(ctx)
 		t.Fatalf("wait for native resume: %v; diagnostics=%+v diagnostics_error=%v", err, details, detailsErr)
 	}
@@ -370,7 +368,7 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	if resumed.Path == lease.Path {
 		t.Fatal("resume reused old physical path")
 	}
-	if err := m.WaitReady(waitCtx, resumed.SessionID, resumed.Token); err != nil {
+	if err := waitReady(ctx, m, 10*time.Second, resumed.SessionID, resumed.Token); err != nil {
 		t.Fatal(err)
 	}
 	status := gitOutput(t, resumed.Path, "status", "--porcelain")
@@ -468,9 +466,7 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := m.WaitReady(waitCtx, lease.SessionID, lease.Token); err != nil {
+	if err := waitReady(ctx, m, 10*time.Second, lease.SessionID, lease.Token); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Release(ctx, lease.SessionID, lease.Token, "test"); err != nil {
@@ -635,9 +631,7 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := m.WaitReady(waitCtx, first.SessionID, first.Token); err != nil {
+	if err := waitReady(ctx, m, 10*time.Second, first.SessionID, first.Token); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, 10*time.Second, func() bool {
@@ -692,9 +686,7 @@ func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	if err := m.WaitReady(waitCtx, lease.SessionID, lease.Token); err != nil {
+	if err := waitReady(ctx, m, 15*time.Second, lease.SessionID, lease.Token); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.BindAgentSession(ctx, lease.SessionID, lease.Token, "in-flight-agent"); err != nil {
@@ -713,7 +705,7 @@ func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
 	if err := m.BindAndRestoreResume(ctx, native.SessionID, native.Token, "in-flight-agent"); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.WaitReady(waitCtx, native.SessionID, native.Token); err != nil {
+	if err := waitReady(ctx, m, 15*time.Second, native.SessionID, native.Token); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(native.Path, "pending.txt"))
@@ -745,9 +737,7 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := m.WaitReady(waitCtx, lease.SessionID, lease.Token); err != nil {
+	if err := waitReady(ctx, m, 10*time.Second, lease.SessionID, lease.Token); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.BindAgentSession(ctx, lease.SessionID, lease.Token, "expired-agent-session"); err != nil {
@@ -792,7 +782,7 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.WaitReady(waitCtx, fresh.SessionID, fresh.Token); err != nil {
+	if err := waitReady(ctx, m, 10*time.Second, fresh.SessionID, fresh.Token); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(fresh.Path, "uncommitted.txt")); !os.IsNotExist(err) {
@@ -974,7 +964,7 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.WaitReady(resumeCtx, resumed.SessionID, resumed.Token); err != nil {
+	if err := waitReady(context.Background(), m, 10*time.Second, resumed.SessionID, resumed.Token); err != nil {
 		t.Fatal(err)
 	}
 	assertWorkspaceTestFile(t, filepath.Join(resumed.Path, "AGENTS.md"), "session-specific rules\n")
@@ -1028,6 +1018,20 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// waitReady gives one readiness wait its own budget. Sharing a single
+// context.WithTimeout across several WaitReady calls keeps that deadline
+// counting down through the Git, archive, and restore work performed between
+// them, so a later wait inherits an almost-expired deadline and reports
+// "context deadline exceeded" for a workspace that was still progressing
+// normally. Each wait must still finish inside its own budget, so the
+// assertion is no weaker than a shared deadline; it just stops an earlier
+// phase from spending a later phase's allowance.
+func waitReady(ctx context.Context, m *Manager, budget time.Duration, sessionID, token string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	return m.WaitReady(waitCtx, sessionID, token)
 }
 
 func waitUntil(t *testing.T, timeout time.Duration, fn func() bool) {
