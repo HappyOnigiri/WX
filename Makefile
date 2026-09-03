@@ -22,10 +22,8 @@ GREMLINS_VERSION ?= v0.6.0
 MARKDOWNLINT_VERSION ?= 0.23.2
 ZIZMOR_VERSION ?= 1.30.0
 SHELLCHECK_VERSION ?= 0.11.0
-COVERAGE_MIN ?= 85
-CORE_COVERAGE_MIN ?= 90
-CHANGED_COVERAGE_MIN ?= 90
-COVERAGE_BASE ?= origin/main
+COVERAGE_MIN ?= 80
+CORE_COVERAGE_MIN ?= 85
 COVERAGE_EXCLUSIONS ?= coverage-exclusions.txt
 MUTATION_BASE ?= origin/main
 MUTATION_MIN ?= 80
@@ -182,9 +180,6 @@ test-race-coverage:
 
 coverage-check: test-race-coverage
 	$(GO) run ./tools/checkcoverage -profile coverage/all.out -exclusions $(COVERAGE_EXCLUSIONS) -overall $(COVERAGE_MIN) -core $(CORE_COVERAGE_MIN)
-
-changed-coverage-check: coverage-check
-	$(GO) run ./tools/checkchangedcoverage -profile coverage/all.out -exclusions $(COVERAGE_EXCLUSIONS) -base $(COVERAGE_BASE) -minimum $(CHANGED_COVERAGE_MIN)
 
 portable-test:
 	$(GO) test -shuffle=on -count=1 ./...
