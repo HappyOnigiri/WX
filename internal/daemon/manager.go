@@ -1019,6 +1019,18 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 		if leased {
 			return lease, nil
 		}
+		if len(branches) > 0 {
+			// A mismatch against an explicit --branch request says nothing
+			// about the slot itself: it is still a valid main-based standby
+			// for the next request that wants main. Retiring it here would
+			// let one --branch lease wipe the whole warm pool and turn the
+			// following plain `wx` invocation into a cold start too, which is
+			// the opposite of what consulting the pool is for. Leave it READY
+			// and allocate a fresh slot instead. ReadySlot would keep
+			// returning this same slot, so stop looking rather than
+			// re-validating it.
+			break
+		}
 		_ = m.store.SetSlotState(ctx, ready.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
 	}
 	return m.allocate(ctx, w, resolved, generation, agent, pid, "STARTING", "")

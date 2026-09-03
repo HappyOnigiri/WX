@@ -187,6 +187,86 @@ func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 	}
 }
 
+// TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch guards the
+// other side of consulting the READY pool for an explicit --branch request: a
+// slot that holds a different base OID is not stale, it is simply not what
+// this request wants. Retiring it would let a single `wx --branch other`
+// invocation wipe the warm pool built for main, making the *next* plain `wx`
+// a cold start as well — strictly worse than not consulting the pool at all.
+func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T) {
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repository := filepath.Join(root, "repo")
+	initGitRepo(t, repository)
+	databasePath := filepath.Join(root, "state.db")
+	store, err := state.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 1
+	m := testManager(t, cfg, store)
+	m.git.SetTimeout(10 * time.Second)
+	defer m.Close()
+	ctx := context.Background()
+
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	raw := openManagerCoverageDB(t, databasePath)
+	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 || jobs[0].Kind != "PREPARE" {
+		t.Fatalf("standby jobs=%+v err=%v", jobs, err)
+	}
+	prepared, err := store.ClaimJob(ctx, jobs[0].ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, prepared.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	ready, ok, err := store.ReadySlot(ctx, string(w.ID))
+	if err != nil || !ok {
+		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
+	}
+
+	// A branch whose tip is a different commit than the standby's base OID.
+	gitRun(t, repository, "checkout", "-q", "-b", "other")
+	gitRun(t, repository, "commit", "--allow-empty", "-m", "other")
+	gitRun(t, repository, "checkout", "-q", "main")
+
+	lease, err := m.ResolveAndLease(ctx, repository, []string{"other"}, "codex", os.Getpid())
+	if err != nil {
+		t.Fatalf("resolve and lease with a mismatching branch: %v", err)
+	}
+	if lease.SessionID == ready.ID {
+		t.Fatal("mismatching branch reused the main-based standby slot")
+	}
+	slot, err := store.Slot(ctx, ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slot.State != "READY" {
+		t.Fatalf("warm pool slot state=%s failure_code=%s, want READY", slot.State, slot.FailureCode)
+	}
+}
+
 // TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath
 // verifies that a READY slot whose recorded repository worktree path has
 // drifted outside every known wx root is quarantined and reported back to
@@ -243,6 +323,86 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 	}
 	if slot, err := store.Slot(ctx, badID); err != nil || slot.State != "QUARANTINED" {
 		t.Fatalf("unverifiable ready slot=%+v err=%v", slot, err)
+	}
+}
+
+// TestForgetFailsClosedWhenAFailedSlotCannotBeRetired covers the other half of
+// the FAILED-slot retirement: when the retirement cannot complete, forget must
+// report the failure and leave the workspace registered. Completing it would
+// clear workspace_id and make the slot's path permanently unprovable, which is
+// exactly the leak the retirement exists to prevent. The unprovable path must
+// also end up QUARANTINED rather than deleted.
+func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repository := filepath.Join(root, "repo")
+	initGitRepo(t, repository)
+	databasePath := filepath.Join(root, "state.db")
+	store, err := state.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 1
+	m := testManager(t, cfg, store)
+	m.git.SetTimeout(10 * time.Second)
+	defer m.Close()
+	ctx := context.Background()
+
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertWorkspace(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	raw := openManagerCoverageDB(t, databasePath)
+	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 || jobs[0].Kind != "PREPARE" {
+		t.Fatalf("standby jobs=%+v err=%v", jobs, err)
+	}
+	prepared, err := store.ClaimJob(ctx, jobs[0].ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, prepared.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	ready, ok, err := store.ReadySlot(ctx, string(w.ID))
+	if err != nil || !ok {
+		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
+	}
+	// Fail the slot and move its recorded path outside every known wx root, so
+	// the retirement cannot prove ownership of what it would have to delete.
+	outside := filepath.Join(t.TempDir(), "unowned-slot")
+	if _, err := raw.ExecContext(ctx, `UPDATE slots SET state='FAILED',path=? WHERE id=?`, outside, ready.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Forget(ctx, repository); err == nil {
+		t.Fatal("forget completed despite an unretirable FAILED slot")
+	}
+	if _, err := store.Workspace(ctx, string(w.ID)); err != nil {
+		t.Fatalf("workspace was forgotten despite the failed retirement: %v", err)
+	}
+	slot, err := store.Slot(ctx, ready.ID)
+	if err != nil || slot.State != "QUARANTINED" {
+		t.Fatalf("slot with an unprovable path was not quarantined: slot=%+v err=%v", slot, err)
+	}
+	if _, statErr := os.Stat(ready.Path); statErr != nil {
+		t.Fatalf("worktree of an unprovable slot path was removed: %v", statErr)
 	}
 }
 
