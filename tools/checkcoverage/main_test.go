@@ -7,9 +7,40 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/HappyOnigiri/WX/tools/internal/coverageconfig"
 )
+
+func TestLoadExclusionsAndExcluded(t *testing.T) {
+	fileName := filepath.Join(t.TempDir(), "exclusions.txt")
+	content := "# comment\n\ncmd/wx/main.go\tprocess adapter\ninternal/launchd/launchd.go\tDarwin adapter\n"
+	if err := os.WriteFile(fileName, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exclusions, err := loadExclusions(fileName)
+	if err != nil || len(exclusions) != 2 {
+		t.Fatalf("exclusions=%+v err=%v", exclusions, err)
+	}
+	if !excluded("github.com/example/project/cmd/wx/main.go", exclusions) || !excluded("internal/launchd/launchd.go", exclusions) {
+		t.Fatal("configured files did not match")
+	}
+	if excluded("internal/daemon/manager.go", exclusions) {
+		t.Fatal("unconfigured file matched")
+	}
+}
+
+func TestLoadExclusionsRejectsMissingAndUnexplainedEntries(t *testing.T) {
+	if _, err := loadExclusions(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("missing exclusion file succeeded")
+	}
+	fileName := filepath.Join(t.TempDir(), "invalid.txt")
+	for _, content := range []string{"path-without-reason\n", "\treason\n", "path\t\n"} {
+		if err := os.WriteFile(fileName, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadExclusions(fileName); err == nil {
+			t.Fatalf("invalid exclusion succeeded: %q", content)
+		}
+	}
+}
 
 func TestReadProfileMergesDuplicateBlocksAndComputesScopes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "coverage.out")
@@ -107,7 +138,7 @@ func TestRunCoverageGate(t *testing.T) {
 	if err := run(context.Background(), []string{"-profile", path, "-exclusions", filepath.Join(t.TempDir(), "missing")}, &output); err == nil {
 		t.Fatal("missing exclusions file succeeded")
 	}
-	if got := percentage(map[string]block{"github.com/HappyOnigiri/WX/cmd/wx/main.go:1": {statements: 1}}, "", []coverageconfig.Exclusion{{Path: "cmd/wx/main.go", Reason: "adapter"}}); got != 0 {
+	if got := percentage(map[string]block{"github.com/HappyOnigiri/WX/cmd/wx/main.go:1": {statements: 1}}, "", []exclusion{{path: "cmd/wx/main.go"}}); got != 0 {
 		t.Fatalf("excluded-only percentage=%v", got)
 	}
 }

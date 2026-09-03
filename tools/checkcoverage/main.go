@@ -8,15 +8,56 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/HappyOnigiri/WX/tools/internal/coverageconfig"
 )
 
 type block struct {
 	statements int
 	covered    bool
+}
+
+// exclusion is one exact repository-relative path carved out of the
+// coverage gate, each with a mandatory reviewer-facing reason recorded in
+// the exclusions file (not retained here; nothing reads it back).
+type exclusion struct {
+	path string
+}
+
+func loadExclusions(fileName string) ([]exclusion, error) {
+	file, err := os.Open(fileName)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	var exclusions []exclusion
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 2)
+		if len(fields) != 2 || strings.TrimSpace(fields[0]) == "" || strings.TrimSpace(fields[1]) == "" {
+			return nil, fmt.Errorf("invalid coverage exclusion %q: expected path and reason separated by a tab", line)
+		}
+		exclusions = append(exclusions, exclusion{path: filepath.ToSlash(filepath.Clean(fields[0]))})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return exclusions, nil
+}
+
+func excluded(fileName string, exclusions []exclusion) bool {
+	fileName = filepath.ToSlash(filepath.Clean(fileName))
+	for _, item := range exclusions {
+		if fileName == item.path || strings.HasSuffix(fileName, "/"+item.path) {
+			return true
+		}
+	}
+	return false
 }
 
 func main() {
@@ -48,7 +89,7 @@ func run(ctx context.Context, arguments []string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	exclusions, err := coverageconfig.Load(*exclusionsFile)
+	exclusions, err := loadExclusions(*exclusionsFile)
 	if err != nil {
 		return err
 	}
@@ -98,12 +139,12 @@ func readProfile(path string) (map[string]block, error) {
 	return blocks, scanner.Err()
 }
 
-func percentage(blocks map[string]block, corePatterns string, exclusions []coverageconfig.Exclusion) float64 {
+func percentage(blocks map[string]block, corePatterns string, exclusions []exclusion) float64 {
 	var total, covered int
 	patterns := strings.Split(corePatterns, "|")
 	for location, item := range blocks {
 		file := strings.SplitN(location, ":", 2)[0]
-		if strings.HasSuffix(file, "/migrations/embed.go") || coverageconfig.Matches(file, exclusions) {
+		if strings.HasSuffix(file, "/migrations/embed.go") || excluded(file, exclusions) {
 			continue
 		}
 		if corePatterns != "" {
@@ -126,7 +167,7 @@ func percentage(blocks map[string]block, corePatterns string, exclusions []cover
 	return float64(covered) * 100 / float64(total)
 }
 
-func rejectZeroCoreFunctions(ctx context.Context, profile string, exclusions []coverageconfig.Exclusion) error {
+func rejectZeroCoreFunctions(ctx context.Context, profile string, exclusions []exclusion) error {
 	command := exec.CommandContext(ctx, "go", "tool", "cover", "-func="+profile)
 	output, err := command.Output()
 	if err != nil {
@@ -138,7 +179,7 @@ func rejectZeroCoreFunctions(ctx context.Context, profile string, exclusions []c
 			continue
 		}
 		fileName := strings.SplitN(line, ":", 2)[0]
-		if coverageconfig.Matches(fileName, exclusions) {
+		if excluded(fileName, exclusions) {
 			continue
 		}
 		if strings.Contains(line, "/internal/config/") || strings.Contains(line, "/internal/state/") || strings.Contains(line, "/internal/pool/") || strings.Contains(line, "/internal/gitx/") || strings.Contains(line, "/internal/workspace/") || strings.Contains(line, "/internal/archive/") || strings.Contains(line, "/internal/rpc/") {
