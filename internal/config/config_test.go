@@ -81,6 +81,26 @@ func TestSavePreservesExistingPermissions(t *testing.T) {
 	}
 }
 
+func TestSavePropagatesAnUnsearchableConfigDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "wx")
+	// Pre-create the directory without execute permission: MkdirAll treats
+	// an already-existing directory as satisfied without touching its mode,
+	// so Save's own Lstat of the config file inside it fails with a
+	// permission error rather than os.ErrNotExist.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := Save(Config{Version: 1}); err == nil || os.IsNotExist(err) {
+		t.Fatalf("Save error=%v, want a non-ErrNotExist error", err)
+	}
+}
+
 func TestSaveRejectsNonRegularConfigPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

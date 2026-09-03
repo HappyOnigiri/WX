@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,42 @@ import (
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
+
+// installGitFault makes the occurrence-th invocation of git whose arguments
+// contain pattern fail, and lets every other invocation run the real git
+// binary. It mirrors the identical helper in internal/archive's test suite so
+// specific revalidation/cleanup Git calls can be targeted deterministically.
+func installGitFault(t *testing.T, pattern string, occurrence int) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "matches")
+	wrapper := filepath.Join(bin, "git")
+	script := `#!/bin/sh
+if case " $* " in *"$WX_FAULT_PATTERN"*) true;; *) false;; esac; then
+  count=0
+  if [ -f "$WX_FAULT_MARKER" ]; then read -r count < "$WX_FAULT_MARKER"; fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$WX_FAULT_MARKER"
+  if [ "$count" -eq "$WX_FAULT_OCCURRENCE" ]; then
+    printf 'injected git failure\n' >&2
+    exit 2
+  fi
+fi
+exec "$WX_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_REAL_GIT", realGit)
+	t.Setenv("WX_FAULT_PATTERN", pattern)
+	t.Setenv("WX_FAULT_MARKER", marker)
+	t.Setenv("WX_FAULT_OCCURRENCE", strconv.Itoa(occurrence))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
 
 func TestRestorePreparationResumeAndFinishLifecycle(t *testing.T) {
 	repository, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -360,6 +398,171 @@ func TestPrepareRejectsUnsafeConfiguredWorktreeRoot(t *testing.T) {
 	preparer.Config = config
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil {
 		t.Fatal("prepare beneath a regular configured root succeeded")
+	}
+}
+
+func TestPrepareRejectsWorktreeAlteredByThePrepareCommand(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		script  string
+		wantErr string
+	}{
+		{name: "checks out a branch", script: "git checkout -b stray", wantErr: "not detached"},
+		{name: "moves HEAD", script: "git commit --allow-empty -m stray", wantErr: "differs from requested OID"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, repo, preparer, head, target := prepareEdgesFixture(t)
+			root := preparer.Config.Storage.WorktreeRoot
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cfg := preparer.Config
+			cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", test.script}, Timeout: config.Duration{Duration: 5 * time.Second}}}}
+			preparer.Config = cfg
+			err := preparer.Prepare(context.Background(), repo, target, head, "slot")
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("prepare command tampering error=%v, want substring %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestPrepareLeavesWorktreeForQuarantineWhenCleanupGitFails(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		pattern    string
+		wantLocked bool
+	}{
+		{name: "unlock fails", pattern: "worktree unlock", wantLocked: true},
+		{name: "remove fails", pattern: "worktree remove --force", wantLocked: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, repo, preparer, head, target := prepareEdgesFixture(t)
+			root := preparer.Config.Storage.WorktreeRoot
+			if err := os.MkdirAll(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cfg := preparer.Config
+			cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "exit 1"}, Timeout: config.Duration{Duration: 5 * time.Second}}}}
+			preparer.Config = cfg
+			// The prepare command is the only failure injected by the test
+			// scenario; "worktree lock" must still succeed so cleanup is
+			// armed (ownedAfterLock=true). The cleanup path's own Git call
+			// is then made to fail so the deferred cleanup must leave the
+			// worktree registered for later quarantine/reconcile instead of
+			// silently discarding it.
+			installGitFault(t, test.pattern, 1)
+			if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil {
+				t.Fatal("prepare succeeded despite a failing prepare command")
+			}
+			_, locked, found, err := RegisteredWorktreeLockStatus(context.Background(), preparer.Git, string(repo.MainPath), target)
+			if err != nil || !found {
+				t.Fatalf("worktree registration was removed despite a cleanup Git failure: found=%v err=%v", found, err)
+			}
+			if locked != test.wantLocked {
+				t.Fatalf("worktree locked=%v, want %v", locked, test.wantLocked)
+			}
+		})
+	}
+}
+
+func TestPrepareOnAnExistingWorktreePropagatesInitialUnlockFailure(t *testing.T) {
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
+		t.Fatalf("initial prepare: %v", err)
+	}
+	// The first Prepare call only ever locks a newly created worktree; the
+	// re-prepare below is the first call in this test to unlock an existing
+	// one, so occurrence 1 targets exactly that call.
+	installGitFault(t, "worktree unlock", 1)
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "unlock existing wx worktree") {
+		t.Fatalf("re-prepare error=%v", err)
+	}
+}
+
+func TestPrepareOnANewWorktreePropagatesLockFailure(t *testing.T) {
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	installGitFault(t, "worktree lock", 1)
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil {
+		t.Fatal("prepare succeeded despite a failing initial lock")
+	}
+}
+
+func TestAddWorktreeWithIdentityRecognizesACleanFailedAdd(t *testing.T) {
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	preparer.OwnedRoot = owner
+	preparer.RootPath = root
+	preparer.RequireOwnedRoot = true
+	// git fails before writing anything into the reserved leaf or registering
+	// the worktree, so addWorktreeWithIdentity must recognize the reserved
+	// namespace as clean and return the original Git error rather than an
+	// uncertain-outcome ownership error.
+	installGitFault(t, "worktree add --detach", 1)
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("clean failed add error=%v, want a plain Git error", err)
+	}
+	if _, _, found, err := RegisteredWorktreeLockStatusAt(context.Background(), preparer.Git, string(repo.MainPath), owner, root, "slots/slot/root", "irrelevant"); err != nil || found {
+		t.Fatalf("failed add left a Git registration: found=%v err=%v", found, err)
+	}
+}
+
+func TestAddWorktreeWithIdentityQuarantinesAnInterruptedAdd(t *testing.T) {
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	preparer.OwnedRoot = owner
+	preparer.RootPath = root
+	preparer.RequireOwnedRoot = true
+	// Simulate Git being interrupted after it started writing into the
+	// reserved worktree namespace but before it reported success: the
+	// reserved leaf is left non-empty, which addWorktreeWithIdentity must
+	// treat as an uncertain outcome (ownership quarantine) rather than a
+	// plain, retryable Git failure.
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	wrapper := filepath.Join(bin, "git")
+	script := "#!/bin/sh\n" +
+		"case \" $* \" in\n" +
+		"  *\"worktree add --detach\"*)\n" +
+		"    : > stray-partial-file\n" +
+		"    printf 'interrupted\\n' >&2\n" +
+		"    exit 1\n" +
+		"    ;;\n" +
+		"esac\n" +
+		"exec \"" + realGit + "\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("interrupted add error=%v, want an ownership-uncertain error", err)
 	}
 }
 

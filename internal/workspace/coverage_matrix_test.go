@@ -448,8 +448,22 @@ func TestOwnershipDescriptorAndGitRecordBoundaryMatrix(t *testing.T) {
 	if _, err := newOwnershipMarkerAt(nil, root, target, "s", common, true); err == nil {
 		t.Fatal("nil owner was accepted by newOwnershipMarkerAt")
 	}
+	// EnsureOwnershipMarkerAt/ValidateOwnershipMarkerAt already reject an
+	// unsafe slot id before calling newOwnershipMarkerAt, so exercise its own
+	// defense-in-depth guard directly: the helper must not trust a future
+	// caller to have validated its input.
+	if _, err := newOwnershipMarkerAt(owner, root, target, "bad/slot", common, true); err == nil {
+		t.Fatal("unsafe slot id was accepted by newOwnershipMarkerAt directly")
+	}
 	if _, err := newOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside"), "s", common, true); err == nil {
 		t.Fatal("outside marker target was accepted")
+	}
+	symlinkTarget := filepath.Join(root, "workspaces", "w", "slots", "s", "link")
+	if err := os.Symlink(target, symlinkTarget); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newOwnershipMarkerAt(owner, root, symlinkTarget, "s", common, true); err == nil {
+		t.Fatal("symlink marker target was accepted")
 	}
 	missingTarget := filepath.Join(root, "workspaces", "w", "slots", "s", "missing")
 	if _, err := newOwnershipMarkerAt(owner, root, missingTarget, "s", common, true); err != nil {

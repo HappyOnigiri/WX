@@ -13,6 +13,35 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
+func TestValidateWorktreeOwnershipRejectsAWorktreeRecordedOutsideItsSlot(t *testing.T) {
+	f := newOwnershipFixture(t)
+	ctx := context.Background()
+	outside := filepath.Join(f.root, "outside-worktree")
+	if err := os.Mkdir(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.db.ExecContext(ctx, `UPDATE slot_repositories SET worktree_path=? WHERE slot_id=? AND repository_id=?`, outside, f.slotID, f.repository); err != nil {
+		t.Fatal(err)
+	}
+	request := f.worktreeRequest()
+	request.WorktreePath = outside
+	if _, err := f.store.ValidateWorktreeOwnership(ctx, request); err == nil || !strings.Contains(err.Error(), "outside its slot path") {
+		t.Fatalf("worktree recorded outside its slot error=%v", err)
+	}
+}
+
+func TestValidateSlotOwnershipRejectsAMissingRecordedWorkspaceRoot(t *testing.T) {
+	f := newOwnershipFixture(t)
+	ctx := context.Background()
+	if _, err := f.store.db.ExecContext(ctx, `UPDATE workspaces SET root_path=? WHERE id=?`, filepath.Join(f.root, "missing-workspace-root"), f.workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	request := SlotOwnershipRequest{SlotID: f.slotID, WorkspaceID: f.workspaceID, Path: f.slotPath, AllowedSlotStates: []string{"READY"}}
+	if _, err := f.store.ValidateSlotOwnership(ctx, request); err == nil || !strings.Contains(err.Error(), "recorded workspace root") {
+		t.Fatalf("missing recorded workspace root error=%v", err)
+	}
+}
+
 func TestOwnershipPathHelpersRejectUnsafeInputs(t *testing.T) {
 	if !allowedState("READY", []string{"PREPARING", "READY"}) || allowedState("FAILED", []string{"READY"}) {
 		t.Fatal("allowed-state matching is incorrect")

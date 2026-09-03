@@ -619,6 +619,69 @@ func TestRemoveWorktreePropagatesGitFailures(t *testing.T) {
 	}
 }
 
+func TestRemoveWorktreePropagatesRevalidationGitFailures(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		pattern    string
+		occurrence int
+	}{
+		{name: "unlock", pattern: " worktree unlock ", occurrence: 1},
+		{name: "post-unlock lock status", pattern: " worktree list --porcelain -z ", occurrence: 2},
+		{name: "post-unlock common dir", pattern: " rev-parse --path-format=absolute --git-common-dir ", occurrence: 2},
+		{name: "post-unlock head", pattern: " rev-parse HEAD ", occurrence: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, repo, manager, worktreeRoot := archiveFixture(t)
+			head := gitCommand(t, repository, "rev-parse", "HEAD")
+			target := filepath.Join(worktreeRoot, "slot", "root")
+			mustMkdir(t, filepath.Dir(target))
+			gitCommand(t, repository, "worktree", "add", "--detach", target, head)
+			markOwnedWorktree(t, worktreeRoot, target, "slot", repo.CommonDir)
+			installGitFault(t, test.pattern, test.occurrence)
+			if err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, target, head); err == nil {
+				t.Fatal("worktree removal succeeded despite an injected revalidation Git failure")
+			}
+			if _, err := os.Lstat(target); err != nil {
+				t.Fatalf("worktree was removed despite a revalidation failure: %v", err)
+			}
+		})
+	}
+}
+
+func TestRemoveWorktreeMissingRegistrationPropagatesGitFailures(t *testing.T) {
+	newMissingRegisteredFixture := func(t *testing.T) (discovery.Repository, *Manager, string, string, string) {
+		t.Helper()
+		repository, repo, manager, worktreeRoot := archiveFixture(t)
+		head := gitCommand(t, repository, "rev-parse", "HEAD")
+		target := filepath.Join(worktreeRoot, "slot", "root")
+		mustMkdir(t, filepath.Dir(target))
+		gitCommand(t, repository, "worktree", "add", "--detach", target, head)
+		markOwnedWorktree(t, worktreeRoot, target, "slot", repo.CommonDir)
+		if err := os.RemoveAll(target); err != nil {
+			t.Fatal(err)
+		}
+		return repo, manager, worktreeRoot, target, head
+	}
+
+	for _, test := range []struct {
+		name       string
+		pattern    string
+		occurrence int
+	}{
+		{name: "unlock", pattern: " worktree unlock ", occurrence: 1},
+		{name: "post-unlock lock status", pattern: " worktree list --porcelain -z ", occurrence: 2},
+		{name: "final remove", pattern: " worktree remove --force ", occurrence: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo, manager, worktreeRoot, target, head := newMissingRegisteredFixture(t)
+			installGitFault(t, test.pattern, test.occurrence)
+			if err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, target, head); err == nil {
+				t.Fatal("missing-worktree reconciliation succeeded despite an injected Git failure")
+			}
+		})
+	}
+}
+
 func TestRemoveWorktreePropagatesFilesystemOwnershipFailures(t *testing.T) {
 	t.Run("non-directory path component", func(t *testing.T) {
 		_, repo, manager, worktreeRoot := archiveFixture(t)

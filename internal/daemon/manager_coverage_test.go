@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -976,6 +977,84 @@ func openManagerCoverageDB(t *testing.T, path string) *sql.DB {
 	}
 	t.Cleanup(func() { _ = database.Close() })
 	return database
+}
+
+func TestPrepareFreshResumePropagatesFailureCodes(t *testing.T) {
+	t.Run("refuses a still-live prior mapping", func(t *testing.T) {
+		root := t.TempDir()
+		repoPath := filepath.Join(root, "repo")
+		initGitRepo(t, repoPath)
+		cfg := config.Defaults()
+		cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+		cfg.Pool.WarmPerWorkspace = 0
+		store, err := state.Open(filepath.Join(root, "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		manager := testManager(t, cfg, store)
+		t.Cleanup(manager.Close)
+		ctx := context.Background()
+		prior, err := manager.AllocateResumeSlot(ctx, "codex", os.Getpid())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.BindAgentSession(ctx, prior.SessionID, "shared-agent"); err != nil {
+			t.Fatal(err)
+		}
+		current, err := manager.AllocateResumeSlot(ctx, "codex", os.Getpid())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.PrepareFreshResume(ctx, current.SessionID, current.Token, "shared-agent", repoPath, nil); err == nil || !strings.Contains(err.Error(), "not EXPIRED") {
+			t.Fatalf("fresh resume against a live prior mapping error=%v", err)
+		}
+		currentSession, err := store.SessionByID(ctx, current.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slot, err := store.Slot(ctx, currentSession.SlotID); err != nil || slot.State != "FAILED" {
+			t.Fatalf("refused fresh resume slot=%+v err=%v", slot, err)
+		}
+	})
+
+	t.Run("propagates a bind storage failure", func(t *testing.T) {
+		root := t.TempDir()
+		repoPath := filepath.Join(root, "repo")
+		initGitRepo(t, repoPath)
+		cfg := config.Defaults()
+		cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+		cfg.Pool.WarmPerWorkspace = 0
+		databasePath := filepath.Join(root, "state.db")
+		store, err := state.Open(databasePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		manager := testManager(t, cfg, store)
+		t.Cleanup(manager.Close)
+		ctx := context.Background()
+		current, err := manager.AllocateResumeSlot(ctx, "codex", os.Getpid())
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := openManagerCoverageDB(t, databasePath)
+		// SQLite trigger WHEN clauses cannot bind parameters, so the already-
+		// known session id is interpolated directly into the trigger body.
+		if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_fresh_bind BEFORE UPDATE ON sessions WHEN OLD.id='`+current.SessionID+`' BEGIN SELECT RAISE(ABORT,'injected bind failure'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.PrepareFreshResume(ctx, current.SessionID, current.Token, "solo-agent", repoPath, nil); err == nil {
+			t.Fatal("fresh resume succeeded despite an injected bind storage failure")
+		}
+		currentSession, err := store.SessionByID(ctx, current.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slot, err := store.Slot(ctx, currentSession.SlotID); err != nil || slot.State != "FAILED" {
+			t.Fatalf("failed fresh resume slot=%+v err=%v", slot, err)
+		}
+	})
 }
 
 func managerCoverageFixture(t *testing.T) (context.Context, *Manager, *state.Store, discovery.Workspace, []pool.Resolved, string) {

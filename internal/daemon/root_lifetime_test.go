@@ -897,3 +897,61 @@ func TestAdoptRootRejectsShutdownAndIdentityChanges(t *testing.T) {
 	release()
 	manager.Close()
 }
+
+func TestReleaseRootAndCloseRootLockedGuardClauses(t *testing.T) {
+	manager := &Manager{
+		rootRefs:       map[string]*managedRoot{},
+		rootHandles:    map[string]*os.Root{},
+		retiredRefs:    map[string][]*managedRoot{},
+		rootIdentities: map[string]string{},
+	}
+
+	// A nil entry, an already-closed entry, and a zero-refcount entry must all
+	// be safe no-ops rather than panicking or double-releasing.
+	manager.releaseRoot("missing", nil)
+	closedEntry := &managedRoot{closed: true}
+	manager.releaseRoot("closed", closedEntry)
+	zeroRefsEntry := &managedRoot{refs: 0}
+	manager.releaseRoot("zero-refs", zeroRefsEntry)
+
+	manager.closeRootLocked("missing", nil)
+	manager.closeRootLocked("closed", closedEntry)
+	if !closedEntry.closed {
+		t.Fatal("already-closed entry lost its closed flag")
+	}
+
+	root := t.TempDir()
+	opened, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := &managedRoot{root: opened, refs: 1}
+	other := &managedRoot{root: nil, refs: 1}
+	manager.retiredRefs[root] = []*managedRoot{entry, other}
+	manager.rootRefs[root] = entry
+	manager.rootHandles[root] = opened
+	manager.roots = map[string]bool{root: true}
+	manager.closeRootLocked(root, entry)
+	if !entry.closed {
+		t.Fatal("closeRootLocked did not mark the entry closed")
+	}
+	if _, err := opened.Lstat("."); err == nil {
+		t.Fatal("closeRootLocked did not close the underlying descriptor")
+	}
+	if _, stillTracked := manager.rootRefs[root]; stillTracked {
+		t.Fatal("closed entry remained the active root reference")
+	}
+	if _, stillTracked := manager.rootHandles[root]; stillTracked {
+		t.Fatal("closed entry remained the compatibility root handle")
+	}
+	if retired := manager.retiredRefs[root]; len(retired) != 1 || retired[0] != other {
+		t.Fatalf("closed entry was not filtered out of the retired list: %+v", retired)
+	}
+
+	// Closing the last retired generation at a path must drop the retired
+	// list entirely rather than leaving an empty slice behind.
+	manager.closeRootLocked(root, other)
+	if _, stillPresent := manager.retiredRefs[root]; stillPresent {
+		t.Fatal("retired list was not removed once empty")
+	}
+}
