@@ -15,7 +15,6 @@ func FuzzPathAndIDValidation(f *testing.F) {
 		f.Add(seed.root, seed.path, seed.id)
 	}
 	f.Fuzz(func(t *testing.T, root, path, id string) {
-		_ = ValidateID(id)
 		_ = StableID(root, path, id)
 		within := IsWithin(root, path)
 		rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))

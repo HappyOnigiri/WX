@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -21,8 +20,6 @@ type (
 	WorkspaceID  string
 	RepositoryID string
 )
-
-var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 func NewID() (string, error) {
 	var b [16]byte
@@ -39,13 +36,6 @@ func StableID(parts ...string) string {
 		_, _ = h.Write([]byte(p))
 	}
 	return hex.EncodeToString(h.Sum(nil)[:16])
-}
-
-func ValidateID(id string) error {
-	if !idPattern.MatchString(id) {
-		return fmt.Errorf("invalid wx id %q", id)
-	}
-	return nil
 }
 
 type CanonicalPath string
@@ -68,6 +58,29 @@ func Canonicalize(path string) (CanonicalPath, error) {
 func IsWithin(root, path string) bool {
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && rel != ".." && rel != "." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// RelativeWithin computes path's location relative to root and rejects any
+// result that escapes root or names root itself: an absolute path, ".", "..",
+// or anything starting with "../". Go 1.26's filepath.IsLocal already rejects
+// everything but the "." case (it treats "." as local), so that one case is
+// checked explicitly; callers that need to accept path == root should not use
+// this helper.
+func RelativeWithin(root, path string) (string, error) {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", err
+	}
+	if relative == "." || !filepath.IsLocal(relative) {
+		return "", fmt.Errorf("%s is outside %s", path, root)
+	}
+	return relative, nil
+}
+
+// ValidWxLockReason reports whether reason is one of the `git worktree lock`
+// reasons wx itself writes for slotID: READY, PREPARING, or RESTORING.
+func ValidWxLockReason(reason, slotID string) bool {
+	return reason == "wx:"+slotID+":READY" || reason == "wx:"+slotID+":PREPARING" || reason == "wx:"+slotID+":RESTORING"
 }
 
 // OpenOwnedRoot binds subsequent filesystem operations to the validated

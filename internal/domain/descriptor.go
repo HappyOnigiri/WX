@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
+	"syscall"
 )
 
 // OpenOwnedDirectory opens an existing directory through a descriptor rooted
@@ -111,53 +111,21 @@ func OpenRootAt(owner *os.Root, relative string) (*os.Root, error) {
 	return child, nil
 }
 
-// FileIdentity returns a portable textual device/inode identity.  Go's
-// syscall.Stat_t has the same Dev/Ino field names on Darwin and Linux, while
-// their integer widths differ; reflection keeps this small boundary
-// independent of either platform's concrete type.
+// FileIdentity returns a portable textual device/inode identity. This
+// package builds only for darwin and linux (see physical_unix.go), so the
+// concrete type behind info.Sys() is always *syscall.Stat_t; a direct type
+// assertion replaces the reflection this used to need only to smooth over
+// Dev/Ino's differing integer widths between those two platforms. A failed
+// assertion is fail-closed: it returns an error rather than a zero identity,
+// since a zero identity would compare equal to another failure instead of
+// being treated as unavailable.
 func FileIdentity(info os.FileInfo) (string, error) {
 	if info == nil || info.Sys() == nil {
 		return "", errors.New("file identity is unavailable")
 	}
-	value := reflect.ValueOf(info.Sys())
-	if value.Kind() == reflect.Pointer {
-		if value.IsNil() {
-			return "", errors.New("file identity is unavailable")
-		}
-		value = value.Elem()
-	}
-	if value.Kind() != reflect.Struct {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil {
 		return "", fmt.Errorf("unsupported file identity type %T", info.Sys())
 	}
-	device, ok := unsignedStatField(value.FieldByName("Dev"))
-	if !ok {
-		return "", fmt.Errorf("file identity has no device field (%T)", info.Sys())
-	}
-	inode, ok := unsignedStatField(value.FieldByName("Ino"))
-	if !ok {
-		return "", fmt.Errorf("file identity has no inode field (%T)", info.Sys())
-	}
-	return fmt.Sprintf("%d:%d", device, inode), nil
-}
-
-func unsignedStatField(value reflect.Value) (uint64, bool) {
-	if !value.IsValid() {
-		return 0, false
-	}
-	switch value.Kind() {
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return value.Uint(), true
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		integer := value.Int()
-		if integer < 0 {
-			return 0, false
-		}
-		return uint64(integer), true
-	case reflect.Invalid, reflect.Bool, reflect.Float32, reflect.Float64,
-		reflect.Complex64, reflect.Complex128, reflect.Array, reflect.Chan,
-		reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer,
-		reflect.Slice, reflect.String, reflect.Struct, reflect.UnsafePointer:
-		return 0, false
-	}
-	return 0, false
+	return fmt.Sprintf("%d:%d", uint64(stat.Dev), stat.Ino), nil
 }

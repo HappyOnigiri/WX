@@ -7,15 +7,8 @@ import (
 )
 
 func TestIDsAndContainment(t *testing.T) {
-	id, err := NewID()
-	if err != nil {
+	if _, err := NewID(); err != nil {
 		t.Fatal(err)
-	}
-	if err := ValidateID(id); err != nil {
-		t.Fatal(err)
-	}
-	if err := ValidateID("not-an-id"); err == nil {
-		t.Fatal("malformed ID was accepted")
 	}
 	if _, err := Canonicalize(""); err == nil {
 		t.Fatal("empty path was canonicalized")
