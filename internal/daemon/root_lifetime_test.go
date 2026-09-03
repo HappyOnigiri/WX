@@ -639,3 +639,261 @@ func TestConcurrentCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("concurrent close left root state active=%d compatibility=%d retired=%d refs=%d", active, compatibility, retired, refs)
 	}
 }
+
+func TestRootReferenceAccountingAndBackgroundAdmission(t *testing.T) {
+	root := t.TempDir()
+	manager := &Manager{
+		roots:          map[string]bool{root: true},
+		rootHandles:    map[string]*os.Root{},
+		rootRefs:       map[string]*managedRoot{},
+		retiredRefs:    map[string][]*managedRoot{},
+		rootIdentities: map[string]string{},
+	}
+	owner, release, err := manager.rootDescriptor(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner == nil || manager.rootHandleForPath(filepath.Join(root, "nested")) == nil {
+		t.Fatal("active root descriptor was not discoverable")
+	}
+	manager.mu.Lock()
+	entry := manager.rootRefs[root]
+	if entry == nil || !manager.rootHasReferencesLocked(root) || manager.rootReferenceCountLocked() != 1 {
+		manager.mu.Unlock()
+		t.Fatalf("active root accounting is incorrect: entry=%+v refs=%d", entry, manager.rootReferenceCountLocked())
+	}
+	_, acquired, found, acquireErr := manager.acquireRootLocked(root, false)
+	manager.mu.Unlock()
+	if acquireErr != nil || !found || acquired != entry {
+		t.Fatalf("reacquire root=%v found=%v err=%v", acquired, found, acquireErr)
+	}
+	manager.releaseRoot(root, entry)
+	release()
+	manager.mu.RLock()
+	if manager.rootReferenceCountLocked() != 0 || manager.rootHasReferencesLocked(root) {
+		manager.mu.RUnlock()
+		t.Fatal("root references were not released")
+	}
+	manager.mu.RUnlock()
+
+	started := make(chan struct{})
+	if !manager.startBackground(func() { close(started) }) {
+		t.Fatal("background task was rejected before shutdown")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background task did not run")
+	}
+	manager.backgroundMu.Lock()
+	manager.backgroundClosing = true
+	manager.backgroundMu.Unlock()
+	if manager.startBackground(func() {}) {
+		t.Fatal("background task was admitted after shutdown")
+	}
+	manager.backgroundWG.Wait()
+
+	manager.mu.Lock()
+	manager.rootClosing = true
+	_, _, _, acquireErr = manager.acquireRootLocked(root, false)
+	manager.mu.Unlock()
+	if !errors.Is(acquireErr, errManagerClosed) {
+		t.Fatalf("root acquire during shutdown error=%v", acquireErr)
+	}
+	manager.Close()
+}
+
+func TestRootCompatibilityHandleAndHistoricalPathLookup(t *testing.T) {
+	root := t.TempDir()
+	owner, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		roots:          map[string]bool{root: false},
+		rootHandles:    map[string]*os.Root{root: owner},
+		rootIdentities: map[string]string{},
+		retiredRefs:    map[string][]*managedRoot{},
+	}
+	manager.mu.Lock()
+	opened, entry, found, err := manager.acquireRootLocked(root, false)
+	manager.mu.Unlock()
+	if err != nil || !found || opened != owner || entry == nil || !entry.retired {
+		t.Fatalf("compatibility handle adoption=%v entry=%+v found=%v err=%v", opened, entry, found, err)
+	}
+	if manager.rootHandleForRoot(root) != owner {
+		t.Fatal("retired compatibility handle was not borrowed")
+	}
+	if got, ok := manager.rootForPath(filepath.Join(root, "historical", "slot")); !ok || got != root {
+		t.Fatalf("historical root lookup=%q,%v", got, ok)
+	}
+	manager.releaseRoot(root, entry)
+	manager.mu.RLock()
+	closed := entry.closed
+	manager.mu.RUnlock()
+	if !closed {
+		t.Fatal("retired compatibility descriptor remained open after release")
+	}
+	manager.Close()
+}
+
+func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "worktrees")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(base, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+
+	owner, release, err := manager.rootDescriptor(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity, identityErr := descriptorIdentity(owner); identityErr != nil || identity == "" {
+		t.Fatalf("descriptor identity=%q err=%v", identity, identityErr)
+	}
+	release()
+	if _, err := descriptorIdentity(nil); err == nil {
+		t.Fatal("nil descriptor identity succeeded")
+	}
+	closed, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := descriptorIdentity(closed); err == nil {
+		t.Fatal("closed descriptor identity succeeded")
+	}
+
+	slotPath := filepath.Join(root, "workspaces", "workspace", "slots", "slot", "root")
+	if _, err := manager.createSlotRoot(slotPath); err != nil {
+		t.Fatalf("create slot root: %v", err)
+	}
+	if identity, err := manager.leaseRootIdentity(slotPath); err != nil || identity == "" {
+		t.Fatalf("lease root identity=%q err=%v", identity, err)
+	}
+	if _, err := manager.leaseRootIdentity(filepath.Join(root, "missing")); err == nil {
+		t.Fatal("missing lease root identity succeeded")
+	}
+	if _, err := manager.createSlotRoot(filepath.Join(base, "outside")); err == nil {
+		t.Fatal("outside slot root creation succeeded")
+	}
+
+	file := filepath.Join(root, "owned.txt")
+	if err := os.WriteFile(file, []byte("owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if exists, err := manager.ownedPathExists(file); err != nil || !exists {
+		t.Fatalf("owned file exists=%v err=%v", exists, err)
+	}
+	if exists, err := manager.ownedPathExists(filepath.Join(root, "not-present")); err != nil || exists {
+		t.Fatalf("missing owned path exists=%v err=%v", exists, err)
+	}
+	if exists, err := manager.ownedPathExists(filepath.Join(base, "outside")); !errors.Is(err, state.ErrOwnership) || exists {
+		t.Fatalf("outside owned path exists=%v err=%v", exists, err)
+	}
+	if heldRoot, releaseRoot, err := manager.holdVerifiedRootForPath(file); err != nil || heldRoot != root {
+		t.Fatalf("verified root=%q err=%v", heldRoot, err)
+	} else {
+		releaseRoot()
+	}
+	if _, releaseRoot, err := manager.holdVerifiedRootForPath(filepath.Join(base, "outside")); err == nil {
+		releaseRoot()
+		t.Fatal("outside verified root succeeded")
+	}
+
+	source := filepath.Join(base, "source")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "instructions"), []byte("rules\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	materialized := filepath.Join(root, "materialized")
+	if err := os.Mkdir(materialized, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.materializeWorkspaceRoot(source, materialized, config.Workspace{Copy: []string{"instructions"}}); err != nil {
+		t.Fatalf("descriptor-bound root materialization: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(materialized, "instructions")); err != nil || string(data) != "rules\n" {
+		t.Fatalf("materialized data=%q err=%v", data, err)
+	}
+
+	validWorkspaceRoot := filepath.Join(root, "workspaces", "registered", "slots", "registered", "root")
+	if err := os.MkdirAll(validWorkspaceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	validUnboundRoot := filepath.Join(root, "unbound", "session", "root")
+	if err := os.MkdirAll(validUnboundRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "workspaces", "ignored", "slots"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "workspaces", "ignored", "slots", "regular"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := manager.ownedRootArtifactPaths(root)
+	if err != nil {
+		t.Fatalf("owned root artifacts: %v", err)
+	}
+	if !containsString(paths, validWorkspaceRoot) || !containsString(paths, validUnboundRoot) {
+		t.Fatalf("owned root artifacts=%v", paths)
+	}
+}
+
+func TestAdoptRootRejectsShutdownAndIdentityChanges(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	identityManager := &Manager{rootIdentities: map[string]string{root: "different"}}
+	opened, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := identityManager.adoptRoot(root, opened, true); err == nil {
+		t.Fatal("root inode replacement was accepted")
+	}
+	closingManager := &Manager{rootIdentities: map[string]string{}, rootClosing: true}
+	opened, err = os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := closingManager.adoptRoot(root, opened, true); !errors.Is(err, errManagerClosed) {
+		t.Fatalf("shutdown root adoption error=%v", err)
+	}
+
+	existingPath := filepath.Join(base, "existing")
+	if err := os.Mkdir(existingPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	existing, err := os.OpenRoot(existingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{rootRefs: map[string]*managedRoot{existingPath: {root: existing, refs: 0}}, rootHandles: map[string]*os.Root{}, rootIdentities: map[string]string{}}
+	other, err := os.OpenRoot(existingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned, release, err := manager.adoptRoot(existingPath, other, true)
+	if err != nil || returned != existing {
+		t.Fatalf("existing root adoption=%v err=%v", returned, err)
+	}
+	release()
+	manager.Close()
+}

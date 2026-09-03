@@ -111,70 +111,7 @@ func snapshotWorkspace(ctx context.Context, bundleRoot, ownershipRoot string, pi
 	}()
 	hasher := sha256.New()
 	writer := tar.NewWriter(io.MultiWriter(output, hasher))
-	err = fs.WalkDir(bundle.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if name == "." {
-			return nil
-		}
-		rel, err := archiveRelative(name)
-		if err != nil {
-			return err
-		}
-		if workspacePathExcluded(rel, exclusions) {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		var linkTarget string
-		switch {
-		case info.IsDir(), info.Mode().IsRegular():
-		case info.Mode()&os.ModeSymlink != 0:
-			linkTarget, err = bundle.Readlink(filepath.FromSlash(rel))
-			if err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("workspace root path %s has unsupported mode %s", rel, info.Mode())
-		}
-		header, err := tar.FileInfoHeader(info, linkTarget)
-		if err != nil {
-			return err
-		}
-		header.Name = rel
-		header.Uid, header.Gid, header.Uname, header.Gname = 0, 0, "", ""
-		header.AccessTime, header.ChangeTime = time.Time{}, time.Time{}
-		if err := writer.WriteHeader(header); err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		file, err := bundle.Open(filepath.FromSlash(rel))
-		if err != nil {
-			return err
-		}
-		openedInfo, statErr := file.Stat()
-		if statErr != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
-			_ = file.Close()
-			return fmt.Errorf("workspace root file %s changed while snapshotting", rel)
-		}
-		_, copyErr := io.Copy(writer, file)
-		closeErr := file.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		return closeErr
-	})
+	err = writeWorkspaceArchiveEntries(ctx, bundle, writer, exclusions)
 	if err == nil {
 		err = writer.Close()
 	} else {
@@ -216,6 +153,77 @@ func snapshotWorkspace(ctx context.Context, bundleRoot, ownershipRoot string, pi
 	}, nil
 }
 
+func writeWorkspaceArchiveEntries(ctx context.Context, bundle *os.Root, writer *tar.Writer, exclusions []string) error {
+	return fs.WalkDir(bundle.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if name == "." {
+			return nil
+		}
+		rel, err := archiveRelative(name)
+		if err != nil {
+			return err
+		}
+		if workspacePathExcluded(rel, exclusions) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		return writeWorkspaceArchiveEntry(bundle, writer, rel, entry)
+	})
+}
+
+func writeWorkspaceArchiveEntry(bundle *os.Root, writer *tar.Writer, rel string, entry fs.DirEntry) error {
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	var linkTarget string
+	switch {
+	case info.IsDir(), info.Mode().IsRegular():
+	case info.Mode()&os.ModeSymlink != 0:
+		linkTarget, err = bundle.Readlink(filepath.FromSlash(rel))
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("workspace root path %s has unsupported mode %s", rel, info.Mode())
+	}
+	header, err := tar.FileInfoHeader(info, linkTarget)
+	if err != nil {
+		return err
+	}
+	header.Name = rel
+	header.Uid, header.Gid, header.Uname, header.Gname = 0, 0, "", ""
+	header.AccessTime, header.ChangeTime = time.Time{}, time.Time{}
+	if err := writer.WriteHeader(header); err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	file, err := bundle.Open(filepath.FromSlash(rel))
+	if err != nil {
+		return err
+	}
+	openedInfo, statErr := file.Stat()
+	if statErr != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		_ = file.Close()
+		return fmt.Errorf("workspace root file %s changed while snapshotting", rel)
+	}
+	_, copyErr := io.Copy(writer, file)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
 // verifyPinnedRootPath prevents a successful descriptor-bound archive from
 // being committed with an ArchivePath that now resolves to a replacement
 // namespace. The pinned descriptor protects the bytes, while this check keeps
@@ -226,16 +234,16 @@ func verifyPinnedRootPath(path string, owner *os.Root) error {
 	}
 	current, err := workspace.OpenPhysicalRoot(path)
 	if err != nil {
-		return fmt.Errorf("%w: workspace archive owner path changed: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: workspace archive owner path changed: %w", state.ErrOwnership, err)
 	}
 	defer func() { _ = current.Close() }()
 	heldInfo, err := owner.Lstat(".")
 	if err != nil {
-		return fmt.Errorf("%w: inspect pinned workspace archive owner: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: inspect pinned workspace archive owner: %w", state.ErrOwnership, err)
 	}
 	currentInfo, err := current.Lstat(".")
 	if err != nil {
-		return fmt.Errorf("%w: inspect workspace archive owner path: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: inspect workspace archive owner path: %w", state.ErrOwnership, err)
 	}
 	if !os.SameFile(heldInfo, currentInfo) {
 		return fmt.Errorf("%w: workspace archive owner path names a different directory", state.ErrOwnership)
@@ -297,6 +305,18 @@ func restoreWorkspace(ctx context.Context, bundleRoot, targetOwnershipRoot strin
 	if !domain.IsWithin(targetOwnershipRoot, bundleRoot) {
 		return errors.New("workspace restore target is outside wx ownership root")
 	}
+	archiveFile, root, err := openWorkspaceRestoreRoots(bundleRoot, targetOwnershipRoot, pinnedTargetRoot, archiveOwnershipRoot, pinnedArchiveRoot, snapshot)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = archiveFile.Close() }()
+	defer func() { _ = root.Close() }()
+	if err := pruneWorkspaceRoot(root, ".", exclusions); err != nil {
+		return err
+	}
+	if err := restoreWorkspaceEntries(ctx, root, archiveFile, exclusions); err != nil {
+		return err
+	}
 	if pinnedTargetRoot != nil {
 		if err := verifyPinnedRootPath(targetOwnershipRoot, pinnedTargetRoot); err != nil {
 			return err
@@ -307,47 +327,67 @@ func restoreWorkspace(ctx context.Context, bundleRoot, targetOwnershipRoot strin
 			return err
 		}
 	}
+	return nil
+}
+
+func openWorkspaceRestoreRoots(bundleRoot, targetOwnershipRoot string, pinnedTargetRoot *os.Root, archiveOwnershipRoot string, pinnedArchiveRoot *os.Root, snapshot state.WorkspaceSnapshot) (*os.File, *os.Root, error) {
+	if pinnedTargetRoot != nil {
+		if err := verifyPinnedRootPath(targetOwnershipRoot, pinnedTargetRoot); err != nil {
+			return nil, nil, err
+		}
+	}
+	if pinnedArchiveRoot != nil {
+		if err := verifyPinnedRootPath(archiveOwnershipRoot, pinnedArchiveRoot); err != nil {
+			return nil, nil, err
+		}
+	}
 	var archiveFile *os.File
+	var err error
 	if pinnedArchiveRoot == nil {
 		archiveFile, err = openVerifiedWorkspaceSnapshot(archiveOwnershipRoot, snapshot, time.Now())
 	} else {
 		archiveFile, err = openVerifiedWorkspaceSnapshotAt(archiveOwnershipRoot, pinnedArchiveRoot, snapshot, time.Now())
 	}
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	defer func() { _ = archiveFile.Close() }()
 	var root *os.Root
 	if pinnedTargetRoot == nil {
 		if err := domain.ValidatePhysicalPath(bundleRoot, false); err != nil {
-			return err
+			_ = archiveFile.Close()
+			return nil, nil, err
 		}
 		root, err = workspace.OpenPhysicalRoot(bundleRoot)
-		if err != nil {
-			return err
-		}
 	} else {
 		ownershipAbs, absErr := filepath.Abs(filepath.Clean(targetOwnershipRoot))
 		if absErr != nil {
-			return absErr
+			_ = archiveFile.Close()
+			return nil, nil, absErr
 		}
 		bundleAbs, absErr := filepath.Abs(filepath.Clean(bundleRoot))
 		if absErr != nil {
-			return absErr
+			_ = archiveFile.Close()
+			return nil, nil, absErr
 		}
 		relative, relErr := filepath.Rel(ownershipAbs, bundleAbs)
 		if relErr != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-			return errors.New("workspace restore target is outside pinned wx ownership root")
+			_ = archiveFile.Close()
+			return nil, nil, errors.New("workspace restore target is outside pinned wx ownership root")
 		}
 		root, err = domain.OpenRootAt(pinnedTargetRoot, relative)
 		if err != nil {
-			return fmt.Errorf("open pinned workspace restore target: %w", err)
+			_ = archiveFile.Close()
+			return nil, nil, fmt.Errorf("open pinned workspace restore target: %w", err)
 		}
 	}
-	defer func() { _ = root.Close() }()
-	if err := pruneWorkspaceRoot(root, ".", exclusions); err != nil {
-		return err
+	if err != nil {
+		_ = archiveFile.Close()
+		return nil, nil, err
 	}
+	return archiveFile, root, nil
+}
+
+func restoreWorkspaceEntries(ctx context.Context, root *os.Root, archiveFile *os.File, exclusions []string) error {
 	reader := tar.NewReader(archiveFile)
 	seen := map[string]byte{}
 	for {
@@ -361,84 +401,83 @@ func restoreWorkspace(ctx context.Context, bundleRoot, targetOwnershipRoot strin
 		if err != nil {
 			return err
 		}
-		rel, err := archiveRelative(header.Name)
-		if err != nil {
-			return err
-		}
-		if workspacePathExcluded(rel, exclusions) {
-			return fmt.Errorf("workspace archive path %s overlaps an excluded repository or shared link", rel)
-		}
-		if _, duplicate := seen[rel]; duplicate {
-			return fmt.Errorf("duplicate workspace archive path %s", rel)
-		}
-		for parent := path.Dir(rel); parent != "."; parent = path.Dir(parent) {
-			if seen[parent] == tar.TypeSymlink {
-				return fmt.Errorf("workspace archive path %s descends through symlink %s", rel, parent)
-			}
-		}
-		seen[rel] = header.Typeflag
-		osRel := filepath.FromSlash(rel)
-		parent := filepath.Dir(osRel)
-		if parent != "." {
-			if err := root.MkdirAll(parent, 0o700); err != nil {
-				return err
-			}
-		}
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if info, err := root.Lstat(osRel); errors.Is(err, os.ErrNotExist) {
-				if err := root.Mkdir(osRel, 0o700); err != nil {
-					return err
-				}
-			} else if err != nil {
-				return err
-			} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-				return fmt.Errorf("workspace archive directory collision %s", rel)
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if header.Size < 0 {
-				return fmt.Errorf("workspace archive file %s has invalid size", rel)
-			}
-			file, err := root.OpenFile(osRel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-			if err != nil {
-				return err
-			}
-			written, copyErr := io.CopyN(file, reader, header.Size)
-			if copyErr == nil && written != header.Size {
-				copyErr = io.ErrUnexpectedEOF
-			}
-			if copyErr == nil {
-				copyErr = file.Chmod(os.FileMode(header.Mode) & os.ModePerm)
-			}
-			if copyErr == nil {
-				copyErr = file.Sync()
-			}
-			closeErr := file.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-		case tar.TypeSymlink:
-			if err := root.Symlink(header.Linkname, osRel); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("workspace archive path %s has unsupported tar type %d", rel, header.Typeflag)
-		}
-	}
-	if pinnedTargetRoot != nil {
-		if err := verifyPinnedRootPath(targetOwnershipRoot, pinnedTargetRoot); err != nil {
-			return err
-		}
-	}
-	if pinnedArchiveRoot != nil {
-		if err := verifyPinnedRootPath(archiveOwnershipRoot, pinnedArchiveRoot); err != nil {
+		if err := restoreWorkspaceEntry(root, reader, header, exclusions, seen); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func restoreWorkspaceEntry(root *os.Root, reader *tar.Reader, header *tar.Header, exclusions []string, seen map[string]byte) error {
+	rel, err := archiveRelative(header.Name)
+	if err != nil {
+		return err
+	}
+	if workspacePathExcluded(rel, exclusions) {
+		return fmt.Errorf("workspace archive path %s overlaps an excluded repository or shared link", rel)
+	}
+	if _, duplicate := seen[rel]; duplicate {
+		return fmt.Errorf("duplicate workspace archive path %s", rel)
+	}
+	for parent := path.Dir(rel); parent != "."; parent = path.Dir(parent) {
+		if seen[parent] == tar.TypeSymlink {
+			return fmt.Errorf("workspace archive path %s descends through symlink %s", rel, parent)
+		}
+	}
+	seen[rel] = header.Typeflag
+	osRel := filepath.FromSlash(rel)
+	parent := filepath.Dir(osRel)
+	if parent != "." {
+		if err := root.MkdirAll(parent, 0o700); err != nil {
+			return err
+		}
+	}
+	switch header.Typeflag {
+	case tar.TypeDir:
+		if info, err := root.Lstat(osRel); errors.Is(err, os.ErrNotExist) {
+			if err := root.Mkdir(osRel, 0o700); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("workspace archive directory collision %s", rel)
+		}
+	case tar.TypeReg, tar.TypeRegA:
+		return restoreWorkspaceRegularFile(root, reader, osRel, rel, header)
+	case tar.TypeSymlink:
+		if err := root.Symlink(header.Linkname, osRel); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("workspace archive path %s has unsupported tar type %d", rel, header.Typeflag)
+	}
+	return nil
+}
+
+func restoreWorkspaceRegularFile(root *os.Root, reader *tar.Reader, osRel, rel string, header *tar.Header) error {
+	if header.Size < 0 {
+		return fmt.Errorf("workspace archive file %s has invalid size", rel)
+	}
+	file, err := root.OpenFile(osRel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	written, copyErr := io.CopyN(file, reader, header.Size)
+	if copyErr == nil && written != header.Size {
+		copyErr = io.ErrUnexpectedEOF
+	}
+	if copyErr == nil {
+		copyErr = file.Chmod(os.FileMode(header.Mode) & os.ModePerm)
+	}
+	if copyErr == nil {
+		copyErr = file.Sync()
+	}
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
 }
 
 // DeleteWorkspaceSnapshot removes only the deterministic, hash-matching

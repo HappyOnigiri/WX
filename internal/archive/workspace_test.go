@@ -124,6 +124,99 @@ func TestSnapshotWorkspaceAtUsesPinnedRootAcrossReplacement(t *testing.T) {
 	}
 }
 
+func TestPinnedWorkspaceSnapshotRestoreValidationAndDeletion(t *testing.T) {
+	ownershipRoot := t.TempDir()
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "notes", "saved.txt"), "pinned state\n", 0o640)
+
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, nil, "nil-owner", nil, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("nil descriptor was accepted")
+	}
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "pinned", nil, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("pinned snapshot: %v", err)
+	}
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err != nil {
+		t.Fatalf("pinned validation: %v", err)
+	}
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now().Add(2*time.Hour)); err == nil {
+		t.Fatal("expired pinned snapshot was accepted")
+	}
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil); err != nil {
+		t.Fatalf("pinned restore: %v", err)
+	}
+	assertWorkspaceTestFile(t, filepath.Join(bundleRoot, "notes", "saved.txt"), "pinned state\n")
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err != nil {
+		t.Fatalf("pinned deletion: %v", err)
+	}
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err != nil {
+		t.Fatalf("idempotent pinned deletion: %v", err)
+	}
+}
+
+func TestPinnedWorkspaceOperationsRejectClosedAndMismatchedDescriptors(t *testing.T) {
+	ownershipRoot := t.TempDir()
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "boundary", nil, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, nil, ownershipRoot, owner, snapshot, nil); err == nil {
+		t.Fatal("restore accepted a nil target descriptor")
+	}
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, nil, snapshot, nil); err == nil {
+		t.Fatal("restore accepted a nil archive descriptor")
+	}
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, nil, snapshot); err == nil {
+		t.Fatal("delete accepted a nil descriptor")
+	}
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, nil, snapshot, time.Now()); err == nil {
+		t.Fatal("validation accepted a nil descriptor")
+	}
+	if err := verifyPinnedRootPath(filepath.Join(t.TempDir(), "missing"), owner); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("mismatched root error=%v", err)
+	}
+	if _, _, err := openWorkspaceRestoreRoots(filepath.Join(t.TempDir(), "outside"), ownershipRoot, owner, ownershipRoot, owner, snapshot); err == nil {
+		t.Fatal("pinned restore opened a bundle outside the ownership root")
+	}
+	if _, _, err := openWorkspaceRestoreRoots(bundleRoot, ownershipRoot, nil, filepath.Join(t.TempDir(), "missing"), nil, snapshot); err == nil {
+		t.Fatal("restore opened an archive below a missing ownership root")
+	}
+	closed, err := os.OpenRoot(ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, closed, snapshot, time.Now()); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("closed validation error=%v", err)
+	}
+	if _, _, err := openWorkspaceRestoreRoots(bundleRoot, ownershipRoot, closed, ownershipRoot, owner, snapshot); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("closed target restore root error=%v", err)
+	}
+	if err := restoreWorkspaceRegularFile(owner, tar.NewReader(bytes.NewReader(nil)), "bad", "bad", &tar.Header{Size: -1}); err == nil {
+		t.Fatal("negative archive file size was accepted")
+	}
+}
+
 func TestWorkspaceRestoreRejectsArchiveOverlapAndTraversal(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -593,6 +686,26 @@ func TestPruneWorkspaceRootPropagatesClosedRootFailure(t *testing.T) {
 	}
 	if err := pruneWorkspaceRoot(root, ".", nil); err == nil {
 		t.Fatal("pruning through a closed root succeeded")
+	}
+}
+
+func TestSnapshotWorkspacePropagatesPublishRenameFailure(t *testing.T) {
+	ownershipRoot := t.TempDir()
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "file.txt"), "data", 0o600)
+	// Pre-occupy the deterministic archive destination with a non-empty
+	// directory so the final rename from the temporary file cannot succeed,
+	// exercising the publish-time failure path without touching production
+	// behavior.
+	collision := filepath.Join(ownershipRoot, workspaceSnapshotRelativePath("collision"))
+	if err := os.MkdirAll(collision, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(collision, "occupied"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SnapshotWorkspace(context.Background(), bundleRoot, ownershipRoot, "collision", nil, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("snapshot publish succeeded despite a colliding archive destination")
 	}
 }
 

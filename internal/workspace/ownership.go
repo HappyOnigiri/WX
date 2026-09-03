@@ -283,7 +283,8 @@ func newOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string
 		return ownershipMarker{}, err
 	}
 	info, statErr := owner.Lstat(relative)
-	if statErr == nil {
+	switch {
+	case statErr == nil:
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return ownershipMarker{}, errors.New("worktree target is not a physical directory")
 		}
@@ -292,9 +293,9 @@ func newOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string
 		} else if closeErr := directory.Close(); closeErr != nil {
 			return ownershipMarker{}, closeErr
 		}
-	} else if !allowMissingTarget || !errors.Is(statErr, os.ErrNotExist) {
+	case !allowMissingTarget || !errors.Is(statErr, os.ErrNotExist):
 		return ownershipMarker{}, statErr
-	} else {
+	default:
 		parent := filepath.Dir(relative)
 		if directory, _, openErr := domain.OpenDirectoryAt(owner, parent); openErr != nil {
 			return ownershipMarker{}, fmt.Errorf("worktree target parent is not physical: %w", openErr)

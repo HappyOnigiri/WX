@@ -81,6 +81,18 @@ func TestSavePreservesExistingPermissions(t *testing.T) {
 	}
 }
 
+func TestSaveRejectsNonRegularConfigPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".config", "wx", "config.yaml")
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(Config{Version: 1}); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("Save error=%v", err)
+	}
+}
+
 func TestStrictDecode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

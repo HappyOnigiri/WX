@@ -79,7 +79,7 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 		var identityErr error
 		worktreeIdentity, identityErr = m.Preparer.WorktreeIdentity(worktree)
 		if identityErr != nil {
-			return state.Snapshot{}, fmt.Errorf("%w: capture worktree identity before snapshot: %v", state.ErrOwnership, identityErr)
+			return state.Snapshot{}, fmt.Errorf("%w: capture worktree identity before snapshot: %w", state.ErrOwnership, identityErr)
 		}
 	}
 	worktreeValue := func(env []string, args ...string) (string, error) {
@@ -194,7 +194,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 	}
 	targetIdentity, err := m.Preparer.WorktreeIdentity(target)
 	if err != nil {
-		return fmt.Errorf("%w: capture restored worktree identity: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: capture restored worktree identity: %w", state.ErrOwnership, err)
 	}
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
 		targetValue := func(env []string, args ...string) (string, error) {
@@ -374,11 +374,11 @@ func (m *Manager) removeExistingWorktree(ctx context.Context, repo discovery.Rep
 	if m.Preparer != nil && m.Preparer.OwnedRoot != nil && filepath.Clean(m.Preparer.RootPath) == absoluteRoot {
 		directory, identity, identityErr := domain.OpenDirectoryAt(m.Preparer.OwnedRoot, relative)
 		if identityErr != nil {
-			return fmt.Errorf("%w: capture worktree identity before removal: %v", state.ErrOwnership, identityErr)
+			return fmt.Errorf("%w: capture worktree identity before removal: %w", state.ErrOwnership, identityErr)
 		}
 		targetIdentity = identity
 		if closeErr := directory.Close(); closeErr != nil {
-			return fmt.Errorf("%w: close worktree identity descriptor: %v", state.ErrOwnership, closeErr)
+			return fmt.Errorf("%w: close worktree identity descriptor: %w", state.ErrOwnership, closeErr)
 		}
 	}
 	common, err := filepath.EvalSymlinks(string(repo.CommonDir))
@@ -483,7 +483,7 @@ func removalOwnershipFailure(err error) error {
 	if err == nil || errors.Is(err, state.ErrOwnership) {
 		return err
 	}
-	return fmt.Errorf("%w: %v", state.ErrOwnership, err)
+	return fmt.Errorf("%w: %w", state.ErrOwnership, err)
 }
 
 func (m *Manager) validateStateOwnership(ctx context.Context, repo discovery.Repository, target, slotID string, slotStates, repositoryStates []string) error {

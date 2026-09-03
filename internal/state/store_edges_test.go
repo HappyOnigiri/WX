@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -535,6 +536,85 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	_, err = store.GCCandidates(ctx, "before")
 	requireError("GCCandidates", err)
 	requireError("MarkSlotArchived", store.MarkSlotArchived(ctx, slot.ID))
+}
+
+func TestMissingLifecycleRowsFailClosed(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	missing := "missing-lifecycle-row"
+	session := Session{ID: missing, WorkspaceID: "missing-workspace", SlotID: missing, State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+	requireError := func(name string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Errorf("missing-row operation %s succeeded", name)
+		}
+	}
+
+	if err := store.RegisterAgentProcess(ctx, missing, "token", 0); err == nil {
+		t.Error("non-positive agent PID was accepted")
+	}
+
+	_, err := store.ClaimJob(ctx, missing, "worker")
+	requireError("ClaimJob", err)
+	requireError("RenewJob", store.RenewJob(ctx, missing, "worker"))
+	requireError("FinishJob", store.FinishJob(ctx, missing, "worker", nil))
+	requireError("RetryJob", store.RetryJob(ctx, missing, "worker", time.Second, "retry"))
+	requireError("DeferJob", store.DeferJob(ctx, missing, "worker", time.Second, "defer"))
+	requireError("LeaseReady", store.LeaseReady(ctx, missing, session))
+	_, err = store.LeaseReadyWithCold(ctx, missing, session)
+	requireError("LeaseReadyWithCold", err)
+	requireError("SetSlotState", store.SetSlotState(ctx, missing, []string{"READY"}, "STALE", "missing"))
+	requireError("MarkReady", store.MarkReady(ctx, missing))
+	requireError("FinishPreparation", store.FinishPreparation(ctx, missing))
+	_, _, err = store.FinishPreparationWithRelease(ctx, missing)
+	requireError("FinishPreparationWithRelease", err)
+	requireError("MarkSessionState", store.MarkSessionState(ctx, missing, []string{"ACTIVE"}, "RELEASING"))
+	_, err = store.Session(ctx, missing, "token")
+	requireError("Session", err)
+	_, err = store.SessionByID(ctx, missing)
+	requireError("SessionByID", err)
+	if err := store.RegisterAgentProcess(ctx, missing, "token", 1); err == nil {
+		t.Error("agent process was registered for a missing session")
+	}
+	requireError("BindAgentSession", store.BindAgentSession(ctx, missing, "agent"))
+	requireError("BindFreshSession", store.BindFreshSession(ctx, missing, "parent", "agent"))
+	_, err = store.BindFreshResumeSlot(ctx, missing, "parent", "workspace", "agent", 1, nil)
+	requireError("BindFreshResumeSlot", err)
+	_, err = store.FindByAgentSession(ctx, "codex", "agent")
+	requireError("FindByAgentSession", err)
+	requireError("Heartbeat", store.Heartbeat(ctx, missing, "token"))
+	_, err = store.BindResumeSlot(ctx, missing, "parent", "workspace", "agent", 1, nil)
+	requireError("BindResumeSlot", err)
+	_, err = store.SlotRepositories(ctx, missing)
+	if err != nil {
+		t.Errorf("missing SlotRepositories returned error: %v", err)
+	}
+	requireError("AddRestoringRepositories", store.AddRestoringRepositories(ctx, missing, nil))
+	_, err = store.SlotRepository(ctx, missing, "repository")
+	requireError("SlotRepository", err)
+	requireError("SetSlotRepositoryState", store.SetSlotRepositoryState(ctx, missing, "repository", []string{"READY"}, "COLD"))
+	_, err = store.Slot(ctx, missing)
+	requireError("Slot", err)
+	_, err = store.Repository(ctx, "repository")
+	requireError("Repository", err)
+	_, err = store.Workspace(ctx, "workspace")
+	requireError("Workspace", err)
+	_, err = store.WorkspaceByRoot(ctx, "/missing-workspace")
+	requireError("WorkspaceByRoot", err)
+	_, err = store.SessionWorkspace(ctx, missing)
+	requireError("SessionWorkspace", err)
+	requireError("ForgetWorkspace", store.ForgetWorkspace(ctx, "/missing-workspace"))
+	requireError("MarkArchived", store.MarkArchived(ctx, missing, missing, "expiry"))
+	requireError("BeginSnapshot", store.BeginSnapshot(ctx, missing, missing))
+	_, _, err = store.Release(ctx, missing, "workspace", missing)
+	requireError("Release", err)
+	requireError("QuarantineMissingSlot", store.QuarantineMissingSlot(ctx, missing, "missing"))
+	_, _, err = store.ScheduleRemoval(ctx, missing, missing)
+	requireError("ScheduleRemoval", err)
+	requireError("MarkStandbyArchived", store.MarkStandbyArchived(ctx, missing))
+	requireError("FinishRemoval", store.FinishRemoval(ctx, missing))
+	requireError("ExpireSessionSnapshots", store.ExpireSessionSnapshots(ctx, missing))
+	requireError("MarkSlotArchived", store.MarkSlotArchived(ctx, missing))
 }
 
 func TestFinishPreparationSchedulesSnapshotAfterRelease(t *testing.T) {
@@ -1576,6 +1656,445 @@ func TestReleaseAndForgetRefuseDurableStateThatChangedUnderTheCaller(t *testing.
 		}
 		if err := store.ForgetWorkspace(ctx, "/workspace"); err == nil || !strings.Contains(err.Error(), "pending recovery jobs") {
 			t.Fatalf("forget ignored pending job: %v", err)
+		}
+	})
+}
+
+func TestScheduleColdRepositoryRemovalPropagatesTransactionFaults(t *testing.T) {
+	ctx := context.Background()
+	newColdSlot := func(t *testing.T, store *Store, id string) {
+		t.Helper()
+		if _, err := store.CreateStandby(ctx, Slot{ID: id, WorkspaceID: "workspace", Generation: 1, Path: "/wx/" + id, State: "READY"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: "/wx/" + id + "/repository", State: "READY", BaseOID: "head"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("slot transition fault", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		newColdSlot(t, store, "cold-slot-fault")
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_cold_slot BEFORE UPDATE OF state ON slots WHEN OLD.id='cold-slot-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.ScheduleColdRepositoryRemoval(ctx, ColdRepositoryCandidate{SlotID: "cold-slot-fault", WorkspaceID: "workspace", RepositoryID: "repository", WorktreePath: "/wx/cold-slot-fault/repository"}); err == nil {
+			t.Fatal("cold repository removal succeeded despite a slot transition fault")
+		}
+	})
+
+	t.Run("job insertion fault", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		newColdSlot(t, store, "cold-job-fault")
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_cold_job BEFORE INSERT ON jobs WHEN NEW.kind='REMOVE_REPOSITORY' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.ScheduleColdRepositoryRemoval(ctx, ColdRepositoryCandidate{SlotID: "cold-job-fault", WorkspaceID: "workspace", RepositoryID: "repository", WorktreePath: "/wx/cold-job-fault/repository"}); err == nil {
+			t.Fatal("cold repository removal succeeded despite a job insertion fault")
+		}
+		if slot, err := store.Slot(ctx, "cold-job-fault"); err != nil || slot.State != "READY" {
+			t.Fatalf("rolled-back cold removal slot=%+v err=%v", slot, err)
+		}
+	})
+}
+
+func TestReleasePropagatesTransactionFaults(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("draining slot update fault", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		session := Session{ID: "release-drain-fault", WorkspaceID: "workspace", SlotID: "release-drain-fault", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("release-drain-fault")}
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "release-drain-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/release-drain-fault", State: "LEASED"}, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_release_drain BEFORE UPDATE OF state ON slots WHEN OLD.id='release-drain-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID); err == nil {
+			t.Fatal("release succeeded despite a draining slot transition fault")
+		}
+	})
+
+	t.Run("unbound session removal job insertion fault", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		session := Session{ID: "release-unbound-fault", WorkspaceID: "workspace", SlotID: "release-unbound-fault", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("release-unbound-fault")}
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "release-unbound-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/release-unbound-fault", State: "UNBOUND"}, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_release_unbound_job BEFORE INSERT ON jobs WHEN NEW.kind='REMOVE' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID); err == nil {
+			t.Fatal("release succeeded despite an unbound removal job insertion fault")
+		}
+	})
+
+	t.Run("unbound session expiry fault", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		session := Session{ID: "release-unbound-session-fault", WorkspaceID: "workspace", SlotID: "release-unbound-session-fault", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("release-unbound-session-fault")}
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "release-unbound-session-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/release-unbound-session-fault", State: "UNBOUND"}, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_release_unbound_session BEFORE UPDATE OF state ON sessions WHEN OLD.id='release-unbound-session-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID); err == nil {
+			t.Fatal("release succeeded despite an unbound session expiry fault")
+		}
+	})
+
+	t.Run("unbound slot removal fault", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		session := Session{ID: "release-unbound-slot-fault", WorkspaceID: "workspace", SlotID: "release-unbound-slot-fault", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("release-unbound-slot-fault")}
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "release-unbound-slot-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/release-unbound-slot-fault", State: "UNBOUND"}, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_release_unbound_slot BEFORE UPDATE OF state ON slots WHEN OLD.id='release-unbound-slot-fault' AND NEW.state='REMOVING' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID); err == nil {
+			t.Fatal("release succeeded despite an unbound slot removal fault")
+		}
+	})
+}
+
+func TestScheduleRemovalPropagatesJobInsertionFault(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	if _, err := store.CreateStandby(ctx, Slot{ID: "schedule-removal-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/schedule-removal-fault", State: "READY"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_schedule_removal_job BEFORE INSERT ON jobs WHEN NEW.kind='REMOVE' AND NEW.slot_id='schedule-removal-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ScheduleRemoval(ctx, "schedule-removal-fault", ""); err == nil {
+		t.Fatal("schedule removal succeeded despite a job insertion fault")
+	}
+	if slot, err := store.Slot(ctx, "schedule-removal-fault"); err != nil || slot.State != "READY" {
+		t.Fatalf("rolled-back schedule removal slot=%+v err=%v", slot, err)
+	}
+}
+
+func TestEnsureRecoveryJobsPropagatesJobInsertionFault(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	root := t.TempDir()
+	if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,path,state,created_at,updated_at) VALUES('recovery-fault','workspace',1,?,'PREPARING',?,?)`, root, now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_recovery_job BEFORE INSERT ON jobs WHEN NEW.kind='PREPARE' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureRecoveryJobs(ctx); err == nil {
+		t.Fatal("recovery job reconstruction succeeded despite a job insertion fault")
+	}
+	var count int
+	if err := store.db.QueryRow(`SELECT count(*) FROM jobs`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("failed recovery reconstruction left partial jobs: %d", count)
+	}
+}
+
+func TestUpsertWorkspaceGenerationPropagatesMembershipTransactionFaults(t *testing.T) {
+	ctx := context.Background()
+	baseWorkspace := func() discovery.Workspace {
+		return discovery.Workspace{ID: "workspace", Root: "/workspace", Kind: "multi_repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/workspace/repository", CommonDir: "/workspace/repository/.git", RelativePath: "repository", DefaultBranch: "main"}}}
+	}
+	addedRepository := func() discovery.Workspace {
+		w := baseWorkspace()
+		w.Repositories = append(w.Repositories, discovery.Repository{ID: "repository-2", MainPath: "/workspace/repository-2", CommonDir: "/workspace/repository-2/.git", RelativePath: "repository-2", DefaultBranch: "main"})
+		return w
+	}
+
+	t.Run("stale standby update fault", func(t *testing.T) {
+		store := openTestStore(t)
+		if _, err := store.UpsertWorkspaceGeneration(ctx, baseWorkspace()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.CreateStandby(ctx, Slot{ID: "membership-fault-slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/membership-fault-slot", State: "READY"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: "/wx/membership-fault-slot/repository", State: "READY", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fingerprint"}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_membership_stale BEFORE UPDATE OF state ON slots WHEN OLD.id='membership-fault-slot' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.UpsertWorkspaceGeneration(ctx, addedRepository()); err == nil {
+			t.Fatal("membership change succeeded despite a stale-standby update fault")
+		}
+		if slot, err := store.Slot(ctx, "membership-fault-slot"); err != nil || slot.State != "READY" {
+			t.Fatalf("rolled-back membership change slot=%+v err=%v", slot, err)
+		}
+	})
+
+	t.Run("membership replacement fault", func(t *testing.T) {
+		store := openTestStore(t)
+		if _, err := store.UpsertWorkspaceGeneration(ctx, baseWorkspace()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_membership_delete BEFORE DELETE ON workspace_repositories WHEN OLD.workspace_id='workspace' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.UpsertWorkspaceGeneration(ctx, addedRepository()); err == nil {
+			t.Fatal("membership change succeeded despite a membership replacement fault")
+		}
+		loaded, err := store.Workspace(ctx, "workspace")
+		if err != nil || len(loaded.Repositories) != 1 {
+			t.Fatalf("rolled-back workspace repositories=%d err=%v", len(loaded.Repositories), err)
+		}
+	})
+}
+
+func TestQuarantineMissingRecoveryRefPropagatesTransactionFaults(t *testing.T) {
+	ctx := context.Background()
+	newSnapshotFixture := func(t *testing.T, id string) *Store {
+		t.Helper()
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		session := Session{ID: id, WorkspaceID: "workspace", SlotID: id, State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken(id)}
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: id, WorkspaceID: "workspace", Generation: 1, Path: "/wx/" + id, State: "LEASED"}, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveSnapshot(ctx, Snapshot{ID: id, SessionID: id, RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/" + id, IndexTreeOID: "index", WorktreeOID: "tree", WorktreeRef: "refs/wx/recovery/" + id + "-worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}); err != nil {
+			t.Fatal(err)
+		}
+		return store
+	}
+
+	t.Run("session quarantine fault", func(t *testing.T) {
+		store := newSnapshotFixture(t, "quarantine-session-fault")
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_quarantine_session BEFORE UPDATE OF state ON sessions WHEN OLD.id='quarantine-session-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.QuarantineMissingRecoveryRef(ctx, "refs/wx/recovery/quarantine-session-fault"); err == nil {
+			t.Fatal("recovery ref quarantine succeeded despite a session update fault")
+		}
+		if session, err := store.SessionByID(ctx, "quarantine-session-fault"); err != nil || session.State != "ACTIVE" {
+			t.Fatalf("rolled-back quarantine session=%+v err=%v", session, err)
+		}
+	})
+
+	t.Run("slot quarantine fault", func(t *testing.T) {
+		store := newSnapshotFixture(t, "quarantine-slot-fault")
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_quarantine_slot BEFORE UPDATE OF state ON slots WHEN OLD.id='quarantine-slot-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.QuarantineMissingRecoveryRef(ctx, "refs/wx/recovery/quarantine-slot-fault"); err == nil {
+			t.Fatal("recovery ref quarantine succeeded despite a slot update fault")
+		}
+		if slot, err := store.Slot(ctx, "quarantine-slot-fault"); err != nil || slot.State != "LEASED" {
+			t.Fatalf("rolled-back quarantine slot=%+v err=%v", slot, err)
+		}
+	})
+}
+
+func TestCreateSlotSessionPropagatesLastLeasedAtFault(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_last_leased_at BEFORE UPDATE OF last_leased_at ON repositories WHEN OLD.id='repository' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	session := Session{ID: "leased-at-fault", WorkspaceID: "workspace", SlotID: "leased-at-fault", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("leased-at-fault")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "leased-at-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/leased-at-fault", State: "PREPARING"}, nil, session, ""); err == nil {
+		t.Fatal("slot session creation succeeded despite a last_leased_at update fault")
+	}
+	if _, err := store.Slot(ctx, "leased-at-fault"); err == nil {
+		t.Fatal("rolled-back slot session left a durable slot row")
+	}
+}
+
+func TestFinishColdRepositoryRemovalPropagatesSlotReadyFault(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	if _, err := store.CreateStandby(ctx, Slot{ID: "cold-ready-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/cold-ready-fault", State: "RETIRING"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: "/wx/cold-ready-fault/repository", State: "RETIRING", BaseOID: "head"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_cold_ready BEFORE UPDATE OF state ON slots WHEN OLD.id='cold-ready-fault' AND NEW.state='READY' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishColdRepositoryRemoval(ctx, "cold-ready-fault", "repository"); err == nil {
+		t.Fatal("cold repository finish succeeded despite a slot-ready transition fault")
+	}
+	if slot, err := store.Slot(ctx, "cold-ready-fault"); err != nil || slot.State != "RETIRING" {
+		t.Fatalf("rolled-back cold finish slot=%+v err=%v", slot, err)
+	}
+}
+
+func TestReopeningAnExistingDatabaseSkipsAppliedMigrations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedWorkspace(t, first)
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Reopening the same database file exercises the schema_migrations
+	// short-circuit: every migration is already recorded as applied, so init
+	// must skip re-executing any of them.
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close() }()
+	if _, err := second.Workspace(context.Background(), "workspace"); err != nil {
+		t.Fatalf("data from before reopen is unavailable: %v", err)
+	}
+}
+
+func TestFinishPreparationWithReleasePropagatesSnapshotJobFault(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "releasing-fault", WorkspaceID: "workspace", SlotID: "releasing-fault", State: "RELEASING", AgentKind: "codex", TokenHash: HashToken("releasing-fault")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "releasing-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/releasing-fault", State: "PREPARING"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_finish_preparation_snapshot BEFORE INSERT ON jobs WHEN NEW.kind='SNAPSHOT' AND NEW.slot_id='releasing-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.FinishPreparationWithRelease(ctx, session.SlotID); err == nil {
+		t.Fatal("finish preparation succeeded despite a snapshot job insertion fault")
+	}
+	if slot, err := store.Slot(ctx, session.SlotID); err != nil || slot.State != "PREPARING" {
+		t.Fatalf("rolled-back finish preparation slot=%+v err=%v", slot, err)
+	}
+}
+
+func TestCreateStandbyPropagatesJobInsertionFault(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_create_standby_job BEFORE INSERT ON jobs WHEN NEW.kind='PREPARE' AND NEW.slot_id='standby-job-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateStandby(ctx, Slot{ID: "standby-job-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/standby-job-fault", State: "PREPARING"}, nil); err == nil {
+		t.Fatal("create standby succeeded despite a job insertion fault")
+	}
+	if _, err := store.Slot(ctx, "standby-job-fault"); err == nil {
+		t.Fatal("rolled-back standby creation left a durable slot row")
+	}
+}
+
+func TestLeaseReadyPropagatesTransactionFaults(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("repository lease timestamp fault", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		if _, err := store.CreateStandby(ctx, Slot{ID: "lease-ready-fault", WorkspaceID: "workspace", Generation: 1, Path: "/wx/lease-ready-fault", State: "READY"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_lease_ready_repo BEFORE UPDATE OF last_leased_at ON repositories WHEN OLD.id='repository' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		session := Session{ID: "lease-ready-fault", WorkspaceID: "workspace", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("lease-ready-fault")}
+		if err := store.LeaseReady(ctx, "lease-ready-fault", session); err == nil {
+			t.Fatal("lease ready succeeded despite a repository lease timestamp fault")
+		}
+		if slot, err := store.Slot(ctx, "lease-ready-fault"); err != nil || slot.State != "READY" {
+			t.Fatalf("rolled-back lease slot=%+v err=%v", slot, err)
+		}
+	})
+}
+
+func TestDeferJobPropagatesUpdateFault(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	job, err := store.CreateJob(ctx, "RESTORE", "workspace", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ClaimJob(ctx, job.ID, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(fmt.Sprintf(`CREATE TRIGGER fail_defer_job BEFORE UPDATE OF state ON jobs WHEN OLD.id='%s' AND NEW.state='PENDING' BEGIN SELECT RAISE(ABORT,'fault'); END`, job.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeferJob(ctx, job.ID, "worker", 0, "SNAPSHOT_PENDING"); err == nil {
+		t.Fatal("job deferral succeeded despite an update fault")
+	}
+}
+
+func TestRecoverJobsPropagatesReclaimUpdateFault(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	job, err := store.CreateJob(ctx, "ENSURE_STANDBY", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ClaimJob(ctx, job.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`UPDATE jobs SET lease_expires_at=? WHERE id=?`, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano), job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_recover_jobs BEFORE UPDATE OF state ON jobs WHEN NEW.state='PENDING' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecoverJobs(ctx, false); err == nil {
+		t.Fatal("job recovery succeeded despite a reclaim update fault")
+	}
+}
+
+func TestSaveWorkspaceSnapshotPropagatesInsertionFault(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "workspace-snapshot-fault", Path: "/wx/workspace-snapshot-fault", State: "ARCHIVED"}, nil, Session{ID: "workspace-snapshot-fault", SlotID: "workspace-snapshot-fault", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("workspace-snapshot-fault")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER fail_workspace_snapshot_insert BEFORE INSERT ON workspace_snapshots BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWorkspaceSnapshot(ctx, WorkspaceSnapshot{SessionID: "workspace-snapshot-fault", ArchivePath: "/wx/workspace-snapshot-fault/workspace.tar", SHA256: "sha", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: now()}); err == nil {
+		t.Fatal("workspace snapshot save succeeded despite an insertion fault")
+	}
+}
+
+func TestExpireSessionSnapshotsPropagatesDeletionFaults(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("repository snapshot deletion fault", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "expire-fault", Path: "/wx/expire-fault", State: "ARCHIVED"}, nil, Session{ID: "expire-fault", SlotID: "expire-fault", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("expire-fault")}, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`INSERT INTO snapshots(id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at) VALUES ('snap-fault','expire-fault','repository','head','refs/wx/head','tree','worktree','refs/wx/worktree','ARCHIVED',?,?)`, now(), now()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_expire_snapshot BEFORE DELETE ON snapshots WHEN OLD.session_id='expire-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.ExpireSessionSnapshots(ctx, "expire-fault"); err == nil {
+			t.Fatal("session snapshot expiry succeeded despite a repository snapshot deletion fault")
+		}
+	})
+
+	t.Run("workspace snapshot deletion fault", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "expire-ws-fault", Path: "/wx/expire-ws-fault", State: "ARCHIVED"}, nil, Session{ID: "expire-ws-fault", SlotID: "expire-ws-fault", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("expire-ws-fault")}, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveWorkspaceSnapshot(ctx, WorkspaceSnapshot{SessionID: "expire-ws-fault", ArchivePath: "/wx/expire-ws-fault/workspace.tar", SHA256: "sha", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: now()}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec(`CREATE TRIGGER fail_expire_workspace_snapshot BEFORE DELETE ON workspace_snapshots WHEN OLD.session_id='expire-ws-fault' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.ExpireSessionSnapshots(ctx, "expire-ws-fault"); err == nil {
+			t.Fatal("session snapshot expiry succeeded despite a workspace snapshot deletion fault")
 		}
 	})
 }

@@ -1559,7 +1559,7 @@ func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules config
 	}
 	owner, closeOwner, err := m.existingRootDescriptor(root)
 	if err != nil {
-		return fmt.Errorf("%w: open slot root namespace: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: open slot root namespace: %w", state.ErrOwnership, err)
 	}
 	defer closeOwner()
 	if err := verifyRootDescriptorPath(root, owner); err != nil {
@@ -1570,11 +1570,11 @@ func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules config
 		if err == nil {
 			err = errors.New("slot path is outside wx root")
 		}
-		return fmt.Errorf("%w: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: %w", state.ErrOwnership, err)
 	}
 	destination, err := domain.OpenRootAt(owner, relative)
 	if err != nil {
-		return fmt.Errorf("%w: open slot root namespace: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: open slot root namespace: %w", state.ErrOwnership, err)
 	}
 	defer func() { _ = destination.Close() }()
 	if err := workspace.MaterializeRootAt(source, destination, rules); err != nil {
@@ -1599,7 +1599,7 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
-		return false, fmt.Errorf("%w: open ready slot root: %v", state.ErrOwnership, err)
+		return false, fmt.Errorf("%w: open ready slot root: %w", state.ErrOwnership, err)
 	}
 	defer closeOwner()
 	relativeSlot, err := filepath.Rel(filepath.Clean(root), filepath.Clean(s.Path))
@@ -1614,7 +1614,7 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("%w: open ready slot root: %v", state.ErrOwnership, err)
+		return false, fmt.Errorf("%w: open ready slot root: %w", state.ErrOwnership, err)
 	}
 	if slotInfo.Mode()&os.ModeSymlink != 0 || !slotInfo.IsDir() {
 		return false, nil
@@ -1624,11 +1624,15 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("%w: open ready slot root: %v", state.ErrOwnership, err)
+		return false, fmt.Errorf("%w: open ready slot root: %w", state.ErrOwnership, err)
 	}
 	if err := slotDirectory.Close(); err != nil {
-		return false, fmt.Errorf("%w: close ready slot root: %v", state.ErrOwnership, err)
+		return false, fmt.Errorf("%w: close ready slot root: %w", state.ErrOwnership, err)
 	}
+	return m.readyRepositoriesMatch(ctx, s, resolved, root, owner)
+}
+
+func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, resolved []pool.Resolved, root string, owner *os.Root) (bool, error) {
 	repos, err := m.store.SlotRepositories(ctx, s.ID)
 	if err != nil {
 		return false, err
@@ -1661,7 +1665,7 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 			if _, err := owner.Lstat(relative); err == nil {
 				return false, nil
 			} else if !errors.Is(err, os.ErrNotExist) {
-				return false, fmt.Errorf("%w: inspect cold worktree path: %v", state.ErrOwnership, err)
+				return false, fmt.Errorf("%w: inspect cold worktree path: %w", state.ErrOwnership, err)
 			}
 			continue
 		}
@@ -1674,17 +1678,17 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 			return false, nil
 		}
 		if err != nil {
-			return false, fmt.Errorf("%w: inspect ready worktree path: %v", state.ErrOwnership, err)
+			return false, fmt.Errorf("%w: inspect ready worktree path: %w", state.ErrOwnership, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return false, nil
 		}
 		directory, _, openErr := domain.OpenDirectoryAt(owner, relative)
 		if openErr != nil {
-			return false, fmt.Errorf("%w: open ready worktree path: %v", state.ErrOwnership, openErr)
+			return false, fmt.Errorf("%w: open ready worktree path: %w", state.ErrOwnership, openErr)
 		}
 		if closeErr := directory.Close(); closeErr != nil {
-			return false, fmt.Errorf("%w: close ready worktree path: %v", state.ErrOwnership, closeErr)
+			return false, fmt.Errorf("%w: close ready worktree path: %w", state.ErrOwnership, closeErr)
 		}
 		if err := preparer.ValidateReady(ctx, r.Repository, stored.WorktreePath, r.OID); err != nil {
 			return false, err
@@ -2358,45 +2362,41 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	if dry {
 		return total, nil
 	}
-	count := 0
-	quarantineCleanupFailure := func(slotID string, runErr error) {
-		if !errors.Is(runErr, state.ErrOwnership) {
-			return
-		}
-		if quarantineErr := m.store.QuarantineMissingSlot(context.Background(), slotID, "WORKTREE_OWNERSHIP_UNCERTAIN"); quarantineErr != nil {
-			m.log.Error("quarantine cleanup ownership failure", "slot_id", slotID, "error", quarantineErr)
-		}
+	count := m.scheduleColdRepositoryRemovals(ctx, cold, wholeSlotRemoval)
+	count += m.scheduleStandbyRemovals(ctx, standbys)
+	count += m.scheduleEndedWorktreeRemovals(ctx, items)
+	archiveManager := m.newArchiveManager(cfg, "")
+	count += m.expireWorkspaceSnapshots(ctx, expiredSessions, &archiveManager)
+	if err := m.store.PruneMetadata(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.FailedJob.Duration)), state.FormatTime(nowTime.Add(-cfg.Retention.EventLog.Duration)), state.FormatTime(nowTime.Add(-cfg.Retention.ExpiredSessionTombstone.Duration))); err != nil {
+		return count, err
 	}
-	for _, candidate := range cold {
+	return count, nil
+}
+
+func (m *Manager) quarantineCleanupFailure(slotID string, runErr error) {
+	if !errors.Is(runErr, state.ErrOwnership) {
+		return
+	}
+	if quarantineErr := m.store.QuarantineMissingSlot(context.Background(), slotID, "WORKTREE_OWNERSHIP_UNCERTAIN"); quarantineErr != nil {
+		m.log.Error("quarantine cleanup ownership failure", "slot_id", slotID, "error", quarantineErr)
+	}
+}
+
+func (m *Manager) scheduleColdRepositoryRemovals(ctx context.Context, candidates []state.ColdRepositoryCandidate, wholeSlotRemoval map[string]bool) int {
+	count := 0
+	for _, candidate := range candidates {
 		if wholeSlotRemoval[candidate.SlotID] {
 			continue
 		}
 		if _, release, err := m.holdVerifiedRootForPath(candidate.WorktreePath); err != nil {
-			quarantineCleanupFailure(candidate.SlotID, err)
+			m.quarantineCleanupFailure(candidate.SlotID, err)
 			continue
 		} else {
 			release()
 		}
-		job, changed, scheduleErr := m.store.ScheduleColdRepositoryRemoval(ctx, candidate)
-		if scheduleErr != nil {
-			m.log.Error("cold repository removal scheduling failed", "slot_id", candidate.SlotID, "repository_id", candidate.RepositoryID, "error", scheduleErr)
-			continue
-		}
-		if changed {
-			m.schedule(job)
-			count++
-		}
-	}
-	for _, item := range standbys {
-		if _, release, err := m.holdVerifiedRootForPath(item.Path); err != nil {
-			quarantineCleanupFailure(item.SlotID, err)
-			continue
-		} else {
-			release()
-		}
-		job, changed, err := m.store.ScheduleRemoval(ctx, item.SlotID, "")
+		job, changed, err := m.store.ScheduleColdRepositoryRemoval(ctx, candidate)
 		if err != nil {
-			m.log.Error("standby removal scheduling failed", "slot_id", item.SlotID, "error", err)
+			m.log.Error("cold repository removal scheduling failed", "slot_id", candidate.SlotID, "repository_id", candidate.RepositoryID, "error", err)
 			continue
 		}
 		if changed {
@@ -2404,24 +2404,46 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			count++
 		}
 	}
-	for _, item := range items {
-		if _, release, err := m.holdVerifiedRootForPath(item.Path); err != nil {
-			quarantineCleanupFailure(item.SlotID, err)
-			continue
-		} else {
-			release()
-		}
-		job, changed, err := m.store.ScheduleRemoval(ctx, item.SlotID, item.SessionID)
-		if err != nil {
-			m.log.Error("ended worktree removal scheduling failed", "slot_id", item.SlotID, "error", err)
-			continue
-		}
-		if changed {
-			m.schedule(job)
-			count++
-		}
+	return count
+}
+
+func (m *Manager) scheduleStandbyRemovals(ctx context.Context, candidates []state.StandbyGCCandidate) int {
+	count := 0
+	for _, candidate := range candidates {
+		count += m.scheduleRemovalCandidate(ctx, candidate.SlotID, candidate.Path, "", "standby removal scheduling failed")
 	}
-	archiveManager := m.newArchiveManager(cfg, "")
+	return count
+}
+
+func (m *Manager) scheduleEndedWorktreeRemovals(ctx context.Context, candidates []state.GCCandidate) int {
+	count := 0
+	for _, candidate := range candidates {
+		count += m.scheduleRemovalCandidate(ctx, candidate.SlotID, candidate.Path, candidate.SessionID, "ended worktree removal scheduling failed")
+	}
+	return count
+}
+
+func (m *Manager) scheduleRemovalCandidate(ctx context.Context, slotID, path, sessionID, logMessage string) int {
+	if _, release, err := m.holdVerifiedRootForPath(path); err != nil {
+		m.quarantineCleanupFailure(slotID, err)
+		return 0
+	} else {
+		release()
+	}
+	job, changed, err := m.store.ScheduleRemoval(ctx, slotID, sessionID)
+	if err != nil {
+		m.log.Error(logMessage, "slot_id", slotID, "error", err)
+		return 0
+	}
+	if !changed {
+		return 0
+	}
+	m.schedule(job)
+	return 1
+}
+
+func (m *Manager) expireWorkspaceSnapshots(ctx context.Context, expiredSessions map[string][]state.Snapshot, archiveManager *archive.Manager) int {
+	count := 0
 	for sessionID, snapshots := range expiredSessions {
 		ok := true
 		var rootSnapshot state.WorkspaceSnapshot
@@ -2444,7 +2466,6 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 				rootSnapshotOwnerRelease = releaseOwner
 				rootSnapshotOwnerHandle = m.rootHandleForRoot(owner)
 				if rootSnapshotOwnerHandle == nil {
-					workspaceErr = errors.New("root descriptor is unavailable")
 					ok = false
 				} else {
 					ok = archive.ValidateWorkspaceSnapshotAt(owner, rootSnapshotOwnerHandle, rootSnapshot, time.Time{}) == nil
@@ -2476,10 +2497,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			rootSnapshotOwnerRelease()
 		}
 	}
-	if err := m.store.PruneMetadata(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.FailedJob.Duration)), state.FormatTime(nowTime.Add(-cfg.Retention.EventLog.Duration)), state.FormatTime(nowTime.Add(-cfg.Retention.ExpiredSessionTombstone.Duration))); err != nil {
-		return count, err
-	}
-	return count, nil
+	return count
 }
 
 func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
@@ -2570,7 +2588,7 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 			if relativeErr == nil {
 				relativeErr = errors.New("slot path is outside wx root")
 			}
-			return fmt.Errorf("%w: recreate cold workspace shell: %v", state.ErrOwnership, relativeErr)
+			return fmt.Errorf("%w: recreate cold workspace shell: %w", state.ErrOwnership, relativeErr)
 		}
 		if err := ownedRoot.MkdirAll(relativeSlot, 0o700); err != nil {
 			return fmt.Errorf("recreate cold workspace shell: %w", err)
@@ -2859,7 +2877,7 @@ func (m *Manager) retainLease(sessionID, path string) error {
 			if err == nil {
 				err = errors.New("lease path is outside known wx roots")
 			}
-			return fmt.Errorf("%w: %v", state.ErrOwnership, err)
+			return fmt.Errorf("%w: %w", state.ErrOwnership, err)
 		}
 	}
 	release, err := m.holdRootForPath(path)
@@ -2968,7 +2986,7 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 		if relativeErr == nil {
 			relativeErr = errors.New("slot path is outside wx root")
 		}
-		return fmt.Errorf("%w: open slot root for removal: %v", state.ErrOwnership, relativeErr)
+		return fmt.Errorf("%w: open slot root for removal: %w", state.ErrOwnership, relativeErr)
 	}
 	info, err := ownedRoot.Lstat(relativeSlot)
 	if errors.Is(err, os.ErrNotExist) {
@@ -2999,16 +3017,16 @@ func verifyRootDescriptorPath(path string, owner *os.Root) error {
 	}
 	current, _, err := domain.OpenOwnedRoot(path, path)
 	if err != nil {
-		return fmt.Errorf("%w: wx root path changed: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: wx root path changed: %w", state.ErrOwnership, err)
 	}
 	defer func() { _ = current.Close() }()
 	heldInfo, err := owner.Lstat(".")
 	if err != nil {
-		return fmt.Errorf("%w: inspect pinned wx root: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: inspect pinned wx root: %w", state.ErrOwnership, err)
 	}
 	currentInfo, err := current.Lstat(".")
 	if err != nil {
-		return fmt.Errorf("%w: inspect wx root path: %v", state.ErrOwnership, err)
+		return fmt.Errorf("%w: inspect wx root path: %w", state.ErrOwnership, err)
 	}
 	if !os.SameFile(heldInfo, currentInfo) {
 		return fmt.Errorf("%w: wx root path names a different directory", state.ErrOwnership)

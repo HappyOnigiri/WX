@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -175,4 +176,45 @@ exit 1
 	if got := strings.TrimSpace(string(data)); got != "4" {
 		t.Fatalf("attempts=%s want=4", got)
 	}
+}
+
+func TestIsDetachedDistinguishesBranchAndDetachedHeads(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitTestCommand(t, root, "init", "-b", "main")
+	gitTestCommand(t, root, "config", "user.name", "test")
+	gitTestCommand(t, root, "config", "user.email", "test@example.com")
+	gitTestCommand(t, root, "add", "tracked")
+	gitTestCommand(t, root, "commit", "-m", "initial")
+	runner := &Runner{Timeout: time.Second}
+	if IsDetached(context.Background(), runner, root) {
+		t.Fatal("branch checkout was reported as detached")
+	}
+	head := gitTestOutput(t, root, "rev-parse", "HEAD")
+	gitTestCommand(t, root, "checkout", "--detach", head)
+	if !IsDetached(context.Background(), runner, root) {
+		t.Fatal("detached checkout was reported as a branch")
+	}
+}
+
+func gitTestCommand(t *testing.T, directory string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = directory
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
+}
+
+func gitTestOutput(t *testing.T, directory string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = directory
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(output))
 }

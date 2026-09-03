@@ -761,6 +761,70 @@ func TestStatusHotStandbyUsesRepositoryLastLease(t *testing.T) {
 	}
 }
 
+func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	root := manager.Config().Storage.WorktreeRoot
+	repositoryID := string(workspaceRecord.Repositories[0].ID)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	newStandby := func(name string, repositories []state.SlotRepository) state.Slot {
+		t.Helper()
+		id := domain.StableID("cleanup-scheduling", name)
+		path := filepath.Join(root, "cleanup", id, "root")
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.CreateStandby(ctx, state.Slot{ID: id, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: path, State: "READY"}, repositories); err != nil {
+			t.Fatal(err)
+		}
+		return state.Slot{ID: id, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: path, State: "READY"}
+	}
+
+	standby := newStandby("standby", nil)
+	if count := manager.scheduleStandbyRemovals(ctx, []state.StandbyGCCandidate{{SlotID: standby.ID, WorkspaceID: standby.WorkspaceID, Path: standby.Path, State: standby.State}}); count != 1 {
+		t.Fatalf("standby removal count=%d, want 1", count)
+	}
+	if job := <-manager.jobs; job.id == "" {
+		t.Fatal("standby removal did not enqueue a durable job")
+	}
+	if stored, err := store.Slot(ctx, standby.ID); err != nil || stored.State != "REMOVING" {
+		t.Fatalf("standby slot after scheduling=%+v err=%v", stored, err)
+	}
+	if count := manager.scheduleEndedWorktreeRemovals(ctx, []state.GCCandidate{{SlotID: standby.ID, Path: standby.Path}}); count != 0 {
+		t.Fatalf("already-removing worktree count=%d, want 0", count)
+	}
+
+	cold := newStandby("cold", []state.SlotRepository{{RepositoryID: repositoryID, WorktreePath: filepath.Join(root, "cleanup", "cold", "repository"), State: "READY", BaseOID: "head"}})
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, "cleanup", "cold", "repository")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	candidate := state.ColdRepositoryCandidate{SlotID: cold.ID, WorkspaceID: cold.WorkspaceID, RepositoryID: repositoryID, WorktreePath: filepath.Join(root, "cleanup", "cold", "repository")}
+	if count := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{}); count != 1 {
+		t.Fatalf("cold repository removal count=%d, want 1", count)
+	}
+	if job := <-manager.jobs; job.id == "" {
+		t.Fatal("cold repository removal did not enqueue a durable job")
+	}
+	if count := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{}); count != 0 {
+		t.Fatalf("already-retiring repository count=%d, want 0", count)
+	}
+	if count := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{cold.ID: true}); count != 0 {
+		t.Fatalf("whole-slot cold removal count=%d, want 0", count)
+	}
+
+	unsafe := newStandby("unsafe", nil)
+	outside := filepath.Join(t.TempDir(), "outside")
+	if count := manager.scheduleEndedWorktreeRemovals(ctx, []state.GCCandidate{{SlotID: unsafe.ID, Path: outside, SessionID: ""}}); count != 0 {
+		t.Fatalf("outside worktree removal count=%d, want 0", count)
+	}
+	if stored, err := store.Slot(ctx, unsafe.ID); err != nil || stored.State != "QUARANTINED" {
+		t.Fatalf("outside worktree slot after quarantine=%+v err=%v", stored, err)
+	}
+	manager.quarantineCleanupFailure(unsafe.ID, errors.New("ordinary cleanup failure"))
+}
+
 func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 	t.Run("resolve and lease", func(t *testing.T) {
 		ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)

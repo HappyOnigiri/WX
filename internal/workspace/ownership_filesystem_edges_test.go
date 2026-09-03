@@ -206,6 +206,129 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	}
 }
 
+func TestDescriptorBoundOwnershipMarkerLifecycle(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "workspaces", "workspace", "slots", "slot", "root")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	common := t.TempDir()
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+		t.Fatalf("descriptor-bound marker creation: %v", err)
+	}
+	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+		t.Fatalf("descriptor-bound marker idempotence: %v", err)
+	}
+	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+		t.Fatalf("descriptor-bound marker validation: %v", err)
+	}
+	if slot, err := ValidateRemovalOwnershipAt(owner, root, target, common); err != nil || slot != "slot" {
+		t.Fatalf("descriptor-bound removal proof slot=%q err=%v", slot, err)
+	}
+	if err := removeOwnershipMarkerAt(owner, root, target); err != nil {
+		t.Fatalf("descriptor-bound marker removal: %v", err)
+	}
+	if err := removeOwnershipMarkerAt(owner, root, target); err != nil {
+		t.Fatalf("descriptor-bound idempotent marker removal: %v", err)
+	}
+	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("missing descriptor-bound marker error=%v", err)
+	}
+	if err := EnsureOwnershipMarkerAt(nil, root, target, "slot", common); err == nil {
+		t.Fatal("nil descriptor marker creation succeeded")
+	}
+}
+
+func TestDescriptorBoundOwnershipMarkerRejectsNamespaceAndProofChanges(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "slots", "slot", "root")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	common := t.TempDir()
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+
+	for _, slotID := range []string{"", "bad/slot"} {
+		if err := EnsureOwnershipMarkerAt(owner, root, target, slotID, common); err == nil {
+			t.Fatalf("invalid slot %q was accepted", slotID)
+		}
+		if err := ValidateOwnershipMarkerAt(owner, root, target, slotID, common); !errors.Is(err, state.ErrOwnership) {
+			t.Fatalf("invalid validation slot %q error=%v", slotID, err)
+		}
+	}
+	if err := EnsureOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside"), "slot", common); err == nil {
+		t.Fatal("outside marker target was accepted")
+	}
+	regular := filepath.Join(root, "regular")
+	if err := os.WriteFile(regular, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureOwnershipMarkerAt(owner, root, regular, "regular", common); err == nil {
+		t.Fatal("regular marker target was accepted")
+	}
+	missing := filepath.Join(root, "missing-parent", "root")
+	if err := EnsureOwnershipMarkerAt(owner, root, missing, "missing", common); err == nil {
+		t.Fatal("missing physical marker parent was accepted")
+	}
+
+	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name   string
+		slot   string
+		common string
+	}{
+		{name: "wrong slot", slot: "other", common: common},
+		{name: "wrong common", slot: "slot", common: t.TempDir()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := ValidateOwnershipMarkerAt(owner, root, target, test.slot, test.common); !errors.Is(err, state.ErrOwnership) {
+				t.Fatalf("mismatched marker proof error=%v", err)
+			}
+			slot, err := ValidateRemovalOwnershipAt(owner, root, target, test.common)
+			if test.slot == "slot" && !errors.Is(err, state.ErrOwnership) {
+				t.Fatalf("mismatched removal proof error=%v", err)
+			}
+			if test.slot != "slot" && (err != nil || slot != "slot") {
+				t.Fatalf("slot-independent removal proof slot=%q err=%v", slot, err)
+			}
+		})
+	}
+	if err := removeOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside")); err == nil {
+		t.Fatal("outside marker removal was accepted")
+	}
+	if err := removeOwnershipMarkerAt(nil, root, target); err == nil {
+		t.Fatal("nil marker removal root was accepted")
+	}
+
+	closed, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureOwnershipMarkerAt(closed, root, target, "closed", common); err == nil {
+		t.Fatal("closed marker root was accepted")
+	}
+	if err := ValidateOwnershipMarkerAt(closed, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("closed marker validation error=%v", err)
+	}
+	if _, err := ValidateRemovalOwnershipAt(closed, root, target, common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("closed removal validation error=%v", err)
+	}
+}
+
 func TestPhysicalFilesystemRejectsNondirectoryAndInvalidTraversal(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "file")

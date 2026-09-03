@@ -55,6 +55,90 @@ func TestMaterializeRootCopiesLinksAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
+	source, target := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "copied.txt"), []byte("pinned copy\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(source, "shared"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := MaterializeRootAt(source, owner, config.Workspace{Copy: []string{"copied.txt"}, Link: []string{"shared"}}); err != nil {
+		t.Fatalf("pinned materialization: %v", err)
+	}
+	data, err := owner.ReadFile("copied.txt")
+	if err != nil || string(data) != "pinned copy\n" {
+		t.Fatalf("pinned copy=%q err=%v", data, err)
+	}
+	link, err := owner.Readlink("shared")
+	if err != nil || link != filepath.Join(source, "shared") {
+		t.Fatalf("pinned link=%q err=%v", link, err)
+	}
+	if err := MaterializeRootAt(source, nil, config.Workspace{}); err == nil {
+		t.Fatal("nil destination root was accepted")
+	}
+}
+
+func TestPinnedIncludeAndLinkMaterializationStayWithinRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "worktrees")
+	repository := filepath.Join(base, "repository")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("local.env\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "local.env"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repository, "shared"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "slot", "root")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root, RequireOwnedRoot: true}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	if err := preparer.copyIncludes(repo, target); err != nil {
+		t.Fatalf("pinned include: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(target, "local.env"))
+	if err != nil || string(data) != "local\n" {
+		t.Fatalf("included file=%q err=%v", data, err)
+	}
+	if err := preparer.createLinks(context.Background(), repo, target); err != nil {
+		t.Fatalf("pinned link: %v", err)
+	}
+	link, err := os.Readlink(filepath.Join(target, "shared"))
+	if err != nil || link != filepath.Join(repository, "shared") {
+		t.Fatalf("pinned link=%q err=%v", link, err)
+	}
+}
+
 func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
 	for _, path := range []string{"", "../outside", "/absolute"} {
 		if _, err := safeRelative(path); err == nil {

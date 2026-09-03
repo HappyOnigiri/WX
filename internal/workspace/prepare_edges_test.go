@@ -154,6 +154,146 @@ func prepareEdgesFixture(t *testing.T) (string, discovery.Repository, *Preparer,
 	return repository, repo, preparer, head, target
 }
 
+func TestPinnedPreparerLifecycleAndDescriptorBoundCommands(t *testing.T) {
+	ctx := context.Background()
+	for _, restore := range []bool{false, true} {
+		t.Run(map[bool]string{false: "prepare", true: "restore"}[restore], func(t *testing.T) {
+			_, repo, preparer, head, target := prepareEdgesFixture(t)
+			root := preparer.Config.Storage.WorktreeRoot
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			owner, _, err := domain.OpenOwnedRoot(root, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = owner.Close() }()
+			preparer.OwnedRoot = owner
+			preparer.RootPath = root
+			preparer.RequireOwnedRoot = true
+
+			var prepareErr error
+			if restore {
+				prepareErr = preparer.PrepareForRestore(ctx, repo, target, head, "slot")
+			} else {
+				prepareErr = preparer.Prepare(ctx, repo, target, head, "slot")
+			}
+			if prepareErr != nil {
+				t.Fatalf("descriptor-bound preparation: %v", prepareErr)
+			}
+			identity, err := preparer.WorktreeIdentity(target)
+			if err != nil || identity == "" {
+				t.Fatalf("worktree identity=%q err=%v", identity, err)
+			}
+			if err := preparer.VerifyWorktreeIdentity(target, identity); err != nil {
+				t.Fatalf("identity verification: %v", err)
+			}
+			if err := preparer.VerifyWorktreeIdentity(target, "different"); !errors.Is(err, state.ErrOwnership) {
+				t.Fatalf("identity mismatch error=%v", err)
+			}
+			if _, err := preparer.RunGitInWorktree(ctx, target, identity, nil, nil, "rev-parse", "HEAD"); err != nil {
+				t.Fatalf("descriptor-bound git command: %v", err)
+			}
+			if err := preparer.ValidateOwnership(ctx, repo, target, head); err != nil {
+				t.Fatalf("descriptor-bound ownership validation: %v", err)
+			}
+			if restore {
+				if err := preparer.PrepareResumeWithIdentity(ctx, repo, target, head, "slot", identity); err != nil {
+					t.Fatalf("descriptor-bound resume prepare: %v", err)
+				}
+				if err := preparer.FinishRestoreWithIdentity(ctx, repo, target, head, "slot", identity); err != nil {
+					t.Fatalf("descriptor-bound restore finish: %v", err)
+				}
+				if _, err := preparer.runWorktreeAdmin(ctx, repo, owner, filepath.Join("slots", "slot", "root"), target, "unlock"); err != nil {
+					t.Fatalf("unlock restored worktree before removal: %v", err)
+				}
+			} else {
+				if _, err := preparer.runWorktreeAdmin(ctx, repo, owner, filepath.Join("slots", "slot", "root"), target, "unlock"); err != nil {
+					t.Fatalf("descriptor-bound admin wrapper: %v", err)
+				}
+			}
+			if err := preparer.RemoveWorktreeAt(ctx, repo, root, target, identity); err != nil {
+				t.Fatalf("descriptor-bound worktree removal: %v", err)
+			}
+			if _, err := os.Lstat(target); !os.IsNotExist(err) {
+				t.Fatalf("removed worktree still exists: %v", err)
+			}
+			if err := preparer.RemoveWorktreeAt(ctx, repo, root, filepath.Join(t.TempDir(), "outside"), identity); !errors.Is(err, state.ErrOwnership) {
+				t.Fatalf("outside descriptor-bound removal error=%v", err)
+			}
+		})
+	}
+}
+
+func TestPreparerDescriptorOperationsRejectInvalidRootsAndIdentities(t *testing.T) {
+	ctx := context.Background()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	preparer.OwnedRoot = owner
+	preparer.RootPath = root
+	preparer.RequireOwnedRoot = true
+
+	if _, _, err := preparer.prepareTarget(filepath.Join(t.TempDir(), "outside")); err == nil {
+		t.Fatal("prepare target outside root was accepted")
+	}
+	preparer.OwnedRoot = nil
+	if _, _, err := preparer.prepareTarget(target); err == nil {
+		t.Fatal("missing required root descriptor was accepted")
+	}
+	preparer.OwnedRoot = owner
+	if _, _, _, err := preparer.openOwnedRoot(root, target); err != nil {
+		t.Fatalf("pinned root open: %v", err)
+	}
+
+	if _, err := preparer.WorktreeIdentity(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("missing worktree identity succeeded")
+	}
+	if err := preparer.VerifyWorktreeIdentity(target, ""); err != nil {
+		t.Fatalf("empty identity compatibility path: %v", err)
+	}
+	if _, err := preparer.RunGitInWorktree(ctx, filepath.Join(t.TempDir(), "missing"), "identity", nil, nil, "status"); err == nil {
+		t.Fatalf("missing descriptor-bound command error=%v", err)
+	}
+	if err := preparer.RemoveWorktreeAt(ctx, repo, root, filepath.Join(t.TempDir(), "outside"), "identity"); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("outside removal error=%v", err)
+	}
+	if err := preparer.RemoveWorktreeAt(ctx, repo, root, target, "identity"); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("unavailable removal target error=%v", err)
+	}
+
+	closed, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := preparer.addWorktreeWithIdentity(ctx, repo, closed, target, filepath.Join("slot", "root"), head); err == nil {
+		t.Fatal("closed descriptor worktree add succeeded")
+	}
+	if _, err := preparer.runWorktreeAdminOwned(ctx, repo, closed, filepath.Join("slot", "root"), target, "", "unlock"); err == nil {
+		t.Fatal("closed descriptor worktree admin succeeded")
+	}
+
+	badConfig := preparer.Config
+	badConfig.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/true"}, Timeout: config.Duration{Duration: time.Second}}}}
+	preparer.Config = badConfig
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.runPrepareWithIdentity(ctx, repo, target, "mismatched"); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("mismatched prepare identity error=%v", err)
+	}
+}
+
 func TestPreparationHelpersRejectInvalidPhaseAndOwnershipInputs(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	if slots, repos := preparationOwnershipStates(preparePhaseRestore); strings.Join(slots, ",") != "RESTORING" || strings.Join(repos, ",") != "RESTORING,RESTORE_RUNNING" {

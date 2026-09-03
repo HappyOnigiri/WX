@@ -39,6 +39,19 @@ func TestIdempotentCallStopsRetryingWhenContextIsCanceled(t *testing.T) {
 	}
 }
 
+func TestIdempotentCallStopsRetryingWhenContextExpiresDuringBackoff(t *testing.T) {
+	// The dial against a missing socket fails immediately with a transient
+	// *net.OpError, so the retry loop's backoff sleep (25ms for the first
+	// attempt) is what the short deadline below must race against and win;
+	// the 5ms budget leaves a wide margin against the 25ms backoff.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	client := Client{Socket: shortSocketPath(t, "missing.sock"), Timeout: time.Second}
+	if err := client.CallWithKey(ctx, "mutate", "stable-key", map[string]int{"value": 1}, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("idempotent call error during backoff=%v", err)
+	}
+}
+
 type echoHandler struct{}
 
 func shortSocketPath(t *testing.T, name string) string {
@@ -567,6 +580,35 @@ func TestServerReplacesOnlyAStaleUnixSocket(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServeReturnsAcceptErrorWhenClosedWithoutContextCancellation(t *testing.T) {
+	socket := shortSocketPath(t, "closed-without-cancel.sock")
+	ctx := context.Background()
+	server := &Server{Socket: socket, Handler: echoHandler{}}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	client := Client{Socket: socket, Timeout: time.Second}
+	deadline := time.Now().Add(time.Second)
+	for {
+		var output map[string]any
+		if err := client.Call(context.Background(), "ready", nil, &output); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("server did not start listening")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Closing the listener directly (rather than canceling ctx) exercises the
+	// branch where Accept fails but ctx is still live: Serve must surface the
+	// Accept error instead of treating it as an ordinary shutdown.
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("Serve returned nil after an externally closed listener")
 	}
 }
 

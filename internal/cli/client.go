@@ -73,8 +73,8 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		return 1
 	}
 	native := isNativeResume(agent, args)
-	if fresh && (!native || explicitResume != "") {
-		fmt.Fprintln(os.Stderr, "error: --fresh is only valid for an agent-native resume")
+	if err := validateFreshResume(fresh, native, explicitResume); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
 	recoveryDiscarded := false
@@ -233,6 +233,13 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	}
 	fmt.Fprintln(os.Stderr, "error:", runErr)
 	return 1
+}
+
+func validateFreshResume(fresh, native bool, explicitResume string) error {
+	if fresh && (!native || explicitResume != "") {
+		return errors.New("--fresh is only valid for an agent-native resume")
+	}
+	return nil
 }
 
 func configureAgentProcess(cmd *exec.Cmd, ttyFD int) bool {

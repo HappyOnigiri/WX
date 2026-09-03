@@ -153,7 +153,11 @@ func unsignedStatField(value reflect.Value) (uint64, bool) {
 			return 0, false
 		}
 		return uint64(integer), true
-	default:
+	case reflect.Invalid, reflect.Bool, reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128, reflect.Array, reflect.Chan,
+		reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer,
+		reflect.Slice, reflect.String, reflect.Struct, reflect.UnsafePointer:
 		return 0, false
 	}
+	return 0, false
 }
