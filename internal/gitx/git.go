@@ -182,18 +182,43 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 // legitimately need one of these (for example archive's temporary
 // GIT_INDEX_FILE) still set it explicitly through the env parameter, which is
 // appended after this sanitized base and therefore wins.
+//
+// The first group is exactly what `git rev-parse --local-env-vars` reports,
+// which is the same list scripts/hook-check.sh unsets before running its own
+// child Git commands. It is spelled out statically here so that no Git
+// invocation is needed to build a child environment;
+// TestSanitizedEnvironCoversEveryLocalGitEnvironmentVariable derives the list
+// from the Git binary in use and fails if an upgrade adds a name, so the two
+// cannot drift apart silently. GIT_CONFIG_PARAMETERS matters as much as
+// GIT_WORK_TREE does: it is how `git -c <key>=<value>` reaches child
+// processes, so an inherited one can re-point core.excludesFile or
+// status.showUntrackedFiles and make `git add -A` omit untracked work while
+// still exiting 0.
+//
+// The second group is not repository-local in Git's own sense, so
+// --local-env-vars does not list it, but each one still redirects where a
+// child Git reads objects, refs, or configuration from.
 var gitEnvDenylist = map[string]bool{
-	"GIT_DIR":                          true,
-	"GIT_COMMON_DIR":                   true,
-	"GIT_WORK_TREE":                    true,
-	"GIT_INDEX_FILE":                   true,
-	"GIT_OBJECT_DIRECTORY":             true,
 	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
-	"GIT_NAMESPACE":                    true,
-	"GIT_CEILING_DIRECTORIES":          true,
-	"GIT_CONFIG_GLOBAL":                true,
-	"GIT_CONFIG_SYSTEM":                true,
+	"GIT_COMMON_DIR":                   true,
+	"GIT_CONFIG":                       true,
 	"GIT_CONFIG_COUNT":                 true,
+	"GIT_CONFIG_PARAMETERS":            true,
+	"GIT_DIR":                          true,
+	"GIT_GRAFT_FILE":                   true,
+	"GIT_IMPLICIT_WORK_TREE":           true,
+	"GIT_INDEX_FILE":                   true,
+	"GIT_NO_REPLACE_OBJECTS":           true,
+	"GIT_OBJECT_DIRECTORY":             true,
+	"GIT_PREFIX":                       true,
+	"GIT_REPLACE_REF_BASE":             true,
+	"GIT_SHALLOW_FILE":                 true,
+	"GIT_WORK_TREE":                    true,
+
+	"GIT_CEILING_DIRECTORIES": true,
+	"GIT_CONFIG_GLOBAL":       true,
+	"GIT_CONFIG_SYSTEM":       true,
+	"GIT_NAMESPACE":           true,
 }
 
 // isGitConfigKeyValueVar reports whether name is one of Git's indexed

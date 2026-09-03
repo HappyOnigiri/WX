@@ -168,6 +168,83 @@ func TestRunAtStripsInheritedRepositoryScopedGitEnvironment(t *testing.T) {
 	}
 }
 
+// TestSanitizedEnvironCoversEveryLocalGitEnvironmentVariable pins the
+// denylist to Git's own definition of "repository-scoped" instead of to a
+// hand-maintained list. scripts/hook-check.sh unsets exactly
+// `git rev-parse --local-env-vars` for the same reason, so any name Git
+// reports and gitEnvDenylist omits is a hole through which an inherited
+// variable reaches a child Git and can silently change which worktree,
+// index, object store, or config a snapshot reads. A Git upgrade that adds a
+// name fails here rather than reopening that hole unnoticed.
+func TestSanitizedEnvironCoversEveryLocalGitEnvironmentVariable(t *testing.T) {
+	// Ask the real Git before any of these variables are set, so the query
+	// itself cannot be perturbed by them.
+	output, err := exec.Command("git", "rev-parse", "--local-env-vars").Output()
+	if err != nil {
+		t.Fatalf("git rev-parse --local-env-vars: %v", err)
+	}
+	names := strings.Fields(string(output))
+	if len(names) == 0 {
+		t.Fatal("git reported no local environment variables")
+	}
+	for _, name := range names {
+		t.Setenv(name, "/unrelated/"+name)
+	}
+	sanitized := sanitizedEnviron()
+	for _, name := range names {
+		for _, kv := range sanitized {
+			if got, _, _ := strings.Cut(kv, "="); got == name {
+				t.Errorf("%s is repository-scoped per git rev-parse --local-env-vars but survived sanitization", name)
+			}
+		}
+	}
+}
+
+// TestExplicitEnvOverridesSanitizedDenylistOnBothPaths guards the property
+// internal/archive depends on: archive passes its temporary GIT_INDEX_FILE
+// explicitly, and sanitizing the inherited one must not defeat that.
+// exec.Cmd de-duplicates Env keeping the last occurrence of a key, and the
+// descriptor-bound path re-execs through a trampoline, so assert the
+// override survives on both paths rather than assuming last-wins carries
+// through fdexec.
+func TestExplicitEnvOverridesSanitizedDenylistOnBothPaths(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf 'index=%s\\n' \"$GIT_INDEX_FILE\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wxExe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("GIT_INDEX_FILE", "/unrelated/index")
+	const want = "index=/wx/owned/index"
+	env := []string{"GIT_INDEX_FILE=/wx/owned/index"}
+	runner := &Runner{FDHelper: wxExe}
+
+	result, err := runner.RunEnv(context.Background(), t.TempDir(), env, "write-tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Stdout) != want {
+		t.Fatalf("explicit GIT_INDEX_FILE lost on the path-based command: %q want %q", result.Stdout, want)
+	}
+
+	dirFile, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dirFile.Close() }()
+	result, err = runner.RunAt(context.Background(), dirFile, env, nil, "write-tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Stdout) != want {
+		t.Fatalf("explicit GIT_INDEX_FILE lost on the descriptor-bound command: %q want %q", result.Stdout, want)
+	}
+}
+
 func TestRunEnvInputPassesEnvironmentAndStdin(t *testing.T) {
 	bin := t.TempDir()
 	fakeGit := filepath.Join(bin, "git")
