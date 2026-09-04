@@ -127,6 +127,7 @@ func (m *Manager) RequestRestart(ctx context.Context) map[string]any {
 	already := m.restartPending
 	m.restartPending = true
 	m.stopPending = false
+	m.resetLifecycleRetriesLocked()
 	m.mu.Unlock()
 	m.notifyLifecycleCheck()
 	m.log.Info("daemon restart was requested; it will be issued once the daemon is idle")
@@ -146,6 +147,7 @@ func (m *Manager) RequestStop(ctx context.Context) map[string]any {
 	already := m.stopPending
 	m.stopPending = true
 	m.restartPending = false
+	m.resetLifecycleRetriesLocked()
 	m.mu.Unlock()
 	m.notifyLifecycleCheck()
 	m.log.Info("daemon stop was requested; it will be issued once the daemon is idle")
@@ -320,9 +322,24 @@ func (m *Manager) issueStop() {
 // releaseLifecycleClaim hands the claim back so the next check retries an
 // action whose signal was never delivered, but gives up after a bounded number
 // of attempts rather than calling launchctl every second for the rest of the
-// daemon's life. An exhausted claim parks every later stop and restart too:
-// the operator has been told to act by hand, and a daemon that cannot signal
-// itself will not do better on the next intent either.
+// daemon's life. An exhausted claim parks the pending intent until an operator
+// asks again: resetLifecycleRetriesLocked lifts it for the next explicit
+// request, so a failing launchctl cannot leave the daemon unable to stop.
+// resetLifecycleRetriesLocked gives an explicitly re-requested intent a fresh
+// attempt budget. The exhausted latch is shared by both intents, so without
+// this a restart whose launchctl call failed maxLifecycleAttempts times would
+// park every later stop too — and a stop is a SIGTERM to this very process,
+// about which the failure of an external launchctl says nothing. A claim that
+// is not exhausted belongs to a signal that was already delivered and is left
+// alone: not repeating it is the whole point of holding it. m.mu must be held.
+func (m *Manager) resetLifecycleRetriesLocked() {
+	if m.lifecycleClaimed && m.lifecycleAttempts < maxLifecycleAttempts {
+		return
+	}
+	m.lifecycleAttempts = 0
+	m.lifecycleClaimed = false
+}
+
 func (m *Manager) releaseLifecycleClaim() (attempts int, exhausted bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

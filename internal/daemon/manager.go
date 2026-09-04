@@ -95,7 +95,9 @@ type Manager struct {
 	// the idle gate. At most one is ever raised: each request lowers the other,
 	// so the gate never has to rank them. lifecycleClaimed marks the moment one
 	// of them was handed to the signal that carries it out, which must happen
-	// once and only once.
+	// once and only once. lifecycleAttempts counts the signals that never got
+	// delivered; once it reaches maxLifecycleAttempts the claim latches, and
+	// only a new explicit request clears the pair again.
 	restartPending    bool
 	stopPending       bool
 	lifecycleClaimed  bool

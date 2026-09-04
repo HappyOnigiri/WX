@@ -319,6 +319,54 @@ func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 	kickstarts.stayAt(t, maxLifecycleAttempts)
 }
 
+// TestAnExhaustedRestartDoesNotParkALaterStop is the reason the attempt budget
+// is cleared by an explicit request: the latch is shared by both intents, so a
+// launchctl that failed its way to the limit would otherwise leave the daemon
+// impossible to stop for the rest of its life.
+func TestAnExhaustedRestartDoesNotParkALaterStop(t *testing.T) {
+	manager, executable, kickstarts := restartFixture(t)
+	stops := &signalLog{}
+	manager.terminate = func() error { return stops.record() }
+	kickstarts.failWith(context.DeadlineExceeded)
+	replaceExecutable(t, executable)
+	manager.detectExecutableReplacement()
+	for attempt := 1; attempt <= maxLifecycleAttempts; attempt++ {
+		manager.runPendingLifecycle()
+		kickstarts.want(t, attempt)
+	}
+	waitFor(t, "the claim to latch", func() bool { return lifecycleActionClaimed(manager) })
+	manager.RequestStop(context.Background())
+	if lifecycleActionClaimed(manager) {
+		t.Fatal("an explicit stop did not lift the latched claim")
+	}
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+}
+
+// TestANewRequestKeepsAClaimWhoseSignalWasDelivered is the other half: the
+// claim that is not latched belongs to a signal already on its way, and
+// clearing it would let a second kickstart -k kill the replacement launchd
+// just started.
+func TestANewRequestKeepsAClaimWhoseSignalWasDelivered(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	manager.RequestStop(ctx)
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+	manager.RequestRestart(ctx)
+	if !lifecycleActionClaimed(manager) {
+		t.Fatal("a delivered signal's claim was released by a later request")
+	}
+	manager.runPendingLifecycle()
+	stops.stayAt(t, 1)
+}
+
 func TestManagedProcessDetectionRejectsAnInteractiveDaemon(t *testing.T) {
 	t.Setenv("XPC_SERVICE_NAME", "not-the-wx-label")
 	if launchdManagedProcess() {
