@@ -33,6 +33,10 @@ type Store struct {
 
 const SchemaVersion = 1
 
+// ErrPreviousWorktreeLayout identifies a state database from before the
+// worktree-layout change, for which wx deliberately has no migration path.
+var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree layout")
+
 // JSONSchemaVersion is the stability contract for `wx status --json` and
 // `wx doctor --json` output shape. It is deliberately independent of
 // SchemaVersion (the SQLite migration count): bumping SchemaVersion only
@@ -248,7 +252,7 @@ func (s *Store) verifySchema(ctx context.Context) error {
 		return err
 	}
 	if present == 0 {
-		return fmt.Errorf("%s was created by a wx release that used the previous worktree layout and cannot be migrated; stop the daemon, remove that file, and remove the old worktree root once no session needs it", s.path)
+		return fmt.Errorf("%w: %s was created by a wx release that used the previous worktree layout and cannot be migrated; stop the daemon, remove that file, and remove the old worktree root once no session needs it", ErrPreviousWorktreeLayout, s.path)
 	}
 	return nil
 }
