@@ -1336,6 +1336,25 @@ func TestPreparationRetryAndOwnerStateBranches(t *testing.T) {
 			t.Fatalf("restoring session=%+v err=%v", stored, err)
 		}
 	})
+
+	t.Run("finish owner in unexpected state", func(t *testing.T) {
+		store := openTestStore(t)
+		seedWorkspace(t, store)
+		session := Session{ID: "unexpected", WorkspaceID: "workspace", SlotID: "unexpected", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "unexpected", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "unexpected"), State: "PREPARING"}, nil, session, "PREPARE"); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkSessionState(ctx, session.ID, []string{"STARTING"}, "SNAPSHOTTING"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.FinishPreparationWithRelease(ctx, "unexpected"); err == nil {
+			t.Fatal("finish preparation with a SNAPSHOTTING owner session must fail")
+		}
+		slot, err := store.Slot(ctx, "unexpected")
+		if err != nil || slot.State != "PREPARING" {
+			t.Fatalf("unexpected slot=%+v err=%v", slot, err)
+		}
+	})
 }
 
 func TestColdRemovalCompletionAndAdministrativeQueries(t *testing.T) {
