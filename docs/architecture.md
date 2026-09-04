@@ -93,6 +93,20 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   ここで返却される。
 - **degraded運用** — SQLiteが開けないときも`Status`と`Doctor`だけは
   `DegradedHandler`が答える。診断のためにdaemonを完全に沈黙させない。
+- **restart / stopのidleゲート** — `wx daemon restart`・`wx daemon stop`と
+  バイナリ差し替えの自動検知は、いずれも`restartPending`・`stopPending`を
+  立てるだけで、実行は`maintainJobs`から`runPendingLifecycle`が駆動する。
+  ゲートは「in-flightのRPCが0」「最後のRPC終了から`lifecycleQuietPeriod`
+  （5秒）経過」「`jobs`が0」の3条件で、SIGTERMがin-flightのRPCを救わない
+  （応答を書かずに接続が閉じる）以上、これが唯一の保護である。1回のwx起動が
+  独立した複数のRPCの列である以上、in-flightが0になった最初の瞬間は安全な
+  瞬間ではないので、quiet periodを別に要求する。restartは`underLaunchd()`も
+  要求する（手動起動のdaemonがkickstartすると二重起動になる）が、stopは
+  要求しない。要求は互いを打ち消し、同時に2つはpendingにならない。ゲートを
+  通過したら、restartは`launchd.Kickstart`、stopは自プロセスへのSIGTERMを
+  1度だけ発行する。同期待ちするCLI側はsocketへのdial可否だけを見る
+  （`Status`をpollingすると`lastRequestEnd`が更新され続けてゲートが永久に
+  開かない）。
 
 ## 所有権の証明
 
