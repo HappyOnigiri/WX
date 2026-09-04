@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/domain"
@@ -17,19 +18,18 @@ import (
 // launchctl before it finished asking launchd for the replacement.
 const restartKickstartTimeout = 10 * time.Second
 
-// restartQuietPeriod is how long the daemon must have been idle before a
-// pending restart is issued. An in-flight count of zero is not by itself a safe
-// moment: one wx invocation is a sequence of independent RPCs (Status, then
-// ResolveAndLease, then RegisterAgentProcess, then Release at exit) with the
-// daemon fully idle in between, so restarting at the first zero lands squarely
-// inside a single user-visible operation.
-const restartQuietPeriod = 5 * time.Second
+// lifecycleQuietPeriod is how long the daemon must have been idle before a
+// pending restart or stop is issued. An in-flight count of zero is not by
+// itself a safe moment: one wx invocation is a sequence of independent RPCs
+// (Status, then ResolveAndLease, then RegisterAgentProcess, then Release at
+// exit) with the daemon fully idle in between, so acting at the first zero
+// lands squarely inside a single user-visible operation.
+const lifecycleQuietPeriod = 5 * time.Second
 
-// maxRestartAttempts bounds how many times a failing kickstart is retried
-// before the daemon stops asking. Each retry costs one launchctl invocation on
-// the 10s check, and a failure that survives this many attempts is not the
-// transient kind a retry fixes.
-const maxRestartAttempts = 3
+// maxLifecycleAttempts bounds how many times a failing kickstart or stop
+// signal is retried before the daemon stops asking. A failure that survives
+// this many attempts is not the transient kind a retry fixes.
+const maxLifecycleAttempts = 3
 
 // executableSnapshot identifies the daemon's own binary. The inode alone would
 // miss an in-place overwrite (go build -o over a running binary keeps the
@@ -82,10 +82,13 @@ func (m *Manager) watchExecutable(executable string, executableErr error) {
 // detectExecutableReplacement raises the pending flag once the binary behind
 // the daemon's own pathname stops matching the startup baseline. The flag is
 // never lowered again: the running process keeps executing the old inode no
-// matter what happens to the pathname afterwards.
+// matter what happens to the pathname afterwards. A pending stop suppresses
+// the detection entirely, because an operator who asked this daemon to exit
+// must not have that request quietly turned into a restart.
 func (m *Manager) detectExecutableReplacement() {
 	m.mu.RLock()
-	watching, path, baseline, pending := m.executableWatch, m.executablePath, m.executableBaseline, m.restartPending
+	watching, path, baseline := m.executableWatch, m.executablePath, m.executableBaseline
+	pending := m.restartPending || m.stopPending
 	m.mu.RUnlock()
 	if !watching || pending {
 		return
@@ -110,31 +113,119 @@ func (m *Manager) detectExecutableReplacement() {
 }
 
 // RequestRestart records an operator's explicit restart request. It only raises
-// the pending flag: the restart itself still goes through restartIfReplaced, so
-// an operator who ran make install cannot cut short an in-flight RPC. That
+// the pending flag: the restart itself still goes through runPendingLifecycle,
+// so an operator who ran make install cannot cut short an in-flight RPC. That
 // matters because a kickstart -k landing between BeginRPCRequest and
 // CompleteRPCRequest leaves the reservation PENDING, and an idempotency key
 // stuck that way answers IDEMPOTENCY_INDETERMINATE for the rest of its TTL —
 // the session-scoped Release keys never succeed again for that session.
-func (m *Manager) RequestRestart() map[string]any {
+//
+// A restart request supersedes a pending stop and vice versa, so at most one
+// intent is ever waiting on the gate and the daemon never has to rank them.
+func (m *Manager) RequestRestart(ctx context.Context) map[string]any {
 	m.mu.Lock()
+	already := m.restartPending
 	m.restartPending = true
+	m.stopPending = false
 	m.mu.Unlock()
+	m.notifyLifecycleCheck()
 	m.log.Info("daemon restart was requested; it will be issued once the daemon is idle")
-	return map[string]any{"restart_pending": true}
+	reply := m.lifecycleSnapshot(ctx)
+	reply["restart_pending"] = true
+	reply["already_pending"] = already
+	return reply
 }
 
-// restartIfReplaced restarts the daemon once the pending replacement can be
+// RequestStop records an operator's explicit stop request. It goes through the
+// same idle gate as a restart, because SIGTERM does not rescue an in-flight
+// RPC either: the RPC server closes the connection without a response, so the
+// gate is the only thing standing between wx daemon stop and a half-finished
+// reservation.
+func (m *Manager) RequestStop(ctx context.Context) map[string]any {
+	m.mu.Lock()
+	already := m.stopPending
+	m.stopPending = true
+	m.restartPending = false
+	m.mu.Unlock()
+	m.notifyLifecycleCheck()
+	m.log.Info("daemon stop was requested; it will be issued once the daemon is idle")
+	reply := m.lifecycleSnapshot(ctx)
+	reply["stop_pending"] = true
+	reply["already_pending"] = already
+	return reply
+}
+
+// lifecycleSnapshot describes what the idle gate is still waiting for, so a
+// synchronous wx daemon stop/restart that runs out of patience can say which
+// condition held it up instead of only reporting a timeout. The caller cannot
+// sample this itself while it waits: every Status call restamps
+// lastRequestEnd, which would hold the quiet period open for as long as the
+// polling lasted.
+//
+// inflight_requests deliberately excludes the lifecycle RPC being answered.
+// Handler.Handle brackets itself, so the raw counter is never below one here
+// and reporting it unadjusted would tell every operator that a request was in
+// flight even on a completely idle daemon.
+func (m *Manager) lifecycleSnapshot(ctx context.Context) map[string]any {
+	m.mu.RLock()
+	inflight := m.inflightRequests
+	lastEnd := m.lastRequestEnd
+	m.mu.RUnlock()
+	if inflight > 0 {
+		inflight--
+	}
+	remaining := time.Duration(0)
+	if !lastEnd.IsZero() {
+		if elapsed := time.Since(lastEnd); elapsed < lifecycleQuietPeriod {
+			remaining = lifecycleQuietPeriod - elapsed
+		}
+	}
+	jobs := 0
+	if status, err := m.store.Status(ctx); err == nil {
+		jobs = status.Jobs
+	}
+	return map[string]any{
+		"pid":                       os.Getpid(),
+		"inflight_requests":         inflight,
+		"queued_jobs":               jobs,
+		"quiet_period_remaining_ms": remaining.Milliseconds(),
+	}
+}
+
+// notifyLifecycleCheck wakes maintainJobs so a request does not have to wait
+// out the 10s job tick before the gate is looked at for the first time.
+func (m *Manager) notifyLifecycleCheck() {
+	select {
+	case m.lifecycleChecks <- struct{}{}:
+	default:
+	}
+}
+
+// lifecyclePending reports whether a stop or restart is still waiting on the
+// gate. maintainJobs uses it to decide whether to keep re-checking on the
+// short lifecycle interval instead of the 10s job tick.
+func (m *Manager) lifecyclePending() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return (m.restartPending || m.stopPending) && !m.lifecycleClaimed
+}
+
+// runPendingLifecycle carries out a pending restart or stop once it can be
 // followed without dropping work. SIGTERM does not rescue an in-flight RPC (the
 // connection is closed without a response) and Manager.Close blocks until every
 // root reference is released, so passing this gate is the only protection the
 // callers have; the client-side connect retry only covers the listen gap that
 // remains after it. The gate therefore requires more than an in-flight count of
-// zero: it also waits out restartQuietPeriod since the daemon went idle, so a
-// restart cannot land between two RPCs of the same wx invocation.
-func (m *Manager) restartIfReplaced() {
+// zero: it also waits out lifecycleQuietPeriod since the daemon went idle, so
+// neither action can land between two RPCs of the same wx invocation.
+//
+// A stop does not require launchd. wx daemon stop must work against a daemon
+// started by hand with wx daemon start --foreground, and unlike a kickstart a
+// SIGTERM to this very process cannot start a second daemon by mistake.
+func (m *Manager) runPendingLifecycle() {
 	m.mu.Lock()
-	if !m.restartPending || m.restartRequested || !m.restartGateOpenLocked() {
+	stop, restart := m.stopPending, m.restartPending
+	if (!stop && !restart) || m.lifecycleClaimed || !m.lifecycleGateOpenLocked() {
 		m.mu.Unlock()
 		return
 	}
@@ -143,36 +234,41 @@ func (m *Manager) restartIfReplaced() {
 	status, err := m.store.Status(m.ctx)
 	if err != nil {
 		if m.ctx.Err() == nil {
-			m.log.Warn("pending daemon restart could not read job state", "error", err)
+			m.log.Warn("pending daemon lifecycle action could not read job state", "error", err)
 		}
 		return
 	}
 	if status.Jobs > 0 {
 		return
 	}
-	if !m.underLaunchd() {
+	if restart && !m.underLaunchd() {
 		m.warnRestartUnmanaged()
 		return
 	}
 	m.mu.Lock()
-	if m.restartRequested || !m.restartGateOpenLocked() {
+	if m.lifecycleClaimed || !m.lifecycleGateOpenLocked() {
 		m.mu.Unlock()
 		return
 	}
-	// Claim the restart before issuing it. The claim is only permanent once
-	// launchd accepted the request: cmd/wx's daemon serve stops honouring
+	// Claim the action before issuing it. The claim is only permanent once the
+	// signal was delivered: cmd/wx's daemon start --foreground stops honouring
 	// SIGTERM after the first one (signal.NotifyContext keeps the registration
 	// but the context is already cancelled), so repeating kickstart -k after a
 	// successful one would only kill the replacement launchd just started.
-	m.restartRequested = true
+	m.lifecycleClaimed = true
 	m.mu.Unlock()
-	m.log.Info("restarting daemon after executable replacement", "path", path, "baseline_identity", baseline.identity)
-	// Issue the kickstart off maintainJobs. maintainJobs is tracked by m.wg and
+	// Issue the signal off maintainJobs. maintainJobs is tracked by m.wg and
 	// Manager.Close waits on it before it releases the root handles, so running
 	// launchctl inline would make the shutdown that this very command triggers
 	// wait for the command that triggered it. The listener is already closed by
 	// then, so every millisecond spent there widens the window where clients
 	// cannot connect at all.
+	if stop {
+		m.log.Info("stopping daemon on request")
+		go m.issueStop()
+		return
+	}
+	m.log.Info("restarting daemon", "path", path, "baseline_identity", baseline.identity)
 	go m.issueRestart(path)
 }
 
@@ -189,30 +285,55 @@ func (m *Manager) issueRestart(path string) {
 	}
 	// A kickstart that failed never delivered a SIGTERM, so the reasoning above
 	// does not apply and this process is still running the replaced binary.
-	// Release the claim so the next tick retries, but give up after a bounded
-	// number of attempts rather than calling launchctl every 10 seconds for the
-	// rest of the daemon's life.
-	m.mu.Lock()
-	m.restartAttempts++
-	attempts := m.restartAttempts
-	exhausted := attempts >= maxRestartAttempts
-	m.restartRequested = exhausted
-	m.mu.Unlock()
+	attempts, exhausted := m.releaseLifecycleClaim()
 	if exhausted {
-		m.log.Error("daemon restart after executable replacement failed and will not be retried; restart wx daemon manually", "path", path, "attempts", attempts, "error", err)
+		m.log.Error("daemon restart failed and will not be retried; restart wx daemon manually", "path", path, "attempts", attempts, "error", err)
 		return
 	}
-	m.log.Warn("daemon restart after executable replacement failed; retrying on the next check", "path", path, "attempts", attempts, "error", err)
+	m.log.Warn("daemon restart failed; retrying on the next check", "path", path, "attempts", attempts, "error", err)
 }
 
-// restartGateOpenLocked reports whether the daemon is idle enough to be
-// replaced. A zero lastRequestEnd means no RPC has been served yet, so there is
-// no operation in progress to cut short. m.mu must be held.
-func (m *Manager) restartGateOpenLocked() bool {
+// issueStop asks this process to shut down the way launchd's own SIGTERM
+// would, so the exit runs through cmd/wx's signal.NotifyContext and
+// Manager.Close rather than dropping the socket where it stands. The exit code
+// is 0, which is what keeps the LaunchAgent's KeepAlive{SuccessfulExit:false}
+// from immediately starting a replacement.
+func (m *Manager) issueStop() {
+	err := m.terminateSelf()
+	if err == nil {
+		return
+	}
+	attempts, exhausted := m.releaseLifecycleClaim()
+	if exhausted {
+		m.log.Error("daemon stop failed and will not be retried; stop wx daemon manually", "attempts", attempts, "error", err)
+		return
+	}
+	m.log.Warn("daemon stop failed; retrying on the next check", "attempts", attempts, "error", err)
+}
+
+// releaseLifecycleClaim hands the claim back so the next check retries an
+// action whose signal was never delivered, but gives up after a bounded number
+// of attempts rather than calling launchctl every second for the rest of the
+// daemon's life. An exhausted claim parks every later stop and restart too:
+// the operator has been told to act by hand, and a daemon that cannot signal
+// itself will not do better on the next intent either.
+func (m *Manager) releaseLifecycleClaim() (attempts int, exhausted bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lifecycleAttempts++
+	exhausted = m.lifecycleAttempts >= maxLifecycleAttempts
+	m.lifecycleClaimed = exhausted
+	return m.lifecycleAttempts, exhausted
+}
+
+// lifecycleGateOpenLocked reports whether the daemon is idle enough to be
+// replaced or stopped. A zero lastRequestEnd means no RPC has been served yet,
+// so there is no operation in progress to cut short. m.mu must be held.
+func (m *Manager) lifecycleGateOpenLocked() bool {
 	if m.inflightRequests > 0 {
 		return false
 	}
-	return m.lastRequestEnd.IsZero() || time.Since(m.lastRequestEnd) >= restartQuietPeriod
+	return m.lastRequestEnd.IsZero() || time.Since(m.lastRequestEnd) >= lifecycleQuietPeriod
 }
 
 func (m *Manager) kickstartService(ctx context.Context) error {
@@ -225,10 +346,24 @@ func (m *Manager) kickstartService(ctx context.Context) error {
 	return kickstart(ctx)
 }
 
+func (m *Manager) terminateSelf() error {
+	m.mu.RLock()
+	terminate := m.terminate
+	m.mu.RUnlock()
+	if terminate == nil {
+		terminate = signalSelfTerminate
+	}
+	return terminate()
+}
+
+func signalSelfTerminate() error {
+	return syscall.Kill(os.Getpid(), syscall.SIGTERM)
+}
+
 // underLaunchd reports whether launchd owns this process. A manually started
-// wx daemon serve must not kickstart itself: launchd would start a second
-// daemon, that one would lose the socket lock and exit, and the manual process
-// would survive still running the replaced binary.
+// wx daemon start --foreground must not kickstart itself: launchd would start a
+// second daemon, that one would lose the socket lock and exit, and the manual
+// process would survive still running the replaced binary.
 func (m *Manager) underLaunchd() bool {
 	m.mu.RLock()
 	managed := m.launchdManaged

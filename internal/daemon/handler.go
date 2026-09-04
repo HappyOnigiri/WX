@@ -201,7 +201,9 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	case "ReloadConfig":
 		return map[string]bool{"reloaded": true}, h.Manager.ReloadConfig()
 	case "RequestRestart":
-		return h.Manager.RequestRestart(), nil
+		return h.Manager.RequestRestart(ctx), nil
+	case "RequestStop":
+		return h.Manager.RequestStop(ctx), nil
 	case "Sessions":
 		var p struct {
 			All bool `json:"all"`

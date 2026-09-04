@@ -41,7 +41,8 @@ const SchemaVersion = 1
 // output shape itself changes in a way consumers need to detect.
 //
 // 2: `wx status --json` gained restart_pending.
-const JSONSchemaVersion = 2
+// 3: `wx status --json` gained stop_pending and pid.
+const JSONSchemaVersion = 3
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
