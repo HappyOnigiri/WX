@@ -936,6 +936,26 @@ var defaultIncludeNames = []string{
 	".mcp.json",
 }
 
+// defaultWorkspaceRootCopyNames are materialized into a multi-repository slot
+// when they are ordinary files at the workspace root. A tracked AGENTS.md may
+// deliberately be a symlink to CLAUDE.md; Git already checks it out with the
+// repository, so the workspace-root materializer must not try to follow it.
+var defaultWorkspaceRootCopyNames = []string{"AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md"}
+
+func workspaceRootCopyPlan(rules config.Workspace) ([]string, map[string]bool, error) {
+	copyNames := append([]string{}, defaultWorkspaceRootCopyNames...)
+	copyNames = append(copyNames, rules.Copy...)
+	explicit := make(map[string]bool, len(rules.Copy))
+	for _, name := range rules.Copy {
+		clean, err := safeRelative(name)
+		if err != nil {
+			return nil, nil, err
+		}
+		explicit[clean] = true
+	}
+	return copyNames, explicit, nil
+}
+
 // defaultIncludeCandidates returns the default names that exist in the main
 // worktree as regular physical files. A name listed in .worktreelink is left
 // out: an explicit link rule owns that path, and copying it first would turn
@@ -1255,7 +1275,10 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 	}
 	rules := c.Workspaces[workspaceRoot]
 	_, _ = fmt.Fprintf(h, "workspace-root=%s\ncopy-rules=%q\nlink-rules=%q\n", workspaceRoot, rules.Copy, rules.Link)
-	copyNames := append([]string{"AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md"}, rules.Copy...)
+	copyNames, explicitCopies, err := workspaceRootCopyPlan(rules)
+	if err != nil {
+		return "", err
+	}
 	seenCopies := map[string]bool{}
 	for _, name := range copyNames {
 		clean, err := safeRelative(name)
@@ -1267,10 +1290,14 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 		}
 		seenCopies[clean] = true
 		path := filepath.Join(workspaceRoot, clean)
-		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
 			return "", err
+		}
+		if info.Mode()&os.ModeSymlink != 0 && !explicitCopies[clean] {
+			continue
 		}
 		if err := fingerprintPath(h, workspaceRoot, path); err != nil {
 			return "", err
@@ -1430,7 +1457,10 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 		return err
 	}
 	defer func() { _ = sourceRoot.Close() }()
-	copyNames := append([]string{"AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md"}, rules.Copy...)
+	copyNames, explicitCopies, err := workspaceRootCopyPlan(rules)
+	if err != nil {
+		return err
+	}
 	if err := validateRuleConflicts(copyNames, rules.Link); err != nil {
 		return err
 	}
@@ -1444,9 +1474,16 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 			continue
 		}
 		seen[clean] = true
-		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); errors.Is(err, os.ErrNotExist) {
+		info, err := sourceRoot.Lstat(clean)
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 && !explicitCopies[clean] {
+			continue
+		}
+		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
 			return err
 		}
 		if err := copyPathFromOwnedRoot(sourceRoot, clean, destinationRoot, clean); err != nil {
