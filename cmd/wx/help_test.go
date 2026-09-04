@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,10 +208,24 @@ func TestDaemonLifecycleTimeoutsNameWhatTheGateWasWaitingFor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
+	logPath, err := config.LogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct{ action, want string }{
 		{action: "stop", want: "2 job(s) were still queued"},
 		{action: "restart", want: "2 job(s) were still queued"},
+		{action: "stop", want: logPath},
+		{action: "restart", want: logPath},
 	} {
+		if strings.HasPrefix(test.want, "/") {
+			// The idle branch is the one an operator cannot act on without
+			// the log: the snapshot says nothing arrived before acceptance,
+			// so the cause is only in what the daemon did afterwards.
+			idleGate.Store(true)
+		} else {
+			idleGate.Store(false)
+		}
 		exit, stderr := runCapturingStderr(t, []string{"daemon", test.action})
 		if exit != 1 {
 			t.Fatalf("daemon %s exit=%d, want 1", test.action, exit)
@@ -420,12 +435,21 @@ func (unmanagedHandler) Handle(_ context.Context, method string, _ json.RawMessa
 	}
 }
 
+// idleGate switches busyHandler between the two snapshots a timeout can carry:
+// one that names a queued job and one that has nothing to name because the
+// daemon was idle when it accepted the request.
+var idleGate atomic.Bool
+
 type busyHandler struct{}
 
 func (busyHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	switch method {
 	case "RequestStop", "RequestRestart":
-		return map[string]any{"pid": 1234, "inflight_requests": 0, "queued_jobs": 2, "quiet_period_remaining_ms": 5000}, nil
+		jobs := 2
+		if idleGate.Load() {
+			jobs = 0
+		}
+		return map[string]any{"pid": 1234, "inflight_requests": 0, "queued_jobs": jobs, "quiet_period_remaining_ms": 5000}, nil
 	default:
 		return map[string]any{"ok": true, "pid": 1234}, nil
 	}

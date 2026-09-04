@@ -433,6 +433,15 @@ func lifecycleConflict(reply map[string]any, wanted string) string {
 // gateWaitReason explains, in the words of the snapshot taken when the request
 // was accepted, what the daemon was still waiting for. Running jobs are the
 // one cause that legitimately outlasts the budget, so they are named first.
+//
+// The snapshot is all there is: sampling the gate again while waiting would
+// restamp lastRequestEnd and hold the quiet period open for as long as the
+// polling lasted. That is why the last branch does not claim the daemon was
+// idle for the whole wait — it only knows about the moment of acceptance, so
+// whatever held the gate arrived after it, and only the daemon log says what.
+// wx doctor is not that log: its checks cover config, git, sqlite, the socket,
+// the state database, the LaunchAgent, the worktree root, hooks, worktree
+// registration and artifact ownership, and none of them print it.
 func gateWaitReason(reply map[string]any) string {
 	if jobs := replyInt(reply, "queued_jobs"); jobs > 0 {
 		return fmt.Sprintf("%d job(s) were still queued when the request was accepted; the daemon waits for them to finish", jobs)
@@ -440,7 +449,12 @@ func gateWaitReason(reply map[string]any) string {
 	if inflight := replyInt(reply, "inflight_requests"); inflight > 0 {
 		return fmt.Sprintf("%d other request(s) were still in flight when the request was accepted", inflight)
 	}
-	return "the daemon was idle when the request was accepted; check the daemon log with wx doctor"
+	reason := "the daemon was idle when the request was accepted, so whatever held the gate arrived after that"
+	logPath, err := config.LogPath()
+	if err != nil {
+		return reason + "; check the daemon log for the requests and jobs that followed"
+	}
+	return fmt.Sprintf("%s; check %s for the requests and jobs that followed", reason, logPath)
 }
 
 func runDaemon(ctx context.Context, args []string) int {
