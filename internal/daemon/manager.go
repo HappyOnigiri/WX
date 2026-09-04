@@ -75,13 +75,15 @@ type Manager struct {
 	// lookup the in-memory descriptor registry needs to name them, and it is
 	// reloaded from the roots table at startup and on every reload.
 	rootIDs map[string]string
-	// activeRootID is the roots.id of the configured worktree root. New
-	// slots are created only under this generation; existing slots keep
-	// resolving through their own recorded root_id.
-	activeRootID string
-	rootCond     *sync.Cond
-	rootClosing  bool
-	leases       map[string]func()
+	// rootError is why the configured worktree root has no usable generation,
+	// empty once one is registered. registerRootGeneration only logs its
+	// failure so the daemon keeps answering read-only requests, and activeRoot
+	// would otherwise report nothing but the absence of an ID, leaving the
+	// user with no way to reach the cause short of reading the daemon log.
+	rootError   string
+	rootCond    *sync.Cond
+	rootClosing bool
+	leases      map[string]func()
 	// beforeSlotRootCreate is a deterministic adversarial-test barrier. It is
 	// invoked after the pinned root descriptor and relative namespace are ready
 	// but before the first descriptor-relative mkdir. Production managers leave
@@ -1274,17 +1276,28 @@ var errManagerClosed = errors.New("daemon manager is closed")
 func (m *Manager) registerRootGeneration(ctx context.Context, root, identity string) {
 	if identity == "" {
 		m.log.Error("worktree root generation cannot be registered without an identity", "path", root)
+		m.setRootError(fmt.Sprintf("worktree root %s has no readable inode identity", root))
 		return
 	}
 	id, err := m.store.EnsureActiveRoot(ctx, root, identity)
 	if err != nil {
 		m.log.Error("register worktree root generation failed", "path", root, "error", err)
+		m.setRootError(err.Error())
 		return
 	}
 	m.mu.Lock()
 	m.ensureRootStateLocked()
 	m.rootIDs[root] = id
-	m.activeRootID = id
+	m.rootError = ""
+	m.mu.Unlock()
+}
+
+// setRootError records why the configured root has no usable generation. The
+// message is what activeRoot wraps and what status and doctor report, so the
+// user sees the cause rather than only its consequence.
+func (m *Manager) setRootError(message string) {
+	m.mu.Lock()
+	m.rootError = message
 	m.mu.Unlock()
 }
 
@@ -1353,8 +1366,12 @@ func (m *Manager) activeRoot() (string, string, error) {
 	root = filepath.Clean(root)
 	m.mu.RLock()
 	id := m.rootIDs[root]
+	rootError := m.rootError
 	m.mu.RUnlock()
 	if id == "" {
+		if rootError != "" {
+			return "", "", fmt.Errorf("%w: worktree root %s has no registered generation: %s", state.ErrOwnership, root, rootError)
+		}
 		return "", "", fmt.Errorf("%w: worktree root %s has no registered generation", state.ErrOwnership, root)
 	}
 	return root, id, nil
@@ -3563,6 +3580,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	}
 	m.mu.RLock()
 	reloadAt, reloadError, backupAt, backupError := m.lastReload, m.reloadError, m.lastBackup, m.backupError
+	rootError := m.rootError
 	restartPending, stopPending := m.restartPending, m.stopPending
 	cfg := m.cfg
 	roots := make(map[string]bool, len(m.roots))
@@ -3620,7 +3638,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		// wx daemon restart tell a replacement apart from the daemon it asked to
 		// go away when it misses the moment the listener was closed.
 		"pid":         os.Getpid(),
-		"config_path": must(config.Path()), "config_last_reload": reloadAt.UTC().Format(time.RFC3339Nano), "config_reload_error": reloadError,
+		"config_path": must(config.Path()), "config_last_reload": reloadAt.UTC().Format(time.RFC3339Nano), "config_reload_error": reloadError, "worktree_root_error": rootError,
 		"sqlite_last_backup": formatOptionalTime(backupAt), "sqlite_backup_error": backupError, "restart_pending": restartPending, "stop_pending": stopPending,
 		"workspaces": s.Workspaces, "repositories": s.Repositories,
 		"slots":           map[string]int{"ready": s.Ready, "leased": s.Leased, "failed": s.Failed, "quarantined": s.Quarantined},
@@ -3708,6 +3726,7 @@ func formatOptionalTime(value time.Time) string {
 func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	m.mu.RLock()
 	reloadError, restartPending, cfg := m.reloadError, m.restartPending, m.cfg
+	rootError := m.rootError
 	m.mu.RUnlock()
 	var checks map[string]any
 	if restartPending {
@@ -3727,6 +3746,13 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 		checks["sqlite"] = err.Error()
 	} else {
 		checks["sqlite"] = "ok"
+	}
+	// A root that has no usable generation blocks every allocation until it is
+	// fixed, so the cause belongs here rather than only in the daemon log.
+	if rootError == "" {
+		checks["worktree_root"] = "ok"
+	} else {
+		checks["worktree_root"] = rootError
 	}
 	checks["worktree_registration"] = m.registrationDiagnostics(ctx)
 	checks["artifact_ownership"] = m.artifactDiagnostics(ctx)

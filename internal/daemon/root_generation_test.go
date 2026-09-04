@@ -160,6 +160,73 @@ func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
 	}
 }
 
+// TestRootRegistrationFailureReachesTheUserWithItsCause proves the failure
+// of registerRootGeneration leaves a durable trace. It only logs, because the
+// daemon must keep answering read-only requests, but every allocation then
+// fails on the missing generation - and the message the user sees must carry
+// the reason rather than only its consequence.
+func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	store, err := state.Open(filepath.Join(base, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	rootPath := filepath.Join(base, "worktrees")
+	cfg.Storage.WorktreeRoot = rootPath
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	// Registering without an identity is the case that cannot produce a
+	// generation at all, so it stands in for every EnsureActiveRoot failure.
+	manager.mu.Lock()
+	manager.rootIDs = map[string]string{}
+	manager.mu.Unlock()
+	manager.registerRootGeneration(ctx, rootPath, "")
+
+	_, _, err = manager.activeRoot()
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("activeRoot error=%v, want an ownership failure", err)
+	}
+	if !strings.Contains(err.Error(), "inode identity") {
+		t.Fatalf("activeRoot error %q does not carry the cause", err)
+	}
+	doctor := manager.Doctor(ctx)
+	checks := doctor["checks"].(map[string]any)
+	if got, _ := checks["worktree_root"].(string); got == "ok" || got == "" {
+		t.Fatalf("doctor worktree_root=%q, want the registration failure", got)
+	}
+	status, err := manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := status["worktree_root_error"].(string); got == "" {
+		t.Fatalf("status worktree_root_error is empty: %v", status["worktree_root_error"])
+	}
+
+	// A later successful registration clears it, so a fixed root does not
+	// keep reporting a stale cause.
+	if err := os.MkdirAll(rootPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := domain.FileIdentity(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.registerRootGeneration(ctx, rootPath, identity)
+	manager.mu.RLock()
+	remaining := manager.rootError
+	manager.mu.RUnlock()
+	if remaining != "" {
+		t.Fatalf("root error survived a successful registration: %q", remaining)
+	}
+}
+
 // TestArtifactDiagnosticsScanRetiredRootGenerations proves the enumeration
 // source for the orphan scan is SQLite, not the set of descriptors that
 // happen to be open. A superseded root is released as soon as it is adopted

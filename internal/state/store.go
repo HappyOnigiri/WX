@@ -43,7 +43,10 @@ const SchemaVersion = 1
 // 2: `wx status --json` gained restart_pending.
 // 3: `wx status --json` gained stop_pending and pid.
 // 4: `wx doctor --json` gained local daemon-unavailable diagnostics.
-const JSONSchemaVersion = 4
+// 5: `wx status --json` gained worktree_root_error and `wx doctor --json`
+//
+//	gained the worktree_root check.
+const JSONSchemaVersion = 5
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

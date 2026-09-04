@@ -56,7 +56,7 @@ func tryRegisterTestRoot(m *Manager, path string) (string, error) {
 	m.mu.Lock()
 	m.ensureRootStateLocked()
 	m.rootIDs[path] = id
-	m.activeRootID = id
+
 	m.roots[path] = true
 	m.mu.Unlock()
 	return id, nil
