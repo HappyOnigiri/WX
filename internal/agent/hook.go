@@ -44,7 +44,13 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 			}
 		}
 	}
-	client := rpc.Client{Socket: socket, Timeout: 3 * time.Second}
+	// Hook failures block the agent operation that triggered them
+	// (user-prompt-submit and pre-tool-use turn into exit 1, which Claude Code
+	// reports as a blocked tool), so hooks ride out the sub-second gap where a
+	// daemon that is restarting itself after a binary replacement is not
+	// listening yet. The budget stays under the session-end release timeout
+	// below so that hook keeps its own deadline.
+	client := rpc.Client{Socket: socket, Timeout: 3 * time.Second, ConnectRetry: 2 * time.Second}
 	switch event {
 	case "session-start":
 		if payload.SessionID == "" {

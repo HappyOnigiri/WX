@@ -309,3 +309,38 @@ func TestHookRejectsInvalidModesAndReadinessTimeouts(t *testing.T) {
 		t.Fatalf("native hook accepted a non-resume payload: %v", err)
 	}
 }
+
+func TestReadinessHookSurvivesADaemonThatIsStillRestarting(t *testing.T) {
+	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED", "WX_BRANCHES_JSON"} {
+		t.Setenv(key, "")
+	}
+	socket := shortHookSocketPath(t)
+	handler := &recordingHandler{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := &rpc.Server{Socket: socket, Handler: handler}
+	done := make(chan error, 1)
+	go func() {
+		// Nothing is listening when the hook starts, which is the gap a daemon
+		// leaves between kickstart -k and the replacement's first accept.
+		time.Sleep(200 * time.Millisecond)
+		done <- server.Serve(ctx)
+	}()
+	t.Setenv("WX_DAEMON_SOCKET", socket)
+	t.Setenv("WX_SESSION_TOKEN", "token")
+	t.Setenv("WX_SESSION_ID", "wx-restarting")
+	t.Setenv("WX_READINESS_TIMEOUT", "5s")
+	if err := RunHook(ctx, "pre-tool-use", strings.NewReader("")); err != nil {
+		t.Fatalf("pre-tool-use hook failed across a daemon restart: %v", err)
+	}
+	handler.mu.Lock()
+	methods := strings.Join(handler.methods, ",")
+	handler.mu.Unlock()
+	if !strings.Contains(methods, "WaitReady") {
+		t.Fatalf("methods=%s, want WaitReady", methods)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
