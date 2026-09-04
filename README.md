@@ -75,8 +75,24 @@ Complex workspace and repository overrides are edited in `~/.config/wx/config.ya
 Configuration is strictly decoded; an invalid reload leaves the last valid daemon configuration active.
 Paths expand `$HOME` only—`~` and arbitrary environment variables are rejected.
 
+Agent rule files that convention keeps out of version control are copied into every worktree without a manifest entry, because Git does not carry them there itself:
+
+- Claude Code: `CLAUDE.local.md`, `.claudeignore`
+- Codex and the other AGENTS.md readers: `AGENTS.local.md`, `AGENTS.override.md`
+- Gemini CLI: `GEMINI.local.md`, `.geminiignore`, `.aiexclude`
+- Cursor: `.cursorrules`, `.cursorignore`
+- Windsurf: `.windsurfrules`, `.codeiumignore`
+- Cline, Roo Code, and Kilo Code: `.clinerules`, `.roorules`, `.kilocoderules`
+- MCP servers, shared by several agents: `.mcp.json`
+- Aider: `.aider.conf.yml`
+
+Only untracked regular files are copied, and a tracked path is left to the checkout.
+A directory or symlink under one of those names stays the job of an explicit `.worktreeinclude` or `.worktreelink` entry.
+List anything else a worktree needs in `.worktreeinclude` (copied) or `.worktreelink` (symlinked to the main worktree, and required to be Git-ignored).
+
 Recovery snapshots are stored as protected Git objects and refs in the source repository.
 They can contain staged, unstaged, and non-ignored untracked content and are readable by processes with access to that repository.
+A local rule file copied into a worktree is untracked content of that kind.
 
 ## Development
 

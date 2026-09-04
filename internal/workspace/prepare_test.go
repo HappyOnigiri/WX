@@ -1282,6 +1282,146 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	}
 }
 
+func TestDefaultIncludesCarryUntrackedRuleFilesWithoutAManifest(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "worktrees")
+	repository := filepath.Join(base, "repository")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	// Untracked rule files: the case the defaults exist for.
+	if err := os.WriteFile(filepath.Join(repository, "CLAUDE.local.md"), []byte("local rules\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".mcp.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Tracked file under a default name: left to the checkout, not an error.
+	if err := os.WriteFile(filepath.Join(repository, ".cursorrules"), []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A directory and a symlink stay the job of an explicit manifest entry.
+	if err := os.Mkdir(filepath.Join(repository, ".clinerules"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".clinerules", "style.md"), []byte("style\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "shared-override.md"), []byte("shared override\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(base, "shared-override.md"), filepath.Join(repository, "AGENTS.override.md")); err != nil {
+		t.Fatal(err)
+	}
+	// An explicit link rule owns its path, so the default must not copy it
+	// first and turn createLinks into a collision.
+	if err := os.WriteFile(filepath.Join(repository, ".geminiignore"), []byte("vendor\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte(".geminiignore\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("CLAUDE.local.md\n.mcp.json\n.clinerules\nAGENTS.override.md\n.geminiignore\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".gitignore", ".cursorrules", ".worktreelink")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	target := filepath.Join(root, "slot", "root")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	if err := preparer.copyIncludes(repo, target); err != nil {
+		t.Fatalf("default include copy: %v", err)
+	}
+	for name, want := range map[string]string{"CLAUDE.local.md": "local rules\n", ".mcp.json": "{}\n"} {
+		data, err := os.ReadFile(filepath.Join(target, name))
+		if err != nil || string(data) != want {
+			t.Fatalf("default include %s=%q err=%v", name, data, err)
+		}
+	}
+	for _, name := range []string{".cursorrules", ".clinerules", "AGENTS.override.md", ".geminiignore"} {
+		if _, err := os.Lstat(filepath.Join(target, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was materialized by the defaults: %v", name, err)
+		}
+	}
+	if err := preparer.createLinks(context.Background(), repo, target); err != nil {
+		t.Fatalf("link after defaults: %v", err)
+	}
+	link, err := os.Readlink(filepath.Join(target, ".geminiignore"))
+	if err != nil || link != filepath.Join(repository, ".geminiignore") {
+		t.Fatalf("linked default=%q err=%v", link, err)
+	}
+}
+
+func TestFingerprintTracksDefaultIncludeContent(t *testing.T) {
+	base := t.TempDir()
+	repository := filepath.Join(base, "repository")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	cfg := config.Defaults()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	bare, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "GEMINI.local.md"), []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	added, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added == bare {
+		t.Fatal("an added default include left the fingerprint unchanged")
+	}
+	if err := os.WriteFile(filepath.Join(repository, "GEMINI.local.md"), []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	edited, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited == added {
+		t.Fatal("an edited default include left the fingerprint unchanged")
+	}
+	// A path an explicit link rule owns is not copied, so its content must not
+	// rebuild slots either.
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("GEMINI.local.md\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linked, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "GEMINI.local.md"), []byte("third\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	relinked, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relinked != linked {
+		t.Fatal("a linked default include still contributed its content")
+	}
+}
+
 func gitOutput(t *testing.T, directory string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
