@@ -7,8 +7,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -16,50 +18,50 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// kickstartLog records the restart path's launchctl calls. The kickstart runs
-// on its own goroutine (it must not block the manager's WaitGroup), so the
-// counter is shared state and the assertions below have to wait for it rather
-// than read it straight after the call that scheduled it.
-type kickstartLog struct {
+// signalLog records the lifecycle path's launchctl calls and stop signals.
+// Both run on their own goroutine (neither must block the manager's
+// WaitGroup), so the counter is shared state and the assertions below have to
+// wait for it rather than read it straight after the call that scheduled it.
+type signalLog struct {
 	mu  sync.Mutex
 	n   int
 	err error
 }
 
-func (k *kickstartLog) record() error {
+func (k *signalLog) record() error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.n++
 	return k.err
 }
 
-func (k *kickstartLog) count() int {
+func (k *signalLog) count() int {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.n
 }
 
-func (k *kickstartLog) failWith(err error) {
+func (k *signalLog) failWith(err error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.err = err
 }
 
-func (k *kickstartLog) want(t *testing.T, n int) {
+func (k *signalLog) want(t *testing.T, n int) {
 	t.Helper()
-	waitFor(t, fmt.Sprintf("%d kickstart(s)", n), func() bool { return k.count() >= n })
+	waitFor(t, fmt.Sprintf("%d call(s)", n), func() bool { return k.count() >= n })
 	if got := k.count(); got != n {
-		t.Fatalf("kickstarts=%d, want %d", got, n)
+		t.Fatalf("recorded calls=%d, want %d", got, n)
 	}
 }
 
-// stayAt fails if another kickstart is issued. The grace period is what makes
+// stayAt fails if another call is issued. The grace period is what makes
 // it meaningful: the call that would have issued one has already returned.
-func (k *kickstartLog) stayAt(t *testing.T, n int) {
+func (k *signalLog) stayAt(t *testing.T, n int) {
 	t.Helper()
 	time.Sleep(50 * time.Millisecond)
 	if got := k.count(); got != n {
-		t.Fatalf("kickstarts=%d, want it to stay at %d", got, n)
+		t.Fatalf("recorded calls=%d, want it to stay at %d", got, n)
 	}
 }
 
@@ -74,16 +76,16 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-func restartClaimed(m *Manager) bool {
+func lifecycleActionClaimed(m *Manager) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.restartRequested
+	return m.lifecycleClaimed
 }
 
 // restartFixture builds a manager that watches a stand-in executable inside a
 // temporary directory, so replacement can be simulated without touching the
 // test binary itself.
-func restartFixture(t *testing.T) (*Manager, string, *kickstartLog) {
+func restartFixture(t *testing.T) (*Manager, string, *signalLog) {
 	t.Helper()
 	root := t.TempDir()
 	cfg := config.Defaults()
@@ -96,7 +98,7 @@ func restartFixture(t *testing.T) (*Manager, string, *kickstartLog) {
 	manager := testManager(t, cfg, store)
 	manager.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	manager.launchdManaged = func() bool { return true }
-	kickstarts := &kickstartLog{}
+	kickstarts := &signalLog{}
 	manager.kickstart = func(context.Context) error { return kickstarts.record() }
 	executable := filepath.Join(root, "wx")
 	if err := os.WriteFile(executable, []byte("original"), 0o700); err != nil {
@@ -107,6 +109,16 @@ func restartFixture(t *testing.T) (*Manager, string, *kickstartLog) {
 		t.Fatal("executable watch was not armed")
 	}
 	return manager, executable, kickstarts
+}
+
+// stopFixture is restartFixture with the SIGTERM seam captured too, so a stop
+// can be driven to completion without ending the test binary.
+func stopFixture(t *testing.T) (*Manager, *signalLog) {
+	t.Helper()
+	manager, _, _ := restartFixture(t)
+	stops := &signalLog{}
+	manager.terminate = func() error { return stops.record() }
+	return manager, stops
 }
 
 // replaceExecutable renames a new file over the pathname, which is what
@@ -125,7 +137,7 @@ func replaceExecutable(t *testing.T, path string) {
 func TestUnchangedExecutableNeverRestartsTheDaemon(t *testing.T) {
 	manager, _, kickstarts := restartFixture(t)
 	manager.detectExecutableReplacement()
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	if manager.restartPending {
 		t.Fatal("unchanged executable raised a pending restart")
 	}
@@ -146,11 +158,11 @@ func TestReplacedExecutableRestartsWhenIdle(t *testing.T) {
 	if pending, _ := status["restart_pending"].(bool); !pending {
 		t.Fatalf("status does not report the pending restart: %v", status["restart_pending"])
 	}
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
 	// The restart is requested exactly once: cmd/wx stops honouring SIGTERM
 	// after the first one, so a repeat would only kill the replacement.
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 1)
 }
 
@@ -165,7 +177,7 @@ func TestMissingExecutablePathDefersInsteadOfRestarting(t *testing.T) {
 	}
 	replaceExecutable(t, executable)
 	manager.detectExecutableReplacement()
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
 }
 
@@ -178,47 +190,91 @@ func TestPendingRestartWaitsForJobsAndRequests(t *testing.T) {
 	}
 	replaceExecutable(t, executable)
 	manager.detectExecutableReplacement()
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
 	if _, err := manager.store.ClaimJob(ctx, job.ID, "restart-test"); err != nil {
 		t.Fatal(err)
 	}
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
 	if err := manager.store.FinishJob(ctx, job.ID, "restart-test", nil); err != nil {
 		t.Fatal(err)
 	}
-	manager.beginRequest()
-	manager.restartIfReplaced()
+	manager.beginRequest(false)
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
-	manager.endRequest()
-	manager.restartIfReplaced()
+	manager.endRequest(false)
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
 	// One wx invocation is several RPCs with idle moments between them, so the
-	// gate only opens once the daemon has stayed idle for restartQuietPeriod.
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-restartQuietPeriod)
-	manager.mu.Unlock()
-	manager.restartIfReplaced()
+	// gate only opens once the daemon has stayed idle for lifecycleQuietPeriod.
+	elapseLifecycleGate(manager)
+	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
+}
+
+// elapseLifecycleGate ages both of the gate's stamps past their thresholds, so
+// a test that has already exercised the condition it cares about can let the
+// gate open without sleeping through a quiet period.
+func elapseLifecycleGate(m *Manager) {
+	m.mu.Lock()
+	m.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	m.lastLifecycleEnd = time.Now().Add(-lifecycleReplyGrace)
+	m.mu.Unlock()
 }
 
 func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
 	manager, _, kickstarts := restartFixture(t)
-	manager.beginRequest()
-	manager.RequestRestart()
+	// A wx invocation is in the middle of its RPC sequence when the restart is
+	// asked for; the request that asks carries its own bracket on top.
+	manager.beginRequest(false)
+	manager.beginRequest(true)
+	manager.RequestRestart(context.Background())
 	if !manager.restartPending {
 		t.Fatal("an explicit request did not raise the pending restart")
 	}
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
-	manager.endRequest()
-	manager.restartIfReplaced()
+	manager.endRequest(true)
+	manager.runPendingLifecycle()
+	kickstarts.stayAt(t, 0)
+	// The lifecycle request is answered but the wx invocation is not, so the
+	// quiet period has not even started yet.
+	manager.endRequest(false)
+	manager.runPendingLifecycle()
+	kickstarts.stayAt(t, 0)
+	elapseLifecycleGate(manager)
+	manager.runPendingLifecycle()
+	kickstarts.want(t, 1)
+}
+
+// TestLifecycleRequestDoesNotRestartTheQuietPeriod pins the reason wx daemon
+// stop and restart do not sit out a five-second quiet period on a daemon that
+// was already idle: the request that raises the intent is not the user-visible
+// operation the period protects, so it does not restamp it.
+func TestLifecycleRequestDoesNotRestartTheQuietPeriod(t *testing.T) {
+	manager, _, kickstarts := restartFixture(t)
+	handler := Handler{Manager: manager}
+	if _, err := handler.Handle(context.Background(), "RequestRestart", nil); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	lastEnd, lastLifecycle := manager.lastRequestEnd, manager.lastLifecycleEnd
+	manager.mu.Unlock()
+	if !lastEnd.IsZero() {
+		t.Fatal("the lifecycle request restamped the quiet period it was waiting on")
+	}
+	if lastLifecycle.IsZero() {
+		t.Fatal("the lifecycle request did not record when its reply became due")
+	}
+	// The reply frame is written after Handler.Handle returns, so the gate is
+	// still shut for lifecycleReplyGrace.
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
 	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-restartQuietPeriod)
+	manager.lastLifecycleEnd = time.Now().Add(-lifecycleReplyGrace)
 	manager.mu.Unlock()
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
 }
 
@@ -227,11 +283,11 @@ func TestUnmanagedDaemonKeepsThePendingRestart(t *testing.T) {
 	manager.launchdManaged = func() bool { return false }
 	replaceExecutable(t, executable)
 	manager.detectExecutableReplacement()
-	manager.restartIfReplaced()
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
-	if !manager.restartPending || manager.restartRequested {
-		t.Fatalf("restart state pending=%v requested=%v", manager.restartPending, manager.restartRequested)
+	if !manager.restartPending || manager.lifecycleClaimed {
+		t.Fatalf("restart state pending=%v claimed=%v", manager.restartPending, manager.lifecycleClaimed)
 	}
 	if !manager.restartUnmanaged {
 		t.Fatal("the unmanaged daemon warning was not recorded")
@@ -250,7 +306,7 @@ func TestExecutableWatchStaysDisabledWithoutABaseline(t *testing.T) {
 		t.Fatal("watch was armed after os.Executable failed")
 	}
 	manager.detectExecutableReplacement()
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	if manager.restartPending {
 		t.Fatalf("disabled watch raised a pending restart")
 	}
@@ -281,12 +337,12 @@ func TestHandledRequestHoldsOffAPendingRestart(t *testing.T) {
 	if _, err := (Handler{Manager: manager}).Handle(context.Background(), "unknown", json.RawMessage(nil)); err == nil {
 		t.Fatal("unknown method succeeded")
 	}
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
 	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-restartQuietPeriod)
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
 	manager.mu.Unlock()
-	manager.restartIfReplaced()
+	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
 }
 
@@ -297,14 +353,62 @@ func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 	manager.detectExecutableReplacement()
 	// A kickstart that failed delivered no SIGTERM, so the daemon is still on
 	// the replaced binary and the claim has to come back for the next check.
-	for attempt := 1; attempt <= maxRestartAttempts; attempt++ {
-		manager.restartIfReplaced()
+	for attempt := 1; attempt <= maxLifecycleAttempts; attempt++ {
+		manager.runPendingLifecycle()
 		kickstarts.want(t, attempt)
-		claimed := attempt == maxRestartAttempts
-		waitFor(t, "the claim to settle", func() bool { return restartClaimed(manager) == claimed })
+		claimed := attempt == maxLifecycleAttempts
+		waitFor(t, "the claim to settle", func() bool { return lifecycleActionClaimed(manager) == claimed })
 	}
-	manager.restartIfReplaced()
-	kickstarts.stayAt(t, maxRestartAttempts)
+	manager.runPendingLifecycle()
+	kickstarts.stayAt(t, maxLifecycleAttempts)
+}
+
+// TestAnExhaustedRestartDoesNotParkALaterStop is the reason the attempt budget
+// is cleared by an explicit request: the latch is shared by both intents, so a
+// launchctl that failed its way to the limit would otherwise leave the daemon
+// impossible to stop for the rest of its life.
+func TestAnExhaustedRestartDoesNotParkALaterStop(t *testing.T) {
+	manager, executable, kickstarts := restartFixture(t)
+	stops := &signalLog{}
+	manager.terminate = func() error { return stops.record() }
+	kickstarts.failWith(context.DeadlineExceeded)
+	replaceExecutable(t, executable)
+	manager.detectExecutableReplacement()
+	for attempt := 1; attempt <= maxLifecycleAttempts; attempt++ {
+		manager.runPendingLifecycle()
+		kickstarts.want(t, attempt)
+	}
+	waitFor(t, "the claim to latch", func() bool { return lifecycleActionClaimed(manager) })
+	manager.RequestStop(context.Background())
+	if lifecycleActionClaimed(manager) {
+		t.Fatal("an explicit stop did not lift the latched claim")
+	}
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+}
+
+// TestANewRequestKeepsAClaimWhoseSignalWasDelivered is the other half: the
+// claim that is not latched belongs to a signal already on its way, and
+// clearing it would let a second kickstart -k kill the replacement launchd
+// just started.
+func TestANewRequestKeepsAClaimWhoseSignalWasDelivered(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	manager.RequestStop(ctx)
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+	manager.RequestRestart(ctx)
+	if !lifecycleActionClaimed(manager) {
+		t.Fatal("a delivered signal's claim was released by a later request")
+	}
+	manager.runPendingLifecycle()
+	stops.stayAt(t, 1)
 }
 
 func TestManagedProcessDetectionRejectsAnInteractiveDaemon(t *testing.T) {
@@ -349,5 +453,331 @@ func TestSnapshotMatchesDistinguishesEveryTrackedAttribute(t *testing.T) {
 		if base.matches(other) {
 			t.Fatalf("snapshot differing in %s matched", name)
 		}
+	}
+}
+
+func TestRequestedStopWaitsForTheSameIdleGateAsARestart(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	job, err := manager.store.CreateJob(ctx, "ENSURE_STANDBY", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.beginRequest(true)
+	manager.RequestStop(ctx)
+	if !manager.stopPending {
+		t.Fatal("an explicit request did not raise the pending stop")
+	}
+	status, err := manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := status["stop_pending"].(bool); !pending {
+		t.Fatalf("status does not report the pending stop: %v", status["stop_pending"])
+	}
+	// In flight, then a queued job, then the quiet period: each of the gate's
+	// conditions holds the stop back on its own.
+	manager.runPendingLifecycle()
+	stops.stayAt(t, 0)
+	manager.endRequest(true)
+	elapseLifecycleGate(manager)
+	manager.runPendingLifecycle()
+	stops.stayAt(t, 0)
+	if _, err := manager.store.ClaimJob(ctx, job.ID, "stop-test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.store.FinishJob(ctx, job.ID, "stop-test", nil); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now()
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.stayAt(t, 0)
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+	// The daemon honours only the first SIGTERM, so the claim is permanent.
+	manager.runPendingLifecycle()
+	stops.stayAt(t, 1)
+}
+
+// TestStopDoesNotRequireLaunchd is the difference between the two intents: a
+// daemon started by hand with wx daemon start --foreground has to be
+// stoppable, and signalling this very process cannot start a second daemon the
+// way a kickstart could.
+func TestStopDoesNotRequireLaunchdButRestartStillDoes(t *testing.T) {
+	manager, stops := stopFixture(t)
+	manager.launchdManaged = func() bool { return false }
+	manager.RequestStop(context.Background())
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+
+	restarting, kickstarts := stopFixture(t)
+	restarting.launchdManaged = func() bool { return false }
+	restarting.RequestRestart(context.Background())
+	restarting.mu.Lock()
+	restarting.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	restarting.mu.Unlock()
+	restarting.runPendingLifecycle()
+	kickstarts.stayAt(t, 0)
+	if !restarting.restartUnmanaged {
+		t.Fatal("the unmanaged daemon warning was not recorded for a requested restart")
+	}
+}
+
+func TestEachLifecycleRequestSupersedesTheOther(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	manager.RequestStop(ctx)
+	manager.RequestRestart(ctx)
+	if manager.stopPending || !manager.restartPending {
+		t.Fatalf("restart did not supersede the stop: stop=%v restart=%v", manager.stopPending, manager.restartPending)
+	}
+	manager.RequestStop(ctx)
+	if !manager.stopPending || manager.restartPending {
+		t.Fatalf("stop did not supersede the restart: stop=%v restart=%v", manager.stopPending, manager.restartPending)
+	}
+	if !manager.lifecyclePending() {
+		t.Fatal("a raised stop was not reported as pending")
+	}
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+	if manager.lifecyclePending() {
+		t.Fatal("a claimed stop is still reported as pending")
+	}
+}
+
+// TestARequestAfterADeliveredSignalIsRefusedAsAConflict keeps the reply
+// honest: once a signal is on its way the opposite request cannot supersede
+// it, so answering as if it had would have the caller wait out its whole
+// budget for a state the daemon is not heading to.
+func TestARequestAfterADeliveredSignalIsRefusedAsAConflict(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	manager.RequestStop(ctx)
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+	reply := manager.RequestRestart(ctx)
+	if conflict, _ := reply["conflict"].(bool); !conflict {
+		t.Fatalf("the restart request was not refused as a conflict: %v", reply)
+	}
+	if stopping, _ := reply["stop_pending"].(bool); !stopping {
+		t.Fatalf("the conflict did not name the stop under way: %v", reply)
+	}
+	manager.mu.RLock()
+	restarting := manager.restartPending
+	manager.mu.RUnlock()
+	if restarting {
+		t.Fatal("a refused request still raised its intent")
+	}
+}
+
+// TestAStaleIntentIsNotIssuedAfterTheJobQuery covers the window the job query
+// opens: the lock is released across it, so the intent read before it can have
+// been replaced by the time the action would be claimed.
+func TestAStaleIntentIsNotIssuedAfterTheJobQuery(t *testing.T) {
+	manager, _ := stopFixture(t)
+	manager.RequestStop(context.Background())
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	if !manager.lifecycleIntentUnchangedLocked(true, false) {
+		t.Fatal("the raised stop was reported as changed")
+	}
+	if manager.lifecycleIntentUnchangedLocked(false, true) {
+		t.Fatal("a restart evaluation was allowed to proceed against a pending stop")
+	}
+}
+
+// TestStartRequestCallsBackAStopThatWasNeverIssued closes the gap a stop that
+// outlived its caller leaves behind: the intent stays pending, and a later
+// start that only looked at the socket would report a running daemon that is
+// still going to exit.
+func TestStartRequestCallsBackAStopThatWasNeverIssued(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	manager.RequestStop(ctx)
+	reply := manager.RequestStart(ctx)
+	if cancelled, _ := reply["stop_cancelled"].(bool); !cancelled {
+		t.Fatalf("start did not report the cancelled stop: %v", reply)
+	}
+	if stopping, _ := reply["stop_pending"].(bool); stopping {
+		t.Fatalf("start left the stop pending: %v", reply)
+	}
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.stayAt(t, 0)
+}
+
+// TestStartRequestCannotCallBackADeliveredStop is the other half: the SIGTERM
+// is already on its way, so the reply has to say the daemon is still stopping
+// rather than claim it is running.
+func TestStartRequestCannotCallBackADeliveredStop(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	manager.RequestStop(ctx)
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+	reply := manager.RequestStart(ctx)
+	if cancelled, _ := reply["stop_cancelled"].(bool); cancelled {
+		t.Fatalf("start claimed to have cancelled a delivered stop: %v", reply)
+	}
+	if stopping, _ := reply["stop_pending"].(bool); !stopping {
+		t.Fatalf("start did not report the daemon as stopping: %v", reply)
+	}
+}
+
+// TestReplacementDetectionRechecksTheIntentBeforeRaisingIt covers the window
+// the stat opens: the pending flags are read before it and written after, so a
+// stop that arrives in between would otherwise be buried under a restart.
+func TestReplacementDetectionRechecksTheIntentBeforeRaisingIt(t *testing.T) {
+	manager, _ := stopFixture(t)
+	executable := manager.executablePath
+	replaceExecutable(t, executable)
+	// Standing in for the request that lands while the stat is running: the
+	// detection read no pending intent, and by the write it is there.
+	manager.mu.Lock()
+	manager.stopPending = true
+	manager.mu.Unlock()
+	manager.detectExecutableReplacement()
+	manager.mu.RLock()
+	stopping, restarting := manager.stopPending, manager.restartPending
+	manager.mu.RUnlock()
+	if restarting {
+		t.Fatal("the detection raised a restart on top of a pending stop")
+	}
+	if !stopping {
+		t.Fatal("the detection lowered the pending stop")
+	}
+}
+
+// TestPendingStopSuppressesReplacementDetection guards the one way an operator
+// who asked for a stop could get a restart instead: the executable watch fires
+// on the same tick and would otherwise raise restartPending over the stop.
+func TestPendingStopSuppressesReplacementDetection(t *testing.T) {
+	manager, stops := stopFixture(t)
+	executable := manager.executablePath
+	manager.RequestStop(context.Background())
+	replaceExecutable(t, executable)
+	manager.detectExecutableReplacement()
+	if manager.restartPending {
+		t.Fatal("a replaced executable overrode the pending stop")
+	}
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+}
+
+func TestLifecycleReplyReportsWhatTheGateIsWaitingFor(t *testing.T) {
+	manager, _ := stopFixture(t)
+	ctx := context.Background()
+	if _, err := manager.store.CreateJob(ctx, "ENSURE_STANDBY", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// One in-flight request stands for the lifecycle RPC itself, which the
+	// snapshot must not count against the daemon it is describing.
+	manager.beginRequest(true)
+	reply := manager.RequestStop(ctx)
+	if pid, _ := reply["pid"].(int); pid != os.Getpid() {
+		t.Fatalf("reply pid=%v, want %d", reply["pid"], os.Getpid())
+	}
+	if inflight, _ := reply["inflight_requests"].(int); inflight != 0 {
+		t.Fatalf("reply inflight_requests=%v, want the lifecycle RPC itself to be excluded", reply["inflight_requests"])
+	}
+	if jobs, _ := reply["queued_jobs"].(int); jobs != 1 {
+		t.Fatalf("reply queued_jobs=%v, want 1", reply["queued_jobs"])
+	}
+	if already, _ := reply["already_pending"].(bool); already {
+		t.Fatal("the first stop request reported itself as already pending")
+	}
+	manager.endRequest(true)
+	repeat := manager.RequestStop(ctx)
+	if already, _ := repeat["already_pending"].(bool); !already {
+		t.Fatal("the second stop request did not report the standing one")
+	}
+	if remaining, _ := repeat["quiet_period_remaining_ms"].(int64); remaining != 0 {
+		t.Fatalf("quiet_period_remaining_ms=%v, want the lifecycle RPC to leave the quiet period alone", repeat["quiet_period_remaining_ms"])
+	}
+	// A request that is not a lifecycle request is what the quiet period is
+	// measured over, so this one does push the gate out.
+	manager.beginRequest(false)
+	manager.endRequest(false)
+	stamped := manager.RequestStop(ctx)
+	if remaining, _ := stamped["quiet_period_remaining_ms"].(int64); remaining <= 0 {
+		t.Fatalf("quiet_period_remaining_ms=%v, want the period the served request restarted", stamped["quiet_period_remaining_ms"])
+	}
+	restart := manager.RequestRestart(ctx)
+	if pending, _ := restart["restart_pending"].(bool); !pending {
+		t.Fatalf("restart reply=%v", restart)
+	}
+	if _, ok := restart["queued_jobs"]; !ok {
+		t.Fatalf("the restart reply carries no gate snapshot: %v", restart)
+	}
+}
+
+func TestStopSignalFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
+	manager, stops := stopFixture(t)
+	stops.failWith(os.ErrPermission)
+	manager.RequestStop(context.Background())
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	// A signal that was never delivered leaves the daemon running, so the claim
+	// has to come back for the next check until the attempt limit is reached.
+	for attempt := 1; attempt <= maxLifecycleAttempts; attempt++ {
+		manager.runPendingLifecycle()
+		stops.want(t, attempt)
+		claimed := attempt == maxLifecycleAttempts
+		waitFor(t, "the claim to settle", func() bool { return lifecycleActionClaimed(manager) == claimed })
+	}
+	manager.runPendingLifecycle()
+	stops.stayAt(t, maxLifecycleAttempts)
+}
+
+// TestTerminateSelfSignalsThisProcess exercises the production seam. Notifying
+// on SIGTERM first is what keeps the default disposition (terminate the test
+// binary) from taking effect.
+func TestTerminateSelfSignalsThisProcess(t *testing.T) {
+	received := make(chan os.Signal, 1)
+	signal.Notify(received, syscall.SIGTERM)
+	defer signal.Stop(received)
+	manager, _, _ := restartFixture(t)
+	manager.terminate = nil
+	if err := manager.terminateSelf(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-received:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SIGTERM was not delivered to this process")
+	}
+}
+
+func TestLifecycleCheckNotificationNeverBlocks(t *testing.T) {
+	manager, _ := stopFixture(t)
+	manager.lifecycleChecks = make(chan struct{}, 1)
+	for i := 0; i < 3; i++ {
+		manager.notifyLifecycleCheck()
+	}
+	if len(manager.lifecycleChecks) != 1 {
+		t.Fatalf("buffered notifications=%d, want the channel to coalesce them", len(manager.lifecycleChecks))
 	}
 }

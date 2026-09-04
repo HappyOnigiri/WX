@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -87,6 +88,36 @@ func TestDegradedHandlerAllowsOnlyReadOnlyDiagnostics(t *testing.T) {
 	}
 	if _, err := handler.Handle(context.Background(), "GC", nil); err == nil {
 		t.Fatal("degraded mutating method succeeded")
+	}
+}
+
+// TestDegradedHandlerStillHonoursAStop keeps wx daemon stop working on the one
+// daemon an operator most wants to take down: refusing here would leave kill(1)
+// and wx daemon uninstall as the only ways out of a broken database.
+func TestDegradedHandlerStillHonoursAStop(t *testing.T) {
+	signalled := make(chan struct{})
+	handler := DegradedHandler{
+		DatabasePath: "/state.db",
+		OpenError:    errors.New("corrupt"),
+		terminate:    func() error { close(signalled); return nil },
+	}
+	result, err := handler.Handle(context.Background(), "RequestStop", nil)
+	if err != nil {
+		t.Fatalf("degraded stop err=%v", err)
+	}
+	reply, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("degraded stop result=%v", result)
+	}
+	if pending, _ := reply["stop_pending"].(bool); !pending {
+		t.Fatalf("degraded stop did not report the pending stop: %v", reply)
+	}
+	// The signal is scheduled rather than sent inline so this very reply is
+	// not cut off by the shutdown it asks for.
+	select {
+	case <-signalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the degraded stop never reached the signal")
 	}
 }
 

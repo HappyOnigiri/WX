@@ -21,7 +21,7 @@ const (
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>{{.Label}}</string>
-<key>ProgramArguments</key><array><string>{{.Binary | x}}</string><string>daemon</string><string>serve</string></array>
+<key>ProgramArguments</key><array><string>{{.Binary | x}}</string><string>daemon</string><string>start</string><string>--foreground</string></array>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>EnvironmentVariables</key><dict><key>HOME</key><string>{{.Home | x}}</string><key>PATH</key><string>{{.Path | x}}</string></dict>
 <key>StandardOutPath</key><string>{{.Log | x}}</string><key>StandardErrorPath</key><string>{{.Log | x}}</string>
@@ -212,9 +212,25 @@ func launchctlServiceMissing(output []byte) bool {
 // failure they cannot act on.
 var ErrServiceMissing = errors.New("wx LaunchAgent is not installed")
 
+// Kickstart replaces the running service: launchctl's -k kills it first and
+// launchd starts it again. Callers that only want a service running must use
+// Start, which leaves a live daemon alone.
 func Kickstart(ctx context.Context) error {
+	return kickstart(ctx, "-k")
+}
+
+// Start asks launchd to run the service if it is not running already. Without
+// -k launchctl leaves a live daemon untouched, so wx daemon start is safe to
+// repeat and never kills a daemon that is serving other sessions.
+func Start(ctx context.Context) error {
+	return kickstart(ctx)
+}
+
+func kickstart(ctx context.Context, flags ...string) error {
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), Label)
-	out, err := exec.CommandContext(ctx, "launchctl", "kickstart", "-k", target).CombinedOutput()
+	args := append([]string{"kickstart"}, flags...)
+	args = append(args, target)
+	out, err := exec.CommandContext(ctx, "launchctl", args...).CombinedOutput()
 	if err != nil {
 		if launchctlServiceMissing(out) {
 			return fmt.Errorf("launchctl kickstart: %s: %w", bytes.TrimSpace(out), ErrServiceMissing)

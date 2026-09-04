@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -32,6 +33,14 @@ func TestRenderInstallUninstallAndKickstart(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), Label) || !strings.Contains(string(data), "/usr/local/bin/wx") {
 		t.Fatalf("rendered plist=%q err=%v", data, err)
 	}
+	// The plist is the only caller of the foreground mode, so a rename that
+	// missed it would leave launchd running an unknown action in a KeepAlive
+	// loop rather than failing anywhere a test would notice.
+	for _, argument := range []string{"<string>daemon</string>", "<string>start</string>", "<string>--foreground</string>"} {
+		if !strings.Contains(string(data), argument) {
+			t.Fatalf("rendered plist does not pass %s: %s", argument, data)
+		}
+	}
 	if err := Install(context.Background(), "/usr/local/bin/wx", logPath); err != nil {
 		t.Fatal(err)
 	}
@@ -43,6 +52,9 @@ func TestRenderInstallUninstallAndKickstart(t *testing.T) {
 		t.Fatalf("plist info=%v err=%v", info, err)
 	}
 	if err := Kickstart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := Uninstall(context.Background()); err != nil {
@@ -221,5 +233,64 @@ func TestLaunchctlFailuresAreReported(t *testing.T) {
 	}
 	if err := Kickstart(context.Background()); err == nil {
 		t.Fatal("failed kickstart succeeded")
+	}
+}
+
+// TestStartAsksLaunchdWithoutKillingTheRunningService pins the one difference
+// between Start and Kickstart. Passing -k here would make wx daemon start tear
+// down a daemon that is serving other sessions, which is exactly what the
+// separate entry point exists to avoid.
+func TestStartAsksLaunchdWithoutKillingTheRunningService(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(home, "argv")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + record + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	if err := Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	argv, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), Label)
+	if got := strings.Fields(string(argv)); len(got) != 2 || got[0] != "kickstart" || got[1] != target {
+		t.Fatalf("launchctl argv=%q, want [kickstart %s]", got, target)
+	}
+	if err := os.Truncate(record, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := Kickstart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	argv, err = os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(string(argv)); len(got) != 3 || got[1] != "-k" {
+		t.Fatalf("launchctl argv=%q, want kickstart -k %s", got, target)
+	}
+}
+
+func TestStartReportsAnUninstalledService(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\necho 'Could not find service' >&2\nexit 3\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	if err := Start(context.Background()); !errors.Is(err, ErrServiceMissing) {
+		t.Fatalf("start error=%v, want ErrServiceMissing", err)
 	}
 }

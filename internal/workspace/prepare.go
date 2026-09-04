@@ -897,6 +897,116 @@ func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error 
 	return p.copyIncludesAt(repo, owner, relativeTarget)
 }
 
+// defaultIncludeNames are the agent rule and tool configuration files that are
+// kept out of version control by convention. Git does not carry them into a
+// worktree, so an agent started there loses the local rules their author wrote
+// for that repository, and the documented workaround for it is to import a
+// file from the home directory instead. The workspace-root materializer
+// already copies the same class of file without a manifest
+// (MaterializeRootAt); this keeps the per-repository side symmetric.
+//
+// Only regular files are copied, and only while Git does not track them. A
+// tracked path is checked out by the worktree itself, and a directory or
+// symlink under one of these names belongs to a sharing scheme its author
+// chose deliberately: both stay the job of an explicit .worktreeinclude entry.
+var defaultIncludeNames = []string{
+	// Claude Code
+	"CLAUDE.local.md",
+	".claudeignore",
+	// Codex and the other AGENTS.md readers
+	"AGENTS.local.md",
+	"AGENTS.override.md",
+	// Gemini CLI
+	"GEMINI.local.md",
+	".geminiignore",
+	".aiexclude",
+	// Cursor
+	".cursorrules",
+	".cursorignore",
+	// Windsurf
+	".windsurfrules",
+	".codeiumignore",
+	// Cline, Roo Code, Kilo Code
+	".clinerules",
+	".roorules",
+	".kilocoderules",
+	// Aider
+	".aider.conf.yml",
+	// MCP servers, shared by several agents
+	".mcp.json",
+}
+
+// defaultIncludeCandidates returns the default names that exist in the main
+// worktree as regular physical files. A name listed in .worktreelink is left
+// out: an explicit link rule owns that path, and copying it first would turn
+// createLinksAt into a target collision. Absence is not an error here, since
+// the list is applied to every repository and only the names an author keeps
+// locally should reach the worktree.
+func defaultIncludeCandidates(mainPath string) ([]string, error) {
+	linkPatterns, err := readPhysicalPatterns(mainPath, ".worktreelink")
+	if err != nil {
+		return nil, err
+	}
+	linked := map[string]bool{}
+	for _, pattern := range linkPatterns {
+		linked[filepath.Clean(pattern)] = true
+	}
+	root, err := OpenPhysicalRoot(mainPath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	out := make([]string, 0, len(defaultIncludeNames))
+	for _, name := range defaultIncludeNames {
+		clean, err := safeRelative(name)
+		if err != nil {
+			return nil, err
+		}
+		if linked[clean] {
+			continue
+		}
+		info, err := domain.PhysicalPathInfo(root, clean)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		out = append(out, clean)
+	}
+	return out, nil
+}
+
+// defaultIncludes narrows the candidates to the names Git does not track. One
+// ls-files call answers for the whole list: the names are checked on every
+// cold start, and a tracked one is skipped rather than reported, so that a
+// repository that commits a file under one of these names still prepares.
+func (p *Preparer) defaultIncludes(mainPath string) ([]string, error) {
+	candidates, err := defaultIncludeCandidates(mainPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	listed, err := p.Git.Run(context.Background(), mainPath, append([]string{"ls-files", "-z", "--"}, candidates...)...)
+	if err != nil {
+		return nil, err
+	}
+	tracked := map[string]bool{}
+	for _, entry := range strings.Split(listed.Stdout, "\x00") {
+		if entry == "" {
+			continue
+		}
+		tracked[filepath.Clean(entry)] = true
+	}
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if tracked[candidate] {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out, nil
+}
+
 // copyIncludesAt is the descriptor-bound include materializer. destinationRoot
 // is opened from the already pinned owner namespace and every write is
 // relative to it; the lexical target pathname is never used for a destination
@@ -906,11 +1016,28 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 	if err != nil {
 		return err
 	}
+	defaults, err := p.defaultIncludes(string(repo.MainPath))
+	if err != nil {
+		return err
+	}
 	destinationRoot, err := domain.OpenRootAt(owner, relativeTarget)
 	if err != nil {
 		return fmt.Errorf("open include destination: %w", err)
 	}
 	defer func() { _ = destinationRoot.Close() }()
+	// Defaults run first so that an explicit .worktreeinclude entry for the
+	// same path is the one that decides the final content.
+	for _, rel := range defaults {
+		sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
+		if sourceErr != nil {
+			return sourceErr
+		}
+		copyErr := copyPathFromOwnedRoot(sourceRoot, rel, destinationRoot, rel)
+		_ = sourceRoot.Close()
+		if copyErr != nil {
+			return fmt.Errorf("copy default include %s: %w", rel, copyErr)
+		}
+	}
 	for _, pattern := range patterns {
 		clean := filepath.Clean(pattern)
 		if filepath.IsAbs(pattern) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
@@ -1074,6 +1201,22 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 		return "", err
 	}
 	seenIncludes := map[string]bool{}
+	// The default includes are hashed without the tracked check copyIncludesAt
+	// applies, because Fingerprint has no Git runner. The asymmetry only costs
+	// a cold start: a tracked file under one of these names is hashed here but
+	// left to the checkout, so editing it in the main worktree rebuilds slots
+	// that would have been reusable. Leaving the untracked ones out instead
+	// would hand out slots carrying stale local rules.
+	defaults, err := defaultIncludeCandidates(string(repo.MainPath))
+	if err != nil {
+		return "", err
+	}
+	for _, rel := range defaults {
+		seenIncludes[rel] = true
+		if err := fingerprintPath(h, string(repo.MainPath), filepath.Join(string(repo.MainPath), rel)); err != nil {
+			return "", err
+		}
+	}
 	for _, pattern := range patterns {
 		clean := filepath.Clean(pattern)
 		if filepath.IsAbs(pattern) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {

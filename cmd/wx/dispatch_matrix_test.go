@@ -29,7 +29,20 @@ func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
 		{name: "daemon wrong arity", args: []string{"daemon"}, want: 2},
 		{name: "daemon unknown action", args: []string{"daemon", "unknown"}, want: 2},
 		{name: "daemon restart extra argument", args: []string{"daemon", "restart", "extra"}, want: 2},
+		{name: "daemon stop extra argument", args: []string{"daemon", "stop", "extra"}, want: 2},
+		{name: "daemon start extra argument", args: []string{"daemon", "start", "extra"}, want: 2},
+		// --foreground is only meaningful for start; accepting it silently
+		// elsewhere would make wx daemon stop --foreground look like a mode
+		// rather than the misuse it is.
+		{name: "daemon stop rejects foreground", args: []string{"daemon", "stop", "--foreground"}, want: 2},
+		{name: "daemon restart rejects foreground", args: []string{"daemon", "restart", "--foreground"}, want: 2},
+		{name: "daemon install rejects foreground", args: []string{"daemon", "install", "--foreground"}, want: 2},
 		{name: "daemon restart unavailable", args: []string{"daemon", "restart"}, want: 1},
+		// A cancelled context reaches the RPC client before it can classify the
+		// missing socket as a connect error, so stop reports the failure rather
+		// than the "already stopped" it answers with a live context.
+		{name: "daemon stop unavailable", args: []string{"daemon", "stop"}, want: 1},
+		{name: "daemon start unavailable", args: []string{"daemon", "start"}, want: 1},
 		{name: "hook missing event", args: []string{"hook"}, want: 2},
 		{name: "sessions extra argument", args: []string{"sessions", "extra"}, want: 2},
 		{name: "sessions unavailable", args: []string{"sessions"}, want: 1},
