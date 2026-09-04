@@ -1345,6 +1345,56 @@ func TestDefaultIncludesCarryUntrackedRuleFilesWithoutAManifest(t *testing.T) {
 	cfg.Storage.WorktreeRoot = root
 	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root}
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	disabledCfg := cfg
+	disabledCfg.Includes.DefaultAgentRules = false
+	disabledPreparer := preparer
+	disabledPreparer.Config = disabledCfg
+	disabledTarget := filepath.Join(root, "slot-disabled", "root")
+	if err := os.MkdirAll(disabledTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := disabledPreparer.copyIncludes(repo, disabledTarget); err != nil {
+		t.Fatalf("disabled default include copy: %v", err)
+	}
+	for _, name := range []string{"CLAUDE.local.md", ".mcp.json"} {
+		if _, err := os.Lstat(filepath.Join(disabledTarget, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was materialized while defaults were disabled: %v", name, err)
+		}
+	}
+	enabled := true
+	disabledCfg.Repositories[string(repo.MainPath)] = config.Repository{Includes: config.RepositoryIncludes{DefaultAgentRules: &enabled}}
+	overriddenPreparer := preparer
+	overriddenPreparer.Config = disabledCfg
+	overriddenTarget := filepath.Join(root, "slot-overridden", "root")
+	if err := os.MkdirAll(overriddenTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := overriddenPreparer.copyIncludes(repo, overriddenTarget); err != nil {
+		t.Fatalf("repository-enabled default include copy: %v", err)
+	}
+	for _, name := range []string{"CLAUDE.local.md", ".mcp.json"} {
+		if _, err := os.Lstat(filepath.Join(overriddenTarget, name)); err != nil {
+			t.Fatalf("%s was not materialized by the repository override: %v", name, err)
+		}
+	}
+	disabled := false
+	enabledCfg := cfg
+	enabledCfg.Repositories[string(repo.MainPath)] = config.Repository{Includes: config.RepositoryIncludes{DefaultAgentRules: &disabled}}
+	repositoryDisabledPreparer := preparer
+	repositoryDisabledPreparer.Config = enabledCfg
+	repositoryDisabledTarget := filepath.Join(root, "slot-repository-disabled", "root")
+	if err := os.MkdirAll(repositoryDisabledTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := repositoryDisabledPreparer.copyIncludes(repo, repositoryDisabledTarget); err != nil {
+		t.Fatalf("repository-disabled default include copy: %v", err)
+	}
+	for _, name := range []string{"CLAUDE.local.md", ".mcp.json"} {
+		if _, err := os.Lstat(filepath.Join(repositoryDisabledTarget, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s was materialized despite the repository override: %v", name, err)
+		}
+	}
+	delete(cfg.Repositories, string(repo.MainPath))
 	if err := preparer.copyIncludes(repo, target); err != nil {
 		t.Fatalf("default include copy: %v", err)
 	}
@@ -1383,6 +1433,15 @@ func TestFingerprintTracksDefaultIncludeContent(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(repository, "GEMINI.local.md"), []byte("first\n"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	disabledCfg := cfg
+	disabledCfg.Includes.DefaultAgentRules = false
+	disabled, err := Fingerprint(1, "oid", repo, disabledCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled != bare {
+		t.Fatal("disabling default includes changed the fingerprint without materialized content")
 	}
 	added, err := Fingerprint(1, "oid", repo, cfg)
 	if err != nil {

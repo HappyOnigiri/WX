@@ -942,7 +942,10 @@ var defaultIncludeNames = []string{
 // createLinksAt into a target collision. Absence is not an error here, since
 // the list is applied to every repository and only the names an author keeps
 // locally should reach the worktree.
-func defaultIncludeCandidates(mainPath string) ([]string, error) {
+func defaultIncludeCandidates(mainPath string, c config.Config) ([]string, error) {
+	if !c.DefaultAgentRulesEnabled(mainPath) {
+		return nil, nil
+	}
 	linkPatterns, err := readPhysicalPatterns(mainPath, ".worktreelink")
 	if err != nil {
 		return nil, err
@@ -979,7 +982,7 @@ func defaultIncludeCandidates(mainPath string) ([]string, error) {
 // cold start, and a tracked one is skipped rather than reported, so that a
 // repository that commits a file under one of these names still prepares.
 func (p *Preparer) defaultIncludes(mainPath string) ([]string, error) {
-	candidates, err := defaultIncludeCandidates(mainPath)
+	candidates, err := defaultIncludeCandidates(mainPath, p.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -1207,7 +1210,9 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 	// left to the checkout, so editing it in the main worktree rebuilds slots
 	// that would have been reusable. Leaving the untracked ones out instead
 	// would hand out slots carrying stale local rules.
-	defaults, err := defaultIncludeCandidates(string(repo.MainPath))
+	// The setting itself is intentionally not hashed: when no default file
+	// exists, toggling it does not change the materialized worktree.
+	defaults, err := defaultIncludeCandidates(string(repo.MainPath), c)
 	if err != nil {
 		return "", err
 	}
