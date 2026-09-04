@@ -278,8 +278,25 @@ func slotAtPath(t *testing.T, m *Manager, workspaceID, slotID, slotPath string, 
 	return state.Slot{
 		ID: slotID, WorkspaceID: workspaceID, Generation: generation,
 		RootID: rootID, RelPath: relPath, Path: filepath.Clean(slotPath),
-		State: slotState,
+		DirIdentity: existingDirIdentity(t, slotPath), State: slotState,
 	}
+}
+
+// existingDirIdentity records the slot directory's inode the way allocation
+// does, so a hand-built row carries the same evidence a real one would. The
+// tests that stage an absent slot, a regular file, or a symlink get an empty
+// identity, matching the row a slot with no directory of its own would have.
+func existingDirIdentity(tb testing.TB, slotPath string) string {
+	tb.Helper()
+	info, err := os.Lstat(slotPath)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return ""
+	}
+	identity, err := domain.FileIdentity(info)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return identity
 }
 
 // storeSlotAt is slotAtPath for the tests that have no Manager yet (or a
@@ -311,7 +328,7 @@ func storeSlotAt(tb testing.TB, store *state.Store, rootPath, workspaceID, slotI
 	return state.Slot{
 		ID: slotID, WorkspaceID: workspaceID, Generation: generation,
 		RootID: rootID, RelPath: relPath, Path: filepath.Clean(slotPath),
-		State: slotState,
+		DirIdentity: existingDirIdentity(tb, slotPath), State: slotState,
 	}
 }
 

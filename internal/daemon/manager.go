@@ -1644,7 +1644,7 @@ func directoryIdentityAt(owner *os.Root, relative string) (string, error) {
 // before it opens its own descriptor.
 func (m *Manager) ensureLeaseRoot(slotPath, leasePathValue string) (string, error) {
 	if leasePathValue == slotPath {
-		return m.leaseRootIdentity(slotPath)
+		return m.ownedDirectoryIdentity(slotPath)
 	}
 	root, ok := m.rootForPath(slotPath)
 	if !ok {
@@ -1672,7 +1672,12 @@ func (m *Manager) ensureLeaseRoot(slotPath, leasePathValue string) (string, erro
 	return directoryIdentityAt(owner, relative)
 }
 
-func (m *Manager) leaseRootIdentity(path string) (string, error) {
+// ownedDirectoryIdentity reads a directory's inode identity through the
+// pinned descriptor of whichever root generation owns it. It is what turns a
+// pathname into evidence: the lease sends the result to the foreground client,
+// and the slot ownership proofs compare it against slots.dir_identity, so a
+// replaced directory fails closed instead of matching on its name.
+func (m *Manager) ownedDirectoryIdentity(path string) (string, error) {
 	root, ok := m.rootForPath(path)
 	if !ok {
 		var err error
@@ -1823,7 +1828,16 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 		if err != nil {
 			return err
 		}
-		if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, RootID: slot.RootID, RelPath: slot.RelPath, DirIdentity: slot.DirIdentity, AllowedSlotStates: []string{"PREPARING", "RESTORING"}}); err != nil {
+		// The identity comes from the directory on disk, not from the row
+		// being validated: comparing slot.DirIdentity against itself would
+		// always match and leave the proof at root generation plus
+		// root-relative path.
+		dirIdentity, identityErr := m.ownedDirectoryIdentity(slot.Path)
+		if identityErr != nil {
+			m.quarantineOwnershipFailure(id, []string{"PREPARING", "RESTORING"}, fmt.Errorf("%w: read slot directory identity: %w", state.ErrOwnership, identityErr))
+			return identityErr
+		}
+		if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, RootID: slot.RootID, RelPath: slot.RelPath, DirIdentity: dirIdentity, AllowedSlotStates: []string{"PREPARING", "RESTORING"}}); err != nil {
 			if errors.Is(err, state.ErrOwnership) {
 				_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING", "RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
 			}
@@ -2370,7 +2384,12 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 		if err != nil {
 			return err
 		}
-		if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, RootID: slot.RootID, RelPath: slot.RelPath, DirIdentity: slot.DirIdentity, AllowedSlotStates: []string{"RESTORING"}}); err != nil {
+		dirIdentity, identityErr := m.ownedDirectoryIdentity(slot.Path)
+		if identityErr != nil {
+			m.quarantineOwnershipFailure(id, []string{"RESTORING"}, fmt.Errorf("%w: read slot directory identity: %w", state.ErrOwnership, identityErr))
+			return identityErr
+		}
+		if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, RootID: slot.RootID, RelPath: slot.RelPath, DirIdentity: dirIdentity, AllowedSlotStates: []string{"RESTORING"}}); err != nil {
 			if errors.Is(err, state.ErrOwnership) {
 				_ = m.store.SetSlotState(context.Background(), id, []string{"RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
 			}
@@ -3380,9 +3399,6 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 			return err
 		}
 	}
-	if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slotID, RootID: slot.RootID, RelPath: slot.RelPath, DirIdentity: slot.DirIdentity, AllowedSlotStates: []string{"REMOVING"}}); err != nil {
-		return err
-	}
 	ownedRoot, closeOwnedRoot, err := m.existingRootDescriptor(root)
 	if err != nil {
 		return fmt.Errorf("%w: open slot root for removal: %w", state.ErrOwnership, err)
@@ -3395,6 +3411,10 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	if !ok || relativeSlot == "." {
 		return fmt.Errorf("%w: open slot root for removal: slot path is outside wx root", state.ErrOwnership)
 	}
+	// The physical inspection runs before the SQLite proof so that a removal
+	// interrupted after the slot directory was already deleted still
+	// converges: there is nothing left to prove ownership of, and nothing
+	// left to delete.
 	info, err := ownedRoot.Lstat(relativeSlot)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -3403,6 +3423,16 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("%w: slot root is not a physical directory", state.ErrOwnership)
+	}
+	// This is the last proof before the destructive call, so it presents the
+	// identity of the directory that is about to be removed rather than
+	// re-reading slots.dir_identity, which would compare the row to itself.
+	dirIdentity, err := directoryIdentityAt(ownedRoot, relativeSlot)
+	if err != nil {
+		return fmt.Errorf("%w: read slot directory identity for removal: %w", state.ErrOwnership, err)
+	}
+	if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slotID, RootID: slot.RootID, RelPath: slot.RelPath, DirIdentity: dirIdentity, AllowedSlotStates: []string{"REMOVING"}}); err != nil {
+		return err
 	}
 	// Root.RemoveAll does not follow symlink leaves and cannot traverse outside
 	// the descriptor-owned root. It also removes bundle rules and empty nested

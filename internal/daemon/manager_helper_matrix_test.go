@@ -73,11 +73,11 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 		t.Fatalf("unsafe artifact entries changed paths=%v err=%v", paths, err)
 	}
 
-	leaseIdentity, err := manager.leaseRootIdentity(slotRoot)
+	leaseIdentity, err := manager.ownedDirectoryIdentity(slotRoot)
 	if err != nil || leaseIdentity != identity {
 		t.Fatalf("lease identity=%q want=%q err=%v", leaseIdentity, identity, err)
 	}
-	if _, err := manager.leaseRootIdentity(filepath.Join(t.TempDir(), "outside")); err == nil {
+	if _, err := manager.ownedDirectoryIdentity(filepath.Join(t.TempDir(), "outside")); err == nil {
 		t.Fatal("outside lease identity succeeded")
 	}
 	if _, _, err := manager.createSlotRoot(filepath.Join(t.TempDir(), "outside"), filepath.Join(t.TempDir(), "outside")); err == nil {

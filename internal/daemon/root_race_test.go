@@ -74,7 +74,7 @@ func TestCreateSlotRootPinsAllocationAcrossRootReplacement(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(outside, "wsp001")); !os.IsNotExist(err) {
 		t.Fatalf("allocation escaped into replacement directory: %v", err)
 	}
-	if got, err := m.leaseRootIdentity(target); err != nil || got != identity {
+	if got, err := m.ownedDirectoryIdentity(target); err != nil || got != identity {
 		t.Fatalf("lease identity got=%q want=%q err=%v", got, identity, err)
 	}
 }

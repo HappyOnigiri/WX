@@ -104,6 +104,12 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	// Allocation creates the slot directory before it inserts the row, so the
+	// recorded dir_identity is that directory's. Staging it in the same order
+	// keeps the fixture's evidence the same as a real slot's.
+	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	slot := storeSlotAt(t, store, cfg.Storage.WorktreeRoot, string(w.ID), id, slotRoot, 1, "PREPARING")
 	prepareJob, err := store.CreateSlotSession(ctx, slot, repos, session, "PREPARE")
 	if err != nil {
@@ -785,6 +791,12 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	slotRoot := filepath.Join(cfg.Storage.WorktreeRoot, slotRelative)
 	repos := []state.SlotRepository{{RepositoryID: string(w.Repositories[0].ID), DirName: testDirName(w.Repositories[0], cfg), State: "PREPARING", RequestedRef: resolved[0].RequestedRef, BaseOID: resolved[0].OID, Fingerprint: "test"}}
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	// Allocation creates the slot directory before it inserts the row, so the
+	// recorded dir_identity is that directory's. Staging it in the same order
+	// keeps the fixture's evidence the same as a real slot's.
+	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	slot := storeSlotAt(t, store, cfg.Storage.WorktreeRoot, string(w.ID), id, slotRoot, 1, "PREPARING")
 	job, err := store.CreateSlotSession(ctx, slot, repos, session, "PREPARE")
 	if err != nil {

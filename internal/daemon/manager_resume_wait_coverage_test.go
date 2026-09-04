@@ -49,6 +49,37 @@ func TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot(t *testing.T) {
 	}
 }
 
+// TestRemoveSlotWorktreesRejectsReplacedSlotDirectory proves that the last
+// proof before the destructive RemoveAll presents the identity of the
+// directory on disk. A slot directory that was deleted and recreated under
+// the same name keeps its root generation and root-relative path, so only the
+// inode comparison can tell it apart from the one SQLite recorded.
+func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	root := manager.Config().Storage.WorktreeRoot
+	slotID := domain.StableID("remove-slot", "replaced-directory")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "REMOVING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Removing and recreating the directory under the same name is exactly
+	// the substitution the identity is there to catch.
+	if err := os.Remove(slot.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(slot.Path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slot, ""); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replaced slot directory error=%v, want an ownership failure", err)
+	}
+	// Fail closed means the replacement is left on disk rather than deleted
+	// as though it were wx's.
+	if _, err := os.Lstat(slot.Path); err != nil {
+		t.Fatalf("replaced slot directory was removed despite the failed proof: %v", err)
+	}
+}
+
 // TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable proves
 // waitForSnapshot's success path: once a session has reached ARCHIVED with a
 // non-expired repository snapshot, it returns without waiting out the

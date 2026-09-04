@@ -750,10 +750,10 @@ func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing
 	if _, _, err := manager.createSlotRoot(slotPath, slotPath); err != nil {
 		t.Fatalf("create slot root: %v", err)
 	}
-	if identity, err := manager.leaseRootIdentity(slotPath); err != nil || identity == "" {
+	if identity, err := manager.ownedDirectoryIdentity(slotPath); err != nil || identity == "" {
 		t.Fatalf("lease root identity=%q err=%v", identity, err)
 	}
-	if _, err := manager.leaseRootIdentity(filepath.Join(root, "missing")); err == nil {
+	if _, err := manager.ownedDirectoryIdentity(filepath.Join(root, "missing")); err == nil {
 		t.Fatal("missing lease root identity succeeded")
 	}
 	if _, _, err := manager.createSlotRoot(filepath.Join(base, "outside"), filepath.Join(base, "outside")); err == nil {
