@@ -39,7 +39,17 @@ func decode(raw json.RawMessage, v any) error {
 	return d.Decode(v)
 }
 
+// Handle counts itself as in-flight for the whole dispatch. The manager's
+// restart gate uses that count to pick a moment where a kickstart cannot cut a
+// response short, so the accounting has to bracket every method, including the
+// ones that fail to decode.
 func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	h.Manager.beginRequest()
+	defer h.Manager.endRequest()
+	return h.dispatch(ctx, method, raw)
+}
+
+func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	switch method {
 	case "ResolveAndLease":
 		var p struct {

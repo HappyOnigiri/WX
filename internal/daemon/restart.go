@@ -1,0 +1,216 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"os"
+	"time"
+
+	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/launchd"
+)
+
+// restartKickstartTimeout bounds the launchctl invocation that replaces this
+// process. It runs on a context derived from context.Background rather than the
+// manager's: kickstart -k sends SIGTERM to this very process, so a manager
+// context would cancel the command with its own shutdown and could kill
+// launchctl before it finished asking launchd for the replacement.
+const restartKickstartTimeout = 10 * time.Second
+
+// executableSnapshot identifies the daemon's own binary. The inode alone would
+// miss an in-place overwrite (go build -o over a running binary keeps the
+// inode), and mtime plus size alone would miss a replacement that preserved
+// both, so all three are compared.
+type executableSnapshot struct {
+	identity string
+	modTime  time.Time
+	size     int64
+}
+
+func (s executableSnapshot) matches(other executableSnapshot) bool {
+	return s.identity == other.identity && s.size == other.size && s.modTime.Equal(other.modTime)
+}
+
+func snapshotExecutable(path string) (executableSnapshot, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return executableSnapshot{}, err
+	}
+	identity, err := domain.FileIdentity(info)
+	if err != nil {
+		return executableSnapshot{}, err
+	}
+	return executableSnapshot{identity: identity, modTime: info.ModTime(), size: info.Size()}, nil
+}
+
+// watchExecutable records the baseline the periodic check compares against.
+// A baseline that cannot be taken disables the watch: os.Executable returns the
+// pathname resolved at startup and keeps returning it after the file behind it
+// is replaced or removed, so a missing stat result is not evidence that the
+// binary is unchanged and must not be treated as such.
+func (m *Manager) watchExecutable(executable string, executableErr error) {
+	if executableErr != nil {
+		m.log.Warn("daemon executable is unknown; automatic restart after a binary replacement is disabled", "error", executableErr)
+		return
+	}
+	snapshot, err := snapshotExecutable(executable)
+	if err != nil {
+		m.log.Warn("daemon executable could not be identified; automatic restart after a binary replacement is disabled", "path", executable, "error", err)
+		return
+	}
+	m.mu.Lock()
+	m.executablePath = executable
+	m.executableBaseline = snapshot
+	m.executableWatch = true
+	m.mu.Unlock()
+}
+
+// detectExecutableReplacement raises the pending flag once the binary behind
+// the daemon's own pathname stops matching the startup baseline. The flag is
+// never lowered again: the running process keeps executing the old inode no
+// matter what happens to the pathname afterwards.
+func (m *Manager) detectExecutableReplacement() {
+	m.mu.RLock()
+	watching, path, baseline, pending := m.executableWatch, m.executablePath, m.executableBaseline, m.restartPending
+	m.mu.RUnlock()
+	if !watching || pending {
+		return
+	}
+	current, err := snapshotExecutable(path)
+	if err != nil {
+		// install(1) renames a temporary file over the pathname, which leaves a
+		// window where it does not exist. Carry the check to the next cycle
+		// instead of reporting a replacement that may not have happened.
+		if !errors.Is(err, os.ErrNotExist) {
+			m.log.Warn("daemon executable could not be inspected", "path", path, "error", err)
+		}
+		return
+	}
+	if current.matches(baseline) {
+		return
+	}
+	m.mu.Lock()
+	m.restartPending = true
+	m.mu.Unlock()
+	m.log.Info("daemon executable was replaced; restart is pending", "path", path, "baseline_identity", baseline.identity, "current_identity", current.identity)
+}
+
+// restartIfReplaced restarts the daemon once the pending replacement can be
+// followed without dropping work. SIGTERM does not rescue an in-flight RPC (the
+// connection is closed without a response) and Manager.Close blocks until every
+// root reference is released, so passing this gate is the only protection the
+// callers have; the client-side connect retry only covers the listen gap that
+// remains after it.
+func (m *Manager) restartIfReplaced() {
+	m.mu.Lock()
+	if !m.restartPending || m.restartRequested || m.inflightRequests > 0 {
+		m.mu.Unlock()
+		return
+	}
+	path, baseline := m.executablePath, m.executableBaseline
+	m.mu.Unlock()
+	status, err := m.store.Status(m.ctx)
+	if err != nil {
+		if m.ctx.Err() == nil {
+			m.log.Warn("pending daemon restart could not read job state", "error", err)
+		}
+		return
+	}
+	if status.Jobs > 0 {
+		return
+	}
+	if !m.underLaunchd() {
+		m.warnRestartUnmanaged()
+		return
+	}
+	m.mu.Lock()
+	if m.restartRequested || m.inflightRequests > 0 {
+		m.mu.Unlock()
+		return
+	}
+	// Claim the restart before issuing it and never release the claim.
+	// cmd/wx's daemon serve stops honouring SIGTERM after the first one
+	// (signal.NotifyContext keeps the registration but the context is already
+	// cancelled), so repeating kickstart -k would only kill the replacement
+	// launchd just started.
+	m.restartRequested = true
+	m.mu.Unlock()
+	m.log.Info("restarting daemon after executable replacement", "path", path, "baseline_identity", baseline.identity)
+	ctx, cancel := context.WithTimeout(context.Background(), restartKickstartTimeout)
+	defer cancel()
+	if err := m.kickstartService(ctx); err != nil {
+		m.log.Error("daemon restart after executable replacement failed; restart wx daemon manually", "path", path, "error", err)
+	}
+}
+
+func (m *Manager) kickstartService(ctx context.Context) error {
+	m.mu.RLock()
+	kickstart := m.kickstart
+	m.mu.RUnlock()
+	if kickstart == nil {
+		kickstart = launchd.Kickstart
+	}
+	return kickstart(ctx)
+}
+
+// underLaunchd reports whether launchd owns this process. A manually started
+// wx daemon serve must not kickstart itself: launchd would start a second
+// daemon, that one would lose the socket lock and exit, and the manual process
+// would survive still running the replaced binary.
+func (m *Manager) underLaunchd() bool {
+	m.mu.RLock()
+	managed := m.launchdManaged
+	m.mu.RUnlock()
+	if managed == nil {
+		managed = launchdManagedProcess
+	}
+	return managed()
+}
+
+func launchdManagedProcess() bool {
+	return os.Getppid() == 1 && os.Getenv("XPC_SERVICE_NAME") == launchd.Label
+}
+
+func (m *Manager) warnRestartUnmanaged() {
+	m.mu.Lock()
+	warned := m.restartUnmanaged
+	m.restartUnmanaged = true
+	path := m.executablePath
+	m.mu.Unlock()
+	if warned {
+		return
+	}
+	m.log.Warn("daemon executable was replaced but this daemon is not managed by launchd; restart it manually", "path", path)
+}
+
+// beginRequest and endRequest bracket every RPC the manager serves. The RPC
+// server starts each connection in its own goroutine without any accounting of
+// its own, so the restart gate counts handlers here instead. Both tolerate a
+// nil manager because Handler dispatches parameter decoding before it reaches
+// one, and the decoding contract is exercised without a manager at all.
+func (m *Manager) beginRequest() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.inflightRequests++
+	m.mu.Unlock()
+}
+
+func (m *Manager) endRequest() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.inflightRequests--
+	idle := m.inflightRequests == 0
+	waiting := m.restartPending && !m.restartRequested
+	m.mu.Unlock()
+	if !idle || !waiting {
+		return
+	}
+	select {
+	case m.restartChecks <- struct{}{}:
+	default:
+	}
+}
