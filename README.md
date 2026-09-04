@@ -38,10 +38,12 @@ wx daemon restart  # replace it with the installed binary
 ```
 
 All three wait for the daemon to reach the requested state and give up after
-60 seconds, reporting what the daemon was still waiting for. `wx daemon stop`
-leaves the LaunchAgent registered, so the next login — or the next `wx claude`
-— starts the daemon again; use `wx daemon uninstall` to stop it from coming
-back at all.
+60 seconds. A `stop`, and a `restart` the daemon accepted, also name what the
+daemon was still waiting for; `start`, and a `restart` that found nothing
+listening and fell back to launchd, have no such answer to report and say only
+that the daemon never appeared. `wx daemon stop` leaves the LaunchAgent
+registered, so the next login — or the next `wx claude` — starts the daemon
+again; use `wx daemon uninstall` to stop it from coming back at all.
 
 ## Use
 
