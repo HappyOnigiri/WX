@@ -221,6 +221,56 @@ func TestDaemonLifecycleTimeoutsNameWhatTheGateWasWaitingFor(t *testing.T) {
 	}
 }
 
+// TestDaemonRestartRefusesADaemonLaunchdDoesNotManage keeps the command from
+// waiting out its whole budget for a replacement that is never coming: a
+// daemon started with start --foreground answers the request but never
+// kickstarts itself.
+func TestDaemonRestartRefusesADaemonLaunchdDoesNotManage(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wxl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	// A budget long enough that a regression waiting on it would be obvious.
+	restore := daemonWaitTimeout
+	daemonWaitTimeout = 30 * time.Second
+	t.Cleanup(func() { daemonWaitTimeout = restore })
+	socket, err := config.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel, done := serveUntilCanceled(t, socket, unmanagedHandler{})
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}()
+	started := time.Now()
+	exit, stderr := runCapturingStderr(t, []string{"daemon", "restart"})
+	if exit != 1 {
+		t.Fatalf("daemon restart exit=%d, want 1", exit)
+	}
+	if !strings.Contains(stderr, "not managed by launchd") {
+		t.Fatalf("daemon restart stderr does not name the reason:\n%s", stderr)
+	}
+	if elapsed := time.Since(started); elapsed >= daemonWaitTimeout {
+		t.Fatalf("daemon restart waited %s before refusing", elapsed)
+	}
+}
+
+type unmanagedHandler struct{}
+
+func (unmanagedHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	switch method {
+	case "RequestRestart":
+		return map[string]any{"pid": 1234, "launchd_managed": false, "inflight_requests": 0, "queued_jobs": 0, "quiet_period_remaining_ms": 0}, nil
+	default:
+		return map[string]any{"ok": true, "pid": 1234}, nil
+	}
+}
+
 type busyHandler struct{}
 
 func (busyHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {

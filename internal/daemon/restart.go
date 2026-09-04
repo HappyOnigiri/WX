@@ -166,6 +166,11 @@ func (m *Manager) RequestStop(ctx context.Context) map[string]any {
 // Handler.Handle brackets itself, so the raw counter is never below one here
 // and reporting it unadjusted would tell every operator that a request was in
 // flight even on a completely idle daemon.
+//
+// launchd_managed answers the one question a caller cannot ask from outside:
+// a restart is only ever issued under launchd, so a caller that waits for a
+// replacement from a daemon started by hand would sit out the whole budget for
+// something that is never coming.
 func (m *Manager) lifecycleSnapshot(ctx context.Context) map[string]any {
 	m.mu.RLock()
 	inflight := m.inflightRequests
@@ -186,6 +191,7 @@ func (m *Manager) lifecycleSnapshot(ctx context.Context) map[string]any {
 	}
 	return map[string]any{
 		"pid":                       os.Getpid(),
+		"launchd_managed":           m.underLaunchd(),
 		"inflight_requests":         inflight,
 		"queued_jobs":               jobs,
 		"quiet_period_remaining_ms": remaining.Milliseconds(),

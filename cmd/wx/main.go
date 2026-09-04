@@ -582,6 +582,15 @@ func restartDaemon(ctx context.Context) int {
 		fmt.Println("restarted", launchd.Label)
 		return 0
 	}
+	// A daemon started by hand never kickstarts itself, so it will not be
+	// replaced no matter how long the wait lasts. The field is absent on a
+	// daemon that predates it, and an absent field must not read as "not
+	// managed": that would refuse the restart the older daemon can still do.
+	if managed, ok := reply["launchd_managed"].(bool); ok && !managed {
+		fmt.Fprintf(os.Stderr, "error: the daemon answering %s is not managed by launchd, so it cannot restart itself\n", socket)
+		fmt.Fprintln(os.Stderr, "stop it with wx daemon stop and start it again with wx daemon start")
+		return 1
+	}
 	if !waitForDaemonReplacement(ctx, socket, replyInt(reply, "pid")) {
 		fmt.Fprintf(os.Stderr, "error: %s accepted the restart request but was not replaced within %s\n", launchd.Label, daemonWaitTimeout)
 		fmt.Fprintln(os.Stderr, gateWaitReason(reply))

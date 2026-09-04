@@ -102,9 +102,11 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   独立した複数のRPCの列である以上、in-flightが0になった最初の瞬間は安全な
   瞬間ではないので、quiet periodを別に要求する。restartは`underLaunchd()`も
   要求する（手動起動のdaemonがkickstartすると二重起動になる）が、stopは
-  要求しない。要求は互いを打ち消し、同時に2つはpendingにならない。ゲートを
-  通過したら、restartは`launchd.Kickstart`、stopは自プロセスへのSIGTERMを
-  1度だけ発行する。同期待ちするCLI側はsocketへのdial可否だけを見る
+  要求しない。この判定は`launchd_managed`として要求の応答にも載るので、CLIは
+  来ない置換を待たずに即座に断れる。要求は互いを打ち消し、同時に2つは
+  pendingにならない。ゲートを通過したら、restartは`launchd.Kickstart`、
+  stopは自プロセスへのSIGTERMを1度だけ発行する。
+  同期待ちするCLI側はsocketへのdial可否だけを見る
   （`Status`をpollingすると`lastRequestEnd`が更新され続けてゲートが永久に
   開かない）。
 
