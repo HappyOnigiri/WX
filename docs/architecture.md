@@ -107,7 +107,10 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
    これに加えて、slotとリポジトリのstate、common dir、workspace内の相対pathを確かめる。
    読み取り専用トランザクションが囲むのはSELECTだけで、一致判定はcommit後に走る。
    identityは**fail closed**で、descriptorを握っている呼び出し元がidentityを渡したのに記録が空なら不一致として扱う。
-   identityを渡さないのは、worktreeがまだ存在しないprepare前の検査だけである。
+   identityを渡さないのは、開くべきディレクトリが無い2つの場合だけである。
+   worktreeがまだ存在しないprepare前の検査と、worktreeの実体が既に消えていてGitの登録だけが残っている削除（`archive.Manager.RemoveWorktree`のmissing-registration分岐）である。
+   slotディレクトリ自体の証明（`ValidateSlotOwnership`）も同じで、削除直前の検査はpin済みroot descriptorから読んだ実inodeを渡す。
+   `slots.dir_identity`を読み直して渡すと同じ行を自分自身と比べることになり、identity層が実効を失う。
 2. **ファイルシステム上のマーカー** — slotディレクトリ直下の`.wx-owner-<repository_id>`に、slot ID・root ID・repository ID・common dirをJSONで書く（`version: 2`）。
    内容が一致しないマーカーは所有の否定として扱う。
    マーカーはworktreeの**親**に置く。

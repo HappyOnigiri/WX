@@ -179,6 +179,22 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 		t.Fatalf("mismatched identity proof succeeded: %v", err)
 	}
 
+	// Removal has to present the identity of the directory it holds open, not
+	// only its recorded location: with a recorded identity that no longer
+	// matches the inode on disk, the destructive call must not be reached.
+	if err := store.RecordSlotRepositoryIdentity(ctx, "slotaa", string(repo.ID), identity+"0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RemoveWorktree(ctx, repo, worktreeRoot, ownedPath, head); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("removal with a mismatched recorded identity succeeded: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ownedPath, ".git")); err != nil {
+		t.Fatalf("worktree was removed despite the identity mismatch: %v", err)
+	}
+	if err := store.RecordSlotRepositoryIdentity(ctx, "slotaa", string(repo.ID), identity); err != nil {
+		t.Fatal(err)
+	}
+
 	transitionValidator := &transitionOwnershipValidator{store: store}
 	transitionManager := removalManager(t, worktreeRoot, transitionValidator)
 	transitionManager.Preparer.RootID = rootID

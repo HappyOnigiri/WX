@@ -73,14 +73,14 @@ func TestRemovalOwnershipHelpersFailClosed(t *testing.T) {
 	slotPath := filepath.Join(root, "slot")
 	target := filepath.Join(slotPath, "repo")
 	manager := &Manager{}
-	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", nil, nil); !errors.Is(err, state.ErrOwnership) {
+	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", nil, nil); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing ownership validator error=%v", err)
 	}
 	// A Preparer that carries a validator but no recorded slot location
 	// cannot describe what to compare against, so the proof must fail rather
 	// than fall back to a pathname.
 	manager.Preparer = &workspace.Preparer{Ownership: allowOwnershipValidator{}}
-	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", []string{"READY"}, []string{"READY"}); !errors.Is(err, state.ErrOwnership) {
+	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", []string{"READY"}, []string{"READY"}); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing slot location error=%v", err)
 	}
 	if _, _, _, err := manager.worktreeLocation(target); !errors.Is(err, state.ErrOwnership) {
@@ -89,7 +89,7 @@ func TestRemovalOwnershipHelpersFailClosed(t *testing.T) {
 	manager.Preparer.RootID = testRootID
 	manager.Preparer.SlotPath = slotPath
 	manager.Preparer.SlotRelPath = "slot"
-	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", []string{"READY"}, []string{"READY"}); err != nil {
+	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", []string{"READY"}, []string{"READY"}); err != nil {
 		t.Fatalf("preparer ownership fallback=%v", err)
 	}
 	if rootID, slotRel, dirName, err := manager.worktreeLocation(target); err != nil || rootID != testRootID || slotRel != "slot" || dirName != "repo" {
@@ -109,7 +109,7 @@ func TestRemovalOwnershipHelpersFailClosed(t *testing.T) {
 		t.Fatalf("marker identity without a preparer=%+v", identity)
 	}
 	manager.Ownership = rejectingOwnershipValidator{err: errors.New("proof changed")}
-	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", nil, nil); !strings.Contains(err.Error(), "proof changed") {
+	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", nil, nil); !strings.Contains(err.Error(), "proof changed") {
 		t.Fatalf("validator failure=%v", err)
 	}
 }

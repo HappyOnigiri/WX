@@ -380,7 +380,7 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 			if err := validateWxLockReason(lockReason, slotID); err != nil {
 				return removalOwnershipFailure(err)
 			}
-			if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+			if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, "", []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
 				return fmt.Errorf("validate missing worktree SQLite ownership: %w", err)
 			}
 			if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
@@ -402,7 +402,7 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 			if _, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, m.markerIdentity(repo), common); err != nil {
 				return fmt.Errorf("revalidate missing worktree ownership: %w", err)
 			}
-			if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+			if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, "", []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
 				return fmt.Errorf("revalidate missing worktree SQLite ownership: %w", err)
 			}
 			if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
@@ -441,7 +441,7 @@ func (m *Manager) removeExistingWorktree(ctx context.Context, repo discovery.Rep
 	if err := validateWxLockReason(lockReason, slotID); err != nil {
 		return removalOwnershipFailure(err)
 	}
-	if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+	if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, targetIdentity, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
 		return fmt.Errorf("validate worktree SQLite ownership: %w", err)
 	}
 	canonicalRoot, err := filepath.EvalSymlinks(absoluteRoot)
@@ -494,7 +494,7 @@ func (m *Manager) removeExistingWorktree(ctx context.Context, repo discovery.Rep
 	if _, err := workspace.ValidateRemovalOwnership(absoluteRoot, absolutePath, m.markerIdentity(repo), common); err != nil {
 		return fmt.Errorf("revalidate worktree ownership: %w", err)
 	}
-	if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+	if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, targetIdentity, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
 		return fmt.Errorf("revalidate worktree SQLite ownership: %w", err)
 	}
 	if err := validateRemovalPathComponents(absoluteRoot, relative); err != nil {
@@ -518,7 +518,7 @@ func (m *Manager) removeExistingWorktree(ctx context.Context, repo discovery.Rep
 	// operation. The common-directory lock remains held throughout the
 	// physical/Git checks and this state read, so a forged marker/lock can
 	// never authorize deletion without the matching SQLite rows.
-	if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
+	if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, targetIdentity, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
 		return fmt.Errorf("worktree SQLite ownership changed before removal: %w", err)
 	}
 	if targetIdentity != "" {
@@ -535,7 +535,13 @@ func removalOwnershipFailure(err error) error {
 	return fmt.Errorf("%w: %w", state.ErrOwnership, err)
 }
 
-func (m *Manager) validateStateOwnership(ctx context.Context, repo discovery.Repository, target, slotID string, slotStates, repositoryStates []string) error {
+// validateStateOwnership proves the removal target against SQLite. dirIdentity
+// is the inode identity of the directory the caller holds open; presenting it
+// makes a missing SQLite record a failure instead of a silent pass, so every
+// caller that has a descriptor must pass one. It is empty only where there is
+// no directory to open: the missing-registration branches of RemoveWorktree,
+// which run once the worktree itself is already gone.
+func (m *Manager) validateStateOwnership(ctx context.Context, repo discovery.Repository, target, slotID, dirIdentity string, slotStates, repositoryStates []string) error {
 	validator := m.Ownership
 	if validator == nil && m.Preparer != nil {
 		validator = m.Preparer.Ownership
@@ -553,6 +559,7 @@ func (m *Manager) validateStateOwnership(ctx context.Context, repo discovery.Rep
 		RootID:                  rootID,
 		SlotRelPath:             slotRel,
 		DirName:                 dirName,
+		DirIdentity:             dirIdentity,
 		CommonDir:               string(repo.CommonDir),
 		AllowedSlotStates:       slotStates,
 		AllowedRepositoryStates: repositoryStates,
