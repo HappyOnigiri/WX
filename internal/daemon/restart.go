@@ -26,6 +26,15 @@ const restartKickstartTimeout = 10 * time.Second
 // lands squarely inside a single user-visible operation.
 const lifecycleQuietPeriod = 5 * time.Second
 
+// lifecycleReplyGrace keeps the gate shut for a moment after a lifecycle
+// request left Handler.Handle. rpc.Server writes the response frame after the
+// handler returns, so the in-flight bracket is already released while the reply
+// is still unwritten, and RequestStop wakes the check that could open the gate
+// from inside that same bracket. A signal delivered in that window would reach
+// the caller as a dropped connection instead of as the accepted stop it is,
+// which is the same hazard degradedStopDelay exists for.
+const lifecycleReplyGrace = 100 * time.Millisecond
+
 // maxLifecycleAttempts bounds how many times a failing kickstart or stop
 // signal is retried before the daemon stops asking. A failure that survives
 // this many attempts is not the transient kind a retry fixes.
@@ -222,9 +231,9 @@ func (m *Manager) RequestStart(ctx context.Context) map[string]any {
 // lastRequestEnd, which would hold the quiet period open for as long as the
 // polling lasted.
 //
-// inflight_requests deliberately excludes the lifecycle RPC being answered.
-// Handler.Handle brackets itself, so the raw counter is never below one here
-// and reporting it unadjusted would tell every operator that a request was in
+// inflight_requests counts only the requests the quiet period is there to
+// protect. Handler.Handle brackets the lifecycle RPC being answered too, so
+// reporting the raw counter would tell every operator that a request was in
 // flight even on a completely idle daemon.
 //
 // launchd_managed answers the one question a caller cannot ask from outside:
@@ -233,12 +242,9 @@ func (m *Manager) RequestStart(ctx context.Context) map[string]any {
 // something that is never coming.
 func (m *Manager) lifecycleSnapshot(ctx context.Context) map[string]any {
 	m.mu.RLock()
-	inflight := m.inflightRequests
+	inflight := m.inflightRequests - m.inflightLifecycle
 	lastEnd := m.lastRequestEnd
 	m.mu.RUnlock()
-	if inflight > 0 {
-		inflight--
-	}
 	remaining := time.Duration(0)
 	if !lastEnd.IsZero() {
 		if elapsed := time.Since(lastEnd); elapsed < lifecycleQuietPeriod {
@@ -431,10 +437,14 @@ func (m *Manager) lifecycleIntentUnchangedLocked(stop, restart bool) bool {
 }
 
 // lifecycleGateOpenLocked reports whether the daemon is idle enough to be
-// replaced or stopped. A zero lastRequestEnd means no RPC has been served yet,
-// so there is no operation in progress to cut short. m.mu must be held.
+// replaced or stopped. A zero lastRequestEnd means no request that the quiet
+// period protects has been served yet, so there is no operation in progress to
+// cut short. m.mu must be held.
 func (m *Manager) lifecycleGateOpenLocked() bool {
 	if m.inflightRequests > 0 {
+		return false
+	}
+	if !m.lastLifecycleEnd.IsZero() && time.Since(m.lastLifecycleEnd) < lifecycleReplyGrace {
 		return false
 	}
 	return m.lastRequestEnd.IsZero() || time.Since(m.lastRequestEnd) >= lifecycleQuietPeriod
@@ -499,25 +509,47 @@ func (m *Manager) warnRestartUnmanaged() {
 // its own, so the restart gate counts handlers here instead. Both tolerate a
 // nil manager because Handler dispatches parameter decoding before it reaches
 // one, and the decoding contract is exercised without a manager at all.
-func (m *Manager) beginRequest() {
+//
+// lifecycle marks the requests that exist only to change the daemon's own run
+// state. They are counted like any other request, because a signal delivered
+// while one is still dispatching would close its connection without a reply,
+// but they are deliberately kept out of the quiet-period stamp: the quiet
+// period protects a user-visible operation from being cut in half, and wx
+// daemon stop is not such an operation. Stamping it would make the gate wait
+// five seconds for the request that opened it.
+func (m *Manager) beginRequest(lifecycle bool) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	m.inflightRequests++
+	if lifecycle {
+		m.inflightLifecycle++
+	}
 	m.mu.Unlock()
 }
 
-func (m *Manager) endRequest() {
+func (m *Manager) endRequest(lifecycle bool) {
 	if m == nil {
 		return
 	}
 	m.mu.Lock()
 	m.inflightRequests--
+	if lifecycle {
+		m.inflightLifecycle--
+		// The reply has not been written yet, so record the moment the gate
+		// has to stay shut until.
+		m.lastLifecycleEnd = time.Now()
+		m.mu.Unlock()
+		return
+	}
 	// The quiet period is measured from the moment the daemon actually went
-	// idle, so the stamp is taken only when the count reaches zero: a nested or
-	// concurrent request that is still running has not ended anything.
-	if m.inflightRequests == 0 {
+	// idle of the work it does for users, so the stamp is taken only when that
+	// count reaches zero: a nested or concurrent request that is still running
+	// has not ended anything. A lifecycle request that is still in flight does
+	// not hold the stamp back, because it is not the kind of work the quiet
+	// period exists to protect.
+	if m.inflightRequests-m.inflightLifecycle == 0 {
 		m.lastRequestEnd = time.Now()
 	}
 	m.mu.Unlock()

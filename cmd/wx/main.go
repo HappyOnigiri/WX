@@ -526,6 +526,8 @@ func startDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "starting")
+	defer waiting.finish()
 	// A daemon that is already listening is the wanted state, and reporting it
 	// before touching launchctl also covers the daemon an operator started by
 	// hand with --foreground, which launchd knows nothing about. It is only the
@@ -537,15 +539,17 @@ func startDaemon(ctx context.Context) int {
 		switch reply, err := requestDaemonLifecycle(ctx, "RequestStart"); {
 		case err == nil:
 			if cancelled, _ := reply["stop_cancelled"].(bool); cancelled {
-				fmt.Println("cancelled the pending stop of", launchd.Label)
+				waiting.line("cancelled the pending stop of " + launchd.Label)
 			}
 			if stopping, _ := reply["stop_pending"].(bool); !stopping {
+				waiting.finish()
 				fmt.Println("already running", launchd.Label)
 				return 0
 			}
 			// The stop was already handed to its signal, so the only route to
 			// the wanted state runs through the exit and a fresh daemon.
 			if !waitForSocket(ctx, socket, false) {
+				waiting.finish()
 				fmt.Fprintf(os.Stderr, "error: %s is stopping but did not exit within %s\n", launchd.Label, daemonWaitTimeout)
 				return 1
 			}
@@ -556,11 +560,13 @@ func startDaemon(ctx context.Context) int {
 			// Something is answering the socket, which is the wanted state. A
 			// degraded daemon and one that predates RequestStart both land
 			// here, and neither can be holding a pending stop.
+			waiting.finish()
 			fmt.Println("already running", launchd.Label)
 			return 0
 		}
 	}
 	if err := startAndWaitForDaemon(ctx, socket); err != nil {
+		waiting.finish()
 		if errors.Is(err, errNoDaemonAnswered) {
 			fmt.Fprintf(os.Stderr, "error: launchd was asked to start %s but no daemon answered %s within %s\n", launchd.Label, socket, daemonWaitTimeout)
 			return 1
@@ -571,6 +577,7 @@ func startDaemon(ctx context.Context) int {
 		}
 		return 1
 	}
+	waiting.finish()
 	fmt.Println("started", launchd.Label)
 	return 0
 }
@@ -626,8 +633,11 @@ func stopDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "stopping")
+	defer waiting.finish()
 	reply, err := requestDaemonLifecycle(ctx, "RequestStop")
 	if err != nil {
+		waiting.finish()
 		if rpc.IsConnectError(err) {
 			fmt.Println("already stopped", launchd.Label)
 			return 0
@@ -636,19 +646,22 @@ func stopDaemon(ctx context.Context) int {
 		return 1
 	}
 	if reason := lifecycleConflict(reply, "stop"); reason != "" {
+		waiting.finish()
 		fmt.Fprintln(os.Stderr, "error:", reason)
 		return 1
 	}
 	if already, _ := reply["already_pending"].(bool); already {
 		// The daemon honours only the first SIGTERM, so a repeated request
 		// changes nothing; the wait below is the useful half of this run.
-		fmt.Println("stop was already requested; waiting for the daemon to exit")
+		waiting.line("stop was already requested; waiting for the daemon to exit")
 	}
 	if !waitForSocket(ctx, socket, false) {
+		waiting.finish()
 		fmt.Fprintf(os.Stderr, "error: %s accepted the stop request but did not exit within %s\n", launchd.Label, daemonWaitTimeout)
 		fmt.Fprintln(os.Stderr, gateWaitReason(reply))
 		return 1
 	}
+	waiting.finish()
 	fmt.Println("stopped", launchd.Label)
 	return 0
 }
@@ -664,15 +677,19 @@ func restartDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "restarting")
+	defer waiting.finish()
 	reply, err := requestDaemonLifecycle(ctx, "RequestRestart")
 	if err != nil {
 		if !rpc.IsConnectError(err) {
+			waiting.finish()
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
 		// Nothing answered the socket, so there is no in-flight work to
 		// protect and launchd is the only way to get a daemon running again.
 		if err := launchd.Kickstart(ctx); err != nil {
+			waiting.finish()
 			fmt.Fprintln(os.Stderr, "error:", err)
 			if errors.Is(err, launchd.ErrServiceMissing) {
 				fmt.Fprintln(os.Stderr, "run wx daemon install to register the LaunchAgent first")
@@ -680,13 +697,16 @@ func restartDaemon(ctx context.Context) int {
 			return 1
 		}
 		if !waitForSocket(ctx, socket, true) {
+			waiting.finish()
 			fmt.Fprintf(os.Stderr, "error: launchd was asked to start %s but no daemon answered %s within %s\n", launchd.Label, socket, daemonWaitTimeout)
 			return 1
 		}
+		waiting.finish()
 		fmt.Println("restarted", launchd.Label)
 		return 0
 	}
 	if reason := lifecycleConflict(reply, "restart"); reason != "" {
+		waiting.finish()
 		fmt.Fprintln(os.Stderr, "error:", reason)
 		return 1
 	}
@@ -695,15 +715,18 @@ func restartDaemon(ctx context.Context) int {
 	// daemon that predates it, and an absent field must not read as "not
 	// managed": that would refuse the restart the older daemon can still do.
 	if managed, ok := reply["launchd_managed"].(bool); ok && !managed {
+		waiting.finish()
 		fmt.Fprintf(os.Stderr, "error: the daemon answering %s is not managed by launchd, so it cannot restart itself\n", socket)
 		fmt.Fprintln(os.Stderr, "stop it with wx daemon stop and start it again with wx daemon start")
 		return 1
 	}
 	if !waitForDaemonReplacement(ctx, socket, replyInt(reply, "pid")) {
+		waiting.finish()
 		fmt.Fprintf(os.Stderr, "error: %s accepted the restart request but was not replaced within %s\n", launchd.Label, daemonWaitTimeout)
 		fmt.Fprintln(os.Stderr, gateWaitReason(reply))
 		return 1
 	}
+	waiting.finish()
 	fmt.Println("restarted", launchd.Label)
 	return 0
 }

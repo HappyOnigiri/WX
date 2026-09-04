@@ -104,11 +104,25 @@ type Manager struct {
 	lifecycleAttempts int
 	restartUnmanaged  bool
 	inflightRequests  int
-	// lastRequestEnd is the moment the in-flight count last reached zero. The
-	// lifecycle gate waits out lifecycleQuietPeriod from it, because a single wx
-	// invocation is several independent RPCs with genuinely idle moments
-	// between them and a restart taken in one of those gaps cuts the next call.
+	// inflightLifecycle is the subset of inflightRequests that is asking the
+	// daemon to change its own run state. The gate blocks on the full count so
+	// that no signal lands on an unanswered request, but the quiet period is
+	// measured over the other kind only: see lastRequestEnd.
+	inflightLifecycle int
+	// lastRequestEnd is the moment the count of requests that are not lifecycle
+	// requests last reached zero. The lifecycle gate waits out
+	// lifecycleQuietPeriod from it, because a single wx invocation is several
+	// independent RPCs with genuinely idle moments between them and a restart
+	// taken in one of those gaps cuts the next call. wx daemon stop's own RPC
+	// is not one of those moments — it is the request being served — so
+	// stamping it would make every stop wait out a quiet period it created
+	// itself, even on a daemon that had been idle for hours.
 	lastRequestEnd time.Time
+	// lastLifecycleEnd is when a lifecycle request last left Handler.Handle.
+	// The gate holds lifecycleReplyGrace from it so the reply frame, which
+	// rpc.Server writes after the handler returns, is not cut off by the very
+	// signal the reply is reporting.
+	lastLifecycleEnd time.Time
 	// kickstart, terminate and launchdManaged are test seams for the restart and
 	// stop paths. Production managers leave them nil and take the launchd and
 	// signal implementations.

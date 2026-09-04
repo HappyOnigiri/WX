@@ -102,7 +102,14 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   （5秒）経過」「`jobs`が0」の3条件で、SIGTERMがin-flightのRPCを救わない
   （応答を書かずに接続が閉じる）以上、これが唯一の保護である。1回のwx起動が
   独立した複数のRPCの列である以上、in-flightが0になった最初の瞬間は安全な
-  瞬間ではないので、quiet periodを別に要求する。restartは`underLaunchd()`も
+  瞬間ではないので、quiet periodを別に要求する。ただしquiet periodを数える
+  対象から`RequestStop`・`RequestRestart`・`RequestStart`自身は外す
+  （`Handler.Handle`が`isLifecycleMethod`で振り分ける）。これらは守るべき
+  ユーザー操作ではなく、ゲートを待っている側であり、数えるとidleなdaemonでも
+  自分が作ったquiet periodを5秒待つことになる。in-flightの数え上げからは
+  外さない。応答フレームは`Handler.Handle`が戻った後に書かれるので、
+  代わりに`lifecycleReplyGrace`（100ミリ秒）だけゲートを閉じたままにして、
+  受理を伝える応答がそのsignalに切られないようにする。restartは`underLaunchd()`も
   要求する（手動起動のdaemonがkickstartすると二重起動になる）が、stopは
   要求しない。この判定は`launchd_managed`として応答にも載るので、CLIは来ない
   置換を待たずに断れる。要求は互いを打ち消し、同時に2つはpendingにならない。
@@ -120,6 +127,10 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   数ミリ秒を丸ごと取りこぼしうるので、置換の判定は観測した断ではなくpidの
   比較で行うためである。前者はkickstartが済んだ後なのでゲートに影響しないが、
   後者は諦める直前の1回で、restartがまだpendingならquiet periodを押し出す。
+  待っている間、CLIは`stopping...`のような行を出す。ゲートが開くまでdaemonは
+  何も言わないので、これが唯一の生存表示になる。ドットのアニメーションは
+  stdoutが端末のときだけで、pipeやファイルへ出しているときは待機行を一切
+  出さない（`interactiveOutput`）。
 
 ## 所有権の証明
 

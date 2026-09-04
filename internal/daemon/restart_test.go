@@ -200,35 +200,79 @@ func TestPendingRestartWaitsForJobsAndRequests(t *testing.T) {
 	if err := manager.store.FinishJob(ctx, job.ID, "restart-test", nil); err != nil {
 		t.Fatal(err)
 	}
-	manager.beginRequest()
+	manager.beginRequest(false)
 	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
-	manager.endRequest()
+	manager.endRequest(false)
 	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
 	// One wx invocation is several RPCs with idle moments between them, so the
 	// gate only opens once the daemon has stayed idle for lifecycleQuietPeriod.
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
+	elapseLifecycleGate(manager)
 	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
 }
 
+// elapseLifecycleGate ages both of the gate's stamps past their thresholds, so
+// a test that has already exercised the condition it cares about can let the
+// gate open without sleeping through a quiet period.
+func elapseLifecycleGate(m *Manager) {
+	m.mu.Lock()
+	m.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	m.lastLifecycleEnd = time.Now().Add(-lifecycleReplyGrace)
+	m.mu.Unlock()
+}
+
 func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
 	manager, _, kickstarts := restartFixture(t)
-	manager.beginRequest()
+	// A wx invocation is in the middle of its RPC sequence when the restart is
+	// asked for; the request that asks carries its own bracket on top.
+	manager.beginRequest(false)
+	manager.beginRequest(true)
 	manager.RequestRestart(context.Background())
 	if !manager.restartPending {
 		t.Fatal("an explicit request did not raise the pending restart")
 	}
 	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
-	manager.endRequest()
+	manager.endRequest(true)
+	manager.runPendingLifecycle()
+	kickstarts.stayAt(t, 0)
+	// The lifecycle request is answered but the wx invocation is not, so the
+	// quiet period has not even started yet.
+	manager.endRequest(false)
+	manager.runPendingLifecycle()
+	kickstarts.stayAt(t, 0)
+	elapseLifecycleGate(manager)
+	manager.runPendingLifecycle()
+	kickstarts.want(t, 1)
+}
+
+// TestLifecycleRequestDoesNotRestartTheQuietPeriod pins the reason wx daemon
+// stop and restart do not sit out a five-second quiet period on a daemon that
+// was already idle: the request that raises the intent is not the user-visible
+// operation the period protects, so it does not restamp it.
+func TestLifecycleRequestDoesNotRestartTheQuietPeriod(t *testing.T) {
+	manager, _, kickstarts := restartFixture(t)
+	handler := Handler{Manager: manager}
+	if _, err := handler.Handle(context.Background(), "RequestRestart", nil); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	lastEnd, lastLifecycle := manager.lastRequestEnd, manager.lastLifecycleEnd
+	manager.mu.Unlock()
+	if !lastEnd.IsZero() {
+		t.Fatal("the lifecycle request restamped the quiet period it was waiting on")
+	}
+	if lastLifecycle.IsZero() {
+		t.Fatal("the lifecycle request did not record when its reply became due")
+	}
+	// The reply frame is written after Handler.Handle returns, so the gate is
+	// still shut for lifecycleReplyGrace.
 	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
 	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.lastLifecycleEnd = time.Now().Add(-lifecycleReplyGrace)
 	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
@@ -419,7 +463,7 @@ func TestRequestedStopWaitsForTheSameIdleGateAsARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.beginRequest()
+	manager.beginRequest(true)
 	manager.RequestStop(ctx)
 	if !manager.stopPending {
 		t.Fatal("an explicit request did not raise the pending stop")
@@ -435,10 +479,8 @@ func TestRequestedStopWaitsForTheSameIdleGateAsARestart(t *testing.T) {
 	// conditions holds the stop back on its own.
 	manager.runPendingLifecycle()
 	stops.stayAt(t, 0)
-	manager.endRequest()
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
+	manager.endRequest(true)
+	elapseLifecycleGate(manager)
 	manager.runPendingLifecycle()
 	stops.stayAt(t, 0)
 	if _, err := manager.store.ClaimJob(ctx, job.ID, "stop-test"); err != nil {
@@ -652,7 +694,7 @@ func TestLifecycleReplyReportsWhatTheGateIsWaitingFor(t *testing.T) {
 	}
 	// One in-flight request stands for the lifecycle RPC itself, which the
 	// snapshot must not count against the daemon it is describing.
-	manager.beginRequest()
+	manager.beginRequest(true)
 	reply := manager.RequestStop(ctx)
 	if pid, _ := reply["pid"].(int); pid != os.Getpid() {
 		t.Fatalf("reply pid=%v, want %d", reply["pid"], os.Getpid())
@@ -666,13 +708,21 @@ func TestLifecycleReplyReportsWhatTheGateIsWaitingFor(t *testing.T) {
 	if already, _ := reply["already_pending"].(bool); already {
 		t.Fatal("the first stop request reported itself as already pending")
 	}
-	manager.endRequest()
+	manager.endRequest(true)
 	repeat := manager.RequestStop(ctx)
 	if already, _ := repeat["already_pending"].(bool); !already {
 		t.Fatal("the second stop request did not report the standing one")
 	}
-	if remaining, _ := repeat["quiet_period_remaining_ms"].(int64); remaining <= 0 {
-		t.Fatalf("quiet_period_remaining_ms=%v, want the period the request just restarted", repeat["quiet_period_remaining_ms"])
+	if remaining, _ := repeat["quiet_period_remaining_ms"].(int64); remaining != 0 {
+		t.Fatalf("quiet_period_remaining_ms=%v, want the lifecycle RPC to leave the quiet period alone", repeat["quiet_period_remaining_ms"])
+	}
+	// A request that is not a lifecycle request is what the quiet period is
+	// measured over, so this one does push the gate out.
+	manager.beginRequest(false)
+	manager.endRequest(false)
+	stamped := manager.RequestStop(ctx)
+	if remaining, _ := stamped["quiet_period_remaining_ms"].(int64); remaining <= 0 {
+		t.Fatalf("quiet_period_remaining_ms=%v, want the period the served request restarted", stamped["quiet_period_remaining_ms"])
 	}
 	restart := manager.RequestRestart(ctx)
 	if pending, _ := restart["restart_pending"].(bool); !pending {

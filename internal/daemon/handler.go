@@ -65,11 +65,28 @@ func decode(raw json.RawMessage, v any) error {
 // Handle counts itself as in-flight for the whole dispatch. The manager's
 // restart gate uses that count to pick a moment where a kickstart cannot cut a
 // response short, so the accounting has to bracket every method, including the
-// ones that fail to decode.
+// ones that fail to decode. Which side of the quiet period a method lands on
+// is decided here rather than in the manager, because the manager sees the
+// intent and not the method that carried it.
 func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
-	h.Manager.beginRequest()
-	defer h.Manager.endRequest()
+	lifecycle := isLifecycleMethod(method)
+	h.Manager.beginRequest(lifecycle)
+	defer h.Manager.endRequest(lifecycle)
 	return h.dispatch(ctx, method, raw)
+}
+
+// isLifecycleMethod reports whether a method exists only to change the daemon's
+// own run state. Those requests are not the user-visible operation the quiet
+// period protects — they are the ones waiting on it — so they do not restamp
+// it. An unknown method is not one of them: a typo must not be able to open the
+// gate early.
+func isLifecycleMethod(method string) bool {
+	switch method {
+	case "RequestStop", "RequestRestart", "RequestStart":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessage) (any, error) {

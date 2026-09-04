@@ -38,8 +38,11 @@ wx daemon restart  # replace it with the installed binary
 ```
 
 All three wait for the daemon to reach the requested state and give up after
-60 seconds. A `stop`, and a `restart` the daemon accepted, also name what the
-daemon was still waiting for; `start`, and a `restart` that found nothing
+60 seconds. The daemon acts on the request at its next idle moment rather than
+straight away, so the wait is normally a second or two and longer while a job
+is still running; in a terminal the command shows a `stopping...` line for as
+long as it waits. A `stop`, and a `restart` the daemon accepted, also name what
+the daemon was still waiting for; `start`, and a `restart` that found nothing
 listening and fell back to launchd, have no such answer to report and say only
 that the daemon never appeared. `wx daemon stop` leaves the LaunchAgent
 registered, so the next login — or the next `wx claude` — starts the daemon
