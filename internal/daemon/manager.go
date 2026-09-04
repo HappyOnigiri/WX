@@ -20,11 +20,10 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/hookconfig"
-	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
@@ -3263,72 +3262,35 @@ func formatOptionalTime(value time.Time) string {
 }
 
 func (m *Manager) Doctor(ctx context.Context) map[string]any {
-	checks := map[string]any{}
 	m.mu.RLock()
-	reloadError := m.reloadError
+	reloadError, restartPending, cfg := m.reloadError, m.restartPending, m.cfg
 	m.mu.RUnlock()
-	if reloadError == "" {
-		checks["config"] = "ok"
+	var checks map[string]any
+	if restartPending {
+		checks = diag.SharedChecksWithoutLaunchAgent(ctx, cfg, reloadError, m.git)
 	} else {
-		checks["config"] = reloadError
+		checks = diag.SharedChecks(ctx, cfg, reloadError, m.git)
 	}
-	if _, err := m.git.Run(ctx, "", "--version"); err != nil {
-		checks["git"] = err.Error()
-	} else {
-		checks["git"] = "ok"
+	if restartPending {
+		// The daemon is still executing the old binary after a replacement. Its
+		// Render result is therefore intentionally not compared with the plist
+		// yet; doing so would report a stale plist even when install was already
+		// performed for the incoming binary.
+		checks["launch_agent"] = "restart pending; LaunchAgent content check deferred"
 	}
+
 	if err := m.store.Ping(ctx); err != nil {
 		checks["sqlite"] = err.Error()
 	} else {
 		checks["sqlite"] = "ok"
 	}
-	checks["socket"] = diagnosticPath(must(config.SocketPath()), os.ModeSocket, 0o600)
-	checks["state_database"] = diagnosticPath(must(config.StatePath()), 0, 0o600)
-	checks["launch_agent"] = diagnosticPath(must(launchd.PlistPath()), 0, 0o600)
-	root, rootErr := config.ExpandHome(m.Config().Storage.WorktreeRoot)
-	if rootErr != nil {
-		checks["worktree_root"] = rootErr.Error()
-	} else {
-		checks["worktree_root"] = diagnosticPath(root, os.ModeDir, 0o700)
-	}
-	hooks := map[string]string{}
-	for _, agentKind := range []string{"claude", "codex"} {
-		if hookconfig.Available(agentKind) {
-			hooks[agentKind] = "ok"
-		} else {
-			hooks[agentKind] = "missing or invalid readiness hooks; foreground readiness remains required"
-		}
-	}
-	checks["hooks"] = hooks
 	checks["worktree_registration"] = m.registrationDiagnostics(ctx)
 	checks["artifact_ownership"] = m.artifactDiagnostics(ctx)
 	return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "checks": checks}
 }
 
 func diagnosticPath(path string, requiredType os.FileMode, requiredPerm os.FileMode) string {
-	if path == "" {
-		return "path unavailable"
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err.Error()
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "unsafe symlink"
-	}
-	if requiredType == os.ModeDir && !info.IsDir() {
-		return "not a directory"
-	}
-	if requiredType == os.ModeSocket && info.Mode()&os.ModeSocket == 0 {
-		return "not a Unix socket"
-	}
-	if requiredType == 0 && !info.Mode().IsRegular() {
-		return "not a regular file"
-	}
-	if info.Mode().Perm() != requiredPerm {
-		return fmt.Sprintf("unsafe permissions %04o; expected %04o", info.Mode().Perm(), requiredPerm)
-	}
-	return "ok"
+	return diag.DiagnosticPath(path, requiredType, requiredPerm)
 }
 
 func (m *Manager) registrationDiagnostics(ctx context.Context) map[string]any {

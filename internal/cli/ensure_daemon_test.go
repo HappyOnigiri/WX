@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
@@ -45,6 +46,42 @@ func TestEnsureDaemonKickstartsWhenNothingIsListening(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); statErr != nil {
 		t.Fatalf("launchctl kickstart was not invoked for a missing socket: %v", statErr)
+	}
+}
+
+func TestEnsureDaemonGuidesInstallForStaleLaunchAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "wx"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\necho bootstrap-failed >&2\nexit 9\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	plist, err := launchd.PlistPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plist), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The old command contract that motivated this diagnostic wrote a plist
+	// containing daemon start --foreground instead of daemon serve.
+	if err := os.WriteFile(plist, []byte("<string>daemon start --foreground</string>\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := Client{RPC: rpc.Client{Socket: filepath.Join(home, "wxd.sock"), Timeout: 200 * time.Millisecond}, Config: config.Defaults()}
+	err = client.ensureDaemon(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "run wx daemon install") {
+		t.Fatalf("stale launch agent guidance error=%v", err)
+	}
+	if strings.Contains(err.Error(), "run wx doctor") {
+		t.Fatalf("stale launch agent still suggested doctor: %v", err)
 	}
 }
 

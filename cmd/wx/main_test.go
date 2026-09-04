@@ -92,6 +92,49 @@ func TestRunRPCDisplaySortsHumanReadableOutputByKey(t *testing.T) {
 	}
 }
 
+func TestRunDoctorFallsBackToLocalChecksWhenDaemonCannotConnect(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stdout := captureStdout(t, func() {
+		if code := runDoctor(context.Background(), []string{"--json"}); code != 1 {
+			t.Fatalf("runDoctor exit=%d, want 1 when daemon is unavailable", code)
+		}
+	})
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("local doctor output is not JSON: %v\n%s", err, stdout)
+	}
+	if got := payload["schema_version"]; got != float64(4) {
+		t.Fatalf("schema_version=%v, want 4", got)
+	}
+	checks, ok := payload["checks"].(map[string]any)
+	if !ok {
+		t.Fatalf("checks has wrong type: %T", payload["checks"])
+	}
+	for _, key := range []string{"config", "git", "socket", "state_database", "launch_agent", "worktree_root", "hooks", "sqlite", "worktree_registration", "artifact_ownership", "daemon"} {
+		if _, ok := checks[key]; !ok {
+			t.Fatalf("local doctor checks missing %q: %v", key, checks)
+		}
+	}
+	if got := checks["sqlite"]; got == "ok" {
+		t.Fatal("local doctor reported sqlite as available without a daemon")
+	}
+	registration, ok := checks["worktree_registration"].(map[string]any)
+	if !ok || registration["checked"] != float64(0) || registration["error"] == nil {
+		t.Fatalf("local registration placeholder=%v", checks["worktree_registration"])
+	}
+	artifacts, ok := checks["artifact_ownership"].(map[string]any)
+	if !ok {
+		t.Fatalf("local artifact placeholder=%v", checks["artifact_ownership"])
+	}
+	if errors, ok := artifacts["errors"].([]any); !ok || len(errors) == 0 {
+		t.Fatalf("local artifact errors=%v", artifacts["errors"])
+	}
+	if daemon, ok := checks["daemon"].(string); !ok || !strings.Contains(daemon, "connect") {
+		t.Fatalf("local daemon reason=%v", checks["daemon"])
+	}
+}
+
 // captureStdout redirects os.Stdout for the duration of fn and returns what
 // was written. Tests in this package do not run in parallel, so the process-
 // wide swap is safe.
