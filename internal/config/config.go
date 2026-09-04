@@ -37,6 +37,7 @@ type Config struct {
 	Retention    Retention             `yaml:"retention,omitempty"`
 	Discovery    Discovery             `yaml:"discovery,omitempty"`
 	Readiness    Readiness             `yaml:"readiness,omitempty"`
+	Includes     Includes              `yaml:"includes,omitempty"`
 	Workspaces   map[string]Workspace  `yaml:"workspaces,omitempty"`
 	Repositories map[string]Repository `yaml:"repositories,omitempty"`
 	Logging      Logging               `yaml:"logging,omitempty"`
@@ -74,9 +75,16 @@ type Workspace struct {
 	Copy []string `yaml:"copy,omitempty"`
 	Link []string `yaml:"link,omitempty"`
 }
+type Includes struct {
+	DefaultAgentRules bool `yaml:"default_agent_rules,omitempty"`
+}
 type Repository struct {
-	DefaultBranch string  `yaml:"default_branch,omitempty"`
-	Prepare       Prepare `yaml:"prepare,omitempty"`
+	DefaultBranch string             `yaml:"default_branch,omitempty"`
+	Prepare       Prepare            `yaml:"prepare,omitempty"`
+	Includes      RepositoryIncludes `yaml:"includes,omitempty"`
+}
+type RepositoryIncludes struct {
+	DefaultAgentRules *bool `yaml:"default_agent_rules,omitempty"`
 }
 type Prepare struct {
 	Command []string `yaml:"command,omitempty"`
@@ -95,9 +103,19 @@ func Defaults() Config {
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2, GitConcurrencyPerRepository: 1},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
-		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Logging: Logging{Level: "info"},
+		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
 		Workspaces: map[string]Workspace{}, Repositories: map[string]Repository{},
 	}
+}
+
+// DefaultAgentRulesEnabled resolves whether default agent rule files should be
+// copied for a repository, preferring its explicit override over the global
+// setting.
+func (c Config) DefaultAgentRulesEnabled(mainPath string) bool {
+	if override, ok := c.Repositories[mainPath]; ok && override.Includes.DefaultAgentRules != nil {
+		return *override.Includes.DefaultAgentRules
+	}
+	return c.Includes.DefaultAgentRules
 }
 
 // homePath joins parts onto the user's home directory, failing closed when
@@ -261,7 +279,7 @@ func (c Config) has(key string, fallback bool) bool {
 // leaves rather than nested sections).
 var durationType = reflect.TypeOf(Duration{})
 
-// walkConfigLeaves visits every scalar (string, int, or Duration) field
+// walkConfigLeaves visits every scalar (string, int, bool, or Duration) field
 // reachable from v, in declaration order, along with its dotted yaml key.
 // It skips unexported fields, "version" (handled separately by every
 // caller), and any map or slice field (workspaces, repositories, and
@@ -490,6 +508,8 @@ func Fields(c Config) []Field {
 			value = fv.Interface().(Duration).String()
 		case fv.Kind() == reflect.String:
 			value = fv.String()
+		case fv.Kind() == reflect.Bool:
+			value = strconv.FormatBool(fv.Bool())
 		default:
 			value = strconv.FormatInt(fv.Int(), 10)
 		}
@@ -499,7 +519,7 @@ func Fields(c Config) []Field {
 }
 
 // SetField parses value for the type of the scalar field addressed by key
-// (a duration, an integer, or a plain string) and assigns it. Range and
+// (a duration, an integer, a boolean, or a plain string) and assigns it. Range and
 // enum validity for every key is enforced later by Validate; SetField only
 // performs the type-level parsing needed to store the value at all.
 func SetField(c *Config, key, value string) error {
@@ -516,6 +536,12 @@ func SetField(c *Config, key, value string) error {
 		field.Set(reflect.ValueOf(Duration{d}))
 	case field.Kind() == reflect.String:
 		field.SetString(value)
+	case field.Kind() == reflect.Bool:
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		field.SetBool(b)
 	default:
 		n, err := strconv.Atoi(value)
 		if err != nil {
