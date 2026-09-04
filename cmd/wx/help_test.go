@@ -34,6 +34,45 @@ func (h commandHandler) Handle(_ context.Context, method string, _ json.RawMessa
 	}
 }
 
+// TestDaemonRestartTellsAnOperatorToInstallTheLaunchAgent covers the branch the
+// other daemon restart tests miss: the one that answers with the stub
+// launchctl's success, the other cancels its context so launchctl never runs
+// and the output stays empty.
+func TestDaemonRestartTellsAnOperatorToInstallTheLaunchAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\necho 'Could not find service' >&2\nexit 3\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := os.Stderr
+	os.Stderr = write
+	// No daemon is listening under this HOME, so RequestRestart fails to
+	// connect and the command falls back to launchctl.
+	exit := run(context.Background(), []string{"daemon", "restart"})
+	os.Stderr = restore
+	_ = write.Close()
+	var stderr bytes.Buffer
+	if _, err := stderr.ReadFrom(read); err != nil {
+		t.Fatal(err)
+	}
+	_ = read.Close()
+	if exit != 1 {
+		t.Fatalf("daemon restart exit=%d, want 1", exit)
+	}
+	if !strings.Contains(stderr.String(), "run wx daemon install to register the LaunchAgent first") {
+		t.Fatalf("stderr does not carry the install guidance:\n%s", stderr.String())
+	}
+}
+
 func TestTopUsageContract(t *testing.T) {
 	var b bytes.Buffer
 	topUsage(&b)
