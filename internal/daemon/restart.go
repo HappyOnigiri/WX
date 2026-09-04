@@ -109,6 +109,21 @@ func (m *Manager) detectExecutableReplacement() {
 	m.log.Info("daemon executable was replaced; restart is pending", "path", path, "baseline_identity", baseline.identity, "current_identity", current.identity)
 }
 
+// RequestRestart records an operator's explicit restart request. It only raises
+// the pending flag: the restart itself still goes through restartIfReplaced, so
+// an operator who ran make install cannot cut short an in-flight RPC. That
+// matters because a kickstart -k landing between BeginRPCRequest and
+// CompleteRPCRequest leaves the reservation PENDING, and an idempotency key
+// stuck that way answers IDEMPOTENCY_INDETERMINATE for the rest of its TTL —
+// the session-scoped Release keys never succeed again for that session.
+func (m *Manager) RequestRestart() map[string]any {
+	m.mu.Lock()
+	m.restartPending = true
+	m.mu.Unlock()
+	m.log.Info("daemon restart was requested; it will be issued once the daemon is idle")
+	return map[string]any{"restart_pending": true}
+}
+
 // restartIfReplaced restarts the daemon once the pending replacement can be
 // followed without dropping work. SIGTERM does not rescue an in-flight RPC (the
 // connection is closed without a response) and Manager.Close blocks until every

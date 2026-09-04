@@ -158,6 +158,31 @@ func TestPendingRestartWaitsForJobsAndRequests(t *testing.T) {
 	}
 }
 
+func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
+	manager, _, kickstarts := restartFixture(t)
+	manager.beginRequest()
+	manager.RequestRestart()
+	if !manager.restartPending {
+		t.Fatal("an explicit request did not raise the pending restart")
+	}
+	manager.restartIfReplaced()
+	if *kickstarts != 0 {
+		t.Fatalf("kickstarts=%d while the requesting RPC is still in flight", *kickstarts)
+	}
+	manager.endRequest()
+	manager.restartIfReplaced()
+	if *kickstarts != 0 {
+		t.Fatalf("kickstarts=%d before the quiet period elapsed", *kickstarts)
+	}
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-restartQuietPeriod)
+	manager.mu.Unlock()
+	manager.restartIfReplaced()
+	if *kickstarts != 1 {
+		t.Fatalf("kickstarts=%d once the daemon had been idle, want 1", *kickstarts)
+	}
+}
+
 func TestUnmanagedDaemonKeepsThePendingRestart(t *testing.T) {
 	manager, executable, kickstarts := restartFixture(t)
 	manager.launchdManaged = func() bool { return false }
