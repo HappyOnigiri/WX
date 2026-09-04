@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -288,8 +289,145 @@ func runResume(ctx context.Context, args []string) int {
 	return c.RunAgent(ctx, agentName, rest[2:], nil, false, id)
 }
 
+// daemonWaitTimeout bounds each synchronous daemon lifecycle command. The
+// daemon only acts on a stop or restart once it is idle, and it waits for
+// running jobs as well as in-flight RPCs, so the budget has to cover a
+// realistic job rather than just the signal. It is a variable so tests can
+// shorten it; production never changes it.
+var daemonWaitTimeout = 60 * time.Second
+
+// daemonPollInterval is how often the socket is probed while waiting. It
+// matches cli.Client.ensureDaemon's cadence.
+const daemonPollInterval = 50 * time.Millisecond
+
+// daemonListening reports whether something is accepting connections on the
+// daemon socket. It dials and closes without ever sending a frame, on purpose:
+// rpc.Server abandons a connection whose first frame never arrives before
+// Handler.Handle runs, so this probe is invisible to the manager's idle gate.
+// Polling with a real RPC instead would restamp lastRequestEnd on every pass
+// and hold the quiet period — and therefore the pending stop or restart — open
+// for exactly as long as the caller kept waiting.
+func daemonListening(ctx context.Context, socket string) bool {
+	dialer := net.Dialer{Timeout: daemonPollInterval}
+	conn, err := dialer.DialContext(ctx, "unix", socket)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// waitForSocket blocks until the socket reaches the wanted state, reporting
+// false when the budget ran out or the caller gave up first.
+func waitForSocket(ctx context.Context, socket string, listening bool) bool {
+	deadline := time.Now().Add(daemonWaitTimeout)
+	for {
+		if daemonListening(ctx, socket) == listening {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(daemonPollInterval):
+		}
+	}
+}
+
+// waitForDaemonReplacement waits for a restart to produce a different process.
+// The listener closes and reopens within a few milliseconds of the kickstart,
+// so a 50ms probe can miss the gap entirely; the pid comparison, not the
+// observed outage, is what decides. Status is only called once the socket has
+// been seen closed, because until then the restart is still pending and every
+// Status would push its quiet period out by another five seconds.
+func waitForDaemonReplacement(ctx context.Context, socket string, previousPID int) bool {
+	deadline := time.Now().Add(daemonWaitTimeout)
+	sawOutage := false
+	for {
+		if !daemonListening(ctx, socket) {
+			sawOutage = true
+		} else if sawOutage {
+			if pid := daemonPID(ctx); pid != 0 && pid != previousPID {
+				return true
+			}
+		}
+		if !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(daemonPollInterval):
+		}
+	}
+	// The outage was never observed. A daemon answering with a different pid
+	// restarted anyway, and this is the last moment where asking cannot delay
+	// anything that is still pending.
+	pid := daemonPID(ctx)
+	return pid != 0 && pid != previousPID
+}
+
+// daemonPID asks the running daemon which process is serving the socket.
+func daemonPID(ctx context.Context) int {
+	client, err := rpcClient()
+	if err != nil {
+		return 0
+	}
+	var out struct {
+		PID int `json:"pid"`
+	}
+	callCtx, cancel := context.WithTimeout(ctx, daemonRequestTimeout)
+	defer cancel()
+	if err := client.Call(callCtx, "Status", struct{}{}, &out); err != nil {
+		return 0
+	}
+	return out.PID
+}
+
+// daemonRequestTimeout bounds the lifecycle request itself, as opposed to the
+// wait for it to take effect.
+const daemonRequestTimeout = 5 * time.Second
+
+// requestDaemonLifecycle sends one lifecycle RPC and returns the gate snapshot
+// the daemon answered with.
+func requestDaemonLifecycle(ctx context.Context, method string) (map[string]any, error) {
+	client, err := rpcClient()
+	if err != nil {
+		return nil, err
+	}
+	var reply map[string]any
+	requestCtx, cancel := context.WithTimeout(ctx, daemonRequestTimeout)
+	defer cancel()
+	err = client.Call(requestCtx, method, struct{}{}, &reply)
+	return reply, err
+}
+
+// replyInt reads one number out of a lifecycle reply. JSON numbers decode into
+// float64 through map[string]any, and a daemon that predates a field simply
+// omits it, so an unreadable value reads as zero rather than as a failure.
+func replyInt(reply map[string]any, key string) int {
+	value, _ := reply[key].(float64)
+	return int(value)
+}
+
+// gateWaitReason explains, in the words of the snapshot taken when the request
+// was accepted, what the daemon was still waiting for. Running jobs are the
+// one cause that legitimately outlasts the budget, so they are named first.
+func gateWaitReason(reply map[string]any) string {
+	if jobs := replyInt(reply, "queued_jobs"); jobs > 0 {
+		return fmt.Sprintf("%d job(s) were still queued when the request was accepted; the daemon waits for them to finish", jobs)
+	}
+	if inflight := replyInt(reply, "inflight_requests"); inflight > 0 {
+		return fmt.Sprintf("%d other request(s) were still in flight when the request was accepted", inflight)
+	}
+	return "the daemon was idle when the request was accepted; check the daemon log with wx doctor"
+}
+
 func runDaemon(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("daemon", pflag.ContinueOnError)
+	foreground := fs.Bool("foreground", false, "with start, run the daemon in this process")
 	fs.Usage = func() { commandUsage(os.Stdout, "daemon") }
 	if code, done := finishFlagParse(fs, "daemon", args); done {
 		return code
@@ -298,15 +436,25 @@ func runDaemon(ctx context.Context, args []string) int {
 		commandUsage(os.Stderr, "daemon")
 		return 2
 	}
-	switch fs.Arg(0) {
-	case "serve":
-		signalCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-		defer cancel()
-		if err := daemon.Serve(signalCtx); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
+	action := fs.Arg(0)
+	if *foreground && action != "start" {
+		commandUsage(os.Stderr, "daemon")
+		return 2
+	}
+	switch action {
+	case "start":
+		if *foreground {
+			signalCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+			if err := daemon.Serve(signalCtx); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				return 1
+			}
+			return 0
 		}
-		return 0
+		return startDaemon(ctx)
+	case "stop":
+		return stopDaemon(ctx)
 	case "install":
 		binary, err := exec.LookPath("wx")
 		if err != nil {
@@ -331,23 +479,89 @@ func runDaemon(ctx context.Context, args []string) int {
 		fmt.Println("uninstalled", launchd.Label)
 		return 0
 	case "restart":
-		// Ask the running daemon to restart itself rather than kickstarting it
-		// from here. kickstart -k closes in-flight RPCs without a response, and
-		// a reservation interrupted between BeginRPCRequest and
-		// CompleteRPCRequest answers IDEMPOTENCY_INDETERMINATE until its TTL
-		// expires. The daemon's own gate waits for an idle moment instead.
-		client, clientErr := rpcClient()
-		if clientErr != nil {
-			fmt.Fprintln(os.Stderr, "error:", clientErr)
-			return 1
+		return restartDaemon(ctx)
+	default:
+		commandUsage(os.Stderr, "daemon")
+		return 2
+	}
+}
+
+// startDaemon asks launchd for a running daemon and waits until one answers
+// the socket.
+func startDaemon(ctx context.Context) int {
+	socket, err := config.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	// A daemon that is already listening is the wanted state, and reporting it
+	// before touching launchctl also covers the daemon an operator started by
+	// hand with --foreground, which launchd knows nothing about.
+	if daemonListening(ctx, socket) {
+		fmt.Println("already running", launchd.Label)
+		return 0
+	}
+	if err := launchd.Start(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		if errors.Is(err, launchd.ErrServiceMissing) {
+			fmt.Fprintln(os.Stderr, "run wx daemon install to register the LaunchAgent first")
 		}
-		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := client.Call(requestCtx, "RequestRestart", struct{}{}, nil)
-		cancel()
-		if err == nil {
-			fmt.Println("restart requested", launchd.Label)
+		return 1
+	}
+	if !waitForSocket(ctx, socket, true) {
+		fmt.Fprintf(os.Stderr, "error: launchd was asked to start %s but no daemon answered %s within %s\n", launchd.Label, socket, daemonWaitTimeout)
+		return 1
+	}
+	fmt.Println("started", launchd.Label)
+	return 0
+}
+
+// stopDaemon asks the running daemon to exit at its next idle moment and waits
+// for the socket to go quiet. The LaunchAgent and its plist are left in place,
+// so the next login (or the next wx claude) brings the daemon back; removing
+// the registration is what wx daemon uninstall is for.
+func stopDaemon(ctx context.Context) int {
+	socket, err := config.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	reply, err := requestDaemonLifecycle(ctx, "RequestStop")
+	if err != nil {
+		if rpc.IsConnectError(err) {
+			fmt.Println("already stopped", launchd.Label)
 			return 0
 		}
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if already, _ := reply["already_pending"].(bool); already {
+		// The daemon honours only the first SIGTERM, so a repeated request
+		// changes nothing; the wait below is the useful half of this run.
+		fmt.Println("stop was already requested; waiting for the daemon to exit")
+	}
+	if !waitForSocket(ctx, socket, false) {
+		fmt.Fprintf(os.Stderr, "error: %s accepted the stop request but did not exit within %s\n", launchd.Label, daemonWaitTimeout)
+		fmt.Fprintln(os.Stderr, gateWaitReason(reply))
+		return 1
+	}
+	fmt.Println("stopped", launchd.Label)
+	return 0
+}
+
+// restartDaemon asks the running daemon to restart itself rather than
+// kickstarting it from here. kickstart -k closes in-flight RPCs without a
+// response, and a reservation interrupted between BeginRPCRequest and
+// CompleteRPCRequest answers IDEMPOTENCY_INDETERMINATE until its TTL expires.
+// The daemon's own gate waits for an idle moment instead.
+func restartDaemon(ctx context.Context) int {
+	socket, err := config.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	reply, err := requestDaemonLifecycle(ctx, "RequestRestart")
+	if err != nil {
 		if !rpc.IsConnectError(err) {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
@@ -361,12 +575,20 @@ func runDaemon(ctx context.Context, args []string) int {
 			}
 			return 1
 		}
+		if !waitForSocket(ctx, socket, true) {
+			fmt.Fprintf(os.Stderr, "error: launchd was asked to start %s but no daemon answered %s within %s\n", launchd.Label, socket, daemonWaitTimeout)
+			return 1
+		}
 		fmt.Println("restarted", launchd.Label)
 		return 0
-	default:
-		commandUsage(os.Stderr, "daemon")
-		return 2
 	}
+	if !waitForDaemonReplacement(ctx, socket, replyInt(reply, "pid")) {
+		fmt.Fprintf(os.Stderr, "error: %s accepted the restart request but was not replaced within %s\n", launchd.Label, daemonWaitTimeout)
+		fmt.Fprintln(os.Stderr, gateWaitReason(reply))
+		return 1
+	}
+	fmt.Println("restarted", launchd.Label)
+	return 0
 }
 
 func runHook(ctx context.Context, args []string) int {
