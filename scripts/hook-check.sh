@@ -1,8 +1,11 @@
 #!/bin/sh
 set -eu
 
-# The hooks that invoke this script (.githooks/pre-commit, .githooks/pre-push)
-# do not enforce a fixed time budget. Keep this script's own checks fast as a
+# The hooks that invoke this script (the pre-commit and pre-push under
+# $(git rev-parse --git-common-dir)/hooks, via `make hook-pre-commit` and
+# `make hook-pre-push`) do not enforce a fixed time budget. They are not
+# tracked here, so that a user-level core.hooksPath dispatcher stays in
+# effect. Keep this script's own checks fast as a
 # guideline (aim to stay well under 30 seconds), but do not narrow what it
 # checks in order to chase a budget. The full test suite and golangci-lint are
 # deliberately not run here: they are CI's job, not the hook's.

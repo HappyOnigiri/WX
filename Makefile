@@ -31,13 +31,9 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # `gosec` target, which is paused out of default setup, CI, and hooks.
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check portable-test concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hooks-install hooks-test hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check portable-test concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
-# hooks-install is a dependency (not just documented separately) so that the
-# README's `make setup && make ci` sequence succeeds on a brand-new clone or
-# worktree: `ci-checks` runs hooks-test, which hard-fails unless
-# core.hooksPath is already set to .githooks.
-setup: setup-go-tools setup-external-tools hooks-install
+setup: setup-go-tools setup-external-tools
 
 setup-go-tools:
 	mkdir -p "$(TOOLS_BIN)"
@@ -144,7 +140,7 @@ workflow-security-audit: setup-zizmor
 
 shell-check:
 	@shellcheck --version | grep -q 'version: $(SHELLCHECK_VERSION)' || { echo "ShellCheck $(SHELLCHECK_VERSION) is required; run make setup"; exit 1; }
-	shellcheck .githooks/pre-commit .githooks/pre-push scripts/*.sh
+	shellcheck scripts/*.sh
 
 test:
 	$(GO) test -shuffle=on -count=1 ./...
@@ -221,14 +217,11 @@ security-local: setup-security-tools govulncheck dependency-check gosec license-
 ci:
 	$(MAKE) $(CI_MAKEFLAGS) ci-checks
 
-ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check coverage-check build-darwin smoke hooks-test
+ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check coverage-check build-darwin smoke
 
-hooks-install:
-	git config --local core.hooksPath .githooks
-
-hooks-test:
-	scripts/test-hooks.sh
-
+# The hook bodies live in $(git rev-parse --git-common-dir)/hooks and are not
+# tracked here, so that the user-level core.hooksPath dispatcher keeps working.
+# These targets are the contract those hooks call.
 hook-pre-commit:
 	scripts/hook-check.sh pre-commit
 

@@ -83,8 +83,15 @@ at this project's scale. `gremlins` and the mutation targets have been
 removed rather than paused.
 
 Do not re-enable these checks in CI, workflows, or hooks without the user's
-explicit permission. Run `make hooks-install` to enable the bounded
-pre-commit and pre-push checks.
+explicit permission.
+
+Git hooks are not tracked in this repository. Install them by placing an
+executable `pre-commit` and `pre-push` under
+`$(git rev-parse --git-common-dir)/hooks`, each dispatching to the matching
+`make hook-pre-commit` / `make hook-pre-push` target. Keeping the hook bodies
+there rather than under a repository-local `core.hooksPath` leaves a
+user-level `core.hooksPath` dispatcher intact, which a repository-local
+setting would otherwise shadow for every hook.
 
 The invariants this repository will not trade away, and the conventions that
 follow from them, are in [`AGENTS.md`](AGENTS.md); the package layout, session

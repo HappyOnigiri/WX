@@ -73,6 +73,11 @@ daemonの常駐はLaunchAgentが担う。ビルド対象がdarwinとlinuxに限�
   テスト側のtemporary directoryが引っかかる。
 - Git hookは書式・`go vet`・buildまでに絞ってある。全テストとlintはCIの仕事
   なので、hookへ足さない。
+- Git hookの本体はリポジトリで管理しない。`$(git rev-parse --git-common-dir)`
+  の`hooks/`直下に置き、そこから`make hook-pre-commit`・`make hook-pre-push`
+  を呼ぶ。`core.hooksPath`のlocal設定はglobal設定を丸ごと覆い隠すので、
+  userレベルのhook dispatcherを使う環境ではこのリポジトリのhookだけでなく
+  `post-checkout`など全てのhookが止まる。local設定を復活させない。
 
 ## 停止中の自動化
 
