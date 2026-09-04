@@ -23,7 +23,7 @@ import (
 
 func TestReadyMatchesRejectsEveryUnsafeRepresentation(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, testDirName(resolved[0].Repository, manager.Config()), manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 	}
 
 	dirName := testDirName(resolved[0].Repository, manager.Config())
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, dirName, manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestRestoreSlotFailureAndReplayBoundaries(t *testing.T) {
 	}
 
 	dirName := testDirName(resolved[0].Repository, manager.Config())
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, dirName, manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ func TestRegistryOrphanAndClosedStoreReconciliation(t *testing.T) {
 		t.Fatal(err)
 	}
 	dirName := testDirName(resolved[0].Repository, cfg)
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, dirName, cfg)
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +512,7 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 		ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
 		workspaceRecord.Kind = "repository"
 		dirName := testDirName(resolved[0].Repository, manager.Config())
-		fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, dirName, manager.Config())
+		fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
 		if err != nil {
 			t.Fatal(err)
 		}

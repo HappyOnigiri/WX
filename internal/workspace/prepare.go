@@ -1282,19 +1282,23 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 }
 
 // Fingerprint hashes everything that makes a prepared worktree reusable.
-// dirName is the repository's directory name inside the slot, hashed so that
-// changing storage.repo_dir_source or a repositories.<path>.dir_name
-// override makes existing READY slots stop matching and be rebuilt at the
-// new location instead of being leased at the old one.
 //
-// schema=3 marks the layout change that introduced dirName; a fingerprint
-// written by an earlier wx therefore never compares equal.
-func Fingerprint(generation int, oid string, repo discovery.Repository, dirName string, c config.Config) (string, error) {
+// The repository's directory name inside the slot is deliberately not part of
+// it. slot_repositories.dir_name is the authority once a slot exists, so an
+// existing slot keeps the name it recorded and only new slots pick up a
+// changed storage.repo_dir_source or repositories.<path>.dir_name. Hashing
+// the name could not change that either way: the reuse check recomputes the
+// fingerprint from the stored name, so the component would always compare
+// equal to itself.
+//
+// schema=3 marks the layout change; a fingerprint written by an earlier wx
+// therefore never compares equal.
+func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	if err := domain.ValidatePhysicalPath(string(repo.MainPath), false); err != nil {
 		return "", err
 	}
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=3\ngeneration=%d\noid=%s\ndir=%s\n", generation, oid, dirName)
+	_, _ = fmt.Fprintf(h, "schema=3\ngeneration=%d\noid=%s\n", generation, oid)
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
 		data, err := readPhysicalManifest(string(repo.MainPath), name)
 		if err != nil {

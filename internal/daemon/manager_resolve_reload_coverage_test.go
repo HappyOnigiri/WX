@@ -298,12 +298,11 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 	if _, _, err := m.createSlotRoot(badPath, badPath); err != nil {
 		t.Fatal(err)
 	}
-	// The recorded directory name escapes the wx root. The fingerprint has to
-	// agree with it, because Fingerprint hashes the chosen name and a
-	// mismatch would be reported as an ordinary not-ready slot before the
-	// ownership check under test runs.
+	// The recorded directory name escapes the wx root. The fingerprint still
+	// has to match, or the slot would be reported as an ordinary not-ready
+	// slot before the ownership check under test runs.
 	badDirName := escapingDirNameFor(t, cfg.Storage.WorktreeRoot, badPath)
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, badDirName, cfg)
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

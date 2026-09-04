@@ -362,13 +362,12 @@ func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 	}
 	defer release()
 
-	// The fingerprint must agree with the escaping directory name, because
-	// Fingerprint hashes the chosen name; a mismatch is reported as an
+	// The fingerprint still has to match, or the slot is reported as an
 	// ordinary not-ready slot before the ownership check under test runs.
 	coldID := domain.StableID("ready-outside", "cold")
 	coldSlot := slotAtPath(t, manager, string(workspaceRecord.ID), coldID, filepath.Join(root, "ready-outside", coldID, "root"), 1, "READY")
 	coldDirName := escapingDirNameFor(t, root, coldSlot.Path)
-	coldFingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, coldDirName, manager.Config())
+	coldFingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +382,7 @@ func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 	readyID := domain.StableID("ready-outside", "ready")
 	readySlot := slotAtPath(t, manager, string(workspaceRecord.ID), readyID, filepath.Join(root, "ready-outside", readyID, "root"), 1, "READY")
 	readyDirName := escapingDirNameFor(t, root, readySlot.Path)
-	readyFingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, readyDirName, manager.Config())
+	readyFingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +411,7 @@ func TestReadyRepositoriesMatchReportsUnopenableReadyWorktree(t *testing.T) {
 	}
 	defer release()
 
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, testDirName(resolved[0].Repository, manager.Config()), manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}

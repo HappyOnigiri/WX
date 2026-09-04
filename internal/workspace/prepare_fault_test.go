@@ -811,7 +811,7 @@ func TestAddWorktreeWithIdentityRejectsAReservedLeafThatIsNotADirectory(t *testi
 // elsewhere.
 func TestFingerprintRejectsAMissingRepositoryMainPath(t *testing.T) {
 	missing := domain.CanonicalPath(filepath.Join(t.TempDir(), "missing-repository"))
-	if _, err := Fingerprint(1, "oid", discovery.Repository{MainPath: missing}, testRepositoryID, config.Defaults()); err == nil {
+	if _, err := Fingerprint(1, "oid", discovery.Repository{MainPath: missing}, config.Defaults()); err == nil {
 		t.Fatal("fingerprint of a missing repository main path succeeded")
 	}
 }

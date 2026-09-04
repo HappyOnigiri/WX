@@ -1761,7 +1761,7 @@ func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []p
 		if err := validateLayoutComponent("repository directory", dirName); err != nil {
 			return nil, err
 		}
-		fp, err := workspace.Fingerprint(generation, r.OID, r.Repository, dirName, cfg)
+		fp, err := workspace.Fingerprint(generation, r.OID, r.Repository, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -1992,7 +1992,7 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 		if !ok || (stored.State != "READY" && stored.State != "COLD") || stored.BaseOID != r.OID {
 			return false, nil
 		}
-		fp, err := workspace.Fingerprint(s.Generation, r.OID, r.Repository, stored.DirName, m.Config())
+		fp, err := workspace.Fingerprint(s.Generation, r.OID, r.Repository, m.Config())
 		if err != nil {
 			return false, err
 		}

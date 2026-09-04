@@ -146,7 +146,7 @@ func TestRestoreSlotCompletesMultiRepositoryWorkspaceRootRecovery(t *testing.T) 
 	childSlot := testSlot(t, manager, string(workspaceRecord.ID), childID, 1, "RESTORING")
 	childRoot := childSlot.Path
 	childWorktree := filepath.Join(childRoot, dirName)
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, dirName, manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestRestoreSlotQuarantinesUncertainWorkspaceRootOwnership(t *testing.T) {
 
 	childID := domain.StableID("restore-multi", "unowned-child")
 	dirName := testDirName(repository, manager.Config())
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, dirName, manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestPrepareSlotQuarantinesUncertainRepositoryOwnershipInMultiRepository(t *
 
 	slotID := domain.StableID("prepare-multi", "unowned")
 	dirName := testDirName(repository, manager.Config())
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, dirName, manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
