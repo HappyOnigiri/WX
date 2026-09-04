@@ -226,6 +226,73 @@ func TestRegisterAndLoadRootGenerationsRepinRetiredRoots(t *testing.T) {
 	}
 }
 
+// TestLoadRootGenerationsRefusesAReplacedRootDirectory proves that a restart
+// binds a durable generation only to the inode SQLite recorded for it. The
+// pathname survives a manual delete and recreation, so without comparing the
+// recorded identity the old generation would be re-bound to the replacement
+// and every later proof under it would reach a directory wx never owned.
+func TestLoadRootGenerationsRefusesAReplacedRootDirectory(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	store, err := state.Open(filepath.Join(base, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	rootPath := filepath.Join(base, "worktrees")
+	cfg.Storage.WorktreeRoot = rootPath
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	rootID := registerTestRoot(t, manager, rootPath)
+
+	// Control: with the recorded directory still in place, a restart with an
+	// empty registry republishes the generation. Without this the refusal
+	// below would pass for the wrong reason.
+	resetRootRegistryForTest(manager)
+	manager.loadRootGenerations(ctx)
+	manager.mu.RLock()
+	republished := manager.rootIDs[rootPath]
+	manager.mu.RUnlock()
+	if republished != rootID {
+		t.Fatalf("intact root republished as %q, want %q", republished, rootID)
+	}
+
+	if err := os.RemoveAll(rootPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rootPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resetRootRegistryForTest(manager)
+	manager.loadRootGenerations(ctx)
+	manager.mu.RLock()
+	rebound := manager.rootIDs[rootPath]
+	manager.mu.RUnlock()
+	if rebound != "" {
+		t.Fatalf("replaced root directory was re-bound to generation %q", rebound)
+	}
+	// Fail closed: nothing under the replaced pathname resolves to a
+	// generation, so no durable state can be created or removed there.
+	if _, _, err := manager.rootIDForPath(filepath.Join(rootPath, "wsp001", "slt001")); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("slot under a replaced root resolved: %v", err)
+	}
+}
+
+// resetRootRegistryForTest empties the in-memory root registries the way a
+// daemon restart does, leaving SQLite as the only source of generations.
+func resetRootRegistryForTest(m *Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureRootStateLocked()
+	for path, entry := range m.rootRefs {
+		m.closeRootLocked(path, entry)
+	}
+	m.rootIDs = map[string]string{}
+	m.rootIdentities = map[string]string{}
+	m.rootRefs = map[string]*managedRoot{}
+}
+
 // TestDirectoryIdentityAtReportsTheOpenedInode verifies the identity helper
 // used to record slots.dir_identity and to answer the lease.
 func TestDirectoryIdentityAtReportsTheOpenedInode(t *testing.T) {

@@ -282,6 +282,25 @@ func slotAtPath(t *testing.T, m *Manager, workspaceID, slotID, slotPath string, 
 	}
 }
 
+// recordTestWorktreeIdentity records a repository worktree's inode the way
+// preparation does when the repository becomes READY. Production rows in
+// READY or RETIRING always carry one, and the removal proofs present it, so a
+// hand-built row has to carry it too.
+func recordTestWorktreeIdentity(t *testing.T, store *state.Store, slotID, repositoryID, worktreePath string) {
+	t.Helper()
+	info, err := os.Lstat(worktreePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := domain.FileIdentity(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordSlotRepositoryIdentity(context.Background(), slotID, repositoryID, identity); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // existingDirIdentity records the slot directory's inode the way allocation
 // does, so a hand-built row carries the same evidence a real one would. The
 // tests that stage an absent slot, a regular file, or a symlink get an empty

@@ -36,6 +36,7 @@ func TestRemoveColdRepositoryJobKeepsTheSlotDirectoryAndItsMarker(t *testing.T) 
 		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "RETIRING", BaseOID: head}}); err != nil {
 		t.Fatal(err)
 	}
+	recordTestWorktreeIdentity(t, store, slotID, string(repository.ID), worktreePath)
 
 	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-shell", SlotID: slotID, RepositoryID: string(repository.ID)}); err != nil {
 		t.Fatalf("single-repository cold removal: %v", err)

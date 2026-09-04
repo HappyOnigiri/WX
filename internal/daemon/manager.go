@@ -1294,19 +1294,46 @@ func (m *Manager) loadRootGenerations(ctx context.Context) {
 		return
 	}
 	for _, root := range roots {
-		m.mu.Lock()
-		m.ensureRootStateLocked()
-		m.rootIDs[root.Path] = root.ID
-		alreadyKnown := m.rootIdentities[root.Path] != ""
-		m.mu.Unlock()
-		if alreadyKnown {
+		if root.Identity == "" {
+			m.log.Error("worktree root generation has no recorded identity", "path", root.Path)
 			continue
 		}
-		if _, release, openErr := m.existingRootDescriptor(root.Path); openErr != nil {
-			m.log.Warn("retired worktree root generation is unavailable", "path", root.Path, "error", openErr)
-		} else {
-			release()
+		m.mu.Lock()
+		m.ensureRootStateLocked()
+		pinned := m.rootIdentities[root.Path]
+		if pinned == "" {
+			// Seed the expected identity from SQLite before anything opens
+			// the pathname. adoptRoot refuses a descriptor whose inode does
+			// not match the expectation, so this is what stops a root
+			// directory that was replaced between daemon runs from being
+			// re-bound to the old generation: without it the first open would
+			// simply adopt whatever the pathname names now, and every later
+			// proof under this generation would reach the replacement.
+			m.rootIdentities[root.Path] = root.Identity
 		}
+		m.mu.Unlock()
+		if pinned != "" {
+			if pinned != root.Identity {
+				m.log.Error("worktree root generation is not the pinned directory", "path", root.Path, "recorded", root.Identity, "pinned", pinned)
+				continue
+			}
+			m.mu.Lock()
+			m.rootIDs[root.Path] = root.ID
+			m.mu.Unlock()
+			continue
+		}
+		_, release, openErr := m.existingRootDescriptor(root.Path)
+		if openErr != nil {
+			// The ID stays unpublished, so rootIDForPath fails closed for
+			// anything under this generation rather than operating on a
+			// pathname wx cannot prove.
+			m.log.Warn("retired worktree root generation is unavailable", "path", root.Path, "error", openErr)
+			continue
+		}
+		release()
+		m.mu.Lock()
+		m.rootIDs[root.Path] = root.ID
+		m.mu.Unlock()
 	}
 }
 

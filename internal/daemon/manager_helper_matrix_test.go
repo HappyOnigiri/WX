@@ -346,6 +346,7 @@ func TestManagerColdRepositoryRemovalCompletesOwnedWorktree(t *testing.T) {
 		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: "repository", State: "RETIRING", BaseOID: head}}); err != nil {
 		t.Fatal(err)
 	}
+	recordTestWorktreeIdentity(t, store, slotID, string(repository.ID), worktreePath)
 	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-owned", SlotID: slotID, RepositoryID: string(repository.ID)}); err != nil {
 		t.Fatalf("owned cold repository removal: %v", err)
 	}
