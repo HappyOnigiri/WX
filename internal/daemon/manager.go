@@ -645,12 +645,17 @@ func (m *Manager) artifactDiagnostics(ctx context.Context) map[string]any {
 			missingPaths = append(missingPaths, fmt.Sprintf("%s (%s, %s)", clean, artifact.ID, artifact.State))
 		}
 	}
-	m.mu.RLock()
-	roots := make([]string, 0, len(m.roots))
-	for root := range m.roots {
-		roots = append(roots, root)
+	// The generations to scan come from SQLite, not from the descriptors that
+	// happen to be open. A retired root is released as soon as its adoption
+	// returns, and the configuration reload that retired it removes the
+	// pathname from m.roots, so enumerating the live set would silently stop
+	// looking at every generation the current configuration no longer names -
+	// exactly the generations whose slots outlive a worktree_root change and
+	// whose orphans nobody else would report.
+	roots, rootsErr := m.rootPathsFromStore(ctx)
+	if rootsErr != nil {
+		diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("list worktree root generations: %v", rootsErr))
 	}
-	m.mu.RUnlock()
 	for _, root := range roots {
 		paths, pathsErr := m.ownedRootArtifactPaths(root)
 		if pathsErr != nil {
@@ -3167,6 +3172,28 @@ func (m *Manager) ownedPathExists(path string) (bool, error) {
 	return true, nil
 }
 
+// rootPathsFromStore lists every root generation SQLite still references,
+// falling back to the live descriptor set only when the store cannot be read.
+// The fallback keeps diagnostics working on a degraded daemon rather than
+// reporting nothing at all.
+func (m *Manager) rootPathsFromStore(ctx context.Context) ([]string, error) {
+	rows, err := m.store.Roots(ctx)
+	if err == nil {
+		paths := make([]string, 0, len(rows))
+		for _, row := range rows {
+			paths = append(paths, filepath.Clean(row.Path))
+		}
+		return paths, nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	paths := make([]string, 0, len(m.roots))
+	for root := range m.roots {
+		paths = append(paths, root)
+	}
+	return paths, err
+}
+
 func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
 	root = filepath.Clean(root)
 	m.mu.RLock()
@@ -3543,6 +3570,19 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		roots[root] = active
 	}
 	m.mu.RUnlock()
+	// SQLite is the authority on which generations exist, and a retired one
+	// is not in m.roots: its descriptor is released once adopted, and a
+	// reload drops the pathname. Reporting only the live set would hide the
+	// disk a superseded root still holds, which is the number the user needs
+	// in order to decide it is safe to delete.
+	if rows, rootsErr := m.store.Roots(ctx); rootsErr == nil {
+		for _, row := range rows {
+			path := filepath.Clean(row.Path)
+			if _, known := roots[path]; !known {
+				roots[path] = row.Active
+			}
+		}
+	}
 	for index := range details.Repositories {
 		details.Repositories[index].Hot = false
 		if leasedAt, parseErr := time.Parse(time.RFC3339Nano, details.Repositories[index].LastUsedAt); parseErr == nil {

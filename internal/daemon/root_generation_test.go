@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -156,6 +157,80 @@ func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
 		if !want[filepath.Clean(path)] {
 			t.Fatalf("scanned path %q is not a wx slot directory", path)
 		}
+	}
+}
+
+// TestArtifactDiagnosticsScanRetiredRootGenerations proves the enumeration
+// source for the orphan scan is SQLite, not the set of descriptors that
+// happen to be open. A superseded root is released as soon as it is adopted
+// and a reload drops its pathname from the live set, so scanning the live set
+// would stop looking at exactly the generations whose slots outlive a
+// worktree_root change.
+func TestArtifactDiagnosticsScanRetiredRootGenerations(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	store, err := state.Open(filepath.Join(base, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	oldRoot := filepath.Join(base, "old-root")
+	cfg.Storage.WorktreeRoot = oldRoot
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	registerTestRoot(t, manager, oldRoot)
+	orphan := filepath.Join(oldRoot, "wsp001", "slt001")
+	if err := os.MkdirAll(orphan, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Move the configuration to a new root and retire the old one the way a
+	// reload does.
+	newRoot := filepath.Join(base, "new-root")
+	cfg.Storage.WorktreeRoot = newRoot
+	manager.mu.Lock()
+	manager.cfg = cfg
+	manager.retireRootLocked(oldRoot)
+	manager.mu.Unlock()
+	registerTestRoot(t, manager, newRoot)
+	manager.mu.RLock()
+	_, live := manager.roots[oldRoot]
+	manager.mu.RUnlock()
+	if live {
+		t.Fatal("retired root is still in the live set; the case under test no longer applies")
+	}
+
+	artifacts := manager.artifactDiagnostics(ctx)
+	if !containsString(artifacts["unknown_paths"].([]string), filepath.Clean(orphan)) {
+		t.Fatalf("orphan under the retired root was not reported: %v", artifacts)
+	}
+	status, err := manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(status["worktree_roots"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reportedRoots []struct {
+		Path   string `json:"path"`
+		Active bool   `json:"active"`
+	}
+	if err := json.Unmarshal(encoded, &reportedRoots); err != nil {
+		t.Fatal(err)
+	}
+	reported := false
+	for _, item := range reportedRoots {
+		if item.Path == oldRoot {
+			reported = true
+			if item.Active {
+				t.Fatalf("retired root is reported as active: %+v", item)
+			}
+		}
+	}
+	if !reported {
+		t.Fatalf("retired root is missing from status: %s", encoded)
 	}
 }
 
