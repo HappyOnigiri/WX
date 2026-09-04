@@ -433,8 +433,9 @@ func TestPrepareClassifiesReplacedRootAsOwnershipUncertain(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = root
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root}
-	target := filepath.Join(root, "slot", "root")
+	slotPath := filepath.Join(root, testSlotRelPath)
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
+	target := filepath.Join(slotPath, testRepositoryID)
 	oldRoot := root + "-old"
 	if err := os.Rename(root, oldRoot); err != nil {
 		t.Fatal(err)
@@ -447,7 +448,7 @@ func TestPrepareClassifiesReplacedRootAsOwnershipUncertain(t *testing.T) {
 	if !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("replaced root returned non-ownership error: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(outside, "slot")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(outside, testWorkspaceID)); !os.IsNotExist(err) {
 		t.Fatalf("replaced root escaped into outside directory: %v", err)
 	}
 }
@@ -486,8 +487,9 @@ func TestPrepareRejectsTargetReplacementAfterGitAdd(t *testing.T) {
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = root
-	preparer := Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root}
-	target := filepath.Join(root, "slot", "root")
+	slotPath := filepath.Join(root, testSlotRelPath)
+	preparer := Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
+	target := filepath.Join(slotPath, testRepositoryID)
 	targetOld := target + "-old"
 	replaced := false
 	runner.SetBeforeRunAtHook(func(args []string) {
@@ -535,8 +537,9 @@ func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testi
 	gitCommand(t, repository, "commit", "-m", "initial")
 	head := gitOutput(t, repository, "rev-parse", "HEAD")
 	common := gitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	target := filepath.Join(worktreeRoot, "slot", "root")
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
+	target := filepath.Join(slotPath, testRepositoryID)
+	if err := os.MkdirAll(slotPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	gitCommand(t, repository, "worktree", "add", "--detach", target, head)
@@ -548,7 +551,7 @@ func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testi
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "ownership marker") {
 		t.Fatalf("foreign worktree prepare error=%v", err)
 	}
@@ -743,8 +746,9 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
-	target := filepath.Join(worktreeRoot, "slot", "root")
+	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
+	target := filepath.Join(slotPath, testRepositoryID)
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "tracked path") {
 		t.Fatalf("tracked include error=%v", err)
 	}
@@ -757,7 +761,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("tracked\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	linkTarget := filepath.Join(worktreeRoot, "link-failure", "root")
+	linkTarget := filepath.Join(slotPath, "link-failure")
 	if err := preparer.Prepare(context.Background(), repo, linkTarget, head, "link-failure"); err == nil || !strings.Contains(err.Error(), "not ignored") {
 		t.Fatalf("prepare link policy error=%v", err)
 	}
@@ -770,7 +774,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	failingCfg := cfg
 	failingCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/usr/bin/false"}, Timeout: config.Duration{Duration: time.Second}}}}
 	preparer.Config = failingCfg
-	commandTarget := filepath.Join(worktreeRoot, "command-failure", "root")
+	commandTarget := filepath.Join(slotPath, "command-failure")
 	if err := preparer.Prepare(context.Background(), repo, commandTarget, head, "command-failure"); err == nil {
 		t.Fatal("failed prepare command completed a worktree")
 	}
@@ -780,7 +784,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	dirtyCfg := cfg
 	dirtyCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf changed > tracked"}, Timeout: config.Duration{Duration: time.Second}}}}
 	preparer.Config = dirtyCfg
-	dirtyTarget := filepath.Join(worktreeRoot, "dirty-command", "root")
+	dirtyTarget := filepath.Join(slotPath, "dirty-command")
 	if err := preparer.Prepare(context.Background(), repo, dirtyTarget, head, "dirty-command"); err == nil || !strings.Contains(err.Error(), "tracked changes") {
 		t.Fatalf("dirty prepare command error=%v", err)
 	}
@@ -791,7 +795,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	cfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/usr/bin/true"}, Version: "v1"}}}
 	cfg.Readiness.Timeout.Duration = time.Second
 	preparer.Config = cfg
-	runPrepareTarget := filepath.Join(worktreeRoot, "run-prepare", "root")
+	runPrepareTarget := filepath.Join(slotPath, "run-prepare")
 	if err := os.MkdirAll(runPrepareTarget, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -998,6 +1002,7 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 	gitCommand(t, repository, "add", ".")
 	gitCommand(t, repository, "commit", "-m", "initial")
 	repo := discovery.Repository{
+		ID:        testRepositoryID,
 		MainPath:  domain.CanonicalPath(repository),
 		CommonDir: domain.CanonicalPath(filepath.Join(repository, ".git")),
 	}
@@ -1008,7 +1013,7 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root, RootID: testRootID}
 
 	if err := preparer.validateTrackedClean(context.Background(), filepath.Join(root, "missing")); err == nil {
 		t.Fatal("tracked-clean validation of a missing worktree succeeded")
@@ -1099,7 +1104,7 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 	}
 	unregistered := repo
 	unregistered.MainPath = domain.CanonicalPath(other)
-	if err := EnsureOwnershipMarkerAt(owner, root, repository, "slot", string(repo.CommonDir)); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, repository, markerFor("slot"), string(repo.CommonDir)); err != nil {
 		t.Fatal(err)
 	}
 	if err := preparer.validateExistingWorktree(context.Background(), unregistered, repository, gitOutput(t, repository, "rev-parse", "HEAD")); err == nil || !strings.Contains(err.Error(), "not registered") {
@@ -1240,8 +1245,9 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
-	target := filepath.Join(worktreeRoot, "slot", "root")
+	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
+	target := filepath.Join(slotPath, testRepositoryID)
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
 		t.Fatal(err)
 	}

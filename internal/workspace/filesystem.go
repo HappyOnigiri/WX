@@ -340,8 +340,8 @@ func validateRuleConflicts(copyRules, linkRules []string) error {
 // removeOwnershipMarkerAt removes a marker through an already pinned wx root.
 // It is used only after the caller has proved ownership and therefore must not
 // reopen the mutable root pathname during failure cleanup.
-func removeOwnershipMarkerAt(owner *os.Root, root, target string) error {
-	relative, err := ownershipMarkerRelative(root, target)
+func removeOwnershipMarkerAt(owner *os.Root, root, target, repositoryID string) error {
+	relative, err := ownershipMarkerRelative(root, target, repositoryID)
 	if err != nil {
 		return err
 	}

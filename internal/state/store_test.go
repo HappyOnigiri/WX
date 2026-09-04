@@ -20,7 +20,7 @@ func TestCreateSlotSessionCommitsJobAtomically(t *testing.T) {
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
-	job, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "PREPARING"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(t.TempDir(), "worktree"), State: "PREPARING", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fingerprint"}}, session, "PREPARE")
+	job, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(t.TempDir(), "worktree"), State: "PREPARING", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fingerprint"}}, session, "PREPARE")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,8 +37,7 @@ func TestFailedStandbyBlocksUnboundedPoolRefill(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
-	root := t.TempDir()
-	job, err := store.CreateStandby(ctx, Slot{ID: "blocked", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "blocked"), State: "PREPARING"}, nil)
+	job, err := store.CreateStandby(ctx, Slot{ID: "blocked", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/blocked", State: "PREPARING"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +64,7 @@ func TestReleaseCreatesExactlyOneSnapshotJob(t *testing.T) {
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "LEASED"}, nil, session, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "LEASED"}, nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	job, changed, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID)
@@ -97,19 +96,21 @@ func TestSessionRepositoryMembershipSurvivesWorkspaceReconciliation(t *testing.T
 			{ID: "repository-b", MainPath: domain.CanonicalPath(filepath.Join(root, "b")), CommonDir: domain.CanonicalPath(filepath.Join(root, "b.git")), RelativePath: "nested/b", DefaultBranch: "main"},
 		},
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
+	registered, _, err := store.UpsertWorkspaceGeneration(ctx, workspace)
+	if err != nil {
 		t.Fatal(err)
 	}
-	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+	workspaceID := string(registered.ID)
+	session := Session{ID: "session", WorkspaceID: workspaceID, SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
 	repositories := []SlotRepository{
-		{RepositoryID: "repository-a", WorktreePath: filepath.Join(root, "slot", "a"), State: "READY", RequestedRef: "main", BaseOID: "a", Fingerprint: "a"},
-		{RepositoryID: "repository-b", WorktreePath: filepath.Join(root, "slot", "nested", "b"), State: "READY", RequestedRef: "main", BaseOID: "b", Fingerprint: "b"},
+		{RepositoryID: "repository-a", DirName: "a", State: "READY", RequestedRef: "main", BaseOID: "a", Fingerprint: "a"},
+		{RepositoryID: "repository-b", DirName: "b", State: "READY", RequestedRef: "main", BaseOID: "b", Fingerprint: "b"},
 	}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "slot"), State: "LEASED"}, repositories, session, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: workspaceID, Generation: 1, RootID: testRootID, RelPath: filepath.Join(workspaceID, "slot"), State: "LEASED"}, repositories, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	workspace.Repositories = workspace.Repositories[:1]
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
+	if _, _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
 		t.Fatal(err)
 	}
 	historical, err := store.SessionWorkspace(ctx, session.ID)
@@ -119,7 +120,7 @@ func TestSessionRepositoryMembershipSurvivesWorkspaceReconciliation(t *testing.T
 	if len(historical.Repositories) != 2 || historical.Repositories[0].RelativePath != "a" || historical.Repositories[1].RelativePath != "nested/b" {
 		t.Fatalf("historical membership=%+v", historical.Repositories)
 	}
-	current, err := store.Workspace(ctx, "workspace")
+	current, err := store.Workspace(ctx, workspaceID)
 	if err != nil || len(current.Repositories) != 1 {
 		t.Fatalf("current membership=%+v err=%v", current.Repositories, err)
 	}
@@ -138,25 +139,27 @@ func TestCanonicalWorkspaceKeepsSlotsWhenMainWorktreeMoves(t *testing.T) {
 			ID: "repository", MainPath: domain.CanonicalPath(oldMain), CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main",
 		}},
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, registered); err != nil {
+	stored, _, err := store.UpsertWorkspaceGeneration(ctx, registered)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(ctx, Slot{ID: "standby", WorkspaceID: string(registered.ID), Generation: 1, Path: filepath.Join(t.TempDir(), "standby"), State: "READY"}, nil); err != nil {
+	workspaceID := string(stored.ID)
+	if _, err := store.CreateStandby(ctx, Slot{ID: "standby", WorkspaceID: workspaceID, Generation: 1, RootID: testRootID, RelPath: filepath.Join(workspaceID, "standby"), State: "READY"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	discovered := registered
-	discovered.ID = "new-workspace-id"
+	discovered.ID = "propos"
 	discovered.Root = domain.CanonicalPath(newMain)
 	discovered.Repositories[0].MainPath = domain.CanonicalPath(newMain)
 	canonical, err := store.CanonicalWorkspace(ctx, discovered)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if canonical.ID != registered.ID || canonical.Root != discovered.Root {
+	if string(canonical.ID) != workspaceID || canonical.Root != discovered.Root {
 		t.Fatalf("canonical workspace=%+v, want existing ID with moved root", canonical)
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, discovered); err != nil {
+	if _, _, err := store.UpsertWorkspaceGeneration(ctx, discovered); err != nil {
 		t.Fatal(err)
 	}
 	status, err := store.Status(ctx)
@@ -166,14 +169,14 @@ func TestCanonicalWorkspaceKeepsSlotsWhenMainWorktreeMoves(t *testing.T) {
 	if status.Workspaces != 1 {
 		t.Fatalf("workspace count=%d, want one registered identity", status.Workspaces)
 	}
-	updated, err := store.Workspace(ctx, string(registered.ID))
+	updated, err := store.Workspace(ctx, workspaceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.Root != discovered.Root || updated.Repositories[0].MainPath != discovered.Repositories[0].MainPath {
 		t.Fatalf("updated workspace=%+v", updated)
 	}
-	if slots, err := store.ReadySlots(ctx, string(registered.ID)); err != nil || len(slots) != 1 || slots[0].ID != "standby" {
+	if slots, err := store.ReadySlots(ctx, workspaceID); err != nil || len(slots) != 1 || slots[0].ID != "standby" {
 		t.Fatalf("existing slots=%+v err=%v", slots, err)
 	}
 	if slots, err := store.ReadySlots(ctx, string(discovered.ID)); err != nil || len(slots) != 0 {
@@ -187,8 +190,9 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 	t.Run("duplicate common directory identity", func(t *testing.T) {
 		store := openTestStore(t)
 		common := "/repository/common.git"
-		registered := discovery.Workspace{ID: "registered", Root: "/registered", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/registered", CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main"}}}
-		if _, err := store.UpsertWorkspaceGeneration(ctx, registered); err != nil {
+		registered := discovery.Workspace{ID: "propos", Root: "/registered", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/registered", CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main"}}}
+		stored, _, err := store.UpsertWorkspaceGeneration(ctx, registered)
+		if err != nil {
 			t.Fatal(err)
 		}
 		// This models a pre-existing inconsistent registry. The common directory
@@ -207,14 +211,14 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 		if _, err := store.CanonicalWorkspace(ctx, candidate); err == nil || !strings.Contains(err.Error(), "multiple registered workspaces") {
 			t.Fatalf("conflicting common directory accepted: %v", err)
 		}
-		if _, err := store.UpsertWorkspaceGeneration(ctx, candidate); err == nil {
+		if _, _, err := store.UpsertWorkspaceGeneration(ctx, candidate); err == nil {
 			t.Fatal("upsert proceeded through conflicting common directory")
 		}
 		status, err := store.Status(ctx)
 		if err != nil || status.Workspaces != 2 {
 			t.Fatalf("conflict changed registry: status=%+v err=%v", status, err)
 		}
-		loaded, err := store.Workspace(ctx, string(registered.ID))
+		loaded, err := store.Workspace(ctx, string(stored.ID))
 		if err != nil || loaded.Root != registered.Root {
 			t.Fatalf("registered workspace changed after conflict: workspace=%+v err=%v", loaded, err)
 		}
@@ -222,61 +226,64 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 
 	t.Run("root uniqueness conflict", func(t *testing.T) {
 		store := openTestStore(t)
-		old := discovery.Workspace{ID: "old", Root: "/old", Kind: "repository", Repositories: []discovery.Repository{{ID: "old-repository", MainPath: "/old", CommonDir: "/old/common.git", RelativePath: ".", DefaultBranch: "main"}}}
-		other := discovery.Workspace{ID: "other", Root: "/new", Kind: "repository", Repositories: []discovery.Repository{{ID: "other-repository", MainPath: "/new", CommonDir: "/new/common.git", RelativePath: ".", DefaultBranch: "main"}}}
-		if _, err := store.UpsertWorkspaceGeneration(ctx, old); err != nil {
+		old := discovery.Workspace{ID: "propos", Root: "/old", Kind: "repository", Repositories: []discovery.Repository{{ID: "old-repository", MainPath: "/old", CommonDir: "/old/common.git", RelativePath: ".", DefaultBranch: "main"}}}
+		other := discovery.Workspace{ID: "propo2", Root: "/new", Kind: "repository", Repositories: []discovery.Repository{{ID: "other-repository", MainPath: "/new", CommonDir: "/new/common.git", RelativePath: ".", DefaultBranch: "main"}}}
+		storedOld, _, err := store.UpsertWorkspaceGeneration(ctx, old)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.UpsertWorkspaceGeneration(ctx, other); err != nil {
+		oldID := string(storedOld.ID)
+		if _, _, err := store.UpsertWorkspaceGeneration(ctx, other); err != nil {
 			t.Fatal(err)
 		}
-		session := Session{ID: "session", WorkspaceID: string(old.ID), SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-		if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: string(old.ID), Generation: 1, Path: "/wx/slot", State: "LEASED"}, nil, session, ""); err != nil {
+		session := Session{ID: "session", WorkspaceID: oldID, SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: oldID, Generation: 1, RootID: testRootID, RelPath: filepath.Join(oldID, "slot"), State: "LEASED"}, nil, session, ""); err != nil {
 			t.Fatal(err)
 		}
 		oldRoot, oldMain := old.Root, old.Repositories[0].MainPath
 		candidate := old
 		candidate.Repositories = append([]discovery.Repository(nil), old.Repositories...)
-		candidate.ID = "new-identity"
 		candidate.Root = "/new"
 		candidate.Repositories[0].MainPath = "/new"
-		if _, err := store.UpsertWorkspaceGeneration(ctx, candidate); err == nil {
+		if _, _, err := store.UpsertWorkspaceGeneration(ctx, candidate); err == nil {
 			t.Fatal("root uniqueness conflict was accepted")
 		}
-		loaded, err := store.Workspace(ctx, string(old.ID))
+		loaded, err := store.Workspace(ctx, oldID)
 		if err != nil || loaded.Root != oldRoot || loaded.Repositories[0].MainPath != oldMain {
 			t.Fatalf("root conflict partially moved workspace: workspace=%+v err=%v", loaded, err)
 		}
 		storedSession, err := store.SessionByID(ctx, session.ID)
-		if err != nil || storedSession.WorkspaceID != string(old.ID) {
+		if err != nil || storedSession.WorkspaceID != oldID {
 			t.Fatalf("root conflict detached session: session=%+v err=%v", storedSession, err)
 		}
 	})
 
 	t.Run("storage failure", func(t *testing.T) {
 		store := openTestStore(t)
-		old := discovery.Workspace{ID: "old", Root: "/old", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/old", CommonDir: "/old/common.git", RelativePath: ".", DefaultBranch: "main"}}}
-		if _, err := store.UpsertWorkspaceGeneration(ctx, old); err != nil {
+		old := discovery.Workspace{ID: "propos", Root: "/old", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/old", CommonDir: "/old/common.git", RelativePath: ".", DefaultBranch: "main"}}}
+		storedOld, _, err := store.UpsertWorkspaceGeneration(ctx, old)
+		if err != nil {
 			t.Fatal(err)
 		}
+		oldID := string(storedOld.ID)
 		if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_relocation_repository_update BEFORE UPDATE OF main_worktree_path ON repositories BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
 			t.Fatal(err)
 		}
 		oldRoot, oldMain := old.Root, old.Repositories[0].MainPath
 		candidate := old
 		candidate.Repositories = append([]discovery.Repository(nil), old.Repositories...)
-		candidate.ID = "new-identity"
 		candidate.Root = "/new"
 		candidate.Repositories[0].MainPath = "/new"
-		if _, err := store.UpsertWorkspaceGeneration(ctx, candidate); err == nil {
+		if _, _, err := store.UpsertWorkspaceGeneration(ctx, candidate); err == nil {
 			t.Fatal("storage failure was ignored")
 		}
-		loaded, err := store.Workspace(ctx, string(old.ID))
+		loaded, err := store.Workspace(ctx, oldID)
 		if err != nil || loaded.Root != oldRoot || loaded.Repositories[0].MainPath != oldMain {
 			t.Fatalf("storage failure partially moved workspace: workspace=%+v err=%v", loaded, err)
 		}
-		if _, err := store.Workspace(ctx, string(candidate.ID)); err == nil {
-			t.Fatal("storage failure created a duplicate workspace")
+		var workspaces int
+		if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM workspaces`).Scan(&workspaces); err != nil || workspaces != 1 {
+			t.Fatalf("storage failure created a duplicate workspace: count=%d err=%v", workspaces, err)
 		}
 	})
 }
@@ -290,14 +297,14 @@ func TestResumeBindingsUpdateAllRepositoryLeaseTimestamps(t *testing.T) {
 			name: "native fresh resume",
 			bind: func(t *testing.T, store *Store, ctx context.Context, old string) error {
 				parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("parent")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
 					t.Fatal(err)
 				}
 				current := Session{ID: "current", SlotID: "current", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("current")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", Path: "/workspace/current", State: "UNBOUND"}, nil, current, ""); err != nil {
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/current"}, nil, current, ""); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, old); err != nil {
@@ -312,14 +319,14 @@ func TestResumeBindingsUpdateAllRepositoryLeaseTimestamps(t *testing.T) {
 			bind: func(t *testing.T, store *Store, ctx context.Context, old string) error {
 				parentRepos := []SlotRepository{{RepositoryID: "repository", WorktreePath: "/workspace/parent/repository", State: "READY", RequestedRef: "main", BaseOID: "head", Fingerprint: "fingerprint"}}
 				parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("parent")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/parent", State: "ARCHIVED"}, parentRepos, parent, ""); err != nil {
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "ARCHIVED"}, parentRepos, parent, ""); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
 					t.Fatal(err)
 				}
 				child := Session{ID: "child", SlotID: "child", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", Path: "/workspace/child", State: "UNBOUND"}, nil, child, ""); err != nil {
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, old); err != nil {
@@ -371,25 +378,31 @@ func TestWorkspaceSnapshotMetadataGatesMultiRepositoryArchive(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	root := t.TempDir()
-	workspace := discovery.Workspace{ID: "workspace", Root: domain.CanonicalPath(root), Kind: "multi_repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: domain.CanonicalPath(filepath.Join(root, "repository")), CommonDir: domain.CanonicalPath(filepath.Join(root, "repository.git")), RelativePath: "repository", DefaultBranch: "main"}}}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
+	workspace := discovery.Workspace{ID: "propos", Root: domain.CanonicalPath(root), Kind: "multi_repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: domain.CanonicalPath(filepath.Join(root, "repository")), CommonDir: domain.CanonicalPath(filepath.Join(root, "repository.git")), RelativePath: "repository", DefaultBranch: "main"}}}
+	registered, _, err := store.UpsertWorkspaceGeneration(ctx, workspace)
+	if err != nil {
 		t.Fatal(err)
 	}
-	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "RELEASING", AgentKind: "codex", TokenHash: HashToken("token")}
-	repositories := []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "slot", "repository"), State: "LEASED", RequestedRef: "main", BaseOID: "base", Fingerprint: "fingerprint"}}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "slot"), State: "SNAPSHOTTING"}, repositories, session, ""); err != nil {
+	workspaceID := string(registered.ID)
+	session := Session{ID: "session", WorkspaceID: workspaceID, SlotID: "slot", State: "RELEASING", AgentKind: "codex", TokenHash: HashToken("token")}
+	repositories := []SlotRepository{{RepositoryID: "repository", DirName: "repository", State: "LEASED", RequestedRef: "main", BaseOID: "base", Fingerprint: "fingerprint"}}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: workspaceID, Generation: 1, RootID: testRootID, RelPath: filepath.Join(workspaceID, "slot"), State: "SNAPSHOTTING"}, repositories, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	expires := FormatTime(time.Now().Add(time.Hour))
 	if err := store.MarkArchived(ctx, "session", "slot", expires); err == nil {
 		t.Fatal("multi-repository session archived without a workspace root snapshot")
 	}
-	snapshot := WorkspaceSnapshot{SessionID: "session", ArchivePath: filepath.Join(root, "recovery", "snapshot.tar"), SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: expires}
+	snapshot := WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: filepath.Join("_recovery", "workspace-snapshots", "snapshot.tar"), SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: expires}
 	if err := store.SaveWorkspaceSnapshot(ctx, snapshot); err != nil {
 		t.Fatal(err)
 	}
 	loaded, found, err := store.WorkspaceSnapshot(ctx, "session")
-	if err != nil || !found || loaded != snapshot {
+	// ArchivePath is composed on read from the joined root generation, so the
+	// value that was written back carries it while the saved value does not.
+	expected := snapshot
+	expected.ArchivePath = filepath.Join(testRootPath, snapshot.RelPath)
+	if err != nil || !found || loaded != expected {
 		t.Fatalf("workspace snapshot found=%v loaded=%+v err=%v", found, loaded, err)
 	}
 	conflict := snapshot
@@ -413,7 +426,7 @@ func TestReleaseDuringPreparationDefersSnapshotUntilPreparationFinishes(t *testi
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "PREPARING"}, nil, session, "PREPARE"); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, nil, session, "PREPARE"); err != nil {
 		t.Fatal(err)
 	}
 	if job, scheduled, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID); err != nil || scheduled || job.ID != "" {
@@ -459,7 +472,7 @@ func TestFinishPreparationLeasesSlotWhoseSessionBoundBeforePreparationFinished(t
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "PREPARING"}, nil, session, "PREPARE"); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, nil, session, "PREPARE"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.BindAgentSession(ctx, session.ID, "agent"); err != nil {
@@ -490,7 +503,7 @@ func TestReleaseCleansUpUnboundAndRestoringSessions(t *testing.T) {
 		t.Run(sessionState, func(t *testing.T) {
 			id := strings.ToLower(sessionState)
 			session := Session{ID: id, SlotID: id, State: sessionState, AgentKind: "codex", TokenHash: HashToken("token")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: id, Path: filepath.Join(t.TempDir(), id), State: sessionState}, nil, session, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: id, State: sessionState, RootID: testRootID, RelPath: filepath.Join("_unbound", id)}, nil, session, ""); err != nil {
 				t.Fatal(err)
 			}
 			job, changed, err := store.Release(ctx, id, "", id)
@@ -516,7 +529,7 @@ func TestUnboundReleaseRollsBackWhenSlotStateChanged(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	session := Session{ID: "unbound", SlotID: "unbound", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "unbound", Path: filepath.Join(t.TempDir(), "unbound"), State: "UNBOUND"}, nil, session, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "unbound", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/unbound"}, nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetSlotState(ctx, "unbound", []string{"UNBOUND"}, "QUARANTINED", "TEST"); err != nil {
@@ -535,9 +548,8 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
-	root := t.TempDir()
 
-	standby, err := store.CreateStandby(ctx, Slot{ID: "ready", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "ready"), State: "PREPARING"}, nil)
+	standby, err := store.CreateStandby(ctx, Slot{ID: "ready", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/ready", State: "PREPARING"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +571,7 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 	}
 
 	active := Session{ID: "active", WorkspaceID: "workspace", SlotID: "active", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "active", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "active"), State: "LEASED"}, nil, active, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "active", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/active", State: "LEASED"}, nil, active, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.MarkSessionState(ctx, "active", []string{"ACTIVE"}, "EXPIRED"); err != nil {
@@ -573,11 +585,11 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 	}
 
 	parent := Session{ID: "parent-unmapped", WorkspaceID: "workspace", SlotID: "parent-unmapped", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("parent")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent-unmapped", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "parent-unmapped"), State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent-unmapped", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent-unmapped", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
 		t.Fatal(err)
 	}
 	child := Session{ID: "child-unmapped", SlotID: "child-unmapped", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child-unmapped", Path: filepath.Join(root, "child-unmapped"), State: "UNBOUND"}, nil, child, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child-unmapped", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child-unmapped"}, nil, child, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.BindResumeSlot(ctx, "child-unmapped", "parent-unmapped", "workspace", "agent", 1, nil); err == nil || !strings.Contains(err.Error(), "mapping changed") {
@@ -599,16 +611,15 @@ func TestRecoveryRefQueriesAndPendingMappingFailure(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
-	root := t.TempDir()
 	parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("parent")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "parent"), State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.BindAgentSession(ctx, "parent", "agent"); err != nil {
 		t.Fatal(err)
 	}
 	child := Session{ID: "child", SlotID: "child", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", Path: filepath.Join(root, "child"), State: "UNBOUND"}, nil, child, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, nil); err != nil {
@@ -638,9 +649,8 @@ func TestRecoveryRefExpectationsMarkActiveSnapshotJobInFlight(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
-	root := t.TempDir()
 	session := Session{ID: "snapshotting", WorkspaceID: "workspace", SlotID: "snapshotting", State: "SNAPSHOTTING", AgentKind: "codex", TokenHash: HashToken("snapshotting")}
-	job, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: session.WorkspaceID, Generation: 1, Path: filepath.Join(root, session.SlotID), State: "SNAPSHOTTING"}, nil, session, "SNAPSHOT")
+	job, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: session.WorkspaceID, Generation: 1, RootID: testRootID, RelPath: filepath.Join(session.WorkspaceID, session.SlotID), State: "SNAPSHOTTING"}, nil, session, "SNAPSHOT")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -691,9 +701,8 @@ func TestActiveRestoreProtectsSnapshotAndParentBindingCanTransfer(t *testing.T) 
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
-	root := t.TempDir()
 	parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("parent")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "parent"), State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.BindAgentSession(ctx, "parent", "agent"); err != nil {
@@ -704,7 +713,7 @@ func TestActiveRestoreProtectsSnapshotAndParentBindingCanTransfer(t *testing.T) 
 		t.Fatal(err)
 	}
 	resume := Session{ID: "resume", SlotID: "resume", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("resume")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "resume", Path: filepath.Join(root, "resume"), State: "UNBOUND"}, nil, resume, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "resume", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/resume"}, nil, resume, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.BindResumeSlot(ctx, "resume", "parent", "workspace", "agent", 1, nil); err != nil {
@@ -715,7 +724,7 @@ func TestActiveRestoreProtectsSnapshotAndParentBindingCanTransfer(t *testing.T) 
 	}
 
 	transfer := Session{ID: "transfer", WorkspaceID: "workspace", SlotID: "transfer", ParentSessionID: "parent", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("transfer")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "transfer", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "transfer"), State: "LEASED"}, nil, transfer, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "transfer", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/transfer", State: "LEASED"}, nil, transfer, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.BindAgentSession(ctx, "transfer", "agent"); err != nil {
@@ -731,9 +740,8 @@ func TestColdRemovalSchedulingIsIdempotent(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
-	root := t.TempDir()
-	repository := SlotRepository{RepositoryID: "repository", WorktreePath: filepath.Join(root, "ready", "repo"), State: "READY", RequestedRef: "main", BaseOID: "head", Fingerprint: "fp"}
-	job, err := store.CreateStandby(ctx, Slot{ID: "ready", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "ready"), State: "PREPARING"}, []SlotRepository{repository})
+	repository := SlotRepository{RepositoryID: "repository", DirName: "repository", State: "READY", RequestedRef: "main", BaseOID: "head", Fingerprint: "fp"}
+	job, err := store.CreateStandby(ctx, Slot{ID: "ready", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/ready", State: "PREPARING"}, []SlotRepository{repository})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,13 +768,12 @@ func TestTransactionalTransitionsRollBackOnCompanionStateChanges(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
-	root := t.TempDir()
 
 	for _, operation := range []string{"archive", "snapshot"} {
 		t.Run(operation, func(t *testing.T) {
 			id := operation
 			session := Session{ID: id, WorkspaceID: "workspace", SlotID: id, State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: id, WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, id), State: "LEASED"}, nil, session, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: id, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: filepath.Join("workspace", id), State: "LEASED"}, nil, session, ""); err != nil {
 				t.Fatal(err)
 			}
 			if _, changed, err := store.Release(ctx, id, "workspace", id); err != nil || !changed {
@@ -790,14 +797,14 @@ func TestTransactionalTransitionsRollBackOnCompanionStateChanges(t *testing.T) {
 	}
 
 	parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("parent")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "parent"), State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.BindAgentSession(ctx, "parent", "agent"); err != nil {
 		t.Fatal(err)
 	}
 	child := Session{ID: "child", SlotID: "child", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", Path: filepath.Join(root, "child"), State: "UNBOUND"}, nil, child, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetSlotState(ctx, "child", []string{"UNBOUND"}, "QUARANTINED", "TEST"); err != nil {
@@ -841,7 +848,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 			t.Fatal(err)
 		}
 		session := Session{ID: "slot", WorkspaceID: "workspace", SlotID: "slot", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
-		_, err := store.CreateSlotSession(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/slot", State: "PREPARING"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: "/wx/slot/repo"}}, session, "")
+		_, err := store.CreateSlotSession(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: "/wx/slot/repo"}}, session, "")
 		if err == nil {
 			t.Fatal("slot creation succeeded without repository metadata table")
 		}
@@ -858,7 +865,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 			t.Fatal(err)
 		}
 		session := Session{ID: "slot", WorkspaceID: "workspace", SlotID: "slot", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
-		if _, err := store.CreateSlotSession(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/slot", State: "PREPARING"}, nil, session, ""); err == nil {
+		if _, err := store.CreateSlotSession(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, nil, session, ""); err == nil {
 			t.Fatal("slot creation succeeded without sessions table")
 		}
 	})
@@ -869,7 +876,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 		if _, err := store.db.Exec(`DROP TABLE jobs`); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.CreateStandby(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/slot", State: "PREPARING"}, nil); err == nil {
+		if _, err := store.CreateStandby(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, nil); err == nil {
 			t.Fatal("standby creation succeeded without jobs table")
 		}
 	})
@@ -881,7 +888,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 			t.Fatal(err)
 		}
 		session := Session{ID: "slot", WorkspaceID: "workspace", SlotID: "slot", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
-		if _, err := store.CreateSlotSession(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/slot", State: "PREPARING"}, nil, session, "PREPARE"); err == nil {
+		if _, err := store.CreateSlotSession(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, nil, session, "PREPARE"); err == nil {
 			t.Fatal("slot creation succeeded without durable jobs table")
 		}
 	})
@@ -892,8 +899,8 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 		if _, err := store.db.Exec(`DROP TABLE slot_repositories`); err != nil {
 			t.Fatal(err)
 		}
-		repository := SlotRepository{RepositoryID: "repository", WorktreePath: "/wx/slot/repository", State: "PREPARING"}
-		if _, err := store.CreateStandby(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/slot", State: "PREPARING"}, []SlotRepository{repository}); err == nil {
+		repository := SlotRepository{RepositoryID: "repository", DirName: "repository", State: "PREPARING"}
+		if _, err := store.CreateStandby(context.Background(), Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, []SlotRepository{repository}); err == nil {
 			t.Fatal("standby creation succeeded without repository metadata table")
 		}
 	})
@@ -902,7 +909,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 		store := openTestStore(t)
 		seedWorkspace(t, store)
 		ctx := context.Background()
-		job, err := store.CreateStandby(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/slot", State: "PREPARING"}, nil)
+		job, err := store.CreateStandby(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -933,7 +940,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 		store := openTestStore(t)
 		seedWorkspace(t, store)
 		ctx := context.Background()
-		job, err := store.CreateStandby(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/slot", State: "PREPARING"}, nil)
+		job, err := store.CreateStandby(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -958,7 +965,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 		seedWorkspace(t, store)
 		ctx := context.Background()
 		session := Session{ID: "slot", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-		if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/slot", State: "LEASED"}, nil, session, ""); err != nil {
+		if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "LEASED"}, nil, session, ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.db.Exec(`DROP TABLE jobs`); err != nil {
@@ -983,7 +990,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 				sessionState, slotState = "RELEASING", "DRAINING"
 			}
 			session := Session{ID: "slot", WorkspaceID: "workspace", SlotID: "slot", State: sessionState, AgentKind: "codex", TokenHash: HashToken("token")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/wx/slot", State: slotState}, nil, session, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: slotState}, nil, session, ""); err != nil {
 				t.Fatal(err)
 			}
 			if operation == "finish-preparation" {
@@ -1054,7 +1061,6 @@ func TestEnsureRecoveryJobsReconstructsInterruptedSlotAndRepositoryWork(t *testi
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
-	root := t.TempDir()
 	for _, slot := range []struct {
 		id, state, sessionState string
 	}{
@@ -1062,7 +1068,7 @@ func TestEnsureRecoveryJobsReconstructsInterruptedSlotAndRepositoryWork(t *testi
 		{id: "snapshot", state: "SNAPSHOTTING", sessionState: "SNAPSHOTTING"},
 		{id: "remove", state: "REMOVING", sessionState: "ARCHIVED"},
 	} {
-		if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,path,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, slot.id, "workspace", 1, filepath.Join(root, slot.id), slot.state, now(), now()); err != nil {
+		if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, slot.id, "workspace", 1, testRootID, filepath.Join("workspace", slot.id), slot.state, now(), now()); err != nil {
 			t.Fatal(err)
 		}
 		if slot.sessionState != "" {
@@ -1071,10 +1077,10 @@ func TestEnsureRecoveryJobsReconstructsInterruptedSlotAndRepositoryWork(t *testi
 			}
 		}
 	}
-	if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,path,state,created_at,updated_at) VALUES('retire','workspace',1,?,'RETIRING',?,?)`, filepath.Join(root, "retire"), now(), now()); err != nil {
+	if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,state,created_at,updated_at) VALUES('retire','workspace',1,?,'workspace/retire','RETIRING',?,?)`, testRootID, now(), now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES('retire','repository',?,'RETIRING','main','abc','fp')`, filepath.Join(root, "retire", "repo")); err != nil {
+	if _, err := store.db.Exec(`INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES('retire','repository','repository','RETIRING','main','abc','fp')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1105,7 +1111,7 @@ func TestEnsureRecoveryJobsReconstructsInterruptedSlotAndRepositoryWork(t *testi
 func TestAgentProcessRegistrationAndDependencyDeferral(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "agent", Path: filepath.Join(t.TempDir(), "agent"), State: "LEASED"}, nil, Session{ID: "agent", SlotID: "agent", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "agent", State: "LEASED", RootID: testRootID, RelPath: "_unbound/agent"}, nil, Session{ID: "agent", SlotID: "agent", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RegisterAgentProcess(ctx, "agent", "token", 0); err == nil {
@@ -1265,14 +1271,14 @@ func TestBindFreshResumeSlotRollsBackAtEveryPersistenceBoundary(t *testing.T) {
 			seedWorkspace(t, store)
 			ctx := context.Background()
 			parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "EXPIRED", AgentKind: "codex", AgentSessionID: "agent", TokenHash: HashToken("parent")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: "/wx/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.db.Exec(`UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
 				t.Fatal(err)
 			}
 			current := Session{ID: "current", SlotID: "current", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("current")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", Path: "/wx/current", State: "UNBOUND"}, nil, current, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/current"}, nil, current, ""); err != nil {
 				t.Fatal(err)
 			}
 			if test.mutate != nil {
@@ -1309,14 +1315,14 @@ func TestBindFreshSessionCommitsOrRollsBackAtomically(t *testing.T) {
 			store := openTestStore(t)
 			ctx := context.Background()
 			parent := Session{ID: "parent", SlotID: "parent", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("parent")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", Path: "/wx/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", State: "SNAPSHOTTED", RootID: testRootID, RelPath: "_unbound/parent"}, nil, parent, ""); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.db.Exec(`UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
 				t.Fatal(err)
 			}
 			current := Session{ID: "current", SlotID: "current", State: test.currentState, AgentKind: "codex", TokenHash: HashToken("current")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", Path: "/wx/current", State: test.currentState}, nil, current, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", State: test.currentState, RootID: testRootID, RelPath: "_unbound/current"}, nil, current, ""); err != nil {
 				t.Fatal(err)
 			}
 			if test.trigger != "" {
@@ -1453,7 +1459,7 @@ func TestEnsureRecoveryJobsReportsQueryAndInsertFaults(t *testing.T) {
 	t.Run("insert", func(t *testing.T) {
 		store := openTestStore(t)
 		seedWorkspace(t, store)
-		if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,path,state,created_at,updated_at) VALUES('slot','workspace',1,'/wx/slot','PREPARING',?,?)`, now(), now()); err != nil {
+		if _, err := store.db.Exec(`INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,state,created_at,updated_at) VALUES('slot','workspace',1,?,'workspace/slot','PREPARING',?,?)`, testRootID, now(), now()); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.db.Exec(`CREATE TRIGGER fail_recovery_job BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
@@ -1484,7 +1490,7 @@ func TestAdministrativeStateTransitionsAndQueries(t *testing.T) {
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	root := t.TempDir()
-	job, err := store.CreateStandby(ctx, Slot{ID: "standby", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "standby"), State: "PREPARING"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "standby", "repo"), State: "PREPARING", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}})
+	job, err := store.CreateStandby(ctx, Slot{ID: "standby", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/standby", State: "PREPARING"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "standby", "repo"), State: "PREPARING", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1554,9 +1560,8 @@ func TestOwnershipAndCompareAndSwapFailuresAreRejected(t *testing.T) {
 	if err := store.FinishJob(ctx, job.ID, "owner", errors.New("expected")); err != nil {
 		t.Fatal(err)
 	}
-	root := t.TempDir()
 	session := Session{ID: "active", WorkspaceID: "workspace", SlotID: "active", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "active", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "active"), State: "LEASED"}, nil, session, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "active", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/active", State: "LEASED"}, nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Session(ctx, "active", "wrong"); err == nil {
@@ -1591,20 +1596,14 @@ func TestOwnershipAndCompareAndSwapFailuresAreRejected(t *testing.T) {
 	}
 }
 
-func TestDrainArchiveAndForgetAdministrativePaths(t *testing.T) {
+func TestArchiveAndForgetAdministrativePaths(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	root := t.TempDir()
-	job, err := store.CreateStandby(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "slot"), State: "READY"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "slot", "repo"), State: "READY", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}})
+	job, err := store.CreateStandby(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "READY"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "slot", "repo"), State: "READY", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if err := store.DrainRoot(ctx, root); err != nil {
-		t.Fatal(err)
-	}
-	if slot, err := store.Slot(ctx, "slot"); err != nil || slot.State != "STALE" {
-		t.Fatalf("drained slot=%+v err=%v", slot, err)
 	}
 	if err := store.SetSlotState(ctx, "slot", []string{"READY", "STALE"}, "ARCHIVED", ""); err != nil {
 		t.Fatal(err)
@@ -1641,7 +1640,7 @@ func TestForgetWorkspaceRefusesLiveRecoveryMappings(t *testing.T) {
 			name: "session mapping",
 			seed: func(t *testing.T, store *Store, ctx context.Context) {
 				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("token")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -1656,7 +1655,7 @@ func TestForgetWorkspaceRefusesLiveRecoveryMappings(t *testing.T) {
 			name: "repository snapshot",
 			seed: func(t *testing.T, store *Store, ctx context.Context) {
 				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("token")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
 					t.Fatal(err)
 				}
 				if err := store.SaveSnapshot(ctx, Snapshot{ID: "snapshot", SessionID: "session", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}); err != nil {
@@ -1674,10 +1673,10 @@ func TestForgetWorkspaceRefusesLiveRecoveryMappings(t *testing.T) {
 			name: "workspace snapshot",
 			seed: func(t *testing.T, store *Store, ctx context.Context) {
 				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("token")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: "/workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
+				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
 					t.Fatal(err)
 				}
-				if err := store.SaveWorkspaceSnapshot(ctx, WorkspaceSnapshot{SessionID: "session", ArchivePath: "/workspace/snapshot.tar", SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}); err != nil {
+				if err := store.SaveWorkspaceSnapshot(ctx, WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: "_recovery/workspace-snapshots/snapshot.tar", SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -1714,7 +1713,7 @@ func TestSaveSnapshotIsIdempotentButRejectsConflict(t *testing.T) {
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "LEASED"}, nil, session, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "LEASED"}, nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := Snapshot{ID: "snapshot", SessionID: "session", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)}
@@ -1733,27 +1732,37 @@ func TestSaveSnapshotIsIdempotentButRejectsConflict(t *testing.T) {
 func TestWorkspaceMembershipChangeAdvancesGenerationAndStalesOldStandby(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
-	w := discovery.Workspace{ID: "workspace", Root: "/workspace", Kind: "multi_repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/workspace/repository", CommonDir: "/workspace/repository/.git", RelativePath: "repository", DefaultBranch: "main"}}}
-	generation, err := store.UpsertWorkspaceGeneration(ctx, w)
+	w := discovery.Workspace{ID: "propos", Root: "/workspace", Kind: "multi_repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/workspace/repository", CommonDir: "/workspace/repository/.git", RelativePath: "repository", DefaultBranch: "main"}}}
+	registered, generation, err := store.UpsertWorkspaceGeneration(ctx, w)
 	if err != nil || generation != 1 {
 		t.Fatalf("initial generation=%d err=%v", generation, err)
 	}
-	job, err := store.CreateStandby(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: generation, Path: filepath.Join(t.TempDir(), "slot"), State: "READY"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(t.TempDir(), "worktree"), State: "READY", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fingerprint"}})
+	workspaceID := string(registered.ID)
+	// The ID is redrawn rather than taken from the caller: it becomes a
+	// directory name, so it has to be a short base36 value and it must not be
+	// allowed to collide with an unrelated workspace row.
+	if workspaceID == string(w.ID) || !domain.ValidShortID(workspaceID) {
+		t.Fatalf("assigned workspace id=%q, want a fresh short id", workspaceID)
+	}
+	job, err := store.CreateStandby(ctx, Slot{ID: "slot", WorkspaceID: workspaceID, Generation: generation, RootID: testRootID, RelPath: filepath.Join(workspaceID, "slot"), State: "READY"}, []SlotRepository{{RepositoryID: "repository", DirName: "repository", State: "READY", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fingerprint"}})
 	if err != nil || job.Kind != "PREPARE" {
 		t.Fatalf("create standby job=%+v err=%v", job, err)
 	}
-	if generation, err = store.UpsertWorkspaceGeneration(ctx, w); err != nil || generation != 1 {
-		t.Fatalf("unchanged generation=%d err=%v", generation, err)
+	// A multi-repository workspace is re-resolved through its root path, so
+	// the second call must land on the same row rather than redrawing an ID
+	// and advancing the generation of a duplicate.
+	if again, generation, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil || generation != 1 || string(again.ID) != workspaceID {
+		t.Fatalf("unchanged generation=%d id=%q err=%v", generation, again.ID, err)
 	}
 	w.Repositories = append(w.Repositories, discovery.Repository{ID: "repository-2", MainPath: "/workspace/repository-2", CommonDir: "/workspace/repository-2/.git", RelativePath: "repository-2", DefaultBranch: "main"})
-	if generation, err = store.UpsertWorkspaceGeneration(ctx, w); err != nil || generation != 2 {
-		t.Fatalf("changed generation=%d err=%v", generation, err)
+	if again, generation, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil || generation != 2 || string(again.ID) != workspaceID {
+		t.Fatalf("changed generation=%d id=%q err=%v", generation, again.ID, err)
 	}
 	slot, err := store.Slot(ctx, "slot")
 	if err != nil || slot.State != "STALE" {
 		t.Fatalf("old slot=%+v err=%v", slot, err)
 	}
-	loaded, err := store.Workspace(ctx, "workspace")
+	loaded, err := store.Workspace(ctx, workspaceID)
 	if err != nil || len(loaded.Repositories) != 2 {
 		t.Fatalf("workspace repositories=%d err=%v", len(loaded.Repositories), err)
 	}
@@ -1866,12 +1875,12 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 	}
 	ctx := context.Background()
 	w := discovery.Workspace{ID: "w", Root: "/w", Kind: "repository"}
-	slot := Slot{ID: "s", WorkspaceID: "w", Path: "/wx/s", State: "PREPARING"}
-	repository := SlotRepository{RepositoryID: "r", WorktreePath: "/wx/s/r", State: "PREPARING"}
+	slot := Slot{ID: "s", WorkspaceID: "w", State: "PREPARING", RootID: testRootID, RelPath: "w/s"}
+	repository := SlotRepository{RepositoryID: "r", DirName: "r", State: "PREPARING"}
 	session := Session{ID: "s", WorkspaceID: "w", SlotID: "s", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
 	snapshot := Snapshot{ID: "snapshot", SessionID: "s", RepositoryID: "r"}
 
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err == nil {
+	if _, _, err := store.UpsertWorkspaceGeneration(ctx, w); err == nil {
 		t.Error("upsert succeeded against damaged schema")
 	}
 	if _, err := store.WorkspaceGeneration(ctx, "w"); err == nil {
@@ -1923,7 +1932,7 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 		"begin snapshot":     func() error { return store.BeginSnapshot(ctx, "s", "s") },
 		"finish cold":        func() error { return store.FinishColdRepositoryRemoval(ctx, "s", "r") },
 		"finish removal":     func() error { return store.FinishRemoval(ctx, "s") },
-		"drain root":         func() error { return store.DrainRoot(ctx, "/wx") },
+		"prune roots":        func() error { return store.PruneRoots(ctx) },
 		"expire snapshots":   func() error { return store.ExpireSessionSnapshots(ctx, "s") },
 		"prune":              func() error { return store.PruneMetadata(ctx, now(), now(), now()) },
 	} {
@@ -2077,12 +2086,14 @@ func TestSessionWorkspaceRejectsEmptyMembershipAndMissingSession(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	w := discovery.Workspace{ID: "empty-workspace", Root: "/empty", Kind: "repository"}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
+	w := discovery.Workspace{ID: "propos", Root: "/empty", Kind: "repository"}
+	registered, _, err := store.UpsertWorkspaceGeneration(ctx, w)
+	if err != nil {
 		t.Fatal(err)
 	}
-	session := Session{ID: "empty-session", WorkspaceID: string(w.ID), SlotID: "empty-slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: string(w.ID), Path: "/empty/slot", State: "LEASED"}, nil, session, ""); err != nil {
+	workspaceID := string(registered.ID)
+	session := Session{ID: "empty-session", WorkspaceID: workspaceID, SlotID: "empty-slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: workspaceID, State: "LEASED", RootID: testRootID, RelPath: filepath.Join(workspaceID, session.SlotID)}, nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SessionWorkspace(ctx, session.ID); err == nil || !strings.Contains(err.Error(), "no recorded repository") {
@@ -2100,14 +2111,14 @@ func TestResumeOrphanAndBackupNontrivialPaths(t *testing.T) {
 	root := t.TempDir()
 
 	parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ACTIVE", AgentKind: "codex", AgentSessionID: "agent", TokenHash: HashToken("parent-token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "parent"), State: "LEASED"}, nil, parent, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "LEASED"}, nil, parent, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.BindAgentSession(ctx, "parent", "agent"); err != nil {
 		t.Fatal(err)
 	}
 	unbound := Session{ID: "child", SlotID: "child", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child-token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", Path: filepath.Join(root, "child"), State: "UNBOUND"}, nil, unbound, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, unbound, ""); err != nil {
 		t.Fatal(err)
 	}
 	repositories := []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "child", "repo"), RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}}
@@ -2141,7 +2152,7 @@ func TestResumeOrphanAndBackupNontrivialPaths(t *testing.T) {
 	}
 
 	orphan := Session{ID: "orphan", WorkspaceID: "workspace", SlotID: "orphan", State: "STARTING", AgentKind: "codex", ClientPID: 999999, TokenHash: HashToken("orphan-token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "orphan", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "orphan"), State: "LEASED"}, nil, orphan, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "orphan", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/orphan", State: "LEASED"}, nil, orphan, ""); err != nil {
 		t.Fatal(err)
 	}
 	candidates, err := store.OrphanCandidates(ctx, time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano))
@@ -2199,7 +2210,7 @@ func TestColdLeaseRollsBackAtEveryPersistenceBoundary(t *testing.T) {
 			seedWorkspace(t, store)
 			ctx := context.Background()
 			root := t.TempDir()
-			if _, err := store.CreateStandby(ctx, Slot{ID: "cold", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "cold"), State: "READY"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "cold", "root"), State: "COLD"}}); err != nil {
+			if _, err := store.CreateStandby(ctx, Slot{ID: "cold", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/cold", State: "READY"}, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "cold", "root"), State: "COLD"}}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.db.ExecContext(ctx, test.trigger); err != nil {
@@ -2242,14 +2253,14 @@ func TestResumeBindingRollsBackAtEveryPersistenceBoundary(t *testing.T) {
 			ctx := context.Background()
 			root := t.TempDir()
 			parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", AgentSessionID: "agent", TokenHash: HashToken("parent")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "parent"), State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
 				t.Fatal(err)
 			}
 			if err := store.BindAgentSession(ctx, "parent", "agent"); err != nil {
 				t.Fatal(err)
 			}
 			child := Session{ID: "child", SlotID: "child", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", Path: filepath.Join(root, "child"), State: "UNBOUND"}, nil, child, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.db.ExecContext(ctx, test.trigger); err != nil {
@@ -2288,16 +2299,15 @@ func TestRestoreActivationPreservesParentMappingAtEveryHandoffFailure(t *testing
 			store := openTestStore(t)
 			seedWorkspace(t, store)
 			ctx := context.Background()
-			root := t.TempDir()
 			parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", AgentSessionID: "agent", TokenHash: HashToken("parent")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "parent"), State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
 				t.Fatal(err)
 			}
 			if err := store.BindAgentSession(ctx, "parent", "agent"); err != nil {
 				t.Fatal(err)
 			}
 			child := Session{ID: "child", SlotID: "child", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", Path: filepath.Join(root, "child"), State: "UNBOUND"}, nil, child, ""); err != nil {
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, nil); err != nil {
@@ -2401,7 +2411,7 @@ func TestJobClaimRollsBackWhenClaimedRowOrAuditEventChanges(t *testing.T) {
 func TestReadySlotsRejectsCorruptGenerationType(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
-	job, err := store.CreateStandby(context.Background(), Slot{ID: "ready-corrupt", WorkspaceID: "workspace", Generation: 1, Path: "/ready-corrupt", State: "READY"}, nil)
+	job, err := store.CreateStandby(context.Background(), Slot{ID: "ready-corrupt", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/ready-corrupt", State: "READY"}, nil)
 	if err != nil || job.ID == "" {
 		t.Fatalf("create standby job=%+v err=%v", job, err)
 	}
@@ -2413,6 +2423,15 @@ func TestReadySlotsRejectsCorruptGenerationType(t *testing.T) {
 	}
 }
 
+// testRootID and testRootPath are the worktree root generation openTestStore
+// registers. Slot locations are proven through root_id plus the recorded
+// inode identity, never by reading the root pathname from disk, so a fixed
+// lexical path keeps the composed Slot.Path deterministic across tests.
+const (
+	testRootID   = "root01"
+	testRootPath = "/wx"
+)
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
@@ -2420,13 +2439,48 @@ func openTestStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	seedRoot(t, store, testRootID, testRootPath, "root-identity", true)
 	return store
 }
 
+// seedRoot registers one worktree root generation directly. EnsureActiveRoot
+// draws a random ID, so tests that need to name a generation in an expected
+// value insert the row instead of calling it.
+func seedRoot(t *testing.T, store *Store, id, path, identity string, active bool) {
+	t.Helper()
+	activeFlag := 0
+	if active {
+		activeFlag = 1
+	}
+	if _, err := store.db.ExecContext(context.Background(), `INSERT INTO roots(id,path,identity,active,created_at) VALUES(?,?,?,?,?)`, id, path, identity, activeFlag, now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// seedWorkspace registers the shared single-repository workspace fixture with
+// a fixed ID. UpsertWorkspaceGeneration deliberately redraws the ID of a
+// workspace it has never seen (the value discovery proposes is random and can
+// collide), so a fixture that needs a stable, quotable workspace ID inserts
+// the rows itself. Later UpsertWorkspaceGeneration calls resolve back to this
+// row through the repository's common Git directory.
 func seedWorkspace(t *testing.T, store *Store) {
 	t.Helper()
-	w := discovery.Workspace{ID: "workspace", Root: "/workspace", Kind: "repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/workspace", CommonDir: "/workspace/.git", DefaultBranch: "main"}}}
-	if _, err := store.UpsertWorkspaceGeneration(context.Background(), w); err != nil {
+	// relative_path is deliberately "" here, matching the fixture this helper
+	// replaced: the workspace root and the repository main path are the same
+	// directory for a single-repository workspace.
+	seedWorkspaceRows(t, store, "workspace", "/workspace", "repository", "repository", "/workspace", "/workspace/.git", "")
+}
+
+func seedWorkspaceRows(t *testing.T, store *Store, workspaceID, root, kind, repositoryID, mainPath, commonDir, relative string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO workspaces(id,root_path,kind,generation,discovery_state,first_seen_at,last_seen_at,last_reconciled_at) VALUES(?,?,?,1,'READY',?,?,?)`, workspaceID, root, kind, now(), now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,'main','',?,?)`, repositoryID, mainPath, commonDir, now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES(?,?,?,0)`, workspaceID, repositoryID, relative); err != nil {
 		t.Fatal(err)
 	}
 }

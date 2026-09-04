@@ -133,7 +133,7 @@ func TestHandlerRoutesAgentRegistrationAndConfigReload(t *testing.T) {
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	manager := testManager(t, cfg, store)
 	t.Cleanup(manager.Close)
-	if _, err := store.CreateSlotSession(context.Background(), state.Slot{ID: "slot", Path: filepath.Join(root, "slot"), State: "LEASED"}, nil, state.Session{ID: "session", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}, ""); err != nil {
+	if _, err := store.CreateSlotSession(context.Background(), testSlotRow(t, manager, "", "slot", 0, "LEASED"), nil, state.Session{ID: "session", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}, ""); err != nil {
 		t.Fatal(err)
 	}
 	handler := Handler{Manager: manager}
@@ -155,7 +155,7 @@ func TestHandlerRoutesAgentRegistrationAndConfigReload(t *testing.T) {
 	if result, ok := reloaded.(map[string]bool); !ok || !result["reloaded"] {
 		t.Fatalf("reload result=%v", reloaded)
 	}
-	if got, want := manager.Config().Storage.WorktreeRoot, filepath.Join(root, "dev", "worktrees", "wx"); got != want {
+	if got, want := manager.Config().Storage.WorktreeRoot, filepath.Join(root, "wx"); got != want {
 		t.Fatalf("reloaded worktree root=%q, want %q", got, want)
 	}
 }

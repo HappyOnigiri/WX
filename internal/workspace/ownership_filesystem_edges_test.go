@@ -22,7 +22,8 @@ import (
 
 func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "slots", "slot", "root")
+	slotDirectory := filepath.Join(root, testSlotRelPath)
+	target := filepath.Join(slotDirectory, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -33,57 +34,87 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	}
 	defer func() { _ = owner.Close() }()
 
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "", common); err == nil {
-		t.Fatal("empty slot marker was accepted")
+	for _, test := range []struct {
+		name     string
+		identity MarkerIdentity
+	}{
+		{name: "empty slot", identity: MarkerIdentity{RootID: testRootID, RepositoryID: testRepositoryID}},
+		{name: "path in slot", identity: MarkerIdentity{SlotID: "bad/slot", RootID: testRootID, RepositoryID: testRepositoryID}},
+		{name: "empty root", identity: MarkerIdentity{SlotID: "slot", RepositoryID: testRepositoryID}},
+		{name: "path in root", identity: MarkerIdentity{SlotID: "slot", RootID: "bad/root", RepositoryID: testRepositoryID}},
+		{name: "empty repository", identity: MarkerIdentity{SlotID: "slot", RootID: testRootID}},
+		{name: "path in repository", identity: MarkerIdentity{SlotID: "slot", RootID: testRootID, RepositoryID: "bad/repo"}},
+		{name: "dot repository", identity: MarkerIdentity{SlotID: "slot", RootID: testRootID, RepositoryID: "."}},
+		{name: "parent repository", identity: MarkerIdentity{SlotID: "slot", RootID: testRootID, RepositoryID: ".."}},
+	} {
+		if err := EnsureOwnershipMarkerAt(owner, root, target, test.identity, common); err == nil {
+			t.Fatalf("%s marker identity was accepted", test.name)
+		}
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "bad/slot", common); err == nil {
-		t.Fatal("path-containing slot marker was accepted")
-	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatalf("idempotent marker creation: %v", err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "other", common); err == nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("other"), common); err == nil {
 		t.Fatal("mismatched existing marker was accepted for another slot")
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", t.TempDir()); err == nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, MarkerIdentity{SlotID: "slot", RootID: "rtzzzz", RepositoryID: testRepositoryID}, common); err == nil {
+		t.Fatal("mismatched existing marker was accepted for another root generation")
+	}
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), t.TempDir()); err == nil {
 		t.Fatal("mismatched existing marker was accepted for another common directory")
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", filepath.Join(root, "missing-common")); err == nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), filepath.Join(root, "missing-common")); err == nil {
 		t.Fatal("marker creation accepted a missing Git common directory")
 	}
 	outsideTarget := filepath.Join(t.TempDir(), "outside")
 	if err := os.MkdirAll(outsideTarget, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, outsideTarget, "slot", common); err == nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, outsideTarget, markerFor("slot"), common); err == nil {
 		t.Fatal("marker creation accepted a target outside the ownership root")
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatalf("valid marker rejected: %v", err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "", common); err != nil {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor(""), common); err != nil {
 		t.Fatalf("marker with unspecified slot rejected: %v", err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "other", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("other"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("wrong slot error=%v", err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", t.TempDir()); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, MarkerIdentity{SlotID: "slot", RootID: "rtzzzz", RepositoryID: testRepositoryID}, common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("wrong root generation error=%v", err)
+	}
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), t.TempDir()); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("wrong common directory error=%v", err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "bad/slot", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, MarkerIdentity{SlotID: "bad/slot", RootID: testRootID, RepositoryID: testRepositoryID}, common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("invalid validation slot error=%v", err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", filepath.Join(root, "missing-common")); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), filepath.Join(root, "missing-common")); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing validation common directory error=%v", err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, outsideTarget, "slot", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, outsideTarget, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("outside validation target error=%v", err)
 	}
 
-	markerPath := filepath.Join(filepath.Dir(target), ownershipMarkerNameForTarget(target))
+	markerName, err := ownershipMarkerName(testRepositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if markerName != ownershipMarkerPrefix+testRepositoryID {
+		t.Fatalf("marker name=%q", markerName)
+	}
+	// The marker lives in the worktree's parent, which is the slot
+	// directory. That is what lets an interrupted removal prove ownership
+	// again after the worktree itself is gone.
+	markerPath := filepath.Join(slotDirectory, markerName)
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("marker is not in the slot directory: %v", err)
+	}
 	writeMarker := func(value string, mode os.FileMode) {
 		t.Helper()
 		if err := os.WriteFile(markerPath, []byte(value), mode); err != nil {
@@ -93,7 +124,7 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	valid := ownershipMarker{Version: 1, SlotID: "slot", Target: target, CommonDir: common}
+	valid := ownershipMarker{Version: ownershipMarkerVersion, SlotID: "slot", RootID: testRootID, RepositoryID: testRepositoryID, CommonDir: common}
 	validJSON, err := json.Marshal(valid)
 	if err != nil {
 		t.Fatal(err)
@@ -105,16 +136,17 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	}{
 		{name: "world readable", data: string(validJSON), mode: 0o644},
 		{name: "invalid json", data: "{", mode: 0o600},
-		{name: "unknown field", data: `{"version":1,"slot_id":"slot","target":"` + target + `","common_dir":"` + common + `","extra":true}`, mode: 0o600},
+		{name: "unknown field", data: `{"version":2,"slot_id":"slot","root_id":"` + testRootID + `","repository_id":"` + testRepositoryID + `","common_dir":"` + common + `","extra":true}`, mode: 0o600},
 		{name: "trailing data", data: string(validJSON) + "\n{}", mode: 0o600},
 		{name: "malformed trailing data", data: string(validJSON) + "{", mode: 0o600},
-		{name: "incomplete", data: `{"version":1,"slot_id":"slot"}`, mode: 0o600},
-		{name: "invalid slot", data: `{"version":1,"slot_id":"bad/slot","target":"` + target + `","common_dir":"` + common + `"}`, mode: 0o600},
+		{name: "incomplete", data: `{"version":2,"slot_id":"slot"}`, mode: 0o600},
+		{name: "invalid slot", data: `{"version":2,"slot_id":"bad/slot","root_id":"` + testRootID + `","repository_id":"` + testRepositoryID + `","common_dir":"` + common + `"}`, mode: 0o600},
+		{name: "superseded version", data: `{"version":1,"slot_id":"slot","root_id":"` + testRootID + `","repository_id":"` + testRepositoryID + `","common_dir":"` + common + `"}`, mode: 0o600},
 		{name: "write only", data: string(validJSON), mode: 0o200},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			writeMarker(test.data, test.mode)
-			if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+			if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 				t.Fatalf("malformed marker error=%v", err)
 			}
 			if err := os.Chmod(markerPath, 0o600); err != nil {
@@ -128,78 +160,109 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	if err := os.Mkdir(markerPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("directory marker error=%v", err)
 	}
 	if err := os.Remove(markerPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing marker error=%v", err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatalf("marker recreation: %v", err)
 	}
 
-	// A marker can be syntactically valid while binding a different physical
-	// target; the proof must reject that identity mismatch.
-	otherTarget := filepath.Join(root, "slots", "other", "root")
-	if err := os.MkdirAll(otherTarget, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	other := ownershipMarker{Version: 1, SlotID: "slot", Target: otherTarget, CommonDir: common}
-	otherJSON, err := json.Marshal(other)
+	// A marker can be syntactically valid while naming a different root
+	// generation or repository; the proof must reject that mismatch. This is
+	// what replaced version 1's redundant absolute target path.
+	otherGeneration := ownershipMarker{Version: ownershipMarkerVersion, SlotID: "slot", RootID: "rtzzzz", RepositoryID: testRepositoryID, CommonDir: common}
+	otherGenerationJSON, err := json.Marshal(otherGeneration)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeMarker(string(otherJSON), 0o600)
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("target mismatch error=%v", err)
+	writeMarker(string(otherGenerationJSON), 0o600)
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("root generation mismatch error=%v", err)
+	}
+	if _, err := ValidateRemovalOwnership(root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("removal root generation mismatch error=%v", err)
+	}
+	otherRepository := ownershipMarker{Version: ownershipMarkerVersion, SlotID: "slot", RootID: testRootID, RepositoryID: "other", CommonDir: common}
+	otherRepositoryJSON, err := json.Marshal(otherRepository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeMarker(string(otherRepositoryJSON), 0o600)
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("repository mismatch error=%v", err)
+	}
+	if _, err := ValidateRemovalOwnership(root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("removal repository mismatch error=%v", err)
 	}
 	writeMarker(string(validJSON), 0o600)
-	if _, err := ValidateRemovalOwnership(root, target, t.TempDir()); !errors.Is(err, state.ErrOwnership) {
+	if _, err := ValidateRemovalOwnership(root, target, markerFor("slot"), t.TempDir()); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("removal common mismatch error=%v", err)
 	}
-	writeMarker(string(otherJSON), 0o600)
-	if _, err := ValidateRemovalOwnership(root, target, common); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("removal target mismatch error=%v", err)
-	}
-	writeMarker(string(validJSON), 0o600)
-	if _, err := ValidateRemovalOwnership(root, target, filepath.Join(root, "missing-common")); !errors.Is(err, state.ErrOwnership) {
+	if _, err := ValidateRemovalOwnership(root, target, markerFor("slot"), filepath.Join(root, "missing-common")); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing common directory removal error=%v", err)
 	}
-	if _, err := ValidateRemovalOwnership(root, outsideTarget, common); !errors.Is(err, state.ErrOwnership) {
+	if _, err := ValidateRemovalOwnership(root, outsideTarget, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("outside target removal error=%v", err)
+	}
+	if _, err := ValidateRemovalOwnership(root, target, MarkerIdentity{SlotID: "slot", RootID: testRootID}, common); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("removal without a repository id error=%v", err)
 	}
 
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
-	if slot, err := ValidateRemovalOwnership(root, target, common); err != nil || slot != "slot" {
+	if slot, err := ValidateRemovalOwnership(root, target, markerFor("slot"), common); err != nil || slot != "slot" {
 		t.Fatalf("missing-leaf removal proof slot=%q err=%v", slot, err)
 	}
-	if slot, err := ValidateRemovalOwnership(root, target, t.TempDir()); !errors.Is(err, state.ErrOwnership) || slot != "" {
+	if slot, err := ValidateRemovalOwnership(root, target, markerFor("slot"), t.TempDir()); !errors.Is(err, state.ErrOwnership) || slot != "" {
 		t.Fatalf("common mismatch slot=%q err=%v", slot, err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing target validation error=%v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(root, "file"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newOwnershipMarker(filepath.Join(root, "file"), "slot", common, true); err == nil {
+	if _, err := newOwnershipMarker(filepath.Join(root, "file"), markerFor("slot"), common, true); err == nil {
 		t.Fatal("regular file accepted as target")
 	}
 	link := filepath.Join(root, "target-link")
-	if err := os.Symlink(otherTarget, link); err != nil {
+	if err := os.Symlink(slotDirectory, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newOwnershipMarker(link, "slot", common, true); err == nil {
+	if _, err := newOwnershipMarker(link, markerFor("slot"), common, true); err == nil {
 		t.Fatal("target symlink accepted")
 	}
-	if _, err := newOwnershipMarker(target, "slot", filepath.Join(root, "missing-common"), true); err == nil {
+	if _, err := newOwnershipMarker(slotDirectory, markerFor("slot"), filepath.Join(root, "missing-common"), true); err == nil {
 		t.Fatal("missing common directory accepted")
+	}
+	if _, err := markerExpectation(markerFor("slot"), filepath.Join(root, "missing-common")); err == nil {
+		t.Fatal("marker expectation accepted a missing common directory")
+	}
+	expectation, err := markerExpectation(markerFor("slot"), common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expectation != valid {
+		t.Fatalf("marker expectation=%+v want=%+v", expectation, valid)
+	}
+	if err := compareRemovalMarker(valid, valid); err != nil {
+		t.Fatalf("identical removal markers rejected: %v", err)
+	}
+	if err := compareRemovalMarker(otherRepository, valid); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("repository mismatch removal comparison error=%v", err)
+	}
+	mismatchedCommon := valid
+	mismatchedCommon.CommonDir = t.TempDir()
+	if err := compareRemovalMarker(mismatchedCommon, valid); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("common directory mismatch removal comparison error=%v", err)
 	}
 	if got := markerOwnershipFailure(state.ErrOwnership); !errors.Is(got, state.ErrOwnership) {
 		t.Fatalf("ownership sentinel was rewrapped: %v", got)
@@ -207,14 +270,17 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	if got := markerOwnershipFailure(nil); got != nil {
 		t.Fatalf("nil ownership error became non-nil: %v", got)
 	}
-	if err := removeOwnershipMarkerAt(owner, root, outsideTarget); err == nil {
+	if err := removeOwnershipMarkerAt(owner, root, outsideTarget, testRepositoryID); err == nil {
 		t.Fatal("marker removal accepted a target outside the ownership root")
+	}
+	if err := removeOwnershipMarkerAt(owner, root, target, "bad/repo"); err == nil {
+		t.Fatal("marker removal accepted an unusable repository id")
 	}
 }
 
 func TestDescriptorBoundOwnershipMarkerLifecycle(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "workspaces", "workspace", "slots", "slot", "root")
+	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -224,35 +290,44 @@ func TestDescriptorBoundOwnershipMarkerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatalf("descriptor-bound marker creation: %v", err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatalf("descriptor-bound marker idempotence: %v", err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatalf("descriptor-bound marker validation: %v", err)
 	}
-	if slot, err := ValidateRemovalOwnershipAt(owner, root, target, common); err != nil || slot != "slot" {
+	if slot, err := ValidateRemovalOwnershipAt(owner, root, target, markerFor("slot"), common); err != nil || slot != "slot" {
 		t.Fatalf("descriptor-bound removal proof slot=%q err=%v", slot, err)
 	}
-	if err := removeOwnershipMarkerAt(owner, root, target); err != nil {
+	// Removing the worktree must leave the marker in the slot directory, so
+	// an interrupted removal can still prove ownership when it is retried.
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if slot, err := ValidateRemovalOwnershipAt(owner, root, target, markerFor("slot"), common); err != nil || slot != "slot" {
+		t.Fatalf("removal proof after worktree removal slot=%q err=%v", slot, err)
+	}
+	if err := removeOwnershipMarkerAt(owner, root, target, testRepositoryID); err != nil {
 		t.Fatalf("descriptor-bound marker removal: %v", err)
 	}
-	if err := removeOwnershipMarkerAt(owner, root, target); err != nil {
+	if err := removeOwnershipMarkerAt(owner, root, target, testRepositoryID); err != nil {
 		t.Fatalf("descriptor-bound idempotent marker removal: %v", err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing descriptor-bound marker error=%v", err)
 	}
-	if err := EnsureOwnershipMarkerAt(nil, root, target, "slot", common); err == nil {
+	if err := EnsureOwnershipMarkerAt(nil, root, target, markerFor("slot"), common); err == nil {
 		t.Fatal("nil descriptor marker creation succeeded")
 	}
 }
 
 func TestDescriptorBoundOwnershipMarkerRejectsNamespaceAndProofChanges(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "slots", "slot", "root")
+	slotDirectory := filepath.Join(root, testSlotRelPath)
+	target := filepath.Join(slotDirectory, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -263,30 +338,38 @@ func TestDescriptorBoundOwnershipMarkerRejectsNamespaceAndProofChanges(t *testin
 	}
 	defer func() { _ = owner.Close() }()
 
-	for _, slotID := range []string{"", "bad/slot"} {
-		if err := EnsureOwnershipMarkerAt(owner, root, target, slotID, common); err == nil {
-			t.Fatalf("invalid slot %q was accepted", slotID)
+	for _, identity := range []MarkerIdentity{
+		{RootID: testRootID, RepositoryID: testRepositoryID},
+		{SlotID: "bad/slot", RootID: testRootID, RepositoryID: testRepositoryID},
+	} {
+		if err := EnsureOwnershipMarkerAt(owner, root, target, identity, common); err == nil {
+			t.Fatalf("invalid slot %q was accepted", identity.SlotID)
 		}
-		if err := ValidateOwnershipMarkerAt(owner, root, target, slotID, common); !errors.Is(err, state.ErrOwnership) {
-			t.Fatalf("invalid validation slot %q error=%v", slotID, err)
+		if identity.SlotID == "" {
+			// An empty slot ID is legitimate for validation: it means the
+			// caller does not care which slot the marker names.
+			continue
+		}
+		if err := ValidateOwnershipMarkerAt(owner, root, target, identity, common); !errors.Is(err, state.ErrOwnership) {
+			t.Fatalf("invalid validation slot %q error=%v", identity.SlotID, err)
 		}
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside"), "slot", common); err == nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside"), markerFor("slot"), common); err == nil {
 		t.Fatal("outside marker target was accepted")
 	}
 	regular := filepath.Join(root, "regular")
 	if err := os.WriteFile(regular, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, regular, "regular", common); err == nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, regular, markerFor("regular"), common); err == nil {
 		t.Fatal("regular marker target was accepted")
 	}
-	missing := filepath.Join(root, "missing-parent", "root")
-	if err := EnsureOwnershipMarkerAt(owner, root, missing, "missing", common); err == nil {
+	missing := filepath.Join(root, "missing-parent", testRepositoryID)
+	if err := EnsureOwnershipMarkerAt(owner, root, missing, markerFor("missing"), common); err == nil {
 		t.Fatal("missing physical marker parent was accepted")
 	}
 
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
@@ -298,10 +381,10 @@ func TestDescriptorBoundOwnershipMarkerRejectsNamespaceAndProofChanges(t *testin
 		{name: "wrong common", slot: "slot", common: t.TempDir()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := ValidateOwnershipMarkerAt(owner, root, target, test.slot, test.common); !errors.Is(err, state.ErrOwnership) {
+			if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor(test.slot), test.common); !errors.Is(err, state.ErrOwnership) {
 				t.Fatalf("mismatched marker proof error=%v", err)
 			}
-			slot, err := ValidateRemovalOwnershipAt(owner, root, target, test.common)
+			slot, err := ValidateRemovalOwnershipAt(owner, root, target, markerFor(test.slot), test.common)
 			if test.slot == "slot" && !errors.Is(err, state.ErrOwnership) {
 				t.Fatalf("mismatched removal proof error=%v", err)
 			}
@@ -310,10 +393,10 @@ func TestDescriptorBoundOwnershipMarkerRejectsNamespaceAndProofChanges(t *testin
 			}
 		})
 	}
-	if err := removeOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside")); err == nil {
+	if err := removeOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside"), testRepositoryID); err == nil {
 		t.Fatal("outside marker removal was accepted")
 	}
-	if err := removeOwnershipMarkerAt(nil, root, target); err == nil {
+	if err := removeOwnershipMarkerAt(nil, root, target, testRepositoryID); err == nil {
 		t.Fatal("nil marker removal root was accepted")
 	}
 
@@ -324,13 +407,13 @@ func TestDescriptorBoundOwnershipMarkerRejectsNamespaceAndProofChanges(t *testin
 	if err := closed.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureOwnershipMarkerAt(closed, root, target, "closed", common); err == nil {
+	if err := EnsureOwnershipMarkerAt(closed, root, target, markerFor("closed"), common); err == nil {
 		t.Fatal("closed marker root was accepted")
 	}
-	if err := ValidateOwnershipMarkerAt(closed, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(closed, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("closed marker validation error=%v", err)
 	}
-	if _, err := ValidateRemovalOwnershipAt(closed, root, target, common); !errors.Is(err, state.ErrOwnership) {
+	if _, err := ValidateRemovalOwnershipAt(closed, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("closed removal validation error=%v", err)
 	}
 }
@@ -447,45 +530,54 @@ func TestPhysicalFilesystemRejectsNondirectoryAndInvalidTraversal(t *testing.T) 
 
 func TestOwnershipMarkerCanBeCreatedBeforeGitAddsTheWorktree(t *testing.T) {
 	root := t.TempDir()
-	slotRoot := filepath.Join(root, "slots", "slot")
-	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
+	slotDirectory := filepath.Join(root, testSlotRelPath)
+	if err := os.MkdirAll(slotDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(slotRoot, "root")
+	target := filepath.Join(slotDirectory, testRepositoryID)
 	common := t.TempDir()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatalf("pre-creation marker: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(slotRoot, ownershipMarkerNameForTarget(target))); err != nil {
+	if _, err := os.Stat(filepath.Join(slotDirectory, ownershipMarkerPrefix+testRepositoryID)); err != nil {
 		t.Fatalf("marker was not created beside missing worktree: %v", err)
 	}
-	if _, err := ValidateRemovalOwnership(root, target, common); err != nil {
+	if _, err := ValidateRemovalOwnership(root, target, markerFor("slot"), common); err != nil {
 		t.Fatalf("pre-creation removal proof: %v", err)
 	}
 }
 
 func TestOwnershipMarkerPathsAndPhysicalHelpers(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "slots", "slot", "root")
+	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := ownershipMarkerBase(root, target); got != filepath.Dir(target) {
-		t.Fatalf("slot marker base=%q", got)
+	// The marker is always the worktree's sibling, with no layout pattern
+	// matching involved any more.
+	relative, err := ownershipMarkerRelative(root, target, testRepositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(testSlotRelPath, ownershipMarkerPrefix+testRepositoryID); relative != want {
+		t.Fatalf("marker relative=%q want=%q", relative, want)
+	}
+	if _, err := ownershipMarkerRelative(root, target, "bad/repo"); err == nil {
+		t.Fatal("marker relative accepted an unusable repository id")
+	}
+	if _, err := ownershipMarkerRelative(root, root, testRepositoryID); err == nil {
+		t.Fatal("marker relative accepted a target whose parent is outside the root")
 	}
 	ordinary := filepath.Join(root, "ordinary")
 	if err := os.Mkdir(ordinary, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := ownershipMarkerBase(root, ordinary); got != root {
-		t.Fatalf("ordinary marker base=%q", got)
-	}
-	if _, _, err := openMarkerRoot(root, filepath.Join(t.TempDir(), "outside")); err == nil {
+	if _, _, err := openMarkerRoot(root, filepath.Join(t.TempDir(), "outside"), testRepositoryID); err == nil {
 		t.Fatal("marker root opened outside ownership root")
 	}
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -493,13 +585,13 @@ func TestOwnershipMarkerPathsAndPhysicalHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := EnsureOwnershipMarkerAt(owner, root, ordinary, "ordinary", root); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, ordinary, markerFor("ordinary"), root); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeOwnershipMarkerAt(owner, root, ordinary); err != nil {
+	if err := removeOwnershipMarkerAt(owner, root, ordinary, testRepositoryID); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeOwnershipMarkerAt(owner, root, ordinary); err != nil {
+	if err := removeOwnershipMarkerAt(owner, root, ordinary, testRepositoryID); err != nil {
 		t.Fatalf("idempotent marker removal: %v", err)
 	}
 
@@ -832,7 +924,8 @@ func TestFilesystemAndMarkerHelpersPropagateClosedDescriptorErrors(t *testing.T)
 func TestOwnershipDescriptorAndGitRecordBoundaryMatrix(t *testing.T) {
 	root := t.TempDir()
 	common := filepath.Join(root, "common")
-	target := filepath.Join(root, "workspaces", "w", "slots", "s", "root")
+	slotDirectory := filepath.Join(root, testSlotRelPath)
+	target := filepath.Join(slotDirectory, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -845,52 +938,45 @@ func TestOwnershipDescriptorAndGitRecordBoundaryMatrix(t *testing.T) {
 	}
 	defer func() { _ = owner.Close() }()
 
-	if err := EnsureOwnershipMarkerAt(nil, root, target, "s", common); err == nil {
+	if err := EnsureOwnershipMarkerAt(nil, root, target, markerFor("s"), common); err == nil {
 		t.Fatal("nil marker owner was accepted")
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "bad/slot", common); err == nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, MarkerIdentity{SlotID: "bad/slot", RootID: testRootID, RepositoryID: testRepositoryID}, common); err == nil {
 		t.Fatal("unsafe marker slot was accepted")
 	}
-	if _, err := newOwnershipMarkerAt(nil, root, target, "s", common, true); err == nil {
+	if _, err := newOwnershipMarkerAt(nil, root, target, markerFor("s"), common, true); err == nil {
 		t.Fatal("nil owner was accepted by newOwnershipMarkerAt")
 	}
-	// EnsureOwnershipMarkerAt/ValidateOwnershipMarkerAt already reject an
-	// unsafe slot id before calling newOwnershipMarkerAt, so exercise its own
-	// defense-in-depth guard directly: the helper must not trust a future
-	// caller to have validated its input.
-	if _, err := newOwnershipMarkerAt(owner, root, target, "bad/slot", common, true); err == nil {
-		t.Fatal("unsafe slot id was accepted by newOwnershipMarkerAt directly")
-	}
-	if _, err := newOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside"), "s", common, true); err == nil {
+	if _, err := newOwnershipMarkerAt(owner, root, filepath.Join(t.TempDir(), "outside"), markerFor("s"), common, true); err == nil {
 		t.Fatal("outside marker target was accepted")
 	}
-	symlinkTarget := filepath.Join(root, "workspaces", "w", "slots", "s", "link")
+	symlinkTarget := filepath.Join(slotDirectory, "link")
 	if err := os.Symlink(target, symlinkTarget); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newOwnershipMarkerAt(owner, root, symlinkTarget, "s", common, true); err == nil {
+	if _, err := newOwnershipMarkerAt(owner, root, symlinkTarget, markerFor("s"), common, true); err == nil {
 		t.Fatal("symlink marker target was accepted")
 	}
-	missingTarget := filepath.Join(root, "workspaces", "w", "slots", "s", "missing")
-	if _, err := newOwnershipMarkerAt(owner, root, missingTarget, "s", common, true); err != nil {
+	missingTarget := filepath.Join(slotDirectory, "missing")
+	if _, err := newOwnershipMarkerAt(owner, root, missingTarget, markerFor("s"), common, true); err != nil {
 		t.Fatalf("missing marker target with physical parent: %v", err)
 	}
-	if _, err := newOwnershipMarkerAt(owner, root, filepath.Join(root, "missing", "target"), "s", common, true); err == nil {
+	if _, err := newOwnershipMarkerAt(owner, root, filepath.Join(root, "missing", "target"), markerFor("s"), common, true); err == nil {
 		t.Fatal("missing marker parent was accepted")
 	}
-	if _, err := newOwnershipMarkerAt(owner, root, target, "s", filepath.Join(root, "missing-common"), true); err == nil {
+	if _, err := newOwnershipMarkerAt(owner, root, target, markerFor("s"), filepath.Join(root, "missing-common"), true); err == nil {
 		t.Fatal("missing common directory was accepted")
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "s", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("s"), common); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "s", common); err != nil {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("s"), common); err != nil {
 		t.Fatalf("valid descriptor marker: %v", err)
 	}
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "other", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("other"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("wrong slot marker error=%v", err)
 	}
-	markerRelative, err := ownershipMarkerRelative(root, target)
+	markerRelative, err := ownershipMarkerRelative(root, target, testRepositoryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -910,7 +996,7 @@ func TestOwnershipDescriptorAndGitRecordBoundaryMatrix(t *testing.T) {
 	if err := owner.Remove(markerRelative); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "s", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("s"), common); err != nil {
 		t.Fatal(err)
 	}
 
@@ -929,12 +1015,6 @@ func TestOwnershipDescriptorAndGitRecordBoundaryMatrix(t *testing.T) {
 				t.Fatalf("records=%+v want %d", records, test.want)
 			}
 		})
-	}
-	if base := ownershipMarkerBase(root, target); base != filepath.Join(root, "workspaces", "w", "slots", "s") {
-		t.Fatalf("slot marker base=%q", base)
-	}
-	if base := ownershipMarkerBase(root, filepath.Join(root, "misc", "target")); base != filepath.Join(root, "misc") {
-		t.Fatalf("ordinary marker base=%q", base)
 	}
 	for _, candidate := range []string{root, filepath.Join(root, "link"), filepath.Join(root, "missing", "leaf")} {
 		if candidate == filepath.Join(root, "link") {

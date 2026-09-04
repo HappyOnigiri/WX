@@ -207,3 +207,144 @@ func runDiscoveryGit(t *testing.T, directory string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 }
+
+func TestResolveMultiRepositoryCollapsesLinkedWorktreesOntoTheMainWorktree(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "server")
+	initDiscoveryRepository(t, main)
+	// Two linked worktrees of the same repository placed as siblings inside
+	// the workspace root. They share the repository's Git common directory,
+	// so inspectRepo derives the same repository ID for all three entries.
+	for _, name := range []string{"server-feature", "server-hotfix"} {
+		runDiscoveryGit(t, main, "worktree", "add", "--detach", filepath.Join(root, name))
+	}
+	other := filepath.Join(root, "client")
+	initDiscoveryRepository(t, other)
+
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(t.TempDir(), "worktrees")
+	cfg.Discovery.Timeout.Duration = 30 * time.Second
+	discoverer := Discoverer{Git: &gitx.Runner{Timeout: 30 * time.Second}, Config: cfg}
+	workspace, err := discoverer.Resolve(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Kind != "multi_repository" {
+		t.Fatalf("kind=%q", workspace.Kind)
+	}
+	if len(workspace.Repositories) != 2 {
+		var located []string
+		for _, repo := range workspace.Repositories {
+			located = append(located, repo.RelativePath)
+		}
+		t.Fatalf("repositories=%v; duplicates of one common directory were not collapsed", located)
+	}
+	byID := map[domain.RepositoryID]Repository{}
+	for _, repo := range workspace.Repositories {
+		if existing, duplicate := byID[repo.ID]; duplicate {
+			t.Fatalf("repository %s enumerated twice (%q and %q)", repo.ID, existing.RelativePath, repo.RelativePath)
+		}
+		byID[repo.ID] = repo
+	}
+	// The surviving entry must be the main worktree: state's
+	// validateWorkspaceRepositoryAssociation proves that
+	// workspace_root + relative_path equals repositories.main_worktree_path.
+	for _, repo := range workspace.Repositories {
+		located := filepath.Join(string(workspace.Root), repo.RelativePath)
+		canonical, canonicalErr := domain.Canonicalize(located)
+		if canonicalErr != nil {
+			t.Fatal(canonicalErr)
+		}
+		if canonical != repo.MainPath {
+			t.Fatalf("repository %s kept relative path %q which resolves to %s, not its main worktree %s", repo.ID, repo.RelativePath, canonical, repo.MainPath)
+		}
+	}
+}
+
+func TestResolveMultiRepositoryRefusesRepositoryVisibleOnlyThroughALinkedWorktree(t *testing.T) {
+	outside := t.TempDir()
+	main := filepath.Join(outside, "server")
+	initDiscoveryRepository(t, main)
+	root := t.TempDir()
+	runDiscoveryGit(t, main, "worktree", "add", "--detach", filepath.Join(root, "server-feature"))
+
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(t.TempDir(), "worktrees")
+	cfg.Discovery.Timeout.Duration = 30 * time.Second
+	discoverer := Discoverer{Git: &gitx.Runner{Timeout: 30 * time.Second}, Config: cfg}
+	_, err := discoverer.Resolve(context.Background(), root)
+	if err == nil || !strings.Contains(err.Error(), "linked worktree") {
+		t.Fatalf("error=%v; a repository whose main worktree is outside the workspace must fail closed", err)
+	}
+}
+
+func TestInspectRepositoryReadsOriginRemoteName(t *testing.T) {
+	repository := filepath.Join(t.TempDir(), "checkout")
+	initDiscoveryRepository(t, repository)
+	discoverer := Discoverer{Git: &gitx.Runner{Timeout: 30 * time.Second}, Config: config.Defaults()}
+
+	without, err := discoverer.inspectRepo(context.Background(), repository, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if without.RemoteName != "" {
+		t.Fatalf("remote name without an origin=%q", without.RemoteName)
+	}
+
+	runDiscoveryGit(t, repository, "remote", "add", "origin", "https://github.com/HappyOnigiri/WX.git")
+	with, err := discoverer.inspectRepo(context.Background(), repository, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if with.RemoteName != "WX" {
+		t.Fatalf("remote name=%q", with.RemoteName)
+	}
+}
+
+func TestRemoteBaseNameReducesRemoteURLForms(t *testing.T) {
+	for _, test := range []struct{ url, want string }{
+		{url: "https://github.com/HappyOnigiri/WX.git", want: "WX"},
+		{url: "https://github.com/HappyOnigiri/WX", want: "WX"},
+		{url: "  https://github.com/HappyOnigiri/WX/  ", want: "WX"},
+		{url: "git@github.com:HappyOnigiri/WX.git", want: "WX"},
+		{url: "ssh://git@example.invalid/deep/path/name.git", want: "name"},
+		{url: "/srv/git/bare-repo.git", want: "bare-repo"},
+		{url: `C:\repos\windows-style.git`, want: "windows-style"},
+		{url: "", want: ""},
+		{url: "   ", want: ""},
+		{url: "https://example.invalid/.git", want: ""},
+		{url: "/", want: ""},
+	} {
+		if got := RemoteBaseName(test.url); got != test.want {
+			t.Errorf("RemoteBaseName(%q)=%q want %q", test.url, got, test.want)
+		}
+	}
+}
+
+func TestWorkspaceIDsAreFreshShortIdentifiers(t *testing.T) {
+	repository := filepath.Join(t.TempDir(), "repository")
+	initDiscoveryRepository(t, repository)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(t.TempDir(), "worktrees")
+	cfg.Discovery.Timeout.Duration = 30 * time.Second
+	discoverer := Discoverer{Git: &gitx.Runner{Timeout: 30 * time.Second}, Config: cfg}
+
+	first, err := discoverer.Resolve(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := discoverer.Resolve(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []domain.WorkspaceID{first.ID, second.ID} {
+		if !domain.ValidShortID(string(id)) {
+			t.Fatalf("workspace id=%q is not a short identifier", id)
+		}
+	}
+	// Identity is resolved by internal/state, not by discovery, so two passes
+	// over the same repository deliberately propose different IDs.
+	if first.ID == second.ID {
+		t.Fatalf("two discovery passes proposed the same id %q; the proposal must be random", first.ID)
+	}
+}

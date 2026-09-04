@@ -150,7 +150,7 @@ func TestOwnedPathExistsPropagatesManagerClosedError(t *testing.T) {
 func TestOwnedPathExistsReportsUnreadablePath(t *testing.T) {
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	if _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root")); err != nil {
+	if _, _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root"), filepath.Join(root, "bootstrap", "root")); err != nil {
 		t.Fatal(err)
 	}
 	blockedDir := filepath.Join(root, "blocked-parent")
@@ -212,7 +212,7 @@ func TestCreateSlotRootDetectsReplacedWorktreeRootDirectory(t *testing.T) {
 	m := testManager(t, cfg, store)
 	defer m.Close()
 
-	if _, err := m.createSlotRoot(filepath.Join(cfg.Storage.WorktreeRoot, "slot", "root")); err != nil {
+	if _, _, err := m.createSlotRoot(filepath.Join(cfg.Storage.WorktreeRoot, "slot", "root"), filepath.Join(cfg.Storage.WorktreeRoot, "slot", "root")); err != nil {
 		t.Fatal(err)
 	}
 	// Pin the manager's cached descriptor open across the on-disk swap below
@@ -230,7 +230,7 @@ func TestCreateSlotRootDetectsReplacedWorktreeRootDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := m.createSlotRoot(filepath.Join(cfg.Storage.WorktreeRoot, "slot2", "root")); err == nil || !strings.Contains(err.Error(), "wx root path names a different directory") {
+	if _, _, err := m.createSlotRoot(filepath.Join(cfg.Storage.WorktreeRoot, "slot2", "root"), filepath.Join(cfg.Storage.WorktreeRoot, "slot2", "root")); err == nil || !strings.Contains(err.Error(), "wx root path names a different directory") {
 		t.Fatalf("swapped worktree root was not detected: %v", err)
 	}
 }
@@ -244,14 +244,14 @@ func TestCreateSlotRootFailsWhenWorktreeRootIsReadOnly(t *testing.T) {
 	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
 	_ = ctx
 	root := manager.Config().Storage.WorktreeRoot
-	if _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root")); err != nil {
+	if _, _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root"), filepath.Join(root, "bootstrap", "root")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(root, 0o500); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
-	if _, err := manager.createSlotRoot(filepath.Join(root, "blocked", "root")); err == nil {
+	if _, _, err := manager.createSlotRoot(filepath.Join(root, "blocked", "root"), filepath.Join(root, "blocked", "root")); err == nil {
 		t.Fatal("slot root creation succeeded despite a read-only worktree root")
 	}
 }
@@ -266,7 +266,7 @@ func TestMaterializeWorkspaceRootFailsWhenSlotDirectoryIsUnreadable(t *testing.T
 	_ = ctx
 	root := manager.Config().Storage.WorktreeRoot
 	slotPath := filepath.Join(root, "materialize", "unreadable", "root")
-	if _, err := manager.createSlotRoot(slotPath); err != nil {
+	if _, _, err := manager.createSlotRoot(slotPath, slotPath); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(slotPath, 0o000); err != nil {
@@ -288,7 +288,7 @@ func TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable(t *testing.T) {
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	blocked := filepath.Join(root, "blocked")
-	if _, err := manager.createSlotRoot(blocked); err != nil {
+	if _, _, err := manager.createSlotRoot(blocked, blocked); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(blocked, 0o000); err != nil {
@@ -310,7 +310,7 @@ func TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable(t *testing.T) {
 func TestReadyMatchesReportsUnreadableSlotDirectory(t *testing.T) {
 	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	if _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root")); err != nil {
+	if _, _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root"), filepath.Join(root, "bootstrap", "root")); err != nil {
 		t.Fatal(err)
 	}
 	slotsDir := filepath.Join(root, "workspaces", string(workspaceRecord.ID), "slots")
@@ -322,7 +322,7 @@ func TestReadyMatchesReportsUnreadableSlotDirectory(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(slotsDir, 0o700) })
 
-	slot := state.Slot{ID: "blocked", WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: filepath.Join(slotsDir, "blocked", "root"), State: "READY"}
+	slot := slotAtPath(t, manager, string(workspaceRecord.ID), "blocked", filepath.Join(slotsDir, "blocked", "root"), 1, "READY")
 	if ok, err := manager.readyMatches(ctx, slot, resolved); ok || !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("unreadable slot directory ok=%v err=%v", ok, err)
 	}
@@ -335,12 +335,12 @@ func TestReadyMatchesReportsUnreadableSlotDirectory(t *testing.T) {
 func TestReadyMatchesReportsMissingReadySlotDirectory(t *testing.T) {
 	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	bootstrap := filepath.Join(manager.Config().Storage.WorktreeRoot, "ready-missing", "bootstrap", "root")
-	if _, err := manager.createSlotRoot(bootstrap); err != nil {
+	if _, _, err := manager.createSlotRoot(bootstrap, bootstrap); err != nil {
 		t.Fatal(err)
 	}
 	goneID := domain.StableID("ready-missing", "gone")
 	gonePath := filepath.Join(manager.Config().Storage.WorktreeRoot, "ready-missing", goneID, "root")
-	slot := state.Slot{ID: goneID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: gonePath, State: "READY"}
+	slot := slotAtPath(t, manager, string(workspaceRecord.ID), goneID, gonePath, 1, "READY")
 	if ok, err := manager.readyMatches(ctx, slot, resolved); err != nil || ok {
 		t.Fatalf("missing ready slot directory ok=%v err=%v", ok, err)
 	}
@@ -353,7 +353,7 @@ func TestReadyMatchesReportsMissingReadySlotDirectory(t *testing.T) {
 func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	if _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root")); err != nil {
+	if _, _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root"), filepath.Join(root, "bootstrap", "root")); err != nil {
 		t.Fatal(err)
 	}
 	owner, release, err := manager.existingRootDescriptor(root)
@@ -362,16 +362,17 @@ func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 	}
 	defer release()
 
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
+	// The fingerprint still has to match, or the slot is reported as an
+	// ordinary not-ready slot before the ownership check under test runs.
+	coldID := domain.StableID("ready-outside", "cold")
+	coldSlot := slotAtPath(t, manager, string(workspaceRecord.ID), coldID, filepath.Join(root, "ready-outside", coldID, "root"), 1, "READY")
+	coldDirName := escapingDirNameFor(t, root, coldSlot.Path)
+	coldFingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	coldID := domain.StableID("ready-outside", "cold")
-	coldOutside := filepath.Join(t.TempDir(), "cold-outside")
-	coldSlot := state.Slot{ID: coldID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: filepath.Join(root, "ready-outside", coldID, "root"), State: "READY"}
 	if _, err := store.CreateStandby(ctx, coldSlot,
-		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: coldOutside, State: "COLD", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
+		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: coldDirName, State: "COLD", BaseOID: resolved[0].OID, Fingerprint: coldFingerprint}}); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := manager.readyRepositoriesMatch(ctx, coldSlot, resolved, root, owner); ok || !errors.Is(err, state.ErrOwnership) {
@@ -379,10 +380,14 @@ func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 	}
 
 	readyID := domain.StableID("ready-outside", "ready")
-	readyOutside := filepath.Join(t.TempDir(), "ready-outside")
-	readySlot := state.Slot{ID: readyID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: filepath.Join(root, "ready-outside", readyID, "root"), State: "READY"}
+	readySlot := slotAtPath(t, manager, string(workspaceRecord.ID), readyID, filepath.Join(root, "ready-outside", readyID, "root"), 1, "READY")
+	readyDirName := escapingDirNameFor(t, root, readySlot.Path)
+	readyFingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.CreateStandby(ctx, readySlot,
-		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: readyOutside, State: "READY", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
+		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: readyDirName, State: "READY", BaseOID: resolved[0].OID, Fingerprint: readyFingerprint}}); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := manager.readyRepositoriesMatch(ctx, readySlot, resolved, root, owner); ok || !errors.Is(err, state.ErrOwnership) {
@@ -397,7 +402,7 @@ func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 func TestReadyRepositoriesMatchReportsUnopenableReadyWorktree(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	if _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root")); err != nil {
+	if _, _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root"), filepath.Join(root, "bootstrap", "root")); err != nil {
 		t.Fatal(err)
 	}
 	owner, release, err := manager.existingRootDescriptor(root)
@@ -422,9 +427,9 @@ func TestReadyRepositoriesMatchReportsUnopenableReadyWorktree(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(worktreePath, 0o700) })
 
-	slot := state.Slot{ID: blockedID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: slotRoot, State: "READY"}
+	slot := slotAtPath(t, manager, string(workspaceRecord.ID), blockedID, slotRoot, 1, "READY")
 	if _, err := store.CreateStandby(ctx, slot,
-		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: worktreePath, State: "READY", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
+		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: filepath.Base(worktreePath), State: "READY", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -442,8 +447,8 @@ func TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath(t *te
 	slotID := domain.StableID("cold-schedule", "outside")
 	outsidePath := filepath.Join(t.TempDir(), "outside-worktree")
 	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: slotID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: filepath.Join(manager.Config().Storage.WorktreeRoot, "cold-schedule", slotID, "root"), State: "RETIRING"},
-		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: outsidePath, State: "RETIRING", BaseOID: resolved[0].OID}}); err != nil {
+		slotAtPath(t, manager, string(workspaceRecord.ID), slotID, filepath.Join(manager.Config().Storage.WorktreeRoot, "cold-schedule", slotID, "root"), 1, "RETIRING"),
+		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: "repository", State: "RETIRING", BaseOID: resolved[0].OID}}); err != nil {
 		t.Fatal(err)
 	}
 	candidates := []state.ColdRepositoryCandidate{{SlotID: slotID, WorkspaceID: string(workspaceRecord.ID), RepositoryID: string(resolved[0].Repository.ID), WorktreePath: outsidePath}}
@@ -457,19 +462,27 @@ func TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath(t *te
 
 // TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries
 // verifies that ownedRootArtifactPaths treats a workspace directory that has
-// not allocated any slots yet, and an unbound entry that is not a physical
-// directory, as ordinary absent artifacts rather than as errors or as
-// reportable slot roots.
+// not allocated any slots yet, an _unbound entry that is not a physical
+// directory, and wx's own reserved namespaces as ordinary absent artifacts
+// rather than as errors or as reportable slot directories.
 func TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries(t *testing.T) {
 	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	if err := os.MkdirAll(filepath.Join(root, "workspaces", string(workspaceRecord.ID)), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, string(workspaceRecord.ID)), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "unbound"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, unboundNamespace), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "unbound", "not-a-slot"), []byte("x"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, unboundNamespace, "not-a-slot"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// _recovery holds workspace bundle archives, not slots, and must not be
+	// reported as an orphaned workspace namespace.
+	if err := os.MkdirAll(filepath.Join(root, "_recovery", "workspace-snapshots"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "_recovery", "workspace-snapshots", "bundle.tar"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -483,13 +496,13 @@ func TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries(t *test
 }
 
 // TestOwnedRootArtifactPathsReportsUnreadableWorkspaceSlots verifies that a
-// registered workspace directory whose "slots" namespace cannot be read (as
-// opposed to simply not existing yet) is reported as an ownership failure,
-// since the daemon cannot prove there are no owned artifacts underneath it.
+// workspace namespace whose contents cannot be read (as opposed to simply
+// not existing yet) is reported as an ownership failure, since the daemon
+// cannot prove there are no owned artifacts underneath it.
 func TestOwnedRootArtifactPathsReportsUnreadableWorkspaceSlots(t *testing.T) {
 	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	slotsDir := filepath.Join(root, "workspaces", string(workspaceRecord.ID), "slots")
+	slotsDir := filepath.Join(root, string(workspaceRecord.ID))
 	if err := os.MkdirAll(slotsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +524,7 @@ func TestOwnedRootArtifactPathsReportsUnreadableWorkspaceSlots(t *testing.T) {
 func TestOwnedRootArtifactPathsReportsUnreadableUnboundNamespace(t *testing.T) {
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	unboundDir := filepath.Join(root, "unbound")
+	unboundDir := filepath.Join(root, unboundNamespace)
 	if err := os.MkdirAll(unboundDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +555,7 @@ func TestQuarantineFailureHelpersIgnoreNonOwnershipErrors(t *testing.T) {
 	ctx := context.Background()
 
 	session := state.Session{ID: "slot", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "slot", Generation: 1, Path: filepath.Join(root, "slot"), State: "RETIRING"}, nil, session, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, testSlotRow(t, m, "", "slot", 1, "RETIRING"), nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
 

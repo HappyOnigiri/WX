@@ -79,6 +79,7 @@ func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T)
 		}
 		t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
 		target := filepath.Join(worktreeRoot, "tmp-restore", "root")
+		pointAtSlot(t, manager, worktreeRoot, target)
 		if err := manager.Restore(context.Background(), repo, target, "tmp-restore", snapshot); err == nil || !strings.Contains(err.Error(), "temporary restore index") {
 			t.Fatalf("restore succeeded despite an unusable TMPDIR: %v", err)
 		}
@@ -99,6 +100,7 @@ func TestRestorePropagatesRelockedRecoveryRefVerificationFailure(t *testing.T) {
 	}
 	installGitFault(t, " rev-parse --verify refs/wx/recovery", 4)
 	target := filepath.Join(worktreeRoot, "relock-fault", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
 	if err := manager.Restore(context.Background(), repo, target, "relock-fault", snapshot); err == nil || !strings.Contains(err.Error(), "changed during restore") {
 		t.Fatalf("restore succeeded despite an injected relocked verification failure: %v", err)
 	}

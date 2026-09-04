@@ -54,11 +54,11 @@ func TestLifecycleCandidateQueriesCoverWarmStaleAndColdTransitions(t *testing.T)
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	root := t.TempDir()
-	ready := Slot{ID: "ready-candidate", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "ready"), State: "READY"}
+	ready := Slot{ID: "ready-candidate", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/ready-candidate", State: "READY"}
 	if _, err := store.CreateStandby(ctx, ready, []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "ready", "repository"), State: "READY", RequestedRef: "main", BaseOID: "head", Fingerprint: "fingerprint"}}); err != nil {
 		t.Fatal(err)
 	}
-	stale := Slot{ID: "stale-candidate", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(root, "stale"), State: "STALE"}
+	stale := Slot{ID: "stale-candidate", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/stale-candidate", State: "STALE"}
 	if _, err := store.CreateStandby(ctx, stale, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestHotRepositoryIDsExcludesNeverLeasedAndStaleRepositories(t *testing.T) {
 		{ID: "stale", MainPath: "/workspace/stale", CommonDir: "/workspace/stale/.git", RelativePath: "stale", DefaultBranch: "main"},
 		{ID: "hot", MainPath: "/workspace/hot", CommonDir: "/workspace/hot/.git", RelativePath: "hot", DefaultBranch: "main"},
 	}}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
+	if _, _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	hotBefore := FormatTime(time.Now().Add(-time.Hour))
@@ -124,7 +124,7 @@ func TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions(t *testin
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "LEASED"}, nil, session, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "LEASED"}, nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	expired := FormatTime(time.Now().Add(-time.Hour))
@@ -158,7 +158,7 @@ func TestSaveSnapshotRejectsConflictingIndexTree(t *testing.T) {
 	seedWorkspace(t, store)
 	ctx := context.Background()
 	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "LEASED"}, nil, session, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "LEASED"}, nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	original := Snapshot{ID: "snapshot", SessionID: "session", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/session/repository/head", IndexTreeOID: "index", IndexRef: "refs/wx/recovery/session/repository/index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/session/repository/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}

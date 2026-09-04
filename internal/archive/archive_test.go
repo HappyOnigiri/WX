@@ -60,7 +60,8 @@ func TestRemoveWorktreeRejectsSymlinkInRecordedPath(t *testing.T) {
 		MainPath:  domain.CanonicalPath(repository),
 		CommonDir: domain.CanonicalPath(filepath.Join(repository, ".git")),
 	}
-	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}, Ownership: allowOwnershipValidator{}}
+	manager := removalManager(t, root, allowOwnershipValidator{})
+	pointAtSlot(t, manager, root, first)
 	err := manager.RemoveWorktree(context.Background(), repo, root, first, head)
 	if err == nil || !strings.Contains(err.Error(), "symlink component") {
 		t.Fatalf("RemoveWorktree error = %v, want symlink rejection", err)
@@ -99,14 +100,14 @@ func TestRemoveWorktreeUsesPinnedDescriptorAcrossRootReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := workspace.EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := workspace.EnsureOwnershipMarkerAt(owner, root, target, markerIdentityFor(repo, "slot"), common); err != nil {
 		t.Fatal(err)
 	}
 	gitCommand(t, repository, "worktree", "lock", "--reason", "wx:slot:READY", target)
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = root
-	preparer := &workspace.Preparer{Git: runner, Config: cfg, OwnedRoot: owner, RootPath: root}
+	preparer := &workspace.Preparer{Git: runner, Config: cfg, OwnedRoot: owner, RootPath: root, RootID: testRootID, SlotPath: filepath.Dir(target), SlotRelPath: "slot"}
 	manager := &Manager{Git: runner, Preparer: preparer, Ownership: allowOwnershipValidator{}}
 	replaced := false
 	runner.SetBeforeRunAtHook(func(args []string) {
@@ -274,6 +275,7 @@ func TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects(t *tes
 		t.Fatalf("clean snapshot index tree=%s, want HEAD tree %s", snapshot.IndexTreeOID, headTree)
 	}
 	target := filepath.Join(worktreeRoot, "restore", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
 	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
 		t.Fatalf("restore from clean snapshot: %v", err)
 	}
@@ -348,6 +350,7 @@ func TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded(t *testing.T) {
 				t.Fatal("clean shortcut was taken while git status was hiding worktree content")
 			}
 			target := filepath.Join(worktreeRoot, "restore", "root")
+			pointAtSlot(t, manager, worktreeRoot, target)
 			if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
 				t.Fatalf("restore from snapshot: %v", err)
 			}
@@ -448,7 +451,7 @@ func TestArchiveRejectsUnownedAndMismatchedWorktrees(t *testing.T) {
 	head := gitCommand(t, repository, "rev-parse", "HEAD")
 	common := gitCommand(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
-	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}, Ownership: allowOwnershipValidator{}}
+	manager := removalManager(t, root, allowOwnershipValidator{})
 	ctx := context.Background()
 
 	if err := manager.RemoveWorktree(ctx, repo, root, repository, head); err == nil || !strings.Contains(err.Error(), "outside") {
@@ -464,13 +467,15 @@ func TestArchiveRejectsUnownedAndMismatchedWorktrees(t *testing.T) {
 	unowned := filepath.Join(root, "foreign", "root")
 	mustMkdir(t, filepath.Dir(unowned))
 	gitCommand(t, repository, "worktree", "add", "--detach", unowned, head)
+	pointAtSlot(t, manager, root, unowned)
 	if err := manager.RemoveWorktree(ctx, repo, root, unowned, head); err == nil || !strings.Contains(err.Error(), "ownership marker") {
 		t.Fatalf("unowned registered worktree removal error=%v", err)
 	}
 	if _, err := os.Stat(filepath.Join(unowned, ".git")); err != nil {
 		t.Fatalf("unowned registered worktree was removed: %v", err)
 	}
-	markOwnedWorktree(t, root, registered, "slot", repo.CommonDir)
+	markOwnedWorktree(t, root, registered, "slot", repo)
+	pointAtSlot(t, manager, root, registered)
 	if err := manager.RemoveWorktree(ctx, repo, root, registered, strings.Repeat("0", 40)); err == nil || !strings.Contains(err.Error(), "HEAD") {
 		t.Fatalf("mismatched HEAD removal error=%v", err)
 	}
@@ -509,9 +514,14 @@ func TestRemovalReconcilesMissingRegistrationAndRejectsWrongRepository(t *testin
 	gitCommand(t, first, "worktree", "add", "--detach", target, head)
 	firstRepo := discovery.Repository{ID: "first", MainPath: domain.CanonicalPath(first), CommonDir: domain.CanonicalPath(gitCommand(t, first, "rev-parse", "--path-format=absolute", "--git-common-dir"))}
 	secondRepo := discovery.Repository{ID: "second", MainPath: domain.CanonicalPath(second), CommonDir: domain.CanonicalPath(gitCommand(t, second, "rev-parse", "--path-format=absolute", "--git-common-dir"))}
-	markOwnedWorktree(t, wxRoot, target, "slot", firstRepo.CommonDir)
-	manager := &Manager{Git: &gitx.Runner{Timeout: 5 * time.Second}, Ownership: allowOwnershipValidator{}}
-	if err := manager.RemoveWorktree(context.Background(), secondRepo, wxRoot, target, ""); err == nil || !strings.Contains(err.Error(), "common directory") {
+	markOwnedWorktree(t, wxRoot, target, "slot", firstRepo)
+	manager := removalManager(t, wxRoot, allowOwnershipValidator{})
+	pointAtSlot(t, manager, wxRoot, target)
+	// The marker is named after the repository it belongs to, so a removal
+	// requested for a different repository does not find a marker at all.
+	// That is the same fail-closed refusal the common-directory comparison
+	// used to produce, one step earlier.
+	if err := manager.RemoveWorktree(context.Background(), secondRepo, wxRoot, target, ""); !errors.Is(err, state.ErrOwnership) || !strings.Contains(err.Error(), "ownership marker") {
 		t.Fatalf("wrong repository removal error=%v", err)
 	}
 	if err := os.RemoveAll(target); err != nil {
@@ -567,6 +577,7 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	badIndex := snapshot
 	badIndex.IndexTreeOID = "not-an-object"
 	target := filepath.Join(worktreeRoot, "bad-index", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
 	if err := manager.Restore(context.Background(), repo, target, "bad-index", badIndex); err == nil {
 		t.Fatal("restore with invalid index tree succeeded")
 	}
@@ -622,6 +633,7 @@ func TestRestoreRunsPrepareCommandAfterSnapshotTreeAndIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := filepath.Join(worktreeRoot, "slot", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
 	if err := manager.Restore(context.Background(), repo, target, "slot", snapshot); err != nil {
 		t.Fatalf("restore failed: %v", err)
 	}
@@ -696,6 +708,7 @@ func TestRestorePropagatesGitVerificationFailures(t *testing.T) {
 			}
 			installGitFault(t, test.pattern(snapshot), test.occurrence)
 			target := filepath.Join(worktreeRoot, "fault", "root")
+			pointAtSlot(t, manager, worktreeRoot, target)
 			if err := manager.Restore(context.Background(), repo, target, "fault", snapshot); err == nil {
 				t.Fatal("restore succeeded despite injected Git failure")
 			}
@@ -731,7 +744,7 @@ func TestRemoveWorktreePropagatesGitFailures(t *testing.T) {
 			target := filepath.Join(worktreeRoot, "slot", "root")
 			mustMkdir(t, filepath.Dir(target))
 			gitCommand(t, repository, "worktree", "add", "--detach", target, head)
-			markOwnedWorktree(t, worktreeRoot, target, "slot", repo.CommonDir)
+			markOwnedWorktree(t, worktreeRoot, target, "slot", repo)
 			installGitFault(t, pattern, 1)
 			if err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, target, head); err == nil {
 				t.Fatal("worktree removal succeeded despite injected Git failure")
@@ -757,7 +770,7 @@ func TestRemoveWorktreePropagatesRevalidationGitFailures(t *testing.T) {
 			target := filepath.Join(worktreeRoot, "slot", "root")
 			mustMkdir(t, filepath.Dir(target))
 			gitCommand(t, repository, "worktree", "add", "--detach", target, head)
-			markOwnedWorktree(t, worktreeRoot, target, "slot", repo.CommonDir)
+			markOwnedWorktree(t, worktreeRoot, target, "slot", repo)
 			installGitFault(t, test.pattern, test.occurrence)
 			if err := manager.RemoveWorktree(context.Background(), repo, worktreeRoot, target, head); err == nil {
 				t.Fatal("worktree removal succeeded despite an injected revalidation Git failure")
@@ -777,7 +790,7 @@ func TestRemoveWorktreeMissingRegistrationPropagatesGitFailures(t *testing.T) {
 		target := filepath.Join(worktreeRoot, "slot", "root")
 		mustMkdir(t, filepath.Dir(target))
 		gitCommand(t, repository, "worktree", "add", "--detach", target, head)
-		markOwnedWorktree(t, worktreeRoot, target, "slot", repo.CommonDir)
+		markOwnedWorktree(t, worktreeRoot, target, "slot", repo)
 		if err := os.RemoveAll(target); err != nil {
 			t.Fatal(err)
 		}
@@ -897,6 +910,25 @@ exec "$WX_REAL_GIT" "$@"
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// removalManager builds a Manager that can actually prove ownership of a
+// worktree under root. Removal needs a Preparer for two independent reasons:
+// the descriptor-bound guard requires OwnedRoot pinned to root, and the
+// SQLite proof reads the slot's recorded location (root generation plus
+// root-relative slot path) from it. pointAtSlot names the slot per target.
+func removalManager(t *testing.T, root string, ownership state.OwnershipValidator) *Manager {
+	t.Helper()
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	runner := &gitx.Runner{Timeout: 5 * time.Second}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	preparer := &workspace.Preparer{Git: runner, Config: cfg, Ownership: ownership, OwnedRoot: owner, RootPath: root, RootID: testRootID}
+	return &Manager{Git: runner, Preparer: preparer, Ownership: ownership}
+}
+
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o700); err != nil {
@@ -904,17 +936,41 @@ func mustMkdir(t *testing.T, path string) {
 	}
 }
 
-func markOwnedWorktree(t *testing.T, root, target, slotID string, commonDir domain.CanonicalPath) {
+// markerIdentityFor names the marker wx writes for one repository inside one
+// slot. The marker file is ".wx-owner-<repository_id>" in the worktree's
+// parent directory and records the root generation, so both values have to
+// come from the fixture rather than being derived from the target path.
+func markerIdentityFor(repo discovery.Repository, slotID string) workspace.MarkerIdentity {
+	return workspace.MarkerIdentity{SlotID: slotID, RootID: testRootID, RepositoryID: string(repo.ID)}
+}
+
+func markOwnedWorktree(t *testing.T, root, target, slotID string, repo discovery.Repository) {
 	t.Helper()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := workspace.EnsureOwnershipMarkerAt(owner, root, target, slotID, string(commonDir)); err != nil {
+	if err := workspace.EnsureOwnershipMarkerAt(owner, root, target, markerIdentityFor(repo, slotID), string(repo.CommonDir)); err != nil {
 		t.Fatal(err)
 	}
-	gitCommand(t, filepath.Dir(string(commonDir)), "worktree", "lock", "--reason", "wx:"+slotID+":READY", target)
+	gitCommand(t, filepath.Dir(string(repo.CommonDir)), "worktree", "lock", "--reason", "wx:"+slotID+":READY", target)
+}
+
+// pointAtSlot tells the fixture's Preparer which slot a worktree belongs to.
+// Ownership proofs no longer compare absolute paths, so a removal or
+// validation call has to be able to name the slot's root-relative location
+// and the repository's directory name inside it.
+func pointAtSlot(t *testing.T, manager *Manager, root, target string) {
+	t.Helper()
+	slotPath := filepath.Dir(target)
+	relative, err := filepath.Rel(root, slotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.Preparer.SlotPath = slotPath
+	manager.Preparer.SlotRelPath = relative
+	manager.Preparer.RootID = testRootID
 }
 
 func gitCommand(t *testing.T, dir string, args ...string) string {

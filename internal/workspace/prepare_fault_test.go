@@ -390,14 +390,14 @@ func TestPrepareLockedTargetPropagatesRevalidationDescriptorFailure(t *testing.T
 func TestPrepareLockedTargetPropagatesParentCreationFailure(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
-	slotsDirectory := filepath.Join(root, "slots")
-	if err := os.MkdirAll(slotsDirectory, 0o700); err != nil {
+	workspaceDirectory := filepath.Join(root, testWorkspaceID)
+	if err := os.MkdirAll(workspaceDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(slotsDirectory, 0o500); err != nil {
+	if err := os.Chmod(workspaceDirectory, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(slotsDirectory, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(workspaceDirectory, 0o700) })
 	if err := preparer.prepareLocked(context.Background(), repo, target, head, "slot", preparePhaseCreate, root); err == nil {
 		t.Fatal("prepareLockedTarget created a worktree parent below a read-only directory")
 	}
@@ -597,8 +597,8 @@ func TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailures(t *testing.T
 	root := preparer.Config.Storage.WorktreeRoot
 
 	t.Run("target lookup blocked by an unsearchable parent", func(t *testing.T) {
-		slotDirectory := filepath.Join(root, "slots", "blocked-lookup")
-		target := filepath.Join(slotDirectory, "root")
+		slotDirectory := filepath.Join(root, testWorkspaceID, "blockd")
+		target := filepath.Join(slotDirectory, testRepositoryID)
 		if err := os.MkdirAll(slotDirectory, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -621,8 +621,8 @@ func TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailures(t *testing.T
 	})
 
 	t.Run("target directory itself is unsearchable", func(t *testing.T) {
-		slotDirectory := filepath.Join(root, "slots", "blocked-open")
-		target := filepath.Join(slotDirectory, "root")
+		slotDirectory := filepath.Join(root, testWorkspaceID, "blocko")
+		target := filepath.Join(slotDirectory, testRepositoryID)
 		if err := os.MkdirAll(target, 0o700); err != nil {
 			t.Fatal(err)
 		}

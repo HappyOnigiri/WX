@@ -72,6 +72,10 @@ wx config retention.hot_standby 168h
 ```
 
 Complex workspace and repository overrides are edited in `~/.config/wx/config.yaml`.
+Worktrees are created under `storage.worktree_root` (default `$HOME/wx`) as `<workspace-id>/<slot-id>/<RepoName>`.
+Both IDs are six lowercase base36 characters, and `RepoName` comes from the repository's `origin` URL.
+Set `storage.repo_dir_source` to `directory` to use the main worktree's own directory name instead, or pin one repository with a `dir_name` / `dir_source` entry under `repositories`.
+Changing `storage.worktree_root` leaves existing sessions where they are and creates only new slots under the new root.
 Configuration is strictly decoded; an invalid reload leaves the last valid daemon configuration active.
 Paths expand `$HOME` only—`~` and arbitrary environment variables are rejected.
 

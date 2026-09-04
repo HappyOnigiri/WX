@@ -58,19 +58,23 @@ func TestCreateSlotRootPinsAllocationAcrossRootReplacement(t *testing.T) {
 	}
 	t.Cleanup(m.Close)
 
-	target := filepath.Join(root, "workspaces", "workspace", "slots", "slot", "root")
-	identity, err := m.createSlotRoot(target)
+	relPath, err := slotRelPath("wsp001", "slt001", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, relPath)
+	identity, _, err := m.createSlotRoot(target, target)
 	if err != nil {
 		t.Fatalf("create slot root: %v", err)
 	}
-	oldTarget := filepath.Join(root+"-old", "workspaces", "workspace", "slots", "slot", "root")
+	oldTarget := filepath.Join(root+"-old", relPath)
 	if info, err := os.Stat(oldTarget); err != nil || !info.IsDir() {
 		t.Fatalf("allocation did not remain in pinned root: info=%v err=%v", info, err)
 	}
-	if _, err := os.Lstat(filepath.Join(outside, "workspaces")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(outside, "wsp001")); !os.IsNotExist(err) {
 		t.Fatalf("allocation escaped into replacement directory: %v", err)
 	}
-	if got, err := m.leaseRootIdentity(target); err != nil || got != identity {
+	if got, err := m.ownedDirectoryIdentity(target); err != nil || got != identity {
 		t.Fatalf("lease identity got=%q want=%q err=%v", got, identity, err)
 	}
 }
@@ -104,30 +108,23 @@ func TestPrepareQuarantinesUncertainGitAddAfterRootReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 	resolved, err := pool.ResolveBranches(ctx, runner, w, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := domain.NewID()
+	id, err := newSlotID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	slotRoot, err := m.slotRoot(string(w.ID), id, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.createSlotRoot(slotRoot); err != nil {
-		t.Fatal(err)
-	}
+	slot := testSlot(t, m, string(w.ID), id, 1, "PREPARING")
+	slotRoot := slot.Path
 	repos, err := m.slotRepos(slotRoot, w, resolved, 1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: 1, Path: slotRoot, State: "PREPARING"}, repos, session, "PREPARE"); err != nil {
+	if _, err := store.CreateSlotSession(ctx, slot, repos, session, "PREPARE"); err != nil {
 		t.Fatal(err)
 	}
 	oldRoot := root + "-old"
@@ -145,14 +142,14 @@ func TestPrepareQuarantinesUncertainGitAddAfterRootReplacement(t *testing.T) {
 	if err := m.prepareSlot(ctx, id, w, resolved, repos); err == nil {
 		t.Fatal("uncertain descriptor-bound Git add unexpectedly succeeded")
 	}
-	slot, err := store.Slot(ctx, id)
+	quarantined, err := store.Slot(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slot.State != "QUARANTINED" {
-		t.Fatalf("uncertain add state=%s want QUARANTINED", slot.State)
+	if quarantined.State != "QUARANTINED" {
+		t.Fatalf("uncertain add state=%s want QUARANTINED", quarantined.State)
 	}
-	oldTarget := filepath.Join(oldRoot, "workspaces", string(w.ID), "slots", id, "root")
+	oldTarget := filepath.Join(oldRoot, slot.RelPath)
 	if info, err := os.Stat(oldTarget); err != nil || !info.IsDir() {
 		t.Fatalf("quarantined worktree was not preserved: info=%v err=%v", info, err)
 	}

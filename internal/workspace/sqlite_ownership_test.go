@@ -33,23 +33,35 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 	gitCommand(t, repositoryPath, "commit", "-m", "initial")
 	head := gitOutput(t, repositoryPath, "rev-parse", "HEAD")
 	common := gitOutput(t, repositoryPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	repo := discovery.Repository{ID: domain.RepositoryID("repository"), MainPath: domain.CanonicalPath(repositoryPath), CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main"}
-	w := discovery.Workspace{ID: domain.WorkspaceID("workspace"), Root: domain.CanonicalPath(repositoryPath), Kind: "repository", Repositories: []discovery.Repository{repo}}
+	repo := discovery.Repository{ID: domain.RepositoryID(testRepositoryID), MainPath: domain.CanonicalPath(repositoryPath), CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main"}
+	w := discovery.Workspace{ID: domain.WorkspaceID(testWorkspaceID), Root: domain.CanonicalPath(repositoryPath), Kind: "repository", Repositories: []discovery.Repository{repo}}
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
+	registered, _, err := store.UpsertWorkspaceGeneration(ctx, w)
+	if err != nil {
 		t.Fatal(err)
 	}
-	slotPath := filepath.Join(worktreeRoot, "slots", "slot", "root")
-	if _, err := store.CreateStandby(ctx, state.Slot{ID: "slot", WorkspaceID: string(w.ID), Generation: 1, Path: slotPath, State: "PREPARING"}, []state.SlotRepository{{RepositoryID: string(repo.ID), WorktreePath: slotPath, State: "PREPARING", RequestedRef: "main", BaseOID: head, Fingerprint: "fingerprint"}}); err != nil {
+	rootID, err := store.EnsureActiveRoot(ctx, worktreeRoot, "test-root-identity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slotRel := filepath.Join(string(registered.ID), testSlotID)
+	slotPath := filepath.Join(worktreeRoot, slotRel)
+	target := filepath.Join(slotPath, testRepositoryID)
+	if _, err := store.CreateStandby(ctx, state.Slot{ID: testSlotID, WorkspaceID: string(registered.ID), Generation: 1, RootID: rootID, RelPath: slotRel, State: "PREPARING"}, []state.SlotRepository{{RepositoryID: string(repo.ID), DirName: testRepositoryID, State: "PREPARING", RequestedRef: "main", BaseOID: head, Fingerprint: "fingerprint"}}); err != nil {
 		t.Fatal(err)
 	}
 
-	foreignPath := filepath.Join(worktreeRoot, "foreign", "root")
-	if err := os.MkdirAll(filepath.Dir(foreignPath), 0o700); err != nil {
+	// The forged worktree is a sibling inside the very slot directory the
+	// marker belongs to. Since version 2 the marker is named after the
+	// repository and shared by the whole slot, so this worktree carries a
+	// byte-identical marker and a matching wx lock: only the recorded
+	// dir_name distinguishes it from the real one.
+	foreignPath := filepath.Join(slotPath, "foreign")
+	if err := os.MkdirAll(slotPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	gitCommand(t, repositoryPath, "worktree", "add", "--detach", foreignPath, head)
@@ -58,15 +70,16 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = owner.Close() })
-	if err := EnsureOwnershipMarkerAt(owner, worktreeRoot, foreignPath, "slot", common); err != nil {
+	identity := MarkerIdentity{SlotID: testSlotID, RootID: rootID, RepositoryID: string(repo.ID)}
+	if err := EnsureOwnershipMarkerAt(owner, worktreeRoot, foreignPath, identity, common); err != nil {
 		t.Fatal(err)
 	}
-	gitCommand(t, repositoryPath, "worktree", "lock", "--reason", "wx:slot:READY", foreignPath)
+	gitCommand(t, repositoryPath, "worktree", "lock", "--reason", "wx:"+testSlotID+":READY", foreignPath)
 
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: store, SlotPath: slotPath, OwnedRoot: owner, RootPath: worktreeRoot}
-	err = preparer.Prepare(ctx, repo, foreignPath, head, "slot")
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: store, SlotPath: slotPath, OwnedRoot: owner, RootPath: worktreeRoot, RootID: rootID, SlotRelPath: slotRel}
+	err = preparer.Prepare(ctx, repo, foreignPath, head, testSlotID)
 	if !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("forged marker/lock accepted or wrong error: %v", err)
 	}
@@ -74,42 +87,85 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 		t.Fatalf("foreign worktree was removed or changed: %v", err)
 	}
 	lockReason, locked, found, err := RegisteredWorktreeLockStatus(ctx, preparer.Git, string(repo.MainPath), foreignPath)
-	if err != nil || !found || !locked || lockReason != "wx:slot:READY" {
+	if err != nil || !found || !locked || lockReason != "wx:"+testSlotID+":READY" {
 		t.Fatalf("foreign lock changed after rejection: reason=%q locked=%v found=%v err=%v", lockReason, locked, found, err)
 	}
 
-	_, err = store.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
-		SlotID: "slot", RepositoryID: string(repo.ID), SlotPath: slotPath, WorktreePath: foreignPath, CommonDir: common,
-		AllowedSlotStates: []string{"PREPARING"}, AllowedRepositoryStates: []string{"PREPARING"},
-	})
-	if !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("foreign path passed direct SQLite ownership check: %v", err)
+	preparing := func(request state.WorktreeOwnershipRequest) state.WorktreeOwnershipRequest {
+		request.SlotID = testSlotID
+		request.RepositoryID = string(repo.ID)
+		request.CommonDir = common
+		request.AllowedSlotStates = []string{"PREPARING"}
+		request.AllowedRepositoryStates = []string{"PREPARING"}
+		return request
 	}
-	_, err = store.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
-		SlotID: "slot", RepositoryID: string(repo.ID), SlotPath: filepath.Join(worktreeRoot, "stale-slot"), WorktreePath: slotPath, CommonDir: common,
-		AllowedSlotStates: []string{"PREPARING"}, AllowedRepositoryStates: []string{"PREPARING"},
-	})
-	if !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("stale slot path passed SQLite ownership check: %v", err)
+	for _, test := range []struct {
+		name    string
+		request state.WorktreeOwnershipRequest
+	}{
+		{name: "foreign directory name", request: preparing(state.WorktreeOwnershipRequest{RootID: rootID, SlotRelPath: slotRel, DirName: "foreign"})},
+		{name: "stale slot location", request: preparing(state.WorktreeOwnershipRequest{RootID: rootID, SlotRelPath: filepath.Join(string(registered.ID), "stale1"), DirName: testRepositoryID})},
+		{name: "other root generation", request: preparing(state.WorktreeOwnershipRequest{RootID: "rtzzzz", SlotRelPath: slotRel, DirName: testRepositoryID})},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := store.ValidateWorktreeOwnership(ctx, test.request); !errors.Is(err, state.ErrOwnership) {
+				t.Fatalf("mismatched location passed SQLite ownership: %v", err)
+			}
+		})
 	}
 
-	if err := preparer.Prepare(ctx, repo, slotPath, head, "slot"); err != nil {
+	if err := preparer.Prepare(ctx, repo, target, head, testSlotID); err != nil {
 		t.Fatalf("owned prepare rejected: %v", err)
 	}
-	if err := store.SetSlotRepositoryState(ctx, "slot", string(repo.ID), []string{"PREPARING"}, "READY"); err != nil {
+	worktreeIdentity, err := preparer.WorktreeIdentity(target)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.MarkReady(ctx, "slot"); err != nil {
+	// Presenting an identity before it has been recorded must fail closed:
+	// an absent record is not a match.
+	if _, err := store.ValidateWorktreeOwnership(ctx, preparing(state.WorktreeOwnershipRequest{RootID: rootID, SlotRelPath: slotRel, DirName: testRepositoryID, DirIdentity: worktreeIdentity})); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("unrecorded worktree identity passed SQLite ownership: %v", err)
+	}
+	if err := store.RecordSlotRepositoryIdentity(ctx, testSlotID, string(repo.ID), worktreeIdentity); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ValidateWorktreeOwnership(ctx, preparing(state.WorktreeOwnershipRequest{RootID: rootID, SlotRelPath: slotRel, DirName: testRepositoryID, DirIdentity: "0:0"})); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("mismatched worktree identity passed SQLite ownership: %v", err)
+	}
+	// The crash-replay check cannot require an identity: a preparation
+	// interrupted before it recorded one legitimately has none. It must still
+	// compare the record when there is one, or a substituted directory that
+	// reproduces the marker and the Git metadata would be accepted on retry
+	// and then have its own identity written as the truth.
+	if err := preparer.ValidateSlotWorktreeOwnership(ctx, repo, target, head, testSlotID); err != nil {
+		t.Fatalf("replay validation of the recorded worktree failed: %v", err)
+	}
+	if err := store.RecordSlotRepositoryIdentity(ctx, testSlotID, string(repo.ID), "0:0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.ValidateSlotWorktreeOwnership(ctx, repo, target, head, testSlotID); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replay validation accepted a worktree whose recorded identity differs: %v", err)
+	}
+	if err := store.RecordSlotRepositoryIdentity(ctx, testSlotID, string(repo.ID), worktreeIdentity); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlotRepositoryState(ctx, testSlotID, string(repo.ID), []string{"PREPARING"}, "READY"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkReady(ctx, testSlotID); err != nil {
 		t.Fatal(err)
 	}
 	owned, err := store.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
-		SlotID: "slot", RepositoryID: string(repo.ID), SlotPath: slotPath, WorktreePath: slotPath, CommonDir: common,
+		SlotID: testSlotID, RepositoryID: string(repo.ID), RootID: rootID, SlotRelPath: slotRel,
+		DirName: testRepositoryID, DirIdentity: worktreeIdentity, CommonDir: common,
 		AllowedSlotStates: []string{"READY"}, AllowedRepositoryStates: []string{"READY"},
 	})
 	if err != nil {
-		t.Fatalf("owned READY path failed SQLite ownership check: %v", err)
+		t.Fatalf("owned READY location failed SQLite ownership check: %v", err)
 	}
-	if owned.SlotID != "slot" || owned.WorkspaceID != string(w.ID) || owned.RepositoryID != string(repo.ID) || owned.SlotPath != slotPath || owned.WorktreePath != slotPath || owned.CommonDir != common || owned.SlotState != "READY" || owned.RepositoryState != "READY" {
+	if owned.SlotID != testSlotID || owned.WorkspaceID != string(registered.ID) || owned.RepositoryID != string(repo.ID) ||
+		owned.RootID != rootID || owned.RootPath != worktreeRoot || owned.SlotRelPath != slotRel ||
+		owned.DirName != testRepositoryID || owned.CommonDir != common || owned.SlotState != "READY" || owned.RepositoryState != "READY" {
 		t.Fatalf("owned proof does not preserve exact identity: %+v", owned)
 	}
 }

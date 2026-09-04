@@ -3,6 +3,7 @@ package domain
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -211,5 +212,56 @@ func TestEnsurePhysicalDirectoryRootPinsFinalDirectoryAcrossReplacement(t *testi
 	}
 	if _, err := os.Lstat(filepath.Join(outside, "marker")); !os.IsNotExist(err) {
 		t.Fatalf("replacement directory was modified: %v", err)
+	}
+}
+
+func TestNewShortIDIsFixedWidthLowercaseBase36(t *testing.T) {
+	seen := map[string]bool{}
+	for range 512 {
+		id, err := NewShortID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(id) != ShortIDLength {
+			t.Fatalf("id=%q length=%d want %d", id, len(id), ShortIDLength)
+		}
+		if !ValidShortID(id) {
+			t.Fatalf("id=%q is outside the lowercase base36 alphabet", id)
+		}
+		if id != strings.ToLower(id) {
+			t.Fatalf("id=%q contains uppercase; APFS is case-insensitive by default", id)
+		}
+		seen[id] = true
+	}
+	// 512 draws from ~2.18e9 values collide with probability well under 1e-4,
+	// so a large duplicate count means the generator is not random.
+	if len(seen) < 500 {
+		t.Fatalf("only %d distinct ids out of 512 draws", len(seen))
+	}
+}
+
+func TestNewShortIDIsUsableAsAPathAndRefComponent(t *testing.T) {
+	id, err := NewShortID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(id, `/\:.`) {
+		t.Fatalf("id=%q contains a character that breaks a path component, a Git ref component, or a wx lock reason", id)
+	}
+	if !ValidWxLockReason("wx:"+id+":READY", id) {
+		t.Fatalf("id=%q cannot be embedded in a wx lock reason", id)
+	}
+}
+
+func TestValidShortIDRejectsEverythingNewShortIDCannotProduce(t *testing.T) {
+	for _, value := range []string{"", "abc", "abcdefg", "ABCDEF", "abcde-", "abcd/f", "abcde.", "  abcd"} {
+		if ValidShortID(value) {
+			t.Errorf("ValidShortID(%q) accepted", value)
+		}
+	}
+	for _, value := range []string{"000000", "zzzzzz", "a1b2c3"} {
+		if !ValidShortID(value) {
+			t.Errorf("ValidShortID(%q) rejected", value)
+		}
 	}
 }
