@@ -30,7 +30,10 @@ type DegradedHandler struct {
 const degradedStopDelay = 100 * time.Millisecond
 
 func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
-	message := fmt.Sprintf("SQLite state is unavailable: %v; restore a verified backup from %s.backups or preserve the database for wx doctor", h.OpenError, h.DatabasePath)
+	message := fmt.Sprintf("SQLite state is unavailable: %v", h.OpenError)
+	if !errors.Is(h.OpenError, state.ErrPreviousWorktreeLayout) {
+		message += fmt.Sprintf("; restore a verified backup from %s.backups or preserve the database for wx doctor", h.DatabasePath)
+	}
 	switch method {
 	case "Status":
 		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "protocol_version": 1, "degraded": true, "database_path": h.DatabasePath, "error": message}, nil

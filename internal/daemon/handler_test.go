@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +90,86 @@ func TestDegradedHandlerAllowsOnlyReadOnlyDiagnostics(t *testing.T) {
 	}
 	if _, err := handler.Handle(context.Background(), "GC", nil); err == nil {
 		t.Fatal("degraded mutating method succeeded")
+	}
+}
+
+func TestDegradedHandlerGuidanceDependsOnOpenError(t *testing.T) {
+	tests := []struct {
+		name       string
+		openError  error
+		want       []string
+		wantAbsent []string
+	}{
+		{
+			name: "previous worktree layout",
+			openError: fmt.Errorf(
+				"%w: /state.db was created by a wx release that used the previous worktree layout and cannot be migrated; stop the daemon, remove that file, and remove the old worktree root once no session needs it",
+				state.ErrPreviousWorktreeLayout,
+			),
+			want:       []string{"previous worktree layout", "stop the daemon", "remove that file", "remove the old worktree root"},
+			wantAbsent: []string{"state.db.backups", "wx doctor"},
+		},
+		{
+			name:      "other open failure",
+			openError: errors.New("corrupt"),
+			want:      []string{"corrupt", "/state.db.backups", "wx doctor"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := DegradedHandler{DatabasePath: "/state.db", OpenError: test.openError}
+			for _, method := range []string{"Status", "Doctor"} {
+				result, err := handler.Handle(context.Background(), method, nil)
+				if err != nil {
+					t.Fatalf("%s err=%v", method, err)
+				}
+				message := degradedDiagnosticMessage(t, method, result)
+				assertGuidance(t, method, message, test.want, test.wantAbsent)
+			}
+			_, err := handler.Handle(context.Background(), "GC", nil)
+			if err == nil {
+				t.Fatal("default degraded method unexpectedly succeeded")
+			}
+			assertGuidance(t, "default", err.Error(), test.want, test.wantAbsent)
+		})
+	}
+}
+
+func degradedDiagnosticMessage(t *testing.T, method string, result any) string {
+	t.Helper()
+	payload, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("%s result=%T %v, want object", method, result, result)
+	}
+	if method == "Status" {
+		message, ok := payload["error"].(string)
+		if !ok {
+			t.Fatalf("status error=%T %v, want string", payload["error"], payload["error"])
+		}
+		return message
+	}
+	checks, ok := payload["checks"].(map[string]any)
+	if !ok {
+		t.Fatalf("doctor checks=%T %v, want object", payload["checks"], payload["checks"])
+	}
+	message, ok := checks["sqlite"].(string)
+	if !ok {
+		t.Fatalf("doctor sqlite=%T %v, want string", checks["sqlite"], checks["sqlite"])
+	}
+	return message
+}
+
+func assertGuidance(t *testing.T, method, message string, want, wantAbsent []string) {
+	t.Helper()
+	for _, fragment := range want {
+		if !strings.Contains(message, fragment) {
+			t.Errorf("%s message=%q, want %q", method, message, fragment)
+		}
+	}
+	for _, fragment := range wantAbsent {
+		if strings.Contains(message, fragment) {
+			t.Errorf("%s message=%q, must not contain %q", method, message, fragment)
+		}
 	}
 }
 
