@@ -1055,7 +1055,18 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 			if !valid {
 				return Lease{}, false, nil
 			}
-			rootIdentity, identityErr := m.leaseRootIdentity(ready.Path)
+			repositories, repositoryErr := m.store.SlotRepositories(ctx, ready.ID)
+			if repositoryErr != nil {
+				return Lease{}, false, repositoryErr
+			}
+			// The lease path is derived here, not taken from ready.Path: a
+			// single-repository workspace hands the agent the repository
+			// directory one level below the slot, exactly as a cold
+			// allocation does. Reusing the slot directory instead would give
+			// the agent a CWD that is not a Git worktree and would put the
+			// slot's ownership marker in its view.
+			leasePathValue := leasePath(ready.Path, w.Kind, repositories)
+			rootIdentity, identityErr := m.ensureLeaseRoot(ready.Path, leasePathValue)
 			if identityErr != nil {
 				_ = m.store.SetSlotState(context.Background(), ready.ID, []string{"READY"}, "QUARANTINED", "LEASE_ROOT_OWNERSHIP_UNCERTAIN")
 				return Lease{}, false, fmt.Errorf("pin ready lease root: %w", identityErr)
@@ -1063,10 +1074,6 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 			token, tokenErr := state.TokenHex()
 			if tokenErr != nil {
 				return Lease{}, false, tokenErr
-			}
-			repositories, repositoryErr := m.store.SlotRepositories(ctx, ready.ID)
-			if repositoryErr != nil {
-				return Lease{}, false, repositoryErr
 			}
 			hasCold := false
 			for _, repository := range repositories {
@@ -1077,7 +1084,7 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 				sessionState = "STARTING"
 			}
 			session := state.Session{ID: ready.ID, WorkspaceID: string(w.ID), SlotID: ready.ID, State: sessionState, AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
-			if retainErr := m.retainLease(session.ID, ready.Path); retainErr != nil {
+			if retainErr := m.retainLease(session.ID, leasePathValue); retainErr != nil {
 				return Lease{}, false, retainErr
 			}
 			if hasCold {
@@ -1085,14 +1092,14 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 				if leaseErr == nil {
 					m.schedule(job)
 					_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
-					return Lease{SessionID: session.ID, Token: token, Path: ready.Path, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, true, nil
+					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, true, nil
 				}
 				m.releaseLease(session.ID)
 				return Lease{}, false, nil
 			}
 			if leaseErr := m.store.LeaseReady(ctx, ready.ID, session); leaseErr == nil {
 				_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
-				return Lease{SessionID: session.ID, Token: token, Path: ready.Path, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true}, true, nil
+				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true}, true, nil
 			}
 			m.releaseLease(session.ID)
 			return Lease{}, false, nil
@@ -1626,6 +1633,43 @@ func directoryIdentityAt(owner *os.Root, relative string) (string, error) {
 		return "", err
 	}
 	return identity, nil
+}
+
+// ensureLeaseRoot is the READY-reuse counterpart of createSlotRoot. The
+// client opens the lease path as its CWD immediately, so a repository
+// directory that a COLD eviction removed has to exist again before the lease
+// is handed out; MkdirAll through the pinned root descriptor is the same
+// operation a cold allocation performs. The returned inode identity is the
+// lease directory's, so the foreground client can reject a replacement
+// before it opens its own descriptor.
+func (m *Manager) ensureLeaseRoot(slotPath, leasePathValue string) (string, error) {
+	if leasePathValue == slotPath {
+		return m.leaseRootIdentity(slotPath)
+	}
+	root, ok := m.rootForPath(slotPath)
+	if !ok {
+		return "", fmt.Errorf("%w: lease path %s has no registered worktree root", state.ErrOwnership, leasePathValue)
+	}
+	root = filepath.Clean(root)
+	if !domain.IsWithin(root, leasePathValue) {
+		return "", fmt.Errorf("lease path %s is outside wx worktree root", leasePathValue)
+	}
+	owner, closeOwner, err := m.existingRootDescriptor(root)
+	if err != nil {
+		return "", err
+	}
+	defer closeOwner()
+	if err := verifyRootDescriptorPath(root, owner); err != nil {
+		return "", err
+	}
+	relative, ok := relativeWithinRoot(root, leasePathValue)
+	if !ok || relative == "." {
+		return "", fmt.Errorf("%w: lease path is outside wx worktree root", state.ErrOwnership)
+	}
+	if err := owner.MkdirAll(relative, 0o700); err != nil {
+		return "", fmt.Errorf("create lease root safely: %w", err)
+	}
+	return directoryIdentityAt(owner, relative)
 }
 
 func (m *Manager) leaseRootIdentity(path string) (string, error) {

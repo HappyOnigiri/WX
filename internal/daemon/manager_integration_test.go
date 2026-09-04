@@ -261,6 +261,113 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 		}
 		t.Fatalf("retired slot directory contents=%v, want only the ownership marker", names)
 	}
+	// Leasing the COLD slot must still hand out the repository directory, not
+	// the slot directory: the client opens the lease path as its CWD before
+	// the restore job runs, so the lease has to recreate the directory the
+	// cold removal took away.
+	lease, err := m.ResolveAndLease(ctx, repoPath, nil, "claude", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID != ready.ID {
+		t.Fatalf("cold lease session=%q, want the READY slot %q", lease.SessionID, ready.ID)
+	}
+	want := filepath.Join(ready.Path, repository.DirName)
+	if lease.Path != want {
+		t.Fatalf("cold lease path=%q, want the repository directory %q", lease.Path, want)
+	}
+	if info, err := os.Lstat(lease.Path); err != nil || !info.IsDir() {
+		t.Fatalf("cold lease path is not a directory: info=%+v err=%v", info, err)
+	}
+}
+
+// TestWarmSlotLeaseHandsOutTheRepositoryDirectory covers the READY-reuse
+// branch of ResolveAndLease. A cold allocation derives the lease path from
+// the slot's repository rows, and the warm branch has to agree: with
+// warm_per_workspace at its default the warm branch is the common one, and
+// handing out the slot directory there would give the agent a CWD that is
+// not a Git worktree and would put the slot's ownership marker in its view.
+func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "repo")
+	initGitRepo(t, repoPath)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 1
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	m := testManager(t, cfg, store)
+	m.git.SetTimeout(10 * time.Second)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = registerTestWorkspace(t, store, w)
+	// ensureStandby only checks out repositories used within hot_standby, so
+	// simulate a prior lease: this test needs a materialized (hot) warm slot,
+	// not the COLD standby an unleased repository would produce.
+	raw := openManagerCoverageDB(t, filepath.Join(root, "state.db"))
+	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 || jobs[0].Kind != "PREPARE" {
+		t.Fatalf("standby jobs=%+v err=%v", jobs, err)
+	}
+	prepared, err := store.ClaimJob(ctx, jobs[0].ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, prepared.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	ready, ok, err := store.ReadySlot(ctx, string(w.ID))
+	if err != nil || !ok {
+		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
+	}
+	repositories, err := store.SlotRepositories(ctx, ready.ID)
+	if err != nil || len(repositories) != 1 {
+		t.Fatalf("slot repositories=%+v err=%v", repositories, err)
+	}
+	lease, err := m.ResolveAndLease(ctx, repoPath, nil, "claude", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID != ready.ID {
+		t.Fatalf("lease session=%q, want the warm slot %q (a cold start would defeat the test)", lease.SessionID, ready.ID)
+	}
+	if !lease.Ready {
+		t.Fatalf("warm lease reported not ready: %+v", lease)
+	}
+	want := filepath.Join(ready.Path, repositories[0].DirName)
+	if lease.Path != want {
+		t.Fatalf("warm lease path=%q, want the repository directory %q", lease.Path, want)
+	}
+	// The leased directory has to be the Git worktree itself, and the slot's
+	// ownership marker has to stay in the parent, out of the agent's view.
+	if _, err := os.Lstat(filepath.Join(lease.Path, ".git")); err != nil {
+		t.Fatalf("warm lease path is not a Git worktree: %v", err)
+	}
+	markerName := workspace.OwnershipMarkerName(repositories[0].RepositoryID)
+	if _, err := os.Lstat(filepath.Join(lease.Path, markerName)); !os.IsNotExist(err) {
+		t.Fatalf("ownership marker is visible inside the leased directory: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(ready.Path, markerName)); err != nil {
+		t.Fatalf("ownership marker is missing from the slot directory: %v", err)
+	}
 }
 
 // TestEnsureStandbyOnlyChecksOutRecentlyUsedRepositories exercises the
