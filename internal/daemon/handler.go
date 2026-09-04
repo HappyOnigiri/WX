@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -16,7 +17,17 @@ type Handler struct{ Manager *Manager }
 type DegradedHandler struct {
 	DatabasePath string
 	OpenError    error
+	// terminate is the test seam for the stop path, so a test can drive it
+	// without ending the test binary. Production handlers leave it nil and
+	// take the SIGTERM implementation.
+	terminate func() error
 }
+
+// degradedStopDelay keeps the SIGTERM off the request that asked for it. The
+// RPC server abandons in-flight connections when the listener closes, so a
+// signal delivered before this reply is written would reach the caller as a
+// dropped connection rather than as the accepted stop it is.
+const degradedStopDelay = 100 * time.Millisecond
 
 func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	message := fmt.Sprintf("SQLite state is unavailable: %v; restore a verified backup from %s.backups or preserve the database for wx doctor", h.OpenError, h.DatabasePath)
@@ -25,6 +36,18 @@ func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMess
 		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "protocol_version": 1, "degraded": true, "database_path": h.DatabasePath, "error": message}, nil
 	case "Doctor":
 		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "degraded": true, "checks": map[string]any{"sqlite": message}}, nil
+	case "RequestStop":
+		// Degraded mode answers nothing that changes state, so there is no
+		// reservation for the idle gate to protect and no manager to run one.
+		// Refusing here would leave kill(1) and wx daemon uninstall as the only
+		// ways to take down a daemon whose database an operator wants to look
+		// at, which is exactly when stopping it matters most.
+		terminate := h.terminate
+		if terminate == nil {
+			terminate = signalSelfTerminate
+		}
+		time.AfterFunc(degradedStopDelay, func() { _ = terminate() })
+		return map[string]any{"degraded": true, "stop_pending": true, "pid": os.Getpid()}, nil
 	default:
 		return nil, errors.New("wx daemon is read-only degraded: " + message)
 	}

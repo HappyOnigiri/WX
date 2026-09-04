@@ -91,8 +91,10 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
 - **reconcile** — 定期的にDBと実体を突き合わせ、素性の分からないpath・ref
   を隔離側へ倒す。clientとエージェントの両プロセスが死んでいるsessionは
   ここで返却される。
-- **degraded運用** — SQLiteが開けないときも`Status`と`Doctor`だけは
-  `DegradedHandler`が答える。診断のためにdaemonを完全に沈黙させない。
+- **degraded運用** — SQLiteが開けないときも`Status`・`Doctor`・
+  `RequestStop`は`DegradedHandler`が答える。診断のためにdaemonを完全に
+  沈黙させないためで、`RequestStop`だけは状態を変えるがゲートを通さない
+  （状態を変えるRPCを一切受け付けない以上、守るべきin-flightの予約が無い）。
 - **restart / stopのidleゲート** — `wx daemon restart`・`wx daemon stop`と
   バイナリ差し替えの自動検知は、いずれも`restartPending`・`stopPending`を
   立てるだけで、実行は`maintainJobs`から`runPendingLifecycle`が駆動する。
