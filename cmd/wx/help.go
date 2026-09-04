@@ -16,15 +16,15 @@ Global options:
   -v, --version                  show version
 
 Commands:
-  claude [arguments...]           launch Claude Code in a wx workspace
-  codex [arguments...]            launch Codex in a wx workspace
-  status [--json]                show daemon and pool state
-  doctor [--json]                check configuration and dependencies
-  gc [--dry-run]                 run retention cleanup
-  sessions [--all] [--json]     list managed sessions
-  config [<key> <value>]         show or update configuration
-  resume <id> <agent> [args...] restore a wx session
-  forget <workspace-path>        forget an inactive workspace
+  claude [arguments...]             launch Claude Code in a wx workspace
+  codex [arguments...]              launch Codex in a wx workspace
+  status [--json]                   show daemon and pool state
+  doctor [--json]                   check configuration and dependencies
+  gc [--dry-run]                    run retention cleanup
+  sessions [--all] [--json]         list managed sessions
+  config [<key> <value>]            show or update configuration
+  resume <id> <agent> [args...]     restore a wx session
+  forget <workspace-path>           forget an inactive workspace
   daemon install|uninstall|restart  manage or restart the LaunchAgent`)
 }
 
