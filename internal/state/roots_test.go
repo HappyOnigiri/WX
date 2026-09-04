@@ -423,4 +423,7 @@ func TestOpenRefusesADatabaseFromThePreviousWorktreeLayout(t *testing.T) {
 	if !strings.Contains(err.Error(), "previous worktree layout") {
 		t.Fatalf("error=%v; it must name the layout change and say what to remove", err)
 	}
+	if !errors.Is(err, ErrPreviousWorktreeLayout) {
+		t.Fatalf("error=%v; it must carry ErrPreviousWorktreeLayout", err)
+	}
 }
