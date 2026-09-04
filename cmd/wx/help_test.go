@@ -379,15 +379,21 @@ func TestDaemonStartKeepsAskingLaunchdUntilADaemonAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The daemon only appears once the first request has already been wasted.
+	// The daemon appears only after launchd has been asked a second time,
+	// which is exactly what a start that asks once can never reach.
 	late := make(chan context.CancelFunc, 1)
 	lateDone := make(chan (<-chan error), 1)
-	timer := time.AfterFunc(400*time.Millisecond, func() {
+	go func() {
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+			if data, err := os.ReadFile(calls); err == nil && strings.Count(string(data), "call") >= 2 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 		cancel, done := serveUntilCanceled(t, socket, busyHandler{})
 		late <- cancel
 		lateDone <- done
-	})
-	defer timer.Stop()
+	}()
 	exit := run(context.Background(), []string{"daemon", "start"})
 	cancel := <-late
 	cancel()
