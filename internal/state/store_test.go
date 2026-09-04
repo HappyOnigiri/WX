@@ -454,6 +454,35 @@ func TestReleaseDuringPreparationDefersSnapshotUntilPreparationFinishes(t *testi
 	}
 }
 
+func TestFinishPreparationLeasesSlotWhoseSessionBoundBeforePreparationFinished(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(t.TempDir(), "slot"), State: "PREPARING"}, nil, session, "PREPARE"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindAgentSession(ctx, session.ID, "agent"); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := store.SessionByID(ctx, session.ID)
+	if err != nil || bound.State != "ACTIVE" {
+		t.Fatalf("bound session=%+v err=%v", bound, err)
+	}
+	job, scheduled, err := store.FinishPreparationWithRelease(ctx, session.SlotID)
+	if err != nil || scheduled || job.ID != "" {
+		t.Fatalf("finish preparation: scheduled=%v job=%+v err=%v", scheduled, job, err)
+	}
+	slot, err := store.Slot(ctx, session.SlotID)
+	if err != nil || slot.State != "LEASED" {
+		t.Fatalf("slot=%+v err=%v", slot, err)
+	}
+	finished, err := store.SessionByID(ctx, session.ID)
+	if err != nil || finished.State != "ACTIVE" || finished.AgentSessionID != "agent" {
+		t.Fatalf("session=%+v err=%v", finished, err)
+	}
+}
+
 func TestReleaseCleansUpUnboundAndRestoringSessions(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

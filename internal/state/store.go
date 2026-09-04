@@ -906,8 +906,14 @@ func (s *Store) FinishPreparationWithRelease(ctx context.Context, id string) (Jo
 	}
 	targetState := "READY"
 	if sessionID != "" {
+		// ACTIVE belongs here with STARTING: BindAgentSession promotes the
+		// owner session without looking at its slot, so a SessionStart hook
+		// that lands before preparation finishes leaves the session ACTIVE
+		// while the slot is still PREPARING. The slot is occupied by that
+		// session either way, so LEASED is the correct destination. The
+		// activation UPDATE below then matches no row, which is harmless.
 		switch sessionState {
-		case "STARTING", "RESTORING":
+		case "STARTING", "RESTORING", "ACTIVE":
 			targetState = "LEASED"
 		case "RELEASING":
 			targetState = "DRAINING"
