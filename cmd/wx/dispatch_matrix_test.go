@@ -28,6 +28,8 @@ func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
 		{name: "resume invalid agent", args: []string{"resume", "session", "editor"}, want: 2},
 		{name: "daemon wrong arity", args: []string{"daemon"}, want: 2},
 		{name: "daemon unknown action", args: []string{"daemon", "unknown"}, want: 2},
+		{name: "daemon restart extra argument", args: []string{"daemon", "restart", "extra"}, want: 2},
+		{name: "daemon restart unavailable", args: []string{"daemon", "restart"}, want: 1},
 		{name: "hook missing event", args: []string{"hook"}, want: 2},
 		{name: "sessions extra argument", args: []string{"sessions", "extra"}, want: 2},
 		{name: "sessions unavailable", args: []string{"sessions"}, want: 1},

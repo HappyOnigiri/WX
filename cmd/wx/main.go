@@ -330,6 +330,16 @@ func runDaemon(ctx context.Context, args []string) int {
 		}
 		fmt.Println("uninstalled", launchd.Label)
 		return 0
+	case "restart":
+		if err := launchd.Kickstart(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			if errors.Is(err, launchd.ErrServiceMissing) {
+				fmt.Fprintln(os.Stderr, "run wx daemon install to register the LaunchAgent first")
+			}
+			return 1
+		}
+		fmt.Println("restarted", launchd.Label)
+		return 0
 	default:
 		commandUsage(os.Stderr, "daemon")
 		return 2

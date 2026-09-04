@@ -113,6 +113,26 @@ func TestUninstallRemovesPlistWhenServiceIsAlreadyMissing(t *testing.T) {
 	}
 }
 
+func TestKickstartReportsAnUninstalledService(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\necho 'Could not find service' >&2\nexit 3\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	err := Kickstart(context.Background())
+	if !errors.Is(err, ErrServiceMissing) {
+		t.Fatalf("kickstart error=%v, want ErrServiceMissing", err)
+	}
+	if !strings.Contains(err.Error(), "Could not find service") {
+		t.Fatalf("kickstart error does not carry the launchctl output: %v", err)
+	}
+}
+
 func TestLaunchctlFailuresAreReported(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

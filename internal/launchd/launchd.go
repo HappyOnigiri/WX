@@ -132,10 +132,19 @@ func launchctlServiceMissing(output []byte) bool {
 	return strings.Contains(message, "could not find service") || strings.Contains(message, "no such process") || strings.Contains(message, "service not found")
 }
 
+// ErrServiceMissing reports that launchctl does not know the wx LaunchAgent at
+// all, as opposed to knowing it and failing to act on it. Callers use it to
+// tell an operator to run wx daemon install instead of reporting a launchctl
+// failure they cannot act on.
+var ErrServiceMissing = errors.New("wx LaunchAgent is not installed")
+
 func Kickstart(ctx context.Context) error {
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), Label)
 	out, err := exec.CommandContext(ctx, "launchctl", "kickstart", "-k", target).CombinedOutput()
 	if err != nil {
+		if launchctlServiceMissing(out) {
+			return fmt.Errorf("launchctl kickstart: %s: %w", bytes.TrimSpace(out), ErrServiceMissing)
+		}
 		return fmt.Errorf("launchctl kickstart: %s", bytes.TrimSpace(out))
 	}
 	return nil

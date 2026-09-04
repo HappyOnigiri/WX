@@ -142,6 +142,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"resume", "session", "codex"},
 		{"daemon", "install"},
 		{"daemon", "uninstall"},
+		{"daemon", "restart"},
 	} {
 		if exit := run(ctx, args); exit != 0 {
 			t.Fatalf("run(%v) exit=%d", args, exit)
