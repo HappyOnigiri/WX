@@ -33,9 +33,7 @@ func TestSessionLifecycleSoak(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 	workspace := discovery.Workspace{ID: "soak-workspace", Root: domain.CanonicalPath(root), Kind: "repository"}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
-		t.Fatal(err)
-	}
+	workspace = registerTestWorkspace(t, store, workspace)
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Retention.EndedWorktree.Duration = -time.Second
@@ -44,9 +42,9 @@ func TestSessionLifecycleSoak(t *testing.T) {
 
 	for i := 0; i < sessions; i++ {
 		id := domain.StableID("soak", fmt.Sprint(i))
-		path := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(workspace.ID), "slots", id, "root")
+		path := filepath.Join(cfg.Storage.WorktreeRoot, string(workspace.ID), id)
 		_, err := store.CreateSlotSession(ctx,
-			state.Slot{ID: id, WorkspaceID: string(workspace.ID), Generation: 1, Path: path, State: "PREPARING"}, nil,
+			slotAtPath(t, manager, string(workspace.ID), id, path, 1, "PREPARING"), nil,
 			state.Session{ID: id, WorkspaceID: string(workspace.ID), SlotID: id, State: "STARTING", AgentKind: "soak", TokenHash: state.HashToken(id)}, "")
 		if err != nil {
 			t.Fatal(err)

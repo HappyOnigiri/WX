@@ -73,22 +73,21 @@ exit 1
 	// enough room for process startup while keeping the production timeout intact.
 	m.git.SetTimeout(5 * time.Second)
 	ctx := context.Background()
-	oldWorkspaceID := domain.WorkspaceID("old-workspace-id")
 	repositoryID := domain.RepositoryID(domain.StableID(common))
-	registered := discovery.Workspace{
-		ID: oldWorkspaceID, Root: domain.CanonicalPath(oldMain), Kind: "repository",
+	registered := registerTestWorkspace(t, store, discovery.Workspace{
+		Root: domain.CanonicalPath(oldMain), Kind: "repository",
 		Repositories: []discovery.Repository{{
 			ID: repositoryID, MainPath: domain.CanonicalPath(oldMain), CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main",
 		}},
-	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, registered); err != nil {
-		t.Fatal(err)
-	}
-	oldSlotPath := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(oldWorkspaceID), "slots", "old-slot", "root")
+	})
+	// Workspace identity is the store's: the durable ID is what names the
+	// slot directories and what relocation has to preserve.
+	oldWorkspaceID := registered.ID
+	oldSlotPath := filepath.Join(cfg.Storage.WorktreeRoot, string(oldWorkspaceID), "old-slot")
 	if err := os.MkdirAll(oldSlotPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(ctx, state.Slot{ID: "old-slot", WorkspaceID: string(oldWorkspaceID), Generation: 1, Path: oldSlotPath, State: "FAILED"}, nil); err != nil {
+	if _, err := store.CreateStandby(ctx, slotAtPath(t, m, string(oldWorkspaceID), "old-slot", oldSlotPath, 1, "FAILED"), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,7 +122,7 @@ exit 1
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(oldWorkspaceID), "slots") + string(os.PathSeparator)
+	wantPrefix := filepath.Join(cfg.Storage.WorktreeRoot, string(oldWorkspaceID)) + string(os.PathSeparator)
 	if !strings.HasPrefix(lease.Path, wantPrefix) {
 		t.Fatalf("new-path lease=%q, want existing workspace namespace %q", lease.Path, wantPrefix)
 	}
@@ -135,7 +134,7 @@ exit 1
 	// A fresh native resume after restart uses the relocated workspace row and
 	// must allocate into that same namespace as well.
 	parent := state.Session{ID: "expired-parent", WorkspaceID: string(oldWorkspaceID), SlotID: "expired-parent", State: "EXPIRED", AgentKind: "codex", TokenHash: state.HashToken("parent")}
-	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: parent.SlotID, WorkspaceID: parent.WorkspaceID, Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(oldWorkspaceID), "slots", parent.SlotID, "root"), State: "ARCHIVED"}, nil, parent, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, slotAtPath(t, m, parent.WorkspaceID, parent.SlotID, filepath.Join(cfg.Storage.WorktreeRoot, string(oldWorkspaceID), parent.SlotID), 1, "ARCHIVED"), nil, parent, ""); err != nil {
 		t.Fatal(err)
 	}
 	resumed, err := m.Resume(ctx, parent.ID, "codex", os.Getpid(), true)
@@ -184,18 +183,17 @@ func TestMainWorktreeRelocationWithGitRegistryPreservesIdentityAndSessions(t *te
 	// Seed the pre-common-directory identity used by an older database. The
 	// repository common directory is real, so the post-move reconciliation must
 	// retain this ID and its existing slot namespace.
-	legacy := discovered
-	legacy.ID = domain.WorkspaceID(domain.StableID(string(discovered.Root)))
-	if _, err := store.UpsertWorkspaceGeneration(ctx, legacy); err != nil {
-		t.Fatal(err)
-	}
+	// The ID discovery proposes is discarded by the store, which assigns the
+	// durable one; this test's point is that the post-move reconciliation
+	// retains that ID and its existing slot namespace.
+	legacy := registerTestWorkspace(t, store, discovered)
 	m := testManager(t, cfg, store)
 	defer m.Close()
-	oldSlotPath := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(legacy.ID), "slots", "old-slot", "root")
+	oldSlotPath := filepath.Join(cfg.Storage.WorktreeRoot, string(legacy.ID), "old-slot")
 	if err := os.MkdirAll(oldSlotPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(ctx, state.Slot{ID: "old-slot", WorkspaceID: string(legacy.ID), Generation: 1, Path: oldSlotPath, State: "FAILED"}, nil); err != nil {
+	if _, err := store.CreateStandby(ctx, slotAtPath(t, m, string(legacy.ID), "old-slot", oldSlotPath, 1, "FAILED"), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,7 +227,7 @@ func TestMainWorktreeRelocationWithGitRegistryPreservesIdentityAndSessions(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(legacy.ID), "slots") + string(os.PathSeparator)
+	wantPrefix := filepath.Join(cfg.Storage.WorktreeRoot, string(legacy.ID)) + string(os.PathSeparator)
 	if !strings.HasPrefix(lease.Path, wantPrefix) {
 		t.Fatalf("new-path lease=%q, want existing workspace namespace %q", lease.Path, wantPrefix)
 	}
@@ -239,7 +237,7 @@ func TestMainWorktreeRelocationWithGitRegistryPreservesIdentityAndSessions(t *te
 	}
 
 	parent := state.Session{ID: "expired-parent", WorkspaceID: string(legacy.ID), SlotID: "expired-parent", State: "EXPIRED", AgentKind: "codex", TokenHash: state.HashToken("parent")}
-	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: parent.SlotID, WorkspaceID: parent.WorkspaceID, Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(legacy.ID), "slots", parent.SlotID, "root"), State: "ARCHIVED"}, nil, parent, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, slotAtPath(t, m, parent.WorkspaceID, parent.SlotID, filepath.Join(cfg.Storage.WorktreeRoot, string(legacy.ID), parent.SlotID), 1, "ARCHIVED"), nil, parent, ""); err != nil {
 		t.Fatal(err)
 	}
 	resumed, err := m.Resume(ctx, parent.ID, "codex", os.Getpid(), true)

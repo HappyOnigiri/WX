@@ -27,55 +27,116 @@ type OwnershipValidator interface {
 	ValidateWorktreeOwnership(context.Context, WorktreeOwnershipRequest) (WorktreeOwnership, error)
 }
 
+// WorktreeOwnershipRequest locates a repository worktree the way SQLite
+// records it: a root generation, the slot's root-relative path, the
+// repository's directory name inside that slot, and the inode identity the
+// caller is holding. No absolute pathname crosses this boundary, so a
+// pathname replacement cannot make two different directories compare equal.
 type WorktreeOwnershipRequest struct {
-	SlotID                  string
-	WorkspaceID             string
-	RepositoryID            string
-	SlotPath                string
-	WorktreePath            string
+	SlotID       string
+	WorkspaceID  string
+	RepositoryID string
+	RootID       string
+	SlotRelPath  string
+	DirName      string
+	// DirIdentity is the dev:ino identity of the directory the caller has
+	// open. When it is set, the recorded identity must exist and match; an
+	// empty record is a failure, never a pass. It is empty only before the
+	// worktree exists (the pre-creation checks inside prepare), which is the
+	// one case where no identity can be presented at all.
+	DirIdentity             string
 	CommonDir               string
 	AllowedSlotStates       []string
 	AllowedRepositoryStates []string
 }
 
 // WorktreeOwnership is the durable identity proved by a successful
-// ValidateWorktreeOwnership call. The returned canonical paths are useful to
-// diagnostics and make it explicit which physical paths were compared.
+// ValidateWorktreeOwnership call. It reports the location as recorded rather
+// than as a composed absolute path, so diagnostics show which root
+// generation answered.
 type WorktreeOwnership struct {
 	SlotID           string
 	WorkspaceID      string
 	RepositoryID     string
 	Generation       int
-	SlotPath         string
-	WorktreePath     string
+	RootID           string
+	RootPath         string
+	SlotRelPath      string
+	DirName          string
 	WorkspaceRoot    string
 	MainWorktreePath string
 	CommonDir        string
 	RelativePath     string
 	SlotState        string
 	RepositoryState  string
+	// DirIdentity is the identity SQLite has recorded for the worktree
+	// directory, empty until preparation or restore completes and records
+	// one. It is returned so a caller that cannot require an identity yet -
+	// the re-run of an interrupted preparation, which legitimately finds no
+	// record - can still refuse a directory whose recorded identity differs.
+	DirIdentity string
 }
 
+// SlotOwnershipRequest locates a slot directory for the operations that have
+// no repository worktree to prove through ValidateWorktreeOwnership.
 type SlotOwnershipRequest struct {
 	SlotID            string
 	WorkspaceID       string
-	Path              string
+	RootID            string
+	RelPath           string
+	DirIdentity       string
 	AllowedSlotStates []string
 }
 
 var _ OwnershipValidator = (*Store)(nil)
 
-// ValidateWorktreeOwnership proves that the caller's physical worktree is the
-// exact path recorded for the requested slot/repository pair. It also proves
-// that the repository belongs to the slot's workspace, that its common Git
-// directory is the one recorded for that repository, and that both durable
-// state machines are in caller-approved states.
+// validateOwnershipRelative rejects anything that cannot be a root-relative
+// location: an empty value, an absolute path, an unclean spelling, "." (which
+// would name the root or slot directory itself), or any escape through "..".
+func validateOwnershipRelative(kind, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is empty", kind)
+	}
+	if value == "." || filepath.Clean(value) != value || !filepath.IsLocal(value) {
+		return fmt.Errorf("%s %q is not a safe root-relative location", kind, value)
+	}
+	return nil
+}
+
+// validateOwnershipComponent additionally requires exactly one path
+// component. A repository's directory name must be a direct child of its
+// slot: filepath.IsLocal accepts "a/b", so without this a recorded dir_name
+// could place a worktree at an arbitrary depth below the slot and the
+// UNIQUE(slot_id, dir_name) constraint would not notice.
+func validateOwnershipComponent(kind, value string) error {
+	if err := validateOwnershipRelative(kind, value); err != nil {
+		return err
+	}
+	if strings.ContainsRune(value, filepath.Separator) {
+		return fmt.Errorf("%s %q is not a single path component", kind, value)
+	}
+	return nil
+}
+
+// ValidateWorktreeOwnership proves that the caller's worktree is the exact
+// directory recorded for the requested slot/repository pair: the same root
+// generation, the same root-relative slot path, the same directory name, and
+// the same inode. It also proves that the repository belongs to the slot's
+// workspace, that its common Git directory is the one recorded for that
+// repository, and that both durable state machines are in caller-approved
+// states.
 func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwnershipRequest) (WorktreeOwnership, error) {
 	if s == nil || s.db == nil {
 		return WorktreeOwnership{}, ownershipFailure("state store is unavailable")
 	}
-	if req.SlotID == "" || req.RepositoryID == "" || req.WorktreePath == "" || req.CommonDir == "" {
-		return WorktreeOwnership{}, ownershipFailure("slot, repository, worktree path, and common directory are required")
+	if req.SlotID == "" || req.RepositoryID == "" || req.RootID == "" || req.CommonDir == "" {
+		return WorktreeOwnership{}, ownershipFailure("slot, repository, root, and common directory are required")
+	}
+	if err := validateOwnershipRelative("requested slot path", req.SlotRelPath); err != nil {
+		return WorktreeOwnership{}, ownershipFailure(err.Error())
+	}
+	if err := validateOwnershipComponent("requested repository directory", req.DirName); err != nil {
+		return WorktreeOwnership{}, ownershipFailure(err.Error())
 	}
 	if len(req.AllowedSlotStates) == 0 || len(req.AllowedRepositoryStates) == 0 {
 		return WorktreeOwnership{}, ownershipFailure("eligible slot and repository states are required")
@@ -88,21 +149,23 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 	defer func() { _ = tx.Rollback() }()
 
 	var out WorktreeOwnership
-	var workspaceRoot, mainWorktreePath, commonDir, slotPath, worktreePath string
+	var workspaceRoot, mainWorktreePath, commonDir string
 	var workspaceID, slotState, repositoryID, repositoryState, relativePath string
+	var storedDirIdentity string
 	err = tx.QueryRowContext(ctx, `
-		SELECT sl.id,sl.workspace_id,sl.generation,sl.path,sl.state,
-		       sr.repository_id,sr.worktree_path,sr.state,
+		SELECT sl.id,sl.workspace_id,sl.generation,sl.root_id,rt.path,sl.rel_path,sl.state,
+		       sr.repository_id,sr.dir_name,COALESCE(sr.dir_identity,''),sr.state,
 		       w.root_path,r.main_worktree_path,r.common_git_dir,wr.relative_path
 		FROM slots sl
+		JOIN roots rt ON rt.id=sl.root_id
 		JOIN slot_repositories sr ON sr.slot_id=sl.id
 		JOIN workspaces w ON w.id=sl.workspace_id
 		JOIN repositories r ON r.id=sr.repository_id
 		JOIN workspace_repositories wr ON wr.workspace_id=sl.workspace_id
 		                          AND wr.repository_id=sr.repository_id
 		WHERE sl.id=? AND sr.repository_id=?`, req.SlotID, req.RepositoryID).
-		Scan(&out.SlotID, &workspaceID, &out.Generation, &slotPath, &slotState,
-			&repositoryID, &worktreePath, &repositoryState, &workspaceRoot,
+		Scan(&out.SlotID, &workspaceID, &out.Generation, &out.RootID, &out.RootPath, &out.SlotRelPath, &slotState,
+			&repositoryID, &out.DirName, &storedDirIdentity, &repositoryState, &workspaceRoot,
 			&mainWorktreePath, &commonDir, &relativePath)
 	if err != nil {
 		return WorktreeOwnership{}, ownershipDatabaseFailure(err)
@@ -123,41 +186,32 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 	if !slices.Contains(req.AllowedRepositoryStates, repositoryState) {
 		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("repository %s is in ineligible state %s", req.RepositoryID, repositoryState))
 	}
-
-	canonicalSlot, err := canonicalOwnershipPath(slotPath)
-	if err != nil {
-		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("recorded slot path: %v", err))
+	if out.RootID != req.RootID {
+		return WorktreeOwnership{}, ownershipFailure("requested worktree root generation does not match the SQLite slot")
 	}
-	canonicalWorktree, err := canonicalOwnershipPath(worktreePath)
-	if err != nil {
-		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("recorded worktree path: %v", err))
+	if err := validateOwnershipRelative("recorded slot path", out.SlotRelPath); err != nil {
+		return WorktreeOwnership{}, ownershipFailure(err.Error())
 	}
-	requestedWorktree, err := canonicalOwnershipPath(req.WorktreePath)
-	if err != nil {
-		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("requested worktree path: %v", err))
+	if err := validateOwnershipComponent("recorded repository directory", out.DirName); err != nil {
+		return WorktreeOwnership{}, ownershipFailure(err.Error())
 	}
-	if canonicalWorktree != requestedWorktree {
-		return WorktreeOwnership{}, ownershipFailure("requested worktree path does not match the SQLite slot path")
+	if out.SlotRelPath != req.SlotRelPath {
+		return WorktreeOwnership{}, ownershipFailure("requested slot location does not match the SQLite slot")
 	}
-	if req.SlotPath != "" {
-		requestedSlot, err := canonicalOwnershipPath(req.SlotPath)
-		if err != nil {
-			return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("requested slot path: %v", err))
+	if out.DirName != req.DirName {
+		return WorktreeOwnership{}, ownershipFailure("requested repository directory does not match the SQLite slot")
+	}
+	// Fail closed on identity: a caller holding a descriptor must find a
+	// recorded identity, and it must be the same inode. Treating a missing
+	// record as a match would reinstate exactly the pathname-only proof this
+	// check replaced.
+	if req.DirIdentity != "" {
+		if storedDirIdentity == "" {
+			return WorktreeOwnership{}, ownershipFailure("SQLite has no recorded worktree directory identity")
 		}
-		if requestedSlot != canonicalSlot {
-			return WorktreeOwnership{}, ownershipFailure("requested slot path does not match the SQLite slot path")
+		if storedDirIdentity != req.DirIdentity {
+			return WorktreeOwnership{}, ownershipFailure("worktree directory identity does not match the SQLite record")
 		}
-	}
-	if filepath.Clean(canonicalSlot) != filepath.Clean(canonicalWorktree) && !domain.IsWithin(canonicalSlot, canonicalWorktree) {
-		return WorktreeOwnership{}, ownershipFailure("SQLite worktree path is outside its slot path")
-	}
-	cleanRelativePath := filepath.Clean(relativePath)
-	expectedWorktree, err := canonicalOwnershipPath(filepath.Join(canonicalSlot, cleanRelativePath))
-	if err != nil {
-		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("expected workspace-relative worktree path: %v", err))
-	}
-	if canonicalWorktree != expectedWorktree {
-		return WorktreeOwnership{}, ownershipFailure("SQLite worktree path does not match the workspace repository relative path")
 	}
 
 	canonicalWorkspaceRoot, err := canonicalExistingDirectory(workspaceRoot)
@@ -185,39 +239,41 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 
 	out.WorkspaceID = workspaceID
 	out.RepositoryID = repositoryID
-	out.SlotPath = canonicalSlot
-	out.WorktreePath = canonicalWorktree
 	out.WorkspaceRoot = canonicalWorkspaceRoot
 	out.MainWorktreePath = canonicalMain
 	out.CommonDir = canonicalCommon
-	out.RelativePath = cleanRelativePath
+	out.RelativePath = filepath.Clean(relativePath)
 	out.SlotState = slotState
 	out.RepositoryState = repositoryState
+	out.DirIdentity = storedDirIdentity
 	return out, nil
 }
 
-// ValidateSlotOwnership is used before deleting or recreating a slot root. It
-// covers slots that have no repository worktree (and therefore cannot be
-// proven through ValidateWorktreeOwnership) while retaining the same
-// fail-closed path/state checks.
+// ValidateSlotOwnership is used before deleting or recreating a slot
+// directory. It covers slots that have no repository worktree (and therefore
+// cannot be proven through ValidateWorktreeOwnership) while retaining the
+// same fail-closed location and state checks.
 func (s *Store) ValidateSlotOwnership(ctx context.Context, req SlotOwnershipRequest) error {
 	if s == nil || s.db == nil {
 		return ownershipFailure("state store is unavailable")
 	}
-	if req.SlotID == "" || req.Path == "" || len(req.AllowedSlotStates) == 0 {
-		return ownershipFailure("slot, path, and eligible states are required")
+	if req.SlotID == "" || req.RootID == "" || len(req.AllowedSlotStates) == 0 {
+		return ownershipFailure("slot, root, and eligible states are required")
+	}
+	if err := validateOwnershipRelative("requested slot path", req.RelPath); err != nil {
+		return ownershipFailure(err.Error())
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return ownershipDatabaseFailure(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var workspaceID, slotState, rawPath, rawRoot string
+	var workspaceID, slotState, rootID, relPath, storedDirIdentity, rawRoot string
 	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(sl.workspace_id,''),sl.path,sl.state,w.root_path
+		SELECT COALESCE(sl.workspace_id,''),sl.root_id,sl.rel_path,COALESCE(sl.dir_identity,''),sl.state,w.root_path
 		FROM slots sl LEFT JOIN workspaces w ON w.id=sl.workspace_id
 		WHERE sl.id=?`, req.SlotID).
-		Scan(&workspaceID, &rawPath, &slotState, &rawRoot)
+		Scan(&workspaceID, &rootID, &relPath, &storedDirIdentity, &slotState, &rawRoot)
 	if err != nil {
 		return ownershipDatabaseFailure(err)
 	}
@@ -230,16 +286,22 @@ func (s *Store) ValidateSlotOwnership(ctx context.Context, req SlotOwnershipRequ
 	if !slices.Contains(req.AllowedSlotStates, slotState) {
 		return ownershipFailure(fmt.Sprintf("slot %s is in ineligible state %s", req.SlotID, slotState))
 	}
-	canonicalPath, err := canonicalOwnershipPath(rawPath)
-	if err != nil {
-		return ownershipFailure(fmt.Sprintf("recorded slot path: %v", err))
+	if rootID != req.RootID {
+		return ownershipFailure("requested worktree root generation does not match the SQLite slot")
 	}
-	requestedPath, err := canonicalOwnershipPath(req.Path)
-	if err != nil {
-		return ownershipFailure(fmt.Sprintf("requested slot path: %v", err))
+	if err := validateOwnershipRelative("recorded slot path", relPath); err != nil {
+		return ownershipFailure(err.Error())
 	}
-	if canonicalPath != requestedPath {
-		return ownershipFailure("requested slot path does not match the SQLite slot path")
+	if relPath != req.RelPath {
+		return ownershipFailure("requested slot location does not match the SQLite slot")
+	}
+	if req.DirIdentity != "" {
+		if storedDirIdentity == "" {
+			return ownershipFailure("SQLite has no recorded slot directory identity")
+		}
+		if storedDirIdentity != req.DirIdentity {
+			return ownershipFailure("slot directory identity does not match the SQLite record")
+		}
 	}
 	if _, err := canonicalExistingDirectory(rawRoot); err != nil {
 		return ownershipFailure(fmt.Sprintf("recorded workspace root: %v", err))

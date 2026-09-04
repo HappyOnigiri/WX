@@ -43,7 +43,7 @@ func TestWorkspaceSnapshotRestorePreservesOnlyOwnedRootState(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 
 	expiry := time.Now().Add(time.Hour)
-	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "session", []string{"repo", "audit"}, expiry)
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "session", []string{"repo", "audit"}, expiry)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestSnapshotWorkspaceAtUsesPinnedRootAcrossReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "replaced-root", nil, time.Now().Add(time.Hour))
+	_, err = SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "replaced-root", nil, time.Now().Add(time.Hour))
 	if !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("replaced workspace root returned non-ownership error: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestPinnedWorkspaceSnapshotRestoreValidationAndDeletion(t *testing.T) {
 	}
 	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "notes", "saved.txt"), "pinned state\n", 0o640)
 
-	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, nil, "nil-owner", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, nil, "nil-owner", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("nil descriptor was accepted")
 	}
 	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
@@ -146,7 +146,7 @@ func TestPinnedWorkspaceSnapshotRestoreValidationAndDeletion(t *testing.T) {
 	}
 	defer func() { _ = owner.Close() }()
 
-	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "pinned", nil, time.Now().Add(time.Hour))
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "pinned", nil, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("pinned snapshot: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestPinnedWorkspaceOperationsRejectClosedAndMismatchedDescriptors(t *testin
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "boundary", nil, time.Now().Add(time.Hour))
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "boundary", nil, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestWorkspaceRestoreRejectsArchiveOverlapAndTraversal(t *testing.T) {
 				t.Fatal(err)
 			}
 			digest := sha256.Sum256(content.Bytes())
-			snapshot := state.WorkspaceSnapshot{SessionID: "session", ArchivePath: archivePath, SHA256: hex.EncodeToString(digest[:]), Status: "ARCHIVED", ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))}
+			snapshot := state.WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: workspaceSnapshotRelPath("session"), ArchivePath: archivePath, SHA256: hex.EncodeToString(digest[:]), Status: "ARCHIVED", ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))}
 			owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
 			if err != nil {
 				t.Fatal(err)
@@ -313,7 +313,7 @@ func TestDeleteWorkspaceSnapshotRequiresMatchingArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "session", nil, time.Now().Add(time.Hour))
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "session", nil, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,21 +359,21 @@ func TestWorkspaceSnapshotRejectsUnsafeInputsAndUnsupportedFiles(t *testing.T) {
 	}
 	defer func() { _ = owner.Close() }()
 
-	if _, err := SnapshotWorkspaceAt(context.Background(), t.TempDir(), ownershipRoot, owner, "outside", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(context.Background(), t.TempDir(), ownershipRoot, testRootID, owner, "outside", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot outside ownership root succeeded")
 	}
-	if _, err := SnapshotWorkspaceAt(context.Background(), filepath.Join(ownershipRoot, "missing"), ownershipRoot, owner, "missing", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(context.Background(), filepath.Join(ownershipRoot, "missing"), ownershipRoot, testRootID, owner, "missing", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot of missing bundle succeeded")
 	}
 	for _, exclusion := range []string{"", "..", "a/../b", `/absolute`, `back\\slash`} {
-		if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "unsafe", []string{exclusion}, time.Now().Add(time.Hour)); err == nil {
+		if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "unsafe", []string{exclusion}, time.Now().Add(time.Hour)); err == nil {
 			t.Fatalf("unsafe exclusion %q accepted", exclusion)
 		}
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := SnapshotWorkspaceAt(canceled, bundleRoot, ownershipRoot, owner, "canceled", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(canceled, bundleRoot, ownershipRoot, testRootID, owner, "canceled", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("canceled snapshot succeeded")
 	}
 
@@ -383,17 +383,17 @@ func TestWorkspaceSnapshotRejectsUnsafeInputsAndUnsupportedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
-	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "socket", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "socket", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot containing a unix socket succeeded")
 	}
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(ownershipRoot, "recovery")); err != nil {
+	if err := os.RemoveAll(filepath.Join(ownershipRoot, recoveryNamespace)); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkspaceTestFile(t, filepath.Join(ownershipRoot, "recovery"), "collision", 0o600)
-	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "recovery-collision", nil, time.Now().Add(time.Hour)); err == nil {
+	writeWorkspaceTestFile(t, filepath.Join(ownershipRoot, recoveryNamespace), "collision", 0o600)
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "recovery-collision", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot with a non-directory recovery path succeeded")
 	}
 }
@@ -409,7 +409,7 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "session", nil, time.Now().Add(time.Hour))
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "session", nil, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 		func(value *state.WorkspaceSnapshot) { value.Status = "PENDING" },
 		func(value *state.WorkspaceSnapshot) { value.ExpiresAt = "not-a-time" },
 		func(value *state.WorkspaceSnapshot) { value.ExpiresAt = state.FormatTime(time.Now().Add(-time.Hour)) },
-		func(value *state.WorkspaceSnapshot) { value.ArchivePath += ".other" },
+		func(value *state.WorkspaceSnapshot) { value.RelPath += ".other" },
 	} {
 		invalid := snapshot
 		mutate(&invalid)
@@ -564,7 +564,8 @@ func TestWorkspaceRestoreRejectsUnsafeTargetsAndArchiveShapes(t *testing.T) {
 	}
 	digest := sha256.Sum256([]byte("not a tar archive"))
 	invalid := state.WorkspaceSnapshot{
-		SessionID: "invalid-tar", ArchivePath: invalidPath, SHA256: hex.EncodeToString(digest[:]),
+		SessionID: "invalid-tar", RootID: testRootID, RelPath: workspaceSnapshotRelPath("invalid-tar"),
+		ArchivePath: invalidPath, SHA256: hex.EncodeToString(digest[:]),
 		Status: "ARCHIVED", ExpiresAt: state.FormatTime(time.Now().Add(time.Hour)),
 	}
 	if err := RestoreWorkspaceAt(context.Background(), invalidTarget, ownershipRoot, owner, ownershipRoot, owner, invalid, nil); err == nil {
@@ -583,12 +584,12 @@ func TestDeleteWorkspaceSnapshotRejectsWrongPathAndNonRegularArtifact(t *testing
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "session", nil, time.Now().Add(time.Hour))
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "session", nil, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	wrongPath := snapshot
-	wrongPath.ArchivePath += ".other"
+	wrongPath.RelPath += ".other"
 	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, wrongPath); err == nil {
 		t.Fatal("snapshot with wrong path deleted")
 	}
@@ -623,7 +624,7 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = owner.Close() }()
-		if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "unreadable-file", nil, time.Now().Add(time.Hour)); err == nil {
+		if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "unreadable-file", nil, time.Now().Add(time.Hour)); err == nil {
 			t.Fatal("snapshot read an unreadable file")
 		}
 	})
@@ -647,7 +648,7 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = owner.Close() }()
-		if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "unreadable-directory", nil, time.Now().Add(time.Hour)); err == nil {
+		if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "unreadable-directory", nil, time.Now().Add(time.Hour)); err == nil {
 			t.Fatal("snapshot traversed an unreadable directory")
 		}
 	})
@@ -663,7 +664,7 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = owner.Close() }()
-		snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "unreadable-archive", nil, time.Now().Add(time.Hour))
+		snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "unreadable-archive", nil, time.Now().Add(time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -697,7 +698,7 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer func() { _ = owner.Close() }()
-		snapshot, err := SnapshotWorkspaceAt(context.Background(), source, ownershipRoot, owner, "unreadable-target", nil, time.Now().Add(time.Hour))
+		snapshot, err := SnapshotWorkspaceAt(context.Background(), source, ownershipRoot, testRootID, owner, "unreadable-target", nil, time.Now().Add(time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -737,7 +738,8 @@ func writeWorkspaceArchive(t *testing.T, ownershipRoot, sessionID string, header
 	}
 	digest := sha256.Sum256(content.Bytes())
 	return state.WorkspaceSnapshot{
-		SessionID: sessionID, ArchivePath: archivePath, SHA256: hex.EncodeToString(digest[:]),
+		SessionID: sessionID, RootID: testRootID, RelPath: workspaceSnapshotRelPath(sessionID),
+		ArchivePath: archivePath, SHA256: hex.EncodeToString(digest[:]),
 		Status: "ARCHIVED", ExpiresAt: state.FormatTime(time.Now().Add(time.Hour)),
 	}
 }
@@ -776,7 +778,7 @@ func TestSnapshotWorkspacePropagatesPublishRenameFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "collision", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "collision", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("snapshot publish succeeded despite a colliding archive destination")
 	}
 }

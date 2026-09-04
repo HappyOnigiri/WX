@@ -49,8 +49,12 @@ func TestRemovalOwnershipHelpersFailClosed(t *testing.T) {
 	if err := validateRemovalPathComponents(root, filepath.Join("slot", "missing")); err != nil {
 		t.Fatalf("missing leaf rejected: %v", err)
 	}
-	if err := validateRemovalPathComponents(root, filepath.Join("missing", "leaf")); err == nil {
-		t.Fatal("missing intermediate path accepted")
+	// A missing ancestor ends the walk successfully at any depth: the leaf is
+	// gone too, so there is nothing to delete. This is the state an
+	// interrupted removal replays in, because removeSlotWorktrees deletes the
+	// whole slot directory before it commits ARCHIVED.
+	if err := validateRemovalPathComponents(root, filepath.Join("missing", "leaf")); err != nil {
+		t.Fatalf("missing intermediate path rejected: %v", err)
 	}
 	if err := os.Symlink(t.TempDir(), filepath.Join(root, "link")); err != nil {
 		t.Fatal(err)
@@ -66,16 +70,46 @@ func TestRemovalOwnershipHelpersFailClosed(t *testing.T) {
 	}
 
 	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(root), CommonDir: domain.CanonicalPath(root)}
+	slotPath := filepath.Join(root, "slot")
+	target := filepath.Join(slotPath, "repo")
 	manager := &Manager{}
-	if err := manager.validateStateOwnership(context.Background(), repo, "target", "slot", nil, nil); !errors.Is(err, state.ErrOwnership) {
+	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", nil, nil); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing ownership validator error=%v", err)
 	}
+	// A Preparer that carries a validator but no recorded slot location
+	// cannot describe what to compare against, so the proof must fail rather
+	// than fall back to a pathname.
 	manager.Preparer = &workspace.Preparer{Ownership: allowOwnershipValidator{}}
-	if err := manager.validateStateOwnership(context.Background(), repo, "target", "slot", []string{"READY"}, []string{"READY"}); err != nil {
+	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", []string{"READY"}, []string{"READY"}); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("missing slot location error=%v", err)
+	}
+	if _, _, _, err := manager.worktreeLocation(target); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("worktreeLocation without a slot location error=%v", err)
+	}
+	manager.Preparer.RootID = testRootID
+	manager.Preparer.SlotPath = slotPath
+	manager.Preparer.SlotRelPath = "slot"
+	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", []string{"READY"}, []string{"READY"}); err != nil {
 		t.Fatalf("preparer ownership fallback=%v", err)
 	}
+	if rootID, slotRel, dirName, err := manager.worktreeLocation(target); err != nil || rootID != testRootID || slotRel != "slot" || dirName != "repo" {
+		t.Fatalf("worktreeLocation=%q/%q/%q err=%v", rootID, slotRel, dirName, err)
+	}
+	// A worktree that is not a direct child of the recorded slot has no
+	// directory name to compare, so it is refused too.
+	if _, _, _, err := manager.worktreeLocation(filepath.Join(target, "nested")); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("worktreeLocation for a non-child target error=%v", err)
+	}
+	if identity := manager.markerIdentity(repo); identity.RootID != testRootID || identity.RepositoryID != string(repo.ID) || identity.SlotID != "" {
+		t.Fatalf("marker identity=%+v", identity)
+	}
+	// Without a Preparer there is no root generation to name, so the marker
+	// identity is incomplete and marker validation refuses it.
+	if identity := (&Manager{}).markerIdentity(repo); identity.RootID != "" {
+		t.Fatalf("marker identity without a preparer=%+v", identity)
+	}
 	manager.Ownership = rejectingOwnershipValidator{err: errors.New("proof changed")}
-	if err := manager.validateStateOwnership(context.Background(), repo, "target", "slot", nil, nil); !strings.Contains(err.Error(), "proof changed") {
+	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", nil, nil); !strings.Contains(err.Error(), "proof changed") {
 		t.Fatalf("validator failure=%v", err)
 	}
 }
@@ -150,25 +184,25 @@ func TestWorkspaceSnapshotPreconditionsAndPruneFailures(t *testing.T) {
 	}
 	defer func() { _ = snapshotOwner.Close() }()
 	outside := t.TempDir()
-	if _, err := SnapshotWorkspaceAt(ctx, outside, ownershipRoot, snapshotOwner, "outside", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(ctx, outside, ownershipRoot, testRootID, snapshotOwner, "outside", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("workspace snapshot accepted a bundle outside the ownership root")
 	}
 	missing := filepath.Join(ownershipRoot, "missing")
-	if _, err := SnapshotWorkspaceAt(ctx, missing, ownershipRoot, snapshotOwner, "missing", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(ctx, missing, ownershipRoot, testRootID, snapshotOwner, "missing", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("workspace snapshot accepted a missing bundle root")
 	}
 	fileRoot := filepath.Join(ownershipRoot, "file-root")
 	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SnapshotWorkspaceAt(ctx, fileRoot, ownershipRoot, snapshotOwner, "file", nil, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(ctx, fileRoot, ownershipRoot, testRootID, snapshotOwner, "file", nil, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("workspace snapshot accepted a regular-file bundle root")
 	}
-	if _, err := SnapshotWorkspaceAt(ctx, bundleRoot, ownershipRoot, snapshotOwner, "unsafe", []string{"../escape"}, time.Now().Add(time.Hour)); err == nil {
+	if _, err := SnapshotWorkspaceAt(ctx, bundleRoot, ownershipRoot, testRootID, snapshotOwner, "unsafe", []string{"../escape"}, time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("workspace snapshot accepted an unsafe exclusion")
 	}
 
-	invalid := state.WorkspaceSnapshot{SessionID: "session", ArchivePath: filepath.Join(ownershipRoot, "wrong.tar"), Status: "READY"}
+	invalid := state.WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: "wrong.tar", ArchivePath: filepath.Join(ownershipRoot, "wrong.tar"), Status: "READY"}
 	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("non-archived workspace snapshot was accepted")
 	}
@@ -181,11 +215,11 @@ func TestWorkspaceSnapshotPreconditionsAndPruneFailures(t *testing.T) {
 	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("workspace snapshot with mismatched path was accepted")
 	}
-	invalid.ArchivePath = filepath.Join(ownershipRoot, filepath.FromSlash(workspaceSnapshotRelativePath(invalid.SessionID)))
+	invalid.RelPath = workspaceSnapshotRelPath(invalid.SessionID)
 	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("missing workspace snapshot artifact was accepted")
 	}
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, state.WorkspaceSnapshot{SessionID: "session", ArchivePath: filepath.Join(ownershipRoot, "wrong.tar")}); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, state.WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: "wrong.tar"}); err == nil {
 		t.Fatal("snapshot deletion accepted a mismatched artifact path")
 	}
 	// A missing ownership root cannot be opened as a pinned descriptor at
@@ -262,6 +296,7 @@ func TestRestoreRevalidatesOwnershipAtHandoffs(t *testing.T) {
 			validator := &countingOwnershipValidator{failAt: test.failAt}
 			manager.Preparer.Ownership = validator
 			target := filepath.Join(worktreeRoot, test.name, "root")
+			pointAtSlot(t, manager, worktreeRoot, target)
 			err = manager.Restore(context.Background(), repo, target, test.name, snapshot)
 			if err == nil {
 				t.Fatal("restore succeeded after ownership proof was invalidated")
@@ -282,10 +317,10 @@ func TestRemoveMissingWorktreeReportsEveryHandoffFailure(t *testing.T) {
 		fault      string
 		occurrence int
 		want       string
-		setup      func(*testing.T, *Manager, discovery.Repository, string)
+		setup      func(*testing.T, *Manager, discovery.Repository, string, string)
 	}{
-		{name: "common directory marker mismatch", want: "ownership marker", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
-			marker := filepath.Join(filepath.Dir(target), ".wx-owner-"+domain.StableID("worktree", filepath.Clean(target)))
+		{name: "common directory marker mismatch", want: "ownership marker", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, worktreeRoot, target string) {
+			marker := filepath.Join(filepath.Dir(target), ".wx-owner-"+string(repo.ID))
 			if err := os.Remove(marker); err != nil {
 				t.Fatal(err)
 			}
@@ -293,26 +328,25 @@ func TestRemoveMissingWorktreeReportsEveryHandoffFailure(t *testing.T) {
 			if err := os.Mkdir(otherCommon, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			ownershipRoot := filepath.Dir(filepath.Dir(filepath.Dir(target)))
-			owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+			owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer func() { _ = owner.Close() }()
-			if err := workspace.EnsureOwnershipMarkerAt(owner, ownershipRoot, target, "slot", otherCommon); err != nil {
+			if err := workspace.EnsureOwnershipMarkerAt(owner, worktreeRoot, target, markerIdentityFor(repo, "slot"), otherCommon); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{name: "foreign lock reason", want: "lock reason", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
+		{name: "foreign lock reason", want: "lock reason", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, worktreeRoot, target string) {
 			gitCommand(t, string(repo.MainPath), "worktree", "unlock", target)
 			gitCommand(t, string(repo.MainPath), "worktree", "lock", "--reason", "foreign", target)
 		}},
-		{name: "state proof before unlock", want: "state changed", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
+		{name: "state proof before unlock", want: "state changed", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, worktreeRoot, target string) {
 			manager.Ownership = rejectingOwnershipValidator{err: errors.New("state changed")}
 		}},
 		{name: "unlock failure", fault: " worktree unlock ", occurrence: 1, want: "git worktree failed"},
 		{name: "post-unlock listing failure", fault: " worktree list --porcelain -z ", occurrence: 2, want: "git worktree failed"},
-		{name: "revalidation state proof", want: "state proof changed", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, target string) {
+		{name: "revalidation state proof", want: "state proof changed", setup: func(t *testing.T, manager *Manager, repo discovery.Repository, worktreeRoot, target string) {
 			manager.Ownership = &countingOwnershipValidator{failAt: 2}
 		}},
 		{name: "remove failure", fault: " worktree remove --force ", occurrence: 1, want: "git worktree failed"},
@@ -323,9 +357,10 @@ func TestRemoveMissingWorktreeReportsEveryHandoffFailure(t *testing.T) {
 			target := filepath.Join(worktreeRoot, "slots", "slot", "root")
 			mustMkdir(t, filepath.Dir(target))
 			gitCommand(t, repository, "worktree", "add", "--detach", target, head)
-			markOwnedWorktree(t, worktreeRoot, target, "slot", repo.CommonDir)
+			markOwnedWorktree(t, worktreeRoot, target, "slot", repo)
+			pointAtSlot(t, manager, worktreeRoot, target)
 			if test.setup != nil {
-				test.setup(t, manager, repo, target)
+				test.setup(t, manager, repo, worktreeRoot, target)
 			}
 			if test.fault != "" {
 				installGitFault(t, test.fault, test.occurrence)

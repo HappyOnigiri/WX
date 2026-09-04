@@ -33,6 +33,43 @@ type Preparer struct {
 	// inode namespace rather than reopening a mutable pathname.
 	OwnedRoot *os.Root
 	RootPath  string
+	// RootID and SlotRelPath are how SQLite records this slot's location:
+	// the durable root generation and the slot's path relative to it. They
+	// are what ownership validation compares, in place of the absolute
+	// SlotPath, so a renamed or reconfigured root cannot make two different
+	// directories look like the same slot.
+	RootID      string
+	SlotRelPath string
+}
+
+// markerIdentity builds the slot-scoped marker identity for one repository.
+func (p *Preparer) markerIdentity(repo discovery.Repository, slotID string) MarkerIdentity {
+	return MarkerIdentity{SlotID: slotID, RootID: p.RootID, RepositoryID: string(repo.ID)}
+}
+
+// WorktreeDirName is the exported form of worktreeDirName, used by
+// internal/archive to describe a removal target the same way prepare does.
+func (p *Preparer) WorktreeDirName(target string) (string, error) {
+	return p.worktreeDirName(target)
+}
+
+// worktreeDirName returns the repository's directory name inside the slot,
+// which is the single path component between SlotPath and target. It is read
+// back from the caller's target rather than recomputed from configuration:
+// the name recorded when the slot was created is the authority, and a later
+// configuration change must not be able to redirect an existing slot.
+func (p *Preparer) worktreeDirName(target string) (string, error) {
+	if p.SlotPath == "" {
+		return "", fmt.Errorf("%w: slot path is unavailable", state.ErrOwnership)
+	}
+	relative, err := filepath.Rel(filepath.Clean(p.SlotPath), filepath.Clean(target))
+	if err != nil {
+		return "", fmt.Errorf("%w: worktree is not inside its slot: %w", state.ErrOwnership, err)
+	}
+	if relative == "." || !filepath.IsLocal(relative) || strings.ContainsRune(relative, filepath.Separator) {
+		return "", fmt.Errorf("%w: worktree %s is not a direct child of slot %s", state.ErrOwnership, target, p.SlotPath)
+	}
+	return relative, nil
 }
 
 func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
@@ -113,7 +150,7 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 			if _, err := p.runWorktreeAdminOwned(context.Background(), repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "remove", "--force"); err != nil {
 				return
 			}
-			_ = removeOwnershipMarkerAt(lockedRoot, root, target)
+			_ = removeOwnershipMarkerAt(lockedRoot, root, target, string(repo.ID))
 		}
 	}()
 	if existingWorktree {
@@ -258,7 +295,7 @@ func (p *Preparer) prepareLockedTarget(ctx context.Context, repo discovery.Repos
 	if err := p.validateStateOwnership(ctx, repo, target, slotID, prepareSlotStates, prepareRepositoryStates); err != nil {
 		return nil, fmt.Errorf("wx worktree ownership changed before marker: %w", err)
 	}
-	if err := EnsureOwnershipMarkerAt(lockedRoot, root, target, slotID, string(repo.CommonDir)); err != nil {
+	if err := EnsureOwnershipMarkerAt(lockedRoot, root, target, p.markerIdentity(repo, slotID), string(repo.CommonDir)); err != nil {
 		return nil, fmt.Errorf("prepare wx ownership marker: %w", err)
 	}
 	if !existingWorktree {
@@ -538,7 +575,7 @@ func (p *Preparer) existingTargetState(ctx context.Context, repo discovery.Repos
 	if len(entries) == 0 {
 		// An empty shell may be left by an interrupted allocation. A marker,
 		// when present, still has to match; a missing marker is created below.
-		markerRelative, markerErr := ownershipMarkerRelative(root, target)
+		markerRelative, markerErr := ownershipMarkerRelative(root, target, string(repo.ID))
 		if markerErr != nil {
 			return false, markerErr
 		}
@@ -623,7 +660,7 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 		return fmt.Errorf("open worktree ownership root: %w", err)
 	}
 	defer closeOwner()
-	if err := ValidateOwnershipMarkerAt(owner, root, target, slotID, string(repo.CommonDir)); err != nil {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, p.markerIdentity(repo, slotID), string(repo.CommonDir)); err != nil {
 		return err
 	}
 	ownedTarget, targetIdentity, err := domain.OpenDirectoryAt(owner, relativeTarget)
@@ -663,8 +700,18 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 	if slotID == "" {
 		return nil
 	}
-	if err := p.validateStateOwnership(ctx, repo, target, slotID, slotStates, repositoryStates); err != nil {
+	proof, err := p.stateOwnershipProof(ctx, repo, target, slotID, slotStates, repositoryStates)
+	if err != nil {
 		return err
+	}
+	// A recorded identity has to be the directory actually open. Preparation
+	// and restore record it only once the worktree is complete, so an empty
+	// record means a run that was interrupted before that point and is
+	// allowed to converge on retry. A record that differs means this is not
+	// the directory wx prepared, however well the marker and the Git
+	// metadata reproduce it.
+	if proof.DirIdentity != "" && proof.DirIdentity != targetIdentity {
+		return fmt.Errorf("%w: worktree directory identity does not match the SQLite record", state.ErrOwnership)
 	}
 	return nil
 }
@@ -764,7 +811,7 @@ func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository,
 	if err != nil {
 		return err
 	}
-	slotID, err := p.validateRemovalOwnership(root, target, common)
+	slotID, err := p.validateRemovalOwnership(repo, root, target, common)
 	if err != nil {
 		return err
 	}
@@ -789,7 +836,7 @@ func (p *Preparer) ValidateOwnership(ctx context.Context, repo discovery.Reposit
 	if err != nil {
 		return err
 	}
-	slotID, err := p.validateRemovalOwnership(root, target, common)
+	slotID, err := p.validateRemovalOwnership(repo, root, target, common)
 	if err != nil {
 		return err
 	}
@@ -808,16 +855,16 @@ func (p *Preparer) ValidateOwnership(ctx context.Context, repo discovery.Reposit
 	if err := ValidateRegisteredWorktreeAt(ctx, p.Git, string(repo.MainPath), owner, root, relativeTarget, targetIdentity, slotID, true); err != nil {
 		return err
 	}
-	return p.validateStateOwnership(ctx, repo, target, slotID, allOwnershipSlotStates, allOwnershipRepositoryStates)
+	return p.validateStateOwnershipWithIdentity(ctx, repo, target, slotID, targetIdentity, allOwnershipSlotStates, allOwnershipRepositoryStates)
 }
 
-func (p *Preparer) validateRemovalOwnership(root, target, common string) (string, error) {
+func (p *Preparer) validateRemovalOwnership(repo discovery.Repository, root, target, common string) (string, error) {
 	owner, _, closeOwner, err := p.openOwnedRoot(root, target)
 	if err != nil {
 		return "", err
 	}
 	defer closeOwner()
-	return ValidateRemovalOwnershipAt(owner, root, target, common)
+	return ValidateRemovalOwnershipAt(owner, root, target, p.markerIdentity(repo, ""), common)
 }
 
 // ValidateRestoringOwnership is the slot-bound ownership check used while a
@@ -840,18 +887,66 @@ func preparationOwnershipStates(phase preparePhase) ([]string, []string) {
 }
 
 func (p *Preparer) validateStateOwnership(ctx context.Context, repo discovery.Repository, target, slotID string, slotStates, repositoryStates []string) error {
+	_, err := p.stateOwnershipProof(ctx, repo, target, slotID, slotStates, repositoryStates)
+	return err
+}
+
+// stateOwnershipProof is validateStateOwnership with the proof returned, for
+// the caller that needs the recorded identity to compare it itself.
+func (p *Preparer) stateOwnershipProof(ctx context.Context, repo discovery.Repository, target, slotID string, slotStates, repositoryStates []string) (state.WorktreeOwnership, error) {
+	if slotID == "" {
+		return state.WorktreeOwnership{}, nil
+	}
+	if p.Ownership == nil {
+		return state.WorktreeOwnership{}, fmt.Errorf("%w: state-backed worktree ownership validator is required", state.ErrOwnership)
+	}
+	dirName, err := p.worktreeDirName(target)
+	if err != nil {
+		return state.WorktreeOwnership{}, err
+	}
+	return p.Ownership.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
+		SlotID:       slotID,
+		RepositoryID: string(repo.ID),
+		WorkspaceID:  "",
+		RootID:       p.RootID,
+		SlotRelPath:  p.SlotRelPath,
+		DirName:      dirName,
+		// DirIdentity is intentionally left empty here. This helper runs
+		// both before the worktree directory exists (the pre-creation
+		// checks inside prepare) and after, so it cannot promise an
+		// identity; the callers that hold a descriptor pass one through
+		// validateStateOwnershipWithIdentity instead, and the caller that
+		// only has a record to compare reads it from the returned proof.
+		CommonDir:               string(repo.CommonDir),
+		AllowedSlotStates:       slotStates,
+		AllowedRepositoryStates: repositoryStates,
+	})
+}
+
+// validateStateOwnershipWithIdentity is the fail-closed form used once the
+// caller holds the worktree directory open. Presenting the identity makes a
+// missing SQLite record a failure rather than a silent pass.
+func (p *Preparer) validateStateOwnershipWithIdentity(ctx context.Context, repo discovery.Repository, target, slotID, dirIdentity string, slotStates, repositoryStates []string) error {
 	if slotID == "" {
 		return nil
 	}
 	if p.Ownership == nil {
 		return fmt.Errorf("%w: state-backed worktree ownership validator is required", state.ErrOwnership)
 	}
-	_, err := p.Ownership.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
+	if dirIdentity == "" {
+		return fmt.Errorf("%w: worktree directory identity is unavailable", state.ErrOwnership)
+	}
+	dirName, err := p.worktreeDirName(target)
+	if err != nil {
+		return err
+	}
+	_, err = p.Ownership.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
 		SlotID:                  slotID,
 		RepositoryID:            string(repo.ID),
-		WorkspaceID:             "",
-		SlotPath:                p.SlotPath,
-		WorktreePath:            target,
+		RootID:                  p.RootID,
+		SlotRelPath:             p.SlotRelPath,
+		DirName:                 dirName,
+		DirIdentity:             dirIdentity,
 		CommonDir:               string(repo.CommonDir),
 		AllowedSlotStates:       slotStates,
 		AllowedRepositoryStates: repositoryStates,
@@ -1186,12 +1281,24 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 	return runErr
 }
 
+// Fingerprint hashes everything that makes a prepared worktree reusable.
+//
+// The repository's directory name inside the slot is deliberately not part of
+// it. slot_repositories.dir_name is the authority once a slot exists, so an
+// existing slot keeps the name it recorded and only new slots pick up a
+// changed storage.repo_dir_source or repositories.<path>.dir_name. Hashing
+// the name could not change that either way: the reuse check recomputes the
+// fingerprint from the stored name, so the component would always compare
+// equal to itself.
+//
+// schema=3 marks the layout change; a fingerprint written by an earlier wx
+// therefore never compares equal.
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	if err := domain.ValidatePhysicalPath(string(repo.MainPath), false); err != nil {
 		return "", err
 	}
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=2\ngeneration=%d\noid=%s\n", generation, oid)
+	_, _ = fmt.Fprintf(h, "schema=3\ngeneration=%d\noid=%s\n", generation, oid)
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
 		data, err := readPhysicalManifest(string(repo.MainPath), name)
 		if err != nil {

@@ -21,7 +21,7 @@ import (
 // filesystem-error branches (MkdirAll, Lstat, and OpenFile failing for a reason
 // other than the marker already existing).
 func TestEnsureOwnershipMarkerAtDirectFaultInjection(t *testing.T) {
-	marker := ownershipMarker{Version: 1, SlotID: "slot", Target: "target", CommonDir: "common"}
+	marker := ownershipMarker{Version: ownershipMarkerVersion, SlotID: "slot", RootID: testRootID, RepositoryID: testRepositoryID, CommonDir: "common"}
 
 	if err := ensureOwnershipMarkerAt(nil, "marker", marker); err == nil {
 		t.Fatal("nil ownership root was accepted")
@@ -97,7 +97,7 @@ func TestValidateOwnershipMarkerRejectsNonDirectoryTargetWithRequiredLeaf(t *tes
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := ValidateOwnershipMarkerAt(owner, root, target, "slot", common); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("regular file target validation error=%v", err)
 	}
 }
@@ -224,7 +224,8 @@ func TestRegisteredWorktreeLockStatusAtSkipsRemovedWorktreeRegistration(t *testi
 // instead of os.ErrNotExist.
 func TestRemoveOwnershipMarkerAtPropagatesPermissionFailures(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "slots", "slot", "root")
+	slotDirectory := filepath.Join(root, testSlotRelPath)
+	target := filepath.Join(slotDirectory, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -234,15 +235,14 @@ func TestRemoveOwnershipMarkerAtPropagatesPermissionFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatal(err)
 	}
-	slotDirectory := filepath.Join(root, "slots", "slot")
 	if err := os.Chmod(slotDirectory, 0); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(slotDirectory, 0o700) })
-	if err := removeOwnershipMarkerAt(owner, root, target); err == nil {
+	if err := removeOwnershipMarkerAt(owner, root, target, testRepositoryID); err == nil {
 		t.Fatal("descriptor-bound marker removal below an unsearchable directory was accepted")
 	}
 }
@@ -253,7 +253,7 @@ func TestRemoveOwnershipMarkerAtPropagatesPermissionFailures(t *testing.T) {
 // the target itself denies search access.
 func TestNewOwnershipMarkerAtPropagatesDirectoryOpenFailureForExistingTarget(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "slots", "slot", "root")
+	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestNewOwnershipMarkerAtPropagatesDirectoryOpenFailureForExistingTarget(t *
 	}
 	defer func() { _ = owner.Close() }()
 	common := t.TempDir()
-	if _, err := newOwnershipMarkerAt(owner, root, target, "slot", common, true); err == nil {
+	if _, err := newOwnershipMarkerAt(owner, root, target, markerFor("slot"), common, true); err == nil {
 		t.Fatal("unsearchable existing marker target was accepted")
 	}
 }
@@ -278,7 +278,7 @@ func TestNewOwnershipMarkerAtPropagatesDirectoryOpenFailureForExistingTarget(t *
 // target/common-directory identity checks exercised elsewhere.
 func TestValidateRemovalOwnershipRejectsMalformedMarkerContents(t *testing.T) {
 	root := t.TempDir()
-	target := filepath.Join(root, "slots", "slot", "root")
+	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -288,25 +288,25 @@ func TestValidateRemovalOwnershipRejectsMalformedMarkerContents(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
 		t.Fatal(err)
 	}
-	markerPath := filepath.Join(filepath.Dir(target), ownershipMarkerNameForTarget(target))
+	markerPath := filepath.Join(filepath.Dir(target), ownershipMarkerPrefix+testRepositoryID)
 	if err := os.WriteFile(markerPath, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ValidateRemovalOwnership(root, target, common); !errors.Is(err, state.ErrOwnership) {
+	if _, err := ValidateRemovalOwnership(root, target, markerFor("slot"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("malformed marker removal proof error=%v", err)
 	}
 
-	descriptorTarget := filepath.Join(root, "slots", "slot2", "root")
+	descriptorTarget := filepath.Join(root, testWorkspaceID, "slot02", testRepositoryID)
 	if err := os.MkdirAll(descriptorTarget, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, descriptorTarget, "slot2", common); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, descriptorTarget, markerFor("slot02"), common); err != nil {
 		t.Fatal(err)
 	}
-	descriptorMarkerRelative, err := ownershipMarkerRelative(root, descriptorTarget)
+	descriptorMarkerRelative, err := ownershipMarkerRelative(root, descriptorTarget, testRepositoryID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestValidateRemovalOwnershipRejectsMalformedMarkerContents(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ValidateRemovalOwnershipAt(owner, root, descriptorTarget, common); !errors.Is(err, state.ErrOwnership) {
+	if _, err := ValidateRemovalOwnershipAt(owner, root, descriptorTarget, markerFor("slot02"), common); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("malformed descriptor-bound marker removal proof error=%v", err)
 	}
 }

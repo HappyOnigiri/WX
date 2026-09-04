@@ -22,7 +22,7 @@ func TestReleaseIsIdempotentAfterAlreadyReleasingSession(t *testing.T) {
 	}
 	defer store.Close()
 	ctx := context.Background()
-	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "dup", Path: filepath.Join(root, "root"), State: "LEASED"}, nil, state.Session{ID: "dup", SlotID: "dup", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, storeSlotAt(t, store, root, "", "dup", filepath.Join(root, "root"), 0, "LEASED"), nil, state.Session{ID: "dup", SlotID: "dup", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}, ""); err != nil {
 		t.Fatal(err)
 	}
 	manager := &Manager{store: store, jobs: make(chan jobWork, 4), ctx: context.Background()}
@@ -89,14 +89,19 @@ func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
 // path diagnostics entirely.
 func TestReconcileArtifactsSkipsUnverifiableAndArchivedPaths(t *testing.T) {
 	ctx, manager, store, _, _, _ := managerCoverageFixture(t)
-	outside := filepath.Join(t.TempDir(), "outside-slot")
+	// A slot whose recorded root-relative path leaves the wx root cannot be
+	// proven owned; this is the remaining way to express that now that a slot
+	// is located by root generation plus relative path rather than by an
+	// arbitrary absolute path.
+	outsideSlot := testSlotRow(t, manager, "", "outside", 1, "LEASED")
+	outsideSlot.RelPath = filepath.Join("..", "outside-slot")
+	outsideSlot.Path = filepath.Join(manager.Config().Storage.WorktreeRoot, outsideSlot.RelPath)
 	outsideSession := state.Session{ID: "outside", SlotID: "outside", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("outside")}
-	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "outside", Generation: 1, Path: outside, State: "LEASED"}, nil, outsideSession, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, outsideSlot, nil, outsideSession, ""); err != nil {
 		t.Fatal(err)
 	}
-	archivedPath := filepath.Join(t.TempDir(), "archived-slot")
 	archivedSession := state.Session{ID: "archived", SlotID: "archived", State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken("archived")}
-	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "archived", Generation: 1, Path: archivedPath, State: "ARCHIVED"}, nil, archivedSession, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, testSlotRow(t, manager, "", "archived", 1, "ARCHIVED"), nil, archivedSession, ""); err != nil {
 		t.Fatal(err)
 	}
 

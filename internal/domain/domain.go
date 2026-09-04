@@ -29,6 +29,61 @@ func NewID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// shortIDAlphabet is lowercase base36. Uppercase letters are deliberately
+// excluded: these IDs are directory names and APFS is case-insensitive by
+// default, so a mixed-case alphabet would let two distinct IDs collide on
+// disk while remaining distinct in SQLite.
+const shortIDAlphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+// ShortIDLength is the fixed width of NewShortID's output. Six base36
+// characters give ~2.18e9 values, which keeps the collision probability below
+// 1% for the number of live slot/session rows a single-user install
+// accumulates while its tombstones are retained.
+const ShortIDLength = 6
+
+// NewShortID returns a ShortIDLength-character lowercase base36 identifier
+// drawn from crypto/rand. Bytes at or above the largest multiple of the
+// alphabet size are rejected rather than reduced modulo it, so every
+// character is uniformly distributed.
+func NewShortID() (string, error) {
+	const limit = 256 - (256 % len(shortIDAlphabet))
+	out := make([]byte, 0, ShortIDLength)
+	var buffer [ShortIDLength]byte
+	for len(out) < ShortIDLength {
+		if _, err := rand.Read(buffer[:]); err != nil {
+			return "", fmt.Errorf("generate short id: %w", err)
+		}
+		for _, b := range buffer {
+			if int(b) >= limit {
+				continue
+			}
+			out = append(out, shortIDAlphabet[int(b)%len(shortIDAlphabet)])
+			if len(out) == ShortIDLength {
+				break
+			}
+		}
+	}
+	return string(out), nil
+}
+
+// ValidShortID reports whether value is exactly the shape NewShortID
+// produces. The orphan scan uses it to decide which directories below the
+// worktree root are wx's own namespaces: the generating side spells them as
+// short IDs, so anything else is not a slot location wx created. Generated
+// values are validated as path components by their own callers
+// (daemon.validateLayoutComponent) rather than here.
+func ValidShortID(value string) bool {
+	if len(value) != ShortIDLength {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if !strings.ContainsRune(shortIDAlphabet, rune(value[i])) {
+			return false
+		}
+	}
+	return true
+}
+
 func StableID(parts ...string) string {
 	h := sha256.New()
 	for _, p := range parts {

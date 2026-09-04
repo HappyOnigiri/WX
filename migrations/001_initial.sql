@@ -1,3 +1,7 @@
+CREATE TABLE roots(
+ id TEXT PRIMARY KEY, path TEXT UNIQUE NOT NULL, identity TEXT NOT NULL,
+ active INTEGER NOT NULL, created_at TEXT NOT NULL, retired_at TEXT
+);
 CREATE TABLE workspaces(
  id TEXT PRIMARY KEY, root_path TEXT UNIQUE NOT NULL, kind TEXT NOT NULL,
  generation INTEGER NOT NULL, discovery_state TEXT NOT NULL,
@@ -5,7 +9,8 @@ CREATE TABLE workspaces(
 );
 CREATE TABLE repositories(
  id TEXT PRIMARY KEY, main_worktree_path TEXT NOT NULL, common_git_dir TEXT UNIQUE NOT NULL,
- default_branch TEXT NOT NULL, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_leased_at TEXT
+ default_branch TEXT NOT NULL, remote_name TEXT NOT NULL DEFAULT '',
+ first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, last_leased_at TEXT
 );
 CREATE TABLE workspace_repositories(
  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, repository_id TEXT NOT NULL REFERENCES repositories(id),
@@ -14,15 +19,17 @@ CREATE TABLE workspace_repositories(
 );
 CREATE TABLE slots(
  id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL, generation INTEGER NOT NULL,
- path TEXT UNIQUE NOT NULL, state TEXT NOT NULL, owner_session_id TEXT,
+ root_id TEXT NOT NULL REFERENCES roots(id), rel_path TEXT NOT NULL, dir_identity TEXT,
+ state TEXT NOT NULL, owner_session_id TEXT,
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, ready_at TEXT, last_used_at TEXT,
- failure_code TEXT, failure_detail_path TEXT
+ failure_code TEXT, failure_detail_path TEXT,
+ UNIQUE(root_id, rel_path)
 );
 CREATE TABLE slot_repositories(
  slot_id TEXT NOT NULL REFERENCES slots(id), repository_id TEXT NOT NULL REFERENCES repositories(id),
- worktree_path TEXT UNIQUE NOT NULL, state TEXT NOT NULL, requested_ref TEXT NOT NULL,
+ dir_name TEXT NOT NULL, dir_identity TEXT, state TEXT NOT NULL, requested_ref TEXT NOT NULL,
  base_oid TEXT NOT NULL, prepare_fingerprint TEXT NOT NULL, git_worktree_name TEXT,
- PRIMARY KEY(slot_id, repository_id)
+ PRIMARY KEY(slot_id, repository_id), UNIQUE(slot_id, dir_name)
 );
 CREATE TABLE sessions(
  id TEXT PRIMARY KEY, workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL, slot_id TEXT NOT NULL REFERENCES slots(id),
@@ -45,8 +52,10 @@ CREATE TABLE snapshots(
  UNIQUE(session_id, repository_id)
 );
 CREATE TABLE workspace_snapshots(
- session_id TEXT PRIMARY KEY REFERENCES sessions(id), archive_path TEXT UNIQUE NOT NULL, sha256 TEXT NOT NULL,
- status TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+ session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+ root_id TEXT NOT NULL REFERENCES roots(id), rel_path TEXT NOT NULL, sha256 TEXT NOT NULL,
+ status TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+ UNIQUE(root_id, rel_path)
 );
 CREATE TABLE jobs(
  id TEXT PRIMARY KEY, kind TEXT NOT NULL, workspace_id TEXT, slot_id TEXT, session_id TEXT, repository_id TEXT,
@@ -66,6 +75,7 @@ CREATE TABLE quarantined_artifacts(
  path TEXT PRIMARY KEY, kind TEXT NOT NULL, reason TEXT NOT NULL, detected_at TEXT NOT NULL
 );
 CREATE INDEX idx_slots_ready ON slots(workspace_id, generation, state, ready_at);
+CREATE INDEX idx_slots_root ON slots(root_id);
 CREATE INDEX idx_sessions_agent ON sessions(agent_kind, agent_session_id);
 CREATE INDEX idx_jobs_state ON jobs(state, not_before);
 CREATE INDEX session_repositories_repository_idx ON session_repositories(repository_id);

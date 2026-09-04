@@ -43,7 +43,10 @@ const SchemaVersion = 1
 // 2: `wx status --json` gained restart_pending.
 // 3: `wx status --json` gained stop_pending and pid.
 // 4: `wx doctor --json` gained local daemon-unavailable diagnostics.
-const JSONSchemaVersion = 4
+// 5: `wx status --json` gained worktree_root_error and `wx doctor --json`
+//
+//	gained the worktree_root check.
+const JSONSchemaVersion = 5
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -230,7 +233,172 @@ func (s *Store) init(ctx context.Context) error {
 			return err
 		}
 	}
+	return s.verifySchema(ctx)
+}
+
+// verifySchema fails Open with an actionable message when the database was
+// created by a wx that predates the worktree-layout change. Those databases
+// already carry user_version=1, so the migration loop applies nothing and
+// every later query fails on a column that no longer exists. wx deliberately
+// has no migration path off that schema (see AGENTS.md), so the only thing
+// left to do is say so clearly instead of failing one RPC at a time.
+func (s *Store) verifySchema(ctx context.Context) error {
+	var present int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='roots'`).Scan(&present); err != nil {
+		return err
+	}
+	if present == 0 {
+		return fmt.Errorf("%s was created by a wx release that used the previous worktree layout and cannot be migrated; stop the daemon, remove that file, and remove the old worktree root once no session needs it", s.path)
+	}
 	return nil
+}
+
+// sqliteConstraintPrimaryKey and sqliteConstraintUnique are the extended
+// result codes SQLite reports when an INSERT loses a primary-key or unique
+// race. wx generates short random IDs, so these two are the only signals that
+// distinguish "pick another ID and retry" from a real failure.
+const (
+	sqliteConstraintUnique     = 2067
+	sqliteConstraintPrimaryKey = 1555
+)
+
+// IsIDCollision reports whether err is the constraint violation a duplicate
+// generated identifier produces. Callers retry with a new identifier; every
+// other error is returned to the caller untouched.
+func IsIDCollision(err error) bool {
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		code := sqliteErr.Code()
+		return code == sqliteConstraintUnique || code == sqliteConstraintPrimaryKey
+	}
+	return false
+}
+
+// idCollisionAttempts bounds identifier retries. Six base36 characters give
+// roughly 2.18e9 values, so ten independent draws failing means something
+// other than chance is wrong and the operation should surface an error.
+const idCollisionAttempts = 10
+
+// newUnusedShortID draws short IDs until one is absent from the named table's
+// id column. The caller must already hold the write lock (and, when a
+// transaction is in flight, pass it as the querier) so the value it returns
+// is still unused when the INSERT runs.
+func newUnusedShortID(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, table string,
+) (string, error) {
+	for range idCollisionAttempts {
+		id, err := domain.NewShortID()
+		if err != nil {
+			return "", err
+		}
+		var taken int
+		// table is always a package-internal constant literal ("roots",
+		// "workspaces"), never caller input, so the concatenation cannot
+		// carry untrusted text into the statement.
+		err = q.QueryRowContext(ctx, `SELECT count(*) FROM `+table+` WHERE id=?`, id).Scan(&taken)
+		if err != nil {
+			return "", err
+		}
+		if taken == 0 {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("could not find an unused %s identifier in %d attempts", table, idCollisionAttempts)
+}
+
+// Root is one generation of storage.worktree_root. wx never moves existing
+// slots when the configured root changes: the previous row stays with
+// active=0 so its slots keep resolving, and only new slots are created under
+// the active row.
+type Root struct {
+	ID, Path, Identity string
+	Active             bool
+}
+
+// EnsureActiveRoot registers path as the active worktree root generation and
+// returns its durable ID. A previously registered pathname keeps its ID so
+// existing slots stay attached to it; every other row is marked retired.
+//
+// A pathname whose recorded inode identity no longer matches is accepted only
+// while nothing durable still points at it. That case is a root directory the
+// user deleted and wx recreated, which strands no state. A mismatch with live
+// slots or snapshots is refused instead, because their recorded locations
+// would then name a directory wx never wrote.
+func (s *Store) EnsureActiveRoot(ctx context.Context, path, identity string) (string, error) {
+	if path == "" || identity == "" {
+		return "", errors.New("worktree root path and identity are required")
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+	t := now()
+	var id, storedIdentity string
+	err = tx.QueryRowContext(ctx, `SELECT id,identity FROM roots WHERE path=?`, path).Scan(&id, &storedIdentity)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		id, err = newUnusedShortID(ctx, tx, "roots")
+		if err != nil {
+			return "", err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO roots(id,path,identity,active,created_at) VALUES(?,?,?,1,?)`, id, path, identity, t); err != nil {
+			return "", err
+		}
+	case err != nil:
+		return "", err
+	case storedIdentity != identity:
+		var referencing int
+		if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM slots WHERE root_id=?)+(SELECT count(*) FROM workspace_snapshots WHERE root_id=?)`, id, id).Scan(&referencing); err != nil {
+			return "", err
+		}
+		if referencing > 0 {
+			return "", fmt.Errorf("%w: worktree root %s inode changed (recorded %s, found %s) while %d durable rows still reference it", ErrOwnership, path, storedIdentity, identity, referencing)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE roots SET identity=?,active=1,retired_at=NULL WHERE id=?`, identity, id); err != nil {
+			return "", err
+		}
+	default:
+		if _, err := tx.ExecContext(ctx, `UPDATE roots SET active=1,retired_at=NULL WHERE id=?`, id); err != nil {
+			return "", err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE roots SET active=0,retired_at=COALESCE(retired_at,?) WHERE id<>? AND active=1`, t, id); err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
+}
+
+// Roots lists every registered root generation so the daemon can repin the
+// descriptors its durable slots still depend on.
+func (s *Store) Roots(ctx context.Context) ([]Root, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,path,identity,active FROM roots ORDER BY created_at,id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Root
+	for rows.Next() {
+		var root Root
+		if err := rows.Scan(&root.ID, &root.Path, &root.Identity, &root.Active); err != nil {
+			return nil, err
+		}
+		out = append(out, root)
+	}
+	return out, rows.Err()
+}
+
+// PruneRoots deletes retired root generations that nothing durable references
+// any more. The directories themselves are left on disk: wx never removes a
+// configured root, only the rows that made it addressable.
+func (s *Store) PruneRoots(ctx context.Context) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM roots WHERE active=0 AND NOT EXISTS (SELECT 1 FROM slots WHERE slots.root_id=roots.id) AND NOT EXISTS (SELECT 1 FROM workspace_snapshots WHERE workspace_snapshots.root_id=roots.id)`)
+	return err
 }
 
 const timestampFormat = "2006-01-02T15:04:05.000000000Z07:00"
@@ -243,60 +411,95 @@ func FormatTime(value time.Time) string { return value.UTC().Format(timestampFor
 func now() string                   { return FormatTime(time.Now()) }
 func HashToken(token string) []byte { sum := sha256.Sum256([]byte(token)); return sum[:] }
 
-// CanonicalWorkspace returns the workspace identity already registered for a
-// repository common directory. Repository workspace IDs are derived from the
-// common directory for new registrations, but older databases may contain an
-// ID derived from the former main-worktree path. Keeping that existing ID is
-// important: slot paths contain it, and changing it would strand the existing
-// pool and create a second workspace after a main-worktree move.
+// CanonicalWorkspace returns the workspace identity already registered for
+// this workspace, replacing the freshly generated proposal discovery hands
+// out. Identity is proven by the Git common directory for a single-repository
+// workspace and by the canonical root path for a multi-repository one, never
+// by the workspace ID itself: slot directories are named after that ID, so
+// changing it would strand the existing pool and create a duplicate
+// workspace after a main-worktree move.
 func (s *Store) CanonicalWorkspace(ctx context.Context, w discovery.Workspace) (discovery.Workspace, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	return s.canonicalWorkspace(ctx, w)
-}
-
-func (s *Store) canonicalWorkspace(ctx context.Context, w discovery.Workspace) (discovery.Workspace, error) {
-	if w.Kind != "repository" || len(w.Repositories) != 1 {
-		return w, nil
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT w.id FROM workspaces w JOIN workspace_repositories wr ON wr.workspace_id=w.id JOIN repositories r ON r.id=wr.repository_id WHERE w.kind='repository' AND r.common_git_dir=? ORDER BY w.id`, w.Repositories[0].CommonDir)
+	registered, found, err := s.registeredWorkspaceID(ctx, w)
 	if err != nil {
 		return w, err
+	}
+	if found {
+		w.ID = domain.WorkspaceID(registered)
+	}
+	return w, nil
+}
+
+// registeredWorkspaceID resolves the durable ID of an already-registered
+// workspace, or reports found=false for one wx has never seen.
+func (s *Store) registeredWorkspaceID(ctx context.Context, w discovery.Workspace) (string, bool, error) {
+	var query string
+	var argument any
+	switch {
+	case w.Kind == "repository" && len(w.Repositories) == 1:
+		query = `SELECT DISTINCT w.id FROM workspaces w JOIN workspace_repositories wr ON wr.workspace_id=w.id JOIN repositories r ON r.id=wr.repository_id WHERE w.kind='repository' AND r.common_git_dir=? ORDER BY w.id`
+		argument = string(w.Repositories[0].CommonDir)
+	case w.Kind == "multi_repository":
+		query = `SELECT id FROM workspaces WHERE kind='multi_repository' AND root_path=? ORDER BY id`
+		argument = string(w.Root)
+	default:
+		return "", false, nil
+	}
+	rows, err := s.db.QueryContext(ctx, query, argument)
+	if err != nil {
+		return "", false, err
 	}
 	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return w, err
+			return "", false, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return w, err
+		return "", false, err
 	}
 	if len(ids) > 1 {
-		return w, fmt.Errorf("Git common directory %s belongs to multiple registered workspaces", w.Repositories[0].CommonDir)
+		return "", false, fmt.Errorf("workspace identity %v belongs to multiple registered workspaces", argument)
 	}
-	if len(ids) == 1 {
-		w.ID = domain.WorkspaceID(ids[0])
+	if len(ids) == 0 {
+		return "", false, nil
 	}
-	return w, nil
+	return ids[0], true, nil
 }
 
-func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Workspace) (int, error) {
+// UpsertWorkspaceGeneration registers the workspace and returns it with its
+// durable ID resolved. Callers must use the returned workspace: the ID it
+// carries is the one that names slot directories, and it differs from the
+// proposal discovery produced whenever the workspace was already known or a
+// generated ID had to be redrawn.
+func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Workspace) (discovery.Workspace, int, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	canonical, err := s.canonicalWorkspace(ctx, w)
+	registered, found, err := s.registeredWorkspaceID(ctx, w)
 	if err != nil {
-		return 0, err
+		return w, 0, err
 	}
-	w = canonical
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return w, 0, err
 	}
 	defer tx.Rollback()
+	if found {
+		w.ID = domain.WorkspaceID(registered)
+	} else {
+		// The proposal from discovery is random, so it can collide with an
+		// unrelated workspace. Redrawing inside this transaction is what
+		// keeps the INSERT below from silently taking over that row.
+		id, idErr := newUnusedShortID(ctx, tx, "workspaces")
+		if idErr != nil {
+			return w, 0, idErr
+		}
+		w.ID = domain.WorkspaceID(id)
+	}
 	t := now()
 	generation := 1
 	existing := false
@@ -305,7 +508,7 @@ func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Works
 	if err == nil {
 		existing = true
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
+		return w, 0, err
 	}
 	type membership struct {
 		rel     string
@@ -315,7 +518,7 @@ func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Works
 	if existing {
 		rows, err := tx.QueryContext(ctx, `SELECT repository_id,relative_path,ordinal FROM workspace_repositories WHERE workspace_id=?`, w.ID)
 		if err != nil {
-			return 0, err
+			return w, 0, err
 		}
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
@@ -323,16 +526,16 @@ func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Works
 			var member membership
 			if err := rows.Scan(&id, &member.rel, &member.ordinal); err != nil {
 				_ = rows.Close()
-				return 0, err
+				return w, 0, err
 			}
 			oldMembers[id] = member
 		}
 		if err := rows.Err(); err != nil {
 			_ = rows.Close()
-			return 0, err
+			return w, 0, err
 		}
 		if err := rows.Close(); err != nil {
-			return 0, err
+			return w, 0, err
 		}
 	}
 	changed := existing && oldKind != w.Kind
@@ -350,29 +553,29 @@ func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Works
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO workspaces(id,root_path,kind,generation,discovery_state,first_seen_at,last_seen_at,last_reconciled_at) VALUES(?,?,?,?,'READY',?,?,?) ON CONFLICT(id) DO UPDATE SET root_path=excluded.root_path,kind=excluded.kind,generation=excluded.generation,last_seen_at=excluded.last_seen_at,last_reconciled_at=excluded.last_reconciled_at`, w.ID, w.Root, w.Kind, generation, t, t, t)
 	if err != nil {
-		return 0, err
+		return w, 0, err
 	}
 	if existing {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM workspace_repositories WHERE workspace_id=?`, w.ID); err != nil {
-			return 0, err
+			return w, 0, err
 		}
 	}
 	for i, r := range w.Repositories {
-		_, err = tx.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET main_worktree_path=excluded.main_worktree_path,common_git_dir=excluded.common_git_dir,default_branch=excluded.default_branch,last_seen_at=excluded.last_seen_at`, r.ID, r.MainPath, r.CommonDir, r.DefaultBranch, t, t)
+		_, err = tx.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET main_worktree_path=excluded.main_worktree_path,common_git_dir=excluded.common_git_dir,default_branch=excluded.default_branch,remote_name=CASE WHEN excluded.remote_name<>'' THEN excluded.remote_name ELSE repositories.remote_name END,last_seen_at=excluded.last_seen_at`, r.ID, r.MainPath, r.CommonDir, r.DefaultBranch, r.RemoteName, t, t)
 		if err != nil {
-			return 0, err
+			return w, 0, err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES(?,?,?,?) ON CONFLICT(workspace_id,repository_id) DO UPDATE SET relative_path=excluded.relative_path,ordinal=excluded.ordinal`, w.ID, r.ID, r.RelativePath, i)
 		if err != nil {
-			return 0, err
+			return w, 0, err
 		}
 	}
 	if changed {
 		if _, err := tx.ExecContext(ctx, `UPDATE slots SET state='STALE',updated_at=? WHERE workspace_id=? AND generation<? AND owner_session_id IS NULL AND state IN ('PREPARING','READY')`, t, w.ID, generation); err != nil {
-			return 0, err
+			return w, 0, err
 		}
 	}
-	return generation, tx.Commit()
+	return w, generation, tx.Commit()
 }
 
 func (s *Store) WorkspaceGeneration(ctx context.Context, workspaceID string) (int, error) {
@@ -381,14 +584,24 @@ func (s *Store) WorkspaceGeneration(ctx context.Context, workspaceID string) (in
 	return generation, err
 }
 
+// Slot locates a slot directory as a root generation plus a root-relative
+// path. Path is derived: reads compose it from roots.path, and writes ignore
+// it in favour of RootID/RelPath. Do not confuse it with daemon.Lease.Path,
+// which for a single-repository workspace is the repository directory one
+// level below the slot directory.
 type Slot struct {
-	ID, WorkspaceID, Path, State, OwnerSessionID, FailureCode string
-	Generation                                                int
-	CreatedAt, ReadyAt                                        string
+	ID, WorkspaceID, RootID, RelPath, Path, State, OwnerSessionID, FailureCode string
+	DirIdentity                                                                string
+	Generation                                                                 int
+	CreatedAt, ReadyAt                                                         string
 }
 type (
-	SlotRepository struct{ RepositoryID, WorktreePath, State, RequestedRef, BaseOID, Fingerprint string }
-	Session        struct {
+	// SlotRepository locates a repository worktree as a directory name
+	// inside its slot. WorktreePath is derived the same way Slot.Path is.
+	SlotRepository struct {
+		RepositoryID, DirName, DirIdentity, WorktreePath, State, RequestedRef, BaseOID, Fingerprint string
+	}
+	Session struct {
 		ID, WorkspaceID, SlotID, ParentSessionID, State, AgentKind, AgentSessionID, CreatedAt, ReleasedAt, ArchivedAt, ExpiresAt string
 		TokenHash                                                                                                                []byte
 		ClientPID, AgentPID                                                                                                      int
@@ -403,8 +616,10 @@ type (
 		Ref, OID, SessionID, SessionState string
 		InFlight                          bool
 	}
+	// WorkspaceSnapshot locates a bundle archive the same way Slot does:
+	// RootID/RelPath are authoritative and ArchivePath is derived.
 	WorkspaceSnapshot struct {
-		SessionID, ArchivePath, SHA256, Status, CreatedAt, ExpiresAt string
+		SessionID, RootID, RelPath, ArchivePath, SHA256, Status, CreatedAt, ExpiresAt string
 	}
 	Job struct {
 		ID, Kind, WorkspaceID, SlotID, SessionID, RepositoryID, State string
@@ -663,9 +878,32 @@ func (s *Store) EnsureRecoveryJobs(ctx context.Context) ([]Job, error) {
 	return candidates, nil
 }
 
-func (s *Store) ReadySlot(ctx context.Context, workspaceID string) (Slot, bool, error) {
+// slotColumns is the column list shared by every full-row slot read. The
+// absolute Slot.Path is not stored; scanSlot composes it from the joined
+// root generation so a retired root keeps resolving its own slots.
+const slotColumns = `sl.id,COALESCE(sl.workspace_id,''),sl.generation,sl.root_id,rt.path,sl.rel_path,COALESCE(sl.dir_identity,''),sl.state,COALESCE(sl.owner_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.failure_code,'')`
+
+// slotFrom is the FROM clause slotColumns requires.
+const slotFrom = ` FROM slots sl JOIN roots rt ON rt.id=sl.root_id`
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows, so single-row and
+// multi-row slot reads share one scan implementation.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSlot(row rowScanner) (Slot, error) {
 	var x Slot
-	err := s.db.QueryRowContext(ctx, `SELECT sl.id,sl.workspace_id,sl.generation,sl.path,sl.state,COALESCE(sl.owner_session_id,''),sl.created_at,COALESCE(sl.ready_at,'') FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='READY' ORDER BY sl.ready_at LIMIT 1`, workspaceID).Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.Path, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt)
+	var rootPath string
+	if err := row.Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.RootID, &rootPath, &x.RelPath, &x.DirIdentity, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt, &x.FailureCode); err != nil {
+		return Slot{}, err
+	}
+	x.Path = filepath.Join(rootPath, x.RelPath)
+	return x, nil
+}
+
+func (s *Store) ReadySlot(ctx context.Context, workspaceID string) (Slot, bool, error) {
+	x, err := scanSlot(s.db.QueryRowContext(ctx, `SELECT `+slotColumns+slotFrom+` JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='READY' ORDER BY sl.ready_at LIMIT 1`, workspaceID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Slot{}, false, nil
 	}
@@ -673,15 +911,15 @@ func (s *Store) ReadySlot(ctx context.Context, workspaceID string) (Slot, bool, 
 }
 
 func (s *Store) ReadySlots(ctx context.Context, workspaceID string) ([]Slot, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,workspace_id,generation,path,state,COALESCE(owner_session_id,''),created_at,COALESCE(ready_at,'') FROM slots WHERE workspace_id=? AND state='READY' AND owner_session_id IS NULL ORDER BY ready_at,id`, workspaceID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+slotColumns+slotFrom+` WHERE sl.workspace_id=? AND sl.state='READY' AND sl.owner_session_id IS NULL ORDER BY sl.ready_at,sl.id`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var slots []Slot
 	for rows.Next() {
-		var slot Slot
-		if err := rows.Scan(&slot.ID, &slot.WorkspaceID, &slot.Generation, &slot.Path, &slot.State, &slot.OwnerSessionID, &slot.CreatedAt, &slot.ReadyAt); err != nil {
+		slot, err := scanSlot(rows)
+		if err != nil {
 			return nil, err
 		}
 		slots = append(slots, slot)
@@ -715,12 +953,12 @@ func (s *Store) CreateSlotSession(ctx context.Context, slot Slot, repos []SlotRe
 	}
 	defer tx.Rollback()
 	t := now()
-	_, err = tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,path,state,owner_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, slot.ID, nullString(slot.WorkspaceID), slot.Generation, slot.Path, slot.State, nullString(session.ID), t, t)
+	_, err = tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,owner_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, slot.ID, nullString(slot.WorkspaceID), slot.Generation, slot.RootID, slot.RelPath, nullString(slot.DirIdentity), slot.State, nullString(session.ID), t, t)
 	if err != nil {
 		return Job{}, err
 	}
 	for _, r := range repos {
-		_, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.WorktreePath, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint)
+		_, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint)
 		if err != nil {
 			return Job{}, err
 		}
@@ -764,12 +1002,12 @@ func (s *Store) CreateStandby(ctx context.Context, slot Slot, repos []SlotReposi
 	}
 	defer tx.Rollback()
 	t := now()
-	_, err = tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,path,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, slot.ID, slot.WorkspaceID, slot.Generation, slot.Path, slot.State, t, t)
+	_, err = tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, slot.ID, slot.WorkspaceID, slot.Generation, slot.RootID, slot.RelPath, nullString(slot.DirIdentity), slot.State, t, t)
 	if err != nil {
 		return Job{}, err
 	}
 	for _, r := range repos {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.WorktreePath, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
 			return Job{}, err
 		}
 	}
@@ -1135,7 +1373,7 @@ func (s *Store) BindFreshResumeSlot(ctx context.Context, sessionID, parentSessio
 		return Job{}, errors.New("fresh resume slot is no longer UNBOUND")
 	}
 	for _, repository := range repos {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, sessionID, repository.RepositoryID, repository.WorktreePath, "PREPARING", repository.RequestedRef, repository.BaseOID, repository.Fingerprint); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, sessionID, repository.RepositoryID, repository.DirName, "PREPARING", repository.RequestedRef, repository.BaseOID, repository.Fingerprint); err != nil {
 			return Job{}, err
 		}
 	}
@@ -1230,7 +1468,7 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, 
 		return Job{}, errors.New("resume slot is no longer UNBOUND")
 	}
 	for _, r := range repos {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, sessionID, r.RepositoryID, r.WorktreePath, "RESTORING", r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, sessionID, r.RepositoryID, r.DirName, "RESTORING", r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
 			return Job{}, err
 		}
 	}
@@ -1246,16 +1484,34 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, 
 	return job, tx.Commit()
 }
 
+// slotRepositoryColumns is shared by every slot-repository read.
+// SlotRepository.WorktreePath is composed from the joined root generation and
+// slot path rather than stored, so the same row keeps resolving after the
+// configured worktree root changes.
+const slotRepositoryColumns = `sr.repository_id,sr.dir_name,COALESCE(sr.dir_identity,''),rt.path,sl.rel_path,sr.state,sr.requested_ref,sr.base_oid,sr.prepare_fingerprint`
+
+const slotRepositoryFrom = ` FROM slot_repositories sr JOIN slots sl ON sl.id=sr.slot_id JOIN roots rt ON rt.id=sl.root_id`
+
+func scanSlotRepository(row rowScanner) (SlotRepository, error) {
+	var x SlotRepository
+	var rootPath, slotRel string
+	if err := row.Scan(&x.RepositoryID, &x.DirName, &x.DirIdentity, &rootPath, &slotRel, &x.State, &x.RequestedRef, &x.BaseOID, &x.Fingerprint); err != nil {
+		return SlotRepository{}, err
+	}
+	x.WorktreePath = filepath.Join(rootPath, slotRel, x.DirName)
+	return x, nil
+}
+
 func (s *Store) SlotRepositories(ctx context.Context, slotID string) ([]SlotRepository, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint FROM slot_repositories WHERE slot_id=? ORDER BY repository_id`, slotID)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+slotRepositoryColumns+slotRepositoryFrom+` WHERE sr.slot_id=? ORDER BY sr.repository_id`, slotID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []SlotRepository
 	for rows.Next() {
-		var x SlotRepository
-		if err := rows.Scan(&x.RepositoryID, &x.WorktreePath, &x.State, &x.RequestedRef, &x.BaseOID, &x.Fingerprint); err != nil {
+		x, err := scanSlotRepository(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, x)
@@ -1289,7 +1545,7 @@ func (s *Store) AddRestoringRepositories(ctx context.Context, slotID string, rep
 		return errors.New("resume repository metadata is incomplete")
 	}
 	for _, repo := range repos {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slotID, repo.RepositoryID, repo.WorktreePath, "RESTORING", repo.RequestedRef, repo.BaseOID, repo.Fingerprint); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slotID, repo.RepositoryID, repo.DirName, "RESTORING", repo.RequestedRef, repo.BaseOID, repo.Fingerprint); err != nil {
 			return err
 		}
 	}
@@ -1297,9 +1553,27 @@ func (s *Store) AddRestoringRepositories(ctx context.Context, slotID string, rep
 }
 
 func (s *Store) SlotRepository(ctx context.Context, slotID, repositoryID string) (SlotRepository, error) {
-	var x SlotRepository
-	err := s.db.QueryRowContext(ctx, `SELECT repository_id,worktree_path,state,requested_ref,base_oid,prepare_fingerprint FROM slot_repositories WHERE slot_id=? AND repository_id=?`, slotID, repositoryID).Scan(&x.RepositoryID, &x.WorktreePath, &x.State, &x.RequestedRef, &x.BaseOID, &x.Fingerprint)
-	return x, err
+	return scanSlotRepository(s.db.QueryRowContext(ctx, `SELECT `+slotRepositoryColumns+slotRepositoryFrom+` WHERE sr.slot_id=? AND sr.repository_id=?`, slotID, repositoryID))
+}
+
+// RecordSlotRepositoryIdentity stores the inode identity of a repository
+// worktree directory immediately after it is created. Ownership validation
+// compares this value, so a caller that can present an identity and finds no
+// record fails closed rather than falling back to a path comparison.
+func (s *Store) RecordSlotRepositoryIdentity(ctx context.Context, slotID, repositoryID, identity string) error {
+	if identity == "" {
+		return errors.New("slot repository directory identity is required")
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE slot_repositories SET dir_identity=? WHERE slot_id=? AND repository_id=?`, identity, slotID, repositoryID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("slot repository %s/%s is not registered", slotID, repositoryID)
+	}
+	return nil
 }
 
 func (s *Store) SetSlotRepositoryState(ctx context.Context, slotID, repositoryID string, from []string, to string) error {
@@ -1317,9 +1591,7 @@ func (s *Store) SetSlotRepositoryState(ctx context.Context, slotID, repositoryID
 }
 
 func (s *Store) Slot(ctx context.Context, id string) (Slot, error) {
-	var x Slot
-	err := s.db.QueryRowContext(ctx, `SELECT id,COALESCE(workspace_id,''),generation,path,state,COALESCE(owner_session_id,''),created_at,COALESCE(ready_at,''),COALESCE(failure_code,'') FROM slots WHERE id=?`, id).Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.Path, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt, &x.FailureCode)
-	return x, err
+	return scanSlot(s.db.QueryRowContext(ctx, `SELECT `+slotColumns+slotFrom+` WHERE sl.id=?`, id))
 }
 
 // SaveSnapshot records a repository's recovery snapshot, or verifies that a
@@ -1369,12 +1641,12 @@ func (s *Store) SaveWorkspaceSnapshot(ctx context.Context, x WorkspaceSnapshot) 
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	var ok int
-	err := s.db.QueryRowContext(ctx, `INSERT INTO workspace_snapshots(session_id,archive_path,sha256,status,created_at,expires_at) VALUES(?,?,?,?,?,?)
+	err := s.db.QueryRowContext(ctx, `INSERT INTO workspace_snapshots(session_id,root_id,rel_path,sha256,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?)
 		ON CONFLICT(session_id) DO UPDATE SET status=excluded.status
-		WHERE workspace_snapshots.archive_path=excluded.archive_path AND workspace_snapshots.sha256=excluded.sha256
+		WHERE workspace_snapshots.root_id=excluded.root_id AND workspace_snapshots.rel_path=excluded.rel_path AND workspace_snapshots.sha256=excluded.sha256
 		  AND workspace_snapshots.status=excluded.status AND workspace_snapshots.expires_at=excluded.expires_at
 		RETURNING 1`,
-		x.SessionID, x.ArchivePath, x.SHA256, x.Status, x.CreatedAt, x.ExpiresAt).Scan(&ok)
+		x.SessionID, x.RootID, x.RelPath, x.SHA256, x.Status, x.CreatedAt, x.ExpiresAt).Scan(&ok)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("workspace snapshot metadata conflicts with an existing recovery snapshot")
 	}
@@ -1383,16 +1655,18 @@ func (s *Store) SaveWorkspaceSnapshot(ctx context.Context, x WorkspaceSnapshot) 
 
 func (s *Store) WorkspaceSnapshot(ctx context.Context, sessionID string) (WorkspaceSnapshot, bool, error) {
 	var x WorkspaceSnapshot
-	err := s.db.QueryRowContext(ctx, `SELECT session_id,archive_path,sha256,status,created_at,expires_at FROM workspace_snapshots WHERE session_id=?`, sessionID).Scan(&x.SessionID, &x.ArchivePath, &x.SHA256, &x.Status, &x.CreatedAt, &x.ExpiresAt)
+	var rootPath string
+	err := s.db.QueryRowContext(ctx, `SELECT ws.session_id,ws.root_id,rt.path,ws.rel_path,ws.sha256,ws.status,ws.created_at,ws.expires_at FROM workspace_snapshots ws JOIN roots rt ON rt.id=ws.root_id WHERE ws.session_id=?`, sessionID).Scan(&x.SessionID, &x.RootID, &rootPath, &x.RelPath, &x.SHA256, &x.Status, &x.CreatedAt, &x.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkspaceSnapshot{}, false, nil
 	}
+	x.ArchivePath = filepath.Join(rootPath, x.RelPath)
 	return x, err == nil, err
 }
 
 func (s *Store) Repository(ctx context.Context, id string) (discovery.Repository, error) {
 	var r discovery.Repository
-	err := s.db.QueryRowContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch FROM repositories WHERE id=?`, id).Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.DefaultBranch)
+	err := s.db.QueryRowContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch,remote_name FROM repositories WHERE id=?`, id).Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.DefaultBranch, &r.RemoteName)
 	return r, err
 }
 
@@ -1402,14 +1676,14 @@ func (s *Store) Workspace(ctx context.Context, id string) (discovery.Workspace, 
 	if err != nil {
 		return w, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,wr.relative_path,r.default_branch FROM workspace_repositories wr JOIN repositories r ON r.id=wr.repository_id WHERE wr.workspace_id=? ORDER BY wr.ordinal`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,wr.relative_path,r.default_branch,r.remote_name FROM workspace_repositories wr JOIN repositories r ON r.id=wr.repository_id WHERE wr.workspace_id=? ORDER BY wr.ordinal`, id)
 	if err != nil {
 		return w, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var r discovery.Repository
-		if err := rows.Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.RelativePath, &r.DefaultBranch); err != nil {
+		if err := rows.Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.RelativePath, &r.DefaultBranch, &r.RemoteName); err != nil {
 			return w, err
 		}
 		w.Repositories = append(w.Repositories, r)
@@ -1451,14 +1725,14 @@ func (s *Store) SessionWorkspace(ctx context.Context, sessionID string) (discove
 	if err != nil {
 		return w, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,sr.relative_path,r.default_branch FROM session_repositories sr JOIN repositories r ON r.id=sr.repository_id WHERE sr.session_id=? ORDER BY sr.ordinal`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,sr.relative_path,r.default_branch,r.remote_name FROM session_repositories sr JOIN repositories r ON r.id=sr.repository_id WHERE sr.session_id=? ORDER BY sr.ordinal`, sessionID)
 	if err != nil {
 		return w, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var r discovery.Repository
-		if err := rows.Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.RelativePath, &r.DefaultBranch); err != nil {
+		if err := rows.Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.RelativePath, &r.DefaultBranch, &r.RemoteName); err != nil {
 			return w, err
 		}
 		w.Repositories = append(w.Repositories, r)
@@ -1717,7 +1991,7 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*),COALESCE(MIN(expires_at),'') FROM snapshots WHERE status='ARCHIVED'`).Scan(&out.Snapshots.Count, &out.Snapshots.EarliestExpiry); err != nil {
 		return out, err
 	}
-	quarantineRows, err := s.db.QueryContext(ctx, `SELECT id,path,COALESCE(failure_code,'') FROM slots WHERE state='QUARANTINED' UNION ALL SELECT '',path,reason FROM quarantined_artifacts ORDER BY path`)
+	quarantineRows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path||'/'||sl.rel_path,COALESCE(sl.failure_code,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id WHERE sl.state='QUARANTINED' UNION ALL SELECT '',path,reason FROM quarantined_artifacts ORDER BY 2`)
 	if err != nil {
 		return out, err
 	}
@@ -1865,7 +2139,7 @@ type GCCandidate struct{ SlotID, SessionID, Path string }
 type SlotArtifact struct{ ID, Path, State string }
 
 func (s *Store) SlotArtifacts(ctx context.Context) ([]SlotArtifact, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,path,state FROM slots ORDER BY path`)
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path||'/'||sl.rel_path,sl.state FROM slots sl JOIN roots rt ON rt.id=sl.root_id ORDER BY 2`)
 	if err != nil {
 		return nil, err
 	}
@@ -1934,7 +2208,7 @@ func (s *Store) QuarantineMissingRecoveryRef(ctx context.Context, ref string) er
 }
 
 func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch FROM repositories ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch,remote_name FROM repositories ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1942,7 +2216,7 @@ func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error
 	var repositories []discovery.Repository
 	for rows.Next() {
 		var repository discovery.Repository
-		if err := rows.Scan(&repository.ID, &repository.MainPath, &repository.CommonDir, &repository.DefaultBranch); err != nil {
+		if err := rows.Scan(&repository.ID, &repository.MainPath, &repository.CommonDir, &repository.DefaultBranch, &repository.RemoteName); err != nil {
 			return nil, err
 		}
 		repositories = append(repositories, repository)
@@ -2022,7 +2296,7 @@ func (s *Store) HotRepositoryIDs(ctx context.Context, hotBefore string) (map[str
 type ColdRepositoryCandidate struct{ SlotID, WorkspaceID, RepositoryID, WorktreePath string }
 
 func (s *Store) ColdRepositoryCandidates(ctx context.Context, hotBefore string) ([]ColdRepositoryCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sr.repository_id,sr.worktree_path FROM slots sl JOIN slot_repositories sr ON sr.slot_id=sl.id JOIN repositories r ON r.id=sr.repository_id WHERE sl.owner_session_id IS NULL AND sl.state='READY' AND sr.state='READY' AND (r.last_leased_at IS NULL OR r.last_leased_at<=?) ORDER BY sl.id,sr.repository_id`, hotBefore)
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sr.repository_id,rt.path||'/'||sl.rel_path||'/'||sr.dir_name FROM slots sl JOIN roots rt ON rt.id=sl.root_id JOIN slot_repositories sr ON sr.slot_id=sl.id JOIN repositories r ON r.id=sr.repository_id WHERE sl.owner_session_id IS NULL AND sl.state='READY' AND sr.state='READY' AND (r.last_leased_at IS NULL OR r.last_leased_at<=?) ORDER BY sl.id,sr.repository_id`, hotBefore)
 	if err != nil {
 		return nil, err
 	}
@@ -2091,7 +2365,7 @@ func (s *Store) FinishColdRepositoryRemoval(ctx context.Context, slotID, reposit
 }
 
 func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm int) ([]StandbyGCCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sl.path,sl.state,COALESCE(sl.ready_at,sl.created_at) FROM slots sl WHERE sl.owner_session_id IS NULL AND sl.state IN ('READY','STALE') ORDER BY sl.workspace_id,COALESCE(sl.ready_at,sl.created_at) DESC,sl.id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,rt.path||'/'||sl.rel_path,sl.state,COALESCE(sl.ready_at,sl.created_at) FROM slots sl JOIN roots rt ON rt.id=sl.root_id WHERE sl.owner_session_id IS NULL AND sl.state IN ('READY','STALE') ORDER BY sl.workspace_id,COALESCE(sl.ready_at,sl.created_at) DESC,sl.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -2202,14 +2476,6 @@ func (s *Store) ScheduleFailedSlotRemoval(ctx context.Context, slotID string) (J
 	return job, true, tx.Commit()
 }
 
-func (s *Store) DrainRoot(ctx context.Context, root string) error {
-	s.writer.Lock()
-	defer s.writer.Unlock()
-	prefix := strings.TrimSuffix(filepath.Clean(root), string(filepath.Separator)) + string(filepath.Separator) + "%"
-	_, err := s.db.ExecContext(ctx, `UPDATE slots SET state='STALE',failure_code='CONFIG_ROOT_RETIRED',updated_at=? WHERE owner_session_id IS NULL AND path LIKE ? ESCAPE '\' AND state IN ('PREPARING','READY')`, now(), prefix)
-	return err
-}
-
 func (s *Store) ExpiredSnapshots(ctx context.Context, before string) ([]Snapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sn.id,sn.session_id,sn.repository_id,sn.head_oid,sn.head_recovery_ref,sn.index_tree_oid,sn.index_recovery_ref,sn.worktree_snapshot_oid,sn.worktree_recovery_ref,sn.status,sn.created_at,sn.expires_at FROM snapshots sn JOIN sessions se ON se.id=sn.session_id JOIN slots sl ON sl.id=se.slot_id WHERE se.state='ARCHIVED' AND sl.state='ARCHIVED' AND sn.status='ARCHIVED' AND sn.expires_at<=? AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING')) ORDER BY sn.session_id,sn.repository_id`, before)
 	if err != nil {
@@ -2307,7 +2573,7 @@ func (s *Store) PruneMetadata(ctx context.Context, failedBefore, eventBefore, to
 }
 
 func (s *Store) GCCandidates(ctx context.Context, before string) ([]GCCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,se.id,sl.path FROM slots sl JOIN sessions se ON se.slot_id=sl.id WHERE sl.state='SNAPSHOTTED' AND se.archived_at<=?`, before)
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,se.id,rt.path||'/'||sl.rel_path FROM slots sl JOIN roots rt ON rt.id=sl.root_id JOIN sessions se ON se.slot_id=sl.id WHERE sl.state='SNAPSHOTTED' AND se.archived_at<=?`, before)
 	if err != nil {
 		return nil, err
 	}

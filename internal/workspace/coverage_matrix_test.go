@@ -67,14 +67,14 @@ func TestWorktreeOwnershipValidationCoversPhysicalAndGitBoundaries(t *testing.T)
 		t.Fatal("foreign Git common directory accepted")
 	}
 
-	marker := filepath.Join(filepath.Dir(target), ownershipMarkerNameForTarget(target))
+	marker := filepath.Join(filepath.Dir(target), ownershipMarkerPrefix+string(repo.ID))
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
 	if err := preparer.ValidateOwnership(ctx, repo, target, head); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing marker error=%v", err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "slot", string(repo.CommonDir)); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, preparer.markerIdentity(repo, "slot"), string(repo.CommonDir)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(target, ".git")); err != nil {
@@ -216,7 +216,7 @@ func TestPhysicalManifestAndMarkerRemovalBoundaries(t *testing.T) {
 		t.Fatal("symlink manifest was accepted")
 	}
 
-	target := filepath.Join(root, "workspaces", "w", "slots", "s", "root")
+	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -224,16 +224,16 @@ func TestPhysicalManifestAndMarkerRemovalBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, "s", root); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, target, markerFor("s"), root); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeOwnershipMarkerAt(owner, root, target); err != nil {
+	if err := removeOwnershipMarkerAt(owner, root, target, testRepositoryID); err != nil {
 		t.Fatal(err)
 	}
-	if err := removeOwnershipMarkerAt(owner, root, target); err != nil {
+	if err := removeOwnershipMarkerAt(owner, root, target, testRepositoryID); err != nil {
 		t.Fatalf("idempotent marker removal: %v", err)
 	}
-	if err := removeOwnershipMarkerAt(nil, root, target); err == nil {
+	if err := removeOwnershipMarkerAt(nil, root, target, testRepositoryID); err == nil {
 		t.Fatal("nil marker removal root was accepted")
 	}
 	if err := owner.Close(); err != nil {

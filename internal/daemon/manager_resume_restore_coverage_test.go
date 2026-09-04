@@ -22,14 +22,14 @@ func TestResumeRestoreJobQuarantinesWhenParentSnapshotJobFailed(t *testing.T) {
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	parentID := domain.StableID("resume-restore", "parent-failed")
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: parentID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: filepath.Join(t.TempDir(), "parent"), State: "FAILED"},
+		testSlot(t, manager, string(workspaceRecord.ID), parentID, 1, "FAILED"),
 		nil,
 		state.Session{ID: parentID, WorkspaceID: string(workspaceRecord.ID), SlotID: parentID, State: "RELEASING", AgentKind: "codex", TokenHash: state.HashToken(parentID)}, ""); err != nil {
 		t.Fatal(err)
 	}
 	childID := domain.StableID("resume-restore", "child-of-failed-parent")
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: childID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: filepath.Join(t.TempDir(), "child"), State: "RESTORING"},
+		testSlot(t, manager, string(workspaceRecord.ID), childID, 1, "RESTORING"),
 		nil,
 		state.Session{ID: childID, WorkspaceID: string(workspaceRecord.ID), SlotID: childID, ParentSessionID: parentID, State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken(childID)}, ""); err != nil {
 		t.Fatal(err)
@@ -67,19 +67,18 @@ func TestResumeRestoreJobQuarantinesOnIncompleteRepositorySnapshotSet(t *testing
 		{ID: "repository-1", MainPath: discoveryPath(filepath.Join(root, "repository-1")), CommonDir: discoveryPath(filepath.Join(root, "repository-1", ".git")), RelativePath: "repository-1", DefaultBranch: "main"},
 		{ID: "repository-2", MainPath: discoveryPath(filepath.Join(root, "repository-2")), CommonDir: discoveryPath(filepath.Join(root, "repository-2", ".git")), RelativePath: "repository-2", DefaultBranch: "main"},
 	}}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
+	workspaceID := string(w.ID)
 
 	parentID := "parent-incomplete"
 	parentRepos := []state.SlotRepository{
-		{RepositoryID: "repository-1", WorktreePath: filepath.Join(cfg.Storage.WorktreeRoot, parentID, "repository-1"), State: "ARCHIVED"},
-		{RepositoryID: "repository-2", WorktreePath: filepath.Join(cfg.Storage.WorktreeRoot, parentID, "repository-2"), State: "ARCHIVED"},
+		{RepositoryID: "repository-1", DirName: "repository-1", State: "ARCHIVED"},
+		{RepositoryID: "repository-2", DirName: "repository-2", State: "ARCHIVED"},
 	}
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: parentID, WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, parentID), State: "ARCHIVED"},
+		slotAtPath(t, m, workspaceID, parentID, filepath.Join(cfg.Storage.WorktreeRoot, parentID), 1, "ARCHIVED"),
 		parentRepos,
-		state.Session{ID: parentID, WorkspaceID: "workspace", SlotID: parentID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(parentID)}, ""); err != nil {
+		state.Session{ID: parentID, WorkspaceID: workspaceID, SlotID: parentID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(parentID)}, ""); err != nil {
 		t.Fatal(err)
 	}
 	expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
@@ -89,9 +88,9 @@ func TestResumeRestoreJobQuarantinesOnIncompleteRepositorySnapshotSet(t *testing
 
 	childID := "child-incomplete"
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: childID, WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, childID), State: "RESTORING"},
+		slotAtPath(t, m, workspaceID, childID, filepath.Join(cfg.Storage.WorktreeRoot, childID), 1, "RESTORING"),
 		nil,
-		state.Session{ID: childID, WorkspaceID: "workspace", SlotID: childID, ParentSessionID: parentID, State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken(childID)}, ""); err != nil {
+		state.Session{ID: childID, WorkspaceID: workspaceID, SlotID: childID, ParentSessionID: parentID, State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken(childID)}, ""); err != nil {
 		t.Fatal(err)
 	}
 

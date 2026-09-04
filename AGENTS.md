@@ -22,6 +22,10 @@
 - **パス名ではなくdescriptorを信頼する。**
   rootのpin（`os.Root`・`domain.OpenOwnedRoot`）、全path成分のsymlink拒否（`domain.PhysicalPathInfo`）、子プロセスCWDのfchdir束縛（`internal/fdexec`）が揃って初めてTOCTOUが閉じる。
   「descriptorが無ければパス名で代替する」フォールバックを足さない。
+- **worktree rootの世代をpathで表さない。**
+  slotの位置は`roots.id` + root相対pathで、所有権証明はそれとinode identityで行う。
+  path文字列の一致比較を戻さない。
+  `storage.worktree_root`を変えても既存slotは旧root配下で寿命を全うする（実体を移動しない・STALEにしない）。
 - **貸出中のslotのworktreeを書き換えない。**
   `--branch`指定やmain更新でOIDが一致しないときは、非同期にrefreshせずcold startで作り直す。
   貸出中に書き換える経路は、未スナップショット保護と所有権の境界を壊す。
@@ -37,6 +41,10 @@ Go側に状態のenum型や遷移ガードを作らない。
 
 `migrations/*.sql`は名前順に並べた添字を版番号とし、`PRAGMA user_version`より新しいものだけを適用する。
 適用済みDBには既存ファイルの編集が反映されないので、スキーマ変更は必ず次の番号のファイルを追加する。
+配布前の一度きりの例外として、worktreeレイアウト刷新（`roots`テーブルの導入、`slots.path`と`slot_repositories.worktree_path`の削除）では`001_initial.sql`を書き換えた。
+旧レイアウトとの互換を持たない前提で、002を足すと旧レイアウト由来の列を引きずるだけになるためである。
+既存の`state.db`は作り直す必要があり、移行コードは持たない。
+この例外を再利用しないこと。以後のスキーマ変更は次の番号のファイルを追加する。
 `state.SchemaVersion`はその本数と一致させる。
 この一致を検査するテストもCI checkも無いので、手で揃える。
 `state.JSONSchemaVersion`は`--json`出力の形状に対する別の契約である。

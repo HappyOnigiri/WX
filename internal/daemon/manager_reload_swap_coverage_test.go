@@ -32,7 +32,7 @@ func TestReloadConfigDetectsSwappedUnchangedWorktreeRoot(t *testing.T) {
 
 	// Populate a cached, referenced descriptor for the configured root so
 	// reload has something to compare the freshly reopened directory against.
-	if _, err := m.createSlotRoot(filepath.Join(worktreeRoot, "bootstrap", "root")); err != nil {
+	if _, _, err := m.createSlotRoot(filepath.Join(worktreeRoot, "bootstrap", "root"), filepath.Join(worktreeRoot, "bootstrap", "root")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -102,7 +102,7 @@ func TestReloadConfigIsIdempotentForAnUnchangedWorktreeRoot(t *testing.T) {
 	if err := m.reloadConfig(false); err != nil {
 		t.Fatalf("second reload of unchanged root: %v", err)
 	}
-	if _, err := m.createSlotRoot(filepath.Join(worktreeRoot, "after-reload", "root")); err != nil {
+	if _, _, err := m.createSlotRoot(filepath.Join(worktreeRoot, "after-reload", "root"), filepath.Join(worktreeRoot, "after-reload", "root")); err != nil {
 		t.Fatalf("worktree root unusable after repeated reload: %v", err)
 	}
 }

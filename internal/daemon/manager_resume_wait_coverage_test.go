@@ -17,26 +17,66 @@ import (
 )
 
 // TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot verifies that a
-// recorded repository worktree path pointing outside the owning wx root is
-// rejected as an ownership failure instead of being handed to
+// repository directory name that escapes the wx root is rejected as an
+// ownership failure instead of being handed to
 // archiveManager.RemoveWorktree, which could otherwise be pointed at an
 // arbitrary filesystem path.
+//
+// slot_repositories.dir_name is plain text, so a corrupted or forged row can
+// still spell a traversal even though every name wx writes is a single
+// component. The derived worktree path is what removal checks.
 func TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	slotID := domain.StableID("remove-slot", "outside-repo")
-	slotPath := filepath.Join(root, "remove-slot", slotID, "root")
-	if _, err := manager.createSlotRoot(slotPath); err != nil {
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "REMOVING")
+	// The slot is two levels below the root, so three levels of traversal
+	// leave the root entirely.
+	escaping := filepath.Join("..", "..", "..", "outside-repo")
+	if _, err := store.CreateStandby(ctx, slot,
+		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: escaping, State: "REMOVING", BaseOID: resolved[0].OID}}); err != nil {
 		t.Fatal(err)
 	}
-	outside := filepath.Join(t.TempDir(), "outside-repo")
-	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: slotID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: slotPath, State: "REMOVING"},
-		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: outside, State: "REMOVING", BaseOID: resolved[0].OID}}); err != nil {
+	stored, err := store.SlotRepository(ctx, slotID, string(resolved[0].Repository.ID))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slotID, "", slotPath); !errors.Is(err, state.ErrOwnership) {
+	if domain.IsWithin(root, stored.WorktreePath) {
+		t.Fatalf("derived worktree path %s did not escape root %s; the case under test no longer applies", stored.WorktreePath, root)
+	}
+	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slot, ""); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("repository outside root error=%v", err)
+	}
+}
+
+// TestRemoveSlotWorktreesRejectsReplacedSlotDirectory proves that the last
+// proof before the destructive RemoveAll presents the identity of the
+// directory on disk. A slot directory that was deleted and recreated under
+// the same name keeps its root generation and root-relative path, so only the
+// inode comparison can tell it apart from the one SQLite recorded.
+func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	root := manager.Config().Storage.WorktreeRoot
+	slotID := domain.StableID("remove-slot", "replaced-directory")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "REMOVING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Removing and recreating the directory under the same name is exactly
+	// the substitution the identity is there to catch.
+	if err := os.Remove(slot.Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(slot.Path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slot, ""); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replaced slot directory error=%v, want an ownership failure", err)
+	}
+	// Fail closed means the replacement is left on disk rather than deleted
+	// as though it were wx's.
+	if _, err := os.Lstat(slot.Path); err != nil {
+		t.Fatalf("replaced slot directory was removed despite the failed proof: %v", err)
 	}
 }
 
@@ -45,12 +85,7 @@ func TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot(t *testing.T) {
 // non-expired repository snapshot, it returns without waiting out the
 // readiness timeout.
 func TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable(t *testing.T) {
-	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
-	workspaceRecord.Kind = "repository"
-	workspaceRecord.Repositories[0].RelativePath = "."
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
-		t.Fatal(err)
-	}
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	repository := resolved[0].Repository
 	sessionID := domain.StableID("wait-snapshot", "archived-usable")
 	slotPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "wait-snapshot", sessionID, "root")
@@ -58,8 +93,8 @@ func TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable(t *testin
 		t.Fatal(err)
 	}
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: sessionID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: slotPath, State: "SNAPSHOTTED"},
-		[]state.SlotRepository{{RepositoryID: string(repository.ID), WorktreePath: slotPath, State: "ARCHIVED", BaseOID: resolved[0].OID}},
+		slotAtPath(t, manager, string(workspaceRecord.ID), sessionID, slotPath, 1, "SNAPSHOTTED"),
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: testDirName(repository, manager.Config()), State: "ARCHIVED", BaseOID: resolved[0].OID}},
 		state.Session{ID: sessionID, WorkspaceID: string(workspaceRecord.ID), SlotID: sessionID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(sessionID)}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +130,7 @@ func TestResumeWaitsForInFlightSnapshotBeforeEvaluatingRecovery(t *testing.T) {
 	ctx := context.Background()
 	sessionID := "snapshotting"
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: sessionID, Path: filepath.Join(cfg.Storage.WorktreeRoot, sessionID), State: "SNAPSHOTTING"},
+		slotAtPath(t, manager, "", sessionID, filepath.Join(cfg.Storage.WorktreeRoot, sessionID), 0, "SNAPSHOTTING"),
 		nil,
 		state.Session{ID: sessionID, SlotID: sessionID, State: "SNAPSHOTTING", AgentKind: "codex", TokenHash: state.HashToken(sessionID)}, ""); err != nil {
 		t.Fatal(err)
@@ -126,18 +161,16 @@ func TestResumeReportsIncompleteRecoverySnapshotAcrossRepositories(t *testing.T)
 		{ID: "repository-1", MainPath: discoveryPath(filepath.Join(root, "repository-1")), CommonDir: discoveryPath(filepath.Join(root, "repository-1", ".git")), RelativePath: "repository-1", DefaultBranch: "main"},
 		{ID: "repository-2", MainPath: discoveryPath(filepath.Join(root, "repository-2")), CommonDir: discoveryPath(filepath.Join(root, "repository-2", ".git")), RelativePath: "repository-2", DefaultBranch: "main"},
 	}}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 	sessionRepos := []state.SlotRepository{
-		{RepositoryID: "repository-1", WorktreePath: filepath.Join(cfg.Storage.WorktreeRoot, "old", "repository-1"), State: "ARCHIVED"},
-		{RepositoryID: "repository-2", WorktreePath: filepath.Join(cfg.Storage.WorktreeRoot, "old", "repository-2"), State: "ARCHIVED"},
+		{RepositoryID: "repository-1", DirName: "repository-1", State: "ARCHIVED"},
+		{RepositoryID: "repository-2", DirName: "repository-2", State: "ARCHIVED"},
 	}
 	sessionID := "old-session"
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: sessionID, WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, "old"), State: "SNAPSHOTTED"},
+		slotAtPath(t, manager, string(w.ID), sessionID, filepath.Join(cfg.Storage.WorktreeRoot, "old"), 1, "SNAPSHOTTED"),
 		sessionRepos,
-		state.Session{ID: sessionID, WorkspaceID: "workspace", SlotID: sessionID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(sessionID)}, ""); err != nil {
+		state.Session{ID: sessionID, WorkspaceID: string(w.ID), SlotID: sessionID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(sessionID)}, ""); err != nil {
 		t.Fatal(err)
 	}
 	expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)

@@ -46,9 +46,7 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 	if len(w.Repositories) != 2 {
 		t.Fatalf("workspace repositories=%d, want 2", len(w.Repositories))
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 	resolved, err := resolveTestBranches(ctx, m, w)
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +55,7 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	slotPath := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(w.ID), "slots", sessionID, "root")
+	slotPath := filepath.Join(cfg.Storage.WorktreeRoot, string(w.ID), sessionID)
 	if err := os.MkdirAll(slotPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +64,7 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 		t.Fatal(err)
 	}
 	session := state.Session{ID: sessionID, WorkspaceID: string(w.ID), SlotID: sessionID, State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken("token")}
-	prepareJob, err := store.CreateSlotSession(ctx, state.Slot{ID: sessionID, WorkspaceID: string(w.ID), Generation: 1, Path: slotPath, State: "PREPARING"}, repos, session, "PREPARE")
+	prepareJob, err := store.CreateSlotSession(ctx, slotAtPath(t, m, string(w.ID), sessionID, slotPath, 1, "PREPARING"), repos, session, "PREPARE")
 	if err != nil {
 		t.Fatal(err)
 	}
