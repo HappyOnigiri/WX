@@ -55,9 +55,16 @@ func RepositoryDirName(repo discovery.Repository, cfg config.Config) string {
 }
 
 // sanitizeDirName rejects anything that cannot safely be one path component:
-// an empty value, a path separator, a control character, "." or "..", and the
-// reserved "_" prefix. Accepted names are truncated to
-// maxRepositoryDirNameLength.
+// an empty value, a path separator, a control character, "." or "..", the
+// reserved "_" prefix, and the ownership marker prefix. Accepted names are
+// truncated to maxRepositoryDirNameLength.
+//
+// The marker prefix has to be refused because the marker and the repository
+// directory share one namespace: the marker is written into the slot
+// directory, immediately beside the repository directories. A repository
+// named ".wx-owner-<repository-id>" would want the same path as a marker, so
+// preparation would fail outright, and in a bundle it could collide with
+// another repository's marker instead of its own.
 func sanitizeDirName(value string) (string, bool) {
 	if value == "" || value == "." || value == ".." {
 		return "", false
@@ -65,18 +72,37 @@ func sanitizeDirName(value string) (string, bool) {
 	if strings.ContainsAny(value, `/\`) || strings.HasPrefix(value, reservedDirNamePrefix) {
 		return "", false
 	}
+	if strings.HasPrefix(value, ownershipMarkerPrefix) {
+		return "", false
+	}
 	for _, r := range value {
 		if r == 0 || unicode.IsControl(r) {
 			return "", false
 		}
 	}
-	if len(value) > maxRepositoryDirNameLength {
-		value = value[:maxRepositoryDirNameLength]
-	}
+	value = truncateDirName(value)
 	if value != filepath.Clean(value) {
 		return "", false
 	}
 	return value, true
+}
+
+// truncateDirName cuts value to the byte budget on a rune boundary. Cutting
+// mid-rune would leave an invalid UTF-8 byte sequence in
+// slot_repositories.dir_name and in the directory name on disk, which the
+// checks after truncation do not inspect.
+func truncateDirName(value string) string {
+	if len(value) <= maxRepositoryDirNameLength {
+		return value
+	}
+	cut := 0
+	for index := range value {
+		if index > maxRepositoryDirNameLength {
+			break
+		}
+		cut = index
+	}
+	return value[:cut]
 }
 
 // UniqueDirName returns name, or name with a numeric suffix, so that no two

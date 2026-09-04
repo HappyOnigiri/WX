@@ -3,6 +3,7 @@ package workspace
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -70,7 +71,12 @@ func TestRepositoryDirNameFallsBackWhenSourcesAreUnusable(t *testing.T) {
 }
 
 func TestSanitizeDirNameRejectsUnusableComponents(t *testing.T) {
-	for _, value := range []string{"", ".", "..", "a/b", `a\b`, "_unbound", "with\x00null", "with\tcontrol"} {
+	for _, value := range []string{
+		"", ".", "..", "a/b", `a\b`, "_unbound", "with\x00null", "with\tcontrol",
+		// The ownership marker shares the slot directory with the repository
+		// directories, so a repository may not claim a marker's name.
+		OwnershipMarkerName("deadbeef"), ownershipMarkerPrefix, ownershipMarkerPrefix + "anything",
+	} {
 		if got, ok := sanitizeDirName(value); ok {
 			t.Fatalf("sanitizeDirName(%q)=%q was accepted", value, got)
 		}
@@ -86,6 +92,24 @@ func TestSanitizeDirNameRejectsUnusableComponents(t *testing.T) {
 	// Truncation must not be able to produce a value wx would refuse.
 	if _, ok := sanitizeDirName(got); !ok {
 		t.Fatalf("truncated name %q is not itself acceptable", got)
+	}
+	// A multi-byte name over the byte budget has to be cut on a rune
+	// boundary: the checks after truncation do not inspect UTF-8 validity, so
+	// a split rune would reach slot_repositories.dir_name and the directory
+	// name on disk as an invalid byte sequence.
+	multibyte := strings.Repeat("あ", maxRepositoryDirNameLength)
+	wide, ok := sanitizeDirName(multibyte)
+	if !ok || len(wide) > maxRepositoryDirNameLength {
+		t.Fatalf("truncated multibyte name=%q len=%d ok=%v", wide, len(wide), ok)
+	}
+	if !utf8.ValidString(wide) {
+		t.Fatalf("truncated multibyte name %q is not valid UTF-8", wide)
+	}
+	if wide != strings.Repeat("あ", len(wide)/len("あ")) {
+		t.Fatalf("truncated multibyte name %q lost or split a rune", wide)
+	}
+	if _, ok := sanitizeDirName(wide); !ok {
+		t.Fatalf("truncated multibyte name %q is not itself acceptable", wide)
 	}
 }
 
