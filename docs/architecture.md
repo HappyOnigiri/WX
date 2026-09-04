@@ -104,19 +104,22 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   独立した複数のRPCの列である以上、in-flightが0になった最初の瞬間は安全な
   瞬間ではないので、quiet periodを別に要求する。restartは`underLaunchd()`も
   要求する（手動起動のdaemonがkickstartすると二重起動になる）が、stopは
-  要求しない。この判定は`launchd_managed`として要求の応答にも載るので、CLIは
-  来ない置換を待たずに即座に断れる。要求は互いを打ち消し、同時に2つは
-  pendingにならない。ただし打ち消せるのはsignalに渡される前までで、渡した
-  後に届いた逆の要求は`conflict`として断る（配送済みのsignalは呼び戻せず、
-  受理したように答えると呼び出し側が来ない状態を待ち続ける）。
-  `wx daemon start`は起動済みのdaemonにも`RequestStart`を
-  送る。CLIが待ちきれずに諦めたstopはpendingのまま残るので、signalに
-  渡される前のstopはここで取り消す。渡された後は取り消せないため、CLIは
-  終了を待ってからlaunchd経由で起動し直す。ゲートを通過したら、restartは`launchd.Kickstart`、
-  stopは自プロセスへのSIGTERMを1度だけ発行する。
-  同期待ちするCLI側はsocketへのdial可否だけを見る
+  要求しない。この判定は`launchd_managed`として応答にも載るので、CLIは来ない
+  置換を待たずに断れる。要求は互いを打ち消し、同時に2つはpendingにならない。
+  ただし打ち消せるのはsignalに渡される前までで、渡した後に届いた逆の要求は
+  `conflict`として断る（配送済みのsignalは呼び戻せず、受理したように答えると
+  呼び出し側が来ない状態を待ち続ける）。`wx daemon start`は起動済みのdaemonにも
+  `RequestStart`を送る。CLIが待ちきれずに諦めたstopはpendingのまま残るので、
+  signalに渡される前ならここで取り消す。渡された後は取り消せないため、CLIは
+  終了を待ってからlaunchd経由で起動し直す。ゲートを通過したら、restartは
+  `launchd.Kickstart`、stopは自プロセスへのSIGTERMを1度だけ発行する。
+  同期待ちするCLI側は、stopとstartはsocketへのdial可否だけを見る
   （`Status`をpollingすると`lastRequestEnd`が更新され続けてゲートが永久に
-  開かない）。
+  開かない）。restartだけは、listenerの消失を観測した後と、待ち切れた後の
+  2箇所で`Status`のpidを読む。50msのプローブはkickstartが閉じて開き直す
+  数ミリ秒を丸ごと取りこぼしうるので、置換の判定は観測した断ではなくpidの
+  比較で行うためである。前者はkickstartが済んだ後なのでゲートに影響しないが、
+  後者は諦める直前の1回で、restartがまだpendingならquiet periodを押し出す。
 
 ## 所有権の証明
 
