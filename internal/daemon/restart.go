@@ -25,6 +25,12 @@ const restartKickstartTimeout = 10 * time.Second
 // inside a single user-visible operation.
 const restartQuietPeriod = 5 * time.Second
 
+// maxRestartAttempts bounds how many times a failing kickstart is retried
+// before the daemon stops asking. Each retry costs one launchctl invocation on
+// the 10s check, and a failure that survives this many attempts is not the
+// transient kind a retry fixes.
+const maxRestartAttempts = 3
+
 // executableSnapshot identifies the daemon's own binary. The inode alone would
 // miss an in-place overwrite (go build -o over a running binary keeps the
 // inode), and mtime plus size alone would miss a replacement that preserved
@@ -138,19 +144,36 @@ func (m *Manager) restartIfReplaced() {
 		m.mu.Unlock()
 		return
 	}
-	// Claim the restart before issuing it and never release the claim.
-	// cmd/wx's daemon serve stops honouring SIGTERM after the first one
-	// (signal.NotifyContext keeps the registration but the context is already
-	// cancelled), so repeating kickstart -k would only kill the replacement
-	// launchd just started.
+	// Claim the restart before issuing it. The claim is only permanent once
+	// launchd accepted the request: cmd/wx's daemon serve stops honouring
+	// SIGTERM after the first one (signal.NotifyContext keeps the registration
+	// but the context is already cancelled), so repeating kickstart -k after a
+	// successful one would only kill the replacement launchd just started.
 	m.restartRequested = true
 	m.mu.Unlock()
 	m.log.Info("restarting daemon after executable replacement", "path", path, "baseline_identity", baseline.identity)
 	ctx, cancel := context.WithTimeout(context.Background(), restartKickstartTimeout)
 	defer cancel()
-	if err := m.kickstartService(ctx); err != nil {
-		m.log.Error("daemon restart after executable replacement failed; restart wx daemon manually", "path", path, "error", err)
+	err = m.kickstartService(ctx)
+	if err == nil {
+		return
 	}
+	// A kickstart that failed never delivered a SIGTERM, so the reasoning above
+	// does not apply and this process is still running the replaced binary.
+	// Release the claim so the next tick retries, but give up after a bounded
+	// number of attempts rather than calling launchctl every 10 seconds for the
+	// rest of the daemon's life.
+	m.mu.Lock()
+	m.restartAttempts++
+	attempts := m.restartAttempts
+	exhausted := attempts >= maxRestartAttempts
+	m.restartRequested = exhausted
+	m.mu.Unlock()
+	if exhausted {
+		m.log.Error("daemon restart after executable replacement failed and will not be retried; restart wx daemon manually", "path", path, "attempts", attempts, "error", err)
+		return
+	}
+	m.log.Warn("daemon restart after executable replacement failed; retrying on the next check", "path", path, "attempts", attempts, "error", err)
 }
 
 // restartGateOpenLocked reports whether the daemon is idle enough to be

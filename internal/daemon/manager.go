@@ -93,6 +93,7 @@ type Manager struct {
 	executableWatch    bool
 	restartPending     bool
 	restartRequested   bool
+	restartAttempts    int
 	restartUnmanaged   bool
 	inflightRequests   int
 	// lastRequestEnd is the moment the in-flight count last reached zero. The

@@ -204,14 +204,30 @@ func TestRestartAccountingBracketsEveryHandledRequest(t *testing.T) {
 	}
 }
 
-func TestKickstartServiceFailureLeavesTheRestartClaimed(t *testing.T) {
+func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 	manager, executable, _ := restartFixture(t)
-	manager.kickstart = func(context.Context) error { return context.DeadlineExceeded }
+	attempts := 0
+	manager.kickstart = func(context.Context) error {
+		attempts++
+		return context.DeadlineExceeded
+	}
 	replaceExecutable(t, executable)
 	manager.detectExecutableReplacement()
+	// A kickstart that failed delivered no SIGTERM, so the daemon is still on
+	// the replaced binary and the claim has to come back for the next check.
 	manager.restartIfReplaced()
+	if manager.restartRequested {
+		t.Fatal("a failed kickstart kept the restart claimed")
+	}
+	for attempts < maxRestartAttempts {
+		manager.restartIfReplaced()
+	}
 	if !manager.restartRequested {
-		t.Fatal("a failed kickstart released the restart claim")
+		t.Fatalf("the claim was released after %d failed attempts", attempts)
+	}
+	manager.restartIfReplaced()
+	if attempts != maxRestartAttempts {
+		t.Fatalf("attempts=%d, want the retries to stop at %d", attempts, maxRestartAttempts)
 	}
 }
 
