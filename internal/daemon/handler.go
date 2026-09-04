@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -16,7 +17,17 @@ type Handler struct{ Manager *Manager }
 type DegradedHandler struct {
 	DatabasePath string
 	OpenError    error
+	// terminate is the test seam for the stop path, so a test can drive it
+	// without ending the test binary. Production handlers leave it nil and
+	// take the SIGTERM implementation.
+	terminate func() error
 }
+
+// degradedStopDelay keeps the SIGTERM off the request that asked for it. The
+// RPC server abandons in-flight connections when the listener closes, so a
+// signal delivered before this reply is written would reach the caller as a
+// dropped connection rather than as the accepted stop it is.
+const degradedStopDelay = 100 * time.Millisecond
 
 func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	message := fmt.Sprintf("SQLite state is unavailable: %v; restore a verified backup from %s.backups or preserve the database for wx doctor", h.OpenError, h.DatabasePath)
@@ -25,6 +36,18 @@ func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMess
 		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "protocol_version": 1, "degraded": true, "database_path": h.DatabasePath, "error": message}, nil
 	case "Doctor":
 		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "degraded": true, "checks": map[string]any{"sqlite": message}}, nil
+	case "RequestStop":
+		// Degraded mode answers nothing that changes state, so there is no
+		// reservation for the idle gate to protect and no manager to run one.
+		// Refusing here would leave kill(1) and wx daemon uninstall as the only
+		// ways to take down a daemon whose database an operator wants to look
+		// at, which is exactly when stopping it matters most.
+		terminate := h.terminate
+		if terminate == nil {
+			terminate = signalSelfTerminate
+		}
+		time.AfterFunc(degradedStopDelay, func() { _ = terminate() })
+		return map[string]any{"degraded": true, "stop_pending": true, "pid": os.Getpid()}, nil
 	default:
 		return nil, errors.New("wx daemon is read-only degraded: " + message)
 	}
@@ -42,11 +65,28 @@ func decode(raw json.RawMessage, v any) error {
 // Handle counts itself as in-flight for the whole dispatch. The manager's
 // restart gate uses that count to pick a moment where a kickstart cannot cut a
 // response short, so the accounting has to bracket every method, including the
-// ones that fail to decode.
+// ones that fail to decode. Which side of the quiet period a method lands on
+// is decided here rather than in the manager, because the manager sees the
+// intent and not the method that carried it.
 func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
-	h.Manager.beginRequest()
-	defer h.Manager.endRequest()
+	lifecycle := isLifecycleMethod(method)
+	h.Manager.beginRequest(lifecycle)
+	defer h.Manager.endRequest(lifecycle)
 	return h.dispatch(ctx, method, raw)
+}
+
+// isLifecycleMethod reports whether a method exists only to change the daemon's
+// own run state. Those requests are not the user-visible operation the quiet
+// period protects — they are the ones waiting on it — so they do not restamp
+// it. An unknown method is not one of them: a typo must not be able to open the
+// gate early.
+func isLifecycleMethod(method string) bool {
+	switch method {
+	case "RequestStop", "RequestRestart", "RequestStart":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessage) (any, error) {
@@ -201,7 +241,11 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	case "ReloadConfig":
 		return map[string]bool{"reloaded": true}, h.Manager.ReloadConfig()
 	case "RequestRestart":
-		return h.Manager.RequestRestart(), nil
+		return h.Manager.RequestRestart(ctx), nil
+	case "RequestStop":
+		return h.Manager.RequestStop(ctx), nil
+	case "RequestStart":
+		return h.Manager.RequestStart(ctx), nil
 	case "Sessions":
 		var p struct {
 			All bool `json:"all"`
