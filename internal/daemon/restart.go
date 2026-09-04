@@ -167,9 +167,23 @@ func (m *Manager) restartIfReplaced() {
 	m.restartRequested = true
 	m.mu.Unlock()
 	m.log.Info("restarting daemon after executable replacement", "path", path, "baseline_identity", baseline.identity)
+	// Issue the kickstart off maintainJobs. maintainJobs is tracked by m.wg and
+	// Manager.Close waits on it before it releases the root handles, so running
+	// launchctl inline would make the shutdown that this very command triggers
+	// wait for the command that triggered it. The listener is already closed by
+	// then, so every millisecond spent there widens the window where clients
+	// cannot connect at all.
+	go m.issueRestart(path)
+}
+
+// issueRestart runs the launchctl invocation that replaces this process. Its
+// context is derived from context.Background rather than the manager's, because
+// kickstart -k sends SIGTERM here and a manager context would cancel the
+// command with its own shutdown, possibly before launchd had the request.
+func (m *Manager) issueRestart(path string) {
 	ctx, cancel := context.WithTimeout(context.Background(), restartKickstartTimeout)
 	defer cancel()
-	err = m.kickstartService(ctx)
+	err := m.kickstartService(ctx)
 	if err == nil {
 		return
 	}

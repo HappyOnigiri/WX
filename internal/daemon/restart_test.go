@@ -3,10 +3,12 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,10 +16,74 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
+// kickstartLog records the restart path's launchctl calls. The kickstart runs
+// on its own goroutine (it must not block the manager's WaitGroup), so the
+// counter is shared state and the assertions below have to wait for it rather
+// than read it straight after the call that scheduled it.
+type kickstartLog struct {
+	mu  sync.Mutex
+	n   int
+	err error
+}
+
+func (k *kickstartLog) record() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.n++
+	return k.err
+}
+
+func (k *kickstartLog) count() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.n
+}
+
+func (k *kickstartLog) failWith(err error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.err = err
+}
+
+func (k *kickstartLog) want(t *testing.T, n int) {
+	t.Helper()
+	waitFor(t, fmt.Sprintf("%d kickstart(s)", n), func() bool { return k.count() >= n })
+	if got := k.count(); got != n {
+		t.Fatalf("kickstarts=%d, want %d", got, n)
+	}
+}
+
+// stayAt fails if another kickstart is issued. The grace period is what makes
+// it meaningful: the call that would have issued one has already returned.
+func (k *kickstartLog) stayAt(t *testing.T, n int) {
+	t.Helper()
+	time.Sleep(50 * time.Millisecond)
+	if got := k.count(); got != n {
+		t.Fatalf("kickstarts=%d, want it to stay at %d", got, n)
+	}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func restartClaimed(m *Manager) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.restartRequested
+}
+
 // restartFixture builds a manager that watches a stand-in executable inside a
 // temporary directory, so replacement can be simulated without touching the
 // test binary itself.
-func restartFixture(t *testing.T) (*Manager, string, *int) {
+func restartFixture(t *testing.T) (*Manager, string, *kickstartLog) {
 	t.Helper()
 	root := t.TempDir()
 	cfg := config.Defaults()
@@ -30,11 +96,8 @@ func restartFixture(t *testing.T) (*Manager, string, *int) {
 	manager := testManager(t, cfg, store)
 	manager.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	manager.launchdManaged = func() bool { return true }
-	kickstarts := 0
-	manager.kickstart = func(context.Context) error {
-		kickstarts++
-		return nil
-	}
+	kickstarts := &kickstartLog{}
+	manager.kickstart = func(context.Context) error { return kickstarts.record() }
 	executable := filepath.Join(root, "wx")
 	if err := os.WriteFile(executable, []byte("original"), 0o700); err != nil {
 		t.Fatal(err)
@@ -43,7 +106,7 @@ func restartFixture(t *testing.T) (*Manager, string, *int) {
 	if !manager.executableWatch {
 		t.Fatal("executable watch was not armed")
 	}
-	return manager, executable, &kickstarts
+	return manager, executable, kickstarts
 }
 
 // replaceExecutable renames a new file over the pathname, which is what
@@ -66,9 +129,7 @@ func TestUnchangedExecutableNeverRestartsTheDaemon(t *testing.T) {
 	if manager.restartPending {
 		t.Fatal("unchanged executable raised a pending restart")
 	}
-	if *kickstarts != 0 {
-		t.Fatalf("kickstarts=%d for an unchanged executable", *kickstarts)
-	}
+	kickstarts.stayAt(t, 0)
 }
 
 func TestReplacedExecutableRestartsWhenIdle(t *testing.T) {
@@ -86,15 +147,11 @@ func TestReplacedExecutableRestartsWhenIdle(t *testing.T) {
 		t.Fatalf("status does not report the pending restart: %v", status["restart_pending"])
 	}
 	manager.restartIfReplaced()
-	if *kickstarts != 1 {
-		t.Fatalf("kickstarts=%d, want 1", *kickstarts)
-	}
+	kickstarts.want(t, 1)
 	// The restart is requested exactly once: cmd/wx stops honouring SIGTERM
 	// after the first one, so a repeat would only kill the replacement.
 	manager.restartIfReplaced()
-	if *kickstarts != 1 {
-		t.Fatalf("kickstarts=%d after a second evaluation, want 1", *kickstarts)
-	}
+	kickstarts.stayAt(t, 1)
 }
 
 func TestMissingExecutablePathDefersInsteadOfRestarting(t *testing.T) {
@@ -109,9 +166,7 @@ func TestMissingExecutablePathDefersInsteadOfRestarting(t *testing.T) {
 	replaceExecutable(t, executable)
 	manager.detectExecutableReplacement()
 	manager.restartIfReplaced()
-	if *kickstarts != 1 {
-		t.Fatalf("kickstarts=%d after the replacement landed, want 1", *kickstarts)
-	}
+	kickstarts.want(t, 1)
 }
 
 func TestPendingRestartWaitsForJobsAndRequests(t *testing.T) {
@@ -124,38 +179,28 @@ func TestPendingRestartWaitsForJobsAndRequests(t *testing.T) {
 	replaceExecutable(t, executable)
 	manager.detectExecutableReplacement()
 	manager.restartIfReplaced()
-	if *kickstarts != 0 {
-		t.Fatalf("kickstarts=%d while a job is queued", *kickstarts)
-	}
+	kickstarts.stayAt(t, 0)
 	if _, err := manager.store.ClaimJob(ctx, job.ID, "restart-test"); err != nil {
 		t.Fatal(err)
 	}
 	manager.restartIfReplaced()
-	if *kickstarts != 0 {
-		t.Fatalf("kickstarts=%d while a job is running", *kickstarts)
-	}
+	kickstarts.stayAt(t, 0)
 	if err := manager.store.FinishJob(ctx, job.ID, "restart-test", nil); err != nil {
 		t.Fatal(err)
 	}
 	manager.beginRequest()
 	manager.restartIfReplaced()
-	if *kickstarts != 0 {
-		t.Fatalf("kickstarts=%d while an RPC is in flight", *kickstarts)
-	}
+	kickstarts.stayAt(t, 0)
 	manager.endRequest()
 	manager.restartIfReplaced()
-	if *kickstarts != 0 {
-		t.Fatalf("kickstarts=%d immediately after the last request returned", *kickstarts)
-	}
+	kickstarts.stayAt(t, 0)
 	// One wx invocation is several RPCs with idle moments between them, so the
 	// gate only opens once the daemon has stayed idle for restartQuietPeriod.
 	manager.mu.Lock()
 	manager.lastRequestEnd = time.Now().Add(-restartQuietPeriod)
 	manager.mu.Unlock()
 	manager.restartIfReplaced()
-	if *kickstarts != 1 {
-		t.Fatalf("kickstarts=%d once the daemon had been idle, want 1", *kickstarts)
-	}
+	kickstarts.want(t, 1)
 }
 
 func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
@@ -166,21 +211,15 @@ func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
 		t.Fatal("an explicit request did not raise the pending restart")
 	}
 	manager.restartIfReplaced()
-	if *kickstarts != 0 {
-		t.Fatalf("kickstarts=%d while the requesting RPC is still in flight", *kickstarts)
-	}
+	kickstarts.stayAt(t, 0)
 	manager.endRequest()
 	manager.restartIfReplaced()
-	if *kickstarts != 0 {
-		t.Fatalf("kickstarts=%d before the quiet period elapsed", *kickstarts)
-	}
+	kickstarts.stayAt(t, 0)
 	manager.mu.Lock()
 	manager.lastRequestEnd = time.Now().Add(-restartQuietPeriod)
 	manager.mu.Unlock()
 	manager.restartIfReplaced()
-	if *kickstarts != 1 {
-		t.Fatalf("kickstarts=%d once the daemon had been idle, want 1", *kickstarts)
-	}
+	kickstarts.want(t, 1)
 }
 
 func TestUnmanagedDaemonKeepsThePendingRestart(t *testing.T) {
@@ -190,9 +229,7 @@ func TestUnmanagedDaemonKeepsThePendingRestart(t *testing.T) {
 	manager.detectExecutableReplacement()
 	manager.restartIfReplaced()
 	manager.restartIfReplaced()
-	if *kickstarts != 0 {
-		t.Fatalf("kickstarts=%d outside launchd", *kickstarts)
-	}
+	kickstarts.stayAt(t, 0)
 	if !manager.restartPending || manager.restartRequested {
 		t.Fatalf("restart state pending=%v requested=%v", manager.restartPending, manager.restartRequested)
 	}
@@ -214,9 +251,10 @@ func TestExecutableWatchStaysDisabledWithoutABaseline(t *testing.T) {
 	}
 	manager.detectExecutableReplacement()
 	manager.restartIfReplaced()
-	if manager.restartPending || *kickstarts != 0 {
-		t.Fatalf("disabled watch acted: pending=%v kickstarts=%d", manager.restartPending, *kickstarts)
+	if manager.restartPending {
+		t.Fatalf("disabled watch raised a pending restart")
 	}
+	kickstarts.stayAt(t, 0)
 }
 
 func TestRestartAccountingBracketsEveryHandledRequest(t *testing.T) {
@@ -244,43 +282,29 @@ func TestHandledRequestHoldsOffAPendingRestart(t *testing.T) {
 		t.Fatal("unknown method succeeded")
 	}
 	manager.restartIfReplaced()
-	if *kickstarts != 0 {
-		t.Fatalf("kickstarts=%d right after a request was handled", *kickstarts)
-	}
+	kickstarts.stayAt(t, 0)
 	manager.mu.Lock()
 	manager.lastRequestEnd = time.Now().Add(-restartQuietPeriod)
 	manager.mu.Unlock()
 	manager.restartIfReplaced()
-	if *kickstarts != 1 {
-		t.Fatalf("kickstarts=%d once the quiet period elapsed, want 1", *kickstarts)
-	}
+	kickstarts.want(t, 1)
 }
 
 func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
-	manager, executable, _ := restartFixture(t)
-	attempts := 0
-	manager.kickstart = func(context.Context) error {
-		attempts++
-		return context.DeadlineExceeded
-	}
+	manager, executable, kickstarts := restartFixture(t)
+	kickstarts.failWith(context.DeadlineExceeded)
 	replaceExecutable(t, executable)
 	manager.detectExecutableReplacement()
 	// A kickstart that failed delivered no SIGTERM, so the daemon is still on
 	// the replaced binary and the claim has to come back for the next check.
-	manager.restartIfReplaced()
-	if manager.restartRequested {
-		t.Fatal("a failed kickstart kept the restart claimed")
-	}
-	for attempts < maxRestartAttempts {
+	for attempt := 1; attempt <= maxRestartAttempts; attempt++ {
 		manager.restartIfReplaced()
-	}
-	if !manager.restartRequested {
-		t.Fatalf("the claim was released after %d failed attempts", attempts)
+		kickstarts.want(t, attempt)
+		claimed := attempt == maxRestartAttempts
+		waitFor(t, "the claim to settle", func() bool { return restartClaimed(manager) == claimed })
 	}
 	manager.restartIfReplaced()
-	if attempts != maxRestartAttempts {
-		t.Fatalf("attempts=%d, want the retries to stop at %d", attempts, maxRestartAttempts)
-	}
+	kickstarts.stayAt(t, maxRestartAttempts)
 }
 
 func TestManagedProcessDetectionRejectsAnInteractiveDaemon(t *testing.T) {
