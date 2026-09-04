@@ -55,6 +55,37 @@ func TestMaterializeRootCopiesLinksAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRootDefaultSymlinkRuleIsSkipped(t *testing.T) {
+	source, target := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "CLAUDE.md"), []byte("rules\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository := discovery.Repository{MainPath: domain.CanonicalPath(source)}
+	before, err := Fingerprint(1, "oid", repository, config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("CLAUDE.md", filepath.Join(source, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := Fingerprint(1, "oid", repository, config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("default symlink changed fingerprint before=%s after=%s", before, after)
+	}
+	if err := MaterializeRoot(source, target, config.Workspace{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(target, "AGENTS.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("default symlink materialized: %v", err)
+	}
+	if err := MaterializeRoot(source, t.TempDir(), config.Workspace{Copy: []string{"AGENTS.md"}}); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("explicit symlink copy error=%v", err)
+	}
+}
+
 func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
 	source, target := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "copied.txt"), []byte("pinned copy\n"), 0o640); err != nil {
