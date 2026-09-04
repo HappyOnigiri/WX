@@ -330,6 +330,39 @@ func runDaemon(ctx context.Context, args []string) int {
 		}
 		fmt.Println("uninstalled", launchd.Label)
 		return 0
+	case "restart":
+		// Ask the running daemon to restart itself rather than kickstarting it
+		// from here. kickstart -k closes in-flight RPCs without a response, and
+		// a reservation interrupted between BeginRPCRequest and
+		// CompleteRPCRequest answers IDEMPOTENCY_INDETERMINATE until its TTL
+		// expires. The daemon's own gate waits for an idle moment instead.
+		client, clientErr := rpcClient()
+		if clientErr != nil {
+			fmt.Fprintln(os.Stderr, "error:", clientErr)
+			return 1
+		}
+		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := client.Call(requestCtx, "RequestRestart", struct{}{}, nil)
+		cancel()
+		if err == nil {
+			fmt.Println("restart requested", launchd.Label)
+			return 0
+		}
+		if !rpc.IsConnectError(err) {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		// Nothing answered the socket, so there is no in-flight work to
+		// protect and launchd is the only way to get a daemon running again.
+		if err := launchd.Kickstart(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			if errors.Is(err, launchd.ErrServiceMissing) {
+				fmt.Fprintln(os.Stderr, "run wx daemon install to register the LaunchAgent first")
+			}
+			return 1
+		}
+		fmt.Println("restarted", launchd.Label)
+		return 0
 	default:
 		commandUsage(os.Stderr, "daemon")
 		return 2

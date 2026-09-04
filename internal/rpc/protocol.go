@@ -64,7 +64,21 @@ type (
 type Client struct {
 	Socket  string
 	Timeout time.Duration
+	// ConnectRetry, when positive, keeps retrying a call that failed before any
+	// byte was exchanged (see ConnectError) until this budget is spent. It is
+	// opt-in and zero by default so the CLI keeps failing immediately when no
+	// daemon is listening; callers that cannot tolerate the short window where
+	// a restarting daemon is not listening yet (agent hooks, session
+	// heartbeats) set it deliberately. It never retries a failure that happened
+	// on an established connection, so a request the daemon may have started
+	// executing is not repeated.
+	ConnectRetry time.Duration
 }
+
+// connectRetryInterval paces ConnectRetry. A restarting daemon needs a few
+// hundred milliseconds to listen again, so this is short enough to cover the
+// gap within a budget measured in seconds.
+const connectRetryInterval = 100 * time.Millisecond
 
 // ConnectError wraps a failure that happened while establishing the
 // connection to the daemon (socket missing, connection refused, or a dial
@@ -91,6 +105,21 @@ func (c Client) Call(ctx context.Context, method string, params, result any) err
 }
 
 func (c Client) CallWithKey(ctx context.Context, method, idempotencyKey string, params, result any) error {
+	retryUntil := time.Now().Add(c.ConnectRetry)
+	for {
+		err := c.callWithTransportRetries(ctx, method, idempotencyKey, params, result)
+		if err == nil || c.ConnectRetry <= 0 || !IsConnectError(err) || !time.Now().Before(retryUntil) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(connectRetryInterval):
+		}
+	}
+}
+
+func (c Client) callWithTransportRetries(ctx context.Context, method, idempotencyKey string, params, result any) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		err = c.callOnce(ctx, method, idempotencyKey, params, result)

@@ -81,7 +81,30 @@ type Manager struct {
 	beforeSlotRootCreate func()
 	// beforeRootClose is a deterministic shutdown barrier for lifecycle tests.
 	// Production managers leave it nil.
-	beforeRootClose   func()
+	beforeRootClose func()
+	// executablePath and executableBaseline record the daemon's own binary as
+	// it was at startup, so a later replacement (make install renames a new
+	// inode over the pathname) can be detected and followed by a restart.
+	// executableWatch is false when that baseline could not be taken, which
+	// disables the watch rather than letting an unavailable baseline read as
+	// "unchanged".
+	executablePath     string
+	executableBaseline executableSnapshot
+	executableWatch    bool
+	restartPending     bool
+	restartRequested   bool
+	restartAttempts    int
+	restartUnmanaged   bool
+	inflightRequests   int
+	// lastRequestEnd is the moment the in-flight count last reached zero. The
+	// restart gate waits out restartQuietPeriod from it, because a single wx
+	// invocation is several independent RPCs with genuinely idle moments
+	// between them and a restart taken in one of those gaps cuts the next call.
+	lastRequestEnd time.Time
+	// kickstart and launchdManaged are test seams for the restart path.
+	// Production managers leave them nil and take the launchd implementations.
+	kickstart         func(context.Context) error
+	launchdManaged    func() bool
 	jobs              chan jobWork
 	reloads           chan struct{}
 	ctx               context.Context
@@ -113,7 +136,8 @@ const maxJobAttempts = 8
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {
 	git := &gitx.Runner{Timeout: cfg.Readiness.Timeout.Duration}
-	if executable, err := os.Executable(); err == nil {
+	executable, executableErr := os.Executable()
+	if executableErr == nil {
 		git.FDHelper = executable
 	}
 	started := time.Now()
@@ -121,6 +145,7 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 	reclaimAll := len(exclusiveStartup) > 0 && exclusiveStartup[0]
 	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
+	m.watchExecutable(executable, executableErr)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {
 		m.roots[root] = true
 		identity, identityErr := descriptorIdentity(ownedRoot)
@@ -448,6 +473,8 @@ func (m *Manager) maintainJobs() {
 			return
 		case <-ticker.C:
 			m.recoverJobs(false)
+			m.detectExecutableReplacement()
+			m.restartIfReplaced()
 		}
 	}
 }
@@ -3051,6 +3078,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	}
 	m.mu.RLock()
 	reloadAt, reloadError, backupAt, backupError := m.lastReload, m.reloadError, m.lastBackup, m.backupError
+	restartPending := m.restartPending
 	cfg := m.cfg
 	roots := make(map[string]bool, len(m.roots))
 	for root, active := range m.roots {
@@ -3091,7 +3119,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	return map[string]any{
 		"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "daemon_version": daemonVersion(), "protocol_version": 1, "uptime_seconds": int(time.Since(m.started).Seconds()),
 		"config_path": must(config.Path()), "config_last_reload": reloadAt.UTC().Format(time.RFC3339Nano), "config_reload_error": reloadError,
-		"sqlite_last_backup": formatOptionalTime(backupAt), "sqlite_backup_error": backupError,
+		"sqlite_last_backup": formatOptionalTime(backupAt), "sqlite_backup_error": backupError, "restart_pending": restartPending,
 		"workspaces": s.Workspaces, "repositories": s.Repositories,
 		"slots":           map[string]int{"ready": s.Ready, "leased": s.Leased, "failed": s.Failed, "quarantined": s.Quarantined},
 		"active_sessions": s.Active, "snapshots": s.Snapshots, "queued_jobs": s.Jobs, "worktree_roots": rootStatuses,

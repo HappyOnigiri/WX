@@ -17,6 +17,13 @@ The default installation path is `~/.local/bin/wx`. The LaunchAgent starts the
 daemon at login and maintains one ready workspace for recently used
 repositories.
 
+A running daemon keeps executing the binary it started with, so `make install`
+alone does not update it. The daemon notices the replacement within ten seconds
+and restarts itself once no job is running and no request is in flight; run
+`wx daemon restart` to ask for the same restart without waiting for that check.
+Either way the daemon waits for an idle moment, so a restart never cuts short a
+request that is already running.
+
 ## Use
 
 ```sh

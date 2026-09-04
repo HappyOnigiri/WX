@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,6 +111,43 @@ func TestUninstallRemovesPlistWhenServiceIsAlreadyMissing(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("plist remains after missing service uninstall: %v", err)
+	}
+}
+
+func TestKickstartReportsAnUninstalledService(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\necho 'Could not find service' >&2\nexit 3\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	err := Kickstart(context.Background())
+	if !errors.Is(err, ErrServiceMissing) {
+		t.Fatalf("kickstart error=%v, want ErrServiceMissing", err)
+	}
+	if !strings.Contains(err.Error(), "Could not find service") {
+		t.Fatalf("kickstart error does not carry the launchctl output: %v", err)
+	}
+}
+
+func TestKickstartReportsAFailureThatProducedNoOutput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// An empty PATH makes exec fail before launchctl can print anything, which
+	// is the shape of every failure that leaves CombinedOutput empty (a
+	// cancelled context and a reached deadline included). The wrapped error is
+	// then all the daemon log and wx daemon restart have to report.
+	t.Setenv("PATH", "")
+	err := Kickstart(context.Background())
+	if err == nil {
+		t.Fatal("kickstart succeeded without launchctl on PATH")
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("kickstart error=%v, want it to carry %v", err, exec.ErrNotFound)
 	}
 }
 

@@ -106,3 +106,62 @@ func TestRequestDeadlineHonorsEarlierParentDeadline(t *testing.T) {
 		t.Fatalf("request deadline=%v parent deadline=%v", deadline, parentDeadline)
 	}
 }
+
+func TestConnectRetryBridgesADaemonThatIsNotListeningYet(t *testing.T) {
+	socket := shortSocketPath(t, "connect-retry.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := &Server{Socket: socket, Handler: echoHandler{}}
+	serverErr := make(chan error, 1)
+	go func() {
+		// Start listening only after the first connection attempts have already
+		// failed, which is the window a daemon leaves while launchd replaces it.
+		time.Sleep(150 * time.Millisecond)
+		serverErr <- server.Serve(ctx)
+	}()
+	var result map[string]any
+	if err := (Client{Socket: socket, Timeout: time.Second, ConnectRetry: 3 * time.Second}).Call(ctx, "echo", struct{}{}, &result); err != nil {
+		t.Fatalf("retrying client failed: %v", err)
+	}
+	if result["method"] != "echo" {
+		t.Fatalf("unexpected result: %v", result)
+	}
+	cancel()
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestZeroValueClientStillFailsImmediatelyWithoutADaemon(t *testing.T) {
+	socket := shortSocketPath(t, "no-daemon.sock")
+	start := time.Now()
+	err := (Client{Socket: socket, Timeout: time.Second}).Call(context.Background(), "echo", struct{}{}, nil)
+	if !IsConnectError(err) {
+		t.Fatalf("error=%v, want a connect error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("call without a daemon took %s; the default must not retry", elapsed)
+	}
+}
+
+func TestConnectRetryStopsAtItsBudget(t *testing.T) {
+	socket := shortSocketPath(t, "retry-budget.sock")
+	start := time.Now()
+	err := (Client{Socket: socket, Timeout: 100 * time.Millisecond, ConnectRetry: 300 * time.Millisecond}).Call(context.Background(), "echo", struct{}{}, nil)
+	if !IsConnectError(err) {
+		t.Fatalf("error=%v, want a connect error", err)
+	}
+	if elapsed := time.Since(start); elapsed < 300*time.Millisecond || elapsed > 3*time.Second {
+		t.Fatalf("retry budget elapsed=%s, want roughly 300ms", elapsed)
+	}
+}
+
+func TestConnectRetryStopsWhenTheCallerGivesUp(t *testing.T) {
+	socket := shortSocketPath(t, "retry-cancel.sock")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := (Client{Socket: socket, Timeout: 50 * time.Millisecond, ConnectRetry: 10 * time.Second}).Call(ctx, "echo", struct{}{}, nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%v, want the caller deadline", err)
+	}
+}

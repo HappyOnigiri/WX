@@ -16,16 +16,16 @@ Global options:
   -v, --version                  show version
 
 Commands:
-  claude [arguments...]           launch Claude Code in a wx workspace
-  codex [arguments...]            launch Codex in a wx workspace
-  status [--json]                show daemon and pool state
-  doctor [--json]                check configuration and dependencies
-  gc [--dry-run]                 run retention cleanup
-  sessions [--all] [--json]     list managed sessions
-  config [<key> <value>]         show or update configuration
-  resume <id> <agent> [args...] restore a wx session
-  forget <workspace-path>        forget an inactive workspace
-  daemon install|uninstall       manage the LaunchAgent`)
+  claude [arguments...]             launch Claude Code in a wx workspace
+  codex [arguments...]              launch Codex in a wx workspace
+  status [--json]                   show daemon and pool state
+  doctor [--json]                   check configuration and dependencies
+  gc [--dry-run]                    run retention cleanup
+  sessions [--all] [--json]         list managed sessions
+  config [<key> <value>]            show or update configuration
+  resume <id> <agent> [args...]     restore a wx session
+  forget <workspace-path>           forget an inactive workspace
+  daemon install|uninstall|restart  manage or restart the LaunchAgent`)
 }
 
 func commandUsage(w io.Writer, name string) {
@@ -72,9 +72,10 @@ Options:
 
 Forget an inactive workspace after all managed slots are safely archived.`)
 	case "daemon":
-		_, _ = fmt.Fprintln(w, `Usage: wx daemon <serve|install|uninstall>
+		_, _ = fmt.Fprintln(w, `Usage: wx daemon <serve|install|uninstall|restart>
 
-Serve internally, or install and remove the per-user LaunchAgent.`)
+Serve internally, install and remove the per-user LaunchAgent, or restart the
+running daemon so a replaced wx binary takes effect immediately.`)
 	case "hook":
 		_, _ = fmt.Fprintln(w, `Usage: wx hook <event>
 

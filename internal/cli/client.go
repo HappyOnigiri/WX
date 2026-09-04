@@ -63,7 +63,18 @@ func New(cfg config.Config) (Client, error) {
 	if err != nil {
 		return Client{}, err
 	}
-	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second}, Config: cfg}, nil
+	// Every call this client makes belongs to a session that outlives a daemon
+	// restart: the lease, the agent process registration, the heartbeats and
+	// the release at exit. Each of them would otherwise fail outright in the
+	// short window where a daemon that is replacing itself after a binary swap
+	// has closed its listener and not opened the new one yet. Retrying is safe
+	// because ConnectRetry only covers failures that happened before any byte
+	// was sent, so a request the daemon may have started executing is never
+	// repeated. wx's plain commands keep their own client (cmd/wx) without this
+	// budget and still exit immediately when no daemon is listening. The 2s
+	// figure is the same budget agent hooks use; see internal/agent/hook.go for
+	// the measured gap it is sized against.
+	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second, ConnectRetry: 2 * time.Second}, Config: cfg}, nil
 }
 
 // ensureDaemon confirms a daemon is reachable, bootstrapping one through
@@ -249,6 +260,11 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		return 1
 	}
 	heartbeatDone := make(chan struct{})
+	// A heartbeat that lands while the daemon is restarting itself after a
+	// binary replacement would otherwise age the session's liveness by a full
+	// interval for a gap that lasts a fraction of a second. The client's
+	// ConnectRetry budget (see New) covers that gap; the surrounding 2s context
+	// still bounds the whole attempt.
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
