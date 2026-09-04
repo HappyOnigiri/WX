@@ -195,8 +195,13 @@ func prepareEdgesFixture(t *testing.T) (string, discovery.Repository, *Preparer,
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = owner.Close() })
-	preparer := &Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
-	target := filepath.Join(worktreeRoot, "slots", "slot", "root")
+	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
+	preparer := &Preparer{
+		Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{},
+		SlotPath: slotPath, OwnedRoot: owner, RootPath: worktreeRoot,
+		RootID: testRootID, SlotRelPath: testSlotRelPath,
+	}
+	target := filepath.Join(slotPath, testRepositoryID)
 	return repository, repo, preparer, head, target
 }
 
@@ -249,11 +254,11 @@ func TestPinnedPreparerLifecycleAndDescriptorBoundCommands(t *testing.T) {
 				if err := preparer.FinishRestoreWithIdentity(ctx, repo, target, head, "slot", identity); err != nil {
 					t.Fatalf("descriptor-bound restore finish: %v", err)
 				}
-				if _, err := preparer.runWorktreeAdmin(ctx, repo, owner, filepath.Join("slots", "slot", "root"), target, "unlock"); err != nil {
+				if _, err := preparer.runWorktreeAdmin(ctx, repo, owner, filepath.Join(testSlotRelPath, testRepositoryID), target, "unlock"); err != nil {
 					t.Fatalf("unlock restored worktree before removal: %v", err)
 				}
 			} else {
-				if _, err := preparer.runWorktreeAdmin(ctx, repo, owner, filepath.Join("slots", "slot", "root"), target, "unlock"); err != nil {
+				if _, err := preparer.runWorktreeAdmin(ctx, repo, owner, filepath.Join(testSlotRelPath, testRepositoryID), target, "unlock"); err != nil {
 					t.Fatalf("descriptor-bound admin wrapper: %v", err)
 				}
 			}
@@ -320,10 +325,10 @@ func TestPreparerDescriptorOperationsRejectInvalidRootsAndIdentities(t *testing.
 	if err := closed.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := preparer.addWorktreeWithIdentity(ctx, repo, closed, target, filepath.Join("slot", "root"), head); err == nil {
+	if _, err := preparer.addWorktreeWithIdentity(ctx, repo, closed, target, filepath.Join(testSlotRelPath, testRepositoryID), head); err == nil {
 		t.Fatal("closed descriptor worktree add succeeded")
 	}
-	if _, err := preparer.runWorktreeAdminOwned(ctx, repo, closed, filepath.Join("slot", "root"), target, "", "unlock"); err == nil {
+	if _, err := preparer.runWorktreeAdminOwned(ctx, repo, closed, filepath.Join(testSlotRelPath, testRepositoryID), target, "", "unlock"); err == nil {
 		t.Fatal("closed descriptor worktree admin succeeded")
 	}
 
@@ -523,7 +528,7 @@ func TestAddWorktreeWithIdentityRecognizesACleanFailedAdd(t *testing.T) {
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("clean failed add error=%v, want a plain Git error", err)
 	}
-	if _, _, found, err := RegisteredWorktreeLockStatusAt(context.Background(), preparer.Git, string(repo.MainPath), owner, root, "slots/slot/root", "irrelevant"); err != nil || found {
+	if _, _, found, err := RegisteredWorktreeLockStatusAt(context.Background(), preparer.Git, string(repo.MainPath), owner, root, filepath.Join(testSlotRelPath, testRepositoryID), "irrelevant"); err != nil || found {
 		t.Fatalf("failed add left a Git registration: found=%v err=%v", found, err)
 	}
 }

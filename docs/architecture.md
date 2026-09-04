@@ -101,29 +101,69 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
 
 破壊的操作の前に求める証明は、次の3つが同時に一致することである。
 
-1. **DBの行** — `ValidateWorktreeOwnership`が`slots`・`slot_repositories`・`workspaces`・`repositories`・`workspace_repositories`の5表を結合して1行を読む。
-   slotとリポジトリのstate、slot path、common dir、workspace内の相対pathが期待と一致することを確かめる。
-   読み取り専用トランザクションが囲むのはSELECTだけで、path正規化と一致判定はcommit後に走る。
-2. **ファイルシステム上のマーカー** — slotディレクトリ配下の`.wx-owner-<target由来の安定ID>`に、slot ID・対象worktree・common dirをJSONで書く。
+1. **DBの行** — `ValidateWorktreeOwnership`が`roots`・`slots`・`slot_repositories`・`workspaces`・`repositories`・`workspace_repositories`の6表を結合して1行を読む。
+   突き合わせるのは絶対pathではない。
+   root世代（`roots.id`）・root相対のslot path（`slots.rel_path`）・slot内のリポジトリ配置名（`slot_repositories.dir_name`）・inode identity（`dir_identity`）の4つである。
+   これに加えて、slotとリポジトリのstate、common dir、workspace内の相対pathを確かめる。
+   読み取り専用トランザクションが囲むのはSELECTだけで、一致判定はcommit後に走る。
+   identityは**fail closed**で、descriptorを握っている呼び出し元がidentityを渡したのに記録が空なら不一致として扱う。
+   identityを渡さないのは、worktreeがまだ存在しないprepare前の検査だけである。
+2. **ファイルシステム上のマーカー** — slotディレクトリ直下の`.wx-owner-<repository_id>`に、slot ID・root ID・repository ID・common dirをJSONで書く（`version: 2`）。
    内容が一致しないマーカーは所有の否定として扱う。
+   マーカーはworktreeの**親**に置く。
+   worktree削除が中断されても、再試行時に所有権を証明できる唯一のディスク側証拠がこれだからである。
 3. **Gitのworktree lock** — wx自身が付けた`wx:<slot-id>:READY`・`PREPARING`・`RESTORING`のいずれかであること（`domain.ValidWxLockReason`）。
    認識できない理由でlockされたworktreeは、wxのものではない。
 
 このうち2と3は、pinしたroot descriptor配下の相対pathに対して行う。
 `domain.OpenOwnedRoot`がrootをinodeごとpinし、`domain.PhysicalPathInfo`が全成分のsymlinkを拒否するので、検査と実行の間にpathを差し替えられても、差し替え先へ操作が届かない。
-1のDB側はpath名の正規化で比較しており、descriptorには載っていない。
+1のDB側は「何が正しいか」を答え、descriptorは「いま触っているものが本当にそれか」を答える。
+DBが持つidentityはdescriptorが返す`dev:ino`と同じ形式なので、2つの層が同じ対象を指していることを比較できる。
+`workspace_repositories.relative_path`はソース側でのリポジトリ位置という本来の意味だけを担い、slot内の配置は`slot_repositories.dir_name`が持つ。
 
 ## ディスク上のレイアウト
 
-worktree root（`storage.worktree_root`）配下は次の形になる。
+worktree root（`storage.worktree_root`、既定`$HOME/wx`）配下は次の形になる。
 
 ```text
-<worktree_root>/workspaces/<workspace-id>/slots/<slot-id>/root/
-<worktree_root>/unbound/<slot-id>/root/
-<worktree_root>/recovery/workspace-snapshots/<安定ID>.tar
+<worktree_root>/<workspace-id>/<slot-id>/<RepoName>/
+<worktree_root>/_unbound/<slot-id>/
+<worktree_root>/_recovery/workspace-snapshots/<安定ID>.tar
 ```
 
-`root/`がエージェントへ貸し出す単位で、`unbound/`はworkspaceが確定していないslotが入る。
+workspace-idとslot-idは6桁固定の小文字英数字（base36、`domain.NewShortID`）である。
+slot-idはsession IDと同値なので、`wx sessions`が出すIDをそのまま`wx resume`に渡せる。
+大文字を混ぜないのはAPFSが既定でcase-insensitiveなためで、同じ理由からslot内の配置名の衝突判定も小文字化して行い、衝突したら`-2`のサフィックスを付ける。
+
+`_`始まりはwxの予約プレフィックスで、workspace IDもリポジトリ配置名もこの接頭辞を拒否する。
+孤児スキャン（`ownedRootArtifactPaths`）はこの規則の裏返しで、`_`始まりを除く全ての第1階層をworkspaceディレクトリとみなし、その直下をslotディレクトリとして列挙する。
+生成側（`slotRelPath`）と列挙側は同時に直さなければならない。片方だけ直すと、孤児検出が無音で機能停止する。
+
+エージェントへ貸し出す単位（`Lease.Path`）は、単一リポジトリworkspaceなら`<slot-id>/<RepoName>`、multi_repositoryなら`<slot-id>`である。
+単一リポジトリでCWDをリポジトリ直下にすることで、`.wx-owner-*`がCWDの親に残りエージェントから見えない。
+`Lease.Path`と`state.Slot.Path`（常にslotディレクトリ）を混同しないこと。
+workspaceが確定していない`_unbound/<slot-id>`はslotディレクトリ自体を貸し出す。
+リポジトリ名がその時点では決まらないためで、単一リポジトリworkspaceに束縛された後もworktreeはCWDの1つ下に現れる。
+
+`RepoName`の決定順は`repositories.<main path>.dir_name` → `repositories.<main path>.dir_source` → `storage.repo_dir_source`（既定`remote`）→ main worktreeのディレクトリ名である。
+`remote`は`git remote get-url origin`の出力から末尾の`.git`を除いたbasenameで、取れないときはディレクトリ名へ落ちる。
+採用した値は`slot_repositories.dir_name`に記録され、以後はその値が権威になる。
+設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`（`schema=3`）が名前を含むので新規slotから新しい名前になる。
+
+`storage.worktree_root`を変えても既存slotは移動しない。
+`roots`テーブルがroot世代を持ち、slotは`root_id` + root相対pathで位置を表す。
+変更後は新しいrootが`active=1`になり、それまでのrootは`active=0`で残る。
+旧root配下のslotは（READYのwarm slotも含めて）そのまま寿命を全うし、新規slotだけが新rootに作られる。
+実体を移動しない理由は3つある。
+gitのworktreeメタデータが絶対pathなので`git worktree repair`が要ること、別ファイルシステムへの変更ではrenameが失敗すること、中断時の再開規則が必要になることである。
+いずれも単一ユーザー・単一マシンという前提に釣り合わない。
+参照するslotもスナップショットも無くなった`roots`行はGCが削除するが、ディレクトリの実体は消さない。
+
+multi_repositoryのworkspaceスナップショットは、slotディレクトリ自体をbundle rootとしてtarに詰める。
+そのためリポジトリのworktreeと`.wx-owner-*`はどちらも除外リストに載せる（`workspaceRecoveryExclusions`）。
+除外に使うのは`slot_repositories.dir_name`で、ソース側の`workspace_repositories.relative_path`ではない。
+マーカーを除外しないと、archiveが別slotのIDを運び、復元前のpruneが現在のslotの所有権証拠を消してしまう。
+
 状態は`~/Library/Application Support/wx/state.db`が持ち、同じ場所の`state.db.backups/`にオンラインバックアップを世代保存する。
 
 リポジトリ単位の復旧スナップショットだけは**wxの領域ではなくソースリポジトリのGitオブジェクトとref**として置かれるため、そのリポジトリを読めるプロセスからは中身が読める。

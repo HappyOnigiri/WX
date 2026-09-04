@@ -402,8 +402,9 @@ func TestPrepareClassifiesReplacedRootAsOwnershipUncertain(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = root
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root}
-	target := filepath.Join(root, "slot", "root")
+	slotPath := filepath.Join(root, testSlotRelPath)
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
+	target := filepath.Join(slotPath, testRepositoryID)
 	oldRoot := root + "-old"
 	if err := os.Rename(root, oldRoot); err != nil {
 		t.Fatal(err)
@@ -416,7 +417,7 @@ func TestPrepareClassifiesReplacedRootAsOwnershipUncertain(t *testing.T) {
 	if !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("replaced root returned non-ownership error: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(outside, "slot")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(outside, testWorkspaceID)); !os.IsNotExist(err) {
 		t.Fatalf("replaced root escaped into outside directory: %v", err)
 	}
 }
@@ -455,8 +456,9 @@ func TestPrepareRejectsTargetReplacementAfterGitAdd(t *testing.T) {
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = root
-	preparer := Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root}
-	target := filepath.Join(root, "slot", "root")
+	slotPath := filepath.Join(root, testSlotRelPath)
+	preparer := Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: root, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
+	target := filepath.Join(slotPath, testRepositoryID)
 	targetOld := target + "-old"
 	replaced := false
 	runner.SetBeforeRunAtHook(func(args []string) {
@@ -504,8 +506,9 @@ func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testi
 	gitCommand(t, repository, "commit", "-m", "initial")
 	head := gitOutput(t, repository, "rev-parse", "HEAD")
 	common := gitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	target := filepath.Join(worktreeRoot, "slot", "root")
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
+	target := filepath.Join(slotPath, testRepositoryID)
+	if err := os.MkdirAll(slotPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	gitCommand(t, repository, "worktree", "add", "--detach", target, head)
@@ -517,7 +520,7 @@ func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testi
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "ownership marker") {
 		t.Fatalf("foreign worktree prepare error=%v", err)
 	}
@@ -611,7 +614,7 @@ func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
 	if err := preparer.copyIncludes(repo, target); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("include through symlink ancestor succeeded: %v", err)
 	}
-	if _, err := Fingerprint(1, "oid", repo, config.Defaults()); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if _, err := Fingerprint(1, "oid", repo, testRepositoryID, config.Defaults()); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("fingerprint through symlink ancestor succeeded: %v", err)
 	}
 
@@ -712,8 +715,9 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
-	target := filepath.Join(worktreeRoot, "slot", "root")
+	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
+	target := filepath.Join(slotPath, testRepositoryID)
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "tracked path") {
 		t.Fatalf("tracked include error=%v", err)
 	}
@@ -726,7 +730,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("tracked\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	linkTarget := filepath.Join(worktreeRoot, "link-failure", "root")
+	linkTarget := filepath.Join(slotPath, "link-failure")
 	if err := preparer.Prepare(context.Background(), repo, linkTarget, head, "link-failure"); err == nil || !strings.Contains(err.Error(), "not ignored") {
 		t.Fatalf("prepare link policy error=%v", err)
 	}
@@ -739,7 +743,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	failingCfg := cfg
 	failingCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/usr/bin/false"}, Timeout: config.Duration{Duration: time.Second}}}}
 	preparer.Config = failingCfg
-	commandTarget := filepath.Join(worktreeRoot, "command-failure", "root")
+	commandTarget := filepath.Join(slotPath, "command-failure")
 	if err := preparer.Prepare(context.Background(), repo, commandTarget, head, "command-failure"); err == nil {
 		t.Fatal("failed prepare command completed a worktree")
 	}
@@ -749,7 +753,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	dirtyCfg := cfg
 	dirtyCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf changed > tracked"}, Timeout: config.Duration{Duration: time.Second}}}}
 	preparer.Config = dirtyCfg
-	dirtyTarget := filepath.Join(worktreeRoot, "dirty-command", "root")
+	dirtyTarget := filepath.Join(slotPath, "dirty-command")
 	if err := preparer.Prepare(context.Background(), repo, dirtyTarget, head, "dirty-command"); err == nil || !strings.Contains(err.Error(), "tracked changes") {
 		t.Fatalf("dirty prepare command error=%v", err)
 	}
@@ -760,14 +764,14 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	cfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/usr/bin/true"}, Version: "v1"}}}
 	cfg.Readiness.Timeout.Duration = time.Second
 	preparer.Config = cfg
-	runPrepareTarget := filepath.Join(worktreeRoot, "run-prepare", "root")
+	runPrepareTarget := filepath.Join(slotPath, "run-prepare")
 	if err := os.MkdirAll(runPrepareTarget, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := preparer.runPrepareWithIdentity(context.Background(), repo, runPrepareTarget, ""); err != nil {
 		t.Fatal(err)
 	}
-	if fingerprint, err := Fingerprint(1, head, repo, cfg); err != nil || fingerprint == "" {
+	if fingerprint, err := Fingerprint(1, head, repo, testRepositoryID, cfg); err != nil || fingerprint == "" {
 		t.Fatalf("fingerprint=%q err=%v", fingerprint, err)
 	}
 	badRoot := preparer
@@ -842,21 +846,21 @@ func TestFingerprintTracksMaterializedCopyInputs(t *testing.T) {
 	}
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository), RelativePath: "repository"}
 	cfg := config.Defaults()
-	first, err := Fingerprint(1, "oid", repo, cfg)
+	first, err := Fingerprint(1, "oid", repo, testRepositoryID, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(local, []byte("second\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	second, err := Fingerprint(1, "oid", repo, cfg)
+	second, err := Fingerprint(1, "oid", repo, testRepositoryID, cfg)
 	if err != nil || second == first {
 		t.Fatalf("include content fingerprint first=%s second=%s err=%v", first, second, err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("instructions\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	third, err := Fingerprint(1, "oid", repo, cfg)
+	third, err := Fingerprint(1, "oid", repo, testRepositoryID, cfg)
 	if err != nil || third == second {
 		t.Fatalf("workspace copy fingerprint second=%s third=%s err=%v", second, third, err)
 	}
@@ -864,7 +868,7 @@ func TestFingerprintTracksMaterializedCopyInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Workspaces[root] = config.Workspace{Copy: []string{"custom.txt"}}
-	fourth, err := Fingerprint(1, "oid", repo, cfg)
+	fourth, err := Fingerprint(1, "oid", repo, testRepositoryID, cfg)
 	if err != nil || fourth == third {
 		t.Fatalf("workspace rule fingerprint third=%s fourth=%s err=%v", third, fourth, err)
 	}
@@ -895,14 +899,14 @@ func TestFingerprintCoversRecursiveDuplicateAndWorkspaceLinkInputs(t *testing.T)
 		Link: []string{"shared"},
 	}
 	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"true"}, Version: "v2"}}
-	first, err := Fingerprint(2, "oid", repo, cfg)
+	first, err := Fingerprint(2, "oid", repo, testRepositoryID, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, "included", "child", "value"), []byte("two\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	second, err := Fingerprint(2, "oid", repo, cfg)
+	second, err := Fingerprint(2, "oid", repo, testRepositoryID, cfg)
 	if err != nil || first == second {
 		t.Fatalf("recursive fingerprint first=%s second=%s err=%v", first, second, err)
 	}
@@ -913,13 +917,13 @@ func TestFingerprintCoversRecursiveDuplicateAndWorkspaceLinkInputs(t *testing.T)
 	if err := os.Symlink(root, filepath.Join(repository, "included")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Fingerprint(2, "oid", repo, cfg); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if _, err := Fingerprint(2, "oid", repo, testRepositoryID, cfg); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("include symlink error=%v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("../outside\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Fingerprint(2, "oid", repo, cfg); err == nil || !strings.Contains(err.Error(), "unsafe") {
+	if _, err := Fingerprint(2, "oid", repo, testRepositoryID, cfg); err == nil || !strings.Contains(err.Error(), "unsafe") {
 		t.Fatalf("unsafe fingerprint include error=%v", err)
 	}
 
@@ -927,23 +931,23 @@ func TestFingerprintCoversRecursiveDuplicateAndWorkspaceLinkInputs(t *testing.T)
 	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Fingerprint(2, "oid", cleanRepo, cfg); err == nil {
+	if _, err := Fingerprint(2, "oid", cleanRepo, testRepositoryID, cfg); err == nil {
 		t.Fatal("unsafe repository relative path was fingerprinted")
 	}
 
 	unsafeCopy := cfg
 	unsafeCopy.Workspaces[root] = config.Workspace{Copy: []string{"../outside"}}
-	if _, err := Fingerprint(2, "oid", repo, unsafeCopy); err == nil {
+	if _, err := Fingerprint(2, "oid", repo, testRepositoryID, unsafeCopy); err == nil {
 		t.Fatal("unsafe workspace copy path was fingerprinted")
 	}
 	unsafeLink := cfg
 	unsafeLink.Workspaces[root] = config.Workspace{Link: []string{"../outside"}}
-	if _, err := Fingerprint(2, "oid", repo, unsafeLink); err == nil {
+	if _, err := Fingerprint(2, "oid", repo, testRepositoryID, unsafeLink); err == nil {
 		t.Fatal("unsafe workspace link path was fingerprinted")
 	}
 	missingLink := cfg
 	missingLink.Workspaces[root] = config.Workspace{Link: []string{"missing"}}
-	if _, err := Fingerprint(2, "oid", repo, missingLink); err == nil {
+	if _, err := Fingerprint(2, "oid", repo, testRepositoryID, missingLink); err == nil {
 		t.Fatal("missing workspace link path was fingerprinted")
 	}
 }
@@ -967,6 +971,7 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 	gitCommand(t, repository, "add", ".")
 	gitCommand(t, repository, "commit", "-m", "initial")
 	repo := discovery.Repository{
+		ID:        testRepositoryID,
 		MainPath:  domain.CanonicalPath(repository),
 		CommonDir: domain.CanonicalPath(filepath.Join(repository, ".git")),
 	}
@@ -977,7 +982,7 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root, RootID: testRootID}
 
 	if err := preparer.validateTrackedClean(context.Background(), filepath.Join(root, "missing")); err == nil {
 		t.Fatal("tracked-clean validation of a missing worktree succeeded")
@@ -1068,7 +1073,7 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 	}
 	unregistered := repo
 	unregistered.MainPath = domain.CanonicalPath(other)
-	if err := EnsureOwnershipMarkerAt(owner, root, repository, "slot", string(repo.CommonDir)); err != nil {
+	if err := EnsureOwnershipMarkerAt(owner, root, repository, markerFor("slot"), string(repo.CommonDir)); err != nil {
 		t.Fatal(err)
 	}
 	if err := preparer.validateExistingWorktree(context.Background(), unregistered, repository, gitOutput(t, repository, "rev-parse", "HEAD")); err == nil || !strings.Contains(err.Error(), "not registered") {
@@ -1144,7 +1149,7 @@ func TestWorkspaceHelpersRejectUnreadableInputsAndUnwritableTargets(t *testing.T
 	}
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(manifestRoot)}
 	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: config.Defaults()}
-	if _, err := Fingerprint(1, "oid", repo, config.Defaults()); err == nil {
+	if _, err := Fingerprint(1, "oid", repo, testRepositoryID, config.Defaults()); err == nil {
 		t.Fatal("unreadable fingerprint manifest succeeded")
 	}
 	if err := preparer.copyIncludes(repo, root); err == nil {
@@ -1209,8 +1214,9 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
-	target := filepath.Join(worktreeRoot, "slot", "root")
+	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
+	target := filepath.Join(slotPath, testRepositoryID)
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
 		t.Fatal(err)
 	}
@@ -1271,13 +1277,13 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	if err := MaterializeRoot(brokenSource, materialized, config.Workspace{}); err == nil {
 		t.Fatal("root copy overwrote destination symlink")
 	}
-	if _, err := Fingerprint(1, head, discovery.Repository{MainPath: domain.CanonicalPath(brokenSource)}, cfg); err != nil {
+	if _, err := Fingerprint(1, head, discovery.Repository{MainPath: domain.CanonicalPath(brokenSource)}, testRepositoryID, cfg); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(brokenSource, ".worktreeinclude"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Fingerprint(1, head, discovery.Repository{MainPath: domain.CanonicalPath(brokenSource)}, cfg); err == nil {
+	if _, err := Fingerprint(1, head, discovery.Repository{MainPath: domain.CanonicalPath(brokenSource)}, testRepositoryID, cfg); err == nil {
 		t.Fatal("unreadable fingerprint input succeeded")
 	}
 }
@@ -1377,14 +1383,14 @@ func TestFingerprintTracksDefaultIncludeContent(t *testing.T) {
 	gitCommand(t, repository, "init", "-b", "main")
 	cfg := config.Defaults()
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
-	bare, err := Fingerprint(1, "oid", repo, cfg)
+	bare, err := Fingerprint(1, "oid", repo, testRepositoryID, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, "GEMINI.local.md"), []byte("first\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	added, err := Fingerprint(1, "oid", repo, cfg)
+	added, err := Fingerprint(1, "oid", repo, testRepositoryID, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1394,7 +1400,7 @@ func TestFingerprintTracksDefaultIncludeContent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, "GEMINI.local.md"), []byte("second\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	edited, err := Fingerprint(1, "oid", repo, cfg)
+	edited, err := Fingerprint(1, "oid", repo, testRepositoryID, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1406,14 +1412,14 @@ func TestFingerprintTracksDefaultIncludeContent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("GEMINI.local.md\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	linked, err := Fingerprint(1, "oid", repo, cfg)
+	linked, err := Fingerprint(1, "oid", repo, testRepositoryID, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, "GEMINI.local.md"), []byte("third\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	relinked, err := Fingerprint(1, "oid", repo, cfg)
+	relinked, err := Fingerprint(1, "oid", repo, testRepositoryID, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

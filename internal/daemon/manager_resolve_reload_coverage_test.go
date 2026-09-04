@@ -82,18 +82,16 @@ func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 
 	staleID := domain.StableID("resolve-lease", "stale")
-	stalePath := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(w.ID), "slots", staleID, "root")
-	if _, err := m.createSlotRoot(stalePath); err != nil {
+	stalePath := filepath.Join(cfg.Storage.WorktreeRoot, string(w.ID), staleID)
+	if _, _, err := m.createSlotRoot(stalePath, stalePath); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: staleID, WorkspaceID: string(w.ID), Generation: 1, Path: stalePath, State: "READY"},
-		[]state.SlotRepository{{RepositoryID: string(w.Repositories[0].ID), WorktreePath: filepath.Join(stalePath, w.Repositories[0].RelativePath), State: "READY", BaseOID: "stale-oid"}}); err != nil {
+		slotAtPath(t, m, string(w.ID), staleID, stalePath, 1, "READY"),
+		[]state.SlotRepository{{RepositoryID: string(w.Repositories[0].ID), DirName: testDirName(w.Repositories[0], cfg), State: "READY", BaseOID: "stale-oid"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,9 +136,7 @@ func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 	// ensureStandby only checks out repositories used within hot_standby;
 	// mark this repository as previously leased so the standby it builds
 	// below is an actual hot checkout, not a COLD placeholder. That isolates
@@ -217,9 +213,7 @@ func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 	raw := openManagerCoverageDB(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
@@ -294,27 +288,28 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 	resolved, err := pool.ResolveBranches(ctx, m.git, w, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, cfg)
+	badID := domain.StableID("resolve-lease", "bad-path")
+	badPath := filepath.Join(cfg.Storage.WorktreeRoot, string(w.ID), badID)
+	if _, _, err := m.createSlotRoot(badPath, badPath); err != nil {
+		t.Fatal(err)
+	}
+	// The recorded directory name escapes the wx root. The fingerprint has to
+	// agree with it, because Fingerprint hashes the chosen name and a
+	// mismatch would be reported as an ordinary not-ready slot before the
+	// ownership check under test runs.
+	badDirName := escapingDirNameFor(t, cfg.Storage.WorktreeRoot, badPath)
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, badDirName, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	badID := domain.StableID("resolve-lease", "bad-path")
-	badPath := filepath.Join(cfg.Storage.WorktreeRoot, "workspaces", string(w.ID), "slots", badID, "root")
-	if _, err := m.createSlotRoot(badPath); err != nil {
-		t.Fatal(err)
-	}
-	outside := filepath.Join(t.TempDir(), "outside-worktree")
 	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: badID, WorkspaceID: string(w.ID), Generation: 1, Path: badPath, State: "READY"},
-		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: outside, State: "READY", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
+		slotAtPath(t, m, string(w.ID), badID, badPath, 1, "READY"),
+		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: badDirName, State: "READY", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -356,9 +351,7 @@ func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 	raw := openManagerCoverageDB(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
@@ -384,10 +377,11 @@ func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
 	}
-	// Fail the slot and move its recorded path outside every known wx root, so
-	// the retirement cannot prove ownership of what it would have to delete.
-	outside := filepath.Join(t.TempDir(), "unowned-slot")
-	if _, err := raw.ExecContext(ctx, `UPDATE slots SET state='FAILED',path=? WHERE id=?`, outside, ready.ID); err != nil {
+	// Fail the slot and move its recorded location outside every known wx
+	// root, so the retirement cannot prove ownership of what it would have to
+	// delete. A slot is now located by root generation plus root-relative
+	// path, so the escape is spelled in rel_path.
+	if _, err := raw.ExecContext(ctx, `UPDATE slots SET state='FAILED',rel_path=? WHERE id=?`, filepath.Join("..", "outside-slot"), ready.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -435,9 +429,7 @@ func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 	// A never-leased single-repository workspace's standby would otherwise
 	// register its sole repository COLD (see ensureStandby's hot_standby
 	// filter); mark it previously leased so this builds a real checkout to

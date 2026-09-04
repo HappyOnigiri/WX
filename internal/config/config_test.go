@@ -143,7 +143,7 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	values := map[string]string{
-		"storage.worktree_root": "$HOME/wx", "storage.backup_generations": "4", "storage.backup_retention": "24h",
+		"storage.worktree_root": "$HOME/wx", "storage.repo_dir_source": "directory", "storage.backup_generations": "4", "storage.backup_retention": "24h",
 		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3", "pool.git_concurrency_per_repository": "2",
 		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
 		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "logging.level": "debug",

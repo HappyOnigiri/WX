@@ -29,7 +29,7 @@ func TestNormalizeWorkspaceExclusionsDeduplicatesAndSorts(t *testing.T) {
 
 // TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure exercises
 // the MkdirAll failure branch in the pinned snapshot path: the deterministic
-// "recovery" directory name is pre-occupied by a regular file, so the
+// "_recovery" directory name is pre-occupied by a regular file, so the
 // recovery-snapshots directory can never be created.
 func TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure(t *testing.T) {
 	ownershipRoot := t.TempDir()
@@ -37,13 +37,13 @@ func TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure(t *testing.
 	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeWorkspaceTestFile(t, filepath.Join(ownershipRoot, "recovery"), "blocks directory creation", 0o600)
+	writeWorkspaceTestFile(t, filepath.Join(ownershipRoot, recoveryNamespace), "blocks directory creation", 0o600)
 	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, "recovery-blocked", nil, time.Now().Add(time.Hour)); err == nil || !strings.Contains(err.Error(), "create workspace recovery directory") {
+	if _, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "recovery-blocked", nil, time.Now().Add(time.Hour)); err == nil || !strings.Contains(err.Error(), "create workspace recovery directory") {
 		t.Fatalf("snapshot succeeded despite a blocked recovery directory: %v", err)
 	}
 }

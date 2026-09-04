@@ -43,7 +43,12 @@ type Config struct {
 	present      map[string]bool
 }
 type Storage struct {
-	WorktreeRoot      string   `yaml:"worktree_root,omitempty"`
+	WorktreeRoot string `yaml:"worktree_root,omitempty"`
+	// RepoDirSource selects how a repository's directory name inside a slot
+	// is derived: "remote" uses the origin URL's basename, "directory" uses
+	// the main worktree's own directory name. Per-repository overrides in
+	// Repositories take precedence.
+	RepoDirSource     string   `yaml:"repo_dir_source,omitempty"`
 	BackupGenerations int      `yaml:"backup_generations,omitempty"`
 	BackupRetention   Duration `yaml:"backup_retention,omitempty"`
 }
@@ -75,8 +80,15 @@ type Workspace struct {
 	Link []string `yaml:"link,omitempty"`
 }
 type Repository struct {
-	DefaultBranch string  `yaml:"default_branch,omitempty"`
-	Prepare       Prepare `yaml:"prepare,omitempty"`
+	DefaultBranch string `yaml:"default_branch,omitempty"`
+	// DirName pins the repository's directory name inside a slot. DirSource
+	// ("remote" or "directory") selects the derivation when DirName is empty.
+	// Both live outside the scalar key space walked by walkConfigLeaves
+	// (Repositories is a map), so they are set by editing the YAML directly,
+	// like default_branch and prepare.
+	DirName   string  `yaml:"dir_name,omitempty"`
+	DirSource string  `yaml:"dir_source,omitempty"`
+	Prepare   Prepare `yaml:"prepare,omitempty"`
 }
 type Prepare struct {
 	Command []string `yaml:"command,omitempty"`
@@ -89,9 +101,16 @@ type Logging struct {
 
 type Field struct{ Key, Value string }
 
+// RepoDirSourceRemote and RepoDirSourceDirectory are the two accepted values
+// of storage.repo_dir_source and repositories.<path>.dir_source.
+const (
+	RepoDirSourceRemote    = "remote"
+	RepoDirSourceDirectory = "directory"
+)
+
 func Defaults() Config {
 	return Config{
-		Version: 1, Storage: Storage{WorktreeRoot: "$HOME/dev/worktrees/wx", BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
+		Version: 1, Storage: Storage{WorktreeRoot: "$HOME/wx", RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2, GitConcurrencyPerRepository: 1},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
@@ -362,6 +381,14 @@ func Validate(c *Config) error {
 	}
 	if c.Storage.BackupGenerations < 1 || c.Storage.BackupRetention.Duration < 0 {
 		return errors.New("storage backup_generations must be positive and backup_retention must not be negative")
+	}
+	if c.Storage.RepoDirSource != RepoDirSourceRemote && c.Storage.RepoDirSource != RepoDirSourceDirectory {
+		return fmt.Errorf("storage.repo_dir_source must be %s or %s", RepoDirSourceRemote, RepoDirSourceDirectory)
+	}
+	for path, override := range c.Repositories {
+		if override.DirSource != "" && override.DirSource != RepoDirSourceRemote && override.DirSource != RepoDirSourceDirectory {
+			return fmt.Errorf("repositories.%s.dir_source must be %s or %s", path, RepoDirSourceRemote, RepoDirSourceDirectory)
+		}
 	}
 	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 || c.Pool.GitConcurrencyPerRepository < 1 {
 		return errors.New("pool counts must be non-negative and concurrency must be at least 1")

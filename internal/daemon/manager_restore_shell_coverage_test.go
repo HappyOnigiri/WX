@@ -14,62 +14,53 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-// TestRemoveColdRepositoryJobRecreatesSingleRepositorySlotShell exercises the
-// branch of removeColdRepositoryJob taken when the retiring repository's
-// worktree path is the slot root itself (a single-repository workspace),
-// which must recreate an empty, owned shell directory in its place after the
-// git worktree is removed so a later allocation can reuse the slot path.
-func TestRemoveColdRepositoryJobRecreatesSingleRepositorySlotShell(t *testing.T) {
-	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
-	workspaceRecord.Kind = "repository"
-	workspaceRecord.Repositories[0].RelativePath = "."
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
-		t.Fatal(err)
-	}
+// TestRemoveColdRepositoryJobKeepsTheSlotDirectoryAndItsMarker covers what
+// replaced removeColdRepositoryJob's shell-recreation branch. Every worktree
+// now lives one level below its slot directory, for a single-repository
+// workspace as much as for a bundle, so retiring a repository removes only
+// the worktree: the slot directory survives, and so does the ownership
+// marker that lets a later removal prove the slot is wx's.
+func TestRemoveColdRepositoryJobKeepsTheSlotDirectoryAndItsMarker(t *testing.T) {
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	repository := resolved[0].Repository
 	head := gitOutput(t, string(repository.MainPath), "rev-parse", "HEAD")
-
 	slotID := domain.StableID("cold-shell", "single-repo")
-	slotPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "cold-shell", slotID, "root")
-	if _, err := manager.createSlotRoot(slotPath); err != nil {
-		t.Fatal(err)
-	}
-	// createSlotRoot leaves the directory in place; a real worktree checkout
-	// needs to replace it, matching how a live prepare would populate it.
-	if err := os.RemoveAll(slotPath); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, string(repository.MainPath), "worktree", "add", "--detach", slotPath, head)
-	ensureOwnershipMarkerForTest(t, manager.Config().Storage.WorktreeRoot, slotPath, slotID, string(repository.CommonDir))
-	gitRun(t, string(repository.MainPath), "worktree", "lock", "--reason", "wx:"+slotID+":READY", slotPath)
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "RETIRING")
+	dirName := testDirName(repository, manager.Config())
+	worktreePath := filepath.Join(slot.Path, dirName)
+	gitRun(t, string(repository.MainPath), "worktree", "add", "--detach", worktreePath, head)
+	ensureOwnershipMarkerForTest(t, manager.Config().Storage.WorktreeRoot, worktreePath, workspace.MarkerIdentity{SlotID: slotID, RootID: slot.RootID, RepositoryID: string(repository.ID)}, string(repository.CommonDir))
+	gitRun(t, string(repository.MainPath), "worktree", "lock", "--reason", "wx:"+slotID+":READY", worktreePath)
 
-	// Kind "repository" canonicalizes to the workspace already registered for
-	// this common directory, so the workspace ID stays workspaceRecord.ID;
-	// only the recorded root needs to line up with the repository's own path.
-	workspaceRecord.Root = domain.CanonicalPath(string(repository.MainPath))
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: slotID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: slotPath, State: "RETIRING"},
-		[]state.SlotRepository{{RepositoryID: string(repository.ID), WorktreePath: slotPath, State: "RETIRING", BaseOID: head}}); err != nil {
+	if _, err := store.CreateStandby(ctx, slot,
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "RETIRING", BaseOID: head}}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-shell", SlotID: slotID, RepositoryID: string(repository.ID)}); err != nil {
 		t.Fatalf("single-repository cold removal: %v", err)
 	}
-	info, err := os.Lstat(slotPath)
+	if _, err := os.Lstat(worktreePath); !os.IsNotExist(err) {
+		t.Fatalf("retired worktree still exists: %v", err)
+	}
+	info, err := os.Lstat(slot.Path)
 	if err != nil || !info.IsDir() {
-		t.Fatalf("cold shell was not recreated as a directory: info=%v err=%v", info, err)
+		t.Fatalf("slot directory did not survive repository retirement: info=%v err=%v", info, err)
 	}
-	entries, err := os.ReadDir(slotPath)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("recreated cold shell was not empty: entries=%v err=%v", entries, err)
+	entries, err := os.ReadDir(slot.Path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	slot, err := store.Slot(ctx, slotID)
-	if err != nil || slot.State != "READY" {
-		t.Fatalf("single-repository cold slot=%+v err=%v", slot, err)
+	if len(entries) != 1 || entries[0].Name() != workspace.OwnershipMarkerName(string(repository.ID)) {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("slot directory contents=%v, want only the ownership marker", names)
+	}
+	finished, err := store.Slot(ctx, slotID)
+	if err != nil || finished.State != "READY" {
+		t.Fatalf("single-repository cold slot=%+v err=%v", finished, err)
 	}
 }
 
@@ -79,41 +70,27 @@ func TestRemoveColdRepositoryJobRecreatesSingleRepositorySlotShell(t *testing.T)
 // reason, instead of removing a worktree it cannot prove is safe to
 // reclaim.
 func TestRemoveColdRepositoryJobQuarantinesOnUnlockedWorktree(t *testing.T) {
-	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
-	workspaceRecord.Kind = "repository"
-	workspaceRecord.Repositories[0].RelativePath = "."
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
-		t.Fatal(err)
-	}
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	repository := resolved[0].Repository
 	head := gitOutput(t, string(repository.MainPath), "rev-parse", "HEAD")
 
 	slotID := domain.StableID("cold-shell", "unlocked")
-	slotPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "cold-shell", slotID, "root")
-	if _, err := manager.createSlotRoot(slotPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(slotPath); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, string(repository.MainPath), "worktree", "add", "--detach", slotPath, head)
-	ensureOwnershipMarkerForTest(t, manager.Config().Storage.WorktreeRoot, slotPath, slotID, string(repository.CommonDir))
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "RETIRING")
+	dirName := testDirName(repository, manager.Config())
+	worktreePath := filepath.Join(slot.Path, dirName)
+	gitRun(t, string(repository.MainPath), "worktree", "add", "--detach", worktreePath, head)
+	ensureOwnershipMarkerForTest(t, manager.Config().Storage.WorktreeRoot, worktreePath, workspace.MarkerIdentity{SlotID: slotID, RootID: slot.RootID, RepositoryID: string(repository.ID)}, string(repository.CommonDir))
 	// Deliberately do not lock the worktree with a recognized wx reason.
 
-	workspaceRecord.Root = domain.CanonicalPath(string(repository.MainPath))
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: slotID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: slotPath, State: "RETIRING"},
-		[]state.SlotRepository{{RepositoryID: string(repository.ID), WorktreePath: slotPath, State: "RETIRING", BaseOID: head}}); err != nil {
+	if _, err := store.CreateStandby(ctx, slot,
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "RETIRING", BaseOID: head}}); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-unlocked", SlotID: slotID, RepositoryID: string(repository.ID)}); err == nil {
 		t.Fatal("cold repository removal succeeded for an unlocked worktree")
 	}
-	if _, err := os.Lstat(filepath.Join(slotPath, ".git")); err != nil {
+	if _, err := os.Lstat(filepath.Join(worktreePath, ".git")); err != nil {
 		t.Fatalf("unlocked worktree was removed despite a failed removal: %v", err)
 	}
 }
@@ -133,22 +110,21 @@ func TestRestoreSlotCompletesMultiRepositoryWorkspaceRootRecovery(t *testing.T) 
 	// ownership validation below rejects the association before the
 	// workspace-root recovery branch under test is ever reached.
 	workspaceRecord.Root = domain.CanonicalPath(filepath.Dir(string(repository.MainPath)))
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord); err != nil {
+	workspaceRecord, _, err := store.UpsertWorkspaceGeneration(ctx, workspaceRecord)
+	if err != nil {
 		t.Fatal(err)
 	}
+	dirName := testDirName(repository, manager.Config())
 
 	parentID := domain.StableID("restore-multi", "parent")
-	parentRoot := filepath.Join(manager.Config().Storage.WorktreeRoot, "restore-multi", parentID, "root")
-	if _, err := manager.createSlotRoot(parentRoot); err != nil {
-		t.Fatal(err)
-	}
+	parentSlot := testSlot(t, manager, string(workspaceRecord.ID), parentID, 1, "ARCHIVED")
+	parentRoot := parentSlot.Path
 	const marker = "workspace root recovery marker"
 	if err := os.WriteFile(filepath.Join(parentRoot, "workspace-state.txt"), []byte(marker), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: parentID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: parentRoot, State: "ARCHIVED"},
-		[]state.SlotRepository{{RepositoryID: string(repository.ID), WorktreePath: filepath.Join(parentRoot, "repository"), State: "READY", BaseOID: resolved[0].OID}},
+	if _, err := store.CreateSlotSession(ctx, parentSlot,
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "READY", BaseOID: resolved[0].OID}},
 		state.Session{ID: parentID, WorkspaceID: string(workspaceRecord.ID), SlotID: parentID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(parentID)}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +132,7 @@ func TestRestoreSlotCompletesMultiRepositoryWorkspaceRootRecovery(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootSnapshot, err := archive.SnapshotWorkspaceAt(ctx, parentRoot, manager.Config().Storage.WorktreeRoot, owner, parentID, nil, time.Now().Add(time.Hour))
+	rootSnapshot, err := archive.SnapshotWorkspaceAt(ctx, parentRoot, manager.Config().Storage.WorktreeRoot, parentSlot.RootID, owner, parentID, nil, time.Now().Add(time.Hour))
 	releaseOwner()
 	if err != nil {
 		t.Fatalf("snapshot parent workspace root: %v", err)
@@ -166,15 +142,15 @@ func TestRestoreSlotCompletesMultiRepositoryWorkspaceRootRecovery(t *testing.T) 
 	}
 
 	childID := domain.StableID("restore-multi", "child")
-	childRoot := filepath.Join(manager.Config().Storage.WorktreeRoot, "restore-multi", childID, "root")
-	childWorktree := filepath.Join(childRoot, "repository")
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, manager.Config())
+	childSlot := testSlot(t, manager, string(workspaceRecord.ID), childID, 1, "RESTORING")
+	childRoot := childSlot.Path
+	childWorktree := filepath.Join(childRoot, dirName)
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, dirName, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: childID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: childRoot, State: "RESTORING"},
-		[]state.SlotRepository{{RepositoryID: string(repository.ID), WorktreePath: childWorktree, State: "RESTORING", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}},
+	if _, err := store.CreateSlotSession(ctx, childSlot,
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "RESTORING", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}},
 		state.Session{ID: childID, WorkspaceID: string(workspaceRecord.ID), SlotID: childID, ParentSessionID: parentID, State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken(childID)}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +158,7 @@ func TestRestoreSlotCompletesMultiRepositoryWorkspaceRootRecovery(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.newPreparer(manager.Config(), childRoot).PrepareForRestore(ctx, repository, childWorktree, resolved[0].OID, childID); err != nil {
+	if err := manager.newPreparer(manager.Config(), childSlot).PrepareForRestore(ctx, repository, childWorktree, resolved[0].OID, childID); err != nil {
 		releaseRoot()
 		t.Fatalf("prepare restoring repository worktree: %v", err)
 	}
@@ -216,15 +192,13 @@ func TestRestoreSlotQuarantinesUncertainWorkspaceRootOwnership(t *testing.T) {
 	repository := resolved[0].Repository
 
 	childID := domain.StableID("restore-multi", "unowned-child")
-	childRoot := filepath.Join(manager.Config().Storage.WorktreeRoot, "restore-multi", childID, "root")
-	childWorktree := filepath.Join(childRoot, "repository")
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, manager.Config())
+	dirName := testDirName(repository, manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, dirName, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: childID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: childRoot, State: "RESTORING"},
-		[]state.SlotRepository{{RepositoryID: string(repository.ID), WorktreePath: childWorktree, State: "READY", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
+	if _, err := store.CreateStandby(ctx, testSlot(t, manager, string(workspaceRecord.ID), childID, 1, "RESTORING"),
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "READY", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -246,15 +220,13 @@ func TestPrepareSlotQuarantinesUncertainRepositoryOwnershipInMultiRepository(t *
 	repository := resolved[0].Repository
 
 	slotID := domain.StableID("prepare-multi", "unowned")
-	slotRoot := filepath.Join(manager.Config().Storage.WorktreeRoot, "prepare-multi", slotID, "root")
-	slotWorktree := filepath.Join(slotRoot, "repository")
-	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, manager.Config())
+	dirName := testDirName(repository, manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, dirName, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: slotID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: slotRoot, State: "PREPARING"},
-		[]state.SlotRepository{{RepositoryID: string(repository.ID), WorktreePath: slotWorktree, State: "READY", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
+	if _, err := store.CreateStandby(ctx, testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING"),
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "READY", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
 	}
 

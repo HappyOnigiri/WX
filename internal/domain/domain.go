@@ -29,6 +29,59 @@ func NewID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+// shortIDAlphabet is lowercase base36. Uppercase letters are deliberately
+// excluded: these IDs are directory names and APFS is case-insensitive by
+// default, so a mixed-case alphabet would let two distinct IDs collide on
+// disk while remaining distinct in SQLite.
+const shortIDAlphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+// ShortIDLength is the fixed width of NewShortID's output. Six base36
+// characters give ~2.18e9 values, which keeps the collision probability below
+// 1% for the number of live slot/session rows a single-user install
+// accumulates while its tombstones are retained.
+const ShortIDLength = 6
+
+// NewShortID returns a ShortIDLength-character lowercase base36 identifier
+// drawn from crypto/rand. Bytes at or above the largest multiple of the
+// alphabet size are rejected rather than reduced modulo it, so every
+// character is uniformly distributed.
+func NewShortID() (string, error) {
+	const limit = 256 - (256 % len(shortIDAlphabet))
+	out := make([]byte, 0, ShortIDLength)
+	var buffer [ShortIDLength]byte
+	for len(out) < ShortIDLength {
+		if _, err := rand.Read(buffer[:]); err != nil {
+			return "", fmt.Errorf("generate short id: %w", err)
+		}
+		for _, b := range buffer {
+			if int(b) >= limit {
+				continue
+			}
+			out = append(out, shortIDAlphabet[int(b)%len(shortIDAlphabet)])
+			if len(out) == ShortIDLength {
+				break
+			}
+		}
+	}
+	return string(out), nil
+}
+
+// ValidShortID reports whether value is exactly the shape NewShortID
+// produces. Slot and workspace IDs become path components and Git ref
+// components, so a value read back from SQLite is checked before it is used
+// to build either.
+func ValidShortID(value string) bool {
+	if len(value) != ShortIDLength {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if !strings.ContainsRune(shortIDAlphabet, rune(value[i])) {
+			return false
+		}
+	}
+	return true
+}
+
 func StableID(parts ...string) string {
 	h := sha256.New()
 	for _, p := range parts {

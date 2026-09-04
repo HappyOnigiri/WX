@@ -17,25 +17,55 @@ import (
 
 const ownershipMarkerPrefix = ".wx-owner-"
 
+// ownershipMarkerVersion is the marker schema. Version 2 dropped the
+// absolute Target path: the durable root generation plus the recorded inode
+// identity in SQLite now carry the role that redundant path played, and the
+// marker no longer has to be rewritten when the configured root moves.
+const ownershipMarkerVersion = 2
+
 type ownershipMarker struct {
-	Version   int    `json:"version"`
-	SlotID    string `json:"slot_id"`
-	Target    string `json:"target"`
-	CommonDir string `json:"common_dir"`
+	Version      int    `json:"version"`
+	SlotID       string `json:"slot_id"`
+	RootID       string `json:"root_id"`
+	RepositoryID string `json:"repository_id"`
+	CommonDir    string `json:"common_dir"`
+}
+
+// MarkerIdentity names the slot-scoped marker for one repository worktree.
+// The marker is the only on-disk evidence of ownership if SQLite is lost, so
+// it lives in the slot directory (the worktree's parent) and survives the
+// worktree's own removal.
+type MarkerIdentity struct {
+	SlotID       string
+	RootID       string
+	RepositoryID string
+}
+
+func (m MarkerIdentity) validate(requireSlot bool) error {
+	if m.RepositoryID == "" || strings.ContainsAny(m.RepositoryID, `/\`) || m.RepositoryID == "." || m.RepositoryID == ".." {
+		return errors.New("invalid wx ownership repository id")
+	}
+	if m.RootID == "" || strings.ContainsAny(m.RootID, `/\`) {
+		return errors.New("invalid wx ownership root id")
+	}
+	if strings.ContainsAny(m.SlotID, `/\`) || (requireSlot && m.SlotID == "") {
+		return errors.New("invalid wx ownership slot id")
+	}
+	return nil
 }
 
 // EnsureOwnershipMarkerAt is the descriptor-bound variant used while a
 // daemon-held worktree root is pinned. It keeps marker creation in the same
 // inode namespace as allocation and worktree preparation.
-func EnsureOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string) error {
-	if slotID == "" || strings.ContainsAny(slotID, `/\`) {
-		return errors.New("invalid wx ownership slot id")
+func EnsureOwnershipMarkerAt(owner *os.Root, root, target string, identity MarkerIdentity, commonDir string) error {
+	if err := identity.validate(true); err != nil {
+		return err
 	}
-	marker, err := newOwnershipMarkerAt(owner, root, target, slotID, commonDir, true)
+	marker, err := newOwnershipMarkerAt(owner, root, target, identity, commonDir, true)
 	if err != nil {
 		return err
 	}
-	markerRelative, err := ownershipMarkerRelative(root, target)
+	markerRelative, err := ownershipMarkerRelative(root, target, identity.RepositoryID)
 	if err != nil {
 		return err
 	}
@@ -87,15 +117,15 @@ func ensureOwnershipMarkerAt(owner *os.Root, markerRelative string, marker owner
 // ValidateOwnershipMarkerAt verifies a marker through a previously pinned
 // root descriptor. Pathnames may be replaced after the caller obtained the
 // descriptor without redirecting this read to an outside directory.
-func ValidateOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string) error {
-	if strings.ContainsAny(slotID, `/\`) {
-		return markerOwnershipFailure(errors.New("invalid wx ownership slot id"))
+func ValidateOwnershipMarkerAt(owner *os.Root, root, target string, identity MarkerIdentity, commonDir string) error {
+	if err := identity.validate(false); err != nil {
+		return markerOwnershipFailure(err)
 	}
-	marker, err := newOwnershipMarkerAt(owner, root, target, slotID, commonDir, false)
+	marker, err := newOwnershipMarkerAt(owner, root, target, identity, commonDir, false)
 	if err != nil {
 		return markerOwnershipFailure(err)
 	}
-	markerRelative, err := ownershipMarkerRelative(root, target)
+	markerRelative, err := ownershipMarkerRelative(root, target, identity.RepositoryID)
 	if err != nil {
 		return markerOwnershipFailure(err)
 	}
@@ -103,10 +133,10 @@ func ValidateOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir s
 	if err != nil {
 		return markerOwnershipFailure(err)
 	}
-	if actual.Target != marker.Target || actual.CommonDir != marker.CommonDir {
+	if actual.RootID != marker.RootID || actual.RepositoryID != marker.RepositoryID || actual.CommonDir != marker.CommonDir {
 		return markerOwnershipFailure(errors.New("wx ownership marker does not match expected worktree"))
 	}
-	if slotID != "" && actual.SlotID != slotID {
+	if identity.SlotID != "" && actual.SlotID != identity.SlotID {
 		return markerOwnershipFailure(errors.New("wx ownership marker does not match expected slot"))
 	}
 	return nil
@@ -114,12 +144,15 @@ func ValidateOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir s
 
 // ValidateRemovalOwnership verifies the marker even when the physical
 // worktree leaf is missing and returns the slot id encoded by the marker.
-func ValidateRemovalOwnership(root, target, commonDir string) (string, error) {
-	marker, err := newOwnershipMarker(target, "", commonDir, true)
+func ValidateRemovalOwnership(root, target string, identity MarkerIdentity, commonDir string) (string, error) {
+	if err := identity.validate(false); err != nil {
+		return "", markerOwnershipFailure(err)
+	}
+	marker, err := newOwnershipMarker(target, identity, commonDir, true)
 	if err != nil {
 		return "", markerOwnershipFailure(err)
 	}
-	owner, markerRelative, err := openMarkerRoot(root, target)
+	owner, markerRelative, err := openMarkerRoot(root, target, identity.RepositoryID)
 	if err != nil {
 		return "", markerOwnershipFailure(err)
 	}
@@ -128,11 +161,8 @@ func ValidateRemovalOwnership(root, target, commonDir string) (string, error) {
 	if err != nil {
 		return "", markerOwnershipFailure(err)
 	}
-	if actual.Target != marker.Target || actual.CommonDir != marker.CommonDir {
-		if actual.Target == marker.Target && actual.CommonDir != marker.CommonDir {
-			return "", markerOwnershipFailure(errors.New("wx ownership marker common directory does not match recorded worktree"))
-		}
-		return "", markerOwnershipFailure(errors.New("wx ownership marker does not match recorded worktree"))
+	if err := compareRemovalMarker(actual, marker); err != nil {
+		return "", err
 	}
 	return actual.SlotID, nil
 }
@@ -140,12 +170,15 @@ func ValidateRemovalOwnership(root, target, commonDir string) (string, error) {
 // ValidateRemovalOwnershipAt is the descriptor-bound counterpart used by the
 // daemon while a configured wx root is pinned. It avoids resolving target
 // through the mutable lexical root while constructing the expected marker.
-func ValidateRemovalOwnershipAt(owner *os.Root, root, target, commonDir string) (string, error) {
-	marker, err := newOwnershipMarkerAt(owner, root, target, "", commonDir, true)
+func ValidateRemovalOwnershipAt(owner *os.Root, root, target string, identity MarkerIdentity, commonDir string) (string, error) {
+	if err := identity.validate(false); err != nil {
+		return "", markerOwnershipFailure(err)
+	}
+	marker, err := newOwnershipMarkerAt(owner, root, target, identity, commonDir, true)
 	if err != nil {
 		return "", markerOwnershipFailure(err)
 	}
-	markerRelative, err := ownershipMarkerRelative(root, target)
+	markerRelative, err := ownershipMarkerRelative(root, target, identity.RepositoryID)
 	if err != nil {
 		return "", markerOwnershipFailure(err)
 	}
@@ -153,10 +186,20 @@ func ValidateRemovalOwnershipAt(owner *os.Root, root, target, commonDir string) 
 	if err != nil {
 		return "", markerOwnershipFailure(err)
 	}
-	if actual.Target != marker.Target || actual.CommonDir != marker.CommonDir {
-		return "", markerOwnershipFailure(errors.New("wx ownership marker does not match recorded worktree"))
+	if err := compareRemovalMarker(actual, marker); err != nil {
+		return "", err
 	}
 	return actual.SlotID, nil
+}
+
+func compareRemovalMarker(actual, expected ownershipMarker) error {
+	if actual.RootID != expected.RootID || actual.RepositoryID != expected.RepositoryID {
+		return markerOwnershipFailure(errors.New("wx ownership marker does not match recorded worktree"))
+	}
+	if actual.CommonDir != expected.CommonDir {
+		return markerOwnershipFailure(errors.New("wx ownership marker common directory does not match recorded worktree"))
+	}
+	return nil
 }
 
 func markerOwnershipFailure(err error) error {
@@ -166,7 +209,7 @@ func markerOwnershipFailure(err error) error {
 	return fmt.Errorf("%w: %w", state.ErrOwnership, err)
 }
 
-func newOwnershipMarker(target, slotID, commonDir string, allowMissingTarget bool) (ownershipMarker, error) {
+func newOwnershipMarker(target string, identity MarkerIdentity, commonDir string, allowMissingTarget bool) (ownershipMarker, error) {
 	absoluteTarget, err := filepath.Abs(filepath.Clean(target))
 	if err != nil {
 		return ownershipMarker{}, err
@@ -182,38 +225,20 @@ func newOwnershipMarker(target, slotID, commonDir string, allowMissingTarget boo
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return ownershipMarker{}, errors.New("worktree target is not a physical directory")
 		}
-		absoluteTarget, err = filepath.EvalSymlinks(absoluteTarget)
-		if err != nil {
-			return ownershipMarker{}, err
-		}
-		absoluteTarget = filepath.Clean(absoluteTarget)
 	} else if !allowMissingTarget || !errors.Is(statErr, os.ErrNotExist) {
 		return ownershipMarker{}, statErr
 	}
-	absoluteCommon, err := filepath.Abs(filepath.Clean(commonDir))
-	if err != nil {
-		return ownershipMarker{}, err
-	}
-	absoluteCommon, err = filepath.EvalSymlinks(absoluteCommon)
-	if err != nil {
-		return ownershipMarker{}, fmt.Errorf("canonicalize Git common directory: %w", err)
-	}
-	return ownershipMarker{Version: 1, SlotID: slotID, Target: filepath.Clean(absoluteTarget), CommonDir: filepath.Clean(absoluteCommon)}, nil
+	return markerExpectation(identity, commonDir)
 }
 
 // newOwnershipMarkerAt constructs a marker expectation without following the
-// target pathname. The target is first proven to be the directory represented
-// by owner (or to have a descriptor-safe parent when it is the missing leaf),
-// then its absolute lexical spelling is retained as the canonical wx path.
-// This is important after the configured root has been renamed: evaluating
-// target through the replacement pathname could otherwise bind a marker to an
-// unrelated outside directory.
-func newOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string, allowMissingTarget bool) (ownershipMarker, error) {
+// target pathname. The target is first proven to be reachable through owner
+// (or to have a descriptor-safe parent when it is the missing leaf). Since
+// version 2 the marker records no absolute path at all, so the root
+// generation ID it carries is what ties it to a particular wx root.
+func newOwnershipMarkerAt(owner *os.Root, root, target string, identity MarkerIdentity, commonDir string, allowMissingTarget bool) (ownershipMarker, error) {
 	if owner == nil {
 		return ownershipMarker{}, errors.New("wx ownership root is nil")
-	}
-	if slotID != "" && strings.ContainsAny(slotID, `/\`) {
-		return ownershipMarker{}, errors.New("invalid wx ownership slot id")
 	}
 	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
@@ -251,6 +276,10 @@ func newOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string
 			return ownershipMarker{}, closeErr
 		}
 	}
+	return markerExpectation(identity, commonDir)
+}
+
+func markerExpectation(identity MarkerIdentity, commonDir string) (ownershipMarker, error) {
 	absoluteCommon, err := filepath.Abs(filepath.Clean(commonDir))
 	if err != nil {
 		return ownershipMarker{}, err
@@ -259,33 +288,33 @@ func newOwnershipMarkerAt(owner *os.Root, root, target, slotID, commonDir string
 	if err != nil {
 		return ownershipMarker{}, fmt.Errorf("canonicalize Git common directory: %w", err)
 	}
-	return ownershipMarker{Version: 1, SlotID: slotID, Target: filepath.Clean(absoluteTarget), CommonDir: filepath.Clean(absoluteCommon)}, nil
+	return ownershipMarker{
+		Version: ownershipMarkerVersion, SlotID: identity.SlotID, RootID: identity.RootID,
+		RepositoryID: identity.RepositoryID, CommonDir: filepath.Clean(absoluteCommon),
+	}, nil
 }
 
-func openMarkerRoot(root, target string) (*os.Root, string, error) {
+func openMarkerRoot(root, target, repositoryID string) (*os.Root, string, error) {
 	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
 		return nil, "", err
 	}
-	absoluteTarget, err := filepath.Abs(filepath.Clean(target))
+	relative, err := ownershipMarkerRelative(absoluteRoot, target, repositoryID)
 	if err != nil {
 		return nil, "", err
 	}
-	if !domain.IsWithin(absoluteRoot, absoluteTarget) {
-		return nil, "", errors.New("worktree target is outside wx ownership root")
-	}
-	marker := filepath.Join(ownershipMarkerBase(absoluteRoot, absoluteTarget), ownershipMarkerNameForTarget(absoluteTarget))
-	if !domain.IsWithin(absoluteRoot, marker) {
-		return nil, "", errors.New("wx ownership marker is outside ownership root")
-	}
-	owner, relative, err := domain.OpenOwnedRoot(absoluteRoot, marker)
+	owner, markerRelative, err := domain.OpenOwnedRoot(absoluteRoot, filepath.Join(absoluteRoot, relative))
 	if err != nil {
 		return nil, "", err
 	}
-	return owner, relative, nil
+	return owner, markerRelative, nil
 }
 
-func ownershipMarkerRelative(root, target string) (string, error) {
+// ownershipMarkerRelative places the marker in the worktree's parent, which
+// in the wx layout is always the slot directory. Keeping it outside the
+// worktree is what lets an interrupted removal prove ownership again on the
+// retry: the worktree is gone, the marker is not.
+func ownershipMarkerRelative(root, target, repositoryID string) (string, error) {
 	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
 		return "", err
@@ -294,33 +323,30 @@ func ownershipMarkerRelative(root, target string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	marker := filepath.Join(ownershipMarkerBase(absoluteRoot, absoluteTarget), ownershipMarkerNameForTarget(absoluteTarget))
+	name, err := ownershipMarkerName(repositoryID)
+	if err != nil {
+		return "", err
+	}
+	marker := filepath.Join(filepath.Dir(absoluteTarget), name)
 	if !domain.IsWithin(absoluteRoot, marker) {
 		return "", errors.New("wx ownership marker is outside ownership root")
 	}
 	return filepath.Rel(absoluteRoot, marker)
 }
 
-func ownershipMarkerNameForTarget(target string) string {
-	return ownershipMarkerPrefix + domain.StableID("worktree", filepath.Clean(target))
+func ownershipMarkerName(repositoryID string) (string, error) {
+	if repositoryID == "" || strings.ContainsAny(repositoryID, `/\`) || repositoryID == "." || repositoryID == ".." {
+		return "", errors.New("invalid wx ownership repository id")
+	}
+	return ownershipMarkerPrefix + repositoryID, nil
 }
 
-func ownershipMarkerBase(root, target string) string {
-	relative, err := filepath.Rel(root, target)
-	if err != nil {
-		return filepath.Dir(target)
-	}
-	parts := strings.Split(relative, string(filepath.Separator))
-	for index := 0; index+2 < len(parts); index++ {
-		if (parts[index] == "slots" || parts[index] == "unbound") && parts[index+1] != "" && parts[index+2] == "root" {
-			base := root
-			for _, part := range parts[:index+2] {
-				base = filepath.Join(base, part)
-			}
-			return base
-		}
-	}
-	return filepath.Dir(target)
+// OwnershipMarkerName is the exported spelling used by internal/daemon to
+// exclude a slot's markers from the multi-repository workspace bundle. The
+// markers sit in the slot directory, which is that bundle's root, and they
+// must survive both the archive and the pre-restore prune.
+func OwnershipMarkerName(repositoryID string) string {
+	return ownershipMarkerPrefix + repositoryID
 }
 
 func validateMarkerContents(owner *os.Root, relative string, expected ownershipMarker) error {
@@ -359,7 +385,7 @@ func readOwnershipMarker(owner *os.Root, relative string) (ownershipMarker, erro
 		}
 		return ownershipMarker{}, fmt.Errorf("decode wx ownership marker trailing data: %w", err)
 	}
-	if marker.Version != 1 || marker.SlotID == "" || strings.ContainsAny(marker.SlotID, `/\`) || marker.Target == "" || marker.CommonDir == "" {
+	if marker.Version != ownershipMarkerVersion || marker.SlotID == "" || strings.ContainsAny(marker.SlotID, `/\`) || marker.RootID == "" || marker.RepositoryID == "" || marker.CommonDir == "" {
 		return ownershipMarker{}, errors.New("wx ownership marker is incomplete")
 	}
 	return marker, nil

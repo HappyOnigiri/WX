@@ -14,13 +14,14 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
 func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	slotRoot := filepath.Join(root, "workspaces", string(workspaceRecord.ID), "slots", "slot", "root")
-	identity, err := manager.createSlotRoot(slotRoot)
+	slotRoot := filepath.Join(root, string(workspaceRecord.ID), "slot")
+	identity, _, err := manager.createSlotRoot(slotRoot, slotRoot)
 	if err != nil {
 		t.Fatalf("create slot root: %v", err)
 	}
@@ -56,10 +57,16 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 	if err != nil || len(paths) != 1 || filepath.Clean(paths[0]) != filepath.Clean(slotRoot) {
 		t.Fatalf("owned artifact paths=%v err=%v", paths, err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "workspaces", "ignored"), []byte("file"), 0o600); err != nil {
+	// A regular file at the workspace level and a symlinked namespace are
+	// neither workspaces nor slots, and a regular file inside a workspace
+	// namespace is not a slot directory.
+	if err := os.WriteFile(filepath.Join(root, "ignored"), []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(t.TempDir(), filepath.Join(root, "unbound-link")); err != nil {
+	if err := os.WriteFile(filepath.Join(root, string(workspaceRecord.ID), "regular"), []byte("file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "namespace-link")); err != nil {
 		t.Fatal(err)
 	}
 	if paths, err := manager.ownedRootArtifactPaths(root); err != nil || len(paths) != 1 {
@@ -73,7 +80,7 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 	if _, err := manager.leaseRootIdentity(filepath.Join(t.TempDir(), "outside")); err == nil {
 		t.Fatal("outside lease identity succeeded")
 	}
-	if _, err := manager.createSlotRoot(filepath.Join(t.TempDir(), "outside")); err == nil {
+	if _, _, err := manager.createSlotRoot(filepath.Join(t.TempDir(), "outside"), filepath.Join(t.TempDir(), "outside")); err == nil {
 		t.Fatal("outside slot root creation succeeded")
 	}
 	if _, _, err := manager.holdVerifiedRootForPath(filepath.Join(t.TempDir(), "outside")); !errors.Is(err, state.ErrOwnership) {
@@ -177,13 +184,10 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	}
 
 	multiID := domain.StableID("expiry-matrix", "multi")
-	multiPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "expiry", multiID, "root")
-	if err := os.MkdirAll(multiPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
+	multiSlot := testSlot(t, manager, string(workspaceRecord.ID), multiID, 1, "ARCHIVED")
 	repoID := string(workspaceRecord.Repositories[0].ID)
-	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: multiID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: multiPath, State: "ARCHIVED"}, []state.SlotRepository{{RepositoryID: repoID, WorktreePath: filepath.Join(multiPath, "repository"), State: "READY", BaseOID: "head"}},
+	if _, err := store.CreateSlotSession(ctx, multiSlot,
+		[]state.SlotRepository{{RepositoryID: repoID, DirName: "repository", State: "READY", BaseOID: "head"}},
 		state.Session{ID: multiID, WorkspaceID: string(workspaceRecord.ID), SlotID: multiID, State: "ARCHIVED", AgentKind: "matrix", TokenHash: state.HashToken(multiID)}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -192,15 +196,13 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	}
 
 	validID := domain.StableID("expiry-matrix", "workspace-snapshot")
-	validPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "expiry", validID, "root")
-	if _, err := manager.createSlotRoot(validPath); err != nil {
-		t.Fatal(err)
-	}
+	validSlot := testSlot(t, manager, string(workspaceRecord.ID), validID, 1, "ARCHIVED")
+	validPath := validSlot.Path
 	if err := os.WriteFile(filepath.Join(validPath, "workspace.txt"), []byte("workspace"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: validID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: validPath, State: "ARCHIVED"}, []state.SlotRepository{{RepositoryID: repoID, WorktreePath: filepath.Join(validPath, "repository"), State: "READY", BaseOID: "head"}},
+	if _, err := store.CreateSlotSession(ctx, validSlot,
+		[]state.SlotRepository{{RepositoryID: repoID, DirName: "repository", State: "READY", BaseOID: "head"}},
 		state.Session{ID: validID, WorkspaceID: string(workspaceRecord.ID), SlotID: validID, State: "ARCHIVED", AgentKind: "matrix", TokenHash: state.HashToken(validID)}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +210,7 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootSnapshot, err := archive.SnapshotWorkspaceAt(ctx, validPath, manager.Config().Storage.WorktreeRoot, owner, validID, nil, time.Now().Add(time.Hour))
+	rootSnapshot, err := archive.SnapshotWorkspaceAt(ctx, validPath, manager.Config().Storage.WorktreeRoot, validSlot.RootID, owner, validID, nil, time.Now().Add(time.Hour))
 	releaseOwner()
 	if err != nil {
 		t.Fatalf("snapshot workspace: %v", err)
@@ -219,11 +221,9 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	if count := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{validID: nil}, archiveManager); count != 1 {
 		t.Fatalf("valid workspace snapshot expiry count=%d", count)
 	}
-	outsideArchive := filepath.Join(t.TempDir(), "outside-archive")
-	if err := os.WriteFile(outsideArchive, []byte("archive"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveWorkspaceSnapshot(ctx, state.WorkspaceSnapshot{SessionID: multiID, ArchivePath: outsideArchive, SHA256: "bad", Status: "ARCHIVED", CreatedAt: state.FormatTime(time.Now()), ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))}); err != nil {
+	// A snapshot recorded at a root-relative path that leaves the root is the
+	// remaining way to express an archive wx does not own.
+	if err := store.SaveWorkspaceSnapshot(ctx, state.WorkspaceSnapshot{SessionID: multiID, RootID: multiSlot.RootID, RelPath: filepath.Join("..", "outside-archive"), SHA256: "bad", Status: "ARCHIVED", CreatedAt: state.FormatTime(time.Now()), ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))}); err != nil {
 		t.Fatal(err)
 	}
 	if count := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{multiID: nil}, archiveManager); count != 0 {
@@ -241,11 +241,9 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	repositoryWorkspace.ID = domain.WorkspaceID(domain.StableID("expiry-matrix", "repository-workspace"))
 	repositoryWorkspace.Kind = "repository"
 	repositoryWorkspace.Root = domain.CanonicalPath(filepath.Join(t.TempDir(), "repository-workspace"))
-	if _, err := store.UpsertWorkspaceGeneration(ctx, repositoryWorkspace); err != nil {
-		t.Fatal(err)
-	}
+	repositoryWorkspace = registerTestWorkspace(t, store, repositoryWorkspace)
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: repositorySessionID, WorkspaceID: string(repositoryWorkspace.ID), Generation: 1, Path: repositoryPath, State: "ARCHIVED"}, []state.SlotRepository{{RepositoryID: string(repositoryWorkspace.Repositories[0].ID), WorktreePath: repositoryPath, State: "READY", BaseOID: "head"}},
+		slotAtPath(t, manager, string(repositoryWorkspace.ID), repositorySessionID, repositoryPath, 1, "ARCHIVED"), []state.SlotRepository{{RepositoryID: string(repositoryWorkspace.Repositories[0].ID), DirName: "repository", State: "READY", BaseOID: "head"}},
 		state.Session{ID: repositorySessionID, WorkspaceID: string(repositoryWorkspace.ID), SlotID: repositorySessionID, State: "ARCHIVED", AgentKind: "matrix", TokenHash: state.HashToken(repositorySessionID)}, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -258,8 +256,7 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	if err := os.MkdirAll(retiringPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	repositoryPathOutside := filepath.Join(t.TempDir(), "foreign-worktree")
-	if _, err := store.CreateStandby(ctx, state.Slot{ID: retiringID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: retiringPath, State: "RETIRING"}, []state.SlotRepository{{RepositoryID: string(workspaceRecord.Repositories[0].ID), WorktreePath: repositoryPathOutside, State: "RETIRING", BaseOID: "head"}}); err != nil {
+	if _, err := store.CreateStandby(ctx, slotAtPath(t, manager, string(workspaceRecord.ID), retiringID, retiringPath, 1, "RETIRING"), []state.SlotRepository{{RepositoryID: string(workspaceRecord.Repositories[0].ID), DirName: escapingDirNameFor(t, manager.Config().Storage.WorktreeRoot, retiringPath), State: "RETIRING", BaseOID: "head"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-boundary", Kind: "REMOVE_REPOSITORY", SlotID: retiringID, RepositoryID: string(workspaceRecord.Repositories[0].ID)}); !errors.Is(err, state.ErrOwnership) {
@@ -269,26 +266,24 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 		t.Fatalf("outside cold repository slot=%+v err=%v", slot, err)
 	}
 
-	coldOutside := filepath.Join(t.TempDir(), "cold-worktree")
 	coldID := domain.StableID("expiry-matrix", "already-cold")
 	coldPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "expiry", coldID, "root")
 	if err := os.MkdirAll(coldPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(ctx, state.Slot{ID: coldID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: coldPath, State: "READY"}, []state.SlotRepository{{RepositoryID: string(workspaceRecord.Repositories[0].ID), WorktreePath: coldOutside, State: "COLD", BaseOID: "head"}}); err != nil {
+	if _, err := store.CreateStandby(ctx, slotAtPath(t, manager, string(workspaceRecord.ID), coldID, coldPath, 1, "READY"), []state.SlotRepository{{RepositoryID: string(workspaceRecord.Repositories[0].ID), DirName: escapingDirNameFor(t, manager.Config().Storage.WorktreeRoot, coldPath), State: "COLD", BaseOID: "head"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-idempotent", Kind: "REMOVE_REPOSITORY", SlotID: coldID, RepositoryID: string(workspaceRecord.Repositories[0].ID)}); err != nil {
 		t.Fatalf("already cold repository removal: %v", err)
 	}
 
-	wrongOutside := filepath.Join(t.TempDir(), "wrong-worktree")
 	wrongID := domain.StableID("expiry-matrix", "wrong-state")
 	wrongPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "expiry", wrongID, "root")
 	if err := os.MkdirAll(wrongPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(ctx, state.Slot{ID: wrongID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: wrongPath, State: "READY"}, []state.SlotRepository{{RepositoryID: string(workspaceRecord.Repositories[0].ID), WorktreePath: wrongOutside, State: "READY", BaseOID: "head"}}); err != nil {
+	if _, err := store.CreateStandby(ctx, slotAtPath(t, manager, string(workspaceRecord.ID), wrongID, wrongPath, 1, "READY"), []state.SlotRepository{{RepositoryID: string(workspaceRecord.Repositories[0].ID), DirName: escapingDirNameFor(t, manager.Config().Storage.WorktreeRoot, wrongPath), State: "READY", BaseOID: "head"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-wrong-state", Kind: "REMOVE_REPOSITORY", SlotID: wrongID, RepositoryID: string(workspaceRecord.Repositories[0].ID)}); err == nil {
@@ -334,25 +329,21 @@ func TestManagerColdRepositoryRemovalCompletesOwnedWorktree(t *testing.T) {
 	repository := workspaceRecord.Repositories[0]
 	head := gitOutput(t, string(repository.MainPath), "rev-parse", "HEAD")
 	slotID := domain.StableID("cold-removal", "owned")
-	slotPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "cold", slotID, "root")
-	if _, err := manager.createSlotRoot(slotPath); err != nil {
-		t.Fatal(err)
-	}
-	worktreePath := filepath.Join(slotPath, "repository")
-	gitRun(t, string(repository.MainPath), "worktree", "add", "--detach", worktreePath, head)
-	ensureOwnershipMarkerForTest(t, manager.Config().Storage.WorktreeRoot, worktreePath, slotID, string(repository.CommonDir))
-	gitRun(t, string(repository.MainPath), "worktree", "lock", "--reason", "wx:"+slotID+":READY", worktreePath)
 	ownedWorkspace := workspaceRecord
-	ownedWorkspace.ID = domain.WorkspaceID(domain.StableID("cold-removal", "workspace"))
 	ownedWorkspace.Root = domain.CanonicalPath(filepath.Dir(string(repository.MainPath)))
 	ownedWorkspace.Repositories = append([]discovery.Repository(nil), workspaceRecord.Repositories...)
 	ownedWorkspace.Repositories[0].RelativePath = filepath.Base(string(repository.MainPath))
-	if _, err := store.UpsertWorkspaceGeneration(ctx, ownedWorkspace); err != nil {
+	ownedWorkspace, _, err := store.UpsertWorkspaceGeneration(ctx, ownedWorkspace)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: slotID, WorkspaceID: string(ownedWorkspace.ID), Generation: 1, Path: slotPath, State: "RETIRING"},
-		[]state.SlotRepository{{RepositoryID: string(repository.ID), WorktreePath: worktreePath, State: "RETIRING", BaseOID: head}}); err != nil {
+	slot := testSlot(t, manager, string(ownedWorkspace.ID), slotID, 1, "RETIRING")
+	worktreePath := filepath.Join(slot.Path, "repository")
+	gitRun(t, string(repository.MainPath), "worktree", "add", "--detach", worktreePath, head)
+	ensureOwnershipMarkerForTest(t, manager.Config().Storage.WorktreeRoot, worktreePath, workspace.MarkerIdentity{SlotID: slotID, RootID: slot.RootID, RepositoryID: string(repository.ID)}, string(repository.CommonDir))
+	gitRun(t, string(repository.MainPath), "worktree", "lock", "--reason", "wx:"+slotID+":READY", worktreePath)
+	if _, err := store.CreateStandby(ctx, slot,
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: "repository", State: "RETIRING", BaseOID: head}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-owned", SlotID: slotID, RepositoryID: string(repository.ID)}); err != nil {
@@ -361,8 +352,8 @@ func TestManagerColdRepositoryRemovalCompletesOwnedWorktree(t *testing.T) {
 	if _, err := os.Lstat(worktreePath); !os.IsNotExist(err) {
 		t.Fatalf("removed worktree still exists: %v", err)
 	}
-	slot, err := store.Slot(ctx, slotID)
-	if err != nil || slot.State != "READY" {
-		t.Fatalf("finished cold slot=%+v err=%v", slot, err)
+	finished, err := store.Slot(ctx, slotID)
+	if err != nil || finished.State != "READY" {
+		t.Fatalf("finished cold slot=%+v err=%v", finished, err)
 	}
 }

@@ -24,8 +24,8 @@ func TestScheduleColdRepositoryRemovalsSurvivesQuarantineStorageFailure(t *testi
 	slotID := domain.StableID("cold-schedule", "quarantine-fault")
 	outsidePath := filepath.Join(t.TempDir(), "outside-worktree-fault")
 	if _, err := store.CreateStandby(ctx,
-		state.Slot{ID: slotID, WorkspaceID: string(workspaceRecord.ID), Generation: 1, Path: filepath.Join(manager.Config().Storage.WorktreeRoot, "cold-schedule", slotID, "root"), State: "RETIRING"},
-		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), WorktreePath: outsidePath, State: "RETIRING", BaseOID: resolved[0].OID}}); err != nil {
+		slotAtPath(t, manager, string(workspaceRecord.ID), slotID, filepath.Join(manager.Config().Storage.WorktreeRoot, "cold-schedule", slotID, "root"), 1, "RETIRING"),
+		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: "repository", State: "RETIRING", BaseOID: resolved[0].OID}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,7 +56,7 @@ func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
 	ctx, manager, store, _, _, databasePath := managerCoverageFixture(t)
 	missingID := "missing-artifact"
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: missingID, Generation: 1, Path: filepath.Join(manager.Config().Storage.WorktreeRoot, "missing-artifact"), State: "LEASED"},
+		slotAtPath(t, manager, "", missingID, filepath.Join(manager.Config().Storage.WorktreeRoot, "missing-artifact"), 1, "LEASED"),
 		nil,
 		state.Session{ID: missingID, SlotID: missingID, State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken(missingID)}, ""); err != nil {
 		t.Fatal(err)
@@ -102,15 +102,17 @@ func TestRemoveSlotWorktreesWrapsRepositorySnapshotStorageFailure(t *testing.T) 
 	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "repository", Repositories: []discovery.Repository{
 		{ID: "repository", MainPath: discoveryPath(filepath.Join(root, "repository")), CommonDir: discoveryPath(filepath.Join(root, "repository", ".git")), DefaultBranch: "main"},
 	}}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
+	// The store owns workspace identity now, so the durable ID has to come
+	// back from the upsert; the proposal above is discarded.
+	registered, _, err := store.UpsertWorkspaceGeneration(ctx, w)
+	if err != nil {
 		t.Fatal(err)
 	}
-	slotPath := filepath.Join(cfg.Storage.WorktreeRoot, "slot")
+	workspaceID := string(registered.ID)
+	slot := testSlot(t, manager, workspaceID, "slot", 1, "REMOVING")
 	sessionID := "session"
-	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: slotPath, State: "REMOVING"},
-		nil,
-		state.Session{ID: sessionID, WorkspaceID: "workspace", SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(sessionID)}, ""); err != nil {
+	if _, err := store.CreateSlotSession(ctx, slot, nil,
+		state.Session{ID: sessionID, WorkspaceID: workspaceID, SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(sessionID)}, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,7 +125,7 @@ func TestRemoveSlotWorktreesWrapsRepositorySnapshotStorageFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, cfg.Storage.WorktreeRoot, "slot", sessionID, slotPath); err == nil {
+	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, cfg.Storage.WorktreeRoot, slot, sessionID); err == nil {
 		t.Fatal("worktree removal succeeded despite an unreadable snapshot table")
 	}
 }
@@ -147,20 +149,18 @@ func TestResumeRestoreJobWrapsSlotRepositoryStorageFailure(t *testing.T) {
 	defer manager.Close()
 	ctx := context.Background()
 
-	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "repository", Repositories: []discovery.Repository{
+	w := discovery.Workspace{Root: discoveryPath(root), Kind: "repository", Repositories: []discovery.Repository{
 		{ID: "repository", MainPath: discoveryPath(filepath.Join(root, "repository")), CommonDir: discoveryPath(filepath.Join(root, "repository", ".git")), RelativePath: "repository", DefaultBranch: "main"},
 	}}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil {
-		t.Fatal(err)
-	}
+	w = registerTestWorkspace(t, store, w)
 	parentRepos := []state.SlotRepository{
-		{RepositoryID: "repository", WorktreePath: filepath.Join(cfg.Storage.WorktreeRoot, "parent", "repository"), State: "ARCHIVED"},
+		{RepositoryID: "repository", DirName: "repository", State: "ARCHIVED"},
 	}
 	parentID := "parent-db-fault"
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: parentID, WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, "parent"), State: "ARCHIVED"},
+		slotAtPath(t, manager, string(w.ID), parentID, filepath.Join(cfg.Storage.WorktreeRoot, "parent"), 1, "ARCHIVED"),
 		parentRepos,
-		state.Session{ID: parentID, WorkspaceID: "workspace", SlotID: parentID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(parentID)}, ""); err != nil {
+		state.Session{ID: parentID, WorkspaceID: string(w.ID), SlotID: parentID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(parentID)}, ""); err != nil {
 		t.Fatal(err)
 	}
 	expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
@@ -169,9 +169,9 @@ func TestResumeRestoreJobWrapsSlotRepositoryStorageFailure(t *testing.T) {
 	}
 	childID := "child-db-fault"
 	if _, err := store.CreateSlotSession(ctx,
-		state.Slot{ID: childID, WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(cfg.Storage.WorktreeRoot, "child"), State: "RESTORING"},
+		slotAtPath(t, manager, string(w.ID), childID, filepath.Join(cfg.Storage.WorktreeRoot, "child"), 1, "RESTORING"),
 		nil,
-		state.Session{ID: childID, WorkspaceID: "workspace", SlotID: childID, ParentSessionID: parentID, State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken(childID)}, ""); err != nil {
+		state.Session{ID: childID, WorkspaceID: string(w.ID), SlotID: childID, ParentSessionID: parentID, State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken(childID)}, ""); err != nil {
 		t.Fatal(err)
 	}
 

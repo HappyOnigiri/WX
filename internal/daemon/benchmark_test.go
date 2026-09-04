@@ -22,15 +22,12 @@ func BenchmarkHotLease(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer store.Close()
-	workspace := discovery.Workspace{ID: "workspace", Root: domain.CanonicalPath(root), Kind: "repository"}
-	if _, err := store.UpsertWorkspaceGeneration(ctx, workspace); err != nil {
-		b.Fatal(err)
-	}
+	workspace := registerTestWorkspace(b, store, discovery.Workspace{Root: domain.CanonicalPath(root), Kind: "repository"})
 
 	b.StopTimer()
 	for i := 0; i < b.N; i++ {
 		slotID := domain.StableID("benchmark-slot", fmt.Sprint(i))
-		if _, err := store.CreateStandby(ctx, state.Slot{ID: slotID, WorkspaceID: string(workspace.ID), Generation: 1, Path: filepath.Join(root, slotID), State: "PREPARING"}, nil); err != nil {
+		if _, err := store.CreateStandby(ctx, storeSlotAt(b, store, root, string(workspace.ID), slotID, filepath.Join(root, slotID), 1, "PREPARING"), nil); err != nil {
 			b.Fatal(err)
 		}
 		if _, _, err := store.FinishPreparationWithRelease(ctx, slotID); err != nil {

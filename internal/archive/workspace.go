@@ -21,14 +21,22 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-const workspaceSnapshotDirectory = "recovery/workspace-snapshots"
+// workspaceSnapshotDirectory stays inside the worktree root: the pinned
+// root descriptor, holdVerifiedRootForPath's pre-removal check, and the
+// deterministic path recomputation below are all anchored to that root. The
+// "_" prefix is what keeps it out of the orphan scan, which treats every
+// top-level entry that does not start with "_" as a workspace directory.
+const workspaceSnapshotDirectory = "_recovery/workspace-snapshots"
 
 // SnapshotWorkspaceAt is the descriptor-bound form used by the daemon for a
 // multi-repository slot. owner must be the manager-held root descriptor
 // corresponding to ownershipRoot. Bundle reads and archive writes stay in
 // that physical root, while a pathname replacement is rejected before the
 // returned ArchivePath can be committed to SQLite.
-func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot string, owner *os.Root, sessionID string, excluded []string, expiry time.Time) (state.WorkspaceSnapshot, error) {
+func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot, rootID string, owner *os.Root, sessionID string, excluded []string, expiry time.Time) (state.WorkspaceSnapshot, error) {
+	if rootID == "" {
+		return state.WorkspaceSnapshot{}, errors.New("workspace ownership root generation is required")
+	}
 	if owner == nil {
 		return state.WorkspaceSnapshot{}, errors.New("workspace ownership root descriptor is nil")
 	}
@@ -113,8 +121,9 @@ func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot string, 
 	}
 	created := time.Now().UTC()
 	return state.WorkspaceSnapshot{
-		SessionID: sessionID, ArchivePath: filepath.Join(ownershipRoot, filepath.FromSlash(archiveRel)),
-		SHA256: hex.EncodeToString(hasher.Sum(nil)), Status: "ARCHIVED",
+		SessionID: sessionID, RootID: rootID, RelPath: filepath.FromSlash(archiveRel),
+		ArchivePath: filepath.Join(ownershipRoot, filepath.FromSlash(archiveRel)),
+		SHA256:      hex.EncodeToString(hasher.Sum(nil)), Status: "ARCHIVED",
 		CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry),
 	}, nil
 }
@@ -405,11 +414,10 @@ func DeleteWorkspaceSnapshotAt(ownershipRoot string, owner *os.Root, snapshot st
 	if err := verifyPinnedRootPath(ownershipRoot, owner); err != nil {
 		return err
 	}
-	expected := filepath.Join(ownershipRoot, filepath.FromSlash(workspaceSnapshotRelativePath(snapshot.SessionID)))
-	if filepath.Clean(snapshot.ArchivePath) != filepath.Clean(expected) {
+	rel := filepath.FromSlash(workspaceSnapshotRelativePath(snapshot.SessionID))
+	if filepath.Clean(snapshot.RelPath) != filepath.Clean(rel) {
 		return errors.New("workspace snapshot path does not match its session")
 	}
-	rel := filepath.FromSlash(workspaceSnapshotRelativePath(snapshot.SessionID))
 	if _, err := owner.Lstat(rel); errors.Is(err, os.ErrNotExist) {
 		return nil
 	} else if err != nil {
@@ -442,14 +450,13 @@ func openVerifiedWorkspaceSnapshotAt(ownershipRoot string, owner *os.Root, snaps
 			return nil, errors.New("workspace snapshot has expired")
 		}
 	}
-	expected := filepath.Join(ownershipRoot, filepath.FromSlash(workspaceSnapshotRelativePath(snapshot.SessionID)))
-	if filepath.Clean(snapshot.ArchivePath) != filepath.Clean(expected) {
+	rel := filepath.FromSlash(workspaceSnapshotRelativePath(snapshot.SessionID))
+	if filepath.Clean(snapshot.RelPath) != filepath.Clean(rel) {
 		return nil, errors.New("workspace snapshot path does not match its session")
 	}
 	if owner == nil {
 		return nil, errors.New("workspace snapshot ownership root descriptor is nil")
 	}
-	rel := filepath.FromSlash(workspaceSnapshotRelativePath(snapshot.SessionID))
 	info, err := owner.Lstat(rel)
 	if err != nil {
 		return nil, err

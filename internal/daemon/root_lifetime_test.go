@@ -87,11 +87,9 @@ func TestGCDiscoversArchivedSlotOnClosedRetiredRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	ctx := context.Background()
-	if _, err := store.UpsertWorkspaceGeneration(ctx, discovery.Workspace{ID: "workspace", Root: discoveryPath(home), Kind: "repository"}); err != nil {
-		t.Fatal(err)
-	}
-	session := state.Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken("token")}
-	if _, err := store.CreateSlotSession(ctx, state.Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, Path: filepath.Join(oldRoot, "slot"), State: "SNAPSHOTTED"}, nil, session, ""); err != nil {
+	workspaceID := string(registerTestWorkspace(t, store, discovery.Workspace{Root: discoveryPath(home), Kind: "repository"}).ID)
+	session := state.Session{ID: "session", WorkspaceID: workspaceID, SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, storeSlotAt(t, store, oldRoot, workspaceID, "slot", filepath.Join(oldRoot, "slot"), 1, "SNAPSHOTTED"), nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.MarkArchived(ctx, session.ID, session.SlotID, state.FormatTime(time.Now().Add(time.Hour))); err != nil {
@@ -487,16 +485,25 @@ func TestRootReplacementQuarantinesPreparationBeforeDescriptorAcquire(t *testing
 	} else {
 		release()
 	}
-	if _, err := store.UpsertWorkspaceGeneration(context.Background(), discovery.Workspace{ID: "workspace", Root: discoveryPath(home), Kind: "repository"}); err != nil {
+	staleWorkspaceID := string(registerTestWorkspace(t, store, discovery.Workspace{Root: discoveryPath(home), Kind: "repository"}).ID)
+	const slotID = "preparing-slot"
+	// The slot stays on the retired root: the point of this test is that a
+	// slot created before the reload keeps resolving through its own root
+	// generation.
+	staleRootID := registerTestRoot(t, manager, oldRoot)
+	staleRelative, err := slotRelPath(staleWorkspaceID, slotID, false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	const slotID = "preparing-slot"
-	slotPath := filepath.Join(oldRoot, "workspaces", "workspace", "slots", slotID, "root")
+	slotPath := filepath.Join(oldRoot, staleRelative)
+	if err := os.MkdirAll(slotPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	writeRootLifetimeConfig(t, home, newRoot)
 	if err := manager.reloadConfig(false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(context.Background(), state.Slot{ID: slotID, WorkspaceID: "workspace", Generation: 1, Path: slotPath, State: "PREPARING"}, nil); err != nil {
+	if _, err := store.CreateStandby(context.Background(), state.Slot{ID: slotID, WorkspaceID: staleWorkspaceID, Generation: 1, RootID: staleRootID, RelPath: staleRelative, Path: slotPath, State: "PREPARING"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	originalRoot := oldRoot + "-original"
@@ -739,8 +746,8 @@ func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing
 		t.Fatal("closed descriptor identity succeeded")
 	}
 
-	slotPath := filepath.Join(root, "workspaces", "workspace", "slots", "slot", "root")
-	if _, err := manager.createSlotRoot(slotPath); err != nil {
+	slotPath := filepath.Join(root, "workspace", "slot")
+	if _, _, err := manager.createSlotRoot(slotPath, slotPath); err != nil {
 		t.Fatalf("create slot root: %v", err)
 	}
 	if identity, err := manager.leaseRootIdentity(slotPath); err != nil || identity == "" {
@@ -749,7 +756,7 @@ func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing
 	if _, err := manager.leaseRootIdentity(filepath.Join(root, "missing")); err == nil {
 		t.Fatal("missing lease root identity succeeded")
 	}
-	if _, err := manager.createSlotRoot(filepath.Join(base, "outside")); err == nil {
+	if _, _, err := manager.createSlotRoot(filepath.Join(base, "outside"), filepath.Join(base, "outside")); err == nil {
 		t.Fatal("outside slot root creation succeeded")
 	}
 
@@ -794,26 +801,38 @@ func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing
 		t.Fatalf("materialized data=%q err=%v", data, err)
 	}
 
-	validWorkspaceRoot := filepath.Join(root, "workspaces", "registered", "slots", "registered", "root")
-	if err := os.MkdirAll(validWorkspaceRoot, 0o700); err != nil {
+	// The enumeration unit is the slot directory: "<workspace-id>/<slot-id>"
+	// and "_unbound/<slot-id>".
+	validSlot := filepath.Join(root, "wsp001", "slt001")
+	if err := os.MkdirAll(validSlot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	validUnboundRoot := filepath.Join(root, "unbound", "session", "root")
-	if err := os.MkdirAll(validUnboundRoot, 0o700); err != nil {
+	validUnboundSlot := filepath.Join(root, unboundNamespace, "slt002")
+	if err := os.MkdirAll(validUnboundSlot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "workspaces", "ignored", "slots"), 0o700); err != nil {
+	// A regular file inside a workspace namespace is not a slot directory,
+	// and wx's own reserved "_recovery" namespace is not a workspace.
+	if err := os.MkdirAll(filepath.Join(root, "wsp002"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "workspaces", "ignored", "slots", "regular"), []byte("x"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "wsp002", "regular"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "_recovery", "workspace-snapshots"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := manager.ownedRootArtifactPaths(root)
 	if err != nil {
 		t.Fatalf("owned root artifacts: %v", err)
 	}
-	if !containsString(paths, validWorkspaceRoot) || !containsString(paths, validUnboundRoot) {
+	if !containsString(paths, validSlot) || !containsString(paths, validUnboundSlot) {
 		t.Fatalf("owned root artifacts=%v", paths)
+	}
+	for _, unexpected := range []string{filepath.Join(root, "wsp002", "regular"), filepath.Join(root, "_recovery", "workspace-snapshots")} {
+		if containsString(paths, unexpected) {
+			t.Fatalf("owned root artifacts=%v reported %s", paths, unexpected)
+		}
 	}
 }
 
