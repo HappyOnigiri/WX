@@ -496,10 +496,37 @@ func startDaemon(ctx context.Context) int {
 	}
 	// A daemon that is already listening is the wanted state, and reporting it
 	// before touching launchctl also covers the daemon an operator started by
-	// hand with --foreground, which launchd knows nothing about.
+	// hand with --foreground, which launchd knows nothing about. It is only the
+	// wanted state while it is not on its way out, though: a stop whose gate
+	// never opened is still pending after the caller gave up on it, and
+	// reporting "already running" would hand back a daemon that exits as soon
+	// as the last job finishes.
 	if daemonListening(ctx, socket) {
-		fmt.Println("already running", launchd.Label)
-		return 0
+		switch reply, err := requestDaemonLifecycle(ctx, "RequestStart"); {
+		case err == nil:
+			if cancelled, _ := reply["stop_cancelled"].(bool); cancelled {
+				fmt.Println("cancelled the pending stop of", launchd.Label)
+			}
+			if stopping, _ := reply["stop_pending"].(bool); !stopping {
+				fmt.Println("already running", launchd.Label)
+				return 0
+			}
+			// The stop was already handed to its signal, so the only route to
+			// the wanted state runs through the exit and a fresh daemon.
+			if !waitForSocket(ctx, socket, false) {
+				fmt.Fprintf(os.Stderr, "error: %s is stopping but did not exit within %s\n", launchd.Label, daemonWaitTimeout)
+				return 1
+			}
+		case rpc.IsConnectError(err):
+			// The daemon went away between the probe and the call. launchd is
+			// the way back from here either way.
+		default:
+			// Something is answering the socket, which is the wanted state. A
+			// degraded daemon and one that predates RequestStart both land
+			// here, and neither can be holding a pending stop.
+			fmt.Println("already running", launchd.Label)
+			return 0
+		}
 	}
 	if err := launchd.Start(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

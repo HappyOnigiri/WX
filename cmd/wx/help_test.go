@@ -260,6 +260,46 @@ func TestDaemonRestartRefusesADaemonLaunchdDoesNotManage(t *testing.T) {
 	}
 }
 
+// TestDaemonStartCallsBackAPendingStop covers the branch that makes start
+// idempotent for real: a socket that answers is not enough when the daemon
+// behind it is still holding a stop nobody called back.
+func TestDaemonStartCallsBackAPendingStop(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wxl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	socket, err := config.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel, done := serveUntilCanceled(t, socket, cancellingStartHandler{})
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}()
+	out := captureStdout(t, func() {
+		if exit := run(context.Background(), []string{"daemon", "start"}); exit != 0 {
+			t.Fatalf("daemon start exit=%d, want 0", exit)
+		}
+	})
+	if !strings.Contains(out, "cancelled the pending stop") {
+		t.Fatalf("daemon start did not report the cancelled stop:\n%s", out)
+	}
+}
+
+type cancellingStartHandler struct{}
+
+func (cancellingStartHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	if method == "RequestStart" {
+		return map[string]any{"pid": 1234, "stop_pending": false, "stop_cancelled": true}, nil
+	}
+	return map[string]any{"ok": true, "pid": 1234}, nil
+}
+
 type unmanagedHandler struct{}
 
 func (unmanagedHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {

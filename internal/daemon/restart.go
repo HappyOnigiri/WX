@@ -157,6 +157,32 @@ func (m *Manager) RequestStop(ctx context.Context) map[string]any {
 	return reply
 }
 
+// RequestStart is what wx daemon start sends to a daemon that already answers
+// the socket. Its only job is to call back a stop that has not been handed to
+// its signal yet: a stop whose gate never opened stays pending after the
+// caller gave up waiting, and without this the daemon would exit minutes after
+// a later start reported "already running". A stop whose SIGTERM is already on
+// its way cannot be called back, so the reply says the daemon is still
+// stopping and leaves the caller to wait out the exit and ask launchd for a
+// fresh daemon.
+func (m *Manager) RequestStart(ctx context.Context) map[string]any {
+	m.mu.Lock()
+	cancelled := m.stopPending && !m.lifecycleSignalDeliveredLocked()
+	if cancelled {
+		m.stopPending = false
+		m.resetLifecycleRetriesLocked()
+	}
+	stopping := m.stopPending
+	m.mu.Unlock()
+	if cancelled {
+		m.log.Info("pending daemon stop was cancelled by a start request")
+	}
+	reply := m.lifecycleSnapshot(ctx)
+	reply["stop_pending"] = stopping
+	reply["stop_cancelled"] = cancelled
+	return reply
+}
+
 // lifecycleSnapshot describes what the idle gate is still waiting for, so a
 // synchronous wx daemon stop/restart that runs out of patience can say which
 // condition held it up instead of only reporting a timeout. The caller cannot
@@ -333,11 +359,19 @@ func (m *Manager) issueStop() {
 // is not exhausted belongs to a signal that was already delivered and is left
 // alone: not repeating it is the whole point of holding it. m.mu must be held.
 func (m *Manager) resetLifecycleRetriesLocked() {
-	if m.lifecycleClaimed && m.lifecycleAttempts < maxLifecycleAttempts {
+	if m.lifecycleSignalDeliveredLocked() {
 		return
 	}
 	m.lifecycleAttempts = 0
 	m.lifecycleClaimed = false
+}
+
+// lifecycleSignalDeliveredLocked distinguishes the two states a raised claim
+// can be in: a signal that was actually delivered and is carrying the intent
+// out, or the latch releaseLifecycleClaim leaves once the attempt budget runs
+// out. Only the first is irreversible. m.mu must be held.
+func (m *Manager) lifecycleSignalDeliveredLocked() bool {
+	return m.lifecycleClaimed && m.lifecycleAttempts < maxLifecycleAttempts
 }
 
 func (m *Manager) releaseLifecycleClaim() (attempts int, exhausted bool) {

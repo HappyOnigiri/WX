@@ -204,6 +204,8 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		return h.Manager.RequestRestart(ctx), nil
 	case "RequestStop":
 		return h.Manager.RequestStop(ctx), nil
+	case "RequestStart":
+		return h.Manager.RequestStart(ctx), nil
 	case "Sessions":
 		var p struct {
 			All bool `json:"all"`

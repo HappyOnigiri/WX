@@ -514,6 +514,49 @@ func TestEachLifecycleRequestSupersedesTheOther(t *testing.T) {
 	}
 }
 
+// TestStartRequestCallsBackAStopThatWasNeverIssued closes the gap a stop that
+// outlived its caller leaves behind: the intent stays pending, and a later
+// start that only looked at the socket would report a running daemon that is
+// still going to exit.
+func TestStartRequestCallsBackAStopThatWasNeverIssued(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	manager.RequestStop(ctx)
+	reply := manager.RequestStart(ctx)
+	if cancelled, _ := reply["stop_cancelled"].(bool); !cancelled {
+		t.Fatalf("start did not report the cancelled stop: %v", reply)
+	}
+	if stopping, _ := reply["stop_pending"].(bool); stopping {
+		t.Fatalf("start left the stop pending: %v", reply)
+	}
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.stayAt(t, 0)
+}
+
+// TestStartRequestCannotCallBackADeliveredStop is the other half: the SIGTERM
+// is already on its way, so the reply has to say the daemon is still stopping
+// rather than claim it is running.
+func TestStartRequestCannotCallBackADeliveredStop(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	manager.RequestStop(ctx)
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+	reply := manager.RequestStart(ctx)
+	if cancelled, _ := reply["stop_cancelled"].(bool); cancelled {
+		t.Fatalf("start claimed to have cancelled a delivered stop: %v", reply)
+	}
+	if stopping, _ := reply["stop_pending"].(bool); !stopping {
+		t.Fatalf("start did not report the daemon as stopping: %v", reply)
+	}
+}
+
 // TestPendingStopSuppressesReplacementDetection guards the one way an operator
 // who asked for a stop could get a restart instead: the executable watch fires
 // on the same tick and would otherwise raise restartPending over the stop.
