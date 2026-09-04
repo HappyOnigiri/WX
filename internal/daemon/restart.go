@@ -124,6 +124,12 @@ func (m *Manager) detectExecutableReplacement() {
 // intent is ever waiting on the gate and the daemon never has to rank them.
 func (m *Manager) RequestRestart(ctx context.Context) map[string]any {
 	m.mu.Lock()
+	if m.lifecycleSignalDeliveredLocked() {
+		stopping, restarting := m.stopPending, m.restartPending
+		m.mu.Unlock()
+		m.log.Warn("daemon restart was requested while another lifecycle action was already under way")
+		return m.conflictReply(ctx, stopping, restarting)
+	}
 	already := m.restartPending
 	m.restartPending = true
 	m.stopPending = false
@@ -144,6 +150,12 @@ func (m *Manager) RequestRestart(ctx context.Context) map[string]any {
 // reservation.
 func (m *Manager) RequestStop(ctx context.Context) map[string]any {
 	m.mu.Lock()
+	if m.lifecycleSignalDeliveredLocked() {
+		stopping, restarting := m.stopPending, m.restartPending
+		m.mu.Unlock()
+		m.log.Warn("daemon stop was requested while another lifecycle action was already under way")
+		return m.conflictReply(ctx, stopping, restarting)
+	}
 	already := m.stopPending
 	m.stopPending = true
 	m.restartPending = false
@@ -154,6 +166,18 @@ func (m *Manager) RequestStop(ctx context.Context) map[string]any {
 	reply := m.lifecycleSnapshot(ctx)
 	reply["stop_pending"] = true
 	reply["already_pending"] = already
+	return reply
+}
+
+// conflictReply answers a lifecycle request that arrived after the other
+// intent had already been handed to its signal. That signal cannot be called
+// back, so the reply names the action actually under way rather than letting
+// the caller believe its own request superseded it.
+func (m *Manager) conflictReply(ctx context.Context, stopping, restarting bool) map[string]any {
+	reply := m.lifecycleSnapshot(ctx)
+	reply["stop_pending"] = stopping
+	reply["restart_pending"] = restarting
+	reply["conflict"] = true
 	return reply
 }
 
@@ -280,6 +304,15 @@ func (m *Manager) runPendingLifecycle() {
 		return
 	}
 	m.mu.Lock()
+	// The lock was not held across the job query, so the intent read at the
+	// top may have been superseded meanwhile. Issuing the stale one would send
+	// the opposite signal to the request that was just answered, so the
+	// evaluation is dropped and the new intent gets its own pass.
+	if !m.lifecycleIntentUnchangedLocked(stop, restart) {
+		m.mu.Unlock()
+		m.notifyLifecycleCheck()
+		return
+	}
 	if m.lifecycleClaimed || !m.lifecycleGateOpenLocked() {
 		m.mu.Unlock()
 		return
@@ -381,6 +414,12 @@ func (m *Manager) releaseLifecycleClaim() (attempts int, exhausted bool) {
 	exhausted = m.lifecycleAttempts >= maxLifecycleAttempts
 	m.lifecycleClaimed = exhausted
 	return m.lifecycleAttempts, exhausted
+}
+
+// lifecycleIntentUnchangedLocked reports whether the pending intent is still
+// the one an evaluation started with. m.mu must be held.
+func (m *Manager) lifecycleIntentUnchangedLocked(stop, restart bool) bool {
+	return m.stopPending == stop && m.restartPending == restart
 }
 
 // lifecycleGateOpenLocked reports whether the daemon is idle enough to be

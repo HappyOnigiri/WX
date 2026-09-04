@@ -412,6 +412,24 @@ func replyInt(reply map[string]any, key string) int {
 	return int(value)
 }
 
+// lifecycleConflict names the action a daemon is already carrying out when it
+// refuses a request for the opposite one. A signal that has been delivered
+// cannot be called back, so waiting for the state this command asked for would
+// only burn the whole budget. A conflict that names the action this command
+// wanted anyway is not one: the wait below is still the useful half.
+func lifecycleConflict(reply map[string]any, wanted string) string {
+	if conflict, _ := reply["conflict"].(bool); !conflict {
+		return ""
+	}
+	if stopping, _ := reply["stop_pending"].(bool); stopping && wanted != "stop" {
+		return "the daemon is already stopping; wait for it to exit and run wx daemon start"
+	}
+	if restarting, _ := reply["restart_pending"].(bool); restarting && wanted != "restart" {
+		return "the daemon is already restarting; run the command again once the replacement is up"
+	}
+	return ""
+}
+
 // gateWaitReason explains, in the words of the snapshot taken when the request
 // was accepted, what the daemon was still waiting for. Running jobs are the
 // one cause that legitimately outlasts the budget, so they are named first.
@@ -562,6 +580,10 @@ func stopDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	if reason := lifecycleConflict(reply, "stop"); reason != "" {
+		fmt.Fprintln(os.Stderr, "error:", reason)
+		return 1
+	}
 	if already, _ := reply["already_pending"].(bool); already {
 		// The daemon honours only the first SIGTERM, so a repeated request
 		// changes nothing; the wait below is the useful half of this run.
@@ -608,6 +630,10 @@ func restartDaemon(ctx context.Context) int {
 		}
 		fmt.Println("restarted", launchd.Label)
 		return 0
+	}
+	if reason := lifecycleConflict(reply, "restart"); reason != "" {
+		fmt.Fprintln(os.Stderr, "error:", reason)
+		return 1
 	}
 	// A daemon started by hand never kickstarts itself, so it will not be
 	// replaced no matter how long the wait lasts. The field is absent on a

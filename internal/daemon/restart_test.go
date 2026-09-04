@@ -514,6 +514,50 @@ func TestEachLifecycleRequestSupersedesTheOther(t *testing.T) {
 	}
 }
 
+// TestARequestAfterADeliveredSignalIsRefusedAsAConflict keeps the reply
+// honest: once a signal is on its way the opposite request cannot supersede
+// it, so answering as if it had would have the caller wait out its whole
+// budget for a state the daemon is not heading to.
+func TestARequestAfterADeliveredSignalIsRefusedAsAConflict(t *testing.T) {
+	manager, stops := stopFixture(t)
+	ctx := context.Background()
+	manager.RequestStop(ctx)
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
+	manager.mu.Unlock()
+	manager.runPendingLifecycle()
+	stops.want(t, 1)
+	reply := manager.RequestRestart(ctx)
+	if conflict, _ := reply["conflict"].(bool); !conflict {
+		t.Fatalf("the restart request was not refused as a conflict: %v", reply)
+	}
+	if stopping, _ := reply["stop_pending"].(bool); !stopping {
+		t.Fatalf("the conflict did not name the stop under way: %v", reply)
+	}
+	manager.mu.RLock()
+	restarting := manager.restartPending
+	manager.mu.RUnlock()
+	if restarting {
+		t.Fatal("a refused request still raised its intent")
+	}
+}
+
+// TestAStaleIntentIsNotIssuedAfterTheJobQuery covers the window the job query
+// opens: the lock is released across it, so the intent read before it can have
+// been replaced by the time the action would be claimed.
+func TestAStaleIntentIsNotIssuedAfterTheJobQuery(t *testing.T) {
+	manager, _ := stopFixture(t)
+	manager.RequestStop(context.Background())
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	if !manager.lifecycleIntentUnchangedLocked(true, false) {
+		t.Fatal("the raised stop was reported as changed")
+	}
+	if manager.lifecycleIntentUnchangedLocked(false, true) {
+		t.Fatal("a restart evaluation was allowed to proceed against a pending stop")
+	}
+}
+
 // TestStartRequestCallsBackAStopThatWasNeverIssued closes the gap a stop that
 // outlived its caller leaves behind: the intent stays pending, and a later
 // start that only looked at the socket would report a running daemon that is

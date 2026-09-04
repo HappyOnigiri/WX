@@ -291,6 +291,53 @@ func TestDaemonStartCallsBackAPendingStop(t *testing.T) {
 	}
 }
 
+// TestDaemonStopRefusesADaemonThatIsAlreadyRestarting keeps a refused request
+// from being read as an accepted one: the daemon answered that it is heading
+// somewhere else, so waiting for the socket to go quiet would only spend the
+// budget.
+func TestDaemonStopRefusesADaemonThatIsAlreadyRestarting(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wxl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	restore := daemonWaitTimeout
+	daemonWaitTimeout = 30 * time.Second
+	t.Cleanup(func() { daemonWaitTimeout = restore })
+	socket, err := config.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel, done := serveUntilCanceled(t, socket, conflictHandler{})
+	defer func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}()
+	started := time.Now()
+	exit, stderr := runCapturingStderr(t, []string{"daemon", "stop"})
+	if exit != 1 {
+		t.Fatalf("daemon stop exit=%d, want 1", exit)
+	}
+	if !strings.Contains(stderr, "already restarting") {
+		t.Fatalf("daemon stop stderr does not name the conflict:\n%s", stderr)
+	}
+	if elapsed := time.Since(started); elapsed >= daemonWaitTimeout {
+		t.Fatalf("daemon stop waited %s before refusing", elapsed)
+	}
+}
+
+type conflictHandler struct{}
+
+func (conflictHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+	if method == "RequestStop" {
+		return map[string]any{"pid": 1234, "conflict": true, "stop_pending": false, "restart_pending": true}, nil
+	}
+	return map[string]any{"ok": true, "pid": 1234}, nil
+}
+
 type cancellingStartHandler struct{}
 
 func (cancellingStartHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {

@@ -104,7 +104,10 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   要求する（手動起動のdaemonがkickstartすると二重起動になる）が、stopは
   要求しない。この判定は`launchd_managed`として要求の応答にも載るので、CLIは
   来ない置換を待たずに即座に断れる。要求は互いを打ち消し、同時に2つは
-  pendingにならない。`wx daemon start`は起動済みのdaemonにも`RequestStart`を
+  pendingにならない。ただし打ち消せるのはsignalに渡される前までで、渡した
+  後に届いた逆の要求は`conflict`として断る（配送済みのsignalは呼び戻せず、
+  受理したように答えると呼び出し側が来ない状態を待ち続ける）。
+  `wx daemon start`は起動済みのdaemonにも`RequestStart`を
   送る。CLIが待ちきれずに諦めたstopはpendingのまま残るので、signalに
   渡される前のstopはここで取り消す。渡された後は取り消せないため、CLIは
   終了を待ってからlaunchd経由で起動し直す。ゲートを通過したら、restartは`launchd.Kickstart`、
