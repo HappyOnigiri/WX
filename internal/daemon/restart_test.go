@@ -202,6 +202,33 @@ func TestRestartAccountingBracketsEveryHandledRequest(t *testing.T) {
 	if manager.inflightRequests != 0 {
 		t.Fatalf("inflightRequests=%d after a failed dispatch", manager.inflightRequests)
 	}
+	// lastRequestEnd is stamped only when the count reaches zero from above, so
+	// it stays unset if Handler.Handle loses either half of the bracket:
+	// without beginRequest the count goes to -1, without endRequest it stays at
+	// one, and without both it never moves.
+	if manager.lastRequestEnd.IsZero() {
+		t.Fatal("a dispatched request was not counted as in-flight")
+	}
+}
+
+func TestHandledRequestHoldsOffAPendingRestart(t *testing.T) {
+	manager, executable, kickstarts := restartFixture(t)
+	replaceExecutable(t, executable)
+	manager.detectExecutableReplacement()
+	if _, err := (Handler{Manager: manager}).Handle(context.Background(), "unknown", json.RawMessage(nil)); err == nil {
+		t.Fatal("unknown method succeeded")
+	}
+	manager.restartIfReplaced()
+	if *kickstarts != 0 {
+		t.Fatalf("kickstarts=%d right after a request was handled", *kickstarts)
+	}
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-restartQuietPeriod)
+	manager.mu.Unlock()
+	manager.restartIfReplaced()
+	if *kickstarts != 1 {
+		t.Fatalf("kickstarts=%d once the quiet period elapsed, want 1", *kickstarts)
+	}
 }
 
 func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
