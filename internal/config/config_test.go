@@ -146,7 +146,7 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 		"storage.worktree_root": "$HOME/wx", "storage.repo_dir_source": "directory", "storage.backup_generations": "4", "storage.backup_retention": "24h",
 		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3", "pool.git_concurrency_per_repository": "2",
 		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
-		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "logging.level": "debug",
+		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "includes.default_agent_rules": "false", "logging.level": "debug",
 	}
 	var raw Config
 	for key, value := range values {
@@ -163,6 +163,11 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 	}
 	if len(Fields(effective)) != len(values) {
 		t.Fatalf("Fields count=%d", len(Fields(effective)))
+	}
+	for _, field := range Fields(effective) {
+		if field.Key == "includes.default_agent_rules" && field.Value != "false" {
+			t.Fatalf("default agent rules field=%q", field.Value)
+		}
 	}
 	for _, pathFn := range []func() (string, error){Path, StatePath, SocketPath, LogPath} {
 		if path, err := pathFn(); err != nil || !strings.HasPrefix(path, home) {
@@ -185,7 +190,7 @@ func TestSetFieldRejectsEveryInvalidScalarType(t *testing.T) {
 		"storage.backup_generations", "pool.warm_per_workspace", "pool.preparation_concurrency", "pool.git_concurrency_per_repository",
 		"discovery.max_depth", "discovery.max_entries",
 		"storage.backup_retention", "retention.hot_standby", "retention.ended_worktree", "retention.recovery_snapshot",
-		"retention.expired_session_tombstone", "retention.failed_job", "retention.event_log", "discovery.timeout",
+		"retention.expired_session_tombstone", "retention.failed_job", "retention.event_log", "discovery.timeout", "includes.default_agent_rules",
 		"discovery.reconcile_interval", "readiness.timeout",
 	}
 	for _, key := range keys {
@@ -193,6 +198,74 @@ func TestSetFieldRejectsEveryInvalidScalarType(t *testing.T) {
 		if err := SetField(&cfg, key, "invalid"); err == nil {
 			t.Errorf("SetField(%s) accepted invalid value", key)
 		}
+	}
+}
+
+func TestDefaultAgentRulesResolution(t *testing.T) {
+	repository := filepath.Join(t.TempDir(), "repository")
+	cfg := Defaults()
+	if !cfg.DefaultAgentRulesEnabled(repository) {
+		t.Fatal("default agent rules are disabled by default")
+	}
+	cfg.Repositories[repository] = Repository{}
+	if !cfg.DefaultAgentRulesEnabled(repository) {
+		t.Fatal("nil repository override did not fall back to the global setting")
+	}
+	cfg.Includes.DefaultAgentRules = false
+	if cfg.DefaultAgentRulesEnabled(repository) {
+		t.Fatal("nil repository override ignored the disabled global setting")
+	}
+	enabled := true
+	cfg.Repositories[repository] = Repository{Includes: RepositoryIncludes{DefaultAgentRules: &enabled}}
+	if !cfg.DefaultAgentRulesEnabled(repository) {
+		t.Fatal("explicit repository enable was ignored")
+	}
+	disabled := false
+	cfg.Repositories[repository] = Repository{Includes: RepositoryIncludes{DefaultAgentRules: &disabled}}
+	if cfg.DefaultAgentRulesEnabled(repository) {
+		t.Fatal("explicit repository disable was ignored")
+	}
+	delete(cfg.Repositories, repository)
+	if cfg.DefaultAgentRulesEnabled(repository) {
+		t.Fatal("missing repository override did not use the disabled global setting")
+	}
+}
+
+func TestDefaultAgentRulesOverridesLoadFromYAML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repository := filepath.Join(home, "repository")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".config", "wx", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	document := `version: 1
+includes:
+  default_agent_rules: false
+repositories:
+  $HOME/repository:
+    includes:
+      default_agent_rules: true
+`
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Includes.DefaultAgentRules {
+		t.Fatal("global default agent rules override was not loaded")
+	}
+	override, ok := cfg.Repositories[repository]
+	if !ok || override.Includes.DefaultAgentRules == nil || !*override.Includes.DefaultAgentRules {
+		t.Fatalf("repository override=%+v, want normalized explicit true", override)
+	}
+	if !cfg.DefaultAgentRulesEnabled(repository) {
+		t.Fatal("loaded repository override was not applied")
 	}
 }
 

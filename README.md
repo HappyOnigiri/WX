@@ -81,6 +81,10 @@ Paths expand `$HOME` only—`~` and arbitrary environment variables are rejected
 
 Agent rule files that convention keeps out of version control are copied into every worktree without a manifest entry, because Git does not carry them there itself:
 
+Disable this default with `wx config includes.default_agent_rules false`.
+Set `repositories.<path>.includes.default_agent_rules` in `~/.config/wx/config.yaml` to override the global value for one repository.
+Changing the setting affects newly prepared worktrees; files are not removed from a worktree that is currently leased.
+
 - Claude Code: `CLAUDE.local.md`, `.claudeignore`
 - Codex and the other AGENTS.md readers: `AGENTS.local.md`, `AGENTS.override.md`
 - Gemini CLI: `GEMINI.local.md`, `.geminiignore`, `.aiexclude`

@@ -97,7 +97,7 @@ func (c Client) ensureDaemon(ctx context.Context) error {
 		return fmt.Errorf("wx daemon is reachable but this request did not complete (%w); refusing to restart a socket that may still be serving other sessions, run wx doctor", err)
 	}
 	if err := launchd.Kickstart(ctx); err != nil {
-		return fmt.Errorf("wx daemon is unavailable (%w); run wx doctor", err)
+		return daemonRecoveryError("wx daemon is unavailable", err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -106,7 +106,23 @@ func (c Client) ensureDaemon(ctx context.Context) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return errors.New("wx daemon did not become ready; run wx doctor")
+	return daemonRecoveryError("wx daemon did not become ready", nil)
+}
+
+// daemonRecoveryError keeps the ordinary doctor guidance for an unknown
+// LaunchAgent state, but points directly at daemon install when the plist is a
+// byte-for-byte mismatch with the current wx executable.  The check is
+// best-effort: inability to inspect the plist must not hide the original
+// connection failure or turn it into a new failure mode.
+func daemonRecoveryError(prefix string, cause error) error {
+	hint := "run wx doctor"
+	if status, err := launchd.CurrentPlistStatus(); err == nil && status == launchd.PlistStale {
+		hint = "LaunchAgent plist is stale; run wx daemon install"
+	}
+	if cause != nil {
+		return fmt.Errorf("%s (%w); %s", prefix, cause, hint)
+	}
+	return errors.New(prefix + "; " + hint)
 }
 
 func (c Client) RunAgent(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume string) int {
