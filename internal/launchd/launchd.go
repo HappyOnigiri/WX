@@ -145,7 +145,10 @@ func Kickstart(ctx context.Context) error {
 		if launchctlServiceMissing(out) {
 			return fmt.Errorf("launchctl kickstart: %s: %w", bytes.TrimSpace(out), ErrServiceMissing)
 		}
-		return fmt.Errorf("launchctl kickstart: %s", bytes.TrimSpace(out))
+		// launchctl prints nothing when it never ran (missing from PATH, a
+		// cancelled context, a deadline reached while it was still working), so
+		// the wrapped error is the only thing that identifies those failures.
+		return fmt.Errorf("launchctl kickstart: %s: %w", bytes.TrimSpace(out), err)
 	}
 	return nil
 }
