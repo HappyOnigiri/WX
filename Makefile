@@ -126,6 +126,8 @@ generated-check:
 
 docs-check:
 	@test -x "$(NPM_BIN)/markdownlint-cli2" || { echo "pinned markdownlint is missing; run make setup"; exit 1; }
+	command -v node >/dev/null
+	node tools/markdownlint/selftest.mjs "$(TOOLS_DIR)/npm/node_modules/markdownlint-cli2/export-markdownlint.mjs"
 	"$(NPM_BIN)/markdownlint-cli2" README.md '**/*.md' '#.tools/**' '#tmp/**'
 
 workflow-check: workflow-lint
