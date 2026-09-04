@@ -329,6 +329,68 @@ func TestDaemonStopRefusesADaemonThatIsAlreadyRestarting(t *testing.T) {
 	}
 }
 
+// TestDaemonStartKeepsAskingLaunchdUntilADaemonAnswers is the stop && start
+// case: launchd does nothing with a request for a service it still considers
+// running, so the one request a start used to make can be consumed by the
+// process that is on its way out.
+func TestDaemonStartKeepsAskingLaunchdUntilADaemonAnswers(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wxl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A launchctl that succeeds without starting anything is exactly what
+	// launchd does for a service it still believes is running.
+	calls := filepath.Join(home, "launchctl.calls")
+	script := "#!/bin/sh\necho call >> " + calls + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	restoreTimeout := daemonWaitTimeout
+	daemonWaitTimeout = 10 * time.Second
+	restoreRetry := daemonStartRetryInterval
+	daemonStartRetryInterval = 100 * time.Millisecond
+	t.Cleanup(func() {
+		daemonWaitTimeout = restoreTimeout
+		daemonStartRetryInterval = restoreRetry
+	})
+	socket, err := config.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The daemon only appears once the first request has already been wasted.
+	late := make(chan context.CancelFunc, 1)
+	lateDone := make(chan (<-chan error), 1)
+	timer := time.AfterFunc(400*time.Millisecond, func() {
+		cancel, done := serveUntilCanceled(t, socket, busyHandler{})
+		late <- cancel
+		lateDone <- done
+	})
+	defer timer.Stop()
+	exit := run(context.Background(), []string{"daemon", "start"})
+	cancel := <-late
+	cancel()
+	if err := <-<-lateDone; err != nil {
+		t.Fatal(err)
+	}
+	if exit != 0 {
+		t.Fatalf("daemon start exit=%d, want 0", exit)
+	}
+	recorded, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(recorded), "call"); n < 2 {
+		t.Fatalf("launchctl was asked %d time(s); the request wasted on the outgoing daemon was never repeated", n)
+	}
+}
+
 type conflictHandler struct{}
 
 func (conflictHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {

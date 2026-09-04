@@ -546,19 +546,60 @@ func startDaemon(ctx context.Context) int {
 			return 0
 		}
 	}
-	if err := launchd.Start(ctx); err != nil {
+	if err := startAndWaitForDaemon(ctx, socket); err != nil {
+		if errors.Is(err, errNoDaemonAnswered) {
+			fmt.Fprintf(os.Stderr, "error: launchd was asked to start %s but no daemon answered %s within %s\n", launchd.Label, socket, daemonWaitTimeout)
+			return 1
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		if errors.Is(err, launchd.ErrServiceMissing) {
 			fmt.Fprintln(os.Stderr, "run wx daemon install to register the LaunchAgent first")
 		}
 		return 1
 	}
-	if !waitForSocket(ctx, socket, true) {
-		fmt.Fprintf(os.Stderr, "error: launchd was asked to start %s but no daemon answered %s within %s\n", launchd.Label, socket, daemonWaitTimeout)
-		return 1
-	}
 	fmt.Println("started", launchd.Label)
 	return 0
+}
+
+// daemonStartRetryInterval paces how often launchd is asked again while start
+// waits. It is a variable so tests can shorten it; production never changes it.
+var daemonStartRetryInterval = 2 * time.Second
+
+// errNoDaemonAnswered separates a budget that ran out from a launchctl that
+// refused, so start can name the LaunchAgent that has to be installed only
+// when that is actually what happened.
+var errNoDaemonAnswered = errors.New("no daemon answered the socket")
+
+// startAndWaitForDaemon asks launchd for a running daemon until one answers.
+// Asking once is not enough: a stop reports success as soon as the listener
+// closes, while the process behind it goes on releasing its roots for a while
+// after that, and launchd answers a request for a service it still considers
+// running by doing nothing. That request is consumed, the old process then
+// exits 0 so KeepAlive{SuccessfulExit:false} starts no replacement, and a
+// plain wx daemon stop && wx daemon start would spend its whole budget waiting
+// for a daemon nobody is going to start.
+func startAndWaitForDaemon(ctx context.Context, socket string) error {
+	deadline := time.Now().Add(daemonWaitTimeout)
+	next := time.Now()
+	for {
+		if !time.Now().Before(next) {
+			if err := launchd.Start(ctx); err != nil {
+				return err
+			}
+			next = time.Now().Add(daemonStartRetryInterval)
+		}
+		if daemonListening(ctx, socket) {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			return errNoDaemonAnswered
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(daemonPollInterval):
+		}
+	}
 }
 
 // stopDaemon asks the running daemon to exit at its next idle moment and waits
