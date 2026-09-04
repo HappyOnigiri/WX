@@ -107,6 +107,14 @@ func (m *Manager) detectExecutableReplacement() {
 		return
 	}
 	m.mu.Lock()
+	// The lock was not held across the stat, so a request may have raised an
+	// intent meanwhile. Raising this one on top would put two intents on the
+	// gate at once, and an operator's explicit stop would lose to a restart
+	// nobody asked for.
+	if m.restartPending || m.stopPending {
+		m.mu.Unlock()
+		return
+	}
 	m.restartPending = true
 	m.mu.Unlock()
 	m.log.Info("daemon executable was replaced; restart is pending", "path", path, "baseline_identity", baseline.identity, "current_identity", current.identity)

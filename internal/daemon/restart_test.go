@@ -601,6 +601,30 @@ func TestStartRequestCannotCallBackADeliveredStop(t *testing.T) {
 	}
 }
 
+// TestReplacementDetectionRechecksTheIntentBeforeRaisingIt covers the window
+// the stat opens: the pending flags are read before it and written after, so a
+// stop that arrives in between would otherwise be buried under a restart.
+func TestReplacementDetectionRechecksTheIntentBeforeRaisingIt(t *testing.T) {
+	manager, _ := stopFixture(t)
+	executable := manager.executablePath
+	replaceExecutable(t, executable)
+	// Standing in for the request that lands while the stat is running: the
+	// detection read no pending intent, and by the write it is there.
+	manager.mu.Lock()
+	manager.stopPending = true
+	manager.mu.Unlock()
+	manager.detectExecutableReplacement()
+	manager.mu.RLock()
+	stopping, restarting := manager.stopPending, manager.restartPending
+	manager.mu.RUnlock()
+	if restarting {
+		t.Fatal("the detection raised a restart on top of a pending stop")
+	}
+	if !stopping {
+		t.Fatal("the detection lowered the pending stop")
+	}
+}
+
 // TestPendingStopSuppressesReplacementDetection guards the one way an operator
 // who asked for a stop could get a restart instead: the executable watch fires
 // on the same tick and would otherwise raise restartPending over the stop.
