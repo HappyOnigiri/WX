@@ -700,8 +700,18 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 	if slotID == "" {
 		return nil
 	}
-	if err := p.validateStateOwnership(ctx, repo, target, slotID, slotStates, repositoryStates); err != nil {
+	proof, err := p.stateOwnershipProof(ctx, repo, target, slotID, slotStates, repositoryStates)
+	if err != nil {
 		return err
+	}
+	// A recorded identity has to be the directory actually open. Preparation
+	// and restore record it only once the worktree is complete, so an empty
+	// record means a run that was interrupted before that point and is
+	// allowed to converge on retry. A record that differs means this is not
+	// the directory wx prepared, however well the marker and the Git
+	// metadata reproduce it.
+	if proof.DirIdentity != "" && proof.DirIdentity != targetIdentity {
+		return fmt.Errorf("%w: worktree directory identity does not match the SQLite record", state.ErrOwnership)
 	}
 	return nil
 }
@@ -877,33 +887,40 @@ func preparationOwnershipStates(phase preparePhase) ([]string, []string) {
 }
 
 func (p *Preparer) validateStateOwnership(ctx context.Context, repo discovery.Repository, target, slotID string, slotStates, repositoryStates []string) error {
+	_, err := p.stateOwnershipProof(ctx, repo, target, slotID, slotStates, repositoryStates)
+	return err
+}
+
+// stateOwnershipProof is validateStateOwnership with the proof returned, for
+// the caller that needs the recorded identity to compare it itself.
+func (p *Preparer) stateOwnershipProof(ctx context.Context, repo discovery.Repository, target, slotID string, slotStates, repositoryStates []string) (state.WorktreeOwnership, error) {
 	if slotID == "" {
-		return nil
+		return state.WorktreeOwnership{}, nil
 	}
 	if p.Ownership == nil {
-		return fmt.Errorf("%w: state-backed worktree ownership validator is required", state.ErrOwnership)
+		return state.WorktreeOwnership{}, fmt.Errorf("%w: state-backed worktree ownership validator is required", state.ErrOwnership)
 	}
 	dirName, err := p.worktreeDirName(target)
 	if err != nil {
-		return err
+		return state.WorktreeOwnership{}, err
 	}
-	_, err = p.Ownership.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
+	return p.Ownership.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
 		SlotID:       slotID,
 		RepositoryID: string(repo.ID),
 		WorkspaceID:  "",
 		RootID:       p.RootID,
 		SlotRelPath:  p.SlotRelPath,
 		DirName:      dirName,
-		// dirIdentity is intentionally left empty here. This helper runs
+		// DirIdentity is intentionally left empty here. This helper runs
 		// both before the worktree directory exists (the pre-creation
 		// checks inside prepare) and after, so it cannot promise an
 		// identity; the callers that hold a descriptor pass one through
-		// validateStateOwnershipWithIdentity instead.
+		// validateStateOwnershipWithIdentity instead, and the caller that
+		// only has a record to compare reads it from the returned proof.
 		CommonDir:               string(repo.CommonDir),
 		AllowedSlotStates:       slotStates,
 		AllowedRepositoryStates: repositoryStates,
 	})
-	return err
 }
 
 // validateStateOwnershipWithIdentity is the fail-closed form used once the

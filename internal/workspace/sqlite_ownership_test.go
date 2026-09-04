@@ -132,6 +132,23 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 	if _, err := store.ValidateWorktreeOwnership(ctx, preparing(state.WorktreeOwnershipRequest{RootID: rootID, SlotRelPath: slotRel, DirName: testRepositoryID, DirIdentity: "0:0"})); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("mismatched worktree identity passed SQLite ownership: %v", err)
 	}
+	// The crash-replay check cannot require an identity: a preparation
+	// interrupted before it recorded one legitimately has none. It must still
+	// compare the record when there is one, or a substituted directory that
+	// reproduces the marker and the Git metadata would be accepted on retry
+	// and then have its own identity written as the truth.
+	if err := preparer.ValidateSlotWorktreeOwnership(ctx, repo, target, head, testSlotID); err != nil {
+		t.Fatalf("replay validation of the recorded worktree failed: %v", err)
+	}
+	if err := store.RecordSlotRepositoryIdentity(ctx, testSlotID, string(repo.ID), "0:0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.ValidateSlotWorktreeOwnership(ctx, repo, target, head, testSlotID); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replay validation accepted a worktree whose recorded identity differs: %v", err)
+	}
+	if err := store.RecordSlotRepositoryIdentity(ctx, testSlotID, string(repo.ID), worktreeIdentity); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SetSlotRepositoryState(ctx, testSlotID, string(repo.ID), []string{"PREPARING"}, "READY"); err != nil {
 		t.Fatal(err)
 	}

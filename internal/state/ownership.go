@@ -69,6 +69,12 @@ type WorktreeOwnership struct {
 	RelativePath     string
 	SlotState        string
 	RepositoryState  string
+	// DirIdentity is the identity SQLite has recorded for the worktree
+	// directory, empty until preparation or restore completes and records
+	// one. It is returned so a caller that cannot require an identity yet -
+	// the re-run of an interrupted preparation, which legitimately finds no
+	// record - can still refuse a directory whose recorded identity differs.
+	DirIdentity string
 }
 
 // SlotOwnershipRequest locates a slot directory for the operations that have
@@ -239,6 +245,7 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 	out.RelativePath = filepath.Clean(relativePath)
 	out.SlotState = slotState
 	out.RepositoryState = repositoryState
+	out.DirIdentity = storedDirIdentity
 	return out, nil
 }
 
