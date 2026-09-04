@@ -102,6 +102,63 @@ func TestOwnedSlotDirectoriesListsOnlyPhysicalSlotDirectories(t *testing.T) {
 	}
 }
 
+// TestOwnedRootArtifactPathsScansOnlyWxNamespaces pins the enumeration side
+// of the layout. storage.worktree_root is an ordinary configurable pathname,
+// so it can name a directory that also holds unrelated content; only
+// top-level entries spelled like a workspace ID, plus the reserved _unbound,
+// are wx's own namespaces. Without the shape test every second-level
+// directory below the root would be reported as an unprovable artifact and
+// bury the real orphans.
+func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
+	base := t.TempDir()
+	store, err := state.Open(filepath.Join(base, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	rootPath := filepath.Join(base, "worktrees")
+	cfg.Storage.WorktreeRoot = rootPath
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	registerTestRoot(t, manager, rootPath)
+	if _, release, err := manager.existingRootDescriptor(rootPath); err != nil {
+		t.Fatal(err)
+	} else {
+		t.Cleanup(release)
+	}
+
+	workspaceSlot := filepath.Join(rootPath, "wsp001", "slt001")
+	unboundSlot := filepath.Join(rootPath, unboundNamespace, "slt002")
+	for _, directory := range []string{
+		workspaceSlot,
+		unboundSlot,
+		// Neither of these is a wx namespace: one is a reserved entry that
+		// holds no slots, the others are simply not spelled like an ID.
+		filepath.Join(rootPath, "_recovery", "whatever"),
+		filepath.Join(rootPath, "unrelated-project", "src"),
+		filepath.Join(rootPath, "toolong01", "slt003"),
+		filepath.Join(rootPath, "UPPER1", "slt004"),
+	} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths, err := manager.ownedRootArtifactPaths(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{filepath.Clean(workspaceSlot): true, filepath.Clean(unboundSlot): true}
+	if len(paths) != len(want) {
+		t.Fatalf("scanned paths=%v, want only the wx slot directories %v", paths, want)
+	}
+	for _, path := range paths {
+		if !want[filepath.Clean(path)] {
+			t.Fatalf("scanned path %q is not a wx slot directory", path)
+		}
+	}
+}
+
 // TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration
 // verifies that neither accessor invents a root generation: a slot row
 // inserted without one could not be located again, so both must refuse.

@@ -67,9 +67,11 @@ func NewShortID() (string, error) {
 }
 
 // ValidShortID reports whether value is exactly the shape NewShortID
-// produces. Slot and workspace IDs become path components and Git ref
-// components, so a value read back from SQLite is checked before it is used
-// to build either.
+// produces. The orphan scan uses it to decide which directories below the
+// worktree root are wx's own namespaces: the generating side spells them as
+// short IDs, so anything else is not a slot location wx created. Generated
+// values are validated as path components by their own callers
+// (daemon.validateLayoutComponent) rather than here.
 func ValidShortID(value string) bool {
 	if len(value) != ShortIDLength {
 		return false

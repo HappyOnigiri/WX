@@ -204,7 +204,9 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if _, ok := m.rootForPath(filepath.Join(home, "outside")); ok {
 		t.Fatal("outside path was accepted as wx-owned")
 	}
-	unknownPath := filepath.Join(newRoot, "unknown", "orphan")
+	// The orphan scan only descends into namespaces spelled like a workspace
+	// ID, so an unregistered slot has to sit in one to be reported at all.
+	unknownPath := filepath.Join(newRoot, "wsp999", "orphan")
 	if err := os.MkdirAll(unknownPath, 0o700); err != nil {
 		t.Fatal(err)
 	}

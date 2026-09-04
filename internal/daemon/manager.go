@@ -3195,10 +3195,17 @@ func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
 		return nil, err
 	}
 	// The enumeration unit is the slot directory itself, which is exactly
-	// what slots.rel_path records. Every top-level entry that does not start
-	// with "_" is a workspace directory; "_unbound" holds slots whose
-	// workspace is not known yet, and the remaining reserved entries
-	// ("_recovery") belong to wx and are not slots.
+	// what slots.rel_path records. A top-level entry is a workspace
+	// namespace only if it is spelled like a workspace ID (a short ID) or is
+	// "_unbound", which holds slots whose workspace is not known yet; the
+	// remaining reserved entries ("_recovery") belong to wx and are not
+	// slots.
+	//
+	// The shape test is what keeps the scan from claiming a directory that is
+	// not wx's. storage.worktree_root is an ordinary configurable pathname,
+	// so it can be pointed at a directory that holds unrelated content, and
+	// without this every second-level directory below it would be reported as
+	// an artifact wx cannot prove ownership of, burying the real orphans.
 	//
 	// This is the enumeration counterpart of slotRelPath's generation. If the
 	// two ever disagree, orphan detection stops seeing real slots without
@@ -3214,7 +3221,7 @@ func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
 		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
 			continue
 		}
-		if strings.HasPrefix(entry.Name(), "_") && entry.Name() != unboundNamespace {
+		if entry.Name() != unboundNamespace && !domain.ValidShortID(entry.Name()) {
 			continue
 		}
 		slotPaths, readErr := ownedSlotDirectories(owner, root, entry.Name())

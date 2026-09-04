@@ -525,7 +525,7 @@ func TestOwnedRootArtifactPathsReportsUnreadableWorkspaceSlots(t *testing.T) {
 func TestOwnedRootArtifactPathsReportsUnreadableUnboundNamespace(t *testing.T) {
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	unboundDir := filepath.Join(root, "unbound")
+	unboundDir := filepath.Join(root, unboundNamespace)
 	if err := os.MkdirAll(unboundDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
