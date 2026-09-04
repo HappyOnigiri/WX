@@ -17,6 +17,14 @@ import (
 // launchctl before it finished asking launchd for the replacement.
 const restartKickstartTimeout = 10 * time.Second
 
+// restartQuietPeriod is how long the daemon must have been idle before a
+// pending restart is issued. An in-flight count of zero is not by itself a safe
+// moment: one wx invocation is a sequence of independent RPCs (Status, then
+// ResolveAndLease, then RegisterAgentProcess, then Release at exit) with the
+// daemon fully idle in between, so restarting at the first zero lands squarely
+// inside a single user-visible operation.
+const restartQuietPeriod = 5 * time.Second
+
 // executableSnapshot identifies the daemon's own binary. The inode alone would
 // miss an in-place overwrite (go build -o over a running binary keeps the
 // inode), and mtime plus size alone would miss a replacement that preserved
@@ -100,10 +108,12 @@ func (m *Manager) detectExecutableReplacement() {
 // connection is closed without a response) and Manager.Close blocks until every
 // root reference is released, so passing this gate is the only protection the
 // callers have; the client-side connect retry only covers the listen gap that
-// remains after it.
+// remains after it. The gate therefore requires more than an in-flight count of
+// zero: it also waits out restartQuietPeriod since the daemon went idle, so a
+// restart cannot land between two RPCs of the same wx invocation.
 func (m *Manager) restartIfReplaced() {
 	m.mu.Lock()
-	if !m.restartPending || m.restartRequested || m.inflightRequests > 0 {
+	if !m.restartPending || m.restartRequested || !m.restartGateOpenLocked() {
 		m.mu.Unlock()
 		return
 	}
@@ -124,7 +134,7 @@ func (m *Manager) restartIfReplaced() {
 		return
 	}
 	m.mu.Lock()
-	if m.restartRequested || m.inflightRequests > 0 {
+	if m.restartRequested || !m.restartGateOpenLocked() {
 		m.mu.Unlock()
 		return
 	}
@@ -141,6 +151,16 @@ func (m *Manager) restartIfReplaced() {
 	if err := m.kickstartService(ctx); err != nil {
 		m.log.Error("daemon restart after executable replacement failed; restart wx daemon manually", "path", path, "error", err)
 	}
+}
+
+// restartGateOpenLocked reports whether the daemon is idle enough to be
+// replaced. A zero lastRequestEnd means no RPC has been served yet, so there is
+// no operation in progress to cut short. m.mu must be held.
+func (m *Manager) restartGateOpenLocked() bool {
+	if m.inflightRequests > 0 {
+		return false
+	}
+	return m.lastRequestEnd.IsZero() || time.Since(m.lastRequestEnd) >= restartQuietPeriod
 }
 
 func (m *Manager) kickstartService(ctx context.Context) error {
@@ -203,14 +223,11 @@ func (m *Manager) endRequest() {
 	}
 	m.mu.Lock()
 	m.inflightRequests--
-	idle := m.inflightRequests == 0
-	waiting := m.restartPending && !m.restartRequested
+	// The quiet period is measured from the moment the daemon actually went
+	// idle, so the stamp is taken only when the count reaches zero: a nested or
+	// concurrent request that is still running has not ended anything.
+	if m.inflightRequests == 0 {
+		m.lastRequestEnd = time.Now()
+	}
 	m.mu.Unlock()
-	if !idle || !waiting {
-		return
-	}
-	select {
-	case m.restartChecks <- struct{}{}:
-	default:
-	}
 }

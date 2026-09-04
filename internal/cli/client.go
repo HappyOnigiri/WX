@@ -63,7 +63,16 @@ func New(cfg config.Config) (Client, error) {
 	if err != nil {
 		return Client{}, err
 	}
-	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second}, Config: cfg}, nil
+	// Every call this client makes belongs to a session that outlives a daemon
+	// restart: the lease, the agent process registration, the heartbeats and
+	// the release at exit. Each of them would otherwise fail outright in the
+	// short window where a daemon that is replacing itself after a binary swap
+	// has closed its listener and not opened the new one yet. Retrying is safe
+	// because ConnectRetry only covers failures that happened before any byte
+	// was sent, so a request the daemon may have started executing is never
+	// repeated. wx's plain commands keep their own client (cmd/wx) without this
+	// budget and still exit immediately when no daemon is listening.
+	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second, ConnectRetry: 2 * time.Second}, Config: cfg}, nil
 }
 
 // ensureDaemon confirms a daemon is reachable, bootstrapping one through
@@ -251,11 +260,9 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	heartbeatDone := make(chan struct{})
 	// A heartbeat that lands while the daemon is restarting itself after a
 	// binary replacement would otherwise age the session's liveness by a full
-	// interval for a gap that lasts a fraction of a second. Retrying the
-	// connection is safe here because the failure happens before the request is
-	// sent; the surrounding 2s context still bounds the whole attempt.
-	heartbeatRPC := c.RPC
-	heartbeatRPC.ConnectRetry = 2 * time.Second
+	// interval for a gap that lasts a fraction of a second. The client's
+	// ConnectRetry budget (see New) covers that gap; the surrounding 2s context
+	// still bounds the whole attempt.
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
@@ -263,7 +270,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 			select {
 			case <-ticker.C:
 				heartbeatCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-				_ = heartbeatRPC.Call(heartbeatCtx, "Heartbeat", map[string]string{"session_id": lease.SessionID, "token": lease.Token}, nil)
+				_ = c.RPC.Call(heartbeatCtx, "Heartbeat", map[string]string{"session_id": lease.SessionID, "token": lease.Token}, nil)
 				cancel()
 			case <-heartbeatDone:
 				return

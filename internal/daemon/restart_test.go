@@ -29,7 +29,6 @@ func restartFixture(t *testing.T) (*Manager, string, *int) {
 	t.Cleanup(func() { _ = store.Close() })
 	manager := testManager(t, cfg, store)
 	manager.log = slog.New(slog.NewTextHandler(io.Discard, nil))
-	manager.restartChecks = make(chan struct{}, 1)
 	manager.launchdManaged = func() bool { return true }
 	kickstarts := 0
 	manager.kickstart = func(context.Context) error {
@@ -144,14 +143,18 @@ func TestPendingRestartWaitsForJobsAndRequests(t *testing.T) {
 		t.Fatalf("kickstarts=%d while an RPC is in flight", *kickstarts)
 	}
 	manager.endRequest()
-	select {
-	case <-manager.restartChecks:
-	default:
-		t.Fatal("the last returning request did not request a re-evaluation")
+	manager.restartIfReplaced()
+	if *kickstarts != 0 {
+		t.Fatalf("kickstarts=%d immediately after the last request returned", *kickstarts)
 	}
+	// One wx invocation is several RPCs with idle moments between them, so the
+	// gate only opens once the daemon has stayed idle for restartQuietPeriod.
+	manager.mu.Lock()
+	manager.lastRequestEnd = time.Now().Add(-restartQuietPeriod)
+	manager.mu.Unlock()
 	manager.restartIfReplaced()
 	if *kickstarts != 1 {
-		t.Fatalf("kickstarts=%d once the daemon went idle, want 1", *kickstarts)
+		t.Fatalf("kickstarts=%d once the daemon had been idle, want 1", *kickstarts)
 	}
 }
 

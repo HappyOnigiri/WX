@@ -95,11 +95,15 @@ type Manager struct {
 	restartRequested   bool
 	restartUnmanaged   bool
 	inflightRequests   int
+	// lastRequestEnd is the moment the in-flight count last reached zero. The
+	// restart gate waits out restartQuietPeriod from it, because a single wx
+	// invocation is several independent RPCs with genuinely idle moments
+	// between them and a restart taken in one of those gaps cuts the next call.
+	lastRequestEnd time.Time
 	// kickstart and launchdManaged are test seams for the restart path.
 	// Production managers leave them nil and take the launchd implementations.
 	kickstart         func(context.Context) error
 	launchdManaged    func() bool
-	restartChecks     chan struct{}
 	jobs              chan jobWork
 	reloads           chan struct{}
 	ctx               context.Context
@@ -138,7 +142,7 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 	started := time.Now()
 	managerCtx, managerCancel := context.WithCancel(context.Background())
 	reclaimAll := len(exclusiveStartup) > 0 && exclusiveStartup[0]
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), reloads: make(chan struct{}, 1), restartChecks: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
 	m.watchExecutable(executable, executableErr)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {
@@ -466,11 +470,6 @@ func (m *Manager) maintainJobs() {
 		select {
 		case <-m.ctx.Done():
 			return
-		case <-m.restartChecks:
-			// The last in-flight RPC just returned. Re-evaluate immediately
-			// instead of waiting out the rest of the tick, so a pending restart
-			// takes the first idle moment it gets.
-			m.restartIfReplaced()
 		case <-ticker.C:
 			m.recoverJobs(false)
 			m.detectExecutableReplacement()
