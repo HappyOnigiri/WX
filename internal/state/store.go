@@ -39,7 +39,9 @@ const SchemaVersion = 1
 // adds or changes internal storage, and must not silently change the
 // version a scripted `--json` consumer sees. Bump this only when the JSON
 // output shape itself changes in a way consumers need to detect.
-const JSONSchemaVersion = 1
+//
+// 2: `wx status --json` gained restart_pending.
+const JSONSchemaVersion = 2
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
