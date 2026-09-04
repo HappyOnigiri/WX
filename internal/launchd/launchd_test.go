@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/HappyOnigiri/WX/internal/config"
 )
 
 func TestRenderInstallUninstallAndKickstart(t *testing.T) {
@@ -81,6 +83,55 @@ func TestRenderEscapesAndPreservesSpecialCharacterPaths(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("decoded plist does not preserve %q: %s", expected, joined)
 		}
+	}
+}
+
+func TestCurrentPlistStatusDistinguishesCurrentStaleAndUnknown(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(bin, "wx")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	logPath, err := config.LogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plist, err := PlistPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(plist), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := Render(binary, home, logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plist, expected, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := CurrentPlistStatus(); status != PlistCurrent || err != nil {
+		t.Fatalf("current plist status=%v err=%v", status, err)
+	}
+	// This is the stale shape produced by the old daemon command contract.
+	if err := os.WriteFile(plist, []byte("<string>daemon start --foreground</string>\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := CurrentPlistStatus(); status != PlistStale || err != nil {
+		t.Fatalf("stale plist status=%v err=%v", status, err)
+	}
+	if err := os.Remove(plist); err != nil {
+		t.Fatal(err)
+	}
+	status, err := CurrentPlistStatus()
+	if status != PlistUnknown || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing plist status=%v err=%v", status, err)
 	}
 }
 

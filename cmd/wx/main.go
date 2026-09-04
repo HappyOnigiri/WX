@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -18,9 +17,11 @@ import (
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/fdexec"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 var (
@@ -61,7 +62,7 @@ func run(ctx context.Context, args []string) int {
 	case "status":
 		return runRPCDisplay(ctx, "Status", args[1:])
 	case "doctor":
-		return runRPCDisplay(ctx, "Doctor", args[1:])
+		return runDoctor(ctx, args[1:])
 	case "gc":
 		return runGC(ctx, args[1:])
 	case "config":
@@ -141,6 +142,11 @@ func finishFlagParse(fs *pflag.FlagSet, name string, args []string) (code int, d
 }
 
 func runRPCDisplay(ctx context.Context, method string, args []string) int {
+	// Keep this compatibility path for in-process callers while the doctor
+	// command has its own connection-error fallback.
+	if strings.EqualFold(method, "Doctor") {
+		return runDoctor(ctx, args)
+	}
 	name := strings.ToLower(method)
 	fs := pflag.NewFlagSet(name, pflag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print JSON")
@@ -165,6 +171,61 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	var out map[string]any
 	if err := c.Call(ctx, method, struct{}{}, &out); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	data, _ := json.MarshalIndent(out, "", "  ")
+	if *jsonOut {
+		fmt.Println(string(data))
+	} else {
+		printDisplay(os.Stdout, out)
+	}
+	return 0
+}
+
+// runDoctor is deliberately separate from the generic RPC display path:
+// doctor can still report local configuration and filesystem facts when no
+// daemon answers the socket.  A live daemon that accepted the connection but
+// failed the request remains an error and does not trigger the fallback.
+func runDoctor(ctx context.Context, args []string) int {
+	fs := pflag.NewFlagSet("doctor", pflag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "print JSON")
+	fs.Usage = func() { commandUsage(os.Stdout, "doctor") }
+	if code, done := finishFlagParse(fs, "doctor", args); done {
+		return code
+	}
+	if fs.NArg() != 0 {
+		commandUsage(os.Stderr, "doctor")
+		return 2
+	}
+	c, err := rpcClient()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, statusDisplayTimeout)
+		defer cancel()
+	}
+	var out map[string]any
+	if err := c.Call(ctx, "Doctor", struct{}{}, &out); err != nil {
+		if !rpc.IsConnectError(err) {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		out = map[string]any{
+			"schema_version":    state.JSONSchemaVersion,
+			"db_schema_version": state.SchemaVersion,
+			"checks":            diag.LocalChecks(ctx, err),
+		}
+		data, _ := json.MarshalIndent(out, "", "  ")
+		if *jsonOut {
+			fmt.Println(string(data))
+		} else {
+			printDisplay(os.Stdout, out)
+		}
+		// The local report is useful but cannot establish that a daemon is
+		// healthy; preserve doctor’s historical failure exit code.
 		return 1
 	}
 	data, _ := json.MarshalIndent(out, "", "  ")
@@ -308,10 +369,7 @@ func runDaemon(ctx context.Context, args []string) int {
 		}
 		return 0
 	case "install":
-		binary, err := exec.LookPath("wx")
-		if err != nil {
-			binary, err = os.Executable()
-		}
+		binary, err := launchd.ResolveBinary()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1

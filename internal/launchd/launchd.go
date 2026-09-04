@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"github.com/HappyOnigiri/WX/internal/config"
 )
 
 const (
@@ -34,6 +36,20 @@ func PlistPath() (string, error) {
 	return filepath.Join(h, "Library", "LaunchAgents", Label+".plist"), nil
 }
 
+// ResolveBinary returns the wx executable that a LaunchAgent installation
+// should invoke.  The command on PATH is preferred so an installed wx keeps
+// using the same path an operator would run from a shell; os.Executable is the
+// fallback for development builds and test binaries that are not named wx.
+// Callers that inspect an existing plist use this same resolver so install and
+// diagnostics cannot disagree about which binary belongs in ProgramArguments.
+func ResolveBinary() (string, error) {
+	binary, err := exec.LookPath("wx")
+	if err == nil {
+		return binary, nil
+	}
+	return os.Executable()
+}
+
 func Render(binary, home, logPath string) ([]byte, error) {
 	t, err := template.New("plist").Funcs(template.FuncMap{"x": xmlEscapeText}).Parse(plistTemplate)
 	if err != nil {
@@ -45,6 +61,64 @@ func Render(binary, home, logPath string) ([]byte, error) {
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+// PlistStatus describes whether the on-disk LaunchAgent can be regenerated
+// from the current wx executable.  Unknown deliberately includes both a
+// missing plist and any other inability to inspect it; callers need to avoid
+// treating an uninstalled or unreadable service as stale.
+type PlistStatus uint8
+
+const (
+	PlistUnknown PlistStatus = iota
+	PlistCurrent
+	PlistStale
+)
+
+// CurrentPlistStatus compares the complete LaunchAgent bytes on disk with the
+// bytes wx daemon install would render today.  A byte-for-byte comparison is
+// intentional: wx owns the entire plist, so any difference is repaired by
+// rerunning the install command rather than by trying to interpret XML
+// fragments independently.
+func CurrentPlistStatus() (PlistStatus, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return PlistUnknown, err
+	}
+	path, err := PlistPath()
+	if err != nil {
+		return PlistUnknown, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return PlistUnknown, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return PlistUnknown, errors.New("unsafe symlink")
+	}
+	if !info.Mode().IsRegular() {
+		return PlistUnknown, errors.New("LaunchAgent plist is not a regular file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return PlistUnknown, err
+	}
+	binary, err := ResolveBinary()
+	if err != nil {
+		return PlistUnknown, fmt.Errorf("resolve wx executable: %w", err)
+	}
+	logPath, err := config.LogPath()
+	if err != nil {
+		return PlistUnknown, err
+	}
+	expected, err := Render(binary, home, logPath)
+	if err != nil {
+		return PlistUnknown, err
+	}
+	if bytes.Equal(data, expected) {
+		return PlistCurrent, nil
+	}
+	return PlistStale, nil
 }
 
 // xmlEscapeText is a template FuncMap entry: the template calls it on every
