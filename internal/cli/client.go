@@ -71,7 +71,9 @@ func New(cfg config.Config) (Client, error) {
 	// because ConnectRetry only covers failures that happened before any byte
 	// was sent, so a request the daemon may have started executing is never
 	// repeated. wx's plain commands keep their own client (cmd/wx) without this
-	// budget and still exit immediately when no daemon is listening.
+	// budget and still exit immediately when no daemon is listening. The 2s
+	// figure is the same budget agent hooks use; see internal/agent/hook.go for
+	// the measured gap it is sized against.
 	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second, ConnectRetry: 2 * time.Second}, Config: cfg}, nil
 }
 
