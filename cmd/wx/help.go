@@ -16,16 +16,17 @@ Global options:
   -v, --version                  show version
 
 Commands:
-  claude [arguments...]             launch Claude Code in a wx workspace
-  codex [arguments...]              launch Codex in a wx workspace
-  status [--json]                   show daemon and pool state
-  doctor [--json]                   check configuration and dependencies
-  gc [--dry-run]                    run retention cleanup
-  sessions [--all] [--json]         list managed sessions
-  config [<key> <value>]            show or update configuration
-  resume <id> <agent> [args...]     restore a wx session
-  forget <workspace-path>           forget an inactive workspace
-  daemon install|uninstall|restart  manage or restart the LaunchAgent`)
+  claude [arguments...]          launch Claude Code in a wx workspace
+  codex [arguments...]           launch Codex in a wx workspace
+  status [--json]                show daemon and pool state
+  doctor [--json]                check configuration and dependencies
+  gc [--dry-run]                 run retention cleanup
+  sessions [--all] [--json]      list managed sessions
+  config [<key> <value>]         show or update configuration
+  resume <id> <agent> [args...]  restore a wx session
+  forget <workspace-path>        forget an inactive workspace
+  daemon start|stop|restart      change whether the daemon is running
+  daemon install|uninstall       register or remove the LaunchAgent`)
 }
 
 func commandUsage(w io.Writer, name string) {
@@ -72,10 +73,24 @@ Options:
 
 Forget an inactive workspace after all managed slots are safely archived.`)
 	case "daemon":
-		_, _ = fmt.Fprintln(w, `Usage: wx daemon <serve|install|uninstall|restart>
+		_, _ = fmt.Fprintln(w, `Usage: wx daemon <start|stop|restart|install|uninstall> [--foreground]
 
-Serve internally, install and remove the per-user LaunchAgent, or restart the
-running daemon so a replaced wx binary takes effect immediately.`)
+Change whether the daemon is running, or install and remove the per-user
+LaunchAgent that starts it at login.
+
+  start      run the daemon, or report that it is already running
+  stop       exit the running daemon, leaving the LaunchAgent registered
+  restart    replace the running daemon so a new wx binary takes effect
+  install    write the LaunchAgent plist and load it
+  uninstall  unload the LaunchAgent and remove its plist
+
+start, stop, and restart wait for the daemon to reach the requested state and
+give up after 60s. The daemon acts only once it is idle, so none of them cuts
+short a request or a job that is already running.
+
+Options:
+  --foreground  with start, serve in this process instead of asking launchd
+                to start the daemon. This is how the LaunchAgent runs wx.`)
 	case "hook":
 		_, _ = fmt.Fprintln(w, `Usage: wx hook <event>
 

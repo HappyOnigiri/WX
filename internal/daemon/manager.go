@@ -91,21 +91,49 @@ type Manager struct {
 	executablePath     string
 	executableBaseline executableSnapshot
 	executableWatch    bool
-	restartPending     bool
-	restartRequested   bool
-	restartAttempts    int
-	restartUnmanaged   bool
-	inflightRequests   int
-	// lastRequestEnd is the moment the in-flight count last reached zero. The
-	// restart gate waits out restartQuietPeriod from it, because a single wx
-	// invocation is several independent RPCs with genuinely idle moments
-	// between them and a restart taken in one of those gaps cuts the next call.
+	// restartPending and stopPending are the two lifecycle intents that wait on
+	// the idle gate. At most one is ever raised: each request lowers the other,
+	// so the gate never has to rank them. lifecycleClaimed marks the moment one
+	// of them was handed to the signal that carries it out, which must happen
+	// once and only once. lifecycleAttempts counts the signals that never got
+	// delivered; once it reaches maxLifecycleAttempts the claim latches, and
+	// only a new explicit request clears the pair again.
+	restartPending    bool
+	stopPending       bool
+	lifecycleClaimed  bool
+	lifecycleAttempts int
+	restartUnmanaged  bool
+	inflightRequests  int
+	// inflightLifecycle is the subset of inflightRequests that is asking the
+	// daemon to change its own run state. The gate blocks on the full count so
+	// that no signal lands on an unanswered request, but the quiet period is
+	// measured over the other kind only: see lastRequestEnd.
+	inflightLifecycle int
+	// lastRequestEnd is the moment the count of requests that are not lifecycle
+	// requests last reached zero. The lifecycle gate waits out
+	// lifecycleQuietPeriod from it, because a single wx invocation is several
+	// independent RPCs with genuinely idle moments between them and a restart
+	// taken in one of those gaps cuts the next call. wx daemon stop's own RPC
+	// is not one of those moments — it is the request being served — so
+	// stamping it would make every stop wait out a quiet period it created
+	// itself, even on a daemon that had been idle for hours.
 	lastRequestEnd time.Time
-	// kickstart and launchdManaged are test seams for the restart path.
-	// Production managers leave them nil and take the launchd implementations.
-	kickstart         func(context.Context) error
-	launchdManaged    func() bool
-	jobs              chan jobWork
+	// lastLifecycleEnd is when a lifecycle request last left Handler.Handle.
+	// The gate holds lifecycleReplyGrace from it so the reply frame, which
+	// rpc.Server writes after the handler returns, is not cut off by the very
+	// signal the reply is reporting.
+	lastLifecycleEnd time.Time
+	// kickstart, terminate and launchdManaged are test seams for the restart and
+	// stop paths. Production managers leave them nil and take the launchd and
+	// signal implementations.
+	kickstart      func(context.Context) error
+	terminate      func() error
+	launchdManaged func() bool
+	jobs           chan jobWork
+	// lifecycleChecks wakes maintainJobs as soon as a stop or restart is
+	// requested, so a synchronous wx daemon stop does not have to sit through
+	// the 10s job tick before the gate is looked at at all.
+	lifecycleChecks   chan struct{}
 	reloads           chan struct{}
 	ctx               context.Context
 	cancel            context.CancelFunc
@@ -143,7 +171,7 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 	started := time.Now()
 	managerCtx, managerCancel := context.WithCancel(context.Background())
 	reclaimAll := len(exclusiveStartup) > 0 && exclusiveStartup[0]
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
 	m.watchExecutable(executable, executableErr)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {
@@ -464,17 +492,44 @@ func (m *Manager) recoverJobs(reclaimAll bool) {
 	}
 }
 
+// lifecycleCheckInterval is how often the gate is re-evaluated while a stop or
+// restart is waiting on it. The 10s job tick is too coarse for a command an
+// operator is watching: the quiet period alone is 5s and is never elapsed at
+// the moment the request arrives, so a gate that is only looked at every 10s
+// turns every wx daemon stop into a 5-15s wait.
+const lifecycleCheckInterval = time.Second
+
 func (m *Manager) maintainJobs() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	// The lifecycle timer runs only while something is pending, so a daemon
+	// that nobody asked to stop keeps exactly the one 10s wakeup it had before.
+	lifecycle := time.NewTimer(lifecycleCheckInterval)
+	lifecycle.Stop()
+	defer lifecycle.Stop()
+	armed := false
+	rearm := func() {
+		if !armed && m.lifecyclePending() {
+			lifecycle.Reset(lifecycleCheckInterval)
+			armed = true
+		}
+	}
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
+		case <-m.lifecycleChecks:
+			m.runPendingLifecycle()
+			rearm()
+		case <-lifecycle.C:
+			armed = false
+			m.runPendingLifecycle()
+			rearm()
 		case <-ticker.C:
 			m.recoverJobs(false)
 			m.detectExecutableReplacement()
-			m.restartIfReplaced()
+			m.runPendingLifecycle()
+			rearm()
 		}
 	}
 }
@@ -3078,7 +3133,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	}
 	m.mu.RLock()
 	reloadAt, reloadError, backupAt, backupError := m.lastReload, m.reloadError, m.lastBackup, m.backupError
-	restartPending := m.restartPending
+	restartPending, stopPending := m.restartPending, m.stopPending
 	cfg := m.cfg
 	roots := make(map[string]bool, len(m.roots))
 	for root, active := range m.roots {
@@ -3118,8 +3173,12 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	sort.Slice(rootStatuses, func(i, j int) bool { return rootStatuses[i].Path < rootStatuses[j].Path })
 	return map[string]any{
 		"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "daemon_version": daemonVersion(), "protocol_version": 1, "uptime_seconds": int(time.Since(m.started).Seconds()),
+		// pid identifies the serving process, which is what lets a synchronous
+		// wx daemon restart tell a replacement apart from the daemon it asked to
+		// go away when it misses the moment the listener was closed.
+		"pid":         os.Getpid(),
 		"config_path": must(config.Path()), "config_last_reload": reloadAt.UTC().Format(time.RFC3339Nano), "config_reload_error": reloadError,
-		"sqlite_last_backup": formatOptionalTime(backupAt), "sqlite_backup_error": backupError, "restart_pending": restartPending,
+		"sqlite_last_backup": formatOptionalTime(backupAt), "sqlite_backup_error": backupError, "restart_pending": restartPending, "stop_pending": stopPending,
 		"workspaces": s.Workspaces, "repositories": s.Repositories,
 		"slots":           map[string]int{"ready": s.Ready, "leased": s.Leased, "failed": s.Failed, "quarantined": s.Quarantined},
 		"active_sessions": s.Active, "snapshots": s.Snapshots, "queued_jobs": s.Jobs, "worktree_roots": rootStatuses,

@@ -172,8 +172,9 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 // gitEnvDenylist names repository-scoped Git environment variables that must
 // never leak from the daemon's own process environment into a Git child
 // process. daemon startup paths (launchd session env via `launchctl setenv`,
-// a manual `wx daemon serve`, or invocation from inside a Git hook) can carry
-// GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointed at an unrelated repository.
+// a manual `wx daemon start --foreground`, or invocation from inside a Git
+// hook) can carry GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointed at an
+// unrelated repository.
 // Without stripping them, a snapshot's `git add -A` / `write-tree` would
 // silently operate on the wrong worktree or index, report success, and let
 // the caller remove a dirty worktree it never actually captured. Callers that
