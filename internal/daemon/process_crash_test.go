@@ -129,7 +129,7 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 		waitCrashSessionState(t, store, lease.SessionID, "ARCHIVED")
 		armCrashGate(t, gate)
 		var resumed Lease
-		if err := client.Call(context.Background(), "Resume", map[string]any{"wx_session_id": lease.SessionID, "agent": "codex", "client_pid": os.Getpid(), "allow_fresh": false}, &resumed); err != nil {
+		if err := client.Call(context.Background(), "Resume", map[string]any{"wx_session_id": lease.SessionID, "agent": "codex", "client_pid": os.Getpid(), "fresh": false}, &resumed); err != nil {
 			t.Fatal(err)
 		}
 		expectedRegistration = resumed.Path

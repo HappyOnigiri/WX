@@ -205,7 +205,7 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if err := os.MkdirAll(unknownPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	missing, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
+	missing, err := legacyLeaseFixture(m, "codex", os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	t.Cleanup(m.Close)
 	ctx := context.Background()
 
-	lease, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
+	lease, err := legacyLeaseFixture(m, "codex", os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,10 +458,8 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 		t.Fatalf("unbound readiness error=%v", err)
 	}
 	cancel()
-	if err := m.PrepareFreshResume(ctx, lease.SessionID, lease.Token, "new-agent", "", nil); err == nil {
-		t.Fatal("UNBOUND slot unexpectedly accepted fresh resume")
-	}
-	if err := store.SetSlotState(ctx, lease.SessionID, []string{"FAILED"}, "QUARANTINED", "test"); err != nil {
+
+	if err := store.SetSlotState(ctx, lease.SessionID, []string{"UNBOUND"}, "QUARANTINED", "test"); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := m.waitForSnapshot(ctx, lease.SessionID); err == nil || !strings.Contains(err.Error(), "archive failed") {
@@ -540,6 +538,7 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 }
 
 func TestWaitReadyIncludesPrepareDiagnosticMetadata(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -550,7 +549,7 @@ func TestWaitReadyIncludesPrepareDiagnosticMetadata(t *testing.T) {
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	m := testManager(t, cfg, store)
 	t.Cleanup(m.Close)
-	lease, err := m.AllocateResumeSlot(context.Background(), "codex", os.Getpid())
+	lease, err := legacyLeaseFixture(m, "codex", os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -739,23 +738,10 @@ func TestManagerResumeAndArchiveFailureStates(t *testing.T) {
 		return session, token
 	}
 
-	missing, missingToken := createSession("missing-current", "UNBOUND", "UNBOUND", "")
-	if err := m.BindAndRestoreResume(ctx, missing.ID, missingToken, "unmapped-agent"); err == nil || !strings.Contains(err.Error(), "no wx recovery mapping") {
-		t.Fatalf("missing mapping error=%v", err)
-	}
-	if err := m.BindAndRestoreResume(ctx, missing.ID, "wrong", "unmapped-agent"); err == nil {
-		t.Fatal("resume binding accepted a wrong token")
-	}
 	for _, priorState := range []string{"EXPIRED", "ACTIVE", "ARCHIVED"} {
-		id := strings.ToLower(priorState)
-		prior, _ := createSession(id+"-prior", priorState, "SNAPSHOTTED", "")
-		agentID := id + "-agent"
-		if err := store.BindAgentSession(ctx, prior.ID, agentID); err != nil {
-			t.Fatal(err)
-		}
-		current, token := createSession(id+"-current", "UNBOUND", "UNBOUND", "")
-		if err := m.BindAndRestoreResume(ctx, current.ID, token, agentID); err == nil {
-			t.Fatalf("%s prior unexpectedly resumed without a usable snapshot", priorState)
+		prior, _ := createSession(strings.ToLower(priorState)+"-prior", priorState, "SNAPSHOTTED", "")
+		if _, err := m.Resume(ctx, prior.ID, "codex", os.Getpid(), false); err == nil {
+			t.Fatalf("%s parent resumed without usable recovery", priorState)
 		}
 	}
 

@@ -302,7 +302,7 @@ func TestConcurrentCloseReloadAndAllocationHasNoUseAfterClose(t *testing.T) {
 
 	allocationDone := make(chan error, 1)
 	go func() {
-		_, allocationErr := manager.AllocateResumeSlot(context.Background(), "codex", os.Getpid())
+		_, allocationErr := legacyLeaseFixture(manager, "codex", os.Getpid())
 		allocationDone <- allocationErr
 	}()
 	<-allocationEntered
@@ -470,7 +470,7 @@ func TestRootReplacementQuarantinesPreparationBeforeDescriptorAcquire(t *testing
 	staleWorkspaceID := string(registerTestWorkspace(t, store, discovery.Workspace{Root: discoveryPath(home), Kind: "repository"}).ID)
 	const slotID = "preparing-slot"
 	staleRootID := registerTestRoot(t, manager, oldRoot)
-	staleRelative, err := slotRelPath(staleWorkspaceID, slotID, false)
+	staleRelative, err := slotRelPath(staleWorkspaceID, slotID)
 	if err != nil {
 		t.Fatal(err)
 	}

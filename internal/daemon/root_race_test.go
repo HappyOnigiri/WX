@@ -56,7 +56,7 @@ func TestCreateSlotRootPinsAllocationAcrossRootReplacement(t *testing.T) {
 	}
 	t.Cleanup(m.Close)
 
-	relPath, err := slotRelPath("wsp001", "slt001", false)
+	relPath, err := slotRelPath("wsp001", "slt001")
 	if err != nil {
 		t.Fatal(err)
 	}

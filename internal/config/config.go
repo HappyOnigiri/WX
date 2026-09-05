@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	sessionsconfig "github.com/HappyOnigiri/WX/internal/sessions/config"
 )
 
 type Duration struct{ time.Duration }
@@ -39,6 +41,7 @@ type Config struct {
 	Discovery    Discovery             `yaml:"discovery,omitempty"`
 	Readiness    Readiness             `yaml:"readiness,omitempty"`
 	Includes     Includes              `yaml:"includes,omitempty"`
+	Sessions     sessionsconfig.Config `yaml:"sessions,omitempty"`
 	Workspaces   map[string]Workspace  `yaml:"workspaces,omitempty"`
 	Repositories map[string]Repository `yaml:"repositories,omitempty"`
 	Logging      Logging               `yaml:"logging,omitempty"`
@@ -124,6 +127,7 @@ func Defaults() Config {
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
 		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
+		Sessions:   sessionsconfig.Defaults(),
 		Workspaces: map[string]Workspace{}, Repositories: map[string]Repository{},
 	}
 }
@@ -272,17 +276,26 @@ func collectKeys(doc *yaml.Node) map[string]bool {
 	if len(doc.Content) == 0 {
 		return out
 	}
-	root := doc.Content[0]
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		key, value := root.Content[i].Value, root.Content[i+1]
-		out[key] = true
-		if value.Kind == yaml.MappingNode && key != "workspaces" && key != "repositories" {
-			for j := 0; j+1 < len(value.Content); j += 2 {
-				out[key+"."+value.Content[j].Value] = true
-			}
-		}
-	}
+	collectMappingKeys(doc.Content[0], "", out)
 	return out
+}
+
+func collectMappingKeys(node *yaml.Node, prefix string, out map[string]bool) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keyNode, value := node.Content[i], node.Content[i+1]
+		key := keyNode.Value
+		if prefix != "" {
+			key = prefix + "." + key
+		}
+		out[key] = true
+		if value.Kind != yaml.MappingNode || key == "workspaces" || key == "repositories" || key == "sessions.paths" {
+			continue
+		}
+		collectMappingKeys(value, key, out)
+	}
 }
 
 func (c Config) has(key string, fallback bool) bool {
@@ -295,8 +308,8 @@ func (c Config) has(key string, fallback bool) bool {
 // durationType は Duration の reflect.Type。struct だが、設定上は scalar leaf として扱う。
 var durationType = reflect.TypeOf(Duration{})
 
-// walkConfigLeaves は v から到達できる scalar（string、int、bool、Duration）を宣言順に走査し、YAML key と返す。
-// unexported、version、map/slice（workspaces、repositories、discovery.exclude）は共通の scalar key 空間から除外する。
+// walkConfigLeaves は v から到達できる scalar（string、int、bool、Duration）を宣言順に走査する。
+// unexported、version、map/slice は共通の scalar key 空間から除外する。
 func walkConfigLeaves(v reflect.Value, prefix string, visit func(key string, field reflect.Value)) {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
@@ -326,12 +339,49 @@ func walkConfigLeaves(v reflect.Value, prefix string, visit func(key string, fie
 	}
 }
 
+// walkConfigLists は v から到達できる string slice を宣言順に走査する。
+// map は動的キーを持つため、workspaces と repositories を含めて対象外にする。
+func walkConfigLists(v reflect.Value, prefix string, visit func(key string, field reflect.Value)) {
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		sf := t.Field(i)
+		if sf.PkgPath != "" {
+			continue
+		}
+		tag, _, _ := strings.Cut(sf.Tag.Get("yaml"), ",")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		key := tag
+		if prefix != "" {
+			key = prefix + "." + tag
+		}
+		fv := v.Field(i)
+		switch {
+		case fv.Kind() == reflect.Slice && fv.Type().Elem().Kind() == reflect.String:
+			visit(key, fv)
+		case fv.Kind() == reflect.Struct && fv.Type() != durationType:
+			walkConfigLists(fv, key, visit)
+		}
+	}
+}
+
 // configField は walkConfigLeaves と同じ形で key の scalar field を探す。scalar leaf でなければ zero Value を返す。
 func configField(v reflect.Value, key string) reflect.Value {
 	var target reflect.Value
 	walkConfigLeaves(v, "", func(k string, fv reflect.Value) {
 		if k == key {
 			target = fv
+		}
+	})
+	return target
+}
+
+func configListField(v reflect.Value, key string) reflect.Value {
+	var target reflect.Value
+	walkConfigLists(v, "", func(k string, field reflect.Value) {
+		if k == key {
+			target = field
 		}
 	})
 	return target
@@ -351,9 +401,12 @@ func Merge(d, raw Config) Config {
 		}
 		configField(resultValue, key).Set(rawField)
 	})
-	if raw.has("discovery.exclude", raw.Discovery.Exclude != nil) {
-		r.Discovery.Exclude = raw.Discovery.Exclude
-	}
+	walkConfigLists(rawValue, "", func(key string, rawField reflect.Value) {
+		if rawField.IsNil() {
+			return
+		}
+		configListField(resultValue, key).Set(rawField)
+	})
 	if raw.has("workspaces", raw.Workspaces != nil) {
 		r.Workspaces = raw.Workspaces
 	}
@@ -432,6 +485,9 @@ func Validate(c *Config) error {
 	if c.Logging.Level != "debug" && c.Logging.Level != "info" && c.Logging.Level != "warn" && c.Logging.Level != "error" {
 		return errors.New("logging.level must be debug, info, warn, or error")
 	}
+	if err := c.Sessions.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -502,22 +558,14 @@ func (c Config) MarshalYAML() (any, error) {
 		if !c.has(key, false) {
 			return
 		}
-		section, name, _ := strings.Cut(key, ".")
-		m, _ := out[section].(map[string]any)
-		if m == nil {
-			m = map[string]any{}
-			out[section] = m
-		}
-		m[name] = leafInterface(fv)
+		setNestedYAMLValue(out, key, leafInterface(fv))
 	})
-	if c.has("discovery.exclude", false) {
-		m, _ := out["discovery"].(map[string]any)
-		if m == nil {
-			m = map[string]any{}
-			out["discovery"] = m
+	walkConfigLists(reflect.ValueOf(c), "", func(key string, fv reflect.Value) {
+		if !listPresent(c, key) {
+			return
 		}
-		m["exclude"] = c.Discovery.Exclude
-	}
+		setNestedYAMLValue(out, key, fv.Interface())
+	})
 	if c.has("workspaces", c.Workspaces != nil) {
 		out["workspaces"] = c.Workspaces
 	}
@@ -525,6 +573,31 @@ func (c Config) MarshalYAML() (any, error) {
 		out["repositories"] = c.Repositories
 	}
 	return out, nil
+}
+
+func setNestedYAMLValue(root map[string]any, key string, value any) {
+	parts := strings.Split(key, ".")
+	current := root
+	for _, part := range parts[:len(parts)-1] {
+		nested, _ := current[part].(map[string]any)
+		if nested == nil {
+			nested = map[string]any{}
+			current[part] = nested
+		}
+		current = nested
+	}
+	current[parts[len(parts)-1]] = value
+}
+
+func listPresent(c Config, key string) bool {
+	if strings.HasPrefix(key, "sessions.paths.") {
+		if !c.has("sessions.paths", false) {
+			return false
+		}
+		list := configListField(reflect.ValueOf(c), key)
+		return list.IsValid() && !list.IsNil()
+	}
+	return c.has(key, false)
 }
 
 // Fields はユーザーが設定できる scalar key と現在の実効値を SetField と同じ順序で列挙する。
@@ -581,6 +654,128 @@ func SetField(c *Config, key, value string) error {
 	}
 	c.present[key] = true
 	return nil
+}
+
+// AppendList は discovery.exclude または対応ツールの sessions.paths へ値を追加する。
+func AppendList(c *Config, key, value string) error {
+	list, err := mutableConfigList(c, key)
+	if err != nil {
+		return err
+	}
+	if list.IsNil() {
+		defaults := Defaults()
+		defaultList := configListField(reflect.ValueOf(defaults), key)
+		list.Set(reflect.ValueOf(append([]string(nil), defaultList.Interface().([]string)...)))
+	}
+	target := normalizeListPath(value)
+	values := list.Interface().([]string)
+	for _, current := range values {
+		if current == value || normalizeListPath(current) == target {
+			return fmt.Errorf("%q already exists in %s (as %q)", value, key, current)
+		}
+	}
+	list.Set(reflect.ValueOf(append(values, value)))
+	markListPresent(c, key)
+	return nil
+}
+
+// RemoveList は discovery.exclude または対応ツールの sessions.paths から値を削除する。
+func RemoveList(c *Config, key, value string) error {
+	list, err := mutableConfigList(c, key)
+	if err != nil {
+		return err
+	}
+	if list.IsNil() {
+		defaults := Defaults()
+		defaultList := configListField(reflect.ValueOf(defaults), key)
+		values := defaultList.Interface().([]string)
+		if len(values) == 0 {
+			return fmt.Errorf("%s has no paths configured", key)
+		}
+		return fmt.Errorf("%s is unset, so the defaults are in effect (%s); use --add to set explicit paths first", key, strings.Join(values, ", "))
+	}
+	values := list.Interface().([]string)
+	target := normalizeListPath(value)
+	index := -1
+	for i, current := range values {
+		if current == value || normalizeListPath(current) == target {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		if len(values) == 0 {
+			return fmt.Errorf("%q not found in %s", value, key)
+		}
+		return fmt.Errorf("%q not found in %s; current values: %s", value, key, strings.Join(values, ", "))
+	}
+	list.Set(reflect.ValueOf(append(values[:index], values[index+1:]...)))
+	markListPresent(c, key)
+	return nil
+}
+
+// ResetList は指定したリストを未設定へ戻し、既定値を再び有効にする。
+func ResetList(c *Config, key string) error {
+	list, err := mutableConfigList(c, key)
+	if err != nil {
+		return err
+	}
+	list.Set(reflect.Zero(list.Type()))
+	markListPresent(c, key)
+	return nil
+}
+
+func mutableConfigList(c *Config, key string) (reflect.Value, error) {
+	if c == nil {
+		return reflect.Value{}, errors.New("config is nil")
+	}
+	if key != "discovery.exclude" && !validSessionsPathKey(key) {
+		return reflect.Value{}, fmt.Errorf("unknown list config key %q", key)
+	}
+	list := configListField(reflect.ValueOf(c).Elem(), key)
+	if !list.IsValid() {
+		return reflect.Value{}, fmt.Errorf("unknown list config key %q", key)
+	}
+	return list, nil
+}
+
+func validSessionsPathKey(key string) bool {
+	parts := strings.Split(key, ".")
+	if len(parts) != 4 || parts[0] != "sessions" || parts[1] != "paths" {
+		return false
+	}
+	switch parts[2] {
+	case "claude", "codex":
+	default:
+		return false
+	}
+	return parts[3] == "sessions"
+}
+
+func markListPresent(c *Config, key string) {
+	if c.present == nil {
+		c.present = map[string]bool{}
+	}
+	if strings.HasPrefix(key, "sessions.paths.") {
+		c.present["sessions.paths"] = true
+		return
+	}
+	c.present[key] = true
+}
+
+func normalizeListPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"))
+		}
+	}
+	if absolute, err := filepath.Abs(path); err == nil {
+		return absolute
+	}
+	return filepath.Clean(path)
 }
 
 func validWorktreeMode(mode string, allowAsk bool) bool {

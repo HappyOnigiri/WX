@@ -150,7 +150,7 @@ func TestResumeReportsIncompleteRecoverySnapshotAcrossRepositories(t *testing.T)
 	if err := store.SaveSnapshot(ctx, state.Snapshot{ID: "snap-1", SessionID: sessionID, RepositoryID: "repository-1", HeadOID: "head", HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/worktree", Status: "ARCHIVED", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpiresAt: expiry}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Resume(ctx, sessionID, "codex", os.Getpid(), true); err == nil || !strings.Contains(err.Error(), "incomplete recovery snapshot") {
+	if _, err := manager.Resume(ctx, sessionID, "codex", os.Getpid(), false); err == nil || !strings.Contains(err.Error(), "incomplete recovery snapshot") {
 		t.Fatalf("resume with incomplete recovery snapshot error=%v", err)
 	}
 }
