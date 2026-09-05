@@ -43,6 +43,9 @@ Go側に状態のenum型や遷移ガードを作らない。
   本体は`$(git rev-parse --git-common-dir)`の`hooks/`直下に置き、`make hook-pre-commit`・`make hook-pre-push`を呼ぶ。
   `core.hooksPath`のlocal設定はuserレベルのhook dispatcherを覆い隠し、`post-checkout`なども止めるため設定しない。
 - Markdown文書は1文1行とし、表示幅200桁を超える文は分割する（全角文字は2桁）。
+- READMEは紹介・導入を中心としたコンパクトな記載に留める。
+- 機能追加のたびにREADMEへ追記しない。
+- READMEとの不整合が起きたときだけ修正する。
 
 ## コメント
 

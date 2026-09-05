@@ -279,4 +279,8 @@ func TestWorktreeFlagsAndPassThrough(t *testing.T) {
 			t.Fatalf("accepted %v", args)
 		}
 	}
+	f, name, args, err := parseAgentPrefix([]string{"-s"})
+	if err != nil || !f.selectWorktree || name != "" || len(args) != 0 {
+		t.Fatalf("select-only invocation: flags=%+v name=%q args=%v err=%v", f, name, args, err)
+	}
 }
