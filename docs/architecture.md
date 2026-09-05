@@ -168,7 +168,7 @@ workspaceが確定していない`_unbound/<slot-id>`はslotディレクトリ�
 `RepoName`の決定順は`repositories.<main path>.dir_name` → `repositories.<main path>.dir_source` → `storage.repo_dir_source`（既定`remote`）→ main worktreeのディレクトリ名である。
 `remote`は`git remote get-url origin`の出力から末尾の`.git`を除いたbasenameで、取れないときはディレクトリ名へ落ちる。
 採用した値は`slot_repositories.dir_name`に記録され、以後はその値が権威になる。
-設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`（`schema=3`）が名前を含むので新規slotから新しい名前になる。
+設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`（`schema=4`）が準備入力を含むので新規slotから新しい設定を使う。
 
 `storage.worktree_root`を変えても既存slotは移動しない。
 `roots`テーブルがroot世代を持ち、slotは`root_id` + root相対pathで位置を表す。
@@ -191,8 +191,9 @@ multi_repositoryのworkspaceスナップショットは、slotディレクトリ
 ## 未実装のまま残しているもの
 
 - `.worktreelink`に列挙したpathは、main worktree側の実体へ直接symlinkする（`createLinksAt`）。
-  workspace内の相対位置を保って再構成する処理は持たない。
-  必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
+  sourceが存在しない項目は、ファイル・ディレクトリを問わずその準備では省略し、sourceの出現・消失でslot再利用をfingerprintの存在状態変更により止める。
+  sourceのsymlink・path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
+  workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
 - 生成器を持たない。
   help本文、config schema、SQLite migration、LaunchAgent plistはすべて手書きで維持し、shell completionは実装しない。
   `make`の`generated-check`が現状なにも検証していない理由と、それでも残している理由は`Makefile`の同targetのコメントにある。

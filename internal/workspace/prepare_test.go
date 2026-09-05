@@ -170,6 +170,90 @@ func TestPinnedIncludeAndLinkMaterializationStayWithinRoot(t *testing.T) {
 	}
 }
 
+func TestWorktreeLinksSkipMissingSourcesAndTrackPresence(t *testing.T) {
+	base := t.TempDir()
+	repository := filepath.Join(base, "repository")
+	worktreeRoot := filepath.Join(base, "worktrees")
+	if err := os.MkdirAll(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(worktreeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("appearing-file\nappearing-dir/\npresent-dir/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("missing-file\nmissing-dir/child\nappearing-file\nappearing-dir\npresent-dir\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repository, "present-dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "present-dir", "value"), []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(worktreeRoot, "slot")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = worktreeRoot
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: worktreeRoot}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+
+	before, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.createLinks(context.Background(), repo, target); err != nil {
+		t.Fatalf("missing worktree links should be skipped: %v", err)
+	}
+	for _, name := range []string{"missing-file", "missing-dir", "appearing-file", "appearing-dir"} {
+		if _, err := os.Lstat(filepath.Join(target, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("missing link %s touched destination: %v", name, err)
+		}
+	}
+	link, err := os.Readlink(filepath.Join(target, "present-dir"))
+	if err != nil || link != filepath.Join(repository, "present-dir") {
+		t.Fatalf("existing directory link=%q err=%v", link, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(repository, "present-dir", "value"), []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil || unchanged != before {
+		t.Fatalf("link source contents changed fingerprint before=%s after=%s err=%v", before, unchanged, err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "appearing-file"), []byte("file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repository, "appearing-dir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	after, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil || after == before {
+		t.Fatalf("link source presence did not change fingerprint before=%s after=%s err=%v", before, after, err)
+	}
+	if err := preparer.createLinks(context.Background(), repo, target); err != nil {
+		t.Fatalf("present ignored links should be created: %v", err)
+	}
+	for _, name := range []string{"appearing-file", "appearing-dir"} {
+		link, err := os.Readlink(filepath.Join(target, name))
+		if err != nil || link != filepath.Join(repository, name) {
+			t.Fatalf("appearing %s link=%q err=%v", name, link, err)
+		}
+	}
+}
+
 func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
 	for _, path := range []string{"", "../outside", "/absolute"} {
 		if _, err := safeRelative(path); err == nil {
@@ -596,8 +680,14 @@ func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("not-ignored\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := preparer.createLinks(context.Background(), repo, target); err != nil {
+		t.Fatalf("missing unignored link should be skipped: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "not-ignored"), []byte("now present\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := preparer.createLinks(context.Background(), repo, target); err == nil || !strings.Contains(err.Error(), "not ignored") {
-		t.Fatalf("unignored link error=%v", err)
+		t.Fatalf("present unignored link error=%v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("../outside\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1085,6 +1175,12 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("blocked/child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(repository, "blocked"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "blocked", "child"), []byte("source"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(target, "blocked"), []byte("file"), 0o600); err != nil {
