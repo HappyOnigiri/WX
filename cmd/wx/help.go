@@ -18,7 +18,7 @@ Global options:
 Commands:
   claude [arguments...]          launch Claude Code in a wx workspace
   codex [arguments...]           launch Codex in a wx workspace
-  status [--json]                show daemon and pool state
+  status [--verbose] [--json]    show daemon and pool state
   doctor [--json]                check configuration and dependencies
   gc [--dry-run]                 run retention cleanup
   sessions [--all] [--json]      list managed sessions
@@ -32,11 +32,13 @@ Commands:
 func commandUsage(w io.Writer, name string) {
 	switch name {
 	case "status":
-		_, _ = fmt.Fprintln(w, `Usage: wx status [--json]
+		_, _ = fmt.Fprintln(w, `Usage: wx status [--verbose] [--json]
 
-Show daemon health, pool state, active sessions, retention, and disk usage.
+Show a workspace summary, or all daemon, pool, session, retention, and disk
+details with --verbose (-v). The JSON shape is unchanged by either display.
 
 Options:
+	--verbose, -v  show detailed status instead of the summary
   --json  print machine-readable JSON`)
 	case "doctor":
 		_, _ = fmt.Fprintln(w, `Usage: wx doctor [--json]

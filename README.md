@@ -49,6 +49,10 @@ wx --branch server=feature/api --branch web=feature/ui claude
 
 Arguments following `claude` or `codex` are passed through unchanged.
 `wx status`, `wx doctor`, `wx sessions`, and `wx gc --dry-run` expose daemon state and diagnostics.
+`wx status` prints one row per workspace followed by daemon, job, and storage summaries.
+Use `wx status --verbose` (or `wx status -v`) for the complete grouped detail view, while `wx status --json` keeps the machine-readable response unchanged.
+The `*` marker identifies the workspace containing the current directory, including a managed slot under any current or retired storage root.
+`LAST USED` is shown only when a workspace has exactly one repository whose main path is that workspace root; otherwise it is `—`.
 
 The user-level Claude Code and Codex hooks should call these commands only when `WX_SESSION_ID` is present:
 
