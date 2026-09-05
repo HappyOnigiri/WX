@@ -112,10 +112,9 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 	repositories := statusObjectsSortedBy(statusObjectList(payload["repository_details"]), "main_path")
 	roots := statusObjectsSortedBy(statusObjectList(payload["worktree_roots"]), "path")
 
-	// Repository last-used timestamps are only associated with a workspace when
-	// the database says that workspace has exactly one repository and its root
-	// is exactly that repository's main path.  In particular, do not infer a
-	// relationship from path containment.
+	// Repository last-used timestamps are only associated with a workspace when the
+	// database says it has exactly one repository whose root exactly matches that
+	// repository's main path; do not infer a relationship from path containment.
 	rows := make([]statusWorkspaceRow, 0, len(workspaces))
 	for _, workspace := range workspaces {
 		root, _ := statusRawString(workspace, "root")
