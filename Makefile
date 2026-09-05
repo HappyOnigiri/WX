@@ -116,11 +116,12 @@ generated-check:
 	$(GO) generate ./...
 	git diff --exit-code
 
+# エージェント用worktreeやnpmの生成物はroot直下に限らず現れるため、深さに依存しないパターンで除外する。
 docs-check:
 	@test -x "$(NPM_BIN)/markdownlint-cli2" || { echo "pinned markdownlint is missing; run make setup"; exit 1; }
 	command -v node >/dev/null
 	node tools/markdownlint/selftest.mjs "$(TOOLS_DIR)/npm/node_modules/markdownlint-cli2/export-markdownlint.mjs"
-	"$(NPM_BIN)/markdownlint-cli2" README.md '**/*.md' '#.tools/**' '#tmp/**'
+	"$(NPM_BIN)/markdownlint-cli2" README.md '**/*.md' '#.tools/**' '#tmp/**' '#.claude/**' '#**/node_modules/**'
 
 comments-check:
 	$(GO) run ./tools/checkcomments
