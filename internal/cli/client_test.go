@@ -155,9 +155,48 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 	}
 }
 
+// shortSocketPath は unix socket 用に、テスト名を含まない一時ディレクトリ配下のパスを返す。
+// t.TempDir() はテスト名をそのままパスへ入れるため、名前が長いと sun_path の上限に達して bind が invalid argument で失敗する。
+func shortSocketPath(t *testing.T, name string) string {
+	t.Helper()
+	directory, err := os.MkdirTemp("", "wx-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	socket := filepath.Join(directory, name)
+	if len(socket) >= socketPathLimit {
+		t.Fatalf("socket path %q is %d bytes and cannot be bound (limit %d)", socket, len(socket), socketPathLimit)
+	}
+	return socket
+}
+
+// socketPathLimit は macOS の sockaddr_un.sun_path（終端 NUL 込み 104 バイト）に由来する。
+const socketPathLimit = 104
+
 func waitForPath(t *testing.T, path string) {
 	t.Helper()
 	waitForPathWithin(t, path, 3*time.Second)
+}
+
+// waitForSocket は socket の出現を待ち、先に Serve が失敗したらその原因をそのまま報告する。
+func waitForSocket(t *testing.T, socket string, serve <-chan error) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Lstat(socket); err == nil {
+			return
+		}
+		select {
+		case err := <-serve:
+			t.Fatalf("rpc server stopped before the socket appeared: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("socket %q did not appear", socket)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func waitForPathWithin(t *testing.T, path string, timeout time.Duration) {
