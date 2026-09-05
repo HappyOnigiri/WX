@@ -1459,20 +1459,29 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 		}
 		_, _ = fmt.Fprintf(h, "workspace-link=%s:%s\n", clean, info.Mode())
 	}
-	if o, ok := c.Repositories[string(repo.MainPath)]; ok {
-		prepareInput, err := json.Marshal(struct {
-			Command []string `json:"command"`
-			Version string   `json:"version"`
-		}{Command: o.Prepare.Command, Version: o.Prepare.Version})
-		if err != nil {
-			return "", fmt.Errorf("marshal prepare fingerprint input: %w", err)
-		}
-		_, _ = fmt.Fprintf(h, "prepare=%s\n", prepareInput)
+	if err := writePrepareFingerprint(h, repo, c); err != nil {
+		return "", err
 	}
 	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func writePrepareFingerprint(h hash.Hash, repo discovery.Repository, c config.Config) error {
+	o, ok := c.Repositories[string(repo.MainPath)]
+	if !ok {
+		return nil
+	}
+	prepareInput, err := json.Marshal(struct {
+		Command []string `json:"command"`
+		Version string   `json:"version"`
+	}{Command: o.Prepare.Command, Version: o.Prepare.Version})
+	if err != nil {
+		return fmt.Errorf("marshal prepare fingerprint input: %w", err)
+	}
+	_, _ = fmt.Fprintf(h, "prepare=%s\n", prepareInput)
+	return nil
 }
 
 func repositoryWorkspaceRoot(repo discovery.Repository) (string, error) {
