@@ -892,37 +892,47 @@ func (s *Store) ReadySlots(ctx context.Context, workspaceID string) ([]Slot, err
 	return slots, rows.Err()
 }
 
+// standbyQuery は待機枠を数える SQL。QUARANTINED は枠に含めない。
+// 隔離は終端状態で READY へ戻らないため、数えると補充が恒久的に止まる。
+// リトライ中の一時状態である FAILED は枠に残し、通常セッション成功時点で記録された除外だけを計算から外す。
+const standbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
+	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
+	AND sl.state IN ('PREPARING','READY','FAILED','RETIRING','REMOVING')
+	AND (sl.state<>'FAILED' OR NOT EXISTS (
+		SELECT 1 FROM standby_replenish_exclusions ex
+		WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
+	))`
+
+// quarantinedStandbyQuery は貸出前に隔離された slot を数える SQL。
+// last_used_at が NULL の slot だけを対象にし、一度使われた slot の隔離（snapshot 失敗など）を補充抑制に持ち込まない。
+const quarantinedStandbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
+	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='QUARANTINED' AND sl.last_used_at IS NULL`
+
 // standbyCountTx は現行 generation の待機枠を writer transaction 内で数える。
-// 終端失敗 slot は、通常セッション成功時点で記録された除外だけを計算から外す。
 func standbyCountTx(ctx context.Context, tx *sql.Tx, workspaceID string) (int, error) {
 	var n int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
-		WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
-		AND sl.state IN ('PREPARING','READY','FAILED','QUARANTINED','RETIRING','REMOVING')
-		AND (sl.state NOT IN ('FAILED','QUARANTINED') OR NOT EXISTS (
-			SELECT 1 FROM standby_replenish_exclusions ex
-			WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
-		))`, workspaceID).Scan(&n)
+	err := tx.QueryRowContext(ctx, standbyQuery, workspaceID).Scan(&n)
 	return n, err
 }
 
 func (s *Store) StandbyCount(ctx context.Context, workspaceID string) int {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
-		WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
-		AND sl.state IN ('PREPARING','READY','FAILED','QUARANTINED','RETIRING','REMOVING')
-		AND (sl.state NOT IN ('FAILED','QUARANTINED') OR NOT EXISTS (
-			SELECT 1 FROM standby_replenish_exclusions ex
-			WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
-		))`, workspaceID).Scan(&n)
-	if err != nil {
+	if err := s.db.QueryRowContext(ctx, standbyQuery, workspaceID).Scan(&n); err != nil {
 		return 0
 	}
 	return n
 }
 
+// QuarantinedStandbyCount は現行 generation で貸出前に隔離された slot を数える。
+// 補充側は、準備が壊れた workspace で隔離 slot が無制限に積み上がらないよう、この数を上限として使う。
+func (s *Store) QuarantinedStandbyCount(ctx context.Context, workspaceID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, quarantinedStandbyQuery, workspaceID).Scan(&n)
+	return n, err
+}
+
 // recordStandbySuccessTx は通常 session の準備成功を一度だけ記録し、
-// その時点で既に終了している待機失敗だけを同じ transaction で除外する。
+// その時点で既に終了している FAILED の待機失敗だけを同じ transaction で除外する（QUARANTINED は枠に数えないので対象外）。
 // ensureAfterSuccess は READY 貸出や起動回収のように、失敗が無くても補充を再確認する経路で指定する。
 func recordStandbySuccessTx(ctx context.Context, tx *sql.Tx, sessionID string, ensureAfterSuccess bool) (Job, bool, bool, error) {
 	var workspaceID string
@@ -958,7 +968,7 @@ func recordStandbySuccessTx(ctx context.Context, tx *sql.Tx, sessionID string, e
 		SELECT sl.id,sl.workspace_id,sl.generation,?,?
 		FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
 		WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
-		  AND sl.state IN ('FAILED','QUARANTINED')
+		  AND sl.state='FAILED'
 		  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.state IN ('PENDING','RUNNING'))`, sessionID, t, workspaceID)
 	if err != nil {
 		return Job{}, false, false, err
@@ -2278,6 +2288,34 @@ func (s *Store) BeginSnapshot(ctx context.Context, sessionID, slotID string) err
 	return tx.Commit()
 }
 
+// expireQuarantinedOwnerTx は隔離 slot を owner に持つ session を終端させ、slot の owner だけを外す。
+// 隔離 slot は DRAINING へ進めないので、これを行わないと orphan reconcile が同じ解放を無限に再試行する。
+// slot は QUARANTINED のまま残し、worktree にも snapshot にも触れない。
+func expireQuarantinedOwnerTx(ctx context.Context, tx *sql.Tx, sessionID, slotID string) (bool, error) {
+	t := now()
+	res, err := tx.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED',pending_agent_session_id=NULL,released_at=COALESCE(released_at,?),archived_at=COALESCE(archived_at,?),expires_at=?
+		WHERE id=? AND state IN ('STARTING','ACTIVE','UNBOUND','RESTORING')
+		  AND EXISTS (SELECT 1 FROM slots sl WHERE sl.id=? AND sl.owner_session_id=? AND sl.state='QUARANTINED')`, t, t, t, sessionID, slotID, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE slots SET owner_session_id=NULL,updated_at=? WHERE id=? AND owner_session_id=? AND state='QUARANTINED'`, t, slotID, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, errors.New("quarantined slot ownership changed before release")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,session_id,message) SELECT ?,'warn','session_expired',workspace_id,id,?,? FROM slots WHERE id=?`,
+		t, sessionID, "owner released from QUARANTINED slot", slotID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) Release(ctx context.Context, sessionID, workspaceID, slotID string) (Job, bool, error) {
 	job, err := newJob("SNAPSHOT", workspaceID, slotID, sessionID)
 	if err != nil {
@@ -2290,6 +2328,13 @@ func (s *Store) Release(ctx context.Context, sessionID, workspaceID, slotID stri
 		return Job{}, false, err
 	}
 	defer tx.Rollback()
+	expired, err := expireQuarantinedOwnerTx(ctx, tx, sessionID, slotID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	if expired {
+		return Job{}, false, tx.Commit()
+	}
 	var sessionState string
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM sessions WHERE id=?`, sessionID).Scan(&sessionState); err != nil {
 		return Job{}, false, err

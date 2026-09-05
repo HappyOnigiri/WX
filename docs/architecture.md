@@ -69,9 +69,13 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   その列を更新する側は5箇所すべてworkspace単位であるため、同じworkspaceのリポジトリを一律に同じ時刻へ揃える。
   そのため、貸出直後の`ENSURE_STANDBY`では全リポジトリがhotと判定され、このフィルタは実質効かない。
   粒度を上げるには、貸出時に実際に使ったリポジトリを`session_repositories`側へ記録し、`HotRepositoryIDs`とGCの`ColdRepositoryCandidates`の両方をそこから読ませる必要がある。
-  待機準備が失敗して`FAILED`または`QUARANTINED`になったslotは、通常sessionの準備成功または検証済みREADY slotの貸出時点でだけ、その成功に紐付く除外記録により補充数の計算から外れる。
+  リトライ中の一時状態である`FAILED`のslotは待機枠に数え、通常sessionの準備成功または検証済みREADY slotの貸出時点でだけ、その成功に紐付く除外記録により補充数の計算から外れる。
   除外記録はslotの状態やworktreeを変更せず、同じ成功を再処理しても後から発生した失敗slotを許可しない。
   復元sessionの成功や`SessionStart`による`ACTIVE`遷移だけでは除外記録を作らず、補充の契機にもならない。
+  終端状態の`QUARANTINED`は待機枠に数えない。
+  READYへ戻らないslotを枠として数えると、そのworkspaceの補充が成功イベントを待つ以外に回復せず恒久的に止まるためである。
+  代わりに、貸出前に隔離されたslot（`last_used_at`がNULL）が`standbyQuarantineLimit`個に達したworkspaceでは補充を止める。
+  GCも`wx clear`も隔離実体を消さないので、準備が壊れ続けるworkspaceでworktreeが無制限に積み上がるのを防ぐ。
   隔離slotとそのファイル・所有権情報は保全され、READYの回復と隔離物の削除は別の操作である。
 - **clear** — `wx clear`は保持期限を待たずにworktreeを削除する。
   受付時点で全workspace・全root世代のslotから対象を確定し、`clean_runs`・`clean_targets`へ永続化するので、daemon再起動後も同じ対象と期限で再開する。
@@ -90,6 +94,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   無期限に待つと、貸出を断ったままworkspace全体が使えなくなるためである。
 - **reconcile** — 定期的にDBと実体を突き合わせ、素性の分からないpath・refを隔離側へ倒す。
   clientとエージェントの両プロセスが死んでいるsessionはここで返却される。
+  隔離slotを所有するsessionは`DRAINING`へ進めないため、返却では`EXPIRED`へ終端させslotのownerだけを外す。
+  slotは`QUARANTINED`のまま残し、worktreeとsnapshotには触れない。
+  こうしないと同じsessionの返却が候補として毎回失敗し続ける。
 - **degraded運用** — SQLiteが開けないときも`Status`・`Doctor`・`RequestStop`は`DegradedHandler`が答える。
   診断のためにdaemonを完全に沈黙させないためである。
   `RequestStop`だけは状態を変えるがゲートを通さない（状態を変えるRPCを一切受け付けない以上、守るべきin-flightの予約が無い）。

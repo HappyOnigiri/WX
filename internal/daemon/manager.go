@@ -2011,6 +2011,11 @@ func coldWorktreeUnmaterialized(owner *os.Root, root, worktreePath string) (bool
 	return len(entries) == 0, nil
 }
 
+// standbyQuarantineLimit は、貸出前の隔離 slot をこの数まで許して補充を続ける上限。
+// 隔離 slot は待機枠に数えないので環境が直れば補充で自己回復するが、GC も clean も隔離実体を消さないため、
+// 準備が壊れ続ける workspace で無制限に worktree が積み上がるのを防ぐ。
+const standbyQuarantineLimit = 3
+
 func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) error {
 	cfg := m.Config()
 	if !m.standbyReplenishmentEnabled(w) {
@@ -2018,6 +2023,15 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	}
 	// clean 後の補充停止は永続化してあるため、定期 reconcile と補充ジョブの双方でここを通る。
 	if m.replenishSuspended(ctx, string(w.ID)) {
+		return nil
+	}
+	quarantined, err := m.store.QuarantinedStandbyCount(ctx, string(w.ID))
+	if err != nil {
+		return err
+	}
+	if quarantined >= standbyQuarantineLimit {
+		// 10 分ごとの reconcile から呼ばれるため、繰り返す抑制は Debug に留める。
+		m.log.Debug("standby replenishment stopped by quarantined slots", "workspace_id", w.ID, "quarantined", quarantined)
 		return nil
 	}
 	needed := cfg.Pool.WarmPerWorkspace - m.store.StandbyCount(ctx, string(w.ID))

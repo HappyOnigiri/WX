@@ -174,6 +174,42 @@ func TestCreateStandbyIfNeededRevalidatesCapacityAndGeneration(t *testing.T) {
 	}
 }
 
+// 隔離 slot は READY へ戻らないため待機枠に数えず、成功イベントを待たずに補充できる。
+// 一方で貸出前の隔離は上限判定のために数え続ける。
+func TestStandbyCountExcludesQuarantinedSlotsAndAllowsReplenishment(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	if _, err := store.CreateStandby(ctx, Slot{ID: "quarantined", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/quarantined", State: "PREPARING"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlotState(ctx, "quarantined", []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.StandbyCount(ctx, "workspace"); got != 0 {
+		t.Fatalf("standby count with a quarantined slot=%d, want zero", got)
+	}
+	quarantined, err := store.QuarantinedStandbyCount(ctx, "workspace")
+	if err != nil || quarantined != 1 {
+		t.Fatalf("quarantined standby count=%d err=%v", quarantined, err)
+	}
+	job, created, err := store.CreateStandbyIfNeeded(ctx, Slot{ID: "replacement", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/replacement", State: "PREPARING"}, nil, 1)
+	if err != nil || !created || job.Kind != "PREPARE" {
+		t.Fatalf("replenishment job=%+v created=%v err=%v", job, created, err)
+	}
+	if got := store.StandbyCount(ctx, "workspace"); got != 1 {
+		t.Fatalf("standby count after replenishment=%d, want the replacement only", got)
+	}
+	// 一度使われた slot の隔離は準備の破損を示さないため、上限判定には数えない。
+	if _, err := store.db.ExecContext(ctx, `UPDATE slots SET last_used_at=? WHERE id='quarantined'`, now()); err != nil {
+		t.Fatal(err)
+	}
+	quarantined, err = store.QuarantinedStandbyCount(ctx, "workspace")
+	if err != nil || quarantined != 0 {
+		t.Fatalf("quarantined count after use=%d err=%v", quarantined, err)
+	}
+}
+
 func TestStandbyReplenishmentRollsBackOnEnsureJobFailure(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)

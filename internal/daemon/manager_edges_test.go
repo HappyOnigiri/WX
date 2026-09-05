@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -1371,6 +1372,61 @@ func TestOrphanReconciliationWaitsForRegisteredAgentProcess(t *testing.T) {
 	session, err = store.SessionByID(ctx, "agent")
 	if err != nil || session.State != "RELEASING" {
 		t.Fatalf("dead agent was not released: session=%+v err=%v", session, err)
+	}
+}
+
+// 隔離 slot を owner に持つ session の返却は候補から消えるまで一度で収束する。
+// 修正前は slot を DRAINING へ進められず、10 分ごとに同じ解放失敗を記録し続けていた。
+func TestOrphanReconcileConvergesForQuarantinedSlotOwner(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "state.db")
+	store, err := state.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	var logs bytes.Buffer
+	m.log = slog.New(slog.NewTextHandler(&logs, nil))
+	ctx := context.Background()
+	slotPath := filepath.Join(cfg.Storage.WorktreeRoot, "quarantined")
+	if err := os.MkdirAll(slotPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateSlotSession(ctx, slotAtPath(t, m, "", "quarantined", slotPath, 0, "PREPARING"), nil,
+		state.Session{ID: "quarantined", SlotID: "quarantined", State: "ACTIVE", AgentKind: "codex", ClientPID: 99999999, TokenHash: state.HashToken("token")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlotState(ctx, "quarantined", []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `UPDATE sessions SET last_heartbeat_at=? WHERE id='quarantined'`, state.FormatTime(time.Now().Add(-time.Minute))); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m.reconcileOrphans(ctx)
+	m.reconcileOrphans(ctx)
+	session, err := store.SessionByID(ctx, "quarantined")
+	if err != nil || session.State != "EXPIRED" {
+		t.Fatalf("session owning a quarantined slot=%+v err=%v", session, err)
+	}
+	slot, err := store.Slot(ctx, "quarantined")
+	if err != nil || slot.State != "QUARANTINED" || slot.OwnerSessionID != "" {
+		t.Fatalf("quarantined slot after release=%+v err=%v", slot, err)
+	}
+	if strings.Contains(logs.String(), "orphan release failed") {
+		t.Fatalf("orphan release kept failing: %s", logs.String())
 	}
 }
 
