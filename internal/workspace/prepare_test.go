@@ -86,6 +86,46 @@ func TestWorkspaceRootDefaultSymlinkRuleIsSkipped(t *testing.T) {
 	}
 }
 
+func TestMaterializeRootRejectsMissingExplicitCopyBeforeWriting(t *testing.T) {
+	source, target := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "AGENTS.md"), []byte("rules\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rules := config.Workspace{Copy: []string{"required.json"}}
+	err := MaterializeRoot(source, target, rules)
+	if err == nil {
+		t.Fatal("missing explicit workspace copy succeeded")
+	}
+	missing := filepath.Join(source, "required.json")
+	if !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), source) {
+		t.Fatalf("missing explicit copy error=%v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(target, "AGENTS.md")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("materialization wrote a default copy before validation: %v", statErr)
+	}
+}
+
+func TestFingerprintRejectsMissingExplicitCopyAndAllowsMissingDefaults(t *testing.T) {
+	source := t.TempDir()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(source)}
+	cfg := config.Defaults()
+	if _, err := Fingerprint(1, "oid", repo, cfg); err != nil {
+		t.Fatalf("missing default workspace copies should remain optional: %v", err)
+	}
+	cfg.Workspaces[source] = config.Workspace{Copy: []string{"required.json"}}
+	err := func() error {
+		_, err := Fingerprint(1, "oid", repo, cfg)
+		return err
+	}()
+	if err == nil {
+		t.Fatal("missing explicit workspace copy fingerprint succeeded")
+	}
+	missing := filepath.Join(source, "required.json")
+	if !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), source) {
+		t.Fatalf("missing explicit copy fingerprint error=%v", err)
+	}
+}
+
 func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
 	source, target := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "copied.txt"), []byte("pinned copy\n"), 0o640); err != nil {

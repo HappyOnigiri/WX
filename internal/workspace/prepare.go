@@ -989,6 +989,45 @@ func workspaceRootCopyPlan(rules config.Workspace) ([]string, map[string]bool, e
 	return copyNames, explicit, nil
 }
 
+// validateWorkspaceRootCopySources は workspace root の copy source を書き込み前に検査する。
+// 既定の名前は欠落を許すが、設定で明示した名前は入力漏れとして扱い、slot 準備を成功させない。
+func validateWorkspaceRootCopySources(sourceRoot *os.Root, workspaceRoot string, copyNames []string, explicit map[string]bool) (map[string]bool, error) {
+	if sourceRoot == nil {
+		return nil, errors.New("workspace copy source root is nil")
+	}
+	present := make(map[string]bool, len(copyNames))
+	seen := make(map[string]bool, len(copyNames))
+	for _, name := range copyNames {
+		clean, err := safeRelative(name)
+		if err != nil {
+			return nil, err
+		}
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		info, err := sourceRoot.Lstat(clean)
+		if errors.Is(err, os.ErrNotExist) {
+			if explicit[clean] {
+				path := filepath.Join(workspaceRoot, clean)
+				return nil, fmt.Errorf("required workspace copy source %s is missing from workspace root %s: %w", path, workspaceRoot, os.ErrNotExist)
+			}
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect workspace copy source %s in workspace root %s: %w", clean, workspaceRoot, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 && !explicit[clean] {
+			continue
+		}
+		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
+			return nil, fmt.Errorf("workspace copy source %s in workspace root %s is not physical: %w", clean, workspaceRoot, err)
+		}
+		present[clean] = true
+	}
+	return present, nil
+}
+
 // defaultIncludeCandidates は main worktree に regular physical file として存在する default 名を返す。
 // .worktreelink にある名前は明示的な link rule が所有するため除外する。存在しなくても、この一覧は全 repository に適用されるのでエラーにしない。
 func defaultIncludeCandidates(mainPath string, c config.Config) ([]string, error) {
@@ -1413,6 +1452,15 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 	if err != nil {
 		return "", err
 	}
+	workspaceRootHandle, err := OpenPhysicalRoot(workspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = workspaceRootHandle.Close() }()
+	presentCopies, err := validateWorkspaceRootCopySources(workspaceRootHandle, workspaceRoot, copyNames, explicitCopies)
+	if err != nil {
+		return "", err
+	}
 	seenCopies := map[string]bool{}
 	for _, name := range copyNames {
 		clean, err := safeRelative(name)
@@ -1423,17 +1471,10 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 			continue
 		}
 		seenCopies[clean] = true
-		path := filepath.Join(workspaceRoot, clean)
-		info, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return "", err
-		}
-		if info.Mode()&os.ModeSymlink != 0 && !explicitCopies[clean] {
+		if !presentCopies[clean] {
 			continue
 		}
-		if err := fingerprintPath(h, workspaceRoot, path); err != nil {
+		if err := fingerprintRootPath(h, workspaceRootHandle, clean, clean); err != nil {
 			return "", err
 		}
 	}
@@ -1599,27 +1640,22 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 	if err := validateRuleConflicts(copyNames, rules.Link); err != nil {
 		return err
 	}
-	seen := map[string]bool{}
+	presentCopies, err := validateWorkspaceRootCopySources(sourceRoot, source, copyNames, explicitCopies)
+	if err != nil {
+		return err
+	}
+	seenCopies := map[string]bool{}
 	for _, rel := range copyNames {
 		clean, err := safeRelative(rel)
 		if err != nil {
 			return err
 		}
-		if seen[clean] {
+		if seenCopies[clean] {
 			continue
 		}
-		seen[clean] = true
-		info, err := sourceRoot.Lstat(clean)
-		if errors.Is(err, os.ErrNotExist) {
+		seenCopies[clean] = true
+		if !presentCopies[clean] {
 			continue
-		} else if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 && !explicitCopies[clean] {
-			continue
-		}
-		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
-			return err
 		}
 		if err := copyPathFromOwnedRoot(sourceRoot, clean, destinationRoot, clean); err != nil {
 			return fmt.Errorf("copy workspace root path %s: %w", clean, err)
