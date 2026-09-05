@@ -1,133 +1,71 @@
 # wx
 
-`wx` launches Claude Code or Codex inside daemon-managed, detached Git worktrees.
-The source repository's HEAD, index, and tracked working files are never used as the agent's working directory.
+English | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
-## Install
+Run Claude Code or Codex in a separate Git worktree with a single command.
+`wx` prepares and manages workspaces on macOS, so you can hand off a task without switching branches in your source repository.
+
+## Features
+
+- **Separate workspaces** — Agents work in detached Git worktrees, keeping your source checkout's HEAD, index, and tracked files untouched.
+- **Ready when you need them** — A background daemon keeps a workspace ready for recently used repositories.
+- **Session recovery** — List sessions and restore archived work with `wx sessions` and `wx resume`.
+- **Familiar commands** — Use Claude Code or Codex with their usual arguments, and optionally choose a starting branch.
+
+## Installation
+
+Requires **macOS**, **Git**, **Go 1.26.6 or later**, and **Claude Code or Codex** installed and available on your `PATH`.
 
 ```sh
-make setup
-make ci
+git clone https://github.com/HappyOnigiri/WX.git
+cd WX
 make install
+export PATH="$HOME/.local/bin:$PATH"
 wx daemon install
 ```
 
-The default installation path is `~/.local/bin/wx`.
-The LaunchAgent starts the daemon at login and maintains one ready workspace for recently used repositories.
+The binary is installed to `~/.local/bin/wx`.
+Add the `export PATH` line to your shell configuration (for example, `~/.zshrc`) to keep it available in new terminals.
+`wx daemon install` registers a LaunchAgent that starts the daemon at login.
 
-Upgrading from a wx that predates `wx daemon start` requires `wx daemon install` to be run again, even on a machine where the LaunchAgent is already registered.
-The plist now runs `wx daemon start --foreground` where it used to run `wx daemon serve`, and the new binary rejects `serve` as an unknown action.
-Until the plist is rewritten, launchd keeps restarting a daemon that exits immediately and the log fills with usage output.
+To update, run `git pull --ff-only` and `make install` in the cloned WX directory, then `wx daemon install` and `wx daemon restart`.
 
-A running daemon keeps executing the binary it started with, so `make install` alone does not update it.
-The daemon notices the replacement within ten seconds and restarts itself once no job is running and no request is in flight.
-Run `wx daemon restart` to ask for the same restart without waiting for that check.
-Either way the daemon waits for an idle moment, so a restart never cuts short a request that is already running.
+## Quick start
 
-```sh
-wx daemon stop     # exit the running daemon
-wx daemon start    # run it again
-wx daemon restart  # replace it with the installed binary
-```
-
-All three wait for the daemon to reach the requested state and give up after 60 seconds.
-The daemon acts on the request at its next idle moment rather than straight away, so the wait is normally a second or two, and longer while a job is still running.
-In a terminal the command shows a `stopping...` line for as long as it waits.
-A `stop`, and a `restart` the daemon accepted, also name what the daemon was still waiting for.
-`start`, and a `restart` that found nothing listening and fell back to launchd, have no such answer to report and say only that the daemon never appeared.
-`wx daemon stop` leaves the LaunchAgent registered, so the next login — or the next `wx claude` — starts the daemon again.
-Use `wx daemon uninstall` to stop it from coming back at all.
-
-## Use
+From the repository you want to work on:
 
 ```sh
 wx claude
 wx codex
+```
+
+Each command launches the chosen agent in a managed worktree.
+Arguments after `claude` or `codex` are passed through unchanged.
+To choose a starting branch, place the wx option before the agent name:
+
+```sh
 wx --branch feature/api codex
-wx --branch server=feature/api --branch web=feature/ui claude
 ```
 
-Arguments following `claude` or `codex` are passed through unchanged.
-`wx status`, `wx doctor`, `wx sessions`, and `wx gc --dry-run` expose daemon state and diagnostics.
-`wx status` prints one row per workspace followed by daemon, job, and storage summaries.
-Use `wx status --verbose` (or `wx status -v`) for the complete grouped detail view, while `wx status --json` keeps the machine-readable response unchanged.
-The `*` marker identifies the workspace containing the current directory, including a managed slot under any current or retired storage root.
-`LAST USED` is shown only when a workspace has exactly one repository whose main path is that workspace root; otherwise it is `—`.
+## More options
 
-The user-level Claude Code and Codex hooks should call these commands only when `WX_SESSION_ID` is present:
+- **Status and diagnostics:** `wx status`, `wx doctor`.
+- **Sessions and cleanup:** `wx sessions`, `wx resume`, `wx gc --dry-run`.
+- **Configuration:** `wx config` shows settings and can update individual values.
+- **Agent integration:** Global agent hooks enable native session resume and workspace readiness checks.
+  Configure them to call `wx hook session-start`, `wx hook user-prompt-submit`, `wx hook pre-tool-use`, and `wx hook session-end` only when `WX_SESSION_ID` is set.
+  Hook configuration is managed separately from wx.
 
-```text
-wx hook session-start
-wx hook user-prompt-submit
-wx hook pre-tool-use
-wx hook session-end
-```
-
-The hooks bind native agent session IDs, gate prompts and tools until the workspace is ready, and send a short release RPC.
-Hook configuration remains outside this repository so it can be managed with the rest of the user's agent configuration.
-
-## Configuration
-
-Run `wx config` to show the effective configuration and all scalar keys.
-Update a scalar without expanding the sparse YAML file:
+See `wx --help` and `wx <command> --help` for commands and options:
 
 ```sh
-wx config retention.hot_standby 168h
+wx --help
+wx config --help
+wx daemon --help
 ```
 
-Complex workspace and repository overrides are edited in `~/.config/wx/config.yaml`.
-Worktrees are created under `storage.worktree_root` (default `$HOME/wx`) as `<workspace-id>/<slot-id>/<RepoName>`.
-Both IDs are six lowercase base36 characters, and `RepoName` comes from the repository's `origin` URL.
-Set `storage.repo_dir_source` to `directory` to use the main worktree's own directory name instead, or pin one repository with a `dir_name` / `dir_source` entry under `repositories`.
-Changing `storage.worktree_root` leaves existing sessions where they are and creates only new slots under the new root.
-Configuration is strictly decoded; an invalid reload leaves the last valid daemon configuration active.
-Paths expand `$HOME` only—`~` and arbitrary environment variables are rejected.
+## Contributing
 
-Agent rule files that convention keeps out of version control are copied into every worktree without a manifest entry, because Git does not carry them there itself:
-
-Disable this default with `wx config includes.default_agent_rules false`.
-Set `repositories.<path>.includes.default_agent_rules` in `~/.config/wx/config.yaml` to override the global value for one repository.
-Changing the setting affects newly prepared worktrees; files are not removed from a worktree that is currently leased.
-
-- Claude Code: `CLAUDE.local.md`, `.claudeignore`
-- Codex and the other AGENTS.md readers: `AGENTS.local.md`, `AGENTS.override.md`
-- Gemini CLI: `GEMINI.local.md`, `.geminiignore`, `.aiexclude`
-- Cursor: `.cursorrules`, `.cursorignore`
-- Windsurf: `.windsurfrules`, `.codeiumignore`
-- Cline, Roo Code, and Kilo Code: `.clinerules`, `.roorules`, `.kilocoderules`
-- MCP servers, shared by several agents: `.mcp.json`
-- Aider: `.aider.conf.yml`
-
-Only untracked regular files are copied, and a tracked path is left to the checkout.
-A directory or symlink under one of those names stays the job of an explicit `.worktreeinclude` or `.worktreelink` entry.
-List anything else a worktree needs in `.worktreeinclude` (copied) or `.worktreelink` (symlinked to the main worktree, and required to be Git-ignored).
-
-Recovery snapshots are stored as protected Git objects and refs in the source repository.
-They can contain staged, unstaged, and non-ignored untracked content and are readable by processes with access to that repository.
-A local rule file copied into a worktree is untracked content of that kind.
-
-## Development
-
-Run `make setup` once to install the pinned development tools, then `make ci` for the local quality gate.
-Security and SBOM checks are paused in the initial phase and are not part of `make setup`, `make ci`, or the Git hooks.
-They remain available as manual, explicit opt-in targets; each target installs its paused tool only when you invoke that target:
-
-```sh
-make security-local             # govulncheck, dependency, gosec, license, secrets
-make workflow-security-audit    # zizmor
-make sbom
-```
-
-Mutation testing was tried and dropped: it drove test design from a threshold rather than from behavior, and the survivor triage cost outweighed its value at this project's scale.
-`gremlins` and the mutation targets have been removed rather than paused.
-
-Do not re-enable these checks in CI, workflows, or hooks without the user's explicit permission.
-
-Git hooks are not tracked in this repository.
-Install them by placing an executable `pre-commit` and `pre-push` under `$(git rev-parse --git-common-dir)/hooks`.
-Each hook dispatches to the matching `make hook-pre-commit` / `make hook-pre-push` target.
-Keeping the hook bodies there rather than under a repository-local `core.hooksPath` leaves a user-level `core.hooksPath` dispatcher intact.
-A repository-local setting would otherwise shadow that dispatcher for every hook.
-
-The invariants this repository will not trade away, and the conventions that follow from them, are in [`AGENTS.md`](AGENTS.md).
-The package layout, session lifecycle, and ownership proof are in [`docs/architecture.md`](docs/architecture.md).
+Contributions are welcome!
+Share bug reports and ideas through [Issues](https://github.com/HappyOnigiri/WX/issues), or send a [pull request](https://github.com/HappyOnigiri/WX/pulls).
+Documentation improvements and translations are welcome too.
