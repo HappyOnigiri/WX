@@ -713,6 +713,60 @@ func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
 	}
 }
 
+// tracked path を指す .worktreeinclude entry は無視され、worktree の内容は checkout が決める。
+// main worktree 側だけ内容を変えることで、コピーが起きていないことを見分ける。
+func TestWorktreeIncludeIgnoresTrackedPaths(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	worktreeRoot := filepath.Join(root, "worktrees")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("tracked\nuntracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("modified\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "untracked"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	head := gitOutput(t, repository, "rev-parse", "HEAD")
+	common := gitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = worktreeRoot
+	if err := os.MkdirAll(worktreeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
+	target := filepath.Join(slotPath, testRepositoryID)
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
+		t.Fatalf("tracked include was not ignored: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(target, "tracked")); err != nil || string(content) != "base\n" {
+		t.Fatalf("tracked include overwrote the checkout: content=%q err=%v", content, err)
+	}
+	// 同じ manifest の untracked entry は従来どおりコピーされ、tracked entry の無視が manifest 全体を止めていないことを示す。
+	if content, err := os.ReadFile(filepath.Join(target, "untracked")); err != nil || string(content) != "local\n" {
+		t.Fatalf("untracked include was not copied: content=%q err=%v", content, err)
+	}
+}
+
 func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
@@ -747,12 +801,6 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
 	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot, SlotPath: slotPath, RootID: testRootID, SlotRelPath: testSlotRelPath}
 	target := filepath.Join(slotPath, testRepositoryID)
-	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "tracked path") {
-		t.Fatalf("tracked include error=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(target, ".git")); !os.IsNotExist(err) {
-		t.Fatalf("partial Git worktree remains after policy failure: %v", err)
-	}
 	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

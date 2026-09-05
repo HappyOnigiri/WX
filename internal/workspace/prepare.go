@@ -1103,9 +1103,11 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 			if err != nil {
 				return fmt.Errorf("unsafe .worktreeinclude match %q: %w", src, err)
 			}
+			// tracked path は worktree 自身が checkout するため、この entry は無視する。
+			// default include と同じ扱いにして、file が後から追跡下に入っても manifest の古い行が slot 準備全体を止めないようにする。
 			tracked, err := p.Git.Run(context.Background(), string(repo.MainPath), "ls-files", "--error-unmatch", "--", rel)
 			if err == nil && strings.TrimSpace(tracked.Stdout) != "" {
-				return fmt.Errorf(".worktreeinclude would overwrite tracked path %s", rel)
+				continue
 			}
 			sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
 			if sourceErr != nil {
