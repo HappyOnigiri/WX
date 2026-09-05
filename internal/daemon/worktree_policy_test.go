@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -170,11 +173,23 @@ func TestStandbyReplenishmentContinuesAfterQuarantineUpToLimit(t *testing.T) {
 			t.Fatalf("quarantined slot still occupies a standby place: %d", count)
 		}
 	}
+	// 上限に達したことは一度だけ Warn で伝える。10 分ごとの reconcile で同じ警告を積まない。
+	var logs bytes.Buffer
+	m.log = slog.New(slog.NewTextHandler(&logs, nil))
 	if err := m.ensureStandby(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	jobs, err := store.RecoverJobs(ctx, false)
 	if err != nil || len(jobs) != 0 {
 		t.Fatalf("replenishment continued past the quarantine limit: jobs=%+v err=%v", jobs, err)
+	}
+	if got := strings.Count(logs.String(), "standby replenishment stopped until quarantined slots are removed"); got != 1 {
+		t.Fatalf("quarantine limit warnings after the first stop=%d, want one: %s", got, logs.String())
+	}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(logs.String(), "standby replenishment stopped until quarantined slots are removed"); got != 1 {
+		t.Fatalf("quarantine limit warnings after the second stop=%d, want one: %s", got, logs.String())
 	}
 }
