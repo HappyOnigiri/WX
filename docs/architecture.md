@@ -69,6 +69,10 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   その列を更新する側は5箇所すべてworkspace単位であるため、同じworkspaceのリポジトリを一律に同じ時刻へ揃える。
   そのため、貸出直後の`ENSURE_STANDBY`では全リポジトリがhotと判定され、このフィルタは実質効かない。
   粒度を上げるには、貸出時に実際に使ったリポジトリを`session_repositories`側へ記録し、`HotRepositoryIDs`とGCの`ColdRepositoryCandidates`の両方をそこから読ませる必要がある。
+  待機準備が失敗して`FAILED`または`QUARANTINED`になったslotは、通常sessionの準備成功または検証済みREADY slotの貸出時点でだけ、その成功に紐付く除外記録により補充数の計算から外れる。
+  除外記録はslotの状態やworktreeを変更せず、同じ成功を再処理しても後から発生した失敗slotを許可しない。
+  復元sessionの成功や`SessionStart`による`ACTIVE`遷移だけでは除外記録を作らず、補充の契機にもならない。
+  隔離slotとそのファイル・所有権情報は保全され、READYの回復と隔離物の削除は別の操作である。
 - **clean** — `wx clean`は保持期限を待たずにworktreeを削除する。
   受付時点で全workspace・全root世代のslotから対象を確定し、`clean_runs`・`clean_targets`へ永続化するので、daemon再起動後も同じ対象と期限で再開する。
   進行は`Manager.driveClean`のbackground goroutineが既存ジョブの完了を監視するだけで、workerを占有したまま別ジョブを待たない。
