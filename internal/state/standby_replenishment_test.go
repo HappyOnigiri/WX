@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -200,13 +201,25 @@ func TestStandbyCountExcludesQuarantinedSlotsAndAllowsReplenishment(t *testing.T
 	if got := store.StandbyCount(ctx, "workspace"); got != 1 {
 		t.Fatalf("standby count after replenishment=%d, want the replacement only", got)
 	}
-	// 一度使われた slot の隔離は準備の破損を示さないため、上限判定には数えない。
-	if _, err := store.db.ExecContext(ctx, `UPDATE slots SET last_used_at=? WHERE id='quarantined'`, now()); err != nil {
+	// session を持った slot の隔離は準備の破損を示さないため、上限判定には数えない。
+	// last_used_at は cold start の slot では貸出後も NULL のままなので、判定は session の有無で行う。
+	coldSession := Session{ID: "cold-session", WorkspaceID: "workspace", SlotID: "cold-session", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("cold-session")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: coldSession.SlotID, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/cold-session", State: "PREPARING"}, nil, coldSession, "PREPARE"); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetSlotState(ctx, coldSession.SlotID, []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+		t.Fatal(err)
+	}
+	var lastUsed sql.NullString
+	if err := store.db.QueryRowContext(ctx, `SELECT last_used_at FROM slots WHERE id=?`, coldSession.SlotID).Scan(&lastUsed); err != nil {
+		t.Fatal(err)
+	}
+	if lastUsed.Valid {
+		t.Fatalf("cold start slot last_used_at=%q, want NULL", lastUsed.String)
+	}
 	quarantined, err = store.QuarantinedStandbyCount(ctx, "workspace")
-	if err != nil || quarantined != 0 {
-		t.Fatalf("quarantined count after use=%d err=%v", quarantined, err)
+	if err != nil || quarantined != 1 {
+		t.Fatalf("quarantined count with a used slot=%d err=%v, want the standby one only", quarantined, err)
 	}
 }
 

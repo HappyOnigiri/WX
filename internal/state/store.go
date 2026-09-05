@@ -904,9 +904,11 @@ const standbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl
 	))`
 
 // quarantinedStandbyQuery は貸出前に隔離された slot を数える SQL。
-// last_used_at が NULL の slot だけを対象にし、一度使われた slot の隔離（snapshot 失敗など）を補充抑制に持ち込まない。
+// session を一度も持たなかった slot だけを対象にし、使われた slot の隔離（snapshot 失敗など）を補充抑制に持ち込まない。
+// last_used_at は READY からの貸出でしか書かれず cold start・復元の slot では NULL のまま残るため、判定には使わない。
 const quarantinedStandbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
-	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='QUARANTINED' AND sl.last_used_at IS NULL`
+	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='QUARANTINED'
+	AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.slot_id=sl.id)`
 
 // standbyCountTx は現行 generation の待機枠を writer transaction 内で数える。
 func standbyCountTx(ctx context.Context, tx *sql.Tx, workspaceID string) (int, error) {

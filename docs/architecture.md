@@ -74,7 +74,8 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   復元sessionの成功や`SessionStart`による`ACTIVE`遷移だけでは除外記録を作らず、補充の契機にもならない。
   終端状態の`QUARANTINED`は待機枠に数えない。
   READYへ戻らないslotを枠として数えると、そのworkspaceの補充が成功イベントを待つ以外に回復せず恒久的に止まるためである。
-  代わりに、貸出前に隔離されたslot（`last_used_at`がNULL）が`standbyQuarantineLimit`個に達したworkspaceでは補充を止める。
+  代わりに、貸出前に隔離されたslot（sessionを一度も持たなかったslot）が`standbyQuarantineLimit`個に達したworkspaceでは補充を止める。
+  `last_used_at`はREADYからの貸出でしか書かれずcold startのslotではNULLのまま残るため、判定には使わない。
   GCも`wx clear`も隔離実体を消さないので、準備が壊れ続けるworkspaceでworktreeが無制限に積み上がるのを防ぐ。
   隔離slotとそのファイル・所有権情報は保全され、READYの回復と隔離物の削除は別の操作である。
 - **clear** — `wx clear`は保持期限を待たずにworktreeを削除する。
