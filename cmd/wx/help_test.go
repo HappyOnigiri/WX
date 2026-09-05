@@ -453,7 +453,7 @@ func TestTopUsageContract(t *testing.T) {
 	var b bytes.Buffer
 	topUsage(&b)
 	got := b.String()
-	for _, want := range []string{"Usage: wx", "Global options:", "Commands:", "claude [arguments", "daemon install|uninstall"} {
+	for _, want := range []string{"Usage: wx", "Global options:", "Commands:", "claude [arguments", "resume conversation from the current base", "leases [--all]", "daemon install|uninstall"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("help missing %q:\n%s", want, got)
 		}
@@ -549,8 +549,8 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"doctor", "--json"},
 		{"gc", "--dry-run"},
 		{"clear", "--dry-run"},
-		{"sessions", "--all", "--json"},
-		{"sessions"},
+		{"leases", "--all", "--json"},
+		{"leases"},
 		{"forget", home},
 		{"config"},
 		{"config", "logging.level", "warn"},
@@ -566,7 +566,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 			t.Fatalf("run(%v) exit=%d", args, exit)
 		}
 	}
-	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"clear", "extra"}, {"clean"}, {"sessions", "extra"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
+	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"clear", "extra"}, {"clean"}, {"leases", "extra"}, {"sessions", "unknown"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
 		if exit := run(ctx, args); exit != 2 {
 			t.Fatalf("misuse run(%v) exit=%d", args, exit)
 		}
@@ -611,7 +611,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 	for _, args := range [][]string{
 		{"status"},
 		{"gc", "--dry-run"},
-		{"sessions", "--all"},
+		{"leases", "--all"},
 		{"forget", home},
 	} {
 		if exit := run(ctx, args); exit != 1 {
@@ -653,7 +653,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 }
 
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
-	for _, command := range []string{"status", "doctor", "gc", "clear", "sessions", "config", "resume", "forget", "daemon"} {
+	for _, command := range []string{"status", "doctor", "gc", "clear", "leases", "config", "resume", "forget", "daemon"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			commandUsage(&output, command)

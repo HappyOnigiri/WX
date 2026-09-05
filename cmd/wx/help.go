@@ -11,7 +11,7 @@ func topUsage(w io.Writer) {
 
 Global options:
   --branch <branch|repo=branch>  choose a detached base (repeatable)
-  --fresh                        resume conversation without wx recovery state
+  --fresh                        resume conversation from the current base
   -s, --select-worktree          select and save the workspace policy again
   -w, --worktree                 create a worktree without saving a policy
   -n, --no-worktree              run here without saving a policy
@@ -25,9 +25,9 @@ Commands:
   doctor [--json]                check configuration and dependencies
   gc [--dry-run]                 run retention cleanup
   clear [--all] [--standby]      delete managed worktrees now
-  sessions [--all] [--json]      list managed sessions
-  config [<key> <value>]         show or update configuration
-  resume <id> <agent> [args...]  restore a wx session
+  leases [--all] [--json]        list managed wx leases
+  config [<key> ...]             show or update configuration
+  resume <id> [agent] [args...]  restore a wx session
   forget <workspace-path>        forget an inactive workspace
   daemon start|stop|restart      change whether the daemon is running
   daemon install|uninstall       register or remove the LaunchAgent`)
@@ -88,21 +88,27 @@ Options:
   --dry-run  report the targets and the reasons wx cannot process some of
              them, changing nothing`)
 	case "config":
-		_, _ = fmt.Fprintln(w, `Usage: wx config [<key> <value>]
+		_, _ = fmt.Fprintln(w, `Usage: wx config
+       wx config <key> <value>
+       wx config <key> --add <value>
+       wx config <key> --remove <value>
+       wx config <key> --reset
 
-Show effective configuration, or atomically update one supported scalar key.`)
+Show effective configuration, or atomically update one supported scalar key or list.`)
 	case "resume":
-		_, _ = fmt.Fprintln(w, `Usage: wx resume <wx-session-id> <claude|codex> [agent-arguments...]
+		_, _ = fmt.Fprintln(w, `Usage: wx resume <wx-session-id> [claude|codex] [--fresh] [--branch <branch>] [agent-arguments...]
 
-Restore an archived wx session into a new managed workspace.`)
-	case "sessions":
-		_, _ = fmt.Fprintln(w, `Usage: wx sessions [--all] [--json]
+Restore an archived wx session into a new managed workspace.
+With --fresh, keep the conversation but build the worktree from the current base.
+Use --branch with --fresh to choose the detached base.`)
+	case "leases":
+		_, _ = fmt.Fprintln(w, `Usage: wx leases [--all] [--json]
 
-List managed wx sessions and their recovery state.
+List managed wx leases and their recovery state.
 By default, only ACTIVE sessions are listed.
 
 Options:
-  --all   include inactive and expired sessions
+  --all   include inactive and expired leases
   --json  print machine-readable JSON`)
 	case "forget":
 		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path>

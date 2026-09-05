@@ -38,8 +38,8 @@ func (c Client) SelectWorktreePolicy(ctx context.Context) int {
 
 // RunAgentWithPolicy は daemon の起動前に許可を解決し、対象外なら現在のディレクトリで通常起動する。
 func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, branches []string, fresh bool, options WorktreeOptions) int {
-	if err := validateFreshResume(fresh, isNativeResume(agent, args), ""); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+	if fresh && parseResumeIntent(agent, args).Kind == resumeIntentNone {
+		fmt.Fprintln(os.Stderr, "error: --fresh requires a resume operation")
 		return 2
 	}
 	mode, err := c.selectWorktreeMode(ctx, options)
@@ -64,7 +64,7 @@ func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, bran
 		fmt.Fprintln(os.Stderr, "error: reload worktree policy:", err)
 		return 1
 	}
-	return c.RunAgent(ctx, agent, args, branches, fresh, "")
+	return c.RunAgent(ctx, agent, args, branches, fresh)
 }
 
 func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions) (string, error) {

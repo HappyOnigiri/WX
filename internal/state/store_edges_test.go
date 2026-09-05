@@ -339,16 +339,13 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	requireError("SessionByID", err)
 	requireError("RegisterAgentProcess", store.RegisterAgentProcess(ctx, session.ID, "token", 1))
 	requireError("BindAgentSession", store.BindAgentSession(ctx, session.ID, "agent"))
-	requireError("BindFreshSession", store.BindFreshSession(ctx, session.ID, "parent", "agent"))
-	_, err = store.BindFreshResumeSlot(ctx, session.ID, "parent", workspaceID, "agent", 1, nil)
-	requireError("BindFreshResumeSlot", err)
+
 	_, err = store.FindByAgentSession(ctx, "codex", "agent")
 	requireError("FindByAgentSession", err)
 	requireError("Heartbeat", store.Heartbeat(ctx, session.ID, "token"))
 	_, err = store.OrphanCandidates(ctx, "before")
 	requireError("OrphanCandidates", err)
-	_, err = store.BindResumeSlot(ctx, session.ID, "parent", workspaceID, "agent", 1, nil)
-	requireError("BindResumeSlot", err)
+
 	_, err = store.SlotRepositories(ctx, slot.ID)
 	requireError("SlotRepositories", err)
 	requireError("AddRestoringRepositories", store.AddRestoringRepositories(ctx, slot.ID, nil))
@@ -451,14 +448,11 @@ func TestMissingLifecycleRowsFailClosed(t *testing.T) {
 		t.Error("agent process was registered for a missing session")
 	}
 	requireError("BindAgentSession", store.BindAgentSession(ctx, missing, "agent"))
-	requireError("BindFreshSession", store.BindFreshSession(ctx, missing, "parent", "agent"))
-	_, err = store.BindFreshResumeSlot(ctx, missing, "parent", "workspace", "agent", 1, nil)
-	requireError("BindFreshResumeSlot", err)
+
 	_, err = store.FindByAgentSession(ctx, "codex", "agent")
 	requireError("FindByAgentSession", err)
 	requireError("Heartbeat", store.Heartbeat(ctx, missing, "token"))
-	_, err = store.BindResumeSlot(ctx, missing, "parent", "workspace", "agent", 1, nil)
-	requireError("BindResumeSlot", err)
+
 	_, err = store.SlotRepositories(ctx, missing)
 	if err != nil {
 		t.Errorf("missing SlotRepositories returned error: %v", err)
@@ -798,8 +792,8 @@ func TestStatePersistenceFaultsRemainFailClosed(t *testing.T) {
 		if _, err := store.db.Exec(`CREATE TRIGGER ignore_restore_activation BEFORE UPDATE ON sessions WHEN OLD.id='restore-child' AND NEW.pending_agent_session_id IS NULL BEGIN SELECT RAISE(IGNORE); END`); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := store.FinishPreparationWithRelease(ctx, child.SlotID); err == nil {
-			t.Fatal("restore activation succeeded after its mapping changed")
+		if _, _, err := store.FinishPreparationWithRelease(ctx, child.SlotID); err != nil {
+			t.Fatalf("mapping conflict blocked restored workspace activation: %v", err)
 		}
 	})
 
@@ -889,75 +883,6 @@ func TestStatePersistenceFaultsRemainFailClosed(t *testing.T) {
 }
 
 func TestStateLifecycleFaultsRemainFailClosed(t *testing.T) {
-	newFreshResumeState := func(t *testing.T) (*Store, context.Context) {
-		t.Helper()
-		store := openTestStore(t)
-		seedWorkspace(t, store)
-		ctx := context.Background()
-		parent := Session{ID: "resume-parent", WorkspaceID: "workspace", SlotID: "resume-parent", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("parent")}
-		if _, err := store.CreateSlotSession(ctx, Slot{ID: parent.ID, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: filepath.Join("workspace", parent.ID), State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.db.Exec(`UPDATE sessions SET agent_session_id='agent' WHERE id=?`, parent.ID); err != nil {
-			t.Fatal(err)
-		}
-		current := Session{ID: "resume-current", SlotID: "resume-current", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("current")}
-		if _, err := store.CreateSlotSession(ctx, Slot{ID: current.ID, State: "UNBOUND", RootID: testRootID, RelPath: filepath.Join("_unbound", current.ID)}, nil, current, ""); err != nil {
-			t.Fatal(err)
-		}
-		return store, ctx
-	}
-
-	t.Run("fresh resume parent update", func(t *testing.T) {
-		store, ctx := newFreshResumeState(t)
-		if _, err := store.db.Exec(`CREATE TRIGGER fail_fresh_parent BEFORE UPDATE ON sessions WHEN OLD.id='resume-parent' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.BindFreshResumeSlot(ctx, "resume-current", "resume-parent", "workspace", "agent", 1, nil); err == nil {
-			t.Fatal("fresh resume succeeded despite parent mapping fault")
-		}
-	})
-
-	t.Run("fresh resume session update", func(t *testing.T) {
-		store, ctx := newFreshResumeState(t)
-		if _, err := store.db.Exec(`CREATE TRIGGER fail_fresh_session BEFORE UPDATE ON sessions WHEN OLD.id='resume-current' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.BindFreshResumeSlot(ctx, "resume-current", "resume-parent", "workspace", "agent", 1, nil); err == nil {
-			t.Fatal("fresh resume succeeded despite session mapping fault")
-		}
-	})
-
-	t.Run("fresh resume slot update", func(t *testing.T) {
-		store, ctx := newFreshResumeState(t)
-		if _, err := store.db.Exec(`CREATE TRIGGER fail_fresh_slot BEFORE UPDATE ON slots WHEN OLD.id='resume-current' BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.BindFreshResumeSlot(ctx, "resume-current", "resume-parent", "workspace", "agent", 1, nil); err == nil {
-			t.Fatal("fresh resume succeeded despite slot transition fault")
-		}
-	})
-
-	t.Run("fresh resume membership", func(t *testing.T) {
-		store, ctx := newFreshResumeState(t)
-		if _, err := store.db.Exec(`DROP TABLE session_repositories`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.BindFreshResumeSlot(ctx, "resume-current", "resume-parent", "workspace", "agent", 1, nil); err == nil {
-			t.Fatal("fresh resume succeeded without membership storage")
-		}
-	})
-
-	t.Run("resume membership copy", func(t *testing.T) {
-		store, ctx := newFreshResumeState(t)
-		if _, err := store.db.Exec(`DROP TABLE session_repositories`); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := store.BindResumeSlot(ctx, "resume-current", "resume-parent", "workspace", "agent", 1, nil); err == nil {
-			t.Fatal("resume succeeded without membership storage")
-		}
-	})
-
 	t.Run("restoring repository count", func(t *testing.T) {
 		store := openTestStore(t)
 		ctx := context.Background()
@@ -1189,18 +1114,11 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 		"session by ID":         func() error { _, err := store.SessionByID(ctx, "canceled"); return err },
 		"register agent":        func() error { return store.RegisterAgentProcess(ctx, "canceled", "token", 1) },
 		"bind agent":            func() error { return store.BindAgentSession(ctx, "canceled", "agent") },
-		"bind fresh":            func() error { return store.BindFreshSession(ctx, "canceled", "", "agent") },
-		"bind fresh resume": func() error {
-			_, err := store.BindFreshResumeSlot(ctx, "canceled", "", "workspace", "agent", 1, nil)
-			return err
-		},
+
 		"find agent": func() error { _, err := store.FindByAgentSession(ctx, "codex", "agent"); return err },
 		"heartbeat":  func() error { return store.Heartbeat(ctx, "canceled", "token") },
 		"orphans":    func() error { _, err := store.OrphanCandidates(ctx, now()); return err },
-		"bind resume": func() error {
-			_, err := store.BindResumeSlot(ctx, "canceled", "parent", "workspace", "agent", 1, nil)
-			return err
-		},
+
 		"slot repositories":          func() error { _, err := store.SlotRepositories(ctx, "canceled"); return err },
 		"add restoring repositories": func() error { return store.AddRestoringRepositories(ctx, "canceled", nil) },
 		"slot repository":            func() error { _, err := store.SlotRepository(ctx, "canceled", "repository"); return err },
@@ -1459,7 +1377,7 @@ func TestReadAndRestoreStateBoundaries(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET parent_session_id='parent-copy' WHERE id='child-copy'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.FinishPreparationWithRelease(ctx, child.SlotID); err == nil || !strings.Contains(err.Error(), "mapping changed") {
+	if _, _, err := store.FinishPreparationWithRelease(ctx, child.SlotID); err != nil {
 		t.Fatalf("pending mapping with missing parent error=%v", err)
 	}
 }

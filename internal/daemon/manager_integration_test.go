@@ -79,7 +79,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	slotRelative, err := slotRelPath(string(w.ID), id, false)
+	slotRelative, err := slotRelPath(string(w.ID), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,58 +413,6 @@ func TestEnsureStandbyOnlyChecksOutRecentlyUsedRepositories(t *testing.T) {
 	}
 }
 
-func TestFreshNativeResumeWithoutPriorMappingUsesSourceWorkspace(t *testing.T) {
-	t.Parallel()
-	requireDaemonIntegration(t)
-	root := t.TempDir()
-	repoPath := filepath.Join(root, "repo")
-	initGitRepo(t, repoPath)
-	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
-	cfg.Pool.WarmPerWorkspace = 0
-	store, err := state.Open(filepath.Join(root, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	m := testManager(t, cfg, store)
-	t.Cleanup(m.Close)
-	ctx := context.Background()
-	lease, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.PrepareFreshResume(ctx, lease.SessionID, lease.Token, "new-agent-session", repoPath, []string{"main"}); err != nil {
-		t.Fatal(err)
-	}
-	jobs, err := store.RecoverJobs(ctx, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, job := range jobs {
-		if job.Kind != "PREPARE" {
-			continue
-		}
-		claimed, err := store.ClaimJob(ctx, job.ID, "test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := m.runRecoveredJob(ctx, claimed); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.FinishJob(ctx, claimed.ID, "test", nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := m.WaitReady(ctx, lease.SessionID, lease.Token); err != nil {
-		t.Fatal(err)
-	}
-	session, err := store.FindByAgentSession(ctx, "codex", "new-agent-session")
-	if err != nil || session.ID != lease.SessionID || session.WorkspaceID == "" {
-		t.Fatalf("fresh source mapping session=%+v err=%v", session, err)
-	}
-}
-
 func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	t.Parallel()
 	requireDaemonIntegration(t)
@@ -547,17 +495,8 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, 10*time.Second, func() bool { snaps, _ := store.Snapshots(ctx, lease.SessionID); return len(snaps) == 1 })
-	native, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
+	native, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), false)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(native.Path, string(filepath.Separator)+unboundNamespace+string(filepath.Separator)) {
-		t.Fatalf("native resume path is not unbound: %s", native.Path)
-	}
-	if entries, err := os.ReadDir(native.Path); err != nil || len(entries) != 0 {
-		t.Fatalf("unbound root must start empty: entries=%v err=%v", entries, err)
-	}
-	if err := m.BindAndRestoreResume(ctx, native.SessionID, native.Token, "agent-session-1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := waitReady(ctx, m, 30*time.Second, native.SessionID, native.Token); err != nil {
@@ -595,6 +534,23 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	}
 	if string(data) != "dirty main\n" {
 		t.Fatalf("source main changed: %q", data)
+	}
+	statusResult, err := m.ResumeStatus(ctx, lease.SessionID)
+	if err != nil || statusResult["expired"] != false {
+		t.Fatalf("snapshot must remain usable: %v %v", statusResult, err)
+	}
+	fresh, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), true, ResumeOptions{Branches: []string{"main"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(ctx, m, 30*time.Second, fresh.SessionID, fresh.Token); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(fresh.Path, "tracked.txt")); err != nil || string(data) != "base\n" {
+		t.Fatalf("fresh workspace restored snapshot content: %q %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(fresh.Path, "untracked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("snapshot-only file in fresh workspace: %v", err)
 	}
 }
 
@@ -643,9 +599,6 @@ func TestHandlerPublicLifecycleSurface(t *testing.T) {
 	}
 	if _, err := handler.Handle(ctx, "Release", JSON(map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": "test"})); err != nil {
 		t.Fatal(err)
-	}
-	if result, err := handler.Handle(ctx, "AllocateResumeSlot", JSON(map[string]any{"agent": "codex", "client_pid": os.Getpid()})); err != nil || result == nil {
-		t.Fatalf("allocate resume result=%v err=%v", result, err)
 	}
 }
 
@@ -744,7 +697,7 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := domain.NewID()
-	slotRelative, err := slotRelPath(string(w.ID), id, false)
+	slotRelative, err := slotRelPath(string(w.ID), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -921,11 +874,8 @@ func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
 	if err := m.Release(ctx, lease.SessionID, lease.Token, "test"); err != nil {
 		t.Fatal(err)
 	}
-	native, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
+	native, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), false)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.BindAndRestoreResume(ctx, native.SessionID, native.Token, "in-flight-agent"); err != nil {
 		t.Fatal(err)
 	}
 	if err := waitReady(ctx, m, 15*time.Second, native.SessionID, native.Token); err != nil {
@@ -967,13 +917,10 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	if err := m.BindAgentSession(ctx, lease.SessionID, lease.Token, "expired-agent-session"); err != nil {
 		t.Fatal(err)
 	}
-	refusedFresh, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
-	if err != nil {
-		t.Fatal(err)
+	if _, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), true); err == nil {
+		t.Fatal("fresh resume accepted an active parent")
 	}
-	if err := m.PrepareFreshResume(ctx, refusedFresh.SessionID, refusedFresh.Token, "expired-agent-session", "", nil); err == nil {
-		t.Fatal("--fresh was accepted while the mapped session was active")
-	}
+
 	if err := os.WriteFile(filepath.Join(lease.Path, "uncommitted.txt"), []byte("discarded\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1015,12 +962,9 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	if got := gitOutput(t, fresh.Path, "rev-parse", "HEAD"); got != gitOutput(t, repo, "rev-parse", "refs/heads/main") {
 		t.Fatalf("fresh base=%s main=%s", got, gitOutput(t, repo, "rev-parse", "refs/heads/main"))
 	}
-	nativeFresh, err := m.AllocateResumeSlot(ctx, "codex", os.Getpid())
+	nativeFresh, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), true)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if err := m.PrepareFreshResume(ctx, nativeFresh.SessionID, nativeFresh.Token, "expired-agent-session", "", nil); err != nil {
-		t.Fatalf("--fresh rejected expired mapping: %v", err)
 	}
 	nativeWait, nativeCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer nativeCancel()

@@ -93,7 +93,11 @@ func testSlotRow(t *testing.T, m *Manager, workspaceID, slotID string, generatio
 func testSlotRowUnder(t *testing.T, rootPath, rootID, workspaceID, slotID string, generation int, slotState string) state.Slot {
 	// directoryを作らないfixtureなので、欠損・通常file・symlinkを個別にstageできる。
 	t.Helper()
-	relPath, err := slotRelPath(workspaceID, slotID, workspaceID == "")
+	relPath, err := slotRelPath(workspaceID, slotID)
+	if workspaceID == "" {
+		relPath = filepath.Join(unboundNamespace, slotID)
+		err = nil
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,30 +123,23 @@ func testSlotID(name string) string {
 
 func TestSlotRelPathGeneratesTheDocumentedLayout(t *testing.T) {
 	t.Parallel()
-	relPath, err := slotRelPath("wsp001", "slt001", false)
+	relPath, err := slotRelPath("wsp001", "slt001")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if relPath != filepath.Join("wsp001", "slt001") {
 		t.Fatalf("bound slot rel path=%q", relPath)
 	}
-	unbound, err := slotRelPath("", "slt002", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unbound != filepath.Join(unboundNamespace, "slt002") {
-		t.Fatalf("unbound slot rel path=%q", unbound)
-	}
-	if _, err := slotRelPath("", "slt003", false); !errors.Is(err, state.ErrOwnership) {
+	if _, err := slotRelPath("", "slt003"); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("empty workspace id error=%v", err)
 	}
 	for _, slotID := range []string{"", ".", "..", "a/b", `a\b`, "_reserved"} {
-		if _, err := slotRelPath("wsp001", slotID, false); !errors.Is(err, state.ErrOwnership) {
+		if _, err := slotRelPath("wsp001", slotID); !errors.Is(err, state.ErrOwnership) {
 			t.Errorf("slot id %q error=%v", slotID, err)
 		}
 	}
 	for _, workspaceID := range []string{"", ".", "..", "a/b", "_unbound", "_recovery"} {
-		if _, err := slotRelPath(workspaceID, "slt001", false); !errors.Is(err, state.ErrOwnership) {
+		if _, err := slotRelPath(workspaceID, "slt001"); !errors.Is(err, state.ErrOwnership) {
 			t.Errorf("workspace id %q error=%v", workspaceID, err)
 		}
 	}

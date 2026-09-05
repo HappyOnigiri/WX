@@ -501,9 +501,6 @@ func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 		t.Fatalf("duplicate slot id error=%v, want a SQLite constraint violation", err)
 	}
 
-	if _, retry, err := manager.allocateResumeSlotWithID(ctx, taken, rootPath, rootID, "token", "codex", 0); err == nil || !retry {
-		t.Fatalf("duplicate unbound slot id retry=%v err=%v", retry, err)
-	}
 	if _, err := manager.createStandbySlot(ctx, rootPath, rootID, workspaceRecord, resolved, 1, nil); err != nil {
 		t.Fatalf("standby allocation with a free id: %v", err)
 	}

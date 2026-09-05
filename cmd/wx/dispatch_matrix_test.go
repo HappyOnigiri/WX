@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/HappyOnigiri/WX/internal/config"
 )
 
 func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
@@ -45,8 +50,9 @@ func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
 		{name: "daemon stop unavailable", args: []string{"daemon", "stop"}, want: 1},
 		{name: "daemon start unavailable", args: []string{"daemon", "start"}, want: 1},
 		{name: "hook missing event", args: []string{"hook"}, want: 2},
-		{name: "sessions extra argument", args: []string{"sessions", "extra"}, want: 2},
-		{name: "sessions unavailable", args: []string{"sessions"}, want: 1},
+		{name: "leases extra argument", args: []string{"leases", "extra"}, want: 2},
+		{name: "leases unavailable", args: []string{"leases"}, want: 1},
+		{name: "sessions unknown subcommand", args: []string{"sessions", "unknown"}, want: 2},
 		{name: "forget missing path", args: []string{"forget"}, want: 2},
 		{name: "forget unavailable", args: []string{"forget", "/tmp/workspace"}, want: 1},
 		{name: "agent daemon unavailable", args: []string{"codex"}, want: 1},
@@ -67,5 +73,64 @@ func TestConfigCommandDisplaysDefaultsAndHelp(t *testing.T) {
 	}
 	if got := runConfig(context.Background(), nil); got != 0 {
 		t.Fatalf("config display exit=%d", got)
+	}
+}
+
+func TestConfigCommandListOperations(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	key := "sessions.paths.claude.sessions"
+
+	if got := runConfig(context.Background(), []string{key, "--add", "~/custom-sessions"}); got != 0 {
+		t.Fatalf("config --add exit=%d", got)
+	}
+	raw, err := config.LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := raw.Sessions.Paths.Claude.Sessions; len(got) != 2 || got[1] != "~/custom-sessions" {
+		t.Fatalf("added session paths=%v, want default and user notation", got)
+	}
+
+	if got := runConfig(context.Background(), []string{key, "--remove", filepath.Join(home, "custom-sessions")}); got != 0 {
+		t.Fatalf("config --remove exit=%d", got)
+	}
+	raw, err = config.LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := raw.Sessions.Paths.Claude.Sessions; len(got) != 1 || got[0] != "~/.claude/projects" {
+		t.Fatalf("removed session paths=%v, want default path", got)
+	}
+
+	if got := runConfig(context.Background(), []string{key, "--reset"}); got != 0 {
+		t.Fatalf("config --reset exit=%d", got)
+	}
+	raw, err = config.LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw.Sessions.Paths.Claude.Sessions != nil {
+		t.Fatalf("reset session paths=%v, want unset", raw.Sessions.Paths.Claude.Sessions)
+	}
+	effective := config.Merge(config.Defaults(), raw)
+	if got := effective.Sessions.SessionPaths("claude"); len(got) != 1 || got[0] != "~/.claude/projects" {
+		t.Fatalf("effective reset session paths=%v, want defaults", got)
+	}
+
+	if got := runConfig(context.Background(), []string{key, "--reset", "extra"}); got != 2 {
+		t.Fatalf("config --reset with extra argument exit=%d, want 2", got)
+	}
+
+	path, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "custom-sessions") {
+		t.Fatalf("reset config still contains custom path: %s", data)
 	}
 }

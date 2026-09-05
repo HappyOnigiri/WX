@@ -9,7 +9,7 @@ Claude Code や Codex を、コマンドひとつで専用の Git worktree に�
 
 - **作業環境を分離** — エージェントは detached な Git worktree で作業し、元の作業ツリーの HEAD・index・追跡ファイルを変更しません。
 - **すぐに作業を開始** — バックグラウンドのデーモンが、最近使ったリポジトリの作業環境を準備して待機します。
-- **セッションを復元** — `wx sessions` と `wx resume` でセッションを確認し、アーカイブした作業を再開できます。
+- **セッションを復元** — `wx leases` でセッションを確認し、`wx resume` でアーカイブした作業を再開できます。
 - **いつものコマンドで操作** — Claude Code や Codex の引数をそのまま使え、開始元のブランチも指定できます。
 
 ## インストール
@@ -52,10 +52,11 @@ wx --branch feature/api codex
 ## その他の機能
 
 - **状態確認・診断:** `wx status`、`wx doctor`。
-- **セッション管理・クリーンアップ:** `wx sessions`、`wx resume`、`wx gc --dry-run`、`wx clear`。
+- **セッション管理・クリーンアップ:** `wx leases`、`wx resume`、`wx gc --dry-run`、`wx clear`。
 - **設定:** `wx config` で設定の確認や個別の値の変更ができます。
-- **エージェント連携:** グローバルなエージェント hook で、エージェント側からのセッション再開や作業環境の準備完了チェックに対応します。
+- **エージェント連携:** グローバルなエージェント hook で作業環境の準備完了を確認し、エージェントのセッションを wx に結び付けて返却します。
   `WX_SESSION_ID` が設定されている場合だけ、`wx hook session-start`、`wx hook user-prompt-submit`、`wx hook pre-tool-use`、`wx hook session-end` を呼び出すよう設定してください。
+  Claude の `--resume` と Codex の `resume` は通常の引数のまま使えます。
   hook の設定は wx とは別に管理します。
 
 コマンドやオプションの詳細は、`wx --help` と `wx <command> --help` を参照してください。

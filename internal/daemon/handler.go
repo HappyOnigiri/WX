@@ -96,15 +96,6 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return nil, err
 		}
 		return h.Manager.leaseWithPolicy(ctx, p.CWD, p.Branches, p.Agent, p.ClientPID, p.ForceWorktree)
-	case "AllocateResumeSlot":
-		var p struct {
-			Agent     string `json:"agent"`
-			ClientPID int    `json:"client_pid"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return h.Manager.AllocateResumeSlot(ctx, p.Agent, p.ClientPID)
 	case "WaitReady":
 		var p struct {
 			SessionID string `json:"session_id"`
@@ -132,35 +123,11 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		return map[string]bool{"bound": true}, h.Manager.BindAgentSession(ctx, p.SessionID, p.Token, p.AgentSessionID)
-	case "BindAndRestoreResume":
-		var p struct {
-			SessionID      string `json:"session_id"`
-			Token          string `json:"token"`
-			AgentSessionID string `json:"agent_session_id"`
-			Source         string `json:"source"`
-		}
-		if err := decode(raw, &p); err != nil {
+		if err := h.Manager.BindAgentSession(ctx, p.SessionID, p.Token, p.AgentSessionID); err != nil {
 			return nil, err
 		}
-		// hook 側の選択だけを信頼せず、サーバー側でも Source == "resume" を必須にする。
-		// 欠落を許すと、有効な session token の caller が restore 経路へ到達できる。
-		if p.Source != "resume" {
-			return nil, fmt.Errorf("BindAndRestoreResume requires a resume source, got %q", p.Source)
-		}
-		return map[string]bool{"bound": true}, h.Manager.BindAndRestoreResume(ctx, p.SessionID, p.Token, p.AgentSessionID)
-	case "ValidateFreshResume":
-		var p struct {
-			SessionID      string   `json:"session_id"`
-			Token          string   `json:"token"`
-			AgentSessionID string   `json:"agent_session_id"`
-			CWD            string   `json:"cwd"`
-			Branches       []string `json:"branches"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return map[string]bool{"allowed": true}, h.Manager.PrepareFreshResume(ctx, p.SessionID, p.Token, p.AgentSessionID, p.CWD, p.Branches)
+		previous, err := h.Manager.store.PreviousWorktree(ctx, p.SessionID)
+		return map[string]string{"previous_worktree": previous}, err
 	case "Release":
 		var p struct {
 			SessionID string `json:"session_id"`
@@ -173,23 +140,27 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		return map[string]bool{"released": true}, h.Manager.Release(ctx, p.SessionID, p.Token, p.Reason)
 	case "Resume":
 		var p struct {
-			WXSessionID string `json:"wx_session_id"`
-			Agent       string `json:"agent"`
-			ClientPID   int    `json:"client_pid"`
-			AllowFresh  bool   `json:"allow_fresh"`
+			WXSessionID    string   `json:"wx_session_id"`
+			Agent          string   `json:"agent"`
+			ClientPID      int      `json:"client_pid"`
+			Fresh          bool     `json:"fresh"`
+			AgentSessionID string   `json:"agent_session_id"`
+			Branches       []string `json:"branches"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		return h.Manager.Resume(ctx, p.WXSessionID, p.Agent, p.ClientPID, p.AllowFresh)
+		return h.Manager.Resume(ctx, p.WXSessionID, p.Agent, p.ClientPID, p.Fresh, ResumeOptions{AgentSessionID: p.AgentSessionID, Branches: p.Branches})
 	case "ResumeStatus":
+		return h.resumeStatusRPC(ctx, raw)
+	case "WorkspaceScope":
 		var p struct {
-			WXSessionID string `json:"wx_session_id"`
+			CWD string `json:"cwd"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		return h.Manager.ResumeStatus(ctx, p.WXSessionID)
+		return h.Manager.WorkspaceScope(ctx, p.CWD)
 	case "Status":
 		return h.Manager.Status(ctx)
 	case "Doctor":
@@ -309,4 +280,26 @@ func (h Handler) dispatchLiveness(ctx context.Context, method string, raw json.R
 	}
 	// 起動と終了要求が競合した場合、client は登録応答で要求を受け取り、起動直後のプロセスを終了させる。
 	return h.Manager.terminationReply(ctx, p.SessionID, base), true, nil
+}
+
+func (h Handler) resumeStatusRPC(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p struct {
+		WXSessionID    string `json:"wx_session_id"`
+		Agent          string `json:"agent"`
+		AgentSessionID string `json:"agent_session_id"`
+	}
+	if err := decode(raw, &p); err != nil {
+		return nil, err
+	}
+	if (p.WXSessionID != "" && (p.Agent != "" || p.AgentSessionID != "")) || (p.WXSessionID == "" && (p.Agent == "" || p.AgentSessionID == "")) {
+		return nil, errors.New("specify wx_session_id or both agent and agent_session_id")
+	}
+	if p.WXSessionID == "" {
+		se, err := h.Manager.store.FindByAgentSession(ctx, p.Agent, p.AgentSessionID)
+		if err != nil {
+			return nil, err
+		}
+		p.WXSessionID = se.ID
+	}
+	return h.Manager.ResumeStatus(ctx, p.WXSessionID)
 }

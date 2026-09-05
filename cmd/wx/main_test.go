@@ -193,7 +193,7 @@ func TestRunGCReturnsNonZeroForPendingReport(t *testing.T) {
 	}
 }
 
-func TestRunSessionsDefaultsToActive(t *testing.T) {
+func TestRunLeasesDefaultsToActive(t *testing.T) {
 	home, err := os.MkdirTemp("/tmp", "wx-sessions-")
 	if err != nil {
 		t.Fatal(err)
@@ -218,8 +218,8 @@ func TestRunSessionsDefaultsToActive(t *testing.T) {
 	})
 
 	stdout := captureStdout(t, func() {
-		if code := runSessions(context.Background(), nil); code != 0 {
-			t.Fatalf("runSessions exit=%d", code)
+		if code := runLeases(context.Background(), nil); code != 0 {
+			t.Fatalf("runLeases exit=%d", code)
 		}
 	})
 	if !strings.Contains(stdout, "active") || strings.Contains(stdout, "starting") || strings.Contains(stdout, "archived") || strings.Contains(stdout, "expired") {
@@ -227,8 +227,8 @@ func TestRunSessionsDefaultsToActive(t *testing.T) {
 	}
 
 	stdout = captureStdout(t, func() {
-		if code := runSessions(context.Background(), []string{"--all"}); code != 0 {
-			t.Fatalf("runSessions --all exit=%d", code)
+		if code := runLeases(context.Background(), []string{"--all"}); code != 0 {
+			t.Fatalf("runLeases --all exit=%d", code)
 		}
 	})
 	for _, id := range []string{"active", "starting", "archived", "expired"} {
@@ -300,7 +300,7 @@ func TestEverySubcommandHasAUniformPflagContract(t *testing.T) {
 		{name: "status", run: func(ctx context.Context, args []string) int { return runRPCDisplay(ctx, "Status", args) }, helpExit: 0, helpOnStdout: true},
 		{name: "doctor", run: func(ctx context.Context, args []string) int { return runRPCDisplay(ctx, "Doctor", args) }, helpExit: 0, helpOnStdout: true},
 		{name: "gc", run: runGC, helpExit: 0, helpOnStdout: true},
-		{name: "sessions", run: runSessions, helpExit: 0, helpOnStdout: true},
+		{name: "leases", run: runLeases, helpExit: 0, helpOnStdout: true},
 		{name: "config", run: runConfig, helpExit: 0, helpOnStdout: true},
 		{name: "resume", run: runResume, helpExit: 0, helpOnStdout: true},
 		{name: "daemon", run: runDaemon, helpExit: 0, helpOnStdout: true},
