@@ -18,9 +18,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// NEW-1: allocation, and the identity later attached to ready/native leases,
-// stay in the daemon-held root inode when its pathname is replaced at the
-// exact allocation barrier.
 func TestCreateSlotRootPinsAllocationAcrossRootReplacement(t *testing.T) {
 	parent := t.TempDir()
 	root := filepath.Join(parent, "worktrees")
@@ -79,8 +76,6 @@ func TestCreateSlotRootPinsAllocationAcrossRootReplacement(t *testing.T) {
 	}
 }
 
-// NEW-2: when the post-add ownership/registration proof fails, the manager
-// must quarantine the slot while retaining the descriptor-created worktree.
 func TestPrepareQuarantinesUncertainGitAddAfterRootReplacement(t *testing.T) {
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")

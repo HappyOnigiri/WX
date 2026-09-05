@@ -114,11 +114,9 @@ func TestHotRepositoryIDsExcludesNeverLeasedAndStaleRepositories(t *testing.T) {
 	}
 }
 
-// TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions pins the
-// dry-run accounting to work PruneMetadata would actually perform. Tombstoning
-// clears agent_session_id, so an already-tombstoned session is not a candidate
-// any more; counting it would make `wx gc --dry-run` report the same non-zero
-// total forever while nothing ever changes.
+// TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions は、dry-run の集計が
+// PruneMetadata の実処理と一致することを固定する。tombstone 化で agent_session_id が消えるため、
+// 処理済み session を数えると `wx gc --dry-run` が変化しない非ゼロ値を報告し続ける。
 func TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
@@ -131,7 +129,7 @@ func TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions(t *testin
 	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED',expires_at=?,agent_session_id='agent' WHERE id=?`, expired, session.ID); err != nil {
 		t.Fatal(err)
 	}
-	// Keep the other three tiers empty so the total is exactly the tombstone.
+	// 他の3層を空にして、合計をこの tombstone だけにする。
 	past := FormatTime(time.Now().Add(-24 * time.Hour))
 	tombstoneBefore := FormatTime(time.Now())
 	count, err := store.CountMetadataCandidates(ctx, past, past, tombstoneBefore)
@@ -147,12 +145,9 @@ func TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions(t *testin
 	}
 }
 
-// TestSaveSnapshotBackfillsMissingIndexRecoveryRefButStillRejectsMismatch
-// covers the migration 010 upgrade path: a snapshot row committed before the
-// index_recovery_ref column existed carries an empty ref, so re-running its
-// snapshot job after the upgrade must backfill that one column instead of
-// reporting a metadata conflict (which would quarantine the slot). A row whose
-// index tree genuinely differs must still be refused.
+// TestSaveSnapshotBackfillsMissingIndexRecoveryRefButStillRejectsMismatch は migration 010 の更新経路を検証する。
+// index_recovery_ref 列の追加前に commit された row は ref が空なので、更新後の再実行では slot を quarantine せず
+// その列を補完する。一方、index tree が実際に異なる row は拒否し続ける。
 func TestSaveSnapshotRejectsConflictingIndexTree(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)

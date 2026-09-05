@@ -16,12 +16,10 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
-// OpenPhysicalRoot opens path through a descriptor rooted at the filesystem
-// root, then reopens the validated directory as its own Root. os.OpenRoot(path)
-// follows a symlink in path before returning, so using it after a separate
-// Lstat/physical-path check would leave a check/open race at the root itself.
-// The filesystem-root descriptor keeps the path lookup inside the validated
-// namespace and Root's Unix openat traversal rejects a swapped-out ancestor.
+// OpenPhysicalRoot は filesystem root の descriptor 経由で path を開き、検証済み directory を独自の Root として開き直す。
+// os.OpenRoot(path) は返却前に symlink を辿るため、別の Lstat/physical path 検査後に使うと root 自体に check/open race が残る。
+// filesystem-root descriptor と Root の Unix openat traversal は置換 ancestor を拒否する。
+// commentlint:allow-long -- root 自体の check/open race を閉じる経路を説明する
 func OpenPhysicalRoot(path string) (*os.Root, error) {
 	absolute, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
@@ -52,8 +50,7 @@ func OpenPhysicalRoot(path string) (*os.Root, error) {
 		_ = root.Close()
 		return nil, closeErr
 	}
-	// Check the descriptor itself as well. This catches a path that was
-	// replaced between the initial physical check and OpenRoot.
+	// descriptor 自体も検査する。初回 physical 検査と OpenRoot の間に置換された path を検出する。
 	reopenedInfo, err := domain.PhysicalPathInfo(root, ".")
 	if err != nil {
 		_ = root.Close()
@@ -66,9 +63,8 @@ func OpenPhysicalRoot(path string) (*os.Root, error) {
 	return root, nil
 }
 
-// safeGlob walks a pattern below a physical root without ever descending
-// through a symlink. filepath.Glob is intentionally not used here: it follows
-// a symlink ancestor before the matching result can be checked.
+// safeGlob は physical root 配下で symlink を一度も辿らず pattern を走査する。
+// filepath.Glob は match 結果を検査する前に symlink ancestor を辿るため使わない。
 func safeGlob(root, pattern string) ([]string, error) {
 	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
@@ -178,9 +174,8 @@ func walkSafeGlob(owner *os.Root, current string, parts []string, index int, mat
 	return nil
 }
 
-// copyPathFromOwnedRoot copies a validated source entry into an already pinned
-// destination Root. Keeping the destination descriptor supplied by the caller
-// is what makes writes survive a rename/replacement of the lexical wx root.
+// copyPathFromOwnedRoot は検証済み source entry を pin 済み destination Root にコピーする。
+// 呼び出し元の destination descriptor を保持し、lexical wx root の rename/置換後も write を正しい namespace に保つ。
 func copyPathFromOwnedRoot(sourceRoot *os.Root, sourceRelative string, destinationRoot *os.Root, destinationRelative string) error {
 	if sourceRoot == nil || destinationRoot == nil {
 		return errors.New("copy roots must not be nil")
@@ -294,12 +289,8 @@ func ensureRootDirectory(root *os.Root, relative string) error {
 	return nil
 }
 
-// validateRuleConflicts rejects ambiguous copy/link layouts before either
-// rule starts mutating the destination. Duplicate rules of the same kind are
-// intentionally allowed for idempotent manifests, but a link cannot be an
-// ancestor or descendant of another link, nor overlap a copy rule. Otherwise
-// the result would depend on manifest order and a failed preparation could
-// leave a partially materialized bundle.
+// validateRuleConflicts は copy/link rule が destination を変更する前に曖昧な layout を拒否する。同種 rule の重複は idempotent manifest のため許可する。
+// link は別 link の ancestor/descendant にも copy rule とも重複できない。許すと結果が manifest 順序に依存し、失敗した prepare が部分的 bundle を残す。
 func validateRuleConflicts(copyRules, linkRules []string) error {
 	clean := func(kind string, rules []string) ([]string, error) {
 		out := make([]string, 0, len(rules))
@@ -337,9 +328,8 @@ func validateRuleConflicts(copyRules, linkRules []string) error {
 	return nil
 }
 
-// removeOwnershipMarkerAt removes a marker through an already pinned wx root.
-// It is used only after the caller has proved ownership and therefore must not
-// reopen the mutable root pathname during failure cleanup.
+// removeOwnershipMarkerAt は pin 済み wx root 経由で marker を削除する。
+// 所有権証明後だけに使い、failure cleanup 中に可変 root pathname を開き直してはならない。
 func removeOwnershipMarkerAt(owner *os.Root, root, target, repositoryID string) error {
 	relative, err := ownershipMarkerRelative(root, target, repositoryID)
 	if err != nil {
@@ -356,9 +346,8 @@ func removeOwnershipMarkerAt(owner *os.Root, root, target, repositoryID string) 
 	return owner.Remove(relative)
 }
 
-// readPhysicalManifest reads a manifest through a descriptor rooted at the
-// repository directory. The ordinary os.ReadFile(path) sequence would let a
-// swapped manifest or ancestor symlink redirect the read after a prior check.
+// readPhysicalManifest は repository directory を root とする descriptor 経由で manifest を読む。
+// 通常の os.ReadFile(path) は先行検査後に manifest または ancestor symlink が置換されると read を逸らし得る。
 func readPhysicalManifest(root, name string) ([]byte, error) {
 	owner, err := OpenPhysicalRoot(root)
 	if err != nil {

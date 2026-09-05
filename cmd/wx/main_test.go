@@ -42,9 +42,8 @@ func (multiKeyStatusHandler) Handle(_ context.Context, method string, _ json.Raw
 }
 
 func TestRunRPCDisplaySortsHumanReadableOutputByKey(t *testing.T) {
-	// A short /tmp-rooted HOME keeps the Unix socket path under sun_path's
-	// length limit; t.TempDir()'s deeper path does not (see the same pattern
-	// in help_test.go's TestCommandDispatchAgainstRPCBoundary).
+	// /tmp 配下の短い HOME で Unix socket path を sun_path の長さ上限内に収める。
+	// t.TempDir() の深い path では収まらない。
 	home, err := os.MkdirTemp("/tmp", "wx-status-sort-")
 	if err != nil {
 		t.Fatal(err)
@@ -135,9 +134,8 @@ func TestRunDoctorFallsBackToLocalChecksWhenDaemonCannotConnect(t *testing.T) {
 	}
 }
 
-// captureStdout redirects os.Stdout for the duration of fn and returns what
-// was written. Tests in this package do not run in parallel, so the process-
-// wide swap is safe.
+// captureStdout は fn 中の os.Stdout を差し替え、書込み内容を返す。
+// この package の test は並列実行しないため、process 全体の差し替えでも安全である。
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	read, write, err := os.Pipe()
@@ -146,11 +144,8 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	original := os.Stdout
 	os.Stdout = write
-	// A deferred restore (rather than a plain assignment after fn()) keeps
-	// os.Stdout from staying redirected to a now-closed pipe for the rest of
-	// the test binary if fn calls t.Fatal/t.Fatalf: those call
-	// runtime.Goexit, which unwinds through defers but skips any code after
-	// fn() that isn't one.
+	// t.Fatal/t.Fatalf は runtime.Goexit で後続処理を飛ばすため、defer で os.Stdout を復元する。
+	// 閉じた pipe へのリダイレクトを test binary の残りへ残さない。
 	defer func() { os.Stdout = original }()
 	fn()
 	if err := write.Close(); err != nil {
@@ -187,16 +182,8 @@ func TestRunHookRejectsUnknownFlag(t *testing.T) {
 	})
 }
 
-// TestEverySubcommandHasAUniformPflagContract verifies, for all 9 wx
-// subcommands, that each owns a pflag.NewFlagSet(..., pflag.ContinueOnError)
-// rather than a hand-rolled len(args) check: --help/-h prints usage and
-// exits with that command's existing contract (stdout+0 for every command
-// except hook, which is invoked by agent hook configuration rather than
-// typed interactively and so keeps its misuse-style stderr+2), and an
-// unrecognized flag is rejected with usage on stderr and a non-zero exit
-// rather than being silently accepted or misparsed as a positional
-// argument. None of these paths reach the daemon or touch the filesystem:
-// pflag rejects the input before any command-specific logic runs.
+// TestEverySubcommandHasAUniformPflagContract は全 subcommand の --help と未知 flag の終了コード・出力先を確認する。
+// 入力は command 固有の処理より前に pflag が拒否するため、daemon や filesystem には触れない。
 func TestEverySubcommandHasAUniformPflagContract(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	type contract struct {
@@ -243,10 +230,8 @@ func TestEverySubcommandHasAUniformPflagContract(t *testing.T) {
 			if want := "Usage: wx " + c.name; !strings.Contains(stderr, want) {
 				t.Fatalf("%s unrecognized-flag stderr=%q missing %q", c.name, stderr, want)
 			}
-			// The usage block alone does not say which argument was rejected,
-			// and pflag writes nothing itself under ContinueOnError, so the
-			// diagnostic has to name the flag or the user has no way to tell a
-			// typo from an unsupported option.
+			// ContinueOnError の pflag はエラーを書かず、usage だけでは拒否した引数が分からない。
+			// 診断には typo と未対応 option を区別できる flag 名を含める。
 			if !strings.Contains(stderr, "--this-flag-does-not-exist") {
 				t.Fatalf("%s unrecognized-flag stderr=%q does not name the rejected flag", c.name, stderr)
 			}
@@ -254,9 +239,8 @@ func TestEverySubcommandHasAUniformPflagContract(t *testing.T) {
 	}
 }
 
-// captureStderr redirects os.Stderr for the duration of fn and returns what
-// was written. Tests in this package do not run in parallel, so the process-
-// wide swap is safe.
+// captureStderr は fn 中の os.Stderr を差し替え、書込み内容を返す。
+// この package の test は並列実行しないため、process 全体の差し替えでも安全である。
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	read, write, err := os.Pipe()

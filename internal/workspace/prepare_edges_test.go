@@ -18,10 +18,8 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// installGitFault makes the occurrence-th invocation of git whose arguments
-// contain pattern fail, and lets every other invocation run the real git
-// binary. It mirrors the identical helper in internal/archive's test suite so
-// specific revalidation/cleanup Git calls can be targeted deterministically.
+// installGitFaultは、引数にpatternを含むgit呼び出しの指定回だけ失敗させ、それ以外は実gitを実行する。
+// internal/archiveの同名helperと同じ仕組みで、再検証・cleanupの特定のGit呼び出しを決定的に狙う。
 func installGitFault(t *testing.T, pattern string, occurrence int) {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
@@ -456,12 +454,8 @@ func TestPrepareLeavesWorktreeForQuarantineWhenCleanupGitFails(t *testing.T) {
 			cfg := preparer.Config
 			cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "exit 1"}, Timeout: config.Duration{Duration: 5 * time.Second}}}}
 			preparer.Config = cfg
-			// The prepare command is the only failure injected by the test
-			// scenario; "worktree lock" must still succeed so cleanup is
-			// armed (ownedAfterLock=true). The cleanup path's own Git call
-			// is then made to fail so the deferred cleanup must leave the
-			// worktree registered for later quarantine/reconcile instead of
-			// silently discarding it.
+			// このシナリオで失敗させるのはprepare commandだけであり、cleanupを有効にするためworktree lockは成功させる（ownedAfterLock=true）。
+			// 続くcleanup自身のGit呼び出しを失敗させ、worktreeを黙って捨てず後のquarantine/reconcile用に登録したままにする。
 			installGitFault(t, test.pattern, 1)
 			if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil {
 				t.Fatal("prepare succeeded despite a failing prepare command")
@@ -486,9 +480,8 @@ func TestPrepareOnAnExistingWorktreePropagatesInitialUnlockFailure(t *testing.T)
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
 		t.Fatalf("initial prepare: %v", err)
 	}
-	// The first Prepare call only ever locks a newly created worktree; the
-	// re-prepare below is the first call in this test to unlock an existing
-	// one, so occurrence 1 targets exactly that call.
+	// 最初のPrepareは新規worktreeだけをlockする。
+	// 下の再Prepareが既存worktreeをunlockするこのテスト初回の呼び出しなので、occurrence 1がその呼び出しに一致する。
 	installGitFault(t, "worktree unlock", 1)
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || !strings.Contains(err.Error(), "unlock existing wx worktree") {
 		t.Fatalf("re-prepare error=%v", err)
@@ -520,10 +513,8 @@ func TestAddWorktreeWithIdentityRecognizesACleanFailedAdd(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	// git fails before writing anything into the reserved leaf or registering
-	// the worktree, so addWorktreeWithIdentity must recognize the reserved
-	// namespace as clean and return the original Git error rather than an
-	// uncertain-outcome ownership error.
+	// gitは予約leafへの書き込みやworktree登録前に失敗するため、addWorktreeWithIdentityは予約namespaceをcleanと判断する。
+	// その結果、所有権が不確かなエラーではなく元のGitエラーを返す。
 	installGitFault(t, "worktree add --detach", 1)
 	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("clean failed add error=%v, want a plain Git error", err)
@@ -546,11 +537,8 @@ func TestAddWorktreeWithIdentityQuarantinesAnInterruptedAdd(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	preparer.OwnedRoot = owner
 	preparer.RootPath = root
-	// Simulate Git being interrupted after it started writing into the
-	// reserved worktree namespace but before it reported success: the
-	// reserved leaf is left non-empty, which addWorktreeWithIdentity must
-	// treat as an uncertain outcome (ownership quarantine) rather than a
-	// plain, retryable Git failure.
+	// Gitが予約worktree namespaceへの書き込み後、成功報告前に中断された状態を再現する。
+	// 予約leafが空でないため、addWorktreeWithIdentityは単純な再試行可能エラーでなく不確かな結果（ownership quarantine）として扱う。
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)

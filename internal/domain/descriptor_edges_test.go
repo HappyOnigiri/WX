@@ -6,10 +6,8 @@ import (
 	"testing"
 )
 
-// TestOpenOwnedDirectoryPropagatesOwnershipRootFailure exercises the branch
-// where OpenOwnedRoot itself rejects the requested path before any directory
-// descriptor is opened: OpenOwnedDirectory must surface that error unchanged
-// rather than attempting to open anything.
+// TestOpenOwnedDirectoryPropagatesOwnershipRootFailure は、directory descriptor を開く前に OpenOwnedRoot が path を拒否する経路を検証する。
+// OpenOwnedDirectory は別の open を試さず、その error をそのまま返す必要がある。
 func TestOpenOwnedDirectoryPropagatesOwnershipRootFailure(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -18,9 +16,8 @@ func TestOpenOwnedDirectoryPropagatesOwnershipRootFailure(t *testing.T) {
 	}
 }
 
-// TestOpenOwnedDirectoryPropagatesDirectoryOpenFailure exercises the second
-// failure branch of OpenOwnedDirectory: the ownership root itself resolves
-// fine, but the requested leaf is not a physical directory.
+// TestOpenOwnedDirectoryPropagatesDirectoryOpenFailure は OpenOwnedDirectory の二つ目の失敗経路を検証する。
+// ownership root は解決できるが、要求した leaf が physical directory ではない。
 func TestOpenOwnedDirectoryPropagatesDirectoryOpenFailure(t *testing.T) {
 	root := t.TempDir()
 	regular := filepath.Join(root, "regular")
@@ -32,11 +29,8 @@ func TestOpenOwnedDirectoryPropagatesDirectoryOpenFailure(t *testing.T) {
 	}
 }
 
-// TestOpenDirectoryAtAndOpenRootAtRejectDirectRegularFileLeaf targets the
-// "owned path is not a physical directory" branch in both OpenDirectoryAt and
-// OpenRootAt for a leaf reached without any ".." traversal, which the
-// existing escape tests do not exercise (those fail earlier, inside the
-// os.Root sandbox itself).
+// TestOpenDirectoryAtAndOpenRootAtRejectDirectRegularFileLeaf は、`..` traversal をせず到達した regular file leaf を両関数が拒否する経路を検証する。
+// 既存の escape test は os.Root sandbox 内で先に失敗するため、この経路を通らない。
 func TestOpenDirectoryAtAndOpenRootAtRejectDirectRegularFileLeaf(t *testing.T) {
 	root := t.TempDir()
 	regular := filepath.Join(root, "leaf")
@@ -59,11 +53,8 @@ func TestOpenDirectoryAtAndOpenRootAtRejectDirectRegularFileLeaf(t *testing.T) {
 	}
 }
 
-// TestPhysicalPathInfoRejectsSymlinkComponent exercises PhysicalPathInfo's
-// own symlink rejection directly: every path callers resolve through it
-// (OpenDirectoryAt, OpenRootAt, OpenOwnedRoot) normally hits os.Root's own
-// symlink protection first, which never lets this defense-in-depth check run
-// on an in-root symlink reached without any escaping "..".
+// TestPhysicalPathInfoRejectsSymlinkComponent は PhysicalPathInfo 自身の symlink 拒否を直接検証する。
+// 通常は os.Root の保護が先に働くため、`..` escape なしで root 内 symlink に到達するこの多層防御の経路は通らない。
 func TestPhysicalPathInfoRejectsSymlinkComponent(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
@@ -84,10 +75,8 @@ func TestPhysicalPathInfoRejectsSymlinkComponent(t *testing.T) {
 	}
 }
 
-// TestOpenFilesystemRootAtFilesystemRootYieldsDotRelative exercises the
-// branch in openFilesystemRoot where the ownership root itself is the
-// filesystem root: TrimPrefix leaves an empty relative path, which must
-// normalize to ".".
+// TestOpenFilesystemRootAtFilesystemRootYieldsDotRelative は ownership root 自体が filesystem root の openFilesystemRoot 経路を検証する。
+// TrimPrefix が空 relative path を残すため、これを `.` に正規化する必要がある。
 func TestOpenOwnedRootAtFilesystemRootYieldsDotRelative(t *testing.T) {
 	owned, relative, err := OpenOwnedRoot(string(filepath.Separator), string(filepath.Separator))
 	if err != nil {

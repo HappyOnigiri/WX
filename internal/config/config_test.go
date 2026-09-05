@@ -69,10 +69,8 @@ func TestSavePropagatesAnUnsearchableConfigDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	dir := filepath.Join(home, ".config", "wx")
-	// Pre-create the directory without execute permission: MkdirAll treats
-	// an already-existing directory as satisfied without touching its mode,
-	// so Save's own Lstat of the config file inside it fails with a
-	// permission error rather than os.ErrNotExist.
+	// execute permission のない directory を先に作ると、MkdirAll は既存 mode を変えない。
+	// Save の config file に対する Lstat は os.ErrNotExist ではなく permission error になる。
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

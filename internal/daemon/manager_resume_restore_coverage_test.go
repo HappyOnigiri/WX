@@ -13,11 +13,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// TestResumeRestoreJobQuarantinesWhenParentSnapshotJobFailed verifies that a
-// restoring child whose parent session is still being archived, but whose
-// parent slot has already failed or been quarantined, is itself quarantined
-// with a descriptive error instead of being left to poll a snapshot that
-// will never complete.
 func TestResumeRestoreJobQuarantinesWhenParentSnapshotJobFailed(t *testing.T) {
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	parentID := domain.StableID("resume-restore", "parent-failed")
@@ -42,11 +37,6 @@ func TestResumeRestoreJobQuarantinesWhenParentSnapshotJobFailed(t *testing.T) {
 	}
 }
 
-// TestResumeRestoreJobQuarantinesOnIncompleteRepositorySnapshotSet drives the
-// zero-stored-repositories replay path of resumeRestoreJob: the parent
-// session's recovery snapshot is usable but does not cover every repository
-// in the workspace, which must quarantine the restoring slot with a
-// descriptive error rather than silently resuming a partial workspace.
 func TestResumeRestoreJobQuarantinesOnIncompleteRepositorySnapshotSet(t *testing.T) {
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
@@ -60,9 +50,6 @@ func TestResumeRestoreJobQuarantinesOnIncompleteRepositorySnapshotSet(t *testing
 	defer m.Close()
 	ctx := context.Background()
 
-	// Kind "repository" sidesteps the multi_repository workspace-root
-	// snapshot check inside recoveryUsable, which is exercised separately;
-	// this test only needs an incomplete per-repository snapshot set.
 	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "repository", Repositories: []discovery.Repository{
 		{ID: "repository-1", MainPath: discoveryPath(filepath.Join(root, "repository-1")), CommonDir: discoveryPath(filepath.Join(root, "repository-1", ".git")), RelativePath: "repository-1", DefaultBranch: "main"},
 		{ID: "repository-2", MainPath: discoveryPath(filepath.Join(root, "repository-2")), CommonDir: discoveryPath(filepath.Join(root, "repository-2", ".git")), RelativePath: "repository-2", DefaultBranch: "main"},
@@ -102,9 +89,6 @@ func TestResumeRestoreJobQuarantinesOnIncompleteRepositorySnapshotSet(t *testing
 	}
 }
 
-// TestDoctorReportsGitAndSQLiteFailures verifies Doctor surfaces a broken
-// git executable and a closed state database as failing checks with the
-// underlying error text, instead of masking them as "ok".
 func TestDoctorReportsGitAndSQLiteFailures(t *testing.T) {
 	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
 	t.Setenv("PATH", t.TempDir())

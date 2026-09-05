@@ -138,9 +138,8 @@ func TestRemoveWorktreeUsesPinnedDescriptorAcrossRootReplacement(t *testing.T) {
 	}
 }
 
-// The archive snapshot must read the leased worktree through the same pinned
-// descriptor as preparation. Replacing the lexical root immediately before
-// the first Git read must not make the snapshot consume the replacement path.
+// archive snapshot は、prepare と同じ pin 済み descriptor から lease 中の worktree を読む必要がある。
+// 最初の Git 読取り直前に lexical root を置換しても、snapshot が置換先 path を使ってはならない。
 func TestSnapshotUsesPinnedDescriptorAcrossRootReplacement(t *testing.T) {
 	temp := t.TempDir()
 	repository := filepath.Join(temp, "repository")
@@ -251,12 +250,8 @@ func TestSnapshotRefsAreIdempotentAndDeletionChecksOwnership(t *testing.T) {
 	}
 }
 
-// TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects
-// exercises the clean-session archive minimization: when the worktree has
-// nothing staged, unstaged, or untracked relative to HEAD, snapshotObjects
-// must not fabricate a new recovery commit or write a new tree via a
-// temporary index. It records HEAD's own tree/commit directly, and restore
-// must still round-trip correctly from that.
+// TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects は clean session の archive 最小化を検証する。
+// staged、unstaged、untracked の変更がなければ新しい tree や recovery commit、一時 index を作らず、HEAD の tree/commit を直接記録して復元する。
 func TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects(t *testing.T) {
 	repository, repo, manager, worktreeRoot := archiveFixture(t)
 	head := gitCommand(t, repository, "rev-parse", "HEAD")
@@ -287,13 +282,10 @@ func TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects(t *tes
 	}
 }
 
-// TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded pins the clean
-// shortcut to the safe side of the "never discard unsnapshotted work"
-// invariant. `git status` is configurable and deliberately hides content that
-// the dirty path's `read-tree HEAD` + `add -A` (a temporary index carrying
-// neither the assume-unchanged nor the skip-worktree bit) still records. If the
-// shortcut trusted a blinded status, the recovery snapshot would omit that
-// content and the slot worktree is physically removed afterwards.
+// TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded は、未 snapshot の作業を失わないための clean short-circuit を検証する。
+// `git status` は設定で内容を隠せる一方、dirty 経路の一時 index には assume-unchanged/skip-worktree bit がないため `add -A` は内容を記録する。
+// short-circuit が隠れた状態を信頼すると、recovery snapshot を作った後に slot worktree を物理削除して作業を失う。
+// commentlint:allow-long -- `git status` と一時 index の観測差が安全条件であるため
 func TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -365,10 +357,7 @@ func TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded(t *testing.T) {
 	}
 }
 
-// TestSnapshotFailsClosedWhenCleanlinessCannotBeDetermined verifies that a
-// failure of either cleanliness probe aborts the snapshot instead of falling
-// through to the clean shortcut, which would record HEAD as the whole session's
-// content.
+// TestSnapshotFailsClosedWhenCleanlinessCannotBeDetermined は、clean 判定 probe の失敗時に short-circuit せず snapshot を中止することを検証する。
 func TestSnapshotFailsClosedWhenCleanlinessCannotBeDetermined(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -517,10 +506,8 @@ func TestRemovalReconcilesMissingRegistrationAndRejectsWrongRepository(t *testin
 	markOwnedWorktree(t, wxRoot, target, "slot", firstRepo)
 	manager := removalManager(t, wxRoot, allowOwnershipValidator{})
 	pointAtSlot(t, manager, wxRoot, target)
-	// The marker is named after the repository it belongs to, so a removal
-	// requested for a different repository does not find a marker at all.
-	// That is the same fail-closed refusal the common-directory comparison
-	// used to produce, one step earlier.
+	// marker は所属 repository 名で作るため、別 repository を指定すれば marker が見つからず拒否される。
+	// これは本番で common directory 比較が行うフェイルクローズと同じ拒否を、より早く検証する。
 	if err := manager.RemoveWorktree(context.Background(), secondRepo, wxRoot, target, ""); !errors.Is(err, state.ErrOwnership) || !strings.Contains(err.Error(), "ownership marker") {
 		t.Fatalf("wrong repository removal error=%v", err)
 	}
@@ -590,7 +577,7 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	_, _ = runner.Run(context.Background(), repository, "worktree", "remove", "--force", target)
 }
 
-// Finding 5: resume preparation observes the restored snapshot tree and index.
+// Finding 5: resume prepare は復元済みの snapshot tree と index を観測する。
 func TestRestoreRunsPrepareCommandAfterSnapshotTreeAndIndex(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
@@ -668,10 +655,7 @@ func TestSnapshotPropagatesGitStageFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			repository, repo, manager, _ := archiveFixture(t)
 			head := gitCommand(t, repository, "rev-parse", "HEAD")
-			// A clean worktree takes the short-circuit that skips
-			// write-tree/read-tree/add/commit-tree entirely (see
-			// snapshotObjects); dirty it so every injected fault below still
-			// lands on a step the snapshot actually executes.
+			// clean worktree は snapshotObjects の write-tree/read-tree/add/commit-tree を省くため、各注入 fault が実行経路に当たるよう dirty にする。
 			if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("dirty\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -845,12 +829,8 @@ func TestRemoveWorktreePropagatesFilesystemOwnershipFailures(t *testing.T) {
 func archiveFixture(t *testing.T) (string, discovery.Repository, *Manager, string) {
 	t.Helper()
 	root := t.TempDir()
-	// The repository lives inside worktreeRoot (rather than beside it) so
-	// that Snapshot/Restore calls in this fixture's tests that pass
-	// repository itself as the "worktree" being archived stay within the
-	// Preparer's pinned root and exercise the descriptor-bound path, matching
-	// production where Manager.Snapshot only ever runs on a worktree under
-	// the configured wx root.
+	// repository を worktreeRoot の中に置き、この fixture の Snapshot/Restore が repository 自身を archive 対象 worktree として扱えるようにする。
+	// これで Preparer の pin 済み root を通る descriptor-bound 経路を通り、設定済み wx root 配下の worktree だけで Snapshot を呼ぶ本番と一致する。
 	worktreeRoot := filepath.Join(root, "worktrees")
 	mustMkdir(t, worktreeRoot)
 	repository := filepath.Join(worktreeRoot, "repository")
@@ -910,11 +890,9 @@ exec "$WX_REAL_GIT" "$@"
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// removalManager builds a Manager that can actually prove ownership of a
-// worktree under root. Removal needs a Preparer for two independent reasons:
-// the descriptor-bound guard requires OwnedRoot pinned to root, and the
-// SQLite proof reads the slot's recorded location (root generation plus
-// root-relative slot path) from it. pointAtSlot names the slot per target.
+// removalManager は root 配下の worktree の所有権を実際に証明できる manager を作る。
+// 削除には、root に pin した OwnedRoot を使う descriptor-bound guard と、SQLite の root generation/root-relative slot path の両方が必要である。
+// pointAtSlot が target ごとの slot を指定する。
 func removalManager(t *testing.T, root string, ownership state.OwnershipValidator) *Manager {
 	t.Helper()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -936,10 +914,8 @@ func mustMkdir(t *testing.T, path string) {
 	}
 }
 
-// markerIdentityFor names the marker wx writes for one repository inside one
-// slot. The marker file is ".wx-owner-<repository_id>" in the worktree's
-// parent directory and records the root generation, so both values have to
-// come from the fixture rather than being derived from the target path.
+// markerIdentityFor は wx が slot 内の repository に書く marker の identity を作る。
+// marker は `.wx-owner-<repository_id>` であり、親 directory と root generation は target path から導出せず fixture の値を使う。
 func markerIdentityFor(repo discovery.Repository, slotID string) workspace.MarkerIdentity {
 	return workspace.MarkerIdentity{SlotID: slotID, RootID: testRootID, RepositoryID: string(repo.ID)}
 }
@@ -957,10 +933,8 @@ func markOwnedWorktree(t *testing.T, root, target, slotID string, repo discovery
 	gitCommand(t, filepath.Dir(string(repo.CommonDir)), "worktree", "lock", "--reason", "wx:"+slotID+":READY", target)
 }
 
-// pointAtSlot tells the fixture's Preparer which slot a worktree belongs to.
-// Ownership proofs no longer compare absolute paths, so a removal or
-// validation call has to be able to name the slot's root-relative location
-// and the repository's directory name inside it.
+// pointAtSlot は fixture の Preparer に worktree の所属 slot を設定する。
+// 所有権証明は絶対 path を比較しないため、削除/検証で slot の root 相対位置と repository directory 名を指定できる必要がある。
 func pointAtSlot(t *testing.T, manager *Manager, root, target string) {
 	t.Helper()
 	slotPath := filepath.Dir(target)

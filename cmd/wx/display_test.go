@@ -6,10 +6,8 @@ import (
 	"testing"
 )
 
-// TestPrintDisplayRendersNestedPayloadsWithoutGoFormatting pins the shapes a
-// real `wx status` / `wx doctor` run produced. Before this renderer the human
-// output carried Go's own map, slice and nil formatting, and whole numbers
-// were printed in exponent form.
+// TestPrintDisplayRendersNestedPayloadsWithoutGoFormatting は、実行時の入れ子 payload を表示用に展開することを確認する。
+// map、slice、nil の Go 表現や整数の指数表記を出力しない。
 func TestPrintDisplayRendersNestedPayloadsWithoutGoFormatting(t *testing.T) {
 	payload := map[string]any{
 		"active_sessions":   float64(0),
@@ -80,7 +78,7 @@ func TestPrintDisplayRendersNestedPayloadsWithoutGoFormatting(t *testing.T) {
 		}
 	}
 
-	// Keys must be sorted so repeated runs produce identical output.
+	// key は sort し、繰り返し実行しても同じ出力にする。
 	var keys []string
 	for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
 		key, _, _ := strings.Cut(line, " ")
@@ -93,8 +91,7 @@ func TestPrintDisplayRendersNestedPayloadsWithoutGoFormatting(t *testing.T) {
 	}
 }
 
-// TestPrintDisplayHandlesEmptyAndNonObjectPayloads covers the degenerate
-// shapes the daemon can return when it is degraded or has nothing to report.
+// TestPrintDisplayHandlesEmptyAndNonObjectPayloads は daemon の低下時や報告対象がない場合の payload を確認する。
 func TestPrintDisplayHandlesEmptyAndNonObjectPayloads(t *testing.T) {
 	var empty bytes.Buffer
 	printDisplay(&empty, map[string]any{})

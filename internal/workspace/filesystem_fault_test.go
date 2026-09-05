@@ -6,11 +6,8 @@ import (
 	"testing"
 )
 
-// TestEnsureRootDirectoryRejectsWriteProtectedParent covers the Mkdir failure
-// branch that is distinct from the already-exists race: a directory component
-// is missing (Lstat sees os.ErrNotExist, which only requires search
-// permission on the parent) but the parent itself forbids writes, so Mkdir
-// fails for a real, non-transient reason.
+// TestEnsureRootDirectoryRejectsWriteProtectedParentは、既存競合とは異なるMkdir失敗分岐を確認する。
+// 欠落成分のLstatは親の検索権限だけで成功するが、親が書き込みを拒否するためMkdirが恒久的なエラーになる。
 func TestEnsureRootDirectoryRejectsWriteProtectedParent(t *testing.T) {
 	root := t.TempDir()
 	readOnly := filepath.Join(root, "readonly")
@@ -28,9 +25,8 @@ func TestEnsureRootDirectoryRejectsWriteProtectedParent(t *testing.T) {
 	}
 }
 
-// TestCopyPathFromOwnedRootRejectsUnsafeSourcePath covers the source-side
-// safeRelative rejection in copyPathFromOwnedRoot, which is otherwise
-// shadowed by the destination-side check already covered elsewhere.
+// TestCopyPathFromOwnedRootRejectsUnsafeSourcePathは、copyPathFromOwnedRootのsource側safeRelative拒否を確認する。
+// この分岐は、別テストで確認済みのdestination側検査に隠れている。
 func TestCopyPathFromOwnedRootRejectsUnsafeSourcePath(t *testing.T) {
 	source := t.TempDir()
 	destination := t.TempDir()
@@ -52,12 +48,8 @@ func TestCopyPathFromOwnedRootRejectsUnsafeSourcePath(t *testing.T) {
 	}
 }
 
-// TestSafeGlobPropagatesNestedPatternErrors covers walkSafeGlob's propagation
-// of an error raised by its own recursive call. safeGlob itself validates
-// every pattern segment upfront and never reaches the walk for a malformed
-// segment, so walkSafeGlob is called directly here with a first segment that
-// matches a real directory, forcing the recursive call whose error must then
-// be propagated by the parent frame.
+// TestSafeGlobPropagatesNestedPatternErrorsは、walkSafeGlob自身の再帰呼び出しで生じたエラーが親へ伝播することを確認する。
+// safeGlobは先に全segmentを検証するため、不正なsegmentではwalkに到達しない。実在ディレクトリに続く不正segmentを直接walkSafeGlobへ渡して再帰を発生させる。
 func TestSafeGlobPropagatesNestedPatternErrors(t *testing.T) {
 	root := t.TempDir()
 	nested := filepath.Join(root, "valid")

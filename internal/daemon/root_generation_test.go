@@ -14,11 +14,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// TestColdWorktreeUnmaterializedAcceptsAbsentAndEmptyDirectories covers the
-// single rule that replaced readyRepositoriesMatch's per-workspace-kind COLD
-// branches. A cold lease creates the repository directory so the client can
-// open it as its CWD before preparation runs, so "empty" is a real state and
-// only content means the repository was actually checked out.
 func TestColdWorktreeUnmaterializedAcceptsAbsentAndEmptyDirectories(t *testing.T) {
 	root := t.TempDir()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -68,9 +63,6 @@ func TestColdWorktreeUnmaterializedAcceptsAbsentAndEmptyDirectories(t *testing.T
 	}
 }
 
-// TestOwnedSlotDirectoriesListsOnlyPhysicalSlotDirectories covers the
-// enumeration side of the layout: one level below a workspace namespace, and
-// nothing that is not a physical directory.
 func TestOwnedSlotDirectoriesListsOnlyPhysicalSlotDirectories(t *testing.T) {
 	root := t.TempDir()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -103,13 +95,6 @@ func TestOwnedSlotDirectoriesListsOnlyPhysicalSlotDirectories(t *testing.T) {
 	}
 }
 
-// TestOwnedRootArtifactPathsScansOnlyWxNamespaces pins the enumeration side
-// of the layout. storage.worktree_root is an ordinary configurable pathname,
-// so it can name a directory that also holds unrelated content; only
-// top-level entries spelled like a workspace ID, plus the reserved _unbound,
-// are wx's own namespaces. Without the shape test every second-level
-// directory below the root would be reported as an unprovable artifact and
-// bury the real orphans.
 func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
 	base := t.TempDir()
 	store, err := state.Open(filepath.Join(base, "state.db"))
@@ -134,8 +119,6 @@ func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
 	for _, directory := range []string{
 		workspaceSlot,
 		unboundSlot,
-		// Neither of these is a wx namespace: one is a reserved entry that
-		// holds no slots, the others are simply not spelled like an ID.
 		filepath.Join(rootPath, "_recovery", "whatever"),
 		filepath.Join(rootPath, "unrelated-project", "src"),
 		filepath.Join(rootPath, "toolong01", "slt003"),
@@ -160,11 +143,6 @@ func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
 	}
 }
 
-// TestRootRegistrationFailureReachesTheUserWithItsCause proves the failure
-// of registerRootGeneration leaves a durable trace. It only logs, because the
-// daemon must keep answering read-only requests, but every allocation then
-// fails on the missing generation - and the message the user sees must carry
-// the reason rather than only its consequence.
 func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()
@@ -178,8 +156,6 @@ func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
 	cfg.Storage.WorktreeRoot = rootPath
 	manager := testManager(t, cfg, store)
 	t.Cleanup(manager.Close)
-	// Registering without an identity is the case that cannot produce a
-	// generation at all, so it stands in for every EnsureActiveRoot failure.
 	manager.mu.Lock()
 	manager.rootIDs = map[string]string{}
 	manager.mu.Unlock()
@@ -205,8 +181,6 @@ func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
 		t.Fatalf("status worktree_root_error is empty: %v", status["worktree_root_error"])
 	}
 
-	// A later successful registration clears it, so a fixed root does not
-	// keep reporting a stale cause.
 	if err := os.MkdirAll(rootPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -227,12 +201,6 @@ func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
 	}
 }
 
-// TestArtifactDiagnosticsScanRetiredRootGenerations proves the enumeration
-// source for the orphan scan is SQLite, not the set of descriptors that
-// happen to be open. A superseded root is released as soon as it is adopted
-// and a reload drops its pathname from the live set, so scanning the live set
-// would stop looking at exactly the generations whose slots outlive a
-// worktree_root change.
 func TestArtifactDiagnosticsScanRetiredRootGenerations(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()
@@ -252,8 +220,6 @@ func TestArtifactDiagnosticsScanRetiredRootGenerations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Move the configuration to a new root and retire the old one the way a
-	// reload does.
 	newRoot := filepath.Join(base, "new-root")
 	cfg.Storage.WorktreeRoot = newRoot
 	manager.mu.Lock()
@@ -301,9 +267,6 @@ func TestArtifactDiagnosticsScanRetiredRootGenerations(t *testing.T) {
 	}
 }
 
-// TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration
-// verifies that neither accessor invents a root generation: a slot row
-// inserted without one could not be located again, so both must refuse.
 func TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration(t *testing.T) {
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
@@ -316,7 +279,6 @@ func TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration(t *tes
 	manager := testManager(t, cfg, store)
 	t.Cleanup(manager.Close)
 
-	// testManager registers the configured root the way New() does.
 	rootPath, rootID, err := manager.activeRoot()
 	if err != nil || rootID == "" || rootPath != filepath.Clean(cfg.Storage.WorktreeRoot) {
 		t.Fatalf("active root path=%q id=%q err=%v", rootPath, rootID, err)
@@ -328,8 +290,6 @@ func TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration(t *tes
 		t.Fatalf("root id outside every root err=%v", err)
 	}
 
-	// Forgetting the mapping is what "no registered generation" looks like
-	// after a failed EnsureActiveRoot at startup.
 	manager.mu.Lock()
 	delete(manager.rootIDs, rootPath)
 	manager.mu.Unlock()
@@ -341,10 +301,6 @@ func TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration(t *tes
 	}
 }
 
-// TestRegisterAndLoadRootGenerationsRepinRetiredRoots proves the durable half
-// of root co-existence: a previously configured root keeps its row and its ID
-// after a reload, and loadRootGenerations repins it so its slots stay
-// addressable across a restart.
 func TestRegisterAndLoadRootGenerationsRepinRetiredRoots(t *testing.T) {
 	home := t.TempDir()
 	store, err := state.Open(filepath.Join(home, "state.db"))
@@ -408,8 +364,6 @@ func TestRegisterAndLoadRootGenerationsRepinRetiredRoots(t *testing.T) {
 		}
 	}
 
-	// A restart starts with an empty registry; loadRootGenerations must bring
-	// the retired generation back so its slots remain resolvable.
 	manager.mu.Lock()
 	manager.rootIDs = map[string]string{}
 	manager.mu.Unlock()
@@ -425,11 +379,6 @@ func TestRegisterAndLoadRootGenerationsRepinRetiredRoots(t *testing.T) {
 	}
 }
 
-// TestLoadRootGenerationsRefusesAReplacedRootDirectory proves that a restart
-// binds a durable generation only to the inode SQLite recorded for it. The
-// pathname survives a manual delete and recreation, so without comparing the
-// recorded identity the old generation would be re-bound to the replacement
-// and every later proof under it would reach a directory wx never owned.
 func TestLoadRootGenerationsRefusesAReplacedRootDirectory(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()
@@ -445,9 +394,6 @@ func TestLoadRootGenerationsRefusesAReplacedRootDirectory(t *testing.T) {
 	t.Cleanup(manager.Close)
 	rootID := registerTestRoot(t, manager, rootPath)
 
-	// Control: with the recorded directory still in place, a restart with an
-	// empty registry republishes the generation. Without this the refusal
-	// below would pass for the wrong reason.
 	resetRootRegistryForTest(manager)
 	manager.loadRootGenerations(ctx)
 	manager.mu.RLock()
@@ -471,15 +417,11 @@ func TestLoadRootGenerationsRefusesAReplacedRootDirectory(t *testing.T) {
 	if rebound != "" {
 		t.Fatalf("replaced root directory was re-bound to generation %q", rebound)
 	}
-	// Fail closed: nothing under the replaced pathname resolves to a
-	// generation, so no durable state can be created or removed there.
 	if _, _, err := manager.rootIDForPath(filepath.Join(rootPath, "wsp001", "slt001")); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("slot under a replaced root resolved: %v", err)
 	}
 }
 
-// resetRootRegistryForTest empties the in-memory root registries the way a
-// daemon restart does, leaving SQLite as the only source of generations.
 func resetRootRegistryForTest(m *Manager) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -492,8 +434,6 @@ func resetRootRegistryForTest(m *Manager) {
 	m.rootRefs = map[string]*managedRoot{}
 }
 
-// TestDirectoryIdentityAtReportsTheOpenedInode verifies the identity helper
-// used to record slots.dir_identity and to answer the lease.
 func TestDirectoryIdentityAtReportsTheOpenedInode(t *testing.T) {
 	root := t.TempDir()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -529,9 +469,6 @@ func TestDirectoryIdentityAtReportsTheOpenedInode(t *testing.T) {
 	}
 }
 
-// TestAllocationRetriesASlotIDCollision proves the collision path: the INSERT
-// is the only place that can decide the race, so a duplicate slot ID must be
-// reported by it and redrawn rather than silently taking over another slot.
 func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	rootPath, rootID, err := manager.activeRoot()
@@ -546,8 +483,6 @@ func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reusing the existing ID must be reported as a collision (retry=true), so
-	// the caller redraws instead of failing the allocation.
 	_, retry, err := manager.allocateWithID(ctx, taken, rootPath, rootID, "token", workspaceRecord, resolved, 1, "codex", 0, "STARTING", "PREPARING", "PREPARE", "")
 	if err == nil || !retry {
 		t.Fatalf("duplicate slot id retry=%v err=%v, want a retryable collision", retry, err)
@@ -556,7 +491,6 @@ func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 		t.Fatalf("duplicate slot id error=%v, want a SQLite constraint violation", err)
 	}
 
-	// The same contract holds for the unbound and standby allocation paths.
 	if _, retry, err := manager.allocateResumeSlotWithID(ctx, taken, rootPath, rootID, "token", "codex", 0); err == nil || !retry {
 		t.Fatalf("duplicate unbound slot id retry=%v err=%v", retry, err)
 	}
@@ -564,7 +498,6 @@ func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 		t.Fatalf("standby allocation with a free id: %v", err)
 	}
 
-	// A fresh ID allocates normally and lands in the documented layout.
 	lease, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", 0, "STARTING", "")
 	if err != nil {
 		t.Fatal(err)
@@ -579,8 +512,6 @@ func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 	if slot.RelPath != filepath.Join(string(workspaceRecord.ID), slot.ID) {
 		t.Fatalf("allocated slot rel_path=%q, want %q", slot.RelPath, filepath.Join(string(workspaceRecord.ID), slot.ID))
 	}
-	// A single-repository workspace leases the repository directory, so the
-	// ownership marker stays in the parent and out of the agent's view.
 	if want := filepath.Join(slot.Path, testDirName(resolved[0].Repository, manager.Config())); lease.Path != want {
 		t.Fatalf("lease path=%q, want %q", lease.Path, want)
 	}

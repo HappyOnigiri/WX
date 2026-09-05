@@ -16,9 +16,8 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// readinessCeilingMargin is the slack added to readiness.timeout when raising
-// the handler deadline ceiling, covering the client's own dial and framing time
-// so the server does not expire a request the client still considers in budget.
+// handlerの期限上限へ加える余裕時間である。
+// client側のdialとframing時間を吸収し、clientのbudget内の要求をserverだけで失効させない。
 const readinessCeilingMargin = 5 * time.Minute
 
 func Serve(ctx context.Context) error {
@@ -127,12 +126,8 @@ func releaseDaemonLock(file *os.File) {
 	_ = file.Close()
 }
 
-// handlerCeiling keeps the RPC handler deadline ceiling at or above the
-// configured readiness budget. WaitReady is the longest-lived legitimate
-// handler and its client-side budget follows readiness.timeout, so a readiness
-// timeout configured past rpc.DefaultMaxHandlerTimeout would otherwise be cut
-// short server-side. The ceiling never drops below the rpc default, because
-// handlers unrelated to readiness (cold preparation) are not bounded by it.
+// RPC handler の期限上限を readiness budget 以上にする。
+// readiness と無関係な handler もあるため、rpc の既定値を下回らない。
 func handlerCeiling(readiness time.Duration) time.Duration {
 	if ceiling := readiness + readinessCeilingMargin; ceiling > rpc.DefaultMaxHandlerTimeout {
 		return ceiling

@@ -16,22 +16,11 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot verifies that a
-// repository directory name that escapes the wx root is rejected as an
-// ownership failure instead of being handed to
-// archiveManager.RemoveWorktree, which could otherwise be pointed at an
-// arbitrary filesystem path.
-//
-// slot_repositories.dir_name is plain text, so a corrupted or forged row can
-// still spell a traversal even though every name wx writes is a single
-// component. The derived worktree path is what removal checks.
 func TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	slotID := domain.StableID("remove-slot", "outside-repo")
 	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "REMOVING")
-	// The slot is two levels below the root, so three levels of traversal
-	// leave the root entirely.
 	escaping := filepath.Join("..", "..", "..", "outside-repo")
 	if _, err := store.CreateStandby(ctx, slot,
 		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: escaping, State: "REMOVING", BaseOID: resolved[0].OID}}); err != nil {
@@ -49,11 +38,6 @@ func TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot(t *testing.T) {
 	}
 }
 
-// TestRemoveSlotWorktreesRejectsReplacedSlotDirectory proves that the last
-// proof before the destructive RemoveAll presents the identity of the
-// directory on disk. A slot directory that was deleted and recreated under
-// the same name keeps its root generation and root-relative path, so only the
-// inode comparison can tell it apart from the one SQLite recorded.
 func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -62,8 +46,6 @@ func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
 		t.Fatal(err)
 	}
-	// Removing and recreating the directory under the same name is exactly
-	// the substitution the identity is there to catch.
 	if err := os.Remove(slot.Path); err != nil {
 		t.Fatal(err)
 	}
@@ -73,17 +55,11 @@ func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
 	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slot, ""); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("replaced slot directory error=%v, want an ownership failure", err)
 	}
-	// Fail closed means the replacement is left on disk rather than deleted
-	// as though it were wx's.
 	if _, err := os.Lstat(slot.Path); err != nil {
 		t.Fatalf("replaced slot directory was removed despite the failed proof: %v", err)
 	}
 }
 
-// TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable proves
-// waitForSnapshot's success path: once a session has reached ARCHIVED with a
-// non-expired repository snapshot, it returns without waiting out the
-// readiness timeout.
 func TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	repository := resolved[0].Repository
@@ -111,10 +87,6 @@ func TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable(t *testin
 	}
 }
 
-// TestResumeWaitsForInFlightSnapshotBeforeEvaluatingRecovery verifies that
-// Resume defers to waitForSnapshot when the session it is asked to resume is
-// still mid-archive (SNAPSHOTTING), rather than immediately evaluating a
-// recovery snapshot set that has not been written yet.
 func TestResumeWaitsForInFlightSnapshotBeforeEvaluatingRecovery(t *testing.T) {
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
@@ -140,10 +112,6 @@ func TestResumeWaitsForInFlightSnapshotBeforeEvaluatingRecovery(t *testing.T) {
 	}
 }
 
-// TestResumeReportsIncompleteRecoverySnapshotAcrossRepositories verifies
-// that Resume refuses to build a lease from a recovery snapshot set that
-// does not cover every repository in the archived workspace, instead of
-// silently omitting the missing repository from the resumed session.
 func TestResumeReportsIncompleteRecoverySnapshotAcrossRepositories(t *testing.T) {
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))

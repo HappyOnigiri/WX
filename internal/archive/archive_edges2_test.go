@@ -11,12 +11,8 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase exercises
-// the two error branches unique to SnapshotWithPersistence itself (as
-// opposed to Snapshot, which shares snapshotObjects/publishSnapshotRefs but
-// wraps them differently): a Git failure while capturing the snapshot under
-// the first lock, and a Git failure while publishing recovery refs under the
-// second lock, after metadata has already been durably persisted.
+// TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase は、SnapshotWithPersistence 固有の二つの失敗経路を検証する。
+// 最初の lock 中の snapshot 取得失敗と、metadata の永続化後に二つ目の lock 中で起きる recovery ref 公開失敗を対象にする。
 func TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase(t *testing.T) {
 	t.Run("snapshot capture failure", func(t *testing.T) {
 		repository, repo, manager, _ := archiveFixture(t)
@@ -52,16 +48,12 @@ func TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase(t *testing.T
 	})
 }
 
-// TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures exercises the
-// os.CreateTemp failure branches in snapshotObjects and Restore: pointing
-// TMPDIR at a path that does not exist makes both temporary-index files
-// impossible to create.
+// TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures は、snapshotObjects と Restore の os.CreateTemp 失敗を検証する。
+// 存在しない path を TMPDIR に指定し、両方の一時 index file を作れなくする。
 func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T) {
 	t.Run("snapshot temporary index", func(t *testing.T) {
 		repository, repo, manager, _ := archiveFixture(t)
-		// A clean worktree skips the temporary index entirely (see
-		// snapshotObjects's clean short-circuit); dirty it so this exercises
-		// the os.CreateTemp failure it is meant to test.
+		// clean worktree は一時 index を使わないため、対象の os.CreateTemp 失敗を起こせるよう dirty にする。
 		if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("dirty\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -86,12 +78,8 @@ func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T)
 	})
 }
 
-// TestRestorePropagatesRelockedRecoveryRefVerificationFailure exercises the
-// second recovery-ref verification loop inside Restore's locked closure
-// (distinct from the pre-lock check performed before PrepareForRestore):
-// occurrence 4 of the verify pattern lands on the first ref check taken after
-// the common-directory lock is acquired (head/worktree/index each verify once
-// pre-lock, so the relocked loop starts at occurrence 4).
+// TestRestorePropagatesRelockedRecoveryRefVerificationFailure は、Restore の common-directory lock 内で再検証する recovery ref の失敗を検証する。
+// lock 前に head/worktree/index の三 ref を一度ずつ検証するため、4 回目の該当呼出しが lock 取得後の最初の ref 検証になる。
 func TestRestorePropagatesRelockedRecoveryRefVerificationFailure(t *testing.T) {
 	repository, repo, manager, worktreeRoot := archiveFixture(t)
 	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)

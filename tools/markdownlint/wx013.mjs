@@ -5,8 +5,7 @@ const ERROR_DETAIL =
   "Write one sentence per line; split sentences over 200 display columns; " +
   "count full-width characters as two columns.";
 
-// East Asian Width W/F characters occupy two terminal columns. Ambiguous
-// characters intentionally remain narrow, as do half-width katakana.
+// East Asian Width の W/F 文字は端末上で2桁を占める。Ambiguous と半角カタカナは1桁のままとする。
 const FULL_WIDTH_RE = /[ᄀ-ᅟ⌚-⌛〈-〉⏩-⏬⏰⏳◽-◾☔-☕♈-♓♿⚓⚡⚪-⚫⚽-⚾⛄-⛅⛎⛔⛪⛲-⛳⛵⛺⛽✅✊-✋✨❌❎❓-❕❗➕-➗➰➿⬛-⬜⭐⭕⺀-⺙⺛-⻳⼀-⿕⿰-⿻　-〾ぁ-ゖ゙-ヿㄅ-ㄯㄱ-ㆎ㆐-㇣ㇰ-㈞㈠-㉇㉐-㋿㌀-䶿一-꓆ꥠ-ꥼ가-힣豈-﫿︐-︙︰-﹫！-｠￠-￦🀄🃏🆎🆑-🆚🈀-🈂🈐-🈻🉀-🉈🉐-🉑🌀-🙏🚀-🛿🤀-🧿🩰-🫿𠀀-𿿽]/u;
 
 /**
@@ -58,4 +57,3 @@ export default {
     }
   }
 };
-

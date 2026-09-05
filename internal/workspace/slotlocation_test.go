@@ -10,10 +10,8 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// TestWorktreeDirNameAcceptsOnlyDirectSlotChildren pins the layout invariant
-// the ownership request depends on: a repository worktree is exactly one path
-// component below its slot directory, so anything else has no dir_name to
-// compare against and must fail closed.
+// TestWorktreeDirNameAcceptsOnlyDirectSlotChildrenは、所有権要求が依存するlayout不変条件を固定する。
+// repository worktreeはslot directoryの直下1成分であり、それ以外は比較するdir_nameがないため安全側に失敗する。
 func TestWorktreeDirNameAcceptsOnlyDirectSlotChildren(t *testing.T) {
 	worktreeRoot := string(filepath.Separator) + "wx"
 	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
@@ -37,16 +35,14 @@ func TestWorktreeDirNameAcceptsOnlyDirectSlotChildren(t *testing.T) {
 			}
 		})
 	}
-	// Without a slot path there is nothing to measure the worktree against.
+	// slot pathがなければworktreeとの相対位置を測れない。
 	if _, err := (&Preparer{}).WorktreeDirName(filepath.Join(slotPath, testRepositoryID)); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing slot path error=%v", err)
 	}
 }
 
-// TestValidateStateOwnershipWithIdentityFailsClosedWithoutAnIdentity covers
-// the distinction between the two state-ownership helpers: the identity-bearing
-// form exists so a caller that holds a descriptor cannot pass by omitting the
-// identity, which is what would let a pathname-only proof back in.
+// TestValidateStateOwnershipWithIdentityFailsClosedWithoutAnIdentityは、2つの状態所有権helperの違いを確認する。
+// identity付き形式ではdescriptor保持者がidentityを省略して通過できず、pathnameだけの証明が復活しない。
 func TestValidateStateOwnershipWithIdentityFailsClosedWithoutAnIdentity(t *testing.T) {
 	ctx := context.Background()
 	slotPath := filepath.Join(string(filepath.Separator)+"wx", testSlotRelPath)
@@ -71,9 +67,7 @@ func TestValidateStateOwnershipWithIdentityFailsClosedWithoutAnIdentity(t *testi
 		recorder.last.DirName != testRepositoryID || recorder.last.DirIdentity != "dev:ino" {
 		t.Fatalf("request does not describe the recorded location: %+v", recorder.last)
 	}
-	// The identity-free form is what prepare uses before the worktree
-	// exists; it must send no identity so the validator does not fail closed
-	// on a directory that cannot have one yet.
+	// identityなし形式はworktree作成前にprepareが使うため、まだidentityを持てないdirectoryで安全側に失敗しないようidentityを渡さない。
 	if err := preparer.validateStateOwnership(ctx, repo, target, "slot", []string{"PREPARING"}, []string{"PREPARING"}); err != nil {
 		t.Fatal(err)
 	}

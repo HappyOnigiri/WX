@@ -21,18 +21,14 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-// workspaceSnapshotDirectory stays inside the worktree root: the pinned
-// root descriptor, holdVerifiedRootForPath's pre-removal check, and the
-// deterministic path recomputation below are all anchored to that root. The
-// "_" prefix is what keeps it out of the orphan scan, which treats every
-// top-level entry that does not start with "_" as a workspace directory.
+// workspaceSnapshotDirectory は worktree root 内に置く。pin 済み root descriptor、
+// holdVerifiedRootForPath の削除前検査、下の決定的なパス再計算はすべてこの root を基準にする。
+// "_" 接頭辞により orphan scan の対象外になる。scan は "_" で始まらない最上位項目を workspace とみなす。
 const workspaceSnapshotDirectory = "_recovery/workspace-snapshots"
 
-// SnapshotWorkspaceAt is the descriptor-bound form used by the daemon for a
-// multi-repository slot. owner must be the manager-held root descriptor
-// corresponding to ownershipRoot. Bundle reads and archive writes stay in
-// that physical root, while a pathname replacement is rejected before the
-// returned ArchivePath can be committed to SQLite.
+// SnapshotWorkspaceAt は daemon が multi-repository slot に使う descriptor 束縛版である。 owner は ownershipRoot に対応する manager 所有の root
+// descriptor でなければならない。 bundle の読み取りと archive の書き込みを同じ物理 root に限定し、返す ArchivePath を SQLite に commit
+// する前にパス名の置換を拒否する。
 func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot, rootID string, owner *os.Root, sessionID string, excluded []string, expiry time.Time) (state.WorkspaceSnapshot, error) {
 	if rootID == "" {
 		return state.WorkspaceSnapshot{}, errors.New("workspace ownership root generation is required")
@@ -199,10 +195,9 @@ func writeWorkspaceArchiveEntry(bundle *os.Root, writer *tar.Writer, rel string,
 	return closeErr
 }
 
-// verifyPinnedRootPath prevents a successful descriptor-bound archive from
-// being committed with an ArchivePath that now resolves to a replacement
-// namespace. The pinned descriptor protects the bytes, while this check keeps
-// the durable pathname metadata usable after a daemon restart.
+// verifyPinnedRootPath は descriptor 束縛 archive が成功しても、ArchivePath が置換後の
+// namespace を指す状態で commit されることを防ぐ。pin 済み descriptor が内容を守り、
+// この検査が daemon 再起動後にも永続パスのメタデータを利用可能にする。
 func verifyPinnedRootPath(path string, owner *os.Root) error {
 	if owner == nil {
 		return fmt.Errorf("%w: workspace archive owner descriptor is nil", state.ErrOwnership)
@@ -226,9 +221,8 @@ func verifyPinnedRootPath(path string, owner *os.Root) error {
 	return nil
 }
 
-// ValidateWorkspaceSnapshotAt validates a snapshot through a caller-supplied
-// ownership root descriptor. It is used by the daemon for roots that may have
-// been renamed or replaced since the SQLite path was recorded.
+// ValidateWorkspaceSnapshotAt は呼び出し元が渡す ownership root descriptor 経由で snapshot を検証する。
+// SQLite にパスを記録した後で rename または置換された可能性がある root を daemon が検査するために使う。
 func ValidateWorkspaceSnapshotAt(ownershipRoot string, owner *os.Root, snapshot state.WorkspaceSnapshot, at time.Time) error {
 	if owner == nil {
 		return errors.New("workspace snapshot ownership root descriptor is nil")
@@ -246,9 +240,8 @@ func ValidateWorkspaceSnapshotAt(ownershipRoot string, owner *os.Root, snapshot 
 	return verifyPinnedRootPath(ownershipRoot, owner)
 }
 
-// RestoreWorkspaceAt restores a multi-repository bundle through manager-held
-// target and archive root descriptors. The two handles may be the same when
-// the snapshot and target are in one root.
+// RestoreWorkspaceAt は manager 所有の target と archive の root descriptor 経由で
+// multi-repository bundle を復元する。snapshot と target が同じ root にある場合は同じ handle を使える。
 func RestoreWorkspaceAt(ctx context.Context, bundleRoot, targetOwnershipRoot string, targetRootHandle *os.Root, archiveOwnershipRoot string, archiveRootHandle *os.Root, snapshot state.WorkspaceSnapshot, excluded []string) error {
 	if targetRootHandle == nil || archiveRootHandle == nil {
 		return errors.New("workspace restore root descriptor is nil")
@@ -405,8 +398,8 @@ func restoreWorkspaceRegularFile(root *os.Root, reader *tar.Reader, osRel, rel s
 	return closeErr
 }
 
-// DeleteWorkspaceSnapshotAt removes a recovery archive through a pinned root
-// descriptor after validating its checksum and deterministic path.
+// DeleteWorkspaceSnapshotAt は checksum と決定的なパスを検証した後、pin 済み root descriptor 経由で
+// recovery archive を削除する。
 func DeleteWorkspaceSnapshotAt(ownershipRoot string, owner *os.Root, snapshot state.WorkspaceSnapshot) error {
 	if owner == nil {
 		return errors.New("workspace snapshot ownership root descriptor is nil")

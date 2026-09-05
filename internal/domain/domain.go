@@ -11,11 +11,8 @@ import (
 	"strings"
 )
 
-// SlotID and SessionID were removed as unused: nothing outside this package
-// ever referenced them, and internal/state.Store already uses plain string
-// slot/session IDs at every boundary (see the design deviation note on
-// CanTransitionSlot below). WorkspaceID and RepositoryID remain because
-// discovery.Workspace/Repository and their callers use them throughout.
+// SlotID と SessionID は未使用のため削除した。package 外から参照されず、internal/state.Store は全境界で plain string の slot/session ID を使う。
+// discovery.Workspace/Repository と呼び出し元が使う WorkspaceID と RepositoryID は残す。
 type (
 	WorkspaceID  string
 	RepositoryID string
@@ -29,22 +26,14 @@ func NewID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// shortIDAlphabet is lowercase base36. Uppercase letters are deliberately
-// excluded: these IDs are directory names and APFS is case-insensitive by
-// default, so a mixed-case alphabet would let two distinct IDs collide on
-// disk while remaining distinct in SQLite.
+// shortIDAlphabet は lowercase base36 である。ID は directory 名で APFS は既定で case-insensitive のため、大文字を含めると SQLite では別 ID が disk 上で衝突する。
 const shortIDAlphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
 
-// ShortIDLength is the fixed width of NewShortID's output. Six base36
-// characters give ~2.18e9 values, which keeps the collision probability below
-// 1% for the number of live slot/session rows a single-user install
-// accumulates while its tombstones are retained.
+// ShortIDLength は NewShortID 出力の固定幅である。6桁 base36 は約21.8億通りで、single-user install の live slot/session row 数では衝突確率を1%未満に保つ。
 const ShortIDLength = 6
 
-// NewShortID returns a ShortIDLength-character lowercase base36 identifier
-// drawn from crypto/rand. Bytes at or above the largest multiple of the
-// alphabet size are rejected rather than reduced modulo it, so every
-// character is uniformly distributed.
+// NewShortID は crypto/rand から得た ShortIDLength 文字の lowercase base36 identifier を返す。
+// alphabet size の最大倍数以上の byte を modulo 縮約せず拒否し、各文字を一様分布にする。
 func NewShortID() (string, error) {
 	const limit = 256 - (256 % len(shortIDAlphabet))
 	out := make([]byte, 0, ShortIDLength)
@@ -66,12 +55,9 @@ func NewShortID() (string, error) {
 	return string(out), nil
 }
 
-// ValidShortID reports whether value is exactly the shape NewShortID
-// produces. The orphan scan uses it to decide which directories below the
-// worktree root are wx's own namespaces: the generating side spells them as
-// short IDs, so anything else is not a slot location wx created. Generated
-// values are validated as path components by their own callers
-// (daemon.validateLayoutComponent) rather than here.
+// ValidShortID は value が NewShortID と同じ形式かを返す。orphan scan はこれで worktree root 配下の
+// wx namespace を判定し、short ID 以外を wx 作成 slot location と扱わない。
+// 生成値の path component 検査はここではなく呼び出し元（daemon.validateLayoutComponent）が行う。
 func ValidShortID(value string) bool {
 	if len(value) != ShortIDLength {
 		return false
@@ -115,12 +101,8 @@ func IsWithin(root, path string) bool {
 	return err == nil && rel != ".." && rel != "." && !filepath.IsAbs(rel) && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// RelativeWithin computes path's location relative to root and rejects any
-// result that escapes root or names root itself: an absolute path, ".", "..",
-// or anything starting with "../". Go 1.26's filepath.IsLocal already rejects
-// everything but the "." case (it treats "." as local), so that one case is
-// checked explicitly; callers that need to accept path == root should not use
-// this helper.
+// RelativeWithin は root に対する path の位置を求め、root 自身または外部を指す結果を拒否する。absolute path、`.`, `..`, `../` で始まる値が対象である。
+// Go 1.26 の filepath.IsLocal は `.` 以外を拒否するため `.` だけを明示検査する。path == root を許す呼び出し元はこれを使わない。
 func RelativeWithin(root, path string) (string, error) {
 	relative, err := filepath.Rel(root, path)
 	if err != nil {
@@ -132,17 +114,15 @@ func RelativeWithin(root, path string) (string, error) {
 	return relative, nil
 }
 
-// ValidWxLockReason reports whether reason is one of the `git worktree lock`
-// reasons wx itself writes for slotID: READY, PREPARING, or RESTORING.
+// ValidWxLockReason は reason が wx 自身が slotID に書き込む `git worktree lock` の
+// 理由（READY、PREPARING、RESTORING）のいずれかであるかを返す。
 func ValidWxLockReason(reason, slotID string) bool {
 	return reason == "wx:"+slotID+":READY" || reason == "wx:"+slotID+":PREPARING" || reason == "wx:"+slotID+":RESTORING"
 }
 
-// OpenOwnedRoot binds subsequent filesystem operations to the validated
-// ownership root and returns the owned path relative to that descriptor.
-// Starting from the filesystem root lets us reject symlinks while opening the
-// configured root; reopening that component as its own Root also pins the
-// directory across renames/replacements after this function returns.
+// OpenOwnedRoot は後続 filesystem 操作を検証済み ownership root に束縛し、その descriptor 相対の owned path を返す。
+// filesystem root から開くことで configured root の symlink を拒否する。
+// component を独自 Root として開き直し、この関数の返却後も rename/置換をまたいで directory を pin する。
 func OpenOwnedRoot(root, path string) (*os.Root, string, error) {
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -211,10 +191,9 @@ func openFilesystemRoot(absolute string) (*os.Root, string, error) {
 	return handle, relative, nil
 }
 
-// PhysicalPathInfo rejects symlinks in every component of a path relative to
-// an already opened Root and returns the final component's metadata. Checking
-// the components through the same filesystem-root descriptor avoids treating a
-// separately evaluated lexical path as proof of physical containment.
+// PhysicalPathInfo は、既に開いた Root からの相対 path の全成分で symlink を拒否し、
+// 最終成分の metadata を返す。同じ filesystem-root descriptor で検査し、別途評価した
+// 字句 path を物理的な包含の証明として扱わない。
 func PhysicalPathInfo(root *os.Root, relative string) (os.FileInfo, error) {
 	current := "."
 	clean := filepath.Clean(relative)
@@ -237,8 +216,8 @@ func PhysicalPathInfo(root *os.Root, relative string) (os.FileInfo, error) {
 	return root.Lstat(clean)
 }
 
-// ValidatePhysicalPath rejects symbolic links in every existing path
-// component. A missing final component may be allowed for safe creation.
+// ValidatePhysicalPath は存在する path 成分の全てで symbolic link を拒否する。
+// 安全に作成できるよう、allowMissingLeaf が真なら最後の成分の欠落を許す。
 func ValidatePhysicalPath(path string, allowMissingLeaf bool) error {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -266,8 +245,8 @@ func ValidatePhysicalPath(path string, allowMissingLeaf bool) error {
 	return nil
 }
 
-// EnsurePhysicalDirectory creates a directory one component at a time beneath
-// a filesystem-root descriptor, rejecting symlinks at every component.
+// EnsurePhysicalDirectory は filesystem-root descriptor 配下に成分ごとに directory を作り、
+// 各成分で symlink を拒否する。
 func EnsurePhysicalDirectory(path string, perm os.FileMode) error {
 	root, err := EnsurePhysicalDirectoryRoot(path, perm)
 	if err != nil {
@@ -276,18 +255,11 @@ func EnsurePhysicalDirectory(path string, perm os.FileMode) error {
 	return root.Close()
 }
 
-// EnsurePhysicalDirectoryRoot is the descriptor-retaining form of
-// EnsurePhysicalDirectory. The final directory is opened before the
-// filesystem-root descriptor is released and compared with the final Lstat,
-// so a rename/replacement between creation and the caller's first write
-// cannot redirect that write to an unrelated pathname.
-//
-// ensurePhysicalDirectoryRootPlatform is implemented only for darwin and
-// linux (see physical_unix.go): the design's non-goals explicitly exclude
-// initial Windows/other-platform support, and this package never shipped a
-// tested implementation for platforms outside that pair, so it intentionally
-// does not build there rather than carry an untested, never-exercised
-// fallback that only pretended to be portable.
+// EnsurePhysicalDirectoryRoot は EnsurePhysicalDirectory の descriptor 保持版である。filesystem-root
+// descriptor を解放する前に最終 directory を開いて最後の Lstat と比較し、作成後の rename/置換で
+// 呼び出し元の最初の write が無関係な pathname に向かないようにする。対応対象は設計上 darwin と
+// linux に限り（physical_unix.go 参照）、未検証の他 platform 向け fallback は実装しない。
+// commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func EnsurePhysicalDirectoryRoot(path string, perm os.FileMode) (*os.Root, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -296,16 +268,9 @@ func EnsurePhysicalDirectoryRoot(path string, perm os.FileMode) (*os.Root, error
 	return ensurePhysicalDirectoryRootPlatform(filepath.Clean(absolute), perm)
 }
 
-// Design deviation (see the design doc's state machine and package
-// structure sections): this package used to carry a parallel SlotState /
-// SessionState type set plus CanTransitionSlot as a second, unused
-// transition guard. internal/state.Store is the actual authority for both
-// state sets and already enforces every transition as a SQLite
-// compare-and-swap (state IN (...) plus RowsAffected()==1), including
-// states this package's old enum never had: STALE, REMOVING, RETIRING,
-// COLD, and slot_repositories' PREPARE_RUNNING/RESTORE_RUNNING. Keeping a
-// second, unenforced enum here that could not represent those states read
-// as if it were still guarding transitions when it was dead code (no
-// production caller referenced CanTransitionSlot, SlotState, SessionState,
-// SlotID, or SessionID). They have been removed; internal/state.Store's
-// string states and CAS updates are the single source of truth.
+// 設計文書の state machine と package 構成に対する変更として、ここにあった SlotState / SessionState
+// と CanTransitionSlot は削除した。状態の権威は internal/state.Store だけであり、全遷移を SQLite の
+// compare-and-swap（state IN (...) と RowsAffected()==1）で検証する。旧 enum が表せなかった STALE、
+// REMOVING、RETIRING、COLD、slot_repositories の PREPARE_RUNNING/RESTORE_RUNNING も含む。
+//
+// commentlint:allow-long -- 状態遷移の権威と削除理由を保守時に確認できるようにするため

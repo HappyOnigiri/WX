@@ -32,8 +32,7 @@ func (h *recordingHandler) Handle(_ context.Context, method string, params json.
 	return map[string]bool{"ok": true}, nil
 }
 
-// paramsFor returns the raw request body of the first recorded call to
-// method, or nil if it was never called.
+// paramsFor は method の最初の記録済み呼び出しの request body を返す。未呼び出しなら nil。
 func (h *recordingHandler) paramsFor(method string) json.RawMessage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -321,8 +320,7 @@ func TestReadinessHookSurvivesADaemonThatIsStillRestarting(t *testing.T) {
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() {
-		// Nothing is listening when the hook starts, which is the gap a daemon
-		// leaves between kickstart -k and the replacement's first accept.
+		// hook 開始時は未待受で、kickstart -k から置換 process の最初の accept までの隙間に当たる。
 		time.Sleep(200 * time.Millisecond)
 		done <- server.Serve(ctx)
 	}()

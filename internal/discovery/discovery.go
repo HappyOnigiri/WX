@@ -19,10 +19,8 @@ type Repository struct {
 	MainPath     domain.CanonicalPath
 	CommonDir    domain.CanonicalPath
 	RelativePath string
-	// RemoteName is the basename of the origin remote URL with any trailing
-	// ".git" removed, or "" when the repository has no usable origin. It is
-	// one input to the repository's directory name inside a slot; a missing
-	// value is not an error, it just falls back to the directory name.
+	// RemoteName は origin URL の末尾 .git を除く basename。
+	// 利用可能な origin がなければ空にし、slot 内の directory 名は main worktree の名前へフォールバックする。
 	RemoteName    string
 	DefaultBranch string
 }
@@ -54,13 +52,8 @@ func (d *Discoverer) repositoryWorkspace(ctx context.Context, root string) (Work
 		return Workspace{}, err
 	}
 	w := Workspace{Root: repo.MainPath, Kind: "repository", Repositories: []Repository{repo}}
-	// The ID assigned here is only a proposal for a workspace that has never
-	// been registered. Workspace identity lives in SQLite, which resolves an
-	// already-known workspace through its Git common directory (or, for a
-	// multi-repository workspace, its root path) and replaces this value. A
-	// short random ID is used because the ID becomes a directory name; a
-	// digest of the common directory would be both long and unnecessary now
-	// that the database, not the path, carries the identity.
+	// ここで割り当てる ID は未登録 workspace 用の候補に過ぎない。
+	// SQLite が Git common directory または root から既知の identity を解決するため、path は identity を担わない。
 	id, err := domain.NewShortID()
 	if err != nil {
 		return Workspace{}, err
@@ -69,10 +62,8 @@ func (d *Discoverer) repositoryWorkspace(ctx context.Context, root string) (Work
 	return w, nil
 }
 
-// ResolveFromCommonDir rediscovers a repository whose main worktree path may
-// have moved. Git keeps the worktree registry rooted at its common directory,
-// so asking Git from that directory lets the daemon find the current main path
-// without trusting the path stored in SQLite.
+// ResolveFromCommonDir は移動し得る main worktree を Git common directory から再探索する。
+// SQLite に保存した path を信頼せず、Git の worktree registry から現在の main path を得る。
 func (d *Discoverer) ResolveFromCommonDir(ctx context.Context, commonDir string) (Workspace, error) {
 	common, err := domain.Canonicalize(commonDir)
 	if err != nil {
@@ -124,10 +115,8 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 	return Repository{ID: domain.RepositoryID(domain.StableID(string(common))), MainPath: mainPath, CommonDir: common, RelativePath: filepath.Clean(relative), RemoteName: d.remoteName(ctx, string(mainPath)), DefaultBranch: branch}, nil
 }
 
-// remoteName reads the origin remote URL and reduces it to a bare repository
-// name. A repository without an origin, or with a URL that does not reduce to
-// a usable name, yields "" rather than an error: the name is a convenience
-// for the on-disk layout, never an ownership input.
+// remoteName は origin URL から repository 名を取り出す。
+// origin がないか名前へ縮約できなければ空を返し、これは on-disk layout 用で所有権の入力にはしない。
 func (d *Discoverer) remoteName(ctx context.Context, mainPath string) string {
 	res, err := d.Git.Run(ctx, mainPath, "remote", "get-url", "origin")
 	if err != nil {
@@ -136,10 +125,8 @@ func (d *Discoverer) remoteName(ctx context.Context, mainPath string) string {
 	return RemoteBaseName(strings.TrimSpace(res.Stdout))
 }
 
-// RemoteBaseName extracts the repository name from a remote URL. It handles
-// both URL forms ("https://host/owner/name.git") and scp-like SSH forms
-// ("git@host:owner/name.git"), and returns "" for anything that does not end
-// in a usable name component.
+// RemoteBaseName は URL 形式と scp 形式の SSH URL から repository 名を取り出す。
+// 利用可能な末尾 component がなければ空を返す。
 func RemoteBaseName(url string) string {
 	value := strings.TrimSpace(url)
 	if value == "" {
@@ -157,10 +144,8 @@ func RemoteBaseName(url string) string {
 	return value
 }
 
-// firstWorktreePath returns the first non-bare worktree's path. A repository
-// discovered from a bare main worktree with linked worktrees attached still
-// needs a real checkout to canonicalize against, so a bare entry is skipped
-// rather than treated as the answer.
+// firstWorktreePath は最初の non-bare worktree の path を返す。
+// bare main worktree に linked worktree がある場合も canonicalize できる checkout を選び、bare entry は飛ばす。
 func firstWorktreePath(output string) string {
 	for _, record := range gitx.ParseWorktreeRecords(output) {
 		if !record.Bare {
@@ -170,20 +155,8 @@ func firstWorktreePath(output string) string {
 	return ""
 }
 
-// dedupeRepositories collapses walk results that name the same repository.
-// A repository's ID is a digest of its Git common directory, so a linked
-// worktree placed beside its own main worktree inside the workspace root is
-// discovered as a second entry with an identical ID. Everything downstream
-// (pool.ResolveBranches, the slot layout, and the slot_repositories primary
-// key) assumes one row per repository per workspace, so the duplicates are
-// removed here rather than being reconciled by each consumer.
-//
-// Which entry survives is an ownership requirement, not a presentation
-// choice: duplicates differ only in RelativePath, and
-// state.validateWorkspaceRepositoryAssociation proves that
-// workspace_root + relative_path is exactly repositories.main_worktree_path.
-// Keeping a linked worktree's RelativePath would therefore make every
-// ownership proof for that repository fail closed at preparation time.
+// dedupeRepositories は同じ Git common directory を持つ walk 結果を一つにまとめる。
+// main worktree の root 相対 path を残す。linked worktree の path を残すと所有権証明が prepare 時に失敗閉鎖する。
 func dedupeRepositories(root string, repos []Repository) ([]Repository, error) {
 	out := make([]Repository, 0, len(repos))
 	index := map[domain.RepositoryID]int{}
@@ -202,20 +175,14 @@ func dedupeRepositories(root string, repos []Repository) ([]Repository, error) {
 		if repositoryIsMainWorktree(root, repo) {
 			continue
 		}
-		// No discovered location for this repository satisfies the ownership
-		// equation, which happens when its main worktree lives outside the
-		// workspace root and only linked worktrees are inside it. Refuse the
-		// whole workspace instead of dropping the repository: a workspace
-		// that silently omits one of the user's repositories would hand out
-		// bundles that look complete, and keeping it would create slots that
-		// can never prove ownership and end up QUARANTINED during prepare.
+		// main worktree が workspace root 外で、内側には linked worktree しかないため所有権式を満たせない。
+		// repository を黙って落とすと不完全な bundle を渡すため workspace 全体を拒否し、prepare 時の QUARANTINED を避ける。
 		return nil, fmt.Errorf("repository %s is only visible below %s through a linked worktree; its main worktree is %s. Move the main worktree into the workspace, or add the linked worktree's directory name to discovery.exclude", repo.ID, root, repo.MainPath)
 	}
 	return out, nil
 }
 
-// repositoryIsMainWorktree reports whether the entry's workspace-relative
-// location names the repository's own main worktree.
+// repositoryIsMainWorktree は entry の workspace 相対位置が repository 自身の main worktree を指すか返す。
 func repositoryIsMainWorktree(root string, repo Repository) bool {
 	candidate, err := domain.Canonicalize(filepath.Join(root, repo.RelativePath))
 	return err == nil && candidate == repo.MainPath
@@ -253,10 +220,8 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 		if e.IsDir() && (exclude[e.Name()] || path == wtRoot) {
 			return filepath.SkipDir
 		}
-		// filepath.WalkDir does not follow symlinks, so a symlink DirEntry
-		// always reports IsDir()==false regardless of its target; this is
-		// what keeps symlink ancestries from being walked into (design's
-		// non-follow requirement), without a separate symlink check.
+		// filepath.WalkDir は symlink を辿らず、symlink DirEntry は target にかかわらず IsDir()==false となる。
+		// 追加の symlink 判定なしで non-follow 条件を満たす。
 		if !e.IsDir() {
 			return nil
 		}
@@ -285,8 +250,8 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 	if err != nil {
 		return Workspace{}, err
 	}
-	// As in repositoryWorkspace, this ID is only a proposal: SQLite resolves
-	// an already-registered multi-repository workspace through its root path.
+	// repositoryWorkspace と同じく、この ID は候補に過ぎない。
+	// SQLite は既登録の multi-repository workspace を root path から解決する。
 	id, err := domain.NewShortID()
 	if err != nil {
 		return Workspace{}, err

@@ -100,8 +100,7 @@ func TestSharedAndLocalChecksUseStableShapes(t *testing.T) {
 		t.Fatalf("local artifact errors=%v", artifacts["errors"])
 	}
 
-	// An invalid config is still reported while path checks fall back to the
-	// same default effective values used before the first config load.
+	// 不正な config も報告し、path 診断は初回 load 前と同じ既定の実効値へ戻る。
 	configPath, err := config.Path()
 	if err != nil {
 		t.Fatal(err)

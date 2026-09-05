@@ -33,23 +33,12 @@ type Store struct {
 
 const SchemaVersion = 1
 
-// ErrPreviousWorktreeLayout identifies a state database from before the
-// worktree-layout change, for which wx deliberately has no migration path.
+// ErrPreviousWorktreeLayout は、wx が意図的に migration path を持たない旧 worktree layout の state database を示す。
 var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree layout")
 
-// JSONSchemaVersion is the stability contract for `wx status --json` and
-// `wx doctor --json` output shape. It is deliberately independent of
-// SchemaVersion (the SQLite migration count): bumping SchemaVersion only
-// adds or changes internal storage, and must not silently change the
-// version a scripted `--json` consumer sees. Bump this only when the JSON
-// output shape itself changes in a way consumers need to detect.
-//
-// 2: `wx status --json` gained restart_pending.
-// 3: `wx status --json` gained stop_pending and pid.
-// 4: `wx doctor --json` gained local daemon-unavailable diagnostics.
-// 5: `wx status --json` gained worktree_root_error and `wx doctor --json`
-//
-//	gained the worktree_root check.
+// JSONSchemaVersion は `wx status --json` と `wx doctor --json` の出力形状の互換契約であり、SQLite migration 数の SchemaVersion とは独立である。
+// scripted consumer が観測する形状を変える場合だけ上げる。2 は restart_pending、3 は stop_pending/pid、4 は daemon-unavailable diagnostics を追加した。
+// 5 は `wx status --json` の worktree_root_error と `wx doctor --json` の worktree_root check を追加した。
 const JSONSchemaVersion = 5
 
 func Open(path string) (*Store, error) {
@@ -64,8 +53,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Connection-local policies are encoded in the DSN, so status readers can
-	// use WAL concurrently while writes remain serialized by writer.
+	// connection-local policy は DSN に含める。status reader は WAL を並行利用し、write は writer が直列化する。
 	db.SetMaxOpenConns(8)
 	s := &Store{db: db, path: path}
 	if err := s.init(context.Background()); err != nil {
@@ -240,12 +228,9 @@ func (s *Store) init(ctx context.Context) error {
 	return s.verifySchema(ctx)
 }
 
-// verifySchema fails Open with an actionable message when the database was
-// created by a wx that predates the worktree-layout change. Those databases
-// already carry user_version=1, so the migration loop applies nothing and
-// every later query fails on a column that no longer exists. wx deliberately
-// has no migration path off that schema (see AGENTS.md), so the only thing
-// left to do is say so clearly instead of failing one RPC at a time.
+// verifySchema は worktree layout 変更前の wx が作成した database に対し、対処可能な message で Open を失敗させる。
+// それらは user_version=1 のため migration loop では何も適用されず、以降の query が存在しない column で失敗する。
+// 旧 schema の migration path は持たないためである。
 func (s *Store) verifySchema(ctx context.Context) error {
 	var present int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='roots'`).Scan(&present); err != nil {
@@ -257,18 +242,15 @@ func (s *Store) verifySchema(ctx context.Context) error {
 	return nil
 }
 
-// sqliteConstraintPrimaryKey and sqliteConstraintUnique are the extended
-// result codes SQLite reports when an INSERT loses a primary-key or unique
-// race. wx generates short random IDs, so these two are the only signals that
-// distinguish "pick another ID and retry" from a real failure.
+// sqliteConstraintPrimaryKey と sqliteConstraintUnique は INSERT が primary-key/unique race に負けたときの SQLite extended result code である。
+// wx は短い random ID を生成するため、再抽選すべき衝突と本当の失敗を区別する信号はこの二つだけである。
 const (
 	sqliteConstraintUnique     = 2067
 	sqliteConstraintPrimaryKey = 1555
 )
 
-// IsIDCollision reports whether err is the constraint violation a duplicate
-// generated identifier produces. Callers retry with a new identifier; every
-// other error is returned to the caller untouched.
+// IsIDCollision は重複生成 identifier による constraint violation かを返す。
+// 呼び出し元は新しい identifier で retry し、他の error はそのまま返す。
 func IsIDCollision(err error) bool {
 	var sqliteErr *sqlite.Error
 	if errors.As(err, &sqliteErr) {
@@ -278,15 +260,11 @@ func IsIDCollision(err error) bool {
 	return false
 }
 
-// idCollisionAttempts bounds identifier retries. Six base36 characters give
-// roughly 2.18e9 values, so ten independent draws failing means something
-// other than chance is wrong and the operation should surface an error.
+// idCollisionAttempts は identifier retry 回数の上限である。6桁 base36 は約 21.8 億通りなので、10回連続失敗は偶然以外の問題として error にする。
 const idCollisionAttempts = 10
 
-// newUnusedShortID draws short IDs until one is absent from the named table's
-// id column. The caller must already hold the write lock (and, when a
-// transaction is in flight, pass it as the querier) so the value it returns
-// is still unused when the INSERT runs.
+// newUnusedShortID は指定 table の id column にない short ID を引くまで再試行する。
+// 呼び出し元は write lock を保持し、transaction 中はそれを querier に渡す。これにより返却値は INSERT 時にも未使用である。
 func newUnusedShortID(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, table string,
@@ -297,9 +275,7 @@ func newUnusedShortID(ctx context.Context, q interface {
 			return "", err
 		}
 		var taken int
-		// table is always a package-internal constant literal ("roots",
-		// "workspaces"), never caller input, so the concatenation cannot
-		// carry untrusted text into the statement.
+		// table は package 内の定数 literal（`roots`、`workspaces`）であり caller input ではない。連結しても statement に untrusted text は入らない。
 		err = q.QueryRowContext(ctx, `SELECT count(*) FROM `+table+` WHERE id=?`, id).Scan(&taken)
 		if err != nil {
 			return "", err
@@ -311,24 +287,16 @@ func newUnusedShortID(ctx context.Context, q interface {
 	return "", fmt.Errorf("could not find an unused %s identifier in %d attempts", table, idCollisionAttempts)
 }
 
-// Root is one generation of storage.worktree_root. wx never moves existing
-// slots when the configured root changes: the previous row stays with
-// active=0 so its slots keep resolving, and only new slots are created under
-// the active row.
+// Root は storage.worktree_root の一世代である。設定 root が変わっても既存 slot は移動せず、以前の row を active=0 で残して解決を維持する。
+// 新しい slot だけを active row の下に作る。
 type Root struct {
 	ID, Path, Identity string
 	Active             bool
 }
 
-// EnsureActiveRoot registers path as the active worktree root generation and
-// returns its durable ID. A previously registered pathname keeps its ID so
-// existing slots stay attached to it; every other row is marked retired.
-//
-// A pathname whose recorded inode identity no longer matches is accepted only
-// while nothing durable still points at it. That case is a root directory the
-// user deleted and wx recreated, which strands no state. A mismatch with live
-// slots or snapshots is refused instead, because their recorded locations
-// would then name a directory wx never wrote.
+// EnsureActiveRoot は path を active worktree root generation として登録し durable ID を返す。既登録 path は同じ ID を保ち、他の row は retired にする。
+// inode identity の不一致は durable な参照がない場合だけ許可する。ユーザーが root を削除し wx が再作成しても state を取り残さない場合である。
+// live slot/snapshot がある不一致は、記録済み location が wx の作成していない directory を指すため拒否する。
 func (s *Store) EnsureActiveRoot(ctx context.Context, path, identity string) (string, error) {
 	if path == "" || identity == "" {
 		return "", errors.New("worktree root path and identity are required")
@@ -376,8 +344,7 @@ func (s *Store) EnsureActiveRoot(ctx context.Context, path, identity string) (st
 	return id, tx.Commit()
 }
 
-// Roots lists every registered root generation so the daemon can repin the
-// descriptors its durable slots still depend on.
+// Roots は登録済み root generation を全て返し、daemon が durable slot の依存する descriptor を再 pin できるようにする。
 func (s *Store) Roots(ctx context.Context) ([]Root, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,path,identity,active FROM roots ORDER BY created_at,id`)
 	if err != nil {
@@ -395,9 +362,8 @@ func (s *Store) Roots(ctx context.Context) ([]Root, error) {
 	return out, rows.Err()
 }
 
-// PruneRoots deletes retired root generations that nothing durable references
-// any more. The directories themselves are left on disk: wx never removes a
-// configured root, only the rows that made it addressable.
+// PruneRoots は durable な参照がなくなった retired root generation を削除する。
+// directory 自体は disk に残す。wx は configured root を削除せず、参照可能にしていた row だけを削除する。
 func (s *Store) PruneRoots(ctx context.Context) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -407,21 +373,17 @@ func (s *Store) PruneRoots(ctx context.Context) error {
 
 const timestampFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
-// FormatTime returns a fixed-width RFC 3339 timestamp. SQLite stores wx times
-// as TEXT, so a fixed fractional width is required for lexical comparisons to
-// preserve chronological order.
+// FormatTime は固定幅 RFC 3339 timestamp を返す。SQLite は wx の時刻を TEXT で保存するため、
+// lexical comparison で時系列順を保つには固定の小数幅が必要である。
 func FormatTime(value time.Time) string { return value.UTC().Format(timestampFormat) }
 
 func now() string                   { return FormatTime(time.Now()) }
 func HashToken(token string) []byte { sum := sha256.Sum256([]byte(token)); return sum[:] }
 
-// CanonicalWorkspace returns the workspace identity already registered for
-// this workspace, replacing the freshly generated proposal discovery hands
-// out. Identity is proven by the Git common directory for a single-repository
-// workspace and by the canonical root path for a multi-repository one, never
-// by the workspace ID itself: slot directories are named after that ID, so
-// changing it would strand the existing pool and create a duplicate
-// workspace after a main-worktree move.
+// CanonicalWorkspace は discovery の新しい proposal を、既登録 workspace の identity に置き換えて返す。single-repository は Git common directory、
+// multi-repository は canonical root path で証明し、workspace ID 自体では証明しない。
+// slot directory 名である ID を変えると既存 pool を取り残し、main worktree 移動後に重複 workspace を作る。
+// commentlint:allow-long -- workspace identity を ID 以外で証明する理由を説明する
 func (s *Store) CanonicalWorkspace(ctx context.Context, w discovery.Workspace) (discovery.Workspace, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -435,8 +397,7 @@ func (s *Store) CanonicalWorkspace(ctx context.Context, w discovery.Workspace) (
 	return w, nil
 }
 
-// registeredWorkspaceID resolves the durable ID of an already-registered
-// workspace, or reports found=false for one wx has never seen.
+// registeredWorkspaceID は既登録 workspace の durable ID を解決し、wx が未観測なら found=false を返す。
 func (s *Store) registeredWorkspaceID(ctx context.Context, w discovery.Workspace) (string, bool, error) {
 	var query string
 	var argument any
@@ -475,11 +436,8 @@ func (s *Store) registeredWorkspaceID(ctx context.Context, w discovery.Workspace
 	return ids[0], true, nil
 }
 
-// UpsertWorkspaceGeneration registers the workspace and returns it with its
-// durable ID resolved. Callers must use the returned workspace: the ID it
-// carries is the one that names slot directories, and it differs from the
-// proposal discovery produced whenever the workspace was already known or a
-// generated ID had to be redrawn.
+// UpsertWorkspaceGeneration は workspace を登録し、解決済み durable ID を持つ値を返す。呼び出し元は返却値を使う。
+// その ID が slot directory 名であり、既知 workspace や generated ID 再抽選時には discovery の proposal と異なる。
 func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Workspace) (discovery.Workspace, int, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -495,9 +453,8 @@ func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Works
 	if found {
 		w.ID = domain.WorkspaceID(registered)
 	} else {
-		// The proposal from discovery is random, so it can collide with an
-		// unrelated workspace. Redrawing inside this transaction is what
-		// keeps the INSERT below from silently taking over that row.
+		// discovery の proposal は random なので、無関係な workspace と衝突し得る。
+		// transaction 内で引き直し、下の INSERT がその row を奪わないようにする。
 		id, idErr := newUnusedShortID(ctx, tx, "workspaces")
 		if idErr != nil {
 			return w, 0, idErr
@@ -588,11 +545,8 @@ func (s *Store) WorkspaceGeneration(ctx context.Context, workspaceID string) (in
 	return generation, err
 }
 
-// Slot locates a slot directory as a root generation plus a root-relative
-// path. Path is derived: reads compose it from roots.path, and writes ignore
-// it in favour of RootID/RelPath. Do not confuse it with daemon.Lease.Path,
-// which for a single-repository workspace is the repository directory one
-// level below the slot directory.
+// Slot は root generation と root 相対 path で slot directory を位置付ける。Path は派生値で、read は roots.path から組み立て、write は RootID/RelPath を使う。
+// single-repository workspace では slot directory の一階層下を指す daemon.Lease.Path と混同してはならない。
 type Slot struct {
 	ID, WorkspaceID, RootID, RelPath, Path, State, OwnerSessionID, FailureCode string
 	DirIdentity                                                                string
@@ -600,8 +554,7 @@ type Slot struct {
 	CreatedAt, ReadyAt                                                         string
 }
 type (
-	// SlotRepository locates a repository worktree as a directory name
-	// inside its slot. WorktreePath is derived the same way Slot.Path is.
+	// SlotRepository は slot 内の directory 名で repository worktree を位置付ける。WorktreePath は Slot.Path と同様に派生する。
 	SlotRepository struct {
 		RepositoryID, DirName, DirIdentity, WorktreePath, State, RequestedRef, BaseOID, Fingerprint string
 	}
@@ -620,8 +573,7 @@ type (
 		Ref, OID, SessionID, SessionState string
 		InFlight                          bool
 	}
-	// WorkspaceSnapshot locates a bundle archive the same way Slot does:
-	// RootID/RelPath are authoritative and ArchivePath is derived.
+	// WorkspaceSnapshot は Slot と同様に bundle archive を位置付ける。RootID/RelPath が authority で、ArchivePath は派生値である。
 	WorkspaceSnapshot struct {
 		SessionID, RootID, RelPath, ArchivePath, SHA256, Status, CreatedAt, ExpiresAt string
 	}
@@ -695,13 +647,9 @@ func (s *Store) ClaimJob(ctx context.Context, id, owner string) (Job, error) {
 	if n != 1 {
 		return Job{}, errors.New("job is not pending")
 	}
-	// A separate SELECT (rather than RETURNING on the UPDATE) is required
-	// here: RETURNING reflects only the row image this statement itself
-	// wrote, not further changes made by AFTER triggers that run as its
-	// side effect. If a trigger deletes the row this UPDATE just claimed
-	// (simulating a concurrent actor finishing and cleaning it up), a
-	// separate SELECT correctly observes that the row is gone and fails the
-	// claim so the transaction rolls back; RETURNING would miss it.
+	// ここでは UPDATE の RETURNING ではなく別の SELECT が必要である。RETURNING は文自身が書いた row image だけを返し、
+	// 副作用で動く AFTER trigger の変更を反映しない。trigger が claim 直後の row を削除した場合も、別 SELECT なら消失を検出して
+	// claim を失敗させ transaction を rollback できるが、RETURNING では見逃す。
 	var j Job
 	if err := tx.QueryRowContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt); err != nil {
 		return Job{}, err
@@ -788,7 +736,7 @@ func (s *Store) RetryJob(ctx context.Context, id, owner string, delay time.Durat
 	return tx.Commit()
 }
 
-// DeferJob waits for a durable dependency without consuming the retry budget.
+// DeferJob は retry budget を消費せず、durable な依存関係を待つ。
 func (s *Store) DeferJob(ctx context.Context, id, owner string, delay time.Duration, code string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -882,16 +830,16 @@ func (s *Store) EnsureRecoveryJobs(ctx context.Context) ([]Job, error) {
 	return candidates, nil
 }
 
-// slotColumns is the column list shared by every full-row slot read. The
-// absolute Slot.Path is not stored; scanSlot composes it from the joined
-// root generation so a retired root keeps resolving its own slots.
+// slotColumns は full-row の slot read 全てで共有する column list である。
+// absolute な Slot.Path は保存せず、scanSlot が結合した root generation から組み立てるため、
+// retired root も自身の slot を解決し続けられる。
 const slotColumns = `sl.id,COALESCE(sl.workspace_id,''),sl.generation,sl.root_id,rt.path,sl.rel_path,COALESCE(sl.dir_identity,''),sl.state,COALESCE(sl.owner_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.failure_code,'')`
 
-// slotFrom is the FROM clause slotColumns requires.
+// slotFrom は slotColumns が必要とする FROM clause である。
 const slotFrom = ` FROM slots sl JOIN roots rt ON rt.id=sl.root_id`
 
-// rowScanner is satisfied by both *sql.Row and *sql.Rows, so single-row and
-// multi-row slot reads share one scan implementation.
+// rowScanner は *sql.Row と *sql.Rows の双方を満たすため、single-row と multi-row の slot read は
+// 1つの scan 実装を共有する。
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -1149,12 +1097,9 @@ func (s *Store) FinishPreparationWithRelease(ctx context.Context, id string) (Jo
 	}
 	targetState := "READY"
 	if sessionID != "" {
-		// ACTIVE belongs here with STARTING: BindAgentSession promotes the
-		// owner session without looking at its slot, so a SessionStart hook
-		// that lands before preparation finishes leaves the session ACTIVE
-		// while the slot is still PREPARING. The slot is occupied by that
-		// session either way, so LEASED is the correct destination. The
-		// activation UPDATE below then matches no row, which is harmless.
+		// ACTIVE は STARTING と同じ扱いにする。BindAgentSession は slot を見ずに owner session を昇格するため、
+		// 準備完了前に SessionStart hook が到達すると session は ACTIVE、slot は PREPARING のままになる。
+		// どちらにせよ slot はその session が占有しているので、行き先は LEASED が正しく、後続 UPDATE が0行でも無害である。
 		switch sessionState {
 		case "STARTING", "RESTORING", "ACTIVE":
 			targetState = "LEASED"
@@ -1230,8 +1175,8 @@ func (s *Store) MarkSessionState(ctx context.Context, id string, from []string, 
 	return nil
 }
 
-// placeholders returns n comma-separated "?" bind markers for an IN(...)
-// clause built from a caller-supplied slice.
+// placeholders は caller が渡した slice から作る IN(...) clause 用に、n 個の "?" bind marker を
+// comma で連結して返す。
 func placeholders(n int) string { return strings.TrimRight(strings.Repeat("?,", n), ",") }
 
 func stringsToAny(v []string) []any {
@@ -1242,7 +1187,7 @@ func stringsToAny(v []string) []any {
 	return a
 }
 
-// sessionColumns is the column list shared by every full-row session read.
+// sessionColumns は full-row の session read 全てで共有する column list である。
 const sessionColumns = `id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'')`
 
 func scanSession(row *sql.Row) (Session, error) {
@@ -1488,10 +1433,8 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, 
 	return job, tx.Commit()
 }
 
-// slotRepositoryColumns is shared by every slot-repository read.
-// SlotRepository.WorktreePath is composed from the joined root generation and
-// slot path rather than stored, so the same row keeps resolving after the
-// configured worktree root changes.
+// slotRepositoryColumns は slot-repository read 全てで共有する。SlotRepository.WorktreePath は保存せず、
+// 結合した root generation と slot path から組み立てるため、設定 worktree root の変更後も同じ row を解決できる。
 const slotRepositoryColumns = `sr.repository_id,sr.dir_name,COALESCE(sr.dir_identity,''),rt.path,sl.rel_path,sr.state,sr.requested_ref,sr.base_oid,sr.prepare_fingerprint`
 
 const slotRepositoryFrom = ` FROM slot_repositories sr JOIN slots sl ON sl.id=sr.slot_id JOIN roots rt ON rt.id=sl.root_id`
@@ -1560,10 +1503,8 @@ func (s *Store) SlotRepository(ctx context.Context, slotID, repositoryID string)
 	return scanSlotRepository(s.db.QueryRowContext(ctx, `SELECT `+slotRepositoryColumns+slotRepositoryFrom+` WHERE sr.slot_id=? AND sr.repository_id=?`, slotID, repositoryID))
 }
 
-// RecordSlotRepositoryIdentity stores the inode identity of a repository
-// worktree directory immediately after it is created. Ownership validation
-// compares this value, so a caller that can present an identity and finds no
-// record fails closed rather than falling back to a path comparison.
+// RecordSlotRepositoryIdentity は repository worktree directory 作成直後の inode identity を保存する。
+// ownership validation はこれを比較し、identity を提示できる呼び出し元で record がなければ path 比較へ戻さずフェイルクローズする。
 func (s *Store) RecordSlotRepositoryIdentity(ctx context.Context, slotID, repositoryID, identity string) error {
 	if identity == "" {
 		return errors.New("slot repository directory identity is required")
@@ -1598,12 +1539,8 @@ func (s *Store) Slot(ctx context.Context, id string) (Slot, error) {
 	return scanSlot(s.db.QueryRowContext(ctx, `SELECT `+slotColumns+slotFrom+` WHERE sl.id=?`, id))
 }
 
-// SaveSnapshot records a repository's recovery snapshot, or verifies that a
-// prior write for the same session/repository named the exact same objects
-// and refs. The comparison happens in SQL: ON CONFLICT only applies the
-// update (a no-op rewrite of status) when every immutable field already
-// matches, so a real mismatch leaves the existing row untouched and
-// RETURNING yields no row.
+// SaveSnapshot は repository recovery snapshot を保存するか、同一 session/repository の既存 record が同じ object/ref を指すことを検証する。
+// SQL の ON CONFLICT は全 immutable field が一致する場合だけ status を no-op 更新する。不一致では既存 row を変えず、RETURNING も row を返さない。
 func (s *Store) SaveSnapshot(ctx context.Context, x Snapshot) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -1638,9 +1575,8 @@ func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, er
 	return out, rows.Err()
 }
 
-// SaveWorkspaceSnapshot records a workspace bundle's recovery snapshot, or
-// verifies that a prior write for the same session named the exact same
-// archive. See SaveSnapshot for how the comparison is pushed into SQL.
+// SaveWorkspaceSnapshot は workspace bundle の recovery snapshot を記録するか、同じ session の既存 write が
+// 完全に同じ archive を指すことを検証する。比較を SQL に移す方法は SaveSnapshot を参照する。
 func (s *Store) SaveWorkspaceSnapshot(ctx context.Context, x WorkspaceSnapshot) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -1703,26 +1639,18 @@ func (s *Store) WorkspaceByRoot(ctx context.Context, root string) (discovery.Wor
 	return s.Workspace(ctx, id)
 }
 
-// SessionWorkspaceKind resolves only the workspace kind ("repository" or
-// "multi_repository") for a session, without SessionWorkspace's
-// repository-membership requirement (see below). Several callers branch
-// purely on kind to decide whether multi-repository root-snapshot handling
-// applies and never touch the repository list; routing them through the
-// full SessionWorkspace lookup made them fail closed for any session whose
-// workspace happens to have zero recorded repositories, a case unrelated to
-// what they actually check.
+// SessionWorkspaceKind は session の workspace kind（"repository" または "multi_repository"）だけを解決し、
+// SessionWorkspace が要求する repository membership は要求しない。kind だけで分岐する caller は repository list に触れず、
+// membership が0件でも root-snapshot 処理を判定できる必要があるためである。
 func (s *Store) SessionWorkspaceKind(ctx context.Context, sessionID string) (string, error) {
 	var kind string
 	err := s.db.QueryRowContext(ctx, `SELECT w.kind FROM sessions se JOIN workspaces w ON w.id=se.workspace_id WHERE se.id=?`, sessionID).Scan(&kind)
 	return kind, err
 }
 
-// SessionWorkspace additionally requires the session's workspace to have at
-// least one recorded repository membership row (session_repositories): a
-// session with none cannot have its repository set verified, and callers
-// that iterate w.Repositories depend on that proof. Callers that only need
-// w.Kind should use SessionWorkspaceKind instead, which carries no such
-// requirement.
+// SessionWorkspace は session の workspace に少なくとも1つの repository membership row（session_repositories）も要求する。
+// 0件では repository set を検証できず、w.Repositories を反復する caller がその証明に依存するためである。
+// w.Kind だけが必要な caller は、この要求を持たない SessionWorkspaceKind を使う。
 func (s *Store) SessionWorkspace(ctx context.Context, sessionID string) (discovery.Workspace, error) {
 	var w discovery.Workspace
 	err := s.db.QueryRowContext(ctx, `SELECT w.id,w.root_path,w.kind FROM sessions se JOIN workspaces w ON w.id=se.workspace_id WHERE se.id=?`, sessionID).Scan(&w.ID, &w.Root, &w.Kind)
@@ -1865,13 +1793,9 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 		return err
 	}
 	var unsafe int
-	// FAILED is not treated as safe here: once workspace_id is cleared below,
-	// ValidateWorktreeOwnership can never again prove ownership for that
-	// slot's physical path (proof requires the workspace link), turning a
-	// FAILED slot's worktree into a permanent, un-collectible leak. The
-	// caller (Manager.Forget) retires FAILED slots via
-	// ScheduleFailedSlotRemoval before calling this, so a workspace with no
-	// other unsafe state is not permanently stuck.
+	// ここで FAILED を安全とは扱わない。下で workspace_id を消すと ValidateWorktreeOwnership は workspace link を
+	// 必要とするため、その slot の物理 path の所有権を二度と証明できず、FAILED worktree が回収不能な leak になる。
+	// caller（Manager.Forget）は先に ScheduleFailedSlotRemoval で FAILED slot を retired にするため、他に危険な状態がなければ詰まらない。
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM slots WHERE workspace_id=? AND state NOT IN ('ARCHIVED')`, id).Scan(&unsafe); err != nil {
 		return err
 	}
@@ -1903,11 +1827,8 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 	if liveRecovery > 0 {
 		return errors.New("workspace has pending recovery jobs; wait for them before forgetting it")
 	}
-	// jobs.workspace_id has no foreign key (jobs can reference removed
-	// workspaces after the fact for audit purposes), so it is the only
-	// reference that still needs a manual clear. slots.workspace_id and
-	// sessions.workspace_id cascade to NULL and workspace_repositories rows
-	// cascade to deletion via the foreign keys declared on those columns.
+	// jobs.workspace_id には foreign key がなく、監査目的で削除後の workspace を参照できるため、手動で clear する必要がある唯一の参照である。
+	// slots.workspace_id と sessions.workspace_id は NULL へ cascade し、workspace_repositories row は各列の foreign key により削除へ cascade する。
 	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET workspace_id=NULL WHERE workspace_id=?`, id); err != nil {
 		return err
 	}
@@ -2228,12 +2149,9 @@ func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error
 	return repositories, rows.Err()
 }
 
-// RecoveryRefExpectations returns the durable ownership proof for each
-// published recovery ref. A snapshot job that has already committed its
-// metadata but has not finished publishing refs is marked InFlight while its
-// pending job or unexpired worker lease is present; reconcile may wait for
-// those missing refs while still quarantining every ref whose name or object
-// ID is not exactly accounted for.
+// RecoveryRefExpectations は公開済み recovery ref ごとの durable ownership proof を返す。metadata を commit 済みで ref 公開未完了の snapshot job は、
+// pending job または未期限 worker lease があれば InFlight とする。reconcile はその ref を待てるが、name/object ID を厳密に説明できない ref は quarantine する。
+// commentlint:allow-long -- ref 公開途中の job と未知 ref の扱いを区別するため
 func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string) ([]RecoveryRefExpectation, error) {
 	at := now()
 	rows, err := s.db.QueryContext(ctx, `
@@ -2275,11 +2193,9 @@ func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string
 
 type StandbyGCCandidate struct{ SlotID, WorkspaceID, Path, State string }
 
-// HotRepositoryIDs reports which repositories were leased within the
-// hot_standby window, i.e. after hotBefore. A repository that has never been
-// leased (last_leased_at IS NULL) is excluded: it is not yet "used" in the
-// sense retention.hot_standby measures, so replacement standby prefetch must
-// not build it ahead of an actual lease.
+// HotRepositoryIDs は hot_standby window、つまり hotBefore より後に lease された repository を返す。
+// 一度も lease されていない repository（last_leased_at IS NULL）は retention.hot_standby 上まだ「使用済み」でなく、
+// 実際の lease 前に replacement standby を先読み作成してはならないため除外する。
 func (s *Store) HotRepositoryIDs(ctx context.Context, hotBefore string) (map[string]bool, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM repositories WHERE last_leased_at IS NOT NULL AND last_leased_at>?`, hotBefore)
 	if err != nil {
@@ -2426,7 +2342,7 @@ func (s *Store) FinishRemoval(ctx context.Context, slotID string) error {
 	return s.SetSlotState(ctx, slotID, []string{"REMOVING", "ARCHIVED"}, "ARCHIVED", "")
 }
 
-// FailedSlotIDs returns the unowned FAILED slots belonging to a workspace.
+// FailedSlotIDs は workspace に属する未所有の FAILED slot を返す。
 func (s *Store) FailedSlotIDs(ctx context.Context, workspaceID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM slots WHERE workspace_id=? AND owner_session_id IS NULL AND state='FAILED'`, workspaceID)
 	if err != nil {
@@ -2444,11 +2360,9 @@ func (s *Store) FailedSlotIDs(ctx context.Context, workspaceID string) ([]string
 	return out, rows.Err()
 }
 
-// ScheduleFailedSlotRemoval retires a FAILED slot's physical worktree so its
-// row can reach ARCHIVED. Unlike ScheduleRemoval (READY/STALE/SNAPSHOTTED),
-// this exists specifically so ForgetWorkspace's refusal of any non-ARCHIVED
-// slot does not leave a permanently un-collectible FAILED worktree behind:
-// see ForgetWorkspace for why FAILED cannot be treated as already-safe.
+// ScheduleFailedSlotRemoval は FAILED slot の物理 worktree を retired にして row を ARCHIVED へ進める。
+// ScheduleRemoval（READY/STALE/SNAPSHOTTED）とは別に、ForgetWorkspace が非 ARCHIVED slot を拒否しても
+// 回収不能な FAILED worktree を残さないために用意する。FAILED を安全済みと扱えない理由は ForgetWorkspace を参照する。
 func (s *Store) ScheduleFailedSlotRemoval(ctx context.Context, slotID string) (Job, bool, error) {
 	job, err := newJob("REMOVE", "", slotID, "")
 	if err != nil {
@@ -2528,10 +2442,8 @@ func (s *Store) ExpireSessionSnapshots(ctx context.Context, sessionID string) er
 	return tx.Commit()
 }
 
-// CountMetadataCandidates reports how many rows PruneMetadata would remove or
-// tombstone for the given thresholds, without mutating anything. It backs
-// `wx gc --dry-run` so the reported total includes TTL-expired events and
-// finished job metadata, matching the highest GC priority tier.
+// CountMetadataCandidates は指定 threshold で PruneMetadata が remove または tombstone する row 数を、変更せずに返す。
+// `wx gc --dry-run` を支え、報告値に TTL 切れ event と完了 job metadata を含めて最高の GC priority tier と一致させる。
 func (s *Store) CountMetadataCandidates(ctx context.Context, failedBefore, eventBefore, tombstoneBefore string) (int, error) {
 	var jobs, events, tombstones, idempotency int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE (state='SUCCEEDED' OR state='FAILED') AND COALESCE(finished_at,started_at,not_before)<=?`, failedBefore).Scan(&jobs); err != nil {
@@ -2540,10 +2452,8 @@ func (s *Store) CountMetadataCandidates(ctx context.Context, failedBefore, event
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE time<=?`, eventBefore).Scan(&events); err != nil {
 		return 0, err
 	}
-	// PruneMetadata tombstones by clearing agent_session_id, so a session
-	// already tombstoned is not a candidate any more. Counting it would make
-	// `wx gc --dry-run` report the same work forever without anything ever
-	// changing.
+	// PruneMetadata は agent_session_id を消して tombstone 化するため、処理済み session は候補ではない。
+	// 数えると `wx gc --dry-run` が何も変わらない同じ作業を報告し続ける。
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE state='EXPIRED' AND expires_at<=? AND agent_session_id IS NOT NULL`, tombstoneBefore).Scan(&tombstones); err != nil {
 		return 0, err
 	}

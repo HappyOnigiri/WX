@@ -10,10 +10,8 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
-// TestRepositoryDirNameResolutionOrder walks the documented resolution order
-// one step at a time: a pinned dir_name wins outright, then the repository's
-// own dir_source, then storage.repo_dir_source, and finally the main
-// worktree's directory name.
+// TestRepositoryDirNameResolutionOrderは、文書化された解決順序を一度に一段ずつ確認する。
+// 固定dir_name、リポジトリ自身のdir_source、storage.repo_dir_source、最後にメインworktreeのディレクトリ名の順である。
 func TestRepositoryDirNameResolutionOrder(t *testing.T) {
 	repo := discovery.Repository{
 		ID:         "repo-id",
@@ -50,10 +48,8 @@ func TestRepositoryDirNameResolutionOrder(t *testing.T) {
 	}
 }
 
-// TestRepositoryDirNameFallsBackWhenSourcesAreUnusable covers the steps that
-// exist so the name can never fail: a repository with no origin falls back to
-// its directory name, and a directory name wx cannot use falls back to the
-// repository ID, which is hex and therefore always a legal component.
+// TestRepositoryDirNameFallsBackWhenSourcesAreUnusableは、利用できない名前の候補から安全にフォールバックできることを確認する。
+// originのないリポジトリはディレクトリ名を使い、wxで使えない場合は常に有効な16進数のリポジトリIDを使う。
 func TestRepositoryDirNameFallsBackWhenSourcesAreUnusable(t *testing.T) {
 	noRemote := discovery.Repository{ID: "repo-id", MainPath: domain.CanonicalPath("/src/checkout")}
 	if got := RepositoryDirName(noRemote, config.Defaults()); got != "checkout" {
@@ -63,7 +59,7 @@ func TestRepositoryDirNameFallsBackWhenSourcesAreUnusable(t *testing.T) {
 	if got := RepositoryDirName(reserved, config.Defaults()); got != "repo-id" {
 		t.Fatalf("reserved directory name fallback=%q", got)
 	}
-	// A remote name wx cannot use must not shadow a usable directory name.
+	// wx が使用できないリモート名は、使用可能なディレクトリ名を隠してはならない。
 	unusableRemote := discovery.Repository{ID: "repo-id", MainPath: domain.CanonicalPath("/src/checkout"), RemoteName: "_reserved"}
 	if got := RepositoryDirName(unusableRemote, config.Defaults()); got != "checkout" {
 		t.Fatalf("unusable remote fallback=%q", got)
@@ -73,8 +69,8 @@ func TestRepositoryDirNameFallsBackWhenSourcesAreUnusable(t *testing.T) {
 func TestSanitizeDirNameRejectsUnusableComponents(t *testing.T) {
 	for _, value := range []string{
 		"", ".", "..", "a/b", `a\b`, "_unbound", "with\x00null", "with\tcontrol",
-		// The ownership marker shares the slot directory with the repository
-		// directories, so a repository may not claim a marker's name.
+		// 所有権マーカーはslotディレクトリをリポジトリと共有するため、
+		// リポジトリはマーカーの名前を使えない。
 		OwnershipMarkerName("deadbeef"), ownershipMarkerPrefix, ownershipMarkerPrefix + "anything",
 	} {
 		if got, ok := sanitizeDirName(value); ok {
@@ -89,14 +85,12 @@ func TestSanitizeDirNameRejectsUnusableComponents(t *testing.T) {
 	if !ok || len(got) != maxRepositoryDirNameLength {
 		t.Fatalf("truncated name=%q len=%d ok=%v", got, len(got), ok)
 	}
-	// Truncation must not be able to produce a value wx would refuse.
+	// 切り詰め後もwxが拒否する値を生成しないようにする。
 	if _, ok := sanitizeDirName(got); !ok {
 		t.Fatalf("truncated name %q is not itself acceptable", got)
 	}
-	// A multi-byte name over the byte budget has to be cut on a rune
-	// boundary: the checks after truncation do not inspect UTF-8 validity, so
-	// a split rune would reach slot_repositories.dir_name and the directory
-	// name on disk as an invalid byte sequence.
+	// バイト予算でマルチバイト名を切るときはルーン境界で切る必要がある。
+	// 切り詰め後の検査はUTF-8の妥当性を確認しないため、分割されたルーンがDBとディスクに残ってはならない。
 	multibyte := strings.Repeat("あ", maxRepositoryDirNameLength)
 	wide, ok := sanitizeDirName(multibyte)
 	if !ok || len(wide) > maxRepositoryDirNameLength {
@@ -113,9 +107,8 @@ func TestSanitizeDirNameRejectsUnusableComponents(t *testing.T) {
 	}
 }
 
-// TestUniqueDirNameResolvesCaseInsensitiveCollisions pins the APFS-driven
-// rule: two names that differ only in case are one directory on disk, so the
-// second one must be suffixed even though the strings differ.
+// TestUniqueDirNameResolvesCaseInsensitiveCollisionsは、APFSの規則を固定する。
+// 大文字小文字だけが異なる名前はディスク上で同じディレクトリになるため、文字列が異なっても2つ目には接尾辞が必要である。
 func TestUniqueDirNameResolvesCaseInsensitiveCollisions(t *testing.T) {
 	taken := map[string]bool{}
 	if got := UniqueDirName("Repo", taken); got != "Repo" {
@@ -130,7 +123,7 @@ func TestUniqueDirNameResolvesCaseInsensitiveCollisions(t *testing.T) {
 	if got := UniqueDirName("other", taken); got != "other" {
 		t.Fatalf("unrelated name=%q", got)
 	}
-	// A pre-taken suffix must be skipped rather than reused.
+	// 既に使われている接尾辞は再利用せず、次の番号へ進める。
 	prepared := map[string]bool{"repo": true, "repo-2": true}
 	if got := UniqueDirName("repo", prepared); got != "repo-3" {
 		t.Fatalf("pre-taken suffix name=%q", got)

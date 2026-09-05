@@ -38,15 +38,10 @@ func (e *Error) Error() string {
 
 type Runner struct {
 	Timeout time.Duration
-	// DetailDir is set once during daemon startup, before any worker begins
-	// running Git commands (see internal/daemon/server.go), so plain field
-	// access is safe: there is no concurrent writer for getDetailDir's reads
-	// to race with.
+	// DetailDir は daemon 起動時、worker が Git を実行する前に一度だけ設定する。
+	// 以降更新しないため getDetailDir の読み取りと競合しない。
 	DetailDir string
-	// FDHelper is the wx executable used to fchdir to a descriptor before
-	// execing Git. Production managers set it to their own executable. Keeping
-	// it injectable lets tests use a built helper without weakening the
-	// descriptor-bound path.
+	// FDHelper は Git の exec 前に descriptor へ fchdir する wx executable。テストでは helper を差し替えられる。
 	FDHelper    string
 	timeout     sync.RWMutex
 	runAt       sync.RWMutex
@@ -54,11 +49,8 @@ type Runner struct {
 	locks       sync.Map
 }
 
-// SetBeforeRunAtHook installs a test/diagnostic barrier invoked after a
-// descriptor-bound command has been constructed and immediately before its
-// child starts. Production callers leave it nil. The hook is intentionally
-// synchronized because descriptor-bound commands may run concurrently across
-// preparation workers.
+// SetBeforeRunAtHook は descriptor-bound command の構築後、子の開始直前に呼ぶテスト用 barrier を設定する。
+// preparation worker 間で同時実行されるため同期する。
 func (r *Runner) SetBeforeRunAtHook(hook func([]string)) {
 	r.runAt.Lock()
 	r.beforeRunAt = hook
@@ -106,10 +98,8 @@ func (r *Runner) RunEnvInput(ctx context.Context, dir string, env []string, inpu
 	return r.runEnvInput(ctx, dir, nil, env, input, args...)
 }
 
-// RunAt executes Git with dirFile as its current directory. The descriptor is
-// inherited by a tiny wx trampoline which calls fchdir before exec. Relative
-// arguments therefore resolve in the pinned inode even if its pathname is
-// renamed or replaced while Git is starting.
+// RunAt は dirFile を CWD として Git を実行する。trampoline が exec 前に fchdir するため、
+// 起動中に path が rename・置換されても相対引数は pin した inode を参照する。
 func (r *Runner) RunAt(ctx context.Context, dirFile *os.File, env []string, input []byte, args ...string) (Result, error) {
 	return r.runEnvInput(ctx, string(filepath.Separator), dirFile, env, input, args...)
 }
@@ -169,34 +159,9 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 	}
 }
 
-// gitEnvDenylist names repository-scoped Git environment variables that must
-// never leak from the daemon's own process environment into a Git child
-// process. daemon startup paths (launchd session env via `launchctl setenv`,
-// a manual `wx daemon start --foreground`, or invocation from inside a Git
-// hook) can carry GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointed at an
-// unrelated repository.
-// Without stripping them, a snapshot's `git add -A` / `write-tree` would
-// silently operate on the wrong worktree or index, report success, and let
-// the caller remove a dirty worktree it never actually captured. Callers that
-// legitimately need one of these (for example archive's temporary
-// GIT_INDEX_FILE) still set it explicitly through the env parameter, which is
-// appended after this sanitized base and therefore wins.
-//
-// The first group is exactly what `git rev-parse --local-env-vars` reports,
-// which is the same list scripts/hook-check.sh unsets before running its own
-// child Git commands. It is spelled out statically here so that no Git
-// invocation is needed to build a child environment;
-// TestSanitizedEnvironCoversEveryLocalGitEnvironmentVariable derives the list
-// from the Git binary in use and fails if an upgrade adds a name, so the two
-// cannot drift apart silently. GIT_CONFIG_PARAMETERS matters as much as
-// GIT_WORK_TREE does: it is how `git -c <key>=<value>` reaches child
-// processes, so an inherited one can re-point core.excludesFile or
-// status.showUntrackedFiles and make `git add -A` omit untracked work while
-// still exiting 0.
-//
-// The second group is not repository-local in Git's own sense, so
-// --local-env-vars does not list it, but each one still redirects where a
-// child Git reads objects, refs, or configuration from.
+// gitEnvDenylist は daemon から child Git へ渡してはならない repository-scoped 環境変数。
+// 継承した GIT_DIR、GIT_WORK_TREE、GIT_INDEX_FILE が別 repository を指すと snapshot が成功しても dirty worktree を未保存で削除し得る。
+// archive などが明示した環境変数は sanitization 後に追加し、意図した値を優先する。
 var gitEnvDenylist = map[string]bool{
 	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
 	"GIT_COMMON_DIR":                   true,
@@ -220,18 +185,14 @@ var gitEnvDenylist = map[string]bool{
 	"GIT_NAMESPACE":           true,
 }
 
-// isGitConfigKeyValueVar reports whether name is one of Git's indexed
-// GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> pair used to inject config entries
-// without a config file. These are numbered, so they cannot be listed in
-// gitEnvDenylist by exact name.
+// isGitConfigKeyValueVar は config entry を注入する連番付きの GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> か判定する。
+// 連番のため gitEnvDenylist には完全名で列挙できない。
 func isGitConfigKeyValueVar(name string) bool {
 	return strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")
 }
 
-// sanitizedEnviron returns the current process environment with
-// repository-scoped Git variables removed. See gitEnvDenylist for why this
-// matters; it mirrors the unset loop scripts/hook-check.sh already applies to
-// its own child Git invocations for the same reason.
+// sanitizedEnviron は repository-scoped Git 変数を除いた現在の環境を返す。
+// scripts/hook-check.sh の child Git に対する除去処理と同じ目的である。
 func sanitizedEnviron() []string {
 	environ := os.Environ()
 	sanitized := make([]string, 0, len(environ))
@@ -245,11 +206,8 @@ func sanitizedEnviron() []string {
 	return sanitized
 }
 
-// newFailureID uses crypto/rand.Text() directly: Go 1.26's crypto/rand.Read
-// does not fail on any supported platform, so the fallback this used to carry
-// for a read failure could never execute and is removed rather than kept
-// dead. Its 26-character output over a 32-symbol alphabet carries more
-// entropy than the 12 bytes of hex this replaces.
+// newFailureID は crypto/rand.Text() を使う。
+// Go 1.26 の crypto/rand.Read は対応 platform で失敗しないため、到達不能な fallback は持たない。
 func newFailureID() string {
 	return rand.Text()
 }
@@ -284,8 +242,7 @@ func (r *Runner) WithCommonDirLock(common string, fn func() error) error {
 	return fn()
 }
 
-// WorktreeRecord is one entry parsed from the NUL-separated output of
-// `git worktree list --porcelain -z`.
+// WorktreeRecord は `git worktree list --porcelain -z` の NUL 区切り出力から解析した一件。
 type WorktreeRecord struct {
 	Path       string
 	Bare       bool
@@ -293,10 +250,8 @@ type WorktreeRecord struct {
 	LockReason string
 }
 
-// ParseWorktreeRecords parses the -z (NUL-separated) porcelain output of
-// `git worktree list --porcelain -z` into one record per worktree. Both
-// internal/discovery (to find the main worktree, skipping any that are bare)
-// and internal/workspace (to inspect lock state) parse this same format.
+// ParseWorktreeRecords は `git worktree list --porcelain -z` の NUL 区切り出力を worktree ごとの record に解析する。
+// discovery は main worktree の探索に、workspace は lock 状態の確認に同じ形式を使う。
 func ParseWorktreeRecords(output string) []WorktreeRecord {
 	var records []WorktreeRecord
 	var current *WorktreeRecord

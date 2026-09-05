@@ -114,8 +114,8 @@ func TestConnectRetryBridgesADaemonThatIsNotListeningYet(t *testing.T) {
 	server := &Server{Socket: socket, Handler: echoHandler{}}
 	serverErr := make(chan error, 1)
 	go func() {
-		// Start listening only after the first connection attempts have already
-		// failed, which is the window a daemon leaves while launchd replaces it.
+		// 最初の接続試行が失敗した後に待受を始める。
+		// launchd が daemon を置換する間に生じる空白を再現する。
 		time.Sleep(150 * time.Millisecond)
 		serverErr <- server.Serve(ctx)
 	}()

@@ -17,16 +17,11 @@ type Handler struct{ Manager *Manager }
 type DegradedHandler struct {
 	DatabasePath string
 	OpenError    error
-	// terminate is the test seam for the stop path, so a test can drive it
-	// without ending the test binary. Production handlers leave it nil and
-	// take the SIGTERM implementation.
+	// terminate は停止経路のテスト差し替え点。通常は nil のまま SIGTERM 実装を使う。
 	terminate func() error
 }
 
-// degradedStopDelay keeps the SIGTERM off the request that asked for it. The
-// RPC server abandons in-flight connections when the listener closes, so a
-// signal delivered before this reply is written would reach the caller as a
-// dropped connection rather than as the accepted stop it is.
+// 応答を書き終えるまで SIGTERM を遅らせる。listener の終了で RPC 接続が破棄されるためである。
 const degradedStopDelay = 100 * time.Millisecond
 
 func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
@@ -40,11 +35,8 @@ func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMess
 	case "Doctor":
 		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "degraded": true, "checks": map[string]any{"sqlite": message}}, nil
 	case "RequestStop":
-		// Degraded mode answers nothing that changes state, so there is no
-		// reservation for the idle gate to protect and no manager to run one.
-		// Refusing here would leave kill(1) and wx daemon uninstall as the only
-		// ways to take down a daemon whose database an operator wants to look
-		// at, which is exactly when stopping it matters most.
+		// Degraded mode は状態を変更せず予約もないため、manager のアイドルゲートを通さない。
+		// ここを拒否すると、調査対象の DB を開いたデーモンを停止する手段が失われる。
 		terminate := h.terminate
 		if terminate == nil {
 			terminate = signalSelfTerminate
@@ -65,12 +57,8 @@ func decode(raw json.RawMessage, v any) error {
 	return d.Decode(v)
 }
 
-// Handle counts itself as in-flight for the whole dispatch. The manager's
-// restart gate uses that count to pick a moment where a kickstart cannot cut a
-// response short, so the accounting has to bracket every method, including the
-// ones that fail to decode. Which side of the quiet period a method lands on
-// is decided here rather than in the manager, because the manager sees the
-// intent and not the method that carried it.
+// dispatch 全体を in-flight として数える。応答途中の kickstart を防ぐため、decode 失敗を含む全 method を囲む。
+// quiet period の対象かどうかは method を知るここで判定する。
 func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	lifecycle := isLifecycleMethod(method)
 	h.Manager.beginRequest(lifecycle)
@@ -78,11 +66,7 @@ func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage)
 	return h.dispatch(ctx, method, raw)
 }
 
-// isLifecycleMethod reports whether a method exists only to change the daemon's
-// own run state. Those requests are not the user-visible operation the quiet
-// period protects — they are the ones waiting on it — so they do not restamp
-// it. An unknown method is not one of them: a typo must not be able to open the
-// gate early.
+// デーモン自身の実行状態だけを変更する method かを返す。未知の method はゲートを早く開けないよう対象外とする。
 func isLifecycleMethod(method string) bool {
 	switch method {
 	case "RequestStop", "RequestRestart", "RequestStart":
@@ -134,11 +118,8 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			SessionID      string `json:"session_id"`
 			Token          string `json:"token"`
 			AgentSessionID string `json:"agent_session_id"`
-			// Source is accepted (matching the hook's own SessionStart payload
-			// field) but not required: this RPC is the non-resume bind path, so a
-			// resume source belongs on BindAndRestoreResume instead. Decoding it
-			// here keeps the strict decoder from rejecting the field the hook
-			// always sends, even though this method does not act on it.
+			// hook の SessionStart payload と整合させるため Source は受け付けるが、通常 bind では使用しない。
+			// strict decoder が hook の送信フィールドを拒否しないよう、ここでも decode する。
 			Source string `json:"source"`
 		}
 		if err := decode(raw, &p); err != nil {
@@ -155,15 +136,8 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		// The hook only ever chooses this method when its own SessionStart
-		// payload identifies a resume (internal/agent/hook.go), and it always
-		// forwards that source: RunHook rejects the event outright unless
-		// payload.Source == "resume" before it can select this method.
-		// Re-check the claim server-side instead of trusting method selection
-		// alone, and require the field rather than merely rejecting a wrong
-		// value: treating an absent source as acceptable would let any caller
-		// holding a valid session token reach the restore path by simply
-		// omitting it, which is the easier thing to do, not the harder one.
+		// hook 側の選択だけを信頼せず、サーバー側でも Source == "resume" を必須にする。
+		// 欠落を許すと、有効な session token の caller が restore 経路へ到達できる。
 		if p.Source != "resume" {
 			return nil, fmt.Errorf("BindAndRestoreResume requires a resume source, got %q", p.Source)
 		}

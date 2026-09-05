@@ -55,11 +55,8 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 		t.Fatal(err)
 	}
 
-	// The forged worktree is a sibling inside the very slot directory the
-	// marker belongs to. Since version 2 the marker is named after the
-	// repository and shared by the whole slot, so this worktree carries a
-	// byte-identical marker and a matching wx lock: only the recorded
-	// dir_name distinguishes it from the real one.
+	// 偽造されたワークツリーは、スロットディレクトリ内の兄弟です。 マーカーはに属しています。バージョン2以降、マーカーは
+	// スロット全体で共有されているため、このワークツリーには バイト同一のマーカーと一致するwxロック：記録された dir_nameは実際のものと区別します。
 	foreignPath := filepath.Join(slotPath, "foreign")
 	if err := os.MkdirAll(slotPath, 0o700); err != nil {
 		t.Fatal(err)
@@ -121,8 +118,8 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Presenting an identity before it has been recorded must fail closed:
-	// an absent record is not a match.
+	// 記録される前にIDを提示するには、次のようにフェイルクローズする必要があります。
+	// 不在レコードは一致しません。
 	if _, err := store.ValidateWorktreeOwnership(ctx, preparing(state.WorktreeOwnershipRequest{RootID: rootID, SlotRelPath: slotRel, DirName: testRepositoryID, DirIdentity: worktreeIdentity})); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("unrecorded worktree identity passed SQLite ownership: %v", err)
 	}
@@ -132,11 +129,9 @@ func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing
 	if _, err := store.ValidateWorktreeOwnership(ctx, preparing(state.WorktreeOwnershipRequest{RootID: rootID, SlotRelPath: slotRel, DirName: testRepositoryID, DirIdentity: "0:0"})); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("mismatched worktree identity passed SQLite ownership: %v", err)
 	}
-	// The crash-replay check cannot require an identity: a preparation
-	// interrupted before it recorded one legitimately has none. It must still
-	// compare the record when there is one, or a substituted directory that
-	// reproduces the marker and the Git metadata would be accepted on retry
-	// and then have its own identity written as the truth.
+	// クラッシュリプレイチェックにIDを必要とすることはできません：準備 1つを合法的に記録する前に中断されましたが、何もありません。それでも
+	// 1つのレコード、または置換されたディレクトリがある場合にレコードを比較します。 マーカーを再現し、再試行時にGitメタデータが受け入れられます
+	// そして、真実として書かれた独自のアイデンティティを持っています。
 	if err := preparer.ValidateSlotWorktreeOwnership(ctx, repo, target, head, testSlotID); err != nil {
 		t.Fatalf("replay validation of the recorded worktree failed: %v", err)
 	}

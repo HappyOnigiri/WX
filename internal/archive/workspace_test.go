@@ -279,9 +279,8 @@ func TestWorkspaceRestoreAcceptsDirectoryCreatedByChildEntry(t *testing.T) {
 	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A tar writer is allowed to omit an explicit parent directory or emit it
-	// after a child. Restore must keep the parent physical and still materialize
-	// the regular file without following an attacker-controlled path.
+	// tar writer は明示的な親 directory を省略したり、子より後に書いたりできる。
+	// restore は親を物理 directory として保ち、攻撃者が制御する path を辿らず通常 file を作らなければならない。
 	snapshot := writeWorkspaceArchive(t, ownershipRoot, "directory-order", []tar.Header{
 		{Name: "nested/file.txt", Typeflag: tar.TypeReg, Mode: 0o640, Size: 4},
 		{Name: "nested", Typeflag: tar.TypeDir, Mode: 0o700},
@@ -334,11 +333,8 @@ func TestDeleteWorkspaceSnapshotRequiresMatchingArtifact(t *testing.T) {
 }
 
 func TestWorkspaceSnapshotRejectsUnsafeInputsAndUnsupportedFiles(t *testing.T) {
-	// /tmp (rather than t.TempDir()) keeps the unix socket path below the
-	// platform's socket path length limit later in this test. It is resolved
-	// to its physical form immediately because /tmp itself is a symlink on
-	// macOS (-> /private/tmp) and the pinned root descriptor this test opens
-	// below rejects a symlink ancestor.
+	// unix socket の path 長を抑えるため t.TempDir ではなく /tmp を使う。
+	// macOS の /tmp は symlink なので、pin 済み root descriptor が symlink ancestor を拒否しないよう、先に物理 path へ解決する。
 	rawOwnershipRoot, err := os.MkdirTemp("/tmp", "wx-archive-")
 	if err != nil {
 		t.Fatal(err)
@@ -449,9 +445,8 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 		t.Fatal("symlink artifact accepted")
 	}
 
-	// A missing ownership root cannot even be opened as a pinned descriptor,
-	// so the *At entry points cannot be reached with one; the fail-closed
-	// behavior for a missing root is the descriptor open itself failing.
+	// 存在しない ownership root は pin 済み descriptor として開けない。
+	// *At entry point に届く前に descriptor open 自体が失敗するのがフェイルクローズの動作である。
 	missingRoot := filepath.Join(t.TempDir(), "missing-root")
 	if _, _, err := domain.OpenOwnedRoot(missingRoot, missingRoot); err == nil {
 		t.Fatal("missing ownership root was opened as a pinned descriptor")
@@ -762,10 +757,7 @@ func TestSnapshotWorkspacePropagatesPublishRenameFailure(t *testing.T) {
 	ownershipRoot := t.TempDir()
 	bundleRoot := filepath.Join(ownershipRoot, "bundle")
 	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "file.txt"), "data", 0o600)
-	// Pre-occupy the deterministic archive destination with a non-empty
-	// directory so the final rename from the temporary file cannot succeed,
-	// exercising the publish-time failure path without touching production
-	// behavior.
+	// 空でない決定的 archive destination を事前に占有し、一時 file からの最終 rename が失敗する publish 時の経路を検証する。
 	collision := filepath.Join(ownershipRoot, workspaceSnapshotRelativePath("collision"))
 	if err := os.MkdirAll(collision, 0o700); err != nil {
 		t.Fatal(err)

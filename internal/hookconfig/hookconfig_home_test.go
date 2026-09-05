@@ -38,10 +38,8 @@ func validReadinessDocument(t *testing.T, executable string) string {
 	return string(data)
 }
 
-// TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures exercises every
-// reachable branch of readinessHookPaths: the per-agent file layout, Claude's
-// local-settings precedence over settings.json, the unsafe-local-settings
-// short circuit, an unrecognised agent, and a missing home directory.
+// TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures は agent ごとの file layout と Claude の local-settings 優先を確認する。
+// unsafe local settings、未対応 agent、home directory 不在も確認する。
 func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 	t.Run("codex present", func(t *testing.T) {
 		home := t.TempDir()
@@ -112,10 +110,8 @@ func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 	})
 }
 
-// TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles exercises
-// codexHooksEnabled's file-by-file evaluation: absent policy files (default
-// enabled), a missing home directory, a disabling user config, a config path
-// that is not a regular file, an unreadable config, and an oversized config.
+// TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles は policy file ごとの判定を確認する。
+// file 不在、home 不在、無効化設定、regular file 以外、読取不能、サイズ超過を含める。
 func TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles(t *testing.T) {
 	t.Run("no policy files present", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
@@ -175,11 +171,8 @@ func TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles(t *testing.T) {
 	})
 }
 
-// TestAvailableEvaluatesFullReadinessContractPerAgent drives Available end to
-// end through a controlled $HOME, covering: an unrecognised agent, a policy
-// that disables Codex hooks, a satisfied readiness contract for both agents,
-// an empty hook file, an oversized hook file, and a document that does not
-// satisfy the contract.
+// TestAvailableEvaluatesFullReadinessContractPerAgent は制御した HOME で Available を end-to-end に確認する。
+// 未対応 agent、無効化 policy、両 agent の有効 contract、空・サイズ超過・不正な hook file を含める。
 func TestAvailableEvaluatesFullReadinessContractPerAgent(t *testing.T) {
 	executable, err := CurrentExecutable()
 	if err != nil {
@@ -257,10 +250,8 @@ func TestAvailableEvaluatesFullReadinessContractPerAgent(t *testing.T) {
 	})
 }
 
-// TestReadinessHookGroupsMatchSkipsNonCommandDisabledAndAsyncHooks exercises
-// the per-hook filtering inside readinessHookGroupsMatch: a non-command hook
-// ahead of the matching one, a disabled duplicate, an async duplicate, and an
-// invalid group preceding a valid one.
+// TestReadinessHookGroupsMatchSkipsNonCommandDisabledAndAsyncHooks は readinessHookGroupsMatch の hook 単位の絞り込みを確認する。
+// non-command、disabled、async の重複と、有効 group より前の不正 group を飛ばす。
 func TestReadinessHookGroupsMatchSkipsNonCommandDisabledAndAsyncHooks(t *testing.T) {
 	executable, err := CurrentExecutable()
 	if err != nil {
@@ -304,9 +295,8 @@ func TestReadinessHookGroupsMatchSkipsNonCommandDisabledAndAsyncHooks(t *testing
 	})
 }
 
-// TestResolveHookExecutableExpandsHomeAndTildeVariants exercises every
-// $HOME/~ expansion branch in resolveHookExecutable, plus the case where
-// os.UserHomeDir itself fails.
+// TestResolveHookExecutableExpandsHomeAndTildeVariants は resolveHookExecutable の $HOME と ~ の展開経路を確認する。
+// os.UserHomeDir 自体が失敗する場合も含める。
 func TestResolveHookExecutableExpandsHomeAndTildeVariants(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

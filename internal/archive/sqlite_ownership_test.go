@@ -43,8 +43,7 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Slots are located by root generation plus a root-relative path, so the
-	// roots row has to exist before a slot can reference it.
+	// slot は root generation と root 相対 path で位置付けるため、slot が参照する前に root row が必要である。
 	rootIdentity, err := ownedRootIdentity(worktreeRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -60,9 +59,8 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 		t.Fatal(err)
 	}
 
-	// A worktree in a directory wx never recorded, carrying a marker and a wx
-	// lock that both look right, must still be refused: only SQLite can say
-	// which location belongs to the slot.
+	// marker と wx lock を持つ未登録 directory の worktree は正しく見えても拒否する。
+	// どの location が slot に属するかは SQLite だけが証明できる。
 	foreignSlotRel := filepath.Join(string(w.ID), "forgnn")
 	foreignPath := filepath.Join(worktreeRoot, foreignSlotRel, "repo")
 	mustMkdir(t, filepath.Dir(foreignPath))
@@ -157,8 +155,7 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 	}); err != nil {
 		t.Fatalf("owned removal proof failed: %v", err)
 	}
-	// Once the identity is recorded, presenting the matching one proves the
-	// same inode and presenting a different one is refused.
+	// identity を記録後は、一致しない inode identity の提示を拒否する。
 	identity, err := manager.Preparer.WorktreeIdentity(ownedPath)
 	if err != nil {
 		t.Fatal(err)
@@ -179,9 +176,8 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 		t.Fatalf("mismatched identity proof succeeded: %v", err)
 	}
 
-	// Removal has to present the identity of the directory it holds open, not
-	// only its recorded location: with a recorded identity that no longer
-	// matches the inode on disk, the destructive call must not be reached.
+	// 削除では開いている directory の identity を提示する必要がある。
+	// 記録値が disk 上の inode と一致しなければ、破壊的な呼出しに進めてはならない。
 	if err := store.RecordSlotRepositoryIdentity(ctx, "slotaa", string(repo.ID), identity+"0"); err != nil {
 		t.Fatal(err)
 	}
@@ -222,15 +218,13 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 	if list := gitCommand(t, repositoryPath, "worktree", "list", "--porcelain"); strings.Contains(list, ownedPath) {
 		t.Fatalf("owned worktree registration remains: %s", list)
 	}
-	// The marker lives in the slot directory, so an interrupted removal can
-	// still be proven on retry.
+	// marker は slot directory にあるため、中断した削除でも再試行時に所有権を証明できる。
 	if _, err := os.Stat(filepath.Join(slotPath, ".wx-owner-"+string(repo.ID))); err != nil {
 		t.Fatalf("ownership marker was removed with the worktree: %v", err)
 	}
 }
 
-// ownedRootIdentity reports the dev:ino identity of a wx root the way the
-// daemon does before registering it as a root generation.
+// ownedRootIdentity は、daemon が root generation として登録する前の wx root の dev:ino identity を返す。
 func ownedRootIdentity(root string) (string, error) {
 	owner, _, err := domain.OpenOwnedRoot(root, root)
 	if err != nil {

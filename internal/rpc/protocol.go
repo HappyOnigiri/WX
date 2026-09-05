@@ -23,15 +23,9 @@ const (
 	defaultClientTimeout        = 10 * time.Second
 	defaultServerFrameTimeout   = 10 * time.Second
 	defaultServerHandlerTimeout = 10 * time.Second
-	// DefaultMaxHandlerTimeout bounds how far into the future a client-supplied
-	// Request.Deadline may push a handler deadline. Without this ceiling, any
-	// caller holding a valid session token can keep an RPC handler goroutine
-	// (and any root descriptor references or locks it holds) alive
-	// indefinitely by requesting an implausible deadline, which in turn blocks
-	// Manager.Close's WaitGroup drain during shutdown. The longest-lived
-	// legitimate caller today is WaitReady, bounded by the configurable
-	// readiness.timeout (10 minutes by default); this ceiling leaves it a wide
-	// margin while still bounding the worst case.
+	// DefaultMaxHandlerTimeout は、クライアント指定の Request.Deadline が
+	// handler を延長できる上限。descriptor や lock の保持を無期限にせず、終了時の待機を保証する。
+	// 現在最長の WaitReady（既定10分）には十分な余裕を残す。
 	DefaultMaxHandlerTimeout = 30 * time.Minute
 	serverResponseGrace      = 100 * time.Millisecond
 )
@@ -64,37 +58,22 @@ type (
 type Client struct {
 	Socket  string
 	Timeout time.Duration
-	// ConnectRetry, when positive, keeps retrying a call that failed before any
-	// byte was exchanged (see ConnectError) until this budget is spent. It is
-	// opt-in and zero by default so the CLI keeps failing immediately when no
-	// daemon is listening; callers that cannot tolerate the short window where
-	// a restarting daemon is not listening yet (agent hooks, session
-	// heartbeats) set it deliberately. It never retries a failure that happened
-	// on an established connection, so a request the daemon may have started
-	// executing is not repeated.
+	// ConnectRetry が正なら、1 byte も交換せず失敗した呼び出し（ConnectError）を予算内で再試行する。
+	// 既定値は 0 で、実行中 RPC は再試行しない。再起動直後の短い未待受期間に耐える呼び出しだけが明示的に設定する。
 	ConnectRetry time.Duration
 }
 
-// connectRetryInterval paces ConnectRetry. A restarting daemon needs a few
-// hundred milliseconds to listen again, so this is short enough to cover the
-// gap within a budget measured in seconds.
+// connectRetryInterval は ConnectRetry の間隔。再起動後の数百 ms の空白を秒単位の予算内で覆う。
 const connectRetryInterval = 100 * time.Millisecond
 
-// ConnectError wraps a failure that happened while establishing the
-// connection to the daemon (socket missing, connection refused, or a dial
-// timeout before any byte was exchanged). It never wraps a failure that
-// happened after a connection was established, so callers can use
-// IsConnectError to distinguish "nothing is listening here" from "something
-// is listening but did not answer in time" — the latter means a live daemon
-// process exists and must not be assumed safe to kill.
+// ConnectError は接続確立中の失敗（socket 不在、拒否、送信前の timeout）を包む。
+// 接続確立後の失敗は包まないため、IsConnectError で未待受と応答遅延を区別できる。
 type ConnectError struct{ Err error }
 
 func (e *ConnectError) Error() string { return fmt.Sprintf("connect to wx daemon: %v", e.Err) }
 func (e *ConnectError) Unwrap() error { return e.Err }
 
-// IsConnectError reports whether err represents a failure to establish the
-// connection at all, as opposed to a failure while using an already
-// established connection.
+// IsConnectError は接続確立自体の失敗かどうかを返す。
 func IsConnectError(err error) bool {
 	var connectErr *ConnectError
 	return errors.As(err, &connectErr)
@@ -228,11 +207,8 @@ type Server struct {
 	Durable        DurableIdempotency
 	FrameTimeout   time.Duration
 	HandlerTimeout time.Duration
-	// MaxHandlerTimeout caps how far into the future a client-supplied
-	// Request.Deadline may push a handler deadline (see
-	// DefaultMaxHandlerTimeout). Zero uses the default. Set it above the
-	// default when the configured readiness budget exceeds the ceiling, so a
-	// long readiness gate is not cut short server-side.
+	// MaxHandlerTimeout はクライアント指定の Request.Deadline を延長できる上限。
+	// 0 は既定値を使う。readiness の予算が大きい場合はそれ以上に設定し、server 側で短縮しない。
 	MaxHandlerTimeout time.Duration
 	listener          net.Listener
 	idemMu            sync.Mutex

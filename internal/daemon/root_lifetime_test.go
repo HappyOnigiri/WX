@@ -17,9 +17,6 @@ import (
 func rootLifetimeManager(t *testing.T, cfg config.Config, store *state.Store) *Manager {
 	t.Helper()
 	manager := testManager(t, cfg, store)
-	// Reload tests exercise descriptor ownership directly and do not need
-	// preparation workers. Marking the worker pool closed keeps reloads from
-	// introducing unrelated goroutines while preserving Manager.Close ordering.
 	manager.workersMu.Lock()
 	manager.closed = true
 	manager.workersMu.Unlock()
@@ -64,9 +61,6 @@ func openDescriptorCount(t *testing.T) int {
 	return len(entries)
 }
 
-// A retired root that still owns an archived slot must remain discoverable by
-// GC after its last live descriptor reference is released. This reproduces a
-// reload followed by archival cleanup without starting lifecycle workers.
 func TestGCDiscoversArchivedSlotOnClosedRetiredRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -125,8 +119,6 @@ func TestGCDiscoversArchivedSlotOnClosedRetiredRoot(t *testing.T) {
 	}
 }
 
-// NEW-5: unique root rotations must close unused retired descriptors instead
-// of retaining one descriptor per historical configuration generation.
 func TestReloadUniqueRootsRetiresDescriptorsWithinBound(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -171,8 +163,6 @@ func TestReloadUniqueRootsRetiresDescriptorsWithinBound(t *testing.T) {
 	}
 }
 
-// A root used by a synchronous operation remains usable after reload and is
-// closed immediately after its reference is released.
 func TestRetiredRootSurvivesInflightOperationUntilRelease(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -230,8 +220,6 @@ func TestRetiredRootSurvivesInflightOperationUntilRelease(t *testing.T) {
 	}
 }
 
-// A lease is a durable root reference: reload may retire its generation, but
-// Release is the point at which the descriptor becomes eligible for closing.
 func TestLeaseReleaseRetiresOldRootDescriptor(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -279,9 +267,6 @@ func TestLeaseReleaseRetiresOldRootDescriptor(t *testing.T) {
 	}
 }
 
-// Reload, allocation, and shutdown overlap at deterministic barriers. The
-// allocation may finish before shutdown wins the gate, but it must never use a
-// closed descriptor and Close must always return after all references drain.
 func TestConcurrentCloseReloadAndAllocationHasNoUseAfterClose(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -350,9 +335,6 @@ func TestConcurrentCloseReloadAndAllocationHasNoUseAfterClose(t *testing.T) {
 	}
 }
 
-// A same-path inode replacement must not be silently accepted as the same
-// generation. Reload remains atomic and keeps the old descriptor/configuration
-// so subsequent allocation can fail closed instead of mixing namespaces.
 func TestReloadRejectsSamePathRootInodeReplacementAtomically(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -487,9 +469,6 @@ func TestRootReplacementQuarantinesPreparationBeforeDescriptorAcquire(t *testing
 	}
 	staleWorkspaceID := string(registerTestWorkspace(t, store, discovery.Workspace{Root: discoveryPath(home), Kind: "repository"}).ID)
 	const slotID = "preparing-slot"
-	// The slot stays on the retired root: the point of this test is that a
-	// slot created before the reload keeps resolving through its own root
-	// generation.
 	staleRootID := registerTestRoot(t, manager, oldRoot)
 	staleRelative, err := slotRelPath(staleWorkspaceID, slotID, false)
 	if err != nil {
@@ -801,8 +780,6 @@ func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing
 		t.Fatalf("materialized data=%q err=%v", data, err)
 	}
 
-	// The enumeration unit is the slot directory: "<workspace-id>/<slot-id>"
-	// and "_unbound/<slot-id>".
 	validSlot := filepath.Join(root, "wsp001", "slt001")
 	if err := os.MkdirAll(validSlot, 0o700); err != nil {
 		t.Fatal(err)
@@ -811,8 +788,6 @@ func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing
 	if err := os.MkdirAll(validUnboundSlot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A regular file inside a workspace namespace is not a slot directory,
-	// and wx's own reserved "_recovery" namespace is not a workspace.
 	if err := os.MkdirAll(filepath.Join(root, "wsp002"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -888,8 +863,6 @@ func TestReleaseRootAndCloseRootLockedGuardClauses(t *testing.T) {
 		rootIdentities: map[string]string{},
 	}
 
-	// A nil entry, an already-closed entry, and a zero-refcount entry must all
-	// be safe no-ops rather than panicking or double-releasing.
 	manager.releaseRoot("missing", nil)
 	closedEntry := &managedRoot{closed: true}
 	manager.releaseRoot("closed", closedEntry)
@@ -926,8 +899,6 @@ func TestReleaseRootAndCloseRootLockedGuardClauses(t *testing.T) {
 		t.Fatalf("closed entry was not filtered out of the retired list: %+v", retired)
 	}
 
-	// Closing the last retired generation at a path must drop the retired
-	// list entirely rather than leaving an empty slice behind.
 	manager.closeRootLocked(root, other)
 	if _, stillPresent := manager.retiredRefs[root]; stillPresent {
 		t.Fatal("retired list was not removed once empty")
