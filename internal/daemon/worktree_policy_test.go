@@ -192,4 +192,64 @@ func TestStandbyReplenishmentContinuesAfterQuarantineUpToLimit(t *testing.T) {
 	if got := strings.Count(logs.String(), "standby replenishment stopped until quarantined slots are removed"); got != 1 {
 		t.Fatalf("quarantine limit warnings after the second stop=%d, want one: %s", got, logs.String())
 	}
+	status, err := m.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, ok := status["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic)
+	if !ok || len(blocked) != 1 || blocked[0].Quarantined != standbyQuarantineLimit || !strings.Contains(blocked[0].Action, "wx retry-standby") {
+		t.Fatalf("standby recovery diagnostics=%v", status["standby_replenishment"])
+	}
+	doctor := m.Doctor(ctx)
+	checks, ok := doctor["checks"].(map[string]any)
+	if !ok {
+		t.Fatalf("doctor checks=%v", doctor["checks"])
+	}
+	if diagnostic, ok := checks["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic); !ok || len(diagnostic) != 1 || diagnostic[0].Quarantined != standbyQuarantineLimit {
+		t.Fatalf("doctor standby recovery diagnostics=%v", checks["standby_replenishment"])
+	}
+	retry, err := m.RetryStandby(ctx, string(w.Root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry["generation"] != 1 || retry["quarantined"] != standbyQuarantineLimit || retry["scheduled"] != true {
+		t.Fatalf("retry reply=%v", retry)
+	}
+	if got, err := store.QuarantinedStandbyCount(ctx, string(w.ID)); err != nil || got != 0 {
+		t.Fatalf("quarantined count after retry=%d err=%v", got, err)
+	}
+	jobs, err = store.RecoverJobs(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ensure state.Job
+	for _, job := range jobs {
+		if job.Kind == "ENSURE_STANDBY" {
+			ensure = job
+			break
+		}
+	}
+	if ensure.ID == "" {
+		t.Fatalf("manual retry did not enqueue ensure job: %+v", jobs)
+	}
+	claimed, err := store.ClaimJob(ctx, ensure.ID, "retry-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, claimed); err != nil {
+		t.Fatalf("manual retry job: %v", err)
+	}
+	if err := store.FinishJob(ctx, claimed.ID, "retry-test", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.StandbyCount(ctx, string(w.ID)); got != 1 {
+		t.Fatalf("standby count after manual retry=%d, want one", got)
+	}
+	status, err = m.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked, ok := status["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic); !ok || len(blocked) != 0 {
+		t.Fatalf("standby recovery diagnostics after retry=%v", status["standby_replenishment"])
+	}
 }

@@ -68,6 +68,8 @@ func run(ctx context.Context, args []string) int {
 		return runPrune(ctx, args[1:])
 	case "clear":
 		return runClean(ctx, args[1:])
+	case "retry-standby":
+		return runRetryStandby(ctx, args[1:])
 	case "config":
 		return runConfig(ctx, args[1:])
 	case "resume":
@@ -934,5 +936,42 @@ func runForget(ctx context.Context, args []string) int {
 		return 1
 	}
 	fmt.Println("forgotten", fs.Arg(0))
+	return 0
+}
+
+func runRetryStandby(ctx context.Context, args []string) int {
+	fs := pflag.NewFlagSet("retry-standby", pflag.ContinueOnError)
+	fs.SetInterspersed(false)
+	fs.Usage = func() { commandUsage(os.Stdout, "retry-standby") }
+	if code, done := finishFlagParse(fs, "retry-standby", args); done {
+		return code
+	}
+	if fs.NArg() != 1 {
+		commandUsage(os.Stderr, "retry-standby")
+		return 2
+	}
+	c, err := rpcClient()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	var out struct {
+		Root        string `json:"root"`
+		Generation  int    `json:"generation"`
+		Quarantined int    `json:"quarantined"`
+		Scheduled   bool   `json:"scheduled"`
+	}
+	if err := c.Call(ctx, "RetryStandby", map[string]string{"path": fs.Arg(0)}, &out); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if out.Root == "" {
+		out.Root = fs.Arg(0)
+	}
+	if out.Scheduled {
+		fmt.Printf("standby replenishment retry scheduled for %s (generation %d; %d quarantined slot(s) kept)\n", out.Root, out.Generation, out.Quarantined)
+	} else {
+		fmt.Printf("standby replenishment retry already in progress for %s (generation %d; %d quarantined slot(s) kept)\n", out.Root, out.Generation, out.Quarantined)
+	}
 	return 0
 }
