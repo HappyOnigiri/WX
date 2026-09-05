@@ -1362,6 +1362,54 @@ func TestStatusDiagnosticsFailsAtEachSchemaBoundary(t *testing.T) {
 	}
 }
 
+// TestStatusDiagnosticsReportsWorkspaceLastUsedFromLinkedRepositories は workspace_details.last_used_at の集計元を固定する。
+// slots.last_used_at ではなく workspace_repositories 経由の repositories.last_leased_at を使うため、repository 数に関わらず貸出のたびに値が入る。
+func TestStatusDiagnosticsReportsWorkspaceLastUsedFromLinkedRepositories(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	seedWorkspaceRows(t, store, "multi", "/multi", "multi_repository", "multi-a", "/multi/a", "/multi/a/.git", "a")
+	seedWorkspaceRows(t, store, "single", "/single", "repository", "single-repo", "/single", "/single/.git", "")
+	seedWorkspaceRows(t, store, "unused", "/unused", "repository", "unused-repo", "/unused", "/unused/.git", "")
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES('multi-b','/multi/b','/multi/b/.git','main','',?,?)`, now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES('multi','multi-b','b',1)`); err != nil {
+		t.Fatal(err)
+	}
+	older, newer := FormatTime(time.Now().Add(-2*time.Hour)), FormatTime(time.Now().Add(-time.Hour))
+	if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=CASE id WHEN 'multi-a' THEN ? WHEN 'multi-b' THEN ? ELSE NULL END WHERE id IN ('multi-a','multi-b','unused-repo')`, older, newer); err != nil {
+		t.Fatal(err)
+	}
+	// single-repository workspace は実際の貸出経路で更新させ、複数 repository と同じ集計で値が出ることを示す。
+	session := Session{ID: "single-session", WorkspaceID: "single", SlotID: "single-slot", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "single-slot", WorkspaceID: "single", Generation: 1, RootID: testRootID, RelPath: "single/slot", State: "PREPARING"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := store.StatusDiagnostics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastUsed := map[string]string{}
+	repositories := map[string]int{}
+	for _, workspace := range diagnostics.Workspaces {
+		lastUsed[workspace.ID] = workspace.LastUsedAt
+		repositories[workspace.ID] = workspace.Repositories
+	}
+	if repositories["multi"] != 2 || lastUsed["multi"] != newer {
+		t.Fatalf("multi-repository workspace repositories=%d last_used_at=%q, want 2 and %q", repositories["multi"], lastUsed["multi"], newer)
+	}
+	var singleLeasedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT COALESCE(last_leased_at,'') FROM repositories WHERE id='single-repo'`).Scan(&singleLeasedAt); err != nil {
+		t.Fatal(err)
+	}
+	if lastUsed["single"] == "" || lastUsed["single"] != singleLeasedAt {
+		t.Fatalf("single-repository workspace last_used_at=%q, want the repository value %q", lastUsed["single"], singleLeasedAt)
+	}
+	if lastUsed["unused"] != "" {
+		t.Fatalf("never leased workspace last_used_at=%q, want empty", lastUsed["unused"])
+	}
+}
+
 func TestStatusDiagnosticsRejectsMalformedRows(t *testing.T) {
 	for _, test := range []struct {
 		name string

@@ -8,7 +8,19 @@ import (
 	"time"
 )
 
-func TestPrintStatusSummaryUsesWorkspaceRepositoryMappingAndRoots(t *testing.T) {
+// statusRowMatches は表の行を path で探し、空白を 1 つに畳んだ残りの列が columns と一致するかを返す。
+// 列幅は他の行の内容で変わるため、桁揃えを期待値に含めない。
+func statusRowMatches(output, path, columns string) bool {
+	for line := range strings.SplitSeq(output, "\n") {
+		trimmed := strings.Join(strings.Fields(line), " ")
+		if rest, ok := strings.CutPrefix(trimmed, path+" "); ok {
+			return rest == columns
+		}
+	}
+	return false
+}
+
+func TestPrintStatusSummaryReadsWorkspaceLastUsedAndRoots(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	current := home + "/dev/wx"
@@ -20,11 +32,14 @@ func TestPrintStatusSummaryUsesWorkspaceRepositoryMappingAndRoots(t *testing.T) 
 	statusDisplayLocation = time.FixedZone("JST", 9*60*60)
 	t.Cleanup(func() { statusDisplayLocation = previousLocation })
 
+	// cs は複数 repository の workspace で、root と一致する repository が無い。それでも workspace 側の last_used_at が時刻として出ることを検査する。
 	payload := map[string]any{
 		"workspace_details": []map[string]any{
-			{"id": "chez", "root": home + "/.local/share/chezmoi", "repositories": 1, "ready": 1, "leased": 0},
-			{"id": "prx", "root": home + "/dev/prx", "repositories": 1, "ready": 1, "leased": 0},
-			{"id": "wx", "root": current, "repositories": 1, "ready": 1, "leased": 2},
+			{"id": "chez", "root": home + "/.local/share/chezmoi", "repositories": 1, "ready": 1, "leased": 0, "last_used_at": "2026-09-04T23:09:00Z"},
+			{"id": "cs", "root": home + "/dev/cs", "repositories": 5, "ready": 1, "leased": 1, "last_used_at": "2026-09-04T14:47:00Z"},
+			{"id": "prx", "root": home + "/dev/prx", "repositories": 1, "ready": 1, "leased": 0, "last_used_at": "2026-09-04T22:37:00Z"},
+			{"id": "unused", "root": home + "/dev/unused", "repositories": 1, "ready": 0, "leased": 0},
+			{"id": "wx", "root": current, "repositories": 1, "ready": 1, "leased": 2, "last_used_at": "2026-09-04T22:16:00Z"},
 		},
 		"repository_details": []map[string]any{
 			{"id": "chez-repo", "main_path": home + "/.local/share/chezmoi", "last_used_at": "2026-09-04T23:09:00Z"},
@@ -42,17 +57,24 @@ func TestPrintStatusSummaryUsesWorkspaceRepositoryMappingAndRoots(t *testing.T) 
 	for _, want := range []string{
 		"WORKSPACE",
 		"LAST USED (JST)",
-		"~/.local/share/chezmoi",
-		"~/dev/prx",
-		"~/dev/wx *",
-		"09/05 08:09",
-		"09/05 07:37",
-		"—",
 		"Daemon running · Jobs 0 pending / 0 running / 0 failed",
 		"Disk   365 MiB allocated · ~/wx",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary missing %q:\n%s", want, got)
+		}
+	}
+	for _, want := range []struct{ path, columns string }{
+		{path: "~/.local/share/chezmoi", columns: "1 0 09/05 08:09"},
+		// 複数 repository でも、root と一致する repository が無くても時刻が出る。
+		{path: "~/dev/cs", columns: "1 1 09/04 23:47"},
+		{path: "~/dev/prx", columns: "1 0 09/05 07:37"},
+		// 利用実績が無い workspace だけが「—」になる。
+		{path: "~/dev/unused", columns: "0 0 —"},
+		{path: "~/dev/wx *", columns: "1 2 09/05 07:16"},
+	} {
+		if !statusRowMatches(got, want.path, want.columns) {
+			t.Fatalf("summary row %q missing columns %q:\n%s", want.path, want.columns, got)
 		}
 	}
 	if strings.Contains(got, "HOT UNTIL") || strings.Contains(got, "quarantine") || strings.Contains(got, "session_details") {
@@ -62,7 +84,7 @@ func TestPrintStatusSummaryUsesWorkspaceRepositoryMappingAndRoots(t *testing.T) 
 
 func TestPrintVerboseStatusRetainsDetailsAndUnknownFields(t *testing.T) {
 	payload := map[string]any{
-		"schema_version": 5, "db_schema_version": 1, "daemon_version": "1.2.3", "protocol_version": 1,
+		"schema_version": 6, "db_schema_version": 1, "daemon_version": "1.2.3", "protocol_version": 1,
 		"pid": 42, "uptime_seconds": 604800, "degraded": false, "restart_pending": false, "stop_pending": false,
 		"config_path": "/Users/example/.config/wx/config.yaml", "config_last_reload": "2026-09-05T00:00:00Z", "config_reload_error": "",
 		"worktree_root_error": "", "sqlite_last_backup": "2026-09-05T00:01:00Z", "sqlite_backup_error": "",
