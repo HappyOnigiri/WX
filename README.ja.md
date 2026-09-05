@@ -52,9 +52,7 @@ wx --branch feature/api codex
 ## その他の機能
 
 - **状態確認・診断:** `wx status`、`wx doctor`。
-- **セッション管理・クリーンアップ:** `wx sessions`、`wx resume`、`wx gc --dry-run`、`wx clean --dry-run`。
-- **worktree の即時削除:** `wx clean` は、保持期限を待たずに未使用の worktree を削除します。`wx clean --all` は使用中のセッションにも終了を要求してから削除します。
-  削除前に作業は保存し、復元データとセッション履歴は残します。
+- **セッション管理・クリーンアップ:** `wx sessions`、`wx resume`、`wx gc --dry-run`、`wx clean`。
 - **設定:** `wx config` で設定の確認や個別の値の変更ができます。
 - **エージェント連携:** グローバルなエージェント hook で、エージェント側からのセッション再開や作業環境の準備完了チェックに対応します。
   `WX_SESSION_ID` が設定されている場合だけ、`wx hook session-start`、`wx hook user-prompt-submit`、`wx hook pre-tool-use`、`wx hook session-end` を呼び出すよう設定してください。
