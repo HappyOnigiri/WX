@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
@@ -131,6 +132,64 @@ func TestRunDoctorFallsBackToLocalChecksWhenDaemonCannotConnect(t *testing.T) {
 	}
 	if daemon, ok := checks["daemon"].(string); !ok || !strings.Contains(daemon, "connect") {
 		t.Fatalf("local daemon reason=%v", checks["daemon"])
+	}
+}
+
+func TestRunGCReturnsNonZeroForPendingReport(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wx-gc-result-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	socket, err := config.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := &rpc.Server{
+		Socket: socket,
+		Handler: commandHandler{gcResult: &daemon.GCResult{
+			Candidates: 2,
+			Pending:    1,
+			Reasons:    []daemon.GCReason{{Target: "worktree slot", Status: "pending", Reason: "ownership could not be proven"}},
+		}},
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	for deadline := time.Now().Add(time.Second); ; {
+		if _, err := os.Lstat(socket); err == nil {
+			break
+		}
+		select {
+		case serveErr := <-done:
+			t.Fatalf("RPC server failed at %s: %v", socket, serveErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RPC server did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var code int
+	stdout := captureStdout(t, func() {
+		stderr := captureStderr(t, func() { code = runGC(ctx, nil) })
+		if !strings.Contains(stderr, "ownership could not be proven") {
+			t.Fatalf("GC reason missing from stderr: %q", stderr)
+		}
+	})
+	if code != 1 {
+		t.Fatalf("runGC exit=%d, want 1 for pending report", code)
+	}
+	for _, field := range []string{"candidates: 2", "scheduled: 0", "pending: 1", "failed: 0"} {
+		if !strings.Contains(stdout, field) {
+			t.Fatalf("GC output=%q missing %q", stdout, field)
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

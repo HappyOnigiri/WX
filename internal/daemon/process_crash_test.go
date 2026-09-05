@@ -112,7 +112,7 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 		releaseCrashLease(t, client, lease)
 		waitCrashSessionState(t, store, lease.SessionID, "ARCHIVED")
 		armCrashGate(t, gate)
-		var result map[string]int
+		var result GCResult
 		if err := client.Call(context.Background(), "GC", map[string]bool{"dry_run": false}, &result); err != nil {
 			t.Fatal(err)
 		}

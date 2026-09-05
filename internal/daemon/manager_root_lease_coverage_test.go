@@ -401,8 +401,8 @@ func TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath(t *te
 		t.Fatal(err)
 	}
 	candidates := []state.ColdRepositoryCandidate{{SlotID: slotID, WorkspaceID: string(workspaceRecord.ID), RepositoryID: string(resolved[0].Repository.ID), WorktreePath: outsidePath}}
-	if count := manager.scheduleColdRepositoryRemovals(ctx, candidates, map[string]bool{}); count != 0 {
-		t.Fatalf("unverifiable cold repository was scheduled: count=%d", count)
+	if result := manager.scheduleColdRepositoryRemovals(ctx, candidates, map[string]bool{}); result.Scheduled != 0 {
+		t.Fatalf("unverifiable cold repository was scheduled: result=%+v", result)
 	}
 	if slot, err := store.Slot(ctx, slotID); err != nil || slot.State != "QUARANTINED" {
 		t.Fatalf("unverifiable cold repository slot=%+v err=%v", slot, err)

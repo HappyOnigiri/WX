@@ -875,6 +875,9 @@ func TestGCRefusesIncompleteMultiRepositoryRecoveryMetadata(t *testing.T) {
 			if err := store.SaveSnapshot(ctx, state.Snapshot{ID: "snapshot", SessionID: session.ID, RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/worktree", Status: "ARCHIVED", CreatedAt: expired, ExpiresAt: expired}); err != nil {
 				t.Fatal(err)
 			}
+			if err := store.SetSlotState(ctx, session.SlotID, []string{"SNAPSHOTTED"}, "ARCHIVED", ""); err != nil {
+				t.Fatal(err)
+			}
 			if test.workspaceSnapshot != "" {
 				relPath := filepath.Join("..", "outside", "snapshot.tar")
 				if test.workspaceSnapshot == "missing" {
@@ -884,12 +887,12 @@ func TestGCRefusesIncompleteMultiRepositoryRecoveryMetadata(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			count, err := manager.GC(ctx, false)
-			if err != nil {
-				t.Fatal(err)
+			result, err := manager.GC(ctx, false)
+			if err == nil && result.Pending == 0 && result.Failed == 0 {
+				t.Fatalf("unsafe recovery metadata was reported as complete: result=%+v", result)
 			}
-			if count != 0 {
-				t.Fatalf("unsafe recovery metadata was collected: count=%d", count)
+			if len(result.Reasons) == 0 {
+				t.Fatalf("incomplete recovery metadata lost its reason: result=%+v err=%v", result, err)
 			}
 			if snapshots, err := store.Snapshots(ctx, session.ID); err != nil || len(snapshots) != 1 {
 				t.Fatalf("recovery metadata was discarded: snapshots=%+v err=%v", snapshots, err)

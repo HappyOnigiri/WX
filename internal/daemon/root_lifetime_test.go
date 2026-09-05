@@ -103,12 +103,12 @@ func TestGCDiscoversArchivedSlotOnClosedRetiredRoot(t *testing.T) {
 	if err := manager.reloadConfig(false); err != nil {
 		t.Fatal(err)
 	}
-	count, err := manager.GC(ctx, false)
+	result, err := manager.GC(ctx, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("GC count=%d, want one archived candidate", count)
+	if result.Scheduled != 1 || result.Candidates != 1 {
+		t.Fatalf("GC result=%+v, want one archived candidate reservation", result)
 	}
 	jobs, err := store.RecoverJobs(ctx, false)
 	if err != nil {

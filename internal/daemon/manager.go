@@ -38,6 +38,70 @@ type Lease struct {
 	Ready           bool   `json:"ready"`
 }
 
+// GCReason は GC が対象を処理できなかった理由を対象単位で返す。
+// 安全のために保留した場合も、削除できなかった事実を呼出元が区別できるようにする。
+type GCReason struct {
+	Target string `json:"target"`
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+}
+
+// GCResult は GC の予約・完了・保留・失敗を分けて報告する。
+// REMOVE job は予約時点では物理削除が完了していないため、Scheduled と Completed を混同しない。
+type GCResult struct {
+	Candidates int        `json:"candidates"`
+	Scheduled  int        `json:"scheduled"`
+	Completed  int        `json:"completed"`
+	Pending    int        `json:"pending"`
+	Failed     int        `json:"failed"`
+	Reasons    []GCReason `json:"reasons"`
+}
+
+// gcProgress は GC の内部処理で結果と呼出元へ返すエラーを同時に集約する。
+type gcProgress struct {
+	GCResult
+	errs []error
+}
+
+func newGCProgress() gcProgress {
+	return gcProgress{GCResult: GCResult{Reasons: []GCReason{}}}
+}
+
+func (p *gcProgress) addIssue(target, status, reason string, cause error) {
+	if cause != nil {
+		if reason == "" {
+			reason = cause.Error()
+		} else {
+			reason = fmt.Sprintf("%s: %v", reason, cause)
+		}
+		p.errs = append(p.errs, fmt.Errorf("%s: %w", target, cause))
+	}
+	p.Reasons = append(p.Reasons, GCReason{Target: target, Status: status, Reason: reason})
+}
+
+func (p *gcProgress) addPending(target, reason string, cause error) {
+	p.Pending++
+	p.addIssue(target, "pending", reason, cause)
+}
+
+func (p *gcProgress) addFailed(target, reason string, cause error) {
+	p.Failed++
+	p.addIssue(target, "failed", reason, cause)
+}
+
+func (p *gcProgress) merge(other gcProgress) {
+	p.Scheduled += other.Scheduled
+	p.Completed += other.Completed
+	p.Pending += other.Pending
+	p.Failed += other.Failed
+	p.Reasons = append(p.Reasons, other.Reasons...)
+	p.errs = append(p.errs, other.errs...)
+}
+
+func (p *gcProgress) err() error {
+	return errors.Join(p.errs...)
+}
+
 type managedRoot struct {
 	// retired rootは操作またはleaseの参照が残る間だけ開き、最後のreleaseで閉じる。
 	root     *os.Root
@@ -494,7 +558,7 @@ func (m *Manager) maintainLifecycle() {
 	m.reconcileArtifacts(m.ctx)
 	m.reconcileOrphans(m.ctx)
 	m.maybeBackup(m.ctx)
-	_, _ = m.GC(m.ctx, false)
+	m.runBackgroundGC()
 	for {
 		interval := m.Config().Discovery.ReconcileInterval.Duration
 		if interval <= 0 {
@@ -515,11 +579,30 @@ func (m *Manager) maintainLifecycle() {
 			m.reconcileArtifacts(m.ctx)
 			m.reconcileOrphans(m.ctx)
 			m.maybeBackup(m.ctx)
-			if _, err := m.GC(m.ctx, false); err != nil && m.ctx.Err() == nil {
-				m.log.Error("automatic GC failed", "error", err)
-			}
+			m.runBackgroundGC()
 		}
 	}
+}
+
+// runBackgroundGC は自動 GC の保留・失敗をログへ残す。
+// background 処理は呼出元へ返せないため、結果を捨てずに後から調査できる形にする。
+func (m *Manager) runBackgroundGC() {
+	result, err := m.GC(m.ctx, false)
+	if err == nil && result.Pending == 0 && result.Failed == 0 {
+		return
+	}
+	attrs := []any{
+		"candidates", result.Candidates,
+		"scheduled", result.Scheduled,
+		"completed", result.Completed,
+		"pending", result.Pending,
+		"failed", result.Failed,
+		"reasons", result.Reasons,
+	}
+	if err != nil {
+		attrs = append(attrs, "error", err)
+	}
+	m.log.Error("automatic GC incomplete", attrs...)
 }
 
 func (m *Manager) reconcileArtifacts(ctx context.Context) {
@@ -1114,7 +1197,7 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 		return Lease{}, state.IsIDCollision(err), err
 	}
 	m.schedule(job)
-	m.startBackground(func() { _, _ = m.GC(m.ctx, false) })
+	m.startBackground(m.runBackgroundGC)
 	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false}, false, nil
 }
 
@@ -2674,7 +2757,8 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 	return m.store.MarkArchived(ctx, s.ID, s.SlotID, state.FormatTime(expiry))
 }
 
-func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
+func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
+	progress := newGCProgress()
 	cfg := m.Config()
 	nowTime := time.Now().UTC()
 	failedBefore := state.FormatTime(nowTime.Add(-cfg.Retention.FailedJob.Duration))
@@ -2682,27 +2766,32 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	tombstoneBefore := state.FormatTime(nowTime.Add(-cfg.Retention.ExpiredSessionTombstone.Duration))
 	metadataCount, err := m.store.CountMetadataCandidates(ctx, failedBefore, eventBefore, tombstoneBefore)
 	if err != nil {
-		return 0, err
+		progress.addFailed("metadata", "metadata candidate query failed", err)
+		return progress.GCResult, progress.err()
 	}
 	before := state.FormatTime(nowTime.Add(-cfg.Retention.EndedWorktree.Duration))
 	items, err := m.store.GCCandidates(ctx, before)
 	if err != nil {
-		return 0, err
+		progress.addFailed("ended worktrees", "ended worktree candidate query failed", err)
+		return progress.GCResult, progress.err()
 	}
 	standbys, err := m.store.StandbyGCCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)), cfg.Pool.WarmPerWorkspace)
 	if err != nil {
-		return 0, err
+		progress.addFailed("standby worktrees", "standby candidate query failed", err)
+		return progress.GCResult, progress.err()
 	}
 	var cold []state.ColdRepositoryCandidate
 	if cfg.Pool.WarmPerWorkspace > 0 {
 		cold, err = m.store.ColdRepositoryCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)))
 		if err != nil {
-			return 0, err
+			progress.addFailed("cold repositories", "cold repository candidate query failed", err)
+			return progress.GCResult, progress.err()
 		}
 	}
 	expired, err := m.store.ExpiredSnapshots(ctx, state.FormatTime(nowTime))
 	if err != nil {
-		return 0, err
+		progress.addFailed("snapshots", "expired snapshot candidate query failed", err)
+		return progress.GCResult, progress.err()
 	}
 	expiredSessions := map[string][]state.Snapshot{}
 	for _, snapshot := range expired {
@@ -2718,43 +2807,54 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 			totalCold++
 		}
 	}
-	total := metadataCount + len(items) + len(standbys) + len(expiredSessions) + totalCold
+	progress.Candidates = metadataCount + len(items) + len(standbys) + len(expiredSessions) + totalCold
 	if dry {
-		return total, nil
+		// dry-run は状態を変更せず、候補が処理されずに残る見込みを pending として報告する。
+		progress.Pending = progress.Candidates
+		return progress.GCResult, nil
 	}
 	if err := m.store.PruneMetadata(ctx, failedBefore, eventBefore, tombstoneBefore); err != nil {
-		return 0, err
+		progress.addFailed("metadata", "metadata pruning failed", err)
+	} else {
+		progress.Completed += metadataCount
 	}
-	count := metadataCount
-	count += m.scheduleColdRepositoryRemovals(ctx, cold, wholeSlotRemoval)
-	count += m.scheduleStandbyRemovals(ctx, standbys)
-	count += m.scheduleEndedWorktreeRemovals(ctx, items)
+	progress.merge(m.scheduleColdRepositoryRemovals(ctx, cold, wholeSlotRemoval))
+	progress.merge(m.scheduleStandbyRemovals(ctx, standbys))
+	progress.merge(m.scheduleEndedWorktreeRemovals(ctx, items))
 	archiveManager := m.newArchiveManager(cfg, state.Slot{})
-	count += m.expireWorkspaceSnapshots(ctx, expiredSessions, &archiveManager)
+	progress.merge(m.expireWorkspaceSnapshots(ctx, expiredSessions, &archiveManager))
 	// retired rootはSQLiteの参照が消えた後にrowだけをpruneし、設定済みdirectory自体は削除しない。
 	if err := m.store.PruneRoots(ctx); err != nil {
-		m.log.Error("prune retired worktree root generations failed", "error", err)
+		progress.addFailed("roots", "retired worktree root metadata pruning failed", err)
 	}
-	return count, nil
+	return progress.GCResult, progress.err()
 }
 
-func (m *Manager) quarantineCleanupFailure(slotID string, runErr error) {
+func (m *Manager) quarantineCleanupFailure(slotID string, runErr error) error {
 	if !errors.Is(runErr, state.ErrOwnership) {
-		return
+		return runErr
 	}
 	if quarantineErr := m.store.QuarantineMissingSlot(context.Background(), slotID, "WORKTREE_OWNERSHIP_UNCERTAIN"); quarantineErr != nil {
 		m.log.Error("quarantine cleanup ownership failure", "slot_id", slotID, "error", quarantineErr)
+		return errors.Join(runErr, fmt.Errorf("quarantine slot after ownership failure: %w", quarantineErr))
 	}
+	return runErr
 }
 
-func (m *Manager) scheduleColdRepositoryRemovals(ctx context.Context, candidates []state.ColdRepositoryCandidate, wholeSlotRemoval map[string]bool) int {
-	count := 0
+func (m *Manager) scheduleColdRepositoryRemovals(ctx context.Context, candidates []state.ColdRepositoryCandidate, wholeSlotRemoval map[string]bool) gcProgress {
+	progress := newGCProgress()
 	for _, candidate := range candidates {
 		if wholeSlotRemoval[candidate.SlotID] {
 			continue
 		}
+		target := fmt.Sprintf("cold repository %s/%s", candidate.SlotID, candidate.RepositoryID)
 		if _, release, err := m.holdVerifiedRootForPath(candidate.WorktreePath); err != nil {
-			m.quarantineCleanupFailure(candidate.SlotID, err)
+			reasonErr := m.quarantineCleanupFailure(candidate.SlotID, err)
+			reason := "cleanup ownership verification failed; the artifact was not deleted"
+			if errors.Is(err, state.ErrOwnership) {
+				reason = "ownership could not be proven; the artifact was quarantined instead of deleted"
+			}
+			progress.addPending(target, reason, reasonErr)
 			continue
 		} else {
 			release()
@@ -2762,54 +2862,73 @@ func (m *Manager) scheduleColdRepositoryRemovals(ctx context.Context, candidates
 		job, changed, err := m.store.ScheduleColdRepositoryRemoval(ctx, candidate)
 		if err != nil {
 			m.log.Error("cold repository removal scheduling failed", "slot_id", candidate.SlotID, "repository_id", candidate.RepositoryID, "error", err)
+			progress.addFailed(target, "cold repository removal reservation failed", err)
 			continue
 		}
-		if changed {
-			m.schedule(job)
-			count++
+		if !changed {
+			progress.addPending(target, "candidate changed before removal reservation", nil)
+			continue
 		}
+		m.schedule(job)
+		progress.Scheduled++
 	}
-	return count
+	return progress
 }
 
-func (m *Manager) scheduleStandbyRemovals(ctx context.Context, candidates []state.StandbyGCCandidate) int {
-	count := 0
+func (m *Manager) scheduleStandbyRemovals(ctx context.Context, candidates []state.StandbyGCCandidate) gcProgress {
+	progress := newGCProgress()
 	for _, candidate := range candidates {
-		count += m.scheduleRemovalCandidate(ctx, candidate.SlotID, candidate.Path, "", "standby removal scheduling failed")
+		progress.merge(m.scheduleRemovalCandidate(ctx, candidate.SlotID, candidate.Path, "", "standby removal scheduling failed"))
 	}
-	return count
+	return progress
 }
 
-func (m *Manager) scheduleEndedWorktreeRemovals(ctx context.Context, candidates []state.GCCandidate) int {
-	count := 0
+func (m *Manager) scheduleEndedWorktreeRemovals(ctx context.Context, candidates []state.GCCandidate) gcProgress {
+	progress := newGCProgress()
 	for _, candidate := range candidates {
-		count += m.scheduleRemovalCandidate(ctx, candidate.SlotID, candidate.Path, candidate.SessionID, "ended worktree removal scheduling failed")
+		progress.merge(m.scheduleRemovalCandidate(ctx, candidate.SlotID, candidate.Path, candidate.SessionID, "ended worktree removal scheduling failed"))
 	}
-	return count
+	return progress
 }
 
-func (m *Manager) scheduleRemovalCandidate(ctx context.Context, slotID, path, sessionID, logMessage string) int {
+func (m *Manager) scheduleRemovalCandidate(ctx context.Context, slotID, path, sessionID, logMessage string) gcProgress {
+	progress := newGCProgress()
+	target := "worktree " + slotID
 	if _, release, err := m.holdVerifiedRootForPath(path); err != nil {
-		m.quarantineCleanupFailure(slotID, err)
-		return 0
+		reasonErr := m.quarantineCleanupFailure(slotID, err)
+		reason := "cleanup ownership verification failed; the artifact was not deleted"
+		if errors.Is(err, state.ErrOwnership) {
+			reason = "ownership could not be proven; the artifact was quarantined instead of deleted"
+		}
+		progress.addPending(target, reason, reasonErr)
+		return progress
 	} else {
 		release()
 	}
 	job, changed, err := m.store.ScheduleRemoval(ctx, slotID, sessionID)
 	if err != nil {
 		m.log.Error(logMessage, "slot_id", slotID, "error", err)
-		return 0
+		progress.addFailed(target, logMessage, err)
+		return progress
 	}
 	if !changed {
-		return 0
+		progress.addPending(target, "candidate changed before removal reservation", nil)
+		return progress
 	}
 	m.schedule(job)
-	return 1
+	progress.Scheduled++
+	return progress
 }
 
-func (m *Manager) expireWorkspaceSnapshots(ctx context.Context, expiredSessions map[string][]state.Snapshot, archiveManager *archive.Manager) int {
-	count := 0
-	for sessionID, snapshots := range expiredSessions {
+func (m *Manager) expireWorkspaceSnapshots(ctx context.Context, expiredSessions map[string][]state.Snapshot, archiveManager *archive.Manager) gcProgress {
+	progress := newGCProgress()
+	sessionIDs := make([]string, 0, len(expiredSessions))
+	for sessionID := range expiredSessions {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	sort.Strings(sessionIDs)
+	for _, sessionID := range sessionIDs {
+		snapshots := expiredSessions[sessionID]
 		ok := true
 		var rootSnapshot state.WorkspaceSnapshot
 		var rootSnapshotOwner string
@@ -2817,23 +2936,36 @@ func (m *Manager) expireWorkspaceSnapshots(ctx context.Context, expiredSessions 
 		var rootSnapshotOwnerRelease func()
 		workspaceKind, workspaceErr := m.store.SessionWorkspaceKind(ctx, sessionID)
 		if workspaceErr != nil {
+			progress.addPending("snapshots "+sessionID, "session workspace metadata could not be read", workspaceErr)
 			ok = false
 		} else if workspaceKind == "multi_repository" {
 			var found bool
 			rootSnapshot, found, workspaceErr = m.store.WorkspaceSnapshot(ctx, sessionID)
-			if workspaceErr != nil || !found {
+			if workspaceErr != nil {
+				progress.addPending("workspace snapshot "+sessionID, "workspace snapshot metadata could not be read", workspaceErr)
+				ok = false
+			} else if !found {
+				progress.addPending("workspace snapshot "+sessionID, "workspace snapshot metadata is incomplete", errors.New("workspace snapshot is missing"))
 				ok = false
 			} else if owner, releaseOwner, ownerErr := m.holdVerifiedRootForPath(rootSnapshot.ArchivePath); ownerErr != nil {
-				_ = m.store.QuarantineArtifact(context.Background(), "workspace_snapshot", rootSnapshot.ArchivePath, "ownership could not be proven during cleanup")
+				quarantineErr := m.store.QuarantineArtifact(context.Background(), "workspace_snapshot", rootSnapshot.ArchivePath, "ownership could not be proven during cleanup")
+				if quarantineErr != nil {
+					ownerErr = errors.Join(ownerErr, fmt.Errorf("quarantine workspace snapshot failed: %w", quarantineErr))
+				}
+				progress.addPending("workspace snapshot "+sessionID, "ownership could not be proven; the artifact was quarantined instead of deleted", ownerErr)
 				ok = false
 			} else {
 				rootSnapshotOwner = owner
 				rootSnapshotOwnerRelease = releaseOwner
 				rootSnapshotOwnerHandle = m.rootHandleForRoot(owner)
 				if rootSnapshotOwnerHandle == nil {
+					progress.addPending("workspace snapshot "+sessionID, "workspace snapshot ownership handle is unavailable", errors.New("workspace snapshot ownership root descriptor is unavailable"))
 					ok = false
 				} else {
-					ok = archive.ValidateWorkspaceSnapshotAt(owner, rootSnapshotOwnerHandle, rootSnapshot, time.Time{}) == nil
+					if validateErr := archive.ValidateWorkspaceSnapshotAt(owner, rootSnapshotOwnerHandle, rootSnapshot, time.Time{}); validateErr != nil {
+						progress.addPending("workspace snapshot "+sessionID, "workspace snapshot metadata or artifact validation failed", validateErr)
+						ok = false
+					}
 				}
 			}
 		}
@@ -2845,24 +2977,35 @@ func (m *Manager) expireWorkspaceSnapshots(ctx context.Context, expiredSessions 
 		}
 		for _, snapshot := range snapshots {
 			repo, err := m.store.Repository(ctx, snapshot.RepositoryID)
-			if err != nil || archiveManager.DeleteSnapshotRefs(ctx, repo, snapshot) != nil {
+			if err != nil {
+				progress.addFailed("snapshot "+sessionID+"/"+snapshot.RepositoryID, "snapshot repository metadata could not be read", err)
+				ok = false
+				break
+			}
+			if err := archiveManager.DeleteSnapshotRefs(ctx, repo, snapshot); err != nil {
+				progress.addFailed("snapshot "+sessionID+"/"+snapshot.RepositoryID, "snapshot recovery refs could not be deleted", err)
 				ok = false
 				break
 			}
 		}
 		if ok && rootSnapshot.SessionID != "" {
-			ok = archive.DeleteWorkspaceSnapshotAt(rootSnapshotOwner, rootSnapshotOwnerHandle, rootSnapshot) == nil
+			if err := archive.DeleteWorkspaceSnapshotAt(rootSnapshotOwner, rootSnapshotOwnerHandle, rootSnapshot); err != nil {
+				progress.addFailed("workspace snapshot "+sessionID, "workspace snapshot archive could not be deleted", err)
+				ok = false
+			}
 		}
 		if ok {
-			if err := m.store.ExpireSessionSnapshots(ctx, sessionID); err == nil {
-				count++
+			if err := m.store.ExpireSessionSnapshots(ctx, sessionID); err != nil {
+				progress.addFailed("snapshots "+sessionID, "snapshot metadata could not be expired", err)
+			} else {
+				progress.Completed++
 			}
 		}
 		if rootSnapshotOwnerRelease != nil {
 			rootSnapshotOwnerRelease()
 		}
 	}
-	return count
+	return progress
 }
 
 func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
@@ -3742,7 +3885,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	if runGC {
 		m.startBackground(func() {
 			m.reconcileRegistry(m.ctx)
-			_, _ = m.GC(m.ctx, false)
+			m.runBackgroundGC()
 		})
 	}
 	return nil

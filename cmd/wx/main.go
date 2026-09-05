@@ -257,13 +257,27 @@ func runGC(ctx context.Context, args []string) int {
 		commandUsage(os.Stderr, "gc")
 		return 2
 	}
-	c, _ := rpcClient()
-	var out map[string]int
+	c, err := rpcClient()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	var out daemon.GCResult
 	if err := c.Call(ctx, "GC", map[string]bool{"dry_run": *dry}, &out); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	fmt.Printf("candidates: %d\n", out["candidates"])
+	fmt.Printf("candidates: %d\n", out.Candidates)
+	fmt.Printf("scheduled: %d\n", out.Scheduled)
+	fmt.Printf("completed: %d\n", out.Completed)
+	fmt.Printf("pending: %d\n", out.Pending)
+	fmt.Printf("failed: %d\n", out.Failed)
+	for _, reason := range out.Reasons {
+		fmt.Fprintf(os.Stderr, "gc %s (%s): %s\n", reason.Target, reason.Status, reason.Reason)
+	}
+	if !*dry && (out.Pending > 0 || out.Failed > 0) {
+		return 1
+	}
 	return 0
 }
 

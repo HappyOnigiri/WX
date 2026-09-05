@@ -71,9 +71,9 @@ func TestSessionLifecycleSoak(t *testing.T) {
 		}
 	}
 
-	count, err := manager.GC(ctx, false)
-	if err != nil || count != sessions {
-		t.Fatalf("GC count=%d, want %d, err=%v", count, sessions, err)
+	result, err := manager.GC(ctx, false)
+	if err != nil || result.Scheduled != sessions || result.Candidates != sessions {
+		t.Fatalf("GC result=%+v, want %d scheduled candidates, err=%v", result, sessions, err)
 	}
 	for {
 		jobs, err := store.RecoverJobs(ctx, false)
