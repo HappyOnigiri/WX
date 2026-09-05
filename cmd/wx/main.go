@@ -135,6 +135,10 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	name := strings.ToLower(method)
 	fs := pflag.NewFlagSet(name, pflag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print JSON")
+	var verbose *bool
+	if strings.EqualFold(method, "Status") {
+		verbose = fs.BoolP("verbose", "v", false, "show detailed status")
+	}
 	fs.Usage = func() { commandUsage(os.Stdout, name) }
 	if code, done := finishFlagParse(fs, name, args); done {
 		return code
@@ -159,9 +163,12 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 		return 1
 	}
 	data, _ := json.MarshalIndent(out, "", "  ")
-	if *jsonOut {
+	switch {
+	case *jsonOut:
 		fmt.Println(string(data))
-	} else {
+	case verbose != nil:
+		printStatusDisplay(os.Stdout, out, *verbose)
+	default:
 		printDisplay(os.Stdout, out)
 	}
 	return 0
