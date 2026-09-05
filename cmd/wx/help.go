@@ -24,6 +24,7 @@ Commands:
   status [--verbose] [--json]    show daemon and pool state
   doctor [--json]                check configuration and dependencies
   gc [--dry-run]                 run retention cleanup
+  prune [--all] [--dry-run]      delete recovery refs the database cannot explain
   clear [--all] [--standby]      delete managed worktrees now
   sessions [--all] [--json]      list managed sessions
   config [<key> <value>]         show or update configuration
@@ -58,6 +59,29 @@ Run retention cleanup without deleting unarchived workspace data.
 
 Options:
   --dry-run  report candidates without removing them`)
+	case "prune":
+		_, _ = fmt.Fprintln(w, `Usage: wx prune [--all] [--dry-run]
+
+Delete the recovery refs that the current database no longer explains. These
+are left behind when the state database is rebuilt, and the daemon reports
+them once per repository.
+
+By default wx deletes only the refs it can prove are safe to lose: every
+object they reach is also reachable from another ref, so nothing is lost. A
+ref that keeps objects of its own is left alone and reported with the number
+of objects that would become unreachable.
+
+With --all those refs are deleted too, and the work saved in them is lost for
+good. Refs the current database still expects are never touched, with or
+without --all.
+
+Exit status is 0 when the run finished, 1 when something failed, and 2 for an
+argument error. Keeping refs that could not be proven safe is not a failure.
+
+Options:
+  --all      delete refs whose contents cannot be proven safe to lose,
+             discarding the work they hold
+  --dry-run  report what would be deleted, changing nothing`)
 	case "clear":
 		_, _ = fmt.Fprintln(w, `Usage: wx clear [--all] [--standby] [--dry-run]
 
