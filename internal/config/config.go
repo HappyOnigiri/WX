@@ -31,6 +31,7 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
 type Config struct {
+	Worktree     WorktreePolicy        `yaml:"worktree,omitempty"`
 	Version      int                   `yaml:"version,omitempty"`
 	Storage      Storage               `yaml:"storage,omitempty"`
 	Pool         Pool                  `yaml:"pool,omitempty"`
@@ -43,6 +44,10 @@ type Config struct {
 	Logging      Logging               `yaml:"logging,omitempty"`
 	present      map[string]bool
 }
+type WorktreePolicy struct {
+	Undefined string `yaml:"undefined,omitempty"`
+}
+
 type Storage struct {
 	WorktreeRoot string `yaml:"worktree_root,omitempty"`
 	// RepoDirSource は slot 内の repository directory 名の導出方法を選ぶ。
@@ -75,8 +80,9 @@ type Readiness struct {
 	Timeout Duration `yaml:"timeout,omitempty"`
 }
 type Workspace struct {
-	Copy []string `yaml:"copy,omitempty"`
-	Link []string `yaml:"link,omitempty"`
+	Worktree string   `yaml:"worktree,omitempty"`
+	Copy     []string `yaml:"copy,omitempty"`
+	Link     []string `yaml:"link,omitempty"`
 }
 type Includes struct {
 	DefaultAgentRules bool `yaml:"default_agent_rules,omitempty"`
@@ -112,7 +118,8 @@ const (
 
 func Defaults() Config {
 	return Config{
-		Version: 1, Storage: Storage{WorktreeRoot: "$HOME/wx", RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
+		Worktree: WorktreePolicy{Undefined: "ask"},
+		Version:  1, Storage: Storage{WorktreeRoot: "$HOME/wx", RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2, GitConcurrencyPerRepository: 1},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
@@ -375,6 +382,14 @@ func ExpandHome(path string) (string, error) {
 }
 
 func Validate(c *Config) error {
+	if !validWorktreeMode(c.Worktree.Undefined, true) {
+		return errors.New("worktree.undefined must be ask, hot, cold, or off")
+	}
+	for path, workspace := range c.Workspaces {
+		if workspace.Worktree != "" && !validWorktreeMode(workspace.Worktree, false) {
+			return fmt.Errorf("workspaces.%s.worktree must be hot, cold, or off", path)
+		}
+	}
 	if c.Version != 1 {
 		return fmt.Errorf("unsupported config version %d", c.Version)
 	}
@@ -559,5 +574,49 @@ func SetField(c *Config, key, value string) error {
 		c.present = map[string]bool{}
 	}
 	c.present[key] = true
+	return nil
+}
+
+func validWorktreeMode(mode string, allowAsk bool) bool {
+	return mode == "hot" || mode == "cold" || mode == "off" || (allowAsk && mode == "ask")
+}
+
+// WorktreeMode は正規化済み workspace root の個別設定を優先し、未定義なら全体の方針を返す。
+func (c Config) WorktreeMode(root string) string {
+	if mode := c.Workspaces[root].Worktree; mode != "" {
+		return mode
+	}
+	return c.Worktree.Undefined
+}
+
+// SetWorkspaceWorktree は既存の copy/link と疎な設定を保ち、同じ実体を指すキーへ選択を保存する。
+func SetWorkspaceWorktree(c *Config, root, mode string) error {
+	if !validWorktreeMode(mode, false) {
+		return fmt.Errorf("invalid worktree mode %q", mode)
+	}
+	canonical, err := canonicalPath(root)
+	if err != nil {
+		return err
+	}
+	key := canonical
+	for path := range c.Workspaces {
+		resolved, err := canonicalPath(path)
+		if err != nil {
+			return err
+		}
+		if resolved == canonical {
+			key = path
+		}
+	}
+	if c.Workspaces == nil {
+		c.Workspaces = map[string]Workspace{}
+	}
+	workspace := c.Workspaces[key]
+	workspace.Worktree = mode
+	c.Workspaces[key] = workspace
+	if c.present == nil {
+		c.present = map[string]bool{}
+	}
+	c.present["workspaces"] = true
 	return nil
 }

@@ -168,6 +168,7 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 	initGitRepo(t, repoPath)
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -269,6 +270,7 @@ func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
 	initGitRepo(t, repoPath)
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -349,6 +351,7 @@ func TestEnsureStandbyOnlyChecksOutRecentlyUsedRepositories(t *testing.T) {
 	initGitRepo(t, coldRepoPath)
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
 	databasePath := filepath.Join(root, "state.db")
 	store, err := state.Open(databasePath)
@@ -607,7 +610,7 @@ func TestHandlerPublicLifecycleSurface(t *testing.T) {
 	defer manager.Close()
 	handler := Handler{Manager: manager}
 	ctx := context.Background()
-	result, err := handler.Handle(ctx, "ResolveAndLease", JSON(map[string]any{"cwd": repository, "agent": "codex", "client_pid": os.Getpid()}))
+	result, err := handler.Handle(ctx, "ResolveAndLease", JSON(map[string]any{"force_worktree": true, "cwd": repository, "agent": "codex", "client_pid": os.Getpid()}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,6 +824,7 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 	initGitRepo(t, repo)
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 2
 	cfg.Pool.PreparationConcurrency = 3
 	cfg.Retention.HotStandby.Duration = time.Hour
@@ -1028,6 +1032,7 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
 	cfg.Discovery.ReconcileInterval.Duration = time.Hour
 	cfg.Retention.EndedWorktree.Duration = 0

@@ -80,15 +80,16 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	switch method {
 	case "ResolveAndLease":
 		var p struct {
-			CWD       string   `json:"cwd"`
-			Branches  []string `json:"branches"`
-			Agent     string   `json:"agent"`
-			ClientPID int      `json:"client_pid"`
+			ForceWorktree bool     `json:"force_worktree"`
+			CWD           string   `json:"cwd"`
+			Branches      []string `json:"branches"`
+			Agent         string   `json:"agent"`
+			ClientPID     int      `json:"client_pid"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		return h.Manager.ResolveAndLease(ctx, p.CWD, p.Branches, p.Agent, p.ClientPID)
+		return h.Manager.leaseWithPolicy(ctx, p.CWD, p.Branches, p.Agent, p.ClientPID, p.ForceWorktree)
 	case "AllocateResumeSlot":
 		var p struct {
 			Agent     string `json:"agent"`

@@ -27,8 +27,9 @@ import (
 )
 
 type Client struct {
-	RPC    rpc.Client
-	Config config.Config
+	RPC           rpc.Client
+	Config        config.Config
+	forceWorktree bool
 
 	// beforeAgentStart は lease directory descriptor を開いた後に lexical root を置換する test 用 barrier。
 	// production client では nil のままにし、子 process は fdexec 経由で起動する。
@@ -116,7 +117,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	recoveryDiscarded := false
 	var lease daemon.Lease
 	method := "ResolveAndLease"
-	params := any(map[string]any{"cwd": cwd, "branches": branches, "agent": agent, "client_pid": os.Getpid()})
+	params := any(map[string]any{"cwd": cwd, "branches": branches, "agent": agent, "client_pid": os.Getpid(), "force_worktree": c.forceWorktree})
 	if explicitResume != "" {
 		var status struct {
 			Expired bool `json:"expired"`
