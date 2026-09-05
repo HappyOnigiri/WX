@@ -38,8 +38,8 @@ var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree l
 
 // JSONSchemaVersion は `wx status --json` と `wx doctor --json` の出力形状の互換契約であり、SQLite migration 数の SchemaVersion とは独立である。
 // scripted consumer が観測する形状を変える場合だけ上げる。2 は restart_pending、3 は stop_pending/pid、4 は daemon-unavailable diagnostics を追加した。
-// 5 は `wx status --json` の worktree_root_error と `wx doctor --json` の worktree_root check を追加した。
-const JSONSchemaVersion = 5
+// 5 は `wx status --json` の worktree_root_error と `wx doctor --json` の worktree_root check、6 は workspace_details の last_used_at を追加した。
+const JSONSchemaVersion = 6
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -1990,6 +1990,9 @@ type (
 		Ready        int    `json:"ready"`
 		Leased       int    `json:"leased"`
 		Failed       int    `json:"failed"`
+		// LastUsedAt はその workspace で作られた session の created_at の最大値であり、一度も使っていない workspace では空になる。
+		// repositories.last_leased_at を使わないのは、repository 行を共有する別 workspace の貸出でも値が入り、workspace 自身の利用実績と区別できないためである。
+		LastUsedAt string `json:"last_used_at,omitempty"`
 	}
 	SessionDiagnostic struct {
 		ID         string `json:"id"`
@@ -2146,14 +2149,14 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 
 func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error) {
 	var out StatusDiagnostics
-	workspaceRows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,(SELECT count(*) FROM workspace_repositories wr WHERE wr.workspace_id=w.id),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='READY'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='LEASED'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state IN ('FAILED','QUARANTINED')) FROM workspaces w ORDER BY w.root_path`)
+	workspaceRows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,(SELECT count(*) FROM workspace_repositories wr WHERE wr.workspace_id=w.id),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='READY'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='LEASED'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state IN ('FAILED','QUARANTINED')),COALESCE((SELECT MAX(se.created_at) FROM sessions se WHERE se.workspace_id=w.id),'') FROM workspaces w ORDER BY w.root_path`)
 	if err != nil {
 		return out, err
 	}
 	defer workspaceRows.Close()
 	for workspaceRows.Next() {
 		var item WorkspaceDiagnostic
-		if err := workspaceRows.Scan(&item.ID, &item.Root, &item.Generation, &item.Repositories, &item.Ready, &item.Leased, &item.Failed); err != nil {
+		if err := workspaceRows.Scan(&item.ID, &item.Root, &item.Generation, &item.Repositories, &item.Ready, &item.Leased, &item.Failed, &item.LastUsedAt); err != nil {
 			return out, err
 		}
 		out.Workspaces = append(out.Workspaces, item)

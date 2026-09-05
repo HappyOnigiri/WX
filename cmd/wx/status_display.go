@@ -106,11 +106,10 @@ type statusWorkspaceRow struct {
 
 func printStatusSummary(w io.Writer, payload map[string]any) {
 	workspaces := statusObjectList(payload["workspace_details"])
-	repositories := statusObjectsSortedBy(statusObjectList(payload["repository_details"]), "main_path")
 	roots := statusObjectsSortedBy(statusObjectList(payload["worktree_roots"]), "path")
 
-	// LAST USED は workspace と単一 repository の root が一致するときだけ対応付ける。
-	// パスの包含関係から repository を推測しない。
+	// LAST USED は daemon が workspace ごとに集計した last_used_at をそのまま出す。
+	// repository 一覧と突き合わせず、パスの包含関係からも repository を推測しない。
 	rows := make([]statusWorkspaceRow, 0, len(workspaces))
 	for _, workspace := range workspaces {
 		root, _ := statusRawString(workspace, "root")
@@ -125,16 +124,8 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 			leased:  statusCountOrDash(workspace, "leased"),
 			last:    "—",
 		}
-		if repositoryCount, ok := statusInt(workspace, "repositories"); ok && repositoryCount == 1 {
-			for _, repository := range repositories {
-				mainPath, _ := statusRawString(repository, "main_path")
-				if statusPathEqual(root, mainPath) {
-					if lastUsed, ok := statusRawString(repository, "last_used_at"); ok && lastUsed != "" {
-						row.last = statusLocalDate(lastUsed)
-					}
-					break
-				}
-			}
+		if lastUsed, ok := statusRawString(workspace, "last_used_at"); ok && lastUsed != "" {
+			row.last = statusLocalDate(lastUsed)
 		}
 		rows = append(rows, row)
 	}
@@ -228,13 +219,6 @@ func statusWorkspaceIsCurrent(workspace map[string]any, roots []map[string]any) 
 		}
 	}
 	return false
-}
-
-func statusPathEqual(left, right string) bool {
-	if left == "" || right == "" {
-		return false
-	}
-	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 func statusPathWithin(path, root string) bool {
@@ -362,10 +346,10 @@ func (r *verboseStatusRenderer) renderWorkspaces() {
 	r.mark("workspace_details")
 	rows := make([][]string, 0, len(items))
 	for index, item := range items {
-		rows = append(rows, []string{statusValue(item, "id"), statusHomeValue(item, "root"), statusValue(item, "generation"), statusValue(item, "repositories"), statusValue(item, "ready"), statusValue(item, "leased"), statusValue(item, "failed")})
-		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("workspaces[%d]", index), item, map[string]bool{"id": true, "root": true, "generation": true, "repositories": true, "ready": true, "leased": true, "failed": true})
+		rows = append(rows, []string{statusValue(item, "id"), statusHomeValue(item, "root"), statusValue(item, "generation"), statusValue(item, "repositories"), statusValue(item, "ready"), statusValue(item, "leased"), statusValue(item, "failed"), statusValue(item, "last_used_at")})
+		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("workspaces[%d]", index), item, map[string]bool{"id": true, "root": true, "generation": true, "repositories": true, "ready": true, "leased": true, "failed": true, "last_used_at": true})
 	}
-	r.lineTable([]string{"ID", "PATH", "GENERATION", "REPOSITORIES", "READY", "IN USE", "FAILED (FAILED + QUARANTINED)"}, rows, present)
+	r.lineTable([]string{"ID", "PATH", "GENERATION", "REPOSITORIES", "READY", "IN USE", "FAILED (FAILED + QUARANTINED)", "LAST USED"}, rows, present)
 }
 
 func (r *verboseStatusRenderer) lineTable(headers []string, rows [][]string, present bool) {
