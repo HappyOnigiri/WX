@@ -18,9 +18,8 @@ type block struct {
 	covered    bool
 }
 
-// exclusion is one exact repository-relative path carved out of the
-// coverage gate, each with a mandatory reviewer-facing reason recorded in
-// the exclusions file (not retained here; nothing reads it back).
+// exclusion は coverage gate から除外する repository-relative path と、
+// exclusions file に記録する reviewer 向け理由を表す。
 type exclusion struct {
 	path string
 }

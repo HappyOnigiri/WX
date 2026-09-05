@@ -14,11 +14,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-// TestCloseRootHandlesClosesRetiredDescriptors exercises the branches of
-// closeRootHandles that are not reached by adoptRoot-driven tests: an active
-// entry that is already closed (must not be double-closed or panic), a nil
-// descriptor recorded alongside live ones (must not panic on a nil
-// *os.Root.Close()), and retired-generation entries with the same shapes.
 func TestCloseRootHandlesClosesRetiredDescriptors(t *testing.T) {
 	base := t.TempDir()
 	openDir := func(name string) *os.Root {
@@ -77,9 +72,6 @@ func TestCloseRootHandlesClosesRetiredDescriptors(t *testing.T) {
 	}
 }
 
-// TestRootHasReferencesLockedCountsActiveAndRetiredGenerations verifies that
-// a retired-generation reference alone is sufficient to report the root as
-// referenced, and that a fully dereferenced/closed state reports false.
 func TestRootHasReferencesLockedCountsActiveAndRetiredGenerations(t *testing.T) {
 	m := &Manager{
 		rootRefs: map[string]*managedRoot{
@@ -108,8 +100,6 @@ func TestRootHasReferencesLockedCountsActiveAndRetiredGenerations(t *testing.T) 
 	}
 }
 
-// TestRootHandleForRootReportsNoDescriptorForUnknownRoot covers the branch
-// that reports no descriptor at all for an unknown root.
 func TestRootHandleForRootReportsNoDescriptorForUnknownRoot(t *testing.T) {
 	m := &Manager{}
 	if got := m.rootHandleForRoot(filepath.Join(t.TempDir(), "unknown")); got != nil {
@@ -117,9 +107,6 @@ func TestRootHandleForRootReportsNoDescriptorForUnknownRoot(t *testing.T) {
 	}
 }
 
-// TestOwnedPathExistsPropagatesManagerClosedError verifies that a shutting
-// down manager reports errManagerClosed verbatim from ownedPathExists rather
-// than wrapping it as an ordinary ownership failure GC could quarantine.
 func TestOwnedPathExistsPropagatesManagerClosedError(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Defaults()
@@ -142,11 +129,6 @@ func TestOwnedPathExistsPropagatesManagerClosedError(t *testing.T) {
 	}
 }
 
-// TestOwnedPathExistsReportsUnreadablePath verifies that ownedPathExists
-// reports a genuine filesystem error (an unreadable parent directory) as an
-// ownership failure distinct from an ordinary missing path, since the
-// caller must not treat "cannot tell" the same as "confirmed absent" when
-// deciding whether to quarantine.
 func TestOwnedPathExistsReportsUnreadablePath(t *testing.T) {
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -168,10 +150,6 @@ func TestOwnedPathExistsReportsUnreadablePath(t *testing.T) {
 	}
 }
 
-// TestRetainLeaseRejectsPathOutsideKnownRoots verifies retainLease fails
-// closed with an ownership error for a path that is neither a known root
-// nor within the configured worktree root, instead of silently accepting an
-// unrelated path as leaseable.
 func TestRetainLeaseRejectsPathOutsideKnownRoots(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Defaults()
@@ -196,10 +174,6 @@ func TestRetainLeaseRejectsPathOutsideKnownRoots(t *testing.T) {
 	}
 }
 
-// TestCreateSlotRootDetectsReplacedWorktreeRootDirectory proves that a
-// worktree root swapped out from under an already-cached descriptor (same
-// pathname, different inode) is detected and rejected rather than silently
-// handed to the caller as the configured root.
 func TestCreateSlotRootDetectsReplacedWorktreeRootDirectory(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Defaults()
@@ -215,8 +189,6 @@ func TestCreateSlotRootDetectsReplacedWorktreeRootDirectory(t *testing.T) {
 	if _, _, err := m.createSlotRoot(filepath.Join(cfg.Storage.WorktreeRoot, "slot", "root"), filepath.Join(cfg.Storage.WorktreeRoot, "slot", "root")); err != nil {
 		t.Fatal(err)
 	}
-	// Pin the manager's cached descriptor open across the on-disk swap below
-	// so createSlotRoot observes the now-stale inode it already holds.
 	_, release, err := m.rootDescriptor(cfg.Storage.WorktreeRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -235,11 +207,6 @@ func TestCreateSlotRootDetectsReplacedWorktreeRootDirectory(t *testing.T) {
 	}
 }
 
-// TestCreateSlotRootFailsWhenWorktreeRootIsReadOnly verifies that
-// createSlotRoot surfaces the underlying filesystem error when the
-// configured worktree root itself refuses new subdirectories (for example
-// because an operator changed its permissions), instead of silently
-// returning a lease path that was never actually created.
 func TestCreateSlotRootFailsWhenWorktreeRootIsReadOnly(t *testing.T) {
 	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
 	_ = ctx
@@ -256,11 +223,6 @@ func TestCreateSlotRootFailsWhenWorktreeRootIsReadOnly(t *testing.T) {
 	}
 }
 
-// TestMaterializeWorkspaceRootFailsWhenSlotDirectoryIsUnreadable verifies
-// that materializeWorkspaceRoot surfaces the underlying filesystem error
-// when the destination slot directory cannot be opened (an operator
-// permission change, or a hostile concurrent modification), instead of
-// silently reporting a successful materialization that never happened.
 func TestMaterializeWorkspaceRootFailsWhenSlotDirectoryIsUnreadable(t *testing.T) {
 	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
 	_ = ctx
@@ -280,10 +242,6 @@ func TestMaterializeWorkspaceRootFailsWhenSlotDirectoryIsUnreadable(t *testing.T
 	}
 }
 
-// TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable verifies that
-// rootDirectoryUsage propagates a filesystem walk failure (an unreadable
-// nested directory) as an error rather than silently reporting a partial or
-// zero usage figure for a root it could not fully inspect.
 func TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable(t *testing.T) {
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -301,12 +259,6 @@ func TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable(t *testing.T) {
 	}
 }
 
-// TestReadyMatchesReportsUnreadableSlotDirectory verifies that readyMatches
-// reports a genuine filesystem error (an unreadable parent directory) as an
-// ownership failure distinct from an ordinary missing slot, since the two
-// require different remediation: one is routine (the slot is simply gone),
-// the other means the daemon cannot currently prove anything about the path
-// at all.
 func TestReadyMatchesReportsUnreadableSlotDirectory(t *testing.T) {
 	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -328,10 +280,6 @@ func TestReadyMatchesReportsUnreadableSlotDirectory(t *testing.T) {
 	}
 }
 
-// TestReadyMatchesReportsMissingReadySlotDirectory exercises the ENOENT
-// branch reached only once the slot's root namespace itself resolves and
-// opens, but the slot's own directory has since disappeared underneath a
-// durable READY row.
 func TestReadyMatchesReportsMissingReadySlotDirectory(t *testing.T) {
 	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	bootstrap := filepath.Join(manager.Config().Storage.WorktreeRoot, "ready-missing", "bootstrap", "root")
@@ -346,10 +294,6 @@ func TestReadyMatchesReportsMissingReadySlotDirectory(t *testing.T) {
 	}
 }
 
-// TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot verifies that a
-// stored repository worktree path pointing outside the owning wx root is
-// reported as an ownership failure for both COLD and READY repository
-// states, rather than treated as an ordinary not-ready mismatch.
 func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -362,8 +306,6 @@ func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 	}
 	defer release()
 
-	// The fingerprint still has to match, or the slot is reported as an
-	// ordinary not-ready slot before the ownership check under test runs.
 	coldID := domain.StableID("ready-outside", "cold")
 	coldSlot := slotAtPath(t, manager, string(workspaceRecord.ID), coldID, filepath.Join(root, "ready-outside", coldID, "root"), 1, "READY")
 	coldDirName := escapingDirNameFor(t, root, coldSlot.Path)
@@ -395,10 +337,6 @@ func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 	}
 }
 
-// TestReadyRepositoriesMatchReportsUnopenableReadyWorktree verifies that a
-// READY repository worktree that Lstat can see but the daemon cannot open
-// (for example because its permissions were tampered with) is reported as
-// an ownership failure distinct from an ordinary not-ready mismatch.
 func TestReadyRepositoriesMatchReportsUnopenableReadyWorktree(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -438,10 +376,6 @@ func TestReadyRepositoriesMatchReportsUnopenableReadyWorktree(t *testing.T) {
 	}
 }
 
-// TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath
-// verifies a candidate whose worktree path cannot be verified against a
-// known wx root is quarantined and skipped rather than scheduled for
-// removal.
 func TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	slotID := domain.StableID("cold-schedule", "outside")
@@ -460,11 +394,6 @@ func TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath(t *te
 	}
 }
 
-// TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries
-// verifies that ownedRootArtifactPaths treats a workspace directory that has
-// not allocated any slots yet, an _unbound entry that is not a physical
-// directory, and wx's own reserved namespaces as ordinary absent artifacts
-// rather than as errors or as reportable slot directories.
 func TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries(t *testing.T) {
 	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -477,8 +406,6 @@ func TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries(t *test
 	if err := os.WriteFile(filepath.Join(root, unboundNamespace, "not-a-slot"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// _recovery holds workspace bundle archives, not slots, and must not be
-	// reported as an orphaned workspace namespace.
 	if err := os.MkdirAll(filepath.Join(root, "_recovery", "workspace-snapshots"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -495,10 +422,6 @@ func TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries(t *test
 	}
 }
 
-// TestOwnedRootArtifactPathsReportsUnreadableWorkspaceSlots verifies that a
-// workspace namespace whose contents cannot be read (as opposed to simply
-// not existing yet) is reported as an ownership failure, since the daemon
-// cannot prove there are no owned artifacts underneath it.
 func TestOwnedRootArtifactPathsReportsUnreadableWorkspaceSlots(t *testing.T) {
 	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -516,11 +439,6 @@ func TestOwnedRootArtifactPathsReportsUnreadableWorkspaceSlots(t *testing.T) {
 	}
 }
 
-// TestOwnedRootArtifactPathsReportsUnreadableUnboundNamespace verifies that
-// an unreadable "unbound" namespace under the wx root is reported as an
-// ownership failure rather than treated the same as an absent namespace,
-// mirroring the equivalent guarantee already covered for the "workspaces"
-// namespace above.
 func TestOwnedRootArtifactPathsReportsUnreadableUnboundNamespace(t *testing.T) {
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -538,10 +456,6 @@ func TestOwnedRootArtifactPathsReportsUnreadableUnboundNamespace(t *testing.T) {
 	}
 }
 
-// TestQuarantineFailureHelpersIgnoreNonOwnershipErrors verifies the guard
-// clauses in quarantineOwnershipFailure and quarantineCleanupFailure that
-// leave durable state untouched for an ordinary (non-ownership) error,
-// instead of quarantining a slot on every unrelated failure.
 func TestQuarantineFailureHelpersIgnoreNonOwnershipErrors(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Defaults()

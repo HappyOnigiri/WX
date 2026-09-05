@@ -57,9 +57,6 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 	if err != nil || len(paths) != 1 || filepath.Clean(paths[0]) != filepath.Clean(slotRoot) {
 		t.Fatalf("owned artifact paths=%v err=%v", paths, err)
 	}
-	// A regular file at the workspace level and a symlinked namespace are
-	// neither workspaces nor slots, and a regular file inside a workspace
-	// namespace is not a slot directory.
 	if err := os.WriteFile(filepath.Join(root, "ignored"), []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -221,8 +218,6 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	if count := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{validID: nil}, archiveManager); count != 1 {
 		t.Fatalf("valid workspace snapshot expiry count=%d", count)
 	}
-	// A snapshot recorded at a root-relative path that leaves the root is the
-	// remaining way to express an archive wx does not own.
 	if err := store.SaveWorkspaceSnapshot(ctx, state.WorkspaceSnapshot{SessionID: multiID, RootID: multiSlot.RootID, RelPath: filepath.Join("..", "outside-archive"), SHA256: "bad", Status: "ARCHIVED", CreatedAt: state.FormatTime(time.Now()), ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))}); err != nil {
 		t.Fatal(err)
 	}
@@ -230,8 +225,6 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 		t.Fatalf("outside archive expiry count=%d", count)
 	}
 
-	// A repository-only archived session has no workspace snapshot and can
-	// still expire its repository snapshots independently.
 	repositorySessionID := domain.StableID("expiry-matrix", "repository")
 	repositoryPath := filepath.Join(manager.Config().Storage.WorktreeRoot, "expiry", repositorySessionID, "root")
 	if err := os.MkdirAll(repositoryPath, 0o700); err != nil {

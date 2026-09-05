@@ -91,8 +91,8 @@ func TestOpenOwnedRootPinsRootAcrossReplacement(t *testing.T) {
 	}
 }
 
-// NEW-1: allocation must continue in the descriptor-pinned root when the
-// configured pathname is replaced after the root check.
+// NEW-1: ルート確認後に設定済みパスが置き換わっても、記述子で固定した
+// ルート内で割り当てを継続しなければならない。
 func TestOpenOwnedRootAllocationSurvivesRootReplacement(t *testing.T) {
 	parent := t.TempDir()
 	root := filepath.Join(parent, "owned")
@@ -233,8 +233,8 @@ func TestNewShortIDIsFixedWidthLowercaseBase36(t *testing.T) {
 		}
 		seen[id] = true
 	}
-	// 512 draws from ~2.18e9 values collide with probability well under 1e-4,
-	// so a large duplicate count means the generator is not random.
+	// 約21.8億個から512回抽出する衝突確率は1e-4を大きく下回るため、
+	// 重複が多ければ生成器がランダムでないことを示す。
 	if len(seen) < 500 {
 		t.Fatalf("only %d distinct ids out of 512 draws", len(seen))
 	}

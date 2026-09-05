@@ -78,10 +78,6 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 	if err := store.FinishJob(ctx, claimedPrepare.ID, "test", nil); err != nil {
 		t.Fatal(err)
 	}
-	// A clean worktree now takes snapshotObjects's short-circuit and reuses
-	// HEAD as WorktreeOID (see the clean-session archive minimization);
-	// dirty both checkouts so the later mismatched-ref assertion below still
-	// has a WorktreeOID distinct from HeadOID to point a ref at.
 	for _, sr := range repos {
 		if err := os.WriteFile(filepath.Join(sr.WorktreePath, "session-change.txt"), []byte("dirty\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -119,9 +115,6 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 		}
 	}
 
-	// The first repository has durable snapshot metadata while its refs are
-	// blocked, and the second repository is still before its archive step. The
-	// in-flight job is the only authority that suppresses missing-ref noise.
 	if diagnostics := m.artifactDiagnostics(ctx); len(diagnostics["unknown_refs"].([]string)) != 0 || len(diagnostics["missing_refs"].([]string)) != 0 {
 		t.Fatalf("in-flight archive was diagnosed as an artifact: %v", diagnostics)
 	}
@@ -155,8 +148,6 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 		t.Fatalf("multi-repository snapshots=%+v err=%v", snapshots, err)
 	}
 
-	// A ref outside the exact durable snapshot set remains unknown even after
-	// a successful archive and must enter persistent quarantine.
 	gitRun(t, service, "update-ref", "refs/wx/recovery/foreign", gitOutput(t, service, "rev-parse", "HEAD"))
 	m.reconcileArtifacts(ctx)
 	diagnostics := m.artifactDiagnostics(ctx)
@@ -172,8 +163,6 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 		t.Fatalf("genuine unknown ref was not quarantined: %+v", status.Quarantine)
 	}
 
-	// A known recovery-ref name pointing at a different object is equally
-	// unowned: the SQLite OID is part of the ownership proof.
 	mismatchedSnapshot := snapshots[0]
 	var mismatchedRepository discovery.Repository
 	for _, repository := range w.Repositories {

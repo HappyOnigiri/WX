@@ -9,28 +9,20 @@ import (
 	"time"
 )
 
-// progressFrameInterval paces the animated dots. Slow enough not to flicker,
-// fast enough that the line visibly moves between two socket probes. It is a
-// variable so tests can shorten it; production never changes it.
+// progressFrameInterval は animation の dot 間隔。
+// socket probe の間に動きを見せつつ点滅させず、test は短縮できるが production では変更しない。
 var progressFrameInterval = 400 * time.Millisecond
 
-// progressMaxDots is how far the dots grow before they start over at one.
+// progressMaxDots は dot を先頭へ戻すまでの最大数。
 const progressMaxDots = 3
 
-// progress is the "stopping..." line the synchronous daemon commands show
-// while they wait. The wait is dominated by the daemon's idle gate, which is
-// silence from the daemon's side, and a command that prints nothing at all
-// until it succeeds reads as a hang.
-//
-// The animation is for an interactive terminal only: it is carriage returns
-// and padding, which is noise once the output is a pipe, a log file or a test.
-// Non-interactive output therefore shows no waiting line at all, and the type
-// still carries the finished messages so the callers do not have to branch.
+// progress は同期的な daemon 操作の待機中に表示する進捗行。
+// 対話端末だけで描画し、pipe・log・test の出力には制御文字を出さない。
 type progress struct {
 	w     io.Writer
 	label string
-	// mu serialises the ticker goroutine's redraws against the caller's own
-	// writes, which have to erase the animated line before they use it.
+	// mu は ticker goroutine の再描画と呼び出し側の書込みを直列化する。
+	// 呼び出し側は書込み前に animation 行を消す。
 	mu       sync.Mutex
 	frame    int
 	animated bool
@@ -38,19 +30,15 @@ type progress struct {
 	done     chan struct{}
 }
 
-// interactiveOutput reports whether the command's output goes to a terminal.
-// A pipe and a regular file both answer no, which is what keeps the animation
-// out of everything a script, a log or a test reads back. /dev/null is a
-// character device and answers yes, which costs a few carriage returns that
-// nobody sees and is not worth a syscall to tell apart.
+// interactiveOutput は command の出力先が terminal か返す。
+// pipe と regular file には animation を出さない。/dev/null は見えないため特別扱いしない。
 func interactiveOutput(f *os.File) bool {
 	info, err := f.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
-// startProgress begins the waiting line. The first frame is drawn before the
-// call returns, so the feedback is there from the moment the command starts
-// rather than one frame interval later.
+// startProgress は待機行を開始する。
+// 最初の frame は return 前に描画し、command 開始直後から進捗を示す。
 func startProgress(w io.Writer, animate bool, label string) *progress {
 	p := &progress{w: w, label: label}
 	if !animate {
@@ -83,21 +71,19 @@ func (p *progress) run() {
 	}
 }
 
-// draw rewrites the waiting line in place. The dots are padded to their full
-// width so a shorter frame cannot leave the tail of a longer one behind.
-// p.mu must be held.
+// draw は待機行を同じ位置に再描画する。短い frame が長い frame の末尾を残さないよう dot を埋める。
+// p.mu を保持して呼ぶ。
 func (p *progress) draw() {
 	if !p.animated {
 		return
 	}
 	dots := strings.Repeat(".", p.frame%progressMaxDots+1)
-	// The waiting line is decoration; a write failure on it is not actionable
-	// and must not change the command's exit status.
+	// 待機行は装飾であり、書込み失敗は対処できず command の終了コードも変えない。
 	_, _ = fmt.Fprintf(p.w, "\r%s%-*s", p.label, progressMaxDots, dots)
 }
 
-// erase clears the waiting line and returns the cursor to column zero, so
-// whatever is written next starts on a blank line. p.mu must be held.
+// erase は待機行を消して cursor を先頭列へ戻し、次の出力を空行から始める。
+// p.mu を保持して呼ぶ。
 func (p *progress) erase() {
 	if !p.animated {
 		return
@@ -105,8 +91,7 @@ func (p *progress) erase() {
 	_, _ = fmt.Fprintf(p.w, "\r%*s\r", len(p.label)+progressMaxDots, "")
 }
 
-// line prints a message that is not the end of the wait, and puts the waiting
-// line back underneath it.
+// line は待機終了ではない message を出し、その下に待機行を戻す。
 func (p *progress) line(text string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -115,9 +100,8 @@ func (p *progress) line(text string) {
 	p.draw()
 }
 
-// finish takes the waiting line down. Callers defer it and also call it before
-// writing the outcome, so it has to tolerate the second call; it is not safe
-// against two goroutines, which the commands never do.
+// finish は待機行を消す。呼び出し側は defer と結果出力前の両方で呼ぶため、二度目を許容する。
+// command は複数 goroutine から呼ばない。
 func (p *progress) finish() {
 	p.mu.Lock()
 	animated := p.animated

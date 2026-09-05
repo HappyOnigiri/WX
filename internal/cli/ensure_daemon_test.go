@@ -15,10 +15,8 @@ import (
 	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
-// fakeLaunchctl installs a launchctl on PATH that records each invocation to
-// marker and exits 0 without doing anything real. It lets tests observe
-// whether ensureDaemon reached for launchd.Kickstart without actually
-// depending on a real LaunchAgent.
+// fakeLaunchctl は PATH に偽の launchctl を置き、呼び出しを marker へ記録して成功終了する。
+// 実際の LaunchAgent に依存せず、ensureDaemon が launchd.Kickstart を呼んだか確認できる。
 func fakeLaunchctl(t *testing.T) (marker string) {
 	t.Helper()
 	bin := t.TempDir()
@@ -70,8 +68,7 @@ func TestEnsureDaemonGuidesInstallForStaleLaunchAgent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(plist), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// The old command contract that motivated this diagnostic wrote a plist
-	// containing daemon start --foreground instead of daemon serve.
+	// 旧 command 契約は daemon serve ではなく daemon start --foreground を含む plist を書いていた。
 	if err := os.WriteFile(plist, []byte("<string>daemon start --foreground</string>\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

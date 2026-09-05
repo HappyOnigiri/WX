@@ -6,11 +6,8 @@ import (
 	"testing"
 )
 
-// TestLoadRawReturnsEmptyConfigWhenFileIsAbsent exercises LoadRaw's
-// first-run branch: no config file has ever been written under $HOME, so the
-// call must succeed with a zero-value Config rather than surfacing the
-// missing-file error, and that empty raw config must still merge into a
-// valid effective configuration.
+// TestLoadRawReturnsEmptyConfigWhenFileIsAbsent は初回起動で config file がない経路を確認する。
+// LoadRaw は missing-file error を返さず zero Config を返し、既定値との merge で有効な設定になる。
 func TestLoadRawReturnsEmptyConfigWhenFileIsAbsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -30,9 +27,8 @@ func TestLoadRawReturnsEmptyConfigWhenFileIsAbsent(t *testing.T) {
 	}
 }
 
-// TestSavePropagatesConfigDirectoryCreationFailure exercises Save's
-// os.MkdirAll failure branch: an ancestor of the config directory already
-// exists as a regular file, so the parent directory can never be created.
+// TestSavePropagatesConfigDirectoryCreationFailure は Save の os.MkdirAll 失敗経路を確認する。
+// config directory の祖先が regular file のため、親 directory を作成できない。
 func TestSavePropagatesConfigDirectoryCreationFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -45,12 +41,8 @@ func TestSavePropagatesConfigDirectoryCreationFailure(t *testing.T) {
 	}
 }
 
-// TestSavePropagatesTemporaryFileCreationFailure exercises Save's
-// os.CreateTemp failure branch: the config directory exists and is
-// searchable (so the preceding Lstat succeeds with ErrNotExist) but is not
-// writable, so the temporary file used for the atomic write can never be
-// created. This is distinct from the existing unsearchable-directory test,
-// which fails earlier at Save's own Lstat of the config path.
+// TestSavePropagatesTemporaryFileCreationFailure は書込み不能な config directory で os.CreateTemp が失敗することを確認する。
+// Lstat で先に失敗する検索不能 directory の test とは別の経路である。
 func TestSavePropagatesTemporaryFileCreationFailure(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

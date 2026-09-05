@@ -18,10 +18,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// signalLog records the lifecycle path's launchctl calls and stop signals.
-// Both run on their own goroutine (neither must block the manager's
-// WaitGroup), so the counter is shared state and the assertions below have to
-// wait for it rather than read it straight after the call that scheduled it.
 type signalLog struct {
 	mu  sync.Mutex
 	n   int
@@ -55,8 +51,6 @@ func (k *signalLog) want(t *testing.T, n int) {
 	}
 }
 
-// stayAt fails if another call is issued. The grace period is what makes
-// it meaningful: the call that would have issued one has already returned.
 func (k *signalLog) stayAt(t *testing.T, n int) {
 	t.Helper()
 	time.Sleep(50 * time.Millisecond)
@@ -82,9 +76,6 @@ func lifecycleActionClaimed(m *Manager) bool {
 	return m.lifecycleClaimed
 }
 
-// restartFixture builds a manager that watches a stand-in executable inside a
-// temporary directory, so replacement can be simulated without touching the
-// test binary itself.
 func restartFixture(t *testing.T) (*Manager, string, *signalLog) {
 	t.Helper()
 	root := t.TempDir()
@@ -111,8 +102,6 @@ func restartFixture(t *testing.T) (*Manager, string, *signalLog) {
 	return manager, executable, kickstarts
 }
 
-// stopFixture is restartFixture with the SIGTERM seam captured too, so a stop
-// can be driven to completion without ending the test binary.
 func stopFixture(t *testing.T) (*Manager, *signalLog) {
 	t.Helper()
 	manager, _, _ := restartFixture(t)
@@ -121,8 +110,6 @@ func stopFixture(t *testing.T) (*Manager, *signalLog) {
 	return manager, stops
 }
 
-// replaceExecutable renames a new file over the pathname, which is what
-// install(1) does and what leaves the running process on the old inode.
 func replaceExecutable(t *testing.T, path string) {
 	t.Helper()
 	replacement := path + ".new"
@@ -160,8 +147,6 @@ func TestReplacedExecutableRestartsWhenIdle(t *testing.T) {
 	}
 	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
-	// The restart is requested exactly once: cmd/wx stops honouring SIGTERM
-	// after the first one, so a repeat would only kill the replacement.
 	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 1)
 }
@@ -206,16 +191,11 @@ func TestPendingRestartWaitsForJobsAndRequests(t *testing.T) {
 	manager.endRequest(false)
 	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
-	// One wx invocation is several RPCs with idle moments between them, so the
-	// gate only opens once the daemon has stayed idle for lifecycleQuietPeriod.
 	elapseLifecycleGate(manager)
 	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
 }
 
-// elapseLifecycleGate ages both of the gate's stamps past their thresholds, so
-// a test that has already exercised the condition it cares about can let the
-// gate open without sleeping through a quiet period.
 func elapseLifecycleGate(m *Manager) {
 	m.mu.Lock()
 	m.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
@@ -225,8 +205,6 @@ func elapseLifecycleGate(m *Manager) {
 
 func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
 	manager, _, kickstarts := restartFixture(t)
-	// A wx invocation is in the middle of its RPC sequence when the restart is
-	// asked for; the request that asks carries its own bracket on top.
 	manager.beginRequest(false)
 	manager.beginRequest(true)
 	manager.RequestRestart(context.Background())
@@ -238,8 +216,6 @@ func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
 	manager.endRequest(true)
 	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
-	// The lifecycle request is answered but the wx invocation is not, so the
-	// quiet period has not even started yet.
 	manager.endRequest(false)
 	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
@@ -248,10 +224,6 @@ func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
 	kickstarts.want(t, 1)
 }
 
-// TestLifecycleRequestDoesNotRestartTheQuietPeriod pins the reason wx daemon
-// stop and restart do not sit out a five-second quiet period on a daemon that
-// was already idle: the request that raises the intent is not the user-visible
-// operation the period protects, so it does not restamp it.
 func TestLifecycleRequestDoesNotRestartTheQuietPeriod(t *testing.T) {
 	manager, _, kickstarts := restartFixture(t)
 	handler := Handler{Manager: manager}
@@ -267,8 +239,6 @@ func TestLifecycleRequestDoesNotRestartTheQuietPeriod(t *testing.T) {
 	if lastLifecycle.IsZero() {
 		t.Fatal("the lifecycle request did not record when its reply became due")
 	}
-	// The reply frame is written after Handler.Handle returns, so the gate is
-	// still shut for lifecycleReplyGrace.
 	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
 	manager.mu.Lock()
@@ -321,10 +291,6 @@ func TestRestartAccountingBracketsEveryHandledRequest(t *testing.T) {
 	if manager.inflightRequests != 0 {
 		t.Fatalf("inflightRequests=%d after a failed dispatch", manager.inflightRequests)
 	}
-	// lastRequestEnd is stamped only when the count reaches zero from above, so
-	// it stays unset if Handler.Handle loses either half of the bracket:
-	// without beginRequest the count goes to -1, without endRequest it stays at
-	// one, and without both it never moves.
 	if manager.lastRequestEnd.IsZero() {
 		t.Fatal("a dispatched request was not counted as in-flight")
 	}
@@ -351,8 +317,6 @@ func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 	kickstarts.failWith(context.DeadlineExceeded)
 	replaceExecutable(t, executable)
 	manager.detectExecutableReplacement()
-	// A kickstart that failed delivered no SIGTERM, so the daemon is still on
-	// the replaced binary and the claim has to come back for the next check.
 	for attempt := 1; attempt <= maxLifecycleAttempts; attempt++ {
 		manager.runPendingLifecycle()
 		kickstarts.want(t, attempt)
@@ -363,10 +327,6 @@ func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 	kickstarts.stayAt(t, maxLifecycleAttempts)
 }
 
-// TestAnExhaustedRestartDoesNotParkALaterStop is the reason the attempt budget
-// is cleared by an explicit request: the latch is shared by both intents, so a
-// launchctl that failed its way to the limit would otherwise leave the daemon
-// impossible to stop for the rest of its life.
 func TestAnExhaustedRestartDoesNotParkALaterStop(t *testing.T) {
 	manager, executable, kickstarts := restartFixture(t)
 	stops := &signalLog{}
@@ -390,10 +350,6 @@ func TestAnExhaustedRestartDoesNotParkALaterStop(t *testing.T) {
 	stops.want(t, 1)
 }
 
-// TestANewRequestKeepsAClaimWhoseSignalWasDelivered is the other half: the
-// claim that is not latched belongs to a signal already on its way, and
-// clearing it would let a second kickstart -k kill the replacement launchd
-// just started.
 func TestANewRequestKeepsAClaimWhoseSignalWasDelivered(t *testing.T) {
 	manager, stops := stopFixture(t)
 	ctx := context.Background()
@@ -475,8 +431,6 @@ func TestRequestedStopWaitsForTheSameIdleGateAsARestart(t *testing.T) {
 	if pending, _ := status["stop_pending"].(bool); !pending {
 		t.Fatalf("status does not report the pending stop: %v", status["stop_pending"])
 	}
-	// In flight, then a queued job, then the quiet period: each of the gate's
-	// conditions holds the stop back on its own.
 	manager.runPendingLifecycle()
 	stops.stayAt(t, 0)
 	manager.endRequest(true)
@@ -499,15 +453,10 @@ func TestRequestedStopWaitsForTheSameIdleGateAsARestart(t *testing.T) {
 	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
-	// The daemon honours only the first SIGTERM, so the claim is permanent.
 	manager.runPendingLifecycle()
 	stops.stayAt(t, 1)
 }
 
-// TestStopDoesNotRequireLaunchd is the difference between the two intents: a
-// daemon started by hand with wx daemon start --foreground has to be
-// stoppable, and signalling this very process cannot start a second daemon the
-// way a kickstart could.
 func TestStopDoesNotRequireLaunchdButRestartStillDoes(t *testing.T) {
 	manager, stops := stopFixture(t)
 	manager.launchdManaged = func() bool { return false }
@@ -556,10 +505,6 @@ func TestEachLifecycleRequestSupersedesTheOther(t *testing.T) {
 	}
 }
 
-// TestARequestAfterADeliveredSignalIsRefusedAsAConflict keeps the reply
-// honest: once a signal is on its way the opposite request cannot supersede
-// it, so answering as if it had would have the caller wait out its whole
-// budget for a state the daemon is not heading to.
 func TestARequestAfterADeliveredSignalIsRefusedAsAConflict(t *testing.T) {
 	manager, stops := stopFixture(t)
 	ctx := context.Background()
@@ -584,9 +529,6 @@ func TestARequestAfterADeliveredSignalIsRefusedAsAConflict(t *testing.T) {
 	}
 }
 
-// TestAStaleIntentIsNotIssuedAfterTheJobQuery covers the window the job query
-// opens: the lock is released across it, so the intent read before it can have
-// been replaced by the time the action would be claimed.
 func TestAStaleIntentIsNotIssuedAfterTheJobQuery(t *testing.T) {
 	manager, _ := stopFixture(t)
 	manager.RequestStop(context.Background())
@@ -600,10 +542,6 @@ func TestAStaleIntentIsNotIssuedAfterTheJobQuery(t *testing.T) {
 	}
 }
 
-// TestStartRequestCallsBackAStopThatWasNeverIssued closes the gap a stop that
-// outlived its caller leaves behind: the intent stays pending, and a later
-// start that only looked at the socket would report a running daemon that is
-// still going to exit.
 func TestStartRequestCallsBackAStopThatWasNeverIssued(t *testing.T) {
 	manager, stops := stopFixture(t)
 	ctx := context.Background()
@@ -622,9 +560,6 @@ func TestStartRequestCallsBackAStopThatWasNeverIssued(t *testing.T) {
 	stops.stayAt(t, 0)
 }
 
-// TestStartRequestCannotCallBackADeliveredStop is the other half: the SIGTERM
-// is already on its way, so the reply has to say the daemon is still stopping
-// rather than claim it is running.
 func TestStartRequestCannotCallBackADeliveredStop(t *testing.T) {
 	manager, stops := stopFixture(t)
 	ctx := context.Background()
@@ -643,15 +578,10 @@ func TestStartRequestCannotCallBackADeliveredStop(t *testing.T) {
 	}
 }
 
-// TestReplacementDetectionRechecksTheIntentBeforeRaisingIt covers the window
-// the stat opens: the pending flags are read before it and written after, so a
-// stop that arrives in between would otherwise be buried under a restart.
 func TestReplacementDetectionRechecksTheIntentBeforeRaisingIt(t *testing.T) {
 	manager, _ := stopFixture(t)
 	executable := manager.executablePath
 	replaceExecutable(t, executable)
-	// Standing in for the request that lands while the stat is running: the
-	// detection read no pending intent, and by the write it is there.
 	manager.mu.Lock()
 	manager.stopPending = true
 	manager.mu.Unlock()
@@ -667,9 +597,6 @@ func TestReplacementDetectionRechecksTheIntentBeforeRaisingIt(t *testing.T) {
 	}
 }
 
-// TestPendingStopSuppressesReplacementDetection guards the one way an operator
-// who asked for a stop could get a restart instead: the executable watch fires
-// on the same tick and would otherwise raise restartPending over the stop.
 func TestPendingStopSuppressesReplacementDetection(t *testing.T) {
 	manager, stops := stopFixture(t)
 	executable := manager.executablePath
@@ -692,8 +619,6 @@ func TestLifecycleReplyReportsWhatTheGateIsWaitingFor(t *testing.T) {
 	if _, err := manager.store.CreateJob(ctx, "ENSURE_STANDBY", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	// One in-flight request stands for the lifecycle RPC itself, which the
-	// snapshot must not count against the daemon it is describing.
 	manager.beginRequest(true)
 	reply := manager.RequestStop(ctx)
 	if pid, _ := reply["pid"].(int); pid != os.Getpid() {
@@ -716,8 +641,6 @@ func TestLifecycleReplyReportsWhatTheGateIsWaitingFor(t *testing.T) {
 	if remaining, _ := repeat["quiet_period_remaining_ms"].(int64); remaining != 0 {
 		t.Fatalf("quiet_period_remaining_ms=%v, want the lifecycle RPC to leave the quiet period alone", repeat["quiet_period_remaining_ms"])
 	}
-	// A request that is not a lifecycle request is what the quiet period is
-	// measured over, so this one does push the gate out.
 	manager.beginRequest(false)
 	manager.endRequest(false)
 	stamped := manager.RequestStop(ctx)
@@ -740,8 +663,6 @@ func TestStopSignalFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 	manager.mu.Lock()
 	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
 	manager.mu.Unlock()
-	// A signal that was never delivered leaves the daemon running, so the claim
-	// has to come back for the next check until the attempt limit is reached.
 	for attempt := 1; attempt <= maxLifecycleAttempts; attempt++ {
 		manager.runPendingLifecycle()
 		stops.want(t, attempt)
@@ -752,9 +673,6 @@ func TestStopSignalFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 	stops.stayAt(t, maxLifecycleAttempts)
 }
 
-// TestTerminateSelfSignalsThisProcess exercises the production seam. Notifying
-// on SIGTERM first is what keeps the default disposition (terminate the test
-// binary) from taking effect.
 func TestTerminateSelfSignalsThisProcess(t *testing.T) {
 	received := make(chan os.Signal, 1)
 	signal.Notify(received, syscall.SIGTERM)

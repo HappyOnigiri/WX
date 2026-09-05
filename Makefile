@@ -25,13 +25,11 @@ COVERAGE_MIN ?= 80
 CORE_COVERAGE_MIN ?= 85
 COVERAGE_EXCLUSIONS ?= coverage-exclusions.txt
 LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicode-3.0,Unlicense
-# wx intentionally executes Git, launchctl, and user-configured prepare commands
-# against ownership-validated paths. These generic rules cannot model those
-# trust boundaries; this exclusion list is used only by the explicitly invoked
-# `gosec` target, which is paused out of default setup, CI, and hooks.
+# 所有権を検証したパスでGit・launchctl・prepareコマンドを実行する。
+# 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check portable-test concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-coverage coverage-check portable-test concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -45,9 +43,8 @@ setup-go-tools:
 
 setup-external-tools: setup-markdownlint check-shellcheck
 
-# These setup targets are intentionally not dependencies of `setup`, CI, or
-# hooks. Invoke the corresponding check explicitly only after the user grants
-# permission to opt back into the paused security or SBOM tooling.
+# セキュリティ・SBOMの再開はユーザーの明示許可後に手動実行する。
+# setup・CI・hookの依存には含めない。
 setup-security-tools:
 	mkdir -p "$(TOOLS_BIN)"
 	GOBIN="$(TOOLS_BIN)" $(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
@@ -111,15 +108,8 @@ mod-tidy-check:
 	$(GO) mod tidy -diff
 	$(GO) mod verify
 
-# No package in this repository currently declares a //go:generate directive:
-# help text, config schema, SQLite migrations, the LaunchAgent plist, and
-# shell completion are all hand-maintained, and the project keeps that
-# no-generator stance rather than introducing one.
-# `go generate ./...` therefore has nothing to run today, so this check is
-# green by construction and does not yet catch generated-artifact drift; it
-# is kept as a required CI check (rather than removed) so that adding a real
-# //go:generate directive to any of those sources starts enforcing it
-# immediately, with no further wiring.
+# 現在は全て手書きで、go:generateがないため生成物の差分検出は行われない。
+# 将来ディレクティブを追加した時点で検査が働くよう、CIへの接続を維持する。
 generated-check:
 	$(GO) generate ./...
 	git diff --exit-code
@@ -129,6 +119,9 @@ docs-check:
 	command -v node >/dev/null
 	node tools/markdownlint/selftest.mjs "$(TOOLS_DIR)/npm/node_modules/markdownlint-cli2/export-markdownlint.mjs"
 	"$(NPM_BIN)/markdownlint-cli2" README.md '**/*.md' '#.tools/**' '#tmp/**'
+
+comments-check:
+	$(GO) run ./tools/checkcomments
 
 workflow-check: workflow-lint
 
@@ -212,28 +205,24 @@ sbom: setup-sbom-tools
 	mkdir -p artifacts
 	"$(TOOLS_BIN)/cyclonedx-gomod" mod -json -output artifacts/sbom.json
 
-# Security and SBOM targets are manual opt-in checks. Keep them out of CI and
-# hooks until the user explicitly authorizes re-enabling automation.
+# セキュリティ・SBOMは手動opt-inとし、自動化の再開にはユーザーの明示許可が必要。
 security-local: setup-security-tools govulncheck dependency-check gosec license-check secret-check
 
 ci:
 	$(MAKE) $(CI_MAKEFLAGS) ci-checks
 
-ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check workflow-check shell-check coverage-check build-darwin smoke
+ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check comments-check workflow-check shell-check coverage-check build-darwin smoke
 
-# The hook bodies live in $(git rev-parse --git-common-dir)/hooks and are not
-# tracked here, so that the user-level core.hooksPath dispatcher keeps working.
-# These targets are the contract those hooks call.
+# hook本体は共通Gitディレクトリのhooks直下に置き、user側のdispatcherを維持する。
+# 以下はそのhookが呼び出す契約である。
 hook-pre-commit:
 	scripts/hook-check.sh pre-commit
 
 hook-pre-push:
 	scripts/hook-check.sh pre-push
 
-# -timeout is explicit here (rather than Go's default 10m/package) because
-# -count=10 over the full module makes internal/daemon alone run well past 10
-# minutes; measured ~14-18 minutes standalone, so 45m leaves headroom while
-# still comfortably fitting the 90-minute nightly job budget.
+# 全体を10回実行するとdaemonだけで約14〜18分かかるため、45分の上限を明示する。
+# nightlyジョブの90分枠内に収めつつ余裕を持たせる。
 nightly-race:
 	$(GO) test -race -shuffle=on -count=10 -timeout=45m ./...
 

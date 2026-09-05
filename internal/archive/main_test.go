@@ -21,19 +21,16 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// testRootID stands in for a roots.id row. Slot and workspace-snapshot
-// locations are recorded as a root generation plus a root-relative path, so
-// every fixture that builds one has to name a generation.
+// testRootID は roots.id 行を表す。slot と workspace snapshot の場所は root generation と
+// root 相対パスで記録するため、これを組み立てる fixture は generation を必ず指定する。
 const testRootID = "rt0001"
 
-// workspaceSnapshotRelPath is the OS-separator form of a session's recorded
-// workspace-snapshot location, which is what the deterministic-location
-// checks compare against.
+// workspaceSnapshotRelPath は session に記録した workspace snapshot の OS 区切り形式で、
+// 決定的な場所の検査が比較する値である。
 func workspaceSnapshotRelPath(sessionID string) string {
 	return filepath.FromSlash(workspaceSnapshotRelativePath(sessionID))
 }
 
-// recoveryNamespace is the top-level entry under a wx root that holds
-// workspace recovery archives. Tests that need to block or collide with it
-// derive the name from the production constant rather than repeating it.
+// recoveryNamespace は wx root 直下で workspace recovery archive を保持する最上位項目である。
+// これを塞いだり衝突させたりするテストは、本番定数から名前を導出して重複を避ける。
 var recoveryNamespace = strings.Split(workspaceSnapshotDirectory, "/")[0]

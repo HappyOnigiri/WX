@@ -24,8 +24,8 @@ func TestRunStopsLockConflictRetryWhenContextExpires(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		// Race-enabled all-package coverage can delay process startup on loaded CI
-		// runners, so keep this watchdog well above the normal millisecond path.
+		// race 有効の全 package coverage では負荷の高い CI runner で process 起動が遅れ得る。
+		// watchdog は通常の millisecond 経路より十分長くする。
 		deadline := time.Now().Add(10 * time.Second)
 		for {
 			if _, err := os.Stat(marker); err == nil {
@@ -168,17 +168,10 @@ func TestRunAtStripsInheritedRepositoryScopedGitEnvironment(t *testing.T) {
 	}
 }
 
-// TestSanitizedEnvironCoversEveryLocalGitEnvironmentVariable pins the
-// denylist to Git's own definition of "repository-scoped" instead of to a
-// hand-maintained list. scripts/hook-check.sh unsets exactly
-// `git rev-parse --local-env-vars` for the same reason, so any name Git
-// reports and gitEnvDenylist omits is a hole through which an inherited
-// variable reaches a child Git and can silently change which worktree,
-// index, object store, or config a snapshot reads. A Git upgrade that adds a
-// name fails here rather than reopening that hole unnoticed.
+// TestSanitizedEnvironCoversEveryLocalGitEnvironmentVariable は denylist を Git の repository-scoped 定義と一致させる。
+// Git upgrade の変数追加は、child Git が別 worktree・index・object store を読む穴になる前にこの test で失敗させる。
 func TestSanitizedEnvironCoversEveryLocalGitEnvironmentVariable(t *testing.T) {
-	// Ask the real Git before any of these variables are set, so the query
-	// itself cannot be perturbed by them.
+	// これらの変数を設定する前に実際の Git へ問い合わせ、query 自体が影響を受けないようにする。
 	output, err := exec.Command("git", "rev-parse", "--local-env-vars").Output()
 	if err != nil {
 		t.Fatalf("git rev-parse --local-env-vars: %v", err)
@@ -200,13 +193,8 @@ func TestSanitizedEnvironCoversEveryLocalGitEnvironmentVariable(t *testing.T) {
 	}
 }
 
-// TestExplicitEnvOverridesSanitizedDenylistOnBothPaths guards the property
-// internal/archive depends on: archive passes its temporary GIT_INDEX_FILE
-// explicitly, and sanitizing the inherited one must not defeat that.
-// exec.Cmd de-duplicates Env keeping the last occurrence of a key, and the
-// descriptor-bound path re-execs through a trampoline, so assert the
-// override survives on both paths rather than assuming last-wins carries
-// through fdexec.
+// TestExplicitEnvOverridesSanitizedDenylistOnBothPaths は archive が明示する一時 GIT_INDEX_FILE を保持する。
+// exec.Cmd と fdexec trampoline の両方で、sanitization 後に渡す値が優先されることを確認する。
 func TestExplicitEnvOverridesSanitizedDenylistOnBothPaths(t *testing.T) {
 	bin := t.TempDir()
 	fakeGit := filepath.Join(bin, "git")

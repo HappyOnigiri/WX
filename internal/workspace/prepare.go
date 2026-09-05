@@ -28,36 +28,28 @@ type Preparer struct {
 	Config    config.Config
 	Ownership state.OwnershipValidator
 	SlotPath  string
-	// OwnedRoot is held by the daemon for its configured worktree root. When it
-	// is set, all target creation and descriptor-bound Git operations use this
-	// inode namespace rather than reopening a mutable pathname.
+	// OwnedRoot は設定済み worktree root 用に daemon が保持する。
+	// 設定時は、target の作成と descriptor-bound Git 操作のすべてで、可変なパス名を開き直さずこの inode namespace を使う。
 	OwnedRoot *os.Root
 	RootPath  string
-	// RootID and SlotRelPath are how SQLite records this slot's location:
-	// the durable root generation and the slot's path relative to it. They
-	// are what ownership validation compares, in place of the absolute
-	// SlotPath, so a renamed or reconfigured root cannot make two different
-	// directories look like the same slot.
+	// RootID と SlotRelPath は、SQLite が slot の場所を durable root 世代と root 相対パスで記録する値である。
+	// 所有権検証は絶対 SlotPath の代わりにこれらを比較し、root の改名や再設定で別 directory が同じ slot に見えることを防ぐ。
 	RootID      string
 	SlotRelPath string
 }
 
-// markerIdentity builds the slot-scoped marker identity for one repository.
+// markerIdentity は、repository ごとの slot 用 marker identity を作る。
 func (p *Preparer) markerIdentity(repo discovery.Repository, slotID string) MarkerIdentity {
 	return MarkerIdentity{SlotID: slotID, RootID: p.RootID, RepositoryID: string(repo.ID)}
 }
 
-// WorktreeDirName is the exported form of worktreeDirName, used by
-// internal/archive to describe a removal target the same way prepare does.
+// WorktreeDirName は worktreeDirName の exported 版であり、internal/archive が prepare と同じ方法で削除対象を表すために使う。
 func (p *Preparer) WorktreeDirName(target string) (string, error) {
 	return p.worktreeDirName(target)
 }
 
-// worktreeDirName returns the repository's directory name inside the slot,
-// which is the single path component between SlotPath and target. It is read
-// back from the caller's target rather than recomputed from configuration:
-// the name recorded when the slot was created is the authority, and a later
-// configuration change must not be able to redirect an existing slot.
+// worktreeDirName は slot 内の repository directory 名、つまり SlotPath と target の間にある単一 path component を返す。
+// 設定から再計算せず呼び出し元の target から読み取り、slot 作成時に記録した名前を権威として既存 slot の向き先変更を防ぐ。
 func (p *Preparer) worktreeDirName(target string) (string, error) {
 	if p.SlotPath == "" {
 		return "", fmt.Errorf("%w: slot path is unavailable", state.ErrOwnership)
@@ -76,9 +68,8 @@ func (p *Preparer) Prepare(ctx context.Context, repo discovery.Repository, targe
 	return p.prepare(ctx, repo, target, oid, slotID, preparePhaseCreate)
 }
 
-// PrepareForRestore creates the clean base of a restore while leaving the
-// worktree locked as RESTORING. Snapshot contents and the saved index must be
-// installed before any resume-phase prepare command runs.
+// PrepareForRestore は worktree を RESTORING としてロックしたまま restore の clean base を作る。
+// resume-phase の prepare command を実行する前に、snapshot 内容と保存済み index を配置しておく必要がある。
 func (p *Preparer) PrepareForRestore(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
 	return p.prepare(ctx, repo, target, oid, slotID, preparePhaseRestore)
 }
@@ -138,9 +129,8 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	ownedAfterLock := false
 	defer func() {
 		if cleanup && ownedAfterLock {
-			// A failed preparation is removable only while ownership can still
-			// be proved. If a command or concurrent filesystem change invalidated
-			// that proof, leave the locked target and marker for quarantine/reconcile.
+			// 失敗した preparation は所有権を証明できる間だけ削除できる。
+			// command や並行する filesystem 変更で証明が無効になった場合は、ロック済み target と marker を quarantine/reconcile 用に残す。
 			if err := p.validatePreparedTarget(context.Background(), repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "validate worktree before cleanup"); err != nil {
 				return
 			}
@@ -165,17 +155,14 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	if _, err := p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "lock", "--reason", "wx:"+slotID+":"+lockState); err != nil {
 		return err
 	}
-	// This validation is deliberately after the new lock is acquired. It
-	// proves that the marker, physical path, Git registration, OID, and
-	// lock reason still describe the same slot before any file operation.
+	// この検証は意図的に新しい lock の取得後に行う。
+	// file 操作の前に marker、physical path、Git registration、OID、lock reason が同じ slot を示すことを証明する。
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed after lock"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed after lock: %w", err)
 	}
 	ownedAfterLock = true
-	// Revalidate the durable owner immediately before each operation that
-	// writes into or reuses the worktree. A common-directory lock protects
-	// Git metadata, while this read-only state proof protects the slot/path
-	// association and state machine independently.
+	// worktree に書き込む、または再利用する各操作の直前に durable owner を再検証する。
+	// common-directory lock は Git metadata を守り、この read-only な state の証明は slot/path の対応と state machine を独立に守る。
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before includes"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed before includes: %w", err)
 	}
@@ -229,8 +216,7 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 		return errors.New("prepared worktree is not detached")
 	}
 	if phase == preparePhaseRestore {
-		// Keep the RESTORING lock until archive.Manager has restored the
-		// snapshot tree/index and run the resume-phase command.
+		// archive.Manager が snapshot の tree/index を復元し、resume-phase command を実行するまで RESTORING lock を保持する。
 		cleanup = false
 		return nil
 	}
@@ -258,9 +244,8 @@ type lockedTarget struct {
 
 func (p *Preparer) prepareLockedTarget(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, root string) (*lockedTarget, error) {
 	prepareSlotStates, prepareRepositoryStates := preparationOwnershipStates(phase)
-	// Re-open the descriptor after taking the common-directory lock and
-	// repeat the physical/ownership checks. A pre-lock check alone would
-	// allow a path replacement between validation and the Git operation.
+	// common-directory lock の取得後に descriptor を開き直し、physical/ownership 検査を繰り返す。
+	// lock 前の検査だけでは、検証と Git 操作の間に path を置換できてしまう。
 	lockedRoot, lockedRelativeTarget, closeLockedRoot, err := p.openOwnedRoot(root, target)
 	if err != nil {
 		return nil, fmt.Errorf("revalidate wx worktree root: %w", err)
@@ -321,9 +306,8 @@ func (p *Preparer) prepareLockedTarget(ctx context.Context, repo discovery.Repos
 	return &lockedTarget{root: lockedRoot, relative: lockedRelativeTarget, identity: targetIdentity, existing: existingWorktree, close: closeLockedRoot}, nil
 }
 
-// requirePinnedRoot fails closed unless the daemon-held root descriptor is
-// present and pinned to root. Production always constructs a Preparer this
-// way; there is no fallback to a mutable pathname.
+// requirePinnedRoot は daemon が保持する root descriptor が存在し、root に pin されていない限り fail closed する。
+// production では常にこの方法で Preparer を構築し、可変な path 名への fallback はない。
 func (p *Preparer) requirePinnedRoot(root string) error {
 	if p.OwnedRoot == nil || filepath.Clean(p.RootPath) != filepath.Clean(root) {
 		return errors.New("wx worktree root descriptor is unavailable")
@@ -372,11 +356,8 @@ func (p *Preparer) openOwnedRoot(root, target string) (*os.Root, string, func(),
 	return p.OwnedRoot, relative, func() {}, nil
 }
 
-// addWorktree reserves the target namespace by creating/opening its final
-// directory through the pinned parent descriptor, then runs Git with that
-// target descriptor as its current directory and "." as the target. A
-// replacement of any lexical root/ancestor/target after this point cannot
-// redirect Git's checkout or its worktree registration outside the owned inode.
+// addWorktree は pin 済み parent descriptor から最終 directory を作成して target namespace を予約し、その descriptor を cwd、`.` を target にして Git を起動する。
+// 以後 lexical root/ancestor/target が置換されても、Git の checkout と worktree registration を所有 inode の外へ向けられない。
 func (p *Preparer) addWorktree(ctx context.Context, repo discovery.Repository, owner *os.Root, target, relativeTarget, oid string) error {
 	_, err := p.addWorktreeWithIdentity(ctx, repo, owner, target, relativeTarget, oid)
 	return err
@@ -399,8 +380,7 @@ func (p *Preparer) addWorktreeWithIdentity(ctx context.Context, repo discovery.R
 	if name == "." || name == string(filepath.Separator) || name == "" {
 		return "", errors.New("worktree target has no relative leaf")
 	}
-	// Reserve the final leaf with mkdirat. Using owner.Mkdir(relativeTarget)
-	// here would reopen the parent pathname after the descriptor barrier.
+	// 最終 leaf は mkdirat で予約する。ここで owner.Mkdir(relativeTarget) を使うと、descriptor barrier 後に parent path を開き直してしまう。
 	if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return "", fmt.Errorf("reserve worktree target namespace: %w", err)
 	}
@@ -409,18 +389,13 @@ func (p *Preparer) addWorktreeWithIdentity(ctx context.Context, repo discovery.R
 		return "", fmt.Errorf("open reserved worktree target: %w", err)
 	}
 	defer func() { _ = targetDirectory.Close() }()
-	// --git-dir identifies the source repository without changing cwd.  -C
-	// would make Git resolve the target relative to repo.MainPath, defeating
-	// the descriptor-bound target namespace established above.
+	// `--git-dir` は cwd を変えず source repository を特定する。`-C` では target を repo.MainPath 基準に解決し、上で確立した descriptor-bound namespace を失う。
 	_, err = p.Git.RunAt(ctx, targetDirectory, nil, nil, "--git-dir", string(repo.CommonDir), "worktree", "add", "--detach", ".", oid)
 	if err == nil {
 		return targetIdentity, nil
 	}
-	// Git may have updated its common-directory registration before reporting
-	// an error (or the child may have been interrupted). If the descriptor
-	// namespace or registration cannot be proved clean, preserve the target for
-	// the daemon's ownership quarantine instead of turning an ambiguous add into
-	// a generic FAILED slot.
+	// Git は error 報告前に common-directory registration を更新し得る。child 中断も含め、descriptor namespace または registration の clean を証明できなければ、
+	// 曖昧な add を通常の FAILED slot にせず、daemon の ownership quarantine 用に target を残す。
 	entries, readErr := targetDirectory.Readdirnames(-1)
 	if readErr != nil {
 		return "", fmt.Errorf("%w: inspect git worktree add target: %w", state.ErrOwnership, readErr)
@@ -446,11 +421,9 @@ func (p *Preparer) runWorktreeAdmin(ctx context.Context, repo discovery.Reposito
 	return p.runWorktreeAdminOwned(ctx, repo, owner, relativeTarget, target, "", args...)
 }
 
-// RemoveWorktreeAt performs the destructive worktree removal from the
-// descriptor-bound target inode. The caller must have completed its ownership
-// checks while holding the Git common-directory lock. A failure after those
-// checks is ownership-uncertain because the target may have been renamed or
-// replaced while Git was being started, so it is returned as ErrOwnership.
+// RemoveWorktreeAt は descriptor-bound target inode から破壊的な worktree 削除を行う。
+// 呼び出し元は Git common-directory lock 中に所有権検査を完了していなければならない。
+// 検査後の失敗は Git 起動中の rename/置換を示し得るため ownership-uncertain とし、ErrOwnership として返す。
 func (p *Preparer) RemoveWorktreeAt(ctx context.Context, repo discovery.Repository, root, target, expectedIdentity string) error {
 	if err := p.requirePinnedRoot(root); err != nil {
 		return fmt.Errorf("%w: descriptor-bound worktree removal requires the pinned root", state.ErrOwnership)
@@ -477,8 +450,7 @@ func (p *Preparer) runWorktreeAdminOwned(ctx context.Context, repo discovery.Rep
 	if expectedIdentity != "" && identity != expectedIdentity {
 		return gitx.Result{}, fmt.Errorf("%w: worktree target identity changed (expected %s, got %s)", state.ErrOwnership, expectedIdentity, identity)
 	}
-	// Keep cwd at the descriptor-bound target itself. Supplying --git-dir selects
-	// the source repository while "." identifies the reserved worktree inode.
+	// cwd は descriptor-bound target に保つ。`--git-dir` で source repository を選び、`.` で予約済み worktree inode を指定する。
 	command := append([]string{"--git-dir", string(repo.CommonDir), "worktree"}, args...)
 	command = append(command, ".")
 	result, runErr := p.Git.RunAt(ctx, targetDirectory, nil, nil, command...)
@@ -497,9 +469,8 @@ func (p *Preparer) runWorktreeAdminOwned(ctx context.Context, repo discovery.Rep
 	return result, runErr
 }
 
-// PrepareResumeWithIdentity is the descriptor-bound resume phase. The
-// identity is supplied by archive.Manager after the clean base is prepared and
-// remains attached through the resume command and its final ownership proof.
+// PrepareResumeWithIdentity は descriptor-bound resume phase である。
+// archive.Manager が clean base 作成後に渡す identity を、resume command と最後の所有権証明まで保持する。
 func (p *Preparer) PrepareResumeWithIdentity(ctx context.Context, repo discovery.Repository, target, oid, slotID, expectedIdentity string) error {
 	if err := p.VerifyWorktreeIdentity(target, expectedIdentity); err != nil {
 		return fmt.Errorf("validate restoring worktree identity before resume prepare: %w", err)
@@ -519,8 +490,7 @@ func (p *Preparer) PrepareResumeWithIdentity(ctx context.Context, repo discovery
 	return nil
 }
 
-// FinishRestoreWithIdentity transitions a restored worktree to READY while
-// keeping the physical target identity attached to both Git admin commands.
+// FinishRestoreWithIdentity は、二つの Git admin command に physical target identity を保持したまま復元済み worktree を READY に遷移させる。
 func (p *Preparer) FinishRestoreWithIdentity(ctx context.Context, repo discovery.Repository, target, oid, slotID, expectedIdentity string) error {
 	if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore); err != nil {
 		return err
@@ -573,8 +543,7 @@ func (p *Preparer) existingTargetState(ctx context.Context, repo discovery.Repos
 		return false, err
 	}
 	if len(entries) == 0 {
-		// An empty shell may be left by an interrupted allocation. A marker,
-		// when present, still has to match; a missing marker is created below.
+		// 中断した allocation は空の shell を残し得る。marker があれば一致が必要で、なければ下で作成する。
 		markerRelative, markerErr := ownershipMarkerRelative(root, target, string(repo.ID))
 		if markerErr != nil {
 			return false, markerErr
@@ -612,18 +581,14 @@ func (p *Preparer) validateExistingWorktreeOwnedForPhase(ctx context.Context, re
 	return fmt.Errorf("%w: %w", state.ErrOwnership, err)
 }
 
-// ValidateSlotWorktreeOwnership verifies a worktree that was already marked
-// READY at the repository level before the enclosing prepare/restore job
-// committed its slot state. A daemon crash can leave that durable intermediate
-// state behind; replay must prove the exact slot/path/registration before
-// promoting the slot instead of treating the READY row as sufficient.
+// ValidateSlotWorktreeOwnership は、prepare/restore job が slot state を commit する前に repository level だけ READY になった worktree を検証する。
+// daemon crash でこの中間状態が残るため、slot 昇格前に READY row だけで済ませず、正確な slot/path/registration を証明する。
 func (p *Preparer) ValidateSlotWorktreeOwnership(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
 	return p.validateSlotWorktreeOwnershipForPhase(ctx, repo, target, oid, slotID, preparePhaseCreate)
 }
 
-// ValidateRestoringSlotWorktreeOwnership is the replay check for a repository
-// that was durably marked READY during restore. It keeps the enclosing slot in
-// RESTORING instead of widening the proof to unrelated lifecycle states.
+// ValidateRestoringSlotWorktreeOwnership は restore 中に durable に READY と記録された repository の replay 検査である。
+// 関係する slot は RESTORING のままにし、無関係な lifecycle state まで証明範囲を広げない。
 func (p *Preparer) ValidateRestoringSlotWorktreeOwnership(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
 	return p.validateSlotWorktreeOwnershipForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore)
 }
@@ -633,9 +598,8 @@ func (p *Preparer) validateSlotWorktreeOwnershipForPhase(ctx context.Context, re
 		return fmt.Errorf("%w: slot ID is required for replay validation", state.ErrOwnership)
 	}
 	slotStates, repositoryStates := preparationOwnershipStates(phase)
-	// The repository row is already READY at this crash-replay boundary, while
-	// the enclosing slot is still in its phase state. Keep that one durable
-	// intermediate state eligible without accepting unrelated lifecycle states.
+	// この crash-replay 境界では repository row はすでに READY だが、関係する slot はまだ phase state にある。
+	// その durable な中間 state だけを許可し、無関係な lifecycle state は受け入れない。
 	repositoryStates = append(repositoryStates, "READY")
 	if err := p.validateExistingWorktreeOwnedForStates(ctx, repo, target, oid, slotID, slotStates, repositoryStates); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -704,12 +668,8 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 	if err != nil {
 		return err
 	}
-	// A recorded identity has to be the directory actually open. Preparation
-	// and restore record it only once the worktree is complete, so an empty
-	// record means a run that was interrupted before that point and is
-	// allowed to converge on retry. A record that differs means this is not
-	// the directory wx prepared, however well the marker and the Git
-	// metadata reproduce it.
+	// 記録済み identity は実際に open した directory と一致しなければならない。空 record は完了前に中断した run を示すため retry で収束できる。
+	// 異なる record は marker と Git metadata が再現されていても wx が prepare した directory ではないことを示す。
 	if proof.DirIdentity != "" && proof.DirIdentity != targetIdentity {
 		return fmt.Errorf("%w: worktree directory identity does not match the SQLite record", state.ErrOwnership)
 	}
@@ -720,10 +680,8 @@ func (p *Preparer) runGitInDirectory(ctx context.Context, directory *os.File, ar
 	return p.Git.RunAt(ctx, directory, nil, nil, args...)
 }
 
-// WorktreeIdentity returns the device/inode identity of target through the
-// configured ownership root. Callers that perform more than one operation on
-// a restored or leased worktree carry this identity across the sequence so a
-// replacement target cannot be mistaken for the original slot.
+// WorktreeIdentity は configured ownership root 経由で target の device/inode identity を返す。
+// 復元済みまたは lease 中 worktree に複数操作をする呼び出し元はこれを保持し、置換 target を元の slot と取り違えない。
 func (p *Preparer) WorktreeIdentity(target string) (string, error) {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
@@ -748,9 +706,8 @@ func (p *Preparer) WorktreeIdentity(target string) (string, error) {
 	return identity, nil
 }
 
-// VerifyWorktreeIdentity rejects a target that no longer names the physical
-// directory captured by the caller. An empty expected identity keeps the
-// compatibility path used by older in-process callers.
+// VerifyWorktreeIdentity は target が呼び出し元の取得した physical directory を指さなくなった場合に拒否する。
+// expected identity が空なら、以前の in-process caller 用の互換経路を維持する。
 func (p *Preparer) VerifyWorktreeIdentity(target, expectedIdentity string) error {
 	if expectedIdentity == "" {
 		return nil
@@ -765,11 +722,9 @@ func (p *Preparer) VerifyWorktreeIdentity(target, expectedIdentity string) error
 	return nil
 }
 
-// RunGitInWorktree runs a Git command in a target whose identity was captured
-// by WorktreeIdentity. Production preparers use the pinned root and descriptor
-// cwd, so a lexical root/target replacement cannot redirect the command. The
-// identity is checked both before and after the child runs; a changed target is
-// ownership-uncertain even when Git itself reports success or failure.
+// RunGitInWorktree は WorktreeIdentity で取得した identity の target で Git command を実行する。本番の Preparer は pin 済み root と descriptor cwd を使うため、
+// lexical root/target の置換では command を逸らせない。child 実行の前後で identity を検査し、変化は Git の成否にかかわらず ownership-uncertain とする。
+// commentlint:allow-long -- command 実行中の path 置換に対する保証を説明する
 func (p *Preparer) RunGitInWorktree(ctx context.Context, target, expectedIdentity string, env []string, input []byte, args ...string) (gitx.Result, error) {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
@@ -797,8 +752,7 @@ func (p *Preparer) RunGitInWorktree(ctx context.Context, target, expectedIdentit
 	return result, runErr
 }
 
-// ValidateReady verifies the physical and Git-administrative invariants that
-// make a stored READY worktree safe to lease.
+// ValidateReady は、保存済み READY worktree を安全に lease できる physical および Git-administrative invariant を検証する。
 func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository, target, oid string) error {
 	if err := p.ValidateOwnership(ctx, repo, target, oid); err != nil {
 		return err
@@ -821,9 +775,8 @@ func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository,
 	return p.validateTrackedClean(ctx, target)
 }
 
-// ValidateOwnership verifies the physical and Git-administrative ownership
-// invariants without requiring a clean index or working tree. Restored leased
-// sessions intentionally contain the archived user's tracked changes.
+// ValidateOwnership は index や working tree の clean を要求せず、physical および Git-administrative ownership invariant を検証する。
+// 復元した leased session には archived user の tracked changes が意図的に含まれる。
 func (p *Preparer) ValidateOwnership(ctx context.Context, repo discovery.Repository, target, oid string) error {
 	if err := p.validateExistingWorktree(ctx, repo, target, oid); err != nil {
 		return err
@@ -867,9 +820,8 @@ func (p *Preparer) validateRemovalOwnership(repo discovery.Repository, root, tar
 	return ValidateRemovalOwnershipAt(owner, root, target, p.markerIdentity(repo, ""), common)
 }
 
-// ValidateRestoringOwnership is the slot-bound ownership check used while a
-// restore lock is held. Keeping the slot ID in this check prevents a restore
-// handoff from accepting a different wx lock reason at the same path.
+// ValidateRestoringOwnership は restore lock の保持中に使う slot-bound ownership 検査である。
+// この検査で slot ID を保持し、同じ path にある別の wx lock reason を restore handoff が受け入れることを防ぐ。
 func (p *Preparer) ValidateRestoringOwnership(ctx context.Context, repo discovery.Repository, target, oid, slotID string) error {
 	return p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore)
 }
@@ -891,8 +843,7 @@ func (p *Preparer) validateStateOwnership(ctx context.Context, repo discovery.Re
 	return err
 }
 
-// stateOwnershipProof is validateStateOwnership with the proof returned, for
-// the caller that needs the recorded identity to compare it itself.
+// stateOwnershipProof は proof を返す validateStateOwnership であり、記録済み identity を自分で比較する caller が使う。
 func (p *Preparer) stateOwnershipProof(ctx context.Context, repo discovery.Repository, target, slotID string, slotStates, repositoryStates []string) (state.WorktreeOwnership, error) {
 	if slotID == "" {
 		return state.WorktreeOwnership{}, nil
@@ -911,21 +862,16 @@ func (p *Preparer) stateOwnershipProof(ctx context.Context, repo discovery.Repos
 		RootID:       p.RootID,
 		SlotRelPath:  p.SlotRelPath,
 		DirName:      dirName,
-		// DirIdentity is intentionally left empty here. This helper runs
-		// both before the worktree directory exists (the pre-creation
-		// checks inside prepare) and after, so it cannot promise an
-		// identity; the callers that hold a descriptor pass one through
-		// validateStateOwnershipWithIdentity instead, and the caller that
-		// only has a record to compare reads it from the returned proof.
+		// DirIdentity は意図的に空のままにする。この helper は worktree directory の作成前後で実行されるため identity を保証できない。
+		// descriptor を保持する caller は validateStateOwnershipWithIdentity で渡し、record だけを比較する caller は返された proof から読む。
 		CommonDir:               string(repo.CommonDir),
 		AllowedSlotStates:       slotStates,
 		AllowedRepositoryStates: repositoryStates,
 	})
 }
 
-// validateStateOwnershipWithIdentity is the fail-closed form used once the
-// caller holds the worktree directory open. Presenting the identity makes a
-// missing SQLite record a failure rather than a silent pass.
+// validateStateOwnershipWithIdentity は caller が worktree directory を open した後に使う fail-closed 形式である。
+// identity を提示することで、SQLite record の欠落を暗黙の成功ではなく失敗にする。
 func (p *Preparer) validateStateOwnershipWithIdentity(ctx context.Context, repo discovery.Repository, target, slotID, dirIdentity string, slotStates, repositoryStates []string) error {
 	if slotID == "" {
 		return nil
@@ -992,49 +938,41 @@ func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error 
 	return p.copyIncludesAt(repo, owner, relativeTarget)
 }
 
-// defaultIncludeNames are the agent rule and tool configuration files that are
-// kept out of version control by convention. Git does not carry them into a
-// worktree, so an agent started there loses the local rules their author wrote
-// for that repository, and the documented workaround for it is to import a
-// file from the home directory instead. The workspace-root materializer
-// already copies the same class of file without a manifest
-// (MaterializeRootAt); this keeps the per-repository side symmetric.
-//
-// Only regular files are copied, and only while Git does not track them. A
-// tracked path is checked out by the worktree itself, and a directory or
-// symlink under one of these names belongs to a sharing scheme its author
-// chose deliberately: both stay the job of an explicit .worktreeinclude entry.
+// defaultIncludeNames は慣例として version control 外に置く agent rule と tool 設定ファイルである。
+// Git はこれらを worktree に持ち込まないため、そこで起動した agent は repository 固有の local rule を失う。
+// その回避策は home directory から file を取り込むことである。workspace-root materializer は manifest なしで同種の file をコピーする (MaterializeRootAt)。
+// repository 側も同じ動作にする。コピー対象は regular file かつ Git が追跡していないものだけである。
+// tracked path は worktree 自身が checkout し、directory や symlink は明示的な共有方式なので .worktreeinclude に任せる。
+// commentlint:allow-long -- 契約と安全条件を保持する説明のため
 var defaultIncludeNames = []string{
-	// Claude Code
+	// Claude Code 用
 	"CLAUDE.local.md",
 	".claudeignore",
-	// Codex and the other AGENTS.md readers
+	// Codex とその他の AGENTS.md 読み取りツール用
 	"AGENTS.local.md",
 	"AGENTS.override.md",
-	// Gemini CLI
+	// Gemini CLI 用
 	"GEMINI.local.md",
 	".geminiignore",
 	".aiexclude",
-	// Cursor
+	// Cursor 用
 	".cursorrules",
 	".cursorignore",
-	// Windsurf
+	// Windsurf 用
 	".windsurfrules",
 	".codeiumignore",
-	// Cline, Roo Code, Kilo Code
+	// Cline、Roo Code、Kilo Code 用
 	".clinerules",
 	".roorules",
 	".kilocoderules",
-	// Aider
+	// Aider 用
 	".aider.conf.yml",
-	// MCP servers, shared by several agents
+	// 複数の agent が共有する MCP server 用
 	".mcp.json",
 }
 
-// defaultWorkspaceRootCopyNames are materialized into a multi-repository slot
-// when they are ordinary files at the workspace root. A tracked AGENTS.md may
-// deliberately be a symlink to CLAUDE.md; Git already checks it out with the
-// repository, so the workspace-root materializer must not try to follow it.
+// defaultWorkspaceRootCopyNames は workspace root にある通常の file を multi-repository slot へ materialize する名前である。
+// tracked AGENTS.md は意図的に CLAUDE.md への symlink になり得る。Git が repository とともに checkout するため、workspace-root materializer は追従してはならない。
 var defaultWorkspaceRootCopyNames = []string{"AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md"}
 
 func workspaceRootCopyPlan(rules config.Workspace) ([]string, map[string]bool, error) {
@@ -1051,12 +989,8 @@ func workspaceRootCopyPlan(rules config.Workspace) ([]string, map[string]bool, e
 	return copyNames, explicit, nil
 }
 
-// defaultIncludeCandidates returns the default names that exist in the main
-// worktree as regular physical files. A name listed in .worktreelink is left
-// out: an explicit link rule owns that path, and copying it first would turn
-// createLinksAt into a target collision. Absence is not an error here, since
-// the list is applied to every repository and only the names an author keeps
-// locally should reach the worktree.
+// defaultIncludeCandidates は main worktree に regular physical file として存在する default 名を返す。
+// .worktreelink にある名前は明示的な link rule が所有するため除外する。存在しなくても、この一覧は全 repository に適用されるのでエラーにしない。
 func defaultIncludeCandidates(mainPath string, c config.Config) ([]string, error) {
 	if !c.DefaultAgentRulesEnabled(mainPath) {
 		return nil, nil
@@ -1092,10 +1026,8 @@ func defaultIncludeCandidates(mainPath string, c config.Config) ([]string, error
 	return out, nil
 }
 
-// defaultIncludes narrows the candidates to the names Git does not track. One
-// ls-files call answers for the whole list: the names are checked on every
-// cold start, and a tracked one is skipped rather than reported, so that a
-// repository that commits a file under one of these names still prepares.
+// defaultIncludes は候補を Git が追跡していない名前に絞る。一度の ls-files で一覧全体を調べ、tracked name は報告せず skip する。
+// これにより、repository がこれらの名前で file を commit していても prepare できる。
 func (p *Preparer) defaultIncludes(mainPath string) ([]string, error) {
 	candidates, err := defaultIncludeCandidates(mainPath, p.Config)
 	if err != nil {
@@ -1125,10 +1057,8 @@ func (p *Preparer) defaultIncludes(mainPath string) ([]string, error) {
 	return out, nil
 }
 
-// copyIncludesAt is the descriptor-bound include materializer. destinationRoot
-// is opened from the already pinned owner namespace and every write is
-// relative to it; the lexical target pathname is never used for a destination
-// syscall.
+// copyIncludesAt は descriptor-bound な include materializer である。destinationRoot は pin 済み owner namespace から開き、すべての書き込みをその相対 path で行う。
+// destination syscall に lexical target pathname は決して使わない。
 func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, relativeTarget string) error {
 	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreeinclude")
 	if err != nil {
@@ -1143,8 +1073,7 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 		return fmt.Errorf("open include destination: %w", err)
 	}
 	defer func() { _ = destinationRoot.Close() }()
-	// Defaults run first so that an explicit .worktreeinclude entry for the
-	// same path is the one that decides the final content.
+	// 同じ path の最終内容を明示的な .worktreeinclude entry が決められるよう、default を先に適用する。
 	for _, rel := range defaults {
 		sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
 		if sourceErr != nil {
@@ -1205,9 +1134,8 @@ func (p *Preparer) createLinks(ctx context.Context, repo discovery.Repository, t
 	return p.createLinksAt(ctx, repo, owner, relativeTarget)
 }
 
-// createLinksAt mirrors createLinks while keeping the destination Root open
-// across all checks and symlink creation. This closes the root replacement
-// window between validating the worktree and writing an ignored link.
+// createLinksAt は createLinks と同じ処理を、全検査と symlink 作成の間 destination Root を開いたまま行う。
+// これにより worktree の検証から ignored link の書き込みまでに root を置換される隙間を閉じる。
 func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository, owner *os.Root, relativeTarget string) error {
 	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreelink")
 	if err != nil {
@@ -1301,18 +1229,12 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 	return runErr
 }
 
-// Fingerprint hashes everything that makes a prepared worktree reusable.
-//
-// The repository's directory name inside the slot is deliberately not part of
-// it. slot_repositories.dir_name is the authority once a slot exists, so an
-// existing slot keeps the name it recorded and only new slots pick up a
-// changed storage.repo_dir_source or repositories.<path>.dir_name. Hashing
-// the name could not change that either way: the reuse check recomputes the
-// fingerprint from the stored name, so the component would always compare
-// equal to itself.
-//
-// schema=3 marks the layout change; a fingerprint written by an earlier wx
-// therefore never compares equal.
+// Fingerprint は prepared worktree を再利用可能にするすべての情報を hash 化する。slot 内の repository directory 名は意図的に含めない。
+// slot が存在すれば slot_repositories.dir_name が権威となり、既存 slot は記録済みの名前を保つ。
+// 新規 slot だけが変更後の storage.repo_dir_source や repositories.<path>.dir_name を使う。
+// 名前を hash 化しても reuse check は保存済みの名前から再計算するため常に自身と一致し、挙動は変わらない。
+// schema=3 は layout 変更を示すため、以前の wx が書いた fingerprint とは一致しない。
+// commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	if err := domain.ValidatePhysicalPath(string(repo.MainPath), false); err != nil {
 		return "", err
@@ -1331,14 +1253,9 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 		return "", err
 	}
 	seenIncludes := map[string]bool{}
-	// The default includes are hashed without the tracked check copyIncludesAt
-	// applies, because Fingerprint has no Git runner. The asymmetry only costs
-	// a cold start: a tracked file under one of these names is hashed here but
-	// left to the checkout, so editing it in the main worktree rebuilds slots
-	// that would have been reusable. Leaving the untracked ones out instead
-	// would hand out slots carrying stale local rules.
-	// The setting itself is intentionally not hashed: when no default file
-	// exists, toggling it does not change the materialized worktree.
+	// default include は Fingerprint が Git runner を持たないため、copyIncludesAt の tracked 検査なしで hash 化する。
+	// tracked file も checkout に任せるため、main worktree の編集で再利用できた slot も cold start 時に再構築される。untracked file を除外すると古い local rule を持つ slot を渡してしまう。
+	// default file がない場合の切り替えで materialized worktree は変わらないため、設定自体は意図的に hash 化しない。
 	defaults, err := defaultIncludeCandidates(string(repo.MainPath), c)
 	if err != nil {
 		return "", err
@@ -1543,10 +1460,8 @@ func MaterializeRoot(source, target string, rules config.Workspace) error {
 	return MaterializeRootAt(source, destinationRoot, rules)
 }
 
-// MaterializeRootAt materializes workspace-level copy/link rules into an
-// already pinned destination namespace. It is used by the daemon for
-// multi-repository slots after their slot root has been opened from the
-// manager-held wx root descriptor.
+// MaterializeRootAt は workspace-level の copy/link rule を pin 済み destination namespace に materialize する。
+// daemon が manager-held wx root descriptor から slot root を開いた後、multi-repository slot に対して使う。
 func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Workspace) error {
 	if destinationRoot == nil {
 		return errors.New("workspace destination root is nil")

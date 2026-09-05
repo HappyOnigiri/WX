@@ -334,9 +334,8 @@ func TestPrepareRejectsPathsOutsideRootSymlinksAndForeignContents(t *testing.T) 
 	}
 }
 
-// NEW-2: the Git add syscall must use the descriptor-reserved target
-// namespace. The barrier replaces the lexical root after the parent has been
-// opened and before Git starts; neither files nor Git registration may escape.
+// NEW-2: Git の add syscall は記述子で予約した対象名前空間を使う必要がある。
+// 親を開いた後 Git 開始前にルートを置き換えても、ファイルと登録は逃げない。
 func TestAddWorktreeUsesReservedNamespaceAcrossRootReplacement(t *testing.T) {
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
@@ -453,9 +452,8 @@ func TestPrepareClassifiesReplacedRootAsOwnershipUncertain(t *testing.T) {
 	}
 }
 
-// A target leaf can be replaced with another physical worktree after the
-// descriptor-bound Git add has completed. The replacement must not be treated
-// as the worktree whose identity was reserved for this prepare job.
+// 記述子に束縛された Git add 完了後に対象 leaf を別の物理 worktree へ置換できる。
+// 置換先をこの prepare job が予約した worktree として扱ってはならない。
 func TestPrepareRejectsTargetReplacementAfterGitAdd(t *testing.T) {
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
@@ -519,7 +517,7 @@ func TestPrepareRejectsTargetReplacementAfterGitAdd(t *testing.T) {
 	}
 }
 
-// Finding 1: a matching Git worktree is not reusable without wx ownership proof.
+// Finding 1: 一致する Git worktree でも wx の所有権証明なしには再利用できない。
 func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
@@ -609,7 +607,7 @@ func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
 	}
 }
 
-// Finding 4: source and destination symlink ancestors must not escape their roots.
+// Finding 4: source と destination の symlink 祖先は、それぞれのルートから逃げてはならない。
 func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
@@ -1332,18 +1330,18 @@ func TestDefaultIncludesCarryUntrackedRuleFilesWithoutAManifest(t *testing.T) {
 	gitCommand(t, repository, "init", "-b", "main")
 	gitCommand(t, repository, "config", "user.name", "test")
 	gitCommand(t, repository, "config", "user.email", "test@example.com")
-	// Untracked rule files: the case the defaults exist for.
+	// 未追跡のルールファイル。デフォルトが用意されているケース。
 	if err := os.WriteFile(filepath.Join(repository, "CLAUDE.local.md"), []byte("local rules\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, ".mcp.json"), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Tracked file under a default name: left to the checkout, not an error.
+	// デフォルト名の追跡済みファイルは checkout に任せ、エラーにしない。
 	if err := os.WriteFile(filepath.Join(repository, ".cursorrules"), []byte("shared\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A directory and a symlink stay the job of an explicit manifest entry.
+	// ディレクトリと symlink は明示的な manifest 項目の責務として残す。
 	if err := os.Mkdir(filepath.Join(repository, ".clinerules"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1356,8 +1354,8 @@ func TestDefaultIncludesCarryUntrackedRuleFilesWithoutAManifest(t *testing.T) {
 	if err := os.Symlink(filepath.Join(base, "shared-override.md"), filepath.Join(repository, "AGENTS.override.md")); err != nil {
 		t.Fatal(err)
 	}
-	// An explicit link rule owns its path, so the default must not copy it
-	// first and turn createLinks into a collision.
+	// 明示的な link ルールがパスを所有するため、デフォルトで先にコピーして
+	// createLinks を衝突させてはならない。
 	if err := os.WriteFile(filepath.Join(repository, ".geminiignore"), []byte("vendor\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1497,8 +1495,8 @@ func TestFingerprintTracksDefaultIncludeContent(t *testing.T) {
 	if edited == added {
 		t.Fatal("an edited default include left the fingerprint unchanged")
 	}
-	// A path an explicit link rule owns is not copied, so its content must not
-	// rebuild slots either.
+	// 明示的な link ルールが所有するパスはコピーせず、その内容で slot も
+	// 再構築してはならない。
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("GEMINI.local.md\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

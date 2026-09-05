@@ -15,9 +15,7 @@ func TestEnsureActiveRootRegistersAndRetiresGenerations(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
-	// openTestStore seeded testRootID as the active generation. Registering a
-	// different pathname must make it the only active one without deleting
-	// the previous row, because slots still resolve through it.
+	// openTestStore は testRootID を active generation として seed した。別 pathname を登録すると以前の row を削除せず新しいものだけを active にする。slot は以前の row でも解決するためである。
 	newID, err := store.EnsureActiveRoot(ctx, "/wx-next", "next-identity")
 	if err != nil {
 		t.Fatal(err)
@@ -50,12 +48,12 @@ func TestEnsureActiveRootRegistersAndRetiresGenerations(t *testing.T) {
 		t.Fatal("retired generation has no retired_at timestamp")
 	}
 
-	// Re-registering the pathname keeps its ID: slots are attached to it.
+	// pathname を再登録しても ID を保つ。slot はその ID に紐付くためである。
 	againID, err := store.EnsureActiveRoot(ctx, "/wx-next", "next-identity")
 	if err != nil || againID != newID {
 		t.Fatalf("re-registration id=%q err=%v, want %q", againID, err, newID)
 	}
-	// Coming back to the original pathname reactivates the original row.
+	// 元の pathname に戻ると元の row を再 active 化する。
 	backID, err := store.EnsureActiveRoot(ctx, testRootPath, "root-identity")
 	if err != nil || backID != testRootID {
 		t.Fatalf("reactivated id=%q err=%v, want %q", backID, err, testRootID)
@@ -94,10 +92,8 @@ func TestEnsureActiveRootRequiresPathAndIdentity(t *testing.T) {
 	}
 }
 
-// TestEnsureActiveRootRefusesAnInodeChangeWithLiveReferences is the
-// fail-closed half of the root-identity rule: a root directory that was
-// replaced under wx's feet cannot be adopted while durable rows still claim
-// locations inside the directory wx originally wrote.
+// TestEnsureActiveRootRefusesAnInodeChangeWithLiveReferences は root identity 規則のフェイルクローズ側を検証する。
+// wx の管理下で置換された root directory は、wx が元に書いた directory 内 location を durable row がまだ主張する間は採用できない。
 func TestEnsureActiveRootRefusesAnInodeChangeWithLiveReferences(t *testing.T) {
 	ctx := context.Background()
 	t.Run("slot reference", func(t *testing.T) {
@@ -122,8 +118,7 @@ func TestEnsureActiveRootRefusesAnInodeChangeWithLiveReferences(t *testing.T) {
 	t.Run("workspace snapshot reference", func(t *testing.T) {
 		store := openTestStore(t)
 		seedWorkspace(t, store)
-		// The snapshot lives in a second generation that no slot points at,
-		// so only the workspace_snapshots row can be what refuses adoption.
+		// snapshot は slot が参照しない二つ目 generation にあるため、採用拒否の原因は workspace_snapshots row だけになる。
 		seedRoot(t, store, "root02", "/wx-snapshot", "snapshot-identity", false)
 		session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot01", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}
 		if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot01", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot01", State: "LEASED"}, nil, session, ""); err != nil {
@@ -138,9 +133,8 @@ func TestEnsureActiveRootRefusesAnInodeChangeWithLiveReferences(t *testing.T) {
 	})
 }
 
-// TestEnsureActiveRootAdoptsAnInodeChangeWithNoReferences is the other half:
-// a root directory the user deleted and wx recreated strands nothing, so its
-// row is updated rather than refused forever.
+// TestEnsureActiveRootAdoptsAnInodeChangeWithNoReferences はもう一方を検証する。
+// ユーザーが root directory を削除し wx が再作成しても state を取り残さない場合は、永続拒否せず row を更新する。
 func TestEnsureActiveRootAdoptsAnInodeChangeWithNoReferences(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -188,8 +182,7 @@ func TestPruneRootsKeepsReferencedAndActiveGenerations(t *testing.T) {
 	}
 }
 
-// TestPruneRootsDeletesAGenerationOnceItsSnapshotIsGone pairs with the
-// workspace_snapshots half of the reference check above.
+// TestPruneRootsDeletesAGenerationOnceItsSnapshotIsGone は、上の参照検査における workspace_snapshots 側を検証する。
 func TestPruneRootsDeletesAGenerationOnceItsSnapshotIsGone(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
@@ -256,9 +249,8 @@ func TestIsIDCollisionRecognisesOnlyConstraintViolations(t *testing.T) {
 	}
 }
 
-// TestNewUnusedShortIDSkipsTakenIdentifiers proves the generator consults the
-// table it is drawing for, which is what keeps a random workspace ID from
-// silently taking over an existing row through the upsert's ON CONFLICT.
+// TestNewUnusedShortIDSkipsTakenIdentifiers は、生成器が対象 table を参照することを検証する。
+// これにより random workspace ID が upsert の ON CONFLICT 経由で既存 row を密かに奪わない。
 func TestNewUnusedShortIDSkipsTakenIdentifiers(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -305,9 +297,8 @@ func TestRecordSlotRepositoryIdentityRequiresAnExistingRow(t *testing.T) {
 	}
 }
 
-// TestSlotAndRepositoryPathsComposeFromTheirRootGeneration pins the read-side
-// derivation: nothing stores an absolute path any more, so a slot in a
-// retired generation must still report a path under that generation's root.
+// TestSlotAndRepositoryPathsComposeFromTheirRootGeneration は read 側の派生規則を固定する。
+// absolute path は保存しないため、retired generation の slot もその generation の root 配下を返す。
 func TestSlotAndRepositoryPathsComposeFromTheirRootGeneration(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
@@ -344,9 +335,8 @@ func TestSlotAndRepositoryPathsComposeFromTheirRootGeneration(t *testing.T) {
 	}
 }
 
-// TestSlotLayoutUniquenessIsPerRootGeneration proves the schema constraints
-// the new layout depends on: one slot directory per root generation, and one
-// repository directory name per slot.
+// TestSlotLayoutUniquenessIsPerRootGeneration は新 layout が依存する schema 制約を検証する。
+// root generation ごとに slot directory は1つ、slot ごとに repository directory 名は1つである。
 func TestSlotLayoutUniquenessIsPerRootGeneration(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
@@ -355,12 +345,11 @@ func TestSlotLayoutUniquenessIsPerRootGeneration(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, Slot{ID: "slot01", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot01", State: "READY"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	// The same relative location in a different generation is a different
-	// directory, so it must be accepted.
+	// 別 generation の同じ相対 location は別 directory なので受理する。
 	if _, err := store.CreateStandby(ctx, Slot{ID: "slot02", WorkspaceID: "workspace", Generation: 1, RootID: "root02", RelPath: "workspace/slot01", State: "READY"}, nil); err != nil {
 		t.Fatalf("same relative location in another generation rejected: %v", err)
 	}
-	// The same location in the same generation is the same directory.
+	// 同じ generation の同じ location は同じ directory である。
 	_, err := store.CreateStandby(ctx, Slot{ID: "slot03", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot01", State: "READY"}, nil)
 	if err == nil {
 		t.Fatal("duplicate slot location in one generation was accepted")
@@ -380,10 +369,8 @@ func TestSlotLayoutUniquenessIsPerRootGeneration(t *testing.T) {
 }
 
 func TestValidateWorktreeOwnershipRejectsAMultiComponentRepositoryDirectory(t *testing.T) {
-	// filepath.IsLocal accepts "a/b", so a recorded dir_name has to be
-	// refused for depth explicitly: a repository worktree must be a direct
-	// child of its slot directory, and UNIQUE(slot_id, dir_name) alone does
-	// not enforce that.
+	// filepath.IsLocal は "a/b" を受理するため、記録する dir_name は深さを明示的に拒否する。
+	// repository worktree は slot directory の直下でなければならず、UNIQUE(slot_id, dir_name) だけでは強制できない。
 	if err := validateOwnershipComponent("repository directory", "nested/repository"); err == nil {
 		t.Fatal("a two-component repository directory was accepted")
 	}
@@ -396,9 +383,8 @@ func TestValidateWorktreeOwnershipRejectsAMultiComponentRepositoryDirectory(t *t
 }
 
 func TestOpenRefusesADatabaseFromThePreviousWorktreeLayout(t *testing.T) {
-	// A pre-layout database already reports user_version=1, so the migration
-	// loop applies nothing and the mismatch would otherwise surface one
-	// failed RPC at a time.
+	// layout 前の database は既に user_version=1 を返すため migration loop は何も適用せず、
+	// この不一致を放置すると RPC が1回ずつ失敗して初めて表面化する。
 	path := filepath.Join(t.TempDir(), "state.db")
 	legacy, err := sql.Open("sqlite", path)
 	if err != nil {

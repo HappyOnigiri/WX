@@ -1,11 +1,7 @@
 name: Security
 
-# 初期フェーズではセキュリティ自動チェックを停止中。ユーザーの明示許可なしに
-# PR/push/merge_group/schedule のトリガーを再有効化しないこと。
-# Automatic security checks are paused during the initial phase. Do not re-enable
-# PR/push/merge_group/schedule triggers without explicit user permission.
-# workflow_dispatch is intentionally the sole trigger; run it only after the
-# user explicitly authorizes a manual security check.
+# セキュリティ自動チェックは停止中。トリガーの再開にはユーザーの明示許可が必要。
+# workflow_dispatchによる手動実行にも明示許可を得る。
 on:
   workflow_dispatch:
 

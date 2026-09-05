@@ -195,9 +195,7 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 		if err != nil {
 			t.Fatal(err)
 		}
-		// This models a pre-existing inconsistent registry. The common directory
-		// is unique per repository, but a damaged registry can still attach that
-		// repository to multiple workspace rows.
+		// 既存の不整合な registry を再現する。common directory は repository ごとに一意だが、破損した registry は同じ repository を複数 workspace row に関連付け得る。
 		if _, err := store.db.ExecContext(ctx, `INSERT INTO workspaces(id,root_path,kind,generation,discovery_state,first_seen_at,last_seen_at,last_reconciled_at) VALUES(?,?,?,?,?,?,?,?)`, "conflict", "/conflict", "repository", 1, "READY", now(), now(), now()); err != nil {
 			t.Fatal(err)
 		}
@@ -398,8 +396,7 @@ func TestWorkspaceSnapshotMetadataGatesMultiRepositoryArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, found, err := store.WorkspaceSnapshot(ctx, "session")
-	// ArchivePath is composed on read from the joined root generation, so the
-	// value that was written back carries it while the saved value does not.
+	// ArchivePath は join した root generation から read 時に組み立てるため、書き戻した値だけがこれを持ち、保存値は持たない。
 	expected := snapshot
 	expected.ArchivePath = filepath.Join(testRootPath, snapshot.RelPath)
 	if err != nil || !found || loaded != expected {
@@ -1738,9 +1735,7 @@ func TestWorkspaceMembershipChangeAdvancesGenerationAndStalesOldStandby(t *testi
 		t.Fatalf("initial generation=%d err=%v", generation, err)
 	}
 	workspaceID := string(registered.ID)
-	// The ID is redrawn rather than taken from the caller: it becomes a
-	// directory name, so it has to be a short base36 value and it must not be
-	// allowed to collide with an unrelated workspace row.
+	// ID は caller の値を使わず再抽選する。directory 名になるため短い base36 値であり、無関係な workspace row と衝突してはならない。
 	if workspaceID == string(w.ID) || !domain.ValidShortID(workspaceID) {
 		t.Fatalf("assigned workspace id=%q, want a fresh short id", workspaceID)
 	}
@@ -1748,9 +1743,7 @@ func TestWorkspaceMembershipChangeAdvancesGenerationAndStalesOldStandby(t *testi
 	if err != nil || job.Kind != "PREPARE" {
 		t.Fatalf("create standby job=%+v err=%v", job, err)
 	}
-	// A multi-repository workspace is re-resolved through its root path, so
-	// the second call must land on the same row rather than redrawing an ID
-	// and advancing the generation of a duplicate.
+	// multi-repository workspace は root path で再解決するため、二回目の呼出しは ID を再抽選して重複の generation を進めず、同じ row に到達する必要がある。
 	if again, generation, err := store.UpsertWorkspaceGeneration(ctx, w); err != nil || generation != 1 || string(again.ID) != workspaceID {
 		t.Fatalf("unchanged generation=%d id=%q err=%v", generation, again.ID, err)
 	}
@@ -2423,10 +2416,8 @@ func TestReadySlotsRejectsCorruptGenerationType(t *testing.T) {
 	}
 }
 
-// testRootID and testRootPath are the worktree root generation openTestStore
-// registers. Slot locations are proven through root_id plus the recorded
-// inode identity, never by reading the root pathname from disk, so a fixed
-// lexical path keeps the composed Slot.Path deterministic across tests.
+// testRootID と testRootPath は openTestStore が登録する worktree root generation である。
+// slot location は disk 上の root pathname ではなく root_id と記録済み inode identity で証明するため、固定 lexical path により test 間の Slot.Path 組立てを決定的にする。
 const (
 	testRootID   = "root01"
 	testRootPath = "/wx"
@@ -2443,9 +2434,7 @@ func openTestStore(t *testing.T) *Store {
 	return store
 }
 
-// seedRoot registers one worktree root generation directly. EnsureActiveRoot
-// draws a random ID, so tests that need to name a generation in an expected
-// value insert the row instead of calling it.
+// seedRoot は一 worktree root generation を直接登録する。EnsureActiveRoot は random ID を引くため、expected value で generation を指す test は関数を呼ばず row を insert する。
 func seedRoot(t *testing.T, store *Store, id, path, identity string, active bool) {
 	t.Helper()
 	activeFlag := 0
@@ -2457,17 +2446,12 @@ func seedRoot(t *testing.T, store *Store, id, path, identity string, active bool
 	}
 }
 
-// seedWorkspace registers the shared single-repository workspace fixture with
-// a fixed ID. UpsertWorkspaceGeneration deliberately redraws the ID of a
-// workspace it has never seen (the value discovery proposes is random and can
-// collide), so a fixture that needs a stable, quotable workspace ID inserts
-// the rows itself. Later UpsertWorkspaceGeneration calls resolve back to this
-// row through the repository's common Git directory.
+// seedWorkspace は固定 ID の shared single-repository workspace fixture を直接登録する。UpsertWorkspaceGeneration は未観測 workspace の random proposal を意図的に再抽選するため、
+// stable な ID を必要とする fixture は row を自ら insert する。後続の UpsertWorkspaceGeneration は repository の common Git directory でこの row に解決する。
+// commentlint:allow-long -- fixture の固定 ID と通常の再抽選を使い分ける理由を説明する
 func seedWorkspace(t *testing.T, store *Store) {
 	t.Helper()
-	// relative_path is deliberately "" here, matching the fixture this helper
-	// replaced: the workspace root and the repository main path are the same
-	// directory for a single-repository workspace.
+	// relative_path は意図的に空にする。置換前 fixture と同じく、single-repository workspace では workspace root と repository main path が同じ directory である。
 	seedWorkspaceRows(t, store, "workspace", "/workspace", "repository", "repository", "/workspace", "/workspace/.git", "")
 }
 

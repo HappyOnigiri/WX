@@ -212,9 +212,8 @@ func TestResolveMultiRepositoryCollapsesLinkedWorktreesOntoTheMainWorktree(t *te
 	root := t.TempDir()
 	main := filepath.Join(root, "server")
 	initDiscoveryRepository(t, main)
-	// Two linked worktrees of the same repository placed as siblings inside
-	// the workspace root. They share the repository's Git common directory,
-	// so inspectRepo derives the same repository ID for all three entries.
+	// 同じ repository の二つの linked worktree を workspace root 内で sibling として置く。
+	// 三つの entry は Git common directory を共有するため、inspectRepo は同じ repository ID を導く。
 	for _, name := range []string{"server-feature", "server-hotfix"} {
 		runDiscoveryGit(t, main, "worktree", "add", "--detach", filepath.Join(root, name))
 	}
@@ -246,9 +245,8 @@ func TestResolveMultiRepositoryCollapsesLinkedWorktreesOntoTheMainWorktree(t *te
 		}
 		byID[repo.ID] = repo
 	}
-	// The surviving entry must be the main worktree: state's
-	// validateWorkspaceRepositoryAssociation proves that
-	// workspace_root + relative_path equals repositories.main_worktree_path.
+	// 残る entry は main worktree でなければならない。
+	// state.validateWorkspaceRepositoryAssociation は workspace_root + relative_path が repositories.main_worktree_path と一致することを証明する。
 	for _, repo := range workspace.Repositories {
 		located := filepath.Join(string(workspace.Root), repo.RelativePath)
 		canonical, canonicalErr := domain.Canonicalize(located)
@@ -342,8 +340,8 @@ func TestWorkspaceIDsAreFreshShortIdentifiers(t *testing.T) {
 			t.Fatalf("workspace id=%q is not a short identifier", id)
 		}
 	}
-	// Identity is resolved by internal/state, not by discovery, so two passes
-	// over the same repository deliberately propose different IDs.
+	// identity は discovery ではなく internal/state が解決する。
+	// 同じ repository を二度探索しても、候補 ID は意図的に異なる。
 	if first.ID == second.ID {
 		t.Fatalf("two discovery passes proposed the same id %q; the proposal must be random", first.ID)
 	}

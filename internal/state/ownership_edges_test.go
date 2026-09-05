@@ -101,9 +101,8 @@ func TestOwnershipPathHelpersRejectUnsafeInputs(t *testing.T) {
 	}
 }
 
-// TestValidateOwnershipRelativeRejectsUnsafeLocations covers the shared guard
-// both ownership entry points apply to every root-relative location, in the
-// request and in the recorded row.
+// TestValidateOwnershipRelativeRejectsUnsafeLocations は、所有権の両入口が request と
+// 記録済み row の全 root-relative location に適用する共通ガードを検証する。
 func TestValidateOwnershipRelativeRejectsUnsafeLocations(t *testing.T) {
 	for _, value := range []string{"", ".", "..", "/absolute", "../escape", "trailing/", "double//slash", "./here"} {
 		if err := validateOwnershipRelative("slot path", value); err == nil {
@@ -334,10 +333,8 @@ func TestValidateWorktreeOwnershipRejectsEveryIdentityBoundary(t *testing.T) {
 	}
 }
 
-// TestValidateWorktreeOwnershipAcceptsAMatchingIdentity is the positive half
-// of the fail-closed identity rule: a caller that presents the identity wx
-// recorded is accepted, so the rejections above are about the mismatch and
-// not about presenting an identity at all.
+// TestValidateWorktreeOwnershipAcceptsAMatchingIdentity は fail-closed な identity 規則の成功側を検証する。
+// wx が記録した identity を caller が提示すれば受理されるため、上の拒否は identity の提示自体ではなく不一致による。
 func TestValidateWorktreeOwnershipAcceptsAMatchingIdentity(t *testing.T) {
 	f := newOwnershipFixture(t)
 	ctx := context.Background()
@@ -425,8 +422,7 @@ func TestValidateSlotOwnershipBoundaries(t *testing.T) {
 	}
 }
 
-// TestValidateSlotOwnershipAcceptsAMatchingIdentity pairs with the
-// identity rejections above.
+// TestValidateSlotOwnershipAcceptsAMatchingIdentity は、上の identity 不一致による拒否と対になる。
 func TestValidateSlotOwnershipAcceptsAMatchingIdentity(t *testing.T) {
 	f := newOwnershipFixture(t)
 	ctx := context.Background()

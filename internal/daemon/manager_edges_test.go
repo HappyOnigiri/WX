@@ -45,12 +45,6 @@ func testManager(t *testing.T, cfg config.Config, store *state.Store) *Manager {
 		ctx:     ctx,
 		cancel:  cancel,
 	}
-	// New() creates the configured root and registers its durable generation
-	// before anything can allocate. slots.root_id is a NOT NULL foreign key,
-	// so a Manager assembled by hand has to do the same or every slot insert
-	// fails.
-	// A Manager built for an unavailable-root test must still be usable, so
-	// registration failure is left to the test that asked for it.
 	_, _ = tryRegisterTestRoot(m, filepath.Clean(root))
 	return m
 }
@@ -204,8 +198,6 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if _, ok := m.rootForPath(filepath.Join(home, "outside")); ok {
 		t.Fatal("outside path was accepted as wx-owned")
 	}
-	// The orphan scan only descends into namespaces spelled like a workspace
-	// ID, so an unregistered slot has to sit in one to be reported at all.
 	unknownPath := filepath.Join(newRoot, "wsp999", "orphan")
 	if err := os.MkdirAll(unknownPath, 0o700); err != nil {
 		t.Fatal(err)
@@ -469,10 +461,6 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	if _, _, err := m.waitForSnapshot(ctx, lease.SessionID); err == nil || !strings.Contains(err.Error(), "archive failed") {
 		t.Fatalf("quarantined archive wait error=%v", err)
 	}
-	// The readiness error must carry the slot's failure_code as a failure ID
-	// plus a pointer to `wx status`/`wx doctor`, not just the bare state
-	// name: an agent hook needs both pieces of design 672/961 to stop and
-	// tell the user where to look instead of retrying blind.
 	if err := m.WaitReady(ctx, lease.SessionID, lease.Token); err == nil ||
 		!strings.Contains(err.Error(), "failure_id=test") ||
 		!strings.Contains(err.Error(), "wx status") ||
@@ -556,8 +544,6 @@ func TestRemoveEmptySlotRejectsDescendantSymlinkSwap(t *testing.T) {
 	if err := os.WriteFile(outsideFile, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The slot directory itself is the symlink: removal must refuse it rather
-	// than follow it into an unrelated tree.
 	slotPath := filepath.Join(worktreeRoot, unboundNamespace, "slt001")
 	if err := os.Symlink(outside, slotPath); err != nil {
 		t.Fatal(err)
@@ -770,8 +756,6 @@ func discoveryPath(path string) domain.CanonicalPath {
 	return domain.CanonicalPath(filepath.Clean(path))
 }
 
-// ensureOwnershipMarkerForTest writes the marker for one repository worktree
-// into the slot directory that contains it, which is where the daemon puts it.
 func ensureOwnershipMarkerForTest(t *testing.T, root, target string, identity workspace.MarkerIdentity, commonDir string) {
 	t.Helper()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
@@ -880,9 +864,6 @@ func TestGCRefusesIncompleteMultiRepositoryRecoveryMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.workspaceSnapshot != "" {
-				// A bundle archive is located by root generation plus
-				// root-relative path, so "outside the roots" is a traversal
-				// that leaves the root rather than an unrelated absolute path.
 				relPath := filepath.Join("..", "outside", "snapshot.tar")
 				if test.workspaceSnapshot == "missing" {
 					relPath = filepath.Join("_recovery", "workspace-snapshots", "missing.tar")
@@ -942,10 +923,6 @@ func TestRemoveSlotWorktreesRefusesIncompleteRecoveryMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.workspaceSnapshot != "" {
-				// A workspace snapshot is located by root generation plus
-				// root-relative path, so "outside" is expressed as a
-				// traversal that leaves the root rather than as an unrelated
-				// absolute path.
 				rootID := slot.RootID
 				relPath := filepath.Join("..", "outside", "snapshot.tar")
 				if test.workspaceSnapshot == "missing" {
@@ -1004,9 +981,6 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 			workspaceID := string(registered.ID)
 			session := state.Session{ID: "session", WorkspaceID: workspaceID, SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}
 			slotRepository := state.SlotRepository{RepositoryID: "repository", DirName: "repository", State: "LEASED", BaseOID: gitOutput(t, repositoryPath, "rev-parse", "HEAD")}
-			// A slot whose recorded location leaves the wx root is how "the
-			// bundle is outside every known root" is expressed now that a slot
-			// is located by root generation plus root-relative path.
 			var bundleSlot state.Slot
 			if test.mode == "outside" {
 				if _, inside := relativeWithinRoot(cfg.Storage.WorktreeRoot, bundleRoot); inside {
@@ -1062,13 +1036,6 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 			if err := manager.snapshotSession(ctx, released); err == nil {
 				t.Fatal("workspace root snapshot failure was ignored")
 			}
-			// A slot inside the owned worktree root gets its repository
-			// snapshot persisted first, and only the workspace root step
-			// fails. A slot outside that root cannot be snapshotted at all:
-			// every git invocation now goes through the pinned root
-			// descriptor, so wx refuses to run git against a pathname whose
-			// ownership it cannot prove instead of taking a snapshot through
-			// a swappable path.
 			wantSnapshots := 1
 			if test.mode == "outside" {
 				wantSnapshots = 0
@@ -1077,8 +1044,6 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 			if err != nil || len(snapshots) != wantSnapshots {
 				t.Fatalf("repository recovery snapshot count=%d want %d: snapshots=%+v err=%v", len(snapshots), wantSnapshots, snapshots, err)
 			}
-			// Either failure point quarantines the slot, so nothing removes a
-			// worktree whose state was never captured.
 			slot, err := store.Slot(ctx, session.SlotID)
 			if err != nil || slot.State != "QUARANTINED" {
 				t.Fatalf("unsafe root snapshot slot=%+v err=%v", slot, err)

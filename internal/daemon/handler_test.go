@@ -70,11 +70,6 @@ func TestBindAndRestoreResumeRejectsNonResumeSource(t *testing.T) {
 			t.Fatalf("source=%q was accepted for the restore-resume path", source)
 		}
 	}
-	// An omitted source must be rejected for the same reason an empty one is:
-	// the check exists so the restore path cannot be reached without a resume
-	// payload behind it, and omitting a field is easier than forging it. The
-	// nil Manager here also proves the rejection happens before the manager is
-	// reached — if it did not, this would panic rather than return an error.
 	raw := json.RawMessage(`{"session_id":"missing","token":"token","agent_session_id":"agent"}`)
 	if _, err := handler.Handle(context.Background(), "BindAndRestoreResume", raw); err == nil {
 		t.Fatal("an omitted source was accepted for the restore-resume path")
@@ -173,9 +168,6 @@ func assertGuidance(t *testing.T, method, message string, want, wantAbsent []str
 	}
 }
 
-// TestDegradedHandlerStillHonoursAStop keeps wx daemon stop working on the one
-// daemon an operator most wants to take down: refusing here would leave kill(1)
-// and wx daemon uninstall as the only ways out of a broken database.
 func TestDegradedHandlerStillHonoursAStop(t *testing.T) {
 	signalled := make(chan struct{})
 	handler := DegradedHandler{
@@ -194,8 +186,6 @@ func TestDegradedHandlerStillHonoursAStop(t *testing.T) {
 	if pending, _ := reply["stop_pending"].(bool); !pending {
 		t.Fatalf("degraded stop did not report the pending stop: %v", reply)
 	}
-	// The signal is scheduled rather than sent inline so this very reply is
-	// not cut off by the shutdown it asks for.
 	select {
 	case <-signalled:
 	case <-time.After(2 * time.Second):

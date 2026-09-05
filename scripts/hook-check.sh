@@ -1,14 +1,9 @@
 #!/bin/sh
 set -eu
 
-# The hooks that invoke this script (the pre-commit and pre-push under
-# $(git rev-parse --git-common-dir)/hooks, via `make hook-pre-commit` and
-# `make hook-pre-push`) do not enforce a fixed time budget. They are not
-# tracked here, so that a user-level core.hooksPath dispatcher stays in
-# effect. Keep this script's own checks fast as a
-# guideline (aim to stay well under 30 seconds), but do not narrow what it
-# checks in order to chase a budget. The full test suite and golangci-lint are
-# deliberately not run here: they are CI's job, not the hook's.
+# この script を呼ぶ pre-commit・pre-push hook は固定の時間予算を設けない。
+# user-level core.hooksPath dispatcher を維持するため hook 本体は追跡せず、軽量な検査だけを行う。
+# 全テストと golangci-lint は CI の責務なのでここでは実行しない。
 mode=${1:-}
 case "$mode" in
   pre-commit|pre-push) ;;
@@ -17,9 +12,8 @@ esac
 
 root=$(git rev-parse --show-toplevel)
 cd "$root"
-# Hooks inherit GIT_INDEX_FILE and related variables for this repository. Tests
-# create independent repositories, so carrying those relative paths into child
-# Git processes corrupts their worktree view.
+# hook はこの repository 用の GIT_INDEX_FILE などを継承する。
+# テストは独立 repository を作るため、相対 path を child Git へ渡すと worktree の見え方が壊れる。
 local_git_env=$(git rev-parse --local-env-vars)
 for variable in $local_git_env; do
   unset "$variable"
@@ -36,9 +30,7 @@ require_tool() {
 require_tool "$tools/gofumpt"
 require_tool "$tools/gci"
 
-# fmt-check, matching `make fmt-check`: every commit and push runs this over
-# the whole module regardless of which paths changed, so formatting drift
-# never slips past the hook.
+# `make fmt-check` と同じ書式検査。変更 path に関係なく module 全体を検査し、書式崩れを通さない。
 if [ -n "$("$tools/gofumpt" -l cmd internal migrations tools)" ]; then
   "$tools/gofumpt" -l cmd internal migrations tools
   echo "run make fmt" >&2

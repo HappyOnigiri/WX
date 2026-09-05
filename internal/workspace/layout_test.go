@@ -2,10 +2,8 @@ package workspace
 
 import "path/filepath"
 
-// The fixtures in this package mirror the production layout,
-// <worktree_root>/<workspace-id>/<slot-id>/<RepoName>, so the tests exercise
-// the same path components the daemon builds. The IDs use the
-// six-character lowercase base36 shape domain.NewShortID produces.
+// この package の fixture は本番 layout `<worktree_root>/<workspace-id>/<slot-id>/<RepoName>` を再現し、daemon が組み立てる path component を同じく検証する。
+// ID は domain.NewShortID が生成する6文字 lowercase base36 形式を使う。
 const (
 	testRootID       = "rt0001"
 	testWorkspaceID  = "ws0001"
@@ -13,13 +11,11 @@ const (
 	testRepositoryID = "repository"
 )
 
-// testSlotRelPath is the slot directory's location relative to the worktree
-// root, which is what SQLite records in slots.rel_path.
+// testSlotRelPath は worktree root に対する slot directory の位置であり、SQLite が slots.rel_path に記録する値である。
 var testSlotRelPath = filepath.Join(testWorkspaceID, testSlotID)
 
-// markerFor builds the marker identity for this package's default root
-// generation and repository. Cases that deliberately vary the root or
-// repository build a MarkerIdentity inline instead.
+// markerFor はこの package の既定 root generation と repository の marker identity を作る。
+// root/repository を意図的に変える case は MarkerIdentity を inline で作る。
 func markerFor(slotID string) MarkerIdentity {
 	return MarkerIdentity{SlotID: slotID, RootID: testRootID, RepositoryID: testRepositoryID}
 }

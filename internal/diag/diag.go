@@ -1,7 +1,5 @@
-// Package diag contains the checks that wx can perform without an active
-// daemon connection.  The daemon and the CLI use the same implementation so
-// a failed connection does not replace useful local facts with a second,
-// subtly different diagnostic path.
+// Package diag は daemon 接続なしで wx が実行できる診断を提供する。
+// daemon と CLI が同じ実装を使い、接続失敗時もローカルの事実を保つ。
 package diag
 
 import (
@@ -18,18 +16,14 @@ import (
 
 const daemonUnavailable = "unavailable without daemon"
 
-// SharedChecks runs all checks whose answer does not require the daemon's
-// SQLite store.  configError is supplied by the caller because the daemon can
-// retain its last valid configuration after a failed reload, while the CLI
-// obtains its status from config.Load directly.
+// SharedChecks は daemon の SQLite store を必要としない診断を実行する。
+// daemon は reload 失敗後も最後の有効設定を保持できるため configError は呼び出し側から渡す。
 func SharedChecks(ctx context.Context, cfg config.Config, configError string, runners ...*gitx.Runner) map[string]any {
 	return sharedChecks(ctx, cfg, configError, false, runners...)
 }
 
-// SharedChecksWithoutLaunchAgent is used during the daemon's pending restart
-// window.  The old process cannot render the incoming binary's plist, so even
-// reading the comparison result in that window would create a false stale
-// warning.
+// SharedChecksWithoutLaunchAgent は daemon の再起動待ちに使う。
+// 旧 process は新 binary の plist を生成できず、比較結果を読むと誤った stale 警告になる。
 func SharedChecksWithoutLaunchAgent(ctx context.Context, cfg config.Config, configError string, runners ...*gitx.Runner) map[string]any {
 	return sharedChecks(ctx, cfg, configError, true, runners...)
 }
@@ -69,17 +63,14 @@ func sharedChecks(ctx context.Context, cfg config.Config, configError string, sk
 	return checks
 }
 
-// LocalChecks returns the shared checks plus stable placeholders for the
-// daemon-only checks.  reason is recorded under checks.daemon so callers can
-// see why the fallback was selected while retaining the daemon command's
-// non-zero exit status.
+// LocalChecks は共通診断と daemon 専用診断の固定 placeholder を返す。
+// fallback の理由を checks.daemon に記録し、daemon command の非ゼロ終了も保つ。
 func LocalChecks(ctx context.Context, reason error) map[string]any {
 	cfg, err := config.Load()
 	configError := ""
 	if err != nil {
 		configError = err.Error()
-		// Keep path diagnostics useful even when the configured file is invalid.
-		// Defaults are the same effective values used before a first config load.
+		// 設定ファイルが不正でも path 診断を有効にする。既定値は初回 load 前と同じ実効値を使う。
 		cfg = config.Defaults()
 	}
 	checks := SharedChecks(ctx, cfg, configError)
@@ -102,9 +93,8 @@ func pathCheck(path func() (string, error), requiredType, requiredPerm os.FileMo
 	return DiagnosticPath(value, requiredType, requiredPerm)
 }
 
-// DiagnosticPath reports whether path is the expected non-symlink kind and
-// permission.  Exact permissions are intentional because every path checked
-// here is private per-user state or a private worktree root.
+// DiagnosticPath は path が想定した種別・権限の非 symlink かを返す。
+// ここで調べるのは per-user の private state または private worktree root のため、権限は厳密に判定する。
 func DiagnosticPath(path string, requiredType os.FileMode, requiredPerm os.FileMode) string {
 	if path == "" {
 		return "path unavailable"

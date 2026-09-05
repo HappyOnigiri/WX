@@ -14,11 +14,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// TestScheduleColdRepositoryRemovalsSurvivesQuarantineStorageFailure
-// verifies that quarantineCleanupFailure logs (rather than panics or
-// silently loses) a storage failure while quarantining a slot whose cold
-// repository path could not be verified, keeping the calling GC sweep alive
-// for the rest of the candidates in the batch.
 func TestScheduleColdRepositoryRemovalsSurvivesQuarantineStorageFailure(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
 	slotID := domain.StableID("cold-schedule", "quarantine-fault")
@@ -47,11 +42,6 @@ func TestScheduleColdRepositoryRemovalsSurvivesQuarantineStorageFailure(t *testi
 	}
 }
 
-// TestReconcileArtifactsSurvivesQuarantineStorageFailure verifies that a
-// storage failure while quarantining a missing owned artifact is logged and
-// does not abort the wider reconciliation pass (a startup routine that must
-// keep making progress across every artifact even when one durable update
-// fails).
 func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
 	ctx, manager, store, _, _, databasePath := managerCoverageFixture(t)
 	missingID := "missing-artifact"
@@ -71,20 +61,12 @@ func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Must not panic and must leave the slot in its prior (non-quarantined)
-	// state; the failure is logged, not silently promoted to a crash.
 	manager.reconcileArtifacts(ctx)
 	if slot, err := store.Slot(ctx, missingID); err != nil || slot.State != "LEASED" {
 		t.Fatalf("slot state changed despite injected quarantine failure: slot=%+v err=%v", slot, err)
 	}
 }
 
-// TestRemoveSlotWorktreesWrapsRepositorySnapshotStorageFailure verifies that
-// a storage failure reading repository snapshots before a worktree removal
-// is reported as removal metadata failure (state.ErrOwnership-compatible via
-// removalMetadataFailure) rather than an opaque low-level SQL error, keeping
-// the failure classification callers rely on to decide whether to
-// quarantine.
 func TestRemoveSlotWorktreesWrapsRepositorySnapshotStorageFailure(t *testing.T) {
 	root := t.TempDir()
 	databasePath := filepath.Join(root, "state.db")
@@ -102,8 +84,6 @@ func TestRemoveSlotWorktreesWrapsRepositorySnapshotStorageFailure(t *testing.T) 
 	w := discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "repository", Repositories: []discovery.Repository{
 		{ID: "repository", MainPath: discoveryPath(filepath.Join(root, "repository")), CommonDir: discoveryPath(filepath.Join(root, "repository", ".git")), DefaultBranch: "main"},
 	}}
-	// The store owns workspace identity now, so the durable ID has to come
-	// back from the upsert; the proposal above is discarded.
 	registered, _, err := store.UpsertWorkspaceGeneration(ctx, w)
 	if err != nil {
 		t.Fatal(err)
@@ -130,11 +110,6 @@ func TestRemoveSlotWorktreesWrapsRepositorySnapshotStorageFailure(t *testing.T) 
 	}
 }
 
-// TestResumeRestoreJobWrapsSlotRepositoryStorageFailure verifies that a
-// storage failure reading the restoring slot's own repository rows (after
-// the parent recovery snapshot has already been validated as usable) is
-// propagated as an error instead of proceeding to rebuild repository state
-// from a read that silently returned nothing.
 func TestResumeRestoreJobWrapsSlotRepositoryStorageFailure(t *testing.T) {
 	root := t.TempDir()
 	databasePath := filepath.Join(root, "state.db")

@@ -49,10 +49,8 @@ func TestRemovalOwnershipHelpersFailClosed(t *testing.T) {
 	if err := validateRemovalPathComponents(root, filepath.Join("slot", "missing")); err != nil {
 		t.Fatalf("missing leaf rejected: %v", err)
 	}
-	// A missing ancestor ends the walk successfully at any depth: the leaf is
-	// gone too, so there is nothing to delete. This is the state an
-	// interrupted removal replays in, because removeSlotWorktrees deletes the
-	// whole slot directory before it commits ARCHIVED.
+	// どの深さでも ancestor がなければ walk は成功する。leaf もなく削除対象がないためであり、
+	// slot directory を削除後 ARCHIVED commit 前に中断した削除を再実行するときに必要である。
 	if err := validateRemovalPathComponents(root, filepath.Join("missing", "leaf")); err != nil {
 		t.Fatalf("missing intermediate path rejected: %v", err)
 	}
@@ -76,9 +74,8 @@ func TestRemovalOwnershipHelpersFailClosed(t *testing.T) {
 	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", nil, nil); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing ownership validator error=%v", err)
 	}
-	// A Preparer that carries a validator but no recorded slot location
-	// cannot describe what to compare against, so the proof must fail rather
-	// than fall back to a pathname.
+	// validator を持っても記録済み slot location がなければ比較対象を特定できない。
+	// path 名だけの比較に戻さず、証明を失敗させる。
 	manager.Preparer = &workspace.Preparer{Ownership: allowOwnershipValidator{}}
 	if err := manager.validateStateOwnership(context.Background(), repo, target, "slot", "", []string{"READY"}, []string{"READY"}); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing slot location error=%v", err)
@@ -95,16 +92,14 @@ func TestRemovalOwnershipHelpersFailClosed(t *testing.T) {
 	if rootID, slotRel, dirName, err := manager.worktreeLocation(target); err != nil || rootID != testRootID || slotRel != "slot" || dirName != "repo" {
 		t.Fatalf("worktreeLocation=%q/%q/%q err=%v", rootID, slotRel, dirName, err)
 	}
-	// A worktree that is not a direct child of the recorded slot has no
-	// directory name to compare, so it is refused too.
+	// 記録済み slot の直接の子でない worktree には比較する directory 名がないため、拒否する。
 	if _, _, _, err := manager.worktreeLocation(filepath.Join(target, "nested")); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("worktreeLocation for a non-child target error=%v", err)
 	}
 	if identity := manager.markerIdentity(repo); identity.RootID != testRootID || identity.RepositoryID != string(repo.ID) || identity.SlotID != "" {
 		t.Fatalf("marker identity=%+v", identity)
 	}
-	// Without a Preparer there is no root generation to name, so the marker
-	// identity is incomplete and marker validation refuses it.
+	// Preparer がなければ root generation を特定できず marker identity は不完全なので、marker 検証は拒否する。
 	if identity := (&Manager{}).markerIdentity(repo); identity.RootID != "" {
 		t.Fatalf("marker identity without a preparer=%+v", identity)
 	}
@@ -222,9 +217,8 @@ func TestWorkspaceSnapshotPreconditionsAndPruneFailures(t *testing.T) {
 	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, state.WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: "wrong.tar"}); err == nil {
 		t.Fatal("snapshot deletion accepted a mismatched artifact path")
 	}
-	// A missing ownership root cannot be opened as a pinned descriptor at
-	// all, so the fail-closed behavior for it is the descriptor open itself
-	// failing rather than a *At entry point being reached with one.
+	// 存在しない ownership root は pin 済み descriptor として開けない。
+	// *At entry point に届く前に descriptor open 自体を失敗させるのがフェイルクローズの動作である。
 	if _, _, err := domain.OpenOwnedRoot(filepath.Join(ownershipRoot, "missing-root"), filepath.Join(ownershipRoot, "missing-root")); err == nil {
 		t.Fatal("missing ownership root was opened as a pinned descriptor")
 	}

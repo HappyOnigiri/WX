@@ -128,10 +128,8 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 	})
 	waitForPathWithin(t, pidFile, 10*time.Second)
 	var agentPID int
-	// Coverage, race, and mutation jobs execute this helper while the machine is
-	// saturated. The agent may already be running before the helper process gets
-	// enough CPU to complete its registration RPC, so allow the same bounded
-	// startup window used by the other process-level tests.
+	// coverage と race の実行中は machine が飽和し、agent が registration RPC より先に起動し得る。
+	// 他の process-level test と同じ上限で registration を待つ。
 	waitUntilCLI(t, 10*time.Second, func() bool {
 		handler.mu.Lock()
 		defer handler.mu.Unlock()
@@ -338,8 +336,7 @@ func TestRunAgentSupervisesChildAndReleasesLease(t *testing.T) {
 	}
 }
 
-// NEW-1: replacing the configured root after the lease directory is opened
-// must not redirect the agent CWD to the replacement directory.
+// NEW-1: lease directory を開いた後に設定済み root を置換しても、agent CWD は置換先 directory を指してはならない。
 func TestRunAgentKeepsDescriptorBoundCWDAcrossRootReplacement(t *testing.T) {
 	base, err := os.MkdirTemp("", "wx-cwd-")
 	if err != nil {

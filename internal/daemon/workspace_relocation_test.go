@@ -69,8 +69,6 @@ exit 1
 	cfg.Readiness.Timeout.Duration = time.Second
 	m := testManager(t, cfg, store)
 	defer m.Close()
-	// The fake Git path is exercised by coverage and race instrumentation; leave
-	// enough room for process startup while keeping the production timeout intact.
 	m.git.SetTimeout(5 * time.Second)
 	ctx := context.Background()
 	repositoryID := domain.RepositoryID(domain.StableID(common))
@@ -80,8 +78,6 @@ exit 1
 			ID: repositoryID, MainPath: domain.CanonicalPath(oldMain), CommonDir: domain.CanonicalPath(common), RelativePath: ".", DefaultBranch: "main",
 		}},
 	})
-	// Workspace identity is the store's: the durable ID is what names the
-	// slot directories and what relocation has to preserve.
 	oldWorkspaceID := registered.ID
 	oldSlotPath := filepath.Join(cfg.Storage.WorktreeRoot, string(oldWorkspaceID), "old-slot")
 	if err := os.MkdirAll(oldSlotPath, 0o700); err != nil {
@@ -91,8 +87,6 @@ exit 1
 		t.Fatal(err)
 	}
 
-	// A restarted manager only has the old root from SQLite. It must recover the
-	// moved main worktree from Git's common directory and update that same row.
 	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 	if _, resolveErr := m.resolveRegisteredWorkspace(ctx, oldMain, &discoverer); resolveErr != nil {
 		t.Fatalf("common-directory recovery failed: %v", resolveErr)
@@ -116,8 +110,6 @@ exit 1
 		t.Fatalf("status=%+v err=%v, want one workspace", status, err)
 	}
 
-	// A request through the new path must resolve to the same workspace ID and
-	// therefore continue using the existing workspaces/<id>/slots namespace.
 	lease, err := m.ResolveAndLease(ctx, newMain, nil, "codex", os.Getpid())
 	if err != nil {
 		t.Fatal(err)
@@ -131,8 +123,6 @@ exit 1
 		t.Fatalf("new-path session=%+v err=%v, want existing workspace identity", leasedSession, err)
 	}
 
-	// A fresh native resume after restart uses the relocated workspace row and
-	// must allocate into that same namespace as well.
 	parent := state.Session{ID: "expired-parent", WorkspaceID: string(oldWorkspaceID), SlotID: "expired-parent", State: "EXPIRED", AgentKind: "codex", TokenHash: state.HashToken("parent")}
 	if _, err := store.CreateSlotSession(ctx, slotAtPath(t, m, parent.WorkspaceID, parent.SlotID, filepath.Join(cfg.Storage.WorktreeRoot, string(oldWorkspaceID), parent.SlotID), 1, "ARCHIVED"), nil, parent, ""); err != nil {
 		t.Fatal(err)
@@ -180,12 +170,6 @@ func TestMainWorktreeRelocationWithGitRegistryPreservesIdentityAndSessions(t *te
 		t.Fatal(err)
 	}
 	defer store.Close()
-	// Seed the pre-common-directory identity used by an older database. The
-	// repository common directory is real, so the post-move reconciliation must
-	// retain this ID and its existing slot namespace.
-	// The ID discovery proposes is discarded by the store, which assigns the
-	// durable one; this test's point is that the post-move reconciliation
-	// retains that ID and its existing slot namespace.
 	legacy := registerTestWorkspace(t, store, discovered)
 	m := testManager(t, cfg, store)
 	defer m.Close()

@@ -30,26 +30,17 @@ type Client struct {
 	RPC    rpc.Client
 	Config config.Config
 
-	// beforeAgentStart is a deterministic test barrier used to replace the
-	// lexical root after the lease directory descriptor is opened. Production
-	// clients leave it nil; the child still starts through fdexec below.
+	// beforeAgentStart は lease directory descriptor を開いた後に lexical root を置換する test 用 barrier。
+	// production client では nil のままにし、子 process は fdexec 経由で起動する。
 	beforeAgentStart func()
 }
 
-// defaultDiscoveryBudget mirrors config.Defaults().Discovery.Timeout. It is
-// used only as a floor when a caller's config was not loaded through
-// config.Load (for example in-process test clients), so discovery-bound RPCs
-// still get a generous budget rather than silently falling back to the
-// unrelated fixed client timeout below.
+// defaultDiscoveryBudget は config.Defaults().Discovery.Timeout と同じ値。
+// config.Load を経ない呼び出しでも discovery RPC を固定の短い client timeout に落とさないための下限である。
 const defaultDiscoveryBudget = 30 * time.Second
 
-// discoveryTimeout returns the time budget for RPCs whose server-side work is
-// bounded by the daemon's own repository discovery pass (ResolveAndLease,
-// Resume, AllocateResumeSlot), plus Status/Doctor whose disk usage
-// accounting walks the same worktree root. A fixed short client timeout here
-// would otherwise race the daemon's own discovery.timeout budget (default 30s,
-// but operator-configurable higher) and abandon a discovery pass that is
-// still succeeding on schedule.
+// discoveryTimeout は repository discovery を行う RPC の制限時間を返す。
+// daemon の discovery.timeout に余裕を足し、予定どおり進む大規模 root の探索を client 側で中断しない。
 func (c Client) discoveryTimeout() time.Duration {
 	budget := c.Config.Discovery.Timeout.Duration
 	if budget <= 0 {
@@ -63,28 +54,13 @@ func New(cfg config.Config) (Client, error) {
 	if err != nil {
 		return Client{}, err
 	}
-	// Every call this client makes belongs to a session that outlives a daemon
-	// restart: the lease, the agent process registration, the heartbeats and
-	// the release at exit. Each of them would otherwise fail outright in the
-	// short window where a daemon that is replacing itself after a binary swap
-	// has closed its listener and not opened the new one yet. Retrying is safe
-	// because ConnectRetry only covers failures that happened before any byte
-	// was sent, so a request the daemon may have started executing is never
-	// repeated. wx's plain commands keep their own client (cmd/wx) without this
-	// budget and still exit immediately when no daemon is listening. The 2s
-	// figure is the same budget agent hooks use; see internal/agent/hook.go for
-	// the measured gap it is sized against.
+	// この client の RPC は再起動をまたぐ lease、agent 登録、heartbeat、release に使う。
+	// ConnectRetry は送信前の接続失敗だけを再試行するため、実行中の要求は重複しない。予算は hook と同じ 2 秒である。
 	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second, ConnectRetry: 2 * time.Second}, Config: cfg}, nil
 }
 
-// ensureDaemon confirms a daemon is reachable, bootstrapping one through
-// launchd only when nothing answered the connection at all (no socket, or a
-// stale socket nobody is listening on). It must never kickstart -k on the
-// strength of a slow-but-successful connection: Status's disk usage walk
-// (rootDirectoryUsage) can legitimately take longer than a short fixed
-// timeout on a large worktree root, and launchctl kickstart -k kills a
-// running service, which would tear down a daemon that is still serving
-// other live sessions.
+// ensureDaemon は daemon への接続を確認し、未待受時だけ launchd で起動する。
+// 大きな root の Status は遅延し得るため、応答遅延だけで kickstart すると他 session を処理中の daemon を終了させる。
 func (c Client) ensureDaemon(ctx context.Context) error {
 	var status map[string]any
 	statusCtx, cancel := context.WithTimeout(ctx, c.discoveryTimeout())
@@ -109,11 +85,8 @@ func (c Client) ensureDaemon(ctx context.Context) error {
 	return daemonRecoveryError("wx daemon did not become ready", nil)
 }
 
-// daemonRecoveryError keeps the ordinary doctor guidance for an unknown
-// LaunchAgent state, but points directly at daemon install when the plist is a
-// byte-for-byte mismatch with the current wx executable.  The check is
-// best-effort: inability to inspect the plist must not hide the original
-// connection failure or turn it into a new failure mode.
+// daemonRecoveryError は通常は doctor を案内し、現在の executable と plist が不一致なら daemon install を案内する。
+// plist を検査できなくても、元の接続失敗を別の失敗に置き換えない。
 func daemonRecoveryError(prefix string, cause error) error {
 	hint := "run wx doctor"
 	if status, err := launchd.CurrentPlistStatus(); err == nil && status == launchd.PlistStale {
@@ -175,12 +148,8 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		fmt.Fprintln(os.Stderr, "error: create operation identity:", err)
 		return 1
 	}
-	// ResolveAndLease/Resume/AllocateResumeSlot run the daemon's own
-	// repository discovery synchronously (bounded by discovery.timeout, 30s by
-	// default but operator-configurable). Give the call the same generous
-	// budget instead of the RPC client's fixed default timeout, so a cold,
-	// multi-repository root does not get abandoned client-side while the
-	// daemon is still completing a discovery pass that is on schedule.
+	// ResolveAndLease、Resume、AllocateResumeSlot は daemon 側で repository discovery を同期実行する。
+	// cold な複数 repository root でも、discovery.timeout 内の探索を client 側の既定 timeout で中断しない。
 	leaseCtx := ctx
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -218,8 +187,8 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		envOverrides = append(envOverrides, "WX_RECOVERY_DISCARDED=1")
 	}
 	env := childEnvironment(os.Environ(), envOverrides)
-	// When hooks are installed, preparation overlaps agent startup and prompt entry.
-	// Otherwise normal starts and explicit resumes safely wait in the foreground.
+	// hook 導入時は preparation を agent 起動と prompt 入力に重ねる。
+	// それ以外の通常起動と明示 resume は foreground で安全に待機する。
 	if !lease.Ready && !hooksReady {
 		waitCtx, cancel := context.WithTimeout(ctx, c.Config.Readiness.Timeout.Duration)
 		err = c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
@@ -238,9 +207,8 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	if c.beforeAgentStart != nil {
 		c.beforeAgentStart()
 	}
-	// The descriptor-bound trampoline calls fchdir(2) in the child immediately
-	// before exec(2). This keeps agent CWD on the lease inode across a rename or
-	// symlink/physical replacement of the lexical wx root.
+	// descriptor-bound trampoline は子 process の exec(2) 直前に fchdir(2) する。
+	// lexical wx root が rename・symlink・実体置換されても agent CWD は lease inode を指す。
 	helper, helperErr := os.Executable()
 	if helperErr != nil {
 		fmt.Fprintln(os.Stderr, "error: locate wx descriptor helper:", helperErr)
@@ -276,11 +244,8 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		return 1
 	}
 	heartbeatDone := make(chan struct{})
-	// A heartbeat that lands while the daemon is restarting itself after a
-	// binary replacement would otherwise age the session's liveness by a full
-	// interval for a gap that lasts a fraction of a second. The client's
-	// ConnectRetry budget (see New) covers that gap; the surrounding 2s context
-	// still bounds the whole attempt.
+	// binary 置換後の再起動中に heartbeat が失敗しても、ConnectRetry で短い未待受期間を吸収する。
+	// 呼び出し全体は 2 秒の context で制限する。
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
@@ -339,15 +304,8 @@ func forwardAgentSignal(cmd *exec.Cmd, sig os.Signal) {
 }
 
 func restoreForeground(ttyFD int) {
-	// TIOCSPGRP delivers SIGTTOU to a background process group that attempts
-	// it, which would stop wx itself while it is trying to hand the terminal
-	// back. Divert that one delivery through a Notify channel instead of
-	// signal.Ignore: Ignore's disposition cannot be fully undone by
-	// signal.Reset (Reset only removes Notify registrations), so it would
-	// leave SIGTTOU permanently reported as ignored for the rest of the
-	// process's life. Notify/Stop brackets the same window without that
-	// process-wide leak; the channel's buffer of 1 is enough since nothing
-	// ever reads from it and Stop discards it regardless.
+	// TIOCSPGRP は background process group に SIGTTOU を送り、wx 自身を停止させ得る。
+	// signal.Ignore は Reset 後も残るため使わず、Notify/Stop で ioctl 中だけ受信し、channel は読まない。
 	sigttou := make(chan os.Signal, 1)
 	signal.Notify(sigttou, syscall.SIGTTOU)
 	_ = unix.IoctlSetPointerInt(ttyFD, unix.TIOCSPGRP, syscall.Getpgrp())
@@ -360,12 +318,8 @@ func openLeaseDirectory(cfg config.Config, lease daemon.Lease) (*os.File, error)
 		return nil, err
 	}
 	if !domain.IsWithin(root, lease.Path) && lease.RootIdentity == "" {
-		// Test-only/in-process RPC handlers from older callers do not carry the
-		// daemon's durable inode identity. Keep that compatibility path physical
-		// and fail closed on symlink components. Canonicalize first so Darwin's
-		// /tmp -> /private/tmp alias is not rejected as an unsafe component, then
-		// open through the filesystem-root descriptor. Daemon-issued leases always
-		// carry RootIdentity and never take this compatibility branch.
+		// 旧 test/in-process RPC handler は daemon の durable inode identity を持たない。
+		// この互換経路も symlink 成分を拒否し、Darwin の /tmp alias を canonicalize 後に root descriptor 経由で開く。
 		canonical, err := domain.Canonicalize(lease.Path)
 		if err != nil {
 			return nil, err

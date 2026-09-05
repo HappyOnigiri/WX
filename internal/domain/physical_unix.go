@@ -13,9 +13,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ensurePhysicalDirectoryRootPlatform creates and opens each component with
-// directory FDs. Unlike os.Root rooted at "/", this never follows a symlink
-// inserted between the existence check and mkdirat for an intermediate path.
+// ensurePhysicalDirectoryRootPlatform は各成分をディレクトリ FD で作成・オープンする。
+// "/" を起点とする os.Root と異なり、存在確認と中間パスの mkdirat の間に
+// 挿入された symlink を追跡しない。
 func ensurePhysicalDirectoryRootPlatform(absolute string, perm os.FileMode) (*os.Root, error) {
 	volumeRoot := filepath.VolumeName(absolute) + string(filepath.Separator)
 	relative := strings.TrimPrefix(absolute, volumeRoot)
@@ -62,9 +62,9 @@ func ensurePhysicalDirectoryRootPlatform(absolute string, perm os.FileMode) (*os
 		return nil, fmt.Errorf("stat physical directory: %w", err)
 	}
 
-	// os.Root has no exported constructor from an existing FD. /dev/fd is an
-	// FD identity lookup on both supported Unix targets; the fallback is still
-	// checked against finalInfo before it can be returned to the caller.
+	// os.Root には既存 FD から作る公開コンストラクタがない。
+	// /dev/fd は対応する Unix で FD の同一性を参照できるため、フォールバックも
+	// 呼び出し元へ返す前に finalInfo と照合する。
 	owned, err := os.OpenRoot(filepath.Join(string(filepath.Separator), "dev", "fd", strconv.FormatUint(uint64(final.Fd()), 10)))
 	if err != nil {
 		owned, err = os.OpenRoot(absolute)

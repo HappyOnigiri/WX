@@ -7,10 +7,9 @@ import (
 	"syscall"
 )
 
-// OpenOwnedDirectory opens an existing directory through a descriptor rooted
-// at root.  The returned file descriptor refers to the directory inode itself;
-// callers may keep it open while a child process is started so a rename or a
-// replacement of the pathname cannot change that child's working directory.
+// OpenOwnedDirectory は root を起点とする descriptor 経由で既存ディレクトリを開く。
+// 返す FD はディレクトリ inode 自体を参照するため、子プロセス起動中も保持すれば
+// パス名の rename や置換で子の作業ディレクトリが変わることを防げる。
 func OpenOwnedDirectory(root, path string) (*os.File, string, error) {
 	ownedRoot, relative, err := OpenOwnedRoot(root, path)
 	if err != nil {
@@ -28,8 +27,8 @@ func OpenOwnedDirectory(root, path string) (*os.File, string, error) {
 	return file, identity, nil
 }
 
-// OpenDirectoryAt opens a directory relative to an already pinned os.Root.
-// It deliberately does not close owner: the caller owns that descriptor.
+// OpenDirectoryAt は、既に pin された os.Root を基準にディレクトリを開く。
+// owner は呼び出し元が所有するため、この関数では意図的に close しない。
 func OpenDirectoryAt(owner *os.Root, relative string) (*os.File, string, error) {
 	if owner == nil {
 		return nil, "", errors.New("owned root is nil")
@@ -71,10 +70,9 @@ func OpenDirectoryAt(owner *os.Root, relative string) (*os.File, string, error) 
 	return file, identity, nil
 }
 
-// OpenRootAt reopens an existing directory as a child Root while checking the
-// directory inode before and after OpenRoot. It is the Root-valued counterpart
-// to OpenDirectoryAt for callers that need several descriptor-relative file
-// operations below one pinned worktree target.
+// OpenRootAt は OpenRoot の前後でディレクトリ inode を検査し、既存ディレクトリを
+// 子 Root として開き直す。pin された worktree 配下で複数の descriptor 相対操作を
+// 行う呼び出し元向けの、Root 版 OpenDirectoryAt である。
 func OpenRootAt(owner *os.Root, relative string) (*os.Root, error) {
 	if owner == nil {
 		return nil, errors.New("owned root is nil")
@@ -111,19 +109,9 @@ func OpenRootAt(owner *os.Root, relative string) (*os.Root, error) {
 	return child, nil
 }
 
-// FileIdentity returns a portable textual device/inode identity. This
-// package builds only for darwin and linux (see physical_unix.go), so the
-// concrete type behind info.Sys() is always *syscall.Stat_t; a direct type
-// assertion replaces the reflection this used to need only to smooth over
-// Dev/Ino's differing integer widths between those two platforms; %d formats
-// either width directly, so no explicit conversion is involved (Dev is int32
-// on darwin and uint64 on linux, and converting would be flagged as
-// unnecessary on linux). The identity only ever names a local inode and is
-// only compared against another identity captured by the same binary, so the
-// per-platform rendering does not have to agree across platforms. A failed
-// assertion is fail-closed: it returns an error rather than a zero identity,
-// since a zero identity would compare equal to another failure instead of
-// being treated as unavailable.
+// FileIdentity は device/inode の同一性を可搬な文字列で返す。 本パッケージは darwin と linux だけでビルドするため info.Sys() は常に *syscall.Stat_t
+// であり、型 assertion に失敗した場合はゼロ値ではなくエラーを返す。 同一性は同じバイナリが取得したローカル inode との比較にだけ使うため、OS 間で
+// 表現形式を一致させる必要はない。
 func FileIdentity(info os.FileInfo) (string, error) {
 	if info == nil || info.Sys() == nil {
 		return "", errors.New("file identity is unavailable")

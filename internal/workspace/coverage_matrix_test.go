@@ -271,8 +271,8 @@ func TestPinnedPrepareCommandRunsInsideValidatedWorktree(t *testing.T) {
 	if data, err := os.ReadFile(filepath.Join(target, "prepare-marker")); err != nil || string(data) != "pinned" {
 		t.Fatalf("prepare marker=%q err=%v", data, err)
 	}
-	// A non-positive command timeout falls back to the configured readiness
-	// budget, keeping the ordinary path covered as well.
+	// 0以下のコマンドタイムアウトは設定済みの準備待ち予算へフォールバックし、
+	// 通常経路も検証対象に含める。
 	cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{Command: []string{"/usr/bin/true"}}}
 	preparer.Config = cfg
 	plain := &Preparer{Git: preparer.Git, Config: cfg, OwnedRoot: owner, RootPath: root}

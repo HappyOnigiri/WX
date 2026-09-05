@@ -38,11 +38,8 @@ type Lease struct {
 	Ready           bool   `json:"ready"`
 }
 
-// managedRoot is the lifetime record for one descriptor-bound wx root. A
-// retired root remains open while an operation or lease still owns a
-// reference; the final release closes it and removes it from the manager's
-// handle set.
 type managedRoot struct {
+	// retired rootは操作またはleaseの参照が残る間だけ開き、最後のreleaseで閉じる。
 	root     *os.Root
 	identity string
 	refs     int
@@ -51,115 +48,60 @@ type managedRoot struct {
 }
 
 type Manager struct {
-	mu          sync.RWMutex
-	cfg         config.Config
-	store       *state.Store
-	git         *gitx.Runner
-	log         *slog.Logger
-	started     time.Time
-	lastReload  time.Time
-	reloadError string
-	lastBackup  time.Time
-	backupError string
-	roots       map[string]bool
-	rootRefs    map[string]*managedRoot
-	retiredRefs map[string][]*managedRoot
-	// rootIdentities keeps the physical identity of every root pathname that
-	// has been admitted during this manager lifetime. A retired descriptor may
-	// be reopened for cleanup only when it still names the same inode; a
-	// replacement at the old pathname fails closed instead of becoming a new
-	// generation for an old slot/job.
-	rootIdentities map[string]string
-	// rootIDs maps a root pathname to its durable roots.id. SQLite is the
-	// authority for which root generations exist; this map is only the
-	// lookup the in-memory descriptor registry needs to name them, and it is
-	// reloaded from the roots table at startup and on every reload.
-	rootIDs map[string]string
-	// rootError is why the configured worktree root has no usable generation,
-	// empty once one is registered. registerRootGeneration only logs its
-	// failure so the daemon keeps answering read-only requests, and activeRoot
-	// would otherwise report nothing but the absence of an ID, leaving the
-	// user with no way to reach the cause short of reading the daemon log.
-	rootError   string
-	rootCond    *sync.Cond
-	rootClosing bool
-	leases      map[string]func()
-	// beforeSlotRootCreate is a deterministic adversarial-test barrier. It is
-	// invoked after the pinned root descriptor and relative namespace are ready
-	// but before the first descriptor-relative mkdir. Production managers leave
-	// it nil.
+	mu                   sync.RWMutex
+	cfg                  config.Config
+	store                *state.Store
+	git                  *gitx.Runner
+	log                  *slog.Logger
+	started              time.Time
+	lastReload           time.Time
+	reloadError          string
+	lastBackup           time.Time
+	backupError          string
+	roots                map[string]bool
+	rootRefs             map[string]*managedRoot
+	retiredRefs          map[string][]*managedRoot
+	rootIdentities       map[string]string
+	rootIDs              map[string]string
+	rootError            string
+	rootCond             *sync.Cond
+	rootClosing          bool
+	leases               map[string]func()
 	beforeSlotRootCreate func()
-	// beforeRootClose is a deterministic shutdown barrier for lifecycle tests.
-	// Production managers leave it nil.
-	beforeRootClose func()
-	// executablePath and executableBaseline record the daemon's own binary as
-	// it was at startup, so a later replacement (make install renames a new
-	// inode over the pathname) can be detected and followed by a restart.
-	// executableWatch is false when that baseline could not be taken, which
-	// disables the watch rather than letting an unavailable baseline read as
-	// "unchanged".
-	executablePath     string
-	executableBaseline executableSnapshot
-	executableWatch    bool
-	// restartPending and stopPending are the two lifecycle intents that wait on
-	// the idle gate. At most one is ever raised: each request lowers the other,
-	// so the gate never has to rank them. lifecycleClaimed marks the moment one
-	// of them was handed to the signal that carries it out, which must happen
-	// once and only once. lifecycleAttempts counts the signals that never got
-	// delivered; once it reaches maxLifecycleAttempts the claim latches, and
-	// only a new explicit request clears the pair again.
-	restartPending    bool
-	stopPending       bool
-	lifecycleClaimed  bool
-	lifecycleAttempts int
-	restartUnmanaged  bool
-	inflightRequests  int
-	// inflightLifecycle is the subset of inflightRequests that is asking the
-	// daemon to change its own run state. The gate blocks on the full count so
-	// that no signal lands on an unanswered request, but the quiet period is
-	// measured over the other kind only: see lastRequestEnd.
-	inflightLifecycle int
-	// lastRequestEnd is the moment the count of requests that are not lifecycle
-	// requests last reached zero. The lifecycle gate waits out
-	// lifecycleQuietPeriod from it, because a single wx invocation is several
-	// independent RPCs with genuinely idle moments between them and a restart
-	// taken in one of those gaps cuts the next call. wx daemon stop's own RPC
-	// is not one of those moments — it is the request being served — so
-	// stamping it would make every stop wait out a quiet period it created
-	// itself, even on a daemon that had been idle for hours.
-	lastRequestEnd time.Time
-	// lastLifecycleEnd is when a lifecycle request last left Handler.Handle.
-	// The gate holds lifecycleReplyGrace from it so the reply frame, which
-	// rpc.Server writes after the handler returns, is not cut off by the very
-	// signal the reply is reporting.
-	lastLifecycleEnd time.Time
-	// kickstart, terminate and launchdManaged are test seams for the restart and
-	// stop paths. Production managers leave them nil and take the launchd and
-	// signal implementations.
-	kickstart      func(context.Context) error
-	terminate      func() error
-	launchdManaged func() bool
-	jobs           chan jobWork
-	// lifecycleChecks wakes maintainJobs as soon as a stop or restart is
-	// requested, so a synchronous wx daemon stop does not have to sit through
-	// the 10s job tick before the gate is looked at at all.
-	lifecycleChecks   chan struct{}
-	reloads           chan struct{}
-	ctx               context.Context
-	cancel            context.CancelFunc
-	wg                sync.WaitGroup
-	workersMu         sync.Mutex
-	workerStops       []chan struct{}
-	workerSeq         int
-	closed            bool
-	logLevel          *slog.LevelVar
-	backgroundMu      sync.Mutex
-	backgroundWG      sync.WaitGroup
-	backgroundClosing bool
-	reloadMu          sync.Mutex
-	closeOnce         sync.Once
-	closeDoneMu       sync.Mutex
-	closeDone         chan struct{}
+	beforeRootClose      func()
+	executablePath       string
+	executableBaseline   executableSnapshot
+	executableWatch      bool
+	restartPending       bool
+	stopPending          bool
+	lifecycleClaimed     bool
+	lifecycleAttempts    int
+	restartUnmanaged     bool
+	inflightRequests     int
+	inflightLifecycle    int
+	lastRequestEnd       time.Time
+	lastLifecycleEnd     time.Time
+	kickstart            func(context.Context) error
+	terminate            func() error
+	launchdManaged       func() bool
+	jobs                 chan jobWork
+	lifecycleChecks      chan struct{}
+	reloads              chan struct{}
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	wg                   sync.WaitGroup
+	workersMu            sync.Mutex
+	workerStops          []chan struct{}
+	workerSeq            int
+	closed               bool
+	logLevel             *slog.LevelVar
+	backgroundMu         sync.Mutex
+	backgroundWG         sync.WaitGroup
+	backgroundClosing    bool
+	reloadMu             sync.Mutex
+	closeOnce            sync.Once
+	closeDoneMu          sync.Mutex
+	closeDone            chan struct{}
 }
 type jobWork struct {
 	id string
@@ -197,8 +139,6 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 		logger.Error("worktree root is unavailable", "path", cfg.Storage.WorktreeRoot, "error", err)
 	}
 	m.loadRootGenerations(context.Background())
-	// Reclaim durable jobs before workers and lifecycle reconciliation can race
-	// over stale RUNNING leases or snapshot-ref ownership.
 	m.recoverJobs(reclaimAll)
 	m.resizeWorkers(cfg.Pool.PreparationConcurrency)
 	m.wg.Add(2)
@@ -239,11 +179,9 @@ func (m *Manager) Close() {
 	<-done
 }
 
-// beginRootClose prevents new descriptor acquisitions before cancellation is
-// broadcast. Existing references are deliberately left alive until their
-// operations return, while durable lease references are released because a
-// closing daemon cannot service those leases anymore.
 func (m *Manager) beginRootClose() {
+	// 新規のdescriptor取得を止め、貸出中のroot参照を解放する。
+	// 進行中の操作は完了まで参照を保持し、closeRootHandles が待機する。
 	m.mu.Lock()
 	m.ensureRootStateLocked()
 	m.rootClosing = true
@@ -434,16 +372,8 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 
 func (m *Manager) Config() config.Config { m.mu.RLock(); defer m.mu.RUnlock(); return m.cfg }
 
-// newPreparer and newArchiveManager are the single construction points for
-// filesystem operations that can reuse or remove a worktree. Production
-// callers always provide the state store so those operations cannot fall back
-// to a forgeable marker/Git-lock-only proof.
 func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Preparer {
-	// A preparation job may outlive a config reload. Keep its filesystem
-	// namespace tied to the active or retired root that contains the durable
-	// slot path, while still using the newly loaded config for repository rules.
-	// The caller must hold the root for the complete Preparer operation; this
-	// function only borrows the already-pinned descriptor.
+	// worktreeを再利用・削除する操作には必ずStoreによる所有権証明を渡す。
 	slotPath := slot.Path
 	if root, ok := m.rootForPath(slotPath); ok {
 		cfg.Storage.WorktreeRoot = root
@@ -482,7 +412,6 @@ func (m *Manager) schedule(job state.Job) {
 	case <-m.ctx.Done():
 	case m.jobs <- jobWork{id: job.ID}:
 	default:
-		// The durable PENDING row is picked up by maintainJobs once capacity frees up.
 	}
 }
 
@@ -509,18 +438,11 @@ func (m *Manager) recoverJobs(reclaimAll bool) {
 	}
 }
 
-// lifecycleCheckInterval is how often the gate is re-evaluated while a stop or
-// restart is waiting on it. The 10s job tick is too coarse for a command an
-// operator is watching: the quiet period alone is 5s and is never elapsed at
-// the moment the request arrives, so a gate that is only looked at every 10s
-// turns every wx daemon stop into a 5-15s wait.
 const lifecycleCheckInterval = time.Second
 
 func (m *Manager) maintainJobs() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	// The lifecycle timer runs only while something is pending, so a daemon
-	// that nobody asked to stop keeps exactly the one 10s wakeup it had before.
 	lifecycle := time.NewTimer(lifecycleCheckInterval)
 	lifecycle.Stop()
 	defer lifecycle.Stop()
@@ -647,13 +569,6 @@ func (m *Manager) artifactDiagnostics(ctx context.Context) map[string]any {
 			missingPaths = append(missingPaths, fmt.Sprintf("%s (%s, %s)", clean, artifact.ID, artifact.State))
 		}
 	}
-	// The generations to scan come from SQLite, not from the descriptors that
-	// happen to be open. A retired root is released as soon as its adoption
-	// returns, and the configuration reload that retired it removes the
-	// pathname from m.roots, so enumerating the live set would silently stop
-	// looking at every generation the current configuration no longer names -
-	// exactly the generations whose slots outlive a worktree_root change and
-	// whose orphans nobody else would report.
 	roots, rootsErr := m.rootPathsFromStore(ctx)
 	if rootsErr != nil {
 		diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("list worktree root generations: %v", rootsErr))
@@ -729,10 +644,6 @@ func (m *Manager) resolveRegisteredWorkspace(ctx context.Context, root string, d
 		return m.store.CanonicalWorkspace(ctx, workspaceRecord)
 	}
 
-	// The stored root is a cache of the last observed main-worktree path. If it
-	// moved, rediscover a repository from its canonical Git common directory
-	// before treating the registry entry as lost. This keeps existing slots and
-	// session mappings attached to the same workspace identity.
 	registered, lookupErr := m.store.WorkspaceByRoot(ctx, root)
 	if lookupErr != nil {
 		return discovery.Workspace{}, err
@@ -1029,14 +940,6 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 	if err != nil {
 		return Lease{}, err
 	}
-	// The READY pool is consulted even for an explicit --branch request: if
-	// the branch already resolves to exactly what a READY slot holds (e.g.
-	// the same branch was just used, or --branch main with nothing new to
-	// fetch), readyMatches accepts it like any other exact match. A slot
-	// whose base ref genuinely differs from the request still fails the
-	// match below and falls through to a fresh allocation, so this does not
-	// create a per-branch hot pool: ensureStandby's replacement always
-	// resolves against main, unaffected by what any single lease requested.
 	for attempts := 0; attempts < m.Config().Pool.WarmPerWorkspace+1; attempts++ {
 		ready, ok, err := m.store.ReadySlot(ctx, string(w.ID))
 		if err != nil {
@@ -1066,12 +969,6 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 			if repositoryErr != nil {
 				return Lease{}, false, repositoryErr
 			}
-			// The lease path is derived here, not taken from ready.Path: a
-			// single-repository workspace hands the agent the repository
-			// directory one level below the slot, exactly as a cold
-			// allocation does. Reusing the slot directory instead would give
-			// the agent a CWD that is not a Git worktree and would put the
-			// slot's ownership marker in its view.
 			leasePathValue := leasePath(ready.Path, w.Kind, repositories)
 			rootIdentity, identityErr := m.ensureLeaseRoot(ready.Path, leasePathValue)
 			if identityErr != nil {
@@ -1118,15 +1015,6 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 			return lease, nil
 		}
 		if len(branches) > 0 {
-			// A mismatch against an explicit --branch request says nothing
-			// about the slot itself: it is still a valid main-based standby
-			// for the next request that wants main. Retiring it here would
-			// let one --branch lease wipe the whole warm pool and turn the
-			// following plain `wx` invocation into a cold start too, which is
-			// the opposite of what consulting the pool is for. Leave it READY
-			// and allocate a fresh slot instead. ReadySlot would keep
-			// returning this same slot, so stop looking rather than
-			// re-validating it.
 			break
 		}
 		_ = m.store.SetSlotState(ctx, ready.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
@@ -1149,9 +1037,6 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 		slotState = "RESTORING"
 		jobKind = "RESTORE"
 	}
-	// A slot ID is a short random value, so a duplicate is possible. The
-	// INSERT is the detector: it is the only place that can decide the race,
-	// and it either wins or reports the constraint violation retried here.
 	var lastErr error
 	for range idAllocationAttempts {
 		id, idErr := newSlotID()
@@ -1170,10 +1055,6 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 	return Lease{}, fmt.Errorf("allocate slot: %w", lastErr)
 }
 
-// idAllocationAttempts bounds short-ID redraws. It matches
-// state.idCollisionAttempts in spirit: ten independent draws from a
-// ~2.18e9-value space cannot all lose to chance, so exhausting it means the
-// INSERT is failing for another reason and the error must surface.
 const idAllocationAttempts = 10
 
 func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, token string, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, sessionState, slotState, jobKind, parent string) (Lease, bool, error) {
@@ -1216,19 +1097,11 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false}, false, nil
 }
 
-// unboundNamespace is the reserved top-level entry for slots whose workspace
-// is not known yet. Together with archive's "_recovery", it is why every
-// reserved entry under the worktree root starts with "_": the orphan scan
-// treats each remaining top-level entry as a workspace ID, and workspace and
-// repository names are refused that prefix.
+// workspace未確定slot用の予約namespaceであり、通常のworkspace IDには"_"接頭辞を許さない。
 const unboundNamespace = "_unbound"
 
-// slotRelPath builds a slot's location relative to the worktree root:
-// "<workspace-id>/<slot-id>", or "_unbound/<slot-id>" before the workspace
-// is known. It is the single place the layout is generated; the orphan scan
-// in ownedRootArtifactPaths is the matching enumeration side, and the two
-// must be changed together.
 func slotRelPath(workspaceID, slotID string, unbound bool) (string, error) {
+	// 作成側とorphan scanの列挙側で共有するroot相対layoutを生成する。
 	if err := validateLayoutComponent("slot id", slotID); err != nil {
 		return "", err
 	}
@@ -1241,26 +1114,16 @@ func slotRelPath(workspaceID, slotID string, unbound bool) (string, error) {
 	return filepath.Join(workspaceID, slotID), nil
 }
 
-// validateLayoutComponent rejects any value that cannot be exactly one path
-// component under the worktree root, including the "_" prefix wx reserves for
-// its own namespaces.
 func validateLayoutComponent(kind, value string) error {
+	// root外への脱出とwxの予約namespaceとの衝突を拒否する。
 	if value == "" || value == "." || value == ".." || strings.ContainsAny(value, `/\`) || strings.HasPrefix(value, "_") {
 		return fmt.Errorf("%w: %s %q cannot be a wx layout path component", state.ErrOwnership, kind, value)
 	}
 	return nil
 }
 
-// leasePath is the directory handed to the agent as its CWD. A
-// single-repository workspace leases the repository directory itself, so the
-// slot's ownership marker stays in the parent and out of the agent's view; a
-// multi-repository workspace leases the slot directory, which is the bundle
-// root. An _unbound slot has no known repository yet and therefore leases
-// the slot directory too.
-//
-// Do not confuse the result with state.Slot.Path, which is always the slot
-// directory.
 func leasePath(slotPath, kind string, repos []state.SlotRepository) string {
+	// 単一repositoryだけはagentのCWDをworktreeにし、slotの所有権markerを親に残す。
 	if kind == "repository" && len(repos) == 1 && repos[0].DirName != "" {
 		return filepath.Join(slotPath, repos[0].DirName)
 	}
@@ -1269,11 +1132,8 @@ func leasePath(slotPath, kind string, repos []state.SlotRepository) string {
 
 var errManagerClosed = errors.New("daemon manager is closed")
 
-// registerRootGeneration makes the configured pathname the active roots row
-// and remembers its ID. A failure here is logged rather than fatal: the
-// daemon still answers read-only requests, and every path that would create
-// durable state calls activeRoot, which fails closed without an ID.
 func (m *Manager) registerRootGeneration(ctx context.Context, root, identity string) {
+	// root IDなしのslotは再発見できないため、失敗時は後続のallocationをfail closedにする。
 	if identity == "" {
 		m.log.Error("worktree root generation cannot be registered without an identity", "path", root)
 		m.setRootError(fmt.Sprintf("worktree root %s has no readable inode identity", root))
@@ -1292,20 +1152,14 @@ func (m *Manager) registerRootGeneration(ctx context.Context, root, identity str
 	m.mu.Unlock()
 }
 
-// setRootError records why the configured root has no usable generation. The
-// message is what activeRoot wraps and what status and doctor report, so the
-// user sees the cause rather than only its consequence.
 func (m *Manager) setRootError(message string) {
 	m.mu.Lock()
 	m.rootError = message
 	m.mu.Unlock()
 }
 
-// loadRootGenerations repins every root generation SQLite still references,
-// so slots created under a previously configured root keep working after a
-// restart. Their descriptors are adopted as retired: they may be read,
-// prepared and removed, but no new slot is placed in them.
 func (m *Manager) loadRootGenerations(ctx context.Context) {
+	// 旧rootのslotも寿命まで扱えるよう、SQLiteが参照するgenerationをretired rootとしてpinする。
 	roots, err := m.store.Roots(ctx)
 	if err != nil {
 		m.log.Error("load worktree root generations failed", "error", err)
@@ -1320,13 +1174,6 @@ func (m *Manager) loadRootGenerations(ctx context.Context) {
 		m.ensureRootStateLocked()
 		pinned := m.rootIdentities[root.Path]
 		if pinned == "" {
-			// Seed the expected identity from SQLite before anything opens
-			// the pathname. adoptRoot refuses a descriptor whose inode does
-			// not match the expectation, so this is what stops a root
-			// directory that was replaced between daemon runs from being
-			// re-bound to the old generation: without it the first open would
-			// simply adopt whatever the pathname names now, and every later
-			// proof under this generation would reach the replacement.
 			m.rootIdentities[root.Path] = root.Identity
 		}
 		m.mu.Unlock()
@@ -1342,9 +1189,6 @@ func (m *Manager) loadRootGenerations(ctx context.Context) {
 		}
 		_, release, openErr := m.existingRootDescriptor(root.Path)
 		if openErr != nil {
-			// The ID stays unpublished, so rootIDForPath fails closed for
-			// anything under this generation rather than operating on a
-			// pathname wx cannot prove.
 			m.log.Warn("retired worktree root generation is unavailable", "path", root.Path, "error", openErr)
 			continue
 		}
@@ -1355,9 +1199,6 @@ func (m *Manager) loadRootGenerations(ctx context.Context) {
 	}
 }
 
-// activeRoot reports the pathname and durable ID of the root new slots are
-// created in. It fails closed when the ID is unknown: a slot row inserted
-// without a root generation could not be located again.
 func (m *Manager) activeRoot() (string, string, error) {
 	root, err := config.ExpandHome(m.Config().Storage.WorktreeRoot)
 	if err != nil {
@@ -1377,11 +1218,8 @@ func (m *Manager) activeRoot() (string, string, error) {
 	return root, id, nil
 }
 
-// rootIDForPath resolves the durable root generation that owns path. Delayed
-// jobs and recovery archives can outlive the configuration that created
-// them, so this deliberately consults every known generation, not just the
-// active one.
 func (m *Manager) rootIDForPath(path string) (string, string, error) {
+	// 遅延jobとrecoveryは設定変更後の旧rootにも属し得るため、active rootだけに絞らない。
 	root, ok := m.rootForPath(path)
 	if !ok {
 		return "", "", fmt.Errorf("%w: path is outside known wx roots", state.ErrOwnership)
@@ -1490,19 +1328,13 @@ func (m *Manager) closeRootLocked(path string, entry *managedRoot) {
 			m.retiredRefs[path] = kept
 		}
 	}
-	// A closed retired generation can no longer service a path-based operation.
-	// Drop its lookup entry so repeated root rotations do not grow the active
-	// pathname registry indefinitely. rootIdentities intentionally remains as a
-	// small inode tombstone to reject replacement at a previously used path.
 	if !m.roots[path] {
 		delete(m.roots, path)
 	}
 }
 
-// adoptRoot registers an opened descriptor and returns one reference to its
-// caller. The descriptor is closed if another caller won the registration
-// race or if shutdown started while it was being opened.
 func (m *Manager) adoptRoot(path string, opened *os.Root, active bool) (*os.Root, func(), error) {
+	// 競合で既存descriptorが勝った場合とshutdown開始後は、開いたdescriptorを必ず閉じる。
 	path = filepath.Clean(path)
 	identity, err := descriptorIdentity(opened)
 	if err != nil {
@@ -1559,11 +1391,8 @@ func (m *Manager) rootDescriptor(root string) (*os.Root, func(), error) {
 	return m.adoptRoot(root, opened, true)
 }
 
-// existingRootDescriptor pins an already-created root without creating it.
-// Readiness/reconcile checks must not recreate a missing root merely because a
-// durable READY row still refers to it; allocation is the only path allowed to
-// create a new root namespace.
 func (m *Manager) existingRootDescriptor(root string) (*os.Root, func(), error) {
+	// READY検証やreconcileでは、欠けたrootを作り直して所有権を偽装してはならない。
 	root = filepath.Clean(root)
 	m.mu.Lock()
 	ownedRoot, entry, found, err := m.acquireRootLocked(root, true)
@@ -1613,15 +1442,8 @@ func (m *Manager) retireRootLocked(path string) {
 	m.retiredRefs[path] = append(m.retiredRefs[path], entry)
 }
 
-// createSlotRoot performs allocation through the manager's pinned worktree
-// root. It creates the slot directory and, when the lease is handed out one
-// level below it, that directory too: the client opens the lease path
-// immediately and a hooks-enabled start never waits for preparation. Both
-// inode identities are returned; the slot identity becomes
-// slots.dir_identity and the lease identity is sent with the lease so the
-// foreground client can reject a replacement before it opens its own
-// descriptor.
 func (m *Manager) createSlotRoot(slotPath, leasePathValue string) (string, string, error) {
+	// allocationはmanagerがpinしたroot descriptorで行い、返すinode identityでclient側の置換検出を可能にする。
 	root, err := config.ExpandHome(m.Config().Storage.WorktreeRoot)
 	if err != nil {
 		return "", "", err
@@ -1635,10 +1457,6 @@ func (m *Manager) createSlotRoot(slotPath, leasePathValue string) (string, strin
 		return "", "", err
 	}
 	defer closeOwner()
-	// The manager-held descriptor is the write/lease authority. Verify that
-	// the configured pathname still names the same root before returning a
-	// lease; if it was replaced, the client must not receive a path that could
-	// resolve to a different namespace.
 	if err := verifyRootDescriptorPath(root, owner); err != nil {
 		return "", "", err
 	}
@@ -1684,14 +1502,8 @@ func directoryIdentityAt(owner *os.Root, relative string) (string, error) {
 	return identity, nil
 }
 
-// ensureLeaseRoot is the READY-reuse counterpart of createSlotRoot. The
-// client opens the lease path as its CWD immediately, so a repository
-// directory that a COLD eviction removed has to exist again before the lease
-// is handed out; MkdirAll through the pinned root descriptor is the same
-// operation a cold allocation performs. The returned inode identity is the
-// lease directory's, so the foreground client can reject a replacement
-// before it opens its own descriptor.
 func (m *Manager) ensureLeaseRoot(slotPath, leasePathValue string) (string, error) {
+	// COLD eviction後もclientが直ちにCWDを開けるよう、既存root descriptor経由でlease directoryを復元する。
 	if leasePathValue == slotPath {
 		return m.ownedDirectoryIdentity(slotPath)
 	}
@@ -1721,12 +1533,8 @@ func (m *Manager) ensureLeaseRoot(slotPath, leasePathValue string) (string, erro
 	return directoryIdentityAt(owner, relative)
 }
 
-// ownedDirectoryIdentity reads a directory's inode identity through the
-// pinned descriptor of whichever root generation owns it. It is what turns a
-// pathname into evidence: the lease sends the result to the foreground client,
-// and the slot ownership proofs compare it against slots.dir_identity, so a
-// replaced directory fails closed instead of matching on its name.
 func (m *Manager) ownedDirectoryIdentity(path string) (string, error) {
+	// path名ではなく所有root descriptorからinode identityを取得し、置換をfail closedにする。
 	root, ok := m.rootForPath(path)
 	if !ok {
 		var err error
@@ -1758,20 +1566,10 @@ func (m *Manager) ownedDirectoryIdentity(path string) (string, error) {
 	return identity, nil
 }
 
-// slotRepos builds the per-repository rows for a new slot. hot, when
-// non-nil, restricts which repositories are actually checked out: a
-// repository absent from hot is registered as COLD instead of PREPARING, so
-// prepareSlot leaves it unmaterialized until a later lease pulls it in via
-// the existing cold-materialize path (LeaseReadyWithCold). Pass nil for
-// on-demand allocation, where every requested repository must be built
-// immediately regardless of recent usage.
 func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []pool.Resolved, generation int, hot map[string]bool) ([]state.SlotRepository, error) {
+	// hotにないrepositoryはCOLDとして記録し、実際のlease時までcheckoutを遅らせる。
 	cfg := m.Config()
 	out := make([]state.SlotRepository, 0, len(resolved))
-	// Directory names are decided once, here, and recorded in
-	// slot_repositories.dir_name. Case-insensitive collision handling is
-	// required because two repositories can resolve to names that differ only
-	// in case, which is one directory on a default APFS volume.
 	taken := map[string]bool{}
 	for _, r := range resolved {
 		dirName := workspace.UniqueDirName(workspace.RepositoryDirName(r.Repository, cfg), taken)
@@ -1791,10 +1589,6 @@ func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []p
 	return out, nil
 }
 
-// newSlotID draws a slot identifier. Slot and session IDs are the same value
-// and become both a directory name and a Git ref component, so they are
-// short random base36; a duplicate is detected by the INSERT and retried by
-// the caller.
 func newSlotID() (string, error) { return domain.NewShortID() }
 
 func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository) error {
@@ -1824,11 +1618,6 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 			return err
 		}
 		if stored.State == "COLD" {
-			// Registered by ensureStandby's hot_standby filter: this
-			// repository is outside the recently-used window, so the
-			// replacement bundle leaves it unchecked-out. It is
-			// materialized later by the existing cold-lease path
-			// (LeaseReadyWithCold) instead of here.
 			continue
 		}
 		if stored.State == "READY" {
@@ -1856,10 +1645,6 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 			}
 			return err
 		}
-		// Record the inode identity while the worktree has just been
-		// created. Ownership validation compares it from here on, and a
-		// caller that holds a descriptor treats a missing record as a
-		// failure, so this must happen before the repository becomes READY.
 		identity, identityErr := preparer.WorktreeIdentity(stored.WorktreePath)
 		if identityErr != nil {
 			m.quarantineOwnershipFailure(id, []string{"PREPARING", "RESTORING"}, fmt.Errorf("%w: capture prepared worktree identity: %w", state.ErrOwnership, identityErr))
@@ -1877,10 +1662,6 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 		if err != nil {
 			return err
 		}
-		// The identity comes from the directory on disk, not from the row
-		// being validated: comparing slot.DirIdentity against itself would
-		// always match and leave the proof at root generation plus
-		// root-relative path.
 		dirIdentity, identityErr := m.ownedDirectoryIdentity(slot.Path)
 		if identityErr != nil {
 			m.quarantineOwnershipFailure(id, []string{"PREPARING", "RESTORING"}, fmt.Errorf("%w: read slot directory identity: %w", state.ErrOwnership, identityErr))
@@ -1913,11 +1694,8 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 	return nil
 }
 
-// materializeWorkspaceRoot opens the slot root from the same manager-held
-// descriptor used for allocation and repository worktrees. A path-based
-// MaterializeRoot call here would reintroduce a root replacement window after
-// the SQLite ownership check above.
 func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules config.Workspace) error {
+	// SQLiteの所有権確認後もroot置換の窓を作らないよう、pathベースでmaterializeしない。
 	root, ok := m.rootForPath(slotPath)
 	if !ok {
 		return fmt.Errorf("%w: slot path is outside known wx roots", state.ErrOwnership)
@@ -2017,12 +1795,6 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 			return false, nil
 		}
 		if stored.State == "COLD" {
-			// Every repository now has its own directory below the slot, so
-			// one rule covers both workspace kinds: a COLD repository is
-			// unmaterialized as long as its directory is absent or empty.
-			// The empty case is real, not defensive - a cold lease creates
-			// the directory so the client can open it as its CWD before
-			// preparation has run.
 			unmaterialized, coldErr := coldWorktreeUnmaterialized(owner, root, stored.WorktreePath)
 			if coldErr != nil || !unmaterialized {
 				return false, coldErr
@@ -2057,8 +1829,6 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 	return true, nil
 }
 
-// coldWorktreeUnmaterialized reports whether a COLD repository's directory
-// is genuinely without a checkout: either absent, or present but empty.
 func coldWorktreeUnmaterialized(owner *os.Root, root, worktreePath string) (bool, error) {
 	relative, ok := relativeWithinRoot(root, worktreePath)
 	if !ok {
@@ -2107,10 +1877,6 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	if err != nil {
 		return err
 	}
-	// Only repositories used within the hot_standby window get an actual
-	// checkout in the replacement bundle; the rest are registered COLD so
-	// this prefetch does not `git worktree add` repositories the next GC
-	// pass would immediately retire again.
 	hotBefore := state.FormatTime(time.Now().UTC().Add(-cfg.Retention.HotStandby.Duration))
 	hot, err := m.store.HotRepositoryIDs(ctx, hotBefore)
 	if err != nil {
@@ -2142,9 +1908,6 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 			return state.Job{}, err
 		}
 		slotPath := filepath.Join(rootPath, relPath)
-		// A standby slot has no lease yet, so only the slot directory is
-		// created. A COLD repository's directory is left absent, which is
-		// what readyRepositoriesMatch checks for.
 		slotIdentity, _, err := m.createSlotRoot(slotPath, slotPath)
 		if err != nil {
 			return state.Job{}, err
@@ -2165,14 +1928,8 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 	return state.Job{}, fmt.Errorf("create standby slot: %w", lastErr)
 }
 
-// AllocateResumeSlot creates the _unbound slot an agent-native resume starts
-// in, before the agent session reveals which workspace it belongs to.
-//
-// The lease is the slot directory itself, not a repository directory: the
-// repository name is unknowable at this point, so for a single-repository
-// workspace the worktree appears one level below the agent's initial CWD
-// once the SessionStart hook binds the workspace.
 func (m *Manager) AllocateResumeSlot(ctx context.Context, agent string, pid int) (Lease, error) {
+	// workspace未確定のresumeはslot directoryをleaseし、SessionStartでbind後にworktreeをその配下へ作る。
 	rootPath, rootID, err := m.activeRoot()
 	if err != nil {
 		return Lease{}, err
@@ -2334,7 +2091,6 @@ func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID s
 	}
 	switch prior.State {
 	case "RELEASING", "SNAPSHOTTING":
-		// The durable RESTORE job waits for the parent SNAPSHOT job to commit.
 	case "ARCHIVED":
 		w, workspaceErr := m.store.SessionWorkspace(ctx, prior.ID)
 		if workspaceErr != nil {
@@ -2555,24 +2311,9 @@ func (m *Manager) recoveryUsable(ctx context.Context, sessionID string, w discov
 	return true, nil
 }
 
-// workspaceRecoveryExclusions lists the bundle-root-relative paths a
-// multi-repository snapshot must neither archive nor prune. For a
-// multi_repository slot the bundle root is the slot directory itself, so the
-// exclusions are expressed in the slot's own layout:
-//
-//   - each repository's slot directory name. This is
-//     slot_repositories.dir_name, not workspace_repositories.relative_path:
-//     the former is where the worktree actually is, and the two differ
-//     whenever the repository's name is not its position in the source
-//     workspace (a nested source repository is flat inside a slot). Using the
-//     source-relative path would archive and then prune a whole worktree.
-//   - each repository's ownership marker. The markers live in the slot
-//     directory, which is inside the bundle root, and they must outlive the
-//     restore: archiving them would carry one slot's identity into another,
-//     and pruning them would leave the slot unable to prove ownership.
-//   - the workspace's configured .worktreelink entries, which keep their
-//     configured position relative to the bundle root.
 func workspaceRecoveryExclusions(w discovery.Workspace, repos []state.SlotRepository, cfg config.Config) []string {
+	// bundle root内のworktree、slot marker、.worktreelinkをsnapshot/prune対象から外す。
+	// source相対pathではなくslot_repositories.dir_nameを使わないとnested repositoryを消し得る。
 	links := cfg.Workspaces[string(w.Root)].Link
 	excluded := make([]string, 0, 2*len(repos)+len(links))
 	for _, repository := range repos {
@@ -2703,10 +2444,6 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 	if err != nil {
 		return err
 	}
-	// SessionEnd may run before the wrapped agent exits (for example during a
-	// session switch). The foreground client is the authoritative process
-	// owner; its client-exit notification or orphan reconciliation confirms that
-	// no writer remains before snapshotting.
 	if reason == "session-end-hook" && (processAlive(session.ClientPID) || processAlive(session.AgentPID)) {
 		return nil
 	}
@@ -2860,9 +2597,6 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	if dry {
 		return total, nil
 	}
-	// Highest GC priority tier runs first: TTL-expired events and finished
-	// job metadata carry no physical worktree, so pruning them never
-	// competes with the filesystem reclamation below for time or I/O.
 	if err := m.store.PruneMetadata(ctx, failedBefore, eventBefore, tombstoneBefore); err != nil {
 		return 0, err
 	}
@@ -2872,8 +2606,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (int, error) {
 	count += m.scheduleEndedWorktreeRemovals(ctx, items)
 	archiveManager := m.newArchiveManager(cfg, state.Slot{})
 	count += m.expireWorkspaceSnapshots(ctx, expiredSessions, &archiveManager)
-	// A retired root generation is only a row once nothing points at it. The
-	// directory itself is left alone: wx never deletes a configured root.
+	// retired rootはSQLiteの参照が消えた後にrowだけをpruneし、設定済みdirectory自体は削除しない。
 	if err := m.store.PruneRoots(ctx); err != nil {
 		m.log.Error("prune retired worktree root generations failed", "error", err)
 	}
@@ -3077,9 +2810,7 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 		m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
 		return err
 	}
-	// Every worktree now lives one level below its slot directory, so
-	// retiring a repository never removes the slot directory itself and the
-	// empty shell this used to recreate is no longer possible.
+	// repositoryをretireしてもslot directoryとownership markerは残し、後のslot削除で証明できるようにする。
 	return m.store.FinishColdRepositoryRemoval(ctx, slot.ID, job.RepositoryID)
 }
 
@@ -3093,12 +2824,10 @@ func (m *Manager) quarantineOwnershipFailure(slotID string, from []string, runEr
 }
 
 func (m *Manager) rootForPath(path string) (string, bool) {
+	// active/retired rootが重なる場合は最長一致を選び、map順序で別のdescriptorを借りない。
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	path = filepath.Clean(path)
-	// Retired and active roots may overlap after a configuration reload. Pick
-	// the most-specific root so a slot below a nested root uses that root's
-	// pinned descriptor instead of depending on randomized map iteration.
 	best := ""
 	for root := range m.roots {
 		if domain.IsWithin(root, path) {
@@ -3107,13 +2836,6 @@ func (m *Manager) rootForPath(path string) (string, bool) {
 			}
 		}
 	}
-	// A closed retired descriptor is removed from m.roots to keep the active
-	// pathname registry bounded, but its inode tombstone remains durable for
-	// this manager lifetime. Recovery archives and delayed removal jobs can
-	// outlive the lease that kept their root open, so retain the historical
-	// pathname as a candidate. Callers that need filesystem access still go
-	// through existingRootDescriptor, which reopens it only if the pathname
-	// names the same physical inode; a replacement therefore fails closed.
 	for root := range m.rootIdentities {
 		if domain.IsWithin(root, path) && (best == "" || len(root) > len(best)) {
 			best = root
@@ -3127,11 +2849,8 @@ func rootPathsOverlap(first, second string) bool {
 	return first == second || domain.IsWithin(first, second) || domain.IsWithin(second, first)
 }
 
-// rootHandleForPath borrows a descriptor whose lifetime is owned by the
-// caller's surrounding holdRootForPath reference. It never increments or
-// releases a reference itself; returning a descriptor without an enclosing
-// hold would allow a reload to close it while a Preparer still uses it.
 func (m *Manager) rootHandleForPath(path string) *os.Root {
+	// 周囲のholdRootForPathがdescriptorの寿命を保持する。ここで参照数は増減させない。
 	root, ok := m.rootForPath(path)
 	if !ok {
 		return nil
@@ -3154,11 +2873,8 @@ func (m *Manager) rootHandleForRoot(root string) *os.Root {
 	return nil
 }
 
-// ownedPathExists checks an artifact through the descriptor generation that
-// owns its lexical root. A missing or replaced historical root is reported as
-// an ownership error, never as an ordinary missing path that reconciliation
-// could quarantine automatically.
 func (m *Manager) ownedPathExists(path string) (bool, error) {
+	// 置換・消失したhistorical rootは通常の欠損ではなく所有権エラーとして扱う。
 	root, ok := m.rootForPath(path)
 	if !ok {
 		return false, fmt.Errorf("%w: path is outside known wx roots", state.ErrOwnership)
@@ -3189,11 +2905,8 @@ func (m *Manager) ownedPathExists(path string) (bool, error) {
 	return true, nil
 }
 
-// rootPathsFromStore lists every root generation SQLite still references,
-// falling back to the live descriptor set only when the store cannot be read.
-// The fallback keeps diagnostics working on a degraded daemon rather than
-// reporting nothing at all.
 func (m *Manager) rootPathsFromStore(ctx context.Context) ([]string, error) {
+	// Storeを読めないdegraded状態ではlive descriptor集合へfallbackし、診断を空にしない。
 	rows, err := m.store.Roots(ctx)
 	if err == nil {
 		paths := make([]string, 0, len(rows))
@@ -3212,6 +2925,8 @@ func (m *Manager) rootPathsFromStore(ctx context.Context) ([]string, error) {
 }
 
 func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
+	// 列挙単位は<workspace-id>/<slot-id>または_unbound/<slot-id>のslot directoryである。
+	// configurable root内の無関係なdirectoryをartifactと誤認しないよう、namespaceの形も検証する。
 	root = filepath.Clean(root)
 	m.mu.RLock()
 	active, known := m.roots[root]
@@ -3221,10 +2936,6 @@ func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
 	if known && active {
 		_, release, err = m.rootDescriptor(root)
 	} else {
-		// This function is invoked once per exact root-generation entry from
-		// artifactDiagnostics. Do not resolve the probe through rootForPath:
-		// an overlapping nested root could otherwise pin a different generation
-		// while rootHandleForRoot below borrows this one.
 		_, release, err = m.existingRootDescriptor(root)
 	}
 	if err != nil {
@@ -3238,22 +2949,6 @@ func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
 	if err := verifyRootDescriptorPath(root, owner); err != nil {
 		return nil, err
 	}
-	// The enumeration unit is the slot directory itself, which is exactly
-	// what slots.rel_path records. A top-level entry is a workspace
-	// namespace only if it is spelled like a workspace ID (a short ID) or is
-	// "_unbound", which holds slots whose workspace is not known yet; the
-	// remaining reserved entries ("_recovery") belong to wx and are not
-	// slots.
-	//
-	// The shape test is what keeps the scan from claiming a directory that is
-	// not wx's. storage.worktree_root is an ordinary configurable pathname,
-	// so it can be pointed at a directory that holds unrelated content, and
-	// without this every second-level directory below it would be reported as
-	// an artifact wx cannot prove ownership of, burying the real orphans.
-	//
-	// This is the enumeration counterpart of slotRelPath's generation. If the
-	// two ever disagree, orphan detection stops seeing real slots without
-	// reporting anything, so they must be changed together.
 	entries, err := fs.ReadDir(owner.FS(), ".")
 	if errors.Is(err, os.ErrNotExist) {
 		entries = nil
@@ -3277,8 +2972,6 @@ func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
 	return paths, nil
 }
 
-// ownedSlotDirectories lists the slot directories inside one workspace (or
-// _unbound) namespace entry.
 func ownedSlotDirectories(owner *os.Root, root, namespace string) ([]string, error) {
 	slots, err := fs.ReadDir(owner.FS(), namespace)
 	if errors.Is(err, os.ErrNotExist) {
@@ -3306,10 +2999,8 @@ func ownedSlotDirectories(owner *os.Root, root, namespace string) ([]string, err
 	return paths, nil
 }
 
-// holdRootForPath acquires a reference for the complete lifetime of one
-// synchronous operation. In particular, a worker that starts before reload
-// keeps the retired root alive until its preparer/archive call returns.
 func (m *Manager) holdRootForPath(path string) (func(), error) {
+	// 同期操作の全期間でrootを保持し、reload後もworkerがretired descriptorを使い切れるようにする。
 	root, ok := m.rootForPath(path)
 	if !ok {
 		configured, expandErr := config.ExpandHome(m.Config().Storage.WorktreeRoot)
@@ -3317,9 +3008,6 @@ func (m *Manager) holdRootForPath(path string) (func(), error) {
 			return func() {}, fmt.Errorf("%w: resolve configured wx root: %w", state.ErrOwnership, expandErr)
 		}
 		if !domain.IsWithin(configured, path) {
-			// Repository worktrees and other archive inputs may intentionally live
-			// outside wx's managed root. Such path-based callers do not need a root
-			// reference; their own ownership checks decide whether they are usable.
 			return func() {}, nil
 		}
 		root = filepath.Clean(configured)
@@ -3347,11 +3035,8 @@ func (m *Manager) holdRootForPath(path string) (func(), error) {
 	return release, nil
 }
 
-// holdVerifiedRootForPath is used by delayed cleanup jobs. A path may still
-// belong to a closed historical generation, so rootForPath alone is not
-// sufficient; the descriptor and its current lexical pathname must both be
-// validated before a job is allowed to transition durable state to REMOVING.
 func (m *Manager) holdVerifiedRootForPath(path string) (string, func(), error) {
+	// 遅延cleanupはREMOVINGへ遷移する前に、historical rootのdescriptorとpath名の両方を検証する。
 	root, ok := m.rootForPath(path)
 	if !ok {
 		return "", func() {}, fmt.Errorf("%w: path is outside known wx roots", state.ErrOwnership)
@@ -3372,10 +3057,8 @@ func (m *Manager) holdVerifiedRootForPath(path string) (string, func(), error) {
 	return root, release, nil
 }
 
-// retainLease transfers one root reference from the allocation/validation
-// operation to the durable foreground lease. A retired root therefore remains
-// pinned while the client can still release or use that session.
 func (m *Manager) retainLease(sessionID, path string) error {
+	// foreground leaseへroot参照を移し、retired rootもsessionのreleaseまで閉じない。
 	_, ok := m.rootForPath(path)
 	if !ok {
 		configured, err := config.ExpandHome(m.Config().Storage.WorktreeRoot)
@@ -3489,10 +3172,7 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	if !ok || relativeSlot == "." {
 		return fmt.Errorf("%w: open slot root for removal: slot path is outside wx root", state.ErrOwnership)
 	}
-	// The physical inspection runs before the SQLite proof so that a removal
-	// interrupted after the slot directory was already deleted still
-	// converges: there is nothing left to prove ownership of, and nothing
-	// left to delete.
+	// 物理directoryを先に検査し、消失済みならSQLiteの証明より前に正常終了する。
 	info, err := ownedRoot.Lstat(relativeSlot)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -3502,31 +3182,22 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("%w: slot root is not a physical directory", state.ErrOwnership)
 	}
-	// This is the last proof before the destructive call, so it presents the
-	// identity of the directory that is about to be removed rather than
-	// re-reading slots.dir_identity, which would compare the row to itself.
 	dirIdentity, err := directoryIdentityAt(ownedRoot, relativeSlot)
 	if err != nil {
 		return fmt.Errorf("%w: read slot directory identity for removal: %w", state.ErrOwnership, err)
 	}
+	// 破壊操作直前の証明にはdiskから再取得したidentityを渡し、row自身との比較にしない。
 	if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slotID, RootID: slot.RootID, RelPath: slot.RelPath, DirIdentity: dirIdentity, AllowedSlotStates: []string{"REMOVING"}}); err != nil {
 		return err
 	}
-	// Root.RemoveAll does not follow symlink leaves and cannot traverse outside
-	// the descriptor-owned root. It also removes bundle rules and empty nested
-	// repository parents left after the registered worktrees are removed.
 	if err := ownedRoot.RemoveAll(relativeSlot); err != nil {
 		return err
 	}
 	return verifyRootDescriptorPath(root, ownedRoot)
 }
 
-// relativeWithinRoot resolves path relative to root and reports whether the
-// result stays inside root. filepath.IsLocal rejects "..", an absolute
-// result, and any unclean input in one call, replacing the
-// rel == ".." || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) guard
-// this package used to repeat at every root-relative path computation.
 func relativeWithinRoot(root, path string) (relative string, ok bool) {
+	// filepath.IsLocalで".."、絶対path、未cleanなroot相対pathをまとめて拒否する。
 	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	if err != nil || !filepath.IsLocal(relative) {
 		return "", false
@@ -3534,12 +3205,8 @@ func relativeWithinRoot(root, path string) (relative string, ok bool) {
 	return relative, true
 }
 
-// verifyRootDescriptorPath ensures a descriptor-bound operation has not
-// detached its durable lexical root from the inode the manager owns. The
-// descriptor keeps a replacement from redirecting the syscall; this check
-// keeps the caller from committing state for a pathname that now names a
-// different namespace.
 func verifyRootDescriptorPath(path string, owner *os.Root) error {
+	// descriptorが固定したinodeとpath名がまだ同じnamespaceを指すことを確認してから状態を更新する。
 	if owner == nil {
 		return fmt.Errorf("%w: wx root descriptor is unavailable", state.ErrOwnership)
 	}
@@ -3588,11 +3255,6 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		roots[root] = active
 	}
 	m.mu.RUnlock()
-	// SQLite is the authority on which generations exist, and a retired one
-	// is not in m.roots: its descriptor is released once adopted, and a
-	// reload drops the pathname. Reporting only the live set would hide the
-	// disk a superseded root still holds, which is the number the user needs
-	// in order to decide it is safe to delete.
 	if rows, rootsErr := m.store.Roots(ctx); rootsErr == nil {
 		for _, row := range rows {
 			path := filepath.Clean(row.Path)
@@ -3634,9 +3296,6 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	sort.Slice(rootStatuses, func(i, j int) bool { return rootStatuses[i].Path < rootStatuses[j].Path })
 	return map[string]any{
 		"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "daemon_version": daemonVersion(), "protocol_version": 1, "uptime_seconds": int(time.Since(m.started).Seconds()),
-		// pid identifies the serving process, which is what lets a synchronous
-		// wx daemon restart tell a replacement apart from the daemon it asked to
-		// go away when it misses the moment the listener was closed.
 		"pid":         os.Getpid(),
 		"config_path": must(config.Path()), "config_last_reload": reloadAt.UTC().Format(time.RFC3339Nano), "config_reload_error": reloadError, "worktree_root_error": rootError,
 		"sqlite_last_backup": formatOptionalTime(backupAt), "sqlite_backup_error": backupError, "restart_pending": restartPending, "stop_pending": stopPending,
@@ -3653,11 +3312,8 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	}, nil
 }
 
-// rootDirectoryUsage measures a root through its pinned descriptor. A
-// pathname walk could cross into a replacement directory after reload and
-// report bytes for a namespace that wx does not own, so status uses the same
-// generation and reference accounting as mutating operations.
 func (m *Manager) rootDirectoryUsage(root string) (int64, int64, error) {
+	// path walkではreload後の置換directoryへ渡り得るため、statusもpin済みdescriptor経由で測定する。
 	root = filepath.Clean(root)
 	m.mu.RLock()
 	_, known := m.roots[root]
@@ -3735,10 +3391,6 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 		checks = diag.SharedChecks(ctx, cfg, reloadError, m.git)
 	}
 	if restartPending {
-		// The daemon is still executing the old binary after a replacement. Its
-		// Render result is therefore intentionally not compared with the plist
-		// yet; doing so would report a stale plist even when install was already
-		// performed for the incoming binary.
 		checks["launch_agent"] = "restart pending; LaunchAgent content check deferred"
 	}
 
@@ -3747,8 +3399,6 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	} else {
 		checks["sqlite"] = "ok"
 	}
-	// A root that has no usable generation blocks every allocation until it is
-	// fixed, so the cause belongs here rather than only in the daemon log.
 	if rootError == "" {
 		checks["worktree_root"] = "ok"
 	} else {
@@ -3814,10 +3464,7 @@ func (m *Manager) Forget(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	// FAILED slots are retired before ForgetWorkspace's own safety check runs
-	// (which now refuses them too): otherwise clearing workspace_id would
-	// leave a FAILED slot's physical worktree with no way to ever prove
-	// ownership again, permanently leaking it instead of removing it.
+	// FAILED slotを先にretireしないとworkspace IDが消え、worktreeの所有権を永久に証明できなくなる。
 	if w, lookupErr := m.store.WorkspaceByRoot(ctx, string(canonical)); lookupErr == nil {
 		failed, failedErr := m.store.FailedSlotIDs(ctx, string(w.ID))
 		if failedErr != nil {
@@ -3832,25 +3479,15 @@ func (m *Manager) Forget(ctx context.Context, path string) error {
 	return m.store.ForgetWorkspace(ctx, string(canonical))
 }
 
-// retireFailedSlotForForget physically removes a FAILED slot's worktree so
-// Forget's caller does not have to reason about it. If removal cannot
-// complete immediately (e.g. a transient fault), the slot is left REMOVING
-// with its REMOVE job persisted; the daemon's normal job recovery retries it
-// in the background, and ForgetWorkspace continues to refuse the workspace
-// (REMOVING is not ARCHIVED) until it converges, exactly as for any other
-// in-flight removal.
 func (m *Manager) retireFailedSlotForForget(ctx context.Context, slotID string) error {
+	// 即時に消せなくてもREMOVING jobを残し、通常のrecoveryが完了するまでForgetを収束させない。
 	job, changed, err := m.store.ScheduleFailedSlotRemoval(ctx, slotID)
 	if err != nil {
 		return err
 	}
 	if !changed {
-		// Already resolved concurrently (removed, retried, or re-quarantined).
 		return nil
 	}
-	// Claim and finish the job exactly as the normal worker loop would
-	// (runWorker), so it does not linger as a PENDING job that
-	// ForgetWorkspace's own "pending recovery jobs" check would then refuse.
 	claimed, err := m.store.ClaimJob(ctx, job.ID, "wx-forget")
 	if err != nil {
 		return err
@@ -3901,6 +3538,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	}
 	oldRoot := oldConfiguredRoot
 	if oldRoot != newRoot {
+		// 旧rootのslotは移動・STALE化せず寿命まで使い、新規slotだけを新rootに置く。
 		for existingPath := range m.roots {
 			if existingPath == newRoot || !rootPathsOverlap(existingPath, newRoot) || !m.rootHasReferencesLocked(existingPath) {
 				continue
@@ -3951,12 +3589,6 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		newHandle = nil
 	}
 	if oldRoot != newRoot {
-		// The retired root's slots are deliberately left alone. They stay
-		// valid worktrees under a roots row that is now active=0, so a READY
-		// standby there is still leasable and a LEASED session there keeps
-		// working; only new slots go to the new root. Marking them STALE (as
-		// the removed DrainRoot did) would contradict that and throw away
-		// warm slots on every root change.
 		m.roots[oldRoot] = false
 		m.roots[newRoot] = true
 		m.retireRootLocked(oldRoot)
@@ -3974,9 +3606,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	m.reloadError = ""
 	m.roots[newRoot] = true
 	m.mu.Unlock()
-	// The durable roots row must follow the configuration: EnsureActiveRoot
-	// keeps the previously configured pathname registered with active=0 so
-	// its slots stay addressable, and points new allocations at this one.
+	// EnsureActiveRootは旧rootをinactiveとして残し、そのslotを再発見可能にする。
 	m.registerRootGeneration(context.Background(), newRoot, newIdentity)
 	m.loadRootGenerations(context.Background())
 	m.resizeWorkers(cfg.Pool.PreparationConcurrency)
