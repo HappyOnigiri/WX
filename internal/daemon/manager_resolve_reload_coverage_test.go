@@ -93,7 +93,8 @@ func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 	if lease.SessionID == staleID {
 		t.Fatal("stale READY slot was reused despite a BaseOID mismatch")
 	}
-	if slot, err := store.Slot(ctx, staleID); err != nil || slot.State != "STALE" {
+	// allocate が起動する background GC は STALE slot を REMOVING へ進めるため、どちらも退役とみなす。
+	if slot, err := store.Slot(ctx, staleID); err != nil || (slot.State != "STALE" && slot.State != "REMOVING") {
 		t.Fatalf("stale ready slot=%+v err=%v", slot, err)
 	}
 }
