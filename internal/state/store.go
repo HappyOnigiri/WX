@@ -892,37 +892,56 @@ func (s *Store) ReadySlots(ctx context.Context, workspaceID string) ([]Slot, err
 	return slots, rows.Err()
 }
 
+// standbyQuery は待機枠を数える SQL。QUARANTINED は枠に含めない。
+// 隔離は終端状態で READY へ戻らないため、数えると補充が恒久的に止まる。
+// リトライ中の一時状態である FAILED は枠に残し、通常セッション成功時点で記録された除外だけを計算から外す。
+const standbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
+	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
+	AND sl.state IN ('PREPARING','READY','FAILED','RETIRING','REMOVING')
+	AND (sl.state<>'FAILED' OR NOT EXISTS (
+		SELECT 1 FROM standby_replenish_exclusions ex
+		WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
+	))`
+
+// quarantinedStandbyQuery は貸出前に隔離された slot を数える SQL。
+// session を一度も持たなかった slot だけを対象にし、使われた slot の隔離（snapshot 失敗など）を補充抑制に持ち込まない。
+// last_used_at は READY からの貸出でしか書かれず cold start・復元の slot では NULL のまま残るため、判定には使わない。
+const quarantinedStandbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
+	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='QUARANTINED'
+	AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.slot_id=sl.id)`
+
 // standbyCountTx は現行 generation の待機枠を writer transaction 内で数える。
-// 終端失敗 slot は、通常セッション成功時点で記録された除外だけを計算から外す。
 func standbyCountTx(ctx context.Context, tx *sql.Tx, workspaceID string) (int, error) {
 	var n int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
-		WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
-		AND sl.state IN ('PREPARING','READY','FAILED','QUARANTINED','RETIRING','REMOVING')
-		AND (sl.state NOT IN ('FAILED','QUARANTINED') OR NOT EXISTS (
-			SELECT 1 FROM standby_replenish_exclusions ex
-			WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
-		))`, workspaceID).Scan(&n)
+	err := tx.QueryRowContext(ctx, standbyQuery, workspaceID).Scan(&n)
 	return n, err
 }
 
 func (s *Store) StandbyCount(ctx context.Context, workspaceID string) int {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
-		WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
-		AND sl.state IN ('PREPARING','READY','FAILED','QUARANTINED','RETIRING','REMOVING')
-		AND (sl.state NOT IN ('FAILED','QUARANTINED') OR NOT EXISTS (
-			SELECT 1 FROM standby_replenish_exclusions ex
-			WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
-		))`, workspaceID).Scan(&n)
-	if err != nil {
+	if err := s.db.QueryRowContext(ctx, standbyQuery, workspaceID).Scan(&n); err != nil {
 		return 0
 	}
 	return n
 }
 
+// quarantinedStandbyCountTx は貸出前に隔離された slot を writer transaction 内で数える。
+func quarantinedStandbyCountTx(ctx context.Context, tx *sql.Tx, workspaceID string) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, quarantinedStandbyQuery, workspaceID).Scan(&n)
+	return n, err
+}
+
+// QuarantinedStandbyCount は現行 generation で貸出前に隔離された slot を数える。
+// 補充側は、準備が壊れた workspace で隔離 slot が無制限に積み上がらないよう、この数を上限として使う。
+func (s *Store) QuarantinedStandbyCount(ctx context.Context, workspaceID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, quarantinedStandbyQuery, workspaceID).Scan(&n)
+	return n, err
+}
+
 // recordStandbySuccessTx は通常 session の準備成功を一度だけ記録し、
-// その時点で既に終了している待機失敗だけを同じ transaction で除外する。
+// その時点で既に終了している FAILED の待機失敗だけを同じ transaction で除外する（QUARANTINED は枠に数えないので対象外）。
 // ensureAfterSuccess は READY 貸出や起動回収のように、失敗が無くても補充を再確認する経路で指定する。
 func recordStandbySuccessTx(ctx context.Context, tx *sql.Tx, sessionID string, ensureAfterSuccess bool) (Job, bool, bool, error) {
 	var workspaceID string
@@ -958,7 +977,7 @@ func recordStandbySuccessTx(ctx context.Context, tx *sql.Tx, sessionID string, e
 		SELECT sl.id,sl.workspace_id,sl.generation,?,?
 		FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
 		WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
-		  AND sl.state IN ('FAILED','QUARANTINED')
+		  AND sl.state='FAILED'
 		  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.state IN ('PENDING','RUNNING'))`, sessionID, t, workspaceID)
 	if err != nil {
 		return Job{}, false, false, err
@@ -1124,9 +1143,10 @@ func (s *Store) CreateStandby(ctx context.Context, slot Slot, repos []SlotReposi
 	return job, tx.Commit()
 }
 
-// CreateStandbyIfNeeded は standby 枠の再検証と slot/job 登録を同じ transaction で行う。
-// 別の reconcile が先に不足分を埋めた場合は、作成側が物理 directory を所有権確認後に片付けられるよう false を返す。
-func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []SlotRepository, limit int) (Job, bool, error) {
+// CreateStandbyIfNeeded は standby 枠と隔離上限の再検証、slot/job 登録を同じ transaction で行う。
+// 別の reconcile が先に不足分を埋めた場合や隔離上限に達していた場合は、作成側が物理 directory を所有権確認後に片付けられるよう false を返す。
+// quarantineLimit が 0 以下なら隔離上限は検証しない。
+func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []SlotRepository, limit, quarantineLimit int) (Job, bool, error) {
 	if limit <= 0 {
 		return Job{}, false, nil
 	}
@@ -1159,6 +1179,19 @@ func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []Sl
 			return Job{}, false, err
 		}
 		return Job{}, false, nil
+	}
+	if quarantineLimit > 0 {
+		// 上限判定を作成と同じ transaction で行い、並行する ENSURE_STANDBY が上限を越えて作れないようにする。
+		quarantined, quarantineErr := quarantinedStandbyCountTx(ctx, tx, slot.WorkspaceID)
+		if quarantineErr != nil {
+			return Job{}, false, quarantineErr
+		}
+		if quarantined >= quarantineLimit {
+			if err := tx.Commit(); err != nil {
+				return Job{}, false, err
+			}
+			return Job{}, false, nil
+		}
 	}
 	job, err := newJob("PREPARE", slot.WorkspaceID, slot.ID, "")
 	if err != nil {
@@ -2281,75 +2314,119 @@ func (s *Store) BeginSnapshot(ctx context.Context, sessionID, slotID string) err
 	return tx.Commit()
 }
 
+// expireQuarantinedOwnerTx は隔離 slot を owner に持つ session を終端させ、slot の owner だけを外す。
+// 隔離 slot は DRAINING へ進めないので、これを行わないと orphan reconcile が同じ解放を無限に再試行する。
+// slot は QUARANTINED のまま残し、worktree にも snapshot にも触れない。
+func expireQuarantinedOwnerTx(ctx context.Context, tx *sql.Tx, sessionID, slotID string) (bool, error) {
+	t := now()
+	res, err := tx.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED',pending_agent_session_id=NULL,released_at=COALESCE(released_at,?),archived_at=COALESCE(archived_at,?),expires_at=?
+		WHERE id=? AND state IN ('STARTING','ACTIVE','UNBOUND','RESTORING')
+		  AND EXISTS (SELECT 1 FROM slots sl WHERE sl.id=? AND sl.owner_session_id=? AND sl.state='QUARANTINED')`, t, t, t, sessionID, slotID, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE slots SET owner_session_id=NULL,updated_at=? WHERE id=? AND owner_session_id=? AND state='QUARANTINED'`, t, slotID, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, errors.New("quarantined slot ownership changed before release")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,session_id,message) SELECT ?,'warn','session_expired',workspace_id,id,?,? FROM slots WHERE id=?`,
+		t, sessionID, "owner released from QUARANTINED slot", slotID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Release は返却を進め、SNAPSHOT または REMOVE ジョブを作ったときに changed=true を返す。
+// 隔離 slot による終端を区別する必要がある呼び出し側は ReleaseWithOutcome を使う。
 func (s *Store) Release(ctx context.Context, sessionID, workspaceID, slotID string) (Job, bool, error) {
+	job, changed, _, err := s.ReleaseWithOutcome(ctx, sessionID, workspaceID, slotID)
+	return job, changed, err
+}
+
+// ReleaseWithOutcome は Release の結果に加えて、隔離 slot のため snapshot を作らず session を終端したかを返す。
+// この終端では復旧 snapshot が残らないため、呼び出し側は成功として黙って閉じずに記録する。
+func (s *Store) ReleaseWithOutcome(ctx context.Context, sessionID, workspaceID, slotID string) (Job, bool, bool, error) {
 	job, err := newJob("SNAPSHOT", workspaceID, slotID, sessionID)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	defer tx.Rollback()
+	expired, err := expireQuarantinedOwnerTx(ctx, tx, sessionID, slotID)
+	if err != nil {
+		return Job{}, false, false, err
+	}
+	if expired {
+		return Job{}, false, true, tx.Commit()
+	}
 	var sessionState string
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM sessions WHERE id=?`, sessionID).Scan(&sessionState); err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	if sessionState == "UNBOUND" || sessionState == "RESTORING" {
 		job, err = newJob("REMOVE", workspaceID, slotID, "")
 		if err != nil {
-			return Job{}, false, err
+			return Job{}, false, false, err
 		}
 		timestamp := now()
 		res, updateErr := tx.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED',pending_agent_session_id=NULL,released_at=?,archived_at=?,expires_at=? WHERE id=? AND state IN ('UNBOUND','RESTORING')`, timestamp, timestamp, timestamp, sessionID)
 		if updateErr != nil {
-			return Job{}, false, updateErr
+			return Job{}, false, false, updateErr
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return Job{}, false, nil
+			return Job{}, false, false, nil
 		}
 		res, err = tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=? AND state IN ('UNBOUND','RESTORING')`, timestamp, slotID)
 		if err != nil {
-			return Job{}, false, err
+			return Job{}, false, false, err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return Job{}, false, errors.New("unbound slot state changed before release")
+			return Job{}, false, false, errors.New("unbound slot state changed before release")
 		}
 		if err := insertJob(ctx, tx, job); err != nil {
-			return Job{}, false, err
+			return Job{}, false, false, err
 		}
-		return job, true, tx.Commit()
+		return job, true, false, tx.Commit()
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE sessions SET state='RELEASING',released_at=COALESCE(released_at,?) WHERE id=? AND state IN ('STARTING','ACTIVE')`, now(), sessionID)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return Job{}, false, nil
+		return Job{}, false, false, nil
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE slots SET state='DRAINING',updated_at=? WHERE owner_session_id=? AND state='LEASED'`, now(), sessionID); err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	var slotState string
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM slots WHERE id=? AND owner_session_id=?`, slotID, sessionID).Scan(&slotState); err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	if slotState == "PREPARING" {
 		if err := tx.Commit(); err != nil {
-			return Job{}, false, err
+			return Job{}, false, false, err
 		}
-		return Job{}, false, nil
+		return Job{}, false, false, nil
 	}
 	if slotState != "DRAINING" {
-		return Job{}, false, fmt.Errorf("slot %s cannot be released from %s", slotID, slotState)
+		return Job{}, false, false, fmt.Errorf("slot %s cannot be released from %s", slotID, slotState)
 	}
 	if err := insertJob(ctx, tx, job); err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
-	return job, true, tx.Commit()
+	return job, true, false, tx.Commit()
 }
 
 type GCCandidate struct{ SlotID, SessionID, Path string }

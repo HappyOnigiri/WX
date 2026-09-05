@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -159,18 +160,70 @@ func TestCreateStandbyIfNeededRevalidatesCapacityAndGeneration(t *testing.T) {
 	slot := func(id string, generation int) Slot {
 		return Slot{ID: id, WorkspaceID: "workspace", Generation: generation, RootID: testRootID, RelPath: filepath.Join("workspace", id), State: "PREPARING"}
 	}
-	job, created, err := store.CreateStandbyIfNeeded(ctx, slot("first", 1), nil, 1)
+	job, created, err := store.CreateStandbyIfNeeded(ctx, slot("first", 1), nil, 1, 0)
 	if err != nil || !created || job.Kind != "PREPARE" {
 		t.Fatalf("first creation job=%+v created=%v err=%v", job, created, err)
 	}
-	if _, created, err := store.CreateStandbyIfNeeded(ctx, slot("second", 1), nil, 1); err != nil || created {
+	if _, created, err := store.CreateStandbyIfNeeded(ctx, slot("second", 1), nil, 1, 0); err != nil || created {
 		t.Fatalf("capacity revalidation created=%v err=%v", created, err)
 	}
-	if _, created, err := store.CreateStandbyIfNeeded(ctx, slot("stale", 2), nil, 2); err != nil || created {
+	if _, created, err := store.CreateStandbyIfNeeded(ctx, slot("stale", 2), nil, 2, 0); err != nil || created {
 		t.Fatalf("generation mismatch created=%v err=%v", created, err)
 	}
 	if got := store.StandbyCount(ctx, "workspace"); got != 1 {
 		t.Fatalf("standby count=%d, want one", got)
+	}
+}
+
+// 隔離 slot は READY へ戻らないため待機枠に数えず、成功イベントを待たずに補充できる。
+// 一方で貸出前の隔離は上限判定のために数え続ける。
+func TestStandbyCountExcludesQuarantinedSlotsAndAllowsReplenishment(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	if _, err := store.CreateStandby(ctx, Slot{ID: "quarantined", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/quarantined", State: "PREPARING"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlotState(ctx, "quarantined", []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.StandbyCount(ctx, "workspace"); got != 0 {
+		t.Fatalf("standby count with a quarantined slot=%d, want zero", got)
+	}
+	quarantined, err := store.QuarantinedStandbyCount(ctx, "workspace")
+	if err != nil || quarantined != 1 {
+		t.Fatalf("quarantined standby count=%d err=%v", quarantined, err)
+	}
+	job, created, err := store.CreateStandbyIfNeeded(ctx, Slot{ID: "replacement", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/replacement", State: "PREPARING"}, nil, 1, 2)
+	if err != nil || !created || job.Kind != "PREPARE" {
+		t.Fatalf("replenishment job=%+v created=%v err=%v", job, created, err)
+	}
+	if got := store.StandbyCount(ctx, "workspace"); got != 1 {
+		t.Fatalf("standby count after replenishment=%d, want the replacement only", got)
+	}
+	// session を持った slot の隔離は準備の破損を示さないため、上限判定には数えない。
+	// last_used_at は cold start の slot では貸出後も NULL のままなので、判定は session の有無で行う。
+	coldSession := Session{ID: "cold-session", WorkspaceID: "workspace", SlotID: "cold-session", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("cold-session")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: coldSession.SlotID, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/cold-session", State: "PREPARING"}, nil, coldSession, "PREPARE"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlotState(ctx, coldSession.SlotID, []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+		t.Fatal(err)
+	}
+	var lastUsed sql.NullString
+	if err := store.db.QueryRowContext(ctx, `SELECT last_used_at FROM slots WHERE id=?`, coldSession.SlotID).Scan(&lastUsed); err != nil {
+		t.Fatal(err)
+	}
+	if lastUsed.Valid {
+		t.Fatalf("cold start slot last_used_at=%q, want NULL", lastUsed.String)
+	}
+	quarantined, err = store.QuarantinedStandbyCount(ctx, "workspace")
+	if err != nil || quarantined != 1 {
+		t.Fatalf("quarantined count with a used slot=%d err=%v, want the standby one only", quarantined, err)
+	}
+	// 上限は作成と同じ transaction でも検証する。枠に空きがあっても上限に達していれば作らない。
+	if _, created, err := store.CreateStandbyIfNeeded(ctx, Slot{ID: "over-limit", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/over-limit", State: "PREPARING"}, nil, 2, 1); err != nil || created {
+		t.Fatalf("creation past the quarantine limit created=%v err=%v", created, err)
 	}
 }
 

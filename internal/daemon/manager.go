@@ -170,6 +170,8 @@ type Manager struct {
 	closeDone            chan struct{}
 	// cleanDrivers は run ごとの進行管理が二重に走らないようにする。同じ run への再実行は既存の driver へ合流する。
 	cleanDrivers map[string]bool
+	// standbyQuarantineWarned は隔離上限による補充停止の警告を workspace ごとに一度だけ出すための記録。
+	standbyQuarantineWarned map[string]bool
 }
 type jobWork struct {
 	id string
@@ -842,10 +844,13 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 		if processAlive(candidate.ClientPID) || processAlive(candidate.AgentPID) {
 			continue
 		}
-		job, changed, err := m.store.Release(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
+		job, changed, quarantineExpired, err := m.store.ReleaseWithOutcome(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
 		if err != nil {
 			m.log.Error("orphan release failed", "session_id", candidate.ID, "error", err)
 			continue
+		}
+		if quarantineExpired {
+			m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", candidate.ID, "slot_id", candidate.SlotID)
 		}
 		if changed {
 			m.schedule(job)
@@ -2011,6 +2016,11 @@ func coldWorktreeUnmaterialized(owner *os.Root, root, worktreePath string) (bool
 	return len(entries) == 0, nil
 }
 
+// standbyQuarantineLimit は、貸出前の隔離 slot をこの数まで許して補充を続ける上限。
+// 隔離 slot は待機枠に数えないので環境が直れば補充で自己回復するが、GC も clean も隔離実体を消さないため、
+// 準備が壊れ続ける workspace で無制限に worktree が積み上がるのを防ぐ。
+const standbyQuarantineLimit = 3
+
 func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) error {
 	cfg := m.Config()
 	if !m.standbyReplenishmentEnabled(w) {
@@ -2020,6 +2030,21 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	if m.replenishSuspended(ctx, string(w.ID)) {
 		return nil
 	}
+	quarantined, err := m.store.QuarantinedStandbyCount(ctx, string(w.ID))
+	if err != nil {
+		return err
+	}
+	if quarantined >= standbyQuarantineLimit {
+		// 隔離実体を消す製品内の経路が無く、片付けるまで補充は再開しない。
+		// 10 分ごとの reconcile から呼ばれるため、上限へ達したことは workspace ごとに一度だけ Warn で伝える。
+		if m.markStandbyQuarantineWarned(string(w.ID)) {
+			m.log.Warn("standby replenishment stopped until quarantined slots are removed", "workspace_id", w.ID, "quarantined", quarantined, "limit", standbyQuarantineLimit)
+		} else {
+			m.log.Debug("standby replenishment stopped by quarantined slots", "workspace_id", w.ID, "quarantined", quarantined)
+		}
+		return nil
+	}
+	m.clearStandbyQuarantineWarned(string(w.ID))
 	needed := cfg.Pool.WarmPerWorkspace - m.store.StandbyCount(ctx, string(w.ID))
 	if needed <= 0 {
 		return nil
@@ -2052,6 +2077,27 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 		}
 	}
 	return nil
+}
+
+// markStandbyQuarantineWarned は隔離上限の警告をまだ出していない workspace で true を返し、以降は false を返す。
+func (m *Manager) markStandbyQuarantineWarned(workspaceID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.standbyQuarantineWarned == nil {
+		m.standbyQuarantineWarned = map[string]bool{}
+	}
+	if m.standbyQuarantineWarned[workspaceID] {
+		return false
+	}
+	m.standbyQuarantineWarned[workspaceID] = true
+	return true
+}
+
+// clearStandbyQuarantineWarned は上限を下回った workspace の記録を消し、再発時に再び警告できるようにする。
+func (m *Manager) clearStandbyQuarantineWarned(workspaceID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.standbyQuarantineWarned, workspaceID)
 }
 
 func (m *Manager) standbyReplenishmentEnabled(w discovery.Workspace) bool {
@@ -2098,7 +2144,7 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 			}
 			return state.Job{}, err
 		}
-		job, created, err := m.store.CreateStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, DirIdentity: slotIdentity, State: "PREPARING"}, repos, m.Config().Pool.WarmPerWorkspace)
+		job, created, err := m.store.CreateStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, DirIdentity: slotIdentity, State: "PREPARING"}, repos, m.Config().Pool.WarmPerWorkspace, standbyQuarantineLimit)
 		if err == nil {
 			if created {
 				return job, nil
@@ -2763,9 +2809,13 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 	if reason == "session-end-hook" && (processAlive(session.ClientPID) || processAlive(session.AgentPID)) {
 		return nil
 	}
-	job, changed, err := m.store.Release(ctx, id, session.WorkspaceID, session.SlotID)
+	job, changed, quarantineExpired, err := m.store.ReleaseWithOutcome(ctx, id, session.WorkspaceID, session.SlotID)
 	if err != nil {
 		return err
+	}
+	if quarantineExpired {
+		// clientはReleaseの応答を読まないため、snapshotを作らずに終端したことはログだけが残す。
+		m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", id, "slot_id", session.SlotID, "reason", reason)
 	}
 	if !changed {
 		m.releaseLease(id)

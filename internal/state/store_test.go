@@ -522,6 +522,8 @@ func TestReleaseCleansUpUnboundAndRestoringSessions(t *testing.T) {
 	}
 }
 
+// READY は UNBOUND slot が実際に遷移できる状態（PREPARING・RESTORING・QUARANTINED）ではなく、
+// session だけ先に EXPIRED へ進めた後の CAS ガードを踏ませるための人工的な状態である。
 func TestUnboundReleaseRollsBackWhenSlotStateChanged(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -529,7 +531,7 @@ func TestUnboundReleaseRollsBackWhenSlotStateChanged(t *testing.T) {
 	if _, err := store.CreateSlotSession(ctx, Slot{ID: "unbound", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/unbound"}, nil, session, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetSlotState(ctx, "unbound", []string{"UNBOUND"}, "QUARANTINED", "TEST"); err != nil {
+	if err := store.SetSlotState(ctx, "unbound", []string{"UNBOUND"}, "READY", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.Release(ctx, "unbound", "", "unbound"); err == nil {
@@ -538,6 +540,52 @@ func TestUnboundReleaseRollsBackWhenSlotStateChanged(t *testing.T) {
 	storedSession, err := store.SessionByID(ctx, "unbound")
 	if err != nil || storedSession.State != "UNBOUND" {
 		t.Fatalf("release transaction did not roll back: session=%+v err=%v", storedSession, err)
+	}
+}
+
+// 隔離 slot の owner は DRAINING へ進めないため、返却は session を終端させて owner を外す一度きりの操作になる。
+// これが成立しないと orphan reconcile が同じ session の返却を無限に再試行する。
+func TestReleaseExpiresSessionOwningQuarantinedSlot(t *testing.T) {
+	ctx := context.Background()
+	for _, sessionState := range []string{"STARTING", "ACTIVE", "UNBOUND", "RESTORING"} {
+		t.Run(sessionState, func(t *testing.T) {
+			store := openTestStore(t)
+			seedWorkspace(t, store)
+			id := "quarantined-" + strings.ToLower(sessionState)
+			session := Session{ID: id, WorkspaceID: "workspace", SlotID: id, State: sessionState, AgentKind: "codex", TokenHash: HashToken(id)}
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: id, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: filepath.Join("workspace", id), State: "PREPARING"}, nil, session, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetSlotState(ctx, id, []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+				t.Fatal(err)
+			}
+			job, changed, quarantineExpired, err := store.ReleaseWithOutcome(ctx, id, "workspace", id)
+			if err != nil || changed || job.ID != "" || !quarantineExpired {
+				t.Fatalf("release job=%+v changed=%v quarantineExpired=%v err=%v", job, changed, quarantineExpired, err)
+			}
+			storedSession, err := store.SessionByID(ctx, id)
+			if err != nil || storedSession.State != "EXPIRED" {
+				t.Fatalf("session=%+v err=%v", storedSession, err)
+			}
+			slot, err := store.Slot(ctx, id)
+			if err != nil || slot.State != "QUARANTINED" || slot.OwnerSessionID != "" || slot.FailureCode != "JOB_RETRY_EXHAUSTED" {
+				t.Fatalf("slot=%+v err=%v", slot, err)
+			}
+			// 終端後は候補に残らず、同じ返却を繰り返してもエラーにならない。
+			// 二度目は終端する session が無いため、隔離による終端としても報告しない。
+			if _, changed, quarantineExpired, err := store.ReleaseWithOutcome(ctx, id, "workspace", id); err != nil || changed || quarantineExpired {
+				t.Fatalf("repeated release changed=%v quarantineExpired=%v err=%v", changed, quarantineExpired, err)
+			}
+			candidates, err := store.OrphanCandidates(ctx, FormatTime(time.Now().Add(time.Hour)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, candidate := range candidates {
+				if candidate.ID == id {
+					t.Fatalf("expired session remained an orphan candidate: %+v", candidate)
+				}
+			}
+		})
 	}
 }
 
