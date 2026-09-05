@@ -35,6 +35,42 @@ func TestResolveBranchesFallbackAndOverride(t *testing.T) {
 	}
 }
 
+func TestResolveBranchesRejectsGlobalMissingBranchForSingleRepository(t *testing.T) {
+	root := t.TempDir()
+	repo := initRepo(t, filepath.Join(root, "repository"))
+	w := discovery.Workspace{Repositories: []discovery.Repository{{ID: "repository", MainPath: domain.CanonicalPath(repo), RelativePath: "repository", DefaultBranch: "main"}}}
+
+	_, err := ResolveBranches(context.Background(), &gitx.Runner{}, w, []string{"missing"})
+	if err == nil {
+		t.Fatal("missing global branch for a single repository succeeded")
+	}
+	for _, want := range []string{"branch \"missing\" does not exist", "repository", "refusing to use default branch \"main\""} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestResolveBranchesRejectsGlobalMissingBranchForAllRepositories(t *testing.T) {
+	root := t.TempDir()
+	a := initRepo(t, filepath.Join(root, "a"))
+	b := initRepo(t, filepath.Join(root, "b"))
+	w := discovery.Workspace{Repositories: []discovery.Repository{
+		{ID: "a", MainPath: domain.CanonicalPath(a), RelativePath: "a", DefaultBranch: "main"},
+		{ID: "b", MainPath: domain.CanonicalPath(b), RelativePath: "b", DefaultBranch: "main"},
+	}}
+
+	_, err := ResolveBranches(context.Background(), &gitx.Runner{}, w, []string{"missing"})
+	if err == nil {
+		t.Fatal("missing global branch for all repositories succeeded")
+	}
+	for _, want := range []string{"branch \"missing\" does not exist in any repository", "a", "b", "refusing to use default branches"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
 func TestResolveBranchesRejectsAmbiguousAndMissingSpecifications(t *testing.T) {
 	root := t.TempDir()
 	a := initRepo(t, filepath.Join(root, "services", "api"))
@@ -79,7 +115,7 @@ func TestResolveBranchesFailsClosedUnderACanceledContext(t *testing.T) {
 	repo := discovery.Repository{ID: "repository", MainPath: domain.CanonicalPath(main), RelativePath: "repository", DefaultBranch: "main"}
 	w := discovery.Workspace{Repositories: []discovery.Repository{repo}}
 	runner := &gitx.Runner{}
-	if _, err := ResolveBranches(context.Background(), runner, w, []string{"feature"}); err != nil {
+	if _, err := ResolveBranches(context.Background(), runner, w, []string{"main"}); err != nil {
 		t.Fatalf("global branch resolution on a live context: %v", err)
 	}
 	if _, err := ResolveBranches(context.Background(), runner, w, nil); err != nil {
@@ -87,7 +123,7 @@ func TestResolveBranchesFailsClosedUnderACanceledContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := ResolveBranches(ctx, runner, w, []string{"feature"}); err == nil {
+	if _, err := ResolveBranches(ctx, runner, w, []string{"main"}); err == nil {
 		t.Fatal("canceled global branch resolution succeeded")
 	}
 	if _, err := ResolveBranches(ctx, runner, w, nil); err == nil {
