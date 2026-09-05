@@ -1982,8 +1982,6 @@ func (s *Store) WorkspaceRoots(ctx context.Context) ([]string, error) {
 type Status struct{ Workspaces, Repositories, Ready, Leased, Failed, Active, Snapshots, Jobs, Quarantined int }
 
 type (
-	// LastUsedAt はその workspace で作られた session の created_at の最大値であり、一度も使っていない workspace では空になる。
-	// repositories.last_leased_at を使わないのは、repository 行を共有する別 workspace の貸出でも値が入り、workspace 自身の利用実績と区別できないためである。
 	WorkspaceDiagnostic struct {
 		ID           string `json:"id"`
 		Root         string `json:"root"`
@@ -1992,7 +1990,9 @@ type (
 		Ready        int    `json:"ready"`
 		Leased       int    `json:"leased"`
 		Failed       int    `json:"failed"`
-		LastUsedAt   string `json:"last_used_at,omitempty"`
+		// LastUsedAt はその workspace で作られた session の created_at の最大値であり、一度も使っていない workspace では空になる。
+		// repositories.last_leased_at を使わないのは、repository 行を共有する別 workspace の貸出でも値が入り、workspace 自身の利用実績と区別できないためである。
+		LastUsedAt string `json:"last_used_at,omitempty"`
 	}
 	SessionDiagnostic struct {
 		ID         string `json:"id"`
