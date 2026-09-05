@@ -5,12 +5,15 @@
 ## 層とパッケージ
 
 依存はおおむね上から下へ流れるが、厳密な一方向ではない（例えば`internal/state`は`internal/discovery`のworkspace型を受け取る）。
-lintが機械的に守るのは`.golangci.yml`のdepguardが書いた`internal/domain`と`internal/state`の2つぶんだけで、それ以外の辺は規約でしか守られていない。
+lintは`.golangci.yml`のdepguardで`internal/domain`・`internal/state`・`internal/sessions`の依存境界を検査する。
 
 - **入口** — `cmd/wx`、`internal/cli`。
   引数解析、daemonへのRPC、エージェント子プロセスの起動と信号中継。
 - **エージェント連携** — `internal/agent`、`internal/hookconfig`。
   hookの実行と、hook設定が同期的な準備完了契約を満たしているかの判定。
+- **会話選択** — `internal/sessions`。
+  continue / resume の実行時にClaude・Codexの履歴ファイルからタイトル・会話ID・cwdを読み、タイトル一覧から選択する。
+  本文表示・全文検索・履歴DB・キャッシュ・daemonでの履歴更新は持たない。
 - **転送** — `internal/rpc`。
   Unix socket上の長さ前置きJSON、冪等性キーによる重複実行の抑止。
 - **調整** — `internal/daemon`。
@@ -45,6 +48,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
    hookが入っていれば、`wx hook user-prompt-submit`と`wx hook pre-tool-use`が`WaitReady`をブロッキングで呼ぶので、準備とエージェント起動を重ねられる。
    hookが無ければ、client側が起動前に前面で`WaitReady`を待つ（`hookconfig.Available`で分岐）。
    `wx hook session-start`は`BindAgentSession`系でエージェント側のネイティブなセッションIDをwxのセッションへ結び付ける。
+   RESTORING中に届いたIDは`pending_agent_session_id`として保持し、復元成功後に親から新しいセッションへ移譲する。
+   resumeの`session-start`は`previous_worktree`を返し、`source == "resume"`のとき旧pathを使わないよう通知文を1行出す。
+   通知文は`wx notice: this conversation previously ran in <previous_worktree>; the workspace is now <cwd>. Do not use the old path.`とする。
 4. **返却** — `wx hook session-end`が`Release`を呼ぶ。
    ただしsession-end hookはエージェント本体より先に走ることがあるため、clientまたはエージェントのプロセスが生きている間は返却しない。
    前面clientの終了通知か、daemonのorphan reconcileが「もう書き手がいない」ことを確認してから先へ進む。
@@ -53,8 +59,12 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
    multi-repository workspaceではさらに、workspace root自体のtarをwxのworktree root配下（`recovery/workspace-snapshots/`）へ書き、`workspace_snapshots`行が指す。
    refの公開はDB行の永続化の後に行う。
    逆順だと、reconcileから見て正常なアーカイブが素性不明のrefに見える窓が開く。
-6. **再開** — `wx resume`または各エージェントのネイティブなresumeが`Resume`/`AllocateResumeSlot`を通り、RESTOREジョブがスナップショットを新しいslotへ戻す。
-   ネイティブresumeはhookが揃っていることを要求し、揃っていなければ前面で待つ`wx resume <wx-session-id>`へ倒す。
+6. **再開** — `wx resume`、`claude --resume`、`codex resume`はclientがagent session IDを解決し、`Resume`または`ResolveAndLease`へ合流させる。
+   `wx claude -c`は直近の会話を選び、`wx claude -r`と`wx codex resume`はタイトル一覧を開く。
+   選択した会話と明示的な`wx resume <wx-session-id>`は同じRESTORE経路を使う。
+   RESTORING中のagent session IDは`pending_agent_session_id`として保持し、復元成功時に新しいセッションへ移譲する。
+   `--fresh`は会話を同じIDで再開しつつ現在のbaseからslotを作り、`--branch`は`--fresh`との併用時だけ使う。
+   ネイティブresumeは遅延バインドや`_unbound` slotを新規生成せず、clientが準備完了を前面で待ってから起動する。
    復元後のworktreeはtracked changesを含むため、貸出前の検査はcleanなworking treeを要求しない`ValidateOwnership`を使う。
    READY slotの再利用側は`ValidateReady`で、こちらはtracked cleanまで求める。
 
@@ -167,19 +177,21 @@ worktree root（`storage.worktree_root`、既定`$HOME/wx`）配下は次の形�
 <worktree_root>/_recovery/workspace-snapshots/<安定ID>.tar
 ```
 
+`_unbound/<slot-id>`は旧リリースが生成した残骸の回収用にだけ残り、新しいslotの生成には使わない。
 workspace-idとslot-idは6桁固定の小文字英数字（base36、`domain.NewShortID`）である。
-slot-idはsession IDと同値なので、`wx sessions`が出すIDをそのまま`wx resume`に渡せる。
+slot-idはleaseのsession IDと同値なので、`wx leases`が出すIDをそのまま`wx resume`に渡せる。
 大文字を混ぜないのはAPFSが既定でcase-insensitiveなためで、同じ理由からslot内の配置名の衝突判定も小文字化して行い、衝突したら`-2`のサフィックスを付ける。
 
-`_`始まりはwxの予約プレフィックスで、workspace IDもリポジトリ配置名もこの接頭辞を拒否する。
-孤児スキャン（`ownedRootArtifactPaths`）はこの規則の裏返しで、`_`始まりを除く全ての第1階層をworkspaceディレクトリとみなし、その直下をslotディレクトリとして列挙する。
-生成側（`slotRelPath`）と列挙側は同時に直さなければならない。片方だけ直すと、孤児検出が無音で機能停止する。
+`_`始まりはwxの予約プレフィックスで、workspace IDもリポジトリ配置名もこの接頭辞を拒否し、旧`_unbound`は回収用に特別扱いする。
+孤児スキャン（`ownedRootArtifactPaths`）は予約名を通常workspaceとして列挙せず、旧`_unbound`だけを回収対象として特別扱いする。
+生成側は`_unbound`を作らず、列挙側は旧リリースの`_unbound`を回収対象として残す。
+旧UNBOUND行と`_unbound`の回収分岐は1リリースだけ維持し、孤児検出後に`Release`→`REMOVE`で自然に削除する。
 
 エージェントへ貸し出す単位（`Lease.Path`）は、単一リポジトリworkspaceなら`<slot-id>/<RepoName>`、multi_repositoryなら`<slot-id>`である。
 単一リポジトリでCWDをリポジトリ直下にすることで、`.wx-owner-*`がCWDの親に残りエージェントから見えない。
 `Lease.Path`と`state.Slot.Path`（常にslotディレクトリ）を混同しないこと。
-workspaceが確定していない`_unbound/<slot-id>`はslotディレクトリ自体を貸し出す。
-リポジトリ名がその時点では決まらないためで、単一リポジトリworkspaceに束縛された後もworktreeはCWDの1つ下に現れる。
+旧リリースの`_unbound/<slot-id>`は新規貸出に使わず、孤児スキャンから`Release`→`REMOVE`へ回収する。
+旧方式のworkspace未確定slotを残したまま新しいpathへ移すため、回収が完了するまでこの分岐を保持する。
 
 `RepoName`の決定順は`repositories.<main path>.dir_name` → `repositories.<main path>.dir_source` → `storage.repo_dir_source`（既定`remote`）→ main worktreeのディレクトリ名である。
 `remote`は`git remote get-url origin`の出力から末尾の`.git`を除いたbasenameで、取れないときはディレクトリ名へ落ちる。
