@@ -39,6 +39,10 @@ Go側に状態のenum型や遷移ガードを作らない。
 - platform依存のコードを触ったら`CGO_ENABLED=0 GOOS=linux .tools/bin/golangci-lint run ./...`も手元で通す。
 - ファイルシステムを触るテストを持つパッケージには、`TMPDIR`を`filepath.EvalSymlinks`済みの物理パスへ差し替える`TestMain`を置く。
   macOSの`/var` → `/private/var`などがsymlink拒否の検査に引っかかるためである。
+- `internal/daemon`のトップレベルテストは、専用の一時ディレクトリ・DB・Managerだけを使うものに`t.Parallel()`を付ける。
+  `t.Setenv`を自身かサブテストで呼ぶテスト、プロセス全体のgoroutine・fdを数えるテスト、短い待機に依存するテストは直列のまま残す。
+- CIはrace検査（`make test-race`）とcoverage計測（`make coverage-check`）を別ジョブで並列に実行し、`coverage`ジョブが両方の結果を集約する。
+  `make test-race-coverage`は両者を同時に走らせた場合の比較・診断用で、通常のゲートには含めない。
 - Git hookは書式・`go vet`・buildに絞る。
   本体は`$(git rev-parse --git-common-dir)`の`hooks/`直下に置き、`make hook-pre-commit`・`make hook-pre-push`を呼ぶ。
   `core.hooksPath`のlocal設定はuserレベルのhook dispatcherを覆い隠し、`post-checkout`なども止めるため設定しない。
