@@ -104,12 +104,15 @@ type statusWorkspaceRow struct {
 	sortKey, path, ready, leased, last string
 }
 
+// workspaceLastUsedSchemaVersion は workspace_details.last_used_at が導入された JSON schema 版である。
+const workspaceLastUsedSchemaVersion = 6
+
 func printStatusSummary(w io.Writer, payload map[string]any) {
 	workspaces := statusObjectList(payload["workspace_details"])
 	roots := statusObjectsSortedBy(statusObjectList(payload["worktree_roots"]), "path")
 
-	// LAST USED は daemon が workspace ごとに集計した last_used_at をそのまま出す。
-	// repository 一覧と突き合わせず、パスの包含関係からも repository を推測しない。
+	// LAST USED は daemon が workspace ごとに集計した値をそのまま出す。
+	// 旧 schema の応答では repository の時刻を workspace の値として補完しない。
 	rows := make([]statusWorkspaceRow, 0, len(workspaces))
 	for _, workspace := range workspaces {
 		root, _ := statusRawString(workspace, "root")
@@ -124,9 +127,7 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 			leased:  statusCountOrDash(workspace, "leased"),
 			last:    "—",
 		}
-		if lastUsed, ok := statusRawString(workspace, "last_used_at"); ok && lastUsed != "" {
-			row.last = statusLocalDate(lastUsed)
-		}
+		row.last = statusWorkspaceLastUsed(payload, workspace)
 		rows = append(rows, row)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -143,6 +144,9 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 		}
 		return out
 	}())
+	if notice := statusWorkspaceLastUsedNotice(payload); notice != "" {
+		writeStatusLine(w, notice)
+	}
 	if len(rows) == 0 {
 		// 空の registry でも表のヘッダーを残し、(none) を件数の 0 と混同させない。
 		writeStatusLine(w, "(none)")
@@ -271,6 +275,37 @@ func statusLocalDate(raw string) string {
 	return parsed.In(statusDisplayLocation).Format("01/02 15:04")
 }
 
+func statusWorkspaceLastUsed(payload, workspace map[string]any) string {
+	if statusWorkspaceLastUsedUnavailable(payload) {
+		return "unknown"
+	}
+	lastUsed, ok := statusRawString(workspace, "last_used_at")
+	if !ok || lastUsed == "" {
+		return "—"
+	}
+	return statusLocalDate(lastUsed)
+}
+
+func statusWorkspaceLastUsedVerbose(payload, workspace map[string]any) string {
+	if statusWorkspaceLastUsedUnavailable(payload) {
+		return "unknown"
+	}
+	return statusValue(workspace, "last_used_at")
+}
+
+func statusWorkspaceLastUsedUnavailable(payload map[string]any) bool {
+	schema, ok := statusInt(payload, "schema_version")
+	return ok && schema < workspaceLastUsedSchemaVersion
+}
+
+func statusWorkspaceLastUsedNotice(payload map[string]any) string {
+	if !statusWorkspaceLastUsedUnavailable(payload) {
+		return ""
+	}
+	schema, _ := statusInt(payload, "schema_version")
+	return fmt.Sprintf("LAST USED unavailable: daemon JSON schema %d has no workspace history; update the daemon.", schema)
+}
+
 func statusZoneLabel() string {
 	name, _ := time.Now().In(statusDisplayLocation).Zone()
 	if name == "" {
@@ -346,10 +381,13 @@ func (r *verboseStatusRenderer) renderWorkspaces() {
 	r.mark("workspace_details")
 	rows := make([][]string, 0, len(items))
 	for index, item := range items {
-		rows = append(rows, []string{statusValue(item, "id"), statusHomeValue(item, "root"), statusValue(item, "generation"), statusValue(item, "repositories"), statusValue(item, "ready"), statusValue(item, "leased"), statusValue(item, "failed"), statusValue(item, "last_used_at")})
+		rows = append(rows, []string{statusValue(item, "id"), statusHomeValue(item, "root"), statusValue(item, "generation"), statusValue(item, "repositories"), statusValue(item, "ready"), statusValue(item, "leased"), statusValue(item, "failed"), statusWorkspaceLastUsedVerbose(r.payload, item)})
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("workspaces[%d]", index), item, map[string]bool{"id": true, "root": true, "generation": true, "repositories": true, "ready": true, "leased": true, "failed": true, "last_used_at": true})
 	}
 	r.lineTable([]string{"ID", "PATH", "GENERATION", "REPOSITORIES", "READY", "IN USE", "FAILED (FAILED + QUARANTINED)", "LAST USED"}, rows, present)
+	if notice := statusWorkspaceLastUsedNotice(r.payload); notice != "" {
+		r.line("  " + notice)
+	}
 }
 
 func (r *verboseStatusRenderer) lineTable(headers []string, rows [][]string, present bool) {
