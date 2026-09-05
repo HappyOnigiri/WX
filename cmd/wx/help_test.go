@@ -544,6 +544,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"doctor"},
 		{"doctor", "--json"},
 		{"gc", "--dry-run"},
+		{"clear", "--dry-run"},
 		{"sessions", "--all", "--json"},
 		{"sessions"},
 		{"forget", home},
@@ -561,7 +562,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 			t.Fatalf("run(%v) exit=%d", args, exit)
 		}
 	}
-	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"sessions", "extra"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
+	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"clear", "extra"}, {"clean"}, {"sessions", "extra"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
 		if exit := run(ctx, args); exit != 2 {
 			t.Fatalf("misuse run(%v) exit=%d", args, exit)
 		}
@@ -648,7 +649,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 }
 
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
-	for _, command := range []string{"status", "doctor", "gc", "sessions", "config", "resume", "forget", "daemon"} {
+	for _, command := range []string{"status", "doctor", "gc", "clear", "sessions", "config", "resume", "forget", "daemon"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			commandUsage(&output, command)

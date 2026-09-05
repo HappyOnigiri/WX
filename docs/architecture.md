@@ -73,11 +73,11 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   除外記録はslotの状態やworktreeを変更せず、同じ成功を再処理しても後から発生した失敗slotを許可しない。
   復元sessionの成功や`SessionStart`による`ACTIVE`遷移だけでは除外記録を作らず、補充の契機にもならない。
   隔離slotとそのファイル・所有権情報は保全され、READYの回復と隔離物の削除は別の操作である。
-- **clean** — `wx clean`は保持期限を待たずにworktreeを削除する。
+- **clear** — `wx clear`は保持期限を待たずにworktreeを削除する。
   受付時点で全workspace・全root世代のslotから対象を確定し、`clean_runs`・`clean_targets`へ永続化するので、daemon再起動後も同じ対象と期限で再開する。
   進行は`Manager.driveClean`のbackground goroutineが既存ジョブの完了を監視するだけで、workerを占有したまま別ジョブを待たない。
   削除そのものは通常の返却・保存・削除経路（`Release`→`SNAPSHOT`→`ScheduleRemoval`→`REMOVE`）に載せるので、GCと二重の削除実装を持たない。
-  貸出前の待機用slot（READYと補充中のPREPARING）は通常のcleanでは残し、`--standby`と`--all`だけが対象に含める。
+  貸出前の待機用slot（READYと補充中のPREPARING）は通常のclearでは残し、`--standby`と`--all`だけが対象に含める。
   mode（`normal`・`standby`・`all`）は対象の範囲そのものなので、実行中のrunへ合流できるのは同じmodeの再実行に限る。
   `--all`は`session_termination_requests`へ期限付き（30秒）の終了要求を記録し、heartbeatとagent登録の応答でclientへ渡す。
   signalを送るのはclientだけで、daemonは記録されたPIDへ触れない。

@@ -24,7 +24,7 @@ Commands:
   status [--verbose] [--json]    show daemon and pool state
   doctor [--json]                check configuration and dependencies
   gc [--dry-run]                 run retention cleanup
-  clean [--all] [--standby]      delete managed worktrees now
+  clear [--all] [--standby]      delete managed worktrees now
   sessions [--all] [--json]      list managed sessions
   config [<key> <value>]         show or update configuration
   resume <id> <agent> [args...]  restore a wx session
@@ -58,8 +58,8 @@ Run retention cleanup without deleting unarchived workspace data.
 
 Options:
   --dry-run  report candidates without removing them`)
-	case "clean":
-		_, _ = fmt.Fprintln(w, `Usage: wx clean [--all] [--standby] [--dry-run]
+	case "clear":
+		_, _ = fmt.Fprintln(w, `Usage: wx clear [--all] [--standby] [--dry-run]
 
 Delete the worktrees wx manages without waiting for their retention period.
 Work is saved first: recovery data, session history, and workspace
@@ -74,8 +74,8 @@ those sessions to stop, waits up to 30s for each of them, and deletes only the
 ones that stopped; nothing is killed. Quarantined slots are always kept.
 
 The command waits for every target to finish. Interrupting it does not stop
-the daemon, and running it again rejoins the clean already in progress. While
-a clean runs, new sessions and resumes are refused.
+the daemon, and running it again rejoins the clear already in progress. While
+a clear runs, new sessions and resumes are refused.
 
 Exit status is 0 when every target succeeded or there was nothing to do, 1
 when something failed, was quarantined, or did not finish, and 2 for an

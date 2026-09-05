@@ -21,7 +21,7 @@ type terminationRequest struct {
 	Deadline  string `json:"deadline"`
 }
 
-// agentTerminator は wx clean の終了要求を 1 度だけ agent へ伝え、停止確認の応答先を覚える。
+// agentTerminator は wx clear の終了要求を 1 度だけ agent へ伝え、停止確認の応答先を覚える。
 // signal を送るのは client であり、daemon は記録された PID へ signal を送らない。
 type agentTerminator struct {
 	mu        sync.Mutex

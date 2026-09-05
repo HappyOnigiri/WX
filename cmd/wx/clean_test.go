@@ -32,7 +32,7 @@ func TestCleanExitCodeSeparatesFailuresFromExcludedSessions(t *testing.T) {
 func TestPrintCleanTargetsShowsPathsAndReasons(t *testing.T) {
 	var out bytes.Buffer
 	printCleanTargets(&out, nil)
-	if !strings.Contains(out.String(), "no managed worktrees to clean") {
+	if !strings.Contains(out.String(), "no managed worktrees to clear") {
 		t.Fatalf("empty output=%q", out.String())
 	}
 	out.Reset()
@@ -95,14 +95,19 @@ func TestWaitForCleanReportsPollFailuresWithTheLastKnownState(t *testing.T) {
 	}
 }
 
-func TestRunCleanRejectsPositionalArguments(t *testing.T) {
+func TestRunClearRejectsPositionalArguments(t *testing.T) {
 	if code := runClean(context.Background(), []string{"extra"}); code != 2 {
 		t.Fatalf("exit code=%d", code)
 	}
 	if code := runClean(context.Background(), []string{"--unknown"}); code != 2 {
 		t.Fatalf("unknown flag exit code=%d", code)
 	}
-	if code := runClean(context.Background(), []string{"--help"}); code != 0 {
-		t.Fatalf("help exit code=%d", code)
+	help := captureStdout(t, func() {
+		if code := runClean(context.Background(), []string{"--help"}); code != 0 {
+			t.Fatalf("help exit code=%d", code)
+		}
+	})
+	if !strings.Contains(help, "Usage: wx clear") {
+		t.Fatalf("help=%q", help)
 	}
 }
