@@ -83,6 +83,24 @@ func run(ctx context.Context, args []string) int {
 		topUsage(os.Stderr)
 		return 2
 	}
+	if agentName == "" {
+		if len(f.branches) > 0 || f.fresh {
+			fmt.Fprintln(os.Stderr, "error: --branch and --fresh require an agent")
+			topUsage(os.Stderr)
+			return 2
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		client, err := cli.New(cfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		return client.SelectWorktreePolicy(ctx)
+	}
 	if agentName != "claude" && agentName != "codex" {
 		fmt.Fprintf(os.Stderr, "error: unknown command or agent %q\n", agentName)
 		topUsage(os.Stderr)

@@ -22,6 +22,20 @@ type WorktreeOptions struct {
 	Select  bool
 }
 
+// SelectWorktreePolicy は agent を起動せず、現在の workspace の policy を選択して保存する。
+func (c Client) SelectWorktreePolicy(ctx context.Context) int {
+	if _, err := c.selectWorktreeMode(ctx, WorktreeOptions{Select: true}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	// 起動している daemon があれば、次の agent 起動を待たずに保存済み設定を反映する。
+	if err := c.RPC.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil && !rpc.IsConnectError(err) {
+		fmt.Fprintln(os.Stderr, "error: reload worktree policy:", err)
+		return 1
+	}
+	return 0
+}
+
 // RunAgentWithPolicy は daemon の起動前に許可を解決し、対象外なら現在のディレクトリで通常起動する。
 func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, branches []string, fresh bool, options WorktreeOptions) int {
 	if err := validateFreshResume(fresh, isNativeResume(agent, args), ""); err != nil {
