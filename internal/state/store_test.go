@@ -2595,3 +2595,66 @@ func seedWorkspaceRows(t *testing.T, store *Store, workspaceID, root, kind, repo
 		t.Fatal(err)
 	}
 }
+
+func TestQuarantineArtifactReportsFirstDetectionAndKeepsDetectedAt(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	inserted, err := store.QuarantineArtifact(ctx, "unknown_refs", "repo:refs/wx/recovery/a", "first")
+	if err != nil || !inserted {
+		t.Fatalf("first record inserted=%v err=%v", inserted, err)
+	}
+	var firstDetectedAt string
+	if err := store.db.QueryRowContext(ctx, `SELECT detected_at FROM quarantined_artifacts WHERE path=?`, "repo:refs/wx/recovery/a").Scan(&firstDetectedAt); err != nil {
+		t.Fatal(err)
+	}
+	// 再検出は新規と区別され、detected_at は初回検出時刻のまま残る。これが毎周の警告を抑える前提である。
+	inserted, err = store.QuarantineArtifact(ctx, "unknown_refs", "repo:refs/wx/recovery/a", "second")
+	if err != nil || inserted {
+		t.Fatalf("repeat record inserted=%v err=%v", inserted, err)
+	}
+	var detectedAt, reason string
+	if err := store.db.QueryRowContext(ctx, `SELECT detected_at,reason FROM quarantined_artifacts WHERE path=?`, "repo:refs/wx/recovery/a").Scan(&detectedAt, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if detectedAt != firstDetectedAt || reason != "second" {
+		t.Fatalf("detected_at=%q want %q, reason=%q", detectedAt, firstDetectedAt, reason)
+	}
+}
+
+func TestPruneQuarantinedArtifactsOnlyTouchesRedetectedKinds(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	for _, record := range []struct{ kind, path string }{
+		{"unknown_refs", "repo:refs/wx/recovery/gone"},
+		{"unknown_refs", "repo:refs/wx/recovery/present"},
+		{"standby_slot", "/root/standby"},
+	} {
+		if _, err := store.QuarantineArtifact(ctx, record.kind, record.path, "reason"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	present := map[string]bool{"repo:refs/wx/recovery/present": true}
+	if err := store.PruneQuarantinedArtifacts(ctx, []string{"unknown_refs", "mismatched_refs"}, present); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := store.StatusDiagnostics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, item := range diagnostics.Quarantine {
+		kinds[item.Path] = item.Kind
+	}
+	if len(kinds) != 2 || kinds["repo:refs/wx/recovery/present"] != "unknown_refs" || kinds["/root/standby"] != "standby_slot" {
+		t.Fatalf("quarantine after prune=%v", kinds)
+	}
+	if err := store.ForgetQuarantinedArtifact(ctx, "repo:refs/wx/recovery/present"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ForgetQuarantinedArtifact(ctx, "repo:refs/wx/recovery/present"); err != nil {
+		t.Fatalf("forgetting an absent record failed: %v", err)
+	}
+	if err := store.PruneQuarantinedArtifacts(ctx, nil, nil); err != nil {
+		t.Fatalf("prune without kinds failed: %v", err)
+	}
+}

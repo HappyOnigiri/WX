@@ -826,9 +826,10 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	}
 }
 
-// 2つのgoroutineが同じREADY slotを選ぶ窓を狭めるため、直列で実行する。
-// 負けた側のREADY所有権検査はErrOwnershipになり、ResolveAndLeaseは再試行せず失敗する。
+// ReadySlotは最古のREADYを決定的に返すため、2つのgoroutineは同じslotを選び得る。
+// 負けた側はstate不一致として次のREADYへ回り、二重leaseもcold fallbackも起こさない。
 func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")

@@ -22,6 +22,8 @@ func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
 		{name: "status unavailable", args: []string{"status"}, want: 1},
 		{name: "gc extra argument", args: []string{"gc", "extra"}, want: 2},
 		{name: "gc unavailable", args: []string{"gc"}, want: 1},
+		{name: "prune extra argument", args: []string{"prune", "extra"}, want: 2},
+		{name: "prune unavailable", args: []string{"prune"}, want: 1},
 		{name: "clear extra argument", args: []string{"clear", "extra"}, want: 2},
 		{name: "clear unavailable", args: []string{"clear"}, want: 1},
 		{name: "renamed clean command", args: []string{"clean"}, want: 2},

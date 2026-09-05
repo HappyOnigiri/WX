@@ -387,7 +387,8 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	_, err = store.SlotArtifacts(ctx)
 	requireError("SlotArtifacts", err)
 	requireError("QuarantineMissingSlot", store.QuarantineMissingSlot(ctx, slot.ID, "reason"))
-	requireError("QuarantineArtifact", store.QuarantineArtifact(ctx, "slot", slot.Path, "reason"))
+	_, quarantineArtifactErr := store.QuarantineArtifact(ctx, "slot", slot.Path, "reason")
+	requireError("QuarantineArtifact", quarantineArtifactErr)
 	requireError("QuarantineMissingRecoveryRef", store.QuarantineMissingRecoveryRef(ctx, "refs/wx/missing"))
 	_, err = store.Repositories(ctx)
 	requireError("Repositories", err)
@@ -1119,7 +1120,7 @@ func TestStatusDiagnosticsAndGarbageCollectionCandidatesExposeRows(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.QuarantineArtifact(ctx, "test", filepath.Join(root, "artifact"), "TEST"); err != nil {
+	if _, err := store.QuarantineArtifact(ctx, "test", filepath.Join(root, "artifact"), "TEST"); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveSnapshot(ctx, Snapshot{ID: "snapshot-row", SessionID: session.ID, RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "tree", WorktreeRef: "refs/wx/recovery/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}); err != nil {
@@ -1228,7 +1229,7 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 		"release":                 func() error { _, _, err := store.Release(ctx, "canceled", "", "canceled"); return err },
 		"slot artifacts":          func() error { _, err := store.SlotArtifacts(ctx); return err },
 		"quarantine slot":         func() error { return store.QuarantineMissingSlot(ctx, "canceled", "CANCELED") },
-		"quarantine artifact":     func() error { return store.QuarantineArtifact(ctx, "test", "/canceled", "CANCELED") },
+		"quarantine artifact":     func() error { _, err := store.QuarantineArtifact(ctx, "test", "/canceled", "CANCELED"); return err },
 		"quarantine recovery ref": func() error { return store.QuarantineMissingRecoveryRef(ctx, "refs/wx/canceled") },
 		"repositories":            func() error { _, err := store.Repositories(ctx); return err },
 		"cold candidates":         func() error { _, err := store.ColdRepositoryCandidates(ctx, now()); return err },

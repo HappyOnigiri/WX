@@ -38,8 +38,8 @@ var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree l
 
 // JSONSchemaVersion は `wx status --json` と `wx doctor --json` の出力形状の互換契約であり、SQLite migration 数の SchemaVersion とは独立である。
 // scripted consumer が観測する形状を変える場合だけ上げる。2 は restart_pending、3 は stop_pending/pid、4 は daemon-unavailable diagnostics を追加した。
-// 5 は `wx status --json` の worktree_root_error と `wx doctor --json` の worktree_root check、6 は workspace_details の last_used_at を追加した。
-const JSONSchemaVersion = 6
+// 5 は worktree_root_error と worktree_root check、6 は workspace_details の last_used_at、7 は quarantine の kind と artifact_ownership.mismatched_refs を追加した。
+const JSONSchemaVersion = 7
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -2055,6 +2055,7 @@ type (
 	QuarantineDiagnostic struct {
 		ID          string `json:"id"`
 		Path        string `json:"path"`
+		Kind        string `json:"kind,omitempty"`
 		FailureCode string `json:"failure_code,omitempty"`
 	}
 	StatusDiagnostics struct {
@@ -2242,14 +2243,14 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*),COALESCE(MIN(expires_at),'') FROM snapshots WHERE status='ARCHIVED'`).Scan(&out.Snapshots.Count, &out.Snapshots.EarliestExpiry); err != nil {
 		return out, err
 	}
-	quarantineRows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path||'/'||sl.rel_path,COALESCE(sl.failure_code,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id WHERE sl.state='QUARANTINED' UNION ALL SELECT '',path,reason FROM quarantined_artifacts ORDER BY 2`)
+	quarantineRows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path||'/'||sl.rel_path,'slot',COALESCE(sl.failure_code,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id WHERE sl.state='QUARANTINED' UNION ALL SELECT '',path,kind,reason FROM quarantined_artifacts ORDER BY 2`)
 	if err != nil {
 		return out, err
 	}
 	defer quarantineRows.Close()
 	for quarantineRows.Next() {
 		var item QuarantineDiagnostic
-		if err := quarantineRows.Scan(&item.ID, &item.Path, &item.FailureCode); err != nil {
+		if err := quarantineRows.Scan(&item.ID, &item.Path, &item.Kind, &item.FailureCode); err != nil {
 			return out, err
 		}
 		out.Quarantine = append(out.Quarantine, item)
@@ -2454,10 +2455,69 @@ func (s *Store) QuarantineMissingSlot(ctx context.Context, id, reason string) er
 	return s.SetSlotState(ctx, id, []string{"PREPARING", "READY", "LEASED", "DRAINING", "SNAPSHOTTING", "SNAPSHOTTED", "UNBOUND", "RESTORING", "RETIRING", "REMOVING", "FAILED", "STALE"}, "QUARANTINED", reason)
 }
 
-func (s *Store) QuarantineArtifact(ctx context.Context, kind, path, reason string) error {
+// QuarantineArtifact は隔離記録を追加または更新し、今回はじめて記録したときだけ inserted=true を返す。
+// detected_at は初回検出時刻を保つ（更新しない）ので、呼び出し側は毎周の再検出を新規と区別して警告を抑制できる。
+func (s *Store) QuarantineArtifact(ctx context.Context, kind, path, reason string) (bool, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO quarantined_artifacts(path,kind,reason,detected_at) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET kind=excluded.kind,reason=excluded.reason,detected_at=excluded.detected_at`, path, kind, reason, now())
+	at := now()
+	var detectedAt string
+	err := s.db.QueryRowContext(ctx, `INSERT INTO quarantined_artifacts(path,kind,reason,detected_at) VALUES(?,?,?,?) ON CONFLICT(path) DO UPDATE SET kind=excluded.kind,reason=excluded.reason RETURNING detected_at`, path, kind, reason, at).Scan(&detectedAt)
+	if err != nil {
+		return false, err
+	}
+	return detectedAt == at, nil
+}
+
+// PruneQuarantinedArtifacts は kinds の記録のうち present に無い path を消す。
+// 再検出され続けるカテゴリだけを渡すこと。reconcile が再検出しない kind を含めると、消えてはいけない記録まで消える。
+func (s *Store) PruneQuarantinedArtifacts(ctx context.Context, kinds []string, present map[string]bool) error {
+	if len(kinds) == 0 {
+		return nil
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	query := `SELECT path FROM quarantined_artifacts WHERE kind IN (` + placeholders(len(kinds)) + `)`
+	args := make([]any, 0, len(kinds))
+	for _, kind := range kinds {
+		args = append(args, kind)
+	}
+	stale, err := s.stalePaths(ctx, query, args, present)
+	if err != nil {
+		return err
+	}
+	for _, path := range stale {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM quarantined_artifacts WHERE path=?`, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) stalePaths(ctx context.Context, query string, args []any, present map[string]bool) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var stale []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		if !present[path] {
+			stale = append(stale, path)
+		}
+	}
+	return stale, rows.Err()
+}
+
+// ForgetQuarantinedArtifact は解消済みの隔離記録を消す。存在しない path は成功として扱う。
+func (s *Store) ForgetQuarantinedArtifact(ctx context.Context, path string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM quarantined_artifacts WHERE path=?`, path)
 	return err
 }
 
