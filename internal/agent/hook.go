@@ -44,20 +44,8 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 			}
 		}
 	}
-	// Hook failures block the agent operation that triggered them
-	// (user-prompt-submit and pre-tool-use turn into exit 1, which Claude Code
-	// reports as a blocked tool), so hooks ride out the gap where a daemon that
-	// is restarting itself after a binary replacement is not listening yet.
-	//
-	// Measured floor for that gap: 22ms, from SIGTERM to the first Status that
-	// answered, averaged over three cycles of stopping and restarting a daemon
-	// on an empty state database with no worktree roots. That covers the old
-	// process's Manager.Close and the new one's state.Open plus Manager.New; it
-	// does not cover launchd's own respawn delay, nor the migrations, recovered
-	// jobs and worktree-root descriptors a populated installation adds to
-	// startup. The 2s budget is sized for that unmeasured headroom, and stays
-	// under the session-end release timeout below so that hook keeps its own
-	// deadline.
+	// hook の失敗は agent 操作を止めるため、binary 置換後の再起動中も接続を再試行する。
+	// 空の DB では最短 22ms だが、launchd の遅延、migration、復旧 job、root descriptor を考慮して予算は 2 秒とする。
 	client := rpc.Client{Socket: socket, Timeout: 3 * time.Second, ConnectRetry: 2 * time.Second}
 	switch event {
 	case "session-start":

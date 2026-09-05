@@ -100,10 +100,6 @@ func TestServeStartsRPCAndStopsWithContext(t *testing.T) {
 	}
 	client := rpc.Client{Socket: socket, Timeout: time.Second}
 	var status map[string]any
-	// The socket file already exists between bind(2) and listen(2), and a dial
-	// landing in that window is refused. Waiting for the file alone therefore
-	// races the daemon on a loaded machine, so wait for an answered call
-	// instead and let any failure past the connect stage fail the test at once.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		select {

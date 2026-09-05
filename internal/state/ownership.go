@@ -13,25 +13,17 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
-// ErrOwnership identifies an ownership proof failure. Callers must treat this
-// as a fail-closed result: the filesystem artifact is left in place so that
-// reconciliation can quarantine it rather than guessing which owner it has.
+// ErrOwnership は所有権証明の失敗を示す。呼び出し元は filesystem artifact を残し、owner を推測せず reconciliation で quarantine するフェイルクローズ結果として扱う。
 var ErrOwnership = errors.New("wx ownership validation failed")
 
-// OwnershipValidator is the small state contract required by workspace and
-// archive operations. Store implements it using a read-only transaction. The
-// transaction deliberately does not acquire Store.writer: daemon code holds
-// the Git common-directory lock while calling this method, whereas state
-// writers never acquire that lock, so the lock order cannot be reversed.
+// OwnershipValidator は workspace/archive 操作に必要な小さな state contract である。Store は read-only transaction で実装する。
+// transaction は意図的に Store.writer を取らない。この呼出し中に daemon は Git common-directory lock を持つ一方、state writer はそれを取らないため lock order を逆転させない。
 type OwnershipValidator interface {
 	ValidateWorktreeOwnership(context.Context, WorktreeOwnershipRequest) (WorktreeOwnership, error)
 }
 
-// WorktreeOwnershipRequest locates a repository worktree the way SQLite
-// records it: a root generation, the slot's root-relative path, the
-// repository's directory name inside that slot, and the inode identity the
-// caller is holding. No absolute pathname crosses this boundary, so a
-// pathname replacement cannot make two different directories compare equal.
+// WorktreeOwnershipRequest は SQLite と同じく root generation、slot の root 相対 path、repository directory 名、呼び出し元が保持する inode identity で worktree を位置付ける。
+// この境界を absolute pathname は越えないため、pathname の置換では別 directory を同一と比較できない。
 type WorktreeOwnershipRequest struct {
 	SlotID       string
 	WorkspaceID  string
@@ -39,21 +31,15 @@ type WorktreeOwnershipRequest struct {
 	RootID       string
 	SlotRelPath  string
 	DirName      string
-	// DirIdentity is the dev:ino identity of the directory the caller has
-	// open. When it is set, the recorded identity must exist and match; an
-	// empty record is a failure, never a pass. It is empty only before the
-	// worktree exists (the pre-creation checks inside prepare), which is the
-	// one case where no identity can be presented at all.
+	// DirIdentity は呼び出し元が開いた directory の dev:ino identity である。指定時は記録値が存在し一致しなければならず、空 record は失敗とする。
+	// 空にできるのは worktree 作成前の prepare 検査だけで、その時だけは identity を提示できない。
 	DirIdentity             string
 	CommonDir               string
 	AllowedSlotStates       []string
 	AllowedRepositoryStates []string
 }
 
-// WorktreeOwnership is the durable identity proved by a successful
-// ValidateWorktreeOwnership call. It reports the location as recorded rather
-// than as a composed absolute path, so diagnostics show which root
-// generation answered.
+// WorktreeOwnership は ValidateWorktreeOwnership が証明した durable identity である。組み立てた absolute path ではなく記録済み location を返し、diagnostics が応答した root generation を示せる。
 type WorktreeOwnership struct {
 	SlotID           string
 	WorkspaceID      string
@@ -69,16 +55,12 @@ type WorktreeOwnership struct {
 	RelativePath     string
 	SlotState        string
 	RepositoryState  string
-	// DirIdentity is the identity SQLite has recorded for the worktree
-	// directory, empty until preparation or restore completes and records
-	// one. It is returned so a caller that cannot require an identity yet -
-	// the re-run of an interrupted preparation, which legitimately finds no
-	// record - can still refuse a directory whose recorded identity differs.
+	// DirIdentity は SQLite が worktree directory に記録した identity で、prepare/restore 完了までは空である。中断した prepare の再実行のように identity を要求できない呼び出し元も、
+	// 返却値を使って記録 identity の異なる directory を拒否できる。
 	DirIdentity string
 }
 
-// SlotOwnershipRequest locates a slot directory for the operations that have
-// no repository worktree to prove through ValidateWorktreeOwnership.
+// SlotOwnershipRequest は ValidateWorktreeOwnership で証明できる repository worktree を持たない操作のために slot directory を位置付ける。
 type SlotOwnershipRequest struct {
 	SlotID            string
 	WorkspaceID       string
@@ -90,9 +72,7 @@ type SlotOwnershipRequest struct {
 
 var _ OwnershipValidator = (*Store)(nil)
 
-// validateOwnershipRelative rejects anything that cannot be a root-relative
-// location: an empty value, an absolute path, an unclean spelling, "." (which
-// would name the root or slot directory itself), or any escape through "..".
+// validateOwnershipRelative は root 相対 location にならない値を拒否する。空、absolute path、unclean な綴り、root/slot directory 自身を指す `.`, `..` による escape が対象である。
 func validateOwnershipRelative(kind, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s is empty", kind)
@@ -103,11 +83,8 @@ func validateOwnershipRelative(kind, value string) error {
 	return nil
 }
 
-// validateOwnershipComponent additionally requires exactly one path
-// component. A repository's directory name must be a direct child of its
-// slot: filepath.IsLocal accepts "a/b", so without this a recorded dir_name
-// could place a worktree at an arbitrary depth below the slot and the
-// UNIQUE(slot_id, dir_name) constraint would not notice.
+// validateOwnershipComponent はさらに一つだけの path component を要求する。repository directory 名は slot の直接の子でなければならない。
+// filepath.IsLocal は `a/b` を受け入れるため、これがないと記録済み dir_name が任意の深さに worktree を置けて UNIQUE(slot_id, dir_name) でも検出できない。
 func validateOwnershipComponent(kind, value string) error {
 	if err := validateOwnershipRelative(kind, value); err != nil {
 		return err
@@ -118,13 +95,8 @@ func validateOwnershipComponent(kind, value string) error {
 	return nil
 }
 
-// ValidateWorktreeOwnership proves that the caller's worktree is the exact
-// directory recorded for the requested slot/repository pair: the same root
-// generation, the same root-relative slot path, the same directory name, and
-// the same inode. It also proves that the repository belongs to the slot's
-// workspace, that its common Git directory is the one recorded for that
-// repository, and that both durable state machines are in caller-approved
-// states.
+// ValidateWorktreeOwnership は、呼び出し元の worktree が指定 slot/repository pair の記録済み directory と完全に同一であることを証明する。
+// root generation、root 相対 slot path、directory 名、inode、workspace 所属、common Git directory、両 durable state machine の許可状態を検査する。
 func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwnershipRequest) (WorktreeOwnership, error) {
 	if s == nil || s.db == nil {
 		return WorktreeOwnership{}, ownershipFailure("state store is unavailable")
@@ -201,10 +173,7 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 	if out.DirName != req.DirName {
 		return WorktreeOwnership{}, ownershipFailure("requested repository directory does not match the SQLite slot")
 	}
-	// Fail closed on identity: a caller holding a descriptor must find a
-	// recorded identity, and it must be the same inode. Treating a missing
-	// record as a match would reinstate exactly the pathname-only proof this
-	// check replaced.
+	// identity はフェイルクローズする。descriptor を持つ呼び出し元は記録 identity を見つけ、同じ inode でなければならない。record 欠落を一致扱いすると、この検査が置換した pathname-only proof を復活させる。
 	if req.DirIdentity != "" {
 		if storedDirIdentity == "" {
 			return WorktreeOwnership{}, ownershipFailure("SQLite has no recorded worktree directory identity")
@@ -249,10 +218,7 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 	return out, nil
 }
 
-// ValidateSlotOwnership is used before deleting or recreating a slot
-// directory. It covers slots that have no repository worktree (and therefore
-// cannot be proven through ValidateWorktreeOwnership) while retaining the
-// same fail-closed location and state checks.
+// ValidateSlotOwnership は slot directory の削除または再作成前に使う。repository worktree がなく ValidateWorktreeOwnership で証明できない slot も、同じフェイルクローズの location/state 検査で扱う。
 func (s *Store) ValidateSlotOwnership(ctx context.Context, req SlotOwnershipRequest) error {
 	if s == nil || s.db == nil {
 		return ownershipFailure("state store is unavailable")
@@ -327,10 +293,7 @@ func validateWorkspaceRepositoryAssociation(workspaceRoot, mainPath, relative st
 	return nil
 }
 
-// canonicalOwnershipPath resolves every existing component and appends a
-// missing suffix lexically. Prepare and interrupted removal both legitimately
-// validate a missing worktree leaf, but no existing symlink component is ever
-// accepted.
+// canonicalOwnershipPath は既存 component を全て解決し、欠落 suffix を lexical に追加する。prepare と中断した removal は欠落 worktree leaf を正当に検証するが、既存 symlink component は一切受け入れない。
 func canonicalOwnershipPath(raw string) (string, error) {
 	if raw == "" {
 		return "", errors.New("path is empty")

@@ -10,27 +10,16 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 )
 
-// maxRepositoryDirNameLength bounds the directory name so a deep slot path
-// stays comfortably inside the platform's per-component limit even for a
-// repository whose remote name is pathological.
+// maxRepositoryDirNameLength は directory 名を制限し、remote 名が異常に長い repository でも深い slot path を platform の component 長制限内に収める。
 const maxRepositoryDirNameLength = 64
 
-// reservedDirNamePrefix is the prefix wx keeps for its own top-level entries
-// (_unbound, _recovery). Repository directories live one level deeper, but
-// the same prefix is refused for them so the reservation reads as one rule
-// and the orphan scan never has to special-case a repository name.
+// reservedDirNamePrefix は wx が top-level entry（_unbound、_recovery）に予約する prefix である。
+// repository directory は一階層下だが同じ prefix を拒否し、orphan scan が repository 名を特別扱いしないようにする。
 const reservedDirNamePrefix = "_"
 
-// RepositoryDirName resolves the directory name a repository takes inside a
-// slot. Resolution order is: the repository's pinned dir_name, the
-// repository's dir_source, storage.repo_dir_source, and finally the main
-// worktree's own directory name.
-//
-// Every step falls back rather than failing: the name only affects where wx
-// puts a checkout, never whether it can prove ownership of one. The value
-// actually used is recorded in slot_repositories.dir_name and is the
-// authority from then on, so a later configuration or remote-URL change
-// moves new slots without disturbing existing ones.
+// RepositoryDirName は slot 内の repository directory 名を、pin 済み dir_name、repository の dir_source、storage.repo_dir_source、main worktree 名の順で解決する。
+// 名前は checkout の場所だけに影響し、所有権証明には影響しない。使用値は slot_repositories.dir_name に記録して以後の authority とし、設定/remote URL の変更は新規 slot だけに反映する。
+// commentlint:allow-long -- directory 名の解決順序と既存 slot の不変条件を説明する
 func RepositoryDirName(repo discovery.Repository, cfg config.Config) string {
 	override := cfg.Repositories[string(repo.MainPath)]
 	if name, ok := sanitizeDirName(override.DirName); ok {
@@ -48,23 +37,13 @@ func RepositoryDirName(repo discovery.Repository, cfg config.Config) string {
 	if name, ok := sanitizeDirName(filepath.Base(string(repo.MainPath))); ok {
 		return name
 	}
-	// filepath.Base never returns an empty string and the repository ID is
-	// hex, so this is only reached for a main path whose last component is
-	// "/" or ".."; the repository ID is always a usable component.
+	// filepath.Base は空を返さず、repository ID は hex である。この経路は main path の末尾 component が `/` または `..` の場合だけで、repository ID は常に使える component である。
 	return string(repo.ID)
 }
 
-// sanitizeDirName rejects anything that cannot safely be one path component:
-// an empty value, a path separator, a control character, "." or "..", the
-// reserved "_" prefix, and the ownership marker prefix. Accepted names are
-// truncated to maxRepositoryDirNameLength.
-//
-// The marker prefix has to be refused because the marker and the repository
-// directory share one namespace: the marker is written into the slot
-// directory, immediately beside the repository directories. A repository
-// named ".wx-owner-<repository-id>" would want the same path as a marker, so
-// preparation would fail outright, and in a bundle it could collide with
-// another repository's marker instead of its own.
+// sanitizeDirName は空、separator、control character、`.`、`..`、予約 `_` prefix、ownership marker prefix を拒否し、一 component として安全な名前だけを受け入れる。
+// 受理した名前は maxRepositoryDirNameLength に切り詰める。marker と repository directory は slot directory の同じ namespace を使うため、marker prefix は衝突を防ぐために拒否する。
+// commentlint:allow-long -- marker と repository directory の namespace 衝突を防ぐため
 func sanitizeDirName(value string) (string, bool) {
 	if value == "" || value == "." || value == ".." {
 		return "", false
@@ -87,10 +66,7 @@ func sanitizeDirName(value string) (string, bool) {
 	return value, true
 }
 
-// truncateDirName cuts value to the byte budget on a rune boundary. Cutting
-// mid-rune would leave an invalid UTF-8 byte sequence in
-// slot_repositories.dir_name and in the directory name on disk, which the
-// checks after truncation do not inspect.
+// truncateDirName は rune boundary で byte budget まで value を切る。rune の途中で切ると slot_repositories.dir_name と disk 上の directory 名に無効な UTF-8 を残し、後続検査では検出できない。
 func truncateDirName(value string) string {
 	if len(value) <= maxRepositoryDirNameLength {
 		return value
@@ -105,11 +81,8 @@ func truncateDirName(value string) string {
 	return value[:cut]
 }
 
-// UniqueDirName returns name, or name with a numeric suffix, so that no two
-// repositories in one slot claim the same directory. Comparison is
-// case-insensitive because APFS is case-insensitive by default: two names
-// that differ only in case would be one directory on disk while remaining
-// two distinct rows under UNIQUE(slot_id, dir_name).
+// UniqueDirName は一 slot 内の repository が同じ directory を要求しないよう、必要なら数値 suffix 付きの name を返す。
+// APFS は既定で case-insensitive のため、大文字小文字だけが違う二名は disk 上で一 directory になるが UNIQUE(slot_id, dir_name) では別 row になる。
 func UniqueDirName(name string, taken map[string]bool) string {
 	key := strings.ToLower(name)
 	if !taken[key] {

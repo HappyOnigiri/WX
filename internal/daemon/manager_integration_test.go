@@ -23,23 +23,11 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-// JSON is a test-only encoding helper for driving Handler.Handle with
-// literal request bodies; production code never needs to marshal its own
-// RPC arguments.
 func JSON(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 
-// descriptorBoundPreparerForTest builds a Preparer the way production's only
-// constructor (Manager.newPreparer) does: pinned to a descriptor for the
-// configured worktree root. Every git invocation now goes through that
-// descriptor, so a Preparer without one fails closed.
-// descriptorBoundPreparerForTest mirrors Manager.newPreparer, including the
-// slot location: ownership validation compares the recorded root generation
-// and root-relative slot path, so a Preparer without them fails closed.
 func descriptorBoundPreparerForTest(t *testing.T, runner *gitx.Runner, cfg config.Config, store *state.Store, slot state.Slot) workspace.Preparer {
 	t.Helper()
 	root := cfg.Storage.WorktreeRoot
-	// Serve prepares the worktree root before opening its descriptor, so the
-	// directory always exists by the time production builds a Preparer.
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -104,9 +92,6 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken("token")}
-	// Allocation creates the slot directory before it inserts the row, so the
-	// recorded dir_identity is that directory's. Staging it in the same order
-	// keeps the fixture's evidence the same as a real slot's.
 	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -199,9 +184,6 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	// ensureStandby only checks out repositories used within hot_standby;
-	// simulate a prior lease so this repository is eligible for the hot
-	// checkout the rest of the test exercises aging out of.
 	raw := openManagerCoverageDB(t, filepath.Join(root, "state.db"))
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
@@ -250,9 +232,6 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 	if err != nil || repositoryErr != nil || slot.State != "READY" || repository.State != "COLD" {
 		t.Fatalf("cold state slot=%+v repository=%+v err=%v repositoryErr=%v", slot, repository, err, repositoryErr)
 	}
-	// The worktree lives one level below the slot directory, so retiring it
-	// leaves the slot directory in place with only the ownership marker: the
-	// evidence a later removal needs to prove the slot is wx's.
 	if _, err := os.Lstat(filepath.Join(ready.Path, repository.DirName)); !os.IsNotExist(err) {
 		t.Fatalf("retired repository worktree still exists: %v", err)
 	}
@@ -267,10 +246,6 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 		}
 		t.Fatalf("retired slot directory contents=%v, want only the ownership marker", names)
 	}
-	// Leasing the COLD slot must still hand out the repository directory, not
-	// the slot directory: the client opens the lease path as its CWD before
-	// the restore job runs, so the lease has to recreate the directory the
-	// cold removal took away.
 	lease, err := m.ResolveAndLease(ctx, repoPath, nil, "claude", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -287,12 +262,6 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 	}
 }
 
-// TestWarmSlotLeaseHandsOutTheRepositoryDirectory covers the READY-reuse
-// branch of ResolveAndLease. A cold allocation derives the lease path from
-// the slot's repository rows, and the warm branch has to agree: with
-// warm_per_workspace at its default the warm branch is the common one, and
-// handing out the slot directory there would give the agent a CWD that is
-// not a Git worktree and would put the slot's ownership marker in its view.
 func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -316,9 +285,6 @@ func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	// ensureStandby only checks out repositories used within hot_standby, so
-	// simulate a prior lease: this test needs a materialized (hot) warm slot,
-	// not the COLD standby an unleased repository would produce.
 	raw := openManagerCoverageDB(t, filepath.Join(root, "state.db"))
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
@@ -362,8 +328,6 @@ func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
 	if lease.Path != want {
 		t.Fatalf("warm lease path=%q, want the repository directory %q", lease.Path, want)
 	}
-	// The leased directory has to be the Git worktree itself, and the slot's
-	// ownership marker has to stay in the parent, out of the agent's view.
 	if _, err := os.Lstat(filepath.Join(lease.Path, ".git")); err != nil {
 		t.Fatalf("warm lease path is not a Git worktree: %v", err)
 	}
@@ -376,13 +340,6 @@ func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
 	}
 }
 
-// TestEnsureStandbyOnlyChecksOutRecentlyUsedRepositories exercises the
-// hot_standby filter added to ensureStandby: a multi-repository standby
-// bundle must not `git worktree add` a repository that has never been
-// leased (or fell outside retention.hot_standby), since GC would retire an
-// unleased hot checkout on the very next pass. Such repositories are
-// registered COLD instead and left unmaterialized until an actual lease
-// pulls them in through the existing cold-materialize path.
 func TestEnsureStandbyOnlyChecksOutRecentlyUsedRepositories(t *testing.T) {
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -500,11 +457,6 @@ func TestFreshNativeResumeWithoutPriorMappingUsesSourceWorkspace(t *testing.T) {
 	}
 }
 
-// The readiness budgets in this test are 30s rather than the 10s used
-// elsewhere. It is the only test that drives a lease, a snapshot and two
-// restores in one run, and restore now records the worktree directory
-// identity as an extra descriptor round trip per repository, which made 10s
-// marginal under full-suite load rather than wrong.
 func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -603,8 +555,6 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 		details, detailsErr := store.StatusDiagnostics(ctx)
 		t.Fatalf("wait for native resume: %v; diagnostics=%+v diagnostics_error=%v", err, details, detailsErr)
 	}
-	// An _unbound lease is the slot directory, so the restored worktree is
-	// one level below it once the workspace is bound.
 	nativeWorktree := boundWorktreePath(t, store, native.SessionID)
 	if status := gitOutput(t, nativeWorktree, "status", "--porcelain"); !strings.Contains(status, "MM tracked.txt") || !strings.Contains(status, "?? untracked.txt") {
 		t.Fatalf("native restored status:\n%s", status)
@@ -698,8 +648,6 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Pool.WarmPerWorkspace = 0
 	cfg.Retention.EndedWorktree.Duration = 0
-	// Keep the snapshot unambiguously expired; this test verifies that slot
-	// archival, rather than a near-now clock boundary, gates ref deletion.
 	cfg.Retention.RecoverySnapshot.Duration = -time.Hour
 	cfg.Discovery.ReconcileInterval.Duration = time.Hour
 	store, err := state.Open(filepath.Join(root, "state.db"))
@@ -791,9 +739,6 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	slotRoot := filepath.Join(cfg.Storage.WorktreeRoot, slotRelative)
 	repos := []state.SlotRepository{{RepositoryID: string(w.Repositories[0].ID), DirName: testDirName(w.Repositories[0], cfg), State: "PREPARING", RequestedRef: resolved[0].RequestedRef, BaseOID: resolved[0].OID, Fingerprint: "test"}}
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken("token")}
-	// Allocation creates the slot directory before it inserts the row, so the
-	// recorded dir_identity is that directory's. Staging it in the same order
-	// keeps the fixture's evidence the same as a real slot's.
 	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1124,8 +1069,6 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	}
 	initGitRepo(t, filepath.Join(root, "api"))
 	m.reconcileRegistry(context.Background())
-	// The ID discovery proposes is a fresh random value; the durable identity
-	// of a multi-repository workspace is its root path.
 	updated, err := store.WorkspaceByRoot(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
@@ -1282,14 +1225,6 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// waitReady gives one readiness wait its own budget. Sharing a single
-// context.WithTimeout across several WaitReady calls keeps that deadline
-// counting down through the Git, archive, and restore work performed between
-// them, so a later wait inherits an almost-expired deadline and reports
-// "context deadline exceeded" for a workspace that was still progressing
-// normally. Each wait must still finish inside its own budget, so the
-// assertion is no weaker than a shared deadline; it just stops an earlier
-// phase from spending a later phase's allowance.
 func waitReady(ctx context.Context, m *Manager, budget time.Duration, sessionID, token string) error {
 	waitCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
@@ -1308,13 +1243,6 @@ func waitUntil(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Fatal("condition was not met before timeout")
 }
 
-// TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot
-// proves the co-existence policy that replaced draining. Changing
-// storage.worktree_root leaves every existing slot where it is, under a roots
-// row that is now active=0, and only new allocations go to the new root. Not
-// moving the worktrees is deliberate: Git's worktree metadata is absolute, a
-// cross-filesystem change cannot rename, and an interrupted move would need
-// its own resume rules.
 func TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot(t *testing.T) {
 	requireDaemonIntegration(t)
 	home := t.TempDir()
@@ -1357,8 +1285,6 @@ func TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot(t *
 		t.Fatal(err)
 	}
 
-	// The existing slot is untouched: same root generation, same path, still
-	// leasable state, and the checkout is still on disk.
 	afterReload, err := store.Slot(ctx, existing.SessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -1376,7 +1302,6 @@ func TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot(t *
 		t.Fatalf("existing worktree is no longer usable: %q", status)
 	}
 
-	// A new session goes to the new root, under a new generation.
 	fresh, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
 	if err != nil {
 		t.Fatal(err)
@@ -1403,16 +1328,6 @@ func TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot(t *
 	}
 }
 
-// TestMultiRepositorySiblingLinkedWorktreesAcquireASession covers a workspace
-// root that is not itself a repository and contains one repository's main
-// worktree plus sibling linked worktrees of that same repository. A
-// repository's ID is a digest of its Git common directory, so the walk used
-// to enumerate all of them under one ID and the slot_repositories primary key
-// rejected the duplicates with
-// "UNIQUE constraint failed: slot_repositories.slot_id,
-// slot_repositories.repository_id". discovery.dedupeRepositories now collapses
-// them onto the main-worktree entry, which is also the only one whose
-// workspace-relative path can satisfy ownership validation.
 func TestMultiRepositorySiblingLinkedWorktreesAcquireASession(t *testing.T) {
 	requireDaemonIntegration(t)
 	home := t.TempDir()
@@ -1422,8 +1337,6 @@ func TestMultiRepositorySiblingLinkedWorktreesAcquireASession(t *testing.T) {
 	client := filepath.Join(bundle, "client")
 	initGitRepo(t, server)
 	initGitRepo(t, client)
-	// Four linked worktrees of "server", two as direct siblings and two one
-	// level down, all sharing server's common directory.
 	for _, name := range []string{"server-feature", "server-hotfix"} {
 		gitRun(t, server, "worktree", "add", "--detach", filepath.Join(bundle, name))
 	}
@@ -1462,16 +1375,12 @@ func TestMultiRepositorySiblingLinkedWorktreesAcquireASession(t *testing.T) {
 		}
 		t.Fatalf("slot repositories=%v, want exactly the two distinct repositories", names)
 	}
-	// A multi-repository workspace leases the slot directory, and each
-	// repository is checked out one level below it under its own name.
 	for _, repository := range repos {
 		worktree := filepath.Join(lease.Path, repository.DirName)
 		if info, err := os.Lstat(filepath.Join(worktree, ".git")); err != nil || info.Mode()&os.ModeSymlink != 0 {
 			t.Fatalf("repository %s was not checked out at %s: info=%v err=%v", repository.RepositoryID, worktree, info, err)
 		}
 	}
-	// The surviving membership rows name the main worktrees, which is what
-	// ownership validation proves against workspace_root + relative_path.
 	w, err := store.SessionWorkspace(ctx, lease.SessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -1487,9 +1396,6 @@ func TestMultiRepositorySiblingLinkedWorktreesAcquireASession(t *testing.T) {
 	}
 }
 
-// writeWorktreeRootConfig writes the sparse configuration document a reload
-// reads. config.Save only emits keys the document already carried, so a
-// Config built from Defaults() would save nothing for worktree_root.
 func writeWorktreeRootConfig(t *testing.T, home, root string) {
 	t.Helper()
 	path := filepath.Join(home, ".config", "wx", "config.yaml")

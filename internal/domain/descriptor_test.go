@@ -8,9 +8,8 @@ import (
 	"time"
 )
 
-// descriptorFileInfo lets FileIdentity tests supply an arbitrary Sys() value,
-// including shapes that are not *syscall.Stat_t at all, without depending on
-// a real file.
+// descriptorFileInfo は FileIdentity のテストに任意の Sys() 値を渡す。
+// *syscall.Stat_t 以外の形状も実ファイルなしで検証できる。
 type descriptorFileInfo struct {
 	sys any
 }

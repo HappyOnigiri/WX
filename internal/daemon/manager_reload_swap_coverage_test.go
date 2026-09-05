@@ -10,12 +10,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// TestReloadConfigDetectsSwappedUnchangedWorktreeRoot proves reloadConfig
-// re-validates an *unchanged* configured root, not only a root whose
-// pathname changed: if the directory a cached descriptor already points to
-// was replaced (same pathname, different inode) between reloads, reload
-// must fail closed instead of silently continuing to serve the previous
-// generation under a mismatched identity.
 func TestReloadConfigDetectsSwappedUnchangedWorktreeRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -30,8 +24,6 @@ func TestReloadConfigDetectsSwappedUnchangedWorktreeRoot(t *testing.T) {
 	m := testManager(t, cfg, store)
 	defer m.Close()
 
-	// Populate a cached, referenced descriptor for the configured root so
-	// reload has something to compare the freshly reopened directory against.
 	if _, _, err := m.createSlotRoot(filepath.Join(worktreeRoot, "bootstrap", "root"), filepath.Join(worktreeRoot, "bootstrap", "root")); err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +40,6 @@ func TestReloadConfigDetectsSwappedUnchangedWorktreeRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Swap the directory out from under the cached descriptor: same
-	// pathname, different inode.
 	if err := os.RemoveAll(worktreeRoot); err != nil {
 		t.Fatal(err)
 	}
@@ -65,11 +55,6 @@ func TestReloadConfigDetectsSwappedUnchangedWorktreeRoot(t *testing.T) {
 	}
 }
 
-// TestReloadConfigIsIdempotentForAnUnchangedWorktreeRoot verifies that
-// reloading with the same, unchanged worktree root twice in a row succeeds
-// both times and does not leak a second descriptor for the same root (the
-// redundant freshly opened handle must be closed and discarded in favor of
-// the already-cached one).
 func TestReloadConfigIsIdempotentForAnUnchangedWorktreeRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

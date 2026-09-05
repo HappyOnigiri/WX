@@ -1443,8 +1443,8 @@ func TestReadAndRestoreStateBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	if repositories, err := store.SlotRepositories(ctx, child.SlotID); err != nil || len(repositories) != 0 {
-		// Restore copies membership into the session table, while slot metadata
-		// remains empty until the prepare phase materializes its repositories.
+		// Restore は所属情報を session テーブルへ複製するが、slot のメタデータは
+		// prepare 段階でリポジトリを実体化するまで空のままである。
 		t.Fatalf("child slot repositories=%v err=%v", repositories, err)
 	}
 	if err := store.BindAgentSession(ctx, child.ID, "agent-copy"); err != nil {
@@ -1822,9 +1822,8 @@ func TestReopeningAnExistingDatabaseSkipsAppliedMigrations(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	// Reopening the same database file exercises the schema_migrations
-	// short-circuit: every migration is already recorded as applied, so init
-	// must skip re-executing any of them.
+	// 同じデータベースを再オープンし、全 migration が適用済みなら init が
+	// 再実行を省略する schema_migrations の短絡経路を検証する。
 	second, err := Open(path)
 	if err != nil {
 		t.Fatal(err)

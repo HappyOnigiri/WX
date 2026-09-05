@@ -15,11 +15,8 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-// registerTestRoot registers path as a root generation the way New() does.
-// slots.root_id is a NOT NULL foreign key into roots, so a hand-built Manager
-// cannot insert a slot until its worktree root has a durable row and the
-// in-memory registry knows the ID.
 func registerTestRoot(t *testing.T, m *Manager, path string) string {
+	// 手組みManagerでもslotを登録できるよう、root rowとin-memory IDをproductionと同じ形で用意する。
 	t.Helper()
 	id, err := tryRegisterTestRoot(m, path)
 	if err != nil {
@@ -28,13 +25,8 @@ func registerTestRoot(t *testing.T, m *Manager, path string) string {
 	return id
 }
 
-// tryRegisterTestRoot is the non-fatal form. New() logs and carries on when
-// its configured root is unavailable, so a Manager built for that case must
-// not fail the test during construction.
 func tryRegisterTestRoot(m *Manager, path string) (string, error) {
 	if m.store == nil {
-		// Some tests build a Manager with no store at all, to exercise
-		// descriptor bookkeeping that never reaches SQLite.
 		return "", nil
 	}
 	path = filepath.Clean(path)
@@ -62,10 +54,6 @@ func tryRegisterTestRoot(m *Manager, path string) (string, error) {
 	return id, nil
 }
 
-// testSlot builds a slot row located under the manager's active root the way
-// allocate does, and creates the slot directory. It returns the row so the
-// caller can pass it to CreateStandby/CreateSlotSession and read Path for
-// filesystem setup.
 func testSlot(t *testing.T, m *Manager, workspaceID, slotID string, generation int, slotState string) state.Slot {
 	t.Helper()
 	rootPath, rootID, err := m.activeRoot()
@@ -75,8 +63,6 @@ func testSlot(t *testing.T, m *Manager, workspaceID, slotID string, generation i
 	return testSlotUnder(t, m, rootPath, rootID, workspaceID, slotID, generation, slotState)
 }
 
-// testSlotUnder is testSlot for a specific root generation, used by the tests
-// that keep two roots alive at once.
 func testSlotUnder(t *testing.T, m *Manager, rootPath, rootID, workspaceID, slotID string, generation int, slotState string) state.Slot {
 	t.Helper()
 	slot := testSlotRowUnder(t, rootPath, rootID, workspaceID, slotID, generation, slotState)
@@ -95,9 +81,6 @@ func testSlotUnder(t *testing.T, m *Manager, rootPath, rootID, workspaceID, slot
 	return slot
 }
 
-// testSlotRow builds the slot row without creating its directory, for tests
-// that stage the slot directory themselves (absent, a regular file, or a
-// symlink). DirIdentity is left empty because there is no inode to record.
 func testSlotRow(t *testing.T, m *Manager, workspaceID, slotID string, generation int, slotState string) state.Slot {
 	t.Helper()
 	rootPath, rootID, err := m.activeRoot()
@@ -108,6 +91,7 @@ func testSlotRow(t *testing.T, m *Manager, workspaceID, slotID string, generatio
 }
 
 func testSlotRowUnder(t *testing.T, rootPath, rootID, workspaceID, slotID string, generation int, slotState string) state.Slot {
+	// directoryを作らないfixtureなので、欠損・通常file・symlinkを個別にstageできる。
 	t.Helper()
 	relPath, err := slotRelPath(workspaceID, slotID, workspaceID == "")
 	if err != nil {
@@ -120,9 +104,6 @@ func testSlotRowUnder(t *testing.T, rootPath, rootID, workspaceID, slotID string
 	}
 }
 
-// testSlotID returns a layout-safe slot identifier derived from name. Slot IDs
-// are only required to be one safe path component, so a readable label keeps
-// failures diagnosable where a random short ID would not.
 func testSlotID(name string) string {
 	return strings.Map(func(r rune) rune {
 		switch {
@@ -151,8 +132,6 @@ func TestSlotRelPathGeneratesTheDocumentedLayout(t *testing.T) {
 	if unbound != filepath.Join(unboundNamespace, "slt002") {
 		t.Fatalf("unbound slot rel path=%q", unbound)
 	}
-	// An unbound slot has no workspace yet, so the workspace component is not
-	// consulted at all rather than being validated as empty.
 	if _, err := slotRelPath("", "slt003", false); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("empty workspace id error=%v", err)
 	}
@@ -172,9 +151,6 @@ func TestValidateLayoutComponentReservesTheUnderscorePrefix(t *testing.T) {
 	if err := validateLayoutComponent("repository directory", "WX"); err != nil {
 		t.Fatalf("plain name error=%v", err)
 	}
-	// _unbound and _recovery are wx's own namespaces; the orphan scan reads
-	// every other top-level entry as a workspace ID, so nothing else may take
-	// that prefix.
 	for _, value := range []string{"_unbound", "_recovery", "_anything"} {
 		if err := validateLayoutComponent("workspace id", value); !errors.Is(err, state.ErrOwnership) {
 			t.Errorf("reserved prefix %q error=%v", value, err)
@@ -192,14 +168,9 @@ func TestLeasePathDependsOnWorkspaceKind(t *testing.T) {
 	if got := leasePath(slotPath, "multi_repository", multi); got != slotPath {
 		t.Fatalf("multi-repository lease path=%q", got)
 	}
-	// An _unbound slot has no repositories yet, so it leases the slot
-	// directory and the worktree appears one level below the agent's CWD once
-	// the workspace is bound.
 	if got := leasePath(slotPath, "", nil); got != slotPath {
 		t.Fatalf("unbound lease path=%q", got)
 	}
-	// A repository row without a recorded directory name cannot name a
-	// worktree, so the slot directory is used rather than a path ending in "/".
 	if got := leasePath(slotPath, "repository", []state.SlotRepository{{RepositoryID: "r1"}}); got != slotPath {
 		t.Fatalf("nameless repository lease path=%q", got)
 	}
@@ -209,9 +180,6 @@ func TestWorkspaceRecoveryExclusionsUseSlotDirectoryNames(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Workspaces["/src/bundle"] = config.Workspace{Link: []string{"shared"}}
 	w := discoveryWorkspaceForExclusions()
-	// The source-relative path is deliberately different from the slot
-	// directory name: the bundle root is the slot directory, so an exclusion
-	// naming "group/server" would neither protect nor prune the real worktree.
 	repos := []state.SlotRepository{{RepositoryID: "repo-1", DirName: "server"}}
 	got := workspaceRecoveryExclusions(w, repos, cfg)
 	want := map[string]bool{"server": true, ".wx-owner-repo-1": true, "shared": true}
@@ -226,8 +194,6 @@ func TestWorkspaceRecoveryExclusionsUseSlotDirectoryNames(t *testing.T) {
 	if containsString(got, w.Repositories[0].RelativePath) {
 		t.Fatalf("exclusions=%v still use the source-relative repository path", got)
 	}
-	// A repository with no recorded directory name contributes nothing rather
-	// than an empty exclusion that would match the bundle root itself.
 	if got := workspaceRecoveryExclusions(w, []state.SlotRepository{{RepositoryID: "repo-1"}}, config.Defaults()); len(got) != 0 {
 		t.Fatalf("nameless repository exclusions=%v", got)
 	}
@@ -253,19 +219,12 @@ func discoveryWorkspaceForExclusions() discovery.Workspace {
 	}
 }
 
-// testDirName is the directory name slotRepos would choose for repo inside a
-// slot. A hand-written fingerprint has to agree with it, because Fingerprint
-// hashes the chosen name.
 func testDirName(repo discovery.Repository, cfg config.Config) string {
 	return workspace.RepositoryDirName(repo, cfg)
 }
 
-// slotAtPath describes a slot located at an explicit absolute path inside a
-// registered root. slots.rel_path is plain text, so a test may still place a
-// slot wherever it needs one; this only converts the absolute path into the
-// root generation plus root-relative pair SQLite now records. The directory
-// itself is left to the caller.
 func slotAtPath(t *testing.T, m *Manager, workspaceID, slotID, slotPath string, generation int, slotState string) state.Slot {
+	// 明示pathをSQLiteが持つroot IDとroot相対pathへ変換し、実directoryの準備は呼び出し側に任せる。
 	t.Helper()
 	rootPath, rootID, err := m.rootIDForPath(slotPath)
 	if err != nil {
@@ -282,10 +241,6 @@ func slotAtPath(t *testing.T, m *Manager, workspaceID, slotID, slotPath string, 
 	}
 }
 
-// recordTestWorktreeIdentity records a repository worktree's inode the way
-// preparation does when the repository becomes READY. Production rows in
-// READY or RETIRING always carry one, and the removal proofs present it, so a
-// hand-built row has to carry it too.
 func recordTestWorktreeIdentity(t *testing.T, store *state.Store, slotID, repositoryID, worktreePath string) {
 	t.Helper()
 	info, err := os.Lstat(worktreePath)
@@ -301,11 +256,8 @@ func recordTestWorktreeIdentity(t *testing.T, store *state.Store, slotID, reposi
 	}
 }
 
-// existingDirIdentity records the slot directory's inode the way allocation
-// does, so a hand-built row carries the same evidence a real one would. The
-// tests that stage an absent slot, a regular file, or a symlink get an empty
-// identity, matching the row a slot with no directory of its own would have.
 func existingDirIdentity(tb testing.TB, slotPath string) string {
+	// 実在するphysical directoryだけがallocation後のslotと同じinode証拠を持つ。
 	tb.Helper()
 	info, err := os.Lstat(slotPath)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
@@ -318,10 +270,6 @@ func existingDirIdentity(tb testing.TB, slotPath string) string {
 	return identity
 }
 
-// storeSlotAt is slotAtPath for the tests that have no Manager yet (or a
-// benchmark, which has no *testing.T at all). It registers rootPath as a root
-// generation directly on the store and derives the root-relative location
-// from slotPath.
 func storeSlotAt(tb testing.TB, store *state.Store, rootPath, workspaceID, slotID, slotPath string, generation int, slotState string) state.Slot {
 	tb.Helper()
 	rootPath = filepath.Clean(rootPath)
@@ -351,9 +299,6 @@ func storeSlotAt(tb testing.TB, store *state.Store, rootPath, workspaceID, slotI
 	}
 }
 
-// registerTestWorkspace upserts w and returns it with the durable ID the
-// store assigned. Workspace identity belongs to the store, not the caller, so
-// a test cannot pin an ID by writing one into the literal.
 func registerTestWorkspace(tb testing.TB, store *state.Store, w discovery.Workspace) discovery.Workspace {
 	tb.Helper()
 	registered, _, err := store.UpsertWorkspaceGeneration(context.Background(), w)
@@ -363,13 +308,8 @@ func registerTestWorkspace(tb testing.TB, store *state.Store, w discovery.Worksp
 	return registered
 }
 
-// escapingDirNameFor returns a slot_repositories.dir_name that resolves
-// outside root once joined to slotPath. dir_name is plain text, so this is
-// the only remaining way a test can express a recorded worktree wx does not
-// own; every name wx itself writes is a single component. The traversal depth
-// is derived from the slot's own depth, because filepath.Join cleans ".."
-// away and a fixed count would stay inside the root for a deeper slot.
 func escapingDirNameFor(tb testing.TB, root, slotPath string) string {
+	// forged rowがroot外を指す場合を再現するため、slotの深さに合わせて".."を積む。
 	tb.Helper()
 	relative, ok := relativeWithinRoot(root, slotPath)
 	if !ok {
@@ -382,11 +322,6 @@ func escapingDirNameFor(tb testing.TB, root, slotPath string) string {
 	return filepath.Join(append(parts, "..", "outside-repository")...)
 }
 
-// boundWorktreePath returns the repository worktree inside a slot. An
-// _unbound lease hands out the slot directory itself, because the repository
-// name is unknowable before the agent session reveals its workspace, so for a
-// single-repository workspace the worktree appears one level below the
-// agent's initial CWD once the SessionStart hook binds it.
 func boundWorktreePath(t *testing.T, store *state.Store, slotID string) string {
 	t.Helper()
 	repos, err := store.SlotRepositories(context.Background(), slotID)

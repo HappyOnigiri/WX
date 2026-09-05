@@ -16,13 +16,8 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// TestPrepareRejectsOwnershipChangesAtEachRevalidationCheckpoint drives an
-// ownership-changed failure through every one of prepareLocked's repeated
-// revalidation checkpoints (before includes, before links, before/during the
-// prepare command, before/during the tracked-status check, and before READY)
-// by varying which call to the ownership validator fails. A successful CREATE
-// phase invokes the validator exactly 7 times, so failAt=1..7 sweeps every
-// checkpoint that calls it.
+// TestPrepareRejectsOwnershipChangesAtEachRevalidationCheckpointは、prepareLockedの各再検証地点で所有権変更を失敗させる。
+// ownership validatorの失敗回数を変え、includes・links・prepare command・tracked-status・READY前後の全7回をfailAt=1..7で網羅する。
 func TestPrepareRejectsOwnershipChangesAtEachRevalidationCheckpoint(t *testing.T) {
 	for failAt := 1; failAt <= 7; failAt++ {
 		t.Run(fmt.Sprintf("failAt=%d", failAt), func(t *testing.T) {
@@ -39,10 +34,8 @@ func TestPrepareRejectsOwnershipChangesAtEachRevalidationCheckpoint(t *testing.T
 	}
 }
 
-// readyStateRejectingOwnershipValidator allows every ownership proof except
-// one that asks specifically for the READY state alone, letting a test tell
-// apart ValidateOwnership's broad lifecycle proof from ValidateReady's own,
-// stricter READY-only proof.
+// readyStateRejectingOwnershipValidatorはREADY状態だけを求める証明以外を許可する。
+// ValidateOwnershipの広いライフサイクル証明と、ValidateReady固有の厳密なREADY専用証明を区別できる。
 type readyStateRejectingOwnershipValidator struct{}
 
 func (readyStateRejectingOwnershipValidator) ValidateWorktreeOwnership(_ context.Context, req state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error) {
@@ -52,9 +45,8 @@ func (readyStateRejectingOwnershipValidator) ValidateWorktreeOwnership(_ context
 	return state.WorktreeOwnership{}, nil
 }
 
-// TestValidateReadyEnforcesItsOwnReadyStateProof proves that ValidateReady
-// performs its own narrower state-ownership check rather than only relying on
-// the broader lifecycle proof already performed by ValidateOwnership.
+// TestValidateReadyEnforcesItsOwnReadyStateProofは、ValidateReadyが独自の狭い状態所有権検査を行うことを確認する。
+// 先に実行されたValidateOwnershipの広い証明だけに依存しない。
 func TestValidateReadyEnforcesItsOwnReadyStateProof(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -71,10 +63,8 @@ func TestValidateReadyEnforcesItsOwnReadyStateProof(t *testing.T) {
 	}
 }
 
-// TestRunGitInWorktreeUnpinnedFastPathAndDescriptorFaults covers the
-// unpinned/no-identity fast path (which skips descriptor handling entirely)
-// and the descriptor-bound faults that only apply once an identity or a
-// pinned root is involved.
+// TestRunGitInWorktreeUnpinnedFastPathAndDescriptorFaultsは、descriptor処理を完全に省くunpinned/no-identity経路を確認する。
+// identityまたはpinned rootが関与した場合だけ発生するdescriptor束縛の障害も確認する。
 func TestRunGitInWorktreeUnpinnedFastPathAndDescriptorFaults(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -107,11 +97,8 @@ func TestRunGitInWorktreeUnpinnedFastPathAndDescriptorFaults(t *testing.T) {
 	}
 }
 
-// TestWorktreeIdentityPropagatesDescriptorAndOpenFailures covers
-// WorktreeIdentity's own descriptor-open failure (the configured root itself
-// becomes unsearchable) and its subsequent directory-open failure (the
-// target itself becomes unsearchable, which only requires search permission
-// on the target rather than on any of its ancestors).
+// TestWorktreeIdentityPropagatesDescriptorAndOpenFailuresは、WorktreeIdentityのdescriptor open失敗と後続のdirectory open失敗を確認する。
+// 前者は設定root、後者は祖先でなくtarget自身を検索不能にして再現する。
 func TestWorktreeIdentityPropagatesDescriptorAndOpenFailures(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -143,11 +130,8 @@ func TestWorktreeIdentityPropagatesDescriptorAndOpenFailures(t *testing.T) {
 	}
 }
 
-// TestCopyIncludesAndCreateLinksPropagateDescriptorFaults covers the
-// pinned-mode descriptor faults shared by copyIncludes/createLinks (a missing
-// root descriptor) and by copyIncludesAt/createLinksAt (an unsearchable
-// destination target), which are otherwise only reachable through the
-// unpinned path in existing tests.
+// TestCopyIncludesAndCreateLinksPropagateDescriptorFaultsは、pinned modeのcopyIncludes/createLinks共通のroot descriptor欠落を確認する。
+// copyIncludesAt/createLinksAtでは検索不能なdestination targetを使い、既存テストのunpinned経路だけでは届かない障害を確認する。
 func TestCopyIncludesAndCreateLinksPropagateDescriptorFaults(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -187,11 +171,8 @@ func TestCopyIncludesAndCreateLinksPropagateDescriptorFaults(t *testing.T) {
 	}
 }
 
-// TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarker exercises the
-// pinned-mode branch of prepareLocked's deferred cleanup, which is otherwise
-// only covered in unpinned mode elsewhere: a failing prepare command must
-// still unlock and remove the reserved worktree and remove its
-// descriptor-bound ownership marker.
+// TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarkerは、pinned modeのprepareLocked遅延cleanupを確認する。
+// prepare commandが失敗してもreserved worktreeをunlock・削除し、descriptor-bound ownership markerも削除しなければならない。
 func TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarker(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -221,10 +202,8 @@ func TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarker(t *testing.T
 	}
 }
 
-// TestMaterializeRootAtRejectsSymlinkAncestorInCopyRule covers the copy-rule
-// existence check's non-ErrNotExist error branch: a copy rule reaching
-// through a symlinked ancestor directory must be rejected instead of treated
-// as simply "missing".
+// TestMaterializeRootAtRejectsSymlinkAncestorInCopyRuleは、copy ruleの存在検査でErrNotExist以外を扱う分岐を確認する。
+// symlink祖先を通るcopy ruleは単なる「欠落」とせず拒否する。
 func TestMaterializeRootAtRejectsSymlinkAncestorInCopyRule(t *testing.T) {
 	source := t.TempDir()
 	outside := t.TempDir()
@@ -246,9 +225,8 @@ func TestMaterializeRootAtRejectsSymlinkAncestorInCopyRule(t *testing.T) {
 	}
 }
 
-// TestRemoveWorktreeAtRequiresAPinnedRootDescriptor covers the guard that
-// rejects descriptor-bound removal outside pinned mode, which the other
-// RemoveWorktreeAt tests never exercise because they always run pinned.
+// TestRemoveWorktreeAtRequiresAPinnedRootDescriptorは、pinned mode外のdescriptor-bound削除を拒否するguardを確認する。
+// 他のRemoveWorktreeAtテストは常にpinnedで実行するため、この分岐には到達しない。
 func TestRemoveWorktreeAtRequiresAPinnedRootDescriptor(t *testing.T) {
 	_, repo, preparer, _, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -257,11 +235,8 @@ func TestRemoveWorktreeAtRequiresAPinnedRootDescriptor(t *testing.T) {
 	}
 }
 
-// TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergence
-// exercises the ownership-marker-independent checks that
-// validateExistingWorktreeOwnedForStates performs on the worktree itself: a
-// removed target, a missing/unsafe .git marker, and a .git file that exists
-// but no longer works as a Git pointer.
+// TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergenceは、markerに依存しないworktree自身の検査を確認する。
+// 削除済みtarget、欠落・安全でない.git marker、Git pointerとして機能しない.git fileを扱う。
 func TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergence(t *testing.T) {
 	ctx := context.Background()
 
@@ -348,9 +323,7 @@ func TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergence(t 
 		if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
 			t.Fatal(err)
 		}
-		// Point the worktree's .git file at a second, unrelated repository so
-		// Git commands keep working but report a different common directory
-		// than the one recorded for this slot.
+		// worktreeの.git fileを無関係な別repositoryへ向け、Git commandは動くがslot記録と異なるcommon directoryを返す状態にする。
 		otherRepository := t.TempDir()
 		gitCommand(t, otherRepository, "init", "-b", "main")
 		gitFile := filepath.Join(target, ".git")
@@ -363,11 +336,8 @@ func TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergence(t 
 	})
 }
 
-// TestPrepareLockedTargetPropagatesRevalidationDescriptorFailure covers
-// prepareLockedTarget's own descriptor re-open, which repeats the physical
-// check after the common-directory lock is taken specifically to close a
-// path-replacement race; an unsearchable configured root must fail this
-// re-open even though nothing has called prepareTarget's earlier check yet.
+// TestPrepareLockedTargetPropagatesRevalidationDescriptorFailureは、common-directory lock取得後に行うprepareLockedTarget固有のdescriptor再openを確認する。
+// path置換競合を防ぐ再検査であり、prepareTargetの先行検査前でも検索不能な設定rootは失敗しなければならない。
 func TestPrepareLockedTargetPropagatesRevalidationDescriptorFailure(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -383,10 +353,8 @@ func TestPrepareLockedTargetPropagatesRevalidationDescriptorFailure(t *testing.T
 	}
 }
 
-// TestPrepareLockedTargetPropagatesParentCreationFailure covers the
-// MkdirAll failure branch that is distinct from "already exists": the
-// target's grandparent directory forbids writes, so creating the target's
-// own parent directory fails for a real reason.
+// TestPrepareLockedTargetPropagatesParentCreationFailureは、「既存」と異なるMkdirAll失敗分岐を確認する。
+// targetの祖父母が書き込みを拒否するため、targetの親作成が恒久的なエラーになる。
 func TestPrepareLockedTargetPropagatesParentCreationFailure(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -403,10 +371,8 @@ func TestPrepareLockedTargetPropagatesParentCreationFailure(t *testing.T) {
 	}
 }
 
-// TestPrepareLockedTargetPropagatesMarkerWriteFailure covers prepareLocked's
-// own markerErr branch: the target's parent directory already exists (so
-// MkdirAll is a no-op) but forbids writes, so writing the ownership marker
-// beside the not-yet-created target fails.
+// TestPrepareLockedTargetPropagatesMarkerWriteFailureは、prepareLocked固有のmarkerErr分岐を確認する。
+// targetの親は存在してMkdirAllが成功するが書き込みを拒否するため、未作成targetの横へのmarker書き込みが失敗する。
 func TestPrepareLockedTargetPropagatesMarkerWriteFailure(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -424,11 +390,8 @@ func TestPrepareLockedTargetPropagatesMarkerWriteFailure(t *testing.T) {
 	}
 }
 
-// TestRunPrepareWithIdentityForcesDescriptorPathWhenIdentityExpected covers
-// the branch where a non-empty expected identity forces the descriptor-bound
-// command path even though the preparer is not otherwise pinned; the
-// configured root does not exist yet, so opening it must fail instead of
-// silently falling back to the plain exec.Command path that ignores identity.
+// TestRunPrepareWithIdentityForcesDescriptorPathWhenIdentityExpectedは、非空identityがdescriptor-bound command経路を強制する分岐を確認する。
+// preparerがunpinnedでも設定rootが未作成ならopenに失敗し、identityを無視する通常のexec.Commandへ黙ってfallbackしてはならない。
 func TestRunPrepareWithIdentityForcesDescriptorPathWhenIdentityExpected(t *testing.T) {
 	_, repo, preparer, _, target := prepareEdgesFixture(t)
 	cfg := preparer.Config
@@ -439,10 +402,8 @@ func TestRunPrepareWithIdentityForcesDescriptorPathWhenIdentityExpected(t *testi
 	}
 }
 
-// TestRunPrepareWithIdentityPropagatesTargetOpenFailure covers the
-// descriptor-bound path's own target-open failure: the configured root
-// exists (so openOwnedRoot succeeds) but the target itself does not, so
-// opening it as a directory must fail.
+// TestRunPrepareWithIdentityPropagatesTargetOpenFailureは、descriptor-bound経路でtarget openが失敗する分岐を確認する。
+// 設定rootは存在してopenOwnedRootが成功するが、targetは存在しないためディレクトリopenに失敗する。
 func TestRunPrepareWithIdentityPropagatesTargetOpenFailure(t *testing.T) {
 	_, repo, preparer, _, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -457,11 +418,8 @@ func TestRunPrepareWithIdentityPropagatesTargetOpenFailure(t *testing.T) {
 	}
 }
 
-// TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommand covers the
-// post-command identity check: the prepare command itself replaces the
-// target directory with a new one at the same path before exiting, which
-// must be detected as an ownership-uncertain identity change rather than
-// treated as if the original directory were untouched.
+// TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommandは、command後のidentity検査を確認する。
+// prepare commandが終了前に同じpathのtargetを別directoryへ置換した場合、元のままではなく所有権不確かなidentity変更として検出する。
 func TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommand(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -475,9 +433,8 @@ func TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommand(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The command replaces its own working directory with a fresh, empty one
-	// of the same name before it exits, so by the time cmd.Run() returns the
-	// target names a different physical inode.
+	// commandは終了前に自身のworking directoryを同名の新しい空directoryへ置換する。
+	// そのためcmd.Run()の返却時にはtargetが別の物理inodeを指す。
 	script := "parent=$(dirname \"$PWD\"); name=$(basename \"$PWD\"); cd \"$parent\" && rm -rf \"$name\" && mkdir \"$name\""
 	cfg := preparer.Config
 	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", script}, Timeout: config.Duration{Duration: 5 * time.Second}}}}
@@ -487,10 +444,8 @@ func TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommand(t *testing.
 	}
 }
 
-// TestPrepareResumeWithIdentityRejectsAMismatchedIdentityBeforeResume covers
-// PrepareResumeWithIdentity's own leading identity proof, which is otherwise
-// only exercised with an empty (compatibility, always-passing) identity by
-// PrepareResume elsewhere.
+// TestPrepareResumeWithIdentityRejectsAMismatchedIdentityBeforeResumeは、PrepareResumeWithIdentity先頭のidentity証明を確認する。
+// 他のPrepareResumeでは空の（互換目的で常に通る）identityしか検査されない。
 func TestPrepareResumeWithIdentityRejectsAMismatchedIdentityBeforeResume(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -506,10 +461,8 @@ func TestPrepareResumeWithIdentityRejectsAMismatchedIdentityBeforeResume(t *test
 	}
 }
 
-// TestPrepareResumeWithIdentityDetectsTargetReplacementDuringResumeCommand
-// covers the post-command identity re-check in the resume phase, mirroring
-// the equivalent CREATE-phase coverage above but through
-// PrepareResumeWithIdentity's own call sequence.
+// TestPrepareResumeWithIdentityDetectsTargetReplacementDuringResumeCommandは、resume phaseのcommand後identity再検査を確認する。
+// 上のCREATE phaseと同じ置換をPrepareResumeWithIdentity固有の呼び出し順で検証する。
 func TestPrepareResumeWithIdentityDetectsTargetReplacementDuringResumeCommand(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -533,9 +486,8 @@ func TestPrepareResumeWithIdentityDetectsTargetReplacementDuringResumeCommand(t 
 	}
 }
 
-// TestFinishRestoreWithIdentityRejectsAMismatchedIdentityBeforeUnlock covers
-// FinishRestoreWithIdentity's own leading identity proof, mirroring the
-// resume-phase equivalent above.
+// TestFinishRestoreWithIdentityRejectsAMismatchedIdentityBeforeUnlockは、FinishRestoreWithIdentity先頭のidentity証明を確認する。
+// 上のresume phaseと同じ条件を扱う。
 func TestFinishRestoreWithIdentityRejectsAMismatchedIdentityBeforeUnlock(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -551,10 +503,8 @@ func TestFinishRestoreWithIdentityRejectsAMismatchedIdentityBeforeUnlock(t *test
 	}
 }
 
-// TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailures covers the
-// admin Git-command failure branches distinct from the "missing repository"
-// failure exercised elsewhere: a real repository whose specific unlock/lock
-// call is made to fail.
+// TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailuresは、「repository欠落」と異なるadmin Git command失敗分岐を確認する。
+// 実在repositoryで特定のunlock/lock呼び出しを失敗させる。
 func TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailures(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -573,11 +523,8 @@ func TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailures(t *testing.T) 
 			if err := preparer.PrepareForRestore(ctx, repo, target, head, "slot"); err != nil {
 				t.Fatal(err)
 			}
-			// installGitFault only intercepts calls made through the fault
-			// wrapper it installs into PATH from this point on, so
-			// PrepareForRestore's own (already completed) Git calls above do
-			// not count toward the occurrence: FinishRestoreWithIdentity's
-			// own unlock/lock call is the first one seen here.
+			// installGitFaultはこの時点以降にPATHへ入れたfault wrapper経由の呼び出しだけを捕捉する。
+			// 既に完了したPrepareForRestoreのGit呼び出しは数えず、FinishRestoreWithIdentityのunlock/lockが最初になる。
 			installGitFault(t, test.pattern, 1)
 			if err := preparer.FinishRestoreWithIdentity(ctx, repo, target, head, "slot", ""); err == nil {
 				t.Fatalf("finish restore succeeded despite a failing %q", test.pattern)
@@ -586,11 +533,8 @@ func TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailures(t *testing.T) 
 	}
 }
 
-// TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailures calls
-// existingTargetState directly to cover its own filesystem-error branches,
-// which the normal Prepare flow cannot reach independently because
-// prepareLockedTarget already performs an equivalent Lstat immediately
-// beforehand.
+// TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailuresは、existingTargetStateを直接呼び出してfilesystem error分岐を確認する。
+// 通常のPrepare flowではprepareLockedTargetが直前に同じLstatを行うため、独立して到達できない。
 func TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailures(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, _ := prepareEdgesFixture(t)
@@ -645,11 +589,8 @@ func TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailures(t *testing.T
 	})
 }
 
-// TestAddWorktreeWithIdentityPropagatesLeafReservationFailure calls
-// addWorktreeWithIdentity directly (bypassing ownership marker creation,
-// which would otherwise fail first against the same read-only parent) to
-// cover its own mkdirat failure branch distinct from the leaf already
-// existing.
+// TestAddWorktreeWithIdentityPropagatesLeafReservationFailureは、addWorktreeWithIdentityを直接呼び出してleaf予約のmkdirat失敗分岐を確認する。
+// 同じread-only parentで先に失敗するownership marker作成を迂回し、leaf既存とは別の分岐を対象にする。
 func TestAddWorktreeWithIdentityPropagatesLeafReservationFailure(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -677,9 +618,8 @@ func TestAddWorktreeWithIdentityPropagatesLeafReservationFailure(t *testing.T) {
 	}
 }
 
-// TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailures covers
-// the CREATE phase's closing PREPARING-to-READY transition, which is
-// otherwise only exercised for its opening PREPARING lock elsewhere.
+// TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailuresは、CREATE phaseのPREPARINGからREADYへの終了遷移を確認する。
+// 他では開始時のPREPARING lockだけが対象になる。
 func TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailures(t *testing.T) {
 	t.Run("final unlock fails", func(t *testing.T) {
 		_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -687,8 +627,7 @@ func TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailures(t *testi
 		if err := os.MkdirAll(root, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		// A fresh worktree never unlocks an existing one, so the first
-		// "worktree unlock" is the closing PREPARING-to-READY transition.
+		// 新規worktreeは既存worktreeをunlockしないため、最初の「worktree unlock」はPREPARINGからREADYへの終了遷移である。
 		installGitFault(t, "worktree unlock", 1)
 		if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil {
 			t.Fatal("prepare succeeded despite a failing final unlock")
@@ -700,8 +639,7 @@ func TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailures(t *testi
 		if err := os.MkdirAll(root, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		// The first "worktree lock" is the opening PREPARING lock; the
-		// second is the closing READY lock.
+		// 最初の「worktree lock」は開始時のPREPARING lock、2回目は終了時のREADY lockである。
 		installGitFault(t, "worktree lock", 2)
 		if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil {
 			t.Fatal("prepare succeeded despite a failing READY lock")
@@ -709,10 +647,8 @@ func TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailures(t *testi
 	})
 }
 
-// TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommand
-// covers runWorktreeAdminOwned's own pre-command identity proof directly,
-// which the higher-level Prepare/RemoveWorktreeAt flows never exercise with
-// a deliberately wrong identity.
+// TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommandは、runWorktreeAdminOwned固有のcommand前identity証明を直接確認する。
+// 上位のPrepare/RemoveWorktreeAt flowでは、意図的に誤ったidentityを与えるこの条件を検査しない。
 func TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommand(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -739,10 +675,7 @@ func TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommand(t *t
 	}
 }
 
-// TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability calls
-// verifyPreparedTargetIdentity directly to cover both of its failure
-// branches: a target that no longer exists, and one whose identity no
-// longer matches what was expected.
+// TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailabilityは、verifyPreparedTargetIdentityを直接呼び、target消失とidentity不一致の両失敗分岐を確認する。
 func TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -775,10 +708,8 @@ func TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability(t *testing
 	}
 }
 
-// TestAddWorktreeWithIdentityRejectsAReservedLeafThatIsNotADirectory covers
-// the branch where mkdirat's reservation tolerates an already-existing leaf
-// (os.ErrExist) but that leaf turns out not to be the physical directory
-// addWorktreeWithIdentity needs to open next.
+// TestAddWorktreeWithIdentityRejectsAReservedLeafThatIsNotADirectoryは、mkdirat予約が既存leaf（os.ErrExist）を許容する分岐を確認する。
+// そのleafがaddWorktreeWithIdentityの次のopenに必要な物理directoryでない場合は拒否する。
 func TestAddWorktreeWithIdentityRejectsAReservedLeafThatIsNotADirectory(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -805,10 +736,8 @@ func TestAddWorktreeWithIdentityRejectsAReservedLeafThatIsNotADirectory(t *testi
 	}
 }
 
-// TestFingerprintRejectsAMissingRepositoryMainPath covers Fingerprint's own
-// leading physical-path check with a repository that does not exist at all,
-// as opposed to the symlink-ancestor and unreadable-input cases exercised
-// elsewhere.
+// TestFingerprintRejectsAMissingRepositoryMainPathは、存在しないrepositoryに対するFingerprint先頭のphysical-path検査を確認する。
+// 別テストのsymlink祖先や入力不可のケースとは異なる。
 func TestFingerprintRejectsAMissingRepositoryMainPath(t *testing.T) {
 	missing := domain.CanonicalPath(filepath.Join(t.TempDir(), "missing-repository"))
 	if _, err := Fingerprint(1, "oid", discovery.Repository{MainPath: missing}, config.Defaults()); err == nil {

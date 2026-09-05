@@ -10,10 +10,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// TestReleaseIsIdempotentAfterAlreadyReleasingSession verifies that
-// releasing an already-releasing session is a harmless no-op (the SQLite
-// UPDATE affects zero rows, changed=false) instead of erroring or
-// scheduling a second, duplicate snapshot job for the same session.
 func TestReleaseIsIdempotentAfterAlreadyReleasingSession(t *testing.T) {
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
@@ -37,10 +33,6 @@ func TestReleaseIsIdempotentAfterAlreadyReleasingSession(t *testing.T) {
 	}
 }
 
-// TestAllocateFailsWhenWorktreeRootCannotBeCreated verifies that allocate
-// surfaces a physical worktree-root creation failure (an ancestor path
-// component that is a regular file, not a directory) instead of returning a
-// lease for a slot whose root was never actually created.
 func TestAllocateFailsWhenWorktreeRootCannotBeCreated(t *testing.T) {
 	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	blocker := filepath.Join(t.TempDir(), "blocker")
@@ -58,12 +50,6 @@ func TestAllocateFailsWhenWorktreeRootCannotBeCreated(t *testing.T) {
 	}
 }
 
-// TestAllocateReleasesLeaseWhenSessionPersistenceFails drives allocate
-// through a crash between physical slot-root creation and the durable
-// session/slot insert (simulated with an injected SQLite trigger). The
-// lease taken to protect the new root must be released on that failure, or
-// it would pin the descriptor open forever and eventually deadlock a
-// subsequent manager close.
 func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
 	ctx, manager, _, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
 	raw := openManagerCoverageDB(t, databasePath)
@@ -81,18 +67,8 @@ func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
 	}
 }
 
-// TestReconcileArtifactsSkipsUnverifiableAndArchivedPaths verifies two
-// fail-closed guarantees of the startup artifact reconciler: a slot whose
-// path cannot be proven owned (outside every known wx root) is left
-// untouched rather than auto-quarantined merely because it could not be
-// checked, and an already-ARCHIVED slot is excluded from the missing/unknown
-// path diagnostics entirely.
 func TestReconcileArtifactsSkipsUnverifiableAndArchivedPaths(t *testing.T) {
 	ctx, manager, store, _, _, _ := managerCoverageFixture(t)
-	// A slot whose recorded root-relative path leaves the wx root cannot be
-	// proven owned; this is the remaining way to express that now that a slot
-	// is located by root generation plus relative path rather than by an
-	// arbitrary absolute path.
 	outsideSlot := testSlotRow(t, manager, "", "outside", 1, "LEASED")
 	outsideSlot.RelPath = filepath.Join("..", "outside-slot")
 	outsideSlot.Path = filepath.Join(manager.Config().Storage.WorktreeRoot, outsideSlot.RelPath)

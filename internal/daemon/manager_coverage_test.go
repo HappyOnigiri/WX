@@ -44,10 +44,6 @@ func TestReadyMatchesRejectsEveryUnsafeRepresentation(t *testing.T) {
 		{name: "preparing repository", rootKind: "directory", repoState: "PREPARING", baseOID: resolved[0].OID, finger: fingerprint},
 		{name: "wrong base", rootKind: "directory", repoState: "READY", baseOID: "wrong", finger: fingerprint},
 		{name: "wrong fingerprint", rootKind: "directory", repoState: "READY", baseOID: resolved[0].OID, finger: "wrong"},
-		// A COLD repository is unmaterialized when its directory is absent
-		// or empty; a cold lease creates the empty directory so the client
-		// can open it as its CWD before preparation runs. Only content means
-		// the repository was actually checked out.
 		{name: "cold repository has a checkout", rootKind: "directory", repoState: "COLD", baseOID: resolved[0].OID, finger: fingerprint, target: "populated"},
 		{name: "cold repository directory is empty", rootKind: "directory", repoState: "COLD", baseOID: resolved[0].OID, finger: fingerprint, target: "directory", want: true},
 		{name: "cold repository absent", rootKind: "directory", repoState: "COLD", baseOID: resolved[0].OID, finger: fingerprint, target: "missing", want: true},
@@ -61,9 +57,6 @@ func TestReadyMatchesRejectsEveryUnsafeRepresentation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			id := domain.StableID("ready-coverage", test.name)
 			slot := testSlotRow(t, manager, string(workspaceRecord.ID), id, 1, "READY")
-			// Every repository worktree now sits one level below its slot
-			// directory, for a single-repository workspace as much as for a
-			// bundle, so "root" and "target" stage two different levels.
 			target := filepath.Join(slot.Path, dirName)
 			switch test.rootKind {
 			case "file":
@@ -202,10 +195,6 @@ func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 	}
 
 	failureID := domain.StableID("prepare-coverage", "preparer-failure")
-	// A regular file where the repository worktree must go makes the
-	// checkout itself fail, which is an ordinary preparation failure rather
-	// than an ownership one. A worktree path outside the root is no longer
-	// expressible: dir_name is one component below the slot.
 	failureSlot := testSlot(t, manager, string(workspaceRecord.ID), failureID, 1, "PREPARING")
 	if err := os.WriteFile(filepath.Join(failureSlot.Path, dirName), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
@@ -533,11 +522,6 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 	})
 
 	t.Run("retired root keeps its slots", func(t *testing.T) {
-		// Changing storage.worktree_root no longer drains the previous root:
-		// its roots row stays registered with active=0 so existing slots keep
-		// resolving, and only new slots go to the new root. The removed
-		// DrainRoot used to mark them STALE, which is what this subtest used
-		// to inject a failure into.
 		ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 		home := t.TempDir()
 		t.Setenv("HOME", home)
@@ -1046,8 +1030,6 @@ func TestPrepareFreshResumePropagatesFailureCodes(t *testing.T) {
 			t.Fatal(err)
 		}
 		raw := openManagerCoverageDB(t, databasePath)
-		// SQLite trigger WHEN clauses cannot bind parameters, so the already-
-		// known session id is interpolated directly into the trigger body.
 		if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_fresh_bind BEFORE UPDATE ON sessions WHEN OLD.id='`+current.SessionID+`' BEGIN SELECT RAISE(ABORT,'injected bind failure'); END`); err != nil {
 			t.Fatal(err)
 		}
@@ -1064,12 +1046,6 @@ func TestPrepareFreshResumePropagatesFailureCodes(t *testing.T) {
 	})
 }
 
-// managerCoverageFixture registers one workspace and returns a Manager for
-// it. kind defaults to "multi_repository"; pass "repository" for the tests
-// that need a single-repository workspace. It is a parameter rather than
-// something a caller re-upserts afterwards because workspace identity is now
-// the store's: a second upsert at the same root_path with a different kind
-// gets a fresh ID and collides on workspaces.root_path.
 func managerCoverageFixture(t *testing.T, kind ...string) (context.Context, *Manager, *state.Store, discovery.Workspace, []pool.Resolved, string) {
 	t.Helper()
 	workspaceKind := "multi_repository"
@@ -1092,8 +1068,6 @@ func managerCoverageFixture(t *testing.T, kind ...string) (context.Context, *Man
 	if workspaceKind == "multi_repository" {
 		workspaceRecord.Repositories[0].RelativePath = "repository"
 	} else {
-		// A single-repository workspace is rooted at its own main worktree,
-		// which is what validateWorkspaceRepositoryAssociation proves.
 		workspaceRecord.Root = workspaceRecord.Repositories[0].MainPath
 		workspaceRecord.Repositories[0].RelativePath = "."
 	}
@@ -1103,8 +1077,6 @@ func managerCoverageFixture(t *testing.T, kind ...string) (context.Context, *Man
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	// The store, not discovery, owns workspace identity: the returned
-	// workspace carries the durable ID that names slot directories.
 	workspaceRecord, _, err = store.UpsertWorkspaceGeneration(ctx, workspaceRecord)
 	if err != nil {
 		t.Fatal(err)

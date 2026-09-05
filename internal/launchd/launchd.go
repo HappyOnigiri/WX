@@ -36,12 +36,9 @@ func PlistPath() (string, error) {
 	return filepath.Join(h, "Library", "LaunchAgents", Label+".plist"), nil
 }
 
-// ResolveBinary returns the wx executable that a LaunchAgent installation
-// should invoke.  The command on PATH is preferred so an installed wx keeps
-// using the same path an operator would run from a shell; os.Executable is the
-// fallback for development builds and test binaries that are not named wx.
-// Callers that inspect an existing plist use this same resolver so install and
-// diagnostics cannot disagree about which binary belongs in ProgramArguments.
+// ResolveBinary は LaunchAgent が起動する wx executable を返す。
+// PATH 上の command を優先し、開発 build や test binary では os.Executable にフォールバックする。
+// 既存 plist の診断も同じ解決処理を使い、インストールと判定の対象を揃える。
 func ResolveBinary() (string, error) {
 	binary, err := exec.LookPath("wx")
 	if err == nil {
@@ -63,10 +60,8 @@ func Render(binary, home, logPath string) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// PlistStatus describes whether the on-disk LaunchAgent can be regenerated
-// from the current wx executable.  Unknown deliberately includes both a
-// missing plist and any other inability to inspect it; callers need to avoid
-// treating an uninstalled or unreadable service as stale.
+// PlistStatus は現在の wx executable から LaunchAgent を再生成できるかを示す。
+// plist 不在や読み取り不能は Unknown とし、未導入・未読を stale と誤判定しない。
 type PlistStatus uint8
 
 const (
@@ -75,11 +70,8 @@ const (
 	PlistStale
 )
 
-// CurrentPlistStatus compares the complete LaunchAgent bytes on disk with the
-// bytes wx daemon install would render today.  A byte-for-byte comparison is
-// intentional: wx owns the entire plist, so any difference is repaired by
-// rerunning the install command rather than by trying to interpret XML
-// fragments independently.
+// CurrentPlistStatus は on-disk の LaunchAgent 全体を、現在の daemon install の出力と比較する。
+// plist 全体を wx が所有するため byte 単位で比較し、差分は install の再実行で修復する。
 func CurrentPlistStatus() (PlistStatus, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -121,9 +113,7 @@ func CurrentPlistStatus() (PlistStatus, error) {
 	return PlistStale, nil
 }
 
-// xmlEscapeText is a template FuncMap entry: the template calls it on every
-// value it interpolates, so every rendered plist is escaped by construction
-// and does not need a separate re-parse to validate it afterwards.
+// xmlEscapeText は template FuncMap の entry。補間する全値を escape するため、生成後の再解析は不要。
 func xmlEscapeText(value string) (string, error) {
 	var escaped bytes.Buffer
 	if err := xml.EscapeText(&escaped, []byte(value)); err != nil {
@@ -206,22 +196,18 @@ func launchctlServiceMissing(output []byte) bool {
 	return strings.Contains(message, "could not find service") || strings.Contains(message, "no such process") || strings.Contains(message, "service not found")
 }
 
-// ErrServiceMissing reports that launchctl does not know the wx LaunchAgent at
-// all, as opposed to knowing it and failing to act on it. Callers use it to
-// tell an operator to run wx daemon install instead of reporting a launchctl
-// failure they cannot act on.
+// ErrServiceMissing は launchctl が wx LaunchAgent を認識していないことを示す。
+// 呼び出し側は操作不能な launchctl エラーではなく wx daemon install を案内できる。
 var ErrServiceMissing = errors.New("wx LaunchAgent is not installed")
 
-// Kickstart replaces the running service: launchctl's -k kills it first and
-// launchd starts it again. Callers that only want a service running must use
-// Start, which leaves a live daemon alone.
+// Kickstart は実行中 service を置き換える。launchctl の -k で終了させてから launchd が再起動する。
+// 稼働確認だけなら、実行中 daemon を残す Start を使う。
 func Kickstart(ctx context.Context) error {
 	return kickstart(ctx, "-k")
 }
 
-// Start asks launchd to run the service if it is not running already. Without
-// -k launchctl leaves a live daemon untouched, so wx daemon start is safe to
-// repeat and never kills a daemon that is serving other sessions.
+// Start は未稼働時だけ launchd に service の実行を依頼する。
+// -k を使わないため、他セッションを処理中の daemon を終了させず繰り返し実行できる。
 func Start(ctx context.Context) error {
 	return kickstart(ctx)
 }
@@ -235,9 +221,7 @@ func kickstart(ctx context.Context, flags ...string) error {
 		if launchctlServiceMissing(out) {
 			return fmt.Errorf("launchctl kickstart: %s: %w", bytes.TrimSpace(out), ErrServiceMissing)
 		}
-		// launchctl prints nothing when it never ran (missing from PATH, a
-		// cancelled context, a deadline reached while it was still working), so
-		// the wrapped error is the only thing that identifies those failures.
+		// launchctl が実行されない場合は出力がないため、原因の識別には wrap 済みエラーだけを使う。
 		return fmt.Errorf("launchctl kickstart: %s: %w", bytes.TrimSpace(out), err)
 	}
 	return nil

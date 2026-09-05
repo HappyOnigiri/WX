@@ -36,8 +36,8 @@ func (h commandHandler) Handle(_ context.Context, method string, _ json.RawMessa
 	}
 }
 
-// runCapturingStderr runs one wx invocation with os.Stderr redirected, so a
-// test can assert on the guidance a failure printed as well as its exit code.
+// runCapturingStderr は os.Stderr を差し替えて wx を一度実行する。
+// test は失敗時の案内と終了コードを確認できる。
 func runCapturingStderr(t *testing.T, args []string) (int, string) {
 	t.Helper()
 	exit := 0
@@ -45,10 +45,8 @@ func runCapturingStderr(t *testing.T, args []string) (int, string) {
 	return exit, stderr
 }
 
-// TestDaemonStartAndRestartTellAnOperatorToInstallTheLaunchAgent covers the
-// branch the other daemon lifecycle tests miss: the one that answers with the
-// stub launchctl's failure, the others cancel their context so launchctl never
-// runs and the output stays empty.
+// TestDaemonStartAndRestartTellAnOperatorToInstallTheLaunchAgent は launchctl の失敗を返す経路を確認する。
+// 他の lifecycle test は context を中断して launchctl を実行しない。
 func TestDaemonStartAndRestartTellAnOperatorToInstallTheLaunchAgent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -60,8 +58,7 @@ func TestDaemonStartAndRestartTellAnOperatorToInstallTheLaunchAgent(t *testing.T
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
-	// No daemon is listening under this HOME, so RequestRestart fails to
-	// connect and the command falls back to launchctl.
+	// この HOME 配下に daemon は待受していないため、RequestRestart は接続に失敗して launchctl へ fallback する。
 	for _, action := range []string{"restart", "start"} {
 		exit, stderr := runCapturingStderr(t, []string{"daemon", action})
 		if exit != 1 {
@@ -73,9 +70,8 @@ func TestDaemonStartAndRestartTellAnOperatorToInstallTheLaunchAgent(t *testing.T
 	}
 }
 
-// TestDaemonStopReportsAnAlreadyStoppedDaemon is the idempotent half of the
-// stop contract: nothing is listening, so there is nothing to wait for and the
-// wanted state already holds.
+// TestDaemonStopReportsAnAlreadyStoppedDaemon は stop の idempotent な契約を確認する。
+// 待受中の daemon がなければ待機せず、目的の停止状態はすでに満たされている。
 func TestDaemonStopReportsAnAlreadyStoppedDaemon(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if exit := run(context.Background(), []string{"daemon", "stop"}); exit != 0 {
@@ -83,9 +79,8 @@ func TestDaemonStopReportsAnAlreadyStoppedDaemon(t *testing.T) {
 	}
 }
 
-// lifecycleHandler answers a lifecycle RPC with a gate snapshot and then tells
-// the test to take the server down, which is what the real daemon does once
-// its idle gate opens.
+// lifecycleHandler は lifecycle RPC に gate snapshot を返してから test に server の停止を伝える。
+// 実際の daemon も idle gate が開いた後に listener を閉じる。
 type lifecycleHandler struct {
 	pid     int
 	stopped chan struct{}
@@ -95,8 +90,7 @@ type lifecycleHandler struct {
 func (h *lifecycleHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	switch method {
 	case "RequestStop", "RequestRestart":
-		// The signal is deferred so this response still reaches the client:
-		// a real daemon closes its listener after answering, not during.
+		// response を client へ届けるため停止通知は遅らせる。daemon も応答中ではなく応答後に listener を閉じる。
 		h.once.Do(func() { time.AfterFunc(100*time.Millisecond, func() { close(h.stopped) }) })
 		return map[string]any{"pid": h.pid, "inflight_requests": 0, "queued_jobs": 0, "quiet_period_remaining_ms": 0}, nil
 	case "Status":
@@ -125,9 +119,8 @@ func serveUntilCanceled(t *testing.T, socket string, handler rpc.Handler) (conte
 	return cancel, done
 }
 
-// TestDaemonStopAndRestartWaitForTheDaemonToReachTheRequestedState is the
-// point of making these commands synchronous: neither may report success while
-// the daemon it addressed is still the one answering the socket.
+// TestDaemonStopAndRestartWaitForTheDaemonToReachTheRequestedState は同期 command の契約を確認する。
+// どちらも要求した daemon が socket に応答中のまま成功を報告してはならない。
 func TestDaemonStopAndRestartWaitForTheDaemonToReachTheRequestedState(t *testing.T) {
 	home, err := os.MkdirTemp("/tmp", "wxl-")
 	if err != nil {
@@ -135,7 +128,7 @@ func TestDaemonStopAndRestartWaitForTheDaemonToReachTheRequestedState(t *testing
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("HOME", home)
-	// A short budget keeps a regression from stalling the suite for a minute.
+	// 短い予算で回帰時に suite が1分停止するのを防ぐ。
 	restore := daemonWaitTimeout
 	daemonWaitTimeout = 5 * time.Second
 	t.Cleanup(func() { daemonWaitTimeout = restore })
@@ -160,8 +153,7 @@ func TestDaemonStopAndRestartWaitForTheDaemonToReachTheRequestedState(t *testing
 		t.Fatal("daemon stop reported success while the socket was still answering")
 	}
 
-	// The restart is the same wait plus the pid comparison: the replacement has
-	// to be a different process, not merely a socket that came back.
+	// restart は同じ待機に PID 比較を加える。socket の復帰だけでなく別 process への置換が必要である。
 	restartHandler := &lifecycleHandler{pid: 4242, stopped: make(chan struct{})}
 	cancelRestart, restartDone := serveUntilCanceled(t, socket, restartHandler)
 	restartExit := make(chan int, 1)
@@ -182,9 +174,8 @@ func TestDaemonStopAndRestartWaitForTheDaemonToReachTheRequestedState(t *testing
 	}
 }
 
-// TestDaemonLifecycleTimeoutsNameWhatTheGateWasWaitingFor keeps the failure
-// path actionable: a daemon that never goes away must produce the gate reason
-// the request came back with, not just a bare timeout.
+// TestDaemonLifecycleTimeoutsNameWhatTheGateWasWaitingFor は timeout 時に gate の待機理由を示すことを確認する。
+// 退出しない daemon は単なる timeout ではなく、要求時の snapshot にある理由を返す。
 func TestDaemonLifecycleTimeoutsNameWhatTheGateWasWaitingFor(t *testing.T) {
 	home, err := os.MkdirTemp("/tmp", "wxl-")
 	if err != nil {
@@ -199,8 +190,7 @@ func TestDaemonLifecycleTimeoutsNameWhatTheGateWasWaitingFor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This server answers the request and then keeps serving, which is what a
-	// daemon whose gate never opens looks like from outside.
+	// この server は要求へ応答した後も待受を続ける。外部からは gate が開かない daemon と同じ状態である。
 	cancel, done := serveUntilCanceled(t, socket, busyHandler{})
 	defer func() {
 		cancel()
@@ -219,9 +209,7 @@ func TestDaemonLifecycleTimeoutsNameWhatTheGateWasWaitingFor(t *testing.T) {
 		{action: "restart", want: logPath},
 	} {
 		if strings.HasPrefix(test.want, "/") {
-			// The idle branch is the one an operator cannot act on without
-			// the log: the snapshot says nothing arrived before acceptance,
-			// so the cause is only in what the daemon did afterwards.
+			// idle branch は log なしに原因を特定できない。受理時 snapshot に到着済みの処理がなく、原因はその後の daemon 操作だけにある。
 			idleGate.Store(true)
 		} else {
 			idleGate.Store(false)
@@ -236,10 +224,8 @@ func TestDaemonLifecycleTimeoutsNameWhatTheGateWasWaitingFor(t *testing.T) {
 	}
 }
 
-// TestDaemonRestartRefusesADaemonLaunchdDoesNotManage keeps the command from
-// waiting out its whole budget for a replacement that is never coming: a
-// daemon started with start --foreground answers the request but never
-// kickstarts itself.
+// TestDaemonRestartRefusesADaemonLaunchdDoesNotManage は foreground 起動の daemon を再起動対象にしないことを確認する。
+// launchd 管理外の daemon は自分自身を kickstart できず、置換を待っても期限切れになる。
 func TestDaemonRestartRefusesADaemonLaunchdDoesNotManage(t *testing.T) {
 	home, err := os.MkdirTemp("/tmp", "wxl-")
 	if err != nil {
@@ -247,7 +233,7 @@ func TestDaemonRestartRefusesADaemonLaunchdDoesNotManage(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("HOME", home)
-	// A budget long enough that a regression waiting on it would be obvious.
+	// 回帰で待機すると明らかに分かる長さの予算を使う。
 	restore := daemonWaitTimeout
 	daemonWaitTimeout = 30 * time.Second
 	t.Cleanup(func() { daemonWaitTimeout = restore })
@@ -275,9 +261,8 @@ func TestDaemonRestartRefusesADaemonLaunchdDoesNotManage(t *testing.T) {
 	}
 }
 
-// TestDaemonStartCallsBackAPendingStop covers the branch that makes start
-// idempotent for real: a socket that answers is not enough when the daemon
-// behind it is still holding a stop nobody called back.
+// TestDaemonStartCallsBackAPendingStop は start が保留 stop を取り消すことを確認する。
+// socket が応答しても daemon に未取消の stop が残る場合は、すでに起動済みとは扱えない。
 func TestDaemonStartCallsBackAPendingStop(t *testing.T) {
 	home, err := os.MkdirTemp("/tmp", "wxl-")
 	if err != nil {
@@ -306,10 +291,8 @@ func TestDaemonStartCallsBackAPendingStop(t *testing.T) {
 	}
 }
 
-// TestDaemonStopRefusesADaemonThatIsAlreadyRestarting keeps a refused request
-// from being read as an accepted one: the daemon answered that it is heading
-// somewhere else, so waiting for the socket to go quiet would only spend the
-// budget.
+// TestDaemonStopRefusesADaemonThatIsAlreadyRestarting は拒否された stop を受理済みと扱わないことを確認する。
+// 再起動中の daemon に対して socket の停止を待つだけでは期限を消費する。
 func TestDaemonStopRefusesADaemonThatIsAlreadyRestarting(t *testing.T) {
 	home, err := os.MkdirTemp("/tmp", "wxl-")
 	if err != nil {
@@ -344,10 +327,8 @@ func TestDaemonStopRefusesADaemonThatIsAlreadyRestarting(t *testing.T) {
 	}
 }
 
-// TestDaemonStartKeepsAskingLaunchdUntilADaemonAnswers is the stop && start
-// case: launchd does nothing with a request for a service it still considers
-// running, so the one request a start used to make can be consumed by the
-// process that is on its way out.
+// TestDaemonStartKeepsAskingLaunchdUntilADaemonAnswers は stop 後の start で launchd への要求を繰り返すことを確認する。
+// 旧 process を稼働中とみなす間は要求が消費されるため、一度の start では足りない。
 func TestDaemonStartKeepsAskingLaunchdUntilADaemonAnswers(t *testing.T) {
 	home, err := os.MkdirTemp("/tmp", "wxl-")
 	if err != nil {
@@ -359,8 +340,7 @@ func TestDaemonStartKeepsAskingLaunchdUntilADaemonAnswers(t *testing.T) {
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// A launchctl that succeeds without starting anything is exactly what
-	// launchd does for a service it still believes is running.
+	// 起動せず成功する launchctl は、launchd が service を稼働中とみなす場合の動作を表す。
 	calls := filepath.Join(home, "launchctl.calls")
 	script := "#!/bin/sh\necho call >> " + calls + "\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte(script), 0o700); err != nil {
@@ -379,8 +359,7 @@ func TestDaemonStartKeepsAskingLaunchdUntilADaemonAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The daemon appears only after launchd has been asked a second time,
-	// which is exactly what a start that asks once can never reach.
+	// daemon は launchd への二度目の要求後にだけ現れる。一度しか要求しない start では到達できない。
 	late := make(chan context.CancelFunc, 1)
 	lateDone := make(chan (<-chan error), 1)
 	go func() {
@@ -441,9 +420,8 @@ func (unmanagedHandler) Handle(_ context.Context, method string, _ json.RawMessa
 	}
 }
 
-// idleGate switches busyHandler between the two snapshots a timeout can carry:
-// one that names a queued job and one that has nothing to name because the
-// daemon was idle when it accepted the request.
+// idleGate は busyHandler を queued job ありの snapshot と idle snapshot の間で切り替える。
+// idle snapshot は要求受理時に daemon が idle で、理由を名指しできない場合を表す。
 var idleGate atomic.Bool
 
 type busyHandler struct{}
@@ -569,11 +547,8 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"resume", "session", "codex"},
 		{"daemon", "install"},
 		{"daemon", "uninstall"},
-		// start short-circuits on the listening socket without going near
-		// launchctl. stop and restart are not in this table on purpose: both
-		// wait for this very server to go away, which it does not do here, so
-		// they get their own fixture in
-		// TestDaemonStopAndRestartWaitForTheDaemonToReachTheRequestedState.
+		// start は待受 socket を見つけると launchctl を呼ばない。
+		// stop と restart はこの server の退出を待つため、専用 fixture で確認する。
 		{"daemon", "start"},
 	} {
 		if exit := run(ctx, args); exit != 0 {

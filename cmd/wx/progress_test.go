@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// syncBuffer lets a test read what the animation has drawn so far while the
-// ticker goroutine is still drawing into it.
+// syncBuffer は ticker goroutine が描画中でも、テストから描画済み内容を読めるようにする。
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -28,9 +27,7 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestProgressAnimatesTheDots is the point of the waiting line: the daemon is
-// silent for the whole idle gate, so the only evidence the command is alive is
-// that the dots keep moving.
+// TestProgressAnimatesTheDots は idle gate 中も待機中であることをドットの動きで示す契約を確認する。
 func TestProgressAnimatesTheDots(t *testing.T) {
 	restore := progressFrameInterval
 	progressFrameInterval = time.Millisecond
@@ -58,20 +55,17 @@ func TestProgressAnimatesTheDots(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	waiting.finish()
-	// The dots start over rather than growing without bound.
+	// ドットは無限に増えず、先頭へ戻る。
 	if strings.Contains(out.String(), "stopping....") {
 		t.Fatalf("the dots grew past %d: %q", progressMaxDots, out.String())
 	}
-	// finish leaves the cursor on a blank line, so the outcome the command
-	// prints next does not land on top of the waiting line.
+	// finish はカーソルを空行へ移し、次の結果が待機行に重ならないようにする。
 	if !strings.HasSuffix(out.String(), "\r"+strings.Repeat(" ", len("stopping")+progressMaxDots)+"\r") {
 		t.Fatalf("finish did not erase the waiting line: %q", out.String())
 	}
 }
 
-// TestProgressLineKeepsTheWaitingLineBelowTheMessage covers the notices that
-// arrive mid-wait: they have to read as finished lines, not as text mixed into
-// the animation.
+// TestProgressLineKeepsTheWaitingLineBelowTheMessage は待機中の通知を完成行として表示する契約を確認する。
 func TestProgressLineKeepsTheWaitingLineBelowTheMessage(t *testing.T) {
 	out := &syncBuffer{}
 	waiting := startProgress(out, true, "starting")
@@ -86,14 +80,12 @@ func TestProgressLineKeepsTheWaitingLineBelowTheMessage(t *testing.T) {
 	}
 }
 
-// TestProgressWritesNothingWhenNotInteractive keeps carriage returns and
-// padding out of pipes, log files and the golden output the other tests read.
+// TestProgressWritesNothingWhenNotInteractive は pipe・log・golden 出力へ制御文字を出さないことを確認する。
 func TestProgressWritesNothingWhenNotInteractive(t *testing.T) {
 	out := &syncBuffer{}
 	waiting := startProgress(out, false, "stopping")
 	waiting.line("stop was already requested")
-	// Deferring finish and calling it explicitly is what the commands do, so
-	// the second call has to be a no-op rather than a panic on a closed channel.
+	// command と同じく finish を defer と明示呼び出しの両方で行うため、二度目は no-op とする。
 	waiting.finish()
 	waiting.finish()
 	if got := out.String(); got != "stop was already requested\n" {
@@ -101,9 +93,7 @@ func TestProgressWritesNothingWhenNotInteractive(t *testing.T) {
 	}
 }
 
-// TestInteractiveOutputRejectsARedirectedStdout pins the decision the commands
-// make: output that was redirected into a file or a pipe is not a terminal, so
-// it gets no animation.
+// TestInteractiveOutputRejectsARedirectedStdout は file・pipe への出力で animation を無効にすることを確認する。
 func TestInteractiveOutputRejectsARedirectedStdout(t *testing.T) {
 	f, err := os.Create(t.TempDir() + "/out")
 	if err != nil {

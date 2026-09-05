@@ -2,7 +2,7 @@ package migrations
 
 import "embed"
 
-// FS contains the versioned SQLite schema.
+// FS は versioned SQLite schema を格納する。
 //
 //go:embed *.sql
 var FS embed.FS

@@ -31,10 +31,8 @@ func TestIdempotentCallStopsRetryingWhenContextIsCanceled(t *testing.T) {
 }
 
 func TestIdempotentCallStopsRetryingWhenContextExpiresDuringBackoff(t *testing.T) {
-	// The dial against a missing socket fails immediately with a transient
-	// *net.OpError, so the retry loop's backoff sleep (25ms for the first
-	// attempt) is what the short deadline below must race against and win;
-	// the 5ms budget leaves a wide margin against the 25ms backoff.
+	// missing socket への dial はすぐ *net.OpError となり、最初の 25ms backoff と短い deadline が競合する。
+	// 5ms の予算なら backoff より十分短い。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 	defer cancel()
 	client := Client{Socket: shortSocketPath(t, "missing.sock"), Timeout: time.Second}
@@ -592,9 +590,8 @@ func TestServeReturnsAcceptErrorWhenClosedWithoutContextCancellation(t *testing.
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	// Closing the listener directly (rather than canceling ctx) exercises the
-	// branch where Accept fails but ctx is still live: Serve must surface the
-	// Accept error instead of treating it as an ordinary shutdown.
+	// ctx を中断せず listener を直接閉じ、ctx が有効なまま Accept が失敗する経路を確認する。
+	// Serve は通常の shutdown と扱わず、Accept error を返さなければならない。
 	if err := server.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -801,10 +798,8 @@ func TestIsConnectErrorRejectsFailuresAfterConnectionEstablished(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	client := Client{Socket: socket, Timeout: time.Second}
-	// A handler that returns an application error still means the connection
-	// itself succeeded: the daemon is alive and answered. This must not be
-	// mistaken for "nothing is listening" by callers such as
-	// cli.Client.ensureDaemon that decide whether it is safe to kickstart -k.
+	// handler の application error でも接続自体は成功しており、daemon は応答している。
+	// cli.Client.ensureDaemon が -k の安全性を判定する際、未待受と誤認してはならない。
 	err := client.Call(ctx, "any-method", struct{}{}, nil)
 	if err == nil {
 		t.Fatal("call against an always-failing handler unexpectedly succeeded")

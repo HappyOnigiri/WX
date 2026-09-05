@@ -86,16 +86,11 @@ func TestOpenLeaseDirectoryPinsAndValidatesRootIdentity(t *testing.T) {
 }
 
 func TestForwardAgentSignalHandlesMissingProcessAndProcessGroup(t *testing.T) {
-	// An unstarted command has no Process; forwarding must return rather than
-	// dereference it.
+	// 未起動 command には Process がないため、signal 転送は dereference せず return する。
 	forwardAgentSignal(&exec.Cmd{}, syscall.SIGTERM)
 
-	// configureAgentProcess puts the child in its own process group, and the
-	// shell keeps a grandchild (`sleep`) alive in it, so the child only dies
-	// if the signal reached the group. Asserting the exact termination signal
-	// is what proves delivery: without it a forwardAgentSignal regression
-	// would leave the child running and surface as a package-wide timeout
-	// rather than as this test failing.
+	// configureAgentProcess は子を専用 process group に置き、shell は grandchild（sleep）を残す。
+	// 終了 signal の一致で group への配送を確認し、回帰を package 全体の timeout にしない。
 	cmd := exec.Command("/bin/sh", "-c", "sleep 300 & wait")
 	configureAgentProcess(cmd, -1)
 	if err := cmd.Start(); err != nil {
@@ -122,23 +117,8 @@ func TestForwardAgentSignalHandlesMissingProcessAndProcessGroup(t *testing.T) {
 }
 
 func TestRestoreForegroundIgnoresInvalidTerminalDescriptor(t *testing.T) {
-	// restoreForeground brackets its TIOCSPGRP ioctl with a SIGTTOU guard so
-	// that handing the terminal back cannot stop wx itself: a background
-	// process group attempting TIOCSPGRP is delivered SIGTTOU, whose default
-	// action stops the process. With an invalid descriptor the ioctl itself
-	// fails and must be swallowed, so the guard's own lifecycle is the only
-	// externally observable effect available here.
-	//
-	// The guard is built on signal.Notify/signal.Stop rather than
-	// signal.Ignore/signal.Reset specifically so this is a true bracket:
-	// signal.Reset only undoes Notify registrations, it does not clear the
-	// disposition signal.Ignore sets, so an Ignore/Reset pair leaves SIGTTOU
-	// permanently reported as ignored for the rest of the process's life
-	// after the very first call. That is a process-wide leak, and this test
-	// runs restoreForeground repeatedly in one process (mirroring `go test
-	// -count>1`, which reruns the whole binary without a fresh process) to
-	// prove no such state survives a call. No other code in this package
-	// touches SIGTTOU, so the order -shuffle picks does not matter.
+	// restoreForeground は TIOCSPGRP 中の SIGTTOU で wx 自身が停止しないようにする。
+	// signal.Notify/Stop は signal.Ignore と異なり process-wide な無視状態を残さないため、繰り返し呼び出して確認する。
 	for i := 0; i < 3; i++ {
 		if signal.Ignored(syscall.SIGTTOU) {
 			t.Fatalf("iteration %d: SIGTTOU was already ignored before restoreForeground ran", i)

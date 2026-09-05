@@ -22,12 +22,8 @@ type Manager struct {
 	Ownership state.OwnershipValidator
 }
 
-// SnapshotWithPersistence publishes recovery refs only after persist has
-// durably recorded the exact ref names and object IDs. This ordering closes
-// the reconcile window in which a normal archive looked like an unknown ref.
-// If persistence fails, no recovery ref has been made visible. If ref
-// publication fails afterwards, the durable row remains and reconciliation
-// can distinguish the incomplete archive from an unrelated ref.
+// SnapshotWithPersistence は、正確な ref 名と object ID の永続化後に recovery ref を公開する。
+// 永続化失敗時は ref を公開せず、公開失敗時は永続行を残すので、reconcile は未完了 archive と無関係な ref を区別できる。
 func (m *Manager) SnapshotWithPersistence(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time, persist func(state.Snapshot) error) (state.Snapshot, error) {
 	var snapshot state.Snapshot
 	if err := m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
@@ -77,18 +73,10 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	indexRef := fmt.Sprintf("refs/wx/recovery/%s/%s/index", sessionID, repo.ID)
 	id := domain.StableID("snapshot", sessionID, string(repo.ID))
 	created := time.Now().UTC()
-	// A clean worktree (nothing staged, unstaged, or untracked relative to
-	// HEAD) needs no new content objects: HEAD's own tree and commit already
-	// represent it exactly. Skip write-tree/read-tree/add/commit-tree
-	// entirely and record only the base OID and ref metadata, per the
-	// clean-session archive minimization the design calls for.
-	//
-	// The shortcut must never see more as clean than the dirty path below
-	// would capture, otherwise it silently discards unsnapshotted work. The
-	// explicit flags are therefore load-bearing, not cosmetic:
-	// status.showUntrackedFiles and submodule.<name>.ignore / diff.ignoreSubmodules
-	// are ordinary user settings that suppress exactly the content
-	// `add -A` on a freshly read index still records.
+	// clean worktree は HEAD の tree と commit で完全に表せるため、新しい object を作らず base OID と ref メタデータだけを記録する。
+	// dirty 経路より多くを clean と判定すると未 snapshot の作業を失うため、次の flag は必須である。
+	// ユーザー設定の status.showUntrackedFiles と submodule.<name>.ignore/diff.ignoreSubmodules は、一時 index の `add -A` が記録する内容を隠し得る。
+	// commentlint:allow-long -- 未 snapshot の作業を失わないための判定条件を説明する
 	statusOutput, err := worktreeValue(nil, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none")
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("check worktree cleanliness: %w", err)
@@ -147,18 +135,9 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
 }
 
-// indexHidesWorktreeChanges reports whether the index carries an entry whose
-// worktree changes `git status` is contractually allowed to hide: the
-// assume-unchanged bit (rendered as a lower-case tag by `git ls-files -v`) and
-// the skip-worktree bit ("S"). Both suppress status output, but the dirty
-// snapshot path rebuilds the index from HEAD into a *temporary* index that
-// carries neither bit, so its `add -A` does record the current worktree
-// content of those paths. Taking the clean shortcut while either bit exists
-// would therefore drop content the previous behaviour preserved, so the
-// caller must fall through to the full snapshot instead.
-//
-// This costs one extra `git ls-files -v` pass, incurred only when the far
-// more expensive `git status` walk already reported a clean worktree.
+// indexHidesWorktreeChanges は、git status が隠し得る assume-unchanged と skip-worktree の index 項目を調べる。
+// dirty snapshot はそれらを持たない一時 index を HEAD から再構築するため、`add -A` は現在の内容を記録する。
+// これらがあれば clean の短絡経路を使わず、追加の `git ls-files -v` は status が clean の場合だけ実行する。
 func indexHidesWorktreeChanges(worktreeValue func(env []string, args ...string) (string, error)) (bool, error) {
 	listing, err := worktreeValue(nil, "ls-files", "-v")
 	if err != nil {
@@ -175,12 +154,8 @@ func indexHidesWorktreeChanges(worktreeValue func(env []string, args ...string) 
 	return false, nil
 }
 
-// recoveryRefTargets maps every ref this snapshot publishes to the object it
-// must point at, including the index tree ref. The index tree is otherwise a
-// dangling object: without a ref keeping it reachable, `git gc`'s normal
-// prune grace period can collect it before `retention.recovery_snapshot`
-// elapses, leaving Resume unable to restore staged/unstaged content even
-// though the head and worktree refs are still intact.
+// recoveryRefTargets は snapshot が公開する ref と object の対応を返し、index tree ref も含める。
+// ref がなければ index tree は dangling object となり、保持期限前でも `git gc` に回収されて Resume が staged/unstaged 内容を復元できなくなる。
 func recoveryRefTargets(snapshot state.Snapshot) map[string]string {
 	targets := map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID}
 	if snapshot.IndexRef != "" {
@@ -229,8 +204,8 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 			return fmt.Errorf("recovery ref %s does not match snapshot metadata", ref)
 		}
 	}
-	// Create and lock the clean base first. Resume-phase preparation is deferred
-	// until the snapshot tree and saved index have been restored below.
+	// 先に clean base を作成してロックする。resume 段階の prepare は snapshot tree と
+	// 保存 index を下で復元するまで遅延させる。
 	if m.Preparer == nil {
 		return errors.New("restore requires a workspace preparer")
 	}
@@ -329,9 +304,8 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 
 func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository, root, path, expectedHead string) error {
 	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
-		// Check the path exactly as recorded in SQLite before resolving anything.
-		// Resolving first would hide a symlink that redirects deletion to another
-		// registered worktree.
+		// 何かを解決する前に SQLite に記録されたパスをそのまま検査する。
+		// 先に解決すると、別の登録済み worktree へ向ける symlink を見落とす。
 		absoluteRoot, err := filepath.Abs(root)
 		if err != nil {
 			return err
@@ -344,12 +318,8 @@ func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository,
 		if !domain.IsWithin(absoluteRoot, absolutePath) {
 			return removalOwnershipFailure(errors.New("worktree path is outside wx root"))
 		}
-		// Production's only Preparer constructor (internal/daemon/manager.go)
-		// always requires a root descriptor, so a Preparer with no descriptor,
-		// or one pinned to a different root than the one requested here, means
-		// the descriptor could not be obtained (or names a config/root-replacement
-		// bug). Fail closed instead of falling through to the non-descriptor-bound
-		// removal path below.
+		// 本番の Preparer は root descriptor を必ず持つ。記述子がない場合や別 root に pin されている場合は、
+		// 記述子を取得できなかったか config/root 置換に問題がある。パス名だけの削除経路へ進めず、フェイルクローズする。
 		if m.Preparer != nil && (m.Preparer.OwnedRoot == nil || filepath.Clean(m.Preparer.RootPath) != absoluteRoot) {
 			return removalOwnershipFailure(errors.New("descriptor-bound worktree removal is unavailable"))
 		}
@@ -514,10 +484,8 @@ func (m *Manager) removeExistingWorktree(ctx context.Context, repo discovery.Rep
 			return removalOwnershipFailure(errors.New("worktree HEAD changed before removal"))
 		}
 	}
-	// This is the last durable ownership check before the destructive Git
-	// operation. The common-directory lock remains held throughout the
-	// physical/Git checks and this state read, so a forged marker/lock can
-	// never authorize deletion without the matching SQLite rows.
+	// 破壊的な Git 操作の直前に行う最後の永続的な所有権検査である。
+	// common-directory lock を物理/Git 検査と状態読取りの間も保持するため、偽造した marker/lock だけでは削除を許可できない。
 	if err := m.validateStateOwnership(ctx, repo, absolutePath, slotID, targetIdentity, []string{"REMOVING", "RETIRING"}, []string{"READY", "RETIRING"}); err != nil {
 		return fmt.Errorf("worktree SQLite ownership changed before removal: %w", err)
 	}
@@ -535,12 +503,8 @@ func removalOwnershipFailure(err error) error {
 	return fmt.Errorf("%w: %w", state.ErrOwnership, err)
 }
 
-// validateStateOwnership proves the removal target against SQLite. dirIdentity
-// is the inode identity of the directory the caller holds open; presenting it
-// makes a missing SQLite record a failure instead of a silent pass, so every
-// caller that has a descriptor must pass one. It is empty only where there is
-// no directory to open: the missing-registration branches of RemoveWorktree,
-// which run once the worktree itself is already gone.
+// validateStateOwnership は SQLite に対して削除対象を証明する。dirIdentity は呼び出し元が開いている directory の inode identity である。
+// これにより SQLite record の欠落を失敗にするため、descriptor を持つ呼び出し元は必ず渡す。空にできるのは対象 directory が既にない場合だけである。
 func (m *Manager) validateStateOwnership(ctx context.Context, repo discovery.Repository, target, slotID, dirIdentity string, slotStates, repositoryStates []string) error {
 	validator := m.Ownership
 	if validator == nil && m.Preparer != nil {
@@ -567,9 +531,8 @@ func (m *Manager) validateStateOwnership(ctx context.Context, repo discovery.Rep
 	return err
 }
 
-// markerIdentity names the marker this manager expects for a repository. The
-// root generation comes from the Preparer, which is the only place the
-// daemon records which pinned root a removal is operating in.
+// markerIdentity はこの manager が repository に要求する marker の同一性を返す。
+// root generation は Preparer から取得する。daemon が削除対象の pin 済み root を記録する場所はここだけである。
 func (m *Manager) markerIdentity(repo discovery.Repository) workspace.MarkerIdentity {
 	rootID := ""
 	if m.Preparer != nil {
@@ -578,12 +541,8 @@ func (m *Manager) markerIdentity(repo discovery.Repository) workspace.MarkerIden
 	return workspace.MarkerIdentity{RootID: rootID, RepositoryID: string(repo.ID)}
 }
 
-// worktreeLocation reports the SQLite-recorded location of target: the root
-// generation, the slot's root-relative path, and the repository's directory
-// name inside it. Production always constructs this manager with a Preparer
-// that carries those values (internal/daemon/manager.go); without one there
-// is nothing to compare against, so removal fails closed rather than
-// reverting to a pathname comparison.
+// worktreeLocation は SQLite に記録した target の場所、すなわち root generation、slot の root 相対パス、repository directory 名を返す。
+// 本番ではこれらを持つ Preparer で manager を構築する。比較値がない場合はパス名比較へ戻さず、削除をフェイルクローズする。
 func (m *Manager) worktreeLocation(target string) (rootID, slotRel, dirName string, err error) {
 	if m.Preparer == nil || m.Preparer.RootID == "" || m.Preparer.SlotRelPath == "" {
 		return "", "", "", fmt.Errorf("%w: worktree slot location is unavailable", state.ErrOwnership)
@@ -602,18 +561,10 @@ func validateWxLockReason(reason, slotID string) error {
 	return nil
 }
 
-// validateRemovalPathComponents rejects a symlink anywhere on the way to a
-// removal target. A missing component ends the walk successfully at any
-// depth: if an ancestor is gone the leaf is gone too, so there is nothing
-// left to delete and no symlink that could redirect a deletion.
-//
-// The depth matters. A worktree's root-relative path is
-// <workspace-id>/<slot-id>/<RepoName>, and removeSlotWorktrees deletes the
-// worktrees and then the whole slot directory. A removal interrupted after
-// that RemoveAll but before its ARCHIVED commit replays with the middle
-// component already missing, so tolerating ENOENT only on the last component
-// would report an ownership failure and quarantine a slot that had in fact
-// finished.
+// validateRemovalPathComponents は削除対象までの全 symlink を拒否する。どの階層でも成分がなければ、leaf もなく削除を逸らす symlink は残らない。
+// worktree は <workspace-id>/<slot-id>/<RepoName> にあり、removeSlotWorktrees は worktree 後に slot directory も削除する。
+// RemoveAll 後で ARCHIVED commit 前に中断すると中間成分がないため、leaf だけで ENOENT を許容すると完了済み slot を誤って quarantine する。
+// commentlint:allow-long -- 中断した削除を再実行する際の ENOENT の許容範囲を説明する
 func validateRemovalPathComponents(root, relative string) error {
 	current := root
 	for _, component := range strings.Split(relative, string(filepath.Separator)) {

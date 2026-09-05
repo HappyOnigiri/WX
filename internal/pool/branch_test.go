@@ -71,12 +71,8 @@ func TestResolveBranchesPropagatesGlobalResolutionFailure(t *testing.T) {
 	}
 }
 
-// TestResolveBranchesFailsClosedUnderACanceledContext uses a repository that
-// resolves successfully on a live context, so the failures below can only come
-// from the canceled context. Pointing the fixture at a nonexistent repository
-// instead — as TestResolveBranchesPropagatesGlobalResolutionFailure does
-// deliberately — would make both assertions hold whether or not cancellation
-// had any effect at all.
+// TestResolveBranchesFailsClosedUnderACanceledContext は通常 context なら解決できる repository を使う。
+// 不存在 repository を使わず、中断した context だけが失敗原因になることを確認する。
 func TestResolveBranchesFailsClosedUnderACanceledContext(t *testing.T) {
 	root := t.TempDir()
 	main := initRepo(t, filepath.Join(root, "repository"))

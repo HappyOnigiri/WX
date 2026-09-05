@@ -108,9 +108,8 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	if markerName != ownershipMarkerPrefix+testRepositoryID {
 		t.Fatalf("marker name=%q", markerName)
 	}
-	// The marker lives in the worktree's parent, which is the slot
-	// directory. That is what lets an interrupted removal prove ownership
-	// again after the worktree itself is gone.
+	// markerはworktreeの親であるslot directoryに置く。
+	// そのため、worktreeが消えた後でも中断した削除の所有権を再証明できる。
 	markerPath := filepath.Join(slotDirectory, markerName)
 	if _, err := os.Stat(markerPath); err != nil {
 		t.Fatalf("marker is not in the slot directory: %v", err)
@@ -173,9 +172,8 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 		t.Fatalf("marker recreation: %v", err)
 	}
 
-	// A marker can be syntactically valid while naming a different root
-	// generation or repository; the proof must reject that mismatch. This is
-	// what replaced version 1's redundant absolute target path.
+	// markerは構文的に正しくても、別のroot世代やrepositoryを指せるため、その不一致を証明で拒否する。
+	// これはversion 1の冗長な絶対target pathに代わる検査である。
 	otherGeneration := ownershipMarker{Version: ownershipMarkerVersion, SlotID: "slot", RootID: "rtzzzz", RepositoryID: testRepositoryID, CommonDir: common}
 	otherGenerationJSON, err := json.Marshal(otherGeneration)
 	if err != nil {
@@ -302,8 +300,8 @@ func TestDescriptorBoundOwnershipMarkerLifecycle(t *testing.T) {
 	if slot, err := ValidateRemovalOwnershipAt(owner, root, target, markerFor("slot"), common); err != nil || slot != "slot" {
 		t.Fatalf("descriptor-bound removal proof slot=%q err=%v", slot, err)
 	}
-	// Removing the worktree must leave the marker in the slot directory, so
-	// an interrupted removal can still prove ownership when it is retried.
+	// worktreeを削除してもmarkerはslot directoryに残すため、
+	// 中断した削除を再試行したときにも所有権を証明できる。
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
@@ -346,8 +344,7 @@ func TestDescriptorBoundOwnershipMarkerRejectsNamespaceAndProofChanges(t *testin
 			t.Fatalf("invalid slot %q was accepted", identity.SlotID)
 		}
 		if identity.SlotID == "" {
-			// An empty slot ID is legitimate for validation: it means the
-			// caller does not care which slot the marker names.
+			// 空のslot IDは検証上正当であり、呼び出し側がmarkerのslotを問わないことを示す。
 			continue
 		}
 		if err := ValidateOwnershipMarkerAt(owner, root, target, identity, common); !errors.Is(err, state.ErrOwnership) {
@@ -558,8 +555,7 @@ func TestOwnershipMarkerPathsAndPhysicalHelpers(t *testing.T) {
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// The marker is always the worktree's sibling, with no layout pattern
-	// matching involved any more.
+	// markerは常にworktreeの兄弟であり、layout patternによる照合は行わない。
 	relative, err := ownershipMarkerRelative(root, target, testRepositoryID)
 	if err != nil {
 		t.Fatal(err)
@@ -1037,11 +1033,8 @@ func TestOwnershipDescriptorAndGitRecordBoundaryMatrix(t *testing.T) {
 	}
 }
 
-// TestValidateRegisteredWorktreeAtCoversLockAndSlotBoundaries exercises the
-// descriptor-bound lock/slot matrix that ValidateRegisteredWorktreeAt shares
-// conceptually with the lexical-path ValidateRegisteredWorktree, but which is
-// tracked as separate code because it never resolves the mutable target
-// pathname (see RegisteredWorktreeLockStatusAt's doc comment).
+// TestValidateRegisteredWorktreeAtCoversLockAndSlotBoundariesは、descriptor版のlock/slot境界行列を確認する。
+// lexical-path版と概念は同じだが、可変target pathnameを解決しない別実装として管理される（RegisteredWorktreeLockStatusAtのdoc comment参照）。
 func TestValidateRegisteredWorktreeAtCoversLockAndSlotBoundaries(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")

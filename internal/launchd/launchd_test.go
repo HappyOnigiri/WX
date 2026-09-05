@@ -33,9 +33,8 @@ func TestRenderInstallUninstallAndKickstart(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), Label) || !strings.Contains(string(data), "/usr/local/bin/wx") {
 		t.Fatalf("rendered plist=%q err=%v", data, err)
 	}
-	// The plist is the only caller of the foreground mode, so a rename that
-	// missed it would leave launchd running an unknown action in a KeepAlive
-	// loop rather than failing anywhere a test would notice.
+	// plist だけが foreground mode を呼ぶ。名称変更を漏らすと launchd は未知 action を KeepAlive loop で実行し続ける。
+	// test が検出できる失敗にならないため、ここで引数を確認する。
 	for _, argument := range []string{"<string>daemon</string>", "<string>start</string>", "<string>--foreground</string>"} {
 		if !strings.Contains(string(data), argument) {
 			t.Fatalf("rendered plist does not pass %s: %s", argument, data)
@@ -131,7 +130,7 @@ func TestCurrentPlistStatusDistinguishesCurrentStaleAndUnknown(t *testing.T) {
 	if status, err := CurrentPlistStatus(); status != PlistCurrent || err != nil {
 		t.Fatalf("current plist status=%v err=%v", status, err)
 	}
-	// This is the stale shape produced by the old daemon command contract.
+	// これは旧 daemon command 契約が生成した stale な形である。
 	if err := os.WriteFile(plist, []byte("<string>daemon start --foreground</string>\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -200,10 +199,8 @@ func TestKickstartReportsAnUninstalledService(t *testing.T) {
 func TestKickstartReportsAFailureThatProducedNoOutput(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// An empty PATH makes exec fail before launchctl can print anything, which
-	// is the shape of every failure that leaves CombinedOutput empty (a
-	// cancelled context and a reached deadline included). The wrapped error is
-	// then all the daemon log and wx daemon restart have to report.
+	// 空の PATH では launchctl が出力する前に exec が失敗し、CombinedOutput は空になる。
+	// context の中断・期限切れも同じ形で、daemon log と restart が報告できるのは wrap 済み error だけである。
 	t.Setenv("PATH", "")
 	err := Kickstart(context.Background())
 	if err == nil {
@@ -236,10 +233,8 @@ func TestLaunchctlFailuresAreReported(t *testing.T) {
 	}
 }
 
-// TestStartAsksLaunchdWithoutKillingTheRunningService pins the one difference
-// between Start and Kickstart. Passing -k here would make wx daemon start tear
-// down a daemon that is serving other sessions, which is exactly what the
-// separate entry point exists to avoid.
+// TestStartAsksLaunchdWithoutKillingTheRunningService は Start と Kickstart の -k の有無を確認する。
+// wx daemon start が他 session を処理中の daemon を終了させないための区別である。
 func TestStartAsksLaunchdWithoutKillingTheRunningService(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

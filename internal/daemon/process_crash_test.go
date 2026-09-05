@@ -68,10 +68,6 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Crash boundaries deliberately stop and restart a separate daemon process.
-	// Use the RPC package's normal ten-second client budget here: the previous
-	// two-second test-only override passed in isolation but expired when this
-	// race matrix ran alongside the other daemon integration shard.
 	client := rpc.Client{Socket: socket, Timeout: 10 * time.Second}
 	process := startCrashDaemon(t, client)
 	t.Cleanup(func() { stopCrashDaemon(process) })

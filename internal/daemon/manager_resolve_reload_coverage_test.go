@@ -17,10 +17,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-// TestReloadConfigFailsClosedWhileShuttingDown verifies that a config reload
-// racing a manager shutdown is rejected with errManagerClosed instead of
-// installing a new worktree-root descriptor into a manager that is already
-// tearing down its state.
 func TestReloadConfigFailsClosedWhileShuttingDown(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -55,11 +51,6 @@ func TestReloadConfigFailsClosedWhileShuttingDown(t *testing.T) {
 	}
 }
 
-// TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh verifies that a
-// cached READY slot whose recorded repository state no longer matches the
-// resolved branch (a stale BaseOID) is marked STALE and skipped rather than
-// handed out as a lease, and that ResolveAndLease falls back to allocating a
-// fresh slot instead of failing outright.
 func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
@@ -107,12 +98,6 @@ func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 	}
 }
 
-// TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch verifies that
-// an explicit --branch request is no longer refused the READY pool outright:
-// when the requested branch resolves to exactly what a READY slot already
-// holds (here, --branch main against a slot built from main with nothing new
-// to fetch), ResolveAndLease reuses it instead of unconditionally cold
-// allocating a fresh slot.
 func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -137,11 +122,6 @@ func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	// ensureStandby only checks out repositories used within hot_standby;
-	// mark this repository as previously leased so the standby it builds
-	// below is an actual hot checkout, not a COLD placeholder. That isolates
-	// this test to the exact-match reuse decision this test is about,
-	// independent of the cold-materialize path exercised elsewhere.
 	raw := openManagerCoverageDB(t, filepath.Join(root, "state.db"))
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
@@ -183,12 +163,6 @@ func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 	}
 }
 
-// TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch guards the
-// other side of consulting the READY pool for an explicit --branch request: a
-// slot that holds a different base OID is not stale, it is simply not what
-// this request wants. Retiring it would let a single `wx --branch other`
-// invocation wipe the warm pool built for main, making the *next* plain `wx`
-// a cold start as well — strictly worse than not consulting the pool at all.
 func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T) {
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -240,7 +214,6 @@ func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T
 		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
 	}
 
-	// A branch whose tip is a different commit than the standby's base OID.
 	gitRun(t, repository, "checkout", "-q", "-b", "other")
 	gitRun(t, repository, "commit", "--allow-empty", "-m", "other")
 	gitRun(t, repository, "checkout", "-q", "main")
@@ -261,11 +234,6 @@ func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T
 	}
 }
 
-// TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath
-// verifies that a READY slot whose recorded repository worktree path has
-// drifted outside every known wx root is quarantined and reported back to
-// the caller as an ownership failure, instead of ResolveAndLease silently
-// skipping it and allocating a fresh slot.
 func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
@@ -298,9 +266,6 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 	if _, _, err := m.createSlotRoot(badPath, badPath); err != nil {
 		t.Fatal(err)
 	}
-	// The recorded directory name escapes the wx root. The fingerprint still
-	// has to match, or the slot would be reported as an ordinary not-ready
-	// slot before the ownership check under test runs.
 	badDirName := escapingDirNameFor(t, cfg.Storage.WorktreeRoot, badPath)
 	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, cfg)
 	if err != nil {
@@ -320,12 +285,6 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 	}
 }
 
-// TestForgetFailsClosedWhenAFailedSlotCannotBeRetired covers the other half of
-// the FAILED-slot retirement: when the retirement cannot complete, forget must
-// report the failure and leave the workspace registered. Completing it would
-// clear workspace_id and make the slot's path permanently unprovable, which is
-// exactly the leak the retirement exists to prevent. The unprovable path must
-// also end up QUARANTINED rather than deleted.
 func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -376,10 +335,6 @@ func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
 	}
-	// Fail the slot and move its recorded location outside every known wx
-	// root, so the retirement cannot prove ownership of what it would have to
-	// delete. A slot is now located by root generation plus root-relative
-	// path, so the escape is spelled in rel_path.
 	if _, err := raw.ExecContext(ctx, `UPDATE slots SET state='FAILED',rel_path=? WHERE id=?`, filepath.Join("..", "outside-slot"), ready.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -399,11 +354,6 @@ func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 	}
 }
 
-// TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt verifies that
-// forgetting a workspace with a FAILED slot physically removes that slot's
-// worktree instead of merely clearing its workspace_id: once the link is
-// gone, ValidateWorktreeOwnership can never again prove ownership for that
-// path, which would otherwise leak it forever with no automatic recovery.
 func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -429,10 +379,6 @@ func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	// A never-leased single-repository workspace's standby would otherwise
-	// register its sole repository COLD (see ensureStandby's hot_standby
-	// filter); mark it previously leased so this builds a real checkout to
-	// force into FAILED below.
 	raw := openManagerCoverageDB(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
@@ -458,8 +404,6 @@ func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
 	}
-	// Force the otherwise-healthy standby into FAILED: forget must treat it
-	// the same as any other genuinely failed preparation.
 	if _, err := raw.ExecContext(ctx, `UPDATE slots SET state='FAILED' WHERE id=?`, ready.ID); err != nil {
 		t.Fatal(err)
 	}

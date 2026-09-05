@@ -1,5 +1,4 @@
-// Package hookconfig evaluates whether the configured agent hooks provide the
-// synchronous readiness contract required by wx.
+// Package hookconfig は設定済み agent hook が wx に必要な同期 readiness 契約を満たすか判定する。
 package hookconfig
 
 import (
@@ -15,9 +14,8 @@ import (
 	"unicode"
 )
 
-// Available reports whether the effective hook configuration for agent has a
-// valid synchronous wx readiness hook for every required event. Any missing,
-// malformed, disabled, ambiguous, or unsafe configuration is unavailable.
+// Available は agent の有効 hook 設定が必須 event すべてに有効な同期 wx readiness hook を持つか返す。
+// 欠落、不正、無効化、曖昧、安全でない設定は unavailable とする。
 func Available(agent string) bool {
 	path, ok := readinessHookPaths(agent)
 	if !ok {
@@ -42,8 +40,7 @@ func Available(agent string) bool {
 	return readinessHookDocumentMatches(data, required, executable)
 }
 
-// CurrentExecutable returns the canonical executable identity of the running
-// wx process.
+// CurrentExecutable は実行中 wx process の canonical executable identity を返す。
 func CurrentExecutable() (string, error) {
 	path, err := os.Executable()
 	if err != nil {
@@ -56,10 +53,8 @@ func CurrentExecutable() (string, error) {
 	return canonical, nil
 }
 
-// codexHooksEnabled checks the Codex feature configuration files, which can
-// disable user hooks even though an otherwise valid hooks.json is present.
-// The detector only needs this small, stable part of TOML; unreadable or
-// structurally malformed policy is treated as unavailable.
+// codexHooksEnabled は有効な hooks.json があっても user hook を無効にし得る Codex 設定を調べる。
+// 必要な TOML 部分だけを読み、読み取り不能または構造不正の policy は unavailable とする。
 func codexHooksEnabled() bool {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -88,13 +83,12 @@ func codexHooksConfigEnabled(data []byte) bool {
 			continue
 		}
 		if strings.Contains(line, "\"\"\"") || strings.Contains(line, "'''") {
-			// A small parser cannot safely reason about multiline strings.
+			// 小さな parser では multiline string を安全に解釈できない。
 			return false
 		}
 		if depth > 0 {
-			// Continuation of an array or inline table opened on an earlier
-			// line. Its contents can never name a [features] key, so only the
-			// bracket depth matters here.
+			// 前行で開いた array または inline table の継続行である。
+			// [features] key にはなれないため、ここでは bracket depth だけを扱う。
 			next, rest, ok := scanTOMLValueDepth(line, depth)
 			if !ok || rest != "" {
 				return false
@@ -106,8 +100,7 @@ func codexHooksConfigEnabled(data []byte) bool {
 			if !strings.HasSuffix(line, "]]") {
 				return false
 			}
-			// Array-of-table entries are valid TOML (and common for hooks),
-			// but never represent the singular [features] table.
+			// array-of-table entry は TOML として有効だが、単一の [features] table にはならない。
 			table = "array:" + strings.TrimSpace(line[2:len(line)-2])
 			continue
 		}
@@ -120,17 +113,15 @@ func codexHooksConfigEnabled(data []byte) bool {
 		}
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
-			// TOML permits no bare statements. Treat an unrecognised shape as
-			// unavailable so a malformed config cannot enable the fast path.
+			// TOML に bare statement はない。不明な形は unavailable とし、不正 config が fast path を有効化しないようにする。
 			return false
 		}
 		next, rest, ok := scanTOMLValueDepth(value, 0)
 		if !ok || rest != "" {
 			return false
 		}
-		// A value that leaves brackets open continues on the following lines.
-		// The key checks below still run: a [features] key whose value cannot
-		// be read on one line stays unavailable.
+		// bracket を開いたままの value は次行へ続く。
+		// 一行で読めない [features] key は unavailable のままとする。
 		depth = next
 		key = normalizeTOMLKey(key)
 		if table == "" {
@@ -152,15 +143,13 @@ func codexHooksConfigEnabled(data []byte) bool {
 			return false
 		}
 	}
-	// An array or inline table that never closes means the file was truncated
-	// or malformed; the skipped lines could have held a [features] key.
+	// 閉じない array または inline table は file の切詰めか不正を示す。
+	// 読み飛ばした行に [features] key があり得るため unavailable とする。
 	return depth == 0
 }
 
-// scanTOMLValueDepth walks one line of a value and reports the bracket depth
-// still open at its end. rest holds whatever follows the bracket that closed
-// the value on this line, and ok is false when quotes or brackets are
-// unbalanced.
+// scanTOMLValueDepth は value の1行を走査し、末尾で開いている bracket depth を返す。
+// rest は閉じた bracket 後の文字列で、quote または bracket が不均衡なら ok は false となる。
 func scanTOMLValueDepth(line string, depth int) (int, string, bool) {
 	var quote byte
 	for index := 0; index < len(line); index++ {
@@ -297,8 +286,8 @@ func readinessHookPaths(agent string) (string, bool) {
 	case "claude":
 		local := filepath.Join(home, ".claude", "settings.local.json")
 		if _, err := regularHookPath(local); err == nil {
-			// Claude's local settings have higher precedence than settings.json.
-			// Do not merge two files when the effective hook set is ambiguous.
+			// Claude の local settings は settings.json より優先される。
+			// 有効な hook set が曖昧になるため、二つの file を merge しない。
 			return local, true
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return "", false
@@ -547,9 +536,8 @@ func splitHookCommand(command string) ([]hookCommandField, bool) {
 	literalExpansion := false
 	for i := 0; i < len(command); i++ {
 		char := command[i]
-		// Newlines and carriage returns are shell command separators, not
-		// ordinary argument whitespace. Reject them even inside quotes so a
-		// multiline command can never be mistaken for a synchronous wx hook.
+		// newline と carriage return は通常の引数空白ではなく shell command separator である。
+		// quote 内でも拒否し、multiline command を同期 wx hook と誤認させない。
 		if char == '\n' || char == '\r' {
 			return nil, false
 		}
@@ -568,8 +556,8 @@ func splitHookCommand(command string) ([]hookCommandField, bool) {
 				continue
 			}
 			if quote == '"' && char == '`' {
-				// Backticks are command substitution in double quotes. Do not
-				// classify a command whose executable depends on shell execution.
+				// double quote 内の backtick は command substitution である。
+				// executable が shell 実行に依存する command は分類しない。
 				return nil, false
 			}
 			if (char == '~' && field.Len() == 0) || (quote == '\'' && char == '$' && strings.HasPrefix(command[i:], "$HOME")) {
@@ -577,9 +565,8 @@ func splitHookCommand(command string) ([]hookCommandField, bool) {
 			}
 			if quote == '"' && char == '\\' {
 				if i+1 >= len(command) || !strings.ContainsRune("$`\"\\", rune(command[i+1])) {
-					// Inside double quotes, backslash only escapes $, `, ", \\,
-					// or a newline. Treating other escapes as removed would
-					// mistake a non-existent shell path for the wx executable.
+					// double quote 内で backslash が escape できるのは $、`、"、\\、newline だけである。
+					// 他の escape を除去すると、存在しない shell path を wx executable と誤認する。
 					return nil, false
 				}
 				escaped = true

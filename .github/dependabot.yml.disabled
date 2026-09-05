@@ -1,7 +1,5 @@
-# Dependabot automatic pull-request generation is paused during the initial phase.
-# Restore this file to .github/dependabot.yml only with explicit user permission.
-# 初期フェーズでは Dependabot の自動 PR 作成を停止中。このファイルを
-# .github/dependabot.yml に戻すのは、ユーザーの明示許可を得た場合だけにすること。
+# Dependabotの自動PR作成は停止中。
+# .github/dependabot.ymlへの復帰にはユーザーの明示許可が必要。
 version: 2
 updates:
   - package-ecosystem: gomod

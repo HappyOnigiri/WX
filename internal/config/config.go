@@ -45,10 +45,8 @@ type Config struct {
 }
 type Storage struct {
 	WorktreeRoot string `yaml:"worktree_root,omitempty"`
-	// RepoDirSource selects how a repository's directory name inside a slot
-	// is derived: "remote" uses the origin URL's basename, "directory" uses
-	// the main worktree's own directory name. Per-repository overrides in
-	// Repositories take precedence.
+	// RepoDirSource は slot 内の repository directory 名の導出方法を選ぶ。
+	// remote は origin URL の basename、directory は main worktree の名前を使い、Repositories の個別指定を優先する。
 	RepoDirSource     string   `yaml:"repo_dir_source,omitempty"`
 	BackupGenerations int      `yaml:"backup_generations,omitempty"`
 	BackupRetention   Duration `yaml:"backup_retention,omitempty"`
@@ -85,11 +83,8 @@ type Includes struct {
 }
 type Repository struct {
 	DefaultBranch string `yaml:"default_branch,omitempty"`
-	// DirName pins the repository's directory name inside a slot. DirSource
-	// ("remote" or "directory") selects the derivation when DirName is empty.
-	// Both live outside the scalar key space walked by walkConfigLeaves
-	// (Repositories is a map), so they are set by editing the YAML directly,
-	// like default_branch and prepare.
+	// DirName は slot 内の repository directory 名を固定する。
+	// 空なら DirSource（remote または directory）で導出する。Repositories は map のため YAML で直接指定する。
 	DirName   string             `yaml:"dir_name,omitempty"`
 	DirSource string             `yaml:"dir_source,omitempty"`
 	Prepare   Prepare            `yaml:"prepare,omitempty"`
@@ -109,8 +104,7 @@ type Logging struct {
 
 type Field struct{ Key, Value string }
 
-// RepoDirSourceRemote and RepoDirSourceDirectory are the two accepted values
-// of storage.repo_dir_source and repositories.<path>.dir_source.
+// RepoDirSourceRemote と RepoDirSourceDirectory は storage.repo_dir_source と repositories.<path>.dir_source の値。
 const (
 	RepoDirSourceRemote    = "remote"
 	RepoDirSourceDirectory = "directory"
@@ -127,9 +121,8 @@ func Defaults() Config {
 	}
 }
 
-// DefaultAgentRulesEnabled resolves whether default agent rule files should be
-// copied for a repository, preferring its explicit override over the global
-// setting.
+// DefaultAgentRulesEnabled は repository へ既定の agent rule をコピーするか解決する。
+// 個別指定が global 設定より優先される。
 func (c Config) DefaultAgentRulesEnabled(mainPath string) bool {
 	if override, ok := c.Repositories[mainPath]; ok && override.Includes.DefaultAgentRules != nil {
 		return *override.Includes.DefaultAgentRules
@@ -137,8 +130,7 @@ func (c Config) DefaultAgentRulesEnabled(mainPath string) bool {
 	return c.Includes.DefaultAgentRules
 }
 
-// homePath joins parts onto the user's home directory, failing closed when
-// the home directory cannot be determined.
+// homePath はユーザーの home directory に parts を結合し、home を取得できない場合は失敗閉鎖する。
 func homePath(parts ...string) (string, error) {
 	h, err := os.UserHomeDir()
 	if err != nil {
@@ -293,17 +285,11 @@ func (c Config) has(key string, fallback bool) bool {
 	return fallback
 }
 
-// durationType is the reflect.Type of Duration, used to recognise Duration
-// leaves during struct walks (they are structs, but scalar configuration
-// leaves rather than nested sections).
+// durationType は Duration の reflect.Type。struct だが、設定上は scalar leaf として扱う。
 var durationType = reflect.TypeOf(Duration{})
 
-// walkConfigLeaves visits every scalar (string, int, bool, or Duration) field
-// reachable from v, in declaration order, along with its dotted yaml key.
-// It skips unexported fields, "version" (handled separately by every
-// caller), and any map or slice field (workspaces, repositories, and
-// discovery.exclude), which are not part of the uniform scalar key space
-// shared by Fields, SetField, Merge, and MarshalYAML.
+// walkConfigLeaves は v から到達できる scalar（string、int、bool、Duration）を宣言順に走査し、YAML key と返す。
+// unexported、version、map/slice（workspaces、repositories、discovery.exclude）は共通の scalar key 空間から除外する。
 func walkConfigLeaves(v reflect.Value, prefix string, visit func(key string, field reflect.Value)) {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {
@@ -333,9 +319,7 @@ func walkConfigLeaves(v reflect.Value, prefix string, visit func(key string, fie
 	}
 }
 
-// configField locates the scalar field addressed by key within v, which
-// must be the same shape walkConfigLeaves would traverse. It returns the
-// zero Value if key does not address a scalar leaf.
+// configField は walkConfigLeaves と同じ形で key の scalar field を探す。scalar leaf でなければ zero Value を返す。
 func configField(v reflect.Value, key string) reflect.Value {
 	var target reflect.Value
 	walkConfigLeaves(v, "", func(k string, fv reflect.Value) {
@@ -483,9 +467,7 @@ func Save(c Config) error {
 	return err
 }
 
-// leafInterface returns the value held by a scalar config field as the
-// concrete type yaml.Marshal should encode it with. Duration already
-// implements yaml.Marshaler (as its string form), so it can be boxed as-is.
+// leafInterface は scalar config field の値を yaml.Marshal が扱う具象型で返す。Duration はそのまま渡せる。
 func leafInterface(fv reflect.Value) any {
 	return fv.Interface()
 }
@@ -524,8 +506,7 @@ func (c Config) MarshalYAML() (any, error) {
 	return out, nil
 }
 
-// Fields lists every user-settable scalar configuration key with its
-// current effective value, in the same order SetField accepts them.
+// Fields はユーザーが設定できる scalar key と現在の実効値を SetField と同じ順序で列挙する。
 func Fields(c Config) []Field {
 	var fields []Field
 	walkConfigLeaves(reflect.ValueOf(c), "", func(key string, fv reflect.Value) {
@@ -545,10 +526,8 @@ func Fields(c Config) []Field {
 	return fields
 }
 
-// SetField parses value for the type of the scalar field addressed by key
-// (a duration, an integer, a boolean, or a plain string) and assigns it. Range and
-// enum validity for every key is enforced later by Validate; SetField only
-// performs the type-level parsing needed to store the value at all.
+// SetField は key の scalar field（duration、整数、真偽、文字列）として value を解析し代入する。
+// 範囲と enum の検証は後段の Validate が行う。
 func SetField(c *Config, key, value string) error {
 	field := configField(reflect.ValueOf(c).Elem(), key)
 	if !field.IsValid() {

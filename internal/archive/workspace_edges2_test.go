@@ -12,10 +12,8 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
-// TestNormalizeWorkspaceExclusionsDeduplicatesAndSorts exercises the
-// duplicate-skip branch in normalizeWorkspaceExclusions directly: repeated
-// exclusion values must collapse to one entry, and the result must come back
-// sorted regardless of input order.
+// TestNormalizeWorkspaceExclusionsDeduplicatesAndSorts は normalizeWorkspaceExclusions の重複除外を検証する。
+// 重複値を一つにまとめ、入力順にかかわらず結果を sort する。
 func TestNormalizeWorkspaceExclusionsDeduplicatesAndSorts(t *testing.T) {
 	out, err := normalizeWorkspaceExclusions([]string{"b", "a", "b", "a/c"})
 	if err != nil {
@@ -27,10 +25,8 @@ func TestNormalizeWorkspaceExclusionsDeduplicatesAndSorts(t *testing.T) {
 	}
 }
 
-// TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure exercises
-// the MkdirAll failure branch in the pinned snapshot path: the deterministic
-// "_recovery" directory name is pre-occupied by a regular file, so the
-// recovery-snapshots directory can never be created.
+// TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure は pin 済み snapshot path の MkdirAll 失敗を検証する。
+// 決定的な `_recovery` directory 名を通常 file で占有し、recovery snapshots directory を作れなくする。
 func TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure(t *testing.T) {
 	ownershipRoot := t.TempDir()
 	bundleRoot := filepath.Join(ownershipRoot, "bundle")
@@ -48,11 +44,8 @@ func TestSnapshotWorkspacePropagatesRecoveryDirectoryCreationFailure(t *testing.
 	}
 }
 
-// TestPruneWorkspaceRootDescendsThroughNonExcludedAncestor exercises the
-// recursive branch of pruneWorkspaceRoot where an ancestor directory itself
-// is not excluded but contains an excluded descendant: pruning must descend
-// into it, preserving the excluded child while still removing its
-// non-excluded sibling.
+// TestPruneWorkspaceRootDescendsThroughNonExcludedAncestor は、除外されない ancestor に除外対象の子孫がある場合を検証する。
+// prune はその ancestor を再帰的に降り、除外対象の子を残しつつ除外されない sibling を消す。
 func TestPruneWorkspaceRootDescendsThroughNonExcludedAncestor(t *testing.T) {
 	ownershipRoot := t.TempDir()
 	bundleRoot := filepath.Join(ownershipRoot, "bundle")

@@ -49,10 +49,8 @@ func run(ctx context.Context, args []string) int {
 		topUsage(os.Stderr)
 		return 2
 	}
-	// Each subcommand below owns its own pflag.FlagSet and therefore its own
-	// --help/-h handling (see finishFlagParse), so there is no separate
-	// top-level pre-empt for "<command> --help" here: every command's own
-	// flagset already reproduces the desired exit code and usage destination.
+	// 各サブコマンドが専用の pflag.FlagSet と --help/-h 処理を持つため、
+	// ここで「<command> --help」を先取りしない。
 	switch args[0] {
 	case "-h", "--help", "help":
 		topUsage(os.Stdout)
@@ -108,33 +106,20 @@ func rpcClient() (rpc.Client, error) {
 	return rpc.Client{Socket: socket, Timeout: 5 * time.Second}, err
 }
 
-// statusDisplayTimeout bounds Status/Doctor, which additionally walk the
-// worktree root to report disk usage (rootDirectoryUsage) and so can take
-// longer than the RPC client's default fixed timeout on a large root. This
-// does not risk killing a live daemon: unlike cli.Client.ensureDaemon, wx
-// status/wx doctor never kickstart on failure, they only report the error.
+// statusDisplayTimeout は Status/Doctor の制限時間。
+// worktree root のディスク使用量も調べるため、大きな root では RPC の既定値を超え得る。
+// status/doctor は失敗時に kickstart せず、エラーを報告するだけなので daemon は停止しない。
 const statusDisplayTimeout = 40 * time.Second
 
-// finishFlagParse applies wx's shared subcommand --help contract to a
-// ContinueOnError FlagSet whose fs.Usage prints to stdout: pflag calls
-// fs.Usage itself only for -h/--help (see the pflag.ErrHelp branches in
-// parseLongArg/parseSingleShortArg), so by the time Parse returns that
-// output already happened and this only needs to choose the exit code. Any
-// other parse failure (for example an unknown flag) is never auto-printed by
-// pflag under ContinueOnError, so this prints it to stderr itself. done is
-// true whenever the caller should return code immediately; it is false only
-// on a clean parse, when the caller still needs its own positional-argument
-// checks. `hook` is the one command whose --help contract is stderr+exit 2
-// rather than stdout+exit 0, so it does not use this helper.
+// finishFlagParse は各サブコマンド共通の --help 契約を適用する。
+// ContinueOnError では pflag が help の Usage だけを自動表示するため、他の解析エラーは stderr に表示する。
+// done が true の場合、呼び出し側は code を返してよい。
 func finishFlagParse(fs *pflag.FlagSet, name string, args []string) (code int, done bool) {
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, pflag.ErrHelp) {
 			return 0, true
 		}
-		// pflag under ContinueOnError returns the error without writing it
-		// anywhere (flag.go's Parse only prints for ExitOnError), so print it
-		// alongside the usage block: it is the only part of the output that
-		// names which argument was rejected.
+		// ContinueOnError の pflag はエラーを書き出さないため、Usage と併せて stderr に表示する。
 		fmt.Fprintln(os.Stderr, "error:", err)
 		commandUsage(os.Stderr, name)
 		return 2, true
@@ -143,8 +128,7 @@ func finishFlagParse(fs *pflag.FlagSet, name string, args []string) (code int, d
 }
 
 func runRPCDisplay(ctx context.Context, method string, args []string) int {
-	// Keep this compatibility path for in-process callers while the doctor
-	// command has its own connection-error fallback.
+	// doctor は接続エラー時に独自のフォールバックを持つため、互換用の経路として残す。
 	if strings.EqualFold(method, "Doctor") {
 		return runDoctor(ctx, args)
 	}
@@ -190,10 +174,8 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	return 0
 }
 
-// runDoctor is deliberately separate from the generic RPC display path:
-// doctor can still report local configuration and filesystem facts when no
-// daemon answers the socket.  A live daemon that accepted the connection but
-// failed the request remains an error and does not trigger the fallback.
+// runDoctor は汎用 RPC 表示処理と分ける。
+// socket に応答する daemon がなくてもローカルの事実を報告するが、接続済み daemon の要求失敗にはフォールバックしない。
 func runDoctor(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("doctor", pflag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print JSON")
@@ -232,8 +214,7 @@ func runDoctor(ctx context.Context, args []string) int {
 		} else {
 			printDisplay(os.Stdout, out)
 		}
-		// The local report is useful but cannot establish that a daemon is
-		// healthy; preserve doctor’s historical failure exit code.
+		// ローカルの報告だけでは daemon の健全性を確認できないため、従来の失敗終了コードを保つ。
 		return 1
 	}
 	data, _ := json.MarshalIndent(out, "", "  ")
@@ -268,9 +249,7 @@ func runGC(ctx context.Context, args []string) int {
 
 func runConfig(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
-	// A config value can itself start with "-" (an option-like string is a
-	// legal, if unusual, scalar value), so stop treating arguments as flags
-	// once the first positional (the key) is seen.
+	// 設定値は「-」で始まることもあるため、最初の位置引数（キー）以降はフラグとして扱わない。
 	fs.SetInterspersed(false)
 	fs.Usage = func() { commandUsage(os.Stdout, "config") }
 	if code, done := finishFlagParse(fs, "config", args); done {
@@ -327,9 +306,7 @@ func runConfig(ctx context.Context, args []string) int {
 
 func runResume(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("resume", pflag.ContinueOnError)
-	// Everything after <id> <agent> is the agent's own argv (it commonly
-	// includes agent flags such as --resume), so wx must stop parsing its own
-	// flags at the first positional rather than trying to recognize them.
+	// <id> <agent> より後は agent 自身の argv（--resume など）なので、最初の位置引数で wx の解析を止める。
 	fs.SetInterspersed(false)
 	fs.Usage = func() { commandUsage(os.Stdout, "resume") }
 	if code, done := finishFlagParse(fs, "resume", args); done {
@@ -357,24 +334,15 @@ func runResume(ctx context.Context, args []string) int {
 	return c.RunAgent(ctx, agentName, rest[2:], nil, false, id)
 }
 
-// daemonWaitTimeout bounds each synchronous daemon lifecycle command. The
-// daemon only acts on a stop or restart once it is idle, and it waits for
-// running jobs as well as in-flight RPCs, so the budget has to cover a
-// realistic job rather than just the signal. It is a variable so tests can
-// shorten it; production never changes it.
+// daemonWaitTimeout は同期的な daemon ライフサイクル操作の待機上限。
+// daemon は idle になるまで停止・再起動せず、実行中ジョブと RPC も待つため、実運用の処理時間を含める。
 var daemonWaitTimeout = 60 * time.Second
 
-// daemonPollInterval is how often the socket is probed while waiting. It
-// matches cli.Client.ensureDaemon's cadence.
+// daemonPollInterval は待機中に socket を調べる間隔で、cli.Client.ensureDaemon と揃える。
 const daemonPollInterval = 50 * time.Millisecond
 
-// daemonListening reports whether something is accepting connections on the
-// daemon socket. It dials and closes without ever sending a frame, on purpose:
-// rpc.Server abandons a connection whose first frame never arrives before
-// Handler.Handle runs, so this probe is invisible to the manager's idle gate.
-// Polling with a real RPC instead would restamp lastRequestEnd on every pass
-// and hold the quiet period — and therefore the pending stop or restart — open
-// for exactly as long as the caller kept waiting.
+// daemonListening は daemon socket が接続を受け付けているか調べる。
+// frame を送らず閉じるため idle gate に影響しない。実 RPC を送ると待機中の各回が quiet period を延長する。
 func daemonListening(ctx context.Context, socket string) bool {
 	dialer := net.Dialer{Timeout: daemonPollInterval}
 	conn, err := dialer.DialContext(ctx, "unix", socket)
@@ -385,8 +353,7 @@ func daemonListening(ctx context.Context, socket string) bool {
 	return true
 }
 
-// waitForSocket blocks until the socket reaches the wanted state, reporting
-// false when the budget ran out or the caller gave up first.
+// waitForSocket は socket が目的の状態になるまで待ち、期限切れまたは呼び出し側の中断時に false を返す。
 func waitForSocket(ctx context.Context, socket string, listening bool) bool {
 	deadline := time.Now().Add(daemonWaitTimeout)
 	for {
@@ -404,12 +371,8 @@ func waitForSocket(ctx context.Context, socket string, listening bool) bool {
 	}
 }
 
-// waitForDaemonReplacement waits for a restart to produce a different process.
-// The listener closes and reopens within a few milliseconds of the kickstart,
-// so a 50ms probe can miss the gap entirely; the pid comparison, not the
-// observed outage, is what decides. Status is only called once the socket has
-// been seen closed, because until then the restart is still pending and every
-// Status would push its quiet period out by another five seconds.
+// waitForDaemonReplacement は再起動後に別プロセスが応答するまで待つ。
+// listener の停止時間は短く見逃し得るため PID の変化で判定し、socket の停止を確認してから一度だけ Status を呼ぶ。
 func waitForDaemonReplacement(ctx context.Context, socket string, previousPID int) bool {
 	deadline := time.Now().Add(daemonWaitTimeout)
 	sawOutage := false
@@ -430,14 +393,12 @@ func waitForDaemonReplacement(ctx context.Context, socket string, previousPID in
 		case <-time.After(daemonPollInterval):
 		}
 	}
-	// The outage was never observed. A daemon answering with a different pid
-	// restarted anyway, and this is the last moment where asking cannot delay
-	// anything that is still pending.
+	// 停止を観測できなくても PID が変われば再起動済みである。この時点の問い合わせは保留処理を遅延させない。
 	pid := daemonPID(ctx)
 	return pid != 0 && pid != previousPID
 }
 
-// daemonPID asks the running daemon which process is serving the socket.
+// daemonPID は socket を提供している daemon の PID を問い合わせる。
 func daemonPID(ctx context.Context) int {
 	client, err := rpcClient()
 	if err != nil {
@@ -454,12 +415,10 @@ func daemonPID(ctx context.Context) int {
 	return out.PID
 }
 
-// daemonRequestTimeout bounds the lifecycle request itself, as opposed to the
-// wait for it to take effect.
+// daemonRequestTimeout はライフサイクル要求そのものの制限時間で、反映待ちとは別に適用する。
 const daemonRequestTimeout = 5 * time.Second
 
-// requestDaemonLifecycle sends one lifecycle RPC and returns the gate snapshot
-// the daemon answered with.
+// requestDaemonLifecycle はライフサイクル RPC を一度送り、daemon の gate スナップショットを返す。
 func requestDaemonLifecycle(ctx context.Context, method string) (map[string]any, error) {
 	client, err := rpcClient()
 	if err != nil {
@@ -472,19 +431,14 @@ func requestDaemonLifecycle(ctx context.Context, method string) (map[string]any,
 	return reply, err
 }
 
-// replyInt reads one number out of a lifecycle reply. JSON numbers decode into
-// float64 through map[string]any, and a daemon that predates a field simply
-// omits it, so an unreadable value reads as zero rather than as a failure.
+// replyInt はライフサイクル応答から数値を読む。JSON 数値は float64 になり、旧 daemon の欠落項目は 0 とする。
 func replyInt(reply map[string]any, key string) int {
 	value, _ := reply[key].(float64)
 	return int(value)
 }
 
-// lifecycleConflict names the action a daemon is already carrying out when it
-// refuses a request for the opposite one. A signal that has been delivered
-// cannot be called back, so waiting for the state this command asked for would
-// only burn the whole budget. A conflict that names the action this command
-// wanted anyway is not one: the wait below is still the useful half.
+// lifecycleConflict は反対の要求を拒否した daemon が実行中の操作を示す。
+// 送信済みの signal は取り消せないため、要求した状態を待つだけでは期限を消費する。
 func lifecycleConflict(reply map[string]any, wanted string) string {
 	if conflict, _ := reply["conflict"].(bool); !conflict {
 		return ""
@@ -498,18 +452,8 @@ func lifecycleConflict(reply map[string]any, wanted string) string {
 	return ""
 }
 
-// gateWaitReason explains, in the words of the snapshot taken when the request
-// was accepted, what the daemon was still waiting for. Running jobs are the
-// one cause that legitimately outlasts the budget, so they are named first.
-//
-// The snapshot is all there is: sampling the gate again while waiting would
-// restamp lastRequestEnd and hold the quiet period open for as long as the
-// polling lasted. That is why the last branch does not claim the daemon was
-// idle for the whole wait — it only knows about the moment of acceptance, so
-// whatever held the gate arrived after it, and only the daemon log says what.
-// wx doctor is not that log: its checks cover config, git, sqlite, the socket,
-// the state database, the LaunchAgent, the worktree root, hooks, worktree
-// registration and artifact ownership, and none of them print it.
+// gateWaitReason は要求受理時のスナップショットに基づき、daemon が待っていた理由を説明する。
+// 待機中に再取得すると quiet period を延長するため、受理時点の情報だけを使う。
 func gateWaitReason(reply map[string]any) string {
 	if jobs := replyInt(reply, "queued_jobs"); jobs > 0 {
 		return fmt.Sprintf("%d job(s) were still queued when the request was accepted; the daemon waits for them to finish", jobs)
@@ -583,8 +527,7 @@ func runDaemon(ctx context.Context, args []string) int {
 	}
 }
 
-// startDaemon asks launchd for a running daemon and waits until one answers
-// the socket.
+// startDaemon は launchd に daemon の起動を依頼し、socket の応答まで待つ。
 func startDaemon(ctx context.Context) int {
 	socket, err := config.SocketPath()
 	if err != nil {
@@ -593,13 +536,8 @@ func startDaemon(ctx context.Context) int {
 	}
 	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "starting")
 	defer waiting.finish()
-	// A daemon that is already listening is the wanted state, and reporting it
-	// before touching launchctl also covers the daemon an operator started by
-	// hand with --foreground, which launchd knows nothing about. It is only the
-	// wanted state while it is not on its way out, though: a stop whose gate
-	// never opened is still pending after the caller gave up on it, and
-	// reporting "already running" would hand back a daemon that exits as soon
-	// as the last job finishes.
+	// 既に待受中なら目的の状態なので launchctl より先に報告する。
+	// ただし停止待ちが残る daemon は、最後のジョブ終了後に退出するため対象外とする。
 	if daemonListening(ctx, socket) {
 		switch reply, err := requestDaemonLifecycle(ctx, "RequestStart"); {
 		case err == nil:
@@ -611,20 +549,16 @@ func startDaemon(ctx context.Context) int {
 				fmt.Println("already running", launchd.Label)
 				return 0
 			}
-			// The stop was already handed to its signal, so the only route to
-			// the wanted state runs through the exit and a fresh daemon.
+			// 停止 signal 済みなので、目的の状態へは退出後に新しい daemon を起動するしかない。
 			if !waitForSocket(ctx, socket, false) {
 				waiting.finish()
 				fmt.Fprintf(os.Stderr, "error: %s is stopping but did not exit within %s\n", launchd.Label, daemonWaitTimeout)
 				return 1
 			}
 		case rpc.IsConnectError(err):
-			// The daemon went away between the probe and the call. launchd is
-			// the way back from here either way.
+			// 調査と呼び出しの間に daemon が消えた。いずれにせよ launchd 経由で戻す。
 		default:
-			// Something is answering the socket, which is the wanted state. A
-			// degraded daemon and one that predates RequestStart both land
-			// here, and neither can be holding a pending stop.
+			// socket に応答があり目的の状態である。低下状態や旧 daemon もここに入り、停止待ちは保持しない。
 			waiting.finish()
 			fmt.Println("already running", launchd.Label)
 			return 0
@@ -647,23 +581,14 @@ func startDaemon(ctx context.Context) int {
 	return 0
 }
 
-// daemonStartRetryInterval paces how often launchd is asked again while start
-// waits. It is a variable so tests can shorten it; production never changes it.
+// daemonStartRetryInterval は start の待機中に launchd へ再依頼する間隔。
 var daemonStartRetryInterval = 2 * time.Second
 
-// errNoDaemonAnswered separates a budget that ran out from a launchctl that
-// refused, so start can name the LaunchAgent that has to be installed only
-// when that is actually what happened.
+// errNoDaemonAnswered は待機期限切れと launchctl の拒否を区別し、必要な場合だけ LaunchAgent の導入を案内する。
 var errNoDaemonAnswered = errors.New("no daemon answered the socket")
 
-// startAndWaitForDaemon asks launchd for a running daemon until one answers.
-// Asking once is not enough: a stop reports success as soon as the listener
-// closes, while the process behind it goes on releasing its roots for a while
-// after that, and launchd answers a request for a service it still considers
-// running by doing nothing. That request is consumed, the old process then
-// exits 0 so KeepAlive{SuccessfulExit:false} starts no replacement, and a
-// plain wx daemon stop && wx daemon start would spend its whole budget waiting
-// for a daemon nobody is going to start.
+// startAndWaitForDaemon は socket に応答するまで launchd へ起動を再依頼する。
+// listener が閉じても旧 process は root 解放を続け、launchd が起動要求を消費する場合があるため一度では足りない。
 func startAndWaitForDaemon(ctx context.Context, socket string) error {
 	deadline := time.Now().Add(daemonWaitTimeout)
 	next := time.Now()
@@ -688,10 +613,8 @@ func startAndWaitForDaemon(ctx context.Context, socket string) error {
 	}
 }
 
-// stopDaemon asks the running daemon to exit at its next idle moment and waits
-// for the socket to go quiet. The LaunchAgent and its plist are left in place,
-// so the next login (or the next wx claude) brings the daemon back; removing
-// the registration is what wx daemon uninstall is for.
+// stopDaemon は次の idle 時点で daemon を終了させ、socket が静かになるまで待つ。
+// LaunchAgent と plist は残し、登録の削除は wx daemon uninstall に任せる。
 func stopDaemon(ctx context.Context) int {
 	socket, err := config.SocketPath()
 	if err != nil {
@@ -716,8 +639,7 @@ func stopDaemon(ctx context.Context) int {
 		return 1
 	}
 	if already, _ := reply["already_pending"].(bool); already {
-		// The daemon honours only the first SIGTERM, so a repeated request
-		// changes nothing; the wait below is the useful half of this run.
+		// daemon が受け付ける SIGTERM は最初の一度だけなので、再要求せず待機を続ける。
 		waiting.line("stop was already requested; waiting for the daemon to exit")
 	}
 	if !waitForSocket(ctx, socket, false) {
@@ -731,11 +653,8 @@ func stopDaemon(ctx context.Context) int {
 	return 0
 }
 
-// restartDaemon asks the running daemon to restart itself rather than
-// kickstarting it from here. kickstart -k closes in-flight RPCs without a
-// response, and a reservation interrupted between BeginRPCRequest and
-// CompleteRPCRequest answers IDEMPOTENCY_INDETERMINATE until its TTL expires.
-// The daemon's own gate waits for an idle moment instead.
+// restartDaemon は実行中の daemon 自身に再起動を依頼する。
+// kickstart は実行中 RPC を切断して不確定な idempotency reservation を残し得るため、daemon の gate が idle まで待つ。
 func restartDaemon(ctx context.Context) int {
 	socket, err := config.SocketPath()
 	if err != nil {
@@ -751,8 +670,7 @@ func restartDaemon(ctx context.Context) int {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
-		// Nothing answered the socket, so there is no in-flight work to
-		// protect and launchd is the only way to get a daemon running again.
+		// socket に応答がなく保護すべき処理もないため、daemon の再起動は launchd に任せる。
 		if err := launchd.Kickstart(ctx); err != nil {
 			waiting.finish()
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -775,10 +693,8 @@ func restartDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "error:", reason)
 		return 1
 	}
-	// A daemon started by hand never kickstarts itself, so it will not be
-	// replaced no matter how long the wait lasts. The field is absent on a
-	// daemon that predates it, and an absent field must not read as "not
-	// managed": that would refuse the restart the older daemon can still do.
+	// 手動起動の daemon は自分自身を kickstart しないため、待っても置き換わらない。
+	// 旧 daemon では項目が欠落するので、欠落を「未管理」と解釈して再起動を拒否しない。
 	if managed, ok := reply["launchd_managed"].(bool); ok && !managed {
 		waiting.finish()
 		fmt.Fprintf(os.Stderr, "error: the daemon answering %s is not managed by launchd, so it cannot restart itself\n", socket)
@@ -797,13 +713,8 @@ func restartDaemon(ctx context.Context) int {
 }
 
 func runHook(ctx context.Context, args []string) int {
-	// hook is invoked by agent hook configuration, not typed interactively, so
-	// unlike the other subcommands its --help contract is usage-on-stderr plus
-	// exit 2 (a misuse-style exit), not usage-on-stdout plus exit 0. pflag
-	// already prints via fs.Usage for -h/--help itself (see finishFlagParse's
-	// doc comment); printing again here would duplicate it, so this only
-	// prints for the parse failures pflag does not auto-print under
-	// ContinueOnError (for example an unknown flag).
+	// hook は agent 設定から呼ばれるため、--help は stderr と終了コード 2 の契約を持つ。
+	// pflag が help を表示済みの場合は重複させず、ContinueOnError が表示しない解析エラーだけ出力する。
 	fs := pflag.NewFlagSet("hook", pflag.ContinueOnError)
 	fs.Usage = func() { commandUsage(os.Stderr, "hook") }
 	if err := fs.Parse(args); err != nil {
