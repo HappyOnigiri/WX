@@ -54,7 +54,7 @@ func TestAllocateFailsWhenWorktreeRootCannotBeCreated(t *testing.T) {
 
 func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
 	t.Parallel()
-	ctx, manager, _, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
+	ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
 	raw := openManagerCoverageDB(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_allocate_insert BEFORE INSERT ON slots BEGIN SELECT RAISE(ABORT,'injected slot insert failure'); END`); err != nil {
 		t.Fatal(err)
@@ -67,6 +67,79 @@ func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
 	manager.mu.RUnlock()
 	if leaseCount != 0 {
 		t.Fatalf("failed allocation left %d dangling lease(s)", leaseCount)
+	}
+	artifacts, err := store.SlotArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("slot reservation failure left registered artifacts=%+v", artifacts)
+	}
+}
+
+func TestAllocateRegistrationFailureQuarantinesCreatedSlot(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
+	raw := openManagerCoverageDB(t, databasePath)
+	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_allocate_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT,'injected session registration failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", os.Getpid(), "STARTING", ""); err == nil {
+		t.Fatal("allocate succeeded despite an injected session registration failure")
+	}
+	manager.mu.RLock()
+	leaseCount := len(manager.leases)
+	manager.mu.RUnlock()
+	if leaseCount != 0 {
+		t.Fatalf("failed registration left %d dangling lease(s)", leaseCount)
+	}
+	artifacts, err := store.SlotArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 1 || artifacts[0].State != "QUARANTINED" {
+		t.Fatalf("failed registration artifacts=%+v, want one QUARANTINED slot", artifacts)
+	}
+	if info, err := os.Stat(artifacts[0].Path); err != nil || !info.IsDir() {
+		t.Fatalf("quarantined slot root was not preserved: info=%v err=%v", info, err)
+	}
+	slot, err := store.Slot(ctx, artifacts[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slot.DirIdentity == "" {
+		t.Fatal("quarantined slot lost the created directory identity")
+	}
+}
+
+func TestStandbyRegistrationFailureQuarantinesCreatedSlot(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
+	manager.mu.Lock()
+	cfg := manager.cfg
+	cfg.Pool.WarmPerWorkspace = 1
+	manager.cfg = cfg
+	manager.mu.Unlock()
+	raw := openManagerCoverageDB(t, databasePath)
+	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_standby_job BEFORE INSERT ON jobs WHEN NEW.kind='PREPARE' BEGIN SELECT RAISE(ABORT,'injected standby registration failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	rootPath, rootID, err := manager.activeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.createStandbySlot(ctx, rootPath, rootID, workspaceRecord, resolved, 1, nil); err == nil {
+		t.Fatal("standby allocation succeeded despite an injected job registration failure")
+	}
+	artifacts, err := store.SlotArtifacts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 1 || artifacts[0].State != "QUARANTINED" {
+		t.Fatalf("failed standby registration artifacts=%+v, want one QUARANTINED slot", artifacts)
+	}
+	if info, err := os.Stat(artifacts[0].Path); err != nil || !info.IsDir() {
+		t.Fatalf("quarantined standby root was not preserved: info=%v err=%v", info, err)
 	}
 }
 
