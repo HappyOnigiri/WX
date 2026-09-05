@@ -897,6 +897,80 @@ func TestWorktreeIncludeIgnoresTrackedPaths(t *testing.T) {
 	}
 }
 
+// directory include は tracked file の存在だけで省略せず、未追跡 file だけを materialize する。
+func TestWorktreeIncludeCopiesUntrackedFilesInsideTrackedDirectory(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(filepath.Join(repository, "settings"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(target, "settings"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repository, "settings", "tracked"), []byte("source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "settings", "local"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("settings\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "settings/tracked")
+	if err := os.WriteFile(filepath.Join(target, "settings", "tracked"), []byte("checkout\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+	if err := preparer.copyIncludesAt(repo, owner, "."); err != nil {
+		t.Fatalf("directory include copy: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(target, "settings", "tracked")); err != nil || string(content) != "checkout\n" {
+		t.Fatalf("tracked include was overwritten: content=%q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(target, "settings", "local")); err != nil || string(content) != "local\n" {
+		t.Fatalf("untracked include was not copied: content=%q err=%v", content, err)
+	}
+}
+
+func TestWorktreeIncludeReturnsTrackedCheckGitErrors(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(filepath.Join(repository, "settings"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "settings", "local"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("settings\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+	if err := preparer.copyIncludesAt(repo, owner, "."); err == nil || !strings.Contains(err.Error(), "check tracked include") {
+		t.Fatalf("tracked check Git failure was not returned: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "settings", "local")); !os.IsNotExist(err) {
+		t.Fatalf("include was copied despite tracked check failure: %v", err)
+	}
+}
+
 func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
