@@ -258,3 +258,27 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 	}
 	return Workspace{ID: domain.WorkspaceID(id), Root: canonical, Kind: "multi_repository", Repositories: repos}, nil
 }
+
+// PolicyRoot は探索や登録をせず、リポジトリなら main worktree、それ以外なら指定ディレクトリを返す。
+func (d *Discoverer) PolicyRoot(ctx context.Context, cwd string) (string, error) {
+	canonical, err := domain.Canonicalize(cwd)
+	if err != nil {
+		return "", err
+	}
+	if _, err := d.Git.Run(ctx, string(canonical), "rev-parse", "--show-toplevel"); err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return string(canonical), nil
+	}
+	result, err := d.Git.Run(ctx, string(canonical), "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", err
+	}
+	main := firstWorktreePath(result.Stdout)
+	if main == "" {
+		return "", errors.New("git did not report a main worktree")
+	}
+	root, err := domain.Canonicalize(main)
+	return string(root), err
+}

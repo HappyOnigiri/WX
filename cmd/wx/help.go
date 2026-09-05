@@ -12,6 +12,9 @@ func topUsage(w io.Writer) {
 Global options:
   --branch <branch|repo=branch>  choose a detached base (repeatable)
   --fresh                        resume conversation without wx recovery state
+  --select-worktree              select and save the workspace policy again
+  --worktree                     create a worktree without saving a policy
+  --no-worktree                  run here without saving a policy
   -h, --help                     show help
   -v, --version                  show version
 

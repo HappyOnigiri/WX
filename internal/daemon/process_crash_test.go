@@ -283,7 +283,7 @@ func waitCrashGate(t *testing.T, gate, name string) {
 func resolveCrashLease(t *testing.T, client rpc.Client, repository string) Lease {
 	t.Helper()
 	var lease Lease
-	if err := client.Call(context.Background(), "ResolveAndLease", map[string]any{"cwd": repository, "branches": []string{}, "agent": "codex", "client_pid": os.Getpid()}, &lease); err != nil {
+	if err := client.Call(context.Background(), "ResolveAndLease", map[string]any{"force_worktree": true, "cwd": repository, "branches": []string{}, "agent": "codex", "client_pid": os.Getpid()}, &lease); err != nil {
 		t.Fatal(err)
 	}
 	return lease

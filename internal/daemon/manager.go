@@ -928,6 +928,11 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 	if err != nil {
 		return Lease{}, err
 	}
+	return m.leaseWorkspace(ctx, w, branches, agent, pid, false)
+}
+
+func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, branches []string, agent string, pid int, cold bool) (Lease, error) {
+	var err error
 	w, err = m.store.CanonicalWorkspace(ctx, w)
 	if err != nil {
 		return Lease{}, err
@@ -940,7 +945,7 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 	if err != nil {
 		return Lease{}, err
 	}
-	for attempts := 0; attempts < m.Config().Pool.WarmPerWorkspace+1; attempts++ {
+	for attempts := 0; !cold && attempts < m.Config().Pool.WarmPerWorkspace+1; attempts++ {
 		ready, ok, err := m.store.ReadySlot(ctx, string(w.ID))
 		if err != nil {
 			return Lease{}, err
@@ -1861,7 +1866,7 @@ func coldWorktreeUnmaterialized(owner *os.Root, root, worktreePath string) (bool
 
 func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) error {
 	cfg := m.Config()
-	if cfg.Pool.WarmPerWorkspace < 1 || cfg.Retention.HotStandby.Duration == 0 {
+	if cfg.WorktreeMode(string(w.Root)) != "hot" || cfg.Pool.WarmPerWorkspace < 1 || cfg.Retention.HotStandby.Duration == 0 {
 		return nil
 	}
 	needed := cfg.Pool.WarmPerWorkspace - m.store.StandbyCount(ctx, string(w.ID))
@@ -3645,4 +3650,18 @@ func must(v string, e error) string {
 		return ""
 	}
 	return v
+}
+
+// leaseWithPolicy は RPC の新規作成要求を検証する。一時許可は設定や standby の補充対象を変更しない。
+func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []string, agent string, pid int, force bool) (Lease, error) {
+	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
+	w, err := discoverer.Resolve(ctx, cwd)
+	if err != nil {
+		return Lease{}, err
+	}
+	mode := m.Config().WorktreeMode(string(w.Root))
+	if !force && mode != "hot" && mode != "cold" {
+		return Lease{}, errors.New("worktree creation is not authorized; select a worktree policy or use --worktree")
+	}
+	return m.leaseWorkspace(ctx, w, branches, agent, pid, force || mode == "cold")
 }

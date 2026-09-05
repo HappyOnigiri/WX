@@ -110,6 +110,7 @@ func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 	defer store.Close()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
 	m := testManager(t, cfg, store)
 	m.git.SetTimeout(10 * time.Second)
@@ -176,6 +177,7 @@ func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T
 	defer store.Close()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
 	m := testManager(t, cfg, store)
 	m.git.SetTimeout(10 * time.Second)
@@ -298,6 +300,7 @@ func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 	defer store.Close()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
 	m := testManager(t, cfg, store)
 	m.git.SetTimeout(10 * time.Second)
@@ -367,6 +370,7 @@ func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
 	defer store.Close()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
 	m := testManager(t, cfg, store)
 	m.git.SetTimeout(10 * time.Second)

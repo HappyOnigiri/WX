@@ -98,7 +98,7 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	return client.RunAgent(ctx, agentName, agentArgs, f.branches, f.fresh, "")
+	return client.RunAgentWithPolicy(ctx, agentName, agentArgs, f.branches, f.fresh, cli.WorktreeOptions{Force: f.worktree, Disable: f.noWorktree, Select: f.selectWorktree})
 }
 
 func rpcClient() (rpc.Client, error) {

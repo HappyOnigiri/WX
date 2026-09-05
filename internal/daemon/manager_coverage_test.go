@@ -883,6 +883,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		ctx, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
 		manager.mu.Lock()
 		cfg := manager.cfg
+		cfg.Worktree.Undefined = "hot"
 		cfg.Pool.WarmPerWorkspace = 1
 		manager.cfg = cfg
 		manager.mu.Unlock()

@@ -543,7 +543,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"forget", home},
 		{"config"},
 		{"config", "logging.level", "warn"},
-		{"codex", "exec"},
+		{"--worktree", "codex", "exec"},
 		{"resume", "session", "codex"},
 		{"daemon", "install"},
 		{"daemon", "uninstall"},

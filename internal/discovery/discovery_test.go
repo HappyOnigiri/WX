@@ -346,3 +346,37 @@ func TestWorkspaceIDsAreFreshShortIdentifiers(t *testing.T) {
 		t.Fatalf("two discovery passes proposed the same id %q; the proposal must be random", first.ID)
 	}
 }
+
+func TestPolicyRootSharesRepositoryAndLinkedWorktreeSelection(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "main")
+	initDiscoveryRepository(t, main)
+	sub := filepath.Join(main, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(root, "linked")
+	runDiscoveryGit(t, main, "worktree", "add", "--detach", linked)
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(sub, alias); err != nil {
+		t.Fatal(err)
+	}
+	d := Discoverer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+	for _, cwd := range []string{main, sub, linked, alias} {
+		got, err := d.PolicyRoot(context.Background(), cwd)
+		if err != nil || got != main {
+			t.Fatalf("cwd=%s root=%s err=%v", cwd, got, err)
+		}
+	}
+	if got, err := d.PolicyRoot(context.Background(), root); err != nil || got != root {
+		t.Fatalf("bundle=%s err=%v", got, err)
+	}
+	if _, err := d.PolicyRoot(context.Background(), filepath.Join(root, "missing")); err == nil {
+		t.Fatal("missing path accepted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := d.PolicyRoot(ctx, root); err == nil {
+		t.Fatal("cancellation ignored")
+	}
+}
