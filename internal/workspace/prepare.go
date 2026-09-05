@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -1419,13 +1420,19 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 	return runErr
 }
 
+const fingerprintSchemaVersion = 5
+
 // Fingerprint は prepared worktree を再利用可能にするすべての情報を hash 化する。slot 内の repository directory 名は意図的に含めない。
 // slot が存在すれば slot_repositories.dir_name が権威となり、既存 slot は記録済みの名前を保つ。
 // 新規 slot だけが変更後の storage.repo_dir_source や repositories.<path>.dir_name を使う。
 // 名前を hash 化しても reuse check は保存済みの名前から再計算するため常に自身と一致し、挙動は変わらない。
-// schema=4 は .worktreelink の存在状態を含める layout 変更を示すため、以前の wx が書いた fingerprint とは一致しない。
+// schema=5 は準備コマンドの引数境界を保持する形式へ変更したため、以前の wx が書いた fingerprint とは一致しない。
 // commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
+	return fingerprintWithSchema(fingerprintSchemaVersion, generation, oid, repo, c)
+}
+
+func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	mainPath := string(repo.MainPath)
 	sourceRoot, err := openPinnedRepositoryRoot(mainPath)
 	if err != nil {
@@ -1433,7 +1440,7 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 	}
 	defer func() { _ = sourceRoot.Close() }()
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=4\ngeneration=%d\noid=%s\n", generation, oid)
+	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\noid=%s\n", schema, generation, oid)
 	var linkPatterns []string
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
 		data, err := readPhysicalManifestAt(sourceRoot, name)
@@ -1557,13 +1564,29 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 		}
 		_, _ = fmt.Fprintf(h, "workspace-link=%s:%s\n", clean, info.Mode())
 	}
-	if o, ok := c.Repositories[string(repo.MainPath)]; ok {
-		_, _ = fmt.Fprint(h, o.Prepare.Command, o.Prepare.Version)
+	if err := writePrepareFingerprint(h, repo, c); err != nil {
+		return "", err
 	}
 	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func writePrepareFingerprint(h hash.Hash, repo discovery.Repository, c config.Config) error {
+	o, ok := c.Repositories[string(repo.MainPath)]
+	if !ok {
+		return nil
+	}
+	prepareInput, err := json.Marshal(struct {
+		Command []string `json:"command"`
+		Version string   `json:"version"`
+	}{Command: o.Prepare.Command, Version: o.Prepare.Version})
+	if err != nil {
+		return fmt.Errorf("marshal prepare fingerprint input: %w", err)
+	}
+	_, _ = fmt.Fprintf(h, "prepare=%s\n", prepareInput)
+	return nil
 }
 
 func repositoryWorkspaceRoot(repo discovery.Repository) (string, error) {
