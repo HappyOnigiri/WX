@@ -1428,6 +1428,10 @@ func TestOrphanReconcileConvergesForQuarantinedSlotOwner(t *testing.T) {
 	if strings.Contains(logs.String(), "orphan release failed") {
 		t.Fatalf("orphan release kept failing: %s", logs.String())
 	}
+	// 復旧 snapshot を作らない終端なので、成功として黙って閉じずに一度だけ記録する。
+	if got := strings.Count(logs.String(), "session expired without a recovery snapshot"); got != 1 {
+		t.Fatalf("snapshotless termination records=%d, want one: %s", got, logs.String())
+	}
 }
 
 func TestWorkerDefersLiveAgentDependencyWithoutRetryConsumption(t *testing.T) {

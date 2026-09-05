@@ -844,10 +844,13 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 		if processAlive(candidate.ClientPID) || processAlive(candidate.AgentPID) {
 			continue
 		}
-		job, changed, err := m.store.Release(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
+		job, changed, quarantineExpired, err := m.store.ReleaseWithOutcome(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
 		if err != nil {
 			m.log.Error("orphan release failed", "session_id", candidate.ID, "error", err)
 			continue
+		}
+		if quarantineExpired {
+			m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", candidate.ID, "slot_id", candidate.SlotID)
 		}
 		if changed {
 			m.schedule(job)
@@ -2806,9 +2809,13 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 	if reason == "session-end-hook" && (processAlive(session.ClientPID) || processAlive(session.AgentPID)) {
 		return nil
 	}
-	job, changed, err := m.store.Release(ctx, id, session.WorkspaceID, session.SlotID)
+	job, changed, quarantineExpired, err := m.store.ReleaseWithOutcome(ctx, id, session.WorkspaceID, session.SlotID)
 	if err != nil {
 		return err
+	}
+	if quarantineExpired {
+		// clientはReleaseの応答を読まないため、snapshotを作らずに終端したことはログだけが残す。
+		m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", id, "slot_id", session.SlotID, "reason", reason)
 	}
 	if !changed {
 		m.releaseLease(id)

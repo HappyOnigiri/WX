@@ -98,6 +98,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   隔離slotを所有するsessionは`DRAINING`へ進めないため、返却では`EXPIRED`へ終端させslotのownerだけを外す。
   slotは`QUARANTINED`のまま残し、worktreeとsnapshotには触れない。
   こうしないと同じsessionの返却が候補として毎回失敗し続ける。
+  この終端はreconcileだけでなく`Release`を通る全経路（clientの返却、`wx clear`の停止）で起きる。
+  復旧snapshotが残らない返却なので、`Store.ReleaseWithOutcome`が呼び出し側へ区別を返し、daemonがWarnで記録する。
+  clientはReleaseの応答を読まないため、記録先はログだけである。
 - **degraded運用** — SQLiteが開けないときも`Status`・`Doctor`・`RequestStop`は`DegradedHandler`が答える。
   診断のためにdaemonを完全に沈黙させないためである。
   `RequestStop`だけは状態を変えるがゲートを通さない（状態を変えるRPCを一切受け付けない以上、守るべきin-flightの予約が無い）。

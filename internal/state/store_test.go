@@ -557,9 +557,9 @@ func TestReleaseExpiresSessionOwningQuarantinedSlot(t *testing.T) {
 			if err := store.SetSlotState(ctx, id, []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
 				t.Fatal(err)
 			}
-			job, changed, err := store.Release(ctx, id, "workspace", id)
-			if err != nil || changed || job.ID != "" {
-				t.Fatalf("release job=%+v changed=%v err=%v", job, changed, err)
+			job, changed, quarantineExpired, err := store.ReleaseWithOutcome(ctx, id, "workspace", id)
+			if err != nil || changed || job.ID != "" || !quarantineExpired {
+				t.Fatalf("release job=%+v changed=%v quarantineExpired=%v err=%v", job, changed, quarantineExpired, err)
 			}
 			storedSession, err := store.SessionByID(ctx, id)
 			if err != nil || storedSession.State != "EXPIRED" {
@@ -570,8 +570,9 @@ func TestReleaseExpiresSessionOwningQuarantinedSlot(t *testing.T) {
 				t.Fatalf("slot=%+v err=%v", slot, err)
 			}
 			// 終端後は候補に残らず、同じ返却を繰り返してもエラーにならない。
-			if _, changed, err := store.Release(ctx, id, "workspace", id); err != nil || changed {
-				t.Fatalf("repeated release changed=%v err=%v", changed, err)
+			// 二度目は終端する session が無いため、隔離による終端としても報告しない。
+			if _, changed, quarantineExpired, err := store.ReleaseWithOutcome(ctx, id, "workspace", id); err != nil || changed || quarantineExpired {
+				t.Fatalf("repeated release changed=%v quarantineExpired=%v err=%v", changed, quarantineExpired, err)
 			}
 			candidates, err := store.OrphanCandidates(ctx, FormatTime(time.Now().Add(time.Hour)))
 			if err != nil {

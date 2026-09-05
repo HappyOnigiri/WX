@@ -2318,82 +2318,91 @@ func expireQuarantinedOwnerTx(ctx context.Context, tx *sql.Tx, sessionID, slotID
 	return true, nil
 }
 
+// Release は返却を進め、SNAPSHOT または REMOVE ジョブを作ったときに changed=true を返す。
+// 隔離 slot による終端を区別する必要がある呼び出し側は ReleaseWithOutcome を使う。
 func (s *Store) Release(ctx context.Context, sessionID, workspaceID, slotID string) (Job, bool, error) {
+	job, changed, _, err := s.ReleaseWithOutcome(ctx, sessionID, workspaceID, slotID)
+	return job, changed, err
+}
+
+// ReleaseWithOutcome は Release の結果に加えて、隔離 slot のため snapshot を作らず session を終端したかを返す。
+// この終端では復旧 snapshot が残らないため、呼び出し側は成功として黙って閉じずに記録する。
+func (s *Store) ReleaseWithOutcome(ctx context.Context, sessionID, workspaceID, slotID string) (Job, bool, bool, error) {
 	job, err := newJob("SNAPSHOT", workspaceID, slotID, sessionID)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	defer tx.Rollback()
 	expired, err := expireQuarantinedOwnerTx(ctx, tx, sessionID, slotID)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	if expired {
-		return Job{}, false, tx.Commit()
+		return Job{}, false, true, tx.Commit()
 	}
 	var sessionState string
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM sessions WHERE id=?`, sessionID).Scan(&sessionState); err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	if sessionState == "UNBOUND" || sessionState == "RESTORING" {
 		job, err = newJob("REMOVE", workspaceID, slotID, "")
 		if err != nil {
-			return Job{}, false, err
+			return Job{}, false, false, err
 		}
 		timestamp := now()
 		res, updateErr := tx.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED',pending_agent_session_id=NULL,released_at=?,archived_at=?,expires_at=? WHERE id=? AND state IN ('UNBOUND','RESTORING')`, timestamp, timestamp, timestamp, sessionID)
 		if updateErr != nil {
-			return Job{}, false, updateErr
+			return Job{}, false, false, updateErr
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return Job{}, false, nil
+			return Job{}, false, false, nil
 		}
 		res, err = tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=? AND state IN ('UNBOUND','RESTORING')`, timestamp, slotID)
 		if err != nil {
-			return Job{}, false, err
+			return Job{}, false, false, err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return Job{}, false, errors.New("unbound slot state changed before release")
+			return Job{}, false, false, errors.New("unbound slot state changed before release")
 		}
 		if err := insertJob(ctx, tx, job); err != nil {
-			return Job{}, false, err
+			return Job{}, false, false, err
 		}
-		return job, true, tx.Commit()
+		return job, true, false, tx.Commit()
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE sessions SET state='RELEASING',released_at=COALESCE(released_at,?) WHERE id=? AND state IN ('STARTING','ACTIVE')`, now(), sessionID)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return Job{}, false, nil
+		return Job{}, false, false, nil
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE slots SET state='DRAINING',updated_at=? WHERE owner_session_id=? AND state='LEASED'`, now(), sessionID); err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	var slotState string
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM slots WHERE id=? AND owner_session_id=?`, slotID, sessionID).Scan(&slotState); err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
 	if slotState == "PREPARING" {
 		if err := tx.Commit(); err != nil {
-			return Job{}, false, err
+			return Job{}, false, false, err
 		}
-		return Job{}, false, nil
+		return Job{}, false, false, nil
 	}
 	if slotState != "DRAINING" {
-		return Job{}, false, fmt.Errorf("slot %s cannot be released from %s", slotID, slotState)
+		return Job{}, false, false, fmt.Errorf("slot %s cannot be released from %s", slotID, slotState)
 	}
 	if err := insertJob(ctx, tx, job); err != nil {
-		return Job{}, false, err
+		return Job{}, false, false, err
 	}
-	return job, true, tx.Commit()
+	return job, true, false, tx.Commit()
 }
 
 type GCCandidate struct{ SlotID, SessionID, Path string }
