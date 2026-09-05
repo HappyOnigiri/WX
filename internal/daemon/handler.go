@@ -212,6 +212,15 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return result, nil
 		}
 		return result, nil
+	case "Prune":
+		var p struct {
+			All    bool `json:"all"`
+			DryRun bool `json:"dry_run"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return h.Manager.PruneRecoveryRefs(ctx, p.All, p.DryRun)
 	case "ReloadConfig":
 		return map[string]bool{"reloaded": true}, h.Manager.ReloadConfig()
 	case "RequestRestart":
