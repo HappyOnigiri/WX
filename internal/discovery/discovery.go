@@ -40,8 +40,12 @@ func (d *Discoverer) Resolve(ctx context.Context, cwd string) (Workspace, error)
 	if err != nil {
 		return Workspace{}, err
 	}
-	if res, e := d.Git.Run(ctx, string(canonical), "rev-parse", "--show-toplevel"); e == nil {
+	res, err := d.Git.Run(ctx, string(canonical), "rev-parse", "--show-toplevel")
+	if err == nil {
 		return d.repositoryWorkspace(ctx, strings.TrimSpace(res.Stdout))
+	}
+	if !gitx.IsNotRepository(err) {
+		return Workspace{}, fmt.Errorf("discover Git repository for %s: %w", canonical, err)
 	}
 	return d.multiWorkspace(ctx, string(canonical))
 }
@@ -266,6 +270,9 @@ func (d *Discoverer) PolicyRoot(ctx context.Context, cwd string) (string, error)
 		return "", err
 	}
 	if _, err := d.Git.Run(ctx, string(canonical), "rev-parse", "--show-toplevel"); err != nil {
+		if !gitx.IsNotRepository(err) {
+			return "", fmt.Errorf("discover Git repository root for %s: %w", canonical, err)
+		}
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}

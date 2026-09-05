@@ -94,3 +94,29 @@ func TestUndefinedPolicyRefusesNoninteractiveInput(t *testing.T) {
 		}
 	}
 }
+
+func TestWorktreePolicyRejectsGitExecutionFailureBeforeDirectAgent(t *testing.T) {
+	root, bin := t.TempDir(), t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n' 'fatal: cannot read configuration' >&2\nexit 128\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Chdir(nested)
+
+	cfg := config.Defaults()
+	cfg.Worktree.Undefined = "off"
+	cfg.Workspaces[root] = config.Workspace{Worktree: "hot"}
+	client := Client{Config: cfg}
+	mode, err := client.selectWorktreeMode(context.Background(), WorktreeOptions{})
+	if err == nil {
+		t.Fatalf("mode=%q; Git execution failure was allowed to select direct execution", mode)
+	}
+	if mode != "" || !strings.Contains(err.Error(), "discover Git repository root") {
+		t.Fatalf("mode=%q err=%v", mode, err)
+	}
+}
