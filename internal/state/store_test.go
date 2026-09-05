@@ -522,6 +522,8 @@ func TestReleaseCleansUpUnboundAndRestoringSessions(t *testing.T) {
 	}
 }
 
+// READY は UNBOUND slot が実際に遷移できる状態（PREPARING・RESTORING・QUARANTINED）ではなく、
+// session だけ先に EXPIRED へ進めた後の CAS ガードを踏ませるための人工的な状態である。
 func TestUnboundReleaseRollsBackWhenSlotStateChanged(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
