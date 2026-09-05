@@ -143,7 +143,7 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 	values := map[string]string{
 		"worktree.undefined":    "cold",
 		"storage.worktree_root": "$HOME/wx", "storage.repo_dir_source": "directory", "storage.backup_generations": "4", "storage.backup_retention": "24h",
-		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3", "pool.git_concurrency_per_repository": "2",
+		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3", "pool.git_concurrency_per_repository": "1",
 		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
 		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "includes.default_agent_rules": "false", "logging.level": "debug",
 	}
@@ -166,6 +166,9 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 	for _, field := range Fields(effective) {
 		if field.Key == "includes.default_agent_rules" && field.Value != "false" {
 			t.Fatalf("default agent rules field=%q", field.Value)
+		}
+		if field.Key == "pool.git_concurrency_per_repository" && field.Value != "1" {
+			t.Fatalf("git concurrency field=%q", field.Value)
 		}
 	}
 	for _, pathFn := range []func() (string, error){Path, StatePath, SocketPath, LogPath} {
@@ -286,6 +289,42 @@ func TestValidateRejectsEachPolicyClass(t *testing.T) {
 		if err := Validate(&tests[i]); err == nil {
 			t.Errorf("invalid policy case %d succeeded", i)
 		}
+	}
+}
+
+func TestGitConcurrencyPerRepositoryAcceptsOnlyOne(t *testing.T) {
+	valid := Defaults()
+	if valid.Pool.GitConcurrencyPerRepository != 1 {
+		t.Fatalf("default git concurrency=%d, want 1", valid.Pool.GitConcurrencyPerRepository)
+	}
+	for _, value := range []int{0, 2} {
+		cfg := valid
+		cfg.Pool.GitConcurrencyPerRepository = value
+		err := Validate(&cfg)
+		if err == nil {
+			t.Fatalf("git concurrency %d was accepted", value)
+		}
+		if !strings.Contains(err.Error(), "pool.git_concurrency_per_repository") || !strings.Contains(err.Error(), "1") {
+			t.Fatalf("git concurrency %d error=%v, want key and supported value", value, err)
+		}
+	}
+}
+
+func TestLoadRejectsUnsupportedGitConcurrency(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\npool:\n  git_concurrency_per_repository: 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "pool.git_concurrency_per_repository") || !strings.Contains(err.Error(), "1") {
+		t.Fatalf("Load error=%v, want key and supported value", err)
 	}
 }
 
