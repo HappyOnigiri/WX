@@ -1041,6 +1041,49 @@ func TestFingerprintTracksMaterializedCopyInputs(t *testing.T) {
 	}
 }
 
+func TestFingerprintDistinguishesPrepareArgumentBoundaries(t *testing.T) {
+	repository := t.TempDir()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	cfg := config.Defaults()
+	cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{
+		Command: []string{"/usr/bin/printf", "%s|", "a b", "c"},
+		Version: "v1",
+	}}
+	first, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{
+		Command: []string{"/usr/bin/printf", "%s|", "a", "b c"},
+		Version: "v1",
+	}}
+	second, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("prepare argument boundaries were lost: fingerprint=%s", first)
+	}
+}
+
+func TestFingerprintSchemaMismatchInvalidatesPreviousValue(t *testing.T) {
+	repository := t.TempDir()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	cfg := config.Defaults()
+	legacy, err := fingerprintWithSchema(fingerprintSchemaVersion-1, 1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == legacy {
+		t.Fatalf("fingerprint schema change did not invalidate previous value: %s", current)
+	}
+}
+
 func TestFingerprintCoversRecursiveDuplicateAndWorkspaceLinkInputs(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "nested", "repository")
