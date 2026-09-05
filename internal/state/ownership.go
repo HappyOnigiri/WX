@@ -16,6 +16,10 @@ import (
 // ErrOwnership は所有権証明の失敗を示す。呼び出し元は filesystem artifact を残し、owner を推測せず reconciliation で quarantine するフェイルクローズ結果として扱う。
 var ErrOwnership = errors.New("wx ownership validation failed")
 
+// ErrSlotStateIneligible は slot の位置と identity は一致した上で、durable state だけが要求と食い違ったことを示す。
+// 併走する遷移で回復できる呼び出し元だけが再取得の合図に使う。ErrOwnership も満たすため、区別しない呼び出し元のフェイルクローズ挙動は変わらない。
+var ErrSlotStateIneligible = errors.New("ineligible slot state")
+
 // OwnershipValidator は workspace/archive 操作に必要な小さな state contract である。Store は read-only transaction で実装する。
 // transaction は意図的に Store.writer を取らない。この呼出し中に daemon は Git common-directory lock を持つ一方、state writer はそれを取らないため lock order を逆転させない。
 type OwnershipValidator interface {
@@ -153,7 +157,7 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 		return WorktreeOwnership{}, ownershipFailure("slot belongs to a different workspace")
 	}
 	if !slices.Contains(req.AllowedSlotStates, slotState) {
-		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("slot %s is in ineligible state %s", req.SlotID, slotState))
+		return WorktreeOwnership{}, slotStateFailure(req.SlotID, slotState)
 	}
 	if !slices.Contains(req.AllowedRepositoryStates, repositoryState) {
 		return WorktreeOwnership{}, ownershipFailure(fmt.Sprintf("repository %s is in ineligible state %s", req.RepositoryID, repositoryState))
@@ -250,7 +254,7 @@ func (s *Store) ValidateSlotOwnership(ctx context.Context, req SlotOwnershipRequ
 		return ownershipFailure("slot workspace association is incomplete or changed")
 	}
 	if !slices.Contains(req.AllowedSlotStates, slotState) {
-		return ownershipFailure(fmt.Sprintf("slot %s is in ineligible state %s", req.SlotID, slotState))
+		return slotStateFailure(req.SlotID, slotState)
 	}
 	if rootID != req.RootID {
 		return ownershipFailure("requested worktree root generation does not match the SQLite slot")
@@ -353,6 +357,10 @@ func canonicalExistingDirectory(raw string) (string, error) {
 
 func ownershipFailure(message string) error {
 	return fmt.Errorf("%w: %s", ErrOwnership, message)
+}
+
+func slotStateFailure(slotID, slotState string) error {
+	return fmt.Errorf("%w: %w: slot %s is in state %s", ErrOwnership, ErrSlotStateIneligible, slotID, slotState)
 }
 
 func ownershipDatabaseFailure(err error) error {
