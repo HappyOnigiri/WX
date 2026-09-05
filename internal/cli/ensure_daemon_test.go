@@ -31,7 +31,7 @@ func fakeLaunchctl(t *testing.T) (marker string) {
 
 func TestEnsureDaemonKickstartsWhenNothingIsListening(t *testing.T) {
 	marker := fakeLaunchctl(t)
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	socket := shortSocketPath(t, "wxd.sock")
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: 200 * time.Millisecond}, Config: config.Defaults()}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -91,15 +91,15 @@ func (erroringStatusHandler) Handle(_ context.Context, method string, _ json.Raw
 	return map[string]bool{"ok": true}, nil
 }
 
-func TestEnsureDaemonDoesNotKickstartALiveDaemonThatFailedToAnswer(t *testing.T) {
+func TestEnsureDaemonKeepsAFailingLiveDaemonUnkicked(t *testing.T) {
 	marker := fakeLaunchctl(t)
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	socket := shortSocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server := &rpc.Server{Socket: socket, Handler: erroringStatusHandler{}}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	waitForPath(t, socket)
+	waitForSocket(t, socket, done)
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
 	err := client.ensureDaemon(context.Background())
 	if err == nil {
