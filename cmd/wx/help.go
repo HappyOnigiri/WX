@@ -99,9 +99,10 @@ Restore an archived wx session into a new managed workspace.`)
 		_, _ = fmt.Fprintln(w, `Usage: wx sessions [--all] [--json]
 
 List managed wx sessions and their recovery state.
+By default, only ACTIVE sessions are listed.
 
 Options:
-  --all   include expired sessions
+  --all   include inactive and expired sessions
   --json  print machine-readable JSON`)
 	case "forget":
 		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path>

@@ -193,6 +193,51 @@ func TestRunGCReturnsNonZeroForPendingReport(t *testing.T) {
 	}
 }
 
+func TestRunSessionsDefaultsToActive(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wx-sessions-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	socket, err := config.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel, done := serveUntilCanceled(t, socket, commandHandler{sessions: []map[string]any{
+		{"id": "active", "state": "ACTIVE", "agent": "codex"},
+		{"id": "starting", "state": "STARTING", "agent": "codex"},
+		{"id": "archived", "state": "ARCHIVED", "agent": "codex"},
+		{"id": "expired", "state": "EXPIRED", "agent": "codex"},
+	}})
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("RPC server stopped with error: %v", err)
+		}
+	})
+
+	stdout := captureStdout(t, func() {
+		if code := runSessions(context.Background(), nil); code != 0 {
+			t.Fatalf("runSessions exit=%d", code)
+		}
+	})
+	if !strings.Contains(stdout, "active") || strings.Contains(stdout, "starting") || strings.Contains(stdout, "archived") || strings.Contains(stdout, "expired") {
+		t.Fatalf("default sessions output=%q", stdout)
+	}
+
+	stdout = captureStdout(t, func() {
+		if code := runSessions(context.Background(), []string{"--all"}); code != 0 {
+			t.Fatalf("runSessions --all exit=%d", code)
+		}
+	})
+	for _, id := range []string{"active", "starting", "archived", "expired"} {
+		if !strings.Contains(stdout, id) {
+			t.Fatalf("--all sessions output=%q missing %q", stdout, id)
+		}
+	}
+}
+
 // captureStdout は fn 中の os.Stdout を差し替え、書込み内容を返す。
 // この package の test は並列実行しないため、process 全体の差し替えでも安全である。
 func captureStdout(t *testing.T, fn func()) string {

@@ -771,7 +771,7 @@ func runHook(ctx context.Context, args []string) int {
 
 func runSessions(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("sessions", pflag.ContinueOnError)
-	all := fs.Bool("all", false, "include expired sessions")
+	all := fs.Bool("all", false, "include inactive and expired sessions")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	fs.Usage = func() { commandUsage(os.Stdout, "sessions") }
 	if code, done := finishFlagParse(fs, "sessions", args); done {
@@ -786,6 +786,16 @@ func runSessions(ctx context.Context, args []string) int {
 	if err := c.Call(ctx, "Sessions", map[string]bool{"all": *all}, &out); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
+	}
+	// daemonが旧実装でも、既定表示はACTIVEだけというCLIの契約を守る。
+	if !*all {
+		active := out[:0]
+		for _, s := range out {
+			if sessionState, ok := s["state"].(string); ok && sessionState == "ACTIVE" {
+				active = append(active, s)
+			}
+		}
+		out = active
 	}
 	if *jsonOut {
 		data, _ := json.MarshalIndent(out, "", "  ")

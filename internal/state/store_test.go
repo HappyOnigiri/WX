@@ -571,6 +571,13 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 	if _, err := store.CreateSlotSession(ctx, Slot{ID: "active", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/active", State: "LEASED"}, nil, active, ""); err != nil {
 		t.Fatal(err)
 	}
+	archived := Session{ID: "archived", WorkspaceID: "workspace", SlotID: "archived", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "archived", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/archived", State: "SNAPSHOTTED"}, nil, archived, ""); err != nil {
+		t.Fatal(err)
+	}
+	if sessions, err := store.ListSessions(ctx, false); err != nil || len(sessions) != 1 || sessions[0].ID != active.ID {
+		t.Fatalf("active session list=%+v err=%v", sessions, err)
+	}
 	if err := store.MarkSessionState(ctx, "active", []string{"ACTIVE"}, "EXPIRED"); err != nil {
 		t.Fatal(err)
 	}

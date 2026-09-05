@@ -22,11 +22,15 @@ import (
 type commandHandler struct {
 	workspace string
 	gcResult  *daemon.GCResult
+	sessions  []map[string]any
 }
 
 func (h commandHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	switch method {
 	case "Sessions":
+		if h.sessions != nil {
+			return h.sessions, nil
+		}
 		return []map[string]any{{"id": "session", "state": "ACTIVE", "agent": "codex"}}, nil
 	case "GC":
 		if h.gcResult != nil {

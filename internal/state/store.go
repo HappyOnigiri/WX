@@ -2045,7 +2045,7 @@ type SessionSummary struct {
 func (s *Store) ListSessions(ctx context.Context, all bool) ([]SessionSummary, error) {
 	q := `SELECT id,COALESCE(workspace_id,''),state,agent_kind,COALESCE(agent_session_id,''),created_at,COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions`
 	if !all {
-		q += ` WHERE state<>'EXPIRED'`
+		q += ` WHERE state='ACTIVE'`
 	}
 	q += ` ORDER BY created_at DESC`
 	rows, err := s.db.QueryContext(ctx, q)
