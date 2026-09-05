@@ -197,12 +197,13 @@ func serveResumeLaunchRPC(t *testing.T, handler *resumeLaunchHandler) (Client, f
 
 func serveResumeLaunchRPCWithConfig(t *testing.T, handler *resumeLaunchHandler, cfg config.Config) (Client, func()) {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	// t.TempDir はテスト名を含み、長い名前では sun_path の 104 バイト制限を超えて bind に失敗する。
+	socket := shortSocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	waitForPath(t, socket)
+	waitForSocket(t, socket, done)
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: cfg}
 	var stopOnce sync.Once
 	stop := func() {
