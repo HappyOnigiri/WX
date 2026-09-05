@@ -15,9 +15,8 @@ import (
 	"unicode/utf8"
 )
 
-// printStatusDisplay is the human-facing renderer for wx status.  The RPC
-// payload is deliberately kept as a map so the JSON contract remains owned by
-// the daemon; this renderer only interprets a copy of the response.
+// printStatusDisplay は wx status の人間向け表示を担当する。
+// RPC payload は daemon が JSON 契約を所有するため、表示側ではコピーだけを解釈する。
 func printStatusDisplay(w io.Writer, payload map[string]any, verbose bool) {
 	payload = normalizeStatusPayload(payload)
 	if degraded, ok := payload["degraded"].(bool); ok && degraded {
@@ -25,9 +24,7 @@ func printStatusDisplay(w io.Writer, payload map[string]any, verbose bool) {
 		return
 	}
 	if !statusPayloadLooksStructured(payload) {
-		// A daemon from before the diagnostic fields, and small in-process test
-		// handlers, still get the stable generic renderer rather than a table
-		// made up of missing values.
+		// 診断項目を返さない古い daemon や小さなテスト用 handler では、欠落値を表にせず汎用表示へ戻す。
 		printDisplay(w, payload)
 		return
 	}
@@ -38,9 +35,8 @@ func printStatusDisplay(w io.Writer, payload map[string]any, verbose bool) {
 	printStatusSummary(w, payload)
 }
 
-// normalizeStatusPayload makes values independent of whether a caller passed
-// the map produced by json.Decoder or typed diagnostic structs in a test.
-// JSON numbers intentionally become float64, matching rpc.Client's decode.
+// normalizeStatusPayload は RPC の JSON decode 結果とテスト用の型付き診断値を同じ形に揃える。
+// JSON 数値は json.Number のまま保持し、大きな値の表示で丸めない。
 func normalizeStatusPayload(payload map[string]any) map[string]any {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -74,17 +70,14 @@ func printDegradedStatus(w io.Writer, payload map[string]any, verbose bool) {
 	}
 	writeStatusLine(w, line)
 
-	// A degraded response has no trustworthy counts.  Keep the error and the
-	// database path visible without manufacturing zero-valued pool data.
+	// degraded 応答では件数を信頼できないため、error と database_path だけを表示し、ゼロ件を補わない。
 	if _, ok := payload["database_path"]; ok {
 		writeStatusField(w, "Database", statusHomeValue(payload, "database_path"))
 	}
 	if !verbose {
 		return
 	}
-	// Degraded status intentionally has no pool counts.  In verbose mode still
-	// expose every field the degraded handler did return, without filling in
-	// absent values as zeroes.
+	// degraded 応答でも受信した追加項目は保持し、欠落した件数をゼロとして生成しない。
 	known := map[string]bool{"degraded": true, "error": true, "database_path": true}
 	var additional []displayPair
 	for key, value := range payload {
@@ -112,9 +105,8 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 	repositories := statusObjectsSortedBy(statusObjectList(payload["repository_details"]), "main_path")
 	roots := statusObjectsSortedBy(statusObjectList(payload["worktree_roots"]), "path")
 
-	// Repository last-used timestamps are only associated with a workspace when the
-	// database says it has exactly one repository whose root exactly matches that
-	// repository's main path; do not infer a relationship from path containment.
+	// LAST USED は workspace と単一 repository の root が一致するときだけ対応付ける。
+	// パスの包含関係から repository を推測しない。
 	rows := make([]statusWorkspaceRow, 0, len(workspaces))
 	for _, workspace := range workspaces {
 		root, _ := statusRawString(workspace, "root")
@@ -157,8 +149,7 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 		return out
 	}())
 	if len(rows) == 0 {
-		// Tables intentionally retain their header for an empty registry.  The
-		// marker is not a count, and therefore cannot be confused with zero.
+		// 空の registry でも表のヘッダーを残し、(none) を件数の 0 と混同させない。
 		writeStatusLine(w, "(none)")
 	}
 
@@ -226,8 +217,8 @@ func statusWorkspaceIsCurrent(workspace map[string]any, roots []map[string]any) 
 			continue
 		}
 		parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
-		// A managed slot is <storage-root>/<workspace-id>/<slot-id>.  A
-		// repository path below that slot is not required for the marker.
+		// managed slot は <storage-root>/<workspace-id>/<slot-id> の形で保存される。
+		// slot 配下の repository まで CWD が進んでいても workspace を特定できる。
 		if len(parts) >= 2 && parts[0] == id {
 			return true
 		}
@@ -324,8 +315,7 @@ func formatHumanBytes(value int64) string {
 	return number + " " + units[unit]
 }
 
-// verboseStatusRenderer carries the small amount of state needed to append
-// unknown fields after the documented sections without mutating the RPC map.
+// verboseStatusRenderer は RPC map を変更せず、既知項目の後ろに未対応項目を追加する状態を持つ。
 type verboseStatusRenderer struct {
 	w          io.Writer
 	payload    map[string]any
@@ -333,8 +323,7 @@ type verboseStatusRenderer struct {
 	additional []displayPair
 }
 
-// printVerboseStatus groups the diagnostic response by the concepts an
-// operator needs while retaining every scalar and every diagnostic item.
+// printVerboseStatus は診断応答を運用上のまとまりに分け、全ての項目を失わずに表示する。
 func printVerboseStatus(w io.Writer, payload map[string]any) {
 	renderer := &verboseStatusRenderer{w: w, payload: payload, knownTop: map[string]bool{}}
 	renderer.renderWorkspaces()
@@ -870,8 +859,7 @@ func humanDurationSeconds(seconds int64) string {
 	negative := seconds < 0
 	var value uint64
 	if negative {
-		// -(MinInt64) overflows an int64, so derive the magnitude through an
-		// offset before converting to unsigned.
+		// math.MinInt64 の絶対値は int64 に収まらないため、オフセットして uint64 の大きさを求める。
 		value = uint64(-(seconds + 1)) + 1
 	} else {
 		value = uint64(seconds)
@@ -925,8 +913,7 @@ func writeStatusField(w io.Writer, label, value string) {
 	if value == "" {
 		value = "(empty)"
 	}
-	// Keep long errors, paths, and opaque IDs lossless while making the label
-	// readable.  Short values retain the compact one-line form.
+	// 長い error・path・opaque ID は値を失わないよう継続行へ送り、短い値は 1 行に収める。
 	if strings.Contains(value, "\n") || utf8.RuneCountInString(value) > 120 {
 		writeStatusLine(w, label+":")
 		for _, line := range strings.Split(value, "\n") {
