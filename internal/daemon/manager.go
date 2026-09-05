@@ -145,7 +145,6 @@ type Manager struct {
 	restartUnmanaged     bool
 	inflightRequests     int
 	inflightLifecycle    int
-	lastRequestEnd       time.Time
 	lastLifecycleEnd     time.Time
 	kickstart            func(context.Context) error
 	terminate            func() error
