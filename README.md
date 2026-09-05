@@ -1,7 +1,7 @@
 # wx
 
-`wx` launches Claude Code or Codex inside daemon-managed, detached Git worktrees.
-The source repository's HEAD, index, and tracked working files are never used as the agent's working directory.
+`wx` launches Claude Code or Codex with a per-workspace choice of daemon-managed, detached Git worktrees or the current directory.
+When worktrees are enabled, the agent works in an isolated checkout.
 
 ## Install
 
@@ -13,7 +13,7 @@ wx daemon install
 ```
 
 The default installation path is `~/.local/bin/wx`.
-The LaunchAgent starts the daemon at login and maintains one ready workspace for recently used repositories.
+The LaunchAgent starts the daemon at login and maintains one ready workspace for recently used workspaces that permit hot standby.
 
 Upgrading from a wx that predates `wx daemon start` requires `wx daemon install` to be run again, even on a machine where the LaunchAgent is already registered.
 The plist now runs `wx daemon start --foreground` where it used to run `wx daemon serve`, and the new binary rejects `serve` as an unknown action.
@@ -47,6 +47,20 @@ wx --branch feature/api codex
 wx --branch server=feature/api --branch web=feature/ui claude
 ```
 
+On the first launch in an unconfigured workspace, a terminal menu offers **Hot standby**, **Cold start**, and **No worktree**.
+Use the up/down keys to choose and Enter to save the choice; Esc or Ctrl+C cancels without saving or launching an agent.
+Cold start is initially selected.
+Hot standby permits a ready worktree to be kept in the pool; cold start creates a new worktree for each launch without replenishing standby worktrees.
+No worktree runs the agent in the current directory without starting the daemon or creating a managed session.
+
+```sh
+wx --select-worktree claude  # choose again and save
+wx --no-worktree codex       # run here for this invocation only
+wx --worktree claude         # create a new worktree for this invocation only
+```
+
+These three options are mutually exclusive and must precede the agent name.
+`--branch` and `--fresh` require worktrees.
 Arguments following `claude` or `codex` are passed through unchanged.
 `wx status`, `wx doctor`, `wx sessions`, and `wx gc --dry-run` expose daemon state and diagnostics.
 `wx status` prints one row per workspace followed by daemon, job, and storage summaries.
@@ -74,6 +88,28 @@ Update a scalar without expanding the sparse YAML file:
 ```sh
 wx config retention.hot_standby 168h
 ```
+
+The default `worktree.undefined` policy is `ask`.
+Without an interactive input and output terminal, an undefined workspace fails with instructions to choose an explicit override.
+Set the behavior for undefined workspaces without prompting:
+
+```sh
+wx config worktree.undefined cold  # always create on demand
+wx config worktree.undefined off   # always run in the current directory
+wx config worktree.undefined hot   # always create and permit hot standby
+wx config worktree.undefined ask   # restore the interactive default
+```
+
+Saved workspace choices take precedence over this default.
+A choice is stored as `workspaces.<absolute-path>.worktree`, with the value `hot`, `cold`, or `off`.
+For a Git repository, the key is the main worktree root, shared by its subdirectories and linked worktrees.
+Outside a Git repository, the key is the current directory, which can contain multiple repositories.
+Paths are matched exactly after canonicalization; policies do not implicitly apply to descendant workspaces.
+Existing copy/link entries and unrelated settings are preserved when saving a choice.
+An existing workspace entry without `worktree` remains undefined, as does a workspace known only to the daemon database.
+Changing a policy stops future standby replenishment; existing slots follow their normal retention and recovery lifecycle.
+`wx resume <id> <agent>` explicitly restores a managed session independently of the current directory's policy.
+Agent-native resume arguments follow the current workspace policy; in worktree mode the selected conversation is restored through the existing wx resume hooks.
 
 Complex workspace and repository overrides are edited in `~/.config/wx/config.yaml`.
 Worktrees are created under `storage.worktree_root` (default `$HOME/wx`) as `<workspace-id>/<slot-id>/<RepoName>`.

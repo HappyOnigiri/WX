@@ -34,7 +34,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
 
 ## 1セッションのライフサイクル
 
-1. **貸出** — `wx claude`が`ensureDaemon`でdaemonの生存を確認し（応答が遅いだけの生きたdaemonをlaunchdで再起動しないよう、接続自体に失敗したときだけkickstartする）、`ResolveAndLease`を呼ぶ。
+1. **貸出** — `wx claude`はworkspace rootのworktree方針を先に解決する。
+   未定義の対話起動は`internal/tui.Select`で選択を保存し、対象外なら現在のCWDで通常起動する。
+   worktreeを使う場合は`ensureDaemon`でdaemonの生存を確認し（応答が遅いだけの生きたdaemonをlaunchdで再起動しないよう、接続自体に失敗したときだけkickstartする）、`ResolveAndLease`を呼ぶ。
    daemonはcwdからworkspaceを解決し、要求したOIDと完全一致するREADY slotがあれば再利用、無ければPREPAREジョブを積んで準備中のpathを返す。
    一致しなければ再利用せずcold startになる。
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
@@ -62,7 +64,7 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   workerがリースを取って実行する。
   失敗の包み方は`retryableJobError`と`dependencyPendingError`の2種である。
   **所有権失敗はどちらにも包まず終端させる**（証明できない実体に対する再試行は危険側に倒れる）。
-- **standby補充** — 直近に使われた（hot）workspaceに対して、READYなslotを`pool.warm_per_workspace`まで先回りで用意する。
+- **standby補充** — worktree方針が`hot`で、直近に使われたworkspaceに対して、READYなslotを`pool.warm_per_workspace`まで先回りで用意する。
   `Store.HotRepositoryIDs`は`repositories.last_leased_at`でリポジトリ単位に絞る形をしている。
   その列を更新する側は5箇所すべてworkspace単位であるため、同じworkspaceのリポジトリを一律に同じ時刻へ揃える。
   そのため、貸出直後の`ENSURE_STANDBY`では全リポジトリがhotと判定され、このフィルタは実質効かない。
