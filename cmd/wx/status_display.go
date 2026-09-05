@@ -15,6 +15,10 @@ import (
 	"unicode/utf8"
 )
 
+// 表示に使うタイムゾーン。テストが固定の地域時刻を検査するための差し替え点である。
+// グローバルなtime.Localを書き換えると、並行するgoroutineのtime.Nowと競合する。
+var statusDisplayLocation = time.Local
+
 // printStatusDisplay は wx status の人間向け表示を担当する。
 // RPC payload は daemon が JSON 契約を所有するため、表示側ではコピーだけを解釈する。
 func printStatusDisplay(w io.Writer, payload map[string]any, verbose bool) {
@@ -280,11 +284,11 @@ func statusLocalDate(raw string) string {
 	if err != nil {
 		return "—"
 	}
-	return parsed.Local().Format("01/02 15:04")
+	return parsed.In(statusDisplayLocation).Format("01/02 15:04")
 }
 
 func statusZoneLabel() string {
-	name, _ := time.Now().Zone()
+	name, _ := time.Now().In(statusDisplayLocation).Zone()
 	if name == "" {
 		return "LOCAL"
 	}

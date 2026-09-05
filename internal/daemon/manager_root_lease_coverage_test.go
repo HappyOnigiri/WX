@@ -15,6 +15,7 @@ import (
 )
 
 func TestCloseRootHandlesClosesRetiredDescriptors(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	openDir := func(name string) *os.Root {
 		t.Helper()
@@ -73,6 +74,7 @@ func TestCloseRootHandlesClosesRetiredDescriptors(t *testing.T) {
 }
 
 func TestRootHasReferencesLockedCountsActiveAndRetiredGenerations(t *testing.T) {
+	t.Parallel()
 	m := &Manager{
 		rootRefs: map[string]*managedRoot{
 			"root": {refs: 0, closed: false},
@@ -101,6 +103,7 @@ func TestRootHasReferencesLockedCountsActiveAndRetiredGenerations(t *testing.T) 
 }
 
 func TestRootHandleForRootReportsNoDescriptorForUnknownRoot(t *testing.T) {
+	t.Parallel()
 	m := &Manager{}
 	if got := m.rootHandleForRoot(filepath.Join(t.TempDir(), "unknown")); got != nil {
 		t.Fatalf("unknown root unexpectedly returned a handle: %v", got)
@@ -108,6 +111,7 @@ func TestRootHandleForRootReportsNoDescriptorForUnknownRoot(t *testing.T) {
 }
 
 func TestOwnedPathExistsPropagatesManagerClosedError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
@@ -130,6 +134,7 @@ func TestOwnedPathExistsPropagatesManagerClosedError(t *testing.T) {
 }
 
 func TestOwnedPathExistsReportsUnreadablePath(t *testing.T) {
+	t.Parallel()
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	if _, _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root"), filepath.Join(root, "bootstrap", "root")); err != nil {
@@ -151,6 +156,7 @@ func TestOwnedPathExistsReportsUnreadablePath(t *testing.T) {
 }
 
 func TestRetainLeaseRejectsPathOutsideKnownRoots(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
@@ -175,6 +181,7 @@ func TestRetainLeaseRejectsPathOutsideKnownRoots(t *testing.T) {
 }
 
 func TestCreateSlotRootDetectsReplacedWorktreeRootDirectory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
@@ -208,6 +215,7 @@ func TestCreateSlotRootDetectsReplacedWorktreeRootDirectory(t *testing.T) {
 }
 
 func TestCreateSlotRootFailsWhenWorktreeRootIsReadOnly(t *testing.T) {
+	t.Parallel()
 	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
 	_ = ctx
 	root := manager.Config().Storage.WorktreeRoot
@@ -224,6 +232,7 @@ func TestCreateSlotRootFailsWhenWorktreeRootIsReadOnly(t *testing.T) {
 }
 
 func TestMaterializeWorkspaceRootFailsWhenSlotDirectoryIsUnreadable(t *testing.T) {
+	t.Parallel()
 	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
 	_ = ctx
 	root := manager.Config().Storage.WorktreeRoot
@@ -243,6 +252,7 @@ func TestMaterializeWorkspaceRootFailsWhenSlotDirectoryIsUnreadable(t *testing.T
 }
 
 func TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable(t *testing.T) {
+	t.Parallel()
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	blocked := filepath.Join(root, "blocked")
@@ -260,6 +270,7 @@ func TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable(t *testing.T) {
 }
 
 func TestReadyMatchesReportsUnreadableSlotDirectory(t *testing.T) {
+	t.Parallel()
 	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	if _, _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root"), filepath.Join(root, "bootstrap", "root")); err != nil {
@@ -281,6 +292,7 @@ func TestReadyMatchesReportsUnreadableSlotDirectory(t *testing.T) {
 }
 
 func TestReadyMatchesReportsMissingReadySlotDirectory(t *testing.T) {
+	t.Parallel()
 	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	bootstrap := filepath.Join(manager.Config().Storage.WorktreeRoot, "ready-missing", "bootstrap", "root")
 	if _, _, err := manager.createSlotRoot(bootstrap, bootstrap); err != nil {
@@ -295,6 +307,7 @@ func TestReadyMatchesReportsMissingReadySlotDirectory(t *testing.T) {
 }
 
 func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	if _, _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root"), filepath.Join(root, "bootstrap", "root")); err != nil {
@@ -338,6 +351,7 @@ func TestReadyRepositoriesMatchRejectsWorktreePathsOutsideRoot(t *testing.T) {
 }
 
 func TestReadyRepositoriesMatchReportsUnopenableReadyWorktree(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	if _, _, err := manager.createSlotRoot(filepath.Join(root, "bootstrap", "root"), filepath.Join(root, "bootstrap", "root")); err != nil {
@@ -377,6 +391,7 @@ func TestReadyRepositoriesMatchReportsUnopenableReadyWorktree(t *testing.T) {
 }
 
 func TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	slotID := domain.StableID("cold-schedule", "outside")
 	outsidePath := filepath.Join(t.TempDir(), "outside-worktree")
@@ -395,6 +410,7 @@ func TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath(t *te
 }
 
 func TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries(t *testing.T) {
+	t.Parallel()
 	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	if err := os.MkdirAll(filepath.Join(root, string(workspaceRecord.ID)), 0o700); err != nil {
@@ -423,6 +439,7 @@ func TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries(t *test
 }
 
 func TestOwnedRootArtifactPathsReportsUnreadableWorkspaceSlots(t *testing.T) {
+	t.Parallel()
 	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	slotsDir := filepath.Join(root, string(workspaceRecord.ID))
@@ -440,6 +457,7 @@ func TestOwnedRootArtifactPathsReportsUnreadableWorkspaceSlots(t *testing.T) {
 }
 
 func TestOwnedRootArtifactPathsReportsUnreadableUnboundNamespace(t *testing.T) {
+	t.Parallel()
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	unboundDir := filepath.Join(root, unboundNamespace)
@@ -457,6 +475,7 @@ func TestOwnedRootArtifactPathsReportsUnreadableUnboundNamespace(t *testing.T) {
 }
 
 func TestQuarantineFailureHelpersIgnoreNonOwnershipErrors(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg := config.Defaults()
 	store, err := state.Open(filepath.Join(root, "state.db"))

@@ -53,8 +53,8 @@ jobs:
       - name: Verify read-only check
         run: git diff --exit-code
 
-  coverage:
-    name: coverage
+  coverage-tests:
+    name: coverage-tests
     runs-on: macos-15
     timeout-minutes: 15
     env:
@@ -69,6 +69,50 @@ jobs:
           cache-name: coverage
       - run: make coverage-check
       - run: git diff --exit-code
+
+  # 3コアランナーではrace検査がCPU律速になり、単独で最長のinternal/daemonが下限を作る。
+  # daemonと残りを別ランナーへ分け、待ち時間をその下限まで下げる。
+  race:
+    name: race (${{ matrix.shard }})
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [daemon, rest]
+    env:
+      TMPDIR: /private/tmp
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: race-${{ matrix.shard }}
+      - env:
+          RACE_SHARD: ${{ matrix.shard }}
+        run: make "test-race-$RACE_SHARD"
+      - run: git diff --exit-code
+
+  # coverageは既存の必須チェック名を保つ集約ジョブである。
+  # needs.race.resultはmatrixの全shardをまとめた結果になる。
+  # どちらかがsuccess以外なら失敗させ、スキップやキャンセルを成功と見なさない。
+  coverage:
+    name: coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [coverage-tests, race]
+    if: always()
+    steps:
+      - name: Require both macOS test jobs to succeed
+        env:
+          COVERAGE_TESTS_RESULT: ${{ needs.coverage-tests.result }}
+          RACE_RESULT: ${{ needs.race.result }}
+        run: |
+          echo "coverage-tests=$COVERAGE_TESTS_RESULT race=$RACE_RESULT"
+          test "$COVERAGE_TESTS_RESULT" = success
+          test "$RACE_RESULT" = success
 
   build:
     name: build

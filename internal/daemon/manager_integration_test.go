@@ -50,6 +50,7 @@ func requireDaemonIntegration(t *testing.T) {
 }
 
 func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repo")
@@ -162,6 +163,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 }
 
 func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repo")
@@ -264,6 +266,7 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 }
 
 func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repo")
@@ -343,6 +346,7 @@ func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
 }
 
 func TestEnsureStandbyOnlyChecksOutRecentlyUsedRepositories(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	hotRepoPath := filepath.Join(root, "hot")
@@ -410,6 +414,7 @@ func TestEnsureStandbyOnlyChecksOutRecentlyUsedRepositories(t *testing.T) {
 }
 
 func TestFreshNativeResumeWithoutPriorMappingUsesSourceWorkspace(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repo")
@@ -461,6 +466,7 @@ func TestFreshNativeResumeWithoutPriorMappingUsesSourceWorkspace(t *testing.T) {
 }
 
 func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -593,6 +599,7 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 }
 
 func TestHandlerPublicLifecycleSurface(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
@@ -643,6 +650,7 @@ func TestHandlerPublicLifecycleSurface(t *testing.T) {
 }
 
 func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -710,6 +718,7 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 }
 
 func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repo")
@@ -817,6 +826,8 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	}
 }
 
+// 2つのgoroutineが同じREADY slotを選ぶ窓を狭めるため、直列で実行する。
+// 負けた側のREADY所有権検査はErrOwnershipになり、ResolveAndLeaseは再試行せず失敗する。
 func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -875,6 +886,7 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 }
 
 func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -925,6 +937,7 @@ func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
 }
 
 func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -1019,6 +1032,7 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 }
 
 func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	initGitRepo(t, filepath.Join(root, "service"))
@@ -1132,7 +1146,10 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	if coldLease.SessionID != coldSlot.ID || coldLease.Ready {
 		t.Fatalf("cold bundle lease=%+v slot=%+v", coldLease, coldSlot)
 	}
-	if err := m.WaitReady(ctx, coldLease.SessionID, coldLease.Token); err != nil {
+	// 上のctxはこの時点までの経過時間も食っているため、この待機には独自の予算を与える。
+	coldWait, coldCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer coldCancel()
+	if err := m.WaitReady(coldWait, coldLease.SessionID, coldLease.Token); err != nil {
 		t.Fatal(err)
 	}
 	for _, repository := range updated.Repositories {

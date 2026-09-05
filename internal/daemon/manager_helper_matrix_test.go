@@ -18,6 +18,7 @@ import (
 )
 
 func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
+	t.Parallel()
 	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	slotRoot := filepath.Join(root, string(workspaceRecord.ID), "slot")
@@ -172,6 +173,7 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 }
 
 func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	archiveManager := &archive.Manager{Git: manager.git}
 	if count := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{
@@ -285,6 +287,7 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 }
 
 func TestManagerDiagnosticPathBoundaries(t *testing.T) {
+	t.Parallel()
 	if got := diagnosticPath("", 0, 0); got != "path unavailable" {
 		t.Fatalf("empty diagnostic path=%q", got)
 	}
@@ -318,6 +321,7 @@ func TestManagerDiagnosticPathBoundaries(t *testing.T) {
 }
 
 func TestManagerColdRepositoryRemovalCompletesOwnedWorktree(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	repository := workspaceRecord.Repositories[0]
 	head := gitOutput(t, string(repository.MainPath), "rev-parse", "HEAD")

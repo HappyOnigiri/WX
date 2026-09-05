@@ -1,5 +1,5 @@
 name: Set up pinned Go
-description: Install the toolchain from go.mod with a job-scoped cache
+description: Install the toolchain from go.mod with split module and build caches
 inputs:
   cache-name:
     description: Cache namespace for the calling check
@@ -11,9 +11,9 @@ runs:
       uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
       with:
         go-version-file: go.mod
-        # setup-go's built-in key has no caller-provided namespace. Use the
-        # official setup action for toolchain installation and an explicit
-        # cache action below so each check owns a distinct cache key.
+        # setup-go's built-in key covers neither a caller-provided namespace nor
+        # the source tree. Use the official setup action for toolchain
+        # installation and the explicit cache actions below instead.
         cache: false
     - id: go-cache-paths
       name: Locate Go caches
@@ -23,12 +23,39 @@ runs:
           echo "module=$(go env GOMODCACHE)"
           echo "build=$(go env GOCACHE)"
         } >> "$GITHUB_OUTPUT"
-    - name: Restore and save job-scoped Go cache
+    - id: cache-keys
+      name: Derive cache keys
+      shell: bash
+      env:
+        # 依存はgo.sumだけで決まる。ビルド成果物はソースを変えると無効になるため、
+        # 埋め込み資産を含むディレクトリとビルド定義まで対象に含める。
+        DEPENDENCY_HASH: ${{ hashFiles('go.sum') }}
+        SOURCE_HASH: ${{ hashFiles('go.mod', 'go.sum', 'Makefile', '.github/actions/setup-go/action.yml', 'cmd/**', 'internal/**', 'migrations/**', 'tools/**') }}
+        RUNNER_PLATFORM: ${{ runner.os }}-${{ runner.arch }}
+        GO_VERSION: ${{ steps.setup-go.outputs.go-version }}
+        CACHE_NAME: ${{ inputs.cache-name }}
+      run: |
+        prefix="$RUNNER_PLATFORM-$GO_VERSION"
+        {
+          echo "module-prefix=wx-mod-$prefix-"
+          echo "build-prefix=wx-build-$prefix-$CACHE_NAME-"
+          echo "dependency=$DEPENDENCY_HASH"
+          echo "source=$SOURCE_HASH"
+        } >> "$GITHUB_OUTPUT"
+    # モジュールキャッシュは依存が変わるまで不変なので、全ジョブで同じキーを共有する。
+    - name: Restore and save the Go module cache
       uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # v4.2.2
       with:
-        path: |
-          ${{ steps.go-cache-paths.outputs.module }}
-          ${{ steps.go-cache-paths.outputs.build }}
-        key: wx-go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ inputs.cache-name }}-${{ hashFiles('go.sum') }}
+        path: ${{ steps.go-cache-paths.outputs.module }}
+        key: ${{ steps.cache-keys.outputs.module-prefix }}${{ steps.cache-keys.outputs.dependency }}
+        restore-keys: ${{ steps.cache-keys.outputs.module-prefix }}
+    # ビルドキャッシュはジョブごとにコンパイル対象が異なるためcache-nameで分ける。
+    # 既存エントリは更新できないので、ソースハッシュを鍵に含めて新しいキーへ保存させる。
+    - name: Restore and save the Go build cache
+      uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # v4.2.2
+      with:
+        path: ${{ steps.go-cache-paths.outputs.build }}
+        key: ${{ steps.cache-keys.outputs.build-prefix }}${{ steps.cache-keys.outputs.dependency }}-${{ steps.cache-keys.outputs.source }}
         restore-keys: |
-          wx-go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup-go.outputs.go-version }}-${{ inputs.cache-name }}-
+          ${{ steps.cache-keys.outputs.build-prefix }}${{ steps.cache-keys.outputs.dependency }}-
+          ${{ steps.cache-keys.outputs.build-prefix }}

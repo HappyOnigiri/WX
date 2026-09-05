@@ -14,6 +14,7 @@ import (
 )
 
 func TestDaemonRuntimeLockAllowsOnlyOneOwner(t *testing.T) {
+	t.Parallel()
 	path := t.TempDir() + "/daemon.lock"
 	first, err := acquireDaemonLock(path)
 	if err != nil {
@@ -31,6 +32,7 @@ func TestDaemonRuntimeLockAllowsOnlyOneOwner(t *testing.T) {
 }
 
 func TestServerPathLevelAndWorktreeRootHelpers(t *testing.T) {
+	t.Parallel()
 	for value, want := range map[string]slog.Level{
 		"debug": slog.LevelDebug,
 		"info":  slog.LevelInfo,

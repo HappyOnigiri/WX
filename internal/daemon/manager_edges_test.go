@@ -59,6 +59,7 @@ func containsString(values []string, target string) bool {
 }
 
 func TestScheduleDropsWorkWhenCanceledQueueIsFull(t *testing.T) {
+	t.Parallel()
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +78,7 @@ func TestScheduleDropsWorkWhenCanceledQueueIsFull(t *testing.T) {
 }
 
 func TestNewPreparerKeepsRetiredRootForInFlightSlot(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	oldRoot := filepath.Join(base, "old-root")
 	newRoot := filepath.Join(base, "new-root")
@@ -300,6 +302,7 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 }
 
 func TestRootForPathChoosesMostSpecificOverlappingRoot(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	outer := filepath.Join(parent, "outer")
 	inner := filepath.Join(outer, "inner")
@@ -425,6 +428,8 @@ func TestDiagnosticFilesystemAndHookChecks(t *testing.T) {
 	}
 }
 
+// Readiness.Timeoutを20msに縮めた状態で終端エラーの即時返却を確かめるため、直列で実行する。
+// 並列実行の負荷では待機が先に切れ、context.DeadlineExceededに化ける。
 func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
@@ -534,6 +539,7 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 }
 
 func TestRemoveEmptySlotRejectsDescendantSymlinkSwap(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	worktreeRoot := filepath.Join(root, "worktrees")
 	if err := os.MkdirAll(filepath.Join(worktreeRoot, unboundNamespace), 0o700); err != nil {
@@ -570,6 +576,7 @@ func TestRemoveEmptySlotRejectsDescendantSymlinkSwap(t *testing.T) {
 }
 
 func TestSessionEndWaitsForForegroundClientExit(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -596,6 +603,7 @@ func TestSessionEndWaitsForForegroundClientExit(t *testing.T) {
 }
 
 func TestManagerIdempotentJobsAndOwnershipRejections(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -662,6 +670,7 @@ func TestManagerIdempotentJobsAndOwnershipRejections(t *testing.T) {
 }
 
 func TestManagerResumeAndArchiveFailureStates(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -768,6 +777,8 @@ func ensureOwnershipMarkerForTest(t *testing.T, root, target string, identity wo
 	}
 }
 
+// Readiness.Timeoutを30msに縮めた終端状態の検査を含むため、直列で実行する。
+// 理由はTestManagerReadinessAndRecoveryFailurePathsと同じである。
 func TestWaitForSnapshotReportsTerminalAndTimeoutStates(t *testing.T) {
 	newFixture := func(t *testing.T, sessionState, slotState string) (*Manager, *state.Store, state.Session) {
 		t.Helper()
@@ -824,6 +835,7 @@ func TestWaitForSnapshotReportsTerminalAndTimeoutStates(t *testing.T) {
 }
 
 func TestGCRefusesIncompleteMultiRepositoryRecoveryMetadata(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name              string
 		kind              string
@@ -887,6 +899,7 @@ func TestGCRefusesIncompleteMultiRepositoryRecoveryMetadata(t *testing.T) {
 }
 
 func TestRemoveSlotWorktreesRefusesIncompleteRecoveryMetadata(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name              string
 		kind              string
@@ -941,6 +954,7 @@ func TestRemoveSlotWorktreesRefusesIncompleteRecoveryMetadata(t *testing.T) {
 }
 
 func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUnsafe(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		mode string
@@ -1053,6 +1067,7 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 }
 
 func TestWorkerStopsRetryingAfterBoundedAttempts(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -1097,6 +1112,7 @@ func TestWorkerStopsRetryingAfterBoundedAttempts(t *testing.T) {
 }
 
 func TestSnapshotFailureQuarantinesSlotWithoutRemovingWorktreeMetadata(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repository")
 	initGitRepo(t, repoPath)
@@ -1138,6 +1154,7 @@ func TestSnapshotFailureQuarantinesSlotWithoutRemovingWorktreeMetadata(t *testin
 }
 
 func TestMultiRepositoryRootMaterializationFailurePersistsFailedState(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -1184,6 +1201,7 @@ func TestMultiRepositoryRootMaterializationFailurePersistsFailedState(t *testing
 }
 
 func TestManagerFailsClosedWhenStateStoreBecomesUnavailable(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -1249,6 +1267,7 @@ func TestManagerFailsClosedWhenStateStoreBecomesUnavailable(t *testing.T) {
 }
 
 func TestOrphanReconciliationWaitsForRegisteredAgentProcess(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	databasePath := filepath.Join(root, "state.db")
 	store, err := state.Open(databasePath)
@@ -1322,6 +1341,7 @@ func TestOrphanReconciliationWaitsForRegisteredAgentProcess(t *testing.T) {
 }
 
 func TestWorkerDefersLiveAgentDependencyWithoutRetryConsumption(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	databasePath := filepath.Join(root, "state.db")
 	store, err := state.Open(databasePath)
@@ -1364,6 +1384,7 @@ func TestWorkerDefersLiveAgentDependencyWithoutRetryConsumption(t *testing.T) {
 }
 
 func TestScheduleLeavesOverflowForDurableRecovery(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := &Manager{jobs: make(chan jobWork, 1), ctx: ctx, cancel: cancel}
@@ -1375,6 +1396,7 @@ func TestScheduleLeavesOverflowForDurableRecovery(t *testing.T) {
 }
 
 func TestManagerHandlesUnavailableRootAndZeroLifecycleInterval(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	blockedRoot := filepath.Join(root, "blocked-root")
 	if err := os.WriteFile(blockedRoot, []byte("file"), 0o600); err != nil {

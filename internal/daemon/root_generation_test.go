@@ -15,6 +15,7 @@ import (
 )
 
 func TestColdWorktreeUnmaterializedAcceptsAbsentAndEmptyDirectories(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
 	if err != nil {
@@ -64,6 +65,7 @@ func TestColdWorktreeUnmaterializedAcceptsAbsentAndEmptyDirectories(t *testing.T
 }
 
 func TestOwnedSlotDirectoriesListsOnlyPhysicalSlotDirectories(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
 	if err != nil {
@@ -96,6 +98,7 @@ func TestOwnedSlotDirectoriesListsOnlyPhysicalSlotDirectories(t *testing.T) {
 }
 
 func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	store, err := state.Open(filepath.Join(base, "state.db"))
 	if err != nil {
@@ -144,6 +147,7 @@ func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
 }
 
 func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
 	store, err := state.Open(filepath.Join(base, "state.db"))
@@ -202,6 +206,7 @@ func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
 }
 
 func TestArtifactDiagnosticsScanRetiredRootGenerations(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
 	store, err := state.Open(filepath.Join(base, "state.db"))
@@ -268,6 +273,7 @@ func TestArtifactDiagnosticsScanRetiredRootGenerations(t *testing.T) {
 }
 
 func TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -302,6 +308,7 @@ func TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration(t *tes
 }
 
 func TestRegisterAndLoadRootGenerationsRepinRetiredRoots(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	store, err := state.Open(filepath.Join(home, "state.db"))
 	if err != nil {
@@ -380,6 +387,7 @@ func TestRegisterAndLoadRootGenerationsRepinRetiredRoots(t *testing.T) {
 }
 
 func TestLoadRootGenerationsRefusesAReplacedRootDirectory(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
 	store, err := state.Open(filepath.Join(base, "state.db"))
@@ -435,6 +443,7 @@ func resetRootRegistryForTest(m *Manager) {
 }
 
 func TestDirectoryIdentityAtReportsTheOpenedInode(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
 	if err != nil {
@@ -470,6 +479,7 @@ func TestDirectoryIdentityAtReportsTheOpenedInode(t *testing.T) {
 }
 
 func TestAllocationRetriesASlotIDCollision(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	rootPath, rootID, err := manager.activeRoot()
 	if err != nil {

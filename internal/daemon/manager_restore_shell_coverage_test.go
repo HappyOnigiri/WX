@@ -15,6 +15,7 @@ import (
 )
 
 func TestRemoveColdRepositoryJobKeepsTheSlotDirectoryAndItsMarker(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	repository := resolved[0].Repository
 	head := gitOutput(t, string(repository.MainPath), "rev-parse", "HEAD")
@@ -60,6 +61,7 @@ func TestRemoveColdRepositoryJobKeepsTheSlotDirectoryAndItsMarker(t *testing.T) 
 }
 
 func TestRemoveColdRepositoryJobQuarantinesOnUnlockedWorktree(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	repository := resolved[0].Repository
 	head := gitOutput(t, string(repository.MainPath), "rev-parse", "HEAD")
@@ -85,6 +87,7 @@ func TestRemoveColdRepositoryJobQuarantinesOnUnlockedWorktree(t *testing.T) {
 }
 
 func TestRestoreSlotCompletesMultiRepositoryWorkspaceRootRecovery(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	repository := resolved[0].Repository
 	workspaceRecord.Root = domain.CanonicalPath(filepath.Dir(string(repository.MainPath)))
@@ -159,6 +162,7 @@ func TestRestoreSlotCompletesMultiRepositoryWorkspaceRootRecovery(t *testing.T) 
 }
 
 func TestRestoreSlotQuarantinesUncertainWorkspaceRootOwnership(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	repository := resolved[0].Repository
 
@@ -182,6 +186,7 @@ func TestRestoreSlotQuarantinesUncertainWorkspaceRootOwnership(t *testing.T) {
 }
 
 func TestPrepareSlotQuarantinesUncertainRepositoryOwnershipInMultiRepository(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	repository := resolved[0].Repository
 
