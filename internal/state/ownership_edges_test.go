@@ -455,3 +455,25 @@ func TestCanonicalWorkspaceKeepsNewRepositoryIdentity(t *testing.T) {
 		t.Fatalf("unregistered repository workspace identity=%q, want the caller's proposal %q", canonical.ID, w.ID)
 	}
 }
+
+// TestSlotStateMismatchIsDistinguishableFromOwnershipDoubt は、state だけが食い違う失敗を
+// 呼び出し元が再取得で回復できるよう、位置・identity の不一致と区別できることを検証する。
+func TestSlotStateMismatchIsDistinguishableFromOwnershipDoubt(t *testing.T) {
+	ctx := context.Background()
+	f := newOwnershipFixture(t)
+	if _, err := f.store.db.ExecContext(ctx, `UPDATE slots SET state='LEASED' WHERE id=?`, f.slotID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.ValidateWorktreeOwnership(ctx, f.worktreeRequest()); !errors.Is(err, ErrSlotStateIneligible) || !errors.Is(err, ErrOwnership) {
+		t.Fatalf("worktree state mismatch=%v", err)
+	}
+	if err := f.store.ValidateSlotOwnership(ctx, f.slotRequest()); !errors.Is(err, ErrSlotStateIneligible) || !errors.Is(err, ErrOwnership) {
+		t.Fatalf("slot state mismatch=%v", err)
+	}
+	eligible := newOwnershipFixture(t)
+	mislocated := eligible.slotRequest()
+	mislocated.RelPath = filepath.Join(eligible.workspaceID, "elsewhere")
+	if err := eligible.store.ValidateSlotOwnership(ctx, mislocated); errors.Is(err, ErrSlotStateIneligible) || !errors.Is(err, ErrOwnership) {
+		t.Fatalf("location mismatch was reported as a state mismatch: %v", err)
+	}
+}

@@ -1094,7 +1094,8 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 			defer releaseRoot()
 			valid, matchErr := m.readyMatches(ctx, ready, resolved)
 			if matchErr != nil {
-				if errors.Is(matchErr, state.ErrOwnership) {
+				// 併走するleaseがREADYを奪った場合は所有権自体は疑わしくないため、隔離せず次の候補へ回す。
+				if errors.Is(matchErr, state.ErrOwnership) && !errors.Is(matchErr, state.ErrSlotStateIneligible) {
 					m.quarantineOwnershipFailure(ready.ID, []string{"READY"}, matchErr)
 				}
 				return Lease{}, false, matchErr
@@ -1145,6 +1146,10 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 			return Lease{}, false, nil
 		}()
 		if leaseErr != nil {
+			// READY取得後に状態が変わっただけならslotをSTALEにせず、残るREADYまたはcold allocateで応答する。
+			if errors.Is(leaseErr, state.ErrSlotStateIneligible) {
+				continue
+			}
 			return Lease{}, leaseErr
 		}
 		if leased {
