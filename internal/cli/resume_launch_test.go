@@ -15,6 +15,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 func TestRunResumeAgentOmittedFreshSetsRecoveryModeAndWaitsBeforeLaunch(t *testing.T) {
@@ -197,7 +198,7 @@ func serveResumeLaunchRPC(t *testing.T, handler *resumeLaunchHandler) (Client, f
 
 func serveResumeLaunchRPCWithConfig(t *testing.T, handler *resumeLaunchHandler, cfg config.Config) (Client, func()) {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)

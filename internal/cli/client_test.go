@@ -155,25 +155,6 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 	}
 }
 
-// shortSocketPath は unix socket 用に、テスト名を含まない一時ディレクトリ配下のパスを返す。
-// t.TempDir() はテスト名をそのままパスへ入れるため、名前が長いと sun_path の上限に達して bind が invalid argument で失敗する。
-func shortSocketPath(t *testing.T, name string) string {
-	t.Helper()
-	directory, err := os.MkdirTemp("", "wx-cli-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(directory) })
-	socket := filepath.Join(directory, name)
-	if len(socket) >= socketPathLimit {
-		t.Fatalf("socket path %q is %d bytes and cannot be bound (limit %d)", socket, len(socket), socketPathLimit)
-	}
-	return socket
-}
-
-// socketPathLimit は macOS の sockaddr_un.sun_path（終端 NUL 込み 104 バイト）に由来する。
-const socketPathLimit = 104
-
 func waitForPath(t *testing.T, path string) {
 	t.Helper()
 	waitForPathWithin(t, path, 3*time.Second)

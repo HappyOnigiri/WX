@@ -8,10 +8,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 func TestIdempotentCallStopsRetryAfterConnectedPeerCloses(t *testing.T) {
-	socket := shortSocketPath(t, "close-before-response.sock")
+	socket := testsupport.SocketPath(t, "close-before-response.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +110,7 @@ func TestRequestDeadlineHonorsEarlierParentDeadline(t *testing.T) {
 }
 
 func TestConnectRetryBridgesADaemonThatIsNotListeningYet(t *testing.T) {
-	socket := shortSocketPath(t, "connect-retry.sock")
+	socket := testsupport.SocketPath(t, "connect-retry.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server := &Server{Socket: socket, Handler: echoHandler{}}
@@ -133,7 +135,7 @@ func TestConnectRetryBridgesADaemonThatIsNotListeningYet(t *testing.T) {
 }
 
 func TestZeroValueClientStillFailsImmediatelyWithoutADaemon(t *testing.T) {
-	socket := shortSocketPath(t, "no-daemon.sock")
+	socket := testsupport.SocketPath(t, "no-daemon.sock")
 	start := time.Now()
 	err := (Client{Socket: socket, Timeout: time.Second}).Call(context.Background(), "echo", struct{}{}, nil)
 	if !IsConnectError(err) {
@@ -145,7 +147,7 @@ func TestZeroValueClientStillFailsImmediatelyWithoutADaemon(t *testing.T) {
 }
 
 func TestConnectRetryStopsAtItsBudget(t *testing.T) {
-	socket := shortSocketPath(t, "retry-budget.sock")
+	socket := testsupport.SocketPath(t, "retry-budget.sock")
 	start := time.Now()
 	err := (Client{Socket: socket, Timeout: 100 * time.Millisecond, ConnectRetry: 300 * time.Millisecond}).Call(context.Background(), "echo", struct{}{}, nil)
 	if !IsConnectError(err) {
@@ -157,7 +159,7 @@ func TestConnectRetryStopsAtItsBudget(t *testing.T) {
 }
 
 func TestConnectRetryStopsWhenTheCallerGivesUp(t *testing.T) {
-	socket := shortSocketPath(t, "retry-cancel.sock")
+	socket := testsupport.SocketPath(t, "retry-cancel.sock")
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	err := (Client{Socket: socket, Timeout: 50 * time.Millisecond, ConnectRetry: 10 * time.Second}).Call(ctx, "echo", struct{}{}, nil)
