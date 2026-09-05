@@ -41,8 +41,9 @@ Go側に状態のenum型や遷移ガードを作らない。
   macOSの`/var` → `/private/var`などがsymlink拒否の検査に引っかかるためである。
 - `internal/daemon`のトップレベルテストは、専用の一時ディレクトリ・DB・Managerだけを使うものに`t.Parallel()`を付ける。
   `t.Setenv`を自身かサブテストで呼ぶテスト、プロセス全体のgoroutine・fdを数えるテスト、短い待機に依存するテストは直列のまま残す。
-- CIはrace検査（`make test-race`）とcoverage計測（`make coverage-check`）を別ジョブで並列に実行し、`coverage`ジョブが両方の結果を集約する。
-  `make test-race-coverage`は両者を同時に走らせた場合の比較・診断用で、通常のゲートには含めない。
+- CIはrace検査とcoverage計測（`make coverage-check`）を別ジョブで並列に実行し、`coverage`ジョブが両方の結果を集約する。
+  race検査は3コアランナーでCPU律速になるため、`make test-race-daemon`と`make test-race-rest`の2ランナーへ分ける。
+  手元の`make ci`と`make test-race`は全パッケージをまとめて検査し、`make test-race-coverage`は両者を同時に走らせた場合の比較・診断用に残す。
 - Git hookは書式・`go vet`・buildに絞る。
   本体は`$(git rev-parse --git-common-dir)`の`hooks/`直下に置き、`make hook-pre-commit`・`make hook-pre-push`を呼ぶ。
   `core.hooksPath`のlocal設定はuserレベルのhook dispatcherを覆い隠し、`post-checkout`なども止めるため設定しない。

@@ -24,13 +24,14 @@ SHELLCHECK_VERSION ?= 0.11.0
 COVERAGE_MIN ?= 80
 CORE_COVERAGE_MIN ?= 85
 COVERAGE_EXCLUSIONS ?= coverage-exclusions.txt
-RACE_TEST_ARGS := -race -shuffle=on -count=1 ./...
+RACE_TEST_ARGS := -race -shuffle=on -count=1
+RACE_DAEMON_PACKAGE := ./internal/daemon
 LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicode-3.0,Unlicense
 # 所有権を検証したパスでGit・launchctl・prepareコマンドを実行する。
 # 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check workflow-check workflow-lint workflow-security-audit shell-check test test-race ci-test-race test-coverage test-race-coverage coverage-check portable-test concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -142,12 +143,20 @@ test:
 	$(GO) test -shuffle=on -count=1 ./...
 
 test-race:
-	$(GO) test $(RACE_TEST_ARGS)
+	$(GO) test $(RACE_TEST_ARGS) ./...
+
+# race検査はCIの3コアランナーでCPU律速になり、単独で最長のinternal/daemonがジョブの下限を作る。
+# daemonと残りを別ジョブへ分けるため、対象パッケージだけが違う2つのtargetを用意する。
+test-race-daemon:
+	$(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE)
+
+test-race-rest:
+	$(GO) test $(RACE_TEST_ARGS) $$($(GO) list ./... | grep -v '/internal/daemon$$')
 
 # ci-checksは-jで並列に走るため、2つのテストスイートが同時に実行されると資源が枯渇して失敗する。
 # coverage計測の完了を待たせ、同時実行だけを防ぐ。
 ci-test-race: coverage-check
-	$(GO) test $(RACE_TEST_ARGS)
+	$(GO) test $(RACE_TEST_ARGS) ./...
 
 # race検査とcoverage計測はCIで別ジョブへ分けるため、race抜きの計測を通常経路にする。
 # test-race-coverageは両者を同時に走らせた場合の比較・診断用に残す。

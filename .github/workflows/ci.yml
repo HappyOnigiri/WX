@@ -70,10 +70,16 @@ jobs:
       - run: make coverage-check
       - run: git diff --exit-code
 
+  # 3コアランナーではrace検査がCPU律速になり、単独で最長のinternal/daemonが下限を作る。
+  # daemonと残りを別ランナーへ分け、待ち時間をその下限まで下げる。
   race:
-    name: race
+    name: race (${{ matrix.shard }})
     runs-on: macos-15
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [daemon, rest]
     env:
       TMPDIR: /private/tmp
     steps:
@@ -83,12 +89,15 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-go
         with:
-          cache-name: race
-      - run: make test-race
+          cache-name: race-${{ matrix.shard }}
+      - env:
+          RACE_SHARD: ${{ matrix.shard }}
+        run: make "test-race-$RACE_SHARD"
       - run: git diff --exit-code
 
   # coverageは既存の必須チェック名を保つ集約ジョブである。
-  # 分割した2ジョブのどちらかがsuccess以外なら失敗させ、スキップやキャンセルを成功と見なさない。
+  # needs.race.resultはmatrixの全shardをまとめた結果になる。
+  # どちらかがsuccess以外なら失敗させ、スキップやキャンセルを成功と見なさない。
   coverage:
     name: coverage
     runs-on: ubuntu-24.04
