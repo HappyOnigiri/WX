@@ -58,7 +58,7 @@ func decode(raw json.RawMessage, v any) error {
 }
 
 // dispatch 全体を in-flight として数える。応答途中の kickstart を防ぐため、decode 失敗を含む全 method を囲む。
-// quiet period の対象かどうかは method を知るここで判定する。
+// 利用者操作として報告するかどうかは method を知るここで判定する。
 func (h Handler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	lifecycle := isLifecycleMethod(method)
 	h.Manager.beginRequest(lifecycle)
@@ -183,6 +183,15 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return result, nil
 		}
 		return result, nil
+	case "Prune":
+		var p struct {
+			All    bool `json:"all"`
+			DryRun bool `json:"dry_run"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return h.Manager.PruneRecoveryRefs(ctx, p.All, p.DryRun)
 	case "ReloadConfig":
 		return map[string]bool{"reloaded": true}, h.Manager.ReloadConfig()
 	case "RequestRestart":

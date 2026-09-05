@@ -102,7 +102,7 @@ func (h *lifecycleHandler) Handle(_ context.Context, method string, _ json.RawMe
 	case "RequestStop", "RequestRestart":
 		// response を client へ届けるため停止通知は遅らせる。daemon も応答中ではなく応答後に listener を閉じる。
 		h.once.Do(func() { time.AfterFunc(100*time.Millisecond, func() { close(h.stopped) }) })
-		return map[string]any{"pid": h.pid, "inflight_requests": 0, "queued_jobs": 0, "quiet_period_remaining_ms": 0}, nil
+		return map[string]any{"pid": h.pid, "inflight_requests": 0, "queued_jobs": 0}, nil
 	case "Status":
 		return map[string]any{"pid": h.pid}, nil
 	default:
@@ -424,7 +424,7 @@ type unmanagedHandler struct{}
 func (unmanagedHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	switch method {
 	case "RequestRestart":
-		return map[string]any{"pid": 1234, "launchd_managed": false, "inflight_requests": 0, "queued_jobs": 0, "quiet_period_remaining_ms": 0}, nil
+		return map[string]any{"pid": 1234, "launchd_managed": false, "inflight_requests": 0, "queued_jobs": 0}, nil
 	default:
 		return map[string]any{"ok": true, "pid": 1234}, nil
 	}
@@ -443,7 +443,7 @@ func (busyHandler) Handle(_ context.Context, method string, _ json.RawMessage) (
 		if idleGate.Load() {
 			jobs = 0
 		}
-		return map[string]any{"pid": 1234, "inflight_requests": 0, "queued_jobs": jobs, "quiet_period_remaining_ms": 5000}, nil
+		return map[string]any{"pid": 1234, "inflight_requests": 0, "queued_jobs": jobs}, nil
 	default:
 		return map[string]any{"ok": true, "pid": 1234}, nil
 	}
@@ -548,6 +548,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"doctor"},
 		{"doctor", "--json"},
 		{"gc", "--dry-run"},
+		{"prune", "--dry-run"},
 		{"clear", "--dry-run"},
 		{"leases", "--all", "--json"},
 		{"leases"},
@@ -566,7 +567,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 			t.Fatalf("run(%v) exit=%d", args, exit)
 		}
 	}
-	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"clear", "extra"}, {"clean"}, {"leases", "extra"}, {"sessions", "unknown"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
+	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"prune", "extra"}, {"clear", "extra"}, {"clean"}, {"leases", "extra"}, {"sessions", "unknown"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
 		if exit := run(ctx, args); exit != 2 {
 			t.Fatalf("misuse run(%v) exit=%d", args, exit)
 		}
@@ -611,6 +612,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 	for _, args := range [][]string{
 		{"status"},
 		{"gc", "--dry-run"},
+		{"prune", "--dry-run"},
 		{"leases", "--all"},
 		{"forget", home},
 	} {
@@ -653,7 +655,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 }
 
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
-	for _, command := range []string{"status", "doctor", "gc", "clear", "leases", "config", "resume", "forget", "daemon"} {
+	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "leases", "config", "resume", "forget", "daemon"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			commandUsage(&output, command)
