@@ -191,7 +191,7 @@ multi_repositoryのworkspaceスナップショットは、slotディレクトリ
 ## 未実装のまま残しているもの
 
 - `.worktreelink`に列挙したpathは、main worktree側の実体へ直接symlinkする（`createLinksAt`）。
-  sourceが存在しない項目は、ファイル・ディレクトリを問わずその準備では省略し、sourceが現れた後のslot再利用はfingerprintの存在状態変更で止める。
+  sourceが存在しない項目は、ファイル・ディレクトリを問わずその準備では省略し、sourceの出現・消失でslot再利用をfingerprintの存在状態変更により止める。
   sourceのsymlink・path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
   workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
 - 生成器を持たない。
