@@ -133,6 +133,7 @@ Agent rule files that convention keeps out of version control are copied into ev
 Only untracked regular files are copied, and a tracked path is left to the checkout.
 A directory or symlink under one of those names stays the job of an explicit `.worktreeinclude` or `.worktreelink` entry.
 List anything else a worktree needs in `.worktreeinclude` (copied) or `.worktreelink` (symlinked to the main worktree, and required to be Git-ignored).
+`.worktreeinclude` entries that match a tracked path are ignored the same way, so an entry left behind when a file starts being tracked does not block the worktree.
 
 ## Contributing
 
