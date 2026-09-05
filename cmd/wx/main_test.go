@@ -104,8 +104,8 @@ func TestRunDoctorFallsBackToLocalChecksWhenDaemonCannotConnect(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("local doctor output is not JSON: %v\n%s", err, stdout)
 	}
-	if got := payload["schema_version"]; got != float64(6) {
-		t.Fatalf("schema_version=%v, want 6", got)
+	if got := payload["schema_version"]; got != float64(7) {
+		t.Fatalf("schema_version=%v, want 7", got)
 	}
 	checks, ok := payload["checks"].(map[string]any)
 	if !ok {
