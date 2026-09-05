@@ -487,7 +487,7 @@ func lifecycleConflict(reply map[string]any, wanted string) string {
 }
 
 // gateWaitReason は要求受理時のスナップショットに基づき、daemon が待っていた理由を説明する。
-// 待機中に再取得すると quiet period を延長するため、受理時点の情報だけを使う。
+// 受理後の状態は問い合わせず、待機中の RPC でゲートの判断材料を増やさない。
 func gateWaitReason(reply map[string]any) string {
 	if jobs := replyInt(reply, "queued_jobs"); jobs > 0 {
 		return fmt.Sprintf("%d job(s) were still queued when the request was accepted; the daemon waits for them to finish", jobs)
@@ -495,7 +495,7 @@ func gateWaitReason(reply map[string]any) string {
 	if inflight := replyInt(reply, "inflight_requests"); inflight > 0 {
 		return fmt.Sprintf("%d other request(s) were still in flight when the request was accepted", inflight)
 	}
-	reason := "the daemon was idle when the request was accepted, so whatever held the gate arrived after that"
+	reason := "the daemon was idle when the request was accepted, so a long-running request or job arrived after that"
 	logPath, err := config.LogPath()
 	if err != nil {
 		return reason + "; check the daemon log for the requests and jobs that followed"

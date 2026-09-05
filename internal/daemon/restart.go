@@ -16,10 +16,6 @@ import (
 // そうしないと終了処理で launchctl が置換を依頼する前に取り消される。
 const restartKickstartTimeout = 10 * time.Second
 
-// 保留中の再起動・停止を実行するまでに必要なアイドル時間。
-// RPC 間にはカウンターが 0 になるため、最初の 0 だけで実行すると一連の操作を途中で切る。
-const lifecycleQuietPeriod = 5 * time.Second
-
 // Handler.Handle の終了後もしばらくライフサイクルゲートを閉じておく時間。
 // handler 復帰後に rpc.Server が応答を書き込むため、この間のシグナルは接続断として届き得る。
 const lifecycleReplyGrace = 100 * time.Millisecond
@@ -186,24 +182,16 @@ func (m *Manager) RequestStart(ctx context.Context) map[string]any {
 func (m *Manager) lifecycleSnapshot(ctx context.Context) map[string]any {
 	m.mu.RLock()
 	inflight := m.inflightRequests - m.inflightLifecycle
-	lastEnd := m.lastRequestEnd
 	m.mu.RUnlock()
-	remaining := time.Duration(0)
-	if !lastEnd.IsZero() {
-		if elapsed := time.Since(lastEnd); elapsed < lifecycleQuietPeriod {
-			remaining = lifecycleQuietPeriod - elapsed
-		}
-	}
 	jobs := 0
 	if status, err := m.store.Status(ctx); err == nil {
 		jobs = status.Jobs
 	}
 	return map[string]any{
-		"pid":                       os.Getpid(),
-		"launchd_managed":           m.underLaunchd(),
-		"inflight_requests":         inflight,
-		"queued_jobs":               jobs,
-		"quiet_period_remaining_ms": remaining.Milliseconds(),
+		"pid":               os.Getpid(),
+		"launchd_managed":   m.underLaunchd(),
+		"inflight_requests": inflight,
+		"queued_jobs":       jobs,
 	}
 }
 
@@ -223,7 +211,7 @@ func (m *Manager) lifecyclePending() bool {
 }
 
 // 作業を落とさず追従できる時点で保留中の停止・再起動を実行する。
-// RPC 完了後も quiet period を待ち、同じ wx 呼び出しの RPC 間でシグナルを送らない。
+// 実行中の RPC と job が捌けた時点で発行し、次の要求が来るかどうかは待たない。
 // 停止は launchd を必要とせず、--foreground で起動したデーモンにも適用する。
 func (m *Manager) runPendingLifecycle() {
 	m.mu.Lock()
@@ -338,16 +326,14 @@ func (m *Manager) lifecycleIntentUnchangedLocked(stop, restart bool) bool {
 	return m.stopPending == stop && m.restartPending == restart
 }
 
-// デーモンが置換・停止できる程度にアイドルかを返す。lastRequestEnd がゼロなら保護対象の要求はない。
-// 呼び出し時は m.mu を保持する。
+// デーモンが置換・停止できる程度にアイドルかを返す。判定は実行中の要求だけを見る。
+// 要求と要求の隙間を待たないのは、heartbeat のような周期的 RPC が固定間隔のアイドルを恒久的に塞ぎ得るためである。
+// 隙間で置換されたクライアントは rpc.Client の ConnectRetry と冪等キーで追従する。呼び出し時は m.mu を保持する。
 func (m *Manager) lifecycleGateOpenLocked() bool {
 	if m.inflightRequests > 0 {
 		return false
 	}
-	if !m.lastLifecycleEnd.IsZero() && time.Since(m.lastLifecycleEnd) < lifecycleReplyGrace {
-		return false
-	}
-	return m.lastRequestEnd.IsZero() || time.Since(m.lastRequestEnd) >= lifecycleQuietPeriod
+	return m.lastLifecycleEnd.IsZero() || time.Since(m.lastLifecycleEnd) >= lifecycleReplyGrace
 }
 
 func (m *Manager) kickstartService(ctx context.Context) error {
@@ -403,7 +389,7 @@ func (m *Manager) warnRestartUnmanaged() {
 }
 
 // beginRequest と endRequest は全 RPC を囲み、RPC サーバーが管理しない handler 数を記録する。
-// lifecycle 要求も接続保護のため数えるが、利用者操作ではないため quiet period の基準にはしない。
+// lifecycle 要求も接続保護のため数えるが、報告する inflight からは除いて利用者操作だけを示す。
 func (m *Manager) beginRequest(lifecycle bool) {
 	if m == nil {
 		return
@@ -426,13 +412,6 @@ func (m *Manager) endRequest(lifecycle bool) {
 		m.inflightLifecycle--
 		// まだ応答を書き込んでいないため、ゲートを閉じ始める時刻を記録する。
 		m.lastLifecycleEnd = time.Now()
-		m.mu.Unlock()
-		return
-	}
-	// quiet period は利用者向け作業が実際にアイドルになった時刻から測るため、カウンターが 0 の時だけ記録する。
-	// 実行中の lifecycle 要求は保護対象ではないため時刻を遅らせない。
-	if m.inflightRequests-m.inflightLifecycle == 0 {
-		m.lastRequestEnd = time.Now()
 	}
 	m.mu.Unlock()
 }
