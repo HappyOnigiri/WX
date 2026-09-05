@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -434,6 +435,18 @@ func TestPrepareCommandSuccessFailureAndTimeout(t *testing.T) {
 	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
 	if !errors.As(err, &prepareFailure) || !strings.Contains(err.Error(), "timeout must not be negative") {
 		t.Fatalf("invalid timeout prepare error=%v typed=%+v", err, prepareFailure)
+	}
+}
+
+func TestPrepareCommandErrorUnwrapAndNilReceiver(t *testing.T) {
+	cause := errors.New("prepare cause")
+	failure := &PrepareCommandError{Err: fmt.Errorf("wrapped: %w", cause)}
+	if !errors.Is(failure, cause) {
+		t.Fatalf("prepare command error did not unwrap cause: %v", failure)
+	}
+	var nilFailure *PrepareCommandError
+	if nilFailure.Unwrap() != nil || nilFailure.Error() != "prepare command failed" || errors.Is(nilFailure, cause) {
+		t.Fatalf("nil prepare command error is not safe: unwrap=%v error=%q is=%v", nilFailure.Unwrap(), nilFailure.Error(), errors.Is(nilFailure, cause))
 	}
 }
 
