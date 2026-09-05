@@ -407,8 +407,11 @@ func Validate(c *Config) error {
 			return fmt.Errorf("repositories.%s.dir_source must be %s or %s", path, RepoDirSourceRemote, RepoDirSourceDirectory)
 		}
 	}
-	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 || c.Pool.GitConcurrencyPerRepository < 1 {
+	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 {
 		return errors.New("pool counts must be non-negative and concurrency must be at least 1")
+	}
+	if c.Pool.GitConcurrencyPerRepository != 1 {
+		return errors.New("pool.git_concurrency_per_repository must be 1 (only supported value)")
 	}
 	for k, v := range map[string]time.Duration{"retention.hot_standby": c.Retention.HotStandby.Duration, "retention.ended_worktree": c.Retention.EndedWorktree.Duration, "retention.recovery_snapshot": c.Retention.RecoverySnapshot.Duration, "retention.expired_session_tombstone": c.Retention.ExpiredSessionTombstone.Duration, "retention.failed_job": c.Retention.FailedJob.Duration, "retention.event_log": c.Retention.EventLog.Duration, "discovery.timeout": c.Discovery.Timeout.Duration, "discovery.reconcile_interval": c.Discovery.ReconcileInterval.Duration, "readiness.timeout": c.Readiness.Timeout.Duration} {
 		if v < 0 {
