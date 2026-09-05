@@ -36,6 +36,12 @@ const SchemaVersion = 3
 // ErrPreviousWorktreeLayout は、wx が意図的に migration path を持たない旧 worktree layout の state database を示す。
 var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree layout")
 
+// ErrWorkspaceKindConflict は、同じ root path が別の workspace kind で登録済みであることを示す。
+var ErrWorkspaceKindConflict = errors.New("workspace root is already registered with a different kind")
+
+// ErrWorkspaceIdentityConflict は、同じ root path が別の workspace identity で登録済みであることを示す。
+var ErrWorkspaceIdentityConflict = errors.New("workspace root is already registered with a different identity")
+
 // JSONSchemaVersion は `wx status --json` と `wx doctor --json` の出力形状の互換契約であり、SQLite migration 数の SchemaVersion とは独立である。
 // scripted consumer が観測する形状を変える場合だけ上げる。2 は restart_pending、3 は stop_pending/pid、4 は daemon-unavailable diagnostics を追加した。
 // 5 は worktree_root_error と worktree_root check、6 は workspace_details の last_used_at、7 は quarantine の kind と artifact_ownership.mismatched_refs を追加した。
@@ -430,10 +436,24 @@ func (s *Store) registeredWorkspaceID(ctx context.Context, w discovery.Workspace
 	if len(ids) > 1 {
 		return "", false, fmt.Errorf("workspace identity %v belongs to multiple registered workspaces", argument)
 	}
-	if len(ids) == 0 {
-		return "", false, nil
+	var rootID, rootKind string
+	err = s.db.QueryRowContext(ctx, `SELECT id,kind FROM workspaces WHERE root_path=?`, w.Root).Scan(&rootID, &rootKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		if len(ids) == 0 {
+			return "", false, nil
+		}
+		return ids[0], true, nil
 	}
-	return ids[0], true, nil
+	if err != nil {
+		return "", false, err
+	}
+	if len(ids) == 1 && rootID == ids[0] {
+		return ids[0], true, nil
+	}
+	if rootKind != w.Kind {
+		return "", false, fmt.Errorf("%w: root %q is registered as workspace %s with kind %q; archive and run wx forget %q before registering discovered kind %q", ErrWorkspaceKindConflict, w.Root, rootID, rootKind, w.Root, w.Kind)
+	}
+	return "", false, fmt.Errorf("%w: root %q is registered as workspace %s, but its %s identity does not match; archive and run wx forget %q before registering it again", ErrWorkspaceIdentityConflict, w.Root, rootID, w.Kind, w.Root)
 }
 
 // UpsertWorkspaceGeneration は workspace を登録し、解決済み durable ID を持つ値を返す。呼び出し元は返却値を使う。
