@@ -286,92 +286,6 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 	})
 }
 
-func TestResumeBindingsUpdateAllRepositoryLeaseTimestamps(t *testing.T) {
-	tests := []struct {
-		name string
-		bind func(*testing.T, *Store, context.Context, string) error
-	}{
-		{
-			name: "native fresh resume",
-			bind: func(t *testing.T, store *Store, ctx context.Context, old string) error {
-				parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("parent")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
-					t.Fatal(err)
-				}
-				current := Session{ID: "current", SlotID: "current", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("current")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/current"}, nil, current, ""); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, old); err != nil {
-					t.Fatal(err)
-				}
-				_, err := store.BindFreshResumeSlot(ctx, "current", "parent", "workspace", "agent", 1, []SlotRepository{{RepositoryID: "repository", WorktreePath: "/workspace/current/repository", State: "PREPARING", RequestedRef: "main", BaseOID: "head", Fingerprint: "fingerprint"}})
-				return err
-			},
-		},
-		{
-			name: "snapshot resume",
-			bind: func(t *testing.T, store *Store, ctx context.Context, old string) error {
-				parentRepos := []SlotRepository{{RepositoryID: "repository", WorktreePath: "/workspace/parent/repository", State: "READY", RequestedRef: "main", BaseOID: "head", Fingerprint: "fingerprint"}}
-				parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("parent")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "ARCHIVED"}, parentRepos, parent, ""); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
-					t.Fatal(err)
-				}
-				child := Session{ID: "child", SlotID: "child", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, old); err != nil {
-					t.Fatal(err)
-				}
-				_, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, nil)
-				return err
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			store := openTestStore(t)
-			seedWorkspace(t, store)
-			ctx := context.Background()
-			secondSeen := now()
-			if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?)`, "repository-two", "/workspace/two", "/workspace/two.git", "main", secondSeen, secondSeen); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.db.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES(?,?,?,?)`, "workspace", "repository-two", "two", 1); err != nil {
-				t.Fatal(err)
-			}
-			oldTime := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
-			old := FormatTime(oldTime)
-			if err := test.bind(t, store, ctx, old); err != nil {
-				t.Fatal(err)
-			}
-			for _, repositoryID := range []string{"repository", "repository-two"} {
-				var value sql.NullString
-				if err := store.db.QueryRowContext(ctx, `SELECT last_leased_at FROM repositories WHERE id=?`, repositoryID).Scan(&value); err != nil {
-					t.Fatal(err)
-				}
-				if !value.Valid {
-					t.Fatalf("resume binding did not lease repository %s", repositoryID)
-				}
-				leasedAt, err := time.Parse(time.RFC3339Nano, value.String)
-				if err != nil {
-					t.Fatalf("repository %s last_leased_at=%q: %v", repositoryID, value.String, err)
-				}
-				if !leasedAt.After(oldTime) {
-					t.Fatalf("repository %s last_leased_at=%s, want after %s", repositoryID, leasedAt, oldTime)
-				}
-			}
-		})
-	}
-}
-
 func TestWorkspaceSnapshotMetadataGatesMultiRepositoryArchive(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
@@ -644,9 +558,6 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child-unmapped", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child-unmapped"}, nil, child, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.BindResumeSlot(ctx, "child-unmapped", "parent-unmapped", "workspace", "agent", 1, nil); err == nil || !strings.Contains(err.Error(), "mapping changed") {
-		t.Fatalf("unmapped parent resume error=%v", err)
-	}
 
 	if err := store.MarkArchived(ctx, "active", "active", now()); err == nil {
 		t.Fatal("invalid session archive transition succeeded")
@@ -674,13 +585,13 @@ func TestRecoveryRefQueriesAndPendingMappingFailure(t *testing.T) {
 	if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, nil); err != nil {
+	if _, err := recreateRestoreFixture(store, ctx, "child", "parent", "workspace", "agent", 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec(`UPDATE sessions SET agent_session_id=NULL WHERE id='parent'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.FinishPreparationWithRelease(ctx, "child"); err == nil || !strings.Contains(err.Error(), "mapping changed") {
+	if _, _, err := store.FinishPreparationWithRelease(ctx, "child"); err != nil {
 		t.Fatalf("changed parent mapping error=%v", err)
 	}
 
@@ -768,7 +679,7 @@ func TestActiveRestoreProtectsSnapshotAndParentBindingCanTransfer(t *testing.T) 
 	if _, err := store.CreateSlotSession(ctx, Slot{ID: "resume", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/resume"}, nil, resume, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.BindResumeSlot(ctx, "resume", "parent", "workspace", "agent", 1, nil); err != nil {
+	if _, err := recreateRestoreFixture(store, ctx, "resume", "parent", "workspace", "agent", 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ExpireSessionSnapshots(ctx, "parent"); err == nil || !strings.Contains(err.Error(), "active restore") {
@@ -862,9 +773,7 @@ func TestTransactionalTransitionsRollBackOnCompanionStateChanges(t *testing.T) {
 	if err := store.SetSlotState(ctx, "child", []string{"UNBOUND"}, "QUARANTINED", "TEST"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, nil); err == nil || !strings.Contains(err.Error(), "slot is no longer UNBOUND") {
-		t.Fatalf("changed resume slot error=%v", err)
-	}
+
 	storedChild, err := store.SessionByID(ctx, "child")
 	if err != nil || storedChild.State != "UNBOUND" {
 		t.Fatalf("resume transaction did not roll back: child=%+v err=%v", storedChild, err)
@@ -1281,125 +1190,6 @@ func TestJobEventsRecordAttemptsRetriesAndElapsedTime(t *testing.T) {
 		if !strings.Contains(joined, fragment) {
 			t.Fatalf("event log missing %q:\n%s", fragment, joined)
 		}
-	}
-}
-
-func TestBindFreshResumeSlotRollsBackAtEveryPersistenceBoundary(t *testing.T) {
-	cases := []struct {
-		name   string
-		mutate func(*testing.T, *Store)
-		repos  []SlotRepository
-	}{
-		{name: "parent mapping", mutate: func(t *testing.T, store *Store) {
-			if _, err := store.db.Exec(`UPDATE sessions SET state='ACTIVE' WHERE id='parent'`); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "session update", mutate: func(t *testing.T, store *Store) {
-			if _, err := store.db.Exec(`UPDATE sessions SET state='ACTIVE' WHERE id='current'`); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "slot update", mutate: func(t *testing.T, store *Store) {
-			if _, err := store.db.Exec(`UPDATE slots SET state='FAILED' WHERE id='current'`); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "repository insert", repos: []SlotRepository{{RepositoryID: "missing", WorktreePath: "/wx/current/repo", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}}},
-		{name: "lease timestamp", repos: []SlotRepository{{RepositoryID: "repository", WorktreePath: "/wx/current/repo", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}}, mutate: func(t *testing.T, store *Store) {
-			if _, err := store.db.Exec(`CREATE TRIGGER fail_fresh_lease_timestamp BEFORE UPDATE OF last_leased_at ON repositories BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "job insert", mutate: func(t *testing.T, store *Store) {
-			if _, err := store.db.Exec(`CREATE TRIGGER fail_fresh_job BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			store := openTestStore(t)
-			seedWorkspace(t, store)
-			ctx := context.Background()
-			parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "EXPIRED", AgentKind: "codex", AgentSessionID: "agent", TokenHash: HashToken("parent")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.db.Exec(`UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
-				t.Fatal(err)
-			}
-			current := Session{ID: "current", SlotID: "current", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("current")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/current"}, nil, current, ""); err != nil {
-				t.Fatal(err)
-			}
-			if test.mutate != nil {
-				test.mutate(t, store)
-			}
-			if _, err := store.BindFreshResumeSlot(ctx, "current", "parent", "workspace", "agent", 1, test.repos); err == nil {
-				t.Fatal("fault-injected fresh resume binding succeeded")
-			}
-			storedParent, err := store.SessionByID(ctx, "parent")
-			if err != nil || storedParent.AgentSessionID != "agent" {
-				t.Fatalf("parent mapping was not rolled back: session=%+v err=%v", storedParent, err)
-			}
-			var jobs int
-			if err := store.db.QueryRow(`SELECT count(*) FROM jobs WHERE slot_id='current'`).Scan(&jobs); err != nil || jobs != 0 {
-				t.Fatalf("partial fresh resume job count=%d err=%v", jobs, err)
-			}
-		})
-	}
-}
-
-func TestBindFreshSessionCommitsOrRollsBackAtomically(t *testing.T) {
-	for _, test := range []struct {
-		name         string
-		currentState string
-		trigger      string
-		wantError    bool
-	}{
-		{name: "success", currentState: "STARTING"},
-		{name: "state changed", currentState: "UNBOUND", wantError: true},
-		{name: "parent update fault", currentState: "STARTING", trigger: `CREATE TRIGGER fail_parent_update BEFORE UPDATE ON sessions WHEN OLD.id='parent' BEGIN SELECT RAISE(ABORT,'fault'); END`, wantError: true},
-		{name: "current update fault", currentState: "STARTING", trigger: `CREATE TRIGGER fail_current_update BEFORE UPDATE ON sessions WHEN OLD.id='current' BEGIN SELECT RAISE(ABORT,'fault'); END`, wantError: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			store := openTestStore(t)
-			ctx := context.Background()
-			parent := Session{ID: "parent", SlotID: "parent", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("parent")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", State: "SNAPSHOTTED", RootID: testRootID, RelPath: "_unbound/parent"}, nil, parent, ""); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.db.Exec(`UPDATE sessions SET agent_session_id='agent' WHERE id='parent'`); err != nil {
-				t.Fatal(err)
-			}
-			current := Session{ID: "current", SlotID: "current", State: test.currentState, AgentKind: "codex", TokenHash: HashToken("current")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "current", State: test.currentState, RootID: testRootID, RelPath: "_unbound/current"}, nil, current, ""); err != nil {
-				t.Fatal(err)
-			}
-			if test.trigger != "" {
-				if _, err := store.db.Exec(test.trigger); err != nil {
-					t.Fatal(err)
-				}
-			}
-			err := store.BindFreshSession(ctx, "current", "parent", "agent")
-			if (err != nil) != test.wantError {
-				t.Fatalf("BindFreshSession error=%v wantError=%v", err, test.wantError)
-			}
-			storedParent, err := store.SessionByID(ctx, "parent")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if test.wantError && storedParent.AgentSessionID != "agent" {
-				t.Fatalf("parent mapping was not rolled back: %+v", storedParent)
-			}
-			if !test.wantError {
-				storedCurrent, err := store.SessionByID(ctx, "current")
-				if err != nil || storedCurrent.State != "ACTIVE" || storedCurrent.ParentSessionID != "parent" || storedCurrent.AgentSessionID != "agent" || storedParent.AgentSessionID != "" {
-					t.Fatalf("fresh binding current=%+v parent=%+v err=%v", storedCurrent, storedParent, err)
-				}
-			}
-		})
 	}
 }
 
@@ -2042,19 +1832,19 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 		"finish preparation": func() error { _, _, err := store.FinishPreparationWithRelease(ctx, "s"); return err },
 		"session state":      func() error { return store.MarkSessionState(ctx, "s", []string{"ACTIVE"}, "RELEASING") },
 		"bind agent":         func() error { return store.BindAgentSession(ctx, "s", "agent") },
-		"bind fresh":         func() error { return store.BindFreshSession(ctx, "s", "", "agent") },
-		"heartbeat":          func() error { return store.Heartbeat(ctx, "s", "token") },
-		"add restore repos":  func() error { return store.AddRestoringRepositories(ctx, "s", []SlotRepository{repository}) },
-		"set repository":     func() error { return store.SetSlotRepositoryState(ctx, "s", "r", []string{"READY"}, "COLD") },
-		"save snapshot":      func() error { return store.SaveSnapshot(ctx, snapshot) },
-		"forget":             func() error { return store.ForgetWorkspace(ctx, "/w") },
-		"mark archived":      func() error { return store.MarkArchived(ctx, "s", "s", now()) },
-		"begin snapshot":     func() error { return store.BeginSnapshot(ctx, "s", "s") },
-		"finish cold":        func() error { return store.FinishColdRepositoryRemoval(ctx, "s", "r") },
-		"finish removal":     func() error { return store.FinishRemoval(ctx, "s") },
-		"prune roots":        func() error { return store.PruneRoots(ctx) },
-		"expire snapshots":   func() error { return store.ExpireSessionSnapshots(ctx, "s") },
-		"prune":              func() error { return store.PruneMetadata(ctx, now(), now(), now()) },
+
+		"heartbeat":         func() error { return store.Heartbeat(ctx, "s", "token") },
+		"add restore repos": func() error { return store.AddRestoringRepositories(ctx, "s", []SlotRepository{repository}) },
+		"set repository":    func() error { return store.SetSlotRepositoryState(ctx, "s", "r", []string{"READY"}, "COLD") },
+		"save snapshot":     func() error { return store.SaveSnapshot(ctx, snapshot) },
+		"forget":            func() error { return store.ForgetWorkspace(ctx, "/w") },
+		"mark archived":     func() error { return store.MarkArchived(ctx, "s", "s", now()) },
+		"begin snapshot":    func() error { return store.BeginSnapshot(ctx, "s", "s") },
+		"finish cold":       func() error { return store.FinishColdRepositoryRemoval(ctx, "s", "r") },
+		"finish removal":    func() error { return store.FinishRemoval(ctx, "s") },
+		"prune roots":       func() error { return store.PruneRoots(ctx) },
+		"expire snapshots":  func() error { return store.ExpireSessionSnapshots(ctx, "s") },
+		"prune":             func() error { return store.PruneMetadata(ctx, now(), now(), now()) },
 	} {
 		if err := operation(); err == nil {
 			t.Errorf("%s succeeded against damaged schema", name)
@@ -2086,9 +1876,7 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 	if _, err := store.LeaseReadyWithCold(ctx, "s", session); err == nil {
 		t.Error("cold lease succeeded against damaged schema")
 	}
-	if _, err := store.BindResumeSlot(ctx, "s", "parent", "w", "agent", 1, nil); err == nil {
-		t.Error("resume binding succeeded against damaged schema")
-	}
+
 	if _, _, err := store.Release(ctx, "s", "w", "s"); err == nil {
 		t.Error("release succeeded against damaged schema")
 	}
@@ -2242,7 +2030,8 @@ func TestResumeOrphanAndBackupNontrivialPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	repositories := []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "child", "repo"), RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}}
-	job, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, repositories)
+
+	job, err := recreateRestoreFixture(store, ctx, "child", "parent", "workspace", "agent", 1, repositories)
 	if err != nil || job.Kind != "RESTORE" || job.RepositoryID != "" {
 		t.Fatalf("resume job=%+v err=%v", job, err)
 	}
@@ -2260,9 +2049,7 @@ func TestResumeOrphanAndBackupNontrivialPaths(t *testing.T) {
 	if err := store.AddRestoringRepositories(ctx, "child", append(repositories, SlotRepository{})); err == nil {
 		t.Fatal("incomplete restore metadata was accepted")
 	}
-	if _, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, nil); err == nil {
-		t.Fatal("bound resume slot was rebound")
-	}
+
 	if _, _, err := store.FinishPreparationWithRelease(ctx, "child"); err != nil {
 		t.Fatalf("finish restore: %v", err)
 	}
@@ -2355,56 +2142,6 @@ func TestColdLeaseRollsBackAtEveryPersistenceBoundary(t *testing.T) {
 	}
 }
 
-func TestResumeBindingRollsBackAtEveryPersistenceBoundary(t *testing.T) {
-	tests := []struct {
-		name    string
-		trigger string
-	}{
-		{name: "session update", trigger: `CREATE TRIGGER fail_resume_session_update BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT,'fault'); END`},
-		{name: "slot update", trigger: `CREATE TRIGGER fail_resume_slot_update BEFORE UPDATE ON slots BEGIN SELECT RAISE(ABORT,'fault'); END`},
-		{name: "repository insert", trigger: `CREATE TRIGGER fail_resume_repository_insert BEFORE INSERT ON slot_repositories BEGIN SELECT RAISE(ABORT,'fault'); END`},
-		{name: "lease timestamp", trigger: `CREATE TRIGGER fail_resume_lease_timestamp BEFORE UPDATE OF last_leased_at ON repositories BEGIN SELECT RAISE(ABORT,'fault'); END`},
-		{name: "job insert", trigger: `CREATE TRIGGER fail_resume_job_insert BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT,'fault'); END`},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			store := openTestStore(t)
-			seedWorkspace(t, store)
-			ctx := context.Background()
-			root := t.TempDir()
-			parent := Session{ID: "parent", WorkspaceID: "workspace", SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", AgentSessionID: "agent", TokenHash: HashToken("parent")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "parent", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/parent", State: "SNAPSHOTTED"}, nil, parent, ""); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.BindAgentSession(ctx, "parent", "agent"); err != nil {
-				t.Fatal(err)
-			}
-			child := Session{ID: "child", SlotID: "child", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("child")}
-			if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.db.ExecContext(ctx, test.trigger); err != nil {
-				t.Fatal(err)
-			}
-			repositories := []SlotRepository{{RepositoryID: "repository", WorktreePath: filepath.Join(root, "child", "root"), State: "RESTORING"}}
-			if _, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, repositories); err == nil {
-				t.Fatal("fault-injected resume binding succeeded")
-			}
-			storedChild, err := store.SessionByID(ctx, "child")
-			if err != nil || storedChild.State != "UNBOUND" || storedChild.ParentSessionID != "" {
-				t.Fatalf("resume binding did not roll back session: session=%+v err=%v", storedChild, err)
-			}
-			slot, err := store.Slot(ctx, "child")
-			if err != nil || slot.State != "UNBOUND" || slot.WorkspaceID != "" {
-				t.Fatalf("resume binding did not roll back slot: slot=%+v err=%v", slot, err)
-			}
-			if repositories, err := store.SlotRepositories(ctx, "child"); err != nil || len(repositories) != 0 {
-				t.Fatalf("resume binding retained repository metadata: repositories=%+v err=%v", repositories, err)
-			}
-		})
-	}
-}
-
 func TestRestoreActivationPreservesParentMappingAtEveryHandoffFailure(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -2430,7 +2167,7 @@ func TestRestoreActivationPreservesParentMappingAtEveryHandoffFailure(t *testing
 			if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "UNBOUND", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.BindResumeSlot(ctx, "child", "parent", "workspace", "agent", 1, nil); err != nil {
+			if _, err := recreateRestoreFixture(store, ctx, "child", "parent", "workspace", "agent", 1, nil); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.db.ExecContext(ctx, test.trigger); err != nil {

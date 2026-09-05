@@ -559,9 +559,9 @@ type (
 		RepositoryID, DirName, DirIdentity, WorktreePath, State, RequestedRef, BaseOID, Fingerprint string
 	}
 	Session struct {
-		ID, WorkspaceID, SlotID, ParentSessionID, State, AgentKind, AgentSessionID, CreatedAt, ReleasedAt, ArchivedAt, ExpiresAt string
-		TokenHash                                                                                                                []byte
-		ClientPID, AgentPID                                                                                                      int
+		ID, WorkspaceID, SlotID, ParentSessionID, State, AgentKind, AgentSessionID, PendingAgentSessionID, CreatedAt, ReleasedAt, ArchivedAt, ExpiresAt string
+		TokenHash                                                                                                                                       []byte
+		ClientPID, AgentPID                                                                                                                             int
 	}
 )
 
@@ -601,11 +601,6 @@ func insertCurrentSessionRepositories(ctx context.Context, tx *sql.Tx, sessionID
 
 func copySessionRepositories(ctx context.Context, tx *sql.Tx, sessionID, parentSessionID string) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal) SELECT ?,repository_id,relative_path,ordinal FROM session_repositories WHERE session_id=? ORDER BY ordinal`, sessionID, parentSessionID)
-	return err
-}
-
-func updateWorkspaceLeaseTimestamps(ctx context.Context, tx *sql.Tx, workspaceID, leasedAt string) error {
-	_, err := tx.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id IN (SELECT repository_id FROM workspace_repositories WHERE workspace_id=?)`, leasedAt, workspaceID)
 	return err
 }
 
@@ -1085,6 +1080,15 @@ func (s *Store) CreateSlotSession(ctx context.Context, slot Slot, repos []SlotRe
 	if err := assertNoActiveClean(ctx, tx); err != nil {
 		return Job{}, err
 	}
+	if jobKind == "RESTORE" && session.ParentSessionID != "" {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sessions WHERE parent_session_id=? AND state='RESTORING'`, session.ParentSessionID).Scan(&count); err != nil {
+			return Job{}, err
+		}
+		if count != 0 {
+			return Job{}, errors.New("session is already being restored")
+		}
+	}
 	t := now()
 	_, err = tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,owner_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, slot.ID, nullString(slot.WorkspaceID), slot.Generation, slot.RootID, slot.RelPath, nullString(slot.DirIdentity), slot.State, nullString(session.ID), t, t)
 	if err != nil {
@@ -1096,7 +1100,7 @@ func (s *Store) CreateSlotSession(ctx context.Context, slot Slot, repos []SlotRe
 			return Job{}, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,parent_session_id,state,agent_kind,client_pid,session_token_hash,requested_branch_spec,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, session.ID, nullString(session.WorkspaceID), session.SlotID, nullString(session.ParentSessionID), session.State, session.AgentKind, session.ClientPID, session.TokenHash, "", t)
+	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,parent_session_id,state,agent_kind,client_pid,session_token_hash,requested_branch_spec,created_at,pending_agent_session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, session.ID, nullString(session.WorkspaceID), session.SlotID, nullString(session.ParentSessionID), session.State, session.AgentKind, session.ClientPID, session.TokenHash, "", t, nullString(session.PendingAgentSessionID))
 	if err != nil {
 		return Job{}, err
 	}
@@ -1421,19 +1425,19 @@ func (s *Store) FinishPreparationWithReplenishment(ctx context.Context, id strin
 			if parentID == "" {
 				return Job{}, false, Job{}, false, errors.New("restoring session has no parent for its pending agent mapping")
 			}
-			res, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND agent_kind=? AND agent_session_id=?`, parentID, kind, pendingAgentID)
+			_, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND agent_kind=? AND agent_session_id=?`, parentID, kind, pendingAgentID)
+			if err != nil {
+				return Job{}, false, Job{}, false, err
+			}
+
+			res, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=?,pending_agent_session_id=NULL WHERE id=? AND state='RESTORING' AND NOT EXISTS (SELECT 1 FROM sessions other WHERE other.agent_kind=? AND other.agent_session_id=? AND other.id<>?)`, pendingAgentID, sessionID, kind, pendingAgentID, sessionID)
 			if err != nil {
 				return Job{}, false, Job{}, false, err
 			}
 			if n, _ := res.RowsAffected(); n != 1 {
-				return Job{}, false, Job{}, false, errors.New("resume parent agent mapping changed before restore completed")
-			}
-			res, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=?,pending_agent_session_id=NULL WHERE id=? AND state='RESTORING'`, pendingAgentID, sessionID)
-			if err != nil {
-				return Job{}, false, Job{}, false, err
-			}
-			if n, _ := res.RowsAffected(); n != 1 {
-				return Job{}, false, Job{}, false, errors.New("restoring session changed before activation")
+				if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,session_id,message) VALUES(?,'warn','resume_mapping_conflict',?,?)`, t, sessionID, "restored workspace activated with pending agent mapping: "+pendingAgentID); err != nil {
+					return Job{}, false, Job{}, false, err
+				}
 			}
 		}
 	}
@@ -1499,11 +1503,11 @@ func stringsToAny(v []string) []any {
 }
 
 // sessionColumns は full-row の session read 全てで共有する column list である。
-const sessionColumns = `id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'')`
+const sessionColumns = `id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(pending_agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'')`
 
 func scanSession(row *sql.Row) (Session, error) {
 	var x Session
-	err := row.Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
+	err := row.Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.PendingAgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
 	return x, err
 }
 
@@ -1549,9 +1553,24 @@ func (s *Store) BindAgentSession(ctx context.Context, id, agentID string) error 
 		return err
 	}
 	defer tx.Rollback()
-	var kind, parent string
-	if err := tx.QueryRowContext(ctx, `SELECT agent_kind,COALESCE(parent_session_id,'') FROM sessions WHERE id=?`, id).Scan(&kind, &parent); err != nil {
+	var kind, parent, sessionState, pending string
+	if err := tx.QueryRowContext(ctx, `SELECT agent_kind,COALESCE(parent_session_id,''),state,COALESCE(pending_agent_session_id,'') FROM sessions WHERE id=?`, id).Scan(&kind, &parent, &sessionState, &pending); err != nil {
 		return err
+	}
+	if sessionState == "RESTORING" {
+		if pending == agentID {
+			res, err := tx.ExecContext(ctx, `UPDATE sessions SET started_at=COALESCE(started_at,?),last_heartbeat_at=? WHERE id=? AND state='RESTORING' AND pending_agent_session_id=?`, now(), now(), id, agentID)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n != 1 {
+				return errors.New("restoring session changed during binding")
+			}
+			return tx.Commit()
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET pending_agent_session_id=NULL WHERE id=? AND state='RESTORING'`, id); err != nil {
+			return err
+		}
 	}
 	if parent != "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE agent_kind=? AND agent_session_id=? AND id<>?`, kind, agentID, id); err != nil {
@@ -1567,89 +1586,6 @@ func (s *Store) BindAgentSession(ctx context.Context, id, agentID string) error 
 		return errors.New("agent session is already bound or mapping is ambiguous")
 	}
 	return tx.Commit()
-}
-
-func (s *Store) BindFreshSession(ctx context.Context, id, parentID, agentID string) error {
-	s.writer.Lock()
-	defer s.writer.Unlock()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var kind string
-	if err := tx.QueryRowContext(ctx, `SELECT agent_kind FROM sessions WHERE id=?`, id).Scan(&kind); err != nil {
-		return err
-	}
-	if parentID != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND state='EXPIRED'`, parentID); err != nil {
-			return err
-		}
-	}
-	res, err := tx.ExecContext(ctx, `UPDATE sessions SET parent_session_id=?,agent_session_id=?,state='ACTIVE',started_at=COALESCE(started_at,?),last_heartbeat_at=? WHERE id=? AND state IN ('STARTING','ACTIVE')`, nullString(parentID), agentID, now(), now(), id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n != 1 {
-		return errors.New("fresh session state changed")
-	}
-	return tx.Commit()
-}
-
-func (s *Store) BindFreshResumeSlot(ctx context.Context, sessionID, parentSessionID, workspaceID, agentID string, generation int, repos []SlotRepository) (Job, error) {
-	job, err := newJob("PREPARE", workspaceID, sessionID, sessionID)
-	if err != nil {
-		return Job{}, err
-	}
-	s.writer.Lock()
-	defer s.writer.Unlock()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Job{}, err
-	}
-	defer tx.Rollback()
-	if err := assertNoActiveClean(ctx, tx); err != nil {
-		return Job{}, err
-	}
-	if parentSessionID != "" {
-		res, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND state='EXPIRED' AND agent_session_id=?`, parentSessionID, agentID)
-		if err != nil {
-			return Job{}, err
-		}
-		if n, _ := res.RowsAffected(); n != 1 {
-			return Job{}, errors.New("fresh resume parent mapping changed")
-		}
-	}
-	res, err := tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=?,parent_session_id=?,agent_session_id=?,state='STARTING',started_at=COALESCE(started_at,?),last_heartbeat_at=? WHERE id=? AND state='UNBOUND'`, workspaceID, nullString(parentSessionID), agentID, now(), now(), sessionID)
-	if err != nil {
-		return Job{}, err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return Job{}, errors.New("fresh resume session is no longer UNBOUND")
-	}
-	res, err = tx.ExecContext(ctx, `UPDATE slots SET workspace_id=?,generation=?,state='PREPARING',updated_at=? WHERE id=? AND state='UNBOUND'`, workspaceID, generation, now(), sessionID)
-	if err != nil {
-		return Job{}, err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return Job{}, errors.New("fresh resume slot is no longer UNBOUND")
-	}
-	for _, repository := range repos {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, sessionID, repository.RepositoryID, repository.DirName, "PREPARING", repository.RequestedRef, repository.BaseOID, repository.Fingerprint); err != nil {
-			return Job{}, err
-		}
-	}
-	if err := insertCurrentSessionRepositories(ctx, tx, sessionID, workspaceID, sessionID); err != nil {
-		return Job{}, err
-	}
-	if err := updateWorkspaceLeaseTimestamps(ctx, tx, workspaceID, now()); err != nil {
-		return Job{}, err
-	}
-	if err := insertJob(ctx, tx, job); err != nil {
-		return Job{}, err
-	}
-	return job, tx.Commit()
 }
 
 func (s *Store) FindByAgentSession(ctx context.Context, kind, agentID string) (Session, error) {
@@ -1692,62 +1628,6 @@ func (s *Store) OrphanCandidates(ctx context.Context, heartbeatBefore string) ([
 		out = append(out, candidate)
 	}
 	return out, rows.Err()
-}
-
-func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, workspaceID, agentID string, generation int, repos []SlotRepository) (Job, error) {
-	job, err := newJob("RESTORE", workspaceID, sessionID, sessionID)
-	if err != nil {
-		return Job{}, err
-	}
-	s.writer.Lock()
-	defer s.writer.Unlock()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Job{}, err
-	}
-	defer tx.Rollback()
-	if err := assertNoActiveClean(ctx, tx); err != nil {
-		return Job{}, err
-	}
-	var kind string
-	if err := tx.QueryRowContext(ctx, `SELECT agent_kind FROM sessions WHERE id=?`, sessionID).Scan(&kind); err != nil {
-		return Job{}, err
-	}
-	var mappedParent string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM sessions WHERE id=? AND agent_kind=? AND agent_session_id=?`, parentSessionID, kind, agentID).Scan(&mappedParent); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Job{}, errors.New("resume parent agent mapping changed")
-		}
-		return Job{}, err
-	}
-	res, err := tx.ExecContext(ctx, `UPDATE sessions SET workspace_id=?,parent_session_id=?,pending_agent_session_id=?,state='RESTORING' WHERE id=? AND state='UNBOUND'`, workspaceID, parentSessionID, agentID, sessionID)
-	if err != nil {
-		return Job{}, err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return Job{}, errors.New("resume session is no longer UNBOUND")
-	}
-	if res, err = tx.ExecContext(ctx, `UPDATE slots SET workspace_id=?,generation=?,state='RESTORING',updated_at=? WHERE id=? AND state='UNBOUND'`, workspaceID, generation, now(), sessionID); err != nil {
-		return Job{}, err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return Job{}, errors.New("resume slot is no longer UNBOUND")
-	}
-	for _, r := range repos {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, sessionID, r.RepositoryID, r.DirName, "RESTORING", r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
-			return Job{}, err
-		}
-	}
-	if err := copySessionRepositories(ctx, tx, sessionID, parentSessionID); err != nil {
-		return Job{}, err
-	}
-	if err := updateWorkspaceLeaseTimestamps(ctx, tx, workspaceID, now()); err != nil {
-		return Job{}, err
-	}
-	if err := insertJob(ctx, tx, job); err != nil {
-		return Job{}, err
-	}
-	return job, tx.Commit()
 }
 
 // slotRepositoryColumns は slot-repository read 全てで共有する。SlotRepository.WorktreePath は保存せず、

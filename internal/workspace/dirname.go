@@ -13,8 +13,8 @@ import (
 // maxRepositoryDirNameLength は directory 名を制限し、remote 名が異常に長い repository でも深い slot path を platform の component 長制限内に収める。
 const maxRepositoryDirNameLength = 64
 
-// reservedDirNamePrefix は wx が top-level entry（_unbound、_recovery）に予約する prefix である。
-// repository directory は一階層下だが同じ prefix を拒否し、orphan scan が repository 名を特別扱いしないようにする。
+// reservedDirNamePrefix は wx が top-level entry（_recovery と旧リリースの _unbound）に予約する prefix である。
+// repository directory は一階層下だが同じ prefix を拒否し、orphan scan が旧 _unbound を通常の workspace として扱わないようにする。
 const reservedDirNamePrefix = "_"
 
 // RepositoryDirName は slot 内の repository directory 名を、pin 済み dir_name、repository の dir_source、storage.repo_dir_source、main worktree 名の順で解決する。
