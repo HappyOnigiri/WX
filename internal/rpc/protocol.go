@@ -140,6 +140,10 @@ func (c Client) callOnce(ctx context.Context, method, idempotencyKey string, par
 	defer stopConnection()
 	if deadline, ok := ioCtx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
+			// watchContextがconnを閉じた直後はSetDeadlineがclosed network connectionを返すため、キャンセルを優先して返す。
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			return err
 		}
 	}
