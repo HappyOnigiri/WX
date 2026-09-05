@@ -2144,7 +2144,7 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 			}
 			return state.Job{}, err
 		}
-		job, created, err := m.store.CreateStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, DirIdentity: slotIdentity, State: "PREPARING"}, repos, m.Config().Pool.WarmPerWorkspace)
+		job, created, err := m.store.CreateStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, DirIdentity: slotIdentity, State: "PREPARING"}, repos, m.Config().Pool.WarmPerWorkspace, standbyQuarantineLimit)
 		if err == nil {
 			if created {
 				return job, nil

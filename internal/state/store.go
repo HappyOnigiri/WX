@@ -925,6 +925,13 @@ func (s *Store) StandbyCount(ctx context.Context, workspaceID string) int {
 	return n
 }
 
+// quarantinedStandbyCountTx は貸出前に隔離された slot を writer transaction 内で数える。
+func quarantinedStandbyCountTx(ctx context.Context, tx *sql.Tx, workspaceID string) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, quarantinedStandbyQuery, workspaceID).Scan(&n)
+	return n, err
+}
+
 // QuarantinedStandbyCount は現行 generation で貸出前に隔離された slot を数える。
 // 補充側は、準備が壊れた workspace で隔離 slot が無制限に積み上がらないよう、この数を上限として使う。
 func (s *Store) QuarantinedStandbyCount(ctx context.Context, workspaceID string) (int, error) {
@@ -1136,9 +1143,11 @@ func (s *Store) CreateStandby(ctx context.Context, slot Slot, repos []SlotReposi
 	return job, tx.Commit()
 }
 
-// CreateStandbyIfNeeded は standby 枠の再検証と slot/job 登録を同じ transaction で行う。
-// 別の reconcile が先に不足分を埋めた場合は、作成側が物理 directory を所有権確認後に片付けられるよう false を返す。
-func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []SlotRepository, limit int) (Job, bool, error) {
+// CreateStandbyIfNeeded は standby 枠と隔離上限の再検証、slot/job 登録を同じ transaction で行う。
+// 別の reconcile が先に不足分を埋めた場合や隔離上限に達していた場合は、
+// 作成側が物理 directory を所有権確認後に片付けられるよう false を返す。
+// quarantineLimit が 0 以下なら隔離上限は検証しない。
+func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []SlotRepository, limit, quarantineLimit int) (Job, bool, error) {
 	if limit <= 0 {
 		return Job{}, false, nil
 	}
@@ -1171,6 +1180,19 @@ func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []Sl
 			return Job{}, false, err
 		}
 		return Job{}, false, nil
+	}
+	if quarantineLimit > 0 {
+		// 上限判定を作成と同じ transaction で行い、並行する ENSURE_STANDBY が上限を越えて作れないようにする。
+		quarantined, quarantineErr := quarantinedStandbyCountTx(ctx, tx, slot.WorkspaceID)
+		if quarantineErr != nil {
+			return Job{}, false, quarantineErr
+		}
+		if quarantined >= quarantineLimit {
+			if err := tx.Commit(); err != nil {
+				return Job{}, false, err
+			}
+			return Job{}, false, nil
+		}
 	}
 	job, err := newJob("PREPARE", slot.WorkspaceID, slot.ID, "")
 	if err != nil {
