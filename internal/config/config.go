@@ -406,6 +406,9 @@ func Validate(c *Config) error {
 		if override.DirSource != "" && override.DirSource != RepoDirSourceRemote && override.DirSource != RepoDirSourceDirectory {
 			return fmt.Errorf("repositories.%s.dir_source must be %s or %s", path, RepoDirSourceRemote, RepoDirSourceDirectory)
 		}
+		if override.Prepare.Timeout.Duration < 0 {
+			return fmt.Errorf("repositories.%s.prepare.timeout must not be negative", path)
+		}
 	}
 	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 {
 		return errors.New("pool counts must be non-negative and concurrency must be at least 1")

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -136,6 +137,7 @@ type Manager struct {
 	executablePath       string
 	executableBaseline   executableSnapshot
 	executableWatch      bool
+	prepareDetailDir     string
 	restartPending       bool
 	stopPending          bool
 	lifecycleClaimed     bool
@@ -189,7 +191,13 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 	started := time.Now()
 	managerCtx, managerCancel := context.WithCancel(context.Background())
 	reclaimAll := len(exclusiveStartup) > 0 && exclusiveStartup[0]
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
+	prepareDetailDir := ""
+	if reclaimAll {
+		if logPath, logErr := config.LogPath(); logErr == nil {
+			prepareDetailDir = filepath.Join(filepath.Dir(logPath), "details")
+		}
+	}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
 	m.watchExecutable(executable, executableErr)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {
@@ -415,7 +423,7 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 			if job.Attempt >= maxJobAttempts {
 				m.log.Error("job exhausted retry limit", "job_id", job.ID, "attempt", job.Attempt, "error", err)
 				_ = m.store.SetSlotState(context.Background(), job.SlotID, []string{"PREPARING", "RESTORING", "FAILED", "REMOVING", "RETIRING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED")
-				if finishErr := m.store.FinishJob(context.Background(), work.id, owner, err); finishErr != nil {
+				if finishErr := m.finishJob(context.Background(), work.id, owner, err); finishErr != nil {
 					m.log.Error("finish exhausted job failed", "job_id", work.id, "error", finishErr)
 				}
 				m.releaseLease(job.SessionID)
@@ -430,7 +438,7 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 			}
 			continue
 		}
-		if finishErr := m.store.FinishJob(context.Background(), work.id, owner, err); finishErr != nil {
+		if finishErr := m.finishJob(context.Background(), work.id, owner, err); finishErr != nil {
 			m.log.Error("finish job failed", "job_id", work.id, "error", finishErr)
 		}
 		m.releaseLease(job.SessionID)
@@ -455,6 +463,7 @@ func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Pre
 	}
 	return &workspace.Preparer{
 		Git: m.git, Config: cfg, Ownership: m.store, SlotPath: slotPath,
+		DetailDir: m.prepareDetailDir,
 		OwnedRoot: ownedRoot, RootPath: filepath.Clean(root),
 		RootID: slot.RootID, SlotRelPath: slot.RelPath,
 	}
@@ -846,6 +855,18 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 	}
 }
 
+func (m *Manager) finishJob(ctx context.Context, id, owner string, runErr error) error {
+	var prepareErr *workspace.PrepareCommandError
+	if errors.As(runErr, &prepareErr) {
+		failureCode := "PREPARE_FAILED"
+		if prepareErr.FailureID != "" {
+			failureCode += ":" + prepareErr.FailureID
+		}
+		return m.store.FinishJobWithDetail(ctx, id, owner, runErr, failureCode, prepareErr.DetailPath)
+	}
+	return m.store.FinishJob(ctx, id, owner, runErr)
+}
+
 func (m *Manager) Heartbeat(ctx context.Context, id, token string) error {
 	return m.store.Heartbeat(ctx, id, token)
 }
@@ -882,8 +903,13 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 		if err != nil {
 			return err
 		}
-		if err := m.prepareSlot(ctx, job.SlotID, w, resolved, repos); err != nil {
+		if err := m.prepareSlotWithJob(ctx, job.SlotID, w, resolved, repos, job); err != nil {
 			if errors.Is(err, state.ErrOwnership) {
+				return err
+			}
+			var prepareErr *workspace.PrepareCommandError
+			if errors.As(err, &prepareErr) {
+				// prepare command は副作用を持つため、終了コードだけを根拠に再実行しない。
 				return err
 			}
 			return retryableJobError{err}
@@ -1696,6 +1722,10 @@ func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []p
 func newSlotID() (string, error) { return domain.NewShortID() }
 
 func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository) error {
+	return m.prepareSlotWithJob(ctx, id, w, resolved, repos, state.Job{})
+}
+
+func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, job state.Job) error {
 	slot, err := m.store.Slot(ctx, id)
 	if err != nil {
 		return err
@@ -1741,11 +1771,19 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 			return err
 		}
 		if err := preparer.Prepare(ctx, r.Repository, stored.WorktreePath, r.OID, id); err != nil {
-			m.log.Error("slot preparation failed", "slot_id", id, "repository_id", r.Repository.ID, "error", err)
+			m.log.Error("slot preparation failed", "job_id", job.ID, "session_id", job.SessionID, "slot_id", id, "repository_id", r.Repository.ID, "error", err)
 			if errors.Is(err, state.ErrOwnership) {
 				_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING", "RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
 			} else {
-				_ = m.store.SetSlotState(ctx, id, []string{"PREPARING", "RESTORING"}, "FAILED", "PREPARE_FAILED")
+				failureCode, detailPath := "PREPARE_FAILED", ""
+				var prepareErr *workspace.PrepareCommandError
+				if errors.As(err, &prepareErr) {
+					detailPath = prepareErr.DetailPath
+					if prepareErr.FailureID != "" {
+						failureCode += ":" + prepareErr.FailureID
+					}
+				}
+				_ = m.store.SetSlotStateWithDetail(ctx, id, []string{"PREPARING", "RESTORING"}, "FAILED", failureCode, detailPath)
 			}
 			return err
 		}
@@ -2210,7 +2248,25 @@ func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
 			if failureID == "" {
 				failureID = "UNKNOWN"
 			}
-			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s; run `wx status` or `wx doctor` for details", slot.State, failureID)
+			for _, prefix := range []string{"PREPARE_FAILED:", "RESTORE_FAILED:"} {
+				if strings.HasPrefix(failureID, prefix) {
+					failureID = strings.TrimPrefix(failureID, prefix)
+					break
+				}
+			}
+			metadata := readPrepareDiagnostic(slot.FailureDetailPath)
+			if metadata.FailureID != "" {
+				failureID = metadata.FailureID
+			}
+			detailPath := slot.FailureDetailPath
+			if detailPath == "" {
+				detailPath = "unavailable"
+			}
+			exitCode := "unknown"
+			if metadata.HasExitCode {
+				exitCode = strconv.Itoa(metadata.ExitCode)
+			}
+			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s detail_path=%s exit_code=%s timed_out=%t canceled=%t; run `wx status` or `wx doctor` for details", slot.State, failureID, detailPath, exitCode, metadata.TimedOut, metadata.Canceled)
 		}
 		select {
 		case <-ctx.Done():
@@ -2218,6 +2274,49 @@ func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+type prepareDiagnosticMetadata struct {
+	FailureID   string
+	ExitCode    int
+	HasExitCode bool
+	TimedOut    bool
+	Canceled    bool
+}
+
+func readPrepareDiagnostic(path string) prepareDiagnosticMetadata {
+	var metadata prepareDiagnosticMetadata
+	if path == "" {
+		return metadata
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return metadata
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, 8<<10))
+	if err != nil {
+		return metadata
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, ": ")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "failure_id":
+			metadata.FailureID = strings.TrimSpace(value)
+		case "exit_code":
+			if exitCode, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil {
+				metadata.ExitCode, metadata.HasExitCode = exitCode, true
+			}
+		case "timed_out":
+			metadata.TimedOut, _ = strconv.ParseBool(strings.TrimSpace(value))
+		case "canceled":
+			metadata.Canceled, _ = strconv.ParseBool(strings.TrimSpace(value))
+		}
+	}
+	return metadata
 }
 
 func (m *Manager) BindAgentSession(ctx context.Context, id, token, agentID string) error {
@@ -2377,7 +2476,16 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 		repositoryPath := repos[i].WorktreePath // #nosec G602 -- equal slice lengths are checked before the loop.
 		if err := archiveManager.Restore(ctx, r.Repository, repositoryPath, id, snaps[string(r.Repository.ID)]); err != nil {
 			m.log.Error("restore failed", "slot_id", id, "repository_id", r.Repository.ID, "error", err)
-			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "RESTORE_FAILED")
+			var prepareErr *workspace.PrepareCommandError
+			if errors.As(err, &prepareErr) {
+				failureCode := "RESTORE_FAILED"
+				if prepareErr.FailureID != "" {
+					failureCode += ":" + prepareErr.FailureID
+				}
+				_ = m.store.SetSlotStateWithDetail(ctx, id, []string{"RESTORING"}, "QUARANTINED", failureCode, prepareErr.DetailPath)
+			} else {
+				_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "RESTORE_FAILED")
+			}
 			return err
 		}
 		identity, identityErr := archiveManager.Preparer.WorktreeIdentity(repositoryPath)
