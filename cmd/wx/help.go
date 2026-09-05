@@ -43,8 +43,8 @@ Show a workspace summary, or all daemon, pool, session, retention, and disk
 details with --verbose (-v). The JSON shape is unchanged by either display.
 
 Options:
-	--verbose, -v  show detailed status instead of the summary
-  --json  print machine-readable JSON`)
+  --verbose, -v  show detailed status instead of the summary
+  --json         print machine-readable JSON`)
 	case "doctor":
 		_, _ = fmt.Fprintln(w, `Usage: wx doctor [--json]
 
