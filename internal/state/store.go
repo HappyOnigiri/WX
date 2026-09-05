@@ -1144,8 +1144,7 @@ func (s *Store) CreateStandby(ctx context.Context, slot Slot, repos []SlotReposi
 }
 
 // CreateStandbyIfNeeded は standby 枠と隔離上限の再検証、slot/job 登録を同じ transaction で行う。
-// 別の reconcile が先に不足分を埋めた場合や隔離上限に達していた場合は、
-// 作成側が物理 directory を所有権確認後に片付けられるよう false を返す。
+// 別の reconcile が先に不足分を埋めた場合や隔離上限に達していた場合は、作成側が物理 directory を所有権確認後に片付けられるよう false を返す。
 // quarantineLimit が 0 以下なら隔離上限は検証しない。
 func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []SlotRepository, limit, quarantineLimit int) (Job, bool, error) {
 	if limit <= 0 {
