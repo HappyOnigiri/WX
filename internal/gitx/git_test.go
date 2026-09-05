@@ -118,6 +118,76 @@ func TestErrorFormattingUsesFallbackAndFirstArgument(t *testing.T) {
 	}
 }
 
+func TestRunClassifiesConfirmedNonRepositorySeparatelyFromExecutionFailure(t *testing.T) {
+	for _, test := range []struct {
+		name, message string
+		class         ErrorClass
+		notRepo       bool
+	}{
+		{name: "non repository", message: "fatal: not a git repository", class: ErrorClassNotRepository, notRepo: true},
+		{name: "invalid configuration", message: "fatal: cannot read configuration", class: ErrorClassExecution},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bin := t.TempDir()
+			fakeGit := filepath.Join(bin, "git")
+			script := "#!/bin/sh\nprintf '%s\\n' \"" + test.message + "\" >&2\nexit 128\n"
+			if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin)
+
+			_, err := (&Runner{}).Run(context.Background(), t.TempDir(), "rev-parse", "--show-toplevel")
+			var gitError *Error
+			if !errors.As(err, &gitError) {
+				t.Fatalf("error=%v", err)
+			}
+			if gitError.Class != test.class {
+				t.Fatalf("class=%q want %q", gitError.Class, test.class)
+			}
+			if got := errors.Is(err, ErrNotRepository); got != test.notRepo {
+				t.Fatalf("errors.Is(ErrNotRepository)=%v want %v", got, test.notRepo)
+			}
+		})
+	}
+}
+
+func TestRunPreservesGitExecutableFailureCause(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	_, err := (&Runner{}).Run(context.Background(), t.TempDir(), "rev-parse", "--show-toplevel")
+	var gitError *Error
+	if !errors.As(err, &gitError) {
+		t.Fatalf("error=%v", err)
+	}
+	if gitError.Class != ErrorClassExecution {
+		t.Fatalf("class=%q", gitError.Class)
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("error=%v does not preserve executable-not-found cause", err)
+	}
+}
+
+func TestRunClassifiesTimeoutAsExecutionFailure(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	runner := &Runner{Timeout: 100 * time.Millisecond}
+	_, err := runner.Run(context.Background(), t.TempDir(), "rev-parse", "--show-toplevel")
+	var gitError *Error
+	if !errors.As(err, &gitError) {
+		t.Fatalf("error=%v", err)
+	}
+	if gitError.Class != ErrorClassExecution || errors.Is(err, ErrNotRepository) {
+		t.Fatalf("class=%q err=%v", gitError.Class, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout cause was lost: %v", err)
+	}
+}
+
 func TestRunStripsInheritedRepositoryScopedGitEnvironment(t *testing.T) {
 	bin := t.TempDir()
 	fakeGit := filepath.Join(bin, "git")

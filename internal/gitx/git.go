@@ -22,10 +22,29 @@ type Result struct {
 	ExitCode       int
 	Elapsed        time.Duration
 }
+
+// ErrorClass は Git の失敗を呼び出し側が安全に分岐するための分類である。
+type ErrorClass string
+
+const (
+	// ErrorClassExecution は Git の起動・設定・権限・タイムアウトなどの実行障害を示す。
+	ErrorClassExecution ErrorClass = "execution"
+	// ErrorClassNotRepository は Git が対象をリポジトリでないと確認したことを示す。
+	ErrorClassNotRepository ErrorClass = "not_repository"
+)
+
+// ErrNotRepository は Git の非リポジトリ判定を表す。
+var ErrNotRepository = errors.New("git directory is not a repository")
+
+// IsNotRepository は Git の失敗が非リポジトリ判定かを返す。
+func IsNotRepository(err error) bool { return errors.Is(err, ErrNotRepository) }
+
 type Error struct {
 	Args      []string
 	Result    Result
 	FailureID string
+	Class     ErrorClass
+	cause     error
 }
 
 func (e *Error) Error() string {
@@ -34,6 +53,12 @@ func (e *Error) Error() string {
 		command = e.Args[0]
 	}
 	return fmt.Sprintf("git %s failed with exit %d (failure %s)", command, e.Result.ExitCode, e.FailureID)
+}
+
+func (e *Error) Unwrap() error { return e.cause }
+
+func (e *Error) Is(target error) bool {
+	return target == ErrNotRepository && e.Class == ErrorClassNotRepository
 }
 
 type Runner struct {
@@ -124,7 +149,7 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 				res := Result{ExitCode: -1, Elapsed: time.Since(start)}
 				failureID := newFailureID()
 				r.writeFailureDetail(failureID, args, res)
-				return res, &Error{Args: append([]string(nil), args...), Result: res, FailureID: failureID}
+				return res, &Error{Args: append([]string(nil), args...), Result: res, FailureID: failureID, Class: ErrorClassExecution, cause: err}
 			}
 			r.invokeBeforeRunAt(args)
 		}
@@ -148,7 +173,11 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 		if attempt >= 3 || !isLockConflict(res.Stderr) {
 			failureID := newFailureID()
 			r.writeFailureDetail(failureID, args, res)
-			return res, &Error{Args: append([]string(nil), args...), Result: res, FailureID: failureID}
+			cause := err
+			if contextErr := ctx.Err(); contextErr != nil {
+				cause = contextErr
+			}
+			return res, &Error{Args: append([]string(nil), args...), Result: res, FailureID: failureID, Class: classifyError(args, res), cause: cause}
 		}
 		delay := time.Duration(25*(1<<attempt)) * time.Millisecond
 		select {
@@ -157,6 +186,20 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 		case <-time.After(delay):
 		}
 	}
+}
+
+func classifyError(args []string, result Result) ErrorClass {
+	if isNotRepositoryFailure(args, result.Stderr) {
+		return ErrorClassNotRepository
+	}
+	return ErrorClassExecution
+}
+
+func isNotRepositoryFailure(args []string, stderr string) bool {
+	if len(args) == 0 || args[0] != "rev-parse" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(stderr), "not a git repository")
 }
 
 // gitEnvDenylist は daemon から child Git へ渡してはならない repository-scoped 環境変数。
