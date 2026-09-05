@@ -51,7 +51,7 @@ wx --branch feature/api codex
 ## 更多功能
 
 - **状态与诊断：** `wx status`、`wx doctor`。
-- **会话管理与清理：** `wx sessions`、`wx resume`、`wx gc --dry-run`。
+- **会话管理与清理：** `wx sessions`、`wx resume`、`wx gc --dry-run`、`wx clean`。
 - **配置：** 使用 `wx config` 查看配置或修改单个配置值。
 - **智能体集成：** 全局智能体 hook 支持从智能体恢复会话，并检查工作环境是否就绪。
   请配置为仅在设置了 `WX_SESSION_ID` 时调用 `wx hook session-start`、`wx hook user-prompt-submit`、`wx hook pre-tool-use` 和 `wx hook session-end`。

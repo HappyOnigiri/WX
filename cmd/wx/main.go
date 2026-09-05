@@ -64,6 +64,8 @@ func run(ctx context.Context, args []string) int {
 		return runDoctor(ctx, args[1:])
 	case "gc":
 		return runGC(ctx, args[1:])
+	case "clean":
+		return runClean(ctx, args[1:])
 	case "config":
 		return runConfig(ctx, args[1:])
 	case "resume":

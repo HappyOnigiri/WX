@@ -31,7 +31,7 @@ type Store struct {
 	path   string
 }
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // ErrPreviousWorktreeLayout は、wx が意図的に migration path を持たない旧 worktree layout の state database を示す。
 var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree layout")
@@ -904,6 +904,9 @@ func (s *Store) CreateSlotSession(ctx context.Context, slot Slot, repos []SlotRe
 		return Job{}, err
 	}
 	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return Job{}, err
+	}
 	t := now()
 	_, err = tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,owner_session_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, slot.ID, nullString(slot.WorkspaceID), slot.Generation, slot.RootID, slot.RelPath, nullString(slot.DirIdentity), slot.State, nullString(session.ID), t, t)
 	if err != nil {
@@ -953,6 +956,9 @@ func (s *Store) CreateStandby(ctx context.Context, slot Slot, repos []SlotReposi
 		return Job{}, err
 	}
 	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return Job{}, err
+	}
 	t := now()
 	_, err = tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, slot.ID, slot.WorkspaceID, slot.Generation, slot.RootID, slot.RelPath, nullString(slot.DirIdentity), slot.State, t, t)
 	if err != nil {
@@ -977,6 +983,9 @@ func (s *Store) LeaseReady(ctx context.Context, slotID string, session Session) 
 		return err
 	}
 	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='LEASED',owner_session_id=?,last_used_at=?,updated_at=? WHERE id=? AND state='READY'`, session.ID, now(), now(), slotID)
 	if err != nil {
 		return err
@@ -1011,6 +1020,9 @@ func (s *Store) LeaseReadyWithCold(ctx context.Context, slotID string, session S
 		return Job{}, err
 	}
 	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return Job{}, err
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',owner_session_id=?,last_used_at=?,updated_at=? WHERE id=? AND state='READY' AND owner_session_id IS NULL`, session.ID, now(), now(), slotID)
 	if err != nil {
 		return Job{}, err
@@ -1298,6 +1310,9 @@ func (s *Store) BindFreshResumeSlot(ctx context.Context, sessionID, parentSessio
 		return Job{}, err
 	}
 	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return Job{}, err
+	}
 	if parentSessionID != "" {
 		res, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND state='EXPIRED' AND agent_session_id=?`, parentSessionID, agentID)
 		if err != nil {
@@ -1392,6 +1407,9 @@ func (s *Store) BindResumeSlot(ctx context.Context, sessionID, parentSessionID, 
 		return Job{}, err
 	}
 	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return Job{}, err
+	}
 	var kind string
 	if err := tx.QueryRowContext(ctx, `SELECT agent_kind FROM sessions WHERE id=?`, sessionID).Scan(&kind); err != nil {
 		return Job{}, err

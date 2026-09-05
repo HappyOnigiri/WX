@@ -50,7 +50,7 @@ wx --branch feature/api codex
 ## More options
 
 - **Status and diagnostics:** `wx status`, `wx doctor`.
-- **Sessions and cleanup:** `wx sessions`, `wx resume`, `wx gc --dry-run`.
+- **Sessions and cleanup:** `wx sessions`, `wx resume`, `wx gc --dry-run`, `wx clean`.
 - **Configuration:** `wx config` shows settings and can update individual values.
 - **Agent integration:** Global agent hooks enable native session resume and workspace readiness checks.
   Configure them to call `wx hook session-start`, `wx hook user-prompt-submit`, `wx hook pre-tool-use`, and `wx hook session-end` only when `WX_SESSION_ID` is set.
