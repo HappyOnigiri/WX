@@ -166,7 +166,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		defer cancel()
 		_ = c.RPC.CallWithKey(releaseCtx, "Release", "release:"+lease.SessionID+":client-exit", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": "client-exit"}, nil)
 	}()
-	// wx clean --all の終了要求は heartbeat と agent 登録の応答で届く。
+	// wx clear --all の終了要求は heartbeat と agent 登録の応答で届く。
 	// 要求を受けたら agent の process group へ一度だけ SIGTERM を送り、停止を確認してから daemon へ応答する。
 	terminator := &agentTerminator{}
 	heartbeatDone := make(chan struct{})
@@ -208,7 +208,7 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	}
 	// 起動前・準備待ちの間に終了要求が届いていたら、agent を起動せずにそのまま応答する。
 	if terminator.requested() {
-		fmt.Fprintln(os.Stderr, "wx clean asked this session to stop before the agent started")
+		fmt.Fprintln(os.Stderr, "wx clear asked this session to stop before the agent started")
 		return 1
 	}
 	leaseDirectory, err := openLeaseDirectory(c.Config, lease)

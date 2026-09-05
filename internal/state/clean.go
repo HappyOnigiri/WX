@@ -10,10 +10,10 @@ import (
 
 // ErrCleanInProgress は clean 実行中に新規の貸出・復元・待機用作成を断る。
 // 予約済み slot を再貸出しないため、判定は貸出側の書き込みトランザクション内で行う。
-var ErrCleanInProgress = errors.New("wx clean is in progress; retry once it finishes")
+var ErrCleanInProgress = errors.New("wx clear is in progress; retry once it finishes")
 
 // ErrCleanModeConflict は実行中の clean と異なる mode の要求を断る。同じ mode の再実行は既存 run へ合流する。
-var ErrCleanModeConflict = errors.New("a wx clean with a different mode is already running")
+var ErrCleanModeConflict = errors.New("a wx clear with a different mode is already running")
 
 // clean run と target の state 名。遷移は SQL の compare-and-swap で検証する。
 const (

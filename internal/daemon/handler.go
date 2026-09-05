@@ -241,7 +241,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	}
 }
 
-// dispatchClean は wx clean の method を分けて受け持つ。handled が false のときは他の method として扱う。
+// dispatchClean は wx clear の method を分けて受け持つ。handled が false のときは他の method として扱う。
 func (h Handler) dispatchClean(ctx context.Context, method string, raw json.RawMessage) (any, bool, error) {
 	switch method {
 	case "Clean":

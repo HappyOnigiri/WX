@@ -38,16 +38,16 @@ const cleanPollInterval = 500 * time.Millisecond
 const cleanRequestTimeout = 40 * time.Second
 
 func runClean(ctx context.Context, args []string) int {
-	fs := pflag.NewFlagSet("clean", pflag.ContinueOnError)
+	fs := pflag.NewFlagSet("clear", pflag.ContinueOnError)
 	all := fs.Bool("all", false, "ask sessions in use to stop, then delete what stopped, standby worktrees included")
 	standby := fs.Bool("standby", false, "delete standby worktrees too")
 	dry := fs.Bool("dry-run", false, "show what would be deleted without changing anything")
-	fs.Usage = func() { commandUsage(os.Stdout, "clean") }
-	if code, done := finishFlagParse(fs, "clean", args); done {
+	fs.Usage = func() { commandUsage(os.Stdout, "clear") }
+	if code, done := finishFlagParse(fs, "clear", args); done {
 		return code
 	}
 	if fs.NArg() != 0 {
-		commandUsage(os.Stderr, "clean")
+		commandUsage(os.Stderr, "clear")
 		return 2
 	}
 	c, err := rpcClient()
@@ -74,7 +74,7 @@ func runClean(ctx context.Context, args []string) int {
 	fmt.Println(cleanSummaryLine(final.Summary))
 	if waitErr != nil {
 		fmt.Fprintln(os.Stderr, "error:", waitErr)
-		fmt.Fprintf(os.Stderr, "the daemon keeps working on clean %s; run wx clean again to rejoin it\n", final.RunID)
+		fmt.Fprintf(os.Stderr, "the daemon keeps working on clear %s; run wx clear again to rejoin it\n", final.RunID)
 		return 1
 	}
 	return cleanExitCode(final)
@@ -85,7 +85,7 @@ type rpcCall func(ctx context.Context, method string, params, result any) error
 
 // waitForClean は run が閉じるまで進捗を取得し続ける。CLI を中断しても受付済みの処理は daemon が続ける。
 func waitForClean(ctx context.Context, call rpcCall, accepted cleanReplyView) (cleanReplyView, error) {
-	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "cleaning")
+	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "clearing")
 	defer waiting.finish()
 	current := accepted
 	for current.State == "RUNNING" {
@@ -125,7 +125,7 @@ func cleanExitCode(reply cleanReplyView) int {
 
 func printCleanTargets(w io.Writer, targets []cleanTargetView) {
 	if len(targets) == 0 {
-		_, _ = fmt.Fprintln(w, "no managed worktrees to clean")
+		_, _ = fmt.Fprintln(w, "no managed worktrees to clear")
 		return
 	}
 	for _, target := range targets {
