@@ -20,9 +20,9 @@ func parseAgentPrefix(args []string) (agentFlags, string, []string, error) {
 	var f agentFlags
 	fs.StringArrayVar(&f.branches, "branch", nil, "detached base branch")
 	fs.BoolVar(&f.fresh, "fresh", false, "continue without recovery state")
-	fs.BoolVar(&f.worktree, "worktree", false, "create a worktree for this invocation")
-	fs.BoolVar(&f.noWorktree, "no-worktree", false, "run in the current directory for this invocation")
-	fs.BoolVar(&f.selectWorktree, "select-worktree", false, "select and save this workspace policy again")
+	fs.BoolVarP(&f.worktree, "worktree", "w", false, "create a worktree for this invocation")
+	fs.BoolVarP(&f.noWorktree, "no-worktree", "n", false, "run in the current directory for this invocation")
+	fs.BoolVarP(&f.selectWorktree, "select-worktree", "s", false, "select and save this workspace policy again")
 	if err := fs.Parse(args); err != nil {
 		return f, "", nil, err
 	}

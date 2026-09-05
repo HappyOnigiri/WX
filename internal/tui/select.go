@@ -104,11 +104,10 @@ func (m selectionModel) content() string {
 		}
 	}
 	for index, option := range m.selection.Options {
-		marker := "    "
+		line := "    " + labels[index]
 		if index == m.cursor {
-			marker = "  › "
+			line = "  " + green("› "+labels[index])
 		}
-		line := marker + labels[index]
 		if description := singleLine(option.Description); description != "" {
 			line += strings.Repeat(" ", column-ansi.StringWidth(labels[index])+3) + description
 		}
@@ -116,6 +115,12 @@ func (m selectionModel) content() string {
 	}
 	out.WriteString("\n  ↑/↓ move · enter select · esc cancel\n")
 	return out.String()
+}
+
+// green は選択中の行を緑にする。
+// bubbleteaのレンダラが端末の色プロファイルに合わせて落とすため、色を扱えない端末に制御列は残らない。
+func green(value string) string {
+	return "\x1b[32m" + value + "\x1b[39m"
 }
 
 // singleLine はパスや選択肢に含まれる制御文字を除き、画面の制御シーケンスとして扱わせない。

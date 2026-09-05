@@ -57,6 +57,7 @@ No worktree runs the agent in the current directory without starting the daemon 
 wx --select-worktree claude  # choose again and save
 wx --no-worktree codex       # run here for this invocation only
 wx --worktree claude         # create a new worktree for this invocation only
+wx -s claude                 # same as --select-worktree; -n and -w are the other two
 ```
 
 These three options are mutually exclusive and must precede the agent name.
