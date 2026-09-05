@@ -102,7 +102,7 @@ func IsWithin(root, path string) bool {
 }
 
 // RelativeWithin は root に対する path の位置を求め、root 自身または外部を指す結果を拒否する。absolute path、`.`, `..`, `../` で始まる値が対象である。
-// Go 1.26 の filepath.IsLocal は `.` 以外を拒否するため `.` だけを明示検査する。path == root を許す呼び出し元はこれを使わない。
+// Go 1.27 の filepath.IsLocal は `.` 以外を拒否するため `.` だけを明示検査する。path == root を許す呼び出し元はこれを使わない。
 func RelativeWithin(root, path string) (string, error) {
 	relative, err := filepath.Rel(root, path)
 	if err != nil {
