@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -989,6 +990,45 @@ func workspaceRootCopyPlan(rules config.Workspace) ([]string, map[string]bool, e
 	return copyNames, explicit, nil
 }
 
+// validateWorkspaceRootCopySources は workspace root の copy source を書き込み前に検査する。
+// 既定の名前は欠落を許すが、設定で明示した名前は入力漏れとして扱い、slot 準備を成功させない。
+func validateWorkspaceRootCopySources(sourceRoot *os.Root, workspaceRoot string, copyNames []string, explicit map[string]bool) (map[string]bool, error) {
+	if sourceRoot == nil {
+		return nil, errors.New("workspace copy source root is nil")
+	}
+	present := make(map[string]bool, len(copyNames))
+	seen := make(map[string]bool, len(copyNames))
+	for _, name := range copyNames {
+		clean, err := safeRelative(name)
+		if err != nil {
+			return nil, err
+		}
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		info, err := sourceRoot.Lstat(clean)
+		if errors.Is(err, os.ErrNotExist) {
+			if explicit[clean] {
+				path := filepath.Join(workspaceRoot, clean)
+				return nil, fmt.Errorf("required workspace copy source %s is missing from workspace root %s: %w", path, workspaceRoot, os.ErrNotExist)
+			}
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect workspace copy source %s in workspace root %s: %w", clean, workspaceRoot, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 && !explicit[clean] {
+			continue
+		}
+		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
+			return nil, fmt.Errorf("workspace copy source %s in workspace root %s is not physical: %w", clean, workspaceRoot, err)
+		}
+		present[clean] = true
+	}
+	return present, nil
+}
+
 // defaultIncludeCandidates は main worktree に regular physical file として存在する default 名を返す。
 // .worktreelink にある名前は明示的な link rule が所有するため除外する。存在しなくても、この一覧は全 repository に適用されるのでエラーにしない。
 func defaultIncludeCandidates(mainPath string, c config.Config) ([]string, error) {
@@ -1103,17 +1143,11 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 			if err != nil {
 				return fmt.Errorf("unsafe .worktreeinclude match %q: %w", src, err)
 			}
-			// tracked path は worktree 自身が checkout するため、この entry は無視する。
-			// default include と同じ扱いにして、file が後から追跡下に入っても manifest の古い行が slot 準備全体を止めないようにする。
-			tracked, err := p.Git.Run(context.Background(), string(repo.MainPath), "ls-files", "--error-unmatch", "--", rel)
-			if err == nil && strings.TrimSpace(tracked.Stdout) != "" {
-				continue
-			}
 			sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
 			if sourceErr != nil {
 				return sourceErr
 			}
-			copyErr := copyPathFromOwnedRoot(sourceRoot, rel, destinationRoot, rel)
+			copyErr := p.copyIncludePath(repo, sourceRoot, rel, destinationRoot, rel)
 			_ = sourceRoot.Close()
 			if copyErr != nil {
 				return copyErr
@@ -1121,6 +1155,76 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 		}
 	}
 	return nil
+}
+
+// copyIncludePath は directory を再帰的に列挙し、tracked file を除いて materialize する。
+// Git の終了コード 1 だけを未追跡と扱い、それ以外の失敗は include 処理へ返す。
+func (p *Preparer) copyIncludePath(repo discovery.Repository, sourceRoot *os.Root, source string, destinationRoot *os.Root, destination string) error {
+	info, err := sourceRoot.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if _, err := domain.PhysicalPathInfo(sourceRoot, source); err != nil {
+			return err
+		}
+		if err := ensureRootDirectory(destinationRoot, destination); err != nil {
+			return err
+		}
+		directory, err := sourceRoot.OpenFile(source, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return err
+		}
+		openedInfo, statErr := directory.Stat()
+		if statErr != nil || !openedInfo.IsDir() || !os.SameFile(info, openedInfo) {
+			_ = directory.Close()
+			return fmt.Errorf("copy include directory %s changed while opening", source)
+		}
+		names, readErr := directory.Readdirnames(-1)
+		closeErr := directory.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			child := filepath.Join(source, name)
+			childDestination := filepath.Join(destination, name)
+			if err := p.copyIncludePath(repo, sourceRoot, child, destinationRoot, childDestination); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	tracked, err := p.includePathTracked(repo, source)
+	if err != nil {
+		return err
+	}
+	if tracked {
+		return nil
+	}
+	if _, err := domain.PhysicalPathInfo(sourceRoot, source); err != nil {
+		return err
+	}
+	return copyPathFromOwnedRoot(sourceRoot, source, destinationRoot, destination)
+}
+
+func (p *Preparer) includePathTracked(repo discovery.Repository, relative string) (bool, error) {
+	result, err := p.Git.Run(context.Background(), string(repo.MainPath), "ls-files", "--error-unmatch", "--", relative)
+	if err == nil {
+		if strings.TrimSpace(result.Stdout) == "" {
+			return false, fmt.Errorf("Git tracked check returned no result for %s", relative)
+		}
+		return true, nil
+	}
+	var gitErr *gitx.Error
+	if errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("check tracked include %s: %w", relative, err)
 }
 
 func (p *Preparer) createLinks(ctx context.Context, repo discovery.Repository, target string) error {
@@ -1316,13 +1420,19 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 	return runErr
 }
 
+const fingerprintSchemaVersion = 5
+
 // Fingerprint は prepared worktree を再利用可能にするすべての情報を hash 化する。slot 内の repository directory 名は意図的に含めない。
 // slot が存在すれば slot_repositories.dir_name が権威となり、既存 slot は記録済みの名前を保つ。
 // 新規 slot だけが変更後の storage.repo_dir_source や repositories.<path>.dir_name を使う。
 // 名前を hash 化しても reuse check は保存済みの名前から再計算するため常に自身と一致し、挙動は変わらない。
-// schema=4 は .worktreelink の存在状態を含める layout 変更を示すため、以前の wx が書いた fingerprint とは一致しない。
+// schema=5 は準備コマンドの引数境界を保持する形式へ変更したため、以前の wx が書いた fingerprint とは一致しない。
 // commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
+	return fingerprintWithSchema(fingerprintSchemaVersion, generation, oid, repo, c)
+}
+
+func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	mainPath := string(repo.MainPath)
 	sourceRoot, err := openPinnedRepositoryRoot(mainPath)
 	if err != nil {
@@ -1330,7 +1440,7 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 	}
 	defer func() { _ = sourceRoot.Close() }()
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=4\ngeneration=%d\noid=%s\n", generation, oid)
+	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\noid=%s\n", schema, generation, oid)
 	var linkPatterns []string
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
 		data, err := readPhysicalManifestAt(sourceRoot, name)
@@ -1413,6 +1523,15 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 	if err != nil {
 		return "", err
 	}
+	workspaceRootHandle, err := OpenPhysicalRoot(workspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = workspaceRootHandle.Close() }()
+	presentCopies, err := validateWorkspaceRootCopySources(workspaceRootHandle, workspaceRoot, copyNames, explicitCopies)
+	if err != nil {
+		return "", err
+	}
 	seenCopies := map[string]bool{}
 	for _, name := range copyNames {
 		clean, err := safeRelative(name)
@@ -1423,17 +1542,10 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 			continue
 		}
 		seenCopies[clean] = true
-		path := filepath.Join(workspaceRoot, clean)
-		info, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return "", err
-		}
-		if info.Mode()&os.ModeSymlink != 0 && !explicitCopies[clean] {
+		if !presentCopies[clean] {
 			continue
 		}
-		if err := fingerprintPath(h, workspaceRoot, path); err != nil {
+		if err := fingerprintRootPath(h, workspaceRootHandle, clean, clean); err != nil {
 			return "", err
 		}
 	}
@@ -1452,13 +1564,29 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 		}
 		_, _ = fmt.Fprintf(h, "workspace-link=%s:%s\n", clean, info.Mode())
 	}
-	if o, ok := c.Repositories[string(repo.MainPath)]; ok {
-		_, _ = fmt.Fprint(h, o.Prepare.Command, o.Prepare.Version)
+	if err := writePrepareFingerprint(h, repo, c); err != nil {
+		return "", err
 	}
 	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func writePrepareFingerprint(h hash.Hash, repo discovery.Repository, c config.Config) error {
+	o, ok := c.Repositories[string(repo.MainPath)]
+	if !ok {
+		return nil
+	}
+	prepareInput, err := json.Marshal(struct {
+		Command []string `json:"command"`
+		Version string   `json:"version"`
+	}{Command: o.Prepare.Command, Version: o.Prepare.Version})
+	if err != nil {
+		return fmt.Errorf("marshal prepare fingerprint input: %w", err)
+	}
+	_, _ = fmt.Fprintf(h, "prepare=%s\n", prepareInput)
+	return nil
 }
 
 func repositoryWorkspaceRoot(repo discovery.Repository) (string, error) {
@@ -1599,27 +1727,22 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 	if err := validateRuleConflicts(copyNames, rules.Link); err != nil {
 		return err
 	}
-	seen := map[string]bool{}
+	presentCopies, err := validateWorkspaceRootCopySources(sourceRoot, source, copyNames, explicitCopies)
+	if err != nil {
+		return err
+	}
+	seenCopies := map[string]bool{}
 	for _, rel := range copyNames {
 		clean, err := safeRelative(rel)
 		if err != nil {
 			return err
 		}
-		if seen[clean] {
+		if seenCopies[clean] {
 			continue
 		}
-		seen[clean] = true
-		info, err := sourceRoot.Lstat(clean)
-		if errors.Is(err, os.ErrNotExist) {
+		seenCopies[clean] = true
+		if !presentCopies[clean] {
 			continue
-		} else if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 && !explicitCopies[clean] {
-			continue
-		}
-		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
-			return err
 		}
 		if err := copyPathFromOwnedRoot(sourceRoot, clean, destinationRoot, clean); err != nil {
 			return fmt.Errorf("copy workspace root path %s: %w", clean, err)

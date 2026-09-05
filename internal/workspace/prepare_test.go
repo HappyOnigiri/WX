@@ -86,6 +86,46 @@ func TestWorkspaceRootDefaultSymlinkRuleIsSkipped(t *testing.T) {
 	}
 }
 
+func TestMaterializeRootRejectsMissingExplicitCopyBeforeWriting(t *testing.T) {
+	source, target := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "AGENTS.md"), []byte("rules\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rules := config.Workspace{Copy: []string{"required.json"}}
+	err := MaterializeRoot(source, target, rules)
+	if err == nil {
+		t.Fatal("missing explicit workspace copy succeeded")
+	}
+	missing := filepath.Join(source, "required.json")
+	if !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), source) {
+		t.Fatalf("missing explicit copy error=%v", err)
+	}
+	if _, statErr := os.Lstat(filepath.Join(target, "AGENTS.md")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("materialization wrote a default copy before validation: %v", statErr)
+	}
+}
+
+func TestFingerprintRejectsMissingExplicitCopyAndAllowsMissingDefaults(t *testing.T) {
+	source := t.TempDir()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(source)}
+	cfg := config.Defaults()
+	if _, err := Fingerprint(1, "oid", repo, cfg); err != nil {
+		t.Fatalf("missing default workspace copies should remain optional: %v", err)
+	}
+	cfg.Workspaces[source] = config.Workspace{Copy: []string{"required.json"}}
+	err := func() error {
+		_, err := Fingerprint(1, "oid", repo, cfg)
+		return err
+	}()
+	if err == nil {
+		t.Fatal("missing explicit workspace copy fingerprint succeeded")
+	}
+	missing := filepath.Join(source, "required.json")
+	if !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), source) {
+		t.Fatalf("missing explicit copy fingerprint error=%v", err)
+	}
+}
+
 func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
 	source, target := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "copied.txt"), []byte("pinned copy\n"), 0o640); err != nil {
@@ -857,6 +897,80 @@ func TestWorktreeIncludeIgnoresTrackedPaths(t *testing.T) {
 	}
 }
 
+// directory include は tracked file の存在だけで省略せず、未追跡 file だけを materialize する。
+func TestWorktreeIncludeCopiesUntrackedFilesInsideTrackedDirectory(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(filepath.Join(repository, "settings"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(target, "settings"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repository, "settings", "tracked"), []byte("source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "settings", "local"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("settings\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "settings/tracked")
+	if err := os.WriteFile(filepath.Join(target, "settings", "tracked"), []byte("checkout\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+	if err := preparer.copyIncludesAt(repo, owner, "."); err != nil {
+		t.Fatalf("directory include copy: %v", err)
+	}
+	if content, err := os.ReadFile(filepath.Join(target, "settings", "tracked")); err != nil || string(content) != "checkout\n" {
+		t.Fatalf("tracked include was overwritten: content=%q err=%v", content, err)
+	}
+	if content, err := os.ReadFile(filepath.Join(target, "settings", "local")); err != nil || string(content) != "local\n" {
+		t.Fatalf("untracked include was not copied: content=%q err=%v", content, err)
+	}
+}
+
+func TestWorktreeIncludeReturnsTrackedCheckGitErrors(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(filepath.Join(repository, "settings"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "settings", "local"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("settings\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+	if err := preparer.copyIncludesAt(repo, owner, "."); err == nil || !strings.Contains(err.Error(), "check tracked include") {
+		t.Fatalf("tracked check Git failure was not returned: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "settings", "local")); !os.IsNotExist(err) {
+		t.Fatalf("include was copied despite tracked check failure: %v", err)
+	}
+}
+
 func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
@@ -1038,6 +1152,49 @@ func TestFingerprintTracksMaterializedCopyInputs(t *testing.T) {
 	fourth, err := Fingerprint(1, "oid", repo, cfg)
 	if err != nil || fourth == third {
 		t.Fatalf("workspace rule fingerprint third=%s fourth=%s err=%v", third, fourth, err)
+	}
+}
+
+func TestFingerprintDistinguishesPrepareArgumentBoundaries(t *testing.T) {
+	repository := t.TempDir()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	cfg := config.Defaults()
+	cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{
+		Command: []string{"/usr/bin/printf", "%s|", "a b", "c"},
+		Version: "v1",
+	}}
+	first, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{
+		Command: []string{"/usr/bin/printf", "%s|", "a", "b c"},
+		Version: "v1",
+	}}
+	second, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("prepare argument boundaries were lost: fingerprint=%s", first)
+	}
+}
+
+func TestFingerprintSchemaMismatchInvalidatesPreviousValue(t *testing.T) {
+	repository := t.TempDir()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	cfg := config.Defaults()
+	legacy, err := fingerprintWithSchema(fingerprintSchemaVersion-1, 1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == legacy {
+		t.Fatalf("fingerprint schema change did not invalidate previous value: %s", current)
 	}
 }
 

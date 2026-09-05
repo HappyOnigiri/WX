@@ -45,6 +45,7 @@ func TestReadyMatchesRejectsEveryUnsafeRepresentation(t *testing.T) {
 		{name: "preparing repository", rootKind: "directory", repoState: "PREPARING", baseOID: resolved[0].OID, finger: fingerprint},
 		{name: "wrong base", rootKind: "directory", repoState: "READY", baseOID: "wrong", finger: fingerprint},
 		{name: "wrong fingerprint", rootKind: "directory", repoState: "READY", baseOID: resolved[0].OID, finger: "wrong"},
+		{name: "legacy fingerprint schema", rootKind: "directory", repoState: "READY", baseOID: resolved[0].OID, finger: strings.Repeat("0", 64)},
 		{name: "cold repository has a checkout", rootKind: "directory", repoState: "COLD", baseOID: resolved[0].OID, finger: fingerprint, target: "populated"},
 		{name: "cold repository directory is empty", rootKind: "directory", repoState: "COLD", baseOID: resolved[0].OID, finger: fingerprint, target: "directory", want: true},
 		{name: "cold repository absent", rootKind: "directory", repoState: "COLD", baseOID: resolved[0].OID, finger: fingerprint, target: "missing", want: true},

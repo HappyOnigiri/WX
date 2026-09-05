@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -378,5 +379,41 @@ func TestPolicyRootSharesRepositoryAndLinkedWorktreeSelection(t *testing.T) {
 	cancel()
 	if _, err := d.PolicyRoot(ctx, root); err == nil {
 		t.Fatal("cancellation ignored")
+	}
+}
+
+func TestPolicyRootRejectsGitExecutionFailureInsteadOfUsingCWD(t *testing.T) {
+	root, bin := t.TempDir(), t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n' 'fatal: cannot read configuration' >&2\nexit 128\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	d := Discoverer{Git: &gitx.Runner{}, Config: config.Defaults()}
+	got, err := d.PolicyRoot(context.Background(), root)
+	if err == nil {
+		t.Fatalf("root=%q; Git execution failure was treated as a non-repository", got)
+	}
+	if got != "" || errors.Is(err, gitx.ErrNotRepository) || !strings.Contains(err.Error(), root) {
+		t.Fatalf("root=%q err=%v", got, err)
+	}
+}
+
+func TestResolveRejectsGitExecutionFailureBeforeMultiRepositoryFallback(t *testing.T) {
+	root, bin := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "nested", ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n' 'fatal: cannot read configuration' >&2\nexit 128\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	d := Discoverer{Git: &gitx.Runner{}, Config: config.Defaults()}
+	if _, err := d.Resolve(context.Background(), root); err == nil || errors.Is(err, gitx.ErrNotRepository) {
+		t.Fatalf("Git execution failure was accepted as a multi-repository workspace: %v", err)
 	}
 }

@@ -172,7 +172,7 @@ workspaceが確定していない`_unbound/<slot-id>`はslotディレクトリ�
 `RepoName`の決定順は`repositories.<main path>.dir_name` → `repositories.<main path>.dir_source` → `storage.repo_dir_source`（既定`remote`）→ main worktreeのディレクトリ名である。
 `remote`は`git remote get-url origin`の出力から末尾の`.git`を除いたbasenameで、取れないときはディレクトリ名へ落ちる。
 採用した値は`slot_repositories.dir_name`に記録され、以後はその値が権威になる。
-設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`（`schema=4`）が準備入力を含むので新規slotから新しい設定を使う。
+設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`（`schema=5`）が準備入力を含むので新規slotから新しい設定を使う。
 
 `storage.worktree_root`を変えても既存slotは移動しない。
 `roots`テーブルがroot世代を持ち、slotは`root_id` + root相対pathで位置を表す。
