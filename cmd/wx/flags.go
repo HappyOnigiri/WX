@@ -31,6 +31,9 @@ func parseAgentPrefix(args []string) (agentFlags, string, []string, error) {
 	}
 	rest := fs.Args()
 	if len(rest) == 0 {
+		if f.selectWorktree {
+			return f, "", nil, nil
+		}
 		return f, "", nil, pflag.ErrHelp
 	}
 	return f, rest[0], rest[1:], nil
