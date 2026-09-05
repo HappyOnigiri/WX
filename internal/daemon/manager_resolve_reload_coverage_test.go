@@ -168,6 +168,78 @@ func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 	}
 }
 
+func TestResolveAndLeaseRejectsHotStandbyAfterWorktreeLinkAppears(t *testing.T) {
+	t.Parallel()
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repository := filepath.Join(root, "repo")
+	initGitRepo(t, repository)
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("app/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("app/tmp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	databasePath := filepath.Join(root, "state.db")
+	store, err := state.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
+	cfg.Pool.WarmPerWorkspace = 1
+	m := testManager(t, cfg, store)
+	m.git.SetTimeout(10 * time.Second)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = registerTestWorkspace(t, store, w)
+	raw := openManagerCoverageDB(t, databasePath)
+	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatalf("missing .worktreelink source blocked hot standby: %v", err)
+	}
+	j, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(j) != 1 || j[0].Kind != "PREPARE" {
+		t.Fatalf("standby jobs=%+v err=%v", j, err)
+	}
+	prepared, err := store.ClaimJob(ctx, j[0].ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, prepared); err != nil {
+		t.Fatalf("prepare hot standby with missing .worktreelink source: %v", err)
+	}
+	if err := store.FinishJob(ctx, prepared.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	ready, ok, err := store.ReadySlot(ctx, string(w.ID))
+	if err != nil || !ok {
+		t.Fatalf("ready slot=%+v ok=%v err=%v", ready, ok, err)
+	}
+	if _, err := os.Lstat(filepath.Join(ready.Path, "repo", "app")); !os.IsNotExist(err) {
+		t.Fatalf("missing .worktreelink source touched standby: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repository, "app", "tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := m.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid())
+	if err != nil {
+		t.Fatalf("resolve and lease after .worktreelink source appeared: %v", err)
+	}
+	if lease.SessionID == ready.ID {
+		t.Fatalf("hot standby with changed .worktreelink source presence was reused: %s", lease.SessionID)
+	}
+}
+
 func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T) {
 	t.Parallel()
 	requireDaemonIntegration(t)

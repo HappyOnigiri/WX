@@ -1139,34 +1139,63 @@ func (p *Preparer) createLinks(ctx context.Context, repo discovery.Repository, t
 // createLinksAt は createLinks と同じ処理を、全検査と symlink 作成の間 destination Root を開いたまま行う。
 // これにより worktree の検証から ignored link の書き込みまでに root を置換される隙間を閉じる。
 func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository, owner *os.Root, relativeTarget string) error {
-	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreelink")
+	mainPath := string(repo.MainPath)
+	sourceRoot, err := openPinnedRepositoryRoot(mainPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sourceRoot.Close() }()
+	patterns, err := readPhysicalPatternsAt(sourceRoot, ".worktreelink")
 	if err != nil {
 		return err
 	}
 	if err := validateRuleConflicts(nil, patterns); err != nil {
 		return err
 	}
+	sources, err := inspectLinkSources(sourceRoot, patterns)
+	if err != nil {
+		return err
+	}
+	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
+		return err
+	}
+	if len(sources) == 0 {
+		destinationRoot, err := domain.OpenRootAt(owner, relativeTarget)
+		if err != nil {
+			return fmt.Errorf("open link destination: %w", err)
+		}
+		return destinationRoot.Close()
+	}
+	if !hasPresentLinkSource(sources) {
+		return nil
+	}
 	destinationRoot, err := domain.OpenRootAt(owner, relativeTarget)
 	if err != nil {
 		return fmt.Errorf("open link destination: %w", err)
 	}
 	defer func() { _ = destinationRoot.Close() }()
-	for _, rel := range patterns {
-		clean := filepath.Clean(rel)
-		if filepath.IsAbs(rel) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("unsafe .worktreelink path %q", rel)
+	for _, link := range sources {
+		if !link.present {
+			continue
 		}
-		if _, err := p.Git.Run(ctx, string(repo.MainPath), "check-ignore", "-q", "--", clean); err != nil {
-			return fmt.Errorf(".worktreelink path %q is not ignored", rel)
+		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
+			return err
 		}
-		source := filepath.Join(string(repo.MainPath), clean)
-		if err := domain.ValidatePhysicalPath(source, false); err != nil {
-			return fmt.Errorf(".worktreelink source %s is not physical: %w", rel, err)
-		}
-		destinationRelative, err := safeRelative(clean)
+		current, err := inspectLinkSource(sourceRoot, link.relative)
 		if err != nil {
 			return err
 		}
+		if !current.present {
+			continue
+		}
+		if _, err := p.Git.Run(ctx, mainPath, "check-ignore", "-q", "--", link.relative); err != nil {
+			return fmt.Errorf(".worktreelink path %q is not ignored", link.relative)
+		}
+		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
+			return err
+		}
+		source := filepath.Join(mainPath, link.relative)
+		destinationRelative := link.relative
 		if err := ensureRootDirectory(destinationRoot, filepath.Dir(destinationRelative)); err != nil {
 			return err
 		}
@@ -1177,15 +1206,71 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 					continue
 				}
 			}
-			return fmt.Errorf(".worktreelink target collision %s", rel)
+			return fmt.Errorf(".worktreelink target collision %s", link.relative)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
+		}
+		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
+			return err
+		}
+		current, err = inspectLinkSource(sourceRoot, link.relative)
+		if err != nil {
+			return err
+		}
+		if !current.present {
+			continue
 		}
 		if err := destinationRoot.Symlink(source, destinationRelative); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+type linkSource struct {
+	relative string
+	present  bool
+}
+
+// inspectLinkSources は .worktreelink の source を pin 済み root から検査する。
+// os.ErrNotExist は leaf と中間成分のどちらでも欠落として扱い、それ以外の失敗は安全側へ倒して返す。
+func inspectLinkSources(sourceRoot *os.Root, patterns []string) ([]linkSource, error) {
+	if sourceRoot == nil {
+		return nil, errors.New("link source root is nil")
+	}
+	out := make([]linkSource, 0, len(patterns))
+	for _, pattern := range patterns {
+		link, err := inspectLinkSource(sourceRoot, pattern)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, link)
+	}
+	return out, nil
+}
+
+func inspectLinkSource(sourceRoot *os.Root, pattern string) (linkSource, error) {
+	clean, err := safeRelative(pattern)
+	if err != nil {
+		return linkSource{}, fmt.Errorf("unsafe .worktreelink path %q", pattern)
+	}
+	_, err = domain.PhysicalPathInfo(sourceRoot, clean)
+	if errors.Is(err, os.ErrNotExist) {
+		return linkSource{relative: clean}, nil
+	}
+	if err != nil {
+		return linkSource{}, fmt.Errorf(".worktreelink source %s is not physical: %w", pattern, err)
+	}
+	return linkSource{relative: clean, present: true}, nil
+}
+
+func hasPresentLinkSource(sources []linkSource) bool {
+	for _, source := range sources {
+		if source.present {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Repository, target, expectedIdentity string) error {
@@ -1235,22 +1320,45 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 // slot が存在すれば slot_repositories.dir_name が権威となり、既存 slot は記録済みの名前を保つ。
 // 新規 slot だけが変更後の storage.repo_dir_source や repositories.<path>.dir_name を使う。
 // 名前を hash 化しても reuse check は保存済みの名前から再計算するため常に自身と一致し、挙動は変わらない。
-// schema=3 は layout 変更を示すため、以前の wx が書いた fingerprint とは一致しない。
+// schema=4 は .worktreelink の存在状態を含める layout 変更を示すため、以前の wx が書いた fingerprint とは一致しない。
 // commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
-	if err := domain.ValidatePhysicalPath(string(repo.MainPath), false); err != nil {
+	mainPath := string(repo.MainPath)
+	sourceRoot, err := openPinnedRepositoryRoot(mainPath)
+	if err != nil {
 		return "", err
 	}
+	defer func() { _ = sourceRoot.Close() }()
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=3\ngeneration=%d\noid=%s\n", generation, oid)
+	_, _ = fmt.Fprintf(h, "schema=4\ngeneration=%d\noid=%s\n", generation, oid)
+	var linkPatterns []string
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
-		data, err := readPhysicalManifest(string(repo.MainPath), name)
+		data, err := readPhysicalManifestAt(sourceRoot, name)
 		if err != nil {
 			return "", err
 		}
 		_, _ = fmt.Fprintf(h, "manifest=%s:%x\n", name, sha256.Sum256(data))
+		if name == ".worktreelink" && data != nil {
+			linkPatterns, err = parsePhysicalPatterns(data)
+			if err != nil {
+				return "", err
+			}
+		}
 	}
-	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreeinclude")
+	if err := validateRuleConflicts(nil, linkPatterns); err != nil {
+		return "", err
+	}
+	linkSources, err := inspectLinkSources(sourceRoot, linkPatterns)
+	if err != nil {
+		return "", err
+	}
+	sort.SliceStable(linkSources, func(i, j int) bool {
+		return linkSources[i].relative < linkSources[j].relative
+	})
+	for _, source := range linkSources {
+		_, _ = fmt.Fprintf(h, "worktreelink-source=%s:present=%t\n", source.relative, source.present)
+	}
+	patterns, err := readPhysicalPatternsAt(sourceRoot, ".worktreeinclude")
 	if err != nil {
 		return "", err
 	}
@@ -1264,7 +1372,7 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 	}
 	for _, rel := range defaults {
 		seenIncludes[rel] = true
-		if err := fingerprintPath(h, string(repo.MainPath), filepath.Join(string(repo.MainPath), rel)); err != nil {
+		if err := fingerprintPath(h, mainPath, filepath.Join(mainPath, rel)); err != nil {
 			return "", err
 		}
 	}
@@ -1273,12 +1381,12 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 		if filepath.IsAbs(pattern) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return "", fmt.Errorf("unsafe .worktreeinclude pattern %q", pattern)
 		}
-		matches, err := safeGlob(string(repo.MainPath), pattern)
+		matches, err := safeGlob(mainPath, pattern)
 		if err != nil {
 			return "", err
 		}
 		for _, match := range matches {
-			rel, err := filepath.Rel(string(repo.MainPath), match)
+			rel, err := filepath.Rel(mainPath, match)
 			if err != nil {
 				return "", err
 			}
@@ -1346,6 +1454,9 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 	}
 	if o, ok := c.Repositories[string(repo.MainPath)]; ok {
 		_, _ = fmt.Fprint(h, o.Prepare.Command, o.Prepare.Version)
+	}
+	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
+		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }

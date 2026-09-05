@@ -63,6 +63,50 @@ func OpenPhysicalRoot(path string) (*os.Root, error) {
 	return root, nil
 }
 
+// openPinnedRepositoryRoot は main worktree の directory を descriptor へ pin し、path 名が同じ実体を指すことを確認する。
+// .worktreelink の source はこの root から読むため、main path の消失・symlink 化・置換を欠落 source として扱わない。
+func openPinnedRepositoryRoot(path string) (*os.Root, error) {
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	root, err := OpenPhysicalRoot(absolute)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyPinnedRepositoryPath(root, absolute); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	return root, nil
+}
+
+// verifyPinnedRepositoryPath は pin 済み main worktree と可変な path 名の同一性を再検証する。
+func verifyPinnedRepositoryPath(root *os.Root, path string) error {
+	if root == nil {
+		return errors.New("repository root is nil")
+	}
+	absolute, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	if err := domain.ValidatePhysicalPath(absolute, false); err != nil {
+		return fmt.Errorf("repository main path is not physical: %w", err)
+	}
+	pinned, err := domain.PhysicalPathInfo(root, ".")
+	if err != nil {
+		return fmt.Errorf("inspect pinned repository root: %w", err)
+	}
+	current, err := os.Lstat(absolute)
+	if err != nil {
+		return fmt.Errorf("inspect repository main path: %w", err)
+	}
+	if current.Mode()&os.ModeSymlink != 0 || !current.IsDir() || !os.SameFile(pinned, current) {
+		return errors.New("repository main path changed while opening")
+	}
+	return nil
+}
+
 // safeGlob は physical root 配下で symlink を一度も辿らず pattern を走査する。
 // filepath.Glob は match 結果を検査する前に symlink ancestor を辿るため使わない。
 func safeGlob(root, pattern string) ([]string, error) {
@@ -354,6 +398,13 @@ func readPhysicalManifest(root, name string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = owner.Close() }()
+	return readPhysicalManifestAt(owner, name)
+}
+
+func readPhysicalManifestAt(owner *os.Root, name string) ([]byte, error) {
+	if owner == nil {
+		return nil, errors.New("manifest root is nil")
+	}
 	relative, err := safeRelative(name)
 	if err != nil {
 		return nil, err
@@ -401,6 +452,18 @@ func readPhysicalPatterns(root, name string) ([]string, error) {
 	if err != nil || data == nil {
 		return nil, err
 	}
+	return parsePhysicalPatterns(data)
+}
+
+func readPhysicalPatternsAt(root *os.Root, name string) ([]string, error) {
+	data, err := readPhysicalManifestAt(root, name)
+	if err != nil || data == nil {
+		return nil, err
+	}
+	return parsePhysicalPatterns(data)
+}
+
+func parsePhysicalPatterns(data []byte) ([]string, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	var patterns []string
 	for scanner.Scan() {
