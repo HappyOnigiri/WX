@@ -44,9 +44,27 @@ func sessionInUse(sessionState string) bool {
 	}
 }
 
+// standbySlot は次の session を待つ待機用 slot（ホットスタンバイ）かを返す。補充途中の PREPARING も含める。
+// owner が付いた slot は貸出済みで、世代遅れの STALE は再利用されない残骸なので、どちらも待機用としては扱わない。
+func standbySlot(candidate state.CleanCandidate) bool {
+	return candidate.SessionID == "" && (candidate.SlotState == "READY" || candidate.SlotState == "PREPARING")
+}
+
+// cleanMode は run へ永続化する mode を返す。--all は待機用 worktree の削除も含むため、その組み合わせは独立した mode にしない。
+func cleanMode(all, standby bool) string {
+	switch {
+	case all:
+		return "all"
+	case standby:
+		return "standby"
+	default:
+		return "normal"
+	}
+}
+
 // planCleanTargets は受付時点の候補から対象と除外理由を確定する。
-// 通常の clean は使用中の session を対象外とし、--all は起動・復元途中も含める。
-func planCleanTargets(candidates []state.CleanCandidate, all bool) []state.CleanTarget {
+// 通常の clean は使用中の session と待機用 slot を対象外とし、--standby は待機用を、--all は加えて起動・復元途中も含める。
+func planCleanTargets(candidates []state.CleanCandidate, all, standby bool) []state.CleanTarget {
 	out := make([]state.CleanTarget, 0, len(candidates))
 	for _, candidate := range candidates {
 		target := state.CleanTarget{
@@ -56,8 +74,12 @@ func planCleanTargets(candidates []state.CleanCandidate, all bool) []state.Clean
 		switch {
 		case candidate.SlotState == "QUARANTINED":
 			target.State, target.Reason = cleanTargetQuarantined, "slot is quarantined; wx keeps artifacts whose ownership it cannot prove"
+		case standbySlot(candidate):
+			if !all && !standby {
+				target.State, target.Reason = cleanTargetSkipped, "standby worktree is not in use; rerun with --standby to delete it"
+			}
 		case !sessionInUse(candidate.SessionState):
-			// 未使用の待機用・終了済み slot はそのまま削除経路へ進む。
+			// 終了済み・無効化された未使用 slot はそのまま削除経路へ進む。
 		case !all:
 			target.State, target.Reason = cleanTargetSkipped, "session "+candidate.SessionID+" is in use; rerun with --all to ask it to stop"
 		default:
@@ -91,7 +113,11 @@ func unsavedDataRisk(candidate state.CleanCandidate) string {
 }
 
 // cleanWorkspaces は補充を停止すべき workspace を、実際に削除へ進む対象から集める。
-func cleanWorkspaces(targets []state.CleanTarget) []string {
+// 待機用 worktree を残すモードでは停止しない。残すと決めた以上、補充で数が戻ることは矛盾しないためである。
+func cleanWorkspaces(targets []state.CleanTarget, removeStandby bool) []string {
+	if !removeStandby {
+		return nil
+	}
 	seen := map[string]bool{}
 	var out []string
 	for _, target := range targets {
@@ -125,16 +151,13 @@ func cleanReply(run state.CleanRun, targets []state.CleanTarget, dryRun bool) ma
 
 // Clean は保持期限を待たずに wx 管理下の worktree を削除する。
 // dry-run は終了要求・補充停止・ジョブ登録・隔離を含め一切状態を変更せず、調査時点の見込みだけを返す。
-func (m *Manager) Clean(ctx context.Context, all, dryRun bool) (map[string]any, error) {
+func (m *Manager) Clean(ctx context.Context, all, standby, dryRun bool) (map[string]any, error) {
 	candidates, err := m.store.CleanCandidates(ctx)
 	if err != nil {
 		return nil, err
 	}
-	mode := "normal"
-	if all {
-		mode = "all"
-	}
-	targets := planCleanTargets(candidates, all)
+	mode := cleanMode(all, standby)
+	targets := planCleanTargets(candidates, all, standby)
 	if dryRun {
 		return cleanReply(state.CleanRun{Mode: mode, State: "DRY_RUN"}, targets, true), nil
 	}
@@ -142,7 +165,7 @@ func (m *Manager) Clean(ctx context.Context, all, dryRun bool) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	runID, joined, err := m.store.BeginCleanRun(ctx, id, mode, targets, cleanWorkspaces(targets))
+	runID, joined, err := m.store.BeginCleanRun(ctx, id, mode, targets, cleanWorkspaces(targets, mode != "normal"))
 	if err != nil {
 		return nil, err
 	}

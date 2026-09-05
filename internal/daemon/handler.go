@@ -237,13 +237,14 @@ func (h Handler) dispatchClean(ctx context.Context, method string, raw json.RawM
 	switch method {
 	case "Clean":
 		var p struct {
-			All    bool `json:"all"`
-			DryRun bool `json:"dry_run"`
+			All     bool `json:"all"`
+			Standby bool `json:"standby"`
+			DryRun  bool `json:"dry_run"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, true, err
 		}
-		result, err := h.Manager.Clean(ctx, p.All, p.DryRun)
+		result, err := h.Manager.Clean(ctx, p.All, p.Standby, p.DryRun)
 		return result, true, err
 	case "CleanStatus":
 		var p struct {

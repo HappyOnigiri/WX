@@ -24,7 +24,7 @@ Commands:
   status [--verbose] [--json]    show daemon and pool state
   doctor [--json]                check configuration and dependencies
   gc [--dry-run]                 run retention cleanup
-  clean [--all] [--dry-run]      delete managed worktrees now
+  clean [--all] [--standby]      delete managed worktrees now
   sessions [--all] [--json]      list managed sessions
   config [<key> <value>]         show or update configuration
   resume <id> <agent> [args...]  restore a wx session
@@ -59,11 +59,15 @@ Run retention cleanup without deleting unarchived workspace data.
 Options:
   --dry-run  report candidates without removing them`)
 	case "clean":
-		_, _ = fmt.Fprintln(w, `Usage: wx clean [--all] [--dry-run]
+		_, _ = fmt.Fprintln(w, `Usage: wx clean [--all] [--standby] [--dry-run]
 
 Delete the worktrees wx manages without waiting for their retention period.
 Work is saved first: recovery data, session history, and workspace
 registrations stay, and their retention follows the existing settings.
+
+Standby worktrees waiting for the next session are kept unless --standby or
+--all is given. Once they are deleted, wx does not replenish them until the
+affected workspace is used again.
 
 Without --all, sessions that are in use are left alone. With --all, wx asks
 those sessions to stop, waits up to 30s for each of them, and deletes only the
@@ -71,15 +75,16 @@ ones that stopped; nothing is killed. Quarantined slots are always kept.
 
 The command waits for every target to finish. Interrupting it does not stop
 the daemon, and running it again rejoins the clean already in progress. While
-a clean runs, new sessions and resumes are refused. Standby worktrees are not
-replenished until the affected workspace is used again.
+a clean runs, new sessions and resumes are refused.
 
 Exit status is 0 when every target succeeded or there was nothing to do, 1
 when something failed, was quarantined, or did not finish, and 2 for an
-argument error. Excluding sessions in use is not a failure.
+argument error. Keeping sessions in use or standby worktrees is not a failure.
 
 Options:
-  --all      ask sessions in use to stop, then delete what stopped
+  --all      ask sessions in use to stop, then delete what stopped, standby
+             worktrees included
+  --standby  delete standby worktrees too
   --dry-run  report the targets and the reasons wx cannot process some of
              them, changing nothing`)
 	case "config":

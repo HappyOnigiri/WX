@@ -39,7 +39,8 @@ const cleanRequestTimeout = 40 * time.Second
 
 func runClean(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("clean", pflag.ContinueOnError)
-	all := fs.Bool("all", false, "ask sessions in use to stop, then delete what stopped")
+	all := fs.Bool("all", false, "ask sessions in use to stop, then delete what stopped, standby worktrees included")
+	standby := fs.Bool("standby", false, "delete standby worktrees too")
 	dry := fs.Bool("dry-run", false, "show what would be deleted without changing anything")
 	fs.Usage = func() { commandUsage(os.Stdout, "clean") }
 	if code, done := finishFlagParse(fs, "clean", args); done {
@@ -56,7 +57,7 @@ func runClean(ctx context.Context, args []string) int {
 	}
 	var reply cleanReplyView
 	callCtx, cancel := context.WithTimeout(ctx, cleanRequestTimeout)
-	err = c.Call(callCtx, "Clean", map[string]bool{"all": *all, "dry_run": *dry}, &reply)
+	err = c.Call(callCtx, "Clean", map[string]bool{"all": *all, "standby": *standby, "dry_run": *dry}, &reply)
 	cancel()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
