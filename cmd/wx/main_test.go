@@ -193,7 +193,7 @@ func TestRunGCReturnsNonZeroForPendingReport(t *testing.T) {
 	}
 }
 
-func TestRunSessionsDefaultsToActive(t *testing.T) {
+func TestRunLeasesDefaultsToActive(t *testing.T) {
 	home, err := os.MkdirTemp("/tmp", "wx-sessions-")
 	if err != nil {
 		t.Fatal(err)
@@ -218,8 +218,8 @@ func TestRunSessionsDefaultsToActive(t *testing.T) {
 	})
 
 	stdout := captureStdout(t, func() {
-		if code := runSessions(context.Background(), nil); code != 0 {
-			t.Fatalf("runSessions exit=%d", code)
+		if code := runLeases(context.Background(), nil); code != 0 {
+			t.Fatalf("runLeases exit=%d", code)
 		}
 	})
 	if !strings.Contains(stdout, "active") || strings.Contains(stdout, "starting") || strings.Contains(stdout, "archived") || strings.Contains(stdout, "expired") {
@@ -227,8 +227,8 @@ func TestRunSessionsDefaultsToActive(t *testing.T) {
 	}
 
 	stdout = captureStdout(t, func() {
-		if code := runSessions(context.Background(), []string{"--all"}); code != 0 {
-			t.Fatalf("runSessions --all exit=%d", code)
+		if code := runLeases(context.Background(), []string{"--all"}); code != 0 {
+			t.Fatalf("runLeases --all exit=%d", code)
 		}
 	})
 	for _, id := range []string{"active", "starting", "archived", "expired"} {

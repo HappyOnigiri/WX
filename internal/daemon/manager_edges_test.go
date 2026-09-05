@@ -538,6 +538,7 @@ func TestManagerReadinessAndRecoveryFailurePaths(t *testing.T) {
 }
 
 func TestWaitReadyIncludesPrepareDiagnosticMetadata(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -548,7 +549,7 @@ func TestWaitReadyIncludesPrepareDiagnosticMetadata(t *testing.T) {
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	m := testManager(t, cfg, store)
 	t.Cleanup(m.Close)
-	lease, err := m.AllocateResumeSlot(context.Background(), "codex", os.Getpid())
+	lease, err := legacyLeaseFixture(m, "codex", os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
