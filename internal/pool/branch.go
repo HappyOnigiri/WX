@@ -43,13 +43,41 @@ func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 			global = s
 		}
 	}
+	globalMatches := map[string]bool{}
+	if global != "" {
+		matched := 0
+		applicable := make([]discovery.Repository, 0, len(w.Repositories))
+		for _, repo := range w.Repositories {
+			if _, overridden := qualified[string(repo.ID)]; overridden {
+				continue
+			}
+			applicable = append(applicable, repo)
+			_, ok, err := gitx.ResolveRef(ctx, git, string(repo.MainPath), global)
+			if err != nil {
+				return nil, err
+			}
+			globalMatches[string(repo.ID)] = ok
+			if ok {
+				matched++
+			}
+		}
+		if matched == 0 && len(applicable) == 1 {
+			repo := applicable[0]
+			return nil, fmt.Errorf("branch %q does not exist in repository %s; refusing to use default branch %q", global, repo.RelativePath, repo.DefaultBranch)
+		}
+		if matched == 0 && len(applicable) > 1 {
+			paths := make([]string, 0, len(applicable))
+			for _, repo := range applicable {
+				paths = append(paths, repo.RelativePath)
+			}
+			return nil, fmt.Errorf("branch %q does not exist in any repository (%s); refusing to use default branches", global, strings.Join(paths, ", "))
+		}
+	}
 	out := make([]Resolved, 0, len(w.Repositories))
 	for _, repo := range w.Repositories {
 		branch := repo.DefaultBranch
 		if global != "" {
-			if _, ok, err := gitx.ResolveRef(ctx, git, string(repo.MainPath), global); err != nil {
-				return nil, err
-			} else if ok {
+			if globalMatches[string(repo.ID)] {
 				branch = global
 			}
 		}
