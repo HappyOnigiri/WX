@@ -182,8 +182,13 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 	gitRun(t, string(mismatchedRepository.MainPath), "update-ref", mismatched, mismatchedOID)
 	m.reconcileArtifacts(ctx)
 	diagnostics = m.artifactDiagnostics(ctx)
+	// 名前ごと未知の ref と、DB が知る名前が別 OID を指す ref は別カテゴリに入る。前者は wx prune の対象、後者は resume の実害である。
 	unknown = diagnostics["unknown_refs"].([]string)
-	if len(unknown) != 2 || !containsString(unknown, mismatchedSnapshot.RepositoryID+":"+mismatched) {
+	if len(unknown) != 1 || !strings.HasSuffix(unknown[0], ":refs/wx/recovery/foreign") {
+		t.Fatalf("unknown ref category changed: %v", diagnostics)
+	}
+	mismatchedRefs := diagnostics["mismatched_refs"].([]string)
+	if len(mismatchedRefs) != 1 || !containsString(mismatchedRefs, mismatchedSnapshot.RepositoryID+":"+mismatched) {
 		t.Fatalf("mismatched recovery ref was not diagnosed: %v", diagnostics)
 	}
 	status, err = store.StatusDiagnostics(ctx)

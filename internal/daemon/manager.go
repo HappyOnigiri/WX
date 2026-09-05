@@ -642,25 +642,61 @@ func (m *Manager) reconcileArtifacts(ctx context.Context) {
 		}
 	}
 	diagnostics := m.artifactDiagnostics(ctx)
-	for _, category := range []string{"unknown_paths", "missing_paths", "unknown_refs", "missing_refs", "errors"} {
+	// unknown_refs は現行 DB が説明しない孤児 ref で、`wx prune` で解消できる。件数が多く毎周同じ内容になるため、
+	// per-item ではなくリポジトリ単位に束ね、そのリポジトリに新規記録があるときだけ 1 行出す。
+	newOrphans := map[string]bool{}
+	orphansByRepository := map[string]int{}
+	present := map[string]bool{}
+	for _, category := range []string{"unknown_paths", "missing_paths", "unknown_refs", "mismatched_refs", "missing_refs", "errors"} {
 		items, _ := diagnostics[category].([]string)
 		for _, item := range items {
 			switch category {
-			case "unknown_paths", "unknown_refs":
-				_ = m.store.QuarantineArtifact(ctx, category, item, "ownership could not be proven during reconciliation")
+			case "unknown_paths", "mismatched_refs":
+				present[item] = true
+				if _, err := m.store.QuarantineArtifact(ctx, category, item, artifactQuarantineReasons[category]); err != nil {
+					m.log.Error("record quarantined artifact failed", "category", category, "artifact", item, "error", err)
+				}
+			case "unknown_refs":
+				present[item] = true
+				repositoryID, _, _ := strings.Cut(item, ":")
+				orphansByRepository[repositoryID]++
+				inserted, err := m.store.QuarantineArtifact(ctx, category, item, artifactQuarantineReasons[category])
+				if err != nil {
+					m.log.Error("record quarantined artifact failed", "category", category, "artifact", item, "error", err)
+				}
+				if inserted {
+					newOrphans[repositoryID] = true
+				}
+				continue
 			case "missing_refs":
 				if _, ref, ok := strings.Cut(item, ":"); ok {
 					_ = m.store.QuarantineMissingRecoveryRef(ctx, ref)
 				}
 			}
-			m.log.Warn("startup artifact quarantined for manual inspection", "category", category, "artifact", item)
+			m.log.Warn("artifact quarantined for manual inspection", "category", category, "artifact", item)
 		}
 	}
+	for repositoryID := range newOrphans {
+		m.log.Warn("recovery refs are not explained by the current database; run wx prune to remove them",
+			"category", "unknown_refs", "repository", repositoryID, "refs", orphansByRepository[repositoryID])
+	}
+	// 再検出され続けるカテゴリだけを刈る。standby_slot・workspace_snapshot は reconcile が再検出しないため対象にしない。
+	if err := m.store.PruneQuarantinedArtifacts(ctx, []string{"unknown_paths", "unknown_refs", "mismatched_refs"}, present); err != nil {
+		m.log.Error("prune resolved quarantine records failed", "error", err)
+	}
+}
+
+// artifactQuarantineReasons は quarantined_artifacts.reason をカテゴリごとに分ける。
+// 所有権証明そのものが失敗した経路（standby_slot など）とは別の文言にし、`wx status` で束ねたときに区別できるようにする。
+var artifactQuarantineReasons = map[string]string{
+	"unknown_paths":   "path is not registered in the current database",
+	"unknown_refs":    "recovery ref is not explained by the current database",
+	"mismatched_refs": "recovery ref points at an object the current database does not expect",
 }
 
 func (m *Manager) artifactDiagnostics(ctx context.Context) map[string]any {
 	unknownPaths, missingPaths := []string{}, []string{}
-	unknownRefs, missingRefs := []string{}, []string{}
+	unknownRefs, mismatchedRefs, missingRefs := []string{}, []string{}, []string{}
 	diagnosticErrors := []string{}
 	artifacts, err := m.store.SlotArtifacts(ctx)
 	if err != nil {
@@ -729,8 +765,11 @@ func (m *Manager) artifactDiagnostics(ctx context.Context) map[string]any {
 				ref, oid := fields[0], fields[1]
 				actual[ref] = true
 				want, known := expected[ref]
-				if !known || want.OID != oid {
+				switch {
+				case !known:
 					unknownRefs = append(unknownRefs, fmt.Sprintf("%s:%s", repository.ID, ref))
+				case want.OID != oid:
+					mismatchedRefs = append(mismatchedRefs, fmt.Sprintf("%s:%s", repository.ID, ref))
 				}
 			}
 			for ref, expectation := range expected {
@@ -740,12 +779,13 @@ func (m *Manager) artifactDiagnostics(ctx context.Context) map[string]any {
 			}
 		}
 	}
-	for _, values := range [][]string{unknownPaths, missingPaths, unknownRefs, missingRefs, diagnosticErrors} {
+	for _, values := range [][]string{unknownPaths, missingPaths, unknownRefs, mismatchedRefs, missingRefs, diagnosticErrors} {
 		sort.Strings(values)
 	}
 	return map[string]any{
 		"unknown_paths": unknownPaths, "missing_paths": missingPaths,
-		"unknown_refs": unknownRefs, "missing_refs": missingRefs, "errors": diagnosticErrors,
+		"unknown_refs": unknownRefs, "mismatched_refs": mismatchedRefs,
+		"missing_refs": missingRefs, "errors": diagnosticErrors,
 	}
 }
 
@@ -2212,15 +2252,15 @@ func (m *Manager) removeUnregisteredSlotRoot(ctx context.Context, rootPath, slot
 		return nil
 	}
 	if identityErr != nil {
-		_ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "ownership could not be proven for an unregistered slot")
+		_, _ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "ownership could not be proven for an unregistered slot")
 		return fmt.Errorf("%w: inspect unregistered standby slot: %w", state.ErrOwnership, identityErr)
 	}
 	if actual != expectedIdentity {
-		_ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "unregistered slot inode changed before cleanup")
+		_, _ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "unregistered slot inode changed before cleanup")
 		return fmt.Errorf("%w: unregistered standby slot identity changed", state.ErrOwnership)
 	}
 	if err := owner.RemoveAll(relative); err != nil {
-		_ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "unregistered slot cleanup failed")
+		_, _ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "unregistered slot cleanup failed")
 		return err
 	}
 	return verifyRootDescriptorPath(rootPath, owner)
@@ -3111,7 +3151,7 @@ func (m *Manager) expireWorkspaceSnapshots(ctx context.Context, expiredSessions 
 				progress.addPending("workspace snapshot "+sessionID, "workspace snapshot metadata is incomplete", errors.New("workspace snapshot is missing"))
 				ok = false
 			} else if owner, releaseOwner, ownerErr := m.holdVerifiedRootForPath(rootSnapshot.ArchivePath); ownerErr != nil {
-				quarantineErr := m.store.QuarantineArtifact(context.Background(), "workspace_snapshot", rootSnapshot.ArchivePath, "ownership could not be proven during cleanup")
+				_, quarantineErr := m.store.QuarantineArtifact(context.Background(), "workspace_snapshot", rootSnapshot.ArchivePath, "ownership could not be proven during cleanup")
 				if quarantineErr != nil {
 					ownerErr = errors.Join(ownerErr, fmt.Errorf("quarantine workspace snapshot failed: %w", quarantineErr))
 				}

@@ -64,6 +64,8 @@ func run(ctx context.Context, args []string) int {
 		return runDoctor(ctx, args[1:])
 	case "gc":
 		return runGC(ctx, args[1:])
+	case "prune":
+		return runPrune(ctx, args[1:])
 	case "clear":
 		return runClean(ctx, args[1:])
 	case "config":
@@ -276,6 +278,47 @@ func runGC(ctx context.Context, args []string) int {
 		fmt.Fprintf(os.Stderr, "gc %s (%s): %s\n", reason.Target, reason.Status, reason.Reason)
 	}
 	if !*dry && (out.Pending > 0 || out.Failed > 0) {
+		return 1
+	}
+	return 0
+}
+
+func runPrune(ctx context.Context, args []string) int {
+	fs := pflag.NewFlagSet("prune", pflag.ContinueOnError)
+	all := fs.Bool("all", false, "delete refs whose contents cannot be proven safe to lose")
+	dry := fs.Bool("dry-run", false, "report what would be deleted without deleting")
+	fs.Usage = func() { commandUsage(os.Stdout, "prune") }
+	if code, done := finishFlagParse(fs, "prune", args); done {
+		return code
+	}
+	if fs.NArg() != 0 {
+		commandUsage(os.Stderr, "prune")
+		return 2
+	}
+	c, err := rpcClient()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	var out daemon.PruneResult
+	if err := c.Call(ctx, "Prune", map[string]bool{"all": *all, "dry_run": *dry}, &out); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if out.DryRun {
+		fmt.Printf("deletable: %d\n", out.Deleted)
+	} else {
+		fmt.Printf("deleted: %d\n", out.Deleted)
+	}
+	fmt.Printf("kept: %d\n", out.Kept)
+	for _, ref := range out.KeptRefs {
+		fmt.Fprintf(os.Stderr, "kept %s (%s): %d objects would become unreachable\n", ref.Ref, ref.Repository, ref.UnreachableObjects)
+	}
+	for _, message := range out.Errors {
+		fmt.Fprintln(os.Stderr, "error:", message)
+	}
+	// 安全でない ref を残したことは失敗にしない。`wx clear` が使用中セッションを残しても失敗にしないのと同じ扱いである。
+	if len(out.Errors) > 0 {
 		return 1
 	}
 	return 0

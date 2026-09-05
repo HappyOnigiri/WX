@@ -599,8 +599,16 @@ func (r *verboseStatusRenderer) renderRetention() {
 }
 
 type statusQuarantineGroup struct {
+	kind   string
 	reason string
 	items  []map[string]any
+}
+
+func (g *statusQuarantineGroup) label() string {
+	if g.kind == "" {
+		return g.reason
+	}
+	return g.kind + " / " + g.reason
 }
 
 func (r *verboseStatusRenderer) renderQuarantine() {
@@ -618,11 +626,12 @@ func (r *verboseStatusRenderer) renderQuarantine() {
 	} else {
 		groups := make(map[string]*statusQuarantineGroup)
 		for _, item := range items {
-			reason := statusQuarantineReason(item)
-			group := groups[reason]
+			kind, reason := statusValueRaw(item, "kind"), statusQuarantineReason(item)
+			key := kind + "\x00" + reason
+			group := groups[key]
 			if group == nil {
-				group = &statusQuarantineGroup{reason: reason}
-				groups[reason] = group
+				group = &statusQuarantineGroup{kind: kind, reason: reason}
+				groups[key] = group
 			}
 			group.items = append(group.items, item)
 		}
@@ -637,9 +646,9 @@ func (r *verboseStatusRenderer) renderQuarantine() {
 			})
 			ordered = append(ordered, group)
 		}
-		sort.Slice(ordered, func(i, j int) bool { return ordered[i].reason < ordered[j].reason })
+		sort.Slice(ordered, func(i, j int) bool { return ordered[i].label() < ordered[j].label() })
 		for _, group := range ordered {
-			r.line(fmt.Sprintf("  Reason: %s (%d)", group.reason, len(group.items)))
+			r.line(fmt.Sprintf("  Reason: %s (%d)", group.label(), len(group.items)))
 			for _, item := range group.items {
 				r.field("    ID", statusValue(item, "id"))
 				r.field("    Path", statusHomeValue(item, "path"))
@@ -647,7 +656,7 @@ func (r *verboseStatusRenderer) renderQuarantine() {
 		}
 	}
 	for index, item := range items {
-		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("quarantine[%d]", index), item, map[string]bool{"id": true, "path": true, "failure_code": true})
+		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("quarantine[%d]", index), item, map[string]bool{"id": true, "path": true, "kind": true, "failure_code": true})
 	}
 }
 
