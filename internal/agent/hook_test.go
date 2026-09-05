@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 type recordingHandler struct {
@@ -44,21 +45,11 @@ func (h *recordingHandler) paramsFor(method string) json.RawMessage {
 	return nil
 }
 
-func shortHookSocketPath(t *testing.T) string {
-	t.Helper()
-	directory, err := os.MkdirTemp("/tmp", "wx-agent-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(directory) })
-	return filepath.Join(directory, "wxd.sock")
-}
-
 func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
 	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED", "WX_BRANCHES_JSON"} {
 		t.Setenv(key, "")
 	}
-	socket := shortHookSocketPath(t)
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	handler := &recordingHandler{}
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &rpc.Server{Socket: socket, Handler: handler}
@@ -140,7 +131,7 @@ func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
 		t.Fatal("incomplete environment succeeded")
 	}
 	t.Setenv("WX_SESSION_TOKEN", "token")
-	t.Setenv("WX_DAEMON_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	t.Setenv("WX_DAEMON_SOCKET", testsupport.SocketPath(t, "missing.sock"))
 	if err := RunHook(context.Background(), "session-start", strings.NewReader("{")); err == nil {
 		t.Fatal("malformed payload succeeded")
 	}
@@ -172,7 +163,7 @@ func TestRecordedClaudeAndCodexHookPayloads(t *testing.T) {
 	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED", "WX_BRANCHES_JSON"} {
 		t.Setenv(key, "")
 	}
-	socket := shortHookSocketPath(t)
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	handler := &recordingHandler{}
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &rpc.Server{Socket: socket, Handler: handler}
@@ -254,7 +245,7 @@ func TestRecordedClaudeAndCodexHookPayloads(t *testing.T) {
 func TestHookRejectsContradictoryInvocationModes(t *testing.T) {
 	t.Setenv("WX_SESSION_ID", "wx")
 	t.Setenv("WX_SESSION_TOKEN", "token")
-	t.Setenv("WX_DAEMON_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	t.Setenv("WX_DAEMON_SOCKET", testsupport.SocketPath(t, "missing.sock"))
 	t.Setenv("WX_NATIVE_RESUME", "1")
 	t.Setenv("WX_EXPLICIT_RESUME", "1")
 	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{"session_id":"agent","source":"resume"}`)); err == nil || !strings.Contains(err.Error(), "contradictory") {
@@ -277,7 +268,7 @@ func TestHookRejectsContradictoryInvocationModes(t *testing.T) {
 func TestHookRejectsInvalidModesAndReadinessTimeouts(t *testing.T) {
 	t.Setenv("WX_SESSION_ID", "wx")
 	t.Setenv("WX_SESSION_TOKEN", "token")
-	t.Setenv("WX_DAEMON_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	t.Setenv("WX_DAEMON_SOCKET", testsupport.SocketPath(t, "missing.sock"))
 	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED"} {
 		t.Setenv(key, "")
 	}
@@ -313,7 +304,7 @@ func TestReadinessHookSurvivesADaemonThatIsStillRestarting(t *testing.T) {
 	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED", "WX_BRANCHES_JSON"} {
 		t.Setenv(key, "")
 	}
-	socket := shortHookSocketPath(t)
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	handler := &recordingHandler{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

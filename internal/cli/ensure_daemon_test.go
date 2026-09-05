@@ -13,6 +13,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 // fakeLaunchctl は PATH に偽の launchctl を置き、呼び出しを marker へ記録して成功終了する。
@@ -31,7 +32,7 @@ func fakeLaunchctl(t *testing.T) (marker string) {
 
 func TestEnsureDaemonKickstartsWhenNothingIsListening(t *testing.T) {
 	marker := fakeLaunchctl(t)
-	socket := shortSocketPath(t, "wxd.sock")
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: 200 * time.Millisecond}, Config: config.Defaults()}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -72,7 +73,7 @@ func TestEnsureDaemonGuidesInstallForStaleLaunchAgent(t *testing.T) {
 	if err := os.WriteFile(plist, []byte("<string>daemon start --foreground</string>\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	client := Client{RPC: rpc.Client{Socket: filepath.Join(home, "wxd.sock"), Timeout: 200 * time.Millisecond}, Config: config.Defaults()}
+	client := Client{RPC: rpc.Client{Socket: testsupport.SocketPath(t, "wxd.sock"), Timeout: 200 * time.Millisecond}, Config: config.Defaults()}
 	err = client.ensureDaemon(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "run wx daemon install") {
 		t.Fatalf("stale launch agent guidance error=%v", err)
@@ -93,7 +94,7 @@ func (erroringStatusHandler) Handle(_ context.Context, method string, _ json.Raw
 
 func TestEnsureDaemonKeepsAFailingLiveDaemonUnkicked(t *testing.T) {
 	marker := fakeLaunchctl(t)
-	socket := shortSocketPath(t, "wxd.sock")
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server := &rpc.Server{Socket: socket, Handler: erroringStatusHandler{}}

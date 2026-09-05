@@ -16,12 +16,14 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 func TestIdempotentCallStopsRetryingWhenContextIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	client := Client{Socket: shortSocketPath(t, "missing.sock"), Timeout: time.Second}
+	client := Client{Socket: testsupport.SocketPath(t, "missing.sock"), Timeout: time.Second}
 	if err := client.CallWithKey(ctx, "mutate", "stable-key", map[string]int{"value": 1}, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled idempotent call error=%v", err)
 	}
@@ -35,23 +37,13 @@ func TestIdempotentCallStopsRetryingWhenContextExpiresDuringBackoff(t *testing.T
 	// 5ms の予算なら backoff より十分短い。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 	defer cancel()
-	client := Client{Socket: shortSocketPath(t, "missing.sock"), Timeout: time.Second}
+	client := Client{Socket: testsupport.SocketPath(t, "missing.sock"), Timeout: time.Second}
 	if err := client.CallWithKey(ctx, "mutate", "stable-key", map[string]int{"value": 1}, nil); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("idempotent call error during backoff=%v", err)
 	}
 }
 
 type echoHandler struct{}
-
-func shortSocketPath(t *testing.T, name string) string {
-	t.Helper()
-	directory, err := os.MkdirTemp("", "wx-rpc-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(directory) })
-	return filepath.Join(directory, name)
-}
 
 func (echoHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
 	return map[string]any{"method": method, "size": len(raw)}, nil
@@ -183,7 +175,7 @@ func (h delayedRPCHandler) Handle(ctx context.Context, _ string, _ json.RawMessa
 }
 
 func TestClientBoundsConnectedPeerReadWithDefaultTimeout(t *testing.T) {
-	socket := shortSocketPath(t, "unresponsive.sock")
+	socket := testsupport.SocketPath(t, "unresponsive.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +205,7 @@ func TestClientBoundsConnectedPeerReadWithDefaultTimeout(t *testing.T) {
 }
 
 func TestClientCancellationClosesConnectedPeer(t *testing.T) {
-	socket := shortSocketPath(t, "cancel.sock")
+	socket := testsupport.SocketPath(t, "cancel.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatal(err)
@@ -376,7 +368,7 @@ func TestServerBoundsResponseWriteToUnresponsivePeer(t *testing.T) {
 }
 
 func TestClientServerRoundTripWithoutParentDeadline(t *testing.T) {
-	socket := shortSocketPath(t, "wxd.sock")
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	server := &Server{Socket: socket, Handler: echoHandler{}}
@@ -441,8 +433,8 @@ func TestDurableIdempotencySurvivesServerRestart(t *testing.T) {
 		}
 		return result
 	}
-	first := call(shortSocketPath(t, "first.sock"))
-	second := call(shortSocketPath(t, "second.sock"))
+	first := call(testsupport.SocketPath(t, "first.sock"))
+	second := call(testsupport.SocketPath(t, "second.sock"))
 	if first["call"] != 1 || second["call"] != 1 || handler.calls.Load() != 1 {
 		t.Fatalf("first=%v second=%v handler_calls=%d", first, second, handler.calls.Load())
 	}
@@ -517,7 +509,7 @@ func TestDurableReservationPreventsMutationReplayAfterResponseCommitGap(t *testi
 }
 
 func TestServerRefusesNonSocket(t *testing.T) {
-	path := shortSocketPath(t, "wxd.sock")
+	path := testsupport.SocketPath(t, "wxd.sock")
 	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +523,7 @@ func TestServerCloseWithoutListenerIsSafe(t *testing.T) {
 	if err := (&Server{}).Close(); err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("unix", shortSocketPath(t, "close.sock"))
+	listener, err := net.Listen("unix", testsupport.SocketPath(t, "close.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +533,7 @@ func TestServerCloseWithoutListenerIsSafe(t *testing.T) {
 }
 
 func TestServerReplacesOnlyAStaleUnixSocket(t *testing.T) {
-	socket := shortSocketPath(t, "stale.sock")
+	socket := testsupport.SocketPath(t, "stale.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
@@ -573,7 +565,7 @@ func TestServerReplacesOnlyAStaleUnixSocket(t *testing.T) {
 }
 
 func TestServeReturnsAcceptErrorWhenClosedWithoutContextCancellation(t *testing.T) {
-	socket := shortSocketPath(t, "closed-without-cancel.sock")
+	socket := testsupport.SocketPath(t, "closed-without-cancel.sock")
 	ctx := context.Background()
 	server := &Server{Socket: socket, Handler: echoHandler{}}
 	done := make(chan error, 1)
@@ -647,7 +639,7 @@ func TestClientValidatesEveryResponseBoundary(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			socket := shortSocketPath(t, "server.sock")
+			socket := testsupport.SocketPath(t, "server.sock")
 			listener, err := net.Listen("unix", socket)
 			if err != nil {
 				t.Fatal(err)
@@ -692,6 +684,7 @@ func TestServerPropagatesSocketSetupAndAddressFailures(t *testing.T) {
 	if err := os.WriteFile(blockingParent, []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// socketlint:allow-tempdir -- 通常ファイル配下でのbind失敗を検証するため、socketを作れないpathが要る。
 	if err := (&Server{Socket: filepath.Join(blockingParent, "wxd.sock"), Handler: echoHandler{}}).Serve(context.Background()); err == nil {
 		t.Fatal("server created a socket beneath a regular file")
 	}
@@ -764,7 +757,7 @@ func TestServeConnRejectsProtocolVersion(t *testing.T) {
 }
 
 func TestClientReportsMissingSocket(t *testing.T) {
-	client := Client{Socket: shortSocketPath(t, "missing.sock"), Timeout: time.Millisecond}
+	client := Client{Socket: testsupport.SocketPath(t, "missing.sock"), Timeout: time.Millisecond}
 	err := client.Call(context.Background(), "missing", nil, nil)
 	if err == nil {
 		t.Fatal("missing server call succeeded")
@@ -781,7 +774,7 @@ func (alwaysFailingHandler) Handle(context.Context, string, json.RawMessage) (an
 }
 
 func TestIsConnectErrorRejectsFailuresAfterConnectionEstablished(t *testing.T) {
-	socket := shortSocketPath(t, "connected-failure.sock")
+	socket := testsupport.SocketPath(t, "connected-failure.sock")
 	server := &Server{Socket: socket, Handler: alwaysFailingHandler{}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -814,7 +807,7 @@ func TestIsConnectErrorRejectsFailuresAfterConnectionEstablished(t *testing.T) {
 }
 
 func TestServerRefusesToUnlinkLiveSocket(t *testing.T) {
-	socket := shortSocketPath(t, "wxd.sock")
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	first := &Server{Socket: socket, Handler: echoHandler{}}
 	done := make(chan error, 1)
@@ -844,7 +837,7 @@ func TestServerRefusesToUnlinkLiveSocket(t *testing.T) {
 }
 
 func TestIdempotencyKeyReplaysResponseWithoutRepeatingHandler(t *testing.T) {
-	socket := shortSocketPath(t, "wxd.sock")
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	handler := &countingHandler{}
 	server := &Server{Socket: socket, Handler: handler}
