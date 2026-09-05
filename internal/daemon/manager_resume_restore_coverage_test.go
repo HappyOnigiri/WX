@@ -14,6 +14,7 @@ import (
 )
 
 func TestResumeRestoreJobQuarantinesWhenParentSnapshotJobFailed(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	parentID := domain.StableID("resume-restore", "parent-failed")
 	if _, err := store.CreateSlotSession(ctx,
@@ -38,6 +39,7 @@ func TestResumeRestoreJobQuarantinesWhenParentSnapshotJobFailed(t *testing.T) {
 }
 
 func TestResumeRestoreJobQuarantinesOnIncompleteRepositorySnapshotSet(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {

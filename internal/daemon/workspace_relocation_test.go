@@ -141,6 +141,7 @@ exit 1
 }
 
 func TestMainWorktreeRelocationWithGitRegistryPreservesIdentityAndSessions(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	source := filepath.Join(root, "source")
 	common := filepath.Join(root, "common.git")

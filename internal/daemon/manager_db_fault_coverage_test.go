@@ -15,6 +15,7 @@ import (
 )
 
 func TestScheduleColdRepositoryRemovalsSurvivesQuarantineStorageFailure(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
 	slotID := domain.StableID("cold-schedule", "quarantine-fault")
 	outsidePath := filepath.Join(t.TempDir(), "outside-worktree-fault")
@@ -43,6 +44,7 @@ func TestScheduleColdRepositoryRemovalsSurvivesQuarantineStorageFailure(t *testi
 }
 
 func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, _, _, databasePath := managerCoverageFixture(t)
 	missingID := "missing-artifact"
 	if _, err := store.CreateSlotSession(ctx,
@@ -68,6 +70,7 @@ func TestReconcileArtifactsSurvivesQuarantineStorageFailure(t *testing.T) {
 }
 
 func TestRemoveSlotWorktreesWrapsRepositorySnapshotStorageFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	databasePath := filepath.Join(root, "state.db")
 	store, err := state.Open(databasePath)
@@ -111,6 +114,7 @@ func TestRemoveSlotWorktreesWrapsRepositorySnapshotStorageFailure(t *testing.T) 
 }
 
 func TestResumeRestoreJobWrapsSlotRepositoryStorageFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	databasePath := filepath.Join(root, "state.db")
 	store, err := state.Open(databasePath)

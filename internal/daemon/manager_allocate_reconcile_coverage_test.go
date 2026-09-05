@@ -11,6 +11,7 @@ import (
 )
 
 func TestReleaseIsIdempotentAfterAlreadyReleasingSession(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -34,6 +35,7 @@ func TestReleaseIsIdempotentAfterAlreadyReleasingSession(t *testing.T) {
 }
 
 func TestAllocateFailsWhenWorktreeRootCannotBeCreated(t *testing.T) {
+	t.Parallel()
 	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
@@ -51,6 +53,7 @@ func TestAllocateFailsWhenWorktreeRootCannotBeCreated(t *testing.T) {
 }
 
 func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
+	t.Parallel()
 	ctx, manager, _, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
 	raw := openManagerCoverageDB(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_allocate_insert BEFORE INSERT ON slots BEGIN SELECT RAISE(ABORT,'injected slot insert failure'); END`); err != nil {
@@ -68,6 +71,7 @@ func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
 }
 
 func TestReconcileArtifactsSkipsUnverifiableAndArchivedPaths(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, _, _, _ := managerCoverageFixture(t)
 	outsideSlot := testSlotRow(t, manager, "", "outside", 1, "LEASED")
 	outsideSlot.RelPath = filepath.Join("..", "outside-slot")

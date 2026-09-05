@@ -15,6 +15,7 @@ import (
 )
 
 func TestHandlerRejectsUnknownFieldsForEveryParameterizedMethod(t *testing.T) {
+	t.Parallel()
 	handler := Handler{}
 	methods := []string{
 		"ResolveAndLease", "AllocateResumeSlot", "WaitReady", "BindAgentSession", "BindAndRestoreResume",
@@ -37,6 +38,7 @@ func TestHandlerRejectsUnknownFieldsForEveryParameterizedMethod(t *testing.T) {
 }
 
 func TestHandlerRoutesResumeAndFreshOperationsToManager(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -63,6 +65,7 @@ func TestHandlerRoutesResumeAndFreshOperationsToManager(t *testing.T) {
 }
 
 func TestBindAndRestoreResumeRejectsNonResumeSource(t *testing.T) {
+	t.Parallel()
 	handler := Handler{}
 	for _, source := range []string{"start", "fresh", "resume-ish", ""} {
 		raw := json.RawMessage(`{"session_id":"missing","token":"token","agent_session_id":"agent","source":"` + source + `"}`)
@@ -77,6 +80,7 @@ func TestBindAndRestoreResumeRejectsNonResumeSource(t *testing.T) {
 }
 
 func TestDegradedHandlerAllowsOnlyReadOnlyDiagnostics(t *testing.T) {
+	t.Parallel()
 	handler := DegradedHandler{DatabasePath: "/state.db", OpenError: errors.New("corrupt")}
 	for _, method := range []string{"Status", "Doctor"} {
 		if result, err := handler.Handle(context.Background(), method, nil); err != nil || result == nil {
@@ -89,6 +93,7 @@ func TestDegradedHandlerAllowsOnlyReadOnlyDiagnostics(t *testing.T) {
 }
 
 func TestDegradedHandlerGuidanceDependsOnOpenError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		openError  error
@@ -169,6 +174,7 @@ func assertGuidance(t *testing.T, method, message string, want, wantAbsent []str
 }
 
 func TestDegradedHandlerStillHonoursAStop(t *testing.T) {
+	t.Parallel()
 	signalled := make(chan struct{})
 	handler := DegradedHandler{
 		DatabasePath: "/state.db",

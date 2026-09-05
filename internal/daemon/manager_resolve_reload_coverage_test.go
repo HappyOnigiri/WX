@@ -51,6 +51,8 @@ func TestReloadConfigFailsClosedWhileShuttingDown(t *testing.T) {
 	}
 }
 
+// 退役直後のSTALEを観測するため、直列で実行する。
+// 並列実行の負荷では後続の削除ジョブが先に走り、REMOVINGへ進んでしまう。
 func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
@@ -100,6 +102,7 @@ func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 }
 
 func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
@@ -166,6 +169,7 @@ func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 }
 
 func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
@@ -238,6 +242,7 @@ func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T
 }
 
 func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
 	initGitRepo(t, repository)
@@ -289,6 +294,7 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 }
 
 func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
@@ -359,6 +365,7 @@ func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 }
 
 func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
+	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")

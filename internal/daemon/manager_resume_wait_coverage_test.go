@@ -17,6 +17,7 @@ import (
 )
 
 func TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	slotID := domain.StableID("remove-slot", "outside-repo")
@@ -39,6 +40,7 @@ func TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot(t *testing.T) {
 }
 
 func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	slotID := domain.StableID("remove-slot", "replaced-directory")
@@ -61,6 +63,7 @@ func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
 }
 
 func TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	repository := resolved[0].Repository
 	sessionID := domain.StableID("wait-snapshot", "archived-usable")
@@ -88,6 +91,7 @@ func TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable(t *testin
 }
 
 func TestResumeWaitsForInFlightSnapshotBeforeEvaluatingRecovery(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
@@ -113,6 +117,7 @@ func TestResumeWaitsForInFlightSnapshotBeforeEvaluatingRecovery(t *testing.T) {
 }
 
 func TestResumeReportsIncompleteRecoverySnapshotAcrossRepositories(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {

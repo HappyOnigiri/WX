@@ -16,9 +16,9 @@ func TestPrintStatusSummaryUsesWorkspaceRepositoryMappingAndRoots(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Chdir(current)
-	previousLocal := time.Local
-	time.Local = time.FixedZone("JST", 9*60*60)
-	t.Cleanup(func() { time.Local = previousLocal })
+	previousLocation := statusDisplayLocation
+	statusDisplayLocation = time.FixedZone("JST", 9*60*60)
+	t.Cleanup(func() { statusDisplayLocation = previousLocation })
 
 	payload := map[string]any{
 		"workspace_details": []map[string]any{
