@@ -2311,7 +2311,12 @@ func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
 			if metadata.HasExitCode {
 				exitCode = strconv.Itoa(metadata.ExitCode)
 			}
-			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s detail_path=%s exit_code=%s timed_out=%t canceled=%t; run `wx status` or `wx doctor` for details", slot.State, failureID, detailPath, exitCode, metadata.TimedOut, metadata.Canceled)
+			// 復元の失敗は marker で区別する。client は会話の再開を優先し、新しい worktree で作り直してよいか確認する。
+			recovery := ""
+			if recoveryUnavailable(slot.FailureCode) {
+				recovery = " " + RecoveryUnavailableMarker
+			}
+			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s%s detail_path=%s exit_code=%s timed_out=%t canceled=%t; run `wx status` or `wx doctor` for details", slot.State, failureID, recovery, detailPath, exitCode, metadata.TimedOut, metadata.Canceled)
 		}
 		select {
 		case <-ctx.Done():
@@ -2632,7 +2637,7 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, fres
 	}
 	if fresh || old.State == "EXPIRED" || !usable {
 		if !fresh {
-			return Lease{}, errors.New("session snapshot is EXPIRED; confirmation is required before creating a workspace from the current base")
+			return Lease{}, errors.New("session snapshot is EXPIRED; confirmation is required before creating a workspace from the current base " + RecoveryUnavailableMarker)
 		}
 		w, err := m.store.Workspace(ctx, old.WorkspaceID)
 		if err != nil {

@@ -135,13 +135,17 @@ func TestRunAgentUnknownResumeIDPassesOriginalArgumentsThrough(t *testing.T) {
 }
 
 type resumeLaunchHandler struct {
-	mu        sync.Mutex
-	events    []string
-	params    map[string]json.RawMessage
-	lease     daemon.Lease
-	status    resumeStatus
-	resumeErr error
-	eventLog  string
+	mu      sync.Mutex
+	events  []string
+	params  map[string]json.RawMessage
+	history map[string][]json.RawMessage
+	lease   daemon.Lease
+	status  resumeStatus
+	// waitReadyErrors と leaseErrors は該当 method の応答を呼び出し順に決める。使い切った後は成功に戻る。
+	waitReadyErrors []error
+	leaseErrors     map[string][]error
+	resumeErr       error
+	eventLog        string
 }
 
 func (h *resumeLaunchHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
@@ -150,8 +154,24 @@ func (h *resumeLaunchHandler) Handle(_ context.Context, method string, raw json.
 	if h.params == nil {
 		h.params = map[string]json.RawMessage{}
 	}
+	if h.history == nil {
+		h.history = map[string][]json.RawMessage{}
+	}
 	h.params[method] = append(json.RawMessage(nil), raw...)
+	h.history[method] = append(h.history[method], append(json.RawMessage(nil), raw...))
+	var injected error
+	if method == "WaitReady" && len(h.waitReadyErrors) > 0 {
+		injected = h.waitReadyErrors[0]
+		h.waitReadyErrors = h.waitReadyErrors[1:]
+	}
+	if queued := h.leaseErrors[method]; len(queued) > 0 {
+		injected = queued[0]
+		h.leaseErrors[method] = queued[1:]
+	}
 	h.mu.Unlock()
+	if injected != nil {
+		return nil, injected
+	}
 	if h.eventLog != "" {
 		if err := appendEvent(h.eventLog, "rpc:"+method); err != nil {
 			return nil, err
@@ -189,6 +209,13 @@ func (h *resumeLaunchHandler) paramsFor(method string) json.RawMessage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append(json.RawMessage(nil), h.params[method]...)
+}
+
+// historyFor は method の呼び出しごとの params を呼び出し順に返す。
+func (h *resumeLaunchHandler) historyFor(method string) []json.RawMessage {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]json.RawMessage(nil), h.history[method]...)
 }
 
 func serveResumeLaunchRPC(t *testing.T, handler *resumeLaunchHandler) (Client, func()) {
