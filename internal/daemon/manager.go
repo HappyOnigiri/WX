@@ -143,6 +143,7 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 	m.loadRootGenerations(context.Background())
 	m.recoverJobs(reclaimAll)
 	m.resizeWorkers(cfg.Pool.PreparationConcurrency)
+	m.reconcileStandbyReplenishments(context.Background())
 	m.wg.Add(2)
 	go func() { defer m.wg.Done(); m.maintainJobs() }()
 	go func() { defer m.wg.Done(); m.maintainLifecycle() }()
@@ -440,6 +441,17 @@ func (m *Manager) recoverJobs(reclaimAll bool) {
 	}
 }
 
+func (m *Manager) reconcileStandbyReplenishments(ctx context.Context) {
+	jobs, err := m.store.RecoverStandbyReplenishments(ctx)
+	if err != nil {
+		m.log.Error("recover standby replenishment successes failed", "error", err)
+		return
+	}
+	for _, job := range jobs {
+		m.schedule(job)
+	}
+}
+
 const lifecycleCheckInterval = time.Second
 
 func (m *Manager) maintainJobs() {
@@ -477,6 +489,7 @@ func (m *Manager) maintainJobs() {
 
 func (m *Manager) maintainLifecycle() {
 	m.resumeCleanRuns(m.ctx)
+	m.reconcileStandbyReplenishments(m.ctx)
 	m.reconcileRegistry(m.ctx)
 	m.reconcileArtifacts(m.ctx)
 	m.reconcileOrphans(m.ctx)
@@ -497,6 +510,7 @@ func (m *Manager) maintainLifecycle() {
 			continue
 		case <-timer.C:
 			_ = m.reloadConfig(false)
+			m.reconcileStandbyReplenishments(m.ctx)
 			m.reconcileRegistry(m.ctx)
 			m.reconcileArtifacts(m.ctx)
 			m.reconcileOrphans(m.ctx)
@@ -665,6 +679,7 @@ func (m *Manager) resolveRegisteredWorkspace(ctx context.Context, root string, d
 }
 
 func (m *Manager) reconcileRegistry(ctx context.Context) {
+	m.reconcileStandbyReplenishments(ctx)
 	roots, err := m.store.WorkspaceRoots(ctx)
 	if err != nil {
 		m.log.Error("workspace registry reconcile failed", "error", err)
@@ -1003,16 +1018,13 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 				job, leaseErr := m.store.LeaseReadyWithCold(ctx, ready.ID, session)
 				if leaseErr == nil {
 					m.schedule(job)
-					m.resumeReplenish(ctx, string(w.ID))
-					_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, true, nil
 				}
 				m.releaseLease(session.ID)
 				return Lease{}, false, nil
 			}
-			if leaseErr := m.store.LeaseReady(ctx, ready.ID, session); leaseErr == nil {
-				m.resumeReplenish(ctx, string(w.ID))
-				_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
+			if replenishJob, replenished, leaseErr := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session); leaseErr == nil {
+				m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
 				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true}, true, nil
 			}
 			m.releaseLease(session.ID)
@@ -1102,8 +1114,6 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 		return Lease{}, state.IsIDCollision(err), err
 	}
 	m.schedule(job)
-	m.resumeReplenish(ctx, string(w.ID))
-	_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 	m.startBackground(func() { _, _ = m.GC(m.ctx, false) })
 	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false}, false, nil
 }
@@ -1694,13 +1704,23 @@ func (m *Manager) prepareSlot(ctx context.Context, id string, w discovery.Worksp
 			return err
 		}
 	}
-	releaseJob, released, err := m.store.FinishPreparationWithRelease(ctx, id)
+	normalPreparation := false
+	if slot.OwnerSessionID != "" {
+		if owner, ownerErr := m.store.SessionByID(ctx, slot.OwnerSessionID); ownerErr == nil {
+			normalPreparation = owner.State != "RESTORING"
+		}
+	}
+	releaseJob, released, replenishJob, replenished, err := m.store.FinishPreparationWithReplenishment(ctx, id)
 	if err != nil {
 		m.log.Error("finish preparation failed", "slot_id", id, "error", err)
 		return err
 	}
 	if released {
 		m.schedule(releaseJob)
+		return nil
+	}
+	if normalPreparation && m.standbyReplenishmentEnabled(w) {
+		m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
 	}
 	return nil
 }
@@ -1872,7 +1892,7 @@ func coldWorktreeUnmaterialized(owner *os.Root, root, worktreePath string) (bool
 
 func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) error {
 	cfg := m.Config()
-	if cfg.WorktreeMode(string(w.Root)) != "hot" || cfg.Pool.WarmPerWorkspace < 1 || cfg.Retention.HotStandby.Duration == 0 {
+	if !m.standbyReplenishmentEnabled(w) {
 		return nil
 	}
 	// clean 後の補充停止は永続化してあるため、定期 reconcile と補充ジョブの双方でここを通る。
@@ -1906,9 +1926,29 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 		if err != nil {
 			return err
 		}
-		m.schedule(job)
+		if job.ID != "" {
+			m.schedule(job)
+		}
 	}
 	return nil
+}
+
+func (m *Manager) standbyReplenishmentEnabled(w discovery.Workspace) bool {
+	cfg := m.Config()
+	return cfg.WorktreeMode(string(w.Root)) == "hot" && cfg.Pool.WarmPerWorkspace >= 1 && cfg.Retention.HotStandby.Duration > 0
+}
+
+func (m *Manager) handleNormalSessionSuccess(ctx context.Context, w discovery.Workspace, replenishJob state.Job, replenished bool) {
+	if !m.standbyReplenishmentEnabled(w) {
+		return
+	}
+	m.resumeReplenish(ctx, string(w.ID))
+	if replenished {
+		m.schedule(replenishJob)
+		return
+	}
+	// 除外対象が無い成功も、貸出で減った通常の待機枠を補う必要がある。
+	_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 }
 
 func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string, w discovery.Workspace, resolved []pool.Resolved, generation int, hot map[string]bool) (state.Job, error) {
@@ -1925,15 +1965,42 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 		slotPath := filepath.Join(rootPath, relPath)
 		slotIdentity, _, err := m.createSlotRoot(slotPath, slotPath)
 		if err != nil {
+			if cleanupErr := m.cleanupStandbySlotCandidate(ctx, rootPath, slotPath, id, rootID, relPath, slotIdentity); cleanupErr != nil {
+				return state.Job{}, cleanupErr
+			}
 			return state.Job{}, err
 		}
 		repos, err := m.slotRepos(slotPath, w, resolved, generation, hot)
 		if err != nil {
+			if cleanupErr := m.cleanupStandbySlotCandidate(ctx, rootPath, slotPath, id, rootID, relPath, slotIdentity); cleanupErr != nil {
+				return state.Job{}, cleanupErr
+			}
 			return state.Job{}, err
 		}
-		job, err := m.store.CreateStandby(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, DirIdentity: slotIdentity, State: "PREPARING"}, repos)
+		job, created, err := m.store.CreateStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, DirIdentity: slotIdentity, State: "PREPARING"}, repos, m.Config().Pool.WarmPerWorkspace)
 		if err == nil {
-			return job, nil
+			if created {
+				return job, nil
+			}
+			if cleanupErr := m.cleanupStandbySlotCandidate(ctx, rootPath, slotPath, id, rootID, relPath, slotIdentity); cleanupErr != nil {
+				return state.Job{}, cleanupErr
+			}
+			return state.Job{}, nil
+		}
+		if state.IsIDCollision(err) {
+			// slot IDの衝突では同じ物理pathを既存slotが所有している可能性がある。
+			// その場合は新規作成途中の実体ではないため、所有中のworktreeを削除せず再抽選する。
+			existing, lookupErr := m.store.Slot(ctx, id)
+			if lookupErr == nil && existing.RootID == rootID && existing.RelPath == relPath {
+				lastErr = err
+				continue
+			}
+			if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
+				return state.Job{}, lookupErr
+			}
+		}
+		if cleanupErr := m.cleanupStandbySlotCandidate(ctx, rootPath, slotPath, id, rootID, relPath, slotIdentity); cleanupErr != nil {
+			return state.Job{}, cleanupErr
 		}
 		if !state.IsIDCollision(err) {
 			return state.Job{}, err
@@ -1941,6 +2008,50 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 		lastErr = err
 	}
 	return state.Job{}, fmt.Errorf("create standby slot: %w", lastErr)
+}
+
+func (m *Manager) cleanupStandbySlotCandidate(ctx context.Context, rootPath, slotPath, slotID, rootID, relPath, expectedIdentity string) error {
+	registered, err := m.store.Slot(ctx, slotID)
+	if err == nil {
+		if registered.RootID == rootID && registered.RelPath == relPath {
+			return nil
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return m.removeUnregisteredSlotRoot(ctx, rootPath, slotPath, expectedIdentity)
+}
+
+func (m *Manager) removeUnregisteredSlotRoot(ctx context.Context, rootPath, slotPath, expectedIdentity string) error {
+	owner, release, err := m.existingRootDescriptor(rootPath)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := verifyRootDescriptorPath(rootPath, owner); err != nil {
+		return err
+	}
+	relative, ok := relativeWithinRoot(rootPath, slotPath)
+	if !ok || relative == "." {
+		return fmt.Errorf("%w: unregistered standby slot is outside worktree root", state.ErrOwnership)
+	}
+	actual, identityErr := directoryIdentityAt(owner, relative)
+	if errors.Is(identityErr, os.ErrNotExist) {
+		return nil
+	}
+	if identityErr != nil {
+		_ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "ownership could not be proven for an unregistered slot")
+		return fmt.Errorf("%w: inspect unregistered standby slot: %w", state.ErrOwnership, identityErr)
+	}
+	if actual != expectedIdentity {
+		_ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "unregistered slot inode changed before cleanup")
+		return fmt.Errorf("%w: unregistered standby slot identity changed", state.ErrOwnership)
+	}
+	if err := owner.RemoveAll(relative); err != nil {
+		_ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "unregistered slot cleanup failed")
+		return err
+	}
+	return verifyRootDescriptorPath(rootPath, owner)
 }
 
 func (m *Manager) AllocateResumeSlot(ctx context.Context, agent string, pid int) (Lease, error) {
@@ -2087,8 +2198,6 @@ func (m *Manager) PrepareFreshResume(ctx context.Context, id, token, agentID, cw
 		return fail("FRESH_BIND_FAILED", err)
 	}
 	m.schedule(job)
-	m.resumeReplenish(ctx, string(w.ID))
-	_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 	return nil
 }
 
@@ -2137,7 +2246,6 @@ func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID s
 		return err
 	}
 	m.schedule(job)
-	m.resumeReplenish(ctx, string(w.ID))
 	return nil
 }
 

@@ -31,7 +31,7 @@ type Store struct {
 	path   string
 }
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // ErrPreviousWorktreeLayout は、wx が意図的に migration path を持たない旧 worktree layout の state database を示す。
 var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree layout")
@@ -879,13 +879,159 @@ func (s *Store) ReadySlots(ctx context.Context, workspaceID string) ([]Slot, err
 	return slots, rows.Err()
 }
 
+// standbyCountTx は現行 generation の待機枠を writer transaction 内で数える。
+// 終端失敗 slot は、通常セッション成功時点で記録された除外だけを計算から外す。
+func standbyCountTx(ctx context.Context, tx *sql.Tx, workspaceID string) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
+		WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
+		AND sl.state IN ('PREPARING','READY','FAILED','QUARANTINED','RETIRING','REMOVING')
+		AND (sl.state NOT IN ('FAILED','QUARANTINED') OR NOT EXISTS (
+			SELECT 1 FROM standby_replenish_exclusions ex
+			WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
+		))`, workspaceID).Scan(&n)
+	return n, err
+}
+
 func (s *Store) StandbyCount(ctx context.Context, workspaceID string) int {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL AND sl.state IN ('PREPARING','READY','FAILED','QUARANTINED','RETIRING','REMOVING')`, workspaceID).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
+		WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
+		AND sl.state IN ('PREPARING','READY','FAILED','QUARANTINED','RETIRING','REMOVING')
+		AND (sl.state NOT IN ('FAILED','QUARANTINED') OR NOT EXISTS (
+			SELECT 1 FROM standby_replenish_exclusions ex
+			WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
+		))`, workspaceID).Scan(&n)
 	if err != nil {
 		return 0
 	}
 	return n
+}
+
+// recordStandbySuccessTx は通常 session の準備成功を一度だけ記録し、
+// その時点で既に終了している待機失敗だけを同じ transaction で除外する。
+// ensureAfterSuccess は READY 貸出や起動回収のように、失敗が無くても補充を再確認する経路で指定する。
+func recordStandbySuccessTx(ctx context.Context, tx *sql.Tx, sessionID string, ensureAfterSuccess bool) (Job, bool, bool, error) {
+	var workspaceID string
+	var generation int
+	var sessionState string
+	err := tx.QueryRowContext(ctx, `SELECT se.workspace_id,sl.generation,se.state
+		FROM sessions se JOIN slots sl ON sl.id=se.slot_id JOIN workspaces w ON w.id=se.workspace_id
+		WHERE se.id=? AND sl.workspace_id=se.workspace_id AND sl.owner_session_id=se.id
+		  AND sl.state='LEASED' AND sl.generation=w.generation
+		  AND se.state IN ('STARTING','ACTIVE')
+		  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.session_id=se.id AND j.kind='RESTORE')
+		  AND (se.parent_session_id IS NULL OR EXISTS (SELECT 1 FROM sessions parent WHERE parent.id=se.parent_session_id AND parent.state='EXPIRED'))`, sessionID).
+		Scan(&workspaceID, &generation, &sessionState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Job{}, false, false, nil
+	}
+	if err != nil {
+		return Job{}, false, false, err
+	}
+	if sessionState != "STARTING" && sessionState != "ACTIVE" {
+		return Job{}, false, false, nil
+	}
+	t := now()
+	res, err := tx.ExecContext(ctx, `INSERT INTO standby_replenish_successes(session_id,workspace_id,recorded_at) VALUES(?,?,?) ON CONFLICT(session_id) DO NOTHING`, sessionID, workspaceID, t)
+	if err != nil {
+		return Job{}, false, false, err
+	}
+	inserted, _ := res.RowsAffected()
+	if inserted != 1 {
+		return Job{}, false, false, nil
+	}
+	res, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO standby_replenish_exclusions(slot_id,workspace_id,generation,success_session_id,excluded_at)
+		SELECT sl.id,sl.workspace_id,sl.generation,?,?
+		FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
+		WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
+		  AND sl.state IN ('FAILED','QUARANTINED')
+		  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.state IN ('PENDING','RUNNING'))`, sessionID, t, workspaceID)
+	if err != nil {
+		return Job{}, false, false, err
+	}
+	excluded, _ := res.RowsAffected()
+	if excluded == 0 && !ensureAfterSuccess {
+		return Job{}, false, true, nil
+	}
+	job, err := newJob("ENSURE_STANDBY", workspaceID, "", "")
+	if err != nil {
+		return Job{}, false, false, err
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, false, false, err
+	}
+	return job, true, true, nil
+}
+
+// RecordStandbySuccess は、既に LEASED になった通常 session を起点に補充許可を回収する。
+// 同じ session を再度渡しても、新しい失敗 slotを同じ成功で許可しない。
+func (s *Store) RecordStandbySuccess(ctx context.Context, sessionID string) (Job, bool, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, false, err
+	}
+	defer tx.Rollback()
+	job, created, _, err := recordStandbySuccessTx(ctx, tx, sessionID, true)
+	if err != nil {
+		return Job{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Job{}, false, err
+	}
+	return job, created, nil
+}
+
+// RecoverStandbyReplenishments は起動・定期 reconcile 時点で未記録の通常成功を一度だけ回収する。
+// 終了済み session と復元 session は対象にしない。
+func (s *Store) RecoverStandbyReplenishments(ctx context.Context) ([]Job, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT se.id FROM sessions se JOIN slots sl ON sl.id=se.slot_id JOIN workspaces w ON w.id=se.workspace_id
+		WHERE sl.workspace_id=se.workspace_id AND sl.owner_session_id=se.id AND sl.state='LEASED'
+		  AND sl.generation=w.generation AND se.state IN ('STARTING','ACTIVE')
+		  AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.session_id=se.id AND j.kind='RESTORE')
+		  AND (se.parent_session_id IS NULL OR EXISTS (SELECT 1 FROM sessions parent WHERE parent.id=se.parent_session_id AND parent.state='EXPIRED')) ORDER BY se.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var sessionIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		sessionIDs = append(sessionIDs, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var jobs []Job
+	for _, sessionID := range sessionIDs {
+		job, created, _, err := recordStandbySuccessTx(ctx, tx, sessionID, true)
+		if err != nil {
+			return nil, err
+		}
+		if created {
+			jobs = append(jobs, job)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return jobs, nil
 }
 
 func (s *Store) CreateSlotSession(ctx context.Context, slot Slot, repos []SlotRepository, session Session, jobKind string) (Job, error) {
@@ -959,53 +1105,130 @@ func (s *Store) CreateStandby(ctx context.Context, slot Slot, repos []SlotReposi
 	if err := assertNoActiveClean(ctx, tx); err != nil {
 		return Job{}, err
 	}
-	t := now()
-	_, err = tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, slot.ID, slot.WorkspaceID, slot.Generation, slot.RootID, slot.RelPath, nullString(slot.DirIdentity), slot.State, t, t)
-	if err != nil {
-		return Job{}, err
-	}
-	for _, r := range repos {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
-			return Job{}, err
-		}
-	}
-	if err := insertJob(ctx, tx, job); err != nil {
+	if err := insertStandbySlotTx(ctx, tx, slot, repos, job); err != nil {
 		return Job{}, err
 	}
 	return job, tx.Commit()
 }
 
-func (s *Store) LeaseReady(ctx context.Context, slotID string, session Session) error {
+// CreateStandbyIfNeeded は standby 枠の再検証と slot/job 登録を同じ transaction で行う。
+// 別の reconcile が先に不足分を埋めた場合は、作成側が物理 directory を所有権確認後に片付けられるよう false を返す。
+func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []SlotRepository, limit int) (Job, bool, error) {
+	if limit <= 0 {
+		return Job{}, false, nil
+	}
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return Job{}, false, err
 	}
 	defer tx.Rollback()
 	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return Job{}, false, err
+	}
+	var currentGeneration int
+	if err := tx.QueryRowContext(ctx, `SELECT generation FROM workspaces WHERE id=?`, slot.WorkspaceID).Scan(&currentGeneration); err != nil {
+		return Job{}, false, err
+	}
+	if currentGeneration != slot.Generation {
+		if err := tx.Commit(); err != nil {
+			return Job{}, false, err
+		}
+		return Job{}, false, nil
+	}
+	count, err := standbyCountTx(ctx, tx, slot.WorkspaceID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	if count >= limit {
+		if err := tx.Commit(); err != nil {
+			return Job{}, false, err
+		}
+		return Job{}, false, nil
+	}
+	job, err := newJob("PREPARE", slot.WorkspaceID, slot.ID, "")
+	if err != nil {
+		return Job{}, false, err
+	}
+	if err := insertStandbySlotTx(ctx, tx, slot, repos, job); err != nil {
+		return Job{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Job{}, false, err
+	}
+	return job, true, nil
+}
+
+func insertStandbySlotTx(ctx context.Context, tx *sql.Tx, slot Slot, repos []SlotRepository, job Job) error {
+	t := now()
+	_, err := tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, slot.ID, slot.WorkspaceID, slot.Generation, slot.RootID, slot.RelPath, nullString(slot.DirIdentity), slot.State, t, t)
+	if err != nil {
 		return err
+	}
+	for _, r := range repos {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
+			return err
+		}
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) LeaseReady(ctx context.Context, slotID string, session Session) error {
+	_, _, err := s.LeaseReadyWithReplenishment(ctx, slotID, session)
+	return err
+}
+
+// LeaseReadyWithReplenishment は検証済み READY slot の通常貸出を補充許可の記録と同じ transaction で確定する。
+// 戻り値の Job は、貸出直後の不足を再確認する ENSURE_STANDBY が新規登録された場合に有効である。
+func (s *Store) LeaseReadyWithReplenishment(ctx context.Context, slotID string, session Session) (Job, bool, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, false, err
+	}
+	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return Job{}, false, err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='LEASED',owner_session_id=?,last_used_at=?,updated_at=? WHERE id=? AND state='READY'`, session.ID, now(), now(), slotID)
 	if err != nil {
-		return err
+		return Job{}, false, err
 	}
 	n, _ := res.RowsAffected()
 	if n != 1 {
-		return errors.New("slot is no longer READY")
+		return Job{}, false, errors.New("slot is no longer READY")
+	}
+	var coldRepositories int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM slot_repositories WHERE slot_id=? AND state='COLD'`, slotID).Scan(&coldRepositories); err != nil {
+		return Job{}, false, err
+	}
+	if coldRepositories != 0 {
+		return Job{}, false, errors.New("slot has COLD repositories; use the cold preparation path")
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,state,agent_kind,client_pid,session_token_hash,created_at) VALUES(?,?,?,?,?,?,?,?)`, session.ID, session.WorkspaceID, slotID, session.State, session.AgentKind, session.ClientPID, session.TokenHash, now())
 	if err != nil {
-		return err
+		return Job{}, false, err
 	}
 	if err := insertCurrentSessionRepositories(ctx, tx, session.ID, session.WorkspaceID, slotID); err != nil {
-		return err
+		return Job{}, false, err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id IN (SELECT repository_id FROM workspace_repositories WHERE workspace_id=?)`, now(), session.WorkspaceID)
 	if err != nil {
-		return err
+		return Job{}, false, err
 	}
-	return tx.Commit()
+	replenishJob, created, _, err := recordStandbySuccessTx(ctx, tx, session.ID, true)
+	if err != nil {
+		return Job{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Job{}, false, err
+	}
+	return replenishJob, created, nil
 }
 
 func (s *Store) LeaseReadyWithCold(ctx context.Context, slotID string, session Session) (Job, error) {
@@ -1094,18 +1317,26 @@ func (s *Store) MarkReady(ctx context.Context, id string) error {
 }
 
 func (s *Store) FinishPreparationWithRelease(ctx context.Context, id string) (Job, bool, error) {
+	job, scheduled, _, _, err := s.FinishPreparationWithReplenishment(ctx, id)
+	return job, scheduled, err
+}
+
+// FinishPreparationWithReplenishment は準備完了による slot/session 遷移と、
+// 通常 session の補充許可を一つの transaction で確定する。
+// 末尾の Job/boolean は、今回の成功で除外対象があり ENSURE_STANDBY を登録した場合だけ有効である。
+func (s *Store) FinishPreparationWithReplenishment(ctx context.Context, id string) (Job, bool, Job, bool, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, Job{}, false, err
 	}
 	defer tx.Rollback()
 	t := now()
 	var sessionID, sessionState, kind, parentID, pendingAgentID string
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(se.id,''),COALESCE(se.state,''),COALESCE(se.agent_kind,''),COALESCE(se.parent_session_id,''),COALESCE(se.pending_agent_session_id,'') FROM slots sl LEFT JOIN sessions se ON se.id=sl.owner_session_id WHERE sl.id=?`, id).Scan(&sessionID, &sessionState, &kind, &parentID, &pendingAgentID)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, Job{}, false, err
 	}
 	targetState := "READY"
 	if sessionID != "" {
@@ -1118,58 +1349,70 @@ func (s *Store) FinishPreparationWithRelease(ctx context.Context, id string) (Jo
 		case "RELEASING":
 			targetState = "DRAINING"
 		default:
-			return Job{}, false, fmt.Errorf("slot %s has owner session %s in unexpected state %s", id, sessionID, sessionState)
+			return Job{}, false, Job{}, false, fmt.Errorf("slot %s has owner session %s in unexpected state %s", id, sessionID, sessionState)
 		}
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE slots SET state=?,ready_at=?,updated_at=? WHERE id=? AND state IN ('PREPARING','RESTORING')`, targetState, t, t, id)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, Job{}, false, err
 	}
 	n, _ := res.RowsAffected()
 	if n != 1 {
-		return Job{}, false, fmt.Errorf("slot %s preparation state changed", id)
+		return Job{}, false, Job{}, false, fmt.Errorf("slot %s preparation state changed", id)
 	}
 	if sessionState == "RESTORING" {
 		if pendingAgentID != "" {
 			if parentID == "" {
-				return Job{}, false, errors.New("restoring session has no parent for its pending agent mapping")
+				return Job{}, false, Job{}, false, errors.New("restoring session has no parent for its pending agent mapping")
 			}
 			res, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE id=? AND agent_kind=? AND agent_session_id=?`, parentID, kind, pendingAgentID)
 			if err != nil {
-				return Job{}, false, err
+				return Job{}, false, Job{}, false, err
 			}
 			if n, _ := res.RowsAffected(); n != 1 {
-				return Job{}, false, errors.New("resume parent agent mapping changed before restore completed")
+				return Job{}, false, Job{}, false, errors.New("resume parent agent mapping changed before restore completed")
 			}
 			res, err = tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=?,pending_agent_session_id=NULL WHERE id=? AND state='RESTORING'`, pendingAgentID, sessionID)
 			if err != nil {
-				return Job{}, false, err
+				return Job{}, false, Job{}, false, err
 			}
 			if n, _ := res.RowsAffected(); n != 1 {
-				return Job{}, false, errors.New("restoring session changed before activation")
+				return Job{}, false, Job{}, false, errors.New("restoring session changed before activation")
 			}
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE sessions SET state='ACTIVE',started_at=COALESCE(started_at,?) WHERE slot_id=? AND state IN ('STARTING','RESTORING')`, t, id); err != nil {
-		return Job{}, false, err
+		return Job{}, false, Job{}, false, err
 	}
 	if targetState != "DRAINING" {
-		return Job{}, false, tx.Commit()
+		var replenishJob Job
+		var replenishCreated bool
+		if sessionID != "" && sessionState != "RESTORING" && targetState == "LEASED" {
+			var recordErr error
+			replenishJob, replenishCreated, _, recordErr = recordStandbySuccessTx(ctx, tx, sessionID, false)
+			if recordErr != nil {
+				return Job{}, false, Job{}, false, recordErr
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return Job{}, false, Job{}, false, err
+		}
+		return Job{}, false, replenishJob, replenishCreated, nil
 	}
 	job, err := newJob("SNAPSHOT", "", id, sessionID)
 	if err != nil {
-		return Job{}, false, err
+		return Job{}, false, Job{}, false, err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(workspace_id,'') FROM sessions WHERE id=?`, sessionID).Scan(&job.WorkspaceID); err != nil {
-		return Job{}, false, err
+		return Job{}, false, Job{}, false, err
 	}
 	if err := insertJob(ctx, tx, job); err != nil {
-		return Job{}, false, err
+		return Job{}, false, Job{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return Job{}, false, err
+		return Job{}, false, Job{}, false, err
 	}
-	return job, true, nil
+	return job, true, Job{}, false, nil
 }
 
 func (s *Store) MarkSessionState(ctx context.Context, id string, from []string, to string) error {
@@ -1845,6 +2088,12 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 	if liveRecovery > 0 {
 		return errors.New("workspace has pending recovery jobs; wait for them before forgetting it")
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM standby_replenish_exclusions WHERE workspace_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM standby_replenish_successes WHERE workspace_id=?`, id); err != nil {
+		return err
+	}
 	// jobs.workspace_id には foreign key がなく、監査目的で削除後の workspace を参照できるため、手動で clear する必要がある唯一の参照である。
 	// slots.workspace_id と sessions.workspace_id は NULL へ cascade し、workspace_repositories row は各列の foreign key により削除へ cascade する。
 	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET workspace_id=NULL WHERE workspace_id=?`, id); err != nil {
@@ -2357,7 +2606,28 @@ func (s *Store) ScheduleRemoval(ctx context.Context, slotID, sessionID string) (
 }
 
 func (s *Store) FinishRemoval(ctx context.Context, slotID string) error {
-	return s.SetSlotState(ctx, slotID, []string{"REMOVING", "ARCHIVED"}, "ARCHIVED", "")
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	t := now()
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='ARCHIVED',updated_at=?,failure_code=NULL WHERE id=? AND state IN ('REMOVING','ARCHIVED')`, t, slotID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("slot %s state compare-and-swap failed", slotID)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,message) SELECT ?,'info','slot_transition',workspace_id,id,? FROM slots WHERE id=?`, t, "state=ARCHIVED failure_code=", slotID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM standby_replenish_exclusions WHERE slot_id=?`, slotID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // FailedSlotIDs は workspace に属する未所有の FAILED slot を返す。
