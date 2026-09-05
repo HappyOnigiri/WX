@@ -679,3 +679,64 @@ func TestAgentPrefixAndCommandUsageFallbacks(t *testing.T) {
 		t.Fatalf("unknown command usage=%q", output.String())
 	}
 }
+
+// helpDescriptionColumn は "  <label>  <description>" 形式の一覧行から説明の開始桁を返す。
+// label と description は 2 space 以上で区切られ、label 自体は 2 space を含まない。説明のない行は -1 を返す。
+func helpDescriptionColumn(line string) int {
+	rest := line[2:]
+	gap := strings.Index(rest, "  ")
+	if gap < 0 {
+		return -1
+	}
+	column := 2 + gap
+	for column < len(line) && line[column] == ' ' {
+		column++
+	}
+	return column
+}
+
+// TestHelpListsStayAligned は help 本文の一覧が端末で揃うことを確認する。
+// help 本文は raw string literal に手書きするため、tab の混入や桁のずれは読んでも気付きにくい。
+func TestHelpListsStayAligned(t *testing.T) {
+	texts := map[string]string{}
+	var top bytes.Buffer
+	topUsage(&top)
+	texts["top"] = top.String()
+	for _, command := range []string{"status", "doctor", "gc", "clear", "sessions", "config", "resume", "forget", "daemon", "hook"} {
+		var output bytes.Buffer
+		commandUsage(&output, command)
+		texts[command] = output.String()
+	}
+	for name, text := range texts {
+		t.Run(name, func(t *testing.T) {
+			if strings.ContainsRune(text, '\t') {
+				t.Fatalf("help contains a tab, which the terminal expands to an unpredictable width:\n%s", text)
+			}
+			column, block := -1, ""
+			for _, line := range strings.Split(text, "\n") {
+				switch {
+				case strings.HasPrefix(line, "  ") && line[2] != ' ':
+					// 一覧の項目行。ブロックの先頭が説明の桁を決め、以降の行はそれに従う。
+					entry := helpDescriptionColumn(line)
+					if entry < 0 {
+						continue
+					}
+					if column < 0 {
+						column, block = entry, line
+						continue
+					}
+					if entry != column {
+						t.Errorf("description starts at column %d, but %q starts it at column %d:\n%s", entry, block, column, line)
+					}
+				case strings.HasPrefix(line, "   "):
+					// 項目の説明の折返し行。説明の桁に揃わないと label 列へはみ出して見える。
+					if indent := len(line) - len(strings.TrimLeft(line, " ")); column >= 0 && indent != column {
+						t.Errorf("continuation is indented %d, but the description column is %d:\n%s", indent, column, line)
+					}
+				default:
+					column, block = -1, ""
+				}
+			}
+		})
+	}
+}
