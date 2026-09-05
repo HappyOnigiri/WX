@@ -213,7 +213,7 @@ func TestHandlerRoutesAgentRegistrationAndConfigReload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result, ok := registered.(map[string]bool); !ok || !result["registered"] {
+	if result, ok := registered.(map[string]any); !ok || result["registered"] != true {
 		t.Fatalf("registration result=%v", registered)
 	}
 	session, err := store.SessionByID(context.Background(), "session")

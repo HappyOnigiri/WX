@@ -166,6 +166,13 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		defer cancel()
 		_ = c.RPC.CallWithKey(releaseCtx, "Release", "release:"+lease.SessionID+":client-exit", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": "client-exit"}, nil)
 	}()
+	// wx clean --all の終了要求は heartbeat と agent 登録の応答で届く。
+	// 要求を受けたら agent の process group へ一度だけ SIGTERM を送り、停止を確認してから daemon へ応答する。
+	terminator := &agentTerminator{}
+	heartbeatDone := make(chan struct{})
+	go c.watchTermination(ctx, lease, terminator, heartbeatDone)
+	defer close(heartbeatDone)
+	defer terminator.confirm(c, lease)
 	if agent == "codex" && native {
 		args = codexResumeArgs(args)
 	}
@@ -198,6 +205,11 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 			fmt.Fprintln(os.Stderr, "error: workspace preparation:", err)
 			return 1
 		}
+	}
+	// 起動前・準備待ちの間に終了要求が届いていたら、agent を起動せずにそのまま応答する。
+	if terminator.requested() {
+		fmt.Fprintln(os.Stderr, "wx clean asked this session to stop before the agent started")
+		return 1
 	}
 	leaseDirectory, err := openLeaseDirectory(c.Config, lease)
 	if err != nil {
@@ -236,7 +248,8 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		defer restoreForeground(int(os.Stdin.Fd()))
 	}
 	registerCtx, registerCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	registerErr := c.RPC.CallWithKey(registerCtx, "RegisterAgentProcess", "agent-process:"+lease.SessionID+":"+strconv.Itoa(cmd.Process.Pid), map[string]any{"session_id": lease.SessionID, "token": lease.Token, "agent_pid": cmd.Process.Pid}, nil)
+	var registered terminationEnvelope
+	registerErr := c.RPC.CallWithKey(registerCtx, "RegisterAgentProcess", "agent-process:"+lease.SessionID+":"+strconv.Itoa(cmd.Process.Pid), map[string]any{"session_id": lease.SessionID, "token": lease.Token, "agent_pid": cmd.Process.Pid}, &registered)
 	registerCancel()
 	if registerErr != nil {
 		_ = cmd.Process.Kill()
@@ -244,23 +257,8 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		fmt.Fprintln(os.Stderr, "error: register agent process:", registerErr)
 		return 1
 	}
-	heartbeatDone := make(chan struct{})
-	// binary 置換後の再起動中に heartbeat が失敗しても、ConnectRetry で短い未待受期間を吸収する。
-	// 呼び出し全体は 2 秒の context で制限する。
-	go func() {
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				heartbeatCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-				_ = c.RPC.Call(heartbeatCtx, "Heartbeat", map[string]string{"session_id": lease.SessionID, "token": lease.Token}, nil)
-				cancel()
-			case <-heartbeatDone:
-				return
-			}
-		}
-	}()
+	terminator.adopt(cmd)
+	terminator.request(registered.Terminate)
 	go func() { done <- cmd.Wait() }()
 	var runErr error
 	select {
@@ -269,7 +267,6 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		forwardAgentSignal(cmd, sig)
 		runErr = <-done
 	}
-	close(heartbeatDone)
 	if runErr == nil {
 		return 0
 	}

@@ -69,6 +69,18 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   その列を更新する側は5箇所すべてworkspace単位であるため、同じworkspaceのリポジトリを一律に同じ時刻へ揃える。
   そのため、貸出直後の`ENSURE_STANDBY`では全リポジトリがhotと判定され、このフィルタは実質効かない。
   粒度を上げるには、貸出時に実際に使ったリポジトリを`session_repositories`側へ記録し、`HotRepositoryIDs`とGCの`ColdRepositoryCandidates`の両方をそこから読ませる必要がある。
+- **clean** — `wx clean`は保持期限を待たずにworktreeを削除する。
+  受付時点で全workspace・全root世代のslotから対象を確定し、`clean_runs`・`clean_targets`へ永続化するので、daemon再起動後も同じ対象と期限で再開する。
+  進行は`Manager.driveClean`のbackground goroutineが既存ジョブの完了を監視するだけで、workerを占有したまま別ジョブを待たない。
+  削除そのものは通常の返却・保存・削除経路（`Release`→`SNAPSHOT`→`ScheduleRemoval`→`REMOVE`）に載せるので、GCと二重の削除実装を持たない。
+  `--all`は`session_termination_requests`へ期限付き（30秒）の終了要求を記録し、heartbeatとagent登録の応答でclientへ渡す。
+  signalを送るのはclientだけで、daemonは記録されたPIDへ触れない。
+  期限内に停止を確認できない対象は失敗として閉じ、遅れて終了しても通常の返却処理に戻す。
+  run実行中は`assertNoActiveClean`が貸出・復元・待機用作成の書き込みトランザクションを断るので、予約した対象が新しいsessionへ渡ることはない。
+  削除後の補充停止は`replenish_suspensions`に永続化し、`ensureStandby`が定期reconcileと補充ジョブの双方で参照する。
+  解除はそのworkspaceの貸出・resumeが成功した時点だけで、既存sessionの返却では解除しない。
+  安全な処理境界を待つ対象には`cleanBoundaryWait`（5分）の上限を置く。
+  無期限に待つと、貸出を断ったままworkspace全体が使えなくなるためである。
 - **reconcile** — 定期的にDBと実体を突き合わせ、素性の分からないpath・refを隔離側へ倒す。
   clientとエージェントの両プロセスが死んでいるsessionはここで返却される。
 - **degraded運用** — SQLiteが開けないときも`Status`・`Doctor`・`RequestStop`は`DegradedHandler`が答える。

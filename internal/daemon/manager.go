@@ -102,6 +102,8 @@ type Manager struct {
 	closeOnce            sync.Once
 	closeDoneMu          sync.Mutex
 	closeDone            chan struct{}
+	// cleanDrivers は run ごとの進行管理が二重に走らないようにする。同じ run への再実行は既存の driver へ合流する。
+	cleanDrivers map[string]bool
 }
 type jobWork struct {
 	id string
@@ -474,6 +476,7 @@ func (m *Manager) maintainJobs() {
 }
 
 func (m *Manager) maintainLifecycle() {
+	m.resumeCleanRuns(m.ctx)
 	m.reconcileRegistry(m.ctx)
 	m.reconcileArtifacts(m.ctx)
 	m.reconcileOrphans(m.ctx)
@@ -1000,6 +1003,7 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 				job, leaseErr := m.store.LeaseReadyWithCold(ctx, ready.ID, session)
 				if leaseErr == nil {
 					m.schedule(job)
+					m.resumeReplenish(ctx, string(w.ID))
 					_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, true, nil
 				}
@@ -1007,6 +1011,7 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 				return Lease{}, false, nil
 			}
 			if leaseErr := m.store.LeaseReady(ctx, ready.ID, session); leaseErr == nil {
+				m.resumeReplenish(ctx, string(w.ID))
 				_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true}, true, nil
 			}
@@ -1097,6 +1102,7 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 		return Lease{}, state.IsIDCollision(err), err
 	}
 	m.schedule(job)
+	m.resumeReplenish(ctx, string(w.ID))
 	_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 	m.startBackground(func() { _, _ = m.GC(m.ctx, false) })
 	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false}, false, nil
@@ -1869,6 +1875,10 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	if cfg.WorktreeMode(string(w.Root)) != "hot" || cfg.Pool.WarmPerWorkspace < 1 || cfg.Retention.HotStandby.Duration == 0 {
 		return nil
 	}
+	// clean 後の補充停止は永続化してあるため、定期 reconcile と補充ジョブの双方でここを通る。
+	if m.replenishSuspended(ctx, string(w.ID)) {
+		return nil
+	}
 	needed := cfg.Pool.WarmPerWorkspace - m.store.StandbyCount(ctx, string(w.ID))
 	if needed <= 0 {
 		return nil
@@ -2077,6 +2087,7 @@ func (m *Manager) PrepareFreshResume(ctx context.Context, id, token, agentID, cw
 		return fail("FRESH_BIND_FAILED", err)
 	}
 	m.schedule(job)
+	m.resumeReplenish(ctx, string(w.ID))
 	_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 	return nil
 }
@@ -2126,6 +2137,7 @@ func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID s
 		return err
 	}
 	m.schedule(job)
+	m.resumeReplenish(ctx, string(w.ID))
 	return nil
 }
 

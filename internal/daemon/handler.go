@@ -77,6 +77,12 @@ func isLifecycleMethod(method string) bool {
 }
 
 func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	if result, handled, err := h.dispatchClean(ctx, method, raw); handled {
+		return result, err
+	}
+	if result, handled, err := h.dispatchLiveness(ctx, method, raw); handled {
+		return result, err
+	}
 	switch method {
 	case "ResolveAndLease":
 		var p struct {
@@ -165,25 +171,6 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return nil, err
 		}
 		return map[string]bool{"released": true}, h.Manager.Release(ctx, p.SessionID, p.Token, p.Reason)
-	case "Heartbeat":
-		var p struct {
-			SessionID string `json:"session_id"`
-			Token     string `json:"token"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return map[string]bool{"ok": true}, h.Manager.Heartbeat(ctx, p.SessionID, p.Token)
-	case "RegisterAgentProcess":
-		var p struct {
-			SessionID string `json:"session_id"`
-			Token     string `json:"token"`
-			AgentPID  int    `json:"agent_pid"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return map[string]bool{"registered": true}, h.Manager.RegisterAgentProcess(ctx, p.SessionID, p.Token, p.AgentPID)
 	case "Resume":
 		var p struct {
 			WXSessionID string `json:"wx_session_id"`
@@ -243,4 +230,73 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	default:
 		return nil, errors.New("unknown RPC method")
 	}
+}
+
+// dispatchClean は wx clean の method を分けて受け持つ。handled が false のときは他の method として扱う。
+func (h Handler) dispatchClean(ctx context.Context, method string, raw json.RawMessage) (any, bool, error) {
+	switch method {
+	case "Clean":
+		var p struct {
+			All    bool `json:"all"`
+			DryRun bool `json:"dry_run"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.Clean(ctx, p.All, p.DryRun)
+		return result, true, err
+	case "CleanStatus":
+		var p struct {
+			RunID string `json:"run_id"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.CleanStatus(ctx, p.RunID)
+		return result, true, err
+	case "ConfirmTermination":
+		var p struct {
+			SessionID string `json:"session_id"`
+			Token     string `json:"token"`
+			RequestID string `json:"request_id"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		return map[string]bool{"confirmed": true}, true, h.Manager.ConfirmTermination(ctx, p.SessionID, p.Token, p.RequestID)
+	default:
+		return nil, false, nil
+	}
+}
+
+// dispatchLiveness は session の生存報告を受け持つ。どちらの応答にも、届いている終了要求を載せる。
+func (h Handler) dispatchLiveness(ctx context.Context, method string, raw json.RawMessage) (any, bool, error) {
+	var p struct {
+		SessionID string `json:"session_id"`
+		Token     string `json:"token"`
+		AgentPID  int    `json:"agent_pid"`
+	}
+	base := map[string]any{}
+	switch method {
+	case "Heartbeat":
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		if err := h.Manager.Heartbeat(ctx, p.SessionID, p.Token); err != nil {
+			return nil, true, err
+		}
+		base["ok"] = true
+	case "RegisterAgentProcess":
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		if err := h.Manager.RegisterAgentProcess(ctx, p.SessionID, p.Token, p.AgentPID); err != nil {
+			return nil, true, err
+		}
+		base["registered"] = true
+	default:
+		return nil, false, nil
+	}
+	// 起動と終了要求が競合した場合、client は登録応答で要求を受け取り、起動直後のプロセスを終了させる。
+	return h.Manager.terminationReply(ctx, p.SessionID, base), true, nil
 }
