@@ -211,7 +211,7 @@ gosec: setup-security-tools
 
 license-check: setup-security-tools
 	@test -x "$(TOOLS_BIN)/go-licenses" || { echo "pinned license checker is missing; run make setup-security-tools"; exit 1; }
-	@# go-licenses v2 misclassifies Go 1.26 standard packages as modules;
+	@# go-licenses v2 misclassifies Go 1.27 standard packages as modules;
 	@# ignore the explicit `go list std` set while still resolving their dependencies.
 	@$(GO) list std | sed 's/^/--ignore=/' | xargs "$(TOOLS_BIN)/go-licenses" check ./... \
 	  --ignore=github.com/HappyOnigiri/WX --allowed_licenses="$(LICENSE_ALLOWLIST)"

@@ -14,7 +14,7 @@ Run Claude Code or Codex in a separate Git worktree with a single command.
 
 ## Installation
 
-Requires **macOS**, **Git**, **Go 1.26.6 or later**, and **Claude Code or Codex** installed and available on your `PATH`.
+Requires **macOS**, **Git**, **Go 1.27.1 or later**, and **Claude Code or Codex** installed and available on your `PATH`.
 
 ```sh
 git clone https://github.com/HappyOnigiri/WX.git

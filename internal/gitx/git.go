@@ -250,7 +250,7 @@ func sanitizedEnviron() []string {
 }
 
 // newFailureID は crypto/rand.Text() を使う。
-// Go 1.26 の crypto/rand.Read は対応 platform で失敗しないため、到達不能な fallback は持たない。
+// Go 1.27 の crypto/rand.Read は対応 platform で失敗しないため、到達不能な fallback は持たない。
 func newFailureID() string {
 	return rand.Text()
 }

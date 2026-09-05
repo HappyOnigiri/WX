@@ -14,7 +14,7 @@ Claude Code や Codex を、コマンドひとつで専用の Git worktree に�
 
 ## インストール
 
-**macOS**、**Git**、**Go 1.26.6 以降**、および **Claude Code または Codex** が必要です。
+**macOS**、**Git**、**Go 1.27.1 以降**、および **Claude Code または Codex** が必要です。
 各コマンドをインストールし、`PATH` を通しておいてください。
 
 ```sh

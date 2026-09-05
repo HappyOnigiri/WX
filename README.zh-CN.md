@@ -14,7 +14,7 @@
 
 ## 安装
 
-需要 **macOS**、**Git**、**Go 1.26.6 或更高版本**，以及 **Claude Code 或 Codex**。
+需要 **macOS**、**Git**、**Go 1.27.1 或更高版本**，以及 **Claude Code 或 Codex**。
 请先安装这些工具，并确保可以通过 `PATH` 访问它们。
 
 ```sh
