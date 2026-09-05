@@ -17,6 +17,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/sessions"
 	"github.com/HappyOnigiri/WX/internal/sessions/identity"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 func TestResumeArgsBuildsAgentSpecificResumeCommands(t *testing.T) {
@@ -113,7 +114,7 @@ func TestLookupResumePassesThroughUnknownAndReportsConnectionErrors(t *testing.T
 	}
 
 	missing := Client{
-		RPC:    rpc.Client{Socket: filepath.Join(t.TempDir(), "missing.sock"), Timeout: 100 * time.Millisecond},
+		RPC:    rpc.Client{Socket: testsupport.SocketPath(t, "missing.sock"), Timeout: 100 * time.Millisecond},
 		Config: config.Defaults(),
 	}
 	got, found, err = missing.lookupResume(context.Background(), "claude", "unreachable-session")
@@ -239,7 +240,7 @@ func (h *resumeTestRPCHandler) paramsFor(method string) json.RawMessage {
 
 func serveResumeTestRPC(t *testing.T, handler *resumeTestRPCHandler) Client {
 	t.Helper()
-	socket := filepath.Join(t.TempDir(), "wxd.sock")
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)

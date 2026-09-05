@@ -15,6 +15,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 func TestRunResumeAgentOmittedFreshSetsRecoveryModeAndWaitsBeforeLaunch(t *testing.T) {
@@ -224,8 +225,7 @@ func serveResumeLaunchRPC(t *testing.T, handler *resumeLaunchHandler) (Client, f
 
 func serveResumeLaunchRPCWithConfig(t *testing.T, handler *resumeLaunchHandler, cfg config.Config) (Client, func()) {
 	t.Helper()
-	// t.TempDir はテスト名を含み、長い名前では sun_path の 104 バイト制限を超えて bind に失敗する。
-	socket := shortSocketPath(t, "wxd.sock")
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)

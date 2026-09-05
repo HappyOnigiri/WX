@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 type recordingHandler struct {
@@ -55,19 +56,9 @@ func (h *recordingHandler) methodsSnapshot() []string {
 	return append([]string(nil), h.methods...)
 }
 
-func shortHookSocketPath(t *testing.T) string {
-	t.Helper()
-	directory, err := os.MkdirTemp("/tmp", "wx-agent-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(directory) })
-	return filepath.Join(directory, "wxd.sock")
-}
-
 func startHookServer(t *testing.T, handler rpc.Handler) context.Context {
 	t.Helper()
-	socket := shortHookSocketPath(t)
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
@@ -149,7 +140,7 @@ func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
 		t.Fatalf("incomplete environment error=%v", err)
 	}
 	t.Setenv("WX_SESSION_TOKEN", "token")
-	t.Setenv("WX_DAEMON_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	t.Setenv("WX_DAEMON_SOCKET", testsupport.SocketPath(t, "missing.sock"))
 	if err := RunHook(context.Background(), "session-start", strings.NewReader("{")); err == nil || !strings.Contains(err.Error(), "decode hook payload") {
 		t.Fatalf("malformed payload error=%v", err)
 	}
@@ -249,7 +240,7 @@ func TestHookRejectsInvalidReadinessTimeouts(t *testing.T) {
 	clearHookEnvironment(t)
 	t.Setenv("WX_SESSION_ID", "wx")
 	t.Setenv("WX_SESSION_TOKEN", "token")
-	t.Setenv("WX_DAEMON_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+	t.Setenv("WX_DAEMON_SOCKET", testsupport.SocketPath(t, "missing.sock"))
 	for _, timeout := range []string{"not-a-duration", "0s", "-1s"} {
 		t.Run("invalid readiness timeout "+timeout, func(t *testing.T) {
 			t.Setenv("WX_READINESS_TIMEOUT", timeout)
@@ -263,7 +254,7 @@ func TestHookRejectsInvalidReadinessTimeouts(t *testing.T) {
 
 func TestReadinessHookSurvivesADaemonThatIsStillRestarting(t *testing.T) {
 	clearHookEnvironment(t)
-	socket := shortHookSocketPath(t)
+	socket := testsupport.SocketPath(t, "wxd.sock")
 	handler := &recordingHandler{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
