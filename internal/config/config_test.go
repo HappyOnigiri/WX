@@ -277,6 +277,11 @@ func TestValidateRejectsEachPolicyClass(t *testing.T) {
 		func() Config { c := valid; c.Storage.BackupGenerations = 0; return c }(),
 		func() Config { c := valid; c.Pool.WarmPerWorkspace = -1; return c }(),
 		func() Config { c := valid; c.Retention.HotStandby.Duration = -1; return c }(),
+		func() Config {
+			c := valid
+			c.Repositories = map[string]Repository{"/tmp/repository": {Prepare: Prepare{Timeout: Duration{Duration: -1}}}}
+			return c
+		}(),
 		func() Config { c := valid; c.Discovery.Timeout.Duration = 0; return c }(),
 		func() Config { c := valid; c.Readiness.Timeout.Duration = 0; return c }(),
 		func() Config { c := valid; c.Discovery.MaxDepth = 0; return c }(),

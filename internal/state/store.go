@@ -548,10 +548,10 @@ func (s *Store) WorkspaceGeneration(ctx context.Context, workspaceID string) (in
 // Slot は root generation と root 相対 path で slot directory を位置付ける。Path は派生値で、read は roots.path から組み立て、write は RootID/RelPath を使う。
 // single-repository workspace では slot directory の一階層下を指す daemon.Lease.Path と混同してはならない。
 type Slot struct {
-	ID, WorkspaceID, RootID, RelPath, Path, State, OwnerSessionID, FailureCode string
-	DirIdentity                                                                string
-	Generation                                                                 int
-	CreatedAt, ReadyAt                                                         string
+	ID, WorkspaceID, RootID, RelPath, Path, State, OwnerSessionID, FailureCode, FailureDetailPath string
+	DirIdentity                                                                                   string
+	Generation                                                                                    int
+	CreatedAt, ReadyAt                                                                            string
 }
 type (
 	// SlotRepository は slot 内の directory 名で repository worktree を位置付ける。WorktreePath は Slot.Path と同様に派生する。
@@ -579,6 +579,7 @@ type (
 	}
 	Job struct {
 		ID, Kind, WorkspaceID, SlotID, SessionID, RepositoryID, State string
+		ErrorCode, ErrorDetailPath                                    string
 		Attempt                                                       int
 	}
 )
@@ -651,7 +652,7 @@ func (s *Store) ClaimJob(ctx context.Context, id, owner string) (Job, error) {
 	// 副作用で動く AFTER trigger の変更を反映しない。trigger が claim 直後の row を削除した場合も、別 SELECT なら消失を検出して
 	// claim を失敗させ transaction を rollback できるが、RETURNING では見逃す。
 	var j Job
-	if err := tx.QueryRowContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt,COALESCE(error_code,''),COALESCE(error_detail_path,'') FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt, &j.ErrorCode, &j.ErrorDetailPath); err != nil {
 		return Job{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,session_id,repository_id,message) VALUES(?,?,?,?,?,?,?,?)`, now(), "info", "job_started", nullString(j.WorkspaceID), nullString(j.SlotID), nullString(j.SessionID), nullString(j.RepositoryID), fmt.Sprintf("kind=%s attempt=%d", j.Kind, j.Attempt)); err != nil {
@@ -674,6 +675,12 @@ func (s *Store) RenewJob(ctx context.Context, id, owner string) error {
 }
 
 func (s *Store) FinishJob(ctx context.Context, id, owner string, runErr error) error {
+	return s.FinishJobWithDetail(ctx, id, owner, runErr, "", "")
+}
+
+// FinishJobWithDetail は失敗した job の診断ファイルを job row に固定する。
+// detail path は command 出力を含み得るため、作成側が 0600 を保証したものだけを受け取る。
+func (s *Store) FinishJobWithDetail(ctx context.Context, id, owner string, runErr error, failureCode, detailPath string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -687,14 +694,17 @@ func (s *Store) FinishJob(ctx context.Context, id, owner string, runErr error) e
 	if runErr != nil {
 		stateName = "FAILED"
 		level = "error"
-		code = "JOB_FAILED"
+		if failureCode == "" {
+			failureCode = "JOB_FAILED"
+		}
+		code = failureCode
 	}
 	var startedAt string
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(started_at,'') FROM jobs WHERE id=? AND state='RUNNING' AND lease_owner=?`, id, owner).Scan(&startedAt); err != nil {
 		return errors.New("job cannot be finished without its active lease")
 	}
 	finishedAt := time.Now()
-	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state=?,finished_at=?,lease_owner=NULL,lease_expires_at=NULL,error_code=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, stateName, FormatTime(finishedAt), code, id, owner)
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state=?,finished_at=?,lease_owner=NULL,lease_expires_at=NULL,error_code=?,error_detail_path=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, stateName, FormatTime(finishedAt), code, nullString(detailPath), id, owner)
 	if err != nil {
 		return err
 	}
@@ -708,6 +718,9 @@ func (s *Store) FinishJob(ctx context.Context, id, owner string, runErr error) e
 	message := fmt.Sprintf("state=%s elapsed=%s", stateName, elapsed)
 	if code != nil {
 		message += " failure_code=" + fmt.Sprint(code)
+	}
+	if detailPath != "" {
+		message += " detail_path=" + detailPath
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,session_id,repository_id,message) SELECT ?,?,kind,workspace_id,slot_id,session_id,repository_id,? FROM jobs WHERE id=?`, FormatTime(finishedAt), level, message, id); err != nil {
 		return err
@@ -770,7 +783,7 @@ func (s *Store) RecoverJobs(ctx context.Context, reclaimAll bool) ([]Job, error)
 	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt FROM jobs WHERE state='PENDING' ORDER BY not_before,id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt,COALESCE(error_code,''),COALESCE(error_detail_path,'') FROM jobs WHERE state='PENDING' ORDER BY not_before,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -778,7 +791,7 @@ func (s *Store) RecoverJobs(ctx context.Context, reclaimAll bool) ([]Job, error)
 	var out []Job
 	for rows.Next() {
 		var j Job
-		if err := rows.Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt); err != nil {
+		if err := rows.Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt, &j.ErrorCode, &j.ErrorDetailPath); err != nil {
 			return nil, err
 		}
 		out = append(out, j)
@@ -833,7 +846,7 @@ func (s *Store) EnsureRecoveryJobs(ctx context.Context) ([]Job, error) {
 // slotColumns は full-row の slot read 全てで共有する column list である。
 // absolute な Slot.Path は保存せず、scanSlot が結合した root generation から組み立てるため、
 // retired root も自身の slot を解決し続けられる。
-const slotColumns = `sl.id,COALESCE(sl.workspace_id,''),sl.generation,sl.root_id,rt.path,sl.rel_path,COALESCE(sl.dir_identity,''),sl.state,COALESCE(sl.owner_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.failure_code,'')`
+const slotColumns = `sl.id,COALESCE(sl.workspace_id,''),sl.generation,sl.root_id,rt.path,sl.rel_path,COALESCE(sl.dir_identity,''),sl.state,COALESCE(sl.owner_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.failure_code,''),COALESCE(sl.failure_detail_path,'')`
 
 // slotFrom は slotColumns が必要とする FROM clause である。
 const slotFrom = ` FROM slots sl JOIN roots rt ON rt.id=sl.root_id`
@@ -847,7 +860,7 @@ type rowScanner interface {
 func scanSlot(row rowScanner) (Slot, error) {
 	var x Slot
 	var rootPath string
-	if err := row.Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.RootID, &rootPath, &x.RelPath, &x.DirIdentity, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt, &x.FailureCode); err != nil {
+	if err := row.Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.RootID, &rootPath, &x.RelPath, &x.DirIdentity, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt, &x.FailureCode, &x.FailureDetailPath); err != nil {
 		return Slot{}, err
 	}
 	x.Path = filepath.Join(rootPath, x.RelPath)
@@ -1276,10 +1289,16 @@ func (s *Store) LeaseReadyWithCold(ctx context.Context, slotID string, session S
 }
 
 func (s *Store) SetSlotState(ctx context.Context, id string, from []string, to, code string) error {
+	return s.SetSlotStateWithDetail(ctx, id, from, to, code, "")
+}
+
+// SetSlotStateWithDetail は slot 遷移と診断ファイルの場所を同じ CAS で保存する。
+// failure_detail_path は失敗原因の追跡にだけ使い、所有権不明時の隔離判断は従来どおり state で行う。
+func (s *Store) SetSlotStateWithDetail(ctx context.Context, id string, from []string, to, code, detailPath string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	args := append([]any{to, now(), nullString(code), id}, stringsToAny(from)...)
-	res, err := s.db.ExecContext(ctx, `UPDATE slots SET state=?,updated_at=?,failure_code=? WHERE id=? AND state IN (`+placeholders(len(from))+`)`, args...)
+	args := append([]any{to, now(), nullString(code), nullString(detailPath), id}, stringsToAny(from)...)
+	res, err := s.db.ExecContext(ctx, `UPDATE slots SET state=?,updated_at=?,failure_code=?,failure_detail_path=? WHERE id=? AND state IN (`+placeholders(len(from))+`)`, args...)
 	if err != nil {
 		return err
 	}
@@ -1287,7 +1306,11 @@ func (s *Store) SetSlotState(ctx context.Context, id string, from []string, to, 
 	if n != 1 {
 		return fmt.Errorf("slot %s state compare-and-swap failed", id)
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,message) SELECT ?,'info','slot_transition',workspace_id,id,? FROM slots WHERE id=?`, now(), "state="+to+" failure_code="+code, id)
+	message := "state=" + to + " failure_code=" + code
+	if detailPath != "" {
+		message += " detail_path=" + detailPath
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,message) SELECT ?,'info','slot_transition',workspace_id,id,? FROM slots WHERE id=?`, now(), message, id)
 	return err
 }
 
@@ -1299,7 +1322,7 @@ func (s *Store) ResetPreparationForRetry(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',failure_code=NULL,updated_at=? WHERE id=? AND state='FAILED'`, now(), id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',failure_code=NULL,failure_detail_path=NULL,updated_at=? WHERE id=? AND state='FAILED'`, now(), id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE slot_repositories SET state='PREPARING' WHERE slot_id=? AND state='PREPARE_RUNNING'`, id); err != nil {
@@ -2614,7 +2637,7 @@ func (s *Store) FinishRemoval(ctx context.Context, slotID string) error {
 	}
 	defer tx.Rollback()
 	t := now()
-	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='ARCHIVED',updated_at=?,failure_code=NULL WHERE id=? AND state IN ('REMOVING','ARCHIVED')`, t, slotID)
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='ARCHIVED',updated_at=?,failure_code=NULL,failure_detail_path=NULL WHERE id=? AND state IN ('REMOVING','ARCHIVED')`, t, slotID)
 	if err != nil {
 		return err
 	}

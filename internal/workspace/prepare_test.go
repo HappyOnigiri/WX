@@ -348,27 +348,92 @@ func TestPrepareCommandSuccessFailureAndTimeout(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = root
 	cfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf ready > marker"}, Timeout: config.Duration{Duration: time.Second}}}}
+	successDetails := t.TempDir()
 	owner, _, err := domain.OpenOwnedRoot(root, root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root}
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, DetailDir: successDetails, OwnedRoot: owner, RootPath: root}
 	if err := preparer.runPrepareWithIdentity(context.Background(), repo, target, ""); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(filepath.Join(target, "marker")); err != nil || string(data) != "ready" {
 		t.Fatalf("marker=%q err=%v", data, err)
 	}
+	if entries, err := os.ReadDir(successDetails); err != nil || len(entries) != 0 {
+		t.Fatalf("successful prepare left diagnostics=%v err=%v", entries, err)
+	}
+	failureDetails := t.TempDir()
 	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "exit 7"}, Timeout: config.Duration{Duration: time.Second}}}
 	preparer.Config = cfg
-	if err := preparer.runPrepareWithIdentity(context.Background(), repo, target, ""); err == nil {
-		t.Fatal("failed prepare command succeeded")
+	preparer.DetailDir = failureDetails
+	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
+	var prepareFailure *PrepareCommandError
+	if !errors.As(err, &prepareFailure) || prepareFailure.ExitCode != 7 || prepareFailure.TimedOut || prepareFailure.Canceled {
+		t.Fatalf("failed prepare error=%v typed=%+v", err, prepareFailure)
+	}
+	if prepareFailure.FailureID == "" || prepareFailure.DetailPath == "" {
+		t.Fatalf("failed prepare did not expose diagnostic identity: %+v", prepareFailure)
+	}
+	detail, readErr := os.ReadFile(prepareFailure.DetailPath)
+	if readErr != nil || !strings.Contains(string(detail), "exit_code: 7") {
+		t.Fatalf("failed prepare detail=%q err=%v", detail, readErr)
+	}
+	if info, statErr := os.Stat(prepareFailure.DetailPath); statErr != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("failed prepare detail mode=%v err=%v", info, statErr)
+	}
+	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf 'unique prepare cause\\n' >&2; exit 17"}, Timeout: config.Duration{Duration: time.Second}}}
+	preparer.Config = cfg
+	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
+	if !errors.As(err, &prepareFailure) || prepareFailure.ExitCode != 17 {
+		t.Fatalf("stderr prepare error=%v typed=%+v", err, prepareFailure)
+	}
+	detail, readErr = os.ReadFile(prepareFailure.DetailPath)
+	if readErr != nil || !strings.Contains(string(detail), "unique prepare cause") {
+		t.Fatalf("stderr was not retained detail=%q err=%v", detail, readErr)
+	}
+	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "dd if=/dev/zero bs=1024 count=256 >&2 2>/dev/null; exit 19"}, Timeout: config.Duration{Duration: time.Second}}}
+	preparer.Config = cfg
+	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
+	if !errors.As(err, &prepareFailure) || prepareFailure.ExitCode != 19 {
+		t.Fatalf("large output prepare error=%v typed=%+v", err, prepareFailure)
+	}
+	if info, statErr := os.Stat(prepareFailure.DetailPath); statErr != nil || info.Size() > maxPrepareDiagnosticOutput+4096 {
+		t.Fatalf("large output detail size=%v err=%v", info, statErr)
 	}
 	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "sleep 2"}, Timeout: config.Duration{Duration: 20 * time.Millisecond}}}
 	preparer.Config = cfg
-	if err := preparer.runPrepareWithIdentity(context.Background(), repo, target, ""); err == nil {
-		t.Fatal("timed out prepare command succeeded")
+	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
+	if !errors.As(err, &prepareFailure) || !prepareFailure.TimedOut || prepareFailure.Canceled {
+		t.Fatalf("timed out prepare error=%v typed=%+v", err, prepareFailure)
+	}
+	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "sleep 2"}, Timeout: config.Duration{Duration: time.Second}}}
+	preparer.Config = cfg
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	err = preparer.runPrepareWithIdentity(cancelCtx, repo, target, "")
+	if !errors.As(err, &prepareFailure) || prepareFailure.TimedOut || !prepareFailure.Canceled {
+		t.Fatalf("canceled prepare error=%v typed=%+v", err, prepareFailure)
+	}
+	cancel()
+	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"/path/to/missing-wx-prepare-command"}, Timeout: config.Duration{Duration: time.Second}}}
+	preparer.Config = cfg
+	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
+	if !errors.As(err, &prepareFailure) || prepareFailure.ExitCode != -1 || prepareFailure.DetailPath == "" {
+		t.Fatalf("missing executable prepare error=%v typed=%+v", err, prepareFailure)
+	}
+	if detail, readErr := os.ReadFile(prepareFailure.DetailPath); readErr != nil || !strings.Contains(string(detail), "start_error:") {
+		t.Fatalf("missing executable detail=%q err=%v", detail, readErr)
+	}
+	cfg.Repositories[repository] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/true"}, Timeout: config.Duration{Duration: -time.Second}}}
+	preparer.Config = cfg
+	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
+	if !errors.As(err, &prepareFailure) || !strings.Contains(err.Error(), "timeout must not be negative") {
+		t.Fatalf("invalid timeout prepare error=%v typed=%+v", err, prepareFailure)
 	}
 }
 
