@@ -19,6 +19,7 @@ import (
 )
 
 func TestCreateSlotRootPinsAllocationAcrossRootReplacement(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "worktrees")
 	outside := filepath.Join(parent, "outside")
@@ -77,6 +78,7 @@ func TestCreateSlotRootPinsAllocationAcrossRootReplacement(t *testing.T) {
 }
 
 func TestPrepareQuarantinesUncertainGitAddAfterRootReplacement(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	root := filepath.Join(base, "worktrees")

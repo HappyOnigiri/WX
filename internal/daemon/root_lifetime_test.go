@@ -626,6 +626,7 @@ func TestConcurrentCloseIsIdempotent(t *testing.T) {
 }
 
 func TestRootReferenceAccountingAndBackgroundAdmission(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	manager := &Manager{
 		roots:          map[string]bool{root: true},
@@ -688,6 +689,7 @@ func TestRootReferenceAccountingAndBackgroundAdmission(t *testing.T) {
 }
 
 func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "worktrees")
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -812,6 +814,7 @@ func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing
 }
 
 func TestAdoptRootRejectsShutdownAndIdentityChanges(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "root")
 	if err := os.Mkdir(root, 0o700); err != nil {
@@ -857,6 +860,7 @@ func TestAdoptRootRejectsShutdownAndIdentityChanges(t *testing.T) {
 }
 
 func TestReleaseRootAndCloseRootLockedGuardClauses(t *testing.T) {
+	t.Parallel()
 	manager := &Manager{
 		rootRefs:       map[string]*managedRoot{},
 		retiredRefs:    map[string][]*managedRoot{},

@@ -118,6 +118,7 @@ func testSlotID(name string) string {
 }
 
 func TestSlotRelPathGeneratesTheDocumentedLayout(t *testing.T) {
+	t.Parallel()
 	relPath, err := slotRelPath("wsp001", "slt001", false)
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +149,7 @@ func TestSlotRelPathGeneratesTheDocumentedLayout(t *testing.T) {
 }
 
 func TestValidateLayoutComponentReservesTheUnderscorePrefix(t *testing.T) {
+	t.Parallel()
 	if err := validateLayoutComponent("repository directory", "WX"); err != nil {
 		t.Fatalf("plain name error=%v", err)
 	}
@@ -159,6 +161,7 @@ func TestValidateLayoutComponentReservesTheUnderscorePrefix(t *testing.T) {
 }
 
 func TestLeasePathDependsOnWorkspaceKind(t *testing.T) {
+	t.Parallel()
 	slotPath := filepath.Join(string(filepath.Separator)+"wx", "wsp001", "slt001")
 	single := []state.SlotRepository{{RepositoryID: "r1", DirName: "WX"}}
 	if got := leasePath(slotPath, "repository", single); got != filepath.Join(slotPath, "WX") {
@@ -177,6 +180,7 @@ func TestLeasePathDependsOnWorkspaceKind(t *testing.T) {
 }
 
 func TestWorkspaceRecoveryExclusionsUseSlotDirectoryNames(t *testing.T) {
+	t.Parallel()
 	cfg := config.Defaults()
 	cfg.Workspaces["/src/bundle"] = config.Workspace{Link: []string{"shared"}}
 	w := discoveryWorkspaceForExclusions()
@@ -200,6 +204,7 @@ func TestWorkspaceRecoveryExclusionsUseSlotDirectoryNames(t *testing.T) {
 }
 
 func TestNewSlotIDProducesShortIdentifiers(t *testing.T) {
+	t.Parallel()
 	id, err := newSlotID()
 	if err != nil {
 		t.Fatal(err)

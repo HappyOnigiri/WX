@@ -22,6 +22,7 @@ import (
 )
 
 func TestReadyMatchesRejectsEveryUnsafeRepresentation(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
 	if err != nil {
@@ -118,6 +119,7 @@ func TestReadyMatchesRejectsEveryUnsafeRepresentation(t *testing.T) {
 }
 
 func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	resolved[0].Repository.RelativePath = "."
 	if err := manager.prepareSlot(ctx, "missing", workspaceRecord, resolved, nil); err == nil {
@@ -231,6 +233,7 @@ func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 }
 
 func TestRestoreSlotFailureAndReplayBoundaries(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	resolved[0].Repository.RelativePath = "."
 	if err := manager.restoreSlot(ctx, "missing", workspaceRecord, resolved, nil, nil); err == nil {
@@ -389,6 +392,7 @@ func TestMaintenanceLoopHandlesReloadAndTimer(t *testing.T) {
 }
 
 func TestRegistryOrphanAndClosedStoreReconciliation(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	initGitRepo(t, repository)
@@ -672,6 +676,7 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 }
 
 func TestRecoveredJobAndRestoreParentFailures(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	for _, job := range []state.Job{
 		{Kind: "PREPARE", WorkspaceID: "missing", SlotID: "missing"},
@@ -723,6 +728,7 @@ func TestRecoveredJobAndRestoreParentFailures(t *testing.T) {
 }
 
 func TestStatusHotStandbyUsesRepositoryLastLease(t *testing.T) {
+	t.Parallel()
 	ctx, manager, _, _, _, databasePath := managerCoverageFixture(t)
 	manager.mu.Lock()
 	manager.cfg.Retention.HotStandby.Duration = time.Hour
@@ -754,6 +760,7 @@ func TestStatusHotStandbyUsesRepositoryLastLease(t *testing.T) {
 }
 
 func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
+	t.Parallel()
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	repositoryID := string(workspaceRecord.Repositories[0].ID)
@@ -818,6 +825,7 @@ func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
 }
 
 func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
+	t.Parallel()
 	t.Run("resolve and lease", func(t *testing.T) {
 		ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 		if _, err := manager.ResolveAndLease(ctx, filepath.Join(t.TempDir(), "missing"), nil, "coverage", 0); err == nil {
@@ -971,6 +979,7 @@ func openManagerCoverageDB(t *testing.T, path string) *sql.DB {
 }
 
 func TestPrepareFreshResumePropagatesFailureCodes(t *testing.T) {
+	t.Parallel()
 	t.Run("refuses a still-live prior mapping", func(t *testing.T) {
 		root := t.TempDir()
 		repoPath := filepath.Join(root, "repo")
