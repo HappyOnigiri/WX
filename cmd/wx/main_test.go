@@ -300,7 +300,7 @@ func TestEverySubcommandHasAUniformPflagContract(t *testing.T) {
 		{name: "status", run: func(ctx context.Context, args []string) int { return runRPCDisplay(ctx, "Status", args) }, helpExit: 0, helpOnStdout: true},
 		{name: "doctor", run: func(ctx context.Context, args []string) int { return runRPCDisplay(ctx, "Doctor", args) }, helpExit: 0, helpOnStdout: true},
 		{name: "gc", run: runGC, helpExit: 0, helpOnStdout: true},
-		{name: "sessions", run: runSessions, helpExit: 0, helpOnStdout: true},
+		{name: "leases", run: runLeases, helpExit: 0, helpOnStdout: true},
 		{name: "config", run: runConfig, helpExit: 0, helpOnStdout: true},
 		{name: "resume", run: runResume, helpExit: 0, helpOnStdout: true},
 		{name: "daemon", run: runDaemon, helpExit: 0, helpOnStdout: true},

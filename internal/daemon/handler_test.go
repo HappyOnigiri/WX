@@ -18,8 +18,8 @@ func TestHandlerRejectsUnknownFieldsForEveryParameterizedMethod(t *testing.T) {
 	t.Parallel()
 	handler := Handler{}
 	methods := []string{
-		"ResolveAndLease", "AllocateResumeSlot", "WaitReady", "BindAgentSession", "BindAndRestoreResume",
-		"ValidateFreshResume", "Release", "Heartbeat", "RegisterAgentProcess", "Resume", "ResumeStatus", "GC", "Sessions", "Forget",
+		"ResolveAndLease", "WaitReady", "BindAgentSession",
+		"Release", "Heartbeat", "RegisterAgentProcess", "Resume", "ResumeStatus", "WorkspaceScope", "GC", "Sessions", "Forget",
 	}
 	for _, method := range methods {
 		if _, err := handler.Handle(context.Background(), method, json.RawMessage(`{"unexpected":true}`)); err == nil {
@@ -51,31 +51,14 @@ func TestHandlerRoutesResumeAndFreshOperationsToManager(t *testing.T) {
 	t.Cleanup(manager.Close)
 	handler := Handler{Manager: manager}
 	requests := map[string]string{
-		"BindAndRestoreResume": `{"session_id":"missing","token":"token","agent_session_id":"agent"}`,
-		"ValidateFreshResume":  `{"session_id":"missing","token":"token","agent_session_id":"agent","cwd":"/missing","branches":[]}`,
-		"Resume":               `{"wx_session_id":"missing","agent":"codex","client_pid":1,"allow_fresh":false}`,
-		"ResumeStatus":         `{"wx_session_id":"missing"}`,
-		"Forget":               `{"path":"/missing"}`,
+		"Resume":       `{"wx_session_id":"missing","agent":"codex","client_pid":1,"fresh":false}`,
+		"ResumeStatus": `{"wx_session_id":"missing"}`,
+		"Forget":       `{"path":"/missing"}`,
 	}
 	for method, raw := range requests {
 		if _, err := handler.Handle(context.Background(), method, json.RawMessage(raw)); err == nil {
 			t.Errorf("%s unexpectedly succeeded", method)
 		}
-	}
-}
-
-func TestBindAndRestoreResumeRejectsNonResumeSource(t *testing.T) {
-	t.Parallel()
-	handler := Handler{}
-	for _, source := range []string{"start", "fresh", "resume-ish", ""} {
-		raw := json.RawMessage(`{"session_id":"missing","token":"token","agent_session_id":"agent","source":"` + source + `"}`)
-		if _, err := handler.Handle(context.Background(), "BindAndRestoreResume", raw); err == nil {
-			t.Fatalf("source=%q was accepted for the restore-resume path", source)
-		}
-	}
-	raw := json.RawMessage(`{"session_id":"missing","token":"token","agent_session_id":"agent"}`)
-	if _, err := handler.Handle(context.Background(), "BindAndRestoreResume", raw); err == nil {
-		t.Fatal("an omitted source was accepted for the restore-resume path")
 	}
 }
 

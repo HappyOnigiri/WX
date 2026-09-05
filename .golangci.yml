@@ -36,10 +36,32 @@ linters:
           deny:
             - pkg: github.com/HappyOnigiri/WX/internal
               desc: domain must not depend on adapters or orchestration
+        sessions-boundary:
+          files:
+            - "**/internal/sessions/**"
+          deny:
+            - pkg: github.com/HappyOnigiri/WX/internal/config
+              desc: sessions must not depend on wx orchestration or authoritative state
+            - pkg: github.com/HappyOnigiri/WX/internal/cli
+              desc: sessions must not depend on wx orchestration or authoritative state
+            - pkg: github.com/HappyOnigiri/WX/internal/daemon
+              desc: sessions must not depend on wx orchestration or authoritative state
+            - pkg: github.com/HappyOnigiri/WX/internal/rpc
+              desc: sessions must not depend on wx orchestration or authoritative state
+            - pkg: github.com/HappyOnigiri/WX/internal/state
+              desc: sessions must not depend on wx orchestration or authoritative state
+            - pkg: github.com/HappyOnigiri/WX/internal/workspace
+              desc: sessions must not depend on wx orchestration or authoritative state
+            - pkg: github.com/HappyOnigiri/WX/internal/archive
+              desc: sessions must not depend on wx orchestration or authoritative state
+            - pkg: github.com/HappyOnigiri/WX/internal/pool
+              desc: sessions must not depend on wx orchestration or authoritative state
         state-boundary:
           files:
             - "**/internal/state/**"
           deny:
+            - pkg: github.com/HappyOnigiri/WX/internal/sessions
+              desc: state must not depend on session history
             - pkg: github.com/HappyOnigiri/WX/internal/cli
               desc: state must not depend on CLI
             - pkg: github.com/HappyOnigiri/WX/internal/daemon

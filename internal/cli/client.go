@@ -3,7 +3,6 @@ package cli
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -99,7 +98,11 @@ func daemonRecoveryError(prefix string, cause error) error {
 	return errors.New(prefix + "; " + hint)
 }
 
-func (c Client) RunAgent(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume string) int {
+func (c Client) runAgent(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume string) int {
+	return c.runAgentFrom(ctx, agent, args, branches, fresh, explicitResume, "")
+}
+
+func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume, sourceCWD string) int {
 	if err := c.ensureDaemon(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
@@ -109,54 +112,69 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	native := isNativeResume(agent, args)
-	if err := validateFreshResume(fresh, native, explicitResume); err != nil {
+	if sourceCWD != "" {
+		cwd = sourceCWD
+	}
+	intent := parseResumeIntent(agent, args)
+	if err := validateResumeOptions(intent, explicitResume, fresh, branches); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
-	recoveryDiscarded := false
+	target, resuming, err := c.resolveResume(ctx, agent, cwd, intent, explicitResume)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	recoveryDiscarded := fresh
 	var lease daemon.Lease
 	method := "ResolveAndLease"
 	params := any(map[string]any{"cwd": cwd, "branches": branches, "agent": agent, "client_pid": os.Getpid(), "force_worktree": c.forceWorktree})
-	if explicitResume != "" {
-		var status struct {
-			Expired bool `json:"expired"`
-		}
-		if err := c.RPC.Call(ctx, "ResumeStatus", map[string]string{"wx_session_id": explicitResume}, &status); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
-		}
-		if status.Expired {
-			if !confirmExpiredResume(explicitResume) {
-				fmt.Fprintln(os.Stderr, "resume cancelled; no workspace was created")
+	if resuming {
+		if target.WXSessionID != "" {
+			var status resumeStatus
+			if err := c.RPC.Call(ctx, "ResumeStatus", map[string]string{"wx_session_id": target.WXSessionID}, &status); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
 				return 1
 			}
-			recoveryDiscarded = true
+			if agent == "" {
+				agent = status.Agent
+			}
+			target.Agent = agent
+			if target.AgentSessionID == "" {
+				target.AgentSessionID = status.AgentSessionID
+			}
+			if !fresh && status.Expired {
+				if !confirmExpiredResume(target.WXSessionID) {
+					fmt.Fprintln(os.Stderr, "resume cancelled; no workspace was created")
+					return 1
+				}
+				fresh = true
+				recoveryDiscarded = true
+			}
+			method = "Resume"
+			params = map[string]any{"wx_session_id": target.WXSessionID, "agent": agent, "client_pid": os.Getpid(), "agent_session_id": target.AgentSessionID, "fresh": fresh, "branches": branches}
+		} else {
+			if target.CWD == "" {
+				fmt.Fprintln(os.Stderr, "error: selected conversation has no working directory")
+				return 1
+			}
+			params = map[string]any{"cwd": target.CWD, "branches": branches, "agent": agent, "client_pid": os.Getpid(), "force_worktree": c.forceWorktree}
 		}
-		method = "Resume"
-		params = map[string]any{"wx_session_id": explicitResume, "agent": agent, "client_pid": os.Getpid(), "allow_fresh": recoveryDiscarded}
-	} else if native {
-		method = "AllocateResumeSlot"
-		params = map[string]any{"agent": agent, "client_pid": os.Getpid()}
 	}
 	hooksReady := hookconfig.Available(agent)
-	if native && explicitResume == "" && !hooksReady {
-		fmt.Fprintln(os.Stderr, "error: native resume requires global wx SessionStart, UserPromptSubmit, and PreToolUse hooks; use wx resume <wx-session-id> for the safe foreground fallback")
-		return 1
-	}
 	operationKey, err := domain.NewID()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: create operation identity:", err)
 		return 1
 	}
-	// ResolveAndLease、Resume、AllocateResumeSlot は daemon 側で repository discovery を同期実行する。
+	// ResolveAndLease と Resume は daemon 側で repository discovery を同期実行する。
 	// cold な複数 repository root でも、discovery.timeout 内の探索を client 側の既定 timeout で中断しない。
-	leaseCtx := ctx
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		leaseCtx, cancel = context.WithTimeout(ctx, c.discoveryTimeout())
-		defer cancel()
+	budget := c.discoveryTimeout()
+	if method == "Resume" && c.Config.Readiness.Timeout.Duration > 0 {
+		budget = c.Config.Readiness.Timeout.Duration
 	}
+	leaseCtx, cancelLease := context.WithTimeout(ctx, budget)
+	defer cancelLease()
 	if err := c.RPC.CallWithKey(leaseCtx, method, "launch:"+operationKey, params, &lease); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
@@ -173,31 +191,21 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	go c.watchTermination(ctx, lease, terminator, heartbeatDone)
 	defer close(heartbeatDone)
 	defer terminator.confirm(c, lease)
-	if agent == "codex" && native {
-		args = codexResumeArgs(args)
+	if resuming {
+		rest := intent.Rest
+		if explicitResume != "" {
+			rest = args
+		}
+		args = resumeArgs(agent, target.AgentSessionID, lease.Path, rest)
 	}
-	encodedBranches, marshalErr := json.Marshal(branches)
-	if marshalErr != nil {
-		fmt.Fprintln(os.Stderr, "error: encode branch selection:", marshalErr)
-		return 1
-	}
-	envOverrides := []string{"WX_SESSION_ID=" + lease.SessionID, "WX_SESSION_TOKEN=" + lease.Token, "WX_DAEMON_SOCKET=" + c.RPC.Socket, "WX_WORKSPACE_ROOT=" + lease.Path, "WX_SOURCE_WORKSPACE=" + lease.SourceWorkspace, "WX_READINESS_TIMEOUT=" + c.Config.Readiness.Timeout.String(), "WX_SOURCE_CWD=" + cwd, "WX_BRANCHES_JSON=" + string(encodedBranches)}
-	if native && explicitResume == "" {
-		envOverrides = append(envOverrides, "WX_NATIVE_RESUME=1")
-	}
-	if explicitResume != "" {
-		envOverrides = append(envOverrides, "WX_EXPLICIT_RESUME=1")
-	}
-	if fresh {
-		envOverrides = append(envOverrides, "WX_FRESH=1")
-	}
+	envOverrides := []string{"WX_SESSION_ID=" + lease.SessionID, "WX_SESSION_TOKEN=" + lease.Token, "WX_DAEMON_SOCKET=" + c.RPC.Socket, "WX_WORKSPACE_ROOT=" + lease.Path, "WX_SOURCE_WORKSPACE=" + lease.SourceWorkspace, "WX_READINESS_TIMEOUT=" + c.Config.Readiness.Timeout.String(), "WX_SOURCE_CWD=" + cwd}
 	if recoveryDiscarded {
 		envOverrides = append(envOverrides, "WX_RECOVERY_DISCARDED=1")
 	}
 	env := childEnvironment(os.Environ(), envOverrides)
-	// hook 導入時は preparation を agent 起動と prompt 入力に重ねる。
-	// それ以外の通常起動と明示 resume は foreground で安全に待機する。
-	if !lease.Ready && !hooksReady {
+	// 通常起動は hook があれば preparation と重ねる。
+	// 会話の再開は復元と ID の移譲を完了してから agent を起動する。
+	if !lease.Ready && (resuming || !hooksReady) {
 		waitCtx, cancel := context.WithTimeout(ctx, c.Config.Readiness.Timeout.Duration)
 		err = c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
 		cancel()
@@ -278,13 +286,6 @@ func (c Client) RunAgent(ctx context.Context, agent string, args, branches []str
 	return 1
 }
 
-func validateFreshResume(fresh, native bool, explicitResume string) error {
-	if fresh && (!native || explicitResume != "") {
-		return errors.New("--fresh is only valid for an agent-native resume")
-	}
-	return nil
-}
-
 func configureAgentProcess(cmd *exec.Cmd, ttyFD int) bool {
 	foreground := isTerminal(ttyFD)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Foreground: foreground, Ctty: ttyFD}
@@ -348,10 +349,6 @@ var wxChildEnvironmentKeys = map[string]struct{}{
 	"WX_SOURCE_WORKSPACE":   {},
 	"WX_READINESS_TIMEOUT":  {},
 	"WX_SOURCE_CWD":         {},
-	"WX_BRANCHES_JSON":      {},
-	"WX_NATIVE_RESUME":      {},
-	"WX_EXPLICIT_RESUME":    {},
-	"WX_FRESH":              {},
 	"WX_RECOVERY_DISCARDED": {},
 }
 
@@ -382,31 +379,4 @@ func confirmExpiredResume(sessionID string) bool {
 	}
 	answer = strings.ToLower(strings.TrimSpace(answer))
 	return answer == "y" || answer == "yes"
-}
-
-func isNativeResume(agent string, args []string) bool {
-	if agent == "codex" {
-		return len(args) > 0 && args[0] == "resume"
-	}
-	if agent == "claude" {
-		for _, a := range args {
-			if a == "--resume" || strings.HasPrefix(a, "--resume=") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func codexResumeArgs(args []string) []string {
-	hasTarget := false
-	for _, a := range args[1:] {
-		if a == "--last" || a == "--all" || (!strings.HasPrefix(a, "-") && a != "") {
-			hasTarget = true
-		}
-	}
-	if hasTarget {
-		return args
-	}
-	return append(args, "--all")
 }

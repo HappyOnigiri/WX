@@ -1,0 +1,6 @@
+{"timestamp":"2026-09-06T00:00:00Z","type":"session_meta","payload":{"id":"019e8bd5-4230-7403-b1aa-b48f42e564dc","cwd":"/Users/test/project","originator":"codex-tui","cli_version":"0.140.0"}}
+{"timestamp":"2026-09-06T00:00:01Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"Developer instructions are metadata."}]}}
+{"timestamp":"2026-09-06T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/test/project\n\n<INSTRUCTIONS>metadata</INSTRUCTIONS>"}]}}
+{"timestamp":"2026-09-06T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/Users/test/project</cwd>\n</environment_context>"}]}}
+{"timestamp":"2026-09-06T00:00:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Fix the authentication bug\nwith a regression test"}]}}
+{"timestamp":"2026-09-06T00:00:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will inspect the authentication flow."}]}}

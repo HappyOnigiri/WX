@@ -74,8 +74,8 @@ func run(ctx context.Context, args []string) int {
 		return runDaemon(ctx, args[1:])
 	case "hook":
 		return runHook(ctx, args[1:])
-	case "sessions":
-		return runSessions(ctx, args[1:])
+	case "leases":
+		return runLeases(ctx, args[1:])
 	case "forget":
 		return runForget(ctx, args[1:])
 	}
@@ -303,7 +303,7 @@ func runConfig(ctx context.Context, args []string) int {
 		}
 		return 0
 	}
-	if len(rest) != 2 {
+	if len(rest) < 2 {
 		commandUsage(os.Stderr, "config")
 		return 2
 	}
@@ -312,7 +312,34 @@ func runConfig(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	if err := config.SetField(&raw, rest[0], rest[1]); err != nil {
+	key := rest[0]
+	switch rest[1] {
+	case "--add":
+		if len(rest) != 3 {
+			commandUsage(os.Stderr, "config")
+			return 2
+		}
+		err = config.AppendList(&raw, key, rest[2])
+	case "--remove":
+		if len(rest) != 3 {
+			commandUsage(os.Stderr, "config")
+			return 2
+		}
+		err = config.RemoveList(&raw, key, rest[2])
+	case "--reset":
+		if len(rest) != 2 {
+			commandUsage(os.Stderr, "config")
+			return 2
+		}
+		err = config.ResetList(&raw, key)
+	default:
+		if len(rest) != 2 {
+			commandUsage(os.Stderr, "config")
+			return 2
+		}
+		err = config.SetField(&raw, key, rest[1])
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
@@ -339,21 +366,40 @@ func runConfig(ctx context.Context, args []string) int {
 }
 
 func runResume(ctx context.Context, args []string) int {
-	fs := pflag.NewFlagSet("resume", pflag.ContinueOnError)
-	// <id> <agent> より後は agent 自身の argv（--resume など）なので、最初の位置引数で wx の解析を止める。
-	fs.SetInterspersed(false)
-	fs.Usage = func() { commandUsage(os.Stdout, "resume") }
-	if code, done := finishFlagParse(fs, "resume", args); done {
-		return code
-	}
-	rest := fs.Args()
-	if len(rest) < 2 {
+	if len(args) == 0 {
 		commandUsage(os.Stderr, "resume")
 		return 2
 	}
-	id, agentName := rest[0], rest[1]
-	if agentName != "claude" && agentName != "codex" {
+	if args[0] == "--help" || args[0] == "-h" {
+		commandUsage(os.Stdout, "resume")
+		return 0
+	}
+	if strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "error: unknown flag", args[0])
+		commandUsage(os.Stderr, "resume")
+		return 2
+	}
+	id := args[0]
+	rest := args[1:]
+	agentName := ""
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") && rest[0] != "claude" && rest[0] != "codex" {
 		fmt.Fprintln(os.Stderr, "error: agent must be claude or codex")
+		return 2
+	}
+	if len(rest) > 0 && (rest[0] == "claude" || rest[0] == "codex") {
+		agentName = rest[0]
+		rest = rest[1:]
+	}
+	fs := pflag.NewFlagSet("resume", pflag.ContinueOnError)
+	fs.SetInterspersed(false)
+	fresh := fs.Bool("fresh", false, "create a worktree from the current base")
+	branches := fs.StringArray("branch", nil, "base branch for a fresh worktree")
+	wxArgs, agentArgs := resumeFlagPrefix(rest)
+	if code, done := finishFlagParse(fs, "resume", wxArgs); done {
+		return code
+	}
+	if len(*branches) > 0 && !*fresh {
+		fmt.Fprintln(os.Stderr, "error: --branch requires --fresh when resuming")
 		return 2
 	}
 	cfg, err := config.Load()
@@ -361,11 +407,31 @@ func runResume(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	c, err := cli.New(cfg)
+	client, err := cli.New(cfg)
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	return c.RunAgent(ctx, agentName, rest[2:], nil, false, id)
+	return client.RunResume(ctx, id, agentName, agentArgs, *branches, *fresh)
+}
+
+// resumeFlagPrefix は先頭の wx オプションだけを分離し、残りを agent の argv として保つ。
+func resumeFlagPrefix(args []string) (wxArgs, agentArgs []string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			return args[:i], args[i+1:]
+		case arg == "--fresh" || strings.HasPrefix(arg, "--fresh=") || strings.HasPrefix(arg, "--branch="):
+		case arg == "--branch":
+			if i+1 < len(args) {
+				i++
+			}
+		default:
+			return args[:i], args[i:]
+		}
+	}
+	return args, nil
 }
 
 // daemonWaitTimeout は同期的な daemon ライフサイクル操作の待機上限。
@@ -769,16 +835,16 @@ func runHook(ctx context.Context, args []string) int {
 	return 0
 }
 
-func runSessions(ctx context.Context, args []string) int {
-	fs := pflag.NewFlagSet("sessions", pflag.ContinueOnError)
-	all := fs.Bool("all", false, "include inactive and expired sessions")
+func runLeases(ctx context.Context, args []string) int {
+	fs := pflag.NewFlagSet("leases", pflag.ContinueOnError)
+	all := fs.Bool("all", false, "include inactive and expired leases")
 	jsonOut := fs.Bool("json", false, "print JSON")
-	fs.Usage = func() { commandUsage(os.Stdout, "sessions") }
-	if code, done := finishFlagParse(fs, "sessions", args); done {
+	fs.Usage = func() { commandUsage(os.Stdout, "leases") }
+	if code, done := finishFlagParse(fs, "leases", args); done {
 		return code
 	}
 	if fs.NArg() != 0 {
-		commandUsage(os.Stderr, "sessions")
+		commandUsage(os.Stderr, "leases")
 		return 2
 	}
 	c, _ := rpcClient()

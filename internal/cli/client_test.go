@@ -75,7 +75,7 @@ func TestRunAgentFailsClosedWhenAgentRegistrationFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
-	if exit := client.RunAgent(ctx, agentScript, []string{strconv.Itoa(os.Getpid())}, nil, false, ""); exit != 1 {
+	if exit := client.runAgent(ctx, agentScript, []string{strconv.Itoa(os.Getpid())}, nil, false, ""); exit != 1 {
 		t.Fatalf("RunAgent exit=%d", exit)
 	}
 	cancel()
@@ -89,7 +89,7 @@ func TestRunAgentHelperProcess(t *testing.T) {
 		return
 	}
 	client := Client{RPC: rpc.Client{Socket: os.Getenv("WX_HELPER_SOCKET"), Timeout: time.Second}, Config: config.Defaults()}
-	os.Exit(client.RunAgent(context.Background(), os.Getenv("WX_HELPER_AGENT"), []string{os.Getenv("WX_HELPER_PID_FILE"), os.Getenv("WX_HELPER_GUARDIAN_PID")}, nil, false, ""))
+	os.Exit(client.runAgent(context.Background(), os.Getenv("WX_HELPER_AGENT"), []string{os.Getenv("WX_HELPER_PID_FILE"), os.Getenv("WX_HELPER_GUARDIAN_PID")}, nil, false, ""))
 }
 
 func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
@@ -184,9 +184,6 @@ func TestChildEnvironmentScrubsInheritedWXInvocationState(t *testing.T) {
 		"PATH=/bin",
 		"WX_SESSION_ID=parent",
 		"WX_SESSION_TOKEN=parent-token",
-		"WX_NATIVE_RESUME=1",
-		"WX_EXPLICIT_RESUME=1",
-		"WX_FRESH=1",
 		"WX_RECOVERY_DISCARDED=1",
 		"KEEP=present",
 	}
@@ -204,7 +201,7 @@ func TestChildEnvironmentScrubsInheritedWXInvocationState(t *testing.T) {
 	if values["WX_SESSION_ID"] != "child" || values["WX_SESSION_TOKEN"] != "child-token" || values["KEEP"] != "present" {
 		t.Fatalf("current child environment was not applied: %v", values)
 	}
-	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED"} {
+	for _, key := range []string{"WX_RECOVERY_DISCARDED"} {
 		if _, exists := values[key]; exists {
 			t.Fatalf("parent invocation mode %s leaked into child: %v", key, values)
 		}
@@ -218,7 +215,7 @@ func TestRunAgentUsesForegroundReadyFallbackWhenHooksAreUnavailable(t *testing.T
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(temp) })
 	t.Setenv("HOME", filepath.Join(temp, "home"))
-	for _, key := range []string{"WX_NATIVE_RESUME", "WX_EXPLICIT_RESUME", "WX_FRESH", "WX_RECOVERY_DISCARDED"} {
+	for _, key := range []string{"WX_RECOVERY_DISCARDED"} {
 		t.Setenv(key, "1")
 	}
 	socket := filepath.Join(temp, "wxd.sock")
@@ -249,7 +246,7 @@ func TestRunAgentUsesForegroundReadyFallbackWhenHooksAreUnavailable(t *testing.T
 		t.Fatal(err)
 	}
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
-	if exit := client.RunAgent(ctx, agentScript, nil, nil, false, ""); exit != 0 {
+	if exit := client.runAgent(ctx, agentScript, nil, nil, false, ""); exit != 0 {
 		t.Fatalf("RunAgent exit=%d", exit)
 	}
 	handler.mu.Lock()
@@ -304,7 +301,7 @@ func TestRunAgentSupervisesChildAndReleasesLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
-	if exit := client.RunAgent(ctx, script, []string{result}, nil, false, ""); exit != 0 {
+	if exit := client.runAgent(ctx, script, []string{result}, nil, false, ""); exit != 0 {
 		t.Fatalf("RunAgent exit=%d", exit)
 	}
 	data, err := os.ReadFile(result)
@@ -391,7 +388,7 @@ func TestRunAgentKeepsDescriptorBoundCWDAcrossRootReplacement(t *testing.T) {
 			}
 		},
 	}
-	if exit := client.RunAgent(ctx, agent, []string{result}, nil, false, ""); exit != 0 {
+	if exit := client.runAgent(ctx, agent, []string{result}, nil, false, ""); exit != 0 {
 		t.Fatalf("RunAgent exit=%d", exit)
 	}
 	data, err := os.ReadFile(result)
@@ -411,30 +408,5 @@ func TestRunAgentKeepsDescriptorBoundCWDAcrossRootReplacement(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestAgentArgumentAdapters(t *testing.T) {
-	if !isNativeResume("codex", []string{"resume"}) || !isNativeResume("claude", []string{"--resume=id"}) || isNativeResume("codex", []string{"exec"}) {
-		t.Fatal("native resume detection mismatch")
-	}
-	if got := codexResumeArgs([]string{"resume"}); len(got) != 2 || got[1] != "--all" {
-		t.Fatalf("picker args=%v", got)
-	}
-	for _, args := range [][]string{{"resume", "--last"}, {"resume", "session"}, {"resume", "--all"}} {
-		if got := codexResumeArgs(args); len(got) != len(args) {
-			t.Fatalf("targeted resume changed: %v -> %v", args, got)
-		}
-	}
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = write.Close()
-	originalStdin := os.Stdin
-	os.Stdin = read
-	t.Cleanup(func() { os.Stdin = originalStdin; _ = read.Close() })
-	if confirmExpiredResume("session") {
-		t.Fatal("non-interactive expired resume was confirmed")
 	}
 }

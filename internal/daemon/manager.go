@@ -1158,7 +1158,7 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	return m.allocate(ctx, w, resolved, generation, agent, pid, "STARTING", "")
 }
 
-func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, sessionState, parent string) (Lease, error) {
+func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, sessionState, parent string, pendingAgentID ...string) (Lease, error) {
 	rootPath, rootID, err := m.activeRoot()
 	if err != nil {
 		return Lease{}, err
@@ -1179,7 +1179,7 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 		if idErr != nil {
 			return Lease{}, idErr
 		}
-		lease, retry, allocErr := m.allocateWithID(ctx, id, rootPath, rootID, token, w, resolved, generation, agent, pid, sessionState, slotState, jobKind, parent)
+		lease, retry, allocErr := m.allocateWithID(ctx, id, rootPath, rootID, token, w, resolved, generation, agent, pid, sessionState, slotState, jobKind, parent, pendingAgentID...)
 		if allocErr == nil {
 			return lease, nil
 		}
@@ -1193,8 +1193,8 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 
 const idAllocationAttempts = 10
 
-func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, token string, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, sessionState, slotState, jobKind, parent string) (Lease, bool, error) {
-	relPath, err := slotRelPath(string(w.ID), id, false)
+func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, token string, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, sessionState, slotState, jobKind, parent string, pendingAgentID ...string) (Lease, bool, error) {
+	relPath, err := slotRelPath(string(w.ID), id)
 	if err != nil {
 		return Lease{}, false, err
 	}
@@ -1219,6 +1219,18 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 		return Lease{}, false, err
 	}
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, ParentSessionID: parent, State: sessionState, AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
+	if sessionState == "RESTORING" {
+		if len(pendingAgentID) > 0 {
+			session.PendingAgentSessionID = pendingAgentID[0]
+		}
+		if session.PendingAgentSessionID == "" {
+			old, err := m.store.SessionByID(ctx, parent)
+			if err != nil {
+				return Lease{}, false, err
+			}
+			session.PendingAgentSessionID = old.AgentSessionID
+		}
+	}
 	if err := m.retainLease(id, leasePathValue); err != nil {
 		return Lease{}, false, err
 	}
@@ -1235,13 +1247,10 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 // workspace未確定slot用の予約namespaceであり、通常のworkspace IDには"_"接頭辞を許さない。
 const unboundNamespace = "_unbound"
 
-func slotRelPath(workspaceID, slotID string, unbound bool) (string, error) {
+func slotRelPath(workspaceID, slotID string) (string, error) {
 	// 作成側とorphan scanの列挙側で共有するroot相対layoutを生成する。
 	if err := validateLayoutComponent("slot id", slotID); err != nil {
 		return "", err
-	}
-	if unbound {
-		return filepath.Join(unboundNamespace, slotID), nil
 	}
 	if err := validateLayoutComponent("workspace id", workspaceID); err != nil {
 		return "", err
@@ -2125,7 +2134,7 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 		if err != nil {
 			return state.Job{}, err
 		}
-		relPath, err := slotRelPath(string(w.ID), id, false)
+		relPath, err := slotRelPath(string(w.ID), id)
 		if err != nil {
 			return state.Job{}, err
 		}
@@ -2219,60 +2228,6 @@ func (m *Manager) removeUnregisteredSlotRoot(ctx context.Context, rootPath, slot
 		return err
 	}
 	return verifyRootDescriptorPath(rootPath, owner)
-}
-
-func (m *Manager) AllocateResumeSlot(ctx context.Context, agent string, pid int) (Lease, error) {
-	// workspace未確定のresumeはslot directoryをleaseし、SessionStartでbind後にworktreeをその配下へ作る。
-	rootPath, rootID, err := m.activeRoot()
-	if err != nil {
-		return Lease{}, err
-	}
-	token, err := state.TokenHex()
-	if err != nil {
-		return Lease{}, err
-	}
-	var lastErr error
-	for range idAllocationAttempts {
-		id, idErr := newSlotID()
-		if idErr != nil {
-			return Lease{}, idErr
-		}
-		lease, retry, allocErr := m.allocateResumeSlotWithID(ctx, id, rootPath, rootID, token, agent, pid)
-		if allocErr == nil {
-			return lease, nil
-		}
-		if !retry {
-			return Lease{}, allocErr
-		}
-		lastErr = allocErr
-	}
-	return Lease{}, fmt.Errorf("allocate resume slot: %w", lastErr)
-}
-
-func (m *Manager) allocateResumeSlotWithID(ctx context.Context, id, rootPath, rootID, token, agent string, pid int) (Lease, bool, error) {
-	relPath, err := slotRelPath("", id, true)
-	if err != nil {
-		return Lease{}, false, err
-	}
-	slotPath := filepath.Join(rootPath, relPath)
-	releaseRoot, err := m.holdRootForPath(slotPath)
-	if err != nil {
-		return Lease{}, false, err
-	}
-	defer releaseRoot()
-	slotIdentity, _, err := m.createSlotRoot(slotPath, slotPath)
-	if err != nil {
-		return Lease{}, false, err
-	}
-	if err := m.retainLease(id, slotPath); err != nil {
-		return Lease{}, false, err
-	}
-	session := state.Session{ID: id, SlotID: id, State: "UNBOUND", AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
-	if _, err := m.store.CreateSlotSession(ctx, state.Slot{ID: id, Generation: 0, RootID: rootID, RelPath: relPath, DirIdentity: slotIdentity, State: "UNBOUND"}, nil, session, ""); err != nil {
-		m.releaseLease(id)
-		return Lease{}, state.IsIDCollision(err), err
-	}
-	return Lease{SessionID: id, Token: token, Path: slotPath, RootIdentity: slotIdentity}, false, nil
 }
 
 func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
@@ -2370,111 +2325,6 @@ func (m *Manager) BindAgentSession(ctx context.Context, id, token, agentID strin
 		return err
 	}
 	return m.store.BindAgentSession(ctx, id, agentID)
-}
-
-func (m *Manager) PrepareFreshResume(ctx context.Context, id, token, agentID, cwd string, branches []string) error {
-	current, err := m.store.Session(ctx, id, token)
-	if err != nil {
-		return err
-	}
-	fail := func(code string, cause error) error {
-		_ = m.store.SetSlotState(ctx, current.SlotID, []string{"UNBOUND", "PREPARING"}, "FAILED", code)
-		return cause
-	}
-	prior, err := m.store.FindByAgentSession(ctx, current.AgentKind, agentID)
-	parentID := ""
-	var w discovery.Workspace
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		if cwd == "" {
-			return fail("FRESH_SOURCE_UNKNOWN", errors.New("--fresh source workspace is unavailable"))
-		}
-		discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
-		w, err = discoverer.Resolve(ctx, cwd)
-		if err == nil {
-			w, err = m.store.CanonicalWorkspace(ctx, w)
-		}
-	case err != nil:
-		return fail("FRESH_LOOKUP_FAILED", err)
-	case prior.State != "EXPIRED":
-		return fail("FRESH_RESUME_REFUSED", fmt.Errorf("--fresh is refused because wx session %s is %s, not EXPIRED", prior.ID, prior.State))
-	default:
-		parentID = prior.ID
-		w, err = m.store.Workspace(ctx, prior.WorkspaceID)
-	}
-	if err != nil {
-		return fail("FRESH_SOURCE_FAILED", err)
-	}
-	w, generation, err := m.store.UpsertWorkspaceGeneration(ctx, w)
-	if err != nil {
-		return fail("FRESH_STATE_FAILED", err)
-	}
-	resolved, err := pool.ResolveBranches(ctx, m.git, w, branches)
-	if err != nil {
-		return fail("FRESH_RESOLVE_FAILED", err)
-	}
-	slot, err := m.store.Slot(ctx, current.SlotID)
-	if err != nil {
-		return fail("FRESH_STATE_FAILED", err)
-	}
-	repositories, err := m.slotRepos(slot.Path, w, resolved, generation, nil)
-	if err != nil {
-		return fail("FRESH_LAYOUT_FAILED", err)
-	}
-	job, err := m.store.BindFreshResumeSlot(ctx, id, parentID, string(w.ID), agentID, generation, repositories)
-	if err != nil {
-		return fail("FRESH_BIND_FAILED", err)
-	}
-	m.schedule(job)
-	return nil
-}
-
-func (m *Manager) BindAndRestoreResume(ctx context.Context, id, token, agentID string) error {
-	current, err := m.store.Session(ctx, id, token)
-	if err != nil {
-		return err
-	}
-	prior, err := m.store.FindByAgentSession(ctx, current.AgentKind, agentID)
-	if err != nil {
-		return fmt.Errorf("no wx recovery mapping for agent session %s; rerun with --fresh only if local workspace state is no longer needed", agentID)
-	}
-	snaps, err := m.store.Snapshots(ctx, prior.ID)
-	if err != nil {
-		return err
-	}
-	switch prior.State {
-	case "RELEASING", "SNAPSHOTTING":
-	case "ARCHIVED":
-		w, workspaceErr := m.store.SessionWorkspace(ctx, prior.ID)
-		if workspaceErr != nil {
-			return workspaceErr
-		}
-		usable, usableErr := m.recoveryUsable(ctx, prior.ID, w, snaps, time.Now())
-		if usableErr != nil {
-			return fmt.Errorf("validate wx recovery snapshot: %w", usableErr)
-		}
-		if !usable {
-			return fmt.Errorf("wx recovery snapshot is expired or unavailable; stop this session and run wx resume %s %s resume %s, or rerun the native resume with --fresh only if local workspace state may be discarded", prior.ID, current.AgentKind, agentID)
-		}
-	case "EXPIRED":
-		return fmt.Errorf("wx recovery snapshot is expired or unavailable; stop this session and run wx resume %s %s resume %s, or rerun the native resume with --fresh only if local workspace state may be discarded", prior.ID, current.AgentKind, agentID)
-	default:
-		return fmt.Errorf("wx session %s is %s and cannot be resumed without first completing release", prior.ID, prior.State)
-	}
-	w, err := m.store.SessionWorkspace(ctx, prior.ID)
-	if err != nil {
-		return err
-	}
-	generation, err := m.store.WorkspaceGeneration(ctx, string(w.ID))
-	if err != nil {
-		return err
-	}
-	job, err := m.store.BindResumeSlot(ctx, id, prior.ID, string(w.ID), agentID, generation, nil)
-	if err != nil {
-		return err
-	}
-	m.schedule(job)
-	return nil
 }
 
 func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, snaps map[string]state.Snapshot) error {
@@ -2631,7 +2481,7 @@ func (m *Manager) ResumeStatus(ctx context.Context, oldID string) (map[string]an
 		}
 		expired = !usable
 	}
-	return map[string]any{"state": old.State, "expired": expired, "pending": pending, "workspace_id": old.WorkspaceID}, nil
+	return map[string]any{"wx_session_id": old.ID, "agent": old.AgentKind, "agent_session_id": old.AgentSessionID, "state": old.State, "expired": expired, "pending": pending, "workspace_id": old.WorkspaceID}, nil
 }
 
 func snapshotsUsable(snaps []state.Snapshot, at time.Time) bool {
@@ -2688,10 +2538,31 @@ func workspaceRecoveryExclusions(w discovery.Workspace, repos []state.SlotReposi
 	return excluded
 }
 
-func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, allowFresh bool) (Lease, error) {
+type ResumeOptions struct {
+	AgentSessionID string
+	Branches       []string
+}
+
+func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, fresh bool, options ...ResumeOptions) (Lease, error) {
+	var opts ResumeOptions
+	if len(options) > 0 {
+		opts = options[0]
+	}
+	if !fresh && len(opts.Branches) > 0 {
+		return Lease{}, errors.New("--branch requires --fresh when resuming")
+	}
 	old, err := m.store.SessionByID(ctx, oldID)
 	if err != nil {
 		return Lease{}, err
+	}
+	if agent == "" {
+		agent = old.AgentKind
+	}
+	if agent != old.AgentKind {
+		return Lease{}, errors.New("resume agent does not match the original session")
+	}
+	if old.State == "STARTING" || old.State == "ACTIVE" || old.State == "RESTORING" || old.State == "UNBOUND" {
+		return Lease{}, errors.New("session has not been released yet")
 	}
 	snaps, err := m.store.Snapshots(ctx, oldID)
 	if err != nil {
@@ -2705,7 +2576,7 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, allo
 	}
 	usable := false
 	var archivedWorkspace discovery.Workspace
-	if old.State != "EXPIRED" {
+	if !fresh && old.State != "EXPIRED" {
 		archivedWorkspace, err = m.store.SessionWorkspace(ctx, oldID)
 		if err != nil {
 			return Lease{}, err
@@ -2715,15 +2586,15 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, allo
 			return Lease{}, fmt.Errorf("validate recovery snapshot: %w", err)
 		}
 	}
-	if old.State == "EXPIRED" || !usable {
-		if !allowFresh {
+	if fresh || old.State == "EXPIRED" || !usable {
+		if !fresh {
 			return Lease{}, errors.New("session snapshot is EXPIRED; confirmation is required before creating a workspace from the current base")
 		}
 		w, err := m.store.Workspace(ctx, old.WorkspaceID)
 		if err != nil {
 			return Lease{}, err
 		}
-		resolved, err := pool.ResolveBranches(ctx, m.git, w, nil)
+		resolved, err := pool.ResolveBranches(ctx, m.git, w, opts.Branches)
 		if err != nil {
 			return Lease{}, err
 		}
@@ -2752,7 +2623,7 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, allo
 	if err != nil {
 		return Lease{}, err
 	}
-	lease, err := m.allocate(ctx, w, resolved, generation, agent, pid, "RESTORING", oldID)
+	lease, err := m.allocate(ctx, w, resolved, generation, agent, pid, "RESTORING", oldID, opts.AgentSessionID)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -2912,7 +2783,10 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 			}
 		}
 	}
-	return m.store.MarkArchived(ctx, s.ID, s.SlotID, state.FormatTime(expiry))
+	if err := m.store.MarkArchived(ctx, s.ID, s.SlotID, state.FormatTime(expiry)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
