@@ -107,12 +107,14 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   `RequestStop`だけは状態を変えるがゲートを通さない（状態を変えるRPCを一切受け付けない以上、守るべきin-flightの予約が無い）。
 - **restart / stopのidleゲート** — `wx daemon restart`・`wx daemon stop`とバイナリ差し替えの自動検知は、いずれも`restartPending`・`stopPending`を立てるだけである。
   実行は`maintainJobs`から`runPendingLifecycle`が駆動する。
-  ゲートは「in-flightのRPCが0」「最後のRPC終了から`lifecycleQuietPeriod`（5秒）経過」「`jobs`が0」を要求する。
+  ゲートは「in-flightのRPCが0」「`jobs`が0」を要求する。
   SIGTERMがin-flightのRPCを救わない（応答を書かずに接続が閉じる）以上、これが唯一の保護である。
-  1回のwx起動が独立した複数のRPCの列である以上、in-flightが0になった最初の瞬間は安全な瞬間ではないので、quiet periodを別に要求する。
-  ただしquiet periodを数える対象から`RequestStop`・`RequestRestart`・`RequestStart`自身は外す（`Handler.Handle`が`isLifecycleMethod`で振り分ける）。
-  これらは守るべきユーザー操作ではなくゲートを待っている側であり、数えるとidleなdaemonでも自分が作ったquiet periodを5秒待つことになる。
-  in-flightの数え上げからは外さない。
+  RPCとRPCの隙間は待たない。
+  かつては「最後のRPC終了から5秒」のquiet periodも要求していたが、`wx claude`のclientがsessionごとに10秒周期で送る`Heartbeat`の位相が噛み合うと5秒の空きが構造的に生まれず、保留が解けないまま残る。
+  隙間で置換されたclientは`rpc.Client`の`ConnectRetry`（2秒）で追従し、状態を変えるRPCは`CallWithKey`の冪等キーを持つ。
+  そもそも守りたい隙間（`ResolveAndLease`からagent起動を挟んでsession-start hookまで、など）は5秒では届かない。
+  なお`RequestStop`・`RequestRestart`・`RequestStart`はin-flightの数え上げからは外さないが、応答に載せる`inflight_requests`からは外す（`Handler.Handle`が`isLifecycleMethod`で振り分ける）。
+  ゲートを待っている側を数えると、idleなdaemonが自分自身を理由に待っているように見えるためである。
   応答フレームは`Handler.Handle`が戻った後に書かれるので、代わりに`lifecycleReplyGrace`（100ミリ秒）だけゲートを閉じたままにして、受理を伝える応答がそのsignalに切られないようにする。
   restartは`underLaunchd()`も要求する（手動起動のdaemonがkickstartすると二重起動になる）が、stopは要求しない。
   この判定は`launchd_managed`として応答にも載るので、CLIは来ない置換を待たずに断れる。
@@ -122,10 +124,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   CLIが待ちきれずに諦めたstopはpendingのまま残るので、signalに渡される前ならここで取り消す。
   渡された後は取り消せないため、CLIは終了を待ってからlaunchd経由で起動し直す。
   ゲートを通過したら、restartは`launchd.Kickstart`、stopは自プロセスへのSIGTERMを1度だけ発行する。
-  同期待ちするCLI側は、stopとstartはsocketへのdial可否だけを見る（`Status`をpollingすると`lastRequestEnd`が更新され続けてゲートが永久に開かない）。
+  同期待ちするCLI側は、stopとstartはsocketへのdial可否だけを見る（RPCを送らないので、待つこと自体はゲートを塞がない）。
   restartだけは、listenerの消失を観測した後と、待ち切れた後の2箇所で`Status`のpidを読む。
   50msのプローブはkickstartが閉じて開き直す数ミリ秒を丸ごと取りこぼしうるので、置換の判定は観測した断ではなくpidの比較で行うためである。
-  前者はkickstartが済んだ後なのでゲートに影響しないが、後者は諦める直前の1回で、restartがまだpendingならquiet periodを押し出す。
   待っている間、CLIは`stopping...`のような行を出す。
   ゲートが開くまでdaemonは何も言わないので、これが唯一の生存表示になる。
   ドットのアニメーションはstdoutが端末のときだけで、pipeやファイルへ出しているときは待機行を一切出さない（`interactiveOutput`）。

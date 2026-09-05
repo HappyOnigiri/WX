@@ -190,15 +190,24 @@ func TestPendingRestartWaitsForJobsAndRequests(t *testing.T) {
 	kickstarts.stayAt(t, 0)
 	manager.endRequest(false)
 	manager.runPendingLifecycle()
+	kickstarts.want(t, 1)
+}
+
+// 実行中の要求が捌けた時点で発行し、次の要求が来るかどうかは待たないことを固定する。
+func TestAPendingRestartIssuesAsSoonAsTheLastRequestEnds(t *testing.T) {
+	manager, executable, kickstarts := restartFixture(t)
+	replaceExecutable(t, executable)
+	manager.detectExecutableReplacement()
+	manager.beginRequest(false)
+	manager.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
-	elapseLifecycleGate(manager)
+	manager.endRequest(false)
 	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
 }
 
 func elapseLifecycleGate(m *Manager) {
 	m.mu.Lock()
-	m.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
 	m.lastLifecycleEnd = time.Now().Add(-lifecycleReplyGrace)
 	m.mu.Unlock()
 }
@@ -224,18 +233,15 @@ func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
 	kickstarts.want(t, 1)
 }
 
-func TestLifecycleRequestDoesNotRestartTheQuietPeriod(t *testing.T) {
+func TestLifecycleRequestWaitsUntilItsReplyIsDue(t *testing.T) {
 	manager, _, kickstarts := restartFixture(t)
 	handler := Handler{Manager: manager}
 	if _, err := handler.Handle(context.Background(), "RequestRestart", nil); err != nil {
 		t.Fatal(err)
 	}
 	manager.mu.Lock()
-	lastEnd, lastLifecycle := manager.lastRequestEnd, manager.lastLifecycleEnd
+	lastLifecycle := manager.lastLifecycleEnd
 	manager.mu.Unlock()
-	if !lastEnd.IsZero() {
-		t.Fatal("the lifecycle request restamped the quiet period it was waiting on")
-	}
 	if lastLifecycle.IsZero() {
 		t.Fatal("the lifecycle request did not record when its reply became due")
 	}
@@ -285,31 +291,23 @@ func TestExecutableWatchStaysDisabledWithoutABaseline(t *testing.T) {
 
 func TestRestartAccountingBracketsEveryHandledRequest(t *testing.T) {
 	manager, _, _ := restartFixture(t)
-	if _, err := (Handler{Manager: manager}).Handle(context.Background(), "unknown", json.RawMessage(nil)); err == nil {
+	handler := Handler{Manager: manager}
+	if _, err := handler.Handle(context.Background(), "unknown", json.RawMessage(nil)); err == nil {
 		t.Fatal("unknown method succeeded")
 	}
 	if manager.inflightRequests != 0 {
 		t.Fatalf("inflightRequests=%d after a failed dispatch", manager.inflightRequests)
 	}
-	if manager.lastRequestEnd.IsZero() {
+	// lifecycle 経路が bracket を通ったことは、応答待ちの記録が残ることで確かめる。
+	if _, err := handler.Handle(context.Background(), "RequestRestart", nil); err != nil {
+		t.Fatal(err)
+	}
+	if manager.inflightRequests != 0 {
+		t.Fatalf("inflightRequests=%d after a lifecycle dispatch", manager.inflightRequests)
+	}
+	if manager.lastLifecycleEnd.IsZero() {
 		t.Fatal("a dispatched request was not counted as in-flight")
 	}
-}
-
-func TestHandledRequestHoldsOffAPendingRestart(t *testing.T) {
-	manager, executable, kickstarts := restartFixture(t)
-	replaceExecutable(t, executable)
-	manager.detectExecutableReplacement()
-	if _, err := (Handler{Manager: manager}).Handle(context.Background(), "unknown", json.RawMessage(nil)); err == nil {
-		t.Fatal("unknown method succeeded")
-	}
-	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
-	manager.runPendingLifecycle()
-	kickstarts.want(t, 1)
 }
 
 func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
@@ -343,9 +341,6 @@ func TestAnExhaustedRestartDoesNotParkALaterStop(t *testing.T) {
 	if lifecycleActionClaimed(manager) {
 		t.Fatal("an explicit stop did not lift the latched claim")
 	}
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
 }
@@ -354,9 +349,6 @@ func TestANewRequestKeepsAClaimWhoseSignalWasDelivered(t *testing.T) {
 	manager, stops := stopFixture(t)
 	ctx := context.Background()
 	manager.RequestStop(ctx)
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
 	manager.RequestRestart(ctx)
@@ -443,14 +435,6 @@ func TestRequestedStopWaitsForTheSameIdleGateAsARestart(t *testing.T) {
 	if err := manager.store.FinishJob(ctx, job.ID, "stop-test", nil); err != nil {
 		t.Fatal(err)
 	}
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now()
-	manager.mu.Unlock()
-	manager.runPendingLifecycle()
-	stops.stayAt(t, 0)
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
 	manager.runPendingLifecycle()
@@ -461,18 +445,12 @@ func TestStopDoesNotRequireLaunchdButRestartStillDoes(t *testing.T) {
 	manager, stops := stopFixture(t)
 	manager.launchdManaged = func() bool { return false }
 	manager.RequestStop(context.Background())
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
 
 	restarting, kickstarts := stopFixture(t)
 	restarting.launchdManaged = func() bool { return false }
 	restarting.RequestRestart(context.Background())
-	restarting.mu.Lock()
-	restarting.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	restarting.mu.Unlock()
 	restarting.runPendingLifecycle()
 	kickstarts.stayAt(t, 0)
 	if !restarting.restartUnmanaged {
@@ -495,9 +473,6 @@ func TestEachLifecycleRequestSupersedesTheOther(t *testing.T) {
 	if !manager.lifecyclePending() {
 		t.Fatal("a raised stop was not reported as pending")
 	}
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
 	if manager.lifecyclePending() {
@@ -509,9 +484,6 @@ func TestARequestAfterADeliveredSignalIsRefusedAsAConflict(t *testing.T) {
 	manager, stops := stopFixture(t)
 	ctx := context.Background()
 	manager.RequestStop(ctx)
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
 	reply := manager.RequestRestart(ctx)
@@ -553,9 +525,6 @@ func TestStartRequestCallsBackAStopThatWasNeverIssued(t *testing.T) {
 	if stopping, _ := reply["stop_pending"].(bool); stopping {
 		t.Fatalf("start left the stop pending: %v", reply)
 	}
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.stayAt(t, 0)
 }
@@ -564,9 +533,6 @@ func TestStartRequestCannotCallBackADeliveredStop(t *testing.T) {
 	manager, stops := stopFixture(t)
 	ctx := context.Background()
 	manager.RequestStop(ctx)
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
 	reply := manager.RequestStart(ctx)
@@ -606,9 +572,6 @@ func TestPendingStopSuppressesReplacementDetection(t *testing.T) {
 	if manager.restartPending {
 		t.Fatal("a replaced executable overrode the pending stop")
 	}
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
 }
@@ -638,15 +601,12 @@ func TestLifecycleReplyReportsWhatTheGateIsWaitingFor(t *testing.T) {
 	if already, _ := repeat["already_pending"].(bool); !already {
 		t.Fatal("the second stop request did not report the standing one")
 	}
-	if remaining, _ := repeat["quiet_period_remaining_ms"].(int64); remaining != 0 {
-		t.Fatalf("quiet_period_remaining_ms=%v, want the lifecycle RPC to leave the quiet period alone", repeat["quiet_period_remaining_ms"])
-	}
 	manager.beginRequest(false)
-	manager.endRequest(false)
-	stamped := manager.RequestStop(ctx)
-	if remaining, _ := stamped["quiet_period_remaining_ms"].(int64); remaining <= 0 {
-		t.Fatalf("quiet_period_remaining_ms=%v, want the period the served request restarted", stamped["quiet_period_remaining_ms"])
+	served := manager.RequestStop(ctx)
+	if inflight, _ := served["inflight_requests"].(int); inflight != 1 {
+		t.Fatalf("reply inflight_requests=%v, want the served request to be named", served["inflight_requests"])
 	}
+	manager.endRequest(false)
 	restart := manager.RequestRestart(ctx)
 	if pending, _ := restart["restart_pending"].(bool); !pending {
 		t.Fatalf("restart reply=%v", restart)
@@ -660,9 +620,6 @@ func TestStopSignalFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 	manager, stops := stopFixture(t)
 	stops.failWith(os.ErrPermission)
 	manager.RequestStop(context.Background())
-	manager.mu.Lock()
-	manager.lastRequestEnd = time.Now().Add(-lifecycleQuietPeriod)
-	manager.mu.Unlock()
 	for attempt := 1; attempt <= maxLifecycleAttempts; attempt++ {
 		manager.runPendingLifecycle()
 		stops.want(t, attempt)
