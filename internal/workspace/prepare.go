@@ -1103,17 +1103,11 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 			if err != nil {
 				return fmt.Errorf("unsafe .worktreeinclude match %q: %w", src, err)
 			}
-			// tracked path は worktree 自身が checkout するため、この entry は無視する。
-			// default include と同じ扱いにして、file が後から追跡下に入っても manifest の古い行が slot 準備全体を止めないようにする。
-			tracked, err := p.Git.Run(context.Background(), string(repo.MainPath), "ls-files", "--error-unmatch", "--", rel)
-			if err == nil && strings.TrimSpace(tracked.Stdout) != "" {
-				continue
-			}
 			sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
 			if sourceErr != nil {
 				return sourceErr
 			}
-			copyErr := copyPathFromOwnedRoot(sourceRoot, rel, destinationRoot, rel)
+			copyErr := p.copyIncludePath(repo, sourceRoot, rel, destinationRoot, rel)
 			_ = sourceRoot.Close()
 			if copyErr != nil {
 				return copyErr
@@ -1121,6 +1115,76 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 		}
 	}
 	return nil
+}
+
+// copyIncludePath は directory を再帰的に列挙し、tracked file を除いて materialize する。
+// Git の終了コード 1 だけを未追跡と扱い、それ以外の失敗は include 処理へ返す。
+func (p *Preparer) copyIncludePath(repo discovery.Repository, sourceRoot *os.Root, source string, destinationRoot *os.Root, destination string) error {
+	info, err := sourceRoot.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if _, err := domain.PhysicalPathInfo(sourceRoot, source); err != nil {
+			return err
+		}
+		if err := ensureRootDirectory(destinationRoot, destination); err != nil {
+			return err
+		}
+		directory, err := sourceRoot.OpenFile(source, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return err
+		}
+		openedInfo, statErr := directory.Stat()
+		if statErr != nil || !openedInfo.IsDir() || !os.SameFile(info, openedInfo) {
+			_ = directory.Close()
+			return fmt.Errorf("copy include directory %s changed while opening", source)
+		}
+		names, readErr := directory.Readdirnames(-1)
+		closeErr := directory.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			child := filepath.Join(source, name)
+			childDestination := filepath.Join(destination, name)
+			if err := p.copyIncludePath(repo, sourceRoot, child, destinationRoot, childDestination); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	tracked, err := p.includePathTracked(repo, source)
+	if err != nil {
+		return err
+	}
+	if tracked {
+		return nil
+	}
+	if _, err := domain.PhysicalPathInfo(sourceRoot, source); err != nil {
+		return err
+	}
+	return copyPathFromOwnedRoot(sourceRoot, source, destinationRoot, destination)
+}
+
+func (p *Preparer) includePathTracked(repo discovery.Repository, relative string) (bool, error) {
+	result, err := p.Git.Run(context.Background(), string(repo.MainPath), "ls-files", "--error-unmatch", "--", relative)
+	if err == nil {
+		if strings.TrimSpace(result.Stdout) == "" {
+			return false, fmt.Errorf("Git tracked check returned no result for %s", relative)
+		}
+		return true, nil
+	}
+	var gitErr *gitx.Error
+	if errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("check tracked include %s: %w", relative, err)
 }
 
 func (p *Preparer) createLinks(ctx context.Context, repo discovery.Repository, target string) error {
