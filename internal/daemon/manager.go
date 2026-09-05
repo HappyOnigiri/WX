@@ -27,6 +27,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
+	buildversion "github.com/HappyOnigiri/WX/internal/version"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
@@ -3702,16 +3703,26 @@ func (m *Manager) rootDirectoryUsage(root string) (int64, int64, error) {
 
 func daemonVersion() string {
 	info, ok := debug.ReadBuildInfo()
+	embedded, _ := buildversion.EmbeddedString()
+	return daemonVersionForBuildInfo(info, ok, embedded)
+}
+
+func daemonVersionForBuildInfo(info *debug.BuildInfo, ok bool, embedded string) string {
+	if ok {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			return info.Main.Version
+		}
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" {
+				return setting.Value
+			}
+		}
+	}
+	if embedded != "" {
+		return embedded
+	}
 	if !ok {
 		return "unknown"
-	}
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
-	}
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			return setting.Value
-		}
 	}
 	return "devel"
 }
