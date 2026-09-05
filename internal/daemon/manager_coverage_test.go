@@ -670,8 +670,19 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 		if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_gc_schedule BEFORE UPDATE ON slots BEGIN SELECT RAISE(FAIL, 'injected GC failure'); END`); err != nil {
 			t.Fatal(err)
 		}
-		if count, err := manager.GC(ctx, false); err != nil || count != 0 {
-			t.Fatalf("GC count=%d err=%v", count, err)
+		if result, err := manager.GC(ctx, false); err == nil || result.Failed == 0 {
+			t.Fatalf("GC result=%+v err=%v", result, err)
+		} else {
+			foundReason := false
+			for _, reason := range result.Reasons {
+				if reason.Status == "failed" && reason.Target != "" && reason.Reason != "" {
+					foundReason = true
+					break
+				}
+			}
+			if !foundReason {
+				t.Fatalf("GC scheduling failure lost its reason: result=%+v", result)
+			}
 		}
 	})
 }
@@ -783,8 +794,8 @@ func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
 	}
 
 	standby := newStandby("standby", nil)
-	if count := manager.scheduleStandbyRemovals(ctx, []state.StandbyGCCandidate{{SlotID: standby.ID, WorkspaceID: standby.WorkspaceID, Path: standby.Path, State: standby.State}}); count != 1 {
-		t.Fatalf("standby removal count=%d, want 1", count)
+	if result := manager.scheduleStandbyRemovals(ctx, []state.StandbyGCCandidate{{SlotID: standby.ID, WorkspaceID: standby.WorkspaceID, Path: standby.Path, State: standby.State}}); result.Scheduled != 1 {
+		t.Fatalf("standby removal result=%+v, want one reservation", result)
 	}
 	if job := <-manager.jobs; job.id == "" {
 		t.Fatal("standby removal did not enqueue a durable job")
@@ -792,8 +803,8 @@ func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
 	if stored, err := store.Slot(ctx, standby.ID); err != nil || stored.State != "REMOVING" {
 		t.Fatalf("standby slot after scheduling=%+v err=%v", stored, err)
 	}
-	if count := manager.scheduleEndedWorktreeRemovals(ctx, []state.GCCandidate{{SlotID: standby.ID, Path: standby.Path}}); count != 0 {
-		t.Fatalf("already-removing worktree count=%d, want 0", count)
+	if result := manager.scheduleEndedWorktreeRemovals(ctx, []state.GCCandidate{{SlotID: standby.ID, Path: standby.Path}}); result.Scheduled != 0 {
+		t.Fatalf("already-removing worktree result=%+v, want no reservation", result)
 	}
 
 	cold := newStandby("cold", []state.SlotRepository{{RepositoryID: repositoryID, DirName: "repository", State: "READY", BaseOID: "head"}})
@@ -801,23 +812,23 @@ func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	candidate := state.ColdRepositoryCandidate{SlotID: cold.ID, WorkspaceID: cold.WorkspaceID, RepositoryID: repositoryID, WorktreePath: filepath.Join(cold.Path, "repository")}
-	if count := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{}); count != 1 {
-		t.Fatalf("cold repository removal count=%d, want 1", count)
+	if result := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{}); result.Scheduled != 1 {
+		t.Fatalf("cold repository removal result=%+v, want one reservation", result)
 	}
 	if job := <-manager.jobs; job.id == "" {
 		t.Fatal("cold repository removal did not enqueue a durable job")
 	}
-	if count := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{}); count != 0 {
-		t.Fatalf("already-retiring repository count=%d, want 0", count)
+	if result := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{}); result.Scheduled != 0 {
+		t.Fatalf("already-retiring repository result=%+v, want no reservation", result)
 	}
-	if count := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{cold.ID: true}); count != 0 {
-		t.Fatalf("whole-slot cold removal count=%d, want 0", count)
+	if result := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{cold.ID: true}); result.Scheduled != 0 {
+		t.Fatalf("whole-slot cold removal result=%+v, want no reservation", result)
 	}
 
 	unsafe := newStandby("unsafe", nil)
 	outside := filepath.Join(t.TempDir(), "outside")
-	if count := manager.scheduleEndedWorktreeRemovals(ctx, []state.GCCandidate{{SlotID: unsafe.ID, Path: outside, SessionID: ""}}); count != 0 {
-		t.Fatalf("outside worktree removal count=%d, want 0", count)
+	if result := manager.scheduleEndedWorktreeRemovals(ctx, []state.GCCandidate{{SlotID: unsafe.ID, Path: outside, SessionID: ""}}); result.Scheduled != 0 {
+		t.Fatalf("outside worktree removal result=%+v, want no reservation", result)
 	}
 	if stored, err := store.Slot(ctx, unsafe.ID); err != nil || stored.State != "QUARANTINED" {
 		t.Fatalf("outside worktree slot after quarantine=%+v err=%v", stored, err)

@@ -201,8 +201,17 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		n, err := h.Manager.GC(ctx, p.DryRun)
-		return map[string]int{"candidates": n}, err
+		result, err := h.Manager.GC(ctx, p.DryRun)
+		if err != nil {
+			// GC は途中まで予約・完了した対象を巻き戻さないため、RPC error だけにすると
+			// 呼出元がその進捗と安全な保留理由を失う。件数と理由を含む結果を返し、CLI が終了コードを決める。
+			if len(result.Reasons) == 0 {
+				result.Reasons = []GCReason{{Target: "gc", Status: "failed", Reason: err.Error()}}
+				result.Failed++
+			}
+			return result, nil
+		}
+		return result, nil
 	case "ReloadConfig":
 		return map[string]bool{"reloaded": true}, h.Manager.ReloadConfig()
 	case "RequestRestart":

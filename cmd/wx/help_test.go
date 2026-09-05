@@ -19,13 +19,19 @@ import (
 	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
-type commandHandler struct{ workspace string }
+type commandHandler struct {
+	workspace string
+	gcResult  *daemon.GCResult
+}
 
 func (h commandHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
 	switch method {
 	case "Sessions":
 		return []map[string]any{{"id": "session", "state": "ACTIVE", "agent": "codex"}}, nil
 	case "GC":
+		if h.gcResult != nil {
+			return *h.gcResult, nil
+		}
 		return map[string]int{"candidates": 0}, nil
 	case "ResolveAndLease", "Resume":
 		return daemon.Lease{SessionID: "session", Token: "token", Path: h.workspace, SourceWorkspace: h.workspace, Ready: true}, nil

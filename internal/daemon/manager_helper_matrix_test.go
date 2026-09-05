@@ -176,10 +176,10 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	archiveManager := &archive.Manager{Git: manager.git}
-	if count := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{
+	if result := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{
 		"missing-session": nil,
-	}, archiveManager); count != 0 {
-		t.Fatalf("missing session expiry count=%d", count)
+	}, archiveManager); result.Completed != 0 {
+		t.Fatalf("missing session expiry result=%+v", result)
 	}
 
 	multiID := domain.StableID("expiry-matrix", "multi")
@@ -190,8 +190,8 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 		state.Session{ID: multiID, WorkspaceID: string(workspaceRecord.ID), SlotID: multiID, State: "ARCHIVED", AgentKind: "matrix", TokenHash: state.HashToken(multiID)}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if count := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{multiID: nil}, archiveManager); count != 0 {
-		t.Fatalf("multi session without root snapshot count=%d", count)
+	if result := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{multiID: nil}, archiveManager); result.Completed != 0 {
+		t.Fatalf("multi session without root snapshot result=%+v", result)
 	}
 
 	validID := domain.StableID("expiry-matrix", "workspace-snapshot")
@@ -217,14 +217,14 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 	if err := store.SaveWorkspaceSnapshot(ctx, rootSnapshot); err != nil {
 		t.Fatal(err)
 	}
-	if count := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{validID: nil}, archiveManager); count != 1 {
-		t.Fatalf("valid workspace snapshot expiry count=%d", count)
+	if result := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{validID: nil}, archiveManager); result.Completed != 1 {
+		t.Fatalf("valid workspace snapshot expiry result=%+v", result)
 	}
 	if err := store.SaveWorkspaceSnapshot(ctx, state.WorkspaceSnapshot{SessionID: multiID, RootID: multiSlot.RootID, RelPath: filepath.Join("..", "outside-archive"), SHA256: "bad", Status: "ARCHIVED", CreatedAt: state.FormatTime(time.Now()), ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))}); err != nil {
 		t.Fatal(err)
 	}
-	if count := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{multiID: nil}, archiveManager); count != 0 {
-		t.Fatalf("outside archive expiry count=%d", count)
+	if result := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{multiID: nil}, archiveManager); result.Completed != 0 {
+		t.Fatalf("outside archive expiry result=%+v", result)
 	}
 
 	repositorySessionID := domain.StableID("expiry-matrix", "repository")
@@ -242,8 +242,8 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 		state.Session{ID: repositorySessionID, WorkspaceID: string(repositoryWorkspace.ID), SlotID: repositorySessionID, State: "ARCHIVED", AgentKind: "matrix", TokenHash: state.HashToken(repositorySessionID)}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if count := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{repositorySessionID: nil}, archiveManager); count != 1 {
-		t.Fatalf("repository-only expiry count=%d", count)
+	if result := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{repositorySessionID: nil}, archiveManager); result.Completed != 1 {
+		t.Fatalf("repository-only expiry result=%+v", result)
 	}
 
 	retiringID := domain.StableID("expiry-matrix", "retiring")

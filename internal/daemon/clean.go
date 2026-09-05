@@ -319,7 +319,7 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 		m.moveCleanTarget(ctx, run.ID, target, cleanTargetRemoving, "")
 		return
 	case slot.State == "READY" || slot.State == "STALE" || slot.State == "SNAPSHOTTED":
-		if m.scheduleRemovalCandidate(ctx, slot.ID, slot.Path, target.SessionID, "clean removal scheduling failed") == 1 {
+		if m.scheduleRemovalCandidate(ctx, slot.ID, slot.Path, target.SessionID, "clean removal scheduling failed").Scheduled == 1 {
 			m.moveCleanTarget(ctx, run.ID, target, cleanTargetRemoving, "")
 			return
 		}
