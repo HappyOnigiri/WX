@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var ErrCancelled = errors.New("selection cancelled")
@@ -88,22 +89,32 @@ func (m selectionModel) content() string {
 		return "Selection cancelled.\n"
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "\n%s\n", singleLine(m.selection.Title))
+	fmt.Fprintf(&out, "\n? %s\n", singleLine(m.selection.Title))
 	if m.selection.Description != "" {
-		fmt.Fprintf(&out, "%s\n", singleLine(m.selection.Description))
+		fmt.Fprintf(&out, "  %s\n", singleLine(m.selection.Description))
 	}
 	out.WriteByte('\n')
+	// 選択肢は左、説明は右の桁揃えした列に置き、装飾なしでも両者の区別が付くようにする。
+	labels := make([]string, len(m.selection.Options))
+	column := 0
 	for index, option := range m.selection.Options {
-		marker := "  "
-		if index == m.cursor {
-			marker = "› "
-		}
-		fmt.Fprintf(&out, "%s%s\n", marker, singleLine(option.Label))
-		if option.Description != "" {
-			fmt.Fprintf(&out, "    %s\n", singleLine(option.Description))
+		labels[index] = singleLine(option.Label)
+		if width := ansi.StringWidth(labels[index]); width > column {
+			column = width
 		}
 	}
-	out.WriteString("\n↑/↓ move · Enter select · Esc cancel\n")
+	for index, option := range m.selection.Options {
+		marker := "    "
+		if index == m.cursor {
+			marker = "  › "
+		}
+		line := marker + labels[index]
+		if description := singleLine(option.Description); description != "" {
+			line += strings.Repeat(" ", column-ansi.StringWidth(labels[index])+3) + description
+		}
+		fmt.Fprintf(&out, "%s\n", line)
+	}
+	out.WriteString("\n  ↑/↓ move · enter select · esc cancel\n")
 	return out.String()
 }
 

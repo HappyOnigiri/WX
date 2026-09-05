@@ -84,11 +84,11 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions)
 		initial = 2
 	}
 	mode, err = tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
-		Title: "Worktree policy", Description: root, Initial: initial,
+		Title: "Worktree policy", Description: "workspace: " + root, Initial: initial,
 		Options: []tui.Option{
-			{Value: "hot", Label: "Hot standby", Description: "Keep a worktree ready for faster launches."},
-			{Value: "cold", Label: "Cold start (recommended)", Description: "Create a worktree when launching an agent."},
-			{Value: "off", Label: "No worktree", Description: "Run the agent in the current directory."},
+			{Value: "hot", Label: "Hot standby", Description: "keep a worktree ready for faster launches"},
+			{Value: "cold", Label: "Cold start", Description: "create a worktree when launching an agent"},
+			{Value: "off", Label: "No worktree", Description: "run the agent in the current directory"},
 		},
 	})
 	if err != nil {

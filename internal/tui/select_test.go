@@ -20,7 +20,8 @@ func TestSelectionNavigationAndConfirmation(t *testing.T) {
 	if model.Init() != nil {
 		t.Fatal("unexpected initial command")
 	}
-	if view := model.content(); !strings.Contains(view, "› Cold") || !strings.Contains(view, "↑/↓") {
+	// 説明はラベルと同じ行の桁揃えした列に出る。
+	if view := model.content(); !strings.Contains(view, "› Cold") || !strings.Contains(view, "? Choose") || !strings.Contains(view, "Hot    Ready") || !strings.Contains(view, "↑/↓") {
 		t.Fatal(view)
 	}
 	for _, key := range []rune{tea.KeyDown, tea.KeyDown, tea.KeyUp, tea.KeyEnter} {
