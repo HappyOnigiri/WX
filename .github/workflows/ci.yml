@@ -55,10 +55,8 @@ jobs:
 
   coverage-tests:
     name: coverage-tests
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      TMPDIR: /private/tmp
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -70,18 +68,16 @@ jobs:
       - run: make coverage-check
       - run: git diff --exit-code
 
-  # 3コアランナーではrace検査がCPU律速になり、単独で最長のinternal/daemonが下限を作る。
+  # 少コアのCIランナーではrace検査がCPU律速になり、単独で最長のinternal/daemonが下限を作る。
   # daemonと残りを別ランナーへ分け、待ち時間をその下限まで下げる。
   race:
     name: race (${{ matrix.shard }})
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         shard: [daemon, rest]
-    env:
-      TMPDIR: /private/tmp
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -105,7 +101,7 @@ jobs:
     needs: [coverage-tests, race]
     if: always()
     steps:
-      - name: Require both macOS test jobs to succeed
+      - name: Require both test jobs to succeed
         env:
           COVERAGE_TESTS_RESULT: ${{ needs.coverage-tests.result }}
           RACE_RESULT: ${{ needs.race.result }}
@@ -116,10 +112,8 @@ jobs:
 
   build:
     name: build
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
-    env:
-      TMPDIR: /private/tmp
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
