@@ -21,18 +21,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - {id: proof, mode: proof, procs: "0"}
           - {id: pkg-1, mode: pkg, procs: "0"}
           - {id: pkg-2, mode: pkg, procs: "0"}
           - {id: pkg-3, mode: pkg, procs: "0"}
           - {id: pkg-4, mode: pkg, procs: "0"}
-          - {id: iso-1, mode: iso, procs: "0"}
-          - {id: iso-2, mode: iso, procs: "0"}
-          - {id: iso-3, mode: iso, procs: "0"}
-          - {id: iso-procs2-1, mode: iso, procs: "2"}
-          - {id: iso-procs2-2, mode: iso, procs: "2"}
-          - {id: iso-procs1-1, mode: iso, procs: "1"}
-          - {id: load-1, mode: load, procs: "0"}
-          - {id: load-2, mode: load, procs: "0"}
+          - {id: pkg-5, mode: pkg, procs: "0"}
+          - {id: pkg-6, mode: pkg, procs: "0"}
+          - {id: pkg-procs2, mode: pkg, procs: "2"}
+          - {id: all-1, mode: all, procs: "0"}
+          - {id: all-2, mode: all, procs: "0"}
+          - {id: all-3, mode: all, procs: "0"}
+          - {id: all-4, mode: all, procs: "0"}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -52,26 +52,23 @@ jobs:
           if [ "$HUNT_PROCS" != "0" ]; then
             export GOMAXPROCS="$HUNT_PROCS"
           fi
-          test_args=(-race -timeout=20m)
+          test_args=(-race -timeout=25m)
+          skip='^TestReconcileArtifactsQuarantinesInFlightReservation$'
           case "$HUNT_MODE" in
             pkg)
-              test_args+=(-shuffle=on -count=1 ./internal/daemon)
+              test_args+=(-shuffle=on -count=1 -skip "$skip" ./internal/daemon)
               ;;
-            iso|load)
-              test_args+=(-count=20 -run '^TestWarmPoolMaintainsCapacityAndNeverDoubleLeases$' ./internal/daemon)
+            all)
+              test_args+=(-shuffle=on -count=1 -skip "$skip" ./...)
+              ;;
+            proof)
+              test_args+=(-count=1 -run "$skip" ./internal/daemon)
               ;;
             *)
               echo "unknown mode: $HUNT_MODE" >&2
               exit 1
               ;;
           esac
-          load_pids=()
-          if [ "$HUNT_MODE" = load ]; then
-            for _ in 1 2 3 4; do
-              bash -c 'while :; do :; done' &
-              load_pids+=("$!")
-            done
-          fi
           nproc
           go version
           start=$SECONDS
@@ -89,9 +86,6 @@ jobs:
             cat "$log"
             status=1
             break
-          done
-          for pid in ${load_pids[@]+"${load_pids[@]}"}; do
-            kill "$pid" 2>/dev/null || true
           done
           echo "=== rounds=$round elapsed=$((SECONDS - start))s status=$status"
           exit "$status"

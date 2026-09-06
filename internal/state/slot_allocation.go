@@ -116,7 +116,7 @@ func (s *Store) ConfirmSlotCreation(ctx context.Context, id, dirIdentity string)
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return fmt.Errorf("slot %s creation reservation compare-and-swap failed", id)
+		return fmt.Errorf("slot %s creation reservation compare-and-swap failed (%s)", id, slotCASDetail(ctx, tx, id))
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -178,7 +178,7 @@ func (s *Store) RegisterReservedSlotSession(ctx context.Context, slotID string, 
 		return Job{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return Job{}, fmt.Errorf("slot %s registration compare-and-swap failed", slotID)
+		return Job{}, fmt.Errorf("slot %s registration compare-and-swap failed (%s)", slotID, slotCASDetail(ctx, tx, slotID))
 	}
 	if jobKind != "" {
 		if err := insertJob(ctx, tx, job); err != nil {
@@ -234,4 +234,14 @@ func (s *Store) AbandonSlotReservation(ctx context.Context, id string) error {
 		return fmt.Errorf("slot %s reservation changed", id)
 	}
 	return nil
+}
+
+// slotCASDetail は CAS 失敗時の行の実際の値を返す。失敗の原因が別経路の遷移かを、後から判別できるようにする。
+func slotCASDetail(ctx context.Context, tx *sql.Tx, id string) string {
+	var slotState, failureCode, identity, owner string
+	err := tx.QueryRowContext(ctx, `SELECT state,COALESCE(failure_code,''),COALESCE(dir_identity,''),COALESCE(owner_session_id,'') FROM slots WHERE id=?`, id).Scan(&slotState, &failureCode, &identity, &owner)
+	if err != nil {
+		return fmt.Sprintf("row unavailable: %v", err)
+	}
+	return fmt.Sprintf("state=%s failure_code=%s dir_identity=%q owner=%q", slotState, failureCode, identity, owner)
 }

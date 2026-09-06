@@ -17,6 +17,7 @@ permissions:
 jobs:
   static:
     name: static
+    if: ${{ !startsWith(github.head_ref, 'tmp/flake-hunt-') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -56,6 +57,7 @@ jobs:
 
   coverage-tests:
     name: coverage-tests
+    if: ${{ !startsWith(github.head_ref, 'tmp/flake-hunt-') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -73,6 +75,7 @@ jobs:
   # daemonと残りを別ランナーへ分け、待ち時間をその下限まで下げる。
   race:
     name: race (${{ matrix.shard }})
+    if: ${{ !startsWith(github.head_ref, 'tmp/flake-hunt-') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -100,7 +103,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [coverage-tests, race]
-    if: always()
+    if: ${{ always() && !startsWith(github.head_ref, 'tmp/flake-hunt-') }}
     steps:
       - name: Require both test jobs to succeed
         env:
@@ -113,6 +116,7 @@ jobs:
 
   build:
     name: build
+    if: ${{ !startsWith(github.head_ref, 'tmp/flake-hunt-') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

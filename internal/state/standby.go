@@ -290,7 +290,7 @@ func (s *Store) RegisterReservedStandby(ctx context.Context, slotID string, repo
 		return Job{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return Job{}, fmt.Errorf("slot %s standby registration compare-and-swap failed", slotID)
+		return Job{}, fmt.Errorf("slot %s standby registration compare-and-swap failed (%s)", slotID, slotCASDetail(ctx, tx, slotID))
 	}
 	if err := insertJob(ctx, tx, job); err != nil {
 		return Job{}, err
