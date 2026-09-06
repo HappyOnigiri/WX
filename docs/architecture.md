@@ -118,6 +118,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
 - **root使用量の測定** — worktree rootのディスク使用量はreconcileと同じ周期処理だけが測り、`Status`はその値と測定時刻を返す。
   測定量はroot配下の総ファイル数に比例するため、要求のたびに測るとslotが増えるほど`Status`が遅くなり、高負荷時にはclientの制限時間を超える。
   最初の測定が終わるまでは`measurement`を`pending`とし、0を実測値として見せない。
+- **root世代登録の再試行** — 起動時や設定変更時にroot世代（`roots`行）の登録が失敗すると、そのrootへの全allocationが`ErrOwnership`で落ち続ける。
+  reconcileと同じ周期処理が、失敗が残っている間だけdescriptorを取り直して再登録を試み、rootを作り直した・volumeをmountし直したといった外的な回復をdaemon再起動なしで拾う。
+  同じ理由の連続失敗はログを1回に抑え、`wx doctor`の`worktree_root`は失敗理由に再試行し続ける旨を添えて返す。
 - **degraded運用** — SQLiteが開けないときも`Status`・`Doctor`・`RequestStop`は`DegradedHandler`が答える。
   診断のためにdaemonを完全に沈黙させないためである。
   `RequestStop`だけは状態を変えるがゲートを通さない（状態を変えるRPCを一切受け付けない以上、守るべきin-flightの予約が無い）。
