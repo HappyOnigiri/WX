@@ -204,6 +204,10 @@ func replaceWithClone(ctx context.Context, in, original, parent *os.File, root *
 			result = fmt.Errorf("%w: CoW cleanup ownership: %w", state.ErrOwnership, err)
 			return
 		}
+		if err := verifyCOWParent(root, filepath.Dir(name), parent); err != nil {
+			result = err
+			return
+		}
 		if err := verifyCOWLeaf(parent, temporary, cleanupInfo); err != nil {
 			result = err
 			return
