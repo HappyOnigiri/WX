@@ -111,6 +111,10 @@ func TestCOWPreparationModesAndHook(t *testing.T) {
 func TestCOWPrepareFallbackKeepsCheckout(t *testing.T) {
 	for _, mode := range []string{config.CopyModeAuto, config.CopyModeCOW, config.CopyModeCopy} {
 		t.Run(mode, func(t *testing.T) {
+			// CoWのないplatformでは`cow`が donor 以前に落ちるため、symlink donor の分岐を検査できない。
+			if mode == config.CopyModeCOW && !cowAvailable() {
+				t.Skip("strict CoW is unsupported on this platform")
+			}
 			p, repo, oid, target := cowFixture(t)
 			p.Config.Storage.CopyMode = mode
 			source := filepath.Join(string(repo.MainPath), "file")
