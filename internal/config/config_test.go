@@ -127,13 +127,25 @@ func TestLoadRawRejectsMultipleYAMLDocuments(t *testing.T) {
 
 func TestExpandHomeRejectsImplicitExpansion(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, path := range []string{"~/worktrees", "$TMPDIR/worktrees", "relative"} {
+	for _, path := range []string{"~otheruser/worktrees", "~otheruser", "$TMPDIR/worktrees", "relative"} {
 		if _, err := ExpandHome(path); err == nil {
 			t.Errorf("ExpandHome(%q) succeeded", path)
 		}
 	}
 	if got, err := ExpandHome("$HOME/worktrees"); err != nil || !filepath.IsAbs(got) {
 		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestExpandHomeExpandsTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got, err := ExpandHome("~"); err != nil || got != home {
+		t.Fatalf("ExpandHome(~)=%q err=%v want=%q", got, err, home)
+	}
+	want := filepath.Join(home, "worktrees")
+	if got, err := ExpandHome("~/worktrees"); err != nil || got != want {
+		t.Fatalf("ExpandHome(~/worktrees)=%q err=%v want=%q", got, err, want)
 	}
 }
 
