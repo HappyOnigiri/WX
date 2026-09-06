@@ -298,6 +298,46 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 	}
 }
 
+// TestOwnershipMarkerMinVersionAcceptsMarkersWrittenBeforeAWriteVersionBumpは、
+// ownershipMarkerVersion引き上げ直後に既存slotが隔離される事故（レポート項目10）の再発を防ぐ。
+// preBumpVersionはownershipMarkerVersionシンボルではなくリテラル2で固定し、将来の引き上げでも動かさない。
+func TestOwnershipMarkerMinVersionAcceptsMarkersWrittenBeforeAWriteVersionBump(t *testing.T) {
+	const preBumpVersion = 2
+	if ownershipMarkerMinVersion != preBumpVersion {
+		t.Fatalf("test premise stale: ownershipMarkerMinVersion=%d, want %d", ownershipMarkerMinVersion, preBumpVersion)
+	}
+
+	root := t.TempDir()
+	slotDirectory := filepath.Join(root, testSlotRelPath)
+	target := filepath.Join(slotDirectory, testRepositoryID)
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	common := t.TempDir()
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+
+	preBumpMarker := ownershipMarker{Version: preBumpVersion, SlotID: "slot", RootID: testRootID, RepositoryID: testRepositoryID, CommonDir: common}
+	data, err := json.Marshal(preBumpMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerName, err := ownershipMarkerName(testRepositoryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(slotDirectory, markerName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
+		t.Fatalf("marker written at version %d before a hypothetical write-version bump was rejected: %v", preBumpVersion, err)
+	}
+}
+
 func TestDescriptorBoundOwnershipMarkerLifecycle(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
