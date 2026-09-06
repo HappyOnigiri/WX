@@ -41,12 +41,24 @@ func scanSlot(row rowScanner) (Slot, error) {
 	return x, nil
 }
 
+// readySlotJoin は貸出候補になる READY slot の条件である。
+// ReadySlot と ReadySlotCount は同じ集合を指す必要があるため、条件を1箇所で持つ。
+const readySlotJoin = ` JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='READY'`
+
 func (s *Store) ReadySlot(ctx context.Context, workspaceID string) (Slot, bool, error) {
-	x, err := scanSlot(s.db.QueryRowContext(ctx, `SELECT `+slotColumns+slotFrom+` JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='READY' ORDER BY sl.ready_at LIMIT 1`, workspaceID))
+	x, err := scanSlot(s.db.QueryRowContext(ctx, `SELECT `+slotColumns+slotFrom+readySlotJoin+` ORDER BY sl.ready_at LIMIT 1`, workspaceID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Slot{}, false, nil
 	}
 	return x, err == nil, err
+}
+
+// ReadySlotCount は ReadySlot が返し得る候補の件数を返す。
+// 貸出側が再試行の予算を実際の候補数に合わせるために使い、他の READY 集計とは条件が異なる。
+func (s *Store) ReadySlotCount(ctx context.Context, workspaceID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*)`+slotFrom+readySlotJoin, workspaceID).Scan(&n)
+	return n, err
 }
 
 func (s *Store) ReadySlots(ctx context.Context, workspaceID string) ([]Slot, error) {
