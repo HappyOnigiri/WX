@@ -110,8 +110,8 @@ mod-tidy-check:
 	$(GO) mod tidy -diff
 	$(GO) mod verify
 
-# 現在は全て手書きで、go:generateがないため生成物の差分検出は行われない。
-# 将来ディレクティブを追加した時点で検査が働くよう、CIへの接続を維持する。
+# 現在は全て手書きで、go:generateがないため生成物の差分検出は行われず、ci-checksからは外してある。
+# go:generateを追加したらci-checksの行に1行戻す。
 # 生成前の作業ツリーを一時indexへ保存し、生成後に同じindexを更新して比較する。
 # 実index・利用者の差分・生成前からあるuntrackedは変更せず、生成が加えた差分だけを検出する。
 generated-check:
@@ -251,7 +251,7 @@ security-local: setup-security-tools govulncheck dependency-check gosec license-
 ci:
 	$(MAKE) $(CI_MAKEFLAGS) ci-checks
 
-ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check workflow-check shell-check coverage-check ci-test-race build-darwin smoke
+ci-checks: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check workflow-check shell-check coverage-check ci-test-race build-darwin smoke
 
 # hook本体は共通Gitディレクトリのhooks直下に置き、user側のdispatcherを維持する。
 # 以下はそのhookが呼び出す契約である。
