@@ -10,6 +10,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
@@ -218,5 +219,55 @@ func TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable(t *testing.T) {
 
 	if _, _, err := manager.rootDirectoryUsage(t.Context(), root, nil, nil); err == nil {
 		t.Fatal("root directory usage succeeded despite an unreadable entry")
+	}
+}
+
+// 削除の完了した slot は、次の周期測定を待たずに Status の Disk から消えることを検査する。
+// `wx clear` の直後に消えた分が残ると、利用者は空いたはずの容量を確認できない。
+func TestRemovedSlotLeavesTheRootTotalWithoutWaitingForTheNextMeasurement(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	root := manager.Config().Storage.WorktreeRoot
+	slotID := domain.StableID("remove-slot", "usage")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "REMOVING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(slot.Path, "payload"), make([]byte, 65536), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager.measureRootUsage(ctx)
+	measured := statusRootUsage(t, manager, root)
+	if measured.AllocatedBytes < 65536 {
+		t.Fatalf("root usage did not account for the slot payload: %+v", measured)
+	}
+
+	if err := manager.removeSlotJob(ctx, state.Job{SlotID: slotID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, kept := manager.slotUsage[slotID]; kept {
+		t.Fatalf("removed slot sample survived: %+v", manager.slotUsage)
+	}
+	after := statusRootUsage(t, manager, root)
+	if after.AllocatedBytes > measured.AllocatedBytes-65536 {
+		t.Fatalf("root usage kept the removed slot: before=%+v after=%+v", measured, after)
+	}
+	// 引いただけで測り直してはいないので、root の他の部分の鮮度を表す測定時刻は動かない。
+	if after.MeasuredAt != measured.MeasuredAt {
+		t.Fatalf("measured_at changed without a new measurement: before=%q after=%q", measured.MeasuredAt, after.MeasuredAt)
+	}
+}
+
+// 測定後に増えた slot を引いても root 合計を負にしない。負の使用量は Status で意味を持たない。
+func TestForgetSlotUsageStopsTheSubtractionAtZero(t *testing.T) {
+	t.Parallel()
+	_, manager, _, _, _, _ := managerCoverageFixture(t)
+	root := filepath.Clean(manager.Config().Storage.WorktreeRoot)
+	manager.rootUsage = map[string]rootUsageSample{root: {bytes: 100, allocated: 200, shared: 50, measuredAt: time.Now()}}
+	manager.slotUsage["slot"] = slotUsageSample{usage: workspace.SlotUsage{LogicalBytes: 400, AllocatedBytes: 800, SharedBytes: 200}}
+
+	manager.forgetSlotUsage("slot", root)
+	if sample := manager.rootUsage[root]; sample.bytes != 0 || sample.allocated != 0 || sample.shared != 0 {
+		t.Fatalf("root sample went negative: %+v", sample)
 	}
 }

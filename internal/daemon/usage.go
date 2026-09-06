@@ -86,6 +86,33 @@ func (m *Manager) measureRootUsage(ctx context.Context) {
 	m.mu.Unlock()
 }
 
+// forgetSlotUsage は削除の終わった slot の実測を cache から外し、root 合計からもその分を差し引く。
+// `wx clear` や GC で消えた割当量を、次の周期測定まで Status の Disk へ残さないためである。
+// 実体はもう無いので測定し直さずに引くだけとし、測定時刻は据え置いて root の他の部分の鮮度を偽らない。
+func (m *Manager) forgetSlotUsage(slotID, root string) {
+	root = filepath.Clean(root)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sample, measured := m.slotUsage[slotID]
+	delete(m.slotUsage, slotID)
+	rootSample, known := m.rootUsage[root]
+	if !measured || !known || rootSample.err != "" {
+		return
+	}
+	rootSample.bytes = subtractUsage(rootSample.bytes, sample.usage.LogicalBytes)
+	rootSample.allocated = subtractUsage(rootSample.allocated, sample.usage.AllocatedBytes)
+	rootSample.shared = subtractUsage(rootSample.shared, sample.usage.SharedBytes)
+	m.rootUsage[root] = rootSample
+}
+
+// subtractUsage は差し引きの結果を 0 で止める。測定後に増えた slot を引くと負になり得るためである。
+func subtractUsage(total, removed int64) int64 {
+	if removed >= total {
+		return 0
+	}
+	return total - removed
+}
+
 // scheduleSlotUsageMeasurement は準備完了の直後に、その slot だけの測定を background へ回す。
 // 貸出の応答へ走査時間を持ち込まないため同期では測らず、停止中で受け付けられない場合は周期測定へ委ねる。
 func (m *Manager) scheduleSlotUsageMeasurement(slotID string) {

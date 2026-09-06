@@ -42,7 +42,11 @@ func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
 		}
 		return err
 	}
-	return m.store.FinishRemoval(ctx, slot.ID)
+	if err := m.store.FinishRemoval(ctx, slot.ID); err != nil {
+		return err
+	}
+	m.forgetSlotUsage(slot.ID, root)
+	return nil
 }
 
 func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) error {
