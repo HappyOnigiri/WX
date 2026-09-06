@@ -18,6 +18,12 @@ type (
 	RepositoryID string
 )
 
+// path 成分の形状が要求と違うだけの失敗を、呼び出し側が所有権の異常と区別できるようにする。
+var (
+	ErrSymlinkComponent      = errors.New("symlink component in physical path")
+	ErrNonDirectoryComponent = errors.New("non-directory component in physical path")
+)
+
 func NewID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -207,10 +213,10 @@ func PhysicalPathInfo(root *os.Root, relative string) (os.FileInfo, error) {
 			return nil, err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("symlink component in physical path %s", current)
+			return nil, fmt.Errorf("%w %s", ErrSymlinkComponent, current)
 		}
 		if !info.IsDir() && current != clean {
-			return nil, fmt.Errorf("non-directory component in physical path %s", current)
+			return nil, fmt.Errorf("%w %s", ErrNonDirectoryComponent, current)
 		}
 	}
 	return root.Lstat(clean)
@@ -239,7 +245,7 @@ func ValidatePhysicalPath(path string, allowMissingLeaf bool) error {
 			return err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink component in physical path %s", current)
+			return fmt.Errorf("%w %s", ErrSymlinkComponent, current)
 		}
 	}
 	return nil

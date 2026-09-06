@@ -131,14 +131,25 @@ func cowOpenFile(root *os.Root, name string) (*os.File, os.FileInfo, error) {
 	opened, err := file.Stat()
 	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
 		file.Close()
-		return nil, nil, fmt.Errorf("CoW file changed while opening %s", name)
+		return nil, nil, fmt.Errorf("%w while opening %s", errCOWFileChanged, name)
 	}
 	return file, opened, nil
 }
 
+// errCOWFileChanged は open 中に inode が変わったことを表す。main での作業中は日常的に起こる。
+var errCOWFileChanged = errors.New("CoW file changed")
+
+// cowSourceIneligible は donor 側がこのファイルを共有できないことしか意味しない失敗を判定する。
+// 準備全体を止める理由にはならないため、compactFile はこれをスキップとして扱う。
+func cowSourceIneligible(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, domain.ErrSymlinkComponent) ||
+		errors.Is(err, domain.ErrNonDirectoryComponent) || errors.Is(err, errCOWFileChanged) ||
+		errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)
+}
+
 func compactFile(ctx context.Context, source, destination *os.Root, name string, validate func() error) error {
 	in, srcInfo, err := cowOpenFile(source, name)
-	if errors.Is(err, os.ErrNotExist) {
+	if cowSourceIneligible(err) {
 		return nil
 	}
 	if err != nil {

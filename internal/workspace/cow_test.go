@@ -266,8 +266,9 @@ func TestCOWDoesNotFollowSourceSymlink(t *testing.T) {
 	b.Mkdir("dir", 0o700)
 	cowWrite(t, b, "dir/file", "same")
 	before, _ := b.Stat("dir/file")
-	if err := compactFile(context.Background(), a, b, "dir/file", func() error { return nil }); err == nil {
-		t.Fatal("source symlink followed")
+	// donor 側の形状違いは共有対象外というだけなので、準備を止めずにスキップする。
+	if err := compactFile(context.Background(), a, b, "dir/file", func() error { return nil }); err != nil {
+		t.Fatalf("source symlink aborted preparation: %v", err)
 	}
 	after, _ := b.Stat("dir/file")
 	if !os.SameFile(before, after) {

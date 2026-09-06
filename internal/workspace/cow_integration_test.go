@@ -120,14 +120,8 @@ func TestCOWPrepareFallbackKeepsCheckout(t *testing.T) {
 			if err := os.Symlink("missing", source); err != nil {
 				t.Fatal(err)
 			}
-			err := p.Prepare(context.Background(), repo, target, oid, testSlotID)
-			if mode == config.CopyModeCOW {
-				if err == nil {
-					t.Fatal("strict mode ignored failure")
-				}
-				return
-			}
-			if err != nil {
+			// symlink の donor は共有対象外というだけなので、`cow` でも準備は止めない。
+			if err := p.Prepare(context.Background(), repo, target, oid, testSlotID); err != nil {
 				t.Fatal(err)
 			}
 			data, err := os.ReadFile(filepath.Join(target, "file"))
