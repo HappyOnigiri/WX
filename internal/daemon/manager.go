@@ -2365,7 +2365,12 @@ func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
 			if metadata.HasExitCode {
 				exitCode = strconv.Itoa(metadata.ExitCode)
 			}
-			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s detail_path=%s exit_code=%s timed_out=%t canceled=%t; run `wx status` or `wx doctor` for details", slot.State, failureID, detailPath, exitCode, metadata.TimedOut, metadata.Canceled)
+			// 復元の失敗は marker で区別する。client は会話の再開を優先し、新しい worktree で作り直してよいか確認する。
+			recovery := ""
+			if recoveryUnavailable(slot.FailureCode) {
+				recovery = " " + RecoveryUnavailableMarker
+			}
+			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s%s detail_path=%s exit_code=%s timed_out=%t canceled=%t; run `wx status` or `wx doctor` for details", slot.State, failureID, recovery, detailPath, exitCode, metadata.TimedOut, metadata.Canceled)
 		}
 		select {
 		case <-ctx.Done():
@@ -2686,7 +2691,7 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, fres
 	}
 	if fresh || old.State == "EXPIRED" || !usable {
 		if !fresh {
-			return Lease{}, errors.New("session snapshot is EXPIRED; confirmation is required before creating a workspace from the current base")
+			return Lease{}, errors.New("session snapshot is EXPIRED; confirmation is required before creating a workspace from the current base " + RecoveryUnavailableMarker)
 		}
 		w, err := m.store.Workspace(ctx, old.WorkspaceID)
 		if err != nil {
@@ -4117,11 +4122,29 @@ func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []st
 	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 	w, err := discoverer.Resolve(ctx, cwd)
 	if err != nil {
-		return Lease{}, err
+		w, err = m.resolveRetiredSlotPath(ctx, discoverer, cwd, err)
+		if err != nil {
+			return Lease{}, err
+		}
 	}
 	mode := m.Config().WorktreeMode(string(w.Root))
 	if !force && mode != "hot" && mode != "cold" {
 		return Lease{}, errors.New("worktree creation is not authorized; select a worktree policy or use --worktree")
 	}
 	return m.leaseWorkspace(ctx, w, branches, agent, pid, force || mode == "cold")
+}
+
+// resolveRetiredSlotPath は解決できなかった cwd が畳まれた slot のものなら、その slot の workspace root で解決し直す。
+// resume では会話に記録された cwd が渡り、slot を畳んだ後は実体がないため、同じ workspace に新しい worktree を作って会話を続けられるようにする。
+// 逆引きに失敗したときは DB の失敗も含めて cause を返し、解決できなかった理由を別の失敗に置き換えない。
+func (m *Manager) resolveRetiredSlotPath(ctx context.Context, discoverer discovery.Discoverer, cwd string, cause error) (discovery.Workspace, error) {
+	root, err := m.store.WorkspaceRootForSlotPath(ctx, filepath.Clean(cwd))
+	if err != nil || root == "" {
+		return discovery.Workspace{}, cause
+	}
+	w, err := discoverer.Resolve(ctx, root)
+	if err != nil {
+		return discovery.Workspace{}, cause
+	}
+	return w, nil
 }

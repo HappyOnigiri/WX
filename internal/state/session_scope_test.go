@@ -119,3 +119,36 @@ func seedSessionScopeSlotRepository(t *testing.T, store *Store, slotID, reposito
 		t.Fatal(err)
 	}
 }
+
+func TestWorkspaceRootForSlotPathResolvesRetiredSlots(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedWorkspaceRows(t, store, "nested-workspace", "/nested", "repository", "nested-repository", "/nested", "/nested/.git", "")
+	seedSessionScopeSlot(t, store, "slot-archived", "workspace", testRootID, "workspace/archived", "ARCHIVED")
+	seedSessionScopeSlot(t, store, "slot-literal", "workspace", testRootID, "workspace/a_c", "ARCHIVED")
+	seedSessionScopeSlot(t, store, "slot-nested", "nested-workspace", testRootID, "workspace/archived/inner", "ARCHIVED")
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "slot path itself", path: "/wx/workspace/archived", want: "/workspace"},
+		{name: "repository below the slot", path: "/wx/workspace/archived/WX", want: "/workspace"},
+		{name: "longest slot wins", path: "/wx/workspace/archived/inner/WX", want: "/nested"},
+		{name: "unrelated path", path: "/elsewhere/WX", want: ""},
+		{name: "sibling sharing a prefix", path: "/wx/workspace/archived-2/WX", want: ""},
+		{name: "underscore is not a wildcard", path: "/wx/workspace/abc/WX", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.WorkspaceRootForSlotPath(context.Background(), tt.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("workspace root for %q = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
