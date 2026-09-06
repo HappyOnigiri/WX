@@ -47,10 +47,18 @@ func cowFallback(ctx context.Context, mode string, err error) error {
 }
 
 func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string) error {
-	owner, relative, _, err := p.openOwnedRoot(p.RootPath, target)
+	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
 		return err
 	}
+	if !domain.IsWithin(root, target) {
+		return fmt.Errorf("%w: CoW target is outside wx worktree root", state.ErrOwnership)
+	}
+	owner, relative, closeOwner, err := p.openOwnedRoot(root, target)
+	if err != nil {
+		return err
+	}
+	defer closeOwner()
 	validate := func() error {
 		return p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, owner, relative, identity, "validate CoW target")
 	}
