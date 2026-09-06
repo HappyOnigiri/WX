@@ -72,6 +72,14 @@ Go側に状態のenum型や遷移ガードを作らない。
 セキュリティ・SBOM関連は手動opt-inのmake targetに留め、明示許可なしにCI・GitHub Actionsのトリガー・Git hookへ戻さない。
 mutation testingは使わない。
 
-## 参照
+## 作業別ドキュメント
 
-- [docs/architecture.md](docs/architecture.md) — 責務分担、ライフサイクル、所有権証明、ディスク配置の実装。
+変更・調査する観点に対応する文書だけを読む。
+
+- パッケージの責務・依存境界を変えるとき: [責務境界](docs/architecture.md)
+- 起動・hook・返却・snapshot・resumeを扱うとき: [セッションと復元](docs/session-lifecycle.md)
+- CoW・include・linkの準備処理を扱うとき: [worktreeのコピーとリンク](docs/worktree-copy.md)
+- slots/statusの容量・コピー方式の計測を扱うとき: [使用量とCoWの観測](docs/storage-usage.md)
+- ジョブ・補充・clear・GC・障害回復・daemon再起動を扱うとき: [daemonの補充・回収・再起動](docs/daemon-maintenance.md)
+- 削除・上書き・所有権検証を扱うとき: [所有権証明](docs/ownership.md)
+- path・命名・root世代・workspaceのtarを扱うとき: [ディスク配置とroot世代](docs/storage-layout.md)
