@@ -16,8 +16,8 @@ import (
 
 const ownershipMarkerPrefix = ".wx-owner-"
 
-// ownershipMarkerVersionはマーカースキーマです。バージョン2では、 絶対ターゲットパス：耐久性のあるルート生成と記録されたinode
-// sQLiteのアイデンティティは、冗長パスが果たした役割を担い、 設定されたルートが移動したときにマーカーを書き換える必要がなくなりました。
+// ownershipMarkerVersion は marker の schema 版である。version 2 の marker は絶対 target path を記録しない。
+// 代わりに durable な root 世代 ID と SQLite が記録する inode identity がその役割を担うため、設定した root が移動しても marker を書き換えずに済む。
 const ownershipMarkerVersion = 2
 
 // ownershipMarkerMinVersionは、読み取りが受理するversionの下限であり、書き込み側の
@@ -33,8 +33,8 @@ type ownershipMarker struct {
 	CommonDir    string `json:"common_dir"`
 }
 
-// MarkerIdentityは、1つのリポジトリワークツリーのスロットスコープマーカーに名前を付けます。
-// マーカーは、SQLiteが失われた場合の所有権の唯一のディスク上の証拠であるため、 スロットディレクトリ（ワークツリーの親）にあり、 ワークツリー自体の削除。
+// MarkerIdentity は、1つの repository worktree に対応する slot 単位の marker を指定する。
+// marker は SQLite を失ったときに残る唯一のディスク上の所有権の証拠なので、worktree 自身ではなくその親である slot ディレクトリに置き、worktree を消した後も残す。
 type MarkerIdentity struct {
 	SlotID       string
 	RootID       string
@@ -54,9 +54,8 @@ func (m MarkerIdentity) validate(requireSlot bool) error {
 	return nil
 }
 
-// EnsureOwnershipMarkerAtは、
-// デーモンが保持しているワークツリールートがピン留めされています。マーカーの作成を同じ状態に保ちます
-// 割り当てとワークツリーの準備としてのinode名前空間。
+// EnsureOwnershipMarkerAt は、daemon が worktree root を pin したまま marker を作る。
+// marker の作成を、allocation と worktree 準備が使うのと同じ inode namespace に閉じ込めるためである。
 func EnsureOwnershipMarkerAt(owner *os.Root, root, target string, identity MarkerIdentity, commonDir string) error {
 	if err := identity.validate(true); err != nil {
 		return err
@@ -114,9 +113,8 @@ func ensureOwnershipMarkerAt(owner *os.Root, markerRelative string, marker owner
 	return validateMarkerContents(owner, markerRelative, marker)
 }
 
-// ValidateOwnershipMarkerAtは、以前にピン留めされた
-// ルート記述子。パス名は、呼び出し元が
-// この読み取りを外部ディレクトリにリダイレクトせずに記述子を使用します。
+// ValidateOwnershipMarkerAt は、pin 済みの root descriptor 経由で marker を検証する。
+// path 名を開き直さないため、この読み取りが別ディレクトリへすり替わることがない。
 func ValidateOwnershipMarkerAt(owner *os.Root, root, target string, identity MarkerIdentity, commonDir string) error {
 	if err := identity.validate(false); err != nil {
 		return markerOwnershipFailure(err)
@@ -142,8 +140,7 @@ func ValidateOwnershipMarkerAt(owner *os.Root, root, target string, identity Mar
 	return nil
 }
 
-// ValidateRemovalOwnershipは、物理的な
-// ワークツリーリーフが欠落しており、マーカーによってエンコードされたスロットIDを返します。
+// ValidateRemovalOwnership は、worktree の leaf が実体として無いときでも所有権を検証し、marker が記録する slot ID を返す。
 func ValidateRemovalOwnership(root, target string, identity MarkerIdentity, commonDir string) (string, error) {
 	if err := identity.validate(false); err != nil {
 		return "", markerOwnershipFailure(err)
@@ -167,9 +164,8 @@ func ValidateRemovalOwnership(root, target string, identity MarkerIdentity, comm
 	return actual.SlotID, nil
 }
 
-// ValidateRemovalOwnershipAtは、
-// 構成されたwxルートがピン留めされている間のデーモン。ターゲットの解決を回避します
-// 期待されるマーカーを構築しながら、ミュータブルな語彙ルートを通過します。
+// ValidateRemovalOwnershipAt は、daemon が設定済みの wx root を pin したまま使う版である。
+// 期待する marker を組み立てる間、可変な path 名を辿って target を解決しない。
 func ValidateRemovalOwnershipAt(owner *os.Root, root, target string, identity MarkerIdentity, commonDir string) (string, error) {
 	if err := identity.validate(false); err != nil {
 		return "", markerOwnershipFailure(err)
@@ -231,9 +227,8 @@ func newOwnershipMarker(target string, identity MarkerIdentity, commonDir string
 	return markerExpectation(identity, commonDir)
 }
 
-// newOwnershipMarkerAtは、 ターゲットパス名。ターゲットは、最初に所有者を通じて到達可能であることが証明されます。
-// （または、それが欠落しているリーフである場合に記述子セーフな親を持つこと）。 バージョン2では、マーカーは絶対パスをまったく記録しないため、ルートは
-// それが運ぶ世代IDは、それを特定のwxルートに結びつけるものです。
+// newOwnershipMarkerAt は、target が owner 経由で到達できること（leaf が無いときは descriptor で安全に開ける親を持つこと）を確かめてから、期待する marker を組み立てる。
+// version 2 の marker は絶対 path を一切記録しないため、marker を特定の wx root に結び付けるのは、そこに載る root 世代 ID である。
 func newOwnershipMarkerAt(owner *os.Root, root, target string, identity MarkerIdentity, commonDir string, allowMissingTarget bool) (ownershipMarker, error) {
 	if owner == nil {
 		return ownershipMarker{}, errors.New("wx ownership root is nil")
@@ -308,8 +303,8 @@ func openMarkerRoot(root, target, repositoryID string) (*os.Root, string, error)
 	return owner, markerRelative, nil
 }
 
-// ownershipMarkerRelativeは、ワークツリーの親にマーカーを配置します。 wxレイアウトでは常にスロットディレクトリです。外に置いておく
-// ワークツリーは、中断された削除が再び所有権を証明できるようにするものです。 retry:ワークツリーがなくなり、マーカーがなくなりました。
+// ownershipMarkerRelative は marker を worktree の親に置く。wx のレイアウトではそこが必ず slot ディレクトリである。
+// worktree の外に置くことで、中断した削除を再試行するときも所有権を証明できる。worktree が消えていても marker は残るためである。
 func ownershipMarkerRelative(root, target, repositoryID string) (string, error) {
 	absoluteRoot, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
@@ -337,9 +332,8 @@ func ownershipMarkerName(repositoryID string) (string, error) {
 	return ownershipMarkerPrefix + repositoryID, nil
 }
 
-// OwnershipMarkerNameは、内部/デーモンで使用されるエクスポートされたスペルです
-// マルチリポジトリワークスペースバンドルからスロットのマーカーを除外します。 マーカーは、そのバンドルのルートであるスロットディレクトリにあり、
-// アーカイブとプレリストアプルーンの両方を保存する必要があります。
+// OwnershipMarkerName は、multi-repository workspace の bundle から slot の marker を除くために internal/daemon が使う公開名である。
+// marker は bundle の root にあたる slot ディレクトリにあり、archive と復元前の prune のどちらでも残す必要がある。
 func OwnershipMarkerName(repositoryID string) string {
 	return ownershipMarkerPrefix + repositoryID
 }
@@ -396,17 +390,15 @@ func validatePhysicalPathAllowMissingLeaf(path string) error {
 	return domain.ValidatePhysicalLeaf(filepath.Dir(absolute))
 }
 
-// RegisteredWorktreeLockReasonは、ターゲットのGitロック理由を返します。
-// 見つかった結果は、Gitがそのパスに登録していない場合にfalseです。
-// 暫定的な除去後のケース。
+// RegisteredWorktreeLockReason は target に対する Git の lock 理由を返す。
+// found は、Git がその path に登録を持たないとき false になる。削除を途中まで進めた後がこれに当たる。
 func RegisteredWorktreeLockReason(ctx context.Context, runner *gitx.Runner, mainPath, target string) (reason string, found bool, err error) {
 	reason, _, found, err = RegisteredWorktreeLockStatus(ctx, runner, mainPath, target)
 	return reason, found, err
 }
 
-// RegisteredWorktreeLockStatusは、
-// RegisteredWorktreeLockReason。ロック解除されたワークツリーと
-// 空の理由でロックします。これは、ハンドオフを削除する際に重要です。
+// RegisteredWorktreeLockStatus は RegisteredWorktreeLockReason の完全版である。
+// lock されていない worktree と、空の理由で lock された worktree を区別する。削除を引き継ぐときにこの差が効く。
 func RegisteredWorktreeLockStatus(ctx context.Context, runner *gitx.Runner, mainPath, target string) (reason string, locked, found bool, err error) {
 	listed, err := runner.Run(ctx, mainPath, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
@@ -431,9 +423,8 @@ func RegisteredWorktreeLockStatus(ctx context.Context, runner *gitx.Runner, main
 	return "", false, false, nil
 }
 
-// ValidateRegisteredWorktreeAtは、inodeに対してGitの登録を検証します
-// 記述子バインドされたターゲットによって保持されます。RegisteredWorktreeLockStatusとは異なり、
-// ミュータブルなターゲットパス名を正規化することはないので、ルート置換は 外部ディレクトリを明らかなwxマッチに変換します。
+// ValidateRegisteredWorktreeAt は、descriptor で束縛した target が持つ inode に対して Git の登録を検証する。
+// RegisteredWorktreeLockStatus と違い可変な target の path 名を正規化しないため、root のすり替えで別ディレクトリを wx のものに見せかけられない。
 func ValidateRegisteredWorktreeAt(ctx context.Context, runner *gitx.Runner, mainPath string, owner *os.Root, root, relativeTarget, targetIdentity string, slotID string, requireLock bool) error {
 	reason, _, found, err := RegisteredWorktreeLockStatusAt(ctx, runner, mainPath, owner, root, relativeTarget, targetIdentity)
 	if err != nil {
@@ -460,9 +451,8 @@ func ValidateRegisteredWorktreeAt(ctx context.Context, runner *gitx.Runner, main
 	return nil
 }
 
-// RegisteredWorktreeLockStatusAtは、すべてのGit登録を
-// 所有者を介して予想されるターゲットinode。ルート外の登録は無視されます
-// シンボリックリンクエイリアスを介して解決するのではなく、
+// RegisteredWorktreeLockStatusAt は、owner 経由で得た target の inode と Git の各登録を突き合わせる。
+// root の外の登録は、symlink alias を辿って解決せずに無視する。
 func RegisteredWorktreeLockStatusAt(ctx context.Context, runner *gitx.Runner, mainPath string, owner *os.Root, root, relativeTarget, targetIdentity string) (reason string, locked, found bool, err error) {
 	if owner == nil {
 		return "", false, false, errors.New("wx ownership root is nil")
