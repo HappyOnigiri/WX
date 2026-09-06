@@ -18,9 +18,25 @@ const (
 	errorLineLimit   = 1000
 )
 
-// splitGuidance は違反の直し方を示す。行数を削るのではなく責務で切り出すことを促す。
-// commentlint:allow-long -- 出力文面と対応させるため分割しない
-const splitGuidance = "split guidance: keep the package and move responsibilities into sibling files (public API, state transitions, OS/Git adapters, rendering); do not split a single responsibility just to fit the limit. See docs/architecture.md for the boundaries."
+// 案内は直し方の強さが警告と失敗で変わるため段階ごとに分け、両者に共通する禁じ手をsharedGuidanceに置く。
+var (
+	warningGuidance = []string{
+		"warning guidance (600 lines or more):",
+		"- A file with 1000 or more lines fails make ci.",
+		"- Prefer splitting now; deferring is acceptable while the file keeps to one responsibility, or while the split is outside the scope of the current change.",
+		"- Extract what the current change adds into its own file whenever it stands on its own.",
+	}
+	errorGuidance = []string{
+		"error guidance (1000 lines or more):",
+		"- Fix this even when the split reaches beyond the scope of the current change.",
+		"- Do not stop just below 1000 lines; split by responsibility and aim for fewer than 600 lines per file.",
+	}
+	sharedGuidance = []string{
+		"- Move whole responsibilities to sibling files in the same package (public API, state transitions, OS/Git adapters, rendering).",
+		"- Do not delete comments or pack statements to satisfy the limit.",
+		"- See docs/architecture.md for the boundaries.",
+	}
+)
 
 // countLines は改行で終わらない最終行も1行として数える。
 func countLines(content []byte) int {
@@ -75,9 +91,18 @@ func run(root string, out io.Writer) int {
 	for _, line := range append(append(warnings, violations...), failures...) {
 		_, _ = fmt.Fprintln(out, line)
 	}
-	// 案内はファイルごとに繰り返さず、行数の指摘があったときだけ末尾へ1回出す。
-	if len(warnings)+len(violations) > 0 {
-		_, _ = fmt.Fprintln(out, splitGuidance)
+	// 案内はファイルごとに繰り返さず、該当した段階の分だけ末尾へ1回出す。
+	var guidance []string
+	if len(warnings) > 0 {
+		guidance = append(guidance, warningGuidance...)
+	}
+	if len(violations) > 0 {
+		guidance = append(guidance, errorGuidance...)
+	}
+	if len(guidance) > 0 {
+		for _, line := range append(guidance, sharedGuidance...) {
+			_, _ = fmt.Fprintln(out, line)
+		}
 	}
 	if len(violations)+len(failures) > 0 {
 		return 1

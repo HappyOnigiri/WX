@@ -63,7 +63,9 @@ func TestRun(t *testing.T) {
 	for _, want := range []string{
 		filepath.Join(root, "internal", "warned.go") + ":1: file-length: 600 lines; warning at 600 or more",
 		filepath.Join(root, "cmd", "failed.go") + ":1: file-length: 1000 lines; must be fewer than 1000",
-		splitGuidance,
+		warningGuidance[0],
+		errorGuidance[0],
+		sharedGuidance[0],
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output %q does not contain %q", got, want)
@@ -100,8 +102,33 @@ func TestRunReportsMissingDirectory(t *testing.T) {
 	if code := run(t.TempDir(), &out); code != 1 {
 		t.Fatalf("run() = %d, want 1", code)
 	}
-	if strings.Contains(out.String(), splitGuidance) {
+	if strings.Contains(out.String(), sharedGuidance[0]) {
 		t.Fatalf("output %q unexpectedly contains the split guidance", out.String())
+	}
+}
+
+// 警告だけのときは失敗させず、上限超過向けの案内も出さない。
+func TestRunWarnsWithoutFailing(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"cmd", "internal", "tools"} {
+		if err := os.Mkdir(filepath.Join(root, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(root, "internal", "warned.go")
+	if err := os.WriteFile(path, []byte(source(warningLineLimit)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := run(root, &out); code != 0 {
+		t.Fatalf("run() = %d, want 0", code)
+	}
+	got := out.String()
+	if !strings.Contains(got, warningGuidance[0]) || !strings.Contains(got, sharedGuidance[0]) {
+		t.Fatalf("output %q lacks the warning guidance", got)
+	}
+	if strings.Contains(got, errorGuidance[0]) {
+		t.Fatalf("output %q unexpectedly contains the error guidance", got)
 	}
 }
 
