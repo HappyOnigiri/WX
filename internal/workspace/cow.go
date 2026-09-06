@@ -72,7 +72,7 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 		return fmt.Errorf("%w: open CoW Git directory: %w", state.ErrOwnership, err)
 	}
 	defer directory.Close()
-	leftovers, err := p.runGitInDirectory(ctx, directory, "ls-files", "--others", "-z", "--", ":(glob)**/.wx-cow-*")
+	leftovers, err := p.runGitInDirectory(ctx, directory, "ls-files", "--others", "--exclude-standard", "-z", "--", ":(glob)**/.wx-cow-*")
 	if err != nil {
 		return err
 	}
@@ -363,7 +363,7 @@ func sameCOWBytes(ctx context.Context, a, b *os.File) (bool, error) {
 
 // rejectCOWTemporaries は方式変更後も中断時の元ファイルを通常の生成物と取り違えない。
 func (p *Preparer) rejectCOWTemporaries(ctx context.Context, target, identity string) error {
-	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "ls-files", "--others", "-z", "--", ":(glob)**/.wx-cow-*")
+	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "ls-files", "--others", "--exclude-standard", "-z", "--", ":(glob)**/.wx-cow-*")
 	if err != nil {
 		return err
 	}
