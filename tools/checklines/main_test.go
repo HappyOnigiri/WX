@@ -173,3 +173,36 @@ func TestRunSkipsGeneratedFile(t *testing.T) {
 		t.Fatalf("output = %q, want empty", out.String())
 	}
 }
+
+// 分割できないファイルはマーカーで免除し、理由を伴わないマーカーは失敗させる。
+func TestRunAllowLongMarker(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		header   string
+		wantCode int
+		wantText string
+	}{
+		{"with reason", "// linelint:allow-long -- 分割するとGitの履歴が追えなくなる。\n", 0, "allowed by linelint:allow-long -- 分割するとGitの履歴が追えなくなる。"},
+		{"without reason", "// linelint:allow-long\n", 1, "marker-format: linelint:allow-long requires a reason"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, directory := range []string{"cmd", "internal", "tools"} {
+				if err := os.Mkdir(filepath.Join(root, directory), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			content := test.header + source(errorLineLimit)
+			if err := os.WriteFile(filepath.Join(root, "internal", "huge.go"), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if code := run(root, &out); code != test.wantCode {
+				t.Fatalf("run() = %d, want %d; output %q", code, test.wantCode, out.String())
+			}
+			if got := out.String(); !strings.Contains(got, test.wantText) {
+				t.Fatalf("output %q does not contain %q", got, test.wantText)
+			}
+		})
+	}
+}

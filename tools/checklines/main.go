@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -37,6 +38,7 @@ func errorGuidance() []string {
 		fmt.Sprintf("error guidance (%d lines or more):", errorLineLimit),
 		"- Fix this even when the split reaches beyond the scope of the current change.",
 		fmt.Sprintf("- Do not stop just below %d lines; split by responsibility and aim for fewer than %d lines per file.", errorLineLimit, warningLineLimit),
+		"- Only when the file cannot be split, put `// linelint:allow-long -- <reason>` in the top comment; the reason is required.",
 	}
 }
 
@@ -46,6 +48,29 @@ func sharedGuidance() []string {
 		"- Do not delete comments or pack statements to satisfy the limit.",
 		"- See docs/architecture.md for the boundaries.",
 	}
+}
+
+// マーカーはファイル先頭のコメントにだけ置ける。理由を必須にして、分割できない事情を残さない免除を防ぐ。
+var allowLongMarker = regexp.MustCompile(`^//\s*linelint:allow-long -- (.+)$`)
+
+// allowLong はファイル先頭のコメントから免除マーカーを探し、理由とマーカーの行番号を返す。
+// 理由を伴わないマーカーはmalformedとして報告し、免除しない。
+func allowLong(content []byte) (reason string, malformed bool, markerLine int) {
+	for i, raw := range strings.Split(string(content), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "//") {
+			if !strings.Contains(line, "linelint:") {
+				continue
+			}
+			match := allowLongMarker.FindStringSubmatch(line)
+			if len(match) != 2 || strings.TrimSpace(match[1]) == "" {
+				return "", true, i + 1
+			}
+			return strings.TrimSpace(match[1]), false, i + 1
+		}
+		break
+	}
+	return "", false, 0
 }
 
 // countLines は改行で終わらない最終行も1行として数える。
@@ -97,9 +122,15 @@ func run(root string, out io.Writer) int {
 			if generatedFile(path, content) {
 				return nil
 			}
+			reason, malformed, markerLine := allowLong(content)
+			if malformed {
+				violations = append(violations, fmt.Sprintf("%s:%d: marker-format: linelint:allow-long requires a reason", path, markerLine))
+			}
 			switch lines := countLines(content); {
-			case lines >= errorLineLimit:
+			case lines >= errorLineLimit && reason == "":
 				violations = append(violations, fmt.Sprintf("%s:1: file-length: %d lines; must be fewer than %d", path, lines, errorLineLimit))
+			case lines >= errorLineLimit:
+				warnings = append(warnings, fmt.Sprintf("%s:1: file-length: %d lines; allowed by linelint:allow-long -- %s", path, lines, reason))
 			case lines >= warningLineLimit:
 				warnings = append(warnings, fmt.Sprintf("%s:1: file-length: %d lines; warning at %d or more", path, lines, warningLineLimit))
 			}
