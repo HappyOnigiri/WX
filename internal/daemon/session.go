@@ -1,0 +1,131 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+func (m *Manager) Heartbeat(ctx context.Context, id, token string) error {
+	return m.store.Heartbeat(ctx, id, token)
+}
+
+func (m *Manager) RegisterAgentProcess(ctx context.Context, id, token string, pid int) error {
+	return m.store.RegisterAgentProcess(ctx, id, token, pid)
+}
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
+	if _, err := m.store.Session(ctx, id, token); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		slot, err := m.store.Slot(ctx, id)
+		if err != nil {
+			return err
+		}
+		switch slot.State {
+		case "READY", "LEASED":
+			return nil
+		case "FAILED", "QUARANTINED":
+			failureID := slot.FailureCode
+			if failureID == "" {
+				failureID = "UNKNOWN"
+			}
+			for _, prefix := range []string{"PREPARE_FAILED:", "RESTORE_FAILED:"} {
+				if strings.HasPrefix(failureID, prefix) {
+					failureID = strings.TrimPrefix(failureID, prefix)
+					break
+				}
+			}
+			metadata := readPrepareDiagnostic(slot.FailureDetailPath)
+			if metadata.FailureID != "" {
+				failureID = metadata.FailureID
+			}
+			detailPath := slot.FailureDetailPath
+			if detailPath == "" {
+				detailPath = "unavailable"
+			}
+			exitCode := "unknown"
+			if metadata.HasExitCode {
+				exitCode = strconv.Itoa(metadata.ExitCode)
+			}
+			// 復元の失敗は marker で区別する。client は会話の再開を優先し、新しい worktree で作り直してよいか確認する。
+			recovery := ""
+			if recoveryUnavailable(slot.FailureCode) {
+				recovery = " " + RecoveryUnavailableMarker
+			}
+			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s%s detail_path=%s exit_code=%s timed_out=%t canceled=%t; run `wx status` or `wx doctor` for details", slot.State, failureID, recovery, detailPath, exitCode, metadata.TimedOut, metadata.Canceled)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+type prepareDiagnosticMetadata struct {
+	FailureID   string
+	ExitCode    int
+	HasExitCode bool
+	TimedOut    bool
+	Canceled    bool
+}
+
+func readPrepareDiagnostic(path string) prepareDiagnosticMetadata {
+	var metadata prepareDiagnosticMetadata
+	if path == "" {
+		return metadata
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return metadata
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, 8<<10))
+	if err != nil {
+		return metadata
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, ": ")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "failure_id":
+			metadata.FailureID = strings.TrimSpace(value)
+		case "exit_code":
+			if exitCode, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil {
+				metadata.ExitCode, metadata.HasExitCode = exitCode, true
+			}
+		case "timed_out":
+			metadata.TimedOut, _ = strconv.ParseBool(strings.TrimSpace(value))
+		case "canceled":
+			metadata.Canceled, _ = strconv.ParseBool(strings.TrimSpace(value))
+		}
+	}
+	return metadata
+}
+
+func (m *Manager) BindAgentSession(ctx context.Context, id, token, agentID string) error {
+	if _, err := m.store.Session(ctx, id, token); err != nil {
+		return err
+	}
+	return m.store.BindAgentSession(ctx, id, agentID)
+}

@@ -474,3 +474,20 @@ func parsePhysicalPatterns(data []byte) ([]string, error) {
 	}
 	return patterns, scanner.Err()
 }
+
+func readOwnedDirectory(root *os.Root, relative string) ([]string, error) {
+	directory, _, err := domain.OpenDirectoryAt(root, relative)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = directory.Close() }()
+	return directory.Readdirnames(-1)
+}
+
+func safeRelative(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if path == "" || filepath.IsAbs(path) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("unsafe workspace root path %q", path)
+	}
+	return clean, nil
+}

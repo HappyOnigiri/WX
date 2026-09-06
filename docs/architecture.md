@@ -28,7 +28,7 @@ lintは`.golangci.yml`のdepguardで`internal/domain`・`internal/state`・`inte
 - **基盤** — `internal/domain`、`internal/gitx`、`internal/fdexec`、`internal/config`、`internal/launchd`。
   path・ID・descriptorの原始的操作、Git実行、fchdir束縛、設定、LaunchAgent。
 
-`internal/daemon/manager.go`はstatus/doctorの組み立ても持つ。
+`internal/daemon/status.go`はstatus/doctorの組み立てを持つ。
 診断用の独立したパッケージは、分割の便益が間接参照の増加を上回らないので作っていない。
 
 `wx`のバイナリは3つの役割を兼ねる。
@@ -136,6 +136,11 @@ slot単位の測定はそのslotのsubtreeしか歩かず、貸出の応答に�
 LinuxではCoW自体を行わないため、`measurement`は`unsupported`になり`shared_bytes`は常に0である。
 
 ## daemonの内部
+
+`manager.go`は共有状態と構築・終了を持ち、貸出・準備・復元・保存・削除は`lease.go`・`prepare.go`・`resume.go`・`snapshot.go`・`remove.go`で調整する。
+`jobs.go`がジョブを配送し、`maintenance.go`が周期処理、`reconcile.go`が実体照合、`standby.go`が補充、`gc.go`が保持期限に基づく削除を進める。
+root世代の選択・登録は`roots.go`、descriptorの参照保持・終了は`root_handles.go`が担当する。
+使用量の測定は`usage.go`のbackground処理に閉じ、`status.go`はcacheとDBから診断結果を組み立てる。
 
 - **ジョブ** — 永続ジョブは`jobs`テーブルにあり、種別は`PREPARE`、`ENSURE_STANDBY`、`SNAPSHOT`、`RESTORE`、`REMOVE`、`REMOVE_REPOSITORY`。
   workerがリースを取って実行する。

@@ -14,6 +14,16 @@ type SessionScope struct {
 	State          string `json:"state"`
 }
 
+func insertCurrentSessionRepositories(ctx context.Context, tx *sql.Tx, sessionID, workspaceID, slotID string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal) SELECT ?,sr.repository_id,wr.relative_path,wr.ordinal FROM slot_repositories sr JOIN workspace_repositories wr ON wr.workspace_id=? AND wr.repository_id=sr.repository_id WHERE sr.slot_id=? ORDER BY wr.ordinal`, sessionID, workspaceID, slotID)
+	return err
+}
+
+func copySessionRepositories(ctx context.Context, tx *sql.Tx, sessionID, parentSessionID string) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal) SELECT ?,repository_id,relative_path,ordinal FROM session_repositories WHERE session_id=? ORDER BY ordinal`, sessionID, parentSessionID)
+	return err
+}
+
 func (s *Store) WorkspaceSlotPaths(ctx context.Context, workspaceID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT r.path || '/' || sl.rel_path FROM slots sl JOIN roots r ON r.id=sl.root_id WHERE sl.workspace_id=? ORDER BY r.path,sl.rel_path`, workspaceID)
 	if err != nil {
