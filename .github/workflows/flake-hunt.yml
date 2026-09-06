@@ -22,17 +22,17 @@ jobs:
       matrix:
         include:
           - {id: proof, mode: proof, procs: "0"}
+          - {id: iso-1, mode: iso, procs: "0"}
+          - {id: iso-2, mode: iso, procs: "0"}
+          - {id: iso-3, mode: iso, procs: "0"}
+          - {id: iso-4, mode: iso, procs: "0"}
+          - {id: iso-5, mode: iso, procs: "0"}
+          - {id: iso-6, mode: iso, procs: "0"}
+          - {id: iso-7, mode: iso, procs: "2"}
+          - {id: iso-8, mode: iso, procs: "2"}
+          - {id: iso-9, mode: iso, procs: "1"}
           - {id: pkg-1, mode: pkg, procs: "0"}
-          - {id: pkg-2, mode: pkg, procs: "0"}
-          - {id: pkg-3, mode: pkg, procs: "0"}
-          - {id: pkg-4, mode: pkg, procs: "0"}
-          - {id: pkg-5, mode: pkg, procs: "0"}
-          - {id: pkg-6, mode: pkg, procs: "0"}
-          - {id: pkg-procs2, mode: pkg, procs: "2"}
           - {id: all-1, mode: all, procs: "0"}
-          - {id: all-2, mode: all, procs: "0"}
-          - {id: all-3, mode: all, procs: "0"}
-          - {id: all-4, mode: all, procs: "0"}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -53,13 +53,16 @@ jobs:
             export GOMAXPROCS="$HUNT_PROCS"
           fi
           test_args=(-race -timeout=25m)
-          skip='^TestReconcileArtifactsQuarantinesInFlightReservation$'
+          skip='^Test(ReconcileArtifactsQuarantinesInFlightReservation|StandbyBuiltBeforeFirstLeaseIsCold)$'
           case "$HUNT_MODE" in
             pkg)
               test_args+=(-shuffle=on -count=1 -skip "$skip" ./internal/daemon)
               ;;
             all)
               test_args+=(-shuffle=on -count=1 -skip "$skip" ./...)
+              ;;
+            iso)
+              test_args+=(-count=20 -run '^TestWarmPoolMaintainsCapacityAndNeverDoubleLeases$' ./internal/daemon)
               ;;
             proof)
               test_args+=(-count=1 -run "$skip" ./internal/daemon)

@@ -52,6 +52,13 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	if err != nil {
 		return err
 	}
+	coldRepositories := []string{}
+	for _, r := range resolved {
+		if !hot[string(r.Repository.ID)] {
+			coldRepositories = append(coldRepositories, string(r.Repository.ID))
+		}
+	}
+	m.log.Debug("standby replenishment decides hot or cold", "workspace_id", w.ID, "needed", needed, "hot_before", hotBefore, "hot_count", len(hot), "cold_repositories", coldRepositories)
 	rootPath, rootID, err := m.activeRoot()
 	if err != nil {
 		return err

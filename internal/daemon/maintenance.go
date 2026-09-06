@@ -164,6 +164,7 @@ func (m *Manager) reconcileRegistry(ctx context.Context) {
 				m.log.Warn("READY slot failed startup reconciliation", "slot_id", slot.ID, "error", validationErr)
 			}
 		}
+		m.log.Debug("registry reconcile ensures standby", "workspace_id", workspaceRecord.ID)
 		if err := m.ensureStandby(ctx, workspaceRecord); err != nil {
 			m.log.Error("workspace standby reconcile failed", "workspace_id", workspaceRecord.ID, "error", err)
 		}
