@@ -4,6 +4,9 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
@@ -50,7 +53,18 @@ func countLines(content []byte) int {
 	return lines
 }
 
-// targetFile は検査対象のGo実装ファイルかを判定する。テストコードと生成物以外のsymlinkは対象外とする。
+// generatedFile は `// Code generated ... DO NOT EDIT.` を持つ生成物かを判定する。
+// 生成物は分割で縮められないため検査対象から外す。構文エラーで判定できないファイルは生成物とみなさず、行数の検査を続ける。
+func generatedFile(path string, content []byte) bool {
+	file, err := parser.ParseFile(token.NewFileSet(), path, content, parser.PackageClauseOnly|parser.ParseComments)
+	if err != nil && file == nil {
+		return false
+	}
+	return ast.IsGenerated(file)
+}
+
+// targetFile は検査対象のGo実装ファイルかを判定する。テストコードとsymlinkは対象外とする。
+// 生成物は内容を読まないと判定できないため、ここではなくrunでgeneratedFileにより除外する。
 func targetFile(path string, entry fs.DirEntry) bool {
 	if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
 		return false
@@ -71,6 +85,9 @@ func run(root string, out io.Writer) int {
 			content, err := os.ReadFile(path)
 			if err != nil {
 				failures = append(failures, fmt.Sprintf("%s: read: %v", path, err))
+				return nil
+			}
+			if generatedFile(path, content) {
 				return nil
 			}
 			switch lines := countLines(content); {
