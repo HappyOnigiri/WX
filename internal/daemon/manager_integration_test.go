@@ -1008,6 +1008,24 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	defer store.Close()
 	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer m.Close()
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		ctx := context.Background()
+		details, detailsErr := store.StatusDiagnostics(ctx)
+		blocked, blockedErr := store.StandbyReplenishmentDiagnostics(ctx)
+		t.Logf("diagnostics=%+v err=%v; standby_replenishment=%+v err=%v", details, detailsErr, blocked, blockedErr)
+		artifacts, err := store.SlotArtifacts(ctx)
+		if err != nil {
+			t.Logf("slot artifacts: %v", err)
+		}
+		for _, artifact := range artifacts {
+			slot, slotErr := store.Slot(ctx, artifact.ID)
+			repos, reposErr := store.SlotRepositories(ctx, artifact.ID)
+			t.Logf("slot=%+v err=%v; repositories=%+v err=%v", slot, slotErr, repos, reposErr)
+		}
+	}()
 	lease, err := m.ResolveAndLease(context.Background(), root, nil, "codex", 1)
 	if err != nil {
 		t.Fatal(err)
