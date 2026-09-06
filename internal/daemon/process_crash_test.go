@@ -181,7 +181,7 @@ func writeCrashConfig(t *testing.T, home string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := fmt.Sprintf("version: 1\nstorage:\n  worktree_root: %s\npool:\n  warm_per_workspace: 0\n  preparation_concurrency: 1\n  git_concurrency_per_repository: 1\nretention:\n  ended_worktree: 0s\n  recovery_snapshot: 1h\ndiscovery:\n  reconcile_interval: 1h\nreadiness:\n  timeout: 10s\n", filepath.Join(home, "worktrees"))
+	document := fmt.Sprintf("version: 1\nstorage:\n  worktree_root: %s\npool:\n  warm_per_workspace: 0\n  preparation_concurrency: 1\nretention:\n  ended_worktree: 0s\n  recovery_snapshot: 1h\ndiscovery:\n  reconcile_interval: 1h\nreadiness:\n  timeout: 10s\n", filepath.Join(home, "worktrees"))
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
