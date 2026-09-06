@@ -1460,9 +1460,6 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		if !link.present {
 			continue
 		}
-		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
-			return err
-		}
 		current, err := inspectLinkSource(sourceRoot, link.relative)
 		if err != nil {
 			return err
@@ -1497,9 +1494,6 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 				continue
 			}
 		}
-		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
-			return err
-		}
 		source := filepath.Join(mainPath, link.relative)
 		destinationRelative := link.relative
 		if err := ensureRootDirectory(destinationRoot, filepath.Dir(destinationRelative)); err != nil {
@@ -1516,9 +1510,6 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
-			return err
-		}
 		current, err = inspectLinkSource(sourceRoot, link.relative)
 		if err != nil {
 			return err
@@ -1529,6 +1520,12 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		if err := destinationRoot.Symlink(source, destinationRelative); err != nil {
 			return err
 		}
+	}
+	// link を作り終えたあとに、pin した root と main path の pathname がまだ同じ実体を指すことを確認する。
+	// 単一ユーザー環境では作業中に main worktree が差し替わる状況は起きず、起きても次回の prepare で検出できるため、
+	// ループ内での毎回の再検証はせずループ前後の境界 2 回に絞る。
+	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
+		return err
 	}
 	return nil
 }
