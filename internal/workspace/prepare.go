@@ -366,14 +366,8 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 		}
 	}
 	if phase == preparePhaseCreate {
-		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
-			return fmt.Errorf("wx worktree ownership changed before tracked status: %w", err)
-		}
-		if err := p.validateTrackedClean(ctx, target); err != nil {
+		if err := p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status"); err != nil {
 			return err
-		}
-		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
-			return fmt.Errorf("wx worktree ownership changed during tracked status: %w", err)
 		}
 	}
 	targetRoot, currentIdentity, err := domain.OpenDirectoryAt(lockedRoot, lockedRelativeTarget)
@@ -405,14 +399,8 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	// inode 交換で index の stat cache が陳腐化するため、貸出前に refresh して再ハッシュを PREPARING 側で払う。
 	// tracked 内容が変わっていないことの独立検証も兼ねる。
 	if phase == preparePhaseCreate {
-		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
-			return fmt.Errorf("wx worktree ownership changed before tracked status refresh: %w", err)
-		}
-		if err := p.validateTrackedClean(ctx, target); err != nil {
+		if err := p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status refresh"); err != nil {
 			return err
-		}
-		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
-			return fmt.Errorf("wx worktree ownership changed during tracked status refresh: %w", err)
 		}
 	}
 	if _, err = p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
@@ -1099,6 +1087,20 @@ func (p *Preparer) validateStateOwnershipWithIdentity(ctx context.Context, repo 
 		AllowedRepositoryStates: repositoryStates,
 	})
 	return err
+}
+
+// validateTrackedCleanOwned は tracked status の前後で worktree の所有権を確認し、stage を失敗の文脈として使う。
+func (p *Preparer) validateTrackedCleanOwned(ctx context.Context, target string, lockedRoot *os.Root, relative, identity, stage string) error {
+	if err := p.verifyPreparedTargetIdentity(lockedRoot, relative, identity); err != nil {
+		return fmt.Errorf("wx worktree ownership changed before %s: %w", stage, err)
+	}
+	if err := p.validateTrackedClean(ctx, target); err != nil {
+		return err
+	}
+	if err := p.verifyPreparedTargetIdentity(lockedRoot, relative, identity); err != nil {
+		return fmt.Errorf("wx worktree ownership changed during %s: %w", stage, err)
+	}
+	return nil
 }
 
 func (p *Preparer) validateTrackedClean(ctx context.Context, target string) error {
