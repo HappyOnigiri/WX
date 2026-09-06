@@ -196,9 +196,10 @@ portable-test:
 concurrency-test:
 	$(GO) test -race -shuffle=on -count=10 -timeout=15m ./internal/state ./internal/daemon -run 'Lease|Concurrent|Crash|Archive|Remove|Worker'
 
+# amd64は配布・実行対象にしないため落とした。arm64のCGO_ENABLED=0ビルドは
+# 通常のmake buildと異なる唯一のci-checks構成要素であり退行検出の実体なので残す。
 build-darwin:
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/wx-darwin-arm64 ./cmd/wx
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/wx-darwin-amd64 ./cmd/wx
 
 reproducible-build:
 	@scratch="$$(mktemp -d)"; trap 'rm -rf "$$scratch"' EXIT; \
@@ -210,11 +211,13 @@ reproducible-build:
 	  $(GO) version -m "$$scratch/first/wx-$$arch"; \
 	done
 
+# internal/rpcの単体テストは同じmake ciのcoverage-check/ci-test-raceが
+# ./...として実行済みなのでここでは走らせない。
 smoke: build
 	./bin/wx --help >/dev/null
 	./bin/wx --version | grep -q '^wx version '
-	$(GO) test ./internal/rpc -run TestClientServerRoundTripWithoutParentDeadline -count=1
-	@destination="$$(mktemp -d)"; $(MAKE) install INSTALL_DIR="$$destination"; "$$destination/wx" --version >/dev/null
+	@destination="$$(mktemp -d)"; $(MAKE) install INSTALL_DIR="$$destination"; \
+	"$$destination/wx" --help >/dev/null; "$$destination/wx" --version | grep -q '^wx version '
 
 govulncheck: setup-security-tools
 	@test -x "$(TOOLS_BIN)/govulncheck" || { echo "pinned govulncheck is missing; run make setup-security-tools"; exit 1; }
