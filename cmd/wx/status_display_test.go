@@ -59,7 +59,7 @@ func TestPrintStatusSummaryReadsWorkspaceLastUsedAndRoots(t *testing.T) {
 		"WORKSPACE",
 		"LAST USED (JST)",
 		"Daemon running · Jobs 0 pending / 0 running / 0 failed",
-		"Disk   365 MiB allocated · ~/wx",
+		"Disk   365 MiB managed allocated · ~/wx",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary missing %q:\n%s", want, got)
@@ -201,7 +201,7 @@ func TestStatusDiskSummaryDistinguishesPendingFromMeasuredUsage(t *testing.T) {
 		{
 			name: "measured",
 			root: map[string]any{"path": "/repo/wx", "bytes": int64(1), "allocated_bytes": int64(365 * 1024 * 1024), "measurement": "st_blocks_x_512", "measured_at": "2026-09-04T22:16:00Z"},
-			want: "Disk   365 MiB allocated · /repo/wx · measured 09/05 07:16 JST",
+			want: "Disk   365 MiB managed allocated · /repo/wx · measured 09/05 07:16 JST",
 		},
 		{
 			name: "failed",

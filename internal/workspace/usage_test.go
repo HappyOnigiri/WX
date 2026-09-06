@@ -38,7 +38,7 @@ func TestMeasureRootUsageAttributesFilesToSlots(t *testing.T) {
 	slotRepo := filepath.Join(root.Name(), "workspace", "slot", "repo")
 	usageWrite(t, slotRepo, "nested/file", "slot content")
 	usageWrite(t, mainPath, "nested/file", "main content")
-	// slot の外にある実体は root 合計にだけ入り、slot の内訳には数えない。
+	// slot の外にある実体は管理容量に含めず、登録外の容量として報告する。
 	usageWrite(t, root.Name(), "outside", "outside content")
 
 	usage, cache, err := MeasureRootUsage(context.Background(), root, targets, nil)
@@ -49,10 +49,10 @@ func TestMeasureRootUsageAttributesFilesToSlots(t *testing.T) {
 	if !measured || slot.Files != 1 || slot.LogicalBytes != int64(len("slot content")) {
 		t.Fatalf("slot usage=%+v measured=%v", slot, measured)
 	}
-	if usage.LogicalBytes != int64(len("slot content")+len("outside content")) {
+	if usage.LogicalBytes != int64(len("slot content")) {
 		t.Fatalf("root logical bytes=%d", usage.LogicalBytes)
 	}
-	if usage.AllocatedBytes < slot.AllocatedBytes || slot.AllocatedBytes == 0 {
+	if usage.AllocatedBytes != slot.AllocatedBytes || slot.AllocatedBytes == 0 || usage.UnmanagedBytes == 0 {
 		t.Fatalf("allocated root=%d slot=%d", usage.AllocatedBytes, slot.AllocatedBytes)
 	}
 	if !SharingSupported() {

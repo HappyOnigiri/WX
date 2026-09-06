@@ -671,10 +671,10 @@ func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
 
 	unsafe := newStandby("unsafe", nil)
 	outside := filepath.Join(t.TempDir(), "outside")
-	if result := manager.scheduleEndedWorktreeRemovals(ctx, []state.GCCandidate{{SlotID: unsafe.ID, Path: outside, SessionID: ""}}); result.Scheduled != 0 {
-		t.Fatalf("outside worktree removal result=%+v, want no reservation", result)
+	if result := manager.scheduleEndedWorktreeRemovals(ctx, []state.GCCandidate{{SlotID: unsafe.ID, Path: outside, SessionID: ""}}); result.Scheduled != 1 {
+		t.Fatalf("DB registered removal result=%+v, want one reservation", result)
 	}
-	if stored, err := store.Slot(ctx, unsafe.ID); err != nil || stored.State != "QUARANTINED" {
+	if stored, err := store.Slot(ctx, unsafe.ID); err != nil || stored.State != "REMOVING" {
 		t.Fatalf("outside worktree slot after quarantine=%+v err=%v", stored, err)
 	}
 	manager.quarantineCleanupFailure(unsafe.ID, errors.New("ordinary cleanup failure"))

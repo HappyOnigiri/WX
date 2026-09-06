@@ -17,6 +17,7 @@ import (
 type rootUsageSample struct {
 	bytes      int64
 	allocated  int64
+	unmanaged  int64
 	measuredAt time.Time
 	err        string
 }
@@ -45,7 +46,11 @@ const (
 func (m *Manager) measureRootUsage(ctx context.Context) {
 	roots := m.knownRoots(ctx)
 	targetsAt := time.Now().UTC()
-	targets := m.slotUsageTargets(ctx)
+	targets, err := m.slotUsageTargets(ctx)
+	if err != nil {
+		m.log.Warn("list managed usage locations", "error", err)
+		return
+	}
 	samples := make(map[string]rootUsageSample, len(roots))
 	slots := map[string]slotUsageSample{}
 	caches := make(map[string]workspace.SharedFileCache, len(roots))
@@ -55,7 +60,7 @@ func (m *Manager) measureRootUsage(ctx context.Context) {
 			return
 		}
 		measuredAt := time.Now().UTC()
-		sample := rootUsageSample{bytes: usage.LogicalBytes, allocated: usage.AllocatedBytes, measuredAt: measuredAt}
+		sample := rootUsageSample{bytes: usage.LogicalBytes, allocated: usage.AllocatedBytes, unmanaged: usage.UnmanagedBytes, measuredAt: measuredAt}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			sample.err = err.Error()
 		}
@@ -131,12 +136,11 @@ func (m *Manager) measureSlotUsage(ctx context.Context, slotID string) {
 }
 
 // slotUsageTargets は測定対象の slot を root ごとにまとめる。
-// 対象を読めなかった回は slot の内訳だけを諦め、root 合計の測定は続ける。
-func (m *Manager) slotUsageTargets(ctx context.Context) map[string][]workspace.SlotUsageTarget {
+// DB を読めない回は前回値を維持し、管理対象を登録外の容量へ誤分類しない。
+func (m *Manager) slotUsageTargets(ctx context.Context) (map[string][]workspace.SlotUsageTarget, error) {
 	locations, err := m.store.SlotUsageLocations(ctx)
 	if err != nil {
-		m.log.Warn("list slot usage locations", "error", err)
-		return nil
+		return nil, err
 	}
 	targets := map[string][]workspace.SlotUsageTarget{}
 	indexes := map[string]int{}
@@ -151,7 +155,7 @@ func (m *Manager) slotUsageTargets(ctx context.Context) map[string][]workspace.S
 		}
 		targets[root][index].Repositories[location.DirName] = location.MainPath
 	}
-	return targets
+	return targets, nil
 }
 
 func (m *Manager) sharedFileCache(root string) workspace.SharedFileCache {
@@ -161,11 +165,12 @@ func (m *Manager) sharedFileCache(root string) workspace.SharedFileCache {
 }
 
 func (m *Manager) rootDirectoryUsage(ctx context.Context, root string, targets []workspace.SlotUsageTarget, previous workspace.SharedFileCache) (workspace.RootUsage, workspace.SharedFileCache, error) {
-	owner, release, err := m.usageRootDescriptor(root)
+	// root の旧 identity に依存せず、削除と同じ登録 path の現在の実体を測る。
+	owner, err := os.OpenRoot(root)
 	if err != nil {
 		return workspace.RootUsage{}, nil, err
 	}
-	defer release()
+	defer func() { _ = owner.Close() }()
 	return workspace.MeasureRootUsage(ctx, owner, targets, previous)
 }
 

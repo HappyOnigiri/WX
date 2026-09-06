@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1400,7 +1399,7 @@ func writeWorktreeRootConfig(t *testing.T, home, root string) {
 
 // 隔離 slot は retention を過ぎたら GC が通常の REMOVE で消す。
 // 所有権を証明できないうちは実体を残して QUARANTINED へ戻し、証明が通る次の周回で片付く。
-func TestGCRemovesQuarantinedWorktreesOnlyWithProvenOwnership(t *testing.T) {
+func TestGCRemovesRegisteredQuarantineWithoutCachedIdentity(t *testing.T) {
 	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -1467,48 +1466,19 @@ func TestGCRemovesQuarantinedWorktreesOnlyWithProvenOwnership(t *testing.T) {
 		t.Fatalf("quarantined candidates=%+v err=%v", candidates, err)
 	}
 
-	// root を証明できない状態で削除を試すと、実体を残したまま QUARANTINED へ戻る。
+	// manager の古い identity cache に依存せず、DB 登録済みの隔離実体を回収する。
 	if _, changed, err := store.ScheduleQuarantinedRemoval(ctx, id); err != nil || !changed {
 		t.Fatalf("schedule changed=%v err=%v", changed, err)
 	}
 	m.mu.Lock()
-	savedRoots, savedIdentities := m.roots, m.rootIdentities
 	m.roots, m.rootIdentities = map[string]bool{}, nil
 	m.mu.Unlock()
 	recovered, err := store.RecoverJobs(ctx, true)
 	if err != nil || len(recovered) != 1 {
-		t.Fatalf("recovered removal jobs=%+v err=%v", recovered, err)
-	}
-	if err := m.runRecoveredJob(ctx, recovered[0]); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("removal without ownership err=%v", err)
-	}
-	failedRemoval, err := store.ClaimJob(ctx, recovered[0].ID, "gc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.FinishJob(ctx, failedRemoval.ID, "gc", errors.New("ownership could not be proven")); err != nil {
-		t.Fatal(err)
-	}
-	if stored, err := store.Slot(ctx, id); err != nil || stored.State != "QUARANTINED" {
-		t.Fatalf("slot after an unprovable removal=%+v err=%v", stored, err)
-	}
-	if _, err := os.Stat(slotRoot); err != nil {
-		t.Fatalf("quarantined worktree was deleted without proof: %v", err)
-	}
-
-	// 原因が解消された次の周回では、同じ証明を通したうえで実体が消える。
-	m.mu.Lock()
-	m.roots, m.rootIdentities = savedRoots, savedIdentities
-	m.mu.Unlock()
-	if _, changed, err := store.ScheduleQuarantinedRemoval(ctx, id); err != nil || !changed {
-		t.Fatalf("second schedule changed=%v err=%v", changed, err)
-	}
-	recovered, err = store.RecoverJobs(ctx, true)
-	if err != nil || len(recovered) != 1 {
-		t.Fatalf("second recovered removal jobs=%+v err=%v", recovered, err)
+		t.Fatalf("removal jobs=%+v err=%v", recovered, err)
 	}
 	if err := m.runRecoveredJob(ctx, recovered[0]); err != nil {
-		t.Fatalf("removal with ownership: %v", err)
+		t.Fatal(err)
 	}
 	if stored, err := store.Slot(ctx, id); err != nil || stored.State != "ARCHIVED" {
 		t.Fatalf("slot after removal=%+v err=%v", stored, err)

@@ -60,7 +60,7 @@ func TestRemoveColdRepositoryJobKeepsTheSlotDirectoryAndItsMarker(t *testing.T) 
 	}
 }
 
-func TestRemoveColdRepositoryJobQuarantinesOnUnlockedWorktree(t *testing.T) {
+func TestRemoveColdRepositoryJobDeletesRegisteredUnlockedWorktree(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 	repository := resolved[0].Repository
@@ -78,11 +78,11 @@ func TestRemoveColdRepositoryJobQuarantinesOnUnlockedWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-unlocked", SlotID: slotID, RepositoryID: string(repository.ID)}); err == nil {
-		t.Fatal("cold repository removal succeeded for an unlocked worktree")
+	if err := manager.removeColdRepositoryJob(ctx, state.Job{ID: "cold-unlocked", SlotID: slotID, RepositoryID: string(repository.ID)}); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(worktreePath, ".git")); err != nil {
-		t.Fatalf("unlocked worktree was removed despite a failed removal: %v", err)
+	if _, err := os.Lstat(filepath.Join(worktreePath, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("registered unlocked worktree remains: %v", err)
 	}
 }
 

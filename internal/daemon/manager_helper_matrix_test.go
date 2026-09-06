@@ -47,10 +47,10 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	usage, _, err := manager.rootDirectoryUsage(t.Context(), root, nil, nil)
-	if err != nil || usage.LogicalBytes == 0 || usage.AllocatedBytes == 0 {
+	if err != nil || usage.LogicalBytes != 0 || usage.AllocatedBytes != 0 || usage.UnmanagedBytes == 0 {
 		t.Fatalf("root usage bytes=%d allocated=%d err=%v", usage.LogicalBytes, usage.AllocatedBytes, err)
 	}
-	if _, _, err := manager.rootDirectoryUsage(t.Context(), filepath.Join(t.TempDir(), "unknown"), nil, nil); !errors.Is(err, state.ErrOwnership) {
+	if _, _, err := manager.rootDirectoryUsage(t.Context(), filepath.Join(t.TempDir(), "unknown"), nil, nil); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unknown root usage error=%v", err)
 	}
 
@@ -190,7 +190,7 @@ func TestManagerExpiredSnapshotAndColdRemovalBoundaries(t *testing.T) {
 		state.Session{ID: multiID, WorkspaceID: string(workspaceRecord.ID), SlotID: multiID, State: "ARCHIVED", AgentKind: "matrix", TokenHash: state.HashToken(multiID)}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if result := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{multiID: nil}, archiveManager); result.Completed != 0 {
+	if result := manager.expireWorkspaceSnapshots(ctx, map[string][]state.Snapshot{multiID: nil}, archiveManager); result.Completed != 1 {
 		t.Fatalf("multi session without root snapshot result=%+v", result)
 	}
 

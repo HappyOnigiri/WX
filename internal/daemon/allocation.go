@@ -85,6 +85,11 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 			session.PendingAgentSessionID = old.AgentSessionID
 		}
 	}
+	if _, err := os.Lstat(slotPath); err == nil {
+		return Lease{}, true, fmt.Errorf("%w: %s", errSlotPathExists, slotPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Lease{}, false, err
+	}
 	if err := m.store.ReserveSlot(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, OwnerSessionID: id}); err != nil {
 		return Lease{}, state.IsIDCollision(err), err
 	}
@@ -95,6 +100,9 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 	}
 	slotIdentity, leaseIdentity, err := m.createSlotRoot(slotPath, leasePathValue)
 	if err != nil {
+		if errors.Is(err, errSlotPathExists) {
+			return Lease{}, false, errors.Join(err, m.store.AbandonSlotReservation(ctx, id))
+		}
 		quarantineReservation()
 		return Lease{}, false, err
 	}
@@ -147,6 +155,8 @@ func leasePath(slotPath, kind string, repos []state.SlotRepository) string {
 	return slotPath
 }
 
+var errSlotPathExists = errors.New("unregistered slot path already exists")
+
 func (m *Manager) createSlotRoot(slotPath, leasePathValue string) (string, string, error) {
 	// allocationはmanagerがpinしたroot descriptorで行い、返すinode identityでclient側の置換検出を可能にする。
 	root, err := config.ExpandHome(m.Config().Storage.WorktreeRoot)
@@ -185,6 +195,9 @@ func (m *Manager) createSlotRoot(slotPath, leasePathValue string) (string, strin
 		}
 	}
 	if err := owner.Mkdir(relativeSlot, 0o700); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return "", "", fmt.Errorf("%w: %s", errSlotPathExists, slotPath)
+		}
 		return "", "", fmt.Errorf("create slot root safely: %w", err)
 	}
 	if relativeLease != relativeSlot {

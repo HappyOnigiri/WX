@@ -38,7 +38,7 @@ func TestScheduleColdRepositoryRemovalsSurvivesQuarantineStorageFailure(t *testi
 	}
 }
 
-func TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath(t *testing.T) {
+func TestScheduleColdRepositoryRemovalsKeepsAlreadyRetiringSlot(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	slotID := domain.StableID("cold-schedule", "outside")
@@ -52,7 +52,7 @@ func TestScheduleColdRepositoryRemovalsQuarantinesUnverifiableWorktreePath(t *te
 	if result := manager.scheduleColdRepositoryRemovals(ctx, candidates, map[string]bool{}); result.Scheduled != 0 {
 		t.Fatalf("unverifiable cold repository was scheduled: result=%+v", result)
 	}
-	if slot, err := store.Slot(ctx, slotID); err != nil || slot.State != "QUARANTINED" {
+	if slot, err := store.Slot(ctx, slotID); err != nil || slot.State != "RETIRING" {
 		t.Fatalf("unverifiable cold repository slot=%+v err=%v", slot, err)
 	}
 }

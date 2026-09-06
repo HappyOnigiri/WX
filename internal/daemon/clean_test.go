@@ -558,3 +558,47 @@ func TestReplenishSuspensionStopsStandbyCreation(t *testing.T) {
 		t.Fatalf("standby slots created while replenishment was suspended: %d", count)
 	}
 }
+
+func TestCleanDiscardRecoversUnboundAndLeavesUnregisteredPaths(t *testing.T) {
+	manager, store, _ := cleanFixture(t)
+	ctx := t.Context()
+	root := manager.Config().Storage.WorktreeRoot
+	path := filepath.Join(root, "_unbound", "legacy")
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	slot := slotAtPath(t, manager, "", "legacy", path, 1, "QUARANTINED")
+	if _, err := store.CreateSlotSession(ctx, slot, nil, state.Session{ID: "legacy", SlotID: "legacy", State: "EXPIRED", AgentKind: "codex", TokenHash: state.HashToken("legacy")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	unknown := filepath.Join(root, "_unbound", "unknown")
+	if err := os.MkdirAll(unknown, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := manager.Clean(ctx, false, false, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply["mode"] != "normal-discard" {
+		t.Fatalf("mode=%v", reply["mode"])
+	}
+	runID := reply["run_id"].(string)
+	waitCleanTargetState(t, store, runID, slot.ID, cleanTargetRemoving)
+	stored, err := store.Slot(ctx, slot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.removeRegisteredSlot(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishRemoval(ctx, slot.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitCleanRunDone(t, store, runID)
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("registered path remains: %v", err)
+	}
+	if _, err := os.Stat(unknown); err != nil {
+		t.Fatalf("unregistered path changed: %v", err)
+	}
+}
