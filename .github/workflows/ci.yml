@@ -48,6 +48,7 @@ jobs:
       - run: make docs-check
       - run: make comments-check
       - run: make lines-check
+      - run: make testlayout-check
       - run: make workflow-check
       - run: make shell-check
       - name: Verify read-only check
