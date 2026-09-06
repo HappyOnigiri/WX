@@ -34,6 +34,7 @@ func TestPrintStatusSummaryReadsWorkspaceLastUsedAndRoots(t *testing.T) {
 
 	// cs は複数 repository の workspace で、root と一致する repository が無い。それでも workspace 側の last_used_at が時刻として出ることを検査する。
 	payload := map[string]any{
+		"schema_version": 7,
 		"workspace_details": []map[string]any{
 			{"id": "chez", "root": home + "/.local/share/chezmoi", "repositories": 1, "ready": 1, "leased": 0, "last_used_at": "2026-09-04T23:09:00Z"},
 			{"id": "cs", "root": home + "/dev/cs", "repositories": 5, "ready": 1, "leased": 1, "last_used_at": "2026-09-04T14:47:00Z"},
@@ -82,6 +83,42 @@ func TestPrintStatusSummaryReadsWorkspaceLastUsedAndRoots(t *testing.T) {
 	}
 }
 
+func TestPrintStatusSummaryDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	previousLocation := statusDisplayLocation
+	statusDisplayLocation = time.FixedZone("JST", 9*60*60)
+	t.Cleanup(func() { statusDisplayLocation = previousLocation })
+
+	payload := map[string]any{
+		"schema_version": 5,
+		"workspace_details": []map[string]any{{
+			"id": "old", "root": home + "/dev/old", "repositories": 1, "ready": 1, "leased": 0,
+		}},
+		// 旧 daemon が返す repository 単位の時刻を workspace の値へ補完してはいけない。
+		"repository_details": []map[string]any{{"id": "old-repo", "main_path": home + "/dev/old", "last_used_at": "2026-09-04T23:09:00Z"}},
+		"job_details":        map[string]any{"pending": 0, "running": 0, "failed": 0},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, false)
+	got := output.String()
+	if !statusRowMatches(got, "~/dev/old", "1 0 unknown") {
+		t.Fatalf("legacy workspace did not show unavailable LAST USED:\n%s", got)
+	}
+	if strings.Contains(got, "09/05 08:09") {
+		t.Fatalf("legacy repository timestamp was used as workspace LAST USED:\n%s", got)
+	}
+	for _, want := range []string{
+		"LAST USED unavailable",
+		"daemon JSON schema 5",
+		"update the daemon",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("legacy notice missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestPrintStatusSummaryShowsStandbyRecoveryAction(t *testing.T) {
 	payload := map[string]any{
 		"workspace_details":     []map[string]any{{"id": "w1", "root": "/repo", "ready": 0, "leased": 0}},
@@ -94,6 +131,19 @@ func TestPrintStatusSummaryShowsStandbyRecoveryAction(t *testing.T) {
 	got := output.String()
 	if !strings.Contains(got, `Standby replenishment stopped · /repo · 3 quarantined · run wx retry-standby "/repo"`) {
 		t.Fatalf("standby recovery guidance missing:\n%s", got)
+	}
+}
+
+func TestPrintVerboseStatusDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
+	payload := map[string]any{
+		"schema_version":    5,
+		"workspace_details": []map[string]any{{"id": "old", "root": "/repo/old", "repositories": 1, "ready": 1, "leased": 0}},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, true)
+	got := output.String()
+	if !strings.Contains(got, "unknown") || !strings.Contains(got, "LAST USED unavailable: daemon JSON schema 5") {
+		t.Fatalf("verbose legacy workspace output did not distinguish unavailable LAST USED:\n%s", got)
 	}
 }
 
