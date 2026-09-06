@@ -119,6 +119,21 @@ func TestPrintStatusSummaryDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
 	}
 }
 
+func TestPrintStatusSummaryShowsStandbyRecoveryAction(t *testing.T) {
+	payload := map[string]any{
+		"workspace_details":     []map[string]any{{"id": "w1", "root": "/repo", "ready": 0, "leased": 0}},
+		"job_details":           map[string]any{"pending": 0, "running": 0, "failed": 0},
+		"worktree_roots":        []map[string]any{},
+		"standby_replenishment": []map[string]any{{"root": "/repo", "quarantined": 3, "action": `wx retry-standby "/repo"`}},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, false)
+	got := output.String()
+	if !strings.Contains(got, `Standby replenishment stopped · /repo · 3 quarantined · run wx retry-standby "/repo"`) {
+		t.Fatalf("standby recovery guidance missing:\n%s", got)
+	}
+}
+
 func TestPrintVerboseStatusDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
 	payload := map[string]any{
 		"schema_version":    5,

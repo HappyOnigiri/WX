@@ -31,6 +31,8 @@ func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
 		{name: "prune unavailable", args: []string{"prune"}, want: 1},
 		{name: "clear extra argument", args: []string{"clear", "extra"}, want: 2},
 		{name: "clear unavailable", args: []string{"clear"}, want: 1},
+		{name: "retry standby missing path", args: []string{"retry-standby"}, want: 2},
+		{name: "retry standby unavailable", args: []string{"retry-standby", "/tmp/workspace"}, want: 1},
 		{name: "renamed clean command", args: []string{"clean"}, want: 2},
 		{name: "config wrong arity", args: []string{"config", "a", "b", "c"}, want: 2},
 		{name: "config invalid field", args: []string{"config", "unknown.field", "value"}, want: 1},
