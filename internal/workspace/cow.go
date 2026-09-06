@@ -167,7 +167,7 @@ var errCOWFileChanged = errors.New("CoW file changed")
 // cowSourceIneligible は donor 側がこのファイルを共有できないことしか意味しない失敗を判定する。
 // 準備全体を止める理由にはならないため、compactFile はこれをスキップとして扱う。
 func cowSourceIneligible(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || errors.Is(err, domain.ErrSymlinkComponent) ||
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, domain.ErrSymlinkPath) ||
 		errors.Is(err, domain.ErrNonDirectoryComponent) || errors.Is(err, errCOWFileChanged) ||
 		errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)
 }

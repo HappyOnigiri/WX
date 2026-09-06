@@ -966,10 +966,10 @@ func runRetryStandby(ctx context.Context, args []string) int {
 		return 1
 	}
 	var out struct {
-		Root        string `json:"root"`
-		Generation  int    `json:"generation"`
-		Quarantined int    `json:"quarantined"`
-		Scheduled   bool   `json:"scheduled"`
+		Root       string `json:"root"`
+		Generation int    `json:"generation"`
+		Resumed    bool   `json:"resumed"`
+		Scheduled  bool   `json:"scheduled"`
 	}
 	if err := c.Call(ctx, "RetryStandby", map[string]string{"path": fs.Arg(0)}, &out); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -978,10 +978,14 @@ func runRetryStandby(ctx context.Context, args []string) int {
 	if out.Root == "" {
 		out.Root = fs.Arg(0)
 	}
+	state := "resumed"
+	if !out.Resumed {
+		state = "was not stopped"
+	}
 	if out.Scheduled {
-		fmt.Printf("standby replenishment retry scheduled for %s (generation %d; %d quarantined slot(s) kept)\n", out.Root, out.Generation, out.Quarantined)
+		fmt.Printf("standby replenishment %s for %s (generation %d; retry scheduled)\n", state, out.Root, out.Generation)
 	} else {
-		fmt.Printf("standby replenishment retry already in progress for %s (generation %d; %d quarantined slot(s) kept)\n", out.Root, out.Generation, out.Quarantined)
+		fmt.Printf("standby replenishment %s for %s (generation %d; retry already in progress)\n", state, out.Root, out.Generation)
 	}
 	return 0
 }

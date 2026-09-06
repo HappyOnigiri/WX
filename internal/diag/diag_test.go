@@ -15,13 +15,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/launchd"
 )
 
-func TestMain(m *testing.M) {
-	if physical, err := filepath.EvalSymlinks(os.TempDir()); err == nil {
-		_ = os.Setenv("TMPDIR", physical)
-	}
-	os.Exit(m.Run())
-}
-
 func TestDiagnosticPathAndPathCheck(t *testing.T) {
 	home := t.TempDir()
 	regular := filepath.Join(home, "regular")

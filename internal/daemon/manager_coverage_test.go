@@ -834,6 +834,41 @@ func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
 		t.Fatalf("outside worktree slot after quarantine=%+v err=%v", stored, err)
 	}
 	manager.quarantineCleanupFailure(unsafe.ID, errors.New("ordinary cleanup failure"))
+
+	// retention を過ぎた隔離 slot は通常の REMOVE へ載せる。所有権証明は job 側で行うため、予約は状態遷移だけを検証する。
+	quarantined := newStandby("quarantined", nil)
+	if err := store.SetSlotState(ctx, quarantined.ID, []string{"READY"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN"); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := store.QuarantinedGCCandidates(ctx, state.FormatTime(time.Now().UTC().Add(time.Hour)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mine []state.QuarantinedGCCandidate
+	for _, item := range candidates {
+		if item.SlotID == quarantined.ID {
+			mine = append(mine, item)
+		}
+	}
+	if len(mine) != 1 || mine[0].FailureCode != "WORKTREE_OWNERSHIP_UNCERTAIN" {
+		t.Fatalf("quarantined candidates=%+v, want the quarantined slot", candidates)
+	}
+	candidates = mine
+	if fresh, err := store.QuarantinedGCCandidates(ctx, state.FormatTime(time.Now().UTC().Add(-time.Hour))); err != nil || len(fresh) != 0 {
+		t.Fatalf("candidates inside the retention window=%+v err=%v", fresh, err)
+	}
+	if result := manager.scheduleQuarantinedRemovals(ctx, candidates); result.Scheduled != 1 {
+		t.Fatalf("quarantined removal result=%+v, want one reservation", result)
+	}
+	if job := <-manager.jobs; job.id == "" {
+		t.Fatal("quarantined removal did not enqueue a durable job")
+	}
+	if stored, err := store.Slot(ctx, quarantined.ID); err != nil || stored.State != "REMOVING" {
+		t.Fatalf("quarantined slot after scheduling=%+v err=%v", stored, err)
+	}
+	if result := manager.scheduleQuarantinedRemovals(ctx, candidates); result.Scheduled != 0 || result.Pending != 1 {
+		t.Fatalf("already-removing quarantined result=%+v, want no reservation", result)
+	}
 }
 
 func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {

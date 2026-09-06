@@ -27,6 +27,10 @@ func OpenOwnedDirectory(root, path string) (*os.File, string, error) {
 
 // OpenDirectoryAt は、既に pin された os.Root を基準にディレクトリを開く。
 // owner は呼び出し元が所有するため、この関数では意図的に close しない。
+// pathname 経由の PhysicalPathInfo は open 前の 1 回のみ呼び、open 後は descriptor 由来の file.Stat と
+// os.SameFile で照合する。file.Stat は fd 自体から得るため、open 後にもう一度 pathname を歩き直しても
+// この fd の正当性については何も追加で証明しない。
+// commentlint:allow-long -- open 前後で PhysicalPathInfo を 1 回に絞った根拠を保守時に確認できるようにする
 func OpenDirectoryAt(owner *os.Root, relative string) (*os.File, string, error) {
 	if owner == nil {
 		return nil, "", errors.New("owned root is nil")
@@ -48,15 +52,6 @@ func OpenDirectoryAt(owner *os.Root, relative string) (*os.File, string, error) 
 		return nil, "", err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, info) {
-		_ = file.Close()
-		return nil, "", errors.New("owned path changed while opening")
-	}
-	current, err := PhysicalPathInfo(owner, relative)
-	if err != nil {
-		_ = file.Close()
-		return nil, "", err
-	}
-	if current.Mode()&os.ModeSymlink != 0 || !os.SameFile(expected, current) {
 		_ = file.Close()
 		return nil, "", errors.New("owned path changed while opening")
 	}

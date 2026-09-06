@@ -66,8 +66,11 @@ type Pool struct {
 	PreparationConcurrency int `yaml:"preparation_concurrency,omitempty"`
 }
 type Retention struct {
-	HotStandby              Duration `yaml:"hot_standby,omitempty"`
-	EndedWorktree           Duration `yaml:"ended_worktree,omitempty"`
+	HotStandby    Duration `yaml:"hot_standby,omitempty"`
+	EndedWorktree Duration `yaml:"ended_worktree,omitempty"`
+	// Quarantined は隔離slotの実体をGCが削除するまでの保持期間。
+	// LEASEDから隔離へ落ちたslotを調査前に消さないよう、ended_worktreeより長く取る。
+	Quarantined             Duration `yaml:"quarantined,omitempty"`
 	RecoverySnapshot        Duration `yaml:"recovery_snapshot,omitempty"`
 	ExpiredSessionTombstone Duration `yaml:"expired_session_tombstone,omitempty"`
 	FailedJob               Duration `yaml:"failed_job,omitempty"`
@@ -137,7 +140,7 @@ func Defaults() Config {
 		Worktree: WorktreePolicy{Undefined: "ask"},
 		Version:  1, Storage: Storage{WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
-		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
+		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{24 * time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
 		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false}, Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
@@ -498,8 +501,10 @@ func ExpandHome(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	path = expandTilde(path, h)
 	if strings.Contains(path, "~") {
-		return "", errors.New("~ is not expanded; use $HOME")
+		// `~user`（他ユーザーのホーム）はwxが解決手段を持たないため展開せず拒否する。
+		return "", errors.New("~ is only supported as a leading ~ or ~/ prefix; use $HOME for other cases")
 	}
 	if strings.Contains(path, "$") && path != "$HOME" && !strings.HasPrefix(path, "$HOME"+string(filepath.Separator)) {
 		return "", errors.New("only $HOME expansion is supported")
@@ -509,6 +514,18 @@ func ExpandHome(path string) (string, error) {
 		return "", errors.New("path must be absolute")
 	}
 	return filepath.Clean(path), nil
+}
+
+// expandTilde は先頭の `~`（単体または `~/` prefix）だけを home に展開する。
+// `~user` 形式は home を特定できないため素通りさせ、呼び出し側の検証に委ねる。
+func expandTilde(path, home string) string {
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[len("~/"):])
+	}
+	return path
 }
 
 func Validate(c *Config) error {
@@ -546,7 +563,7 @@ func Validate(c *Config) error {
 	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 {
 		return errors.New("pool counts must be non-negative and concurrency must be at least 1")
 	}
-	for k, v := range map[string]time.Duration{"retention.hot_standby": c.Retention.HotStandby.Duration, "retention.ended_worktree": c.Retention.EndedWorktree.Duration, "retention.recovery_snapshot": c.Retention.RecoverySnapshot.Duration, "retention.expired_session_tombstone": c.Retention.ExpiredSessionTombstone.Duration, "retention.failed_job": c.Retention.FailedJob.Duration, "retention.event_log": c.Retention.EventLog.Duration, "discovery.timeout": c.Discovery.Timeout.Duration, "discovery.reconcile_interval": c.Discovery.ReconcileInterval.Duration, "readiness.timeout": c.Readiness.Timeout.Duration} {
+	for k, v := range map[string]time.Duration{"retention.hot_standby": c.Retention.HotStandby.Duration, "retention.ended_worktree": c.Retention.EndedWorktree.Duration, "retention.quarantined": c.Retention.Quarantined.Duration, "retention.recovery_snapshot": c.Retention.RecoverySnapshot.Duration, "retention.expired_session_tombstone": c.Retention.ExpiredSessionTombstone.Duration, "retention.failed_job": c.Retention.FailedJob.Duration, "retention.event_log": c.Retention.EventLog.Duration, "discovery.timeout": c.Discovery.Timeout.Duration, "discovery.reconcile_interval": c.Discovery.ReconcileInterval.Duration, "readiness.timeout": c.Readiness.Timeout.Duration} {
 		if v < 0 {
 			return fmt.Errorf("%s must not be negative", k)
 		}
@@ -844,10 +861,8 @@ func normalizeListPath(path string) string {
 	if path == "" {
 		return ""
 	}
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			path = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"))
-		}
+	if home, err := os.UserHomeDir(); err == nil {
+		path = expandTilde(path, home)
 	}
 	if absolute, err := filepath.Abs(path); err == nil {
 		return absolute

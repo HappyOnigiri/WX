@@ -1,9 +1,11 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,14 +300,15 @@ func TestFingerprintAndRelativePathBoundaries(t *testing.T) {
 	}
 	defer func() { _ = owner.Close() }()
 	for _, test := range []struct {
-		name string
-		rel  string
-		bad  bool
+		name    string
+		rel     string
+		bad     bool
+		skipped bool
 	}{
 		{name: "directory", rel: "nested"},
 		{name: "file", rel: "nested/deep/file"},
 		{name: "missing", rel: "missing", bad: true},
-		{name: "symlink", rel: "link", bad: true},
+		{name: "symlink", rel: "link", skipped: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := sha256.New()
@@ -313,6 +316,17 @@ func TestFingerprintAndRelativePathBoundaries(t *testing.T) {
 			if test.bad {
 				if err == nil {
 					t.Fatal("unsafe fingerprint input succeeded")
+				}
+				return
+			}
+			if test.skipped {
+				marker := sha256.New()
+				_, _ = fmt.Fprintf(marker, "path=%s skipped-symlink\n", test.rel)
+				if err != nil {
+					t.Fatalf("symlink fingerprint: %v", err)
+				}
+				if !bytes.Equal(h.Sum(nil), marker.Sum(nil)) {
+					t.Fatal("symlink fingerprint did not record the skip marker")
 				}
 				return
 			}

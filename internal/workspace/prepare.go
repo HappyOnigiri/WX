@@ -32,7 +32,8 @@ type Preparer struct {
 	Config    config.Config
 	Ownership state.OwnershipValidator
 	SlotPath  string
-	// Log は準備結果を変えない出来事だけを残す。nil でも準備は同じ結果になる。
+	// Log は copy/link source の skip など、準備結果を変えない出来事だけを daemon log へ残す。
+	// nil でも準備は同じ結果になり、記録だけが落ちる。
 	Log *slog.Logger
 	// DetailDir は prepare command の失敗診断を保存する daemon 管理ディレクトリである。
 	// 空の場合も command の出力を無制限に保持せず破棄し、診断保存の失敗で準備結果を変えない。
@@ -45,6 +46,19 @@ type Preparer struct {
 	// 所有権検証は絶対 SlotPath の代わりにこれらを比較し、root の改名や再設定で別 directory が同じ slot に見えることを防ぐ。
 	RootID      string
 	SlotRelPath string
+}
+
+// logSkip は prepare が copy/link source を使わずに進んだ事実と理由を warn として残す。
+// logger を持たない経路（fingerprint 計算やテスト）から呼べるよう nil を許す。
+func logSkip(log *slog.Logger, message string, args ...any) {
+	if log == nil {
+		return
+	}
+	log.Warn("prepare skipped source: "+message, args...)
+}
+
+func (p *Preparer) logSkip(message string, args ...any) {
+	logSkip(p.Log, message, args...)
 }
 
 // PrepareCommandError は prepare command 自身が返した失敗を表す。
@@ -914,9 +928,11 @@ func (p *Preparer) VerifyWorktreeIdentity(target, expectedIdentity string) error
 	return nil
 }
 
-// RunGitInWorktree は WorktreeIdentity で取得した identity の target で Git command を実行する。本番の Preparer は pin 済み root と descriptor cwd を使うため、
-// lexical root/target の置換では command を逸らせない。child 実行の前後で identity を検査し、変化は Git の成否にかかわらず ownership-uncertain とする。
-// commentlint:allow-long -- command 実行中の path 置換に対する保証を説明する
+// RunGitInWorktree は WorktreeIdentity で取得した identity の target で Git command を実行する。
+// 実行前に identity を検査したうえで、pin 済み directory descriptor を internal/fdexec 経由の fchdir で
+// 子プロセスの cwd に束縛してから Git を起動するため、実行中に pathname が rename・置換されても子は
+// pin した inode を見続ける。したがって実行後の再検証は行わない。
+// commentlint:allow-long -- fchdir 束縛により実行後再検証が不要になる根拠を保守時に確認できるようにする
 func (p *Preparer) RunGitInWorktree(ctx context.Context, target, expectedIdentity string, env []string, input []byte, args ...string) (gitx.Result, error) {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
@@ -935,13 +951,7 @@ func (p *Preparer) RunGitInWorktree(ctx context.Context, target, expectedIdentit
 	if expectedIdentity != "" && identity != expectedIdentity {
 		return gitx.Result{}, fmt.Errorf("%w: worktree target identity changed before Git (expected %s, got %s)", state.ErrOwnership, expectedIdentity, identity)
 	}
-	result, runErr := p.Git.RunAt(ctx, directory, env, input, args...)
-	if expectedIdentity != "" {
-		if identityErr := p.VerifyWorktreeIdentity(target, expectedIdentity); identityErr != nil {
-			return result, fmt.Errorf("worktree target identity changed during Git: %w", identityErr)
-		}
-	}
-	return result, runErr
+	return p.Git.RunAt(ctx, directory, env, input, args...)
 }
 
 // ValidateReady は、保存済み READY worktree を安全に lease できる physical および Git-administrative invariant を検証する。
@@ -1197,7 +1207,8 @@ func workspaceRootCopyPlan(rules config.Workspace) ([]string, map[string]bool, e
 
 // validateWorkspaceRootCopySources は workspace root の copy source を書き込み前に検査する。
 // 既定の名前は欠落を許すが、設定で明示した名前は入力漏れとして扱い、slot 準備を成功させない。
-func validateWorkspaceRootCopySources(sourceRoot *os.Root, workspaceRoot string, copyNames []string, explicit map[string]bool) (map[string]bool, error) {
+// symlink の source は既定・明示のどちらも skip する。`.env` のような symlink 運用の 1 件で slot 準備全体を止めないためである。log は nil でよい。
+func validateWorkspaceRootCopySources(log *slog.Logger, sourceRoot *os.Root, workspaceRoot string, copyNames []string, explicit map[string]bool) (map[string]bool, error) {
 	if sourceRoot == nil {
 		return nil, errors.New("workspace copy source root is nil")
 	}
@@ -1223,7 +1234,8 @@ func validateWorkspaceRootCopySources(sourceRoot *os.Root, workspaceRoot string,
 		if err != nil {
 			return nil, fmt.Errorf("inspect workspace copy source %s in workspace root %s: %w", clean, workspaceRoot, err)
 		}
-		if info.Mode()&os.ModeSymlink != 0 && !explicit[clean] {
+		if info.Mode()&os.ModeSymlink != 0 {
+			logSkip(log, "workspace copy source is a symlink", "workspace_root", workspaceRoot, "path", clean)
 			continue
 		}
 		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
@@ -1364,6 +1376,7 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 
 // copyIncludePath は directory を再帰的に列挙し、tracked file を除いて materialize する。
 // Git の終了コード 1 だけを未追跡と扱い、それ以外の失敗は include 処理へ返す。
+// symlink の一致は辿らずに skip する。worktree の外を指す実体を持ち込まないためで、1 件の symlink で include 全体を失敗させない。
 func (p *Preparer) copyIncludePath(repo discovery.Repository, sourceRoot *os.Root, source string, destinationRoot *os.Root, destination string) error {
 	info, err := sourceRoot.Lstat(source)
 	if err != nil {
@@ -1412,6 +1425,10 @@ func (p *Preparer) copyIncludePath(repo discovery.Repository, sourceRoot *os.Roo
 		return nil
 	}
 	if _, err := domain.PhysicalPathInfo(sourceRoot, source); err != nil {
+		if errors.Is(err, domain.ErrSymlinkPath) {
+			p.logSkip("include source is a symlink", "repository", string(repo.MainPath), "path", source)
+			return nil
+		}
 		return err
 	}
 	return copyPathFromOwnedRoot(sourceRoot, source, destinationRoot, destination)
@@ -1466,6 +1483,11 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 	if err != nil {
 		return err
 	}
+	for _, link := range sources {
+		if link.symlink {
+			p.logSkip(".worktreelink source is a symlink", "repository", mainPath, "path", link.relative)
+		}
+	}
 	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
 		return err
 	}
@@ -1496,9 +1518,6 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		if !link.present {
 			continue
 		}
-		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
-			return err
-		}
 		current, err := inspectLinkSource(sourceRoot, link.relative)
 		if err != nil {
 			return err
@@ -1506,35 +1525,23 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		if !current.present {
 			continue
 		}
-		if _, err := p.Git.Run(ctx, mainPath, "check-ignore", "-q", "--", link.relative); err != nil {
-			return fmt.Errorf(".worktreelink path %q is not ignored", link.relative)
+		// 未 ignore の link を張ると worktree に追跡対象の差分を作るため、その 1 件だけ skip して prepare は続ける。
+		ignored, err := checkIgnored(ctx, p.Git, mainPath, link.relative)
+		if err != nil {
+			return fmt.Errorf("check source repository ignore rule for %q: %w", link.relative, err)
+		}
+		if !ignored {
+			p.logSkip(".worktreelink path is not ignored by the source repository", "repository", mainPath, "path", link.relative)
+			continue
 		}
 		if destinationDirectory != nil {
-			ignored, err := checkIgnoredAt(ctx, p.Git, destinationDirectory, link.relative)
+			skip, err := pruneLinkNotIgnoredAtDestination(ctx, p.Git, destinationDirectory, destinationRoot, mainPath, link.relative)
 			if err != nil {
-				return fmt.Errorf("check destination worktree ignore rule for %q: %w", link.relative, err)
+				return err
 			}
-			if !ignored {
-				// 以前の復元試行が作った同じ link だけは、古い ignore 規則の下へ残さない。
-				// 異なる実体は触らず、後段の tree 比較で通常の差分として検出する。
-				if info, statErr := destinationRoot.Lstat(link.relative); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-					existing, readErr := destinationRoot.Readlink(link.relative)
-					if readErr != nil {
-						return fmt.Errorf("read existing .worktreelink %q: %w", link.relative, readErr)
-					}
-					if existing == filepath.Join(mainPath, link.relative) {
-						if removeErr := destinationRoot.Remove(link.relative); removeErr != nil {
-							return fmt.Errorf("remove stale .worktreelink %q: %w", link.relative, removeErr)
-						}
-					}
-				} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-					return statErr
-				}
+			if skip {
 				continue
 			}
-		}
-		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
-			return err
 		}
 		source := filepath.Join(mainPath, link.relative)
 		destinationRelative := link.relative
@@ -1552,9 +1559,6 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
-			return err
-		}
 		current, err = inspectLinkSource(sourceRoot, link.relative)
 		if err != nil {
 			return err
@@ -1566,7 +1570,60 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 			return err
 		}
 	}
+	// link を作り終えたあとに、pin した root と main path の pathname がまだ同じ実体を指すことを確認する。
+	// 単一ユーザー環境では作業中に main worktree が差し替わる状況は起きず、起きても次回の prepare で検出できるため、
+	// ループ内での毎回の再検証はせずループ前後の境界 2 回に絞る。
+	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
+		return err
+	}
 	return nil
+}
+
+// pruneLinkNotIgnoredAtDestination は、復元先の現在の ignore 規則で link 形が無視されるかを調べ、無視されないなら link を張らないと返す。
+// 以前の復元試行が作った同じ link だけは、古い ignore 規則の下へ残さないよう取り除く。
+// 異なる実体は触らず、後段の tree 比較で通常の差分として検出する。
+func pruneLinkNotIgnoredAtDestination(ctx context.Context, runner *gitx.Runner, destinationDirectory *os.File, destinationRoot *os.Root, mainPath, relative string) (bool, error) {
+	ignored, err := checkIgnoredAt(ctx, runner, destinationDirectory, relative)
+	if err != nil {
+		return false, fmt.Errorf("check destination worktree ignore rule for %q: %w", relative, err)
+	}
+	if ignored {
+		return false, nil
+	}
+	info, statErr := destinationRoot.Lstat(relative)
+	if statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			return true, nil
+		}
+		return false, statErr
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return true, nil
+	}
+	existing, readErr := destinationRoot.Readlink(relative)
+	if readErr != nil {
+		return false, fmt.Errorf("read existing .worktreelink %q: %w", relative, readErr)
+	}
+	if existing == filepath.Join(mainPath, relative) {
+		if removeErr := destinationRoot.Remove(relative); removeErr != nil {
+			return false, fmt.Errorf("remove stale .worktreelink %q: %w", relative, removeErr)
+		}
+	}
+	return true, nil
+}
+
+// checkIgnored は path 名で指定した worktree の ignore 規則を調べる。
+// checkIgnoredAt と同じく exit 1 だけを「無視されない」と読み、実行障害と区別する。
+func checkIgnored(ctx context.Context, runner *gitx.Runner, path, relative string) (bool, error) {
+	_, err := runner.Run(ctx, path, "check-ignore", "-q", "--", relative)
+	if err == nil {
+		return true, nil
+	}
+	var gitErr *gitx.Error
+	if errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // checkIgnoredAt は descriptor に束縛した worktree で ignore 規則を調べる。
@@ -1589,6 +1646,8 @@ func checkIgnoredAt(ctx context.Context, runner *gitx.Runner, directory *os.File
 type linkSource struct {
 	relative string
 	present  bool
+	// symlink は source 自体が symlink だったことを表す。link を張らない点は欠落と同じで、記録の理由付けにだけ使う。
+	symlink bool
 }
 
 // inspectLinkSources は .worktreelink の source を pin 済み root から検査する。
@@ -1616,6 +1675,10 @@ func inspectLinkSource(sourceRoot *os.Root, pattern string) (linkSource, error) 
 	_, err = domain.PhysicalPathInfo(sourceRoot, clean)
 	if errors.Is(err, os.ErrNotExist) {
 		return linkSource{relative: clean}, nil
+	}
+	// symlink source は辿らず、link を張らない点で欠落と同じに扱う。symlink 1 件で prepare 全体を止めないためである。
+	if errors.Is(err, domain.ErrSymlinkPath) {
+		return linkSource{relative: clean, symlink: true}, nil
 	}
 	if err != nil {
 		return linkSource{}, fmt.Errorf(".worktreelink source %s is not physical: %w", pattern, err)
@@ -1824,7 +1887,7 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 		return "", err
 	}
 	defer func() { _ = workspaceRootHandle.Close() }()
-	presentCopies, err := validateWorkspaceRootCopySources(workspaceRootHandle, workspaceRoot, copyNames, explicitCopies)
+	presentCopies, err := validateWorkspaceRootCopySources(nil, workspaceRootHandle, workspaceRoot, copyNames, explicitCopies)
 	if err != nil {
 		return "", err
 	}
@@ -1851,7 +1914,12 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 			return "", err
 		}
 		path := filepath.Join(workspaceRoot, clean)
-		if err := domain.ValidatePhysicalPath(path, false); err != nil {
+		// MaterializeRootAt が skip する source なので、fingerprint も内容ではなく skip した事実だけを混ぜる。
+		if err := domain.ValidatePhysicalLeaf(path); err != nil {
+			if errors.Is(err, domain.ErrSymlinkPath) {
+				_, _ = fmt.Fprintf(h, "workspace-link=%s:skipped-symlink\n", clean)
+				continue
+			}
 			return "", err
 		}
 		info, err := os.Lstat(path)
@@ -1928,10 +1996,12 @@ func fingerprintPath(h hash.Hash, root, path string) error {
 func fingerprintRootPath(h hash.Hash, root *os.Root, relative, display string) error {
 	info, err := domain.PhysicalPathInfo(root, relative)
 	if err != nil {
+		// symlink は materializer が辿らず skip するため、内容ではなく skip した事実だけを混ぜて再利用判定を一致させる。
+		if errors.Is(err, domain.ErrSymlinkPath) {
+			_, _ = fmt.Fprintf(h, "path=%s skipped-symlink\n", display)
+			return nil
+		}
 		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("include symlinks are not followed")
 	}
 	_, _ = fmt.Fprintf(h, "path=%s mode=%s size=%d\n", display, info.Mode(), info.Size())
 	if info.IsDir() {
@@ -1979,7 +2049,7 @@ func fingerprintRootPath(h hash.Hash, root *os.Root, relative, display string) e
 	return closeErr
 }
 
-func MaterializeRoot(source, target string, rules config.Workspace) error {
+func MaterializeRoot(log *slog.Logger, source, target string, rules config.Workspace) error {
 	var err error
 	source, err = filepath.Abs(filepath.Clean(source))
 	if err != nil {
@@ -1994,12 +2064,13 @@ func MaterializeRoot(source, target string, rules config.Workspace) error {
 		return fmt.Errorf("workspace target is not physical: %w", err)
 	}
 	defer func() { _ = destinationRoot.Close() }()
-	return MaterializeRootAt(source, destinationRoot, rules)
+	return MaterializeRootAt(log, source, destinationRoot, rules)
 }
 
 // MaterializeRootAt は workspace-level の copy/link rule を pin 済み destination namespace に materialize する。
 // daemon が manager-held wx root descriptor から slot root を開いた後、multi-repository slot に対して使う。
-func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Workspace) error {
+// symlink の copy/link source は skip して log へ残し、materialize 全体は続行する。log は nil でよい。
+func MaterializeRootAt(log *slog.Logger, source string, destinationRoot *os.Root, rules config.Workspace) error {
 	if destinationRoot == nil {
 		return errors.New("workspace destination root is nil")
 	}
@@ -2008,7 +2079,7 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 	if err != nil {
 		return err
 	}
-	if err := domain.ValidatePhysicalPath(source, false); err != nil {
+	if err := domain.ValidatePhysicalLeaf(source); err != nil {
 		return fmt.Errorf("workspace source is not physical: %w", err)
 	}
 	sourceRoot, err := OpenPhysicalRoot(source)
@@ -2023,7 +2094,7 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 	if err := validateRuleConflicts(copyNames, rules.Link); err != nil {
 		return err
 	}
-	presentCopies, err := validateWorkspaceRootCopySources(sourceRoot, source, copyNames, explicitCopies)
+	presentCopies, err := validateWorkspaceRootCopySources(log, sourceRoot, source, copyNames, explicitCopies)
 	if err != nil {
 		return err
 	}
@@ -2051,9 +2122,13 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 		}
 		src := filepath.Join(source, clean)
 		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
+			if errors.Is(err, domain.ErrSymlinkPath) {
+				logSkip(log, "workspace link source is a symlink", "workspace_root", source, "path", clean)
+				continue
+			}
 			return fmt.Errorf("link workspace root path %s: %w", clean, err)
 		}
-		if err := domain.ValidatePhysicalPath(src, false); err != nil {
+		if err := domain.ValidatePhysicalLeaf(src); err != nil {
 			return fmt.Errorf("workspace link source %s is not physical: %w", clean, err)
 		}
 		if err := ensureRootDirectory(destinationRoot, filepath.Dir(clean)); err != nil {

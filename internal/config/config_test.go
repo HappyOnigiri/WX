@@ -127,13 +127,25 @@ func TestLoadRawRejectsMultipleYAMLDocuments(t *testing.T) {
 
 func TestExpandHomeRejectsImplicitExpansion(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, path := range []string{"~/worktrees", "$TMPDIR/worktrees", "relative"} {
+	for _, path := range []string{"~otheruser/worktrees", "~otheruser", "$TMPDIR/worktrees", "relative"} {
 		if _, err := ExpandHome(path); err == nil {
 			t.Errorf("ExpandHome(%q) succeeded", path)
 		}
 	}
 	if got, err := ExpandHome("$HOME/worktrees"); err != nil || !filepath.IsAbs(got) {
 		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestExpandHomeExpandsTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got, err := ExpandHome("~"); err != nil || got != home {
+		t.Fatalf("ExpandHome(~)=%q err=%v want=%q", got, err, home)
+	}
+	want := filepath.Join(home, "worktrees")
+	if got, err := ExpandHome("~/worktrees"); err != nil || got != want {
+		t.Fatalf("ExpandHome(~/worktrees)=%q err=%v want=%q", got, err, want)
 	}
 }
 
@@ -144,7 +156,7 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 		"worktree.undefined":    "cold",
 		"storage.worktree_root": "$HOME/wx", "storage.copy_mode": "cow", "storage.repo_dir_source": "directory", "storage.backup_generations": "4", "storage.backup_retention": "24h",
 		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3",
-		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
+		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.quarantined": "12h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
 		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "resume.auto_fresh": "true", "includes.default_agent_rules": "false", "logging.level": "debug",
 	}
 	var raw Config
@@ -188,7 +200,7 @@ func TestSetFieldRejectsEveryInvalidScalarType(t *testing.T) {
 	keys := []string{
 		"storage.backup_generations", "pool.warm_per_workspace", "pool.preparation_concurrency",
 		"discovery.max_depth", "discovery.max_entries",
-		"storage.backup_retention", "retention.hot_standby", "retention.ended_worktree", "retention.recovery_snapshot",
+		"storage.backup_retention", "retention.hot_standby", "retention.ended_worktree", "retention.quarantined", "retention.recovery_snapshot",
 		"retention.expired_session_tombstone", "retention.failed_job", "retention.event_log", "discovery.timeout", "includes.default_agent_rules",
 		"discovery.reconcile_interval", "readiness.timeout",
 	}

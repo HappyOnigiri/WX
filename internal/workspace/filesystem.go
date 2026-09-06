@@ -18,14 +18,14 @@ import (
 
 // OpenPhysicalRoot は filesystem root の descriptor 経由で path を開き、検証済み directory を独自の Root として開き直す。
 // os.OpenRoot(path) は返却前に symlink を辿るため、別の Lstat/physical path 検査後に使うと root 自体に check/open race が残る。
-// filesystem-root descriptor と Root の Unix openat traversal は置換 ancestor を拒否する。
+// 検査するのは path 自身が symlink でないことだけで、祖先成分の symlink は許す。以後の traversal は Root の openat に閉じる。
 // commentlint:allow-long -- root 自体の check/open race を閉じる経路を説明する
 func OpenPhysicalRoot(path string) (*os.Root, error) {
 	absolute, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}
-	if err := domain.ValidatePhysicalPath(absolute, false); err != nil {
+	if err := domain.ValidatePhysicalLeaf(absolute); err != nil {
 		return nil, fmt.Errorf("physical root %s is unsafe: %w", absolute, err)
 	}
 	filesystemRoot, relative, err := domain.OpenOwnedRoot(filepath.Dir(absolute), absolute)
@@ -90,7 +90,7 @@ func verifyPinnedRepositoryPath(root *os.Root, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := domain.ValidatePhysicalPath(absolute, false); err != nil {
+	if err := domain.ValidatePhysicalLeaf(absolute); err != nil {
 		return fmt.Errorf("repository main path is not physical: %w", err)
 	}
 	pinned, err := domain.PhysicalPathInfo(root, ".")

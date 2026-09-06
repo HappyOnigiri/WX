@@ -76,7 +76,7 @@ func TestEnsureOwnershipMarkerAtDirectFaultInjection(t *testing.T) {
 }
 
 // TestValidateOwnershipMarkerRejectsNonDirectoryTargetWithRequiredLeafは、検証で使うallowMissingTarget=falseのディレクトリ検査を確認する。
-// domain.ValidatePhysicalPathはsymlink成分だけを拒否するため、通常ファイルを通過させ、後段のos.Lstat/IsDir検査で捕捉する。
+// domain.ValidatePhysicalLeafはsymlink成分だけを拒否するため、通常ファイルを通過させ、後段のos.Lstat/IsDir検査で捕捉する。
 func TestValidateOwnershipMarkerRejectsNonDirectoryTargetWithRequiredLeaf(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target-file")
@@ -94,9 +94,9 @@ func TestValidateOwnershipMarkerRejectsNonDirectoryTargetWithRequiredLeaf(t *tes
 	}
 }
 
-// TestRegisteredWorktreeLockStatusSkipsSymlinkAliasedRegistrationsは、symlink祖先を通るGit登録を物理path検査が拒否する境界を確認する。
-// 問い合わせ先を解決すれば同じ実体でも照合せず、Gitが作成時に解決するため、管理ファイルをsymlink別名へ書き換えて再現する。
-func TestRegisteredWorktreeLockStatusSkipsSymlinkAliasedRegistrations(t *testing.T) {
+// TestRegisteredWorktreeLockStatusMatchesSymlinkAliasedRegistrationsは、symlink祖先を通るGit登録も同じ実体として照合することを確認する。
+// 検査対象をleafに限定したため、祖先のsymlinkは canonical 比較で解決する。Gitが作成時に解決するため、管理ファイルをsymlink別名へ書き換えて再現する。
+func TestRegisteredWorktreeLockStatusMatchesSymlinkAliasedRegistrations(t *testing.T) {
 	repository := t.TempDir()
 	gitCommand(t, repository, "init", "-b", "main")
 	gitCommand(t, repository, "config", "user.name", "test")
@@ -128,8 +128,19 @@ func TestRegisteredWorktreeLockStatusSkipsSymlinkAliasedRegistrations(t *testing
 
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
 	ctx := context.Background()
-	if _, found, err := RegisteredWorktreeLockReason(ctx, runner, repository, aliasedTarget); err != nil || found {
-		t.Fatalf("symlink-aliased registration was treated as a match: found=%v err=%v", found, err)
+	if _, found, err := RegisteredWorktreeLockReason(ctx, runner, repository, aliasedTarget); err != nil || !found {
+		t.Fatalf("symlink-aliased registration was not matched: found=%v err=%v", found, err)
+	}
+	// leaf 自体が symlink の登録は、実体が同じでも worktree の位置として扱わない。
+	leafAlias := filepath.Join(repository, "leaf-alias")
+	if err := os.Symlink(filepath.Join(actualParent, "wt"), leafAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gitdirFiles[0], []byte(filepath.Join(leafAlias, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := RegisteredWorktreeLockReason(ctx, runner, repository, leafAlias); err != nil || found {
+		t.Fatalf("symlink leaf registration was treated as a match: found=%v err=%v", found, err)
 	}
 }
 

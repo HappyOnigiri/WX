@@ -290,7 +290,9 @@ func validateWorkspaceRepositoryAssociation(workspaceRoot, mainPath, relative st
 	return nil
 }
 
-// canonicalOwnershipPath は既存 component を全て解決し、欠落 suffix を lexical に追加する。prepare と中断した removal は欠落 worktree leaf を正当に検証するが、既存 symlink component は一切受け入れない。
+// canonicalOwnershipPath は既存 component を全て解決し、欠落 suffix を lexical に追加する。
+// prepare と中断した removal は欠落 worktree leaf を正当に検証する。
+// 最初に見つかった既存成分が symlink なら拒否し、その上の祖先は EvalSymlinks で辿る。
 func canonicalOwnershipPath(raw string) (string, error) {
 	if raw == "" {
 		return "", errors.New("path is empty")
@@ -308,7 +310,7 @@ func canonicalOwnershipPath(raw string) (string, error) {
 	for {
 		_, statErr := os.Lstat(current)
 		if statErr == nil {
-			if err := domain.ValidatePhysicalPath(current, false); err != nil {
+			if err := domain.ValidatePhysicalLeaf(current); err != nil {
 				return "", err
 			}
 			resolved, err := filepath.EvalSymlinks(current)

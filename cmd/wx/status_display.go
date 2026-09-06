@@ -101,7 +101,24 @@ func printDegradedStatus(w io.Writer, payload map[string]any, verbose bool) {
 }
 
 type statusWorkspaceRow struct {
-	sortKey, path, ready, leased, last string
+	sortKey, path, ready, leased, last, note string
+}
+
+// statusReplenishmentNote は補充停止中の workspace 行に出す注記を作る。
+// 表の外へ独立行として出すと正常な行に埋もれるため、該当行自体へ理由と復帰手順を載せる。
+func statusReplenishmentNote(item map[string]any) string {
+	reason := "standby replenishment stopped"
+	switch statusValueRaw(item, "reason") {
+	case "CLEAN":
+		reason += " after wx clear"
+	case "STANDBY_PREPARE_FAILED":
+		reason += " after a preparation failure"
+	}
+	action := statusValueRaw(item, "action")
+	if action == "" {
+		return "! " + reason
+	}
+	return "! " + reason + "; run " + action
 }
 
 // workspaceLastUsedSchemaVersion は workspace_details.last_used_at が導入された JSON schema 版である。
@@ -113,6 +130,12 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 
 	// LAST USED は daemon が workspace ごとに集計した値をそのまま出す。
 	// 旧 schema の応答では repository の時刻を workspace の値として補完しない。
+	notes := map[string]string{}
+	for _, item := range statusObjectList(payload["standby_replenishment"]) {
+		root, _ := statusRawString(item, "root")
+		notes[root] = statusReplenishmentNote(item)
+	}
+
 	rows := make([]statusWorkspaceRow, 0, len(workspaces))
 	for _, workspace := range workspaces {
 		root, _ := statusRawString(workspace, "root")
@@ -128,6 +151,8 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 			last:    "—",
 		}
 		row.last = statusWorkspaceLastUsed(payload, workspace)
+		row.note = notes[root]
+		delete(notes, root)
 		rows = append(rows, row)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -137,10 +162,23 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 		return rows[i].sortKey < rows[j].sortKey
 	})
 
-	writeStatusTable(w, []string{"WORKSPACE", "READY", "IN USE", "LAST USED (" + statusZoneLabel() + ")"}, func() [][]string {
+	// NOTE 列は停止中の workspace がある間だけ出し、正常時の表を広げない。
+	noted := false
+	for _, row := range rows {
+		noted = noted || row.note != ""
+	}
+	header := []string{"WORKSPACE", "READY", "IN USE", "LAST USED (" + statusZoneLabel() + ")"}
+	if noted {
+		header = append(header, "NOTE")
+	}
+	writeStatusTable(w, header, func() [][]string {
 		out := make([][]string, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, []string{row.path, row.ready, row.leased, row.last})
+			cells := []string{row.path, row.ready, row.leased, row.last}
+			if noted {
+				cells = append(cells, statusDash(row.note))
+			}
+			out = append(out, cells)
 		}
 		return out
 	}())
@@ -160,12 +198,14 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 	if len(roots) == 0 {
 		writeStatusLine(w, "Disk   (none)")
 	}
-	standby := statusObjectsSortedBy(statusObjectList(payload["standby_replenishment"]), "root")
-	for _, item := range standby {
-		root := statusHomeValue(item, "root")
-		quarantined := statusCountOrDash(item, "quarantined")
-		action := statusValue(item, "action")
-		writeStatusLine(w, fmt.Sprintf("Standby replenishment stopped · %s · %s quarantined · run %s", root, quarantined, action))
+	// workspace 表に載せられなかった停止（登録が消えた workspace など）だけを残余として出す。
+	remaining := make([]string, 0, len(notes))
+	for root := range notes {
+		remaining = append(remaining, root)
+	}
+	sort.Strings(remaining)
+	for _, root := range remaining {
+		writeStatusLine(w, statusHomePath(root)+" "+notes[root])
 	}
 }
 
@@ -617,7 +657,7 @@ func (r *verboseStatusRenderer) renderRetention() {
 	value, present := r.payload["retention_seconds"]
 	retention, isMap := value.(map[string]any)
 	r.mark("retention_seconds")
-	keys := []string{"hot_standby", "ended_worktree", "recovery_snapshot", "expired_session_tombstone", "failed_job", "event_log"}
+	keys := []string{"hot_standby", "ended_worktree", "quarantined", "recovery_snapshot", "expired_session_tombstone", "failed_job", "event_log"}
 	known := map[string]bool{}
 	for _, key := range keys {
 		known[key] = true
@@ -727,11 +767,12 @@ func (r *verboseStatusRenderer) renderStandbyReplenishment() {
 	for index, item := range items {
 		r.field("  Path", statusHomeValue(item, "root"))
 		r.field("  Generation", statusValue(item, "generation"))
-		r.field("  Quarantined", statusValue(item, "quarantined"))
-		r.field("  Limit", statusValue(item, "limit"))
+		r.field("  Reason", statusValue(item, "reason"))
+		r.field("  Detail", statusValue(item, "detail"))
+		r.field("  Suspended", statusValue(item, "suspended_at"))
 		r.field("  Action", statusValue(item, "action"))
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("standby_replenishment[%d]", index), item, map[string]bool{
-			"workspace_id": true, "root": true, "generation": true, "quarantined": true, "limit": true, "action": true,
+			"workspace_id": true, "root": true, "generation": true, "reason": true, "detail": true, "suspended_at": true, "action": true,
 		})
 	}
 }

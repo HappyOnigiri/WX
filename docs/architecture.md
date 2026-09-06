@@ -143,11 +143,10 @@ LinuxではCoW自体を行わないため、`measurement`は`unsupported`にな�
   復元sessionの成功や`SessionStart`による`ACTIVE`遷移だけでは除外記録を作らず、補充の契機にもならない。
   終端状態の`QUARANTINED`は待機枠に数えない。
   READYへ戻らないslotを枠として数えると、そのworkspaceの補充が成功イベントを待つ以外に回復せず恒久的に止まるためである。
-  代わりに、貸出前に隔離されたslot（sessionを一度も持たなかったslot）が`standbyQuarantineLimit`個に達したworkspaceでは補充を止める。
-  `last_used_at`はREADYからの貸出でしか書かれずcold startのslotではNULLのまま残るため、判定には使わない。
-  上限は補充判定の入口と`CreateStandbyIfNeeded`のtransactionの両方で見るので、並行する`ENSURE_STANDBY`が上限を越えて作ることはない。
-  GCも`wx clear`も隔離実体を消さないので、準備が壊れ続けるworkspaceでworktreeが無制限に積み上がるのを防ぐ。
-  隔離slotとそのファイル・所有権情報は保全され、READYの回復と隔離物の削除は別の操作である。
+  代わりに、待機用slotの準備（`PREPARE`ジョブ）が失敗したworkspaceでは自動補充そのものを止め、停止を`replenish_suspensions`へ`STANDBY_PREPARE_FAILED`として永続化する。
+  GCが隔離実体を削除するようになったため、この停止が無いと削除と補充が交互に繰り返される。
+  停止の表現は`wx clear`後の抑止と同じテーブルに一本化してあり、理由は`reason`列（`CLEAN`・`STANDBY_PREPARE_FAILED`）と、clean runのIDまたは失敗したjobのIDを入れる`detail`列で区別する。
+  解除は手動起動（貸出・resume）の成功と`wx retry-standby`の2経路だけで、どちらも停止理由では区別しない。
 - **clear** — `wx clear`は保持期限を待たずにworktreeを削除する。
   受付時点で全workspace・全root世代のslotから対象を確定し、`clean_runs`・`clean_targets`へ永続化するので、daemon再起動後も同じ対象と期限で再開する。
   進行は`Manager.driveClean`のbackground goroutineが既存ジョブの完了を監視するだけで、workerを占有したまま別ジョブを待たない。
@@ -160,7 +159,7 @@ LinuxではCoW自体を行わないため、`measurement`は`unsupported`にな�
   run実行中は`assertNoActiveClean`が貸出・復元・待機用作成の書き込みトランザクションを断るので、予約した対象が新しいsessionへ渡ることはない。
   削除後の補充停止は`replenish_suspensions`に永続化し、`ensureStandby`が定期reconcileと補充ジョブの双方で参照する。
   停止するのは待機用slotを削除するmodeだけで、残すと決めたworktreeが補充で戻ることは矛盾しないためである。
-  解除はそのworkspaceの貸出・resumeが成功した時点だけで、既存sessionの返却では解除しない。
+  解除はそのworkspaceの貸出・resumeが成功した時点と`wx retry-standby`だけで、既存sessionの返却では解除しない。
   安全な処理境界を待つ対象には`cleanBoundaryWait`（5分）の上限を置く。
   無期限に待つと、貸出を断ったままworkspace全体が使えなくなるためである。
 - **reconcile** — 定期的にDBと実体を突き合わせ、素性の分からないpath・refを隔離側へ倒す。
@@ -171,9 +170,17 @@ LinuxではCoW自体を行わないため、`measurement`は`unsupported`にな�
   この終端はreconcileだけでなく`Release`を通る全経路（clientの返却、`wx clear`の停止）で起きる。
   復旧snapshotが残らない返却なので、`Store.ReleaseWithOutcome`が呼び出し側へ区別を返し、daemonがWarnで記録する。
   clientはReleaseの応答を読まないため、記録先はログだけである。
+- **GC** — 保持期限を過ぎた実体を回収する。
+  worktree実体を伴う候補は`GCCandidates`（終了済みsession）・`StandbyGCCandidates`・`QuarantinedGCCandidates`・`ColdRepositoryCandidates`・`ExpiredSnapshots`の5系統である。
+  隔離slotは`retention.quarantined`（既定24時間）を過ぎたものを候補にし、通常の`REMOVE`ジョブへ載せて所有権証明つきの削除を再試行する。
+  証明が通らなければ実体を消さず`QUARANTINED`へ戻すので、原因が解消された次の周回で自然に片付き、wxのものでない実体は誤って消えない。
+  隔離の多くは所有権を証明できなかった結果なので、証明を迂回する削除経路は作らない。
 - **root使用量の測定** — worktree rootのディスク使用量はreconcileと同じ周期処理だけが測り、`Status`はその値と測定時刻を返す。
   測定量はroot配下の総ファイル数に比例するため、要求のたびに測るとslotが増えるほど`Status`が遅くなり、高負荷時にはclientの制限時間を超える。
   最初の測定が終わるまでは`measurement`を`pending`とし、0を実測値として見せない。
+- **root世代登録の再試行** — 起動時や設定変更時にroot世代（`roots`行）の登録が失敗すると、そのrootへの全allocationが`ErrOwnership`で落ち続ける。
+  reconcileと同じ周期処理が、失敗が残っている間だけdescriptorを取り直して再登録を試み、rootを作り直した・volumeをmountし直したといった外的な回復をdaemon再起動なしで拾う。
+  同じ理由の連続失敗はログを1回に抑え、`wx doctor`の`worktree_root`は失敗理由に再試行し続ける旨を添えて返す。
 - **degraded運用** — SQLiteが開けないときも`Status`・`Doctor`・`RequestStop`は`DegradedHandler`が答える。
   診断のためにdaemonを完全に沈黙させないためである。
   `RequestStop`だけは状態を変えるがゲートを通さない（状態を変えるRPCを一切受け付けない以上、守るべきin-flightの予約が無い）。
@@ -225,7 +232,9 @@ LinuxではCoW自体を行わないため、`measurement`は`unsupported`にな�
    認識できない理由でlockされたworktreeは、wxのものではない。
 
 このうち2と3は、pinしたroot descriptor配下の相対pathに対して行う。
-`domain.OpenOwnedRoot`がrootをinodeごとpinし、`domain.PhysicalPathInfo`が全成分のsymlinkを拒否するので、検査と実行の間にpathを差し替えられても、差し替え先へ操作が届かない。
+`domain.OpenOwnedRoot`がrootをinodeごとpinし、`domain.PhysicalPathInfo`がroot配下の全成分のsymlinkを拒否するので、検査と実行の間にpathを差し替えられても、差し替え先へ操作が届かない。
+root自身より上の祖先成分は検査せず、`~/dev`のようなsymlink配下にworktree rootやソースリポジトリを置ける。
+pin後の操作は`os.Root`のopenatに閉じているため、祖先を差し替えられてもpin済みのdescriptorは動かない。
 1のDB側は「何が正しいか」を答え、descriptorは「いま触っているものが本当にそれか」を答える。
 DBが持つidentityはdescriptorが返す`vol:<inode>:<volume>`と同じ形式なので、2つの層が同じ対象を指していることを比較できる。
 volume成分にdevice番号を使わないのは、macOSではmount順で決まるdevice番号が再起動をまたいで変わり、記録済みの行が一斉に一致しなくなるためである（darwinではmount point、linuxではfilesystem IDで表す）。
@@ -293,7 +302,9 @@ multi_repositoryのworkspaceスナップショットは、slotディレクトリ
 
 - `.worktreelink`に列挙したpathは、main worktree側の実体へ直接symlinkする（`createLinksAt`）。
   sourceが存在しない項目は、ファイル・ディレクトリを問わずその準備では省略し、sourceの出現・消失でslot再利用をfingerprintの存在状態変更により止める。
-  sourceのsymlink・path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
+  sourceがsymlinkの項目と、ソースリポジトリのignore対象でない項目も同じく省略し、省略した対象と理由をdaemon logにwarnで残す。
+  path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
+  同じ扱いはworkspace rootのcopy/link source（`MaterializeRootAt`）と`.worktreeinclude`の一致にも適用し、既定名と明示名で挙動を分けない。
   workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
 - 生成器を持たない。
   help本文、config schema、SQLite migration、LaunchAgent plistはすべて手書きで維持し、shell completionは実装しない。

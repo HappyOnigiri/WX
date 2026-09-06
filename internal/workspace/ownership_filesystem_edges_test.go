@@ -892,7 +892,7 @@ func TestWorktreeRecordAndCanonicalPathEdges(t *testing.T) {
 	if err := validatePhysicalPathAllowMissingLeaf(filepath.Join(base, "alias", "missing")); err == nil {
 		t.Fatal("missing leaf below symlink ancestor accepted")
 	}
-	if err := domain.ValidatePhysicalPath(filepath.Join(base, "real"), false); err != nil {
+	if err := domain.ValidatePhysicalLeaf(filepath.Join(base, "real")); err != nil {
 		t.Fatal(err)
 	}
 }
