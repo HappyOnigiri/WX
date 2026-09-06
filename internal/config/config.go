@@ -61,9 +61,8 @@ type Storage struct {
 	BackupRetention   Duration `yaml:"backup_retention,omitempty"`
 }
 type Pool struct {
-	WarmPerWorkspace            int `yaml:"warm_per_workspace,omitempty"`
-	PreparationConcurrency      int `yaml:"preparation_concurrency,omitempty"`
-	GitConcurrencyPerRepository int `yaml:"git_concurrency_per_repository,omitempty"`
+	WarmPerWorkspace       int `yaml:"warm_per_workspace,omitempty"`
+	PreparationConcurrency int `yaml:"preparation_concurrency,omitempty"`
 }
 type Retention struct {
 	HotStandby              Duration `yaml:"hot_standby,omitempty"`
@@ -130,7 +129,7 @@ func Defaults() Config {
 	return Config{
 		Worktree: WorktreePolicy{Undefined: "ask"},
 		Version:  1, Storage: Storage{WorktreeRoot: "$HOME/wx", RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
-		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2, GitConcurrencyPerRepository: 1},
+		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
 		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false}, Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
@@ -260,22 +259,86 @@ func LoadRaw() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
+	scan := yaml.NewDecoder(bytes.NewReader(data))
+	var doc yaml.Node
+	if err := scan.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
+		return Config{}, fmt.Errorf("decode %s: %w", p, err)
+	}
+	var extra any
+	if err := scan.Decode(&extra); !errors.Is(err, io.EOF) {
+		return Config{}, errors.New("config contains multiple YAML documents")
+	}
+	strict := data
+	if dropRemovedKeys(&doc) {
+		// 削除済みキーが書かれたままの既存configを読めるよう、KnownFields(true)へ渡す前に取り除く。
+		// 元のdataは行番号を保つためそのまま使い、書き換えは実際に該当キーがあったときだけ行う。
+		cleaned, err := yaml.Marshal(&doc)
+		if err != nil {
+			return Config{}, err
+		}
+		strict = cleaned
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(strict))
 	dec.KnownFields(true)
 	var c Config
 	if err := dec.Decode(&c); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", p, err)
 	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return Config{}, errors.New("config contains multiple YAML documents")
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return Config{}, err
-	}
 	c.present = collectKeys(&doc)
 	return c, nil
+}
+
+// removedKeys は過去に存在した設定キーで、書かれていても黙って無視する。
+// 値の解釈は行わないため、`wx config set` などによる次回のSaveで file からも消える。
+var removedKeys = []string{"pool.git_concurrency_per_repository"}
+
+// dropRemovedKeys は doc から removedKeys の項目を取り除き、1件でも取り除いたらtrueを返す。
+func dropRemovedKeys(doc *yaml.Node) bool {
+	if len(doc.Content) == 0 {
+		return false
+	}
+	dropped := false
+	for _, key := range removedKeys {
+		section, leaf, nested := strings.Cut(key, ".")
+		if !nested {
+			section, leaf = "", key
+		}
+		mapping := doc.Content[0]
+		if section != "" {
+			mapping = mappingValue(mapping, section)
+		}
+		if removeMappingKey(mapping, leaf) {
+			dropped = true
+		}
+	}
+	return dropped
+}
+
+// mappingValue は mapping node の key に対応する値を返す。mapping でなければ nil を返す。
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// removeMappingKey は mapping node から key と値の組を取り除き、取り除いたらtrueを返す。
+func removeMappingKey(node *yaml.Node, key string) bool {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return true
+		}
+	}
+	return false
 }
 
 func collectKeys(doc *yaml.Node) map[string]bool {
@@ -472,9 +535,6 @@ func Validate(c *Config) error {
 	}
 	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 {
 		return errors.New("pool counts must be non-negative and concurrency must be at least 1")
-	}
-	if c.Pool.GitConcurrencyPerRepository != 1 {
-		return errors.New("pool.git_concurrency_per_repository must be 1 (only supported value)")
 	}
 	for k, v := range map[string]time.Duration{"retention.hot_standby": c.Retention.HotStandby.Duration, "retention.ended_worktree": c.Retention.EndedWorktree.Duration, "retention.recovery_snapshot": c.Retention.RecoverySnapshot.Duration, "retention.expired_session_tombstone": c.Retention.ExpiredSessionTombstone.Duration, "retention.failed_job": c.Retention.FailedJob.Duration, "retention.event_log": c.Retention.EventLog.Duration, "discovery.timeout": c.Discovery.Timeout.Duration, "discovery.reconcile_interval": c.Discovery.ReconcileInterval.Duration, "readiness.timeout": c.Readiness.Timeout.Duration} {
 		if v < 0 {

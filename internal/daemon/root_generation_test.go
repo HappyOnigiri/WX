@@ -404,10 +404,16 @@ func TestLoadRootGenerationsRefusesAReplacedRootDirectory(t *testing.T) {
 		t.Fatalf("intact root republished as %q, want %q", republished, rootID)
 	}
 
+	// 置き換え先は元のディレクトリが在るうちに作る。
+	// 消してから同じパスへ作り直すと、inodeを再利用するfilesystemでは identity が一致して置き換えを表せない。
+	replacement := rootPath + ".replacement"
+	if err := os.MkdirAll(replacement, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.RemoveAll(rootPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(rootPath, 0o700); err != nil {
+	if err := os.Rename(replacement, rootPath); err != nil {
 		t.Fatal(err)
 	}
 	resetRootRegistryForTest(manager)

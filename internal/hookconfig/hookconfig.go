@@ -299,12 +299,15 @@ func readinessHookPaths(agent string) (string, bool) {
 	}
 }
 
+// regularHookPath は path が最終的に regular file を指す場合にその path を返す。
+// symlink は拒否しない。読み取り専用の user 設定ファイルであり、
+// GNU Stow のような symlink 方式の dotfile 管理で置き換えられても実害がないため。
 func regularHookPath(path string) (string, error) {
-	info, err := os.Lstat(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("hook configuration is not a regular file: %s", path)
 	}
 	return path, nil

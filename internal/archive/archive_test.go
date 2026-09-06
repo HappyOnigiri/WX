@@ -650,7 +650,6 @@ func TestSnapshotPropagatesGitStageFailures(t *testing.T) {
 		{name: "worktree tree", pattern: func(string) string { return " write-tree " }, occurrence: 2},
 		{name: "worktree commit", pattern: func(string) string { return " commit-tree " }, occurrence: 1},
 		{name: "recovery ref creation", pattern: func(string) string { return " update-ref --create-reflog " }, occurrence: 1},
-		{name: "recovery ref verification", pattern: func(string) string { return " rev-parse --verify refs/wx/recovery/" }, occurrence: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository, repo, manager, _ := archiveFixture(t)

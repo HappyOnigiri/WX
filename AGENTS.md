@@ -2,7 +2,9 @@
 
 `wx`は、Claude CodeとCodexをdaemon管理のdetached worktreeで起動するGo製CLI + daemonである。
 機能と運用の複雑さは単一ユーザー・単一マシンを前提に判断する。
-実行対象はmacOSのみ（状態・socketは`~/Library`配下、常駐はLaunchAgent）で、linuxは退行検出用のビルド対象とする。
+実行対象はmacOSのみ（状態・socketは`~/Library`配下、常駐はLaunchAgent）で、linuxは退行検出用のビルド・テスト対象とする。
+CIのランナーは全てlinuxで、darwin専用実装は`make build-darwin`のクロスコンパイルでしか検査されない。
+これらに触ったら手元の`make ci`で実行を確かめる。
 
 ## 不変条件
 
@@ -13,6 +15,8 @@
   継承した`GIT_DIR`・`GIT_WORK_TREE`・`GIT_INDEX_FILE`などが漏れると、別リポジトリへの操作が成功し、未捕捉のworktreeを削除し得る。
 - 自動で行う破壊的なファイルシステム操作の前に所有権を証明する。
   `state.OwnershipValidator`が`ErrOwnership`を返したら、実体を削除せず`QUARANTINED`として残す。
+  証明は破壊的操作ごとに直前の1回とし、同じ操作の前後でinode・path・identityの再検証を重ねない。
+  単一ユーザー・単一マシンでは、pin済みdescriptorへ閉じた操作に割り込む相手がいないためである。
 - TOCTOU対策はrootのpin（`os.Root`・`domain.OpenOwnedRoot`）、全path成分のsymlink拒否（`domain.PhysicalPathInfo`）、子プロセスCWDのfchdir束縛（`internal/fdexec`）を揃える。
   descriptorがない場合にパス名で代替しない。
 - slotの位置は`roots.id` + root相対pathで表し、所有権はそれとinode identityで証明する。
