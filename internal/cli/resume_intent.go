@@ -70,13 +70,15 @@ func parseClaudeResumeIntent(args []string) resumeIntent {
 }
 
 func parseCodexResumeIntent(args []string) resumeIntent {
-	if len(args) == 0 || args[0] != "resume" {
+	start, ok := codexResumeSubcommandIndex(args)
+	if !ok {
 		return resumeIntent{Kind: resumeIntentNone, Rest: cloneResumeArgs(args)}
 	}
 
 	intent := resumeIntent{Kind: resumeIntentPicker}
+	intent.Rest = append(intent.Rest, args[:start]...)
 	var sessionID string
-	for i := 1; i < len(args); i++ {
+	for i := start + 1; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
 		case "--last":
@@ -107,6 +109,29 @@ func parseCodexResumeIntent(args []string) resumeIntent {
 		intent.AgentSessionID = ""
 	}
 	return intent
+}
+
+// codexResumeSubcommandIndex は codex のグローバルフラグを読み飛ばし、resume サブコマンドの位置を返す。
+// ランチャは `codex --model x resume` のようにグローバルフラグを前置するため、先頭固定では resume を取りこぼす。
+// 最初の位置引数が resume でなければ resume 指定ではないと判断し、`--` 以降は codex 本体に委ねる。
+func codexResumeSubcommandIndex(args []string) (int, bool) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return 0, false
+		}
+		if strings.HasPrefix(arg, "-") {
+			if codexResumeFlagTakesValue(arg) && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		if arg == "resume" {
+			return i, true
+		}
+		return 0, false
+	}
+	return 0, false
 }
 
 // codexResumeFlagTakesValue は resume の位置引数探索から値付きフラグを除外する。

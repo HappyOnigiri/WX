@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -125,10 +124,7 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	recoveryDiscarded := fresh
-	var lease daemon.Lease
-	method := "ResolveAndLease"
-	params := any(map[string]any{"cwd": cwd, "branches": branches, "agent": agent, "client_pid": os.Getpid(), "force_worktree": c.forceWorktree})
+	plan := launchPlan{agent: agent, args: args, branches: branches, cwd: cwd, explicitResume: explicitResume, intentRest: intent.Rest, target: target, resuming: resuming, fresh: fresh}
 	if resuming {
 		if target.WXSessionID != "" {
 			var status resumeStatus
@@ -136,36 +132,53 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 				fmt.Fprintln(os.Stderr, "error:", err)
 				return 1
 			}
-			if agent == "" {
-				agent = status.Agent
+			if plan.agent == "" {
+				plan.agent = status.Agent
 			}
-			target.Agent = agent
-			if target.AgentSessionID == "" {
-				target.AgentSessionID = status.AgentSessionID
+			plan.target.Agent = plan.agent
+			if plan.target.AgentSessionID == "" {
+				plan.target.AgentSessionID = status.AgentSessionID
 			}
-			if !fresh && status.Expired {
-				if !confirmExpiredResume(target.WXSessionID) {
+			if !plan.fresh && status.Expired {
+				if !c.confirmFreshResume(ctx, target.WXSessionID, "no recovery snapshot is available") {
 					fmt.Fprintln(os.Stderr, "resume cancelled; no workspace was created")
 					return 1
 				}
-				fresh = true
-				recoveryDiscarded = true
+				plan.fresh = true
 			}
-			method = "Resume"
-			params = map[string]any{"wx_session_id": target.WXSessionID, "agent": agent, "client_pid": os.Getpid(), "agent_session_id": target.AgentSessionID, "fresh": fresh, "branches": branches}
-		} else {
-			if target.CWD == "" {
-				fmt.Fprintln(os.Stderr, "error: selected conversation has no working directory")
-				return 1
-			}
-			params = map[string]any{"cwd": target.CWD, "branches": branches, "agent": agent, "client_pid": os.Getpid(), "force_worktree": c.forceWorktree}
+		} else if target.CWD == "" {
+			fmt.Fprintln(os.Stderr, "error: selected conversation has no working directory")
+			return 1
 		}
 	}
-	hooksReady := hookconfig.Available(agent)
+	plan.hooksReady = hookconfig.Available(plan.agent)
+	// 復元できない worktree で失敗したときだけ、会話の再開を優先して新しい worktree で 1 度だけやり直す。
+	exit, retry := c.launch(ctx, plan)
+	if !retry {
+		return exit
+	}
+	plan.fresh = true
+	exit, _ = c.launch(ctx, plan)
+	return exit
+}
+
+// launch は lease を取り、worktree の準備を待って agent を起動する。
+// 当時の worktree を復元できずに失敗し、新しい worktree での再開が選ばれたときだけ retry=true を返す。
+func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
+	var lease daemon.Lease
+	method := "ResolveAndLease"
+	params := any(map[string]any{"cwd": plan.cwd, "branches": plan.branches, "agent": plan.agent, "client_pid": os.Getpid(), "force_worktree": c.forceWorktree})
+	switch {
+	case plan.resuming && plan.target.WXSessionID != "":
+		method = "Resume"
+		params = map[string]any{"wx_session_id": plan.target.WXSessionID, "agent": plan.agent, "client_pid": os.Getpid(), "agent_session_id": plan.target.AgentSessionID, "fresh": plan.fresh, "branches": plan.branches}
+	case plan.resuming:
+		params = map[string]any{"cwd": plan.target.CWD, "branches": plan.branches, "agent": plan.agent, "client_pid": os.Getpid(), "force_worktree": c.forceWorktree}
+	}
 	operationKey, err := domain.NewID()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: create operation identity:", err)
-		return 1
+		return 1, false
 	}
 	// ResolveAndLease と Resume は daemon 側で repository discovery を同期実行する。
 	// cold な複数 repository root でも、discovery.timeout 内の探索を client 側の既定 timeout で中断しない。
@@ -176,8 +189,11 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 	leaseCtx, cancelLease := context.WithTimeout(ctx, budget)
 	defer cancelLease()
 	if err := c.RPC.CallWithKey(leaseCtx, method, "launch:"+operationKey, params, &lease); err != nil {
+		if c.acceptsFreshWorkspace(ctx, plan, err) {
+			return 1, true
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+		return 1, false
 	}
 	defer func() {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -191,34 +207,43 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 	go c.watchTermination(ctx, lease, terminator, heartbeatDone)
 	defer close(heartbeatDone)
 	defer terminator.confirm(c, lease)
-	if resuming {
-		rest := intent.Rest
-		if explicitResume != "" {
-			rest = args
+	args := plan.args
+	if plan.resuming {
+		rest := plan.intentRest
+		if plan.explicitResume != "" {
+			rest = plan.args
 		}
-		args = resumeArgs(agent, target.AgentSessionID, lease.Path, rest)
+		args = resumeArgs(plan.agent, plan.target.AgentSessionID, lease.Path, rest)
 	}
-	envOverrides := []string{"WX_SESSION_ID=" + lease.SessionID, "WX_SESSION_TOKEN=" + lease.Token, "WX_DAEMON_SOCKET=" + c.RPC.Socket, "WX_WORKSPACE_ROOT=" + lease.Path, "WX_SOURCE_WORKSPACE=" + lease.SourceWorkspace, "WX_READINESS_TIMEOUT=" + c.Config.Readiness.Timeout.String(), "WX_SOURCE_CWD=" + cwd}
-	if recoveryDiscarded {
+	envOverrides := []string{"WX_SESSION_ID=" + lease.SessionID, "WX_SESSION_TOKEN=" + lease.Token, "WX_DAEMON_SOCKET=" + c.RPC.Socket, "WX_WORKSPACE_ROOT=" + lease.Path, "WX_SOURCE_WORKSPACE=" + lease.SourceWorkspace, "WX_READINESS_TIMEOUT=" + c.Config.Readiness.Timeout.String(), "WX_SOURCE_CWD=" + plan.cwd}
+	if plan.fresh {
 		envOverrides = append(envOverrides, "WX_RECOVERY_DISCARDED=1")
 	}
 	env := childEnvironment(os.Environ(), envOverrides)
 	// 通常起動は hook があれば preparation と重ねる。
 	// 会話の再開は復元と ID の移譲を完了してから agent を起動する。
-	if !lease.Ready && (resuming || !hooksReady) {
+	if !lease.Ready && (plan.resuming || !plan.hooksReady) {
 		waitCtx, cancel := context.WithTimeout(ctx, c.Config.Readiness.Timeout.Duration)
 		err = c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
 		cancel()
 		if err != nil {
+			if c.acceptsFreshWorkspace(ctx, plan, err) {
+				return 1, true
+			}
 			fmt.Fprintln(os.Stderr, "error: workspace preparation:", err)
-			return 1
+			return 1, false
 		}
 	}
 	// 起動前・準備待ちの間に終了要求が届いていたら、agent を起動せずにそのまま応答する。
 	if terminator.requested() {
 		fmt.Fprintln(os.Stderr, "wx clear asked this session to stop before the agent started")
-		return 1
+		return 1, false
 	}
+	return c.startAgent(ctx, plan.agent, lease, args, env, terminator), false
+}
+
+// startAgent は lease の inode に束縛した CWD で agent を起動し、終了 status を返す。
+func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease, args, env []string, terminator *agentTerminator) int {
 	leaseDirectory, err := openLeaseDirectory(c.Config, lease)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error: pin workspace CWD:", err)
@@ -364,19 +389,4 @@ func childEnvironment(base, overrides []string) []string {
 		env = append(env, entry)
 	}
 	return append(env, overrides...)
-}
-
-func confirmExpiredResume(sessionID string) bool {
-	info, err := os.Stdin.Stat()
-	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
-		fmt.Fprintf(os.Stderr, "wx session %s has no recovery snapshot; refusing fresh-base resume without an interactive confirmation\n", sessionID)
-		return false
-	}
-	fmt.Fprintf(os.Stderr, "wx session %s has no recovery snapshot. Continue the conversation in a new workspace from the current base? [y/N] ", sessionID)
-	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	if err != nil && len(answer) == 0 {
-		return false
-	}
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	return answer == "y" || answer == "yes"
 }
