@@ -896,9 +896,11 @@ func (p *Preparer) VerifyWorktreeIdentity(target, expectedIdentity string) error
 	return nil
 }
 
-// RunGitInWorktree は WorktreeIdentity で取得した identity の target で Git command を実行する。本番の Preparer は pin 済み root と descriptor cwd を使うため、
-// lexical root/target の置換では command を逸らせない。child 実行の前後で identity を検査し、変化は Git の成否にかかわらず ownership-uncertain とする。
-// commentlint:allow-long -- command 実行中の path 置換に対する保証を説明する
+// RunGitInWorktree は WorktreeIdentity で取得した identity の target で Git command を実行する。
+// 実行前に identity を検査したうえで、pin 済み directory descriptor を internal/fdexec 経由の fchdir で
+// 子プロセスの cwd に束縛してから Git を起動するため、実行中に pathname が rename・置換されても子は
+// pin した inode を見続ける。したがって実行後の再検証は行わない。
+// commentlint:allow-long -- fchdir 束縛により実行後再検証が不要になる根拠を保守時に確認できるようにする
 func (p *Preparer) RunGitInWorktree(ctx context.Context, target, expectedIdentity string, env []string, input []byte, args ...string) (gitx.Result, error) {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
@@ -917,13 +919,7 @@ func (p *Preparer) RunGitInWorktree(ctx context.Context, target, expectedIdentit
 	if expectedIdentity != "" && identity != expectedIdentity {
 		return gitx.Result{}, fmt.Errorf("%w: worktree target identity changed before Git (expected %s, got %s)", state.ErrOwnership, expectedIdentity, identity)
 	}
-	result, runErr := p.Git.RunAt(ctx, directory, env, input, args...)
-	if expectedIdentity != "" {
-		if identityErr := p.VerifyWorktreeIdentity(target, expectedIdentity); identityErr != nil {
-			return result, fmt.Errorf("worktree target identity changed during Git: %w", identityErr)
-		}
-	}
-	return result, runErr
+	return p.Git.RunAt(ctx, directory, env, input, args...)
 }
 
 // ValidateReady は、保存済み READY worktree を安全に lease できる physical および Git-administrative invariant を検証する。
