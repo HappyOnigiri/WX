@@ -402,6 +402,19 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	if err := p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity); err != nil {
 		return err
 	}
+	// inode 交換で index の stat cache が陳腐化するため、貸出前に refresh して再ハッシュを PREPARING 側で払う。
+	// tracked 内容が変わっていないことの独立検証も兼ねる。
+	if phase == preparePhaseCreate {
+		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
+			return fmt.Errorf("wx worktree ownership changed before tracked status refresh: %w", err)
+		}
+		if err := p.validateTrackedClean(ctx, target); err != nil {
+			return err
+		}
+		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
+			return fmt.Errorf("wx worktree ownership changed during tracked status refresh: %w", err)
+		}
+	}
 	if _, err = p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
 		return err
 	}
