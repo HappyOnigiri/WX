@@ -14,6 +14,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 func TestRunConfigRejectsUnnormalizablePathBeforeSave(t *testing.T) {
@@ -104,8 +105,8 @@ func TestRunDoctorFallsBackToLocalChecksWhenDaemonCannotConnect(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("local doctor output is not JSON: %v\n%s", err, stdout)
 	}
-	if got := payload["schema_version"]; got != float64(7) {
-		t.Fatalf("schema_version=%v, want 7", got)
+	if got := payload["schema_version"]; got != float64(state.JSONSchemaVersion) {
+		t.Fatalf("schema_version=%v, want %d", got, state.JSONSchemaVersion)
 	}
 	checks, ok := payload["checks"].(map[string]any)
 	if !ok {

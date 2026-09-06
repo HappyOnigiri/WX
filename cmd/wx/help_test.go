@@ -550,6 +550,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"gc", "--dry-run"},
 		{"prune", "--dry-run"},
 		{"clear", "--dry-run"},
+		{"retry-standby", home},
 		{"leases", "--all", "--json"},
 		{"leases"},
 		{"forget", home},
@@ -655,7 +656,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 }
 
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
-	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "leases", "config", "resume", "forget", "daemon"} {
+	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "leases", "config", "resume", "forget", "daemon"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			commandUsage(&output, command)
@@ -702,7 +703,7 @@ func TestHelpListsStayAligned(t *testing.T) {
 	var top bytes.Buffer
 	topUsage(&top)
 	texts["top"] = top.String()
-	for _, command := range []string{"status", "doctor", "gc", "clear", "sessions", "config", "resume", "forget", "daemon", "hook"} {
+	for _, command := range []string{"status", "doctor", "gc", "clear", "retry-standby", "sessions", "config", "resume", "forget", "daemon", "hook"} {
 		var output bytes.Buffer
 		commandUsage(&output, command)
 		texts[command] = output.String()

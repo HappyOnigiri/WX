@@ -156,6 +156,13 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 	if len(roots) == 0 {
 		writeStatusLine(w, "Disk   (none)")
 	}
+	standby := statusObjectsSortedBy(statusObjectList(payload["standby_replenishment"]), "root")
+	for _, item := range standby {
+		root := statusHomeValue(item, "root")
+		quarantined := statusCountOrDash(item, "quarantined")
+		action := statusValue(item, "action")
+		writeStatusLine(w, fmt.Sprintf("Standby replenishment stopped · %s · %s quarantined · run %s", root, quarantined, action))
+	}
 }
 
 func statusDaemonSummary(payload map[string]any) string {
@@ -326,6 +333,7 @@ func printVerboseStatus(w io.Writer, payload map[string]any) {
 	renderer.renderStorage()
 	renderer.renderRetention()
 	renderer.renderQuarantine()
+	renderer.renderStandbyReplenishment()
 	renderer.renderAdditional()
 }
 
@@ -657,6 +665,27 @@ func (r *verboseStatusRenderer) renderQuarantine() {
 	}
 	for index, item := range items {
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("quarantine[%d]", index), item, map[string]bool{"id": true, "path": true, "kind": true, "failure_code": true})
+	}
+}
+
+func (r *verboseStatusRenderer) renderStandbyReplenishment() {
+	value := r.payload["standby_replenishment"]
+	items := statusObjectsSortedBy(statusObjectList(value), "root")
+	r.mark("standby_replenishment")
+	if len(items) == 0 {
+		return
+	}
+	r.line("")
+	r.line("Standby replenishment")
+	for index, item := range items {
+		r.field("  Path", statusHomeValue(item, "root"))
+		r.field("  Generation", statusValue(item, "generation"))
+		r.field("  Quarantined", statusValue(item, "quarantined"))
+		r.field("  Limit", statusValue(item, "limit"))
+		r.field("  Action", statusValue(item, "action"))
+		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("standby_replenishment[%d]", index), item, map[string]bool{
+			"workspace_id": true, "root": true, "generation": true, "quarantined": true, "limit": true, "action": true,
+		})
 	}
 }
 

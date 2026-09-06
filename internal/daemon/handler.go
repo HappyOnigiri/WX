@@ -216,6 +216,14 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return nil, err
 		}
 		return map[string]bool{"forgotten": true}, h.Manager.Forget(ctx, p.Path)
+	case "RetryStandby":
+		var p struct {
+			Path string `json:"path"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return h.Manager.RetryStandby(ctx, p.Path)
 	default:
 		return nil, errors.New("unknown RPC method")
 	}
