@@ -987,7 +987,9 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 		{name: "unsupported root filesystem entry", mode: "unsupported-entry"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			root, err := os.MkdirTemp("/private/tmp", "wx-snapshot-edge-")
+			// この配下にunix socketを作るため、テスト名を含んで長くなるt.TempDir()は使えない（sun_pathの上限に達する）。
+			// TMPDIRはTestMainが物理パスへ差し替え済みで、OSごとの一時ディレクトリの位置にも追随する。
+			root, err := os.MkdirTemp("", "wx-snap-")
 			if err != nil {
 				t.Fatal(err)
 			}
