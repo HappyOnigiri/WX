@@ -193,6 +193,10 @@ func openFilesystemRoot(absolute string) (*os.Root, string, error) {
 	return handle, relative, nil
 }
 
+// ErrSymlinkPath は物理 path 検査が symlink を見つけたことを表す。
+// 呼び出し側が「symlink なので対象外」と「検査自体が失敗した」を区別できるようにする。
+var ErrSymlinkPath = errors.New("symlink in physical path")
+
 // PhysicalPathInfo は、既に開いた Root からの相対 path の全成分で symlink を拒否し、
 // 最終成分の metadata を返す。同じ root descriptor で検査し、別途評価した字句 path を
 // 物理的な包含の証明として扱わない。検査範囲は root 配下だけで、root 自身の祖先は見ない。
@@ -211,7 +215,7 @@ func PhysicalPathInfo(root *os.Root, relative string) (os.FileInfo, error) {
 			return nil, err
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("symlink component in physical path %s", current)
+			return nil, fmt.Errorf("%w: symlink component in physical path %s", ErrSymlinkPath, current)
 		}
 		if !info.IsDir() && current != clean {
 			return nil, fmt.Errorf("non-directory component in physical path %s", current)
@@ -236,7 +240,7 @@ func ValidatePhysicalLeaf(path string) error {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("symlink leaf in physical path %s", absolute)
+		return fmt.Errorf("%w: symlink leaf in physical path %s", ErrSymlinkPath, absolute)
 	}
 	return nil
 }
