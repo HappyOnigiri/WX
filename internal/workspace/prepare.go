@@ -344,7 +344,9 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before links"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed before links: %w", err)
 	}
-	if err := p.createLinksAt(ctx, repo, lockedRoot, lockedRelativeTarget); err != nil {
+	// snapshot と現在の main で ignore 規則が異なるため、復元先で symlink 形を無視できる場合だけ link を作る。
+	// source 側だけを確認すると、古い `/.tools/` のような directory-only 規則で復元後の tree が変わる。
+	if err := p.createLinksAt(ctx, repo, lockedRoot, lockedRelativeTarget, true); err != nil {
 		return err
 	}
 	if phase == preparePhaseCreate {
@@ -1408,12 +1410,13 @@ func (p *Preparer) createLinks(ctx context.Context, repo discovery.Repository, t
 		return err
 	}
 	defer closeOwner()
-	return p.createLinksAt(ctx, repo, owner, relativeTarget)
+	return p.createLinksAt(ctx, repo, owner, relativeTarget, false)
 }
 
 // createLinksAt は createLinks と同じ処理を、全検査と symlink 作成の間 destination Root を開いたまま行う。
 // これにより worktree の検証から ignored link の書き込みまでに root を置換される隙間を閉じる。
-func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository, owner *os.Root, relativeTarget string) error {
+// destinationIgnore は、復元先の現在の ignore 規則でも link 形を無視できるかを確認する。
+func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository, owner *os.Root, relativeTarget string, destinationIgnore bool) error {
 	mainPath := string(repo.MainPath)
 	sourceRoot, err := openPinnedRepositoryRoot(mainPath)
 	if err != nil {
@@ -1449,6 +1452,14 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		return fmt.Errorf("open link destination: %w", err)
 	}
 	defer func() { _ = destinationRoot.Close() }()
+	var destinationDirectory *os.File
+	if destinationIgnore {
+		destinationDirectory, err = destinationRoot.Open(".")
+		if err != nil {
+			return fmt.Errorf("open link destination for ignore check: %w", err)
+		}
+		defer func() { _ = destinationDirectory.Close() }()
+	}
 	for _, link := range sources {
 		if !link.present {
 			continue
@@ -1465,6 +1476,30 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		}
 		if _, err := p.Git.Run(ctx, mainPath, "check-ignore", "-q", "--", link.relative); err != nil {
 			return fmt.Errorf(".worktreelink path %q is not ignored", link.relative)
+		}
+		if destinationDirectory != nil {
+			ignored, err := checkIgnoredAt(ctx, p.Git, destinationDirectory, link.relative)
+			if err != nil {
+				return fmt.Errorf("check destination worktree ignore rule for %q: %w", link.relative, err)
+			}
+			if !ignored {
+				// 以前の復元試行が作った同じ link だけは、古い ignore 規則の下へ残さない。
+				// 異なる実体は触らず、後段の tree 比較で通常の差分として検出する。
+				if info, statErr := destinationRoot.Lstat(link.relative); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+					existing, readErr := destinationRoot.Readlink(link.relative)
+					if readErr != nil {
+						return fmt.Errorf("read existing .worktreelink %q: %w", link.relative, readErr)
+					}
+					if existing == filepath.Join(mainPath, link.relative) {
+						if removeErr := destinationRoot.Remove(link.relative); removeErr != nil {
+							return fmt.Errorf("remove stale .worktreelink %q: %w", link.relative, removeErr)
+						}
+					}
+				} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+					return statErr
+				}
+				continue
+			}
 		}
 		if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
 			return err
@@ -1500,6 +1535,23 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 		}
 	}
 	return nil
+}
+
+// checkIgnoredAt は descriptor に束縛した worktree で ignore 規則を調べる。
+// exit 1 は「無視されない」という Git の判定なので、実行障害と区別して返す。
+func checkIgnoredAt(ctx context.Context, runner *gitx.Runner, directory *os.File, relative string) (bool, error) {
+	if directory == nil {
+		return false, errors.New("ignore check directory is nil")
+	}
+	_, err := runner.RunAt(ctx, directory, nil, nil, "check-ignore", "-q", "--", relative)
+	if err == nil {
+		return true, nil
+	}
+	var gitErr *gitx.Error
+	if errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 type linkSource struct {

@@ -19,6 +19,8 @@ func TestParseResumeIntentClaude(t *testing.T) {
 		{name: "resume equals lookup", args: []string{"--resume=session-id", "--verbose"}, want: resumeIntent{Kind: resumeIntentLookup, AgentSessionID: "session-id", Rest: []string{"--verbose"}}},
 		{name: "resume equals without value", args: []string{"--resume="}, want: resumeIntent{Kind: resumeIntentPicker}},
 		{name: "unknown flags stay intact", args: []string{"--model", "opus", "-r", "-p", "prompt"}, want: resumeIntent{Kind: resumeIntentPicker, Rest: []string{"--model", "opus", "-p", "prompt"}}},
+		{name: "continue after global flags", args: []string{"--dangerously-skip-permissions", "--model", "opus", "--continue"}, want: resumeIntent{Kind: resumeIntentContinueLatest, Rest: []string{"--dangerously-skip-permissions", "--model", "opus"}}},
+		{name: "resume lookup after global flags", args: []string{"--dangerously-skip-permissions", "--model", "opus", "-r", "session-id"}, want: resumeIntent{Kind: resumeIntentLookup, AgentSessionID: "session-id", Rest: []string{"--dangerously-skip-permissions", "--model", "opus"}}},
 		{name: "double dash stops scan", args: []string{"--", "--resume", "session-id"}, want: resumeIntent{Kind: resumeIntentNone, Rest: []string{"--", "--resume", "session-id"}}},
 		{name: "unrelated args", args: []string{"--model", "opus", "-p", "prompt"}, want: resumeIntent{Kind: resumeIntentNone, Rest: []string{"--model", "opus", "-p", "prompt"}}},
 	}
@@ -45,8 +47,14 @@ func TestParseResumeIntentCodex(t *testing.T) {
 		{name: "value flag before lookup", args: []string{"resume", "--model", "opus", "session-id"}, want: resumeIntent{Kind: resumeIntentLookup, AgentSessionID: "session-id", Rest: []string{"--model", "opus"}}},
 		{name: "cd value stays intact", args: []string{"resume", "--cd", "/tmp/work", "--all"}, want: resumeIntent{Kind: resumeIntentPicker, WidenScope: true, Rest: []string{"--cd", "/tmp/work"}}},
 		{name: "last and all", args: []string{"resume", "--last", "--all"}, want: resumeIntent{Kind: resumeIntentContinueLatest, WidenScope: true}},
-		{name: "resume only at first position", args: []string{"exec", "resume", "session-id"}, want: resumeIntent{Kind: resumeIntentNone, Rest: []string{"exec", "resume", "session-id"}}},
+		{name: "resume only at first positional", args: []string{"exec", "resume", "session-id"}, want: resumeIntent{Kind: resumeIntentNone, Rest: []string{"exec", "resume", "session-id"}}},
 		{name: "unknown command", args: []string{"resumeish", "session-id"}, want: resumeIntent{Kind: resumeIntentNone, Rest: []string{"resumeish", "session-id"}}},
+		{name: "global flags before resume", args: []string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-luna", "--config", `model_reasoning_effort="low"`, "resume"}, want: resumeIntent{Kind: resumeIntentPicker, Rest: []string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-luna", "--config", `model_reasoning_effort="low"`}}},
+		{name: "global flags before resume lookup", args: []string{"--model", "gpt-5.6-luna", "resume", "session-id"}, want: resumeIntent{Kind: resumeIntentLookup, AgentSessionID: "session-id", Rest: []string{"--model", "gpt-5.6-luna"}}},
+		{name: "global flags before resume last", args: []string{"--profile", "work", "resume", "--last"}, want: resumeIntent{Kind: resumeIntentContinueLatest, Rest: []string{"--profile", "work"}}},
+		{name: "global flag with inline value before resume", args: []string{"--model=gpt-5.6-luna", "resume", "--all"}, want: resumeIntent{Kind: resumeIntentPicker, WidenScope: true, Rest: []string{"--model=gpt-5.6-luna"}}},
+		{name: "double dash before resume", args: []string{"--", "resume"}, want: resumeIntent{Kind: resumeIntentNone, Rest: []string{"--", "resume"}}},
+		{name: "flag value named resume", args: []string{"--model", "resume", "session-id"}, want: resumeIntent{Kind: resumeIntentNone, Rest: []string{"--model", "resume", "session-id"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
