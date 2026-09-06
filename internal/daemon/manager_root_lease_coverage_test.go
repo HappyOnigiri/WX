@@ -264,7 +264,7 @@ func TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
 
-	if _, _, err := manager.rootDirectoryUsage(root); err == nil {
+	if _, _, err := manager.rootDirectoryUsage(t.Context(), root); err == nil {
 		t.Fatal("root directory usage succeeded despite an unreadable entry")
 	}
 }

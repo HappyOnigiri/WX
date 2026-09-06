@@ -129,6 +129,7 @@ type Manager struct {
 	retiredRefs          map[string][]*managedRoot
 	rootIdentities       map[string]string
 	rootIDs              map[string]string
+	rootUsage            map[string]rootUsageSample
 	rootError            string
 	rootCond             *sync.Cond
 	rootClosing          bool
@@ -177,6 +178,22 @@ type jobWork struct {
 	id string
 }
 
+// rootUsageSample は lifecycle が測った root 1 世代分のディスク使用量。
+// Status は要求のたびに測り直さず、この値と measuredAt をそのまま返す。
+type rootUsageSample struct {
+	bytes      int64
+	allocated  int64
+	measuredAt time.Time
+	err        string
+}
+
+const (
+	// rootUsageMeasurement は allocated_bytes の算出方法を表す。
+	rootUsageMeasurement = "st_blocks_x_512"
+	// rootUsagePendingMeasurement は最初の測定が終わる前の root を表す。bytes と allocated_bytes は 0 で、実際の使用量ではない。
+	rootUsagePendingMeasurement = "pending"
+)
+
 type (
 	retryableJobError      struct{ error }
 	dependencyPendingError struct{ error }
@@ -199,7 +216,7 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 			prepareDetailDir = filepath.Join(filepath.Dir(logPath), "details")
 		}
 	}
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, rootUsage: map[string]rootUsageSample{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
 	m.watchExecutable(executable, executableErr)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {
@@ -563,6 +580,8 @@ func (m *Manager) maintainJobs() {
 }
 
 func (m *Manager) maintainLifecycle() {
+	// 起動直後の Status を pending のままにしないため、重い reconcile より先に一度測る。
+	m.measureRootUsage(m.ctx)
 	m.resumeCleanRuns(m.ctx)
 	m.reconcileStandbyReplenishments(m.ctx)
 	m.reconcileRegistry(m.ctx)
@@ -570,6 +589,7 @@ func (m *Manager) maintainLifecycle() {
 	m.reconcileOrphans(m.ctx)
 	m.maybeBackup(m.ctx)
 	m.runBackgroundGC()
+	m.measureRootUsage(m.ctx)
 	for {
 		interval := m.Config().Discovery.ReconcileInterval.Duration
 		if interval <= 0 {
@@ -591,6 +611,7 @@ func (m *Manager) maintainLifecycle() {
 			m.reconcileOrphans(m.ctx)
 			m.maybeBackup(m.ctx)
 			m.runBackgroundGC()
+			m.measureRootUsage(m.ctx)
 		}
 	}
 }
@@ -3634,19 +3655,12 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	rootError := m.rootError
 	restartPending, stopPending := m.restartPending, m.stopPending
 	cfg := m.cfg
-	roots := make(map[string]bool, len(m.roots))
-	for root, active := range m.roots {
-		roots[root] = active
+	usage := make(map[string]rootUsageSample, len(m.rootUsage))
+	for root, sample := range m.rootUsage {
+		usage[root] = sample
 	}
 	m.mu.RUnlock()
-	if rows, rootsErr := m.store.Roots(ctx); rootsErr == nil {
-		for _, row := range rows {
-			path := filepath.Clean(row.Path)
-			if _, known := roots[path]; !known {
-				roots[path] = row.Active
-			}
-		}
-	}
+	roots := m.knownRoots(ctx)
 	for index := range details.Repositories {
 		details.Repositories[index].Hot = false
 		if leasedAt, parseErr := time.Parse(time.RFC3339Nano, details.Repositories[index].LastUsedAt); parseErr == nil {
@@ -3666,14 +3680,16 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		Bytes          int64  `json:"bytes"`
 		AllocatedBytes int64  `json:"allocated_bytes"`
 		Measurement    string `json:"measurement"`
+		MeasuredAt     string `json:"measured_at,omitempty"`
 		Error          string `json:"error,omitempty"`
 	}
+	// 使用量は lifecycle が測った値を返すだけにする。要求経路で walk すると root 配下の総ファイル数に比例して Status が遅くなる。
 	rootStatuses := make([]rootStatus, 0, len(roots))
 	for root, active := range roots {
-		bytes, allocated, usageErr := m.rootDirectoryUsage(root)
-		item := rootStatus{Path: root, Active: active, Bytes: bytes, AllocatedBytes: allocated, Measurement: "st_blocks_x_512"}
-		if usageErr != nil && !errors.Is(usageErr, os.ErrNotExist) {
-			item.Error = usageErr.Error()
+		item := rootStatus{Path: root, Active: active, Measurement: rootUsagePendingMeasurement}
+		if sample, measured := usage[root]; measured {
+			item.Bytes, item.AllocatedBytes = sample.bytes, sample.allocated
+			item.Measurement, item.MeasuredAt, item.Error = rootUsageMeasurement, state.FormatTime(sample.measuredAt), sample.err
 		}
 		rootStatuses = append(rootStatuses, item)
 	}
@@ -3697,7 +3713,48 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	}, nil
 }
 
-func (m *Manager) rootDirectoryUsage(root string) (int64, int64, error) {
+// knownRoots は in-memory に登録済みの root へ DB の root 世代を重ねた集合を返す。値は active かどうかを表す。
+func (m *Manager) knownRoots(ctx context.Context) map[string]bool {
+	m.mu.RLock()
+	roots := make(map[string]bool, len(m.roots))
+	for root, active := range m.roots {
+		roots[root] = active
+	}
+	m.mu.RUnlock()
+	if rows, err := m.store.Roots(ctx); err == nil {
+		for _, row := range rows {
+			path := filepath.Clean(row.Path)
+			if _, known := roots[path]; !known {
+				roots[path] = row.Active
+			}
+		}
+	}
+	return roots
+}
+
+// measureRootUsage は root ごとの使用量を測り直して cache へ載せ替える。
+// 走査量は root 配下の総ファイル数に比例するため、要求経路では呼ばず lifecycle の周期処理だけが更新する。
+// ctx が切れた回は cache を据え置き、部分的な測定値で既存の値を壊さない。
+func (m *Manager) measureRootUsage(ctx context.Context) {
+	roots := m.knownRoots(ctx)
+	samples := make(map[string]rootUsageSample, len(roots))
+	for root := range roots {
+		bytes, allocated, err := m.rootDirectoryUsage(ctx, root)
+		if ctx.Err() != nil {
+			return
+		}
+		sample := rootUsageSample{bytes: bytes, allocated: allocated, measuredAt: time.Now().UTC()}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			sample.err = err.Error()
+		}
+		samples[root] = sample
+	}
+	m.mu.Lock()
+	m.rootUsage = samples
+	m.mu.Unlock()
+}
+
+func (m *Manager) rootDirectoryUsage(ctx context.Context, root string) (int64, int64, error) {
 	// path walkではreload後の置換directoryへ渡り得るため、statusもpin済みdescriptor経由で測定する。
 	root = filepath.Clean(root)
 	m.mu.RLock()
@@ -3722,6 +3779,10 @@ func (m *Manager) rootDirectoryUsage(root string) (int64, int64, error) {
 	walkErr := fs.WalkDir(owner.FS(), ".", func(_ string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		// 高負荷時は walk が数十秒に伸びるため、停止要求を待たせないよう各 entry で中断を確認する。
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if entry.IsDir() {
 			return nil
