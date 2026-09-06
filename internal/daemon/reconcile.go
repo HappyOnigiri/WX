@@ -25,6 +25,10 @@ func (m *Manager) reconcileArtifacts(ctx context.Context) {
 	if artifacts, err := m.store.SlotArtifacts(ctx); err == nil {
 		for _, artifact := range artifacts {
 			if artifact.State == "ALLOCATING" || artifact.State == "REGISTERING" {
+				// 自プロセスで進行中の予約は中断された確保ではない。隔離すると確保側の CAS が落ち、正常な起動が失敗する。
+				if m.reservationInFlight(artifact.ID) {
+					continue
+				}
 				code := "STANDBY_ALLOCATION_INTERRUPTED"
 				if slot, slotErr := m.store.Slot(ctx, artifact.ID); slotErr == nil && slot.OwnerSessionID != "" {
 					code = "ALLOCATION_INTERRUPTED"

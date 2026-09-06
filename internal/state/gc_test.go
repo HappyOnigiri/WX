@@ -293,3 +293,39 @@ func TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions(t *testin
 		t.Fatalf("candidate count after pruning=%d err=%v, want 0", count, err)
 	}
 }
+
+// 貸出が進行中でlast_leased_atがまだ無いrepositoryも hot として返す。
+// 使用中のrepositoryをcoldと判定すると、補充が COLD の待機枠を作り、次の貸出が cold start になるためである。
+func TestHotRepositoryIDsIncludesInFlightLease(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	hotBefore := FormatTime(time.Now().UTC())
+	hot, err := store.HotRepositoryIDs(ctx, hotBefore)
+	if err != nil || hot["repository"] {
+		t.Fatalf("repository without a lease was hot: hot=%+v err=%v", hot, err)
+	}
+	slot := Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", OwnerSessionID: "session"}
+	if err := store.ReserveSlot(ctx, slot); err != nil {
+		t.Fatal(err)
+	}
+	hot, err = store.HotRepositoryIDs(ctx, hotBefore)
+	if err != nil || hot["repository"] {
+		t.Fatalf("reservation without repositories was hot: hot=%+v err=%v", hot, err)
+	}
+	if err := store.ConfirmSlotCreation(ctx, slot.ID, "identity"); err != nil {
+		t.Fatal(err)
+	}
+	repository := SlotRepository{RepositoryID: "repository", DirName: "repository", State: "PREPARING", RequestedRef: "main", BaseOID: "head", Fingerprint: "fp"}
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: slot.ID, State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.RegisterReservedSlotSession(ctx, slot.ID, []SlotRepository{repository}, session, "PREPARING", "PREPARE"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=NULL WHERE id='repository'`); err != nil {
+		t.Fatal(err)
+	}
+	hot, err = store.HotRepositoryIDs(ctx, hotBefore)
+	if err != nil || !hot["repository"] {
+		t.Fatalf("repository with an in-flight lease was cold: hot=%+v err=%v", hot, err)
+	}
+}

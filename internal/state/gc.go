@@ -10,10 +10,10 @@ type GCCandidate struct{ SlotID, SessionID, Path string }
 type StandbyGCCandidate struct{ SlotID, WorkspaceID, Path, State string }
 
 // HotRepositoryIDs は hot_standby window、つまり hotBefore より後に lease された repository を返す。
-// 一度も lease されていない repository（last_leased_at IS NULL）は retention.hot_standby 上まだ「使用済み」でなく、
-// 実際の lease 前に replacement standby を先読み作成してはならないため除外する。
+// last_leased_at をまだ書いていない進行中の貸出も hot に含める。使用中の repository を cold と判定すると、補充が COLD の待機枠を作るためである。
+// 一度も lease されておらず進行中の貸出も無い repository は、実際の lease 前に standby を先読み作成しないよう除外する。
 func (s *Store) HotRepositoryIDs(ctx context.Context, hotBefore string) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM repositories WHERE last_leased_at IS NOT NULL AND last_leased_at>?`, hotBefore)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id FROM repositories r WHERE (r.last_leased_at IS NOT NULL AND r.last_leased_at>?) OR EXISTS (SELECT 1 FROM slot_repositories sr JOIN slots sl ON sl.id=sr.slot_id WHERE sr.repository_id=r.id AND sl.owner_session_id IS NOT NULL AND sl.state IN ('ALLOCATING','REGISTERING','PREPARING','RESTORING','LEASED'))`, hotBefore)
 	if err != nil {
 		return nil, err
 	}

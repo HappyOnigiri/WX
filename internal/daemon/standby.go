@@ -52,6 +52,21 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	if err != nil {
 		return err
 	}
+	// 進行中の貸出はまだ last_leased_at を書いていないことがある。その workspace の repository は hot として扱い、
+	// 使用中の workspace へ COLD の待機枠を作らないようにする。
+	leaseInFlight := m.workspaceLeaseInFlight(string(w.ID))
+	cold := make([]string, 0, len(resolved))
+	for _, r := range resolved {
+		if leaseInFlight {
+			hot[string(r.Repository.ID)] = true
+			continue
+		}
+		if !hot[string(r.Repository.ID)] {
+			cold = append(cold, string(r.Repository.ID))
+		}
+	}
+	// COLD の待機枠は貸出時に cold start となるため、どの repository をどの基準で cold と判断したかを残す。
+	m.log.Debug("standby replenishment decides hot or cold", "workspace_id", w.ID, "needed", needed, "hot_before", hotBefore, "cold_repositories", cold)
 	rootPath, rootID, err := m.activeRoot()
 	if err != nil {
 		return err
@@ -141,6 +156,46 @@ func (m *Manager) handleNormalSessionSuccess(ctx context.Context, w discovery.Wo
 	_ = m.enqueue("ENSURE_STANDBY", string(w.ID), "", "")
 }
 
+// reserveStandbySlot は予約から登録までを1回分だけ行う。retry が true のときは ID 衝突なので、別の ID で呼び直せる。
+// 予約中は reconcile の回収対象から外し、進行中の確保を中断扱いで隔離されないようにする。
+func (m *Manager) reserveStandbySlot(ctx context.Context, id, rootID, relPath, slotPath, workspaceID string, generation int, repos []state.SlotRepository) (state.Job, bool, error) {
+	endReservation := m.beginReservation(id)
+	defer endReservation()
+	reserved, err := m.store.ReserveStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: workspaceID, Generation: generation, RootID: rootID, RelPath: relPath}, m.Config().Pool.WarmPerWorkspace)
+	if err == nil && !reserved {
+		return state.Job{}, false, nil
+	}
+	if state.IsIDCollision(err) {
+		return state.Job{}, true, err
+	}
+	if err != nil {
+		return state.Job{}, false, err
+	}
+	quarantineReservation := func() {
+		if quarantineErr := m.store.QuarantineReservedSlot(context.Background(), id, "STANDBY_ALLOCATION_FAILED"); quarantineErr != nil {
+			m.log.Error("quarantine failed standby reservation failed", "slot_id", id, "error", quarantineErr)
+		}
+	}
+	slotIdentity, _, err := m.createSlotRoot(slotPath, slotPath)
+	if err != nil {
+		if errors.Is(err, errSlotPathExists) {
+			return state.Job{}, false, errors.Join(err, m.store.AbandonSlotReservation(ctx, id))
+		}
+		quarantineReservation()
+		return state.Job{}, false, err
+	}
+	if err := m.store.ConfirmSlotCreation(ctx, id, slotIdentity); err != nil {
+		quarantineReservation()
+		return state.Job{}, false, err
+	}
+	job, err := m.store.RegisterReservedStandby(ctx, id, repos)
+	if err != nil {
+		quarantineReservation()
+		return state.Job{}, false, err
+	}
+	return job, false, nil
+}
+
 func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string, w discovery.Workspace, resolved []pool.Resolved, generation int, hot map[string]bool) (state.Job, error) {
 	var lastErr error
 	for range idAllocationAttempts {
@@ -163,40 +218,12 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return state.Job{}, err
 		}
-		reserved, err := m.store.ReserveStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath}, m.Config().Pool.WarmPerWorkspace)
-		if err == nil && !reserved {
-			return state.Job{}, nil
-		}
-		if state.IsIDCollision(err) {
+		job, retry, err := m.reserveStandbySlot(ctx, id, rootID, relPath, slotPath, string(w.ID), generation, repos)
+		if retry {
 			lastErr = err
 			continue
 		}
-		if err != nil {
-			return state.Job{}, err
-		}
-		quarantineReservation := func() {
-			if quarantineErr := m.store.QuarantineReservedSlot(context.Background(), id, "STANDBY_ALLOCATION_FAILED"); quarantineErr != nil {
-				m.log.Error("quarantine failed standby reservation failed", "slot_id", id, "error", quarantineErr)
-			}
-		}
-		slotIdentity, _, err := m.createSlotRoot(slotPath, slotPath)
-		if err != nil {
-			if errors.Is(err, errSlotPathExists) {
-				return state.Job{}, errors.Join(err, m.store.AbandonSlotReservation(ctx, id))
-			}
-			quarantineReservation()
-			return state.Job{}, err
-		}
-		if err := m.store.ConfirmSlotCreation(ctx, id, slotIdentity); err != nil {
-			quarantineReservation()
-			return state.Job{}, err
-		}
-		job, err := m.store.RegisterReservedStandby(ctx, id, repos)
-		if err != nil {
-			quarantineReservation()
-			return state.Job{}, err
-		}
-		return job, nil
+		return job, err
 	}
 	return state.Job{}, fmt.Errorf("create standby slot: %w", lastErr)
 }

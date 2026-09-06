@@ -90,6 +90,8 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Lease{}, false, err
 	}
+	endReservation := m.beginReservation(id)
+	defer endReservation()
 	if err := m.store.ReserveSlot(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, OwnerSessionID: id}); err != nil {
 		return Lease{}, state.IsIDCollision(err), err
 	}
@@ -318,3 +320,53 @@ func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []p
 }
 
 func newSlotID() (string, error) { return domain.NewShortID() }
+
+// beginReservation は自プロセスで進行中の slot 予約を記録し、解除する関数を返す。
+// reconcile は ALLOCATING・REGISTERING を中断された確保と見なすため、進行中の予約を除外できるようにする。
+func (m *Manager) beginReservation(id string) func() {
+	m.mu.Lock()
+	if m.inFlightReservations == nil {
+		m.inFlightReservations = map[string]bool{}
+	}
+	m.inFlightReservations[id] = true
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		delete(m.inFlightReservations, id)
+		m.mu.Unlock()
+	}
+}
+
+// reservationInFlight は id の予約が自プロセスで進行中かを返す。
+func (m *Manager) reservationInFlight(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.inFlightReservations[id]
+}
+
+// beginWorkspaceLease は貸出処理が進行中の workspace を記録し、解除する関数を返す。
+// 並走する補充が、まだ last_leased_at を書いていない使用中の repository を cold と判定しないようにする。
+func (m *Manager) beginWorkspaceLease(workspaceID string) func() {
+	m.mu.Lock()
+	if m.leasingWorkspaces == nil {
+		m.leasingWorkspaces = map[string]int{}
+	}
+	m.leasingWorkspaces[workspaceID]++
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		if m.leasingWorkspaces[workspaceID] <= 1 {
+			delete(m.leasingWorkspaces, workspaceID)
+		} else {
+			m.leasingWorkspaces[workspaceID]--
+		}
+		m.mu.Unlock()
+	}
+}
+
+// workspaceLeaseInFlight は workspace の貸出が自プロセスで進行中かを返す。
+func (m *Manager) workspaceLeaseInFlight(workspaceID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.leasingWorkspaces[workspaceID] > 0
+}
