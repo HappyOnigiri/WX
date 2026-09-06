@@ -1678,6 +1678,86 @@ func TestWorkspaceMembershipChangeAdvancesGenerationAndStalesOldStandby(t *testi
 	}
 }
 
+func TestUpsertWorkspaceGenerationRejectsKindChangeAtSameRoot(t *testing.T) {
+	tests := []struct {
+		name      string
+		existing  discovery.Workspace
+		candidate discovery.Workspace
+	}{
+		{
+			name: "multi repository to repository",
+			existing: discovery.Workspace{
+				ID: "multi-proposal", Root: "/workspace", Kind: "multi_repository",
+				Repositories: []discovery.Repository{{ID: "repository-a", MainPath: "/workspace/a", CommonDir: "/workspace/a/.git", RelativePath: "a", DefaultBranch: "main"}},
+			},
+			candidate: discovery.Workspace{
+				ID: "repository-proposal", Root: "/workspace", Kind: "repository",
+				Repositories: []discovery.Repository{{ID: "repository-root", MainPath: "/workspace", CommonDir: "/workspace/.git", RelativePath: ".", DefaultBranch: "main"}},
+			},
+		},
+		{
+			name: "repository to multi repository",
+			existing: discovery.Workspace{
+				ID: "repository-proposal", Root: "/workspace", Kind: "repository",
+				Repositories: []discovery.Repository{{ID: "repository-root", MainPath: "/workspace", CommonDir: "/workspace/.git", RelativePath: ".", DefaultBranch: "main"}},
+			},
+			candidate: discovery.Workspace{
+				ID: "multi-proposal", Root: "/workspace", Kind: "multi_repository",
+				Repositories: []discovery.Repository{{ID: "repository-a", MainPath: "/workspace/a", CommonDir: "/workspace/a/.git", RelativePath: "a", DefaultBranch: "main"}},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			ctx := context.Background()
+			stored, generation, err := store.UpsertWorkspaceGeneration(ctx, test.existing)
+			if err != nil || generation != 1 {
+				t.Fatalf("initial workspace=%+v generation=%d err=%v", stored, generation, err)
+			}
+			_, _, err = store.UpsertWorkspaceGeneration(ctx, test.candidate)
+			if !errors.Is(err, ErrWorkspaceKindConflict) || strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				t.Fatalf("kind change error=%v, want dedicated conflict without raw UNIQUE error", err)
+			}
+			if !strings.Contains(err.Error(), test.existing.Kind) || !strings.Contains(err.Error(), test.candidate.Kind) {
+				t.Fatalf("kind change error=%v, want both workspace kinds", err)
+			}
+			loaded, err := store.Workspace(ctx, string(stored.ID))
+			if err != nil || loaded.Kind != test.existing.Kind || loaded.Root != test.existing.Root {
+				t.Fatalf("existing workspace changed: workspace=%+v err=%v", loaded, err)
+			}
+			status, err := store.Status(ctx)
+			if err != nil || status.Workspaces != 1 {
+				t.Fatalf("workspace count=%d err=%v, want one unchanged registration", status.Workspaces, err)
+			}
+		})
+	}
+}
+
+func TestUpsertWorkspaceGenerationRejectsSameKindRootIdentityChange(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	existing := discovery.Workspace{
+		ID: "existing-proposal", Root: "/workspace", Kind: "repository",
+		Repositories: []discovery.Repository{{ID: "repository", MainPath: "/workspace", CommonDir: "/workspace/.git", RelativePath: ".", DefaultBranch: "main"}},
+	}
+	candidate := existing
+	candidate.ID = "candidate-proposal"
+	candidate.Repositories = []discovery.Repository{{ID: "other-repository", MainPath: "/workspace", CommonDir: "/other/.git", RelativePath: ".", DefaultBranch: "main"}}
+	stored, _, err := store.UpsertWorkspaceGeneration(ctx, existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = store.UpsertWorkspaceGeneration(ctx, candidate)
+	if !errors.Is(err, ErrWorkspaceIdentityConflict) || strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		t.Fatalf("identity change error=%v, want dedicated conflict without raw UNIQUE error", err)
+	}
+	loaded, err := store.Workspace(ctx, string(stored.ID))
+	if err != nil || loaded.Kind != existing.Kind || len(loaded.Repositories) != 1 || loaded.Repositories[0].ID != existing.Repositories[0].ID {
+		t.Fatalf("existing workspace changed: workspace=%+v err=%v", loaded, err)
+	}
+}
+
 func TestOnlineBackupContainsCommittedRegistry(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)

@@ -227,6 +227,81 @@ func TestStandbyCountExcludesQuarantinedSlotsAndAllowsReplenishment(t *testing.T
 	}
 }
 
+func TestRetryStandbyReplenishmentKeepsQuarantineAndResetsOnlyTheCurrentFailures(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	for _, id := range []string{"quarantine-a", "quarantine-b", "quarantine-c"} {
+		job, err := store.CreateStandby(ctx, Slot{ID: id, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: filepath.Join("workspace", id), State: "PREPARING"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetSlotState(ctx, id, []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := store.ClaimJob(ctx, job.ID, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.FinishJob(ctx, claimed.ID, "test", errors.New("prepare failed")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blocked, err := store.StandbyReplenishmentDiagnostics(ctx, 3)
+	if err != nil || len(blocked) != 1 || blocked[0].Quarantined != 3 || blocked[0].Generation != 1 {
+		t.Fatalf("blocked diagnostics=%+v err=%v", blocked, err)
+	}
+	if got, err := store.QuarantinedStandbyCount(ctx, "workspace"); err != nil || got != 3 {
+		t.Fatalf("quarantined before retry=%d err=%v", got, err)
+	}
+	retry, err := store.RetryStandbyReplenishment(ctx, "workspace")
+	if err != nil || retry.Generation != 1 || retry.Quarantined != 3 || retry.Job.ID == "" || retry.Job.State != "PENDING" {
+		t.Fatalf("retry=%+v err=%v", retry, err)
+	}
+	if got, err := store.QuarantinedStandbyCount(ctx, "workspace"); err != nil || got != 0 {
+		t.Fatalf("quarantined after retry=%d err=%v", got, err)
+	}
+	for _, id := range []string{"quarantine-a", "quarantine-b", "quarantine-c"} {
+		slot, err := store.Slot(ctx, id)
+		if err != nil || slot.State != "QUARANTINED" {
+			t.Fatalf("quarantine slot %s changed: %+v err=%v", id, slot, err)
+		}
+	}
+	newJob, created, err := store.CreateStandbyIfNeeded(ctx, Slot{ID: "replacement", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/replacement", State: "PREPARING"}, nil, 1, 3)
+	if err != nil || !created || newJob.Kind != "PREPARE" {
+		t.Fatalf("replacement job=%+v created=%v err=%v", newJob, created, err)
+	}
+	if err := store.SetSlotState(ctx, "replacement", []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.QuarantinedStandbyCount(ctx, "workspace"); err != nil || got != 1 {
+		t.Fatalf("new quarantine count=%d err=%v", got, err)
+	}
+	second, err := store.RetryStandbyReplenishment(ctx, "workspace")
+	if err != nil || second.Job.ID != retry.Job.ID || second.Quarantined != 1 {
+		t.Fatalf("second retry=%+v err=%v", second, err)
+	}
+}
+
+func TestRetryStandbyReplenishmentRefusesAnActiveClean(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	if _, _, err := store.BeginCleanRun(ctx, "clean", "normal", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RetryStandbyReplenishment(ctx, "workspace"); !errors.Is(err, ErrCleanInProgress) {
+		t.Fatalf("retry during clean err=%v", err)
+	}
+	var resets int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM standby_quarantine_resets`).Scan(&resets); err != nil {
+		t.Fatal(err)
+	}
+	if resets != 0 {
+		t.Fatalf("retry during clean persisted %d reset rows", resets)
+	}
+}
+
 func TestStandbyReplenishmentRollsBackOnEnsureJobFailure(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)

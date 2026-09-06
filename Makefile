@@ -1,7 +1,7 @@
 GO ?= go
 INSTALL_DIR ?= $(HOME)/.local/bin
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X main.version=$(VERSION) -X main.buildMeta=dev
+LDFLAGS := -s -w -X github.com/HappyOnigiri/WX/internal/version.Version=$(VERSION) -X github.com/HappyOnigiri/WX/internal/version.BuildMeta=dev
 CI_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 CI_MAKEFLAGS := -j$(CI_JOBS) --keep-going $(if $(filter output-sync,$(.FEATURES)),--output-sync=target)
 TOOLS_DIR := $(CURDIR)/.tools
@@ -112,9 +112,23 @@ mod-tidy-check:
 
 # 現在は全て手書きで、go:generateがないため生成物の差分検出は行われない。
 # 将来ディレクティブを追加した時点で検査が働くよう、CIへの接続を維持する。
+# 生成前の作業ツリーを一時indexへ保存し、生成後に同じindexを更新して比較する。
+# 実index・利用者の差分・生成前からあるuntrackedは変更せず、生成が加えた差分だけを検出する。
 generated-check:
-	$(GO) generate ./...
-	git diff --exit-code
+	@set -eu; \
+	index="$$(git rev-parse --git-path index)"; \
+	before="$$(mktemp)"; after="$$(mktemp)"; temporary_index="$$(mktemp)"; \
+	trap 'rm -f "$$before" "$$after" "$$temporary_index"' EXIT; \
+	cp "$$index" "$$temporary_index"; \
+	GIT_INDEX_FILE="$$temporary_index" git add -A; \
+	GIT_INDEX_FILE="$$temporary_index" git ls-files --stage -z > "$$before"; \
+	$(GO) generate ./...; \
+	GIT_INDEX_FILE="$$temporary_index" git add -A; \
+	GIT_INDEX_FILE="$$temporary_index" git ls-files --stage -z > "$$after"; \
+	if ! cmp -s "$$before" "$$after"; then \
+		echo "go generate changed the working tree; generated artifacts are stale" >&2; \
+		exit 1; \
+	fi
 
 # エージェント用worktreeやnpmの生成物はroot直下に限らず現れるため、深さに依存しないパターンで除外する。
 docs-check:
@@ -183,8 +197,8 @@ concurrency-test:
 	$(GO) test -race -shuffle=on -count=10 -timeout=15m ./internal/state ./internal/daemon -run 'Lease|Concurrent|Crash|Archive|Remove|Worker'
 
 build-darwin:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -o bin/wx-darwin-arm64 ./cmd/wx
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -o bin/wx-darwin-amd64 ./cmd/wx
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/wx-darwin-arm64 ./cmd/wx
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/wx-darwin-amd64 ./cmd/wx
 
 reproducible-build:
 	@scratch="$$(mktemp -d)"; trap 'rm -rf "$$scratch"' EXIT; \
