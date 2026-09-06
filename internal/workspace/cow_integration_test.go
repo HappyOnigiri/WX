@@ -243,3 +243,43 @@ func TestCOWPreparationKeepsAmbiguousArtifacts(t *testing.T) {
 		t.Fatalf("artifact lost: %q %v", data, readErr)
 	}
 }
+
+// compactOwnedWorktreeは`auto`のfallbackに隠れるため、CoWのないplatformでも直接呼んで共有の手前までを検査する。
+func TestCOWCompactOwnedWorktreeSharesDonorBytes(t *testing.T) {
+	p, repo, oid, target := cowFixture(t)
+	p.Config.Storage.CopyMode = config.CopyModeCopy
+	if err := p.Prepare(context.Background(), repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var donor, before unix.Stat_t
+	if err := unix.Stat(filepath.Join(string(repo.MainPath), "file"), &donor); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Stat(filepath.Join(target, "file"), &before); err != nil {
+		t.Fatal(err)
+	}
+	err = p.compactOwnedWorktree(context.Background(), repo, target, oid, testSlotID, preparePhaseCreate, identity)
+	if !cowAvailable() {
+		if !errors.Is(err, unix.ENOTSUP) {
+			t.Fatalf("unsupported clone error=%v", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after unix.Stat_t
+	if err := unix.Stat(filepath.Join(target, "file"), &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Ino == before.Ino || after.Ino == donor.Ino {
+		t.Fatalf("inode donor=%d before=%d after=%d", donor.Ino, before.Ino, after.Ino)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "file")); err != nil || string(data) != "original\n" {
+		t.Fatalf("shared bytes changed: %q %v", data, err)
+	}
+}
