@@ -40,6 +40,7 @@ type Config struct {
 	Retention    Retention             `yaml:"retention,omitempty"`
 	Discovery    Discovery             `yaml:"discovery,omitempty"`
 	Readiness    Readiness             `yaml:"readiness,omitempty"`
+	Resume       Resume                `yaml:"resume,omitempty"`
 	Includes     Includes              `yaml:"includes,omitempty"`
 	Sessions     sessionsconfig.Config `yaml:"sessions,omitempty"`
 	Workspaces   map[string]Workspace  `yaml:"workspaces,omitempty"`
@@ -81,6 +82,12 @@ type Discovery struct {
 }
 type Readiness struct {
 	Timeout Duration `yaml:"timeout,omitempty"`
+}
+
+// Resume は会話の再開時の既定の振る舞いを決める。
+type Resume struct {
+	// AutoFresh は、当時の worktree を復元できないときの確認を省き、新しい worktree での再開をそのまま選ぶ。
+	AutoFresh bool `yaml:"auto_fresh,omitempty"`
 }
 type Workspace struct {
 	Worktree string   `yaml:"worktree,omitempty"`
@@ -126,7 +133,7 @@ func Defaults() Config {
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2, GitConcurrencyPerRepository: 1},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
-		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
+		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false}, Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
 		Workspaces: map[string]Workspace{}, Repositories: map[string]Repository{},
 	}

@@ -419,7 +419,7 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
 	initGitRepo(t, repo)
-	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("shared/\nlocal.cfg\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte("shared\nlocal.cfg\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, ".worktreeinclude"), []byte("local.cfg\n"), 0o600); err != nil {

@@ -211,6 +211,76 @@ func TestPinnedIncludeAndLinkMaterializationStayWithinRoot(t *testing.T) {
 	}
 }
 
+func TestWorktreeLinksRespectDestinationIgnoreRule(t *testing.T) {
+	base := t.TempDir()
+	repository := filepath.Join(base, "repository")
+	worktreeRoot := filepath.Join(base, "worktrees")
+	if err := os.MkdirAll(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(worktreeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	hooksPath := filepath.Join(base, "hooks")
+	if err := os.Mkdir(hooksPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "config", "core.hooksPath", hooksPath)
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("shared/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".gitignore")
+	gitCommand(t, repository, "commit", "-m", "directory ignore")
+	oldHead := gitOutput(t, repository, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".gitignore")
+	gitCommand(t, repository, "commit", "-m", "symlink ignore")
+	currentHead := gitOutput(t, repository, "rev-parse", "HEAD")
+	if err := os.Mkdir(filepath.Join(repository, "shared"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "shared", "value"), []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldTarget := filepath.Join(worktreeRoot, "old")
+	currentTarget := filepath.Join(worktreeRoot, "current")
+	gitCommand(t, repository, "worktree", "add", "--detach", oldTarget, oldHead)
+	gitCommand(t, repository, "worktree", "add", "--detach", currentTarget, currentHead)
+	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = worktreeRoot
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: worktreeRoot}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	if err := os.Symlink(filepath.Join(repository, "shared"), filepath.Join(oldTarget, "shared")); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.createLinksAt(context.Background(), repo, owner, "old", true); err != nil {
+		t.Fatalf("directory-only destination ignore: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(oldTarget, "shared")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("directory-only ignore materialized a symlink: %v", err)
+	}
+	if err := preparer.createLinksAt(context.Background(), repo, owner, "current", true); err != nil {
+		t.Fatalf("symlink destination ignore: %v", err)
+	}
+	link, err := os.Readlink(filepath.Join(currentTarget, "shared"))
+	if err != nil || link != filepath.Join(repository, "shared") {
+		t.Fatalf("symlink destination link=%q err=%v", link, err)
+	}
+}
+
 func TestWorktreeLinksSkipMissingSourcesAndTrackPresence(t *testing.T) {
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
