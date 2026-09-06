@@ -188,11 +188,7 @@ func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
 	if err := os.MkdirAll(rootPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Lstat(rootPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := domain.FileIdentity(info)
+	identity, err := pathIdentity(rootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,11 +325,7 @@ func TestRegisterAndLoadRootGenerationsRepinRetiredRoots(t *testing.T) {
 	if err := os.MkdirAll(secondPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Lstat(secondPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := domain.FileIdentity(info)
+	identity, err := pathIdentity(secondPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,11 +454,7 @@ func TestDirectoryIdentityAtReportsTheOpenedInode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Lstat(slot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := domain.FileIdentity(info)
+	want, err := pathIdentity(slot)
 	if err != nil {
 		t.Fatal(err)
 	}

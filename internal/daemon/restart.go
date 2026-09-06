@@ -37,11 +37,16 @@ func (s executableSnapshot) matches(other executableSnapshot) bool {
 }
 
 func snapshotExecutable(path string) (executableSnapshot, error) {
-	info, err := os.Stat(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return executableSnapshot{}, err
 	}
-	identity, err := domain.FileIdentity(info)
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return executableSnapshot{}, err
+	}
+	identity, err := domain.FileIdentity(file)
 	if err != nil {
 		return executableSnapshot{}, err
 	}

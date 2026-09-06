@@ -15,6 +15,16 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
+// pathIdentity は path を open して、daemon が記録するものと同じ形式の identity を返す。
+func pathIdentity(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	return domain.FileIdentity(file)
+}
+
 func registerTestRoot(t *testing.T, m *Manager, path string) string {
 	// 手組みManagerでもslotを登録できるよう、root rowとin-memory IDをproductionと同じ形で用意する。
 	t.Helper()
@@ -33,11 +43,7 @@ func tryRegisterTestRoot(m *Manager, path string) (string, error) {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", err
 	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", err
-	}
-	identity, err := domain.FileIdentity(info)
+	identity, err := pathIdentity(path)
 	if err != nil {
 		return "", err
 	}
@@ -69,11 +75,7 @@ func testSlotUnder(t *testing.T, m *Manager, rootPath, rootID, workspaceID, slot
 	if err := os.MkdirAll(slot.Path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Lstat(slot.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := domain.FileIdentity(info)
+	identity, err := pathIdentity(slot.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,11 +247,7 @@ func slotAtPath(t *testing.T, m *Manager, workspaceID, slotID, slotPath string, 
 
 func recordTestWorktreeIdentity(t *testing.T, store *state.Store, slotID, repositoryID, worktreePath string) {
 	t.Helper()
-	info, err := os.Lstat(worktreePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity, err := domain.FileIdentity(info)
+	identity, err := pathIdentity(worktreePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +263,7 @@ func existingDirIdentity(tb testing.TB, slotPath string) string {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return ""
 	}
-	identity, err := domain.FileIdentity(info)
+	identity, err := pathIdentity(slotPath)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -278,11 +276,7 @@ func storeSlotAt(tb testing.TB, store *state.Store, rootPath, workspaceID, slotI
 	if err := os.MkdirAll(rootPath, 0o700); err != nil {
 		tb.Fatal(err)
 	}
-	info, err := os.Lstat(rootPath)
-	if err != nil {
-		tb.Fatal(err)
-	}
-	identity, err := domain.FileIdentity(info)
+	identity, err := pathIdentity(rootPath)
 	if err != nil {
 		tb.Fatal(err)
 	}
