@@ -218,7 +218,7 @@ func newOwnershipMarker(target string, identity MarkerIdentity, commonDir string
 		if err := validatePhysicalPathAllowMissingLeaf(absoluteTarget); err != nil {
 			return ownershipMarker{}, err
 		}
-	} else if err := domain.ValidatePhysicalPath(absoluteTarget, false); err != nil {
+	} else if err := domain.ValidatePhysicalLeaf(absoluteTarget); err != nil {
 		return ownershipMarker{}, fmt.Errorf("worktree target is not physical: %w", err)
 	}
 	if info, statErr := os.Lstat(absoluteTarget); statErr == nil {
@@ -389,11 +389,11 @@ func validatePhysicalPathAllowMissingLeaf(path string) error {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return errors.New("worktree target is not a physical directory")
 		}
-		return domain.ValidatePhysicalPath(absolute, false)
+		return nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return statErr
 	}
-	return domain.ValidatePhysicalPath(filepath.Dir(absolute), false)
+	return domain.ValidatePhysicalLeaf(filepath.Dir(absolute))
 }
 
 // RegisteredWorktreeLockReasonは、ターゲットのGitロック理由を返します。
@@ -418,8 +418,8 @@ func RegisteredWorktreeLockStatus(ctx context.Context, runner *gitx.Runner, main
 	}
 	for _, record := range gitx.ParseWorktreeRecords(listed.Stdout) {
 		if err := validatePhysicalPathAllowMissingLeaf(record.Path); err != nil {
-			// シンボリックリンクエイリアスを介して到達したGit登録は、
-			// 所有権の一致。最初に解決すると、パスの置換が非表示になります。
+			// 登録 path の leaf 自体が symlink のものは worktree ではないので除く。
+			// 祖先が symlink の登録は同じ実体なので、下の canonical 比較で照合する。
 			continue
 		}
 		got, resolveErr := canonicalPathAllowMissing(record.Path)
