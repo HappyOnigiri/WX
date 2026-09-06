@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1372,5 +1373,123 @@ func writeWorktreeRootConfig(t *testing.T, home, root string) {
 	document := fmt.Sprintf("version: 1\nstorage:\n  worktree_root: %s\npool:\n  warm_per_workspace: 0\ndiscovery:\n  reconcile_interval: 1h\n", root)
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 隔離 slot は retention を過ぎたら GC が通常の REMOVE で消す。
+// 所有権を証明できないうちは実体を残して QUARANTINED へ戻し、証明が通る次の周回で片付く。
+func TestGCRemovesQuarantinedWorktreesOnlyWithProvenOwnership(t *testing.T) {
+	t.Parallel()
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "repo")
+	initGitRepo(t, repoPath)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.WarmPerWorkspace = 0
+	cfg.Retention.Quarantined.Duration = 0
+	runner := &gitx.Runner{Timeout: 10 * time.Second}
+	ctx := context.Background()
+	discoverer := discovery.Discoverer{Git: runner, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	w = registerTestWorkspace(t, store, w)
+	resolved, err := pool.ResolveBranches(ctx, runner, w, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := domain.NewID()
+	slotRelative, err := slotRelPath(string(w.ID), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slotRoot := filepath.Join(cfg.Storage.WorktreeRoot, slotRelative)
+	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repos := []state.SlotRepository{{RepositoryID: string(w.Repositories[0].ID), DirName: testDirName(w.Repositories[0], cfg), State: "PREPARING", RequestedRef: resolved[0].RequestedRef, BaseOID: resolved[0].OID, Fingerprint: "test"}}
+	slot := storeSlotAt(t, store, cfg.Storage.WorktreeRoot, string(w.ID), id, slotRoot, 1, "PREPARING")
+	prepareJob, err := store.CreateStandby(ctx, slot, repos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparer := descriptorBoundPreparerForTest(t, runner, cfg, store, slot)
+	if err := preparer.Prepare(ctx, w.Repositories[0], filepath.Join(slotRoot, repos[0].DirName), resolved[0].OID, id); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{cfg.Storage.WorktreeRoot: slot.RootID}}
+	if err := m.prepareSlot(ctx, id, w, resolved, repos); err != nil {
+		t.Fatal(err)
+	}
+	claimedPrepare, err := store.ClaimJob(ctx, prepareJob.ID, "setup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, claimedPrepare.ID, "setup", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlotState(ctx, id, []string{"READY"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN"); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := store.QuarantinedGCCandidates(ctx, state.FormatTime(time.Now().UTC()))
+	if err != nil || len(candidates) != 1 || candidates[0].SlotID != id {
+		t.Fatalf("quarantined candidates=%+v err=%v", candidates, err)
+	}
+
+	// root を証明できない状態で削除を試すと、実体を残したまま QUARANTINED へ戻る。
+	if _, changed, err := store.ScheduleQuarantinedRemoval(ctx, id); err != nil || !changed {
+		t.Fatalf("schedule changed=%v err=%v", changed, err)
+	}
+	m.mu.Lock()
+	savedRoots, savedIdentities := m.roots, m.rootIdentities
+	m.roots, m.rootIdentities = map[string]bool{}, nil
+	m.mu.Unlock()
+	recovered, err := store.RecoverJobs(ctx, true)
+	if err != nil || len(recovered) != 1 {
+		t.Fatalf("recovered removal jobs=%+v err=%v", recovered, err)
+	}
+	if err := m.runRecoveredJob(ctx, recovered[0]); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("removal without ownership err=%v", err)
+	}
+	failedRemoval, err := store.ClaimJob(ctx, recovered[0].ID, "gc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, failedRemoval.ID, "gc", errors.New("ownership could not be proven")); err != nil {
+		t.Fatal(err)
+	}
+	if stored, err := store.Slot(ctx, id); err != nil || stored.State != "QUARANTINED" {
+		t.Fatalf("slot after an unprovable removal=%+v err=%v", stored, err)
+	}
+	if _, err := os.Stat(slotRoot); err != nil {
+		t.Fatalf("quarantined worktree was deleted without proof: %v", err)
+	}
+
+	// 原因が解消された次の周回では、同じ証明を通したうえで実体が消える。
+	m.mu.Lock()
+	m.roots, m.rootIdentities = savedRoots, savedIdentities
+	m.mu.Unlock()
+	if _, changed, err := store.ScheduleQuarantinedRemoval(ctx, id); err != nil || !changed {
+		t.Fatalf("second schedule changed=%v err=%v", changed, err)
+	}
+	recovered, err = store.RecoverJobs(ctx, true)
+	if err != nil || len(recovered) != 1 {
+		t.Fatalf("second recovered removal jobs=%+v err=%v", recovered, err)
+	}
+	if err := m.runRecoveredJob(ctx, recovered[0]); err != nil {
+		t.Fatalf("removal with ownership: %v", err)
+	}
+	if stored, err := store.Slot(ctx, id); err != nil || stored.State != "ARCHIVED" {
+		t.Fatalf("slot after removal=%+v err=%v", stored, err)
+	}
+	if _, err := os.Stat(slotRoot); !os.IsNotExist(err) {
+		t.Fatalf("quarantined worktree still exists: %v", err)
 	}
 }

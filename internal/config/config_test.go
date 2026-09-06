@@ -144,7 +144,7 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 		"worktree.undefined":    "cold",
 		"storage.worktree_root": "$HOME/wx", "storage.repo_dir_source": "directory", "storage.backup_generations": "4", "storage.backup_retention": "24h",
 		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3", "pool.git_concurrency_per_repository": "1",
-		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
+		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.quarantined": "12h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
 		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "resume.auto_fresh": "true", "includes.default_agent_rules": "false", "logging.level": "debug",
 	}
 	var raw Config
@@ -191,7 +191,7 @@ func TestSetFieldRejectsEveryInvalidScalarType(t *testing.T) {
 	keys := []string{
 		"storage.backup_generations", "pool.warm_per_workspace", "pool.preparation_concurrency", "pool.git_concurrency_per_repository",
 		"discovery.max_depth", "discovery.max_entries",
-		"storage.backup_retention", "retention.hot_standby", "retention.ended_worktree", "retention.recovery_snapshot",
+		"storage.backup_retention", "retention.hot_standby", "retention.ended_worktree", "retention.quarantined", "retention.recovery_snapshot",
 		"retention.expired_session_tombstone", "retention.failed_job", "retention.event_log", "discovery.timeout", "includes.default_agent_rules",
 		"discovery.reconcile_interval", "readiness.timeout",
 	}

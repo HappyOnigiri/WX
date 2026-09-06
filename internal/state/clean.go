@@ -128,7 +128,7 @@ func (s *Store) BeginCleanRun(ctx context.Context, id, mode string, targets []Cl
 		if workspaceID == "" {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO replenish_suspensions(workspace_id,run_id,suspended_at) VALUES(?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET run_id=excluded.run_id,suspended_at=excluded.suspended_at`, workspaceID, id, t); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO replenish_suspensions(workspace_id,reason,detail,suspended_at) VALUES(?,?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET reason=excluded.reason,detail=excluded.detail,suspended_at=excluded.suspended_at`, workspaceID, SuspendReplenishReasonClean, id, t); err != nil {
 			return "", false, err
 		}
 	}
@@ -276,11 +276,28 @@ func (s *Store) ReplenishSuspended(ctx context.Context, workspaceID string) (boo
 	return present > 0, nil
 }
 
-// ResumeReplenish は workspace の補充停止を解除する。clean 後の新規貸出・resume の成功時だけ呼ぶ。
+// ResumeReplenish は workspace の補充停止を解除する。
+// 呼ぶのは手動起動（新規貸出・resume）が成功した時点と `wx retry-standby` の 2 経路だけで、停止理由では区別しない。
 func (s *Store) ResumeReplenish(ctx context.Context, workspaceID string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	_, err := s.db.ExecContext(ctx, `DELETE FROM replenish_suspensions WHERE workspace_id=?`, workspaceID)
+	return err
+}
+
+// SuspendReplenishReasonClean は `wx clear` が待機用slotを削除した後の補充停止を表す。detail は clean run の ID である。
+const SuspendReplenishReasonClean = "CLEAN"
+
+// SuspendReplenishReasonStandbyFailure は待機用slotの準備が失敗した後の補充停止を表す。detail は失敗した job の ID である。
+const SuspendReplenishReasonStandbyFailure = "STANDBY_PREPARE_FAILED"
+
+// SuspendReplenish は workspace の待機用 worktree 補充を停止する。
+// 既に停止中なら理由を上書きせず、最初に止めた理由と時刻を残す。
+func (s *Store) SuspendReplenish(ctx context.Context, workspaceID, reason, detail string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO replenish_suspensions(workspace_id,reason,detail,suspended_at) VALUES(?,?,?,?)
+		ON CONFLICT(workspace_id) DO NOTHING`, workspaceID, reason, detail, now())
 	return err
 }
 

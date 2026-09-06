@@ -31,7 +31,7 @@ type Store struct {
 	path   string
 }
 
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // ErrPreviousWorktreeLayout は、wx が意図的に migration path を持たない旧 worktree layout の state database を示す。
 var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree layout")
@@ -44,8 +44,8 @@ var ErrWorkspaceIdentityConflict = errors.New("workspace root is already registe
 
 // JSONSchemaVersion は `wx status --json` と `wx doctor --json` の出力形状の互換契約であり、SQLite migration 数の SchemaVersion とは独立である。
 // scripted consumer が観測する形状を変える場合だけ上げる。2〜4 は restart・stop・daemon unavailable、5〜7 は root・workspace・quarantine の診断を追加した。
-// 8 は隔離 standby 上限の回復案内、9 は worktree_roots の measured_at を追加した。
-const JSONSchemaVersion = 9
+// 8 は隔離 standby 上限の回復案内、9 は worktree_roots の measured_at、10 は standby_replenishment を補充停止の理由（reason・detail・suspended_at）へ差し替えた。
+const JSONSchemaVersion = 10
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -207,6 +207,12 @@ func (s *Store) init(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&applied); err != nil {
 		return err
 	}
+	// 旧 layout の判定は migration の前に行う。後段の migration が旧 schema に当たって別の error で落ちると、対処を示せなくなる。
+	if applied > 0 {
+		if err := s.verifySchema(ctx); err != nil {
+			return err
+		}
+	}
 	for i, name := range entries {
 		version := i + 1
 		if version <= applied {
@@ -235,7 +241,7 @@ func (s *Store) init(ctx context.Context) error {
 }
 
 // verifySchema は worktree layout 変更前の wx が作成した database に対し、対処可能な message で Open を失敗させる。
-// それらは user_version=1 のため migration loop では何も適用されず、以降の query が存在しない column で失敗する。
+// それらは user_version=1 のため以降の migration も query も旧 schema に当たって失敗する。
 // 旧 schema の migration path は持たないためである。
 func (s *Store) verifySchema(ctx context.Context) error {
 	var present int
@@ -980,16 +986,6 @@ const standbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl
 		WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
 	))`
 
-// quarantinedStandbyQuery は貸出前に隔離された slot を数える SQL。
-// session を一度も持たなかった slot だけを対象にし、使われた slot の隔離（snapshot 失敗など）を補充抑制に持ち込まない。
-// last_used_at は READY からの貸出でしか書かれず cold start・復元の slot では NULL のまま残るため、判定には使わない。
-const quarantinedStandbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
-	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='QUARANTINED'
-	AND substr(COALESCE(sl.failure_code,''),1,11)<>'ALLOCATION_'
-	AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.slot_id=sl.id)
-	AND sl.updated_at>COALESCE((SELECT reset_at FROM standby_quarantine_resets qr
-		WHERE qr.workspace_id=sl.workspace_id AND qr.generation=sl.generation),'')`
-
 // standbyCountTx は現行 generation の待機枠を writer transaction 内で数える。
 func standbyCountTx(ctx context.Context, tx *sql.Tx, workspaceID string) (int, error) {
 	var n int
@@ -1005,31 +1001,16 @@ func (s *Store) StandbyCount(ctx context.Context, workspaceID string) int {
 	return n
 }
 
-// quarantinedStandbyCountTx は貸出前に隔離された slot を writer transaction 内で数える。
-func quarantinedStandbyCountTx(ctx context.Context, tx *sql.Tx, workspaceID string) (int, error) {
-	var n int
-	err := tx.QueryRowContext(ctx, quarantinedStandbyQuery, workspaceID).Scan(&n)
-	return n, err
-}
-
-// QuarantinedStandbyCount は現行 generation で貸出前に隔離された slot を数える。
-// 補充側は、準備が壊れた workspace で隔離 slot が無制限に積み上がらないよう、この数を上限として使う。
-func (s *Store) QuarantinedStandbyCount(ctx context.Context, workspaceID string) (int, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, quarantinedStandbyQuery, workspaceID).Scan(&n)
-	return n, err
-}
-
-// StandbyReplenishmentRetry は隔離上限の手動解除結果と、再補充を促す job を返す。
-// Quarantined は reset 前に上限へ寄与していた隔離 slot 数であり、slot の削除や状態変更は行わない。
+// StandbyReplenishmentRetry は補充停止の手動解除結果と、再補充を促す job を返す。
+// Suspended は解除前に停止が記録されていたかを表し、slot の削除や状態変更は行わない。
 type StandbyReplenishmentRetry struct {
-	Generation  int
-	Quarantined int
-	Job         Job
+	Generation int
+	Suspended  bool
+	Job        Job
 }
 
-// RetryStandbyReplenishment は利用者が環境修復を確認した時点を記録し、ENSURE_STANDBY を一度だけ予約する。
-// reset は同じ generation の既存隔離物だけを上限計算から外し、新たな失敗は再び上限へ数える。
+// RetryStandbyReplenishment は補充停止を解除し、ENSURE_STANDBY を一度だけ予約する。
+// 停止理由（clean 由来か standby 失敗か）では区別せず、隔離 slot の状態と実体には触れない。
 func (s *Store) RetryStandbyReplenishment(ctx context.Context, workspaceID string) (StandbyReplenishmentRetry, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -1045,15 +1026,11 @@ func (s *Store) RetryStandbyReplenishment(ctx context.Context, workspaceID strin
 	if err := tx.QueryRowContext(ctx, `SELECT generation FROM workspaces WHERE id=?`, workspaceID).Scan(&generation); err != nil {
 		return StandbyReplenishmentRetry{}, err
 	}
-	quarantined, err := quarantinedStandbyCountTx(ctx, tx, workspaceID)
+	res, err := tx.ExecContext(ctx, `DELETE FROM replenish_suspensions WHERE workspace_id=?`, workspaceID)
 	if err != nil {
 		return StandbyReplenishmentRetry{}, err
 	}
-	resetAt := now()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO standby_quarantine_resets(workspace_id,generation,reset_at) VALUES(?,?,?)
-		ON CONFLICT(workspace_id) DO UPDATE SET generation=excluded.generation,reset_at=excluded.reset_at`, workspaceID, generation, resetAt); err != nil {
-		return StandbyReplenishmentRetry{}, err
-	}
+	removed, _ := res.RowsAffected()
 	var job Job
 	err = tx.QueryRowContext(ctx, `SELECT id,state FROM jobs WHERE kind='ENSURE_STANDBY' AND workspace_id=? AND state IN ('PENDING','RUNNING')
 		ORDER BY CASE state WHEN 'PENDING' THEN 0 ELSE 1 END,id LIMIT 1`, workspaceID).Scan(&job.ID, &job.State)
@@ -1075,7 +1052,7 @@ func (s *Store) RetryStandbyReplenishment(ctx context.Context, workspaceID strin
 	if err := tx.Commit(); err != nil {
 		return StandbyReplenishmentRetry{}, err
 	}
-	return StandbyReplenishmentRetry{Generation: generation, Quarantined: quarantined, Job: job}, nil
+	return StandbyReplenishmentRetry{Generation: generation, Suspended: removed > 0, Job: job}, nil
 }
 
 // recordStandbySuccessTx は通常 session の準備成功を一度だけ記録し、
@@ -1290,7 +1267,7 @@ func (s *Store) ReserveSlot(ctx context.Context, slot Slot) error {
 
 // ReserveStandbyIfNeeded は待機枠の再確認と物理作成前の slot 予約を同じ transaction で行う。
 // 予約中の slot も待機枠に数えるため、並行した補充が上限を越えない。
-func (s *Store) ReserveStandbyIfNeeded(ctx context.Context, slot Slot, limit, quarantineLimit int) (bool, error) {
+func (s *Store) ReserveStandbyIfNeeded(ctx context.Context, slot Slot, limit int) (bool, error) {
 	if limit <= 0 {
 		return false, nil
 	}
@@ -1323,18 +1300,6 @@ func (s *Store) ReserveStandbyIfNeeded(ctx context.Context, slot Slot, limit, qu
 			return false, err
 		}
 		return false, nil
-	}
-	if quarantineLimit > 0 {
-		quarantined, quarantineErr := quarantinedStandbyCountTx(ctx, tx, slot.WorkspaceID)
-		if quarantineErr != nil {
-			return false, quarantineErr
-		}
-		if quarantined >= quarantineLimit {
-			if err := tx.Commit(); err != nil {
-				return false, err
-			}
-			return false, nil
-		}
 	}
 	if err := insertReservedSlotTx(ctx, tx, slot); err != nil {
 		return false, err
@@ -1532,10 +1497,9 @@ func (s *Store) CreateStandby(ctx context.Context, slot Slot, repos []SlotReposi
 	return job, tx.Commit()
 }
 
-// CreateStandbyIfNeeded は standby 枠と隔離上限の再検証、slot/job 登録を同じ transaction で行う。
+// CreateStandbyIfNeeded は standby 枠の再検証と slot/job 登録を同じ transaction で行う。
 // 別の reconcile が先に不足分を埋めた場合や隔離上限に達していた場合は、作成側が物理 directory を所有権確認後に片付けられるよう false を返す。
-// quarantineLimit が 0 以下なら隔離上限は検証しない。
-func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []SlotRepository, limit, quarantineLimit int) (Job, bool, error) {
+func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []SlotRepository, limit int) (Job, bool, error) {
 	if limit <= 0 {
 		return Job{}, false, nil
 	}
@@ -1568,19 +1532,6 @@ func (s *Store) CreateStandbyIfNeeded(ctx context.Context, slot Slot, repos []Sl
 			return Job{}, false, err
 		}
 		return Job{}, false, nil
-	}
-	if quarantineLimit > 0 {
-		// 上限判定を作成と同じ transaction で行い、並行する ENSURE_STANDBY が上限を越えて作れないようにする。
-		quarantined, quarantineErr := quarantinedStandbyCountTx(ctx, tx, slot.WorkspaceID)
-		if quarantineErr != nil {
-			return Job{}, false, quarantineErr
-		}
-		if quarantined >= quarantineLimit {
-			if err := tx.Commit(); err != nil {
-				return Job{}, false, err
-			}
-			return Job{}, false, nil
-		}
 	}
 	job, err := newJob("PREPARE", slot.WorkspaceID, slot.ID, "")
 	if err != nil {
@@ -2327,8 +2278,9 @@ type (
 		WorkspaceID string `json:"workspace_id"`
 		Root        string `json:"root"`
 		Generation  int    `json:"generation"`
-		Quarantined int    `json:"quarantined"`
-		Limit       int    `json:"limit"`
+		Reason      string `json:"reason"`
+		Detail      string `json:"detail,omitempty"`
+		SuspendedAt string `json:"suspended_at,omitempty"`
 		Action      string `json:"action,omitempty"`
 	}
 	StatusDiagnostics struct {
@@ -2425,9 +2377,6 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM standby_replenish_successes WHERE workspace_id=?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM standby_quarantine_resets WHERE workspace_id=?`, id); err != nil {
 		return err
 	}
 	// jobs.workspace_id には foreign key がなく、監査目的で削除後の workspace を参照できるため、手動で clear する必要がある唯一の参照である。
@@ -2534,18 +2483,11 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 	return out, quarantineRows.Err()
 }
 
-// StandbyReplenishmentDiagnostics は現行 generation で補充停止を引き起こす隔離 standby を返す。
-// limit は daemon の補充上限であり、reset 済みの隔離 slot は上限判定と同じ条件で除外する。
-func (s *Store) StandbyReplenishmentDiagnostics(ctx context.Context, limit int) ([]StandbyReplenishmentDiagnostic, error) {
-	if limit <= 0 {
-		return nil, nil
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,count(sl.id)
-		FROM workspaces w LEFT JOIN slots sl ON sl.workspace_id=w.id AND sl.generation=w.generation AND sl.state='QUARANTINED'
-			AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.slot_id=sl.id)
-			AND sl.updated_at>COALESCE((SELECT reset_at FROM standby_quarantine_resets qr
-				WHERE qr.workspace_id=sl.workspace_id AND qr.generation=sl.generation),'')
-		GROUP BY w.id,w.root_path,w.generation HAVING count(sl.id)>=? ORDER BY w.root_path`, limit)
+// StandbyReplenishmentDiagnostics は待機用 worktree の補充を停止中の workspace を返す。
+// 停止は `replenish_suspensions` が唯一の権威なので、隔離 slot の数は判定にも表示にも使わない。
+func (s *Store) StandbyReplenishmentDiagnostics(ctx context.Context) ([]StandbyReplenishmentDiagnostic, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,rs.reason,rs.detail,rs.suspended_at
+		FROM replenish_suspensions rs JOIN workspaces w ON w.id=rs.workspace_id ORDER BY w.root_path`)
 	if err != nil {
 		return nil, err
 	}
@@ -2553,8 +2495,7 @@ func (s *Store) StandbyReplenishmentDiagnostics(ctx context.Context, limit int) 
 	out := []StandbyReplenishmentDiagnostic{}
 	for rows.Next() {
 		var item StandbyReplenishmentDiagnostic
-		item.Limit = limit
-		if err := rows.Scan(&item.WorkspaceID, &item.Root, &item.Generation, &item.Quarantined); err != nil {
+		if err := rows.Scan(&item.WorkspaceID, &item.Root, &item.Generation, &item.Reason, &item.Detail, &item.SuspendedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)
@@ -3256,6 +3197,63 @@ func (s *Store) GCCandidates(ctx context.Context, before string) ([]GCCandidate,
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+
+// QuarantinedGCCandidate は retention を過ぎた隔離 slot の削除候補である。
+type QuarantinedGCCandidate struct{ SlotID, Path, FailureCode string }
+
+// QuarantinedGCCandidates は updated_at が before 以前の QUARANTINED slot を返す。
+// 隔離は所有権を証明できなかった結果でもあるため、削除側も通常の REMOVE と同じ証明を通す前提で候補にする。
+// owner が残る行は session の終端処理が済んでいないので候補にしない。
+func (s *Store) QuarantinedGCCandidates(ctx context.Context, before string) ([]QuarantinedGCCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path||'/'||sl.rel_path,COALESCE(sl.failure_code,'')
+		FROM slots sl JOIN roots rt ON rt.id=sl.root_id
+		WHERE sl.state='QUARANTINED' AND sl.owner_session_id IS NULL AND sl.updated_at<=? ORDER BY sl.id`, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []QuarantinedGCCandidate
+	for rows.Next() {
+		var candidate QuarantinedGCCandidate
+		if err := rows.Scan(&candidate.SlotID, &candidate.Path, &candidate.FailureCode); err != nil {
+			return nil, err
+		}
+		out = append(out, candidate)
+	}
+	return out, rows.Err()
+}
+
+// ScheduleQuarantinedRemoval は隔離 slot を REMOVING へ移し、REMOVE job を予約する。
+// 削除が所有権証明に失敗すれば呼び出し側が QUARANTINED へ戻すので、この予約は再試行の入口である。
+func (s *Store) ScheduleQuarantinedRemoval(ctx context.Context, slotID string) (Job, bool, error) {
+	job, err := newJob("REMOVE", "", slotID, "")
+	if err != nil {
+		return Job{}, false, err
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, false, err
+	}
+	defer tx.Rollback()
+	var workspaceID string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(workspace_id,'') FROM slots WHERE id=?`, slotID).Scan(&workspaceID); err != nil {
+		return Job{}, false, err
+	}
+	job.WorkspaceID = workspaceID
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',updated_at=? WHERE id=? AND owner_session_id IS NULL AND state='QUARANTINED'`, now(), slotID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	if changed, _ := res.RowsAffected(); changed == 0 {
+		return Job{}, false, nil
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, false, err
+	}
+	return job, true, tx.Commit()
 }
 
 func (s *Store) MarkSlotArchived(ctx context.Context, id string) error {
