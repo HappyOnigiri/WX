@@ -64,6 +64,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
    選択した会話と明示的な`wx resume <wx-session-id>`は同じRESTORE経路を使う。
    RESTORING中のagent session IDは`pending_agent_session_id`として保持し、復元成功時に新しいセッションへ移譲する。
    `--fresh`は会話を同じIDで再開しつつ現在のbaseからslotを作り、`--branch`は`--fresh`との併用時だけ使う。
+   当時のworktreeを復元できないときは会話の再開を優先し、新しいworktreeで再開してよいかをYes既定で確認して`--fresh`と同じ経路へ倒す。
+   復元不能はdaemonが`recovery=unavailable`を失敗メッセージに載せて伝え、clientはRESTORE系のfailure codeとEXPIRED snapshotの両方をこの確認に集約する。
+   確認は`resume.auto_fresh`が真なら省き、端末がなければnoticeを出して再開を続ける。やり直しは1回だけで、2回目の失敗はそのまま返す。
    ネイティブresumeは遅延バインドや`_unbound` slotを新規生成せず、clientが準備完了を前面で待ってから起動する。
    復元後のworktreeはtracked changesを含むため、貸出前の検査はcleanなworking treeを要求しない`ValidateOwnership`を使う。
    READY slotの再利用側は`ValidateReady`で、こちらはtracked cleanまで求める。
