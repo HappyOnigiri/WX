@@ -458,17 +458,12 @@ func (m *Manager) resumeReplenish(ctx context.Context, workspaceID string) {
 // 隔離実体を GC が消すようになったため、この停止が無いと削除と補充が交互に繰り返される。
 // session に紐づく準備（cold start・復元）は手動起動そのものなので対象にしない。
 func (m *Manager) suspendStandbyReplenishment(ctx context.Context, job state.Job) {
-	if job.WorkspaceID == "" || job.SessionID != "" {
-		return
-	}
-	if slot, err := m.store.Slot(ctx, job.SlotID); err != nil || slot.OwnerSessionID != "" {
-		return
-	}
-	if err := m.store.SuspendReplenish(ctx, job.WorkspaceID, state.SuspendReplenishReasonStandbyFailure, job.ID); err != nil {
+	suspended, err := m.store.SuspendFailedStandbyReplenishment(ctx, job.ID)
+	if err != nil {
 		m.log.Error("suspend standby replenishment failed", "workspace_id", job.WorkspaceID, "job_id", job.ID, "error", err)
 		return
 	}
-	if m.markStandbySuspensionWarned(job.WorkspaceID) {
+	if suspended && m.markStandbySuspensionWarned(job.WorkspaceID) {
 		m.log.Warn("standby replenishment stopped after a preparation failure", "workspace_id", job.WorkspaceID, "job_id", job.ID)
 	}
 }

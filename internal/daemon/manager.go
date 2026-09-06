@@ -129,6 +129,8 @@ type Manager struct {
 	rootIdentities       map[string]string
 	rootIDs              map[string]string
 	rootUsage            map[string]rootUsageSample
+	slotUsage            map[string]slotUsageSample
+	sharedFiles          map[string]workspace.SharedFileCache
 	rootError            string
 	rootRetryLogged      string
 	rootCond             *sync.Cond
@@ -187,11 +189,22 @@ type rootUsageSample struct {
 	err        string
 }
 
+// slotUsageSample は lifecycle が測った slot 1 個分の使用量と CoW 共有量。
+// 貸出後の書き換えで共有が解けた分もここに現れるよう、準備時の記録ではなく毎回の実測で求める。
+type slotUsageSample struct {
+	usage      workspace.SlotUsage
+	measuredAt time.Time
+}
+
 const (
 	// rootUsageMeasurement は allocated_bytes の算出方法を表す。
 	rootUsageMeasurement = "st_blocks_x_512"
 	// rootUsagePendingMeasurement は最初の測定が終わる前の root を表す。bytes と allocated_bytes は 0 で、実際の使用量ではない。
 	rootUsagePendingMeasurement = "pending"
+	// slotSharingMeasurement は shared_bytes の算出方法を表す。先頭と末尾の物理 offset だけを比べるため上限側の推定になる。
+	slotSharingMeasurement = "log2phys_first_last"
+	// slotSharingUnsupported は CoW 共有を判定できない platform を表す。shared_bytes は 0 で、共有が無いことの証明ではない。
+	slotSharingUnsupported = "unsupported"
 )
 
 type (
@@ -216,7 +229,7 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 			prepareDetailDir = filepath.Join(filepath.Dir(logPath), "details")
 		}
 	}
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, rootUsage: map[string]rootUsageSample{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, rootUsage: map[string]rootUsageSample{}, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}, leases: map[string]func(){}, jobs: make(chan jobWork, 256), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
 	m.watchExecutable(executable, executableErr)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {
@@ -481,11 +494,10 @@ func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Pre
 		}
 	}
 	return &workspace.Preparer{
-		Git: m.git, Config: cfg, Ownership: m.store, SlotPath: slotPath,
+		Git: m.git, Config: cfg, Ownership: m.store, SlotPath: slotPath, Log: m.log,
 		DetailDir: m.prepareDetailDir,
 		OwnedRoot: ownedRoot, RootPath: filepath.Clean(root),
 		RootID: slot.RootID, SlotRelPath: slot.RelPath,
-		Log: m.log,
 	}
 }
 
@@ -2035,6 +2047,7 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 		m.log.Error("finish preparation failed", "slot_id", id, "error", err)
 		return err
 	}
+	m.scheduleSlotUsageMeasurement(id)
 	if released {
 		m.schedule(releaseJob)
 		return nil
@@ -2602,8 +2615,11 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			return fmt.Errorf("restore workspace root: %w", err)
 		}
 	}
-	_, _, err = m.store.FinishPreparationWithRelease(ctx, id)
-	return err
+	if _, _, err = m.store.FinishPreparationWithRelease(ctx, id); err != nil {
+		return err
+	}
+	m.scheduleSlotUsageMeasurement(id)
+	return nil
 }
 
 func (m *Manager) ResumeStatus(ctx context.Context, oldID string) (map[string]any, error) {
@@ -3815,69 +3831,155 @@ func (m *Manager) knownRoots(ctx context.Context) map[string]bool {
 // ctx が切れた回は cache を据え置き、部分的な測定値で既存の値を壊さない。
 func (m *Manager) measureRootUsage(ctx context.Context) {
 	roots := m.knownRoots(ctx)
+	targetsAt := time.Now().UTC()
+	targets := m.slotUsageTargets(ctx)
 	samples := make(map[string]rootUsageSample, len(roots))
+	slots := map[string]slotUsageSample{}
+	caches := make(map[string]workspace.SharedFileCache, len(roots))
 	for root := range roots {
-		bytes, allocated, err := m.rootDirectoryUsage(ctx, root)
+		usage, cache, err := m.rootDirectoryUsage(ctx, root, targets[root], m.sharedFileCache(root))
 		if ctx.Err() != nil {
 			return
 		}
-		sample := rootUsageSample{bytes: bytes, allocated: allocated, measuredAt: time.Now().UTC()}
+		measuredAt := time.Now().UTC()
+		sample := rootUsageSample{bytes: usage.LogicalBytes, allocated: usage.AllocatedBytes, measuredAt: measuredAt}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			sample.err = err.Error()
 		}
 		samples[root] = sample
+		caches[root] = cache
+		if sample.err != "" {
+			continue
+		}
+		for slotID, slot := range usage.Slots {
+			slots[slotID] = slotUsageSample{usage: slot, measuredAt: measuredAt}
+		}
 	}
 	m.mu.Lock()
-	m.rootUsage = samples
+	// 対象一覧を撮った後に準備が終わった slot はこの回の測定に入らない。
+	// 上書きすると measureSlotUsage の結果が消えて次の周期まで pending へ戻るため、より新しい実測だけ残す。
+	for slotID, sample := range m.slotUsage {
+		if _, remeasured := slots[slotID]; !remeasured && sample.measuredAt.After(targetsAt) {
+			slots[slotID] = sample
+		}
+	}
+	m.rootUsage, m.slotUsage, m.sharedFiles = samples, slots, caches
 	m.mu.Unlock()
 }
 
-func (m *Manager) rootDirectoryUsage(ctx context.Context, root string) (int64, int64, error) {
-	// path walkではreload後の置換directoryへ渡り得るため、statusもpin済みdescriptor経由で測定する。
+// scheduleSlotUsageMeasurement は準備完了の直後に、その slot だけの測定を background へ回す。
+// 貸出の応答へ走査時間を持ち込まないため同期では測らず、停止中で受け付けられない場合は周期測定へ委ねる。
+func (m *Manager) scheduleSlotUsageMeasurement(slotID string) {
+	m.startBackground(func() { m.measureSlotUsage(m.ctx, slotID) })
+}
+
+// measureSlotUsage は準備の終わった slot 1 個だけを測って cache へ載せる。
+// root 全体の周期測定を待たせずに方式と使用量を出すためだけの処理なので、失敗しても準備結果は変えず記録に留める。
+func (m *Manager) measureSlotUsage(ctx context.Context, slotID string) {
+	locations, err := m.store.SlotUsageLocationsForSlot(ctx, slotID)
+	if err != nil {
+		m.log.Warn("list slot usage location", "slot_id", slotID, "error", err)
+		return
+	}
+	if len(locations) == 0 {
+		return
+	}
+	target := workspace.SlotUsageTarget{SlotID: slotID, RelPath: locations[0].RelPath, Repositories: map[string]string{}}
+	for _, location := range locations {
+		target.Repositories[location.DirName] = location.MainPath
+	}
+	root := filepath.Clean(locations[0].RootPath)
+	owner, release, err := m.usageRootDescriptor(root)
+	if err != nil {
+		m.log.Warn("open root for slot usage", "slot_id", slotID, "root", root, "error", err)
+		return
+	}
+	defer release()
+	usage, cache, err := workspace.MeasureSlotUsage(ctx, owner, target, m.sharedFileCache(root))
+	if err != nil {
+		if ctx.Err() == nil {
+			m.log.Warn("measure slot usage", "slot_id", slotID, "error", err)
+		}
+		return
+	}
+	measuredAt := time.Now().UTC()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.slotUsage[slotID] = slotUsageSample{usage: usage, measuredAt: measuredAt}
+	// 公開済みの cache は measureRootUsage が previous として読むため、書き換えずに差し替える。
+	merged := make(workspace.SharedFileCache, len(m.sharedFiles[root])+len(cache))
+	for name, shared := range m.sharedFiles[root] {
+		merged[name] = shared
+	}
+	for name, shared := range cache {
+		merged[name] = shared
+	}
+	m.sharedFiles[root] = merged
+}
+
+// slotUsageTargets は測定対象の slot を root ごとにまとめる。
+// 対象を読めなかった回は slot の内訳だけを諦め、root 合計の測定は続ける。
+func (m *Manager) slotUsageTargets(ctx context.Context) map[string][]workspace.SlotUsageTarget {
+	locations, err := m.store.SlotUsageLocations(ctx)
+	if err != nil {
+		m.log.Warn("list slot usage locations", "error", err)
+		return nil
+	}
+	targets := map[string][]workspace.SlotUsageTarget{}
+	indexes := map[string]int{}
+	for _, location := range locations {
+		root := filepath.Clean(location.RootPath)
+		key := root + "\x00" + location.SlotID
+		index, known := indexes[key]
+		if !known {
+			index = len(targets[root])
+			indexes[key] = index
+			targets[root] = append(targets[root], workspace.SlotUsageTarget{SlotID: location.SlotID, RelPath: location.RelPath, Repositories: map[string]string{}})
+		}
+		targets[root][index].Repositories[location.DirName] = location.MainPath
+	}
+	return targets
+}
+
+func (m *Manager) sharedFileCache(root string) workspace.SharedFileCache {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sharedFiles[filepath.Clean(root)]
+}
+
+func (m *Manager) rootDirectoryUsage(ctx context.Context, root string, targets []workspace.SlotUsageTarget, previous workspace.SharedFileCache) (workspace.RootUsage, workspace.SharedFileCache, error) {
+	owner, release, err := m.usageRootDescriptor(root)
+	if err != nil {
+		return workspace.RootUsage{}, nil, err
+	}
+	defer release()
+	return workspace.MeasureRootUsage(ctx, owner, targets, previous)
+}
+
+// usageRootDescriptor は測定用に root を pin し、path 名ではなく descriptor で走査できるようにする。
+// path walk では reload 後の置換 directory へ渡り得るため、使用量も pin 済み descriptor 経由で測る。
+func (m *Manager) usageRootDescriptor(root string) (*os.Root, func(), error) {
 	root = filepath.Clean(root)
 	m.mu.RLock()
 	_, known := m.roots[root]
 	m.mu.RUnlock()
 	if !known {
-		return 0, 0, fmt.Errorf("%w: root is not registered", state.ErrOwnership)
+		return nil, nil, fmt.Errorf("%w: root is not registered", state.ErrOwnership)
 	}
 	_, release, err := m.existingRootDescriptor(root)
 	if err != nil {
-		return 0, 0, err
+		return nil, nil, err
 	}
-	defer release()
 	owner := m.rootHandleForRoot(root)
 	if owner == nil {
-		return 0, 0, fmt.Errorf("%w: root descriptor is unavailable", state.ErrOwnership)
+		release()
+		return nil, nil, fmt.Errorf("%w: root descriptor is unavailable", state.ErrOwnership)
 	}
 	if err := verifyRootDescriptorPath(root, owner); err != nil {
-		return 0, 0, err
+		release()
+		return nil, nil, err
 	}
-	var bytes, allocated int64
-	walkErr := fs.WalkDir(owner.FS(), ".", func(_ string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		// 高負荷時は walk が数十秒に伸びるため、停止要求を待たせないよう各 entry で中断を確認する。
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return infoErr
-		}
-		if info.Mode().IsRegular() {
-			bytes += info.Size()
-		}
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-			allocated += stat.Blocks * 512
-		}
-		return nil
-	})
-	return bytes, allocated, walkErr
+	return owner, release, nil
 }
 
 func daemonVersion() string {
@@ -3999,8 +4101,66 @@ func (m *Manager) registrationDiagnostics(ctx context.Context) map[string]any {
 	return result
 }
 
-func (m *Manager) Sessions(ctx context.Context, all bool) ([]state.SessionSummary, error) {
-	return m.store.ListSessions(ctx, all)
+// SlotView は slot 1 行に、lifecycle が測った使用量と、そこから決まるコピー方式を足したものである。
+// 測定前や測定できない platform では Measurement がそれを示し、Bytes 系は実際の使用量ではない。
+type SlotView struct {
+	state.SlotSummary
+	CopyMode       string `json:"copy_mode,omitempty"`
+	Files          int    `json:"files,omitempty"`
+	AllocatedBytes int64  `json:"allocated_bytes,omitempty"`
+	SharedBytes    int64  `json:"shared_bytes,omitempty"`
+	ExclusiveBytes int64  `json:"exclusive_bytes,omitempty"`
+	Measurement    string `json:"measurement,omitempty"`
+	MeasuredAt     string `json:"measured_at,omitempty"`
+}
+
+func (m *Manager) Slots(ctx context.Context, all bool) ([]SlotView, error) {
+	summaries, err := m.store.ListSlots(ctx, all)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	usage := make(map[string]slotUsageSample, len(m.slotUsage))
+	for slotID, sample := range m.slotUsage {
+		usage[slotID] = sample
+	}
+	m.mu.RUnlock()
+	out := make([]SlotView, 0, len(summaries))
+	for _, summary := range summaries {
+		out = append(out, slotView(summary, usage))
+	}
+	return out, nil
+}
+
+// slotView は測定結果を 1 行へ畳み込む。共有と判定したファイルが 1 つでもあれば CoW が効いている slot とみなす。
+func slotView(summary state.SlotSummary, usage map[string]slotUsageSample) SlotView {
+	view := SlotView{SlotSummary: summary}
+	if summary.SlotID == "" {
+		return view
+	}
+	if !workspace.SharingSupported() {
+		view.Measurement = slotSharingUnsupported
+	}
+	sample, measured := usage[summary.SlotID]
+	if !measured {
+		if view.Measurement == "" {
+			view.Measurement = rootUsagePendingMeasurement
+		}
+		return view
+	}
+	view.Files = sample.usage.Files
+	view.AllocatedBytes = sample.usage.AllocatedBytes
+	view.SharedBytes = sample.usage.SharedBytes
+	view.ExclusiveBytes = sample.usage.AllocatedBytes - sample.usage.SharedBytes
+	view.MeasuredAt = state.FormatTime(sample.measuredAt)
+	if view.Measurement == "" {
+		view.Measurement = slotSharingMeasurement
+		view.CopyMode = config.CopyModeCopy
+		if sample.usage.SharedFiles > 0 {
+			view.CopyMode = config.CopyModeCOW
+		}
+	}
+	return view
 }
 
 func (m *Manager) Forget(ctx context.Context, path string) error {

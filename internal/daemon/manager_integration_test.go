@@ -88,7 +88,9 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{}}
+	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{}, ctx: ctx, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}}
+	// 準備完了ごとの使用量測定は background で走るため、store を閉じる前に join する。
+	defer m.backgroundWG.Wait()
 	repos, err := m.slotRepos(slotRoot, w, resolved, 1, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -587,7 +589,7 @@ func TestHandlerPublicLifecycleSurface(t *testing.T) {
 		"Heartbeat":        map[string]any{"session_id": lease.SessionID, "token": lease.Token},
 		"ResumeStatus":     map[string]any{"wx_session_id": lease.SessionID},
 		"GC":               map[string]any{"dry_run": true},
-		"Sessions":         map[string]any{"all": true},
+		"Slots":            map[string]any{"all": true},
 	} {
 		if _, err := handler.Handle(ctx, method, JSON(params)); err != nil {
 			t.Fatalf("%s: %v", method, err)
@@ -721,7 +723,9 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{cfg.Storage.WorktreeRoot: slot.RootID}}
+	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{cfg.Storage.WorktreeRoot: slot.RootID}, ctx: ctx, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}}
+	// 準備完了ごとの使用量測定は background で走るため、store を閉じる前に join する。
+	defer m.backgroundWG.Wait()
 	if err := m.prepareSlot(ctx, id, w, resolved, repos); err != nil {
 		t.Fatal(err)
 	}
@@ -1004,6 +1008,24 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	defer store.Close()
 	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer m.Close()
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		ctx := context.Background()
+		details, detailsErr := store.StatusDiagnostics(ctx)
+		blocked, blockedErr := store.StandbyReplenishmentDiagnostics(ctx)
+		t.Logf("diagnostics=%+v err=%v; standby_replenishment=%+v err=%v", details, detailsErr, blocked, blockedErr)
+		artifacts, err := store.SlotArtifacts(ctx)
+		if err != nil {
+			t.Logf("slot artifacts: %v", err)
+		}
+		for _, artifact := range artifacts {
+			slot, slotErr := store.Slot(ctx, artifact.ID)
+			repos, reposErr := store.SlotRepositories(ctx, artifact.ID)
+			t.Logf("slot=%+v err=%v; repositories=%+v err=%v", slot, slotErr, repos, reposErr)
+		}
+	}()
 	lease, err := m.ResolveAndLease(context.Background(), root, nil, "codex", 1)
 	if err != nil {
 		t.Fatal(err)
@@ -1424,7 +1446,9 @@ func TestGCRemovesQuarantinedWorktreesOnlyWithProvenOwnership(t *testing.T) {
 	if err := preparer.Prepare(ctx, w.Repositories[0], filepath.Join(slotRoot, repos[0].DirName), resolved[0].OID, id); err != nil {
 		t.Fatal(err)
 	}
-	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{cfg.Storage.WorktreeRoot: slot.RootID}}
+	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{cfg.Storage.WorktreeRoot: slot.RootID}, ctx: ctx, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}}
+	// 準備完了ごとの使用量測定は background で走るため、store を閉じる前に join する。
+	defer m.backgroundWG.Wait()
 	if err := m.prepareSlot(ctx, id, w, resolved, repos); err != nil {
 		t.Fatal(err)
 	}

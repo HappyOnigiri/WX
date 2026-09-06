@@ -537,8 +537,16 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 	if _, err := store.CreateSlotSession(ctx, Slot{ID: "archived", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/archived", State: "SNAPSHOTTED"}, nil, archived, ""); err != nil {
 		t.Fatal(err)
 	}
-	if sessions, err := store.ListSessions(ctx, false); err != nil || len(sessions) != 1 || sessions[0].ID != active.ID {
-		t.Fatalf("active session list=%+v err=%v", sessions, err)
+	slots, err := store.ListSlots(ctx, false)
+	if err != nil || len(slots) != 2 {
+		t.Fatalf("lendable slot list=%+v err=%v", slots, err)
+	}
+	if slots[1].SlotID != "ready" || slots[1].SessionID != "" || slots[0].SlotID != "active" || slots[0].SessionID != active.ID {
+		t.Fatalf("lendable slots=%+v", slots)
+	}
+	// SNAPSHOTTED slot は貸出も待機もしていないため、既定の一覧には出ず --all にだけ出る。
+	if slots, err := store.ListSlots(ctx, true); err != nil || len(slots) != 3 {
+		t.Fatalf("all slot list=%+v err=%v", slots, err)
 	}
 	if err := store.MarkSessionState(ctx, "active", []string{"ACTIVE"}, "EXPIRED"); err != nil {
 		t.Fatal(err)
@@ -546,8 +554,8 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 	if err := store.Heartbeat(ctx, "active", "token"); err == nil {
 		t.Fatal("expired session heartbeat succeeded")
 	}
-	if sessions, err := store.ListSessions(ctx, false); err != nil || len(sessions) != 0 {
-		t.Fatalf("non-expired session list=%+v err=%v", sessions, err)
+	if slots, err := store.ListSlots(ctx, false); err != nil || len(slots) != 2 || slots[0].SessionState != "EXPIRED" {
+		t.Fatalf("expired session slot list=%+v err=%v", slots, err)
 	}
 
 	parent := Session{ID: "parent-unmapped", WorkspaceID: "workspace", SlotID: "parent-unmapped", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("parent")}
@@ -1440,8 +1448,8 @@ func TestAdministrativeStateTransitionsAndQueries(t *testing.T) {
 	if err := store.MarkSessionState(ctx, "standby", []string{"ACTIVE"}, "RELEASING"); err != nil {
 		t.Fatal(err)
 	}
-	if sessions, err := store.ListSessions(ctx, true); err != nil || len(sessions) != 1 || sessions[0].ID != "standby" {
-		t.Fatalf("sessions=%+v err=%v", sessions, err)
+	if slots, err := store.ListSlots(ctx, true); err != nil || len(slots) != 1 || slots[0].SessionID != "standby" {
+		t.Fatalf("slots=%+v err=%v", slots, err)
 	}
 	if err := store.Ping(ctx); err != nil {
 		t.Fatal(err)
@@ -1943,7 +1951,7 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 		"workspace":         func() error { _, err := store.Workspace(ctx, "w"); return err },
 		"workspace roots":   func() error { _, err := store.WorkspaceRoots(ctx); return err },
 		"status":            func() error { _, err := store.Status(ctx); return err },
-		"sessions":          func() error { _, err := store.ListSessions(ctx, true); return err },
+		"slots":             func() error { _, err := store.ListSlots(ctx, true); return err },
 		"standby gc":        func() error { _, err := store.StandbyGCCandidates(ctx, now(), 1); return err },
 		"cold candidates":   func() error { _, err := store.ColdRepositoryCandidates(ctx, now()); return err },
 		"expired snapshots": func() error { _, err := store.ExpiredSnapshots(ctx, now()); return err },

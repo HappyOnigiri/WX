@@ -200,14 +200,14 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		return h.Manager.RequestStop(ctx), nil
 	case "RequestStart":
 		return h.Manager.RequestStart(ctx), nil
-	case "Sessions":
+	case "Slots":
 		var p struct {
 			All bool `json:"all"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		return h.Manager.Sessions(ctx, p.All)
+		return h.Manager.Slots(ctx, p.All)
 	case "Forget":
 		var p struct {
 			Path string `json:"path"`
