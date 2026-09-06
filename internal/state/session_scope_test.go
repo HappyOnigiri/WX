@@ -152,3 +152,88 @@ func TestWorkspaceRootForSlotPathResolvesRetiredSlots(t *testing.T) {
 		})
 	}
 }
+
+func TestScopeWorkspaceForSlotPathReturnsIdentityOfLongestSlot(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedWorkspaceRows(t, store, "multi-workspace", "/multi", "multi_repository", "multi-repository", "/multi/repo", "/multi/repo/.git", "repo")
+	seedRoot(t, store, "root-retired", "/retired-wx", "retired-identity", false)
+	seedSessionScopeSlot(t, store, "slot-retired", "workspace", "root-retired", "workspace/archived", "ARCHIVED")
+	seedSessionScopeSlot(t, store, "slot-nested", "multi-workspace", "root-retired", "workspace/archived/inner", "ARCHIVED")
+
+	scope, found, err := store.ScopeWorkspaceForSlotPath(context.Background(), "/retired-wx/workspace/archived/WX")
+	if err != nil || !found {
+		t.Fatalf("slot path scope found=%v err=%v", found, err)
+	}
+	if scope != (ScopeWorkspace{ID: "workspace", Root: "/workspace", Kind: "repository"}) {
+		t.Fatalf("slot path scope=%+v", scope)
+	}
+
+	nested, found, err := store.ScopeWorkspaceForSlotPath(context.Background(), "/retired-wx/workspace/archived/inner/repo")
+	if err != nil || !found {
+		t.Fatalf("nested slot path scope found=%v err=%v", found, err)
+	}
+	if nested != (ScopeWorkspace{ID: "multi-workspace", Root: "/multi", Kind: "multi_repository"}) {
+		t.Fatalf("nested slot path scope=%+v", nested)
+	}
+
+	if scope, found, err := store.ScopeWorkspaceForSlotPath(context.Background(), "/retired-wx/workspace/archived-2"); err != nil || found {
+		t.Fatalf("sibling sharing a prefix scope=%+v found=%v err=%v", scope, found, err)
+	}
+}
+
+func TestScopeRepositoryWorkspaceMatchesOnlyUnambiguousRepositoryKind(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedWorkspaceRows(t, store, "multi-workspace", "/multi", "multi_repository", "multi-repository", "/multi/repo", "/multi/repo/.git", "repo")
+
+	scope, found, err := store.ScopeRepositoryWorkspace(context.Background(), "/workspace/.git")
+	if err != nil || !found {
+		t.Fatalf("repository workspace found=%v err=%v", found, err)
+	}
+	if scope != (ScopeWorkspace{ID: "workspace", Root: "/workspace", Kind: "repository"}) {
+		t.Fatalf("repository workspace scope=%+v", scope)
+	}
+
+	// multi-repository workspace の member repository は repository workspace の identity ではないため一致させない。
+	if scope, found, err := store.ScopeRepositoryWorkspace(context.Background(), "/multi/repo/.git"); err != nil || found {
+		t.Fatalf("member repository scope=%+v found=%v err=%v", scope, found, err)
+	}
+	if scope, found, err := store.ScopeRepositoryWorkspace(context.Background(), "/unknown/.git"); err != nil || found {
+		t.Fatalf("unregistered common directory scope=%+v found=%v err=%v", scope, found, err)
+	}
+}
+
+func TestScopeMultiWorkspaceForRootMatchesExactRootOnly(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedWorkspaceRows(t, store, "multi-workspace", "/multi", "multi_repository", "multi-repository", "/multi/repo", "/multi/repo/.git", "repo")
+
+	scope, found, err := store.ScopeMultiWorkspaceForRoot(context.Background(), "/multi")
+	if err != nil || !found {
+		t.Fatalf("multi workspace found=%v err=%v", found, err)
+	}
+	if scope != (ScopeWorkspace{ID: "multi-workspace", Root: "/multi", Kind: "multi_repository"}) {
+		t.Fatalf("multi workspace scope=%+v", scope)
+	}
+	for _, path := range []string{"/multi/repo", "/multi-2", "/workspace"} {
+		if scope, found, err := store.ScopeMultiWorkspaceForRoot(context.Background(), path); err != nil || found {
+			t.Fatalf("path %q scope=%+v found=%v err=%v", path, scope, found, err)
+		}
+	}
+}
+
+func TestWorkspaceHasCommonDirChecksCurrentMembership(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedWorkspaceRows(t, store, "multi-workspace", "/multi", "multi_repository", "multi-repository", "/multi/repo", "/multi/repo/.git", "repo")
+
+	member, err := store.WorkspaceHasCommonDir(context.Background(), "multi-workspace", "/multi/repo/.git")
+	if err != nil || !member {
+		t.Fatalf("member common directory=%v err=%v", member, err)
+	}
+	member, err = store.WorkspaceHasCommonDir(context.Background(), "multi-workspace", "/workspace/.git")
+	if err != nil || member {
+		t.Fatalf("foreign common directory=%v err=%v", member, err)
+	}
+}
