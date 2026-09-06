@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -626,7 +625,17 @@ func (m *Manager) reconcileArtifacts(ctx context.Context) {
 	}
 	if artifacts, err := m.store.SlotArtifacts(ctx); err == nil {
 		for _, artifact := range artifacts {
-			if artifact.State == "ARCHIVED" || artifact.State == "REMOVING" || artifact.State == "PREPARING" {
+			if artifact.State == "ALLOCATING" || artifact.State == "REGISTERING" {
+				code := "STANDBY_ALLOCATION_INTERRUPTED"
+				if slot, slotErr := m.store.Slot(ctx, artifact.ID); slotErr == nil && slot.OwnerSessionID != "" {
+					code = "ALLOCATION_INTERRUPTED"
+				}
+				if quarantineErr := m.store.QuarantineReservedSlot(ctx, artifact.ID, code); quarantineErr != nil {
+					m.log.Warn("slot reservation changed before reconciliation", "slot_id", artifact.ID, "error", quarantineErr)
+				}
+				continue
+			}
+			if artifact.State == "ARCHIVED" || artifact.State == "REMOVING" || artifact.State == "PREPARING" || artifact.State == "QUARANTINED" {
 				continue
 			}
 			exists, statErr := m.ownedPathExists(artifact.Path)
@@ -1259,10 +1268,6 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 		}
 	}
 	leasePathValue := leasePath(slotPath, w.Kind, repos)
-	slotIdentity, leaseIdentity, err := m.createSlotRoot(slotPath, leasePathValue)
-	if err != nil {
-		return Lease{}, false, err
-	}
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, ParentSessionID: parent, State: sessionState, AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
 	if sessionState == "RESTORING" {
 		if len(pendingAgentID) > 0 {
@@ -1276,13 +1281,32 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 			session.PendingAgentSessionID = old.AgentSessionID
 		}
 	}
-	if err := m.retainLease(id, leasePathValue); err != nil {
+	if err := m.store.ReserveSlot(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, OwnerSessionID: id}); err != nil {
+		return Lease{}, state.IsIDCollision(err), err
+	}
+	quarantineReservation := func() {
+		if quarantineErr := m.store.QuarantineReservedSlot(context.Background(), id, "ALLOCATION_FAILED"); quarantineErr != nil {
+			m.log.Error("quarantine failed slot reservation failed", "slot_id", id, "error", quarantineErr)
+		}
+	}
+	slotIdentity, leaseIdentity, err := m.createSlotRoot(slotPath, leasePathValue)
+	if err != nil {
+		quarantineReservation()
 		return Lease{}, false, err
 	}
-	job, err := m.store.CreateSlotSession(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, DirIdentity: slotIdentity, State: slotState}, repos, session, jobKind)
+	if err := m.store.ConfirmSlotCreation(ctx, id, slotIdentity); err != nil {
+		quarantineReservation()
+		return Lease{}, false, err
+	}
+	if err := m.retainLease(id, leasePathValue); err != nil {
+		quarantineReservation()
+		return Lease{}, false, err
+	}
+	job, err := m.store.RegisterReservedSlotSession(ctx, id, repos, session, slotState, jobKind)
 	if err != nil {
 		m.releaseLease(id)
-		return Lease{}, state.IsIDCollision(err), err
+		quarantineReservation()
+		return Lease{}, false, err
 	}
 	m.schedule(job)
 	m.startBackground(m.runBackgroundGC)
@@ -1663,8 +1687,18 @@ func (m *Manager) createSlotRoot(slotPath, leasePathValue string) (string, strin
 	if barrier != nil {
 		barrier()
 	}
-	if err := owner.MkdirAll(relativeLease, 0o700); err != nil {
+	if parent := filepath.Dir(relativeSlot); parent != "." {
+		if err := owner.MkdirAll(parent, 0o700); err != nil {
+			return "", "", fmt.Errorf("create slot namespace safely: %w", err)
+		}
+	}
+	if err := owner.Mkdir(relativeSlot, 0o700); err != nil {
 		return "", "", fmt.Errorf("create slot root safely: %w", err)
+	}
+	if relativeLease != relativeSlot {
+		if err := owner.Mkdir(relativeLease, 0o700); err != nil {
+			return "", "", fmt.Errorf("create lease root safely: %w", err)
+		}
 	}
 	slotIdentity, err := directoryIdentityAt(owner, relativeSlot)
 	if err != nil {
@@ -2216,95 +2250,43 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 			return state.Job{}, err
 		}
 		slotPath := filepath.Join(rootPath, relPath)
-		slotIdentity, _, err := m.createSlotRoot(slotPath, slotPath)
-		if err != nil {
-			if cleanupErr := m.cleanupStandbySlotCandidate(ctx, rootPath, slotPath, id, rootID, relPath, slotIdentity); cleanupErr != nil {
-				return state.Job{}, cleanupErr
-			}
-			return state.Job{}, err
-		}
 		repos, err := m.slotRepos(slotPath, w, resolved, generation, hot)
 		if err != nil {
-			if cleanupErr := m.cleanupStandbySlotCandidate(ctx, rootPath, slotPath, id, rootID, relPath, slotIdentity); cleanupErr != nil {
-				return state.Job{}, cleanupErr
-			}
 			return state.Job{}, err
 		}
-		job, created, err := m.store.CreateStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, DirIdentity: slotIdentity, State: "PREPARING"}, repos, m.Config().Pool.WarmPerWorkspace, standbyQuarantineLimit)
-		if err == nil {
-			if created {
-				return job, nil
-			}
-			if cleanupErr := m.cleanupStandbySlotCandidate(ctx, rootPath, slotPath, id, rootID, relPath, slotIdentity); cleanupErr != nil {
-				return state.Job{}, cleanupErr
-			}
+		reserved, err := m.store.ReserveStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath}, m.Config().Pool.WarmPerWorkspace, standbyQuarantineLimit)
+		if err == nil && !reserved {
 			return state.Job{}, nil
 		}
 		if state.IsIDCollision(err) {
-			// slot IDの衝突では同じ物理pathを既存slotが所有している可能性がある。
-			// その場合は新規作成途中の実体ではないため、所有中のworktreeを削除せず再抽選する。
-			existing, lookupErr := m.store.Slot(ctx, id)
-			if lookupErr == nil && existing.RootID == rootID && existing.RelPath == relPath {
-				lastErr = err
-				continue
-			}
-			if lookupErr != nil && !errors.Is(lookupErr, sql.ErrNoRows) {
-				return state.Job{}, lookupErr
-			}
+			lastErr = err
+			continue
 		}
-		if cleanupErr := m.cleanupStandbySlotCandidate(ctx, rootPath, slotPath, id, rootID, relPath, slotIdentity); cleanupErr != nil {
-			return state.Job{}, cleanupErr
-		}
-		if !state.IsIDCollision(err) {
+		if err != nil {
 			return state.Job{}, err
 		}
-		lastErr = err
+		quarantineReservation := func() {
+			if quarantineErr := m.store.QuarantineReservedSlot(context.Background(), id, "STANDBY_ALLOCATION_FAILED"); quarantineErr != nil {
+				m.log.Error("quarantine failed standby reservation failed", "slot_id", id, "error", quarantineErr)
+			}
+		}
+		slotIdentity, _, err := m.createSlotRoot(slotPath, slotPath)
+		if err != nil {
+			quarantineReservation()
+			return state.Job{}, err
+		}
+		if err := m.store.ConfirmSlotCreation(ctx, id, slotIdentity); err != nil {
+			quarantineReservation()
+			return state.Job{}, err
+		}
+		job, err := m.store.RegisterReservedStandby(ctx, id, repos)
+		if err != nil {
+			quarantineReservation()
+			return state.Job{}, err
+		}
+		return job, nil
 	}
 	return state.Job{}, fmt.Errorf("create standby slot: %w", lastErr)
-}
-
-func (m *Manager) cleanupStandbySlotCandidate(ctx context.Context, rootPath, slotPath, slotID, rootID, relPath, expectedIdentity string) error {
-	registered, err := m.store.Slot(ctx, slotID)
-	if err == nil {
-		if registered.RootID == rootID && registered.RelPath == relPath {
-			return nil
-		}
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	return m.removeUnregisteredSlotRoot(ctx, rootPath, slotPath, expectedIdentity)
-}
-
-func (m *Manager) removeUnregisteredSlotRoot(ctx context.Context, rootPath, slotPath, expectedIdentity string) error {
-	owner, release, err := m.existingRootDescriptor(rootPath)
-	if err != nil {
-		return err
-	}
-	defer release()
-	if err := verifyRootDescriptorPath(rootPath, owner); err != nil {
-		return err
-	}
-	relative, ok := relativeWithinRoot(rootPath, slotPath)
-	if !ok || relative == "." {
-		return fmt.Errorf("%w: unregistered standby slot is outside worktree root", state.ErrOwnership)
-	}
-	actual, identityErr := directoryIdentityAt(owner, relative)
-	if errors.Is(identityErr, os.ErrNotExist) {
-		return nil
-	}
-	if identityErr != nil {
-		_, _ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "ownership could not be proven for an unregistered slot")
-		return fmt.Errorf("%w: inspect unregistered standby slot: %w", state.ErrOwnership, identityErr)
-	}
-	if actual != expectedIdentity {
-		_, _ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "unregistered slot inode changed before cleanup")
-		return fmt.Errorf("%w: unregistered standby slot identity changed", state.ErrOwnership)
-	}
-	if err := owner.RemoveAll(relative); err != nil {
-		_, _ = m.store.QuarantineArtifact(ctx, "standby_slot", slotPath, "unregistered slot cleanup failed")
-		return err
-	}
-	return verifyRootDescriptorPath(rootPath, owner)
 }
 
 func (m *Manager) WaitReady(ctx context.Context, id, token string) error {

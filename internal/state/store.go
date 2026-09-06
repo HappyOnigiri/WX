@@ -912,7 +912,7 @@ func (s *Store) ReadySlots(ctx context.Context, workspaceID string) ([]Slot, err
 // リトライ中の一時状態である FAILED は枠に残し、通常セッション成功時点で記録された除外だけを計算から外す。
 const standbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
 	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
-	AND sl.state IN ('PREPARING','READY','FAILED','RETIRING','REMOVING')
+	AND sl.state IN ('ALLOCATING','REGISTERING','PREPARING','READY','FAILED','RETIRING','REMOVING')
 	AND (sl.state<>'FAILED' OR NOT EXISTS (
 		SELECT 1 FROM standby_replenish_exclusions ex
 		WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
@@ -923,6 +923,7 @@ const standbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl
 // last_used_at は READY からの貸出でしか書かれず cold start・復元の slot では NULL のまま残るため、判定には使わない。
 const quarantinedStandbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
 	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.state='QUARANTINED'
+	AND substr(COALESCE(sl.failure_code,''),1,11)<>'ALLOCATION_'
 	AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.slot_id=sl.id)
 	AND sl.updated_at>COALESCE((SELECT reset_at FROM standby_quarantine_resets qr
 		WHERE qr.workspace_id=sl.workspace_id AND qr.generation=sl.generation),'')`
@@ -1204,6 +1205,248 @@ func (s *Store) CreateSlotSession(ctx context.Context, slot Slot, repos []SlotRe
 		}
 	}
 	return job, tx.Commit()
+}
+
+// ReserveSlot は物理 directory を作る前に slot の位置だけを台帳へ予約する。
+// owner_session_id はまだ存在しない session を指すが、待機枠と通常貸出の予約を区別するために使う。
+func (s *Store) ReserveSlot(ctx context.Context, slot Slot) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return err
+	}
+	if err := insertReservedSlotTx(ctx, tx, slot); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ReserveStandbyIfNeeded は待機枠の再確認と物理作成前の slot 予約を同じ transaction で行う。
+// 予約中の slot も待機枠に数えるため、並行した補充が上限を越えない。
+func (s *Store) ReserveStandbyIfNeeded(ctx context.Context, slot Slot, limit, quarantineLimit int) (bool, error) {
+	if limit <= 0 {
+		return false, nil
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return false, err
+	}
+	var currentGeneration int
+	if err := tx.QueryRowContext(ctx, `SELECT generation FROM workspaces WHERE id=?`, slot.WorkspaceID).Scan(&currentGeneration); err != nil {
+		return false, err
+	}
+	if currentGeneration != slot.Generation {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	count, err := standbyCountTx(ctx, tx, slot.WorkspaceID)
+	if err != nil {
+		return false, err
+	}
+	if count >= limit {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if quarantineLimit > 0 {
+		quarantined, quarantineErr := quarantinedStandbyCountTx(ctx, tx, slot.WorkspaceID)
+		if quarantineErr != nil {
+			return false, quarantineErr
+		}
+		if quarantined >= quarantineLimit {
+			if err := tx.Commit(); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+	}
+	if err := insertReservedSlotTx(ctx, tx, slot); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func insertReservedSlotTx(ctx context.Context, tx *sql.Tx, slot Slot) error {
+	t := now()
+	_, err := tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,owner_session_id,created_at,updated_at) VALUES(?,?,?,?,?,NULL,'ALLOCATING',?,?,?)`, slot.ID, nullString(slot.WorkspaceID), slot.Generation, slot.RootID, slot.RelPath, nullString(slot.OwnerSessionID), t, t)
+	return err
+}
+
+// ConfirmSlotCreation は descriptor から取得した slot directory identity を予約行へ CAS で記録する。
+// identity の確定後だけ、session・repository・job の登録へ進める。
+func (s *Store) ConfirmSlotCreation(ctx context.Context, id, dirIdentity string) error {
+	if dirIdentity == "" {
+		return errors.New("slot directory identity is required")
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	t := now()
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REGISTERING',dir_identity=?,updated_at=? WHERE id=? AND state='ALLOCATING' AND dir_identity IS NULL`, dirIdentity, t, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("slot %s creation reservation compare-and-swap failed", id)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,message) SELECT ?,'info','slot_transition',workspace_id,id,? FROM slots WHERE id=?`, t, "state=REGISTERING failure_code=", id)
+	return err
+}
+
+// RegisterReservedSlotSession は identity を確定した予約 slot に session 一式を登録する。
+// いずれかの INSERT が失敗しても予約行は残り、呼び出し側が CAS で隔離できる。
+func (s *Store) RegisterReservedSlotSession(ctx context.Context, slotID string, repos []SlotRepository, session Session, slotState, jobKind string) (Job, error) {
+	var job Job
+	var err error
+	if jobKind != "" {
+		job, err = newJob(jobKind, session.WorkspaceID, session.SlotID, session.ID)
+		if err != nil {
+			return Job{}, err
+		}
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, err
+	}
+	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return Job{}, err
+	}
+	if jobKind == "RESTORE" && session.ParentSessionID != "" {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sessions WHERE parent_session_id=? AND state='RESTORING'`, session.ParentSessionID).Scan(&count); err != nil {
+			return Job{}, err
+		}
+		if count != 0 {
+			return Job{}, errors.New("session is already being restored")
+		}
+	}
+	t := now()
+	for _, r := range repos {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slotID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
+			return Job{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,parent_session_id,state,agent_kind,client_pid,session_token_hash,requested_branch_spec,created_at,pending_agent_session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, session.ID, nullString(session.WorkspaceID), session.SlotID, nullString(session.ParentSessionID), session.State, session.AgentKind, session.ClientPID, session.TokenHash, "", t, nullString(session.PendingAgentSessionID)); err != nil {
+		return Job{}, err
+	}
+	if jobKind == "RESTORE" && session.ParentSessionID != "" {
+		if err := copySessionRepositories(ctx, tx, session.ID, session.ParentSessionID); err != nil {
+			return Job{}, err
+		}
+	} else if session.WorkspaceID != "" {
+		if err := insertCurrentSessionRepositories(ctx, tx, session.ID, session.WorkspaceID, session.SlotID); err != nil {
+			return Job{}, err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state=?,owner_session_id=?,updated_at=? WHERE id=? AND state='REGISTERING' AND dir_identity IS NOT NULL AND owner_session_id=? AND COALESCE(workspace_id,'')=?`, slotState, session.ID, t, slotID, session.ID, session.WorkspaceID)
+	if err != nil {
+		return Job{}, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return Job{}, fmt.Errorf("slot %s registration compare-and-swap failed", slotID)
+	}
+	if jobKind != "" {
+		if err := insertJob(ctx, tx, job); err != nil {
+			return Job{}, err
+		}
+	}
+	if session.WorkspaceID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id IN (SELECT repository_id FROM workspace_repositories WHERE workspace_id=?)`, t, session.WorkspaceID); err != nil {
+			return Job{}, err
+		}
+	}
+	return job, tx.Commit()
+}
+
+// RegisterReservedStandby は identity を確定した予約 slot に待機用 repository と job を登録する。
+func (s *Store) RegisterReservedStandby(ctx context.Context, slotID string, repos []SlotRepository) (Job, error) {
+	job, err := newJob("PREPARE", "", slotID, "")
+	if err != nil {
+		return Job{}, err
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, err
+	}
+	defer tx.Rollback()
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		return Job{}, err
+	}
+	var workspaceID string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(workspace_id,'') FROM slots WHERE id=?`, slotID).Scan(&workspaceID); err != nil {
+		return Job{}, err
+	}
+	job.WorkspaceID = workspaceID
+	for _, r := range repos {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slotID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
+			return Job{}, err
+		}
+	}
+	t := now()
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',updated_at=? WHERE id=? AND state='REGISTERING' AND dir_identity IS NOT NULL AND owner_session_id IS NULL`, t, slotID)
+	if err != nil {
+		return Job{}, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return Job{}, fmt.Errorf("slot %s standby registration compare-and-swap failed", slotID)
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, err
+	}
+	return job, tx.Commit()
+}
+
+// QuarantineReservedSlot は作成途中の予約が競合・失敗したときに物理実体を残したまま隔離する。
+func (s *Store) QuarantineReservedSlot(ctx context.Context, id, code string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	t := now()
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='QUARANTINED',owner_session_id=NULL,updated_at=?,failure_code=?,failure_detail_path=NULL WHERE id=? AND state IN ('ALLOCATING','REGISTERING')`, t, nullString(code), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("slot %s reservation state compare-and-swap failed", id)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,message) SELECT ?,'warn','slot_transition',workspace_id,id,? FROM slots WHERE id=?`, t, "state=QUARANTINED failure_code="+code, id)
+	return err
 }
 
 func (s *Store) CreateStandby(ctx context.Context, slot Slot, repos []SlotRepository) (Job, error) {
@@ -2451,7 +2694,7 @@ func (s *Store) SlotArtifacts(ctx context.Context) ([]SlotArtifact, error) {
 }
 
 func (s *Store) QuarantineMissingSlot(ctx context.Context, id, reason string) error {
-	return s.SetSlotState(ctx, id, []string{"PREPARING", "READY", "LEASED", "DRAINING", "SNAPSHOTTING", "SNAPSHOTTED", "UNBOUND", "RESTORING", "RETIRING", "REMOVING", "FAILED", "STALE"}, "QUARANTINED", reason)
+	return s.SetSlotState(ctx, id, []string{"ALLOCATING", "REGISTERING", "PREPARING", "READY", "LEASED", "DRAINING", "SNAPSHOTTING", "SNAPSHOTTED", "UNBOUND", "RESTORING", "RETIRING", "REMOVING", "FAILED", "STALE"}, "QUARANTINED", reason)
 }
 
 // QuarantineArtifact は隔離記録を追加または更新し、今回はじめて記録したときだけ inserted=true を返す。
