@@ -301,6 +301,26 @@ func (s *Store) SuspendReplenish(ctx context.Context, workspaceID, reason, detai
 	return err
 }
 
+// SuspendFailedStandbyReplenishment は現行世代の未貸出 slot の準備失敗だけで補充を停止する。
+// 構成更新で無効になった準備ジョブが新世代を止めないよう、対象の確認と停止の記録を同じ SQL で行う。
+// 既存の停止理由は維持し、今回新しく停止を記録した場合だけ true を返す。
+func (s *Store) SuspendFailedStandbyReplenishment(ctx context.Context, jobID string) (bool, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	res, err := s.db.ExecContext(ctx, `INSERT INTO replenish_suspensions(workspace_id,reason,detail,suspended_at)
+		SELECT sl.workspace_id,?,j.id,? FROM jobs j
+		JOIN slots sl ON sl.id=j.slot_id AND sl.workspace_id=j.workspace_id
+		JOIN workspaces w ON w.id=sl.workspace_id AND w.generation=sl.generation
+		WHERE j.id=? AND j.kind='PREPARE' AND j.session_id IS NULL AND sl.owner_session_id IS NULL
+		  AND sl.state IN ('PREPARING','FAILED','QUARANTINED')
+		ON CONFLICT(workspace_id) DO NOTHING`, SuspendReplenishReasonStandbyFailure, now(), jobID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // assertNoActiveClean は貸出側の書き込みトランザクションから clean の実行を検査する。
 // 対象予約と同じ writer lock の下で判定するため、予約済み slot が新しい session へ渡ることはない。
 func assertNoActiveClean(ctx context.Context, tx *sql.Tx) error {

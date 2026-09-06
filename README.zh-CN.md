@@ -9,7 +9,7 @@
 
 - **独立的工作环境** — 智能体在 detached HEAD 状态的 Git worktree 中工作，不会更改原工作区的 HEAD、暂存区和已跟踪文件。
 - **随时开始工作** — 后台守护进程会为最近使用的仓库预先准备工作环境。
-- **恢复会话** — 使用 `wx leases` 查看会话，使用 `wx resume` 恢复已归档的工作。
+- **恢复会话** — 使用 `wx slots` 查看槽位与会话，使用 `wx resume` 恢复已归档的工作。
 - **熟悉的命令** — 直接使用 Claude Code 或 Codex 的常用参数，也可以指定起始分支。
 
 ## 安装
@@ -51,7 +51,7 @@ wx --branch feature/api codex
 ## 更多功能
 
 - **状态与诊断：** `wx status`、`wx doctor`。
-- **会话管理与清理：** `wx leases`、`wx resume`、`wx gc --dry-run`、`wx clear`。
+- **会话管理与清理：** `wx slots`、`wx resume`、`wx gc --dry-run`、`wx clear`。
 - **配置：** 使用 `wx config` 查看配置或修改单个配置值。
 - **智能体集成：** 全局智能体 hook 会检查工作环境是否就绪，将智能体会话绑定到 wx，并在工作结束后归还。
   请配置为仅在设置了 `WX_SESSION_ID` 时调用 `wx hook session-start`、`wx hook user-prompt-submit`、`wx hook pre-tool-use` 和 `wx hook session-end`。

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -79,8 +80,8 @@ func run(ctx context.Context, args []string) int {
 		return runDaemon(ctx, args[1:])
 	case "hook":
 		return runHook(ctx, args[1:])
-	case "leases":
-		return runLeases(ctx, args[1:])
+	case "slots":
+		return runSlots(ctx, args[1:])
 	case "forget":
 		return runForget(ctx, args[1:])
 	}
@@ -881,43 +882,82 @@ func runHook(ctx context.Context, args []string) int {
 	return 0
 }
 
-func runLeases(ctx context.Context, args []string) int {
-	fs := pflag.NewFlagSet("leases", pflag.ContinueOnError)
-	all := fs.Bool("all", false, "include inactive and expired leases")
+func runSlots(ctx context.Context, args []string) int {
+	fs := pflag.NewFlagSet("slots", pflag.ContinueOnError)
+	all := fs.Bool("all", false, "include failed, quarantined, and released slots")
 	jsonOut := fs.Bool("json", false, "print JSON")
-	fs.Usage = func() { commandUsage(os.Stdout, "leases") }
-	if code, done := finishFlagParse(fs, "leases", args); done {
+	fs.Usage = func() { commandUsage(os.Stdout, "slots") }
+	if code, done := finishFlagParse(fs, "slots", args); done {
 		return code
 	}
 	if fs.NArg() != 0 {
-		commandUsage(os.Stderr, "leases")
+		commandUsage(os.Stderr, "slots")
 		return 2
 	}
 	c, _ := rpcClient()
 	var out []map[string]any
-	if err := c.Call(ctx, "Sessions", map[string]bool{"all": *all}, &out); err != nil {
+	if err := c.Call(ctx, "Slots", map[string]bool{"all": *all}, &out); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
-	}
-	// daemonが旧実装でも、既定表示はACTIVEだけというCLIの契約を守る。
-	if !*all {
-		active := out[:0]
-		for _, s := range out {
-			if sessionState, ok := s["state"].(string); ok && sessionState == "ACTIVE" {
-				active = append(active, s)
-			}
-		}
-		out = active
 	}
 	if *jsonOut {
 		data, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Println(string(data))
 		return 0
 	}
+	fmt.Printf(slotRowFormat, "SLOT", "STATE", "SESSION", "AGENT", "COPY", "SIZE(MB)", "PATH")
 	for _, s := range out {
-		fmt.Printf("%s  %-12v %-8v %v\n", s["id"], s["state"], s["agent"], s["agent_session_id"])
+		fmt.Printf(slotRowFormat,
+			slotField(s, "slot_id"), slotField(s, "state"), slotField(s, "session_id"), slotField(s, "agent"),
+			slotCopyMode(s), slotSizeMB(s), slotField(s, "path"))
 	}
 	return 0
+}
+
+const slotRowFormat = "%-8s %-12s %-8s %-8s %-11s %8s  %s\n"
+
+func slotField(row map[string]any, key string) string {
+	if value, ok := row[key].(string); ok && value != "" {
+		return value
+	}
+	return "-"
+}
+
+// slotCopyMode は方式を出し、まだ決まらない行には copy_mode の代わりに理由（pending・unsupported）を出す。
+// 空欄にすると測定前と情報のない行を見分けられない。
+func slotCopyMode(row map[string]any) string {
+	if mode, ok := row["copy_mode"].(string); ok && mode != "" {
+		return mode
+	}
+	return slotField(row, "measurement")
+}
+
+// slotSizeMB は slot が専有する bytes を MB へ切り上げ、3 桁区切りで返す。
+// main worktree と共有している block を除いた量なので、slot を消して解放される見込みの大きさにあたる。
+// 測定前の行は 0 ではなく - と表示する。
+func slotSizeMB(row map[string]any) string {
+	if _, measured := row["measured_at"].(string); !measured {
+		return "-"
+	}
+	const megabyte = 1 << 20
+	exclusive, _ := row["exclusive_bytes"].(float64)
+	if exclusive < 0 {
+		exclusive = 0
+	}
+	return formatThousands((int64(exclusive) + megabyte - 1) / megabyte)
+}
+
+// formatThousands は負でない整数を 3 桁ごとに , で区切る。
+func formatThousands(value int64) string {
+	digits := strconv.FormatInt(value, 10)
+	var out strings.Builder
+	for i := range len(digits) {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			out.WriteByte(',')
+		}
+		out.WriteByte(digits[i])
+	}
+	return out.String()
 }
 
 func runForget(ctx context.Context, args []string) int {

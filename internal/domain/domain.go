@@ -18,6 +18,10 @@ type (
 	RepositoryID string
 )
 
+// ErrNonDirectoryComponent は、path 成分の形状が要求と違うだけの失敗を呼び出し側が所有権の異常と区別できるようにする。
+// symlink を見つけた場合は ErrSymlinkPath を返す。
+var ErrNonDirectoryComponent = errors.New("non-directory component in physical path")
+
 func NewID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -218,7 +222,7 @@ func PhysicalPathInfo(root *os.Root, relative string) (os.FileInfo, error) {
 			return nil, fmt.Errorf("%w: symlink component in physical path %s", ErrSymlinkPath, current)
 		}
 		if !info.IsDir() && current != clean {
-			return nil, fmt.Errorf("non-directory component in physical path %s", current)
+			return nil, fmt.Errorf("%w %s", ErrNonDirectoryComponent, current)
 		}
 	}
 	return root.Lstat(clean)
