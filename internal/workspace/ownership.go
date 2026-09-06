@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +19,11 @@ const ownershipMarkerPrefix = ".wx-owner-"
 // ownershipMarkerVersion は marker の schema 版である。version 2 の marker は絶対 target path を記録しない。
 // 代わりに durable な root 世代 ID と SQLite が記録する inode identity がその役割を担うため、設定した root が移動しても marker を書き換えずに済む。
 const ownershipMarkerVersion = 2
+
+// ownershipMarkerMinVersionは、読み取りが受理するversionの下限であり、書き込み側の
+// ownershipMarkerVersionとは独立に管理する。これを上げてよいのは、それ未満のversionで
+// 書かれたmarkerを持つslotがもう存在しないと言えるときだけである。
+const ownershipMarkerMinVersion = 2
 
 type ownershipMarker struct {
 	Version      int    `json:"version"`
@@ -210,7 +214,7 @@ func newOwnershipMarker(target string, identity MarkerIdentity, commonDir string
 		if err := validatePhysicalPathAllowMissingLeaf(absoluteTarget); err != nil {
 			return ownershipMarker{}, err
 		}
-	} else if err := domain.ValidatePhysicalPath(absoluteTarget, false); err != nil {
+	} else if err := domain.ValidatePhysicalLeaf(absoluteTarget); err != nil {
 		return ownershipMarker{}, fmt.Errorf("worktree target is not physical: %w", err)
 	}
 	if info, statErr := os.Lstat(absoluteTarget); statErr == nil {
@@ -345,32 +349,26 @@ func validateMarkerContents(owner *os.Root, relative string, expected ownershipM
 	return nil
 }
 
+// readOwnershipMarkerは、wx自身しか書かないmarkerを読み戻す。所有権の証明として意味を持つのは
+// 呼び出し元が比較するID一致だけなので、未知フィールド・末尾データ・パーミッションは許容する。
+// versionはownershipMarkerMinVersion以上を受け付け、書き込み版を上げても既存slotは隔離されない。
 func readOwnershipMarker(owner *os.Root, relative string) (ownershipMarker, error) {
 	info, err := owner.Lstat(relative)
 	if err != nil {
 		return ownershipMarker{}, fmt.Errorf("wx ownership marker is missing: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return ownershipMarker{}, errors.New("wx ownership marker is not an owner-only regular file")
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return ownershipMarker{}, errors.New("wx ownership marker is not a regular file")
 	}
 	data, err := owner.ReadFile(relative)
 	if err != nil {
 		return ownershipMarker{}, fmt.Errorf("read wx ownership marker: %w", err)
 	}
 	var marker ownershipMarker
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&marker); err != nil {
+	if err := json.NewDecoder(strings.NewReader(string(data))).Decode(&marker); err != nil {
 		return ownershipMarker{}, fmt.Errorf("decode wx ownership marker: %w", err)
 	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return ownershipMarker{}, errors.New("wx ownership marker has trailing data")
-		}
-		return ownershipMarker{}, fmt.Errorf("decode wx ownership marker trailing data: %w", err)
-	}
-	if marker.Version != ownershipMarkerVersion || marker.SlotID == "" || strings.ContainsAny(marker.SlotID, `/\`) || marker.RootID == "" || marker.RepositoryID == "" || marker.CommonDir == "" {
+	if marker.Version < ownershipMarkerMinVersion || marker.SlotID == "" || strings.ContainsAny(marker.SlotID, `/\`) || marker.RootID == "" || marker.RepositoryID == "" || marker.CommonDir == "" {
 		return ownershipMarker{}, errors.New("wx ownership marker is incomplete")
 	}
 	return marker, nil
@@ -385,11 +383,11 @@ func validatePhysicalPathAllowMissingLeaf(path string) error {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return errors.New("worktree target is not a physical directory")
 		}
-		return domain.ValidatePhysicalPath(absolute, false)
+		return nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return statErr
 	}
-	return domain.ValidatePhysicalPath(filepath.Dir(absolute), false)
+	return domain.ValidatePhysicalLeaf(filepath.Dir(absolute))
 }
 
 // RegisteredWorktreeLockReason は target に対する Git の lock 理由を返す。
@@ -412,8 +410,8 @@ func RegisteredWorktreeLockStatus(ctx context.Context, runner *gitx.Runner, main
 	}
 	for _, record := range gitx.ParseWorktreeRecords(listed.Stdout) {
 		if err := validatePhysicalPathAllowMissingLeaf(record.Path); err != nil {
-			// symlink alias 経由で到達する Git 登録は所有権の一致とみなさない。
-			// 先に解決すると path のすり替えが見えなくなる。
+			// 登録 path の leaf 自体が symlink のものは worktree ではないので除く。
+			// 祖先が symlink の登録は同じ実体なので、下の canonical 比較で照合する。
 			continue
 		}
 		got, resolveErr := canonicalPathAllowMissing(record.Path)

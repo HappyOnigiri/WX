@@ -127,7 +127,7 @@ func TestLoadRawRejectsMultipleYAMLDocuments(t *testing.T) {
 
 func TestExpandHomeRejectsImplicitExpansion(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	for _, path := range []string{"~/worktrees", "$TMPDIR/worktrees", "relative"} {
+	for _, path := range []string{"~otheruser/worktrees", "~otheruser", "$TMPDIR/worktrees", "relative"} {
 		if _, err := ExpandHome(path); err == nil {
 			t.Errorf("ExpandHome(%q) succeeded", path)
 		}
@@ -137,13 +137,25 @@ func TestExpandHomeRejectsImplicitExpansion(t *testing.T) {
 	}
 }
 
+func TestExpandHomeExpandsTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if got, err := ExpandHome("~"); err != nil || got != home {
+		t.Fatalf("ExpandHome(~)=%q err=%v want=%q", got, err, home)
+	}
+	want := filepath.Join(home, "worktrees")
+	if got, err := ExpandHome("~/worktrees"); err != nil || got != want {
+		t.Fatalf("ExpandHome(~/worktrees)=%q err=%v want=%q", got, err, want)
+	}
+}
+
 func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	values := map[string]string{
 		"worktree.undefined":    "cold",
 		"storage.worktree_root": "$HOME/wx", "storage.repo_dir_source": "directory", "storage.backup_generations": "4", "storage.backup_retention": "24h",
-		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3", "pool.git_concurrency_per_repository": "1",
+		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3",
 		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
 		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "resume.auto_fresh": "true", "includes.default_agent_rules": "false", "logging.level": "debug",
 	}
@@ -167,9 +179,6 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 		if field.Key == "includes.default_agent_rules" && field.Value != "false" {
 			t.Fatalf("default agent rules field=%q", field.Value)
 		}
-		if field.Key == "pool.git_concurrency_per_repository" && field.Value != "1" {
-			t.Fatalf("git concurrency field=%q", field.Value)
-		}
 	}
 	for _, pathFn := range []func() (string, error){Path, StatePath, SocketPath, LogPath} {
 		if path, err := pathFn(); err != nil || !strings.HasPrefix(path, home) {
@@ -189,7 +198,7 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 
 func TestSetFieldRejectsEveryInvalidScalarType(t *testing.T) {
 	keys := []string{
-		"storage.backup_generations", "pool.warm_per_workspace", "pool.preparation_concurrency", "pool.git_concurrency_per_repository",
+		"storage.backup_generations", "pool.warm_per_workspace", "pool.preparation_concurrency",
 		"discovery.max_depth", "discovery.max_entries",
 		"storage.backup_retention", "retention.hot_standby", "retention.ended_worktree", "retention.recovery_snapshot",
 		"retention.expired_session_tombstone", "retention.failed_job", "retention.event_log", "discovery.timeout", "includes.default_agent_rules",
@@ -297,25 +306,8 @@ func TestValidateRejectsEachPolicyClass(t *testing.T) {
 	}
 }
 
-func TestGitConcurrencyPerRepositoryAcceptsOnlyOne(t *testing.T) {
-	valid := Defaults()
-	if valid.Pool.GitConcurrencyPerRepository != 1 {
-		t.Fatalf("default git concurrency=%d, want 1", valid.Pool.GitConcurrencyPerRepository)
-	}
-	for _, value := range []int{0, 2} {
-		cfg := valid
-		cfg.Pool.GitConcurrencyPerRepository = value
-		err := Validate(&cfg)
-		if err == nil {
-			t.Fatalf("git concurrency %d was accepted", value)
-		}
-		if !strings.Contains(err.Error(), "pool.git_concurrency_per_repository") || !strings.Contains(err.Error(), "1") {
-			t.Fatalf("git concurrency %d error=%v, want key and supported value", value, err)
-		}
-	}
-}
-
-func TestLoadRejectsUnsupportedGitConcurrency(t *testing.T) {
+// pool.git_concurrency_per_repository は削除済みキー。既存configに残っていても読み込みを失敗させず、無視する。
+func TestLoadIgnoresRemovedGitConcurrencyKey(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	path, err := Path()
@@ -325,11 +317,34 @@ func TestLoadRejectsUnsupportedGitConcurrency(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("version: 1\npool:\n  git_concurrency_per_repository: 2\n"), 0o600); err != nil {
+	document := "version: 1\npool:\n  warm_per_workspace: 2\n  git_concurrency_per_repository: 4\n"
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "pool.git_concurrency_per_repository") || !strings.Contains(err.Error(), "1") {
-		t.Fatalf("Load error=%v, want key and supported value", err)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Pool.WarmPerWorkspace != 2 {
+		t.Fatalf("warm_per_workspace=%d, want 2 (siblings of the removed key must survive)", cfg.Pool.WarmPerWorkspace)
+	}
+	for _, field := range Fields(cfg) {
+		if field.Key == "pool.git_concurrency_per_repository" {
+			t.Fatal("removed key is still listed by Fields")
+		}
+	}
+	raw, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+	if raw.has("pool.git_concurrency_per_repository", false) {
+		t.Fatal("removed key is still recorded as present")
+	}
+	if err := os.WriteFile(path, []byte("version: 1\ngit_concurrency_per_repository: 4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil {
+		t.Fatal("top-level unknown key was accepted")
 	}
 }
 

@@ -118,6 +118,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
 - **root使用量の測定** — worktree rootのディスク使用量はreconcileと同じ周期処理だけが測り、`Status`はその値と測定時刻を返す。
   測定量はroot配下の総ファイル数に比例するため、要求のたびに測るとslotが増えるほど`Status`が遅くなり、高負荷時にはclientの制限時間を超える。
   最初の測定が終わるまでは`measurement`を`pending`とし、0を実測値として見せない。
+- **root世代登録の再試行** — 起動時や設定変更時にroot世代（`roots`行）の登録が失敗すると、そのrootへの全allocationが`ErrOwnership`で落ち続ける。
+  reconcileと同じ周期処理が、失敗が残っている間だけdescriptorを取り直して再登録を試み、rootを作り直した・volumeをmountし直したといった外的な回復をdaemon再起動なしで拾う。
+  同じ理由の連続失敗はログを1回に抑え、`wx doctor`の`worktree_root`は失敗理由に再試行し続ける旨を添えて返す。
 - **degraded運用** — SQLiteが開けないときも`Status`・`Doctor`・`RequestStop`は`DegradedHandler`が答える。
   診断のためにdaemonを完全に沈黙させないためである。
   `RequestStop`だけは状態を変えるがゲートを通さない（状態を変えるRPCを一切受け付けない以上、守るべきin-flightの予約が無い）。
@@ -169,12 +172,22 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
    認識できない理由でlockされたworktreeは、wxのものではない。
 
 このうち2と3は、pinしたroot descriptor配下の相対pathに対して行う。
-`domain.OpenOwnedRoot`がrootをinodeごとpinし、`domain.PhysicalPathInfo`が全成分のsymlinkを拒否するので、検査と実行の間にpathを差し替えられても、差し替え先へ操作が届かない。
+`domain.OpenOwnedRoot`がrootをinodeごとpinし、`domain.PhysicalPathInfo`がroot配下の全成分のsymlinkを拒否するので、検査と実行の間にpathを差し替えられても、差し替え先へ操作が届かない。
+root自身より上の祖先成分は検査せず、`~/dev`のようなsymlink配下にworktree rootやソースリポジトリを置ける。
+pin後の操作は`os.Root`のopenatに閉じているため、祖先を差し替えられてもpin済みのdescriptorは動かない。
 1のDB側は「何が正しいか」を答え、descriptorは「いま触っているものが本当にそれか」を答える。
 DBが持つidentityはdescriptorが返す`vol:<inode>:<volume>`と同じ形式なので、2つの層が同じ対象を指していることを比較できる。
 volume成分にdevice番号を使わないのは、macOSではmount順で決まるdevice番号が再起動をまたいで変わり、記録済みの行が一斉に一致しなくなるためである（darwinではmount point、linuxではfilesystem IDで表す）。
 device番号を含む旧形式で記録された行は、`EnsureActiveRoot`がinodeの一致を確かめた上で、root世代とその配下のslot・リポジトリまとめて現行形式へ書き換える。
 `workspace_repositories.relative_path`はソース側でのリポジトリ位置という本来の意味だけを担い、slot内の配置は`slot_repositories.dir_name`が持つ。
+
+証明を行うのは破壊的操作ごとに直前の1回で、同じ操作の前後にinode・path・identityの再検証を重ねない。
+削除・上書きの対象そのものが自分の物であることの確認は、この直前の1回に含む。
+`rename`のようにatomicな操作は、成功した後で結果を確認し直さない。
+pin済みdescriptorへ操作が閉じている限り、単一ユーザー・単一マシンでは検査と実行の間に割り込む相手がいないためである。
+
+この粒度では、証明から操作までの間に別のプロセスが対象へ書き込んだ内容を検出できない。
+それを承知で採る方針なので、書き込み得るプロセスが並行しない位置（貸出前の準備・復元中など）に破壊的操作を置く。
 
 ## ディスク上のレイアウト
 

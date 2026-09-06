@@ -48,10 +48,16 @@ func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
 		t.Fatal(err)
 	}
+	// 置き換え先は元のディレクトリが在るうちに作る。
+	// 消してから同じパスへ作り直すと、inodeを再利用するfilesystemでは identity が一致して置き換えを表せない。
+	replacement := slot.Path + ".replacement"
+	if err := os.MkdirAll(replacement, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(slot.Path); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(slot.Path, 0o700); err != nil {
+	if err := os.Rename(replacement, slot.Path); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slot, ""); !errors.Is(err, state.ErrOwnership) {
