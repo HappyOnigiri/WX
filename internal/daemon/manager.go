@@ -130,6 +130,7 @@ type Manager struct {
 	rootIDs              map[string]string
 	rootUsage            map[string]rootUsageSample
 	rootError            string
+	rootRetryLogged      string
 	rootCond             *sync.Cond
 	rootClosing          bool
 	leases               map[string]func()
@@ -605,6 +606,7 @@ func (m *Manager) maintainLifecycle() {
 			continue
 		case <-timer.C:
 			_ = m.reloadConfig(false)
+			m.retryRootGeneration(m.ctx)
 			m.reconcileStandbyReplenishments(m.ctx)
 			m.reconcileRegistry(m.ctx)
 			m.reconcileArtifacts(m.ctx)
@@ -1368,23 +1370,98 @@ func leasePath(slotPath, kind string, repos []state.SlotRepository) string {
 var errManagerClosed = errors.New("daemon manager is closed")
 
 func (m *Manager) registerRootGeneration(ctx context.Context, root, identity string) {
-	// root IDなしのslotは再発見できないため、失敗時は後続のallocationをfail closedにする。
+	if err := m.ensureRootGeneration(ctx, root, identity); err != nil {
+		m.log.Error("register worktree root generation failed", "path", root, "error", err)
+	}
+}
+
+// ensureRootGeneration はroot generationを登録し、失敗理由をrootErrorへ残して返す。
+// root IDなしのslotは再発見できないため、失敗時は後続のallocationをfail closedにする。
+// ログは呼出元が出す。周期的な再試行が同じ失敗を繰り返し記録しないためである。
+func (m *Manager) ensureRootGeneration(ctx context.Context, root, identity string) error {
 	if identity == "" {
-		m.log.Error("worktree root generation cannot be registered without an identity", "path", root)
-		m.setRootError(fmt.Sprintf("worktree root %s has no readable inode identity", root))
-		return
+		err := fmt.Errorf("worktree root %s has no readable inode identity", root)
+		m.setRootError(err.Error())
+		return err
 	}
 	id, err := m.store.EnsureActiveRoot(ctx, root, identity)
 	if err != nil {
-		m.log.Error("register worktree root generation failed", "path", root, "error", err)
 		m.setRootError(err.Error())
-		return
+		return err
 	}
 	m.mu.Lock()
 	m.ensureRootStateLocked()
 	m.rootIDs[root] = id
 	m.rootError = ""
+	m.rootRetryLogged = ""
 	m.mu.Unlock()
+	return nil
+}
+
+// retryRootGeneration は失敗したままのroot generation登録を周期処理から再試行する。
+// rootを作り直した・volumeをmountし直したといった外的な回復を、daemon再起動なしで拾うためである。
+func (m *Manager) retryRootGeneration(ctx context.Context) {
+	m.mu.RLock()
+	failing := m.rootError != ""
+	m.mu.RUnlock()
+	if !failing {
+		return
+	}
+	configured := m.Config().Storage.WorktreeRoot
+	root, err := config.ExpandHome(configured)
+	if err != nil {
+		m.recordRootRetryFailure(configured, err)
+		return
+	}
+	root = filepath.Clean(root)
+	identity, err := m.retryRootIdentity(root)
+	if err != nil {
+		m.recordRootRetryFailure(root, err)
+		return
+	}
+	if err := m.ensureRootGeneration(ctx, root, identity); err != nil {
+		m.recordRootRetryFailure(root, err)
+		return
+	}
+	m.log.Info("worktree root generation registration recovered", "path", root)
+}
+
+// retryRootIdentity は再試行のためにactive rootのdescriptorを取り直し、そのidentityを返す。
+// 起動時にidentityを読めなかったrootはpinが空のままなので、読めた時点でpinを埋める。
+func (m *Manager) retryRootIdentity(root string) (string, error) {
+	handle, release, err := m.rootDescriptor(root)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	identity, err := descriptorIdentity(handle)
+	if err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	m.ensureRootStateLocked()
+	if m.rootIdentities[root] == "" {
+		m.rootIdentities[root] = identity
+	}
+	if entry := m.rootRefs[root]; entry != nil && entry.identity == "" {
+		entry.identity = identity
+	}
+	m.mu.Unlock()
+	return identity, nil
+}
+
+// recordRootRetryFailure は再試行の失敗をrootErrorへ反映し、理由が変わらない連続失敗はログを1回に抑える。
+func (m *Manager) recordRootRetryFailure(root string, err error) {
+	message := err.Error()
+	m.mu.Lock()
+	m.rootError = message
+	repeated := m.rootRetryLogged == message
+	m.rootRetryLogged = message
+	m.mu.Unlock()
+	if repeated {
+		return
+	}
+	m.log.Error("retry worktree root generation registration failed", "path", root, "error", err)
 }
 
 func (m *Manager) setRootError(message string) {
@@ -3852,7 +3929,8 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	if rootError == "" {
 		checks["worktree_root"] = "ok"
 	} else {
-		checks["worktree_root"] = rootError
+		// 再起動しか手が無いと読ませないため、周期処理が再登録を試み続けることを添える。
+		checks["worktree_root"] = rootError + "; wx retries the registration on each reconcile"
 	}
 	checks["worktree_registration"] = m.registrationDiagnostics(ctx)
 	checks["artifact_ownership"] = m.artifactDiagnostics(ctx)
