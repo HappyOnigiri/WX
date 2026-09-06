@@ -249,7 +249,7 @@ func cowTemporaryName(t *testing.T, root *os.Root, directory string) (string, er
 		return "", err
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".wx-cow-") {
+		if strings.HasPrefix(entry.Name(), cowTemporaryPrefix) {
 			return entry.Name(), nil
 		}
 	}

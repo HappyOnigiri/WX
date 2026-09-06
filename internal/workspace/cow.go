@@ -19,6 +19,21 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
+// cowTemporaryPrefix は交換中の一時ファイル名の接頭辞で、中断時の元ファイルを指す予約名でもある。
+// 検出の pathspec はこの定数から組み立て、名前を変えたときに検査だけが取り残されないようにする。
+const cowTemporaryPrefix = ".wx-cow-"
+
+func cowLeftoverArgs() []string {
+	return []string{"ls-files", "--others", "--exclude-standard", "-z", "--", ":(glob)**/" + cowTemporaryPrefix + "*"}
+}
+
+func cowLeftoverResult(stdout string) error {
+	if stdout != "" {
+		return fmt.Errorf("%w: interrupted CoW replacement remains", state.ErrOwnership)
+	}
+	return nil
+}
+
 // compactWorktree は checkout/復元の最終 bytes を変えず、main と同内容の通常ファイルだけを共有する。
 // 貸出前にのみ呼び、Git の index（復元時の staged/unstaged の区別を含む）は作り直さない。
 func (p *Preparer) compactWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string) error {
@@ -80,12 +95,12 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 		return fmt.Errorf("%w: open CoW Git directory: %w", state.ErrOwnership, err)
 	}
 	defer directory.Close()
-	leftovers, err := p.runGitInDirectory(ctx, directory, "ls-files", "--others", "--exclude-standard", "-z", "--", ":(glob)**/.wx-cow-*")
+	leftovers, err := p.runGitInDirectory(ctx, directory, cowLeftoverArgs()...)
 	if err != nil {
 		return err
 	}
-	if leftovers.Stdout != "" {
-		return fmt.Errorf("%w: interrupted CoW replacement remains", state.ErrOwnership)
+	if err := cowLeftoverResult(leftovers.Stdout); err != nil {
+		return err
 	}
 	entries, err := p.runGitInDirectory(ctx, directory, "ls-files", "--stage", "-z")
 	if err != nil {
@@ -198,7 +213,7 @@ func compactFile(ctx context.Context, source, destination *os.Root, name string,
 
 func replaceWithClone(ctx context.Context, in, original, parent *os.File, root *os.Root, name string, before unix.Stat_t, validate func() error) (result error) {
 	leaf := filepath.Base(name)
-	temporary := ".wx-cow-" + rand.Text()
+	temporary := cowTemporaryPrefix + rand.Text()
 	if err := cloneCOW(in, parent, temporary); err != nil {
 		return err
 	}
@@ -371,12 +386,9 @@ func sameCOWBytes(ctx context.Context, a, b *os.File) (bool, error) {
 
 // rejectCOWTemporaries は方式変更後も中断時の元ファイルを通常の生成物と取り違えない。
 func (p *Preparer) rejectCOWTemporaries(ctx context.Context, target, identity string) error {
-	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "ls-files", "--others", "--exclude-standard", "-z", "--", ":(glob)**/.wx-cow-*")
+	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, cowLeftoverArgs()...)
 	if err != nil {
 		return err
 	}
-	if result.Stdout != "" {
-		return fmt.Errorf("%w: interrupted CoW replacement remains", state.ErrOwnership)
-	}
-	return nil
+	return cowLeftoverResult(result.Stdout)
 }
