@@ -52,6 +52,10 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	}
 	var out map[string]any
 	if err := c.Call(ctx, method, struct{}{}, &out); err != nil {
+		if rpc.IsConnectError(err) {
+			fmt.Fprintln(os.Stderr, "error: wx daemon is not running or still starting; try again shortly")
+			return 1
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}

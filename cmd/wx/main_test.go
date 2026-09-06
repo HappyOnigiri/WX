@@ -94,6 +94,21 @@ func TestRunRPCDisplaySortsHumanReadableOutputByKey(t *testing.T) {
 	}
 }
 
+func TestRunRPCDisplayExplainsWhenDaemonIsNotReady(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stderr := captureStderr(t, func() {
+		if code := runRPCDisplay(context.Background(), "Status", nil); code != 1 {
+			t.Fatalf("runRPCDisplay exit=%d, want 1 when daemon is unavailable", code)
+		}
+	})
+	if want := "wx daemon is not running or still starting; try again shortly"; !strings.Contains(stderr, want) {
+		t.Fatalf("daemon connection guidance=%q, want substring %q", stderr, want)
+	}
+	if strings.Contains(stderr, "dial unix") {
+		t.Fatalf("daemon connection guidance leaked socket implementation detail: %q", stderr)
+	}
+}
+
 func TestRunDoctorFallsBackToLocalChecksWhenDaemonCannotConnect(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
