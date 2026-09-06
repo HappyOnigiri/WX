@@ -491,8 +491,10 @@ func ExpandHome(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	path = expandTilde(path, h)
 	if strings.Contains(path, "~") {
-		return "", errors.New("~ is not expanded; use $HOME")
+		// `~user`（他ユーザーのホーム）はwxが解決手段を持たないため展開せず拒否する。
+		return "", errors.New("~ is only supported as a leading ~ or ~/ prefix; use $HOME for other cases")
 	}
 	if strings.Contains(path, "$") && path != "$HOME" && !strings.HasPrefix(path, "$HOME"+string(filepath.Separator)) {
 		return "", errors.New("only $HOME expansion is supported")
@@ -502,6 +504,18 @@ func ExpandHome(path string) (string, error) {
 		return "", errors.New("path must be absolute")
 	}
 	return filepath.Clean(path), nil
+}
+
+// expandTilde は先頭の `~`（単体または `~/` prefix）だけを home に展開する。
+// `~user` 形式は home を特定できないため素通りさせ、呼び出し側の検証に委ねる。
+func expandTilde(path, home string) string {
+	if path == "~" {
+		return home
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(home, path[len("~/"):])
+	}
+	return path
 }
 
 func Validate(c *Config) error {
@@ -834,10 +848,8 @@ func normalizeListPath(path string) string {
 	if path == "" {
 		return ""
 	}
-	if path == "~" || strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			path = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"))
-		}
+	if home, err := os.UserHomeDir(); err == nil {
+		path = expandTilde(path, home)
 	}
 	if absolute, err := filepath.Abs(path); err == nil {
 		return absolute
