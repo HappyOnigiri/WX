@@ -3,23 +3,8 @@ package domain
 import (
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
-	"time"
 )
-
-// descriptorFileInfo は FileIdentity のテストに任意の Sys() 値を渡す。
-// *syscall.Stat_t 以外の形状も実ファイルなしで検証できる。
-type descriptorFileInfo struct {
-	sys any
-}
-
-func (i descriptorFileInfo) Name() string       { return "test" }
-func (i descriptorFileInfo) Size() int64        { return 0 }
-func (i descriptorFileInfo) Mode() os.FileMode  { return 0 }
-func (i descriptorFileInfo) ModTime() time.Time { return time.Time{} }
-func (i descriptorFileInfo) IsDir() bool        { return false }
-func (i descriptorFileInfo) Sys() any           { return i.sys }
 
 func TestDescriptorOperationsPinAndValidateDirectories(t *testing.T) {
 	root := t.TempDir()
@@ -87,27 +72,5 @@ func TestDescriptorOperationsPinAndValidateDirectories(t *testing.T) {
 	}
 	if _, _, err := OpenDirectoryAt(owner, "child"); err != nil {
 		t.Fatalf("reopening child: %v", err)
-	}
-}
-
-func TestFileIdentityRejectsUnavailableAndUnsupportedMetadata(t *testing.T) {
-	for _, info := range []os.FileInfo{
-		nil,
-		descriptorFileInfo{},
-		descriptorFileInfo{sys: (*syscall.Stat_t)(nil)},
-		descriptorFileInfo{sys: 42},
-		descriptorFileInfo{sys: syscall.Stat_t{Dev: 7, Ino: 11}}, // not a pointer
-	} {
-		if _, err := FileIdentity(info); err == nil {
-			t.Fatalf("unsupported metadata accepted: %#v", info)
-		}
-	}
-
-	identity, err := FileIdentity(descriptorFileInfo{sys: &syscall.Stat_t{Dev: 7, Ino: 11}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if identity != "7:11" {
-		t.Fatalf("identity=%q want 7:11", identity)
 	}
 }

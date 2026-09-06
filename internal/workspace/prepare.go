@@ -854,7 +854,7 @@ func (p *Preparer) runGitInDirectory(ctx context.Context, directory *os.File, ar
 	return p.Git.RunAt(ctx, directory, nil, nil, args...)
 }
 
-// WorktreeIdentity は configured ownership root 経由で target の device/inode identity を返す。
+// WorktreeIdentity は configured ownership root 経由で target の volume/inode identity を返す。
 // 復元済みまたは lease 中 worktree に複数操作をする呼び出し元はこれを保持し、置換 target を元の slot と取り違えない。
 func (p *Preparer) WorktreeIdentity(target string) (string, error) {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)

@@ -2,9 +2,7 @@ package domain
 
 import (
 	"errors"
-	"fmt"
 	"os"
-	"syscall"
 )
 
 // OpenOwnedDirectory は root を起点とする descriptor 経由で既存ディレクトリを開く。
@@ -62,7 +60,7 @@ func OpenDirectoryAt(owner *os.Root, relative string) (*os.File, string, error) 
 		_ = file.Close()
 		return nil, "", errors.New("owned path changed while opening")
 	}
-	identity, err := FileIdentity(info)
+	identity, err := FileIdentity(file)
 	if err != nil {
 		_ = file.Close()
 		return nil, "", err
@@ -107,18 +105,4 @@ func OpenRootAt(owner *os.Root, relative string) (*os.Root, error) {
 		return nil, errors.New("owned path changed while opening")
 	}
 	return child, nil
-}
-
-// FileIdentity は device/inode の同一性を可搬な文字列で返す。 本パッケージは darwin と linux だけでビルドするため info.Sys() は常に *syscall.Stat_t
-// であり、型 assertion に失敗した場合はゼロ値ではなくエラーを返す。 同一性は同じバイナリが取得したローカル inode との比較にだけ使うため、OS 間で
-// 表現形式を一致させる必要はない。
-func FileIdentity(info os.FileInfo) (string, error) {
-	if info == nil || info.Sys() == nil {
-		return "", errors.New("file identity is unavailable")
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat == nil {
-		return "", fmt.Errorf("unsupported file identity type %T", info.Sys())
-	}
-	return fmt.Sprintf("%d:%d", stat.Dev, stat.Ino), nil
 }
