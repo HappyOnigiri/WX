@@ -485,6 +485,7 @@ func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Pre
 		DetailDir: m.prepareDetailDir,
 		OwnedRoot: ownedRoot, RootPath: filepath.Clean(root),
 		RootID: slot.RootID, SlotRelPath: slot.RelPath,
+		Log: m.log,
 	}
 }
 
@@ -2067,7 +2068,7 @@ func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules config
 		return fmt.Errorf("%w: open slot root namespace: %w", state.ErrOwnership, err)
 	}
 	defer func() { _ = destination.Close() }()
-	if err := workspace.MaterializeRootAt(source, destination, rules); err != nil {
+	if err := workspace.MaterializeRootAt(m.log, source, destination, rules); err != nil {
 		return err
 	}
 	if err := verifyRootDescriptorPath(root, owner); err != nil {

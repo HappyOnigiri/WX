@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,10 +41,10 @@ func TestMaterializeRootCopiesLinksAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := config.Workspace{Copy: []string{"docs", "docs"}, Link: []string{"shared"}}
-	if err := MaterializeRoot(source, target, rules); err != nil {
+	if err := MaterializeRoot(nil, source, target, rules); err != nil {
 		t.Fatal(err)
 	}
-	if err := MaterializeRoot(source, target, rules); err != nil {
+	if err := MaterializeRoot(nil, source, target, rules); err != nil {
 		t.Fatalf("idempotent materialization: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(target, "docs", "nested", "note"))
@@ -76,14 +77,19 @@ func TestWorkspaceRootDefaultSymlinkRuleIsSkipped(t *testing.T) {
 	if after != before {
 		t.Fatalf("default symlink changed fingerprint before=%s after=%s", before, after)
 	}
-	if err := MaterializeRoot(source, target, config.Workspace{}); err != nil {
+	if err := MaterializeRoot(nil, source, target, config.Workspace{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(target, "AGENTS.md")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("default symlink materialized: %v", err)
 	}
-	if err := MaterializeRoot(source, t.TempDir(), config.Workspace{Copy: []string{"AGENTS.md"}}); err == nil || !strings.Contains(err.Error(), "symlink") {
+	// 明示指定した名前も symlink なら既定名と同じく skip し、prepare を失敗させない。
+	explicitTarget := t.TempDir()
+	if err := MaterializeRoot(nil, source, explicitTarget, config.Workspace{Copy: []string{"AGENTS.md"}}); err != nil {
 		t.Fatalf("explicit symlink copy error=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(explicitTarget, "AGENTS.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("explicit symlink materialized: %v", err)
 	}
 }
 
@@ -93,7 +99,7 @@ func TestMaterializeRootRejectsMissingExplicitCopyBeforeWriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	rules := config.Workspace{Copy: []string{"required.json"}}
-	err := MaterializeRoot(source, target, rules)
+	err := MaterializeRoot(nil, source, target, rules)
 	if err == nil {
 		t.Fatal("missing explicit workspace copy succeeded")
 	}
@@ -140,7 +146,7 @@ func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := MaterializeRootAt(source, owner, config.Workspace{Copy: []string{"copied.txt"}, Link: []string{"shared"}}); err != nil {
+	if err := MaterializeRootAt(nil, source, owner, config.Workspace{Copy: []string{"copied.txt"}, Link: []string{"shared"}}); err != nil {
 		t.Fatalf("pinned materialization: %v", err)
 	}
 	data, err := owner.ReadFile("copied.txt")
@@ -151,7 +157,7 @@ func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
 	if err != nil || link != filepath.Join(source, "shared") {
 		t.Fatalf("pinned link=%q err=%v", link, err)
 	}
-	if err := MaterializeRootAt(source, nil, config.Workspace{}); err == nil {
+	if err := MaterializeRootAt(nil, source, nil, config.Workspace{}); err == nil {
 		t.Fatal("nil destination root was accepted")
 	}
 }
@@ -378,13 +384,13 @@ func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "shared"), []byte("collision"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := MaterializeRoot(source, target, config.Workspace{Link: []string{"shared"}}); err == nil {
+	if err := MaterializeRoot(nil, source, target, config.Workspace{Link: []string{"shared"}}); err == nil {
 		t.Fatal("link collision succeeded")
 	}
-	if err := MaterializeRoot(source, target, config.Workspace{Copy: []string{"../outside"}}); err == nil {
+	if err := MaterializeRoot(nil, source, target, config.Workspace{Copy: []string{"../outside"}}); err == nil {
 		t.Fatal("unsafe copy succeeded")
 	}
-	if err := MaterializeRoot(source, target, config.Workspace{Link: []string{"../outside"}}); err == nil {
+	if err := MaterializeRoot(nil, source, target, config.Workspace{Link: []string{"../outside"}}); err == nil {
 		t.Fatal("unsafe link succeeded")
 	}
 }
@@ -410,7 +416,7 @@ func TestRuleConflictsAreRejectedBeforeMaterialization(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			target := t.TempDir()
-			if err := MaterializeRoot(source, target, test.rules); err == nil {
+			if err := MaterializeRoot(nil, source, target, test.rules); err == nil {
 				t.Fatal("conflicting rules succeeded")
 			}
 			entries, err := os.ReadDir(target)
@@ -830,6 +836,81 @@ func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testi
 	}
 }
 
+// TestSkippedSourcesAreRecorded は、skip した source が後から追える形で warn ログに残ることを確認する。
+func TestSkippedSourcesAreRecorded(t *testing.T) {
+	base := t.TempDir()
+	repository := filepath.Join(base, "repository")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "real"), []byte("real\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(repository, "linked-source")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "unignored"), []byte("unignored\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("linked-source\nunignored\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(base, "worktrees")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	var logged strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root, Log: logger}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	if err := preparer.createLinks(context.Background(), repo, target); err != nil {
+		t.Fatalf("createLinks: %v", err)
+	}
+	for _, want := range []string{"source is a symlink", "linked-source", "is not ignored", "unignored"} {
+		if !strings.Contains(logged.String(), want) {
+			t.Fatalf("skip log %q missing from %q", want, logged.String())
+		}
+	}
+
+	logged.Reset()
+	workspaceRoot := filepath.Join(base, "workspace")
+	if err := os.Mkdir(workspaceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "real"), []byte("real\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"copied", "linked"} {
+		if err := os.Symlink("real", filepath.Join(workspaceRoot, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	materialized := filepath.Join(base, "materialized")
+	rules := config.Workspace{Copy: []string{"copied"}, Link: []string{"linked"}}
+	if err := MaterializeRoot(logger, workspaceRoot, materialized, rules); err != nil {
+		t.Fatalf("MaterializeRoot: %v", err)
+	}
+	for _, name := range []string{"copied", "linked"} {
+		if _, err := os.Lstat(filepath.Join(materialized, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("symlink workspace source %s materialized: %v", name, err)
+		}
+		if !strings.Contains(logged.String(), name) {
+			t.Fatalf("skip log for %s missing from %q", name, logged.String())
+		}
+	}
+}
+
 func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
@@ -874,8 +955,12 @@ func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, "not-ignored"), []byte("now present\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := preparer.createLinks(context.Background(), repo, target); err == nil || !strings.Contains(err.Error(), "not ignored") {
+	// 未 ignore の link は worktree に追跡差分を作らないよう、その 1 件だけ skip する。
+	if err := preparer.createLinks(context.Background(), repo, target); err != nil {
 		t.Fatalf("present unignored link error=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(target, "not-ignored")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unignored link materialized: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("../outside\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -943,8 +1028,12 @@ func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("source\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := preparer.createLinks(context.Background(), discovery.Repository{MainPath: domain.CanonicalPath(repository)}, target); err == nil || !strings.Contains(err.Error(), "physical") {
-		t.Fatalf("link source through symlink ancestor succeeded: %v", err)
+	// symlink の link source は辿らず skip する。repository の外を指す実体を worktree に持ち込まないためである。
+	if err := preparer.createLinks(context.Background(), discovery.Repository{MainPath: domain.CanonicalPath(repository)}, target); err != nil {
+		t.Fatalf("symlink link source error=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(target, "source")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlink link source materialized: %v", err)
 	}
 
 	linkSource := filepath.Join(repository, "real-source")
@@ -986,7 +1075,7 @@ func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, "nested", "value"), []byte("value\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := MaterializeRoot(repository, materializedTarget, config.Workspace{Copy: []string{"nested/value"}}); err == nil || !strings.Contains(err.Error(), "destination") {
+	if err := MaterializeRoot(nil, repository, materializedTarget, config.Workspace{Copy: []string{"nested/value"}}); err == nil || !strings.Contains(err.Error(), "destination") {
 		t.Fatalf("copy destination through symlink ancestor succeeded: %v", err)
 	}
 }
@@ -1159,12 +1248,21 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("tracked\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	linkTarget := filepath.Join(slotPath, "link-failure")
-	if err := preparer.Prepare(context.Background(), repo, linkTarget, head, "link-failure"); err == nil || !strings.Contains(err.Error(), "not ignored") {
+	// 未 ignore の link は skip されるため、prepare 自体は成功して worktree が残る。
+	// 成功した prepare は所有権 marker を slot directory に残すので、後続の失敗ケースとは別の slot を使う。
+	linkSlotRelPath := filepath.Join(testWorkspaceID, "slot-link-skipped")
+	linkPreparer := preparer
+	linkPreparer.SlotPath = filepath.Join(worktreeRoot, linkSlotRelPath)
+	linkPreparer.SlotRelPath = linkSlotRelPath
+	linkTarget := filepath.Join(linkPreparer.SlotPath, testRepositoryID)
+	if err := linkPreparer.Prepare(context.Background(), repo, linkTarget, head, "link-skipped"); err != nil {
 		t.Fatalf("prepare link policy error=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(linkTarget, ".git")); !os.IsNotExist(err) {
-		t.Fatalf("link-policy partial worktree remains: %v", err)
+	if _, err := os.Stat(filepath.Join(linkTarget, ".git")); err != nil {
+		t.Fatalf("link-skipped worktree missing: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(linkTarget, "tracked")); err != nil {
+		t.Fatalf("link-skipped worktree lost its tracked file: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -1389,8 +1487,10 @@ func TestFingerprintCoversRecursiveDuplicateAndWorkspaceLinkInputs(t *testing.T)
 	if err := os.Symlink(root, filepath.Join(repository, "included")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Fingerprint(2, "oid", repo, cfg); err == nil || !strings.Contains(err.Error(), "symlink") {
-		t.Fatalf("include symlink error=%v", err)
+	// symlink の include は materializer が skip するため、fingerprint も失敗せず skip 済みとして値が変わる。
+	third, err := Fingerprint(2, "oid", repo, cfg)
+	if err != nil || third == second {
+		t.Fatalf("include symlink fingerprint=%s err=%v", third, err)
 	}
 	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("../outside\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1472,8 +1572,12 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("included\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := preparer.copyIncludes(repo, target); err == nil || !strings.Contains(err.Error(), "symlink") {
+	// symlink の include は辿らず skip し、include 処理全体は成功させる。
+	if err := preparer.copyIncludes(repo, target); err != nil {
 		t.Fatalf("include copy error=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(target, "included")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("include symlink materialized: %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("blocked/child\n"), 0o600); err != nil {
@@ -1656,7 +1760,7 @@ func TestWorkspaceHelpersRejectUnreadableInputsAndUnwritableTargets(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(linkTarget, 0o700) })
-	if err := MaterializeRoot(root, linkTarget, config.Workspace{Link: []string{"link-source"}}); err == nil {
+	if err := MaterializeRoot(nil, root, linkTarget, config.Workspace{Link: []string{"link-source"}}); err == nil {
 		t.Fatal("workspace link created in unwritable target")
 	}
 }
@@ -1743,7 +1847,7 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	}
 
 	brokenSource, materialized := t.TempDir(), t.TempDir()
-	if err := MaterializeRoot(brokenSource, materialized, config.Workspace{Link: []string{"missing"}}); err == nil {
+	if err := MaterializeRoot(nil, brokenSource, materialized, config.Workspace{Link: []string{"missing"}}); err == nil {
 		t.Fatal("missing root link source succeeded")
 	}
 	if err := os.WriteFile(filepath.Join(brokenSource, "AGENTS.local.md"), []byte("rules"), 0o640); err != nil {
@@ -1752,7 +1856,7 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	if err := os.Symlink(filepath.Join(brokenSource, "AGENTS.local.md"), filepath.Join(materialized, "AGENTS.local.md")); err != nil {
 		t.Fatal(err)
 	}
-	if err := MaterializeRoot(brokenSource, materialized, config.Workspace{}); err == nil {
+	if err := MaterializeRoot(nil, brokenSource, materialized, config.Workspace{}); err == nil {
 		t.Fatal("root copy overwrote destination symlink")
 	}
 	if _, err := Fingerprint(1, head, discovery.Repository{MainPath: domain.CanonicalPath(brokenSource)}, cfg); err != nil {

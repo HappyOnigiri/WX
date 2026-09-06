@@ -220,7 +220,7 @@ func TestMaterializeRootAtRejectsSymlinkAncestorInCopyRule(t *testing.T) {
 	}
 	defer func() { _ = destinationRoot.Close() }()
 	rules := config.Workspace{Copy: []string{filepath.Join("linked", "value")}}
-	if err := MaterializeRootAt(source, destinationRoot, rules); err == nil {
+	if err := MaterializeRootAt(nil, source, destinationRoot, rules); err == nil {
 		t.Fatal("workspace copy rule through a symlink ancestor was accepted")
 	}
 }

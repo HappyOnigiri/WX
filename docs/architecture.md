@@ -246,7 +246,9 @@ multi_repositoryのworkspaceスナップショットは、slotディレクトリ
 
 - `.worktreelink`に列挙したpathは、main worktree側の実体へ直接symlinkする（`createLinksAt`）。
   sourceが存在しない項目は、ファイル・ディレクトリを問わずその準備では省略し、sourceの出現・消失でslot再利用をfingerprintの存在状態変更により止める。
-  sourceのsymlink・path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
+  sourceがsymlinkの項目と、ソースリポジトリのignore対象でない項目も同じく省略し、省略した対象と理由をdaemon logにwarnで残す。
+  path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
+  同じ扱いはworkspace rootのcopy/link source（`MaterializeRootAt`）と`.worktreeinclude`の一致にも適用し、既定名と明示名で挙動を分けない。
   workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
 - 生成器を持たない。
   help本文、config schema、SQLite migration、LaunchAgent plistはすべて手書きで維持し、shell completionは実装しない。
