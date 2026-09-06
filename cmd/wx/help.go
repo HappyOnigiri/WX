@@ -27,7 +27,7 @@ Commands:
   prune [--all] [--dry-run]      delete recovery refs the database cannot explain
   clear [--all] [--standby]      delete managed worktrees now
   retry-standby <workspace>      resume standby replenishment after it stopped
-  leases [--all] [--json]        list managed wx leases
+  slots [--all] [--json]         list managed wx slots and their disk usage
   config [<key> ...]             show or update configuration
   resume <id> [agent] [args...]  restore a wx session
   forget <workspace-path>        forget an inactive workspace
@@ -129,21 +129,36 @@ The workspace path is shown by wx status when standby replenishment is stopped.`
        wx config <key> --remove <value>
        wx config <key> --reset
 
-Show effective configuration, or atomically update one supported scalar key or list.`)
+Show effective configuration, or atomically update one supported scalar key or list.
+
+Copy mode (storage.copy_mode):
+  auto  share identical checked-out files with APFS CoW; fall back to copies, but quarantine when ownership is unprovable (default)
+  cow   fail preparation if CoW fails
+  copy  keep normal Git checkout files`)
 	case "resume":
 		_, _ = fmt.Fprintln(w, `Usage: wx resume <wx-session-id> [claude|codex] [--fresh] [--branch <branch>] [agent-arguments...]
 
 Restore an archived wx session into a new managed workspace.
 With --fresh, keep the conversation but build the worktree from the current base.
 Use --branch with --fresh to choose the detached base.`)
-	case "leases":
-		_, _ = fmt.Fprintln(w, `Usage: wx leases [--all] [--json]
+	case "slots":
+		_, _ = fmt.Fprintln(w, `Usage: wx slots [--all] [--json]
 
-List managed wx leases and their recovery state.
-By default, only ACTIVE sessions are listed.
+List managed wx slots with their session, copy mode, and disk usage.
+By default, only READY and LEASED slots are listed.
+
+SIZE(MB) is what the slot occupies on its own, rounded up: blocks it still
+shares with the main worktree are excluded, so the column sums without double
+counting. COPY reports what the slot looks like now: cow once any file still
+shares blocks with the main worktree, copy otherwise.
+
+The daemon measures a slot when its preparation finishes and re-measures every
+root periodically; wx slots only reads those results, never measures on demand.
+Rows still waiting for the first measurement show pending, and platforms that
+cannot compare blocks show unsupported. --json carries the measurement time.
 
 Options:
-  --all   include inactive and expired leases
+  --all   include failed, quarantined, and released slots
   --json  print machine-readable JSON`)
 	case "forget":
 		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path>

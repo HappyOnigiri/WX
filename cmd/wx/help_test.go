@@ -22,16 +22,24 @@ import (
 type commandHandler struct {
 	workspace string
 	gcResult  *daemon.GCResult
-	sessions  []map[string]any
+	slots     []map[string]any
+	allSlots  []map[string]any
 }
 
-func (h commandHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+func (h commandHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
 	switch method {
-	case "Sessions":
-		if h.sessions != nil {
-			return h.sessions, nil
+	case "Slots":
+		var p struct {
+			All bool `json:"all"`
 		}
-		return []map[string]any{{"id": "session", "state": "ACTIVE", "agent": "codex"}}, nil
+		_ = json.Unmarshal(raw, &p)
+		if p.All && h.allSlots != nil {
+			return h.allSlots, nil
+		}
+		if h.slots != nil {
+			return h.slots, nil
+		}
+		return []map[string]any{{"slot_id": "slot", "state": "LEASED", "session_id": "session", "agent": "codex"}}, nil
 	case "GC":
 		if h.gcResult != nil {
 			return *h.gcResult, nil
@@ -453,7 +461,7 @@ func TestTopUsageContract(t *testing.T) {
 	var b bytes.Buffer
 	topUsage(&b)
 	got := b.String()
-	for _, want := range []string{"Usage: wx", "Global options:", "Commands:", "claude [arguments", "resume conversation from the current base", "leases [--all]", "daemon install|uninstall"} {
+	for _, want := range []string{"Usage: wx", "Global options:", "Commands:", "claude [arguments", "resume conversation from the current base", "slots [--all]", "daemon install|uninstall"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("help missing %q:\n%s", want, got)
 		}
@@ -551,8 +559,8 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"prune", "--dry-run"},
 		{"clear", "--dry-run"},
 		{"retry-standby", home},
-		{"leases", "--all", "--json"},
-		{"leases"},
+		{"slots", "--all", "--json"},
+		{"slots"},
 		{"forget", home},
 		{"config"},
 		{"config", "logging.level", "warn"},
@@ -568,7 +576,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 			t.Fatalf("run(%v) exit=%d", args, exit)
 		}
 	}
-	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"prune", "extra"}, {"clear", "extra"}, {"clean"}, {"leases", "extra"}, {"sessions", "unknown"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
+	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"prune", "extra"}, {"clear", "extra"}, {"clean"}, {"slots", "extra"}, {"sessions", "unknown"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
 		if exit := run(ctx, args); exit != 2 {
 			t.Fatalf("misuse run(%v) exit=%d", args, exit)
 		}
@@ -614,7 +622,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 		{"status"},
 		{"gc", "--dry-run"},
 		{"prune", "--dry-run"},
-		{"leases", "--all"},
+		{"slots", "--all"},
 		{"forget", home},
 	} {
 		if exit := run(ctx, args); exit != 1 {
@@ -656,7 +664,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 }
 
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
-	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "leases", "config", "resume", "forget", "daemon"} {
+	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "slots", "config", "resume", "forget", "daemon"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			commandUsage(&output, command)

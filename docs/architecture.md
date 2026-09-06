@@ -71,6 +71,70 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
    復元後のworktreeはtracked changesを含むため、貸出前の検査はcleanなworking treeを要求しない`ValidateOwnership`を使う。
    READY slotの再利用側は`ValidateReady`で、こちらはtracked cleanまで求める。
 
+## worktree のコピー方式
+
+`storage.copy_mode`で、通常のGit checkout後に同内容の追跡ファイルをAPFS CoWへ置き換えるかを選ぶ。
+`wx config storage.copy_mode cow`のように変更でき、既定は`auto`である。
+
+| 値 | 動作 |
+| --- | --- |
+| `auto` | CoWを試み、失敗時は生成済みの通常コピーを使う |
+| `cow` | CoWが利用できない環境やclone失敗では準備を失敗させる |
+| `copy` | 通常のGit checkoutによるファイルを使う |
+
+対象はmain worktreeの同じpathにある通常ファイルで、cloneしたbytesと宛先の最終bytesが一致するものだけである。
+mainとcommitが異なっていても同内容のファイルは共有でき、dirtyなmainの変更は宛先へ持ち込まない。
+新規・内容不一致・空ファイル・symlink・submodule・複数hard linkを持つ宛先は通常方式のまま残す。
+mainのtree形状が異なる場合や、mainがこの処理中に変化した場合も、そのファイルだけを共有対象外として残りの処理を続ける。
+所有者・mode・flags・ACL・xattrが一致しないものも共有対象外とする。
+`cow`は共有対象のclone失敗をエラーにする指定であり、全ファイルの共有や削減容量を保証する指定ではない。
+
+`internal/workspace/cow.go`が準備・復元の完了前に処理し、Gitのfilter、checkout hook、prepare commandによる結果を保持する。
+indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変えないため、復元した区別も保たれる。
+宛先の日時はFD経由で復元し、元ファイルとcloneをatomic swapしてから元inodeを検証して削除する。
+所有権不明は`auto`でもfallbackせずQUARANTINEDとして実体を残す。
+中断して残った未追跡の`.wx-cow-*`も自動削除せず隔離するため、この名前は予約する。
+この検査は無視されたtreeを走査しないので、`.wx-cow-*`をgitignoreで無視すると残骸を検出できなくなる。
+貸出中のworktreeを後からCoW化する処理は持たない。
+
+Darwinでは`Fclonefileat`を使い、Linuxでは`auto`が通常方式、`cow`がエラーになる。
+clone元と宛先は同じ対応volumeにある必要があり、通常checkout1個分の一時容量は必要である。
+コピー方式はfingerprintに含めるため、設定変更後の貸出では以前の方式で作ったREADY slotを再利用しない。
+既に貸出中のslotのファイルは変更しない。
+`.worktreeinclude`、workspace rootのコピー、生成物、Git objectsや復旧snapshotの容量は、この設定の対象外である。
+`auto`が通常コピーへ落ちた回はdaemonのログにwarnとして残る。
+落ちた事実を握り潰したまま貸し出すと、CoWが常に効いていないことを利用者が知る手立てが無くなるためである。
+
+## slotの使用量とコピー方式の観測
+
+`wx slots`はslotを1行として、状態・借りているsession・実体のpath・コピー方式・使用量を出す。
+既定はREADYとLEASEDで、`--all`はFAILED・QUARANTINEDのslotと、slotを手放したsessionも加える。
+slotを持たないsessionの行はslot列を空にして返すため、`wx resume`へ渡すIDはこの一覧から辿れる。
+
+使用量はdaemonが測った値だけを`wx slots`と`wx status`が`measured_at`とともに返し、要求のたびには走査しない。
+要求時に測るとroot配下の総ファイル数に比例して応答が遅くなるためである。
+測る契機は2つで、lifecycleが`Discovery.ReconcileInterval`ごとにroot全体を測り直すのに加え、slotの準備が終わった直後にそのslotだけをbackgroundで測る。
+周期測定だけでは、対象一覧を撮った後に作られたslotが次の周期まで`pending`のままになり、CoWが効いていても方式が出ない。
+slot単位の測定はそのslotのsubtreeしか歩かず、貸出の応答に走査時間を持ち込まないようbackgroundで走る。
+周期測定は対象一覧を撮った時刻より新しい実測を上書きせず、準備直後の測定結果が次の周期まで消えないようにする。
+
+プレーン出力の容量列は`exclusive_bytes`をMBへ切り上げた1列だけで、main worktreeと共有しているblockを含まない。
+共有blockを含む`allocated_bytes`を並べると同じblockをslotの数だけ二重計上するため、slotを消して解放される見込みの量だけを出す。
+方式が決まらない行は`copy_mode`の代わりに`pending`・`unsupported`を同じ列へ出し、測定前と情報のない行を見分けられるようにする。
+
+コピー方式は準備時の記録ではなく、測定時点の実体から決める。
+`allocated_bytes`（`st_blocks*512`）はAPFSのcloneを割り引かず、共有していてもファイル1個分を満額で数えるため、この値だけではCoWと通常コピーを区別できない。
+そこでmain worktreeの同じpathを開き、`F_LOG2PHYS_EXT`で得た物理offsetの一致をblock共有の証拠として使う（`internal/workspace/usage.go`）。
+1つでも共有しているファイルがあれば`cow`、比較できて1つも無ければ`copy`とする。
+貸出後にエージェントが書き換えて共有が解けた分も、次の測定でそのまま`shared_bytes`の減少として現れる。
+
+比較するのは先頭と末尾の2点だけのsamplingなので、途中のblockだけが書き換わったファイルは共有と見える。
+`shared_bytes`は上限側の推定であり、`exclusive_bytes`は下限側の推定である。
+判定は前回の`(dev, ino, ctime)`でcacheし、共有を壊す書き込みが必ずctimeを更新することを根拠に、変化していないファイルの再判定を省く。
+どちらのファイルも読むだけで、内容もmetadataも変更しない。
+判定できない事情（open失敗・size不一致・platform非対応）はすべて共有なしとして扱い、測定の失敗で準備や貸出の結果を変えない。
+LinuxではCoW自体を行わないため、`measurement`は`unsupported`になり`shared_bytes`は常に0である。
+
 ## daemonの内部
 
 - **ジョブ** — 永続ジョブは`jobs`テーブルにあり、種別は`PREPARE`、`ENSURE_STANDBY`、`SNAPSHOT`、`RESTORE`、`REMOVE`、`REMOVE_REPOSITORY`。
@@ -122,6 +186,7 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
 - **root使用量の測定** — worktree rootのディスク使用量はreconcileと同じ周期処理だけが測り、`Status`はその値と測定時刻を返す。
   測定量はroot配下の総ファイル数に比例するため、要求のたびに測るとslotが増えるほど`Status`が遅くなり、高負荷時にはclientの制限時間を超える。
   最初の測定が終わるまでは`measurement`を`pending`とし、0を実測値として見せない。
+  slot単位の内訳だけは準備完了ごとにそのslotをbackgroundで測り直し、周期を待たずに方式と使用量が出るようにする（root合計は周期測定だけが更新する）。
 - **root世代登録の再試行** — 起動時や設定変更時にroot世代（`roots`行）の登録が失敗すると、そのrootへの全allocationが`ErrOwnership`で落ち続ける。
   reconcileと同じ周期処理が、失敗が残っている間だけdescriptorを取り直して再登録を試み、rootを作り直した・volumeをmountし直したといった外的な回復をdaemon再起動なしで拾う。
   同じ理由の連続失敗はログを1回に抑え、`wx doctor`の`worktree_root`は失敗理由に再試行し続ける旨を添えて返す。
@@ -205,7 +270,7 @@ worktree root（`storage.worktree_root`、既定`$HOME/wx`）配下は次の形�
 
 `_unbound/<slot-id>`は旧リリースが生成した残骸の回収用にだけ残り、新しいslotの生成には使わない。
 workspace-idとslot-idは6桁固定の小文字英数字（base36、`domain.NewShortID`）である。
-slot-idはleaseのsession IDと同値なので、`wx leases`が出すIDをそのまま`wx resume`に渡せる。
+slot-idはleaseのsession IDと同値なので、`wx slots`が出すIDをそのまま`wx resume`に渡せる。
 大文字を混ぜないのはAPFSが既定でcase-insensitiveなためで、同じ理由からslot内の配置名の衝突判定も小文字化して行い、衝突したら`-2`のサフィックスを付ける。
 
 `_`始まりはwxの予約プレフィックスで、workspace IDもリポジトリ配置名もこの接頭辞を拒否し、旧`_unbound`は回収用に特別扱いする。
@@ -222,7 +287,7 @@ slot-idはleaseのsession IDと同値なので、`wx leases`が出すIDをその
 `RepoName`の決定順は`repositories.<main path>.dir_name` → `repositories.<main path>.dir_source` → `storage.repo_dir_source`（既定`remote`）→ main worktreeのディレクトリ名である。
 `remote`は`git remote get-url origin`の出力から末尾の`.git`を除いたbasenameで、取れないときはディレクトリ名へ落ちる。
 採用した値は`slot_repositories.dir_name`に記録され、以後はその値が権威になる。
-設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`（`schema=5`）が準備入力を含むので新規slotから新しい設定を使う。
+設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`（`schema=6`）が準備入力を含むので新規slotから新しい設定を使う。
 
 `storage.worktree_root`を変えても既存slotは移動しない。
 `roots`テーブルがroot世代を持ち、slotは`root_id` + root相対pathで位置を表す。
