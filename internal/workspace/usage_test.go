@@ -154,3 +154,45 @@ func TestLookupUsagePrefixPicksTheLongestAncestor(t *testing.T) {
 		t.Fatal("empty prefix table matched")
 	}
 }
+
+// 共有判定と cache 再利用は platform に依らず同じ契約で、CoW のない環境では walker がここへ到達しない。
+func TestSharedWithRepositoryReusesUnchangedIdentities(t *testing.T) {
+	root, mainPath, _ := usageRoots(t)
+	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "nested/file", "shared content")
+	usageWrite(t, mainPath, "nested/file", "shared content")
+	const name, relative = "workspace/slot/repo/nested/file", "nested/file"
+	info, err := root.Stat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainRoots := map[string]*os.Root{}
+	t.Cleanup(func() {
+		for _, opened := range mainRoots {
+			if opened != nil {
+				opened.Close()
+			}
+		}
+	})
+	measured := SharedFileCache{}
+	// 別々に書いた実体は共有していないので、実測は cache の有無に関わらず false になる。
+	if sharedWithRepository(root, name, info, mainPath, relative, mainRoots, SharedFileCache{}, measured) {
+		t.Fatal("independent files reported as shared")
+	}
+	entry, cached := measured[name]
+	if !cached {
+		t.Fatalf("cache=%+v", measured)
+	}
+	entry.Shared = true
+	carried := SharedFileCache{}
+	if !sharedWithRepository(root, name, info, mainPath, relative, mainRoots, SharedFileCache{name: entry}, carried) {
+		t.Fatal("cached result was recomputed")
+	}
+	if carried[name] != entry {
+		t.Fatalf("carried=%+v want=%+v", carried[name], entry)
+	}
+	stale := entry
+	stale.CtimeNanos++
+	if sharedWithRepository(root, name, info, mainPath, relative, mainRoots, SharedFileCache{name: stale}, SharedFileCache{}) {
+		t.Fatal("stale cache entry was trusted")
+	}
+}

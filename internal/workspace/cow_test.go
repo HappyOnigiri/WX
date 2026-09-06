@@ -217,3 +217,79 @@ func TestCOWFallbackModes(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// leaf helper は clone 成功後にしか呼ばれないため、CoW のない platform ではここだけが検査の機会になる。
+func TestCOWLeafVerificationRejectsReplacedInode(t *testing.T) {
+	_, b := cowRoots(t)
+	cowWrite(t, b, "file", "same")
+	parent, err := os.Open(b.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	leaf, err := openCOWLeaf(parent, "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leaf.Close()
+	info, err := leaf.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyCOWLeaf(parent, "file", info); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Remove("file"); err != nil {
+		t.Fatal(err)
+	}
+	cowWrite(t, b, "file", "same")
+	if err := verifyCOWLeaf(parent, "file", info); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replaced leaf error=%v", err)
+	}
+	if err := b.Remove("file"); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyCOWLeaf(parent, "file", info); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("missing leaf error=%v", err)
+	}
+	if _, err := openCOWLeaf(parent, "missing"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing open error=%v", err)
+	}
+}
+
+func TestCOWByteComparisonSpansChunks(t *testing.T) {
+	body := strings.Repeat("x", 300<<10)
+	for _, test := range []struct {
+		name, left, right string
+		want              bool
+	}{
+		{"equal", body, body, true},
+		{"tail", body, body[:len(body)-1] + "y", false},
+		{"shorter", body, body[:len(body)-1], false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, b := cowRoots(t)
+			cowWrite(t, b, "left", test.left)
+			cowWrite(t, b, "right", test.right)
+			left, err := b.Open("left")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer left.Close()
+			right, err := b.Open("right")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer right.Close()
+			got, err := sameCOWBytes(context.Background(), left, right)
+			if err != nil || got != test.want {
+				t.Fatalf("equal=%t want=%t err=%v", got, test.want, err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if _, err := sameCOWBytes(ctx, left, right); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled error=%v", err)
+			}
+		})
+	}
+}
