@@ -109,3 +109,34 @@ func TestCOWPreservesExplicitDestinationACL(t *testing.T) {
 		t.Fatalf("ACL changed: %v", err)
 	}
 }
+
+// clone が単なるバイトコピーに退行しても他のテストは通るため、ブロック共有そのものを見る。
+func TestCOWSharesBlocks(t *testing.T) {
+	a, b := cowRoots(t)
+	const size = 64 << 20
+	data := bytes.Repeat([]byte("wx-cow-block-sharing\n"), size/21)
+	cowWrite(t, a, "file", string(data))
+	cowWrite(t, b, "file", string(data))
+	before, err := cowFreeBytes(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := compactFile(context.Background(), a, b, "file", func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	after, err := cowFreeBytes(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before-after > int64(len(data))/4 {
+		t.Fatalf("clone consumed %d bytes for a %d byte file; blocks were not shared", before-after, len(data))
+	}
+}
+
+func cowFreeBytes(root *os.Root) (int64, error) {
+	var fs unix.Statfs_t
+	if err := unix.Statfs(root.Name(), &fs); err != nil {
+		return 0, err
+	}
+	return int64(fs.Bfree) * int64(fs.Bsize), nil
+}
