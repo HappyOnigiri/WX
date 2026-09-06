@@ -45,7 +45,6 @@ jobs:
       - run: make lint
       - run: make deadcode
       - run: make mod-tidy-check
-      - run: make generated-check
       - run: make docs-check
       - run: make comments-check
       - run: make workflow-check

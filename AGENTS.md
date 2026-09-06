@@ -13,6 +13,8 @@
   継承した`GIT_DIR`・`GIT_WORK_TREE`・`GIT_INDEX_FILE`などが漏れると、別リポジトリへの操作が成功し、未捕捉のworktreeを削除し得る。
 - 自動で行う破壊的なファイルシステム操作の前に所有権を証明する。
   `state.OwnershipValidator`が`ErrOwnership`を返したら、実体を削除せず`QUARANTINED`として残す。
+  証明は破壊的操作ごとに直前の1回とし、同じ操作の前後でinode・path・identityの再検証を重ねない。
+  単一ユーザー・単一マシンでは、pin済みdescriptorへ閉じた操作に割り込む相手がいないためである。
 - TOCTOU対策はrootのpin（`os.Root`・`domain.OpenOwnedRoot`）、pin済みroot配下の全path成分のsymlink拒否（`domain.PhysicalPathInfo`）、子プロセスCWDのfchdir束縛（`internal/fdexec`）を揃える。
   root自身より上の祖先成分は検査しない（`domain.ValidatePhysicalLeaf`はleafだけを見る）。
   単一ユーザー・単一マシンでは祖先を差し替える相手がおらず、symlink配下にworktree rootやソースリポジトリを置けるようにするためである。
