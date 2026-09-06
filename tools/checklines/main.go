@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -78,8 +79,8 @@ func countLines(content []byte) int {
 	if len(content) == 0 {
 		return 0
 	}
-	lines := strings.Count(string(content), "\n")
-	if !strings.HasSuffix(string(content), "\n") {
+	lines := bytes.Count(content, []byte("\n"))
+	if !bytes.HasSuffix(content, []byte("\n")) {
 		lines++
 	}
 	return lines
