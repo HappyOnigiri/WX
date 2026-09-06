@@ -83,6 +83,26 @@ func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 		}
 	})
 
+	// dotfile を symlink 方式(GNU Stow等)で管理する運用では settings.json 自体が symlink になる。
+	// 拒否すると readiness hook が静かに未設定扱いになるため、regular file を指す symlink は許可する。
+	t.Run("claude settings.json is a symlink to a regular file", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		managed := filepath.Join(home, "dotfiles", "claude-settings.json")
+		writeHookConfigFile(t, managed, "{}")
+		shared := filepath.Join(home, ".claude", "settings.json")
+		if err := os.MkdirAll(filepath.Dir(shared), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(managed, shared); err != nil {
+			t.Fatal(err)
+		}
+		path, ok := readinessHookPaths("claude")
+		if !ok || path != shared {
+			t.Fatalf("readinessHookPaths(claude)=%v,%v want symlinked shared settings", path, ok)
+		}
+	})
+
 	t.Run("claude local settings unsafe", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
@@ -246,6 +266,23 @@ func TestAvailableEvaluatesFullReadinessContractPerAgent(t *testing.T) {
 		writeHookConfigFile(t, filepath.Join(home, ".claude", "settings.json"), validDocument)
 		if !Available("claude") {
 			t.Fatal("valid claude readiness contract reported unavailable")
+		}
+	})
+
+	t.Run("claude readiness contract satisfied via symlinked settings.json", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		managed := filepath.Join(home, "dotfiles", "claude-settings.json")
+		writeHookConfigFile(t, managed, validDocument)
+		shared := filepath.Join(home, ".claude", "settings.json")
+		if err := os.MkdirAll(filepath.Dir(shared), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(managed, shared); err != nil {
+			t.Fatal(err)
+		}
+		if !Available("claude") {
+			t.Fatal("valid claude readiness contract via symlinked settings.json reported unavailable")
 		}
 	})
 }
