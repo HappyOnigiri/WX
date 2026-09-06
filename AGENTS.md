@@ -2,7 +2,9 @@
 
 `wx`は、Claude CodeとCodexをdaemon管理のdetached worktreeで起動するGo製CLI + daemonである。
 機能と運用の複雑さは単一ユーザー・単一マシンを前提に判断する。
-実行対象はmacOSのみ（状態・socketは`~/Library`配下、常駐はLaunchAgent）で、linuxは退行検出用のビルド対象とする。
+実行対象はmacOSのみ（状態・socketは`~/Library`配下、常駐はLaunchAgent）で、linuxは退行検出用のビルド・テスト対象とする。
+CIのランナーは全てlinuxで、darwin専用実装は`make build-darwin`のクロスコンパイルでしか検査されない。
+これらに触ったら手元の`make ci`で実行を確かめる。
 
 ## 不変条件
 
