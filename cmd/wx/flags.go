@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 
 	"github.com/spf13/pflag"
 )
@@ -37,4 +40,39 @@ func parseAgentPrefix(args []string) (agentFlags, string, []string, error) {
 		return f, "", nil, pflag.ErrHelp
 	}
 	return f, rest[0], rest[1:], nil
+}
+
+// finishFlagParse は各サブコマンド共通の --help 契約を適用する。
+// ContinueOnError では pflag が help の Usage だけを自動表示するため、他の解析エラーは stderr に表示する。
+// done が true の場合、呼び出し側は code を返してよい。
+func finishFlagParse(fs *pflag.FlagSet, name string, args []string) (code int, done bool) {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, pflag.ErrHelp) {
+			return 0, true
+		}
+		// ContinueOnError の pflag はエラーを書き出さないため、Usage と併せて stderr に表示する。
+		fmt.Fprintln(os.Stderr, "error:", err)
+		commandUsage(os.Stderr, name)
+		return 2, true
+	}
+	return 0, false
+}
+
+// resumeFlagPrefix は先頭の wx オプションだけを分離し、残りを agent の argv として保つ。
+func resumeFlagPrefix(args []string) (wxArgs, agentArgs []string) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			return args[:i], args[i+1:]
+		case arg == "--fresh" || strings.HasPrefix(arg, "--fresh=") || strings.HasPrefix(arg, "--branch="):
+		case arg == "--branch":
+			if i+1 < len(args) {
+				i++
+			}
+		default:
+			return args[:i], args[i:]
+		}
+	}
+	return args, nil
 }

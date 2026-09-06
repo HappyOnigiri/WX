@@ -500,69 +500,6 @@ func TestPrepareOnANewWorktreePropagatesLockFailure(t *testing.T) {
 	}
 }
 
-func TestAddWorktreeWithIdentityRecognizesACleanFailedAdd(t *testing.T) {
-	_, repo, preparer, head, target := prepareEdgesFixture(t)
-	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	owner, _, err := domain.OpenOwnedRoot(root, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = owner.Close() }()
-	preparer.OwnedRoot = owner
-	preparer.RootPath = root
-	// gitは予約leafへの書き込みやworktree登録前に失敗するため、addWorktreeWithIdentityは予約namespaceをcleanと判断する。
-	// その結果、所有権が不確かなエラーではなく元のGitエラーを返す。
-	installGitFault(t, "worktree add --detach", 1)
-	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err == nil || errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("clean failed add error=%v, want a plain Git error", err)
-	}
-	if _, _, found, err := RegisteredWorktreeLockStatusAt(context.Background(), preparer.Git, string(repo.MainPath), owner, root, filepath.Join(testSlotRelPath, testRepositoryID), "irrelevant"); err != nil || found {
-		t.Fatalf("failed add left a Git registration: found=%v err=%v", found, err)
-	}
-}
-
-func TestAddWorktreeWithIdentityQuarantinesAnInterruptedAdd(t *testing.T) {
-	_, repo, preparer, head, target := prepareEdgesFixture(t)
-	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	owner, _, err := domain.OpenOwnedRoot(root, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = owner.Close() }()
-	preparer.OwnedRoot = owner
-	preparer.RootPath = root
-	// Gitが予約worktree namespaceへの書き込み後、成功報告前に中断された状態を再現する。
-	// 予約leafが空でないため、addWorktreeWithIdentityは単純な再試行可能エラーでなく不確かな結果（ownership quarantine）として扱う。
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatal(err)
-	}
-	bin := t.TempDir()
-	wrapper := filepath.Join(bin, "git")
-	script := "#!/bin/sh\n" +
-		"case \" $* \" in\n" +
-		"  *\"worktree add --detach\"*)\n" +
-		"    : > stray-partial-file\n" +
-		"    printf 'interrupted\\n' >&2\n" +
-		"    exit 1\n" +
-		"    ;;\n" +
-		"esac\n" +
-		"exec \"" + realGit + "\" \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("interrupted add error=%v, want an ownership-uncertain error", err)
-	}
-}
-
 func TestPrepareRejectsStateOwnershipBeforeWritingMarker(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot

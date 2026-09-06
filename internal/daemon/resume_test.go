@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,37 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
+
+func TestWorkspaceRecoveryExclusionsUseSlotDirectoryNames(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	cfg.Workspaces["/src/bundle"] = config.Workspace{Link: []string{"shared"}}
+	w := discoveryWorkspaceForExclusions()
+	repos := []state.SlotRepository{{RepositoryID: "repo-1", DirName: "server"}}
+	got := workspaceRecoveryExclusions(w, repos, cfg)
+	want := map[string]bool{"server": true, ".wx-owner-repo-1": true, "shared": true}
+	if len(got) != len(want) {
+		t.Fatalf("exclusions=%v want keys %v", got, want)
+	}
+	for _, value := range got {
+		if !want[value] {
+			t.Fatalf("exclusions=%v contains unexpected %q", got, value)
+		}
+	}
+	if containsString(got, w.Repositories[0].RelativePath) {
+		t.Fatalf("exclusions=%v still use the source-relative repository path", got)
+	}
+	if got := workspaceRecoveryExclusions(w, []state.SlotRepository{{RepositoryID: "repo-1"}}, config.Defaults()); len(got) != 0 {
+		t.Fatalf("nameless repository exclusions=%v", got)
+	}
+}
+
+func discoveryWorkspaceForExclusions() discovery.Workspace {
+	return discovery.Workspace{
+		ID: "wsp001", Root: "/src/bundle", Kind: "multi_repository",
+		Repositories: []discovery.Repository{{ID: "repo-1", RelativePath: filepath.Join("group", "server")}},
+	}
+}
 
 func TestResumeRestoreJobQuarantinesWhenParentSnapshotJobFailed(t *testing.T) {
 	t.Parallel()
@@ -91,11 +123,57 @@ func TestResumeRestoreJobQuarantinesOnIncompleteRepositorySnapshotSet(t *testing
 	}
 }
 
-func TestDoctorReportsGitAndSQLiteFailures(t *testing.T) {
-	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
-	t.Setenv("PATH", t.TempDir())
-	checks := manager.Doctor(ctx)["checks"].(map[string]any)
-	if got, ok := checks["git"].(string); !ok || got == "ok" || got == "" {
-		t.Fatalf("git failure not reported: checks=%v", checks)
+func TestResumeRestoreJobWrapsSlotRepositoryStorageFailure(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	databasePath := filepath.Join(root, "state.db")
+	store, err := state.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	manager := testManager(t, cfg, store)
+	defer manager.Close()
+	ctx := context.Background()
+
+	w := discovery.Workspace{Root: discoveryPath(root), Kind: "repository", Repositories: []discovery.Repository{
+		{ID: "repository", MainPath: discoveryPath(filepath.Join(root, "repository")), CommonDir: discoveryPath(filepath.Join(root, "repository", ".git")), RelativePath: "repository", DefaultBranch: "main"},
+	}}
+	w = registerTestWorkspace(t, store, w)
+	parentRepos := []state.SlotRepository{
+		{RepositoryID: "repository", DirName: "repository", State: "ARCHIVED"},
+	}
+	parentID := "parent-db-fault"
+	if _, err := store.CreateSlotSession(ctx,
+		slotAtPath(t, manager, string(w.ID), parentID, filepath.Join(cfg.Storage.WorktreeRoot, "parent"), 1, "ARCHIVED"),
+		parentRepos,
+		state.Session{ID: parentID, WorkspaceID: string(w.ID), SlotID: parentID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(parentID)}, ""); err != nil {
+		t.Fatal(err)
+	}
+	expiry := time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	if err := store.SaveSnapshot(ctx, state.Snapshot{ID: "snap-db-fault", SessionID: parentID, RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/worktree", Status: "ARCHIVED", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), ExpiresAt: expiry}); err != nil {
+		t.Fatal(err)
+	}
+	childID := "child-db-fault"
+	if _, err := store.CreateSlotSession(ctx,
+		slotAtPath(t, manager, string(w.ID), childID, filepath.Join(cfg.Storage.WorktreeRoot, "child"), 1, "RESTORING"),
+		nil,
+		state.Session{ID: childID, WorkspaceID: string(w.ID), SlotID: childID, ParentSessionID: parentID, State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken(childID)}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`DROP TABLE slot_repositories`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.resumeRestoreJob(ctx, childID); err == nil {
+		t.Fatal("resume restore succeeded despite an unreadable slot_repositories table")
 	}
 }

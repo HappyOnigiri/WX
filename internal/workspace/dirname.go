@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 // maxRepositoryDirNameLength は directory 名を制限し、remote 名が異常に長い repository でも深い slot path を platform の component 長制限内に収める。
@@ -97,4 +99,25 @@ func UniqueDirName(name string, taken map[string]bool) string {
 			return candidate
 		}
 	}
+}
+
+// WorktreeDirName は worktreeDirName の exported 版であり、internal/archive が prepare と同じ方法で削除対象を表すために使う。
+func (p *Preparer) WorktreeDirName(target string) (string, error) {
+	return p.worktreeDirName(target)
+}
+
+// worktreeDirName は slot 内の repository directory 名、つまり SlotPath と target の間にある単一 path component を返す。
+// 設定から再計算せず呼び出し元の target から読み取り、slot 作成時に記録した名前を権威として既存 slot の向き先変更を防ぐ。
+func (p *Preparer) worktreeDirName(target string) (string, error) {
+	if p.SlotPath == "" {
+		return "", fmt.Errorf("%w: slot path is unavailable", state.ErrOwnership)
+	}
+	relative, err := filepath.Rel(filepath.Clean(p.SlotPath), filepath.Clean(target))
+	if err != nil {
+		return "", fmt.Errorf("%w: worktree is not inside its slot: %w", state.ErrOwnership, err)
+	}
+	if relative == "." || !filepath.IsLocal(relative) || strings.ContainsRune(relative, filepath.Separator) {
+		return "", fmt.Errorf("%w: worktree %s is not a direct child of slot %s", state.ErrOwnership, target, p.SlotPath)
+	}
+	return relative, nil
 }

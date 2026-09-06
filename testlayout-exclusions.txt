@@ -1,0 +1,12 @@
+# 正確な repository-relative path<TAB>exempt|backlog<TAB>理由
+# exempt は恒久的に対象外、backlog は分割でテストを移していない残務（警告として毎回報告される）。
+cmd/wx/config.go	exempt	Stdio and daemon reload RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by CLI integration tests.
+cmd/wx/daemon.go	exempt	Daemon lifecycle and launchd adapter recorded in coverage-exclusions.txt; behavior is exercised by process integration tests.
+cmd/wx/maintenance.go	exempt	Maintenance command stdio and RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by RPC integration tests.
+cmd/wx/rpc.go	exempt	CLI RPC client construction adapter recorded in coverage-exclusions.txt; behavior is exercised by RPC integration tests.
+cmd/wx/slots.go	exempt	Slots command stdio and RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by RPC integration tests.
+cmd/wx/status.go	exempt	Status and Doctor stdio and RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by CLI integration tests.
+internal/cli/terminal_other.go	exempt	Fallback build-tag variant for platforms other than darwin and linux; terminal behavior is exercised through client tests.
+internal/sessions/scanner/target.go	exempt	Resume-target type and small predicates only; behavior is exercised by scan_test.go.
+internal/sessions/scanner/types.go	exempt	Type declarations and a stable-ID delegation only; scanning behavior is exercised by scan_test.go.
+internal/testsupport/socket.go	exempt	Test-only helper package; the packages that call it exercise it in their own tests.

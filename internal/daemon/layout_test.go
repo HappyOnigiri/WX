@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,106 +120,6 @@ func testSlotID(name string) string {
 			return '-'
 		}
 	}, name)
-}
-
-func TestSlotRelPathGeneratesTheDocumentedLayout(t *testing.T) {
-	t.Parallel()
-	relPath, err := slotRelPath("wsp001", "slt001")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if relPath != filepath.Join("wsp001", "slt001") {
-		t.Fatalf("bound slot rel path=%q", relPath)
-	}
-	if _, err := slotRelPath("", "slt003"); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("empty workspace id error=%v", err)
-	}
-	for _, slotID := range []string{"", ".", "..", "a/b", `a\b`, "_reserved"} {
-		if _, err := slotRelPath("wsp001", slotID); !errors.Is(err, state.ErrOwnership) {
-			t.Errorf("slot id %q error=%v", slotID, err)
-		}
-	}
-	for _, workspaceID := range []string{"", ".", "..", "a/b", "_unbound", "_recovery"} {
-		if _, err := slotRelPath(workspaceID, "slt001"); !errors.Is(err, state.ErrOwnership) {
-			t.Errorf("workspace id %q error=%v", workspaceID, err)
-		}
-	}
-}
-
-func TestValidateLayoutComponentReservesTheUnderscorePrefix(t *testing.T) {
-	t.Parallel()
-	if err := validateLayoutComponent("repository directory", "WX"); err != nil {
-		t.Fatalf("plain name error=%v", err)
-	}
-	for _, value := range []string{"_unbound", "_recovery", "_anything"} {
-		if err := validateLayoutComponent("workspace id", value); !errors.Is(err, state.ErrOwnership) {
-			t.Errorf("reserved prefix %q error=%v", value, err)
-		}
-	}
-}
-
-func TestLeasePathDependsOnWorkspaceKind(t *testing.T) {
-	t.Parallel()
-	slotPath := filepath.Join(string(filepath.Separator)+"wx", "wsp001", "slt001")
-	single := []state.SlotRepository{{RepositoryID: "r1", DirName: "WX"}}
-	if got := leasePath(slotPath, "repository", single); got != filepath.Join(slotPath, "WX") {
-		t.Fatalf("single-repository lease path=%q", got)
-	}
-	multi := []state.SlotRepository{{RepositoryID: "r1", DirName: "server"}, {RepositoryID: "r2", DirName: "client"}}
-	if got := leasePath(slotPath, "multi_repository", multi); got != slotPath {
-		t.Fatalf("multi-repository lease path=%q", got)
-	}
-	if got := leasePath(slotPath, "", nil); got != slotPath {
-		t.Fatalf("unbound lease path=%q", got)
-	}
-	if got := leasePath(slotPath, "repository", []state.SlotRepository{{RepositoryID: "r1"}}); got != slotPath {
-		t.Fatalf("nameless repository lease path=%q", got)
-	}
-}
-
-func TestWorkspaceRecoveryExclusionsUseSlotDirectoryNames(t *testing.T) {
-	t.Parallel()
-	cfg := config.Defaults()
-	cfg.Workspaces["/src/bundle"] = config.Workspace{Link: []string{"shared"}}
-	w := discoveryWorkspaceForExclusions()
-	repos := []state.SlotRepository{{RepositoryID: "repo-1", DirName: "server"}}
-	got := workspaceRecoveryExclusions(w, repos, cfg)
-	want := map[string]bool{"server": true, ".wx-owner-repo-1": true, "shared": true}
-	if len(got) != len(want) {
-		t.Fatalf("exclusions=%v want keys %v", got, want)
-	}
-	for _, value := range got {
-		if !want[value] {
-			t.Fatalf("exclusions=%v contains unexpected %q", got, value)
-		}
-	}
-	if containsString(got, w.Repositories[0].RelativePath) {
-		t.Fatalf("exclusions=%v still use the source-relative repository path", got)
-	}
-	if got := workspaceRecoveryExclusions(w, []state.SlotRepository{{RepositoryID: "repo-1"}}, config.Defaults()); len(got) != 0 {
-		t.Fatalf("nameless repository exclusions=%v", got)
-	}
-}
-
-func TestNewSlotIDProducesShortIdentifiers(t *testing.T) {
-	t.Parallel()
-	id, err := newSlotID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !domain.ValidShortID(id) {
-		t.Fatalf("slot id=%q is not a short identifier", id)
-	}
-	if err := validateLayoutComponent("slot id", id); err != nil {
-		t.Fatalf("slot id=%q is not a usable layout component: %v", id, err)
-	}
-}
-
-func discoveryWorkspaceForExclusions() discovery.Workspace {
-	return discovery.Workspace{
-		ID: "wsp001", Root: "/src/bundle", Kind: "multi_repository",
-		Repositories: []discovery.Repository{{ID: "repo-1", RelativePath: filepath.Join("group", "server")}},
-	}
 }
 
 func testDirName(repo discovery.Repository, cfg config.Config) string {

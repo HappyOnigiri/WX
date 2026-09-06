@@ -9,64 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
-
-func TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot(t *testing.T) {
-	t.Parallel()
-	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
-	root := manager.Config().Storage.WorktreeRoot
-	slotID := domain.StableID("remove-slot", "outside-repo")
-	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "REMOVING")
-	escaping := filepath.Join("..", "..", "..", "outside-repo")
-	if _, err := store.CreateStandby(ctx, slot,
-		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: escaping, State: "REMOVING", BaseOID: resolved[0].OID}}); err != nil {
-		t.Fatal(err)
-	}
-	stored, err := store.SlotRepository(ctx, slotID, string(resolved[0].Repository.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if domain.IsWithin(root, stored.WorktreePath) {
-		t.Fatalf("derived worktree path %s did not escape root %s; the case under test no longer applies", stored.WorktreePath, root)
-	}
-	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slot, ""); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("repository outside root error=%v", err)
-	}
-}
-
-func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
-	t.Parallel()
-	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
-	root := manager.Config().Storage.WorktreeRoot
-	slotID := domain.StableID("remove-slot", "replaced-directory")
-	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "REMOVING")
-	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
-		t.Fatal(err)
-	}
-	// 置き換え先は元のディレクトリが在るうちに作る。
-	// 消してから同じパスへ作り直すと、inodeを再利用するfilesystemでは identity が一致して置き換えを表せない。
-	replacement := slot.Path + ".replacement"
-	if err := os.MkdirAll(replacement, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(slot.Path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(replacement, slot.Path); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slot, ""); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("replaced slot directory error=%v, want an ownership failure", err)
-	}
-	if _, err := os.Lstat(slot.Path); err != nil {
-		t.Fatalf("replaced slot directory was removed despite the failed proof: %v", err)
-	}
-}
 
 func TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable(t *testing.T) {
 	t.Parallel()

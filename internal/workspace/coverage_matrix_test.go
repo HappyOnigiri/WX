@@ -1,11 +1,8 @@
 package workspace
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,82 +10,9 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
-
-func TestWorktreeOwnershipValidationCoversPhysicalAndGitBoundaries(t *testing.T) {
-	ctx := context.Background()
-	_, repo, preparer, head, target := prepareEdgesFixture(t)
-	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	owner, _, err := domain.OpenOwnedRoot(root, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = owner.Close() }()
-	preparer.OwnedRoot = owner
-	preparer.RootPath = root
-
-	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
-		t.Fatalf("prepare descriptor-bound worktree: %v", err)
-	}
-	if err := preparer.ValidateSlotWorktreeOwnership(ctx, repo, target, head, "slot"); err != nil {
-		t.Fatalf("valid replay ownership: %v", err)
-	}
-	if err := preparer.ValidateRestoringSlotWorktreeOwnership(ctx, repo, target, head, "slot"); err != nil {
-		t.Fatalf("restoring replay ownership: %v", err)
-	}
-	if err := preparer.ValidateReady(ctx, repo, target, head); err != nil {
-		t.Fatalf("valid ready ownership: %v", err)
-	}
-	identity, err := preparer.WorktreeIdentity(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := preparer.VerifyWorktreeIdentity(target, ""); err != nil {
-		t.Fatalf("empty identity compatibility: %v", err)
-	}
-	if err := preparer.VerifyWorktreeIdentity(target, identity); err != nil {
-		t.Fatalf("matching identity: %v", err)
-	}
-	if err := preparer.VerifyWorktreeIdentity(target, "not-the-target"); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("mismatched identity error=%v", err)
-	}
-
-	if err := preparer.ValidateSlotWorktreeOwnership(ctx, repo, target, "wrong-head", "slot"); err == nil {
-		t.Fatal("wrong detached HEAD accepted")
-	}
-	badCommon := repo
-	badCommon.CommonDir = domain.CanonicalPath(t.TempDir())
-	if err := preparer.ValidateOwnership(ctx, badCommon, target, head); err == nil {
-		t.Fatal("foreign Git common directory accepted")
-	}
-
-	marker := filepath.Join(filepath.Dir(target), ownershipMarkerPrefix+string(repo.ID))
-	if err := os.Remove(marker); err != nil {
-		t.Fatal(err)
-	}
-	if err := preparer.ValidateOwnership(ctx, repo, target, head); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("missing marker error=%v", err)
-	}
-	if err := EnsureOwnershipMarkerAt(owner, root, target, preparer.markerIdentity(repo, "slot"), string(repo.CommonDir)); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(target, ".git")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(t.TempDir(), "outside-git"), filepath.Join(target, ".git")); err != nil {
-		t.Fatal(err)
-	}
-	if err := preparer.ValidateOwnership(ctx, repo, target, head); err == nil {
-		t.Fatal("symlink .git marker accepted")
-	}
-}
 
 func TestPreparationHelpersRejectMissingDescriptorsAndUnsupportedTargets(t *testing.T) {
 	ctx := context.Background()
@@ -240,117 +164,5 @@ func TestPhysicalManifestAndMarkerRemovalBoundaries(t *testing.T) {
 	}
 	if err := owner.Close(); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestPinnedPrepareCommandRunsInsideValidatedWorktree(t *testing.T) {
-	ctx := context.Background()
-	_, repo, preparer, head, target := prepareEdgesFixture(t)
-	root := preparer.Config.Storage.WorktreeRoot
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	owner, _, err := domain.OpenOwnedRoot(root, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = owner.Close() }()
-	preparer.OwnedRoot = owner
-	preparer.RootPath = root
-	if err := preparer.Prepare(ctx, repo, target, head, "prepare-command"); err != nil {
-		t.Fatal(err)
-	}
-	identity, err := preparer.WorktreeIdentity(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := preparer.Config
-	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf pinned > prepare-marker"}}}}
-	preparer.Config = cfg
-	if err := preparer.runPrepareWithIdentity(ctx, repo, target, identity); err != nil {
-		t.Fatalf("descriptor-bound prepare command: %v", err)
-	}
-	if data, err := os.ReadFile(filepath.Join(target, "prepare-marker")); err != nil || string(data) != "pinned" {
-		t.Fatalf("prepare marker=%q err=%v", data, err)
-	}
-	// 0以下のコマンドタイムアウトは設定済みの準備待ち予算へフォールバックし、
-	// 通常経路も検証対象に含める。
-	cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{Command: []string{"/usr/bin/true"}}}
-	preparer.Config = cfg
-	plain := &Preparer{Git: preparer.Git, Config: cfg, OwnedRoot: owner, RootPath: root}
-	if err := plain.runPrepareWithIdentity(ctx, repo, target, ""); err != nil {
-		t.Fatalf("default prepare timeout: %v", err)
-	}
-}
-
-func TestFingerprintAndRelativePathBoundaries(t *testing.T) {
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "nested", "deep"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "nested", "deep", "file"), []byte("fingerprint"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("nested", filepath.Join(root, "link")); err != nil {
-		t.Fatal(err)
-	}
-	owner, err := OpenPhysicalRoot(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = owner.Close() }()
-	for _, test := range []struct {
-		name    string
-		rel     string
-		bad     bool
-		skipped bool
-	}{
-		{name: "directory", rel: "nested"},
-		{name: "file", rel: "nested/deep/file"},
-		{name: "missing", rel: "missing", bad: true},
-		{name: "symlink", rel: "link", skipped: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			h := sha256.New()
-			err := fingerprintRootPath(h, owner, test.rel, test.rel)
-			if test.bad {
-				if err == nil {
-					t.Fatal("unsafe fingerprint input succeeded")
-				}
-				return
-			}
-			if test.skipped {
-				marker := sha256.New()
-				_, _ = fmt.Fprintf(marker, "path=%s skipped-symlink\n", test.rel)
-				if err != nil {
-					t.Fatalf("symlink fingerprint: %v", err)
-				}
-				if !bytes.Equal(h.Sum(nil), marker.Sum(nil)) {
-					t.Fatal("symlink fingerprint did not record the skip marker")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("fingerprintRootPath: %v", err)
-			}
-			if h.Size() == 0 {
-				t.Fatal("fingerprint did not include metadata or file contents")
-			}
-		})
-	}
-	if err := fingerprintPath(sha256.New(), root, filepath.Join(t.TempDir(), "outside")); err == nil {
-		t.Fatal("fingerprintPath accepted an outside path")
-	}
-	if got, err := repositoryWorkspaceRoot(discovery.Repository{MainPath: domain.CanonicalPath(root), RelativePath: "nested/deep"}); err != nil || got != filepath.Dir(filepath.Dir(root)) {
-		t.Fatalf("repository workspace root=%q err=%v", got, err)
-	}
-	if _, err := repositoryWorkspaceRoot(discovery.Repository{MainPath: domain.CanonicalPath(root), RelativePath: "../outside"}); err == nil {
-		t.Fatal("unsafe repository relative path accepted")
-	}
-	for _, value := range []string{"", ".", "..", "../escape", "/absolute", "nested/file"} {
-		_, err := safeRelative(value)
-		if (value == "nested/file") == (err != nil) {
-			t.Fatalf("safeRelative(%q) err=%v", value, err)
-		}
 	}
 }

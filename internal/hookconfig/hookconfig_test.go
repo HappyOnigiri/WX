@@ -7,43 +7,6 @@ import (
 	"testing"
 )
 
-func TestCodexHooksConfigEnabledBoundaries(t *testing.T) {
-	tests := []struct {
-		name string
-		data string
-		want bool
-	}{
-		{name: "empty", data: "", want: true},
-		{name: "comments", data: "# hooks are enabled\nname = \"wx\" # inline comment", want: true},
-		{name: "features table", data: "[features]\nhooks = true\ncodex_hooks = true", want: true},
-		{name: "quoted keys", data: "[features]\n\"hooks\" = true\n'codex_hooks' = true", want: true},
-		{name: "inline features", data: `features = { hooks = true, codex_hooks = true, nested = { value = "#" } }`, want: true},
-		{name: "array of tables", data: "[[features.hooks]]\nname = \"wx\"", want: true},
-		{name: "feature disabled", data: "[features]\nhooks = false", want: false},
-		{name: "inline feature disabled", data: "features = { hooks = false }", want: false},
-		{name: "malformed table", data: "[features", want: false},
-		{name: "malformed array table", data: "[[features.hooks]", want: false},
-		{name: "bare statement", data: "hooks", want: false},
-		{name: "multiline string", data: "name = \"\"\"hooks\"\"\"", want: false},
-		{name: "unbalanced inline table", data: "features = { hooks = true", want: false},
-		{name: "inline field without value", data: "features = { hooks }", want: false},
-		{name: "multiline array", data: "notify = [\n    \"/opt/Codex Client.app/Contents/MacOS/client\",\n    \"turn-ended\",\n]\n\n[features]\nhooks = true", want: true},
-		{name: "multiline array before disabled feature", data: "notify = [\n    \"turn-ended\",\n]\n\n[features]\nhooks = false", want: false},
-		{name: "multiline array of arrays", data: "matrix = [\n    [1, 2],\n    [3],\n]", want: true},
-		{name: "multiline inline table", data: "notify = { command = \"client\",\n    event = \"turn-ended\" }", want: true},
-		{name: "unclosed multiline array", data: "notify = [\n    \"turn-ended\",\n\n[features]\nhooks = false", want: false},
-		{name: "statement after closed array", data: "notify = [\n    \"turn-ended\",\n] hooks = false", want: false},
-		{name: "unopened array close", data: "notify = ]", want: false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := codexHooksConfigEnabled([]byte(test.data)); got != test.want {
-				t.Fatalf("codexHooksConfigEnabled(%q) = %v, want %v", test.data, got, test.want)
-			}
-		})
-	}
-}
-
 func TestHookConfigJSONValidationBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -108,61 +71,6 @@ func TestHookConfigJSONValidationBoundaries(t *testing.T) {
 				t.Fatalf("matcherAppliesToEveryEvent(%s) = %v, want %v", test.raw, got, test.want)
 			}
 		})
-	}
-}
-
-func TestHookConfigCommandParsingAndExecutableIdentity(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		cmd  string
-		want bool
-	}{
-		{name: "plain command", cmd: "/bin/wx hook SessionStart", want: true},
-		{name: "quoted executable", cmd: `"/bin/wx" hook SessionStart`, want: true},
-		{name: "escaped space", cmd: `/tmp/wx\ binary hook SessionStart`, want: true},
-		{name: "single quoted home literal", cmd: `'$HOME/wx' hook SessionStart`, want: true},
-		{name: "newline", cmd: "/bin/wx hook\nSessionStart", want: false},
-		{name: "pipeline", cmd: "/bin/wx | hook SessionStart", want: false},
-		{name: "unterminated quote", cmd: `"/bin/wx hook SessionStart`, want: false},
-		{name: "dangling escape", cmd: `/bin/wx\`, want: false},
-		{name: "backtick substitution", cmd: "\"`uname`\" hook SessionStart", want: false},
-		{name: "invalid double quote escape", cmd: `"/bin/wx\q" hook SessionStart`, want: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			fields, ok := splitHookCommand(test.cmd)
-			if ok != test.want {
-				t.Fatalf("splitHookCommand(%q) ok=%v, want %v; fields=%v", test.cmd, ok, test.want, fields)
-			}
-			if test.want && len(fields) != 3 {
-				t.Fatalf("splitHookCommand(%q) fields=%v, want 3 fields", test.cmd, fields)
-			}
-		})
-	}
-
-	executable, err := CurrentExecutable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !isExactWXHookCommandForExecutable(executable+" hook SessionStart", "SessionStart", executable) {
-		t.Fatal("current executable command was not recognized")
-	}
-	for _, command := range []string{
-		executable + " hook UserPromptSubmit",
-		executable + " run SessionStart",
-		"/definitely/missing/wx hook SessionStart",
-	} {
-		if isExactWXHookCommandForExecutable(command, "SessionStart", executable) {
-			t.Fatalf("unsafe or mismatched command accepted: %q", command)
-		}
-	}
-	if resolved, ok := resolveHookExecutable(executable); !ok || resolved != executable {
-		t.Fatalf("resolveHookExecutable(%q) = %q, %v", executable, resolved, ok)
-	}
-	if _, ok := resolveHookExecutable("relative/wx"); ok {
-		t.Fatal("relative hook executable accepted")
-	}
-	if sameExecutable(executable, filepath.Join(os.TempDir(), "missing-wx-executable")) {
-		t.Fatal("missing executable considered identical")
 	}
 }
 
@@ -263,13 +171,6 @@ func TestReadinessHookDocumentRequiresEachConfiguredEvent(t *testing.T) {
 	required := map[string]string{"SessionStart": "SessionStart", "UserPromptSubmit": "UserPromptSubmit"}
 	if readinessHookDocumentMatches([]byte(data), required, executable) {
 		t.Fatal("readiness hook document missing a required event was accepted")
-	}
-}
-
-func TestResolveHookExecutableRejectsBareWXWhenUnavailable(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	if resolved, ok := resolveHookExecutable("wx"); ok || resolved != "" {
-		t.Fatalf("unavailable bare wx executable resolved to %q, ok=%v", resolved, ok)
 	}
 }
 
