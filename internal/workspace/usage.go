@@ -29,9 +29,11 @@ type SlotUsage struct {
 }
 
 // RootUsage は root 1 世代分の合計と、その root 上にある slot ごとの内訳である。
+// SharedBytes は slot ごとの SharedBytes の合計で、slot の外にあるファイルは共有判定の対象外として常に非共有に数える。
 type RootUsage struct {
 	LogicalBytes   int64
 	AllocatedBytes int64
+	SharedBytes    int64
 	Slots          map[string]SlotUsage
 }
 
@@ -121,6 +123,7 @@ func measureUsage(ctx context.Context, root *os.Root, start string, targets []Sl
 			if sharedWithRepository(root, name, info, repository.mainPath, relative, mainRoots, previous, cache) {
 				sample.SharedFiles++
 				sample.SharedBytes += allocated
+				usage.SharedBytes += allocated
 			}
 		}
 		usage.Slots[slotID] = sample

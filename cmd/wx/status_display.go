@@ -230,11 +230,13 @@ func statusDiskSummary(root map[string]any) string {
 	if measurement, _ := statusRawString(root, "measurement"); measurement == "pending" {
 		return "Disk   measuring · " + path
 	}
-	allocated, ok := statusInt(root, "allocated_bytes")
+	// wx が言う disk 使用量は main worktree と共有していない分だけで、slot ごとの SIZE 列と同じ量を指す。
+	// 満額の allocated_bytes は --json と --verbose にだけ出し、要約では単位を混ぜない。
+	exclusive, ok := statusInt(root, "exclusive_bytes")
 	if !ok {
 		return "Disk   measurement unavailable · " + path
 	}
-	line := "Disk   " + formatHumanBytes(allocated) + " allocated · " + path
+	line := "Disk   " + formatHumanBytes(exclusive) + " · " + path
 	if measuredAt, ok := statusRawString(root, "measured_at"); ok && measuredAt != "" {
 		line += " · measured " + statusLocalDate(measuredAt) + " " + statusZoneLabel()
 	}

@@ -19,3 +19,14 @@ LinuxではCoW自体を行わないため、`measurement`は`unsupported`にな�
 
 root合計は周期測定だけが更新し、最初の測定が終わるまでは`measurement=pending`として0を実測値に見せない。
 表示の組み立ては`internal/cli`、測定は`internal/daemon/usage.go`と`internal/workspace/usage.go`を参照する。
+
+## 表示する使用量の方針
+
+wxがdisk使用量として表示する値は常にexclusive（共有blockを除いた専有分）とし、`wx slots`のSIZE列と`wx status`のDisk行で同じ量を指す。
+どちらもexclusiveなので列の合計とroot合計が同じ意味になり、slotを消したときに実際に空く量の下限を示す。
+表示ではexclusiveやallocatedのような内訳の語を出さず、単に使用量として扱う。
+利用者に2つの数字を並べて選ばせない方が、どちらが本物かという判断を持ち込まずに済むためである。
+
+`allocated_bytes`は`du`との突き合わせにしか使わないため、`--json`と`wx status --verbose`にだけ残す。
+`du -sh`はcloneを割り引かないので必ずDisk行より大きく出る。
+この差はすべてmain worktreeと共有しているblockで、slotを消しても解放されない。

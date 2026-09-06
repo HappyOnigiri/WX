@@ -258,11 +258,14 @@ func (r *verboseStatusRenderer) renderStorage() {
 		r.field("    Path", statusHomeValue(root, "path"))
 		r.field("    Active", statusValue(root, "active"))
 		r.field("    Logical size", statusExactBytes(root, "bytes"))
+		// Disk size は要約の Disk と同じ量で、Allocated と Shared はその内訳として du との差を説明するために出す。
+		r.field("    Disk size", statusExactBytes(root, "exclusive_bytes"))
 		r.field("    Allocated", statusExactBytes(root, "allocated_bytes"))
+		r.field("    Shared", statusExactBytes(root, "shared_bytes"))
 		r.field("    Measurement", statusValue(root, "measurement"))
 		r.field("    Measured at", statusValue(root, "measured_at"))
 		r.field("    Error", statusValue(root, "error"))
-		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("worktree_roots[%d]", index), root, map[string]bool{"path": true, "active": true, "bytes": true, "allocated_bytes": true, "measurement": true, "measured_at": true, "error": true})
+		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("worktree_roots[%d]", index), root, map[string]bool{"path": true, "active": true, "bytes": true, "allocated_bytes": true, "shared_bytes": true, "exclusive_bytes": true, "measurement": true, "measured_at": true, "error": true})
 	}
 }
 

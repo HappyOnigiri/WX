@@ -57,11 +57,15 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 			details.Sessions[index].AgeSeconds = int64(time.Since(createdAt).Seconds())
 		}
 	}
+	// ExclusiveBytes は AllocatedBytes から SharedBytes を引いた、この root だけが専有する量である。
+	// wx が報告する disk 使用量はこの値であり、AllocatedBytes は du と突き合わせるための満額として残す。
 	type rootStatus struct {
 		Path           string `json:"path"`
 		Active         bool   `json:"active"`
 		Bytes          int64  `json:"bytes"`
 		AllocatedBytes int64  `json:"allocated_bytes"`
+		SharedBytes    int64  `json:"shared_bytes"`
+		ExclusiveBytes int64  `json:"exclusive_bytes"`
 		Measurement    string `json:"measurement"`
 		MeasuredAt     string `json:"measured_at,omitempty"`
 		Error          string `json:"error,omitempty"`
@@ -71,7 +75,8 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	for root, active := range roots {
 		item := rootStatus{Path: root, Active: active, Measurement: rootUsagePendingMeasurement}
 		if sample, measured := usage[root]; measured {
-			item.Bytes, item.AllocatedBytes = sample.bytes, sample.allocated
+			item.Bytes, item.AllocatedBytes, item.SharedBytes = sample.bytes, sample.allocated, sample.shared
+			item.ExclusiveBytes = sample.allocated - sample.shared
 			item.Measurement, item.MeasuredAt, item.Error = rootUsageMeasurement, state.FormatTime(sample.measuredAt), sample.err
 		}
 		rootStatuses = append(rootStatuses, item)

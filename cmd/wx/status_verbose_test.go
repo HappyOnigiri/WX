@@ -32,7 +32,7 @@ func TestPrintVerboseStatusRetainsDetailsAndUnknownFields(t *testing.T) {
 		"session_details":    []map[string]any{{"id": "s1", "agent": "codex", "state": "ACTIVE", "created_at": "2026-09-05T00:00:00Z", "base_oids": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "age_seconds": 61}},
 		"job_details":        map[string]any{"pending": 1, "running": 0, "failed": 2},
 		"snapshot_details":   map[string]any{"count": 2, "earliest_expiry": "2026-09-06T00:00:00Z"},
-		"worktree_roots":     []map[string]any{{"path": "/repo/wx", "active": false, "bytes": 123, "allocated_bytes": 456, "measurement": "st_blocks_x_512", "error": ""}},
+		"worktree_roots":     []map[string]any{{"path": "/repo/wx", "active": false, "bytes": 123, "allocated_bytes": 456, "shared_bytes": 400, "exclusive_bytes": 56, "measurement": "st_blocks_x_512", "error": ""}},
 		"retention_seconds":  map[string]any{"hot_standby": 604800, "ended_worktree": 3600, "quarantined": 86400, "recovery_snapshot": 0, "expired_session_tombstone": 31536000, "failed_job": 1, "event_log": 2},
 		"quarantine":         []map[string]any{{"id": "q1", "path": "/bad/one", "failure_code": "OWNERSHIP"}, {"id": "q2", "path": "/bad/two", "failure_code": "OWNERSHIP"}},
 		"new_top_level":      map[string]any{"answer": 0},

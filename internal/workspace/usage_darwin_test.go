@@ -54,6 +54,10 @@ func TestMeasureRootUsageDetectsClonedAndRewrittenFiles(t *testing.T) {
 	if slot.SharedBytes == 0 || slot.SharedBytes >= slot.AllocatedBytes {
 		t.Fatalf("shared bytes=%d allocated=%d", slot.SharedBytes, slot.AllocatedBytes)
 	}
+	// root 合計の共有量は slot ごとの合計と一致し、slot の外にあるファイルは非共有として残る。
+	if usage.SharedBytes != slot.SharedBytes || usage.SharedBytes >= usage.AllocatedBytes {
+		t.Fatalf("root shared=%d allocated=%d slot shared=%d", usage.SharedBytes, usage.AllocatedBytes, slot.SharedBytes)
+	}
 }
 
 func TestMeasureRootUsageReusesTheCachedVerdict(t *testing.T) {
