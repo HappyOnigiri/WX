@@ -127,12 +127,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-name: build
+      # 一時prefixへのinstall検証はmake smokeが --help/--version の確認込みで行うため、ここでは重複させない。
       - run: make build smoke build-darwin
-      - name: Verify install from a temporary prefix
-        run: |
-          destination=$(mktemp -d)
-          make install INSTALL_DIR="$destination"
-          "$destination/wx" --help >/dev/null
-          "$destination/wx" --version | grep -q '^wx version '
       - run: go version -m bin/wx
       - run: git diff --exit-code
