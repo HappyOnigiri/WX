@@ -146,3 +146,35 @@ func TestPrintDegradedStatusDoesNotInventCounts(t *testing.T) {
 		t.Fatalf("degraded output invented zero counts: %q", got)
 	}
 }
+
+// 使用量は daemon の周期処理が測った値なので、未測定の 0 を実測値として出さず、測定済みは測定時刻を添える。
+func TestStatusDiskSummaryDistinguishesPendingFromMeasuredUsage(t *testing.T) {
+	previousLocation := statusDisplayLocation
+	statusDisplayLocation = time.FixedZone("JST", 9*60*60)
+	t.Cleanup(func() { statusDisplayLocation = previousLocation })
+	for _, testCase := range []struct {
+		name string
+		root map[string]any
+		want string
+	}{
+		{
+			name: "pending",
+			root: map[string]any{"path": "/repo/wx", "bytes": int64(0), "allocated_bytes": int64(0), "measurement": "pending"},
+			want: "Disk   measuring · /repo/wx",
+		},
+		{
+			name: "measured",
+			root: map[string]any{"path": "/repo/wx", "bytes": int64(1), "allocated_bytes": int64(365 * 1024 * 1024), "measurement": "st_blocks_x_512", "measured_at": "2026-09-04T22:16:00Z"},
+			want: "Disk   365 MiB allocated · /repo/wx · measured 09/05 07:16 JST",
+		},
+		{
+			name: "failed",
+			root: map[string]any{"path": "/repo/wx", "measurement": "st_blocks_x_512", "error": "root is not registered"},
+			want: "Disk   measurement failed · /repo/wx · root is not registered",
+		},
+	} {
+		if got := statusDiskSummary(testCase.root); got != testCase.want {
+			t.Fatalf("%s: disk summary=%q, want %q", testCase.name, got, testCase.want)
+		}
+	}
+}

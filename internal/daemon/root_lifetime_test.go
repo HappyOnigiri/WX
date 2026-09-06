@@ -537,7 +537,7 @@ func TestRootStatusRejectsReplacedRootGeneration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "replacement.txt"), []byte("replacement"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := manager.rootDirectoryUsage(root); !errors.Is(err, state.ErrOwnership) {
+	if _, _, err := manager.rootDirectoryUsage(t.Context(), root); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("status accepted replaced root generation: %v", err)
 	}
 }

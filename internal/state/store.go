@@ -44,8 +44,8 @@ var ErrWorkspaceIdentityConflict = errors.New("workspace root is already registe
 
 // JSONSchemaVersion は `wx status --json` と `wx doctor --json` の出力形状の互換契約であり、SQLite migration 数の SchemaVersion とは独立である。
 // scripted consumer が観測する形状を変える場合だけ上げる。2〜4 は restart・stop・daemon unavailable、5〜7 は root・workspace・quarantine の診断を追加した。
-// 8 は隔離 standby 上限の回復案内を追加した。
-const JSONSchemaVersion = 8
+// 8 は隔離 standby 上限の回復案内、9 は worktree_roots の measured_at を追加した。
+const JSONSchemaVersion = 9
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
