@@ -78,15 +78,15 @@ func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T)
 	})
 }
 
-// TestRestorePropagatesRelockedRecoveryRefVerificationFailure は、Restore の common-directory lock 内で再検証する recovery ref の失敗を検証する。
-// lock 前に head/worktree/index の三 ref を一度ずつ検証するため、4 回目の該当呼出しが lock 取得後の最初の ref 検証になる。
+// TestRestorePropagatesRelockedRecoveryRefVerificationFailure は、Restore の common-directory lock 内で検証する recovery ref の失敗を検証する。
+// ref 検証は lock 取得後の一度だけなので、最初の該当呼出しがその検証になる。
 func TestRestorePropagatesRelockedRecoveryRefVerificationFailure(t *testing.T) {
 	repository, repo, manager, worktreeRoot := archiveFixture(t)
 	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	installGitFault(t, " rev-parse --verify refs/wx/recovery", 4)
+	installGitFault(t, " rev-parse --verify refs/wx/recovery", 1)
 	target := filepath.Join(worktreeRoot, "relock-fault", "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
 	if err := manager.Restore(context.Background(), repo, target, "relock-fault", snapshot); err == nil || !strings.Contains(err.Error(), "changed during restore") {

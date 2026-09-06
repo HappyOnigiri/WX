@@ -292,12 +292,27 @@ func TestRegularHookPathRejectsUnsafeEntries(t *testing.T) {
 	if _, err := regularHookPath(directory); err == nil {
 		t.Fatal("directory accepted as hook configuration")
 	}
-	symlink := filepath.Join(root, "symlink")
-	if err := os.Symlink(regular, symlink); err != nil {
+	// symlink 自体は dotfile 管理(GNU Stow等)で使われるため、最終的な参照先が regular file なら許可する。
+	symlinkToRegular := filepath.Join(root, "symlink-to-regular")
+	if err := os.Symlink(regular, symlinkToRegular); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := regularHookPath(symlink); err == nil {
-		t.Fatal("symlink accepted as hook configuration")
+	if path, err := regularHookPath(symlinkToRegular); err != nil || path != symlinkToRegular {
+		t.Fatalf("symlink to regular file rejected: path=%q err=%v", path, err)
+	}
+	symlinkToDirectory := filepath.Join(root, "symlink-to-directory")
+	if err := os.Symlink(directory, symlinkToDirectory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := regularHookPath(symlinkToDirectory); err == nil {
+		t.Fatal("symlink to directory accepted as hook configuration")
+	}
+	danglingSymlink := filepath.Join(root, "dangling-symlink")
+	if err := os.Symlink(filepath.Join(root, "does-not-exist"), danglingSymlink); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := regularHookPath(danglingSymlink); !os.IsNotExist(err) {
+		t.Fatalf("dangling symlink err=%v", err)
 	}
 	if got := stripTOMLComment(`key = 'quote # value'`); got != `key = 'quote # value'` {
 		t.Fatalf("comment marker inside single quotes was stripped: %q", got)

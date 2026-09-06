@@ -110,8 +110,8 @@ mod-tidy-check:
 	$(GO) mod tidy -diff
 	$(GO) mod verify
 
-# 現在は全て手書きで、go:generateがないため生成物の差分検出は行われない。
-# 将来ディレクティブを追加した時点で検査が働くよう、CIへの接続を維持する。
+# 現在は全て手書きで、go:generateがないため生成物の差分検出は行われず、ci-checksからは外してある。
+# go:generateを追加したらci-checksの行に1行戻す。
 # 生成前の作業ツリーを一時indexへ保存し、生成後に同じindexを更新して比較する。
 # 実index・利用者の差分・生成前からあるuntrackedは変更せず、生成が加えた差分だけを検出する。
 generated-check:
@@ -164,7 +164,7 @@ test:
 test-race:
 	$(GO) test $(RACE_TEST_ARGS) ./...
 
-# race検査はCIの3コアランナーでCPU律速になり、単独で最長のinternal/daemonがジョブの下限を作る。
+# race検査はCIの少コアランナーでCPU律速になり、単独で最長のinternal/daemonがジョブの下限を作る。
 # daemonと残りを別ジョブへ分けるため、対象パッケージだけが違う2つのtargetを用意する。
 test-race-daemon:
 	$(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE)
@@ -196,9 +196,10 @@ portable-test:
 concurrency-test:
 	$(GO) test -race -shuffle=on -count=10 -timeout=15m ./internal/state ./internal/daemon -run 'Lease|Concurrent|Crash|Archive|Remove|Worker'
 
+# amd64は配布・実行対象にしないため落とした。arm64のCGO_ENABLED=0ビルドは
+# 通常のmake buildと異なる唯一のci-checks構成要素であり退行検出の実体なので残す。
 build-darwin:
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/wx-darwin-arm64 ./cmd/wx
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/wx-darwin-amd64 ./cmd/wx
 
 reproducible-build:
 	@scratch="$$(mktemp -d)"; trap 'rm -rf "$$scratch"' EXIT; \
@@ -210,11 +211,13 @@ reproducible-build:
 	  $(GO) version -m "$$scratch/first/wx-$$arch"; \
 	done
 
+# internal/rpcの単体テストは同じmake ciのcoverage-check/ci-test-raceが
+# ./...として実行済みなのでここでは走らせない。
 smoke: build
 	./bin/wx --help >/dev/null
 	./bin/wx --version | grep -q '^wx version '
-	$(GO) test ./internal/rpc -run TestClientServerRoundTripWithoutParentDeadline -count=1
-	@destination="$$(mktemp -d)"; $(MAKE) install INSTALL_DIR="$$destination"; "$$destination/wx" --version >/dev/null
+	@destination="$$(mktemp -d)"; $(MAKE) install INSTALL_DIR="$$destination"; \
+	"$$destination/wx" --help >/dev/null; "$$destination/wx" --version | grep -q '^wx version '
 
 govulncheck: setup-security-tools
 	@test -x "$(TOOLS_BIN)/govulncheck" || { echo "pinned govulncheck is missing; run make setup-security-tools"; exit 1; }
@@ -251,7 +254,7 @@ security-local: setup-security-tools govulncheck dependency-check gosec license-
 ci:
 	$(MAKE) $(CI_MAKEFLAGS) ci-checks
 
-ci-checks: fmt-check lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check workflow-check shell-check coverage-check ci-test-race build-darwin smoke
+ci-checks: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check workflow-check shell-check coverage-check ci-test-race build-darwin smoke
 
 # hook本体は共通Gitディレクトリのhooks直下に置き、user側のdispatcherを維持する。
 # 以下はそのhookが呼び出す契約である。
