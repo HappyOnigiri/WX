@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -512,5 +513,104 @@ func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 	}
 	if !strings.HasPrefix(lease.Path, slot.Path+string(filepath.Separator)) {
 		t.Fatalf("lease path %q is not below its slot directory %q", lease.Path, slot.Path)
+	}
+}
+
+func TestRetryRootGenerationRecoversWithoutRestart(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := t.TempDir()
+	store, err := state.Open(filepath.Join(base, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	rootPath := filepath.Join(base, "worktrees")
+	cfg.Storage.WorktreeRoot = rootPath
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+
+	// 起動時にidentityを読めなかった状態を作る。
+	manager.mu.Lock()
+	manager.rootIDs = map[string]string{}
+	manager.rootIdentities = map[string]string{}
+	manager.mu.Unlock()
+	manager.registerRootGeneration(ctx, rootPath, "")
+	if _, _, err := manager.activeRoot(); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("activeRoot error=%v, want an ownership failure", err)
+	}
+	doctor := manager.Doctor(ctx)
+	checks := doctor["checks"].(map[string]any)
+	if got, _ := checks["worktree_root"].(string); !strings.Contains(got, "retries") {
+		t.Fatalf("doctor worktree_root=%q, want the failure to read as recoverable", got)
+	}
+
+	manager.retryRootGeneration(ctx)
+
+	manager.mu.RLock()
+	remaining := manager.rootError
+	manager.mu.RUnlock()
+	if remaining != "" {
+		t.Fatalf("root error survived a successful retry: %q", remaining)
+	}
+	gotRoot, gotID, err := manager.activeRoot()
+	if err != nil || gotID == "" {
+		t.Fatalf("activeRoot root=%q id=%q err=%v, want the re-registered generation", gotRoot, gotID, err)
+	}
+	manager.mu.RLock()
+	pinned := manager.rootIdentities[filepath.Clean(rootPath)]
+	manager.mu.RUnlock()
+	if pinned == "" {
+		t.Fatal("retry left the worktree root identity unpinned")
+	}
+}
+
+func TestRetryRootGenerationLogsRepeatedFailuresOnce(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	base := t.TempDir()
+	store, err := state.Open(filepath.Join(base, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	blocker := filepath.Join(base, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	rootPath := filepath.Join(blocker, "worktrees")
+	cfg.Storage.WorktreeRoot = rootPath
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	logs := &strings.Builder{}
+	manager.log = slog.New(slog.NewTextHandler(logs, nil))
+	manager.setRootError("startup registration failed")
+
+	manager.retryRootGeneration(ctx)
+	manager.retryRootGeneration(ctx)
+
+	if got := strings.Count(logs.String(), "retry worktree root generation registration failed"); got != 1 {
+		t.Fatalf("retry failure log count=%d, want 1 for a repeated reason:\n%s", got, logs.String())
+	}
+	manager.mu.RLock()
+	remaining := manager.rootError
+	manager.mu.RUnlock()
+	if remaining == "" || remaining == "startup registration failed" {
+		t.Fatalf("root error=%q, want the current retry failure", remaining)
+	}
+	if _, _, err := manager.activeRoot(); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("activeRoot error=%v, want the failure to persist", err)
+	}
+
+	// 理由が変われば再度記録する。
+	manager.setRootError("another reason")
+	manager.mu.Lock()
+	manager.rootRetryLogged = "another reason"
+	manager.mu.Unlock()
+	manager.retryRootGeneration(ctx)
+	if got := strings.Count(logs.String(), "retry worktree root generation registration failed"); got != 2 {
+		t.Fatalf("retry failure log count=%d, want a second entry for a new reason:\n%s", got, logs.String())
 	}
 }
