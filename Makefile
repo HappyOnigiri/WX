@@ -31,7 +31,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check workflow-check workflow-lint workflow-security-audit shell-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -144,6 +144,10 @@ comments-check:
 tests-check:
 	$(GO) run ./tools/checktests
 
+# Go実装ファイルの行数上限。警告は報告のみで、上限超過だけがci-checksを落とす。
+lines-check:
+	$(GO) run ./tools/checklines
+
 workflow-check: workflow-lint
 
 workflow-lint:
@@ -254,7 +258,7 @@ security-local: setup-security-tools govulncheck dependency-check gosec license-
 ci:
 	$(MAKE) $(CI_MAKEFLAGS) ci-checks
 
-ci-checks: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check workflow-check shell-check coverage-check ci-test-race build-darwin smoke
+ci-checks: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check lines-check workflow-check shell-check coverage-check ci-test-race build-darwin smoke
 
 # hook本体は共通Gitディレクトリのhooks直下に置き、user側のdispatcherを維持する。
 # 以下はそのhookが呼び出す契約である。
