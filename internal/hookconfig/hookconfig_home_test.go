@@ -130,67 +130,6 @@ func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 	})
 }
 
-// TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles は policy file ごとの判定を確認する。
-// file 不在、home 不在、無効化設定、regular file 以外、読取不能、サイズ超過を含める。
-func TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles(t *testing.T) {
-	t.Run("no policy files present", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		if !codexHooksEnabled() {
-			t.Fatal("absent policy files should default to enabled")
-		}
-	})
-
-	t.Run("home unavailable", func(t *testing.T) {
-		t.Setenv("HOME", "")
-		if codexHooksEnabled() {
-			t.Fatal("unavailable HOME should default to disabled")
-		}
-	})
-
-	t.Run("user config disables hooks", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		writeHookConfigFile(t, filepath.Join(home, ".codex", "config.toml"), "[features]\nhooks = false\n")
-		if codexHooksEnabled() {
-			t.Fatal("disabling user config reported enabled")
-		}
-	})
-
-	t.Run("user config is not a regular file", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		if err := os.MkdirAll(filepath.Join(home, ".codex", "config.toml"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if codexHooksEnabled() {
-			t.Fatal("directory masquerading as user config reported enabled")
-		}
-	})
-
-	t.Run("user config unreadable", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		path := filepath.Join(home, ".codex", "config.toml")
-		writeHookConfigFile(t, path, "[features]\nhooks = true\n")
-		if err := os.Chmod(path, 0); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-		if codexHooksEnabled() {
-			t.Fatal("unreadable user config reported enabled")
-		}
-	})
-
-	t.Run("user config too large", func(t *testing.T) {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		writeHookConfigFile(t, filepath.Join(home, ".codex", "config.toml"), strings.Repeat("#", (4<<20)+1))
-		if codexHooksEnabled() {
-			t.Fatal("oversized user config reported enabled")
-		}
-	})
-}
-
 // TestAvailableEvaluatesFullReadinessContractPerAgent は制御した HOME で Available を end-to-end に確認する。
 // 未対応 agent、無効化 policy、両 agent の有効 contract、空・サイズ超過・不正な hook file を含める。
 func TestAvailableEvaluatesFullReadinessContractPerAgent(t *testing.T) {
@@ -328,54 +267,6 @@ func TestReadinessHookGroupsMatchSkipsNonCommandDisabledAndAsyncHooks(t *testing
 		}
 		if !readinessHookGroupsMatch(groups, "session-start", "SessionStart", executable) {
 			t.Fatal("valid group after a disabled group was rejected")
-		}
-	})
-}
-
-// TestResolveHookExecutableExpandsHomeAndTildeVariants は resolveHookExecutable の $HOME と ~ の展開経路を確認する。
-// os.UserHomeDir 自体が失敗する場合も含める。
-func TestResolveHookExecutableExpandsHomeAndTildeVariants(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	binary := filepath.Join(home, "bin", "wx")
-	if err := os.MkdirAll(filepath.Dir(binary), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, test := range []struct {
-		name  string
-		value string
-	}{
-		{name: "$HOME prefix", value: "$HOME/bin/wx"},
-		{name: "tilde prefix", value: "~/bin/wx"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			resolved, ok := resolveHookExecutable(test.value)
-			if !ok || resolved != binary {
-				t.Fatalf("resolveHookExecutable(%q) = %q,%v want %q,true", test.value, resolved, ok, binary)
-			}
-		})
-	}
-
-	t.Run("bare $HOME is not an executable", func(t *testing.T) {
-		if _, ok := resolveHookExecutable("$HOME"); ok {
-			t.Fatal("bare $HOME expanding to a directory was accepted as an executable")
-		}
-	})
-
-	t.Run("bare tilde is not an executable", func(t *testing.T) {
-		if _, ok := resolveHookExecutable("~"); ok {
-			t.Fatal("bare ~ expanding to a directory was accepted as an executable")
-		}
-	})
-
-	t.Run("home unavailable", func(t *testing.T) {
-		t.Setenv("HOME", "")
-		if _, ok := resolveHookExecutable("~/bin/wx"); ok {
-			t.Fatal("tilde path resolved despite missing HOME")
 		}
 	})
 }

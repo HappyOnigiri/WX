@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,5 +90,39 @@ func TestReloadConfigIsIdempotentForAnUnchangedWorktreeRoot(t *testing.T) {
 	}
 	if _, _, err := m.createSlotRoot(filepath.Join(worktreeRoot, "after-reload", "root"), filepath.Join(worktreeRoot, "after-reload", "root")); err != nil {
 		t.Fatalf("worktree root unusable after repeated reload: %v", err)
+	}
+}
+
+func TestReloadConfigFailsClosedWhileShuttingDown(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, err := state.Open(filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(home, "worktrees")
+	m := testManager(t, cfg, store)
+	defer m.Close()
+
+	configPath, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	validConfig := "version: 1\nstorage:\n  worktree_root: " + cfg.Storage.WorktreeRoot + "\n"
+	if err := os.WriteFile(configPath, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m.mu.Lock()
+	m.rootClosing = true
+	m.mu.Unlock()
+
+	if err := m.reloadConfig(false); !errors.Is(err, errManagerClosed) {
+		t.Fatalf("reload during shutdown error=%v", err)
 	}
 }

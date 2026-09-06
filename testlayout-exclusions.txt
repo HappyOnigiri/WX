@@ -2,54 +2,11 @@
 # exempt は恒久的に対象外、backlog は分割でテストを移していない残務（警告として毎回報告される）。
 cmd/wx/config.go	exempt	Stdio and daemon reload RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by CLI integration tests.
 cmd/wx/daemon.go	exempt	Daemon lifecycle and launchd adapter recorded in coverage-exclusions.txt; behavior is exercised by process integration tests.
-cmd/wx/flags.go	backlog	Split out of cmd/wx/main.go and status_display.go; the tests still live in dispatch_matrix_test.go and status_display_test.go.
 cmd/wx/maintenance.go	exempt	Maintenance command stdio and RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by RPC integration tests.
 cmd/wx/rpc.go	exempt	CLI RPC client construction adapter recorded in coverage-exclusions.txt; behavior is exercised by RPC integration tests.
 cmd/wx/slots.go	exempt	Slots command stdio and RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by RPC integration tests.
 cmd/wx/status.go	exempt	Status and Doctor stdio and RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by CLI integration tests.
-cmd/wx/status_format.go	backlog	Split out of cmd/wx/main.go and status_display.go; the tests still live in dispatch_matrix_test.go and status_display_test.go.
-cmd/wx/status_verbose.go	backlog	Split out of cmd/wx/main.go and status_display.go; the tests still live in dispatch_matrix_test.go and status_display_test.go.
-internal/archive/remove.go	backlog	Split out of internal/archive/archive.go; the tests still live in archive_test.go and archive_edges2_test.go.
 internal/cli/terminal_other.go	exempt	Fallback build-tag variant for platforms other than darwin and linux; terminal behavior is exercised through client tests.
-internal/config/fields.go	backlog	Split out of internal/config/config.go; the tests still live in config_test.go and config_edges_test.go.
-internal/config/file.go	backlog	Split out of internal/config/config.go; the tests still live in config_test.go and config_edges_test.go.
-internal/config/paths.go	backlog	Split out of internal/config/config.go; the tests still live in config_test.go and config_edges_test.go.
-internal/daemon/allocation.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/gc.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/jobs.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/maintenance.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/prepare.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/reconcile.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/reload.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/remove.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/resume.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/root_handles.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/roots.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/session.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/session_scope.go	backlog	Predates the split; the tests live in internal/daemon/manager_edges_test.go.
-internal/daemon/snapshot.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/status.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/daemon/usage.go	backlog	Split out of internal/daemon/manager.go; the tests still live in manager_integration_test.go and the other manager_*_test.go files.
-internal/hookconfig/codex_config.go	backlog	Split out of internal/hookconfig/hookconfig.go; the tests still live in hookconfig_test.go.
-internal/hookconfig/command.go	backlog	Split out of internal/hookconfig/hookconfig.go; the tests still live in hookconfig_test.go.
 internal/sessions/scanner/target.go	exempt	Resume-target type and small predicates only; behavior is exercised by scanner_test.go.
 internal/sessions/scanner/types.go	exempt	Type declarations and a stable-ID delegation only; scanning behavior is exercised by scanner_test.go.
-internal/state/gc.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/jobs.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/quarantine.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/rpc_requests.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/sessions.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/slot_allocation.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/slot_repositories.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/slots.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/snapshots.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/status.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
-internal/state/workspaces.go	backlog	Split out of internal/state/store.go; the tests still live in store_test.go and store_edges_test.go.
 internal/testsupport/socket.go	exempt	Test-only helper package; the packages that call it exercise it in their own tests.
-internal/workspace/fingerprint.go	backlog	Split out of internal/workspace/prepare.go and filesystem.go; the tests still live in prepare_test.go and prepare_edges_test.go.
-internal/workspace/includes.go	backlog	Split out of internal/workspace/prepare.go and filesystem.go; the tests still live in prepare_test.go and prepare_edges_test.go.
-internal/workspace/links.go	backlog	Split out of internal/workspace/prepare.go and filesystem.go; the tests still live in prepare_test.go and prepare_edges_test.go.
-internal/workspace/materialize.go	backlog	Split out of internal/workspace/prepare.go and filesystem.go; the tests still live in prepare_test.go and prepare_edges_test.go.
-internal/workspace/prepare_command.go	backlog	Split out of internal/workspace/prepare.go and filesystem.go; the tests still live in prepare_test.go and prepare_edges_test.go.
-internal/workspace/prepare_validation.go	backlog	Split out of internal/workspace/prepare.go and filesystem.go; the tests still live in prepare_test.go and prepare_edges_test.go.
-internal/workspace/worktree_git.go	backlog	Split out of internal/workspace/prepare.go and filesystem.go; the tests still live in prepare_test.go and prepare_edges_test.go.

@@ -337,34 +337,6 @@ func TestNewUnusedShortIDSkipsTakenIdentifiers(t *testing.T) {
 	}
 }
 
-func TestRecordSlotRepositoryIdentityRequiresAnExistingRow(t *testing.T) {
-	store := openTestStore(t)
-	seedWorkspace(t, store)
-	ctx := context.Background()
-	if _, err := store.CreateStandby(ctx, Slot{ID: "slot01", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot01", State: "READY"}, []SlotRepository{{RepositoryID: "repository", DirName: "repository", State: "PREPARING", RequestedRef: "main", BaseOID: "abc", Fingerprint: "fp"}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.RecordSlotRepositoryIdentity(ctx, "slot01", "repository", ""); err == nil {
-		t.Fatal("empty identity was recorded")
-	}
-	if err := store.RecordSlotRepositoryIdentity(ctx, "slot01", "absent", "1:2"); err == nil {
-		t.Fatal("identity was recorded for an unregistered repository")
-	}
-	if err := store.RecordSlotRepositoryIdentity(ctx, "slot01", "repository", "1:2"); err != nil {
-		t.Fatal(err)
-	}
-	stored, err := store.SlotRepository(ctx, "slot01", "repository")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.DirIdentity != "1:2" {
-		t.Fatalf("recorded identity=%q", stored.DirIdentity)
-	}
-	if stored.WorktreePath != filepath.Join(testRootPath, "workspace", "slot01", "repository") {
-		t.Fatalf("composed worktree path=%q", stored.WorktreePath)
-	}
-}
-
 // TestSlotAndRepositoryPathsComposeFromTheirRootGeneration は read 側の派生規則を固定する。
 // absolute path は保存しないため、retired generation の slot もその generation の root 配下を返す。
 func TestSlotAndRepositoryPathsComposeFromTheirRootGeneration(t *testing.T) {
