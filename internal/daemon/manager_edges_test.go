@@ -275,6 +275,8 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if err := m.reloadConfig(false); err == nil {
 		t.Fatal("invalid config reload succeeded")
 	}
+	// Status は使用量を測らず lifecycle が測った値を返すため、報告内容を見る前に一度測っておく。
+	m.measureRootUsage(ctx)
 	status, err := m.Status(ctx)
 	if err != nil {
 		t.Fatal(err)

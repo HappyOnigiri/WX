@@ -189,11 +189,19 @@ func statusDiskSummary(root map[string]any) string {
 	if message, ok := statusRawString(root, "error"); ok && message != "" {
 		return "Disk   measurement failed · " + path + " · " + message
 	}
+	// 使用量は daemon の周期処理が測った値で、要求時点のものではない。0 を実測値と誤読させないため未測定は数値を出さない。
+	if measurement, _ := statusRawString(root, "measurement"); measurement == "pending" {
+		return "Disk   measuring · " + path
+	}
 	allocated, ok := statusInt(root, "allocated_bytes")
 	if !ok {
 		return "Disk   measurement unavailable · " + path
 	}
-	return "Disk   " + formatHumanBytes(allocated) + " allocated · " + path
+	line := "Disk   " + formatHumanBytes(allocated) + " allocated · " + path
+	if measuredAt, ok := statusRawString(root, "measured_at"); ok && measuredAt != "" {
+		line += " · measured " + statusLocalDate(measuredAt) + " " + statusZoneLabel()
+	}
+	return line
 }
 
 func statusWorkspaceIsCurrent(workspace map[string]any, roots []map[string]any) bool {
@@ -559,8 +567,9 @@ func (r *verboseStatusRenderer) renderStorage() {
 		r.field("    Logical size", statusExactBytes(root, "bytes"))
 		r.field("    Allocated", statusExactBytes(root, "allocated_bytes"))
 		r.field("    Measurement", statusValue(root, "measurement"))
+		r.field("    Measured at", statusValue(root, "measured_at"))
 		r.field("    Error", statusValue(root, "error"))
-		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("worktree_roots[%d]", index), root, map[string]bool{"path": true, "active": true, "bytes": true, "allocated_bytes": true, "measurement": true, "error": true})
+		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("worktree_roots[%d]", index), root, map[string]bool{"path": true, "active": true, "bytes": true, "allocated_bytes": true, "measurement": true, "measured_at": true, "error": true})
 	}
 }
 
