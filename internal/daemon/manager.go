@@ -1648,14 +1648,20 @@ func descriptorIdentity(root *os.Root) (string, error) {
 	if root == nil {
 		return "", errors.New("worktree root descriptor is nil")
 	}
-	info, err := root.Lstat(".")
+	// identityはvolumeを含むため、Lstatのmetadataではなくdescriptor自体から引く。
+	directory, err := root.Open(".")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = directory.Close() }()
+	info, err := directory.Stat()
 	if err != nil {
 		return "", err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return "", errors.New("worktree root descriptor is not a physical directory")
 	}
-	return domain.FileIdentity(info)
+	return domain.FileIdentity(directory)
 }
 
 func (m *Manager) retireRootLocked(path string) {

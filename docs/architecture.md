@@ -203,7 +203,9 @@ clone元と宛先は同じ対応volumeにある必要があり、通常checkout1
 このうち2と3は、pinしたroot descriptor配下の相対pathに対して行う。
 `domain.OpenOwnedRoot`がrootをinodeごとpinし、`domain.PhysicalPathInfo`が全成分のsymlinkを拒否するので、検査と実行の間にpathを差し替えられても、差し替え先へ操作が届かない。
 1のDB側は「何が正しいか」を答え、descriptorは「いま触っているものが本当にそれか」を答える。
-DBが持つidentityはdescriptorが返す`dev:ino`と同じ形式なので、2つの層が同じ対象を指していることを比較できる。
+DBが持つidentityはdescriptorが返す`vol:<inode>:<volume>`と同じ形式なので、2つの層が同じ対象を指していることを比較できる。
+volume成分にdevice番号を使わないのは、macOSではmount順で決まるdevice番号が再起動をまたいで変わり、記録済みの行が一斉に一致しなくなるためである（darwinではmount point、linuxではfilesystem IDで表す）。
+device番号を含む旧形式で記録された行は、`EnsureActiveRoot`がinodeの一致を確かめた上で、root世代とその配下のslot・リポジトリまとめて現行形式へ書き換える。
 `workspace_repositories.relative_path`はソース側でのリポジトリ位置という本来の意味だけを担い、slot内の配置は`slot_repositories.dir_name`が持つ。
 
 ## ディスク上のレイアウト

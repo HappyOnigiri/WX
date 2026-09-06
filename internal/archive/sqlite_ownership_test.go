@@ -224,18 +224,19 @@ func TestRemoveWorktreeRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *
 	}
 }
 
-// ownedRootIdentity は、daemon が root generation として登録する前の wx root の dev:ino identity を返す。
+// ownedRootIdentity は、daemon が root generation として登録する前の wx root の identity を返す。
 func ownedRootIdentity(root string) (string, error) {
 	owner, _, err := domain.OpenOwnedRoot(root, root)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = owner.Close() }()
-	info, err := owner.Lstat(".")
+	directory, err := owner.Open(".")
 	if err != nil {
 		return "", err
 	}
-	return domain.FileIdentity(info)
+	defer func() { _ = directory.Close() }()
+	return domain.FileIdentity(directory)
 }
 
 type transitionOwnershipValidator struct {

@@ -151,6 +151,74 @@ func TestEnsureActiveRootAdoptsAnInodeChangeWithNoReferences(t *testing.T) {
 	}
 }
 
+// TestEnsureActiveRootUpgradesTheLegacyIdentityFormat は、device 番号を含む旧記録の移行を検証する。
+// macOS の device 番号は再起動で変わるため、inode が一致する間は root 配下の記録ごと現行形式へ書き換え、参照を保ったまま登録を続ける。
+func TestEnsureActiveRootUpgradesTheLegacyIdentityFormat(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedLegacyIdentities(t, store, "16777229:100", "16777229:200", "16777229:300")
+	current := domain.FormatIdentity("100", "/System/Volumes/Data")
+
+	id, err := store.EnsureActiveRoot(ctx, testRootPath, current)
+	if err != nil || id != testRootID {
+		t.Fatalf("legacy root id=%q err=%v", id, err)
+	}
+	roots, err := store.Roots(ctx)
+	if err != nil || len(roots) != 1 || roots[0].Identity != current || !roots[0].Active {
+		t.Fatalf("roots=%+v err=%v, want the active generation at %q", roots, err, current)
+	}
+	var slotIdentity, repositoryIdentity string
+	if err := store.db.QueryRowContext(ctx, `SELECT dir_identity FROM slots WHERE id='slot01'`).Scan(&slotIdentity); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT dir_identity FROM slot_repositories WHERE slot_id='slot01'`).Scan(&repositoryIdentity); err != nil {
+		t.Fatal(err)
+	}
+	// 記録済み inode は移行後も変えない。書き換えるのは volume を補う形式だけである。
+	if want := domain.FormatIdentity("200", "/System/Volumes/Data"); slotIdentity != want {
+		t.Errorf("slot identity=%q, want %q", slotIdentity, want)
+	}
+	if want := domain.FormatIdentity("300", "/System/Volumes/Data"); repositoryIdentity != want {
+		t.Errorf("slot repository identity=%q, want %q", repositoryIdentity, want)
+	}
+}
+
+// TestEnsureActiveRootRefusesALegacyRecordWithAnotherInode は、形式移行が inode の不一致を通さないことを検証する。
+func TestEnsureActiveRootRefusesALegacyRecordWithAnotherInode(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedLegacyIdentities(t, store, "16777229:100", "16777229:200", "16777229:300")
+
+	_, err := store.EnsureActiveRoot(ctx, testRootPath, domain.FormatIdentity("101", "/System/Volumes/Data"))
+	if !errors.Is(err, ErrOwnership) || !strings.Contains(err.Error(), "inode changed") {
+		t.Fatalf("legacy root with another inode error=%v", err)
+	}
+	var identity string
+	if err := store.db.QueryRowContext(ctx, `SELECT dir_identity FROM slots WHERE id='slot01'`).Scan(&identity); err != nil {
+		t.Fatal(err)
+	}
+	if identity != "16777229:200" {
+		t.Fatalf("refused registration rewrote the slot identity to %q", identity)
+	}
+}
+
+// seedLegacyIdentities は旧 dev:ino 形式で記録された root・slot・repository worktree の組を用意する。
+func seedLegacyIdentities(t *testing.T, store *Store, root, slot, repository string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := store.db.ExecContext(ctx, `UPDATE roots SET identity=? WHERE id=?`, root, testRootID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateStandby(ctx, Slot{ID: "slot01", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot01", State: "READY", DirIdentity: slot}, []SlotRepository{{RepositoryID: "repository", DirName: "repository", RequestedRef: "main", BaseOID: "oid", Fingerprint: "fingerprint"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordSlotRepositoryIdentity(ctx, "slot01", "repository", repository); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPruneRootsKeepsReferencedAndActiveGenerations(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)

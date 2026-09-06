@@ -329,12 +329,18 @@ func (s *Store) EnsureActiveRoot(ctx context.Context, path, identity string) (st
 	case err != nil:
 		return "", err
 	case storedIdentity != identity:
-		var referencing int
-		if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM slots WHERE root_id=?)+(SELECT count(*) FROM workspace_snapshots WHERE root_id=?)`, id, id).Scan(&referencing); err != nil {
+		upgraded, err := upgradeLegacyIdentities(ctx, tx, id, storedIdentity, identity)
+		if err != nil {
 			return "", err
 		}
-		if referencing > 0 {
-			return "", fmt.Errorf("%w: worktree root %s inode changed (recorded %s, found %s) while %d durable rows still reference it", ErrOwnership, path, storedIdentity, identity, referencing)
+		if !upgraded {
+			var referencing int
+			if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM slots WHERE root_id=?)+(SELECT count(*) FROM workspace_snapshots WHERE root_id=?)`, id, id).Scan(&referencing); err != nil {
+				return "", err
+			}
+			if referencing > 0 {
+				return "", fmt.Errorf("%w: worktree root %s inode changed (recorded %s, found %s) while %d durable rows still reference it", ErrOwnership, path, storedIdentity, identity, referencing)
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE roots SET identity=?,active=1,retired_at=NULL WHERE id=?`, identity, id); err != nil {
 			return "", err
@@ -348,6 +354,62 @@ func (s *Store) EnsureActiveRoot(ctx context.Context, path, identity string) (st
 		return "", err
 	}
 	return id, tx.Commit()
+}
+
+// upgradeLegacyIdentities は device 番号を含む旧形式で記録された identity を、記録済み inode を保ったまま現行形式へ書き換える。
+// macOS の device 番号は再起動で変わり、旧形式のままでは root 配下の全 row が一度に一致しなくなるため、inode が一致する間だけ形式を移行する。
+// 対象は登録中の root generation とその配下に限る。他の generation は volume が同じとは限らず、開けたときの identity でしか判定できない。
+func upgradeLegacyIdentities(ctx context.Context, tx *sql.Tx, rootID, stored, current string) (bool, error) {
+	storedInode, storedVolume, storedOK := domain.IdentityFields(stored)
+	currentInode, currentVolume, currentOK := domain.IdentityFields(current)
+	if !storedOK || !currentOK || storedVolume != "" || currentVolume == "" || storedInode != currentInode {
+		return false, nil
+	}
+	slots, err := legacyIdentityRows(ctx, tx, `SELECT id,'',dir_identity FROM slots WHERE root_id=? AND dir_identity IS NOT NULL`, rootID)
+	if err != nil {
+		return false, err
+	}
+	repositories, err := legacyIdentityRows(ctx, tx, `SELECT sr.slot_id,sr.repository_id,sr.dir_identity FROM slot_repositories sr JOIN slots sl ON sl.id=sr.slot_id WHERE sl.root_id=? AND sr.dir_identity IS NOT NULL`, rootID)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range slots {
+		if _, err := tx.ExecContext(ctx, `UPDATE slots SET dir_identity=? WHERE id=?`, domain.FormatIdentity(row.inode, currentVolume), row.slotID); err != nil {
+			return false, err
+		}
+	}
+	for _, row := range repositories {
+		if _, err := tx.ExecContext(ctx, `UPDATE slot_repositories SET dir_identity=? WHERE slot_id=? AND repository_id=?`, domain.FormatIdentity(row.inode, currentVolume), row.slotID, row.repositoryID); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+type legacyIdentityRow struct{ slotID, repositoryID, inode string }
+
+// legacyIdentityRows は旧形式で記録された identity の行だけを返す。現行形式の行は書き換えずに残す。
+func legacyIdentityRows(ctx context.Context, tx *sql.Tx, query, rootID string) ([]legacyIdentityRow, error) {
+	rows, err := tx.QueryContext(ctx, query, rootID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []legacyIdentityRow
+	for rows.Next() {
+		var row legacyIdentityRow
+		var identity string
+		if err := rows.Scan(&row.slotID, &row.repositoryID, &identity); err != nil {
+			return nil, err
+		}
+		inode, volume, ok := domain.IdentityFields(identity)
+		if !ok || volume != "" {
+			continue
+		}
+		row.inode = inode
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 // Roots は登録済み root generation を全て返し、daemon が durable slot の依存する descriptor を再 pin できるようにする。
