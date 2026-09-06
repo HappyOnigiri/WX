@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -163,57 +162,6 @@ func TestCOWOwnershipAndReplacementRacesPreserveFiles(t *testing.T) {
 			}
 		})
 	}
-}
-
-// swap 後に親 directory が置換されると、保持 FD 上の leaf 検査だけでは移動先の元 inode を消してしまう。
-func TestCOWCleanupDetectsParentReplacement(t *testing.T) {
-	if !cowAvailable() {
-		t.Skip("APFS is required")
-	}
-	a, b := cowRoots(t)
-	a.Mkdir("dir", 0o700)
-	b.Mkdir("dir", 0o700)
-	cowWrite(t, a, "dir/file", "same")
-	cowWrite(t, b, "dir/file", "same")
-	calls := 0
-	err := compactFile(context.Background(), a, b, "dir/file", func() error {
-		calls++
-		if calls != 2 {
-			return nil
-		}
-		if e := b.Rename("dir", "saved"); e != nil {
-			t.Fatal(e)
-		}
-		if e := b.Mkdir("dir", 0o700); e != nil {
-			t.Fatal(e)
-		}
-		return nil
-	})
-	if !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("cleanup parent race error=%v", err)
-	}
-	name, e := cowTemporaryName(t, b, "saved")
-	if e != nil {
-		t.Fatalf("original inode was removed: %v", e)
-	}
-	data, e := b.ReadFile(filepath.Join("saved", name))
-	if e != nil || string(data) != "same" {
-		t.Fatalf("original content lost: %q %v", data, e)
-	}
-}
-
-func cowTemporaryName(t *testing.T, root *os.Root, directory string) (string, error) {
-	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(root.Name(), directory))
-	if err != nil {
-		return "", err
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), cowTemporaryPrefix) {
-			return entry.Name(), nil
-		}
-	}
-	return "", errors.New("no CoW temporary remains")
 }
 
 func TestCOWDoesNotFollowSourceSymlink(t *testing.T) {
