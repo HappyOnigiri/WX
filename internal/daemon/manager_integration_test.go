@@ -1428,7 +1428,9 @@ func TestGCRemovesQuarantinedWorktreesOnlyWithProvenOwnership(t *testing.T) {
 	if err := preparer.Prepare(ctx, w.Repositories[0], filepath.Join(slotRoot, repos[0].DirName), resolved[0].OID, id); err != nil {
 		t.Fatal(err)
 	}
-	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{cfg.Storage.WorktreeRoot: slot.RootID}}
+	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{cfg.Storage.WorktreeRoot: slot.RootID}, ctx: ctx, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}}
+	// 準備完了ごとの使用量測定は background で走るため、store を閉じる前に join する。
+	defer m.backgroundWG.Wait()
 	if err := m.prepareSlot(ctx, id, w, resolved, repos); err != nil {
 		t.Fatal(err)
 	}
