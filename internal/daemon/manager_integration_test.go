@@ -586,7 +586,7 @@ func TestHandlerPublicLifecycleSurface(t *testing.T) {
 		"Heartbeat":        map[string]any{"session_id": lease.SessionID, "token": lease.Token},
 		"ResumeStatus":     map[string]any{"wx_session_id": lease.SessionID},
 		"GC":               map[string]any{"dry_run": true},
-		"Sessions":         map[string]any{"all": true},
+		"Slots":            map[string]any{"all": true},
 	} {
 		if _, err := handler.Handle(ctx, method, JSON(params)); err != nil {
 			t.Fatalf("%s: %v", method, err)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,6 +32,8 @@ type Preparer struct {
 	Config    config.Config
 	Ownership state.OwnershipValidator
 	SlotPath  string
+	// Log は準備結果を変えない出来事だけを残す。nil でも準備は同じ結果になる。
+	Log *slog.Logger
 	// DetailDir は prepare command の失敗診断を保存する daemon 管理ディレクトリである。
 	// 空の場合も command の出力を無制限に保持せず破棄し、診断保存の失敗で準備結果を変えない。
 	DetailDir string

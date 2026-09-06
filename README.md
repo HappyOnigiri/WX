@@ -9,7 +9,7 @@ Run Claude Code or Codex in a separate Git worktree with a single command.
 
 - **Separate workspaces** — Agents work in detached Git worktrees, keeping your source checkout's HEAD, index, and tracked files untouched.
 - **Ready when you need them** — A background daemon keeps a workspace ready for recently used repositories.
-- **Session recovery** — Use `wx leases` to list managed sessions and `wx resume` to restore archived work.
+- **Session recovery** — Use `wx slots` to list managed slots and `wx resume` to restore archived work.
 - **Familiar commands** — Use Claude Code or Codex with their usual arguments, and optionally choose a starting branch.
 
 ## Installation
@@ -50,7 +50,7 @@ wx --branch feature/api codex
 ## More options
 
 - **Status and diagnostics:** `wx status`, `wx doctor`.
-- **Sessions and cleanup:** `wx leases`, `wx resume`, `wx gc --dry-run`, `wx clear`.
+- **Sessions and cleanup:** `wx slots`, `wx resume`, `wx gc --dry-run`, `wx clear`.
 - **Configuration:** `wx config` shows settings and can update individual values.
 - **Agent integration:** Global agent hooks check workspace readiness, bind agent sessions to wx, and release them when work ends.
   Configure them to call `wx hook session-start`, `wx hook user-prompt-submit`, `wx hook pre-tool-use`, and `wx hook session-end` only when `WX_SESSION_ID` is set.

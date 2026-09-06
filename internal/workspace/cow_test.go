@@ -1,8 +1,10 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,18 +197,23 @@ func TestCOWDoesNotFollowSourceSymlink(t *testing.T) {
 
 func TestCOWFallbackModes(t *testing.T) {
 	failure := errors.New("clone failed")
-	if err := cowFallback(context.Background(), config.CopyModeAuto, failure); err != nil {
+	var logged bytes.Buffer
+	preparer := &Preparer{Log: slog.New(slog.NewTextHandler(&logged, nil))}
+	if err := preparer.cowFallback(context.Background(), config.CopyModeAuto, "target", failure); err != nil {
 		t.Fatal(err)
 	}
-	if err := cowFallback(context.Background(), config.CopyModeCOW, failure); !errors.Is(err, failure) {
+	if !strings.Contains(logged.String(), "fell back") {
+		t.Fatalf("fallback was not logged: %q", logged.String())
+	}
+	if err := preparer.cowFallback(context.Background(), config.CopyModeCOW, "target", failure); !errors.Is(err, failure) {
 		t.Fatal(err)
 	}
-	if err := cowFallback(context.Background(), config.CopyModeAuto, state.ErrOwnership); !errors.Is(err, state.ErrOwnership) {
+	if err := preparer.cowFallback(context.Background(), config.CopyModeAuto, "target", state.ErrOwnership); !errors.Is(err, state.ErrOwnership) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := cowFallback(ctx, config.CopyModeAuto, failure); !errors.Is(err, context.Canceled) {
+	if err := preparer.cowFallback(ctx, config.CopyModeAuto, "target", failure); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 }

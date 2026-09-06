@@ -933,8 +933,8 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		if err := manager.Heartbeat(ctx, "missing", "token"); err == nil {
 			t.Fatal("heartbeat with closed store succeeded")
 		}
-		if _, err := manager.Sessions(ctx, false); err == nil {
-			t.Fatal("sessions with closed store succeeded")
+		if _, err := manager.Slots(ctx, false); err == nil {
+			t.Fatal("slots with closed store succeeded")
 		}
 		for name, operation := range map[string]func() error{
 			"wait ready": func() error { return manager.WaitReady(ctx, "missing", "token") },

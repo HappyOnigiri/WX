@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -79,8 +80,8 @@ func run(ctx context.Context, args []string) int {
 		return runDaemon(ctx, args[1:])
 	case "hook":
 		return runHook(ctx, args[1:])
-	case "leases":
-		return runLeases(ctx, args[1:])
+	case "slots":
+		return runSlots(ctx, args[1:])
 	case "forget":
 		return runForget(ctx, args[1:])
 	}
@@ -881,33 +882,23 @@ func runHook(ctx context.Context, args []string) int {
 	return 0
 }
 
-func runLeases(ctx context.Context, args []string) int {
-	fs := pflag.NewFlagSet("leases", pflag.ContinueOnError)
-	all := fs.Bool("all", false, "include inactive and expired leases")
+func runSlots(ctx context.Context, args []string) int {
+	fs := pflag.NewFlagSet("slots", pflag.ContinueOnError)
+	all := fs.Bool("all", false, "include failed, quarantined, and released slots")
 	jsonOut := fs.Bool("json", false, "print JSON")
-	fs.Usage = func() { commandUsage(os.Stdout, "leases") }
-	if code, done := finishFlagParse(fs, "leases", args); done {
+	fs.Usage = func() { commandUsage(os.Stdout, "slots") }
+	if code, done := finishFlagParse(fs, "slots", args); done {
 		return code
 	}
 	if fs.NArg() != 0 {
-		commandUsage(os.Stderr, "leases")
+		commandUsage(os.Stderr, "slots")
 		return 2
 	}
 	c, _ := rpcClient()
 	var out []map[string]any
-	if err := c.Call(ctx, "Sessions", map[string]bool{"all": *all}, &out); err != nil {
+	if err := c.Call(ctx, "Slots", map[string]bool{"all": *all}, &out); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
-	}
-	// daemonが旧実装でも、既定表示はACTIVEだけというCLIの契約を守る。
-	if !*all {
-		active := out[:0]
-		for _, s := range out {
-			if sessionState, ok := s["state"].(string); ok && sessionState == "ACTIVE" {
-				active = append(active, s)
-			}
-		}
-		out = active
 	}
 	if *jsonOut {
 		data, _ := json.MarshalIndent(out, "", "  ")
@@ -915,9 +906,27 @@ func runLeases(ctx context.Context, args []string) int {
 		return 0
 	}
 	for _, s := range out {
-		fmt.Printf("%s  %-12v %-8v %v\n", s["id"], s["state"], s["agent"], s["agent_session_id"])
+		fmt.Printf("%-8s %-12s %-8s %-8s %-6s %9s / %-9s %s\n",
+			slotField(s, "slot_id"), slotField(s, "state"), slotField(s, "session_id"), slotField(s, "agent"),
+			slotField(s, "copy_mode"), slotBytes(s, "exclusive_bytes"), slotBytes(s, "allocated_bytes"), slotField(s, "path"))
 	}
 	return 0
+}
+
+func slotField(row map[string]any, key string) string {
+	if value, ok := row[key].(string); ok && value != "" {
+		return value
+	}
+	return "-"
+}
+
+// slotBytes は JSON の数値をそのまま桁区切りなしで出す。測定前の行は 0 ではなく - と表示する。
+func slotBytes(row map[string]any, key string) string {
+	value, ok := row[key].(float64)
+	if !ok {
+		return "-"
+	}
+	return strconv.FormatInt(int64(value), 10)
 }
 
 func runForget(ctx context.Context, args []string) int {

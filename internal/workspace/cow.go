@@ -42,13 +42,22 @@ func (p *Preparer) compactWorktree(ctx context.Context, repo discovery.Repositor
 		return nil
 	}
 	if !cowAvailable() {
-		return cowFallback(ctx, mode, errors.New("CoW is unavailable on this platform"))
+		return p.cowFallback(ctx, mode, target, errors.New("CoW is unavailable on this platform"))
 	}
 	err := p.compactOwnedWorktree(ctx, repo, target, oid, slotID, phase, identity)
-	return cowFallback(ctx, mode, err)
+	return p.cowFallback(ctx, mode, target, err)
 }
 
-func cowFallback(ctx context.Context, mode string, err error) error {
+// logCOWFallback は auto が通常コピーへ落ちた事実を残す。
+// 失敗を握り潰したまま貸し出すと、CoW が常に効いていないことを利用者が知る手立てが無くなる。
+func (p *Preparer) logCOWFallback(target string, err error) {
+	if p.Log == nil || err == nil {
+		return
+	}
+	p.Log.Warn("worktree CoW fell back to a normal copy", "target", target, "error", err)
+}
+
+func (p *Preparer) cowFallback(ctx context.Context, mode, target string, err error) error {
 	if errors.Is(err, state.ErrOwnership) {
 		return fmt.Errorf("compact worktree with CoW: %w", err)
 	}
@@ -56,6 +65,7 @@ func cowFallback(ctx context.Context, mode string, err error) error {
 		return ctx.Err()
 	}
 	if err == nil || mode != config.CopyModeCOW && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		p.logCOWFallback(target, err)
 		return nil
 	}
 	return fmt.Errorf("compact worktree with CoW: %w", err)

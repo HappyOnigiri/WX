@@ -27,7 +27,7 @@ Commands:
   prune [--all] [--dry-run]      delete recovery refs the database cannot explain
   clear [--all] [--standby]      delete managed worktrees now
   retry-standby <workspace>      retry standby replenishment after repair
-  leases [--all] [--json]        list managed wx leases
+  slots [--all] [--json]         list managed wx slots and their disk usage
   config [<key> ...]             show or update configuration
   resume <id> [agent] [args...]  restore a wx session
   forget <workspace-path>        forget an inactive workspace
@@ -139,14 +139,19 @@ Copy mode (storage.copy_mode):
 Restore an archived wx session into a new managed workspace.
 With --fresh, keep the conversation but build the worktree from the current base.
 Use --branch with --fresh to choose the detached base.`)
-	case "leases":
-		_, _ = fmt.Fprintln(w, `Usage: wx leases [--all] [--json]
+	case "slots":
+		_, _ = fmt.Fprintln(w, `Usage: wx slots [--all] [--json]
 
-List managed wx leases and their recovery state.
-By default, only ACTIVE sessions are listed.
+List managed wx slots with their session, copy mode, and disk usage.
+By default, only READY and LEASED slots are listed.
+
+Disk usage is measured periodically by the daemon, not on demand, so the
+numbers carry the measurement time shown by --json. copy_mode reports what
+the slot looks like now: cow once any file still shares blocks with the main
+worktree, copy otherwise.
 
 Options:
-  --all   include inactive and expired leases
+  --all   include failed, quarantined, and released slots
   --json  print machine-readable JSON`)
 	case "forget":
 		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path>

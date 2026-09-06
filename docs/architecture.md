@@ -102,6 +102,30 @@ clone元と宛先は同じ対応volumeにある必要があり、通常checkout1
 コピー方式はfingerprintに含めるため、設定変更後の貸出では以前の方式で作ったREADY slotを再利用しない。
 既に貸出中のslotのファイルは変更しない。
 `.worktreeinclude`、workspace rootのコピー、生成物、Git objectsや復旧snapshotの容量は、この設定の対象外である。
+`auto`が通常コピーへ落ちた回はdaemonのログにwarnとして残る。
+落ちた事実を握り潰したまま貸し出すと、CoWが常に効いていないことを利用者が知る手立てが無くなるためである。
+
+## slotの使用量とコピー方式の観測
+
+`wx slots`はslotを1行として、状態・借りているsession・実体のpath・コピー方式・使用量を出す。
+既定はREADYとLEASEDで、`--all`はFAILED・QUARANTINEDのslotと、slotを手放したsessionも加える。
+slotを持たないsessionの行はslot列を空にして返すため、`wx resume`へ渡すIDはこの一覧から辿れる。
+
+使用量はdaemonのlifecycleが`Discovery.ReconcileInterval`ごとに測り、`wx slots`と`wx status`は測定済みの値と`measured_at`を返すだけである。
+要求のたびに走査すると、root配下の総ファイル数に比例して応答が遅くなるためである。
+
+コピー方式は準備時の記録ではなく、測定時点の実体から決める。
+`allocated_bytes`（`st_blocks*512`）はAPFSのcloneを割り引かず、共有していてもファイル1個分を満額で数えるため、この値だけではCoWと通常コピーを区別できない。
+そこでmain worktreeの同じpathを開き、`F_LOG2PHYS_EXT`で得た物理offsetの一致をblock共有の証拠として使う（`internal/workspace/usage.go`）。
+1つでも共有しているファイルがあれば`cow`、比較できて1つも無ければ`copy`とする。
+貸出後にエージェントが書き換えて共有が解けた分も、次の測定でそのまま`shared_bytes`の減少として現れる。
+
+比較するのは先頭と末尾の2点だけのsamplingなので、途中のblockだけが書き換わったファイルは共有と見える。
+`shared_bytes`は上限側の推定であり、`exclusive_bytes`は下限側の推定である。
+判定は前回の`(dev, ino, ctime)`でcacheし、共有を壊す書き込みが必ずctimeを更新することを根拠に、変化していないファイルの再判定を省く。
+どちらのファイルも読むだけで、内容もmetadataも変更しない。
+判定できない事情（open失敗・size不一致・platform非対応）はすべて共有なしとして扱い、測定の失敗で準備や貸出の結果を変えない。
+LinuxではCoW自体を行わないため、`measurement`は`unsupported`になり`shared_bytes`は常に0である。
 
 ## daemonの内部
 
@@ -220,7 +244,7 @@ worktree root（`storage.worktree_root`、既定`$HOME/wx`）配下は次の形�
 
 `_unbound/<slot-id>`は旧リリースが生成した残骸の回収用にだけ残り、新しいslotの生成には使わない。
 workspace-idとslot-idは6桁固定の小文字英数字（base36、`domain.NewShortID`）である。
-slot-idはleaseのsession IDと同値なので、`wx leases`が出すIDをそのまま`wx resume`に渡せる。
+slot-idはleaseのsession IDと同値なので、`wx slots`が出すIDをそのまま`wx resume`に渡せる。
 大文字を混ぜないのはAPFSが既定でcase-insensitiveなためで、同じ理由からslot内の配置名の衝突判定も小文字化して行い、衝突したら`-2`のサフィックスを付ける。
 
 `_`始まりはwxの予約プレフィックスで、workspace IDもリポジトリ配置名もこの接頭辞を拒否し、旧`_unbound`は回収用に特別扱いする。

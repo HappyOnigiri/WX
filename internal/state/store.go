@@ -44,8 +44,8 @@ var ErrWorkspaceIdentityConflict = errors.New("workspace root is already registe
 
 // JSONSchemaVersion は `wx status --json` と `wx doctor --json` の出力形状の互換契約であり、SQLite migration 数の SchemaVersion とは独立である。
 // scripted consumer が観測する形状を変える場合だけ上げる。2〜4 は restart・stop・daemon unavailable、5〜7 は root・workspace・quarantine の診断を追加した。
-// 8 は隔離 standby 上限の回復案内、9 は worktree_roots の measured_at を追加した。
-const JSONSchemaVersion = 9
+// 8 は隔離 standby 上限の回復案内、9 は worktree_roots の measured_at、10 は `wx leases` を slot 単位の `wx slots` へ置き換えて方式と使用量を足した。
+const JSONSchemaVersion = 10
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -2341,32 +2341,102 @@ type (
 	}
 )
 
-type SessionSummary struct {
-	ID             string `json:"id"`
+// SlotSummary は slot 1 個と、それを借りている session の情報をまとめた 1 行である。
+// slot が既に無い archived session も同じ形で返し、その場合は SlotID・State・Path を空にする。
+type SlotSummary struct {
+	SlotID         string `json:"slot_id,omitempty"`
+	State          string `json:"state,omitempty"`
 	WorkspaceID    string `json:"workspace_id,omitempty"`
-	State          string `json:"state"`
-	AgentKind      string `json:"agent"`
+	Path           string `json:"path,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	SessionState   string `json:"session_state,omitempty"`
+	AgentKind      string `json:"agent,omitempty"`
 	AgentSessionID string `json:"agent_session_id,omitempty"`
-	CreatedAt      string `json:"created_at"`
+	CreatedAt      string `json:"created_at,omitempty"`
+	ReadyAt        string `json:"ready_at,omitempty"`
+	LastUsedAt     string `json:"last_used_at,omitempty"`
 	ArchivedAt     string `json:"archived_at,omitempty"`
 	ExpiresAt      string `json:"expires_at,omitempty"`
 }
 
-func (s *Store) ListSessions(ctx context.Context, all bool) ([]SessionSummary, error) {
-	q := `SELECT id,COALESCE(workspace_id,''),state,agent_kind,COALESCE(agent_session_id,''),created_at,COALESCE(archived_at,''),COALESCE(expires_at,'') FROM sessions`
+// ListSlots は貸出中と待機中の slot を返す。
+// all では FAILED・QUARANTINED の slot に加え、slot を手放した session も返し、`wx resume` に渡す ID をここから辿れるようにする。
+func (s *Store) ListSlots(ctx context.Context, all bool) ([]SlotSummary, error) {
+	q := `SELECT sl.id,sl.state,COALESCE(sl.workspace_id,''),rt.path,sl.rel_path,COALESCE(se.id,''),COALESCE(se.state,''),COALESCE(se.agent_kind,''),COALESCE(se.agent_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.last_used_at,'')
+		FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN sessions se ON se.id=sl.owner_session_id`
 	if !all {
-		q += ` WHERE state='ACTIVE'`
+		q += ` WHERE sl.state IN ('READY','LEASED')`
 	}
-	q += ` ORDER BY created_at DESC`
+	q += ` ORDER BY rt.path,sl.rel_path`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []SessionSummary
+	var out []SlotSummary
 	for rows.Next() {
-		var x SessionSummary
-		if err := rows.Scan(&x.ID, &x.WorkspaceID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.CreatedAt, &x.ArchivedAt, &x.ExpiresAt); err != nil {
+		var x SlotSummary
+		var root, relative string
+		if err := rows.Scan(&x.SlotID, &x.State, &x.WorkspaceID, &root, &relative, &x.SessionID, &x.SessionState, &x.AgentKind, &x.AgentSessionID, &x.CreatedAt, &x.ReadyAt, &x.LastUsedAt); err != nil {
+			return nil, err
+		}
+		x.Path = filepath.Join(root, relative)
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if !all {
+		return out, nil
+	}
+	detached, err := s.listDetachedSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, detached...), nil
+}
+
+// listDetachedSessions は現在どの slot も借りていない session を返す。
+func (s *Store) listDetachedSessions(ctx context.Context) ([]SlotSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT se.id,se.state,COALESCE(se.workspace_id,''),se.agent_kind,COALESCE(se.agent_session_id,''),se.created_at,COALESCE(se.archived_at,''),COALESCE(se.expires_at,'')
+		FROM sessions se WHERE NOT EXISTS (SELECT 1 FROM slots sl WHERE sl.owner_session_id=se.id) ORDER BY se.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SlotSummary
+	for rows.Next() {
+		var x SlotSummary
+		if err := rows.Scan(&x.SessionID, &x.SessionState, &x.WorkspaceID, &x.AgentKind, &x.AgentSessionID, &x.CreatedAt, &x.ArchivedAt, &x.ExpiresAt); err != nil {
+			return nil, err
+		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+// SlotUsageLocation は使用量測定のために slot 内の repository 1 個の置き場所を表す。
+type SlotUsageLocation struct {
+	SlotID   string
+	RootPath string
+	RelPath  string
+	DirName  string
+	MainPath string
+}
+
+// SlotUsageLocations は使用量を測る対象、つまり実体が残っている貸出中・待機中の slot を返す。
+func (s *Store) SlotUsageLocations(ctx context.Context) ([]SlotUsageLocation, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path,sl.rel_path,sr.dir_name,r.main_worktree_path
+		FROM slots sl JOIN roots rt ON rt.id=sl.root_id JOIN slot_repositories sr ON sr.slot_id=sl.id JOIN repositories r ON r.id=sr.repository_id
+		WHERE sl.state IN ('READY','LEASED') ORDER BY sl.id,sr.dir_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SlotUsageLocation
+	for rows.Next() {
+		var x SlotUsageLocation
+		if err := rows.Scan(&x.SlotID, &x.RootPath, &x.RelPath, &x.DirName, &x.MainPath); err != nil {
 			return nil, err
 		}
 		out = append(out, x)

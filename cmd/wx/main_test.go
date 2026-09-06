@@ -194,8 +194,8 @@ func TestRunGCReturnsNonZeroForPendingReport(t *testing.T) {
 	}
 }
 
-func TestRunLeasesDefaultsToActive(t *testing.T) {
-	home, err := os.MkdirTemp("/tmp", "wx-sessions-")
+func TestRunSlotsListsLendableAndAll(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wx-slots-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,12 +205,16 @@ func TestRunLeasesDefaultsToActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancel, done := serveUntilCanceled(t, socket, commandHandler{sessions: []map[string]any{
-		{"id": "active", "state": "ACTIVE", "agent": "codex"},
-		{"id": "starting", "state": "STARTING", "agent": "codex"},
-		{"id": "archived", "state": "ARCHIVED", "agent": "codex"},
-		{"id": "expired", "state": "EXPIRED", "agent": "codex"},
-	}})
+	cancel, done := serveUntilCanceled(t, socket, commandHandler{
+		slots: []map[string]any{
+			{"slot_id": "leased", "state": "LEASED", "session_id": "active", "agent": "codex", "copy_mode": "cow", "allocated_bytes": float64(4096), "exclusive_bytes": float64(1024), "path": "/wx/leased"},
+			{"slot_id": "warm", "state": "READY", "copy_mode": "copy", "path": "/wx/warm"},
+		},
+		allSlots: []map[string]any{
+			{"slot_id": "leased", "state": "LEASED", "session_id": "active", "agent": "codex"},
+			{"session_id": "archived", "session_state": "ARCHIVED", "agent": "codex"},
+		},
+	})
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -219,23 +223,27 @@ func TestRunLeasesDefaultsToActive(t *testing.T) {
 	})
 
 	stdout := captureStdout(t, func() {
-		if code := runLeases(context.Background(), nil); code != 0 {
-			t.Fatalf("runLeases exit=%d", code)
+		if code := runSlots(context.Background(), nil); code != 0 {
+			t.Fatalf("runSlots exit=%d", code)
 		}
 	})
-	if !strings.Contains(stdout, "active") || strings.Contains(stdout, "starting") || strings.Contains(stdout, "archived") || strings.Contains(stdout, "expired") {
-		t.Fatalf("default sessions output=%q", stdout)
+	for _, field := range []string{"leased", "READY", "cow", "1024", "4096", "/wx/warm"} {
+		if !strings.Contains(stdout, field) {
+			t.Fatalf("slots output=%q missing %q", stdout, field)
+		}
+	}
+	// 測定前の slot は 0 ではなく - と出し、使用量が未知であることと 0 バイトを取り違えないようにする。
+	if !strings.Contains(stdout, "-") || strings.Contains(stdout, "archived") {
+		t.Fatalf("slots output=%q", stdout)
 	}
 
 	stdout = captureStdout(t, func() {
-		if code := runLeases(context.Background(), []string{"--all"}); code != 0 {
-			t.Fatalf("runLeases --all exit=%d", code)
+		if code := runSlots(context.Background(), []string{"--all"}); code != 0 {
+			t.Fatalf("runSlots --all exit=%d", code)
 		}
 	})
-	for _, id := range []string{"active", "starting", "archived", "expired"} {
-		if !strings.Contains(stdout, id) {
-			t.Fatalf("--all sessions output=%q missing %q", stdout, id)
-		}
+	if !strings.Contains(stdout, "archived") {
+		t.Fatalf("--all slots output=%q", stdout)
 	}
 }
 
@@ -301,7 +309,7 @@ func TestEverySubcommandHasAUniformPflagContract(t *testing.T) {
 		{name: "status", run: func(ctx context.Context, args []string) int { return runRPCDisplay(ctx, "Status", args) }, helpExit: 0, helpOnStdout: true},
 		{name: "doctor", run: func(ctx context.Context, args []string) int { return runRPCDisplay(ctx, "Doctor", args) }, helpExit: 0, helpOnStdout: true},
 		{name: "gc", run: runGC, helpExit: 0, helpOnStdout: true},
-		{name: "leases", run: runLeases, helpExit: 0, helpOnStdout: true},
+		{name: "slots", run: runSlots, helpExit: 0, helpOnStdout: true},
 		{name: "config", run: runConfig, helpExit: 0, helpOnStdout: true},
 		{name: "resume", run: runResume, helpExit: 0, helpOnStdout: true},
 		{name: "daemon", run: runDaemon, helpExit: 0, helpOnStdout: true},
