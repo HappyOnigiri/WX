@@ -140,6 +140,8 @@ LinuxではCoW自体を行わないため、`measurement`は`unsupported`にな�
 `manager.go`は共有状態と構築・終了を持ち、貸出・準備・復元・保存・削除は`lease.go`・`prepare.go`・`resume.go`・`snapshot.go`・`remove.go`で調整する。
 `jobs.go`がジョブを配送し、`maintenance.go`が周期処理、`reconcile.go`が実体照合、`standby.go`が補充、`gc.go`が保持期限に基づく削除を進める。
 root世代の選択・登録は`roots.go`、descriptorの参照保持・終了は`root_handles.go`が担当する。
+slotの確保とslot rootの作成・所有権確認は`allocation.go`が受け持つ。
+session単位のheartbeat・準備完了待ち・agent sessionの紐付けは`session.go`、設定のリロードは`reload.go`が引き受ける。
 使用量の測定は`usage.go`のbackground処理に閉じ、`status.go`はcacheとDBから診断結果を組み立てる。
 
 - **ジョブ** — 永続ジョブは`jobs`テーブルにあり、種別は`PREPARE`、`ENSURE_STANDBY`、`SNAPSHOT`、`RESTORE`、`REMOVE`、`REMOVE_REPOSITORY`。
