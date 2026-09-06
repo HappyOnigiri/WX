@@ -118,17 +118,13 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 		return WorktreeOwnership{}, ownershipFailure("eligible slot and repository states are required")
 	}
 
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return WorktreeOwnership{}, ownershipDatabaseFailure(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
+	// 単一の read-only 文なので明示的な transaction を張らない。
+	// CoW の圧縮は追跡ファイルごとにこれを呼ぶため、BeginTx/Commit の往復がそのまま準備時間に乗る。
 	var out WorktreeOwnership
 	var workspaceRoot, mainWorktreePath, commonDir string
 	var workspaceID, slotState, repositoryID, repositoryState, relativePath string
 	var storedDirIdentity string
-	err = tx.QueryRowContext(ctx, `
+	err := s.db.QueryRowContext(ctx, `
 		SELECT sl.id,sl.workspace_id,sl.generation,sl.root_id,rt.path,sl.rel_path,sl.state,
 		       sr.repository_id,sr.dir_name,COALESCE(sr.dir_identity,''),sr.state,
 		       w.root_path,r.main_worktree_path,r.common_git_dir,wr.relative_path
@@ -144,9 +140,6 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 			&repositoryID, &out.DirName, &storedDirIdentity, &repositoryState, &workspaceRoot,
 			&mainWorktreePath, &commonDir, &relativePath)
 	if err != nil {
-		return WorktreeOwnership{}, ownershipDatabaseFailure(err)
-	}
-	if err := tx.Commit(); err != nil {
 		return WorktreeOwnership{}, ownershipDatabaseFailure(err)
 	}
 
