@@ -127,7 +127,12 @@ The workspace path is shown by wx status when standby replenishment is stopped.`
        wx config <key> --remove <value>
        wx config <key> --reset
 
-Show effective configuration, or atomically update one supported scalar key or list.`)
+Show effective configuration, or atomically update one supported scalar key or list.
+
+Copy mode (storage.copy_mode):
+  auto  share identical checked-out files with APFS CoW; keep copies on failure (default)
+  cow   fail preparation if CoW fails
+  copy  keep normal Git checkout files`)
 	case "resume":
 		_, _ = fmt.Fprintln(w, `Usage: wx resume <wx-session-id> [claude|codex] [--fresh] [--branch <branch>] [agent-arguments...]
 

@@ -142,7 +142,7 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 	t.Setenv("HOME", home)
 	values := map[string]string{
 		"worktree.undefined":    "cold",
-		"storage.worktree_root": "$HOME/wx", "storage.repo_dir_source": "directory", "storage.backup_generations": "4", "storage.backup_retention": "24h",
+		"storage.worktree_root": "$HOME/wx", "storage.copy_mode": "cow", "storage.repo_dir_source": "directory", "storage.backup_generations": "4", "storage.backup_retention": "24h",
 		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3", "pool.git_concurrency_per_repository": "1",
 		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
 		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "resume.auto_fresh": "true", "includes.default_agent_rules": "false", "logging.level": "debug",
@@ -539,5 +539,32 @@ func TestConfigPathShapeAndWorkspaceCollisionFailures(t *testing.T) {
 	cfg.Workspaces = map[string]Workspace{real: {}, alias: {}}
 	if err := NormalizePaths(&cfg); err == nil || !strings.Contains(err.Error(), "workspace overrides collide") {
 		t.Fatalf("workspace collision error=%v", err)
+	}
+}
+
+func TestCopyModeConfigRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if got, err := Load(); err != nil || got.Storage.CopyMode != CopyModeAuto {
+		t.Fatalf("default=%q err=%v", got.Storage.CopyMode, err)
+	}
+	for _, mode := range []string{CopyModeAuto, CopyModeCOW, CopyModeCopy} {
+		raw := Config{}
+		if err := SetField(&raw, "storage.copy_mode", mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := Save(raw); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load()
+		if err != nil || got.Storage.CopyMode != mode {
+			t.Fatalf("mode=%q got=%q err=%v", mode, got.Storage.CopyMode, err)
+		}
+	}
+	for _, mode := range []string{"", "COW", "invalid"} {
+		cfg := Defaults()
+		cfg.Storage.CopyMode = mode
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("invalid mode accepted: %q", mode)
+		}
 	}
 }

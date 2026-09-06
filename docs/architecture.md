@@ -71,6 +71,36 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
    復元後のworktreeはtracked changesを含むため、貸出前の検査はcleanなworking treeを要求しない`ValidateOwnership`を使う。
    READY slotの再利用側は`ValidateReady`で、こちらはtracked cleanまで求める。
 
+## worktree のコピー方式
+
+`storage.copy_mode`で、通常のGit checkout後に同内容の追跡ファイルをAPFS CoWへ置き換えるかを選ぶ。
+`wx config storage.copy_mode cow`のように変更でき、既定は`auto`である。
+
+| 値 | 動作 |
+| --- | --- |
+| `auto` | CoWを試み、失敗時は生成済みの通常コピーを使う |
+| `cow` | CoWが利用できない環境やclone失敗では準備を失敗させる |
+| `copy` | 通常のGit checkoutによるファイルを使う |
+
+対象はmain worktreeの同じpathにある通常ファイルで、cloneしたbytesと宛先の最終bytesが一致するものだけである。
+mainとcommitが異なっていても同内容のファイルは共有でき、dirtyなmainの変更は宛先へ持ち込まない。
+新規・内容不一致・空ファイル・symlink・submodule・複数hard linkを持つ宛先は通常方式のまま残す。
+所有者・mode・flags・ACL・xattrが一致しないものも共有対象外とする。
+`cow`は共有対象のclone失敗をエラーにする指定であり、全ファイルの共有や削減容量を保証する指定ではない。
+
+`internal/workspace/cow.go`が準備・復元の完了前に処理し、Gitのfilter、checkout hook、prepare commandによる結果を保持する。
+indexは更新しないため、復元したstaged/unstagedの区別も変えない。
+宛先の日時はFD経由で復元し、元ファイルとcloneをatomic swapしてから元inodeを検証して削除する。
+root・親directory・宛先ファイルの置換や所有権不明は、`auto`でもfallbackせずQUARANTINEDとして実体を残す。
+中断して残った未追跡の`.wx-cow-*`も自動削除せず隔離するため、この名前は予約する。
+貸出中のworktreeを後からCoW化する処理は持たない。
+
+Darwinでは`Fclonefileat`を使い、Linuxでは`auto`が通常方式、`cow`がエラーになる。
+clone元と宛先は同じ対応volumeにある必要があり、通常checkout1個分の一時容量は必要である。
+コピー方式はfingerprintに含めるため、設定変更後の貸出では以前の方式で作ったREADY slotを再利用しない。
+既に貸出中のslotのファイルは変更しない。
+`.worktreeinclude`、workspace rootのコピー、生成物、Git objectsや復旧snapshotの容量は、この設定の対象外である。
+
 ## daemonの内部
 
 - **ジョブ** — 永続ジョブは`jobs`テーブルにあり、種別は`PREPARE`、`ENSURE_STANDBY`、`SNAPSHOT`、`RESTORE`、`REMOVE`、`REMOVE_REPOSITORY`。
@@ -203,7 +233,7 @@ slot-idはleaseのsession IDと同値なので、`wx leases`が出すIDをその
 `RepoName`の決定順は`repositories.<main path>.dir_name` → `repositories.<main path>.dir_source` → `storage.repo_dir_source`（既定`remote`）→ main worktreeのディレクトリ名である。
 `remote`は`git remote get-url origin`の出力から末尾の`.git`を除いたbasenameで、取れないときはディレクトリ名へ落ちる。
 採用した値は`slot_repositories.dir_name`に記録され、以後はその値が権威になる。
-設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`（`schema=5`）が準備入力を含むので新規slotから新しい設定を使う。
+設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`（`schema=6`）が準備入力を含むので新規slotから新しい設定を使う。
 
 `storage.worktree_root`を変えても既存slotは移動しない。
 `roots`テーブルがroot世代を持ち、slotは`root_id` + root相対pathで位置を表す。

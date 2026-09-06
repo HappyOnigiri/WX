@@ -286,7 +286,7 @@ func (p *Preparer) prepareTarget(target string) (string, string, error) {
 	return root, target, nil
 }
 
-func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, root string) error {
+func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, root string) (prepareErr error) {
 	locked, err := p.prepareLockedTarget(ctx, repo, target, oid, slotID, phase, root)
 	if err != nil {
 		return err
@@ -300,7 +300,7 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	cleanup := !existingWorktree
 	ownedAfterLock := false
 	defer func() {
-		if cleanup && ownedAfterLock {
+		if cleanup && ownedAfterLock && !errors.Is(prepareErr, state.ErrOwnership) {
 			// 失敗した preparation は所有権を証明できる間だけ削除できる。
 			// command や並行する filesystem 変更で証明が無効になった場合は、ロック済み target と marker を quarantine/reconcile 用に残す。
 			if err := p.validatePreparedTarget(context.Background(), repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "validate worktree before cleanup"); err != nil {
@@ -333,6 +333,11 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 		return fmt.Errorf("wx worktree ownership changed after lock: %w", err)
 	}
 	ownedAfterLock = true
+	if existingWorktree {
+		if err := p.rejectCOWTemporaries(ctx, target, targetIdentity); err != nil {
+			return err
+		}
+	}
 	// worktree に書き込む、または再利用する各操作の直前に durable owner を再検証する。
 	// common-directory lock は Git metadata を守り、この read-only な state の証明は slot/path の対応と state machine を独立に守る。
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before includes"); err != nil {
@@ -393,6 +398,9 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 		// archive.Manager が snapshot の tree/index を復元し、resume-phase command を実行するまで RESTORING lock を保持する。
 		cleanup = false
 		return nil
+	}
+	if err := p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity); err != nil {
+		return err
 	}
 	if _, err = p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
 		return err
@@ -652,7 +660,13 @@ func (p *Preparer) PrepareResumeWithIdentity(ctx context.Context, repo discovery
 	if err := p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, slotID, preparePhaseRestore); err != nil {
 		return fmt.Errorf("validate restoring worktree before resume prepare: %w", err)
 	}
+	if err := p.rejectCOWTemporaries(ctx, target, expectedIdentity); err != nil {
+		return err
+	}
 	if err := p.runPrepareWithIdentity(ctx, repo, target, expectedIdentity); err != nil {
+		return err
+	}
+	if err := p.compactWorktree(ctx, repo, target, oid, slotID, preparePhaseRestore, expectedIdentity); err != nil {
 		return err
 	}
 	if err := p.VerifyWorktreeIdentity(target, expectedIdentity); err != nil {
@@ -1684,13 +1698,13 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 	return nil
 }
 
-const fingerprintSchemaVersion = 5
+const fingerprintSchemaVersion = 6
 
 // Fingerprint は prepared worktree を再利用可能にするすべての情報を hash 化する。slot 内の repository directory 名は意図的に含めない。
 // slot が存在すれば slot_repositories.dir_name が権威となり、既存 slot は記録済みの名前を保つ。
 // 新規 slot だけが変更後の storage.repo_dir_source や repositories.<path>.dir_name を使う。
 // 名前を hash 化しても reuse check は保存済みの名前から再計算するため常に自身と一致し、挙動は変わらない。
-// schema=5 は準備コマンドの引数境界を保持する形式へ変更したため、以前の wx が書いた fingerprint とは一致しない。
+// schema=6 はコピー方式を準備入力に含め、方式変更後に以前の READY slot を再利用しない。
 // commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	return fingerprintWithSchema(fingerprintSchemaVersion, generation, oid, repo, c)
@@ -1704,7 +1718,7 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 	}
 	defer func() { _ = sourceRoot.Close() }()
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\noid=%s\n", schema, generation, oid)
+	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\noid=%s\ncopy_mode=%s\n", schema, generation, oid, c.Storage.CopyMode)
 	var linkPatterns []string
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
 		data, err := readPhysicalManifestAt(sourceRoot, name)
