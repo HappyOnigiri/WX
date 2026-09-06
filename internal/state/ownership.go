@@ -367,3 +367,16 @@ func ownershipDatabaseFailure(err error) error {
 	}
 	return fmt.Errorf("%w: SQLite ownership query: %w", ErrOwnership, err)
 }
+
+// RegisteredRemovalRoot は削除予約済み slot の DB 登録を削除権限として確認する。
+// identity・workspace・marker の欠落は許し、要求が別の登録範囲を指す場合と使用中の session は拒否する。
+func (s *Store) RegisteredRemovalRoot(ctx context.Context, slotID, rootID, relative string) (string, error) {
+	var root string
+	err := s.db.QueryRowContext(ctx, `SELECT rt.path FROM slots sl JOIN roots rt ON rt.id=sl.root_id
+ WHERE sl.id=? AND sl.root_id=? AND sl.rel_path=? AND sl.state='REMOVING'
+ AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.slot_id=sl.id AND se.state IN ('STARTING','ACTIVE','RESTORING','UNBOUND'))`, slotID, rootID, relative).Scan(&root)
+	if err != nil {
+		return "", fmt.Errorf("registered removal target is unavailable: %w", err)
+	}
+	return root, nil
+}

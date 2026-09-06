@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/archive"
@@ -32,15 +34,12 @@ func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
 	if slot.State != "REMOVING" {
 		return fmt.Errorf("slot %s cannot be removed from %s", slot.ID, slot.State)
 	}
-	root, releaseRoot, err := m.holdVerifiedRootForPath(slot.Path)
-	if err != nil {
-		m.quarantineOwnershipFailure(slot.ID, []string{"REMOVING"}, err)
-		return err
-	}
-	defer releaseRoot()
+	root := strings.TrimSuffix(slot.Path, string(filepath.Separator)+slot.RelPath)
 	archiveManager := m.newArchiveManager(m.Config(), slot)
 	if err := m.removeSlotWorktrees(ctx, archiveManager, root, slot, job.SessionID); err != nil {
-		m.quarantineOwnershipFailure(slot.ID, []string{"REMOVING"}, err)
+		if job.SessionID == "" {
+			m.quarantineOwnershipFailure(slot.ID, []string{"REMOVING"}, err)
+		}
 		return err
 	}
 	return m.store.FinishRemoval(ctx, slot.ID)
@@ -61,28 +60,33 @@ func (m *Manager) removeColdRepositoryJob(ctx context.Context, job state.Job) er
 	if repositoryState.State != "RETIRING" || slot.State != "RETIRING" {
 		return fmt.Errorf("repository %s/%s cannot retire from %s/%s", slot.ID, job.RepositoryID, slot.State, repositoryState.State)
 	}
-	root, releaseRoot, err := m.holdVerifiedRootForPath(slot.Path)
-	if err != nil {
-		m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
-		return err
-	}
-	if !domain.IsWithin(root, repositoryState.WorktreePath) {
-		releaseRoot()
-		err := fmt.Errorf("%w: cold repository path is outside wx ownership root", state.ErrOwnership)
-		m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
-		return err
-	}
-	defer releaseRoot()
-	repository, err := m.store.Repository(ctx, job.RepositoryID)
+	root := strings.TrimSuffix(slot.Path, string(filepath.Separator)+slot.RelPath)
+	repo, err := m.store.Repository(ctx, job.RepositoryID)
 	if err != nil {
 		return err
 	}
-	archiveManager := m.newArchiveManager(m.Config(), slot)
-	if err := archiveManager.RemoveWorktree(ctx, repository, root, repositoryState.WorktreePath, repositoryState.BaseOID); err != nil {
+	if !filepath.IsLocal(repositoryState.DirName) || strings.ContainsAny(repositoryState.DirName, `/\\`) || repositoryState.DirName == "." {
+		err := fmt.Errorf("%w: invalid repository directory", state.ErrOwnership)
 		m.quarantineOwnershipFailure(slot.ID, []string{"RETIRING"}, err)
 		return err
 	}
-	// repositoryをretireしてもslot directoryとownership markerは残し、後のslot削除で証明できるようにする。
+	owner, err := os.OpenRoot(root)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if owner != nil {
+		defer func() { _ = owner.Close() }()
+		if _, err := domain.PhysicalPathInfo(owner, slot.RelPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := owner.RemoveAll(filepath.Join(slot.RelPath, repositoryState.DirName)); err != nil {
+			return err
+		}
+	}
+	if err := m.removeGitRegistration(ctx, string(repo.CommonDir), repositoryState.WorktreePath); err != nil {
+		return err
+	}
+	// 待機枠の再利用に備え、repository の回収では slot directory を残す。
 	return m.store.FinishColdRepositoryRemoval(ctx, slot.ID, job.RepositoryID)
 }
 
@@ -140,56 +144,13 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 		}
 	}
 	for _, sr := range repos {
-		repo, err := m.store.Repository(ctx, sr.RepositoryID)
-		if err != nil || !domain.IsWithin(root, sr.WorktreePath) {
-			return fmt.Errorf("%w: slot repository ownership validation failed", state.ErrOwnership)
-		}
-		expectedHead := sr.BaseOID
 		if sessionID != "" {
-			var ok bool
-			expectedHead, ok = expected[sr.RepositoryID]
-			if !ok {
+			if _, ok := expected[sr.RepositoryID]; !ok {
 				return removalMetadataFailure("snapshot metadata is incomplete for worktree removal", errors.New("repository snapshot row is missing"))
 			}
 		}
-		if err := archiveManager.RemoveWorktree(ctx, repo, root, sr.WorktreePath, expectedHead); err != nil {
-			return err
-		}
 	}
-	ownedRoot, closeOwnedRoot, err := m.existingRootDescriptor(root)
-	if err != nil {
-		return fmt.Errorf("%w: open slot root for removal: %w", state.ErrOwnership, err)
-	}
-	defer closeOwnedRoot()
-	if err := verifyRootDescriptorPath(root, ownedRoot); err != nil {
-		return err
-	}
-	relativeSlot, ok := relativeWithinRoot(root, slotPath)
-	if !ok || relativeSlot == "." {
-		return fmt.Errorf("%w: open slot root for removal: slot path is outside wx root", state.ErrOwnership)
-	}
-	// 物理directoryを先に検査し、消失済みならSQLiteの証明より前に正常終了する。
-	info, err := ownedRoot.Lstat(relativeSlot)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("%w: inspect slot root for removal: %w", state.ErrOwnership, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("%w: slot root is not a physical directory", state.ErrOwnership)
-	}
-	dirIdentity, err := directoryIdentityAt(ownedRoot, relativeSlot)
-	if err != nil {
-		return fmt.Errorf("%w: read slot directory identity for removal: %w", state.ErrOwnership, err)
-	}
-	// 破壊操作直前の証明にはdiskから再取得したidentityを渡し、row自身との比較にしない。
-	if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: slotID, RootID: slot.RootID, RelPath: slot.RelPath, DirIdentity: dirIdentity, AllowedSlotStates: []string{"REMOVING"}}); err != nil {
-		return err
-	}
-	if err := ownedRoot.RemoveAll(relativeSlot); err != nil {
-		return err
-	}
-	return verifyRootDescriptorPath(root, ownedRoot)
+	return m.removeRegisteredSlot(ctx, slot)
 }
 
 func removalMetadataFailure(message string, err error) error {

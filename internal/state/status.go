@@ -153,18 +153,19 @@ type SlotUsageLocation struct {
 	MainPath string
 }
 
-// slotUsageLocationQuery は測定対象、つまり実体が残っている貸出中・待機中の slot の置き場所を引く。
-const slotUsageLocationQuery = `SELECT sl.id,rt.path,sl.rel_path,sr.dir_name,r.main_worktree_path
-	FROM slots sl JOIN roots rt ON rt.id=sl.root_id JOIN slot_repositories sr ON sr.slot_id=sl.id JOIN repositories r ON r.id=sr.repository_id
-	WHERE sl.state IN ('READY','LEASED')`
+// slotUsageLocationQuery はDB 管理下で回収前の slot の置き場所を引く。
+const slotUsageLocationQuery = `SELECT sl.id,rt.path,sl.rel_path,COALESCE(sr.dir_name,''),COALESCE(r.main_worktree_path,'')
+ FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN slot_repositories sr ON sr.slot_id=sl.id LEFT JOIN repositories r ON r.id=sr.repository_id
+ WHERE sl.state <> 'ARCHIVED'`
 
-// SlotUsageLocations は使用量を測る対象、つまり実体が残っている貸出中・待機中の slot を返す。
+// SlotUsageLocations は回収前の slot と workspace snapshot を返す。
 func (s *Store) SlotUsageLocations(ctx context.Context) ([]SlotUsageLocation, error) {
-	return s.slotUsageLocations(ctx, slotUsageLocationQuery+` ORDER BY sl.id,sr.dir_name`)
+	return s.slotUsageLocations(ctx, slotUsageLocationQuery+`
+ UNION ALL SELECT 'snapshot:'||ws.session_id,rt.path,ws.rel_path,'','' FROM workspace_snapshots ws JOIN roots rt ON rt.id=ws.root_id WHERE ws.status <> 'EXPIRED'`)
 }
 
 // SlotUsageLocationsForSlot は slot 1 個分の測定対象を返す。
-// 準備完了までに slot が READY/LEASED から外れていれば空を返し、呼び出し側はその slot の測定を諦める。
+// 回収済みなら空を返し、呼び出し側はその slot の測定を諦める。
 func (s *Store) SlotUsageLocationsForSlot(ctx context.Context, slotID string) ([]SlotUsageLocation, error) {
 	return s.slotUsageLocations(ctx, slotUsageLocationQuery+` AND sl.id=? ORDER BY sr.dir_name`, slotID)
 }

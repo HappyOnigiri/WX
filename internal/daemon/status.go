@@ -62,6 +62,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		Active         bool   `json:"active"`
 		Bytes          int64  `json:"bytes"`
 		AllocatedBytes int64  `json:"allocated_bytes"`
+		UnmanagedBytes int64  `json:"unmanaged_allocated_bytes"`
 		Measurement    string `json:"measurement"`
 		MeasuredAt     string `json:"measured_at,omitempty"`
 		Error          string `json:"error,omitempty"`
@@ -72,6 +73,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		item := rootStatus{Path: root, Active: active, Measurement: rootUsagePendingMeasurement}
 		if sample, measured := usage[root]; measured {
 			item.Bytes, item.AllocatedBytes = sample.bytes, sample.allocated
+			item.UnmanagedBytes = sample.unmanaged
 			item.Measurement, item.MeasuredAt, item.Error = rootUsageMeasurement, state.FormatTime(sample.measuredAt), sample.err
 		}
 		rootStatuses = append(rootStatuses, item)

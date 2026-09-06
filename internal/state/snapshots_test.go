@@ -285,3 +285,29 @@ func TestSaveSnapshotRejectsConflictingIndexTree(t *testing.T) {
 		t.Fatal("a snapshot with a different index tree was accepted")
 	}
 }
+
+func TestExpiredWorkspaceSnapshotWithoutRepositorySnapshots(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := t.Context()
+	session := Session{ID: "interrupted", WorkspaceID: "workspace", SlotID: "interrupted", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("token")}
+	slot := Slot{ID: "interrupted", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/interrupted", State: "ARCHIVED"}
+	if _, err := store.CreateSlotSession(ctx, slot, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := WorkspaceSnapshot{SessionID: session.ID, RootID: testRootID, RelPath: "_recovery/workspace-snapshots/interrupted.tar", SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(-time.Hour))}
+	if err := store.SaveWorkspaceSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := store.ExpiredWorkspaceSnapshotSessions(ctx, now())
+	if err != nil || len(ids) != 1 || ids[0] != session.ID {
+		t.Fatalf("expired workspace archives=%v err=%v", ids, err)
+	}
+	if err := store.ExpireSessionSnapshots(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	ids, err = store.ExpiredWorkspaceSnapshotSessions(ctx, now())
+	if err != nil || len(ids) != 0 {
+		t.Fatalf("expired archive remains=%v err=%v", ids, err)
+	}
+}

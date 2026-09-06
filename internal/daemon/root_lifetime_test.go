@@ -504,7 +504,7 @@ func TestRootReplacementQuarantinesPreparationBeforeDescriptorAcquire(t *testing
 	}
 }
 
-func TestRootStatusRejectsReplacedRootGeneration(t *testing.T) {
+func TestRootStatusMeasuresCurrentRegisteredRootPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	root := filepath.Join(home, "worktrees")
@@ -537,8 +537,8 @@ func TestRootStatusRejectsReplacedRootGeneration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "replacement.txt"), []byte("replacement"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := manager.rootDirectoryUsage(t.Context(), root, nil, nil); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("status accepted replaced root generation: %v", err)
+	if usage, _, err := manager.rootDirectoryUsage(t.Context(), root, nil, nil); err != nil || usage.AllocatedBytes != 0 || usage.UnmanagedBytes == 0 {
+		t.Fatalf("replacement usage=%+v err=%v", usage, err)
 	}
 }
 

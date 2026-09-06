@@ -49,13 +49,16 @@ func statusRootUsage(t *testing.T, manager *Manager, root string) reportedRootUs
 // 未測定は pending として数値を出さず、測定後は cache の値と測定時刻を返すことを検査する。
 func TestStatusReportsCachedRootUsageInsteadOfMeasuringPerRequest(t *testing.T) {
 	t.Parallel()
-	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
+	_, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
 	slotRoot := filepath.Join(root, string(workspaceRecord.ID), "slot")
 	if _, _, err := manager.createSlotRoot(slotRoot, slotRoot); err != nil {
 		t.Fatalf("create slot root: %v", err)
 	}
 
+	if _, err := store.CreateStandby(t.Context(), slotAtPath(t, manager, string(workspaceRecord.ID), "slot", slotRoot, 1, "READY"), nil); err != nil {
+		t.Fatal(err)
+	}
 	pending := statusRootUsage(t, manager, root)
 	if pending.Measurement != rootUsagePendingMeasurement || pending.MeasuredAt != "" || pending.AllocatedBytes != 0 {
 		t.Fatalf("unmeasured root usage=%+v", pending)

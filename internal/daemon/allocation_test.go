@@ -209,3 +209,30 @@ func TestAllocateRegistrationFailureQuarantinesCreatedSlot(t *testing.T) {
 		t.Fatal("quarantined slot lost the created directory identity")
 	}
 }
+
+func TestAllocationDoesNotAdoptExistingUnregisteredDirectory(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, w, resolved, _ := managerCoverageFixture(t, "repository")
+	root, rootID, err := manager.activeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, string(w.ID), "taken")
+	manager.beforeSlotRootCreate = func() {
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, "keep"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := manager.allocateWithID(ctx, "taken", root, rootID, "token", w, resolved, 1, "codex", 0, "STARTING", "PREPARING", "PREPARE", ""); !errors.Is(err, errSlotPathExists) {
+		t.Fatalf("collision error=%v", err)
+	}
+	if _, err := store.Slot(ctx, "taken"); err == nil {
+		t.Fatal("unregistered directory became a managed slot")
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "keep")); err != nil || string(data) != "keep" {
+		t.Fatalf("existing directory changed: %q %v", data, err)
+	}
+}
