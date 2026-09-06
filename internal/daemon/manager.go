@@ -27,6 +27,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
+	buildversion "github.com/HappyOnigiri/WX/internal/version"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
@@ -2132,6 +2133,38 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	return nil
 }
 
+// RetryStandby は環境修復を利用者が確認した後、現 generation の隔離上限を一度だけリセットして補充を予約する。
+// 隔離 slot の状態・実体は変更せず、新しい準備失敗だけを次の上限判定へ数える。
+func (m *Manager) RetryStandby(ctx context.Context, root string) (map[string]any, error) {
+	canonical, err := domain.Canonicalize(root)
+	if err != nil {
+		return nil, err
+	}
+	w, err := m.store.WorkspaceByRoot(ctx, string(canonical))
+	if err != nil {
+		return nil, fmt.Errorf("find registered workspace %s: %w", canonical, err)
+	}
+	if !m.standbyReplenishmentEnabled(w) {
+		return nil, errors.New("standby replenishment is disabled for this workspace")
+	}
+	if m.replenishSuspended(ctx, string(w.ID)) {
+		return nil, errors.New("standby replenishment is suspended until the workspace is used again")
+	}
+	retry, err := m.store.RetryStandbyReplenishment(ctx, string(w.ID))
+	if err != nil {
+		return nil, err
+	}
+	m.clearStandbyQuarantineWarned(string(w.ID))
+	scheduled := retry.Job.ID != "" && retry.Job.State == "PENDING"
+	if scheduled {
+		m.schedule(retry.Job)
+	}
+	return map[string]any{
+		"workspace_id": w.ID, "root": w.Root, "generation": retry.Generation,
+		"quarantined": retry.Quarantined, "job_id": retry.Job.ID, "scheduled": scheduled,
+	}, nil
+}
+
 // markStandbyQuarantineWarned は隔離上限の警告をまだ出していない workspace で true を返し、以降は false を返す。
 func (m *Manager) markStandbyQuarantineWarned(workspaceID string) bool {
 	m.mu.Lock()
@@ -3594,6 +3627,13 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	standby, err := m.store.StandbyReplenishmentDiagnostics(ctx, standbyQuarantineLimit)
+	if err != nil {
+		return nil, err
+	}
+	for index := range standby {
+		standby[index].Action = "wx retry-standby " + strconv.Quote(standby[index].Root)
+	}
 	m.mu.RLock()
 	reloadAt, reloadError, backupAt, backupError := m.lastReload, m.reloadError, m.lastBackup, m.backupError
 	rootError := m.rootError
@@ -3653,6 +3693,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		"active_sessions": s.Active, "snapshots": s.Snapshots, "queued_jobs": s.Jobs, "worktree_roots": rootStatuses,
 		"workspace_details": details.Workspaces, "session_details": details.Sessions, "repository_details": details.Repositories,
 		"job_details": details.Jobs, "snapshot_details": details.Snapshots, "quarantine": details.Quarantine,
+		"standby_replenishment": standby,
 		"retention_seconds": map[string]int64{
 			"hot_standby": cfg.Retention.HotStandby.Milliseconds() / 1000, "ended_worktree": cfg.Retention.EndedWorktree.Milliseconds() / 1000,
 			"recovery_snapshot": cfg.Retention.RecoverySnapshot.Milliseconds() / 1000, "expired_session_tombstone": cfg.Retention.ExpiredSessionTombstone.Milliseconds() / 1000,
@@ -3707,16 +3748,26 @@ func (m *Manager) rootDirectoryUsage(root string) (int64, int64, error) {
 
 func daemonVersion() string {
 	info, ok := debug.ReadBuildInfo()
+	embedded, _ := buildversion.EmbeddedString()
+	return daemonVersionForBuildInfo(info, ok, embedded)
+}
+
+func daemonVersionForBuildInfo(info *debug.BuildInfo, ok bool, embedded string) string {
+	if ok {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			return info.Main.Version
+		}
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" {
+				return setting.Value
+			}
+		}
+	}
+	if embedded != "" {
+		return embedded
+	}
 	if !ok {
 		return "unknown"
-	}
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return info.Main.Version
-	}
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			return setting.Value
-		}
 	}
 	return "devel"
 }
@@ -3755,6 +3806,15 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	}
 	checks["worktree_registration"] = m.registrationDiagnostics(ctx)
 	checks["artifact_ownership"] = m.artifactDiagnostics(ctx)
+	standby, err := m.store.StandbyReplenishmentDiagnostics(ctx, standbyQuarantineLimit)
+	if err != nil {
+		checks["standby_replenishment"] = err.Error()
+	} else {
+		for index := range standby {
+			standby[index].Action = "wx retry-standby " + strconv.Quote(standby[index].Root)
+		}
+		checks["standby_replenishment"] = standby
+	}
 	return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "checks": checks}
 }
 

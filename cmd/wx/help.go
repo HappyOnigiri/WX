@@ -26,6 +26,7 @@ Commands:
   gc [--dry-run]                 run retention cleanup
   prune [--all] [--dry-run]      delete recovery refs the database cannot explain
   clear [--all] [--standby]      delete managed worktrees now
+  retry-standby <workspace>      retry standby replenishment after repair
   leases [--all] [--json]        list managed wx leases
   config [<key> ...]             show or update configuration
   resume <id> [agent] [args...]  restore a wx session
@@ -111,6 +112,14 @@ Options:
   --standby  delete standby worktrees too
   --dry-run  report the targets and the reasons wx cannot process some of
              them, changing nothing`)
+	case "retry-standby":
+		_, _ = fmt.Fprintln(w, `Usage: wx retry-standby <workspace-path>
+
+Record that the environment for a workspace's quarantined standby worktrees
+has been repaired, then retry replenishment in the current generation.
+Quarantined worktrees are kept for inspection; this command never deletes them.
+
+The workspace path is shown by wx status when standby replenishment is stopped.`)
 	case "config":
 		_, _ = fmt.Fprintln(w, `Usage: wx config
        wx config <key> <value>
