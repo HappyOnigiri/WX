@@ -96,7 +96,11 @@ affected workspace is used again.
 
 Without --all, sessions that are in use are left alone. With --all, wx asks
 those sessions to stop, waits up to 30s for each of them, and deletes only the
-ones that stopped; nothing is killed. Quarantined slots are always kept.
+ones that stopped; nothing is killed.
+
+Quarantined slots are deleted in every mode, without waiting out
+retention.quarantined. wx still proves ownership before touching the files, so
+the ones it cannot prove stay quarantined and are reported as such.
 
 The command waits for every target to finish. Interrupting it does not stop
 the daemon, and running it again rejoins the clear already in progress. While
@@ -119,7 +123,7 @@ Resume automatic standby worktree replenishment for a workspace after wx
 stopped it, then retry replenishment in the current generation. Replenishment
 also resumes on its own once wx claude or wx codex succeeds for the workspace.
 Quarantined worktrees are left untouched; wx gc deletes them once
-retention.quarantined has passed.
+retention.quarantined has passed, and wx clear deletes them right away.
 
 The workspace path is shown by wx status when standby replenishment is stopped.`)
 	case "config":

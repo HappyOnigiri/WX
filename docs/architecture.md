@@ -96,6 +96,8 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   進行は`Manager.driveClean`のbackground goroutineが既存ジョブの完了を監視するだけで、workerを占有したまま別ジョブを待たない。
   削除そのものは通常の返却・保存・削除経路（`Release`→`SNAPSHOT`→`ScheduleRemoval`→`REMOVE`）に載せるので、GCと二重の削除実装を持たない。
   貸出前の待機用slot（READYと補充中のPREPARING）は通常のclearでは残し、`--standby`と`--all`だけが対象に含める。
+  隔離slotはmodeを問わず対象に含め、`ScheduleQuarantinedRemoval`でGCと同じ`REMOVE`へ載せる。
+  所有権を証明できなかった対象は実体を残して`QUARANTINED`へ戻り、clean target側も同じ理由付きで`QUARANTINED`として閉じる。
   mode（`normal`・`standby`・`all`）は対象の範囲そのものなので、実行中のrunへ合流できるのは同じmodeの再実行に限る。
   `--all`は`session_termination_requests`へ期限付き（30秒）の終了要求を記録し、heartbeatとagent登録の応答でclientへ渡す。
   signalを送るのはclientだけで、daemonは記録されたPIDへ触れない。
@@ -119,6 +121,8 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   隔離slotは`retention.quarantined`（既定24時間）を過ぎたものを候補にし、通常の`REMOVE`ジョブへ載せて所有権証明つきの削除を再試行する。
   証明が通らなければ実体を消さず`QUARANTINED`へ戻すので、原因が解消された次の周回で自然に片付き、wxのものでない実体は誤って消えない。
   隔離の多くは所有権を証明できなかった結果なので、証明を迂回する削除経路は作らない。
+  `wx clear`は同じ`ScheduleQuarantinedRemoval`へ全modeで載せ、retentionの残りだけを飛ばす。
+  ユーザーが明示的に実行するコマンドであり、証明は`REMOVE`ジョブ側に残るため、証明の迂回にはあたらない。
 - **root使用量の測定** — worktree rootのディスク使用量はreconcileと同じ周期処理だけが測り、`Status`はその値と測定時刻を返す。
   測定量はroot配下の総ファイル数に比例するため、要求のたびに測るとslotが増えるほど`Status`が遅くなり、高負荷時にはclientの制限時間を超える。
   最初の測定が終わるまでは`measurement`を`pending`とし、0を実測値として見せない。
