@@ -245,8 +245,7 @@ func ValidatePhysicalLeaf(path string) error {
 	return nil
 }
 
-// EnsurePhysicalDirectory は filesystem-root descriptor 配下に成分ごとに directory を作り、
-// 各成分で symlink を拒否する。
+// EnsurePhysicalDirectory は path の directory を用意し、path 自身が物理 directory であることを検査する。
 func EnsurePhysicalDirectory(path string, perm os.FileMode) error {
 	root, err := EnsurePhysicalDirectoryRoot(path, perm)
 	if err != nil {
@@ -257,15 +256,48 @@ func EnsurePhysicalDirectory(path string, perm os.FileMode) error {
 
 // EnsurePhysicalDirectoryRoot は EnsurePhysicalDirectory の descriptor 保持版である。filesystem-root
 // descriptor を解放する前に最終 directory を開いて最後の Lstat と比較し、作成後の rename/置換で
-// 呼び出し元の最初の write が無関係な pathname に向かないようにする。対応対象は設計上 darwin と
-// linux に限り（physical_unix.go 参照）、未検証の他 platform 向け fallback は実装しない。
-// commentlint:allow-long -- 契約と安全条件を保持する説明のため
+// 呼び出し元の最初の write が無関係な pathname に向かないようにする。
+//
+// 検査は path 自身に限り、祖先成分の symlink は OpenOwnedRoot と同じく filesystem-root descriptor が解決する。
+// wx root やその上位を symlink 配下に置けるようにするためで、置換への耐性は返す descriptor の pin が担う。
+// commentlint:allow-long -- 契約と検査範囲の根拠を保持する説明のため
 func EnsurePhysicalDirectoryRoot(path string, perm os.FileMode) (*os.Root, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	return ensurePhysicalDirectoryRootPlatform(filepath.Clean(absolute), perm)
+	absolute = filepath.Clean(absolute)
+	filesystemRoot, relative, err := openFilesystemRoot(absolute)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = filesystemRoot.Close() }()
+	if relative != "." {
+		if err := filesystemRoot.MkdirAll(relative, perm); err != nil {
+			return nil, fmt.Errorf("create physical directory %s: %w", absolute, err)
+		}
+	}
+	info, err := filesystemRoot.Lstat(relative)
+	if err != nil {
+		return nil, fmt.Errorf("validate physical directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("%s is not a physical directory", absolute)
+	}
+	owned, err := filesystemRoot.OpenRoot(relative)
+	if err != nil {
+		return nil, fmt.Errorf("open retained physical directory: %w", err)
+	}
+	openedInfo, err := owned.Lstat(".")
+	if err != nil {
+		_ = owned.Close()
+		return nil, fmt.Errorf("revalidate retained physical directory: %w", err)
+	}
+	if openedInfo.Mode()&os.ModeSymlink != 0 || !openedInfo.IsDir() || !os.SameFile(info, openedInfo) {
+		_ = owned.Close()
+		return nil, errors.New("physical directory changed while opening")
+	}
+	return owned, nil
 }
 
 // 設計文書の state machine と package 構成に対する変更として、ここにあった SlotState / SessionState

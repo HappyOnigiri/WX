@@ -154,7 +154,7 @@ func TestValidatePhysicalLeafChecksOnlyLeaf(t *testing.T) {
 	}
 }
 
-func TestEnsurePhysicalDirectoryCreatesMissingSuffixWithoutFollowingSymlinks(t *testing.T) {
+func TestEnsurePhysicalDirectoryCreatesMissingSuffixUnderSymlinkedAncestors(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "one", "two", "three")
 	if err := EnsurePhysicalDirectory(target, 0o700); err != nil {
@@ -163,16 +163,36 @@ func TestEnsurePhysicalDirectoryCreatesMissingSuffixWithoutFollowingSymlinks(t *
 	if info, err := os.Lstat(target); err != nil || !info.IsDir() {
 		t.Fatalf("target=%v err=%v", info, err)
 	}
-	outside := t.TempDir()
-	link := filepath.Join(root, "link")
-	if err := os.Symlink(outside, link); err != nil {
+	// 祖先の相対symlinkは辿る。macOSの/tmp → private/tmpのような位置にもworktree rootを置けるようにするためである。
+	sibling := filepath.Join(root, "sibling")
+	if err := os.Mkdir(sibling, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsurePhysicalDirectory(filepath.Join(link, "escape"), 0o700); err == nil {
-		t.Fatal("directory creation followed a symlink outside the physical root")
+	link := filepath.Join(root, "link")
+	if err := os.Symlink("sibling", link); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsurePhysicalDirectory(filepath.Join(link, "under-symlinked-ancestor"), 0o700); err != nil {
+		t.Fatalf("symlinked ancestor was rejected: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(sibling, "under-symlinked-ancestor")); err != nil || !info.IsDir() {
+		t.Fatalf("directory under a symlinked ancestor info=%v err=%v", info, err)
+	}
+	// 絶対symlinkはos.Rootが辿らないため祖先にできない。filesystem rootからの相対解決に閉じるためである。
+	outside := t.TempDir()
+	absoluteLink := filepath.Join(root, "absolute-link")
+	if err := os.Symlink(outside, absoluteLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsurePhysicalDirectory(filepath.Join(absoluteLink, "escape"), 0o700); err == nil {
+		t.Fatal("absolute symlink was followed")
 	}
 	if _, err := os.Lstat(filepath.Join(outside, "escape")); !os.IsNotExist(err) {
 		t.Fatalf("outside directory was modified: %v", err)
+	}
+	// 対象自身がsymlinkなら、実体がdirectoryでも拒否する。
+	if err := EnsurePhysicalDirectory(link, 0o700); err == nil {
+		t.Fatal("symlink leaf was accepted as a physical directory")
 	}
 	regular := filepath.Join(root, "regular")
 	if err := os.WriteFile(regular, []byte("x"), 0o600); err != nil {
