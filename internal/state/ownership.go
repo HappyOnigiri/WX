@@ -35,7 +35,7 @@ type WorktreeOwnershipRequest struct {
 	RootID       string
 	SlotRelPath  string
 	DirName      string
-	// DirIdentity は呼び出し元が開いた directory の dev:ino identity である。指定時は記録値が存在し一致しなければならず、空 record は失敗とする。
+	// DirIdentity は呼び出し元が開いた directory の inode identity である。指定時は記録値が存在し一致しなければならず、空 record は失敗とする。
 	// 空にできるのは worktree 作成前の prepare 検査だけで、その時だけは identity を提示できない。
 	DirIdentity             string
 	CommonDir               string
