@@ -176,6 +176,14 @@ volume成分にdevice番号を使わないのは、macOSではmount順で決ま�
 device番号を含む旧形式で記録された行は、`EnsureActiveRoot`がinodeの一致を確かめた上で、root世代とその配下のslot・リポジトリまとめて現行形式へ書き換える。
 `workspace_repositories.relative_path`はソース側でのリポジトリ位置という本来の意味だけを担い、slot内の配置は`slot_repositories.dir_name`が持つ。
 
+証明を行うのは破壊的操作ごとに直前の1回で、同じ操作の前後にinode・path・identityの再検証を重ねない。
+削除・上書きの対象そのものが自分の物であることの確認は、この直前の1回に含む。
+`rename`のようにatomicな操作は、成功した後で結果を確認し直さない。
+pin済みdescriptorへ操作が閉じている限り、単一ユーザー・単一マシンでは検査と実行の間に割り込む相手がいないためである。
+
+この粒度では、証明から操作までの間に別のプロセスが対象へ書き込んだ内容を検出できない。
+それを承知で採る方針なので、書き込み得るプロセスが並行しない位置（貸出前の準備・復元中など）に破壊的操作を置く。
+
 ## ディスク上のレイアウト
 
 worktree root（`storage.worktree_root`、既定`$HOME/wx`）配下は次の形になる。
