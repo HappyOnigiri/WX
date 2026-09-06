@@ -46,11 +46,11 @@ func TestManagerRootOwnershipHelperMatrix(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(slotRoot, "payload"), []byte("payload"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bytes, allocated, err := manager.rootDirectoryUsage(root)
+	bytes, allocated, err := manager.rootDirectoryUsage(t.Context(), root)
 	if err != nil || bytes == 0 || allocated == 0 {
 		t.Fatalf("root usage bytes=%d allocated=%d err=%v", bytes, allocated, err)
 	}
-	if _, _, err := manager.rootDirectoryUsage(filepath.Join(t.TempDir(), "unknown")); !errors.Is(err, state.ErrOwnership) {
+	if _, _, err := manager.rootDirectoryUsage(t.Context(), filepath.Join(t.TempDir(), "unknown")); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("unknown root usage error=%v", err)
 	}
 

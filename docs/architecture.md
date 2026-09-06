@@ -115,6 +115,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
   この終端はreconcileだけでなく`Release`を通る全経路（clientの返却、`wx clear`の停止）で起きる。
   復旧snapshotが残らない返却なので、`Store.ReleaseWithOutcome`が呼び出し側へ区別を返し、daemonがWarnで記録する。
   clientはReleaseの応答を読まないため、記録先はログだけである。
+- **root使用量の測定** — worktree rootのディスク使用量はreconcileと同じ周期処理だけが測り、`Status`はその値と測定時刻を返す。
+  測定量はroot配下の総ファイル数に比例するため、要求のたびに測るとslotが増えるほど`Status`が遅くなり、高負荷時にはclientの制限時間を超える。
+  最初の測定が終わるまでは`measurement`を`pending`とし、0を実測値として見せない。
 - **degraded運用** — SQLiteが開けないときも`Status`・`Doctor`・`RequestStop`は`DegradedHandler`が答える。
   診断のためにdaemonを完全に沈黙させないためである。
   `RequestStop`だけは状態を変えるがゲートを通さない（状態を変えるRPCを一切受け付けない以上、守るべきin-flightの予約が無い）。
