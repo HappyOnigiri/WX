@@ -216,3 +216,22 @@ func (s *Store) QuarantineReservedSlot(ctx context.Context, id, code string) err
 	_, err = s.db.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,message) SELECT ?,'warn','slot_transition',workspace_id,id,? FROM slots WHERE id=?`, t, "state=QUARANTINED failure_code="+code, id)
 	return err
 }
+
+// AbandonSlotReservation は既存 path と衝突した未作成の予約だけを取り消す。
+// 他の実体を発見したことを削除権限へ変えないため、隔離 slot として残さない。
+func (s *Store) AbandonSlotReservation(ctx context.Context, id string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	res, err := s.db.ExecContext(ctx, `DELETE FROM slots WHERE id=? AND state='ALLOCATING' AND dir_identity IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("slot %s reservation changed", id)
+	}
+	return nil
+}

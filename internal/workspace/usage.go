@@ -29,8 +29,10 @@ type SlotUsage struct {
 }
 
 // RootUsage は root 1 世代分の合計と、その root 上にある slot ごとの内訳である。
-// SharedBytes は slot ごとの SharedBytes の合計で、slot の外にあるファイルは共有判定の対象外として常に非共有に数える。
+// SharedBytes は slot ごとの SharedBytes の合計で、AllocatedBytes のうち main worktree と block を共有している分である。
+// UnmanagedBytes は登録外の実体の割当量で、AllocatedBytes には含めず共有判定もしない。
 type RootUsage struct {
+	UnmanagedBytes int64
 	LogicalBytes   int64
 	AllocatedBytes int64
 	SharedBytes    int64
@@ -103,14 +105,15 @@ func measureUsage(ctx context.Context, root *os.Root, start string, targets []Sl
 		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
 			allocated = stat.Blocks * 512
 		}
+		slotID, _, inSlot := lookupUsagePrefix(name, slots)
+		if !inSlot {
+			usage.UnmanagedBytes += allocated
+			return nil
+		}
 		if info.Mode().IsRegular() {
 			usage.LogicalBytes += info.Size()
 		}
 		usage.AllocatedBytes += allocated
-		slotID, _, inSlot := lookupUsagePrefix(name, slots)
-		if !inSlot {
-			return nil
-		}
 		sample := usage.Slots[slotID]
 		sample.Files++
 		if info.Mode().IsRegular() {
@@ -156,6 +159,9 @@ func usagePrefixes(targets []SlotUsageTarget, samples map[string]SlotUsage) (map
 // lookupUsagePrefix は path の祖先 directory を長い順に辿り、最初に一致した値とその prefix からの相対 path を返す。
 func lookupUsagePrefix[T any](name string, prefixes map[string]T) (T, string, bool) {
 	var zero T
+	if value, ok := prefixes[name]; ok {
+		return value, "", true
+	}
 	if len(prefixes) == 0 {
 		return zero, "", false
 	}

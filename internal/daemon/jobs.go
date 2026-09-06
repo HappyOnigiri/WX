@@ -101,7 +101,12 @@ func (m *Manager) runWorker(workerID int, stop <-chan struct{}) {
 			m.log.Debug("job attempt failed and will be retried", "job_id", job.ID, "kind", job.Kind, "attempt", job.Attempt, "error", err)
 			if job.Attempt >= maxJobAttempts {
 				m.log.Error("job exhausted retry limit", "job_id", job.ID, "attempt", job.Attempt, "error", err)
-				_ = m.store.SetSlotState(context.Background(), job.SlotID, []string{"PREPARING", "RESTORING", "FAILED", "REMOVING", "RETIRING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED")
+				if job.Kind == "REMOVE" && job.SessionID != "" {
+					// 保存の検証に失敗した正常終了 slot を隔離 GC の破棄対象に変えない。
+					_ = m.store.SetSlotState(context.Background(), job.SlotID, []string{"REMOVING"}, "SNAPSHOTTED", "REMOVAL_RETRY_EXHAUSTED")
+				} else {
+					_ = m.store.SetSlotState(context.Background(), job.SlotID, []string{"PREPARING", "RESTORING", "FAILED", "REMOVING", "RETIRING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED")
+				}
 				if finishErr := m.finishJob(context.Background(), work.id, owner, err); finishErr != nil {
 					m.log.Error("finish exhausted job failed", "job_id", work.id, "error", finishErr)
 				}
@@ -225,7 +230,7 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 		return m.resumeRestoreJob(ctx, job.SessionID)
 	case "REMOVE":
 		if err := m.removeSlotJob(ctx, job); err != nil {
-			if errors.Is(err, state.ErrOwnership) {
+			if job.SessionID == "" && errors.Is(err, state.ErrOwnership) {
 				return err
 			}
 			return retryableJobError{err}

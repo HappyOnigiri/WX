@@ -48,7 +48,17 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	if err != nil {
 		return Lease{}, err
 	}
-	for attempts := 0; !cold && attempts < m.Config().Pool.WarmPerWorkspace+1; attempts++ {
+	attempts, budget := 0, 0
+	if !cold {
+		// 再試行の予算は設定値ではなく実際の候補数に合わせる。併走するleaseやGCに1件ずつ奪われても、
+		// 残る候補を見切ってからcold startへ落ちるためである。+1は探索中にREADYへ変わったslotの分。
+		count, countErr := m.store.ReadySlotCount(ctx, string(w.ID))
+		if countErr != nil {
+			return Lease{}, countErr
+		}
+		budget = count + 1
+	}
+	for ; attempts < budget; attempts++ {
 		ready, ok, err := m.store.ReadySlot(ctx, string(w.ID))
 		if err != nil {
 			return Lease{}, err
@@ -130,6 +140,10 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 			break
 		}
 		_ = m.store.SetSlotState(ctx, ready.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
+	}
+	if attempts > 0 {
+		// 待機枠があったのにcold startへ落ちた事実は、記録しないと後から追跡できない。
+		m.log.Info("warm lease fell back to a cold start", "workspace_id", w.ID, "ready_candidates", budget-1, "attempts", attempts)
 	}
 	return m.allocate(ctx, w, resolved, generation, agent, pid, "STARTING", "")
 }

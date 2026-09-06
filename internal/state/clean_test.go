@@ -200,3 +200,33 @@ func TestSessionTerminationRequestIsSingleAndDeadlineBound(t *testing.T) {
 		t.Fatalf("targets=%+v err=%v", stored, err)
 	}
 }
+
+func TestDiscardRemovalPreservesActiveAndRunningWork(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := t.Context()
+	for _, sessionState := range []string{"ACTIVE", "DRAINING"} {
+		slotID := "discard-" + sessionState
+		session := Session{ID: slotID, SlotID: slotID, WorkspaceID: "workspace", State: sessionState, AgentKind: "codex", TokenHash: HashToken(slotID)}
+		slot := Slot{ID: slotID, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/" + slotID, State: "DRAINING"}
+		if _, err := store.CreateSlotSession(ctx, slot, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		job, changed, err := store.ScheduleDiscardRemoval(ctx, slotID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sessionState == "ACTIVE" {
+			if changed {
+				t.Fatal("active session was discarded")
+			}
+		} else {
+			if !changed || job.Kind != "REMOVE" || job.SessionID != "" {
+				t.Fatalf("discard reservation=%+v changed=%v", job, changed)
+			}
+			if _, again, err := store.ScheduleDiscardRemoval(ctx, slotID); err != nil || again {
+				t.Fatalf("duplicate discard changed=%v err=%v", again, err)
+			}
+		}
+	}
+}

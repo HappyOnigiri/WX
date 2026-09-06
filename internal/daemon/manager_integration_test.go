@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -807,16 +806,38 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer m.Close()
 	ctx := context.Background()
-	first, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	var first Lease
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		details, detailsErr := store.StatusDiagnostics(ctx)
+		t.Logf("first=%+v; diagnostics=%+v err=%v", first, details, detailsErr)
+		artifacts, err := store.SlotArtifacts(ctx)
+		if err != nil {
+			t.Logf("slot artifacts: %v", err)
+		}
+		for _, artifact := range artifacts {
+			slot, slotErr := store.Slot(ctx, artifact.ID)
+			repos, reposErr := store.SlotRepositories(ctx, artifact.ID)
+			t.Logf("slot=%+v err=%v; repositories=%+v err=%v", slot, slotErr, repos, reposErr)
+		}
+	}()
+	first, err = m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := waitReady(ctx, m, 10*time.Second, first.SessionID, first.Token); err != nil {
 		t.Fatal(err)
 	}
+	firstSlot, err := store.Slot(ctx, first.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 貸出はReadySlotCountと同じ条件でしか候補を選ばないため、workspaceもgenerationも見ないStatusでは前提として弱い。
 	waitUntil(t, 10*time.Second, func() bool {
-		status, _ := store.Status(ctx)
-		return status.Ready >= cfg.Pool.WarmPerWorkspace
+		count, _ := store.ReadySlotCount(ctx, firstSlot.WorkspaceID)
+		return count >= cfg.Pool.WarmPerWorkspace
 	})
 
 	leases := make(chan Lease, 2)
@@ -839,8 +860,8 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 		t.Fatalf("warm leases were not ready: a=%+v b=%+v", a, b)
 	}
 	waitUntil(t, 10*time.Second, func() bool {
-		status, _ := store.Status(ctx)
-		return status.Ready == 2
+		count, _ := store.ReadySlotCount(ctx, firstSlot.WorkspaceID)
+		return count == cfg.Pool.WarmPerWorkspace
 	})
 }
 
@@ -1400,7 +1421,7 @@ func writeWorktreeRootConfig(t *testing.T, home, root string) {
 
 // 隔離 slot は retention を過ぎたら GC が通常の REMOVE で消す。
 // 所有権を証明できないうちは実体を残して QUARANTINED へ戻し、証明が通る次の周回で片付く。
-func TestGCRemovesQuarantinedWorktreesOnlyWithProvenOwnership(t *testing.T) {
+func TestGCRemovesRegisteredQuarantineWithoutCachedIdentity(t *testing.T) {
 	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -1467,48 +1488,19 @@ func TestGCRemovesQuarantinedWorktreesOnlyWithProvenOwnership(t *testing.T) {
 		t.Fatalf("quarantined candidates=%+v err=%v", candidates, err)
 	}
 
-	// root を証明できない状態で削除を試すと、実体を残したまま QUARANTINED へ戻る。
+	// manager の古い identity cache に依存せず、DB 登録済みの隔離実体を回収する。
 	if _, changed, err := store.ScheduleQuarantinedRemoval(ctx, id); err != nil || !changed {
 		t.Fatalf("schedule changed=%v err=%v", changed, err)
 	}
 	m.mu.Lock()
-	savedRoots, savedIdentities := m.roots, m.rootIdentities
 	m.roots, m.rootIdentities = map[string]bool{}, nil
 	m.mu.Unlock()
 	recovered, err := store.RecoverJobs(ctx, true)
 	if err != nil || len(recovered) != 1 {
-		t.Fatalf("recovered removal jobs=%+v err=%v", recovered, err)
-	}
-	if err := m.runRecoveredJob(ctx, recovered[0]); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("removal without ownership err=%v", err)
-	}
-	failedRemoval, err := store.ClaimJob(ctx, recovered[0].ID, "gc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.FinishJob(ctx, failedRemoval.ID, "gc", errors.New("ownership could not be proven")); err != nil {
-		t.Fatal(err)
-	}
-	if stored, err := store.Slot(ctx, id); err != nil || stored.State != "QUARANTINED" {
-		t.Fatalf("slot after an unprovable removal=%+v err=%v", stored, err)
-	}
-	if _, err := os.Stat(slotRoot); err != nil {
-		t.Fatalf("quarantined worktree was deleted without proof: %v", err)
-	}
-
-	// 原因が解消された次の周回では、同じ証明を通したうえで実体が消える。
-	m.mu.Lock()
-	m.roots, m.rootIdentities = savedRoots, savedIdentities
-	m.mu.Unlock()
-	if _, changed, err := store.ScheduleQuarantinedRemoval(ctx, id); err != nil || !changed {
-		t.Fatalf("second schedule changed=%v err=%v", changed, err)
-	}
-	recovered, err = store.RecoverJobs(ctx, true)
-	if err != nil || len(recovered) != 1 {
-		t.Fatalf("second recovered removal jobs=%+v err=%v", recovered, err)
+		t.Fatalf("removal jobs=%+v err=%v", recovered, err)
 	}
 	if err := m.runRecoveredJob(ctx, recovered[0]); err != nil {
-		t.Fatalf("removal with ownership: %v", err)
+		t.Fatal(err)
 	}
 	if stored, err := store.Slot(ctx, id); err != nil || stored.State != "ARCHIVED" {
 		t.Fatalf("slot after removal=%+v err=%v", stored, err)

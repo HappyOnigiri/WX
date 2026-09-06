@@ -1,6 +1,19 @@
-# 所有権証明
+# 管理対象と所有権検証
 
-破壊的操作の前に求める証明は、次の3つが同時に一致することである。
+## 削除
+
+slot の削除権限は DB の `slots` と `roots` の登録で決まる。
+登録済み path の実体は inode・marker・Git lock・HEAD が変わっていても回収する。
+workspace 紐付けや repository identity が欠けた隔離 slot も対象になる。
+登録外の実体は `quarantined_artifacts` の診断記録だけに残し、その記録は削除権限にならない。
+削除実装は `internal/daemon/registered_removal.go` を参照する。
+
+正常終了の未保存作業は snapshot で保護し、`wx clear --discard` が明示された場合だけ保存を省略する。
+準備・復元失敗などの隔離 slot は保持期限後、または `wx clear` で回収する。
+
+## 準備・復元
+
+準備・復元で既存 worktree を書き換える前に求める証明は、次の3つが同時に一致することである。
 
 1. **DBの行** — `ValidateWorktreeOwnership`が`roots`・`slots`・`slot_repositories`・`workspaces`・`repositories`・`workspace_repositories`の6表を結合して1行を読む。
    突き合わせるのは絶対pathではない。
@@ -8,19 +21,16 @@
    これに加えて、slotとリポジトリのstate、common dir、workspace内の相対pathを確かめる。
    読み取り専用トランザクションが囲むのはSELECTだけで、一致判定はcommit後に走る。
    identityは**fail closed**で、descriptorを握っている呼び出し元がidentityを渡したのに記録が空なら不一致として扱う。
-   identityを渡さないのは、開くべきディレクトリが無い2つの場合だけである。
-   worktreeがまだ存在しないprepare前の検査と、worktreeの実体が既に消えていてGitの登録だけが残っている削除（`archive.Manager.RemoveWorktree`のmissing-registration分岐）である。
-   slotディレクトリ自体の証明（`ValidateSlotOwnership`）も同じで、削除直前の検査はpin済みroot descriptorから読んだ実inodeを渡す。
-   `slots.dir_identity`を読み直して渡すと同じ行を自分自身と比べることになり、identity層が実効を失う。
+   identityを渡さないのは、worktreeがまだ存在しないprepare前の検査だけである。
 2. **ファイルシステム上のマーカー** — slotディレクトリ直下の`.wx-owner-<repository_id>`に、slot ID・root ID・repository ID・common dirをJSONで書く（`version: 2`）。
    内容が一致しないマーカーは所有の否定として扱う。
    マーカーはworktreeの**親**に置く。
-   worktree削除が中断されても、再試行時に所有権を証明できる唯一のディスク側証拠がこれだからである。
+   worktreeの再作成中もslotの識別情報を維持するためである。
 3. **Gitのworktree lock** — wx自身が付けた`wx:<slot-id>:READY`・`PREPARING`・`RESTORING`のいずれかであること（`domain.ValidWxLockReason`）。
    認識できない理由でlockされたworktreeは、wxのものではない。
 
 マーカーとGit lockはpinしたroot descriptor配下の相対pathで検証する。
-rootのpin・symlink検査・証明の回数は[AGENTS.md](../AGENTS.md)の不変条件に従う。
+rootのpin・symlink検査は[AGENTS.md](../AGENTS.md)の不変条件に従う。
 DBが持つidentityはdescriptorが返す`vol:<inode>:<volume>`と同じ形式なので、2つの層が同じ対象を指していることを比較できる。
 volume成分にdevice番号を使わないのは、macOSではmount順で決まるdevice番号が再起動をまたいで変わり、記録済みの行が一斉に一致しなくなるためである（darwinではmount point、linuxではfilesystem IDで表す）。
 device番号を含む旧形式で記録された行は、`EnsureActiveRoot`がinodeの一致を確かめた上で、root世代とその配下のslot・リポジトリまとめて現行形式へ書き換える。

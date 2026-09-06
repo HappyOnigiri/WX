@@ -43,9 +43,10 @@ func commandUsage(w io.Writer, name string) {
 Show a workspace summary, or all daemon, pool, session, retention, and disk
 details with --verbose (-v). The JSON shape is unchanged by either display.
 
-Disk reports what the worktree root occupies on its own: blocks it still shares
-with the main worktrees are excluded, so it sums with the SIZE(MB) column of
-wx slots and stays below what du reports. --verbose adds the full allocated
+Disk reports what the managed slots and snapshots occupy on their own: blocks
+they still share with the main worktrees are excluded, so it sums with the
+SIZE(MB) column of wx slots and stays below what du reports. Paths outside the
+database are listed separately as Unmanaged. --verbose adds the full allocated
 size and the shared part behind it.
 
 Options:
@@ -89,7 +90,7 @@ Options:
              discarding the work they hold
   --dry-run  report what would be deleted, changing nothing`)
 	case "clear":
-		_, _ = fmt.Fprintln(w, `Usage: wx clear [--all] [--standby] [--dry-run]
+		_, _ = fmt.Fprintln(w, `Usage: wx clear [--all] [--standby] [--discard] [--dry-run]
 
 Delete the worktrees wx manages without waiting for their retention period.
 Work is saved first: recovery data, session history, and workspace
@@ -104,8 +105,10 @@ those sessions to stop, waits up to 30s for each of them, and deletes only the
 ones that stopped; nothing is killed.
 
 Quarantined slots are deleted in every mode, without waiting out
-retention.quarantined. wx still proves ownership before touching the files, so
-the ones it cannot prove stay quarantined and are reported as such.
+retention.quarantined. Database registration authorizes deletion, including slots with
+missing identity records or changed markers, locks, and HEAD. Unregistered
+directories are left alone. With --discard, unfinished work is deleted without
+requiring a successful snapshot. Sessions in use still require --all.
 
 The command waits for every target to finish. Interrupting it does not stop
 the daemon, and running it again rejoins the clear already in progress. While
@@ -118,6 +121,7 @@ argument error. Keeping sessions in use or standby worktrees is not a failure.
 Options:
   --all      ask sessions in use to stop, then delete what stopped, standby
              worktrees included
+  --discard  delete selected worktrees without saving unfinished work
   --standby  delete standby worktrees too
   --dry-run  report the targets and the reasons wx cannot process some of
              them, changing nothing`)
