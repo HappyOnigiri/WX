@@ -164,7 +164,7 @@ test:
 test-race:
 	$(GO) test $(RACE_TEST_ARGS) ./...
 
-# race検査はCIの3コアランナーでCPU律速になり、単独で最長のinternal/daemonがジョブの下限を作る。
+# race検査はCIの少コアランナーでCPU律速になり、単独で最長のinternal/daemonがジョブの下限を作る。
 # daemonと残りを別ジョブへ分けるため、対象パッケージだけが違う2つのtargetを用意する。
 test-race-daemon:
 	$(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE)
