@@ -803,7 +803,7 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m := New(cfg, store, newFlakeLogger(t))
 	defer m.Close()
 	ctx := context.Background()
 	var first Lease

@@ -58,14 +58,17 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 		}
 		budget = count + 1
 	}
+	m.log.Debug("warm lease begins", "workspace_id", w.ID, "generation", generation, "budget", budget, "cold", cold)
 	for ; attempts < budget; attempts++ {
 		ready, ok, err := m.store.ReadySlot(ctx, string(w.ID))
 		if err != nil {
 			return Lease{}, err
 		}
 		if !ok {
+			m.log.Debug("warm lease found no ready candidate", "workspace_id", w.ID, "attempt", attempts)
 			break
 		}
+		m.log.Debug("warm lease inspects candidate", "workspace_id", w.ID, "attempt", attempts, "slot", ready.ID, "slot_generation", ready.Generation, "path", ready.Path)
 		lease, leased, leaseErr := func() (Lease, bool, error) {
 			releaseRoot, holdErr := m.holdRootForPath(ready.Path)
 			if holdErr != nil {
@@ -82,6 +85,7 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 				return Lease{}, false, matchErr
 			}
 			if !valid {
+				m.log.Debug("warm lease rejected candidate", "slot", ready.ID)
 				return Lease{}, false, nil
 			}
 			repositories, repositoryErr := m.store.SlotRepositories(ctx, ready.ID)
@@ -116,13 +120,16 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 					m.schedule(job)
 					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, true, nil
 				}
+				m.log.Debug("warm lease lost cold CAS", "slot", ready.ID, "error", leaseErr)
 				m.releaseLease(session.ID)
 				return Lease{}, false, nil
 			}
-			if replenishJob, replenished, leaseErr := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session); leaseErr == nil {
+			replenishJob, replenished, leaseErr := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session)
+			if leaseErr == nil {
 				m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
 				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true}, true, nil
 			}
+			m.log.Debug("warm lease lost CAS", "slot", ready.ID, "error", leaseErr)
 			m.releaseLease(session.ID)
 			return Lease{}, false, nil
 		}()
@@ -148,18 +155,24 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	return m.allocate(ctx, w, resolved, generation, agent, pid, "STARTING", "")
 }
 
+// rejectReady は READY候補を不一致と判定した理由を記録する。flake調査用の一時的な診断である。
+func (m *Manager) rejectReady(s state.Slot, reason string, args ...any) (bool, error) {
+	m.log.Debug("ready candidate mismatch", append([]any{"slot", s.ID, "reason", reason}, args...)...)
+	return false, nil
+}
+
 func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []pool.Resolved) (bool, error) {
 	root, ok := m.rootForPath(s.Path)
 	if !ok {
 		configured, configuredErr := config.ExpandHome(m.Config().Storage.WorktreeRoot)
 		if configuredErr != nil || !domain.IsWithin(configured, s.Path) {
-			return false, nil
+			return m.rejectReady(s, "slot path is outside the configured root", "path", s.Path, "configured", configured, "err", configuredErr)
 		}
 	}
 	owner, closeOwner, err := m.existingRootDescriptor(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return m.rejectReady(s, "root descriptor is missing", "root", root)
 		}
 		return false, fmt.Errorf("%w: open ready slot root: %w", state.ErrOwnership, err)
 	}
@@ -170,17 +183,17 @@ func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []poo
 	}
 	slotInfo, err := owner.Lstat(relativeSlot)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return m.rejectReady(s, "slot directory is missing", "relative", relativeSlot)
 	}
 	if err != nil {
 		return false, fmt.Errorf("%w: open ready slot root: %w", state.ErrOwnership, err)
 	}
 	if slotInfo.Mode()&os.ModeSymlink != 0 || !slotInfo.IsDir() {
-		return false, nil
+		return m.rejectReady(s, "slot path is not a directory", "mode", slotInfo.Mode().String())
 	}
 	slotDirectory, _, err := domain.OpenDirectoryAt(owner, relativeSlot)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return m.rejectReady(s, "slot directory disappeared while opening", "relative", relativeSlot)
 	}
 	if err != nil {
 		return false, fmt.Errorf("%w: open ready slot root: %w", state.ErrOwnership, err)
@@ -197,7 +210,7 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 		return false, err
 	}
 	if len(repos) != len(resolved) {
-		return false, nil
+		return m.rejectReady(s, "repository count differs", "stored", len(repos), "resolved", len(resolved))
 	}
 	byID := map[string]state.SlotRepository{}
 	for _, r := range repos {
@@ -207,18 +220,19 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 	for _, r := range resolved {
 		stored, ok := byID[string(r.Repository.ID)]
 		if !ok || (stored.State != "READY" && stored.State != "COLD") || stored.BaseOID != r.OID {
-			return false, nil
+			return m.rejectReady(s, "repository row is not usable", "found", ok, "state", stored.State, "stored_oid", stored.BaseOID, "resolved_oid", r.OID)
 		}
 		fp, err := workspace.Fingerprint(s.Generation, r.OID, r.Repository, m.Config())
 		if err != nil {
 			return false, err
 		}
 		if fp != stored.Fingerprint {
-			return false, nil
+			return m.rejectReady(s, "fingerprint differs", "slot_generation", s.Generation, "stored", stored.Fingerprint, "computed", fp)
 		}
 		if stored.State == "COLD" {
 			unmaterialized, coldErr := coldWorktreeUnmaterialized(owner, root, stored.WorktreePath)
 			if coldErr != nil || !unmaterialized {
+				m.log.Debug("cold worktree is already materialized", "slot", s.ID, "worktree", stored.WorktreePath, "error", coldErr)
 				return false, coldErr
 			}
 			continue
@@ -229,13 +243,13 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 		}
 		info, err := owner.Lstat(relative)
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return m.rejectReady(s, "worktree directory is missing", "relative", relative)
 		}
 		if err != nil {
 			return false, fmt.Errorf("%w: inspect ready worktree path: %w", state.ErrOwnership, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return false, nil
+			return m.rejectReady(s, "worktree path is not a directory", "mode", info.Mode().String())
 		}
 		directory, _, openErr := domain.OpenDirectoryAt(owner, relative)
 		if openErr != nil {
@@ -245,6 +259,7 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 			return false, fmt.Errorf("%w: close ready worktree path: %w", state.ErrOwnership, closeErr)
 		}
 		if err := preparer.ValidateReady(ctx, r.Repository, stored.WorktreePath, r.OID); err != nil {
+			m.log.Debug("ready candidate failed validation", "slot", s.ID, "worktree", stored.WorktreePath, "error", err)
 			return false, err
 		}
 	}

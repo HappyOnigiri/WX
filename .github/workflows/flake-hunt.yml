@@ -1,0 +1,103 @@
+name: Flake Hunt
+
+# 調査用の一時ワークフローである。tmp/flake-hunt-* ブランチでのみ動かし、原因が判明したら削除する。
+on:
+  push:
+    branches: ["tmp/flake-hunt-*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flake-hunt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hunt:
+    name: hunt ${{ matrix.id }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {id: pkg-1, mode: pkg, procs: "0"}
+          - {id: pkg-2, mode: pkg, procs: "0"}
+          - {id: pkg-3, mode: pkg, procs: "0"}
+          - {id: pkg-4, mode: pkg, procs: "0"}
+          - {id: iso-1, mode: iso, procs: "0"}
+          - {id: iso-2, mode: iso, procs: "0"}
+          - {id: iso-3, mode: iso, procs: "0"}
+          - {id: iso-procs2-1, mode: iso, procs: "2"}
+          - {id: iso-procs2-2, mode: iso, procs: "2"}
+          - {id: iso-procs1-1, mode: iso, procs: "1"}
+          - {id: load-1, mode: load, procs: "0"}
+          - {id: load-2, mode: load, procs: "0"}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: flake-hunt
+      - name: Hunt the warm lease flake
+        shell: bash
+        env:
+          HUNT_MODE: ${{ matrix.mode }}
+          HUNT_PROCS: ${{ matrix.procs }}
+          HUNT_DEADLINE: "2400"
+        run: |
+          set -u
+          mkdir -p hunt-logs
+          if [ "$HUNT_PROCS" != "0" ]; then
+            export GOMAXPROCS="$HUNT_PROCS"
+          fi
+          test_args=(-race -timeout=20m)
+          case "$HUNT_MODE" in
+            pkg)
+              test_args+=(-shuffle=on -count=1 ./internal/daemon)
+              ;;
+            iso|load)
+              test_args+=(-count=20 -run '^TestWarmPoolMaintainsCapacityAndNeverDoubleLeases$' ./internal/daemon)
+              ;;
+            *)
+              echo "unknown mode: $HUNT_MODE" >&2
+              exit 1
+              ;;
+          esac
+          load_pids=()
+          if [ "$HUNT_MODE" = load ]; then
+            for _ in 1 2 3 4; do
+              bash -c 'while :; do :; done' &
+              load_pids+=("$!")
+            done
+          fi
+          nproc
+          go version
+          start=$SECONDS
+          round=0
+          status=0
+          while [ $((SECONDS - start)) -lt "$HUNT_DEADLINE" ]; do
+            round=$((round + 1))
+            log="hunt-logs/round-$round.log"
+            echo "=== round $round starts at $((SECONDS - start))s"
+            if go test "${test_args[@]}" >"$log" 2>&1; then
+              tail -n 2 "$log"
+              continue
+            fi
+            echo "=== FAILED in round $round"
+            cat "$log"
+            status=1
+            break
+          done
+          for pid in ${load_pids[@]+"${load_pids[@]}"}; do
+            kill "$pid" 2>/dev/null || true
+          done
+          echo "=== rounds=$round elapsed=$((SECONDS - start))s status=$status"
+          exit "$status"
+      - if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: hunt-logs-${{ matrix.id }}
+          path: hunt-logs
+          retention-days: 7
