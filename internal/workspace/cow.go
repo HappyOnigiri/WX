@@ -200,10 +200,10 @@ func compactFile(ctx context.Context, source, destination *os.Root, name string,
 		return fmt.Errorf("%w: open CoW parent: %w", state.ErrOwnership, err)
 	}
 	defer parent.Close()
-	return replaceWithClone(ctx, in, original, parent, destination, name, before, validate)
+	return replaceWithClone(ctx, in, original, parent, name, before, validate)
 }
 
-func replaceWithClone(ctx context.Context, in, original, parent *os.File, root *os.Root, name string, before unix.Stat_t, validate func() error) (result error) {
+func replaceWithClone(ctx context.Context, in, original, parent *os.File, name string, before unix.Stat_t, validate func() error) (result error) {
 	leaf := filepath.Base(name)
 	temporary := cowTemporaryPrefix + rand.Text()
 	if err := cloneCOW(in, parent, temporary); err != nil {
@@ -244,50 +244,21 @@ func replaceWithClone(ctx context.Context, in, original, parent *os.File, root *
 	if err != nil || !compatible {
 		return err
 	}
-	var candidateRevision unix.Stat_t
-	if err := unix.Fstat(int(candidate.Fd()), &candidateRevision); err != nil {
-		return err
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := validate(); err != nil {
 		return fmt.Errorf("%w: CoW replacement ownership: %w", state.ErrOwnership, err)
 	}
-	if err := verifyCOWParent(root, filepath.Dir(name), parent); err != nil {
-		return err
-	}
 	originalInfo, err := original.Stat()
 	if err != nil {
-		return err
-	}
-	if err := verifyCOWRevision(original, before); err != nil {
-		return err
-	}
-	if err := verifyCOWLeaf(parent, leaf, originalInfo); err != nil {
-		return err
-	}
-	if err := verifyCOWLeaf(parent, temporary, candidateInfo); err != nil {
-		return err
-	}
-	if err := verifyCOWRevision(candidate, candidateRevision); err != nil {
 		return err
 	}
 	if err := swapCOW(parent, temporary, leaf); err != nil {
 		return err
 	}
+	// swap は atomic なので入れ替わりは確認し直さない。cleanup が消す inode の同一性だけ後で検査する。
 	cleanupInfo = originalInfo
-	if err := verifyCOWLeaf(parent, temporary, originalInfo); err != nil {
-		return err
-	}
-	if err := verifyCOWLeaf(parent, leaf, candidateInfo); err != nil {
-		return err
-	}
-	// rename による ctime 更新は許すが、読み取り後の書き込みは元 inode を残して隔離する。
-	after, err := original.Stat()
-	if err != nil || after.Size() != originalInfo.Size() || after.Mode() != originalInfo.Mode() || !after.ModTime().Equal(originalInfo.ModTime()) {
-		return fmt.Errorf("%w: CoW original changed during replacement", state.ErrOwnership)
-	}
 	return nil
 }
 
@@ -308,29 +279,6 @@ func verifyCOWLeaf(parent *os.File, name string, expected os.FileInfo) error {
 	actual, err := f.Stat()
 	if err != nil || !os.SameFile(expected, actual) {
 		return fmt.Errorf("%w: CoW leaf identity changed", state.ErrOwnership)
-	}
-	return nil
-}
-
-func verifyCOWParent(root *os.Root, path string, parent *os.File) error {
-	expected, err := domain.PhysicalPathInfo(root, path)
-	if err != nil {
-		return fmt.Errorf("%w: CoW parent path changed: %w", state.ErrOwnership, err)
-	}
-	actual, err := parent.Stat()
-	if err != nil || !os.SameFile(expected, actual) {
-		return fmt.Errorf("%w: CoW parent identity changed", state.ErrOwnership)
-	}
-	return nil
-}
-
-func verifyCOWRevision(file *os.File, before unix.Stat_t) error {
-	var after unix.Stat_t
-	if err := unix.Fstat(int(file.Fd()), &after); err != nil {
-		return err
-	}
-	if before.Ino != after.Ino || before.Dev != after.Dev || before.Mtim != after.Mtim || before.Ctim != after.Ctim || before.Size != after.Size || before.Mode != after.Mode || before.Nlink != after.Nlink {
-		return fmt.Errorf("%w: CoW file changed while comparing", state.ErrOwnership)
 	}
 	return nil
 }

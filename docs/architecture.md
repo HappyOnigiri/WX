@@ -92,7 +92,7 @@ mainのtree形状が異なる場合や、mainがこの処理中に変化した�
 `internal/workspace/cow.go`が準備・復元の完了前に処理し、Gitのfilter、checkout hook、prepare commandによる結果を保持する。
 indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変えないため、復元した区別も保たれる。
 宛先の日時はFD経由で復元し、元ファイルとcloneをatomic swapしてから元inodeを検証して削除する。
-root・親directory・宛先ファイルの置換や所有権不明は、`auto`でもfallbackせずQUARANTINEDとして実体を残す。
+所有権不明は`auto`でもfallbackせずQUARANTINEDとして実体を残す。
 中断して残った未追跡の`.wx-cow-*`も自動削除せず隔離するため、この名前は予約する。
 この検査は無視されたtreeを走査しないので、`.wx-cow-*`をgitignoreで無視すると残骸を検出できなくなる。
 貸出中のworktreeを後からCoW化する処理は持たない。

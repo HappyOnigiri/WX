@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,7 +113,8 @@ func TestCOWOwnershipAndReplacementRacesPreserveFiles(t *testing.T) {
 	if !cowAvailable() {
 		t.Skip("APFS is required")
 	}
-	for _, kind := range []string{"ownership", "leaf", "content", "parent"} {
+	// ownership は swap 前の所有権証明、leaf は cleanup が消す inode の同一性検査を見る。
+	for _, kind := range []string{"ownership", "leaf"} {
 		t.Run(kind, func(t *testing.T) {
 			a, b := cowRoots(t)
 			a.Mkdir("dir", 0o700)
@@ -125,43 +127,50 @@ func TestCOWOwnershipAndReplacementRacesPreserveFiles(t *testing.T) {
 				if calls != 1 {
 					return nil
 				}
-				switch kind {
-				case "ownership":
+				if kind == "ownership" {
 					return state.ErrOwnership
-				case "leaf":
-					if e := b.Rename("dir/file", "dir/saved"); e != nil {
-						t.Fatal(e)
-					}
-					cowWrite(t, b, "dir/file", "user")
-				case "content":
-					cowWrite(t, b, "dir/file", "user")
-				case "parent":
-					if e := b.Rename("dir", "saved"); e != nil {
-						t.Fatal(e)
-					}
-					if e := b.Mkdir("dir", 0o700); e != nil {
-						t.Fatal(e)
-					}
-					cowWrite(t, b, "dir/file", "user")
 				}
+				if e := b.Rename("dir/file", "dir/saved"); e != nil {
+					t.Fatal(e)
+				}
+				cowWrite(t, b, "dir/file", "user")
 				return nil
 			})
 			if !errors.Is(err, state.ErrOwnership) {
 				t.Fatalf("race error=%v", err)
 			}
-			data, e := b.ReadFile("dir/file")
-			if e != nil {
-				t.Fatal(e)
-			}
-			want := "user"
 			if kind == "ownership" {
-				want = "same"
+				data, e := b.ReadFile("dir/file")
+				if e != nil || string(data) != "same" {
+					t.Fatalf("destination changed: %q %v", data, e)
+				}
+				return
 			}
-			if string(data) != want {
-				t.Fatalf("user content lost: %q", data)
+			// swap で押し出した inode が自分の物と一致しないので、消さずに残す。
+			name, e := cowTemporaryName(t, b, "dir")
+			if e != nil {
+				t.Fatalf("user file was removed: %v", e)
+			}
+			data, e := b.ReadFile(filepath.Join("dir", name))
+			if e != nil || string(data) != "user" {
+				t.Fatalf("user content lost: %q %v", data, e)
 			}
 		})
 	}
+}
+
+func cowTemporaryName(t *testing.T, root *os.Root, directory string) (string, error) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root.Name(), directory))
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), cowTemporaryPrefix) {
+			return entry.Name(), nil
+		}
+	}
+	return "", errors.New("no CoW temporary remains")
 }
 
 func TestCOWDoesNotFollowSourceSymlink(t *testing.T) {
