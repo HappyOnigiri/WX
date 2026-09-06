@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,6 +163,60 @@ func TestCOWOwnershipAndReplacementRacesPreserveFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+// swap 後の cleanup は元 inode を消すため、その直前の検査でも validate 中の書き込みを捉える必要がある。
+func TestCOWCleanupDetectsOriginalWrite(t *testing.T) {
+	if !cowAvailable() {
+		t.Skip("APFS is required")
+	}
+	a, b := cowRoots(t)
+	a.Mkdir("dir", 0o700)
+	b.Mkdir("dir", 0o700)
+	cowWrite(t, a, "dir/file", "same")
+	cowWrite(t, b, "dir/file", "same")
+	calls := 0
+	err := compactFile(context.Background(), a, b, "dir/file", func() error {
+		calls++
+		if calls != 2 {
+			return nil
+		}
+		// swap 済みなので、元 inode は temporary 名で残っている。
+		name, e := cowTemporaryName(t, b, "dir")
+		if e != nil {
+			t.Fatal(e)
+		}
+		cowWrite(t, b, filepath.Join("dir", name), "user")
+		return nil
+	})
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("cleanup race error=%v", err)
+	}
+	name, e := cowTemporaryName(t, b, "dir")
+	if e != nil {
+		t.Fatalf("original inode was removed: %v", e)
+	}
+	data, e := b.ReadFile(filepath.Join("dir", name))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if string(data) != "user" {
+		t.Fatalf("original content lost: %q", data)
+	}
+}
+
+func cowTemporaryName(t *testing.T, root *os.Root, directory string) (string, error) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root.Name(), directory))
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wx-cow-") {
+			return entry.Name(), nil
+		}
+	}
+	return "", errors.New("no CoW temporary remains")
 }
 
 func TestCOWDoesNotFollowSourceSymlink(t *testing.T) {

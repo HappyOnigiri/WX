@@ -193,6 +193,8 @@ func replaceWithClone(ctx context.Context, in, original, parent *os.File, root *
 		return fmt.Errorf("%w: stat CoW clone: %w", state.ErrOwnership, err)
 	}
 	cleanupInfo := candidateInfo
+	// swap 後だけ設定する。validate 中の書き込みを見落として元 inode を消さないための再検査に使う。
+	var cleanupRevision *unix.Stat_t
 	defer func() {
 		// swap 後は元ファイルが temporary にある。証明できない物は消さず隔離へ渡す。
 		if errors.Is(result, state.ErrOwnership) {
@@ -205,6 +207,12 @@ func replaceWithClone(ctx context.Context, in, original, parent *os.File, root *
 		if err := verifyCOWLeaf(parent, temporary, cleanupInfo); err != nil {
 			result = err
 			return
+		}
+		if cleanupRevision != nil {
+			if err := verifyCOWRevision(original, *cleanupRevision); err != nil {
+				result = err
+				return
+			}
 		}
 		if err := unix.Unlinkat(int(parent.Fd()), temporary, 0); err != nil {
 			result = fmt.Errorf("%w: remove CoW temporary: %w", state.ErrOwnership, err)
@@ -262,6 +270,11 @@ func replaceWithClone(ctx context.Context, in, original, parent *os.File, root *
 	if err != nil || after.Size() != originalInfo.Size() || after.Mode() != originalInfo.Mode() || !after.ModTime().Equal(originalInfo.ModTime()) {
 		return fmt.Errorf("%w: CoW original changed during replacement", state.ErrOwnership)
 	}
+	var swapped unix.Stat_t
+	if err := unix.Fstat(int(original.Fd()), &swapped); err != nil {
+		return err
+	}
+	cleanupRevision = &swapped
 	return nil
 }
 
