@@ -133,14 +133,10 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 		data string
 		mode os.FileMode
 	}{
-		{name: "world readable", data: string(validJSON), mode: 0o644},
 		{name: "invalid json", data: "{", mode: 0o600},
-		{name: "unknown field", data: `{"version":2,"slot_id":"slot","root_id":"` + testRootID + `","repository_id":"` + testRepositoryID + `","common_dir":"` + common + `","extra":true}`, mode: 0o600},
-		{name: "trailing data", data: string(validJSON) + "\n{}", mode: 0o600},
-		{name: "malformed trailing data", data: string(validJSON) + "{", mode: 0o600},
 		{name: "incomplete", data: `{"version":2,"slot_id":"slot"}`, mode: 0o600},
 		{name: "invalid slot", data: `{"version":2,"slot_id":"bad/slot","root_id":"` + testRootID + `","repository_id":"` + testRepositoryID + `","common_dir":"` + common + `"}`, mode: 0o600},
-		{name: "superseded version", data: `{"version":1,"slot_id":"slot","root_id":"` + testRootID + `","repository_id":"` + testRepositoryID + `","common_dir":"` + common + `"}`, mode: 0o600},
+		{name: "version below minimum", data: `{"version":1,"slot_id":"slot","root_id":"` + testRootID + `","repository_id":"` + testRepositoryID + `","common_dir":"` + common + `"}`, mode: 0o600},
 		{name: "write only", data: string(validJSON), mode: 0o200},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -153,6 +149,32 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 			}
 		})
 	}
+
+	// markerはwx自身しか書かないため、パーミッション・未知フィールド・末尾データ・versionの完全一致は
+	// 所有権の証明として意味を持たない。所有権として意味があるID一致（下のtestFor("slot")比較）だけを
+	// 保ったまま、これらの形式検査は緩めている（10-A）。
+	for _, test := range []struct {
+		name string
+		data string
+		mode os.FileMode
+	}{
+		{name: "world readable", data: string(validJSON), mode: 0o644},
+		{name: "unknown field", data: `{"version":2,"slot_id":"slot","root_id":"` + testRootID + `","repository_id":"` + testRepositoryID + `","common_dir":"` + common + `","extra":true}`, mode: 0o600},
+		{name: "trailing data", data: string(validJSON) + "\n{}", mode: 0o600},
+		{name: "malformed trailing data", data: string(validJSON) + "{", mode: 0o600},
+		{name: "newer version with unknown field", data: `{"version":3,"slot_id":"slot","root_id":"` + testRootID + `","repository_id":"` + testRepositoryID + `","common_dir":"` + common + `","extra_future_field":"x"}`, mode: 0o600},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writeMarker(test.data, test.mode)
+			if err := ValidateOwnershipMarkerAt(owner, root, target, markerFor("slot"), common); err != nil {
+				t.Fatalf("relaxed marker check rejected valid marker: %v", err)
+			}
+			if err := os.Chmod(markerPath, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	writeMarker(string(validJSON), 0o600)
 	if err := os.Remove(markerPath); err != nil {
 		t.Fatal(err)
 	}

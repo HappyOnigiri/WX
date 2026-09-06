@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +18,7 @@ const ownershipMarkerPrefix = ".wx-owner-"
 
 // ownershipMarkerVersionはマーカースキーマです。バージョン2では、 絶対ターゲットパス：耐久性のあるルート生成と記録されたinode
 // sQLiteのアイデンティティは、冗長パスが果たした役割を担い、 設定されたルートが移動したときにマーカーを書き換える必要がなくなりました。
+// readOwnershipMarkerはこの値以上のversionを受け付ける。将来この値を上げても、既存slotのmarker（版が下でない限り）は隔離されない。
 const ownershipMarkerVersion = 2
 
 type ownershipMarker struct {
@@ -351,32 +351,26 @@ func validateMarkerContents(owner *os.Root, relative string, expected ownershipM
 	return nil
 }
 
+// readOwnershipMarkerは、wx自身しか書かないmarkerを読み戻す。所有権の証明として意味を持つのは
+// 呼び出し元が比較するID一致だけなので、未知フィールド・末尾データ・パーミッションは許容する。
+// versionはownershipMarkerVersion以上を受け付け、拡張後の新形式を旧バイナリが読んでも失敗しない。
 func readOwnershipMarker(owner *os.Root, relative string) (ownershipMarker, error) {
 	info, err := owner.Lstat(relative)
 	if err != nil {
 		return ownershipMarker{}, fmt.Errorf("wx ownership marker is missing: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return ownershipMarker{}, errors.New("wx ownership marker is not an owner-only regular file")
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return ownershipMarker{}, errors.New("wx ownership marker is not a regular file")
 	}
 	data, err := owner.ReadFile(relative)
 	if err != nil {
 		return ownershipMarker{}, fmt.Errorf("read wx ownership marker: %w", err)
 	}
 	var marker ownershipMarker
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&marker); err != nil {
+	if err := json.NewDecoder(strings.NewReader(string(data))).Decode(&marker); err != nil {
 		return ownershipMarker{}, fmt.Errorf("decode wx ownership marker: %w", err)
 	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return ownershipMarker{}, errors.New("wx ownership marker has trailing data")
-		}
-		return ownershipMarker{}, fmt.Errorf("decode wx ownership marker trailing data: %w", err)
-	}
-	if marker.Version != ownershipMarkerVersion || marker.SlotID == "" || strings.ContainsAny(marker.SlotID, `/\`) || marker.RootID == "" || marker.RepositoryID == "" || marker.CommonDir == "" {
+	if marker.Version < ownershipMarkerVersion || marker.SlotID == "" || strings.ContainsAny(marker.SlotID, `/\`) || marker.RootID == "" || marker.RepositoryID == "" || marker.CommonDir == "" {
 		return ownershipMarker{}, errors.New("wx ownership marker is incomplete")
 	}
 	return marker, nil
