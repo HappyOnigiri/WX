@@ -56,7 +56,10 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		var response struct {
 			PreviousWorktree string `json:"previous_worktree"`
 		}
-		if err := client.CallWithKey(ctx, "BindAgentSession", "bind:"+wxID+":"+payload.SessionID, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID, "source": payload.Source}, &response); err != nil {
+		// Codex は compact 後にも同じ session_id で SessionStart を送り、source だけが変わる。
+		// payload 全体に対する冪等キーなので source もキーに含める。
+		idempotencyKey := "bind:" + wxID + ":" + payload.SessionID + ":" + payload.Source
+		if err := client.CallWithKey(ctx, "BindAgentSession", idempotencyKey, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID, "source": payload.Source}, &response); err != nil {
 			return err
 		}
 		if response.PreviousWorktree != "" && payload.Source == "resume" {

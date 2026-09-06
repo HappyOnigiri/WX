@@ -130,6 +130,24 @@ func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
 	}
 }
 
+func TestSessionStartHookAcceptsCompactionAfterStartup(t *testing.T) {
+	clearHookEnvironment(t)
+	handler := &recordingHandler{}
+	ctx := startHookServer(t, handler)
+	t.Setenv("WX_SESSION_ID", "wx-compact")
+	t.Setenv("WX_SESSION_TOKEN", "token")
+
+	for _, source := range []string{"startup", "compact"} {
+		payload := `{"session_id":"agent-compact","source":"` + source + `"}`
+		if err := RunHook(ctx, "session-start", strings.NewReader(payload)); err != nil {
+			t.Fatalf("source=%s: %v", source, err)
+		}
+	}
+	if methods := strings.Join(handler.methodsSnapshot(), ","); methods != "BindAgentSession,BindAgentSession" {
+		t.Fatalf("methods=%s, want BindAgentSession,BindAgentSession", methods)
+	}
+}
+
 func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
 	clearHookEnvironment(t)
 	if err := RunHook(context.Background(), "unknown", strings.NewReader("")); err != nil {
