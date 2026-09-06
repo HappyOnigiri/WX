@@ -253,6 +253,34 @@ func TestReadAndRestoreStateBoundaries(t *testing.T) {
 	}
 }
 
+func TestReadySlotCountMatchesTheReadySlotCandidateSet(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	standby := func(id, state string, generation int) {
+		t.Helper()
+		if _, err := store.CreateStandby(ctx, Slot{ID: id, WorkspaceID: "workspace", Generation: generation, RootID: testRootID, RelPath: filepath.Join("workspace", id), State: state}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	standby("ready-old", "READY", 1)
+	standby("ready-new", "READY", 1)
+	standby("preparing", "PREPARING", 1)
+	standby("obsolete", "READY", 0)
+	if count, err := store.ReadySlotCount(ctx, "workspace"); err != nil || count != 2 {
+		t.Fatalf("ready slot count=%d err=%v", count, err)
+	}
+	if err := store.SetSlotState(ctx, "ready-old", []string{"READY"}, "LEASED", ""); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := store.ReadySlotCount(ctx, "workspace"); err != nil || count != 1 {
+		t.Fatalf("ready slot count after leasing=%d err=%v", count, err)
+	}
+	if count, err := store.ReadySlotCount(ctx, "missing"); err != nil || count != 0 {
+		t.Fatalf("unknown workspace ready slot count=%d err=%v", count, err)
+	}
+}
+
 func TestFinishPreparationWithReleasePropagatesSnapshotJobFault(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
