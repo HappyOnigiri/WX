@@ -48,7 +48,7 @@ func TestPrintStatusSummaryReadsWorkspaceLastUsedAndRoots(t *testing.T) {
 			{"id": "wx-repo", "main_path": home + "/elsewhere", "last_used_at": "2026-09-04T22:16:00Z"},
 		},
 		"job_details":     map[string]any{"pending": 0, "running": 0, "failed": 0},
-		"worktree_roots":  []map[string]any{{"path": home + "/wx", "active": true, "bytes": 1, "allocated_bytes": int64(365 * 1024 * 1024)}},
+		"worktree_roots":  []map[string]any{{"path": home + "/wx", "active": true, "bytes": 1, "allocated_bytes": int64(365 * 1024 * 1024), "shared_bytes": int64(300 * 1024 * 1024), "exclusive_bytes": int64(65 * 1024 * 1024)}},
 		"restart_pending": false,
 		"stop_pending":    false,
 	}
@@ -59,7 +59,7 @@ func TestPrintStatusSummaryReadsWorkspaceLastUsedAndRoots(t *testing.T) {
 		"WORKSPACE",
 		"LAST USED (JST)",
 		"Daemon running · Jobs 0 pending / 0 running / 0 failed",
-		"Disk   365 MiB managed allocated · ~/wx",
+		"Disk   65 MiB managed · ~/wx",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary missing %q:\n%s", want, got)
@@ -195,13 +195,20 @@ func TestStatusDiskSummaryDistinguishesPendingFromMeasuredUsage(t *testing.T) {
 	}{
 		{
 			name: "pending",
-			root: map[string]any{"path": "/repo/wx", "bytes": int64(0), "allocated_bytes": int64(0), "measurement": "pending"},
+			root: map[string]any{"path": "/repo/wx", "bytes": int64(0), "allocated_bytes": int64(0), "exclusive_bytes": int64(0), "measurement": "pending"},
 			want: "Disk   measuring · /repo/wx",
 		},
 		{
+			// 満額の allocated_bytes ではなく共有分を除いた exclusive_bytes を出すことを、両者が異なる値で確かめる。
 			name: "measured",
-			root: map[string]any{"path": "/repo/wx", "bytes": int64(1), "allocated_bytes": int64(365 * 1024 * 1024), "measurement": "st_blocks_x_512", "measured_at": "2026-09-04T22:16:00Z"},
-			want: "Disk   365 MiB managed allocated · /repo/wx · measured 09/05 07:16 JST",
+			root: map[string]any{"path": "/repo/wx", "bytes": int64(1), "allocated_bytes": int64(365 * 1024 * 1024), "shared_bytes": int64(300 * 1024 * 1024), "exclusive_bytes": int64(65 * 1024 * 1024), "measurement": "st_blocks_x_512", "measured_at": "2026-09-04T22:16:00Z"},
+			want: "Disk   65 MiB managed · /repo/wx · measured 09/05 07:16 JST",
+		},
+		{
+			// 旧 schema の daemon が返す payload には exclusive_bytes が無く、allocated_bytes を代わりに出すと単位が混ざる。
+			name: "exclusive missing",
+			root: map[string]any{"path": "/repo/wx", "bytes": int64(1), "allocated_bytes": int64(365 * 1024 * 1024), "measurement": "st_blocks_x_512"},
+			want: "Disk   measurement unavailable · /repo/wx",
 		},
 		{
 			name: "failed",

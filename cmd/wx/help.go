@@ -43,6 +43,12 @@ func commandUsage(w io.Writer, name string) {
 Show a workspace summary, or all daemon, pool, session, retention, and disk
 details with --verbose (-v). The JSON shape is unchanged by either display.
 
+Disk reports what the managed slots and snapshots occupy on their own: blocks
+they still share with the main worktrees are excluded, so it sums with the
+SIZE(MB) column of wx slots and stays below what du reports. Paths outside the
+database are listed separately as Unmanaged. --verbose adds the full allocated
+size and the shared part behind it.
+
 Options:
   --verbose, -v  show detailed status instead of the summary
   --json         print machine-readable JSON`)

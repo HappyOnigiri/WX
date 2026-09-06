@@ -18,6 +18,7 @@ type rootUsageSample struct {
 	bytes      int64
 	allocated  int64
 	unmanaged  int64
+	shared     int64
 	measuredAt time.Time
 	err        string
 }
@@ -60,7 +61,7 @@ func (m *Manager) measureRootUsage(ctx context.Context) {
 			return
 		}
 		measuredAt := time.Now().UTC()
-		sample := rootUsageSample{bytes: usage.LogicalBytes, allocated: usage.AllocatedBytes, unmanaged: usage.UnmanagedBytes, measuredAt: measuredAt}
+		sample := rootUsageSample{bytes: usage.LogicalBytes, allocated: usage.AllocatedBytes, unmanaged: usage.UnmanagedBytes, shared: usage.SharedBytes, measuredAt: measuredAt}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			sample.err = err.Error()
 		}
