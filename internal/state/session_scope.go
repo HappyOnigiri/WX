@@ -49,6 +49,20 @@ func (s *Store) WorkspaceSessionScopes(ctx context.Context, workspaceID string) 
 	return out, rows.Err()
 }
 
+// WorkspaceRootForSlotPath は slot の path そのもの、またはその配下の path から、slot が属する workspace の root を返す。
+// 会話に記録された cwd は slot を畳んだ後も残るため、実体を失った worktree からの resume を同じ workspace で作り直すのに使う。
+// 一致しなければ空文字を返す。prefix 判定は substr で行い、path に LIKE のワイルドカードが含まれても誤って一致させない。
+func (s *Store) WorkspaceRootForSlotPath(ctx context.Context, path string) (string, error) {
+	var root string
+	err := s.db.QueryRowContext(ctx, `SELECT w.root_path FROM slots sl JOIN roots r ON r.id=sl.root_id JOIN workspaces w ON w.id=sl.workspace_id
+ WHERE ?=r.path || '/' || sl.rel_path OR substr(?,1,length(r.path || '/' || sl.rel_path)+1)=r.path || '/' || sl.rel_path || '/'
+ ORDER BY length(r.path || '/' || sl.rel_path) DESC LIMIT 1`, path, path).Scan(&root)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return root, err
+}
+
 // PreviousWorktree は会話の親 lease が使用した起動先を返す。
 func (s *Store) PreviousWorktree(ctx context.Context, sessionID string) (string, error) {
 	var path string
