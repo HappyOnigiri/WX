@@ -23,11 +23,12 @@ import (
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
+	buildversion "github.com/HappyOnigiri/WX/internal/version"
 )
 
 var (
-	version   = "undefined"
-	buildMeta = "dev"
+	version   = buildversion.Version
+	buildMeta = buildversion.BuildMeta
 )
 
 func versionString() string {

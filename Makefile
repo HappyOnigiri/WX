@@ -1,7 +1,7 @@
 GO ?= go
 INSTALL_DIR ?= $(HOME)/.local/bin
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X main.version=$(VERSION) -X main.buildMeta=dev
+LDFLAGS := -s -w -X github.com/HappyOnigiri/WX/internal/version.Version=$(VERSION) -X github.com/HappyOnigiri/WX/internal/version.BuildMeta=dev
 CI_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 CI_MAKEFLAGS := -j$(CI_JOBS) --keep-going $(if $(filter output-sync,$(.FEATURES)),--output-sync=target)
 TOOLS_DIR := $(CURDIR)/.tools
@@ -197,8 +197,8 @@ concurrency-test:
 	$(GO) test -race -shuffle=on -count=10 -timeout=15m ./internal/state ./internal/daemon -run 'Lease|Concurrent|Crash|Archive|Remove|Worker'
 
 build-darwin:
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -o bin/wx-darwin-arm64 ./cmd/wx
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -o bin/wx-darwin-amd64 ./cmd/wx
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/wx-darwin-arm64 ./cmd/wx
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/wx-darwin-amd64 ./cmd/wx
 
 reproducible-build:
 	@scratch="$$(mktemp -d)"; trap 'rm -rf "$$scratch"' EXIT; \
