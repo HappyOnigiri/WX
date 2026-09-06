@@ -244,3 +244,67 @@ func TestStandbyReplenishmentStopsAfterAPreparationFailure(t *testing.T) {
 		t.Fatalf("standby recovery diagnostics after retry=%v", status["standby_replenishment"])
 	}
 }
+
+// 補充対象外の workspace では停止の診断を出さないことを確かめる。
+// `wx clear` は policy を問わず停止を記録するため、出すと実行できない `wx retry-standby` を案内してしまう。
+func TestStandbySuspensionIsHiddenWithoutReplenishment(t *testing.T) {
+	t.Parallel()
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	initGitRepo(t, repo)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "off"
+	cfg.Pool.WarmPerWorkspace = 1
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	m := testManager(t, cfg, store)
+	m.git.SetTimeout(10 * time.Second)
+	defer m.Close()
+	ctx := context.Background()
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = registerTestWorkspace(t, store, w)
+	if err := store.SuspendReplenish(ctx, string(w.ID), state.SuspendReplenishReasonClean, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := m.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked, ok := status["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic); !ok || len(blocked) != 0 {
+		t.Fatalf("standby diagnostics for a workspace without replenishment=%v", status["standby_replenishment"])
+	}
+	checks, ok := m.Doctor(ctx)["checks"].(map[string]any)
+	if !ok {
+		t.Fatalf("doctor checks=%v", m.Doctor(ctx)["checks"])
+	}
+	if diagnostic, ok := checks["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic); !ok || len(diagnostic) != 0 {
+		t.Fatalf("doctor standby diagnostics for a workspace without replenishment=%v", checks["standby_replenishment"])
+	}
+	if _, err := m.RetryStandby(ctx, string(w.Root)); err == nil {
+		t.Fatal("retry-standby accepted a workspace without replenishment")
+	}
+	// 停止行は残す。hot へ戻した workspace では、実行できる案内として再び現れる。
+	m.mu.Lock()
+	m.cfg.Workspaces[repo] = config.Workspace{Worktree: "hot"}
+	m.mu.Unlock()
+	status, err = m.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, ok := status["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic)
+	if !ok || len(blocked) != 1 || blocked[0].Reason != state.SuspendReplenishReasonClean {
+		t.Fatalf("standby diagnostics after switching to hot=%v", status["standby_replenishment"])
+	}
+	if !strings.Contains(blocked[0].Action, "wx retry-standby") {
+		t.Fatalf("standby recovery action=%q", blocked[0].Action)
+	}
+}
