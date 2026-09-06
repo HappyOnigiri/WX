@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -156,6 +157,12 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 		if err != nil {
 			return state.Job{}, err
 		}
+		if _, err := os.Lstat(slotPath); err == nil {
+			lastErr = fmt.Errorf("%w: %s", errSlotPathExists, slotPath)
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return state.Job{}, err
+		}
 		reserved, err := m.store.ReserveStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath}, m.Config().Pool.WarmPerWorkspace)
 		if err == nil && !reserved {
 			return state.Job{}, nil
@@ -174,6 +181,9 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 		}
 		slotIdentity, _, err := m.createSlotRoot(slotPath, slotPath)
 		if err != nil {
+			if errors.Is(err, errSlotPathExists) {
+				return state.Job{}, errors.Join(err, m.store.AbandonSlotReservation(ctx, id))
+			}
 			quarantineReservation()
 			return state.Job{}, err
 		}

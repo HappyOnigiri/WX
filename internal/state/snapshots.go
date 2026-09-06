@@ -186,7 +186,7 @@ func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string
 }
 
 func (s *Store) ExpiredSnapshots(ctx context.Context, before string) ([]Snapshot, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sn.id,sn.session_id,sn.repository_id,sn.head_oid,sn.head_recovery_ref,sn.index_tree_oid,sn.index_recovery_ref,sn.worktree_snapshot_oid,sn.worktree_recovery_ref,sn.status,sn.created_at,sn.expires_at FROM snapshots sn JOIN sessions se ON se.id=sn.session_id JOIN slots sl ON sl.id=se.slot_id WHERE se.state='ARCHIVED' AND sl.state='ARCHIVED' AND sn.status='ARCHIVED' AND sn.expires_at<=? AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING')) ORDER BY sn.session_id,sn.repository_id`, before)
+	rows, err := s.db.QueryContext(ctx, `SELECT sn.id,sn.session_id,sn.repository_id,sn.head_oid,sn.head_recovery_ref,sn.index_tree_oid,sn.index_recovery_ref,sn.worktree_snapshot_oid,sn.worktree_recovery_ref,sn.status,sn.created_at,sn.expires_at FROM snapshots sn JOIN sessions se ON se.id=sn.session_id JOIN slots sl ON sl.id=se.slot_id WHERE se.state IN ('ARCHIVED','EXPIRED') AND sl.state='ARCHIVED' AND sn.status='ARCHIVED' AND sn.expires_at<=? AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING')) ORDER BY sn.session_id,sn.repository_id`, before)
 	if err != nil {
 		return nil, err
 	}
@@ -231,4 +231,24 @@ func (s *Store) ExpireSessionSnapshots(ctx context.Context, sessionID string) er
 		return errors.New("session cannot expire from its current state")
 	}
 	return tx.Commit()
+}
+
+// ExpiredWorkspaceSnapshotSessions は repository snapshot を保存する前に中断した archive も回収候補にする。
+func (s *Store) ExpiredWorkspaceSnapshotSessions(ctx context.Context, before string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT ws.session_id FROM workspace_snapshots ws JOIN sessions se ON se.id=ws.session_id JOIN slots sl ON sl.id=se.slot_id
+ WHERE sl.state='ARCHIVED' AND se.state IN ('ARCHIVED','EXPIRED') AND ws.expires_at<=?
+ AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING'))`, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

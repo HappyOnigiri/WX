@@ -295,13 +295,12 @@ func (s *Store) GCCandidates(ctx context.Context, before string) ([]GCCandidate,
 // QuarantinedGCCandidate は retention を過ぎた隔離 slot の削除候補である。
 type QuarantinedGCCandidate struct{ SlotID, Path, FailureCode string }
 
-// QuarantinedGCCandidates は updated_at が before 以前の QUARANTINED slot を返す。
-// 隔離は所有権を証明できなかった結果でもあるため、削除側も通常の REMOVE と同じ証明を通す前提で候補にする。
-// owner が残る行は session の終端処理が済んでいないので候補にしない。
+// QuarantinedGCCandidates は保持期限を過ぎた隔離・失敗 slot を返す。
+// owner や実行中 job が残る行は処理が終わるまで候補にしない。
 func (s *Store) QuarantinedGCCandidates(ctx context.Context, before string) ([]QuarantinedGCCandidate, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path||'/'||sl.rel_path,COALESCE(sl.failure_code,'')
 		FROM slots sl JOIN roots rt ON rt.id=sl.root_id
-		WHERE sl.state='QUARANTINED' AND sl.owner_session_id IS NULL AND sl.updated_at<=? ORDER BY sl.id`, before)
+		WHERE sl.state IN ('QUARANTINED','FAILED') AND sl.owner_session_id IS NULL AND sl.updated_at<=? AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=sl.id AND j.state='RUNNING') ORDER BY sl.id`, before)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +317,7 @@ func (s *Store) QuarantinedGCCandidates(ctx context.Context, before string) ([]Q
 }
 
 // ScheduleQuarantinedRemoval は隔離 slot を REMOVING へ移し、REMOVE job を予約する。
-// 削除が所有権証明に失敗すれば呼び出し側が QUARANTINED へ戻すので、この予約は再試行の入口である。
+// 過去の待機 job は取り消し、DB 登録範囲の回収を再試行する。
 func (s *Store) ScheduleQuarantinedRemoval(ctx context.Context, slotID string) (Job, bool, error) {
 	job, err := newJob("REMOVE", "", slotID, "")
 	if err != nil {
@@ -336,12 +335,15 @@ func (s *Store) ScheduleQuarantinedRemoval(ctx context.Context, slotID string) (
 		return Job{}, false, err
 	}
 	job.WorkspaceID = workspaceID
-	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',updated_at=? WHERE id=? AND owner_session_id IS NULL AND state='QUARANTINED'`, now(), slotID)
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',updated_at=? WHERE id=? AND owner_session_id IS NULL AND state IN ('QUARANTINED','FAILED') AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.slot_id=slots.id AND j.state='RUNNING')`, now(), slotID)
 	if err != nil {
 		return Job{}, false, err
 	}
 	if changed, _ := res.RowsAffected(); changed == 0 {
 		return Job{}, false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='FAILED',finished_at=?,error_code='SUPERSEDED_BY_REMOVAL' WHERE slot_id=? AND state='PENDING'`, now(), slotID); err != nil {
+		return Job{}, false, err
 	}
 	if err := insertJob(ctx, tx, job); err != nil {
 		return Job{}, false, err

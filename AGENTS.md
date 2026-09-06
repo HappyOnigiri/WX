@@ -11,20 +11,22 @@ CIのランナーは全てlinuxで、darwin専用実装は`make build-darwin`の
 - エージェントはwxが作ったworktreeで作業し、ソースリポジトリのHEAD・index・追跡ファイルを変更しない。
 - 正常に終了したslotについて、スナップショットしていない作業を自動で破棄しない（ユーザーが明示的に実行するコマンドでの削除経路は用意してよい）。
   異常終了・不整合な状態で終わったslot（`QUARANTINED`）はこの対象外とし、GCが`retention.quarantined`の経過後に削除する。
-  `wx clear`は同じ所有権証明を通したまま、この経過を待たずに削除する。
+  `wx clear`はこの経過を待たずに削除し、`--discard`指定時は正常終了slotの未保存作業も破棄できる。
   `internal/archive`のclean判定では、Git設定で隠れる変更を見逃さないよう`--untracked-files=all`・`--ignore-submodules=none`を維持する。
 - Gitは必ず`internal/gitx`経由で起動する。
   継承した`GIT_DIR`・`GIT_WORK_TREE`・`GIT_INDEX_FILE`などが漏れると、別リポジトリへの操作が成功し、未捕捉のworktreeを削除し得る。
-- 自動で行う破壊的なファイルシステム操作の前に所有権を証明する。
-  `state.OwnershipValidator`が`ErrOwnership`を返したら、実体を削除せず`QUARANTINED`として残す。
-  GCは同じ証明を要求したまま削除を再試行するので、証明を迂回する削除経路を足さない。
-  証明は破壊的操作ごとに直前の1回とし、同じ操作の前後でinode・path・identityの再検証を重ねない。
-  単一ユーザー・単一マシンでは、pin済みdescriptorへ閉じた操作に割り込む相手がいないためである。
-- TOCTOU対策はrootのpin（`os.Root`・`domain.OpenOwnedRoot`）、pin済みroot配下の全path成分のsymlink拒否（`domain.PhysicalPathInfo`）、子プロセスCWDのfchdir束縛（`internal/fdexec`）を揃える。
+- slot の削除権限は `slots` に登録された root と相対 path で決める。
+  inode・marker・Git lock・HEAD・workspace 紐付けの不一致は削除を拒否する理由にしない。
+  登録 path の実体が置き換わっていても回収する。
+  登録外の実体は診断だけを行い、自動で slot として採用しない。
+  削除は pin 済み root 内に閉じ、root から leaf の親までの symlink を辿らない。
+  leaf symlink はリンク自体を削除する。
+- 準備・復元ではrootのpin（`os.Root`・`domain.OpenOwnedRoot`）と配下のsymlink拒否（`domain.PhysicalPathInfo`）を使う。
+  子プロセスのCWDは`internal/fdexec`でdescriptorへ束縛する。
   root自身より上の祖先成分は検査しない（`domain.ValidatePhysicalLeaf`はleafだけを見る）。
   単一ユーザー・単一マシンでは祖先を差し替える相手がおらず、symlink配下にworktree rootやソースリポジトリを置けるようにするためである。
   descriptorがない場合にパス名で代替しない。
-- slotの位置は`roots.id` + root相対pathで表し、所有権はそれとinode identityで証明する。
+- slotの位置は`roots.id` + root相対pathで表し、削除対象もその登録範囲に限る。
   `storage.worktree_root`変更後も既存slotは旧rootで寿命を全うする（移動・STALE化しない）。
 - 貸出中のslotのworktreeを書き換えない。
   `--branch`指定やmain更新でOIDが一致しないときは、cold startで作り直す。

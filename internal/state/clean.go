@@ -333,3 +333,46 @@ func assertNoActiveClean(ctx context.Context, tx *sql.Tx) error {
 	}
 	return nil
 }
+
+// ScheduleDiscardRemoval は実行中の処理がない終了済み slot を、保存を要求せず削除へ進める。
+// 削除と競合する session/job の検査と予約を同じ transaction に閉じ、再起動後も通常の REMOVE として再開する。
+func (s *Store) ScheduleDiscardRemoval(ctx context.Context, slotID string) (Job, bool, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, false, err
+	}
+	defer tx.Rollback()
+	job, err := newJob("REMOVE", "", slotID, "")
+	if err != nil {
+		return Job{}, false, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(workspace_id,'') FROM slots WHERE id=?`, slotID).Scan(&job.WorkspaceID); err != nil {
+		return Job{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='FAILED',finished_at=?,error_code='DISCARDED' WHERE slot_id=? AND state='PENDING'
+ AND EXISTS (SELECT 1 FROM slots sl WHERE sl.id=jobs.slot_id AND sl.state NOT IN ('ARCHIVED','REMOVING')
+ AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.slot_id=sl.id AND se.state IN ('STARTING','ACTIVE','RESTORING','UNBOUND')))
+ AND NOT EXISTS (SELECT 1 FROM jobs running WHERE running.slot_id=jobs.slot_id AND running.state='RUNNING')`, now(), slotID); err != nil {
+		return Job{}, false, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=?
+ AND state NOT IN ('ARCHIVED','REMOVING')
+ AND NOT EXISTS (SELECT 1 FROM sessions WHERE slot_id=slots.id AND state IN ('STARTING','ACTIVE','RESTORING','UNBOUND'))
+ AND NOT EXISTS (SELECT 1 FROM jobs WHERE slot_id=slots.id AND state IN ('PENDING','RUNNING'))`, now(), slotID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n != 1 {
+		return Job{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED' WHERE slot_id=? AND state NOT IN ('STARTING','ACTIVE','RESTORING','UNBOUND','ARCHIVED','EXPIRED')`, slotID); err != nil {
+		return Job{}, false, err
+	}
+	if err := insertJob(ctx, tx, job); err != nil {
+		return Job{}, false, err
+	}
+	return job, true, tx.Commit()
+}

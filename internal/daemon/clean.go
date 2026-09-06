@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/domain"
@@ -64,7 +65,7 @@ func cleanMode(all, standby bool) string {
 
 // planCleanTargets は受付時点の候補から対象と除外理由を確定する。
 // 通常の clean は使用中の session と待機用 slot を対象外とし、--standby は待機用を、--all は加えて起動・復元途中も含める。
-// 隔離 slot は retention.quarantined の残りを問わず全 mode で削除対象にする。実体を消せるかは REMOVE の所有権証明が決める。
+// 隔離 slot は retention.quarantined の残りを問わず全 mode で削除対象にする。削除範囲は DB の登録で決める。
 func planCleanTargets(candidates []state.CleanCandidate, all, standby bool) []state.CleanTarget {
 	out := make([]state.CleanTarget, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -150,12 +151,15 @@ func cleanReply(run state.CleanRun, targets []state.CleanTarget, dryRun bool) ma
 
 // Clean は保持期限を待たずに wx 管理下の worktree を削除する。
 // dry-run は終了要求・補充停止・ジョブ登録・隔離を含め一切状態を変更せず、調査時点の見込みだけを返す。
-func (m *Manager) Clean(ctx context.Context, all, standby, dryRun bool) (map[string]any, error) {
+func (m *Manager) Clean(ctx context.Context, all, standby, dryRun bool, discardOption ...bool) (map[string]any, error) {
 	candidates, err := m.store.CleanCandidates(ctx)
 	if err != nil {
 		return nil, err
 	}
 	mode := cleanMode(all, standby)
+	if len(discardOption) > 0 && discardOption[0] {
+		mode += "-discard"
+	}
 	targets := planCleanTargets(candidates, all, standby)
 	if dryRun {
 		return cleanReply(state.CleanRun{Mode: mode, State: "DRY_RUN"}, targets, true), nil
@@ -164,7 +168,7 @@ func (m *Manager) Clean(ctx context.Context, all, standby, dryRun bool) (map[str
 	if err != nil {
 		return nil, err
 	}
-	runID, joined, err := m.store.BeginCleanRun(ctx, id, mode, targets, cleanWorkspaces(targets, mode != "normal"))
+	runID, joined, err := m.store.BeginCleanRun(ctx, id, mode, targets, cleanWorkspaces(targets, all || standby))
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +302,7 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 		m.moveCleanTarget(ctx, run.ID, target, cleanTargetDone, "")
 		return
 	case sessionInUse(sessionState):
-		if run.Mode != "all" {
+		if strings.TrimSuffix(run.Mode, "-discard") != "all" {
 			m.moveCleanTarget(ctx, run.ID, target, cleanTargetSkipped, "session "+target.SessionID+" is in use")
 			return
 		}
@@ -314,6 +318,17 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 		// 既存の削除ジョブが動いているので、重複登録せず完了だけを監視する。
 		m.moveCleanTarget(ctx, run.ID, target, cleanTargetRemoving, "")
 		return
+	case strings.HasSuffix(run.Mode, "-discard"):
+		job, changed, err := m.store.ScheduleDiscardRemoval(ctx, slot.ID)
+		if err != nil {
+			m.failCleanTarget(ctx, run.ID, target, err.Error())
+			return
+		}
+		if changed {
+			m.schedule(job)
+			m.moveCleanTarget(ctx, run.ID, target, cleanTargetRemoving, "")
+			return
+		}
 	case slot.State == "READY" || slot.State == "STALE" || slot.State == "SNAPSHOTTED":
 		if m.scheduleRemovalCandidate(ctx, slot.ID, slot.Path, target.SessionID, "clean removal scheduling failed").Scheduled == 1 {
 			m.moveCleanTarget(ctx, run.ID, target, cleanTargetRemoving, "")
@@ -336,7 +351,7 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 			m.moveCleanTarget(ctx, run.ID, target, cleanTargetQuarantined, "quarantined slot is still owned by session "+slot.OwnerSessionID)
 			return
 		}
-		// GC と同じ予約経路へ流し、retention の残りだけを飛ばす。証明できなければ job が QUARANTINED へ戻し、advanceRemoving が理由を付けて閉じる。
+		// GC と同じ予約経路へ流し、retention の残りだけを飛ばす。
 		job, changed, scheduleErr := m.store.ScheduleQuarantinedRemoval(ctx, slot.ID)
 		if scheduleErr != nil {
 			m.log.Error("clean quarantined-slot removal scheduling failed", "slot_id", slot.ID, "error", scheduleErr)
@@ -401,8 +416,10 @@ func (m *Manager) advanceRemoving(ctx context.Context, run state.CleanRun, targe
 	switch slot.State {
 	case "ARCHIVED":
 		m.moveCleanTarget(ctx, run.ID, target, cleanTargetDone, "")
+	case "SNAPSHOTTED":
+		m.failCleanTarget(ctx, run.ID, target, "removal failed; retry clear or use --discard to skip saving")
 	case "QUARANTINED":
-		m.moveCleanTarget(ctx, run.ID, target, cleanTargetQuarantined, "ownership could not be proven; the artifact was quarantined instead of deleted")
+		m.moveCleanTarget(ctx, run.ID, target, cleanTargetQuarantined, "removal failed; registered artifact remains eligible for retry")
 	}
 }
 

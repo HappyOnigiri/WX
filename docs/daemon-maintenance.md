@@ -1,7 +1,7 @@
 # daemonの補充・回収・再起動
 
 ジョブ配送は`internal/daemon/jobs.go`、周期処理は`maintenance.go`、実体照合は`reconcile.go`を参照する。
-所有権失敗は`retryableJobError`・`dependencyPendingError`で包まず終端させ、証明できない実体へのジョブ再試行を止める。
+準備・復元の所有権失敗は終端させ、削除はDB登録済みの範囲を回収する。
 
 ## standby補充
 
@@ -26,7 +26,8 @@
 削除は通常の`Release`→`SNAPSHOT`→`ScheduleRemoval`→`REMOVE`へ載せる。
 
 貸出前のREADY・補充中のPREPARINGは`--standby`と`--all`だけが対象に含め、隔離slotは全modeで`ScheduleQuarantinedRemoval`へ載せる。
-所有権証明に失敗した対象は実体を残し、slot・clean targetとも理由付きの`QUARANTINED`で閉じる。
+`--discard`は保存を省略して削除を予約し、modeに永続化して再起動後も維持する。
+登録外のpathは削除せず、登録済みslotのinode・marker・HEADの不一致は回収を妨げない。
 実行中runへ合流できるのは対象範囲が同じmodeの再実行だけとする。
 `--all`の終了要求は`session_termination_requests`へ期限付きで記録し、heartbeatとagent登録の応答でclientへ渡す。
 signalを送るのはclientだけで、daemonは記録されたPIDへ触れない。
@@ -35,7 +36,7 @@ signalを送るのはclientだけで、daemonは記録されたPIDへ触れな�
 run実行中は`assertNoActiveClean`が貸出・復元・待機用作成の書き込みトランザクションを断り、対象が新しいsessionへ渡るのを防ぐ。
 削除後に補充を停止するのは待機用slotを削除するmodeだけとする。
 安全な処理境界の待機は`cleanBoundaryWait`で制限し、貸出を断ったまま無期限に待たない。
-GC候補の選択と保持期限は`gc.go`を参照し、隔離slotも通常の`REMOVE`で所有権証明を再試行する。
+GC候補の選択と保持期限は`gc.go`を参照し、隔離slotも通常の`REMOVE`で登録範囲を回収する。
 
 ## reconcileと障害時の運用
 

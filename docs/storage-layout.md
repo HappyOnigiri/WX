@@ -15,7 +15,9 @@ slot-idはleaseのsession IDと同値なので、`wx slots`が出すIDをその�
 
 `_`始まりはwxの予約プレフィックスで、workspace IDもリポジトリ配置名もこの接頭辞を拒否し、旧`_unbound`は回収用に特別扱いする。
 孤児スキャン（`ownedRootArtifactPaths`）は予約名を通常workspaceとして列挙せず、旧`_unbound`だけを回収対象として特別扱いする。
-旧UNBOUND行と`_unbound`の回収分岐は1リリースだけ維持し、孤児検出後に`Release`→`REMOVE`で自然に削除する。
+DB登録済みの旧UNBOUND slotは通常の回収経路で削除する。
+登録外の`_unbound`を含むpathは診断だけを行い、自動では削除しない。
+新規slotは未使用pathをDBへ予約してから作成し、既存pathとの衝突時は採用せず予約を取り消す。
 
 エージェントへ貸し出す単位（`Lease.Path`）は、単一リポジトリworkspaceなら`<slot-id>/<RepoName>`、multi_repositoryなら`<slot-id>`である。
 単一リポジトリでCWDをリポジトリ直下にすることで、`.wx-owner-*`がCWDの親に残りエージェントから見えない。

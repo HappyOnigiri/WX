@@ -456,8 +456,8 @@ func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 	if err == nil || !retry {
 		t.Fatalf("duplicate slot id retry=%v err=%v, want a retryable collision", retry, err)
 	}
-	if !state.IsIDCollision(err) {
-		t.Fatalf("duplicate slot id error=%v, want a SQLite constraint violation", err)
+	if !state.IsIDCollision(err) && !errors.Is(err, errSlotPathExists) {
+		t.Fatalf("duplicate slot id error=%v, want a path or SQLite collision", err)
 	}
 
 	if _, err := manager.createStandbySlot(ctx, rootPath, rootID, workspaceRecord, resolved, 1, nil); err != nil {

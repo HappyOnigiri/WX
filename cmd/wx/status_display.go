@@ -234,9 +234,12 @@ func statusDiskSummary(root map[string]any) string {
 	if !ok {
 		return "Disk   measurement unavailable · " + path
 	}
-	line := "Disk   " + formatHumanBytes(allocated) + " allocated · " + path
+	line := "Disk   " + formatHumanBytes(allocated) + " managed allocated · " + path
 	if measuredAt, ok := statusRawString(root, "measured_at"); ok && measuredAt != "" {
 		line += " · measured " + statusLocalDate(measuredAt) + " " + statusZoneLabel()
+	}
+	if unmanaged, ok := statusInt(root, "unmanaged_allocated_bytes"); ok && unmanaged > 0 {
+		line += "\nUnmanaged " + formatHumanBytes(unmanaged) + " · excluded from cleanup"
 	}
 	return line
 }

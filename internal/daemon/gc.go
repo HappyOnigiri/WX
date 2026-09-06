@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/archive"
@@ -121,6 +123,16 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 	for _, snapshot := range expired {
 		expiredSessions[snapshot.SessionID] = append(expiredSessions[snapshot.SessionID], snapshot)
 	}
+	expiredWorkspaces, err := m.store.ExpiredWorkspaceSnapshotSessions(ctx, state.FormatTime(nowTime))
+	if err != nil {
+		progress.addFailed("workspace snapshots", "expired archive query failed", err)
+		return progress.GCResult, progress.err()
+	}
+	for _, id := range expiredWorkspaces {
+		if _, ok := expiredSessions[id]; !ok {
+			expiredSessions[id] = nil
+		}
+	}
 	wholeSlotRemoval := map[string]bool{}
 	for _, standby := range standbys {
 		wholeSlotRemoval[standby.SlotID] = true
@@ -173,17 +185,6 @@ func (m *Manager) scheduleColdRepositoryRemovals(ctx context.Context, candidates
 			continue
 		}
 		target := fmt.Sprintf("cold repository %s/%s", candidate.SlotID, candidate.RepositoryID)
-		if _, release, err := m.holdVerifiedRootForPath(candidate.WorktreePath); err != nil {
-			reasonErr := m.quarantineCleanupFailure(candidate.SlotID, err)
-			reason := "cleanup ownership verification failed; the artifact was not deleted"
-			if errors.Is(err, state.ErrOwnership) {
-				reason = "ownership could not be proven; the artifact was quarantined instead of deleted"
-			}
-			progress.addPending(target, reason, reasonErr)
-			continue
-		} else {
-			release()
-		}
 		job, changed, err := m.store.ScheduleColdRepositoryRemoval(ctx, candidate)
 		if err != nil {
 			m.log.Error("cold repository removal scheduling failed", "slot_id", candidate.SlotID, "repository_id", candidate.RepositoryID, "error", err)
@@ -216,8 +217,7 @@ func (m *Manager) scheduleEndedWorktreeRemovals(ctx context.Context, candidates 
 	return progress
 }
 
-// scheduleQuarantinedRemovals は retention を過ぎた隔離 slot の削除を、通常の REMOVE と同じ証明つきで予約する。
-// 証明が通らない候補は削除せず QUARANTINED のまま残り、原因が解消された次の周回で片付く。
+// scheduleQuarantinedRemovals は保持期限を過ぎた隔離・失敗 slot の回収を予約する。
 func (m *Manager) scheduleQuarantinedRemovals(ctx context.Context, candidates []state.QuarantinedGCCandidate) gcProgress {
 	progress := newGCProgress()
 	for _, candidate := range candidates {
@@ -241,17 +241,6 @@ func (m *Manager) scheduleQuarantinedRemovals(ctx context.Context, candidates []
 func (m *Manager) scheduleRemovalCandidate(ctx context.Context, slotID, path, sessionID, logMessage string) gcProgress {
 	progress := newGCProgress()
 	target := "worktree " + slotID
-	if _, release, err := m.holdVerifiedRootForPath(path); err != nil {
-		reasonErr := m.quarantineCleanupFailure(slotID, err)
-		reason := "cleanup ownership verification failed; the artifact was not deleted"
-		if errors.Is(err, state.ErrOwnership) {
-			reason = "ownership could not be proven; the artifact was quarantined instead of deleted"
-		}
-		progress.addPending(target, reason, reasonErr)
-		return progress
-	} else {
-		release()
-	}
 	job, changed, err := m.store.ScheduleRemoval(ctx, slotID, sessionID)
 	if err != nil {
 		m.log.Error(logMessage, "slot_id", slotID, "error", err)
@@ -277,45 +266,33 @@ func (m *Manager) expireWorkspaceSnapshots(ctx context.Context, expiredSessions 
 	for _, sessionID := range sessionIDs {
 		snapshots := expiredSessions[sessionID]
 		ok := true
-		var rootSnapshot state.WorkspaceSnapshot
 		var rootSnapshotOwner string
 		var rootSnapshotOwnerHandle *os.Root
 		var rootSnapshotOwnerRelease func()
-		workspaceKind, workspaceErr := m.store.SessionWorkspaceKind(ctx, sessionID)
-		if workspaceErr != nil {
-			progress.addPending("snapshots "+sessionID, "session workspace metadata could not be read", workspaceErr)
+		var found bool
+		rootSnapshot, found, snapshotErr := m.store.WorkspaceSnapshot(ctx, sessionID)
+		if snapshotErr != nil {
+			progress.addPending("workspace snapshot "+sessionID, "snapshot metadata could not be read", snapshotErr)
 			ok = false
-		} else if workspaceKind == "multi_repository" {
-			var found bool
-			rootSnapshot, found, workspaceErr = m.store.WorkspaceSnapshot(ctx, sessionID)
-			if workspaceErr != nil {
-				progress.addPending("workspace snapshot "+sessionID, "workspace snapshot metadata could not be read", workspaceErr)
-				ok = false
-			} else if !found {
-				progress.addPending("workspace snapshot "+sessionID, "workspace snapshot metadata is incomplete", errors.New("workspace snapshot is missing"))
-				ok = false
-			} else if owner, releaseOwner, ownerErr := m.holdVerifiedRootForPath(rootSnapshot.ArchivePath); ownerErr != nil {
-				_, quarantineErr := m.store.QuarantineArtifact(context.Background(), "workspace_snapshot", rootSnapshot.ArchivePath, "ownership could not be proven during cleanup")
-				if quarantineErr != nil {
-					ownerErr = errors.Join(ownerErr, fmt.Errorf("quarantine workspace snapshot failed: %w", quarantineErr))
-				}
-				progress.addPending("workspace snapshot "+sessionID, "ownership could not be proven; the artifact was quarantined instead of deleted", ownerErr)
+		}
+		if found {
+			rootSnapshotOwner = strings.TrimSuffix(rootSnapshot.ArchivePath, string(filepath.Separator)+rootSnapshot.RelPath)
+			if !filepath.IsLocal(rootSnapshot.RelPath) || rootSnapshot.RelPath == "." {
+				progress.addFailed("workspace snapshot "+sessionID, "invalid registered snapshot path", errors.New("snapshot path is outside root"))
 				ok = false
 			} else {
-				rootSnapshotOwner = owner
-				rootSnapshotOwnerRelease = releaseOwner
-				rootSnapshotOwnerHandle = m.rootHandleForRoot(owner)
-				if rootSnapshotOwnerHandle == nil {
-					progress.addPending("workspace snapshot "+sessionID, "workspace snapshot ownership handle is unavailable", errors.New("workspace snapshot ownership root descriptor is unavailable"))
+				var openErr error
+				rootSnapshotOwnerHandle, openErr = os.OpenRoot(rootSnapshotOwner)
+				if openErr != nil && !errors.Is(openErr, os.ErrNotExist) {
+					progress.addPending("workspace snapshot "+sessionID, "snapshot root could not be opened", openErr)
 					ok = false
-				} else {
-					if validateErr := archive.ValidateWorkspaceSnapshotAt(owner, rootSnapshotOwnerHandle, rootSnapshot, time.Time{}); validateErr != nil {
-						progress.addPending("workspace snapshot "+sessionID, "workspace snapshot metadata or artifact validation failed", validateErr)
-						ok = false
-					}
+				}
+				if rootSnapshotOwnerHandle != nil {
+					rootSnapshotOwnerRelease = func() { _ = rootSnapshotOwnerHandle.Close() }
 				}
 			}
 		}
+
 		if !ok {
 			if rootSnapshotOwnerRelease != nil {
 				rootSnapshotOwnerRelease()
@@ -335,8 +312,8 @@ func (m *Manager) expireWorkspaceSnapshots(ctx context.Context, expiredSessions 
 				break
 			}
 		}
-		if ok && rootSnapshot.SessionID != "" {
-			if err := archive.DeleteWorkspaceSnapshotAt(rootSnapshotOwner, rootSnapshotOwnerHandle, rootSnapshot); err != nil {
+		if ok && rootSnapshot.SessionID != "" && rootSnapshotOwnerHandle != nil {
+			if err := removeRegisteredSnapshot(rootSnapshotOwnerHandle, rootSnapshot.RelPath); err != nil {
 				progress.addFailed("workspace snapshot "+sessionID, "workspace snapshot archive could not be deleted", err)
 				ok = false
 			}

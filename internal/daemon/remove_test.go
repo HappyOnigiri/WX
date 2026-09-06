@@ -82,7 +82,7 @@ func TestRemoveSlotWorktreesRejectsRepositoryOutsideRoot(t *testing.T) {
 	}
 }
 
-func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
+func TestRemoveSlotWorktreesDeletesReplacedRegisteredDirectory(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
@@ -103,15 +103,15 @@ func TestRemoveSlotWorktreesRejectsReplacedSlotDirectory(t *testing.T) {
 	if err := os.Rename(replacement, slot.Path); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slot, ""); !errors.Is(err, state.ErrOwnership) {
-		t.Fatalf("replaced slot directory error=%v, want an ownership failure", err)
+	if err := manager.removeSlotWorktrees(ctx, archive.Manager{}, root, slot, ""); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Lstat(slot.Path); err != nil {
-		t.Fatalf("replaced slot directory was removed despite the failed proof: %v", err)
+	if _, err := os.Lstat(slot.Path); !os.IsNotExist(err) {
+		t.Fatalf("registered directory remains: %v", err)
 	}
 }
 
-func TestRemoveEmptySlotRejectsDescendantSymlinkSwap(t *testing.T) {
+func TestRemoveEmptySlotDeletesLeafSymlinkWithoutFollowingIt(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	worktreeRoot := filepath.Join(root, "worktrees")
@@ -140,8 +140,8 @@ func TestRemoveEmptySlotRejectsDescendantSymlinkSwap(t *testing.T) {
 	if _, err := store.CreateSlotSession(context.Background(), slot, nil, state.Session{ID: "slt001", SlotID: "slt001", State: "EXPIRED", AgentKind: "codex", TokenHash: state.HashToken("token")}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.removeSlotWorktrees(context.Background(), archive.Manager{}, worktreeRoot, slot, ""); err == nil {
-		t.Fatal("symlinked empty slot was removed")
+	if err := manager.removeSlotWorktrees(context.Background(), archive.Manager{}, worktreeRoot, slot, ""); err != nil {
+		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(outsideFile); err != nil || string(data) != "keep" {
 		t.Fatalf("outside file changed: data=%q err=%v", data, err)
