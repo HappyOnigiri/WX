@@ -11,6 +11,7 @@ CIのランナーは全てlinuxで、darwin専用実装は`make build-darwin`の
 - エージェントはwxが作ったworktreeで作業し、ソースリポジトリのHEAD・index・追跡ファイルを変更しない。
 - 正常に終了したslotについて、スナップショットしていない作業を自動で破棄しない（ユーザーが明示的に実行するコマンドでの削除経路は用意してよい）。
   異常終了・不整合な状態で終わったslot（`QUARANTINED`）はこの対象外とし、GCが`retention.quarantined`の経過後に削除する。
+  `wx clear`は同じ所有権証明を通したまま、この経過を待たずに削除する。
   `internal/archive`のclean判定では、Git設定で隠れる変更を見逃さないよう`--untracked-files=all`・`--ignore-submodules=none`を維持する。
 - Gitは必ず`internal/gitx`経由で起動する。
   継承した`GIT_DIR`・`GIT_WORK_TREE`・`GIT_INDEX_FILE`などが漏れると、別リポジトリへの操作が成功し、未捕捉のworktreeを削除し得る。

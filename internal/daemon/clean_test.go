@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -125,7 +126,8 @@ func TestPlanCleanTargetsSeparatesUnusedInUseAndUnprovableSlots(t *testing.T) {
 	if got := targetByID(normal, "archived").State; got != cleanTargetPending {
 		t.Fatalf("archived session slot state=%s", got)
 	}
-	if got := targetByID(normal, "held").State; got != cleanTargetQuarantined {
+	// 隔離slotはretentionの残りを問わず通常のclearでも削除対象にする。
+	if got := targetByID(normal, "held").State; got != cleanTargetPending {
 		t.Fatalf("quarantined slot state=%s", got)
 	}
 	if got := targetByID(normal, "active"); got.State != cleanTargetSkipped || got.Reason == "" {
@@ -157,8 +159,11 @@ func TestPlanCleanTargetsSeparatesUnusedInUseAndUnprovableSlots(t *testing.T) {
 			t.Fatalf("unprovable target %s=%+v", slotID, got)
 		}
 	}
-	if got := targetByID(all, "held").State; got != cleanTargetQuarantined {
-		t.Fatalf("--all still deletes quarantined slots: state=%s", got)
+	if got := targetByID(all, "held").State; got != cleanTargetPending {
+		t.Fatalf("--all skipped the quarantined slot: state=%s", got)
+	}
+	if got := targetByID(standby, "held").State; got != cleanTargetPending {
+		t.Fatalf("--standby skipped the quarantined slot: state=%s", got)
 	}
 }
 
@@ -279,30 +284,75 @@ func TestCleanRemovesUnusedStandbyAndFinishesTheRun(t *testing.T) {
 	}
 }
 
-func TestCleanQuarantinedSlotIsKeptWithAReason(t *testing.T) {
+// quarantinedCleanFixture は実体を持つ隔離 slot を 1 件だけ置く。retention は既定の 24 時間のままにして、
+// clear が GC の待ち時間を飛ばすことを確かめられるようにする。
+func quarantinedCleanFixture(t *testing.T) (*Manager, *state.Store, state.Slot) {
+	t.Helper()
 	manager, store, workspaceID := cleanFixture(t)
-	ctx := context.Background()
 	slot := testSlot(t, manager, workspaceID, "held", 1, "READY")
-	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+	if _, err := store.CreateStandby(context.Background(), slot, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetSlotState(ctx, "held", []string{"READY"}, "QUARANTINED", "TEST"); err != nil {
+	if err := store.SetSlotState(context.Background(), "held", []string{"READY"}, "QUARANTINED", "TEST"); err != nil {
 		t.Fatal(err)
 	}
+	return manager, store, slot
+}
+
+func TestCleanDeletesQuarantinedSlotWithoutWaitingRetention(t *testing.T) {
+	manager, store, _ := quarantinedCleanFixture(t)
+	ctx := context.Background()
+	// retention を過ぎていないので GC は候補にしない。clear だけが消せることを先に確かめる。
+	candidates, err := store.QuarantinedGCCandidates(ctx, state.FormatTime(time.Now().Add(-manager.Config().Retention.Quarantined.Duration)))
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("gc candidates=%+v err=%v", candidates, err)
+	}
+	reply, err := manager.Clean(ctx, false, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, _ := reply["run_id"].(string)
+	waitCleanTargetState(t, store, runID, "held", cleanTargetRemoving)
+	scheduled, err := store.Slot(ctx, "held")
+	if err != nil || scheduled.State != "REMOVING" {
+		t.Fatalf("quarantined slot after scheduling=%+v err=%v", scheduled, err)
+	}
+	// 削除ジョブの完了だけを監視し、worker を占有したまま待たないことを確かめる。
+	if err := store.FinishRemoval(ctx, "held"); err != nil {
+		t.Fatal(err)
+	}
+	waitCleanTargetState(t, store, runID, "held", cleanTargetDone)
+	waitCleanRunDone(t, store, runID)
+	stored, err := store.Slot(ctx, "held")
+	if err != nil || stored.State != "ARCHIVED" {
+		t.Fatalf("quarantined slot=%+v err=%v", stored, err)
+	}
+}
+
+func TestCleanKeepsQuarantinedSlotWhoseOwnershipCannotBeProven(t *testing.T) {
+	manager, store, slot := quarantinedCleanFixture(t)
+	ctx := context.Background()
 	reply, err := manager.Clean(ctx, true, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runID, _ := reply["run_id"].(string)
+	waitCleanTargetState(t, store, runID, "held", cleanTargetRemoving)
+	// REMOVE が所有権を証明できなかったときと同じ遷移を起こす。実体を消すのは証明を通った後だけなので worktree は残る。
+	manager.quarantineOwnershipFailure("held", []string{"REMOVING"}, state.ErrOwnership)
+	waitCleanTargetState(t, store, runID, "held", cleanTargetQuarantined)
+	waitCleanRunDone(t, store, runID)
 	targets, err := store.CleanTargets(ctx, runID)
-	if err != nil || len(targets) != 1 || targets[0].State != cleanTargetQuarantined || targets[0].Reason == "" {
+	if err != nil || len(targets) != 1 || targets[0].Reason == "" {
 		t.Fatalf("quarantined target=%+v err=%v", targets, err)
 	}
 	stored, err := store.Slot(ctx, "held")
 	if err != nil || stored.State != "QUARANTINED" {
 		t.Fatalf("quarantined slot changed=%+v err=%v", stored, err)
 	}
-	waitCleanRunDone(t, store, runID)
+	if _, err := os.Lstat(slot.Path); err != nil {
+		t.Fatalf("worktree %s was deleted without an ownership proof: err=%v", slot.Path, err)
+	}
 }
 
 func TestCleanAllRequestsTerminationAndTimesOutWithoutKilling(t *testing.T) {
