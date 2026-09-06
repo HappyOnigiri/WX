@@ -119,18 +119,55 @@ func TestPrintStatusSummaryDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
 	}
 }
 
-func TestPrintStatusSummaryShowsStandbyRecoveryAction(t *testing.T) {
+// 補充停止は表の外の注記ではなく、該当 workspace の行そのものに出す。正常な行と同じ見た目だと見落とす。
+func TestPrintStatusSummaryMarksTheStoppedWorkspaceRow(t *testing.T) {
 	payload := map[string]any{
-		"workspace_details":     []map[string]any{{"id": "w1", "root": "/repo", "ready": 0, "leased": 0}},
-		"job_details":           map[string]any{"pending": 0, "running": 0, "failed": 0},
-		"worktree_roots":        []map[string]any{},
-		"standby_replenishment": []map[string]any{{"root": "/repo", "quarantined": 3, "action": `wx retry-standby "/repo"`}},
+		"workspace_details": []map[string]any{
+			{"id": "w1", "root": "/repo", "ready": 0, "leased": 0},
+			{"id": "w2", "root": "/other", "ready": 1, "leased": 0},
+		},
+		"job_details":    map[string]any{"pending": 0, "running": 0, "failed": 0},
+		"worktree_roots": []map[string]any{},
+		"standby_replenishment": []map[string]any{
+			{"root": "/repo", "reason": "STANDBY_PREPARE_FAILED", "detail": "job-1", "action": `wx retry-standby "/repo"`},
+		},
 	}
 	var output bytes.Buffer
 	printStatusDisplay(&output, payload, false)
 	got := output.String()
-	if !strings.Contains(got, `Standby replenishment stopped · /repo · 3 quarantined · run wx retry-standby "/repo"`) {
-		t.Fatalf("standby recovery guidance missing:\n%s", got)
+	if !strings.Contains(got, "NOTE") {
+		t.Fatalf("note column missing:\n%s", got)
+	}
+	var stopped, healthy string
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "/repo") {
+			stopped = line
+		}
+		if strings.HasPrefix(line, "/other") {
+			healthy = line
+		}
+	}
+	if !strings.Contains(stopped, `! standby replenishment stopped after a preparation failure; run wx retry-standby "/repo"`) {
+		t.Fatalf("stopped workspace row=%q\n%s", stopped, got)
+	}
+	if !strings.Contains(healthy, "—") || strings.Contains(healthy, "!") {
+		t.Fatalf("healthy workspace row=%q\n%s", healthy, got)
+	}
+}
+
+// 登録が消えた workspace の停止は表に載らないので、残余として別行で出す。
+func TestPrintStatusSummaryReportsStopsWithoutAWorkspaceRow(t *testing.T) {
+	payload := map[string]any{
+		"workspace_details":     []map[string]any{},
+		"job_details":           map[string]any{"pending": 0, "running": 0, "failed": 0},
+		"worktree_roots":        []map[string]any{},
+		"standby_replenishment": []map[string]any{{"root": "/gone", "reason": "CLEAN", "detail": "run-1", "action": `wx retry-standby "/gone"`}},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, false)
+	got := output.String()
+	if !strings.Contains(got, `/gone ! standby replenishment stopped after wx clear; run wx retry-standby "/gone"`) {
+		t.Fatalf("leftover suspension missing:\n%s", got)
 	}
 }
 
@@ -161,7 +198,7 @@ func TestPrintVerboseStatusRetainsDetailsAndUnknownFields(t *testing.T) {
 		"job_details":        map[string]any{"pending": 1, "running": 0, "failed": 2},
 		"snapshot_details":   map[string]any{"count": 2, "earliest_expiry": "2026-09-06T00:00:00Z"},
 		"worktree_roots":     []map[string]any{{"path": "/repo/wx", "active": false, "bytes": 123, "allocated_bytes": 456, "measurement": "st_blocks_x_512", "error": ""}},
-		"retention_seconds":  map[string]any{"hot_standby": 604800, "ended_worktree": 3600, "recovery_snapshot": 0, "expired_session_tombstone": 31536000, "failed_job": 1, "event_log": 2},
+		"retention_seconds":  map[string]any{"hot_standby": 604800, "ended_worktree": 3600, "quarantined": 86400, "recovery_snapshot": 0, "expired_session_tombstone": 31536000, "failed_job": 1, "event_log": 2},
 		"quarantine":         []map[string]any{{"id": "q1", "path": "/bad/one", "failure_code": "OWNERSHIP"}, {"id": "q2", "path": "/bad/two", "failure_code": "OWNERSHIP"}},
 		"new_top_level":      map[string]any{"answer": 0},
 	}

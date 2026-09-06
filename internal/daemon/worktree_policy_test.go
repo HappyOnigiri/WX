@@ -115,9 +115,9 @@ func TestColdPolicyDoesNotLeaseExistingReadySlot(t *testing.T) {
 	}
 }
 
-// 隔離 slot が残る workspace でも、成功する session を待たずに standby が補充されることを確かめる。
-// 上限に達したら止まるので、準備が壊れ続けても隔離 worktree は無制限には増えない。
-func TestStandbyReplenishmentContinuesAfterQuarantineUpToLimit(t *testing.T) {
+// standby の準備が失敗した workspace では自動補充が止まり、wx retry-standby で再開することを確かめる。
+// 隔離実体は GC が消すので、停止しないと削除と補充が交互に繰り返される。
+func TestStandbyReplenishmentStopsAfterAPreparationFailure(t *testing.T) {
 	t.Parallel()
 	requireDaemonIntegration(t)
 	root := t.TempDir()
@@ -143,80 +143,71 @@ func TestStandbyReplenishmentContinuesAfterQuarantineUpToLimit(t *testing.T) {
 	}
 	w = registerTestWorkspace(t, store, w)
 
-	// 補充された slot をリトライ切れと同じ形で隔離する。slot は QUARANTINED、job は FAILED で残る。
-	quarantineStandby := func() {
-		t.Helper()
-		jobs, err := store.RecoverJobs(ctx, false)
-		if err != nil || len(jobs) != 1 || jobs[0].Kind != "PREPARE" {
-			t.Fatalf("standby jobs=%+v err=%v", jobs, err)
-		}
-		if err := store.SetSlotState(ctx, jobs[0].SlotID, []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
-			t.Fatal(err)
-		}
-		claimed, err := store.ClaimJob(ctx, jobs[0].ID, "test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.FinishJob(ctx, claimed.ID, "test", errors.New("prepare failed")); err != nil {
-			t.Fatal(err)
-		}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatal(err)
 	}
-	for attempt := range standbyQuarantineLimit {
-		if err := m.ensureStandby(ctx, w); err != nil {
-			t.Fatalf("replenishment after %d quarantined slots: %v", attempt, err)
-		}
-		if count := store.StandbyCount(ctx, string(w.ID)); count != 1 {
-			t.Fatalf("standby count after %d quarantined slots=%d, want the new slot", attempt, count)
-		}
-		quarantineStandby()
-		if count := store.StandbyCount(ctx, string(w.ID)); count != 0 {
-			t.Fatalf("quarantined slot still occupies a standby place: %d", count)
-		}
+	if count := store.StandbyCount(ctx, string(w.ID)); count != 1 {
+		t.Fatalf("standby count after the first replenishment=%d, want one", count)
 	}
-	// 上限に達したことは一度だけ Warn で伝える。10 分ごとの reconcile で同じ警告を積まない。
+	// 補充された slot をリトライ切れと同じ形で隔離し、準備失敗の停止を記録する。
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 || jobs[0].Kind != "PREPARE" {
+		t.Fatalf("standby jobs=%+v err=%v", jobs, err)
+	}
+	prepare := jobs[0]
+	if err := store.SetSlotState(ctx, prepare.SlotID, []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimJob(ctx, prepare.ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, claimed.ID, "test", errors.New("prepare failed")); err != nil {
+		t.Fatal(err)
+	}
+	// 停止したことは一度だけ Warn で伝える。10 分ごとの reconcile で同じ警告を積まない。
 	var logs bytes.Buffer
 	m.log = slog.New(slog.NewTextHandler(&logs, nil))
-	if err := m.ensureStandby(ctx, w); err != nil {
-		t.Fatal(err)
-	}
-	jobs, err := store.RecoverJobs(ctx, false)
-	if err != nil || len(jobs) != 0 {
-		t.Fatalf("replenishment continued past the quarantine limit: jobs=%+v err=%v", jobs, err)
-	}
-	if got := strings.Count(logs.String(), "standby replenishment stopped until quarantined slots are removed"); got != 1 {
-		t.Fatalf("quarantine limit warnings after the first stop=%d, want one: %s", got, logs.String())
+	m.suspendStandbyReplenishment(ctx, prepare)
+	m.suspendStandbyReplenishment(ctx, prepare)
+	if got := strings.Count(logs.String(), "standby replenishment stopped after a preparation failure"); got != 1 {
+		t.Fatalf("suspension warnings=%d, want one: %s", got, logs.String())
 	}
 	if err := m.ensureStandby(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(logs.String(), "standby replenishment stopped until quarantined slots are removed"); got != 1 {
-		t.Fatalf("quarantine limit warnings after the second stop=%d, want one: %s", got, logs.String())
+	if jobs, err := store.RecoverJobs(ctx, false); err != nil || len(jobs) != 0 {
+		t.Fatalf("replenishment continued while suspended: jobs=%+v err=%v", jobs, err)
 	}
 	status, err := m.Status(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	blocked, ok := status["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic)
-	if !ok || len(blocked) != 1 || blocked[0].Quarantined != standbyQuarantineLimit || !strings.Contains(blocked[0].Action, "wx retry-standby") {
+	if !ok || len(blocked) != 1 || blocked[0].Reason != state.SuspendReplenishReasonStandbyFailure || blocked[0].Detail != prepare.ID {
 		t.Fatalf("standby recovery diagnostics=%v", status["standby_replenishment"])
+	}
+	if !strings.Contains(blocked[0].Action, "wx retry-standby") {
+		t.Fatalf("standby recovery action=%q", blocked[0].Action)
 	}
 	doctor := m.Doctor(ctx)
 	checks, ok := doctor["checks"].(map[string]any)
 	if !ok {
 		t.Fatalf("doctor checks=%v", doctor["checks"])
 	}
-	if diagnostic, ok := checks["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic); !ok || len(diagnostic) != 1 || diagnostic[0].Quarantined != standbyQuarantineLimit {
+	diagnostic, ok := checks["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic)
+	if !ok || len(diagnostic) != 1 || diagnostic[0].Reason != state.SuspendReplenishReasonStandbyFailure {
 		t.Fatalf("doctor standby recovery diagnostics=%v", checks["standby_replenishment"])
 	}
 	retry, err := m.RetryStandby(ctx, string(w.Root))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retry["generation"] != 1 || retry["quarantined"] != standbyQuarantineLimit || retry["scheduled"] != true {
+	if retry["generation"] != 1 || retry["resumed"] != true || retry["scheduled"] != true {
 		t.Fatalf("retry reply=%v", retry)
 	}
-	if got, err := store.QuarantinedStandbyCount(ctx, string(w.ID)); err != nil || got != 0 {
-		t.Fatalf("quarantined count after retry=%d err=%v", got, err)
+	if suspended, err := store.ReplenishSuspended(ctx, string(w.ID)); err != nil || suspended {
+		t.Fatalf("suspended after retry=%v err=%v", suspended, err)
 	}
 	jobs, err = store.RecoverJobs(ctx, false)
 	if err != nil {
@@ -232,14 +223,14 @@ func TestStandbyReplenishmentContinuesAfterQuarantineUpToLimit(t *testing.T) {
 	if ensure.ID == "" {
 		t.Fatalf("manual retry did not enqueue ensure job: %+v", jobs)
 	}
-	claimed, err := store.ClaimJob(ctx, ensure.ID, "retry-test")
+	ensureClaimed, err := store.ClaimJob(ctx, ensure.ID, "retry-test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.runRecoveredJob(ctx, claimed); err != nil {
+	if err := m.runRecoveredJob(ctx, ensureClaimed); err != nil {
 		t.Fatalf("manual retry job: %v", err)
 	}
-	if err := store.FinishJob(ctx, claimed.ID, "retry-test", nil); err != nil {
+	if err := store.FinishJob(ctx, ensureClaimed.ID, "retry-test", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := store.StandbyCount(ctx, string(w.ID)); got != 1 {

@@ -65,8 +65,11 @@ type Pool struct {
 	PreparationConcurrency int `yaml:"preparation_concurrency,omitempty"`
 }
 type Retention struct {
-	HotStandby              Duration `yaml:"hot_standby,omitempty"`
-	EndedWorktree           Duration `yaml:"ended_worktree,omitempty"`
+	HotStandby    Duration `yaml:"hot_standby,omitempty"`
+	EndedWorktree Duration `yaml:"ended_worktree,omitempty"`
+	// Quarantined は隔離slotの実体をGCが削除するまでの保持期間。
+	// LEASEDから隔離へ落ちたslotを調査前に消さないよう、ended_worktreeより長く取る。
+	Quarantined             Duration `yaml:"quarantined,omitempty"`
 	RecoverySnapshot        Duration `yaml:"recovery_snapshot,omitempty"`
 	ExpiredSessionTombstone Duration `yaml:"expired_session_tombstone,omitempty"`
 	FailedJob               Duration `yaml:"failed_job,omitempty"`
@@ -130,7 +133,7 @@ func Defaults() Config {
 		Worktree: WorktreePolicy{Undefined: "ask"},
 		Version:  1, Storage: Storage{WorktreeRoot: "$HOME/wx", RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
-		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
+		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{24 * time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
 		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false}, Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
@@ -550,7 +553,7 @@ func Validate(c *Config) error {
 	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 {
 		return errors.New("pool counts must be non-negative and concurrency must be at least 1")
 	}
-	for k, v := range map[string]time.Duration{"retention.hot_standby": c.Retention.HotStandby.Duration, "retention.ended_worktree": c.Retention.EndedWorktree.Duration, "retention.recovery_snapshot": c.Retention.RecoverySnapshot.Duration, "retention.expired_session_tombstone": c.Retention.ExpiredSessionTombstone.Duration, "retention.failed_job": c.Retention.FailedJob.Duration, "retention.event_log": c.Retention.EventLog.Duration, "discovery.timeout": c.Discovery.Timeout.Duration, "discovery.reconcile_interval": c.Discovery.ReconcileInterval.Duration, "readiness.timeout": c.Readiness.Timeout.Duration} {
+	for k, v := range map[string]time.Duration{"retention.hot_standby": c.Retention.HotStandby.Duration, "retention.ended_worktree": c.Retention.EndedWorktree.Duration, "retention.quarantined": c.Retention.Quarantined.Duration, "retention.recovery_snapshot": c.Retention.RecoverySnapshot.Duration, "retention.expired_session_tombstone": c.Retention.ExpiredSessionTombstone.Duration, "retention.failed_job": c.Retention.FailedJob.Duration, "retention.event_log": c.Retention.EventLog.Duration, "discovery.timeout": c.Discovery.Timeout.Duration, "discovery.reconcile_interval": c.Discovery.ReconcileInterval.Duration, "readiness.timeout": c.Readiness.Timeout.Duration} {
 		if v < 0 {
 			return fmt.Errorf("%s must not be negative", k)
 		}

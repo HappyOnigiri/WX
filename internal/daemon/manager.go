@@ -171,8 +171,8 @@ type Manager struct {
 	closeDone            chan struct{}
 	// cleanDrivers は run ごとの進行管理が二重に走らないようにする。同じ run への再実行は既存の driver へ合流する。
 	cleanDrivers map[string]bool
-	// standbyQuarantineWarned は隔離上限による補充停止の警告を workspace ごとに一度だけ出すための記録。
-	standbyQuarantineWarned map[string]bool
+	// standbySuspensionWarned は補充停止の警告を workspace ごとに一度だけ出すための記録。
+	standbySuspensionWarned map[string]bool
 }
 type jobWork struct {
 	id string
@@ -981,6 +981,7 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 			return err
 		}
 		if err := m.prepareSlotWithJob(ctx, job.SlotID, w, resolved, repos, job); err != nil {
+			m.suspendStandbyReplenishment(ctx, job)
 			if errors.Is(err, state.ErrOwnership) {
 				return err
 			}
@@ -2208,11 +2209,6 @@ func coldWorktreeUnmaterialized(owner *os.Root, root, worktreePath string) (bool
 	return len(entries) == 0, nil
 }
 
-// standbyQuarantineLimit は、貸出前の隔離 slot をこの数まで許して補充を続ける上限。
-// 隔離 slot は待機枠に数えないので環境が直れば補充で自己回復するが、GC も clean も隔離実体を消さないため、
-// 準備が壊れ続ける workspace で無制限に worktree が積み上がるのを防ぐ。
-const standbyQuarantineLimit = 3
-
 func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) error {
 	cfg := m.Config()
 	if !m.standbyReplenishmentEnabled(w) {
@@ -2222,21 +2218,6 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	if m.replenishSuspended(ctx, string(w.ID)) {
 		return nil
 	}
-	quarantined, err := m.store.QuarantinedStandbyCount(ctx, string(w.ID))
-	if err != nil {
-		return err
-	}
-	if quarantined >= standbyQuarantineLimit {
-		// 隔離実体を消す製品内の経路が無く、片付けるまで補充は再開しない。
-		// 10 分ごとの reconcile から呼ばれるため、上限へ達したことは workspace ごとに一度だけ Warn で伝える。
-		if m.markStandbyQuarantineWarned(string(w.ID)) {
-			m.log.Warn("standby replenishment stopped until quarantined slots are removed", "workspace_id", w.ID, "quarantined", quarantined, "limit", standbyQuarantineLimit)
-		} else {
-			m.log.Debug("standby replenishment stopped by quarantined slots", "workspace_id", w.ID, "quarantined", quarantined)
-		}
-		return nil
-	}
-	m.clearStandbyQuarantineWarned(string(w.ID))
 	needed := cfg.Pool.WarmPerWorkspace - m.store.StandbyCount(ctx, string(w.ID))
 	if needed <= 0 {
 		return nil
@@ -2271,8 +2252,8 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	return nil
 }
 
-// RetryStandby は環境修復を利用者が確認した後、現 generation の隔離上限を一度だけリセットして補充を予約する。
-// 隔離 slot の状態・実体は変更せず、新しい準備失敗だけを次の上限判定へ数える。
+// RetryStandby は環境修復を利用者が確認した後、workspace の補充停止を解除して補充を一度だけ予約する。
+// 停止理由（clean 由来か standby 失敗か）では区別せず、隔離 slot の状態・実体も変更しない。
 func (m *Manager) RetryStandby(ctx context.Context, root string) (map[string]any, error) {
 	canonical, err := domain.Canonicalize(root)
 	if err != nil {
@@ -2285,43 +2266,40 @@ func (m *Manager) RetryStandby(ctx context.Context, root string) (map[string]any
 	if !m.standbyReplenishmentEnabled(w) {
 		return nil, errors.New("standby replenishment is disabled for this workspace")
 	}
-	if m.replenishSuspended(ctx, string(w.ID)) {
-		return nil, errors.New("standby replenishment is suspended until the workspace is used again")
-	}
 	retry, err := m.store.RetryStandbyReplenishment(ctx, string(w.ID))
 	if err != nil {
 		return nil, err
 	}
-	m.clearStandbyQuarantineWarned(string(w.ID))
+	m.clearStandbySuspensionWarned(string(w.ID))
 	scheduled := retry.Job.ID != "" && retry.Job.State == "PENDING"
 	if scheduled {
 		m.schedule(retry.Job)
 	}
 	return map[string]any{
 		"workspace_id": w.ID, "root": w.Root, "generation": retry.Generation,
-		"quarantined": retry.Quarantined, "job_id": retry.Job.ID, "scheduled": scheduled,
+		"resumed": retry.Suspended, "job_id": retry.Job.ID, "scheduled": scheduled,
 	}, nil
 }
 
-// markStandbyQuarantineWarned は隔離上限の警告をまだ出していない workspace で true を返し、以降は false を返す。
-func (m *Manager) markStandbyQuarantineWarned(workspaceID string) bool {
+// markStandbySuspensionWarned は補充停止の警告をまだ出していない workspace で true を返し、以降は false を返す。
+func (m *Manager) markStandbySuspensionWarned(workspaceID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.standbyQuarantineWarned == nil {
-		m.standbyQuarantineWarned = map[string]bool{}
+	if m.standbySuspensionWarned == nil {
+		m.standbySuspensionWarned = map[string]bool{}
 	}
-	if m.standbyQuarantineWarned[workspaceID] {
+	if m.standbySuspensionWarned[workspaceID] {
 		return false
 	}
-	m.standbyQuarantineWarned[workspaceID] = true
+	m.standbySuspensionWarned[workspaceID] = true
 	return true
 }
 
-// clearStandbyQuarantineWarned は上限を下回った workspace の記録を消し、再発時に再び警告できるようにする。
-func (m *Manager) clearStandbyQuarantineWarned(workspaceID string) {
+// clearStandbySuspensionWarned は停止が解除された workspace の記録を消し、再発時に再び警告できるようにする。
+func (m *Manager) clearStandbySuspensionWarned(workspaceID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.standbyQuarantineWarned, workspaceID)
+	delete(m.standbySuspensionWarned, workspaceID)
 }
 
 func (m *Manager) standbyReplenishmentEnabled(w discovery.Workspace) bool {
@@ -2358,7 +2336,7 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 		if err != nil {
 			return state.Job{}, err
 		}
-		reserved, err := m.store.ReserveStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath}, m.Config().Pool.WarmPerWorkspace, standbyQuarantineLimit)
+		reserved, err := m.store.ReserveStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath}, m.Config().Pool.WarmPerWorkspace)
 		if err == nil && !reserved {
 			return state.Job{}, nil
 		}
@@ -2980,6 +2958,11 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		progress.addFailed("standby worktrees", "standby candidate query failed", err)
 		return progress.GCResult, progress.err()
 	}
+	quarantined, err := m.store.QuarantinedGCCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.Quarantined.Duration)))
+	if err != nil {
+		progress.addFailed("quarantined worktrees", "quarantined candidate query failed", err)
+		return progress.GCResult, progress.err()
+	}
 	var cold []state.ColdRepositoryCandidate
 	if cfg.Pool.WarmPerWorkspace > 0 {
 		cold, err = m.store.ColdRepositoryCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)))
@@ -3007,7 +2990,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 			totalCold++
 		}
 	}
-	progress.Candidates = metadataCount + len(items) + len(standbys) + len(expiredSessions) + totalCold
+	progress.Candidates = metadataCount + len(items) + len(standbys) + len(quarantined) + len(expiredSessions) + totalCold
 	if dry {
 		// dry-run は状態を変更せず、候補が処理されずに残る見込みを pending として報告する。
 		progress.Pending = progress.Candidates
@@ -3021,6 +3004,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 	progress.merge(m.scheduleColdRepositoryRemovals(ctx, cold, wholeSlotRemoval))
 	progress.merge(m.scheduleStandbyRemovals(ctx, standbys))
 	progress.merge(m.scheduleEndedWorktreeRemovals(ctx, items))
+	progress.merge(m.scheduleQuarantinedRemovals(ctx, quarantined))
 	archiveManager := m.newArchiveManager(cfg, state.Slot{})
 	progress.merge(m.expireWorkspaceSnapshots(ctx, expiredSessions, &archiveManager))
 	// retired rootはSQLiteの参照が消えた後にrowだけをpruneし、設定済みdirectory自体は削除しない。
@@ -3087,6 +3071,28 @@ func (m *Manager) scheduleEndedWorktreeRemovals(ctx context.Context, candidates 
 	progress := newGCProgress()
 	for _, candidate := range candidates {
 		progress.merge(m.scheduleRemovalCandidate(ctx, candidate.SlotID, candidate.Path, candidate.SessionID, "ended worktree removal scheduling failed"))
+	}
+	return progress
+}
+
+// scheduleQuarantinedRemovals は retention を過ぎた隔離 slot の削除を、通常の REMOVE と同じ証明つきで予約する。
+// 証明が通らない候補は削除せず QUARANTINED のまま残り、原因が解消された次の周回で片付く。
+func (m *Manager) scheduleQuarantinedRemovals(ctx context.Context, candidates []state.QuarantinedGCCandidate) gcProgress {
+	progress := newGCProgress()
+	for _, candidate := range candidates {
+		target := "quarantined worktree " + candidate.SlotID
+		job, changed, err := m.store.ScheduleQuarantinedRemoval(ctx, candidate.SlotID)
+		if err != nil {
+			m.log.Error("quarantined worktree removal scheduling failed", "slot_id", candidate.SlotID, "failure_code", candidate.FailureCode, "error", err)
+			progress.addFailed(target, "quarantined worktree removal reservation failed", err)
+			continue
+		}
+		if !changed {
+			progress.addPending(target, "candidate changed before removal reservation", nil)
+			continue
+		}
+		m.schedule(job)
+		progress.Scheduled++
 	}
 	return progress
 }
@@ -3713,7 +3719,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	standby, err := m.store.StandbyReplenishmentDiagnostics(ctx, standbyQuarantineLimit)
+	standby, err := m.store.StandbyReplenishmentDiagnostics(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -3777,6 +3783,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		"standby_replenishment": standby,
 		"retention_seconds": map[string]int64{
 			"hot_standby": cfg.Retention.HotStandby.Milliseconds() / 1000, "ended_worktree": cfg.Retention.EndedWorktree.Milliseconds() / 1000,
+			"quarantined":       cfg.Retention.Quarantined.Milliseconds() / 1000,
 			"recovery_snapshot": cfg.Retention.RecoverySnapshot.Milliseconds() / 1000, "expired_session_tombstone": cfg.Retention.ExpiredSessionTombstone.Milliseconds() / 1000,
 			"failed_job": cfg.Retention.FailedJob.Milliseconds() / 1000, "event_log": cfg.Retention.EventLog.Milliseconds() / 1000,
 		},
@@ -3933,7 +3940,7 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	}
 	checks["worktree_registration"] = m.registrationDiagnostics(ctx)
 	checks["artifact_ownership"] = m.artifactDiagnostics(ctx)
-	standby, err := m.store.StandbyReplenishmentDiagnostics(ctx, standbyQuarantineLimit)
+	standby, err := m.store.StandbyReplenishmentDiagnostics(ctx)
 	if err != nil {
 		checks["standby_replenishment"] = err.Error()
 	} else {
