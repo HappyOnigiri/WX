@@ -169,7 +169,9 @@ descriptor束縛でGitやエージェントを起動する経路は、必ず自�
    認識できない理由でlockされたworktreeは、wxのものではない。
 
 このうち2と3は、pinしたroot descriptor配下の相対pathに対して行う。
-`domain.OpenOwnedRoot`がrootをinodeごとpinし、`domain.PhysicalPathInfo`が全成分のsymlinkを拒否するので、検査と実行の間にpathを差し替えられても、差し替え先へ操作が届かない。
+`domain.OpenOwnedRoot`がrootをinodeごとpinし、`domain.PhysicalPathInfo`がroot配下の全成分のsymlinkを拒否するので、検査と実行の間にpathを差し替えられても、差し替え先へ操作が届かない。
+root自身より上の祖先成分は検査せず、`~/dev`のようなsymlink配下にworktree rootやソースリポジトリを置ける。
+pin後の操作は`os.Root`のopenatに閉じているため、祖先を差し替えられてもpin済みのdescriptorは動かない。
 1のDB側は「何が正しいか」を答え、descriptorは「いま触っているものが本当にそれか」を答える。
 DBが持つidentityはdescriptorが返す`vol:<inode>:<volume>`と同じ形式なので、2つの層が同じ対象を指していることを比較できる。
 volume成分にdevice番号を使わないのは、macOSではmount順で決まるdevice番号が再起動をまたいで変わり、記録済みの行が一斉に一致しなくなるためである（darwinではmount point、linuxではfilesystem IDで表す）。

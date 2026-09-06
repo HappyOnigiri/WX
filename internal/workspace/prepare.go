@@ -1819,7 +1819,7 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 			return "", err
 		}
 		path := filepath.Join(workspaceRoot, clean)
-		if err := domain.ValidatePhysicalPath(path, false); err != nil {
+		if err := domain.ValidatePhysicalLeaf(path); err != nil {
 			return "", err
 		}
 		info, err := os.Lstat(path)
@@ -1976,7 +1976,7 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 	if err != nil {
 		return err
 	}
-	if err := domain.ValidatePhysicalPath(source, false); err != nil {
+	if err := domain.ValidatePhysicalLeaf(source); err != nil {
 		return fmt.Errorf("workspace source is not physical: %w", err)
 	}
 	sourceRoot, err := OpenPhysicalRoot(source)
@@ -2021,7 +2021,7 @@ func MaterializeRootAt(source string, destinationRoot *os.Root, rules config.Wor
 		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
 			return fmt.Errorf("link workspace root path %s: %w", clean, err)
 		}
-		if err := domain.ValidatePhysicalPath(src, false); err != nil {
+		if err := domain.ValidatePhysicalLeaf(src); err != nil {
 			return fmt.Errorf("workspace link source %s is not physical: %w", clean, err)
 		}
 		if err := ensureRootDirectory(destinationRoot, filepath.Dir(clean)); err != nil {

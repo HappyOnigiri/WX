@@ -127,23 +127,29 @@ func TestOpenOwnedRootAllocationSurvivesRootReplacement(t *testing.T) {
 	}
 }
 
-func TestValidatePhysicalPathRejectsParentSymlink(t *testing.T) {
+// TestValidatePhysicalLeafChecksOnlyLeaf は、拒否対象が最終成分の symlink だけで、
+// 祖先成分の symlink は通過することを検証する。
+func TestValidatePhysicalLeafChecksOnlyLeaf(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	link := filepath.Join(root, "link")
 	if err := os.Symlink(outside, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidatePhysicalPath(filepath.Join(link, "child"), true); err == nil {
-		t.Fatal("parent symlink was accepted for a missing leaf")
+	child := filepath.Join(outside, "child")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if err := ValidatePhysicalPath(filepath.Join(root, "missing"), true); err != nil {
-		t.Fatalf("safe missing leaf was rejected: %v", err)
+	if err := ValidatePhysicalLeaf(filepath.Join(link, "child")); err != nil {
+		t.Fatalf("ancestor symlink was rejected: %v", err)
 	}
-	if err := ValidatePhysicalPath(filepath.Join(root, "missing", "child"), true); !os.IsNotExist(err) {
-		t.Fatalf("missing intermediate component was not rejected: %v", err)
+	if err := ValidatePhysicalLeaf(link); err == nil {
+		t.Fatal("symlink leaf was accepted")
 	}
-	if err := ValidatePhysicalPath(string(filepath.Separator), false); err != nil {
+	if err := ValidatePhysicalLeaf(filepath.Join(root, "missing")); !os.IsNotExist(err) {
+		t.Fatalf("missing leaf was not reported as absent: %v", err)
+	}
+	if err := ValidatePhysicalLeaf(string(filepath.Separator)); err != nil {
 		t.Fatalf("filesystem root was rejected: %v", err)
 	}
 }

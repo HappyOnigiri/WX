@@ -13,7 +13,9 @@
   継承した`GIT_DIR`・`GIT_WORK_TREE`・`GIT_INDEX_FILE`などが漏れると、別リポジトリへの操作が成功し、未捕捉のworktreeを削除し得る。
 - 自動で行う破壊的なファイルシステム操作の前に所有権を証明する。
   `state.OwnershipValidator`が`ErrOwnership`を返したら、実体を削除せず`QUARANTINED`として残す。
-- TOCTOU対策はrootのpin（`os.Root`・`domain.OpenOwnedRoot`）、全path成分のsymlink拒否（`domain.PhysicalPathInfo`）、子プロセスCWDのfchdir束縛（`internal/fdexec`）を揃える。
+- TOCTOU対策はrootのpin（`os.Root`・`domain.OpenOwnedRoot`）、pin済みroot配下の全path成分のsymlink拒否（`domain.PhysicalPathInfo`）、子プロセスCWDのfchdir束縛（`internal/fdexec`）を揃える。
+  root自身より上の祖先成分は検査しない（`domain.ValidatePhysicalLeaf`はleafだけを見る）。
+  単一ユーザー・単一マシンでは祖先を差し替える相手がおらず、symlink配下にworktree rootやソースリポジトリを置けるようにするためである。
   descriptorがない場合にパス名で代替しない。
 - slotの位置は`roots.id` + root相対pathで表し、所有権はそれとinode identityで証明する。
   `storage.worktree_root`変更後も既存slotは旧rootで寿命を全うする（移動・STALE化しない）。
@@ -41,8 +43,6 @@ Go側に状態のenum型や遷移ガードを作らない。
 - coreパッケージのカバレッジ基準は`tools/checkcoverage`を参照する。
   設計と無関係な行を踏むだけのテストで数字を作らず、プロセスやOSのアダプタは`coverage-exclusions.txt`に理由付きで除外する。
 - platform依存のコードを触ったら`CGO_ENABLED=0 GOOS=linux .tools/bin/golangci-lint run ./...`も手元で通す。
-- ファイルシステムを触るテストを持つパッケージには、`TMPDIR`を`filepath.EvalSymlinks`済みの物理パスへ差し替える`TestMain`を置く。
-  macOSの`/var` → `/private/var`などがsymlink拒否の検査に引っかかるためである。
 - `internal/daemon`のトップレベルテストは、専用の一時ディレクトリ・DB・Managerだけを使うものに`t.Parallel()`を付ける。
   `t.Setenv`を自身かサブテストで呼ぶテスト、プロセス全体のgoroutine・fdを数えるテスト、短い待機に依存するテストは直列のまま残す。
 - Markdown文書は1文1行とし、表示幅200桁を超える文は分割する（全角文字は2桁）。

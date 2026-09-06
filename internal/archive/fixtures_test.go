@@ -1,25 +1,9 @@
 package archive
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
-	"testing"
 )
-
-func TestMain(m *testing.M) {
-	temporaryRoot, err := filepath.EvalSymlinks(os.TempDir())
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "resolve physical test temp directory: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.Setenv("TMPDIR", temporaryRoot); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "set physical test temp directory: %v\n", err)
-		os.Exit(1)
-	}
-	os.Exit(m.Run())
-}
 
 // testRootID は roots.id 行を表す。slot と workspace snapshot の場所は root generation と
 // root 相対パスで記録するため、これを組み立てる fixture は generation を必ず指定する。

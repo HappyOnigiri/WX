@@ -25,25 +25,24 @@ func TestPathValidationAndOwnedRootBoundaryMatrix(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		name         string
-		path         string
-		allowMissing bool
-		wantErr      bool
+		name    string
+		path    string
+		wantErr bool
 	}{
-		{name: "missing leaf allowed", path: filepath.Join(root, "new"), allowMissing: true},
-		{name: "missing leaf denied", path: filepath.Join(root, "new-denied"), wantErr: true},
+		{name: "missing leaf", path: filepath.Join(root, "new"), wantErr: true},
 		{name: "regular leaf", path: filepath.Join(root, "file")},
 		{name: "regular ancestor", path: filepath.Join(root, "file", "child"), wantErr: true},
 		{name: "symlink leaf", path: link, wantErr: true},
+		{name: "symlink ancestor", path: filepath.Join(link, "nested")},
 	} {
 		if test.name == "regular leaf" {
 			if err := os.WriteFile(test.path, []byte("x"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
-		err := ValidatePhysicalPath(test.path, test.allowMissing)
+		err := ValidatePhysicalLeaf(test.path)
 		if (err != nil) != test.wantErr {
-			t.Errorf("%s: ValidatePhysicalPath err=%v wantErr=%v", test.name, err, test.wantErr)
+			t.Errorf("%s: ValidatePhysicalLeaf err=%v wantErr=%v", test.name, err, test.wantErr)
 		}
 	}
 

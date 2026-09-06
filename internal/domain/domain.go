@@ -121,8 +121,10 @@ func ValidWxLockReason(reason, slotID string) bool {
 }
 
 // OpenOwnedRoot は後続 filesystem 操作を検証済み ownership root に束縛し、その descriptor 相対の owned path を返す。
-// filesystem root から開くことで configured root の symlink を拒否する。
+// filesystem root から開くことで root 自身が symlink である場合を拒否する。祖先成分の symlink は許し、
+// root より上の配置（`~/dev` を外部ボリュームへ張るなど）を妨げない。
 // component を独自 Root として開き直し、この関数の返却後も rename/置換をまたいで directory を pin する。
+// commentlint:allow-long -- 祖先 symlink を許す範囲と pin の目的を併記するため
 func OpenOwnedRoot(root, path string) (*os.Root, string, error) {
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -140,7 +142,7 @@ func OpenOwnedRoot(root, path string) (*os.Root, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	info, err := PhysicalPathInfo(filesystemRoot, rootRelative)
+	info, err := filesystemRoot.Lstat(rootRelative)
 	if err != nil {
 		_ = filesystemRoot.Close()
 		return nil, "", fmt.Errorf("validate wx ownership root: %w", err)
@@ -192,8 +194,10 @@ func openFilesystemRoot(absolute string) (*os.Root, string, error) {
 }
 
 // PhysicalPathInfo は、既に開いた Root からの相対 path の全成分で symlink を拒否し、
-// 最終成分の metadata を返す。同じ filesystem-root descriptor で検査し、別途評価した
-// 字句 path を物理的な包含の証明として扱わない。
+// 最終成分の metadata を返す。同じ root descriptor で検査し、別途評価した字句 path を
+// 物理的な包含の証明として扱わない。検査範囲は root 配下だけで、root 自身の祖先は見ない。
+// root には wx が所有する directory の descriptor を渡す（filesystem root を渡すと祖先成分まで拒否する）。
+// commentlint:allow-long -- 検査範囲と root 引数の前提を明示するため
 func PhysicalPathInfo(root *os.Root, relative string) (os.FileInfo, error) {
 	current := "."
 	clean := filepath.Clean(relative)
@@ -216,31 +220,23 @@ func PhysicalPathInfo(root *os.Root, relative string) (os.FileInfo, error) {
 	return root.Lstat(clean)
 }
 
-// ValidatePhysicalPath は存在する path 成分の全てで symbolic link を拒否する。
-// 安全に作成できるよう、allowMissingLeaf が真なら最後の成分の欠落を許す。
-func ValidatePhysicalPath(path string, allowMissingLeaf bool) error {
+// ValidatePhysicalLeaf は path の最終成分が symbolic link でないことだけを検査する。
+// 祖先成分の symlink は許す。単一ユーザー・単一マシンでは検査と使用の間に祖先を差し替える相手がおらず、
+// TOCTOU 耐性は os.Root / openat による descriptor pin が担うためである。
+// path が存在しない場合は Lstat の error をそのまま返す。
+// commentlint:allow-long -- 祖先成分を検査しない理由を保守時に確認できるようにするため
+func ValidatePhysicalLeaf(path string) error {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
-	volume := filepath.VolumeName(absolute)
-	current := volume + string(filepath.Separator)
-	components := strings.Split(strings.TrimPrefix(absolute, current), string(filepath.Separator))
-	for index, component := range components {
-		if component == "" {
-			continue
-		}
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if allowMissingLeaf && errors.Is(err, os.ErrNotExist) && index == len(components)-1 {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlink component in physical path %s", current)
-		}
+	absolute = filepath.Clean(absolute)
+	info, err := os.Lstat(absolute)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("symlink leaf in physical path %s", absolute)
 	}
 	return nil
 }
