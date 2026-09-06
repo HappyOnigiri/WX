@@ -266,6 +266,90 @@ func TestRetryStandbyReplenishmentRefusesAnActiveClean(t *testing.T) {
 	}
 }
 
+func TestFailedStandbySuspensionRequiresCurrentUnownedPreparation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		state      string
+		generation int
+		owned      bool
+		want       bool
+	}{
+		{name: "preparing", state: "PREPARING", generation: 1, want: true},
+		{name: "failed", state: "FAILED", generation: 1, want: true},
+		{name: "quarantined", state: "QUARANTINED", generation: 1, want: true},
+		{name: "stale", state: "STALE", generation: 1},
+		{name: "ready", state: "READY", generation: 1},
+		{name: "obsolete preparing", state: "PREPARING", generation: 2},
+		{name: "obsolete failed", state: "FAILED", generation: 2},
+		{name: "obsolete quarantined", state: "QUARANTINED", generation: 2},
+		{name: "session preparation", state: "PREPARING", generation: 1, owned: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := openTestStore(t)
+			seedWorkspace(t, store)
+			ctx := context.Background()
+			slot := Slot{ID: "standby", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/standby", State: test.state}
+			var job Job
+			var err error
+			if test.owned {
+				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: slot.ID, State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
+				job, err = store.CreateSlotSession(ctx, slot, nil, session, "PREPARE")
+			} else {
+				job, err = store.CreateStandby(ctx, slot, nil)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.db.ExecContext(ctx, `UPDATE workspaces SET generation=? WHERE id='workspace'`, test.generation); err != nil {
+				t.Fatal(err)
+			}
+			if suspended, err := store.SuspendFailedStandbyReplenishment(ctx, job.ID); err != nil || suspended != test.want {
+				t.Fatalf("new suspension=%v err=%v, want %v", suspended, err, test.want)
+			}
+			if suspended, err := store.ReplenishSuspended(ctx, "workspace"); err != nil || suspended != test.want {
+				t.Fatalf("stored suspension=%v err=%v, want %v", suspended, err, test.want)
+			}
+			if suspended, err := store.SuspendFailedStandbyReplenishment(ctx, job.ID); err != nil || suspended {
+				t.Fatalf("duplicate suspension=%v err=%v", suspended, err)
+			}
+		})
+	}
+}
+
+func TestFailedStandbySuspensionPreservesTheFirstReasonAndReportsWriteFailure(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	job, err := store.CreateStandby(ctx, Slot{ID: "standby", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/standby", State: "FAILED"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SuspendReplenish(ctx, "workspace", SuspendReplenishReasonClean, "clean-run"); err != nil {
+		t.Fatal(err)
+	}
+	if suspended, err := store.SuspendFailedStandbyReplenishment(ctx, job.ID); err != nil || suspended {
+		t.Fatalf("already stopped: suspension=%v err=%v", suspended, err)
+	}
+	blocked, err := store.StandbyReplenishmentDiagnostics(ctx)
+	if err != nil || len(blocked) != 1 || blocked[0].Reason != SuspendReplenishReasonClean || blocked[0].Detail != "clean-run" {
+		t.Fatalf("first reason changed: diagnostics=%+v err=%v", blocked, err)
+	}
+	if err := store.ResumeReplenish(ctx, "workspace"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER fail_suspend BEFORE INSERT ON replenish_suspensions BEGIN SELECT RAISE(ABORT,'fault'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if suspended, err := store.SuspendFailedStandbyReplenishment(ctx, job.ID); err == nil || suspended {
+		t.Fatalf("write failure: suspension=%v err=%v", suspended, err)
+	}
+	if suspended, err := store.ReplenishSuspended(ctx, "workspace"); err != nil || suspended {
+		t.Fatalf("write failure left a suspension: suspended=%v err=%v", suspended, err)
+	}
+}
+
 func TestStandbyReplenishmentRollsBackOnEnsureJobFailure(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)

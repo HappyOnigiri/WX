@@ -45,6 +45,9 @@ func testManager(t *testing.T, cfg config.Config, store *state.Store) *Manager {
 		jobs:    make(chan jobWork, 4),
 		ctx:     ctx,
 		cancel:  cancel,
+
+		slotUsage:   map[string]slotUsageSample{},
+		sharedFiles: map[string]workspace.SharedFileCache{},
 	}
 	_, _ = tryRegisterTestRoot(m, filepath.Clean(root))
 	return m

@@ -163,7 +163,7 @@ func TestReadModelsRejectRowsWithUnscannableFields(t *testing.T) {
 				"CREATE VIEW sessions AS SELECT NULL AS id,NULL AS workspace_id,'ACTIVE' AS state,'codex' AS agent_kind,NULL AS agent_session_id,'created' AS created_at,NULL AS archived_at,NULL AS expires_at",
 			},
 			check: func(store *Store) error {
-				_, err := store.ListSessions(context.Background(), true)
+				_, err := store.ListSlots(context.Background(), true)
 				return err
 			},
 		},
@@ -370,8 +370,8 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	requireError("SessionWorkspace", err)
 	_, err = store.WorkspaceRoots(ctx)
 	requireError("WorkspaceRoots", err)
-	_, err = store.ListSessions(ctx, false)
-	requireError("ListSessions", err)
+	_, err = store.ListSlots(ctx, false)
+	requireError("ListSlots", err)
 	requireError("ForgetWorkspace", store.ForgetWorkspace(ctx, workspaceRoot))
 	_, err = store.Status(ctx)
 	requireError("Status", err)
@@ -1138,7 +1138,7 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 		"workspace by root":       func() error { _, err := store.WorkspaceByRoot(ctx, "/canceled"); return err },
 		"session workspace":       func() error { _, err := store.SessionWorkspace(ctx, "canceled"); return err },
 		"workspace roots":         func() error { _, err := store.WorkspaceRoots(ctx); return err },
-		"list sessions":           func() error { _, err := store.ListSessions(ctx, true); return err },
+		"list slots":              func() error { _, err := store.ListSlots(ctx, true); return err },
 		"forget workspace":        func() error { return store.ForgetWorkspace(ctx, "/canceled") },
 		"status":                  func() error { _, err := store.Status(ctx); return err },
 		"status diagnostics":      func() error { _, err := store.StatusDiagnostics(ctx); return err },

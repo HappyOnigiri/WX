@@ -54,6 +54,7 @@ type WorktreePolicy struct {
 
 type Storage struct {
 	WorktreeRoot string `yaml:"worktree_root,omitempty"`
+	CopyMode     string `yaml:"copy_mode,omitempty"`
 	// RepoDirSource は slot 内の repository directory 名の導出方法を選ぶ。
 	// remote は origin URL の basename、directory は main worktree の名前を使い、Repositories の個別指定を優先する。
 	RepoDirSource     string   `yaml:"repo_dir_source,omitempty"`
@@ -128,10 +129,16 @@ const (
 	RepoDirSourceDirectory = "directory"
 )
 
+const (
+	CopyModeAuto = "auto"
+	CopyModeCOW  = "cow"
+	CopyModeCopy = "copy"
+)
+
 func Defaults() Config {
 	return Config{
 		Worktree: WorktreePolicy{Undefined: "ask"},
-		Version:  1, Storage: Storage{WorktreeRoot: "$HOME/wx", RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
+		Version:  1, Storage: Storage{WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{24 * time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
@@ -535,6 +542,9 @@ func Validate(c *Config) error {
 	}
 	if _, err := ExpandHome(c.Storage.WorktreeRoot); err != nil {
 		return fmt.Errorf("storage.worktree_root: %w", err)
+	}
+	if c.Storage.CopyMode != CopyModeAuto && c.Storage.CopyMode != CopyModeCOW && c.Storage.CopyMode != CopyModeCopy {
+		return errors.New("storage.copy_mode must be auto, cow, or copy")
 	}
 	if c.Storage.BackupGenerations < 1 || c.Storage.BackupRetention.Duration < 0 {
 		return errors.New("storage backup_generations must be positive and backup_retention must not be negative")

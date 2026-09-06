@@ -64,6 +64,7 @@ func cleanMode(all, standby bool) string {
 
 // planCleanTargets は受付時点の候補から対象と除外理由を確定する。
 // 通常の clean は使用中の session と待機用 slot を対象外とし、--standby は待機用を、--all は加えて起動・復元途中も含める。
+// 隔離 slot は retention.quarantined の残りを問わず全 mode で削除対象にする。実体を消せるかは REMOVE の所有権証明が決める。
 func planCleanTargets(candidates []state.CleanCandidate, all, standby bool) []state.CleanTarget {
 	out := make([]state.CleanTarget, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -72,8 +73,6 @@ func planCleanTargets(candidates []state.CleanCandidate, all, standby bool) []st
 			SessionID: candidate.SessionID, Path: candidate.Path, State: cleanTargetPending,
 		}
 		switch {
-		case candidate.SlotState == "QUARANTINED":
-			target.State, target.Reason = cleanTargetQuarantined, "slot is quarantined; wx keeps artifacts whose ownership it cannot prove"
 		case standbySlot(candidate):
 			if !all && !standby {
 				target.State, target.Reason = cleanTargetSkipped, "standby worktree is not in use; rerun with --standby to delete it"
@@ -298,9 +297,6 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 	case slot.State == "ARCHIVED":
 		m.moveCleanTarget(ctx, run.ID, target, cleanTargetDone, "")
 		return
-	case slot.State == "QUARANTINED":
-		m.moveCleanTarget(ctx, run.ID, target, cleanTargetQuarantined, "slot was quarantined before removal; wx kept the artifact")
-		return
 	case sessionInUse(sessionState):
 		if run.Mode != "all" {
 			m.moveCleanTarget(ctx, run.ID, target, cleanTargetSkipped, "session "+target.SessionID+" is in use")
@@ -327,6 +323,23 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 		job, changed, scheduleErr := m.store.ScheduleFailedSlotRemoval(ctx, slot.ID)
 		if scheduleErr != nil {
 			m.log.Error("clean failed-slot removal scheduling failed", "slot_id", slot.ID, "error", scheduleErr)
+			return
+		}
+		if changed {
+			m.schedule(job)
+			m.moveCleanTarget(ctx, run.ID, target, cleanTargetRemoving, "")
+			return
+		}
+	case slot.State == "QUARANTINED":
+		// owner が残る隔離 slot は session の終端処理が済んでおらず、待っても予約が通らないので境界待ちに落とさず閉じる。
+		if slot.OwnerSessionID != "" {
+			m.moveCleanTarget(ctx, run.ID, target, cleanTargetQuarantined, "quarantined slot is still owned by session "+slot.OwnerSessionID)
+			return
+		}
+		// GC と同じ予約経路へ流し、retention の残りだけを飛ばす。証明できなければ job が QUARANTINED へ戻し、advanceRemoving が理由を付けて閉じる。
+		job, changed, scheduleErr := m.store.ScheduleQuarantinedRemoval(ctx, slot.ID)
+		if scheduleErr != nil {
+			m.log.Error("clean quarantined-slot removal scheduling failed", "slot_id", slot.ID, "error", scheduleErr)
 			return
 		}
 		if changed {
@@ -458,17 +471,12 @@ func (m *Manager) resumeReplenish(ctx context.Context, workspaceID string) {
 // 隔離実体を GC が消すようになったため、この停止が無いと削除と補充が交互に繰り返される。
 // session に紐づく準備（cold start・復元）は手動起動そのものなので対象にしない。
 func (m *Manager) suspendStandbyReplenishment(ctx context.Context, job state.Job) {
-	if job.WorkspaceID == "" || job.SessionID != "" {
-		return
-	}
-	if slot, err := m.store.Slot(ctx, job.SlotID); err != nil || slot.OwnerSessionID != "" {
-		return
-	}
-	if err := m.store.SuspendReplenish(ctx, job.WorkspaceID, state.SuspendReplenishReasonStandbyFailure, job.ID); err != nil {
+	suspended, err := m.store.SuspendFailedStandbyReplenishment(ctx, job.ID)
+	if err != nil {
 		m.log.Error("suspend standby replenishment failed", "workspace_id", job.WorkspaceID, "job_id", job.ID, "error", err)
 		return
 	}
-	if m.markStandbySuspensionWarned(job.WorkspaceID) {
+	if suspended && m.markStandbySuspensionWarned(job.WorkspaceID) {
 		m.log.Warn("standby replenishment stopped after a preparation failure", "workspace_id", job.WorkspaceID, "job_id", job.ID)
 	}
 }
