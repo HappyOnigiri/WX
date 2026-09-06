@@ -807,16 +807,38 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 	m := New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer m.Close()
 	ctx := context.Background()
-	first, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	var first Lease
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		details, detailsErr := store.StatusDiagnostics(ctx)
+		t.Logf("first=%+v; diagnostics=%+v err=%v", first, details, detailsErr)
+		artifacts, err := store.SlotArtifacts(ctx)
+		if err != nil {
+			t.Logf("slot artifacts: %v", err)
+		}
+		for _, artifact := range artifacts {
+			slot, slotErr := store.Slot(ctx, artifact.ID)
+			repos, reposErr := store.SlotRepositories(ctx, artifact.ID)
+			t.Logf("slot=%+v err=%v; repositories=%+v err=%v", slot, slotErr, repos, reposErr)
+		}
+	}()
+	first, err = m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := waitReady(ctx, m, 10*time.Second, first.SessionID, first.Token); err != nil {
 		t.Fatal(err)
 	}
+	firstSlot, err := store.Slot(ctx, first.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 貸出はReadySlotCountと同じ条件でしか候補を選ばないため、workspaceもgenerationも見ないStatusでは前提として弱い。
 	waitUntil(t, 10*time.Second, func() bool {
-		status, _ := store.Status(ctx)
-		return status.Ready >= cfg.Pool.WarmPerWorkspace
+		count, _ := store.ReadySlotCount(ctx, firstSlot.WorkspaceID)
+		return count >= cfg.Pool.WarmPerWorkspace
 	})
 
 	leases := make(chan Lease, 2)
@@ -839,8 +861,8 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 		t.Fatalf("warm leases were not ready: a=%+v b=%+v", a, b)
 	}
 	waitUntil(t, 10*time.Second, func() bool {
-		status, _ := store.Status(ctx)
-		return status.Ready == 2
+		count, _ := store.ReadySlotCount(ctx, firstSlot.WorkspaceID)
+		return count == cfg.Pool.WarmPerWorkspace
 	})
 }
 
