@@ -362,3 +362,81 @@ exit 1
 		t.Fatalf("attempts=%s want=4", got)
 	}
 }
+
+func TestResolveRefDistinguishesResolvedAndMissingRefs(t *testing.T) {
+	repo := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.name", "test"},
+		{"config", "user.email", "test@example.com"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-qm", "initial"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+
+	wantOID := gitOutput(t, repo, "rev-parse", "HEAD")
+	gotOID, found, err := ResolveRef(context.Background(), &Runner{}, repo, "main")
+	if err != nil || !found || gotOID != wantOID {
+		t.Fatalf("resolved ref=(%q, %v, %v), want (%q, true, nil)", gotOID, found, err, wantOID)
+	}
+	gotOID, found, err = ResolveRef(context.Background(), &Runner{}, repo, "missing")
+	if err != nil || found || gotOID != "" {
+		t.Fatalf("missing ref=(%q, %v, %v), want (\"\", false, nil)", gotOID, found, err)
+	}
+}
+
+func TestResolveRefPropagatesCancellationAndDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, found, err := ResolveRef(ctx, &Runner{}, t.TempDir(), "main"); !errors.Is(err, context.Canceled) || found {
+		t.Fatalf("canceled ref=(found=%v, err=%v), want found=false and context.Canceled", found, err)
+	}
+
+	deadlineCtx, deadlineCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer deadlineCancel()
+	if _, found, err := ResolveRef(deadlineCtx, &Runner{}, t.TempDir(), "main"); !errors.Is(err, context.DeadlineExceeded) || found {
+		t.Fatalf("deadline ref=(found=%v, err=%v), want found=false and context.DeadlineExceeded", found, err)
+	}
+}
+
+func TestResolveRefPropagatesRunnerError(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf 'injected failure\\n' >&2\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	_, found, err := ResolveRef(context.Background(), &Runner{}, t.TempDir(), "main")
+	if found {
+		t.Fatal("runner failure was reported as a found ref")
+	}
+	var gitErr *Error
+	if !errors.As(err, &gitErr) || gitErr.Result.ExitCode != 7 {
+		t.Fatalf("runner error=%v, want *Error with exit 7", err)
+	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(output))
+}

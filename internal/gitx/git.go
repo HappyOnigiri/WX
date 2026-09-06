@@ -325,14 +325,23 @@ func ParseWorktreeRecords(output string) []WorktreeRecord {
 
 func ResolveRef(ctx context.Context, r *Runner, repo, branch string) (string, bool, error) {
 	for _, ref := range []string{"refs/heads/" + branch, "refs/remotes/origin/" + branch} {
-		res, err := r.Run(ctx, repo, "rev-parse", "--verify", ref+"^{commit}")
+		// --quiet は ref 不在を exit 1・stderr 空で返すため、実行障害と区別できる。
+		res, err := r.Run(ctx, repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 		if err == nil {
 			return strings.TrimSpace(res.Stdout), true, nil
 		}
-		var ge *Error
-		if !errors.As(err, &ge) {
+		if ctxErr := ctx.Err(); ctxErr != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "", false, err
 		}
+		var ge *Error
+		if !errors.As(err, &ge) || ge.Result.ExitCode != 1 || ge.Result.Stderr != "" {
+			// context のキャンセル・期限切れや Git の実行障害は、ref 不在に
+			// 化けさせず呼び出し元へ返す。
+			return "", false, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", false, err
 	}
 	return "", false, nil
 }

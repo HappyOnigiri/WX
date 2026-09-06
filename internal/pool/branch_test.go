@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -123,11 +124,11 @@ func TestResolveBranchesFailsClosedUnderACanceledContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := ResolveBranches(ctx, runner, w, []string{"main"}); err == nil {
-		t.Fatal("canceled global branch resolution succeeded")
+	if _, err := ResolveBranches(ctx, runner, w, []string{"main"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled global branch resolution error=%v, want context.Canceled", err)
 	}
-	if _, err := ResolveBranches(ctx, runner, w, nil); err == nil {
-		t.Fatal("canceled default branch resolution succeeded")
+	if _, err := ResolveBranches(ctx, runner, w, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled default branch resolution error=%v, want context.Canceled", err)
 	}
 }
 
