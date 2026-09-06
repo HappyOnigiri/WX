@@ -59,18 +59,86 @@ func (s *Store) WorkspaceSessionScopes(ctx context.Context, workspaceID string) 
 	return out, rows.Err()
 }
 
-// WorkspaceRootForSlotPath は slot の path そのもの、またはその配下の path から、slot が属する workspace の root を返す。
-// 会話に記録された cwd は slot を畳んだ後も残るため、実体を失った worktree からの resume を同じ workspace で作り直すのに使う。
-// 一致しなければ空文字を返す。prefix 判定は substr で行い、path に LIKE のワイルドカードが含まれても誤って一致させない。
-func (s *Store) WorkspaceRootForSlotPath(ctx context.Context, path string) (string, error) {
-	var root string
-	err := s.db.QueryRowContext(ctx, `SELECT w.root_path FROM slots sl JOIN roots r ON r.id=sl.root_id JOIN workspaces w ON w.id=sl.workspace_id
+// ScopeWorkspace は会話 scope を引くための workspace identity である。
+// Root は登録時点の値なので、main worktree が移動し得る呼び出し元は現在の実体から上書きする。
+type ScopeWorkspace struct {
+	ID   string
+	Root string
+	Kind string
+}
+
+// ScopeWorkspaceForSlotPath は slot の path そのもの、またはその配下の path から、slot が属する workspace を返す。
+// 会話に記録された cwd は slot を畳んだ後も残るため、実体を失った worktree や退役した root 世代の記録も検索する。
+// prefix 判定は substr で path component 境界を確かめ、path に LIKE のワイルドカードが含まれても誤って一致させない。
+func (s *Store) ScopeWorkspaceForSlotPath(ctx context.Context, path string) (ScopeWorkspace, bool, error) {
+	var scope ScopeWorkspace
+	err := s.db.QueryRowContext(ctx, `SELECT w.id,w.root_path,w.kind FROM slots sl JOIN roots r ON r.id=sl.root_id JOIN workspaces w ON w.id=sl.workspace_id
  WHERE ?=r.path || '/' || sl.rel_path OR substr(?,1,length(r.path || '/' || sl.rel_path)+1)=r.path || '/' || sl.rel_path || '/'
- ORDER BY length(r.path || '/' || sl.rel_path) DESC LIMIT 1`, path, path).Scan(&root)
+ ORDER BY length(r.path || '/' || sl.rel_path) DESC LIMIT 1`, path, path).Scan(&scope.ID, &scope.Root, &scope.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return ScopeWorkspace{}, false, nil
 	}
-	return root, err
+	if err != nil {
+		return ScopeWorkspace{}, false, err
+	}
+	return scope, true, nil
+}
+
+// ScopeRepositoryWorkspace は Git common directory から登録済みの repository workspace を返す。
+// identity が複数の workspace に跨る曖昧な状態では found=false を返し、判定を通常の探索経路へ委ねる。
+func (s *Store) ScopeRepositoryWorkspace(ctx context.Context, commonDir string) (ScopeWorkspace, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT w.id,w.root_path,w.kind FROM workspaces w JOIN workspace_repositories wr ON wr.workspace_id=w.id JOIN repositories r ON r.id=wr.repository_id
+ WHERE w.kind='repository' AND r.common_git_dir=? ORDER BY w.id LIMIT 2`, commonDir)
+	if err != nil {
+		return ScopeWorkspace{}, false, err
+	}
+	defer rows.Close()
+	var found []ScopeWorkspace
+	for rows.Next() {
+		var scope ScopeWorkspace
+		if err := rows.Scan(&scope.ID, &scope.Root, &scope.Kind); err != nil {
+			return ScopeWorkspace{}, false, err
+		}
+		found = append(found, scope)
+	}
+	if err := rows.Err(); err != nil {
+		return ScopeWorkspace{}, false, err
+	}
+	if len(found) != 1 {
+		return ScopeWorkspace{}, false, nil
+	}
+	return found[0], true, nil
+}
+
+// ScopeMultiWorkspaceForRoot は root path の完全一致で登録済みの multi-repository workspace を返す。
+// 子 directory を prefix で結合しないため、workspace 配下の repository は従来の規則で解決される。
+func (s *Store) ScopeMultiWorkspaceForRoot(ctx context.Context, root string) (ScopeWorkspace, bool, error) {
+	var scope ScopeWorkspace
+	err := s.db.QueryRowContext(ctx, `SELECT id,root_path,kind FROM workspaces WHERE kind='multi_repository' AND root_path=?`, root).Scan(&scope.ID, &scope.Root, &scope.Kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ScopeWorkspace{}, false, nil
+	}
+	if err != nil {
+		return ScopeWorkspace{}, false, err
+	}
+	return scope, true, nil
+}
+
+// WorkspaceHasCommonDir は Git common directory が workspace の現在の membership に含まれるかを返す。
+// slot の記録と実体の identity が食い違うときに、記録へ強制結合してよいかの判定に使う。
+func (s *Store) WorkspaceHasCommonDir(ctx context.Context, workspaceID, commonDir string) (bool, error) {
+	var found int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM workspace_repositories wr JOIN repositories r ON r.id=wr.repository_id WHERE wr.workspace_id=? AND r.common_git_dir=?`, workspaceID, commonDir).Scan(&found)
+	return found > 0, err
+}
+
+// WorkspaceRootForSlotPath は ScopeWorkspaceForSlotPath と同じ一致規則で workspace root だけを返し、一致しなければ空文字を返す。
+func (s *Store) WorkspaceRootForSlotPath(ctx context.Context, path string) (string, error) {
+	scope, found, err := s.ScopeWorkspaceForSlotPath(ctx, path)
+	if err != nil || !found {
+		return "", err
+	}
+	return scope.Root, nil
 }
 
 // PreviousWorktree は会話の親 lease が使用した起動先を返す。

@@ -77,7 +77,7 @@ func (d *Discoverer) ResolveFromCommonDir(ctx context.Context, commonDir string)
 	if err != nil {
 		return Workspace{}, err
 	}
-	main := firstWorktreePath(res.Stdout)
+	main := FirstWorktreePath(res.Stdout)
 	if main == "" {
 		return Workspace{}, errors.New("git did not report a main worktree from its common directory")
 	}
@@ -96,7 +96,7 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 	if err != nil {
 		return Repository{}, err
 	}
-	main := firstWorktreePath(res.Stdout)
+	main := FirstWorktreePath(res.Stdout)
 	if main == "" {
 		return Repository{}, errors.New("git did not report a main worktree")
 	}
@@ -148,9 +148,9 @@ func RemoteBaseName(url string) string {
 	return value
 }
 
-// firstWorktreePath は最初の non-bare worktree の path を返す。
+// FirstWorktreePath は最初の non-bare worktree の path を返す。
 // bare main worktree に linked worktree がある場合も canonicalize できる checkout を選び、bare entry は飛ばす。
-func firstWorktreePath(output string) string {
+func FirstWorktreePath(output string) string {
 	for _, record := range gitx.ParseWorktreeRecords(output) {
 		if !record.Bare {
 			return record.Path
@@ -282,7 +282,7 @@ func (d *Discoverer) PolicyRoot(ctx context.Context, cwd string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	main := firstWorktreePath(result.Stdout)
+	main := FirstWorktreePath(result.Stdout)
 	if main == "" {
 		return "", errors.New("git did not report a main worktree")
 	}
