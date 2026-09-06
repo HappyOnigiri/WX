@@ -2317,8 +2317,32 @@ func (m *Manager) clearStandbySuspensionWarned(workspaceID string) {
 }
 
 func (m *Manager) standbyReplenishmentEnabled(w discovery.Workspace) bool {
+	return m.standbyReplenishmentEnabledForRoot(string(w.Root))
+}
+
+// standbyReplenishmentEnabledForRoot は root path だけから補充の有無を判定する。診断は workspace 行しか持たないため、root で引ける形を分けている。
+func (m *Manager) standbyReplenishmentEnabledForRoot(root string) bool {
 	cfg := m.Config()
-	return cfg.WorktreeMode(string(w.Root)) == "hot" && cfg.Pool.WarmPerWorkspace >= 1 && cfg.Retention.HotStandby.Duration > 0
+	return cfg.WorktreeMode(root) == "hot" && cfg.Pool.WarmPerWorkspace >= 1 && cfg.Retention.HotStandby.Duration > 0
+}
+
+// standbyReplenishmentReport は補充停止の診断へ復帰手順を付け、補充が有効な workspace だけに絞って返す。
+// `wx clear` は補充の有無を問わず停止を記録するので、絞らないと `worktree: off` の workspace へ RetryStandby が拒否する案内を出してしまう。
+// 停止行自体は残すため、後で `hot` へ戻した workspace には再び案内が出る。
+func (m *Manager) standbyReplenishmentReport(ctx context.Context) ([]state.StandbyReplenishmentDiagnostic, error) {
+	all, err := m.store.StandbyReplenishmentDiagnostics(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]state.StandbyReplenishmentDiagnostic, 0, len(all))
+	for _, item := range all {
+		if !m.standbyReplenishmentEnabledForRoot(item.Root) {
+			continue
+		}
+		item.Action = "wx retry-standby " + strconv.Quote(item.Root)
+		out = append(out, item)
+	}
+	return out, nil
 }
 
 func (m *Manager) handleNormalSessionSuccess(ctx context.Context, w discovery.Workspace, replenishJob state.Job, replenished bool) {
@@ -3736,12 +3760,9 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	standby, err := m.store.StandbyReplenishmentDiagnostics(ctx)
+	standby, err := m.standbyReplenishmentReport(ctx)
 	if err != nil {
 		return nil, err
-	}
-	for index := range standby {
-		standby[index].Action = "wx retry-standby " + strconv.Quote(standby[index].Root)
 	}
 	m.mu.RLock()
 	reloadAt, reloadError, backupAt, backupError := m.lastReload, m.reloadError, m.lastBackup, m.backupError
@@ -4043,13 +4064,10 @@ func (m *Manager) Doctor(ctx context.Context) map[string]any {
 	}
 	checks["worktree_registration"] = m.registrationDiagnostics(ctx)
 	checks["artifact_ownership"] = m.artifactDiagnostics(ctx)
-	standby, err := m.store.StandbyReplenishmentDiagnostics(ctx)
+	standby, err := m.standbyReplenishmentReport(ctx)
 	if err != nil {
 		checks["standby_replenishment"] = err.Error()
 	} else {
-		for index := range standby {
-			standby[index].Action = "wx retry-standby " + strconv.Quote(standby[index].Root)
-		}
 		checks["standby_replenishment"] = standby
 	}
 	return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "checks": checks}
