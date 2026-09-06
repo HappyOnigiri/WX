@@ -59,6 +59,18 @@ type usageRepository struct {
 // 共有判定は main worktree の同じ path を開いて物理 offset を比べるだけで、どちらのファイルも内容・metadata を変更しない。
 // previous に前回の cache を渡すと identity が変わっていないファイルの判定を再利用する。返す cache は今回 walk したファイルだけを含む。
 func MeasureRootUsage(ctx context.Context, root *os.Root, targets []SlotUsageTarget, previous SharedFileCache) (RootUsage, SharedFileCache, error) {
+	return measureUsage(ctx, root, ".", targets, previous)
+}
+
+// MeasureSlotUsage は root 配下の slot 1 個だけを walk し、その slot の使用量と共有量を返す。
+// root 合計は求めないため、準備の終わった slot を root 全体の測定を待たずに反映する用途に限る。
+func MeasureSlotUsage(ctx context.Context, root *os.Root, target SlotUsageTarget, previous SharedFileCache) (SlotUsage, SharedFileCache, error) {
+	usage, cache, err := measureUsage(ctx, root, path.Clean(target.RelPath), []SlotUsageTarget{target}, previous)
+	return usage.Slots[target.SlotID], cache, err
+}
+
+// measureUsage は start から下だけを walk する共通実装で、path はいずれも root 相対のまま扱う。
+func measureUsage(ctx context.Context, root *os.Root, start string, targets []SlotUsageTarget, previous SharedFileCache) (RootUsage, SharedFileCache, error) {
 	usage := RootUsage{Slots: map[string]SlotUsage{}}
 	cache := SharedFileCache{}
 	slots, repositories := usagePrefixes(targets, usage.Slots)
@@ -70,7 +82,7 @@ func MeasureRootUsage(ctx context.Context, root *os.Root, targets []SlotUsageTar
 			}
 		}
 	}()
-	walkErr := fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+	walkErr := fs.WalkDir(root.FS(), start, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}

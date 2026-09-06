@@ -70,6 +70,44 @@ func TestMeasureRootUsageAttributesFilesToSlots(t *testing.T) {
 	}
 }
 
+func TestMeasureSlotUsageWalksOnlyThatSlot(t *testing.T) {
+	root, mainPath, targets := usageRoots(t)
+	slotRepo := filepath.Join(root.Name(), "workspace", "slot", "repo")
+	usageWrite(t, slotRepo, "nested/file", "shared content")
+	usageWrite(t, mainPath, "nested/file", "shared content")
+	// slot の外を走査していれば、この実体が Files に混ざって検出できる。
+	usageWrite(t, root.Name(), "outside", "outside content")
+
+	slot, cache, err := MeasureSlotUsage(context.Background(), root, targets[0], nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slot.Files != 1 || slot.LogicalBytes != int64(len("shared content")) {
+		t.Fatalf("slot usage=%+v", slot)
+	}
+	if !SharingSupported() {
+		if slot.Compared != 0 || len(cache) != 0 {
+			t.Fatalf("compared without CoW support: %+v cache=%d", slot, len(cache))
+		}
+		return
+	}
+	// 共有判定は root 全体を測るときと同じ結果になり、cache も同じ root 相対 path で引ける。
+	if slot.Compared != 1 || len(cache) != 1 {
+		t.Fatalf("slot usage=%+v cache=%+v", slot, cache)
+	}
+	if _, ok := cache["workspace/slot/repo/nested/file"]; !ok {
+		t.Fatalf("cache=%+v", cache)
+	}
+}
+
+func TestMeasureSlotUsageFailsWhenTheSlotIsGone(t *testing.T) {
+	root, _, _ := usageRoots(t)
+	target := SlotUsageTarget{SlotID: "slot", RelPath: "workspace/removed"}
+	if _, _, err := MeasureSlotUsage(context.Background(), root, target, nil); err == nil {
+		t.Fatal("measuring a missing slot succeeded")
+	}
+}
+
 func TestMeasureRootUsageStopsOnCanceledContext(t *testing.T) {
 	root, _, targets := usageRoots(t)
 	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "file", "content")

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -207,8 +208,9 @@ func TestRunSlotsListsLendableAndAll(t *testing.T) {
 	}
 	cancel, done := serveUntilCanceled(t, socket, commandHandler{
 		slots: []map[string]any{
-			{"slot_id": "leased", "state": "LEASED", "session_id": "active", "agent": "codex", "copy_mode": "cow", "allocated_bytes": float64(4096), "exclusive_bytes": float64(1024), "path": "/wx/leased"},
-			{"slot_id": "warm", "state": "READY", "copy_mode": "copy", "path": "/wx/warm"},
+			{"slot_id": "leased", "state": "LEASED", "session_id": "active", "agent": "codex", "copy_mode": "cow", "measurement": "log2phys_first_last", "measured_at": "2026-01-01T00:00:00Z", "allocated_bytes": float64(4 << 30), "exclusive_bytes": float64(1258291200), "path": "/wx/leased"},
+			{"slot_id": "tiny", "state": "READY", "copy_mode": "copy", "measurement": "log2phys_first_last", "measured_at": "2026-01-01T00:00:00Z", "allocated_bytes": float64(1), "exclusive_bytes": float64(1), "path": "/wx/tiny"},
+			{"slot_id": "warm", "state": "READY", "measurement": "pending", "path": "/wx/warm"},
 		},
 		allSlots: []map[string]any{
 			{"slot_id": "leased", "state": "LEASED", "session_id": "active", "agent": "codex"},
@@ -227,13 +229,34 @@ func TestRunSlotsListsLendableAndAll(t *testing.T) {
 			t.Fatalf("runSlots exit=%d", code)
 		}
 	})
-	for _, field := range []string{"leased", "READY", "cow", "1024", "4096", "/wx/warm"} {
-		if !strings.Contains(stdout, field) {
-			t.Fatalf("slots output=%q missing %q", stdout, field)
+	row := func(path string) []string {
+		t.Helper()
+		for _, line := range strings.Split(stdout, "\n") {
+			if strings.HasSuffix(line, path) {
+				return strings.Fields(line)
+			}
 		}
+		t.Fatalf("slots output=%q missing row for %q", stdout, path)
+		return nil
 	}
-	// 測定前の slot は 0 ではなく - と出し、使用量が未知であることと 0 バイトを取り違えないようにする。
-	if !strings.Contains(stdout, "-") || strings.Contains(stdout, "archived") {
+	// 列の意味は見出しでしか分からないため、見出しの有無と並びを表の契約として固定する。
+	header := strings.Fields(strings.Split(stdout, "\n")[0])
+	if !slices.Equal(header, []string{"SLOT", "STATE", "SESSION", "AGENT", "COPY", "SIZE(MB)", "PATH"}) {
+		t.Fatalf("slots header=%q", header)
+	}
+	// 容量は共有ぶんを除いた占有量を MB で 1 列だけ出し、3 桁ごとに区切る。
+	if got := row("/wx/leased"); !slices.Equal(got, []string{"leased", "LEASED", "active", "codex", "cow", "1,200", "/wx/leased"}) {
+		t.Fatalf("leased row=%q", got)
+	}
+	// 1MB 未満は切り上げるため、実体のある slot が 0 と表示されることはない。
+	if got := row("/wx/tiny"); !slices.Equal(got, []string{"tiny", "READY", "-", "-", "copy", "1", "/wx/tiny"}) {
+		t.Fatalf("tiny row=%q", got)
+	}
+	// 測定前の slot は方式の欄に pending を出し、使用量が未知であることと 0 バイトを取り違えないようにする。
+	if got := row("/wx/warm"); !slices.Equal(got, []string{"warm", "READY", "-", "-", "pending", "-", "/wx/warm"}) {
+		t.Fatalf("warm row=%q", got)
+	}
+	if strings.Contains(stdout, "archived") {
 		t.Fatalf("slots output=%q", stdout)
 	}
 

@@ -905,13 +905,16 @@ func runSlots(ctx context.Context, args []string) int {
 		fmt.Println(string(data))
 		return 0
 	}
+	fmt.Printf(slotRowFormat, "SLOT", "STATE", "SESSION", "AGENT", "COPY", "SIZE(MB)", "PATH")
 	for _, s := range out {
-		fmt.Printf("%-8s %-12s %-8s %-8s %-6s %9s / %-9s %s\n",
+		fmt.Printf(slotRowFormat,
 			slotField(s, "slot_id"), slotField(s, "state"), slotField(s, "session_id"), slotField(s, "agent"),
-			slotField(s, "copy_mode"), slotBytes(s, "exclusive_bytes"), slotBytes(s, "allocated_bytes"), slotField(s, "path"))
+			slotCopyMode(s), slotSizeMB(s), slotField(s, "path"))
 	}
 	return 0
 }
+
+const slotRowFormat = "%-8s %-12s %-8s %-8s %-11s %8s  %s\n"
 
 func slotField(row map[string]any, key string) string {
 	if value, ok := row[key].(string); ok && value != "" {
@@ -920,13 +923,41 @@ func slotField(row map[string]any, key string) string {
 	return "-"
 }
 
-// slotBytes は JSON の数値をそのまま桁区切りなしで出す。測定前の行は 0 ではなく - と表示する。
-func slotBytes(row map[string]any, key string) string {
-	value, ok := row[key].(float64)
-	if !ok {
+// slotCopyMode は方式を出し、まだ決まらない行には copy_mode の代わりに理由（pending・unsupported）を出す。
+// 空欄にすると測定前と情報のない行を見分けられない。
+func slotCopyMode(row map[string]any) string {
+	if mode, ok := row["copy_mode"].(string); ok && mode != "" {
+		return mode
+	}
+	return slotField(row, "measurement")
+}
+
+// slotSizeMB は slot が専有する bytes を MB へ切り上げ、3 桁区切りで返す。
+// main worktree と共有している block を除いた量なので、slot を消して解放される見込みの大きさにあたる。
+// 測定前の行は 0 ではなく - と表示する。
+func slotSizeMB(row map[string]any) string {
+	if _, measured := row["measured_at"].(string); !measured {
 		return "-"
 	}
-	return strconv.FormatInt(int64(value), 10)
+	const megabyte = 1 << 20
+	exclusive, _ := row["exclusive_bytes"].(float64)
+	if exclusive < 0 {
+		exclusive = 0
+	}
+	return formatThousands((int64(exclusive) + megabyte - 1) / megabyte)
+}
+
+// formatThousands は負でない整数を 3 桁ごとに , で区切る。
+func formatThousands(value int64) string {
+	digits := strconv.FormatInt(value, 10)
+	var out strings.Builder
+	for i := range len(digits) {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			out.WriteByte(',')
+		}
+		out.WriteByte(digits[i])
+	}
+	return out.String()
 }
 
 func runForget(ctx context.Context, args []string) int {

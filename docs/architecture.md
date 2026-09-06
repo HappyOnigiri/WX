@@ -111,8 +111,16 @@ clone元と宛先は同じ対応volumeにある必要があり、通常checkout1
 既定はREADYとLEASEDで、`--all`はFAILED・QUARANTINEDのslotと、slotを手放したsessionも加える。
 slotを持たないsessionの行はslot列を空にして返すため、`wx resume`へ渡すIDはこの一覧から辿れる。
 
-使用量はdaemonのlifecycleが`Discovery.ReconcileInterval`ごとに測り、`wx slots`と`wx status`は測定済みの値と`measured_at`を返すだけである。
-要求のたびに走査すると、root配下の総ファイル数に比例して応答が遅くなるためである。
+使用量はdaemonが測った値だけを`wx slots`と`wx status`が`measured_at`とともに返し、要求のたびには走査しない。
+要求時に測るとroot配下の総ファイル数に比例して応答が遅くなるためである。
+測る契機は2つで、lifecycleが`Discovery.ReconcileInterval`ごとにroot全体を測り直すのに加え、slotの準備が終わった直後にそのslotだけをbackgroundで測る。
+周期測定だけでは、対象一覧を撮った後に作られたslotが次の周期まで`pending`のままになり、CoWが効いていても方式が出ない。
+slot単位の測定はそのslotのsubtreeしか歩かず、貸出の応答に走査時間を持ち込まないようbackgroundで走る。
+周期測定は対象一覧を撮った時刻より新しい実測を上書きせず、準備直後の測定結果が次の周期まで消えないようにする。
+
+プレーン出力の容量列は`exclusive_bytes`をMBへ切り上げた1列だけで、main worktreeと共有しているblockを含まない。
+共有blockを含む`allocated_bytes`を並べると同じblockをslotの数だけ二重計上するため、slotを消して解放される見込みの量だけを出す。
+方式が決まらない行は`copy_mode`の代わりに`pending`・`unsupported`を同じ列へ出し、測定前と情報のない行を見分けられるようにする。
 
 コピー方式は準備時の記録ではなく、測定時点の実体から決める。
 `allocated_bytes`（`st_blocks*512`）はAPFSのcloneを割り引かず、共有していてもファイル1個分を満額で数えるため、この値だけではCoWと通常コピーを区別できない。
@@ -178,6 +186,7 @@ LinuxではCoW自体を行わないため、`measurement`は`unsupported`にな�
 - **root使用量の測定** — worktree rootのディスク使用量はreconcileと同じ周期処理だけが測り、`Status`はその値と測定時刻を返す。
   測定量はroot配下の総ファイル数に比例するため、要求のたびに測るとslotが増えるほど`Status`が遅くなり、高負荷時にはclientの制限時間を超える。
   最初の測定が終わるまでは`measurement`を`pending`とし、0を実測値として見せない。
+  slot単位の内訳だけは準備完了ごとにそのslotをbackgroundで測り直し、周期を待たずに方式と使用量が出るようにする（root合計は周期測定だけが更新する）。
 - **root世代登録の再試行** — 起動時や設定変更時にroot世代（`roots`行）の登録が失敗すると、そのrootへの全allocationが`ErrOwnership`で落ち続ける。
   reconcileと同じ周期処理が、失敗が残っている間だけdescriptorを取り直して再登録を試み、rootを作り直した・volumeをmountし直したといった外的な回復をdaemon再起動なしで拾う。
   同じ理由の連続失敗はログを1回に抑え、`wx doctor`の`worktree_root`は失敗理由に再試行し続ける旨を添えて返す。

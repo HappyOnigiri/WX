@@ -147,10 +147,15 @@ Use --branch with --fresh to choose the detached base.`)
 List managed wx slots with their session, copy mode, and disk usage.
 By default, only READY and LEASED slots are listed.
 
-Disk usage is measured periodically by the daemon, not on demand, so the
-numbers carry the measurement time shown by --json. copy_mode reports what
-the slot looks like now: cow once any file still shares blocks with the main
-worktree, copy otherwise.
+SIZE(MB) is what the slot occupies on its own, rounded up: blocks it still
+shares with the main worktree are excluded, so the column sums without double
+counting. COPY reports what the slot looks like now: cow once any file still
+shares blocks with the main worktree, copy otherwise.
+
+The daemon measures a slot when its preparation finishes and re-measures every
+root periodically; wx slots only reads those results, never measures on demand.
+Rows still waiting for the first measurement show pending, and platforms that
+cannot compare blocks show unsupported. --json carries the measurement time.
 
 Options:
   --all   include failed, quarantined, and released slots

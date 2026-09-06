@@ -88,7 +88,9 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{}}
+	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{}, ctx: ctx, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}}
+	// 準備完了ごとの使用量測定は background で走るため、store を閉じる前に join する。
+	defer m.backgroundWG.Wait()
 	repos, err := m.slotRepos(slotRoot, w, resolved, 1, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -721,7 +723,9 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{cfg.Storage.WorktreeRoot: slot.RootID}}
+	m := &Manager{cfg: cfg, store: store, git: runner, log: slog.New(slog.NewTextHandler(io.Discard, nil)), roots: map[string]bool{cfg.Storage.WorktreeRoot: true}, rootIDs: map[string]string{cfg.Storage.WorktreeRoot: slot.RootID}, ctx: ctx, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}}
+	// 準備完了ごとの使用量測定は background で走るため、store を閉じる前に join する。
+	defer m.backgroundWG.Wait()
 	if err := m.prepareSlot(ctx, id, w, resolved, repos); err != nil {
 		t.Fatal(err)
 	}
