@@ -149,6 +149,15 @@ func (c Config) DefaultAgentRulesEnabled(mainPath string) bool {
 	return c.Includes.DefaultAgentRules
 }
 
+// EffectiveEqual は正規化・検証を終えた実効設定として2つのConfigが同じ値かを返す。
+// どのキーがファイルに書かれていたかの記録は実効値に影響しないため比較から外し、
+// 書式だけが変わった設定ファイルを設定変更として扱わない。
+func (c Config) EffectiveEqual(other Config) bool {
+	c.present = nil
+	other.present = nil
+	return reflect.DeepEqual(c, other)
+}
+
 func Merge(d, raw Config) Config {
 	r := d
 	if raw.has("version", raw.Version != 0) {

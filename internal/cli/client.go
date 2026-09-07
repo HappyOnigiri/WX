@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,6 +29,9 @@ type Client struct {
 	RPC           rpc.Client
 	Config        config.Config
 	forceWorktree bool
+	// daemonGate は同一起動内の接続確認を一度にまとめる。
+	// Client は値で複製されるため、複製をまたいで共有できるようポインタで持つ。nil の Client は毎回確認する。
+	daemonGate *daemonGate
 
 	// beforeAgentStart は lease directory descriptor を開いた後に lexical root を置換する test 用 barrier。
 	// production client では nil のままにし、子 process は fdexec 経由で起動する。
@@ -55,28 +59,43 @@ func New(cfg config.Config) (Client, error) {
 	}
 	// この client の RPC は再起動をまたぐ lease、agent 登録、heartbeat、release に使う。
 	// ConnectRetry は送信前の接続失敗だけを再試行するため、実行中の要求は重複しない。予算は hook と同じ 2 秒である。
-	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second, ConnectRetry: 2 * time.Second}, Config: cfg}, nil
+	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second, ConnectRetry: 2 * time.Second}, Config: cfg, daemonGate: &daemonGate{}}, nil
+}
+
+// daemonGate は接続確認の結果を Client の複製をまたいで共有する。
+// policy 起動・RunAgent・RunResume・scope 解決が重なっても、同じ起動では確認を一度だけ行う。
+type daemonGate struct {
+	once sync.Once
+	err  error
 }
 
 // ensureDaemon は daemon への接続を確認し、未待受時だけ launchd で起動する。
-// 大きな root の Status は遅延し得るため、応答遅延だけで kickstart すると他 session を処理中の daemon を終了させる。
+// 同じ起動での2回目以降は最初の結果をそのまま返し、確認済みの接続を再検査しない。
 func (c Client) ensureDaemon(ctx context.Context) error {
-	var status map[string]any
-	statusCtx, cancel := context.WithTimeout(ctx, c.discoveryTimeout())
-	err := c.RPC.Call(statusCtx, "Status", struct{}{}, &status)
-	cancel()
+	if c.daemonGate == nil {
+		return c.checkDaemon(ctx)
+	}
+	c.daemonGate.once.Do(func() { c.daemonGate.err = c.checkDaemon(ctx) })
+	return c.daemonGate.err
+}
+
+// checkDaemon は副作用のない Ping で応答を確かめ、接続確立に失敗したときだけ launchd で起動する。
+// 応答遅延・未知 method・RPC error を未待受と見なすと、他 session を処理中の daemon を終了させるため、再起動を促すエラーにする。
+func (c Client) checkDaemon(ctx context.Context) error {
+	var pong map[string]any
+	err := c.RPC.Call(ctx, "Ping", struct{}{}, &pong)
 	if err == nil {
 		return nil
 	}
 	if !rpc.IsConnectError(err) {
-		return fmt.Errorf("wx daemon is reachable but this request did not complete (%w); refusing to restart a socket that may still be serving other sessions, run wx doctor", err)
+		return fmt.Errorf("wx daemon is reachable but this request did not complete (%w); refusing to restart a socket that may still be serving other sessions, run wx doctor, or wx daemon restart if the daemon predates this wx", err)
 	}
 	if err := launchd.Kickstart(ctx); err != nil {
 		return daemonRecoveryError("wx daemon is unavailable", err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := c.RPC.Call(ctx, "Status", struct{}{}, &status); err == nil {
+		if err := c.RPC.Call(ctx, "Ping", struct{}{}, &pong); err == nil {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)

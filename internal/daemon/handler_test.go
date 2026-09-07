@@ -254,3 +254,47 @@ func TestHandlerDecodesLegacyLeaseAndResumeParams(t *testing.T) {
 		t.Fatal("decode accepted an unknown field")
 	}
 }
+
+func TestPingReportsProtocolVersionWithoutTouchingState(t *testing.T) {
+	t.Parallel()
+	// Manager を持たない Handler でも応答するのが、状態を読まない契約の証明である。
+	result, err := Handler{}.dispatch(context.Background(), "Ping", nil)
+	if err != nil {
+		t.Fatalf("Ping err=%v", err)
+	}
+	reply, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("Ping result type=%T", result)
+	}
+	if reply["protocol_version"] != rpc.ProtocolVersion {
+		t.Fatalf("Ping protocol_version=%v, want %d", reply["protocol_version"], rpc.ProtocolVersion)
+	}
+	if reply["degraded"] != false {
+		t.Fatalf("Ping degraded=%v, want false", reply["degraded"])
+	}
+	if len(reply) != 2 {
+		t.Fatalf("Ping reply=%v, want protocol_version and degraded only", reply)
+	}
+}
+
+func TestDegradedPingAnswersWithoutLiftingTheReadOnlyLimits(t *testing.T) {
+	t.Parallel()
+	handler := DegradedHandler{DatabasePath: "/state.db", OpenError: errors.New("corrupt")}
+	result, err := handler.Handle(context.Background(), "Ping", nil)
+	if err != nil {
+		t.Fatalf("degraded Ping err=%v", err)
+	}
+	reply, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("degraded Ping result type=%T", result)
+	}
+	if reply["degraded"] != true {
+		t.Fatalf("degraded Ping degraded=%v, want true", reply["degraded"])
+	}
+	if reply["protocol_version"] != rpc.ProtocolVersion {
+		t.Fatalf("degraded Ping protocol_version=%v, want %d", reply["protocol_version"], rpc.ProtocolVersion)
+	}
+	if _, err := handler.Handle(context.Background(), "ResolveAndLease", nil); err == nil {
+		t.Fatal("degraded lease succeeded after a successful Ping")
+	}
+}

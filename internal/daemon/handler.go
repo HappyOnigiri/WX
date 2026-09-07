@@ -31,6 +31,9 @@ func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMess
 		message += fmt.Sprintf("; restore a verified backup from %s.backups or preserve the database for wx doctor", h.DatabasePath)
 	}
 	switch method {
+	case "Ping":
+		// degraded でも応答確認だけは成立させる。読み取り以上の制限は後続の method が従来どおり報告する。
+		return map[string]any{"protocol_version": rpc.ProtocolVersion, "degraded": true}, nil
 	case "Status":
 		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "protocol_version": 1, "degraded": true, "database_path": h.DatabasePath, "error": message}, nil
 	case "Doctor":
@@ -85,6 +88,9 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		return result, err
 	}
 	switch method {
+	case "Ping":
+		// 状態を読まず何も変更しない応答確認。起動前の接続確認が Status の集計を待たないために置く。
+		return map[string]any{"protocol_version": rpc.ProtocolVersion, "degraded": false}, nil
 	case "ResolveAndLease":
 		var p rpc.ResolveAndLeaseParams
 		if err := decode(raw, &p); err != nil {
