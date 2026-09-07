@@ -168,3 +168,39 @@ func TestSlotViewReportsCopyModeFromTheMeasuredSharing(t *testing.T) {
 		t.Fatalf("detached session view=%+v", detached)
 	}
 }
+
+// policy は設定側の方針で DB には無いため、Status が workspace ごとに埋めることを確かめる。
+func TestManagerStatusReportsTheConfiguredWorktreePolicy(t *testing.T) {
+	ctx, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)
+	cfg := manager.Config()
+	cfg.Workspaces = map[string]config.Workspace{string(workspaceRecord.Root): {Worktree: "cold"}}
+	manager.cfg = cfg
+
+	status, err := manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details, ok := status["workspace_details"].([]state.WorkspaceDiagnostic)
+	if !ok || len(details) != 1 {
+		t.Fatalf("status workspace_details=%v", status["workspace_details"])
+	}
+	if got := details[0].Policy; got != "cold" {
+		t.Fatalf("workspace policy=%q, want %q", got, "cold")
+	}
+}
+
+// 設定に無い workspace は全体の既定方針を返し、policy を空のままにしない。
+func TestManagerStatusFallsBackToTheDefaultWorktreePolicy(t *testing.T) {
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
+	status, err := manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	details, ok := status["workspace_details"].([]state.WorkspaceDiagnostic)
+	if !ok || len(details) != 1 {
+		t.Fatalf("status workspace_details=%v", status["workspace_details"])
+	}
+	if got, want := details[0].Policy, manager.Config().Worktree.Undefined; got != want {
+		t.Fatalf("workspace policy=%q, want %q", got, want)
+	}
+}
