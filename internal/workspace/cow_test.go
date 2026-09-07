@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +15,16 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
+
+// TestMain はCoWの前提をテスト開始前に一度だけ確かめ、成り立たなければテストを走らせずに終える。
+// 個別のテストで判定すると、CoWを直接扱わないテストが前提未成立をどう扱うかまで決めることになる。
+func TestMain(m *testing.M) {
+	if err := verifyTempDirSupportsCOW(); err != nil {
+		fmt.Fprintf(os.Stderr, "workspace: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
 
 func cowRoots(t *testing.T) (*os.Root, *os.Root) {
 	t.Helper()
