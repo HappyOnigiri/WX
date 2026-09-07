@@ -51,11 +51,10 @@ func (m *Manager) maintainLifecycle() {
 	m.measureRootUsage(m.ctx)
 	m.resumeCleanRuns(m.ctx)
 	m.reconcileStandbyReplenishments(m.ctx)
-	m.reconcileRegistry(m.ctx)
 	m.reconcileArtifacts(m.ctx)
 	m.reconcileOrphans(m.ctx)
 	m.maybeBackup(m.ctx)
-	m.runBackgroundGC()
+	m.runMaintenance()
 	m.measureRootUsage(m.ctx)
 	for {
 		interval := m.Config().Discovery.ReconcileInterval.Duration
@@ -74,14 +73,59 @@ func (m *Manager) maintainLifecycle() {
 			_ = m.reloadConfig(false)
 			m.retryRootGeneration(m.ctx)
 			m.reconcileStandbyReplenishments(m.ctx)
-			m.reconcileRegistry(m.ctx)
 			m.reconcileArtifacts(m.ctx)
 			m.reconcileOrphans(m.ctx)
 			m.maybeBackup(m.ctx)
-			m.runBackgroundGC()
+			m.runMaintenance()
 			m.measureRootUsage(m.ctx)
 		}
 	}
+}
+
+// runMaintenance は registry reconcile と GC の一巡を実行する、定期保守と明示 reload に共通の経路である。
+// 一巡は同時に1本しか走らせず、実行中に届いた要求は落とさずに畳んで、最新設定で追加の一巡を行う。
+func (m *Manager) runMaintenance() {
+	if !m.claimMaintenance() {
+		return
+	}
+	for {
+		m.mu.RLock()
+		barrier := m.beforeMaintenanceSweep
+		m.mu.RUnlock()
+		if barrier != nil {
+			barrier()
+		}
+		m.reconcileRegistry(m.ctx)
+		m.runBackgroundGC()
+		if !m.nextMaintenanceSweep() {
+			return
+		}
+	}
+}
+
+// claimMaintenance は一巡の実行権を取る。既に走っていれば dirty を立てて false を返す。
+func (m *Manager) claimMaintenance() bool {
+	m.maintenanceMu.Lock()
+	defer m.maintenanceMu.Unlock()
+	if m.maintenanceRunning {
+		m.maintenanceDirty = true
+		return false
+	}
+	m.maintenanceRunning = true
+	return true
+}
+
+// nextMaintenanceSweep は畳まれた要求が残っていれば実行権を保ったまま true を返し、なければ手放す。
+func (m *Manager) nextMaintenanceSweep() bool {
+	m.maintenanceMu.Lock()
+	defer m.maintenanceMu.Unlock()
+	if m.maintenanceDirty && m.ctx.Err() == nil {
+		m.maintenanceDirty = false
+		return true
+	}
+	m.maintenanceRunning = false
+	m.maintenanceDirty = false
+	return false
 }
 
 // runBackgroundGC は自動 GC の保留・失敗をログへ残す。

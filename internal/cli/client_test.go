@@ -338,7 +338,7 @@ func TestRunAgentSupervisesChildAndReleasesLease(t *testing.T) {
 	handler.mu.Lock()
 	methods := append([]string(nil), handler.methods...)
 	handler.mu.Unlock()
-	for _, required := range []string{"Status", "ResolveAndLease", "RegisterAgentProcess", "Release"} {
+	for _, required := range []string{"Ping", "ResolveAndLease", "RegisterAgentProcess", "Release"} {
 		found := false
 		for _, method := range methods {
 			found = found || method == required

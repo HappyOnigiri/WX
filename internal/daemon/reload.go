@@ -101,6 +101,15 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		_ = newHandle.Close()
 		newHandle = nil
 	}
+	// root の physical path と inode を検査した後に、実効設定が同じかを判定する。
+	// 設定ファイルの mtime では root の置き換えを見逃すため、検査を省いてここへ来ることはない。
+	if oldRoot == newRoot && newHandle == nil && m.cfg.EffectiveEqual(cfg) {
+		m.roots[newRoot] = true
+		m.lastReload = time.Now()
+		m.reloadError = ""
+		m.mu.Unlock()
+		return nil
+	}
 	if oldRoot != newRoot {
 		m.roots[oldRoot] = false
 		m.roots[newRoot] = true
@@ -128,10 +137,8 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	default:
 	}
 	if runGC {
-		m.startBackground(func() {
-			m.reconcileRegistry(m.ctx)
-			m.runBackgroundGC()
-		})
+		// 設定が変わったときだけ再探索と GC を要求する。要求先は定期保守と同じ経路で、重複した一巡にはならない。
+		m.startBackground(m.runMaintenance)
 	}
 	return nil
 }

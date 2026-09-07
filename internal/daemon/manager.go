@@ -84,6 +84,12 @@ type Manager struct {
 	inFlightReservations map[string]bool
 	// leasingWorkspaces は貸出処理が進行中の workspace の件数。補充が使用中の workspace を cold と判定しないために持つ。
 	leasingWorkspaces map[string]int
+	// maintenanceMu は registry reconcile と GC の一巡を1本に保つ。running 中の要求は dirty へ集約する。
+	maintenanceMu      sync.Mutex
+	maintenanceRunning bool
+	maintenanceDirty   bool
+	// beforeMaintenanceSweep は一巡の開始を数え、止めるための test 用 barrier。production では nil のままにする。
+	beforeMaintenanceSweep func()
 }
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {

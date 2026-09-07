@@ -1,17 +1,19 @@
 #!/bin/sh
 set -eu
 
-# make test-focus から export された PKG・RUN・GO だけを読み、対象を絞った go test を1回実行する。
+# make test-focus から export された PKG・RUN・VERBOSE・GO だけを読み、対象を絞った go test を1回実行する。
 # 値を shell のソースへ埋め込まず、引用した引数として渡す。-short や -race は暗黙に足さない。
 go_command=${GO:-go}
 package=${PKG:-}
 run=${RUN:-}
+verbose=${VERBOSE:-}
 
 usage() {
   cat >&2 <<'USAGE'
-usage: make test-focus PKG=<package> [RUN=<regexp>]
+usage: make test-focus PKG=<package> [RUN=<regexp>] [VERBOSE=1]
   PKG は単一の相対パッケージパス（例: ./internal/daemon）。モジュール全体は ./... と明示したときだけ許可する。
   RUN は go test -run へそのまま渡す正規表現。省略すると PKG のテストすべてを実行する。
+  VERBOSE を空でない値にすると go test -v を足し、個別のRUN/PASS/SKIPとその理由を残す。
 example: make test-focus PKG=./internal/daemon RUN=TestLeaseArchiveAndRestorePreservesGitState
 USAGE
   exit 2
@@ -32,6 +34,9 @@ case "$package" in
 esac
 
 set -- "$go_command" test -count=1 -shuffle=on
+if [ -n "$verbose" ]; then
+  set -- "$@" -v
+fi
 if [ -n "$run" ]; then
   set -- "$@" -run "$run"
 fi

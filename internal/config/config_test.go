@@ -280,3 +280,40 @@ func TestCopyModeConfigRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestEffectiveEqualIgnoresWhichKeysTheFileSpelledOut(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	defaults := Defaults()
+	spelledOut := Merge(Defaults(), mustParseRaw(t, "version: 1\nworktree:\n  undefined: ask\n"))
+	if !defaults.EffectiveEqual(spelledOut) {
+		t.Fatal("a configuration that restates a default was reported as different")
+	}
+	changed := Merge(Defaults(), mustParseRaw(t, "version: 1\nworktree:\n  undefined: hot\n"))
+	if defaults.EffectiveEqual(changed) {
+		t.Fatal("a changed worktree policy was reported as equal")
+	}
+	withWorkspace := Defaults()
+	withWorkspace.Workspaces = map[string]Workspace{"/repo": {Worktree: "cold"}}
+	if defaults.EffectiveEqual(withWorkspace) {
+		t.Fatal("an added workspace override was reported as equal")
+	}
+}
+
+func mustParseRaw(t *testing.T, document string) Config {
+	t.Helper()
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
