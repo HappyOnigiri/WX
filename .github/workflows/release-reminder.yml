@@ -1,0 +1,21 @@
+name: Release Reminder
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  remind:
+    name: remind
+    # forkからのPRではpull-requests:writeが与えられず、コメントできない。
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: HappyOnigiri/ReleaseActions/actions/release-reminder@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
