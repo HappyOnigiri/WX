@@ -44,6 +44,11 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	}
 	m.mu.RUnlock()
 	roots := m.knownRoots(ctx)
+	// policy は設定の worktree 方針であり、DB の登録状態からは決まらない。
+	// 表示側は worktree を使わない workspace を要約から外すため、hot・cold と off・ask を区別できる値を必要とする。
+	for index := range details.Workspaces {
+		details.Workspaces[index].Policy = cfg.WorktreeMode(details.Workspaces[index].Root)
+	}
 	for index := range details.Repositories {
 		details.Repositories[index].Hot = false
 		if leasedAt, parseErr := time.Parse(time.RFC3339Nano, details.Repositories[index].LastUsedAt); parseErr == nil {

@@ -52,11 +52,15 @@ func (r *verboseStatusRenderer) renderWorkspaces() {
 	r.mark("workspace_details")
 	rows := make([][]string, 0, len(items))
 	for index, item := range items {
-		rows = append(rows, []string{statusValue(item, "id"), statusHomeValue(item, "root"), statusValue(item, "generation"), statusValue(item, "repositories"), statusValue(item, "ready"), statusValue(item, "leased"), statusValue(item, "failed"), statusWorkspaceLastUsedVerbose(r.payload, item)})
-		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("workspaces[%d]", index), item, map[string]bool{"id": true, "root": true, "generation": true, "repositories": true, "ready": true, "leased": true, "failed": true, "last_used_at": true})
+		rows = append(rows, []string{statusValue(item, "id"), statusHomeValue(item, "root"), statusWorkspacePolicy(r.payload, item), statusValue(item, "generation"), statusValue(item, "repositories"), statusValue(item, "ready"), statusValue(item, "leased"), statusValue(item, "failed"), statusWorkspaceLastUsedVerbose(r.payload, item)})
+		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("workspaces[%d]", index), item, map[string]bool{"id": true, "root": true, "policy": true, "generation": true, "repositories": true, "ready": true, "leased": true, "failed": true, "last_used_at": true})
 	}
-	r.lineTable([]string{"ID", "PATH", "GENERATION", "REPOSITORIES", "READY", "IN USE", "FAILED (FAILED + QUARANTINED)", "LAST USED"}, rows, present)
+	// verbose は登録の診断が目的のため、要約と違い worktree を使わない workspace も残す。
+	r.lineTable([]string{"ID", "PATH", "POLICY", "GENERATION", "REPOSITORIES", "READY", "IN USE", "FAILED (FAILED + QUARANTINED)", "LAST USED"}, rows, present)
 	if notice := statusWorkspaceLastUsedNotice(r.payload); notice != "" {
+		r.line("  " + notice)
+	}
+	if notice := statusWorkspacePolicyNotice(r.payload); notice != "" {
 		r.line("  " + notice)
 	}
 }

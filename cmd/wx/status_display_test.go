@@ -65,14 +65,15 @@ func TestPrintStatusSummaryReadsWorkspaceLastUsedAndRoots(t *testing.T) {
 			t.Fatalf("summary missing %q:\n%s", want, got)
 		}
 	}
+	// policy を返さない schema では方針を判定できないため、POLICY は unknown で、絞り込みも効かず全件が残る。
 	for _, want := range []struct{ path, columns string }{
-		{path: "~/.local/share/chezmoi", columns: "1 0 09/05 08:09"},
+		{path: "~/.local/share/chezmoi", columns: "unknown 1 0 09/05 08:09"},
 		// 複数 repository でも、root と一致する repository が無くても時刻が出る。
-		{path: "~/dev/cs", columns: "1 1 09/04 23:47"},
-		{path: "~/dev/prx", columns: "1 0 09/05 07:37"},
+		{path: "~/dev/cs", columns: "unknown 1 1 09/04 23:47"},
+		{path: "~/dev/prx", columns: "unknown 1 0 09/05 07:37"},
 		// 利用実績が無い workspace だけが「—」になる。
-		{path: "~/dev/unused", columns: "0 0 —"},
-		{path: "~/dev/wx *", columns: "1 2 09/05 07:16"},
+		{path: "~/dev/unused", columns: "unknown 0 0 —"},
+		{path: "~/dev/wx *", columns: "unknown 1 2 09/05 07:16"},
 	} {
 		if !statusRowMatches(got, want.path, want.columns) {
 			t.Fatalf("summary row %q missing columns %q:\n%s", want.path, want.columns, got)
@@ -102,7 +103,7 @@ func TestPrintStatusSummaryDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
 	var output bytes.Buffer
 	printStatusDisplay(&output, payload, false)
 	got := output.String()
-	if !statusRowMatches(got, "~/dev/old", "1 0 unknown") {
+	if !statusRowMatches(got, "~/dev/old", "unknown 1 0 unknown") {
 		t.Fatalf("legacy workspace did not show unavailable LAST USED:\n%s", got)
 	}
 	if strings.Contains(got, "09/05 08:09") {
@@ -122,9 +123,11 @@ func TestPrintStatusSummaryDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
 // 補充停止は表の外の注記ではなく、該当 workspace の行そのものに出す。正常な行と同じ見た目だと見落とす。
 func TestPrintStatusSummaryMarksTheStoppedWorkspaceRow(t *testing.T) {
 	payload := map[string]any{
+		"schema_version": 14,
+		// 補充停止は hot の workspace でしか起きないため、READY が無くても表に残る。
 		"workspace_details": []map[string]any{
-			{"id": "w1", "root": "/repo", "ready": 0, "leased": 0},
-			{"id": "w2", "root": "/other", "ready": 1, "leased": 0},
+			{"id": "w1", "root": "/repo", "policy": "hot", "ready": 0, "leased": 0},
+			{"id": "w2", "root": "/other", "policy": "hot", "ready": 1, "leased": 0},
 		},
 		"job_details":    map[string]any{"pending": 0, "running": 0, "failed": 0},
 		"worktree_roots": []map[string]any{},
@@ -219,5 +222,84 @@ func TestStatusDiskSummaryDistinguishesPendingFromMeasuredUsage(t *testing.T) {
 		if got := statusDiskSummary(testCase.root); got != testCase.want {
 			t.Fatalf("%s: disk summary=%q, want %q", testCase.name, got, testCase.want)
 		}
+	}
+}
+
+// 要約は worktree を作る方針の workspace と、実際に worktree を持つ workspace だけを載せる。
+func TestPrintStatusSummaryListsOnlyWorkspacesThatUseAWorktree(t *testing.T) {
+	payload := map[string]any{
+		"schema_version": 14,
+		"workspace_details": []map[string]any{
+			{"id": "hot", "root": "/hot", "policy": "hot", "ready": 0, "leased": 0},
+			{"id": "cold", "root": "/cold", "policy": "cold", "ready": 0, "leased": 0},
+			// 方針を off・ask にしても、残っている worktree は回収の判断に要るので隠さない。
+			{"id": "off-ready", "root": "/off-ready", "policy": "off", "ready": 1, "leased": 0},
+			{"id": "ask-leased", "root": "/ask-leased", "policy": "ask", "ready": 0, "leased": 2},
+			{"id": "off", "root": "/off", "policy": "off", "ready": 0, "leased": 0},
+			{"id": "ask", "root": "/ask", "policy": "ask", "ready": 0, "leased": 0},
+		},
+		"job_details":    map[string]any{"pending": 0, "running": 0, "failed": 0},
+		"worktree_roots": []map[string]any{},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, false)
+	got := output.String()
+	for _, want := range []struct{ path, columns string }{
+		{path: "/hot", columns: "HOT 0 0 —"},
+		{path: "/cold", columns: "COLD 0 0 —"},
+		{path: "/off-ready", columns: "OFF 1 0 —"},
+		{path: "/ask-leased", columns: "ASK 0 2 —"},
+	} {
+		if !statusRowMatches(got, want.path, want.columns) {
+			t.Fatalf("summary row %q missing columns %q:\n%s", want.path, want.columns, got)
+		}
+	}
+	for _, hidden := range []string{"/off ", "/ask "} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("summary listed workspace %q without a worktree:\n%s", hidden, got)
+		}
+	}
+	if strings.Contains(got, "POLICY unavailable") {
+		t.Fatalf("summary reported the policy as unavailable:\n%s", got)
+	}
+}
+
+// 全行が絞り込みで消えたときは、(none) を登録ゼロと読み違えないよう件数と確認手段を添える。
+func TestPrintStatusSummaryNotesHiddenWorkspacesWhenNoRowRemains(t *testing.T) {
+	payload := map[string]any{
+		"schema_version": 14,
+		"workspace_details": []map[string]any{
+			{"id": "off", "root": "/off", "policy": "off", "ready": 0, "leased": 0},
+			{"id": "ask", "root": "/ask", "policy": "ask", "ready": 0, "leased": 0},
+		},
+		"job_details":    map[string]any{"pending": 0, "running": 0, "failed": 0},
+		"worktree_roots": []map[string]any{},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, false)
+	got := output.String()
+	for _, want := range []string{"(none)", "2 registered workspaces use no worktree; run wx status --verbose to list them"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summary missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// 登録がそもそも無いときは、隠した件数の案内を出さない。
+func TestPrintStatusSummaryOmitsHiddenNoticeForAnEmptyRegistry(t *testing.T) {
+	payload := map[string]any{
+		"schema_version":    14,
+		"workspace_details": []map[string]any{},
+		"job_details":       map[string]any{"pending": 0, "running": 0, "failed": 0},
+		"worktree_roots":    []map[string]any{},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, false)
+	got := output.String()
+	if !strings.Contains(got, "(none)") {
+		t.Fatalf("summary missing %q:\n%s", "(none)", got)
+	}
+	if strings.Contains(got, "use no worktree") {
+		t.Fatalf("empty registry reported hidden workspaces:\n%s", got)
 	}
 }

@@ -3,9 +3,6 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,22 +10,36 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
 )
 
+// lifecycleSignalBudget は goroutine 越しに届くシグナル発行と claim 更新を待つ上限。
+// 待つのはこの 2 つだけで、ゲートの評価自体は runPendingLifecycle の復帰で確定する。
+const lifecycleSignalBudget = 2 * time.Second
+
+// signalLog は kickstart・停止シグナルの呼び出しを数え、到達を待ち手へ通知する。
+// 通知は容量 1 の channel で coalesce するため、待ち始める前の呼び出しも落とさない。
+// 通知だけを真実にはせず、件数は常に mutex 下で読み直す。
 type signalLog struct {
-	mu  sync.Mutex
-	n   int
-	err error
+	mu       sync.Mutex
+	n        int
+	err      error
+	recorded chan struct{}
+}
+
+func newSignalLog() *signalLog {
+	return &signalLog{recorded: make(chan struct{}, 1)}
 }
 
 func (k *signalLog) record() error {
 	k.mu.Lock()
-	defer k.mu.Unlock()
 	k.n++
-	return k.err
+	err := k.err
+	k.mu.Unlock()
+	select {
+	case k.recorded <- struct{}{}:
+	default:
+	}
+	return err
 }
 
 func (k *signalLog) count() int {
@@ -43,31 +54,70 @@ func (k *signalLog) failWith(err error) {
 	k.err = err
 }
 
+// want は n 件目の呼び出しの到達を通知で待ち、件数が n と一致することを確かめる。
+// シグナル送信は issueStop/issueRestart の goroutine で起きるため、ここだけは期限付きで待つ。
 func (k *signalLog) want(t *testing.T, n int) {
 	t.Helper()
-	waitFor(t, fmt.Sprintf("%d call(s)", n), func() bool { return k.count() >= n })
-	if got := k.count(); got != n {
-		t.Fatalf("recorded calls=%d, want %d", got, n)
+	timer := time.NewTimer(lifecycleSignalBudget)
+	defer timer.Stop()
+	for {
+		if got := k.count(); got >= n {
+			if got != n {
+				t.Fatalf("recorded calls=%d, want %d", got, n)
+			}
+			return
+		}
+		select {
+		case <-k.recorded:
+		case <-timer.C:
+			t.Fatalf("timed out waiting for %d call(s); recorded calls=%d", n, k.count())
+		}
 	}
 }
 
-func (k *signalLog) stayAt(t *testing.T, n int) {
+// at は呼び出し件数が n のままであることを同期的に確かめる。
+// runPendingLifecycle はゲートと claim を同期評価し、発行する場合だけ goroutine を起こすため、
+// 復帰時点で「まだ発行していない」ことが確定しており待つ必要がない。
+func (k *signalLog) at(t *testing.T, n int) {
 	t.Helper()
-	time.Sleep(50 * time.Millisecond)
 	if got := k.count(); got != n {
 		t.Fatalf("recorded calls=%d, want it to stay at %d", got, n)
 	}
 }
 
-func waitFor(t *testing.T, what string, cond func() bool) {
+// wantGateHeldClosed は閉じたゲートの評価結果を確かめる。
+// claim を取らず件数も動かないことが、意図を保留したまま発行を見送った根拠になる。
+func wantGateHeldClosed(t *testing.T, m *Manager, k *signalLog, n int) {
 	t.Helper()
-	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
-		if cond() {
+	if lifecycleActionClaimed(m) {
+		t.Fatal("a closed lifecycle gate still claimed the action")
+	}
+	k.at(t, n)
+}
+
+// wantClaimHeld は配送済み claim が保持され、再評価が同じシグナルを繰り返さないことを確かめる。
+func wantClaimHeld(t *testing.T, m *Manager, k *signalLog, n int) {
+	t.Helper()
+	if !lifecycleActionClaimed(m) {
+		t.Fatal("a delivered signal's claim was not retained")
+	}
+	k.at(t, n)
+}
+
+// waitForClaim は claim の解除・確定を待つ。issueStop/issueRestart は record の後に claim を動かすため、
+// 呼び出し件数の到達を解除完了と扱えない。期限切れでは attempts・claim・件数を診断として出す。
+func waitForClaim(t *testing.T, m *Manager, k *signalLog, want bool) {
+	t.Helper()
+	for deadline := time.Now().Add(lifecycleSignalBudget); time.Now().Before(deadline); {
+		if lifecycleActionClaimed(m) == want {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %s", what)
+	m.mu.RLock()
+	attempts, claimed := m.lifecycleAttempts, m.lifecycleClaimed
+	m.mu.RUnlock()
+	t.Fatalf("timed out waiting for claimed=%v; claimed=%v attempts=%d recorded calls=%d", want, claimed, attempts, k.count())
 }
 
 func lifecycleActionClaimed(m *Manager) bool {
@@ -76,20 +126,14 @@ func lifecycleActionClaimed(m *Manager) bool {
 	return m.lifecycleClaimed
 }
 
+// restartFixture は再起動・停止の検査向けに、手動 Manager を launchd 管理下に見せる目的別のアダプタである。
+// 基礎の準備は manualManagerFixture に任せ、ここでは signal と実行ファイル監視の差分だけを組む。
 func restartFixture(t *testing.T) (*Manager, string, *signalLog) {
 	t.Helper()
-	root := t.TempDir()
-	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
-	store, err := state.Open(filepath.Join(root, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	manager := testManager(t, cfg, store)
-	manager.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	f := manualManagerFixture(t)
+	root, manager := f.Root, f.Manager
 	manager.launchdManaged = func() bool { return true }
-	kickstarts := &signalLog{}
+	kickstarts := newSignalLog()
 	manager.kickstart = func(context.Context) error { return kickstarts.record() }
 	executable := filepath.Join(root, "wx")
 	if err := os.WriteFile(executable, []byte("original"), 0o700); err != nil {
@@ -105,7 +149,7 @@ func restartFixture(t *testing.T) (*Manager, string, *signalLog) {
 func stopFixture(t *testing.T) (*Manager, *signalLog) {
 	t.Helper()
 	manager, _, _ := restartFixture(t)
-	stops := &signalLog{}
+	stops := newSignalLog()
 	manager.terminate = func() error { return stops.record() }
 	return manager, stops
 }
@@ -128,7 +172,7 @@ func TestUnchangedExecutableNeverRestartsTheDaemon(t *testing.T) {
 	if manager.restartPending {
 		t.Fatal("unchanged executable raised a pending restart")
 	}
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 }
 
 func TestReplacedExecutableRestartsWhenIdle(t *testing.T) {
@@ -148,7 +192,7 @@ func TestReplacedExecutableRestartsWhenIdle(t *testing.T) {
 	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 1)
+	wantClaimHeld(t, manager, kickstarts, 1)
 }
 
 func TestMissingExecutablePathDefersInsteadOfRestarting(t *testing.T) {
@@ -176,18 +220,18 @@ func TestPendingRestartWaitsForJobsAndRequests(t *testing.T) {
 	replaceExecutable(t, executable)
 	manager.detectExecutableReplacement()
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 	if _, err := manager.store.ClaimJob(ctx, job.ID, "restart-test"); err != nil {
 		t.Fatal(err)
 	}
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 	if err := manager.store.FinishJob(ctx, job.ID, "restart-test", nil); err != nil {
 		t.Fatal(err)
 	}
 	manager.beginRequest(false)
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 	manager.endRequest(false)
 	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
@@ -200,7 +244,7 @@ func TestAPendingRestartIssuesAsSoonAsTheLastRequestEnds(t *testing.T) {
 	manager.detectExecutableReplacement()
 	manager.beginRequest(false)
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 	manager.endRequest(false)
 	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
@@ -221,13 +265,13 @@ func TestRequestedRestartStillWaitsForTheIdleGate(t *testing.T) {
 		t.Fatal("an explicit request did not raise the pending restart")
 	}
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 	manager.endRequest(true)
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 	manager.endRequest(false)
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 	elapseLifecycleGate(manager)
 	manager.runPendingLifecycle()
 	kickstarts.want(t, 1)
@@ -246,7 +290,7 @@ func TestLifecycleRequestWaitsUntilItsReplyIsDue(t *testing.T) {
 		t.Fatal("the lifecycle request did not record when its reply became due")
 	}
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 	manager.mu.Lock()
 	manager.lastLifecycleEnd = time.Now().Add(-lifecycleReplyGrace)
 	manager.mu.Unlock()
@@ -261,9 +305,9 @@ func TestUnmanagedDaemonKeepsThePendingRestart(t *testing.T) {
 	manager.detectExecutableReplacement()
 	manager.runPendingLifecycle()
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
-	if !manager.restartPending || manager.lifecycleClaimed {
-		t.Fatalf("restart state pending=%v claimed=%v", manager.restartPending, manager.lifecycleClaimed)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
+	if !manager.restartPending {
+		t.Fatal("the unmanaged daemon lowered the pending restart")
 	}
 	if !manager.restartUnmanaged {
 		t.Fatal("the unmanaged daemon warning was not recorded")
@@ -286,7 +330,7 @@ func TestExecutableWatchStaysDisabledWithoutABaseline(t *testing.T) {
 	if manager.restartPending {
 		t.Fatalf("disabled watch raised a pending restart")
 	}
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, kickstarts, 0)
 }
 
 func TestRestartAccountingBracketsEveryHandledRequest(t *testing.T) {
@@ -319,15 +363,15 @@ func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 		manager.runPendingLifecycle()
 		kickstarts.want(t, attempt)
 		claimed := attempt == maxLifecycleAttempts
-		waitFor(t, "the claim to settle", func() bool { return lifecycleActionClaimed(manager) == claimed })
+		waitForClaim(t, manager, kickstarts, claimed)
 	}
 	manager.runPendingLifecycle()
-	kickstarts.stayAt(t, maxLifecycleAttempts)
+	wantClaimHeld(t, manager, kickstarts, maxLifecycleAttempts)
 }
 
 func TestAnExhaustedRestartDoesNotParkALaterStop(t *testing.T) {
 	manager, executable, kickstarts := restartFixture(t)
-	stops := &signalLog{}
+	stops := newSignalLog()
 	manager.terminate = func() error { return stops.record() }
 	kickstarts.failWith(context.DeadlineExceeded)
 	replaceExecutable(t, executable)
@@ -336,7 +380,7 @@ func TestAnExhaustedRestartDoesNotParkALaterStop(t *testing.T) {
 		manager.runPendingLifecycle()
 		kickstarts.want(t, attempt)
 	}
-	waitFor(t, "the claim to latch", func() bool { return lifecycleActionClaimed(manager) })
+	waitForClaim(t, manager, kickstarts, true)
 	manager.RequestStop(context.Background())
 	if lifecycleActionClaimed(manager) {
 		t.Fatal("an explicit stop did not lift the latched claim")
@@ -356,7 +400,7 @@ func TestANewRequestKeepsAClaimWhoseSignalWasDelivered(t *testing.T) {
 		t.Fatal("a delivered signal's claim was released by a later request")
 	}
 	manager.runPendingLifecycle()
-	stops.stayAt(t, 1)
+	wantClaimHeld(t, manager, stops, 1)
 }
 
 func TestManagedProcessDetectionRejectsAnInteractiveDaemon(t *testing.T) {
@@ -424,11 +468,11 @@ func TestRequestedStopWaitsForTheSameIdleGateAsARestart(t *testing.T) {
 		t.Fatalf("status does not report the pending stop: %v", status["stop_pending"])
 	}
 	manager.runPendingLifecycle()
-	stops.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, stops, 0)
 	manager.endRequest(true)
 	elapseLifecycleGate(manager)
 	manager.runPendingLifecycle()
-	stops.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, stops, 0)
 	if _, err := manager.store.ClaimJob(ctx, job.ID, "stop-test"); err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +482,7 @@ func TestRequestedStopWaitsForTheSameIdleGateAsARestart(t *testing.T) {
 	manager.runPendingLifecycle()
 	stops.want(t, 1)
 	manager.runPendingLifecycle()
-	stops.stayAt(t, 1)
+	wantClaimHeld(t, manager, stops, 1)
 }
 
 func TestStopDoesNotRequireLaunchdButRestartStillDoes(t *testing.T) {
@@ -452,7 +496,7 @@ func TestStopDoesNotRequireLaunchdButRestartStillDoes(t *testing.T) {
 	restarting.launchdManaged = func() bool { return false }
 	restarting.RequestRestart(context.Background())
 	restarting.runPendingLifecycle()
-	kickstarts.stayAt(t, 0)
+	wantGateHeldClosed(t, restarting, kickstarts, 0)
 	if !restarting.restartUnmanaged {
 		t.Fatal("the unmanaged daemon warning was not recorded for a requested restart")
 	}
@@ -526,7 +570,7 @@ func TestStartRequestCallsBackAStopThatWasNeverIssued(t *testing.T) {
 		t.Fatalf("start left the stop pending: %v", reply)
 	}
 	manager.runPendingLifecycle()
-	stops.stayAt(t, 0)
+	wantGateHeldClosed(t, manager, stops, 0)
 }
 
 func TestStartRequestCannotCallBackADeliveredStop(t *testing.T) {
@@ -624,10 +668,10 @@ func TestStopSignalFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 		manager.runPendingLifecycle()
 		stops.want(t, attempt)
 		claimed := attempt == maxLifecycleAttempts
-		waitFor(t, "the claim to settle", func() bool { return lifecycleActionClaimed(manager) == claimed })
+		waitForClaim(t, manager, stops, claimed)
 	}
 	manager.runPendingLifecycle()
-	stops.stayAt(t, maxLifecycleAttempts)
+	wantClaimHeld(t, manager, stops, maxLifecycleAttempts)
 }
 
 func TestTerminateSelfSignalsThisProcess(t *testing.T) {

@@ -43,6 +43,10 @@ func commandUsage(w io.Writer, name string) {
 Show a workspace summary, or all daemon, pool, session, retention, and disk
 details with --verbose (-v). The JSON shape is unchanged by either display.
 
+The summary lists the workspaces whose POLICY creates worktrees (HOT or COLD)
+and any workspace that still holds one. A workspace that neither uses nor holds
+a worktree is left to --verbose and --json.
+
 Disk reports what the managed slots and snapshots occupy on their own: blocks
 they still share with the main worktrees are excluded, so it sums with the
 SIZE(MB) column of wx slots and stays below what du reports. Paths outside the
