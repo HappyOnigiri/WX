@@ -3,13 +3,30 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
 )
+
+// verifyTempDirSupportsCOW は一時ディレクトリのfilesystemを確かめる。
+// cowAvailableはdarwinで常にtrueを返すため、非APFSのTMPDIRでは共有が成立せず、失敗が実装の不具合と区別できなくなる。
+func verifyTempDirSupportsCOW() error {
+	directory := os.TempDir()
+	var filesystem unix.Statfs_t
+	if err := unix.Statfs(directory, &filesystem); err != nil {
+		return fmt.Errorf("statfs %s: %w", directory, err)
+	}
+	name := unix.ByteSliceToString(filesystem.Fstypename[:])
+	if !strings.EqualFold(name, "apfs") {
+		return fmt.Errorf("the CoW tests require an APFS temporary directory, but TMPDIR %s is %s", directory, name)
+	}
+	return nil
+}
 
 func TestCOWPreservesDestinationXattrs(t *testing.T) {
 	for _, matching := range []bool{true, false} {

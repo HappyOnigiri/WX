@@ -39,9 +39,13 @@ CoW周辺をまとめて動かすなら`make test-focus PKG=./internal/workspace
 
 ## 部分検証
 
-`internal/workspace`のdarwin専用実装（`cow_darwin.go`・`usage_darwin.go`）を触ったら、macOS実機で`make test-darwin`を実行する。
-このtargetは`internal/workspace`全体を`go test -v -shuffle=on -count=1`で走らせ、macOSのバージョン・アーキテクチャ・Go版と、一時ディレクトリのdeviceとfilesystemを表示する。
-非Darwinホスト・ホストと異なる`GOOS`/`GOARCH`・非APFSの一時ディレクトリは、clonefileの前提が成り立たないためテストを始めずに失敗する。
+darwin専用実装（`cow_darwin.go`・`usage_darwin.go`）のテストは、macOSで`make ci`・`make test`・`make test-focus PKG=./internal/workspace`を実行すればいずれでも走る。
+`cowAvailable`はdarwinで常にtrueを返しfilesystemを見ないため、非APFSの一時ディレクトリではclonefileが効かず、失敗が実装の不具合と区別できない。
+そこで`internal/workspace`の`TestMain`が`statfs`でTMPDIRを判定し、APFSでなければテストを走らせずに前提未成立として終える。
+
+これらの実装を触ったら、macOS実機で`make test-darwin`も実行する。
+このtargetは`internal/workspace`全体を`go test -v -shuffle=on -count=1`で走らせ、macOSのバージョン・アーキテクチャ・Go版と使用した一時ディレクトリを表示する。
+非Darwinホストとホストに一致しない`GOOS`/`GOARCH`は、darwin専用のテストがビルド対象から外れるため、テストを始めずに失敗する。
 `make build-darwin`はarm64のクロスビルドだけを見るので、これらのテストの実行は保証しない。
 CIのランナーはすべてlinuxのままとし、macOS runnerは用意しない。
 

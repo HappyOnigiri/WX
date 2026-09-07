@@ -2,7 +2,7 @@
 set -eu
 
 # make test-darwin から export された GO・PKG・VERBOSE だけを読み、macOS実機向けの部分検証を1回実行する。
-# 実行環境と一時ディレクトリのfilesystemを表示し、前提が成り立たないときはgo testを始めずに失敗する。
+# 実行環境を表示し、hostがmacOSでないかクロス設定が残っているときはgo testを始めずに失敗する。
 # 実行自体は scripts/test-focus.sh へ委譲し、引数の引用と終了状態の伝播を二重に実装しない。
 go_command=${GO:-go}
 package=${PKG:-}
@@ -19,7 +19,7 @@ if [ -z "$package" ]; then
 fi
 
 # 前提確認に使うコマンドはmacOS標準だが、PATHの欠落を値の欠落と区別して報告する。
-for tool in uname sw_vers df diskutil plutil mktemp; do
+for tool in uname sw_vers mktemp; do
   command -v "$tool" >/dev/null 2>&1 || fail "$tool is required for the macOS preflight"
 done
 
@@ -43,24 +43,11 @@ os_build=$(sw_vers -buildVersion) || fail "sw_vers -buildVersion failed"
 [ -n "$os_version" ] && [ -n "$os_build" ] || fail "sw_vers returned no version"
 echo "test-darwin: macOS $os_version ($os_build) arch=$target_goarch go=$go_version" >&2
 
-# 専用のTMPDIRを作り、filesystemを判定した場所とテストが使う場所を一致させる。
-# 前提確認の失敗・テスト失敗・中断のいずれでも残さない。
+# 専用のTMPDIRを作り、前提確認の失敗・テスト失敗・中断のいずれでも残さない。
+# APFSであることは internal/workspace の TestMain が判定するため、ここでは場所だけを決める。
 work_directory=$(mktemp -d "${TMPDIR:-/tmp}/wx-test-darwin.XXXXXX") || fail "mktemp -d failed"
 trap 'rm -rf "$work_directory"' EXIT HUP INT TERM
-
-device=$(df -P "$work_directory" | awk 'NR == 2 { print $1 }') || fail "df -P $work_directory failed"
-[ -n "$device" ] || fail "df -P reported no device for $work_directory"
-device_info=$(diskutil info -plist "$device") || fail "diskutil info -plist $device failed"
-filesystem=$(printf '%s' "$device_info" | plutil -extract FilesystemType raw -o - -) ||
-  fail "diskutil did not report FilesystemType for $device"
-[ -n "$filesystem" ] || fail "diskutil reported an empty FilesystemType for $device"
-echo "test-darwin: tmpdir=$work_directory device=$device filesystem=$filesystem" >&2
-
-# CoWのテストはclonefileが効くAPFSを前提にする。非APFSでは前提未成立としてテスト前に終える。
-case $(printf '%s' "$filesystem" | tr '[:upper:]' '[:lower:]') in
-  apfs) ;;
-  *) fail "the CoW tests require an APFS temporary directory, but $work_directory is $filesystem on $device" ;;
-esac
+echo "test-darwin: tmpdir=$work_directory" >&2
 
 # RUNは空に固定し、この入口が常にパッケージ全体を対象にすることを呼び出し側から見て明らかにする。
 status=0

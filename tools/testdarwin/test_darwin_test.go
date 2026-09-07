@@ -30,17 +30,6 @@ printf '%s\n' "${FAKE_KERNEL:-Darwin}"
 *) exit 64 ;;
 esac
 `
-	fakeDf = `printf 'Filesystem 512-blocks Used Available Capacity Mounted on\n'
-[ -n "${FAKE_DF_HEADER_ONLY:-}" ] && exit 0
-printf '%s 1 1 1 1%% /\n' "${FAKE_DEVICE:-/dev/disk3s5}"
-`
-	fakeDiskutil = `[ -n "${FAKE_DISKUTIL_FAILS:-}" ] && exit 1
-printf 'plist for %s\n' "$3"
-`
-	fakePlutil = `cat >/dev/null
-[ -n "${FAKE_PLUTIL_FAILS:-}" ] && exit 1
-printf '%s\n' "${FAKE_FILESYSTEM-apfs}"
-`
 	fakeGo = `if [ "${1:-}" = env ]; then
   eval "printf '%s\\n' \"\${FAKE_GO_$2:-}\""
   exit 0
@@ -54,12 +43,9 @@ exit "${FAKE_GO_STATUS:-0}"
 )
 
 var fakeTools = map[string]string{
-	"uname":    fakeUname,
-	"sw_vers":  fakeSwVers,
-	"df":       fakeDf,
-	"diskutil": fakeDiskutil,
-	"plutil":   fakePlutil,
-	"go":       fakeGo,
+	"uname":   fakeUname,
+	"sw_vers": fakeSwVers,
+	"go":      fakeGo,
 }
 
 type result struct {
@@ -138,7 +124,7 @@ func runDarwin(t *testing.T, environment ...string) result {
 	return result{status: status, output: output.String(), args: args, tempDir: string(temporary)}
 }
 
-func TestScriptRunsTheWorkspacePackageVerboselyOnAPFS(t *testing.T) {
+func TestScriptRunsTheWorkspacePackageVerbosely(t *testing.T) {
 	t.Parallel()
 	got := runDarwin(t)
 	if got.status != 0 {
@@ -148,8 +134,8 @@ func TestScriptRunsTheWorkspacePackageVerboselyOnAPFS(t *testing.T) {
 	if strings.Join(got.args, argumentSeparator) != strings.Join(want, argumentSeparator) {
 		t.Fatalf("args=%q, want %q", got.args, want)
 	}
-	// 実行環境とfilesystemの表示は、どのホストで確認したかを後から読み取るために必要である。
-	for _, want := range []string{"macOS 15.6 (24G84)", "arch=arm64", "go=go1.25.1", "filesystem=apfs", "/dev/disk3s5"} {
+	// 実行環境の表示は、どのホストで確認したかを後から読み取るために必要である。
+	for _, want := range []string{"macOS 15.6 (24G84)", "arch=arm64", "go=go1.25.1"} {
 		if !strings.Contains(got.output, want) {
 			t.Fatalf("output %q does not mention %q", got.output, want)
 		}
@@ -159,15 +145,15 @@ func TestScriptRunsTheWorkspacePackageVerboselyOnAPFS(t *testing.T) {
 	}
 }
 
-// filesystemを判定した場所とテストが使う場所が一致し、成功しても残らないことを確かめる。
-func TestScriptRunsTheTestsInTheInspectedTemporaryDirectory(t *testing.T) {
+// 表示した場所とテストが使う場所が一致し、成功しても残らないことを確かめる。
+func TestScriptRunsTheTestsInTheReportedTemporaryDirectory(t *testing.T) {
 	t.Parallel()
 	got := runDarwin(t)
 	if got.tempDir == "" {
 		t.Fatalf("go test received no TMPDIR (output %q)", got.output)
 	}
 	if !strings.Contains(got.output, "tmpdir="+got.tempDir) {
-		t.Fatalf("output %q does not report the inspected directory %q", got.output, got.tempDir)
+		t.Fatalf("output %q does not report the directory %q", got.output, got.tempDir)
 	}
 	if _, err := os.Stat(got.tempDir); !os.IsNotExist(err) {
 		t.Fatalf("stat %q after the run: %v, want the directory to be removed", got.tempDir, err)
@@ -183,42 +169,6 @@ func TestScriptRejectsHostsThatCannotRunTheDarwinTests(t *testing.T) {
 		"non-darwin toolchain": {
 			"FAKE_KERNEL=Darwin", "FAKE_GO_GOHOSTOS=linux", "FAKE_GO_GOOS=linux",
 		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			got := runDarwin(t, environment...)
-			if got.status == 0 {
-				t.Fatalf("status=0, want non-zero (output %q)", got.output)
-			}
-			if len(got.args) != 0 {
-				t.Fatalf("go test was invoked with %q", got.args)
-			}
-		})
-	}
-}
-
-// APFSでなければclonefileの前提が成り立たないため、テストを走らせずに失敗する必要がある。
-func TestScriptRejectsATemporaryDirectoryThatIsNotAPFS(t *testing.T) {
-	t.Parallel()
-	got := runDarwin(t, "FAKE_FILESYSTEM=Journaled HFS+")
-	if got.status == 0 {
-		t.Fatalf("status=0, want non-zero (output %q)", got.output)
-	}
-	if len(got.args) != 0 {
-		t.Fatalf("go test was invoked with %q", got.args)
-	}
-	if !strings.Contains(got.output, "APFS") || !strings.Contains(got.output, "Journaled HFS+") {
-		t.Fatalf("output %q does not explain the unmet APFS prerequisite", got.output)
-	}
-}
-
-func TestScriptRejectsAMissingFilesystemType(t *testing.T) {
-	t.Parallel()
-	for name, environment := range map[string][]string{
-		"diskutil fails":    {"FAKE_DISKUTIL_FAILS=1"},
-		"plutil fails":      {"FAKE_PLUTIL_FAILS=1"},
-		"empty filesystem":  {"FAKE_FILESYSTEM="},
-		"no device from df": {"FAKE_DF_HEADER_ONLY=1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
