@@ -18,6 +18,14 @@ import (
 // 既定 page_size は 4096 byte なので、4MiB は backupStepPages(256) を大きく超える。
 const backupBulkBytes = 4 << 20
 
+// backupWriteInterval は並行書き込みを差し込む間隔である。
+// 別 connection の commit ごとに SQLite は backup を先頭から再走査するため、間を置かない書き込みは複製を無期限に飢餓させる。
+// daemon の heartbeat は秒単位で、この間隔でも実運用より十分密である。
+const backupWriteInterval = 10 * time.Millisecond
+
+// backupTestDeadline は並行書き込み下の複製に与える上限である。超えたら飢餓として test を失敗させる。
+const backupTestDeadline = 60 * time.Second
+
 // growDatabase は step が1回で終わらない大きさまで database を膨らませる。
 func growDatabase(t *testing.T, store *Store) {
 	t.Helper()
@@ -151,7 +159,7 @@ func TestOnlineBackupWithConcurrentWritesStaysConsistent(t *testing.T) {
 			case <-stop:
 				writes <- nil
 				return
-			default:
+			case <-time.After(backupWriteInterval):
 			}
 			if err := store.Heartbeat(ctx, "standby", "token"); err != nil {
 				writes <- err
@@ -159,7 +167,9 @@ func TestOnlineBackupWithConcurrentWritesStaysConsistent(t *testing.T) {
 			}
 		}
 	}()
-	path, backupErr := store.Backup(ctx, 2, time.Hour)
+	deadlined, cancel := context.WithTimeout(ctx, backupTestDeadline)
+	defer cancel()
+	path, backupErr := store.Backup(deadlined, 2, time.Hour)
 	close(stop)
 	if err := <-writes; err != nil {
 		t.Fatalf("concurrent heartbeat failed: %v", err)
@@ -365,10 +375,15 @@ func TestRemoveOwnedBackupTempKeepsForeignEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := root.Remove(temporary); err != nil {
+	// 別実体は先に作ってから rename で置き換える。消してから作り直すと inode を再利用され、SameFile が偶然一致し得る。
+	foreign, _, err := createBackupTemp(root)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, temporary), []byte("someone else"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, foreign), []byte("someone else"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Rename(foreign, temporary); err != nil {
 		t.Fatal(err)
 	}
 	removeOwnedBackupTemp(root, temporary, identity)
