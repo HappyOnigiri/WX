@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -218,5 +219,38 @@ func TestHandlerRoutesAgentRegistrationAndConfigReload(t *testing.T) {
 	}
 	if got, want := manager.Config().Storage.WorktreeRoot, filepath.Join(root, "wx"); got != want {
 		t.Fatalf("reloaded worktree root=%q, want %q", got, want)
+	}
+}
+
+// 貸出と復元の要求型を internal/rpc へ移したため、旧 CLI が送っていた payload をそのまま decode できることを固定する。
+// 未知 field 拒否は TestHandlerRejectsUnknownFieldsForEveryParameterizedMethod が見るので、ここでは受理側の値を中心に確認する。
+func TestHandlerDecodesLegacyLeaseAndResumeParams(t *testing.T) {
+	t.Parallel()
+	var lease rpc.ResolveAndLeaseParams
+	if err := decode(json.RawMessage(`{"force_worktree":true,"cwd":"/repo","branches":["main"],"agent":"codex","client_pid":11}`), &lease); err != nil {
+		t.Fatal(err)
+	}
+	if !lease.ForceWorktree || lease.CWD != "/repo" || lease.Agent != "codex" || lease.ClientPID != 11 || len(lease.Branches) != 1 || lease.Branches[0] != "main" {
+		t.Fatalf("decoded ResolveAndLeaseParams=%+v", lease)
+	}
+	var resume rpc.ResumeParams
+	if err := decode(json.RawMessage(`{"wx_session_id":"wx-1","agent":"claude","client_pid":12,"agent_session_id":"native","fresh":true,"branches":null}`), &resume); err != nil {
+		t.Fatal(err)
+	}
+	if resume.WXSessionID != "wx-1" || resume.Agent != "claude" || resume.ClientPID != 12 || resume.AgentSessionID != "native" || !resume.Fresh || resume.Branches != nil {
+		t.Fatalf("decoded ResumeParams=%+v", resume)
+	}
+	// 省略された Params・空 object・null はゼロ値のまま handler へ渡す。
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`null`)} {
+		var empty rpc.ResolveAndLeaseParams
+		if err := decode(raw, &empty); err != nil {
+			t.Fatalf("decode %q: %v", raw, err)
+		}
+		if empty.Agent != "" || empty.CWD != "" || empty.ClientPID != 0 || empty.ForceWorktree || empty.Branches != nil {
+			t.Fatalf("decode %q produced %+v, want zero value", raw, empty)
+		}
+	}
+	if err := decode(json.RawMessage(`{"cwd":"/repo","unexpected":true}`), &rpc.ResolveAndLeaseParams{}); err == nil {
+		t.Fatal("decode accepted an unknown field")
 	}
 }
