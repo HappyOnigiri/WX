@@ -47,6 +47,9 @@ Go側に状態のenum型や遷移ガードを作らない。
 
 - 変更後のゲートは`make ci`で通す。
   Git hookは書式・`go vet`・buildだけを見るため、lint・テスト・カバレッジは手元で走らせない限り検査されない。
+- 編集途中の短い確認には、Go編集時の構造検査だけを集めた`make check-fast`と、対象を絞る`make test-focus PKG=./internal/daemon RUN=TestName`を使う。
+  `PKG`は単一の相対パッケージパスで、`RUN`は省略すると`PKG`全体を実行する。
+  どちらも部分検証であり、最終判定は`make ci`とする。
   `core.hooksPath`のlocal設定はuserレベルのhook dispatcherを覆い隠すため設定しない。
 - 機械的に判定できる規約は`tools/check*`の検査として実装し、`make ci`へ接続する。
   このAGENTS.mdやコメントでの指示は、静的に判定できない規約に限った最終手段とする。
