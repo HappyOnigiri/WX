@@ -25,6 +25,10 @@
    `--fresh`は会話を同じIDで再開しつつ現在のbaseからslotを作り、`--branch`は`--fresh`との併用時だけ使う。
    当時のworktreeを復元できないときは会話の再開を優先し、新しいworktreeで再開してよいかをYes既定で確認して`--fresh`と同じ経路へ倒す。
    復元不能はdaemonが`recovery=unavailable`を失敗メッセージに載せて伝え、clientはRESTORE系のfailure codeとEXPIRED snapshotの両方をこの確認に集約する。
+   再開前の`ResumeStatus`はsnapshot行の状態・期限・repositoryの充足と、workspace archiveのmetadata・実体の種別までしか見ず、`integrity`に`not_checked`を返す。
+   archive本文のSHA256はRESTORE予約でGC保護を得た後、復元workerがtargetを変える前に1度だけ検証し、検証済みdescriptorをそのまま展開へ渡す。
+   破損・置換・読み取り障害は`SNAPSHOT_CORRUPT`で隔離する。
+   これは`recovery=unavailable`を伴わないため、`resume.auto_fresh`や非端末でも新しいworktreeへ自動では倒れない。
    確認は`resume.auto_fresh`が真なら省き、端末がなければnoticeを出して再開を続ける。
    やり直しは1回だけで、2回目の失敗はそのまま返す。
    ネイティブresumeは遅延バインドや`_unbound` slotを新規生成せず、clientが準備完了を前面で待ってから起動する。

@@ -12,14 +12,27 @@ import (
 	"github.com/HappyOnigiri/WX/internal/sessions/identity"
 )
 
+// resumeStatus は再開前の軽量な問い合わせの応答である。
+// Integrity は archive 本文を検証したかを表し、daemon は復元まで判定を持ち越すため `not_checked` を返す。
 type resumeStatus struct {
 	WXSessionID    string `json:"wx_session_id"`
 	Agent          string `json:"agent"`
 	AgentSessionID string `json:"agent_session_id"`
 	Expired        bool   `json:"expired"`
 	Pending        bool   `json:"pending"`
+	Integrity      string `json:"integrity"`
 	State          string `json:"state"`
 }
+
+// resumeUnavailableReason は当時のworktreeを使えないときに確認へ出す理由である。
+// 完全性を検証していない応答と、検証した結果として使えない応答を文面で区別する。
+func resumeUnavailableReason(status resumeStatus) string {
+	if status.Integrity == "" || status.Integrity == "not_checked" {
+		return "no recovery snapshot is available"
+	}
+	return "recovery snapshot is unusable: integrity=" + status.Integrity
+}
+
 type resumeTarget struct {
 	Agent, AgentSessionID, WXSessionID, CWD string
 }
