@@ -214,6 +214,9 @@ func (m *Manager) reconcileRegistry(ctx context.Context) {
 	}
 }
 
+// backupDeadline は1回の online backup に与える総時間である。約24時間ごとの周期に対し十分短く取る。
+const backupDeadline = 60 * time.Second
+
 func (m *Manager) maybeBackup(ctx context.Context) {
 	m.mu.RLock()
 	last := m.lastBackup
@@ -222,7 +225,11 @@ func (m *Manager) maybeBackup(ctx context.Context) {
 	if !last.IsZero() && time.Since(last) < 24*time.Hour {
 		return
 	}
-	_, err := m.store.Backup(ctx, cfg.Storage.BackupGenerations, cfg.Storage.BackupRetention.Duration)
+	// backup は writer を止めないため、並行書き込みで複製が繰り返し再走査されうる。
+	// 無期限に居座らせず、期限内に終わらなければ失敗として次の周期へ回す。
+	backupCtx, cancel := context.WithTimeout(ctx, backupDeadline)
+	defer cancel()
+	_, err := m.store.Backup(backupCtx, cfg.Storage.BackupGenerations, cfg.Storage.BackupRetention.Duration)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err != nil {
