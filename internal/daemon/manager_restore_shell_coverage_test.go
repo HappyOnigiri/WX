@@ -166,14 +166,36 @@ func TestRestoreSlotQuarantinesUncertainWorkspaceRootOwnership(t *testing.T) {
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t)
 	repository := resolved[0].Repository
 
-	childID := domain.StableID("restore-multi", "unowned-child")
 	dirName := testDirName(repository, manager.Config())
 	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, repository, manager.Config())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateStandby(ctx, testSlot(t, manager, string(workspaceRecord.ID), childID, 1, "RESTORING"),
-		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "READY", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
+	// workspace archive の検証は target を変える前に済ませるため、所有権の検査へ進むには使える親 snapshot が要る。
+	parentID := domain.StableID("restore-multi", "unowned-parent")
+	parentSlot := testSlot(t, manager, string(workspaceRecord.ID), parentID, 1, "ARCHIVED")
+	if _, err := store.CreateSlotSession(ctx, parentSlot,
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "READY", BaseOID: resolved[0].OID}},
+		state.Session{ID: parentID, WorkspaceID: string(workspaceRecord.ID), SlotID: parentID, State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken(parentID)}, ""); err != nil {
+		t.Fatal(err)
+	}
+	owner, releaseOwner, err := manager.rootDescriptor(manager.Config().Storage.WorktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootSnapshot, err := archive.SnapshotWorkspaceAt(ctx, parentSlot.Path, manager.Config().Storage.WorktreeRoot, parentSlot.RootID, owner, parentID, nil, time.Now().Add(time.Hour))
+	releaseOwner()
+	if err != nil {
+		t.Fatalf("snapshot parent workspace root: %v", err)
+	}
+	if err := store.SaveWorkspaceSnapshot(ctx, rootSnapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	childID := domain.StableID("restore-multi", "unowned-child")
+	if _, err := store.CreateSlotSession(ctx, testSlot(t, manager, string(workspaceRecord.ID), childID, 1, "RESTORING"),
+		[]state.SlotRepository{{RepositoryID: string(repository.ID), DirName: dirName, State: "READY", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}},
+		state.Session{ID: childID, WorkspaceID: string(workspaceRecord.ID), SlotID: childID, ParentSessionID: parentID, State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken(childID)}, ""); err != nil {
 		t.Fatal(err)
 	}
 

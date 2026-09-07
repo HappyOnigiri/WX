@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -34,11 +36,33 @@ func TestMultiRepositoryRootMaterializationFailurePersistsFailedState(t *testing
 	if err != nil || slot.State != "FAILED" {
 		t.Fatalf("materialization failure slot=%+v err=%v", slot, err)
 	}
+	// 復元は target を変える前に workspace archive を検証するため、materialization まで進むには使える親 snapshot が要る。
+	parentPath := filepath.Join(cfg.Storage.WorktreeRoot, "parent")
+	if err := os.MkdirAll(parentPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	parentSlot := slotAtPath(t, m, string(w.ID), "parent", parentPath, 1, "ARCHIVED")
+	parentSession := state.Session{ID: "parent", WorkspaceID: string(w.ID), SlotID: "parent", State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken("parent")}
+	if _, err := store.CreateSlotSession(ctx, parentSlot, nil, parentSession, ""); err != nil {
+		t.Fatal(err)
+	}
+	owner, releaseOwner, err := m.rootDescriptor(cfg.Storage.WorktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootSnapshot, err := archive.SnapshotWorkspaceAt(ctx, parentPath, cfg.Storage.WorktreeRoot, parentSlot.RootID, owner, "parent", nil, time.Now().Add(time.Hour))
+	releaseOwner()
+	if err != nil {
+		t.Fatalf("snapshot parent workspace root: %v", err)
+	}
+	if err := store.SaveWorkspaceSnapshot(ctx, rootSnapshot); err != nil {
+		t.Fatal(err)
+	}
 	restorePath := filepath.Join(cfg.Storage.WorktreeRoot, "restore")
 	if err := os.MkdirAll(restorePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	restoreSession := state.Session{ID: "restore", WorkspaceID: string(w.ID), SlotID: "restore", State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken("restore")}
+	restoreSession := state.Session{ID: "restore", WorkspaceID: string(w.ID), SlotID: "restore", ParentSessionID: "parent", State: "RESTORING", AgentKind: "codex", TokenHash: state.HashToken("restore")}
 	if _, err := store.CreateSlotSession(ctx, slotAtPath(t, m, string(w.ID), "restore", restorePath, 1, "RESTORING"), nil, restoreSession, ""); err != nil {
 		t.Fatal(err)
 	}

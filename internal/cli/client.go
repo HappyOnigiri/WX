@@ -140,7 +140,7 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 				plan.target.AgentSessionID = status.AgentSessionID
 			}
 			if !plan.fresh && status.Expired {
-				if !c.confirmFreshResume(ctx, target.WXSessionID, "no recovery snapshot is available") {
+				if !c.confirmFreshResume(ctx, target.WXSessionID, resumeUnavailableReason(status)) {
 					fmt.Fprintln(os.Stderr, "resume cancelled; no workspace was created")
 					return 1
 				}

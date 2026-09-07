@@ -56,7 +56,9 @@ type Storage struct {
 	BackupRetention   Duration `yaml:"backup_retention,omitempty"`
 }
 type Pool struct {
-	WarmPerWorkspace       int `yaml:"warm_per_workspace,omitempty"`
+	WarmPerWorkspace int `yaml:"warm_per_workspace,omitempty"`
+	// PreparationConcurrency は利用者が完了を待つ準備・復元・保存の同時実行数である。
+	// 待機枠の補充と自動削除はこの枠を使わず、別に確保した保守枠1本で動く（既定では利用者向け2本と保守1本）。
 	PreparationConcurrency int `yaml:"preparation_concurrency,omitempty"`
 }
 type Retention struct {

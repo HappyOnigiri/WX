@@ -1,7 +1,24 @@
 # daemonの補充・回収・再起動
 
-ジョブ配送は`internal/daemon/jobs.go`、周期処理は`maintenance.go`、実体照合は`reconcile.go`を参照する。
+ジョブ配送は`internal/daemon/jobs.go`、実行枠は`jobqueue.go`、周期処理は`maintenance.go`、実体照合は`reconcile.go`を参照する。
 準備・復元の所有権失敗は終端させ、削除はDB登録済みの範囲を回収する。
+
+## ジョブの分類と実行枠
+
+実行枠は利用者向けと保守用に分かれる。
+利用者向けの枠数は`pool.preparation_concurrency`（既定2）、保守用は常に1本で、保守へ利用者向けの枠を貸さない。
+`preparation_concurrency: 1`でも保守と利用者処理はそれぞれ1本の枠を持ち、資源上限は既定で3本同時になる。
+利用者向けが満杯のときの待ちと、物理ディスクの帯域競合は残る。
+
+分類は`jobClassOf`が job rowの事実だけから決め、DBへ永続化しない。
+session付きPREPARE・RESTORE・SNAPSHOTを利用者向けとし、SNAPSHOTは保存と将来のresumeの前提なので利用者が明示的に待っているかによらずこのクラスに置く。
+待機用PREPARE・ENSURE_STANDBY・自動REMOVE系は保守用とし、実行中のclean runが完了を待つREMOVEだけを`advanceRemoving`が毎回の監視で利用者向けへ昇格させる。
+
+`dispatchJobs`はクラス別の待ち行列から到着順に1件ずつ配り、枠を取ってから`ClaimJob`する。
+このためキュー待ちのジョブはattemptもjob leaseも消費せず、同じジョブIDの二重登録も配送前に落とす。
+待ち行列の上限を超えた分は`PENDING`のdurable jobとして残し、`maintainJobs`の10秒周期の回収が拾う。
+実行枠は`jobExecutionSlot`としてジョブのgoroutineと分けてあり、実行中のコピーやprepare commandは優先度の変更でも枠の縮小でも中断しない。
+キュー待ち時間と実行時間は`job attempt finished`のログで別々に記録する。
 
 ## standby補充
 

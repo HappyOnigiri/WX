@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,7 +14,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-func TestScheduleDropsWorkWhenCanceledQueueIsFull(t *testing.T) {
+func TestScheduleDropsWorkAfterCancellation(t *testing.T) {
 	t.Parallel()
 	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -22,13 +23,10 @@ func TestScheduleDropsWorkWhenCanceledQueueIsFull(t *testing.T) {
 	defer store.Close()
 	m := testManager(t, config.Defaults(), store)
 	defer m.Close()
-	for index := 0; index < cap(m.jobs); index++ {
-		m.jobs <- jobWork{id: fmt.Sprintf("queued-%d", index)}
-	}
 	m.cancel()
-	m.schedule(state.Job{ID: "dropped"})
-	if got := len(m.jobs); got != cap(m.jobs) {
-		t.Fatalf("canceled schedule changed queue length=%d, want %d", got, cap(m.jobs))
+	m.schedule(state.Job{ID: "dropped", Kind: "SNAPSHOT", SessionID: "session"})
+	if pending, _ := m.jobQueue.counts(jobClassInteractive); pending != 0 {
+		t.Fatalf("canceled schedule queued %d jobs", pending)
 	}
 }
 
@@ -36,12 +34,18 @@ func TestScheduleLeavesOverflowForDurableRecovery(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	m := &Manager{jobs: make(chan jobWork, 1), ctx: ctx, cancel: cancel}
-	m.schedule(state.Job{ID: "first"})
-	m.schedule(state.Job{ID: "overflow"})
-	if queued := <-m.jobs; queued.id != "first" {
-		t.Fatalf("queued work=%+v", queued)
+	m := &Manager{jobQueue: newJobQueue(1), log: slog.New(slog.NewTextHandler(newDiagnosticLog(managerFixtureLogLimit), nil)), ctx: ctx, cancel: cancel}
+	for index := 0; index <= queuedJobCapacity; index++ {
+		m.schedule(state.Job{ID: fmt.Sprintf("standby-%d", index), Kind: "PREPARE"})
 	}
+	if pending, _ := m.jobQueue.counts(jobClassMaintenance); pending != queuedJobCapacity {
+		t.Fatalf("maintenance queue length=%d, want %d", pending, queuedJobCapacity)
+	}
+	work, slot, ok := m.jobQueue.take()
+	if !ok || work.id != "standby-0" {
+		t.Fatalf("queued work=%+v ok=%v", work, ok)
+	}
+	m.jobQueue.finish(work, slot)
 }
 
 func TestWorkerStopsRetryingAfterBoundedAttempts(t *testing.T) {
@@ -71,7 +75,10 @@ func TestWorkerStopsRetryingAfterBoundedAttempts(t *testing.T) {
 		}
 	}
 	m.wg.Add(1)
-	go m.runWorker(0, make(chan struct{}))
+	go func() {
+		defer m.wg.Done()
+		m.dispatchJobs()
+	}()
 	m.schedule(job)
 	deadline := time.Now().Add(2 * time.Second)
 	for {
@@ -117,9 +124,11 @@ func TestWorkerDefersLiveAgentDependencyWithoutRetryConsumption(t *testing.T) {
 	if _, err := raw.ExecContext(ctx, `UPDATE sessions SET agent_pid=? WHERE id='live-snapshot'`, os.Getpid()); err != nil {
 		t.Fatal(err)
 	}
-	stop := make(chan struct{})
 	m.wg.Add(1)
-	go m.runWorker(99, stop)
+	go func() {
+		defer m.wg.Done()
+		m.dispatchJobs()
+	}()
 	m.schedule(job)
 	waitUntil(t, 5*time.Second, func() bool {
 		var count int
@@ -129,5 +138,91 @@ func TestWorkerDefersLiveAgentDependencyWithoutRetryConsumption(t *testing.T) {
 	if err != nil || len(jobs) != 1 || jobs[0].ID != job.ID || jobs[0].Attempt != 0 {
 		t.Fatalf("dependency-bound job consumed retry budget: jobs=%+v err=%v", jobs, err)
 	}
-	close(stop)
+}
+
+func TestJobClassOfSeparatesUserFacingWorkFromMaintenance(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		job  state.Job
+		want jobClass
+	}{
+		{job: state.Job{Kind: "PREPARE", SessionID: "session"}, want: jobClassInteractive},
+		{job: state.Job{Kind: "PREPARE"}, want: jobClassMaintenance},
+		{job: state.Job{Kind: "RESTORE", SessionID: "session"}, want: jobClassInteractive},
+		{job: state.Job{Kind: "SNAPSHOT", SessionID: "session"}, want: jobClassInteractive},
+		{job: state.Job{Kind: "ENSURE_STANDBY"}, want: jobClassMaintenance},
+		{job: state.Job{Kind: "REMOVE", SessionID: "session"}, want: jobClassMaintenance},
+		{job: state.Job{Kind: "REMOVE_REPOSITORY"}, want: jobClassMaintenance},
+	} {
+		if got := jobClassOf(test.job); got != test.want {
+			t.Fatalf("%s job with session=%q class=%s, want %s", test.job.Kind, test.job.SessionID, got, test.want)
+		}
+	}
+}
+
+func TestDispatcherKeepsUserFacingJobsRunnableWhileMaintenanceIsBlocked(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Pool.PreparationConcurrency = 1
+	m := testManager(t, cfg, store)
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+	// 保守クラスの実行を止め、待機枠のコピーが長引いた状態を作る。解放は Close でも起きる。
+	release := make(chan struct{})
+	snapshotRan := make(chan struct{}, 1)
+	m.mu.Lock()
+	m.beforeJobRun = func(job state.Job) {
+		if job.Kind != "ENSURE_STANDBY" {
+			snapshotRan <- struct{}{}
+			return
+		}
+		select {
+		case <-release:
+		case <-m.ctx.Done():
+		}
+	}
+	m.mu.Unlock()
+	var scheduled []state.Job
+	for _, kind := range []string{"ENSURE_STANDBY", "ENSURE_STANDBY", "SNAPSHOT"} {
+		job, createErr := store.CreateJob(ctx, kind, "missing-workspace", "", "missing-session")
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		scheduled = append(scheduled, job)
+	}
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.dispatchJobs()
+	}()
+	for _, job := range scheduled {
+		m.schedule(job)
+	}
+	waitUntil(t, 5*time.Second, func() bool {
+		pending, running := m.jobQueue.counts(jobClassInteractive)
+		return pending == 0 && running == 0
+	})
+	select {
+	case <-snapshotRan:
+	default:
+		t.Fatal("the user-facing job did not run while maintenance was blocked")
+	}
+	if _, err := m.Status(ctx); err != nil {
+		t.Fatalf("status while maintenance was blocked: %v", err)
+	}
+	if pending, running := m.jobQueue.counts(jobClassMaintenance); pending != 1 || running != maintenanceJobSlots {
+		t.Fatalf("maintenance pending=%d running=%d, want one waiting behind one running", pending, running)
+	}
+	close(release)
+	waitUntil(t, 5*time.Second, func() bool {
+		pending, running := m.jobQueue.counts(jobClassMaintenance)
+		return pending == 0 && running == 0
+	})
 }

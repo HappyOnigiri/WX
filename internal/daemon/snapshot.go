@@ -106,7 +106,7 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 			return err
 		}
 		if found {
-			if err := archive.ValidateWorkspaceSnapshotAt(ownershipRoot, ownershipRootHandle, rootSnapshot, time.Now()); err != nil {
+			if err := archive.ValidateWorkspaceSnapshotAt(ctx, ownershipRoot, ownershipRootHandle, rootSnapshot, time.Now()); err != nil {
 				_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
 				return fmt.Errorf("validate workspace root snapshot: %w", err)
 			}
