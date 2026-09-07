@@ -22,6 +22,13 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 	if m.Preparer == nil {
 		return errors.New("restore requires a workspace preparer")
 	}
+	// clean base の作成から READY 化までを同じ slot 排他の下に置く。
+	// 内側の PrepareForRestore は取得済みの ctx を受け取るので、同じ slot を取り直さない。
+	ctx, releaseSlot, err := m.lockSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseSlot()
 	if err := m.Preparer.PrepareForRestore(ctx, repo, target, s.HeadOID, slotID); err != nil {
 		return err
 	}
@@ -29,7 +36,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 	if err != nil {
 		return fmt.Errorf("%w: capture restored worktree identity: %w", state.ErrOwnership, err)
 	}
-	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+	return m.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(ctx context.Context) error {
 		targetValue := func(env []string, args ...string) (string, error) {
 			result, runErr := m.Preparer.RunGitInWorktree(ctx, target, targetIdentity, env, nil, args...)
 			if runErr != nil {

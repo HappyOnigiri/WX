@@ -20,6 +20,24 @@ session付きPREPARE・RESTORE・SNAPSHOTを利用者向けとし、SNAPSHOTは�
 実行枠は`jobExecutionSlot`としてジョブのgoroutineと分けてあり、実行中のコピーやprepare commandは優先度の変更でも枠の縮小でも中断しない。
 キュー待ち時間と実行時間は`job attempt finished`のログで別々に記録する。
 
+## slot排他と共通ロック
+
+同じslotへ書く準備・復元・保存・削除は、`roots.id`とroot相対pathをkeyにした`gitx.KeyedLocks`（daemonの`slotLocks`）で直列化する。
+作成前後で変わるinodeはkeyに含めず、所有権検証の入力としてだけ使う。
+slot lockは最上位のoperationで一度だけ取る。
+入口は`Preparer.Prepare`・`archive.Restore`・`archive.SnapshotWithPersistence`・`archive.RemoveWorktree`で、内側の経路には取得済みのcontextを渡して取り直させない。
+
+リポジトリ共有のGit管理情報は`common directory`をkeyにした同じ仕組みで排他する。
+`prepare`はworktreeの作成とlock reasonの確立まで、そして`READY`へ移す最後の区間だけこのロックを保持し、その間のコピー・link・prepare commandは保持せずに行う。
+このため同じリポジトリの別slotは、先行slotのコピーやprepare commandの完了を待たずに準備できる。
+ロックを取り直す区間の入口では、DB状態・root/path/marker/inode・Git登録・OID・lock reasonを検証し直す。
+
+取得順序はslot、common directory、実行枠に統一する。
+どちらのロックも待機に入る前に`jobExecutionSlot`を返し、ロックを取得してから枠を取り直すので、Git管理操作を待つだけのジョブが無関係なリポジトリの枠を占有しない。
+`preparation_concurrency: 1`でも、枠の取り直しがロック取得後であるため循環待ちにならない。
+待機中もジョブの処理位置とlease更新は保たれ、ジョブ先頭からのretryにはならない。
+contextが終わった要求はロックを取らず、callbackも実行しない。
+
 ## standby補充
 
 `standby.go`は`hot`なworkspaceのREADY slotを`pool.warm_per_workspace`まで補充する。

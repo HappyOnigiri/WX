@@ -35,6 +35,9 @@ type Preparer struct {
 	// 所有権検証は絶対 SlotPath の代わりにこれらを比較し、root の改名や再設定で別 directory が同じ slot に見えることを防ぐ。
 	RootID      string
 	SlotRelPath string
+	// SlotLocks は同じ slot へ書く操作を直列化する共有の lock 表である。
+	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、daemon は全 Preparer と archive.Manager へ同じ表を渡す。
+	SlotLocks *gitx.KeyedLocks
 }
 
 // logSkip は prepare が copy/link source を使わずに進んだ事実と理由を warn として残す。
@@ -77,9 +80,13 @@ func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, targe
 	if err != nil {
 		return err
 	}
-	return p.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
-		return p.prepareLocked(ctx, repo, target, oid, slotID, phase, root)
-	})
+	// slot 排他は最上位で一度だけ取る。以降の common-directory lock は slot lock の内側で取り、逆順にしない。
+	slotCtx, releaseSlot, err := p.LockSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseSlot()
+	return p.prepareOwned(slotCtx, repo, target, oid, slotID, phase, root)
 }
 
 func (p *Preparer) prepareTarget(target string) (string, string, error) {
@@ -105,9 +112,16 @@ func (p *Preparer) prepareTarget(target string) (string, string, error) {
 	return root, target, nil
 }
 
-func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, root string) (prepareErr error) {
-	locked, err := p.prepareLockedTarget(ctx, repo, target, oid, slotID, phase, root)
-	if err != nil {
+// prepareOwned は slot 排他の下で準備を三つの区間に分ける。
+// Git 共有情報を作る区間と READY へ移す区間だけ common-directory lock を保持し、その間のコピー・link・prepare command は保持せずに行う。
+// 保持しない区間で同じ slot を触れるのは slot lock を持つこの経路だけなので、区間の境目では所有権を証明し直す。
+func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, root string) (prepareErr error) {
+	var locked *lockedTarget
+	if err := p.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(lockCtx context.Context) error {
+		var beginErr error
+		locked, beginErr = p.beginPrepare(lockCtx, repo, target, oid, slotID, phase, root)
+		return beginErr
+	}); err != nil {
 		return err
 	}
 	defer locked.close()
@@ -117,41 +131,28 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 	targetIdentity := locked.identity
 
 	cleanup := !existingWorktree
-	ownedAfterLock := false
 	defer func() {
-		if cleanup && ownedAfterLock && !errors.Is(prepareErr, state.ErrOwnership) {
+		if cleanup && !errors.Is(prepareErr, state.ErrOwnership) {
 			// 失敗した preparation は所有権を証明できる間だけ削除できる。
 			// command や並行する filesystem 変更で証明が無効になった場合は、ロック済み target と marker を quarantine/reconcile 用に残す。
-			if err := p.validatePreparedTarget(context.Background(), repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "validate worktree before cleanup"); err != nil {
+			// Git 登録を消すため common-directory lock を取り直す。要求の context は既に終わっていることがあるので待機は打ち切らない。
+			cleanupCtx, releaseCommon, lockErr := p.Git.AcquireCommonDirLock(context.Background(), string(repo.CommonDir))
+			if lockErr != nil {
 				return
 			}
-			if _, err := p.runWorktreeAdminOwned(context.Background(), repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
+			defer releaseCommon()
+			if err := p.validatePreparedTarget(cleanupCtx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "validate worktree before cleanup"); err != nil {
 				return
 			}
-			if _, err := p.runWorktreeAdminOwned(context.Background(), repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "remove", "--force"); err != nil {
+			if _, err := p.runWorktreeAdminOwned(cleanupCtx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
+				return
+			}
+			if _, err := p.runWorktreeAdminOwned(cleanupCtx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "remove", "--force"); err != nil {
 				return
 			}
 			_ = removeOwnershipMarkerAt(lockedRoot, root, target, string(repo.ID))
 		}
 	}()
-	if existingWorktree {
-		if _, err := p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
-			return fmt.Errorf("unlock existing wx worktree: %w", err)
-		}
-	}
-	lockState := "PREPARING"
-	if phase == preparePhaseRestore {
-		lockState = "RESTORING"
-	}
-	if _, err := p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "lock", "--reason", "wx:"+slotID+":"+lockState); err != nil {
-		return err
-	}
-	// この検証は意図的に新しい lock の取得後に行う。
-	// file 操作の前に marker、physical path、Git registration、OID、lock reason が同じ slot を示すことを証明する。
-	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed after lock"); err != nil {
-		return fmt.Errorf("wx worktree ownership changed after lock: %w", err)
-	}
-	ownedAfterLock = true
 	if existingWorktree {
 		if err := p.rejectCOWTemporaries(ctx, target, targetIdentity); err != nil {
 			return err
@@ -222,17 +223,65 @@ func (p *Preparer) prepareLocked(ctx context.Context, repo discovery.Repository,
 			return err
 		}
 	}
-	if _, err = p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
+	if err := p.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(lockCtx context.Context) error {
+		return p.finishPrepare(lockCtx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity)
+	}); err != nil {
 		return err
 	}
-	_, err = p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "lock", "--reason", "wx:"+slotID+":READY")
+	cleanup = false
+	return nil
+}
+
+// beginPrepare は common-directory lock を保持する最初の区間である。
+// marker と Git 登録を作り、slot の lock reason を立ててから、以降の file 操作が同じ slot に向くことを証明する。
+// 失敗時は所有権証明を持てないまま target を残さないよう descriptor を閉じて返し、呼び出し側の cleanup を始めない。
+func (p *Preparer) beginPrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, root string) (*lockedTarget, error) {
+	prepared, err := p.prepareLockedTarget(ctx, repo, target, oid, slotID, phase, root)
 	if err != nil {
+		return nil, err
+	}
+	begun := false
+	defer func() {
+		if !begun {
+			prepared.close()
+		}
+	}()
+	if prepared.existing {
+		if _, err := p.runWorktreeAdminOwned(ctx, repo, prepared.root, prepared.relative, target, prepared.identity, "unlock"); err != nil {
+			return nil, fmt.Errorf("unlock existing wx worktree: %w", err)
+		}
+	}
+	lockState := "PREPARING"
+	if phase == preparePhaseRestore {
+		lockState = "RESTORING"
+	}
+	if _, err := p.runWorktreeAdminOwned(ctx, repo, prepared.root, prepared.relative, target, prepared.identity, "lock", "--reason", "wx:"+slotID+":"+lockState); err != nil {
+		return nil, err
+	}
+	// この検証は意図的に新しい lock の取得後に行う。
+	// file 操作の前に marker、physical path、Git registration、OID、lock reason が同じ slot を示すことを証明する。
+	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, prepared.root, prepared.relative, prepared.identity, "wx worktree ownership changed after lock"); err != nil {
+		return nil, fmt.Errorf("wx worktree ownership changed after lock: %w", err)
+	}
+	begun = true
+	return prepared, nil
+}
+
+// finishPrepare は common-directory lock を取り直して worktree を READY へ移す最後の区間である。
+// lock を手放している間に slot の実体や DB 上の位置が入れ替わり得るため、Git 管理操作の前後で所有権を証明し直す。
+func (p *Preparer) finishPrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, lockedRoot *os.Root, lockedRelativeTarget, targetIdentity string) error {
+	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before READY lock"); err != nil {
+		return fmt.Errorf("wx worktree ownership changed before READY lock: %w", err)
+	}
+	if _, err := p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "unlock"); err != nil {
+		return err
+	}
+	if _, err := p.runWorktreeAdminOwned(ctx, repo, lockedRoot, lockedRelativeTarget, target, targetIdentity, "lock", "--reason", "wx:"+slotID+":READY"); err != nil {
 		return err
 	}
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before READY"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed before READY: %w", err)
 	}
-	cleanup = false
 	return nil
 }
 

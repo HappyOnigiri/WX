@@ -71,7 +71,7 @@ type Runner struct {
 	timeout     sync.RWMutex
 	runAt       sync.RWMutex
 	beforeRunAt func([]string)
-	locks       sync.Map
+	locks       KeyedLocks
 }
 
 // SetBeforeRunAtHook は descriptor-bound command の構築後、子の開始直前に呼ぶテスト用 barrier を設定する。
@@ -275,14 +275,6 @@ func (r *Runner) writeFailureDetail(id string, args []string, result Result) {
 func isLockConflict(stderr string) bool {
 	message := strings.ToLower(stderr)
 	return strings.Contains(message, "could not lock") || strings.Contains(message, "unable to create") && strings.Contains(message, ".lock") || strings.Contains(message, "another git process")
-}
-
-func (r *Runner) WithCommonDirLock(common string, fn func() error) error {
-	v, _ := r.locks.LoadOrStore(common, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
-	return fn()
 }
 
 // WorktreeRecord は `git worktree list --porcelain -z` の NUL 区切り出力から解析した一件。

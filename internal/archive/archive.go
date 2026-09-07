@@ -21,11 +21,26 @@ type Manager struct {
 	Ownership state.OwnershipValidator
 }
 
+// lockSlot は Preparer が示す slot への書き込みを、prepare を含む他の経路と直列化する。
+// 最上位の operation で一度だけ取得し、内側の Preparer へは返った ctx を渡して再取得させない。
+// recovery ref だけを扱う Preparer 無しの manager は slot を持たないため排他しない。
+func (m *Manager) lockSlot(ctx context.Context) (context.Context, func(), error) {
+	if m.Preparer == nil {
+		return ctx, func() {}, nil
+	}
+	return m.Preparer.LockSlot(ctx)
+}
+
 // SnapshotWithPersistence は、正確な ref 名と object ID の永続化後に recovery ref を公開する。
 // 永続化失敗時は ref を公開せず、公開失敗時は永続行を残すので、reconcile は未完了 archive と無関係な ref を区別できる。
 func (m *Manager) SnapshotWithPersistence(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time, persist func(state.Snapshot) error) (state.Snapshot, error) {
+	ctx, releaseSlot, err := m.lockSlot(ctx)
+	if err != nil {
+		return state.Snapshot{}, err
+	}
+	defer releaseSlot()
 	var snapshot state.Snapshot
-	if err := m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+	if err := m.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(ctx context.Context) error {
 		var err error
 		snapshot, err = m.snapshotObjects(ctx, repo, worktree, sessionID, expiry)
 		return err
@@ -37,7 +52,7 @@ func (m *Manager) SnapshotWithPersistence(ctx context.Context, repo discovery.Re
 			return state.Snapshot{}, err
 		}
 	}
-	if err := m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+	if err := m.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(ctx context.Context) error {
 		return m.publishSnapshotRefs(ctx, repo, snapshot)
 	}); err != nil {
 		return state.Snapshot{}, err
@@ -190,7 +205,7 @@ func (m *Manager) ensureRecoveryRef(ctx context.Context, repo discovery.Reposito
 }
 
 func (m *Manager) DeleteSnapshotRefs(ctx context.Context, repo discovery.Repository, snapshot state.Snapshot) error {
-	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+	return m.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(ctx context.Context) error {
 		for ref, want := range recoveryRefTargets(snapshot) {
 			if _, err := m.Git.Run(ctx, string(repo.MainPath), "check-ref-format", ref); err != nil {
 				return fmt.Errorf("invalid recovery ref %q: %w", ref, err)

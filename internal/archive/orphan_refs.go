@@ -125,7 +125,7 @@ func (m *Manager) DeleteOrphanRefs(ctx context.Context, repo discovery.Repositor
 		}
 		fmt.Fprintf(&input, "delete %s %s\n", ref.Ref, ref.OID)
 	}
-	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+	return m.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(ctx context.Context) error {
 		_, err := m.Git.RunEnvInput(ctx, string(repo.MainPath), nil, []byte(input.String()), "update-ref", "--stdin")
 		return err
 	})

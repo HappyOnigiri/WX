@@ -62,7 +62,9 @@ func (m *Manager) removeRegisteredSlot(ctx context.Context, slot state.Slot) err
 // removeGitRegistration は対象を指す backlink のある Git 管理ディレクトリだけを整理する。
 // lock の理由や存在は問わず、別 worktree の登録は維持する。
 func (m *Manager) removeGitRegistration(ctx context.Context, common, target string) error {
-	return m.git.WithCommonDirLock(common, func() error { return m.removeGitRegistrationLocked(ctx, common, target) })
+	return m.git.WithCommonDirLock(ctx, common, func(ctx context.Context) error {
+		return m.removeGitRegistrationLocked(ctx, common, target)
+	})
 }
 
 func (m *Manager) removeGitRegistrationLocked(ctx context.Context, common, target string) error {

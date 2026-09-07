@@ -59,20 +59,23 @@ type Manager struct {
 	terminate          func() error
 	launchdManaged     func() bool
 	jobQueue           *jobQueue
-	jobSeq             atomic.Uint64
-	lifecycleChecks    chan struct{}
-	reloads            chan struct{}
-	ctx                context.Context
-	cancel             context.CancelFunc
-	wg                 sync.WaitGroup
-	logLevel           *slog.LevelVar
-	backgroundMu       sync.Mutex
-	backgroundWG       sync.WaitGroup
-	backgroundClosing  bool
-	reloadMu           sync.Mutex
-	closeOnce          sync.Once
-	closeDoneMu        sync.Mutex
-	closeDone          chan struct{}
+	// slotLocks は同じ slot へ書く準備・復元・保存・削除を直列化する。
+	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、全 Preparer と archive.Manager で共有する。
+	slotLocks         gitx.KeyedLocks
+	jobSeq            atomic.Uint64
+	lifecycleChecks   chan struct{}
+	reloads           chan struct{}
+	ctx               context.Context
+	cancel            context.CancelFunc
+	wg                sync.WaitGroup
+	logLevel          *slog.LevelVar
+	backgroundMu      sync.Mutex
+	backgroundWG      sync.WaitGroup
+	backgroundClosing bool
+	reloadMu          sync.Mutex
+	closeOnce         sync.Once
+	closeDoneMu       sync.Mutex
+	closeDone         chan struct{}
 	// cleanDrivers は run ごとの進行管理が二重に走らないようにする。同じ run への再実行は既存の driver へ合流する。
 	cleanDrivers map[string]bool
 	// standbySuspensionWarned は補充停止の警告を workspace ごとに一度だけ出すための記録。
