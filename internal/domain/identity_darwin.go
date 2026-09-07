@@ -2,9 +2,21 @@ package domain
 
 import (
 	"errors"
+	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
+
+// changeTimeNanos は inode の変更時刻を返す。内容の書き換えは mtime とともにこの値も進めるため、
+// 時刻を偽装した上書きの検出に使う。
+func changeTimeNanos(info os.FileInfo) (int64, bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil {
+		return 0, false
+	}
+	return stat.Ctimespec.Nano(), true
+}
 
 // volumeIdentity は fd の属する volume を mount point で表す。
 // APFS の volume UUID は cgo なしでは引けないため、再起動後も同じ値になり、同時に 2 つの volume が共有しない mount point を代わりに使う。
