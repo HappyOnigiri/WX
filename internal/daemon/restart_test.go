@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,9 +11,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 type signalLog struct {
@@ -76,18 +71,12 @@ func lifecycleActionClaimed(m *Manager) bool {
 	return m.lifecycleClaimed
 }
 
+// restartFixture は再起動・停止の検査向けに、手動 Manager を launchd 管理下に見せる目的別のアダプタである。
+// 基礎の準備は manualManagerFixture に任せ、ここでは signal と実行ファイル監視の差分だけを組む。
 func restartFixture(t *testing.T) (*Manager, string, *signalLog) {
 	t.Helper()
-	root := t.TempDir()
-	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
-	store, err := state.Open(filepath.Join(root, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	manager := testManager(t, cfg, store)
-	manager.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	f := manualManagerFixture(t)
+	root, manager := f.Root, f.Manager
 	manager.launchdManaged = func() bool { return true }
 	kickstarts := &signalLog{}
 	manager.kickstart = func(context.Context) error { return kickstarts.record() }
