@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,5 +38,29 @@ func TestCreateSlotSessionPropagatesLastLeasedAtFault(t *testing.T) {
 	}
 	if _, err := store.Slot(ctx, "leased-at-fault"); err == nil {
 		t.Fatal("rolled-back slot session left a durable slot row")
+	}
+}
+
+// 予約のCAS失敗には、その時点の行の値を添えて返す。
+// 失敗メッセージだけで、別経路（reconcileの隔離など）に遷移させられたのかを判別できるようにするためである。
+func TestReservationCASFailureReportsCurrentRow(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	slot := Slot{ID: "reserved", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/reserved", OwnerSessionID: "session"}
+	if err := store.ReserveSlot(ctx, slot); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.QuarantineReservedSlot(ctx, slot.ID, "ALLOCATION_INTERRUPTED"); err != nil {
+		t.Fatal(err)
+	}
+	err := store.ConfirmSlotCreation(ctx, slot.ID, "identity")
+	if err == nil {
+		t.Fatal("creation confirmation succeeded after the reservation was quarantined")
+	}
+	for _, want := range []string{"state=QUARANTINED", "failure_code=ALLOCATION_INTERRUPTED"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("compare-and-swap failure %q does not report %s", err, want)
+		}
 	}
 }

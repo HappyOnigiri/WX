@@ -77,6 +77,10 @@ type Manager struct {
 	cleanDrivers map[string]bool
 	// standbySuspensionWarned は補充停止の警告を workspace ごとに一度だけ出すための記録。
 	standbySuspensionWarned map[string]bool
+	// inFlightReservations は自プロセスで進行中の slot 予約。reconcile が中断された確保と取り違えないために持つ。
+	inFlightReservations map[string]bool
+	// leasingWorkspaces は貸出処理が進行中の workspace の件数。補充が使用中の workspace を cold と判定しないために持つ。
+	leasingWorkspaces map[string]int
 }
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {

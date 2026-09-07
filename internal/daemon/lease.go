@@ -44,6 +44,9 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	if err != nil {
 		return Lease{}, err
 	}
+	// 補充はこの貸出を根拠に hot / cold を決める。last_leased_at を書く前に並走されても cold と判定させない。
+	endLease := m.beginWorkspaceLease(string(w.ID))
+	defer endLease()
 	resolved, err := pool.ResolveBranches(ctx, m.git, w, branches)
 	if err != nil {
 		return Lease{}, err
