@@ -2,7 +2,7 @@ name: Nightly
 
 on:
   schedule:
-    - cron: "17 16 * * 0"
+    - cron: "17 16 * * *"
   workflow_dispatch:
 
 permissions:
@@ -21,12 +21,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {package: ./internal/config, target: FuzzDurationYAML}
-          - {package: ./internal/rpc, target: FuzzReadFrame}
-          - {package: ./internal/agent, target: FuzzHookPayload}
-          - {package: ./internal/domain, target: FuzzPathAndIDValidation}
-          - {package: ./internal/archive, target: FuzzSnapshotMetadata}
-          - {package: ./internal/pool, target: FuzzBranchSpecifications}
+          - {package: ./internal/config, target: FuzzDurationYAML, subject: YAML duration parsing and its round trip}
+          - {package: ./internal/rpc, target: FuzzReadFrame, subject: RPC frame length validation and decoding}
+          - {package: ./internal/agent, target: FuzzHookPayload, subject: agent hook payload decoding}
+          - {package: ./internal/domain, target: FuzzPathAndIDValidation, subject: path containment and stable ID derivation}
+          - {package: ./internal/archive, target: FuzzSnapshotMetadata, subject: snapshot metadata round trip}
+          - {package: ./internal/pool, target: FuzzBranchSpecifications, subject: repository selector matching}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -34,11 +34,54 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-name: nightly-fuzz-${{ matrix.target }}
+      # go test -fuzz は一致するターゲットが無くても成功するため、実行前に存在を確かめる。
+      - name: Confirm the fuzz target exists
+        env:
+          FUZZ_PACKAGE: ${{ matrix.package }}
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: |
+          if go test -list="^$FUZZ_TARGET\$" "$FUZZ_PACKAGE" | grep -qx "$FUZZ_TARGET"; then
+            exit 0
+          fi
+          message="$FUZZ_TARGET does not exist in $FUZZ_PACKAGE, so go test -fuzz would have passed without fuzzing"
+          message="$message anything. Restore the target, or fix jobs.fuzz.strategy.matrix in this workflow."
+          message="$message Run 'make fuzz-check' locally to check every entry at once."
+          echo "::error title=Fuzz target missing::$message"
+          exit 1
       - name: Run one fuzz target
         env:
           FUZZ_PACKAGE: ${{ matrix.package }}
           FUZZ_TARGET: ${{ matrix.target }}
         run: go test -run='^$' -fuzz="^$FUZZ_TARGET$" -fuzztime=5m "$FUZZ_PACKAGE"
+      # crasher は testdata/fuzz 配下に書かれる。job が消える前に回収しないと再現できない。
+      - name: Explain the failure
+        if: failure()
+        env:
+          FUZZ_PACKAGE: ${{ matrix.package }}
+          FUZZ_TARGET: ${{ matrix.target }}
+          FUZZ_SUBJECT: ${{ matrix.subject }}
+        run: |
+          message="Fuzzing $FUZZ_SUBJECT found an input that panics or breaks an invariant."
+          message="$message The failing input is attached as the nightly-fuzz-$FUZZ_TARGET-failure artifact."
+          message="$message Unpack it into $FUZZ_PACKAGE/testdata/fuzz/$FUZZ_TARGET/ and reproduce with:"
+          message="$message go test -run='$FUZZ_TARGET/<name>' $FUZZ_PACKAGE"
+          echo "::error title=Fuzz failure in $FUZZ_TARGET::$message"
+          {
+            echo "## Fuzz failure: \`$FUZZ_TARGET\`"
+            echo
+            echo "Fuzzing **$FUZZ_SUBJECT** found a failing input."
+            echo
+            echo "1. Download the \`nightly-fuzz-$FUZZ_TARGET-failure\` artifact."
+            echo "2. Copy its contents into \`$FUZZ_PACKAGE/testdata/fuzz/$FUZZ_TARGET/\`."
+            echo "3. Reproduce with \`go test -run='$FUZZ_TARGET/<name>' $FUZZ_PACKAGE\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: nightly-fuzz-${{ matrix.target }}-failure
+          path: ${{ matrix.package }}/testdata/fuzz/
+          if-no-files-found: warn
+          retention-days: 7
 
   stress:
     name: ${{ matrix.target }}
@@ -47,15 +90,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - nightly-race
-          - crash-check
-          - soak-check
-          - fault-check
-          - resource-leak-check
-          - concurrency-test
-          - reproducible-build
-          - portable-test
+        include:
+          - {target: nightly-race, subject: a data race or an order-dependent test across the whole module}
+          - {target: crash-check, subject: daemon crash recovery failing to converge}
+          - {target: soak-check, subject: state or resources accumulating over 300 session lifecycles}
+          - {target: fault-check, subject: an injected storage fault not failing closed or not rolling back}
+          - {target: resource-leak-check, subject: a leaked goroutine, descriptor or use after close}
+          - {target: concurrency-test, subject: a lost update or a broken compare-and-swap under concurrent leases}
+          - {target: reproducible-build, subject: the darwin build not being byte-for-byte reproducible}
+          - {target: portable-test, subject: a test that depends on execution order}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -67,6 +110,23 @@ jobs:
         env:
           NIGHTLY_TARGET: ${{ matrix.target }}
         run: make "$NIGHTLY_TARGET"
+      - name: Explain the failure
+        if: failure()
+        env:
+          NIGHTLY_TARGET: ${{ matrix.target }}
+          NIGHTLY_SUBJECT: ${{ matrix.subject }}
+        run: |
+          message="This target repeats or shuffles the suite to surface $NIGHTLY_SUBJECT."
+          message="$message A single go test run does not reproduce it. Run 'make $NIGHTLY_TARGET' locally."
+          echo "::error title=Nightly failure in $NIGHTLY_TARGET::$message"
+          {
+            echo "## Nightly failure: \`$NIGHTLY_TARGET\`"
+            echo
+            echo "This target repeats or shuffles the suite to surface **$NIGHTLY_SUBJECT**."
+            echo
+            echo "A single \`go test\` run does not reproduce it. Run \`make $NIGHTLY_TARGET\` locally."
+            echo "Any coverage or artifact output is attached as \`nightly-$NIGHTLY_TARGET-failure\`."
+          } >> "$GITHUB_STEP_SUMMARY"
       - if: failure()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
@@ -85,11 +145,32 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read # Required to list which jobs of this run failed.
       issues: write # Required to persist nightly failures on the default branch.
     steps:
       - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
+          STRESS_RESULT: ${{ needs.stress.result }}
         with:
           script: |
-            const title = `Nightly validation failed: ${context.runId}`;
-            const body = `Nightly validation failed on ${context.ref}. Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            await github.rest.issues.create({...context.repo, title, body});
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              ...context.repo, run_id: context.runId, filter: 'latest',
+            });
+            const failed = jobs.filter(job => job.conclusion === 'failure' || job.conclusion === 'timed_out');
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = `Nightly validation failed: ${failed.map(job => job.name).join(', ') || context.runId}`;
+            const lines = [
+              `Nightly validation failed on ${context.ref}.`,
+              '',
+              `- Fuzz jobs: ${process.env.FUZZ_RESULT}`,
+              `- Stress jobs: ${process.env.STRESS_RESULT}`,
+              '',
+              '## Failed jobs',
+              '',
+              ...failed.map(job => `- [${job.name}](${job.html_url}) (${job.conclusion})`),
+              '',
+              `Each failed job writes a summary explaining what it checks and how to reproduce it: ${run}`,
+              'Failing fuzz inputs and stress artifacts are attached to that run for 7 days.',
+            ];
+            await github.rest.issues.create({...context.repo, title: title.slice(0, 240), body: lines.join('\n')});
