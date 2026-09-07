@@ -167,13 +167,13 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	var lease daemon.Lease
 	method := "ResolveAndLease"
-	params := any(map[string]any{"cwd": plan.cwd, "branches": plan.branches, "agent": plan.agent, "client_pid": os.Getpid(), "force_worktree": c.forceWorktree})
+	params := any(rpc.ResolveAndLeaseParams{Agent: plan.agent, Branches: plan.branches, ClientPID: os.Getpid(), CWD: plan.cwd, ForceWorktree: c.forceWorktree})
 	switch {
 	case plan.resuming && plan.target.WXSessionID != "":
 		method = "Resume"
-		params = map[string]any{"wx_session_id": plan.target.WXSessionID, "agent": plan.agent, "client_pid": os.Getpid(), "agent_session_id": plan.target.AgentSessionID, "fresh": plan.fresh, "branches": plan.branches}
+		params = rpc.ResumeParams{Agent: plan.agent, AgentSessionID: plan.target.AgentSessionID, Branches: plan.branches, ClientPID: os.Getpid(), Fresh: plan.fresh, WXSessionID: plan.target.WXSessionID}
 	case plan.resuming:
-		params = map[string]any{"cwd": plan.target.CWD, "branches": plan.branches, "agent": plan.agent, "client_pid": os.Getpid(), "force_worktree": c.forceWorktree}
+		params = rpc.ResolveAndLeaseParams{Agent: plan.agent, Branches: plan.branches, ClientPID: os.Getpid(), CWD: plan.target.CWD, ForceWorktree: c.forceWorktree}
 	}
 	operationKey, err := domain.NewID()
 	if err != nil {
