@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,7 +22,7 @@ func TestSessionEndWaitsForForegroundClientExit(t *testing.T) {
 	if _, err := store.CreateSlotSession(ctx, storeSlotAt(t, store, root, "", "live", filepath.Join(root, "live"), 0, "LEASED"), nil, state.Session{ID: "live", SlotID: "live", State: "ACTIVE", AgentKind: "codex", ClientPID: os.Getpid(), TokenHash: state.HashToken("token")}, ""); err != nil {
 		t.Fatal(err)
 	}
-	manager := &Manager{store: store, jobs: make(chan jobWork, 1), ctx: context.Background()}
+	manager := &Manager{store: store, jobQueue: newJobQueue(1), log: slog.New(slog.NewTextHandler(newDiagnosticLog(managerFixtureLogLimit), nil)), ctx: context.Background()}
 	if err := manager.Release(ctx, "live", "token", "session-end-hook"); err != nil {
 		t.Fatal(err)
 	}
