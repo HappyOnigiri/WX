@@ -39,3 +39,11 @@ multi_repositoryのworkspaceスナップショットは、slotディレクトリ
 
 リポジトリ単位のsnapshotの保存先・公開順序は[セッションと復元](session-lifecycle.md)を参照する。
 ソースリポジトリを読めるプロセスからは、そのsnapshotの中身も読める。
+
+## 変更の入口と代表テスト
+
+root世代の登録と解決は[`internal/daemon/roots.go`](../internal/daemon/roots.go)が入口である。
+代表テストは`internal/daemon`の[`TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot`](../internal/daemon/roots_integration_test.go)である。
+これは`storage.worktree_root`の変更が既存slotを動かさないことを通す。
+絞って動かすなら`make test-focus PKG=./internal/daemon RUN=TestWorktreeRootChange`とする。
+この実行は[部分検証](worktree-copy.md#部分検証)であり、最終判定は`make ci`とする。

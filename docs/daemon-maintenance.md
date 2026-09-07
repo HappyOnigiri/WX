@@ -91,3 +91,12 @@ CLIのstop/start待ちはsocketへのdialだけを使い、RPCでゲートを塞
 restartはlistener消失後と待機期限後に`Status`のpidを読み、置換前後のpidで判定する。
 短いlistener断はプローブが取りこぼすため、接続断の観測だけでは置換を判断できない。
 待機表示は`interactiveOutput`でstdoutが端末のときだけ出す。
+
+## 変更の入口と代表テスト
+
+GCの候補選択と削除の入口は[`internal/daemon/gc.go`](../internal/daemon/gc.go)である。
+代表テストは`internal/daemon`の[`TestGCRemovesRegisteredQuarantineWithoutCachedIdentity`](../internal/daemon/gc_integration_test.go)である。
+restart/stopのidleゲートの入口は[`internal/daemon/restart.go`](../internal/daemon/restart.go)である。
+代表テストは同パッケージの[`TestPendingRestartWaitsForJobsAndRequests`](../internal/daemon/restart_test.go)である。
+どちらも`make test-focus PKG=./internal/daemon RUN=<テスト名>`で絞って動かせる。
+この実行は[部分検証](worktree-copy.md#部分検証)であり、最終判定は`make ci`とする。

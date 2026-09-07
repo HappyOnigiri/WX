@@ -31,6 +31,12 @@ path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗さ�
 同じ扱いはworkspace rootのcopy/link source（`MaterializeRootAt`）と`.worktreeinclude`の一致にも適用し、既定名と明示名で挙動を分けない。
 workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
 
+## 変更の入口と代表テスト
+
+共有対象の判定と差し替えは[`internal/workspace/cow.go`](../internal/workspace/cow.go)が入口で、clonefileの呼び出しは[`cow_darwin.go`](../internal/workspace/cow_darwin.go)が持つ。
+代表テストは[`cow_darwin_test.go`](../internal/workspace/cow_darwin_test.go)で、macOSであれば`make test-darwin`に限らず`make ci`でも実行される（前提は後述の[部分検証](#部分検証)）。
+CoW周辺をまとめて動かすなら`make test-focus PKG=./internal/workspace RUN='TestCOW.*'`とし、ホストのOSで実行できる範囲に絞られる。
+
 ## 部分検証
 
 darwin専用実装（`cow_darwin.go`・`usage_darwin.go`）のテストは、macOSで`make ci`・`make test`・`make test-focus PKG=./internal/workspace`を実行すればいずれでも走る。

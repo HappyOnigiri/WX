@@ -6,6 +6,7 @@
     }
   },
   "customRules": [
-    "./tools/markdownlint/wx013.mjs"
+    "./tools/markdownlint/wx013.mjs",
+    "./tools/checkdoclinks/wx014.mjs"
   ]
 }
