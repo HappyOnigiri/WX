@@ -94,7 +94,7 @@ func printDegradedStatus(w io.Writer, payload map[string]any, verbose bool) {
 }
 
 type statusWorkspaceRow struct {
-	sortKey, path, ready, leased, last, note string
+	sortKey, path, policy, ready, leased, last, note string
 }
 
 // statusReplenishmentNote は補充停止中の workspace 行に出す注記を作る。
@@ -117,6 +117,9 @@ func statusReplenishmentNote(item map[string]any) string {
 // workspaceLastUsedSchemaVersion は workspace_details.last_used_at が導入された JSON schema 版である。
 const workspaceLastUsedSchemaVersion = 6
 
+// workspacePolicySchemaVersion は workspace_details.policy が導入された JSON schema 版である。
+const workspacePolicySchemaVersion = 14
+
 func printStatusSummary(w io.Writer, payload map[string]any) {
 	workspaces := statusObjectList(payload["workspace_details"])
 	roots := statusObjectsSortedBy(statusObjectList(payload["worktree_roots"]), "path")
@@ -131,6 +134,10 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 
 	rows := make([]statusWorkspaceRow, 0, len(workspaces))
 	for _, workspace := range workspaces {
+		if !statusWorkspaceIsSummarized(payload, workspace) {
+			// 表から外した workspace の補充停止は notes に残し、表の下の残余行として出す。
+			continue
+		}
 		root, _ := statusRawString(workspace, "root")
 		path := statusHomePath(root)
 		if statusWorkspaceIsCurrent(workspace, roots) {
@@ -139,6 +146,7 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 		row := statusWorkspaceRow{
 			sortKey: root,
 			path:    statusDash(path),
+			policy:  statusWorkspacePolicy(payload, workspace),
 			ready:   statusCountOrDash(workspace, "ready"),
 			leased:  statusCountOrDash(workspace, "leased"),
 			last:    "—",
@@ -160,14 +168,14 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 	for _, row := range rows {
 		noted = noted || row.note != ""
 	}
-	header := []string{"WORKSPACE", "READY", "IN USE", "LAST USED (" + statusZoneLabel() + ")"}
+	header := []string{"WORKSPACE", "POLICY", "READY", "IN USE", "LAST USED (" + statusZoneLabel() + ")"}
 	if noted {
 		header = append(header, "NOTE")
 	}
 	writeStatusTable(w, header, func() [][]string {
 		out := make([][]string, 0, len(rows))
 		for _, row := range rows {
-			cells := []string{row.path, row.ready, row.leased, row.last}
+			cells := []string{row.path, row.policy, row.ready, row.leased, row.last}
 			if noted {
 				cells = append(cells, statusDash(row.note))
 			}
@@ -178,9 +186,16 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 	if notice := statusWorkspaceLastUsedNotice(payload); notice != "" {
 		writeStatusLine(w, notice)
 	}
+	if notice := statusWorkspacePolicyNotice(payload); notice != "" {
+		writeStatusLine(w, notice)
+	}
 	if len(rows) == 0 {
 		// 空の registry でも表のヘッダーを残し、(none) を件数の 0 と混同させない。
 		writeStatusLine(w, "(none)")
+		// 全行を絞り込みで落としたときだけ、(none) を登録ゼロと読み違えないよう隠した件数を添える。
+		if hidden := len(workspaces); hidden > 0 {
+			writeStatusLine(w, statusHiddenWorkspaceNotice(hidden))
+		}
 	}
 
 	writeStatusLine(w, "")
@@ -277,6 +292,53 @@ func statusWorkspaceIsCurrent(workspace map[string]any, roots []map[string]any) 
 		}
 	}
 	return false
+}
+
+// statusWorkspaceIsSummarized は workspace を要約表に載せるか返す。
+// worktree を作る方針か、実際に worktree を持つ workspace だけを残し、方針が off・ask で slot も無いものは --verbose と --json に委ねる。
+func statusWorkspaceIsSummarized(payload, workspace map[string]any) bool {
+	if statusWorkspacePolicyUnavailable(payload) {
+		// policy を返さない daemon では方針を判定できないため、登録を隠さず全件出す。
+		return true
+	}
+	switch policy, _ := statusRawString(workspace, "policy"); policy {
+	case "hot", "cold":
+		return true
+	}
+	ready, _ := statusInt(workspace, "ready")
+	leased, _ := statusInt(workspace, "leased")
+	return ready > 0 || leased > 0
+}
+
+// statusWorkspacePolicy は POLICY 列の表示値を返す。
+// hot・cold 以外の方針も、条件を満たして表に残った行では何が有効かを読めるよう同じ形で出す。
+func statusWorkspacePolicy(payload, workspace map[string]any) string {
+	if statusWorkspacePolicyUnavailable(payload) {
+		return "unknown"
+	}
+	policy, _ := statusRawString(workspace, "policy")
+	return statusDash(strings.ToUpper(policy))
+}
+
+func statusWorkspacePolicyUnavailable(payload map[string]any) bool {
+	schema, ok := statusInt(payload, "schema_version")
+	return ok && schema < workspacePolicySchemaVersion
+}
+
+func statusWorkspacePolicyNotice(payload map[string]any) string {
+	if !statusWorkspacePolicyUnavailable(payload) {
+		return ""
+	}
+	schema, _ := statusInt(payload, "schema_version")
+	return fmt.Sprintf("POLICY unavailable: daemon JSON schema %d has no workspace policy; update the daemon.", schema)
+}
+
+// statusHiddenWorkspaceNotice は表が空になったときだけ添える、隠した登録の件数と確認手段の案内である。
+func statusHiddenWorkspaceNotice(hidden int) string {
+	if hidden == 1 {
+		return "1 registered workspace uses no worktree; run wx status --verbose to list it"
+	}
+	return fmt.Sprintf("%d registered workspaces use no worktree; run wx status --verbose to list them", hidden)
 }
 
 func statusWorkspaceLastUsed(payload, workspace map[string]any) string {

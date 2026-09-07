@@ -56,3 +56,26 @@ func TestPrintVerboseStatusRetainsDetailsAndUnknownFields(t *testing.T) {
 		t.Fatalf("false values were not retained:\n%s", got)
 	}
 }
+
+// verbose は登録の診断が目的なので、要約から外れる workspace も policy 付きで残す。
+func TestPrintVerboseStatusKeepsWorkspacesHiddenFromTheSummary(t *testing.T) {
+	payload := map[string]any{
+		"schema_version": 14,
+		"workspace_details": []map[string]any{
+			{"id": "w1", "root": "/repo", "policy": "hot", "generation": 1, "repositories": 1, "ready": 1, "leased": 0},
+			{"id": "w2", "root": "/archive", "policy": "off", "generation": 1, "repositories": 1, "ready": 0, "leased": 0},
+		},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, true)
+	got := output.String()
+	for _, want := range []string{"POLICY", "HOT", "OFF", "/archive"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("verbose output missing %q:\n%s", want, got)
+		}
+	}
+	// policy は既知キーなので、列として出るだけで Additional 側には現れない。
+	if strings.Contains(got, "workspaces[0].policy") {
+		t.Fatalf("known workspace key leaked into additional fields:\n%s", got)
+	}
+}

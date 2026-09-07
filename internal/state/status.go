@@ -19,6 +19,9 @@ type (
 		// LastUsedAt はその workspace で作られた session の created_at の最大値であり、一度も使っていない workspace では空になる。
 		// repositories.last_leased_at を使わないのは、repository 行を共有する別 workspace の貸出でも値が入り、workspace 自身の利用実績と区別できないためである。
 		LastUsedAt string `json:"last_used_at,omitempty"`
+		// Policy は設定側の worktree 方針（hot・cold・off・ask）で、DB ではなく Manager が Config から埋める。
+		// schema 14 以降は常に値がある前提で表示側が方針を判定するため、省略可能にしない。
+		Policy string `json:"policy"`
 	}
 	SessionDiagnostic struct {
 		ID         string `json:"id"`
