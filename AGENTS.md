@@ -39,7 +39,7 @@ Go側に状態のenum型や遷移ガードを作らない。
 隔離は`slots.state='QUARANTINED'`と`quarantined_artifacts`テーブルで表し、専用ディレクトリを作らない。
 
 スキーマ変更は`migrations/*.sql`に次の番号のファイルを追加する（既存ファイルの編集は適用済みDBに反映されない）。
-`state.SchemaVersion`はファイル数に手動で揃える（テスト・CIによる一致検査はない）。
+`state.SchemaVersion`はファイル数に手動で揃える（`make migrations-check`が番号の連番と定数の一致を検査する）。
 旧worktreeレイアウトのDBとの互換・移行コードは持たず、該当する`state.db`は作り直す。
 `state.JSONSchemaVersion`はDB版と独立に、`--json`の出力形状が変わったときだけ上げる。
 
