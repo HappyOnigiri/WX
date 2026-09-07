@@ -228,3 +228,28 @@ func boundWorktreePath(t *testing.T, store *state.Store, slotID string) string {
 	}
 	return repos[0].WorktreePath
 }
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryPath(path string) domain.CanonicalPath {
+	return domain.CanonicalPath(filepath.Clean(path))
+}
+
+func ensureOwnershipMarkerForTest(t *testing.T, root, target string, identity workspace.MarkerIdentity, commonDir string) {
+	t.Helper()
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := workspace.EnsureOwnershipMarkerAt(owner, root, target, identity, commonDir); err != nil {
+		t.Fatal(err)
+	}
+}
