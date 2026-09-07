@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
@@ -77,6 +78,9 @@ func (m *Manager) executeJob(work queuedJob, slot jobExecutionSlot) {
 		barrier(job)
 	}
 	jobCtx, cancel := context.WithCancel(m.ctx)
+	// 実行枠をロック待ちの手放し先として渡す。
+	// 同じリポジトリの Git 管理操作を待つだけのジョブが、無関係なリポジトリの枠を占有しなくなる。
+	jobCtx = gitx.WithLockWaiter(jobCtx, slot)
 	done := make(chan struct{})
 	m.startBackground(func() {
 		ticker := time.NewTicker(10 * time.Second)

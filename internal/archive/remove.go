@@ -15,7 +15,13 @@ import (
 )
 
 func (m *Manager) RemoveWorktree(ctx context.Context, repo discovery.Repository, root, path, expectedHead string) error {
-	return m.Git.WithCommonDirLock(string(repo.CommonDir), func() error {
+	// 削除も slot 排他を先に取る。prepare が common-directory lock を手放している区間の実体を消さないためである。
+	ctx, releaseSlot, err := m.lockSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseSlot()
+	return m.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(ctx context.Context) error {
 		// 何かを解決する前に SQLite に記録されたパスをそのまま検査する。
 		// 先に解決すると、別の登録済み worktree へ向ける symlink を見落とす。
 		absoluteRoot, err := filepath.Abs(root)

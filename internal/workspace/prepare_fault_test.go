@@ -117,7 +117,7 @@ func TestPrepareLockedTargetPropagatesRevalidationDescriptorFailure(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
-	if err := preparer.prepareLocked(context.Background(), repo, target, head, "slot", preparePhaseCreate, root); err == nil {
+	if err := preparer.prepareOwned(context.Background(), repo, target, head, "slot", preparePhaseCreate, root); err == nil {
 		t.Fatal("prepareLockedTarget opened an unsearchable configured root")
 	}
 }
@@ -135,7 +135,7 @@ func TestPrepareLockedTargetPropagatesParentCreationFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(workspaceDirectory, 0o700) })
-	if err := preparer.prepareLocked(context.Background(), repo, target, head, "slot", preparePhaseCreate, root); err == nil {
+	if err := preparer.prepareOwned(context.Background(), repo, target, head, "slot", preparePhaseCreate, root); err == nil {
 		t.Fatal("prepareLockedTarget created a worktree parent below a read-only directory")
 	}
 }
@@ -153,7 +153,7 @@ func TestPrepareLockedTargetPropagatesMarkerWriteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(slotDirectory, 0o700) })
-	err := preparer.prepareLocked(context.Background(), repo, target, head, "slot", preparePhaseCreate, root)
+	err := preparer.prepareOwned(context.Background(), repo, target, head, "slot", preparePhaseCreate, root)
 	if err == nil || !strings.Contains(err.Error(), "marker") {
 		t.Fatalf("prepareLockedTarget wrote an ownership marker below a read-only directory: %v", err)
 	}

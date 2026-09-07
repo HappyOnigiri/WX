@@ -34,6 +34,7 @@ func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Pre
 		DetailDir: m.prepareDetailDir,
 		OwnedRoot: ownedRoot, RootPath: filepath.Clean(root),
 		RootID: slot.RootID, SlotRelPath: slot.RelPath,
+		SlotLocks: &m.slotLocks,
 	}
 }
 
