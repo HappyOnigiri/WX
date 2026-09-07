@@ -223,8 +223,8 @@ func TestRunSlotsListsLendableAndAll(t *testing.T) {
 	}
 	cancel, done := serveUntilCanceled(t, socket, commandHandler{
 		slots: []map[string]any{
-			{"slot_id": "leased", "state": "LEASED", "session_id": "active", "agent": "codex", "copy_mode": "cow", "measurement": "log2phys_first_last", "measured_at": "2026-01-01T00:00:00Z", "allocated_bytes": float64(4 << 30), "exclusive_bytes": float64(1258291200), "path": "/wx/leased"},
-			{"slot_id": "tiny", "state": "READY", "copy_mode": "copy", "measurement": "log2phys_first_last", "measured_at": "2026-01-01T00:00:00Z", "allocated_bytes": float64(1), "exclusive_bytes": float64(1), "path": "/wx/tiny"},
+			{"slot_id": "leased", "state": "LEASED", "session_id": "active", "agent": "codex", "repositories": []any{"/src/api"}, "copy_mode": "cow", "measurement": "log2phys_first_last", "measured_at": "2026-01-01T00:00:00Z", "allocated_bytes": float64(4 << 30), "exclusive_bytes": float64(1258291200), "path": "/wx/leased"},
+			{"slot_id": "tiny", "state": "SNAPSHOTTED", "repositories": []any{"/src/api", "/src/web"}, "copy_mode": "copy", "measurement": "log2phys_first_last", "measured_at": "2026-01-01T00:00:00Z", "allocated_bytes": float64(1), "exclusive_bytes": float64(1), "path": "/wx/tiny"},
 			{"slot_id": "warm", "state": "READY", "measurement": "pending", "path": "/wx/warm"},
 		},
 		allSlots: []map[string]any{
@@ -256,19 +256,20 @@ func TestRunSlotsListsLendableAndAll(t *testing.T) {
 	}
 	// 列の意味は見出しでしか分からないため、見出しの有無と並びを表の契約として固定する。
 	header := strings.Fields(strings.Split(stdout, "\n")[0])
-	if !slices.Equal(header, []string{"SLOT", "STATE", "SESSION", "AGENT", "COPY", "SIZE(MB)", "PATH"}) {
+	if !slices.Equal(header, []string{"SLOT", "STATE", "REPO", "SESSION", "AGENT", "COPY", "SIZE(MB)", "PATH"}) {
 		t.Fatalf("slots header=%q", header)
 	}
 	// 容量は共有ぶんを除いた占有量を MB で 1 列だけ出し、3 桁ごとに区切る。
-	if got := row("/wx/leased"); !slices.Equal(got, []string{"leased", "LEASED", "active", "codex", "cow", "1,200", "/wx/leased"}) {
+	if got := row("/wx/leased"); !slices.Equal(got, []string{"leased", "LEASED", "api", "active", "codex", "cow", "1,200", "/wx/leased"}) {
 		t.Fatalf("leased row=%q", got)
 	}
 	// 1MB 未満は切り上げるため、実体のある slot が 0 と表示されることはない。
-	if got := row("/wx/tiny"); !slices.Equal(got, []string{"tiny", "READY", "-", "-", "copy", "1", "/wx/tiny"}) {
+	// 既定でも SNAPSHOTTED は並び、multi-repo の slot は REPO 列に basename をカンマ区切りで出す。
+	if got := row("/wx/tiny"); !slices.Equal(got, []string{"tiny", "SNAPSHOTTED", "api,web", "-", "-", "copy", "1", "/wx/tiny"}) {
 		t.Fatalf("tiny row=%q", got)
 	}
 	// 測定前の slot は方式の欄に pending を出し、使用量が未知であることと 0 バイトを取り違えないようにする。
-	if got := row("/wx/warm"); !slices.Equal(got, []string{"warm", "READY", "-", "-", "pending", "-", "/wx/warm"}) {
+	if got := row("/wx/warm"); !slices.Equal(got, []string{"warm", "READY", "-", "-", "-", "pending", "-", "/wx/warm"}) {
 		t.Fatalf("warm row=%q", got)
 	}
 	if strings.Contains(stdout, "archived") {

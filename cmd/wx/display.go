@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,13 +11,29 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 )
 
-const slotRowFormat = "%-8s %-12s %-8s %-8s %-11s %8s  %s\n"
+const slotRowFormat = "%-8s %-12s %-16s %-8s %-8s %-11s %8s  %s\n"
 
 func slotField(row map[string]any, key string) string {
 	if value, ok := row[key].(string); ok && value != "" {
 		return value
 	}
 	return "-"
+}
+
+// slotRepositories は行のリポジトリを basename のカンマ区切りで返す。
+// フルパスは --json 側に残し、表では列幅を basename に抑える。
+func slotRepositories(row map[string]any) string {
+	paths, _ := row["repositories"].([]any)
+	names := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if text, ok := path.(string); ok && text != "" {
+			names = append(names, filepath.Base(text))
+		}
+	}
+	if len(names) == 0 {
+		return "-"
+	}
+	return strings.Join(names, ",")
 }
 
 // slotCopyMode は方式を出し、まだ決まらない行には copy_mode の代わりに理由（pending・unsupported）を出す。

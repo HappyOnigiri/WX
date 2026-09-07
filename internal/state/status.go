@@ -89,17 +89,17 @@ type SlotSummary struct {
 	LastUsedAt     string `json:"last_used_at,omitempty"`
 	ArchivedAt     string `json:"archived_at,omitempty"`
 	ExpiresAt      string `json:"expires_at,omitempty"`
+	// Repositories は行に紐づくソースリポジトリの main worktree のフルパスで、multi-repo workspace では複数入る。
+	// 表示側で basename へ縮めるため、ここでは短縮しない。
+	Repositories []string `json:"repositories,omitempty"`
 }
 
-// ListSlots は貸出中と待機中の slot を返す。
-// all では FAILED・QUARANTINED の slot に加え、slot を手放した session も返し、`wx resume` に渡す ID をここから辿れるようにする。
+// ListSlots は回収前（ARCHIVED 以外）の slot をすべて返し、SIZE 列の合計が `wx status` の Disk 行と同じ範囲を指すようにする。
+// all ではさらに、slot を手放した session も返し、`wx resume` に渡す ID をここから辿れるようにする。
 func (s *Store) ListSlots(ctx context.Context, all bool) ([]SlotSummary, error) {
 	q := `SELECT sl.id,sl.state,COALESCE(sl.workspace_id,''),rt.path,sl.rel_path,COALESCE(se.id,''),COALESCE(se.state,''),COALESCE(se.agent_kind,''),COALESCE(se.agent_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.last_used_at,'')
 		FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN sessions se ON se.id=sl.owner_session_id`
-	if !all {
-		q += ` WHERE sl.state IN ('READY','LEASED')`
-	}
-	q += ` ORDER BY rt.path,sl.rel_path`
+	q += ` WHERE sl.state <> 'ARCHIVED' ORDER BY rt.path,sl.rel_path`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
@@ -118,14 +118,58 @@ func (s *Store) ListSlots(ctx context.Context, all bool) ([]SlotSummary, error) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if !all {
-		return out, nil
+	if all {
+		detached, err := s.listDetachedSessions(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, detached...)
 	}
-	detached, err := s.listDetachedSessions(ctx)
+	if err := s.fillSlotRepositories(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// fillSlotRepositories は各行に main worktree path を付ける。
+// group_concat は並び順を保証しないため、slot は dir_name 順・session は ordinal 順で引いて Go 側で束ねる。
+func (s *Store) fillSlotRepositories(ctx context.Context, rows []SlotSummary) error {
+	bySlot, err := s.repositoryPaths(ctx, `SELECT sr.slot_id,r.main_worktree_path FROM slot_repositories sr JOIN repositories r ON r.id=sr.repository_id ORDER BY sr.slot_id,sr.dir_name`)
+	if err != nil {
+		return err
+	}
+	bySession, err := s.repositoryPaths(ctx, `SELECT sr.session_id,r.main_worktree_path FROM session_repositories sr JOIN repositories r ON r.id=sr.repository_id ORDER BY sr.session_id,sr.ordinal`)
+	if err != nil {
+		return err
+	}
+	for i := range rows {
+		if paths := bySlot[rows[i].SlotID]; rows[i].SlotID != "" && len(paths) > 0 {
+			rows[i].Repositories = paths
+			continue
+		}
+		if paths := bySession[rows[i].SessionID]; rows[i].SessionID != "" && len(paths) > 0 {
+			rows[i].Repositories = paths
+		}
+	}
+	return nil
+}
+
+// repositoryPaths は (owner id, main worktree path) の2列を引き、owner ごとの一覧へまとめる。
+func (s *Store) repositoryPaths(ctx context.Context, query string) (map[string][]string, error) {
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	return append(out, detached...), nil
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var owner, path string
+		if err := rows.Scan(&owner, &path); err != nil {
+			return nil, err
+		}
+		out[owner] = append(out[owner], path)
+	}
+	return out, rows.Err()
 }
 
 // listDetachedSessions は現在どの slot も借りていない session を返す。

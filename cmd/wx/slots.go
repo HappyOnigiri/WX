@@ -11,7 +11,7 @@ import (
 
 func runSlots(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("slots", pflag.ContinueOnError)
-	all := fs.Bool("all", false, "include failed, quarantined, and released slots")
+	all := fs.Bool("all", false, "also list sessions that no longer hold a slot")
 	jsonOut := fs.Bool("json", false, "print JSON")
 	fs.Usage = func() { commandUsage(os.Stdout, "slots") }
 	if code, done := finishFlagParse(fs, "slots", args); done {
@@ -32,10 +32,10 @@ func runSlots(ctx context.Context, args []string) int {
 		fmt.Println(string(data))
 		return 0
 	}
-	fmt.Printf(slotRowFormat, "SLOT", "STATE", "SESSION", "AGENT", "COPY", "SIZE(MB)", "PATH")
+	fmt.Printf(slotRowFormat, "SLOT", "STATE", "REPO", "SESSION", "AGENT", "COPY", "SIZE(MB)", "PATH")
 	for _, s := range out {
 		fmt.Printf(slotRowFormat,
-			slotField(s, "slot_id"), slotField(s, "state"), slotField(s, "session_id"), slotField(s, "agent"),
+			slotField(s, "slot_id"), slotField(s, "state"), slotRepositories(s), slotField(s, "session_id"), slotField(s, "agent"),
 			slotCopyMode(s), slotSizeMB(s), slotField(s, "path"))
 	}
 	return 0

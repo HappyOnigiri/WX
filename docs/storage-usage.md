@@ -33,6 +33,7 @@ root合計を更新するのは周期測定・clear後の測り直し・削除�
 
 wxがdisk使用量として表示する値は常にexclusive（共有blockを除いた専有分）とし、`wx slots`のSIZE列と`wx status`のDisk行で同じ量を指す。
 どちらもexclusiveなので列の合計とroot合計が同じ意味になり、slotを消したときに実際に空く量の下限を示す。
+既定の`wx slots`はDisk行と同じ非ARCHIVED slotを全て並べるため、`--all`を付けなくてもSIZE列の合計とDisk行の範囲が一致する。
 表示ではexclusiveやallocatedのような内訳の語を出さず、単に使用量として扱う。
 利用者に2つの数字を並べて選ばせない方が、どちらが本物かという判断を持ち込まずに済むためである。
 Disk行に付く`managed`は管理対象と登録外（`Unmanaged`行）の区別であり、専有分と満額の区別ではない。

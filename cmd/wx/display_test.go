@@ -104,3 +104,24 @@ func TestPrintDisplayHandlesEmptyAndNonObjectPayloads(t *testing.T) {
 		t.Fatalf("non-object payload rendered as %+v", pairs)
 	}
 }
+
+// TestSlotRepositoriesShortensPathsToBasenames は REPO 列の整形を固定する。
+// 表では basename だけを出し、フルパスは --json に残す。
+func TestSlotRepositoriesShortensPathsToBasenames(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		row  map[string]any
+		want string
+	}{
+		{name: "single", row: map[string]any{"repositories": []any{"/src/api"}}, want: "api"},
+		{name: "multi", row: map[string]any{"repositories": []any{"/src/api", "/src/web"}}, want: "api,web"},
+		{name: "missing", row: map[string]any{}, want: "-"},
+		{name: "empty", row: map[string]any{"repositories": []any{""}}, want: "-"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := slotRepositories(testCase.row); got != testCase.want {
+				t.Fatalf("slotRepositories=%q want %q", got, testCase.want)
+			}
+		})
+	}
+}

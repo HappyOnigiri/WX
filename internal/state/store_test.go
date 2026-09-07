@@ -72,14 +72,15 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 	if _, err := store.CreateSlotSession(ctx, Slot{ID: "archived", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/archived", State: "SNAPSHOTTED"}, nil, archived, ""); err != nil {
 		t.Fatal(err)
 	}
+	// 既定の一覧は実体が残る slot をすべて返すため、SNAPSHOTTED も貸出中・待機中と並ぶ。
 	slots, err := store.ListSlots(ctx, false)
-	if err != nil || len(slots) != 2 {
-		t.Fatalf("lendable slot list=%+v err=%v", slots, err)
+	if err != nil || len(slots) != 3 {
+		t.Fatalf("live slot list=%+v err=%v", slots, err)
 	}
-	if slots[1].SlotID != "ready" || slots[1].SessionID != "" || slots[0].SlotID != "active" || slots[0].SessionID != active.ID {
-		t.Fatalf("lendable slots=%+v", slots)
+	if slots[0].SlotID != "active" || slots[0].SessionID != active.ID || slots[1].SlotID != "archived" || slots[2].SlotID != "ready" || slots[2].SessionID != "" {
+		t.Fatalf("live slots=%+v", slots)
 	}
-	// SNAPSHOTTED slot は貸出も待機もしていないため、既定の一覧には出ず --all にだけ出る。
+	// --all が足すのは slot を手放した session だけで、この時点ではまだ存在しない。
 	if slots, err := store.ListSlots(ctx, true); err != nil || len(slots) != 3 {
 		t.Fatalf("all slot list=%+v err=%v", slots, err)
 	}
@@ -89,7 +90,7 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 	if err := store.Heartbeat(ctx, "active", "token"); err == nil {
 		t.Fatal("expired session heartbeat succeeded")
 	}
-	if slots, err := store.ListSlots(ctx, false); err != nil || len(slots) != 2 || slots[0].SessionState != "EXPIRED" {
+	if slots, err := store.ListSlots(ctx, false); err != nil || len(slots) != 3 || slots[0].SessionState != "EXPIRED" {
 		t.Fatalf("expired session slot list=%+v err=%v", slots, err)
 	}
 
