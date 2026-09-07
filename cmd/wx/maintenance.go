@@ -28,7 +28,7 @@ func runGC(ctx context.Context, args []string) int {
 	}
 	var out daemon.GCResult
 	if err := c.Call(ctx, "GC", map[string]bool{"dry_run": *dry}, &out); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		reportRPCError(err)
 		return 1
 	}
 	fmt.Printf("candidates: %d\n", out.Candidates)
@@ -64,7 +64,7 @@ func runPrune(ctx context.Context, args []string) int {
 	}
 	var out daemon.PruneResult
 	if err := c.Call(ctx, "Prune", map[string]bool{"all": *all, "dry_run": *dry}, &out); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		reportRPCError(err)
 		return 1
 	}
 	if out.DryRun {
@@ -99,7 +99,7 @@ func runForget(ctx context.Context, args []string) int {
 	}
 	c, _ := rpcClient()
 	if err := c.Call(ctx, "Forget", map[string]string{"path": fs.Arg(0)}, nil); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		reportRPCError(err)
 		return 1
 	}
 	fmt.Println("forgotten", fs.Arg(0))
@@ -129,7 +129,7 @@ func runRetryStandby(ctx context.Context, args []string) int {
 		Scheduled  bool   `json:"scheduled"`
 	}
 	if err := c.Call(ctx, "RetryStandby", map[string]string{"path": fs.Arg(0)}, &out); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		reportRPCError(err)
 		return 1
 	}
 	if out.Root == "" {

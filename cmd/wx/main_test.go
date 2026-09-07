@@ -109,6 +109,37 @@ func TestRunRPCDisplayExplainsWhenDaemonIsNotReady(t *testing.T) {
 	}
 }
 
+// daemon へ RPC するコマンドは、未待受のとき socket path や dial の syscall error を見せず status と同じ案内で終わる。
+func TestDaemonUnavailableGuidanceIsSharedAcrossCommands(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "status", args: []string{"status"}},
+		{name: "slots", args: []string{"slots"}},
+		{name: "gc", args: []string{"gc", "--dry-run"}},
+		{name: "prune", args: []string{"prune", "--dry-run"}},
+		{name: "clear", args: []string{"clear", "--dry-run"}},
+		{name: "forget", args: []string{"forget", "/nonexistent"}},
+		{name: "retry-standby", args: []string{"retry-standby", "/nonexistent"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			stderr := captureStderr(t, func() {
+				if code := run(context.Background(), tc.args); code != 1 {
+					t.Fatalf("wx %s exit=%d, want 1 when daemon is unavailable", tc.name, code)
+				}
+			})
+			if !strings.Contains(stderr, daemonUnavailableMessage) {
+				t.Fatalf("stderr=%q, want substring %q", stderr, daemonUnavailableMessage)
+			}
+			if strings.Contains(stderr, "dial unix") {
+				t.Fatalf("stderr leaked socket implementation detail: %q", stderr)
+			}
+		})
+	}
+}
+
 func TestRunDoctorFallsBackToLocalChecksWhenDaemonCannotConnect(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

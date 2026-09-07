@@ -87,7 +87,7 @@ func runConfig(ctx context.Context, args []string) int {
 	}
 	c, _ := rpcClient()
 	if err := c.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil {
-		fmt.Printf("saved; daemon reload pending: %v\n", err)
+		fmt.Printf("saved; daemon reload pending: %s\n", rpcErrorMessage(err))
 	} else {
 		fmt.Println("saved and reloaded")
 	}
