@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -85,13 +86,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	}
 	switch method {
 	case "ResolveAndLease":
-		var p struct {
-			ForceWorktree bool     `json:"force_worktree"`
-			CWD           string   `json:"cwd"`
-			Branches      []string `json:"branches"`
-			Agent         string   `json:"agent"`
-			ClientPID     int      `json:"client_pid"`
-		}
+		var p rpc.ResolveAndLeaseParams
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
@@ -139,14 +134,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		}
 		return map[string]bool{"released": true}, h.Manager.Release(ctx, p.SessionID, p.Token, p.Reason)
 	case "Resume":
-		var p struct {
-			WXSessionID    string   `json:"wx_session_id"`
-			Agent          string   `json:"agent"`
-			ClientPID      int      `json:"client_pid"`
-			Fresh          bool     `json:"fresh"`
-			AgentSessionID string   `json:"agent_session_id"`
-			Branches       []string `json:"branches"`
-		}
+		var p rpc.ResumeParams
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
