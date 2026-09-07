@@ -37,6 +37,36 @@ func FileIdentity(file *os.File) (string, error) {
 // FormatIdentity は inode と volume の識別子から identity 文字列を組み立てる。
 func FormatIdentity(inode, volume string) string { return identityPrefix + inode + ":" + volume }
 
+// FileStamp は open 済み file の同一性と、内容が書き換わったかを判別するための属性を持つ。
+// inode を保ったまま中身だけを上書きする in-place 変更は identity では見分けられないため、size と時刻も併せて比較する。
+type FileStamp struct {
+	Identity        string
+	Size            int64
+	ModTimeNanos    int64
+	ChangeTimeNanos int64
+}
+
+// FileStampOf は pin 済み descriptor から FileStamp を読む。path 名を再解決しないため、
+// hash 検証の直後と利用の直後に呼べば、その間に起きた置換と in-place 変更を検出できる。
+func FileStampOf(file *os.File) (FileStamp, error) {
+	if file == nil {
+		return FileStamp{}, errors.New("file stamp is unavailable")
+	}
+	identity, err := FileIdentity(file)
+	if err != nil {
+		return FileStamp{}, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return FileStamp{}, err
+	}
+	change, ok := changeTimeNanos(info)
+	if !ok {
+		return FileStamp{}, fmt.Errorf("unsupported file stamp type %T", info.Sys())
+	}
+	return FileStamp{Identity: identity, Size: info.Size(), ModTimeNanos: info.ModTime().UnixNano(), ChangeTimeNanos: change}, nil
+}
+
 // IdentityFields は identity を inode と volume の識別子に分解する。
 // 旧 `dev:ino` 形式は volume を空文字で返す。呼び出し元はこれで、記録済み identity が移行前のものかを判別できる。
 func IdentityFields(identity string) (inode, volume string, ok bool) {
