@@ -30,3 +30,18 @@ sourceがsymlinkの項目と、ソースリポジトリのignore対象でない�
 path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
 同じ扱いはworkspace rootのcopy/link source（`MaterializeRootAt`）と`.worktreeinclude`の一致にも適用し、既定名と明示名で挙動を分けない。
 workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
+
+## 部分検証
+
+darwin専用実装（`cow_darwin.go`・`usage_darwin.go`）のテストは、macOSで`make ci`・`make test`・`make test-focus PKG=./internal/workspace`を実行すればいずれでも走る。
+`cowAvailable`はdarwinで常にtrueを返しfilesystemを見ないため、非APFSの一時ディレクトリではclonefileが効かず、失敗が実装の不具合と区別できない。
+そこで`internal/workspace`の`TestMain`が`statfs`でTMPDIRを判定し、APFSでなければテストを走らせずに前提未成立として終える。
+
+これらの実装を触ったら、macOS実機で`make test-darwin`も実行する。
+このtargetは`internal/workspace`全体を`go test -v -shuffle=on -count=1`で走らせ、macOSのバージョン・アーキテクチャ・Go版と使用した一時ディレクトリを表示する。
+非Darwinホストとホストに一致しない`GOOS`/`GOARCH`は、darwin専用のテストがビルド対象から外れるため、テストを始めずに失敗する。
+`make build-darwin`はarm64のクロスビルドだけを見るので、これらのテストの実行は保証しない。
+CIのランナーはすべてlinuxのままとし、macOS runnerは用意しない。
+
+Linux側の退行は`CGO_ENABLED=0 GOOS=linux .tools/bin/golangci-lint run ./...`で確認する。
+どちらも部分検証であり、最終判定は`make ci`とする。
