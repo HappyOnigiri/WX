@@ -18,10 +18,10 @@ import (
 // 既定 page_size は 4096 byte なので、4MiB は backupStepPages(256) を大きく超える。
 const backupBulkBytes = 4 << 20
 
-// backupWriteInterval は並行書き込みを差し込む間隔である。
-// 別 connection の commit ごとに SQLite は backup を先頭から再走査するため、間を置かない書き込みは複製を無期限に飢餓させる。
-// daemon の heartbeat は秒単位で、この間隔でも実運用より十分密である。
-const backupWriteInterval = 10 * time.Millisecond
+// backupContendedSteps は並行書き込みと競合させる step 数である。
+// 別 connection の commit ごとに SQLite は backup を先頭から再走査するため、書き込みを止めない限り複製は完了しない。
+// この step 数を観測したら書き込みを止め、競合を経た複製が完成することを確認する。
+const backupContendedSteps = 8
 
 // backupTestDeadline は並行書き込み下の複製に与える上限である。超えたら飢餓として test を失敗させる。
 const backupTestDeadline = 60 * time.Second
@@ -151,7 +151,16 @@ func TestOnlineBackupWithConcurrentWritesStaysConsistent(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 書き込みは step を跨いで競合させたいだけなので、観測した step 数で打ち切る。
+	// 時間で打ち切ると、step が遅い環境では書き込みが常に先に commit して複製が終わらない。
 	stop := make(chan struct{})
+	var stopOnce sync.Once
+	var steps, committed atomic.Int64
+	store.backupStepBarrier = func() {
+		if steps.Add(1) >= backupContendedSteps {
+			stopOnce.Do(func() { close(stop) })
+		}
+	}
 	writes := make(chan error, 1)
 	go func() {
 		for {
@@ -159,23 +168,27 @@ func TestOnlineBackupWithConcurrentWritesStaysConsistent(t *testing.T) {
 			case <-stop:
 				writes <- nil
 				return
-			case <-time.After(backupWriteInterval):
+			default:
 			}
 			if err := store.Heartbeat(ctx, "standby", "token"); err != nil {
 				writes <- err
 				return
 			}
+			committed.Add(1)
 		}
 	}()
 	deadlined, cancel := context.WithTimeout(ctx, backupTestDeadline)
 	defer cancel()
 	path, backupErr := store.Backup(deadlined, 2, time.Hour)
-	close(stop)
+	stopOnce.Do(func() { close(stop) })
 	if err := <-writes; err != nil {
 		t.Fatalf("concurrent heartbeat failed: %v", err)
 	}
 	if backupErr != nil {
 		t.Fatal(backupErr)
+	}
+	if steps.Load() < backupContendedSteps || committed.Load() == 0 {
+		t.Fatalf("backup steps=%d concurrent commits=%d; the contended window was not exercised", steps.Load(), committed.Load())
 	}
 
 	copied, err := Open(path)
