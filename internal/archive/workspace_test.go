@@ -47,7 +47,7 @@ func TestWorkspaceSnapshotRestorePreservesOnlyOwnedRootState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err != nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,7 +88,7 @@ func TestWorkspaceSnapshotRestorePreservesOnlyOwnedRootState(t *testing.T) {
 	if err := os.WriteFile(snapshot.ArchivePath, archiveData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, time.Now()); err == nil {
 		t.Fatal("tampered workspace archive passed checksum validation")
 	}
 }
@@ -150,20 +150,20 @@ func TestPinnedWorkspaceSnapshotRestoreValidationAndDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pinned snapshot: %v", err)
 	}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err != nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, time.Now()); err != nil {
 		t.Fatalf("pinned validation: %v", err)
 	}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now().Add(2*time.Hour)); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, time.Now().Add(2*time.Hour)); err == nil {
 		t.Fatal("expired pinned snapshot was accepted")
 	}
 	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil); err != nil {
 		t.Fatalf("pinned restore: %v", err)
 	}
 	assertWorkspaceTestFile(t, filepath.Join(bundleRoot, "notes", "saved.txt"), "pinned state\n")
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err != nil {
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot); err != nil {
 		t.Fatalf("pinned deletion: %v", err)
 	}
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err != nil {
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot); err != nil {
 		t.Fatalf("idempotent pinned deletion: %v", err)
 	}
 }
@@ -189,19 +189,19 @@ func TestPinnedWorkspaceOperationsRejectClosedAndMismatchedDescriptors(t *testin
 	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, nil, snapshot, nil); err == nil {
 		t.Fatal("restore accepted a nil archive descriptor")
 	}
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, nil, snapshot); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, nil, snapshot); err == nil {
 		t.Fatal("delete accepted a nil descriptor")
 	}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, nil, snapshot, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, nil, snapshot, time.Now()); err == nil {
 		t.Fatal("validation accepted a nil descriptor")
 	}
 	if err := verifyPinnedRootPath(filepath.Join(t.TempDir(), "missing"), owner); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("mismatched root error=%v", err)
 	}
-	if _, _, err := openWorkspaceRestoreRoots(filepath.Join(t.TempDir(), "outside"), ownershipRoot, owner, ownershipRoot, owner, snapshot); err == nil {
+	if _, err := openWorkspaceRestoreTarget(filepath.Join(t.TempDir(), "outside"), ownershipRoot, owner); err == nil {
 		t.Fatal("pinned restore opened a bundle outside the ownership root")
 	}
-	if _, _, err := openWorkspaceRestoreRoots(bundleRoot, ownershipRoot, nil, filepath.Join(t.TempDir(), "missing"), nil, snapshot); err == nil {
+	if _, err := OpenVerifiedWorkspaceSnapshotAt(context.Background(), filepath.Join(t.TempDir(), "missing"), owner, snapshot, time.Now()); err == nil {
 		t.Fatal("restore opened an archive below a missing ownership root")
 	}
 	closed, err := os.OpenRoot(ownershipRoot)
@@ -211,10 +211,10 @@ func TestPinnedWorkspaceOperationsRejectClosedAndMismatchedDescriptors(t *testin
 	if err := closed.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, closed, snapshot, time.Now()); !errors.Is(err, state.ErrOwnership) {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, closed, snapshot, time.Now()); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("closed validation error=%v", err)
 	}
-	if _, _, err := openWorkspaceRestoreRoots(bundleRoot, ownershipRoot, closed, ownershipRoot, owner, snapshot); !errors.Is(err, state.ErrOwnership) {
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, closed, ownershipRoot, owner, snapshot, nil); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("closed target restore root error=%v", err)
 	}
 	if err := restoreWorkspaceRegularFile(owner, tar.NewReader(bytes.NewReader(nil)), "bad", "bad", &tar.Header{Size: -1}); err == nil {
@@ -318,16 +318,16 @@ func TestDeleteWorkspaceSnapshotRequiresMatchingArtifact(t *testing.T) {
 	}
 	tampered := snapshot
 	tampered.SHA256 = "00"
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, tampered); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, tampered); err == nil {
 		t.Fatal("tampered workspace snapshot was deleted")
 	}
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err != nil {
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(snapshot.ArchivePath); !os.IsNotExist(err) {
 		t.Fatalf("workspace snapshot still exists: %v", err)
 	}
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err != nil {
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot); err != nil {
 		t.Fatalf("replayed workspace snapshot deletion: %v", err)
 	}
 }
@@ -418,7 +418,7 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 	} {
 		invalid := snapshot
 		mutate(&invalid)
-		if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, invalid, time.Now()); err == nil {
+		if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, invalid, time.Now()); err == nil {
 			t.Fatalf("invalid snapshot metadata accepted: %+v", invalid)
 		}
 	}
@@ -426,13 +426,13 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 	if err := os.Remove(snapshot.ArchivePath); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); !os.IsNotExist(err) {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, time.Now()); !os.IsNotExist(err) {
 		t.Fatalf("missing artifact error=%v", err)
 	}
 	if err := os.Mkdir(snapshot.ArchivePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, time.Now()); err == nil {
 		t.Fatal("directory artifact accepted")
 	}
 	if err := os.Remove(snapshot.ArchivePath); err != nil {
@@ -441,7 +441,7 @@ func TestWorkspaceSnapshotValidationRejectsInvalidMetadataAndArtifacts(t *testin
 	if err := os.Symlink(bundleRoot, snapshot.ArchivePath); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, time.Now()); err == nil {
 		t.Fatal("symlink artifact accepted")
 	}
 
@@ -585,7 +585,7 @@ func TestDeleteWorkspaceSnapshotRejectsWrongPathAndNonRegularArtifact(t *testing
 	}
 	wrongPath := snapshot
 	wrongPath.RelPath += ".other"
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, wrongPath); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, wrongPath); err == nil {
 		t.Fatal("snapshot with wrong path deleted")
 	}
 	if err := os.Remove(snapshot.ArchivePath); err != nil {
@@ -594,7 +594,7 @@ func TestDeleteWorkspaceSnapshotRejectsWrongPathAndNonRegularArtifact(t *testing
 	if err := os.Mkdir(snapshot.ArchivePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot); err == nil {
 		t.Fatal("directory snapshot artifact deleted")
 	}
 }
@@ -667,13 +667,13 @@ func TestWorkspaceSnapshotSurfacesFilesystemPermissionFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(snapshot.ArchivePath, 0o600) })
-		if err := ValidateWorkspaceSnapshotAt(ownershipRoot, owner, snapshot, time.Now()); err == nil {
+		if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot, time.Now()); err == nil {
 			t.Fatal("unreadable archive validated")
 		}
 		if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil); err == nil {
 			t.Fatal("unreadable archive restored")
 		}
-		if err := DeleteWorkspaceSnapshotAt(ownershipRoot, owner, snapshot); err == nil {
+		if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot); err == nil {
 			t.Fatal("unreadable archive deleted")
 		}
 	})

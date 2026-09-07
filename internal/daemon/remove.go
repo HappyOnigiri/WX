@@ -135,7 +135,7 @@ func (m *Manager) removeSlotWorktrees(ctx context.Context, archiveManager archiv
 				return removalMetadataFailure("open workspace root snapshot owner", rootErr)
 			}
 			defer closeArchiveRoot()
-			if err := archive.ValidateWorkspaceSnapshotAt(archiveRoot, archiveRootHandle, rootSnapshot, time.Now()); err != nil {
+			if err := archive.ValidateWorkspaceSnapshotAt(ctx, archiveRoot, archiveRootHandle, rootSnapshot, time.Now()); err != nil {
 				return removalMetadataFailure("validate workspace root snapshot before removal", err)
 			}
 		}
