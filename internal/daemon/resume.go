@@ -97,6 +97,66 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 	return m.restoreSlot(ctx, s.SlotID, w, resolved, repos, by)
 }
 
+// verifiedWorkspaceArchive は復元 worker が持つ、検証済み workspace archive と pin した root descriptor の寿命である。
+type verifiedWorkspaceArchive struct {
+	snapshot *archive.VerifiedWorkspaceSnapshot
+	release  func()
+}
+
+func (v *verifiedWorkspaceArchive) close() {
+	if v == nil {
+		return
+	}
+	_ = v.snapshot.Close()
+	if v.release != nil {
+		v.release()
+	}
+}
+
+// openVerifiedWorkspaceArchive は RESTORE 予約で GC 保護を得た後に、workspace archive の完全性を 1 度だけ検証する。
+// target への変更を始める前に呼ぶ契約であり、失敗した slot はここで隔離する。
+func (m *Manager) openVerifiedWorkspaceArchive(ctx context.Context, id string) (*verifiedWorkspaceArchive, error) {
+	session, err := m.store.SessionByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	rootSnapshot, found, err := m.store.WorkspaceSnapshot(ctx, session.ParentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
+		return nil, errors.New("multi-repository recovery snapshot has no workspace root archive")
+	}
+	archiveRoot, ok := m.rootForPath(rootSnapshot.ArchivePath)
+	if !ok {
+		_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
+		return nil, errors.New("workspace root recovery paths are outside known wx roots")
+	}
+	archiveRootHandle, closeArchiveRoot, archiveRootErr := m.existingRootDescriptor(archiveRoot)
+	if archiveRootErr != nil {
+		_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
+		return nil, fmt.Errorf("open workspace archive root: %w", archiveRootErr)
+	}
+	verified, err := archive.OpenVerifiedWorkspaceSnapshotAt(ctx, archiveRoot, archiveRootHandle, rootSnapshot, time.Now())
+	if err != nil {
+		closeArchiveRoot()
+		m.quarantineWorkspaceArchiveFailure(ctx, id, err)
+		return nil, fmt.Errorf("verify workspace root snapshot: %w", err)
+	}
+	return &verifiedWorkspaceArchive{snapshot: verified, release: closeArchiveRoot}, nil
+}
+
+// quarantineWorkspaceArchiveFailure は workspace archive の検証・展開の失敗を隔離する。
+// 破損・置換・読み取り障害は専用 code で表し、recovery=unavailable を付けないことで自動 fresh 再開へ倒さない。
+func (m *Manager) quarantineWorkspaceArchiveFailure(ctx context.Context, id string, err error) {
+	code := "RESTORE_FAILED"
+	if errors.Is(err, archive.ErrWorkspaceSnapshotIntegrity) {
+		code = "SNAPSHOT_CORRUPT"
+	}
+	_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", code)
+}
+
 func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, snaps map[string]state.Snapshot) error {
 	slotState, err := m.store.Slot(ctx, id)
 	if err != nil {
@@ -115,6 +175,16 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 	}
 	defer releaseRoot()
 	archiveManager := m.newArchiveManager(m.Config(), slotState)
+	// multi-repository の workspace archive は、repository の復元で target を変え始めるより前に 1 度だけ検証する。
+	// 検証済み descriptor をそのまま展開へ渡すため、path からの再 open と再 hash は行わない。
+	var verifiedWorkspace *verifiedWorkspaceArchive
+	if w.Kind == "multi_repository" {
+		verifiedWorkspace, err = m.openVerifiedWorkspaceArchive(ctx, id)
+		if err != nil {
+			return err
+		}
+		defer verifiedWorkspace.close()
+	}
 	if len(repos) != len(resolved) {
 		return errors.New("restore repository metadata does not match resolved workspace")
 	}
@@ -190,21 +260,8 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			}
 			return err
 		}
-		session, err := m.store.SessionByID(ctx, id)
-		if err != nil {
-			return err
-		}
-		rootSnapshot, found, err := m.store.WorkspaceSnapshot(ctx, session.ParentSessionID)
-		if err != nil {
-			return err
-		}
-		if !found {
-			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
-			return errors.New("multi-repository recovery snapshot has no workspace root archive")
-		}
 		targetRoot, targetOK := m.rootForPath(slot.Path)
-		archiveRoot, archiveOK := m.rootForPath(rootSnapshot.ArchivePath)
-		if !targetOK || !archiveOK {
+		if !targetOK {
 			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
 			return errors.New("workspace root recovery paths are outside known wx roots")
 		}
@@ -214,14 +271,8 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			return fmt.Errorf("open workspace restore target root: %w", targetRootErr)
 		}
 		defer closeTargetRoot()
-		archiveRootHandle, closeArchiveRoot, archiveRootErr := m.existingRootDescriptor(archiveRoot)
-		if archiveRootErr != nil {
-			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "SNAPSHOT_INCOMPLETE")
-			return fmt.Errorf("open workspace archive root: %w", archiveRootErr)
-		}
-		defer closeArchiveRoot()
-		if err := archive.RestoreWorkspaceAt(ctx, slot.Path, targetRoot, targetRootHandle, archiveRoot, archiveRootHandle, rootSnapshot, workspaceRecoveryExclusions(w, repos, m.Config())); err != nil {
-			_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "RESTORE_FAILED")
+		if err := archive.RestoreVerifiedWorkspace(ctx, verifiedWorkspace.snapshot, slot.Path, targetRoot, targetRootHandle, workspaceRecoveryExclusions(w, repos, m.Config())); err != nil {
+			m.quarantineWorkspaceArchiveFailure(ctx, id, err)
 			return fmt.Errorf("restore workspace root: %w", err)
 		}
 	}
@@ -254,8 +305,12 @@ func (m *Manager) ResumeStatus(ctx context.Context, oldID string) (map[string]an
 		}
 		expired = !usable
 	}
-	return map[string]any{"wx_session_id": old.ID, "agent": old.AgentKind, "agent_session_id": old.AgentSessionID, "state": old.State, "expired": expired, "pending": pending, "workspace_id": old.WorkspaceID}, nil
+	// integrity は archive 本文を読まないことを client へ明示する。復元の完全性は RESTORE worker が判定する。
+	return map[string]any{"wx_session_id": old.ID, "agent": old.AgentKind, "agent_session_id": old.AgentSessionID, "state": old.State, "expired": expired, "pending": pending, "integrity": resumeIntegrityNotChecked, "workspace_id": old.WorkspaceID}, nil
 }
+
+// resumeIntegrityNotChecked は ResumeStatus が archive 本文を検証していないことを表す。
+const resumeIntegrityNotChecked = "not_checked"
 
 func snapshotsUsable(snaps []state.Snapshot, at time.Time) bool {
 	if len(snaps) == 0 {
@@ -270,6 +325,9 @@ func snapshotsUsable(snaps []state.Snapshot, at time.Time) bool {
 	return true
 }
 
+// recoveryUsable は snapshot が復元の材料として揃っているかだけを返す軽量な確認である。
+// archive 本文は読まないため、内容が壊れていないことは保証しない。完全性は復元 worker が 1 度だけ検証する。
+// DB・path・権限の失敗はここで返し、成功へ握りつぶさない。
 func (m *Manager) recoveryUsable(ctx context.Context, sessionID string, w discovery.Workspace, snapshots []state.Snapshot, at time.Time) (bool, error) {
 	if !snapshotsUsable(snapshots, at) {
 		return false, nil
@@ -290,7 +348,10 @@ func (m *Manager) recoveryUsable(ctx context.Context, sessionID string, w discov
 		return false, fmt.Errorf("open workspace snapshot owner: %w", err)
 	}
 	defer releaseOwner()
-	if err := archive.ValidateWorkspaceSnapshotAt(root, owner, rootSnapshot, at); err != nil {
+	if err := archive.ValidateWorkspaceSnapshotMetadataAt(root, owner, rootSnapshot, at); err != nil {
+		if errors.Is(err, archive.ErrWorkspaceSnapshotExpired) {
+			return false, nil
+		}
 		return false, err
 	}
 	return true, nil

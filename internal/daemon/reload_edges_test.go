@@ -84,12 +84,12 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if info, err := os.Stat(newRoot); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("new root permissions=%v err=%v", info, err)
 	}
-	if len(m.workerStops) != 3 || m.git.GetTimeout() != time.Second || dynamicLevel.Level() != slog.LevelDebug {
-		t.Fatalf("dynamic reload workers=%d timeout=%s level=%s", len(m.workerStops), m.git.GetTimeout(), dynamicLevel.Level())
+	if got := m.jobQueue.limit(jobClassInteractive); got != 3 || m.git.GetTimeout() != time.Second || dynamicLevel.Level() != slog.LevelDebug {
+		t.Fatalf("dynamic reload interactive slots=%d timeout=%s level=%s", got, m.git.GetTimeout(), dynamicLevel.Level())
 	}
-	m.resizeWorkers(1)
-	if len(m.workerStops) != 1 {
-		t.Fatalf("worker shrink left %d workers", len(m.workerStops))
+	m.jobQueue.setInteractiveLimit(1)
+	if got := m.jobQueue.limit(jobClassInteractive); got != 1 {
+		t.Fatalf("interactive slot shrink left %d slots", got)
 	}
 	if _, ok := m.rootForPath(filepath.Join(cfg.Storage.WorktreeRoot, "retired", "slot")); !ok {
 		t.Fatal("retired root was not retained for safe draining")

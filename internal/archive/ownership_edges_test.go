@@ -198,23 +198,23 @@ func TestWorkspaceSnapshotPreconditionsAndPruneFailures(t *testing.T) {
 	}
 
 	invalid := state.WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: "wrong.tar", ArchivePath: filepath.Join(ownershipRoot, "wrong.tar"), Status: "READY"}
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("non-archived workspace snapshot was accepted")
 	}
 	invalid.Status = "ARCHIVED"
 	invalid.ExpiresAt = "not-a-time"
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("workspace snapshot with malformed expiry was accepted")
 	}
 	invalid.ExpiresAt = time.Now().Add(time.Hour).Format(time.RFC3339Nano)
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("workspace snapshot with mismatched path was accepted")
 	}
 	invalid.RelPath = workspaceSnapshotRelPath(invalid.SessionID)
-	if err := ValidateWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
+	if err := ValidateWorkspaceSnapshotAt(context.Background(), ownershipRoot, snapshotOwner, invalid, time.Now()); err == nil {
 		t.Fatal("missing workspace snapshot artifact was accepted")
 	}
-	if err := DeleteWorkspaceSnapshotAt(ownershipRoot, snapshotOwner, state.WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: "wrong.tar"}); err == nil {
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, snapshotOwner, state.WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: "wrong.tar"}); err == nil {
 		t.Fatal("snapshot deletion accepted a mismatched artifact path")
 	}
 	// 存在しない ownership root は pin 済み descriptor として開けない。

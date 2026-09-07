@@ -641,8 +641,10 @@ func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
 	if result := manager.scheduleStandbyRemovals(ctx, []state.StandbyGCCandidate{{SlotID: standby.ID, WorkspaceID: standby.WorkspaceID, Path: standby.Path, State: standby.State}}); result.Scheduled != 1 {
 		t.Fatalf("standby removal result=%+v, want one reservation", result)
 	}
-	if job := <-manager.jobs; job.id == "" {
+	if work, slot, ok := manager.jobQueue.take(); !ok {
 		t.Fatal("standby removal did not enqueue a durable job")
+	} else {
+		manager.jobQueue.finish(work, slot)
 	}
 	if stored, err := store.Slot(ctx, standby.ID); err != nil || stored.State != "REMOVING" {
 		t.Fatalf("standby slot after scheduling=%+v err=%v", stored, err)
@@ -659,8 +661,10 @@ func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
 	if result := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{}); result.Scheduled != 1 {
 		t.Fatalf("cold repository removal result=%+v, want one reservation", result)
 	}
-	if job := <-manager.jobs; job.id == "" {
+	if work, slot, ok := manager.jobQueue.take(); !ok {
 		t.Fatal("cold repository removal did not enqueue a durable job")
+	} else {
+		manager.jobQueue.finish(work, slot)
 	}
 	if result := manager.scheduleColdRepositoryRemovals(ctx, []state.ColdRepositoryCandidate{candidate}, map[string]bool{}); result.Scheduled != 0 {
 		t.Fatalf("already-retiring repository result=%+v, want no reservation", result)
@@ -704,8 +708,10 @@ func TestCleanupSchedulingUsesPinnedRootOwnership(t *testing.T) {
 	if result := manager.scheduleQuarantinedRemovals(ctx, candidates); result.Scheduled != 1 {
 		t.Fatalf("quarantined removal result=%+v, want one reservation", result)
 	}
-	if job := <-manager.jobs; job.id == "" {
+	if work, slot, ok := manager.jobQueue.take(); !ok {
 		t.Fatal("quarantined removal did not enqueue a durable job")
+	} else {
+		manager.jobQueue.finish(work, slot)
 	}
 	if stored, err := store.Slot(ctx, quarantined.ID); err != nil || stored.State != "REMOVING" {
 		t.Fatalf("quarantined slot after scheduling=%+v err=%v", stored, err)
