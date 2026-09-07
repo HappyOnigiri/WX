@@ -125,3 +125,27 @@ func TestSlotRepositoriesShortensPathsToBasenames(t *testing.T) {
 		})
 	}
 }
+
+// TestPrintSlotTableKeepsColumnsAlignedForOverlongValues は、既定幅を超える値が入っても以降の列がずれないことを固定する。
+// multi-repo の REPO は既定幅に収まらず、固定幅で組むと行ごとに列の開始位置が変わる。
+func TestPrintSlotTableKeepsColumnsAlignedForOverlongValues(t *testing.T) {
+	var buf bytes.Buffer
+	printSlotTable(&buf, [][]string{
+		{"short", "READY", "wx", "-", "-", "pending", "-", "/wx/short"},
+		{"multi", "READY", "app,infra,proto,server,web", "-", "-", "pending", "-", "/wx/multi"},
+	})
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("slot table=%q", buf.String())
+	}
+	want := strings.Index(lines[0], "PATH")
+	for _, line := range lines[1:] {
+		if got := strings.Index(line, "/wx/"); got != want {
+			t.Fatalf("path column starts at %d want %d in %q", got, want, line)
+		}
+	}
+	// 見出しより短い値しか無い列は既定幅のままで、長い値のある列だけが広がる。
+	if !strings.HasPrefix(lines[2], "multi    READY        app,infra,proto,server,web ") {
+		t.Fatalf("multi row=%q", lines[2])
+	}
+}

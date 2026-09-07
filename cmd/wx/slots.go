@@ -32,11 +32,13 @@ func runSlots(ctx context.Context, args []string) int {
 		fmt.Println(string(data))
 		return 0
 	}
-	fmt.Printf(slotRowFormat, "SLOT", "STATE", "REPO", "SESSION", "AGENT", "COPY", "SIZE(MB)", "PATH")
+	rows := make([][]string, 0, len(out))
 	for _, s := range out {
-		fmt.Printf(slotRowFormat,
+		rows = append(rows, []string{
 			slotField(s, "slot_id"), slotField(s, "state"), slotRepositories(s), slotField(s, "session_id"), slotField(s, "agent"),
-			slotCopyMode(s), slotSizeMB(s), slotField(s, "path"))
+			slotCopyMode(s), slotSizeMB(s), slotField(s, "path"),
+		})
 	}
+	printSlotTable(os.Stdout, rows)
 	return 0
 }
