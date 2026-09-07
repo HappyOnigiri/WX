@@ -122,7 +122,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	// EnsureActiveRootは旧rootをinactiveとして残し、そのslotを再発見可能にする。
 	m.registerRootGeneration(context.Background(), newRoot, newIdentity)
 	m.loadRootGenerations(context.Background())
-	m.resizeWorkers(cfg.Pool.PreparationConcurrency)
+	m.jobQueue.setInteractiveLimit(cfg.Pool.PreparationConcurrency)
 	select {
 	case m.reloads <- struct{}{}:
 	default:

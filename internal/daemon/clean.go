@@ -411,6 +411,11 @@ func (m *Manager) closePendingTermination(ctx context.Context, sessionID, to str
 
 // advanceRemoving は削除ジョブの結果を判定する。隔離された対象は実体を残したまま失敗として閉じる。
 func (m *Manager) advanceRemoving(ctx context.Context, run state.CleanRun, target state.CleanTarget) {
+	// 利用者が clear の完了を待つ削除なので、保守枠 1 本の順番待ちに置かず利用者向けの枠へ回す。
+	// 分類は run と target の現在の状態から毎回決め直し、この昇格を job へ永続化しない。
+	if m.jobQueue.promote(target.SlotID) {
+		m.log.Debug("clean removal was promoted to the interactive class", "run_id", run.ID, "slot_id", target.SlotID)
+	}
 	slot, err := m.store.Slot(ctx, target.SlotID)
 	if err != nil {
 		m.failCleanTarget(ctx, run.ID, target, "slot record is unreadable: "+err.Error())
