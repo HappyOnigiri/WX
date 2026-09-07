@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -27,14 +28,14 @@ func TestReleaseIsIdempotentAfterAlreadyReleasingSession(t *testing.T) {
 	if _, err := store.CreateSlotSession(ctx, storeSlotAt(t, store, root, "", "dup", filepath.Join(root, "root"), 0, "LEASED"), nil, state.Session{ID: "dup", SlotID: "dup", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}, ""); err != nil {
 		t.Fatal(err)
 	}
-	manager := &Manager{store: store, jobs: make(chan jobWork, 4), ctx: context.Background()}
+	manager := &Manager{store: store, jobQueue: newJobQueue(2), log: slog.New(slog.NewTextHandler(newDiagnosticLog(managerFixtureLogLimit), nil)), ctx: context.Background()}
 	if err := manager.Release(ctx, "dup", "token", "client-exit"); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.Release(ctx, "dup", "token", "client-exit"); err != nil {
 		t.Fatalf("idempotent release error=%v", err)
 	}
-	if got := len(manager.jobs); got != 1 {
+	if got, _ := manager.jobQueue.counts(jobClassInteractive); got != 1 {
 		t.Fatalf("duplicate release scheduled %d jobs, want 1", got)
 	}
 }

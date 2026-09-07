@@ -18,14 +18,11 @@ func TestManagerFailsClosedWhenStateStoreBecomesUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.recoverJobs(false)
-	select {
-	case queued := <-m.jobs:
-		if queued.id != job.ID {
-			t.Fatalf("recovered job=%+v", queued)
-		}
-	default:
-		t.Fatal("pending durable job was not recovered")
+	work, slot, ok := m.jobQueue.take()
+	if !ok || work.id != job.ID {
+		t.Fatalf("recovered job=%+v ok=%v", work, ok)
 	}
+	m.jobQueue.finish(work, slot)
 	m.maybeBackup(ctx)
 	m.maybeBackup(ctx)
 	if err := store.Close(); err != nil {
@@ -65,5 +62,8 @@ func TestManagerFailsClosedWhenStateStoreBecomesUnavailable(t *testing.T) {
 	m.schedule(state.Job{ID: "cancelled"})
 	m.scheduleDelayed(state.Job{ID: "cancelled"}, time.Millisecond)
 	m.Close()
-	m.resizeWorkers(1)
+	m.jobQueue.setInteractiveLimit(1)
+	if m.jobQueue.add(queuedJob{id: "after-close", class: jobClassInteractive}) {
+		t.Fatal("closed job queue accepted new work")
+	}
 }

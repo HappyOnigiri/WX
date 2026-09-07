@@ -98,11 +98,8 @@ func TestReloadConfigAppliesAndRequestsMaintenanceWhenConfigurationChanges(t *te
 	if got := m.Config().Worktree.Undefined; got != "hot" {
 		t.Fatalf("worktree.undefined=%q, want hot", got)
 	}
-	m.workersMu.Lock()
-	workers := len(m.workerStops)
-	m.workersMu.Unlock()
-	if workers != 3 {
-		t.Fatalf("preparation workers=%d, want 3", workers)
+	if got := m.jobQueue.limit(jobClassInteractive); got != 3 {
+		t.Fatalf("preparation concurrency=%d, want 3", got)
 	}
 	if len(m.reloads) != 1 {
 		t.Fatal("changed reload did not restart the periodic maintenance timer")

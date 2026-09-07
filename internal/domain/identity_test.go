@@ -108,3 +108,40 @@ func TestFileIdentityDistinguishesDirectories(t *testing.T) {
 		t.Fatalf("distinct directories share identity %q", identities["first"])
 	}
 }
+
+// TestFileStampDetectsInPlaceRewrite は、inode と大きさを保った上書きを stamp が検出することを検証する。
+// pin 済み descriptor を使う検証と利用の間に内容が差し替わっても、identity だけでは見分けられない。
+func TestFileStampDetectsInPlaceRewrite(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "artifact")
+	if err := os.WriteFile(name, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(name, os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	before, err := FileStampOf(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Identity == "" || before.Size != int64(len("original")) || before.ChangeTimeNanos == 0 {
+		t.Fatalf("stamp=%+v", before)
+	}
+	if _, err := file.WriteAt([]byte("REWRITTEN"[:len("original")]), 0); err != nil {
+		t.Fatal(err)
+	}
+	after, err := FileStampOf(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after == before {
+		t.Fatalf("in-place rewrite was not detected: %+v", after)
+	}
+	if after.Identity != before.Identity {
+		t.Fatalf("identity changed without a replacement: %q -> %q", before.Identity, after.Identity)
+	}
+	if _, err := FileStampOf(nil); err == nil {
+		t.Fatal("nil descriptor produced a stamp")
+	}
+}

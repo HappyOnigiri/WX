@@ -17,9 +17,7 @@ import (
 func rootLifetimeManager(t *testing.T, cfg config.Config, store *state.Store) *Manager {
 	t.Helper()
 	manager := testManager(t, cfg, store)
-	manager.workersMu.Lock()
-	manager.closed = true
-	manager.workersMu.Unlock()
+	manager.jobQueue.close()
 	return manager
 }
 

@@ -199,16 +199,16 @@ func testManager(t *testing.T, cfg config.Config, store *state.Store) *Manager {
 		t.Fatal(err)
 	}
 	m := &Manager{
-		cfg:     cfg,
-		store:   store,
-		git:     &gitx.Runner{Timeout: time.Second},
-		log:     slog.New(slog.NewTextHandler(newDiagnosticLog(managerFixtureLogLimit), nil)),
-		started: time.Now(),
-		roots:   map[string]bool{filepath.Clean(root): true},
-		rootIDs: map[string]string{},
-		jobs:    make(chan jobWork, 4),
-		ctx:     ctx,
-		cancel:  cancel,
+		cfg:      cfg,
+		store:    store,
+		git:      &gitx.Runner{Timeout: time.Second},
+		log:      slog.New(slog.NewTextHandler(newDiagnosticLog(managerFixtureLogLimit), nil)),
+		started:  time.Now(),
+		roots:    map[string]bool{filepath.Clean(root): true},
+		rootIDs:  map[string]string{},
+		jobQueue: newJobQueue(cfg.Pool.PreparationConcurrency),
+		ctx:      ctx,
+		cancel:   cancel,
 
 		slotUsage:   map[string]slotUsageSample{},
 		sharedFiles: map[string]workspace.SharedFileCache{},
