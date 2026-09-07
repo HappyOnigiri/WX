@@ -924,6 +924,24 @@ func TestReopeningAnExistingDatabaseSkipsAppliedMigrations(t *testing.T) {
 	}
 }
 
+// PRAGMA user_version は migration loop が適用した最後の版であり、SchemaVersion は手動で揃える定数である。
+// 定数だけが先に進むと旧 schema の database が新版として通るため、新規 database で両者の一致を検証する。
+// ファイル数との一致は tools/checkmigrations が静的に見る。
+func TestOpenSetsUserVersionToSchemaVersion(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	var applied int
+	if err := store.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied != SchemaVersion {
+		t.Fatalf("user_version=%d, SchemaVersion=%d; the constant must equal the number of applied migrations", applied, SchemaVersion)
+	}
+}
+
 func TestCreateStandbyPropagatesJobInsertionFault(t *testing.T) {
 	store := openTestStore(t)
 	seedWorkspace(t, store)
