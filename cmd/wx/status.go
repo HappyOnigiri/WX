@@ -52,11 +52,7 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	}
 	var out map[string]any
 	if err := c.Call(ctx, method, struct{}{}, &out); err != nil {
-		if rpc.IsConnectError(err) {
-			fmt.Fprintln(os.Stderr, "error: wx daemon is not running or still starting; try again shortly")
-			return 1
-		}
-		fmt.Fprintln(os.Stderr, "error:", err)
+		reportRPCError(err)
 		return 1
 	}
 	data, _ := json.MarshalIndent(out, "", "  ")
@@ -97,7 +93,7 @@ func runDoctor(ctx context.Context, args []string) int {
 	var out map[string]any
 	if err := c.Call(ctx, "Doctor", struct{}{}, &out); err != nil {
 		if !rpc.IsConnectError(err) {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			reportRPCError(err)
 			return 1
 		}
 		out = map[string]any{

@@ -24,7 +24,7 @@ func runSlots(ctx context.Context, args []string) int {
 	c, _ := rpcClient()
 	var out []map[string]any
 	if err := c.Call(ctx, "Slots", map[string]bool{"all": *all}, &out); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		reportRPCError(err)
 		return 1
 	}
 	if *jsonOut {

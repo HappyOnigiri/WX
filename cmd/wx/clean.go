@@ -61,7 +61,7 @@ func runClean(ctx context.Context, args []string) int {
 	err = c.Call(callCtx, "Clean", map[string]bool{"all": *all, "standby": *standby, "dry_run": *dry, "discard": *discard}, &reply)
 	cancel()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		reportRPCError(err)
 		return 1
 	}
 	if *dry {
@@ -74,7 +74,7 @@ func runClean(ctx context.Context, args []string) int {
 	printCleanTargets(os.Stdout, final.Targets)
 	fmt.Println(cleanSummaryLine(final.Summary))
 	if waitErr != nil {
-		fmt.Fprintln(os.Stderr, "error:", waitErr)
+		reportRPCError(waitErr)
 		fmt.Fprintf(os.Stderr, "the daemon keeps working on clear %s; run wx clear again to rejoin it\n", final.RunID)
 		return 1
 	}
