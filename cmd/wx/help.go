@@ -161,8 +161,10 @@ Use --branch with --fresh to choose the detached base.`)
 	case "slots":
 		_, _ = fmt.Fprintln(w, `Usage: wx slots [--all] [--json]
 
-List managed wx slots with their session, copy mode, and disk usage.
-By default, only READY and LEASED slots are listed.
+List managed wx slots with their repository, session, copy mode, and disk usage.
+Every slot that still occupies disk is listed, so the SIZE(MB) column covers the
+same slots as the Disk line of wx status. REPO names the source repositories the
+slot was prepared from; a multi-repo workspace lists them separated by commas.
 
 SIZE(MB) is what the slot occupies on its own, rounded up: blocks it still
 shares with the main worktree are excluded, so the column sums without double
@@ -175,7 +177,7 @@ Rows still waiting for the first measurement show pending, and platforms that
 cannot compare blocks show unsupported. --json carries the measurement time.
 
 Options:
-  --all   include failed, quarantined, and released slots
+  --all   also list sessions that no longer hold a slot
   --json  print machine-readable JSON`)
 	case "forget":
 		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path>

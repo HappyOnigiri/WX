@@ -3,20 +3,93 @@ package main
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 )
 
-const slotRowFormat = "%-8s %-12s %-8s %-8s %-11s %8s  %s\n"
+// slotColumn は slots 表の 1 列である。min は値が短いときも保つ既定幅で、列の入れ替わりを目立たせないために置く。
+type slotColumn struct {
+	title string
+	min   int
+	right bool
+}
+
+// slotColumns は slots 表の列と並びで、最後の PATH は行末なので幅を持たない。
+var slotColumns = []slotColumn{
+	{title: "SLOT", min: 8},
+	{title: "STATE", min: 12},
+	{title: "REPO", min: 8},
+	{title: "SESSION", min: 8},
+	{title: "AGENT", min: 8},
+	{title: "COPY", min: 11},
+	{title: "SIZE(MB)", min: 8, right: true},
+	{title: "PATH"},
+}
+
+// printSlotTable は列幅を実データに合わせて広げ、multi-repo の REPO のような長い値があっても以降の列がずれないようにする。
+// 幅は rune 数で数え、fmt の width と同じ基準にする。
+func printSlotTable(w io.Writer, rows [][]string) {
+	widths := make([]int, len(slotColumns))
+	titles := make([]string, len(slotColumns))
+	for i, column := range slotColumns {
+		titles[i] = column.title
+		widths[i] = max(utf8.RuneCountInString(column.title), column.min)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			widths[i] = max(widths[i], utf8.RuneCountInString(cell))
+		}
+	}
+	for _, row := range append([][]string{titles}, rows...) {
+		var line strings.Builder
+		for i, cell := range row {
+			if i > 0 {
+				line.WriteByte(' ')
+				// 右揃えの列は値が区切りに寄るため、次の列との間隔を 1 つ広く取る。
+				if slotColumns[i-1].right {
+					line.WriteByte(' ')
+				}
+			}
+			switch {
+			case i == len(row)-1:
+				line.WriteString(cell)
+			case slotColumns[i].right:
+				_, _ = fmt.Fprintf(&line, "%*s", widths[i], cell)
+			default:
+				_, _ = fmt.Fprintf(&line, "%-*s", widths[i], cell)
+			}
+		}
+		// 表示は stdout に出す。書込み失敗は対処できず、command の終了コードも変えない。
+		_, _ = fmt.Fprintln(w, line.String())
+	}
+}
 
 func slotField(row map[string]any, key string) string {
 	if value, ok := row[key].(string); ok && value != "" {
 		return value
 	}
 	return "-"
+}
+
+// slotRepositories は行のリポジトリを basename のカンマ区切りで返す。
+// フルパスは --json 側に残し、表では列幅を basename に抑える。
+func slotRepositories(row map[string]any) string {
+	paths, _ := row["repositories"].([]any)
+	names := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if text, ok := path.(string); ok && text != "" {
+			names = append(names, filepath.Base(text))
+		}
+	}
+	if len(names) == 0 {
+		return "-"
+	}
+	return strings.Join(names, ",")
 }
 
 // slotCopyMode は方式を出し、まだ決まらない行には copy_mode の代わりに理由（pending・unsupported）を出す。

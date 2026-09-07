@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
@@ -201,5 +202,44 @@ func TestStatusDiagnosticsAndGarbageCollectionCandidatesExposeRows(t *testing.T)
 	candidates, err := store.GCCandidates(ctx, FormatTime(time.Now().Add(time.Hour)))
 	if err != nil || len(candidates) != 1 || candidates[0].SlotID != "snapshot" || candidates[0].SessionID != session.ID {
 		t.Fatalf("GC candidates=%+v err=%v", candidates, err)
+	}
+}
+
+// TestListSlotsReturnsLiveSlotsWithRepositories は既定の一覧の範囲と REPO 列の元になる値を固定する。
+// 実体が残る slot（ARCHIVED 以外）を全て返し、multi-repository slot は dir_name 順に main worktree path を並べる。
+func TestListSlotsReturnsLiveSlotsWithRepositories(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	seedWorkspaceRows(t, store, "multi", "/multi", "multi_repository", "multi-a", "/multi/a", "/multi/a/.git", "a")
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES('multi-b','/multi/b','/multi/b/.git','main','',?,?)`, now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES('multi','multi-b','b',1)`); err != nil {
+		t.Fatal(err)
+	}
+	repositories := []SlotRepository{
+		{RepositoryID: "multi-b", DirName: "b", State: "READY", RequestedRef: "main", BaseOID: "head", Fingerprint: "fingerprint"},
+		{RepositoryID: "multi-a", DirName: "a", State: "READY", RequestedRef: "main", BaseOID: "head", Fingerprint: "fingerprint"},
+	}
+	session := Session{ID: "snapshotted", WorkspaceID: "multi", SlotID: "snapshotted", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: "multi", Generation: 1, RootID: testRootID, RelPath: "multi/snapshotted", State: "SNAPSHOTTED"}, repositories, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	// slot_repositories が未登録の slot も行として残し、REPO を空のまま返す。
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "allocating", WorkspaceID: "multi", Generation: 1, RootID: testRootID, RelPath: "multi/allocating", State: "ALLOCATING"}, nil, Session{ID: "allocating", WorkspaceID: "multi", SlotID: "allocating", State: "STARTING", AgentKind: "codex", TokenHash: HashToken("allocating")}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,state,created_at,updated_at) VALUES('archived','multi',1,?,'multi/archived','ARCHIVED',?,?)`, testRootID, now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	slots, err := store.ListSlots(ctx, false)
+	if err != nil || len(slots) != 2 {
+		t.Fatalf("live slot list=%+v err=%v", slots, err)
+	}
+	if slots[0].SlotID != "allocating" || len(slots[0].Repositories) != 0 {
+		t.Fatalf("allocating slot=%+v", slots[0])
+	}
+	if slots[1].SlotID != "snapshotted" || !slices.Equal(slots[1].Repositories, []string{"/multi/a", "/multi/b"}) {
+		t.Fatalf("snapshotted slot=%+v", slots[1])
 	}
 }
