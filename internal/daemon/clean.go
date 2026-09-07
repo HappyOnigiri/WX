@@ -242,6 +242,9 @@ func (m *Manager) driveClean(runID string) {
 		}
 		if done {
 			m.log.Info("clean finished", "run_id", runID)
+			// 削除分は forgetSlotUsage が引くが、保存で増えた snapshot や隔離で残った実体は測り直さないと合わない。
+			// run を閉じた後に測るので、`wx clear` の応答は walk を待たない。
+			m.measureRootUsage(m.ctx)
 			return
 		}
 		select {
