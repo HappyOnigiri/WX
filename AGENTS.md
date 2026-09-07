@@ -56,6 +56,7 @@ Go側に状態のenum型や遷移ガードを作らない。
 - coreパッケージのカバレッジ基準は`tools/checkcoverage`を参照する。
   設計と無関係な行を踏むだけのテストで数字を作らず、プロセスやOSのアダプタは`coverage-exclusions.txt`に理由付きで除外する。
 - platform依存のコードを触ったら`CGO_ENABLED=0 GOOS=linux .tools/bin/golangci-lint run ./...`も手元で通す。
+  darwin専用実装はCIで実行されないため、macOS実機で`make test-darwin`も走らせる（前提と表示は[worktreeのコピーとリンク](docs/worktree-copy.md)の部分検証節）。
 - `internal/daemon`のトップレベルテストは、専用の一時ディレクトリ・DB・Managerだけを使うものに`t.Parallel()`を付ける。
   `t.Setenv`を自身かサブテストで呼ぶテスト、プロセス全体のgoroutine・fdを数えるテスト、短い待機に依存するテストは直列のまま残す。
 - Markdown文書は1文1行とし、表示幅200桁を超える文は分割する（全角文字は2桁）。

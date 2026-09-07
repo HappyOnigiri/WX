@@ -49,7 +49,7 @@ func runFocus(t *testing.T, environment ...string) result {
 	argsPath := filepath.Join(directory, "args")
 
 	command := exec.Command("/bin/sh", scriptPath)
-	command.Env = append(os.Environ(), "GO="+goPath, "FAKE_GO_ARGS="+argsPath, "PKG=", "RUN=", "FAKE_GO_STATUS=")
+	command.Env = append(os.Environ(), "GO="+goPath, "FAKE_GO_ARGS="+argsPath, "PKG=", "RUN=", "VERBOSE=", "FAKE_GO_STATUS=")
 	command.Env = append(command.Env, environment...)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
@@ -156,6 +156,19 @@ func TestScriptRunsTheWholePackageWithoutARunPattern(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// verboseはmake test-darwinが個別のRUN/PASS/SKIPを残すために使う。既定では足さない。
+func TestScriptAddsVerboseOnlyWhenRequested(t *testing.T) {
+	t.Parallel()
+	got := runFocus(t, "PKG=./internal/workspace", "VERBOSE=1")
+	if got.status != 0 {
+		t.Fatalf("status=%d, want 0 (output %q)", got.status, got.stderr)
+	}
+	want := []string{"test", "-count=1", "-shuffle=on", "-v", "./internal/workspace"}
+	if strings.Join(got.args, argumentSeparator) != strings.Join(want, argumentSeparator) {
+		t.Fatalf("args=%q, want %q", got.args, want)
 	}
 }
 

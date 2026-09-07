@@ -26,12 +26,14 @@ CORE_COVERAGE_MIN ?= 85
 COVERAGE_EXCLUSIONS ?= coverage-exclusions.txt
 RACE_TEST_ARGS := -race -shuffle=on -count=1
 RACE_DAEMON_PACKAGE := ./internal/daemon
+# darwin専用テストは internal/workspace にしかない。テスト名の一覧を二重管理せずパッケージ単位で実行する。
+DARWIN_TEST_PACKAGE := ./internal/workspace
 LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicode-3.0,Unlicense
 # 所有権を検証したパスでGit・launchctl・prepareコマンドを実行する。
 # 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check workflow-lint workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus check-fast concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check workflow-lint workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -214,13 +216,19 @@ coverage-check: test-coverage
 portable-test:
 	$(GO) test -shuffle=on -count=1 ./...
 
-# 編集直後に対象を絞って確認する入口。PKG・RUNはrecipeのshellへ埋め込まず環境経由で渡す。
+# 編集直後に対象を絞って確認する入口。PKG・RUN・VERBOSEはrecipeのshellへ埋め込まず環境経由で渡す。
 # 差分からの自動選択はせず、対象の指定はユーザーに委ねる。
 export PKG
 export RUN
+export VERBOSE
 
 test-focus:
 	GO="$(GO)" scripts/test-focus.sh
+
+# darwin専用実装を実機で確認する入口。build-darwinはビルドだけで、これらのテストは走らない。
+# 実行環境とTMPDIRのfilesystemを表示し、非Darwin・クロス設定・非APFSはテスト前に失敗させる。
+test-darwin:
+	GO="$(GO)" PKG=$(DARWIN_TEST_PACKAGE) VERBOSE=1 scripts/test-darwin.sh
 
 # Go編集時の構造検査だけを集めた短い入口。共有契約や書式・lintは含めず、最終判定はmake ciとする。
 check-fast: comments-check tests-check lines-check testlayout-check migrations-check
