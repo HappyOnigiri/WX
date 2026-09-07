@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/sessions/config"
+	"github.com/HappyOnigiri/WX/internal/sessions/metacache"
 	"github.com/HappyOnigiri/WX/internal/sessions/scanner"
 	"github.com/HappyOnigiri/WX/internal/sessions/tui"
 )
@@ -60,11 +61,27 @@ func matchesScope(session scanner.Session, scope *PickerScope) bool {
 	return false
 }
 
+// openCache はメタデータ cache を開く。利用できないときは nil を返し、直接走査へ戻す。
+// 返す関数は cache を閉じるだけなので、cache の有無に関わらず defer できる。
+func openCache() (*metacache.Cache, func()) {
+	path, err := metacache.DefaultPath()
+	if err != nil {
+		return nil, func() {}
+	}
+	cache, err := metacache.Open(path)
+	if err != nil {
+		return nil, func() {}
+	}
+	return cache, func() { _ = cache.Close() }
+}
+
 func list(ctx context.Context, cfg config.Config, opts PickOptions) ([]scanner.Session, error) {
 	if opts.Tool != "claude" && opts.Tool != "codex" {
 		return nil, fmt.Errorf("unsupported agent: %s", opts.Tool)
 	}
-	items, err := scanner.Scan(ctx, cfg, opts.Tool)
+	cache, closeCache := openCache()
+	defer closeCache()
+	items, err := scanner.ScanWith(ctx, cfg, scanner.Options{Cache: cache}, opts.Tool)
 	if err != nil {
 		return nil, err
 	}
@@ -83,17 +100,19 @@ func list(ctx context.Context, cfg config.Config, opts PickOptions) ([]scanner.S
 	return result, nil
 }
 
+// Lookup は native ID 指定の再開先を、一覧全体の整列を経ずに探す。
 func Lookup(ctx context.Context, cfg config.Config, tool, id string) (ResumeTarget, bool, error) {
-	items, err := list(ctx, cfg, PickOptions{Tool: tool})
-	if err != nil {
+	cache, closeCache := openCache()
+	defer closeCache()
+	item, found, err := scanner.Find(ctx, cfg, scanner.Options{Cache: cache}, tool, id)
+	if err != nil || !found {
 		return ResumeTarget{}, false, err
 	}
-	for _, item := range items {
-		if item.SessionID == id {
-			return item.Target(), true, nil
-		}
+	target := item.Target()
+	if !target.Resumable() {
+		return ResumeTarget{}, false, nil
 	}
-	return ResumeTarget{}, false, nil
+	return target, true, nil
 }
 
 func Continue(ctx context.Context, cfg config.Config, opts ContinueOptions) (ResumeTarget, bool, error) {
