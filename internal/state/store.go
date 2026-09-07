@@ -27,6 +27,13 @@ type Store struct {
 	db     *sql.DB
 	writer sync.Mutex
 	path   string
+	// backupGate は online backup と世代整理だけを直列化する。writer とは排他せず、backup 中も lease・heartbeat・release が進む。
+	backupGate chan struct{}
+	// closing は Close の開始を実行中の backup へ伝える。Close は backupGate を取り直して source 接続の返却を待つ。
+	closing   chan struct{}
+	closeOnce sync.Once
+	// backupStepBarrier は step 間に並行書き込みを差し込む test hook である。production では nil のままにする。
+	backupStepBarrier func()
 }
 
 const SchemaVersion = 5
@@ -53,7 +60,7 @@ func Open(path string) (*Store, error) {
 	}
 	// connection-local policy は DSN に含める。status reader は WAL を並行利用し、write は writer が直列化する。
 	db.SetMaxOpenConns(8)
-	s := &Store{db: db, path: path}
+	s := &Store{db: db, path: path, backupGate: make(chan struct{}, 1), closing: make(chan struct{})}
 	if err := s.init(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -65,70 +72,16 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+// Close は実行中の online backup を取り消し、その source 接続が pool へ戻るまで待ってから database を閉じる。
+// Raw callback 実行中に db を閉じると source handle が消えるため、gate を取り直して backup の完了を確認する。
+func (s *Store) Close() error {
+	s.closeOnce.Do(func() { close(s.closing) })
+	s.backupGate <- struct{}{}
+	<-s.backupGate
+	return s.db.Close()
+}
 
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
-
-func (s *Store) Backup(ctx context.Context, generations int, retention time.Duration) (string, error) {
-	s.writer.Lock()
-	defer s.writer.Unlock()
-	dir := s.path + ".backups"
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	destination := filepath.Join(dir, time.Now().UTC().Format("20060102T150405.000000000Z")+".db")
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = conn.Close() }()
-	err = conn.Raw(func(driverConn any) error {
-		backuper, ok := driverConn.(interface {
-			NewBackup(string) (*sqlite.Backup, error)
-		})
-		if !ok {
-			return errors.New("SQLite driver does not support online backup")
-		}
-		backup, err := backuper.NewBackup(destination)
-		if err != nil {
-			return err
-		}
-		if _, err := backup.Step(-1); err != nil {
-			_ = backup.Finish()
-			return err
-		}
-		return backup.Finish()
-	})
-	if err != nil {
-		return "", err
-	}
-	if err := os.Chmod(destination, 0o600); err != nil {
-		return "", err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", err
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
-	cutoff := time.Now().Add(-retention)
-	backupIndex := 0
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".db" {
-			continue
-		}
-		info, infoErr := entry.Info()
-		if infoErr != nil {
-			return "", infoErr
-		}
-		if backupIndex >= generations || (retention > 0 && info.ModTime().Before(cutoff)) {
-			if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
-				return "", err
-			}
-		}
-		backupIndex++
-	}
-	return destination, nil
-}
 
 func (s *Store) init(ctx context.Context) error {
 	for _, pragma := range []string{"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000"} {
