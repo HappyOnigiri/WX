@@ -35,14 +35,9 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	}
 	var payload HookInput
 	if event == "session-start" {
-		data, err := io.ReadAll(io.LimitReader(input, 1<<20))
+		payload, err = decodeHookPayload(input)
 		if err != nil {
 			return err
-		}
-		if len(strings.TrimSpace(string(data))) > 0 {
-			if err := json.Unmarshal(data, &payload); err != nil {
-				return fmt.Errorf("decode hook payload: %w", err)
-			}
 		}
 	}
 	// hook の失敗は agent 操作を止めるため、binary 置換後の再起動中も接続を再試行する。
@@ -90,6 +85,23 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	default:
 		return fmt.Errorf("unknown hook event %q", event)
 	}
+}
+
+// decodeHookPayload は session-start hook の標準入力を読む。
+// agent が渡す payload は信頼できない外部入力なので、読み取りを 1MiB で打ち切り、空白のみの入力は空の HookInput として扱う。
+func decodeHookPayload(input io.Reader) (HookInput, error) {
+	data, err := io.ReadAll(io.LimitReader(input, 1<<20))
+	if err != nil {
+		return HookInput{}, err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return HookInput{}, nil
+	}
+	var payload HookInput
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return HookInput{}, fmt.Errorf("decode hook payload: %w", err)
+	}
+	return payload, nil
 }
 
 func modeFlag(name string) (bool, error) {
