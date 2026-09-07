@@ -41,16 +41,8 @@ jobs:
           echo "$SHELLCHECK_SHA256  /tmp/shellcheck.tar.xz" | sha256sum --check
           tar -C /tmp -xf /tmp/shellcheck.tar.xz
           sudo install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
-      - run: make fmt-check
-      - run: make lint
-      - run: make deadcode
-      - run: make mod-tidy-check
-      - run: make docs-check
-      - run: make comments-check
-      - run: make lines-check
-      - run: make testlayout-check
-      - run: make workflow-check
-      - run: make shell-check
+      # 個別targetを並べるとci-checks側との差が生まれ、tests-checkのように適用漏れが起きる。
+      - run: make static-check
       - name: Verify read-only check
         run: git diff --exit-code
 
