@@ -15,6 +15,7 @@ CIのランナーは全てlinuxで、darwin専用実装は`make build-darwin`の
   `internal/archive`のclean判定では、Git設定で隠れる変更を見逃さないよう`--untracked-files=all`・`--ignore-submodules=none`を維持する。
 - Gitは必ず`internal/gitx`経由で起動する。
   継承した`GIT_DIR`・`GIT_WORK_TREE`・`GIT_INDEX_FILE`などが漏れると、別リポジトリへの操作が成功し、未捕捉のworktreeを削除し得る。
+  `cmd`・`internal`の本番コードから構文で分かる`os/exec`経由のGit起動は`tools/checkgitexec`が検出する（`internal/gitx`だけがパス単位で例外）。
 - slot の削除権限は `slots` に登録された root と相対 path で決める。
   inode・marker・Git lock・HEAD・workspace 紐付けの不一致は削除を拒否する理由にしない。
   登録 path の実体が置き換わっていても回収する。
