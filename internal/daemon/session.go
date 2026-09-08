@@ -123,9 +123,9 @@ func readPrepareDiagnostic(path string) prepareDiagnosticMetadata {
 	return metadata
 }
 
-func (m *Manager) BindAgentSession(ctx context.Context, id, token, agentID string) error {
+func (m *Manager) BindAgentSession(ctx context.Context, id, token, agentID string, replaces ...string) error {
 	if _, err := m.store.Session(ctx, id, token); err != nil {
 		return err
 	}
-	return m.store.BindAgentSession(ctx, id, agentID)
+	return m.store.BindAgentSession(ctx, id, agentID, replaces...)
 }

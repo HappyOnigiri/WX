@@ -13,6 +13,7 @@
    `WX_SESSION_ID`の有無による素通りは`internal/agent/hook.go`のwx側で判定するため、agent設定側での条件分岐ラッパーは不要である。
    受理条件はちょうど3トークンの`<絶対パス> hook <event>`なので、そうしたラッパーはそもそも受理されない。
    `wx hook session-start`は`BindAgentSession`系でエージェント側のネイティブなセッションIDをwxのセッションへ結び付ける。
+   Codex の rewind / fork は transcript metadata の `forked_from_id` と hook payload の新IDを照合できた場合だけ、旧 native IDから新IDへmappingを移管する。照合できない場合は通常のbindとして扱う。
    RESTORING中に届いたIDは`pending_agent_session_id`として保持し、復元成功後に親から新しいセッションへ移譲する。
    resumeの`session-start`は`previous_worktree`を返し、`source == "resume"`のとき旧pathを使わないよう通知文を1行出す。
 4. **返却** — `wx hook session-end`が`Release`を呼ぶ。

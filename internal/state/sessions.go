@@ -207,7 +207,14 @@ func (s *Store) RegisterAgentProcess(ctx context.Context, id, token string, pid 
 	return nil
 }
 
-func (s *Store) BindAgentSession(ctx context.Context, id, agentID string) error {
+func (s *Store) BindAgentSession(ctx context.Context, id, agentID string, replaces ...string) error {
+	if len(replaces) > 1 {
+		return errors.New("at most one agent session replacement source is allowed")
+	}
+	replacesAgentID := ""
+	if len(replaces) == 1 {
+		replacesAgentID = replaces[0]
+	}
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -215,9 +222,32 @@ func (s *Store) BindAgentSession(ctx context.Context, id, agentID string) error 
 		return err
 	}
 	defer tx.Rollback()
-	var kind, parent, sessionState, pending string
-	if err := tx.QueryRowContext(ctx, `SELECT agent_kind,COALESCE(parent_session_id,''),state,COALESCE(pending_agent_session_id,'') FROM sessions WHERE id=?`, id).Scan(&kind, &parent, &sessionState, &pending); err != nil {
+	var kind, parent, sessionState, pending, currentAgentID string
+	if err := tx.QueryRowContext(ctx, `SELECT agent_kind,COALESCE(parent_session_id,''),state,COALESCE(pending_agent_session_id,''),COALESCE(agent_session_id,'') FROM sessions WHERE id=?`, id).Scan(&kind, &parent, &sessionState, &pending, &currentAgentID); err != nil {
 		return err
+	}
+	if replacesAgentID != "" {
+		// Rewind/fork は現在の native mapping を旧 ID と照合してから、同一 transaction で新 IDへ移す。
+		// 旧 ID が別の hook で変化済みなら、到着順が逆転した遅延 hook として拒否する。
+		if currentAgentID != replacesAgentID {
+			return errors.New("agent session mapping changed before replacement")
+		}
+		var ownerID string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM sessions WHERE agent_kind=? AND agent_session_id=? AND id<>?`, kind, agentID, id).Scan(&ownerID)
+		switch {
+		case err == nil:
+			return errors.New("replacement agent session is already bound")
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=?,state=CASE WHEN state='STARTING' THEN 'ACTIVE' ELSE state END,started_at=COALESCE(started_at,?),last_heartbeat_at=? WHERE id=? AND agent_session_id=?`, agentID, now(), now(), id, replacesAgentID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return errors.New("agent session mapping changed during replacement")
+		}
+		return tx.Commit()
 	}
 	if sessionState == "RESTORING" {
 		if pending == agentID {

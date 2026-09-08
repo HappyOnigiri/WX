@@ -116,9 +116,10 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		return map[string]bool{"ready": true}, h.Manager.WaitReady(ctx, p.SessionID, p.Token)
 	case "BindAgentSession":
 		var p struct {
-			SessionID      string `json:"session_id"`
-			Token          string `json:"token"`
-			AgentSessionID string `json:"agent_session_id"`
+			SessionID              string `json:"session_id"`
+			Token                  string `json:"token"`
+			AgentSessionID         string `json:"agent_session_id"`
+			ReplacesAgentSessionID string `json:"replaces_agent_session_id"`
 			// hook の SessionStart payload と整合させるため Source は受け付けるが、通常 bind では使用しない。
 			// strict decoder が hook の送信フィールドを拒否しないよう、ここでも decode する。
 			Source string `json:"source"`
@@ -126,7 +127,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		if err := decode(raw, &p); err != nil {
 			return nil, err
 		}
-		if err := h.Manager.BindAgentSession(ctx, p.SessionID, p.Token, p.AgentSessionID); err != nil {
+		if err := h.Manager.BindAgentSession(ctx, p.SessionID, p.Token, p.AgentSessionID, p.ReplacesAgentSessionID); err != nil {
 			return nil, err
 		}
 		previous, err := h.Manager.store.PreviousWorktree(ctx, p.SessionID)
