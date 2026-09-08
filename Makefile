@@ -107,6 +107,8 @@ release-check:
 	grep -F 'GOOS=darwin' "$$directory/build-info"; \
 	grep -F 'GOARCH=arm64' "$$directory/build-info"; \
 	(cd "$$directory" && shasum -a 256 -c checksums.txt); \
+	test -s "$$directory/install.sh"; \
+	test -s "$$directory/uninstall.sh"; \
 	if [ "$$(uname -sm)" = 'Darwin arm64' ]; then \
 	  test "$$("$$directory/wx-darwin-arm64" --version)" = 'wx version v0.0.0'; \
 	fi

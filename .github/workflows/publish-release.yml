@@ -40,6 +40,7 @@ jobs:
           target-commit: ${{ github.event.pull_request.merge_commit_sha }}
           assets: |
             artifacts/release/install.sh
+            artifacts/release/uninstall.sh
             artifacts/release/wx-darwin-arm64
             artifacts/release/checksums.txt
           github-token: ${{ secrets.GH_TOKEN }}
