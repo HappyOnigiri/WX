@@ -94,12 +94,17 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 	}
 
 	expectedRegistration := lease.Path
+	registrationChecked := false
 	switch boundary {
 	case "preparing":
 		assertCrashSessionState(t, store, lease.SessionID, "ACTIVE")
+		assertCrashWorktreeRegistration(t, repository, expectedRegistration, boundary)
+		registrationChecked = true
 	case "leased":
 		process = restartAfterCrash(t, process, client, "")
 		assertCrashSessionState(t, store, lease.SessionID, "ACTIVE")
+		assertCrashWorktreeRegistration(t, repository, expectedRegistration, boundary)
+		registrationChecked = true
 	case "snapshot", "snapshot-ref":
 		writeCrashWorkspace(t, lease.Path)
 		armCrashGate(t, gate)
@@ -161,15 +166,25 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 	if got := gitOutput(t, repository, "status", "--porcelain=v2"); got != mainStatus {
 		t.Fatalf("main worktree changed after %s crash: got=%q want=%q", boundary, got, mainStatus)
 	}
-	registrations := gitOutput(t, repository, "worktree", "list", "--porcelain")
 	if boundary == "remove" {
+		registrations := gitOutput(t, repository, "worktree", "list", "--porcelain")
 		if strings.Contains(registrations, lease.Path) {
 			t.Fatalf("removed worktree remains registered after crash: %s", lease.Path)
 		}
-	} else if boundary != "snapshot" && boundary != "snapshot-ref" && !strings.Contains(registrations, expectedRegistration) {
-		t.Fatalf("owned worktree registration was lost after %s crash: %s", boundary, expectedRegistration)
+	} else if !registrationChecked && boundary != "snapshot" && boundary != "snapshot-ref" {
+		assertCrashWorktreeRegistration(t, repository, expectedRegistration, boundary)
 	}
 	stopCrashDaemon(process)
+}
+
+// リース中の登録確認を解放後の GC と分離する。ended_worktree=0s の試験設定では、
+// 再起動直後の保守掃引が Release と重なると、保持期限どおりに登録が回収され得る。
+func assertCrashWorktreeRegistration(t *testing.T, repository, expected, boundary string) {
+	t.Helper()
+	registrations := gitOutput(t, repository, "worktree", "list", "--porcelain")
+	if !strings.Contains(registrations, expected) {
+		t.Fatalf("owned worktree registration was lost after %s crash: %s", boundary, expected)
+	}
 }
 
 func writeCrashConfig(t *testing.T, home string) {
