@@ -148,6 +148,68 @@ func TestSessionStartHookAcceptsCompactionAfterStartup(t *testing.T) {
 	}
 }
 
+func TestSessionStartHookSendsVerifiedCodexForkParent(t *testing.T) {
+	clearHookEnvironment(t)
+	handler := &recordingHandler{}
+	ctx := startHookServer(t, handler)
+	t.Setenv("WX_SESSION_TOKEN", "token")
+
+	transcriptDir := t.TempDir()
+	verifiedPath := filepath.Join(transcriptDir, "verified.jsonl")
+	if err := os.WriteFile(verifiedPath, []byte(`{"type":"session_meta","payload":{"id":"codex-child","forked_from_id":"codex-parent"}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mismatchPath := filepath.Join(transcriptDir, "mismatch.jsonl")
+	if err := os.WriteFile(mismatchPath, []byte(`{"type":"session_meta","payload":{"id":"different","forked_from_id":"codex-parent"}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	noParentPath := filepath.Join(transcriptDir, "no-parent.jsonl")
+	if err := os.WriteFile(noParentPath, []byte(`{"type":"session_meta","payload":{"id":"codex-child"}}
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name, sessionID, transcriptPath, wantParent string
+	}{
+		{name: "verified", sessionID: "codex-child", transcriptPath: verifiedPath, wantParent: "codex-parent"},
+		{name: "metadata mismatch", sessionID: "codex-mismatch", transcriptPath: mismatchPath},
+		{name: "missing parent", sessionID: "codex-no-parent", transcriptPath: noParentPath},
+		{name: "unreadable transcript", sessionID: "codex-unreadable", transcriptPath: filepath.Join(transcriptDir, "missing.jsonl")},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]string{
+				"session_id":      test.sessionID,
+				"source":          "startup-" + string(rune('a'+index)),
+				"transcript_path": test.transcriptPath,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler.mu.Lock()
+			handler.methods = nil
+			handler.params = nil
+			handler.mu.Unlock()
+			t.Setenv("WX_SESSION_ID", "wx-fork-"+string(rune('a'+index)))
+			if err := RunHook(ctx, "session-start", strings.NewReader(string(payload))); err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				ReplacesAgentSessionID string `json:"replaces_agent_session_id"`
+			}
+			if err := json.Unmarshal(handler.paramsFor("BindAgentSession"), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.ReplacesAgentSessionID != test.wantParent {
+				t.Fatalf("replacement parent=%q, want %q", got.ReplacesAgentSessionID, test.wantParent)
+			}
+		})
+	}
+}
+
 func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
 	clearHookEnvironment(t)
 	if err := RunHook(context.Background(), "unknown", strings.NewReader("")); err != nil {

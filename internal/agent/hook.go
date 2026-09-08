@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,9 +15,10 @@ import (
 )
 
 type HookInput struct {
-	SessionID string `json:"session_id"`
-	Source    string `json:"source"`
-	CWD       string `json:"cwd"`
+	SessionID      string `json:"session_id"`
+	Source         string `json:"source"`
+	CWD            string `json:"cwd"`
+	TranscriptPath string `json:"transcript_path"`
 }
 
 func RunHook(ctx context.Context, event string, input io.Reader) error {
@@ -48,13 +50,21 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		if payload.SessionID == "" {
 			return errors.New("hook payload does not contain session_id")
 		}
+		replacesAgentSessionID := codexForkParent(payload.TranscriptPath, payload.SessionID)
 		var response struct {
 			PreviousWorktree string `json:"previous_worktree"`
 		}
 		// Codex は compact 後にも同じ session_id で SessionStart を送り、source だけが変わる。
-		// payload 全体に対する冪等キーなので source もキーに含める。
+		// payload 全体に対する冪等キーなので source と fork の置換元もキーに含める。
 		idempotencyKey := "bind:" + wxID + ":" + payload.SessionID + ":" + payload.Source
-		if err := client.CallWithKey(ctx, "BindAgentSession", idempotencyKey, map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID, "source": payload.Source}, &response); err != nil {
+		if replacesAgentSessionID != "" {
+			idempotencyKey += ":" + replacesAgentSessionID
+		}
+		params := map[string]any{"session_id": wxID, "token": token, "agent_session_id": payload.SessionID, "source": payload.Source}
+		if replacesAgentSessionID != "" {
+			params["replaces_agent_session_id"] = replacesAgentSessionID
+		}
+		if err := client.CallWithKey(ctx, "BindAgentSession", idempotencyKey, params, &response); err != nil {
 			return err
 		}
 		if response.PreviousWorktree != "" && payload.Source == "resume" {
@@ -85,6 +95,54 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	default:
 		return fmt.Errorf("unknown hook event %q", event)
 	}
+}
+
+const maxCodexTranscriptRead = 1 << 20
+
+type codexTranscriptMetaEnvelope struct {
+	Type    string `json:"type"`
+	Payload struct {
+		ID           string `json:"id"`
+		SessionID    string `json:"session_id"`
+		ForkedFromID string `json:"forked_from_id"`
+	} `json:"payload"`
+}
+
+// codexForkParent は transcript の session metadata が hook payload と一致する直接 fork の親を返す。
+// transcript は agent から渡される外部入力なので、先頭の 1MiB だけを読み、検証できない場合は通常 bind に戻す。
+func codexForkParent(transcriptPath, sessionID string) string {
+	if transcriptPath == "" || sessionID == "" {
+		return ""
+	}
+	file, err := os.Open(transcriptPath)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = file.Close() }()
+
+	scanner := bufio.NewScanner(io.LimitReader(file, maxCodexTranscriptRead))
+	scanner.Buffer(make([]byte, 4096), maxCodexTranscriptRead)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var envelope codexTranscriptMetaEnvelope
+		if json.Unmarshal([]byte(line), &envelope) != nil || envelope.Type != "session_meta" {
+			return ""
+		}
+		metadataID := envelope.Payload.ID
+		if metadataID == "" {
+			metadataID = envelope.Payload.SessionID
+		} else if envelope.Payload.SessionID != "" && envelope.Payload.SessionID != metadataID {
+			return ""
+		}
+		if metadataID != sessionID || envelope.Payload.ForkedFromID == "" || envelope.Payload.ForkedFromID == sessionID {
+			return ""
+		}
+		return envelope.Payload.ForkedFromID
+	}
+	return ""
 }
 
 // decodeHookPayload は session-start hook の標準入力を読む。
