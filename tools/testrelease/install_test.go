@@ -17,7 +17,7 @@ func TestInstallRegistersDaemonAndPinsRelease(t *testing.T) {
 	if got := readFile(t, f.destination()); got != fakeBinary {
 		t.Fatalf("installed binary=%q", got)
 	}
-	if got := readFile(t, filepath.Join(f.root, "wx.log")); got != "stop\ninstall\nstart\n" {
+	if got := readFile(t, filepath.Join(f.root, "wx.log")); got != "stop\ninstall\nstart\nsetup --update\n" {
 		t.Fatalf("daemon calls=%q", got)
 	}
 	for _, url := range strings.Fields(readFile(t, filepath.Join(f.root, "curl.log"))) {
@@ -27,6 +27,11 @@ func TestInstallRegistersDaemonAndPinsRelease(t *testing.T) {
 	}
 	if !strings.Contains(output, `export PATH="$HOME/.local/bin:$PATH"`) {
 		t.Fatalf("missing PATH instructions: %s", output)
+	}
+	// --update は absent を提示しないため、新規インストール直後は何も出ない。
+	// この 1 行が新規利用者にとって setup への唯一の導線になる。
+	if !strings.Contains(output, "run wx setup") {
+		t.Fatalf("missing setup guidance: %s", output)
 	}
 	if _, err := os.Stat(filepath.Join(f.home, ".zshrc")); !os.IsNotExist(err) {
 		t.Fatalf("shell configuration was changed: %v", err)
@@ -43,9 +48,9 @@ func TestInstallUpdatesAndMigratesDaemon(t *testing.T) {
 	for _, tc := range []struct {
 		name, registered, loaded, want string
 	}{
-		{name: "same path", registered: "current", loaded: "0", want: "restart\n"},
-		{name: "old path", registered: "/old/wx", loaded: "0", want: "stop\ninstall\nstart\n"},
-		{name: "unloaded", registered: "current", loaded: "1", want: "stop\ninstall\nstart\n"},
+		{name: "same path", registered: "current", loaded: "0", want: "restart\nsetup --update\n"},
+		{name: "old path", registered: "/old/wx", loaded: "0", want: "stop\ninstall\nstart\nsetup --update\n"},
+		{name: "unloaded", registered: "current", loaded: "1", want: "stop\ninstall\nstart\nsetup --update\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -149,6 +154,21 @@ func TestInstallRejectsTemplateAndInvalidChecksum(t *testing.T) {
 				t.Fatal("old binary was replaced")
 			}
 		})
+	}
+}
+
+// TestInstallAbsorbsSetupFailure は wx setup --update の失敗が install 全体を落とさないことを確認する。
+// --update は通常 0 を返すが、set -euo pipefail の下で二重の保険として吸収する。
+func TestInstallAbsorbsSetupFailure(t *testing.T) {
+	t.Parallel()
+	f := newInstallFixture(t)
+	f.existing(t, f.destination())
+	output, err := f.run(t, "FAKE_FAIL=setup", "FAKE_LAUNCHCTL_STATUS=0")
+	if err != nil {
+		t.Fatalf("install failed because setup did: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "run wx setup") {
+		t.Fatalf("missing setup guidance: %s", output)
 	}
 }
 
