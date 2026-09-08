@@ -334,8 +334,7 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 
 // StandbyReplenishmentDiagnostics は待機用 worktree の補充を停止中の workspace を返す。
 // 停止は `replenish_suspensions` が唯一の権威なので、隔離 slot の数は判定にも表示にも使わない。
-// detail は停止理由ごとに意味が違い、準備失敗では job ID なので、その job の失敗情報も併せて読む。
-// job は FAILED に限る。再試行待ちの error_code は失敗の確定ではなく、成功した job は error 系が消えている。
+// detail は停止理由ごとに意味が違い、準備失敗では job ID なので、その job の失敗情報も FAILED に限って併せて読む。再試行待ちの error_code は失敗の確定ではない。
 func (s *Store) StandbyReplenishmentDiagnostics(ctx context.Context) ([]StandbyReplenishmentDiagnostic, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,rs.reason,rs.detail,rs.suspended_at,
 		COALESCE(j.error_code,''),COALESCE(j.error_message,''),COALESCE(j.error_detail_path,'')
