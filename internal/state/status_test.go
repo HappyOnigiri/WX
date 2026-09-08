@@ -335,3 +335,45 @@ func TestStandbyReplenishmentDiagnosticsIgnoreJobsThatHaveNotFailed(t *testing.T
 		t.Fatalf("standby diagnostic after success=%+v", diagnostics[0])
 	}
 }
+
+// wx slots --json は貸出の種別・期限・親 session を行に載せる。
+// slot を手放した session の行（--all）でも同じ列が読めることを併せて確認する。
+func TestListSlotsCarryLeaseAttributes(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	expiry := FormatTime(time.Now().Add(72 * time.Hour))
+	seedLease(t, store, "owner", LeaseKindShell, "", "", 0)
+	seedLease(t, store, "child", LeaseKindPath, expiry, "owner", 0)
+	slots, err := store.ListSlots(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]SlotSummary{}
+	for _, slot := range slots {
+		byID[slot.SlotID] = slot
+	}
+	if got := byID["child"]; got.LeaseKind != LeaseKindPath || got.LeaseExpiresAt != expiry || got.LeaseOwnerSessionID != "owner" {
+		t.Fatalf("child lease row=%+v", got)
+	}
+	if got := byID["owner"]; got.LeaseKind != LeaseKindShell || got.LeaseExpiresAt != "" || got.LeaseOwnerSessionID != "" {
+		t.Fatalf("owner lease row=%+v", got)
+	}
+	// slot を手放した session も同じ列を返す。
+	if _, err := store.db.ExecContext(ctx, `UPDATE slots SET owner_session_id=NULL WHERE id='child'`); err != nil {
+		t.Fatal(err)
+	}
+	all, err := store.ListSlots(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, slot := range all {
+		if slot.SlotID == "" && slot.SessionID == "child" {
+			found = slot.LeaseKind == LeaseKindPath && slot.LeaseOwnerSessionID == "owner"
+		}
+	}
+	if !found {
+		t.Fatalf("detached lease session row missing lease columns: %+v", all)
+	}
+}

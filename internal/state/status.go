@@ -94,6 +94,11 @@ type SlotSummary struct {
 	LastUsedAt     string `json:"last_used_at,omitempty"`
 	ArchivedAt     string `json:"archived_at,omitempty"`
 	ExpiresAt      string `json:"expires_at,omitempty"`
+	// LeaseKind 以下は貸出の性質である。agent は wx claude / wx codex の従来経路で、
+	// LeaseExpiresAt は lease.ttl の期限、LeaseOwnerSessionID は wx new を呼んだ親 session を指す。
+	LeaseKind           string `json:"lease_kind,omitempty"`
+	LeaseExpiresAt      string `json:"lease_expires_at,omitempty"`
+	LeaseOwnerSessionID string `json:"lease_owner_session_id,omitempty"`
 	// Repositories は行に紐づくソースリポジトリの main worktree のフルパスで、multi-repo workspace では複数入る。
 	// 表示側で basename へ縮めるため、ここでは短縮しない。
 	Repositories []string `json:"repositories,omitempty"`
@@ -102,7 +107,7 @@ type SlotSummary struct {
 // ListSlots は回収前（ARCHIVED 以外）の slot をすべて返し、SIZE 列の合計が `wx status` の Disk 行と同じ範囲を指すようにする。
 // all ではさらに、slot を手放した session も返し、`wx resume` に渡す ID をここから辿れるようにする。
 func (s *Store) ListSlots(ctx context.Context, all bool) ([]SlotSummary, error) {
-	q := `SELECT sl.id,sl.state,COALESCE(sl.workspace_id,''),rt.path,sl.rel_path,COALESCE(se.id,''),COALESCE(se.state,''),COALESCE(se.agent_kind,''),COALESCE(se.agent_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.last_used_at,'')
+	q := `SELECT sl.id,sl.state,COALESCE(sl.workspace_id,''),rt.path,sl.rel_path,COALESCE(se.id,''),COALESCE(se.state,''),COALESCE(se.agent_kind,''),COALESCE(se.agent_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.last_used_at,''),COALESCE(se.lease_kind,''),COALESCE(se.lease_expires_at,''),COALESCE(se.lease_owner_session_id,'')
 		FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN sessions se ON se.id=sl.owner_session_id`
 	q += ` WHERE sl.state <> 'ARCHIVED' ORDER BY rt.path,sl.rel_path`
 	rows, err := s.db.QueryContext(ctx, q)
@@ -114,7 +119,8 @@ func (s *Store) ListSlots(ctx context.Context, all bool) ([]SlotSummary, error) 
 	for rows.Next() {
 		var x SlotSummary
 		var root, relative string
-		if err := rows.Scan(&x.SlotID, &x.State, &x.WorkspaceID, &root, &relative, &x.SessionID, &x.SessionState, &x.AgentKind, &x.AgentSessionID, &x.CreatedAt, &x.ReadyAt, &x.LastUsedAt); err != nil {
+		if err := rows.Scan(&x.SlotID, &x.State, &x.WorkspaceID, &root, &relative, &x.SessionID, &x.SessionState, &x.AgentKind, &x.AgentSessionID, &x.CreatedAt, &x.ReadyAt, &x.LastUsedAt,
+			&x.LeaseKind, &x.LeaseExpiresAt, &x.LeaseOwnerSessionID); err != nil {
 			return nil, err
 		}
 		x.Path = filepath.Join(root, relative)
@@ -179,7 +185,7 @@ func (s *Store) repositoryPaths(ctx context.Context, query string) (map[string][
 
 // listDetachedSessions は現在どの slot も借りていない session を返す。
 func (s *Store) listDetachedSessions(ctx context.Context) ([]SlotSummary, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT se.id,se.state,COALESCE(se.workspace_id,''),se.agent_kind,COALESCE(se.agent_session_id,''),se.created_at,COALESCE(se.archived_at,''),COALESCE(se.expires_at,'')
+	rows, err := s.db.QueryContext(ctx, `SELECT se.id,se.state,COALESCE(se.workspace_id,''),se.agent_kind,COALESCE(se.agent_session_id,''),se.created_at,COALESCE(se.archived_at,''),COALESCE(se.expires_at,''),se.lease_kind,COALESCE(se.lease_expires_at,''),COALESCE(se.lease_owner_session_id,'')
 		FROM sessions se WHERE NOT EXISTS (SELECT 1 FROM slots sl WHERE sl.owner_session_id=se.id) ORDER BY se.created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -188,7 +194,8 @@ func (s *Store) listDetachedSessions(ctx context.Context) ([]SlotSummary, error)
 	var out []SlotSummary
 	for rows.Next() {
 		var x SlotSummary
-		if err := rows.Scan(&x.SessionID, &x.SessionState, &x.WorkspaceID, &x.AgentKind, &x.AgentSessionID, &x.CreatedAt, &x.ArchivedAt, &x.ExpiresAt); err != nil {
+		if err := rows.Scan(&x.SessionID, &x.SessionState, &x.WorkspaceID, &x.AgentKind, &x.AgentSessionID, &x.CreatedAt, &x.ArchivedAt, &x.ExpiresAt,
+			&x.LeaseKind, &x.LeaseExpiresAt, &x.LeaseOwnerSessionID); err != nil {
 			return nil, err
 		}
 		out = append(out, x)

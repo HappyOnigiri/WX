@@ -10,12 +10,45 @@ import (
 
 type Session struct {
 	ID, WorkspaceID, SlotID, ParentSessionID, State, AgentKind, AgentSessionID, PendingAgentSessionID, CreatedAt, ReleasedAt, ArchivedAt, ExpiresAt string
-	TokenHash                                                                                                                                       []byte
-	ClientPID, AgentPID                                                                                                                             int
+	// LeaseKind は貸出の性質（agent / path / shell / command）である。
+	// LeaseExpiresAt は agent 以外の貸出に付く lease.ttl の期限で、
+	// LeaseOwnerSessionID は wx new を呼んだ親 session を指す。
+	LeaseKind, LeaseExpiresAt, LeaseOwnerSessionID string
+	TokenHash                                      []byte
+	ClientPID, AgentPID                            int
 }
 
+// LeaseKind の値。agent は既存の agent 起動で、既定値でもある。
+const (
+	LeaseKindAgent   = "agent"
+	LeaseKindPath    = "path"
+	LeaseKindShell   = "shell"
+	LeaseKindCommand = "command"
+)
+
 // sessionColumns は full-row の session read 全てで共有する column list である。
-const sessionColumns = `id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(pending_agent_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'')`
+const sessionColumns = `id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(pending_agent_session_id,''),lease_kind,COALESCE(lease_expires_at,''),COALESCE(lease_owner_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'')`
+
+// sessionInsertColumns と sessionInsertPlaceholders は session の新規登録で共有する。
+// 貸出属性の列を足し忘れた登録経路が残らないよう、列名と placeholder を1か所で持つ。
+const (
+	sessionInsertColumns      = `id,workspace_id,slot_id,parent_session_id,state,agent_kind,lease_kind,lease_expires_at,lease_owner_session_id,client_pid,session_token_hash,requested_branch_spec,created_at,pending_agent_session_id`
+	sessionInsertPlaceholders = `?,?,?,?,?,?,?,?,?,?,?,?,?,?`
+)
+
+// sessionInsertArgs は sessionInsertColumns と同じ順で登録引数を組む。
+// lease_kind が空の Session は従来の agent 起動として扱う。
+func sessionInsertArgs(session Session, createdAt string) []any {
+	kind := session.LeaseKind
+	if kind == "" {
+		kind = LeaseKindAgent
+	}
+	return []any{
+		session.ID, nullString(session.WorkspaceID), session.SlotID, nullString(session.ParentSessionID), session.State, session.AgentKind,
+		kind, nullString(session.LeaseExpiresAt), nullString(session.LeaseOwnerSessionID),
+		session.ClientPID, session.TokenHash, "", createdAt, nullString(session.PendingAgentSessionID),
+	}
+}
 
 func (s *Store) LeaseReady(ctx context.Context, slotID string, session Session) error {
 	_, _, err := s.LeaseReadyWithReplenishment(ctx, slotID, session)
@@ -50,7 +83,8 @@ func (s *Store) LeaseReadyWithReplenishment(ctx context.Context, slotID string, 
 	if coldRepositories != 0 {
 		return Job{}, false, errors.New("slot has COLD repositories; use the cold preparation path")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,state,agent_kind,client_pid,session_token_hash,created_at) VALUES(?,?,?,?,?,?,?,?)`, session.ID, session.WorkspaceID, slotID, session.State, session.AgentKind, session.ClientPID, session.TokenHash, now())
+	session.SlotID = slotID
+	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(`+sessionInsertColumns+`) VALUES(`+sessionInsertPlaceholders+`)`, sessionInsertArgs(session, now())...)
 	if err != nil {
 		return Job{}, false, err
 	}
@@ -100,7 +134,8 @@ func (s *Store) LeaseReadyWithCold(ctx context.Context, slotID string, session S
 	if n, _ := res.RowsAffected(); n == 0 {
 		return Job{}, errors.New("slot has no COLD repositories")
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,state,agent_kind,client_pid,session_token_hash,created_at) VALUES(?,?,?,?,?,?,?,?)`, session.ID, session.WorkspaceID, slotID, "STARTING", session.AgentKind, session.ClientPID, session.TokenHash, now()); err != nil {
+	session.SlotID, session.State = slotID, "STARTING"
+	if _, err = tx.ExecContext(ctx, `INSERT INTO sessions(`+sessionInsertColumns+`) VALUES(`+sessionInsertPlaceholders+`)`, sessionInsertArgs(session, now())...); err != nil {
 		return Job{}, err
 	}
 	if err := insertCurrentSessionRepositories(ctx, tx, session.ID, session.WorkspaceID, slotID); err != nil {
@@ -132,7 +167,9 @@ func (s *Store) MarkSessionState(ctx context.Context, id string, from []string, 
 
 func scanSession(row *sql.Row) (Session, error) {
 	var x Session
-	err := row.Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.PendingAgentSessionID, &x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
+	err := row.Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.PendingAgentSessionID,
+		&x.LeaseKind, &x.LeaseExpiresAt, &x.LeaseOwnerSessionID,
+		&x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
 	return x, err
 }
 
@@ -238,11 +275,43 @@ type OrphanCandidate struct {
 	ClientPID, AgentPID     int
 }
 
+// OrphanCandidates は heartbeat が切れた使用中 session を返す。
+// path 貸出（wx new）は heartbeat を張らないため除外する。除外を忘れると wx new の worktree は
+// 45 秒で保存・返却される。shell / command 貸出は client を持つので回収対象に残す。
 func (s *Store) OrphanCandidates(ctx context.Context, heartbeatBefore string) ([]OrphanCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(client_pid,0),COALESCE(agent_pid,0) FROM sessions WHERE state IN ('STARTING','ACTIVE','UNBOUND','RESTORING') AND COALESCE(last_heartbeat_at,created_at)<=?`, heartbeatBefore)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(client_pid,0),COALESCE(agent_pid,0) FROM sessions
+		WHERE state IN ('STARTING','ACTIVE','UNBOUND','RESTORING') AND lease_kind<>'path' AND COALESCE(last_heartbeat_at,created_at)<=?`, heartbeatBefore)
 	if err != nil {
 		return nil, err
 	}
+	return scanOrphanCandidates(rows)
+}
+
+// ExpiredLeaseCandidates は lease.ttl の期限が来た agent 以外の貸出を返す。
+// agent 起動は期限を持たず、期限による返却も既存の返却経路（保存してから返却）を通る。
+func (s *Store) ExpiredLeaseCandidates(ctx context.Context, expiredAt string) ([]OrphanCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(client_pid,0),COALESCE(agent_pid,0) FROM sessions
+		WHERE state IN ('STARTING','ACTIVE') AND lease_kind<>'agent' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?`, expiredAt)
+	if err != nil {
+		return nil, err
+	}
+	return scanOrphanCandidates(rows)
+}
+
+// OrphanedChildLeases は親 session が使用中でなくなった子貸出を返す。
+// 親の終了で SubAgent 用の worktree もまとめて保存・返却するための抽出であり、
+// resume chain 専用の parent_session_id とは別に lease_owner_session_id で結ぶ。
+func (s *Store) OrphanedChildLeases(ctx context.Context) ([]OrphanCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT ch.id,COALESCE(ch.workspace_id,''),ch.slot_id,COALESCE(ch.client_pid,0),COALESCE(ch.agent_pid,0)
+		FROM sessions ch JOIN sessions pa ON pa.id=ch.lease_owner_session_id
+		WHERE ch.state IN ('STARTING','ACTIVE') AND pa.state NOT IN ('STARTING','ACTIVE','UNBOUND','RESTORING')`)
+	if err != nil {
+		return nil, err
+	}
+	return scanOrphanCandidates(rows)
+}
+
+func scanOrphanCandidates(rows *sql.Rows) ([]OrphanCandidate, error) {
 	defer rows.Close()
 	var out []OrphanCandidate
 	for rows.Next() {
