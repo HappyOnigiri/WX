@@ -22,7 +22,7 @@ func TestHandlerRejectsUnknownFieldsForEveryParameterizedMethod(t *testing.T) {
 	handler := Handler{}
 	methods := []string{
 		"ResolveAndLease", "WaitReady", "BindAgentSession",
-		"Release", "Heartbeat", "RegisterAgentProcess", "Resume", "ResumeStatus", "WorkspaceScope", "GC", "Sessions", "Forget", "RetryStandby",
+		"Release", "ReleaseLease", "Heartbeat", "RegisterAgentProcess", "Resume", "ResumeStatus", "WorkspaceScope", "GC", "Sessions", "Forget", "RetryStandby",
 	}
 	for _, method := range methods {
 		if _, err := handler.Handle(context.Background(), method, json.RawMessage(`{"unexpected":true}`)); err == nil {
@@ -270,6 +270,44 @@ func TestHandlerDecodesLegacyLeaseAndResumeParams(t *testing.T) {
 	}
 	if err := decode(json.RawMessage(`{"cwd":"/repo","unexpected":true}`), &rpc.ResolveAndLeaseParams{}); err == nil {
 		t.Fatal("decode accepted an unknown field")
+	}
+	// 貸出コマンドの 3 フィールドは省略も許し、省略時は agent 起動として読む。
+	var leaseKinds rpc.ResolveAndLeaseParams
+	if err := decode(json.RawMessage(`{"cwd":"/repo","lease_kind":"shell","lease_owner_session_id":"owner","lease_owner_token":"token"}`), &leaseKinds); err != nil {
+		t.Fatal(err)
+	}
+	if leaseKinds.LeaseKind != "shell" || leaseKinds.LeaseOwnerSessionID != "owner" || leaseKinds.LeaseOwnerToken != "token" {
+		t.Fatalf("decoded lease fields=%+v", leaseKinds)
+	}
+	var resumeLease rpc.ResumeParams
+	if err := decode(json.RawMessage(`{"wx_session_id":"wx-1","lease_kind":"command"}`), &resumeLease); err != nil {
+		t.Fatal(err)
+	}
+	if resumeLease.LeaseKind != "command" || resumeLease.LeaseOwnerSessionID != "" {
+		t.Fatalf("decoded resume lease fields=%+v", resumeLease)
+	}
+}
+
+// ReleaseLease は未知のフィールドを拒否し、agent session の返却も断る。
+// 認可は socket が per-user であることに依るため、session token は要求しない。
+func TestReleaseLeaseRPCRejectsUnknownFieldsAndAgentSessions(t *testing.T) {
+	t.Parallel()
+	f := manualManagerFixture(t)
+	handler := Handler{Manager: f.Manager}
+	ctx := context.Background()
+	if _, err := handler.dispatch(ctx, "ReleaseLease", json.RawMessage(`{"session_id":"x","token":"secret"}`)); err == nil {
+		t.Fatal("ReleaseLease accepted an unknown field")
+	}
+	if _, err := handler.dispatch(ctx, "ReleaseLease", json.RawMessage(`{"session_id":"missing","reason":"wx-release","discard":false}`)); err == nil {
+		t.Fatal("ReleaseLease accepted an unknown session")
+	}
+	agent := state.Session{ID: "agent", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	if _, err := f.Store.CreateSlotSession(ctx, testSlotRow(t, f.Manager, "", "slot", 0, "LEASED"), nil, agent, ""); err != nil {
+		t.Fatal(err)
+	}
+	_, err := handler.dispatch(ctx, "ReleaseLease", json.RawMessage(`{"session_id":"agent","reason":"wx-release","discard":false}`))
+	if err == nil || !strings.Contains(err.Error(), "leased to an agent") {
+		t.Fatalf("agent session ReleaseLease error=%v", err)
 	}
 }
 

@@ -92,16 +92,13 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	if result, handled, err := h.dispatchLiveness(ctx, method, raw); handled {
 		return result, err
 	}
+	if result, handled, err := h.dispatchLease(ctx, method, raw); handled {
+		return result, err
+	}
 	switch method {
 	case "Ping":
 		// 状態を読まず何も変更しない応答確認。起動前の接続確認が Status の集計を待たないために置く。
 		return map[string]any{"protocol_version": rpc.ProtocolVersion, "degraded": false, "pid": os.Getpid()}, nil
-	case "ResolveAndLease":
-		var p rpc.ResolveAndLeaseParams
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return h.Manager.leaseWithPolicy(ctx, p.CWD, p.Branches, p.Agent, p.ClientPID, p.ForceWorktree)
 	case "WaitReady":
 		var p struct {
 			SessionID string `json:"session_id"`
@@ -144,12 +141,6 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return nil, err
 		}
 		return map[string]bool{"released": true}, h.Manager.Release(ctx, p.SessionID, p.Token, p.Reason)
-	case "Resume":
-		var p rpc.ResumeParams
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return h.Manager.Resume(ctx, p.WXSessionID, p.Agent, p.ClientPID, p.Fresh, ResumeOptions{AgentSessionID: p.AgentSessionID, Branches: p.Branches})
 	case "ResumeStatus":
 		return h.resumeStatusRPC(ctx, raw)
 	case "WorkspaceScope":
@@ -262,6 +253,49 @@ func (h Handler) dispatchClean(ctx context.Context, method string, raw json.RawM
 			return nil, true, err
 		}
 		return map[string]bool{"confirmed": true}, true, h.Manager.ConfirmTermination(ctx, p.SessionID, p.Token, p.RequestID)
+	default:
+		return nil, false, nil
+	}
+}
+
+// dispatchLease は worktree の貸出と復元、貸出の明示的な返却を受け持つ。
+// handled が false のときは他の method として扱う。
+func (h Handler) dispatchLease(ctx context.Context, method string, raw json.RawMessage) (any, bool, error) {
+	switch method {
+	case "ResolveAndLease":
+		var p rpc.ResolveAndLeaseParams
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		attrs, err := h.Manager.resolveLeaseAttrs(ctx, p.LeaseKind, p.LeaseOwnerSessionID, p.LeaseOwnerToken)
+		if err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.leaseWithPolicy(ctx, p.CWD, p.Branches, p.Agent, p.ClientPID, p.ForceWorktree, attrs)
+		return result, true, err
+	case "Resume":
+		var p rpc.ResumeParams
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		attrs, err := h.Manager.resolveLeaseAttrs(ctx, p.LeaseKind, p.LeaseOwnerSessionID, p.LeaseOwnerToken)
+		if err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.Resume(ctx, p.WXSessionID, p.Agent, p.ClientPID, p.Fresh, ResumeOptions{AgentSessionID: p.AgentSessionID, Branches: p.Branches, Lease: attrs})
+		return result, true, err
+	case "ReleaseLease":
+		// 貸出の明示的な返却。session token を持たない wx release から呼ばれる。
+		var p struct {
+			SessionID string `json:"session_id"`
+			Reason    string `json:"reason"`
+			Discard   bool   `json:"discard"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.ReleaseLease(ctx, p.SessionID, p.Reason, p.Discard)
+		return result, true, err
 	default:
 		return nil, false, nil
 	}

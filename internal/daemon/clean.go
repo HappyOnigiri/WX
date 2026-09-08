@@ -81,7 +81,7 @@ func planCleanTargets(candidates []state.CleanCandidate, all, standby bool) []st
 		case !sessionInUse(candidate.SessionState):
 			// 終了済み・無効化された未使用 slot はそのまま削除経路へ進む。
 		case !all:
-			target.State, target.Reason = cleanTargetSkipped, "session "+candidate.SessionID+" is in use; rerun with --all to ask it to stop"
+			target.State, target.Reason = cleanTargetSkipped, skipReasonInUse(candidate)
 		default:
 			if reason := unsavedDataRisk(candidate); reason != "" {
 				target.State, target.Reason = cleanTargetSkipped, reason
@@ -90,6 +90,15 @@ func planCleanTargets(candidates []state.CleanCandidate, all, standby bool) []st
 		out = append(out, target)
 	}
 	return out
+}
+
+// skipReasonInUse は --all 無しで使用中の slot を残すときの理由を返す。
+// wx new の貸出は停止させる相手がいないため、--all ではなく wx release を案内する。
+func skipReasonInUse(candidate state.CleanCandidate) string {
+	if candidate.LeaseKind == state.LeaseKindPath {
+		return "session " + candidate.SessionID + " holds a lease from wx new; run wx release " + candidate.SessionID + " to return it"
+	}
+	return "session " + candidate.SessionID + " is in use; rerun with --all to ask it to stop"
 }
 
 // unsavedDataRisk は、使用中の slot を停止後に削除してよいと証明できない理由を返す。証明できる場合は空文字を返す。
@@ -291,6 +300,19 @@ func (m *Manager) sessionStateOf(ctx context.Context, sessionID string) string {
 	return session.State
 }
 
+// detachedLease は、agent 以外の貸出で生きた client も agent も持たない session かを返す。
+// 該当する貸出は終了要求を受け取る相手がいないため、clean はその場で返却する。
+func (m *Manager) detachedLease(ctx context.Context, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	session, err := m.store.SessionByID(ctx, sessionID)
+	if err != nil || session.LeaseKind == "" || session.LeaseKind == state.LeaseKindAgent {
+		return false
+	}
+	return !processAlive(session.ClientPID) && !processAlive(session.AgentPID)
+}
+
 // advancePending は使用中なら終了要求へ、未使用なら削除ジョブへ進める。
 // 準備・保存・削除途中の対象は既存ジョブと競合せず、安全な処理境界まで待つ。
 func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target state.CleanTarget, waiting map[string]time.Time) {
@@ -305,6 +327,13 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 		m.moveCleanTarget(ctx, run.ID, target, cleanTargetDone, "")
 		return
 	case sessionInUse(sessionState):
+		// 生きた client も agent も持たない貸出（wx new）は終了要求の宛先が無い。
+		// 要求を積んでも誰も応答しないので、その場で返却して保存経路へ進める。
+		if m.detachedLease(ctx, target.SessionID) {
+			m.releaseLeaseWithoutToken(ctx, state.OrphanCandidate{ID: target.SessionID, WorkspaceID: target.WorkspaceID, SlotID: target.SlotID}, "clean-release")
+			m.moveCleanTarget(ctx, run.ID, target, cleanTargetSaving, "")
+			return
+		}
 		if strings.TrimSuffix(run.Mode, "-discard") != "all" {
 			m.moveCleanTarget(ctx, run.ID, target, cleanTargetSkipped, "session "+target.SessionID+" is in use")
 			return

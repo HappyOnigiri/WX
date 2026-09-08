@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -600,5 +601,62 @@ func TestCleanDiscardRecoversUnboundAndLeavesUnregisteredPaths(t *testing.T) {
 	}
 	if _, err := os.Stat(unknown); err != nil {
 		t.Fatalf("unregistered path changed: %v", err)
+	}
+}
+
+// wx new の貸出は停止させる相手がいないため、--all 無しの skip 理由で wx release を案内する。
+// プロセスに随伴する shell 貸出と agent 起動は従来どおり --all を案内する。
+func TestPlanCleanTargetsGuideDetachedLeasesToRelease(t *testing.T) {
+	targets := planCleanTargets([]state.CleanCandidate{
+		{SlotID: "detached", SlotState: "LEASED", SessionID: "path-lease", SessionState: "ACTIVE", LeaseKind: state.LeaseKindPath},
+		{SlotID: "shell", SlotState: "LEASED", SessionID: "shell-lease", SessionState: "ACTIVE", LeaseKind: state.LeaseKindShell},
+		{SlotID: "agent", SlotState: "LEASED", SessionID: "agent-session", SessionState: "ACTIVE", LeaseKind: state.LeaseKindAgent},
+	}, false, false)
+	if got := targetByID(targets, "detached"); got.State != cleanTargetSkipped || !strings.Contains(got.Reason, "wx release path-lease") {
+		t.Fatalf("detached lease target=%+v", got)
+	}
+	for _, slotID := range []string{"shell", "agent"} {
+		if got := targetByID(targets, slotID); got.State != cleanTargetSkipped || !strings.Contains(got.Reason, "--all") {
+			t.Fatalf("%s target=%+v, want the --all guidance", slotID, got)
+		}
+	}
+	// --all では貸出も対象に入る。
+	all := planCleanTargets([]state.CleanCandidate{
+		{SlotID: "detached", SlotState: "LEASED", SessionID: "path-lease", SessionState: "ACTIVE", LeaseKind: state.LeaseKindPath},
+	}, true, false)
+	if got := targetByID(all, "detached").State; got != cleanTargetPending {
+		t.Fatalf("--all detached lease state=%s", got)
+	}
+}
+
+// detachedLease は agent 起動と生きたプロセスを持つ貸出を除き、
+// 終了要求の宛先がない貸出だけを見分ける。
+func TestDetachedLeaseIdentifiesLeasesWithoutALiveProcess(t *testing.T) {
+	t.Parallel()
+	f := manualManagerFixture(t)
+	ctx := context.Background()
+	for name, test := range map[string]struct {
+		kind string
+		pid  int
+		want bool
+	}{
+		"path lease":     {kind: state.LeaseKindPath, want: true},
+		"released shell": {kind: state.LeaseKindShell, want: true},
+		"live shell":     {kind: state.LeaseKindShell, pid: os.Getpid()},
+		"agent session":  {kind: state.LeaseKindAgent},
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := strings.ReplaceAll(name, " ", "-")
+			session := state.Session{ID: id, SlotID: id, State: "ACTIVE", AgentKind: "codex", LeaseKind: test.kind, ClientPID: test.pid, TokenHash: state.HashToken("token")}
+			if _, err := f.Store.CreateSlotSession(ctx, testSlotRow(t, f.Manager, "", id, 0, "LEASED"), nil, session, ""); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.Manager.detachedLease(ctx, id); got != test.want {
+				t.Fatalf("detachedLease(%s)=%v, want %v", name, got, test.want)
+			}
+		})
+	}
+	if f.Manager.detachedLease(ctx, "") || f.Manager.detachedLease(ctx, "missing") {
+		t.Fatal("detachedLease accepted an empty or unknown session")
 	}
 }

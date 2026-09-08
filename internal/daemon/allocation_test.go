@@ -145,7 +145,7 @@ func TestAllocateFailsWhenWorktreeRootCannotBeCreated(t *testing.T) {
 	manager.cfg = cfg
 	manager.mu.Unlock()
 
-	if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", os.Getpid(), "STARTING", ""); err == nil {
+	if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", os.Getpid(), leaseAttrs{}, "STARTING", ""); err == nil {
 		t.Fatal("allocate succeeded with an unusable worktree root")
 	}
 }
@@ -157,7 +157,7 @@ func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_allocate_insert BEFORE INSERT ON slots BEGIN SELECT RAISE(ABORT,'injected slot insert failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", os.Getpid(), "STARTING", ""); err == nil {
+	if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", os.Getpid(), leaseAttrs{}, "STARTING", ""); err == nil {
 		t.Fatal("allocate succeeded despite an injected persistence failure")
 	}
 	manager.mu.RLock()
@@ -182,7 +182,7 @@ func TestAllocateRegistrationFailureQuarantinesCreatedSlot(t *testing.T) {
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_allocate_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT,'injected session registration failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", os.Getpid(), "STARTING", ""); err == nil {
+	if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", os.Getpid(), leaseAttrs{}, "STARTING", ""); err == nil {
 		t.Fatal("allocate succeeded despite an injected session registration failure")
 	}
 	manager.mu.RLock()
@@ -226,7 +226,7 @@ func TestAllocationDoesNotAdoptExistingUnregisteredDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := manager.allocateWithID(ctx, "taken", root, rootID, "token", w, resolved, 1, "codex", 0, "STARTING", "PREPARING", "PREPARE", ""); !errors.Is(err, errSlotPathExists) {
+	if _, _, err := manager.allocateWithID(ctx, "taken", root, rootID, "token", w, resolved, 1, "codex", 0, leaseAttrs{}, "STARTING", "PREPARING", "PREPARE", ""); !errors.Is(err, errSlotPathExists) {
 		t.Fatalf("collision error=%v", err)
 	}
 	if _, err := store.Slot(ctx, "taken"); err == nil {

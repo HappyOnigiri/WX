@@ -452,7 +452,7 @@ func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, retry, err := manager.allocateWithID(ctx, taken, rootPath, rootID, "token", workspaceRecord, resolved, 1, "codex", 0, "STARTING", "PREPARING", "PREPARE", "")
+	_, retry, err := manager.allocateWithID(ctx, taken, rootPath, rootID, "token", workspaceRecord, resolved, 1, "codex", 0, leaseAttrs{}, "STARTING", "PREPARING", "PREPARE", "")
 	if err == nil || !retry {
 		t.Fatalf("duplicate slot id retry=%v err=%v, want a retryable collision", retry, err)
 	}
@@ -464,7 +464,7 @@ func TestAllocationRetriesASlotIDCollision(t *testing.T) {
 		t.Fatalf("standby allocation with a free id: %v", err)
 	}
 
-	lease, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", 0, "STARTING", "")
+	lease, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "codex", 0, leaseAttrs{}, "STARTING", "")
 	if err != nil {
 		t.Fatal(err)
 	}

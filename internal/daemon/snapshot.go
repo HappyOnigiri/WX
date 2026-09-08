@@ -33,9 +33,12 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 	}
 	if !changed {
 		m.releaseLease(id)
-		return nil
+	} else {
+		m.schedule(job)
 	}
-	m.schedule(job)
+	// この session が wx new で用意した子貸出を、周期処理の 10 秒を待たずに返却する。
+	// 正しさの根拠は reconcileExpiredLeases 側にあり、ここは待ち時間の最適化である。
+	m.releaseOrphanedChildLeases(ctx)
 	return nil
 }
 

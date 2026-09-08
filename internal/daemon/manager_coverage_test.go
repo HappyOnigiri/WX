@@ -755,7 +755,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		cfg.Storage.WorktreeRoot = "$UNSUPPORTED/root"
 		manager.cfg = cfg
 		manager.mu.Unlock()
-		if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "coverage", 0, "STARTING", ""); err == nil {
+		if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "coverage", 0, leaseAttrs{}, "STARTING", ""); err == nil {
 			t.Fatal("allocation with unsupported root succeeded")
 		}
 		blocked := filepath.Join(t.TempDir(), "blocked")
@@ -766,7 +766,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		cfg.Storage.WorktreeRoot = filepath.Join(blocked, "child")
 		manager.cfg = cfg
 		manager.mu.Unlock()
-		if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "coverage", 0, "STARTING", ""); err == nil {
+		if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "coverage", 0, leaseAttrs{}, "STARTING", ""); err == nil {
 			t.Fatal("allocation below a regular file succeeded")
 		}
 		manager.mu.Lock()

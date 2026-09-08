@@ -375,6 +375,9 @@ func workspaceRecoveryExclusions(w discovery.Workspace, repos []state.SlotReposi
 type ResumeOptions struct {
 	AgentSessionID string
 	Branches       []string
+	// Lease は wx shell --resume / wx run --resume の貸出属性である。
+	// zero 値なら従来の agent 起動としての復元になる。
+	Lease leaseAttrs
 }
 
 func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, fresh bool, options ...ResumeOptions) (Lease, error) {
@@ -436,7 +439,7 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, fres
 		if err != nil {
 			return Lease{}, err
 		}
-		return m.allocate(ctx, w, resolved, generation, agent, pid, "STARTING", oldID)
+		return m.allocate(ctx, w, resolved, generation, agent, pid, opts.Lease, "STARTING", oldID)
 	}
 	w := archivedWorkspace
 	resolved := make([]pool.Resolved, 0, len(w.Repositories))
@@ -457,7 +460,7 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, fres
 	if err != nil {
 		return Lease{}, err
 	}
-	lease, err := m.allocate(ctx, w, resolved, generation, agent, pid, "RESTORING", oldID, opts.AgentSessionID)
+	lease, err := m.allocate(ctx, w, resolved, generation, agent, pid, opts.Lease, "RESTORING", oldID, opts.AgentSessionID)
 	if err != nil {
 		return Lease{}, err
 	}
