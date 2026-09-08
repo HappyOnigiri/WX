@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -40,9 +41,16 @@ func Start(ctx context.Context, helper string, fd *os.File, env []string, argv .
 		}
 		helper = resolved
 	}
-	executable, err := exec.LookPath(argv[0])
-	if err != nil {
-		return nil, fmt.Errorf("locate descriptor command %q: %w", argv[0], err)
+	executable := argv[0]
+	// 相対パスは呼び出し元の CWD で解決してはいけない。移動先にだけあるコマンド
+	// （wx run -- ./scripts/test.sh）が起動前に失敗するため、Handle が fchdir(2) 後に解決する。
+	// 名前だけ・絶対パスの指定は CWD に依存しないので、ここで解決して起動前に誤りを返す。
+	if !relativeToDescriptor(argv[0]) {
+		resolved, err := exec.LookPath(argv[0])
+		if err != nil {
+			return nil, fmt.Errorf("locate descriptor command %q: %w", argv[0], err)
+		}
+		executable = resolved
 	}
 	childArgs := make([]string, 0, len(argv)+1)
 	childArgs = append(childArgs, Command, executable)
@@ -53,6 +61,12 @@ func Start(ctx context.Context, helper string, fd *os.File, env []string, argv .
 	cmd.Env = env
 	cmd.ExtraFiles = []*os.File{fd}
 	return cmd, nil
+}
+
+// relativeToDescriptor は、path が移動先のディレクトリを基点に解決される指定かを返す。
+// path 区切りを含み絶対パスでないものだけが CWD に依存する。
+func relativeToDescriptor(path string) bool {
+	return strings.ContainsRune(path, filepath.Separator) && !filepath.IsAbs(path)
 }
 
 // Handle は隠し trampoline command を実行する。通常の wx 呼び出しでは handled=false を返す。
@@ -70,7 +84,14 @@ func Handle(args []string) (handled bool, exitCode int) {
 		fmt.Fprintf(os.Stderr, "wx descriptor exec: close directory fd: %v\n", err)
 		return true, 1
 	}
-	if err := unix.Exec(args[1], args[1:], os.Environ()); err != nil {
+	// 実行ファイルの探索は fchdir(2) 後に行う。相対パスは移動先の CWD から、
+	// 名前だけの指定は子へ渡した PATH から解決される。
+	executable, err := exec.LookPath(args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wx descriptor exec: locate %s: %v\n", args[1], err)
+		return true, 1
+	}
+	if err := unix.Exec(executable, args[1:], os.Environ()); err != nil {
 		fmt.Fprintf(os.Stderr, "wx descriptor exec: exec %s: %v\n", args[1], err)
 		return true, 1
 	}
