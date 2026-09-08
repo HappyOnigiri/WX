@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // createSessionSlot は session と slot を 1 組ずつ登録し、その組の job を作れる状態にする。
@@ -115,5 +116,16 @@ func TestTruncateFailureMessageMarksWhatItDropped(t *testing.T) {
 	got := truncateFailureMessage(long)
 	if len(got) <= maxFailureMessage || !strings.HasSuffix(got, "(truncated)") {
 		t.Fatalf("long message length=%d suffix=%q", len(got), got[len(got)-20:])
+	}
+	// 上限の境界に多バイト文字が来ても、壊れた UTF-8 を残さない。
+	for offset := 1; offset <= 3; offset++ {
+		multibyte := strings.Repeat("x", maxFailureMessage-offset) + strings.Repeat("失", 10)
+		truncated := truncateFailureMessage(multibyte)
+		if !utf8.ValidString(truncated) {
+			t.Fatalf("truncated message at offset %d is not valid UTF-8: %q", offset, truncated[len(truncated)-20:])
+		}
+		if !strings.HasSuffix(truncated, "(truncated)") {
+			t.Fatalf("truncated message at offset %d lost its marker: %q", offset, truncated[len(truncated)-20:])
+		}
 	}
 }

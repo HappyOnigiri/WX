@@ -1,17 +1,25 @@
 package state
 
-import "context"
+import (
+	"context"
+	"unicode/utf8"
+)
 
 // maxFailureMessage は job row に残す失敗理由の上限である。
 // 原因の 1 行を残すためのもので、command 出力そのものは error_detail_path のログが持つ。
 const maxFailureMessage = 4 << 10
 
 // truncateFailureMessage は失敗理由を上限まで詰め、切り捨てたことを末尾で示す。
+// 切る位置は rune 境界へ戻す。理由は診断の原因文と `--json` にそのまま載るため、壊れた UTF-8 を残さない。
 func truncateFailureMessage(message string) string {
 	if len(message) <= maxFailureMessage {
 		return message
 	}
-	return message[:maxFailureMessage] + " ... (truncated)"
+	end := maxFailureMessage
+	for end > 0 && !utf8.RuneStart(message[end]) {
+		end--
+	}
+	return message[:end] + " ... (truncated)"
 }
 
 // RecoveryFailure は保存・復元の失敗のうち、後続の実行でも解消していないものを表す。
