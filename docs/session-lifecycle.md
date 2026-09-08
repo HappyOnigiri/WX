@@ -38,8 +38,36 @@
    復元後のworktreeはtracked changesを含むため、貸出前の検査はcleanなworking treeを要求しない`ValidateOwnership`を使う。
    READY slotの再利用側は`ValidateReady`で、こちらはtracked cleanまで求める。
 
+## エージェント起動以外への貸出
+
+`wx shell` / `wx run` / `wx new`はagentを起動せずにworktreeを借りる。
+貸出の性質は`sessions.lease_kind`（`agent` / `path` / `shell` / `command`）で表し、session stateは`STARTING` / `ACTIVE`のままとする。
+新しいstateを作ると`state IN (...)`を持つ全SQL（返却の分岐・orphan判定・heartbeat・standby補充記録・`wx clear`の使用中判定）を一斉に触ることになり、返却が保存経路から外れる危険があるためである。
+`agent_kind`には`wx-shell` / `wx-run` / `wx-path`を入れ、`wx slots`のAGENT列と`--resume`の照合に使う。
+
+`wx shell`と`wx run`は`internal/cli/client.go`の`launch`をそのまま共有し、lease取得・`defer Release`・heartbeat・descriptor束縛・signal中継・`wx clear --all`への応答を既存経路から得る。
+実行するプログラムを`RegisterAgentProcess`で`agent_pid`に登録するので、snapshot前の生存確認も同じに効く。
+`wx new`だけはプロセスに随伴せず、`client_pid=0`でheartbeatも張らない。
+そのため`Store.OrphanCandidates`は`lease_kind<>'path'`で除外する。
+除外を忘れると`wx new`のworktreeは45秒で保存・返却されGCの対象になるため、ここがこの経路で最も静かに壊れる箇所である。
+
+`wx new`の返却契機は3つで、どれも既存の返却経路（session `RELEASING`→slot `DRAINING`→SNAPSHOTジョブ）へ載る。
+
+1. 親sessionの終了。`WX_SESSION_ID` / `WX_SESSION_TOKEN`を持つ環境からの要求は`sessions.lease_owner_session_id`へ親を記録し、親が使用中でなくなると`Store.OrphanedChildLeases`が拾う。
+   resume chain専用の`parent_session_id`は流用しない。`internal/state/standby.go`が「親がEXPIRED」を条件にしているため、流用すると子貸出のstandby補充成功記録が親の終了まで入らない。
+2. `wx release <id>`の明示指定。session tokenを持たない経路なので、生きたclient / agentを持つ貸出は拒否する。
+3. 設定`lease.ttl`（既定72h）の経過。`Store.ExpiredLeaseCandidates`が拾う。
+
+期限が来ても保存されてから返却され、返却後も`retention.ended_worktree`（既定168h）の間は実体が残り`wx shell --resume <id>`で復元できる。
+ただしsnapshot後の編集は保存されない。
+`Manager.snapshotSession`の`processAlive(AgentPID)`ガードは`path`貸出では効かないため、期限到来時にSubAgentがまだ編集中のworktreeのsnapshotを取ることは起こり得る。
+`wx new`の主返却契機は親sessionの終了に置き、終わったら`wx release`で返す。
+
 ## 変更の入口と代表テスト
 
 再開のclient側入口は[`internal/cli/client.go`](../internal/cli/client.go)と[`internal/cli/fresh.go`](../internal/cli/fresh.go)である。
 daemon側の入口は[`internal/daemon/resume.go`](../internal/daemon/resume.go)である。
 代表テストは`internal/daemon`の[`TestLeaseArchiveAndRestorePreservesGitState`](../internal/daemon/resume_integration_test.go)で、貸出からsnapshot・復元までGit状態が保たれることを通す。
+
+エージェント起動以外への貸出の入口は[`internal/cli/lease.go`](../internal/cli/lease.go)と[`internal/daemon/leasekind.go`](../internal/daemon/leasekind.go)である。
+代表テストは[`TestPathLeaseSurvivesOrphanReconcileAndExpiresThroughSnapshot`](../internal/daemon/leasekind_test.go)で、`wx new`の貸出がorphan回収を生き延び、期限到来で保存経路を通ることを通す。
