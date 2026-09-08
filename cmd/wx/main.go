@@ -66,6 +66,14 @@ func run(ctx context.Context, args []string) int {
 		return runSetup(ctx, args[1:])
 	case "resume":
 		return runResume(ctx, args[1:])
+	case "shell":
+		return runShell(ctx, args[1:])
+	case "run":
+		return runRun(ctx, args[1:])
+	case "new":
+		return runNew(ctx, args[1:])
+	case "release":
+		return runRelease(ctx, args[1:])
 	case "daemon":
 		return runDaemon(ctx, args[1:])
 	case "hook":

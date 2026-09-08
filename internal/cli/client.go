@@ -152,6 +152,11 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 				fmt.Fprintln(os.Stderr, "error:", err)
 				return 1
 			}
+			// wx resume は会話の再開なので、agent を持たない貸出 session は受け付けない。
+			if leaseAgentKind(status.Agent) {
+				fmt.Fprintf(os.Stderr, "error: wx session %s holds a lease, not an agent conversation; use wx shell --resume %s\n", target.WXSessionID, target.WXSessionID)
+				return 2
+			}
 			if plan.agent == "" {
 				plan.agent = status.Agent
 			}
@@ -187,13 +192,22 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	var lease daemon.Lease
 	method := "ResolveAndLease"
-	params := any(rpc.ResolveAndLeaseParams{Agent: plan.agent, Branches: plan.branches, ClientPID: os.Getpid(), CWD: plan.cwd, ForceWorktree: c.forceWorktree})
+	newLease := func(cwd string) rpc.ResolveAndLeaseParams {
+		return rpc.ResolveAndLeaseParams{
+			Agent: plan.rpcAgentKind(), Branches: plan.branches, ClientPID: os.Getpid(), CWD: cwd, ForceWorktree: c.forceWorktree,
+			LeaseKind: plan.leaseKind, LeaseOwnerSessionID: plan.ownerSessionID, LeaseOwnerToken: plan.ownerToken,
+		}
+	}
+	params := any(newLease(plan.cwd))
 	switch {
 	case plan.resuming && plan.target.WXSessionID != "":
 		method = "Resume"
-		params = rpc.ResumeParams{Agent: plan.agent, AgentSessionID: plan.target.AgentSessionID, Branches: plan.branches, ClientPID: os.Getpid(), Fresh: plan.fresh, WXSessionID: plan.target.WXSessionID}
+		params = rpc.ResumeParams{
+			Agent: plan.rpcAgentKind(), AgentSessionID: plan.target.AgentSessionID, Branches: plan.branches, ClientPID: os.Getpid(), Fresh: plan.fresh,
+			LeaseKind: plan.leaseKind, LeaseOwnerSessionID: plan.ownerSessionID, LeaseOwnerToken: plan.ownerToken, WXSessionID: plan.target.WXSessionID,
+		}
 	case plan.resuming:
-		params = rpc.ResolveAndLeaseParams{Agent: plan.agent, Branches: plan.branches, ClientPID: os.Getpid(), CWD: plan.target.CWD, ForceWorktree: c.forceWorktree}
+		params = newLease(plan.target.CWD)
 	}
 	operationKey, err := domain.NewID()
 	if err != nil {
@@ -228,7 +242,8 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	defer close(heartbeatDone)
 	defer terminator.confirm(c, lease)
 	args := plan.args
-	if plan.resuming {
+	// 貸出コマンドは会話 ID を argv へ渡す agent の作法を持たないため、引数はそのまま実行する。
+	if plan.resuming && plan.leaseKind == "" {
 		rest := plan.intentRest
 		if plan.explicitResume != "" {
 			rest = plan.args

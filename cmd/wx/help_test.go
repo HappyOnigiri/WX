@@ -469,7 +469,7 @@ func TestTopUsageContract(t *testing.T) {
 	var b bytes.Buffer
 	topUsage(&b)
 	got := b.String()
-	for _, want := range []string{"Usage: wx", "Global options:", "Commands:", "claude [arguments", "resume conversation from the current base", "slots [--all]", "daemon install|uninstall"} {
+	for _, want := range []string{"Usage: wx", "Global options:", "Commands:", "claude [arguments", "resume conversation from the current base", "slots [--all]", "daemon install|uninstall", "shell [--resume <id>]", "release <id> [--discard]"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("help missing %q:\n%s", want, got)
 		}
@@ -569,6 +569,9 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"retry-standby", home},
 		{"slots", "--all", "--json"},
 		{"slots"},
+		{"new"},
+		{"new", "--json"},
+		{"release", "session"},
 		{"forget", home},
 		{"config"},
 		{"config", "logging.level", "warn"},
@@ -672,7 +675,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 }
 
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
-	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "slots", "config", "setup", "resume", "forget", "daemon"} {
+	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "slots", "config", "setup", "resume", "forget", "daemon", "shell", "run", "new", "release"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			commandUsage(&output, command)
@@ -719,7 +722,7 @@ func TestHelpListsStayAligned(t *testing.T) {
 	var top bytes.Buffer
 	topUsage(&top)
 	texts["top"] = top.String()
-	for _, command := range []string{"status", "doctor", "gc", "clear", "retry-standby", "sessions", "config", "setup", "resume", "forget", "daemon", "hook"} {
+	for _, command := range []string{"status", "doctor", "gc", "clear", "retry-standby", "sessions", "config", "setup", "resume", "forget", "daemon", "hook", "shell", "run", "new", "release"} {
 		var output bytes.Buffer
 		commandUsage(&output, command)
 		texts[command] = output.String()

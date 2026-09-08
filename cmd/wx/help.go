@@ -21,6 +21,10 @@ Global options:
 Commands:
   claude [arguments...]          launch Claude Code in a wx workspace
   codex [arguments...]           launch Codex in a wx workspace
+  shell [--resume <id>]          open a shell in a wx workspace
+  run [--resume <id>] -- <cmd>   run one command in a wx workspace
+  new [--json]                   lease a workspace and print its path
+  release <id> [--discard]       return a leased workspace now
   status [--verbose] [--json]    show daemon and pool state
   doctor [--verbose] [--json]    check configuration and dependencies
   gc [--dry-run]                 run retention cleanup
@@ -162,10 +166,81 @@ Copy mode (storage.copy_mode):
 Restore an archived wx session into a new managed workspace.
 With --fresh, keep the conversation but build the worktree from the current base.
 Use --branch with --fresh to choose the detached base.`)
+	case "shell":
+		_, _ = fmt.Fprintln(w, `Usage: wx shell [--branch <branch|repo=branch>] [--resume <wx-session-id>]
+
+Open a shell in a managed wx workspace. This is the way to work in an isolated
+worktree yourself, without launching an agent.
+
+The workspace is prepared the same way it is for wx claude and wx codex, and it
+is returned when the shell exits: unfinished work is saved first, and the
+worktree stays for retention.ended_worktree so wx shell --resume <id> brings it
+back. wx clear --all can also ask the shell to stop.
+
+The worktree is detached, as it is for every wx workspace; --branch only
+chooses the base commit, and creating or pushing a branch is left to you. The
+shell comes from lease.shell, then $SHELL, then /bin/sh.
+
+Options:
+  --branch <branch|repo=branch>  choose a detached base (repeatable)
+  --resume <wx-session-id>       restore the worktree of an earlier wx session`)
+	case "run":
+		_, _ = fmt.Fprintln(w, `Usage: wx run [--branch <branch|repo=branch>] [--resume <wx-session-id>] -- <command> [arguments...]
+
+Run one command in a managed wx workspace and exit with its status. Use it to
+run a build or a test suite against an isolated worktree without disturbing the
+current one.
+
+The workspace is returned when the command exits, and the same saving and
+retention as wx shell apply, so wx shell --resume <id> can reopen what the
+command left behind.
+
+Options:
+  --branch <branch|repo=branch>  choose a detached base (repeatable)
+  --resume <wx-session-id>       restore the worktree of an earlier wx session`)
+	case "new":
+		_, _ = fmt.Fprintln(w, `Usage: wx new [--branch <branch|repo=branch>] [--json]
+
+Lease a managed wx workspace and print its path on one line. Nothing is
+started in it, so this is how an agent prepares a worktree to hand to a
+SubAgent.
+
+The lease does NOT follow the process that asked for it: wx new sends no
+heartbeat, so the workspace is not reclaimed when the caller exits. It is
+returned when the wx session that ran wx new ends, when wx release <id> is
+run, or when lease.ttl (72h by default) has passed, whichever comes first.
+Without one of the first two, the workspace stays leased until that deadline.
+
+Expiry saves before it returns the lease, and nothing edits the worktree
+afterwards, so work written after the deadline is not saved. Return the lease
+with wx release <id> when the SubAgent is done rather than relying on the
+deadline.
+
+The session id to pass to wx release and wx shell --resume is shown by wx
+slots, or by --json here.
+
+Options:
+  --branch <branch|repo=branch>  choose a detached base (repeatable)
+  --json                         print the session id and path as JSON`)
+	case "release":
+		_, _ = fmt.Fprintln(w, `Usage: wx release <wx-session-id> [--discard]
+
+Return a workspace leased by wx new without waiting for lease.ttl. Unfinished
+work is saved first, and the worktree stays for retention.ended_worktree so
+wx shell --resume <id> can reopen it.
+
+Only leases with no running process are returned this way. A workspace held by
+wx shell or wx run is returned when that shell or command exits, and one held
+by an agent when that agent exits; wx clear --all asks either of them to stop.
+
+Options:
+  --discard  return the lease without saving unfinished work`)
 	case "slots":
 		_, _ = fmt.Fprintln(w, `Usage: wx slots [--all] [--json]
 
 List managed wx slots with their repository, session, copy mode, and disk usage.
+AGENT names what holds the slot: claude or codex for an agent, and wx-shell,
+wx-run, or wx-path for a workspace leased by wx shell, wx run, or wx new.
 Every slot that still occupies disk is listed, so the SIZE(MB) column covers the
 same slots as the Disk line of wx status. REPO names the source repositories the
 slot was prepared from; a multi-repo workspace lists them separated by commas.
@@ -179,6 +254,9 @@ The daemon measures a slot when its preparation finishes and re-measures every
 root periodically; wx slots only reads those results, never measures on demand.
 Rows still waiting for the first measurement show pending, and platforms that
 cannot compare blocks show unsupported. --json carries the measurement time.
+
+--json adds the lease kind, the remaining lease deadline, and the wx session
+that asked for a wx new lease.
 
 Options:
   --all   also list sessions that no longer hold a slot

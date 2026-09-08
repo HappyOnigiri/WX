@@ -26,11 +26,19 @@ type launcherHandler struct {
 	lease        daemon.Lease
 	agentPID     int
 	failRegister bool
+	// leaseParams は最初の ResolveAndLease の Params を保持する。貸出コマンドが載せる種別と親を検査する。
+	leaseParams json.RawMessage
+	// releaseLeaseReply と resumeStatus は貸出コマンドの test が応答を差し替える点である。nil なら既定の応答を返す。
+	releaseLeaseReply map[string]any
+	resumeStatus      map[string]any
 }
 
 func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
 	h.mu.Lock()
 	h.methods = append(h.methods, method)
+	if method == "ResolveAndLease" && h.leaseParams == nil {
+		h.leaseParams = append(json.RawMessage(nil), raw...)
+	}
 	if method == "RegisterAgentProcess" {
 		var params struct {
 			AgentPID int `json:"agent_pid"`
@@ -47,7 +55,19 @@ func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawM
 	case "ResolveAndLease", "Resume", "AllocateResumeSlot":
 		return h.lease, nil
 	case "ResumeStatus":
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.resumeStatus != nil {
+			return h.resumeStatus, nil
+		}
 		return map[string]bool{"expired": false}, nil
+	case "ReleaseLease":
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.releaseLeaseReply != nil {
+			return h.releaseLeaseReply, nil
+		}
+		return map[string]any{"released": true, "discarded": false}, nil
 	default:
 		return map[string]bool{"ok": true}, nil
 	}
