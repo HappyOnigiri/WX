@@ -27,11 +27,38 @@ func TestDocumentRoundTripPreservesOrderAndLiterals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(renderDocument(document)); got != source {
+	if got := string(renderDocument(document, documentIndentOf([]byte(source)))); got != source {
 		t.Fatalf("round trip changed the document:\n%s", got)
 	}
 	if got := topLevelKeyOrder(source); got != "model count flag nothing text list empty emptyList" {
 		t.Fatalf("key order=%s", got)
+	}
+}
+
+// TestDocumentRoundTripPreservesTheOriginalIndent は、4 space やタブの文書で
+// 無関係な行まで diff にならないことを確認する。対象は dotfile リポジトリ配下に置かれていることがある。
+func TestDocumentRoundTripPreservesTheOriginalIndent(t *testing.T) {
+	for name, unit := range map[string]string{"four spaces": "    ", "tab": "\t", "one space": " "} {
+		t.Run(name, func(t *testing.T) {
+			source := "{\n" + unit + "\"hooks\": {\n" + unit + unit + "\"SessionStart\": [\n" + unit + unit + unit + "1\n" + unit + unit + "]\n" + unit + "}\n}\n"
+			document, err := decodeDocument([]byte(source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := documentIndentOf([]byte(source)); got != unit {
+				t.Fatalf("detected indent=%q want %q", got, unit)
+			}
+			if got := string(renderDocument(document, documentIndentOf([]byte(source)))); got != source {
+				t.Fatalf("round trip changed the indent:\n%s", got)
+			}
+		})
+	}
+	// 1 行に収まる文書からは読み取れないので、既定へ落とす。
+	if got := documentIndentOf([]byte(`{"a":1}`)); got != "" {
+		t.Fatalf("single line indent=%q", got)
+	}
+	if got := string(renderDocument(&jsonNode{kind: jsonObject}, documentIndentOf([]byte(`{}`)))); got != "{}\n" {
+		t.Fatalf("empty document=%q", got)
 	}
 }
 
@@ -59,7 +86,7 @@ func TestDocumentFieldHelpersEditWithoutReordering(t *testing.T) {
 		t.Fatal("removeField reported the wrong outcome")
 	}
 	document.setField("fourth", &jsonNode{kind: jsonArray})
-	got := string(renderDocument(document))
+	got := string(renderDocument(document, ""))
 	if got != "{\n  \"second\": \"replaced\",\n  \"third\": 3,\n  \"fourth\": []\n}\n" {
 		t.Fatalf("edited document:\n%s", got)
 	}

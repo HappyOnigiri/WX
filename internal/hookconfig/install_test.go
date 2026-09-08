@@ -283,6 +283,26 @@ func TestInstallRepairsWXEntriesTheReadSideRejects(t *testing.T) {
 	}
 }
 
+// TestInstallKeepsTheIndentOfTheExistingFile は、4 space の設定ファイルへ install しても
+// 無関係な行が 2 space へ整形されないことを確認する。
+func TestInstallKeepsTheIndentOfTheExistingFile(t *testing.T) {
+	_, _ = hookTestHome(t)
+	path, err := TargetPath("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeHookConfigFile(t, path, "{\n    \"model\": \"opus\",\n    \"permissions\": {\n        \"allow\": []\n    }\n}\n")
+	if _, err := Install("codex"); err != nil {
+		t.Fatal(err)
+	}
+	got := readTestFile(t, path)
+	for _, line := range []string{"\n    \"model\": \"opus\",", "\n    \"permissions\": {", "\n        \"allow\": []"} {
+		if !strings.Contains(got, line) {
+			t.Fatalf("install reindented an unrelated line %q:\n%s", line, got)
+		}
+	}
+}
+
 func TestInstallRefusesUnsafeTargetsWithoutWriting(t *testing.T) {
 	for _, test := range []struct {
 		name, seed string

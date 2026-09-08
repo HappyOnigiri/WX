@@ -29,8 +29,8 @@ type jsonNode struct {
 	items  []*jsonNode
 }
 
-// documentIndent は書き戻し時のインデント幅で、実機の settings.json / hooks.json の書式に合わせる。
-const documentIndent = "  "
+// defaultDocumentIndent は元文書からインデント幅を読み取れないときの既定で、実機の settings.json / hooks.json の書式に合わせる。
+const defaultDocumentIndent = "  "
 
 // errDuplicateKey は同じ object 内に同名キーがある文書を示す。
 // encoding/json は後勝ちで読むため、前者を編集すると読み側は後者を見る。編集は fail closed とする。
@@ -124,15 +124,36 @@ func decodeArray(decoder *json.Decoder, data []byte) (*jsonNode, error) {
 	return node, nil
 }
 
-// renderDocument は順序保持モデルを 2 space インデントと末尾改行で書き出す。
-func renderDocument(node *jsonNode) []byte {
+// renderDocument は順序保持モデルを unit のインデントと末尾改行で書き出す。
+// unit には元文書のインデント幅を渡す。既定へ正規化すると、4 space やタブの文書で無関係な行まで diff になる。
+func renderDocument(node *jsonNode, unit string) []byte {
+	if unit == "" {
+		unit = defaultDocumentIndent
+	}
 	var out bytes.Buffer
-	renderNode(&out, node, "")
+	renderNode(&out, node, "", unit)
 	out.WriteByte('\n')
 	return out.Bytes()
 }
 
-func renderNode(out *bytes.Buffer, node *jsonNode, indent string) {
+// documentIndentOf は元文書の最上位ノードの子が使っているインデントを返す。
+// 1 行に収まる文書や読み取れない文書では空を返し、呼び出し側が既定へ落とす。
+func documentIndentOf(data []byte) string {
+	lines := strings.Split(string(data), "\n")
+	if len(lines) < 2 {
+		return ""
+	}
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "" || trimmed == "}" || trimmed == "]" {
+			continue
+		}
+		return line[:len(line)-len(trimmed)]
+	}
+	return ""
+}
+
+func renderNode(out *bytes.Buffer, node *jsonNode, indent, unit string) {
 	switch node.kind {
 	case jsonScalar:
 		out.Write(node.raw)
@@ -142,12 +163,12 @@ func renderNode(out *bytes.Buffer, node *jsonNode, indent string) {
 			return
 		}
 		out.WriteString("{\n")
-		inner := indent + documentIndent
+		inner := indent + unit
 		for index, key := range node.keys {
 			out.WriteString(inner)
 			out.Write(encodeJSONString(key))
 			out.WriteString(": ")
-			renderNode(out, node.values[index], inner)
+			renderNode(out, node.values[index], inner, unit)
 			if index < len(node.keys)-1 {
 				out.WriteByte(',')
 			}
@@ -160,10 +181,10 @@ func renderNode(out *bytes.Buffer, node *jsonNode, indent string) {
 			return
 		}
 		out.WriteString("[\n")
-		inner := indent + documentIndent
+		inner := indent + unit
 		for index, item := range node.items {
 			out.WriteString(inner)
-			renderNode(out, item, inner)
+			renderNode(out, item, inner, unit)
 			if index < len(node.items)-1 {
 				out.WriteByte(',')
 			}

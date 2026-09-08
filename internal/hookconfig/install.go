@@ -63,7 +63,7 @@ func applyHookConfig(agent string, edit func(*jsonNode) error) (Result, error) {
 	if err := edit(document); err != nil {
 		return Result{}, err
 	}
-	rendered := renderDocument(document)
+	rendered := renderDocument(document, documentIndentOf(original))
 	if existed && bytes.Equal(rendered, original) {
 		result.State, err = Inspect(agent)
 		return result, err
