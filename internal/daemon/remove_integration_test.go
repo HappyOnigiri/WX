@@ -53,9 +53,6 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	preparer := descriptorBoundPreparerForTest(t, runner, cfg, store, slot)
-	if err := preparer.Prepare(ctx, w.Repositories[0], filepath.Join(slotRoot, repos[0].DirName), resolved[0].OID, id); err != nil {
-		t.Fatal(err)
-	}
 	claimed, err := store.ClaimJob(ctx, job.ID, "setup")
 	if err != nil {
 		t.Fatal(err)

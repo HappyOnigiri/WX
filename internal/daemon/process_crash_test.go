@@ -29,7 +29,7 @@ func TestDaemonCrashProcessHelper(t *testing.T) {
 
 func TestDaemonProcessCrashMatrix(t *testing.T) {
 	requireDaemonIntegration(t)
-	for _, boundary := range []string{"preparing", "leased", "snapshot", "snapshot-ref", "remove", "restore"} {
+	for _, boundary := range []string{"preparing", "early", "leased", "snapshot", "snapshot-ref", "remove", "restore"} {
 		t.Run(boundary, func(t *testing.T) {
 			testDaemonProcessCrashBoundary(t, boundary)
 		})
@@ -81,14 +81,32 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	if boundary == "preparing" {
+	if boundary == "preparing" || boundary == "early" {
 		armCrashGate(t, gate)
 	}
 	lease := resolveCrashLease(t, client, repository)
-	if boundary == "preparing" {
+	if boundary == "preparing" || boundary == "early" {
 		waitCrashGate(t, gate, "entered")
+		sentinel := filepath.Join(filepath.Dir(lease.Path), "preserve-partial-work")
+		if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if boundary == "early" {
+			if err := client.Call(context.Background(), "WaitEarlyReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": 1000}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
 		process = restartAfterCrash(t, process, client, gate)
-		waitCrashReady(t, client, lease)
+		waitUntil(t, 10*time.Second, func() bool {
+			slot, err := store.Slot(context.Background(), lease.SessionID)
+			return err == nil && slot.State == "QUARANTINED" && slot.FailureCode == "PREPARE_AMBIGUOUS"
+		})
+		if data, err := os.ReadFile(sentinel); err != nil || string(data) != "keep" {
+			t.Fatalf("partial work changed: %q, %v", data, err)
+		}
+		if err := client.Call(context.Background(), "WaitEarlyReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": 1000}, nil); err == nil {
+			t.Fatal("interrupted preparation became early ready")
+		}
 	} else {
 		waitCrashReady(t, client, lease)
 	}
@@ -96,9 +114,7 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 	expectedRegistration := lease.Path
 	registrationChecked := false
 	switch boundary {
-	case "preparing":
-		assertCrashSessionState(t, store, lease.SessionID, "ACTIVE")
-		assertCrashWorktreeRegistration(t, repository, expectedRegistration, boundary)
+	case "preparing", "early":
 		registrationChecked = true
 	case "leased":
 		process = restartAfterCrash(t, process, client, "")
@@ -147,7 +163,7 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 		}
 	}
 
-	if boundary == "preparing" || boundary == "leased" {
+	if boundary == "leased" {
 		releaseCrashLease(t, client, lease)
 		waitCrashSessionState(t, store, lease.SessionID, "ARCHIVED")
 	}
@@ -157,7 +173,7 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 		status, statusErr = store.Status(context.Background())
 		return statusErr == nil && status.Jobs == 0
 	})
-	if status.Quarantined != 0 {
+	if ((boundary == "preparing" || boundary == "early") && status.Quarantined != 1) || (boundary != "preparing" && boundary != "early" && status.Quarantined != 0) {
 		t.Fatalf("quarantined state after %s crash: %+v", boundary, status)
 	}
 	if got := gitOutput(t, repository, "rev-parse", "HEAD"); got != mainHead {
@@ -204,7 +220,7 @@ func writeCrashConfig(t *testing.T, home string) {
 
 func installCrashGitWrapper(t *testing.T, home, realGit, gate, boundary string) {
 	t.Helper()
-	pattern := map[string]string{"preparing": " worktree add ", "snapshot": " commit-tree ", "snapshot-ref": " update-ref --create-reflog ", "remove": " worktree remove --force ", "restore": " worktree add "}[boundary]
+	pattern := map[string]string{"preparing": " worktree add ", "early": " checkout-index ", "snapshot": " commit-tree ", "snapshot-ref": " update-ref --create-reflog ", "remove": " worktree remove --force ", "restore": " worktree add "}[boundary]
 	bin := filepath.Join(home, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)

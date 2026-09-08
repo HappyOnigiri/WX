@@ -255,11 +255,15 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		envOverrides = append(envOverrides, "WX_RECOVERY_DISCARDED=1")
 	}
 	env := childEnvironment(os.Environ(), envOverrides)
-	// 通常起動は hook があれば preparation と重ねる。
+	// 通常起動も先行配置を待つ。hook が使える Early Ready だけ残りの準備と重ねる。
 	// 会話の再開は復元と ID の移譲を完了してから agent を起動する。
-	if !lease.Ready && (plan.resuming || !plan.hooksReady) {
+	if !lease.Ready {
+		method := "WaitReady"
+		if !plan.resuming && plan.leaseKind == "" && plan.hooksReady && c.Config.Readiness.Mode != "full" {
+			method = "WaitEarlyReady"
+		}
 		waitCtx, cancel := context.WithTimeout(ctx, c.Config.Readiness.Timeout.Duration)
-		err = c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
+		err = c.RPC.Call(waitCtx, method, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
 		cancel()
 		if err != nil {
 			if c.acceptsFreshWorkspace(ctx, plan, err) {

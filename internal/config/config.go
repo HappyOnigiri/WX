@@ -81,7 +81,9 @@ type Discovery struct {
 	Exclude           []string `yaml:"exclude,omitempty"`
 }
 type Readiness struct {
-	Timeout Duration `yaml:"timeout,omitempty"`
+	Mode       string   `yaml:"mode,omitempty"`
+	EarlyPaths []string `yaml:"early_paths,omitempty"`
+	Timeout    Duration `yaml:"timeout,omitempty"`
 }
 
 // Resume は会話の再開時の既定の振る舞いを決める。
@@ -147,7 +149,7 @@ func Defaults() Config {
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{24 * time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
-		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false},
+		Readiness: Readiness{Mode: "early", Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false},
 		Lease:    Lease{TTL: Duration{72 * time.Hour}},
 		Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
@@ -203,6 +205,9 @@ func Merge(d, raw Config) Config {
 }
 
 func Validate(c *Config) error {
+	if err := validateReadiness(&c.Readiness); err != nil {
+		return err
+	}
 	if !validWorktreeMode(c.Worktree.Undefined, true) {
 		return errors.New("worktree.undefined must be ask, hot, cold, or off")
 	}

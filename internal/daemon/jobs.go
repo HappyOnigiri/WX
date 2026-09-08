@@ -214,6 +214,18 @@ func (m *Manager) finishJob(ctx context.Context, id, owner string, runErr error)
 func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 	switch job.Kind {
 	case "PREPARE":
+		slot, err := m.store.Slot(ctx, job.SlotID)
+		if err != nil {
+			return err
+		}
+		if slot.State == "READY" || slot.State == "LEASED" {
+			return nil
+		}
+		if slot.PreparationStartedAt != "" {
+			_ = m.store.SetSlotState(ctx, job.SlotID, []string{"PREPARING", "FAILED"}, "QUARANTINED", "PREPARE_AMBIGUOUS")
+			m.suspendStandbyReplenishment(ctx, job)
+			return fmt.Errorf("%w: staged preparation was interrupted; automatic replay is disabled", state.ErrOwnership)
+		}
 		if job.Attempt > 1 {
 			if err := m.store.ResetPreparationForRetry(ctx, job.SlotID); err != nil {
 				return retryableJobError{err}
@@ -234,6 +246,9 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 		if err := m.prepareSlotWithJob(ctx, job.SlotID, w, resolved, repos, job); err != nil {
 			m.suspendStandbyReplenishment(ctx, job)
 			if errors.Is(err, state.ErrOwnership) {
+				return err
+			}
+			if current, readErr := m.store.Slot(context.Background(), job.SlotID); readErr == nil && current.PreparationStartedAt != "" {
 				return err
 			}
 			var prepareErr *workspace.PrepareCommandError

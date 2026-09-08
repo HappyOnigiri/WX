@@ -140,7 +140,7 @@ func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 		t.Fatal("unsafe worktree preparation succeeded")
 	}
 	slot, err := store.Slot(ctx, failureID)
-	if err != nil || slot.State != "FAILED" {
+	if err != nil || slot.State != "QUARANTINED" {
 		t.Fatalf("failed preparation slot=%+v err=%v", slot, err)
 	}
 

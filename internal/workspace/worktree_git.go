@@ -87,7 +87,12 @@ func (p *Preparer) addWorktreeWithIdentity(ctx context.Context, repo discovery.R
 	}
 	defer func() { _ = targetDirectory.Close() }()
 	// `--git-dir` は cwd を変えず source repository を特定する。`-C` では target を repo.MainPath 基準に解決し、上で確立した descriptor-bound namespace を失う。
-	_, err = p.Git.RunAt(ctx, targetDirectory, nil, nil, "--git-dir", string(repo.CommonDir), "worktree", "add", "--detach", ".", oid)
+	args := []string{"--git-dir", string(repo.CommonDir), "worktree", "add", "--detach"}
+	if p.noCheckout {
+		args = append(args, "--no-checkout")
+	}
+	args = append(args, ".", oid)
+	_, err = p.Git.RunAt(ctx, targetDirectory, nil, nil, args...)
 	if err == nil {
 		return targetIdentity, nil
 	}

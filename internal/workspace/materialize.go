@@ -136,7 +136,11 @@ func MaterializeRootAt(log *slog.Logger, source string, destinationRoot *os.Root
 			return fmt.Errorf("copy workspace root path %s: %w", clean, err)
 		}
 	}
-	for _, rel := range rules.Link {
+	return materializeRootLinks(log, source, sourceRoot, destinationRoot, rules.Link)
+}
+
+func materializeRootLinks(log *slog.Logger, source string, sourceRoot, destinationRoot *os.Root, links []string) error {
+	for _, rel := range links {
 		clean, err := safeRelative(rel)
 		if err != nil {
 			return err

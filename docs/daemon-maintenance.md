@@ -24,7 +24,8 @@ session付きPREPARE・RESTORE・SNAPSHOTを利用者向けとし、SNAPSHOTは�
 同じslotへ書く準備・復元・保存・削除は、`roots.id`とroot相対pathをkeyにした`gitx.KeyedLocks`（daemonの`slotLocks`）で直列化する。
 作成前後で変わるinodeはkeyに含めず、所有権検証の入力としてだけ使う。
 slot lockは最上位のoperationで一度だけ取る。
-入口は`Preparer.Prepare`・`archive.Restore`・`archive.SnapshotWithPersistence`・`archive.RemoveWorktree`で、内側の経路には取得済みのcontextを渡して取り直させない。
+通常の二段階準備は`prepareStagedSlot`が二巡全体のlockを保持する。
+その他の入口は`Preparer.Prepare`・`archive.Restore`・`archive.SnapshotWithPersistence`・`archive.RemoveWorktree`で、内側の経路には取得済みのcontextを渡して取り直させない。
 
 リポジトリ共有のGit管理情報は`common directory`をkeyにした同じ仕組みで排他する。
 `prepare`はworktreeの作成とlock reasonの確立まで、そして`READY`へ移す最後の区間だけこのロックを保持し、その間のコピー・link・prepare commandは保持せずに行う。
@@ -91,6 +92,13 @@ root世代登録が失敗するとallocationが`ErrOwnership`で落ち続ける�
 使用量の測定契機とcacheは[使用量とCoWの観測](storage-usage.md)を参照する。
 SQLiteを開けなくても`DegradedHandler`が`Status`・`Doctor`・`RequestStop`を受け付ける。
 この場合は状態変更RPCの予約がないため、`RequestStop`はidleゲートを通さない。
+
+通常準備の開始は`slots.preparation_started_at`、全先行配置の完了は`slots.early_ready_at`へSQL CASで記録する。
+Early Readyの間もslotはPREPARINGであり、hookが使うWaitReadyは成功しない。
+WaitEarlyReadyは認証と終端状態を検査し、過去の完了時刻だけで失敗・隔離・終了済みのsessionを起動しない。
+二段階準備がdaemon crashなどで中断した場合は、部分checkoutや外部hookの完了を推測せず隔離し、自動で先頭から再実行しない。
+正常な実行中のlock待ちは同じ実行を継続し、全準備がREADYへ到達済みのslotとrestoreの回復処理はこの隔離条件に含めない。
+COLD repositoryの再補充へ貸し出す際は古い先行完了・開始記録を消し、新しい二巡を始める。
 
 ## doctorの診断
 

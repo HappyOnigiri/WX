@@ -159,7 +159,17 @@ Show effective configuration, or atomically update one supported scalar key or l
 Copy mode (storage.copy_mode):
   auto  share identical checked-out files with APFS CoW; fall back to copies, but quarantine when ownership is unprovable (default)
   cow   fail preparation if CoW fails
-  copy  keep normal Git checkout files`)
+  copy  keep normal Git checkout files
+
+Readiness (readiness.mode):
+  early  wait for Git registration and startup files, then launch with readiness hooks (default)
+  full   wait for checkout, includes, links, prepare commands, and final validation
+Without readiness hooks, both modes wait for full preparation. Resume and shell/run/new always wait for full preparation.
+Use full when checkout hooks or prepare commands generate or update startup settings.
+readiness.early_paths adds literal repository-relative paths to the startup list.
+Directories include their descendants; no glob patterns are expanded. Only paths
+already scheduled by checkout or copy/link rules are materialized. Workspace roots
+use the same selection. Absolute paths, escapes, the root itself, and .git are rejected.`)
 	case "resume":
 		_, _ = fmt.Fprintln(w, `Usage: wx resume <wx-session-id> [claude|codex] [--fresh] [--branch <branch>] [agent-arguments...]
 

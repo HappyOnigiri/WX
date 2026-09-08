@@ -1,0 +1,181 @@
+package workspace
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/state"
+)
+
+// Preparation は一つの repository に配置する確定済み OID と slot 内の場所である。
+type Preparation struct {
+	Repository  discovery.Repository
+	Target, OID string
+}
+
+type stagedRepository struct {
+	Preparation
+	locked *lockedTarget
+	plan   earlyPlan
+}
+
+// PrepareStaged は全 repository の先行配置を一巡してから残りを展開する。
+// 呼び出し元は slot lock を保持し、開始を永続化しておく。失敗時も部分展開を削除せず残す。
+// rootStage は非 Git workspace root の配置、earlyReady は全先行配置の永続化を受け持つ。
+func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositories []Preparation, rootStage func(bool) error, earlyReady func() error) error {
+	stagedPreparer := *p
+	stagedPreparer.noCheckout = true
+	p = &stagedPreparer
+	var prepared []*stagedRepository
+	defer func() {
+		for _, repo := range prepared {
+			repo.locked.close()
+		}
+	}()
+	for _, request := range repositories {
+		root, target, err := p.prepareTarget(request.Target)
+		if err != nil {
+			return err
+		}
+		item := &stagedRepository{Preparation: request, plan: earlyPlan{log: p.Log}}
+		err = p.Git.WithCommonDirLock(ctx, string(request.Repository.CommonDir), func(lockCtx context.Context) error {
+			var beginErr error
+			item.locked, beginErr = p.beginPrepare(lockCtx, request.Repository, target, request.OID, slotID, preparePhaseCreate, root)
+			return beginErr
+		})
+		if err != nil {
+			return err
+		}
+		prepared = append(prepared, item)
+		if item.locked.existing {
+			return fmt.Errorf("%w: staged preparation target already exists", state.ErrOwnership)
+		}
+		if err := p.buildEarlyPlan(ctx, item); err != nil {
+			return err
+		}
+		if err := p.checkoutStage(ctx, item, true); err != nil {
+			return err
+		}
+		if err := p.materializePlan(ctx, item.Repository, item.locked, &item.plan, true); err != nil {
+			return err
+		}
+	}
+	if rootStage != nil {
+		if err := rootStage(true); err != nil {
+			return err
+		}
+	}
+	for _, item := range prepared {
+		if err := p.validatePreparedTarget(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked.root, item.locked.relative, item.locked.identity, "validate early readiness"); err != nil {
+			return err
+		}
+	}
+	if err := earlyReady(); err != nil {
+		return err
+	}
+	for _, item := range prepared {
+		if err := p.validatePreparedTarget(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked.root, item.locked.relative, item.locked.identity, "validate remaining checkout"); err != nil {
+			return err
+		}
+		if err := p.checkoutStage(ctx, item, false); err != nil {
+			return err
+		}
+		// worktree add の post-checkout と同じ null OID・新 HEAD・branch flag を使う。
+		// Git 自身に hook 選択と実行を任せ、未配置の相対 hooksPath も全展開後に解決する。
+		if _, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "hook", "run", "--ignore-missing", "post-checkout", "--", strings.Repeat("0", len(item.OID)), item.OID, "1"); err != nil {
+			return err
+		}
+		if err := p.completePrepare(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked,
+			func() error { return p.materializePlan(ctx, item.Repository, item.locked, &item.plan, false) },
+			func() error { return nil }); err != nil {
+			return err
+		}
+	}
+	if rootStage != nil {
+		return rootStage(false)
+	}
+	return nil
+}
+
+func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) error {
+	if _, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "read-tree", item.OID); err != nil {
+		return err
+	}
+	result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "ls-files", "--stage", "-z")
+	if err != nil {
+		return err
+	}
+	item.plan.symlinks = map[string]string{}
+	for _, entry := range strings.Split(result.Stdout, "\x00") {
+		if entry == "" {
+			continue
+		}
+		metadata, path, ok := strings.Cut(entry, "\t")
+		fields := strings.Fields(metadata)
+		if !ok || len(fields) != 3 {
+			return fmt.Errorf("invalid index entry")
+		}
+		if fields[0] == "160000" {
+			item.plan.gitlinks = append(item.plan.gitlinks, path)
+			continue
+		}
+		item.plan.tracked = append(item.plan.tracked, path)
+		if fields[0] == "120000" {
+			blob, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "cat-file", "blob", fields[1])
+			if err != nil {
+				return err
+			}
+			item.plan.symlinks[path] = blob.Stdout
+		}
+	}
+	if err := p.planIncludes(item.Repository, &item.plan); err != nil {
+		return err
+	}
+	// 要求 OID で追跡するパスは、source の index から外れていても include で上書きしない。
+	tracked := map[string]bool{}
+	for _, path := range item.plan.tracked {
+		tracked[path] = true
+	}
+	copies := item.plan.copies[:0]
+	for _, entry := range item.plan.copies {
+		if !tracked[entry.path] {
+			copies = append(copies, entry)
+		}
+	}
+	item.plan.copies = copies
+	item.plan.split(p.Config.Readiness.EarlyPaths)
+	return nil
+}
+
+func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, early bool) error {
+	for _, path := range item.plan.gitlinks {
+		if item.plan.early[path] != early {
+			continue
+		}
+		destination, err := domain.OpenRootAt(item.locked.root, item.locked.relative)
+		if err != nil {
+			return err
+		}
+		createErr := ensureRootDirectory(destination, path)
+		_ = destination.Close()
+		if createErr != nil {
+			return createErr
+		}
+	}
+	var paths []string
+	for _, path := range item.plan.tracked {
+		if item.plan.early[path] == early {
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	// --force は使わず、先行配置後に現れた衝突を上書きせず失敗させる。
+	// 先行 include の未追跡 .gitattributes が残りの filter を変えないよう、属性は要求 OID から読む。
+	_, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, []string{"GIT_ATTR_SOURCE=" + item.OID}, []byte(strings.Join(paths, "\x00")+"\x00"), "checkout-index", "--index", "-z", "--stdin")
+	return err
+}

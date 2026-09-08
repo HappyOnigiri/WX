@@ -14,7 +14,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
+func TestCrashRecoveryConvergesAfterReadyAndRefsExist(t *testing.T) {
 	t.Parallel()
 	requireDaemonIntegration(t)
 	f := manualManagerFixture(t, func(s *managerFixtureSetup) {
@@ -65,7 +65,7 @@ func TestCrashRecoveryConvergesAfterWorktreeAndRefsExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	preparer := descriptorBoundPreparerForTest(t, runner, cfg, store, slot)
-	if err := preparer.Prepare(ctx, resolved[0].Repository, repos[0].WorktreePath, resolved[0].OID, id); err != nil {
+	if err := m.prepareSlot(ctx, id, w, resolved, repos); err != nil {
 		t.Fatal(err)
 	}
 	jobs, err := store.RecoverJobs(ctx, true)

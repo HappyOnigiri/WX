@@ -79,84 +79,13 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	if len(repos) != len(resolved) {
 		return errors.New("slot repository metadata does not match resolved workspace")
 	}
-	for _, r := range resolved {
-		stored, err := m.store.SlotRepository(ctx, id, string(r.Repository.ID))
-		if err != nil {
+	if slot.State == "PREPARING" {
+		if err := m.prepareStagedSlot(ctx, slot, w, resolved, preparer); err != nil {
+			m.log.Error("slot preparation failed", "job_id", job.ID, "session_id", job.SessionID, "slot_id", id, "error", err)
 			return err
 		}
-		if stored.State == "COLD" {
-			continue
-		}
-		if stored.State == "READY" {
-			if err := preparer.ValidateSlotWorktreeOwnership(ctx, r.Repository, stored.WorktreePath, r.OID, id); err != nil {
-				m.quarantineOwnershipFailure(id, []string{"PREPARING", "RESTORING"}, err)
-				return err
-			}
-			continue
-		}
-		if stored.State == "PREPARE_RUNNING" {
-			if override := m.Config().Repositories[string(r.Repository.MainPath)]; len(override.Prepare.Command) > 0 {
-				err := errors.New("prepare command completion is ambiguous after interruption")
-				_ = m.store.SetSlotState(ctx, id, []string{"PREPARING", "RESTORING"}, "QUARANTINED", "PREPARE_AMBIGUOUS")
-				return err
-			}
-		} else if err := m.store.SetSlotRepositoryState(ctx, id, string(r.Repository.ID), []string{"PREPARING", "RESTORING"}, "PREPARE_RUNNING"); err != nil {
-			return err
-		}
-		if err := preparer.Prepare(ctx, r.Repository, stored.WorktreePath, r.OID, id); err != nil {
-			m.log.Error("slot preparation failed", "job_id", job.ID, "session_id", job.SessionID, "slot_id", id, "repository_id", r.Repository.ID, "error", err)
-			if errors.Is(err, state.ErrOwnership) {
-				_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING", "RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
-			} else {
-				failureCode, detailPath := "PREPARE_FAILED", ""
-				var prepareErr *workspace.PrepareCommandError
-				if errors.As(err, &prepareErr) {
-					detailPath = prepareErr.DetailPath
-					if prepareErr.FailureID != "" {
-						failureCode += ":" + prepareErr.FailureID
-					}
-				}
-				_ = m.store.SetSlotStateWithDetail(ctx, id, []string{"PREPARING", "RESTORING"}, "FAILED", failureCode, detailPath)
-			}
-			return err
-		}
-		identity, identityErr := preparer.WorktreeIdentity(stored.WorktreePath)
-		if identityErr != nil {
-			m.quarantineOwnershipFailure(id, []string{"PREPARING", "RESTORING"}, fmt.Errorf("%w: capture prepared worktree identity: %w", state.ErrOwnership, identityErr))
-			return identityErr
-		}
-		if err := m.store.RecordSlotRepositoryIdentity(ctx, id, string(r.Repository.ID), identity); err != nil {
-			return err
-		}
-		if err := m.store.SetSlotRepositoryState(ctx, id, string(r.Repository.ID), []string{"PREPARE_RUNNING"}, "READY"); err != nil {
-			return err
-		}
-	}
-	if w.Kind == "multi_repository" {
-		slot, err := m.store.Slot(ctx, id)
-		if err != nil {
-			return err
-		}
-		dirIdentity, identityErr := m.ownedDirectoryIdentity(slot.Path)
-		if identityErr != nil {
-			m.quarantineOwnershipFailure(id, []string{"PREPARING", "RESTORING"}, fmt.Errorf("%w: read slot directory identity: %w", state.ErrOwnership, identityErr))
-			return identityErr
-		}
-		if err := m.store.ValidateSlotOwnership(context.Background(), state.SlotOwnershipRequest{SlotID: id, WorkspaceID: slot.WorkspaceID, RootID: slot.RootID, RelPath: slot.RelPath, DirIdentity: dirIdentity, AllowedSlotStates: []string{"PREPARING", "RESTORING"}}); err != nil {
-			if errors.Is(err, state.ErrOwnership) {
-				_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING", "RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
-			}
-			return err
-		}
-		if err := m.materializeWorkspaceRoot(string(w.Root), slot.Path, m.Config().Workspaces[string(w.Root)]); err != nil {
-			m.log.Error("workspace root materialization failed", "slot_id", id, "error", err)
-			if errors.Is(err, state.ErrOwnership) {
-				_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING", "RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
-			} else {
-				_ = m.store.SetSlotState(ctx, id, []string{"PREPARING", "RESTORING"}, "FAILED", "ROOT_MATERIALIZATION_FAILED")
-			}
-			return err
-		}
+	} else {
+		return errors.New("restore preparation must use the restore job")
 	}
 	normalPreparation := false
 	if slot.OwnerSessionID != "" {
@@ -167,6 +96,7 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	releaseJob, released, replenishJob, replenished, err := m.store.FinishPreparationWithReplenishment(ctx, id)
 	if err != nil {
 		m.log.Error("finish preparation failed", "slot_id", id, "error", err)
+		_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING"}, "QUARANTINED", "PREPARE_AMBIGUOUS")
 		return err
 	}
 	m.scheduleSlotUsageMeasurement(id)

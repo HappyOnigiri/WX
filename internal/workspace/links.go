@@ -47,6 +47,12 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 	if err != nil {
 		return err
 	}
+	return p.createPlannedLinksAt(ctx, repo, sourceRoot, owner, relativeTarget, destinationIgnore, sources)
+}
+
+// createPlannedLinksAt は一度列挙した link のうち、今回の配置段階に属するものだけを検証・配置する。
+func (p *Preparer) createPlannedLinksAt(ctx context.Context, repo discovery.Repository, sourceRoot *os.Root, owner *os.Root, relativeTarget string, destinationIgnore bool, sources []linkSource) error {
+	mainPath := string(repo.MainPath)
 	for _, link := range sources {
 		if link.symlink {
 			p.logSkip(".worktreelink source is a symlink", "repository", mainPath, "path", link.relative)

@@ -99,7 +99,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	case "Ping":
 		// 状態を読まず何も変更しない応答確認。起動前の接続確認が Status の集計を待たないために置く。
 		return map[string]any{"protocol_version": rpc.ProtocolVersion, "degraded": false, "pid": os.Getpid()}, nil
-	case "WaitReady":
+	case "WaitReady", "WaitEarlyReady":
 		var p struct {
 			SessionID string `json:"session_id"`
 			Token     string `json:"token"`
@@ -112,6 +112,9 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, time.Duration(p.TimeoutMS)*time.Millisecond)
 			defer cancel()
+		}
+		if method == "WaitEarlyReady" {
+			return map[string]bool{"ready": true}, h.Manager.WaitEarlyReady(ctx, p.SessionID, p.Token)
 		}
 		return map[string]bool{"ready": true}, h.Manager.WaitReady(ctx, p.SessionID, p.Token)
 	case "BindAgentSession":
