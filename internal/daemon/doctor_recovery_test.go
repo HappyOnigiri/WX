@@ -84,8 +84,16 @@ func TestRecoveryFailureFindingSeparatesSaveFromRestore(t *testing.T) {
 			t.Fatalf("snapshot cause=%q, want %q", snapshot.Cause, fragment)
 		}
 	}
-	if !strings.Contains(snapshot.Action, "end the session again") {
+	if !strings.Contains(snapshot.Action, "wx recreates the snapshot job") {
 		t.Fatalf("snapshot action=%q", snapshot.Action)
+	}
+	// 隔離済みの slot は再終了しても保存を作り直さないため、手動退避だけを案内する。
+	quarantined := recoveryFailureFinding(state.RecoveryFailure{
+		JobID: "job-3", Kind: "SNAPSHOT", SessionID: "session-3", SlotPath: "/root/slot",
+		SessionState: "EXPIRED", SlotState: "QUARANTINED",
+	})
+	if !strings.Contains(quarantined.Action, "cannot retry the snapshot") || strings.Contains(quarantined.Action, "recreates") {
+		t.Fatalf("quarantined snapshot action=%q", quarantined.Action)
 	}
 	restore := recoveryFailureFinding(state.RecoveryFailure{JobID: "job-2", Kind: "RESTORE", SessionID: "session-2"})
 	if restore.Target != "session session-2" || !strings.Contains(restore.Action, "resume") {

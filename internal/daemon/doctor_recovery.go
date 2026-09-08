@@ -160,7 +160,7 @@ func recoveryFailureFinding(failure state.RecoveryFailure) diag.Finding {
 	action := "fix the reported cause, then resume that conversation again; wx keeps the recovery snapshot until its retention elapses"
 	if failure.Kind == "SNAPSHOT" {
 		summary = "saving a session workspace failed, so its work is not snapshotted"
-		action = "fix the reported cause, then end the session again to retry the snapshot; copy anything you need out of the slot directory first, and do not run wx clear --discard on it"
+		action = snapshotFailureAction(failure.SlotState)
 	}
 	details := []string{"job " + failure.JobID}
 	if failure.SessionState != "" {
@@ -178,6 +178,15 @@ func recoveryFailureFinding(failure state.RecoveryFailure) diag.Finding {
 		Action:  action,
 		Details: details,
 	}
+}
+
+// snapshotFailureAction は保存失敗後の対処を slot の状態で分ける。
+// 隔離済みの slot は session が終端しており、再終了しても snapshot を作り直さないため、手動退避だけを案内する。
+func snapshotFailureAction(slotState string) string {
+	if slotState == "QUARANTINED" {
+		return "copy anything you need out of the slot directory yourself; wx cannot retry the snapshot for a quarantined slot, and the slot stays until you remove it with wx clear"
+	}
+	return "fix the reported cause and leave the slot alone; wx recreates the snapshot job while the slot is still returning, and you can copy anything you need out of the slot directory first"
 }
 
 // workspaceSnapshotFindings は復元に使える workspace snapshot の実体を軽量に検査する。
