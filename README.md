@@ -40,6 +40,21 @@ wx setup
 Running it again after a completed setup changes nothing.
 See [release and source-build details](docs/release.md) for more information.
 
+## Uninstallation
+
+```sh
+curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/uninstall.sh | bash
+```
+
+The uninstaller lists the worktrees it is about to delete and asks before doing anything, then removes them, the wx hook entries, the LaunchAgent, the configuration, and `~/.local/bin/wx`.
+Pass `--yes` to skip the question.
+Because deletion runs through the daemon, keep it running until the uninstaller has finished.
+
+Three things are left for you, and the uninstaller prints the exact command for each.
+Those are the `PATH` line in your shell configuration, the state database and log directory, and the worktree root.
+The last two hold the work wx saved for you.
+Repositories you ran wx from may also hold `refs/wx/recovery/*` refs for those snapshots.
+
 ## Quick start
 
 From the repository you want to work on:
