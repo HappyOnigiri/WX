@@ -16,7 +16,9 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 type commandHandler struct {
@@ -49,6 +51,12 @@ func (h commandHandler) Handle(_ context.Context, method string, raw json.RawMes
 		return daemon.Lease{SessionID: "session", Token: "token", Path: h.workspace, SourceWorkspace: h.workspace, Ready: true}, nil
 	case "ResumeStatus":
 		return map[string]bool{"expired": false}, nil
+	case "Doctor":
+		// 診断結果を返さない応答は古い daemon として扱われるため、健全な finding を 1 件返す。
+		return diag.Reply{
+			SchemaVersion: state.JSONSchemaVersion, DBSchemaVersion: state.SchemaVersion,
+			Findings: []diag.Finding{{Check: diag.CheckDaemon, Severity: diag.SeverityOK, Summary: "the daemon answered this request"}},
+		}, nil
 	default:
 		return map[string]any{"ok": true}, nil
 	}

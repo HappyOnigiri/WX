@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
@@ -275,9 +276,9 @@ func TestRegistryOrphanAndClosedStoreReconciliation(t *testing.T) {
 		[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: dirName, State: "READY", RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 		t.Fatal(err)
 	}
-	diagnostics := manager.registrationDiagnostics(ctx)
-	if diagnostics["checked"] != 1 || len(diagnostics["invalid"].([]map[string]string)) != 1 {
-		t.Fatalf("registration diagnostics=%v", diagnostics)
+	findings := manager.registrationFindings(ctx)
+	if issues := registrationIssues(findings); len(issues) != 1 || issues[0].Severity != diag.SeverityInfo {
+		t.Fatalf("registration findings=%+v, want one recoverable mismatch", findings)
 	}
 	manager.reconcileRegistry(ctx)
 	slot, err := store.Slot(ctx, readyID)
@@ -289,9 +290,8 @@ func TestRegistryOrphanAndClosedStoreReconciliation(t *testing.T) {
 	missingWorkspace = registerTestWorkspace(t, store, missingWorkspace)
 	_ = missingWorkspace
 	manager.reconcileRegistry(ctx)
-	diagnostics = manager.registrationDiagnostics(ctx)
-	if len(diagnostics["invalid"].([]map[string]string)) == 0 {
-		t.Fatalf("missing workspace diagnostics=%v", diagnostics)
+	if issues := registrationIssues(manager.registrationFindings(ctx)); len(issues) == 0 {
+		t.Fatalf("missing workspace findings=%+v", manager.registrationFindings(ctx))
 	}
 
 	raw, err := sql.Open("sqlite", databasePath)
@@ -339,8 +339,8 @@ func TestRegistryOrphanAndClosedStoreReconciliation(t *testing.T) {
 	if manager.backupError == "" {
 		t.Fatal("closed store backup error was not recorded")
 	}
-	if got := manager.registrationDiagnostics(ctx); got["error"] == nil {
-		t.Fatalf("closed-store registration diagnostics=%v", got)
+	if got := registrationIssues(manager.registrationFindings(ctx)); len(got) == 0 || got[0].Severity != diag.SeverityProblem {
+		t.Fatalf("closed-store registration findings=%+v", got)
 	}
 	manager.Close()
 }
@@ -828,8 +828,8 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 			"snapshot":   func() error { return manager.snapshotSession(ctx, state.Session{SlotID: "missing"}) },
 			"forget":     func() error { return manager.Forget(ctx, t.TempDir()) },
 			"registration report": func() error {
-				_, ok := manager.registrationDiagnostics(ctx)["error"]
-				if !ok {
+				issues := registrationIssues(manager.registrationFindings(ctx))
+				if len(issues) == 0 || issues[0].Severity != diag.SeverityProblem {
 					return errors.New("missing database error")
 				}
 				return nil
@@ -850,10 +850,9 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		if _, err := manager.GC(ctx, false); err == nil {
 			t.Fatal("GC with closed store succeeded")
 		}
-		doctor := manager.Doctor(ctx)
-		checks := doctor["checks"].(map[string]any)
-		if checks["sqlite"] == "ok" {
-			t.Fatal("doctor reported closed store as healthy")
+		reply := manager.Doctor(ctx)
+		if sqlite := doctorProblem(t, reply, diag.CheckSQLite); sqlite.Cause == "" {
+			t.Fatalf("doctor reported closed store without a cause: %+v", sqlite)
 		}
 	})
 }

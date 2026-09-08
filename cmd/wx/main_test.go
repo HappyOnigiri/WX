@@ -14,6 +14,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -140,7 +141,7 @@ func TestDaemonUnavailableGuidanceIsSharedAcrossCommands(t *testing.T) {
 	}
 }
 
-func TestRunDoctorFallsBackToLocalChecksWhenDaemonCannotConnect(t *testing.T) {
+func TestRunDoctorFallsBackToLocalFindingsWhenDaemonCannotConnect(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	stdout := captureStdout(t, func() {
@@ -148,38 +149,42 @@ func TestRunDoctorFallsBackToLocalChecksWhenDaemonCannotConnect(t *testing.T) {
 			t.Fatalf("runDoctor exit=%d, want 1 when daemon is unavailable", code)
 		}
 	})
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+	var reply diag.Reply
+	if err := json.Unmarshal([]byte(stdout), &reply); err != nil {
 		t.Fatalf("local doctor output is not JSON: %v\n%s", err, stdout)
 	}
-	if got := payload["schema_version"]; got != float64(state.JSONSchemaVersion) {
-		t.Fatalf("schema_version=%v, want %d", got, state.JSONSchemaVersion)
+	if reply.SchemaVersion != state.JSONSchemaVersion {
+		t.Fatalf("schema_version=%d, want %d", reply.SchemaVersion, state.JSONSchemaVersion)
 	}
-	checks, ok := payload["checks"].(map[string]any)
-	if !ok {
-		t.Fatalf("checks has wrong type: %T", payload["checks"])
+	byCheck := map[string]diag.Finding{}
+	for _, finding := range reply.Findings {
+		byCheck[finding.Check] = finding
 	}
-	for _, key := range []string{"config", "git", "socket", "state_database", "launch_agent", "worktree_root", "hooks", "sqlite", "worktree_registration", "artifact_ownership", "daemon"} {
-		if _, ok := checks[key]; !ok {
-			t.Fatalf("local doctor checks missing %q: %v", key, checks)
+	// --json は -v に左右されず全検査を返す。
+	for _, check := range append([]string{
+		diag.CheckConfig, diag.CheckGit, diag.CheckSocket, diag.CheckStateDatabase, diag.CheckLaunchAgent,
+		diag.CheckWorktreeRoot, diag.CheckReadinessHooks, diag.CheckDaemon, diag.CheckSQLite,
+	}, diag.StoreDependentChecks()...) {
+		if _, ok := byCheck[check]; !ok {
+			t.Fatalf("local doctor findings missing %q: %+v", check, reply.Findings)
 		}
 	}
-	if got := checks["sqlite"]; got == "ok" {
-		t.Fatal("local doctor reported sqlite as available without a daemon")
+	if got := byCheck[diag.CheckSQLite]; got.Severity != diag.SeverityUnchecked {
+		t.Fatalf("local sqlite finding=%+v, want it reported as unchecked", got)
 	}
-	registration, ok := checks["worktree_registration"].(map[string]any)
-	if !ok || registration["checked"] != float64(0) || registration["error"] == nil {
-		t.Fatalf("local registration placeholder=%v", checks["worktree_registration"])
+	daemon := byCheck[diag.CheckDaemon]
+	if daemon.Severity != diag.SeverityProblem || !strings.Contains(daemon.Cause, "connect") || daemon.Action == "" {
+		t.Fatalf("local daemon finding=%+v", daemon)
 	}
-	artifacts, ok := checks["artifact_ownership"].(map[string]any)
-	if !ok {
-		t.Fatalf("local artifact placeholder=%v", checks["artifact_ownership"])
+}
+
+func TestRunDoctorReportsAnOlderDaemonThatCannotReturnFindings(t *testing.T) {
+	findings := staleDaemonFindings(diag.Reply{SchemaVersion: diag.FindingsSchemaVersion - 1})
+	if len(findings) != 1 || findings[0].Severity != diag.SeverityProblem || !strings.Contains(findings[0].Action, "wx daemon restart") {
+		t.Fatalf("stale daemon findings=%+v", findings)
 	}
-	if errors, ok := artifacts["errors"].([]any); !ok || len(errors) == 0 {
-		t.Fatalf("local artifact errors=%v", artifacts["errors"])
-	}
-	if daemon, ok := checks["daemon"].(string); !ok || !strings.Contains(daemon, "connect") {
-		t.Fatalf("local daemon reason=%v", checks["daemon"])
+	if got := staleDaemonFindings(diag.Reply{Findings: []diag.Finding{{Check: diag.CheckDaemon}}}); got != nil {
+		t.Fatalf("stale daemon findings for a current reply=%+v", got)
 	}
 }
 

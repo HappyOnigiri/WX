@@ -2,19 +2,14 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"os"
-	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
 	buildversion "github.com/HappyOnigiri/WX/internal/version"
 	"github.com/HappyOnigiri/WX/internal/workspace"
@@ -141,87 +136,8 @@ func formatOptionalTime(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }
 
-func (m *Manager) Doctor(ctx context.Context) map[string]any {
-	m.mu.RLock()
-	reloadError, restartPending, cfg := m.reloadError, m.restartPending, m.cfg
-	rootError := m.rootError
-	m.mu.RUnlock()
-	var checks map[string]any
-	if restartPending {
-		checks = diag.SharedChecksWithoutLaunchAgent(ctx, cfg, reloadError, m.git)
-	} else {
-		checks = diag.SharedChecks(ctx, cfg, reloadError, m.git)
-	}
-	if restartPending {
-		checks["launch_agent"] = "restart pending; LaunchAgent content check deferred"
-	}
-
-	if err := m.store.Ping(ctx); err != nil {
-		checks["sqlite"] = err.Error()
-	} else {
-		checks["sqlite"] = "ok"
-	}
-	if rootError == "" {
-		checks["worktree_root"] = "ok"
-	} else {
-		// 再起動しか手が無いと読ませないため、周期処理が再登録を試み続けることを添える。
-		checks["worktree_root"] = rootError + "; wx retries the registration on each reconcile"
-	}
-	checks["worktree_registration"] = m.registrationDiagnostics(ctx)
-	checks["artifact_ownership"] = m.artifactDiagnostics(ctx)
-	standby, err := m.standbyReplenishmentReport(ctx)
-	if err != nil {
-		checks["standby_replenishment"] = err.Error()
-	} else {
-		checks["standby_replenishment"] = standby
-	}
-	return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "checks": checks}
-}
-
 func diagnosticPath(path string, requiredType os.FileMode, requiredPerm os.FileMode) string {
 	return diag.DiagnosticPath(path, requiredType, requiredPerm)
-}
-
-func (m *Manager) registrationDiagnostics(ctx context.Context) map[string]any {
-	result := map[string]any{"checked": 0, "invalid": []map[string]string{}}
-	invalid := []map[string]string{}
-	checked := 0
-	roots, err := m.store.WorkspaceRoots(ctx)
-	if err != nil {
-		return map[string]any{"checked": 0, "error": err.Error()}
-	}
-	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
-	for _, root := range roots {
-		workspaceRecord, resolveErr := m.resolveRegisteredWorkspace(ctx, root, &discoverer)
-		if resolveErr != nil {
-			invalid = append(invalid, map[string]string{"workspace_root": root, "error": resolveErr.Error()})
-			continue
-		}
-		resolved, resolveErr := pool.ResolveBranches(ctx, m.git, workspaceRecord, nil)
-		if resolveErr != nil {
-			invalid = append(invalid, map[string]string{"workspace_root": root, "error": resolveErr.Error()})
-			continue
-		}
-		slots, slotsErr := m.store.ReadySlots(ctx, string(workspaceRecord.ID))
-		if slotsErr != nil {
-			invalid = append(invalid, map[string]string{"workspace_root": root, "error": slotsErr.Error()})
-			continue
-		}
-		for _, slot := range slots {
-			checked++
-			valid, validationErr := m.readyMatches(ctx, slot, resolved)
-			if validationErr != nil || !valid {
-				detail := "READY invariants do not match current repository state"
-				if validationErr != nil {
-					detail = validationErr.Error()
-				}
-				invalid = append(invalid, map[string]string{"workspace_root": root, "slot_id": slot.ID, "path": slot.Path, "error": detail})
-			}
-		}
-	}
-	result["checked"] = checked
-	result["invalid"] = invalid
-	return result
 }
 
 // SlotView は slot 1 行に、lifecycle が測った使用量と、そこから決まるコピー方式を足したものである。
@@ -291,101 +207,6 @@ func must(v string, e error) string {
 		return ""
 	}
 	return v
-}
-
-func (m *Manager) artifactDiagnostics(ctx context.Context) map[string]any {
-	unknownPaths, missingPaths := []string{}, []string{}
-	unknownRefs, mismatchedRefs, missingRefs := []string{}, []string{}, []string{}
-	diagnosticErrors := []string{}
-	artifacts, err := m.store.SlotArtifacts(ctx)
-	if err != nil {
-		return map[string]any{"errors": []string{err.Error()}}
-	}
-	expectedPaths := map[string]state.SlotArtifact{}
-	for _, artifact := range artifacts {
-		clean := filepath.Clean(artifact.Path)
-		expectedPaths[clean] = artifact
-		if artifact.State == "ARCHIVED" || artifact.State == "REMOVING" {
-			continue
-		}
-		exists, statErr := m.ownedPathExists(clean)
-		if statErr != nil {
-			diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("inspect slot %s: %v", artifact.ID, statErr))
-		} else if !exists {
-			missingPaths = append(missingPaths, fmt.Sprintf("%s (%s, %s)", clean, artifact.ID, artifact.State))
-		}
-	}
-	roots, rootsErr := m.rootPathsFromStore(ctx)
-	if rootsErr != nil {
-		diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("list worktree root generations: %v", rootsErr))
-	}
-	for _, root := range roots {
-		paths, pathsErr := m.ownedRootArtifactPaths(root)
-		if pathsErr != nil {
-			diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("inspect root %s: %v", root, pathsErr))
-			continue
-		}
-		for _, path := range paths {
-			clean := filepath.Clean(path)
-			if _, exists := expectedPaths[clean]; !exists {
-				unknownPaths = append(unknownPaths, clean)
-			}
-		}
-	}
-	repositories, err := m.store.Repositories(ctx)
-	if err != nil {
-		diagnosticErrors = append(diagnosticErrors, err.Error())
-	} else {
-		for _, repository := range repositories {
-			expectedList, refsErr := m.store.RecoveryRefExpectations(ctx, string(repository.ID))
-			if refsErr != nil {
-				diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("read recovery refs for %s: %v", repository.ID, refsErr))
-				continue
-			}
-			expected := map[string]state.RecoveryRefExpectation{}
-			for _, ref := range expectedList {
-				expected[ref.Ref] = ref
-			}
-			listed, listErr := m.git.Run(ctx, string(repository.MainPath), "for-each-ref", "--format=%(refname) %(objectname)", "refs/wx/recovery")
-			if listErr != nil {
-				diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("list recovery refs for %s: %v", repository.ID, listErr))
-				continue
-			}
-			actual := map[string]bool{}
-			for _, line := range strings.Split(strings.TrimSpace(listed.Stdout), "\n") {
-				fields := strings.Fields(line)
-				if len(fields) == 0 {
-					continue
-				}
-				if len(fields) != 2 {
-					diagnosticErrors = append(diagnosticErrors, fmt.Sprintf("parse recovery ref listing for %s: %q", repository.ID, line))
-					continue
-				}
-				ref, oid := fields[0], fields[1]
-				actual[ref] = true
-				want, known := expected[ref]
-				switch {
-				case !known:
-					unknownRefs = append(unknownRefs, fmt.Sprintf("%s:%s", repository.ID, ref))
-				case want.OID != oid:
-					mismatchedRefs = append(mismatchedRefs, fmt.Sprintf("%s:%s", repository.ID, ref))
-				}
-			}
-			for ref, expectation := range expected {
-				if !actual[ref] && !expectation.InFlight {
-					missingRefs = append(missingRefs, fmt.Sprintf("%s:%s", repository.ID, ref))
-				}
-			}
-		}
-	}
-	for _, values := range [][]string{unknownPaths, missingPaths, unknownRefs, mismatchedRefs, missingRefs, diagnosticErrors} {
-		sort.Strings(values)
-	}
-	return map[string]any{
-		"unknown_paths": unknownPaths, "missing_paths": missingPaths,
-		"unknown_refs": unknownRefs, "mismatched_refs": mismatchedRefs,
-		"missing_refs": missingRefs, "errors": diagnosticErrors,
-	}
 }
 
 // standbyReplenishmentReport は補充停止の診断へ復帰手順を付け、補充が有効な workspace だけに絞って返す。

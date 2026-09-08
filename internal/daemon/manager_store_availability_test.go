@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -31,10 +32,15 @@ func TestManagerFailsClosedWhenStateStoreBecomesUnavailable(t *testing.T) {
 	if _, err := m.Status(ctx); err == nil {
 		t.Fatal("status succeeded after state store closure")
 	}
-	doctor := m.Doctor(ctx)
-	checks := doctor["checks"].(map[string]any)
-	if checks["sqlite"] == "ok" {
-		t.Fatalf("doctor did not report SQLite failure: %v", checks)
+	reply := m.Doctor(ctx)
+	doctorProblem(t, reply, diag.CheckSQLite)
+	// backup と root 登録は daemon の保持する結果なので、store を読めなくても報告し続ける。
+	for _, check := range storeQueryChecks() {
+		for _, finding := range doctorFindings(reply, check) {
+			if finding.Severity != diag.SeverityUnchecked || finding.DependsOn != diag.CheckSQLite {
+				t.Fatalf("check %s without a usable store=%+v", check, finding)
+			}
+		}
 	}
 	if diagnostics := m.artifactDiagnostics(ctx); len(diagnostics["errors"].([]string)) == 0 {
 		t.Fatalf("artifact diagnostics did not report state failure: %v", diagnostics)

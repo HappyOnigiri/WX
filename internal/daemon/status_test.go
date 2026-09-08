@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/state"
 	buildversion "github.com/HappyOnigiri/WX/internal/version"
 	"github.com/HappyOnigiri/WX/internal/workspace"
@@ -128,9 +129,10 @@ func TestManagerStatusUsesEmbeddedVersionWithoutVCS(t *testing.T) {
 func TestDoctorReportsGitAndSQLiteFailures(t *testing.T) {
 	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
 	t.Setenv("PATH", t.TempDir())
-	checks := manager.Doctor(ctx)["checks"].(map[string]any)
-	if got, ok := checks["git"].(string); !ok || got == "ok" || got == "" {
-		t.Fatalf("git failure not reported: checks=%v", checks)
+	reply := manager.Doctor(ctx)
+	git := doctorProblem(t, reply, diag.CheckGit)
+	if git.Cause == "" || git.Action == "" {
+		t.Fatalf("git failure lacks a cause or an action: %+v", git)
 	}
 }
 

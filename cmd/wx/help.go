@@ -22,7 +22,7 @@ Commands:
   claude [arguments...]          launch Claude Code in a wx workspace
   codex [arguments...]           launch Codex in a wx workspace
   status [--verbose] [--json]    show daemon and pool state
-  doctor [--json]                check configuration and dependencies
+  doctor [--verbose] [--json]    check configuration and dependencies
   gc [--dry-run]                 run retention cleanup
   prune [--all] [--dry-run]      delete recovery refs the database cannot explain
   clear [--all] [--standby]      delete managed worktrees now
@@ -57,12 +57,15 @@ Options:
   --verbose, -v  show detailed status instead of the summary
   --json         print machine-readable JSON`)
 	case "doctor":
-		_, _ = fmt.Fprintln(w, `Usage: wx doctor [--json]
+		_, _ = fmt.Fprintln(w, `Usage: wx doctor [--verbose] [--json]
 
-Run read-only checks for configuration, storage, Git, launchd, and hooks.
+Run read-only checks for configuration, storage, Git, launchd, hooks, and recovery data.
+Print one line when nothing is wrong; otherwise report each problem with its target, cause, and action.
+Exit 0 when only passing and informational results remain, 1 when a problem or an unfinished check remains.
 
 Options:
-  --json  print machine-readable JSON`)
+  --verbose, -v  show passing checks, informational results, and extra diagnostics
+  --json         print machine-readable JSON with every result regardless of --verbose`)
 	case "gc":
 		_, _ = fmt.Fprintln(w, `Usage: wx gc [--dry-run]
 

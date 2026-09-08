@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -96,7 +97,8 @@ func TestDegradedHandlerGuidanceDependsOnOpenError(t *testing.T) {
 		{
 			name:      "other open failure",
 			openError: errors.New("corrupt"),
-			want:      []string{"corrupt", "/state.db.backups", "wx doctor"},
+			// 復旧案内は「保全してから検証済みバックアップへ戻す」ことを、Status の文面と doctor の finding の両方で保つ。
+			want: []string{"corrupt", "/state.db.backups", "preserve"},
 		},
 	}
 	for _, test := range tests {
@@ -121,6 +123,9 @@ func TestDegradedHandlerGuidanceDependsOnOpenError(t *testing.T) {
 
 func degradedDiagnosticMessage(t *testing.T, method string, result any) string {
 	t.Helper()
+	if method == "Doctor" {
+		return degradedDoctorMessage(t, result)
+	}
 	payload, ok := result.(map[string]any)
 	if !ok {
 		t.Fatalf("%s result=%T %v, want object", method, result, result)
@@ -132,15 +137,27 @@ func degradedDiagnosticMessage(t *testing.T, method string, result any) string {
 		}
 		return message
 	}
-	checks, ok := payload["checks"].(map[string]any)
+	t.Fatalf("unexpected degraded method %s", method)
+	return ""
+}
+
+// degradedDoctorMessage は degraded 応答の SQLite 問題から、原因と対処を 1 つの文字列として返す。
+func degradedDoctorMessage(t *testing.T, result any) string {
+	t.Helper()
+	reply, ok := result.(diag.Reply)
 	if !ok {
-		t.Fatalf("doctor checks=%T %v, want object", payload["checks"], payload["checks"])
+		t.Fatalf("doctor result=%T %v, want a diagnostic reply", result, result)
 	}
-	message, ok := checks["sqlite"].(string)
-	if !ok {
-		t.Fatalf("doctor sqlite=%T %v, want string", checks["sqlite"], checks["sqlite"])
+	if !reply.Degraded {
+		t.Fatalf("doctor reply is not marked degraded: %+v", reply)
 	}
-	return message
+	for _, finding := range reply.Findings {
+		if finding.Check == diag.CheckSQLite && finding.Severity == diag.SeverityProblem {
+			return finding.Cause + " " + finding.Action
+		}
+	}
+	t.Fatalf("doctor reply has no SQLite problem: %+v", reply.Findings)
+	return ""
 }
 
 func assertGuidance(t *testing.T, method, message string, want, wantAbsent []string) {

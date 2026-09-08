@@ -393,8 +393,17 @@ func (r *verboseStatusRenderer) renderStandbyReplenishment() {
 		r.field("  Detail", statusValue(item, "detail"))
 		r.field("  Suspended", statusValue(item, "suspended_at"))
 		r.field("  Action", statusValue(item, "action"))
+		// 準備失敗で止まった停止だけが失敗情報を持つ。`wx clear` による停止では行を作らない。
+		for _, failure := range []struct{ label, key string }{
+			{"  Failure code", "failure_code"}, {"  Failure reason", "failure_message"}, {"  Failure log", "detail_path"},
+		} {
+			if value, _ := statusRawString(item, failure.key); value != "" {
+				r.field(failure.label, value)
+			}
+		}
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("standby_replenishment[%d]", index), item, map[string]bool{
 			"workspace_id": true, "root": true, "generation": true, "reason": true, "detail": true, "suspended_at": true, "action": true,
+			"failure_code": true, "failure_message": true, "detail_path": true,
 		})
 	}
 }

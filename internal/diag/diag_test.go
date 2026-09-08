@@ -15,7 +15,19 @@ import (
 	"github.com/HappyOnigiri/WX/internal/launchd"
 )
 
-func TestDiagnosticPathAndPathCheck(t *testing.T) {
+// findingFor は検査名が一致する最初の finding を返す。
+func findingFor(t *testing.T, findings []Finding, check string) Finding {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.Check == check {
+			return finding
+		}
+	}
+	t.Fatalf("no finding for %q: %+v", check, findings)
+	return Finding{}
+}
+
+func TestDiagnosticPathReportsTypeAndPermission(t *testing.T) {
 	home := t.TempDir()
 	regular := filepath.Join(home, "regular")
 	if err := os.WriteFile(regular, []byte("data"), 0o600); err != nil {
@@ -52,48 +64,98 @@ func TestDiagnosticPathAndPathCheck(t *testing.T) {
 	if got := DiagnosticPath(home, 0, 0o700); got != "not a regular file" {
 		t.Fatalf("directory regular-file check=%q", got)
 	}
-	if got := pathCheck(func() (string, error) { return "", errors.New("path lookup failed") }, 0, 0); got != "path lookup failed" {
-		t.Fatalf("path function error=%q", got)
+}
+
+// 欠損は起動前の正常な状態でもあり得るため参考に留め、種別・権限の不一致だけを問題として返す。
+func TestPathFindingSeparatesMissingFromUnsafe(t *testing.T) {
+	home := t.TempDir()
+	spec := pathSpec{
+		check: CheckSocket, path: filepath.Join(home, "missing"), requiredType: os.ModeSocket, requiredPerm: 0o600,
+		summary: "unusable", missing: "not created yet", missingAction: "start the daemon", repairAction: "fix the path",
+	}
+	missing := pathFinding(spec)
+	if missing.Severity != SeverityInfo || missing.Cause != "not created yet" || missing.Action != "start the daemon" {
+		t.Fatalf("missing path finding=%+v", missing)
+	}
+	regular := filepath.Join(home, "regular")
+	if err := os.WriteFile(regular, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec.path = regular
+	unsafe := pathFinding(spec)
+	if unsafe.Severity != SeverityProblem || unsafe.Cause != "not a Unix socket" || unsafe.Action != "fix the path" {
+		t.Fatalf("unsafe path finding=%+v", unsafe)
 	}
 }
 
-func TestSharedAndLocalChecksUseStableShapes(t *testing.T) {
+func TestSharedFindingsCoverEveryLocalCheck(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	checks := SharedChecks(context.Background(), config.Defaults(), "")
-	for _, key := range []string{"config", "git", "socket", "state_database", "launch_agent", "worktree_root", "hooks"} {
-		if _, ok := checks[key]; !ok {
-			t.Fatalf("shared checks missing %q: %v", key, checks)
+	findings := SharedFindings(context.Background(), config.Defaults(), "", SharedOptions{})
+	for _, check := range []string{CheckConfig, CheckGit, CheckSocket, CheckStateDatabase, CheckLaunchAgent, CheckWorktreeRoot, CheckReadinessHooks} {
+		findingFor(t, findings, check)
+	}
+	if got := findingFor(t, findings, CheckConfig); got.Severity != SeverityOK {
+		t.Fatalf("config finding=%+v", got)
+	}
+	// hook 未設定は前面待機で成立するため、必須の修復として扱わない。
+	if got := findingFor(t, findings, CheckReadinessHooks); got.Severity == SeverityProblem {
+		t.Fatalf("readiness hooks finding=%+v", got)
+	}
+	reloadFailed := SharedFindings(context.Background(), config.Defaults(), "reload failed", SharedOptions{})
+	if got := findingFor(t, reloadFailed, CheckConfig); got.Severity != SeverityProblem || got.Cause != "reload failed" {
+		t.Fatalf("config finding after a failed reload=%+v", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	canceled := SharedFindings(ctx, config.Defaults(), "", SharedOptions{Git: &gitx.Runner{}})
+	if got := findingFor(t, canceled, CheckGit); got.Severity != SeverityProblem || got.Action == "" {
+		t.Fatalf("git finding with a cancelled context=%+v", got)
+	}
+}
+
+func TestSharedFindingsDeferTheLaunchAgentWhileRestartPending(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	findings := SharedFindings(context.Background(), config.Defaults(), "", SharedOptions{RestartPending: true})
+	agent := findingFor(t, findings, CheckLaunchAgent)
+	if agent.Severity != SeverityInfo || !strings.Contains(agent.Cause, "restart is pending") {
+		t.Fatalf("launch agent finding while a restart is pending=%+v", agent)
+	}
+}
+
+func TestLocalFindingsReportTheDaemonAndLeaveStoreChecksUnchecked(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	findings := LocalFindings(context.Background(), errors.New("connect to wx daemon: refused"))
+	daemon := findingFor(t, findings, CheckDaemon)
+	if daemon.Severity != SeverityProblem || daemon.Cause != "connect to wx daemon: refused" || daemon.Action == "" {
+		t.Fatalf("daemon finding=%+v", daemon)
+	}
+	for _, check := range append([]string{CheckSQLite}, StoreDependentChecks()...) {
+		got := findingFor(t, findings, check)
+		if got.Severity != SeverityUnchecked || got.DependsOn != CheckDaemon {
+			t.Fatalf("store-dependent finding for %s=%+v", check, got)
 		}
 	}
-	if checks["config"] != "ok" {
-		t.Fatalf("shared config=%v", checks["config"])
+	reply := Reply{Findings: findings}
+	if ExitCode(reply) != 1 {
+		t.Fatal("an unreachable daemon exited with a success code")
 	}
-	if _, ok := checks["hooks"].(map[string]string); !ok {
-		t.Fatalf("shared hooks type=%T", checks["hooks"])
+	// daemon の問題を表示済みなら、それに依存する未検査を独立した故障として重複表示しない。
+	var out strings.Builder
+	Render(&out, reply, false)
+	if strings.Contains(out.String(), daemonUnavailable) {
+		t.Fatalf("normal output repeated the daemon failure per check:\n%s", out.String())
 	}
+	out.Reset()
+	Render(&out, reply, true)
+	if !strings.Contains(out.String(), daemonUnavailable) {
+		t.Fatalf("verbose output hid the unchecked results:\n%s", out.String())
+	}
+}
 
-	local := LocalChecks(context.Background(), errors.New("connect to wx daemon: refused"))
-	if local["config"] != "ok" {
-		t.Fatalf("local config=%v", local["config"])
-	}
-	if local["sqlite"] != daemonUnavailable || local["daemon"] != "connect to wx daemon: refused" {
-		t.Fatalf("local unavailable checks=%v", local)
-	}
-	registration, ok := local["worktree_registration"].(map[string]any)
-	if !ok || registration["checked"] != 0 || registration["error"] != daemonUnavailable {
-		t.Fatalf("local registration=%v", local["worktree_registration"])
-	}
-	artifacts, ok := local["artifact_ownership"].(map[string]any)
-	if !ok {
-		t.Fatalf("local artifacts=%v", local["artifact_ownership"])
-	}
-	errorsList, ok := artifacts["errors"].([]string)
-	if !ok || len(errorsList) != 1 || errorsList[0] != daemonUnavailable {
-		t.Fatalf("local artifact errors=%v", artifacts["errors"])
-	}
-
-	// 不正な config も報告し、path 診断は初回 load 前と同じ既定の実効値へ戻る。
+func TestLocalFindingsReportAnInvalidConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	configPath, err := config.Path()
 	if err != nil {
 		t.Fatal(err)
@@ -104,23 +166,36 @@ func TestSharedAndLocalChecksUseStableShapes(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("unknown: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	invalid := LocalChecks(context.Background(), nil)
-	if got, ok := invalid["config"].(string); !ok || got == "ok" || got == "" {
-		t.Fatalf("invalid config check=%v", invalid["config"])
+	findings := LocalFindings(context.Background(), nil)
+	invalid := findingFor(t, findings, CheckConfig)
+	if invalid.Severity != SeverityProblem || invalid.Target != configPath || invalid.Cause == "" {
+		t.Fatalf("config finding=%+v", invalid)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	withRunner := SharedChecks(ctx, config.Defaults(), "reload failed", &gitx.Runner{})
-	if withRunner["config"] != "reload failed" {
-		t.Fatalf("runner/config check=%v", withRunner["config"])
-	}
-	if got, ok := withRunner["git"].(string); !ok || got == "ok" {
-		t.Fatalf("cancelled git check=%v", withRunner["git"])
+	// 設定を読めなくても path 診断は既定の実効値で続ける。
+	if got := findingFor(t, findings, CheckWorktreeRoot); got.Target == "" {
+		t.Fatalf("worktree root finding without a resolved path=%+v", got)
 	}
 }
 
-func TestLaunchAgentCheckReportsStaleContent(t *testing.T) {
+func TestDegradedFindingsExplainTheDatabaseAndItsRecovery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	findings := DegradedFindings(context.Background(), "/state.db", errors.New("corrupt"), false)
+	sqlite := findingFor(t, findings, CheckSQLite)
+	if sqlite.Severity != SeverityProblem || sqlite.Cause != "corrupt" || !strings.Contains(sqlite.Action, "/state.db.backups") {
+		t.Fatalf("degraded sqlite finding=%+v", sqlite)
+	}
+	layout := findingFor(t, DegradedFindings(context.Background(), "/state.db", errors.New("previous layout"), true), CheckSQLite)
+	if strings.Contains(layout.Action, ".backups") || !strings.Contains(layout.Action, "remove") {
+		t.Fatalf("previous-layout action=%q, want removal guidance instead of a backup restore", layout.Action)
+	}
+	for _, check := range StoreDependentChecks() {
+		if got := findingFor(t, findings, check); got.DependsOn != CheckSQLite {
+			t.Fatalf("store-dependent finding for %s=%+v", check, got)
+		}
+	}
+}
+
+func TestLaunchAgentFindingReportsStaleContent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	bin := filepath.Join(home, "bin")
@@ -139,8 +214,9 @@ func TestLaunchAgentCheckReportsStaleContent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(plist), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := launchAgentCheck(); !strings.Contains(got, "no such file") {
-		t.Fatalf("missing launch agent=%q", got)
+	missing := launchAgentFinding(false)
+	if missing.Severity != SeverityProblem || !strings.Contains(missing.Action, "wx daemon install") {
+		t.Fatalf("missing launch agent finding=%+v", missing)
 	}
 	logPath, err := config.LogPath()
 	if err != nil {
@@ -153,14 +229,15 @@ func TestLaunchAgentCheckReportsStaleContent(t *testing.T) {
 	if err := os.WriteFile(plist, expected, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := launchAgentCheck(); got != "ok" {
-		t.Fatalf("current launch agent=%q", got)
+	if current := launchAgentFinding(false); current.Severity != SeverityOK {
+		t.Fatalf("current launch agent finding=%+v", current)
 	}
 	if err := os.WriteFile(plist, []byte("<string>daemon start --foreground</string>\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := launchAgentCheck(); got != "stale LaunchAgent plist; run wx daemon install" {
-		t.Fatalf("stale launch agent=%q", got)
+	stale := launchAgentFinding(false)
+	if stale.Severity != SeverityProblem || !strings.Contains(stale.Cause, "differs") {
+		t.Fatalf("stale launch agent finding=%+v", stale)
 	}
 	if err := os.Remove(plist); err != nil {
 		t.Fatal(err)
@@ -168,12 +245,12 @@ func TestLaunchAgentCheckReportsStaleContent(t *testing.T) {
 	if err := os.Mkdir(plist, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := launchAgentCheck(); got != "not a regular file" {
-		t.Fatalf("non-file launch agent=%q", got)
+	if directory := launchAgentFinding(false); directory.Severity != SeverityProblem || directory.Cause != "not a regular file" {
+		t.Fatalf("non-file launch agent finding=%+v", directory)
 	}
 }
 
-func TestHookChecksRecognizeValidClaudeHooks(t *testing.T) {
+func TestReadinessHookFindingsRecognizeValidClaudeHooks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	executable, err := hookconfig.CurrentExecutable()
@@ -191,11 +268,15 @@ func TestHookChecksRecognizeValidClaudeHooks(t *testing.T) {
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	hooks := hookChecks()
-	if hooks["claude"] != "ok" {
-		t.Fatalf("claude hooks=%v", hooks)
+	findings := readinessHookFindings()
+	byAgent := map[string]Finding{}
+	for _, finding := range findings {
+		byAgent[finding.Target] = finding
 	}
-	if hooks["codex"] == "ok" {
-		t.Fatalf("codex hooks unexpectedly available=%v", hooks)
+	if byAgent["claude"].Severity != SeverityOK {
+		t.Fatalf("claude hook finding=%+v", byAgent["claude"])
+	}
+	if byAgent["codex"].Severity != SeverityInfo {
+		t.Fatalf("codex hook finding=%+v", byAgent["codex"])
 	}
 }
