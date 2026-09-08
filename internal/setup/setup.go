@@ -21,6 +21,9 @@ const (
 	ActionKeep    Action = "keep"
 	ActionRemove  Action = "remove"
 	ActionSkip    Action = "skip"
+	// ActionDefault と ActionManual は値の決め方を表す。項目の状態から導かれる操作ではなく、値入力を伴う項目の尋ね方としてだけ使う。
+	ActionDefault Action = "default"
+	ActionManual  Action = "manual"
 )
 
 // State は 1 つの項目の現在の状態である。

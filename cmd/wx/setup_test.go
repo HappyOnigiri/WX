@@ -188,7 +188,7 @@ func TestSetupStepValueReadsAPathAfterTheSelector(t *testing.T) {
 		out: &out, errOut: &errOut,
 		selector: func(_ context.Context, asked setup.Step) (setup.Action, error) {
 			if asked.Title == "Worktree root path" {
-				return setup.ActionUpdate, nil
+				return setup.ActionManual, nil
 			}
 			return setup.ActionInstall, nil
 		},
@@ -200,7 +200,7 @@ func TestSetupStepValueReadsAPathAfterTheSelector(t *testing.T) {
 	}
 	kept := setupSession{
 		out: &out, errOut: &errOut,
-		selector: func(context.Context, setup.Step) (setup.Action, error) { return setup.ActionKeep, nil },
+		selector: func(context.Context, setup.Step) (setup.Action, error) { return setup.ActionDefault, nil },
 	}
 	value, err = setupStepValue(context.Background(), kept, step)
 	if err != nil || value != "$HOME/wx" {

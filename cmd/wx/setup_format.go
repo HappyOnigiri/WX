@@ -99,6 +99,10 @@ func setupActionDescription(step setup.Step, action setup.Action) string {
 		return "remove what wx manages from " + target
 	case setup.ActionSkip:
 		return "do nothing now; wx setup can be run again later"
+	case setup.ActionDefault:
+		return "use " + summarizeSetupChange(step)
+	case setup.ActionManual:
+		return "type a value instead of " + summarizeSetupChange(step)
 	default:
 		return ""
 	}

@@ -307,13 +307,13 @@ func setupStepValue(ctx context.Context, session setupSession, step setup.Step) 
 	}
 	answer, err := session.selector(ctx, setup.Step{
 		ID: step.ID, Title: "Worktree root path", Detail: step.Detail,
-		Options: []setup.Action{setup.ActionKeep, setup.ActionUpdate}, Default: setup.ActionKeep,
+		Options: []setup.Action{setup.ActionDefault, setup.ActionManual}, Default: setup.ActionDefault,
 		Desired: step.Desired,
 	})
 	if err != nil {
 		return "", err
 	}
-	if answer != setup.ActionUpdate {
+	if answer != setup.ActionManual {
 		return step.Desired, nil
 	}
 	_, _ = fmt.Fprintf(session.errOut, "Enter the worktree root path [%s]: ", step.Desired)
