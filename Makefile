@@ -36,7 +36,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check workflow-lint workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check workflow-lint workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -159,11 +159,12 @@ generated-check:
 	fi
 
 # エージェント用worktreeやnpmの生成物はroot直下に限らず現れるため、深さに依存しないパターンで除外する。
+# *.local.mdは各利用者のローカル指示で追跡しないため、リポジトリの書式規約の対象から外す。
 docs-check:
 	@test -x "$(NPM_BIN)/markdownlint-cli2" || { echo "pinned markdownlint is missing; run make setup"; exit 1; }
 	command -v node >/dev/null
 	node tools/markdownlint/selftest.mjs "$(TOOLS_DIR)/npm/node_modules/markdownlint-cli2/export-markdownlint.mjs"
-	"$(NPM_BIN)/markdownlint-cli2" README.md '**/*.md' '#.tools/**' '#tmp/**' '#.claude/**' '#**/node_modules/**'
+	"$(NPM_BIN)/markdownlint-cli2" README.md '**/*.md' '#.tools/**' '#tmp/**' '#.claude/**' '#**/node_modules/**' '#**/*.local.md'
 
 comments-check:
 	$(GO) run ./tools/checkcomments
@@ -333,12 +334,9 @@ static-check: fmt-check lint deadcode mod-tidy-check docs-check comments-check t
 ci-checks: static-check coverage-check ci-test-race build-darwin version-check smoke release-check
 
 # hook本体は共通Gitディレクトリのhooks直下に置き、user側のdispatcherを維持する。
-# 以下はそのhookが呼び出す契約である。
+# 以下はそのhookが呼び出す契約である。pre-pushのhookは持たず、コミット時のこの検査だけをゲートとする。
 hook-pre-commit:
-	scripts/hook-check.sh pre-commit
-
-hook-pre-push:
-	scripts/hook-check.sh pre-push
+	scripts/hook-check.sh
 
 # 全体を10回実行するとdaemonだけで約14〜18分かかるため、45分の上限を明示する。
 # nightlyジョブの90分枠内に収めつつ余裕を持たせる。
