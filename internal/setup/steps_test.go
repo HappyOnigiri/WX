@@ -98,6 +98,21 @@ func TestWorktreeRootKeepsTheConfigWhenTheDirectoryCannotBePrepared(t *testing.T
 	}
 }
 
+// TestWorktreeRootReportsARejectedReload は、daemon が変更を拒否したときに成功と表示しないことを確認する。
+// 呑むと再収集は保存済みパスだけを見て present になり、旧 root が使われ続ける。
+func TestWorktreeRootReportsARejectedReload(t *testing.T) {
+	fixture := newSetupFixture(t)
+	options := fixture.options()
+	options.ReloadConfig = func(context.Context) error { return errors.New("the new worktree root overlaps the one in use") }
+	err := Apply(context.Background(), options, collectWorktreeRoot(), ActionInstall, filepath.Join(fixture.home, "elsewhere"))
+	if err == nil {
+		t.Fatal("a rejected reload was reported as success")
+	}
+	if !strings.Contains(err.Error(), "overlaps the one in use") {
+		t.Fatalf("the daemon reason was lost: %v", err)
+	}
+}
+
 func TestLaunchAgentReportsPermissionsAndStaleContent(t *testing.T) {
 	fixture := newSetupFixture(t)
 	options := fixture.options()

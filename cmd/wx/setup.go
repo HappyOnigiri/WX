@@ -87,12 +87,17 @@ func setupOptions() setup.Options {
 			}
 			return startAndWaitForDaemon(ctx, socket)
 		},
+		// daemon 未待受は正常なので接続確立の失敗だけを黙って呑む。
+		// 接続後の拒否（参照中の root と重なる変更など）は setup 側へ返し、反映されていないことを利用者へ伝える。
 		ReloadConfig: func(ctx context.Context) error {
 			client, err := rpcClient()
 			if err != nil {
 				return err
 			}
-			return client.Call(ctx, "ReloadConfig", struct{}{}, nil)
+			if err := client.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil && !rpc.IsConnectError(err) {
+				return err
+			}
+			return nil
 		},
 		DaemonStatus: func(ctx context.Context) (bool, error) {
 			client, err := rpcClient()

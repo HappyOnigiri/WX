@@ -136,9 +136,12 @@ func applyWorktreeRoot(ctx context.Context, options Options, step Step, _ Action
 	if err := config.Save(raw); err != nil {
 		return err
 	}
-	// 起動済みの daemon には保存済み設定を反映する。未起動は正常なので致命的に扱わない。
+	// 起動済みの daemon には保存済み設定を反映する。未起動を正常扱いにするのは呼び出し側のアダプターの責務で、
+	// ここで全エラーを捨てると daemon が変更を拒否しても成功と表示され、旧 root が使われ続ける。
 	if options.ReloadConfig != nil {
-		_ = options.ReloadConfig(ctx)
+		if err := options.ReloadConfig(ctx); err != nil {
+			return fmt.Errorf("%s was saved but the running daemon rejected it: %w", step.Target, err)
+		}
 	}
 	return nil
 }
