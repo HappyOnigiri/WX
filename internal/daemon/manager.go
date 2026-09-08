@@ -51,6 +51,7 @@ type Manager struct {
 	stopPending        bool
 	lifecycleClaimed   bool
 	lifecycleAttempts  int
+	lifecycleRetryAt   time.Time
 	restartUnmanaged   bool
 	inflightRequests   int
 	inflightLifecycle  int

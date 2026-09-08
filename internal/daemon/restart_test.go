@@ -120,6 +120,21 @@ func waitForClaim(t *testing.T, m *Manager, k *signalLog, want bool) {
 	t.Fatalf("timed out waiting for claimed=%v; claimed=%v attempts=%d recorded calls=%d", want, claimed, attempts, k.count())
 }
 
+func waitForLifecycleRetry(t *testing.T, m *Manager) {
+	t.Helper()
+	deadline := time.Now().Add(lifecycleSignalBudget)
+	for time.Now().Before(deadline) {
+		m.mu.RLock()
+		retryAt := m.lifecycleRetryAt
+		m.mu.RUnlock()
+		if lifecycleRetryReady(retryAt, time.Now()) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the lifecycle retry deadline")
+}
+
 func lifecycleActionClaimed(m *Manager) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -250,6 +265,39 @@ func TestAPendingRestartIssuesAsSoonAsTheLastRequestEnds(t *testing.T) {
 	kickstarts.want(t, 1)
 }
 
+func TestLastRequestCompletionNotifiesTheLifecycleGate(t *testing.T) {
+	manager, _, _ := restartFixture(t)
+	manager.lifecycleChecks = make(chan struct{}, 1)
+	manager.RequestRestart(context.Background())
+	select {
+	case <-manager.lifecycleChecks:
+	default:
+		t.Fatal("request did not notify the lifecycle gate")
+	}
+	manager.beginRequest(false)
+	manager.endRequest(false)
+	select {
+	case <-manager.lifecycleChecks:
+	case <-time.After(time.Second):
+		t.Fatal("last request completion did not notify the lifecycle gate")
+	}
+}
+
+func TestLifecycleCheckDelayUsesTheReplyGraceDeadline(t *testing.T) {
+	manager, _, _ := restartFixture(t)
+	manager.RequestRestart(context.Background())
+	manager.mu.Lock()
+	manager.lastLifecycleEnd = time.Now()
+	manager.mu.Unlock()
+	delay, pending := manager.lifecycleCheckDelay()
+	if !pending {
+		t.Fatal("pending lifecycle action was not reported")
+	}
+	if delay <= 0 || delay > lifecycleReplyGrace {
+		t.Fatalf("lifecycle delay=%s, want no more than reply grace %s", delay, lifecycleReplyGrace)
+	}
+}
+
 func elapseLifecycleGate(m *Manager) {
 	m.mu.Lock()
 	m.lastLifecycleEnd = time.Now().Add(-lifecycleReplyGrace)
@@ -364,6 +412,9 @@ func TestKickstartServiceFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 		kickstarts.want(t, attempt)
 		claimed := attempt == maxLifecycleAttempts
 		waitForClaim(t, manager, kickstarts, claimed)
+		if !claimed {
+			waitForLifecycleRetry(t, manager)
+		}
 	}
 	manager.runPendingLifecycle()
 	wantClaimHeld(t, manager, kickstarts, maxLifecycleAttempts)
@@ -379,6 +430,9 @@ func TestAnExhaustedRestartDoesNotParkALaterStop(t *testing.T) {
 	for attempt := 1; attempt <= maxLifecycleAttempts; attempt++ {
 		manager.runPendingLifecycle()
 		kickstarts.want(t, attempt)
+		if attempt < maxLifecycleAttempts {
+			waitForLifecycleRetry(t, manager)
+		}
 	}
 	waitForClaim(t, manager, kickstarts, true)
 	manager.RequestStop(context.Background())
@@ -669,6 +723,9 @@ func TestStopSignalFailureIsRetriedUpToTheAttemptLimit(t *testing.T) {
 		stops.want(t, attempt)
 		claimed := attempt == maxLifecycleAttempts
 		waitForClaim(t, manager, stops, claimed)
+		if !claimed {
+			waitForLifecycleRetry(t, manager)
+		}
 	}
 	manager.runPendingLifecycle()
 	wantClaimHeld(t, manager, stops, maxLifecycleAttempts)

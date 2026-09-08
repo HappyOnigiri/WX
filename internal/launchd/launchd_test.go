@@ -40,6 +40,9 @@ func TestRenderInstallUninstallAndKickstart(t *testing.T) {
 			t.Fatalf("rendered plist does not pass %s: %s", argument, data)
 		}
 	}
+	if !strings.Contains(string(data), "<key>ThrottleInterval</key><integer>1</integer>") {
+		t.Fatalf("rendered plist does not set ThrottleInterval=1: %s", data)
+	}
 	if err := Install(context.Background(), "/usr/local/bin/wx", logPath); err != nil {
 		t.Fatal(err)
 	}

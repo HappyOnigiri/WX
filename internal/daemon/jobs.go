@@ -62,7 +62,10 @@ func (m *Manager) dispatchJobs() {
 // executeJob は確保済みの実行枠で job を 1 回実行し、結果に応じて終了・retry・依存待ちへ落とす。
 // 枠と重複判定の解放は実行の成否によらず行う。
 func (m *Manager) executeJob(work queuedJob, slot jobExecutionSlot) {
-	defer m.jobQueue.finish(work, slot)
+	defer func() {
+		m.jobQueue.finish(work, slot)
+		m.notifyLifecycleCheckIfPending()
+	}()
 	owner := fmt.Sprintf("%d:%d", os.Getpid(), m.jobSeq.Add(1))
 	waited := time.Since(work.queued)
 	job, err := m.store.ClaimJob(context.Background(), work.id, owner)

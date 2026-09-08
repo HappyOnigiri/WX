@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -289,8 +290,11 @@ func TestPingReportsProtocolVersionWithoutTouchingState(t *testing.T) {
 	if reply["degraded"] != false {
 		t.Fatalf("Ping degraded=%v, want false", reply["degraded"])
 	}
-	if len(reply) != 2 {
-		t.Fatalf("Ping reply=%v, want protocol_version and degraded only", reply)
+	if pid, ok := reply["pid"].(int); !ok || pid != os.Getpid() {
+		t.Fatalf("Ping pid=%v, want %d", reply["pid"], os.Getpid())
+	}
+	if len(reply) != 3 {
+		t.Fatalf("Ping reply=%v, want protocol_version, degraded, and pid", reply)
 	}
 }
 
@@ -310,6 +314,9 @@ func TestDegradedPingAnswersWithoutLiftingTheReadOnlyLimits(t *testing.T) {
 	}
 	if reply["protocol_version"] != rpc.ProtocolVersion {
 		t.Fatalf("degraded Ping protocol_version=%v, want %d", reply["protocol_version"], rpc.ProtocolVersion)
+	}
+	if pid, ok := reply["pid"].(int); !ok || pid != os.Getpid() {
+		t.Fatalf("degraded Ping pid=%v, want %d", reply["pid"], os.Getpid())
 	}
 	if _, err := handler.Handle(context.Background(), "ResolveAndLease", nil); err == nil {
 		t.Fatal("degraded lease succeeded after a successful Ping")

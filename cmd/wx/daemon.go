@@ -55,48 +55,66 @@ func waitForSocket(ctx context.Context, socket string, listening bool) bool {
 	}
 }
 
+// daemonReplacementPollInterval は再起動中の PID を再確認する間隔である。
+// socket の停止時間は短く見逃し得るため、停止の観測を待たずに応答元を調べる。
+const daemonReplacementPollInterval = 250 * time.Millisecond
+
 // waitForDaemonReplacement は再起動後に別プロセスが応答するまで待つ。
-// listener の停止時間は短く見逃し得るため PID の変化で判定し、socket の停止を確認してから一度だけ Status を呼ぶ。
+// Ping の PID を優先し、旧 daemon には Status へフォールバックして互換性を保つ。
 func waitForDaemonReplacement(ctx context.Context, socket string, previousPID int) bool {
 	deadline := time.Now().Add(daemonWaitTimeout)
-	sawOutage := false
 	for {
-		if !daemonListening(ctx, socket) {
-			sawOutage = true
-		} else if sawOutage {
-			if pid := daemonPID(ctx); pid != 0 && pid != previousPID {
-				return true
-			}
+		if pid, answered := daemonReplacementPID(ctx, socket, deadline); answered && pid > 0 && pid != previousPID {
+			return true
 		}
 		if !time.Now().Before(deadline) {
-			break
+			return false
+		}
+		interval := daemonReplacementPollInterval
+		if remaining := time.Until(deadline); remaining < interval {
+			interval = remaining
 		}
 		select {
 		case <-ctx.Done():
 			return false
-		case <-time.After(daemonPollInterval):
+		case <-time.After(interval):
 		}
 	}
-	// 停止を観測できなくても PID が変われば再起動済みである。この時点の問い合わせは保留処理を遅延させない。
-	pid := daemonPID(ctx)
-	return pid != 0 && pid != previousPID
 }
 
-// daemonPID は socket を提供している daemon の PID を問い合わせる。
-func daemonPID(ctx context.Context) int {
-	client, err := rpcClient()
-	if err != nil {
-		return 0
+// daemonReplacementPID は再起動待機の 1 回分の確認を行う。
+// Ping と Status は同じ context を共有し、各確認が待機全体の残り時間を使い切らないようにする。
+func daemonReplacementPID(ctx context.Context, socket string, deadline time.Time) (int, bool) {
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return 0, false
 	}
-	var out struct {
+	budget := daemonRequestTimeout
+	if remaining < budget {
+		budget = remaining
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	client := rpc.Client{Socket: socket, Timeout: daemonRequestTimeout}
+	var ping struct {
 		PID int `json:"pid"`
 	}
-	callCtx, cancel := context.WithTimeout(ctx, daemonRequestTimeout)
-	defer cancel()
-	if err := client.Call(callCtx, "Status", struct{}{}, &out); err != nil {
-		return 0
+	err := client.Call(checkCtx, "Ping", struct{}{}, &ping)
+	if err == nil && ping.PID > 0 {
+		return ping.PID, true
 	}
-	return out.PID
+	// 未待受や呼び出し側の中断では、同じ予算内で追加の RPC を発行しない。
+	if checkCtx.Err() != nil || rpc.IsConnectError(err) {
+		return 0, false
+	}
+	// PID を含まない旧 Ping、または Ping を知らない daemon だけは Status へフォールバックする。
+	var status struct {
+		PID int `json:"pid"`
+	}
+	if statusErr := client.Call(checkCtx, "Status", struct{}{}, &status); statusErr != nil {
+		return 0, false
+	}
+	return status.PID, true
 }
 
 // daemonRequestTimeout はライフサイクル要求そのものの制限時間で、反映待ちとは別に適用する。

@@ -124,8 +124,11 @@ restartは二重起動を避けるため`underLaunchd()`を要求し、stopは�
 ゲート通過後はrestartの`launchd.Kickstart`またはstopの自プロセスへのSIGTERMを1度だけ発行する。
 
 CLIのstop/start待ちはsocketへのdialだけを使い、RPCでゲートを塞がない。
-restartはlistener消失後と待機期限後に`Status`のpidを読み、置換前後のpidで判定する。
-短いlistener断はプローブが取りこぼすため、接続断の観測だけでは置換を判断できない。
+restartは要求応答のPIDを基準に、250ms間隔の`Ping`で応答元PIDが変わるまで待つ。
+`Ping`にPIDがない旧daemonや`Ping`が未対応のdaemonでは、同じ確認予算内で`Status`へフォールバックする。
+短いlistener断の観測は成功条件にせず、確認ごとのRPC予算は待機期限の残り時間で制限する。
+RPCやジョブの完了通知はアイドルゲートを起こし、応答保護の100msは期限までのタイマーで再検査する。
+LaunchAgentには`ThrottleInterval=1`を設定し、連続再起動時のlaunchdの待機を短くする。
 待機表示は`interactiveOutput`でstdoutが端末のときだけ出す。
 
 ## 変更の入口と代表テスト
