@@ -288,6 +288,71 @@ func TestReleaseLeaseDiscardsWithoutSaving(t *testing.T) {
 	})
 }
 
+// 貸出は種別をまたいで復元できる。agent 会話は従来どおり厳密一致に留める。
+func TestResumeAgentMatchesAcrossLeaseKinds(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		agent, originalAgent string
+		kind, originalKind   string
+		want                 bool
+	}{
+		"same agent":                     {agent: "codex", originalAgent: "codex", want: true},
+		"different agents":               {agent: "codex", originalAgent: "claude"},
+		"shell resumes a path lease":     {agent: "wx-shell", originalAgent: "wx-path", kind: state.LeaseKindShell, originalKind: state.LeaseKindPath, want: true},
+		"shell resumes a command lease":  {agent: "wx-shell", originalAgent: "wx-run", kind: state.LeaseKindShell, originalKind: state.LeaseKindCommand, want: true},
+		"lease does not resume an agent": {agent: "wx-shell", originalAgent: "codex", kind: state.LeaseKindShell},
+		"agent does not resume a lease":  {agent: "codex", originalAgent: "wx-path", originalKind: state.LeaseKindPath},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := resumeAgentMatches(test.agent, test.originalAgent, test.kind, test.originalKind); got != test.want {
+				t.Fatalf("resumeAgentMatches(%q,%q,%q,%q)=%v, want %v", test.agent, test.originalAgent, test.kind, test.originalKind, got, test.want)
+			}
+		})
+	}
+}
+
+// wx new が出した貸出も wx shell --resume で開ける。
+// これが通らないと、期限や wx release で保存された path 貸出の内容を取り戻す経路が無くなる。
+func TestShellResumeReopensAPathLease(t *testing.T) {
+	t.Parallel()
+	f, repo := leaseWorktreeFixture(t)
+	store, m := f.Store, f.Manager
+	ctx := context.Background()
+	lease, err := m.leaseWithPolicy(ctx, repo, nil, "wx-path", 0, false, leaseAttrs{Kind: state.LeaseKindPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(ctx, m, 10*time.Second, lease.SessionID, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ReleaseLease(ctx, lease.SessionID, "wx-release", false); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 20*time.Second, func() bool {
+		session, _ := store.SessionByID(ctx, lease.SessionID)
+		return session.State == "ARCHIVED"
+	})
+	resumed, err := m.Resume(ctx, lease.SessionID, "wx-shell", os.Getpid(), false, ResumeOptions{Lease: leaseAttrs{Kind: state.LeaseKindShell}})
+	if err != nil {
+		t.Fatalf("resume a path lease as a shell lease: %v", err)
+	}
+	if err := waitReady(ctx, m, 20*time.Second, resumed.SessionID, resumed.Token); err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.SessionByID(ctx, resumed.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 復元後の session は実際に動いている種別で登録され、wx slots の AGENT 列もそれを指す。
+	if session.AgentKind != "wx-shell" || session.LeaseKind != state.LeaseKindShell {
+		t.Fatalf("resumed session=%+v, want a shell lease", session)
+	}
+	// agent 会話は従来どおり厳密一致のままで、貸出の種別では開けない。
+	if _, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), false); err == nil {
+		t.Fatal("a lease session was resumed as an agent conversation")
+	}
+}
+
 // 期限掃引と親連動は、プロセスが生きている貸出（実行中の wx shell / wx run）を返却しない。
 // この 2 経路が生存を見ないと、動いているシェルの worktree が使用中のまま返却へ落ちる。
 func TestExpiredAndOrphanedLeasesSkipRunningProcesses(t *testing.T) {

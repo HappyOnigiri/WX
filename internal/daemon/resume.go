@@ -395,7 +395,7 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, fres
 	if agent == "" {
 		agent = old.AgentKind
 	}
-	if agent != old.AgentKind {
+	if !resumeAgentMatches(agent, old.AgentKind, opts.Lease.Kind, old.LeaseKind) {
 		return Lease{}, errors.New("resume agent does not match the original session")
 	}
 	if old.State == "STARTING" || old.State == "ACTIVE" || old.State == "RESTORING" || old.State == "UNBOUND" {

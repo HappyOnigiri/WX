@@ -58,6 +58,21 @@ func (m *Manager) applyLeaseAttrs(session *state.Session, attrs leaseAttrs) {
 	}
 }
 
+// isLeaseKind は lease_kind が agent 起動以外への貸出かを返す。
+func isLeaseKind(kind string) bool {
+	return kind != "" && kind != state.LeaseKindAgent
+}
+
+// resumeAgentMatches は復元要求の agent が元の session と両立するかを返す。
+// 貸出は種別をまたいで復元できる。厳密一致にすると wx new が出した貸出を wx shell --resume で開けない。
+// agent 会話は ID の移譲と argv の作法が種別ごとに違うため厳密一致に留める。
+func resumeAgentMatches(agent, originalAgent, leaseKind, originalLeaseKind string) bool {
+	if agent == originalAgent {
+		return true
+	}
+	return isLeaseKind(leaseKind) && isLeaseKind(originalLeaseKind)
+}
+
 // releaseLeaseWithoutToken は session token を持たない側からの返却を、通常の返却経路へ載せる。
 // orphan 回収・期限掃引・親連動・wx release が共有し、保存の要否と slot の遷移は Store が決める。
 // 書き込みの失敗は error で返す。再試行できる周期処理と wx release で扱いが違うためである。
