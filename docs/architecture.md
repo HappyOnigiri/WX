@@ -25,7 +25,7 @@
 破損・書き込み不能・schema差異では直接走査へ戻す。このキャッシュはdaemonのstate.dbと独立で、`migrations`にも`state.SchemaVersion`にも関わらない。
 
 statusの組み立ては`internal/daemon/status.go`に置く。
-daemon接続なしで成立する診断とfindingの表示だけを`internal/diag`が持ち、状態を読む検査はdaemon側に残す。
+daemon接続なしで成立する診断とfindingの表示・終了コードだけを`internal/diag`が持ち、状態を読む検査はdaemon側に残す。
 
 `wx`バイナリはCLI・daemon・`internal/fdexec`のexecトランポリン（`__wx_exec_at_fd`）を兼ねる。
 descriptor束縛でGitやエージェントを起動する経路は自分自身を再execする。

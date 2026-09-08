@@ -91,6 +91,7 @@ SQLiteを開けなくても`DegradedHandler`が`Status`・`Doctor`・`RequestSto
 通常表示はproblem（利用者の対処が必要）と、原因を表示していないunchecked（前提の故障で実施できず）だけを「エラー内容・対象・原因・対処方法」の形で出す。
 `unchecked`は`DependsOn`に原因の検査名を持ち、その検査のproblemを表示済みなら通常表示から省く。
 終了コードはproblemまたはuncheckedがあれば1とし、実施できなかった検査を成功として扱わない。
+`--json`は`-v`によらず全findingを返す（消費側の契約なので、絞り込みを足すなら`state.JSONSchemaVersion`を上げる）。
 daemonへ接続できない場合とdegradedの場合は、store依存の検査（`diag.StoreDependentChecks`）をこの形で並べ、同じ故障を検査ごとに繰り返さない。
 `findings`を返せない古いdaemonの応答は正常と読ませず、CLIが`wx daemon restart`を促すproblemを足す。
 

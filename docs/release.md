@@ -45,7 +45,8 @@ WX側のPublish Release workflowは、公開前に配布用の成果物をビル
 
 ## 配布用ビルド
 
-`make release RELEASE_VERSION=vX.Y.Z`がmacOS arm64バイナリ・チェックサム・インストーラー・アンインストーラーを生成する。
+`make release RELEASE_VERSION=vX.Y.Z`が`artifacts/release/`へmacOS arm64バイナリ・チェックサム・インストーラー・アンインストーラーを生成する。
+`publish-release.yml`はこの4ファイルのpathを固定で参照するため、`RELEASE_DIR`とファイル名を変えるとworkflowの添付が壊れる。
 `install.sh`には同じリリースタグを埋め込み、何もダウンロードしない`uninstall.sh`は`scripts/uninstall.sh`をそのまま配る。
 
 配布用ビルドは`Version`に明示したタグ、`BuildMeta`に空文字を埋め込み、`wx --version`は`wx version vX.Y.Z`となる。
