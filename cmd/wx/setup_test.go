@@ -85,13 +85,7 @@ func TestSetupUpdatePrintsNothingWhenNothingDiverged(t *testing.T) {
 func TestSetupUpdateOffersOnlyTheDivergentStep(t *testing.T) {
 	home, options := setupCommandHome(t)
 	// LaunchAgent だけを divergent にする。plist の内容が今の wx と一致しない状態にあたる。
-	plist := filepath.Join(home, "Library", "LaunchAgents", "com.user.wx.plist")
-	if err := os.MkdirAll(filepath.Dir(plist), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(plist, []byte("<plist/>"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeLaunchAgent(t, home)
 	var out, errOut bytes.Buffer
 	var asked []string
 	installed := false
@@ -116,13 +110,7 @@ func TestSetupUpdateOffersOnlyTheDivergentStep(t *testing.T) {
 
 func TestSetupUpdateTreatsCancellationAsSuccessAndFailureAsOne(t *testing.T) {
 	home, options := setupCommandHome(t)
-	plist := filepath.Join(home, "Library", "LaunchAgents", "com.user.wx.plist")
-	if err := os.MkdirAll(filepath.Dir(plist), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(plist, []byte("<plist/>"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeFakeLaunchAgent(t, home)
 	var out, errOut bytes.Buffer
 	cancelling := setupSession{out: &out, errOut: &errOut, selector: func(context.Context, setup.Step) (setup.Action, error) {
 		return "", tui.ErrCancelled
@@ -220,4 +208,80 @@ func readCommandFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// TestSetupRemoveReportsLeftoversInAParsableShape は uninstall.sh が読む leftover 行の形を守る。
+// path には空白が入り得るため（`~/Library/Application Support/wx`）、行頭の目印と 2 列目以降が読み手の契約である。
+func TestSetupRemoveReportsLeftoversInAParsableShape(t *testing.T) {
+	home, options := setupCommandHome(t)
+	removed := false
+	options.UninstallLaunchAgent = func(context.Context) error { removed = true; return nil }
+	writeFakeLaunchAgent(t, home)
+	state := filepath.Join(home, "Library", "Application Support", "wx")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+
+	if code := runSetupRemove(context.Background(), options, &out, &errOut); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if !removed {
+		t.Fatal("--remove did not remove the LaunchAgent")
+	}
+	found := ""
+	for _, line := range strings.Split(out.String(), "\n") {
+		tag, rest, ok := strings.Cut(line, " ")
+		if ok && tag == "leftover" {
+			found = strings.TrimSpace(rest)
+		}
+	}
+	if found != state {
+		t.Fatalf("the state directory was not reported as a leftover: %q\n%s", found, out.String())
+	}
+}
+
+// TestSetupRemoveReportsFailuresOnStderrAndExitsOne は失敗した項目だけを stderr へ出し、成功分の行を stdout に残すことを確認する。
+func TestSetupRemoveReportsFailuresOnStderrAndExitsOne(t *testing.T) {
+	home, options := setupCommandHome(t)
+	options.UninstallLaunchAgent = func(context.Context) error { return errors.New("launchctl refused") }
+	writeFakeLaunchAgent(t, home)
+	var out, errOut bytes.Buffer
+
+	if code := runSetupRemove(context.Background(), options, &out, &errOut); code != 1 {
+		t.Fatalf("exit=%d", code)
+	}
+	if !strings.Contains(errOut.String(), "error: launch_agent: launchctl refused") {
+		t.Fatalf("the failure was not reported: %s", errOut.String())
+	}
+	if strings.Contains(out.String(), "launch_agent") {
+		t.Fatalf("a failed item was printed as done:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "hooks.claude") {
+		t.Fatalf("the items that succeeded are missing:\n%s", out.String())
+	}
+}
+
+// TestSetupRejectsRemoveCombinedWithTheReadOnlyModes は --remove が --check・--update と混ざらないことを確認する。
+// --check は何も変えない約束で、--remove は全部消す。取り違えは元に戻せない。
+func TestSetupRejectsRemoveCombinedWithTheReadOnlyModes(t *testing.T) {
+	setupCommandHome(t)
+	for _, args := range [][]string{{"--remove", "--check"}, {"--remove", "--update"}, {"--remove", "extra"}} {
+		if code := runSetup(context.Background(), args); code != 2 {
+			t.Fatalf("wx setup %v exited %d", args, code)
+		}
+	}
+}
+
+// writeFakeLaunchAgent は plist を置く。--remove は plist が無い環境では launchctl を呼ばないため、
+// 解除の経路を通すテストは実体を用意する必要がある。
+func writeFakeLaunchAgent(t *testing.T, home string) {
+	t.Helper()
+	path := filepath.Join(home, "Library", "LaunchAgents", "com.user.wx.plist")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("<plist/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,7 +71,11 @@ func (f *setupFixture) options() Options {
 			if err != nil {
 				return err
 			}
-			return os.Remove(path)
+			// 未登録を成功として扱う。launchd.Uninstall も plist の ErrNotExist を呑むため、そこに揃える。
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			return nil
 		},
 		StartDaemon:  func(context.Context) error { f.running = true; return nil },
 		ReloadConfig: func(context.Context) error { return nil },

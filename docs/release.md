@@ -47,12 +47,13 @@ WX側のPublish Release workflowは、公開前に配布用の成果物をビル
 
 ## 配布用ビルド
 
-`make release RELEASE_VERSION=vX.Y.Z`が`artifacts/release/`へ次の3ファイルを生成する。
+`make release RELEASE_VERSION=vX.Y.Z`が`artifacts/release/`へ次の4ファイルを生成する。
 `RELEASE_DIR`で出力先を変更できる。
 
 - `wx-darwin-arm64`: `CGO_ENABLED=0`でビルドしたmacOS arm64用バイナリ。
 - `checksums.txt`: バイナリのSHA-256チェックサム。
 - `install.sh`: 同じリリースタグを埋め込んだインストーラー。
+- `uninstall.sh`: アンインストーラー。何もダウンロードしないためタグを埋め込まず、`scripts/uninstall.sh`をそのまま配る。
 
 配布用ビルドは`Version`に明示したタグ、`BuildMeta`に空文字を埋め込み、`wx --version`は`wx version vX.Y.Z`となる。
 この生成時にソースファイルを書き換えたり、バージョン更新のコミットを作ったりすることはない。
@@ -75,6 +76,19 @@ GoやGitHub CLIは不要で、Claude CodeまたはCodexは別途用意する。
 登録済みで同じ配置先の場合は`daemon restart`を使い、処理中のジョブやRPCは既存のidleゲートで待機する。
 停止が失敗した場合はバイナリを置き換えず、登録・起動・再起動が失敗した場合は配置済みのバイナリを残して復旧コマンドを表示する。
 シェル設定とエージェントのhook設定は変更しない。
+
+## アンインストール
+
+READMEは`releases/latest/download/uninstall.sh`の固定URLを案内する。
+アンインストーラーは削除の順序だけを持ち、削除そのものは`wx clear --all --discard`・`wx daemon stop`・`wx setup --remove`へ委ねる。
+`wx clear`はdaemon越しに動き、`wx setup --remove`はLaunchAgentの解除でdaemonをbootoutするため、この順序は入れ替えられない。
+逆にするとworktreeとソースリポジトリのgit worktree登録が残る。
+
+`wx setup --remove`が消すのは、hookエントリ・LaunchAgent・`config.yaml`だけである。
+shell起動ファイルは対象外とし、状態DB・ログ・worktree rootは`leftover`で始まる行として報告するだけにする。
+後者は保存済みの作業と記録を含むので、削除の判断を利用者に残す。
+アンインストーラーはこの`leftover`行を読んで`rm -rf`の候補として表示する。
+snapshotに対応する`refs/wx/recovery/*`は、現行DBが説明する限り`wx prune`の対象にならないため、リポジトリ側で消すコマンドを案内するだけにする。
 
 ## ソースからの開発ビルド
 

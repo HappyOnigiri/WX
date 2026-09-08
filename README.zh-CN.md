@@ -41,6 +41,21 @@ wx setup
 在已完成设置的环境中再次运行不会有任何改动。
 更多信息及源码构建方法，请参阅[版本与发布说明](docs/release.md)。
 
+## 卸载
+
+```sh
+curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/uninstall.sh | bash
+```
+
+卸载程序会先列出将要删除的 worktree 并请求确认，同意后删除这些 worktree、wx 的 hook 条目、LaunchAgent、配置文件以及 `~/.local/bin/wx`。
+传入 `--yes` 可跳过确认。
+删除通过守护进程执行，因此在卸载完成前请保持守护进程运行。
+
+以下三项交由你自行处理，卸载程序会打印每一项对应的命令：
+shell 配置中的 `PATH` 行、状态数据库与日志目录，以及 worktree root。
+后两项保存着 wx 为你保留的工作内容。
+你用过 wx 的仓库中还可能残留对应这些快照的 `refs/wx/recovery/*`。
+
 ## 快速开始
 
 在你要处理的仓库中运行：

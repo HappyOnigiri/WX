@@ -19,6 +19,8 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 "$go_command" build -trimpath \
   -ldflags "-s -w -X github.com/HappyOnigiri/WX/internal/version.Version=$release_version -X github.com/HappyOnigiri/WX/internal/version.BuildMeta=" \
   -o "$scratch/wx-darwin-arm64" ./cmd/wx
 sed "s/@WX_RELEASE_VERSION@/$release_version/g" "$script_directory/install.sh" > "$scratch/install.sh"
+# uninstall.sh は何もダウンロードしないため、install.sh と違ってタグを埋め込まずそのまま配る。
+cp "$script_directory/uninstall.sh" "$scratch/uninstall.sh"
 (cd "$scratch" && shasum -a 256 wx-darwin-arm64 > checksums.txt)
 mkdir -p "$release_dir"
-cp "$scratch/wx-darwin-arm64" "$scratch/install.sh" "$scratch/checksums.txt" "$release_dir/"
+cp "$scratch/wx-darwin-arm64" "$scratch/install.sh" "$scratch/uninstall.sh" "$scratch/checksums.txt" "$release_dir/"

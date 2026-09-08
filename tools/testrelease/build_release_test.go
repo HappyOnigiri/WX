@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -46,9 +47,16 @@ func TestReleaseBuildProducesWorkflowAssets(t *testing.T) {
 			publish = step
 		}
 	}
+	// 期待する集合そのものを書く。件数だけを見ると、YAML の読み取りが壊れて空になった場合を検出できない。
 	assets := strings.Fields(publish.With["assets"])
-	if len(assets) != 3 {
-		t.Fatalf("workflow assets=%v", assets)
+	want := []string{"install.sh", "uninstall.sh", "wx-darwin-arm64", "checksums.txt"}
+	names := make([]string, 0, len(assets))
+	for _, asset := range assets {
+		names = append(names, filepath.Base(asset))
+	}
+	slices.Sort(names)
+	if wanted := slices.Sorted(slices.Values(want)); !slices.Equal(names, wanted) {
+		t.Fatalf("workflow assets=%v, want %v", names, wanted)
 	}
 	for _, asset := range assets {
 		if _, err := os.Stat(filepath.Join(destination, filepath.Base(asset))); err != nil {

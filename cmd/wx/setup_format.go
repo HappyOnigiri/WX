@@ -180,6 +180,34 @@ func printSetupWarnings(w io.Writer, id string, action setup.Action, applied set
 	}
 }
 
+// setupLeftoverPrefix は --remove が消さなかった path を示す行頭で、uninstall.sh が読み取る唯一の目印である。
+// path には空白が入り得るため（`~/Library/Application Support/wx`）、読み手は 2 列目以降を行末まで取る。
+const setupLeftoverPrefix = "leftover"
+
+// printSetupRemoval は削除結果を項目ごとに 1 行で出し、消さなかった path を最後にまとめる。
+// 失敗は stderr に出し、成功した項目の行は stdout に残す。片付けの続きを利用者が判断できるようにするためである。
+func printSetupRemoval(out, errOut io.Writer, removal setup.Removal) {
+	for _, result := range removal.Results {
+		if result.Err != nil {
+			_, _ = fmt.Fprintf(errOut, "error: %s: %v\n", result.ID, result.Err)
+			continue
+		}
+		note := result.Note
+		if note == "" {
+			note = "nothing to remove"
+		}
+		_, _ = fmt.Fprintf(out, "%-14s %s\n", result.ID, note)
+	}
+	if len(removal.Leftovers) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(out, "")
+	_, _ = fmt.Fprintln(out, "wx kept these; they hold saved work and records:")
+	for _, path := range removal.Leftovers {
+		_, _ = fmt.Fprintf(out, "%-14s %s\n", setupLeftoverPrefix, path)
+	}
+}
+
 // setupPayload は --check --json の出力形状である。
 // state.JSONSchemaVersion は wx status / wx doctor の互換契約なので、ここには載せない。
 type setupPayload struct {
