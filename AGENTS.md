@@ -35,7 +35,6 @@ Go側に状態のenum型や遷移ガードを作らない。
 ## 開発
 
 - 編集途中の短い確認には、Go編集時の構造検査を集めた`make check-fast`と、対象を絞る`make test-focus PKG=<パッケージ> RUN=<正規表現>`を使う。
-  どちらも部分検証であり、最終判定はコミット時のpre-commit hookが走らせる`make ci`とする。
 - `core.hooksPath`のlocal設定はuserレベルのhook dispatcherを覆い隠すため設定しない。
 - 機械的に判定できる規約は`tools/check*`の検査として実装し、`make ci`へ接続する。
   このAGENTS.mdやコメントでの指示は、静的に判定できない規約に限った最終手段とする。
