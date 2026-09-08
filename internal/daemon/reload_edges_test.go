@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -147,9 +148,9 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 		t.Fatalf("missing registered repository was absent from diagnostics: %v", brokenArtifacts)
 	}
 	m.reconcileRegistry(ctx)
-	registration := m.registrationDiagnostics(ctx)
-	if invalid := registration["invalid"].([]map[string]string); len(invalid) == 0 {
-		t.Fatalf("missing registered workspace was absent from diagnostics: %v", registration)
+	registration := m.registrationFindings(ctx)
+	if len(registrationIssues(registration)) == 0 {
+		t.Fatalf("missing registered workspace was absent from diagnostics: %+v", registration)
 	}
 	blockedRoot := filepath.Join(home, "blocked-root")
 	if err := os.WriteFile(blockedRoot, []byte("not a directory"), 0o600); err != nil {
@@ -187,10 +188,8 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if status["daemon_version"] == "" || status["workspace_details"] == nil || status["session_details"] == nil || status["repository_details"] == nil || status["job_details"] == nil || status["snapshot_details"] == nil {
 		t.Fatalf("status detail fields are incomplete: %v", status)
 	}
-	doctor := m.Doctor(ctx)
-	checks := doctor["checks"].(map[string]any)
-	if _, ok := checks["hooks"]; !ok {
-		t.Fatalf("doctor checks=%v", checks)
+	if findings := doctorFindings(m.Doctor(ctx), diag.CheckReadinessHooks); len(findings) == 0 {
+		t.Fatalf("doctor findings=%v", m.Doctor(ctx).Findings)
 	}
 	if formatOptionalTime(time.Time{}) != "" || formatOptionalTime(time.Unix(1, 0)) == "" {
 		t.Fatal("optional time formatting is inconsistent")

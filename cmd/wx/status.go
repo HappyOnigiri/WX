@@ -69,9 +69,11 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 
 // runDoctor は汎用 RPC 表示処理と分ける。
 // socket に応答する daemon がなくてもローカルの事実を報告するが、接続済み daemon の要求失敗にはフォールバックしない。
+// 終了コードは診断結果が決め、引数不正だけを 2 として区別する。
 func runDoctor(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("doctor", pflag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print JSON")
+	verbose := fs.BoolP("verbose", "v", false, "show passing checks and extra diagnostics")
 	fs.Usage = func() { commandUsage(os.Stdout, "doctor") }
 	if code, done := finishFlagParse(fs, "doctor", args); done {
 		return code
@@ -90,31 +92,57 @@ func runDoctor(ctx context.Context, args []string) int {
 		ctx, cancel = context.WithTimeout(ctx, statusDisplayTimeout)
 		defer cancel()
 	}
-	var out map[string]any
-	if err := c.Call(ctx, "Doctor", struct{}{}, &out); err != nil {
+	// 診断は daemon の応答待ちと接続失敗時のローカル検査で待たされるため、結果が出るまで待機行を出す。
+	// --json の出力は機械が読むため、端末でも待機行を出さない。
+	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout) && !*jsonOut, "diagnosing")
+	defer waiting.finish()
+	var reply diag.Reply
+	if err := c.Call(ctx, "Doctor", struct{}{}, &reply); err != nil {
 		if !rpc.IsConnectError(err) {
+			waiting.finish()
 			reportRPCError(err)
 			return 1
 		}
-		out = map[string]any{
-			"schema_version":    state.JSONSchemaVersion,
-			"db_schema_version": state.SchemaVersion,
-			"checks":            diag.LocalChecks(ctx, err),
+		reply = diag.Reply{
+			SchemaVersion:   state.JSONSchemaVersion,
+			DBSchemaVersion: state.SchemaVersion,
+			Findings:        diag.LocalFindings(ctx, err),
 		}
-		data, _ := json.MarshalIndent(out, "", "  ")
-		if *jsonOut {
-			fmt.Println(string(data))
-		} else {
-			printDisplay(os.Stdout, out)
-		}
-		// ローカルの報告だけでは daemon の健全性を確認できないため、従来の失敗終了コードを保つ。
-		return 1
 	}
-	data, _ := json.MarshalIndent(out, "", "  ")
-	if *jsonOut {
+	reply.Findings = append(reply.Findings, staleDaemonFindings(reply)...)
+	waiting.finish()
+	printDoctor(reply, *jsonOut, *verbose)
+	return diag.ExitCode(reply)
+}
+
+// staleDaemonFindings は、findings を返せない古い daemon の応答を正常と読ませないための finding を返す。
+// この binary の CLI は checks map を解釈しないため、結果が無いことを未検査ではなく問題として報告する。
+func staleDaemonFindings(reply diag.Reply) []diag.Finding {
+	if len(reply.Findings) > 0 {
+		return nil
+	}
+	if reply.SchemaVersion >= diag.FindingsSchemaVersion {
+		return []diag.Finding{{
+			Check: diag.CheckDaemon, Severity: diag.SeverityProblem, Summary: "the daemon returned no diagnostics",
+			Cause: fmt.Sprintf("the daemon answers with JSON schema %d, which wx doctor can read, but its reply carried no check result at all",
+				reply.SchemaVersion),
+			Action: "check the daemon log for the failed reply, then run wx doctor again",
+		}}
+	}
+	return []diag.Finding{{
+		Check: diag.CheckDaemon, Severity: diag.SeverityProblem, Summary: "the daemon returned no diagnostics",
+		Cause: fmt.Sprintf("the daemon answers with JSON schema %d, and wx doctor needs schema %d or newer to read its results",
+			reply.SchemaVersion, diag.FindingsSchemaVersion),
+		Action: "run wx daemon restart so the daemon runs this wx binary, then run wx doctor again",
+	}}
+}
+
+// printDoctor は診断結果を出力する。--json は -v に左右されず全件を返す。
+func printDoctor(reply diag.Reply, jsonOut, verbose bool) {
+	if jsonOut {
+		data, _ := json.MarshalIndent(reply, "", "  ")
 		fmt.Println(string(data))
-	} else {
-		printDisplay(os.Stdout, out)
+		return
 	}
-	return 0
+	diag.Render(os.Stdout, reply, verbose)
 }

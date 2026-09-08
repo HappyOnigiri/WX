@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -72,10 +73,9 @@ func TestRetryRootGenerationRecoversWithoutRestart(t *testing.T) {
 	if _, _, err := manager.activeRoot(); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("activeRoot error=%v, want an ownership failure", err)
 	}
-	doctor := manager.Doctor(ctx)
-	checks := doctor["checks"].(map[string]any)
-	if got, _ := checks["worktree_root"].(string); !strings.Contains(got, "retries") {
-		t.Fatalf("doctor worktree_root=%q, want the failure to read as recoverable", got)
+	registration := doctorProblem(t, manager.Doctor(ctx), diag.CheckWorktreeRootRegistration)
+	if !strings.Contains(registration.Action, "retries") {
+		t.Fatalf("doctor worktree root registration action=%q, want the failure to read as recoverable", registration.Action)
 	}
 
 	manager.retryRootGeneration(ctx)

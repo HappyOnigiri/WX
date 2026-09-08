@@ -88,6 +88,24 @@ root世代登録が失敗するとallocationが`ErrOwnership`で落ち続ける�
 SQLiteを開けなくても`DegradedHandler`が`Status`・`Doctor`・`RequestStop`を受け付ける。
 この場合は状態変更RPCの予約がないため、`RequestStop`はidleゲートを通さない。
 
+## doctorの診断
+
+`wx doctor`は検査ごとに種別つきのfinding（`internal/diag`の`Finding`）を返し、表示側は文面から重大さを判定しない。
+種別は`problem`（利用者の対処が必要）・`unchecked`（前提の故障で実施できず）・`info`（対処不要の参考）・`ok`（正常確認）である。
+通常表示はproblemと、原因を表示していないuncheckedだけを「エラー内容・対象・原因・対処方法」の形で出し、問題がなければ`No errors found.`の1行にする。
+`-v`はinfo・okと`Details`も出し、`--json`は`-v`によらず全findingを返す。
+終了コードは、problemまたはuncheckedがあれば1、それ以外は0、引数不正は2とする。
+
+`unchecked`は`DependsOn`に原因の検査名を持ち、その検査のproblemを表示済みなら通常表示から省く。
+daemonへ接続できない場合とdegradedの場合は、store依存の検査（`diag.StoreDependentChecks`）をこの形で並べ、同じ故障を検査ごとに繰り返さない。
+`findings`を返せない古いdaemonの応答は正常と読ませず、CLIが`wx daemon restart`を促すproblemを足す。
+
+daemon接続なしで成立する検査は[`internal/diag`](../internal/diag/diag.go)に置く。
+storeを要する検査は[`doctor.go`](../internal/daemon/doctor.go)と[`doctor_recovery.go`](../internal/daemon/doctor_recovery.go)に置く。
+worktree rootのpath検査と登録検査は別のfindingとして両方保持し、登録状態でpath検査の結果を上書きしない。
+準備・保存・復元の失敗は、上位の処理名で言い換えず`jobs.error_message`・`error_detail_path`から具体的な失敗理由と詳細ログの場所まで引き継ぐ。
+原因が記録されていない場合は特定できていないことを明示し、推測を原因として表示しない。
+
 ## restart / stopのidleゲート
 
 明示的なrestart/stopとバイナリ差し替えの自動検知はpendingを立て、同じidleゲートへ合流する。

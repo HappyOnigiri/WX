@@ -62,6 +62,11 @@ type (
 		Detail      string `json:"detail,omitempty"`
 		SuspendedAt string `json:"suspended_at,omitempty"`
 		Action      string `json:"action,omitempty"`
+		// FailureCode 以降は停止の原因になった job から引き継ぐ失敗情報で、`wx clear` による停止では空になる。
+		// 上位の「準備に失敗」で止めず、失敗した操作そのものを報告するために持つ。
+		FailureCode    string `json:"failure_code,omitempty"`
+		FailureMessage string `json:"failure_message,omitempty"`
+		DetailPath     string `json:"detail_path,omitempty"`
 	}
 	StatusDiagnostics struct {
 		Workspaces   []WorkspaceDiagnostic  `json:"workspaces"`
@@ -329,9 +334,12 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 
 // StandbyReplenishmentDiagnostics は待機用 worktree の補充を停止中の workspace を返す。
 // 停止は `replenish_suspensions` が唯一の権威なので、隔離 slot の数は判定にも表示にも使わない。
+// detail は停止理由ごとに意味が違い、準備失敗では job ID なので、その job の失敗情報も FAILED に限って併せて読む。再試行待ちの error_code は失敗の確定ではない。
 func (s *Store) StandbyReplenishmentDiagnostics(ctx context.Context) ([]StandbyReplenishmentDiagnostic, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,rs.reason,rs.detail,rs.suspended_at
-		FROM replenish_suspensions rs JOIN workspaces w ON w.id=rs.workspace_id ORDER BY w.root_path`)
+	rows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,rs.reason,rs.detail,rs.suspended_at,
+		COALESCE(j.error_code,''),COALESCE(j.error_message,''),COALESCE(j.error_detail_path,'')
+		FROM replenish_suspensions rs JOIN workspaces w ON w.id=rs.workspace_id
+		LEFT JOIN jobs j ON j.id=rs.detail AND j.state='FAILED' AND rs.reason=? ORDER BY w.root_path`, SuspendReplenishReasonStandbyFailure)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +347,8 @@ func (s *Store) StandbyReplenishmentDiagnostics(ctx context.Context) ([]StandbyR
 	out := []StandbyReplenishmentDiagnostic{}
 	for rows.Next() {
 		var item StandbyReplenishmentDiagnostic
-		if err := rows.Scan(&item.WorkspaceID, &item.Root, &item.Generation, &item.Reason, &item.Detail, &item.SuspendedAt); err != nil {
+		if err := rows.Scan(&item.WorkspaceID, &item.Root, &item.Generation, &item.Reason, &item.Detail, &item.SuspendedAt,
+			&item.FailureCode, &item.FailureMessage, &item.DetailPath); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

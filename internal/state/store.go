@@ -36,15 +36,17 @@ type Store struct {
 	backupStepBarrier func()
 }
 
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // ErrPreviousWorktreeLayout は、wx が意図的に migration path を持たない旧 worktree layout の state database を示す。
 var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree layout")
 
 // JSONSchemaVersion は `wx status --json` と `wx doctor --json` の出力形状の互換契約であり、SQLite migration 数の SchemaVersion とは独立である。
-// scripted consumer が観測する形状を変える場合だけ上げる。2〜4 は restart・stop・daemon unavailable、5〜7 は root・workspace・quarantine の診断、8 は回復案内を追加した。
-// 9 は measured_at、10 は補充停止の理由、11 は `wx slots` への置き換え、12〜13 は unmanaged・shared/exclusive、14 は policy、15 は resume の integrity、16 は method Ping の追加である。
-const JSONSchemaVersion = 16
+// scripted consumer が観測する形状を変える場合だけ上げる。2〜8 は restart・stop・daemon unavailable と root・workspace・quarantine の診断、回復案内を加えた。
+// 9〜11 は measured_at・補充停止の理由・`wx slots` への置き換え、12〜16 は unmanaged・shared/exclusive・policy・resume の integrity・method Ping を加えた。
+// 17 は `wx doctor` の checks map を、種別・原因・対処を持つ findings 配列へ置き換え、`wx status --json` の standby_replenishment に失敗情報を加えた。
+// commentlint:allow-long -- schema 版ごとの変更点を辿れるようにするため
+const JSONSchemaVersion = 17
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

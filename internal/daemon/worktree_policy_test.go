@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -190,14 +191,19 @@ func TestStandbyReplenishmentStopsAfterAPreparationFailure(t *testing.T) {
 	if !strings.Contains(blocked[0].Action, "wx retry-standby") {
 		t.Fatalf("standby recovery action=%q", blocked[0].Action)
 	}
-	doctor := m.Doctor(ctx)
-	checks, ok := doctor["checks"].(map[string]any)
-	if !ok {
-		t.Fatalf("doctor checks=%v", doctor["checks"])
+	// 「準備に失敗」で止めず、記録した失敗理由まで原因に引き継ぐ。
+	suspension := doctorProblem(t, m.Doctor(ctx), diag.CheckStandbyReplenishment)
+	if !strings.Contains(suspension.Cause, prepare.ID) || !strings.Contains(suspension.Cause, "prepare failed") {
+		t.Fatalf("doctor standby recovery cause=%q", suspension.Cause)
 	}
-	diagnostic, ok := checks["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic)
-	if !ok || len(diagnostic) != 1 || diagnostic[0].Reason != state.SuspendReplenishReasonStandbyFailure {
-		t.Fatalf("doctor standby recovery diagnostics=%v", checks["standby_replenishment"])
+	if !strings.Contains(suspension.Action, "wx retry-standby") || suspension.Target != string(w.Root) {
+		t.Fatalf("doctor standby recovery finding=%+v", suspension)
+	}
+	// 停止中の検査に、同時に「停止していない」という正常確認を並べない。
+	for _, finding := range doctorFindings(m.Doctor(ctx), diag.CheckStandbyReplenishment) {
+		if finding.Severity == diag.SeverityOK {
+			t.Fatalf("standby findings claimed replenishment is not stopped=%+v", finding)
+		}
 	}
 	retry, err := m.RetryStandby(ctx, string(w.Root))
 	if err != nil {
@@ -282,12 +288,10 @@ func TestStandbySuspensionIsHiddenWithoutReplenishment(t *testing.T) {
 	if blocked, ok := status["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic); !ok || len(blocked) != 0 {
 		t.Fatalf("standby diagnostics for a workspace without replenishment=%v", status["standby_replenishment"])
 	}
-	checks, ok := m.Doctor(ctx)["checks"].(map[string]any)
-	if !ok {
-		t.Fatalf("doctor checks=%v", m.Doctor(ctx)["checks"])
-	}
-	if diagnostic, ok := checks["standby_replenishment"].([]state.StandbyReplenishmentDiagnostic); !ok || len(diagnostic) != 0 {
-		t.Fatalf("doctor standby diagnostics for a workspace without replenishment=%v", checks["standby_replenishment"])
+	for _, finding := range doctorFindings(m.Doctor(ctx), diag.CheckStandbyReplenishment) {
+		if finding.Severity != diag.SeverityOK {
+			t.Fatalf("doctor standby finding for a workspace without replenishment=%+v", finding)
+		}
 	}
 	if _, err := m.RetryStandby(ctx, string(w.Root)); err == nil {
 		t.Fatal("retry-standby accepted a workspace without replenishment")

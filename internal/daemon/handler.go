@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -25,9 +26,10 @@ type DegradedHandler struct {
 // 応答を書き終えるまで SIGTERM を遅らせる。listener の終了で RPC 接続が破棄されるためである。
 const degradedStopDelay = 100 * time.Millisecond
 
-func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMessage) (any, error) {
+func (h DegradedHandler) Handle(ctx context.Context, method string, _ json.RawMessage) (any, error) {
+	previousLayout := errors.Is(h.OpenError, state.ErrPreviousWorktreeLayout)
 	message := fmt.Sprintf("SQLite state is unavailable: %v", h.OpenError)
-	if !errors.Is(h.OpenError, state.ErrPreviousWorktreeLayout) {
+	if !previousLayout {
 		message += fmt.Sprintf("; restore a verified backup from %s.backups or preserve the database for wx doctor", h.DatabasePath)
 	}
 	switch method {
@@ -37,7 +39,10 @@ func (h DegradedHandler) Handle(_ context.Context, method string, _ json.RawMess
 	case "Status":
 		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "protocol_version": 1, "degraded": true, "database_path": h.DatabasePath, "error": message}, nil
 	case "Doctor":
-		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "degraded": true, "checks": map[string]any{"sqlite": message}}, nil
+		return diag.Reply{
+			SchemaVersion: state.JSONSchemaVersion, DBSchemaVersion: state.SchemaVersion, Degraded: true,
+			Findings: diag.DegradedFindings(ctx, h.DatabasePath, h.OpenError, previousLayout),
+		}, nil
 	case "RequestStop":
 		// Degraded mode は状態を変更せず予約もないため、manager のアイドルゲートを通さない。
 		// ここを拒否すると、調査対象の DB を開いたデーモンを停止する手段が失われる。

@@ -311,3 +311,37 @@ func TestExpiredWorkspaceSnapshotWithoutRepositorySnapshots(t *testing.T) {
 		t.Fatalf("expired archive remains=%v err=%v", ids, err)
 	}
 }
+
+// 作成途中と期限切れは復元の材料ではないため、実体を検査する doctor へ渡さない。
+func TestActiveWorkspaceSnapshotsExcludesPendingAndExpiredArchives(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	at := time.Now()
+	for _, snapshot := range []struct {
+		id, status string
+		expires    time.Time
+	}{
+		{id: "active", status: "ARCHIVED", expires: at.Add(time.Hour)},
+		{id: "pending", status: "PENDING", expires: at.Add(time.Hour)},
+		{id: "expired", status: "ARCHIVED", expires: at.Add(-time.Hour)},
+	} {
+		createSessionSlot(t, store, snapshot.id, "ARCHIVED", "SNAPSHOTTED")
+		if err := store.SaveWorkspaceSnapshot(ctx, WorkspaceSnapshot{
+			SessionID: snapshot.id, RootID: testRootID, RelPath: filepath.Join("_recovery", snapshot.id+".tar"),
+			SHA256: strings.Repeat("a", 64), Status: snapshot.status, CreatedAt: now(), ExpiresAt: FormatTime(snapshot.expires),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	active, err := store.ActiveWorkspaceSnapshots(ctx, FormatTime(at))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 1 || active[0].SessionID != "active" {
+		t.Fatalf("active workspace snapshots=%+v", active)
+	}
+	if active[0].ArchivePath != filepath.Join(testRootPath, "_recovery", "active.tar") {
+		t.Fatalf("archive path=%q", active[0].ArchivePath)
+	}
+}

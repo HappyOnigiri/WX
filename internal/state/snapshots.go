@@ -13,7 +13,9 @@ type Snapshot struct {
 
 type RecoveryRefExpectation struct {
 	Ref, OID, SessionID, SessionState string
-	InFlight                          bool
+	// ExpiresAt は ref を支える snapshot の期限で、期限切れの ref を欠損・不一致の問題から外す判断に使う。
+	ExpiresAt string
+	InFlight  bool
 }
 
 // WorkspaceSnapshot は Slot と同様に bundle archive を位置付ける。RootID/RelPath が authority で、ArchivePath は派生値である。
@@ -86,6 +88,29 @@ func (s *Store) WorkspaceSnapshot(ctx context.Context, sessionID string) (Worksp
 	return x, err == nil, err
 }
 
+// ActiveWorkspaceSnapshots は復元に使える見込みの workspace snapshot を返す。
+// 作成途中（status が ARCHIVED 以外）と期限切れは復元の材料ではないため、実体を検査する呼び出し側の負荷も含めてここで外す。
+func (s *Store) ActiveWorkspaceSnapshots(ctx context.Context, at string) ([]WorkspaceSnapshot, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT ws.session_id,ws.root_id,rt.path,ws.rel_path,ws.sha256,ws.status,ws.created_at,ws.expires_at
+		FROM workspace_snapshots ws JOIN roots rt ON rt.id=ws.root_id
+		WHERE ws.status='ARCHIVED' AND ws.expires_at>? ORDER BY ws.session_id`, at)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []WorkspaceSnapshot{}
+	for rows.Next() {
+		var x WorkspaceSnapshot
+		var rootPath string
+		if err := rows.Scan(&x.SessionID, &x.RootID, &rootPath, &x.RelPath, &x.SHA256, &x.Status, &x.CreatedAt, &x.ExpiresAt); err != nil {
+			return nil, err
+		}
+		x.ArchivePath = filepath.Join(rootPath, x.RelPath)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) MarkArchived(ctx context.Context, sessionID, slotID, expiry string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -153,17 +178,17 @@ func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string
 			SELECT session_id FROM jobs
 			WHERE kind='SNAPSHOT' AND (state='PENDING' OR (state='RUNNING' AND lease_expires_at>?))
 		)
-		SELECT sn.head_recovery_ref,sn.head_oid,sn.session_id,se.state,
+		SELECT sn.head_recovery_ref,sn.head_oid,sn.session_id,se.state,sn.expires_at,
 		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM inflight i WHERE i.session_id=sn.session_id) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
 		UNION ALL
-		SELECT sn.worktree_recovery_ref,sn.worktree_snapshot_oid,sn.session_id,se.state,
+		SELECT sn.worktree_recovery_ref,sn.worktree_snapshot_oid,sn.session_id,se.state,sn.expires_at,
 		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM inflight i WHERE i.session_id=sn.session_id) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED'
 		UNION ALL
-		SELECT sn.index_recovery_ref,sn.index_tree_oid,sn.session_id,se.state,
+		SELECT sn.index_recovery_ref,sn.index_tree_oid,sn.session_id,se.state,sn.expires_at,
 		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM inflight i WHERE i.session_id=sn.session_id) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED' AND sn.index_recovery_ref<>''
@@ -176,7 +201,7 @@ func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string
 	for rows.Next() {
 		var ref RecoveryRefExpectation
 		var inFlight int
-		if err := rows.Scan(&ref.Ref, &ref.OID, &ref.SessionID, &ref.SessionState, &inFlight); err != nil {
+		if err := rows.Scan(&ref.Ref, &ref.OID, &ref.SessionID, &ref.SessionState, &ref.ExpiresAt, &inFlight); err != nil {
 			return nil, err
 		}
 		ref.InFlight = inFlight != 0

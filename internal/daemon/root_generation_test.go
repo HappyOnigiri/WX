@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -172,10 +173,9 @@ func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
 	if !strings.Contains(err.Error(), "inode identity") {
 		t.Fatalf("activeRoot error %q does not carry the cause", err)
 	}
-	doctor := manager.Doctor(ctx)
-	checks := doctor["checks"].(map[string]any)
-	if got, _ := checks["worktree_root"].(string); got == "ok" || got == "" {
-		t.Fatalf("doctor worktree_root=%q, want the registration failure", got)
+	registration := doctorProblem(t, manager.Doctor(ctx), diag.CheckWorktreeRootRegistration)
+	if registration.Cause == "" {
+		t.Fatalf("doctor worktree root registration=%+v, want the registration failure", registration)
 	}
 	status, err := manager.Status(ctx)
 	if err != nil {
