@@ -208,7 +208,7 @@ SubAgent.
 The lease does NOT follow the process that asked for it: wx new sends no
 heartbeat, so the workspace is not reclaimed when the caller exits. It is
 returned when the wx session that ran wx new ends, when wx release <id> is
-run, or when lease.ttl (72h by default) has passed, whichever comes first.
+run, or when lease.ttl has passed, whichever comes first.
 Without one of the first two, the workspace stays leased until that deadline.
 
 Expiry saves before it returns the lease, and nothing edits the worktree

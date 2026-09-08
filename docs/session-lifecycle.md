@@ -56,9 +56,9 @@
 1. 親sessionの終了。`WX_SESSION_ID` / `WX_SESSION_TOKEN`を持つ環境からの要求は`sessions.lease_owner_session_id`へ親を記録し、親が使用中でなくなると`Store.OrphanedChildLeases`が拾う。
    resume chain専用の`parent_session_id`は流用しない。`internal/state/standby.go`が「親がEXPIRED」を条件にしているため、流用すると子貸出のstandby補充成功記録が親の終了まで入らない。
 2. `wx release <id>`の明示指定。session tokenを持たない経路なので、生きたclient / agentを持つ貸出は拒否する。
-3. 設定`lease.ttl`（既定72h）の経過。`Store.ExpiredLeaseCandidates`が拾う。
+3. 設定`lease.ttl`の経過。`Store.ExpiredLeaseCandidates`が拾う。
 
-期限が来ても保存されてから返却され、返却後も`retention.ended_worktree`（既定168h）の間は実体が残り`wx shell --resume <id>`で復元できる。
+期限が来ても保存されてから返却され、返却後も`retention.ended_worktree`の間は実体が残り`wx shell --resume <id>`で復元できる。
 ただしsnapshot後の編集は保存されない。
 `Manager.snapshotSession`の`processAlive(AgentPID)`ガードは`path`貸出では効かないため、期限到来時にSubAgentがまだ編集中のworktreeのsnapshotを取ることは起こり得る。
 `wx new`の主返却契機は親sessionの終了に置き、終わったら`wx release`で返す。
