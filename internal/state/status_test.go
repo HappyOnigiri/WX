@@ -288,3 +288,50 @@ func TestStandbyReplenishmentDiagnosticsCarryTheFailedJobCause(t *testing.T) {
 		t.Fatalf("standby diagnostics after wx clear=%+v", diagnostics)
 	}
 }
+
+// 再試行待ちの error_code と成功した job は失敗の確定ではないため、失敗情報として引き継がない。
+func TestStandbyReplenishmentDiagnosticsIgnoreJobsThatHaveNotFailed(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	createSessionSlot(t, store, "standby", "STARTING", "PREPARING")
+	job, err := store.CreateJob(ctx, "PREPARE", "workspace", "standby", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SuspendReplenish(ctx, "workspace", SuspendReplenishReasonStandbyFailure, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ClaimJob(ctx, job.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetryJob(ctx, job.ID, "test", 0, "DEPENDENCY_PENDING"); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := store.StandbyReplenishmentDiagnostics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 1 {
+		t.Fatalf("standby diagnostics=%+v", diagnostics)
+	}
+	if diagnostics[0].FailureCode != "" || diagnostics[0].FailureMessage != "" || diagnostics[0].DetailPath != "" {
+		t.Fatalf("standby diagnostic while retrying=%+v", diagnostics[0])
+	}
+	if _, err := store.ClaimJob(ctx, job.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, job.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err = store.StandbyReplenishmentDiagnostics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 1 {
+		t.Fatalf("standby diagnostics=%+v", diagnostics)
+	}
+	if diagnostics[0].FailureCode != "" || diagnostics[0].FailureMessage != "" || diagnostics[0].DetailPath != "" {
+		t.Fatalf("standby diagnostic after success=%+v", diagnostics[0])
+	}
+}
