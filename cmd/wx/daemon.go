@@ -300,7 +300,6 @@ func stopDaemon(ctx context.Context) int {
 }
 
 // restartDaemon は実行中の daemon 自身に再起動を依頼する。
-// kickstart は実行中 RPC を切断して不確定な idempotency reservation を残し得るため、daemon の gate が idle まで待つ。
 func restartDaemon(ctx context.Context) int {
 	socket, err := config.SocketPath()
 	if err != nil {
@@ -309,51 +308,52 @@ func restartDaemon(ctx context.Context) int {
 	}
 	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "restarting daemon")
 	defer waiting.finish()
-	reply, err := requestDaemonLifecycle(ctx, "RequestRestart")
+	guidance, err := restartAndWaitForDaemon(ctx, socket)
 	if err != nil {
-		if !rpc.IsConnectError(err) {
-			waiting.finish()
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
+		waiting.finish()
+		fmt.Fprintln(os.Stderr, "error:", err)
+		for _, line := range guidance {
+			fmt.Fprintln(os.Stderr, line)
 		}
-		// socket に応答がなく保護すべき処理もないため、daemon の再起動は launchd に任せる。
-		if err := launchd.Kickstart(ctx); err != nil {
-			waiting.finish()
-			fmt.Fprintln(os.Stderr, "error:", err)
-			if errors.Is(err, launchd.ErrServiceMissing) {
-				fmt.Fprintln(os.Stderr, "run wx daemon install to register the LaunchAgent first")
-			}
-			return 1
-		}
-		if !waitForSocket(ctx, socket, true) {
-			waiting.finish()
-			fmt.Fprintf(os.Stderr, "error: launchd was asked to start %s but no daemon answered %s within %s\n", launchd.Label, socket, daemonWaitTimeout)
-			return 1
-		}
-		waiting.finish()
-		fmt.Println("restarted", launchd.Label)
-		return 0
-	}
-	if reason := lifecycleConflict(reply, "restart"); reason != "" {
-		waiting.finish()
-		fmt.Fprintln(os.Stderr, "error:", reason)
-		return 1
-	}
-	// 手動起動の daemon は自分自身を kickstart しないため、待っても置き換わらない。
-	// 旧 daemon では項目が欠落するので、欠落を「未管理」と解釈して再起動を拒否しない。
-	if managed, ok := reply["launchd_managed"].(bool); ok && !managed {
-		waiting.finish()
-		fmt.Fprintf(os.Stderr, "error: the daemon answering %s is not managed by launchd, so it cannot restart itself\n", socket)
-		fmt.Fprintln(os.Stderr, "stop it with wx daemon stop and start it again with wx daemon start")
-		return 1
-	}
-	if !waitForDaemonReplacement(ctx, socket, replyInt(reply, "pid")) {
-		waiting.finish()
-		fmt.Fprintf(os.Stderr, "error: %s accepted the restart request but was not replaced within %s\n", launchd.Label, daemonWaitTimeout)
-		fmt.Fprintln(os.Stderr, gateWaitReason(reply))
 		return 1
 	}
 	waiting.finish()
 	fmt.Println("restarted", launchd.Label)
 	return 0
+}
+
+// restartAndWaitForDaemon は実行中の daemon 自身に再起動を依頼し、別 process へ置き換わるまで待つ。
+// kickstart は実行中 RPC を切断して不確定な idempotency reservation を残し得るため、daemon の gate が idle まで待つ。
+// guidance は失敗の対処を示す行で、error が nil のときは空である。呼び出し側は error に続けて出す。
+func restartAndWaitForDaemon(ctx context.Context, socket string) ([]string, error) {
+	reply, err := requestDaemonLifecycle(ctx, "RequestRestart")
+	if err != nil {
+		if !rpc.IsConnectError(err) {
+			return nil, err
+		}
+		// socket に応答がなく保護すべき処理もないため、daemon の再起動は launchd に任せる。
+		if err := launchd.Kickstart(ctx); err != nil {
+			if errors.Is(err, launchd.ErrServiceMissing) {
+				return []string{"run wx daemon install to register the LaunchAgent first"}, err
+			}
+			return nil, err
+		}
+		if !waitForSocket(ctx, socket, true) {
+			return nil, fmt.Errorf("launchd was asked to start %s but no daemon answered %s within %s", launchd.Label, socket, daemonWaitTimeout)
+		}
+		return nil, nil
+	}
+	if reason := lifecycleConflict(reply, "restart"); reason != "" {
+		return nil, errors.New(reason)
+	}
+	// 手動起動の daemon は自分自身を kickstart しないため、待っても置き換わらない。
+	// 旧 daemon では項目が欠落するので、欠落を「未管理」と解釈して再起動を拒否しない。
+	if managed, ok := reply["launchd_managed"].(bool); ok && !managed {
+		guidance := []string{"stop it with wx daemon stop and start it again with wx daemon start"}
+		return guidance, fmt.Errorf("the daemon answering %s is not managed by launchd, so it cannot restart itself", socket)
+	}
+	if !waitForDaemonReplacement(ctx, socket, replyInt(reply, "pid")) {
+		return []string{gateWaitReason(reply)}, fmt.Errorf("%s accepted the restart request but was not replaced within %s", launchd.Label, daemonWaitTimeout)
+	}
+	return nil, nil
 }
