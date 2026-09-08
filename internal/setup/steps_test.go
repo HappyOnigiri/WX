@@ -161,10 +161,15 @@ func TestLaunchAgentReportsPermissionsAndStaleContent(t *testing.T) {
 func TestDaemonUsesAStatusRequestNotJustTheSocket(t *testing.T) {
 	fixture := newSetupFixture(t)
 	ctx := context.Background()
-	if collectDaemon(ctx, fixture.options()).State != StateAbsent {
+	stopped := collectDaemon(ctx, fixture.options())
+	if stopped.State != StateAbsent {
 		t.Fatal("a stopped daemon was not reported absent")
 	}
-	if _, err := Apply(ctx, fixture.options(), Step{ID: stepDaemon}, ActionInstall, ""); err != nil {
+	// 未稼働の daemon には設定を書く install ではなく start を出す。
+	if len(stopped.Options) != 2 || stopped.Options[0] != ActionStart || stopped.Default != ActionStart {
+		t.Fatalf("a stopped daemon=%v,%s", stopped.Options, stopped.Default)
+	}
+	if _, err := Apply(ctx, fixture.options(), Step{ID: stepDaemon}, ActionStart, ""); err != nil {
 		t.Fatal(err)
 	}
 	if collectDaemon(ctx, fixture.options()).State != StatePresent {
@@ -178,7 +183,7 @@ func TestDaemonUsesAStatusRequestNotJustTheSocket(t *testing.T) {
 	if step := collectDaemon(ctx, Options{}); step.State != StateUnknown {
 		t.Fatalf("a daemon without an adapter=%+v", step)
 	}
-	if _, err := Apply(ctx, Options{}, Step{ID: stepDaemon}, ActionInstall, ""); err == nil {
+	if _, err := Apply(ctx, Options{}, Step{ID: stepDaemon}, ActionStart, ""); err == nil {
 		t.Fatal("starting the daemon without an adapter succeeded")
 	}
 }

@@ -315,14 +315,17 @@ func collectDaemon(ctx context.Context, options Options) Step {
 	case responding:
 		step.State = StatePresent
 	default:
+		// 未稼働のときは設定を書く install ではなく start を出す。適用は launchd への起動依頼だけである。
 		step.State = StateAbsent
+		step.Options, step.Default = []Action{ActionStart, ActionSkip}, ActionStart
+		return step
 	}
 	step.Options, step.Default = stepOptions(step.State, daemonActions)
 	return step
 }
 
-// daemonActions は daemon の停止を setup の対象にしない。停止は wx daemon stop の仕事である。
-var daemonActions = []Action{ActionInstall, ActionUpdate, ActionKeep, ActionSkip}
+// daemonActions は稼働を確認できた状態にだけ使う。daemon の停止は setup の対象にせず、wx daemon stop の仕事とする。
+var daemonActions = []Action{ActionUpdate, ActionKeep}
 
 func applyDaemon(ctx context.Context, options Options, _ Action) error {
 	if options.StartDaemon == nil {

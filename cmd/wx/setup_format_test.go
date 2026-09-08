@@ -55,10 +55,10 @@ func TestSetupActionDescriptionsNameWhatChanges(t *testing.T) {
 	// daemon は設定を書かないので、書き込みの文型を当てない。
 	daemon := setup.Step{ID: "daemon", Detail: "wx daemon answers the local socket", State: setup.StateAbsent}
 	for action, want := range map[setup.Action]string{
-		setup.ActionInstall: "start the wx daemon",
-		setup.ActionUpdate:  "start the wx daemon",
-		setup.ActionKeep:    "leave the running daemon as it is",
-		setup.ActionSkip:    "do nothing now",
+		setup.ActionStart:  "start the wx daemon",
+		setup.ActionUpdate: "start the wx daemon",
+		setup.ActionKeep:   "leave the running daemon as it is",
+		setup.ActionSkip:   "do nothing now",
 	} {
 		got := setupActionDescription(daemon, action)
 		if !strings.Contains(got, want) {
