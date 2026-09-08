@@ -18,7 +18,11 @@ import (
 
 func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.T) {
 	requireDaemonIntegration(t)
-	root := t.TempDir()
+	// Manager の設定と workspace の入力を実運用と同じ canonical path 契約に揃える。
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	workspaceRoot := filepath.Join(root, "multi")
 	service := filepath.Join(workspaceRoot, "service")
 	web := filepath.Join(workspaceRoot, "web")
@@ -29,6 +33,9 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Pool.WarmPerWorkspace = 0
 	cfg.Readiness.Timeout.Duration = 10 * time.Second
+	if err := config.NormalizePaths(&cfg); err != nil {
+		t.Fatal(err)
+	}
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
