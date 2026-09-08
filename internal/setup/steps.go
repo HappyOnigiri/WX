@@ -121,9 +121,8 @@ func applyWorktreeRoot(ctx context.Context, options Options, step Step, _ Action
 	if err := config.Validate(&effective); err != nil {
 		return err
 	}
-	if err := config.Save(raw); err != nil {
-		return err
-	}
+	// ディレクトリの準備を先に済ませる。Validate は種別も作成可否も見ないため、
+	// 既存の通常ファイルを指す入力でも保存だけが成功し、daemon の次回起動まで壊れたままになる。
 	expanded, err := config.ExpandHome(value)
 	if err != nil {
 		return err
@@ -132,6 +131,9 @@ func applyWorktreeRoot(ctx context.Context, options Options, step Step, _ Action
 		return err
 	}
 	if err := os.Chmod(expanded, 0o700); err != nil {
+		return err
+	}
+	if err := config.Save(raw); err != nil {
 		return err
 	}
 	// 起動済みの daemon には保存済み設定を反映する。未起動は正常なので致命的に扱わない。

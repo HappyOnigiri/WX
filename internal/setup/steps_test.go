@@ -83,6 +83,21 @@ func TestWorktreeRootAcceptsAnEnteredPath(t *testing.T) {
 	}
 }
 
+// TestWorktreeRootKeepsTheConfigWhenTheDirectoryCannotBePrepared は、使えないパスが
+// config.yaml へ残らないことを確認する。残ると daemon の次回起動も root の準備で失敗する。
+func TestWorktreeRootKeepsTheConfigWhenTheDirectoryCannotBePrepared(t *testing.T) {
+	fixture := newSetupFixture(t)
+	chosen := filepath.Join(fixture.home, "regular-file")
+	writeSetupFile(t, chosen, "not a directory\n")
+	before := collectWorktreeRoot().Current
+	if err := Apply(context.Background(), fixture.options(), collectWorktreeRoot(), ActionInstall, chosen); err == nil {
+		t.Fatal("a path that is a regular file was accepted")
+	}
+	if got := collectWorktreeRoot().Current; got != before {
+		t.Fatalf("config.yaml holds the unusable path %q", got)
+	}
+}
+
 func TestLaunchAgentReportsPermissionsAndStaleContent(t *testing.T) {
 	fixture := newSetupFixture(t)
 	options := fixture.options()
