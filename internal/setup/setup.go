@@ -24,8 +24,9 @@ const (
 	// ActionDefault と ActionManual は値の決め方を表す。項目の状態から導かれる操作ではなく、値入力を伴う項目の尋ね方としてだけ使う。
 	ActionDefault Action = "default"
 	ActionManual  Action = "manual"
-	// ActionStart は daemon の起動を表す。設定を書かない操作なので install と分ける。
-	ActionStart Action = "start"
+	// ActionStart と ActionRestart は daemon の起動と入れ替えを表す。設定を書かない操作なので install・update と分ける。
+	ActionStart   Action = "start"
+	ActionRestart Action = "restart"
 )
 
 // State は 1 つの項目の現在の状態である。
@@ -36,7 +37,7 @@ const (
 	StateAbsent State = "absent"
 	// StatePresent は期待どおりに設定済みであることを示す。
 	StatePresent State = "present"
-	// StateDivergent は設定はあるが期待と異なることを示す。update を選べる唯一の状態である。
+	// StateDivergent は設定はあるが期待と異なることを示す。update・restart を選べる唯一の状態である。
 	StateDivergent State = "divergent"
 	// StateUnknown は読めない・解決できないなどで判定できないことを示す。操作は提示せず理由だけを見せる。
 	StateUnknown State = "unknown"
@@ -64,7 +65,9 @@ type Options struct {
 	InstallLaunchAgent   func(context.Context) error
 	UninstallLaunchAgent func(context.Context) error
 	StartDaemon          func(context.Context) error
-	ReloadConfig         func(context.Context) error
+	// RestartDaemon は応答するが壊れている daemon を別 process へ入れ替える。起動依頼では直らないため Start とは分ける。
+	RestartDaemon func(context.Context) error
+	ReloadConfig  func(context.Context) error
 	// DaemonStatus は daemon へ Status を 1 回送る。responding は応答があったか、error は応答した daemon が壊れていることを示す。
 	DaemonStatus func(context.Context) (bool, error)
 }
@@ -137,11 +140,15 @@ func Pending(steps []Step) bool {
 	return false
 }
 
-// Divergent は update を選べる項目だけを返す。wx setup --update が提示する対象である。
+// Divergent は divergent のうち直す操作を持つ項目だけを返す。wx setup --update が提示する対象である。
+// daemon は設定を書き換えないため update ではなく restart を持つ。
 func Divergent(steps []Step) []Step {
 	var out []Step
 	for _, step := range steps {
-		if step.State == StateDivergent && slices.Contains(step.Options, ActionUpdate) {
+		if step.State != StateDivergent {
+			continue
+		}
+		if slices.Contains(step.Options, ActionUpdate) || slices.Contains(step.Options, ActionRestart) {
 			out = append(out, step)
 		}
 	}

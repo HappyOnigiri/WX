@@ -104,8 +104,8 @@ func setupActionDescription(step setup.Step, action setup.Action) string {
 		return "remove what wx manages from " + target
 	case setup.ActionSkip:
 		return "do nothing now; wx setup can be run again later"
-	// start は daemon だけの操作で、文言は setupDaemonActionDescription が先に返す。
-	case setup.ActionStart:
+	// start と restart は daemon だけの操作で、文言は setupDaemonActionDescription が先に返す。
+	case setup.ActionStart, setup.ActionRestart:
 		return ""
 	case setup.ActionDefault:
 		return "write " + summarizeSetupChange(step) + " to " + target
@@ -121,12 +121,14 @@ func setupActionDescription(step setup.Step, action setup.Action) string {
 // 起動は launchd.Start（-k なしの kickstart）なので、稼働中の daemon は終了させない。
 func setupDaemonActionDescription(action setup.Action) string {
 	switch action {
-	case setup.ActionStart, setup.ActionUpdate:
-		return "start the wx daemon if it is not running, then wait for the local socket to answer"
+	case setup.ActionStart:
+		return "start the wx daemon and wait for the local socket to answer"
+	case setup.ActionRestart:
+		return "ask the daemon to restart once it is idle, then wait for the replacement to answer"
 	case setup.ActionKeep:
 		return "leave the running daemon as it is"
-	// install と remove は daemon に出ず、default と manual は値の入力を伴う項目だけのものである。
-	case setup.ActionInstall, setup.ActionRemove, setup.ActionSkip, setup.ActionDefault, setup.ActionManual:
+	// install・update・remove は daemon に出ず、default と manual は値の入力を伴う項目だけのものである。
+	case setup.ActionInstall, setup.ActionUpdate, setup.ActionRemove, setup.ActionSkip, setup.ActionDefault, setup.ActionManual:
 		return ""
 	default:
 		return ""

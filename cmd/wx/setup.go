@@ -80,12 +80,28 @@ func setupOptions() setup.Options {
 			return launchd.Install(ctx, binary, logPath)
 		},
 		UninstallLaunchAgent: launchd.Uninstall,
+		// daemon の起動と入れ替えは待ち時間が長いので、TUI を閉じた後の stdout に待機行を出す。
 		StartDaemon: func(ctx context.Context) error {
 			socket, err := config.SocketPath()
 			if err != nil {
 				return err
 			}
+			waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "starting daemon")
+			defer waiting.finish()
 			return startAndWaitForDaemon(ctx, socket)
+		},
+		RestartDaemon: func(ctx context.Context) error {
+			socket, err := config.SocketPath()
+			if err != nil {
+				return err
+			}
+			waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "restarting daemon")
+			defer waiting.finish()
+			guidance, err := restartAndWaitForDaemon(ctx, socket)
+			if err != nil && len(guidance) > 0 {
+				return fmt.Errorf("%w; %s", err, strings.Join(guidance, "; "))
+			}
+			return err
 		},
 		// daemon 未待受は正常なので接続確立の失敗だけを黙って呑む。
 		// 接続後の拒否（参照中の root と重なる変更など）は setup 側へ返し、反映されていないことを利用者へ伝える。

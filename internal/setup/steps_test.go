@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -176,9 +177,23 @@ func TestDaemonUsesAStatusRequestNotJustTheSocket(t *testing.T) {
 		t.Fatal("a running daemon was not reported present")
 	}
 	// 応答はあるが要求が通らない daemon は「いるが壊れている」ので divergent とする。
+	// 起動依頼では直らないため、選択肢は update ではなく restart にする。
 	broken := Options{DaemonStatus: func(context.Context) (bool, error) { return false, errors.New("damaged") }}
-	if step := collectDaemon(ctx, broken); step.State != StateDivergent {
+	step := collectDaemon(ctx, broken)
+	if step.State != StateDivergent || step.Default != ActionRestart || slices.Contains(step.Options, ActionUpdate) {
 		t.Fatalf("a broken daemon=%+v", step)
+	}
+	// wx setup --update は restart を持つ項目も提示する。
+	if len(Divergent([]Step{step})) != 1 {
+		t.Fatal("a broken daemon was not offered by --update")
+	}
+	restarted := false
+	broken.RestartDaemon = func(context.Context) error { restarted = true; return nil }
+	if _, err := Apply(ctx, broken, step, ActionRestart, ""); err != nil || !restarted {
+		t.Fatalf("restart was not applied: %v", err)
+	}
+	if _, err := Apply(ctx, Options{}, step, ActionRestart, ""); err == nil {
+		t.Fatal("restarting the daemon without an adapter succeeded")
 	}
 	if step := collectDaemon(ctx, Options{}); step.State != StateUnknown {
 		t.Fatalf("a daemon without an adapter=%+v", step)

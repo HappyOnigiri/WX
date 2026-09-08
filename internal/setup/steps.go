@@ -312,22 +312,27 @@ func collectDaemon(ctx context.Context, options Options) Step {
 	case err != nil:
 		step.State = StateDivergent
 		step.Reasons = append(step.Reasons, "the daemon answered but the request failed: "+err.Error())
+		// 応答するが壊れている daemon は起動依頼では直らないので、別 process へ入れ替える restart を出す。
+		step.Options, step.Default = []Action{ActionRestart, ActionKeep}, ActionRestart
 	case responding:
 		step.State = StatePresent
+		step.Default = ActionKeep
 	default:
 		// 未稼働のときは設定を書く install ではなく start を出す。適用は launchd への起動依頼だけである。
 		step.State = StateAbsent
 		step.Options, step.Default = []Action{ActionStart, ActionSkip}, ActionStart
-		return step
 	}
-	step.Options, step.Default = stepOptions(step.State, daemonActions)
 	return step
 }
 
-// daemonActions は稼働を確認できた状態にだけ使う。daemon の停止は setup の対象にせず、wx daemon stop の仕事とする。
-var daemonActions = []Action{ActionUpdate, ActionKeep}
-
-func applyDaemon(ctx context.Context, options Options, _ Action) error {
+// applyDaemon は未稼働なら起動し、壊れている daemon は入れ替える。停止は setup の対象にせず wx daemon stop の仕事とする。
+func applyDaemon(ctx context.Context, options Options, action Action) error {
+	if action == ActionRestart {
+		if options.RestartDaemon == nil {
+			return errors.New("restarting the daemon is not available here")
+		}
+		return options.RestartDaemon(ctx)
+	}
 	if options.StartDaemon == nil {
 		return errors.New("starting the daemon is not available here")
 	}
