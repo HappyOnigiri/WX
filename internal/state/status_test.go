@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -241,5 +242,49 @@ func TestListSlotsReturnsLiveSlotsWithRepositories(t *testing.T) {
 	}
 	if slots[1].SlotID != "snapshotted" || !slices.Equal(slots[1].Repositories, []string{"/multi/a", "/multi/b"}) {
 		t.Fatalf("snapshotted slot=%+v", slots[1])
+	}
+}
+
+// 準備失敗で止まった補充は、停止行だけでは原因を説明できないため、失敗した job の理由を併せて返す。
+func TestStandbyReplenishmentDiagnosticsCarryTheFailedJobCause(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	createSessionSlot(t, store, "standby", "STARTING", "PREPARING")
+	job, err := store.CreateJob(ctx, "PREPARE", "workspace", "standby", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, job, errors.New("copy /src/AGENTS.md to /slot/AGENTS.md: permission denied"), "PREPARE_FAILED", "/logs/prepare.log")
+	if err := store.SuspendReplenish(ctx, "workspace", SuspendReplenishReasonStandbyFailure, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := store.StandbyReplenishmentDiagnostics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 1 {
+		t.Fatalf("standby diagnostics=%+v", diagnostics)
+	}
+	item := diagnostics[0]
+	if item.FailureCode != "PREPARE_FAILED" || item.DetailPath != "/logs/prepare.log" {
+		t.Fatalf("standby diagnostic=%+v", item)
+	}
+	if item.FailureMessage != "copy /src/AGENTS.md to /slot/AGENTS.md: permission denied" {
+		t.Fatalf("standby failure message=%q", item.FailureMessage)
+	}
+	// `wx clear` による停止は job を指さないため、失敗情報を持たない。
+	if err := store.ResumeReplenish(ctx, "workspace"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SuspendReplenish(ctx, "workspace", SuspendReplenishReasonClean, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err = store.StandbyReplenishmentDiagnostics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics) != 1 || diagnostics[0].FailureCode != "" || diagnostics[0].FailureMessage != "" {
+		t.Fatalf("standby diagnostics after wx clear=%+v", diagnostics)
 	}
 }

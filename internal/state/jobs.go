@@ -107,7 +107,7 @@ func (s *Store) FinishJobWithDetail(ctx context.Context, id, owner string, runEr
 	defer tx.Rollback()
 	stateName := "SUCCEEDED"
 	level := "info"
-	var code any
+	var code, failureMessage any
 	if runErr != nil {
 		stateName = "FAILED"
 		level = "error"
@@ -115,13 +115,14 @@ func (s *Store) FinishJobWithDetail(ctx context.Context, id, owner string, runEr
 			failureCode = "JOB_FAILED"
 		}
 		code = failureCode
+		failureMessage = truncateFailureMessage(runErr.Error())
 	}
 	var startedAt string
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(started_at,'') FROM jobs WHERE id=? AND state='RUNNING' AND lease_owner=?`, id, owner).Scan(&startedAt); err != nil {
 		return errors.New("job cannot be finished without its active lease")
 	}
 	finishedAt := time.Now()
-	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state=?,finished_at=?,lease_owner=NULL,lease_expires_at=NULL,error_code=?,error_detail_path=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, stateName, FormatTime(finishedAt), code, nullString(detailPath), id, owner)
+	res, err := tx.ExecContext(ctx, `UPDATE jobs SET state=?,finished_at=?,lease_owner=NULL,lease_expires_at=NULL,error_code=?,error_message=?,error_detail_path=? WHERE id=? AND state='RUNNING' AND lease_owner=?`, stateName, FormatTime(finishedAt), code, failureMessage, nullString(detailPath), id, owner)
 	if err != nil {
 		return err
 	}
