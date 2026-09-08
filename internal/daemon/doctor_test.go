@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 // doctorFindings は検査名が一致する finding を返す。
@@ -96,6 +97,34 @@ func TestJobFailureCauseKeepsTheRecordedReason(t *testing.T) {
 	unknown := jobFailureCause("SNAPSHOT job job-2", "JOB_FAILED", "", "")
 	if !strings.Contains(unknown, "not recorded") || strings.Contains(unknown, "(command output") {
 		t.Fatalf("cause without a recorded reason=%q, want it to say the root cause is unknown", unknown)
+	}
+}
+
+// 既知でない停止理由は原因を特定できていないことを示し、`wx clear` に帰属させない。
+func TestStandbySuspensionFindingSeparatesEachReason(t *testing.T) {
+	failure := standbySuspensionFinding(state.StandbyReplenishmentDiagnostic{
+		Root: "/root", Reason: state.SuspendReplenishReasonStandbyFailure, Detail: "job-1",
+		FailureCode: "PREPARE_FAILED", Action: "wx retry-standby \"/root\"",
+	})
+	if failure.Severity != diag.SeverityProblem || !strings.Contains(failure.Cause, "PREPARE_FAILED") {
+		t.Fatalf("preparation failure finding=%+v", failure)
+	}
+	clean := standbySuspensionFinding(state.StandbyReplenishmentDiagnostic{
+		Root: "/root", Reason: state.SuspendReplenishReasonClean, Detail: "run-1", Action: "wx retry-standby \"/root\"",
+	})
+	if clean.Severity != diag.SeverityInfo || !strings.Contains(clean.Cause, "wx clear") {
+		t.Fatalf("clean suspension finding=%+v", clean)
+	}
+	unknown := standbySuspensionFinding(state.StandbyReplenishmentDiagnostic{
+		Root: "/root", Reason: "FUTURE_REASON", Detail: "detail-1", Action: "wx retry-standby \"/root\"",
+	})
+	if unknown.Severity != diag.SeverityInfo || strings.Contains(unknown.Cause, "wx clear") {
+		t.Fatalf("unknown suspension finding=%+v", unknown)
+	}
+	for _, fragment := range []string{"FUTURE_REASON", "detail-1", "cannot explain"} {
+		if !strings.Contains(unknown.Cause, fragment) {
+			t.Fatalf("unknown suspension cause=%q, want %q", unknown.Cause, fragment)
+		}
 	}
 }
 

@@ -201,26 +201,41 @@ func (m *Manager) standbyFindings(ctx context.Context) []diag.Finding {
 	}
 	findings := make([]diag.Finding, 0, len(items)+1)
 	for _, item := range items {
-		if item.Reason != state.SuspendReplenishReasonStandbyFailure {
-			findings = append(findings, diag.Finding{
-				Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityInfo,
-				Summary: "standby replenishment is stopped on purpose", Target: item.Root,
-				Cause:  fmt.Sprintf("wx clear stopped the replenishment (reason %s, run %s)", item.Reason, item.Detail),
-				Action: "no action is required; run " + item.Action + " to resume it",
-			})
-			continue
-		}
-		findings = append(findings, diag.Finding{
-			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityProblem,
-			Summary: "standby worktree preparation failed and replenishment is stopped", Target: item.Root,
-			Cause:  jobFailureCause("prepare job "+item.Detail, item.FailureCode, item.FailureMessage, item.DetailPath),
-			Action: "fix the reported cause, then run " + item.Action,
-		})
+		findings = append(findings, standbySuspensionFinding(item))
 	}
 	return append(findings, diag.Finding{
 		Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityOK,
 		Summary: "standby replenishment is not stopped", Details: []string{strconv.Itoa(len(items)) + " suspended workspace(s)"},
 	})
+}
+
+// standbySuspensionFinding は停止 1 件を理由ごとに説明する。
+// 既知でない理由は原因を特定できていないことを示し、`wx clear` などの既知の経路に帰属させない。
+func standbySuspensionFinding(item state.StandbyReplenishmentDiagnostic) diag.Finding {
+	switch item.Reason {
+	case state.SuspendReplenishReasonStandbyFailure:
+		return diag.Finding{
+			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityProblem,
+			Summary: "standby worktree preparation failed and replenishment is stopped", Target: item.Root,
+			Cause:  jobFailureCause("prepare job "+item.Detail, item.FailureCode, item.FailureMessage, item.DetailPath),
+			Action: "fix the reported cause, then run " + item.Action,
+		}
+	case state.SuspendReplenishReasonClean:
+		return diag.Finding{
+			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityInfo,
+			Summary: "standby replenishment is stopped on purpose", Target: item.Root,
+			Cause:  fmt.Sprintf("wx clear stopped the replenishment (clean run %s)", item.Detail),
+			Action: "no action is required; run " + item.Action + " to resume it",
+		}
+	default:
+		return diag.Finding{
+			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityInfo,
+			Summary: "standby replenishment is stopped for an unrecognized reason", Target: item.Root,
+			Cause: fmt.Sprintf("the suspension records reason %s with detail %s, and this wx binary cannot explain what stopped it",
+				item.Reason, item.Detail),
+			Action: "run " + item.Action + " to resume it once you know the stop was not needed",
+		}
+	}
 }
 
 // jobFailureCause は job の失敗を「失敗した操作・記録された理由・詳細ログの場所」の順で 1 行にまとめる。
