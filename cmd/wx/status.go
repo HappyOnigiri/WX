@@ -92,9 +92,14 @@ func runDoctor(ctx context.Context, args []string) int {
 		ctx, cancel = context.WithTimeout(ctx, statusDisplayTimeout)
 		defer cancel()
 	}
+	// 診断は daemon の応答待ちと接続失敗時のローカル検査で待たされるため、結果が出るまで待機行を出す。
+	// --json の出力は機械が読むため、端末でも待機行を出さない。
+	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout) && !*jsonOut, "diagnosing")
+	defer waiting.finish()
 	var reply diag.Reply
 	if err := c.Call(ctx, "Doctor", struct{}{}, &reply); err != nil {
 		if !rpc.IsConnectError(err) {
+			waiting.finish()
 			reportRPCError(err)
 			return 1
 		}
@@ -105,6 +110,7 @@ func runDoctor(ctx context.Context, args []string) int {
 		}
 	}
 	reply.Findings = append(reply.Findings, staleDaemonFindings(reply)...)
+	waiting.finish()
 	printDoctor(reply, *jsonOut, *verbose)
 	return diag.ExitCode(reply)
 }
