@@ -246,6 +246,43 @@ func TestInstallKeepsRecordedCommandsThatResolveToTheSameBinary(t *testing.T) {
 	}
 }
 
+// TestInstallRepairsWXEntriesTheReadSideRejects は、判定側が却下する任意項目が付いた wx エントリを
+// install が書き直せることを確認する。書き換えを skip すると setup から永久に修復できなくなる。
+func TestInstallRepairsWXEntriesTheReadSideRejects(t *testing.T) {
+	for _, option := range []string{`"async": true`, `"disabled": true`, `"once": true`, `"timeout": null`} {
+		t.Run(option, func(t *testing.T) {
+			_, binary := hookTestHome(t)
+			path, err := TargetPath("codex")
+			if err != nil {
+				t.Fatal(err)
+			}
+			seed := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"BINARY hook session-start",OPTION}]}]}}`
+			seed = strings.ReplaceAll(seed, "BINARY", binary)
+			writeHookConfigFile(t, path, strings.ReplaceAll(seed, "OPTION", option))
+			state, err := Inspect("codex")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Status == StatusCurrent {
+				t.Fatalf("the read side accepted %s, so this seed proves nothing", option)
+			}
+			result, err := Install("codex")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Changed {
+				t.Fatalf("install skipped a wx entry the read side rejects: %+v", result)
+			}
+			if result.State.Status != StatusCurrent || !Available("codex") {
+				t.Fatalf("install did not repair the entry: %v", result.State.Reasons())
+			}
+			if got := readTestFile(t, path); strings.Contains(got, strings.SplitN(option, ":", 2)[0]) {
+				t.Fatalf("the rejected option survived install:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestInstallRefusesUnsafeTargetsWithoutWriting(t *testing.T) {
 	for _, test := range []struct {
 		name, seed string

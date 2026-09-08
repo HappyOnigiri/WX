@@ -19,7 +19,7 @@ type Result struct {
 }
 
 // Install は agent の設定ファイルへ wx 専用の hook group を書き、書いた直後に再検査した状態を返す。
-// 冪等であり、既存の記録が同じ実体へ解決するなら表記が違っても書き換えない。
+// 冪等であり、書き戻す内容が既存の内容と同一ならファイルへ触らない。
 func Install(agent string) (Result, error) {
 	binary, err := ResolveHookBinary()
 	if err != nil {
@@ -213,54 +213,12 @@ func installEntries(document *jsonNode, binary string) error {
 		if list.kind != jsonArray {
 			return fmt.Errorf("the %s entry is not a JSON array", event.Name)
 		}
-		if managedGroupCurrent(list, event.Subcommand, binary) {
-			continue
-		}
+		// 既存の wx エントリを判定側の受理条件で選り分けず、常に畳んで書き直す。
+		// 書き込み前の bytes.Equal が冪等性を担保するので、内容が同じなら install.sh の更新でもファイルは変化しない。
 		pruneEvent(list, event.Subcommand)
 		list.items = append([]*jsonNode{managedGroup(command)}, list.items...)
 	}
 	return nil
-}
-
-// managedGroupCurrent は、既存の group に同じ実体へ解決する wx hook が単独で入っているかを返す。
-// install.sh の更新は同じ path の inode を入れ替えるだけで、記録の書き換えを必要としない。
-// ここで stale と判定すると、更新のたびに TUI が出るという最も目立つ退行になる。
-func managedGroupCurrent(list *jsonNode, subcommand, binary string) bool {
-	for _, group := range list.items {
-		hooks, ok := group.field("hooks")
-		if !ok || hooks.kind != jsonArray || len(hooks.items) != 1 {
-			continue
-		}
-		if _, present := group.field("matcher"); present && !dedicatedMatcher(group) {
-			continue
-		}
-		command, ok := hookCommandOf(hooks.items[0])
-		if !ok || wxHookSubcommand(command) != subcommand {
-			continue
-		}
-		if isExactWXHookCommandForExecutable(command, subcommand, binary) {
-			return true
-		}
-	}
-	return false
-}
-
-// dedicatedMatcher は matcher が全 event に適用される形かを返す。
-func dedicatedMatcher(group *jsonNode) bool {
-	matcher, ok := group.field("matcher")
-	if !ok {
-		return true
-	}
-	value, ok := matcher.stringValue()
-	if !ok {
-		return false
-	}
-	switch value {
-	case "", "*", ".*", "^.*$", "^.+$":
-		return true
-	default:
-		return false
-	}
 }
 
 // managedGroup は wx 専用の group を作る。
