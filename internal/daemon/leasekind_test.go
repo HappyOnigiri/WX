@@ -92,7 +92,7 @@ func TestOwnerReleaseReturnsChildLeases(t *testing.T) {
 	f, repo := leaseWorktreeFixture(t)
 	store, m := f.Store, f.Manager
 	ctx := context.Background()
-	owner, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false)
+	owner, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestResolveLeaseAttrsAuthenticatesTheOwnerSession(t *testing.T) {
 	f, repo := leaseWorktreeFixture(t)
 	m := f.Manager
 	ctx := context.Background()
-	owner, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false)
+	owner, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestReleaseLeaseRefusesAgentSessionsAndLiveProcesses(t *testing.T) {
 	f, repo := leaseWorktreeFixture(t)
 	store, m := f.Store, f.Manager
 	ctx := context.Background()
-	agent, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false)
+	agent, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestExpiredAndOrphanedLeasesSkipRunningProcesses(t *testing.T) {
 	f, repo := leaseWorktreeFixture(t)
 	store, m := f.Store, f.Manager
 	ctx := context.Background()
-	owner, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false)
+	owner, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestLeaseRefusesWorkspacesConfiguredWithoutAWorktree(t *testing.T) {
 		t.Fatalf("lease error=%v, want the disabled-worktree marker", err)
 	}
 	// agent 起動は従来どおり、貸出の許可がないという既存の失敗で断られる。
-	if _, err := f.Manager.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false); err == nil || IsWorktreeDisabled(err) {
+	if _, err := f.Manager.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{}); err == nil || IsWorktreeDisabled(err) {
 		t.Fatalf("agent lease error=%v, want the existing authorization failure", err)
 	}
 }

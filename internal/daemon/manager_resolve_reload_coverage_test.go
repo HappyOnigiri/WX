@@ -54,7 +54,7 @@ func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lease, err := m.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatalf("resolve and lease: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestResolveAndLeaseReusesReadySlotForMatchingExplicitBranch(t *testing.T) {
 		t.Fatalf("standby fixture is not a hot checkout: repositories=%+v err=%v", repositories, err)
 	}
 
-	lease, err := m.ResolveAndLease(ctx, repository, []string{"main"}, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, repository, []string{"main"}, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatalf("resolve and lease with explicit branch: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestResolveAndLeaseRejectsHotStandbyAfterWorktreeLinkAppears(t *testing.T) 
 	if err := os.MkdirAll(filepath.Join(repository, "app", "tmp"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	lease, err := m.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatalf("resolve and lease after .worktreelink source appeared: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T
 	gitRun(t, repository, "commit", "--allow-empty", "-m", "other")
 	gitRun(t, repository, "checkout", "-q", "main")
 
-	lease, err := m.ResolveAndLease(ctx, repository, []string{"other"}, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, repository, []string{"other"}, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatalf("resolve and lease with a mismatching branch: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 		t.Fatal(err)
 	}
 
-	if _, err := m.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid()); !errors.Is(err, state.ErrOwnership) {
+	if _, err := m.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid(), leaseAttrs{}); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("resolve and lease with unverifiable ready repository error=%v", err)
 	}
 	if slot, err := store.Slot(ctx, badID); err != nil || slot.State != "QUARANTINED" {

@@ -36,14 +36,14 @@ func TestLeaseWithPolicyResolvesPathBelowRetiredSlot(t *testing.T) {
 	}
 	registerTestWorkspace(t, store, w)
 
-	first, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false)
+	first, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
 	if err != nil || first.Path == "" {
 		t.Fatalf("first lease=%+v err=%v", first, err)
 	}
 	// slot を畳んだ後の cwd を模す。path の実体はなく、slot の配下という位置だけが残る。
 	retired := filepath.Join(first.Path, "gone", "repo")
 
-	second, err := m.leaseWithPolicy(ctx, retired, nil, "codex", os.Getpid(), false)
+	second, err := m.leaseWithPolicy(ctx, retired, nil, "codex", os.Getpid(), false, leaseAttrs{})
 	if err != nil || second.SessionID == "" {
 		t.Fatalf("lease from retired slot path=%+v err=%v", second, err)
 	}
@@ -69,7 +69,7 @@ func TestLeaseWithPolicyKeepsResolveErrorOutsideSlots(t *testing.T) {
 	m := testManager(t, cfg, store)
 	defer m.Close()
 
-	if _, err := m.leaseWithPolicy(context.Background(), filepath.Join(root, "missing"), nil, "codex", os.Getpid(), false); err == nil {
+	if _, err := m.leaseWithPolicy(context.Background(), filepath.Join(root, "missing"), nil, "codex", os.Getpid(), false, leaseAttrs{}); err == nil {
 		t.Fatal("lease from an unknown path succeeded")
 	}
 }

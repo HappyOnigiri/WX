@@ -110,7 +110,7 @@ exit 1
 		t.Fatalf("status=%+v err=%v, want one workspace", status, err)
 	}
 
-	lease, err := m.ResolveAndLease(ctx, newMain, nil, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, newMain, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestMainWorktreeRelocationWithGitRegistryPreservesIdentityAndSessions(t *te
 		t.Fatalf("relocated slot=%+v err=%v", slot, err)
 	}
 
-	lease, err := m.ResolveAndLease(ctx, newMain, nil, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, newMain, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}

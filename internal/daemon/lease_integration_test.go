@@ -92,7 +92,7 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 		}
 		t.Fatalf("retired slot directory contents=%v, want only the ownership marker", names)
 	}
-	lease, err := m.ResolveAndLease(ctx, repoPath, nil, "claude", 0)
+	lease, err := m.ResolveAndLease(ctx, repoPath, nil, "claude", 0, leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
 	if err != nil || len(repositories) != 1 {
 		t.Fatalf("slot repositories=%+v err=%v", repositories, err)
 	}
-	lease, err := m.ResolveAndLease(ctx, repoPath, nil, "claude", 0)
+	lease, err := m.ResolveAndLease(ctx, repoPath, nil, "claude", 0, leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 	repo := filepath.Join(f.Root, "repo")
 	initGitRepo(t, repo)
 	ctx := context.Background()
-	first, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	first, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
-			lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+			lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{})
 			leases <- lease
 			errs <- err
 		}()

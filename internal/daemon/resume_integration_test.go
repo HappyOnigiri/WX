@@ -44,7 +44,7 @@ func TestLeaseArchiveAndRestorePreservesGitState(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestNativeResumeWaitsForInFlightSnapshot(t *testing.T) {
 	repo := filepath.Join(f.Root, "repo")
 	initGitRepo(t, repo)
 	ctx := context.Background()
-	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	repo := filepath.Join(f.Root, "repo")
 	initGitRepo(t, repo)
 	ctx := context.Background()
-	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}

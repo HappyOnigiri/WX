@@ -26,21 +26,16 @@ type Lease struct {
 	Ready           bool   `json:"ready"`
 }
 
-func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []string, agent string, pid int, attrs ...leaseAttrs) (Lease, error) {
+// ResolveAndLease は cwd の workspace を解決して貸出す。
+// attrs は必須引数にしている。可変長にすると渡し忘れをコンパイラが検出できず、
+// 貸出が黙って agent 起動（lease_kind='agent'）として登録される。
+func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []string, agent string, pid int, attrs leaseAttrs) (Lease, error) {
 	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 	w, err := discoverer.Resolve(ctx, cwd)
 	if err != nil {
 		return Lease{}, err
 	}
-	return m.leaseWorkspace(ctx, w, branches, agent, pid, false, leaseAttrsOf(attrs))
-}
-
-// leaseAttrsOf は可変長で受けた貸出属性の先頭を返す。既存の agent 起動は指定しないため zero 値になる。
-func leaseAttrsOf(attrs []leaseAttrs) leaseAttrs {
-	if len(attrs) > 0 {
-		return attrs[0]
-	}
-	return leaseAttrs{}
+	return m.leaseWorkspace(ctx, w, branches, agent, pid, false, attrs)
 }
 
 func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, branches []string, agent string, pid int, cold bool, attrs leaseAttrs) (Lease, error) {
@@ -295,7 +290,8 @@ func coldWorktreeUnmaterialized(owner *os.Root, root, worktreePath string) (bool
 }
 
 // leaseWithPolicy は RPC の新規作成要求を検証する。一時許可は設定や standby の補充対象を変更しない。
-func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []string, agent string, pid int, force bool, attrs ...leaseAttrs) (Lease, error) {
+// attrs を必須引数にしている理由は ResolveAndLease と同じである。
+func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []string, agent string, pid int, force bool, attrs leaseAttrs) (Lease, error) {
 	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 	w, err := discoverer.Resolve(ctx, cwd)
 	if err != nil {
@@ -305,7 +301,7 @@ func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []st
 		}
 	}
 	mode := m.Config().WorktreeMode(string(w.Root))
-	lease := leaseAttrsOf(attrs)
+	lease := attrs
 	// 貸出コマンドは現在のディレクトリで動く選択肢を持たないため、off の workspace では方針の選び直しを促す。
 	if lease.Kind != "" && mode == "off" {
 		return Lease{}, fmt.Errorf("workspace %s is configured not to use a worktree; change worktree.undefined or the workspace policy %s", w.Root, WorktreeDisabledMarker)

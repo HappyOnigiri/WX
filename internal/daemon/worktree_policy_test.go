@@ -48,12 +48,12 @@ func TestLeasePolicyAndStandbyPermissions(t *testing.T) {
 			if (mode == "hot" && count != 1) || (mode != "hot" && count != 0) {
 				t.Fatalf("standby=%d", count)
 			}
-			lease, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false)
+			lease, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
 			if mode == "off" || mode == "ask" {
 				if err == nil {
 					t.Fatal("unapproved creation accepted")
 				}
-				lease, err = m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), true)
+				lease, err = m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), true, leaseAttrs{})
 			}
 			if err != nil || lease.SessionID == "" {
 				t.Fatalf("lease=%+v err=%v", lease, err)
@@ -106,7 +106,7 @@ func TestColdPolicyDoesNotLeaseExistingReadySlot(t *testing.T) {
 	m.mu.Lock()
 	m.cfg.Workspaces[repo] = config.Workspace{Worktree: "cold"}
 	m.mu.Unlock()
-	lease, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false)
+	lease, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
 	if err != nil || lease.SessionID == ready.ID {
 		t.Fatalf("lease=%+v ready=%s err=%v", lease, ready.ID, err)
 	}

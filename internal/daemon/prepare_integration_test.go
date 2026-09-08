@@ -32,7 +32,7 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "audit"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	lease, err := m.ResolveAndLease(context.Background(), root, nil, "codex", 1)
+	lease, err := m.ResolveAndLease(context.Background(), root, nil, "codex", 1, leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 		coldSlot = ready
 		return true
 	})
-	coldLease, err := m.ResolveAndLease(context.Background(), root, nil, "codex", os.Getpid())
+	coldLease, err := m.ResolveAndLease(context.Background(), root, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestMultiRepositorySiblingLinkedWorktreesAcquireASession(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	lease, err := m.ResolveAndLease(ctx, bundle, nil, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, bundle, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatalf("multi-repository lease with sibling linked worktrees: %v", err)
 	}
