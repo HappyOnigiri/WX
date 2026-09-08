@@ -171,8 +171,9 @@ func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard b
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var reply struct {
-		Released  bool `json:"released"`
-		Discarded bool `json:"discarded"`
+		Released       bool   `json:"released"`
+		Discarded      bool   `json:"discarded"`
+		DiscardPending string `json:"discard_pending"`
 	}
 	if err := c.RPC.Call(callCtx, "ReleaseLease", map[string]any{"session_id": sessionID, "reason": "wx-release", "discard": discard}, &reply); err != nil {
 		return reportLeaseError(err)
@@ -182,6 +183,12 @@ func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard b
 		return 0
 	}
 	if discard {
+		// 既に削除まで進んだ slot へ再実行を案内すると、何度実行しても変わらない指示になる。
+		// daemon が返す理由で、保存待ちの再実行と削除済みの報告を書き分ける。
+		if reply.DiscardPending == daemon.DiscardPendingRemoved {
+			fmt.Println("released " + sessionID + "; its worktree is already removed or scheduled for removal")
+			return 0
+		}
 		// 保存ジョブが走っている間は削除を予約できない。保存された事実を隠さず、再実行を案内する。
 		fmt.Println("released " + sessionID + "; the worktree is still being saved, so run wx release --discard " + sessionID + " again to remove it")
 		return 0

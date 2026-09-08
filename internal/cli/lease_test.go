@@ -225,6 +225,16 @@ func TestRunLeaseReleaseReportsWhatHappened(t *testing.T) {
 	if !strings.Contains(stdout, "again to remove it") {
 		t.Fatalf("pending removal output=%q", stdout)
 	}
+	// 既に削除まで進んだ slot では、何度実行しても変わらない再実行を案内しない。
+	handler.releaseLeaseReply = map[string]any{"released": true, "discarded": false, "discard_pending": daemon.DiscardPendingRemoved}
+	stdout = captureLeaseStdout(t, func() {
+		if exit := client.RunLeaseRelease(ctx, "session", true); exit != 0 {
+			t.Fatalf("RunLeaseRelease exit=%d", exit)
+		}
+	})
+	if strings.Contains(stdout, "again to remove it") || !strings.Contains(stdout, "already removed") {
+		t.Fatalf("already removed output=%q", stdout)
+	}
 	stdout = captureLeaseStdout(t, func() {
 		if exit := client.RunLeaseRelease(ctx, "session", false); exit != 0 {
 			t.Fatalf("RunLeaseRelease exit=%d", exit)

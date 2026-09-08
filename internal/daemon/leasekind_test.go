@@ -329,6 +329,36 @@ func TestExpiredAndOrphanedLeasesSkipRunningProcesses(t *testing.T) {
 	}
 }
 
+// 保存まで進んだ貸出へ --discard を追いかけさせると、再実行しても変わらない理由が返る。
+func TestReleaseLeaseDiscardReportsAnAlreadyRemovedSlot(t *testing.T) {
+	t.Parallel()
+	f, repo := leaseWorktreeFixture(t)
+	store, m := f.Store, f.Manager
+	ctx := context.Background()
+	lease, err := m.leaseWithPolicy(ctx, repo, nil, "wx-path", 0, false, leaseAttrs{Kind: state.LeaseKindPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(ctx, m, 10*time.Second, lease.SessionID, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 30*time.Second, func() bool {
+		reply, err := m.ReleaseLease(ctx, lease.SessionID, "wx-release", true)
+		return err == nil && reply["discarded"] == true
+	})
+	waitUntil(t, 20*time.Second, func() bool {
+		slot, _ := store.Slot(ctx, lease.SessionID)
+		return slot.State == "ARCHIVED" || slot.State == "REMOVING"
+	})
+	reply, err := m.ReleaseLease(ctx, lease.SessionID, "wx-release", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply["discarded"] != false || reply["discard_pending"] != DiscardPendingRemoved {
+		t.Fatalf("discard reply=%+v, want %q so the CLI does not advise another run", reply, DiscardPendingRemoved)
+	}
+}
+
 // 返却の書き込みが失敗したら、成功として返さない。
 // wx release が終了コード 0 を返すと、貸出が使用中のまま残っていることを誰も検知できない。
 func TestReleaseLeaseWithoutTokenReturnsWriteFailures(t *testing.T) {

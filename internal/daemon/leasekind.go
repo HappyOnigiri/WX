@@ -153,36 +153,54 @@ func (m *Manager) ReleaseLease(ctx context.Context, sessionID, reason string, di
 	if !discard {
 		return map[string]any{"released": true, "session_id": sessionID, "discarded": false}, nil
 	}
-	discarded, err := m.discardLeaseSlot(ctx, session.SlotID)
+	discarded, pending, err := m.discardLeaseSlot(ctx, session.SlotID)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"released": true, "session_id": sessionID, "discarded": discarded}, nil
+	return map[string]any{"released": true, "session_id": sessionID, "discarded": discarded, "discard_pending": pending}, nil
 }
+
+// ReleaseLease の discard_pending が返す、削除を予約できなかった理由である。
+// CLI が再実行の案内を出し分ける根拠なので、値は RPC の一部として扱う。
+const (
+	// DiscardPendingSaving は返却で積んだ保存がまだ走っていて、予約が通らない状態である。
+	DiscardPendingSaving = "saving"
+	// DiscardPendingRemoved は slot が既に保管済み・削除中で、再実行しても変わらない状態である。
+	DiscardPendingRemoved = "already-removed"
+)
 
 // discardRemovalWait は保存ジョブの完了を待って削除を予約し直す上限である。
 // 返却で登録した SNAPSHOT が既に走っている間は予約が通らないため、短い間だけ待ってから応答する。
 // 待ち切れなかった場合は失敗にせず、保存が終わってからの再実行を CLI が案内する。
 const discardRemovalWait = 3 * time.Second
 
-// discardLeaseSlot は保存を要求せず slot の削除を予約する。予約できたかを返す。
-func (m *Manager) discardLeaseSlot(ctx context.Context, slotID string) (bool, error) {
+// discardLeaseSlot は保存を要求せず slot の削除を予約する。
+// 予約できたかと、できなかった理由（DiscardPending*）を返す。
+func (m *Manager) discardLeaseSlot(ctx context.Context, slotID string) (bool, string, error) {
 	deadline := time.Now().Add(discardRemovalWait)
 	for {
 		job, changed, err := m.store.ScheduleDiscardRemoval(ctx, slotID)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if changed {
 			m.schedule(job)
-			return true, nil
+			return true, "", nil
+		}
+		// 既に保管済み・削除中の slot は待っても予約が通らないので、待たずに理由を返す。
+		slot, err := m.store.Slot(ctx, slotID)
+		if err != nil {
+			return false, "", err
+		}
+		if slot.State == "ARCHIVED" || slot.State == "REMOVING" {
+			return false, DiscardPendingRemoved, nil
 		}
 		if time.Now().After(deadline) {
-			return false, nil
+			return false, DiscardPendingSaving, nil
 		}
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return false, "", ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
