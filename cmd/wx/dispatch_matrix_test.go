@@ -12,6 +12,10 @@ import (
 
 func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	// go test の stdin は端末ではないが、端末から実行すると /dev/tty は開けてしまう。判定だけを固定する。
+	previousTerminal := setupIsTerminal
+	setupIsTerminal = func(int) bool { return false }
+	t.Cleanup(func() { setupIsTerminal = previousTerminal })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	cases := []struct {
@@ -54,6 +58,13 @@ func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
 		{name: "daemon stop unavailable", args: []string{"daemon", "stop"}, want: 1},
 		{name: "daemon start unavailable", args: []string{"daemon", "start"}, want: 1},
 		{name: "hook missing event", args: []string{"hook"}, want: 2},
+		{name: "setup extra argument", args: []string{"setup", "extra"}, want: 2},
+		{name: "setup json without check", args: []string{"setup", "--json"}, want: 2},
+		{name: "setup update with check", args: []string{"setup", "--update", "--check"}, want: 2},
+		// 対話実行は端末が要る環境の問題なので 1 で終える。
+		// --update は install.sh から自動起動されるため、同じ状況でも 0 で終えて案内だけを出す。
+		{name: "setup without a terminal", args: []string{"setup"}, want: 1},
+		{name: "setup update without a terminal", args: []string{"setup", "--update"}, want: 0},
 		{name: "slots extra argument", args: []string{"slots", "extra"}, want: 2},
 		{name: "slots unavailable", args: []string{"slots"}, want: 1},
 		{name: "sessions unknown subcommand", args: []string{"sessions", "unknown"}, want: 2},
