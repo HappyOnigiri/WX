@@ -29,7 +29,7 @@ Commands:
   retry-standby <workspace>      resume standby replenishment after it stopped
   slots [--all] [--json]         list managed wx slots and their disk usage
   config [<key> ...]             show or update configuration
-  setup [--check] [--json]       review and complete the wx setup
+  setup [--check] [--update]     review and complete the wx setup
   resume <id> [agent] [args...]  restore a wx session
   forget <workspace-path>        forget an inactive workspace
   daemon start|stop|restart      change whether the daemon is running
@@ -220,7 +220,9 @@ is idempotent, so running wx setup again finishes the rest.
 
 Exit status is 0 when the walk finished, 1 when an item could not be applied,
 the walk was cancelled, or no terminal is attached, and 2 for an argument
-error. --check reports differences with status 0.
+error. --check reports differences with status 0. --update does not use the
+exit status to report a missing terminal: it names the items that need
+attention on stderr and exits 0.
 
 Options:
   --check   report the current state and change nothing; needs no terminal
