@@ -199,6 +199,12 @@ func TestStandbyReplenishmentStopsAfterAPreparationFailure(t *testing.T) {
 	if !strings.Contains(suspension.Action, "wx retry-standby") || suspension.Target != string(w.Root) {
 		t.Fatalf("doctor standby recovery finding=%+v", suspension)
 	}
+	// 停止中の検査に、同時に「停止していない」という正常確認を並べない。
+	for _, finding := range doctorFindings(m.Doctor(ctx), diag.CheckStandbyReplenishment) {
+		if finding.Severity == diag.SeverityOK {
+			t.Fatalf("standby findings claimed replenishment is not stopped=%+v", finding)
+		}
+	}
 	retry, err := m.RetryStandby(ctx, string(w.Root))
 	if err != nil {
 		t.Fatal(err)

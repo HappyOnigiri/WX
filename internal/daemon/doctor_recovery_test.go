@@ -129,6 +129,12 @@ func TestDoctorReportsUnresolvedSnapshotFailures(t *testing.T) {
 	if !strings.Contains(failure.Cause, errWriteBundle.Error()) {
 		t.Fatalf("recovery job finding=%+v", failure)
 	}
+	// 未解消の失敗がある検査に、同時に正常確認を並べない。
+	for _, finding := range doctorFindings(manager.Doctor(ctx), diag.CheckRecoveryJobs) {
+		if finding.Severity == diag.SeverityOK {
+			t.Fatalf("recovery job findings claimed no outstanding failure=%+v", finding)
+		}
+	}
 }
 
 // errWriteBundle は保存失敗の原因が診断まで届くことを確かめるための固定エラーである。
@@ -163,5 +169,11 @@ func TestDoctorReportsWorkspaceSnapshotArchivesThatCannotRestore(t *testing.T) {
 	missing := doctorProblem(t, manager.Doctor(ctx), diag.CheckWorkspaceSnapshots)
 	if !strings.Contains(missing.Target, "missing.tar") || !strings.Contains(missing.Cause, session.ID) {
 		t.Fatalf("workspace snapshot finding=%+v", missing)
+	}
+	// 使えない archive がある検査に、同時に正常確認を並べない。
+	for _, finding := range doctorFindings(manager.Doctor(ctx), diag.CheckWorkspaceSnapshots) {
+		if finding.Severity == diag.SeverityOK {
+			t.Fatalf("workspace snapshot findings claimed the archives are in place=%+v", finding)
+		}
 	}
 }

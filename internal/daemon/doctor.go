@@ -203,9 +203,12 @@ func (m *Manager) standbyFindings(ctx context.Context) []diag.Finding {
 	for _, item := range items {
 		findings = append(findings, standbySuspensionFinding(item))
 	}
+	if len(items) > 0 {
+		return findings
+	}
 	return append(findings, diag.Finding{
 		Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityOK,
-		Summary: "standby replenishment is not stopped", Details: []string{strconv.Itoa(len(items)) + " suspended workspace(s)"},
+		Summary: "standby replenishment is not stopped", Details: []string{"0 suspended workspace(s)"},
 	})
 }
 

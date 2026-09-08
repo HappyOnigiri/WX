@@ -155,9 +155,12 @@ func (m *Manager) recoveryFailureFindings(ctx context.Context) []diag.Finding {
 	for _, failure := range failures {
 		findings = append(findings, recoveryFailureFinding(failure))
 	}
+	if len(failures) > 0 {
+		return findings
+	}
 	return append(findings, diag.Finding{
 		Check: diag.CheckRecoveryJobs, Severity: diag.SeverityOK,
-		Summary: "no save or restore failure is outstanding", Details: []string{strconv.Itoa(len(failures)) + " unresolved failure(s)"},
+		Summary: "no save or restore failure is outstanding", Details: []string{"0 unresolved failure(s)"},
 	})
 }
 
@@ -216,6 +219,9 @@ func (m *Manager) workspaceSnapshotFindings(ctx context.Context) []diag.Finding 
 		if finding, ok := m.workspaceSnapshotFinding(snapshot, at); ok {
 			findings = append(findings, finding)
 		}
+	}
+	if len(findings) > 0 {
+		return findings
 	}
 	return append(findings, diag.Finding{
 		Check: diag.CheckWorkspaceSnapshots, Severity: diag.SeverityOK,
