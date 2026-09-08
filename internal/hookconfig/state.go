@@ -1,6 +1,7 @@
 package hookconfig
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -263,14 +264,17 @@ func readHookConfig(path string) ([]byte, []Finding, bool) {
 	case len(data) > maxHookConfigSize:
 		return nil, []Finding{{Code: FindingTargetTooLarge, Path: path, Blocking: true}}, false
 	}
-	if _, err := decodeDocument(data); err != nil {
-		code := FindingTargetUnparsable
-		if errors.Is(err, errDuplicateKey) {
-			code = FindingTargetDuplicateKey
-		}
-		return nil, []Finding{{Code: code, Path: path, Detail: err.Error(), Blocking: true}}, false
+	// 判定は読み側と同じ後勝ちの復号で行う。重複キーを blocking にすると、agent 自身は hook を実行できる設定で
+	// wx だけが hook 無しと判断し、前面 readiness 待ちの縮退状態へ戻る。fail closed が要るのは編集経路だけである。
+	var probe map[string]json.RawMessage
+	if err := decodeJSON(data, &probe); err != nil {
+		return nil, []Finding{{Code: FindingTargetUnparsable, Path: path, Detail: err.Error(), Blocking: true}}, false
 	}
-	return data, nil, true
+	var findings []Finding
+	if _, err := decodeDocument(data); err != nil && errors.Is(err, errDuplicateKey) {
+		findings = append(findings, Finding{Code: FindingTargetDuplicateKey, Path: path, Detail: err.Error() + "; wx will not edit this file until the duplicates are removed"})
+	}
+	return data, findings, true
 }
 
 // targetLayoutFindings は dotfile 管理下の設定ファイルを検出する。

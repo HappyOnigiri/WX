@@ -72,7 +72,7 @@ func TestInspectReportsEveryRejectionReason(t *testing.T) {
 			want: StatusBlocked, code: FindingAllHooksDisabled,
 		},
 		{name: "malformed JSON", seed: func(string) string { return "{" }, want: StatusBlocked, code: FindingTargetUnparsable},
-		{name: "duplicate keys", seed: func(string) string { return `{"hooks":{},"hooks":{}}` }, want: StatusBlocked, code: FindingTargetDuplicateKey},
+		{name: "duplicate keys", seed: func(string) string { return `{"hooks":{},"hooks":{}}` }, want: StatusAbsent, code: FindingTargetDuplicateKey},
 		{name: "empty file", seed: func(string) string { return "" }, want: StatusBlocked, code: FindingTargetEmpty},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -98,6 +98,38 @@ func TestInspectReportsEveryRejectionReason(t *testing.T) {
 				t.Fatalf("Available=%v but status=%s; reasons=%v", got, state.Status, state.Reasons())
 			}
 		})
+	}
+}
+
+// TestInspectKeepsHooksAvailableWithDuplicateKeys は、agent 自身が後勝ちで hook を実行できる設定を
+// wx が unavailable にしないことを確認する。判定を止めると前面 readiness 待ちの縮退状態へ戻る。
+func TestInspectKeepsHooksAvailableWithDuplicateKeys(t *testing.T) {
+	_, binary := hookTestHome(t)
+	path, err := TargetPath("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// hook と無関係な object の重複キー。読み側は後者を見るが、必須 event の登録は有効である。
+	seed := strings.Replace(managedDocument(binary), `{"hooks"`, `{"permissions":{"allow":[],"allow":[]},"hooks"`, 1)
+	writeHookConfigFile(t, path, seed)
+	state, err := Inspect("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != StatusCurrent || !Available("codex") {
+		t.Fatalf("status=%s available=%v; reasons=%v", state.Status, Available("codex"), state.Reasons())
+	}
+	if !hasFinding(state, FindingTargetDuplicateKey) {
+		t.Fatalf("the duplicate key was not reported; reasons=%v", state.Reasons())
+	}
+	for _, finding := range state.Blocking() {
+		if finding.Code == FindingTargetDuplicateKey {
+			t.Fatal("the duplicate key finding is still blocking")
+		}
+	}
+	// 編集は fail closed のままで、重複キーがある文書へは書かない。
+	if _, err := Install("codex"); err == nil {
+		t.Fatal("install edited a document with duplicate keys")
 	}
 }
 
