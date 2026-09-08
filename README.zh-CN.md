@@ -31,6 +31,14 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 请将上面的行添加到 shell 配置文件（例如 `~/.zshrc`），以便在新终端中使用。
+然后完成初始化设置：
+
+```sh
+wx setup
+```
+
+`wx setup` 会依次确认 wx 管理的各项（worktree root、shell 的 PATH 设置、LaunchAgent、智能体 hook、守护进程），并应用你选择的操作。
+在已完成设置的环境中再次运行不会有任何改动。
 更多信息及源码构建方法，请参阅[版本与发布说明](docs/release.md)。
 
 ## 快速开始
@@ -56,9 +64,8 @@ wx --branch feature/api codex
 - **会话管理与清理：** `wx slots`、`wx resume`、`wx gc --dry-run`、`wx clear`。
 - **配置：** 使用 `wx config` 查看配置或修改单个配置值。
 - **智能体集成：** 全局智能体 hook 会检查工作环境是否就绪，将智能体会话绑定到 wx，并在工作结束后归还。
-  请配置为仅在设置了 `WX_SESSION_ID` 时调用 `wx hook session-start`、`wx hook user-prompt-submit`、`wx hook pre-tool-use` 和 `wx hook session-end`。
+  hook 的注册由 `wx setup` 完成。Claude 与 Codex 的 hook 配置中只有 wx 自己的条目由 wx 拥有，文件中的其他内容不会被改动。
   Claude 的 `--resume` 和 Codex 的 `resume` 可按原本方式使用。
-  hook 配置由用户单独管理，不包含在 wx 中。
 
 命令和选项的详细用法，请参阅 `wx --help` 和 `wx <command> --help`：
 

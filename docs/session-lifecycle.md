@@ -9,6 +9,9 @@
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
    hookが入っていれば、`wx hook user-prompt-submit`と`wx hook pre-tool-use`が`WaitReady`をブロッキングで呼ぶので、準備とエージェント起動を重ねられる。
    hookが無ければ、client側が起動前に前面で`WaitReady`を待つ（`hookconfig.Available`で分岐）。
+   hookの登録は`wx setup`が行い、`internal/hookconfig`が判定と書き込みを同じ受理条件で持つ。
+   `WX_SESSION_ID`の有無による素通りは`internal/agent/hook.go`のwx側で判定するため、agent設定側での条件分岐ラッパーは不要である。
+   受理条件はちょうど3トークンの`<絶対パス> hook <event>`なので、そうしたラッパーはそもそも受理されない。
    `wx hook session-start`は`BindAgentSession`系でエージェント側のネイティブなセッションIDをwxのセッションへ結び付ける。
    RESTORING中に届いたIDは`pending_agent_session_id`として保持し、復元成功後に親から新しいセッションへ移譲する。
    resumeの`session-start`は`previous_worktree`を返し、`source == "resume"`のとき旧pathを使わないよう通知文を1行出す。

@@ -30,6 +30,14 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Add that line to your shell configuration (for example, `~/.zshrc`) for new terminals.
+Then finish the setup:
+
+```sh
+wx setup
+```
+
+`wx setup` asks about each item it manages — the worktree root, the shell PATH entry, the LaunchAgent, the agent hooks, and the daemon — and applies your choices.
+Running it again after a completed setup changes nothing.
 See [release and source-build details](docs/release.md) for more information.
 
 ## Quick start
@@ -55,9 +63,8 @@ wx --branch feature/api codex
 - **Sessions and cleanup:** `wx slots`, `wx resume`, `wx gc --dry-run`, `wx clear`.
 - **Configuration:** `wx config` shows settings and can update individual values.
 - **Agent integration:** Global agent hooks check workspace readiness, bind agent sessions to wx, and release them when work ends.
-  Configure them to call `wx hook session-start`, `wx hook user-prompt-submit`, `wx hook pre-tool-use`, and `wx hook session-end` only when `WX_SESSION_ID` is set.
+  `wx setup` registers them, and wx owns its own entries in the Claude and Codex hook configuration; everything else in those files is left untouched.
   Claude `--resume` and Codex `resume` keep their usual arguments.
-  Hook configuration is managed separately from wx.
 
 See `wx --help` and `wx <command> --help` for commands and options:
 

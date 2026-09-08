@@ -6,7 +6,8 @@
 | 責務 | 実装の入口 |
 | --- | --- |
 | 引数解析・RPC・子プロセス起動と信号中継 | `cmd/wx`、`internal/cli` |
-| hook実行・同期的な準備完了契約の判定 | `internal/agent`、`internal/hookconfig` |
+| hook実行・同期的な準備完了契約の判定・agent hook設定のwxエントリの書き込み | `internal/agent`、`internal/hookconfig` |
+| セットアップ項目の収集と適用 | `internal/setup` |
 | 会話選択 | `internal/sessions` |
 | Unix socket通信・冪等キーによる重複抑止・要求契約型 | `internal/rpc` |
 | 貸出・返却・永続ジョブ・周期処理 | `internal/daemon` |
@@ -27,5 +28,6 @@ status/doctorの組み立ては`internal/daemon/status.go`に置き、診断用�
 `wx`バイナリはCLI・daemon・`internal/fdexec`のexecトランポリン（`__wx_exec_at_fd`）を兼ねる。
 descriptor束縛でGitやエージェントを起動する経路は自分自身を再execする。
 
-help本文・config schema・SQLite migration・LaunchAgent plistは手書きで維持し、shell completionは実装しない。
+help本文・config schema・SQLite migration・LaunchAgent plist・agent hook設定は手書きで維持し、shell completionは実装しない。
+agent hook設定はwxエントリだけをwxが所有し、`internal/hookconfig`が判定と書き込みを同じ受理条件で持つ。
 生成物検査の扱いは[`Makefile`](../Makefile)の`generated-check`を参照する。

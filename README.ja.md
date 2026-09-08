@@ -31,6 +31,14 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 新しいターミナルでも使えるよう、上記の行をシェル設定（例: `~/.zshrc`）に追加してください。
+続けてセットアップを完了します。
+
+```sh
+wx setup
+```
+
+`wx setup` は wx が管理する項目（worktree root、シェルの PATH 設定、LaunchAgent、エージェントの hook、デーモン）を順に確認し、選んだ操作を適用します。
+セットアップ済みの環境で再実行しても何も変わりません。
 詳細やソースからのビルド方法は[バージョンとリリース](docs/release.md)を参照してください。
 
 ## 使い方
@@ -56,9 +64,8 @@ wx --branch feature/api codex
 - **セッション管理・クリーンアップ:** `wx slots`、`wx resume`、`wx gc --dry-run`、`wx clear`。
 - **設定:** `wx config` で設定の確認や個別の値の変更ができます。
 - **エージェント連携:** グローバルなエージェント hook で作業環境の準備完了を確認し、エージェントのセッションを wx に結び付けて返却します。
-  `WX_SESSION_ID` が設定されている場合だけ、`wx hook session-start`、`wx hook user-prompt-submit`、`wx hook pre-tool-use`、`wx hook session-end` を呼び出すよう設定してください。
+  hook の登録は `wx setup` が行います。Claude と Codex の hook 設定のうち wx のエントリだけを wx が所有し、それ以外の内容には触れません。
   Claude の `--resume` と Codex の `resume` は通常の引数のまま使えます。
-  hook の設定は wx とは別に管理します。
 
 コマンドやオプションの詳細は、`wx --help` と `wx <command> --help` を参照してください。
 
