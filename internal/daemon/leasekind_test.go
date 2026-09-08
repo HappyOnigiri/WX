@@ -288,6 +288,47 @@ func TestReleaseLeaseDiscardsWithoutSaving(t *testing.T) {
 	})
 }
 
+// 期限掃引と親連動は、プロセスが生きている貸出（実行中の wx shell / wx run）を返却しない。
+// この 2 経路が生存を見ないと、動いているシェルの worktree が使用中のまま返却へ落ちる。
+func TestExpiredAndOrphanedLeasesSkipRunningProcesses(t *testing.T) {
+	t.Parallel()
+	f, repo := leaseWorktreeFixture(t)
+	store, m := f.Store, f.Manager
+	ctx := context.Background()
+	owner, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(ctx, m, 10*time.Second, owner.SessionID, owner.Token); err != nil {
+		t.Fatal(err)
+	}
+	attrs, err := m.resolveLeaseAttrs(ctx, state.LeaseKindShell, owner.SessionID, owner.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := m.leaseWithPolicy(ctx, repo, nil, "wx-shell", os.Getpid(), false, attrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(ctx, m, 10*time.Second, shell.SessionID, shell.Token); err != nil {
+		t.Fatal(err)
+	}
+	// 期限が過ぎていても、そのシェルが動いている間は返却しない。
+	setLeaseExpiry(t, f.DatabasePath, shell.SessionID, state.FormatTime(time.Now().Add(-time.Minute)))
+	m.reconcileExpiredLeases(ctx)
+	if stored, err := store.SessionByID(ctx, shell.SessionID); err != nil || stored.State != "ACTIVE" {
+		t.Fatalf("a running shell lease was released at its deadline: session=%+v err=%v", stored, err)
+	}
+	// 親が終了しても、その子が動いている間は返却しない。
+	if err := m.Release(ctx, owner.SessionID, owner.Token, "test"); err != nil {
+		t.Fatal(err)
+	}
+	m.releaseOrphanedChildLeases(ctx)
+	if stored, err := store.SessionByID(ctx, shell.SessionID); err != nil || stored.State != "ACTIVE" {
+		t.Fatalf("a running child lease was released when its owner ended: session=%+v err=%v", stored, err)
+	}
+}
+
 // 返却の書き込みが失敗したら、成功として返さない。
 // wx release が終了コード 0 を返すと、貸出が使用中のまま残っていることを誰も検知できない。
 func TestReleaseLeaseWithoutTokenReturnsWriteFailures(t *testing.T) {

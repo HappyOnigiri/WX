@@ -77,6 +77,13 @@ func (m *Manager) releaseLeaseWithoutToken(ctx context.Context, candidate state.
 	return nil
 }
 
+// leaseCandidateRunning は貸出のプロセスがまだ生きているかを返す。
+// 期限掃引と親連動は、実行中の wx shell / wx run を返却しないためこれで候補を見送る。
+// 見送った候補は次の巡回で拾い直す。
+func leaseCandidateRunning(candidate state.OrphanCandidate) bool {
+	return processAlive(candidate.ClientPID) || processAlive(candidate.AgentPID)
+}
+
 // reconcileExpiredLeases は期限が来た貸出と、親が終了した子貸出を返却する。
 // どちらも保存経路（session RELEASING → slot DRAINING → SNAPSHOT ジョブ）を通るので、
 // 期限が来ても保存されてから返却され、実体は retention.ended_worktree の間残る。
@@ -86,6 +93,9 @@ func (m *Manager) reconcileExpiredLeases(ctx context.Context) {
 		m.log.Error("expired lease reconciliation failed", "error", err)
 	}
 	for _, candidate := range expired {
+		if leaseCandidateRunning(candidate) {
+			continue
+		}
 		m.log.Info("releasing a lease that reached lease.ttl", "session_id", candidate.ID, "slot_id", candidate.SlotID)
 		if err := m.releaseLeaseWithoutToken(ctx, candidate, "lease-expired"); err != nil {
 			m.log.Error("lease release failed", "session_id", candidate.ID, "error", err)
@@ -103,6 +113,9 @@ func (m *Manager) releaseOrphanedChildLeases(ctx context.Context) {
 		return
 	}
 	for _, candidate := range children {
+		if leaseCandidateRunning(candidate) {
+			continue
+		}
 		m.log.Info("releasing a lease whose owner session ended", "session_id", candidate.ID, "slot_id", candidate.SlotID)
 		if err := m.releaseLeaseWithoutToken(ctx, candidate, "lease-owner-ended"); err != nil {
 			m.log.Error("lease release failed", "session_id", candidate.ID, "error", err)

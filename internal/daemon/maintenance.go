@@ -269,7 +269,7 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 		return
 	}
 	for _, candidate := range candidates {
-		if processAlive(candidate.ClientPID) || processAlive(candidate.AgentPID) {
+		if leaseCandidateRunning(candidate) {
 			continue
 		}
 		if err := m.releaseLeaseWithoutToken(ctx, candidate, "orphan-reconcile"); err != nil {
