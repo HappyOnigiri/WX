@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/spf13/pflag"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
 func runConfig(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
+	workspace := fs.String("workspace", "", "target a workspace-specific setting")
 	// 設定値は「-」で始まることもあるため、最初の位置引数（キー）以降はフラグとして扱わない。
 	fs.SetInterspersed(false)
 	fs.Usage = func() { commandUsage(os.Stdout, "config") }
@@ -19,6 +23,9 @@ func runConfig(ctx context.Context, args []string) int {
 		return code
 	}
 	rest := fs.Args()
+	if *workspace != "" {
+		return runWorkspaceConfig(ctx, *workspace, rest)
+	}
 	if len(rest) == 0 {
 		cfg, err := config.Load()
 		if err != nil {
@@ -93,4 +100,77 @@ func runConfig(ctx context.Context, args []string) int {
 		fmt.Println("saved and reloaded")
 	}
 	return 0
+}
+
+func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	root, err := resolveConfigWorkspace(ctx, cfg, path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if len(args) == 0 {
+		count, overridden := cfg.WarmCountForWorkspace(root)
+		source := "global"
+		if overridden {
+			source = "workspace"
+		}
+		fmt.Printf("Workspace: %s\n", root)
+		fmt.Printf("  warm_count = %d\n", count)
+		fmt.Printf("  source = %s\n", source)
+		return 0
+	}
+	if len(args) != 2 || args[0] != "warm_count" {
+		commandUsage(os.Stderr, "config")
+		return 2
+	}
+	raw, err := config.LoadRaw()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	switch args[1] {
+	case "--reset":
+		err = config.ResetWorkspaceWarmCount(&raw, root)
+	default:
+		count, parseErr := strconv.Atoi(args[1])
+		if parseErr != nil {
+			err = fmt.Errorf("warm_count must be an integer: %w", parseErr)
+		} else {
+			err = config.SetWorkspaceWarmCount(&raw, root, count)
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	effective := config.Merge(config.Defaults(), raw)
+	if err := config.NormalizePaths(&effective); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if err := config.Validate(&effective); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if err := config.Save(raw); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	c, _ := rpcClient()
+	if err := c.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil {
+		fmt.Printf("saved; daemon reload pending: %s\n", rpcErrorMessage(err))
+	} else {
+		fmt.Println("saved and reloaded")
+	}
+	return 0
+}
+
+func resolveConfigWorkspace(ctx context.Context, cfg config.Config, path string) (string, error) {
+	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: cfg.Discovery.Timeout.Duration}, Config: cfg}
+	return discoverer.PolicyRoot(ctx, path)
 }

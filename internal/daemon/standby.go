@@ -34,7 +34,8 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	if m.replenishSuspended(ctx, string(w.ID)) {
 		return nil
 	}
-	needed := cfg.Pool.WarmPerWorkspace - m.store.StandbyCount(ctx, string(w.ID))
+	warmCount, _ := cfg.WarmCountForWorkspace(string(w.Root))
+	needed := warmCount - m.store.StandbyCount(ctx, string(w.ID))
 	if needed <= 0 {
 		return nil
 	}
@@ -140,7 +141,8 @@ func (m *Manager) standbyReplenishmentEnabled(w discovery.Workspace) bool {
 // standbyReplenishmentEnabledForRoot は root path だけから補充の有無を判定する。診断は workspace 行しか持たないため、root で引ける形を分けている。
 func (m *Manager) standbyReplenishmentEnabledForRoot(root string) bool {
 	cfg := m.Config()
-	return cfg.WorktreeMode(root) == "hot" && cfg.Pool.WarmPerWorkspace >= 1 && cfg.Retention.HotStandby.Duration > 0
+	warmCount, _ := cfg.WarmCountForWorkspace(root)
+	return cfg.WorktreeMode(root) == "hot" && warmCount >= 1 && cfg.Retention.HotStandby.Duration > 0
 }
 
 func (m *Manager) handleNormalSessionSuccess(ctx context.Context, w discovery.Workspace, replenishJob state.Job, replenished bool) {
@@ -158,10 +160,10 @@ func (m *Manager) handleNormalSessionSuccess(ctx context.Context, w discovery.Wo
 
 // reserveStandbySlot は予約から登録までを1回分だけ行う。retry が true のときは ID 衝突なので、別の ID で呼び直せる。
 // 予約中は reconcile の回収対象から外し、進行中の確保を中断扱いで隔離されないようにする。
-func (m *Manager) reserveStandbySlot(ctx context.Context, id, rootID, relPath, slotPath, workspaceID string, generation int, repos []state.SlotRepository) (state.Job, bool, error) {
+func (m *Manager) reserveStandbySlot(ctx context.Context, id, rootID, relPath, slotPath, workspaceID string, generation, warmCount int, repos []state.SlotRepository) (state.Job, bool, error) {
 	endReservation := m.beginReservation(id)
 	defer endReservation()
-	reserved, err := m.store.ReserveStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: workspaceID, Generation: generation, RootID: rootID, RelPath: relPath}, m.Config().Pool.WarmPerWorkspace)
+	reserved, err := m.store.ReserveStandbyIfNeeded(ctx, state.Slot{ID: id, WorkspaceID: workspaceID, Generation: generation, RootID: rootID, RelPath: relPath}, warmCount)
 	if err == nil && !reserved {
 		return state.Job{}, false, nil
 	}
@@ -197,6 +199,7 @@ func (m *Manager) reserveStandbySlot(ctx context.Context, id, rootID, relPath, s
 }
 
 func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string, w discovery.Workspace, resolved []pool.Resolved, generation int, hot map[string]bool) (state.Job, error) {
+	warmCount, _ := m.Config().WarmCountForWorkspace(string(w.Root))
 	var lastErr error
 	for range idAllocationAttempts {
 		id, err := newSlotID()
@@ -218,7 +221,7 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return state.Job{}, err
 		}
-		job, retry, err := m.reserveStandbySlot(ctx, id, rootID, relPath, slotPath, string(w.ID), generation, repos)
+		job, retry, err := m.reserveStandbySlot(ctx, id, rootID, relPath, slotPath, string(w.ID), generation, warmCount, repos)
 		if retry {
 			lastErr = err
 			continue

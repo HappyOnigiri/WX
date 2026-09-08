@@ -32,7 +32,23 @@ func (s *Store) HotRepositoryIDs(ctx context.Context, hotBefore string) (map[str
 type ColdRepositoryCandidate struct{ SlotID, WorkspaceID, RepositoryID, WorktreePath string }
 
 func (s *Store) ColdRepositoryCandidates(ctx context.Context, hotBefore string) ([]ColdRepositoryCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sr.repository_id,rt.path||'/'||sl.rel_path||'/'||sr.dir_name FROM slots sl JOIN roots rt ON rt.id=sl.root_id JOIN slot_repositories sr ON sr.slot_id=sl.id JOIN repositories r ON r.id=sr.repository_id WHERE sl.owner_session_id IS NULL AND sl.state='READY' AND sr.state='READY' AND (r.last_leased_at IS NULL OR r.last_leased_at<=?) ORDER BY sl.id,sr.repository_id`, hotBefore)
+	return s.coldRepositoryCandidates(ctx, hotBefore, nil)
+}
+
+// ColdRepositoryCandidatesForWarm は workspace ごとの待機枠数が正の workspace だけを COLD 化候補にする。
+// global が 0 でも個別設定が正なら、その workspace の保持期限処理を継続できる。
+func (s *Store) ColdRepositoryCandidatesForWarm(ctx context.Context, hotBefore string, defaultWarm int, overrides map[string]int) ([]ColdRepositoryCandidate, error) {
+	return s.coldRepositoryCandidates(ctx, hotBefore, func(root string) bool {
+		warm := defaultWarm
+		if override, ok := overrides[root]; ok {
+			warm = override
+		}
+		return warm > 0
+	})
+}
+
+func (s *Store) coldRepositoryCandidates(ctx context.Context, hotBefore string, include func(root string) bool) ([]ColdRepositoryCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sr.repository_id,rt.path||'/'||sl.rel_path||'/'||sr.dir_name,COALESCE(w.root_path,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN workspaces w ON w.id=sl.workspace_id JOIN slot_repositories sr ON sr.slot_id=sl.id JOIN repositories r ON r.id=sr.repository_id WHERE sl.owner_session_id IS NULL AND sl.state='READY' AND sr.state='READY' AND (r.last_leased_at IS NULL OR r.last_leased_at<=?) ORDER BY sl.id,sr.repository_id`, hotBefore)
 	if err != nil {
 		return nil, err
 	}
@@ -40,8 +56,12 @@ func (s *Store) ColdRepositoryCandidates(ctx context.Context, hotBefore string) 
 	var out []ColdRepositoryCandidate
 	for rows.Next() {
 		var candidate ColdRepositoryCandidate
-		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.RepositoryID, &candidate.WorktreePath); err != nil {
+		var root string
+		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.RepositoryID, &candidate.WorktreePath, &root); err != nil {
 			return nil, err
+		}
+		if include != nil && !include(root) {
+			continue
 		}
 		out = append(out, candidate)
 	}
@@ -100,8 +120,8 @@ func (s *Store) FinishColdRepositoryRemoval(ctx context.Context, slotID, reposit
 	return tx.Commit()
 }
 
-func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm int) ([]StandbyGCCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,rt.path||'/'||sl.rel_path,sl.state,COALESCE(sl.ready_at,sl.created_at) FROM slots sl JOIN roots rt ON rt.id=sl.root_id WHERE sl.owner_session_id IS NULL AND sl.state IN ('READY','STALE') ORDER BY sl.workspace_id,COALESCE(sl.ready_at,sl.created_at) DESC,sl.id`)
+func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm int, overrides ...map[string]int) ([]StandbyGCCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,rt.path||'/'||sl.rel_path,sl.state,COALESCE(sl.ready_at,sl.created_at),COALESCE(w.root_path,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.owner_session_id IS NULL AND sl.state IN ('READY','STALE') ORDER BY sl.workspace_id,COALESCE(sl.ready_at,sl.created_at) DESC,sl.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -111,10 +131,21 @@ func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm 
 	for rows.Next() {
 		var candidate StandbyGCCandidate
 		var readyAt string
-		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.Path, &candidate.State, &readyAt); err != nil {
+		var root string
+		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.Path, &candidate.State, &readyAt, &root); err != nil {
 			return nil, err
 		}
-		if candidate.State == "STALE" || kept[candidate.WorkspaceID] >= warm {
+		effectiveWarm := warm
+		if len(overrides) > 0 {
+			if override, ok := overrides[0][root]; ok {
+				effectiveWarm = override
+			}
+		}
+		if candidate.State == "STALE" {
+			out = append(out, candidate)
+			continue
+		}
+		if kept[candidate.WorkspaceID] >= effectiveWarm {
 			out = append(out, candidate)
 			continue
 		}

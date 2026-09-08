@@ -40,7 +40,23 @@ contextが終わった要求はロックを取らず、callbackも実行しな�
 
 ## standby補充
 
-`standby.go`は`hot`なworkspaceのREADY slotを`pool.warm_per_workspace`まで補充する。
+`standby.go`は`hot`なworkspaceのREADY slotを待機枠数まで補充する。個数は
+`workspaces.<root>.warm_count`、未指定なら`pool.warm_per_workspace`、さらに未指定なら既定値1の順で決まる。
+workspace個別値は単一リポジトリではそのリポジトリのmain worktree、multi-repositoryではworkspace rootに適用する。
+値0はそのworkspaceの補充を無効にするが、個数指定だけで`hot`へは変更しない。
+設定ファイルでは次のように指定する。
+
+```yaml
+pool:
+  warm_per_workspace: 1
+workspaces:
+  /path/to/repository:
+    warm_count: 3
+```
+
+`wx config --workspace /path/to/repository`で実効値と継承元を確認し、
+`wx config --workspace /path/to/repository warm_count 3`で変更する。
+`warm_count 0`は補充を止め、`warm_count --reset`はグローバル値の継承へ戻す。
 `Store.HotRepositoryIDs`は`repositories.last_leased_at`で絞るが、貸出時の更新はworkspace単位なので、直後の補充では全リポジトリがhotになる。
 リポジトリごとの利用に絞るなら、`session_repositories`へ実利用を記録し、`HotRepositoryIDs`とGCの`ColdRepositoryCandidates`をともに変更する必要がある。
 
@@ -49,6 +65,9 @@ contextが終わった要求はロックを取らず、callbackも実行しな�
 除外記録はslotの状態や実体を変更せず、同じ成功の再処理で後発の失敗slotまで除外しない。
 復元成功や`SessionStart`による`ACTIVE`遷移だけでは除外記録を作らず、補充の契機にもならない。
 `QUARANTINED`は待機枠に数えないが、待機用PREPAREの失敗後は補充を停止することでGCとの作成・削除ループを防ぐ。
+
+個数を増やした設定の反映は次の保守一巡で不足分を補充する。減らした場合は準備中の処理を中断せず、完了後に余剰のREADY slotを既存GCが回収する。
+貸出中slotは回収せず、保持期間によるCOLD化もworkspaceごとの実効値が正のときだけ行う。
 
 補充停止は`replenish_suspensions`に永続化し、定期reconcileと補充ジョブの双方で参照する。
 停止理由によらず、解除はそのworkspaceの手動起動（貸出・resume）の成功か`wx retry-standby`だけとし、既存sessionの返却では解除しない。

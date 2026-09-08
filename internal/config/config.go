@@ -105,6 +105,9 @@ type Workspace struct {
 	Worktree string   `yaml:"worktree,omitempty"`
 	Copy     []string `yaml:"copy,omitempty"`
 	Link     []string `yaml:"link,omitempty"`
+	// WarmCount は workspace 個別の待機枠数で、nil のときは pool.warm_per_workspace を継承する。
+	// ポインタで明示的な 0 と未指定を区別する。
+	WarmCount *int `yaml:"warm_count,omitempty"`
 }
 type Includes struct {
 	DefaultAgentRules bool `yaml:"default_agent_rules,omitempty"`
@@ -215,6 +218,9 @@ func Validate(c *Config) error {
 		if workspace.Worktree != "" && !validWorktreeMode(workspace.Worktree, false) {
 			return fmt.Errorf("workspaces.%s.worktree must be hot, cold, or off", path)
 		}
+		if workspace.WarmCount != nil && *workspace.WarmCount < 0 {
+			return fmt.Errorf("workspaces.%s.warm_count must not be negative", path)
+		}
 	}
 	if c.Version != 1 {
 		return fmt.Errorf("unsupported config version %d", c.Version)
@@ -274,4 +280,25 @@ func (c Config) WorktreeMode(root string) string {
 		return mode
 	}
 	return c.Worktree.Undefined
+}
+
+// WarmCountForWorkspace は workspace root に対する待機枠数と、個別設定の有無を返す。
+// Workspaces は NormalizePaths 済みであることを呼び出し側の契約とする。
+func (c Config) WarmCountForWorkspace(root string) (int, bool) {
+	if override := c.Workspaces[root].WarmCount; override != nil {
+		return *override, true
+	}
+	return c.Pool.WarmPerWorkspace, false
+}
+
+// WarmCountOverrides は workspace root ごとの明示的な待機枠数をコピーして返す。
+// 明示的な 0 も map の値として保持する。
+func (c Config) WarmCountOverrides() map[string]int {
+	overrides := make(map[string]int)
+	for root, workspace := range c.Workspaces {
+		if workspace.WarmCount != nil {
+			overrides[root] = *workspace.WarmCount
+		}
+	}
+	return overrides
 }

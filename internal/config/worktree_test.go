@@ -96,3 +96,70 @@ func TestWorktreeSelectionPreservesSparseConfigAndCanonicalKey(t *testing.T) {
 		t.Fatal("empty config selection lost")
 	}
 }
+
+func TestWorkspaceWarmCountOverridePreservesOtherSettingsAndExplicitZero(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "repo")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(home, "alias")
+	if err := os.Symlink(repo, alias); err != nil {
+		t.Fatal(err)
+	}
+	raw := Config{Workspaces: map[string]Workspace{
+		"$HOME/alias": {Worktree: "hot", Copy: []string{".env"}, Link: []string{"cache"}},
+	}}
+	if err := SetWorkspaceWarmCount(&raw, repo, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, ok := loaded.Workspaces[repo]
+	if !ok || workspace.WarmCount == nil || *workspace.WarmCount != 0 || workspace.Worktree != "hot" || len(workspace.Copy) != 1 || len(workspace.Link) != 1 {
+		t.Fatalf("workspace override=%+v, want preserved settings and explicit zero", workspace)
+	}
+	if got, overridden := loaded.WarmCountForWorkspace(repo); got != 0 || !overridden {
+		t.Fatalf("warm count=%d overridden=%v, want explicit zero", got, overridden)
+	}
+
+	raw, err = LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ResetWorkspaceWarmCount(&raw, repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace = loaded.Workspaces[repo]
+	if workspace.WarmCount != nil || workspace.Worktree != "hot" || len(workspace.Copy) != 1 || len(workspace.Link) != 1 {
+		t.Fatalf("reset workspace override=%+v, want other settings retained", workspace)
+	}
+	if got, overridden := loaded.WarmCountForWorkspace(repo); got != 1 || overridden {
+		t.Fatalf("reset warm count=%d overridden=%v, want global default", got, overridden)
+	}
+}
+
+func TestWorkspaceWarmCountValidationRejectsNegative(t *testing.T) {
+	negative := -1
+	cfg := Defaults()
+	cfg.Workspaces["/repo"] = Workspace{WarmCount: &negative}
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("negative workspace warm count was accepted")
+	}
+	if err := SetWorkspaceWarmCount(&cfg, "/repo", -1); err == nil {
+		t.Fatal("negative workspace warm count update was accepted")
+	}
+}

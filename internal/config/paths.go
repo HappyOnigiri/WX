@@ -156,3 +156,79 @@ func SetWorkspaceWorktree(c *Config, root, mode string) error {
 	c.present["workspaces"] = true
 	return nil
 }
+
+// SetWorkspaceWarmCount は既存の workspace 個別設定を保ったまま待機枠数を保存する。
+// 同じ実体を指す既存キーがあればその表記を維持し、明示的な 0 も未指定と区別して保存する。
+func SetWorkspaceWarmCount(c *Config, root string, count int) error {
+	if count < 0 {
+		return errors.New("warm_count must not be negative")
+	}
+	key, err := workspaceOverrideKey(c, root)
+	if err != nil {
+		return err
+	}
+	if c.Workspaces == nil {
+		c.Workspaces = map[string]Workspace{}
+	}
+	workspace := c.Workspaces[key]
+	workspace.WarmCount = new(count)
+	c.Workspaces[key] = workspace
+	markWorkspacePresent(c)
+	return nil
+}
+
+// ResetWorkspaceWarmCount は workspace の個別待機枠数だけを解除する。
+// 他の workspace 設定が無ければ map の項目自体も削除し、疎な YAML を保つ。
+func ResetWorkspaceWarmCount(c *Config, root string) error {
+	key, err := workspaceOverrideKey(c, root)
+	if err != nil {
+		return err
+	}
+	workspace, ok := c.Workspaces[key]
+	if !ok || workspace.WarmCount == nil {
+		if len(c.Workspaces) == 0 && c.present != nil {
+			c.present["workspaces"] = false
+		}
+		return nil
+	}
+	workspace.WarmCount = nil
+	if workspace.Worktree == "" && len(workspace.Copy) == 0 && len(workspace.Link) == 0 {
+		delete(c.Workspaces, key)
+	} else {
+		c.Workspaces[key] = workspace
+	}
+	if len(c.Workspaces) == 0 {
+		if c.present == nil {
+			c.present = map[string]bool{}
+		}
+		c.present["workspaces"] = false
+	} else {
+		markWorkspacePresent(c)
+	}
+	return nil
+}
+
+// workspaceOverrideKey は指定 root に対応する既存の map key を探し、無ければ canonical path を返す。
+func workspaceOverrideKey(c *Config, root string) (string, error) {
+	canonical, err := canonicalPath(root)
+	if err != nil {
+		return "", err
+	}
+	for path := range c.Workspaces {
+		resolved, err := canonicalPath(path)
+		if err != nil {
+			return "", err
+		}
+		if resolved == canonical {
+			return path, nil
+		}
+	}
+	return canonical, nil
+}
+
+func markWorkspacePresent(c *Config) {
+	if c.present == nil {
+		c.present = map[string]bool{}
+	}
+	c.present["workspaces"] = true
+}

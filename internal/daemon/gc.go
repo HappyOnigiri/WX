@@ -96,7 +96,8 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		progress.addFailed("ended worktrees", "ended worktree candidate query failed", err)
 		return progress.GCResult, progress.err()
 	}
-	standbys, err := m.store.StandbyGCCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)), cfg.Pool.WarmPerWorkspace)
+	warmOverrides := cfg.WarmCountOverrides()
+	standbys, err := m.store.StandbyGCCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)), cfg.Pool.WarmPerWorkspace, warmOverrides)
 	if err != nil {
 		progress.addFailed("standby worktrees", "standby candidate query failed", err)
 		return progress.GCResult, progress.err()
@@ -106,13 +107,10 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		progress.addFailed("quarantined worktrees", "quarantined candidate query failed", err)
 		return progress.GCResult, progress.err()
 	}
-	var cold []state.ColdRepositoryCandidate
-	if cfg.Pool.WarmPerWorkspace > 0 {
-		cold, err = m.store.ColdRepositoryCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)))
-		if err != nil {
-			progress.addFailed("cold repositories", "cold repository candidate query failed", err)
-			return progress.GCResult, progress.err()
-		}
+	cold, err := m.store.ColdRepositoryCandidatesForWarm(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)), cfg.Pool.WarmPerWorkspace, warmOverrides)
+	if err != nil {
+		progress.addFailed("cold repositories", "cold repository candidate query failed", err)
+		return progress.GCResult, progress.err()
 	}
 	expired, err := m.store.ExpiredSnapshots(ctx, state.FormatTime(nowTime))
 	if err != nil {
