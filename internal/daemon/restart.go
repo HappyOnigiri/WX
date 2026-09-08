@@ -208,11 +208,47 @@ func (m *Manager) notifyLifecycleCheck() {
 	}
 }
 
+// notifyLifecycleCheckIfPending はジョブ完了後のゲート検査を促す。
+// 判断とシグナル発行は maintainJobs に集約し、ここでは通知だけを非同期に送る。
+func (m *Manager) notifyLifecycleCheckIfPending() {
+	m.mu.RLock()
+	pending := (m.restartPending || m.stopPending) && !m.lifecycleClaimed && lifecycleRetryReady(m.lifecycleRetryAt, time.Now())
+	m.mu.RUnlock()
+	if pending {
+		m.notifyLifecycleCheck()
+	}
+}
+
 // 停止または再起動がゲート待ちかを返す。maintainJobs は短い周期での再検査に使う。
 func (m *Manager) lifecyclePending() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return (m.restartPending || m.stopPending) && !m.lifecycleClaimed
+}
+
+// lifecycleCheckDelay は次のゲート検査までの待機時間を返す。
+// RPC 応答の保護猶予だけは期限まで待ち、ジョブや読み取り失敗を拾うための周期検査は残す。
+func (m *Manager) lifecycleCheckDelay() (time.Duration, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !(m.restartPending || m.stopPending) || m.lifecycleClaimed {
+		return 0, false
+	}
+	delay := lifecycleCheckInterval
+	if !m.lastLifecycleEnd.IsZero() {
+		grace := time.Until(m.lastLifecycleEnd.Add(lifecycleReplyGrace))
+		if grace > 0 && grace < delay {
+			delay = grace
+		}
+	}
+	if retry := time.Until(m.lifecycleRetryAt); retry > delay {
+		delay = retry
+	}
+	return delay, true
+}
+
+func lifecycleRetryReady(retryAt, now time.Time) bool {
+	return retryAt.IsZero() || !now.Before(retryAt)
 }
 
 // 作業を落とさず追従できる時点で保留中の停止・再起動を実行する。
@@ -221,7 +257,7 @@ func (m *Manager) lifecyclePending() bool {
 func (m *Manager) runPendingLifecycle() {
 	m.mu.Lock()
 	stop, restart := m.stopPending, m.restartPending
-	if (!stop && !restart) || m.lifecycleClaimed || !m.lifecycleGateOpenLocked() {
+	if (!stop && !restart) || m.lifecycleClaimed || !lifecycleRetryReady(m.lifecycleRetryAt, time.Now()) || !m.lifecycleGateOpenLocked() {
 		m.mu.Unlock()
 		return
 	}
@@ -309,6 +345,7 @@ func (m *Manager) resetLifecycleRetriesLocked() {
 	}
 	m.lifecycleAttempts = 0
 	m.lifecycleClaimed = false
+	m.lifecycleRetryAt = time.Time{}
 }
 
 // claim が送信済みか、再試行上限で解除されたものかを区別する。前者だけが不可逆である。
@@ -319,11 +356,21 @@ func (m *Manager) lifecycleSignalDeliveredLocked() bool {
 
 func (m *Manager) releaseLifecycleClaim() (attempts int, exhausted bool) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.lifecycleAttempts++
 	exhausted = m.lifecycleAttempts >= maxLifecycleAttempts
 	m.lifecycleClaimed = exhausted
-	return m.lifecycleAttempts, exhausted
+	if exhausted {
+		m.lifecycleRetryAt = time.Time{}
+	} else {
+		m.lifecycleRetryAt = time.Now().Add(lifecycleCheckInterval)
+	}
+	attempts = m.lifecycleAttempts
+	m.mu.Unlock()
+	if !exhausted {
+		// 失敗後の再検査を予約するが、lifecycleCheckDelay が1秒の期限を守る。
+		m.notifyLifecycleCheck()
+	}
+	return attempts, exhausted
 }
 
 // 評価開始時の保留意図がまだ同じかを返す。呼び出し時は m.mu を保持する。
@@ -411,6 +458,7 @@ func (m *Manager) endRequest(lifecycle bool) {
 	if m == nil {
 		return
 	}
+	notify := false
 	m.mu.Lock()
 	m.inflightRequests--
 	if lifecycle {
@@ -418,5 +466,11 @@ func (m *Manager) endRequest(lifecycle bool) {
 		// まだ応答を書き込んでいないため、ゲートを閉じ始める時刻を記録する。
 		m.lastLifecycleEnd = time.Now()
 	}
+	if m.inflightRequests == 0 && (m.restartPending || m.stopPending) && !m.lifecycleClaimed && lifecycleRetryReady(m.lifecycleRetryAt, time.Now()) {
+		notify = true
+	}
 	m.mu.Unlock()
+	if notify {
+		m.notifyLifecycleCheck()
+	}
 }

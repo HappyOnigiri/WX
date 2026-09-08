@@ -22,7 +22,7 @@ const (
 <plist version="1.0"><dict>
 <key>Label</key><string>{{.Label}}</string>
 <key>ProgramArguments</key><array><string>{{.Binary | x}}</string><string>daemon</string><string>start</string><string>--foreground</string></array>
-<key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>1</integer>
 <key>EnvironmentVariables</key><dict><key>HOME</key><string>{{.Home | x}}</string><key>PATH</key><string>{{.Path | x}}</string></dict>
 <key>StandardOutPath</key><string>{{.Log | x}}</string><key>StandardErrorPath</key><string>{{.Log | x}}</string>
 </dict></plist>`

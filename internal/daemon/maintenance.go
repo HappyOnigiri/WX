@@ -21,10 +21,29 @@ func (m *Manager) maintainJobs() {
 	defer lifecycle.Stop()
 	armed := false
 	rearm := func() {
-		if !armed && m.lifecyclePending() {
-			lifecycle.Reset(lifecycleCheckInterval)
-			armed = true
+		delay, pending := m.lifecycleCheckDelay()
+		if !pending {
+			if armed {
+				if !lifecycle.Stop() {
+					select {
+					case <-lifecycle.C:
+					default:
+					}
+				}
+				armed = false
+			}
+			return
 		}
+		if armed {
+			if !lifecycle.Stop() {
+				select {
+				case <-lifecycle.C:
+				default:
+				}
+			}
+		}
+		lifecycle.Reset(delay)
+		armed = true
 	}
 	for {
 		select {
