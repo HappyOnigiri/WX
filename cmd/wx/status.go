@@ -121,6 +121,14 @@ func staleDaemonFindings(reply diag.Reply) []diag.Finding {
 	if len(reply.Findings) > 0 {
 		return nil
 	}
+	if reply.SchemaVersion >= diag.FindingsSchemaVersion {
+		return []diag.Finding{{
+			Check: diag.CheckDaemon, Severity: diag.SeverityProblem, Summary: "the daemon returned no diagnostics",
+			Cause: fmt.Sprintf("the daemon answers with JSON schema %d, which wx doctor can read, but its reply carried no check result at all",
+				reply.SchemaVersion),
+			Action: "check the daemon log for the failed reply, then run wx doctor again",
+		}}
+	}
 	return []diag.Finding{{
 		Check: diag.CheckDaemon, Severity: diag.SeverityProblem, Summary: "the daemon returned no diagnostics",
 		Cause: fmt.Sprintf("the daemon answers with JSON schema %d, and wx doctor needs schema %d or newer to read its results",

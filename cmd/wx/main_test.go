@@ -186,6 +186,14 @@ func TestRunDoctorReportsAnOlderDaemonThatCannotReturnFindings(t *testing.T) {
 	if got := staleDaemonFindings(diag.Reply{Findings: []diag.Finding{{Check: diag.CheckDaemon}}}); got != nil {
 		t.Fatalf("stale daemon findings for a current reply=%+v", got)
 	}
+	// 読める schema で結果が空なら原因は schema 版ではないため、再起動を促さない。
+	empty := staleDaemonFindings(diag.Reply{SchemaVersion: diag.FindingsSchemaVersion})
+	if len(empty) != 1 || empty[0].Severity != diag.SeverityProblem {
+		t.Fatalf("empty reply findings=%+v", empty)
+	}
+	if strings.Contains(empty[0].Action, "wx daemon restart") || strings.Contains(empty[0].Cause, "or newer") {
+		t.Fatalf("empty reply finding blamed the schema version=%+v", empty[0])
+	}
 }
 
 func TestRunGCReturnsNonZeroForPendingReport(t *testing.T) {
