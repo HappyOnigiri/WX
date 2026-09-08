@@ -307,7 +307,7 @@ func restartDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "restarting")
+	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "restarting daemon")
 	defer waiting.finish()
 	reply, err := requestDaemonLifecycle(ctx, "RequestRestart")
 	if err != nil {
