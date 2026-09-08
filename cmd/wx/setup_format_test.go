@@ -52,6 +52,22 @@ func TestSetupActionDescriptionsNameWhatChanges(t *testing.T) {
 	if got := setupActionDescription(setup.Step{Detail: "the daemon"}, setup.ActionInstall); !strings.Contains(got, "the wx configuration") {
 		t.Fatalf("a step without a target=%q", got)
 	}
+	// daemon は設定を書かないので、書き込みの文型を当てない。
+	daemon := setup.Step{ID: "daemon", Detail: "wx daemon answers the local socket", State: setup.StateAbsent}
+	for action, want := range map[setup.Action]string{
+		setup.ActionInstall: "start the wx daemon",
+		setup.ActionUpdate:  "start the wx daemon",
+		setup.ActionKeep:    "leave the running daemon as it is",
+		setup.ActionSkip:    "do nothing now",
+	} {
+		got := setupActionDescription(daemon, action)
+		if !strings.Contains(got, want) {
+			t.Fatalf("daemon %s description=%q, want it to mention %q", action, got, want)
+		}
+		if strings.Contains(got, "the wx configuration") {
+			t.Fatalf("daemon %s description reads as a write to the configuration: %q", action, got)
+		}
+	}
 	if got := setupActionDescription(step, setup.Action("nonsense")); got != "" {
 		t.Fatalf("an unknown action described itself: %q", got)
 	}

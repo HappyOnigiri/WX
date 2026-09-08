@@ -84,6 +84,11 @@ func setupStepDescription(step setup.Step) string {
 // setupActionDescription は選択肢ごとに、実際に書き込む path と内容の要約を出す。
 // chezmoi などの置き換えという性質上、何が変わるか示さないと選べない。
 func setupActionDescription(step setup.Step, action setup.Action) string {
+	if step.ID == "daemon" {
+		if description := setupDaemonActionDescription(action); description != "" {
+			return description
+		}
+	}
 	target := step.Target
 	if target == "" {
 		target = "the wx configuration"
@@ -103,6 +108,23 @@ func setupActionDescription(step setup.Step, action setup.Action) string {
 		return "write " + summarizeSetupChange(step) + " to " + target
 	case setup.ActionManual:
 		return "type another path to write to " + target
+	default:
+		return ""
+	}
+}
+
+// setupDaemonActionDescription は daemon だけの文言を返す。扱わない操作には空を返し、共通の文型に任せる。
+// daemon は設定ファイルへ何も書かないため、書き込みの文型を当てると config.yaml を変えると誤解させる。
+// 起動は launchd.Start（-k なしの kickstart）なので、稼働中の daemon は終了させない。
+func setupDaemonActionDescription(action setup.Action) string {
+	switch action {
+	case setup.ActionInstall, setup.ActionUpdate:
+		return "start the wx daemon if it is not running, then wait for the local socket to answer"
+	case setup.ActionKeep:
+		return "leave the running daemon as it is"
+	// remove は daemonActions に無く、default と manual は値の入力を伴う項目だけのものなので daemon には出ない。
+	case setup.ActionRemove, setup.ActionSkip, setup.ActionDefault, setup.ActionManual:
+		return ""
 	default:
 		return ""
 	}
