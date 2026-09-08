@@ -87,7 +87,7 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions)
 	if !options.Select && mode != "ask" {
 		return mode, nil
 	}
-	if !isTerminal(int(os.Stdin.Fd())) || !isTerminal(int(os.Stderr.Fd())) {
+	if !tui.IsTerminal(int(os.Stdin.Fd())) || !tui.IsTerminal(int(os.Stderr.Fd())) {
 		return "", errors.New("worktree policy requires a terminal; use wx --worktree or wx --no-worktree, or configure worktree.undefined")
 	}
 	initial := 1
