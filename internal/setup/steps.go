@@ -263,23 +263,40 @@ func joinComma(values []string) string {
 	return out
 }
 
-func applyHooks(step Step, action Action) error {
+// applyHooks は hook エントリを書き、書き換えた実体と控えの path を note として返す。
+// 控えは wx の状態ディレクトリへ置くので、出力に出さないと利用者は写しの場所を知る手段がない。
+func applyHooks(step Step, action Action) (string, error) {
 	agent := "claude"
 	if step.ID == stepHooksCodex {
 		agent = "codex"
 	}
 	if action == ActionRemove {
-		_, err := hookconfig.Remove(agent)
-		return err
+		result, err := hookconfig.Remove(agent)
+		if err != nil {
+			return "", err
+		}
+		return hookApplyNote(result), nil
 	}
 	result, err := hookconfig.Install(agent)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if result.State.Status != hookconfig.StatusCurrent {
-		return fmt.Errorf("%s was written but the readiness contract is still not satisfied: %v", result.Resolved, result.State.Reasons())
+		return "", fmt.Errorf("%s was written but the readiness contract is still not satisfied: %v", result.Resolved, result.State.Reasons())
 	}
-	return nil
+	return hookApplyNote(result), nil
+}
+
+// hookApplyNote は書き換えた実体と控えの path を 1 行にする。何も書かなかったときは空を返す。
+func hookApplyNote(result hookconfig.Result) string {
+	if !result.Changed {
+		return ""
+	}
+	note := "wrote " + result.Resolved
+	if result.Backup != "" {
+		note += "; backup at " + result.Backup
+	}
+	return note
 }
 
 // collectDaemon は socket へ接続するだけで満足せず、Status を 1 回呼んで応答の中身まで確かめる。

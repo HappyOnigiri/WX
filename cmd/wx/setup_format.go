@@ -126,6 +126,14 @@ func printSetupApplied(w io.Writer, step setup.Step, action setup.Action) {
 	_, _ = fmt.Fprintf(w, "%-14s %s\n", step.ID, action)
 }
 
+// printSetupNote は適用の補足を字下げして出す。差分から読み取れない事実だけを持つので、空なら何も出さない。
+func printSetupNote(w io.Writer, note string) {
+	if note == "" {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "%-14s %s\n", "", note)
+}
+
 // printSetupWarnings は適用後に期待した状態にならなかった項目を警告として残す。フローは止めない。
 func printSetupWarnings(w io.Writer, id string, action setup.Action, applied setup.Step) {
 	switch {

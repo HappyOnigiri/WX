@@ -23,7 +23,7 @@ func TestShellPathAddsAndRemovesTheManagedBlock(t *testing.T) {
 	if step.State != StateAbsent || step.Target != rc {
 		t.Fatalf("shell path=%+v", step)
 	}
-	if err := Apply(ctx, fixture.options(), step, ActionInstall, ""); err != nil {
+	if _, err := Apply(ctx, fixture.options(), step, ActionInstall, ""); err != nil {
 		t.Fatal(err)
 	}
 	contents := readSetupFile(t, rc)
@@ -43,13 +43,13 @@ func TestShellPathAddsAndRemovesTheManagedBlock(t *testing.T) {
 	if divergent.State != StateDivergent {
 		t.Fatalf("edited block=%+v", divergent)
 	}
-	if err := Apply(ctx, fixture.options(), divergent, ActionUpdate, ""); err != nil {
+	if _, err := Apply(ctx, fixture.options(), divergent, ActionUpdate, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := readSetupFile(t, rc); !strings.HasPrefix(got, "tail\n") || !strings.Contains(got, shellBlockBegin) {
 		t.Fatalf("update produced:\n%s", got)
 	}
-	if err := Apply(ctx, fixture.options(), collectShellPath(), ActionRemove, ""); err != nil {
+	if _, err := Apply(ctx, fixture.options(), collectShellPath(), ActionRemove, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := readSetupFile(t, rc); got != "tail\n" {
@@ -122,7 +122,7 @@ func TestShellPathRefusesUnknownShellsAndManagedFiles(t *testing.T) {
 	if step.State != StateUnknown || len(step.Options) != 0 || !strings.Contains(strings.Join(step.Reasons, " "), "symlink") {
 		t.Fatalf("symlinked startup file=%+v", step)
 	}
-	if err := Apply(context.Background(), fixture.options(), Step{ID: stepShellPath}, ActionInstall, ""); err == nil {
+	if _, err := Apply(context.Background(), fixture.options(), Step{ID: stepShellPath}, ActionInstall, ""); err == nil {
 		t.Fatal("a step without a target was applied")
 	}
 }

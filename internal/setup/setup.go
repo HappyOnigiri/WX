@@ -145,22 +145,23 @@ func Divergent(steps []Step) []Step {
 
 // Apply は選ばれた操作を適用する。value は値の入力を伴う項目でだけ使う。
 // keep と skip は何もしないので、呼び出し側は結果だけを見ればよい。
-func Apply(ctx context.Context, options Options, step Step, action Action, value string) error {
+// note は利用者へ見せる 1 行の補足で、書き換えた実体や控えの path のように差分から読み取れない事実を返す。
+func Apply(ctx context.Context, options Options, step Step, action Action, value string) (note string, err error) {
 	if action == ActionKeep || action == ActionSkip {
-		return nil
+		return "", nil
 	}
 	switch step.ID {
 	case stepWorktreeRoot:
-		return applyWorktreeRoot(ctx, options, step, action, value)
+		return "", applyWorktreeRoot(ctx, options, step, action, value)
 	case stepShellPath:
-		return applyShellPath(step, action)
+		return "", applyShellPath(step, action)
 	case stepLaunchAgent:
-		return applyLaunchAgent(ctx, options, action)
+		return "", applyLaunchAgent(ctx, options, action)
 	case stepHooksClaude, stepHooksCodex:
 		return applyHooks(step, action)
 	case stepDaemon:
-		return applyDaemon(ctx, options, action)
+		return "", applyDaemon(ctx, options, action)
 	default:
-		return fmt.Errorf("setup step %q cannot be applied", step.ID)
+		return "", fmt.Errorf("setup step %q cannot be applied", step.ID)
 	}
 }

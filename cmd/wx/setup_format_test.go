@@ -88,4 +88,14 @@ func TestSetupWarningsReportStatesThatDidNotSettle(t *testing.T) {
 	if !strings.Contains(out.String(), "daemon") || !strings.Contains(out.String(), "install") {
 		t.Fatalf("applied line=%q", out.String())
 	}
+	out.Reset()
+	printSetupNote(&out, "wrote /home/x/.claude/settings.json; backup at /home/x/backups/claude-settings.json")
+	if !strings.Contains(out.String(), "backup at /home/x/backups/claude-settings.json") {
+		t.Fatalf("note line=%q", out.String())
+	}
+	out.Reset()
+	printSetupNote(&out, "")
+	if out.String() != "" {
+		t.Fatalf("an empty note produced output=%q", out.String())
+	}
 }

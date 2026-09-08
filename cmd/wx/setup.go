@@ -286,11 +286,13 @@ func applySetupStep(ctx context.Context, options setup.Options, session setupSes
 			return setupOutcomeFailed
 		}
 	}
-	if err := setup.Apply(ctx, options, step, action, value); err != nil {
+	note, err := setup.Apply(ctx, options, step, action, value)
+	if err != nil {
 		_, _ = fmt.Fprintf(session.errOut, "error: %s %s: %v\n", step.ID, action, err)
 		return setupOutcomeFailed
 	}
 	printSetupApplied(session.out, step, action)
+	printSetupNote(session.out, note)
 	if applied, err := setup.CollectStep(ctx, options, step.ID); err == nil {
 		printSetupWarnings(session.errOut, step.ID, action, applied)
 	}

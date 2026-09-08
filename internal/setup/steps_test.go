@@ -33,7 +33,7 @@ func TestWorktreeRootComparesRawValuesAndFixesPermissions(t *testing.T) {
 	if step.State != StateAbsent || step.Desired != "$HOME/wx" {
 		t.Fatalf("fresh worktree root=%+v", step)
 	}
-	if err := Apply(ctx, options, step, ActionInstall, ""); err != nil {
+	if _, err := Apply(ctx, options, step, ActionInstall, ""); err != nil {
 		t.Fatal(err)
 	}
 	// 実効値は展開・symlink 解決を経るため、raw の生文字列が保たれていることを確かめる。
@@ -63,7 +63,7 @@ func TestWorktreeRootComparesRawValuesAndFixesPermissions(t *testing.T) {
 	if loose.State != StateDivergent || len(loose.Reasons) == 0 {
 		t.Fatalf("loose permissions=%+v", loose)
 	}
-	if err := Apply(ctx, options, loose, ActionUpdate, ""); err != nil {
+	if _, err := Apply(ctx, options, loose, ActionUpdate, ""); err != nil {
 		t.Fatal(err)
 	}
 	if collectWorktreeRoot().State != StatePresent {
@@ -74,7 +74,7 @@ func TestWorktreeRootComparesRawValuesAndFixesPermissions(t *testing.T) {
 func TestWorktreeRootAcceptsAnEnteredPath(t *testing.T) {
 	fixture := newSetupFixture(t)
 	chosen := filepath.Join(fixture.home, "elsewhere")
-	if err := Apply(context.Background(), fixture.options(), collectWorktreeRoot(), ActionInstall, chosen); err != nil {
+	if _, err := Apply(context.Background(), fixture.options(), collectWorktreeRoot(), ActionInstall, chosen); err != nil {
 		t.Fatal(err)
 	}
 	step := collectWorktreeRoot()
@@ -90,7 +90,7 @@ func TestWorktreeRootKeepsTheConfigWhenTheDirectoryCannotBePrepared(t *testing.T
 	chosen := filepath.Join(fixture.home, "regular-file")
 	writeSetupFile(t, chosen, "not a directory\n")
 	before := collectWorktreeRoot().Current
-	if err := Apply(context.Background(), fixture.options(), collectWorktreeRoot(), ActionInstall, chosen); err == nil {
+	if _, err := Apply(context.Background(), fixture.options(), collectWorktreeRoot(), ActionInstall, chosen); err == nil {
 		t.Fatal("a path that is a regular file was accepted")
 	}
 	if got := collectWorktreeRoot().Current; got != before {
@@ -104,7 +104,7 @@ func TestWorktreeRootReportsARejectedReload(t *testing.T) {
 	fixture := newSetupFixture(t)
 	options := fixture.options()
 	options.ReloadConfig = func(context.Context) error { return errors.New("the new worktree root overlaps the one in use") }
-	err := Apply(context.Background(), options, collectWorktreeRoot(), ActionInstall, filepath.Join(fixture.home, "elsewhere"))
+	_, err := Apply(context.Background(), options, collectWorktreeRoot(), ActionInstall, filepath.Join(fixture.home, "elsewhere"))
 	if err == nil {
 		t.Fatal("a rejected reload was reported as success")
 	}
@@ -120,7 +120,7 @@ func TestLaunchAgentReportsPermissionsAndStaleContent(t *testing.T) {
 	if collectLaunchAgent().State != StateAbsent {
 		t.Fatal("a missing plist was not reported absent")
 	}
-	if err := Apply(ctx, options, collectLaunchAgent(), ActionInstall, ""); err != nil {
+	if _, err := Apply(ctx, options, collectLaunchAgent(), ActionInstall, ""); err != nil {
 		t.Fatal(err)
 	}
 	if collectLaunchAgent().State != StatePresent {
@@ -144,16 +144,16 @@ func TestLaunchAgentReportsPermissionsAndStaleContent(t *testing.T) {
 	if stale := collectLaunchAgent(); stale.State != StateDivergent {
 		t.Fatalf("stale plist=%+v", stale)
 	}
-	if err := Apply(ctx, options, collectLaunchAgent(), ActionRemove, ""); err != nil {
+	if _, err := Apply(ctx, options, collectLaunchAgent(), ActionRemove, ""); err != nil {
 		t.Fatal(err)
 	}
 	if collectLaunchAgent().State != StateAbsent {
 		t.Fatal("remove left the plist behind")
 	}
-	if err := Apply(ctx, Options{}, Step{ID: stepLaunchAgent}, ActionRemove, ""); err == nil {
+	if _, err := Apply(ctx, Options{}, Step{ID: stepLaunchAgent}, ActionRemove, ""); err == nil {
 		t.Fatal("removing the LaunchAgent without an adapter succeeded")
 	}
-	if err := Apply(ctx, Options{}, Step{ID: stepLaunchAgent}, ActionInstall, ""); err == nil {
+	if _, err := Apply(ctx, Options{}, Step{ID: stepLaunchAgent}, ActionInstall, ""); err == nil {
 		t.Fatal("installing the LaunchAgent without an adapter succeeded")
 	}
 }
@@ -164,7 +164,7 @@ func TestDaemonUsesAStatusRequestNotJustTheSocket(t *testing.T) {
 	if collectDaemon(ctx, fixture.options()).State != StateAbsent {
 		t.Fatal("a stopped daemon was not reported absent")
 	}
-	if err := Apply(ctx, fixture.options(), Step{ID: stepDaemon}, ActionInstall, ""); err != nil {
+	if _, err := Apply(ctx, fixture.options(), Step{ID: stepDaemon}, ActionInstall, ""); err != nil {
 		t.Fatal(err)
 	}
 	if collectDaemon(ctx, fixture.options()).State != StatePresent {
@@ -178,7 +178,7 @@ func TestDaemonUsesAStatusRequestNotJustTheSocket(t *testing.T) {
 	if step := collectDaemon(ctx, Options{}); step.State != StateUnknown {
 		t.Fatalf("a daemon without an adapter=%+v", step)
 	}
-	if err := Apply(ctx, Options{}, Step{ID: stepDaemon}, ActionInstall, ""); err == nil {
+	if _, err := Apply(ctx, Options{}, Step{ID: stepDaemon}, ActionInstall, ""); err == nil {
 		t.Fatal("starting the daemon without an adapter succeeded")
 	}
 }
@@ -190,13 +190,13 @@ func TestHooksStepsFollowTheHookConfigStatus(t *testing.T) {
 	if step.State != StateAbsent || step.Target == "" || step.Desired != fixture.binary {
 		t.Fatalf("fresh hooks step=%+v", step)
 	}
-	if err := Apply(ctx, fixture.options(), step, ActionInstall, ""); err != nil {
+	if _, err := Apply(ctx, fixture.options(), step, ActionInstall, ""); err != nil {
 		t.Fatal(err)
 	}
 	if collectHooks("claude").State != StatePresent || !hookconfig.Available("claude") {
 		t.Fatal("installed hooks were not reported present")
 	}
-	if err := Apply(ctx, fixture.options(), collectHooks("claude"), ActionRemove, ""); err != nil {
+	if _, err := Apply(ctx, fixture.options(), collectHooks("claude"), ActionRemove, ""); err != nil {
 		t.Fatal(err)
 	}
 	if collectHooks("claude").State != StateAbsent {
@@ -207,6 +207,38 @@ func TestHooksStepsFollowTheHookConfigStatus(t *testing.T) {
 	blocked := collectHooks("codex")
 	if blocked.State != StateUnknown || len(blocked.Options) != 0 || len(blocked.Reasons) == 0 {
 		t.Fatalf("blocked hooks step=%+v", blocked)
+	}
+}
+
+// TestHooksApplyReportsTheWrittenPathAndBackup は、書き換えた実体と控えの path が
+// 適用結果として返ることを確認する。控えは wx の状態ディレクトリにあり、出力に出ないと場所を知る手段がない。
+func TestHooksApplyReportsTheWrittenPathAndBackup(t *testing.T) {
+	fixture := newSetupFixture(t)
+	ctx := context.Background()
+	target := collectHooks("claude").Target
+	// 既存の settings がある場合だけ控えを取る。書き換え前の内容を置く。
+	writeSetupFile(t, target, "{\n  \"model\": \"opus\"\n}\n")
+	note, err := Apply(ctx, fixture.options(), collectHooks("claude"), ActionInstall, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, target) {
+		t.Fatalf("the written path is missing from %q", note)
+	}
+	backup := filepath.Join(fixture.home, "Library", "Application Support", "wx", "backups", "claude-settings.json")
+	if !strings.Contains(note, backup) {
+		t.Fatalf("the backup path is missing from %q", note)
+	}
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatal(err)
+	}
+	// 書き換えが起きなかった適用は補足を返さない。
+	again, err := Apply(ctx, fixture.options(), collectHooks("claude"), ActionUpdate, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != "" {
+		t.Fatalf("an unchanged apply produced a note: %q", again)
 	}
 }
 

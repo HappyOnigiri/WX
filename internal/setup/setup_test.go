@@ -122,7 +122,7 @@ func applyDefaults(t *testing.T, ctx context.Context, options Options, steps []S
 		if len(step.Options) == 0 {
 			continue
 		}
-		if err := Apply(ctx, options, step, step.Default, ""); err != nil {
+		if _, err := Apply(ctx, options, step, step.Default, ""); err != nil {
 			t.Fatalf("apply %s %s: %v", step.ID, step.Default, err)
 		}
 	}
@@ -184,10 +184,10 @@ func TestOptionsForDerivesChoicesFromState(t *testing.T) {
 
 func TestApplyRejectsUnknownStepsAndSkipsNoOps(t *testing.T) {
 	ctx := context.Background()
-	if err := Apply(ctx, Options{}, Step{ID: "nonsense"}, ActionKeep, ""); err != nil {
+	if _, err := Apply(ctx, Options{}, Step{ID: "nonsense"}, ActionKeep, ""); err != nil {
 		t.Fatalf("keep is a no-op: %v", err)
 	}
-	if err := Apply(ctx, Options{}, Step{ID: "nonsense"}, ActionInstall, ""); err == nil {
+	if _, err := Apply(ctx, Options{}, Step{ID: "nonsense"}, ActionInstall, ""); err == nil {
 		t.Fatal("an unknown step was applied")
 	}
 	if _, err := CollectStep(ctx, Options{}, "nonsense"); err == nil {
