@@ -87,7 +87,7 @@ mutation testingは使わない。
 - 起動・hook・返却・snapshot・resumeを扱うとき: [セッションと復元](docs/session-lifecycle.md)
 - CoW・include・linkの準備処理を扱うとき: [worktreeのコピーとリンク](docs/worktree-copy.md)
 - slots/statusの容量・コピー方式の計測を扱うとき: [使用量とCoWの観測](docs/storage-usage.md)
-- ジョブ・補充・clear・GC・障害回復・daemon再起動を扱うとき: [daemonの補充・回収・再起動](docs/daemon-maintenance.md)
+- ジョブ・補充・clear・GC・障害回復・daemon再起動・`wx doctor`の診断を扱うとき: [daemonの補充・回収・再起動](docs/daemon-maintenance.md)
 - 削除・上書き・所有権検証を扱うとき: [所有権証明](docs/ownership.md)
 - path・命名・root世代・workspaceのtarを扱うとき: [ディスク配置とroot世代](docs/storage-layout.md)
 - バージョンの埋め込み・リリースのworkflowを扱うとき: [バージョンとリリース](docs/release.md)
