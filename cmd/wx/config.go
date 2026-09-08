@@ -30,6 +30,7 @@ func runConfig(ctx context.Context, args []string) int {
 		for _, f := range config.Fields(cfg) {
 			fmt.Printf("  %-42s = %s\n", f.Key, f.Value)
 		}
+		fmt.Printf("  %-42s = %q\n", "readiness.early_paths", cfg.Readiness.EarlyPaths)
 		return 0
 	}
 	if len(rest) < 2 {

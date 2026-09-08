@@ -7,8 +7,11 @@
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
    子プロセスには`WX_SESSION_ID`・`WX_SESSION_TOKEN`・`WX_DAEMON_SOCKET`などが渡り、以降のhookはこれを持つ場合だけ動く。
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
-   hookが入っていれば、`wx hook user-prompt-submit`と`wx hook pre-tool-use`が`WaitReady`をブロッキングで呼ぶので、準備とエージェント起動を重ねられる。
-   hookが無ければ、client側が起動前に前面で`WaitReady`を待つ（`hookconfig.Available`で分岐）。
+   既定の`readiness.mode: early`では、hookが使える通常起動は`WaitEarlyReady`でGit登録と起動用ファイルの配置完了を待つ。
+   その後の`wx hook user-prompt-submit`と`wx hook pre-tool-use`は従来どおり`WaitReady`を呼び、全準備が完了するまで操作を止める。
+   `readiness.mode: full`またはhookが無い起動は、clientが起動前に`WaitReady`を待つ（`hookconfig.Available`で判定）。
+   warm slotは両方式とも即時起動し、resume・restore・`wx shell/run/new`は全準備を待つ。
+   起動前の待機中もheartbeat・終了要求・失敗時のReleaseを維持する。
    hookの登録は`wx setup`が行い、`internal/hookconfig`が判定と書き込みを同じ受理条件で持つ。
    `WX_SESSION_ID`の有無による素通りは`internal/agent/hook.go`のwx側で判定するため、agent設定側での条件分岐ラッパーは不要である。
    受理条件はちょうど3トークンの`<絶対パス> hook <event>`なので、そうしたラッパーはそもそも受理されない。

@@ -37,7 +37,8 @@ type Preparer struct {
 	SlotRelPath string
 	// SlotLocks は同じ slot へ書く操作を直列化する共有の lock 表である。
 	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、daemon は全 Preparer と archive.Manager へ同じ表を渡す。
-	SlotLocks *gitx.KeyedLocks
+	SlotLocks  *gitx.KeyedLocks
+	noCheckout bool
 }
 
 // logSkip は prepare が copy/link source を使わずに進んだ事実と理由を warn として残す。
@@ -153,7 +154,19 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 			_ = removeOwnershipMarkerAt(lockedRoot, root, target, string(repo.ID))
 		}
 	}()
-	if existingWorktree {
+	if err := p.completePrepare(ctx, repo, target, oid, slotID, phase, locked,
+		func() error { return p.copyIncludesAt(repo, lockedRoot, lockedRelativeTarget) },
+		func() error { return p.createLinksAt(ctx, repo, lockedRoot, lockedRelativeTarget, true) }); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+// completePrepare は配置後の command・CoW・最終検証を通常準備と二段階準備で共有する。
+func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, locked *lockedTarget, includes, links func() error) error {
+	lockedRoot, lockedRelativeTarget, targetIdentity := locked.root, locked.relative, locked.identity
+	if locked.existing {
 		if err := p.rejectCOWTemporaries(ctx, target, targetIdentity); err != nil {
 			return err
 		}
@@ -163,7 +176,7 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before includes"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed before includes: %w", err)
 	}
-	if err := p.copyIncludesAt(repo, lockedRoot, lockedRelativeTarget); err != nil {
+	if err := includes(); err != nil {
 		return err
 	}
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before links"); err != nil {
@@ -171,7 +184,7 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 	}
 	// snapshot と現在の main で ignore 規則が異なるため、復元先で symlink 形を無視できる場合だけ link を作る。
 	// source 側だけを確認すると、古い `/.tools/` のような directory-only 規則で復元後の tree が変わる。
-	if err := p.createLinksAt(ctx, repo, lockedRoot, lockedRelativeTarget, true); err != nil {
+	if err := links(); err != nil {
 		return err
 	}
 	if phase == preparePhaseCreate {
@@ -210,7 +223,6 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 	}
 	if phase == preparePhaseRestore {
 		// archive.Manager が snapshot の tree/index を復元し、resume-phase command を実行するまで RESTORING lock を保持する。
-		cleanup = false
 		return nil
 	}
 	if err := p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity); err != nil {
@@ -228,7 +240,6 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 	}); err != nil {
 		return err
 	}
-	cleanup = false
 	return nil
 }
 

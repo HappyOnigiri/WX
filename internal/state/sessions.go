@@ -120,7 +120,7 @@ func (s *Store) LeaseReadyWithCold(ctx context.Context, slotID string, session S
 	if err := assertNoActiveClean(ctx, tx); err != nil {
 		return Job{}, err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',owner_session_id=?,last_used_at=?,updated_at=? WHERE id=? AND state='READY' AND owner_session_id IS NULL`, session.ID, now(), now(), slotID)
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',preparation_started_at=NULL,early_ready_at=NULL,owner_session_id=?,last_used_at=?,updated_at=? WHERE id=? AND state='READY' AND owner_session_id IS NULL`, session.ID, now(), now(), slotID)
 	if err != nil {
 		return Job{}, err
 	}

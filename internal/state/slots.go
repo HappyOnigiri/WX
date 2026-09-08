@@ -11,6 +11,8 @@ import (
 // Slot は root generation と root 相対 path で slot directory を位置付ける。Path は派生値で、read は roots.path から組み立て、write は RootID/RelPath を使う。
 // single-repository workspace では slot directory の一階層下を指す daemon.Lease.Path と混同してはならない。
 type Slot struct {
+	PreparationStartedAt                                                                          string `json:"-"`
+	EarlyReadyAt                                                                                  string `json:"-"`
 	ID, WorkspaceID, RootID, RelPath, Path, State, OwnerSessionID, FailureCode, FailureDetailPath string
 	DirIdentity                                                                                   string
 	Generation                                                                                    int
@@ -20,7 +22,7 @@ type Slot struct {
 // slotColumns は full-row の slot read 全てで共有する column list である。
 // absolute な Slot.Path は保存せず、scanSlot が結合した root generation から組み立てるため、
 // retired root も自身の slot を解決し続けられる。
-const slotColumns = `sl.id,COALESCE(sl.workspace_id,''),sl.generation,sl.root_id,rt.path,sl.rel_path,COALESCE(sl.dir_identity,''),sl.state,COALESCE(sl.owner_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.failure_code,''),COALESCE(sl.failure_detail_path,'')`
+const slotColumns = `sl.id,COALESCE(sl.workspace_id,''),sl.generation,sl.root_id,rt.path,sl.rel_path,COALESCE(sl.dir_identity,''),sl.state,COALESCE(sl.owner_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.failure_code,''),COALESCE(sl.failure_detail_path,''),COALESCE(sl.preparation_started_at,''),COALESCE(sl.early_ready_at,'')`
 
 // slotFrom は slotColumns が必要とする FROM clause である。
 const slotFrom = ` FROM slots sl JOIN roots rt ON rt.id=sl.root_id`
@@ -34,7 +36,7 @@ type rowScanner interface {
 func scanSlot(row rowScanner) (Slot, error) {
 	var x Slot
 	var rootPath string
-	if err := row.Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.RootID, &rootPath, &x.RelPath, &x.DirIdentity, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt, &x.FailureCode, &x.FailureDetailPath); err != nil {
+	if err := row.Scan(&x.ID, &x.WorkspaceID, &x.Generation, &x.RootID, &rootPath, &x.RelPath, &x.DirIdentity, &x.State, &x.OwnerSessionID, &x.CreatedAt, &x.ReadyAt, &x.FailureCode, &x.FailureDetailPath, &x.PreparationStartedAt, &x.EarlyReadyAt); err != nil {
 		return Slot{}, err
 	}
 	x.Path = filepath.Join(rootPath, x.RelPath)

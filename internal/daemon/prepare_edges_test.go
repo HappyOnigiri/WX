@@ -13,7 +13,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-func TestMultiRepositoryRootMaterializationFailurePersistsFailedState(t *testing.T) {
+func TestMultiRepositoryRootMaterializationFailureQuarantinesStagedPreparation(t *testing.T) {
 	t.Parallel()
 	f := manualManagerFixture(t, func(s *managerFixtureSetup) {
 		s.Config.Workspaces[s.Root] = config.Workspace{Link: []string{"missing-root-entry"}}
@@ -33,7 +33,7 @@ func TestMultiRepositoryRootMaterializationFailurePersistsFailedState(t *testing
 		t.Fatal("root materialization with a missing link succeeded")
 	}
 	slot, err := store.Slot(ctx, "slot")
-	if err != nil || slot.State != "FAILED" {
+	if err != nil || slot.State != "QUARANTINED" {
 		t.Fatalf("materialization failure slot=%+v err=%v", slot, err)
 	}
 	// 復元は target を変える前に workspace archive を検証するため、materialization まで進むには使える親 snapshot が要る。

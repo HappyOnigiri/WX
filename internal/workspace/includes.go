@@ -63,6 +63,13 @@ var defaultIncludeNames = []string{
 	".mcp.json",
 }
 
+// defaultEarlyPaths は起動前に必要な候補であり、通常のコピー対象を増やすリストではない。
+var defaultEarlyPaths = append(append([]string{}, defaultIncludeNames...),
+	"AGENTS.md", "CLAUDE.md", "GEMINI.md",
+	".codex", ".claude", ".agents", ".gemini", ".cursor", ".windsurf", ".cline", ".roo", ".kilocode", ".continue",
+	".github/copilot-instructions.md", ".github/instructions", ".github/agents",
+)
+
 // defaultIncludeCandidates は main worktree に regular physical file として存在する default 名を返す。
 // .worktreelink にある名前は明示的な link rule が所有するため除外する。存在しなくても、この一覧は全 repository に適用されるのでエラーにしない。
 func defaultIncludeCandidates(mainPath string, c config.Config) ([]string, error) {

@@ -29,6 +29,15 @@ func processAlive(pid int) bool {
 }
 
 func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
+	return m.waitReadiness(ctx, id, token, false)
+}
+
+// WaitEarlyReady は起動用ファイルまでの準備を待ち、hook が使う WaitReady とは独立に判定する。
+func (m *Manager) WaitEarlyReady(ctx context.Context, id, token string) error {
+	return m.waitReadiness(ctx, id, token, true)
+}
+
+func (m *Manager) waitReadiness(ctx context.Context, id, token string, early bool) error {
 	if _, err := m.store.Session(ctx, id, token); err != nil {
 		return err
 	}
@@ -41,7 +50,9 @@ func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
 		}
 		switch slot.State {
 		case "READY", "LEASED":
-			return nil
+			if !early {
+				return nil
+			}
 		case "FAILED", "QUARANTINED":
 			failureID := slot.FailureCode
 			if failureID == "" {
@@ -71,6 +82,27 @@ func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
 				recovery = " " + RecoveryUnavailableMarker
 			}
 			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s%s detail_path=%s exit_code=%s timed_out=%t canceled=%t; run `wx status` or `wx doctor` for details", slot.State, failureID, recovery, detailPath, exitCode, metadata.TimedOut, metadata.Canceled)
+		}
+		if early {
+			session, sessionErr := m.store.Session(ctx, id, token)
+			if sessionErr != nil {
+				return sessionErr
+			}
+			switch session.State {
+			case "STARTING", "ACTIVE":
+			default:
+				return fmt.Errorf("workspace readiness failed: session state=%s", session.State)
+			}
+			switch slot.State {
+			case "READY", "LEASED":
+				return nil
+			case "PREPARING":
+				if slot.EarlyReadyAt != "" {
+					return nil
+				}
+			default:
+				return fmt.Errorf("workspace readiness failed: state=%s", slot.State)
+			}
 		}
 		select {
 		case <-ctx.Done():
