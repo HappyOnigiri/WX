@@ -63,8 +63,10 @@ func collectShellPath() Step {
 		}
 		contents = string(data)
 	}
-	block, found := shellManagedBlock(contents)
+	block, found, terminated := shellManagedBlock(contents)
 	switch {
+	case found && !terminated:
+		return unknownStep(step, path+" has "+shellBlockBegin+" without "+shellBlockEnd+"; restore the missing end marker or remove the block yourself")
 	case found && block == shellBlock(binDirectory):
 		step.State = StatePresent
 	case found:
@@ -100,20 +102,22 @@ func shellStartupFile() (string, error) {
 }
 
 // shellManagedBlock は marker で囲まれた wx のブロックを返す。
-func shellManagedBlock(contents string) (string, bool) {
+// terminated は終了 marker が見つかったかを表す。開始 marker だけのファイルで末尾までを wx のものと見なすと、
+// 後から書かれた利用者の設定を update・remove が消してしまうため、範囲を確定できないことを呼び出し側へ伝える。
+func shellManagedBlock(contents string) (block string, found bool, terminated bool) {
 	begin := strings.Index(contents, shellBlockBegin)
 	if begin < 0 {
-		return "", false
+		return "", false, false
 	}
 	offset := strings.Index(contents[begin:], shellBlockEnd)
 	if offset < 0 {
-		return contents[begin:], true
+		return "", true, false
 	}
 	end := begin + offset + len(shellBlockEnd)
 	if end < len(contents) && contents[end] == '\n' {
 		end++
 	}
-	return contents[begin:end], true
+	return contents[begin:end], true, true
 }
 
 // directoryOnPath は現在のプロセスの PATH に directory が含まれるかを返す。
@@ -141,7 +145,12 @@ func applyShellPath(step Step, action Action) error {
 	case !errors.Is(err, os.ErrNotExist):
 		return err
 	}
-	if block, found := shellManagedBlock(contents); found {
+	block, found, terminated := shellManagedBlock(contents)
+	switch {
+	case found && !terminated:
+		// 収集時に unknown で弾く状態だが、その後にファイルが変わっていることもあるので書く前に確かめる。
+		return errors.New(path + " has " + shellBlockBegin + " without " + shellBlockEnd + "; wx cannot tell where its block ends")
+	case found:
 		contents = strings.Replace(contents, block, "", 1)
 	}
 	if action != ActionRemove {

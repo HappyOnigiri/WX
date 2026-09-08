@@ -99,11 +99,37 @@ func TestShellBlockQuotesAnUnexpectedDirectory(t *testing.T) {
 	if got := shellBlock("/opt/wx bin"); !strings.Contains(got, `export PATH="/opt/wx bin":$PATH`) {
 		t.Fatalf("block=%q", got)
 	}
-	if _, found := shellManagedBlock("no markers here"); found {
+	if _, found, _ := shellManagedBlock("no markers here"); found {
 		t.Fatal("a block was found in unrelated content")
 	}
-	if block, found := shellManagedBlock(shellBlockBegin + "\nline\n"); !found || !strings.HasSuffix(block, "line\n") {
-		t.Fatalf("unterminated block=%q,%v", block, found)
+	block, found, terminated := shellManagedBlock(shellBlockBegin + "\nline\n")
+	if !found || terminated || block != "" {
+		t.Fatalf("unterminated block=%q,%v,%v", block, found, terminated)
+	}
+}
+
+// TestShellPathRefusesAnUnterminatedBlock は終了 marker が無いとき、後続の利用者の設定を消さないことを確認する。
+func TestShellPathRefusesAnUnterminatedBlock(t *testing.T) {
+	fixture := newSetupFixture(t)
+	rc := filepath.Join(fixture.home, ".zshrc")
+	contents := shellBlockBegin + "\nexport PATH=\"$HOME/.local/bin:$PATH\"\nalias ll='ls -l'\nexport EDITOR=vim\n"
+	writeSetupFile(t, rc, contents)
+
+	step := collectShellPath()
+	if step.State != StateUnknown || len(step.Options) != 0 {
+		t.Fatalf("unterminated block=%+v", step)
+	}
+	if !strings.Contains(strings.Join(step.Reasons, " "), shellBlockEnd) {
+		t.Fatalf("reasons=%v", step.Reasons)
+	}
+	for _, action := range []Action{ActionUpdate, ActionRemove} {
+		target := Step{ID: stepShellPath, Target: rc, Desired: filepath.Join(fixture.home, ".local", "bin")}
+		if err := applyShellPath(target, action); err == nil {
+			t.Fatalf("%s rewrote a file whose block has no end marker", action)
+		}
+	}
+	if got := readSetupFile(t, rc); got != contents {
+		t.Fatalf("the startup file was changed:\n%s", got)
 	}
 }
 
