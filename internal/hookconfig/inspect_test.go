@@ -71,26 +71,32 @@ func TestInspectEventReportsSkippedAndForeignCommands(t *testing.T) {
 	}
 }
 
-// TestInspectDocumentMatchesTheBooleanPredicate は理由返却版と bool 版の受理結果が一致することを確認する。
-// 乖離するとサイレント失敗（書いた直後に未登録と表示される）が起きる。
-func TestInspectDocumentMatchesTheBooleanPredicate(t *testing.T) {
+// TestInspectDocumentClassifiesSeedsByBlockedAndMatched は受理判定の分岐を seed ごとに確認する。
+// blocked（文書全体の却下）と matched（event ごとの一致）の取り違えは、書いた直後に未登録と表示される形で表に出る。
+func TestInspectDocumentClassifiesSeedsByBlockedAndMatched(t *testing.T) {
 	executable, err := CurrentExecutable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	required := map[string]string{"SessionStart": "session-start"}
-	for _, data := range []string{
-		`{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"` + executable + ` hook session-start"}]}]}}`,
-		`{"hooks":{"SessionStart":[]}}`,
-		`{"hooks":"not an object"}`,
-		`{"disableAllHooks":null,"hooks":{}}`,
-		`{}`,
-		`nonsense`,
+	for _, test := range []struct {
+		data    string
+		blocked bool
+		matched bool
+	}{
+		{data: `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"` + executable + ` hook session-start"}]}]}}`, matched: true},
+		{data: `{"hooks":{"SessionStart":[]}}`},
+		{data: `{"hooks":"not an object"}`, blocked: true},
+		{data: `{"disableAllHooks":null,"hooks":{}}`, blocked: true},
+		{data: `{}`},
+		{data: `nonsense`, blocked: true},
 	} {
-		report := inspectDocument([]byte(data), required, executable)
-		want := !report.blocked && report.matched["SessionStart"]
-		if got := readinessHookDocumentMatches([]byte(data), required, executable); got != want {
-			t.Fatalf("readinessHookDocumentMatches=%v but the report says %v for %s", got, want, data)
+		report := inspectDocument([]byte(test.data), required, executable)
+		if report.blocked != test.blocked || report.matched["SessionStart"] != test.matched {
+			t.Fatalf("blocked=%v matched=%v want %v,%v for %s", report.blocked, report.matched["SessionStart"], test.blocked, test.matched, test.data)
+		}
+		if report.blocked && len(report.findings) == 0 {
+			t.Fatalf("a blocked document produced no finding: %s", test.data)
 		}
 	}
 	if wxHookSubcommand("/bin/wx hook not-an-event") != "" || wxHookSubcommand("/bin/wx hook session-start") != "session-start" {

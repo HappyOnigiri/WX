@@ -7,7 +7,9 @@ import (
 	"testing"
 )
 
-func TestCodexHooksConfigEnabledBoundaries(t *testing.T) {
+// TestCodexPolicyFindingsRecognizeConfigBoundaries は config.toml の書式ごとに、本番経路が
+// hook を許すか（finding なし）を確認する。解釈できない TOML と明示的な無効化は code で区別する。
+func TestCodexPolicyFindingsRecognizeConfigBoundaries(t *testing.T) {
 	tests := []struct {
 		name string
 		data string
@@ -37,26 +39,36 @@ func TestCodexHooksConfigEnabledBoundaries(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := codexHooksConfigEnabled([]byte(test.data)); got != test.want {
-				t.Fatalf("codexHooksConfigEnabled(%q) = %v, want %v", test.data, got, test.want)
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			writeHookConfigFile(t, filepath.Join(home, ".codex", "config.toml"), test.data)
+			findings := codexPolicyFindings()
+			if got := len(findings) == 0; got != test.want {
+				t.Fatalf("codexPolicyFindings(%q) = %v, want hooks allowed=%v", test.data, findings, test.want)
+			}
+			if test.want {
+				return
+			}
+			if code := findings[0].Code; code != FindingCodexFeatureOff && code != FindingCodexConfigUnusable {
+				t.Fatalf("code=%s for %q", code, test.data)
 			}
 		})
 	}
 }
 
-// TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles は policy file ごとの判定を確認する。
+// TestCodexPolicyFindingsEvaluateLocalAndManagedPolicyFiles は policy file ごとの判定を確認する。
 // file 不在、home 不在、無効化設定、regular file 以外、読取不能、サイズ超過を含める。
-func TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles(t *testing.T) {
+func TestCodexPolicyFindingsEvaluateLocalAndManagedPolicyFiles(t *testing.T) {
 	t.Run("no policy files present", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
-		if !codexHooksEnabled() {
-			t.Fatal("absent policy files should default to enabled")
+		if findings := codexPolicyFindings(); len(findings) != 0 {
+			t.Fatalf("absent policy files should default to enabled: %v", findings)
 		}
 	})
 
 	t.Run("home unavailable", func(t *testing.T) {
 		t.Setenv("HOME", "")
-		if codexHooksEnabled() {
+		if len(codexPolicyFindings()) == 0 {
 			t.Fatal("unavailable HOME should default to disabled")
 		}
 	})
@@ -65,7 +77,7 @@ func TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		writeHookConfigFile(t, filepath.Join(home, ".codex", "config.toml"), "[features]\nhooks = false\n")
-		if codexHooksEnabled() {
+		if len(codexPolicyFindings()) == 0 {
 			t.Fatal("disabling user config reported enabled")
 		}
 	})
@@ -76,7 +88,7 @@ func TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(home, ".codex", "config.toml"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if codexHooksEnabled() {
+		if len(codexPolicyFindings()) == 0 {
 			t.Fatal("directory masquerading as user config reported enabled")
 		}
 	})
@@ -90,7 +102,7 @@ func TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-		if codexHooksEnabled() {
+		if len(codexPolicyFindings()) == 0 {
 			t.Fatal("unreadable user config reported enabled")
 		}
 	})
@@ -99,7 +111,7 @@ func TestCodexHooksEnabledEvaluatesLocalAndManagedPolicyFiles(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		writeHookConfigFile(t, filepath.Join(home, ".codex", "config.toml"), strings.Repeat("#", (4<<20)+1))
-		if codexHooksEnabled() {
+		if len(codexPolicyFindings()) == 0 {
 			t.Fatal("oversized user config reported enabled")
 		}
 	})

@@ -37,17 +37,6 @@ func codexPolicyFindings() []Finding {
 	return nil
 }
 
-// codexHooksEnabled は Codex の policy が user hook を許しているかを返す。
-func codexHooksEnabled() bool {
-	return len(codexPolicyFindings()) == 0
-}
-
-// codexHooksConfigEnabled は config.toml が user hook を許しているかを返す。
-func codexHooksConfigEnabled(data []byte) bool {
-	enabled, parsable := codexHooksConfigState(data)
-	return enabled && parsable
-}
-
 // codexHooksConfigState は config.toml の [features] hooks を読み、有効かと解釈できたかを返す。
 // 解釈できない TOML と明示的な無効化は診断上まったく別の原因なので、呼び出し側が区別できるようにする。
 func codexHooksConfigState(data []byte) (enabled, parsable bool) {

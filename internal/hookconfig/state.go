@@ -146,7 +146,7 @@ func (s State) Reasons() []string {
 }
 
 // TargetPath は agent の hook 設定の読み書き対象を、ファイルが存在しなくても返す。
-// readinessHookPaths と同じ規則で決めることが、書き込み先と読み取り先の食い違いを防ぐ唯一の手段である。
+// 読み取り先と同じ規則で決めることが、書き込み先と読み取り先の食い違いを防ぐ唯一の手段である。
 func TargetPath(agent string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -365,17 +365,6 @@ func Available(agent string) bool {
 func AgentInstalled(agent string) bool {
 	_, err := exec.LookPath(agent)
 	return err == nil
-}
-
-func readinessHookPaths(agent string) (string, bool) {
-	path, err := TargetPath(agent)
-	if err != nil {
-		return "", false
-	}
-	if _, err := regularHookPath(path); err != nil {
-		return "", false
-	}
-	return path, true
 }
 
 // regularHookPath は path が最終的に regular file を指す場合にその path を返す。

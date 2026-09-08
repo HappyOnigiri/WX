@@ -13,8 +13,8 @@ type documentReport struct {
 	findings []Finding
 }
 
-// inspectDocument は readinessHookDocumentMatches と同じ受理規則で、event ごとの一致と理由を集める。
-// 受理判定を二重管理しないため、bool 版はこの関数のラッパーとして残す。
+// inspectDocument は読み側の受理規則で、event ごとの一致と理由を集める。
+// 受理判定はこの関数だけが持ち、Available も Inspect 経由でここへ辿り着く。
 func inspectDocument(data []byte, events map[string]string, executable string) documentReport {
 	report := documentReport{matched: map[string]bool{}}
 	var document map[string]json.RawMessage
@@ -172,31 +172,4 @@ func wxHookSubcommand(command string) string {
 		}
 	}
 	return ""
-}
-
-func readinessHookDocumentMatches(data []byte, required map[string]string, executable string) bool {
-	report := inspectDocument(data, required, executable)
-	if report.blocked {
-		return false
-	}
-	for event := range required {
-		if !report.matched[event] {
-			return false
-		}
-	}
-	return true
-}
-
-func readinessHookGroupsMatch(groups []readinessHookGroup, command, event, executable string) bool {
-	matched, _ := inspectEvent(groups, command, event, executable)
-	return matched
-}
-
-func readinessHookGroupValid(group readinessHookGroup) bool {
-	valid, _ := inspectGroup(group)
-	return valid
-}
-
-func readinessHookCommandValid(hook readinessHookCommand) bool {
-	return inspectCommand(hook)
 }
