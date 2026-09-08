@@ -72,14 +72,18 @@ func collectShellPath() Step {
 	case found:
 		step.State = StateDivergent
 		step.Reasons = append(step.Reasons, "the block managed by wx does not match what wx would write")
-	case directoryOnPath(binDirectory):
-		// 別の手段で PATH に入っているので、wx が起動ファイルを触る理由がない。
+	case startupFileAddsDirectory(contents, binDirectory):
+		// 起動ファイルが別の書き方で PATH へ加えているので、wx が触る理由がない。
 		step.State = StatePresent
-		step.Detail = binDirectory + " is already on PATH"
+		step.Detail = path + " already adds " + binDirectory + " to PATH"
 		step.Options, step.Default = stepOptions(StatePresent, []Action{ActionKeep})
 		return step
 	default:
 		step.State = StateAbsent
+		if directoryOnPath(binDirectory) {
+			// export だけした利用者はここに来る。現プロセスの PATH を present の根拠にすると、新しい端末で PATH を失う。
+			step.Reasons = append(step.Reasons, binDirectory+" is on PATH in this session, but no line in "+path+" adds it for new terminals")
+		}
 	}
 	step.Options, step.Default = stepOptions(step.State, allActions)
 	return step
@@ -118,6 +122,39 @@ func shellManagedBlock(contents string) (block string, found bool, terminated bo
 		end++
 	}
 	return contents[begin:end], true, true
+}
+
+// startupFileAddsDirectory は起動ファイルの中に、directory を PATH へ加える行があるかを返す。
+// 判定を起動ファイルの内容だけで行うためにあり、現プロセスの PATH は根拠にしない。
+func startupFileAddsDirectory(contents, directory string) bool {
+	needles := pathLineNeedles(directory)
+	for line := range strings.SplitSeq(contents, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || !strings.Contains(trimmed, "PATH") {
+			continue
+		}
+		for _, needle := range needles {
+			if strings.Contains(trimmed, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pathLineNeedles は directory を指す表記の候補を返す。
+// 起動ファイルでは展開前の $HOME・~ でも書かれるため、home からの相対形も候補にする。
+func pathLineNeedles(directory string) []string {
+	needles := []string{directory}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return needles
+	}
+	relative, err := filepath.Rel(home, directory)
+	if err != nil || relative == "." || strings.HasPrefix(relative, "..") {
+		return needles
+	}
+	return append(needles, "$HOME/"+relative, "${HOME}/"+relative, "~/"+relative)
 }
 
 // directoryOnPath は現在のプロセスの PATH に directory が含まれるかを返す。

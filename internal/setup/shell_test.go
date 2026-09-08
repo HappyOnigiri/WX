@@ -57,16 +57,50 @@ func TestShellPathAddsAndRemovesTheManagedBlock(t *testing.T) {
 	}
 }
 
-func TestShellPathStaysQuietWhenTheDirectoryIsAlreadyOnPath(t *testing.T) {
+// TestShellPathStaysQuietWhenTheStartupFileAlreadyAddsTheDirectory は、利用者が自分で書いた
+// PATH 行を wx の block で重ねないことを確認する。$HOME 表記でも同じ行と見なす。
+func TestShellPathStaysQuietWhenTheStartupFileAlreadyAddsTheDirectory(t *testing.T) {
+	for _, line := range []string{
+		`export PATH="$HOME/.local/bin:$PATH"`,
+		`export PATH="${HOME}/.local/bin:$PATH"`,
+		`export PATH=~/.local/bin:$PATH`,
+	} {
+		t.Run(line, func(t *testing.T) {
+			fixture := newSetupFixture(t)
+			writeSetupFile(t, filepath.Join(fixture.home, ".zshrc"), line+"\n")
+			step := collectShellPath()
+			if step.State != StatePresent || len(step.Options) != 0 {
+				t.Fatalf("startup file already adds the directory=%+v", step)
+			}
+			if !strings.Contains(step.Detail, "already adds") {
+				t.Fatalf("detail=%q", step.Detail)
+			}
+		})
+	}
+}
+
+// TestShellPathIgnoresTheProcessPathWhenTheStartupFileHasNoLine は、install.sh の案内どおり
+// export だけした利用者が present と表示されないことを確認する。その場合 PATH は新しい端末で失われる。
+func TestShellPathIgnoresTheProcessPathWhenTheStartupFileHasNoLine(t *testing.T) {
 	fixture := newSetupFixture(t)
 	binDirectory := filepath.Join(fixture.home, ".local", "bin")
+	writeSetupFile(t, filepath.Join(fixture.home, ".zshrc"), "alias ll='ls -l'\n")
 	t.Setenv("PATH", binDirectory+":"+os.Getenv("PATH"))
 	step := collectShellPath()
-	if step.State != StatePresent || len(step.Options) != 0 {
-		t.Fatalf("already on PATH=%+v", step)
+	if step.State != StateAbsent {
+		t.Fatalf("exported but not persisted=%+v", step)
 	}
-	if !strings.Contains(step.Detail, "already on PATH") {
-		t.Fatalf("detail=%q", step.Detail)
+	if !strings.Contains(strings.Join(step.Reasons, " "), "on PATH in this session") {
+		t.Fatalf("reasons=%v", step.Reasons)
+	}
+}
+
+// TestShellPathIgnoresCommentedPathLines はコメント行を根拠にしないことを確認する。
+func TestShellPathIgnoresCommentedPathLines(t *testing.T) {
+	fixture := newSetupFixture(t)
+	writeSetupFile(t, filepath.Join(fixture.home, ".zshrc"), `# export PATH="$HOME/.local/bin:$PATH"`+"\n")
+	if step := collectShellPath(); step.State != StateAbsent {
+		t.Fatalf("commented line=%+v", step)
 	}
 }
 
