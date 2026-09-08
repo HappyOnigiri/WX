@@ -111,14 +111,21 @@ func runningManagerFixture(t *testing.T, options ...managerFixtureOption) *manag
 }
 
 // newManagerFixture は Manager を除く共通準備を行う。t.TempDir より後に cleanup を登録させ、削除順を保つ。
+// macOS の /tmp 別名で Git の記録と path 表記がずれないよう、root を canonical path に揃える。
 func newManagerFixture(t *testing.T, options ...managerFixtureOption) *managerFixture {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	setup := managerFixtureSetup{Root: root, Config: &cfg}
 	for _, option := range options {
 		option(&setup)
+	}
+	if err := config.NormalizePaths(&cfg); err != nil {
+		t.Fatal(err)
 	}
 	databasePath := filepath.Join(root, "state.db")
 	store, err := state.Open(databasePath)
