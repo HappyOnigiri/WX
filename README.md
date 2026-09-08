@@ -9,51 +9,16 @@ Run Claude Code or Codex in a separate Git worktree with a single command.
 
 - **Separate workspaces** — Agents work in detached Git worktrees, keeping your source checkout's HEAD, index, and tracked files untouched.
 - **Ready when you need them** — A background daemon keeps a workspace ready for recently used repositories.
-- **Session recovery** — Use `wx slots` to list managed slots and `wx resume` to restore archived work.
+- **Save disk space** — APFS Copy on Write shares data for files with identical contents in the source checkout, reducing worktree disk usage.
 - **Familiar commands** — Use Claude Code or Codex with their usual arguments, and optionally choose a starting branch.
 
 ## Installation
 
-Requires **macOS on Apple Silicon**, **Git**, and **Claude Code or Codex** available on your `PATH`.
-Install the latest release without cloning this repository or installing Go:
+Requires **macOS on Apple Silicon**, **Git**, and **Claude Code or Codex**.
 
 ```sh
 curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/install.sh | bash
 ```
-
-The installer verifies and installs `~/.local/bin/wx`, registers the daemon as a LaunchAgent, and starts it.
-Run the same command to update to the latest release and restart the daemon.
-Then make `wx` available in your current terminal:
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Add that line to your shell configuration (for example, `~/.zshrc`) for new terminals.
-Then finish the setup:
-
-```sh
-wx setup
-```
-
-`wx setup` asks about each item it manages — the worktree root, the shell PATH entry, the LaunchAgent, the agent hooks, and the daemon — and applies your choices.
-Running it again after a completed setup changes nothing.
-See [release and source-build details](docs/release.md) for more information.
-
-## Uninstallation
-
-```sh
-curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/uninstall.sh | bash
-```
-
-The uninstaller lists the worktrees it is about to delete and asks before doing anything, then removes them, the wx hook entries, the LaunchAgent, the configuration, and `~/.local/bin/wx`.
-Pass `--yes` to skip the question.
-Because deletion runs through the daemon, keep it running until the uninstaller has finished.
-
-Three things are left for you, and the uninstaller prints the exact command for each.
-Those are the `PATH` line in your shell configuration, the state database and log directory, and the worktree root.
-The last two hold the work wx saved for you.
-Repositories you ran wx from may also hold `refs/wx/recovery/*` refs for those snapshots.
 
 ## Quick start
 
@@ -72,22 +37,29 @@ To choose a starting branch, place the wx option before the agent name:
 wx --branch feature/api codex
 ```
 
+Claude Code and Codex associate session logs with the paths they run from, so their standard continue / resume commands can have trouble finding past sessions when the worktree changes.
+wx wraps these commands with a UI for selecting and resuming past sessions.
+
+```sh
+wx claude --resume
+wx codex resume
+```
+
 ## More options
 
 - **Status and diagnostics:** `wx status`, `wx doctor`.
 - **Sessions and cleanup:** `wx slots`, `wx resume`, `wx gc --dry-run`, `wx clear`.
 - **Configuration:** `wx config` shows settings and can update individual values.
-- **Agent integration:** Global agent hooks check workspace readiness, bind agent sessions to wx, and release them when work ends.
-  `wx setup` registers them, and wx owns its own entries in the Claude and Codex hook configuration; everything else in those files is left untouched.
-  Claude `--resume` and Codex `resume` keep their usual arguments.
 
-See `wx --help` and `wx <command> --help` for commands and options:
+See `wx --help` and `wx <command> --help` for commands and options.
+
+## Uninstallation
 
 ```sh
-wx --help
-wx config --help
-wx daemon --help
+curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/uninstall.sh | bash
 ```
+
+Removes wx-managed worktrees (including unsaved work), hook entries, the LaunchAgent, configuration files, and the executable.
 
 ## Contributing
 
