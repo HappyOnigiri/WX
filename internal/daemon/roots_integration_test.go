@@ -27,7 +27,7 @@ func TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot(t *
 	initGitRepo(t, repo)
 	ctx := context.Background()
 
-	existing, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	existing, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot(t *
 		t.Fatalf("existing worktree is no longer usable: %q", status)
 	}
 
-	fresh, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	fresh, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}

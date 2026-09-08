@@ -99,6 +99,8 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 			"quarantined":       cfg.Retention.Quarantined.Milliseconds() / 1000,
 			"recovery_snapshot": cfg.Retention.RecoverySnapshot.Milliseconds() / 1000, "expired_session_tombstone": cfg.Retention.ExpiredSessionTombstone.Milliseconds() / 1000,
 			"failed_job": cfg.Retention.FailedJob.Milliseconds() / 1000, "event_log": cfg.Retention.EventLog.Milliseconds() / 1000,
+			// lease.ttl は retention ではないが、貸出が返却されるまでの上限として同じ場所に出す。
+			"lease_ttl": cfg.Lease.TTL.Milliseconds() / 1000,
 		},
 	}, nil
 }

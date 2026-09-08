@@ -27,7 +27,7 @@ func TestGCExpiresSnapshotRefsOnlyAfterArchivingWorktree(t *testing.T) {
 	repo := filepath.Join(f.Root, "repo")
 	initGitRepo(t, repo)
 	ctx := context.Background()
-	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}

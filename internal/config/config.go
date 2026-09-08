@@ -35,6 +35,7 @@ type Config struct {
 	Discovery    Discovery             `yaml:"discovery,omitempty"`
 	Readiness    Readiness             `yaml:"readiness,omitempty"`
 	Resume       Resume                `yaml:"resume,omitempty"`
+	Lease        Lease                 `yaml:"lease,omitempty"`
 	Includes     Includes              `yaml:"includes,omitempty"`
 	Sessions     sessionsconfig.Config `yaml:"sessions,omitempty"`
 	Workspaces   map[string]Workspace  `yaml:"workspaces,omitempty"`
@@ -88,6 +89,16 @@ type Resume struct {
 	// AutoFresh は、当時の worktree を復元できないときの確認を省き、新しい worktree での再開をそのまま選ぶ。
 	AutoFresh bool `yaml:"auto_fresh,omitempty"`
 }
+
+// Lease は agent 起動以外への worktree 貸出（wx shell / wx run / wx new）の設定である。
+type Lease struct {
+	// TTL は貸出の期限である。期限が来ても保存されてから返却され、実体は retention.ended_worktree の間残る。
+	// プロセスに随伴しない wx new の貸出を、返却し忘れたまま無期限に居座らせないための保険である。
+	TTL Duration `yaml:"ttl,omitempty"`
+	// Shell は wx shell が起動するシェルを固定する。空なら $SHELL、それも無ければ /bin/sh を使う。
+	Shell string `yaml:"shell,omitempty"`
+}
+
 type Workspace struct {
 	Worktree string   `yaml:"worktree,omitempty"`
 	Copy     []string `yaml:"copy,omitempty"`
@@ -136,7 +147,9 @@ func Defaults() Config {
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{24 * time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
-		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false}, Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
+		Readiness: Readiness{Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false},
+		Lease:    Lease{TTL: Duration{72 * time.Hour}},
+		Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
 		Workspaces: map[string]Workspace{}, Repositories: map[string]Repository{},
 	}
@@ -224,7 +237,7 @@ func Validate(c *Config) error {
 	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 {
 		return errors.New("pool counts must be non-negative and concurrency must be at least 1")
 	}
-	for k, v := range map[string]time.Duration{"retention.hot_standby": c.Retention.HotStandby.Duration, "retention.ended_worktree": c.Retention.EndedWorktree.Duration, "retention.quarantined": c.Retention.Quarantined.Duration, "retention.recovery_snapshot": c.Retention.RecoverySnapshot.Duration, "retention.expired_session_tombstone": c.Retention.ExpiredSessionTombstone.Duration, "retention.failed_job": c.Retention.FailedJob.Duration, "retention.event_log": c.Retention.EventLog.Duration, "discovery.timeout": c.Discovery.Timeout.Duration, "discovery.reconcile_interval": c.Discovery.ReconcileInterval.Duration, "readiness.timeout": c.Readiness.Timeout.Duration} {
+	for k, v := range map[string]time.Duration{"retention.hot_standby": c.Retention.HotStandby.Duration, "retention.ended_worktree": c.Retention.EndedWorktree.Duration, "retention.quarantined": c.Retention.Quarantined.Duration, "retention.recovery_snapshot": c.Retention.RecoverySnapshot.Duration, "retention.expired_session_tombstone": c.Retention.ExpiredSessionTombstone.Duration, "retention.failed_job": c.Retention.FailedJob.Duration, "retention.event_log": c.Retention.EventLog.Duration, "discovery.timeout": c.Discovery.Timeout.Duration, "discovery.reconcile_interval": c.Discovery.ReconcileInterval.Duration, "readiness.timeout": c.Readiness.Timeout.Duration, "lease.ttl": c.Lease.TTL.Duration} {
 		if v < 0 {
 			return fmt.Errorf("%s must not be negative", k)
 		}

@@ -70,10 +70,17 @@ run実行中は`assertNoActiveClean`が貸出・復元・待機用作成の書�
 安全な処理境界の待機は`cleanBoundaryWait`で制限し、貸出を断ったまま無期限に待たない。
 GC候補の選択と保持期限は`gc.go`を参照し、隔離slotも通常の`REMOVE`で登録範囲を回収する。
 
+生きたclientもagentも持たない貸出（`wx new`）は終了要求の宛先がないため、`advancePending`は要求を積まずその場で返却して保存経路へ移す。
+`--all`無しで残す場合のskip理由も、停止を待つ`--all`ではなく`wx release <id>`を案内する。
+`wx shell` / `wx run`の強制停止は既存の`--all`経路で成立するので、`session_termination_requests`は貸出用に拡張しない。
+
 ## reconcileと障害時の運用
 
 DBと実体を照合し、素性の分からないpath・refは隔離する。
 clientとagentの両プロセスが死んだsessionは返却する。
+返却の実装は`Manager.releaseLeaseWithoutToken`に集約し、orphan回収・期限掃引・親連動・`wx release`が共有する。
+`Manager.reconcileExpiredLeases`は`maintainJobs`の10秒tickerと`maintainLifecycle`の起動時一巡に繋ぎ、`lease.ttl`の到来と親sessionの終了の両方をここで拾う。
+`Manager.Release`の成功後にも子貸出の返却を呼ぶが、これは待ち時間の最適化であり、正しさの根拠は周期処理側に置く。
 隔離slotを持つsessionは`DRAINING`へ進めず、`EXPIRED`で終端させslotのownerだけを外す。
 slotは`QUARANTINED`のままworktree・snapshotを保持し、同じ返却の失敗が繰り返されるのを防ぐ。
 この扱いは`Release`の全経路に適用する。

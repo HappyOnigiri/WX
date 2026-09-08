@@ -16,7 +16,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, sessionState, parent string, pendingAgentID ...string) (Lease, error) {
+func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, attrs leaseAttrs, sessionState, parent string, pendingAgentID ...string) (Lease, error) {
 	rootPath, rootID, err := m.activeRoot()
 	if err != nil {
 		return Lease{}, err
@@ -37,7 +37,7 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 		if idErr != nil {
 			return Lease{}, idErr
 		}
-		lease, retry, allocErr := m.allocateWithID(ctx, id, rootPath, rootID, token, w, resolved, generation, agent, pid, sessionState, slotState, jobKind, parent, pendingAgentID...)
+		lease, retry, allocErr := m.allocateWithID(ctx, id, rootPath, rootID, token, w, resolved, generation, agent, pid, attrs, sessionState, slotState, jobKind, parent, pendingAgentID...)
 		if allocErr == nil {
 			return lease, nil
 		}
@@ -51,7 +51,7 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 
 const idAllocationAttempts = 10
 
-func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, token string, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, sessionState, slotState, jobKind, parent string, pendingAgentID ...string) (Lease, bool, error) {
+func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, token string, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, attrs leaseAttrs, sessionState, slotState, jobKind, parent string, pendingAgentID ...string) (Lease, bool, error) {
 	relPath, err := slotRelPath(string(w.ID), id)
 	if err != nil {
 		return Lease{}, false, err
@@ -73,6 +73,7 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 	}
 	leasePathValue := leasePath(slotPath, w.Kind, repos)
 	session := state.Session{ID: id, WorkspaceID: string(w.ID), SlotID: id, ParentSessionID: parent, State: sessionState, AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
+	m.applyLeaseAttrs(&session, attrs)
 	if sessionState == "RESTORING" {
 		if len(pendingAgentID) > 0 {
 			session.PendingAgentSessionID = pendingAgentID[0]

@@ -279,7 +279,7 @@ func (r *verboseStatusRenderer) renderRetention() {
 	value, present := r.payload["retention_seconds"]
 	retention, isMap := value.(map[string]any)
 	r.mark("retention_seconds")
-	keys := []string{"hot_standby", "ended_worktree", "quarantined", "recovery_snapshot", "expired_session_tombstone", "failed_job", "event_log"}
+	keys := []string{"hot_standby", "ended_worktree", "quarantined", "recovery_snapshot", "expired_session_tombstone", "failed_job", "event_log", "lease_ttl"}
 	known := map[string]bool{}
 	for _, key := range keys {
 		known[key] = true

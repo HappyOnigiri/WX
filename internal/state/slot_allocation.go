@@ -46,7 +46,7 @@ func (s *Store) CreateSlotSession(ctx context.Context, slot Slot, repos []SlotRe
 			return Job{}, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,parent_session_id,state,agent_kind,client_pid,session_token_hash,requested_branch_spec,created_at,pending_agent_session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, session.ID, nullString(session.WorkspaceID), session.SlotID, nullString(session.ParentSessionID), session.State, session.AgentKind, session.ClientPID, session.TokenHash, "", t, nullString(session.PendingAgentSessionID))
+	_, err = tx.ExecContext(ctx, `INSERT INTO sessions(`+sessionInsertColumns+`) VALUES(`+sessionInsertPlaceholders+`)`, sessionInsertArgs(session, t)...)
 	if err != nil {
 		return Job{}, err
 	}
@@ -161,7 +161,7 @@ func (s *Store) RegisterReservedSlotSession(ctx context.Context, slotID string, 
 			return Job{}, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,parent_session_id,state,agent_kind,client_pid,session_token_hash,requested_branch_spec,created_at,pending_agent_session_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, session.ID, nullString(session.WorkspaceID), session.SlotID, nullString(session.ParentSessionID), session.State, session.AgentKind, session.ClientPID, session.TokenHash, "", t, nullString(session.PendingAgentSessionID)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO sessions(`+sessionInsertColumns+`) VALUES(`+sessionInsertPlaceholders+`)`, sessionInsertArgs(session, t)...); err != nil {
 		return Job{}, err
 	}
 	if jobKind == "RESTORE" && session.ParentSessionID != "" {

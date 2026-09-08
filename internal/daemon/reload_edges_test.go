@@ -29,7 +29,7 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 
 	repository := filepath.Join(home, "repository")
 	initGitRepo(t, repository)
-	lease, err := m.ResolveAndLease(ctx, repository, []string{"main"}, "codex", os.Getpid())
+	lease, err := m.ResolveAndLease(ctx, repository, []string{"main"}, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}

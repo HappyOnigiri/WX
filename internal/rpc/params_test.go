@@ -7,8 +7,9 @@ import (
 	"testing"
 )
 
-// 共有型の round-trip だけでは CLI と daemon が同時に誤るため、旧実装が送っていた固定 JSON と byte 単位で比較する。
+// 共有型の round-trip だけでは CLI と daemon が同時に誤るため、送信する固定 JSON と byte 単位で比較する。
 // 冪等キーと再送判定は Params の JSON 文字列を比較するので、キーの順序・有無・型が変わると同じ要求が別物になる。
+// 貸出の 3 フィールドは辞書順の位置に入り、agent 起動でも空文字として必ず出力される。
 
 func TestResolveAndLeaseParamsMarshalsLegacyBytes(t *testing.T) {
 	t.Parallel()
@@ -20,17 +21,17 @@ func TestResolveAndLeaseParamsMarshalsLegacyBytes(t *testing.T) {
 		{
 			name:   "zero",
 			params: ResolveAndLeaseParams{},
-			want:   `{"agent":"","branches":null,"client_pid":0,"cwd":"","force_worktree":false}`,
+			want:   `{"agent":"","branches":null,"client_pid":0,"cwd":"","force_worktree":false,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":""}`,
 		},
 		{
 			name:   "populated",
 			params: ResolveAndLeaseParams{Agent: "codex", Branches: []string{"main", "topic"}, ClientPID: 4321, CWD: "/repo", ForceWorktree: true},
-			want:   `{"agent":"codex","branches":["main","topic"],"client_pid":4321,"cwd":"/repo","force_worktree":true}`,
+			want:   `{"agent":"codex","branches":["main","topic"],"client_pid":4321,"cwd":"/repo","force_worktree":true,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":""}`,
 		},
 		{
 			name:   "empty branches",
 			params: ResolveAndLeaseParams{Branches: []string{}},
-			want:   `{"agent":"","branches":[],"client_pid":0,"cwd":"","force_worktree":false}`,
+			want:   `{"agent":"","branches":[],"client_pid":0,"cwd":"","force_worktree":false,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":""}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,12 +57,12 @@ func TestResumeParamsMarshalsLegacyBytes(t *testing.T) {
 		{
 			name:   "zero",
 			params: ResumeParams{},
-			want:   `{"agent":"","agent_session_id":"","branches":null,"client_pid":0,"fresh":false,"wx_session_id":""}`,
+			want:   `{"agent":"","agent_session_id":"","branches":null,"client_pid":0,"fresh":false,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":"","wx_session_id":""}`,
 		},
 		{
 			name:   "populated",
 			params: ResumeParams{Agent: "claude", AgentSessionID: "native", Branches: []string{"main"}, ClientPID: 99, Fresh: true, WXSessionID: "wx-1"},
-			want:   `{"agent":"claude","agent_session_id":"native","branches":["main"],"client_pid":99,"fresh":true,"wx_session_id":"wx-1"}`,
+			want:   `{"agent":"claude","agent_session_id":"native","branches":["main"],"client_pid":99,"fresh":true,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":"","wx_session_id":"wx-1"}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,22 +78,23 @@ func TestResumeParamsMarshalsLegacyBytes(t *testing.T) {
 	}
 }
 
-// 旧実装は map[string]any を marshal していたため、同じ値なら byte 列が共有型と一致する。
+// map[string]any の marshal はキーを辞書順に並べるため、同じ値なら byte 列が共有型と一致する。
+// 貸出コマンドが載せる 3 フィールドも同じ並びに入ることをここで固定する。
 func TestSharedParamsMatchLegacyMapEncoding(t *testing.T) {
 	t.Parallel()
 	pid := os.Getpid()
-	lease, err := json.Marshal(map[string]any{"cwd": "/repo", "branches": []string{"main"}, "agent": "codex", "client_pid": pid, "force_worktree": true})
+	lease, err := json.Marshal(map[string]any{"cwd": "/repo", "branches": []string{"main"}, "agent": "codex", "client_pid": pid, "force_worktree": true, "lease_kind": "shell", "lease_owner_session_id": "owner", "lease_owner_token": "token"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	shared, err := json.Marshal(ResolveAndLeaseParams{Agent: "codex", Branches: []string{"main"}, ClientPID: pid, CWD: "/repo", ForceWorktree: true})
+	shared, err := json.Marshal(ResolveAndLeaseParams{Agent: "codex", Branches: []string{"main"}, ClientPID: pid, CWD: "/repo", ForceWorktree: true, LeaseKind: "shell", LeaseOwnerSessionID: "owner", LeaseOwnerToken: "token"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(shared) != string(lease) {
 		t.Fatalf("ResolveAndLeaseParams=%s, legacy map=%s", shared, lease)
 	}
-	legacyResume, err := json.Marshal(map[string]any{"wx_session_id": "wx-1", "agent": "claude", "client_pid": pid, "agent_session_id": "native", "fresh": false, "branches": []string(nil)})
+	legacyResume, err := json.Marshal(map[string]any{"wx_session_id": "wx-1", "agent": "claude", "client_pid": pid, "agent_session_id": "native", "fresh": false, "branches": []string(nil), "lease_kind": "", "lease_owner_session_id": "", "lease_owner_token": ""})
 	if err != nil {
 		t.Fatal(err)
 	}

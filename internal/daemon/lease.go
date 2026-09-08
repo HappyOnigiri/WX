@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -25,16 +26,19 @@ type Lease struct {
 	Ready           bool   `json:"ready"`
 }
 
-func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []string, agent string, pid int) (Lease, error) {
+// ResolveAndLease は cwd の workspace を解決して貸出す。
+// attrs は必須引数にしている。可変長にすると渡し忘れをコンパイラが検出できず、
+// 貸出が黙って agent 起動（lease_kind='agent'）として登録される。
+func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []string, agent string, pid int, attrs leaseAttrs) (Lease, error) {
 	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 	w, err := discoverer.Resolve(ctx, cwd)
 	if err != nil {
 		return Lease{}, err
 	}
-	return m.leaseWorkspace(ctx, w, branches, agent, pid, false)
+	return m.leaseWorkspace(ctx, w, branches, agent, pid, false, attrs)
 }
 
-func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, branches []string, agent string, pid int, cold bool) (Lease, error) {
+func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, branches []string, agent string, pid int, cold bool, attrs leaseAttrs) (Lease, error) {
 	var err error
 	w, err = m.store.CanonicalWorkspace(ctx, w)
 	if err != nil {
@@ -110,6 +114,7 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 				sessionState = "STARTING"
 			}
 			session := state.Session{ID: ready.ID, WorkspaceID: string(w.ID), SlotID: ready.ID, State: sessionState, AgentKind: agent, ClientPID: pid, TokenHash: state.HashToken(token)}
+			m.applyLeaseAttrs(&session, attrs)
 			if retainErr := m.retainLease(session.ID, leasePathValue); retainErr != nil {
 				return Lease{}, false, retainErr
 			}
@@ -148,7 +153,7 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 		// 待機枠があったのにcold startへ落ちた事実は、記録しないと後から追跡できない。
 		m.log.Info("warm lease fell back to a cold start", "workspace_id", w.ID, "ready_candidates", budget-1, "attempts", attempts)
 	}
-	return m.allocate(ctx, w, resolved, generation, agent, pid, "STARTING", "")
+	return m.allocate(ctx, w, resolved, generation, agent, pid, attrs, "STARTING", "")
 }
 
 func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []pool.Resolved) (bool, error) {
@@ -285,7 +290,8 @@ func coldWorktreeUnmaterialized(owner *os.Root, root, worktreePath string) (bool
 }
 
 // leaseWithPolicy は RPC の新規作成要求を検証する。一時許可は設定や standby の補充対象を変更しない。
-func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []string, agent string, pid int, force bool) (Lease, error) {
+// attrs を必須引数にしている理由は ResolveAndLease と同じである。
+func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []string, agent string, pid int, force bool, attrs leaseAttrs) (Lease, error) {
 	discoverer := discovery.Discoverer{Git: m.git, Config: m.Config()}
 	w, err := discoverer.Resolve(ctx, cwd)
 	if err != nil {
@@ -295,10 +301,24 @@ func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []st
 		}
 	}
 	mode := m.Config().WorktreeMode(string(w.Root))
+	lease := attrs
+	// 貸出コマンドは現在のディレクトリで動く選択肢を持たないため、off の workspace では方針の選び直しを促す。
+	if lease.Kind != "" && mode == "off" {
+		return Lease{}, fmt.Errorf("workspace %s is configured not to use a worktree; change worktree.undefined or the workspace policy %s", w.Root, WorktreeDisabledMarker)
+	}
 	if !force && mode != "hot" && mode != "cold" {
 		return Lease{}, errors.New("worktree creation is not authorized; select a worktree policy or use --worktree")
 	}
-	return m.leaseWorkspace(ctx, w, branches, agent, pid, force || mode == "cold")
+	return m.leaseWorkspace(ctx, w, branches, agent, pid, force || mode == "cold", lease)
+}
+
+// WorktreeDisabledMarker は worktree を使わない設定の workspace へ貸出コマンドが来たことを示す機械可読なトークンである。
+// RPC のエラーは文字列で届くため、CLI はこの区別で失敗（1）ではなく引数エラー（2）として終える。
+const WorktreeDisabledMarker = "worktree=disabled"
+
+// IsWorktreeDisabled は貸出コマンドが worktree を使わない workspace で断られたかを返す。
+func IsWorktreeDisabled(err error) bool {
+	return err != nil && strings.Contains(err.Error(), WorktreeDisabledMarker)
 }
 
 // resolveRetiredSlotPath は解決できなかった cwd が畳まれた slot のものなら、その slot の workspace root で解決し直す。

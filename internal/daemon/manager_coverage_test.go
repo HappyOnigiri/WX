@@ -725,7 +725,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 	t.Parallel()
 	t.Run("resolve and lease", func(t *testing.T) {
 		ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
-		if _, err := manager.ResolveAndLease(ctx, filepath.Join(t.TempDir(), "missing"), nil, "coverage", 0); err == nil {
+		if _, err := manager.ResolveAndLease(ctx, filepath.Join(t.TempDir(), "missing"), nil, "coverage", 0, leaseAttrs{}); err == nil {
 			t.Fatal("missing workspace resolved")
 		}
 		manager.mu.Lock()
@@ -733,7 +733,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		cfg.Repositories[string(workspaceRecord.Repositories[0].MainPath)] = config.Repository{DefaultBranch: "missing"}
 		manager.cfg = cfg
 		manager.mu.Unlock()
-		if _, err := manager.ResolveAndLease(ctx, string(workspaceRecord.Root), nil, "coverage", 0); err == nil {
+		if _, err := manager.ResolveAndLease(ctx, string(workspaceRecord.Root), nil, "coverage", 0, leaseAttrs{}); err == nil {
 			t.Fatal("missing base branch lease succeeded")
 		}
 		manager.mu.Lock()
@@ -743,7 +743,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		if err := store.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := manager.ResolveAndLease(ctx, string(workspaceRecord.Root), nil, "coverage", 0); err == nil {
+		if _, err := manager.ResolveAndLease(ctx, string(workspaceRecord.Root), nil, "coverage", 0, leaseAttrs{}); err == nil {
 			t.Fatal("lease with closed store succeeded")
 		}
 	})
@@ -755,7 +755,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		cfg.Storage.WorktreeRoot = "$UNSUPPORTED/root"
 		manager.cfg = cfg
 		manager.mu.Unlock()
-		if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "coverage", 0, "STARTING", ""); err == nil {
+		if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "coverage", 0, leaseAttrs{}, "STARTING", ""); err == nil {
 			t.Fatal("allocation with unsupported root succeeded")
 		}
 		blocked := filepath.Join(t.TempDir(), "blocked")
@@ -766,7 +766,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 		cfg.Storage.WorktreeRoot = filepath.Join(blocked, "child")
 		manager.cfg = cfg
 		manager.mu.Unlock()
-		if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "coverage", 0, "STARTING", ""); err == nil {
+		if _, err := manager.allocate(ctx, workspaceRecord, resolved, 1, "coverage", 0, leaseAttrs{}, "STARTING", ""); err == nil {
 			t.Fatal("allocation below a regular file succeeded")
 		}
 		manager.mu.Lock()

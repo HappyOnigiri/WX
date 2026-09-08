@@ -58,6 +58,7 @@ func (m *Manager) maintainJobs() {
 			rearm()
 		case <-ticker.C:
 			m.recoverJobs(false)
+			m.reconcileExpiredLeases(m.ctx)
 			m.detectExecutableReplacement()
 			m.runPendingLifecycle()
 			rearm()
@@ -72,6 +73,7 @@ func (m *Manager) maintainLifecycle() {
 	m.reconcileStandbyReplenishments(m.ctx)
 	m.reconcileArtifacts(m.ctx)
 	m.reconcileOrphans(m.ctx)
+	m.reconcileExpiredLeases(m.ctx)
 	m.maybeBackup(m.ctx)
 	m.runMaintenance()
 	m.measureRootUsage(m.ctx)
@@ -267,21 +269,11 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 		return
 	}
 	for _, candidate := range candidates {
-		if processAlive(candidate.ClientPID) || processAlive(candidate.AgentPID) {
+		if leaseCandidateRunning(candidate) {
 			continue
 		}
-		job, changed, quarantineExpired, err := m.store.ReleaseWithOutcome(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
-		if err != nil {
-			m.log.Error("orphan release failed", "session_id", candidate.ID, "error", err)
-			continue
-		}
-		if quarantineExpired {
-			m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", candidate.ID, "slot_id", candidate.SlotID)
-		}
-		if changed {
-			m.schedule(job)
-		} else {
-			m.releaseLease(candidate.ID)
+		if err := m.releaseLeaseWithoutToken(ctx, candidate, "orphan-reconcile"); err != nil {
+			m.log.Error("lease release failed", "session_id", candidate.ID, "error", err)
 		}
 	}
 }

@@ -58,7 +58,7 @@ func TestLeaseTriesEveryReadyCandidateBeyondTheConfiguredWarmSize(t *testing.T) 
 	m := testManager(t, cfg, store)
 	defer m.Close()
 	ctx := context.Background()
-	if _, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false); err != nil {
+	if _, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{}); err != nil {
 		t.Fatal(err)
 	}
 	drainPendingJobs(t, m, store)
@@ -83,7 +83,7 @@ func TestLeaseTriesEveryReadyCandidateBeyondTheConfiguredWarmSize(t *testing.T) 
 		t.Fatalf("ready slot count=%d err=%v", count, err)
 	}
 
-	lease, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false)
+	lease, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}

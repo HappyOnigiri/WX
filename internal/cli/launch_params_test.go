@@ -43,7 +43,7 @@ func TestLaunchSendsLegacyResolveAndLeasePayload(t *testing.T) {
 	if params.Agent != "codex" || params.ClientPID != os.Getpid() || params.CWD == "" || params.Branches != nil || params.ForceWorktree {
 		t.Fatalf("ResolveAndLease params=%+v", params)
 	}
-	want, err := json.Marshal(map[string]any{"cwd": params.CWD, "branches": []string(nil), "agent": params.Agent, "client_pid": params.ClientPID, "force_worktree": params.ForceWorktree})
+	want, err := json.Marshal(map[string]any{"cwd": params.CWD, "branches": []string(nil), "agent": params.Agent, "client_pid": params.ClientPID, "force_worktree": params.ForceWorktree, "lease_kind": params.LeaseKind, "lease_owner_session_id": params.LeaseOwnerSessionID, "lease_owner_token": params.LeaseOwnerToken})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestLaunchSendsLegacyResumePayload(t *testing.T) {
 	if params.WXSessionID != "old-codex" || params.Agent != "codex" || params.AgentSessionID != "native-codex" || params.ClientPID != os.Getpid() || !params.Fresh || len(params.Branches) != 1 || params.Branches[0] != "main" {
 		t.Fatalf("Resume params=%+v", params)
 	}
-	want, err := json.Marshal(map[string]any{"wx_session_id": params.WXSessionID, "agent": params.Agent, "client_pid": params.ClientPID, "agent_session_id": params.AgentSessionID, "fresh": params.Fresh, "branches": params.Branches})
+	want, err := json.Marshal(map[string]any{"wx_session_id": params.WXSessionID, "agent": params.Agent, "client_pid": params.ClientPID, "agent_session_id": params.AgentSessionID, "fresh": params.Fresh, "branches": params.Branches, "lease_kind": params.LeaseKind, "lease_owner_session_id": params.LeaseOwnerSessionID, "lease_owner_token": params.LeaseOwnerToken})
 	if err != nil {
 		t.Fatal(err)
 	}
