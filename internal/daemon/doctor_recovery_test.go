@@ -11,7 +11,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// 欠損の重大さは slot の状態で決める。貸出中・保存待ちの欠損だけが利用者の対処を要する。
+// 欠損の重大さは slot の状態で決める。貸出中・保存中の欠損だけが利用者の対処を要する。
 func TestMissingArtifactFindingsSeparateNeededSlotsFromReclaimable(t *testing.T) {
 	findings := missingArtifactFindings([]missingArtifact{
 		{SlotID: "ready", Path: "/root/ready", State: "READY"},
@@ -26,7 +26,7 @@ func TestMissingArtifactFindingsSeparateNeededSlotsFromReclaimable(t *testing.T)
 	for path, want := range map[string]diag.Severity{
 		"/root/ready":       diag.SeverityInfo,
 		"/root/leased":      diag.SeverityProblem,
-		"/root/snapshotted": diag.SeverityProblem,
+		"/root/snapshotted": diag.SeverityInfo,
 		"/root/quarantined": diag.SeverityInfo,
 	} {
 		if severities[path] != want {

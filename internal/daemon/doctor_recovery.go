@@ -15,8 +15,9 @@ import (
 
 // requiredSlotStates は実体が欠けていると起動中の作業か未保存の作業を失う slot の状態である。
 // 待機用・準備中・回収対象の欠損は cold start か GC で解消するため、ここには含めない。
+// SNAPSHOTTED も保存が済んでいて復元は新しい slot へ archive から行うため、含めない。
 var requiredSlotStates = map[string]bool{
-	"LEASED": true, "DRAINING": true, "SNAPSHOTTING": true, "SNAPSHOTTED": true,
+	"LEASED": true, "DRAINING": true, "SNAPSHOTTING": true,
 }
 
 // artifactFindings は所有権の照合結果を内訳ごとに分ける。
@@ -69,6 +70,15 @@ func missingArtifactFindings(missing []missingArtifact) []diag.Finding {
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
 	findings := make([]diag.Finding, 0, len(sorted))
 	for _, item := range sorted {
+		if item.State == "SNAPSHOTTED" {
+			findings = append(findings, diag.Finding{
+				Check: diag.CheckArtifactOwnership, Severity: diag.SeverityInfo,
+				Summary: "a snapshotted slot directory is missing", Target: item.Path,
+				Cause:  fmt.Sprintf("slot %s is SNAPSHOTTED, so its work is already saved, and only the leftover directory is gone", item.SlotID),
+				Action: "no action is required; wx quarantines the slot record and its collection removes it",
+			})
+			continue
+		}
 		if !requiredSlotStates[item.State] {
 			findings = append(findings, diag.Finding{
 				Check: diag.CheckArtifactOwnership, Severity: diag.SeverityInfo,
