@@ -100,9 +100,9 @@ func setupActionDescription(step setup.Step, action setup.Action) string {
 	case setup.ActionSkip:
 		return "do nothing now; wx setup can be run again later"
 	case setup.ActionDefault:
-		return "use " + summarizeSetupChange(step)
+		return "write " + summarizeSetupChange(step) + " to " + target
 	case setup.ActionManual:
-		return "type a value instead of " + summarizeSetupChange(step)
+		return "type another path to write to " + target
 	default:
 		return ""
 	}

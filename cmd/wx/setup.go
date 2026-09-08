@@ -276,8 +276,8 @@ func applySetupStep(ctx context.Context, options setup.Options, session setupSes
 		return setupOutcomeFailed
 	}
 	value := ""
-	if action == setup.ActionInstall || action == setup.ActionUpdate {
-		value, err = setupStepValue(ctx, session, step)
+	if action == setup.ActionManual {
+		value, err = setupStepValue(session, step)
 		if err != nil {
 			if errors.Is(err, tui.ErrCancelled) {
 				return setupOutcomeCancelled
@@ -299,22 +299,11 @@ func applySetupStep(ctx context.Context, options setup.Options, session setupSes
 	return setupOutcomeDone
 }
 
-// setupStepValue は値の入力を伴う項目だけ、既定値の採用か手入力かを尋ねる。
+// setupStepValue は manual が選ばれた項目の値を読む。空行は既定値の採用として扱う。
 // 入力は tui.Select の終了後に読む。bubbletea が端末状態を復元済みでなければ 1 行読み取りが壊れる。
-func setupStepValue(ctx context.Context, session setupSession, step setup.Step) (string, error) {
+func setupStepValue(session setupSession, step setup.Step) (string, error) {
 	if step.ID != "worktree_root" {
 		return "", nil
-	}
-	answer, err := session.selector(ctx, setup.Step{
-		ID: step.ID, Title: "Worktree root path", Detail: step.Detail,
-		Options: []setup.Action{setup.ActionDefault, setup.ActionManual}, Default: setup.ActionDefault,
-		Desired: step.Desired,
-	})
-	if err != nil {
-		return "", err
-	}
-	if answer != setup.ActionManual {
-		return step.Desired, nil
 	}
 	_, _ = fmt.Fprintf(session.errOut, "Enter the worktree root path [%s]: ", step.Desired)
 	line, err := session.readLine()

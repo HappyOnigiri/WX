@@ -49,7 +49,7 @@ func TestSetupCheckReportsStateWithoutChangingAnything(t *testing.T) {
 	if code := runSetupCheck(context.Background(), options, true, &jsonOut, &errOut); code != 0 {
 		t.Fatalf("json exit=%d", code)
 	}
-	for _, want := range []string{`"pending": true`, `"id": "worktree_root"`, `"default": "install"`} {
+	for _, want := range []string{`"pending": true`, `"id": "worktree_root"`, `"default": "default"`} {
 		if !strings.Contains(jsonOut.String(), want) {
 			t.Fatalf("json output is missing %q:\n%s", want, jsonOut.String())
 		}
@@ -180,36 +180,37 @@ func TestSetupInteractiveAppliesDefaultsAndReportsCancellation(t *testing.T) {
 	}
 }
 
-func TestSetupStepValueReadsAPathAfterTheSelector(t *testing.T) {
-	_, options := setupCommandHome(t)
+// TestSetupStepValueReadsAPathOnlyForManual は manual を選んだときだけ入力を求めることを確認する。
+// default では 1 行も読まない。読んでしまうと選択直後の Enter が path として解釈される。
+func TestSetupStepValueReadsAPathOnlyForManual(t *testing.T) {
 	var out, errOut bytes.Buffer
-	step := setup.Step{ID: "worktree_root", Desired: "$HOME/wx", Options: []setup.Action{setup.ActionInstall, setup.ActionSkip}, Default: setup.ActionInstall}
+	step := setup.Step{ID: "worktree_root", Desired: "$HOME/wx", Options: []setup.Action{setup.ActionDefault, setup.ActionManual}, Default: setup.ActionDefault}
 	entered := setupSession{
 		out: &out, errOut: &errOut,
-		selector: func(_ context.Context, asked setup.Step) (setup.Action, error) {
-			if asked.Title == "Worktree root path" {
-				return setup.ActionManual, nil
-			}
-			return setup.ActionInstall, nil
-		},
 		readLine: func() (string, error) { return "  /tmp/wx-root  \n", nil },
 	}
-	value, err := setupStepValue(context.Background(), entered, step)
+	value, err := setupStepValue(entered, step)
 	if err != nil || value != "/tmp/wx-root" {
 		t.Fatalf("value=%q err=%v", value, err)
 	}
-	kept := setupSession{
+	if !strings.Contains(errOut.String(), "Enter the worktree root path [$HOME/wx]") {
+		t.Fatalf("the prompt did not show the default: %q", errOut.String())
+	}
+	blank := setupSession{
 		out: &out, errOut: &errOut,
-		selector: func(context.Context, setup.Step) (setup.Action, error) { return setup.ActionDefault, nil },
+		readLine: func() (string, error) { return "\n", nil },
 	}
-	value, err = setupStepValue(context.Background(), kept, step)
+	value, err = setupStepValue(blank, step)
 	if err != nil || value != "$HOME/wx" {
-		t.Fatalf("kept value=%q err=%v", value, err)
+		t.Fatalf("blank input value=%q err=%v", value, err)
 	}
-	if value, err := setupStepValue(context.Background(), kept, setup.Step{ID: "launch_agent"}); err != nil || value != "" {
+	refusing := setupSession{
+		out: &out, errOut: &errOut,
+		readLine: func() (string, error) { t.Fatal("a step without a value read a line"); return "", nil },
+	}
+	if value, err := setupStepValue(refusing, setup.Step{ID: "launch_agent"}); err != nil || value != "" {
 		t.Fatalf("a step without a value asked for one: %q %v", value, err)
 	}
-	_ = options
 }
 
 func readCommandFile(t *testing.T, path string) string {

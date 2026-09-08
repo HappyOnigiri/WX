@@ -77,7 +77,8 @@ func collectWorktreeRoot() Step {
 	step.Current = raw.Storage.WorktreeRoot
 	if step.Current == "" {
 		step.Detail = "storage.worktree_root is not written; wx would use " + step.Desired
-		step.Options, step.Default = stepOptions(StateAbsent, worktreeRootActions)
+		// 未記載のときは path そのものを決めてもらう。書かずに済ませる skip は既定値での運用と結果が同じなので置かない。
+		step.Options, step.Default = []Action{ActionDefault, ActionManual}, ActionDefault
 		step.State = StateAbsent
 		return step
 	}
@@ -98,8 +99,9 @@ func collectWorktreeRoot() Step {
 	return step
 }
 
-// worktreeRootActions は config.yaml から key を消す公開 API が無いため remove を持たない。
-var worktreeRootActions = []Action{ActionInstall, ActionUpdate, ActionKeep, ActionSkip}
+// worktreeRootActions は記載済みの状態にだけ使う。config.yaml から key を消す公開 API が無いため remove を持たない。
+// 未記載の状態は install/skip ではなく default/manual を出すため、この一覧を通さない。
+var worktreeRootActions = []Action{ActionUpdate, ActionKeep}
 
 // applyWorktreeRoot は raw config へ値を書き、ディレクトリを 0o700 で用意する。
 // Save には raw を渡す。実効値を渡すと全既定値が config.yaml へ焼き付き、以後の既定変更が届かなくなる。

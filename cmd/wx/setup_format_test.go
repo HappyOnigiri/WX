@@ -42,8 +42,8 @@ func TestSetupActionDescriptionsNameWhatChanges(t *testing.T) {
 		setup.ActionKeep:    "leave",
 		setup.ActionRemove:  "remove what wx manages",
 		setup.ActionSkip:    "do nothing now",
-		setup.ActionDefault: "use /home/user/.local/bin/wx",
-		setup.ActionManual:  "type a value instead of /home/user/.local/bin/wx",
+		setup.ActionDefault: "write /home/user/.local/bin/wx to /home/user/.codex/hooks.json",
+		setup.ActionManual:  "type another path to write to /home/user/.codex/hooks.json",
 	} {
 		if got := setupActionDescription(step, action); !strings.Contains(got, want) {
 			t.Fatalf("%s description=%q, want it to mention %q", action, got, want)
