@@ -255,7 +255,7 @@ root periodically; wx slots only reads those results, never measures on demand.
 Rows still waiting for the first measurement show pending, and platforms that
 cannot compare blocks show unsupported. --json carries the measurement time.
 
---json adds the lease kind, the remaining lease deadline, and the wx session
+--json adds the lease kind, the time the lease expires, and the wx session
 that asked for a wx new lease.
 
 Options:
