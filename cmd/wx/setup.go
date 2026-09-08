@@ -36,17 +36,22 @@ func runSetup(ctx context.Context, args []string) int {
 	check := fs.Bool("check", false, "report the current state without changing anything")
 	jsonOut := fs.Bool("json", false, "with --check, print machine-readable JSON")
 	update := fs.Bool("update", false, "offer only the items that diverged from what wx would write")
+	remove := fs.Bool("remove", false, "delete the configuration wx setup writes, leaving the shell startup file alone")
 	fs.Usage = func() { commandUsage(os.Stdout, "setup") }
 	if code, done := finishFlagParse(fs, "setup", args); done {
 		return code
 	}
-	if fs.NArg() != 0 || (*jsonOut && !*check) || (*update && *check) {
+	if fs.NArg() != 0 || (*jsonOut && !*check) || (*update && *check) || (*remove && (*check || *update)) {
 		commandUsage(os.Stderr, "setup")
 		return 2
 	}
 	options := setupOptions()
 	if *check {
 		return runSetupCheck(ctx, options, *jsonOut, os.Stdout, os.Stderr)
+	}
+	// --remove は質問しないので端末を用意しない。uninstall.sh のような非対話の経路から呼べる必要がある。
+	if *remove {
+		return runSetupRemove(ctx, options, os.Stdout, os.Stderr)
 	}
 	session, closeSession, err := interactiveSetupSession(ctx, os.Stdout, os.Stderr)
 	if err != nil {
@@ -195,6 +200,17 @@ func runSetupCheck(ctx context.Context, options setup.Options, jsonOut bool, out
 	}
 	printSetupTable(out, steps)
 	// 差分があっても 0 で終える。非 0 にすると install.sh や CI で「新規マシン = 失敗」になる。
+	return 0
+}
+
+// runSetupRemove は wx setup が書き込んだ設定を消し、結果と消さなかった path を出す。
+// 削除は 1 項目の失敗で打ち切らない。途中で止めると、残った項目を消す手段が利用者に残らない。
+func runSetupRemove(ctx context.Context, options setup.Options, out, errOut io.Writer) int {
+	removal := setup.Remove(ctx, options)
+	printSetupRemoval(out, errOut, removal)
+	if removal.Failed() {
+		return 1
+	}
 	return 0
 }
 

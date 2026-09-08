@@ -29,7 +29,7 @@ Commands:
   retry-standby <workspace>      resume standby replenishment after it stopped
   slots [--all] [--json]         list managed wx slots and their disk usage
   config [<key> ...]             show or update configuration
-  setup [--check] [--update]     review and complete the wx setup
+  setup [--check] [--remove]     review and complete, or remove, the wx setup
   resume <id> [agent] [args...]  restore a wx session
   forget <workspace-path>        forget an inactive workspace
   daemon start|stop|restart      change whether the daemon is running
@@ -207,7 +207,7 @@ Options:
   --foreground  with start, serve in this process instead of asking launchd
                 to start the daemon. This is how the LaunchAgent runs wx.`)
 	case "setup":
-		_, _ = fmt.Fprintln(w, `Usage: wx setup [--check [--json]] [--update]
+		_, _ = fmt.Fprintln(w, `Usage: wx setup [--check [--json]] [--update] [--remove]
 
 Walk through what wx needs to run on its own and apply the choices. Each item
 is offered with the choices its current state allows, so running setup again
@@ -221,17 +221,28 @@ per event and never touches the rest of the file.
 Cancelling stops the walk without undoing what was already applied; every item
 is idempotent, so running wx setup again finishes the rest.
 
+--remove deletes what wx setup writes instead of asking: the wx hook entries,
+the LaunchAgent, and the configuration file. Removing the LaunchAgent boots the
+daemon out, so run anything that needs the daemon, such as wx clear, first. The
+shell startup file is left alone: wx cannot tell its own PATH line apart from
+one you wrote or one your dotfile manager owns, so remove that line yourself.
+The state database, the log directory, and the worktree root are kept too
+because they hold saved work and records; each is printed on a line starting
+with "leftover" so a script can act on them. The uninstaller runs this.
+
 Exit status is 0 when the walk finished, 1 when an item could not be applied,
 the walk was cancelled, or no terminal is attached, and 2 for an argument
 error. --check reports differences with status 0. --update does not use the
 exit status to report a missing terminal: it names the items that need
-attention on stderr and exits 0.
+attention on stderr and exits 0. --remove needs no terminal, keeps going after
+a failed item, and exits 1 when any item failed.
 
 Options:
   --check   report the current state and change nothing; needs no terminal
   --json    with --check, print machine-readable JSON
   --update  offer only the items that no longer match what wx would write, and
-            print nothing when there are none. The installer runs this.`)
+            print nothing when there are none. The installer runs this.
+  --remove  delete the configuration wx setup writes and report what was kept`)
 	case "hook":
 		_, _ = fmt.Fprintln(w, `Usage: wx hook <event>
 
