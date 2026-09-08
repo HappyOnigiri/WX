@@ -9,52 +9,16 @@
 
 - **独立的工作环境** — 智能体在 detached HEAD 状态的 Git worktree 中工作，不会更改原工作区的 HEAD、暂存区和已跟踪文件。
 - **随时开始工作** — 后台守护进程会为最近使用的仓库预先准备工作环境。
-- **恢复会话** — 使用 `wx slots` 查看槽位与会话，使用 `wx resume` 恢复已归档的工作。
+- **节省磁盘空间** — 利用 APFS 的 Copy on Write，与原工作区中内容相同的文件共享数据，减少 worktree 的磁盘占用。
 - **熟悉的命令** — 直接使用 Claude Code 或 Codex 的常用参数，也可以指定起始分支。
 
 ## 安装
 
 需要 **搭载 Apple Silicon 的 macOS**、**Git**，以及 **Claude Code 或 Codex**。
-请确保这些命令可通过 `PATH` 访问。
-无需克隆仓库或安装 Go，即可安装最新发布版本：
 
 ```sh
 curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/install.sh | bash
 ```
-
-安装脚本会验证可执行文件，将其安装到 `~/.local/bin/wx`，并注册和启动 LaunchAgent 守护进程。
-更新时运行同一条命令，即可安装最新发布版本并重启守护进程。
-然后在当前终端中设置 `PATH`：
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-请将上面的行添加到 shell 配置文件（例如 `~/.zshrc`），以便在新终端中使用。
-然后完成初始化设置：
-
-```sh
-wx setup
-```
-
-`wx setup` 会依次确认 wx 管理的各项（worktree root、shell 的 PATH 设置、LaunchAgent、智能体 hook、守护进程），并应用你选择的操作。
-在已完成设置的环境中再次运行不会有任何改动。
-更多信息及源码构建方法，请参阅[版本与发布说明](docs/release.md)。
-
-## 卸载
-
-```sh
-curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/uninstall.sh | bash
-```
-
-卸载程序会先列出将要删除的 worktree 并请求确认，同意后删除这些 worktree、wx 的 hook 条目、LaunchAgent、配置文件以及 `~/.local/bin/wx`。
-传入 `--yes` 可跳过确认。
-删除通过守护进程执行，因此在卸载完成前请保持守护进程运行。
-
-以下三项交由你自行处理，卸载程序会打印每一项对应的命令：
-shell 配置中的 `PATH` 行、状态数据库与日志目录，以及 worktree root。
-后两项保存着 wx 为你保留的工作内容。
-你用过 wx 的仓库中还可能残留对应这些快照的 `refs/wx/recovery/*`。
 
 ## 快速开始
 
@@ -73,22 +37,29 @@ wx codex
 wx --branch feature/api codex
 ```
 
+Claude Code 和 Codex 按启动路径管理会话日志，因此 worktree 发生变化后，标准的 continue / resume 命令可能难以找到过去的会话。
+wx 对这些命令进行封装，提供用于选择并恢复过去会话的 UI。
+
+```sh
+wx claude --resume
+wx codex resume
+```
+
 ## 更多功能
 
 - **状态与诊断：** `wx status`、`wx doctor`。
 - **会话管理与清理：** `wx slots`、`wx resume`、`wx gc --dry-run`、`wx clear`。
 - **配置：** 使用 `wx config` 查看配置或修改单个配置值。
-- **智能体集成：** 全局智能体 hook 会检查工作环境是否就绪，将智能体会话绑定到 wx，并在工作结束后归还。
-  hook 的注册由 `wx setup` 完成。Claude 与 Codex 的 hook 配置中只有 wx 自己的条目由 wx 拥有，文件中的其他内容不会被改动。
-  Claude 的 `--resume` 和 Codex 的 `resume` 可按原本方式使用。
 
-命令和选项的详细用法，请参阅 `wx --help` 和 `wx <command> --help`：
+命令和选项的详细用法，请参阅 `wx --help` 和 `wx <command> --help`。
+
+## 卸载
 
 ```sh
-wx --help
-wx config --help
-wx daemon --help
+curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/uninstall.sh | bash
 ```
+
+删除 wx 管理的 worktree（包括未保存的工作）、hook 条目、LaunchAgent、配置文件和可执行文件。
 
 ## 参与贡献
 
