@@ -1,0 +1,24 @@
+name: Publish Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: publish
+    if: >-
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: HappyOnigiri/ReleaseActions/actions/publish-release@main
+        with:
+          branch: ${{ github.event.pull_request.head.ref }}
+          pr-body: ${{ github.event.pull_request.body }}
+          github-token: ${{ secrets.GH_TOKEN }}

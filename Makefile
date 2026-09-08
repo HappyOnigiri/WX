@@ -1,6 +1,8 @@
 GO ?= go
 INSTALL_DIR ?= $(HOME)/.local/bin
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# バージョンの真実源はリリースタグ（vX.Y.Z）である。
+# 他のタグを起点に選ばないよう--matchで絞り、タグを取得していないcheckoutではコミットへ退避する。
+VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/HappyOnigiri/WX/internal/version.Version=$(VERSION) -X github.com/HappyOnigiri/WX/internal/version.BuildMeta=dev
 CI_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 CI_MAKEFLAGS := -j$(CI_JOBS) --keep-going $(if $(filter output-sync,$(.FEATURES)),--output-sync=target)
@@ -33,7 +35,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check workflow-lint workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check workflow-lint workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-pre-push nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -253,6 +255,12 @@ reproducible-build:
 
 # internal/rpcの単体テストは同じmake ciのcoverage-check/ci-test-raceが
 # ./...として実行済みなのでここでは走らせない。
+# --versionの表示がldflagsの埋め込みまで通っていることを確かめる。
+# 接頭辞だけの確認では、-Xのパスが変わってVersionが"undefined"のままでも気付けない。
+version-check: build
+	@actual="$$(./bin/wx --version)"; expected="wx version $(VERSION)-dev"; \
+	test "$$actual" = "$$expected" || { echo "wx --version is '$$actual', want '$$expected'"; exit 1; }
+
 smoke: build
 	./bin/wx --help >/dev/null
 	./bin/wx --version | grep -q '^wx version '
@@ -298,7 +306,7 @@ ci:
 # 検査一覧を両者へ複製すると片方だけ更新され、CIで適用漏れが起きるため、追加する検査はここへ繋ぐ。
 static-check: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check shell-check
 
-ci-checks: static-check coverage-check ci-test-race build-darwin smoke
+ci-checks: static-check coverage-check ci-test-race build-darwin version-check smoke
 
 # hook本体は共通Gitディレクトリのhooks直下に置き、user側のdispatcherを維持する。
 # 以下はそのhookが呼び出す契約である。
