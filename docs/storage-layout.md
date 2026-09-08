@@ -13,10 +13,8 @@ workspace-idとslot-idは6桁固定の小文字英数字（base36、`domain.NewS
 slot-idはleaseのsession IDと同値なので、`wx slots`が出すIDをそのまま`wx resume`に渡せる。
 大文字を混ぜないのはAPFSが既定でcase-insensitiveなためで、同じ理由からslot内の配置名の衝突判定も小文字化して行い、衝突したら`-2`のサフィックスを付ける。
 
-`_`始まりはwxの予約プレフィックスで、workspace IDもリポジトリ配置名もこの接頭辞を拒否し、旧`_unbound`は回収用に特別扱いする。
+`_`始まりはwxの予約プレフィックスで、workspace IDもリポジトリ配置名もこの接頭辞を拒否する。
 孤児スキャン（`ownedRootArtifactPaths`）は予約名を通常workspaceとして列挙せず、旧`_unbound`だけを回収対象として特別扱いする。
-DB登録済みの旧UNBOUND slotは通常の回収経路で削除する。
-登録外の`_unbound`を含むpathは診断だけを行い、自動では削除しない。
 新規slotは未使用pathをDBへ予約してから作成し、既存pathとの衝突時は採用せず予約を取り消す。
 
 エージェントへ貸し出す単位（`Lease.Path`）は、単一リポジトリworkspaceなら`<slot-id>/<RepoName>`、multi_repositoryなら`<slot-id>`である。
@@ -45,5 +43,3 @@ multi_repositoryのworkspaceスナップショットは、slotディレクトリ
 root世代の登録と解決は[`internal/daemon/roots.go`](../internal/daemon/roots.go)が入口である。
 代表テストは`internal/daemon`の[`TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot`](../internal/daemon/roots_integration_test.go)である。
 これは`storage.worktree_root`の変更が既存slotを動かさないことを通す。
-絞って動かすなら`make test-focus PKG=./internal/daemon RUN=TestWorktreeRootChange`とする。
-この実行は[部分検証](worktree-copy.md#部分検証)であり、最終判定は`make ci`とする。

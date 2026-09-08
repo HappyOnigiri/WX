@@ -35,19 +35,13 @@ workspace内の相対位置を保って再構成する処理は持たず、必�
 
 共有対象の判定と差し替えは[`internal/workspace/cow.go`](../internal/workspace/cow.go)が入口で、clonefileの呼び出しは[`cow_darwin.go`](../internal/workspace/cow_darwin.go)が持つ。
 代表テストは[`cow_darwin_test.go`](../internal/workspace/cow_darwin_test.go)で、macOSであれば`make test-darwin`に限らず`make ci`でも実行される（前提は後述の[部分検証](#部分検証)）。
-CoW周辺をまとめて動かすなら`make test-focus PKG=./internal/workspace RUN='TestCOW.*'`とし、ホストのOSで実行できる範囲に絞られる。
 
 ## 部分検証
 
-darwin専用実装（`cow_darwin.go`・`usage_darwin.go`）のテストは、macOSで`make ci`・`make test`・`make test-focus PKG=./internal/workspace`を実行すればいずれでも走る。
+darwin専用実装（`cow_darwin.go`・`usage_darwin.go`）のテストは、macOSであれば`make ci`・`make test`・`make test-focus PKG=./internal/workspace`のいずれでも走る。
 `cowAvailable`はdarwinで常にtrueを返しfilesystemを見ないため、非APFSの一時ディレクトリではclonefileが効かず、失敗が実装の不具合と区別できない。
 そこで`internal/workspace`の`TestMain`が`statfs`でTMPDIRを判定し、APFSでなければテストを走らせずに前提未成立として終える。
 
 これらの実装を触ったら、macOS実機で`make test-darwin`も実行する。
-このtargetは`internal/workspace`全体を`go test -v -shuffle=on -count=1`で走らせ、macOSのバージョン・アーキテクチャ・Go版と使用した一時ディレクトリを表示する。
-非Darwinホストとホストに一致しない`GOOS`/`GOARCH`は、darwin専用のテストがビルド対象から外れるため、テストを始めずに失敗する。
-`make build-darwin`はarm64のクロスビルドだけを見るので、これらのテストの実行は保証しない。
-CIのランナーはすべてlinuxのままとし、macOS runnerは用意しない。
-
+`make build-darwin`はarm64のクロスビルドだけを見るのでテストの実行を保証せず、CIのランナーはすべてlinuxのままとしてmacOS runnerは用意しない。
 Linux側の退行は`CGO_ENABLED=0 GOOS=linux .tools/bin/golangci-lint run ./...`で確認する。
-どちらも部分検証であり、最終判定は`make ci`とする。

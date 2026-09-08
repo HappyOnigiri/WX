@@ -42,7 +42,4 @@
 
 再開のclient側入口は[`internal/cli/client.go`](../internal/cli/client.go)と[`internal/cli/fresh.go`](../internal/cli/fresh.go)である。
 daemon側の入口は[`internal/daemon/resume.go`](../internal/daemon/resume.go)である。
-代表テストは`internal/daemon`の[`TestLeaseArchiveAndRestorePreservesGitState`](../internal/daemon/resume_integration_test.go)である。
-これは貸出からsnapshot・復元までGit状態が保たれることを通す。
-絞って動かすなら`make test-focus PKG=./internal/daemon RUN=TestLeaseArchiveAndRestorePreservesGitState`とする。
-この実行は[部分検証](worktree-copy.md#部分検証)であり、最終判定は`make ci`とする。
+代表テストは`internal/daemon`の[`TestLeaseArchiveAndRestorePreservesGitState`](../internal/daemon/resume_integration_test.go)で、貸出からsnapshot・復元までGit状態が保たれることを通す。
