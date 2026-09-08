@@ -14,22 +14,24 @@
 
 ## 安装
 
-需要 **macOS**、**Git**、**Go 1.27.1 或更高版本**，以及 **Claude Code 或 Codex**。
-请先安装这些工具，并确保可以通过 `PATH` 访问它们。
+需要 **搭载 Apple Silicon 的 macOS**、**Git**，以及 **Claude Code 或 Codex**。
+请确保这些命令可通过 `PATH` 访问。
+无需克隆仓库或安装 Go，即可安装最新发布版本：
 
 ```sh
-git clone https://github.com/HappyOnigiri/WX.git
-cd WX
-make install
-export PATH="$HOME/.local/bin:$PATH"
-wx daemon install
+curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/install.sh | bash
 ```
 
-可执行文件会安装到 `~/.local/bin/wx`。
-请将上面的 `export PATH` 添加到 shell 配置文件（例如 `~/.zshrc`），以便在新终端中使用。
-`wx daemon install` 会注册 LaunchAgent，让守护进程在登录时启动。
+安装脚本会验证可执行文件，将其安装到 `~/.local/bin/wx`，并注册和启动 LaunchAgent 守护进程。
+更新时运行同一条命令，即可安装最新发布版本并重启守护进程。
+然后在当前终端中设置 `PATH`：
 
-更新时，在克隆的 WX 目录中运行 `git pull --ff-only` 和 `make install`，然后运行 `wx daemon install` 和 `wx daemon restart`。
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+请将上面的行添加到 shell 配置文件（例如 `~/.zshrc`），以便在新终端中使用。
+更多信息及源码构建方法，请参阅[版本与发布说明](docs/release.md)。
 
 ## 快速开始
 
