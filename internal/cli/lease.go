@@ -139,6 +139,15 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 	if err := c.RPC.Call(leaseCtx, "ResolveAndLease", params, &lease); err != nil {
 		return reportLeaseError(err)
 	}
+	// パスを出力できないまま戻ると、利用者は session id を知らないので wx release もできない。
+	// path 貸出は heartbeat も orphan 回収も持たないため、返却しなければ lease.ttl まで slot が残る。
+	handedOff := false
+	defer func() {
+		if handedOff {
+			return
+		}
+		c.releaseLeaseToken(lease, "lease-setup-failed")
+	}()
 	if !lease.Ready {
 		waitCtx, cancel := context.WithTimeout(ctx, c.Config.Readiness.Timeout.Duration)
 		err := c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
@@ -154,11 +163,27 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
-		fmt.Println(string(data))
+		if _, err := fmt.Println(string(data)); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		handedOff = true
 		return 0
 	}
-	fmt.Println(lease.Path)
+	if _, err := fmt.Println(lease.Path); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	handedOff = true
 	return 0
+}
+
+// releaseLeaseToken は取得済みの token で貸出を返却する。
+// ctx が中断されていても返却だけは届けたいので、呼び出し側の ctx からは切り離す。
+func (c Client) releaseLeaseToken(lease daemon.Lease, reason string) {
+	releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = c.RPC.CallWithKey(releaseCtx, "Release", "release:"+lease.SessionID+":"+reason, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": reason}, nil)
 }
 
 // RunLeaseRelease は貸出を明示的に返却する。session token を持たない経路なので、

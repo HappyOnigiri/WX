@@ -184,6 +184,29 @@ func TestRunLeaseNewPrintsThePathWithoutFollowingTheProcess(t *testing.T) {
 	}
 }
 
+// 準備待ちが失敗したら、取った貸出を返却してから終わる。
+// path 貸出は heartbeat も orphan 回収も持たないので、返さないと lease.ttl まで slot が残り、
+// session id を出さないまま終わるため利用者は wx release もできない。
+func TestRunLeaseNewReturnsTheLeaseWhenPreparationFails(t *testing.T) {
+	client, handler, _, ctx := leaseFixture(t)
+	handler.lease.Ready = false
+	handler.waitReadyErr = errors.New("injected preparation failure")
+	stdout := captureLeaseStdout(t, func() {
+		if exit := client.RunLeaseNew(ctx, nil, false); exit != 1 {
+			t.Fatalf("RunLeaseNew exit=%d, want 1", exit)
+		}
+	})
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("stdout=%q, want no path on failure", stdout)
+	}
+	handler.mu.Lock()
+	methods := strings.Join(handler.methods, ",")
+	handler.mu.Unlock()
+	if !strings.Contains(methods, "Release") {
+		t.Fatalf("methods=%s, want the lease returned after a failed preparation", methods)
+	}
+}
+
 // 親 session は ID と token の両方が揃ったときだけ要求へ載せる。
 func TestLeaseOwnerFromEnvironmentNeedsBothIdentityAndToken(t *testing.T) {
 	for name, test := range map[string]struct{ id, token, wantID string }{

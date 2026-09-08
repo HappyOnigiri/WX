@@ -31,6 +31,8 @@ type launcherHandler struct {
 	// releaseLeaseReply と resumeStatus は貸出コマンドの test が応答を差し替える点である。nil なら既定の応答を返す。
 	releaseLeaseReply map[string]any
 	resumeStatus      map[string]any
+	// waitReadyErr は準備待ちを失敗させる点である。nil なら成功を返す。
+	waitReadyErr error
 }
 
 func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
@@ -54,6 +56,13 @@ func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawM
 	switch method {
 	case "ResolveAndLease", "Resume", "AllocateResumeSlot":
 		return h.lease, nil
+	case "WaitReady":
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.waitReadyErr != nil {
+			return nil, h.waitReadyErr
+		}
+		return map[string]bool{"ok": true}, nil
 	case "ResumeStatus":
 		h.mu.Lock()
 		defer h.mu.Unlock()
