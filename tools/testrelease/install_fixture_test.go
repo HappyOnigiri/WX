@@ -16,6 +16,11 @@ if [ "$1" = --version ]; then
   echo "wx version ${FAKE_BINARY_VERSION:-v1.2.3}"
   exit 0
 fi
+if [ "$1" = setup ]; then
+  echo "setup $2" >> "$FAKE_WX_LOG"
+  [ "setup" != "${FAKE_FAIL:-}" ] || exit 23
+  exit 0
+fi
 [ "$1" = daemon ] || exit 64
 echo "$2" >> "$FAKE_WX_LOG"
 [ "$2" != "${FAKE_FAIL:-}" ] || exit 23

@@ -38,24 +38,28 @@ func validReadinessDocument(t *testing.T, executable string) string {
 	return string(data)
 }
 
-// TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures は agent ごとの file layout と Claude の local-settings 優先を確認する。
+// TestTargetPathResolvesPerAgentPrecedenceAndFailures は agent ごとの file layout と Claude の local-settings 優先を確認する。
 // unsafe local settings、未対応 agent、home directory 不在も確認する。
-func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
+func TestTargetPathResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 	t.Run("codex present", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		hooks := filepath.Join(home, ".codex", "hooks.json")
 		writeHookConfigFile(t, hooks, "{}")
-		path, ok := readinessHookPaths("codex")
-		if !ok || path != hooks {
-			t.Fatalf("readinessHookPaths(codex)=%v,%v want %s,true", path, ok, hooks)
+		path, err := TargetPath("codex")
+		if err != nil || path != hooks {
+			t.Fatalf("TargetPath(codex)=%v,%v want %s", path, err, hooks)
 		}
 	})
 
 	t.Run("codex missing", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		if _, ok := readinessHookPaths("codex"); ok {
-			t.Fatal("missing codex hooks file reported available")
+		_, _ = hookTestHome(t)
+		state, err := Inspect("codex")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Status != StatusAbsent || len(state.Blocking()) != 0 {
+			t.Fatalf("missing codex hooks file=%s; reasons=%v", state.Status, state.Reasons())
 		}
 	})
 
@@ -63,12 +67,11 @@ func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		local := filepath.Join(home, ".claude", "settings.local.json")
-		shared := filepath.Join(home, ".claude", "settings.json")
 		writeHookConfigFile(t, local, "{}")
-		writeHookConfigFile(t, shared, "{}")
-		path, ok := readinessHookPaths("claude")
-		if !ok || path != local {
-			t.Fatalf("readinessHookPaths(claude)=%v,%v want local settings", path, ok)
+		writeHookConfigFile(t, filepath.Join(home, ".claude", "settings.json"), "{}")
+		path, err := TargetPath("claude")
+		if err != nil || path != local {
+			t.Fatalf("TargetPath(claude)=%v,%v want local settings", path, err)
 		}
 	})
 
@@ -77,9 +80,9 @@ func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 		t.Setenv("HOME", home)
 		shared := filepath.Join(home, ".claude", "settings.json")
 		writeHookConfigFile(t, shared, "{}")
-		path, ok := readinessHookPaths("claude")
-		if !ok || path != shared {
-			t.Fatalf("readinessHookPaths(claude)=%v,%v want shared settings", path, ok)
+		path, err := TargetPath("claude")
+		if err != nil || path != shared {
+			t.Fatalf("TargetPath(claude)=%v,%v want shared settings", path, err)
 		}
 	})
 
@@ -97,35 +100,41 @@ func TestReadinessHookPathsResolvesPerAgentPrecedenceAndFailures(t *testing.T) {
 		if err := os.Symlink(managed, shared); err != nil {
 			t.Fatal(err)
 		}
-		path, ok := readinessHookPaths("claude")
-		if !ok || path != shared {
-			t.Fatalf("readinessHookPaths(claude)=%v,%v want symlinked shared settings", path, ok)
+		path, err := TargetPath("claude")
+		if err != nil || path != shared {
+			t.Fatalf("TargetPath(claude)=%v,%v want symlinked shared settings", path, err)
 		}
 	})
 
 	t.Run("claude local settings unsafe", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
-		local := filepath.Join(home, ".claude", "settings.local.json")
-		if err := os.MkdirAll(local, 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Join(home, ".claude", "settings.local.json"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if _, ok := readinessHookPaths("claude"); ok {
+		if _, err := TargetPath("claude"); err == nil {
 			t.Fatal("directory masquerading as local settings was accepted")
 		}
 	})
 
 	t.Run("unknown agent", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
-		if _, ok := readinessHookPaths("unknown"); ok {
-			t.Fatal("unknown agent reported available")
+		if _, err := TargetPath("unknown"); err == nil {
+			t.Fatal("unknown agent resolved to a path")
+		}
+		state, err := Inspect("unknown")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Status != StatusUnsupported || !hasFinding(state, FindingUnsupportedAgent) {
+			t.Fatalf("unknown agent=%s; reasons=%v", state.Status, state.Reasons())
 		}
 	})
 
 	t.Run("home unavailable", func(t *testing.T) {
 		t.Setenv("HOME", "")
-		if _, ok := readinessHookPaths("codex"); ok {
-			t.Fatal("missing HOME reported available")
+		if _, err := TargetPath("codex"); err == nil {
+			t.Fatal("missing HOME resolved to a path")
 		}
 	})
 }
@@ -226,47 +235,47 @@ func TestAvailableEvaluatesFullReadinessContractPerAgent(t *testing.T) {
 	})
 }
 
-// TestReadinessHookGroupsMatchSkipsNonCommandDisabledAndAsyncHooks は readinessHookGroupsMatch の hook 単位の絞り込みを確認する。
+// TestInspectEventSkipsNonCommandDisabledAndAsyncHooks は inspectEvent の hook 単位の絞り込みを確認する。
 // non-command、disabled、async の重複と、有効 group より前の不正 group を飛ばす。
-func TestReadinessHookGroupsMatchSkipsNonCommandDisabledAndAsyncHooks(t *testing.T) {
+func TestInspectEventSkipsNonCommandDisabledAndAsyncHooks(t *testing.T) {
 	executable, err := CurrentExecutable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	valid := readinessHookCommand{Type: "command", Command: executable + " hook session-start"}
-
-	t.Run("non-command hook is skipped", func(t *testing.T) {
-		groups := []readinessHookGroup{{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{{Type: "prompt"}, valid}}}
-		if !readinessHookGroupsMatch(groups, "session-start", "SessionStart", executable) {
-			t.Fatal("group with a leading non-command hook was rejected")
-		}
-	})
-
-	t.Run("disabled duplicate is skipped", func(t *testing.T) {
-		groups := []readinessHookGroup{{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{
-			{Type: "command", Command: executable + " hook session-start", Disabled: json.RawMessage("true")}, valid,
-		}}}
-		if !readinessHookGroupsMatch(groups, "session-start", "SessionStart", executable) {
-			t.Fatal("group with a disabled duplicate hook was rejected")
-		}
-	})
-
-	t.Run("async duplicate is skipped", func(t *testing.T) {
-		groups := []readinessHookGroup{{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{
-			{Type: "command", Command: executable + " hook session-start", Async: json.RawMessage("true")}, valid,
-		}}}
-		if !readinessHookGroupsMatch(groups, "session-start", "SessionStart", executable) {
-			t.Fatal("group with an async duplicate hook was rejected")
-		}
-	})
-
-	t.Run("invalid group is skipped before a valid one", func(t *testing.T) {
-		groups := []readinessHookGroup{
-			{Disabled: json.RawMessage("true"), Hooks: []readinessHookCommand{valid}},
-			{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{valid}},
-		}
-		if !readinessHookGroupsMatch(groups, "session-start", "SessionStart", executable) {
-			t.Fatal("valid group after a disabled group was rejected")
-		}
-	})
+	for _, test := range []struct {
+		name   string
+		groups []readinessHookGroup
+	}{
+		{
+			name:   "non-command hook is skipped",
+			groups: []readinessHookGroup{{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{{Type: "prompt"}, valid}}},
+		},
+		{
+			name: "disabled duplicate is skipped",
+			groups: []readinessHookGroup{{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{
+				{Type: "command", Command: executable + " hook session-start", Disabled: json.RawMessage("true")}, valid,
+			}}},
+		},
+		{
+			name: "async duplicate is skipped",
+			groups: []readinessHookGroup{{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{
+				{Type: "command", Command: executable + " hook session-start", Async: json.RawMessage("true")}, valid,
+			}}},
+		},
+		{
+			name: "invalid group is skipped before a valid one",
+			groups: []readinessHookGroup{
+				{Disabled: json.RawMessage("true"), Hooks: []readinessHookCommand{valid}},
+				{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{valid}},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			matched, _ := inspectEvent(test.groups, "session-start", "SessionStart", executable)
+			if !matched {
+				t.Fatal("the valid hook was not found")
+			}
+		})
+	}
 }

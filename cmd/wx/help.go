@@ -29,6 +29,7 @@ Commands:
   retry-standby <workspace>      resume standby replenishment after it stopped
   slots [--all] [--json]         list managed wx slots and their disk usage
   config [<key> ...]             show or update configuration
+  setup [--check] [--update]     review and complete the wx setup
   resume <id> [agent] [args...]  restore a wx session
   forget <workspace-path>        forget an inactive workspace
   daemon start|stop|restart      change whether the daemon is running
@@ -205,6 +206,32 @@ short a request or a job that is already running.
 Options:
   --foreground  with start, serve in this process instead of asking launchd
                 to start the daemon. This is how the LaunchAgent runs wx.`)
+	case "setup":
+		_, _ = fmt.Fprintln(w, `Usage: wx setup [--check [--json]] [--update]
+
+Walk through what wx needs to run on its own and apply the choices. Each item
+is offered with the choices its current state allows, so running setup again
+after a completed setup changes nothing.
+
+The items are the prerequisites, storage.worktree_root, the shell PATH entry,
+the LaunchAgent, the Claude and Codex hook entries, and the daemon. wx owns
+the wx entries of the agent hook configuration: it writes a dedicated group
+per event and never touches the rest of the file.
+
+Cancelling stops the walk without undoing what was already applied; every item
+is idempotent, so running wx setup again finishes the rest.
+
+Exit status is 0 when the walk finished, 1 when an item could not be applied,
+the walk was cancelled, or no terminal is attached, and 2 for an argument
+error. --check reports differences with status 0. --update does not use the
+exit status to report a missing terminal: it names the items that need
+attention on stderr and exits 0.
+
+Options:
+  --check   report the current state and change nothing; needs no terminal
+  --json    with --check, print machine-readable JSON
+  --update  offer only the items that no longer match what wx would write, and
+            print nothing when there are none. The installer runs this.`)
 	case "hook":
 		_, _ = fmt.Fprintln(w, `Usage: wx hook <event>
 

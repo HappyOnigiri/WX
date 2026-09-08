@@ -41,7 +41,7 @@ func (c Client) confirmFreshResume(ctx context.Context, sessionID, reason string
 		fmt.Fprintln(os.Stderr, "notice: resume.auto_fresh is enabled; resuming the conversation in a new workspace from the current base")
 		return true
 	}
-	if !isTerminal(int(os.Stdin.Fd())) || !isTerminal(int(os.Stderr.Fd())) {
+	if !tui.IsTerminal(int(os.Stdin.Fd())) || !tui.IsTerminal(int(os.Stderr.Fd())) {
 		fmt.Fprintln(os.Stderr, "notice: no terminal is attached for the confirmation; resuming the conversation in a new workspace from the current base")
 		return true
 	}

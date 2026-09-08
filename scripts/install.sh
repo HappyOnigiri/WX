@@ -81,11 +81,16 @@ main() {
     fail "binary installed, but daemon restart did not complete"
   fi
 
+  # 新規か更新かの判定は wx 側の状態に寄せる。--update は対応が要る項目だけを提示し、
+  # 何もなければ無出力で 0 を返す。set -euo pipefail で install 全体を落とさないよう終了コードは吸収する。
+  PATH="$install_dir:$PATH" "$destination" setup --update || true
+
   echo 'To use wx in this terminal, run:'
   # 利用者が実行するコマンドを展開せず表示する。
   # shellcheck disable=SC2016
   echo '  export PATH="$HOME/.local/bin:$PATH"'
   echo 'Add that line to your shell configuration (for example, ~/.zshrc) for new terminals.'
+  echo 'To finish the setup, run wx setup. It registers the agent hooks and reviews the rest.'
   echo 'Then run wx claude or wx codex from your repository.'
 }
 

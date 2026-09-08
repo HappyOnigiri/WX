@@ -23,6 +23,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/tui"
 )
 
 type Client struct {
@@ -331,7 +332,7 @@ func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease
 }
 
 func configureAgentProcess(cmd *exec.Cmd, ttyFD int) bool {
-	foreground := isTerminal(ttyFD)
+	foreground := tui.IsTerminal(ttyFD)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Foreground: foreground, Ctty: ttyFD}
 	return foreground
 }

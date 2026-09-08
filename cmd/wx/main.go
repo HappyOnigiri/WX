@@ -62,6 +62,8 @@ func run(ctx context.Context, args []string) int {
 		return runRetryStandby(ctx, args[1:])
 	case "config":
 		return runConfig(ctx, args[1:])
+	case "setup":
+		return runSetup(ctx, args[1:])
 	case "resume":
 		return runResume(ctx, args[1:])
 	case "daemon":

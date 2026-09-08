@@ -6,7 +6,8 @@ cmd/wx/maintenance.go	exempt	Maintenance command stdio and RPC adapter recorded 
 cmd/wx/rpc.go	exempt	CLI RPC client construction adapter recorded in coverage-exclusions.txt; behavior is exercised by RPC integration tests.
 cmd/wx/slots.go	exempt	Slots command stdio and RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by RPC integration tests.
 cmd/wx/status.go	exempt	Status and Doctor stdio and RPC adapter recorded in coverage-exclusions.txt; behavior is exercised by CLI integration tests.
-internal/cli/terminal_other.go	exempt	Fallback build-tag variant for platforms other than darwin and linux; terminal behavior is exercised through client tests.
+internal/hookconfig/owner_other.go	exempt	Fallback build-tag variant for platforms other than darwin and linux; ownership checks are exercised on darwin and linux.
 internal/sessions/scanner/target.go	exempt	Resume-target type and small predicates only; behavior is exercised by scan_test.go.
 internal/sessions/scanner/types.go	exempt	Type declarations and a stable-ID delegation only; scanning behavior is exercised by scan_test.go.
 internal/testsupport/socket.go	exempt	Test-only helper package; the packages that call it exercise it in their own tests.
+internal/tui/terminal_other.go	exempt	Fallback build-tag variant for platforms other than darwin and linux; terminal detection is exercised on darwin and linux.

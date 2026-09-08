@@ -94,7 +94,7 @@ func TestHookConfigStrictJSONAndGroupValidation(t *testing.T) {
 	}
 
 	validCommand := readinessHookCommand{Type: "command", Command: "/bin/wx hook SessionStart", Disabled: json.RawMessage("false"), Async: json.RawMessage("false"), Once: json.RawMessage("false"), Timeout: json.RawMessage("1"), StatusMessage: json.RawMessage(`"ready"`), AdditionalContextLimit: json.RawMessage("1")}
-	if !readinessHookCommandValid(validCommand) {
+	if !inspectCommand(validCommand) {
 		t.Fatal("valid command hook rejected")
 	}
 	for _, invalid := range []readinessHookCommand{
@@ -104,11 +104,11 @@ func TestHookConfigStrictJSONAndGroupValidation(t *testing.T) {
 		{Type: "command", Command: "/bin/wx", Timeout: json.RawMessage("null")},
 		{Type: "command", Command: "/bin/wx", AdditionalContextLimit: json.RawMessage("1.5")},
 	} {
-		if readinessHookCommandValid(invalid) {
+		if inspectCommand(invalid) {
 			t.Fatalf("invalid command hook accepted: %+v", invalid)
 		}
 	}
-	if !readinessHookGroupValid(readinessHookGroup{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{validCommand}}) {
+	if valid, _ := inspectGroup(readinessHookGroup{Matcher: json.RawMessage(`"*"`), Hooks: []readinessHookCommand{validCommand}}); !valid {
 		t.Fatal("valid hook group rejected")
 	}
 	for _, invalid := range []readinessHookGroup{
@@ -116,20 +116,20 @@ func TestHookConfigStrictJSONAndGroupValidation(t *testing.T) {
 		{Matcher: json.RawMessage("null"), Hooks: []readinessHookCommand{validCommand}},
 		{Matcher: json.RawMessage(`"*"`)},
 	} {
-		if readinessHookGroupValid(invalid) {
+		if valid, findings := inspectGroup(invalid); valid || len(findings) == 0 {
 			t.Fatalf("invalid hook group accepted: %+v", invalid)
 		}
 	}
 }
 
-func TestReadinessHookDocumentRejectsMalformedAndDisabledHooks(t *testing.T) {
+func TestInspectDocumentRejectsMalformedAndDisabledHooks(t *testing.T) {
 	required := map[string]string{"SessionStart": "session-start"}
 	executable, err := CurrentExecutable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	valid := `{"disableAllHooks":false,"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"` + executable + ` hook session-start","disabled":false,"async":false,"once":false}]}]}}`
-	if !readinessHookDocumentMatches([]byte(valid), required, executable) {
+	if !documentMatchesEvery(t, valid, required, executable) {
 		t.Fatal("valid readiness hook document rejected")
 	}
 	for _, data := range []string{
@@ -139,7 +139,7 @@ func TestReadinessHookDocumentRejectsMalformedAndDisabledHooks(t *testing.T) {
 		`{"disableAllHooks":false,"hooks":{"SessionStart":"wrong"}}`,
 		`{"disableAllHooks":false,"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"` + executable + ` hook session-start","async":true}]}]}}`,
 	} {
-		if readinessHookDocumentMatches([]byte(data), required, executable) {
+		if documentMatchesEvery(t, data, required, executable) {
 			t.Fatalf("malformed or disabled readiness document accepted: %s", data)
 		}
 	}
@@ -162,16 +162,32 @@ func TestReadinessHookDocumentRejectsMalformedAndDisabledHooks(t *testing.T) {
 	}
 }
 
-func TestReadinessHookDocumentRequiresEachConfiguredEvent(t *testing.T) {
+func TestInspectDocumentRequiresEachConfiguredEvent(t *testing.T) {
 	executable, err := CurrentExecutable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	data := `{"disableAllHooks":false,"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"` + executable + ` hook SessionStart","disabled":false,"async":false,"once":false}]}]}}`
 	required := map[string]string{"SessionStart": "SessionStart", "UserPromptSubmit": "UserPromptSubmit"}
-	if readinessHookDocumentMatches([]byte(data), required, executable) {
+	if documentMatchesEvery(t, data, required, executable) {
 		t.Fatal("readiness hook document missing a required event was accepted")
 	}
+}
+
+// documentMatchesEvery は inspectDocument の report から、required の全 event が受理されたかを返す。
+// 受理判定の本番経路をそのまま呼び、テスト側で bool へ畳む。
+func documentMatchesEvery(t *testing.T, data string, required map[string]string, executable string) bool {
+	t.Helper()
+	report := inspectDocument([]byte(data), required, executable)
+	if report.blocked {
+		return false
+	}
+	for event := range required {
+		if !report.matched[event] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRegularHookPathRejectsUnsafeEntries(t *testing.T) {
