@@ -16,9 +16,30 @@ jobs:
       startsWith(github.event.pull_request.head.ref, 'release/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    concurrency:
+      group: publish-release
+      cancel-in-progress: false
     steps:
-      - uses: HappyOnigiri/ReleaseActions/actions/publish-release@main
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: release
+      - name: Build release assets
+        env:
+          RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          export RELEASE_VERSION="${RELEASE_BRANCH#release/}"
+          make release
+      - uses: HappyOnigiri/ReleaseActions/actions/publish-release@06c18eee2121665d90b655561374255eda6e1c75
         with:
           branch: ${{ github.event.pull_request.head.ref }}
           pr-body: ${{ github.event.pull_request.body }}
+          target-commit: ${{ github.event.pull_request.merge_commit_sha }}
+          assets: |
+            artifacts/release/install.sh
+            artifacts/release/wx-darwin-arm64
+            artifacts/release/checksums.txt
           github-token: ${{ secrets.GH_TOKEN }}

@@ -115,6 +115,6 @@ jobs:
         with:
           cache-name: build
       # 一時prefixへのinstall検証はmake smokeが --help/--version の確認込みで行うため、ここでは重複させない。
-      - run: make build version-check smoke build-darwin
+      - run: make build version-check smoke build-darwin release-check
       - run: go version -m bin/wx
       - run: git diff --exit-code

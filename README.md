@@ -14,21 +14,23 @@ Run Claude Code or Codex in a separate Git worktree with a single command.
 
 ## Installation
 
-Requires **macOS**, **Git**, **Go 1.27.1 or later**, and **Claude Code or Codex** installed and available on your `PATH`.
+Requires **macOS on Apple Silicon**, **Git**, and **Claude Code or Codex** available on your `PATH`.
+Install the latest release without cloning this repository or installing Go:
 
 ```sh
-git clone https://github.com/HappyOnigiri/WX.git
-cd WX
-make install
-export PATH="$HOME/.local/bin:$PATH"
-wx daemon install
+curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/install.sh | bash
 ```
 
-The binary is installed to `~/.local/bin/wx`.
-Add the `export PATH` line to your shell configuration (for example, `~/.zshrc`) to keep it available in new terminals.
-`wx daemon install` registers a LaunchAgent that starts the daemon at login.
+The installer verifies and installs `~/.local/bin/wx`, registers the daemon as a LaunchAgent, and starts it.
+Run the same command to update to the latest release and restart the daemon.
+Then make `wx` available in your current terminal:
 
-To update, run `git pull --ff-only` and `make install` in the cloned WX directory, then `wx daemon install` and `wx daemon restart`.
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Add that line to your shell configuration (for example, `~/.zshrc`) for new terminals.
+See [release and source-build details](docs/release.md) for more information.
 
 ## Quick start
 

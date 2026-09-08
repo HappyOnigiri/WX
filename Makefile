@@ -1,5 +1,6 @@
 GO ?= go
 INSTALL_DIR ?= $(HOME)/.local/bin
+RELEASE_DIR ?= artifacts/release
 # バージョンの真実源はリリースタグ（vX.Y.Z）である。
 # 他のタグを起点に選ばないよう--matchで絞り、タグを取得していないcheckoutではコミットへ退避する。
 VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
@@ -88,6 +89,27 @@ build:
 install: build
 	install -d "$(INSTALL_DIR)"
 	install -m 0755 bin/wx "$(INSTALL_DIR)/wx"
+
+# リリース版は明示したタグでのみ生成し、開発用 build/install の -dev を維持する。
+.PHONY: release release-check
+release: export GO := $(GO)
+release: export RELEASE_VERSION := $(RELEASE_VERSION)
+release: export RELEASE_DIR := $(RELEASE_DIR)
+release:
+	bash scripts/build-release.sh
+
+# Linux では対象 OS/arch とチェックサム、macOS arm64 では埋め込み版の実行結果も検査する。
+release-check:
+	@set -eu; directory="$$(mktemp -d)"; trap 'rm -rf "$$directory"' EXIT; \
+	$(MAKE) release RELEASE_VERSION=v0.0.0 RELEASE_DIR="$$directory"; \
+	$(GO) version -m "$$directory/wx-darwin-arm64" > "$$directory/build-info"; \
+	grep -F 'CGO_ENABLED=0' "$$directory/build-info"; \
+	grep -F 'GOOS=darwin' "$$directory/build-info"; \
+	grep -F 'GOARCH=arm64' "$$directory/build-info"; \
+	(cd "$$directory" && shasum -a 256 -c checksums.txt); \
+	if [ "$$(uname -sm)" = 'Darwin arm64' ]; then \
+	  test "$$("$$directory/wx-darwin-arm64" --version)" = 'wx version v0.0.0'; \
+	fi
 
 fmt:
 	"$(TOOLS_BIN)/gofumpt" -w cmd internal migrations tools
@@ -306,7 +328,7 @@ ci:
 # 検査一覧を両者へ複製すると片方だけ更新され、CIで適用漏れが起きるため、追加する検査はここへ繋ぐ。
 static-check: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check shell-check
 
-ci-checks: static-check coverage-check ci-test-race build-darwin version-check smoke
+ci-checks: static-check coverage-check ci-test-race build-darwin version-check smoke release-check
 
 # hook本体は共通Gitディレクトリのhooks直下に置き、user側のdispatcherを維持する。
 # 以下はそのhookが呼び出す契約である。

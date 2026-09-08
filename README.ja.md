@@ -14,23 +14,24 @@ Claude Code や Codex を、コマンドひとつで専用の Git worktree に�
 
 ## インストール
 
-**macOS**、**Git**、**Go 1.27.1 以降**、および **Claude Code または Codex** が必要です。
-各コマンドをインストールし、`PATH` を通しておいてください。
+**Apple Silicon 搭載の macOS**、**Git**、および **Claude Code または Codex** が必要です。
+各コマンドに `PATH` を通しておいてください。
+リポジトリの clone や Go のインストールなしで、最新リリースを導入できます。
 
 ```sh
-git clone https://github.com/HappyOnigiri/WX.git
-cd WX
-make install
-export PATH="$HOME/.local/bin:$PATH"
-wx daemon install
+curl -fsSL https://github.com/HappyOnigiri/WX/releases/latest/download/install.sh | bash
 ```
 
-実行ファイルは `~/.local/bin/wx` にインストールされます。
-新しいターミナルでも使えるよう、上記の `export PATH` をシェル設定（例: `~/.zshrc`）に追加してください。
-`wx daemon install` は LaunchAgent を登録し、ログイン時にデーモンを起動するようにします。
+インストーラーは検証済みのバイナリを `~/.local/bin/wx` に配置し、デーモンを LaunchAgent に登録して起動します。
+更新も同じコマンドで行い、最新リリースへの置き換え後にデーモンを再起動します。
+続けて、現在のターミナルで `wx` を使えるようにします。
 
-更新時は clone した WX ディレクトリで `git pull --ff-only` と `make install` を実行してください。
-続けて `wx daemon install` と `wx daemon restart` を実行します。
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+新しいターミナルでも使えるよう、上記の行をシェル設定（例: `~/.zshrc`）に追加してください。
+詳細やソースからのビルド方法は[バージョンとリリース](docs/release.md)を参照してください。
 
 ## 使い方
 
