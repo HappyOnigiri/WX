@@ -200,5 +200,49 @@ func applyShellPath(step Step, action Action) error {
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()
 	}
-	return os.WriteFile(path, []byte(contents), mode)
+	return writeStartupFile(path, []byte(contents), mode)
+}
+
+// writeStartupFile は同じディレクトリの一時ファイルへ書いてから rename する。
+// 素の上書きは先に truncate するため、中断・容量不足で利用者の起動ファイルが空のまま残る。
+// 控えも取らない書き込みなので、config.Save と同じ手順に揃える。
+func writeStartupFile(path string, data []byte, mode os.FileMode) error {
+	// rename は symlink 自体を置き換え、dotfile リポジトリとの接続を黙って切る。収集時に unknown で弾く形だが、書く前にも確かめる。
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New(path + " is a symlink; take it out of dotfile management or add the line yourself")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	directory := filepath.Dir(path)
+	tmp, err := os.CreateTemp(directory, ".wx-shell-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	handle, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	err = handle.Sync()
+	_ = handle.Close()
+	return err
 }
