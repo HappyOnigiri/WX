@@ -18,7 +18,6 @@ session付きPREPARE・RESTORE・SNAPSHOTを利用者向けとし、SNAPSHOTは�
 このためキュー待ちのジョブはattemptもjob leaseも消費せず、同じジョブIDの二重登録も配送前に落とす。
 待ち行列の上限を超えた分は`PENDING`のdurable jobとして残し、`maintainJobs`の10秒周期の回収が拾う。
 実行枠は`jobExecutionSlot`としてジョブのgoroutineと分けてあり、実行中のコピーやprepare commandは優先度の変更でも枠の縮小でも中断しない。
-キュー待ち時間と実行時間は`job attempt finished`のログで別々に記録する。
 
 ## slot排他と共通ロック
 
@@ -51,7 +50,6 @@ contextが終わった要求はロックを取らず、callbackも実行しな�
 `QUARANTINED`は待機枠に数えないが、待機用PREPAREの失敗後は補充を停止することでGCとの作成・削除ループを防ぐ。
 
 補充停止は`replenish_suspensions`に永続化し、定期reconcileと補充ジョブの双方で参照する。
-`reason`はclear由来の`CLEAN`または`STANDBY_PREPARE_FAILED`、`detail`はclean runまたは失敗jobのIDを持つ。
 停止理由によらず、解除はそのworkspaceの手動起動（貸出・resume）の成功か`wx retry-standby`だけとし、既存sessionの返却では解除しない。
 
 ## clearとGC
@@ -62,7 +60,6 @@ contextが終わった要求はロックを取らず、callbackも実行しな�
 
 貸出前のREADY・補充中のPREPARINGは`--standby`と`--all`だけが対象に含め、隔離slotは全modeで`ScheduleQuarantinedRemoval`へ載せる。
 `--discard`は保存を省略して削除を予約し、modeに永続化して再起動後も維持する。
-登録外のpathは削除せず、登録済みslotのinode・marker・HEADの不一致は回収を妨げない。
 実行中runへ合流できるのは対象範囲が同じmodeの再実行だけとする。
 `--all`の終了要求は`session_termination_requests`へ期限付きで記録し、heartbeatとagent登録の応答でclientへ渡す。
 signalを送るのはclientだけで、daemonは記録されたPIDへ触れない。
@@ -91,12 +88,9 @@ SQLiteを開けなくても`DegradedHandler`が`Status`・`Doctor`・`RequestSto
 ## doctorの診断
 
 `wx doctor`は検査ごとに種別つきのfinding（`internal/diag`の`Finding`）を返し、表示側は文面から重大さを判定しない。
-種別は`problem`（利用者の対処が必要）・`unchecked`（前提の故障で実施できず）・`info`（対処不要の参考）・`ok`（正常確認）である。
-通常表示はproblemと、原因を表示していないuncheckedだけを「エラー内容・対象・原因・対処方法」の形で出し、問題がなければ`No errors found.`の1行にする。
-`-v`はinfo・okと`Details`も出し、`--json`は`-v`によらず全findingを返す。
-終了コードは、problemまたはuncheckedがあれば1、それ以外は0、引数不正は2とする。
-
+通常表示はproblem（利用者の対処が必要）と、原因を表示していないunchecked（前提の故障で実施できず）だけを「エラー内容・対象・原因・対処方法」の形で出す。
 `unchecked`は`DependsOn`に原因の検査名を持ち、その検査のproblemを表示済みなら通常表示から省く。
+終了コードはproblemまたはuncheckedがあれば1とし、実施できなかった検査を成功として扱わない。
 daemonへ接続できない場合とdegradedの場合は、store依存の検査（`diag.StoreDependentChecks`）をこの形で並べ、同じ故障を検査ごとに繰り返さない。
 `findings`を返せない古いdaemonの応答は正常と読ませず、CLIが`wx daemon restart`を促すproblemを足す。
 
@@ -127,15 +121,14 @@ CLIのstop/start待ちはsocketへのdialだけを使い、RPCでゲートを塞
 restartは要求応答のPIDを基準に、250ms間隔の`Ping`で応答元PIDが変わるまで待つ。
 `Ping`にPIDがない旧daemonや`Ping`が未対応のdaemonでは、同じ確認予算内で`Status`へフォールバックする。
 短いlistener断の観測は成功条件にせず、確認ごとのRPC予算は待機期限の残り時間で制限する。
-RPCやジョブの完了通知はアイドルゲートを起こし、応答保護の100msは期限までのタイマーで再検査する。
 LaunchAgentには`ThrottleInterval=1`を設定し、連続再起動時のlaunchdの待機を短くする。
-待機表示は`interactiveOutput`でstdoutが端末のときだけ出す。
+
+## テストの並行化
+
+`internal/daemon`のトップレベルテストは、専用の一時ディレクトリ・DB・Managerだけを使うものに`t.Parallel()`を付ける。
+`t.Setenv`を自身かサブテストで呼ぶテスト、プロセス全体のgoroutine・fdを数えるテスト、短い待機に依存するテストは直列のまま残す。
 
 ## 変更の入口と代表テスト
 
-GCの候補選択と削除の入口は[`internal/daemon/gc.go`](../internal/daemon/gc.go)である。
-代表テストは`internal/daemon`の[`TestGCRemovesRegisteredQuarantineWithoutCachedIdentity`](../internal/daemon/gc_integration_test.go)である。
-restart/stopのidleゲートの入口は[`internal/daemon/restart.go`](../internal/daemon/restart.go)である。
-代表テストは同パッケージの[`TestPendingRestartWaitsForJobsAndRequests`](../internal/daemon/restart_test.go)である。
-どちらも`make test-focus PKG=./internal/daemon RUN=<テスト名>`で絞って動かせる。
-この実行は[部分検証](worktree-copy.md#部分検証)であり、最終判定は`make ci`とする。
+GCの候補選択と削除の入口は[`internal/daemon/gc.go`](../internal/daemon/gc.go)、代表テストは[`TestGCRemovesRegisteredQuarantineWithoutCachedIdentity`](../internal/daemon/gc_integration_test.go)である。
+restart/stopのidleゲートの入口は[`internal/daemon/restart.go`](../internal/daemon/restart.go)、代表テストは[`TestPendingRestartWaitsForJobsAndRequests`](../internal/daemon/restart_test.go)である。

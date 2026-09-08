@@ -5,10 +5,8 @@
 `wx`のバージョンはリリースタグ`vX.Y.Z`が持つ。
 Goのリポジトリにバージョンを書いたmanifestを置かず、タグだけを唯一の記録とする。
 
-開発ビルド時のバージョンはMakefileの`VERSION`が`git describe --tags --match 'v[0-9]*' --always --dirty`で求め、`-ldflags`で`internal/version.Version`へ埋め込む。
-開発ビルドの`internal/version.BuildMeta`は`dev`固定で、`wx --version`は`wx version v1.2.3-dev`のように表示する。
-手元の`make build`・`make install`が作るのは常に開発ビルドであり、リリース成果物そのものだとは名乗らない。
-`-dev`の手前の部分が、そのビルドの基にしたリリースを示す。
+開発ビルドのバージョンはMakefileの`VERSION`（`git describe`）を`-ldflags`で`internal/version.Version`へ埋め込み、`internal/version.BuildMeta`は`dev`固定とする。
+手元の`make build`・`make install`が作るのは常に開発ビルドであり、`wx version v1.2.3-dev`の`-dev`の手前が基にしたリリースを示す。
 
 タグを取得していないshallow checkoutではコミットのabbrevへ退避するため、CIでも`--version`は空にならない。
 `make version-check`はこの表示が`VERSION`と一致することを確かめる。
@@ -47,13 +45,8 @@ WX側のPublish Release workflowは、公開前に配布用の成果物をビル
 
 ## 配布用ビルド
 
-`make release RELEASE_VERSION=vX.Y.Z`が`artifacts/release/`へ次の4ファイルを生成する。
-`RELEASE_DIR`で出力先を変更できる。
-
-- `wx-darwin-arm64`: `CGO_ENABLED=0`でビルドしたmacOS arm64用バイナリ。
-- `checksums.txt`: バイナリのSHA-256チェックサム。
-- `install.sh`: 同じリリースタグを埋め込んだインストーラー。
-- `uninstall.sh`: アンインストーラー。何もダウンロードしないためタグを埋め込まず、`scripts/uninstall.sh`をそのまま配る。
+`make release RELEASE_VERSION=vX.Y.Z`がmacOS arm64バイナリ・チェックサム・インストーラー・アンインストーラーを生成する。
+`install.sh`には同じリリースタグを埋め込み、何もダウンロードしない`uninstall.sh`は`scripts/uninstall.sh`をそのまま配る。
 
 配布用ビルドは`Version`に明示したタグ、`BuildMeta`に空文字を埋め込み、`wx --version`は`wx version vX.Y.Z`となる。
 この生成時にソースファイルを書き換えたり、バージョン更新のコミットを作ったりすることはない。
@@ -67,8 +60,7 @@ READMEは`releases/latest/download/install.sh`の固定URLを案内する。
 次のリリースが途中で公開されても取得物は混在せず、READMEの自動更新も不要になる。
 この方式で最初のリリースを公開するまでは、固定URLからインストーラーを取得できない。
 
-インストーラーはmacOS arm64を対象とし、GitとmacOS標準のコマンドを使う。
-GoやGitHub CLIは不要で、Claude CodeまたはCodexは別途用意する。
+インストーラーはmacOS arm64を対象とし、GitとmacOS標準のコマンドだけを使う（GoやGitHub CLIは不要）。
 チェックサムと`--version`の一致を確認してから、`~/.local/bin/wx`を同じディレクトリ内の一時ファイルからrenameで置き換える。
 取得・検証の失敗では既存バイナリを変更しない。
 
@@ -92,7 +84,5 @@ snapshotに対応する`refs/wx/recovery/*`は、現行DBが説明する限り`w
 
 ## ソースからの開発ビルド
 
-開発用のcheckoutでは、Goの必要バージョンを`go.mod`で確認して`make install`を使う。
-既定の配置先は`~/.local/bin/wx`で、`INSTALL_DIR`で変更できる。
-初回のdaemon登録は`wx daemon install`、通常のバイナリ更新後は`wx daemon restart`で行う。
-この方法で導入するバイナリは開発版の`-dev`表示となる。
+開発用のcheckoutでは`make install`（既定の配置先は`~/.local/bin/wx`、`INSTALL_DIR`で変更）を使う。
+初回のdaemon登録は`wx daemon install`、バイナリ更新後は`wx daemon restart`が必要である。

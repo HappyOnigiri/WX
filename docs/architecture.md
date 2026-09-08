@@ -21,14 +21,15 @@
 
 会話選択は実行時にClaude・Codexの履歴からタイトル・会話ID・cwdを読む範囲とし、本文表示・全文検索・履歴DB・daemonでの履歴更新は持たない。
 唯一の例外は`internal/sessions/metacache`が持つ再生成可能なメタデータキャッシュで、ユーザーのcache directory内のSQLiteにタイトル・会話ID・cwdと除外結果だけを保存する。
-ディレクトリ列挙とファイル属性の確認は呼び出しごとに行い、属性が一致した未変更JSONLの再解析だけを省くため、権威はJSONLのままである。
+省くのは属性が一致した未変更JSONLの再解析だけで、権威はJSONLのままである。
 破損・書き込み不能・schema差異では直接走査へ戻す。このキャッシュはdaemonのstate.dbと独立で、`migrations`にも`state.SchemaVersion`にも関わらない。
-statusの組み立ては`internal/daemon/status.go`、doctorは`internal/daemon/doctor.go`・`doctor_recovery.go`に置く。
-daemon接続なしで成立する診断とfindingの表示・終了コードだけを`internal/diag`が持ち、状態を読む検査はdaemon側に残す。
+
+statusの組み立ては`internal/daemon/status.go`に置く。
+daemon接続なしで成立する診断とfindingの表示だけを`internal/diag`が持ち、状態を読む検査はdaemon側に残す。
 
 `wx`バイナリはCLI・daemon・`internal/fdexec`のexecトランポリン（`__wx_exec_at_fd`）を兼ねる。
 descriptor束縛でGitやエージェントを起動する経路は自分自身を再execする。
 
 help本文・config schema・SQLite migration・LaunchAgent plist・agent hook設定は手書きで維持し、shell completionは実装しない。
-agent hook設定はwxエントリだけをwxが所有し、`internal/hookconfig`が判定と書き込みを同じ受理条件で持つ。
+agent hook設定のうちwxが所有するのはwxエントリだけである。
 生成物検査の扱いは[`Makefile`](../Makefile)の`generated-check`を参照する。
