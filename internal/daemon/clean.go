@@ -330,7 +330,13 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 		// 生きた client も agent も持たない貸出（wx new）は終了要求の宛先が無い。
 		// 要求を積んでも誰も応答しないので、その場で返却して保存経路へ進める。
 		if m.detachedLease(ctx, target.SessionID) {
-			m.releaseLeaseWithoutToken(ctx, state.OrphanCandidate{ID: target.SessionID, WorkspaceID: target.WorkspaceID, SlotID: target.SlotID}, "clean-release")
+			candidate := state.OrphanCandidate{ID: target.SessionID, WorkspaceID: target.WorkspaceID, SlotID: target.SlotID}
+			// 返却が書き込めていない target を保存待ちへ進めると、保存を待つ相手がいないまま止まる。
+			// この巡回では進めず、次の巡回で返却からやり直す。
+			if err := m.releaseLeaseWithoutToken(ctx, candidate, "clean-release"); err != nil {
+				m.log.Error("lease release failed", "session_id", target.SessionID, "error", err)
+				return
+			}
 			m.moveCleanTarget(ctx, run.ID, target, cleanTargetSaving, "")
 			return
 		}

@@ -272,7 +272,9 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 		if processAlive(candidate.ClientPID) || processAlive(candidate.AgentPID) {
 			continue
 		}
-		m.releaseLeaseWithoutToken(ctx, candidate, "orphan-reconcile")
+		if err := m.releaseLeaseWithoutToken(ctx, candidate, "orphan-reconcile"); err != nil {
+			m.log.Error("lease release failed", "session_id", candidate.ID, "error", err)
+		}
 	}
 }
 

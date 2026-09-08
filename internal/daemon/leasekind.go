@@ -59,22 +59,22 @@ func (m *Manager) applyLeaseAttrs(session *state.Session, attrs leaseAttrs) {
 }
 
 // releaseLeaseWithoutToken は session token を持たない側からの返却を、通常の返却経路へ載せる。
-// orphan 回収・期限掃引・親連動・wx release が共有する。
-// 保存の要否と slot の遷移は Store.ReleaseWithOutcome が決めるので、ここでは分岐を持たない。
-func (m *Manager) releaseLeaseWithoutToken(ctx context.Context, candidate state.OrphanCandidate, reason string) {
+// orphan 回収・期限掃引・親連動・wx release が共有し、保存の要否と slot の遷移は Store が決める。
+// 書き込みの失敗は error で返す。再試行できる周期処理と wx release で扱いが違うためである。
+func (m *Manager) releaseLeaseWithoutToken(ctx context.Context, candidate state.OrphanCandidate, reason string) error {
 	job, changed, quarantineExpired, err := m.store.ReleaseWithOutcome(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
 	if err != nil {
-		m.log.Error("lease release failed", "session_id", candidate.ID, "reason", reason, "error", err)
-		return
+		return fmt.Errorf("release lease %s (%s): %w", candidate.ID, reason, err)
 	}
 	if quarantineExpired {
 		m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", candidate.ID, "slot_id", candidate.SlotID, "reason", reason)
 	}
 	if changed {
 		m.schedule(job)
-		return
+		return nil
 	}
 	m.releaseLease(candidate.ID)
+	return nil
 }
 
 // reconcileExpiredLeases は期限が来た貸出と、親が終了した子貸出を返却する。
@@ -87,7 +87,9 @@ func (m *Manager) reconcileExpiredLeases(ctx context.Context) {
 	}
 	for _, candidate := range expired {
 		m.log.Info("releasing a lease that reached lease.ttl", "session_id", candidate.ID, "slot_id", candidate.SlotID)
-		m.releaseLeaseWithoutToken(ctx, candidate, "lease-expired")
+		if err := m.releaseLeaseWithoutToken(ctx, candidate, "lease-expired"); err != nil {
+			m.log.Error("lease release failed", "session_id", candidate.ID, "error", err)
+		}
 	}
 	m.releaseOrphanedChildLeases(ctx)
 }
@@ -102,7 +104,9 @@ func (m *Manager) releaseOrphanedChildLeases(ctx context.Context) {
 	}
 	for _, candidate := range children {
 		m.log.Info("releasing a lease whose owner session ended", "session_id", candidate.ID, "slot_id", candidate.SlotID)
-		m.releaseLeaseWithoutToken(ctx, candidate, "lease-owner-ended")
+		if err := m.releaseLeaseWithoutToken(ctx, candidate, "lease-owner-ended"); err != nil {
+			m.log.Error("lease release failed", "session_id", candidate.ID, "error", err)
+		}
 	}
 }
 
@@ -126,7 +130,10 @@ func (m *Manager) ReleaseLease(ctx context.Context, sessionID, reason string, di
 		return nil, fmt.Errorf("session %s is no longer in use (state %s)", sessionID, session.State)
 	}
 	if inUse {
-		m.releaseLeaseWithoutToken(ctx, state.OrphanCandidate{ID: session.ID, WorkspaceID: session.WorkspaceID, SlotID: session.SlotID}, reason)
+		candidate := state.OrphanCandidate{ID: session.ID, WorkspaceID: session.WorkspaceID, SlotID: session.SlotID}
+		if err := m.releaseLeaseWithoutToken(ctx, candidate, reason); err != nil {
+			return nil, err
+		}
 		// 親を返却したので、この貸出が用意した子貸出も待たずに返す。
 		m.releaseOrphanedChildLeases(ctx)
 	}

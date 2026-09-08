@@ -288,6 +288,20 @@ func TestReleaseLeaseDiscardsWithoutSaving(t *testing.T) {
 	})
 }
 
+// 返却の書き込みが失敗したら、成功として返さない。
+// wx release が終了コード 0 を返すと、貸出が使用中のまま残っていることを誰も検知できない。
+func TestReleaseLeaseWithoutTokenReturnsWriteFailures(t *testing.T) {
+	t.Parallel()
+	f := manualManagerFixture(t)
+	if err := f.Store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	candidate := state.OrphanCandidate{ID: "session", WorkspaceID: "workspace", SlotID: "slot"}
+	if err := f.Manager.releaseLeaseWithoutToken(context.Background(), candidate, "test"); err == nil {
+		t.Fatal("a failed release was reported as a success")
+	}
+}
+
 // worktree を使わない設定の workspace では貸出コマンドを断り、CLI が引数エラーへ落とせる印を残す。
 func TestLeaseRefusesWorkspacesConfiguredWithoutAWorktree(t *testing.T) {
 	t.Parallel()
