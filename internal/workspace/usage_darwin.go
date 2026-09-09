@@ -26,10 +26,10 @@ func physicalOffset(file *os.File, offset int64) (int64, error) {
 	return int64(binary.NativeEndian.Uint64(buffer[12:20])), nil
 }
 
-func fileIdentity(info os.FileInfo) (SharedFileState, bool) {
+func fileIdentityOf(info os.FileInfo) (fileIdentity, bool) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return SharedFileState{}, false
+		return fileIdentity{}, false
 	}
-	return SharedFileState{Dev: uint64(stat.Dev), Ino: stat.Ino, CtimeNanos: stat.Ctimespec.Nano()}, true
+	return fileIdentity{Dev: uint64(stat.Dev), Ino: stat.Ino, CtimeNanos: stat.Ctimespec.Nano()}, true
 }

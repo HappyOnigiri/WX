@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -153,14 +155,26 @@ func (m *Manager) measureSlotUsage(ctx context.Context, slotID string) {
 	defer m.mu.Unlock()
 	m.slotUsage[slotID] = slotUsageSample{usage: usage, measuredAt: measuredAt}
 	// 公開済みの cache は measureRootUsage が previous として読むため、書き換えずに差し替える。
-	merged := make(workspace.SharedFileCache, len(m.sharedFiles[root])+len(cache))
-	for name, shared := range m.sharedFiles[root] {
+	// 部分走査した slot の prefix だけは結果で置き換え、検証できなかった古い entry を残さない。
+	m.sharedFiles[root] = mergeSlotSharedFileCache(m.sharedFiles[root], cache, target.RelPath)
+}
+
+// mergeSlotSharedFileCache は他 slot の cache を保ったまま、測定対象 slot の entry を今回の結果へ差し替える。
+// source の消失や symlink 化で今回の cache に現れない path は、次回に古い判定を再利用しないよう除外する。
+func mergeSlotSharedFileCache(previous, measured workspace.SharedFileCache, relPath string) workspace.SharedFileCache {
+	prefix := path.Clean(filepath.ToSlash(relPath))
+	merged := make(workspace.SharedFileCache, len(previous)+len(measured))
+	for name, shared := range previous {
+		clean := path.Clean(filepath.ToSlash(name))
+		if clean == prefix || strings.HasPrefix(clean, prefix+"/") {
+			continue
+		}
 		merged[name] = shared
 	}
-	for name, shared := range cache {
+	for name, shared := range measured {
 		merged[name] = shared
 	}
-	m.sharedFiles[root] = merged
+	return merged
 }
 
 // slotUsageTargets は測定対象の slot を root ごとにまとめる。
