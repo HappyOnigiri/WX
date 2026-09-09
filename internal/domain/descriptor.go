@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"fmt"
 	"os"
 )
 
@@ -40,7 +41,7 @@ func OpenDirectoryAt(owner *os.Root, relative string) (*os.File, string, error) 
 		return nil, "", err
 	}
 	if !expected.IsDir() || expected.Mode()&os.ModeSymlink != 0 {
-		return nil, "", errors.New("owned path is not a physical directory")
+		return nil, "", fmt.Errorf("%w: owned path is not a physical directory", ErrNonDirectoryComponent)
 	}
 	file, err := owner.Open(relative)
 	if err != nil {
@@ -74,8 +75,10 @@ func OpenRootAt(owner *os.Root, relative string) (*os.Root, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 最終成分が directory でない場合を ErrNonDirectoryComponent で返すのは、
+	// 成分ごとの検査と同じ分類で「tree 形状が違うだけ」を呼び出し側が判定できるようにするためである。
 	if !expected.IsDir() || expected.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("owned path is not a physical directory")
+		return nil, fmt.Errorf("%w: owned path is not a physical directory", ErrNonDirectoryComponent)
 	}
 	child, err := owner.OpenRoot(relative)
 	if err != nil {
