@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -244,71 +243,6 @@ func (s *cowSharer) shareFile(ctx context.Context, scratch *cowScratch, source, 
 		return nil
 	}
 	return s.replaceWithClone(ctx, scratch, in, original, parent, leaf, before)
-}
-
-func (s *cowSharer) replaceWithClone(ctx context.Context, scratch *cowScratch, in, original, parent *os.File, leaf string, before unix.Stat_t) (result error) {
-	temporary := cowTemporaryPrefix + rand.Text()
-	start := time.Now()
-	if err := cloneCOW(in, parent, temporary); err != nil {
-		return err
-	}
-	s.stats.clone.observe(start)
-	candidate, err := openCOWLeaf(parent, temporary)
-	if err != nil {
-		return fmt.Errorf("%w: open CoW clone: %w", state.ErrOwnership, err)
-	}
-	defer func() { _ = candidate.Close() }()
-	candidateInfo, err := candidate.Stat()
-	if err != nil {
-		return fmt.Errorf("%w: stat CoW clone: %w", state.ErrOwnership, err)
-	}
-	cleanupInfo := candidateInfo
-	defer func() {
-		// swap 後は元ファイルが temporary にある。証明できない物は消さず隔離へ渡す。
-		if errors.Is(result, state.ErrOwnership) {
-			return
-		}
-		verifyStart := time.Now()
-		if err := verifyCOWLeaf(parent, temporary, cleanupInfo); err != nil {
-			result = err
-			return
-		}
-		s.stats.verify.observe(verifyStart)
-		unlinkStart := time.Now()
-		if err := unix.Unlinkat(int(parent.Fd()), temporary, 0); err != nil {
-			result = fmt.Errorf("%w: remove CoW temporary: %w", state.ErrOwnership, err)
-			return
-		}
-		s.stats.unlink.observe(unlinkStart)
-	}()
-	start = time.Now()
-	equal, err := sameCOWBytes(ctx, original, candidate)
-	s.stats.compare.observe(start)
-	if err != nil || !equal {
-		return err
-	}
-	start = time.Now()
-	compatible, err := cowMetadata(original, candidate, before, scratch)
-	s.stats.metadata.observe(start)
-	if err != nil || !compatible {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	originalInfo, err := original.Stat()
-	if err != nil {
-		return err
-	}
-	start = time.Now()
-	if err := swapCOW(parent, temporary, leaf); err != nil {
-		return err
-	}
-	s.stats.swap.observe(start)
-	// swap は atomic なので入れ替わりは確認し直さない。cleanup が消す inode の同一性だけ後で検査する。
-	cleanupInfo = originalInfo
-	s.stats.shared.Add(1)
-	return nil
 }
 
 // cowErrors は worker の失敗を、隔離すべき所有権失敗を落とさない優先度で1つに畳む。

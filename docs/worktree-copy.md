@@ -107,9 +107,13 @@ readiness設定の変更だけでは完成済みREADY slotの再利用を無効�
 
 ## 変更の入口と代表テスト
 
-新規準備の配置は[`internal/workspace/cow_place.go`](../internal/workspace/cow_place.go)が入口で、共有対象の判定と差し替えは[`cow.go`](../internal/workspace/cow.go)が持つ。
-clonefileの呼び出しは[`cow_darwin.go`](../internal/workspace/cow_darwin.go)にある。
+新規準備の配置は[`internal/workspace/cow_place.go`](../internal/workspace/cow_place.go)が入口で、共有対象の判定と差し替えの起動は[`cow.go`](../internal/workspace/cow.go)が持つ。
+cloneの呼び出しと、clone成功後にしか進まない比較・metadata照合・swap・後始末は[`cow_clone.go`](../internal/workspace/cow_clone.go)にまとめてある。
+clonefileそのもののsyscallは[`cow_darwin.go`](../internal/workspace/cow_darwin.go)にある。
 indexの解析と事前skipは[`cow_index.go`](../internal/workspace/cow_index.go)、run分割・並列実行・エラー集約は[`cow_share.go`](../internal/workspace/cow_share.go)が持つ。
+
+`cow_clone.go`はlinuxでは`cloneCOW`がENOTSUPを返して到達しないため、`coverage-exclusions.txt`で理由付きにcoverageの分母から外している。
+linuxでも実行される判定・分割・集約は除外していないので、clone後の処理を足すときは`cow_clone.go`へ置き、cloneの有無に依らず成立する契約は他のファイルへ置く。
 代表テストは[`cow_darwin_test.go`](../internal/workspace/cow_darwin_test.go)で、macOSであれば`make test-darwin`に限らず`make ci`でも実行される（前提は後述の[部分検証](#部分検証)）。
 
 ## 部分検証
