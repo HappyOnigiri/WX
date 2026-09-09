@@ -210,41 +210,50 @@ func RemoveList(c *Config, key, value string) error {
 }
 
 // ResetList は指定したリストを未設定へ戻し、既定値を再び有効にする。
+// present も落とすため設定ファイルからキーごと消える。
+// 空リストを書き残すと、Merge の list 分岐が nil でしか既定値を残さないので既定値が潰れる。
 func ResetList(c *Config, key string) error {
 	list, err := mutableConfigList(c, key)
 	if err != nil {
 		return err
 	}
 	list.Set(reflect.Zero(list.Type()))
-	markListPresent(c, key)
+	clearListPresent(c, key)
 	return nil
 }
 
+// ResetField は key の scalar field を未設定へ戻し、既定値を再び有効にする。
+// present から落とすので Save でキーが消え、次の Merge(Defaults(), raw) が既定値を返す。
+func ResetField(c *Config, key string) error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	field := configField(reflect.ValueOf(c).Elem(), key)
+	if !field.IsValid() {
+		return fmt.Errorf("unknown config key %q; run wx config to list available keys", key)
+	}
+	field.Set(reflect.Zero(field.Type()))
+	delete(c.present, key)
+	return nil
+}
+
+// IsListKey は key が --add・--remove・--reset で操作できる list key かを返す。
+// 呼び出し側が list と scalar のどちらの操作へ振り分けるかの判定に使う。
+func IsListKey(key string) bool {
+	return configListField(reflect.ValueOf(Defaults()), key).IsValid()
+}
+
+// mutableConfigList は key の list field を返す。
+// walkConfigLists が到達できる list（動的キーを持つ map の下は対象外）だけを許可する。
 func mutableConfigList(c *Config, key string) (reflect.Value, error) {
 	if c == nil {
 		return reflect.Value{}, errors.New("config is nil")
-	}
-	if key != "discovery.exclude" && !validSessionsPathKey(key) {
-		return reflect.Value{}, fmt.Errorf("unknown list config key %q", key)
 	}
 	list := configListField(reflect.ValueOf(c).Elem(), key)
 	if !list.IsValid() {
 		return reflect.Value{}, fmt.Errorf("unknown list config key %q", key)
 	}
 	return list, nil
-}
-
-func validSessionsPathKey(key string) bool {
-	parts := strings.Split(key, ".")
-	if len(parts) != 4 || parts[0] != "sessions" || parts[1] != "paths" {
-		return false
-	}
-	switch parts[2] {
-	case "claude", "codex":
-	default:
-		return false
-	}
-	return parts[3] == "sessions"
 }
 
 func markListPresent(c *Config, key string) {
@@ -256,6 +265,16 @@ func markListPresent(c *Config, key string) {
 		return
 	}
 	c.present[key] = true
+}
+
+// clearListPresent は list の present を落とす。present が nil の Config は
+// 記録なしを意味するため作らない。sessions.paths は claude と codex で present を共有し、
+// 個別の list が nil かを listPresent が別に見るので触らない。
+func clearListPresent(c *Config, key string) {
+	if c.present == nil || strings.HasPrefix(key, "sessions.paths.") {
+		return
+	}
+	delete(c.present, key)
 }
 
 func normalizeListPath(path string) string {

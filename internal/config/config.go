@@ -121,10 +121,14 @@ type Repository struct {
 	DefaultBranch string `yaml:"default_branch,omitempty"`
 	// DirName は slot 内の repository directory 名を固定する。
 	// 空なら DirSource（remote または directory）で導出する。Repositories は map のため YAML で直接指定する。
-	DirName   string             `yaml:"dir_name,omitempty"`
-	DirSource string             `yaml:"dir_source,omitempty"`
-	Prepare   Prepare            `yaml:"prepare,omitempty"`
-	Includes  RepositoryIncludes `yaml:"includes,omitempty"`
+	DirName   string `yaml:"dir_name,omitempty"`
+	DirSource string `yaml:"dir_source,omitempty"`
+	// COWMinSizeKiB は repository 個別の CoW 共有下限（KiB）で、nil のときは storage.cow_min_size_kib を継承する。
+	// 最適な下限は repository のファイルサイズ分布で変わるため個別に指定できる。ポインタで明示的な 0（下限なし）と未指定を区別する。
+	// Repositories は map のため YAML で直接指定する。
+	COWMinSizeKiB *int               `yaml:"cow_min_size_kib,omitempty"`
+	Prepare       Prepare            `yaml:"prepare,omitempty"`
+	Includes      RepositoryIncludes `yaml:"includes,omitempty"`
 }
 type RepositoryIncludes struct {
 	DefaultAgentRules *bool `yaml:"default_agent_rules,omitempty"`
@@ -161,6 +165,20 @@ const (
 
 // COWMinShareSize は CoW 共有の下限を bytes で返す。0 は下限なしを表す。
 func (s Storage) COWMinShareSize() int64 { return int64(s.COWMinSizeKiB) << 10 }
+
+// COWMinSizeKiB は repository の CoW 共有下限（KiB）を解決する。
+// 個別指定が global 設定より優先される。
+func (c Config) COWMinSizeKiB(mainPath string) int {
+	if override, ok := c.Repositories[mainPath]; ok && override.COWMinSizeKiB != nil {
+		return *override.COWMinSizeKiB
+	}
+	return c.Storage.COWMinSizeKiB
+}
+
+// COWMinShareSize は repository の CoW 共有下限を bytes で返す。0 は下限なしを表す。
+func (c Config) COWMinShareSize(mainPath string) int64 {
+	return int64(c.COWMinSizeKiB(mainPath)) << 10
+}
 
 func Defaults() Config {
 	return Config{
@@ -266,6 +284,9 @@ func Validate(c *Config) error {
 		}
 		if override.Prepare.Timeout.Duration < 0 {
 			return fmt.Errorf("repositories.%s.prepare.timeout must not be negative", path)
+		}
+		if override.COWMinSizeKiB != nil && (*override.COWMinSizeKiB < 0 || *override.COWMinSizeKiB > MaxCOWMinSizeKiB) {
+			return fmt.Errorf("repositories.%s.cow_min_size_kib must be between 0 and %d", path, MaxCOWMinSizeKiB)
 		}
 	}
 	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 {

@@ -5,9 +5,12 @@
 共有には配置と置換の二方式がある。
 新規準備は配置方式で、共有できるtracked fileをcheckoutせずmainからcloneして置く。
 復元とHot StandbyのUPDATEは置換方式で、checkout済みのファイルを同内容のcloneと入れ替える。
-どちらも共有下限（`storage.cow_min_size_kib`、既定16KiB）未満のファイルと、main側indexのblob OIDが宛先indexと異なるpathは走査の前に共有対象外とする。
+どちらも共有下限（既定16KiB）未満のファイルと、main側indexのblob OIDが宛先indexと異なるpathは走査の前に共有対象外とする。
 小さいファイルはブロック共有で減る容量より判定の定数費用が勝ち、OIDが違うpathは内容まで一致することが稀だからである。
 下限は0（全ファイルを対象）から広げる方向まで設定でき、`storage.copy_mode`と同じくfingerprintに含めるため、変更後の貸出では以前の下限で作ったREADY slotを再利用しない。
+下限はglobalの`storage.cow_min_size_kib`と、repository個別の`repositories.<main worktree path>.cow_min_size_kib`（未指定ならglobalを継承）で決まる。
+最適な下限がrepositoryのファイルサイズ分布に依存するためで、fingerprintにはrepositoryごとに解決した実効値が入る。
+したがって個別指定を足しても、実効値が変わらなかった他repositoryのREADY slotは再利用できる。
 `cow`は共有対象のclone失敗をエラーにする指定であり、全ファイルの共有や削減容量を保証する指定ではない。
 
 ## 配置方式（新規準備）

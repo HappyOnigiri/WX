@@ -68,7 +68,12 @@ func runConfig(ctx context.Context, args []string) int {
 			commandUsage(os.Stderr, "config")
 			return 2
 		}
-		err = config.ResetList(&raw, key)
+		// scalar と list で未設定へ戻す経路が違うため、キーの種別で振り分ける。
+		if config.IsListKey(key) {
+			err = config.ResetList(&raw, key)
+		} else {
+			err = config.ResetField(&raw, key)
+		}
 	default:
 		if len(rest) != 2 {
 			commandUsage(os.Stderr, "config")

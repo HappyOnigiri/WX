@@ -162,6 +162,11 @@ The workspace path is shown by wx status when standby replenishment is stopped.`
 
 Show effective configuration, or atomically update one supported scalar key or list.
 
+--add and --remove take a list key: discovery.exclude, readiness.early_paths, or
+sessions.paths.<claude|codex>.sessions. --reset takes any of those list keys or any
+scalar key wx config lists; it drops the key from the config file so the built-in
+default applies again.
+
 With --workspace, show or update the workspace-specific standby count. The path
 may be relative or a repository subdirectory; linked worktrees resolve to the
 repository's main worktree. A workspace warm_count overrides
@@ -178,13 +183,19 @@ storage.cow_min_size_kib sets the smallest file CoW shares, in KiB (default 16).
 Files below it keep their normal checkout copy; 0 shares every eligible file, and
 a larger value trades disk savings for less per-file work. Changing it stops
 reuse of READY standby worktrees prepared under the previous value.
+A repository can override the limit with
+repositories.<main worktree path>.cow_min_size_kib, since the best value depends
+on the repository's file size distribution. Repository entries are a map, so
+edit them in the config file; wx config does not set them. Only the repositories
+whose effective limit changed lose the reuse of their READY standby worktrees.
 
 Readiness (readiness.mode):
   early  wait for Git registration and startup files, then launch with readiness hooks (default)
   full   wait for checkout, includes, links, prepare commands, and final validation
 Without readiness hooks, both modes wait for full preparation. Resume and shell/run/new always wait for full preparation.
 Use full when checkout hooks or prepare commands generate or update startup settings.
-readiness.early_paths adds literal repository-relative paths to the startup list.
+readiness.early_paths adds literal repository-relative paths to the startup list;
+edit it with wx config readiness.early_paths --add/--remove/--reset.
 Directories include their descendants; no glob patterns are expanded. Only paths
 already scheduled by checkout or copy/link rules are materialized. Workspace roots
 use the same selection. Absolute paths, escapes, the root itself, and .git are rejected.`)

@@ -114,31 +114,47 @@ func TestCOWPreparationModesAndHook(t *testing.T) {
 
 // 共有下限を donor のサイズより大きくすると、auto でも1件も共有せず通常 checkout のまま残る。
 // 下限は配置方式と置換方式の両方を止めるため、prepare command が記録した inode が最後まで変わらない。
+// repository 個別指定の case は、global を下限なしに倒したうえで個別値だけが両方式へ届くことを見る。
 func TestCOWPreparationSkipsSharingAboveTheConfiguredMinimum(t *testing.T) {
-	p, repo, oid, target := cowFixture(t)
-	p.Config.Storage.CopyMode = config.CopyModeAuto
-	p.Config.Storage.COWMinSizeKiB = len(cowBody)/1024 + 1
-	p.Config.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "ls -i file > .before-inode"}}}}
-	if err := p.Prepare(context.Background(), repo, target, oid, testSlotID); err != nil {
-		t.Fatal(err)
-	}
-	captured, err := os.ReadFile(filepath.Join(target, ".before-inode"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	before, err := strconv.ParseUint(strings.Fields(string(captured))[0], 10, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var after unix.Stat_t
-	if err := unix.Stat(filepath.Join(target, "file"), &after); err != nil {
-		t.Fatal(err)
-	}
-	if before != after.Ino {
-		t.Fatal("a file below the configured minimum was shared")
-	}
-	if data, err := os.ReadFile(filepath.Join(target, "file")); err != nil || string(data) != cowBody {
-		t.Fatalf("content=%d bytes err=%v", len(data), err)
+	above := len(cowBody)/1024 + 1
+	for _, c := range []struct {
+		name             string
+		global, override int
+	}{
+		{name: "global", global: above, override: -1},
+		{name: "repository", global: 0, override: above},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p, repo, oid, target := cowFixture(t)
+			p.Config.Storage.CopyMode = config.CopyModeAuto
+			p.Config.Storage.COWMinSizeKiB = c.global
+			override := config.Repository{Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "ls -i file > .before-inode"}}}
+			if c.override >= 0 {
+				override.COWMinSizeKiB = &c.override
+			}
+			p.Config.Repositories = map[string]config.Repository{string(repo.MainPath): override}
+			if err := p.Prepare(context.Background(), repo, target, oid, testSlotID); err != nil {
+				t.Fatal(err)
+			}
+			captured, err := os.ReadFile(filepath.Join(target, ".before-inode"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := strconv.ParseUint(strings.Fields(string(captured))[0], 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var after unix.Stat_t
+			if err := unix.Stat(filepath.Join(target, "file"), &after); err != nil {
+				t.Fatal(err)
+			}
+			if before != after.Ino {
+				t.Fatal("a file below the configured minimum was shared")
+			}
+			if data, err := os.ReadFile(filepath.Join(target, "file")); err != nil || string(data) != cowBody {
+				t.Fatalf("content=%d bytes err=%v", len(data), err)
+			}
+		})
 	}
 }
 
