@@ -43,6 +43,10 @@ const (
 	slotSharingUnsupported = "unsupported"
 )
 
+// MeasurementPending は SlotView.Measurement と worktree root の measurement が、まだ最初の測定を終えていないことを表す値である。
+// 消費側が測定済みの 0 と未測定を取り違えないよう、判定用の値をここで公開する。
+const MeasurementPending = rootUsagePendingMeasurement
+
 // measureRootUsage は root ごとの使用量を測り直して cache へ載せ替える。
 // 走査量は root 配下の総ファイル数に比例するため、要求経路では呼ばず lifecycle の周期処理だけが更新する。
 // ctx が切れた回は cache を据え置き、部分的な測定値で既存の値を壊さない。
