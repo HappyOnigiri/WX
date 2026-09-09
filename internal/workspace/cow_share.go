@@ -51,6 +51,8 @@ type cowStats struct {
 	candidates  atomic.Int64
 	shared      atomic.Int64
 	skippedSize atomic.Int64
+	stat        cowStage
+	directory   cowStage
 	open        cowStage
 	compare     cowStage
 	clone       cowStage
@@ -70,6 +72,8 @@ func (s *cowStats) logArgs() []any {
 		name  string
 		stage *cowStage
 	}{
+		{"stat", &s.stat},
+		{"directory", &s.directory},
 		{"open", &s.open},
 		{"compare", &s.compare},
 		{"clone", &s.clone},
@@ -394,8 +398,9 @@ func (p *Preparer) logCOWStats(target string, stats *cowStats) {
 }
 
 // recordCOWPhases は共有の段階別集計を準備の区間内訳へ移す。
-// worker 間の合計なので `cow` 区間の実時間より大きくなり得る。件数は `cow.entries` などの区間名で持つ。
-func (s *cowStats) recordCOWPhases(timings *PhaseTimings) {
+// prefix は親区間の名前で、下位区間は `<prefix>.entries` のように親の直後へ並ぶ。
+// worker 間の合計なので親区間の実時間より大きくなり得る。
+func (s *cowStats) recordCOWPhases(timings *PhaseTimings, prefix string) {
 	if timings == nil {
 		return
 	}
@@ -403,10 +408,10 @@ func (s *cowStats) recordCOWPhases(timings *PhaseTimings) {
 		name  string
 		value int64
 	}{
-		{"cow.entries", s.entries.Load()},
-		{"cow.candidates", s.candidates.Load()},
-		{"cow.shared", s.shared.Load()},
-		{"cow.skipped_size", s.skippedSize.Load()},
+		{prefix + ".entries", s.entries.Load()},
+		{prefix + ".candidates", s.candidates.Load()},
+		{prefix + ".shared", s.shared.Load()},
+		{prefix + ".skipped_size", s.skippedSize.Load()},
 	} {
 		timings.Add(counter.name, int(counter.value), 0)
 	}
@@ -414,14 +419,16 @@ func (s *cowStats) recordCOWPhases(timings *PhaseTimings) {
 		name  string
 		stage *cowStage
 	}{
-		{"cow.open", &s.open},
-		{"cow.compare", &s.compare},
-		{"cow.clone", &s.clone},
-		{"cow.metadata", &s.metadata},
-		{"cow.swap", &s.swap},
-		{"cow.verify", &s.verify},
-		{"cow.unlink", &s.unlink},
-		{"cow.proof", &s.proof},
+		{prefix + ".stat", &s.stat},
+		{prefix + ".directory", &s.directory},
+		{prefix + ".open", &s.open},
+		{prefix + ".compare", &s.compare},
+		{prefix + ".clone", &s.clone},
+		{prefix + ".metadata", &s.metadata},
+		{prefix + ".swap", &s.swap},
+		{prefix + ".verify", &s.verify},
+		{prefix + ".unlink", &s.unlink},
+		{prefix + ".proof", &s.proof},
 	} {
 		timings.Add(stage.name, int(stage.stage.count.Load()), time.Duration(stage.stage.nanos.Load()))
 	}

@@ -20,10 +20,13 @@ type copyEntry struct {
 }
 
 type earlyPlan struct {
-	log      *slog.Logger
-	copies   []copyEntry
-	links    []linkSource
-	tracked  []string
+	log     *slog.Logger
+	copies  []copyEntry
+	links   []linkSource
+	tracked []string
+	// oids は tracked のうち共有候補にできる entry の blob OID である。
+	// 共有できない mode・stage の entry は載せず、CoW の事前 skip だけに使う。
+	oids     map[string]string
 	gitlinks []string
 	symlinks map[string]string
 	early    map[string]bool

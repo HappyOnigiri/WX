@@ -145,7 +145,7 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 		return nil
 	})
 	p.logCOWStats(target, stats)
-	stats.recordCOWPhases(p.Phases)
+	stats.recordCOWPhases(p.Phases, "cow")
 	if shareErr != nil {
 		return shareErr
 	}

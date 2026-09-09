@@ -60,7 +60,7 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		if err := p.timePhase("early-index", func() error { return p.buildEarlyPlan(ctx, item) }); err != nil {
 			return err
 		}
-		if err := p.timePhase("early-checkout", func() error { return p.checkoutStage(ctx, item, true) }); err != nil {
+		if err := p.timePhase("early-checkout", func() error { return p.checkoutStage(ctx, item, true, nil) }); err != nil {
 			return err
 		}
 		if err := p.timePhase("early-place", func() error {
@@ -88,7 +88,21 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		if err := p.validatePreparedTarget(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked.root, item.locked.relative, item.locked.identity, "validate remaining checkout"); err != nil {
 			return err
 		}
-		if err := p.timePhase("checkout", func() error { return p.checkoutStage(ctx, item, false) }); err != nil {
+		// 共有できる tracked file は checkout せず main から clone する。
+		// checkout してから同内容へ差し替えるのに比べ、同じ bytes の書き出しと読み比べが1往復ぶん要らない。
+		var placed map[string]bool
+		if err := p.timePhase("cow-place", func() error {
+			var placeErr error
+			placed, placeErr = p.placeSharedFiles(ctx, item.Repository, item, slotID)
+			return placeErr
+		}); err != nil {
+			return err
+		}
+		p.sharedPlaced = len(placed) > 0
+		if err := p.timePhase("checkout", func() error { return p.checkoutStage(ctx, item, false, placed) }); err != nil {
+			return err
+		}
+		if err := p.timePhase("cow-verify", func() error { return p.settleCOWPlacement(ctx, item, placed) }); err != nil {
 			return err
 		}
 		// worktree add の post-checkout と同じ null OID・新 HEAD・branch flag を使う。
@@ -120,6 +134,7 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 		return err
 	}
 	item.plan.symlinks = map[string]string{}
+	item.plan.oids = map[string]string{}
 	for _, entry := range strings.Split(result.Stdout, "\x00") {
 		if entry == "" {
 			continue
@@ -134,6 +149,9 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 			continue
 		}
 		item.plan.tracked = append(item.plan.tracked, path)
+		if cowShareableIndexMode(fields) {
+			item.plan.oids[path] = fields[1]
+		}
 		if fields[0] == "120000" {
 			blob, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "cat-file", "blob", fields[1])
 			if err != nil {
@@ -161,7 +179,9 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 	return nil
 }
 
-func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, early bool) error {
+// checkoutStage は plan のうち early 区分が一致する tracked path を展開する。
+// placed は既に clone で配置済みの path で、再展開すると clone した実体を上書きするため除く。
+func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, early bool, placed map[string]bool) error {
 	for _, path := range item.plan.gitlinks {
 		if item.plan.early[path] != early {
 			continue
@@ -178,7 +198,7 @@ func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, ea
 	}
 	var paths []string
 	for _, path := range item.plan.tracked {
-		if item.plan.early[path] == early {
+		if item.plan.early[path] == early && !placed[path] {
 			paths = append(paths, path)
 		}
 	}
