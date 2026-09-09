@@ -50,22 +50,28 @@ type cowStats struct {
 	candidates  atomic.Int64
 	shared      atomic.Int64
 	skippedSize atomic.Int64
-	stat        cowStage
-	directory   cowStage
-	open        cowStage
-	compare     cowStage
-	clone       cowStage
-	metadata    cowStage
-	swap        cowStage
-	verify      cowStage
-	unlink      cowStage
-	proof       cowStage
+	// skippedFlags は file flags が付いていて共有できない donor 側の実体の件数である。
+	skippedFlags atomic.Int64
+	// pending は配置方式では置けなかったが置換方式ならまだ共有できる候補の件数である。
+	// 1件でも残る回は貸出前の置換方式を省かない。
+	pending   atomic.Int64
+	stat      cowStage
+	directory cowStage
+	open      cowStage
+	compare   cowStage
+	clone     cowStage
+	metadata  cowStage
+	swap      cowStage
+	verify    cowStage
+	unlink    cowStage
+	proof     cowStage
 }
 
 func (s *cowStats) logArgs() []any {
 	args := []any{
 		"entries", s.entries.Load(), "candidates", s.candidates.Load(),
 		"shared", s.shared.Load(), "skipped_size", s.skippedSize.Load(),
+		"skipped_flags", s.skippedFlags.Load(), "pending", s.pending.Load(),
 	}
 	for _, stage := range []struct {
 		name  string
@@ -346,6 +352,8 @@ func (s *cowStats) recordCOWPhases(timings *PhaseTimings, prefix string) {
 		{prefix + ".candidates", s.candidates.Load()},
 		{prefix + ".shared", s.shared.Load()},
 		{prefix + ".skipped_size", s.skippedSize.Load()},
+		{prefix + ".skipped_flags", s.skippedFlags.Load()},
+		{prefix + ".pending", s.pending.Load()},
 	} {
 		timings.Add(counter.name, int(counter.value), 0)
 	}

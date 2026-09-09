@@ -18,7 +18,18 @@ checkoutしてから同内容へ差し替えるのに比べ、同じbytesの書�
 内容が要求OIDと一致するかはcloneの直後にGitのtracked検査へ判定させ、一致しないpathだけを`checkout-index --force`でやり直す。
 したがってmainがdirtyなpathやclone中にmainが変わったpathは通常checkoutへ落ちるだけで、準備は成功し共有されないpathが増える。
 やり直しても一致しないpathが残る回だけ準備を失敗させる。
-この検査はcloneしたファイルがindexにstat情報を持たないために内容を実際に読むので、置換方式が貸出前に払っていたindexのrefreshを兼ねる。
+この検査はcloneしたファイルがindexにstat情報を持たないために内容を実際に読むので、貸出前の`tracked-status-refresh`はstatの確認だけで済む。
+
+tracked検査はclean filterを通した一致しか見ないため、変換の入るpathは配置の候補から外す。
+外さないと、mainの未コミット内容がblobへ戻る限り検査を通り、通常checkoutと違うbytesが宛先に残る。
+`check-attr --cached --all`が`text`・`eol`・`crlf`・`ident`・`filter`・`working-tree-encoding`を報告するpathを外し、`core.autocrlf`が有効な回とcheckoutの属性を要求OIDから読む回は1件も置かない。
+
+cloneはmode・xattr・ACLを元の実体から複製する。
+modeの差は要求OIDとのtracked検査で通常checkoutへ落ちるが、file flagsが付いた実体は置くとslotが書換えも削除もできなくなるため候補から外す。
+xattrとACLは複製したまま貸し出すので、置換方式が持つmetadata一致の条件までは揃えない。
+
+置けなかった候補が1件でも残る回は、貸出前の置換方式を省かない。
+省くと、配置から外れた候補をどちらの方式でも共有しないまま貸し出すことになる。
 
 走査はpath順に連続したrunの塊へ分け、塊ごとにdirectory descriptorを共通接頭辞のぶん持ち越す。
 entryごとにrootから全成分をたどると、深さに比例したopenatがdirectory数だけ繰り返される。
@@ -85,6 +96,7 @@ UPDATEは現行ruleとcopy元から作る新計画を旧履歴と比較し、追
 tracked fileは元worktreeの未コミット内容を取り込まず、Gitのfilter・属性・実行権限・symlinkの形を保持する。
 先行配置した未追跡ファイルに`.gitattributes`がある回だけ、checkoutの属性を要求OIDから読み、後段のfilterが変わることを防ぐ。
 無い回に要求OIDから読み直さないのは、worktree上の`.gitattributes`が既に要求OIDの内容と一致し、treeからの属性再読込が大きなリポジトリではcheckout全体を数秒延ばすためである。
+この回はcheckoutと配置後のtracked検査が違う属性を見るため、配置方式を使わず置換方式へ共有を任せる。
 `.worktreelink`のlinkはソースリポジトリのignore対象に限るためtracked fileの祖先にならず、配下の`.gitattributes`は参照されないので数えない。
 残りの展開ではGitのparallel checkoutを使い、並列度はリポジトリ設定に依らずwxが毎回指定する。
 残りの展開は、共有できるtracked fileのclone、残りのcheckout、内容の照合の順で行う。

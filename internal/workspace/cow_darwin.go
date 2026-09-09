@@ -17,6 +17,9 @@ const cowACLBufferSize = 64 << 10
 
 func cowAvailable() bool { return true }
 
+// cowSourceFlags は clone が宛先へ複製する file flags を返す。
+func cowSourceFlags(info *unix.Stat_t) uint32 { return info.Flags }
+
 func cloneCOW(source, parent *os.File, name string) error {
 	return unix.Fclonefileat(int(source.Fd()), int(parent.Fd()), name, 0)
 }

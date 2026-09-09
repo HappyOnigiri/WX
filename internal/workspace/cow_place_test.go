@@ -231,12 +231,12 @@ func stagedCOWFixture(t *testing.T, contents map[string]string) (string, discove
 // 事前 skip は OID の一致だけを見るため、下限の判定は donor の fstatat が担う。
 func TestCOWPlacementPlacesNothingWhenEveryCandidateIsBelowTheMinimum(t *testing.T) {
 	_, repo, preparer, item := stagedCOWFixture(t, map[string]string{"small/leaf.bin": "small\n"})
-	placed, err := preparer.placeOwnedSharedFiles(context.Background(), repo, item, testSlotID)
+	placement, err := preparer.placeOwnedSharedFiles(context.Background(), repo, item, testSlotID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(placed) != 0 {
-		t.Fatalf("placed=%v", placed)
+	if len(placement.placed) != 0 {
+		t.Fatalf("placed=%v", placement.placed)
 	}
 	if _, err := os.Stat(filepath.Join(item.Target, "small")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("destination directory err=%v", err)
@@ -412,12 +412,12 @@ func TestTrackedChangedPathsReportsModifiedTrackedPathsOnly(t *testing.T) {
 func TestPlaceSharedFilesSkipsWhenCopyIsRequested(t *testing.T) {
 	_, repo, preparer, item := stagedCOWFixture(t, map[string]string{"big/donor.bin": strings.Repeat("b", cowMinShareSize) + "\n"})
 	preparer.Config.Storage.CopyMode = config.CopyModeCopy
-	placed, err := preparer.placeSharedFiles(context.Background(), repo, item, testSlotID)
+	placement, err := preparer.placeSharedFiles(context.Background(), repo, item, testSlotID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(placed) != 0 {
-		t.Fatalf("placed=%v", placed)
+	if len(placement.placed) != 0 {
+		t.Fatalf("placed=%v", placement.placed)
 	}
 }
 
@@ -440,5 +440,113 @@ func TestCOWPlacementRecordsPhaseBreakdown(t *testing.T) {
 	// 1件も clone しなかった回は共有件数の区間を作らない。
 	if _, recorded := counts["cow-place.shared"]; recorded {
 		t.Fatalf("shared count without a clone: %v", counts)
+	}
+}
+
+// --all は設定のある属性だけを出す。変換に関わらない属性と、変換を外す unset は候補に残す。
+func TestParseCOWConvertiblePathsKeepsOnlyConversionAttributes(t *testing.T) {
+	output := strings.Join([]string{
+		"binary.bin", "text", "unset",
+		"binary.bin", "diff", "unset",
+		"asset.bin", "filter", "lfs",
+		"note.txt", "text", "set",
+		"marked.bin", "merge", "ours",
+	}, "\x00") + "\x00"
+	got := parseCOWConvertiblePaths(output)
+	want := map[string]bool{"asset.bin": true, "note.txt": true}
+	if len(got) != len(want) {
+		t.Fatalf("convertible=%v", got)
+	}
+	for path := range want {
+		if !got[path] {
+			t.Fatalf("convertible=%v", got)
+		}
+	}
+}
+
+// 変換の入る path は配置しない。配置後の tracked 検査は clean filter 越しの一致しか見ないため、
+// main の未コミット内容が blob へ戻る限り検査を通り、通常 checkout と違う bytes が残る。
+func TestShareableCOWPlacementsDropsConvertiblePaths(t *testing.T) {
+	large := strings.Repeat("x\n", cowMinShareSize)
+	_, _, preparer, item := stagedCOWFixture(t, map[string]string{
+		".gitattributes": "*.dat text\n",
+		"big/plain.bin":  large,
+		"big/text.dat":   large,
+	})
+	candidates := []cowIndexEntry{{name: "big/plain.bin"}, {name: "big/text.dat"}}
+	kept, excluded, err := preparer.shareableCOWPlacements(context.Background(), item, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 || kept[0].name != "big/plain.bin" {
+		t.Fatalf("kept=%v", kept)
+	}
+	if excluded != 1 {
+		t.Fatalf("excluded=%d", excluded)
+	}
+}
+
+// core.autocrlf は属性を持たない path にも効くので、有効な回は1件も配置せず置換方式へ回す。
+func TestShareableCOWPlacementsYieldsWhileAutocrlfConverts(t *testing.T) {
+	source, _, preparer, item := stagedCOWFixture(t, map[string]string{"big/plain.bin": strings.Repeat("x\n", cowMinShareSize)})
+	gitCommand(t, source, "config", "core.autocrlf", "input")
+	candidates := []cowIndexEntry{{name: "big/plain.bin"}}
+	kept, excluded, err := preparer.shareableCOWPlacements(context.Background(), item, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 0 || excluded != 1 {
+		t.Fatalf("kept=%v excluded=%d", kept, excluded)
+	}
+}
+
+// 置けなかった候補が残る回は、配置方式だけで共有をやり切ったとは見なさない。
+func TestCOWPlacementIsCompleteOnlyWithoutPendingCandidates(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		placement cowPlacement
+		want      bool
+	}{
+		{"placed everything", cowPlacement{placed: map[string]bool{"a": true}}, true},
+		{"left a candidate", cowPlacement{placed: map[string]bool{"a": true}, pending: 1}, false},
+		{"placed nothing", cowPlacement{}, false},
+	} {
+		if got := testCase.placement.complete(); got != testCase.want {
+			t.Fatalf("%s: complete=%v", testCase.name, got)
+		}
+	}
+}
+
+// 変換の入る tracked file は、main の作業ファイルが blob と違う bytes でも通常 checkout の内容で貸し出す。
+func TestPrepareStagedKeepsCheckoutBytesForConvertedPaths(t *testing.T) {
+	if !cowAvailable() {
+		t.Skip("APFS is required")
+	}
+	source, repo, preparer, _, target := prepareEdgesFixture(t)
+	committed := strings.Repeat("line\n", cowMinShareSize)
+	if err := os.Mkdir(filepath.Join(source, "big"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{".gitattributes": "*.dat text\n", "big/text.dat": committed} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCommand(t, source, "add", ".")
+	gitCommand(t, source, "commit", "-m", "converted file")
+	oid := gitOutput(t, source, "rev-parse", "HEAD")
+	// clean filter が CRLF を LF へ戻すので、この作業ファイルは blob と違う bytes でも tracked 検査を通ってしまう。
+	if err := os.WriteFile(filepath.Join(source, "big", "text.dat"), []byte(strings.ReplaceAll(committed, "\n", "\r\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "big", "text.dat"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != committed {
+		t.Fatalf("the prepared worktree kept the donor bytes: %d bytes", len(got))
 	}
 }

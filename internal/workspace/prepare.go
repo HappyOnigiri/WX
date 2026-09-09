@@ -42,8 +42,8 @@ type Preparer struct {
 	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、daemon は全 Preparer と archive.Manager へ同じ表を渡す。
 	SlotLocks  *gitx.KeyedLocks
 	noCheckout bool
-	// sharedPlaced は共有できる tracked file を checkout の前に clone 済みであることを表す。
-	// この回は置き換え方式の共有と、inode 交換を前提にした index の再 refresh を行わない。
+	// sharedPlaced は共有できる tracked file を checkout の前に clone で置き切ったことを表す。
+	// この回は置き換え方式の共有を行わない。置けなかった候補が残る回は、それを共有できる方式が他に無いため省かない。
 	sharedPlaced bool
 	// cowWorkerCount は CoW 共有の並列度をテストから固定する内部フックである。
 	// 0 のままなら cowWorkers が既定値を決める。1 にすると共有順序が index の並び順で決定的になる。
@@ -243,14 +243,15 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 		}); err != nil {
 			return err
 		}
-		// inode 交換で index の stat cache が陳腐化するため、貸出前に refresh して再ハッシュを PREPARING 側で払う。
-		// tracked 内容が変わっていないことの独立検証も兼ねる。
-		if phase == preparePhaseCreate {
-			if err := p.timePhase("tracked-status-refresh", func() error {
-				return p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status refresh")
-			}); err != nil {
-				return err
-			}
+	}
+	// inode 交換で index の stat cache が陳腐化するため、貸出前に refresh して再ハッシュを PREPARING 側で払う。
+	// tracked 内容が変わっていないことの独立検証も兼ねる。先行配置した回も、配置した path 以外の検証はここだけが行う。
+	// 配置方式の照合が index を refresh 済みなので、その回のこの status は stat の確認だけで済む。
+	if phase == preparePhaseCreate {
+		if err := p.timePhase("tracked-status-refresh", func() error {
+			return p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status refresh")
+		}); err != nil {
+			return err
 		}
 	}
 	if err := p.timePhase("ready-lock", func() error {

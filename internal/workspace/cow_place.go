@@ -186,6 +186,12 @@ func (c *cowPlacer) shareableLeaves(source *os.File, leaves []string) []string {
 		if info.Mode&unix.S_IFMT != unix.S_IFREG {
 			continue
 		}
+		// clone は file flags も複製するため、uchg の付いた実体を置くと slot が書換えも削除もできなくなる。
+		// 置換方式では checkout 済みの実体との flags 不一致で落ちる分を、配置方式では donor 側だけで落とす。
+		if cowSourceFlags(&info) != 0 {
+			c.stats.skippedFlags.Add(1)
+			continue
+		}
 		if info.Size < c.minSize {
 			c.stats.skippedSize.Add(1)
 			continue
@@ -231,41 +237,62 @@ func planCOWPlacement(plan *earlyPlan, sourceOIDs map[string]string) []cowIndexE
 	return candidates
 }
 
+// cowPlacement は先行配置の結果である。
+// placed は clone で置けた path で、checkout の対象から外す。
+type cowPlacement struct {
+	placed map[string]bool
+	// pending は配置方式では置けなかったが、置換方式ならまだ共有できる候補の件数である。
+	pending int
+}
+
+// complete は配置方式だけで共有をやり切ったかを返す。
+// false の回に貸出前の置換方式を省くと、配置から外れた候補がどの方式でも共有されないまま残る。
+func (c cowPlacement) complete() bool { return len(c.placed) > 0 && c.pending == 0 }
+
 // placeSharedFiles は残りの checkout より先に、main と同内容になり得る tracked file を clone で配置する。
 // checkout してから同内容へ差し替えるのに比べ、同じ bytes の書き出しと読み比べが1往復ぶん要らなくなる。
-// 戻り値の path は checkout の対象から外す。
-func (p *Preparer) placeSharedFiles(ctx context.Context, repo discovery.Repository, item *stagedRepository, slotID string) (map[string]bool, error) {
+func (p *Preparer) placeSharedFiles(ctx context.Context, repo discovery.Repository, item *stagedRepository, slotID string) (cowPlacement, error) {
 	// clone できない platform と copy 指定では1件も置かず、方式の判断は従来どおり compactWorktree に委ねる。
 	mode := p.Config.Storage.CopyMode
 	if mode == config.CopyModeCopy || !cowAvailable() {
-		return nil, nil
+		return cowPlacement{}, nil
 	}
-	placed, err := p.placeOwnedSharedFiles(ctx, repo, item, slotID)
-	return placed, p.cowFallback(ctx, mode, item.Target, err)
+	// 先行配置した未追跡の .gitattributes は、要求 OID から読ませた checkout の属性と、配置後の tracked 検査が使う属性を食い違わせる。
+	// この回は1件も置かず、bytes の一致を自分で確かめる置換方式へ共有を任せる。
+	if item.plan.earlyAttributes() {
+		p.logSkip("CoW placement yields to the replacement method for an early untracked .gitattributes", "repository", string(repo.MainPath))
+		return cowPlacement{}, nil
+	}
+	placement, err := p.placeOwnedSharedFiles(ctx, repo, item, slotID)
+	return placement, p.cowFallback(ctx, mode, item.Target, err)
 }
 
-func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Repository, item *stagedRepository, slotID string) (map[string]bool, error) {
+func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Repository, item *stagedRepository, slotID string) (cowPlacement, error) {
 	owner, relative, _, err := p.openOwnedRoot(p.RootPath, item.Target)
 	if err != nil {
-		return nil, err
+		return cowPlacement{}, err
 	}
 	validate := func() error {
 		return p.verifyPreparedTargetIdentity(owner, relative, item.locked.identity)
 	}
 	destination, err := domain.OpenRootAt(owner, relative)
 	if err != nil {
-		return nil, fmt.Errorf("%w: open CoW target: %w", state.ErrOwnership, err)
+		return cowPlacement{}, fmt.Errorf("%w: open CoW target: %w", state.ErrOwnership, err)
 	}
 	defer func() { _ = destination.Close() }()
 	source, err := openPinnedRepositoryRoot(string(repo.MainPath))
 	if err != nil {
-		return nil, err
+		return cowPlacement{}, err
 	}
 	defer func() { _ = source.Close() }()
-	candidates := planCOWPlacement(&item.plan, p.cowSourceIndexOIDs(ctx, source))
+	candidates, excluded, err := p.shareableCOWPlacements(ctx, item, planCOWPlacement(&item.plan, p.cowSourceIndexOIDs(ctx, source)))
+	if err != nil {
+		return cowPlacement{}, err
+	}
 	stats := &cowStats{}
 	stats.entries.Store(int64(len(item.plan.tracked)))
 	stats.candidates.Store(int64(len(candidates)))
+	stats.pending.Store(int64(excluded))
 	placer := &cowPlacer{
 		source:      source,
 		destination: destination,
@@ -292,12 +319,85 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 	placeErr := runCOWBatches(ctx, workers, chunks, func(ctx context.Context, chunk []cowRun) error {
 		return placer.placeChunk(ctx, chunk, gate(ctx))
 	})
+	if placeErr != nil {
+		// 途中で止めた回は着手していない候補が残るため、置換方式へ回す件数を候補の残りで数える。
+		stats.pending.Store(int64(excluded + len(candidates) - len(placer.placed)))
+	}
 	p.logCOWStats(item.Target, stats)
 	stats.recordCOWPhases(p.Phases, "cow-place")
+	placement := cowPlacement{placed: placer.placed, pending: int(stats.pending.Load())}
 	if placeErr != nil {
-		return placer.placed, placeErr
+		return placement, placeErr
 	}
-	return placer.placed, validate()
+	return placement, validate()
+}
+
+// shareableCOWPlacements は変換の入り得る候補を落とし、落とした件数を返す。
+// 配置後の tracked 検査は clean filter 越しの一致しか見ないため、変換が入る path では
+// main の未コミット内容が blob へ戻る限り検査を通り、通常 checkout と違う bytes が残る。
+func (p *Preparer) shareableCOWPlacements(ctx context.Context, item *stagedRepository, candidates []cowIndexEntry) ([]cowIndexEntry, int, error) {
+	if len(candidates) == 0 {
+		return nil, 0, nil
+	}
+	// core.autocrlf は属性を持たない path にも効くため、有効な回は path 単位に選り分けず全件を置換方式へ回す。
+	// core.eol と core.checkRoundtripEncoding は対応する属性が付いた path にしか効かないので、属性側の判定で足りる。
+	result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "config", "--default", "false", "--get", "core.autocrlf")
+	if err != nil {
+		return nil, 0, err
+	}
+	if value := strings.TrimSpace(result.Stdout); value != "false" {
+		p.logSkip("CoW placement yields to the replacement method while core.autocrlf converts content", "repository", string(item.Repository.MainPath), "core.autocrlf", value)
+		return nil, len(candidates), nil
+	}
+	convertible, err := p.convertibleCOWPaths(ctx, item, candidates)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(convertible) == 0 {
+		return candidates, 0, nil
+	}
+	kept := make([]cowIndexEntry, 0, len(candidates))
+	for _, entry := range candidates {
+		if convertible[entry.name] {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept, len(candidates) - len(kept), nil
+}
+
+// convertibleCOWPaths は候補のうち、属性によって checkout の bytes が blob と変わり得る path を返す。
+// --cached は index の .gitattributes を読む指定で、tracked file を未配置の worktree で checkout が参照する側と同じになる。
+func (p *Preparer) convertibleCOWPaths(ctx context.Context, item *stagedRepository, candidates []cowIndexEntry) (map[string]bool, error) {
+	var input strings.Builder
+	for _, entry := range candidates {
+		input.WriteString(entry.name)
+		input.WriteByte(0)
+	}
+	result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, []byte(input.String()), "check-attr", "--cached", "--all", "--stdin", "-z")
+	if err != nil {
+		return nil, err
+	}
+	return parseCOWConvertiblePaths(result.Stdout), nil
+}
+
+// cowConversionAttributes は、checkout が書く bytes を index の blob と変え得る属性である。
+var cowConversionAttributes = map[string]bool{
+	"text": true, "eol": true, "crlf": true, "ident": true, "filter": true, "working-tree-encoding": true,
+}
+
+// parseCOWConvertiblePaths は `check-attr --all -z` の path・属性・値の3つ組から、変換の入り得る path を集める。
+// --all は設定のある属性だけを出すので、変換に関わらない属性と、変換を外す unset は読み飛ばす。
+func parseCOWConvertiblePaths(stdout string) map[string]bool {
+	fields := strings.Split(stdout, "\x00")
+	convertible := map[string]bool{}
+	for index := 0; index+2 < len(fields); index += 3 {
+		if !cowConversionAttributes[fields[index+1]] || fields[index+2] == "unset" {
+			continue
+		}
+		convertible[fields[index]] = true
+	}
+	return convertible
 }
 
 // settleCOWPlacement は clone した内容が要求 OID と一致することを Git に判定させ、

@@ -10,6 +10,9 @@ func cowAvailable() bool { return false }
 
 func cloneCOW(_, _ *os.File, _ string) error { return unix.ENOTSUP }
 
+// cowSourceFlags は clone を持たない platform では常に 0 を返す。
+func cowSourceFlags(_ *unix.Stat_t) uint32 { return 0 }
+
 func swapCOW(_ *os.File, _, _ string) error { return unix.ENOTSUP }
 
 // cowACLBufferSize は darwin 実装と同じ定数を共有コードへ見せるためだけに置く。
