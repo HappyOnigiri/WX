@@ -119,7 +119,7 @@ func (s *Store) ValidateWorktreeOwnership(ctx context.Context, req WorktreeOwner
 	}
 
 	// 単一の read-only 文なので明示的な transaction を張らない。
-	// CoW の圧縮は追跡ファイルごとにこれを呼ぶため、BeginTx/Commit の往復がそのまま準備時間に乗る。
+	// CoW の圧縮は共有の batch ごとにこれを呼ぶため、BeginTx/Commit の往復がそのまま準備時間に乗る。
 	var out WorktreeOwnership
 	var workspaceRoot, mainWorktreePath, commonDir string
 	var workspaceID, slotState, repositoryID, repositoryState, relativePath string

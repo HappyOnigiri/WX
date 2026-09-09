@@ -5,6 +5,9 @@
 対象はmain worktreeの同じpathにある通常ファイルで、cloneしたbytesと宛先の最終bytesが一致するものだけである。
 mainとcommitが異なっていても同内容のファイルは共有でき、dirtyなmainの変更は宛先へ持ち込まない。
 新規・内容不一致・空ファイル・symlink・submodule・複数hard linkを持つ宛先は通常方式のまま残す。
+16KiB未満のファイルと、main側indexのblob OIDが宛先indexと異なるpathも走査の前に共有対象外とする。
+小さいファイルはブロック共有で減る容量より判定の定数費用が勝ち、OIDが違うpathは内容まで一致することが稀だからである。
+OIDの一致は共有の根拠には使わない（mainがdirtyなら内容は違う）。逆に不一致でも内容が一致する回の共有は諦める。
 mainのtree形状が異なる場合や、mainがこの処理中に変化した場合も、そのファイルだけを共有対象外として残りの処理を続ける。
 所有者・mode・flags・ACL・xattrが一致しないものも共有対象外とする。
 `cow`は共有対象のclone失敗をエラーにする指定であり、全ファイルの共有や削減容量を保証する指定ではない。
@@ -12,6 +15,9 @@ mainのtree形状が異なる場合や、mainがこの処理中に変化した�
 `internal/workspace/cow.go`が準備・復元の完了前に処理し、Gitのfilter、checkout hook、prepare commandによる結果を保持する。
 indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変えないため、復元した区別も保たれる。
 宛先の日時はFD経由で復元し、元ファイルとcloneをatomic swapしてから元inodeを検証して削除する。
+走査は同一ディレクトリの連続したentryをrunとしてまとめ、runをバッチにして並列に処理する。
+所有権証明のうちSQLの照会はバッチ単位、worktree identityの検査は置換1件ごとに行う。
+バッチが失敗した回は着手済みのバッチを完走させてから止めるため、共有できたファイルの集合は回ごとに変わる。
 所有権不明は`auto`でもfallbackせずQUARANTINEDとして実体を残す。
 中断して残った未追跡の`.wx-cow-*`も自動削除せず隔離するため、この名前は予約する。
 この検査は無視されたtreeを走査しないので、`.wx-cow-*`をgitignoreで無視すると残骸を検出できなくなる。
@@ -70,6 +76,7 @@ readiness設定の変更だけでは完成済みREADY slotの再利用を無効�
 ## 変更の入口と代表テスト
 
 共有対象の判定と差し替えは[`internal/workspace/cow.go`](../internal/workspace/cow.go)が入口で、clonefileの呼び出しは[`cow_darwin.go`](../internal/workspace/cow_darwin.go)が持つ。
+indexの解析と事前skipは[`cow_index.go`](../internal/workspace/cow_index.go)、run分割・並列実行・エラー集約は[`cow_share.go`](../internal/workspace/cow_share.go)にある。
 代表テストは[`cow_darwin_test.go`](../internal/workspace/cow_darwin_test.go)で、macOSであれば`make test-darwin`に限らず`make ci`でも実行される（前提は後述の[部分検証](#部分検証)）。
 
 ## 部分検証
