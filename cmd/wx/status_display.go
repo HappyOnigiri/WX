@@ -120,6 +120,9 @@ const workspaceLastUsedSchemaVersion = 6
 // workspacePolicySchemaVersion は workspace_details.policy が導入された JSON schema 版である。
 const workspacePolicySchemaVersion = 14
 
+// archivedSessionSchemaVersion は archived_session_details が導入された JSON schema 版である。
+const archivedSessionSchemaVersion = 19
+
 func printStatusSummary(w io.Writer, payload map[string]any) {
 	workspaces := statusObjectList(payload["workspace_details"])
 	roots := statusObjectsSortedBy(statusObjectList(payload["worktree_roots"]), "path")
@@ -370,4 +373,19 @@ func statusWorkspaceLastUsedNotice(payload map[string]any) string {
 	}
 	schema, _ := statusInt(payload, "schema_version")
 	return fmt.Sprintf("LAST USED unavailable: daemon JSON schema %d has no workspace history; update the daemon.", schema)
+}
+
+func statusArchivedSessionsUnavailable(payload map[string]any) bool {
+	schema, ok := statusInt(payload, "schema_version")
+	return ok && schema < archivedSessionSchemaVersion
+}
+
+// statusArchivedSessionNotice は集計を返さない daemon 向けの注記である。
+// 旧 daemon の session_details には ARCHIVED が混ざるため、行を間引かず注記だけを添えて診断の欠落を防ぐ。
+func statusArchivedSessionNotice(payload map[string]any) string {
+	if !statusArchivedSessionsUnavailable(payload) {
+		return ""
+	}
+	schema, _ := statusInt(payload, "schema_version")
+	return fmt.Sprintf("Archived unavailable: daemon JSON schema %d has no archived session summary; the table above still lists archived sessions. Update the daemon.", schema)
 }

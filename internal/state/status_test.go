@@ -194,8 +194,12 @@ func TestStatusDiagnosticsAndGarbageCollectionCandidatesExposeRows(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(diagnostics.Workspaces) != 1 || len(diagnostics.Sessions) != 1 || len(diagnostics.Repositories) != 1 || diagnostics.Jobs.Pending < 1 || diagnostics.Snapshots.Count != 1 || len(diagnostics.Quarantine) != 1 {
+	// この test の session は ARCHIVED だけなので、一覧は空で集計側に 1 件入る。
+	if len(diagnostics.Workspaces) != 1 || len(diagnostics.Sessions) != 0 || len(diagnostics.Repositories) != 1 || diagnostics.Jobs.Pending < 1 || diagnostics.Snapshots.Count != 1 || len(diagnostics.Quarantine) != 1 {
 		t.Fatalf("diagnostics=%+v", diagnostics)
+	}
+	if diagnostics.ArchivedSessions.Count != 1 || diagnostics.ArchivedSessions.EarliestArchivedAt == "" {
+		t.Fatalf("archived sessions=%+v", diagnostics.ArchivedSessions)
 	}
 	if jobs, err := store.RecoverJobs(ctx, true); err != nil || len(jobs) == 0 || jobs[0].ID != job.ID {
 		t.Fatalf("reclaimed jobs=%+v err=%v", jobs, err)
@@ -375,5 +379,69 @@ func TestListSlotsCarryLeaseAttributes(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("detached lease session row missing lease columns: %+v", all)
+	}
+}
+
+// TestStatusDiagnosticsSplitsArchivedSessionsFromTheList は Sessions 診断の範囲を固定する。
+// 終端でない state は名前を問わず一覧に残り、ARCHIVED は集計だけに、EXPIRED はどちらにも出ない。
+func TestStatusDiagnosticsSplitsArchivedSessionsFromTheList(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	liveStates := []string{"STARTING", "ACTIVE", "RESTORING", "UNBOUND", "RELEASING", "SNAPSHOTTING", "QUARANTINED"}
+	older, newer := FormatTime(time.Now().Add(-2*time.Hour)), FormatTime(time.Now().Add(-time.Hour))
+	earlyExpiry, lateExpiry := FormatTime(time.Now().Add(time.Hour)), FormatTime(time.Now().Add(2*time.Hour))
+	type seed struct{ id, sessionState, archivedAt, expiresAt string }
+	seeds := []seed{
+		{id: "archived-older", sessionState: "ARCHIVED", archivedAt: older, expiresAt: earlyExpiry},
+		{id: "archived-newer", sessionState: "ARCHIVED", archivedAt: newer, expiresAt: lateExpiry},
+		{id: "expired", sessionState: "EXPIRED"},
+	}
+	for _, sessionState := range liveStates {
+		seeds = append(seeds, seed{id: "live-" + sessionState, sessionState: sessionState})
+	}
+	for _, item := range seeds {
+		session := Session{ID: item.id, WorkspaceID: "workspace", SlotID: item.id, State: "STARTING", AgentKind: "codex", TokenHash: HashToken(item.id)}
+		slot := Slot{ID: item.id, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/" + item.id, State: "PREPARING"}
+		if _, err := store.CreateSlotSession(ctx, slot, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state=?,archived_at=NULLIF(?,''),expires_at=NULLIF(?,'') WHERE id=?`, item.sessionState, item.archivedAt, item.expiresAt, item.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diagnostics, err := store.StatusDiagnostics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := make([]string, 0, len(diagnostics.Sessions))
+	for _, item := range diagnostics.Sessions {
+		listed = append(listed, item.State)
+	}
+	slices.Sort(listed)
+	want := slices.Clone(liveStates)
+	slices.Sort(want)
+	if !slices.Equal(listed, want) {
+		t.Fatalf("listed session states=%v, want %v", listed, want)
+	}
+	archived := diagnostics.ArchivedSessions
+	if archived.Count != 2 || archived.EarliestArchivedAt != older || archived.LatestExpiresAt != lateExpiry {
+		t.Fatalf("archived sessions=%+v, want count 2 with earliest %q and latest expiry %q", archived, older, lateExpiry)
+	}
+}
+
+// TestStatusDiagnosticsFailsWhenArchivedSessionColumnsAreMissing は、一覧が引けても集計が引けない DB を失敗として扱うことを固定する。
+func TestStatusDiagnosticsFailsWhenArchivedSessionColumnsAreMissing(t *testing.T) {
+	store := openTestStore(t)
+	for _, statement := range []string{
+		`DROP TABLE sessions`,
+		`CREATE VIEW sessions AS SELECT 'id' AS id,'codex' AS agent_kind,'ACTIVE' AS state,'created' AS created_at,'slot' AS slot_id`,
+	} {
+		if _, err := store.db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.StatusDiagnostics(context.Background()); err == nil {
+		t.Fatal("diagnostics succeeded without the archived session columns")
 	}
 }
