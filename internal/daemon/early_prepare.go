@@ -8,6 +8,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
@@ -31,11 +32,17 @@ func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w disc
 		}
 		code, detail := "PREPARE_FAILED", ""
 		var commandErr *workspace.PrepareCommandError
-		if errors.As(prepareErr, &commandErr) {
+		var gitErr *gitx.Error
+		switch {
+		case errors.As(prepareErr, &commandErr):
 			detail = commandErr.DetailPath
 			if commandErr.FailureID != "" {
 				code += ":" + commandErr.FailureID
 			}
+		case errors.As(prepareErr, &gitErr):
+			// Git は失敗の stderr を failure ID のログへ既に書いている。
+			// path を残さないと `git hook failed with exit N` だけが伝わり、hook が何を言って落ちたかへ辿れない。
+			detail = gitx.DetailPath(m.prepareDetailDir, gitErr.FailureID)
 		}
 		if errors.Is(prepareErr, state.ErrOwnership) {
 			code = "WORKTREE_OWNERSHIP_UNCERTAIN"

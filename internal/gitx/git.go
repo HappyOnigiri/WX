@@ -255,21 +255,49 @@ func newFailureID() string {
 	return rand.Text()
 }
 
-func (r *Runner) writeFailureDetail(id string, args []string, result Result) {
-	detailDir := r.getDetailDir()
-	if detailDir == "" {
-		return
+// DetailPath は detailDir に置かれる詳細ログの path を組む。
+// 失敗を記録した側と、後からその出力を読ませる側が同じ規則で path を組むための唯一の場所である。
+func DetailPath(detailDir, id string) string {
+	if detailDir == "" || id == "" {
+		return ""
+	}
+	return filepath.Join(detailDir, id+".log")
+}
+
+// WriteDetail は detailDir へ新しい識別子の詳細ログを書き、書けた path を返す。
+// 識別子は Git の失敗が持つ FailureID と同じ体系にし、失敗と非失敗の記録が同じ置き場で混ざらないようにする。
+func WriteDetail(detailDir, content string) string {
+	return writeDetail(detailDir, newFailureID(), content)
+}
+
+// writeDetail は id を指定して詳細ログを書く。
+// 診断の保存に失敗しても呼び出し側の結果は変えないため、書けなければ空を返すだけにする。
+func writeDetail(detailDir, id, content string) string {
+	path := DetailPath(detailDir, id)
+	if path == "" {
+		return ""
 	}
 	if err := os.MkdirAll(detailDir, 0o700); err != nil {
-		return
+		return ""
 	}
 	_ = os.Chmod(detailDir, 0o700)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return ""
+	}
+	return path
+}
+
+// FormatCommandDetail は Git 1 回分の実行内容と出力を詳細ログの本文へ整える。
+func FormatCommandDetail(args []string, result Result) string {
 	quotedArgs := make([]string, len(args))
 	for index, argument := range args {
 		quotedArgs[index] = strconv.Quote(argument)
 	}
-	detail := fmt.Sprintf("command: git %s\nexit_status: %d\nelapsed: %s\nstderr:\n%s", strings.Join(quotedArgs, " "), result.ExitCode, result.Elapsed, result.Stderr)
-	_ = os.WriteFile(filepath.Join(detailDir, id+".log"), []byte(detail), 0o600)
+	return fmt.Sprintf("command: git %s\nexit_status: %d\nelapsed: %s\nstderr:\n%s", strings.Join(quotedArgs, " "), result.ExitCode, result.Elapsed, result.Stderr)
+}
+
+func (r *Runner) writeFailureDetail(id string, args []string, result Result) {
+	_ = writeDetail(r.getDetailDir(), id, FormatCommandDetail(args, result))
 }
 
 func isLockConflict(stderr string) bool {
