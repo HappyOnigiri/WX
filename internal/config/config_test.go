@@ -314,6 +314,52 @@ func TestCOWMinSizeConfigRoundTrip(t *testing.T) {
 	}
 }
 
+// repository 個別の下限は、未指定なら global を継承し、明示した 0 は「下限なし」として global を上書きする。
+func TestRepositoryCOWMinSizeOverridesGlobal(t *testing.T) {
+	const path = "/repository"
+	zero, thirtyTwo := 0, 32
+	for _, c := range []struct {
+		name     string
+		override *int
+		want     int
+	}{
+		{name: "inherit", want: DefaultCOWMinSizeKiB},
+		{name: "explicit", override: &thirtyTwo, want: 32},
+		{name: "no-minimum", override: &zero, want: 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Repositories[path] = Repository{COWMinSizeKiB: c.override}
+			if got := cfg.COWMinSizeKiB(path); got != c.want {
+				t.Fatalf("kib=%d want=%d", got, c.want)
+			}
+			if got, want := cfg.COWMinShareSize(path), int64(c.want)<<10; got != want {
+				t.Fatalf("bytes=%d want=%d", got, want)
+			}
+			// 個別指定のない repository は global のままである。
+			if got := cfg.COWMinSizeKiB("/other"); got != DefaultCOWMinSizeKiB {
+				t.Fatalf("other repository kib=%d", got)
+			}
+		})
+	}
+}
+
+// 個別値も global と同じ範囲に限り、どの repository が範囲外かをメッセージで示す。
+func TestRepositoryCOWMinSizeRangeIsValidated(t *testing.T) {
+	const path = "/repository"
+	for _, kib := range []int{-1, MaxCOWMinSizeKiB + 1} {
+		cfg := Defaults()
+		cfg.Repositories[path] = Repository{COWMinSizeKiB: &kib}
+		err := Validate(&cfg)
+		if err == nil {
+			t.Fatalf("out-of-range repository minimum accepted: %d", kib)
+		}
+		if !strings.Contains(err.Error(), "repositories."+path+".cow_min_size_kib") {
+			t.Fatalf("kib=%d error=%v", kib, err)
+		}
+	}
+}
+
 func TestEffectiveEqualIgnoresWhichKeysTheFileSpelledOut(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	defaults := Defaults()

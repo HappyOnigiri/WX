@@ -297,7 +297,7 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 		source:      source,
 		destination: destination,
 		proof:       validate,
-		minSize:     p.Config.Storage.COWMinShareSize(),
+		minSize:     p.Config.COWMinShareSize(string(repo.MainPath)),
 		stats:       stats,
 		placed:      make(map[string]bool, len(candidates)),
 	}
