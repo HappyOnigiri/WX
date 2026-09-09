@@ -35,6 +35,9 @@ type Preparer struct {
 	// 所有権検証は絶対 SlotPath の代わりにこれらを比較し、root の改名や再設定で別 directory が同じ slot に見えることを防ぐ。
 	RootID      string
 	SlotRelPath string
+	// Phases は準備の区間ごとの所要時間を集計する診断用の器である。
+	// nil でも準備は同じ結果になり、記録だけが落ちる。`wx bench` がこの内訳を読む。
+	Phases *PhaseTimings
 	// SlotLocks は同じ slot へ書く操作を直列化する共有の lock 表である。
 	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、daemon は全 Preparer と archive.Manager へ同じ表を渡す。
 	SlotLocks  *gitx.KeyedLocks
@@ -180,7 +183,7 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before includes"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed before includes: %w", err)
 	}
-	if err := includes(); err != nil {
+	if err := p.timePhase("place", includes); err != nil {
 		return err
 	}
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before links"); err != nil {
@@ -188,14 +191,14 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 	}
 	// snapshot と現在の main で ignore 規則が異なるため、復元先で symlink 形を無視できる場合だけ link を作る。
 	// source 側だけを確認すると、古い `/.tools/` のような directory-only 規則で復元後の tree が変わる。
-	if err := links(); err != nil {
+	if err := p.timePhase("link", links); err != nil {
 		return err
 	}
 	if phase == preparePhaseCreate {
 		if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before prepare command"); err != nil {
 			return fmt.Errorf("wx worktree ownership changed before prepare command: %w", err)
 		}
-		if err := p.runPrepareWithIdentity(ctx, repo, target, ""); err != nil {
+		if err := p.timePhase("prepare-command", func() error { return p.runPrepareWithIdentity(ctx, repo, target, "") }); err != nil {
 			return err
 		}
 		if err := p.verifyPreparedTargetIdentity(lockedRoot, lockedRelativeTarget, targetIdentity); err != nil {
@@ -203,7 +206,9 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 		}
 	}
 	if phase == preparePhaseCreate {
-		if err := p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status"); err != nil {
+		if err := p.timePhase("tracked-status", func() error {
+			return p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status")
+		}); err != nil {
 			return err
 		}
 	}
@@ -229,18 +234,24 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 		// archive.Manager が snapshot の tree/index を復元し、resume-phase command を実行するまで RESTORING lock を保持する。
 		return nil
 	}
-	if err := p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity); err != nil {
+	if err := p.timePhase("cow", func() error {
+		return p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity)
+	}); err != nil {
 		return err
 	}
 	// inode 交換で index の stat cache が陳腐化するため、貸出前に refresh して再ハッシュを PREPARING 側で払う。
 	// tracked 内容が変わっていないことの独立検証も兼ねる。
 	if phase == preparePhaseCreate {
-		if err := p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status refresh"); err != nil {
+		if err := p.timePhase("tracked-status-refresh", func() error {
+			return p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status refresh")
+		}); err != nil {
 			return err
 		}
 	}
-	if err := p.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(lockCtx context.Context) error {
-		return p.finishPrepare(lockCtx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity)
+	if err := p.timePhase("ready-lock", func() error {
+		return p.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(lockCtx context.Context) error {
+			return p.finishPrepare(lockCtx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity)
+		})
 	}); err != nil {
 		return err
 	}

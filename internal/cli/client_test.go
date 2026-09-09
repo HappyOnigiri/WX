@@ -33,6 +33,8 @@ type launcherHandler struct {
 	resumeStatus      map[string]any
 	// waitReadyErr は準備待ちを失敗させる点である。nil なら成功を返す。
 	waitReadyErr error
+	// prepareTimings は PrepareTimings の応答を差し替える点である。nil なら既定の応答を返し、内訳なしとして扱われる。
+	prepareTimings map[string]any
 }
 
 func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
@@ -77,6 +79,13 @@ func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawM
 			return h.releaseLeaseReply, nil
 		}
 		return map[string]any{"released": true, "discarded": false}, nil
+	case "PrepareTimings":
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.prepareTimings != nil {
+			return h.prepareTimings, nil
+		}
+		return map[string]any{"measurements": []any{}}, nil
 	default:
 		return map[string]bool{"ok": true}, nil
 	}

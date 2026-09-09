@@ -375,3 +375,37 @@ func (p *Preparer) logCOWStats(target string, stats *cowStats) {
 	}
 	p.Log.Info("worktree CoW compaction", append([]any{"target", target}, stats.logArgs()...)...)
 }
+
+// recordCOWPhases は共有の段階別集計を準備の区間内訳へ移す。
+// worker 間の合計なので `cow` 区間の実時間より大きくなり得る。件数は `cow.entries` などの区間名で持つ。
+func (s *cowStats) recordCOWPhases(timings *PhaseTimings) {
+	if timings == nil {
+		return
+	}
+	for _, counter := range []struct {
+		name  string
+		value int64
+	}{
+		{"cow.entries", s.entries.Load()},
+		{"cow.candidates", s.candidates.Load()},
+		{"cow.shared", s.shared.Load()},
+		{"cow.skipped_size", s.skippedSize.Load()},
+	} {
+		timings.Add(counter.name, int(counter.value), 0)
+	}
+	for _, stage := range []struct {
+		name  string
+		stage *cowStage
+	}{
+		{"cow.open", &s.open},
+		{"cow.compare", &s.compare},
+		{"cow.clone", &s.clone},
+		{"cow.metadata", &s.metadata},
+		{"cow.swap", &s.swap},
+		{"cow.verify", &s.verify},
+		{"cow.unlink", &s.unlink},
+		{"cow.proof", &s.proof},
+	} {
+		timings.Add(stage.name, int(stage.stage.count.Load()), time.Duration(stage.stage.nanos.Load()))
+	}
+}

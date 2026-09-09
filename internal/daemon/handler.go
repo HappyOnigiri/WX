@@ -218,6 +218,23 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return nil, err
 		}
 		return h.Manager.RetryStandby(ctx, p.Path)
+	case "RetireStandby":
+		var p struct {
+			Path string `json:"path"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return h.Manager.RetireStandby(ctx, p.Path)
+	case "PrepareTimings":
+		var p struct {
+			SlotID    string `json:"slot_id"`
+			SessionID string `json:"session_id"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return map[string]any{"measurements": h.Manager.PrepareMeasurements(p.SlotID, p.SessionID)}, nil
 	default:
 		return nil, errors.New("unknown RPC method")
 	}
