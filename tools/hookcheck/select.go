@@ -289,7 +289,8 @@ func isMigrationPath(path string) bool {
 }
 
 func isMarkdownPath(path string) bool {
-	if strings.HasPrefix(path, ".markdownlint") || strings.HasPrefix(path, "tools/markdownlint/") {
+	if strings.HasPrefix(path, ".markdownlint") || strings.HasPrefix(path, "tools/markdownlint/") ||
+		strings.HasPrefix(path, "tools/checkdoclinks/") {
 		return true
 	}
 	return strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".markdown")

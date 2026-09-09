@@ -130,6 +130,17 @@ func TestSelectChecksReportsUnknownFiles(t *testing.T) {
 	}
 }
 
+func TestSelectChecksRunsDocsForCustomMarkdownRules(t *testing.T) {
+	t.Parallel()
+	selected, err := selectChecks(t.TempDir(), []changedFile{{status: "M", path: "tools/checkdoclinks/wx014.mjs"}})
+	if err != nil {
+		t.Fatalf("selectChecks: %v", err)
+	}
+	if selected.checks["docs-check"] == nil {
+		t.Fatalf("checks=%#v", selected.checks)
+	}
+}
+
 func TestCleanEnvironmentRemovesRepositoryGitVariables(t *testing.T) {
 	t.Setenv("GIT_DIR", "/wrong/repository")
 	t.Setenv("GIT_INDEX_FILE", "/wrong/index")
