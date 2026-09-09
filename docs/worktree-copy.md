@@ -2,25 +2,53 @@
 
 `storage.copy_mode`の値・既定値・fallbackは`wx config --help`を参照する。
 
+共有には配置と置換の二方式がある。
+新規準備は配置方式で、共有できるtracked fileをcheckoutせずmainからcloneして置く。
+復元とHot StandbyのUPDATEは置換方式で、checkout済みのファイルを同内容のcloneと入れ替える。
+どちらも16KiB未満のファイルと、main側indexのblob OIDが宛先indexと異なるpathは走査の前に共有対象外とする。
+小さいファイルはブロック共有で減る容量より判定の定数費用が勝ち、OIDが違うpathは内容まで一致することが稀だからである。
+`cow`は共有対象のclone失敗をエラーにする指定であり、全ファイルの共有や削減容量を保証する指定ではない。
+
+## 配置方式（新規準備）
+
+`internal/workspace/cow_place.go`が、残りのcheckoutより前に候補をcloneし、置けたpathをcheckoutの対象から外す。
+checkoutしてから同内容へ差し替えるのに比べ、同じbytesの書き出しと読み比べが1往復ぶん要らない。
+候補はmain側の実体が16KiB以上の通常ファイルであるpathで、OIDの一致は共有の根拠ではなく候補を絞る事前skipにすぎない。
+
+内容が要求OIDと一致するかはcloneの直後にGitのtracked検査へ判定させ、一致しないpathだけを`checkout-index --force`でやり直す。
+したがってmainがdirtyなpathやclone中にmainが変わったpathは通常checkoutへ落ちるだけで、準備は成功し共有されないpathが増える。
+やり直しても一致しないpathが残る回だけ準備を失敗させる。
+この検査はcloneしたファイルがindexにstat情報を持たないために内容を実際に読むので、置換方式が貸出前に払っていたindexのrefreshを兼ねる。
+
+走査はpath順に連続したrunの塊へ分け、塊ごとにdirectory descriptorを共通接頭辞のぶん持ち越す。
+entryごとにrootから全成分をたどると、深さに比例したopenatがdirectory数だけ繰り返される。
+成分は必ず1つずつ`O_NOFOLLOW`で開くため、走査中にsymlinkを差し込まれてもpinした外へは出ない。
+下限を超えるleafが1つも無いdirectoryでは宛先を作らず、後段のcheckoutに任せる。
+所有権証明はSQLの照会・worktree identityの検査とも、塊の前後と一定件数ごとに行う。
+配置方式は既存のファイルを消さないので、`.wx-cow-*`の一時ファイルを作らない。
+
+## 置換方式（復元・Hot StandbyのUPDATE）
+
 対象はmain worktreeの同じpathにある通常ファイルで、cloneしたbytesと宛先の最終bytesが一致するものだけである。
 mainとcommitが異なっていても同内容のファイルは共有でき、dirtyなmainの変更は宛先へ持ち込まない。
 新規・内容不一致・空ファイル・symlink・submodule・複数hard linkを持つ宛先は通常方式のまま残す。
-16KiB未満のファイルと、main側indexのblob OIDが宛先indexと異なるpathも走査の前に共有対象外とする。
-小さいファイルはブロック共有で減る容量より判定の定数費用が勝ち、OIDが違うpathは内容まで一致することが稀だからである。
 OIDの一致は共有の根拠には使わない（mainがdirtyなら内容は違う）。逆に不一致でも内容が一致する回の共有は諦める。
 mainのtree形状が異なる場合や、mainがこの処理中に変化した場合も、そのファイルだけを共有対象外として残りの処理を続ける。
 所有者・mode・flags・ACL・xattrが一致しないものも共有対象外とする。
-`cow`は共有対象のclone失敗をエラーにする指定であり、全ファイルの共有や削減容量を保証する指定ではない。
 
-`internal/workspace/cow.go`が準備・復元の完了前に処理し、Gitのfilter、checkout hook、prepare commandによる結果を保持する。
+`internal/workspace/cow.go`が復元の完了前に処理し、Gitのfilter、checkout hook、prepare commandによる結果を保持する。
 indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変えないため、復元した区別も保たれる。
 宛先の日時はFD経由で復元し、元ファイルとcloneをatomic swapしてから元inodeを検証して削除する。
 走査は同一ディレクトリの連続したentryをrunとしてまとめ、runをバッチにして並列に処理する。
-所有権証明のうちSQLの照会はバッチ単位、worktree identityの検査は置換1件ごとに行う。
+所有権証明はSQLの照会・worktree identityの検査ともバッチの前後で行う。
+宛先への書込みはpin済みdescriptor経由なので、バッチの途中でslotのディレクトリが差し替わっても別のinodeへは書かない。
+共有下限の判定は宛先のlstatだけで行い、下限未満のpathでは両側を開かない。
 バッチが失敗した回は着手済みのバッチを完走させてから止めるため、共有できたファイルの集合は回ごとに変わる。
 所有権不明は`auto`でもfallbackせずQUARANTINEDとして実体を残す。
 中断して残った未追跡の`.wx-cow-*`も自動削除せず隔離するため、この名前は予約する。
 この検査は無視されたtreeを走査しないので、`.wx-cow-*`をgitignoreで無視すると残骸を検出できなくなる。
+
+## 共通
 
 Darwinでは`Fclonefileat`を使い、Linuxでは`auto`が通常方式、`cow`がエラーになる。
 clone元と宛先は同じ対応volumeにある必要があり、通常checkout1個分の一時容量は必要である。
@@ -55,9 +83,13 @@ UPDATEは現行ruleとcopy元から作る新計画を旧履歴と比較し、追
 通常準備は全リポジトリのGit登録・先行配置、残りの配置の二巡で行う。
 `worktree add --detach --no-checkout`で登録し、要求OIDのindexを構築して`checkout-index`へのNUL区切りパス入力で分割展開する。
 tracked fileは元worktreeの未コミット内容を取り込まず、Gitのfilter・属性・実行権限・symlinkの形を保持する。
-checkoutの属性は要求OIDから読み、先行includeの未追跡.gitattributesによって後段のfilterが変わることを防ぐ。
-post-checkoutは全tracked fileの展開後、残りのinclude/link・prepare commandより前に一度だけ実行する。
-CoWと最終検証は従来どおり最後に行う。
+先行配置した未追跡ファイルに`.gitattributes`がある回だけ、checkoutの属性を要求OIDから読み、後段のfilterが変わることを防ぐ。
+無い回に要求OIDから読み直さないのは、worktree上の`.gitattributes`が既に要求OIDの内容と一致し、treeからの属性再読込が大きなリポジトリではcheckout全体を数秒延ばすためである。
+`.worktreelink`のlinkはソースリポジトリのignore対象に限るためtracked fileの祖先にならず、配下の`.gitattributes`は参照されないので数えない。
+残りの展開ではGitのparallel checkoutを使い、並列度はリポジトリ設定に依らずwxが毎回指定する。
+残りの展開は、共有できるtracked fileのclone、残りのcheckout、内容の照合の順で行う。
+post-checkoutは全tracked fileの配置後、残りのinclude/link・prepare commandより前に一度だけ実行する。
+最終検証は従来どおり最後に行う。
 
 先行候補は`internal/workspace/includes.go`の`defaultEarlyPaths`に集約する。
 既定include名、トップレベルのAGENTS.md・CLAUDE.md・GEMINI.md、各エージェントの設定ディレクトリとGitHubの指示・agentディレクトリが対象になる。
@@ -75,8 +107,9 @@ readiness設定の変更だけでは完成済みREADY slotの再利用を無効�
 
 ## 変更の入口と代表テスト
 
-共有対象の判定と差し替えは[`internal/workspace/cow.go`](../internal/workspace/cow.go)が入口で、clonefileの呼び出しは[`cow_darwin.go`](../internal/workspace/cow_darwin.go)が持つ。
-indexの解析と事前skipは[`cow_index.go`](../internal/workspace/cow_index.go)、run分割・並列実行・エラー集約は[`cow_share.go`](../internal/workspace/cow_share.go)にある。
+新規準備の配置は[`internal/workspace/cow_place.go`](../internal/workspace/cow_place.go)が入口で、共有対象の判定と差し替えは[`cow.go`](../internal/workspace/cow.go)が持つ。
+clonefileの呼び出しは[`cow_darwin.go`](../internal/workspace/cow_darwin.go)にある。
+indexの解析と事前skipは[`cow_index.go`](../internal/workspace/cow_index.go)、run分割・並列実行・エラー集約は[`cow_share.go`](../internal/workspace/cow_share.go)が持つ。
 代表テストは[`cow_darwin_test.go`](../internal/workspace/cow_darwin_test.go)で、macOSであれば`make test-darwin`に限らず`make ci`でも実行される（前提は後述の[部分検証](#部分検証)）。
 
 ## 部分検証

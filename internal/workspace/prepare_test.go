@@ -507,6 +507,10 @@ func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
 	if err := os.MkdirAll(repository, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// include の tracked 判定は repository 全体の ls-files を一度引くため、走査前に Git repository が要る。
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
 	if err := os.MkdirAll(outside, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -538,9 +542,6 @@ func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
 		t.Fatalf("fingerprint through symlink ancestor succeeded: %v", err)
 	}
 
-	gitCommand(t, repository, "init", "-b", "main")
-	gitCommand(t, repository, "config", "user.name", "test")
-	gitCommand(t, repository, "config", "user.email", "test@example.com")
 	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("source\ndest/child\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -50,13 +50,17 @@ func (p *Preparer) RepositoryPlacements(ctx context.Context, repo discovery.Repo
 			copyRoots = append(copyRoots, rel)
 		}
 	}
+	tracked, err := p.trackedPathsAt(ctx, repo, oid)
+	if err != nil {
+		return nil, err
+	}
 	placements := make(map[string]state.Placement)
 	for _, root := range copyRoots {
 		clean, err := safeRelative(root)
 		if err != nil {
 			return nil, err
 		}
-		if err := p.planRepositoryCopy(ctx, repo, oid, sourceRoot, clean, placements); err != nil {
+		if err := p.planRepositoryCopy(repo, tracked, sourceRoot, clean, placements); err != nil {
 			return nil, err
 		}
 	}
@@ -75,11 +79,7 @@ func (p *Preparer) RepositoryPlacements(ctx context.Context, repo discovery.Repo
 		if !link.present {
 			continue
 		}
-		tracked, err := p.pathTrackedAt(ctx, repo, oid, link.relative)
-		if err != nil {
-			return nil, err
-		}
-		if tracked {
+		if tracked[filepath.Clean(link.relative)] {
 			continue
 		}
 		ignored, err := checkIgnored(ctx, p.Git, mainPath, link.relative)
@@ -94,7 +94,7 @@ func (p *Preparer) RepositoryPlacements(ctx context.Context, repo discovery.Repo
 	return sortedPlacements(placements), verifyPinnedRepositoryPath(sourceRoot, mainPath)
 }
 
-func (p *Preparer) planRepositoryCopy(ctx context.Context, repo discovery.Repository, oid string, sourceRoot *os.Root, relative string, out map[string]state.Placement) error {
+func (p *Preparer) planRepositoryCopy(repo discovery.Repository, tracked map[string]bool, sourceRoot *os.Root, relative string, out map[string]state.Placement) error {
 	info, err := sourceRoot.Lstat(relative)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -120,7 +120,7 @@ func (p *Preparer) planRepositoryCopy(ctx context.Context, repo discovery.Reposi
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			if err := p.planRepositoryCopy(ctx, repo, oid, sourceRoot, filepath.Join(relative, name), out); err != nil {
+			if err := p.planRepositoryCopy(repo, tracked, sourceRoot, filepath.Join(relative, name), out); err != nil {
 				return err
 			}
 		}
@@ -129,9 +129,8 @@ func (p *Preparer) planRepositoryCopy(ctx context.Context, repo discovery.Reposi
 	if !info.Mode().IsRegular() {
 		return nil
 	}
-	tracked, err := p.pathTrackedAt(ctx, repo, oid, relative)
-	if err != nil || tracked {
-		return err
+	if tracked[filepath.Clean(relative)] {
+		return nil
 	}
 	hash, err := hashRootFile(sourceRoot, relative)
 	if err != nil {
@@ -141,17 +140,21 @@ func (p *Preparer) planRepositoryCopy(ctx context.Context, repo discovery.Reposi
 	return nil
 }
 
-func (p *Preparer) pathTrackedAt(ctx context.Context, repo discovery.Repository, oid, relative string) (bool, error) {
-	result, err := p.Git.Run(ctx, string(repo.MainPath), "ls-tree", "-r", "--name-only", "-z", oid, "--", relative)
+// trackedPathsAt は要求 OID の tree にある path 全体を一度の ls-tree で読む。
+// 候補1件ごとに Git を起動すると、大きな repository では起動費用が候補数だけ積み上がる。
+func (p *Preparer) trackedPathsAt(ctx context.Context, repo discovery.Repository, oid string) (map[string]bool, error) {
+	result, err := p.Git.Run(ctx, string(repo.MainPath), "ls-tree", "-r", "--name-only", "-z", oid)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
+	tracked := map[string]bool{}
 	for _, path := range strings.Split(result.Stdout, "\x00") {
-		if filepath.Clean(path) == filepath.Clean(relative) {
-			return true, nil
+		if path == "" {
+			continue
 		}
+		tracked[filepath.Clean(path)] = true
 	}
-	return false, nil
+	return tracked, nil
 }
 
 func RootPlacements(source string, rules config.Workspace) ([]state.Placement, error) {

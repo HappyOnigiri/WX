@@ -14,7 +14,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
 func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error {
@@ -149,6 +148,10 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 	if err != nil {
 		return err
 	}
+	tracked, err := p.trackedIncludePaths(repo)
+	if err != nil {
+		return err
+	}
 	destinationRoot, err := domain.OpenRootAt(owner, relativeTarget)
 	if err != nil {
 		return fmt.Errorf("open include destination: %w", err)
@@ -188,7 +191,7 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 			if sourceErr != nil {
 				return sourceErr
 			}
-			copyErr := p.copyIncludePath(repo, sourceRoot, rel, destinationRoot, rel)
+			copyErr := p.copyIncludePath(tracked, sourceRoot, rel, destinationRoot, rel)
 			_ = sourceRoot.Close()
 			if copyErr != nil {
 				return copyErr
@@ -201,7 +204,7 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 // copyIncludePath は directory を再帰的に列挙し、tracked file を除いて materialize する。
 // Git の終了コード 1 だけを未追跡と扱い、それ以外の失敗は include 処理へ返す。
 // symlink の一致は辿らずに skip する。worktree の外を指す実体を持ち込まないためで、1 件の symlink で include 全体を失敗させない。
-func (p *Preparer) copyIncludePath(repo discovery.Repository, sourceRoot *os.Root, source string, destinationRoot *os.Root, destination string) error {
+func (p *Preparer) copyIncludePath(tracked map[string]bool, sourceRoot *os.Root, source string, destinationRoot *os.Root, destination string) error {
 	info, err := sourceRoot.Lstat(source)
 	if err != nil {
 		return err
@@ -234,23 +237,19 @@ func (p *Preparer) copyIncludePath(repo discovery.Repository, sourceRoot *os.Roo
 		for _, name := range names {
 			child := filepath.Join(source, name)
 			childDestination := filepath.Join(destination, name)
-			if err := p.copyIncludePath(repo, sourceRoot, child, destinationRoot, childDestination); err != nil {
+			if err := p.copyIncludePath(tracked, sourceRoot, child, destinationRoot, childDestination); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
-	tracked, err := p.includePathTracked(repo, source)
-	if err != nil {
-		return err
-	}
-	if tracked {
+	if tracked[filepath.Clean(source)] {
 		return nil
 	}
 	if _, err := domain.PhysicalPathInfo(sourceRoot, source); err != nil {
 		if errors.Is(err, domain.ErrSymlinkPath) {
-			p.logSkip("include source is a symlink", "repository", string(repo.MainPath), "path", source)
+			p.logSkip("include source is a symlink", "path", source)
 			return nil
 		}
 		return err
@@ -258,17 +257,19 @@ func (p *Preparer) copyIncludePath(repo discovery.Repository, sourceRoot *os.Roo
 	return copyPathFromOwnedRoot(sourceRoot, source, destinationRoot, destination)
 }
 
-func (p *Preparer) includePathTracked(repo discovery.Repository, relative string) (bool, error) {
-	result, err := p.Git.Run(context.Background(), string(repo.MainPath), "ls-files", "--error-unmatch", "--", relative)
-	if err == nil {
-		if strings.TrimSpace(result.Stdout) == "" {
-			return false, fmt.Errorf("Git tracked check returned no result for %s", relative)
+// trackedIncludePaths は main の tracked path 全体を一度の ls-files で読み、include 候補の判定を map 参照にする。
+// 候補1件ごとに Git を起動すると、大きな repository では index 読み込みの起動費用が候補数だけ積み上がる。
+func (p *Preparer) trackedIncludePaths(repo discovery.Repository) (map[string]bool, error) {
+	listed, err := p.Git.Run(context.Background(), string(repo.MainPath), "ls-files", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("list tracked includes: %w", err)
+	}
+	tracked := map[string]bool{}
+	for _, entry := range strings.Split(listed.Stdout, "\x00") {
+		if entry == "" {
+			continue
 		}
-		return true, nil
+		tracked[filepath.Clean(entry)] = true
 	}
-	var gitErr *gitx.Error
-	if errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 {
-		return false, nil
-	}
-	return false, fmt.Errorf("check tracked include %s: %w", relative, err)
+	return tracked, nil
 }
