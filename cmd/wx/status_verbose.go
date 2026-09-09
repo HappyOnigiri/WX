@@ -342,9 +342,15 @@ func (r *verboseStatusRenderer) renderQuarantine() {
 	})
 	rows := make([][]string, 0, len(sorted))
 	for _, item := range sorted {
-		rows = append(rows, []string{statusValue(item, "id"), statusValue(item, "kind"), statusQuarantineReason(item), statusHomeValue(item, "path")})
+		// quarantined_artifacts 由来の行は slot ではないので id が空である。列には "(empty)" ではなく欠測と同じ記号を出す。
+		id, _ := statusRawString(item, "id")
+		kind, _ := statusRawString(item, "kind")
+		rows = append(rows, []string{statusDash(id), statusDash(kind), statusQuarantineReason(item), statusHomeValue(item, "path")})
 	}
 	r.lineTable([]string{"ID", "KIND", "REASON", "PATH"}, rows, present)
+	for _, notice := range statusQuarantineCleanupNotices(sorted) {
+		r.line("  " + notice)
+	}
 	for index, item := range items {
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("quarantine[%d]", index), item, map[string]bool{"id": true, "path": true, "kind": true, "failure_code": true})
 	}

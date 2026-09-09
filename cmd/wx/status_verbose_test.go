@@ -217,6 +217,30 @@ func TestPrintVerboseStatusListsQuarantineAsATable(t *testing.T) {
 	if !strings.Contains(got, "quarantine[0].future: kept") {
 		t.Fatalf("unknown quarantine key was dropped:\n%s", got)
 	}
+	// slot は wx clear で消せるので、表の下に削除手段を案内する。
+	if !strings.Contains(got, "slot: wx clear deletes quarantined slots") {
+		t.Fatalf("quarantine table did not point at wx clear:\n%s", got)
+	}
+	if strings.Contains(got, "wx prune") {
+		t.Fatalf("quarantine table pointed at wx prune without unknown_refs rows:\n%s", got)
+	}
+
+	// unknown_refs は wx prune で消せるが、削除コマンドが無い mismatched_refs には案内を出さない。
+	output.Reset()
+	printStatusDisplay(&output, map[string]any{
+		"schema_version": 19, "worktree_roots": []map[string]any{},
+		"quarantine": []map[string]any{
+			{"id": "", "path": "repo:refs/wx/recovery/a/b/head", "kind": "unknown_refs", "failure_code": "recovery ref is not explained by the current database"},
+			{"id": "", "path": "repo:refs/wx/recovery/a/b/index", "kind": "mismatched_refs", "failure_code": "recovery ref points at an object the current database does not expect"},
+		},
+	}, true)
+	got = output.String()
+	if !strings.Contains(got, "unknown_refs: wx prune deletes the recovery refs") {
+		t.Fatalf("quarantine table did not point at wx prune:\n%s", got)
+	}
+	if strings.Contains(got, "mismatched_refs: wx") {
+		t.Fatalf("quarantine table invented a command for mismatched_refs:\n%s", got)
+	}
 
 	output.Reset()
 	printStatusDisplay(&output, map[string]any{"schema_version": 19, "worktree_roots": []map[string]any{}, "quarantine": []map[string]any{}}, true)
