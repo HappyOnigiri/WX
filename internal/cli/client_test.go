@@ -18,6 +18,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 type launcherHandler struct {
@@ -107,7 +108,7 @@ func TestRunAgentFailsClosedWhenAgentRegistrationFails(t *testing.T) {
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	waitForPath(t, socket)
+	waitForSocket(t, socket, done)
 	agentScript := filepath.Join(temp, "agent")
 	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nexec </dev/null >/dev/null 2>&1\nwhile kill -0 \"$1\" 2>/dev/null; do sleep 0.05; done\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -147,7 +148,7 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	waitForPath(t, socket)
+	waitForSocket(t, socket, done)
 	agentScript := filepath.Join(temp, "agent")
 	pidFile := filepath.Join(temp, "agent.pid")
 	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nexec </dev/null >/dev/null 2>&1\nprintf '%s' $$ > \"$1\"\nwhile kill -0 \"$2\" 2>/dev/null; do sleep 0.05; done\n"), 0o700); err != nil {
@@ -193,29 +194,10 @@ func TestSupervisorKillLeavesRegisteredAgentProtected(t *testing.T) {
 	}
 }
 
-func waitForPath(t *testing.T, path string) {
+// waitForSocket は socket が接続を受け付けるまで待ち、先に Serve が終わったらその原因を報告する。
+func waitForSocket(t *testing.T, socket string, serve chan error) {
 	t.Helper()
-	waitForPathWithin(t, path, 3*time.Second)
-}
-
-// waitForSocket は socket の出現を待ち、先に Serve が失敗したらその原因をそのまま報告する。
-func waitForSocket(t *testing.T, socket string, serve <-chan error) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		if _, err := os.Lstat(socket); err == nil {
-			return
-		}
-		select {
-		case err := <-serve:
-			t.Fatalf("rpc server stopped before the socket appeared: %v", err)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("socket %q did not appear", socket)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testsupport.WaitForSocket(t, socket, serve)
 }
 
 func waitForPathWithin(t *testing.T, path string, timeout time.Duration) {
@@ -425,7 +407,7 @@ func TestRunAgentKeepsDescriptorBoundCWDAcrossRootReplacement(t *testing.T) {
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	waitForPath(t, socket)
+	waitForSocket(t, socket, done)
 	agent := filepath.Join(base, "agent")
 	result := filepath.Join(base, "agent-pwd")
 	if err := os.WriteFile(agent, []byte("#!/bin/sh\npwd -P > \"$1\"\n"), 0o700); err != nil {
