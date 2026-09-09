@@ -174,6 +174,24 @@ func TestCOWWorkerCountStaysWithinBounds(t *testing.T) {
 	}
 }
 
+// 証明は clone に成功した対象だけに対して呼ばれるため、clone できない platform では直接検査する。
+// 失敗した証明も隔離判断の入力になるので、成否に関わらず結果を書き換えず計測へ残すことを確かめる。
+func TestCOWProofIsPassedThroughAndMeasured(t *testing.T) {
+	failure := errors.New("proof failed")
+	stats := &cowStats{}
+	sharer := &cowSharer{proof: func() error { return failure }, stats: stats}
+	if err := sharer.verifyProof(); !errors.Is(err, failure) {
+		t.Fatalf("failed proof err=%v", err)
+	}
+	sharer.proof = func() error { return nil }
+	if err := sharer.verifyProof(); err != nil {
+		t.Fatalf("successful proof err=%v", err)
+	}
+	if got := stats.proof.count.Load(); got != 2 {
+		t.Fatalf("proof count=%d", got)
+	}
+}
+
 func TestCOWStatsAreLoggedWhenALoggerExists(t *testing.T) {
 	stats := &cowStats{}
 	stats.entries.Store(7)
