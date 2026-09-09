@@ -3,7 +3,6 @@ package workspace
 import (
 	"encoding/binary"
 	"os"
-	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -24,12 +23,4 @@ func physicalOffset(file *os.File, offset int64) (int64, error) {
 		return 0, errno
 	}
 	return int64(binary.NativeEndian.Uint64(buffer[12:20])), nil
-}
-
-func fileIdentityOf(info os.FileInfo) (fileIdentity, bool) {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fileIdentity{}, false
-	}
-	return fileIdentity{Dev: uint64(stat.Dev), Ino: stat.Ino, CtimeNanos: stat.Ctimespec.Nano()}, true
 }
