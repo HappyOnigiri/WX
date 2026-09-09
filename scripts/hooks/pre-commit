@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+
+if [ "$branch" = "main" ]; then
+  echo "Error: main ブランチへの直接コミットは禁止されています。作業ブランチを作成してコミットしてください。" >&2
+  exit 1
+fi
+
+root=$(git rev-parse --show-toplevel)
+# No fixed time budget: hook-pre-commit runs the full `make ci`, so a hard
+# timeout here would fail ordinary commits as the test suite grows.
+# It caches the last success by working-tree hash; FORCE_CI=1 re-runs it.
+exec make -C "$root" hook-pre-commit
