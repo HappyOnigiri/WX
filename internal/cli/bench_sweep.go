@@ -135,7 +135,7 @@ func printBenchConfigs(summaries []BenchConfigSummary) {
 	if len(summaries) == 0 || (len(summaries) == 1 && summaries[0].Config.Label == benchCurrentConfigLabel) {
 		return
 	}
-	fmt.Println("comparison by configuration (min/median/max, usage is the median of the measured runs)")
+	fmt.Println(benchConfigsHeadline(summaries))
 	fmt.Printf("  %-28s %5s %5s  %-24s %-24s %12s %12s\n", "config", "runs", "fail", "EARLY READY", "FULL READY", "exclusive", "shared")
 	for _, summary := range summaries {
 		fmt.Printf("  %-28s %5d %5d  %-24s %-24s %12s %12s\n",
@@ -145,10 +145,25 @@ func printBenchConfigs(summaries []BenchConfigSummary) {
 	}
 }
 
+// benchConfigsHeadline は表の読み方を示す見出しを作る。
+// どの設定も1回しか測れていないときは分布を畳んでいないので、min/median/max とは名乗らない。
+func benchConfigsHeadline(summaries []BenchConfigSummary) string {
+	for _, summary := range summaries {
+		if summary.Runs > 1 {
+			return "comparison by configuration (min/median/max, usage is the median of the measured runs)"
+		}
+	}
+	return "comparison by configuration (usage is the median of the measured runs)"
+}
+
 // formatBenchStat は分布を1列へ畳む。成功した回がない設定は時間を名乗らず `-` を出す。
+// 成功が1回だけの設定は同じ値を3つ並べても分布に見えるだけなので、実測値をそのまま1つ出す。
 func formatBenchStat(runs int, stat BenchStat) string {
 	if runs == 0 {
 		return "-"
+	}
+	if runs == 1 {
+		return formatBenchDuration(stat.MedianMS)
 	}
 	return strings.Join([]string{
 		formatBenchDuration(stat.MinMS), formatBenchDuration(stat.MedianMS), formatBenchDuration(stat.MaxMS),

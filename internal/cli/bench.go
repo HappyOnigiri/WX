@@ -351,6 +351,7 @@ func printBenchRun(index, runs int, run BenchRun) {
 }
 
 // printBenchSummary は複数 run の中央値と最小・最大を出す。1回の実測はキャッシュ状態に強く左右されるためである。
+// 失敗が続いて成功が1回だけになった場合は、同じ値を3つ並べず実測値だけを出す。
 func printBenchSummary(runs []BenchRun) {
 	early, full := []int64{}, []int64{}
 	for _, run := range runs {
@@ -364,8 +365,16 @@ func printBenchSummary(runs []BenchRun) {
 		return
 	}
 	fmt.Printf("summary of %d successful run(s)\n", len(full))
-	fmt.Printf("  EARLY READY   min %s  median %s  max %s\n", formatBenchDuration(minOf(early)), formatBenchDuration(medianOf(early)), formatBenchDuration(maxOf(early)))
-	fmt.Printf("  FULL READY    min %s  median %s  max %s\n", formatBenchDuration(minOf(full)), formatBenchDuration(medianOf(full)), formatBenchDuration(maxOf(full)))
+	fmt.Printf("  EARLY READY   %s\n", formatBenchDistribution(early))
+	fmt.Printf("  FULL READY    %s\n", formatBenchDistribution(full))
+}
+
+// formatBenchDistribution は分布を1行で書く。成功が1回だけなら分布ではないので、実測値をそのまま出す。
+func formatBenchDistribution(values []int64) string {
+	if len(values) == 1 {
+		return formatBenchDuration(values[0])
+	}
+	return fmt.Sprintf("min %s  median %s  max %s", formatBenchDuration(minOf(values)), formatBenchDuration(medianOf(values)), formatBenchDuration(maxOf(values)))
 }
 
 func formatBenchDuration(ms int64) string {

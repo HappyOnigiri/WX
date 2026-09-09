@@ -50,7 +50,7 @@ func TestSummarizeBenchConfigsGroupsRunsByConfiguration(t *testing.T) {
 	}
 }
 
-// --runs が 1 のときも最小・中央値・最大を出し、3つが同値になる。
+// --runs が 1 のときも集計は最小・中央値・最大を持ち、3つが同値になる（表では1つに畳む）。
 func TestSummarizeBenchConfigsRepeatsTheSingleRunAcrossMinMedianMax(t *testing.T) {
 	summaries := summarizeBenchConfigs([]BenchRun{benchSweepRun("cow_min_size_kib=64", 3300, 28800, 951<<20, 340<<20, true)})
 	if len(summaries) != 1 {
@@ -138,5 +138,38 @@ func TestBenchSweepConfigsCoversTheBaselineAndEachLowerBound(t *testing.T) {
 	}
 	if sweep[0].COWMinSizeKiB != nil {
 		t.Fatalf("baseline=%+v, want no lower bound on the row that disables CoW sharing", sweep[0])
+	}
+}
+
+// 成功が1回だけの設定は、同じ値を3つ並べず実測値を1つ出す。見出しも分布を名乗らない。
+func TestPrintBenchConfigsPrintsTheSingleRunAsOneValue(t *testing.T) {
+	summaries := summarizeBenchConfigs([]BenchRun{
+		benchSweepRun("cow_min_size_kib=64", 3300, 28800, 951<<20, 340<<20, true),
+		benchSweepRun("copy_mode=copy", 3400, 15200, 1291<<20, 0, true),
+	})
+	stdout := captureLeaseStdout(t, func() { printBenchConfigs(summaries) })
+	if strings.Contains(stdout, "28.800s/") || strings.Contains(stdout, "min/median/max") {
+		t.Fatalf("stdout=%q, want the single run reported as one value", stdout)
+	}
+	for _, required := range []string{"28.800s", "15.200s"} {
+		if !strings.Contains(stdout, required) {
+			t.Fatalf("stdout=%q missing %s", stdout, required)
+		}
+	}
+}
+
+// 同じ設定を繰り返した場合は分布のまま出し、見出しも読み方を示す。
+func TestPrintBenchConfigsKeepsTheDistributionForRepeatedRuns(t *testing.T) {
+	summaries := summarizeBenchConfigs([]BenchRun{
+		benchSweepRun("cow_min_size_kib=64", 3300, 28800, 951<<20, 340<<20, true),
+		benchSweepRun("cow_min_size_kib=64", 3100, 27700, 951<<20, 340<<20, true),
+		benchSweepRun("cow_min_size_kib=64", 3500, 29500, 951<<20, 340<<20, true),
+		benchSweepRun("copy_mode=copy", 3400, 15200, 1291<<20, 0, true),
+	})
+	stdout := captureLeaseStdout(t, func() { printBenchConfigs(summaries) })
+	for _, required := range []string{"min/median/max", "27.700s/28.800s/29.500s", "15.200s"} {
+		if !strings.Contains(stdout, required) {
+			t.Fatalf("stdout=%q missing %s", stdout, required)
+		}
 	}
 }

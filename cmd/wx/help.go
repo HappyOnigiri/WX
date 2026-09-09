@@ -327,7 +327,9 @@ that phase and can exceed the wall-clock time of the phase above them.
 
 With --runs, wx waits for the saving, removal, and replenishment jobs of the
 previous run to finish before measuring the next one, and prints the minimum,
-median, and maximum at the end.
+median, and maximum at the end. A single successful run has no distribution to
+summarize, so its measured time is printed on its own, both in that summary and
+in the comparison table.
 
 --sweep measures the settings a search for the best CoW threshold usually
 compares: copy_mode=copy as the baseline without CoW sharing, then
