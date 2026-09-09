@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -277,6 +278,38 @@ func TestCopyModeConfigRoundTrip(t *testing.T) {
 		cfg.Storage.CopyMode = mode
 		if err := Validate(&cfg); err == nil {
 			t.Fatalf("invalid mode accepted: %q", mode)
+		}
+	}
+}
+
+// 共有下限は0が「下限なし」を意味するため、明示した0が既定値へ戻らないことまで確かめる。
+func TestCOWMinSizeConfigRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	got, err := Load()
+	if err != nil || got.Storage.COWMinSizeKiB != DefaultCOWMinSizeKiB || got.Storage.COWMinShareSize() != 16<<10 {
+		t.Fatalf("default=%d bytes=%d err=%v", got.Storage.COWMinSizeKiB, got.Storage.COWMinShareSize(), err)
+	}
+	for _, kib := range []int{0, 16, 64, MaxCOWMinSizeKiB} {
+		raw := Config{}
+		if err := SetField(&raw, "storage.cow_min_size_kib", strconv.Itoa(kib)); err != nil {
+			t.Fatal(err)
+		}
+		if err := Save(raw); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load()
+		if err != nil || got.Storage.COWMinSizeKiB != kib {
+			t.Fatalf("kib=%d got=%d err=%v", kib, got.Storage.COWMinSizeKiB, err)
+		}
+		if want := int64(kib) << 10; got.Storage.COWMinShareSize() != want {
+			t.Fatalf("kib=%d bytes=%d want=%d", kib, got.Storage.COWMinShareSize(), want)
+		}
+	}
+	for _, kib := range []int{-1, MaxCOWMinSizeKiB + 1} {
+		cfg := Defaults()
+		cfg.Storage.COWMinSizeKiB = kib
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("out-of-range minimum accepted: %d", kib)
 		}
 	}
 }

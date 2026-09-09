@@ -174,6 +174,10 @@ Copy mode (storage.copy_mode):
   auto  share identical checked-out files with APFS CoW; fall back to copies, but quarantine when ownership is unprovable (default)
   cow   fail preparation if CoW fails
   copy  keep normal Git checkout files
+storage.cow_min_size_kib sets the smallest file CoW shares, in KiB (default 16).
+Files below it keep their normal checkout copy; 0 shares every eligible file, and
+a larger value trades disk savings for less per-file work. Changing it stops
+reuse of READY standby worktrees prepared under the previous value.
 
 Readiness (readiness.mode):
   early  wait for Git registration and startup files, then launch with readiness hooks (default)
