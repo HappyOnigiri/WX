@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -16,6 +18,11 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
+
+// readyValidateMaxWorkers は READY 検証の並列度の上限である。
+// repository ごとに git を起動するため、discovery.max_entries が許す規模の workspace でも
+// 同時プロセス数が repository 数のまま膨らまないよう上限を置く。
+const readyValidateMaxWorkers = 10
 
 type Lease struct {
 	SessionID       string `json:"session_id"`
@@ -271,50 +278,92 @@ func (m *Manager) readyRepositoriesMatch(ctx context.Context, s state.Slot, reso
 	for _, r := range repos {
 		byID[r.RepositoryID] = r
 	}
+	// 安価な突き合わせだけを先に直列で済ませる。
+	// 「ソース側で base が進んだ」という最も普通の不一致を、repository 数ぶんの Git 起動を始める前に返すためである。
+	stored := make([]state.SlotRepository, len(resolved))
+	for i, r := range resolved {
+		found, ok := byID[string(r.Repository.ID)]
+		if !ok || (found.State != "READY" && found.State != "COLD") || found.BaseOID != r.OID {
+			return false, nil
+		}
+		stored[i] = found
+	}
 	preparer := m.newPreparer(m.Config(), s)
-	for _, r := range resolved {
-		stored, ok := byID[string(r.Repository.ID)]
-		if !ok || (stored.State != "READY" && stored.State != "COLD") || stored.BaseOID != r.OID {
+	results := make([]readyRepositoryResult, len(resolved))
+	var wait sync.WaitGroup
+	gate := make(chan struct{}, min(runtime.NumCPU(), readyValidateMaxWorkers))
+	for i := range resolved {
+		gate <- struct{}{}
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			defer func() { <-gate }()
+			matched, err := m.readyRepositoryMatches(ctx, s, preparer, resolved[i], stored[i], root, owner)
+			results[i] = readyRepositoryResult{matched: matched, err: err}
+		}()
+	}
+	wait.Wait()
+	// index 昇順で最初の非 OK を採り、直列版がその repository で返していた判定に揃える。
+	// 到着順に採ると、同じ破損に対して貸出のたびに違うエラーが返り、daemon log と client の再現性が失われる。
+	for _, result := range results {
+		if result.err != nil {
+			return false, result.err
+		}
+		if !result.matched {
 			return false, nil
 		}
-		fp, err := workspace.Fingerprint(s.Generation, r.OID, r.Repository, m.Config())
-		if err != nil {
-			return false, err
+	}
+	return true, nil
+}
+
+// readyRepositoryResult は repository 1 件の検証結果である。
+// 不一致（matched=false, err=nil）とエラーは呼び出し側で扱いが違うため畳まない。
+type readyRepositoryResult struct {
+	matched bool
+	err     error
+}
+
+// readyRepositoryMatches は repository 1 件が READY 候補として再利用できるかを検証する。
+// ファイル I/O と Git 起動を伴うため repository ごとに並列で呼ばれる。
+// owner と preparer は候補 slot 全体で共有し、この経路は読み取りだけで両者の状態を変えない。
+func (m *Manager) readyRepositoryMatches(ctx context.Context, s state.Slot, preparer *workspace.Preparer, r pool.Resolved, stored state.SlotRepository, root string, owner *os.Root) (bool, error) {
+	fp, err := workspace.Fingerprint(s.Generation, r.OID, r.Repository, m.Config())
+	if err != nil {
+		return false, err
+	}
+	if fp != stored.Fingerprint {
+		return false, nil
+	}
+	if stored.State == "COLD" {
+		unmaterialized, coldErr := coldWorktreeUnmaterialized(owner, root, stored.WorktreePath)
+		if coldErr != nil || !unmaterialized {
+			return false, coldErr
 		}
-		if fp != stored.Fingerprint {
-			return false, nil
-		}
-		if stored.State == "COLD" {
-			unmaterialized, coldErr := coldWorktreeUnmaterialized(owner, root, stored.WorktreePath)
-			if coldErr != nil || !unmaterialized {
-				return false, coldErr
-			}
-			continue
-		}
-		relative, ok := relativeWithinRoot(root, stored.WorktreePath)
-		if !ok {
-			return false, fmt.Errorf("%w: ready worktree path is outside wx root", state.ErrOwnership)
-		}
-		info, err := owner.Lstat(relative)
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		if err != nil {
-			return false, fmt.Errorf("%w: inspect ready worktree path: %w", state.ErrOwnership, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return false, nil
-		}
-		directory, _, openErr := domain.OpenDirectoryAt(owner, relative)
-		if openErr != nil {
-			return false, fmt.Errorf("%w: open ready worktree path: %w", state.ErrOwnership, openErr)
-		}
-		if closeErr := directory.Close(); closeErr != nil {
-			return false, fmt.Errorf("%w: close ready worktree path: %w", state.ErrOwnership, closeErr)
-		}
-		if err := preparer.ValidateReady(ctx, r.Repository, stored.WorktreePath, r.OID); err != nil {
-			return false, err
-		}
+		return true, nil
+	}
+	relative, ok := relativeWithinRoot(root, stored.WorktreePath)
+	if !ok {
+		return false, fmt.Errorf("%w: ready worktree path is outside wx root", state.ErrOwnership)
+	}
+	info, err := owner.Lstat(relative)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%w: inspect ready worktree path: %w", state.ErrOwnership, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false, nil
+	}
+	directory, _, openErr := domain.OpenDirectoryAt(owner, relative)
+	if openErr != nil {
+		return false, fmt.Errorf("%w: open ready worktree path: %w", state.ErrOwnership, openErr)
+	}
+	if closeErr := directory.Close(); closeErr != nil {
+		return false, fmt.Errorf("%w: close ready worktree path: %w", state.ErrOwnership, closeErr)
+	}
+	if err := preparer.ValidateReady(ctx, r.Repository, stored.WorktreePath, r.OID); err != nil {
+		return false, err
 	}
 	return true, nil
 }
