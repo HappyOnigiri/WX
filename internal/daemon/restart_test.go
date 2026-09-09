@@ -120,6 +120,28 @@ func waitForClaim(t *testing.T, m *Manager, k *signalLog, want bool) {
 	t.Fatalf("timed out waiting for claimed=%v; claimed=%v attempts=%d recorded calls=%d", want, claimed, attempts, k.count())
 }
 
+// waitForLifecycleAttempt は失敗した発行の後始末（attempts の加算と claim・再試行期限の更新）を待つ。
+// 件数の到達は record の時点なので、後始末を待たずに進むと claim が下りる前の runPendingLifecycle が
+// 何もせずに戻って次の発行が起きず、attempts が未加算のうちは未発行の claim を配送済みと読んでしまう。
+func waitForLifecycleAttempt(t *testing.T, m *Manager, k *signalLog, want int) {
+	t.Helper()
+	for deadline := time.Now().Add(lifecycleSignalBudget); time.Now().Before(deadline); {
+		m.mu.RLock()
+		attempts := m.lifecycleAttempts
+		m.mu.RUnlock()
+		if attempts >= want {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	m.mu.RLock()
+	attempts, claimed := m.lifecycleAttempts, m.lifecycleClaimed
+	m.mu.RUnlock()
+	t.Fatalf("timed out waiting for attempts=%d; attempts=%d claimed=%v recorded calls=%d", want, attempts, claimed, k.count())
+}
+
+// waitForLifecycleRetry は再試行の待機が明けるのを待つ。期限が未設定（zero）の間は
+// 後始末が済んでいないので、待機不要と読まずに待ち続ける。
 func waitForLifecycleRetry(t *testing.T, m *Manager) {
 	t.Helper()
 	deadline := time.Now().Add(lifecycleSignalBudget)
@@ -127,7 +149,7 @@ func waitForLifecycleRetry(t *testing.T, m *Manager) {
 		m.mu.RLock()
 		retryAt := m.lifecycleRetryAt
 		m.mu.RUnlock()
-		if lifecycleRetryReady(retryAt, time.Now()) {
+		if !retryAt.IsZero() && lifecycleRetryReady(retryAt, time.Now()) {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -430,6 +452,7 @@ func TestAnExhaustedRestartDoesNotParkALaterStop(t *testing.T) {
 	for attempt := 1; attempt <= maxLifecycleAttempts; attempt++ {
 		manager.runPendingLifecycle()
 		kickstarts.want(t, attempt)
+		waitForLifecycleAttempt(t, manager, kickstarts, attempt)
 		if attempt < maxLifecycleAttempts {
 			waitForLifecycleRetry(t, manager)
 		}
