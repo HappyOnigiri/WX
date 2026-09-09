@@ -19,7 +19,8 @@ import (
 
 // managerFixtureLogLimit は失敗時に出す Manager ログ末尾の上限バイト数。
 // 長時間走る統合テストのログ全量はテスト出力を埋めるため、末尾だけを残す。
-const managerFixtureLogLimit = 32 << 10
+// Debug も残すため、Info だけの頃より余裕を持たせる。
+const managerFixtureLogLimit = 128 << 10
 
 // managerFixtureDiagnosticsBudget は失敗時の診断取得に与える期限。
 // DB が閉じている・ロックされている場合でも、元の失敗の報告を待たせない。
@@ -102,10 +103,12 @@ func manualManagerFixture(t *testing.T, options ...managerFixtureOption) *manage
 }
 
 // runningManagerFixture は New と同じ経路で、復旧処理と worker・周期処理を起動した Manager を返す。
+// ログは Debug まで拾う。待機枠を hot と cold のどちらで作ったかのような判断根拠は Debug にしかなく、
+// 再現しない CI の失敗はそれがないと原因を確定できない。
 func runningManagerFixture(t *testing.T, options ...managerFixtureOption) *managerFixture {
 	t.Helper()
 	f := newManagerFixture(t, options...)
-	f.Manager = New(f.Config, f.Store, slog.New(slog.NewTextHandler(f.logs, nil)))
+	f.Manager = New(f.Config, f.Store, slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(f.cleanup)
 	return f
 }
