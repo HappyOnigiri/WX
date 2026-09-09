@@ -125,6 +125,59 @@ func TestStandbyGCKeepsWarmSlotsAndReportsStaleRows(t *testing.T) {
 	}
 }
 
+func TestStandbyGCUsesWorkspaceWarmOverrides(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedWorkspaceRows(t, store, "zero", "/zero", "repository", "zero-repository", "/zero", "/zero/.git", "")
+	seedWorkspaceRows(t, store, "positive", "/positive", "repository", "positive-repository", "/positive", "/positive/.git", "")
+	ctx := context.Background()
+	for _, slot := range []Slot{
+		{ID: "zero-slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/zero-slot", State: "READY"},
+		{ID: "positive-a", WorkspaceID: "positive", Generation: 1, RootID: testRootID, RelPath: "positive/a", State: "READY"},
+		{ID: "positive-b", WorkspaceID: "positive", Generation: 1, RootID: testRootID, RelPath: "positive/b", State: "READY"},
+		{ID: "zero-override", WorkspaceID: "zero", Generation: 1, RootID: testRootID, RelPath: "zero/override", State: "READY"},
+	} {
+		if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidates, err := store.StandbyGCCandidates(ctx, now(), 0, map[string]int{"/positive": 1, "/zero": 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		seen[candidate.SlotID] = true
+	}
+	if !seen["zero-slot"] || !seen["zero-override"] || !seen["positive-a"] || seen["positive-b"] {
+		t.Fatalf("workspace-specific GC candidates=%v", seen)
+	}
+}
+
+func TestColdRepositoryCandidatesUseWorkspaceWarmOverrides(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedWorkspaceRows(t, store, "positive", "/positive", "repository", "positive-repository", "/positive", "/positive/.git", "")
+	ctx := context.Background()
+	for _, slot := range []struct {
+		id, workspace, repository string
+	}{
+		{"global-zero", "workspace", "repository"},
+		{"override-positive", "positive", "positive-repository"},
+	} {
+		if _, err := store.CreateStandby(ctx, Slot{ID: slot.id, WorkspaceID: slot.workspace, Generation: 1, RootID: testRootID, RelPath: slot.workspace + "/" + slot.id, State: "READY"}, []SlotRepository{{RepositoryID: slot.repository, DirName: "repository", State: "READY", BaseOID: "head"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidates, err := store.ColdRepositoryCandidatesForWarm(ctx, FormatTime(time.Now().Add(time.Hour)), 0, map[string]int{"/positive": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].SlotID != "override-positive" {
+		t.Fatalf("cold candidates=%+v", candidates)
+	}
+}
+
 func TestScheduleColdRepositoryRemovalPropagatesTransactionFaults(t *testing.T) {
 	ctx := context.Background()
 	newColdSlot := func(t *testing.T, store *Store, id string) {
