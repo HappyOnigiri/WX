@@ -73,7 +73,7 @@ func TestPrintBenchConfigsReportsUnmeasuredUsageWithoutDroppingTheTimings(t *tes
 		benchSweepRun("copy_mode=copy", 3400, 15200, 0, 0, false),
 	})
 	stdout := captureLeaseStdout(t, func() { printBenchConfigs(summaries) })
-	for _, required := range []string{"cow_min_size_kib=16", "copy_mode=copy", "175 MiB", "40.500s", "15.200s"} {
+	for _, required := range []string{"cow_min_size_kib=16", "copy_mode=copy", "175.00 MiB", "40.500s", "15.200s"} {
 		if !strings.Contains(stdout, required) {
 			t.Fatalf("stdout=%q missing %s", stdout, required)
 		}
@@ -170,6 +170,23 @@ func TestPrintBenchConfigsKeepsTheDistributionForRepeatedRuns(t *testing.T) {
 	for _, required := range []string{"min/median/max", "27.700s/28.800s/29.500s", "15.200s"} {
 		if !strings.Contains(stdout, required) {
 			t.Fatalf("stdout=%q missing %s", stdout, required)
+		}
+	}
+}
+
+// 使用量の単位は大小によらず MiB に揃える。設定間で列を読み比べるためである。
+func TestFormatBenchBytesKeepsTheUnitAtMiB(t *testing.T) {
+	for _, tc := range []struct {
+		value int64
+		want  string
+	}{
+		{0, "0.00 MiB"},
+		{96 << 10, "0.09 MiB"},
+		{5 << 20, "5.00 MiB"},
+		{3 << 30, "3072.00 MiB"},
+	} {
+		if got := formatBenchBytes(tc.value); got != tc.want {
+			t.Fatalf("formatBenchBytes(%d)=%q, want %q", tc.value, got, tc.want)
 		}
 	}
 }

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 
@@ -178,27 +177,8 @@ func formatBenchOptionalBytes(value *int64) string {
 	return formatBenchBytes(*value)
 }
 
-// formatBenchBytes は使用量を 2 進接頭辞で出す。`wx status` の Disk 行と読み比べられるよう同じ単位を使う。
+// formatBenchBytes は使用量を MiB で出す。設定間の比較が目的なので、
+// 桁ごとに単位が変わると列を読み比べられなくなるため、大小によらず単位を固定する。
 func formatBenchBytes(value int64) string {
-	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
-	negative := value < 0
-	n := float64(value)
-	if negative {
-		n = -n
-	}
-	unit := 0
-	for n >= 1024 && unit < len(units)-1 {
-		n /= 1024
-		unit++
-	}
-	var number string
-	if unit == 0 || n == math.Trunc(n) {
-		number = strconv.FormatFloat(n, 'f', 0, 64)
-	} else {
-		number = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(n, 'f', 2, 64), "0"), ".")
-	}
-	if negative {
-		number = "-" + number
-	}
-	return number + " " + units[unit]
+	return strconv.FormatFloat(float64(value)/(1<<20), 'f', 2, 64) + " MiB"
 }

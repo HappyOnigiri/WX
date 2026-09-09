@@ -192,7 +192,7 @@ func TestRunBenchMeasuresEachConfigurationAndCarriesTheOverrideInTheRequest(t *t
 			t.Fatalf("RunBench exit=%d", exit)
 		}
 	})
-	for _, required := range []string{"cow_min_size_kib=16", "copy_mode=copy", "175 MiB", "comparison by configuration"} {
+	for _, required := range []string{"cow_min_size_kib=16", "copy_mode=copy", "175.00 MiB", "comparison by configuration"} {
 		if !strings.Contains(stdout, required) {
 			t.Fatalf("stdout=%q missing %s", stdout, required)
 		}
