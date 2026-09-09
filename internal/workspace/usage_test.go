@@ -155,7 +155,7 @@ func TestLookupUsagePrefixPicksTheLongestAncestor(t *testing.T) {
 	}
 }
 
-// 共有判定と cache 再利用は platform に依らず同じ契約で、CoW のない環境では walker がここへ到達しない。
+// 共有判定と cache 再利用の共通ロジックを、CoW を提供する platform で検証する。
 func TestSharedWithRepositoryReusesUnchangedIdentities(t *testing.T) {
 	root, mainPath, _ := usageRoots(t)
 	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "nested/file", "shared content")
@@ -174,6 +174,30 @@ func TestSharedWithRepositoryReusesUnchangedIdentities(t *testing.T) {
 		}
 	})
 	measured := SharedFileCache{}
+	if !SharingSupported() {
+		// 本番の walker は CoW 非対応 platform でこの関数を呼ばないが、直接呼んでも判定不能を cache に残さない。
+		if sharedWithRepository(root, name, info, mainPath, relative, mainRoots, SharedFileCache{}, measured) {
+			t.Fatal("unsupported platform reported files as shared")
+		}
+		if len(measured) != 0 {
+			t.Fatalf("unsupported platform retained an unverifiable cache: %+v", measured)
+		}
+		source, target, _, _, sourceIdentity, targetIdentity, opened := openCOWFiles(root, name, info, mainRoots, mainPath, relative)
+		if !opened {
+			t.Fatal("unsupported platform could not open files for cache validation")
+		}
+		_ = source.Close()
+		_ = target.Close()
+		cached := SharedFileState{Slot: targetIdentity, Source: sourceIdentity, Shared: true}
+		carried := SharedFileCache{}
+		if !sharedWithRepository(root, name, info, mainPath, relative, mainRoots, SharedFileCache{name: cached}, carried) {
+			t.Fatal("unchanged cache entry was not reused")
+		}
+		if carried[name] != cached {
+			t.Fatalf("carried=%+v want=%+v", carried[name], cached)
+		}
+		return
+	}
 	// 別々に書いた実体は共有していないので、実測は cache の有無に関わらず false になる。
 	if sharedWithRepository(root, name, info, mainPath, relative, mainRoots, SharedFileCache{}, measured) {
 		t.Fatal("independent files reported as shared")
