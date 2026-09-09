@@ -310,6 +310,15 @@ func TestCOWShareableLeavesKeepsOnlyRegularFilesAboveTheMinimum(t *testing.T) {
 	if stats.skippedSize.Load() != 1 {
 		t.Fatalf("skipped below the minimum=%d", stats.skippedSize.Load())
 	}
+	stats = &cowStats{}
+	// 下限0の設定では size による除外が消え、small も候補として残る。
+	placer = &cowPlacer{minSize: 0, stats: stats}
+	if got := placer.shareableLeaves(base, []string{"large", "small"}); len(got) != 2 {
+		t.Fatalf("shareable without a minimum=%v", got)
+	}
+	if stats.skippedSize.Load() != 0 {
+		t.Fatalf("skipped without a minimum=%d", stats.skippedSize.Load())
+	}
 }
 
 // 集計は塊ごとの worker から並行して呼ばれるため、同時に記録しても path を落とさない。

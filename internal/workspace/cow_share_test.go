@@ -78,6 +78,35 @@ func TestCOWShareSkipsFilesBelowMinimum(t *testing.T) {
 	}
 }
 
+// storage.cow_min_size_kib を0にすると下限がなくなり、数バイトのファイルまで共有対象になる。
+func TestCOWShareWithoutMinimumSharesEverySize(t *testing.T) {
+	a, b := cowRoots(t)
+	for _, root := range []*os.Root{a, b} {
+		cowWrite(t, root, "tiny", "t")
+	}
+	before, _ := b.Stat("tiny")
+	stats := &cowStats{}
+	sharer := &cowSharer{source: a, destination: b, proof: func() error { return nil }, minSize: 0, stats: stats}
+	err := sharer.shareRun(context.Background(), newCOWScratch(), ".", []string{"tiny"})
+	if !cowAvailable() {
+		// clone できない platform では下限を外した結果、tiny が失敗まで進むことだけを確かめる。
+		if err == nil {
+			t.Fatal("clone unexpectedly succeeded")
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := b.Stat("tiny")
+	if os.SameFile(before, after) {
+		t.Fatal("a tiny file was left unshared without a minimum")
+	}
+	if stats.skippedSize.Load() != 0 || stats.shared.Load() != 1 {
+		t.Fatalf("skipped=%d shared=%d", stats.skippedSize.Load(), stats.shared.Load())
+	}
+}
+
 // main の tree 形状違いは共有対象外というだけなので、run 全体を skip して準備は続ける。
 func TestCOWShareSkipsSourceShapeMismatch(t *testing.T) {
 	a, b := cowRoots(t)

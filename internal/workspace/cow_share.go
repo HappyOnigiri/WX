@@ -18,9 +18,6 @@ import (
 )
 
 const (
-	// cowMinShareSize は共有対象の下限である。APFS のブロック共有は数KBのファイルでほぼ容量を節約せず、
-	// clone・比較・metadata 検査・swap・unlink の定数費用だけが残るため、下限未満は通常 checkout のまま残す。
-	cowMinShareSize = 16 << 10
 	// cowBatchSize は1つの worker が受け持つ entry のおおよその件数である。
 	// run 単位で並列にすると短い run では同期費用が勝つため、数百件へまとめてから配る。
 	cowBatchSize = 192

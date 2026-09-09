@@ -16,6 +16,9 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
+// cowMinShareSize は既定設定での共有下限（bytes）で、下限そのものを検証しないテストの入力に使う。
+const cowMinShareSize = config.DefaultCOWMinSizeKiB << 10
+
 // TestMain はCoWの前提をテスト開始前に一度だけ確かめ、成り立たなければテストを走らせずに終える。
 // 個別のテストで判定すると、CoWを直接扱わないテストが前提未成立をどう扱うかまで決めることになる。
 func TestMain(m *testing.M) {

@@ -21,15 +21,16 @@ import (
 )
 
 const (
-	fingerprintSchemaVersion         = 6
-	updateCompatibilitySchemaVersion = 1
+	fingerprintSchemaVersion         = 7
+	updateCompatibilitySchemaVersion = 2
 )
 
 // UpdateCompatibilityFingerprint は既存 worktree の差分更新では変更できない準備条件だけを hash 化する。
 // OID、include/link の配置内容、readiness、reuse 方針は更新時に再計算できるため含めない。
 func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c config.Config) (string, error) {
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\ncopy_mode=%s\n", updateCompatibilitySchemaVersion, generation, c.Storage.CopyMode)
+	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\ncopy_mode=%s\ncow_min_size_kib=%d\n",
+		updateCompatibilitySchemaVersion, generation, c.Storage.CopyMode, c.Storage.COWMinSizeKiB)
 	if err := writePrepareFingerprint(h, repo, c); err != nil {
 		return "", err
 	}
@@ -41,6 +42,7 @@ func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c
 // 新規 slot だけが変更後の storage.repo_dir_source や repositories.<path>.dir_name を使う。
 // 名前を hash 化しても reuse check は保存済みの名前から再計算するため常に自身と一致し、挙動は変わらない。
 // schema=6 はコピー方式を準備入力に含め、方式変更後に以前の READY slot を再利用しない。
+// schema=7 は共有下限（storage.cow_min_size_kib）も含め、下限変更後の貸出で以前の下限で作った slot を再利用しない。
 // commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	return fingerprintWithSchema(fingerprintSchemaVersion, generation, oid, repo, c)
@@ -54,7 +56,8 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 	}
 	defer func() { _ = sourceRoot.Close() }()
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\noid=%s\ncopy_mode=%s\n", schema, generation, oid, c.Storage.CopyMode)
+	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\noid=%s\ncopy_mode=%s\ncow_min_size_kib=%d\n",
+		schema, generation, oid, c.Storage.CopyMode, c.Storage.COWMinSizeKiB)
 	var linkPatterns []string
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
 		data, err := readPhysicalManifestAt(sourceRoot, name)

@@ -121,7 +121,7 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 		source:      source,
 		destination: destination,
 		proof:       func() error { return p.verifyPreparedTargetIdentity(owner, relative, identity) },
-		minSize:     cowMinShareSize,
+		minSize:     p.Config.Storage.COWMinShareSize(),
 		stats:       stats,
 	}
 	batches := batchCOWRuns(splitCOWRuns(candidates), cowBatchSize)

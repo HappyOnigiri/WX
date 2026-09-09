@@ -1,19 +1,20 @@
 # worktreeのコピーとリンク
 
-`storage.copy_mode`の値・既定値・fallbackは`wx config --help`を参照する。
+`storage.copy_mode`の値・既定値・fallbackと、共有下限`storage.cow_min_size_kib`の意味は`wx config --help`を参照する。
 
 共有には配置と置換の二方式がある。
 新規準備は配置方式で、共有できるtracked fileをcheckoutせずmainからcloneして置く。
 復元とHot StandbyのUPDATEは置換方式で、checkout済みのファイルを同内容のcloneと入れ替える。
-どちらも16KiB未満のファイルと、main側indexのblob OIDが宛先indexと異なるpathは走査の前に共有対象外とする。
+どちらも共有下限（`storage.cow_min_size_kib`、既定16KiB）未満のファイルと、main側indexのblob OIDが宛先indexと異なるpathは走査の前に共有対象外とする。
 小さいファイルはブロック共有で減る容量より判定の定数費用が勝ち、OIDが違うpathは内容まで一致することが稀だからである。
+下限は0（全ファイルを対象）から広げる方向まで設定でき、`storage.copy_mode`と同じくfingerprintに含めるため、変更後の貸出では以前の下限で作ったREADY slotを再利用しない。
 `cow`は共有対象のclone失敗をエラーにする指定であり、全ファイルの共有や削減容量を保証する指定ではない。
 
 ## 配置方式（新規準備）
 
 `internal/workspace/cow_place.go`が、残りのcheckoutより前に候補をcloneし、置けたpathをcheckoutの対象から外す。
 checkoutしてから同内容へ差し替えるのに比べ、同じbytesの書き出しと読み比べが1往復ぶん要らない。
-候補はmain側の実体が16KiB以上の通常ファイルであるpathで、OIDの一致は共有の根拠ではなく候補を絞る事前skipにすぎない。
+候補はmain側の実体が共有下限以上の通常ファイルであるpathで、OIDの一致は共有の根拠ではなく候補を絞る事前skipにすぎない。
 
 内容が要求OIDと一致するかはcloneの直後にGitのtracked検査へ判定させ、一致しないpathだけを`checkout-index --force`でやり直す。
 したがってmainがdirtyなpathやclone中にmainが変わったpathは通常checkoutへ落ちるだけで、準備は成功し共有されないpathが増える。

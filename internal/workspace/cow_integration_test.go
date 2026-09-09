@@ -112,6 +112,36 @@ func TestCOWPreparationModesAndHook(t *testing.T) {
 	}
 }
 
+// 共有下限を donor のサイズより大きくすると、auto でも1件も共有せず通常 checkout のまま残る。
+// 下限は配置方式と置換方式の両方を止めるため、prepare command が記録した inode が最後まで変わらない。
+func TestCOWPreparationSkipsSharingAboveTheConfiguredMinimum(t *testing.T) {
+	p, repo, oid, target := cowFixture(t)
+	p.Config.Storage.CopyMode = config.CopyModeAuto
+	p.Config.Storage.COWMinSizeKiB = len(cowBody)/1024 + 1
+	p.Config.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "ls -i file > .before-inode"}}}}
+	if err := p.Prepare(context.Background(), repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := os.ReadFile(filepath.Join(target, ".before-inode"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := strconv.ParseUint(strings.Fields(string(captured))[0], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after unix.Stat_t
+	if err := unix.Stat(filepath.Join(target, "file"), &after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after.Ino {
+		t.Fatal("a file below the configured minimum was shared")
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "file")); err != nil || string(data) != cowBody {
+		t.Fatalf("content=%d bytes err=%v", len(data), err)
+	}
+}
+
 func TestCOWPrepareFallbackKeepsCheckout(t *testing.T) {
 	for _, mode := range []string{config.CopyModeAuto, config.CopyModeCOW, config.CopyModeCopy} {
 		t.Run(mode, func(t *testing.T) {

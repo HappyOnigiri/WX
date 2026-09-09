@@ -51,6 +51,9 @@ type WorktreePolicy struct {
 type Storage struct {
 	WorktreeRoot string `yaml:"worktree_root,omitempty"`
 	CopyMode     string `yaml:"copy_mode,omitempty"`
+	// COWMinSizeKiB は CoW 共有の対象にするファイルサイズの下限（KiB）で、下限未満は通常 checkout のまま残す。
+	// 0 は下限なしで、共有できる通常ファイルをすべて対象にする。
+	COWMinSizeKiB int `yaml:"cow_min_size_kib,omitempty"`
 	// RepoDirSource は slot 内の repository directory 名の導出方法を選ぶ。
 	// remote は origin URL の basename、directory は main worktree の名前を使い、Repositories の個別指定を優先する。
 	RepoDirSource     string   `yaml:"repo_dir_source,omitempty"`
@@ -147,10 +150,25 @@ const (
 	CopyModeCopy = "copy"
 )
 
+const (
+	// DefaultCOWMinSizeKiB は storage.cow_min_size_kib の既定値である。
+	// 数KBのファイルはブロック共有で減る容量より clone・比較・metadata 検査の定数費用が勝つため、既定では共有しない。
+	DefaultCOWMinSizeKiB = 16
+	// MaxCOWMinSizeKiB は設定できる上限である。
+	// bytes 換算での桁溢れを防ぐためだけの上限で、これ以上は共有対象が無いのと変わらない。
+	MaxCOWMinSizeKiB = 1 << 20
+)
+
+// COWMinShareSize は CoW 共有の下限を bytes で返す。0 は下限なしを表す。
+func (s Storage) COWMinShareSize() int64 { return int64(s.COWMinSizeKiB) << 10 }
+
 func Defaults() Config {
 	return Config{
 		Worktree: WorktreePolicy{Undefined: "ask", ReuseStandby: true},
-		Version:  1, Storage: Storage{WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
+		Version:  1, Storage: Storage{
+			WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, COWMinSizeKiB: DefaultCOWMinSizeKiB,
+			RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour},
+		},
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{24 * time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
@@ -232,6 +250,9 @@ func Validate(c *Config) error {
 	}
 	if c.Storage.CopyMode != CopyModeAuto && c.Storage.CopyMode != CopyModeCOW && c.Storage.CopyMode != CopyModeCopy {
 		return errors.New("storage.copy_mode must be auto, cow, or copy")
+	}
+	if c.Storage.COWMinSizeKiB < 0 || c.Storage.COWMinSizeKiB > MaxCOWMinSizeKiB {
+		return fmt.Errorf("storage.cow_min_size_kib must be between 0 and %d", MaxCOWMinSizeKiB)
 	}
 	if c.Storage.BackupGenerations < 1 || c.Storage.BackupRetention.Duration < 0 {
 		return errors.New("storage backup_generations must be positive and backup_retention must not be negative")
