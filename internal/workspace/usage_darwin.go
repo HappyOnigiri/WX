@@ -24,3 +24,6 @@ func physicalOffset(file *os.File, offset int64) (int64, error) {
 	}
 	return int64(binary.NativeEndian.Uint64(buffer[12:20])), nil
 }
+
+// usageDev は darwin の符号付き Dev を identity 用の uint64 へ寄せる。
+func usageDev(stat *unix.Stat_t) uint64 { return uint64(stat.Dev) }

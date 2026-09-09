@@ -68,9 +68,9 @@ func sameUsageIdentities(source, target *os.File, state SharedFileState) bool {
 }
 
 // fileIdentityOf は fstat・fstatat の結果から cache 判定用の identity を組む。
-// Dev の符号は platform で違うが、比較にしか使わないため uint64 へ寄せる。
+// Dev の型は platform で違うが、比較にしか使わないため usageDev で uint64 へ寄せる。
 func fileIdentityOf(stat *unix.Stat_t) fileIdentity {
-	return fileIdentity{Dev: uint64(stat.Dev), Ino: stat.Ino, CtimeNanos: stat.Ctim.Nano()}
+	return fileIdentity{Dev: usageDev(stat), Ino: stat.Ino, CtimeNanos: stat.Ctim.Nano()}
 }
 
 func usageFileIdentity(file *os.File) (fileIdentity, error) {

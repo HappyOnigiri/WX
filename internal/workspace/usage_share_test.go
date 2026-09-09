@@ -113,3 +113,48 @@ func TestSharedLeafDoesNotCacheAnUnverifiableSource(t *testing.T) {
 		t.Fatalf("subtree without a source was cached: %+v decided=%v", state, decided)
 	}
 }
+
+// usageShareOpen は識別の対象として leaf を読み取り専用で開く。
+func usageShareOpen(t *testing.T, dir, name, data string) *os.File {
+	t.Helper()
+	usageWrite(t, dir, name, data)
+	file, err := os.Open(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
+// 比較に使った descriptor が観測時の実体のままなら一致とみなし、片側でも食い違えば判定を捨てる。
+// offset の比較が成立しない linux でも到達するよう、関数を直接呼ぶ。
+func TestSameUsageIdentitiesRejectsAnyMismatch(t *testing.T) {
+	dir := t.TempDir()
+	source, target := usageShareOpen(t, dir, "source", "content"), usageShareOpen(t, dir, "target", "content")
+	sourceIdentity, err := usageFileIdentity(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetIdentity, err := usageFileIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := SharedFileState{Slot: targetIdentity, Source: sourceIdentity}
+	if !sameUsageIdentities(source, target, state) {
+		t.Fatalf("unchanged descriptors were rejected: %+v", state)
+	}
+	for label, stale := range map[string]SharedFileState{"slot": usageShareStale(state, true), "source": usageShareStale(state, false)} {
+		if sameUsageIdentities(source, target, stale) {
+			t.Fatalf("stale %s identity was accepted: %+v", label, stale)
+		}
+	}
+
+	// fstat できない descriptor は実体を確かめられないので、共有と認めない。
+	closed := usageShareOpen(t, dir, "closed", "content")
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if sameUsageIdentities(closed, target, state) || sameUsageIdentities(source, closed, state) {
+		t.Fatal("a closed descriptor was accepted")
+	}
+}
