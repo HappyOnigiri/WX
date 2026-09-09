@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPrintVerboseStatusDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
@@ -143,6 +144,11 @@ func TestPrintVerboseStatusKeepsArchivedSessionsFromLegacyDaemons(t *testing.T) 
 
 // TestPrintVerboseStatusListsRepositoriesAsATable は Repositories の表の列と、行が無いときの出し分けを固定する。
 func TestPrintVerboseStatusListsRepositoriesAsATable(t *testing.T) {
+	// 期待値に時刻を書くので、CI (UTC) でも同じ表示になるよう表示タイムゾーンを固定する。
+	previousLocation := statusDisplayLocation
+	statusDisplayLocation = time.FixedZone("JST", 9*60*60)
+	t.Cleanup(func() { statusDisplayLocation = previousLocation })
+
 	payload := map[string]any{
 		"schema_version": 19,
 		"repository_details": []map[string]any{
