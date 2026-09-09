@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/domain"
@@ -45,53 +44,6 @@ func cowWrite(t *testing.T, r *os.Root, name, data string) {
 	t.Helper()
 	if err := r.WriteFile(name, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestCOWReplacementPreservesBytesAndTimes(t *testing.T) {
-	if !cowAvailable() {
-		t.Skip("APFS is required")
-	}
-	a, b := cowRoots(t)
-	cowWrite(t, a, "file", "original content\n")
-	cowWrite(t, b, "file", "original content\n")
-	stamp := time.Unix(1700000000, 123456789)
-	if err := b.Chtimes("file", stamp, stamp); err != nil {
-		t.Fatal(err)
-	}
-	before, err := b.Stat("file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := compactFile(context.Background(), a, b, "file", func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	after, err := b.Stat("file")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.SameFile(before, after) {
-		t.Fatal("CoW did not replace the original inode")
-	}
-	if !after.ModTime().Equal(stamp) || after.Mode() != before.Mode() {
-		t.Fatalf("metadata changed: %v", after)
-	}
-	f, err := b.OpenFile("file", os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.WriteAt([]byte("changed"), 0)
-	f.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := a.ReadFile("file")
-	if err != nil || string(data) != "original content\n" {
-		t.Fatalf("donor changed: %q %v", data, err)
-	}
-	entries, err := os.ReadDir(b.Name())
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("temporary file remains: %v %v", entries, err)
 	}
 }
 

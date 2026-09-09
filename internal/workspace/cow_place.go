@@ -195,32 +195,6 @@ func (c *cowPlacer) shareableLeaves(source *os.File, leaves []string) []string {
 	return shareable
 }
 
-// placeFile は1件を clone し、置けたかを返す。
-// 置けなかった leaf は通常 checkout に回るだけなので、共有できない理由では準備を止めない。
-func (c *cowPlacer) placeFile(source, destination *os.File, directory, leaf string) (bool, error) {
-	start := time.Now()
-	fd, err := unix.Openat(int(source.Fd()), leaf, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	if err != nil {
-		// main 側の実体が走査中に消えた・symlink へ変わった回は共有対象外にするだけでよい。
-		return false, nil
-	}
-	in := os.NewFile(uintptr(fd), leaf)
-	defer func() { _ = in.Close() }()
-	c.stats.open.observe(start)
-	start = time.Now()
-	cloneErr := cloneCOW(in, destination, leaf)
-	c.stats.clone.observe(start)
-	if cloneErr != nil {
-		// 宛先に既に実体がある回は、通常 checkout の結果を CoW で上書きしないために諦める。
-		if errors.Is(cloneErr, os.ErrExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("clone %s: %w", joinCOWPath(directory, leaf), cloneErr)
-	}
-	c.stats.shared.Add(1)
-	return true, nil
-}
-
 func joinCOWPath(directory, leaf string) string {
 	if directory == "." {
 		return leaf
