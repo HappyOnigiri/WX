@@ -199,6 +199,10 @@ const timestampFormat = "2006-01-02T15:04:05.000000000Z07:00"
 // lexical comparison で時系列順を保つには固定の小数幅が必要である。
 func FormatTime(value time.Time) string { return value.UTC().Format(timestampFormat) }
 
+// ParseTime は FormatTime が書いた timestamp を読み戻す。保存側と同じ書式をここに閉じ込め、
+// 呼び出し側が独自の書式で解釈しないようにする。
+func ParseTime(value string) (time.Time, error) { return time.Parse(timestampFormat, value) }
+
 func now() string { return FormatTime(time.Now()) }
 
 func HashToken(token string) []byte { sum := sha256.Sum256([]byte(token)); return sum[:] }

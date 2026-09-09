@@ -194,16 +194,17 @@ func (c Client) benchOnce(ctx context.Context, cwd, root string, branches []stri
 	run.FullReadyMS = time.Since(started).Milliseconds()
 	run.Measurement = c.prepareMeasurement(ctx, lease.SessionID)
 	// 使用量は返却の前に引く。discard で返した slot は `wx slots` に現れず、後から辿る経路がない。
-	run.Usage = c.benchSlotUsage(ctx, lease.SessionID)
+	run.Usage = c.benchSlotUsage(ctx, lease.SessionID, started)
 	return run
 }
 
 // benchSlotUsage は測り終えた slot の使用量が載るのを待って返す。
 // 上限内に載らなかった場合と daemon から引けなかった場合は nil を返し、その回は時間だけの行になる。
-func (c Client) benchSlotUsage(ctx context.Context, sessionID string) *BenchUsage {
+// notBefore はこの回の貸出を要求した時刻で、それより古い測定は前の準備の値なので待ち続ける。
+func (c Client) benchSlotUsage(ctx context.Context, sessionID string, notBefore time.Time) *BenchUsage {
 	deadline := time.Now().Add(benchUsageTimeout)
 	for {
-		usage, err := c.benchSlotUsageOnce(ctx, sessionID)
+		usage, err := c.benchSlotUsageOnce(ctx, sessionID, notBefore)
 		if err != nil || (usage == nil && time.Now().After(deadline)) {
 			return nil
 		}
@@ -218,8 +219,9 @@ func (c Client) benchSlotUsage(ctx context.Context, sessionID string) *BenchUsag
 	}
 }
 
-// benchSlotUsageOnce は slot 一覧から対象 session の行を探す。まだ測定が載っていない場合は nil を返す。
-func (c Client) benchSlotUsageOnce(ctx context.Context, sessionID string) (*BenchUsage, error) {
+// benchSlotUsageOnce は slot 一覧から対象 session の行を探す。
+// まだ測定が載っていない場合と、載っているのが notBefore より前の測定である場合は nil を返す。
+func (c Client) benchSlotUsageOnce(ctx context.Context, sessionID string, notBefore time.Time) (*BenchUsage, error) {
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var slots []daemon.SlotView
@@ -227,7 +229,7 @@ func (c Client) benchSlotUsageOnce(ctx context.Context, sessionID string) (*Benc
 		return nil, err
 	}
 	for _, slot := range slots {
-		if slot.SessionID != sessionID || slot.MeasuredAt == "" {
+		if slot.SessionID != sessionID || !benchUsageMeasuredAfter(slot.MeasuredAt, notBefore) {
 			continue
 		}
 		return &BenchUsage{
@@ -237,6 +239,20 @@ func (c Client) benchSlotUsageOnce(ctx context.Context, sessionID string) (*Benc
 		}, nil
 	}
 	return nil, nil
+}
+
+// benchUsageMeasuredAfter はこの回の準備を測った結果かを時刻で見分ける。
+// 使用量は slot が再び準備へ入っても消えないため、時刻を見ないと前の世代の値を今回の結果として採ってしまう。
+// 読めない時刻は採らない。単一マシンなので daemon と client の時計は同じである。
+func benchUsageMeasuredAfter(measuredAt string, notBefore time.Time) bool {
+	if measuredAt == "" {
+		return false
+	}
+	parsed, err := state.ParseTime(measuredAt)
+	if err != nil {
+		return false
+	}
+	return !parsed.Before(notBefore)
 }
 
 func (c Client) waitBenchReadiness(ctx context.Context, lease daemon.Lease, method string) error {

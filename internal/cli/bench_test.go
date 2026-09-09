@@ -166,13 +166,14 @@ func TestRunBenchRejectsAnEmptyRunCount(t *testing.T) {
 }
 
 // benchSlotUsageReply は測り終えた slot の使用量として daemon が返す行を組む。
+// 測定時刻は run の途中に置く。bench は貸出要求より前の測定を前の準備の値として採らないためである。
 func benchSlotUsageReply() []daemon.SlotView {
 	return []daemon.SlotView{{
 		SlotSummary:    state.SlotSummary{SlotID: "session", SessionID: "session", State: "LEASED"},
 		Measurement:    "log2phys_first_last",
 		CopyMode:       config.CopyModeCOW,
 		AllocatedBytes: 1291 << 20, SharedBytes: 1116 << 20, ExclusiveBytes: 175 << 20,
-		MeasuredAt: "2026-09-10T00:00:00Z",
+		MeasuredAt: state.FormatTime(time.Now().Add(time.Minute)),
 	}}
 }
 
@@ -337,4 +338,19 @@ func leaseRequests(t *testing.T, handler *launcherHandler) []rpc.ResolveAndLease
 		out = append(out, params)
 	}
 	return out
+}
+
+// 前の準備で測った使用量は、時刻で見分けて今回の結果として採らない。
+func TestBenchUsageMeasuredAfterRejectsTheMeasurementOfAnEarlierPreparation(t *testing.T) {
+	leaseAt := time.Now()
+	if benchUsageMeasuredAfter(state.FormatTime(leaseAt.Add(-time.Second)), leaseAt) {
+		t.Fatal("accepted a measurement taken before the lease request")
+	}
+	if !benchUsageMeasuredAfter(state.FormatTime(leaseAt.Add(time.Second)), leaseAt) {
+		t.Fatal("rejected a measurement taken during the run")
+	}
+	// 測定がまだ無い行と読めない時刻は、待ち続けて次の測定を待つ。
+	if benchUsageMeasuredAfter("", leaseAt) || benchUsageMeasuredAfter("not a timestamp", leaseAt) {
+		t.Fatal("accepted a row without a usable measurement time")
+	}
 }
