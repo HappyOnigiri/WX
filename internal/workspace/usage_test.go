@@ -191,8 +191,23 @@ func TestSharedWithRepositoryReusesUnchangedIdentities(t *testing.T) {
 		t.Fatalf("carried=%+v want=%+v", carried[name], entry)
 	}
 	stale := entry
-	stale.CtimeNanos++
+	stale.Slot.CtimeNanos++
 	if sharedWithRepository(root, name, info, mainPath, relative, mainRoots, SharedFileCache{name: stale}, SharedFileCache{}) {
 		t.Fatal("stale cache entry was trusted")
+	}
+	stale = entry
+	stale.Source.CtimeNanos++
+	if sharedWithRepository(root, name, info, mainPath, relative, mainRoots, SharedFileCache{name: stale}, SharedFileCache{}) {
+		t.Fatal("stale source cache entry was trusted")
+	}
+	if err := os.Remove(filepath.Join(mainPath, "nested", "file")); err != nil {
+		t.Fatal(err)
+	}
+	missing := SharedFileCache{}
+	if sharedWithRepository(root, name, info, mainPath, relative, mainRoots, measured, missing) {
+		t.Fatal("missing source file reported as shared")
+	}
+	if len(missing) != 0 {
+		t.Fatalf("missing source file was cached: %+v", missing)
 	}
 }

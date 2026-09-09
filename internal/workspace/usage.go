@@ -39,16 +39,23 @@ type RootUsage struct {
 	Slots          map[string]SlotUsage
 }
 
-// SharedFileState は 1 ファイルの共有判定と、その判定が有効な file identity である。
-type SharedFileState struct {
+// fileIdentity は開いた regular file の実体と変更時刻を識別する。
+// slot と共有元を同じ cache entry に保存するため、判定側と共有元側を区別して保持する。
+type fileIdentity struct {
 	Dev        uint64
 	Ino        uint64
 	CtimeNanos int64
-	Shared     bool
+}
+
+// SharedFileState は 1 ファイルの共有判定と、その判定が有効な slot・共有元の identity である。
+type SharedFileState struct {
+	Slot   fileIdentity
+	Source fileIdentity
+	Shared bool
 }
 
 // SharedFileCache は root 相対 path をキーに前回の共有判定を保持する。
-// 共有を壊す書き込みは必ず ctime を更新するため、identity が変わっていないファイルは再判定を省ける。
+// slot と共有元のどちらかが変わっていれば再判定し、両方が変わっていない場合だけ判定を省ける。
 type SharedFileCache map[string]SharedFileState
 
 // SharingSupported は CoW の共有判定がこの platform で行えるかを返す。
@@ -61,7 +68,7 @@ type usageRepository struct {
 
 // MeasureRootUsage は pin 済み root を 1 度だけ walk し、root 合計と slot ごとの使用量を返す。
 // 共有判定は main worktree の同じ path を開いて物理 offset を比べるだけで、どちらのファイルも内容・metadata を変更しない。
-// previous に前回の cache を渡すと identity が変わっていないファイルの判定を再利用する。返す cache は今回 walk したファイルだけを含む。
+// previous に前回の cache を渡すと slot と共有元の identity が変わっていないファイルの判定を再利用する。返す cache は今回 walk したファイルだけを含む。
 func MeasureRootUsage(ctx context.Context, root *os.Root, targets []SlotUsageTarget, previous SharedFileCache) (RootUsage, SharedFileCache, error) {
 	return measureUsage(ctx, root, ".", targets, previous)
 }
@@ -173,68 +180,110 @@ func lookupUsagePrefix[T any](name string, prefixes map[string]T) (T, string, bo
 	return zero, "", false
 }
 
-// sharedWithRepository は cache が使えるならそれを返し、使えないときだけ実際に物理 offset を比べる。
+// sharedWithRepository は両側の現在の identity を確認してから cache を参照し、必要なら物理 offset を比べる。
 func sharedWithRepository(root *os.Root, name string, info os.FileInfo, mainPath, relative string, mainRoots map[string]*os.Root, previous, cache SharedFileCache) bool {
-	identity, ok := fileIdentity(info)
-	if !ok {
+	source, target, sourceInfo, targetInfo, sourceIdentity, targetIdentity, opened := openCOWFiles(root, name, info, mainRoots, mainPath, relative)
+	if !opened {
 		return false
 	}
-	if before, found := previous[name]; found && before.Dev == identity.Dev && before.Ino == identity.Ino && before.CtimeNanos == identity.CtimeNanos {
+	defer func() {
+		_ = source.Close()
+		_ = target.Close()
+	}()
+	if before, found := previous[name]; found && before.Slot == targetIdentity && before.Source == sourceIdentity {
+		if !sameCOWFileIdentities(source, target, sourceIdentity, targetIdentity) {
+			return false
+		}
 		cache[name] = before
 		return before.Shared
 	}
-	identity.Shared = sameCOWExtents(root, name, info, mainRoots, mainPath, relative)
-	cache[name] = identity
-	return identity.Shared
+	shared := false
+	if sourceInfo.Size() == targetInfo.Size() {
+		var comparable bool
+		shared, comparable = compareCOWOffsets(source, target, targetInfo.Size())
+		if !comparable {
+			return false
+		}
+	}
+	// offset の比較中にどちらかが変更された場合は、その回の判定を cache に残さない。
+	if !sameCOWFileIdentities(source, target, sourceIdentity, targetIdentity) {
+		return false
+	}
+	state := SharedFileState{Slot: targetIdentity, Source: sourceIdentity, Shared: shared}
+	cache[name] = state
+	return shared
 }
 
-// sameCOWExtents は main worktree 側と slot 側を開いて物理 offset を比べる。
-// 判定できない事情（open 失敗・size 不一致・platform 非対応）はすべて共有なしとして扱い、測定の失敗で準備や貸出の結果を変えない。
-func sameCOWExtents(root *os.Root, name string, info os.FileInfo, mainRoots map[string]*os.Root, mainPath, relative string) bool {
-	mainRoot, opened := mainRoots[mainPath]
-	if !opened {
+// openCOWFiles は main worktree 側と slot 側を読み取り専用で開き、比較に使う現在の identity を返す。
+// slot は walk 時点の実体と一致することも確認し、途中で置き換わったファイルを cache に残さない。
+func openCOWFiles(root *os.Root, name string, info os.FileInfo, mainRoots map[string]*os.Root, mainPath, relative string) (source, target *os.File, sourceInfo, targetInfo os.FileInfo, sourceIdentity, targetIdentity fileIdentity, opened bool) {
+	mainRoot, known := mainRoots[mainPath]
+	if !known {
 		pinned, err := openPinnedRepositoryRoot(mainPath)
 		if err != nil {
 			mainRoots[mainPath] = nil
-			return false
+			return nil, nil, nil, nil, fileIdentity{}, fileIdentity{}, false
 		}
 		mainRoots[mainPath] = pinned
 		mainRoot = pinned
 	}
 	if mainRoot == nil {
-		return false
+		return nil, nil, nil, nil, fileIdentity{}, fileIdentity{}, false
 	}
 	source, sourceInfo, err := cowOpenFile(mainRoot, relative)
 	if err != nil || source == nil {
-		return false
+		return nil, nil, nil, nil, fileIdentity{}, fileIdentity{}, false
 	}
-	defer source.Close()
-	if sourceInfo.Size() != info.Size() {
-		return false
-	}
-	target, targetInfo, err := cowOpenFile(root, name)
+	target, targetInfo, err = cowOpenFile(root, name)
 	if err != nil || target == nil {
-		return false
+		_ = source.Close()
+		return nil, nil, nil, nil, fileIdentity{}, fileIdentity{}, false
 	}
-	defer target.Close()
 	if !os.SameFile(info, targetInfo) {
-		return false
+		_ = source.Close()
+		_ = target.Close()
+		return nil, nil, nil, nil, fileIdentity{}, fileIdentity{}, false
 	}
-	return sameCOWOffsets(source, target, info.Size())
+	sourceIdentity, sourceOK := fileIdentityOf(sourceInfo)
+	targetIdentity, targetOK := fileIdentityOf(targetInfo)
+	if !sourceOK || !targetOK {
+		_ = source.Close()
+		_ = target.Close()
+		return nil, nil, nil, nil, fileIdentity{}, fileIdentity{}, false
+	}
+	return source, target, sourceInfo, targetInfo, sourceIdentity, targetIdentity, true
 }
 
-// sameCOWOffsets は先頭と末尾の 2 点だけを比べる sampling である。
-// 途中の block だけが書き換わったファイルは共有と見えるため、SharedBytes は上限側の推定になる。
-func sameCOWOffsets(source, target *os.File, size int64) bool {
+// sameCOWFileIdentities は比較に使った file descriptor の identity が変わっていないか確認する。
+func sameCOWFileIdentities(source, target *os.File, sourceBefore, targetBefore fileIdentity) bool {
+	sourceInfo, err := source.Stat()
+	if err != nil {
+		return false
+	}
+	targetInfo, err := target.Stat()
+	if err != nil {
+		return false
+	}
+	sourceAfter, sourceOK := fileIdentityOf(sourceInfo)
+	targetAfter, targetOK := fileIdentityOf(targetInfo)
+	return sourceOK && targetOK && sourceAfter == sourceBefore && targetAfter == targetBefore
+}
+
+// compareCOWOffsets は offset を比較し、共有判定を得られたかどうかも返す。
+// offset の取得に失敗した場合は、非共有という判定を cache に固定しない。
+func compareCOWOffsets(source, target *os.File, size int64) (shared, comparable bool) {
 	for _, offset := range []int64{0, size - 1} {
 		left, err := physicalOffset(source, offset)
 		if err != nil {
-			return false
+			return false, false
 		}
 		right, err := physicalOffset(target, offset)
-		if err != nil || left != right {
-			return false
+		if err != nil {
+			return false, false
+		}
+		if left != right {
+			return false, true
 		}
 	}
-	return true
+	return true, true
 }
