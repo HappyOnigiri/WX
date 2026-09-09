@@ -1,0 +1,162 @@
+name: Flake Hunt
+
+# nightly-raceなどで出たflakeを、同じプロファイルの繰り返しで再現・再発確認するための手動job。
+# Nightlyは1ラウンドを1コンテナで走らせて最初の失敗で止まるので、頻度の低いflakeには足りない。
+# こちらは複数コンテナで期限まで繰り返し、失敗しても続けてラウンド数と失敗数を数える。
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: Packages to test (go test path pattern)
+        required: false
+        default: ./...
+      run:
+        description: Optional -run regexp (empty runs every test in the packages)
+        required: false
+        default: ""
+      count:
+        description: -count for one round
+        required: false
+        default: "10"
+      containers:
+        description: Number of parallel containers (1-20)
+        required: false
+        default: "10"
+      minutes:
+        description: How long each container keeps repeating rounds (1-240)
+        required: false
+        default: "90"
+
+permissions:
+  contents: read
+
+# 手動で始めた探索を後続のdispatchで捨てないよう、実行中のrunは打ち切らない。
+concurrency:
+  group: flake-hunt-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan the hunt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      timeout: ${{ steps.plan.outputs.timeout }}
+    steps:
+      - id: plan
+        name: Validate the inputs and build the matrix
+        shell: bash
+        env:
+          HUNT_CONTAINERS: ${{ inputs.containers }}
+          HUNT_MINUTES: ${{ inputs.minutes }}
+          HUNT_COUNT: ${{ inputs.count }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=Invalid input::$1"; exit 1; }
+          case "$HUNT_CONTAINERS" in ''|*[!0-9]*) fail "containers must be a number";; esac
+          case "$HUNT_MINUTES" in ''|*[!0-9]*) fail "minutes must be a number";; esac
+          case "$HUNT_COUNT" in ''|*[!0-9]*) fail "count must be a number";; esac
+          [ "$HUNT_CONTAINERS" -ge 1 ] && [ "$HUNT_CONTAINERS" -le 20 ] || fail "containers must be 1-20"
+          [ "$HUNT_MINUTES" -ge 1 ] && [ "$HUNT_MINUTES" -le 240 ] || fail "minutes must be 1-240"
+          [ "$HUNT_COUNT" -ge 1 ] || fail "count must be 1 or more"
+          matrix=$(seq 1 "$HUNT_CONTAINERS" | jq -Rsc 'split("\n") | map(select(length > 0) | "hunt-" + .)')
+          # 期限の判定はラウンドの開始前に行うので、最後のラウンドは期限を越えて走る。
+          # go testの-timeoutが45mなので、その分と後始末の余裕をjobのtimeoutへ足す。
+          {
+            echo "matrix=$matrix"
+            echo "timeout=$((HUNT_MINUTES + 55))"
+          } >> "$GITHUB_OUTPUT"
+
+  hunt:
+    name: ${{ matrix.id }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        id: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: flake-hunt
+      - name: Repeat the test profile until the deadline
+        shell: bash
+        env:
+          HUNT_ID: ${{ matrix.id }}
+          HUNT_PACKAGES: ${{ inputs.packages }}
+          HUNT_RUN: ${{ inputs.run }}
+          HUNT_COUNT: ${{ inputs.count }}
+          HUNT_MINUTES: ${{ inputs.minutes }}
+        run: |
+          set -uo pipefail
+          mkdir -p hunt-logs
+          args=(test -race -shuffle=on "-count=$HUNT_COUNT" -timeout=45m)
+          if [ -n "$HUNT_RUN" ]; then
+            args+=("-run=$HUNT_RUN")
+          fi
+          # packagesは複数指定できるよう、空白で区切って展開する。
+          read -r -a packages <<<"$HUNT_PACKAGES"
+          args+=("${packages[@]}")
+          echo "profile: go ${args[*]}"
+          nproc
+          go version
+          deadline=$((HUNT_MINUTES * 60))
+          start=$SECONDS
+          round=0
+          failures=0
+          longest=0
+          while [ $((SECONDS - start)) -lt "$deadline" ]; do
+            round=$((round + 1))
+            log="hunt-logs/round-$round.log"
+            echo "=== round $round starts at $((SECONDS - start))s"
+            began=$SECONDS
+            if go "${args[@]}" >"$log" 2>&1; then
+              # 成功したラウンドのログは残さない。artifactを失敗の分だけにするため。
+              rm -f "$log"
+            else
+              failures=$((failures + 1))
+              echo "=== failure in round $round"
+              grep -E "^--- FAIL|^    --- FAIL|^FAIL" "$log" | head -n 20
+            fi
+            elapsed=$((SECONDS - began))
+            [ "$elapsed" -gt "$longest" ] && longest=$elapsed
+            # 期限のすぐ手前で始めたラウンドがjobのtimeoutで切られると結果が残らないので、
+            # 直近で最も長かったラウンドが収まらない残り時間なら打ち切る。
+            if [ $((deadline - (SECONDS - start))) -lt "$longest" ]; then
+              echo "=== stopping: the remaining time is shorter than the longest round (${longest}s)"
+              break
+            fi
+          done
+          echo "=== rounds=$round failures=$failures elapsed=$((SECONDS - start))s"
+          {
+            echo "## Flake hunt: \`$HUNT_ID\`"
+            echo
+            echo "- Profile: \`go ${args[*]}\`"
+            echo "- Rounds: $round"
+            echo "- Failed rounds: $failures"
+            echo
+            if [ "$failures" -gt 0 ]; then
+              echo "### Failing tests"
+              echo
+              echo '```'
+              # 所要時間はラウンドごとに違うので、テスト名だけで数えられるよう落とす。
+              cat hunt-logs/round-*.log 2>/dev/null | grep -Eo "^ *--- FAIL: [^ ]+" |
+                sed -E 's/^ *--- FAIL: //' | sort | uniq -c | sort -rn
+              echo '```'
+              echo
+              echo "Full logs of the failed rounds are attached as \`hunt-logs-$HUNT_ID\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$failures" -eq 0
+      - if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: hunt-logs-${{ matrix.id }}
+          path: hunt-logs
+          if-no-files-found: ignore
+          retention-days: 7
