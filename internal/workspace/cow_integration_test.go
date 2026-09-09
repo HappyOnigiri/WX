@@ -29,6 +29,10 @@ func cowGit(t *testing.T, directory string, args ...string) string {
 	return strings.TrimSpace(result.Stdout)
 }
 
+// cowBody は共有下限（cowMinShareSize）を超える donor 内容である。
+// 下限未満のファイルは共有対象外なので、inode の差し替えを見るテストはこの内容を使う。
+var cowBody = strings.Repeat("original\n", cowMinShareSize/len("original\n")+1)
+
 func cowFixture(t *testing.T) (*Preparer, discovery.Repository, string, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -36,7 +40,7 @@ func cowFixture(t *testing.T) (*Preparer, discovery.Repository, string, string) 
 	cowGit(t, source, "init", "-b", "main")
 	cowGit(t, source, "config", "user.name", "test")
 	cowGit(t, source, "config", "user.email", "test@example.com")
-	if err := os.WriteFile(filepath.Join(source, "file"), []byte("original\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(source, "file"), []byte(cowBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cowGit(t, source, "add", ".")
@@ -129,8 +133,8 @@ func TestCOWPrepareFallbackKeepsCheckout(t *testing.T) {
 				t.Fatal(err)
 			}
 			data, err := os.ReadFile(filepath.Join(target, "file"))
-			if err != nil || string(data) != "original\n" {
-				t.Fatalf("fallback corrupted checkout: %q %v", data, err)
+			if err != nil || string(data) != cowBody {
+				t.Fatalf("fallback corrupted checkout: %d bytes %v", len(data), err)
 			}
 		})
 	}
@@ -146,7 +150,7 @@ func TestCOWRestorePreservesIndexAndDirtyBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	cowGit(t, target, "add", "file")
-	if err := os.WriteFile(file, []byte("original\n"), 0o644); err != nil {
+	if err := os.WriteFile(file, []byte(cowBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	beforeIndex := cowGit(t, target, "write-tree")
@@ -216,6 +220,10 @@ func TestCOWKeepsPathDependentFilterOutput(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, ".gitattributes"), []byte("file filter=location\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// clean filter は行ごとに TOKEN 化するため、smudge 出力（1行）を clean した結果と blob が一致するのは1行の内容だけである。
+	if err := os.WriteFile(filepath.Join(source, "file"), []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cowGit(t, source, "add", ".")
 	cowGit(t, source, "commit", "-m", "filter")
 	oid := cowGit(t, source, "rev-parse", "HEAD")
@@ -279,7 +287,7 @@ func TestCOWCompactOwnedWorktreeSharesDonorBytes(t *testing.T) {
 	if after.Ino == before.Ino || after.Ino == donor.Ino {
 		t.Fatalf("inode donor=%d before=%d after=%d", donor.Ino, before.Ino, after.Ino)
 	}
-	if data, err := os.ReadFile(filepath.Join(target, "file")); err != nil || string(data) != "original\n" {
-		t.Fatalf("shared bytes changed: %q %v", data, err)
+	if data, err := os.ReadFile(filepath.Join(target, "file")); err != nil || string(data) != cowBody {
+		t.Fatalf("shared bytes changed: %d bytes %v", len(data), err)
 	}
 }

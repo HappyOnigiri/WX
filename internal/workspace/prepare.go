@@ -39,6 +39,9 @@ type Preparer struct {
 	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、daemon は全 Preparer と archive.Manager へ同じ表を渡す。
 	SlotLocks  *gitx.KeyedLocks
 	noCheckout bool
+	// cowWorkerCount は CoW 共有の並列度をテストから固定する内部フックである。
+	// 0 のままなら cowWorkers が既定値を決める。1 にすると共有順序が index の並び順で決定的になる。
+	cowWorkerCount int
 }
 
 // logSkip は prepare が copy/link source を使わずに進んだ事実と理由を warn として残す。
