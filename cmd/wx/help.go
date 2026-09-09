@@ -290,7 +290,7 @@ Options:
   --all   also list sessions that no longer hold a slot
   --json  print machine-readable JSON`)
 	case "bench":
-		_, _ = fmt.Fprintln(w, `Usage: wx bench [--runs <n>] [--branch <branch|repo=branch>] [--reuse] [--json]
+		_, _ = fmt.Fprintln(w, `Usage: wx bench [--runs <n>] [--branch <branch|repo=branch>] [--config <key=value,...>] [--reuse] [--json]
 
 Measure how long the current workspace takes to become usable, and where that
 time goes. Each run leases a workspace the way wx new does, waits for EARLY
@@ -318,6 +318,22 @@ With --runs, wx waits for the saving, removal, and replenishment jobs of the
 previous run to finish before measuring the next one, and prints the minimum,
 median, and maximum at the end.
 
+Repeat --config to compare preparation settings. Each --config is one
+configuration to measure, written as copy_mode=<auto|cow|copy> and
+cow_min_size_kib=<n> separated by commas; the keys you leave out keep the value
+the daemon is running with. Every configuration is measured --runs times, and
+the comparison table adds the disk each configuration left behind: the
+exclusive size is what the slot occupies after CoW sharing is discounted, taken
+from the same measurement wx slots reports. A configuration whose usage is not
+measured before the lease is returned is reported as - and keeps its timings.
+The settings travel with the lease request and apply only to the slot prepared
+for it: wx neither reads nor writes your configuration file, and the daemon
+keeps preparing every other workspace with its own settings. Interrupting the
+command therefore leaves no measurement setting behind. Slots prepared with
+--config are not handed to later leases or kept as standby, so each
+configuration is always measured as a cold start, and --config is rejected
+together with --reuse.
+
 The measured workspace is returned without saving it, as wx release --discard
 does. Interrupting wx bench skips that return, and the workspace then stays
 leased until the wx session that ran the command ends, or until lease.ttl.
@@ -328,6 +344,8 @@ an argument error.
 Options:
   --runs <n>                     measure this many leases (default 1)
   --branch <branch|repo=branch>  choose a detached base (repeatable)
+  --config <key=value,...>       compare this preparation setting; keys are
+                                 copy_mode and cow_min_size_kib (repeatable)
   --reuse                        keep standby worktrees and measure what the
                                  pool returns
   --json                         print machine-readable JSON`)

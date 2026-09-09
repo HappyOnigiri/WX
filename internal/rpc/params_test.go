@@ -9,7 +9,7 @@ import (
 
 // 共有型の round-trip だけでは CLI と daemon が同時に誤るため、送信する固定 JSON と byte 単位で比較する。
 // 冪等キーと再送判定は Params の JSON 文字列を比較するので、キーの順序・有無・型が変わると同じ要求が別物になる。
-// 貸出の 3 フィールドは辞書順の位置に入り、agent 起動でも空文字として必ず出力される。
+// 貸出の 3 フィールドと準備設定の上書き 2 フィールドは辞書順の位置に入り、指定がなくても空文字・null として必ず出力される。
 
 func TestResolveAndLeaseParamsMarshalsLegacyBytes(t *testing.T) {
 	t.Parallel()
@@ -21,17 +21,17 @@ func TestResolveAndLeaseParamsMarshalsLegacyBytes(t *testing.T) {
 		{
 			name:   "zero",
 			params: ResolveAndLeaseParams{},
-			want:   `{"agent":"","branches":null,"client_pid":0,"cwd":"","force_worktree":false,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":""}`,
+			want:   `{"agent":"","branches":null,"client_pid":0,"cwd":"","force_worktree":false,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":"","prepare_copy_mode":"","prepare_cow_min_size_kib":null}`,
 		},
 		{
 			name:   "populated",
 			params: ResolveAndLeaseParams{Agent: "codex", Branches: []string{"main", "topic"}, ClientPID: 4321, CWD: "/repo", ForceWorktree: true},
-			want:   `{"agent":"codex","branches":["main","topic"],"client_pid":4321,"cwd":"/repo","force_worktree":true,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":""}`,
+			want:   `{"agent":"codex","branches":["main","topic"],"client_pid":4321,"cwd":"/repo","force_worktree":true,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":"","prepare_copy_mode":"","prepare_cow_min_size_kib":null}`,
 		},
 		{
 			name:   "empty branches",
 			params: ResolveAndLeaseParams{Branches: []string{}},
-			want:   `{"agent":"","branches":[],"client_pid":0,"cwd":"","force_worktree":false,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":""}`,
+			want:   `{"agent":"","branches":[],"client_pid":0,"cwd":"","force_worktree":false,"lease_kind":"","lease_owner_session_id":"","lease_owner_token":"","prepare_copy_mode":"","prepare_cow_min_size_kib":null}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -83,7 +83,7 @@ func TestResumeParamsMarshalsLegacyBytes(t *testing.T) {
 func TestSharedParamsMatchLegacyMapEncoding(t *testing.T) {
 	t.Parallel()
 	pid := os.Getpid()
-	lease, err := json.Marshal(map[string]any{"cwd": "/repo", "branches": []string{"main"}, "agent": "codex", "client_pid": pid, "force_worktree": true, "lease_kind": "shell", "lease_owner_session_id": "owner", "lease_owner_token": "token"})
+	lease, err := json.Marshal(map[string]any{"cwd": "/repo", "branches": []string{"main"}, "agent": "codex", "client_pid": pid, "force_worktree": true, "lease_kind": "shell", "lease_owner_session_id": "owner", "lease_owner_token": "token", "prepare_copy_mode": "", "prepare_cow_min_size_kib": nil})
 	if err != nil {
 		t.Fatal(err)
 	}

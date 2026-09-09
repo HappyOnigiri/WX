@@ -9,6 +9,9 @@ func TestBenchCommandValidatesArgumentsAndHelp(t *testing.T) {
 	assertLeaseCommandExits(t, "bench", runBench, []string{"--all"}, 2)
 	// 回数の指定誤りは daemon へ接続する前に引数エラーで終える。
 	assertLeaseCommandExits(t, "bench", runBench, []string{"--runs", "0"}, 2)
+	// 比較する設定の誤りも、standby を退役させる前に引数エラーで終える。
+	assertLeaseCommandExits(t, "bench", runBench, []string{"--config", "copy_mode=clone"}, 2)
+	assertLeaseCommandExits(t, "bench", runBench, []string{"--config", "warm=1"}, 2)
 	// daemon が居なければ失敗（1）で終える。
 	assertLeaseCommandExits(t, "bench", runBench, []string{"--reuse"}, 1)
 }
