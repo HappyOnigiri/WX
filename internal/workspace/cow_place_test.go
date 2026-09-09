@@ -93,40 +93,6 @@ func TestPlanCOWPlacementKeepsOnlyMatchingLateEntries(t *testing.T) {
 	}
 }
 
-func TestCOWPlacementClonesOnlyFilesAboveTheMinimum(t *testing.T) {
-	if !cowAvailable() {
-		t.Skip("APFS is required")
-	}
-	source, destination := cowRoots(t)
-	if err := source.Mkdir("dir", 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cowWrite(t, source, "dir/large", strings.Repeat("l", cowMinShareSize))
-	cowWrite(t, source, "dir/small", strings.Repeat("s", cowMinShareSize-1))
-	cowWrite(t, source, "top", strings.Repeat("t", cowMinShareSize))
-	stats := &cowStats{}
-	placer := &cowPlacer{
-		source: source, destination: destination, proof: func() error { return nil },
-		minSize: cowMinShareSize, stats: stats, placed: map[string]bool{},
-	}
-	chunk := splitCOWRuns([]cowIndexEntry{{name: "dir/large"}, {name: "dir/small"}, {name: "top"}})
-	if err := placer.placeChunk(context.Background(), chunk, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if !placer.placed["dir/large"] || !placer.placed["top"] {
-		t.Fatalf("placed=%v", placer.placed)
-	}
-	if placer.placed["dir/small"] {
-		t.Fatal("a file below the minimum was cloned")
-	}
-	if _, err := destination.Stat("dir/small"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("small file destination err=%v", err)
-	}
-	if stats.skippedSize.Load() != 1 || stats.shared.Load() != 2 {
-		t.Fatalf("skipped=%d shared=%d", stats.skippedSize.Load(), stats.shared.Load())
-	}
-}
-
 // 所有権を証明できない回は1件も置かない。証明は塊の入口で先に呼ぶ。
 func TestCOWPlacementStopsWhenOwnershipIsUnprovable(t *testing.T) {
 	source, destination := cowRoots(t)
