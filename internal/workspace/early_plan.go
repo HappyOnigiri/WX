@@ -159,9 +159,12 @@ func (p *Preparer) planIncludes(repo discovery.Repository, plan *earlyPlan) erro
 	if err != nil {
 		return err
 	}
+	tracked, err := p.trackedIncludePaths(repo)
+	if err != nil {
+		return err
+	}
 	keep := func(path string) (bool, error) {
-		tracked, err := p.includePathTracked(repo, path)
-		return !tracked, err
+		return !tracked[filepath.Clean(path)], nil
 	}
 	for _, pattern := range patterns {
 		clean := filepath.Clean(pattern)

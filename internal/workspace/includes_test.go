@@ -134,7 +134,7 @@ func TestWorktreeIncludeReturnsTrackedCheckGitErrors(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
 	preparer := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
-	if err := preparer.copyIncludesAt(repo, owner, "."); err == nil || !strings.Contains(err.Error(), "check tracked include") {
+	if err := preparer.copyIncludesAt(repo, owner, "."); err == nil || !strings.Contains(err.Error(), "list tracked includes") {
 		t.Fatalf("tracked check Git failure was not returned: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(target, "settings", "local")); !os.IsNotExist(err) {
