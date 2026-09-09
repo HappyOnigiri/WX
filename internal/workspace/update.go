@@ -16,6 +16,10 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
+// ErrUpdateIneligible はREADY standbyを要求OIDへ更新できない構造的な条件を示す。
+// 呼び出し元はslotを回収して補充へ回し、Cold Startで作り直す合図に使う。
+var ErrUpdateIneligible = errors.New("standby cannot be updated to the requested state")
+
 // ValidateUpdateCandidate は既知の更新不能条件をREADY slotの予約前に検査する。
 func (p *Preparer) ValidateUpdateCandidate(ctx context.Context, repo discovery.Repository, target, oldOID, newOID string, previous, desired []state.Placement) error {
 	if err := p.ValidateReady(ctx, repo, target, oldOID); err != nil {
@@ -24,13 +28,16 @@ func (p *Preparer) ValidateUpdateCandidate(ctx context.Context, repo discovery.R
 	if err := p.rejectChangedGitlinks(ctx, repo, oldOID, newOID); err != nil {
 		return err
 	}
+	if err := p.rejectChangedAttributes(ctx, repo, oldOID, newOID); err != nil {
+		return err
+	}
 	root, err := p.destinationRoot(target)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = root.Close() }()
 	if err := validateRecordedPlacements(root, previous); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrUpdateIneligible, err)
 	}
 	tracked, err := p.gitPaths(ctx, target, "ls-tree", "-r", "--name-only", "-z", newOID)
 	if err != nil {
@@ -54,13 +61,26 @@ func (p *Preparer) ValidateUpdateCandidate(ctx context.Context, repo discovery.R
 			continue
 		}
 		if pathsConflictAny(path, tracked) || pathsConflictAny(path, desiredPaths) {
-			return fmt.Errorf("untracked or ignored path %s conflicts with standby update", path)
+			return fmt.Errorf("%w: untracked or ignored path %s conflicts with standby update", ErrUpdateIneligible, path)
 		}
 	}
 	for path := range desiredPaths {
 		if pathsConflictAny(path, tracked) {
-			return fmt.Errorf("placement path %s becomes tracked at requested OID", path)
+			return fmt.Errorf("%w: placement path %s becomes tracked at requested OID", ErrUpdateIneligible, path)
 		}
+	}
+	return nil
+}
+
+// rejectChangedAttributes は.gitattributesに差のある更新を不適格として扱う。
+// 更新の再展開は`git checkout-index`では済まず、内容が同じでstat cacheの一致するfileだけが旧属性のまま残る。
+func (p *Preparer) rejectChangedAttributes(ctx context.Context, repo discovery.Repository, oldOID, newOID string) error {
+	diff, err := p.Git.Run(ctx, string(repo.MainPath), "diff", "--name-only", "-z", oldOID, newOID, "--", ".gitattributes", ":(glob)**/.gitattributes")
+	if err != nil {
+		return err
+	}
+	if diff.Stdout != "" {
+		return fmt.Errorf("%w: .gitattributes changed between the standby and the requested OID", ErrUpdateIneligible)
 	}
 	return nil
 }
@@ -71,7 +91,7 @@ func (p *Preparer) rejectChangedGitlinks(ctx context.Context, repo discovery.Rep
 		return err
 	}
 	if modules.Stdout != "" {
-		return errors.New("submodule configuration changed")
+		return fmt.Errorf("%w: submodule configuration changed", ErrUpdateIneligible)
 	}
 	oldLinks, err := p.Git.Run(ctx, string(repo.MainPath), "ls-tree", "-r", oldOID)
 	if err != nil {
@@ -91,7 +111,7 @@ func (p *Preparer) rejectChangedGitlinks(ctx context.Context, repo discovery.Rep
 		return strings.Join(lines, "\n")
 	}
 	if filter(oldLinks.Stdout) != filter(newLinks.Stdout) {
-		return errors.New("submodule configuration or gitlink OID changed")
+		return fmt.Errorf("%w: submodule configuration or gitlink OID changed", ErrUpdateIneligible)
 	}
 	return nil
 }
@@ -169,22 +189,6 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 	}
 	if _, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", newOID); err != nil {
 		return nil, err
-	}
-	diff, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "diff", "--name-only", "-z", oldOID, newOID)
-	if err != nil {
-		return nil, err
-	}
-	attributesChanged := false
-	for _, name := range strings.Split(diff.Stdout, "\x00") {
-		if filepath.Base(name) == ".gitattributes" {
-			attributesChanged = true
-			break
-		}
-	}
-	if attributesChanged {
-		if _, err := p.RunGitInWorktree(ctx, target, identity, []string{"GIT_ATTR_SOURCE=" + newOID}, nil, "-c", "core.hooksPath=/dev/null", "checkout-index", "--all", "--force"); err != nil {
-			return nil, err
-		}
 	}
 	retainedPrevious := unchangedPlacements(previous, desired)
 	desired, err = p.filterUpdateLinks(ctx, destination, desired)
@@ -414,7 +418,7 @@ func ValidateRootPlacements(destination *os.Root, previous, desired []state.Plac
 				}
 			}
 			if !found && !covered {
-				return fmt.Errorf("workspace placement collision %s", placement.RelativePath)
+				return fmt.Errorf("%w: workspace placement collision %s", ErrUpdateIneligible, placement.RelativePath)
 			}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err

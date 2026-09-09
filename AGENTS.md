@@ -21,6 +21,7 @@ CIのランナーは全てlinuxなので、platform依存の実装を触った�
 - 貸出中のslotのworktreeを書き換えない。
   READYのHot Standbyは`worktree.reuse_standby`が有効で更新適合条件を満たす場合に限り、貸出予約後・起動前に要求OIDへ更新してよい。
   更新の書込み開始後に失敗・中断したslotは隔離し、自動再実行や別pathへの切替を行わない。
+  更新適合条件を満たさないREADY standbyはSTALEとして回収し、補充で作り直す（`--branch`指定の貸出では回収しない）。
 
 ## 状態とスキーマ
 

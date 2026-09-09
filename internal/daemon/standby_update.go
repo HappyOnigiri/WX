@@ -65,7 +65,7 @@ func (m *Manager) leaseMatchingReady(ctx context.Context, w discovery.Workspace,
 
 func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspace, slot state.Slot, resolved []pool.Resolved, agent string, pid int, attrs leaseAttrs) (Lease, bool, error) {
 	if !slot.PlacementHistoryComplete || slot.OwnerSessionID != "" || slot.Generation == 0 {
-		return Lease{}, false, errors.New("standby has no complete placement history")
+		return Lease{}, false, fmt.Errorf("%w: standby has no complete placement history", workspace.ErrUpdateIneligible)
 	}
 	releaseRoot, err := m.holdRootForPath(slot.Path)
 	if err != nil {
@@ -77,12 +77,12 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 		return Lease{}, false, err
 	}
 	if len(repositories) != len(resolved) {
-		return Lease{}, false, errors.New("workspace repository set changed")
+		return Lease{}, false, fmt.Errorf("%w: workspace repository set changed", workspace.ErrUpdateIneligible)
 	}
 	storedByID := make(map[string]state.SlotRepository, len(repositories))
 	for _, repository := range repositories {
 		if repository.State != "READY" || repository.CompatibilityFingerprint == "" {
-			return Lease{}, false, errors.New("standby contains an unmaterialized or legacy repository")
+			return Lease{}, false, fmt.Errorf("%w: standby contains an unmaterialized or legacy repository", workspace.ErrUpdateIneligible)
 		}
 		storedByID[repository.RepositoryID] = repository
 	}
@@ -96,14 +96,14 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 	for _, requested := range resolved {
 		stored, ok := storedByID[string(requested.Repository.ID)]
 		if !ok {
-			return Lease{}, false, errors.New("workspace repository set changed")
+			return Lease{}, false, fmt.Errorf("%w: workspace repository set changed", workspace.ErrUpdateIneligible)
 		}
 		compatibility, err := workspace.UpdateCompatibilityFingerprint(slot.Generation, requested.Repository, m.Config())
 		if err != nil {
 			return Lease{}, false, err
 		}
 		if compatibility != stored.CompatibilityFingerprint {
-			return Lease{}, false, errors.New("standby preparation conditions changed")
+			return Lease{}, false, fmt.Errorf("%w: standby preparation conditions changed", workspace.ErrUpdateIneligible)
 		}
 		fingerprint, err := workspace.Fingerprint(slot.Generation, requested.OID, requested.Repository, m.Config())
 		if err != nil {
@@ -153,7 +153,7 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 	job, err := m.store.ReserveStandbyUpdate(ctx, slot.ID, session, targets, desired, m.Config().Storage.CopyMode)
 	if err != nil {
 		m.releaseLease(session.ID)
-		if stringsContainStateRace(err) {
+		if standbyStateRace(err) {
 			return Lease{}, false, nil
 		}
 		return Lease{}, false, err
@@ -163,8 +163,9 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, true, nil
 }
 
-func stringsContainStateRace(err error) bool {
-	return err != nil && (errors.Is(err, state.ErrSlotStateIneligible) || err.Error() == "slot is no longer an updateable READY standby")
+// standbyStateRace は候補を奪われただけの一時的な失敗かを返す。slotの状態は変えず次の候補へ回す。
+func standbyStateRace(err error) bool {
+	return err != nil && (errors.Is(err, state.ErrSlotStateIneligible) || errors.Is(err, state.ErrStandbyNotUpdateable))
 }
 
 func placementsFor(placements []state.Placement, repositoryID string) []state.Placement {
@@ -196,8 +197,9 @@ func (m *Manager) standbyStoredStateValid(ctx context.Context, slot state.Slot, 
 		if !ok || stored.State != "READY" {
 			return false, nil
 		}
+		// 更新互換fingerprintを持たないrepositoryは更新に使えないため、保存済み状態では維持しない。
 		if stored.CompatibilityFingerprint == "" {
-			return m.readyMatches(ctx, slot, mustResolveStored(w, repositories))
+			return false, nil
 		}
 		compatibility, err := workspace.UpdateCompatibilityFingerprint(slot.Generation, repository, m.Config())
 		if err != nil || compatibility != stored.CompatibilityFingerprint {
@@ -224,16 +226,17 @@ func (m *Manager) standbyStoredStateValid(ctx context.Context, slot state.Slot, 
 	return true, nil
 }
 
-func mustResolveStored(w discovery.Workspace, repositories []state.SlotRepository) []pool.Resolved {
-	byID := make(map[string]discovery.Repository, len(w.Repositories))
-	for _, repository := range w.Repositories {
-		byID[string(repository.ID)] = repository
+// standbyReadyUsable はREADY slotを維持できるかを返す。reconcileと`wx doctor`で判定がずれないよう共有する。
+// 配置履歴を持たないslotは更新に使えないため、現在のmainと完全一致するときだけ維持する。
+func (m *Manager) standbyReadyUsable(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, reuse bool) (bool, error) {
+	valid, err := m.readyMatches(ctx, slot, resolved)
+	if err == nil && valid {
+		return true, nil
 	}
-	resolved := make([]pool.Resolved, 0, len(repositories))
-	for _, stored := range repositories {
-		resolved = append(resolved, pool.Resolved{Repository: byID[stored.RepositoryID], RequestedRef: stored.RequestedRef, OID: stored.BaseOID})
+	if !reuse || !slot.PlacementHistoryComplete {
+		return valid, err
 	}
-	return resolved
+	return m.standbyStoredStateValid(ctx, slot, w)
 }
 
 func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateErr error) {

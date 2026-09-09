@@ -57,7 +57,7 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	}
 	reuseStandby, _ := m.Config().ReuseStandbyForWorkspace(string(w.Root))
 	if !cold && reuseStandby {
-		return m.leaseReusableStandby(ctx, w, resolved, generation, agent, pid, attrs)
+		return m.leaseReusableStandby(ctx, w, resolved, generation, branches, agent, pid, attrs)
 	}
 	attempts, budget := 0, 0
 	if !cold {
@@ -160,7 +160,7 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	return m.allocate(ctx, w, resolved, generation, agent, pid, attrs, "STARTING", "")
 }
 
-func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, attrs leaseAttrs) (Lease, error) {
+func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspace, resolved []pool.Resolved, generation int, branches []string, agent string, pid int, attrs leaseAttrs) (Lease, error) {
 	candidates, err := m.store.ReadySlots(ctx, string(w.ID))
 	if err != nil {
 		return Lease{}, err
@@ -179,7 +179,7 @@ func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspac
 		}
 		lease, leased, leaseErr := m.leaseMatchingReady(ctx, w, candidate, agent, pid, attrs)
 		if leaseErr != nil {
-			if stringsContainStateRace(leaseErr) || strings.Contains(leaseErr.Error(), "slot is no longer READY") {
+			if standbyStateRace(leaseErr) || strings.Contains(leaseErr.Error(), "slot is no longer READY") {
 				continue
 			}
 			return Lease{}, leaseErr
@@ -191,11 +191,19 @@ func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspac
 	for _, candidate := range candidates {
 		lease, updated, updateErr := m.leaseUpdatingStandby(ctx, w, candidate, resolved, agent, pid, attrs)
 		if updateErr != nil {
-			if errors.Is(updateErr, state.ErrOwnership) {
+			switch {
+			case errors.Is(updateErr, state.ErrOwnership) && !errors.Is(updateErr, state.ErrSlotStateIneligible):
 				m.quarantineOwnershipFailure(candidate.ID, []string{"READY"}, updateErr)
-				continue
+			case standbyStateRace(updateErr):
+				m.log.Info("standby update candidate lost to a concurrent transition", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr)
+			case errors.Is(updateErr, workspace.ErrUpdateIneligible) && len(branches) == 0:
+				// 更新不適格なstandbyは残しても毎回cold startになるだけなので、非reuse経路と同じくSTALEにして補充へ回す。
+				// --branch指定を除くのは、main向けのstandbyをbranch要求のために捨てないためである。
+				_ = m.store.SetSlotState(ctx, candidate.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
+				m.log.Info("standby retired as not updateable", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr)
+			default:
+				m.log.Info("standby update candidate rejected before writes", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr)
 			}
-			m.log.Info("standby update candidate rejected before writes", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr)
 			continue
 		}
 		if updated {

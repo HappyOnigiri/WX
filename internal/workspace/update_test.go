@@ -1,14 +1,77 @@
 package workspace
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
+
+func TestRejectChangedAttributesDetectsRootAndNestedChanges(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		change     func(t *testing.T, repository string)
+		ineligible bool
+	}{
+		{name: "root added", change: func(t *testing.T, repository string) {
+			writeTestFile(t, filepath.Join(repository, ".gitattributes"), "*.txt text eol=crlf\n")
+		}, ineligible: true},
+		{name: "nested changed", change: func(t *testing.T, repository string) {
+			writeTestFile(t, filepath.Join(repository, "sub", ".gitattributes"), "*.txt -text\n")
+		}, ineligible: true},
+		{name: "nested removed", change: func(t *testing.T, repository string) {
+			if err := os.Remove(filepath.Join(repository, "sub", ".gitattributes")); err != nil {
+				t.Fatal(err)
+			}
+		}, ineligible: true},
+		{name: "unrelated file only", change: func(t *testing.T, repository string) {
+			writeTestFile(t, filepath.Join(repository, "sub", "b.txt"), "changed\n")
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repository := t.TempDir()
+			gitCommand(t, repository, "init", "-b", "main")
+			writeTestFile(t, filepath.Join(repository, "a.txt"), "a\n")
+			writeTestFile(t, filepath.Join(repository, "sub", "b.txt"), "b\n")
+			writeTestFile(t, filepath.Join(repository, "sub", ".gitattributes"), "*.txt text\n")
+			gitCommand(t, repository, "add", "-A")
+			gitCommand(t, repository, "commit", "-m", "base")
+			oldOID := gitOutput(t, repository, "rev-parse", "HEAD")
+			testCase.change(t, repository)
+			gitCommand(t, repository, "add", "-A")
+			gitCommand(t, repository, "commit", "-m", "change")
+			newOID := gitOutput(t, repository, "rev-parse", "HEAD")
+			preparer := Preparer{Git: &gitx.Runner{Timeout: 30 * time.Second}}
+			repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+			err := preparer.rejectChangedAttributes(context.Background(), repo, oldOID, newOID)
+			if testCase.ineligible != errors.Is(err, ErrUpdateIneligible) {
+				t.Fatalf("ineligible=%v err=%v", testCase.ineligible, err)
+			}
+			if !testCase.ineligible && err != nil {
+				t.Fatalf("unexpected failure: %v", err)
+			}
+		})
+	}
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestPathsConflictAnyIncludesAncestors(t *testing.T) {
 	if !pathsConflictAny("cache", map[string]bool{"cache/file": true}) {

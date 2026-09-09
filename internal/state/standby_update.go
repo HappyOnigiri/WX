@@ -92,6 +92,10 @@ func (s *Store) ReplacePlacements(ctx context.Context, slotID string, placements
 	return tx.Commit()
 }
 
+// ErrStandbyNotUpdateable は予約の直前に slot が更新可能な READY standby ではなくなったことを示す。
+// 併走する貸出や GC に奪われただけなので、呼び出し元は slot の状態を変えず次の候補へ回す合図に使う。
+var ErrStandbyNotUpdateable = errors.New("slot is no longer an updateable READY standby")
+
 // ReserveStandbyUpdate は検証済み READY slot の貸出予約と UPDATE job を一つの transaction で作る。
 func (s *Store) ReserveStandbyUpdate(ctx context.Context, slotID string, session Session, targets []SlotRepository, placements []Placement, copyMode string) (Job, error) {
 	job, err := newJob("UPDATE", session.WorkspaceID, slotID, session.ID)
@@ -114,7 +118,7 @@ func (s *Store) ReserveStandbyUpdate(ctx context.Context, slotID string, session
 		return Job{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return Job{}, errors.New("slot is no longer an updateable READY standby")
+		return Job{}, ErrStandbyNotUpdateable
 	}
 	for _, target := range targets {
 		res, err := tx.ExecContext(ctx, `UPDATE slot_repositories SET state='UPDATE_PENDING',update_requested_ref=?,update_base_oid=?,update_fingerprint=?,update_compatibility_fingerprint=? WHERE slot_id=? AND repository_id=? AND state='READY' AND base_oid=? AND prepare_fingerprint=? AND compatibility_fingerprint=?`, target.RequestedRef, target.BaseOID, target.Fingerprint, target.CompatibilityFingerprint, slotID, target.RepositoryID, target.UpdateBaseOID, target.UpdateFingerprint, target.CompatibilityFingerprint)

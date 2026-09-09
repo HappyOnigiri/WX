@@ -150,13 +150,10 @@ func (m *Manager) registrationFindings(ctx context.Context) []diag.Finding {
 			findings = append(findings, registrationProblem(root, "", "", slotsErr))
 			continue
 		}
+		reuse, _ := m.Config().ReuseStandbyForWorkspace(string(workspaceRecord.Root))
 		for _, slot := range slots {
 			checked++
-			valid, validationErr := m.readyMatches(ctx, slot, resolved)
-			reuse, _ := m.Config().ReuseStandbyForWorkspace(string(workspaceRecord.Root))
-			if reuse && (validationErr != nil || !valid) {
-				valid, validationErr = m.standbyStoredStateValid(ctx, slot, workspaceRecord)
-			}
+			valid, validationErr := m.standbyReadyUsable(ctx, slot, workspaceRecord, resolved, reuse)
 			switch {
 			case validationErr != nil:
 				findings = append(findings, registrationProblem(root, slot.ID, slot.Path, validationErr))

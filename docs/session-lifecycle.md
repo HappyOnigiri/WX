@@ -5,6 +5,7 @@
    worktreeを使う場合は`ensureDaemon`でdaemonの生存を確認し（応答が遅いだけの生きたdaemonをlaunchdで再起動しないよう、接続自体に失敗したときだけkickstartする）、`ResolveAndLease`を呼ぶ。
    daemonはcwdからworkspaceを解決し、要求したOIDと準備条件が完全一致するREADY slotを優先する。
    一致候補がなく`worktree.reuse_standby`が有効なら、更新適合条件と配置履歴を満たすHot StandbyをUPDATEジョブへ予約し、無ければPREPAREジョブでCold Startする。
+   更新不適格と判定した候補は（`--branch`指定でなければ）STALEにして補充へ回すので、次の貸出では作り直したstandbyが使える。
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
    子プロセスには`WX_SESSION_ID`・`WX_SESSION_TOKEN`・`WX_DAEMON_SOCKET`などが渡り、以降のhookはこれを持つ場合だけ動く。
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
