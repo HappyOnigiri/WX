@@ -115,7 +115,8 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 	candidates := selectCOWCandidates(parsed, p.cowSourceIndexOIDs(ctx, source))
 	stats.candidates.Store(int64(len(candidates)))
 	slotStates, repoStates := preparationOwnershipStates(phase)
-	// 所有権証明は2段に割る。SQL は batch 単位に落とし、identity 検査は置換1件ごとに残して swap 前ゲートを維持する。
+	// 所有権証明は batch の前後で行う。置換1件ごとの identity 検査は、path 解決が entry 数だけ積み上がり共有全体の3割を占めていた。
+	// 宛先への書込みは pin 済み descriptor 経由なので、batch 中に slot directory が差し替わっても別 inode へは書かない。
 	sharer := &cowSharer{
 		source:      source,
 		destination: destination,
@@ -129,15 +130,22 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 		if err := p.validateStateOwnership(context.WithoutCancel(ctx), repo, target, slotID, slotStates, repoStates); err != nil {
 			return err
 		}
+		if err := sharer.verifyProof(); err != nil {
+			return fmt.Errorf("%w: CoW replacement ownership: %w", state.ErrOwnership, err)
+		}
+		scratch := newCOWScratch()
 		for _, run := range batch {
-			if err := sharer.shareRun(ctx, run.directory, run.leaves); err != nil {
+			if err := sharer.shareRun(ctx, scratch, run.directory, run.leaves); err != nil {
 				return err
 			}
+		}
+		if err := sharer.verifyProof(); err != nil {
+			return fmt.Errorf("%w: CoW cleanup ownership: %w", state.ErrOwnership, err)
 		}
 		return nil
 	})
 	p.logCOWStats(target, stats)
-	stats.recordCOWPhases(p.Phases)
+	stats.recordCOWPhases(p.Phases, "cow")
 	if shareErr != nil {
 		return shareErr
 	}
@@ -145,9 +153,19 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 }
 
 // compactFile は1件だけを共有する薄いラッパで、事前 skip を持たない置換機構そのものの検査に使う。
+// 所有権証明は本番の batch と同じく前後で1回ずつ行う。
 func compactFile(ctx context.Context, source, destination *os.Root, name string, validate func() error) error {
 	sharer := &cowSharer{source: source, destination: destination, proof: validate, stats: &cowStats{}}
-	return sharer.shareRun(ctx, filepath.Dir(name), []string{filepath.Base(name)})
+	if err := sharer.verifyProof(); err != nil {
+		return fmt.Errorf("%w: CoW replacement ownership: %w", state.ErrOwnership, err)
+	}
+	if err := sharer.shareRun(ctx, newCOWScratch(), filepath.Dir(name), []string{filepath.Base(name)}); err != nil {
+		return err
+	}
+	if err := sharer.verifyProof(); err != nil {
+		return fmt.Errorf("%w: CoW cleanup ownership: %w", state.ErrOwnership, err)
+	}
+	return nil
 }
 
 // cowOpenFile は全成分の symlink を拒否し、開いた inode が検査対象と同じことを確認する。

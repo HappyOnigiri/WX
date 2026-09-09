@@ -42,6 +42,9 @@ type Preparer struct {
 	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、daemon は全 Preparer と archive.Manager へ同じ表を渡す。
 	SlotLocks  *gitx.KeyedLocks
 	noCheckout bool
+	// sharedPlaced は共有できる tracked file を checkout の前に clone 済みであることを表す。
+	// この回は置き換え方式の共有と、inode 交換を前提にした index の再 refresh を行わない。
+	sharedPlaced bool
 	// cowWorkerCount は CoW 共有の並列度をテストから固定する内部フックである。
 	// 0 のままなら cowWorkers が既定値を決める。1 にすると共有順序が index の並び順で決定的になる。
 	cowWorkerCount int
@@ -234,18 +237,20 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 		// archive.Manager が snapshot の tree/index を復元し、resume-phase command を実行するまで RESTORING lock を保持する。
 		return nil
 	}
-	if err := p.timePhase("cow", func() error {
-		return p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity)
-	}); err != nil {
-		return err
-	}
-	// inode 交換で index の stat cache が陳腐化するため、貸出前に refresh して再ハッシュを PREPARING 側で払う。
-	// tracked 内容が変わっていないことの独立検証も兼ねる。
-	if phase == preparePhaseCreate {
-		if err := p.timePhase("tracked-status-refresh", func() error {
-			return p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status refresh")
+	if !p.sharedPlaced {
+		if err := p.timePhase("cow", func() error {
+			return p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity)
 		}); err != nil {
 			return err
+		}
+		// inode 交換で index の stat cache が陳腐化するため、貸出前に refresh して再ハッシュを PREPARING 側で払う。
+		// tracked 内容が変わっていないことの独立検証も兼ねる。
+		if phase == preparePhaseCreate {
+			if err := p.timePhase("tracked-status-refresh", func() error {
+				return p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status refresh")
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	if err := p.timePhase("ready-lock", func() error {

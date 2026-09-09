@@ -3,6 +3,8 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -58,7 +60,7 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		if err := p.timePhase("early-index", func() error { return p.buildEarlyPlan(ctx, item) }); err != nil {
 			return err
 		}
-		if err := p.timePhase("early-checkout", func() error { return p.checkoutStage(ctx, item, true) }); err != nil {
+		if err := p.timePhase("early-checkout", func() error { return p.checkoutStage(ctx, item, true, nil) }); err != nil {
 			return err
 		}
 		if err := p.timePhase("early-place", func() error {
@@ -86,7 +88,21 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		if err := p.validatePreparedTarget(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked.root, item.locked.relative, item.locked.identity, "validate remaining checkout"); err != nil {
 			return err
 		}
-		if err := p.timePhase("checkout", func() error { return p.checkoutStage(ctx, item, false) }); err != nil {
+		// 共有できる tracked file は checkout せず main から clone する。
+		// checkout してから同内容へ差し替えるのに比べ、同じ bytes の書き出しと読み比べが1往復ぶん要らない。
+		var placed map[string]bool
+		if err := p.timePhase("cow-place", func() error {
+			var placeErr error
+			placed, placeErr = p.placeSharedFiles(ctx, item.Repository, item, slotID)
+			return placeErr
+		}); err != nil {
+			return err
+		}
+		p.sharedPlaced = len(placed) > 0
+		if err := p.timePhase("checkout", func() error { return p.checkoutStage(ctx, item, false, placed) }); err != nil {
+			return err
+		}
+		if err := p.timePhase("cow-verify", func() error { return p.settleCOWPlacement(ctx, item, placed) }); err != nil {
 			return err
 		}
 		// worktree add の post-checkout と同じ null OID・新 HEAD・branch flag を使う。
@@ -118,6 +134,7 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 		return err
 	}
 	item.plan.symlinks = map[string]string{}
+	item.plan.oids = map[string]string{}
 	for _, entry := range strings.Split(result.Stdout, "\x00") {
 		if entry == "" {
 			continue
@@ -132,6 +149,9 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 			continue
 		}
 		item.plan.tracked = append(item.plan.tracked, path)
+		if cowShareableIndexMode(fields) {
+			item.plan.oids[path] = fields[1]
+		}
 		if fields[0] == "120000" {
 			blob, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "cat-file", "blob", fields[1])
 			if err != nil {
@@ -159,7 +179,9 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 	return nil
 }
 
-func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, early bool) error {
+// checkoutStage は plan のうち early 区分が一致する tracked path を展開する。
+// placed は既に clone で配置済みの path で、再展開すると clone した実体を上書きするため除く。
+func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, early bool, placed map[string]bool) error {
 	for _, path := range item.plan.gitlinks {
 		if item.plan.early[path] != early {
 			continue
@@ -176,7 +198,7 @@ func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, ea
 	}
 	var paths []string
 	for _, path := range item.plan.tracked {
-		if item.plan.early[path] == early {
+		if item.plan.early[path] == early && !placed[path] {
 			paths = append(paths, path)
 		}
 	}
@@ -184,7 +206,21 @@ func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, ea
 		return nil
 	}
 	// --force は使わず、先行配置後に現れた衝突を上書きせず失敗させる。
-	// 先行 include の未追跡 .gitattributes が残りの filter を変えないよう、属性は要求 OID から読む。
-	_, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, []string{"GIT_ATTR_SOURCE=" + item.OID}, []byte(strings.Join(paths, "\x00")+"\x00"), "checkout-index", "--index", "-z", "--stdin")
+	// checkout.workers は Git 側の parallel checkout を有効にする。設定の既定は 1 で、repository 設定に依らず同じ並列度にするため毎回明示する。
+	args := []string{"-c", "checkout.workers=" + strconv.Itoa(checkoutWorkers()), "checkout-index", "--index", "-z", "--stdin"}
+	var env []string
+	if item.plan.earlyAttributes() {
+		env = []string{"GIT_ATTR_SOURCE=" + item.OID}
+	}
+	_, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, env, []byte(strings.Join(paths, "\x00")+"\x00"), args...)
 	return err
+}
+
+// checkoutMaxWorkers は parallel checkout の上限である。
+// これを超える並列度は Git 側の同期費用が勝ち、手元の計測では実時間が伸びた。
+const checkoutMaxWorkers = 10
+
+// checkoutWorkers は checkout-index の並列度を返す。
+func checkoutWorkers() int {
+	return min(runtime.NumCPU(), checkoutMaxWorkers)
 }

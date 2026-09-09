@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -38,7 +39,8 @@ func TestEarlyReadinessWaitsForAllRepositoriesButNotRemainingCheckout(t *testing
 	var checkoutCount int
 	var mu sync.Mutex
 	f.Manager.git.SetBeforeRunAtHook(func(args []string) {
-		if len(args) == 0 || args[0] != "checkout-index" {
+		// checkout は `-c` の設定指定を伴うため、先頭ではなく引数全体から subcommand を探す。
+		if !slices.Contains(args, "checkout-index") {
 			return
 		}
 		mu.Lock()

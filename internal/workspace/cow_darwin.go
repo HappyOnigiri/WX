@@ -11,6 +11,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// cowACLBufferSize は ATTR_CMN_EXTENDED_SECURITY の取得に使う buffer 長である。
+// 上限を超える ACL は解釈せず CoW 失敗として扱うため、固定長で足りる。
+const cowACLBufferSize = 64 << 10
+
 func cowAvailable() bool { return true }
 
 func cloneCOW(source, parent *os.File, name string) error {
@@ -23,7 +27,7 @@ func swapCOW(parent *os.File, a, b string) error {
 
 // cowMetadata は所有者・mode・flags・ACL・xattr が一致する場合だけ日時を宛先に揃える。
 // metadata を解釈して移植せず、不一致は共有対象外にして通常 checkout の契約を保つ。
-func cowMetadata(original, clone *os.File, before unix.Stat_t) (bool, error) {
+func cowMetadata(original, clone *os.File, before unix.Stat_t, scratch *cowScratch) (bool, error) {
 	var copied unix.Stat_t
 	if err := unix.Fstat(int(clone.Fd()), &copied); err != nil {
 		return false, err
@@ -31,11 +35,11 @@ func cowMetadata(original, clone *os.File, before unix.Stat_t) (bool, error) {
 	if before.Uid != copied.Uid || before.Gid != copied.Gid || before.Mode != copied.Mode || before.Flags != copied.Flags {
 		return false, nil
 	}
-	left, err := cowACL(original)
+	left, err := cowACL(original, scratch.acl)
 	if err != nil {
 		return false, err
 	}
-	right, err := cowACL(clone)
+	right, err := cowACL(clone, scratch.clone)
 	if err != nil {
 		return false, err
 	}
@@ -71,9 +75,8 @@ func cowMetadata(original, clone *os.File, before unix.Stat_t) (bool, error) {
 
 // cowACL は Darwin の attrreference が指す security blob を比較用に取得する。
 // ACL の解釈や移植はせず、未知の形式・上限超過は CoW 失敗として扱う。
-func cowACL(file *os.File) ([]byte, error) {
+func cowACL(file *os.File, buffer []byte) ([]byte, error) {
 	attributes := unix.Attrlist{Bitmapcount: unix.ATTR_BIT_MAP_COUNT, Commonattr: unix.ATTR_CMN_EXTENDED_SECURITY}
-	buffer := make([]byte, 64<<10)
 	_, _, errno := unix.Syscall6(unix.SYS_FGETATTRLIST, file.Fd(), uintptr(unsafe.Pointer(&attributes)), uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), 0, 0)
 	if errno != 0 {
 		return nil, errno
