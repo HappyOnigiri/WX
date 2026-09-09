@@ -183,6 +183,11 @@ storage.cow_min_size_kib sets the smallest file CoW shares, in KiB (default 16).
 Files below it keep their normal checkout copy; 0 shares every eligible file, and
 a larger value trades disk savings for less per-file work. Changing it stops
 reuse of READY standby worktrees prepared under the previous value.
+A repository can override the limit with
+repositories.<main worktree path>.cow_min_size_kib, since the best value depends
+on the repository's file size distribution. Repository entries are a map, so
+edit them in the config file; wx config does not set them. Only the repositories
+whose effective limit changed lose the reuse of their READY standby worktrees.
 
 Readiness (readiness.mode):
   early  wait for Git registration and startup files, then launch with readiness hooks (default)

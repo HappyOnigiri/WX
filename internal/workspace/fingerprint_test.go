@@ -121,6 +121,40 @@ func TestFingerprintSchemaMismatchInvalidatesPreviousValue(t *testing.T) {
 	}
 }
 
+// repository 個別の共有下限は、その repository の fingerprint だけを変える。
+// 同じ設定に居る他 repository の hash が動かないことが、READY standby を巻き添えで捨てない根拠になる。
+func TestFingerprintFollowsRepositoryCOWMinSize(t *testing.T) {
+	a := discovery.Repository{MainPath: domain.CanonicalPath(t.TempDir())}
+	b := discovery.Repository{MainPath: domain.CanonicalPath(t.TempDir())}
+	cfg := config.Defaults()
+	fingerprints := func() (string, string, string) {
+		t.Helper()
+		first, err := Fingerprint(1, "oid", a, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := Fingerprint(1, "oid", b, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		update, err := UpdateCompatibilityFingerprint(1, a, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return first, second, update
+	}
+	beforeA, beforeB, beforeUpdateA := fingerprints()
+	minimum := config.DefaultCOWMinSizeKiB * 2
+	cfg.Repositories[string(a.MainPath)] = config.Repository{COWMinSizeKiB: &minimum}
+	afterA, afterB, afterUpdateA := fingerprints()
+	if afterA == beforeA || afterUpdateA == beforeUpdateA {
+		t.Fatalf("a repository minimum did not change its own fingerprint: %s %s", afterA, afterUpdateA)
+	}
+	if afterB != beforeB {
+		t.Fatalf("another repository's fingerprint changed: %s want=%s", afterB, beforeB)
+	}
+}
+
 func TestFingerprintCoversRecursiveDuplicateAndWorkspaceLinkInputs(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "nested", "repository")
