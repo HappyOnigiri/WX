@@ -72,7 +72,7 @@ func (c Client) RunBench(ctx context.Context, opts BenchOptions) int {
 	}
 	// 設定を振る測定は cold start を前提とするため、プールが返すものを測る --reuse とは両立しない。
 	if opts.Reuse && len(opts.Configs) > 0 {
-		fmt.Fprintln(os.Stderr, "error: --config cannot be combined with --reuse; each configuration is measured as a cold start")
+		fmt.Fprintln(os.Stderr, "error: --config and --sweep cannot be combined with --reuse; each configuration is measured as a cold start")
 		return 2
 	}
 	if err := c.checkLeaseWorktreeMode(ctx); err != nil {

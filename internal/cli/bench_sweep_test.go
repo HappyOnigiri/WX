@@ -105,3 +105,38 @@ func TestBenchConfigOfLabelsTheOverride(t *testing.T) {
 		t.Fatalf("label=%q, want the current configuration named", benchConfigOf(config.PrepareOverride{}).Label)
 	}
 }
+
+// --sweep は CoW 無しの基準線と下限の並びを、行を重複させずに測る設定として返す。
+func TestBenchSweepConfigsCoversTheBaselineAndEachLowerBound(t *testing.T) {
+	sweep := BenchSweepConfigs()
+	labels := make([]string, 0, len(sweep))
+	seen := map[string]bool{}
+	for _, override := range sweep {
+		if err := override.Validate(); err != nil {
+			t.Fatalf("override=%s: %v", override.String(), err)
+		}
+		label := override.String()
+		if seen[label] {
+			t.Fatalf("label=%q measured twice; each row of the comparison table must be one configuration", label)
+		}
+		seen[label] = true
+		labels = append(labels, label)
+	}
+	want := []string{
+		"copy_mode=copy",
+		"cow_min_size_kib=0", "cow_min_size_kib=4", "cow_min_size_kib=8", "cow_min_size_kib=16",
+		"cow_min_size_kib=32", "cow_min_size_kib=64", "cow_min_size_kib=128",
+	}
+	if strings.Join(labels, " ") != strings.Join(want, " ") {
+		t.Fatalf("labels=%v, want %v", labels, want)
+	}
+	// 下限を振る行は copy_mode を上書きせず、実効設定のまま比べる。
+	for _, override := range sweep[1:] {
+		if override.CopyMode != "" || override.COWMinSizeKiB == nil {
+			t.Fatalf("override=%+v, want only the lower bound overridden", override)
+		}
+	}
+	if sweep[0].COWMinSizeKiB != nil {
+		t.Fatalf("baseline=%+v, want no lower bound on the row that disables CoW sharing", sweep[0])
+	}
+}

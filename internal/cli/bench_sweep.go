@@ -13,6 +13,23 @@ import (
 // 値を並べても daemon の実効設定は測定時点でしか分からないため、行の見出しでは設定名を名乗らない。
 const benchCurrentConfigLabel = "current"
 
+// benchSweepCOWMinSizeKiB は `--sweep` が測る CoW 共有下限（KiB）である。
+// 既定の 16 を中心に倍々で広げ、下限を下げる側（共有量は増えるが配置後の照合が増える）と
+// 上げる側（照合は減るが共有量が落ちる）の両方を1回の測定で見比べられるようにする。
+var benchSweepCOWMinSizeKiB = []int{0, 4, 8, 16, 32, 64, 128}
+
+// BenchSweepConfigs は `--sweep` が測る設定の並びを返す。
+// 先頭の `copy_mode=copy` は CoW を使わない基準線で、続く行は下限だけを振る。
+// 下限の行で copy_mode を指定しないのは、実際に使う実効設定のまま下限の効き方を比べるためである。
+func BenchSweepConfigs() []config.PrepareOverride {
+	out := make([]config.PrepareOverride, 0, len(benchSweepCOWMinSizeKiB)+1)
+	out = append(out, config.PrepareOverride{CopyMode: config.CopyModeCopy})
+	for _, kib := range benchSweepCOWMinSizeKiB {
+		out = append(out, config.PrepareOverride{COWMinSizeKiB: &kib})
+	}
+	return out
+}
+
 // BenchConfig は run に適用した準備設定の上書きである。
 // Label は表と `--json` で行を指す表記で、指定した key だけを `key=value` で並べる。
 type BenchConfig struct {
