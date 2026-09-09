@@ -19,6 +19,8 @@ func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w disc
 		return err
 	}
 	defer release()
+	timer := m.newPrepareTimer(slot, preparer)
+	defer func() { timer.finish(prepareErr) }()
 	if err := m.store.BeginStagedPreparation(ctx, slot.ID); err != nil {
 		_ = m.store.SetSlotState(context.Background(), slot.ID, []string{"PREPARING", "FAILED"}, "QUARANTINED", "PREPARE_AMBIGUOUS")
 		return fmt.Errorf("%w: interrupted staged preparation: %w", state.ErrOwnership, err)
@@ -79,7 +81,11 @@ func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w disc
 				return err
 			}
 		}
-		return m.store.MarkEarlyReady(ctx, slot.ID)
+		if err := m.store.MarkEarlyReady(ctx, slot.ID); err != nil {
+			return err
+		}
+		timer.markEarly()
+		return nil
 	}
 	if err := preparer.PrepareStaged(ctx, slot.ID, requests, rootStage, markEarly); err != nil {
 		return err

@@ -32,6 +32,7 @@ Commands:
   clear [--all] [--standby]      delete managed worktrees now
   retry-standby <workspace>      resume standby replenishment after it stopped
   slots [--all] [--json]         list managed wx slots and their disk usage
+  bench [--runs <n>] [--json]    measure how long a workspace takes to prepare
   config [<key> ...]             show or update configuration
   setup [--check] [--remove]     review and complete, or remove, the wx setup
   resume <id> [agent] [args...]  restore a wx session
@@ -284,6 +285,48 @@ that asked for a wx new lease.
 Options:
   --all   also list sessions that no longer hold a slot
   --json  print machine-readable JSON`)
+	case "bench":
+		_, _ = fmt.Fprintln(w, `Usage: wx bench [--runs <n>] [--branch <branch|repo=branch>] [--reuse] [--json]
+
+Measure how long the current workspace takes to become usable, and where that
+time goes. Each run leases a workspace the way wx new does, waits for EARLY
+READY and then for FULL READY, prints the breakdown the daemon recorded for
+that preparation, and returns the lease without saving it.
+
+EARLY READY is the point an agent can start: Git registration and the startup
+files are in place. FULL READY adds the remaining checkout, the includes and
+links, the prepare command, CoW sharing, and the final validation. Both are
+measured from the lease request, so they include the time the request waited
+for a job slot.
+
+By default the standby worktrees waiting for the current workspace are retired
+first, so what is measured is a cold start. They are reclaimed by normal GC and
+replenished afterwards. With --reuse nothing is retired and the run measures
+whatever the pool returns, which is reported as warm when a prepared slot was
+handed over with no preparation to measure.
+
+The breakdown comes from the running daemon and is not persisted, so restarting
+the daemon between the preparation and the report loses it. Phase names that
+contain a dot, such as cow.compare, are totals across the parallel workers of
+that phase and can exceed the wall-clock time of the phase above them.
+
+With --runs, wx waits for the saving, removal, and replenishment jobs of the
+previous run to finish before measuring the next one, and prints the minimum,
+median, and maximum at the end.
+
+The measured workspace is returned without saving it, as wx release --discard
+does. Interrupting wx bench skips that return, and the workspace then stays
+leased until the wx session that ran the command ends, or until lease.ttl.
+
+Exit status is 0 when every run finished, 1 when one of them failed, and 2 for
+an argument error.
+
+Options:
+  --runs <n>                     measure this many leases (default 1)
+  --branch <branch|repo=branch>  choose a detached base (repeatable)
+  --reuse                        keep standby worktrees and measure what the
+                                 pool returns
+  --json                         print machine-readable JSON`)
 	case "forget":
 		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path>
 

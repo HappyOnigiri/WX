@@ -146,6 +146,22 @@ worktree rootのpath検査と登録検査は別のfindingとして両方保持�
 準備・保存・復元の失敗は、上位の処理名で言い換えず`jobs.error_message`・`error_detail_path`から具体的な失敗理由と詳細ログの場所まで引き継ぐ。
 原因が記録されていない場合は特定できていないことを明示し、推測を原因として表示しない。
 
+## 準備時間の計測
+
+`wx bench`は貸出からEARLY READY・FULL READYまでをclient側で測り、daemonが記録した区間内訳を添えて出す。
+区間はPREPAREジョブの実行中に`workspace.PhaseTimings`が集計し、`internal/daemon/measurement.go`が直近`prepareMeasurementHistory`件だけをdaemonのメモリに持つ。
+計測は診断であって状態ではないので、`state.Store`にもスキーマにも入れない。daemon再起動で消えるのは仕様である。
+
+区間名は準備の節目に対応する。
+先行配置までが`git-register`・`early-index`・`early-checkout`・`early-place`・`early-root`・`early-ready`である。
+以降は`checkout`・`post-checkout`・`place`・`link`・`prepare-command`・`tracked-status`・`cow`・`tracked-status-refresh`・`ready-lock`・`root`と続く。
+`cow.compare`のようにドットを含む区間はCoW共有の並列worker間の合計で、`cow`区間の実時間を超えることがある。
+`cow.entries`・`cow.candidates`・`cow.shared`・`cow.skipped_size`は時間ではなく件数として同じ表に載る。
+区間の合計はEARLY/FULL READYと一致しない。所有権証明・キュー待ち・貸出解決のように計測していない時間が残るためである。
+
+cold startを測るため、既定では対象workspaceの待機中READY slotを`RetireStandby`でSTALEにする。
+実体は通常のGCが回収し、補充が作り直す。貸出中のslotには触れず、未登録のworkspaceは退役対象なしとして成功で返す。
+
 ## restart / stopのidleゲート
 
 明示的なrestart/stopとバイナリ差し替えの自動検知はpendingを立て、同じidleゲートへ合流する。
@@ -178,3 +194,5 @@ LaunchAgentには`ThrottleInterval=1`を設定し、連続再起動時のlaunchd
 
 GCの候補選択と削除の入口は[`internal/daemon/gc.go`](../internal/daemon/gc.go)、代表テストは[`TestGCRemovesRegisteredQuarantineWithoutCachedIdentity`](../internal/daemon/gc_integration_test.go)である。
 restart/stopのidleゲートの入口は[`internal/daemon/restart.go`](../internal/daemon/restart.go)、代表テストは[`TestPendingRestartWaitsForJobsAndRequests`](../internal/daemon/restart_test.go)である。
+準備時間の計測の入口はdaemon側が[`internal/daemon/measurement.go`](../internal/daemon/measurement.go)、client側が[`internal/cli/bench.go`](../internal/cli/bench.go)である。
+代表テストは[`TestPrepareMeasurementRecordsPhasesOfARealPreparation`](../internal/daemon/measurement_test.go)で、実際の準備が区間内訳を残すことを通す。

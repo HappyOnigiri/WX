@@ -80,6 +80,8 @@ func run(ctx context.Context, args []string) int {
 		return runHook(ctx, args[1:])
 	case "slots":
 		return runSlots(ctx, args[1:])
+	case "bench":
+		return runBench(ctx, args[1:])
 	case "forget":
 		return runForget(ctx, args[1:])
 	}

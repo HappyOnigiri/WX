@@ -265,7 +265,7 @@ test-darwin:
 check-fast: comments-check tests-check lines-check testlayout-check migrations-check
 
 concurrency-test:
-	$(GO) test -race -shuffle=on -count=10 -timeout=15m ./internal/state ./internal/daemon -run 'Lease|Concurrent|Crash|Archive|Remove|Worker'
+	$(GO) test -race -shuffle=on -count=10 -timeout=15m ./internal/state ./internal/daemon ./internal/workspace -run 'Lease|Concurrent|Crash|Archive|Remove|Worker|COW'
 
 # amd64は配布・実行対象にしないため落とした。arm64のCGO_ENABLED=0ビルドは
 # 通常のmake buildと異なる唯一のci-checks構成要素であり退行検出の実体なので残す。

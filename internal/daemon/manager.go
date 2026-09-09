@@ -91,6 +91,8 @@ type Manager struct {
 	maintenanceDirty   bool
 	// beforeMaintenanceSweep は一巡の開始を数え、止めるための test 用 barrier。production では nil のままにする。
 	beforeMaintenanceSweep func()
+	// prepareMeasurements は直近の準備の区間内訳。`wx bench` の診断専用で、状態としては扱わない。
+	prepareMeasurements []PrepareMeasurement
 }
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {

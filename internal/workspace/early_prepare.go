@@ -41,10 +41,12 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 			return err
 		}
 		item := &stagedRepository{Preparation: request, plan: earlyPlan{log: p.Log}}
-		err = p.Git.WithCommonDirLock(ctx, string(request.Repository.CommonDir), func(lockCtx context.Context) error {
-			var beginErr error
-			item.locked, beginErr = p.beginPrepare(lockCtx, request.Repository, target, request.OID, slotID, preparePhaseCreate, root)
-			return beginErr
+		err = p.timePhase("git-register", func() error {
+			return p.Git.WithCommonDirLock(ctx, string(request.Repository.CommonDir), func(lockCtx context.Context) error {
+				var beginErr error
+				item.locked, beginErr = p.beginPrepare(lockCtx, request.Repository, target, request.OID, slotID, preparePhaseCreate, root)
+				return beginErr
+			})
 		})
 		if err != nil {
 			return err
@@ -53,39 +55,46 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		if item.locked.existing {
 			return fmt.Errorf("%w: staged preparation target already exists", state.ErrOwnership)
 		}
-		if err := p.buildEarlyPlan(ctx, item); err != nil {
+		if err := p.timePhase("early-index", func() error { return p.buildEarlyPlan(ctx, item) }); err != nil {
 			return err
 		}
-		if err := p.checkoutStage(ctx, item, true); err != nil {
+		if err := p.timePhase("early-checkout", func() error { return p.checkoutStage(ctx, item, true) }); err != nil {
 			return err
 		}
-		if err := p.materializePlan(ctx, item.Repository, item.locked, &item.plan, true); err != nil {
+		if err := p.timePhase("early-place", func() error {
+			return p.materializePlan(ctx, item.Repository, item.locked, &item.plan, true)
+		}); err != nil {
 			return err
 		}
 	}
 	if rootStage != nil {
-		if err := rootStage(true); err != nil {
+		if err := p.timePhase("early-root", func() error { return rootStage(true) }); err != nil {
 			return err
 		}
 	}
-	for _, item := range prepared {
-		if err := p.validatePreparedTarget(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked.root, item.locked.relative, item.locked.identity, "validate early readiness"); err != nil {
-			return err
+	if err := p.timePhase("early-ready", func() error {
+		for _, item := range prepared {
+			if err := p.validatePreparedTarget(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked.root, item.locked.relative, item.locked.identity, "validate early readiness"); err != nil {
+				return err
+			}
 		}
-	}
-	if err := earlyReady(); err != nil {
+		return earlyReady()
+	}); err != nil {
 		return err
 	}
 	for _, item := range prepared {
 		if err := p.validatePreparedTarget(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked.root, item.locked.relative, item.locked.identity, "validate remaining checkout"); err != nil {
 			return err
 		}
-		if err := p.checkoutStage(ctx, item, false); err != nil {
+		if err := p.timePhase("checkout", func() error { return p.checkoutStage(ctx, item, false) }); err != nil {
 			return err
 		}
 		// worktree add の post-checkout と同じ null OID・新 HEAD・branch flag を使う。
 		// Git 自身に hook 選択と実行を任せ、未配置の相対 hooksPath も全展開後に解決する。
-		if _, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "hook", "run", "--ignore-missing", "post-checkout", "--", strings.Repeat("0", len(item.OID)), item.OID, "1"); err != nil {
+		if err := p.timePhase("post-checkout", func() error {
+			_, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "hook", "run", "--ignore-missing", "post-checkout", "--", strings.Repeat("0", len(item.OID)), item.OID, "1")
+			return err
+		}); err != nil {
 			return err
 		}
 		if err := p.completePrepare(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked,
@@ -95,7 +104,7 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		}
 	}
 	if rootStage != nil {
-		return rootStage(false)
+		return p.timePhase("root", func() error { return rootStage(false) })
 	}
 	return nil
 }

@@ -3,13 +3,11 @@ package workspace
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -108,36 +106,48 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 	if err != nil {
 		return err
 	}
-	slotStates, repoStates := preparationOwnershipStates(phase)
-	proof := func() error {
-		if err := p.verifyPreparedTargetIdentity(owner, relative, identity); err != nil {
-			return err
-		}
-		return p.validateStateOwnership(context.WithoutCancel(ctx), repo, target, slotID, slotStates, repoStates)
+	parsed, err := parseCOWIndexEntries(entries.Stdout)
+	if err != nil {
+		return err
 	}
-	for _, entry := range strings.Split(entries.Stdout, "\x00") {
-		if entry == "" {
-			continue
-		}
-		header, name, ok := strings.Cut(entry, "\t")
-		fields := strings.Fields(header)
-		if !ok || len(fields) != 3 {
-			return errors.New("invalid Git index entry for CoW")
-		}
-		if fields[2] != "0" || fields[0] != "100644" && fields[0] != "100755" {
-			continue
-		}
-		if !filepath.IsLocal(name) || filepath.Clean(name) != name {
-			return errors.New("unsafe Git path for CoW")
-		}
-		if err := ctx.Err(); err != nil {
+	stats := &cowStats{}
+	stats.entries.Store(int64(len(parsed)))
+	candidates := selectCOWCandidates(parsed, p.cowSourceIndexOIDs(ctx, source))
+	stats.candidates.Store(int64(len(candidates)))
+	slotStates, repoStates := preparationOwnershipStates(phase)
+	// 所有権証明は2段に割る。SQL は batch 単位に落とし、identity 検査は置換1件ごとに残して swap 前ゲートを維持する。
+	sharer := &cowSharer{
+		source:      source,
+		destination: destination,
+		proof:       func() error { return p.verifyPreparedTargetIdentity(owner, relative, identity) },
+		minSize:     cowMinShareSize,
+		stats:       stats,
+	}
+	batches := batchCOWRuns(splitCOWRuns(candidates), cowBatchSize)
+	shareErr := runCOWBatches(ctx, p.cowWorkers(), batches, func(ctx context.Context, batch []cowRun) error {
+		// WithoutCancel は cancel 後も証明を成立させるための扱いで、落とすと中断時に隔離判断ができなくなる。
+		if err := p.validateStateOwnership(context.WithoutCancel(ctx), repo, target, slotID, slotStates, repoStates); err != nil {
 			return err
 		}
-		if err := compactFile(ctx, source, destination, name, proof); err != nil {
-			return err
+		for _, run := range batch {
+			if err := sharer.shareRun(ctx, run.directory, run.leaves); err != nil {
+				return err
+			}
 		}
+		return nil
+	})
+	p.logCOWStats(target, stats)
+	stats.recordCOWPhases(p.Phases)
+	if shareErr != nil {
+		return shareErr
 	}
 	return validate()
+}
+
+// compactFile は1件だけを共有する薄いラッパで、事前 skip を持たない置換機構そのものの検査に使う。
+func compactFile(ctx context.Context, source, destination *os.Root, name string, validate func() error) error {
+	sharer := &cowSharer{source: source, destination: destination, proof: validate, stats: &cowStats{}}
+	return sharer.shareRun(ctx, filepath.Dir(name), []string{filepath.Base(name)})
 }
 
 // cowOpenFile は全成分の symlink を拒否し、開いた inode が検査対象と同じことを確認する。
@@ -170,106 +180,6 @@ func cowSourceIneligible(err error) bool {
 	return errors.Is(err, os.ErrNotExist) || errors.Is(err, domain.ErrSymlinkPath) ||
 		errors.Is(err, domain.ErrNonDirectoryComponent) || errors.Is(err, errCOWFileChanged) ||
 		errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)
-}
-
-func compactFile(ctx context.Context, source, destination *os.Root, name string, validate func() error) error {
-	in, srcInfo, err := cowOpenFile(source, name)
-	if cowSourceIneligible(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if in == nil {
-		return nil
-	}
-	defer in.Close()
-	original, info, err := cowOpenFile(destination, name)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("%w: inspect CoW destination: %w", state.ErrOwnership, err)
-	}
-	if original == nil {
-		return nil
-	}
-	defer original.Close()
-	if info.Size() == 0 || srcInfo.Size() != info.Size() || os.SameFile(srcInfo, info) {
-		return nil
-	}
-	var before unix.Stat_t
-	if err := unix.Fstat(int(original.Fd()), &before); err != nil {
-		return err
-	}
-	if before.Nlink != 1 {
-		return nil
-	}
-	parent, _, err := domain.OpenDirectoryAt(destination, filepath.Dir(name))
-	if err != nil {
-		return fmt.Errorf("%w: open CoW parent: %w", state.ErrOwnership, err)
-	}
-	defer parent.Close()
-	return replaceWithClone(ctx, in, original, parent, name, before, validate)
-}
-
-func replaceWithClone(ctx context.Context, in, original, parent *os.File, name string, before unix.Stat_t, validate func() error) (result error) {
-	leaf := filepath.Base(name)
-	temporary := cowTemporaryPrefix + rand.Text()
-	if err := cloneCOW(in, parent, temporary); err != nil {
-		return err
-	}
-	candidate, err := openCOWLeaf(parent, temporary)
-	if err != nil {
-		return fmt.Errorf("%w: open CoW clone: %w", state.ErrOwnership, err)
-	}
-	defer candidate.Close()
-	candidateInfo, err := candidate.Stat()
-	if err != nil {
-		return fmt.Errorf("%w: stat CoW clone: %w", state.ErrOwnership, err)
-	}
-	cleanupInfo := candidateInfo
-	defer func() {
-		// swap 後は元ファイルが temporary にある。証明できない物は消さず隔離へ渡す。
-		if errors.Is(result, state.ErrOwnership) {
-			return
-		}
-		if err := validate(); err != nil {
-			result = fmt.Errorf("%w: CoW cleanup ownership: %w", state.ErrOwnership, err)
-			return
-		}
-		if err := verifyCOWLeaf(parent, temporary, cleanupInfo); err != nil {
-			result = err
-			return
-		}
-		if err := unix.Unlinkat(int(parent.Fd()), temporary, 0); err != nil {
-			result = fmt.Errorf("%w: remove CoW temporary: %w", state.ErrOwnership, err)
-		}
-	}()
-	equal, err := sameCOWBytes(ctx, original, candidate)
-	if err != nil || !equal {
-		return err
-	}
-	compatible, err := cowMetadata(original, candidate, before)
-	if err != nil || !compatible {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := validate(); err != nil {
-		return fmt.Errorf("%w: CoW replacement ownership: %w", state.ErrOwnership, err)
-	}
-	originalInfo, err := original.Stat()
-	if err != nil {
-		return err
-	}
-	if err := swapCOW(parent, temporary, leaf); err != nil {
-		return err
-	}
-	// swap は atomic なので入れ替わりは確認し直さない。cleanup が消す inode の同一性だけ後で検査する。
-	cleanupInfo = originalInfo
-	return nil
 }
 
 func openCOWLeaf(parent *os.File, name string) (*os.File, error) {
