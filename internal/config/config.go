@@ -44,7 +44,8 @@ type Config struct {
 	present      map[string]bool
 }
 type WorktreePolicy struct {
-	Undefined string `yaml:"undefined,omitempty"`
+	Undefined    string `yaml:"undefined,omitempty"`
+	ReuseStandby bool   `yaml:"reuse_standby,omitempty"`
 }
 
 type Storage struct {
@@ -102,9 +103,10 @@ type Lease struct {
 }
 
 type Workspace struct {
-	Worktree string   `yaml:"worktree,omitempty"`
-	Copy     []string `yaml:"copy,omitempty"`
-	Link     []string `yaml:"link,omitempty"`
+	Worktree     string   `yaml:"worktree,omitempty"`
+	Copy         []string `yaml:"copy,omitempty"`
+	Link         []string `yaml:"link,omitempty"`
+	ReuseStandby *bool    `yaml:"reuse_standby,omitempty"`
 	// WarmCount は workspace 個別の待機枠数で、nil のときは pool.warm_per_workspace を継承する。
 	// ポインタで明示的な 0 と未指定を区別する。
 	WarmCount *int `yaml:"warm_count,omitempty"`
@@ -147,7 +149,7 @@ const (
 
 func Defaults() Config {
 	return Config{
-		Worktree: WorktreePolicy{Undefined: "ask"},
+		Worktree: WorktreePolicy{Undefined: "ask", ReuseStandby: true},
 		Version:  1, Storage: Storage{WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour}},
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{24 * time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
@@ -289,6 +291,14 @@ func (c Config) WarmCountForWorkspace(root string) (int, bool) {
 		return *override, true
 	}
 	return c.Pool.WarmPerWorkspace, false
+}
+
+// ReuseStandbyForWorkspace は古い READY slot を貸出時に更新する実効方針を返す。
+func (c Config) ReuseStandbyForWorkspace(root string) (bool, bool) {
+	if override := c.Workspaces[root].ReuseStandby; override != nil {
+		return *override, true
+	}
+	return c.Worktree.ReuseStandby, false
 }
 
 // WarmCountOverrides は workspace root ごとの明示的な待機枠数をコピーして返す。

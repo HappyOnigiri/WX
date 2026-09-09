@@ -211,12 +211,15 @@ func (p *Preparer) ValidateRestoringOwnership(ctx context.Context, repo discover
 
 var (
 	allOwnershipSlotStates       = []string{"PREPARING", "RESTORING", "READY", "LEASED", "DRAINING", "SNAPSHOTTING", "SNAPSHOTTED", "ARCHIVED", "REMOVING", "RETIRING"}
-	allOwnershipRepositoryStates = []string{"PREPARING", "PREPARE_RUNNING", "RESTORING", "RESTORE_RUNNING", "READY", "LEASED", "RETIRING"}
+	allOwnershipRepositoryStates = []string{"PREPARING", "PREPARE_RUNNING", "UPDATE_PENDING", "UPDATE_RUNNING", "RESTORING", "RESTORE_RUNNING", "READY", "LEASED", "RETIRING"}
 )
 
 func preparationOwnershipStates(phase preparePhase) ([]string, []string) {
 	if phase == preparePhaseRestore {
 		return []string{"RESTORING"}, []string{"RESTORING", "RESTORE_RUNNING"}
+	}
+	if phase == preparePhaseUpdate {
+		return []string{"PREPARING"}, []string{"UPDATE_RUNNING"}
 	}
 	return []string{"PREPARING"}, []string{"PREPARING", "PREPARE_RUNNING"}
 }

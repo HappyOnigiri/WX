@@ -224,6 +224,10 @@ func (m *Manager) reconcileRegistry(ctx context.Context) {
 		}
 		for _, slot := range readySlots {
 			valid, validationErr := m.readyMatches(ctx, slot, resolved)
+			reuse, _ := m.Config().ReuseStandbyForWorkspace(string(workspaceRecord.Root))
+			if reuse && (validationErr != nil || !valid) {
+				valid, validationErr = m.standbyStoredStateValid(ctx, slot, workspaceRecord)
+			}
 			if validationErr != nil || !valid {
 				_ = m.store.SetSlotState(ctx, slot.ID, []string{"READY"}, "STALE", "READY_RECONCILE_FAILED")
 				m.log.Warn("READY slot failed startup reconciliation", "slot_id", slot.ID, "error", validationErr)

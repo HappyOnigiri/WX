@@ -55,6 +55,10 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	if err != nil {
 		return Lease{}, err
 	}
+	reuseStandby, _ := m.Config().ReuseStandbyForWorkspace(string(w.Root))
+	if !cold && reuseStandby {
+		return m.leaseReusableStandby(ctx, w, resolved, generation, agent, pid, attrs)
+	}
 	attempts, budget := 0, 0
 	if !cold {
 		// 再試行の予算は設定値ではなく実際の候補数に合わせる。併走するleaseやGCに1件ずつ奪われても、
@@ -152,6 +156,54 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	if attempts > 0 {
 		// 待機枠があったのにcold startへ落ちた事実は、記録しないと後から追跡できない。
 		m.log.Info("warm lease fell back to a cold start", "workspace_id", w.ID, "ready_candidates", budget-1, "attempts", attempts)
+	}
+	return m.allocate(ctx, w, resolved, generation, agent, pid, attrs, "STARTING", "")
+}
+
+func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, attrs leaseAttrs) (Lease, error) {
+	candidates, err := m.store.ReadySlots(ctx, string(w.ID))
+	if err != nil {
+		return Lease{}, err
+	}
+	// 更新可能な古い候補が先に並んでも、完全一致する候補を常に優先する。
+	for _, candidate := range candidates {
+		matched, matchErr := m.readyMatches(ctx, candidate, resolved)
+		if matchErr != nil {
+			if errors.Is(matchErr, state.ErrOwnership) && !errors.Is(matchErr, state.ErrSlotStateIneligible) {
+				m.quarantineOwnershipFailure(candidate.ID, []string{"READY"}, matchErr)
+			}
+			continue
+		}
+		if !matched {
+			continue
+		}
+		lease, leased, leaseErr := m.leaseMatchingReady(ctx, w, candidate, agent, pid, attrs)
+		if leaseErr != nil {
+			if stringsContainStateRace(leaseErr) || strings.Contains(leaseErr.Error(), "slot is no longer READY") {
+				continue
+			}
+			return Lease{}, leaseErr
+		}
+		if leased {
+			return lease, nil
+		}
+	}
+	for _, candidate := range candidates {
+		lease, updated, updateErr := m.leaseUpdatingStandby(ctx, w, candidate, resolved, agent, pid, attrs)
+		if updateErr != nil {
+			if errors.Is(updateErr, state.ErrOwnership) {
+				m.quarantineOwnershipFailure(candidate.ID, []string{"READY"}, updateErr)
+				continue
+			}
+			m.log.Info("standby update candidate rejected before writes", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr)
+			continue
+		}
+		if updated {
+			return lease, nil
+		}
+	}
+	if len(candidates) > 0 {
+		m.log.Info("warm lease fell back to a cold start", "workspace_id", w.ID, "ready_candidates", len(candidates), "attempts", len(candidates))
 	}
 	return m.allocate(ctx, w, resolved, generation, agent, pid, attrs, "STARTING", "")
 }

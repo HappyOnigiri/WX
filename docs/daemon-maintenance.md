@@ -57,6 +57,8 @@ workspaces:
 `wx config --workspace /path/to/repository`で実効値と継承元を確認し、
 `wx config --workspace /path/to/repository warm_count 3`で変更する。
 `warm_count 0`は補充を止め、`warm_count --reset`はグローバル値の継承へ戻す。
+`worktree.reuse_standby`は既定でtrueであり、`workspaces.<root>.reuse_standby`が個別値を上書きする。
+`wx config --workspace <path> reuse_standby false`はOID・fingerprint完全一致だけを貸す従来動作へ戻し、`--reset`はグローバル値の継承へ戻す。
 `Store.HotRepositoryIDs`は`repositories.last_leased_at`で絞るが、貸出時の更新はworkspace単位なので、直後の補充では全リポジトリがhotになる。
 リポジトリごとの利用に絞るなら、`session_repositories`へ実利用を記録し、`HotRepositoryIDs`とGCの`ColdRepositoryCandidates`をともに変更する必要がある。
 
@@ -68,6 +70,10 @@ workspaces:
 
 個数を増やした設定の反映は次の保守一巡で不足分を補充する。減らした場合は準備中の処理を中断せず、完了後に余剰のREADY slotを既存GCが回収する。
 貸出中slotは回収せず、保持期間によるCOLD化もworkspaceごとの実効値が正のときだけ行う。
+
+再利用が有効な定期reconcileはREADY slotを保存済みOIDと更新互換fingerprintで検証し、現在のmainとの差だけではSTALEにしない。
+OIDと配置の更新は貸出要求時だけ行い、要求時点のOID・配置計画・copy modeをDBへ固定する。
+UPDATEは利用者向け実行枠を使い、slot・STARTING session・jobの予約を同じtransactionで確定する。
 
 補充停止は`replenish_suspensions`に永続化し、定期reconcileと補充ジョブの双方で参照する。
 停止理由によらず、解除はそのworkspaceの手動起動（貸出・resume）の成功か`wx retry-standby`だけとし、既存sessionの返却では解除しない。
@@ -118,6 +124,8 @@ WaitEarlyReadyは認証と終端状態を検査し、過去の完了時刻だけ
 二段階準備がdaemon crashなどで中断した場合は、部分checkoutや外部hookの完了を推測せず隔離し、自動で先頭から再実行しない。
 正常な実行中のlock待ちは同じ実行を継続し、全準備がREADYへ到達済みのslotとrestoreの回復処理はこの隔離条件に含めない。
 COLD repositoryの再補充へ貸し出す際は古い先行完了・開始記録を消し、新しい二巡を始める。
+UPDATEも書込み開始時刻を永続化し、開始後の中断は隔離する。
+全更新と配置履歴の確定後にだけslotをLEASEDへ移し、DB確定後にjob完了だけが中断した場合は更新を再実行しない。
 
 ## doctorの診断
 

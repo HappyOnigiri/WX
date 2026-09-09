@@ -22,6 +22,12 @@ clone元と宛先は同じ対応volumeにある必要があり、通常checkout1
 `.worktreeinclude`、workspace rootのコピー、生成物、Git objectsや復旧snapshotの容量は、この設定の対象外である。
 `auto`が通常コピーへ落ちた回はdaemonのログにwarnとして残る。
 
+Hot StandbyのUPDATEは旧HEAD・tracked clean・所有権を確認してから、要求時に固定したOIDへdetachedのまま切り替える。
+更新用Git操作だけは`core.hooksPath=/dev/null`をコマンド単位で指定し、checkout filterと属性処理は維持する。
+`.gitattributes`が変わる場合は要求OIDの属性でtracked fileを再展開し、通常差分ではGitが変更したfileだけを置き換える。
+submodule構成・gitlink変更、未登録のuntracked/ignored pathとの衝突、更新互換fingerprintの不一致は書込み前にCold Startへ戻す。
+更新では`prepare.command`を実行しない。
+
 ## include / link
 
 `.worktreelink`に列挙したpathは、main worktree側の実体へ直接symlinkする（`createLinksAt`）。
@@ -30,6 +36,11 @@ sourceがsymlinkの項目と、ソースリポジトリのignore対象でない�
 path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
 同じ扱いはworkspace rootのcopy/link source（`MaterializeRootAt`）と`.worktreeinclude`の一致にも適用し、既定名と明示名で挙動を分けない。
 workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
+
+新規準備は実際に配置したcopy/linkをfile単位で`slot_placements`へ記録する。
+UPDATEは現行ruleとcopy元から作る新計画を旧履歴と比較し、追加・変更・削除とcopy/link切替を反映する。
+削除対象は記録済みpathだけなので、同じdirectoryにある履歴外生成物は保持する。
+配置履歴のない既存slotは完全一致なら貸出せるが、更新には使わない。
 
 ## 起動用ファイルの先行配置
 

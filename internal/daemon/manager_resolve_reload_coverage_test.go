@@ -30,6 +30,7 @@ func TestResolveAndLeaseRetiresStaleReadySlotAndAllocatesFresh(t *testing.T) {
 	defer store.Close()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.ReuseStandby = false
 	cfg.Pool.WarmPerWorkspace = 0
 	m := testManager(t, cfg, store)
 	m.git = &gitx.Runner{Timeout: 5 * time.Second}
@@ -155,6 +156,7 @@ func TestResolveAndLeaseRejectsHotStandbyAfterWorktreeLinkAppears(t *testing.T) 
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "hot"
+	cfg.Worktree.ReuseStandby = false
 	cfg.Pool.WarmPerWorkspace = 1
 	m := testManager(t, cfg, store)
 	m.git.SetTimeout(10 * time.Second)
@@ -221,6 +223,7 @@ func TestResolveAndLeaseKeepsWarmPoolWhenExplicitBranchDoesNotMatch(t *testing.T
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "hot"
+	cfg.Worktree.ReuseStandby = false
 	cfg.Pool.WarmPerWorkspace = 1
 	m := testManager(t, cfg, store)
 	m.git.SetTimeout(10 * time.Second)
@@ -291,6 +294,7 @@ func TestResolveAndLeaseQuarantinesReadySlotWithUnverifiableRepositoryPath(t *te
 	defer store.Close()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.ReuseStandby = false
 	cfg.Pool.WarmPerWorkspace = 0
 	m := testManager(t, cfg, store)
 	m.git = &gitx.Runner{Timeout: 5 * time.Second}

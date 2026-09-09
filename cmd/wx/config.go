@@ -115,16 +115,21 @@ func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
 	}
 	if len(args) == 0 {
 		count, overridden := cfg.WarmCountForWorkspace(root)
-		source := "global"
+		countSource := "global"
 		if overridden {
-			source = "workspace"
+			countSource = "workspace"
+		}
+		reuse, reuseOverridden := cfg.ReuseStandbyForWorkspace(root)
+		reuseSource := "global"
+		if reuseOverridden {
+			reuseSource = "workspace"
 		}
 		fmt.Printf("Workspace: %s\n", root)
-		fmt.Printf("  warm_count = %d\n", count)
-		fmt.Printf("  source = %s\n", source)
+		fmt.Printf("  warm_count = %d (source: %s)\n", count, countSource)
+		fmt.Printf("  reuse_standby = %t (source: %s)\n", reuse, reuseSource)
 		return 0
 	}
-	if len(args) != 2 || args[0] != "warm_count" {
+	if len(args) != 2 || (args[0] != "warm_count" && args[0] != "reuse_standby") {
 		commandUsage(os.Stderr, "config")
 		return 2
 	}
@@ -133,15 +138,29 @@ func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	switch args[1] {
-	case "--reset":
-		err = config.ResetWorkspaceWarmCount(&raw, root)
-	default:
-		count, parseErr := strconv.Atoi(args[1])
-		if parseErr != nil {
-			err = fmt.Errorf("warm_count must be an integer: %w", parseErr)
-		} else {
-			err = config.SetWorkspaceWarmCount(&raw, root, count)
+	if args[0] == "warm_count" {
+		switch args[1] {
+		case "--reset":
+			err = config.ResetWorkspaceWarmCount(&raw, root)
+		default:
+			count, parseErr := strconv.Atoi(args[1])
+			if parseErr != nil {
+				err = fmt.Errorf("warm_count must be an integer: %w", parseErr)
+			} else {
+				err = config.SetWorkspaceWarmCount(&raw, root, count)
+			}
+		}
+	} else {
+		switch args[1] {
+		case "--reset":
+			err = config.ResetWorkspaceReuseStandby(&raw, root)
+		default:
+			enabled, parseErr := strconv.ParseBool(args[1])
+			if parseErr != nil {
+				err = fmt.Errorf("reuse_standby must be true or false: %w", parseErr)
+			} else {
+				err = config.SetWorkspaceReuseStandby(&raw, root, enabled)
+			}
 		}
 	}
 	if err != nil {

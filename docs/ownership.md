@@ -17,7 +17,7 @@ leaf が symlink の場合はリンク自体を削除し、リンク先へは踏
 
 ## 準備・復元
 
-準備・復元で既存 worktree を書き換える前に求める証明は、次の3つが同時に一致することである。
+準備・復元・Hot Standby更新で既存 worktree を書き換える前に求める証明は、次の3つが同時に一致することである。
 
 1. **DBの行** — `ValidateWorktreeOwnership`が突き合わせるのは絶対pathではない。
    root世代（`roots.id`）・root相対のslot path（`slots.rel_path`）・slot内のリポジトリ配置名（`slot_repositories.dir_name`）・inode identity（`dir_identity`）の4つである。
@@ -29,6 +29,7 @@ leaf が symlink の場合はリンク自体を削除し、リンク先へは踏
    マーカーをworktreeの**親**に置くのは、worktreeの再作成中もslotの識別情報を維持するためである。
 3. **Gitのworktree lock** — wx自身が付けた`wx:<slot-id>:READY`・`PREPARING`・`RESTORING`のいずれかであること（`domain.ValidWxLockReason`）。
    認識できない理由でlockされたworktreeは、wxのものではない。
+   Hot Standby更新中は既存のREADY lockを維持し、DBのPREPARING/UPDATE_RUNNINGと組み合わせて所有権を証明する。
 
 rootのpinは`os.Root`と`domain.OpenOwnedRoot`、配下のsymlink拒否は`domain.PhysicalPathInfo`が担う。
 `domain.ValidatePhysicalLeaf`はleafだけを見るため、root自身より上の祖先成分は検査しない（[AGENTS.md](../AGENTS.md)の不変条件）。

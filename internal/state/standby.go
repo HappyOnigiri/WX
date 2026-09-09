@@ -280,7 +280,7 @@ func (s *Store) RegisterReservedStandby(ctx context.Context, slotID string, repo
 	}
 	job.WorkspaceID = workspaceID
 	for _, r := range repos {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slotID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint,compatibility_fingerprint) VALUES(?,?,?,?,?,?,?,?)`, slotID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint, r.CompatibilityFingerprint); err != nil {
 			return Job{}, err
 		}
 	}
@@ -375,7 +375,7 @@ func insertStandbySlotTx(ctx context.Context, tx *sql.Tx, slot Slot, repos []Slo
 		return err
 	}
 	for _, r := range repos {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint,compatibility_fingerprint) VALUES(?,?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint, r.CompatibilityFingerprint); err != nil {
 			return err
 		}
 	}

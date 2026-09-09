@@ -9,19 +9,20 @@ import (
 
 // SlotRepository は slot 内の directory 名で repository worktree を位置付ける。WorktreePath は Slot.Path と同様に派生する。
 type SlotRepository struct {
-	RepositoryID, DirName, DirIdentity, WorktreePath, State, RequestedRef, BaseOID, Fingerprint string
+	RepositoryID, DirName, DirIdentity, WorktreePath, State, RequestedRef, BaseOID, Fingerprint                    string
+	CompatibilityFingerprint, UpdateRequestedRef, UpdateBaseOID, UpdateFingerprint, UpdateCompatibilityFingerprint string
 }
 
 // slotRepositoryColumns は slot-repository read 全てで共有する。SlotRepository.WorktreePath は保存せず、
 // 結合した root generation と slot path から組み立てるため、設定 worktree root の変更後も同じ row を解決できる。
-const slotRepositoryColumns = `sr.repository_id,sr.dir_name,COALESCE(sr.dir_identity,''),rt.path,sl.rel_path,sr.state,sr.requested_ref,sr.base_oid,sr.prepare_fingerprint`
+const slotRepositoryColumns = `sr.repository_id,sr.dir_name,COALESCE(sr.dir_identity,''),rt.path,sl.rel_path,sr.state,sr.requested_ref,sr.base_oid,sr.prepare_fingerprint,COALESCE(sr.compatibility_fingerprint,''),COALESCE(sr.update_requested_ref,''),COALESCE(sr.update_base_oid,''),COALESCE(sr.update_fingerprint,''),COALESCE(sr.update_compatibility_fingerprint,'')`
 
 const slotRepositoryFrom = ` FROM slot_repositories sr JOIN slots sl ON sl.id=sr.slot_id JOIN roots rt ON rt.id=sl.root_id`
 
 func scanSlotRepository(row rowScanner) (SlotRepository, error) {
 	var x SlotRepository
 	var rootPath, slotRel string
-	if err := row.Scan(&x.RepositoryID, &x.DirName, &x.DirIdentity, &rootPath, &slotRel, &x.State, &x.RequestedRef, &x.BaseOID, &x.Fingerprint); err != nil {
+	if err := row.Scan(&x.RepositoryID, &x.DirName, &x.DirIdentity, &rootPath, &slotRel, &x.State, &x.RequestedRef, &x.BaseOID, &x.Fingerprint, &x.CompatibilityFingerprint, &x.UpdateRequestedRef, &x.UpdateBaseOID, &x.UpdateFingerprint, &x.UpdateCompatibilityFingerprint); err != nil {
 		return SlotRepository{}, err
 	}
 	x.WorktreePath = filepath.Join(rootPath, slotRel, x.DirName)
@@ -71,7 +72,7 @@ func (s *Store) AddRestoringRepositories(ctx context.Context, slotID string, rep
 		return errors.New("resume repository metadata is incomplete")
 	}
 	for _, repo := range repos {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slotID, repo.RepositoryID, repo.DirName, "RESTORING", repo.RequestedRef, repo.BaseOID, repo.Fingerprint); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint,compatibility_fingerprint) VALUES(?,?,?,?,?,?,?,?)`, slotID, repo.RepositoryID, repo.DirName, "RESTORING", repo.RequestedRef, repo.BaseOID, repo.Fingerprint, repo.CompatibilityFingerprint); err != nil {
 			return err
 		}
 	}
