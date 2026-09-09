@@ -53,7 +53,7 @@ func leaseFixture(t *testing.T) (Client, *launcherHandler, string, context.Conte
 			t.Error(err)
 		}
 	})
-	waitForPath(t, socket)
+	waitForSocket(t, socket, done)
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = root
 	// PolicyRoot は base 配下を Git repository として解決できないため、貸出前の方針検査は判定を daemon へ委ねる。

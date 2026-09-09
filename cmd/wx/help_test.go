@@ -19,6 +19,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 type commandHandler struct {
@@ -544,20 +545,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 	server := &rpc.Server{Socket: socket, Handler: commandHandler{workspace: home}}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	for deadline := time.Now().Add(time.Second); ; {
-		if _, err := os.Lstat(socket); err == nil {
-			break
-		}
-		select {
-		case serveErr := <-done:
-			t.Fatalf("RPC server failed at %s: %v", socket, serveErr)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("RPC server did not start")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testsupport.WaitForSocket(t, socket, done)
 	for _, args := range [][]string{
 		{"status", "--json"},
 		{"status"},

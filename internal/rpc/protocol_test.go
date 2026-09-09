@@ -780,16 +780,7 @@ func TestIsConnectErrorRejectsFailuresAfterConnectionEstablished(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	deadline := time.Now().Add(time.Second)
-	for {
-		if _, err := os.Lstat(socket); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("server did not create socket")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testsupport.WaitForSocket(t, socket, done)
 	client := Client{Socket: socket, Timeout: time.Second}
 	// handler の application error でも接続自体は成功しており、daemon は応答している。
 	// cli.Client.ensureDaemon が -k の安全性を判定する際、未待受と誤認してはならない。
@@ -812,16 +803,7 @@ func TestServerRefusesToUnlinkLiveSocket(t *testing.T) {
 	first := &Server{Socket: socket, Handler: echoHandler{}}
 	done := make(chan error, 1)
 	go func() { done <- first.Serve(ctx) }()
-	deadline := time.Now().Add(time.Second)
-	for {
-		if _, err := os.Lstat(socket); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("first server did not create socket")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testsupport.WaitForSocket(t, socket, done)
 	second := &Server{Socket: socket, Handler: echoHandler{}}
 	if err := second.Serve(context.Background()); err == nil {
 		t.Fatal("second server replaced a live socket")

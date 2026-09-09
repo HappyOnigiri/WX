@@ -2,9 +2,12 @@
 package testsupport
 
 import (
+	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // SocketPathLimit は sockaddr_un.sun_path の上限に由来する。
@@ -31,4 +34,36 @@ func SocketPath(t testing.TB, name string) string {
 		t.Fatalf("socket path %q is %d bytes and cannot be bound (limit %d); shorten the socket name", socket, len(socket), SocketPathLimit)
 	}
 	return socket
+}
+
+// socketWaitBudget は socket が受け付けを始めるまでの待機上限である。
+// 負荷の高い CI でも待ち切れるよう、bind から listen までの間隔に対して十分長く取る。
+const socketWaitBudget = 3 * time.Second
+
+// WaitForSocket は socket が接続を受け付けるまで待つ。実体の出現を待つだけでは足りない。
+// net.Listen は bind と listen を別の syscall で行うため、その間に届いた接続は ECONNREFUSED で拒否される。
+// serve が非 nil なら、受け付けが始まる前に Serve が終わった原因をそのまま報告する。
+func WaitForSocket(t testing.TB, socket string, serve chan error) {
+	t.Helper()
+	deadline := time.Now().Add(socketWaitBudget)
+	for {
+		conn, err := (&net.Dialer{Timeout: socketWaitBudget}).DialContext(context.Background(), "unix", socket)
+		if err == nil {
+			if closeErr := conn.Close(); closeErr != nil {
+				t.Fatalf("close socket probe %s: %v", socket, closeErr)
+			}
+			return
+		}
+		select {
+		case serveErr := <-serve:
+			// 後片付けが同じ結果を待つため、読んだ値は戻す。
+			serve <- serveErr
+			t.Fatalf("RPC server at %s stopped before it accepted connections: %v", socket, serveErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("socket %s did not accept connections: %v", socket, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

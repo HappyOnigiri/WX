@@ -245,7 +245,7 @@ func serveResumeTestRPC(t *testing.T, handler *resumeTestRPCHandler) Client {
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	waitForPath(t, socket)
+	waitForSocket(t, socket, done)
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {

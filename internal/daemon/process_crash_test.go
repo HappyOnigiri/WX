@@ -1,15 +1,18 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/rpc"
@@ -36,9 +39,11 @@ func TestDaemonProcessCrashMatrix(t *testing.T) {
 	}
 }
 
+// stderr は診断のために保持する。実行中の daemon の出力を診断が読むため、
+// 書き込みと読み出しを直列化する diagnosticLog を使う。
 type crashDaemonProcess struct {
 	command *exec.Cmd
-	stderr  bytes.Buffer
+	stderr  *diagnosticLog
 }
 
 func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
@@ -80,6 +85,7 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	diagnose := func() string { return crashDiagnostics(repository, storePath, process) }
 
 	if boundary == "preparing" || boundary == "early" {
 		armCrashGate(t, gate)
@@ -118,8 +124,8 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 		registrationChecked = true
 	case "leased":
 		process = restartAfterCrash(t, process, client, "")
-		assertCrashSessionState(t, store, lease.SessionID, "ACTIVE")
-		assertCrashWorktreeRegistration(t, repository, expectedRegistration, boundary)
+		assertCrashSessionState(t, store, lease.SessionID, "ACTIVE", diagnose)
+		assertCrashWorktreeRegistration(t, repository, expectedRegistration, boundary, diagnose)
 		registrationChecked = true
 	case "snapshot", "snapshot-ref":
 		writeCrashWorkspace(t, lease.Path)
@@ -185,22 +191,124 @@ func testDaemonProcessCrashBoundary(t *testing.T, boundary string) {
 	if boundary == "remove" {
 		registrations := gitOutput(t, repository, "worktree", "list", "--porcelain")
 		if strings.Contains(registrations, lease.Path) {
-			t.Fatalf("removed worktree remains registered after crash: %s", lease.Path)
+			t.Fatalf("removed worktree remains registered after crash: %s%s", lease.Path, diagnose())
 		}
 	} else if !registrationChecked && boundary != "snapshot" && boundary != "snapshot-ref" {
-		assertCrashWorktreeRegistration(t, repository, expectedRegistration, boundary)
+		assertCrashWorktreeRegistration(t, repository, expectedRegistration, boundary, diagnose)
 	}
 	stopCrashDaemon(process)
 }
 
 // リース中の登録確認を解放後の GC と分離する。ended_worktree=0s の試験設定では、
 // 再起動直後の保守掃引が Release と重なると、保持期限どおりに登録が回収され得る。
-func assertCrashWorktreeRegistration(t *testing.T, repository, expected, boundary string) {
+func assertCrashWorktreeRegistration(t *testing.T, repository, expected, boundary string, diagnose func() string) {
 	t.Helper()
 	registrations := gitOutput(t, repository, "worktree", "list", "--porcelain")
 	if !strings.Contains(registrations, expected) {
-		t.Fatalf("owned worktree registration was lost after %s crash: %s", boundary, expected)
+		t.Fatalf("owned worktree registration was lost after %s crash: %s%s", boundary, expected, diagnose())
 	}
+}
+
+// crashDiagnostics は crash 境界の失敗を、失敗した実行のログだけで追えるようにする。
+// この経路は全モジュールを繰り返す `make nightly-race` でだけ落ちることがあり、
+// 失敗時点の Git 登録・DB の遷移・daemon のログを添えないと、次の失敗まで原因を絞れない。
+func crashDiagnostics(repository, storePath string, process *crashDaemonProcess) string {
+	var out strings.Builder
+	out.WriteString("\n--- .git/worktrees entries\n")
+	out.WriteString(crashRegistrationEntries(repository))
+	out.WriteString("--- state.db\n")
+	out.WriteString(crashStateDump(storePath))
+	out.WriteString("--- daemon log\n")
+	if logPath, err := config.LogPath(); err == nil {
+		out.WriteString(crashFileTail(logPath))
+	}
+	if process != nil {
+		out.WriteString("--- daemon stderr\n")
+		out.WriteString(process.stderr.tail())
+	}
+	return out.String()
+}
+
+// crashRegistrationEntries は common directory の登録実体を、gitdir の中身まで出す。
+// `git worktree list` は gitdir を読めない登録を黙って省くため、登録ごと消えたのか
+// gitdir だけが壊れたのかは、この一覧でしか区別できない。
+func crashRegistrationEntries(repository string) string {
+	directory := filepath.Join(repository, ".git", "worktrees")
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Sprintf("read %s: %v\n", directory, err)
+	}
+	var out strings.Builder
+	for _, entry := range entries {
+		gitdir, readErr := os.ReadFile(filepath.Join(directory, entry.Name(), "gitdir"))
+		locked, lockErr := os.ReadFile(filepath.Join(directory, entry.Name(), "locked"))
+		fmt.Fprintf(&out, "%s: gitdir=%q err=%v locked=%q err=%v\n",
+			entry.Name(), strings.TrimSpace(string(gitdir)), readErr, strings.TrimSpace(string(locked)), lockErr)
+	}
+	return out.String()
+}
+
+// crashStateDump は権威である DB の行をそのまま出す。列を選ばないのは、
+// schema が変わっても診断が黙って古い列だけを出し続けないようにするためである。
+func crashStateDump(storePath string) string {
+	database, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: storePath}).String()+"?_busy_timeout=5000")
+	if err != nil {
+		return fmt.Sprintf("open %s: %v\n", storePath, err)
+	}
+	defer func() { _ = database.Close() }()
+	var out strings.Builder
+	for _, table := range []string{"slots", "sessions", "jobs", "events"} {
+		fmt.Fprintf(&out, "%s:\n%s", table, crashTableDump(database, table))
+	}
+	return out.String()
+}
+
+func crashTableDump(database *sql.DB, table string) string {
+	rows, err := database.QueryContext(context.Background(), "SELECT * FROM "+table+" LIMIT 200")
+	if err != nil {
+		return fmt.Sprintf("  query: %v\n", err)
+	}
+	defer func() { _ = rows.Close() }()
+	columns, err := rows.Columns()
+	if err != nil {
+		return fmt.Sprintf("  columns: %v\n", err)
+	}
+	var out strings.Builder
+	for rows.Next() {
+		values := make([]any, len(columns))
+		targets := make([]any, len(columns))
+		for index := range values {
+			targets[index] = &values[index]
+		}
+		if err := rows.Scan(targets...); err != nil {
+			fmt.Fprintf(&out, "  scan: %v\n", err)
+			break
+		}
+		out.WriteString(" ")
+		for index, column := range columns {
+			if values[index] == nil {
+				continue
+			}
+			fmt.Fprintf(&out, " %s=%v", column, values[index])
+		}
+		out.WriteString("\n")
+	}
+	if err := rows.Err(); err != nil {
+		fmt.Fprintf(&out, "  rows: %v\n", err)
+	}
+	return out.String()
+}
+
+func crashFileTail(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("read %s: %v\n", path, err)
+	}
+	const limit = 32 << 10
+	if len(data) > limit {
+		return fmt.Sprintf("... %d bytes dropped ...\n%s", len(data)-limit, data[len(data)-limit:])
+	}
+	return string(data)
 }
 
 func writeCrashConfig(t *testing.T, home string) {
@@ -253,12 +361,12 @@ exec "$WX_REAL_GIT" "$@"
 
 func startCrashDaemon(t *testing.T, client rpc.Client) *crashDaemonProcess {
 	t.Helper()
-	process := &crashDaemonProcess{}
+	process := &crashDaemonProcess{stderr: newDiagnosticLog(32 << 10)}
 	process.command = exec.Command(os.Args[0], "-test.run=^TestDaemonCrashProcessHelper$")
 	process.command.Env = append(os.Environ(), "WX_DAEMON_CRASH_HELPER=1")
 	process.command.Stdin = nil
 	process.command.Stdout = nil
-	process.command.Stderr = &process.stderr
+	process.command.Stderr = process.stderr
 	if err := process.command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -351,11 +459,11 @@ func waitCrashSessionState(t *testing.T, store *state.Store, sessionID, want str
 	})
 }
 
-func assertCrashSessionState(t *testing.T, store *state.Store, sessionID, want string) {
+func assertCrashSessionState(t *testing.T, store *state.Store, sessionID, want string, diagnose func() string) {
 	t.Helper()
 	session, err := store.SessionByID(context.Background(), sessionID)
 	if err != nil || session.State != want {
-		t.Fatalf("session %s state=%s want=%s err=%v", sessionID, session.State, want, err)
+		t.Fatalf("session %s state=%s want=%s err=%v%s", sessionID, session.State, want, err, diagnose())
 	}
 }
 

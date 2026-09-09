@@ -214,6 +214,10 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 		return count >= cfg.Pool.WarmPerWorkspace
 	})
 
+	// COLD の repository を含む待機枠は再利用しても Ready を返さないため、貸出前の状態を控える。
+	// 控えないと、Ready でなかった原因が cold start への転落か COLD の再利用かを失敗ログから区別できない。
+	standbyBefore := standbyRepositoryStates(t, store, firstSlot.WorkspaceID)
+
 	leases := make(chan Lease, 2)
 	errs := make(chan error, 2)
 	for range 2 {
@@ -231,10 +235,30 @@ func TestWarmPoolMaintainsCapacityAndNeverDoubleLeases(t *testing.T) {
 		t.Fatalf("slots were reused: first=%+v a=%+v b=%+v", first, a, b)
 	}
 	if !a.Ready || !b.Ready {
-		t.Fatalf("warm leases were not ready: a=%+v b=%+v", a, b)
+		t.Fatalf("warm leases were not ready: a=%+v b=%+v standby before the leases=%v", a, b, standbyBefore)
 	}
 	waitUntil(t, 10*time.Second, func() bool {
 		count, _ := store.ReadySlotCount(ctx, firstSlot.WorkspaceID)
 		return count == cfg.Pool.WarmPerWorkspace
 	})
+}
+
+// standbyRepositoryStates は workspace の待機枠ごとに repository の state を返す。
+func standbyRepositoryStates(t *testing.T, store *state.Store, workspaceID string) map[string][]string {
+	t.Helper()
+	slots, err := store.ReadySlots(context.Background(), workspaceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := map[string][]string{}
+	for _, slot := range slots {
+		repositories, err := store.SlotRepositories(context.Background(), slot.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, repository := range repositories {
+			states[slot.ID] = append(states[slot.ID], repository.State)
+		}
+	}
+	return states
 }

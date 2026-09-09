@@ -5,6 +5,7 @@ package testfocus
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,19 +20,31 @@ const (
 	argumentSeparator = "\x00"
 )
 
-// fakeGo は受け取った引数をNUL区切りでファイルへ書き、指定の終了コードで終わるgoの代役を作る。
-// 記録先と終了コードは環境変数で渡し、shellの引用が壊れていれば引数の境界の違いとして表れる。
-func fakeGo(t *testing.T, directory string) string {
-	t.Helper()
-	path := filepath.Join(directory, fakeGoName)
+// fakeGoScript は偽goの実体で、TestMainが並列テストの開始前に1度だけ書く。
+// テストごとに書くと、書き込み中のfdを別の並列テストのfork(2)が引き継ぎ、
+// 直後のexec(2)がETXTBSYで落ちる（nightly-raceの負荷下で実際に発生した）。
+var fakeGoScript string
+
+// TestMain は偽goを1つ用意する。記録先と終了コードは環境変数で渡すので、実体は共有できる。
+func TestMain(m *testing.M) {
+	directory, err := os.MkdirTemp("", "testfocus-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create fake go directory: %v\n", err)
+		os.Exit(1)
+	}
+	fakeGoScript = filepath.Join(directory, fakeGoName)
+	// 引数はNUL区切りで記録する。shellの引用が壊れていれば引数の境界の違いとして表れる。
 	source := "#!/bin/sh\n" +
 		": > \"$FAKE_GO_ARGS\"\n" +
 		"for argument in \"$@\"; do printf '%s\\0' \"$argument\" >> \"$FAKE_GO_ARGS\"; done\n" +
 		"exit \"${FAKE_GO_STATUS:-0}\"\n"
-	if err := os.WriteFile(path, []byte(source), 0o755); err != nil {
-		t.Fatalf("write fake go: %v", err)
+	if err := os.WriteFile(fakeGoScript, []byte(source), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "write fake go: %v\n", err)
+		os.Exit(1)
 	}
-	return path
+	code := m.Run()
+	_ = os.RemoveAll(directory)
+	os.Exit(code)
 }
 
 type result struct {
@@ -44,12 +57,10 @@ type result struct {
 // environmentは PKG=... のような追加の環境変数で、空文字の値は未設定として扱われる。
 func runFocus(t *testing.T, environment ...string) result {
 	t.Helper()
-	directory := t.TempDir()
-	goPath := fakeGo(t, directory)
-	argsPath := filepath.Join(directory, "args")
+	argsPath := filepath.Join(t.TempDir(), "args")
 
 	command := exec.Command("/bin/sh", scriptPath)
-	command.Env = append(os.Environ(), "GO="+goPath, "FAKE_GO_ARGS="+argsPath, "PKG=", "RUN=", "VERBOSE=", "FAKE_GO_STATUS=")
+	command.Env = append(os.Environ(), "GO="+fakeGoScript, "FAKE_GO_ARGS="+argsPath, "PKG=", "RUN=", "VERBOSE=", "FAKE_GO_STATUS=")
 	command.Env = append(command.Env, environment...)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr

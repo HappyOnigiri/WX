@@ -63,22 +63,13 @@ func startHookServer(t *testing.T, handler rpc.Handler) context.Context {
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	for deadline := time.Now().Add(time.Second); ; {
-		if _, err := os.Lstat(socket); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatal("RPC server did not start")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
 			t.Error(err)
 		}
 	})
+	testsupport.WaitForSocket(t, socket, done)
 	t.Setenv("WX_DAEMON_SOCKET", socket)
 	return ctx
 }

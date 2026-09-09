@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
 type replacementProbeHandler struct {
@@ -39,7 +40,7 @@ func (h *replacementProbeHandler) Handle(_ context.Context, method string, _ jso
 }
 
 func TestWaitForDaemonReplacementUsesPingPIDWithoutSocketOutage(t *testing.T) {
-	socket := t.TempDir() + "/daemon.sock"
+	socket := testsupport.SocketPath(t, "daemon.sock")
 	handler := &replacementProbeHandler{pingPID: 2002, statusPID: 2002}
 	cancel, done := serveUntilCanceled(t, socket, handler)
 	defer func() {
@@ -68,7 +69,7 @@ func TestWaitForDaemonReplacementUsesPingPIDWithoutSocketOutage(t *testing.T) {
 }
 
 func TestWaitForDaemonReplacementFallsBackToStatusForLegacyPing(t *testing.T) {
-	socket := t.TempDir() + "/daemon.sock"
+	socket := testsupport.SocketPath(t, "daemon.sock")
 	handler := &replacementProbeHandler{statusPID: 3003}
 	cancel, done := serveUntilCanceled(t, socket, handler)
 	defer func() {
@@ -87,7 +88,7 @@ func TestWaitForDaemonReplacementFallsBackToStatusForLegacyPing(t *testing.T) {
 }
 
 func TestWaitForDaemonReplacementFallsBackToStatusWhenPingFails(t *testing.T) {
-	socket := t.TempDir() + "/daemon.sock"
+	socket := testsupport.SocketPath(t, "daemon.sock")
 	handler := &replacementProbeHandler{pingErr: errors.New("unknown method"), statusPID: 4004}
 	cancel, done := serveUntilCanceled(t, socket, handler)
 	defer func() {
@@ -105,7 +106,7 @@ func TestWaitForDaemonReplacementFallsBackToStatusWhenPingFails(t *testing.T) {
 }
 
 func TestWaitForDaemonReplacementStopsAtTheDeadlineForTheSamePID(t *testing.T) {
-	socket := t.TempDir() + "/daemon.sock"
+	socket := testsupport.SocketPath(t, "daemon.sock")
 	handler := &replacementProbeHandler{pingPID: 5005, statusPID: 5005}
 	cancel, done := serveUntilCanceled(t, socket, handler)
 	defer func() {
@@ -123,7 +124,7 @@ func TestWaitForDaemonReplacementStopsAtTheDeadlineForTheSamePID(t *testing.T) {
 }
 
 func TestWaitForDaemonReplacementStopsWhenTheCallerCancels(t *testing.T) {
-	socket := t.TempDir() + "/daemon.sock"
+	socket := testsupport.SocketPath(t, "daemon.sock")
 	handler := &replacementProbeHandler{pingPID: 6006}
 	cancelServer, done := serveUntilCanceled(t, socket, handler)
 	defer func() {
