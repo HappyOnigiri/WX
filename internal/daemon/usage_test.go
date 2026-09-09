@@ -23,6 +23,25 @@ type reportedRootUsage struct {
 	MeasuredAt     string `json:"measured_at"`
 }
 
+func TestMergeSlotSharedFileCacheReplacesOnlyMeasuredSlot(t *testing.T) {
+	t.Parallel()
+	previous := workspace.SharedFileCache{
+		"workspace/slot/repo/file":  {Shared: true},
+		"workspace/slot2/repo/file": {Shared: true},
+	}
+	measured := workspace.SharedFileCache{"workspace/slot/repo/new": {Shared: false}}
+	merged := mergeSlotSharedFileCache(previous, measured, "workspace/slot")
+	if _, stale := merged["workspace/slot/repo/file"]; stale {
+		t.Fatalf("stale measured-slot entry survived: %+v", merged)
+	}
+	if got, kept := merged["workspace/slot/repo/new"]; !kept || got.Shared {
+		t.Fatalf("measured entry missing or changed: %+v", merged)
+	}
+	if _, kept := merged["workspace/slot2/repo/file"]; !kept {
+		t.Fatalf("other-slot entry was removed: %+v", merged)
+	}
+}
+
 func statusRootUsage(t *testing.T, manager *Manager, root string) reportedRootUsage {
 	t.Helper()
 	status, err := manager.Status(t.Context())
@@ -164,12 +183,21 @@ func TestMeasureSlotUsageRecordsThePreparedSlotAlone(t *testing.T) {
 	if !measured || sample.usage.Files != 1 || sample.measuredAt.IsZero() {
 		t.Fatalf("slot sample=%+v measured=%v", sample, measured)
 	}
+	cacheName := filepath.ToSlash(filepath.Join(slot.RelPath, "repo", "file"))
+	// 共有判定の cache は root 単位で持ち、次の root 全体の測定が再判定を省けるようにする。
+	if workspace.SharingSupported() && len(manager.sharedFiles[filepath.Clean(cfg.Storage.WorktreeRoot)]) != 1 {
+		t.Fatalf("shared cache=%+v", manager.sharedFiles)
+	}
+	// 共有元を削除した測定では、対象 slot の古い cache entry も破棄する。
+	if err := os.Remove(filepath.Join(mainPath, "file")); err != nil {
+		t.Fatal(err)
+	}
+	manager.measureSlotUsage(ctx, "slot")
+	if _, kept := manager.sharedFiles[filepath.Clean(cfg.Storage.WorktreeRoot)][cacheName]; kept {
+		t.Fatalf("unverifiable cache entry survived: %+v", manager.sharedFiles)
+	}
 	if !workspace.SharingSupported() {
 		return
-	}
-	// 共有判定の cache は root 単位で持ち、次の root 全体の測定が再判定を省けるようにする。
-	if len(manager.sharedFiles[filepath.Clean(cfg.Storage.WorktreeRoot)]) != 1 {
-		t.Fatalf("shared cache=%+v", manager.sharedFiles)
 	}
 	// 準備直後に測れているので、周期測定を待たずに方式が決まる。
 	if view := slotView(state.SlotSummary{SlotID: "slot", State: "LEASED"}, manager.slotUsage); view.CopyMode == "" {

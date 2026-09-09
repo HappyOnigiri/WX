@@ -17,9 +17,10 @@ slotの削除が終わった時点では測り直さず、その slot の実測�
 
 比較するのは先頭と末尾の2点だけのsamplingなので、途中のblockだけが書き換わったファイルは共有と見える。
 `shared_bytes`は上限側の推定であり、`exclusive_bytes`は下限側の推定である。
-判定は前回の`(dev, ino, ctime)`でcacheし、共有を壊す書き込みが必ずctimeを更新することを根拠に、変化していないファイルの再判定を省く。
+判定はslot側とmain worktree側それぞれの`(dev, ino, ctime)`でcacheし、共有を壊す書き込みが必ずctimeを更新することを根拠に、両側が変化していないファイルの再判定を省く。
 どちらのファイルも読むだけで、内容もmetadataも変更しない。
 判定できない事情（open失敗・size不一致・platform非対応）はすべて共有なしとして扱い、測定の失敗で準備や貸出の結果を変えない。
+両側を検証できない回はcacheへ保存せず、次回の測定で現在の実体を再検証する。
 LinuxではCoW自体を行わないため、`measurement`は`unsupported`になり`shared_bytes`は常に0である。
 
 root合計を更新するのは周期測定・clear後の測り直し・削除分の差し引きだけで、最初の測定が終わるまでは`measurement=pending`として0を実測値に見せない。
