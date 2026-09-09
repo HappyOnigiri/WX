@@ -40,6 +40,8 @@ func TestRejectChangedAttributesDetectsRootAndNestedChanges(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			repository := t.TempDir()
 			gitCommand(t, repository, "init", "-b", "main")
+			gitCommand(t, repository, "config", "user.name", "test")
+			gitCommand(t, repository, "config", "user.email", "test@example.com")
 			writeTestFile(t, filepath.Join(repository, "a.txt"), "a\n")
 			writeTestFile(t, filepath.Join(repository, "sub", "b.txt"), "b\n")
 			writeTestFile(t, filepath.Join(repository, "sub", ".gitattributes"), "*.txt text\n")
