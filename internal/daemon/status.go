@@ -91,7 +91,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		"workspaces": s.Workspaces, "repositories": s.Repositories,
 		"slots":           map[string]int{"ready": s.Ready, "leased": s.Leased, "failed": s.Failed, "quarantined": s.Quarantined},
 		"active_sessions": s.Active, "snapshots": s.Snapshots, "queued_jobs": s.Jobs, "worktree_roots": rootStatuses,
-		"workspace_details": details.Workspaces, "session_details": details.Sessions, "repository_details": details.Repositories,
+		"workspace_details": details.Workspaces, "session_details": details.Sessions, "archived_session_details": details.ArchivedSessions, "repository_details": details.Repositories,
 		"job_details": details.Jobs, "snapshot_details": details.Snapshots, "quarantine": details.Quarantine,
 		"standby_replenishment": standby,
 		"retention_seconds": map[string]int64{

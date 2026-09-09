@@ -48,6 +48,13 @@ type (
 		Count          int    `json:"count"`
 		EarliestExpiry string `json:"earliest_expiry,omitempty"`
 	}
+	// ArchivedSessionDiagnostic は一覧から外した ARCHIVED session の集計である。
+	// 復元用に retention.recovery_snapshot まで残るだけの行を 1 件ずつ出すと診断が埋まるため、件数と保持期間の両端だけを返す。
+	ArchivedSessionDiagnostic struct {
+		Count              int    `json:"count"`
+		EarliestArchivedAt string `json:"earliest_archived_at,omitempty"`
+		LatestExpiresAt    string `json:"latest_expires_at,omitempty"`
+	}
 	QuarantineDiagnostic struct {
 		ID          string `json:"id"`
 		Path        string `json:"path"`
@@ -69,12 +76,13 @@ type (
 		DetailPath     string `json:"detail_path,omitempty"`
 	}
 	StatusDiagnostics struct {
-		Workspaces   []WorkspaceDiagnostic  `json:"workspaces"`
-		Sessions     []SessionDiagnostic    `json:"sessions"`
-		Repositories []RepositoryDiagnostic `json:"repositories"`
-		Jobs         JobDiagnostic          `json:"jobs"`
-		Snapshots    SnapshotDiagnostic     `json:"snapshots"`
-		Quarantine   []QuarantineDiagnostic `json:"quarantine"`
+		Workspaces       []WorkspaceDiagnostic     `json:"workspaces"`
+		Sessions         []SessionDiagnostic       `json:"sessions"`
+		ArchivedSessions ArchivedSessionDiagnostic `json:"archived_sessions"`
+		Repositories     []RepositoryDiagnostic    `json:"repositories"`
+		Jobs             JobDiagnostic             `json:"jobs"`
+		Snapshots        SnapshotDiagnostic        `json:"snapshots"`
+		Quarantine       []QuarantineDiagnostic    `json:"quarantine"`
 	}
 )
 
@@ -282,11 +290,15 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 	if err := workspaceRows.Close(); err != nil {
 		return out, err
 	}
-	sessionRows, err := s.db.QueryContext(ctx, `SELECT se.id,se.agent_kind,se.state,se.created_at,COALESCE(group_concat(sr.base_oid,','),'') FROM sessions se LEFT JOIN slot_repositories sr ON sr.slot_id=se.slot_id WHERE se.state<>'EXPIRED' GROUP BY se.id ORDER BY se.created_at DESC`)
+	// 終端 state を除外列挙で落とし、新しい state が増えても診断から消えないようにする。
+	// ARCHIVED は復元待ちで数千件まで積み上がるため一覧から外し、後段の集計だけで表す。
+	sessionRows, err := s.db.QueryContext(ctx, `SELECT se.id,se.agent_kind,se.state,se.created_at,COALESCE(group_concat(sr.base_oid,','),'') FROM sessions se LEFT JOIN slot_repositories sr ON sr.slot_id=se.slot_id WHERE se.state NOT IN ('ARCHIVED','EXPIRED') GROUP BY se.id ORDER BY se.created_at DESC`)
 	if err != nil {
 		return out, err
 	}
 	defer sessionRows.Close()
+	// 絞り込みで 0 件になっても payload の session_details を null にしないため、空スライスで初期化する。
+	out.Sessions = []SessionDiagnostic{}
 	for sessionRows.Next() {
 		var item SessionDiagnostic
 		if err := sessionRows.Scan(&item.ID, &item.Agent, &item.State, &item.CreatedAt, &item.BaseOIDs); err != nil {
@@ -298,6 +310,11 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 		return out, err
 	}
 	if err := sessionRows.Close(); err != nil {
+		return out, err
+	}
+	// 一覧と同じ JOIN で ARCHIVED を戻すと GROUP BY 単位が崩れるため、独立したスカラー集計で引く。
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*),COALESCE(MIN(archived_at),''),COALESCE(MAX(expires_at),'') FROM sessions WHERE state='ARCHIVED'`).
+		Scan(&out.ArchivedSessions.Count, &out.ArchivedSessions.EarliestArchivedAt, &out.ArchivedSessions.LatestExpiresAt); err != nil {
 		return out, err
 	}
 	repositoryRows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,COALESCE(r.last_leased_at,''),COALESCE(MAX(CASE WHEN sl.owner_session_id IS NULL AND sl.state='READY' AND sr.state='READY' THEN sl.ready_at END),''),CASE WHEN count(CASE WHEN sl.state IN ('READY','LEASED') AND sr.state IN ('READY','LEASED') THEN 1 END)>0 THEN 1 ELSE 0 END FROM repositories r LEFT JOIN slot_repositories sr ON sr.repository_id=r.id LEFT JOIN slots sl ON sl.id=sr.slot_id GROUP BY r.id ORDER BY r.main_worktree_path`)

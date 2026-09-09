@@ -76,57 +76,63 @@ func (r *verboseStatusRenderer) lineTable(headers []string, rows [][]string, pre
 	}
 }
 
+// renderRepositories は repository を 1 行ずつの表にする。
+// 時刻列が 3 つあり列見出しごとにタイムゾーンを繰り返すと表が横に広がるため、見出し行にまとめて添える。
 func (r *verboseStatusRenderer) renderRepositories() {
 	r.line("")
-	r.line("Repositories")
+	r.line("Repositories (" + statusZoneLabel() + ")")
 	value, present := r.payload["repository_details"]
 	items := statusObjectsSortedBy(statusObjectList(value), "main_path")
 	r.mark("repository_details")
-	if len(items) == 0 {
-		if present {
-			r.line("  (none)")
-		} else {
-			r.line("  (unset)")
-		}
-	}
+	rows := make([][]string, 0, len(items))
 	for index, item := range items {
-		r.line(fmt.Sprintf("  Repository %d", index+1))
-		r.field("    ID", statusValue(item, "id"))
-		r.field("    Path", statusHomeValue(item, "main_path"))
-		r.field("    Hot", statusValue(item, "hot"))
-		r.field("    Last used", statusValue(item, "last_used_at"))
-		r.field("    Standby ready", statusValue(item, "standby_ready_at"))
-		r.field("    Standby expires", statusValue(item, "standby_expires_at"))
+		rows = append(rows, []string{
+			statusValue(item, "id"), statusHomeValue(item, "main_path"), statusValue(item, "hot"),
+			statusLocalDate(statusValueRaw(item, "last_used_at")), statusLocalDate(statusValueRaw(item, "standby_ready_at")), statusLocalDate(statusValueRaw(item, "standby_expires_at")),
+		})
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("repositories[%d]", index), item, map[string]bool{"id": true, "main_path": true, "hot": true, "last_used_at": true, "standby_ready_at": true, "standby_expires_at": true})
 	}
+	r.lineTable([]string{"ID", "PATH", "HOT", "LAST USED", "STANDBY READY", "STANDBY EXPIRES"}, rows, present)
 }
 
+// renderSessions は daemon が絞り込んだ非終端 session を 1 行ずつ出し、その後ろに ARCHIVED の集計を添える。
 func (r *verboseStatusRenderer) renderSessions() {
 	r.line("")
 	r.line("Sessions")
 	value, present := r.payload["session_details"]
 	items := statusObjectsSortedBy(statusObjectList(value), "created_at")
-	r.mark("session_details")
-	if len(items) == 0 {
-		if present {
-			r.line("  (none)")
-		} else {
-			r.line("  (unset)")
-		}
-	}
+	r.mark("session_details", "archived_session_details")
+	rows := make([][]string, 0, len(items))
 	for index, item := range items {
-		r.line(fmt.Sprintf("  Session %d", index+1))
-		r.field("    ID", statusValue(item, "id"))
-		r.field("    Agent", statusValue(item, "agent"))
-		r.field("    State", statusValue(item, "state"))
-		r.field("    Created", statusValue(item, "created_at"))
+		elapsed := "—"
 		if age, ok := statusInt(item, "age_seconds"); ok {
-			r.field("    Elapsed", formatDurationSeconds(age))
-		} else {
-			r.field("    Elapsed", "—")
+			elapsed = humanDurationSeconds(age)
 		}
-		r.field("    Base OIDs", statusValue(item, "base_oids"))
+		rows = append(rows, []string{statusValue(item, "id"), statusValue(item, "agent"), statusValue(item, "state"), statusLocalDate(statusValueRaw(item, "created_at")), elapsed})
+		// base_oids は列に出すと 1 行が長くなりすぎるため表から外すが、Additional へ落ちないよう既知キーとして残す。
+		// appendStatusUnknown は描画の有無ではなく known map への登録だけを見るためである。
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("sessions[%d]", index), item, map[string]bool{"id": true, "agent": true, "state": true, "created_at": true, "age_seconds": true, "base_oids": true})
+	}
+	r.lineTable([]string{"ID", "AGENT", "STATE", "CREATED (" + statusZoneLabel() + ")", "ELAPSED"}, rows, present)
+	r.renderArchivedSessions()
+}
+
+// renderArchivedSessions は復元待ちで保持している ARCHIVED session を、件数と保持期間の両端だけの 1 行にまとめる。
+func (r *verboseStatusRenderer) renderArchivedSessions() {
+	value, present := r.payload["archived_session_details"]
+	archived, isMap := value.(map[string]any)
+	switch {
+	case isMap && len(archived) > 0:
+		r.field("  Archived", fmt.Sprintf("%s (earliest archived %s, latest expiry %s)", statusValue(archived, "count"),
+			statusDash(statusValueRaw(archived, "earliest_archived_at")), statusDash(statusValueRaw(archived, "latest_expires_at"))))
+		r.additional = appendStatusUnknown(r.additional, "archived_session_details", archived, map[string]bool{"count": true, "earliest_archived_at": true, "latest_expires_at": true})
+	case present:
+		r.field("  Archived", "(none)")
+	case statusArchivedSessionsUnavailable(r.payload):
+		r.field("  Archived", "unknown")
+		r.line("  " + statusArchivedSessionNotice(r.payload))
+	default:
+		r.field("  Archived", "—")
 	}
 }
 
@@ -315,62 +321,35 @@ func (r *verboseStatusRenderer) renderRetention() {
 	r.additional = appendStatusUnknown(r.additional, "retention_seconds", retention, known)
 }
 
-type statusQuarantineGroup struct {
-	kind   string
-	reason string
-	items  []map[string]any
-}
-
-func (g *statusQuarantineGroup) label() string {
-	if g.kind == "" {
-		return g.reason
-	}
-	return g.kind + " / " + g.reason
-}
-
+// renderQuarantine は隔離された実体を 1 行ずつの表にする。
+// 同じ kind・reason が並ぶと見分けにくいため、行は kind・reason・path・id の順に並べる。
 func (r *verboseStatusRenderer) renderQuarantine() {
 	r.line("")
 	r.line("Quarantine")
 	value, present := r.payload["quarantine"]
 	items := statusObjectList(value)
 	r.mark("quarantine")
-	if len(items) == 0 {
-		if present {
-			r.line("  (none)")
-		} else {
-			r.line("  (unset)")
-		}
-	} else {
-		groups := make(map[string]*statusQuarantineGroup)
-		for _, item := range items {
-			kind, reason := statusValueRaw(item, "kind"), statusQuarantineReason(item)
-			key := kind + "\x00" + reason
-			group := groups[key]
-			if group == nil {
-				group = &statusQuarantineGroup{kind: kind, reason: reason}
-				groups[key] = group
-			}
-			group.items = append(group.items, item)
-		}
-		ordered := make([]*statusQuarantineGroup, 0, len(groups))
-		for _, group := range groups {
-			sort.SliceStable(group.items, func(i, j int) bool {
-				left, right := statusValueRaw(group.items[i], "path"), statusValueRaw(group.items[j], "path")
-				if left == right {
-					return statusValueRaw(group.items[i], "id") < statusValueRaw(group.items[j], "id")
-				}
-				return left < right
-			})
-			ordered = append(ordered, group)
-		}
-		sort.Slice(ordered, func(i, j int) bool { return ordered[i].label() < ordered[j].label() })
-		for _, group := range ordered {
-			r.line(fmt.Sprintf("  Reason: %s (%d)", group.label(), len(group.items)))
-			for _, item := range group.items {
-				r.field("    ID", statusValue(item, "id"))
-				r.field("    Path", statusHomeValue(item, "path"))
+	sorted := append([]map[string]any(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		left := []string{statusValueRaw(sorted[i], "kind"), statusQuarantineReason(sorted[i]), statusValueRaw(sorted[i], "path"), statusValueRaw(sorted[i], "id")}
+		right := []string{statusValueRaw(sorted[j], "kind"), statusQuarantineReason(sorted[j]), statusValueRaw(sorted[j], "path"), statusValueRaw(sorted[j], "id")}
+		for index := range left {
+			if left[index] != right[index] {
+				return left[index] < right[index]
 			}
 		}
+		return false
+	})
+	rows := make([][]string, 0, len(sorted))
+	for _, item := range sorted {
+		// quarantined_artifacts 由来の行は slot ではないので id が空である。列には "(empty)" ではなく欠測と同じ記号を出す。
+		id, _ := statusRawString(item, "id")
+		kind, _ := statusRawString(item, "kind")
+		rows = append(rows, []string{statusDash(id), statusDash(kind), statusQuarantineReason(item), statusHomeValue(item, "path")})
+	}
+	r.lineTable([]string{"ID", "KIND", "REASON", "PATH"}, rows, present)
+	for _, notice := range statusQuarantineCleanupNotices(sorted) {
+		r.line("  " + notice)
 	}
 	for index, item := range items {
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("quarantine[%d]", index), item, map[string]bool{"id": true, "path": true, "kind": true, "failure_code": true})

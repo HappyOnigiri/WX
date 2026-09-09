@@ -303,3 +303,18 @@ func TestPrintStatusSummaryOmitsHiddenNoticeForAnEmptyRegistry(t *testing.T) {
 		t.Fatalf("empty registry reported hidden workspaces:\n%s", got)
 	}
 }
+
+// TestStatusArchivedSessionNoticeTracksTheSchemaVersion は集計を返さない daemon の判定境界を固定する。
+func TestStatusArchivedSessionNoticeTracksTheSchemaVersion(t *testing.T) {
+	if notice := statusArchivedSessionNotice(map[string]any{"schema_version": archivedSessionSchemaVersion}); notice != "" {
+		t.Fatalf("current schema notice=%q, want empty", notice)
+	}
+	notice := statusArchivedSessionNotice(map[string]any{"schema_version": archivedSessionSchemaVersion - 1})
+	if !strings.Contains(notice, "18") || !strings.Contains(notice, "still lists archived sessions") {
+		t.Fatalf("legacy schema notice=%q", notice)
+	}
+	// schema_version を返さない応答では版を判定できないため、注記も劣化表示も出さない。
+	if notice := statusArchivedSessionNotice(map[string]any{}); notice != "" {
+		t.Fatalf("notice without a schema version=%q, want empty", notice)
+	}
+}
