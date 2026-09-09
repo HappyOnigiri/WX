@@ -41,7 +41,7 @@ func (s *Store) CreateSlotSession(ctx context.Context, slot Slot, repos []SlotRe
 		return Job{}, err
 	}
 	for _, r := range repos {
-		_, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint)
+		_, err = tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint,compatibility_fingerprint) VALUES(?,?,?,?,?,?,?,?)`, slot.ID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint, r.CompatibilityFingerprint)
 		if err != nil {
 			return Job{}, err
 		}
@@ -157,7 +157,7 @@ func (s *Store) RegisterReservedSlotSession(ctx context.Context, slotID string, 
 	}
 	t := now()
 	for _, r := range repos {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES(?,?,?,?,?,?,?)`, slotID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint,compatibility_fingerprint) VALUES(?,?,?,?,?,?,?,?)`, slotID, r.RepositoryID, r.DirName, r.State, r.RequestedRef, r.BaseOID, r.Fingerprint, r.CompatibilityFingerprint); err != nil {
 			return Job{}, err
 		}
 	}

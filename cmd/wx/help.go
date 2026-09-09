@@ -156,6 +156,8 @@ The workspace path is shown by wx status when standby replenishment is stopped.`
        wx config --workspace <path>
        wx config --workspace <path> warm_count <count>
        wx config --workspace <path> warm_count --reset
+       wx config --workspace <path> reuse_standby <true|false>
+       wx config --workspace <path> reuse_standby --reset
 
 Show effective configuration, or atomically update one supported scalar key or list.
 
@@ -164,6 +166,8 @@ may be relative or a repository subdirectory; linked worktrees resolve to the
 repository's main worktree. A workspace warm_count overrides
 pool.warm_per_workspace, 0 disables replenishment, and --reset restores the
 global value. Reducing the count lets normal GC reclaim unused standby slots.
+reuse_standby controls whether an older READY standby is updated at lease time;
+the default is true, and false preserves exact-match cold-start behavior.
 
 Copy mode (storage.copy_mode):
   auto  share identical checked-out files with APFS CoW; fall back to copies, but quarantine when ownership is unprovable (default)

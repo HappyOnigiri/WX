@@ -74,6 +74,7 @@ type preparePhase string
 const (
 	preparePhaseCreate  preparePhase = "create"
 	preparePhaseRestore preparePhase = "restore"
+	preparePhaseUpdate  preparePhase = "update"
 )
 
 func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase) error {

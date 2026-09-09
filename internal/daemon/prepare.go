@@ -87,6 +87,13 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	} else {
 		return errors.New("restore preparation must use the restore job")
 	}
+	placements, err := m.capturePlacements(ctx, slot, w, resolved, preparer)
+	if err != nil {
+		return err
+	}
+	if err := m.store.ReplacePlacements(ctx, id, placements); err != nil {
+		return err
+	}
 	normalPreparation := false
 	if slot.OwnerSessionID != "" {
 		if owner, ownerErr := m.store.SessionByID(ctx, slot.OwnerSessionID); ownerErr == nil {
@@ -108,6 +115,50 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 		m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
 	}
 	return nil
+}
+
+func (m *Manager) capturePlacements(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, preparer *workspace.Preparer) ([]state.Placement, error) {
+	var placements []state.Placement
+	repositories, err := m.store.SlotRepositories(ctx, slot.ID)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]state.SlotRepository, len(repositories))
+	for _, repository := range repositories {
+		byID[repository.RepositoryID] = repository
+	}
+	for _, resolvedRepository := range resolved {
+		stored := byID[string(resolvedRepository.Repository.ID)]
+		if stored.State != "READY" {
+			continue
+		}
+		planned, err := preparer.RepositoryPlacements(ctx, resolvedRepository.Repository, resolvedRepository.OID)
+		if err != nil {
+			return nil, err
+		}
+		materialized, err := preparer.MaterializedPlacements(stored.WorktreePath, planned)
+		if err != nil {
+			return nil, err
+		}
+		placements = append(placements, materialized...)
+	}
+	if w.Kind == "multi_repository" {
+		rootPlacements, err := workspace.RootPlacements(string(w.Root), preparer.Config.Workspaces[string(w.Root)])
+		if err != nil {
+			return nil, err
+		}
+		destination, err := domain.OpenRootAt(preparer.OwnedRoot, slot.RelPath)
+		if err != nil {
+			return nil, err
+		}
+		materialized, materializeErr := workspace.ExistingPlacements(destination, rootPlacements, false)
+		_ = destination.Close()
+		if materializeErr != nil {
+			return nil, materializeErr
+		}
+		placements = append(placements, materialized...)
+	}
+	return placements, nil
 }
 
 func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules config.Workspace) error {

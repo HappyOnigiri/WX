@@ -49,6 +49,7 @@ func TestLeaseTriesEveryReadyCandidateBeyondTheConfiguredWarmSize(t *testing.T) 
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "hot"
+	cfg.Worktree.ReuseStandby = false
 	cfg.Pool.WarmPerWorkspace = 1
 	store, err := state.Open(filepath.Join(root, "state.db"))
 	if err != nil {

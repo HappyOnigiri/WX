@@ -311,11 +311,15 @@ func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []p
 		if err != nil {
 			return nil, err
 		}
+		compatibility, err := workspace.UpdateCompatibilityFingerprint(generation, r.Repository, cfg)
+		if err != nil {
+			return nil, err
+		}
 		repoState := "PREPARING"
 		if hot != nil && !hot[string(r.Repository.ID)] {
 			repoState = "COLD"
 		}
-		out = append(out, state.SlotRepository{RepositoryID: string(r.Repository.ID), DirName: dirName, WorktreePath: filepath.Join(slotPath, dirName), State: repoState, RequestedRef: r.RequestedRef, BaseOID: r.OID, Fingerprint: fp})
+		out = append(out, state.SlotRepository{RepositoryID: string(r.Repository.ID), DirName: dirName, WorktreePath: filepath.Join(slotPath, dirName), State: repoState, RequestedRef: r.RequestedRef, BaseOID: r.OID, Fingerprint: fp, CompatibilityFingerprint: compatibility})
 	}
 	return out, nil
 }

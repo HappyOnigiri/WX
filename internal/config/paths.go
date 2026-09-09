@@ -192,7 +192,48 @@ func ResetWorkspaceWarmCount(c *Config, root string) error {
 		return nil
 	}
 	workspace.WarmCount = nil
-	if workspace.Worktree == "" && len(workspace.Copy) == 0 && len(workspace.Link) == 0 {
+	if workspace.Worktree == "" && len(workspace.Copy) == 0 && len(workspace.Link) == 0 && workspace.ReuseStandby == nil {
+		delete(c.Workspaces, key)
+	} else {
+		c.Workspaces[key] = workspace
+	}
+	if len(c.Workspaces) == 0 {
+		if c.present == nil {
+			c.present = map[string]bool{}
+		}
+		c.present["workspaces"] = false
+	} else {
+		markWorkspacePresent(c)
+	}
+	return nil
+}
+
+func SetWorkspaceReuseStandby(c *Config, root string, enabled bool) error {
+	key, err := workspaceOverrideKey(c, root)
+	if err != nil {
+		return err
+	}
+	if c.Workspaces == nil {
+		c.Workspaces = map[string]Workspace{}
+	}
+	workspace := c.Workspaces[key]
+	workspace.ReuseStandby = new(enabled)
+	c.Workspaces[key] = workspace
+	markWorkspacePresent(c)
+	return nil
+}
+
+func ResetWorkspaceReuseStandby(c *Config, root string) error {
+	key, err := workspaceOverrideKey(c, root)
+	if err != nil {
+		return err
+	}
+	workspace, ok := c.Workspaces[key]
+	if !ok || workspace.ReuseStandby == nil {
+		return nil
+	}
+	workspace.ReuseStandby = nil
+	if workspace.Worktree == "" && len(workspace.Copy) == 0 && len(workspace.Link) == 0 && workspace.WarmCount == nil {
 		delete(c.Workspaces, key)
 	} else {
 		c.Workspaces[key] = workspace

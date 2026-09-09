@@ -163,3 +163,43 @@ func TestWorkspaceWarmCountValidationRejectsNegative(t *testing.T) {
 		t.Fatal("negative workspace warm count update was accepted")
 	}
 }
+
+func TestWorkspaceReuseStandbyOverridePreservesExplicitFalse(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "repo")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := Config{}
+	if err := SetWorkspaceReuseStandby(&raw, repo, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled, overridden := loaded.ReuseStandbyForWorkspace(repo); enabled || !overridden {
+		t.Fatalf("reuse standby=%t overridden=%t, want explicit false", enabled, overridden)
+	}
+	raw, err = LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ResetWorkspaceReuseStandby(&raw, repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled, overridden := loaded.ReuseStandbyForWorkspace(repo); !enabled || overridden {
+		t.Fatalf("reuse standby=%t overridden=%t, want global default", enabled, overridden)
+	}
+}

@@ -20,7 +20,21 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
-const fingerprintSchemaVersion = 6
+const (
+	fingerprintSchemaVersion         = 6
+	updateCompatibilitySchemaVersion = 1
+)
+
+// UpdateCompatibilityFingerprint は既存 worktree の差分更新では変更できない準備条件だけを hash 化する。
+// OID、include/link の配置内容、readiness、reuse 方針は更新時に再計算できるため含めない。
+func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c config.Config) (string, error) {
+	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\ncopy_mode=%s\n", updateCompatibilitySchemaVersion, generation, c.Storage.CopyMode)
+	if err := writePrepareFingerprint(h, repo, c); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
 
 // Fingerprint は prepared worktree を再利用可能にするすべての情報を hash 化する。slot 内の repository directory 名は意図的に含めない。
 // slot が存在すれば slot_repositories.dir_name が権威となり、既存 slot は記録済みの名前を保つ。

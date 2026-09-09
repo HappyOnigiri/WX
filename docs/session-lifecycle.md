@@ -3,14 +3,18 @@
 1. **貸出** — `wx claude`はworkspace rootのworktree方針を先に解決する。
    未定義の対話起動は`internal/tui.Select`で選択を保存し、対象外なら現在のCWDで通常起動する。
    worktreeを使う場合は`ensureDaemon`でdaemonの生存を確認し（応答が遅いだけの生きたdaemonをlaunchdで再起動しないよう、接続自体に失敗したときだけkickstartする）、`ResolveAndLease`を呼ぶ。
-   daemonはcwdからworkspaceを解決し、要求したOIDと完全一致するREADY slotがあれば再利用、無ければPREPAREジョブを積んで準備中のpathを返す。
+   daemonはcwdからworkspaceを解決し、要求したOIDと準備条件が完全一致するREADY slotを優先する。
+   一致候補がなく`worktree.reuse_standby`が有効なら、更新適合条件と配置履歴を満たすHot StandbyをUPDATEジョブへ予約し、無ければPREPAREジョブでCold Startする。
+   更新不適格と判定した候補は（`--branch`指定でなければ）STALEにして補充へ回すので、次の貸出では作り直したstandbyが使える。
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
    子プロセスには`WX_SESSION_ID`・`WX_SESSION_TOKEN`・`WX_DAEMON_SOCKET`などが渡り、以降のhookはこれを持つ場合だけ動く。
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
    既定の`readiness.mode: early`では、hookが使える通常起動は`WaitEarlyReady`でGit登録と起動用ファイルの配置完了を待つ。
    その後の`wx hook user-prompt-submit`と`wx hook pre-tool-use`は従来どおり`WaitReady`を呼び、全準備が完了するまで操作を止める。
    `readiness.mode: full`またはhookが無い起動は、clientが起動前に`WaitReady`を待つ（`hookconfig.Available`で判定）。
-   warm slotは両方式とも即時起動し、resume・restore・`wx shell/run/new`は全準備を待つ。
+   完全一致したwarm slotは両方式とも即時起動する。
+   UPDATE中はEarly Readyを公開せず、通常起動と`wx shell/run/new`のどちらも全repository・workspace rootの更新完了を待つ。
+   resume・restoreは従来どおり全準備を待ち、UPDATE経路を使わない。
    起動前の待機中もheartbeat・終了要求・失敗時のReleaseを維持する。
    hookの登録は`wx setup`が行い、`internal/hookconfig`が判定と書き込みを同じ受理条件で持つ。
    `WX_SESSION_ID`の有無による素通りは`internal/agent/hook.go`のwx側で判定するため、agent設定側での条件分岐ラッパーは不要である。

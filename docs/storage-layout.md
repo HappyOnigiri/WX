@@ -34,6 +34,7 @@ multi_repositoryのworkspaceスナップショットは、slotディレクトリ
 マーカーを除外しないと、archiveが別slotのIDを運び、復元前のpruneが現在のslotの所有権証拠を消してしまう。
 
 状態は`~/Library/Application Support/wx/state.db`が持ち、同じ場所の`state.db.backups/`にオンラインバックアップを世代保存する。
+Hot Standby更新の固定先と開始・完了境界、wxが配置したcopy/linkのfile単位履歴もこのDBに保存し、ディスク上へ別の管理directoryは作らない。
 
 リポジトリ単位のsnapshotの保存先・公開順序は[セッションと復元](session-lifecycle.md)を参照する。
 ソースリポジトリを読めるプロセスからは、そのsnapshotの中身も読める。

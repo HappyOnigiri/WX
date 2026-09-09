@@ -29,7 +29,7 @@ func jobClassOf(job state.Job) jobClass {
 			return jobClassInteractive
 		}
 		return jobClassMaintenance
-	case "RESTORE", "SNAPSHOT":
+	case "UPDATE", "RESTORE", "SNAPSHOT":
 		return jobClassInteractive
 	default:
 		return jobClassMaintenance
@@ -259,6 +259,8 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 			return retryableJobError{err}
 		}
 		return nil
+	case "UPDATE":
+		return m.runStandbyUpdate(ctx, job)
 	case "ENSURE_STANDBY":
 		w, err := m.store.Workspace(ctx, job.WorkspaceID)
 		if err != nil {
