@@ -38,11 +38,13 @@ type Finding struct {
 }
 
 // Reply は `wx doctor` の応答である。findings は `-v` に左右されず全件を持つ。
+// Probes は `--probe` の実地検査が測った値で、失敗ではないため findings には現れない。
 type Reply struct {
 	SchemaVersion   int       `json:"schema_version"`
 	DBSchemaVersion int       `json:"db_schema_version"`
 	Degraded        bool      `json:"degraded,omitempty"`
 	Findings        []Finding `json:"findings"`
+	Probes          []Probe   `json:"probes,omitempty"`
 }
 
 // NoProblems は問題が無いときに出す 1 行である。

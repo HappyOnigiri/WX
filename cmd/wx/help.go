@@ -26,7 +26,7 @@ Commands:
   new [--json]                   lease a workspace and print its path
   release <id> [--discard]       return a leased workspace now
   status [--verbose] [--json]    show daemon and pool state
-  doctor [--verbose] [--json]    check configuration and dependencies
+  doctor [--probe] [--json]      check configuration, dependencies, worktrees
   gc [--dry-run]                 run retention cleanup
   prune [--all] [--dry-run]      delete recovery refs the database cannot explain
   clear [--all] [--standby]      delete managed worktrees now
@@ -63,13 +63,32 @@ Options:
   --verbose, -v  show detailed status instead of the summary
   --json         print machine-readable JSON`)
 	case "doctor":
-		_, _ = fmt.Fprintln(w, `Usage: wx doctor [--verbose] [--json]
+		_, _ = fmt.Fprintln(w, `Usage: wx doctor [--probe] [--verbose] [--json]
 
 Run read-only checks for configuration, storage, Git, launchd, hooks, and recovery data.
 Print one line when nothing is wrong; otherwise report each problem with its target, cause, and action.
 Exit 0 when only passing and informational results remain, 1 when a problem or an unfinished check remains.
 
+Without --probe no worktree is created, so a workspace that prepares a worktree
+wx cannot actually work in is not detected. With --probe wx leases one workspace
+at a time, waits for EARLY READY and then FULL READY, and inspects what it got:
+submodules the index records but whose directory stayed empty, tracked files
+already modified in a worktree wx just prepared, output a post-checkout hook
+wrote while still exiting 0, and whether the copy shared blocks with the main
+worktrees. It also reports how long each workspace took and what the prepared
+slot occupies per repository. Every probed workspace is returned without saving
+it, as wx release --discard does.
+
+--probe first retires the standby worktrees waiting for each workspace so what
+it measures is a cold start. They are reclaimed by normal GC and replenished
+afterwards, so starting a session in a probed workspace is slower until then.
+It runs one workspace at a time and takes as long as preparing every registered
+workspace does. Interrupting it skips the return of the workspace being probed,
+which then stays leased until the wx session that ran the command ends, or until
+lease.ttl.
+
 Options:
+  --probe        prepare a worktree in every registered workspace and check it
   --verbose, -v  show passing checks, informational results, and extra diagnostics
   --json         print machine-readable JSON with every result regardless of --verbose`)
 	case "gc":
