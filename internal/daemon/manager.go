@@ -89,6 +89,10 @@ type Manager struct {
 	maintenanceMu      sync.Mutex
 	maintenanceRunning bool
 	maintenanceDirty   bool
+	// usageMu は使用量の測り直し要求を1本に保つ。running 中の要求は dirty へ集約する。
+	usageMu      sync.Mutex
+	usageRunning bool
+	usageDirty   bool
 	// beforeMaintenanceSweep は一巡の開始を数え、止めるための test 用 barrier。production では nil のままにする。
 	beforeMaintenanceSweep func()
 	// prepareMeasurements は直近の準備の区間内訳。`wx bench` の診断専用で、状態としては扱わない。

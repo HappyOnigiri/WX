@@ -299,3 +299,58 @@ func TestForgetSlotUsageStopsTheSubtractionAtZero(t *testing.T) {
 		t.Fatalf("root sample went negative: %+v", sample)
 	}
 }
+
+// 使用量の測り直しは1本に保ち、走っている間に届いた要求は畳んで追加の1巡にする。
+// 一巡ごとに root 全体を歩き直すため、削除や準備が連続した回に walk を要求数だけ重ねない。
+func TestRootUsageMeasurementRequestsCoalesceIntoOneSweep(t *testing.T) {
+	t.Parallel()
+	_, manager, _, _, _, _ := managerCoverageFixture(t)
+	if !manager.claimRootUsageMeasurement() {
+		t.Fatal("the first request did not take the sweep")
+	}
+	if manager.claimRootUsageMeasurement() || manager.claimRootUsageMeasurement() {
+		t.Fatal("a concurrent request started a second sweep")
+	}
+	if !manager.nextRootUsageMeasurement() {
+		t.Fatal("the folded requests were dropped")
+	}
+	if manager.nextRootUsageMeasurement() {
+		t.Fatal("the sweep repeated without a pending request")
+	}
+	if !manager.claimRootUsageMeasurement() {
+		t.Fatal("the released sweep could not be retaken")
+	}
+}
+
+// 準備の終わった slot は、周期測定を待たずに root 合計へ現れる。
+// 容量が変わってから Disk が追いつくまでの目標は 10 秒で、待ち時間の上限でそれを検査する。
+func TestPreparedSlotEntersTheRootTotalWithoutWaitingForTheNextMeasurement(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	root := manager.Config().Storage.WorktreeRoot
+	manager.measureRootUsage(ctx)
+	before := statusRootUsage(t, manager, root)
+
+	slotID := domain.StableID("prepared-slot", "usage")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "READY")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	const payload = 65536
+	if err := os.WriteFile(filepath.Join(slot.Path, "payload"), make([]byte, payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager.scheduleSlotUsageMeasurement(slotID)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		after := statusRootUsage(t, manager, root)
+		if after.AllocatedBytes >= before.AllocatedBytes+payload {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("root total did not pick up the prepared slot: before=%+v after=%+v", before, after)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

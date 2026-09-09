@@ -115,10 +115,60 @@ func subtractUsage(total, removed int64) int64 {
 	return total - removed
 }
 
-// scheduleSlotUsageMeasurement は準備完了の直後に、その slot だけの測定を background へ回す。
+// scheduleSlotUsageMeasurement は準備完了の直後に、その slot だけの測定と root 合計の測り直しを background へ回す。
 // 貸出の応答へ走査時間を持ち込まないため同期では測らず、停止中で受け付けられない場合は周期測定へ委ねる。
 func (m *Manager) scheduleSlotUsageMeasurement(slotID string) {
-	m.startBackground(func() { m.measureSlotUsage(m.ctx, slotID) })
+	m.startBackground(func() {
+		m.measureSlotUsage(m.ctx, slotID)
+		m.remeasureRootUsage()
+	})
+}
+
+// remeasureRootUsage は使用量が変わった直後の測り直しを1本へ畳んで background へ回す。
+// 周期測定を待つと Disk が `Discovery.ReconcileInterval` の間だけ古い合計を出し続けるため、変化の直後に追随させる。
+// 走っている間に届いた要求は落とさずに畳み、続けて追加の1巡を行う。
+func (m *Manager) remeasureRootUsage() {
+	if !m.claimRootUsageMeasurement() {
+		return
+	}
+	started := m.startBackground(func() {
+		for {
+			m.measureRootUsage(m.ctx)
+			if !m.nextRootUsageMeasurement() {
+				return
+			}
+		}
+	})
+	if !started {
+		// 停止中は測り直せないので実行権を手放し、次の起動後の周期測定へ委ねる。
+		m.usageMu.Lock()
+		m.usageRunning, m.usageDirty = false, false
+		m.usageMu.Unlock()
+	}
+}
+
+// claimRootUsageMeasurement は測り直しの実行権を取る。既に走っていれば dirty を立てて false を返す。
+func (m *Manager) claimRootUsageMeasurement() bool {
+	m.usageMu.Lock()
+	defer m.usageMu.Unlock()
+	if m.usageRunning {
+		m.usageDirty = true
+		return false
+	}
+	m.usageRunning = true
+	return true
+}
+
+// nextRootUsageMeasurement は畳まれた要求が残っていれば実行権を保ったまま true を返し、なければ手放す。
+func (m *Manager) nextRootUsageMeasurement() bool {
+	m.usageMu.Lock()
+	defer m.usageMu.Unlock()
+	if m.usageDirty {
+		m.usageDirty = false
+		return true
+	}
+	m.usageRunning = false
+	return false
 }
 
 // measureSlotUsage は準備の終わった slot 1 個だけを測って cache へ載せる。

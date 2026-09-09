@@ -132,5 +132,7 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 	if err := m.store.MarkArchived(ctx, s.ID, s.SlotID, state.FormatTime(expiry)); err != nil {
 		return err
 	}
+	// snapshot は管理対象の使用量を増やすため、周期測定を待たずに Disk へ反映する。
+	m.remeasureRootUsage()
 	return nil
 }
