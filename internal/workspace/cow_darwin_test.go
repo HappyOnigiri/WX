@@ -157,3 +157,30 @@ func cowFreeBytes(root *os.Root) (int64, error) {
 	}
 	return int64(fs.Bfree) * int64(fs.Bsize), nil
 }
+
+// clone は file flags も複製するため、flags の付いた donor 側の実体は共有対象から外す。
+// 置いてしまうと slot 側の実体が書換えも削除もできなくなり、正常終了した slot の回収が止まる。
+func TestCOWShareableLeavesSkipsFlaggedDonorFiles(t *testing.T) {
+	source, _ := cowRoots(t)
+	cowWrite(t, source, "locked", strings.Repeat("l", cowMinShareSize))
+	cowWrite(t, source, "plain", strings.Repeat("p", cowMinShareSize))
+	locked := filepath.Join(source.Name(), "locked")
+	if err := unix.Chflags(locked, unix.UF_IMMUTABLE); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Chflags(locked, 0) })
+	base, err := source.Open(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = base.Close() }()
+	stats := &cowStats{}
+	placer := &cowPlacer{minSize: cowMinShareSize, stats: stats}
+	got := placer.shareableLeaves(base, []string{"locked", "plain"})
+	if len(got) != 1 || got[0] != "plain" {
+		t.Fatalf("shareable=%v", got)
+	}
+	if stats.skippedFlags.Load() != 1 {
+		t.Fatalf("skipped for flags=%d", stats.skippedFlags.Load())
+	}
+}

@@ -90,19 +90,19 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		}
 		// 共有できる tracked file は checkout せず main から clone する。
 		// checkout してから同内容へ差し替えるのに比べ、同じ bytes の書き出しと読み比べが1往復ぶん要らない。
-		var placed map[string]bool
+		var placement cowPlacement
 		if err := p.timePhase("cow-place", func() error {
 			var placeErr error
-			placed, placeErr = p.placeSharedFiles(ctx, item.Repository, item, slotID)
+			placement, placeErr = p.placeSharedFiles(ctx, item.Repository, item, slotID)
 			return placeErr
 		}); err != nil {
 			return err
 		}
-		p.sharedPlaced = len(placed) > 0
-		if err := p.timePhase("checkout", func() error { return p.checkoutStage(ctx, item, false, placed) }); err != nil {
+		p.sharedPlaced = placement.complete()
+		if err := p.timePhase("checkout", func() error { return p.checkoutStage(ctx, item, false, placement.placed) }); err != nil {
 			return err
 		}
-		if err := p.timePhase("cow-verify", func() error { return p.settleCOWPlacement(ctx, item, placed) }); err != nil {
+		if err := p.timePhase("cow-verify", func() error { return p.settleCOWPlacement(ctx, item, placement.placed) }); err != nil {
 			return err
 		}
 		// worktree add の post-checkout と同じ null OID・新 HEAD・branch flag を使う。

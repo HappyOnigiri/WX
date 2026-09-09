@@ -18,12 +18,12 @@ import (
 func TestCOWPlacementReportsCloneFailureWhereCoWIsUnsupported(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, item := stagedCOWFixture(t, map[string]string{"big/donor.bin": strings.Repeat("b", cowMinShareSize) + "\n"})
-	placed, err := preparer.placeOwnedSharedFiles(ctx, repo, item, testSlotID)
+	placement, err := preparer.placeOwnedSharedFiles(ctx, repo, item, testSlotID)
 	if !errors.Is(err, unix.ENOTSUP) {
 		t.Fatalf("clone err=%v", err)
 	}
-	if len(placed) != 0 {
-		t.Fatalf("placed=%v", placed)
+	if len(placement.placed) != 0 {
+		t.Fatalf("placed=%v", placement.placed)
 	}
 	if _, statErr := os.Stat(filepath.Join(item.Target, "big", "donor.bin")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("destination leaf err=%v", statErr)
@@ -40,11 +40,11 @@ func TestCOWPlacementReportsCloneFailureWhereCoWIsUnsupported(t *testing.T) {
 func TestPlaceSharedFilesSkipsEntirelyWhereCoWIsUnsupported(t *testing.T) {
 	ctx := context.Background()
 	_, repo, preparer, item := stagedCOWFixture(t, map[string]string{"big/donor.bin": strings.Repeat("b", cowMinShareSize) + "\n"})
-	placed, err := preparer.placeSharedFiles(ctx, repo, item, testSlotID)
+	placement, err := preparer.placeSharedFiles(ctx, repo, item, testSlotID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(placed) != 0 {
-		t.Fatalf("placed=%v", placed)
+	if len(placement.placed) != 0 {
+		t.Fatalf("placed=%v", placement.placed)
 	}
 }

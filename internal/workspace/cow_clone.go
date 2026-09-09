@@ -34,7 +34,9 @@ func (c *cowPlacer) placeFile(source, destination *os.File, directory, leaf stri
 	c.stats.clone.observe(start)
 	if cloneErr != nil {
 		// 宛先に既に実体がある回は、通常 checkout の結果を CoW で上書きしないために諦める。
+		// donor 側は共有できる状態なので、置換方式でまだ拾える候補として数える。
 		if errors.Is(cloneErr, os.ErrExist) {
+			c.stats.pending.Add(1)
 			return false, nil
 		}
 		return false, fmt.Errorf("clone %s: %w", joinCOWPath(directory, leaf), cloneErr)
