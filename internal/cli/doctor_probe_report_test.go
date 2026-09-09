@@ -42,7 +42,7 @@ func TestProbeSharingFindingsSkipUndecidableSlots(t *testing.T) {
 	if got := probeSharingFindings("/root", "/slot", daemon.SlotView{}); got != nil {
 		t.Fatalf("unmeasured slot = %+v", got)
 	}
-	if got := probeSharingFindings("/root", "/slot", daemon.SlotView{Measurement: "unsupported"}); len(got) != 1 || got[0].Severity == diag.SeverityProblem {
+	if got := probeSharingFindings("/root", "/slot", daemon.SlotView{Measurement: daemon.MeasurementUnsupported}); got != nil {
 		t.Fatalf("unsupported platform = %+v", got)
 	}
 }

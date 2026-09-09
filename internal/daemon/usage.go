@@ -47,6 +47,10 @@ const (
 // 消費側が測定済みの 0 と未測定を取り違えないよう、判定用の値をここで公開する。
 const MeasurementPending = rootUsagePendingMeasurement
 
+// MeasurementUnsupported は SlotView.Measurement が、この platform では CoW 共有を判定できないことを表す値である。
+// shared_bytes の 0 を共有が無い証明として読ませないよう、判定用の値をここで公開する。
+const MeasurementUnsupported = slotSharingUnsupported
+
 // measureRootUsage は root ごとの使用量を測り直して cache へ載せ替える。
 // 走査量は root 配下の総ファイル数に比例するため、要求経路では呼ばず lifecycle の周期処理だけが更新する。
 // ctx が切れた回は cache を据え置き、部分的な測定値で既存の値を壊さない。

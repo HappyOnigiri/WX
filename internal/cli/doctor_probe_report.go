@@ -6,7 +6,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/diag"
-	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
 // probeUsage は slot の測定結果を probe の内訳へ写す。
@@ -26,9 +25,11 @@ func probeUsage(slot daemon.SlotView) (string, []diag.ProbeRepository) {
 }
 
 // probeSharingFindings は CoW 共有が効かなかった slot を参考として報告する。
-// 共有できない platform では判定そのものが成り立たないため、finding を出さない。
+// 測定前と共有を判定できない platform では判定そのものが成り立たないため、finding を出さない。
+// その区別は slot の measurement だけで行い、報告する側の platform を条件にしない。
 func probeSharingFindings(root, path string, slot daemon.SlotView) []diag.Finding {
-	if !workspace.SharingSupported() || slot.Measurement == "" || slot.Measurement == daemon.MeasurementPending {
+	switch slot.Measurement {
+	case "", daemon.MeasurementPending, daemon.MeasurementUnsupported:
 		return nil
 	}
 	if slot.CopyMode == config.CopyModeCOW {
