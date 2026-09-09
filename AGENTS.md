@@ -39,6 +39,7 @@ Go側に状態のenum型や遷移ガードを作らない。
 - 編集途中の短い確認には、Go編集時の構造検査を集めた`make check-fast`と、対象を絞る`make test-focus PKG=<パッケージ> RUN=<正規表現>`を使う。
 - `core.hooksPath`のlocal設定はuserレベルのhook dispatcherを覆い隠すため設定しない。
   hookの正本は`scripts/hooks/`で、`make setup-hooks`が共通Gitディレクトリの`hooks/`へ複製する。
+  宛先が正本と異なると差分を見せて許可を求め、答えが無ければ既存を残して失敗する。非対話で上書きするときは`SETUP_HOOKS_ASSUME_YES=1`を付ける。
 - 機械的に判定できる規約は`tools/check*`の検査として実装し、`make ci`へ接続する。
   このAGENTS.mdやコメントでの指示は、静的に判定できない規約に限った最終手段とする。
 - 設計と無関係な行を踏むだけのテストでカバレッジの数字を作らず、プロセスやOSのアダプタは`coverage-exclusions.txt`に理由付きで除外する。
