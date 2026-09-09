@@ -159,6 +159,8 @@ The workspace path is shown by wx status when standby replenishment is stopped.`
        wx config --workspace <path> warm_count --reset
        wx config --workspace <path> reuse_standby <true|false>
        wx config --workspace <path> reuse_standby --reset
+       wx config --workspace <path> submodules <true|false>
+       wx config --workspace <path> submodules --reset
 
 Show effective configuration, or atomically update one supported scalar key or list.
 
@@ -174,6 +176,20 @@ pool.warm_per_workspace, 0 disables replenishment, and --reset restores the
 global value. Reducing the count lets normal GC reclaim unused standby slots.
 reuse_standby controls whether an older READY standby is updated at lease time;
 the default is true, and false preserves exact-match cold-start behavior.
+submodules overrides worktree.submodules for the workspace.
+
+Submodules (worktree.submodules, default true):
+Linked worktrees resolve a submodule's gitdir per worktree, so they cannot reuse
+the main repository's .git/modules/<name>. wx therefore clones each submodule
+from that local module, which stays offline and shares objects as hardlinks. A
+submodule is skipped with a warning, leaving the empty gitlink directory, when
+the local module is absent, when it lacks the gitlink commit, or when no
+upstream url is available; preparation still succeeds. After the clone wx
+restores the submodule's origin to the upstream url so git push does not write
+into the main repository's .git/modules. Changing this stops reuse of READY
+standby worktrees prepared under the previous value.
+Commits made inside a worktree's submodule are lost when the slot is deleted,
+because snapshots can only record the gitlink. Push them before releasing.
 
 Copy mode (storage.copy_mode):
   auto  share identical checked-out files with APFS CoW; fall back to copies, but quarantine when ownership is unprovable (default)

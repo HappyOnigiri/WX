@@ -93,6 +93,48 @@ UPDATEは現行ruleとcopy元から作る新計画を旧履歴と比較し、追
 削除対象は記録済みpathだけなので、同じdirectoryにある履歴外生成物は保持する。
 配置履歴のない既存slotは完全一致なら貸出せるが、更新には使わない。
 
+## submodule
+
+linked worktreeではGitがsubmoduleのgitdirを`$GIT_DIR/modules/<name>`（=`.git/worktrees/<id>/modules/<name>`）に解決するため、mainが持つ`.git/modules/<name>`を再利用できない。
+何もしないとsubmoduleは空ディレクトリのまま残り、ネットワークclone以外に埋める手段がない。
+そこでwxはmain側の`.git/modules/<name>`をclone元として実体化する（`internal/workspace/submodules.go`）。
+objectsはローカルcloneのhardlinkで共有され、共有`.git`側のディスクは増えない。
+
+手順は、要求OIDの`.gitmodules`をblobから読んでname/path/urlを取り、候補pathのindex entryから`160000`のgitlink OIDを引くところから始まる。
+そのうえで`-c protocol.file.allow=always`と`-c submodule.<name>.url=<common dir>/modules/<name>`を付けて`submodule update --init -- <path>`を実行する。
+configは必ず`-c`引数で渡す。
+`internal/gitx`の環境サニタイズが`GIT_CONFIG_*`を落とすため、repo-local configや環境変数では子のcloneプロセスに効かない。
+`-c`で与えたこの形は共有`.git/config`へ何も書かない（`submodule.<name>.url`も`.active`も書かれない）。
+これに依存しているので`TestPrepareLeavesSourceRepositoryUnchanged`で恒久的に固定する。
+
+cloneの直後にsubmoduleの`origin`を上流へ戻す。
+戻さないと`git push`がgithubではなくmainの`.git/modules`に入る。
+戻し先は`.gitmodules`のurlではなくローカルmoduleの`remote.origin.url`を使う。
+`.gitmodules`のurlは`../child`のような相対表記があり、その解決はsuperprojectのremote基準になるので、自前で解決するとGitと食い違う。
+
+ローカルmoduleが無い、gitlink OIDがローカルmoduleに無い、`.gitmodules`にurlが無い、ローカルmoduleにoriginが無いのいずれかは、**書き込む前に**判定して省略する。
+warnを残して準備は成功させる。
+省略した場合のworktreeは`checkoutStage`が作るgitlinkの空ディレクトリのままで、後始末は要らない。
+gitlink OIDを解決できないまま実体化を始めると親がdirtyな`M <path>`で残り、その`$GIT_DIR/modules/<name>`は次回以降も古いgitdirを掴む。
+この状態に到達させないことが設計の要点である。
+nameが不正、またはclone・checkout・set-urlが失敗した場合は準備を失敗させる。
+`.git/worktrees/<id>/modules/<name>`はpinしたroot descriptorの外なので、**wxはここを個別に削除しない**。
+書き始めた後に失敗したslotは隔離され、既存のslot削除経路（`worktree remove --force --force`と`RemoveAll("worktrees/<id>")`）が管理ディレクトリごと回収する。
+
+実行位置は残りの展開のpost-checkoutより前で、EARLY READYには含めない。
+post-checkoutより前にするのは、ユーザーのhookがsubmoduleの中身を前提にできるようにし、hook側の`git submodule update`もno-opで済ませるためである。
+単発準備・restore経路では`completePrepare`のinclude配置より前に実体化し、`.worktreeinclude`やprepare commandがsubmodule配下を前提にできるようにする。
+standbyのUPDATE経路は`checkout --detach --force`だけで再同期しない。`rejectChangedGitlinks`が`.gitmodules`とgitlink OIDの完全一致しか通さないため、更新で実体が陳腐化することはない。
+
+方針は`worktree.submodules`（既定true）とワークスペース別上書き`workspaces.<root>.submodules`で切り替える。
+準備用fingerprintと更新互換fingerprintの両方に混ぜて、方針変更後に旧方針のREADY slotを再利用しない。
+更新互換側にも要るのは、更新経路がsubmoduleを実体化しないため`submodules=false`で作ったstandbyをtrue相当へ変換できないからである。
+
+**worktree内のsubmoduleで作ったコミットはslot削除で失われる。**
+snapshotはgitlinkしか記録できず（`internal/archive`の一時indexへの`add -A`も同じ）、救う手段を持たないためである。submodule側の変更はpushしてからslotを返す。
+submodule checkoutのCoW共有も行わない。prepareのCoWフェーズより後に実体化するため、1 slotあたりのcheckout分は共有されない。
+入れ子submoduleの再帰（`--recursive`）は扱わない。
+
 ## 起動用ファイルの先行配置
 
 通常準備は全リポジトリのGit登録・先行配置、残りの配置の二巡で行う。
@@ -127,6 +169,12 @@ readiness設定の変更だけでは完成済みREADY slotの再利用を無効�
 cloneの呼び出しと、clone成功後にしか進まない比較・metadata照合・swap・後始末は[`cow_clone.go`](../internal/workspace/cow_clone.go)にまとめてある。
 clonefileそのもののsyscallは[`cow_darwin.go`](../internal/workspace/cow_darwin.go)にある。
 indexの解析と事前skipは[`cow_index.go`](../internal/workspace/cow_index.go)、run分割・並列実行・エラー集約は[`cow_share.go`](../internal/workspace/cow_share.go)が持つ。
+
+submoduleの実体化は[`submodules.go`](../internal/workspace/submodules.go)が入口である。
+staged経路の結線は[`early_prepare.go`](../internal/workspace/early_prepare.go)、単発・restore経路の結線は[`prepare.go`](../internal/workspace/prepare.go)の`completePrepare`にある。
+代表テストは[`submodules_test.go`](../internal/workspace/submodules_test.go)にある。
+なかでもソースリポジトリの共有configとmain worktreeが不変であることを見る`TestPrepareLeavesSourceRepositoryUnchanged`が本設計の要である。
+挿入位置とslot削除での回収は[`internal/daemon/standby_submodule_test.go`](../internal/daemon/standby_submodule_test.go)が固定する。
 
 `cow_clone.go`はlinuxでは`cloneCOW`がENOTSUPを返して到達しないため、`coverage-exclusions.txt`で理由付きにcoverageの分母から外している。
 linuxでも実行される判定・分割・集約は除外していないので、clone後の処理を足すときは`cow_clone.go`へ置き、cloneの有無に依らず成立する契約は他のファイルへ置く。

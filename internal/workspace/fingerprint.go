@@ -21,16 +21,23 @@ import (
 )
 
 const (
-	fingerprintSchemaVersion         = 7
-	updateCompatibilitySchemaVersion = 2
+	fingerprintSchemaVersion         = 8
+	updateCompatibilitySchemaVersion = 3
 )
 
 // UpdateCompatibilityFingerprint は既存 worktree の差分更新では変更できない準備条件だけを hash 化する。
 // OID、include/link の配置内容、readiness、reuse 方針は更新時に再計算できるため含めない。
+// schema=3 は submodule 方針を含める。更新経路は submodule を実体化せず、false で作った standby を true 相当へ変換できない。
+// commentlint:allow-long -- schema を上げた理由と、更新互換側にも要る条件を保守時に確認できるようにする
 func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c config.Config) (string, error) {
+	workspaceRoot, err := repositoryWorkspaceRoot(repo)
+	if err != nil {
+		return "", err
+	}
+	submodules, _ := c.SubmodulesForWorkspace(workspaceRoot)
 	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\ncopy_mode=%s\ncow_min_size_kib=%d\n",
-		updateCompatibilitySchemaVersion, generation, c.Storage.CopyMode, c.COWMinSizeKiB(string(repo.MainPath)))
+	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\ncopy_mode=%s\ncow_min_size_kib=%d\nsubmodules=%t\n",
+		updateCompatibilitySchemaVersion, generation, c.Storage.CopyMode, c.COWMinSizeKiB(string(repo.MainPath)), submodules)
 	if err := writePrepareFingerprint(h, repo, c); err != nil {
 		return "", err
 	}
@@ -45,6 +52,7 @@ func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c
 // schema=7 は共有下限も含め、下限変更後の貸出で以前の下限で作った slot を再利用しない。
 // 下限は repository ごとに解決した実効値を入れる。schema は上げない。
 // 個別指定を足した repository は値そのものが変わって hash が変わり、他 repository の READY slot は生かしたままにできる。
+// schema=8 は submodule 実体化の方針も含め、方針変更後に以前の READY slot を再利用しない。
 // commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	return fingerprintWithSchema(fingerprintSchemaVersion, generation, oid, repo, c)
@@ -137,7 +145,8 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 		return "", err
 	}
 	rules := c.Workspaces[workspaceRoot]
-	_, _ = fmt.Fprintf(h, "workspace-root=%s\ncopy-rules=%q\nlink-rules=%q\n", workspaceRoot, rules.Copy, rules.Link)
+	submodules, _ := c.SubmodulesForWorkspace(workspaceRoot)
+	_, _ = fmt.Fprintf(h, "workspace-root=%s\ncopy-rules=%q\nlink-rules=%q\nsubmodules=%t\n", workspaceRoot, rules.Copy, rules.Link, submodules)
 	copyNames, explicitCopies, err := workspaceRootCopyPlan(rules)
 	if err != nil {
 		return "", err

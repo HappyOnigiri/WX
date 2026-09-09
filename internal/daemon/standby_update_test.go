@@ -34,13 +34,19 @@ type reuseStandbyFixture struct {
 
 func newReuseStandbyFixture(t *testing.T) *reuseStandbyFixture {
 	t.Helper()
+	return newReuseStandbyFixtureWith(t, initGitRepo)
+}
+
+// newReuseStandbyFixtureWith は main repository の作り方だけを差し替えられる形で fixture を組む。
+func newReuseStandbyFixtureWith(t *testing.T, initRepository func(*testing.T, string)) *reuseStandbyFixture {
+	t.Helper()
 	requireDaemonIntegration(t)
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	repository := filepath.Join(root, "repo")
-	initGitRepo(t, repository)
+	initRepository(t, repository)
 	databasePath := filepath.Join(root, "state.db")
 	store, err := state.Open(databasePath)
 	if err != nil {
