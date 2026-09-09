@@ -95,6 +95,24 @@ func (plan *earlyPlan) split(extra []string) {
 	}
 }
 
+// earlyAttributes は先行配置の未追跡 copy に .gitattributes があるかを返す。
+// ある回だけ checkout の属性を要求 OID から読み、先行配置が残りの filter を変えることを防ぐ。
+// 無い回に GIT_ATTR_SOURCE を渡さないのは、worktree 上の .gitattributes が既に要求 OID の内容と一致し、
+// tree からの属性再読込が大きな repository では checkout 全体を数秒延ばすためである。
+// link は source repository の ignore 対象に限るため tracked file の祖先にならず、配下の .gitattributes は参照されない。
+// commentlint:allow-long -- GIT_ATTR_SOURCE を省ける条件と link を数えない根拠を保守時に確認できるようにする
+func (plan *earlyPlan) earlyAttributes() bool {
+	for _, entry := range plan.copies {
+		if entry.directory || !plan.early[entry.path] {
+			continue
+		}
+		if filepath.Base(entry.path) == ".gitattributes" {
+			return true
+		}
+	}
+	return false
+}
+
 // collectCopies は物理ディレクトリだけを辿り、配置予定を leaf 単位に固定する。
 // keep は repository の tracked 除外用で、workspace root では nil を渡す。
 func (plan *earlyPlan) collectCopies(source *os.Root, path string, keep func(string) (bool, error)) error {

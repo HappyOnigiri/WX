@@ -3,6 +3,8 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -184,7 +186,21 @@ func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, ea
 		return nil
 	}
 	// --force は使わず、先行配置後に現れた衝突を上書きせず失敗させる。
-	// 先行 include の未追跡 .gitattributes が残りの filter を変えないよう、属性は要求 OID から読む。
-	_, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, []string{"GIT_ATTR_SOURCE=" + item.OID}, []byte(strings.Join(paths, "\x00")+"\x00"), "checkout-index", "--index", "-z", "--stdin")
+	// checkout.workers は Git 側の parallel checkout を有効にする。設定の既定は 1 で、repository 設定に依らず同じ並列度にするため毎回明示する。
+	args := []string{"-c", "checkout.workers=" + strconv.Itoa(checkoutWorkers()), "checkout-index", "--index", "-z", "--stdin"}
+	var env []string
+	if item.plan.earlyAttributes() {
+		env = []string{"GIT_ATTR_SOURCE=" + item.OID}
+	}
+	_, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, env, []byte(strings.Join(paths, "\x00")+"\x00"), args...)
 	return err
+}
+
+// checkoutMaxWorkers は parallel checkout の上限である。
+// 手元の計測では 8 を超えると worker 間の競合で遅くなり、CoW と同じく利用者の対話操作と CPU を分け合う。
+const checkoutMaxWorkers = 8
+
+// checkoutWorkers は checkout-index の並列度を返す。
+func checkoutWorkers() int {
+	return min(runtime.NumCPU(), checkoutMaxWorkers)
 }

@@ -55,7 +55,10 @@ UPDATEは現行ruleとcopy元から作る新計画を旧履歴と比較し、追
 通常準備は全リポジトリのGit登録・先行配置、残りの配置の二巡で行う。
 `worktree add --detach --no-checkout`で登録し、要求OIDのindexを構築して`checkout-index`へのNUL区切りパス入力で分割展開する。
 tracked fileは元worktreeの未コミット内容を取り込まず、Gitのfilter・属性・実行権限・symlinkの形を保持する。
-checkoutの属性は要求OIDから読み、先行includeの未追跡.gitattributesによって後段のfilterが変わることを防ぐ。
+先行配置した未追跡ファイルに`.gitattributes`がある回だけ、checkoutの属性を要求OIDから読み、後段のfilterが変わることを防ぐ。
+無い回に要求OIDから読み直さないのは、worktree上の`.gitattributes`が既に要求OIDの内容と一致し、treeからの属性再読込が大きなリポジトリではcheckout全体を数秒延ばすためである。
+`.worktreelink`のlinkはソースリポジトリのignore対象に限るためtracked fileの祖先にならず、配下の`.gitattributes`は参照されないので数えない。
+残りの展開ではGitのparallel checkoutを使い、並列度はリポジトリ設定に依らずwxが毎回指定する。
 post-checkoutは全tracked fileの展開後、残りのinclude/link・prepare commandより前に一度だけ実行する。
 CoWと最終検証は従来どおり最後に行う。
 
