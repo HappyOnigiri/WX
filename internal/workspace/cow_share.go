@@ -26,7 +26,8 @@ const (
 	// run 単位で並列にすると短い run では同期費用が勝つため、数百件へまとめてから配る。
 	cowBatchSize = 192
 	// cowMaxWorkers は並列度の上限である。CoW は利用者の対話操作と同じマシンで走るので全 CPU は使わない。
-	cowMaxWorkers = 4
+	// 8 までは syscall 待ちが重なって実時間が縮み、それ以上は volume 側で頭打ちになる。
+	cowMaxWorkers = 8
 )
 
 // cowStage は1種類の操作の呼び出し回数と所要時間を集計する。
@@ -100,6 +101,17 @@ func (s *cowSharer) verifyProof() error {
 	return s.proof()
 }
 
+// cowScratch は1つの worker が使い回す作業用 buffer である。
+// ACL の取得は file ごとに固定長 buffer を要るが、共有対象が数万件になると確保だけで GB 単位の churn になる。
+type cowScratch struct {
+	acl   []byte
+	clone []byte
+}
+
+func newCOWScratch() *cowScratch {
+	return &cowScratch{acl: make([]byte, cowACLBufferSize), clone: make([]byte, cowACLBufferSize)}
+}
+
 // cowRun は同一 directory に属する連続した entry である。`ls-files` の出力は path 順なので連続で現れる。
 type cowRun struct {
 	directory string
@@ -142,7 +154,7 @@ func batchCOWRuns(runs []cowRun, size int) [][]cowRun {
 
 // shareRun は run を、その directory の descriptor 相対で処理する。
 // 成分の symlink・非 directory の検査は run 先頭の OpenRootAt が担い、leaf 側は1成分だけの検査になる。
-func (s *cowSharer) shareRun(ctx context.Context, directory string, leaves []string) error {
+func (s *cowSharer) shareRun(ctx context.Context, scratch *cowScratch, directory string, leaves []string) error {
 	sourceDirectory, err := domain.OpenRootAt(s.source, directory)
 	if cowSourceIneligible(err) {
 		return nil
@@ -169,14 +181,30 @@ func (s *cowSharer) shareRun(ctx context.Context, directory string, leaves []str
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.shareFile(ctx, sourceDirectory, destinationDirectory, parent, leaf); err != nil {
+		if err := s.shareFile(ctx, scratch, sourceDirectory, destinationDirectory, parent, leaf); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *cowSharer) shareFile(ctx context.Context, source, destination *os.Root, parent *os.File, leaf string) error {
+func (s *cowSharer) shareFile(ctx context.Context, scratch *cowScratch, source, destination *os.Root, parent *os.File, leaf string) error {
+	// 下限判定は宛先の lstat だけで済ませ、開くのは共有し得る file に限る。
+	// 候補の過半は下限未満で落ちるため、先に両側を開くと使わない open と fstat がその分だけ積み上がる。
+	sizeInfo, err := domain.PhysicalPathInfo(destination, leaf)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: inspect CoW destination: %w", state.ErrOwnership, err)
+	}
+	if !sizeInfo.Mode().IsRegular() || sizeInfo.Size() == 0 {
+		return nil
+	}
+	if sizeInfo.Size() < s.minSize {
+		s.stats.skippedSize.Add(1)
+		return nil
+	}
 	start := time.Now()
 	in, sourceInfo, err := cowOpenFile(source, leaf)
 	if cowSourceIneligible(err) {
@@ -204,10 +232,6 @@ func (s *cowSharer) shareFile(ctx context.Context, source, destination *os.Root,
 	if info.Size() == 0 || sourceInfo.Size() != info.Size() || os.SameFile(sourceInfo, info) {
 		return nil
 	}
-	if info.Size() < s.minSize {
-		s.stats.skippedSize.Add(1)
-		return nil
-	}
 	var before unix.Stat_t
 	if err := unix.Fstat(int(original.Fd()), &before); err != nil {
 		return err
@@ -215,10 +239,10 @@ func (s *cowSharer) shareFile(ctx context.Context, source, destination *os.Root,
 	if before.Nlink != 1 {
 		return nil
 	}
-	return s.replaceWithClone(ctx, in, original, parent, leaf, before)
+	return s.replaceWithClone(ctx, scratch, in, original, parent, leaf, before)
 }
 
-func (s *cowSharer) replaceWithClone(ctx context.Context, in, original, parent *os.File, leaf string, before unix.Stat_t) (result error) {
+func (s *cowSharer) replaceWithClone(ctx context.Context, scratch *cowScratch, in, original, parent *os.File, leaf string, before unix.Stat_t) (result error) {
 	temporary := cowTemporaryPrefix + rand.Text()
 	start := time.Now()
 	if err := cloneCOW(in, parent, temporary); err != nil {
@@ -238,10 +262,6 @@ func (s *cowSharer) replaceWithClone(ctx context.Context, in, original, parent *
 	defer func() {
 		// swap 後は元ファイルが temporary にある。証明できない物は消さず隔離へ渡す。
 		if errors.Is(result, state.ErrOwnership) {
-			return
-		}
-		if err := s.verifyProof(); err != nil {
-			result = fmt.Errorf("%w: CoW cleanup ownership: %w", state.ErrOwnership, err)
 			return
 		}
 		verifyStart := time.Now()
@@ -264,16 +284,13 @@ func (s *cowSharer) replaceWithClone(ctx context.Context, in, original, parent *
 		return err
 	}
 	start = time.Now()
-	compatible, err := cowMetadata(original, candidate, before)
+	compatible, err := cowMetadata(original, candidate, before, scratch)
 	s.stats.metadata.observe(start)
 	if err != nil || !compatible {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-	if err := s.verifyProof(); err != nil {
-		return fmt.Errorf("%w: CoW replacement ownership: %w", state.ErrOwnership, err)
 	}
 	originalInfo, err := original.Stat()
 	if err != nil {

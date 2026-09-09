@@ -109,7 +109,7 @@ func TestCOWPreservesExplicitDestinationACL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer original.Close()
-	beforeACL, err := cowACL(original)
+	beforeACL, err := cowACL(original, make([]byte, cowACLBufferSize))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestCOWPreservesExplicitDestinationACL(t *testing.T) {
 	if !os.SameFile(before, after) {
 		t.Fatal("explicit ACL was replaced by inherited ACL")
 	}
-	afterACL, err := cowACL(original)
+	afterACL, err := cowACL(original, make([]byte, cowACLBufferSize))
 	if err != nil || !bytes.Equal(beforeACL, afterACL) {
 		t.Fatalf("ACL changed: %v", err)
 	}

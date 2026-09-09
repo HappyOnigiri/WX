@@ -57,7 +57,7 @@ func TestCOWShareSkipsFilesBelowMinimum(t *testing.T) {
 	before, _ := b.Stat("small")
 	stats := &cowStats{}
 	sharer := &cowSharer{source: a, destination: b, proof: func() error { return nil }, minSize: cowMinShareSize, stats: stats}
-	err := sharer.shareRun(context.Background(), ".", []string{"small", "large"})
+	err := sharer.shareRun(context.Background(), newCOWScratch(), ".", []string{"small", "large"})
 	if !cowAvailable() {
 		// clone できない platform では下限を超えた large だけが失敗まで進む。
 		if err == nil {
@@ -88,7 +88,7 @@ func TestCOWShareSkipsSourceShapeMismatch(t *testing.T) {
 	cowWrite(t, b, "dir/file", "same")
 	before, _ := b.Stat("dir/file")
 	sharer := &cowSharer{source: a, destination: b, proof: func() error { return nil }, stats: &cowStats{}}
-	if err := sharer.shareRun(context.Background(), "dir", []string{"file"}); err != nil {
+	if err := sharer.shareRun(context.Background(), newCOWScratch(), "dir", []string{"file"}); err != nil {
 		t.Fatalf("source shape mismatch aborted preparation: %v", err)
 	}
 	after, _ := b.Stat("dir/file")
@@ -96,7 +96,7 @@ func TestCOWShareSkipsSourceShapeMismatch(t *testing.T) {
 		t.Fatal("destination changed")
 	}
 	// 宛先に無い directory は、宛先ファイル欠落と同じく skip する。
-	if err := sharer.shareRun(context.Background(), "missing", []string{"file"}); err != nil {
+	if err := sharer.shareRun(context.Background(), newCOWScratch(), "missing", []string{"file"}); err != nil {
 		t.Fatalf("missing destination directory aborted preparation: %v", err)
 	}
 }
@@ -174,7 +174,7 @@ func TestCOWWorkerCountStaysWithinBounds(t *testing.T) {
 	}
 }
 
-// 証明は clone に成功した対象だけに対して呼ばれるため、clone できない platform では直接検査する。
+// 証明は batch の前後で呼ばれるため、clone できない platform では直接検査する。
 // 失敗した証明も隔離判断の入力になるので、成否に関わらず結果を書き換えず計測へ残すことを確かめる。
 func TestCOWProofIsPassedThroughAndMeasured(t *testing.T) {
 	failure := errors.New("proof failed")

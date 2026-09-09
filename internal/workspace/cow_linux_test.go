@@ -21,7 +21,7 @@ func TestCOWUnsupportedPlatformRejectsSharing(t *testing.T) {
 	if err := swapCOW(nil, "clone", "leaf"); !errors.Is(err, unix.ENOTSUP) {
 		t.Fatalf("swap error=%v", err)
 	}
-	compatible, err := cowMetadata(nil, nil, unix.Stat_t{})
+	compatible, err := cowMetadata(nil, nil, unix.Stat_t{}, newCOWScratch())
 	if compatible || !errors.Is(err, unix.ENOTSUP) {
 		t.Fatalf("metadata compatible=%t error=%v", compatible, err)
 	}

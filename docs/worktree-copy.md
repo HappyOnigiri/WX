@@ -16,7 +16,9 @@ mainのtree形状が異なる場合や、mainがこの処理中に変化した�
 indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変えないため、復元した区別も保たれる。
 宛先の日時はFD経由で復元し、元ファイルとcloneをatomic swapしてから元inodeを検証して削除する。
 走査は同一ディレクトリの連続したentryをrunとしてまとめ、runをバッチにして並列に処理する。
-所有権証明のうちSQLの照会はバッチ単位、worktree identityの検査は置換1件ごとに行う。
+所有権証明はSQLの照会・worktree identityの検査ともバッチの前後で行う。
+宛先への書込みはpin済みdescriptor経由なので、バッチの途中でslotのディレクトリが差し替わっても別のinodeへは書かない。
+共有下限の判定は宛先のlstatだけで行い、下限未満のpathでは両側を開かない。
 バッチが失敗した回は着手済みのバッチを完走させてから止めるため、共有できたファイルの集合は回ごとに変わる。
 所有権不明は`auto`でもfallbackせずQUARANTINEDとして実体を残す。
 中断して残った未追跡の`.wx-cow-*`も自動削除せず隔離するため、この名前は予約する。
