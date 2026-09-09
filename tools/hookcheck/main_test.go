@@ -67,6 +67,17 @@ func TestSelectChecksForMixedChanges(t *testing.T) {
 	}
 }
 
+func TestSelectChecksCoversHookSources(t *testing.T) {
+	t.Parallel()
+	selected, err := selectChecks(t.TempDir(), []changedFile{{status: "A", path: "scripts/hooks/pre-commit"}})
+	if err != nil {
+		t.Fatalf("selectChecks: %v", err)
+	}
+	if selected.checks["shell-check"] == nil {
+		t.Fatalf("checks=%#v, want shell-check for a hook without a .sh suffix", selected.checks)
+	}
+}
+
 func TestSelectChecksSkipsDeletedPackage(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

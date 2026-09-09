@@ -296,7 +296,11 @@ func isMarkdownPath(path string) bool {
 	return strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".markdown")
 }
 
+// hook本体は拡張子を持てないため、scripts/hooks/直下は名前によらずshell扱いにする。
 func isShellPath(path string) bool {
+	if strings.HasPrefix(path, "scripts/hooks/") {
+		return true
+	}
 	return strings.HasPrefix(path, "scripts/") && strings.HasSuffix(path, ".sh")
 }
 
