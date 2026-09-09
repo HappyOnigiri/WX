@@ -76,29 +76,23 @@ func (r *verboseStatusRenderer) lineTable(headers []string, rows [][]string, pre
 	}
 }
 
+// renderRepositories は repository を 1 行ずつの表にする。
+// 時刻列が 3 つあり列見出しごとにタイムゾーンを繰り返すと表が横に広がるため、見出し行にまとめて添える。
 func (r *verboseStatusRenderer) renderRepositories() {
 	r.line("")
-	r.line("Repositories")
+	r.line("Repositories (" + statusZoneLabel() + ")")
 	value, present := r.payload["repository_details"]
 	items := statusObjectsSortedBy(statusObjectList(value), "main_path")
 	r.mark("repository_details")
-	if len(items) == 0 {
-		if present {
-			r.line("  (none)")
-		} else {
-			r.line("  (unset)")
-		}
-	}
+	rows := make([][]string, 0, len(items))
 	for index, item := range items {
-		r.line(fmt.Sprintf("  Repository %d", index+1))
-		r.field("    ID", statusValue(item, "id"))
-		r.field("    Path", statusHomeValue(item, "main_path"))
-		r.field("    Hot", statusValue(item, "hot"))
-		r.field("    Last used", statusValue(item, "last_used_at"))
-		r.field("    Standby ready", statusValue(item, "standby_ready_at"))
-		r.field("    Standby expires", statusValue(item, "standby_expires_at"))
+		rows = append(rows, []string{
+			statusValue(item, "id"), statusHomeValue(item, "main_path"), statusValue(item, "hot"),
+			statusLocalDate(statusValueRaw(item, "last_used_at")), statusLocalDate(statusValueRaw(item, "standby_ready_at")), statusLocalDate(statusValueRaw(item, "standby_expires_at")),
+		})
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("repositories[%d]", index), item, map[string]bool{"id": true, "main_path": true, "hot": true, "last_used_at": true, "standby_ready_at": true, "standby_expires_at": true})
 	}
+	r.lineTable([]string{"ID", "PATH", "HOT", "LAST USED", "STANDBY READY", "STANDBY EXPIRES"}, rows, present)
 }
 
 // renderSessions は daemon が絞り込んだ非終端 session を 1 行ずつ出し、その後ろに ARCHIVED の集計を添える。
@@ -327,63 +321,30 @@ func (r *verboseStatusRenderer) renderRetention() {
 	r.additional = appendStatusUnknown(r.additional, "retention_seconds", retention, known)
 }
 
-type statusQuarantineGroup struct {
-	kind   string
-	reason string
-	items  []map[string]any
-}
-
-func (g *statusQuarantineGroup) label() string {
-	if g.kind == "" {
-		return g.reason
-	}
-	return g.kind + " / " + g.reason
-}
-
+// renderQuarantine は隔離された実体を 1 行ずつの表にする。
+// 同じ kind・reason が並ぶと見分けにくいため、行は kind・reason・path・id の順に並べる。
 func (r *verboseStatusRenderer) renderQuarantine() {
 	r.line("")
 	r.line("Quarantine")
 	value, present := r.payload["quarantine"]
 	items := statusObjectList(value)
 	r.mark("quarantine")
-	if len(items) == 0 {
-		if present {
-			r.line("  (none)")
-		} else {
-			r.line("  (unset)")
-		}
-	} else {
-		groups := make(map[string]*statusQuarantineGroup)
-		for _, item := range items {
-			kind, reason := statusValueRaw(item, "kind"), statusQuarantineReason(item)
-			key := kind + "\x00" + reason
-			group := groups[key]
-			if group == nil {
-				group = &statusQuarantineGroup{kind: kind, reason: reason}
-				groups[key] = group
-			}
-			group.items = append(group.items, item)
-		}
-		ordered := make([]*statusQuarantineGroup, 0, len(groups))
-		for _, group := range groups {
-			sort.SliceStable(group.items, func(i, j int) bool {
-				left, right := statusValueRaw(group.items[i], "path"), statusValueRaw(group.items[j], "path")
-				if left == right {
-					return statusValueRaw(group.items[i], "id") < statusValueRaw(group.items[j], "id")
-				}
-				return left < right
-			})
-			ordered = append(ordered, group)
-		}
-		sort.Slice(ordered, func(i, j int) bool { return ordered[i].label() < ordered[j].label() })
-		for _, group := range ordered {
-			r.line(fmt.Sprintf("  Reason: %s (%d)", group.label(), len(group.items)))
-			for _, item := range group.items {
-				r.field("    ID", statusValue(item, "id"))
-				r.field("    Path", statusHomeValue(item, "path"))
+	sorted := append([]map[string]any(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		left := []string{statusValueRaw(sorted[i], "kind"), statusQuarantineReason(sorted[i]), statusValueRaw(sorted[i], "path"), statusValueRaw(sorted[i], "id")}
+		right := []string{statusValueRaw(sorted[j], "kind"), statusQuarantineReason(sorted[j]), statusValueRaw(sorted[j], "path"), statusValueRaw(sorted[j], "id")}
+		for index := range left {
+			if left[index] != right[index] {
+				return left[index] < right[index]
 			}
 		}
+		return false
+	})
+	rows := make([][]string, 0, len(sorted))
+	for _, item := range sorted {
+		rows = append(rows, []string{statusValue(item, "id"), statusValue(item, "kind"), statusQuarantineReason(item), statusHomeValue(item, "path")})
 	}
+	r.lineTable([]string{"ID", "KIND", "REASON", "PATH"}, rows, present)
 	for index, item := range items {
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("quarantine[%d]", index), item, map[string]bool{"id": true, "path": true, "kind": true, "failure_code": true})
 	}
