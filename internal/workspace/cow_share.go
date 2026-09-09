@@ -25,9 +25,9 @@ const (
 	// cowBatchSize は1つの worker が受け持つ entry のおおよその件数である。
 	// run 単位で並列にすると短い run では同期費用が勝つため、数百件へまとめてから配る。
 	cowBatchSize = 192
-	// cowMaxWorkers は並列度の上限である。CoW は利用者の対話操作と同じマシンで走るので全 CPU は使わない。
-	// 8 までは syscall 待ちが重なって実時間が縮み、それ以上は volume 側で頭打ちになる。
-	cowMaxWorkers = 8
+	// cowMaxWorkers は並列度の上限である。
+	// 処理の大半は clone・mkdir・open の待ちなので、CPU 数まで重ねると実時間が縮む。
+	cowMaxWorkers = 10
 )
 
 // cowStage は1種類の操作の呼び出し回数と所要時間を集計する。

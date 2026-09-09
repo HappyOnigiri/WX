@@ -217,8 +217,8 @@ func (p *Preparer) checkoutStage(ctx context.Context, item *stagedRepository, ea
 }
 
 // checkoutMaxWorkers は parallel checkout の上限である。
-// 手元の計測では 8 を超えると worker 間の競合で遅くなり、CoW と同じく利用者の対話操作と CPU を分け合う。
-const checkoutMaxWorkers = 8
+// これを超える並列度は Git 側の同期費用が勝ち、手元の計測では実時間が伸びた。
+const checkoutMaxWorkers = 10
 
 // checkoutWorkers は checkout-index の並列度を返す。
 func checkoutWorkers() int {
