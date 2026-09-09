@@ -166,10 +166,13 @@ func TestCOWLeafVerificationRejectsAReplacedInode(t *testing.T) {
 	if err := verifyCOWLeaf(directory, "file", expected); err != nil {
 		t.Fatalf("unchanged leaf err=%v", err)
 	}
-	if err := b.Remove("dir/file"); err != nil {
+	// 置き換えは別名で作ってからrenameで被せる。
+	// 先にunlinkすると、inode番号を再利用するファイルシステム（linuxのext4など）で
+	// 同じ番号が割り当たり、置き換えたのに同一と判定され得る。
+	cowWrite(t, b, "dir/other", "user")
+	if err := b.Rename("dir/other", "dir/file"); err != nil {
 		t.Fatal(err)
 	}
-	cowWrite(t, b, "dir/file", "user")
 	if err := verifyCOWLeaf(directory, "file", expected); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("replaced leaf err=%v", err)
 	}
