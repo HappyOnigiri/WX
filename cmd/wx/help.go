@@ -162,6 +162,11 @@ The workspace path is shown by wx status when standby replenishment is stopped.`
 
 Show effective configuration, or atomically update one supported scalar key or list.
 
+--add and --remove take a list key: discovery.exclude, readiness.early_paths, or
+sessions.paths.<claude|codex>.sessions. --reset takes any of those list keys or any
+scalar key wx config lists; it drops the key from the config file so the built-in
+default applies again.
+
 With --workspace, show or update the workspace-specific standby count. The path
 may be relative or a repository subdirectory; linked worktrees resolve to the
 repository's main worktree. A workspace warm_count overrides
@@ -184,7 +189,8 @@ Readiness (readiness.mode):
   full   wait for checkout, includes, links, prepare commands, and final validation
 Without readiness hooks, both modes wait for full preparation. Resume and shell/run/new always wait for full preparation.
 Use full when checkout hooks or prepare commands generate or update startup settings.
-readiness.early_paths adds literal repository-relative paths to the startup list.
+readiness.early_paths adds literal repository-relative paths to the startup list;
+edit it with wx config readiness.early_paths --add/--remove/--reset.
 Directories include their descendants; no glob patterns are expanded. Only paths
 already scheduled by checkout or copy/link rules are materialized. Workspace roots
 use the same selection. Absolute paths, escapes, the root itself, and .git are rejected.`)
