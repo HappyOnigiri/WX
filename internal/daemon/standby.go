@@ -48,14 +48,16 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	if err != nil {
 		return err
 	}
+	// 進行中の貸出はまだ last_leased_at を書いていないことがある。その workspace の repository は hot として扱い、
+	// 使用中の workspace へ COLD の待機枠を作らないようにする。
+	// 問い合わせの前後で確かめるのは、その間に貸出が終わると書き込みも進行中も見えなくなるためである。
+	leaseInFlight := m.workspaceLeaseInFlight(string(w.ID))
 	hotBefore := state.FormatTime(time.Now().UTC().Add(-cfg.Retention.HotStandby.Duration))
 	hot, err := m.store.HotRepositoryIDs(ctx, hotBefore)
 	if err != nil {
 		return err
 	}
-	// 進行中の貸出はまだ last_leased_at を書いていないことがある。その workspace の repository は hot として扱い、
-	// 使用中の workspace へ COLD の待機枠を作らないようにする。
-	leaseInFlight := m.workspaceLeaseInFlight(string(w.ID))
+	leaseInFlight = leaseInFlight || m.workspaceLeaseInFlight(string(w.ID))
 	cold := make([]string, 0, len(resolved))
 	for _, r := range resolved {
 		if leaseInFlight {
