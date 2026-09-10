@@ -145,6 +145,13 @@ func Pick(ctx context.Context, cfg config.Config, opts PickOptions) (ResumeTarge
 	if err != nil {
 		return ResumeTarget{}, err
 	}
+	sessionList, picker := pickerOptions(items, opts)
+	return tui.Pick(ctx, sessionList, picker)
+}
+
+// pickerOptions は走査結果を picker へ渡す形へ直す。scope が無いときは ScopeFilter を作らず、
+// picker 側に scope を判定できないことを伝える（picker はそのとき絞り込みも scope 表示もしない）。
+func pickerOptions(items []listItem, opts PickOptions) ([]scanner.Session, tui.PickOptions) {
 	sessionList := make([]scanner.Session, 0, len(items))
 	picker := tui.PickOptions{Label: opts.Tool}
 	if opts.Scope != nil {
@@ -158,5 +165,5 @@ func Pick(ctx context.Context, cfg config.Config, opts PickOptions) (ResumeTarge
 			picker.Scope.InScope[item.session.StableID] = true
 		}
 	}
-	return tui.Pick(ctx, sessionList, picker)
+	return sessionList, picker
 }

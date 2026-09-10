@@ -175,6 +175,27 @@ func TestPickerSearchNarrowsTitleAndPath(t *testing.T) {
 	}
 }
 
+// TestPickerCtrlUClearsQuery は Ctrl-U が検索語を一度に消し、表示を全件へ戻すことを確かめる。
+func TestPickerCtrlUClearsQuery(t *testing.T) {
+	items := []scanner.Session{
+		{Tool: "claude", SessionID: "a", Title: "Worktree の調査", CWD: "/one", StableID: "a"},
+		{Tool: "claude", SessionID: "b", Title: "無関係", CWD: "/other", StableID: "b"},
+	}
+	m := newPickerModel(items, PickOptions{Now: fixedNow})
+	for _, key := range []string{"w", "o", "r"} {
+		result, _ := m.Update(keyPress(key))
+		m = result.(pickerModel)
+	}
+	if m.query != "wor" || len(m.visible) != 1 {
+		t.Fatalf("before ctrl+u query=%q visible=%v", m.query, m.visible)
+	}
+	result, cmd := m.Update(keyPress("ctrl+u"))
+	m = result.(pickerModel)
+	if cmd != nil || m.cancelled || m.query != "" || len(m.visible) != 2 || m.selected != 0 {
+		t.Fatalf("after ctrl+u query=%q visible=%v selected=%d cancelled=%v", m.query, m.visible, m.selected, m.cancelled)
+	}
+}
+
 // TestPickerSearchAcceptsLockModifiers は Caps Lock 中の文字入力が検索語になり、
 // ctrl や alt が付いた入力は検索語にならないことを確かめる。
 func TestPickerSearchAcceptsLockModifiers(t *testing.T) {

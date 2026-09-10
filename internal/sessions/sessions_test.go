@@ -127,3 +127,32 @@ func TestContinueReadsEachInvocationAndExcludesInUse(t *testing.T) {
 		t.Fatal("unsupported agent accepted")
 	}
 }
+
+// TestPickerOptionsCarriesScopeFlags は、走査結果から picker へ渡す表示条件を確かめる。
+// scope があるときは scope 内の StableID だけがフィルタに入り、無いときはフィルタを作らない。
+func TestPickerOptionsCarriesScopeFlags(t *testing.T) {
+	items := []listItem{
+		{session: scanner.Session{Tool: "claude", SessionID: "in", StableID: "in-id"}, inScope: true},
+		{session: scanner.Session{Tool: "claude", SessionID: "out", StableID: "out-id"}},
+	}
+	annotations := map[string]Annotation{"in-id": {Text: "復元可"}}
+	scoped := PickOptions{Tool: "claude", Scope: &PickerScope{Label: "workspace", Annotations: annotations}}
+	sessionList, picker := pickerOptions(items, scoped)
+	if len(sessionList) != 2 || sessionList[1].StableID != "out-id" {
+		t.Fatalf("session list=%+v, want both conversations in scan order", sessionList)
+	}
+	if picker.Label != "claude · workspace" {
+		t.Fatalf("label=%q", picker.Label)
+	}
+	if picker.Scope == nil || len(picker.Scope.InScope) != 1 || !picker.Scope.InScope["in-id"] {
+		t.Fatalf("scope filter=%+v, want only the in-scope StableID", picker.Scope)
+	}
+	if picker.Annotations["in-id"].Text != "復元可" {
+		t.Fatalf("annotations=%+v", picker.Annotations)
+	}
+
+	_, unscoped := pickerOptions(items, PickOptions{Tool: "claude"})
+	if unscoped.Scope != nil || unscoped.Annotations != nil || unscoped.Label != "claude" {
+		t.Fatalf("unscoped picker options=%+v, want no scope information", unscoped)
+	}
+}
