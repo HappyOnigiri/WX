@@ -184,3 +184,21 @@ func TestCOWShareableLeavesSkipsFlaggedDonorFiles(t *testing.T) {
 		t.Fatalf("skipped for flags=%d", stats.skippedFlags.Load())
 	}
 }
+
+func TestHasExtendedAttributesReportsXattr(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "xattr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Fsetxattr(int(file.Fd()), "wx.test", []byte("xattr"), 0); err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	has, err := hasExtendedAttributes(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("xattr was not detected")
+	}
+}

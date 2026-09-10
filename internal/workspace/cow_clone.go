@@ -89,6 +89,11 @@ func (s *cowSharer) replaceWithClone(ctx context.Context, scratch *cowScratch, i
 	start = time.Now()
 	compatible, err := cowMetadata(original, candidate, before, scratch)
 	s.stats.metadata.observe(start)
+	if err == nil && !compatible {
+		if has, xattrErr := hasExtendedAttributes(in); xattrErr == nil && has {
+			s.stats.skippedXattrs.Add(1)
+		}
+	}
 	if err != nil || !compatible {
 		return err
 	}
