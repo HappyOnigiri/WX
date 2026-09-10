@@ -175,6 +175,20 @@ func TestPickerSearchNarrowsTitleAndPath(t *testing.T) {
 	}
 }
 
+// TestPickerPasteAppendsToQuery は貼り付けた文字列が検索語になることを確かめる。
+func TestPickerPasteAppendsToQuery(t *testing.T) {
+	items := []scanner.Session{
+		{Tool: "claude", SessionID: "a", Title: "調査", CWD: "/work/one", StableID: "a"},
+		{Tool: "claude", SessionID: "b", Title: "無関係", CWD: "/other", StableID: "b"},
+	}
+	m := newPickerModel(items, PickOptions{Now: fixedNow})
+	result, _ := m.Update(tea.PasteMsg{Content: "/work\n"})
+	m = result.(pickerModel)
+	if m.query != "/work" || len(m.visible) != 1 || m.selected != 0 {
+		t.Fatalf("after paste query=%q visible=%v selected=%d", m.query, m.visible, m.selected)
+	}
+}
+
 // TestPickerCtrlUClearsQuery は Ctrl-U が検索語を一度に消し、表示を全件へ戻すことを確かめる。
 func TestPickerCtrlUClearsQuery(t *testing.T) {
 	items := []scanner.Session{

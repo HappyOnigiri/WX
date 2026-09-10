@@ -178,6 +178,14 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.updateKey(msg)
+	case tea.PasteMsg:
+		// bracketed paste は KeyPressMsg では届かないため、貼り付けた path やタイトルも検索語として受ける。
+		if text := termtext.Sanitize(msg.Content, ""); text != "" {
+			m.query += text
+			m.status = ""
+			m.resetSelection()
+		}
+		return m, nil
 	default:
 		return m, nil
 	}
