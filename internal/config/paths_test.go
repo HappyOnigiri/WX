@@ -31,6 +31,15 @@ func TestExpandHomeExpandsTilde(t *testing.T) {
 	}
 }
 
+func TestNormalizePathsRejectsEmptyWorktreeRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := Defaults()
+	cfg.Storage.WorktreeRoot = ""
+	if err := NormalizePaths(&cfg); err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("empty worktree_root error=%v", err)
+	}
+}
+
 func TestNormalizePathsResolvesSymlinksAndRejectsCanonicalCollisions(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -34,6 +34,9 @@ func LogPath() (string, error) {
 }
 
 func NormalizePaths(c *Config) error {
+	if c.Storage.WorktreeRoot == "" {
+		return errors.New("storage.worktree_root must not be empty")
+	}
 	root, err := canonicalPath(c.Storage.WorktreeRoot)
 	if err != nil {
 		return fmt.Errorf("storage.worktree_root: %w", err)

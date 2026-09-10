@@ -165,6 +165,7 @@ func TestLoadReportsNormalizationAndValidationErrors(t *testing.T) {
 	}
 	for _, document := range []string{
 		"version: 1\nstorage:\n  worktree_root: relative\n",
+		"version: 1\nstorage:\n  worktree_root: \"\"\n",
 		"version: 2\n",
 	} {
 		if err := os.WriteFile(path, []byte(document), 0o600); err != nil {

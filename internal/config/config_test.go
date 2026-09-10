@@ -122,6 +122,7 @@ func TestValidateRejectsEachPolicyClass(t *testing.T) {
 	tests := []Config{
 		func() Config { c := valid; c.Version = 2; return c }(),
 		func() Config { c := valid; c.Storage.WorktreeRoot = "relative"; return c }(),
+		func() Config { c := valid; c.Storage.WorktreeRoot = ""; return c }(),
 		func() Config { c := valid; c.Storage.BackupGenerations = 0; return c }(),
 		func() Config { c := valid; c.Pool.WarmPerWorkspace = -1; return c }(),
 		func() Config { c := valid; c.Retention.HotStandby.Duration = -1; return c }(),
