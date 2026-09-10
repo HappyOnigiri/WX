@@ -93,6 +93,8 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 	preparer := m.newPreparer(m.Config(), slot)
 	var desired []state.Placement
 	var targets []state.SlotRepository
+	// 何がずれて更新になったかは予約後に再計算できないため、判定に使った値からここで組み立てる。
+	var mismatch readyMismatch
 	for _, requested := range resolved {
 		stored, ok := storedByID[string(requested.Repository.ID)]
 		if !ok {
@@ -116,6 +118,9 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 		oldRepositoryPlacements := placementsFor(previous, stored.RepositoryID)
 		if err := preparer.ValidateUpdateCandidate(ctx, requested.Repository, stored.WorktreePath, stored.BaseOID, requested.OID, oldRepositoryPlacements, planned); err != nil {
 			return Lease{}, false, err
+		}
+		if mismatch.reason == "" {
+			mismatch = updateMismatch(stored, requested, fingerprint, oldRepositoryPlacements, planned)
 		}
 		desired = append(desired, planned...)
 		targets = append(targets, state.SlotRepository{RepositoryID: stored.RepositoryID, RequestedRef: requested.RequestedRef, BaseOID: requested.OID, Fingerprint: fingerprint, CompatibilityFingerprint: compatibility, UpdateBaseOID: stored.BaseOID, UpdateFingerprint: stored.Fingerprint})
@@ -158,7 +163,7 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 		}
 		return Lease{}, false, err
 	}
-	m.log.Info("standby update reserved", "workspace_id", w.ID, "slot_id", slot.ID)
+	m.log.Info("standby update reserved", append([]any{"workspace_id", w.ID, "slot_id", slot.ID}, mismatch.logArgs()...)...)
 	m.schedule(job)
 	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, true, nil
 }
