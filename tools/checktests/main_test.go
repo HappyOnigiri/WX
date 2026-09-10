@@ -70,6 +70,26 @@ func TestSocketTempDir(t *testing.T) {
 	}
 }
 
+func TestSQLiteBusyTimeout(t *testing.T) {
+	for _, test := range []struct{ name, body, rules string }{
+		{"bare path", "\t_, _ = sql.Open(\"sqlite\", path)", "sqlite-busy-timeout"},
+		{"dsn without busy timeout", "\t_, _ = sql.Open(\"sqlite\", \"file:\"+path+\"?_journal_mode=wal\")", "sqlite-busy-timeout"},
+		{"dsn literal", "\t_, _ = sql.Open(\"sqlite\", \"file:\"+path+\"?_busy_timeout=5000\")", ""},
+		{"dsn helper", "\t_, _ = sql.Open(\"sqlite\", testDatabaseDSN(path))", ""},
+		{"other driver argument count", "\t_, _ = sql.Open(\"sqlite\")", ""},
+		{"other package", "\t_, _ = database.Open(\"sqlite\", path)", ""},
+		{"marker previous line", "\t// sqlitelint:allow-no-busy-timeout -- 他に書き手がいない\n\t_, _ = sql.Open(\"sqlite\", path)", ""},
+		{"marker without reason", "\t_, _ = sql.Open(\"sqlite\", path) // sqlitelint:allow-no-busy-timeout", "marker-format,sqlite-busy-timeout"},
+		{"tempdir marker does not exempt", "\t_, _ = sql.Open(\"sqlite\", path) // socketlint:allow-tempdir -- 無関係な免除", "sqlite-busy-timeout"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := check(t, "\tpath := \"/tmp/state.db\"\n\t_ = path\n"+test.body); got != test.rules {
+				t.Fatalf("got %q, want %q", got, test.rules)
+			}
+		})
+	}
+}
+
 func TestRun(t *testing.T) {
 	root := t.TempDir()
 	for _, directory := range []string{"cmd", "internal", "tools"} {
