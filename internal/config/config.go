@@ -46,6 +46,9 @@ type Config struct {
 type WorktreePolicy struct {
 	Undefined    string `yaml:"undefined,omitempty"`
 	ReuseStandby bool   `yaml:"reuse_standby,omitempty"`
+	// Submodules は準備時に submodule を worktree へ実体化するかを決める。
+	// linked worktree の submodule gitdir は共有できないため、有効なときは main の `.git/modules/<name>` からローカル clone する。
+	Submodules bool `yaml:"submodules,omitempty"`
 }
 
 type Storage struct {
@@ -110,6 +113,8 @@ type Workspace struct {
 	Copy         []string `yaml:"copy,omitempty"`
 	Link         []string `yaml:"link,omitempty"`
 	ReuseStandby *bool    `yaml:"reuse_standby,omitempty"`
+	// Submodules は workspace 個別の submodule 実体化方針で、nil のときは worktree.submodules を継承する。
+	Submodules *bool `yaml:"submodules,omitempty"`
 	// WarmCount は workspace 個別の待機枠数で、nil のときは pool.warm_per_workspace を継承する。
 	// ポインタで明示的な 0 と未指定を区別する。
 	WarmCount *int `yaml:"warm_count,omitempty"`
@@ -182,7 +187,7 @@ func (c Config) COWMinShareSize(mainPath string) int64 {
 
 func Defaults() Config {
 	return Config{
-		Worktree: WorktreePolicy{Undefined: "ask", ReuseStandby: true},
+		Worktree: WorktreePolicy{Undefined: "ask", ReuseStandby: true, Submodules: true},
 		Version:  1, Storage: Storage{
 			WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, COWMinSizeKiB: DefaultCOWMinSizeKiB,
 			RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour},
@@ -341,6 +346,14 @@ func (c Config) ReuseStandbyForWorkspace(root string) (bool, bool) {
 		return *override, true
 	}
 	return c.Worktree.ReuseStandby, false
+}
+
+// SubmodulesForWorkspace は準備時に submodule を実体化する実効方針と、個別指定の有無を返す。
+func (c Config) SubmodulesForWorkspace(root string) (bool, bool) {
+	if override := c.Workspaces[root].Submodules; override != nil {
+		return *override, true
+	}
+	return c.Worktree.Submodules, false
 }
 
 // WarmCountOverrides は workspace root ごとの明示的な待機枠数をコピーして返す。

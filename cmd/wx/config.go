@@ -129,12 +129,18 @@ func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
 		if reuseOverridden {
 			reuseSource = "workspace"
 		}
+		submodules, submodulesOverridden := cfg.SubmodulesForWorkspace(root)
+		submodulesSource := "global"
+		if submodulesOverridden {
+			submodulesSource = "workspace"
+		}
 		fmt.Printf("Workspace: %s\n", root)
 		fmt.Printf("  warm_count = %d (source: %s)\n", count, countSource)
 		fmt.Printf("  reuse_standby = %t (source: %s)\n", reuse, reuseSource)
+		fmt.Printf("  submodules = %t (source: %s)\n", submodules, submodulesSource)
 		return 0
 	}
-	if len(args) != 2 || (args[0] != "warm_count" && args[0] != "reuse_standby") {
+	if len(args) != 2 || (args[0] != "warm_count" && args[0] != "reuse_standby" && args[0] != "submodules") {
 		commandUsage(os.Stderr, "config")
 		return 2
 	}
@@ -143,7 +149,8 @@ func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	if args[0] == "warm_count" {
+	switch args[0] {
+	case "warm_count":
 		switch args[1] {
 		case "--reset":
 			err = config.ResetWorkspaceWarmCount(&raw, root)
@@ -155,18 +162,10 @@ func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
 				err = config.SetWorkspaceWarmCount(&raw, root, count)
 			}
 		}
-	} else {
-		switch args[1] {
-		case "--reset":
-			err = config.ResetWorkspaceReuseStandby(&raw, root)
-		default:
-			enabled, parseErr := strconv.ParseBool(args[1])
-			if parseErr != nil {
-				err = fmt.Errorf("reuse_standby must be true or false: %w", parseErr)
-			} else {
-				err = config.SetWorkspaceReuseStandby(&raw, root, enabled)
-			}
-		}
+	case "reuse_standby":
+		err = setWorkspaceBool(&raw, root, args[0], args[1], config.SetWorkspaceReuseStandby, config.ResetWorkspaceReuseStandby)
+	default:
+		err = setWorkspaceBool(&raw, root, args[0], args[1], config.SetWorkspaceSubmodules, config.ResetWorkspaceSubmodules)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -192,6 +191,18 @@ func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
 		fmt.Println("saved and reloaded")
 	}
 	return 0
+}
+
+// setWorkspaceBool は真偽値の workspace 個別設定を、--reset と値指定で同じ形に振り分ける。
+func setWorkspaceBool(raw *config.Config, root, key, value string, set func(*config.Config, string, bool) error, reset func(*config.Config, string) error) error {
+	if value == "--reset" {
+		return reset(raw, root)
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return fmt.Errorf("%s must be true or false: %w", key, err)
+	}
+	return set(raw, root, enabled)
 }
 
 func resolveConfigWorkspace(ctx context.Context, cfg config.Config, path string) (string, error) {

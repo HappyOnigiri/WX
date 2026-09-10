@@ -378,3 +378,39 @@ func TestFingerprintAndRelativePathBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// submodule 方針は両 fingerprint に入り、方針変更後に旧方針の READY slot を再利用させない。
+// 更新経路の `checkout --detach --force` は submodule を実体化しないため、更新互換側にも必要である。
+func TestSubmodulePolicyChangesBothFingerprints(t *testing.T) {
+	source := t.TempDir()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(source)}
+	seenPrepare := map[string]bool{}
+	seenUpdate := map[string]bool{}
+	for _, enabled := range []bool{true, false} {
+		cfg := config.Defaults()
+		cfg.Worktree.Submodules = enabled
+		prepare, err := Fingerprint(1, "oid", repo, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		update, err := UpdateCompatibilityFingerprint(1, repo, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seenPrepare[prepare] || seenUpdate[update] {
+			t.Fatalf("submodules=%t did not change both fingerprints", enabled)
+		}
+		seenPrepare[prepare] = true
+		seenUpdate[update] = true
+		// workspace 個別の上書きも同じ hash 入力として効く。
+		cfg.Worktree.Submodules = !enabled
+		cfg.Workspaces[source] = config.Workspace{Submodules: &enabled}
+		overridden, err := Fingerprint(1, "oid", repo, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if overridden != prepare {
+			t.Fatalf("workspace override submodules=%t did not resolve to the global equivalent", enabled)
+		}
+	}
+}

@@ -159,7 +159,7 @@ worktree rootのpath検査と登録検査は別のfindingとして両方保持�
 
 区間名は準備の節目に対応する。
 先行配置までが`git-register`・`early-index`・`early-checkout`・`early-place`・`early-root`・`early-ready`である。
-以降は`checkout`・`post-checkout`・`place`・`link`・`prepare-command`・`tracked-status`・`cow`・`tracked-status-refresh`・`ready-lock`・`root`と続く。
+以降は`checkout`・`submodule`・`post-checkout`・`place`・`link`・`prepare-command`・`tracked-status`・`cow`・`tracked-status-refresh`・`ready-lock`・`root`と続く。
 `cow.compare`のようにドットを含む区間はCoW共有の並列worker間の合計で、`cow`区間の実時間を超えることがある。
 `cow.entries`・`cow.candidates`・`cow.shared`・`cow.skipped_size`は時間ではなく件数として同じ表に載る。
 区間の合計はEARLY/FULL READYと一致しない。所有権証明・キュー待ち・貸出解決のように計測していない時間が残るためである。

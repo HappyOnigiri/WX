@@ -15,6 +15,10 @@ leaf が symlink の場合はリンク自体を削除し、リンク先へは踏
 既定値では Git 設定で隠れる変更を clean と誤判定し、保存せずに削除し得る。
 準備・復元失敗などの隔離 slot は `retention.quarantined` の経過後に GC が回収し、`wx clear` はこの経過を待たずに回収する。
 
+実体化した submodule の per-worktree gitdir（`<common dir>/worktrees/<id>/modules/<name>`）は、slot 削除で管理ディレクトリごと一緒に消える。
+`worktree remove --force --force` が失敗した場合も `RemoveAll("worktrees/<id>")` が回収するため、wx が `.git` 配下を個別に削除する経路は持たない。
+pin した root descriptor の配下に破壊的操作を閉じる不変条件を、submodule のために広げないためである。
+
 ## 準備・復元
 
 準備・復元・Hot Standby更新で既存 worktree を書き換える前に求める証明は、次の3つが同時に一致することである。
