@@ -241,9 +241,10 @@ func (m pickerModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// searchText は検索語へ足す印字可能文字を取り出す。修飾キー付きの入力は検索語にしない。
+// searchText は検索語へ足す印字可能文字を取り出す。ctrl や alt が付いた入力は検索語にしない。
+// Caps Lock・Num Lock は Kitty keyboard protocol の端末で印字可能文字にも付くため、除いてから判定する。
 func searchText(msg tea.KeyPressMsg) string {
-	if msg.Mod != 0 && msg.Mod != tea.ModShift {
+	if msg.Mod&^(tea.ModShift|tea.ModCapsLock|tea.ModNumLock) != 0 {
 		return ""
 	}
 	return termtext.Sanitize(msg.Text, "")

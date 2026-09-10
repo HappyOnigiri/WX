@@ -175,6 +175,26 @@ func TestPickerSearchNarrowsTitleAndPath(t *testing.T) {
 	}
 }
 
+// TestPickerSearchAcceptsLockModifiers は Caps Lock 中の文字入力が検索語になり、
+// ctrl や alt が付いた入力は検索語にならないことを確かめる。
+func TestPickerSearchAcceptsLockModifiers(t *testing.T) {
+	items := []scanner.Session{
+		{Tool: "claude", SessionID: "a", Title: "WORKTREE", CWD: "/one", StableID: "a"},
+		{Tool: "claude", SessionID: "b", Title: "無関係", CWD: "/other", StableID: "b"},
+	}
+	m := newPickerModel(items, PickOptions{Now: fixedNow})
+	result, _ := m.Update(tea.KeyPressMsg{Code: 'w', Text: "W", Mod: tea.ModCapsLock | tea.ModNumLock})
+	m = result.(pickerModel)
+	if m.query != "W" || len(m.visible) != 1 {
+		t.Fatalf("caps lock input query=%q visible=%v", m.query, m.visible)
+	}
+	result, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x", Mod: tea.ModAlt})
+	m = result.(pickerModel)
+	if m.query != "W" {
+		t.Fatalf("alt input query=%q, want it ignored", m.query)
+	}
+}
+
 // TestPickerScopeToggleReusesOneScan は Ctrl-A が走査結果のフラグだけで表示範囲を切り替えることを確かめる。
 func TestPickerScopeToggleReusesOneScan(t *testing.T) {
 	items := []scanner.Session{
