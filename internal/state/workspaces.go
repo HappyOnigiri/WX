@@ -327,6 +327,11 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 	if liveRecovery > 0 {
 		return errors.New("workspace has a workspace recovery snapshot; expire recovery state before forgetting it")
 	}
+	// 補充の再確認は workspace が消えれば意味を失うので、待ちのまま forget を断らせない。
+	// 実行中の job は他の kind と同じく forget を断る条件に残す。
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE kind='ENSURE_STANDBY' AND workspace_id=? AND state='PENDING'`, id); err != nil {
+		return err
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM jobs j WHERE j.state IN ('PENDING','RUNNING') AND (j.workspace_id=? OR EXISTS (SELECT 1 FROM sessions se WHERE se.id=j.session_id AND se.workspace_id=?))`, id, id).Scan(&liveRecovery); err != nil {
 		return err
 	}

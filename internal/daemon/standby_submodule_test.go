@@ -46,7 +46,8 @@ func TestRemoveRegisteredSlotReclaimsSubmoduleGitdir(t *testing.T) {
 	if _, scheduled, err := f.store.ScheduleRemoval(ctx, standby.ID, ""); err != nil || !scheduled {
 		t.Fatalf("schedule removal scheduled=%t err=%v", scheduled, err)
 	}
-	f.runPendingJobs(t)
+	// 補充まで走らせると同じ管理ディレクトリ名で新しいslotが登録され、回収できたかを見分けられない。
+	f.runPendingJobsOfKind(t, "REMOVE")
 	if _, err := os.Stat(filepath.Join(common, "worktrees", name)); !os.IsNotExist(err) {
 		t.Fatalf("worktree admin directory stat err=%v, want it removed with the slot", err)
 	}
