@@ -139,7 +139,9 @@ func classifyResult(result *testResult) {
 		if event.Action == "fail" && event.Test == "" && event.FailedBuild != "" {
 			result.Anomaly = "build failure: " + event.FailedBuild
 		}
-		if strings.Contains(strings.ToLower(event.Output), "panic:") {
+		// 名前付きテストに紐づく出力は、recover済みpanicの記録やエラー文字列の検証でも
+		// "panic:"を含み得る。異常として扱うのはテスト名の無い出力だけに限る。
+		if event.Test == "" && strings.Contains(strings.ToLower(event.Output), "panic:") {
 			result.Anomaly = "panic outside a named test"
 		}
 	}
