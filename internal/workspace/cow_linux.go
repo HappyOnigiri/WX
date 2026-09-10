@@ -21,3 +21,5 @@ const cowACLBufferSize = 64 << 10
 func cowMetadata(_, _ *os.File, _ unix.Stat_t, _ *cowScratch) (bool, error) {
 	return false, unix.ENOTSUP
 }
+
+func cowXattrs(_ *os.File) (map[string][]byte, error) { return nil, nil }
