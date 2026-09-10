@@ -445,3 +445,32 @@ func TestStatusDiagnosticsFailsWhenArchivedSessionColumnsAreMissing(t *testing.T
 		t.Fatal("diagnostics succeeded without the archived session columns")
 	}
 }
+
+// TestStatusDiagnosticsSeparatesDiscardedJobsFromFailures は、state='FAILED' の job を error_code で 2 つに分けて数えることを固定する。
+// 取り消した予定 job は記録として FAILED のまま残るため、集計で除かないと対処が必要な失敗の件数が読めない。
+func TestStatusDiagnosticsSeparatesDiscardedJobsFromFailures(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	for _, job := range []struct{ id, state, code string }{
+		{id: "discarded-snapshot", state: "FAILED", code: JobErrorCodeDiscarded},
+		{id: "discarded-remove", state: "FAILED", code: JobErrorCodeDiscarded},
+		{id: "failed-with-code", state: "FAILED", code: "JOB_FAILED"},
+		// error_code を持たない FAILED も失敗として数える。取り消しだけが除外の対象である。
+		{id: "failed-without-code", state: "FAILED"},
+		{id: "queued", state: "PENDING"},
+		{id: "running", state: "RUNNING"},
+		{id: "succeeded", state: "SUCCEEDED"},
+	} {
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO jobs(id,kind,state,attempt,not_before,error_code) VALUES(?,'SNAPSHOT',?,0,NULL,?)`, job.id, job.state, nullString(job.code)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	diagnostics, err := store.StatusDiagnostics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := JobDiagnostic{Pending: 1, Running: 1, Failed: 2, Discarded: 2}
+	if diagnostics.Jobs != want {
+		t.Fatalf("job diagnostics=%+v, want %+v", diagnostics.Jobs, want)
+	}
+}

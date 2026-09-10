@@ -18,6 +18,14 @@ type Job struct {
 
 const jobLease = 30 * time.Second
 
+// JobErrorCodeDiscarded は `wx clear` と `wx release --discard` が予定 job を取り消したときに付ける error_code である。
+// 記録として残すために state='FAILED' の行にするので、失敗の集計では canceledJobErrorCodes で除く。
+const JobErrorCodeDiscarded = "DISCARDED"
+
+// canceledJobErrorCodes は state='FAILED' のうち失敗として数えない error_code である。
+// 利用者や wx が意図して取り消した予定 job を示す code をここへ足すと、集計と表示の両方が追従する。
+var canceledJobErrorCodes = []string{JobErrorCodeDiscarded}
+
 func newJob(kind, workspaceID, slotID, sessionID string) (Job, error) {
 	id, err := domain.NewID()
 	if err != nil {

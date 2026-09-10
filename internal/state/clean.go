@@ -354,10 +354,10 @@ func (s *Store) ScheduleDiscardRemoval(ctx context.Context, slotID string) (Job,
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(workspace_id,'') FROM slots WHERE id=?`, slotID).Scan(&job.WorkspaceID); err != nil {
 		return Job{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='FAILED',finished_at=?,error_code='DISCARDED' WHERE slot_id=? AND state='PENDING'
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET state='FAILED',finished_at=?,error_code=? WHERE slot_id=? AND state='PENDING'
  AND EXISTS (SELECT 1 FROM slots sl WHERE sl.id=jobs.slot_id AND sl.state NOT IN ('ARCHIVED','REMOVING')
  AND NOT EXISTS (SELECT 1 FROM sessions se WHERE se.slot_id=sl.id AND se.state IN ('STARTING','ACTIVE','RESTORING','UNBOUND')))
- AND NOT EXISTS (SELECT 1 FROM jobs running WHERE running.slot_id=jobs.slot_id AND running.state='RUNNING')`, now(), slotID); err != nil {
+ AND NOT EXISTS (SELECT 1 FROM jobs running WHERE running.slot_id=jobs.slot_id AND running.state='RUNNING')`, now(), JobErrorCodeDiscarded, slotID); err != nil {
 		return Job{}, false, err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=?
