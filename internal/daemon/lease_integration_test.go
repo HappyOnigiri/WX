@@ -30,7 +30,7 @@ func TestSingleRepositoryColdRemovalRecreatesReadySlotRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	raw := openManagerCoverageDB(t, f.DatabasePath)
+	raw := openTestDatabase(t, f.DatabasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestWarmSlotLeaseHandsOutTheRepositoryDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	raw := openManagerCoverageDB(t, f.DatabasePath)
+	raw := openTestDatabase(t, f.DatabasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
 	}

@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -20,11 +19,7 @@ func TestScheduleColdRepositoryRemovalsSurvivesQuarantineStorageFailure(t *testi
 		t.Fatal(err)
 	}
 
-	raw, err := sql.Open("sqlite", databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
+	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_quarantine_cleanup BEFORE UPDATE ON slots WHEN NEW.state='QUARANTINED' BEGIN SELECT RAISE(ABORT,'injected quarantine failure'); END`); err != nil {
 		t.Fatal(err)
 	}

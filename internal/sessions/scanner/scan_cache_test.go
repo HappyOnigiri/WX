@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -213,7 +214,7 @@ func TestScanIgnoresEntriesFromAnotherCacheSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path}).String()+"?_busy_timeout=3000")
 	if err != nil {
 		t.Fatal(err)
 	}

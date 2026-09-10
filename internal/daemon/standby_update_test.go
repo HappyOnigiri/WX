@@ -67,7 +67,7 @@ func newReuseStandbyFixtureWith(t *testing.T, initRepository func(*testing.T, st
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	raw := openManagerCoverageDB(t, databasePath)
+	raw := openTestDatabase(t, databasePath)
 	// 補充を hot と判定させるため、貸出実績を持つ repository として扱う。
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestReconcileRetiresStandbyWithoutPlacementHistoryAndDoctorReportsIt(t *tes
 	if got := f.slotState(t, standby.ID); got != "READY" {
 		t.Fatalf("standby with placement history=%s, want READY", got)
 	}
-	raw := openManagerCoverageDB(t, filepath.Join(f.root, "state.db"))
+	raw := openTestDatabase(t, filepath.Join(f.root, "state.db"))
 	if _, err := raw.ExecContext(ctx, `UPDATE slots SET placement_history_complete=0 WHERE id=?`, standby.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestStandbyUpdateReusesSlotAndSkipsHooksAndPrepare(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	raw := openManagerCoverageDB(t, filepath.Join(root, "state.db"))
+	raw := openTestDatabase(t, filepath.Join(root, "state.db"))
 	defer raw.Close()
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)

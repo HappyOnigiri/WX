@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -45,11 +44,7 @@ func TestRemoveSlotWorktreesWrapsRepositorySnapshotStorageFailure(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	raw, err := sql.Open("sqlite", databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
+	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.Exec(`DROP TABLE snapshots`); err != nil {
 		t.Fatal(err)
 	}

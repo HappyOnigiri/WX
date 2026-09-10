@@ -31,7 +31,7 @@ func TestEnsureStandbyOnlyChecksOutRecentlyUsedRepositories(t *testing.T) {
 		{ID: "cold", MainPath: discoveryPath(coldRepoPath), CommonDir: discoveryPath(filepath.Join(coldRepoPath, ".git")), RelativePath: "cold", DefaultBranch: "main"},
 	}}
 	w = registerTestWorkspace(t, store, w)
-	raw := openManagerCoverageDB(t, f.DatabasePath)
+	raw := openTestDatabase(t, f.DatabasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id=?`, state.FormatTime(time.Now()), "hot"); err != nil {
 		t.Fatal(err)
 	}
