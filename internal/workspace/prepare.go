@@ -165,6 +165,7 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 		}
 	}()
 	if err := p.completePrepare(ctx, repo, target, oid, slotID, phase, locked,
+		func() error { return p.submodulePhase(ctx, repo, target, oid, targetIdentity) },
 		func() error { return p.copyIncludesAt(repo, lockedRoot, lockedRelativeTarget) },
 		func() error { return p.createLinksAt(ctx, repo, lockedRoot, lockedRelativeTarget, true) }); err != nil {
 		return err
@@ -174,7 +175,8 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 }
 
 // completePrepare は配置後の command・CoW・最終検証を通常準備と二段階準備で共有する。
-func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, locked *lockedTarget, includes, links func() error) error {
+// submodules は二段階準備では既に済んでいるため、その経路からは何もしない callback を受ける。
+func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, locked *lockedTarget, submodules, includes, links func() error) error {
 	lockedRoot, lockedRelativeTarget, targetIdentity := locked.root, locked.relative, locked.identity
 	if locked.existing {
 		if err := p.rejectCOWTemporaries(ctx, target, targetIdentity); err != nil {
@@ -185,6 +187,10 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 	// common-directory lock は Git metadata を守り、この read-only な state の証明は slot/path の対応と state machine を独立に守る。
 	if err := p.validatePreparedTarget(ctx, repo, target, oid, slotID, phase, lockedRoot, lockedRelativeTarget, targetIdentity, "wx worktree ownership changed before includes"); err != nil {
 		return fmt.Errorf("wx worktree ownership changed before includes: %w", err)
+	}
+	// include・link・prepare command が submodule 配下を前提にできるよう、配置より前に実体化する。
+	if err := p.timePhase("submodule", submodules); err != nil {
+		return err
 	}
 	if err := p.timePhase("place", includes); err != nil {
 		return err

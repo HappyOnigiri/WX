@@ -203,3 +203,78 @@ func TestWorkspaceReuseStandbyOverridePreservesExplicitFalse(t *testing.T) {
 		t.Fatalf("reuse standby=%t overridden=%t, want global default", enabled, overridden)
 	}
 }
+
+func TestWorkspaceSubmodulesOverridePreservesExplicitFalse(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "repo")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := Config{}
+	if err := SetWorkspaceSubmodules(&raw, repo, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled, overridden := loaded.SubmodulesForWorkspace(repo); enabled || !overridden {
+		t.Fatalf("submodules=%t overridden=%t, want explicit false", enabled, overridden)
+	}
+	raw, err = LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ResetWorkspaceSubmodules(&raw, repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled, overridden := loaded.SubmodulesForWorkspace(repo); !enabled || overridden {
+		t.Fatalf("submodules=%t overridden=%t, want global default", enabled, overridden)
+	}
+}
+
+// 個別設定の解除は同じ workspace の他の上書きを道連れにしない。
+// 削除条件へ新しい項目を足し忘れると、片方の --reset がもう片方を消す。
+func TestWorkspaceOverrideResetKeepsSiblingOverrides(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "repo")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := Config{}
+	if err := SetWorkspaceSubmodules(&raw, repo, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetWorkspaceWarmCount(&raw, repo, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetWorkspaceReuseStandby(&raw, repo, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, reset := range []func(*Config, string) error{ResetWorkspaceWarmCount, ResetWorkspaceReuseStandby} {
+		if err := reset(&raw, repo); err != nil {
+			t.Fatal(err)
+		}
+		if enabled, overridden := Merge(Defaults(), raw).SubmodulesForWorkspace(repo); enabled || !overridden {
+			t.Fatalf("submodules=%t overridden=%t after a sibling reset, want the override kept", enabled, overridden)
+		}
+	}
+	if err := ResetWorkspaceSubmodules(&raw, repo); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.Workspaces) != 0 {
+		t.Fatalf("workspaces=%+v, want the entry dropped once every override is reset", raw.Workspaces)
+	}
+}

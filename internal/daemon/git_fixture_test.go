@@ -23,6 +23,24 @@ func initGitRepo(t *testing.T, path string) {
 	gitRun(t, path, "commit", "-m", "initial")
 }
 
+// daemonSubmoduleName と daemonSubmodulePath は module directory 名と worktree 上の配置を意図的に食い違わせる。
+const (
+	daemonSubmoduleName = "modules/kid"
+	daemonSubmodulePath = "sub/kid"
+)
+
+// initGitRepoWithSubmodule は相対 path のローカル submodule を1件持つ repository を作る。
+// upstream の child は repository の兄弟に置くため、`.gitmodules` の url は `../child` になる。
+func initGitRepoWithSubmodule(t *testing.T, path string) {
+	t.Helper()
+	child := filepath.Join(filepath.Dir(path), "child")
+	initGitRepo(t, child)
+	initGitRepo(t, path)
+	gitRun(t, path, "-c", "protocol.file.allow=always", "submodule", "add", "--name", daemonSubmoduleName, "../child", daemonSubmodulePath)
+	gitRun(t, path, "add", ".")
+	gitRun(t, path, "commit", "-m", "add submodule")
+}
+
 func gitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
