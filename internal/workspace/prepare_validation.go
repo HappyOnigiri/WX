@@ -33,7 +33,13 @@ func (p *Preparer) validateExistingWorktree(ctx context.Context, repo discovery.
 
 func (p *Preparer) validateExistingWorktreeOwnedForPhase(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase) error {
 	slotStates, repositoryStates := preparationOwnershipStates(phase)
-	err := p.validateExistingWorktreeOwnedForStates(ctx, repo, target, oid, slotID, slotStates, repositoryStates)
+	return stateOwnershipFailure(p.validateExistingWorktreeOwnedForStates(ctx, repo, target, oid, slotID, slotStates, repositoryStates))
+}
+
+// stateOwnershipFailure は所有権証明の失敗を state.ErrOwnership に正規化する。
+// 呼び出し元は sentinel だけでフェイルクローズを判定するため、包み忘れた失敗は CoW の auto fallback など良性の失敗の経路へ落ち、証明できないまま貸し出される。
+// ctx の中断はそのまま返す。中断を所有権失敗に見せると、cancel しただけの slot を隔離してしまう。
+func stateOwnershipFailure(err error) error {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, state.ErrOwnership) {
 		return err
 	}
@@ -241,7 +247,7 @@ func (p *Preparer) stateOwnershipProof(ctx context.Context, repo discovery.Repos
 	if err != nil {
 		return state.WorktreeOwnership{}, err
 	}
-	return p.Ownership.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
+	proof, err := p.Ownership.ValidateWorktreeOwnership(ctx, state.WorktreeOwnershipRequest{
 		SlotID:       slotID,
 		RepositoryID: string(repo.ID),
 		WorkspaceID:  "",
@@ -254,6 +260,7 @@ func (p *Preparer) stateOwnershipProof(ctx context.Context, repo discovery.Repos
 		AllowedSlotStates:       slotStates,
 		AllowedRepositoryStates: repositoryStates,
 	})
+	return proof, stateOwnershipFailure(err)
 }
 
 // validateStateOwnershipWithIdentity は caller が worktree directory を open した後に使う fail-closed 形式である。
@@ -283,7 +290,7 @@ func (p *Preparer) validateStateOwnershipWithIdentity(ctx context.Context, repo 
 		AllowedSlotStates:       slotStates,
 		AllowedRepositoryStates: repositoryStates,
 	})
-	return err
+	return stateOwnershipFailure(err)
 }
 
 // validateTrackedCleanOwned は tracked status の前後で worktree の所有権を確認し、stage を失敗の文脈として使う。
