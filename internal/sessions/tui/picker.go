@@ -391,12 +391,14 @@ func (m pickerModel) headerLine() string {
 	return header + "  (全 workspace・他 workspace の使用状況は未判定)"
 }
 
+// footerLine は割り当てているキーをすべて出す。文字入力を検索へ回した結果、
+// キー割り当ての手掛かりはこの行だけになるため、Esc が 2 段で効くことも表記する。
 func (m pickerModel) footerLine() string {
-	footer := "↑↓/Ctrl-N/Ctrl-P/PgUp/PgDn 移動  Enter 選択  文字入力 検索"
+	footer := "↑↓/Ctrl-N/Ctrl-P/PgUp/PgDn/Home/End 移動  Enter 選択  文字入力 検索  Ctrl-U 検索語消去"
 	if m.scopeAware {
 		footer += "  Ctrl-A workspace切替"
 	}
-	return footer + "  Esc キャンセル"
+	return footer + "  Esc 検索語クリア→キャンセル"
 }
 
 func sessionTitle(session scanner.Session) string {

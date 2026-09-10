@@ -284,6 +284,22 @@ func TestPickerCancelKeysQuit(t *testing.T) {
 	}
 }
 
+// TestPickerFooterListsEveryBinding は案内に実装したキーが揃っていることを確かめる。
+func TestPickerFooterListsEveryBinding(t *testing.T) {
+	items := []scanner.Session{{Tool: "claude", SessionID: "id", Title: "title", StableID: "id"}}
+	scoped := newPickerModel(items, PickOptions{Now: fixedNow, Scope: &ScopeFilter{InScope: map[string]bool{"id": true}}})
+	footer := scoped.footerLine()
+	for _, want := range []string{"↑↓", "Ctrl-N", "Ctrl-P", "PgUp", "PgDn", "Home/End", "Enter", "文字入力", "Ctrl-U", "Ctrl-A", "Esc 検索語クリア→キャンセル"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("footer omitted %q: %q", want, footer)
+		}
+	}
+	// scope を判定できないときだけ Ctrl-A を出さない。
+	if got := newPickerModel(items, PickOptions{Now: fixedNow}).footerLine(); strings.Contains(got, "Ctrl-A") {
+		t.Fatalf("scope-unaware footer=%q", got)
+	}
+}
+
 func TestPickerViewShowsLabelAnnotationAndFitsWidth(t *testing.T) {
 	m := newPickerModel([]scanner.Session{{
 		Tool:      "claude",
