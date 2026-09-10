@@ -6,6 +6,12 @@
    daemonはcwdからworkspaceを解決し、要求したOIDと準備条件が完全一致するREADY slotを優先する。
    一致候補がなく`worktree.reuse_standby`が有効なら、更新適合条件と配置履歴を満たすHot StandbyをUPDATEジョブへ予約し、無ければPREPAREジョブでCold Startする。
    更新不適格と判定した候補は（`--branch`指定でなければ）STALEにして補充へ回すので、次の貸出では作り直したstandbyが使える。
+   完全一致しなかった候補は、UPDATE予約・STALE化・cold startへの後退のいずれでも理由をdaemon logへ残す。
+   `mismatch`は分類（`oid` / `fingerprint` / `repository_set` / `repository_state` / `worktree`）で、`mismatch_detail`は対象を指す。
+   `fingerprint`の`mismatch_detail`は`slot_placements`の記録と現在のinclude/link計画の差をpathで示し、追加を`+`、削除を`-`、内容や配置方式の変更を`~`で表す。
+   配置差が無い場合はmanifest・コピー方式・CoW共有下限のような配置に現れない入力が変わったことを示す。
+   予約後は`slot_repositories`が更新後の値へ入れ替わり差を復元できないため、理由は比較したその場で組み立てる。
+   この診断はUPDATEやcold startへ落ちた後だけ動かし、完全一致した貸出には余分なGit起動とファイル読み取りを持ち込まない。
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
    子プロセスには`WX_SESSION_ID`・`WX_SESSION_TOKEN`・`WX_DAEMON_SOCKET`などが渡り、以降のhookはこれを持つ場合だけ動く。
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
