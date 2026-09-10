@@ -41,6 +41,8 @@ type PickOptions struct {
 	Label       string
 	Annotations map[string]Annotation
 	Scope       *ScopeFilter
+	// StartWidened は scope 判定を保ったまま、最初の表示だけ scope 外も含めた全 workspace にする。
+	StartWidened bool
 	// Now は相対時刻の基準時刻で、ゼロ値なら time.Now() を使う。テストが表示を固定するための差し替え点である。
 	Now time.Time
 }
@@ -114,7 +116,7 @@ func newPickerModel(items []scanner.Session, opts PickOptions) pickerModel {
 	m := pickerModel{
 		label:      sanitizeLine(opts.Label),
 		scopeAware: opts.Scope != nil,
-		scoped:     opts.Scope != nil,
+		scoped:     opts.Scope != nil && !opts.StartWidened,
 		width:      80,
 		height:     24,
 	}

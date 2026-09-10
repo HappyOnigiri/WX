@@ -33,6 +33,9 @@ type (
 	PickOptions struct {
 		Tool  string
 		Scope *PickerScope
+		// StartWidened は picker を全 workspace 表示で開く。scope 判定は残すため、Ctrl-A で絞り込みへ戻せる。
+		// Continue は scope 内の最新を返す契約なので、この指定を見ない。
+		StartWidened bool
 	}
 	ContinueOptions = PickOptions
 )
@@ -153,7 +156,7 @@ func Pick(ctx context.Context, cfg config.Config, opts PickOptions) (ResumeTarge
 // picker 側に scope を判定できないことを伝える（picker はそのとき絞り込みも scope 表示もしない）。
 func pickerOptions(items []listItem, opts PickOptions) ([]scanner.Session, tui.PickOptions) {
 	sessionList := make([]scanner.Session, 0, len(items))
-	picker := tui.PickOptions{Label: opts.Tool}
+	picker := tui.PickOptions{Label: opts.Tool, StartWidened: opts.StartWidened}
 	if opts.Scope != nil {
 		picker.Label += " · " + opts.Scope.Label
 		picker.Annotations = opts.Scope.Annotations

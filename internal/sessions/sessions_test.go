@@ -151,6 +151,12 @@ func TestPickerOptionsCarriesScopeFlags(t *testing.T) {
 		t.Fatalf("annotations=%+v", picker.Annotations)
 	}
 
+	// --all では scope を保ったまま初期表示だけ広げるため、Ctrl-A と注記が残る。
+	_, widened := pickerOptions(items, PickOptions{Tool: "claude", Scope: &PickerScope{Label: "workspace", Annotations: annotations}, StartWidened: true})
+	if !widened.StartWidened || widened.Scope == nil || !widened.Scope.InScope["in-id"] {
+		t.Fatalf("widened picker options=%+v, want the scope filter kept", widened)
+	}
+
 	_, unscoped := pickerOptions(items, PickOptions{Tool: "claude"})
 	if unscoped.Scope != nil || unscoped.Annotations != nil || unscoped.Label != "claude" {
 		t.Fatalf("unscoped picker options=%+v, want no scope information", unscoped)

@@ -254,6 +254,34 @@ func TestPickerScopeToggleReusesOneScan(t *testing.T) {
 	}
 }
 
+// TestPickerStartWidenedKeepsScopeToggle は広域表示で開いても Ctrl-A で絞り込みへ戻せることを確かめる。
+func TestPickerStartWidenedKeepsScopeToggle(t *testing.T) {
+	items := []scanner.Session{
+		{Tool: "claude", SessionID: "here", Title: "here", CWD: "/one", StableID: "here"},
+		{Tool: "claude", SessionID: "elsewhere", Title: "elsewhere", CWD: "/two", StableID: "elsewhere"},
+	}
+	m := newPickerModel(items, PickOptions{
+		Now:          fixedNow,
+		Scope:        &ScopeFilter{InScope: map[string]bool{"here": true}},
+		StartWidened: true,
+	})
+	if m.scoped || !m.scopeAware || len(m.visible) != 2 {
+		t.Fatalf("initial scoped=%v scopeAware=%v visible=%v", m.scoped, m.scopeAware, m.visible)
+	}
+	if view := m.View().Content; !strings.Contains(view, "(全 workspace") {
+		t.Fatalf("widened start view=%q", view)
+	}
+	if footer := m.footerLine(); !strings.Contains(footer, "Ctrl-A") {
+		t.Fatalf("widened start footer=%q", footer)
+	}
+
+	result, _ := m.Update(keyPress("ctrl+a"))
+	m = result.(pickerModel)
+	if !m.scoped || len(m.visible) != 1 {
+		t.Fatalf("after ctrl+a scoped=%v visible=%v", m.scoped, m.visible)
+	}
+}
+
 // TestPickerWidenedViewMarksUnknownUsage は scope 外の会話に使用状況の未判定が付くことを確かめる。
 func TestPickerWidenedViewMarksUnknownUsage(t *testing.T) {
 	items := []scanner.Session{
