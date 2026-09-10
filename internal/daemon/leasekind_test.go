@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -450,5 +451,33 @@ func TestLeaseRefusesWorkspacesConfiguredWithoutAWorktree(t *testing.T) {
 	// agent 起動は従来どおり、貸出の許可がないという既存の失敗で断られる。
 	if _, err := f.Manager.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{}); err == nil || IsWorktreeDisabled(err) {
 		t.Fatalf("agent lease error=%v, want the existing authorization failure", err)
+	}
+}
+
+// 準備設定の上書きは貸出属性へ載る前に検証する。
+// 不正な値のまま準備へ進めると、測定用の設定が黙って既定へ落ちた結果を比較表に並べてしまう。
+func TestWithPrepareOverrideValidatesTheRequestedValues(t *testing.T) {
+	t.Parallel()
+	minSize := 64
+	attrs, err := leaseAttrs{Kind: state.LeaseKindPath}.withPrepareOverride(config.CopyModeCopy, &minSize)
+	if err != nil || attrs.Kind != state.LeaseKindPath || attrs.Prepare.CopyMode != config.CopyModeCopy {
+		t.Fatalf("attrs=%+v err=%v, want the override carried with the lease kind", attrs, err)
+	}
+	if attrs.Prepare.COWMinSizeKiB == nil || *attrs.Prepare.COWMinSizeKiB != minSize {
+		t.Fatalf("override=%+v, want the lower bound carried", attrs.Prepare)
+	}
+	empty, err := leaseAttrs{}.withPrepareOverride("", nil)
+	if err != nil || !empty.Prepare.IsZero() {
+		t.Fatalf("attrs=%+v err=%v, want no override without a request", empty, err)
+	}
+	negative := -1
+	invalid := []struct {
+		copyMode string
+		minSize  *int
+	}{{copyMode: "clone"}, {minSize: &negative}}
+	for _, test := range invalid {
+		if _, err := (leaseAttrs{}).withPrepareOverride(test.copyMode, test.minSize); err == nil {
+			t.Fatalf("override copy_mode=%q min_size=%v, want it rejected", test.copyMode, test.minSize)
+		}
 	}
 }

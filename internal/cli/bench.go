@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -21,9 +22,29 @@ const benchIdleTimeout = 5 * time.Minute
 // benchIdlePoll は job の掃けるのを待つ間隔である。
 const benchIdlePoll = 500 * time.Millisecond
 
+// benchUsageTimeout は準備した slot の使用量が載るのを待つ上限である。
+// daemon は準備直後にその slot だけを background で測るため、返却前に少しだけ待つ必要がある。
+// 上限内に載らなかった回は時間だけの行として出す。測れなかったのは観測側の遅れで、測った時間は有効である。
+const benchUsageTimeout = 90 * time.Second
+
+// benchUsagePoll は使用量の測定が載るのを待つ間隔である。
+const benchUsagePoll = 500 * time.Millisecond
+
+// BenchOptions は `wx bench` の測定条件である。
+// Configs は比較する準備設定で、空なら現在の実効設定だけで測る（従来の1通り）。
+type BenchOptions struct {
+	Runs     int
+	Branches []string
+	Reuse    bool
+	JSON     bool
+	Configs  []config.PrepareOverride
+}
+
 // BenchRun は1回分の実測結果である。source は貸出が cold start だったかを表す。
+// Config はこの回に適用した準備設定で、Usage は返却前に引いた slot の使用量である。
 type BenchRun struct {
 	Source         string                     `json:"source"`
+	Config         BenchConfig                `json:"config"`
 	SessionID      string                     `json:"session_id"`
 	Path           string                     `json:"path"`
 	RetiredStandby int                        `json:"retired_standby"`
@@ -31,20 +52,27 @@ type BenchRun struct {
 	EarlyReadyMS   int64                      `json:"early_ready_ms"`
 	FullReadyMS    int64                      `json:"full_ready_ms"`
 	Measurement    *daemon.PrepareMeasurement `json:"measurement,omitempty"`
+	Usage          *BenchUsage                `json:"usage,omitempty"`
 	Error          string                     `json:"error,omitempty"`
 }
 
-// benchReply は `wx bench --json` の出力である。
+// benchReply は `wx bench --json` の出力である。Configs は設定ごとの集計で、表の比較行と同じ値を持つ。
 type benchReply struct {
-	Workspace string     `json:"workspace"`
-	Runs      []BenchRun `json:"runs"`
+	Workspace string               `json:"workspace"`
+	Runs      []BenchRun           `json:"runs"`
+	Configs   []BenchConfigSummary `json:"configs"`
 }
 
 // RunBench は貸出から Early Ready・Full Ready までを実測し、daemon 側の区間内訳と併せて出力する。
 // 既定では対象 workspace の待機中 standby を STALE にして cold start を測る。reuse では今のプールが返す経路をそのまま測る。
-func (c Client) RunBench(ctx context.Context, runs int, branches []string, reuse, jsonOut bool) int {
-	if runs < 1 {
+func (c Client) RunBench(ctx context.Context, opts BenchOptions) int {
+	if opts.Runs < 1 {
 		fmt.Fprintln(os.Stderr, "error: --runs must be at least 1")
+		return 2
+	}
+	// 設定を振る測定は cold start を前提とするため、プールが返すものを測る --reuse とは両立しない。
+	if opts.Reuse && len(opts.Configs) > 0 {
+		fmt.Fprintln(os.Stderr, "error: --config and --sweep cannot be combined with --reuse; each configuration is measured as a cold start")
 		return 2
 	}
 	if err := c.checkLeaseWorktreeMode(ctx); err != nil {
@@ -61,34 +89,23 @@ func (c Client) RunBench(ctx context.Context, runs int, branches []string, reuse
 	}
 	// standby を退役させる要求は workspace root で宛先を指すため、cold start の測定だけが root の解決を要する。
 	root, resolved := c.leasePolicyRoot(ctx, cwd)
-	if !resolved && !reuse {
+	if !resolved && !opts.Reuse {
 		fmt.Fprintln(os.Stderr, "error: cannot resolve a wx workspace from "+cwd+"; run wx bench --reuse to measure without retiring standby worktrees")
 		return 2
 	}
-	reply := benchReply{Workspace: root}
-	failed := false
-	for index := range runs {
-		if index > 0 {
-			c.waitBenchIdle(ctx)
-		}
-		run := c.benchOnce(ctx, cwd, root, branches, reuse)
-		reply.Runs = append(reply.Runs, run)
-		if run.Error != "" {
-			failed = true
-		}
-		if !jsonOut {
-			printBenchRun(index+1, runs, run)
-		}
-	}
-	if jsonOut {
+	reply, failed := c.benchRuns(ctx, cwd, root, opts)
+	if opts.JSON {
 		data, err := json.Marshal(reply)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
 		fmt.Println(string(data))
-	} else if len(reply.Runs) > 1 {
-		printBenchSummary(reply.Runs)
+	} else {
+		if len(reply.Runs) > 1 {
+			printBenchSummary(reply.Runs)
+		}
+		printBenchConfigs(reply.Configs)
 	}
 	if failed {
 		return 1
@@ -96,9 +113,40 @@ func (c Client) RunBench(ctx context.Context, runs int, branches []string, reuse
 	return 0
 }
 
+// benchRuns は設定 × --runs 回の測定を回して集計する。
+// 設定ごとに固めず設定を1巡ずつ回すのは、測定中の機械の状態の移り変わりを設定間で均すためである。
+func (c Client) benchRuns(ctx context.Context, cwd, root string, opts BenchOptions) (benchReply, bool) {
+	reply := benchReply{Workspace: root}
+	overrides := opts.Configs
+	if len(overrides) == 0 {
+		overrides = []config.PrepareOverride{{}}
+	}
+	failed, measured := false, 0
+	total := opts.Runs * len(overrides)
+	for range opts.Runs {
+		for _, override := range overrides {
+			if measured > 0 {
+				c.waitBenchIdle(ctx)
+			}
+			measured++
+			run := c.benchOnce(ctx, cwd, root, opts.Branches, opts.Reuse, override)
+			reply.Runs = append(reply.Runs, run)
+			if run.Error != "" {
+				failed = true
+			}
+			if !opts.JSON {
+				printBenchRun(measured, total, run)
+			}
+		}
+	}
+	reply.Configs = summarizeBenchConfigs(reply.Runs)
+	return reply, failed
+}
+
 // benchOnce は1回の貸出を測って返却する。失敗した回も、そこまでに測れた区間を結果に残す。
-func (c Client) benchOnce(ctx context.Context, cwd, root string, branches []string, reuse bool) BenchRun {
-	run := BenchRun{Source: "cold"}
+// override はこの貸出の準備にだけ適用する設定で、設定ファイルと daemon の実効設定はどちらも変えない。
+func (c Client) benchOnce(ctx context.Context, cwd, root string, branches []string, reuse bool, override config.PrepareOverride) BenchRun {
+	run := BenchRun{Source: "cold", Config: benchConfigOf(override)}
 	if !reuse {
 		retired, err := c.retireStandby(ctx, root)
 		if err != nil {
@@ -113,6 +161,7 @@ func (c Client) benchOnce(ctx context.Context, cwd, root string, branches []stri
 	params := rpc.ResolveAndLeaseParams{
 		Agent: leaseAgentKindPath, Branches: branches, ClientPID: 0, CWD: cwd, ForceWorktree: c.forceWorktree,
 		LeaseKind: state.LeaseKindPath, LeaseOwnerSessionID: ownerID, LeaseOwnerToken: ownerToken,
+		PrepareCopyMode: override.CopyMode, PrepareCOWMinSizeKiB: override.COWMinSizeKiB,
 	}
 	started := time.Now()
 	leaseCtx, cancelLease := context.WithTimeout(ctx, c.discoveryTimeout())
@@ -144,7 +193,66 @@ func (c Client) benchOnce(ctx context.Context, cwd, root string, branches []stri
 	}
 	run.FullReadyMS = time.Since(started).Milliseconds()
 	run.Measurement = c.prepareMeasurement(ctx, lease.SessionID)
+	// 使用量は返却の前に引く。discard で返した slot は `wx slots` に現れず、後から辿る経路がない。
+	run.Usage = c.benchSlotUsage(ctx, lease.SessionID, started)
 	return run
+}
+
+// benchSlotUsage は測り終えた slot の使用量が載るのを待って返す。
+// 上限内に載らなかった場合と daemon から引けなかった場合は nil を返し、その回は時間だけの行になる。
+// notBefore はこの回の貸出を要求した時刻で、それより古い測定は前の準備の値なので待ち続ける。
+func (c Client) benchSlotUsage(ctx context.Context, sessionID string, notBefore time.Time) *BenchUsage {
+	deadline := time.Now().Add(benchUsageTimeout)
+	for {
+		usage, err := c.benchSlotUsageOnce(ctx, sessionID, notBefore)
+		if err != nil || (usage == nil && time.Now().After(deadline)) {
+			return nil
+		}
+		if usage != nil {
+			return usage
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(benchUsagePoll):
+		}
+	}
+}
+
+// benchSlotUsageOnce は slot 一覧から対象 session の行を探す。
+// まだ測定が載っていない場合と、載っているのが notBefore より前の測定である場合は nil を返す。
+func (c Client) benchSlotUsageOnce(ctx context.Context, sessionID string, notBefore time.Time) (*BenchUsage, error) {
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	var slots []daemon.SlotView
+	if err := c.RPC.Call(callCtx, "Slots", map[string]any{"all": false}, &slots); err != nil {
+		return nil, err
+	}
+	for _, slot := range slots {
+		if slot.SessionID != sessionID || !benchUsageMeasuredAfter(slot.MeasuredAt, notBefore) {
+			continue
+		}
+		return &BenchUsage{
+			Measurement: slot.Measurement, CopyMode: slot.CopyMode, Files: slot.Files,
+			AllocatedBytes: slot.AllocatedBytes, SharedBytes: slot.SharedBytes, ExclusiveBytes: slot.ExclusiveBytes,
+			MeasuredAt: slot.MeasuredAt,
+		}, nil
+	}
+	return nil, nil
+}
+
+// benchUsageMeasuredAfter はこの回の準備を測った結果かを時刻で見分ける。
+// 使用量は slot が再び準備へ入っても消えないため、時刻を見ないと前の世代の値を今回の結果として採ってしまう。
+// 読めない時刻は採らない。単一マシンなので daemon と client の時計は同じである。
+func benchUsageMeasuredAfter(measuredAt string, notBefore time.Time) bool {
+	if measuredAt == "" {
+		return false
+	}
+	parsed, err := state.ParseTime(measuredAt)
+	if err != nil {
+		return false
+	}
+	return !parsed.Before(notBefore)
 }
 
 func (c Client) waitBenchReadiness(ctx context.Context, lease daemon.Lease, method string) error {
@@ -226,7 +334,7 @@ func (c Client) waitBenchIdle(ctx context.Context) {
 }
 
 func printBenchRun(index, runs int, run BenchRun) {
-	fmt.Printf("run %d/%d  %s\n", index, runs, run.Source)
+	fmt.Printf("run %d/%d  %s  %s\n", index, runs, run.Source, run.Config.Label)
 	if run.Error != "" {
 		fmt.Println("  error         " + run.Error)
 	}
@@ -236,6 +344,10 @@ func printBenchRun(index, runs int, run BenchRun) {
 	}
 	fmt.Printf("  EARLY READY   %s\n", formatBenchDuration(run.EarlyReadyMS))
 	fmt.Printf("  FULL READY    %s\n", formatBenchDuration(run.FullReadyMS))
+	if run.Usage != nil {
+		fmt.Printf("  slot usage    %s exclusive · %s shared (%s)\n",
+			formatBenchBytes(run.Usage.ExclusiveBytes), formatBenchBytes(run.Usage.SharedBytes), run.Usage.Measurement)
+	}
 	if run.Measurement == nil {
 		return
 	}
@@ -255,6 +367,7 @@ func printBenchRun(index, runs int, run BenchRun) {
 }
 
 // printBenchSummary は複数 run の中央値と最小・最大を出す。1回の実測はキャッシュ状態に強く左右されるためである。
+// 失敗が続いて成功が1回だけになった場合は、同じ値を3つ並べず実測値だけを出す。
 func printBenchSummary(runs []BenchRun) {
 	early, full := []int64{}, []int64{}
 	for _, run := range runs {
@@ -268,8 +381,16 @@ func printBenchSummary(runs []BenchRun) {
 		return
 	}
 	fmt.Printf("summary of %d successful run(s)\n", len(full))
-	fmt.Printf("  EARLY READY   min %s  median %s  max %s\n", formatBenchDuration(minOf(early)), formatBenchDuration(medianOf(early)), formatBenchDuration(maxOf(early)))
-	fmt.Printf("  FULL READY    min %s  median %s  max %s\n", formatBenchDuration(minOf(full)), formatBenchDuration(medianOf(full)), formatBenchDuration(maxOf(full)))
+	fmt.Printf("  EARLY READY   %s\n", formatBenchDistribution(early))
+	fmt.Printf("  FULL READY    %s\n", formatBenchDistribution(full))
+}
+
+// formatBenchDistribution は分布を1行で書く。成功が1回だけなら分布ではないので、実測値をそのまま出す。
+func formatBenchDistribution(values []int64) string {
+	if len(values) == 1 {
+		return formatBenchDuration(values[0])
+	}
+	return fmt.Sprintf("min %s  median %s  max %s", formatBenchDuration(minOf(values)), formatBenchDuration(medianOf(values)), formatBenchDuration(maxOf(values)))
 }
 
 func formatBenchDuration(ms int64) string {

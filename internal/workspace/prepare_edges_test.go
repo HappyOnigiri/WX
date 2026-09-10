@@ -356,9 +356,18 @@ func TestPreparationHelpersRejectInvalidPhaseAndOwnershipInputs(t *testing.T) {
 	if err := preparer.validateStateOwnership(context.Background(), repo, target, "slot", nil, nil); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("missing state validator error=%v", err)
 	}
+	// validator が sentinel を包まずに返しても、証明の失敗は state.ErrOwnership として扱う。
+	// CoW の auto fallback は sentinel の有無で hard fail と良性の失敗を分けるため、ここで正規化しないと証明できないまま貸し出される。
 	preparer.Ownership = edgeOwnershipValidator{err: errors.New("validator fault")}
-	if err := preparer.validateStateOwnership(context.Background(), repo, target, "slot", nil, nil); !strings.Contains(err.Error(), "validator fault") {
+	if err := preparer.validateStateOwnership(context.Background(), repo, target, "slot", nil, nil); !errors.Is(err, state.ErrOwnership) || !strings.Contains(err.Error(), "validator fault") {
 		t.Fatalf("validator error=%v", err)
+	}
+	// ctx の中断は所有権失敗に変換しない。cancel しただけの slot を隔離しないためである。
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	preparer.Ownership = edgeOwnershipValidator{err: context.Canceled}
+	if err := preparer.validateStateOwnership(cancelled, repo, target, "slot", nil, nil); !errors.Is(err, context.Canceled) || errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("cancelled state ownership error=%v", err)
 	}
 	if err := preparer.ValidateRestoringOwnership(context.Background(), repo, target, head, "slot"); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("restoring ownership without worktree error=%v", err)

@@ -79,7 +79,7 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 		if err != nil {
 			return err
 		}
-		repos, err = m.slotRepos(slot.Path, w, resolved, slot.Generation, nil)
+		repos, err = m.slotRepos(slot.Path, w, resolved, slot.Generation, nil, config.PrepareOverride{})
 		if err != nil {
 			return err
 		}

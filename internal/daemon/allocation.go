@@ -62,7 +62,12 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 		return Lease{}, false, err
 	}
 	defer releaseRoot()
-	repos, err := m.slotRepos(slotPath, w, resolved, generation, nil)
+	repos, err := m.slotRepos(slotPath, w, resolved, generation, nil, attrs.Prepare)
+	if err != nil {
+		return Lease{}, false, err
+	}
+	// 上書きは準備 job が読めるよう slot 行へ残す。fingerprint 側は slotRepos が同じ上書きで計算している。
+	prepareOverride, err := attrs.Prepare.Encode()
 	if err != nil {
 		return Lease{}, false, err
 	}
@@ -93,7 +98,7 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 	}
 	endReservation := m.beginReservation(id)
 	defer endReservation()
-	if err := m.store.ReserveSlot(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, OwnerSessionID: id}); err != nil {
+	if err := m.store.ReserveSlot(ctx, state.Slot{ID: id, WorkspaceID: string(w.ID), Generation: generation, RootID: rootID, RelPath: relPath, OwnerSessionID: id, PrepareOverride: prepareOverride}); err != nil {
 		return Lease{}, state.IsIDCollision(err), err
 	}
 	quarantineReservation := func() {
@@ -297,9 +302,12 @@ func (m *Manager) ownedDirectoryIdentity(path string) (string, error) {
 	return identity, nil
 }
 
-func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []pool.Resolved, generation int, hot map[string]bool) ([]state.SlotRepository, error) {
+// slotRepos は slot の repository 行を組む。override は貸出要求が指定した準備設定の上書きで、
+// fingerprint と更新互換 fingerprint を上書き後の設定で計算させる。
+// 上書きを混ぜないと、既定設定の fingerprint を持つ slot が別設定で準備され、後の貸出で再利用される。
+func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []pool.Resolved, generation int, hot map[string]bool, override config.PrepareOverride) ([]state.SlotRepository, error) {
 	// hotにないrepositoryはCOLDとして記録し、実際のlease時までcheckoutを遅らせる。
-	cfg := m.Config()
+	cfg := override.Apply(m.Config())
 	out := make([]state.SlotRepository, 0, len(resolved))
 	taken := map[string]bool{}
 	for _, r := range resolved {

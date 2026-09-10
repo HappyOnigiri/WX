@@ -38,6 +38,17 @@ func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Pre
 	}
 }
 
+// slotPrepareConfig は slot に記録された準備設定の上書きを実効設定へ載せて返す。
+// 準備 job は貸出要求とは別のタイミングで走るため、上書きは要求からではなく slot 行から読む。
+// 記録が壊れていた場合は既定設定で準備し直さず失敗させる。fingerprint は上書き前提で計算されている。
+func (m *Manager) slotPrepareConfig(slot state.Slot) (config.Config, error) {
+	override, err := config.DecodePrepareOverride(slot.PrepareOverride)
+	if err != nil {
+		return config.Config{}, fmt.Errorf("slot %s: %w", slot.ID, err)
+	}
+	return override.Apply(m.Config()), nil
+}
+
 func (m *Manager) resolvedFromStored(ctx context.Context, w discovery.Workspace, repos []state.SlotRepository) ([]pool.Resolved, error) {
 	by := map[string]discovery.Repository{}
 	for _, r := range w.Repositories {
@@ -75,7 +86,11 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 		return err
 	}
 	defer releaseRoot()
-	preparer := m.newPreparer(m.Config(), slot)
+	prepareConfig, err := m.slotPrepareConfig(slot)
+	if err != nil {
+		return err
+	}
+	preparer := m.newPreparer(prepareConfig, slot)
 	if len(repos) != len(resolved) {
 		return errors.New("slot repository metadata does not match resolved workspace")
 	}
