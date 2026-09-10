@@ -21,6 +21,22 @@ func writeFixture(t *testing.T, body string) string {
 	return root
 }
 
+func writeTree(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+	files["go.mod"] = "module example.test\n\ngo 1.27.1\n"
+	for name, body := range files {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
 func runFixture(t *testing.T, root string) (int, manifest) {
 	t.Helper()
 	report := filepath.Join(root, "artifacts")
@@ -104,6 +120,52 @@ func TestAlwaysFails(t *testing.T) { t.Fatal("always") }
 	code, value := runFixture(t, root)
 	if code == 0 || value.Status != "failed" || len(value.Recoveries) != 0 || len(value.Retries) != 1 {
 		t.Fatalf("code=%d status=%s recoveries=%d retries=%d", code, value.Status, len(value.Recoveries), len(value.Retries))
+	}
+}
+
+// in-packageと外部テストパッケージの同名宣言は正当なGoだが、どちらの宣言か決められないため
+// そのパッケージは再実行の対象外になる。他のパッケージの再実行まで止めないことを確かめる。
+func TestUnresolvedDeclarationDoesNotBlockOtherPackages(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "first-run")
+	root := writeTree(t, map[string]string{
+		"a/a_test.go": `package a
+
+import (
+	"os"
+	"testing"
+)
+
+func TestFlaky(t *testing.T) {
+	path := os.Getenv("FLAKY_MARKER")
+	if _, err := os.Stat(path); err != nil {
+		if err := os.WriteFile(path, []byte("seen"), 0o600); err != nil { t.Fatal(err) }
+		t.Fatal("first run fails")
+	}
+}
+`,
+		"b/b_test.go": `package b
+
+import "testing"
+
+func TestDup(t *testing.T) { t.Fatal("in-package") }
+`,
+		"b/x_test.go": `package b_test
+
+import "testing"
+
+func TestDup(t *testing.T) { t.Fatal("external") }
+`,
+	})
+	t.Setenv("FLAKY_MARKER", marker)
+	code, value := runFixture(t, root)
+	if code == 0 || value.Status != "failed" {
+		t.Fatalf("code=%d status=%s", code, value.Status)
+	}
+	if len(value.Recoveries) != 1 || value.Recoveries[0].Package != "example.test/a" {
+		t.Fatalf("recoveries=%+v", value.Recoveries)
+	}
+	if !strings.Contains(strings.Join(value.Diagnostics, "\n"), "ambiguous declaration TestDup") {
+		t.Fatalf("diagnostics=%v", value.Diagnostics)
 	}
 }
 

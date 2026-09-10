@@ -102,11 +102,9 @@ func run(ctx context.Context, cfg config, output io.Writer) (int, error) {
 	default:
 		declarations, diagnostics := resolveFailedDeclarations(ctx, cfg, failed)
 		man.Diagnostics = append(man.Diagnostics, diagnostics...)
-		if len(diagnostics) > 0 {
-			man.Status = "failed"
-		} else {
-			man.Status = retryFailures(ctx, cfg, initialResult, failed, declarations, &man, output)
-		}
+		// 宣言を解決できなかったパッケージはretryFailuresが対象から外し、そのテストは
+		// 回復扱いにならないためstatusはfailedのままになる。他のパッケージの再実行は妨げない。
+		man.Status = retryFailures(ctx, cfg, initialResult, failed, declarations, &man, output)
 	}
 	if initialCoverageError {
 		man.Status = "failed"
