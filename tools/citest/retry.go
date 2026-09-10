@@ -95,7 +95,7 @@ func retryFailures(ctx context.Context, cfg config, initial testResult, failed m
 						FailedTests:   failedNamesForRoot(names, root),
 						InitialResult: "fail",
 						RetryResult:   "pass",
-						RetryIndex:    len(man.Retries),
+						RetryIndex:    len(man.Retries) + 1,
 					})
 				}
 			}

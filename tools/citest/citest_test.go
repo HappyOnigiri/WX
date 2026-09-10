@@ -73,6 +73,9 @@ func TestFlaky(t *testing.T) {
 	if value.Recoveries[0].Declaration.Function != "TestFlaky" || value.Recoveries[0].Declaration.Path != "flaky_test.go" {
 		t.Fatalf("recovery=%+v", value.Recoveries[0])
 	}
+	if value.Recoveries[0].RetryIndex != 1 {
+		t.Fatalf("retry index=%d", value.Recoveries[0].RetryIndex)
+	}
 }
 
 func TestStableTestDoesNotRetry(t *testing.T) {
