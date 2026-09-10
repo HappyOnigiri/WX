@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -91,40 +90,4 @@ func cowACL(file *os.File, buffer []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid Darwin ACL attribute")
 	}
 	return buffer[offset : offset+size], nil
-}
-
-func cowXattrs(file *os.File) (map[string][]byte, error) {
-	fd := int(file.Fd())
-	size, err := unix.Flistxattr(fd, nil)
-	if err != nil {
-		return nil, err
-	}
-	names := make([]byte, size)
-	size, err = unix.Flistxattr(fd, names)
-	if err != nil {
-		return nil, err
-	}
-	if size > len(names) {
-		return nil, unix.ERANGE
-	}
-	result := map[string][]byte{}
-	for _, name := range strings.Split(string(names[:size]), "\x00") {
-		if name == "" {
-			continue
-		}
-		length, err := unix.Fgetxattr(fd, name, nil)
-		if err != nil {
-			return nil, err
-		}
-		data := make([]byte, length)
-		length, err = unix.Fgetxattr(fd, name, data)
-		if err != nil {
-			return nil, err
-		}
-		if length > len(data) {
-			return nil, unix.ERANGE
-		}
-		result[name] = data[:length]
-	}
-	return result, nil
 }

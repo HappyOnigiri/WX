@@ -89,8 +89,15 @@ func (s *cowSharer) replaceWithClone(ctx context.Context, scratch *cowScratch, i
 	start = time.Now()
 	compatible, err := cowMetadata(original, candidate, before, scratch)
 	s.stats.metadata.observe(start)
-	if err != nil || !compatible {
+	if err != nil {
 		return err
+	}
+	if !compatible {
+		// 複製元にextended attributeが付いている回は、owner/mode/flags/ACL不一致と区別してxattr起因のskipとして数える。
+		if hasXattr, xerr := hasExtendedAttributes(in); xerr == nil && hasXattr {
+			s.stats.skippedXattr.Add(1)
+		}
+		return nil
 	}
 	if err := ctx.Err(); err != nil {
 		return err

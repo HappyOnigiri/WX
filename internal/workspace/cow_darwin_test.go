@@ -72,6 +72,35 @@ func TestCOWPreservesDestinationXattrs(t *testing.T) {
 	}
 }
 
+// 複製元にextended attributeが付いている回は、owner/mode/ACL不一致と区別してskippedXattrへ数える。
+// 診断ログでxattrに起因するskipだけを切り分けられることを確かめる。
+func TestCOWReplacementRecordsXattrSkipReason(t *testing.T) {
+	a, b := cowRoots(t)
+	cowWrite(t, a, "file", "data")
+	cowWrite(t, b, "file", "data")
+	f, err := a.Open("file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Fsetxattr(int(f.Fd()), "wx.test", []byte("source"), 0); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	before, _ := b.Stat("file")
+	stats := &cowStats{}
+	sharer := &cowSharer{source: a, destination: b, proof: func() error { return nil }, stats: stats}
+	if err := sharer.shareRun(context.Background(), newCOWScratch(), ".", []string{"file"}); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := b.Stat("file")
+	if !os.SameFile(before, after) {
+		t.Fatal("xattr mismatch unexpectedly replaced the destination file")
+	}
+	if stats.skippedXattr.Load() != 1 {
+		t.Fatalf("skipped for xattr=%d", stats.skippedXattr.Load())
+	}
+}
+
 func TestCOWCloneFailureLeavesOriginal(t *testing.T) {
 	a, b := cowRoots(t)
 	cowWrite(t, a, "file", "data")

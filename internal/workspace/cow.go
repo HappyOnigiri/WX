@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -262,4 +263,42 @@ func hasExtendedAttributes(file *os.File) (bool, error) {
 		return false, err
 	}
 	return len(attributes) > 0, nil
+}
+
+// cowXattrs はfileに付いたextended attributeを名前ごとに読む。
+// Flistxattr・FgetxattrはLinuxでも解決するが、cloneCOW等の他のCoW操作はdarwin専用のままである。
+func cowXattrs(file *os.File) (map[string][]byte, error) {
+	fd := int(file.Fd())
+	size, err := unix.Flistxattr(fd, nil)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]byte, size)
+	size, err = unix.Flistxattr(fd, names)
+	if err != nil {
+		return nil, err
+	}
+	if size > len(names) {
+		return nil, unix.ERANGE
+	}
+	result := map[string][]byte{}
+	for _, name := range strings.Split(string(names[:size]), "\x00") {
+		if name == "" {
+			continue
+		}
+		length, err := unix.Fgetxattr(fd, name, nil)
+		if err != nil {
+			return nil, err
+		}
+		data := make([]byte, length)
+		length, err = unix.Fgetxattr(fd, name, data)
+		if err != nil {
+			return nil, err
+		}
+		if length > len(data) {
+			return nil, unix.ERANGE
+		}
+		result[name] = data[:length]
+	}
+	return result, nil
 }
