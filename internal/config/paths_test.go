@@ -78,6 +78,32 @@ func TestDerivedPathsFailClosedWithoutHome(t *testing.T) {
 	}
 }
 
+// ExpandHome が返すパスは filepath.Clean を通るため末尾のスラッシュは残らない。
+// 呼び出し側が文字列比較でパスを扱う箇所があるため、この不変条件を回帰させない。
+func TestExpandHomeStripsTrailingSlash(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cases := map[string]string{
+		"~/":                 home,
+		"~/worktrees/":       filepath.Join(home, "worktrees"),
+		"$HOME/worktrees/":   filepath.Join(home, "worktrees"),
+		"$HOME/worktrees//":  filepath.Join(home, "worktrees"),
+		home + "/worktrees/": filepath.Join(home, "worktrees"),
+	}
+	for path, want := range cases {
+		got, err := ExpandHome(path)
+		if err != nil {
+			t.Fatalf("ExpandHome(%q) error=%v", path, err)
+		}
+		if got != want {
+			t.Errorf("ExpandHome(%q)=%q, want=%q", path, got, want)
+		}
+		if strings.HasSuffix(got, string(filepath.Separator)) {
+			t.Errorf("ExpandHome(%q)=%q has trailing separator", path, got)
+		}
+	}
+}
+
 // ExpandHome は状態を持たないため、同時に呼ばれても互いに干渉しないことを確認する。
 func TestExpandHomeConcurrentCallsAreIndependent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
