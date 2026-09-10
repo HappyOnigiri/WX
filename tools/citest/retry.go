@@ -52,11 +52,12 @@ func retryFailures(ctx context.Context, cfg config, initial testResult, failed m
 		}
 		command, coverage, err := retryCommand(cfg, packageName, roots, initial.ShuffleByPackage[packageName], len(man.Retries))
 		retry := retryRecord{
-			Package:   packageName,
-			Functions: roots,
-			Command:   command,
-			StartedAt: now(),
-			Coverage:  coverage,
+			Package:     packageName,
+			Functions:   roots,
+			Command:     command,
+			StartedAt:   now(),
+			Coverage:    coverage,
+			FailedTests: append([]string(nil), names...),
 		}
 		if err != nil {
 			retry.Reason = err.Error()

@@ -76,6 +76,9 @@ func TestFlaky(t *testing.T) {
 	if value.Recoveries[0].RetryIndex != 1 {
 		t.Fatalf("retry index=%d", value.Recoveries[0].RetryIndex)
 	}
+	if len(value.Retries[0].FailedTests) != 1 || value.Retries[0].FailedTests[0] != "TestFlaky" {
+		t.Fatalf("retry failed tests=%v", value.Retries[0].FailedTests)
+	}
 }
 
 func TestStableTestDoesNotRetry(t *testing.T) {
