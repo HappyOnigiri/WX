@@ -354,3 +354,45 @@ func TestPreparedSlotEntersTheRootTotalWithoutWaitingForTheNextMeasurement(t *te
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// 準備中の slot は書き込みの途中を歩くので、その途中経過をその slot の使用量として公開しない。
+// 実体は root 合計に数えたままにし、登録外の容量へ移して警告に見せない。
+func TestMeasureRootUsageSkipsSlotsThatAreStillBeingPrepared(t *testing.T) {
+	t.Parallel()
+	_, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t)
+	root := manager.Config().Storage.WorktreeRoot
+	slotRoot := filepath.Join(root, string(workspaceRecord.ID), "slot")
+	if _, _, err := manager.createSlotRoot(slotRoot, slotRoot); err != nil {
+		t.Fatalf("create slot root: %v", err)
+	}
+	if _, err := store.CreateStandby(t.Context(), slotAtPath(t, manager, string(workspaceRecord.ID), "slot", slotRoot, 1, "PREPARING"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(slotRoot, "payload"), make([]byte, 8192), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.measureRootUsage(t.Context())
+	manager.mu.RLock()
+	_, published := manager.slotUsage["slot"]
+	manager.mu.RUnlock()
+	if published {
+		t.Fatal("published the usage of a slot that is still being prepared")
+	}
+	measured := statusRootUsage(t, manager, root)
+	if measured.AllocatedBytes < 8192 {
+		t.Fatalf("root usage lost the bytes of the preparing slot: %+v", measured)
+	}
+
+	// 準備が終われば次の測定で載る。準備中に落としたまま忘れないことを検査する。
+	if err := store.SetSlotState(t.Context(), "slot", []string{"PREPARING"}, "READY", ""); err != nil {
+		t.Fatal(err)
+	}
+	manager.measureRootUsage(t.Context())
+	manager.mu.RLock()
+	sample, measuredSlot := manager.slotUsage["slot"]
+	manager.mu.RUnlock()
+	if !measuredSlot || sample.usage.AllocatedBytes < 8192 {
+		t.Fatalf("slot usage after preparation=%+v measured=%v", sample, measuredSlot)
+	}
+}

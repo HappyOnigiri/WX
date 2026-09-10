@@ -292,6 +292,10 @@ func (h Handler) dispatchLease(ctx context.Context, method string, raw json.RawM
 		if err != nil {
 			return nil, true, err
 		}
+		attrs, err = attrs.withPrepareOverride(p.PrepareCopyMode, p.PrepareCOWMinSizeKiB)
+		if err != nil {
+			return nil, true, err
+		}
 		result, err := h.Manager.leaseWithPolicy(ctx, p.CWD, p.Branches, p.Agent, p.ClientPID, p.ForceWorktree, attrs)
 		return result, true, err
 	case "Resume":

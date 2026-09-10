@@ -29,6 +29,10 @@ type launcherHandler struct {
 	failRegister bool
 	// leaseParams は最初の ResolveAndLease の Params を保持する。貸出コマンドが載せる種別と親を検査する。
 	leaseParams json.RawMessage
+	// leaseParamsAll は ResolveAndLease の Params を要求順に保持する。設定を振る測定が回ごとに送る値を検査する。
+	leaseParamsAll []json.RawMessage
+	// slots は Slots の応答を差し替える点である。nil なら失敗を返し、使用量を引けない daemon として扱われる。
+	slots []daemon.SlotView
 	// releaseLeaseReply と resumeStatus は貸出コマンドの test が応答を差し替える点である。nil なら既定の応答を返す。
 	releaseLeaseReply map[string]any
 	resumeStatus      map[string]any
@@ -41,8 +45,11 @@ type launcherHandler struct {
 func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
 	h.mu.Lock()
 	h.methods = append(h.methods, method)
-	if method == "ResolveAndLease" && h.leaseParams == nil {
-		h.leaseParams = append(json.RawMessage(nil), raw...)
+	if method == "ResolveAndLease" {
+		if h.leaseParams == nil {
+			h.leaseParams = append(json.RawMessage(nil), raw...)
+		}
+		h.leaseParamsAll = append(h.leaseParamsAll, append(json.RawMessage(nil), raw...))
 	}
 	if method == "RegisterAgentProcess" {
 		var params struct {
@@ -80,6 +87,14 @@ func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawM
 			return h.releaseLeaseReply, nil
 		}
 		return map[string]any{"released": true, "discarded": false}, nil
+	case "Slots":
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.slots == nil {
+			// 使用量を差し替えていない test で測定を待たせないため、引けない daemon として即座に失敗を返す。
+			return nil, errors.New("slot usage is not available in this test")
+		}
+		return h.slots, nil
 	case "PrepareTimings":
 		h.mu.Lock()
 		defer h.mu.Unlock()

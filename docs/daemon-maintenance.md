@@ -159,6 +159,8 @@ worktree rootのpath検査と登録検査は別のfindingとして両方保持�
 `cow.entries`・`cow.candidates`・`cow.shared`・`cow.skipped_size`は時間ではなく件数として同じ表に載る。
 区間の合計はEARLY/FULL READYと一致しない。所有権証明・キュー待ち・貸出解決のように計測していない時間が残るためである。
 
+使用量は返却の直前に`wx slots`から引く。使用量の測定はslotが再び準備へ入っても即座には消えないため、貸出を要求した時刻より前の`measured_at`は前の準備の値として採らず、次の測定を待つ。
+
 cold startを測るため、既定では対象workspaceの待機中READY slotを`RetireStandby`でSTALEにする。
 実体は通常のGCが回収し、補充が作り直す。貸出中のslotには触れず、未登録のworkspaceは退役対象なしとして成功で返す。
 

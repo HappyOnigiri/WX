@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/pool"
@@ -213,7 +214,7 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 			return state.Job{}, err
 		}
 		slotPath := filepath.Join(rootPath, relPath)
-		repos, err := m.slotRepos(slotPath, w, resolved, generation, hot)
+		repos, err := m.slotRepos(slotPath, w, resolved, generation, hot, config.PrepareOverride{})
 		if err != nil {
 			return state.Job{}, err
 		}

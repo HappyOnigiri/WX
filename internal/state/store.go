@@ -36,7 +36,7 @@ type Store struct {
 	backupStepBarrier func()
 }
 
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 // ErrPreviousWorktreeLayout は、wx が意図的に migration path を持たない旧 worktree layout の state database を示す。
 var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree layout")
@@ -46,8 +46,9 @@ var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree l
 // 9〜11 は measured_at・補充停止の理由・`wx slots` への置き換え、12〜16 は unmanaged・shared/exclusive・policy・resume の integrity・method Ping を加えた。
 // 17 は `wx doctor` の checks map を、種別・原因・対処を持つ findings 配列へ置き換え、`wx status --json` の standby_replenishment に失敗情報を加えた。
 // 18 は `wx slots --json` の各行へ貸出の種別・期限・親 session を、`wx status --json` の retention_seconds へ lease.ttl を加えた。
+// 19 は `wx status --json` の session_details を非終端 session だけに絞り、ARCHIVED の集計を archived_session_details へ分けた。
 // commentlint:allow-long -- schema 版ごとの変更点を辿れるようにするため
-const JSONSchemaVersion = 18
+const JSONSchemaVersion = 19
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -198,6 +199,10 @@ const timestampFormat = "2006-01-02T15:04:05.000000000Z07:00"
 // FormatTime は固定幅 RFC 3339 timestamp を返す。SQLite は wx の時刻を TEXT で保存するため、
 // lexical comparison で時系列順を保つには固定の小数幅が必要である。
 func FormatTime(value time.Time) string { return value.UTC().Format(timestampFormat) }
+
+// ParseTime は FormatTime が書いた timestamp を読み戻す。保存側と同じ書式をここに閉じ込め、
+// 呼び出し側が独自の書式で解釈しないようにする。
+func ParseTime(value string) (time.Time, error) { return time.Parse(timestampFormat, value) }
 
 func now() string { return FormatTime(time.Now()) }
 
