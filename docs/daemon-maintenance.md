@@ -140,6 +140,11 @@ UPDATEも書込み開始時刻を永続化し、開始後の中断は隔離す�
 daemonへ接続できない場合とdegradedの場合は、store依存の検査（`diag.StoreDependentChecks`）をこの形で並べ、同じ故障を検査ごとに繰り返さない。
 `findings`を返せない古いdaemonの応答は正常と読ませず、CLIが`wx daemon restart`を促すproblemを足す。
 
+`--probe`は静的検査の後に、登録済みworkspaceを1つずつ実際に貸し出して準備し、貸出中のworktreeを読み取りだけで検査してから保存せずに返す。
+駆動はCLI（[`internal/cli/doctor_probe.go`](../internal/cli/doctor_probe.go)）が`wx bench`と同じRPC列で行い、daemonにprobe専用の処理を持たない。
+検査結果は他と同じ`Finding`としてfindingsへ合流させ、所要時間とディスク使用量は失敗ではないので`Reply.Probes`へ分けて出す。
+`--probe`は対象workspaceの待機standbyを`RetireStandby`でSTALEにするので、実行中と直後はそのworkspaceの起動が遅くなる。
+
 daemon接続なしで成立する検査は[`internal/diag`](../internal/diag/diag.go)に置く。
 storeを要する検査は[`doctor.go`](../internal/daemon/doctor.go)と[`doctor_recovery.go`](../internal/daemon/doctor_recovery.go)に置く。
 worktree rootのpath検査と登録検査は別のfindingとして両方保持し、登録状態でpath検査の結果を上書きしない。
@@ -163,6 +168,10 @@ worktree rootのpath検査と登録検査は別のfindingとして両方保持�
 
 cold startを測るため、既定では対象workspaceの待機中READY slotを`RetireStandby`でSTALEにする。
 実体は通常のGCが回収し、補充が作り直す。貸出中のslotには触れず、未登録のworkspaceは退役対象なしとして成功で返す。
+
+失敗せずに出力だけを残した区間は`workspace.PrepareNotices`が集め、計測と同じ経路で`PrepareTimings`から引ける。
+exit 0のpost-checkout hookが内部の失敗を飲み込んでも、出力を捨てるとwxからは正常と区別できないためである。
+本文はdaemon logへwarnで出し、全文は失敗のstderrと同じ`<logdir>/details/<id>.log`へ書く。
 
 ## restart / stopのidleゲート
 

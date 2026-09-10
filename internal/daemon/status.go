@@ -153,6 +153,37 @@ type SlotView struct {
 	ExclusiveBytes int64  `json:"exclusive_bytes,omitempty"`
 	Measurement    string `json:"measurement,omitempty"`
 	MeasuredAt     string `json:"measured_at,omitempty"`
+	// RepositoryUsage は slot 内の repository 別内訳を名前順で並べたものである。
+	// SlotSummary.Repositories がソース側の main worktree を指すのに対し、こちらは slot 内の配置ごとの実測である。
+	// repository の外に置かれた slot 直下のファイルは含まないので、合計は slot 全体と一致しない。
+	RepositoryUsage []SlotRepositoryView `json:"repository_usage,omitempty"`
+}
+
+// SlotRepositoryView は slot 内の repository 1 個分の使用量である。
+// ExclusiveBytes は AllocatedBytes から SharedBytes を引いた、その repository が専有する量である。
+type SlotRepositoryView struct {
+	Name           string `json:"name"`
+	Files          int    `json:"files"`
+	AllocatedBytes int64  `json:"allocated_bytes"`
+	SharedBytes    int64  `json:"shared_bytes"`
+	ExclusiveBytes int64  `json:"exclusive_bytes"`
+}
+
+// slotRepositoryViews は repository 別内訳を名前順で並べる。
+// map の反復順は回ごとに変わるため、`--json` の消費側が同じ入力で同じ並びを読めるようにここで固定する。
+func slotRepositoryViews(repositories map[string]workspace.RepositoryUsage) []SlotRepositoryView {
+	if len(repositories) == 0 {
+		return nil
+	}
+	out := make([]SlotRepositoryView, 0, len(repositories))
+	for name, usage := range repositories {
+		out = append(out, SlotRepositoryView{
+			Name: name, Files: usage.Files, AllocatedBytes: usage.AllocatedBytes,
+			SharedBytes: usage.SharedBytes, ExclusiveBytes: usage.AllocatedBytes - usage.SharedBytes,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func (m *Manager) Slots(ctx context.Context, all bool) ([]SlotView, error) {
@@ -194,6 +225,7 @@ func slotView(summary state.SlotSummary, usage map[string]slotUsageSample) SlotV
 	view.SharedBytes = sample.usage.SharedBytes
 	view.ExclusiveBytes = sample.usage.AllocatedBytes - sample.usage.SharedBytes
 	view.MeasuredAt = state.FormatTime(sample.measuredAt)
+	view.RepositoryUsage = slotRepositoryViews(sample.usage.Repositories)
 	if view.Measurement == "" {
 		view.Measurement = slotSharingMeasurement
 		view.CopyMode = config.CopyModeCopy

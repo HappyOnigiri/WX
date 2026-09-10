@@ -47,8 +47,9 @@ var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree l
 // 17 は `wx doctor` の checks map を、種別・原因・対処を持つ findings 配列へ置き換え、`wx status --json` の standby_replenishment に失敗情報を加えた。
 // 18 は `wx slots --json` の各行へ貸出の種別・期限・親 session を、`wx status --json` の retention_seconds へ lease.ttl を加えた。
 // 19 は `wx status --json` の session_details を非終端 session だけに絞り、ARCHIVED の集計を archived_session_details へ分けた。
+// 20 は `wx doctor --json` へ `wx doctor --probe` の計測値 probes を、`wx slots --json` の各行へ repository 別の使用量内訳を加えた。
 // commentlint:allow-long -- schema 版ごとの変更点を辿れるようにするため
-const JSONSchemaVersion = 19
+const JSONSchemaVersion = 20
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

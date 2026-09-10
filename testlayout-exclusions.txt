@@ -11,3 +11,5 @@ internal/sessions/scanner/target.go	exempt	Resume-target type and small predicat
 internal/sessions/scanner/types.go	exempt	Type declarations and a stable-ID delegation only; scanning behavior is exercised by scan_test.go.
 internal/testsupport/socket.go	exempt	Test-only helper package; the packages that call it exercise it in their own tests.
 internal/tui/terminal_other.go	exempt	Fallback build-tag variant for platforms other than darwin and linux; terminal detection is exercised on darwin and linux.
+internal/diag/probe.go	exempt	Probe result type declarations and constants only; the probe behavior is exercised by internal/cli and cmd/wx tests.
+internal/cli/doctor_probe.go	exempt	Daemon RPC round-trip and progress-output adapter recorded in coverage-exclusions.txt; the probe results are exercised by doctor_probe_report_test.go.

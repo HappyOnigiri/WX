@@ -11,3 +11,4 @@ internal/cli/client.go	Agent process, signal, and terminal adapter; lifecycle be
 internal/daemon/server.go	Daemon process, filesystem, lock, and Unix-socket adapter; behavior is exercised by real-process integration tests.
 internal/launchd/launchd.go	macOS launchd adapter; plist and launchctl behavior is exercised by integration tests that put a stub launchctl on PATH, which needs no macOS host.
 internal/workspace/cow_clone.go	clonefile adapter reached only after a successful clone; linux always fails cloneCOW with ENOTSUP, so the replacement path is exercised by the darwin CoW tests.
+internal/cli/doctor_probe.go	Daemon RPC round-trip and progress-output adapter for wx doctor --probe; the findings it builds are exercised by doctor_probe_report_test.go and the checks by doctor_probe_worktree_test.go.

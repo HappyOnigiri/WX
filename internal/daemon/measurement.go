@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
@@ -25,23 +26,35 @@ type PreparePhase struct {
 	MS    int64  `json:"ms"`
 }
 
+// PrepareNotice は準備が成功したまま出力を残した区間 1 件である。
+// Output は先頭だけを載せ、全文は DetailPath のログが持つ。書き出せなかった回は DetailPath が空になる。
+type PrepareNotice struct {
+	Target     string `json:"target"`
+	Phase      string `json:"phase"`
+	Output     string `json:"output,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+	DetailPath string `json:"detail_path,omitempty"`
+}
+
 // PrepareMeasurement は1回の準備の節目と区間内訳である。daemon のメモリにだけ残り、再起動で消える。
 type PrepareMeasurement struct {
-	SlotID       string         `json:"slot_id"`
-	WorkspaceID  string         `json:"workspace_id"`
-	SessionID    string         `json:"session_id,omitempty"`
-	StartedAt    string         `json:"started_at"`
-	EarlyReadyMS int64          `json:"early_ready_ms"`
-	TotalMS      int64          `json:"total_ms"`
-	Failed       bool           `json:"failed"`
-	Error        string         `json:"error,omitempty"`
-	Phases       []PreparePhase `json:"phases"`
+	SlotID       string          `json:"slot_id"`
+	WorkspaceID  string          `json:"workspace_id"`
+	SessionID    string          `json:"session_id,omitempty"`
+	StartedAt    string          `json:"started_at"`
+	EarlyReadyMS int64           `json:"early_ready_ms"`
+	TotalMS      int64           `json:"total_ms"`
+	Failed       bool            `json:"failed"`
+	Error        string          `json:"error,omitempty"`
+	Phases       []PreparePhase  `json:"phases"`
+	Notices      []PrepareNotice `json:"notices,omitempty"`
 }
 
 // prepareTimer は1回の準備の節目を測り、終了時に計測を Manager へ渡す。
 type prepareTimer struct {
 	manager     *Manager
 	timings     *workspace.PhaseTimings
+	notices     *workspace.PrepareNotices
 	slotID      string
 	workspaceID string
 	sessionID   string
@@ -49,12 +62,13 @@ type prepareTimer struct {
 	early       time.Time
 }
 
-// newPrepareTimer は計測を開始し、Preparer へ区間集計の器を差す。
+// newPrepareTimer は計測を開始し、Preparer へ区間集計と notice の器を差す。
 func (m *Manager) newPrepareTimer(slot state.Slot, preparer *workspace.Preparer) *prepareTimer {
 	timings := &workspace.PhaseTimings{}
-	preparer.Phases = timings
+	notices := &workspace.PrepareNotices{}
+	preparer.Phases, preparer.Notices = timings, notices
 	return &prepareTimer{
-		manager: m, timings: timings, slotID: slot.ID, workspaceID: slot.WorkspaceID,
+		manager: m, timings: timings, notices: notices, slotID: slot.ID, workspaceID: slot.WorkspaceID,
 		sessionID: slot.OwnerSessionID, started: time.Now(),
 	}
 }
@@ -88,7 +102,33 @@ func (t *prepareTimer) finish(prepareErr error) {
 		measurement.Phases = append(measurement.Phases, PreparePhase{Name: phase.Name, Count: phase.Count, MS: phase.Total.Milliseconds()})
 	}
 	measurement.Phases = orderPreparePhases(measurement.Phases)
+	measurement.Notices = t.manager.recordPrepareNotices(t.notices.Notices())
 	t.manager.recordPrepareMeasurement(measurement)
+}
+
+// prepareNoticeSummary は notice の本文を計測へ載せる長さの上限である。
+// これを超える出力は詳細ログへ回し、daemon のメモリと `wx doctor --probe` の応答を hook の出力量に引きずられなくする。
+const prepareNoticeSummary = 4 << 10
+
+// recordPrepareNotices は準備が残した出力を daemon log へ warn で出し、長い本文を詳細ログへ退避した notice を返す。
+// exit 0 の出力は準備の失敗ではないので、記録の失敗も含めて準備結果は変えない。
+func (m *Manager) recordPrepareNotices(notices []workspace.PrepareNotice) []PrepareNotice {
+	if len(notices) == 0 {
+		return nil
+	}
+	out := make([]PrepareNotice, 0, len(notices))
+	for _, notice := range notices {
+		output := notice.Stdout + notice.Stderr
+		item := PrepareNotice{Target: notice.Target, Phase: notice.Phase, Output: output}
+		if len(output) > prepareNoticeSummary {
+			item.Output, item.Truncated = output[:prepareNoticeSummary], true
+		}
+		detail := fmt.Sprintf("phase: %s\ntarget: %s\nstdout:\n%s\nstderr:\n%s", notice.Phase, notice.Target, notice.Stdout, notice.Stderr)
+		item.DetailPath = gitx.WriteDetail(m.prepareDetailDir, detail)
+		m.log.Warn("prepare produced output without failing", "phase", notice.Phase, "target", notice.Target, "detail_path", item.DetailPath, "output", item.Output)
+		out = append(out, item)
+	}
+	return out
 }
 
 // orderPreparePhases は下位区間（`cow.compare` のようにドットを含む名前）を親区間の直後へ並べ替える。

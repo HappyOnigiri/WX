@@ -37,6 +37,10 @@ pendingの間`wx status`は`Disk measuring`と出すため、最初の測定はd
 走査中に消えたentryはその1件だけを飛ばす。GCやclearと並走した回にroot全体の集計を捨てると、部分集計を実測として出すか測れないままになるかのどちらかになる。
 表示の組み立ては`internal/cli`、測定は`internal/daemon/usage.go`と`internal/workspace/usage_scan.go`を参照する。
 
+走査はslot境界に加えてrepository境界も知っているため、slot内のrepository directoryごとの内訳を同じ1巡で集計する。
+内訳は`wx slots --json`の`repository_usage`と`wx doctor --probe`にだけ出し、`wx slots`の表には出さない。
+repositoryの外に置かれたslot直下のファイルはどの内訳にも入らないので、内訳の合計はslot合計と一致しない。
+
 `Disk`はDB登録済みの非ARCHIVED slotとworkspace snapshotの割当量を集計する。
 終了済み・隔離済みslotも含み、登録外の実体は`Unmanaged`として別表示する。
 診断用の`quarantined_artifacts`だけに記録されたpathは管理対象に含めない。
