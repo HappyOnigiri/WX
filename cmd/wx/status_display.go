@@ -228,12 +228,14 @@ func statusDaemonSummary(payload map[string]any) string {
 		state = "restarting"
 	}
 	line := "Daemon " + state
+	// discarded は `wx clear` などが取り消した予定 job で、failed とは対処の要否が違う。
+	// 失敗が 0 でも取り消しが積み上がるので、失敗件数の読み違いを防ぐため既定の 1 行に並べて出す。
 	if jobs, ok := payload["job_details"].(map[string]any); ok {
-		line += " · Jobs " + statusCountOrDash(jobs, "pending") + " pending / " + statusCountOrDash(jobs, "running") + " running / " + statusCountOrDash(jobs, "failed") + " failed"
+		line += " · Jobs " + statusCountOrDash(jobs, "pending") + " pending / " + statusCountOrDash(jobs, "running") + " running / " + statusCountOrDash(jobs, "failed") + " failed / " + statusCountOrDash(jobs, "discarded") + " discarded"
 		return line
 	}
 	if queued, ok := statusInt(payload, "queued_jobs"); ok {
-		line += " · Jobs " + strconv.FormatInt(queued, 10) + " pending / — running / — failed"
+		line += " · Jobs " + strconv.FormatInt(queued, 10) + " pending / — running / — failed / — discarded"
 	}
 	return line
 }
