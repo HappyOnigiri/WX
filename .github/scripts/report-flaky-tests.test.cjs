@@ -123,6 +123,33 @@ test('runs the report workflow with mocked Actions and issue APIs', async () => 
   assert.equal(second.results[0].action, 'commented');
 });
 
+test('files the recoveries it has before failing on a missing artifact', async () => {
+  const issues = [];
+  const warnings = [];
+  const github = { rest: {
+    actions: {
+      getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: '0123456789abcdef0123456789abcdef01234567', html_url: 'https://github.com/HappyOnigiri/WX/actions/runs/10' } }),
+      // coverage-testsはBuild CI test runnerで落ち、if-no-files-foundの警告だけでuploadが成功した状態。
+      listJobsForWorkflowRun: async () => ({ data: { jobs: [
+        { name: 'coverage-tests', run_attempt: 1, conclusion: 'failure', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] },
+        { name: 'race (daemon)', run_attempt: 1, conclusion: 'success', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] },
+      ] } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts: [{ id: 1, name: 'ci-tests-race-daemon-10-1', expired: false, workflow_run: { id: 10 } }] } }),
+    },
+    issues: {
+      listForRepo: async () => ({ data: issues }),
+      listComments: async () => ({ data: [] }),
+      create: async (request) => { const issue = { number: issues.length + 1, title: request.title, body: request.body, state: 'open' }; issues.push(issue); return { data: issue }; },
+      createComment: async () => ({ data: {} }),
+      update: async () => ({ data: {} }),
+    },
+  } };
+  const reports = [{ artifactName: 'ci-tests-race-daemon-10-1', manifest: manifest('10', '1', 'race-daemon') }];
+  await assert.rejects(reporter.run({ github, owner: 'HappyOnigiri', repo: 'WX', sourceRunId: '10', sourceAttempt: '1', reports, core: { warning: (message) => warnings.push(message) } }), /missing report artifact for coverage/);
+  assert.equal(issues.length, 1);
+  assert.deepEqual(warnings, ['missing report artifact for coverage']);
+});
+
 test('rejects a path escape in an artifact manifest', () => {
   const value = manifest('10', '1');
   value.recoveries[0].declaration.path = '../outside.go';

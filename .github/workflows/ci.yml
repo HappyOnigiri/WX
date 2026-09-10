@@ -67,7 +67,7 @@ jobs:
         with:
           name: ci-tests-coverage-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/ci-tests/coverage
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
       - run: git diff --exit-code
 
@@ -100,7 +100,7 @@ jobs:
         with:
           name: ci-tests-race-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/ci-tests/race-${{ matrix.shard }}
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
       - run: git diff --exit-code
 

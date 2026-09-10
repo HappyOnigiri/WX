@@ -281,9 +281,10 @@ async function run(options) {
   }
   const artifacts = await pages((page) => github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: Number(runId), per_page: 100, page }));
   const usable = artifacts.filter((artifact) => !artifact.expired && artifact.workflow_run?.id === Number(runId) && new RegExp(`^ci-tests-(coverage|race-daemon|race-rest)-${runId}-${attempt}$`).test(artifact.name));
-  for (const profile of expected) {
-    if (!usable.some((artifact) => artifact.name.startsWith(`ci-tests-${profile}-`))) throw new Error(`missing report artifact for ${profile}`);
-  }
+  // 取りこぼした成果物は最後に失敗として報告する。
+  // ここで打ち切ると、同じrunの他のジョブが記録した回復まで起票されない。
+  const missing = [...expected].filter((profile) => !usable.some((artifact) => artifact.name.startsWith(`ci-tests-${profile}-`)));
+  for (const profile of missing) source.summary(`missing report artifact for ${profile}`);
   const reports = options.reports || await collectFromArtifacts({ github, owner, repo, runId, attempt, artifacts: usable });
   for (const report of reports) {
     const profile = /^ci-tests-(coverage|race-daemon|race-rest)-/.exec(report.artifactName || '')?.[1] || report.manifest.profile;
@@ -296,6 +297,7 @@ async function run(options) {
   if (options.core?.summary) {
     await options.core.summary.addHeading('Flaky test reports').addRaw(`${summary}\n`).write();
   }
+  if (missing.length > 0) throw new Error(`missing report artifact for ${missing.join(', ')}`);
   return { source, results, groups };
 }
 
