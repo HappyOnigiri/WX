@@ -253,3 +253,13 @@ func (p *Preparer) rejectCOWTemporaries(ctx context.Context, target, identity st
 	}
 	return cowLeftoverResult(result.Stdout)
 }
+
+// hasExtendedAttributes は複製元にextended attributeが付いているかを返す。
+// CoW共有の可否を診断するときに、属性の有無だけを見たい呼び出し元のために切り出してある。
+func hasExtendedAttributes(file *os.File) (bool, error) {
+	attributes, err := cowXattrs(file)
+	if err != nil {
+		return false, err
+	}
+	return len(attributes) > 0, nil
+}

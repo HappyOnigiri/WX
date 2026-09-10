@@ -265,3 +265,14 @@ func TestCOWByteComparisonSpansChunks(t *testing.T) {
 		})
 	}
 }
+
+func TestHasExtendedAttributesReportsPlainFile(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "plain")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer file.Close()
+	if _, err := hasExtendedAttributes(file); err != nil {
+		t.Fatalf("hasExtendedAttributes: %v", err)
+	}
+}
