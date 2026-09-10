@@ -138,6 +138,18 @@ func (f *reuseStandbyFixture) slotState(t *testing.T, id string) string {
 	return slot.State
 }
 
+// requireRetired は standby が READY から退役したことを確かめる。
+// cold startの貸出は背景GCを起動し、そのGCはSTALE slotを即座にREMOVINGへ進めるため、
+// 観測できる状態は呼出しとGCの前後関係で変わる。どちらでも退役の判定は満たす。
+func (f *reuseStandbyFixture) requireRetired(t *testing.T, id string) {
+	t.Helper()
+	switch got := f.slotState(t, id); got {
+	case "STALE", "REMOVING":
+	default:
+		t.Fatalf("retired standby state=%s, want STALE or REMOVING", got)
+	}
+}
+
 // commitChangedAttributes は更新不適格になる`.gitattributes`の変更をmainへ積む。
 func (f *reuseStandbyFixture) commitChangedAttributes(t *testing.T) {
 	t.Helper()
@@ -160,9 +172,7 @@ func TestStandbyRetiredWhenAttributesChangeAndReplenishmentRestoresWarmLease(t *
 	if lease.SessionID == stale.ID {
 		t.Fatalf("lease=%+v, want a cold start on another slot", lease)
 	}
-	if got := f.slotState(t, stale.ID); got != "STALE" {
-		t.Fatalf("retired standby state=%s, want STALE", got)
-	}
+	f.requireRetired(t, stale.ID)
 	f.settleStandby(t)
 	repositoryState, err := f.store.SlotRepository(ctx, lease.SessionID, string(f.workspace.Repositories[0].ID))
 	if err != nil {
