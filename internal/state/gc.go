@@ -2,6 +2,8 @@ package state
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -185,29 +187,65 @@ func (s *Store) ScheduleRemoval(ctx context.Context, slotID, sessionID string) (
 	return job, true, tx.Commit()
 }
 
-func (s *Store) FinishRemoval(ctx context.Context, slotID string) error {
+// FinishRemoval は削除の完了を記録し、必要なら補充の再確認 job を同じ transaction で予約して返す。
+// job を返すのは、削除で減った待機枠を補う契機が他に無いためである。
+// 予約まで同じ transaction に閉じることで、daemon がこの直後に落ちても PENDING の job として再開できる。
+func (s *Store) FinishRemoval(ctx context.Context, slotID string) (Job, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return Job{}, err
 	}
 	defer tx.Rollback()
 	t := now()
 	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='ARCHIVED',updated_at=?,failure_code=NULL,failure_detail_path=NULL WHERE id=? AND state IN ('REMOVING','ARCHIVED')`, t, slotID)
 	if err != nil {
-		return err
+		return Job{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return fmt.Errorf("slot %s state compare-and-swap failed", slotID)
+		return Job{}, fmt.Errorf("slot %s state compare-and-swap failed", slotID)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,message) SELECT ?,'info','slot_transition',workspace_id,id,? FROM slots WHERE id=?`, t, "state=ARCHIVED failure_code=", slotID); err != nil {
-		return err
+		return Job{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM standby_replenish_exclusions WHERE slot_id=?`, slotID); err != nil {
-		return err
+		return Job{}, err
 	}
-	return tx.Commit()
+	job, err := replenishAfterRemovalTx(ctx, tx, slotID)
+	if err != nil {
+		return Job{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Job{}, err
+	}
+	return job, nil
+}
+
+// replenishAfterRemovalTx は削除した slot の workspace に補充の再確認を予約する。
+// 現行 generation の slot だけを対象にするのは、旧 generation の削除では現行の待機枠が減らないためである。
+// clean の実行中は補充自体を止めているので予約しない。
+func replenishAfterRemovalTx(ctx context.Context, tx *sql.Tx, slotID string) (Job, error) {
+	var workspaceID string
+	err := tx.QueryRowContext(ctx, `SELECT sl.workspace_id FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
+		WHERE sl.id=? AND sl.generation=w.generation`, slotID).Scan(&workspaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Job{}, nil
+	}
+	if err != nil {
+		return Job{}, err
+	}
+	if err := assertNoActiveClean(ctx, tx); err != nil {
+		if errors.Is(err, ErrCleanInProgress) {
+			return Job{}, nil
+		}
+		return Job{}, err
+	}
+	job, created, err := ensureStandbyJobTx(ctx, tx, workspaceID)
+	if err != nil || !created {
+		return Job{}, err
+	}
+	return job, nil
 }
 
 // FailedSlotIDs は workspace に属する未所有の FAILED slot を返す。

@@ -313,7 +313,8 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	requireError("StandbyGCCandidates", err)
 	_, _, err = store.ScheduleRemoval(ctx, slot.ID, session.ID)
 	requireError("ScheduleRemoval", err)
-	requireError("FinishRemoval", store.FinishRemoval(ctx, slot.ID))
+	_, err = store.FinishRemoval(ctx, slot.ID)
+	requireError("FinishRemoval", err)
 	requireError("PruneRoots", store.PruneRoots(ctx))
 	_, err = store.ExpiredSnapshots(ctx, "before")
 	requireError("ExpiredSnapshots", err)
@@ -395,7 +396,8 @@ func TestMissingLifecycleRowsFailClosed(t *testing.T) {
 	requireError("QuarantineMissingSlot", store.QuarantineMissingSlot(ctx, missing, "missing"))
 	_, _, err = store.ScheduleRemoval(ctx, missing, missing)
 	requireError("ScheduleRemoval", err)
-	requireError("FinishRemoval", store.FinishRemoval(ctx, missing))
+	_, err = store.FinishRemoval(ctx, missing)
+	requireError("FinishRemoval", err)
 	requireError("ExpireSessionSnapshots", store.ExpireSessionSnapshots(ctx, missing))
 	requireError("MarkSlotArchived", store.MarkSlotArchived(ctx, missing))
 }
@@ -837,7 +839,7 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 		"finish cold removal":      func() error { return store.FinishColdRepositoryRemoval(ctx, "canceled", "repository") },
 		"standby GC candidates":    func() error { _, err := store.StandbyGCCandidates(ctx, now(), 1); return err },
 		"schedule removal":         func() error { _, _, err := store.ScheduleRemoval(ctx, "canceled", "canceled"); return err },
-		"finish removal":           func() error { return store.FinishRemoval(ctx, "canceled") },
+		"finish removal":           func() error { _, err := store.FinishRemoval(ctx, "canceled"); return err },
 		"prune roots":              func() error { return store.PruneRoots(ctx) },
 		"expired snapshots":        func() error { _, err := store.ExpiredSnapshots(ctx, now()); return err },
 		"expire session snapshots": func() error { return store.ExpireSessionSnapshots(ctx, "canceled") },

@@ -385,3 +385,82 @@ func TestStandbyReplenishmentRollsBackOnEnsureJobFailure(t *testing.T) {
 		t.Fatalf("rolled-back records successes=%d exclusions=%d", successes, exclusions)
 	}
 }
+
+// createReadyStandby は job を終えた READY の待機 slot を作り、削除の予約が競合しない状態にする。
+func createReadyStandby(t *testing.T, store *Store, id string) {
+	t.Helper()
+	ctx := context.Background()
+	job, err := store.CreateStandby(ctx, Slot{ID: id, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: filepath.Join("workspace", id), State: "READY"}, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	claimed, err := store.ClaimJob(ctx, job.ID, "test")
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := store.FinishJob(ctx, claimed.ID, "test", nil); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+}
+
+func TestRemovingSlotFreesStandbyRoomAndRemovalSchedulesReplenishment(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	createReadyStandby(t, store, "returned")
+	if got := store.StandbyCount(ctx, "workspace"); got != 1 {
+		t.Fatalf("READY standby count=%d, want 1", got)
+	}
+	if _, changed, err := store.ScheduleRemoval(ctx, "returned", ""); err != nil || !changed {
+		t.Fatalf("schedule removal changed=%v err=%v", changed, err)
+	}
+	if got := store.StandbyCount(ctx, "workspace"); got != 0 {
+		t.Fatalf("REMOVING standby count=%d, want the slot to leave the warm count", got)
+	}
+	job, err := store.FinishRemoval(ctx, "returned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Kind != "ENSURE_STANDBY" || job.WorkspaceID != "workspace" || job.State != "PENDING" {
+		t.Fatalf("replenishment job=%+v, want a pending ENSURE_STANDBY for the workspace", job)
+	}
+
+	createReadyStandby(t, store, "second")
+	if _, changed, err := store.ScheduleRemoval(ctx, "second", ""); err != nil || !changed {
+		t.Fatalf("second schedule removal changed=%v err=%v", changed, err)
+	}
+	duplicate, err := store.FinishRemoval(ctx, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicate.ID != "" {
+		t.Fatalf("duplicate replenishment job=%+v, want none while the first is pending", duplicate)
+	}
+	var pending int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM jobs WHERE kind='ENSURE_STANDBY'`).Scan(&pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 1 {
+		t.Fatalf("ENSURE_STANDBY jobs=%d, want 1", pending)
+	}
+}
+
+func TestRemovalDuringCleanDoesNotScheduleReplenishment(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	createReadyStandby(t, store, "cleaned")
+	if _, changed, err := store.ScheduleRemoval(ctx, "cleaned", ""); err != nil || !changed {
+		t.Fatalf("schedule removal changed=%v err=%v", changed, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO clean_runs(id,mode,state,created_at,updated_at) VALUES('run','standby',?,?,?)`, CleanRunRunning, now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.FinishRemoval(ctx, "cleaned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ID != "" {
+		t.Fatalf("replenishment job=%+v, want none while clean is running", job)
+	}
+}

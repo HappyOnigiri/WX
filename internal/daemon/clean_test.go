@@ -270,7 +270,7 @@ func TestCleanRemovesUnusedStandbyAndFinishesTheRun(t *testing.T) {
 		t.Fatalf("slot after scheduling=%+v err=%v", stored, err)
 	}
 	// 削除ジョブの完了だけを監視し、worker を占有したまま待たないことを確かめる。
-	if err := store.FinishRemoval(ctx, "standby"); err != nil {
+	if _, err := store.FinishRemoval(ctx, "standby"); err != nil {
 		t.Fatal(err)
 	}
 	waitCleanTargetState(t, store, runID, "standby", cleanTargetDone)
@@ -319,7 +319,7 @@ func TestCleanDeletesQuarantinedSlotWithoutWaitingRetention(t *testing.T) {
 		t.Fatalf("quarantined slot after scheduling=%+v err=%v", scheduled, err)
 	}
 	// 削除ジョブの完了だけを監視し、worker を占有したまま待たないことを確かめる。
-	if err := store.FinishRemoval(ctx, "held"); err != nil {
+	if _, err := store.FinishRemoval(ctx, "held"); err != nil {
 		t.Fatal(err)
 	}
 	waitCleanTargetState(t, store, runID, "held", cleanTargetDone)
@@ -592,7 +592,7 @@ func TestCleanDiscardRecoversUnboundAndLeavesUnregisteredPaths(t *testing.T) {
 	if err := manager.removeRegisteredSlot(ctx, stored); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishRemoval(ctx, slot.ID); err != nil {
+	if _, err := store.FinishRemoval(ctx, slot.ID); err != nil {
 		t.Fatal(err)
 	}
 	waitCleanRunDone(t, store, runID)

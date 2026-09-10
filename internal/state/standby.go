@@ -7,12 +7,12 @@ import (
 	"fmt"
 )
 
-// standbyQuery は待機枠を数える SQL。QUARANTINED は枠に含めない。
-// 隔離は終端状態で READY へ戻らないため、数えると補充が恒久的に止まる。
-// リトライ中の一時状態である FAILED は枠に残し、通常セッション成功時点で記録された除外だけを計算から外す。
+// standbyQuery は待機枠を数える SQL。READY へ戻らない QUARANTINED と REMOVING は数えない。隔離を数えると補充が恒久的に止まる。
+// 削除中を数えると返却直後の枠が削除の完了まで埋まり、その間に走った補充の確認が不足なしと判断して、次の reconcile まで枠が欠ける。
+// 完了後に READY へ戻る RETIRING とリトライ中の FAILED は枠に残し、通常セッション成功時点で記録された除外だけを計算から外す。
 const standbyQuery = `SELECT count(*) FROM slots sl JOIN workspaces w ON w.id=sl.workspace_id
 	WHERE sl.workspace_id=? AND sl.generation=w.generation AND sl.owner_session_id IS NULL
-	AND sl.state IN ('ALLOCATING','REGISTERING','PREPARING','READY','FAILED','RETIRING','REMOVING')
+	AND sl.state IN ('ALLOCATING','REGISTERING','PREPARING','READY','FAILED','RETIRING')
 	AND (sl.state<>'FAILED' OR NOT EXISTS (
 		SELECT 1 FROM standby_replenish_exclusions ex
 		WHERE ex.slot_id=sl.id AND ex.workspace_id=sl.workspace_id AND ex.generation=sl.generation
@@ -31,6 +31,31 @@ func (s *Store) StandbyCount(ctx context.Context, workspaceID string) int {
 		return 0
 	}
 	return n
+}
+
+// ensureStandbyJobTx は workspace の ENSURE_STANDBY を1件だけ確保し、今回新しく登録したかを返す。
+// 既に PENDING・RUNNING があるときはそれを返す。補充の確認は不足を数え直すだけなので、同じ確認を積み増しても意味がない。
+func ensureStandbyJobTx(ctx context.Context, tx *sql.Tx, workspaceID string) (Job, bool, error) {
+	var job Job
+	err := tx.QueryRowContext(ctx, `SELECT id,state FROM jobs WHERE kind='ENSURE_STANDBY' AND workspace_id=? AND state IN ('PENDING','RUNNING')
+		ORDER BY CASE state WHEN 'PENDING' THEN 0 ELSE 1 END,id LIMIT 1`, workspaceID).Scan(&job.ID, &job.State)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		job, err = newJob("ENSURE_STANDBY", workspaceID, "", "")
+		if err != nil {
+			return Job{}, false, err
+		}
+		if err := insertJob(ctx, tx, job); err != nil {
+			return Job{}, false, err
+		}
+		return job, true, nil
+	case err != nil:
+		return Job{}, false, err
+	default:
+		job.Kind = "ENSURE_STANDBY"
+		job.WorkspaceID = workspaceID
+		return job, false, nil
+	}
 }
 
 // StandbyReplenishmentRetry は補充停止の手動解除結果と、再補充を促す job を返す。
@@ -63,23 +88,9 @@ func (s *Store) RetryStandbyReplenishment(ctx context.Context, workspaceID strin
 		return StandbyReplenishmentRetry{}, err
 	}
 	removed, _ := res.RowsAffected()
-	var job Job
-	err = tx.QueryRowContext(ctx, `SELECT id,state FROM jobs WHERE kind='ENSURE_STANDBY' AND workspace_id=? AND state IN ('PENDING','RUNNING')
-		ORDER BY CASE state WHEN 'PENDING' THEN 0 ELSE 1 END,id LIMIT 1`, workspaceID).Scan(&job.ID, &job.State)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		job, err = newJob("ENSURE_STANDBY", workspaceID, "", "")
-		if err != nil {
-			return StandbyReplenishmentRetry{}, err
-		}
-		if err := insertJob(ctx, tx, job); err != nil {
-			return StandbyReplenishmentRetry{}, err
-		}
-	case err != nil:
+	job, _, err := ensureStandbyJobTx(ctx, tx, workspaceID)
+	if err != nil {
 		return StandbyReplenishmentRetry{}, err
-	default:
-		job.Kind = "ENSURE_STANDBY"
-		job.WorkspaceID = workspaceID
 	}
 	if err := tx.Commit(); err != nil {
 		return StandbyReplenishmentRetry{}, err
