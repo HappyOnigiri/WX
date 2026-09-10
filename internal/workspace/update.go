@@ -250,7 +250,7 @@ func unchangedPlacements(previous, desired []state.Placement) []state.Placement 
 	}
 	var out []state.Placement
 	for _, placement := range previous {
-		if next, ok := wanted[placementKey(placement)]; ok && samePlacement(placement, next) {
+		if next, ok := wanted[placementKey(placement)]; ok && placement.SameSource(next) {
 			out = append(out, placement)
 		}
 	}
@@ -333,7 +333,7 @@ func removeChangedPlacements(root *os.Root, previous, desired []state.Placement)
 		wanted[placementKey(placement)] = placement
 	}
 	for _, old := range previous {
-		if next, ok := wanted[placementKey(old)]; ok && samePlacement(old, next) {
+		if next, ok := wanted[placementKey(old)]; ok && old.SameSource(next) {
 			continue
 		}
 		if err := root.Remove(old.RelativePath); err != nil {
@@ -365,7 +365,7 @@ func materializeChangedPlacements(root *os.Root, previous, desired []state.Place
 		old[placementKey(placement)] = placement
 	}
 	for _, placement := range desired {
-		if prior, ok := old[placementKey(placement)]; ok && samePlacement(prior, placement) {
+		if prior, ok := old[placementKey(placement)]; ok && prior.SameSource(placement) {
 			continue
 		}
 		if err := ensureRootDirectory(root, filepath.Dir(placement.RelativePath)); err != nil {
