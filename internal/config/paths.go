@@ -192,7 +192,7 @@ func ResetWorkspaceWarmCount(c *Config, root string) error {
 		return nil
 	}
 	workspace.WarmCount = nil
-	if workspace.Worktree == "" && len(workspace.Copy) == 0 && len(workspace.Link) == 0 && workspace.ReuseStandby == nil {
+	if workspaceOverrideEmpty(workspace) {
 		delete(c.Workspaces, key)
 	} else {
 		c.Workspaces[key] = workspace
@@ -233,7 +233,7 @@ func ResetWorkspaceReuseStandby(c *Config, root string) error {
 		return nil
 	}
 	workspace.ReuseStandby = nil
-	if workspace.Worktree == "" && len(workspace.Copy) == 0 && len(workspace.Link) == 0 && workspace.WarmCount == nil {
+	if workspaceOverrideEmpty(workspace) {
 		delete(c.Workspaces, key)
 	} else {
 		c.Workspaces[key] = workspace
@@ -247,6 +247,55 @@ func ResetWorkspaceReuseStandby(c *Config, root string) error {
 		markWorkspacePresent(c)
 	}
 	return nil
+}
+
+func SetWorkspaceSubmodules(c *Config, root string, enabled bool) error {
+	key, err := workspaceOverrideKey(c, root)
+	if err != nil {
+		return err
+	}
+	if c.Workspaces == nil {
+		c.Workspaces = map[string]Workspace{}
+	}
+	workspace := c.Workspaces[key]
+	workspace.Submodules = new(enabled)
+	c.Workspaces[key] = workspace
+	markWorkspacePresent(c)
+	return nil
+}
+
+func ResetWorkspaceSubmodules(c *Config, root string) error {
+	key, err := workspaceOverrideKey(c, root)
+	if err != nil {
+		return err
+	}
+	workspace, ok := c.Workspaces[key]
+	if !ok || workspace.Submodules == nil {
+		return nil
+	}
+	workspace.Submodules = nil
+	if workspaceOverrideEmpty(workspace) {
+		delete(c.Workspaces, key)
+	} else {
+		c.Workspaces[key] = workspace
+	}
+	if len(c.Workspaces) == 0 {
+		if c.present == nil {
+			c.present = map[string]bool{}
+		}
+		c.present["workspaces"] = false
+	} else {
+		markWorkspacePresent(c)
+	}
+	return nil
+}
+
+// workspaceOverrideEmpty は workspace 個別設定が何も残っていないかを返す。
+// 個別設定の解除は、他の項目が残っていなければ map の項目自体も削除して疎な YAML を保つ。
+// 項目を足したらここへ足す。漏らすと別の項目の --reset がその設定を道連れに消す。
+func workspaceOverrideEmpty(workspace Workspace) bool {
+	return workspace.Worktree == "" && len(workspace.Copy) == 0 && len(workspace.Link) == 0 &&
+		workspace.ReuseStandby == nil && workspace.Submodules == nil && workspace.WarmCount == nil
 }
 
 // workspaceOverrideKey は指定 root に対応する既存の map key を探し、無ければ canonical path を返す。

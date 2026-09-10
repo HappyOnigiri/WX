@@ -105,6 +105,13 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		if err := p.timePhase("cow-verify", func() error { return p.settleCOWPlacement(ctx, item, placement.placed) }); err != nil {
 			return err
 		}
+		// post-checkout より前に実体化する。ユーザーの hook が submodule を前提にできるようにし、
+		// hook 側の `git submodule update` も no-op で済ませるためである。
+		if err := p.timePhase("submodule", func() error {
+			return p.submodulePhase(ctx, item.Repository, item.Target, item.OID, item.locked.identity)
+		}); err != nil {
+			return err
+		}
 		// worktree add の post-checkout と同じ null OID・新 HEAD・branch flag を使う。
 		// Git 自身に hook 選択と実行を任せ、未配置の相対 hooksPath も全展開後に解決する。
 		if err := p.timePhase("post-checkout", func() error {
@@ -114,6 +121,7 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 			return err
 		}
 		if err := p.completePrepare(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked,
+			func() error { return nil },
 			func() error { return p.materializePlan(ctx, item.Repository, item.locked, &item.plan, false) },
 			func() error { return nil }); err != nil {
 			return err

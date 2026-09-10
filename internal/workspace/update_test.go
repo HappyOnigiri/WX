@@ -155,3 +155,42 @@ func TestValidateAndSyncRootPlacementsReplacesRecordedDirectoryWithFile(t *testi
 		t.Fatalf("replacement=%q err=%v", got, err)
 	}
 }
+
+// gitlink が同一な更新は submodule の実体を残したまま通り、gitlink が変わる更新は不適格として弾かれる。
+// 更新経路は `checkout --detach --force` だけで submodule を触らないため、この2つが成り立つことが前提になる。
+func TestUpdateKeepsMaterializedSubmoduleAndRejectsChangedGitlinks(t *testing.T) {
+	ctx := context.Background()
+	f := newSubmoduleFixture(t)
+	if err := f.preparer.Prepare(ctx, f.repo, f.target, f.head, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	gitlink := submoduleGitlink(t, f.repository, f.head)
+	writeTestFile(t, filepath.Join(f.repository, "tracked"), "updated\n")
+	gitCommand(t, f.repository, "add", "tracked")
+	gitCommand(t, f.repository, "commit", "-m", "unrelated change")
+	sameGitlink := gitOutput(t, f.repository, "rev-parse", "HEAD")
+	if err := f.preparer.ValidateUpdateCandidate(ctx, f.repo, f.target, f.head, sameGitlink, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.preparer.UpdateLocked(ctx, f.repo, f.target, f.head, sameGitlink, testSlotID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if head := gitOutput(t, f.submoduleTarget(), "rev-parse", "HEAD"); head != gitlink {
+		t.Fatalf("submodule HEAD=%s after update, want the unchanged gitlink %s", head, gitlink)
+	}
+	if status := gitOutput(t, f.target, "status", "--porcelain", "--ignore-submodules=none"); status != "" {
+		t.Fatalf("updated worktree status=%q, want clean", status)
+	}
+	// child を進めて gitlink を差し替えた OID は、submodule を再同期できないため更新に使えない。
+	writeTestFile(t, filepath.Join(f.child, "kid.txt"), "ahead\n")
+	gitCommand(t, f.child, "add", ".")
+	gitCommand(t, f.child, "commit", "-m", "child ahead")
+	ahead := gitOutput(t, f.child, "rev-parse", "HEAD")
+	gitCommand(t, f.repository, "update-index", "--cacheinfo", "160000,"+ahead+",sub/kid")
+	gitCommand(t, f.repository, "commit", "-m", "advance gitlink")
+	changedGitlink := gitOutput(t, f.repository, "rev-parse", "HEAD")
+	err := f.preparer.ValidateUpdateCandidate(ctx, f.repo, f.target, sameGitlink, changedGitlink, nil, nil)
+	if !errors.Is(err, ErrUpdateIneligible) {
+		t.Fatalf("changed gitlink update error=%v, want ErrUpdateIneligible", err)
+	}
+}
