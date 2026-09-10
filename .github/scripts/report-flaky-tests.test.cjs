@@ -129,6 +129,18 @@ test('rejects a path escape in an artifact manifest', () => {
   assert.throws(() => reporter.validateManifest(value), /repository-relative path/);
 });
 
+test('keeps artifact content from breaking out of markdown', () => {
+  const value = manifest('10', '1');
+  value.recoveries[0].package = 'evil`![](https://attacker.example/pixel.png)';
+  value.initial.status = '![](https://attacker.example/prose.png)';
+  const body = reporter.buildIssueBody(reporter.aggregateManifests([{ artifactName: 'coverage', manifest: value }], source)[0], source);
+  // code span内の画像記法は解釈されないので、spanが閉じないことだけを確かめる。
+  assert.ok(!body.includes('evil`'), body);
+  assert.match(body, /^- package: `evil｀!\[\]\(https:\/\/attacker\.example\/pixel\.png\)`$/mu);
+  // 地の文では記法そのものを無効化する。
+  assert.ok(body.includes('- result: initial \\!\\[\\](https://attacker.example/prose.png); retry unknown'), body);
+});
+
 test('reads manifest.json out of an artifact zip', (t) => {
   const zipPath = writeZip(t, { 'coverage/manifest.json': JSON.stringify(manifest('10', '1')), 'coverage/initial.log': 'log' });
   assert.equal(reporter.readZipManifest(zipPath, 'ci-tests-coverage-10-1').profile, 'coverage');

@@ -63,8 +63,18 @@ function marker({ owner, repo, runId, attempt, declaration }) {
   return `<!-- wx-flaky: ${crypto.createHash('sha256').update(raw).digest('hex')} -->`;
 }
 
+// アーティファクト由来の文字列をcode spanとfenced blockへ埋められる形へ均す。
+// code span内はバックスラッシュでエスケープが効かず、\` ではspanが閉じてしまうため、
+// バックティックは全角へ置き換える。
 function sanitize(value, limit = 4000) {
-  return String(value ?? '').replace(/[\u0000-\u001f]/gu, ' ').replaceAll('`', '\\`').replaceAll('@', '＠').replaceAll('<', '&lt;').replaceAll('>', '&gt;').slice(0, limit);
+  return String(value ?? '').replace(/[\u0000-\u001f]/gu, ' ').replaceAll('`', '｀').replaceAll('@', '＠').replaceAll('<', '&lt;').replaceAll('>', '&gt;').slice(0, limit);
+}
+
+// 地の文へ埋める値に使う。リンク・画像の記法はここでだけ解釈され、
+// GitHubのプロキシ越しに外部を取得させるので無効化する。
+// code spanやfenced blockではバックスラッシュがそのまま見えるため、同じ処理はしない。
+function sanitizeText(value, limit = 4000) {
+  return sanitize(value, limit).replace(/[[\]!]/gu, '\\$&');
 }
 
 function issueTitle(declaration) {
@@ -82,8 +92,8 @@ function excerpt(manifest, recovery, jobUrl = '') {
     `- failed tests: \`${sanitize(failed, 1000)}\``,
     `- initial command: \`${sanitize((initial.command || []).join(' '), 2000)}\``,
     `- retry command: \`${sanitize((retry.command || []).join(' '), 2000)}\``,
-    `- duration: initial ${sanitize(initial.duration_ms ?? 'unknown', 100)} ms; retry ${sanitize(retry.duration_ms ?? 'unknown', 100)} ms`,
-    `- result: initial ${sanitize(initial.status || initial.exit || 'unknown', 100)}; retry ${sanitize(retry.status || retry.exit || 'unknown', 100)}`,
+    `- duration: initial ${sanitizeText(initial.duration_ms ?? 'unknown', 100)} ms; retry ${sanitizeText(retry.duration_ms ?? 'unknown', 100)} ms`,
+    `- result: initial ${sanitizeText(initial.status || initial.exit || 'unknown', 100)}; retry ${sanitizeText(retry.status || retry.exit || 'unknown', 100)}`,
     `- shuffle seed: \`${sanitize(retry.shuffle || initial.shuffle || 'not recorded', 200)}\``,
     '',
     'Initial failure excerpt:',
@@ -106,7 +116,7 @@ function buildIssueBody(group, source) {
   const declaration = first.recovery.declaration;
   const lines = [
     group.marker,
-    `## ${sanitize(issueTitle(declaration), 1000)}`,
+    `## ${sanitizeText(issueTitle(declaration), 1000)}`,
     '',
     `Source workflow: [CI run ${source.runId}](${source.runUrl}) (attempt ${source.attempt})`,
     `Event: \`${sanitize(source.event, 200)}\`; ref: \`${sanitize(source.ref, 500)}\``,
