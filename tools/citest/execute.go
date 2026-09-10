@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -28,44 +29,171 @@ func executeRun(ctx context.Context, cfg config, command []string, label, covera
 	stderrPath := filepath.Join(cfg.ReportDir, label+".stderr")
 	logPath := filepath.Join(cfg.ReportDir, label+".log")
 	result := testResult{Tests: make(map[string][]testEvent), ShuffleByPackage: make(map[string]string), StartedAt: started}
+	files, err := createRunFiles(jsonPath, stderrPath, logPath)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = files.close() }()
+	// ジョブがtimeoutで打ち切られても、どのテストで止まったかを残す必要がある。
+	// 出力は終了後にまとめず、実行中に成果物とジョブログへ流す。
+	sink := newSyncWriter(files.log, output)
+	events := &eventText{out: sink}
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = cfg.RepoRoot
 	cmd.Env = os.Environ()
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	result.Exit, result.Signal = exitDetails(err)
-	if err != nil && result.Exit == 0 {
+	cmd.Stdout = io.MultiWriter(files.json, events)
+	cmd.Stderr = io.MultiWriter(files.stderr, sink)
+	runErr := cmd.Run()
+	events.flush()
+	if err := files.close(); err != nil {
+		return result, err
+	}
+	result.Exit, result.Signal = exitDetails(runErr)
+	if runErr != nil && result.Exit == 0 {
 		result.Exit = 1
 	}
-	if err := writeFile(jsonPath, stdout.Bytes()); err != nil {
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
 		return result, err
 	}
-	if err := writeFile(stderrPath, stderr.Bytes()); err != nil {
-		return result, err
-	}
-	if err := parseJSONL(stdout.Bytes(), &result); err != nil {
+	if err := parseJSONL(data, &result); err != nil {
 		return result, fmt.Errorf("parse %s JSON: %w", label, err)
 	}
-	log := restoreLog(result.Events)
-	if stderr.Len() > 0 {
-		log += stderr.String()
-	}
-	result.LogExcerpt = tail(log, 4000)
-	if err := writeFile(logPath, []byte(log)); err != nil {
+	excerpt, err := tailFile(logPath, 4000)
+	if err != nil {
 		return result, err
 	}
-	if output != nil {
-		_, _ = io.WriteString(output, log)
+	result.LogExcerpt = excerpt
+	if result.Shuffle == "" {
+		stderrData, err := os.ReadFile(stderrPath)
+		if err != nil {
+			return result, err
+		}
+		result.Shuffle = findShuffle(string(stderrData))
 	}
-	result.Shuffle = findShuffle(log)
 	classifyResult(&result)
 	result.FinishedAt = now()
-	if err != nil && ctx.Err() != nil {
+	if runErr != nil && ctx.Err() != nil {
 		result.Anomaly = "test process interrupted: " + ctx.Err().Error()
 	}
 	return result, nil
+}
+
+// runFilesはひとつの実行が書き出す成果物をまとめ、二重closeを無害にする。
+type runFiles struct {
+	json   *os.File
+	stderr *os.File
+	log    *os.File
+	closed bool
+}
+
+func createRunFiles(jsonPath, stderrPath, logPath string) (*runFiles, error) {
+	files := &runFiles{}
+	for _, target := range []struct {
+		path string
+		file **os.File
+	}{{jsonPath, &files.json}, {stderrPath, &files.stderr}, {logPath, &files.log}} {
+		file, err := createFile(target.path)
+		if err != nil {
+			_ = files.close()
+			return nil, err
+		}
+		*target.file = file
+	}
+	return files, nil
+}
+
+func (f *runFiles) close() error {
+	if f.closed {
+		return nil
+	}
+	f.closed = true
+	var err error
+	for _, file := range []*os.File{f.json, f.stderr, f.log} {
+		if file == nil {
+			continue
+		}
+		err = errors.Join(err, file.Close())
+	}
+	return err
+}
+
+func createFile(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+}
+
+// syncWriterは共有する出力先への書き込みを直列化する。
+// go testのstdoutとstderrは別goroutineから届くため、排他しないと競合する。
+// ログ側の書き込み失敗で実行を止めないよう、エラーは伝えない。
+type syncWriter struct {
+	mu      sync.Mutex
+	writers []io.Writer
+}
+
+func newSyncWriter(writers ...io.Writer) *syncWriter {
+	result := &syncWriter{}
+	for _, writer := range writers {
+		if writer != nil {
+			result.writers = append(result.writers, writer)
+		}
+	}
+	return result
+}
+
+func (w *syncWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, writer := range w.writers {
+		_, _ = writer.Write(data)
+	}
+	return len(data), nil
+}
+
+// eventTextはtest2jsonの行からOutputだけを取り出して流す。
+// JSONとして読めない行はそのまま流し、枠外に出たビルドエラーなども失わない。
+type eventText struct {
+	out  io.Writer
+	line []byte
+}
+
+func (w *eventText) Write(data []byte) (int, error) {
+	w.line = append(w.line, data...)
+	for {
+		index := bytes.IndexByte(w.line, '\n')
+		if index < 0 {
+			break
+		}
+		w.emit(w.line[:index+1])
+		w.line = append(w.line[:0], w.line[index+1:]...)
+	}
+	// 改行の来ない長大な行でメモリを持ち続けないよう、parseJSONLと同じ上限で吐き出す。
+	if len(w.line) > 16*1024*1024 {
+		w.flush()
+	}
+	return len(data), nil
+}
+
+func (w *eventText) flush() {
+	if len(w.line) == 0 {
+		return
+	}
+	w.emit(w.line)
+	w.line = w.line[:0]
+}
+
+func (w *eventText) emit(line []byte) {
+	var event testEvent
+	if err := json.Unmarshal(line, &event); err != nil {
+		_, _ = w.out.Write(line)
+		return
+	}
+	if event.Output == "" {
+		return
+	}
+	_, _ = io.WriteString(w.out, event.Output)
 }
 
 func parseJSONL(data []byte, result *testResult) error {
@@ -89,6 +217,14 @@ func parseJSONL(data []byte, result *testResult) error {
 			continue
 		}
 		result.Events = append(result.Events, event)
+		if seed := findShuffle(event.Output); seed != "" {
+			if result.Shuffle == "" {
+				result.Shuffle = seed
+			}
+			if event.Package != "" {
+				result.ShuffleByPackage[event.Package] = seed
+			}
+		}
 		if event.Package != "" {
 			if result.Package == "" {
 				result.Package = event.Package
@@ -97,26 +233,12 @@ func parseJSONL(data []byte, result *testResult) error {
 				key := event.Package + "\x00" + event.Test
 				result.Tests[key] = append(result.Tests[key], event)
 			}
-			if seed := findShuffle(event.Output); seed != "" {
-				result.ShuffleByPackage[event.Package] = seed
-			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return err
 	}
 	return nil
-}
-
-func restoreLog(events []testEvent) string {
-	var builder strings.Builder
-	for _, event := range events {
-		if event.Output == "" {
-			continue
-		}
-		_, _ = builder.WriteString(event.Output)
-	}
-	return builder.String()
 }
 
 func classifyResult(result *testResult) {
@@ -234,11 +356,26 @@ func durationMS(start, finish time.Time) int64 {
 	return finish.Sub(start).Milliseconds()
 }
 
-func tail(value string, limit int) string {
-	if len(value) <= limit {
-		return value
+// tailFileはlogの末尾limitバイトを返す。全体をメモリへ載せずに証拠だけを取り出す。
+func tailFile(path string, limit int) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
 	}
-	return "... (truncated) ...\n" + value[len(value)-limit:]
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if info.Size() <= int64(limit) {
+		data, err := io.ReadAll(file)
+		return string(data), err
+	}
+	buffer := make([]byte, limit)
+	if _, err := file.ReadAt(buffer, info.Size()-int64(limit)); err != nil {
+		return "", err
+	}
+	return "... (truncated) ...\n" + string(buffer), nil
 }
 
 func sortStrings(values []string) {
