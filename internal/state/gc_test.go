@@ -88,7 +88,7 @@ func TestColdRemovalCompletionAndAdministrativeQueries(t *testing.T) {
 	if err != nil || removed.State != "REMOVING" || removed.OwnerSessionID != "" {
 		t.Fatalf("scheduled removal slot=%+v err=%v", removed, err)
 	}
-	if err := store.FinishRemoval(ctx, "cold"); err != nil {
+	if _, err := store.FinishRemoval(ctx, "cold"); err != nil {
 		t.Fatal(err)
 	}
 	archived, err := store.Slot(ctx, "cold")

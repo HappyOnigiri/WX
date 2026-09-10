@@ -67,6 +67,9 @@ workspaces:
 除外記録はslotの状態や実体を変更せず、同じ成功の再処理で後発の失敗slotまで除外しない。
 復元成功や`SessionStart`による`ACTIVE`遷移だけでは除外記録を作らず、補充の契機にもならない。
 `QUARANTINED`は待機枠に数えないが、待機用PREPAREの失敗後は補充を停止することでGCとの作成・削除ループを防ぐ。
+削除中の`REMOVING`も`READY`へ戻らないため数えない。数えると返却直後の枠が削除の完了まで埋まり、その間に走った補充の確認が不足なしと判断して、次のreconcileまで待機枠が欠ける。
+削除の完了時は`FinishRemoval`が補充の再確認を同じtransactionで予約する。`ENSURE_STANDBY`が既にPENDING・RUNNINGなら積み増さず、clean実行中は予約しない。
+COLD化の`RETIRING`は完了後に`READY`へ戻るので枠に数える。
 
 個数を増やした設定の反映は次の保守一巡で不足分を補充する。減らした場合は準備中の処理を中断せず、完了後に余剰のREADY slotを既存GCが回収する。
 貸出中slotは回収せず、保持期間によるCOLD化もworkspaceごとの実効値が正のときだけ行う。

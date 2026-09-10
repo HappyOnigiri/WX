@@ -42,10 +42,14 @@ func (m *Manager) removeSlotJob(ctx context.Context, job state.Job) error {
 		}
 		return err
 	}
-	if err := m.store.FinishRemoval(ctx, slot.ID); err != nil {
+	replenish, err := m.store.FinishRemoval(ctx, slot.ID)
+	if err != nil {
 		return err
 	}
 	m.forgetSlotUsage(slot.ID, root)
+	if replenish.ID != "" {
+		m.schedule(replenish)
+	}
 	return nil
 }
 
