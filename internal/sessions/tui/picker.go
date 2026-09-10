@@ -358,7 +358,7 @@ func (m pickerModel) View() tea.View {
 				marker = "❯ "
 			}
 			line := marker + item.title
-			if note := itemNote(item.annotation); note != "" {
+			if note := m.itemNote(item); note != "" {
 				line += "  [" + note + "]"
 			}
 			lines = append(lines, truncateLine(line, m.width))
@@ -388,7 +388,7 @@ func (m pickerModel) headerLine() string {
 	if m.scoped {
 		return header + "  (この workspace)"
 	}
-	return header + "  (全 workspace)"
+	return header + "  (全 workspace・他 workspace の使用状況は未判定)"
 }
 
 func (m pickerModel) footerLine() string {
@@ -426,6 +426,19 @@ func sessionSize(session scanner.Session) string {
 		return ""
 	}
 	return textfmt.HumanBytes(session.Size)
+}
+
+// itemNote は scope 外の会話に使用状況の未判定を足す。注記の元は現在の workspace の貸出状況だけなので、
+// 他 workspace の会話に注記が無いことを「使用中でない」と読ませない。
+func (m pickerModel) itemNote(item pickerItem) string {
+	note := itemNote(item.annotation)
+	if !m.scopeAware || item.inScope {
+		return note
+	}
+	if note == "" {
+		return "使用状況不明"
+	}
+	return note + "・使用状況不明"
 }
 
 func itemNote(annotation Annotation) string {

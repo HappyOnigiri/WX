@@ -214,7 +214,7 @@ func TestPickerScopeToggleReusesOneScan(t *testing.T) {
 	if m.scoped || len(m.visible) != 2 || m.selected != 0 {
 		t.Fatalf("widened scoped=%v visible=%v selected=%d", m.scoped, m.visible, m.selected)
 	}
-	if view := m.View().Content; !strings.Contains(view, "(全 workspace)") || !strings.Contains(view, "elsewhere") {
+	if view := m.View().Content; !strings.Contains(view, "(全 workspace") || !strings.Contains(view, "elsewhere") {
 		t.Fatalf("widened view=%q", view)
 	}
 
@@ -230,6 +230,37 @@ func TestPickerScopeToggleReusesOneScan(t *testing.T) {
 	}
 	if view := unaware.View().Content; strings.Contains(view, "workspace") {
 		t.Fatalf("scope-unaware view mentions workspace: %q", view)
+	}
+}
+
+// TestPickerWidenedViewMarksUnknownUsage は scope 外の会話に使用状況の未判定が付くことを確かめる。
+func TestPickerWidenedViewMarksUnknownUsage(t *testing.T) {
+	items := []scanner.Session{
+		{Tool: "claude", SessionID: "here", Title: "here", CWD: "/one", StableID: "here"},
+		{Tool: "claude", SessionID: "elsewhere", Title: "elsewhere", CWD: "/two", StableID: "elsewhere"},
+	}
+	m := newPickerModel(items, PickOptions{
+		Now:         fixedNow,
+		Scope:       &ScopeFilter{InScope: map[string]bool{"here": true}},
+		Annotations: map[string]Annotation{"here": {Text: "復元可"}},
+	})
+	if got := m.itemNote(m.items[0]); got != "復元可" {
+		t.Fatalf("in-scope note=%q, want the annotation only", got)
+	}
+	if got := m.itemNote(m.items[1]); got != "使用状況不明" {
+		t.Fatalf("out-of-scope note=%q", got)
+	}
+
+	result, _ := m.Update(keyPress("ctrl+a"))
+	m = result.(pickerModel)
+	if view := m.View().Content; !strings.Contains(view, "使用状況不明") || !strings.Contains(view, "使用状況は未判定") {
+		t.Fatalf("widened view=%q", view)
+	}
+
+	// scope を判定できないときは、判定していないことも表示しない。
+	unaware := newPickerModel(items, PickOptions{Now: fixedNow})
+	if got := unaware.itemNote(unaware.items[1]); got != "" {
+		t.Fatalf("scope-unaware note=%q", got)
 	}
 }
 
