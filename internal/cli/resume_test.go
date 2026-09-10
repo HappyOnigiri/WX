@@ -160,7 +160,7 @@ func TestResolveSessionScopeBuildsRootsStableIDsAndAnnotations(t *testing.T) {
 		text  string
 		inUse bool
 	}{
-		wantStableIDs[0]: {text: "使用中", inUse: true},
+		wantStableIDs[0]: {text: "in use", inUse: true},
 		wantStableIDs[1]: {},
 		wantStableIDs[2]: {},
 		wantStableIDs[3]: {},
@@ -266,7 +266,7 @@ func TestResolveSessionScopeKeepsRestoringConversationInUse(t *testing.T) {
 			t.Fatal(err)
 		}
 		id := identity.ComputeSessionStableID("claude", "shared")
-		if a := scope.Annotations[id]; !a.InUse || a.Text != "使用中" {
+		if a := scope.Annotations[id]; !a.InUse || a.Text != "in use" {
 			t.Fatalf("annotation=%+v", a)
 		}
 	}

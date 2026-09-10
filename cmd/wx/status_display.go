@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/HappyOnigiri/WX/internal/textfmt"
 )
 
 // printStatusDisplay は wx status の人間向け表示を担当する。
@@ -142,7 +144,7 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 			continue
 		}
 		root, _ := statusRawString(workspace, "root")
-		path := statusHomePath(root)
+		path := textfmt.HomePath(root)
 		if statusWorkspaceIsCurrent(workspace, roots) {
 			path += " *"
 		}
@@ -216,7 +218,7 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 	}
 	sort.Strings(remaining)
 	for _, root := range remaining {
-		writeStatusLine(w, statusHomePath(root)+" "+notes[root])
+		writeStatusLine(w, textfmt.HomePath(root)+" "+notes[root])
 	}
 }
 
@@ -228,19 +230,21 @@ func statusDaemonSummary(payload map[string]any) string {
 		state = "restarting"
 	}
 	line := "Daemon " + state
+	// discarded は `wx clear` などが取り消した予定 job で、failed とは対処の要否が違う。
+	// 失敗が 0 でも取り消しが積み上がるので、失敗件数の読み違いを防ぐため既定の 1 行に並べて出す。
 	if jobs, ok := payload["job_details"].(map[string]any); ok {
-		line += " · Jobs " + statusCountOrDash(jobs, "pending") + " pending / " + statusCountOrDash(jobs, "running") + " running / " + statusCountOrDash(jobs, "failed") + " failed"
+		line += " · Jobs " + statusCountOrDash(jobs, "pending") + " pending / " + statusCountOrDash(jobs, "running") + " running / " + statusCountOrDash(jobs, "failed") + " failed / " + statusCountOrDash(jobs, "discarded") + " discarded"
 		return line
 	}
 	if queued, ok := statusInt(payload, "queued_jobs"); ok {
-		line += " · Jobs " + strconv.FormatInt(queued, 10) + " pending / — running / — failed"
+		line += " · Jobs " + strconv.FormatInt(queued, 10) + " pending / — running / — failed / — discarded"
 	}
 	return line
 }
 
 func statusDiskSummary(root map[string]any) string {
 	path, _ := statusRawString(root, "path")
-	path = statusDash(statusHomePath(path))
+	path = statusDash(textfmt.HomePath(path))
 	if message, ok := statusRawString(root, "error"); ok && message != "" {
 		return "Disk   measurement failed · " + path + " · " + message
 	}
@@ -255,12 +259,12 @@ func statusDiskSummary(root map[string]any) string {
 	if !ok {
 		return "Disk   measurement unavailable · " + path
 	}
-	line := "Disk   " + formatHumanBytes(exclusive) + " managed · " + path
+	line := "Disk   " + textfmt.HumanBytes(exclusive) + " managed · " + path
 	if measuredAt, ok := statusRawString(root, "measured_at"); ok && measuredAt != "" {
 		line += " · measured " + statusLocalDate(measuredAt) + " " + statusZoneLabel()
 	}
 	if unmanaged, ok := statusInt(root, "unmanaged_allocated_bytes"); ok && unmanaged > 0 {
-		line += "\nUnmanaged " + formatHumanBytes(unmanaged) + " · excluded from cleanup"
+		line += "\nUnmanaged " + textfmt.HumanBytes(unmanaged) + " · excluded from cleanup"
 	}
 	return line
 }

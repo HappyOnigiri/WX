@@ -25,9 +25,9 @@ type stagedRepository struct {
 }
 
 // PrepareStaged は全 repository の先行配置を一巡してから残りを展開する。
-// 呼び出し元は slot lock を保持し、開始を永続化しておく。失敗時も部分展開を削除せず残す。
-// rootStage は非 Git workspace root の配置、earlyReady は全先行配置の永続化を受け持つ。
-func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositories []Preparation, rootStage func(bool) error, earlyReady func() error) error {
+// 呼び出し元は slot lock を保持し、開始を永続化しておく。失敗時も部分展開を削除せず残す。rootStage は非 Git workspace root の配置、earlyReady は全先行配置の永続化を受け持つ。
+// 戻り値は repository ID ごとの、この呼び出しで実際に配置した include/link である。呼び出し元は規則を読み直さずこれを配置履歴にする。読み直すと、準備中の規則変更で記録と実体が食い違う。
+func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositories []Preparation, rootStage func(bool) error, earlyReady func() error) (map[string][]state.Placement, error) {
 	stagedPreparer := *p
 	stagedPreparer.noCheckout = true
 	p = &stagedPreparer
@@ -40,7 +40,7 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 	for _, request := range repositories {
 		root, target, err := p.prepareTarget(request.Target)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		item := &stagedRepository{Preparation: request, plan: earlyPlan{log: p.Log}}
 		err = p.timePhase("git-register", func() error {
@@ -51,27 +51,27 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 			})
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
 		prepared = append(prepared, item)
 		if item.locked.existing {
-			return fmt.Errorf("%w: staged preparation target already exists", state.ErrOwnership)
+			return nil, fmt.Errorf("%w: staged preparation target already exists", state.ErrOwnership)
 		}
 		if err := p.timePhase("early-index", func() error { return p.buildEarlyPlan(ctx, item) }); err != nil {
-			return err
+			return nil, err
 		}
 		if err := p.timePhase("early-checkout", func() error { return p.checkoutStage(ctx, item, true, nil) }); err != nil {
-			return err
+			return nil, err
 		}
 		if err := p.timePhase("early-place", func() error {
 			return p.materializePlan(ctx, item.Repository, item.locked, &item.plan, true)
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if rootStage != nil {
 		if err := p.timePhase("early-root", func() error { return rootStage(true) }); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := p.timePhase("early-ready", func() error {
@@ -82,11 +82,11 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		}
 		return earlyReady()
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	for _, item := range prepared {
 		if err := p.validatePreparedTarget(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked.root, item.locked.relative, item.locked.identity, "validate remaining checkout"); err != nil {
-			return err
+			return nil, err
 		}
 		// 共有できる tracked file は checkout せず main から clone する。
 		// checkout してから同内容へ差し替えるのに比べ、同じ bytes の書き出しと読み比べが1往復ぶん要らない。
@@ -96,21 +96,21 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 			placement, placeErr = p.placeSharedFiles(ctx, item.Repository, item, slotID)
 			return placeErr
 		}); err != nil {
-			return err
+			return nil, err
 		}
 		p.sharedPlaced = placement.complete()
 		if err := p.timePhase("checkout", func() error { return p.checkoutStage(ctx, item, false, placement.placed) }); err != nil {
-			return err
+			return nil, err
 		}
 		if err := p.timePhase("cow-verify", func() error { return p.settleCOWPlacement(ctx, item, placement.placed) }); err != nil {
-			return err
+			return nil, err
 		}
 		// post-checkout より前に実体化する。ユーザーの hook が submodule を前提にできるようにし、
 		// hook 側の `git submodule update` も no-op で済ませるためである。
 		if err := p.timePhase("submodule", func() error {
 			return p.submodulePhase(ctx, item.Repository, item.Target, item.OID, item.locked.identity)
 		}); err != nil {
-			return err
+			return nil, err
 		}
 		// worktree add の post-checkout と同じ null OID・新 HEAD・branch flag を使う。
 		// Git 自身に hook 選択と実行を任せ、未配置の相対 hooksPath も全展開後に解決する。
@@ -120,19 +120,25 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 			p.Notices.Add(PrepareNotice{Target: item.Target, Phase: "post-checkout", Stdout: result.Stdout, Stderr: result.Stderr})
 			return err
 		}); err != nil {
-			return err
+			return nil, err
 		}
 		if err := p.completePrepare(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked,
 			func() error { return nil },
 			func() error { return p.materializePlan(ctx, item.Repository, item.locked, &item.plan, false) },
 			func() error { return nil }); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if rootStage != nil {
-		return p.timePhase("root", func() error { return rootStage(false) })
+		if err := p.timePhase("root", func() error { return rootStage(false) }); err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	placements := make(map[string][]state.Placement, len(prepared))
+	for _, item := range prepared {
+		placements[string(item.Repository.ID)] = item.plan.placements()
+	}
+	return placements, nil
 }
 
 func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) error {
