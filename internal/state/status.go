@@ -212,23 +212,26 @@ func (s *Store) listDetachedSessions(ctx context.Context) ([]SlotSummary, error)
 }
 
 // SlotUsageLocation は使用量測定のために slot 内の repository 1 個の置き場所を表す。
+// SlotState は測定した値をその slot の使用量として名乗ってよいかの判断に使う。
+// snapshot の行は slot ではないので空になる。
 type SlotUsageLocation struct {
-	SlotID   string
-	RootPath string
-	RelPath  string
-	DirName  string
-	MainPath string
+	SlotID    string
+	SlotState string
+	RootPath  string
+	RelPath   string
+	DirName   string
+	MainPath  string
 }
 
 // slotUsageLocationQuery はDB 管理下で回収前の slot の置き場所を引く。
-const slotUsageLocationQuery = `SELECT sl.id,rt.path,sl.rel_path,COALESCE(sr.dir_name,''),COALESCE(r.main_worktree_path,'')
+const slotUsageLocationQuery = `SELECT sl.id,sl.state,rt.path,sl.rel_path,COALESCE(sr.dir_name,''),COALESCE(r.main_worktree_path,'')
  FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN slot_repositories sr ON sr.slot_id=sl.id LEFT JOIN repositories r ON r.id=sr.repository_id
  WHERE sl.state <> 'ARCHIVED'`
 
 // SlotUsageLocations は回収前の slot と workspace snapshot を返す。
 func (s *Store) SlotUsageLocations(ctx context.Context) ([]SlotUsageLocation, error) {
 	return s.slotUsageLocations(ctx, slotUsageLocationQuery+`
- UNION ALL SELECT 'snapshot:'||ws.session_id,rt.path,ws.rel_path,'','' FROM workspace_snapshots ws JOIN roots rt ON rt.id=ws.root_id WHERE ws.status <> 'EXPIRED'`)
+ UNION ALL SELECT 'snapshot:'||ws.session_id,'',rt.path,ws.rel_path,'','' FROM workspace_snapshots ws JOIN roots rt ON rt.id=ws.root_id WHERE ws.status <> 'EXPIRED'`)
 }
 
 // SlotUsageLocationsForSlot は slot 1 個分の測定対象を返す。
@@ -246,7 +249,7 @@ func (s *Store) slotUsageLocations(ctx context.Context, query string, args ...an
 	var out []SlotUsageLocation
 	for rows.Next() {
 		var x SlotUsageLocation
-		if err := rows.Scan(&x.SlotID, &x.RootPath, &x.RelPath, &x.DirName, &x.MainPath); err != nil {
+		if err := rows.Scan(&x.SlotID, &x.SlotState, &x.RootPath, &x.RelPath, &x.DirName, &x.MainPath); err != nil {
 			return nil, err
 		}
 		out = append(out, x)

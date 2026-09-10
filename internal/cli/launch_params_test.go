@@ -43,7 +43,7 @@ func TestLaunchSendsLegacyResolveAndLeasePayload(t *testing.T) {
 	if params.Agent != "codex" || params.ClientPID != os.Getpid() || params.CWD == "" || params.Branches != nil || params.ForceWorktree {
 		t.Fatalf("ResolveAndLease params=%+v", params)
 	}
-	want, err := json.Marshal(map[string]any{"cwd": params.CWD, "branches": []string(nil), "agent": params.Agent, "client_pid": params.ClientPID, "force_worktree": params.ForceWorktree, "lease_kind": params.LeaseKind, "lease_owner_session_id": params.LeaseOwnerSessionID, "lease_owner_token": params.LeaseOwnerToken})
+	want, err := json.Marshal(map[string]any{"cwd": params.CWD, "branches": []string(nil), "agent": params.Agent, "client_pid": params.ClientPID, "force_worktree": params.ForceWorktree, "lease_kind": params.LeaseKind, "lease_owner_session_id": params.LeaseOwnerSessionID, "lease_owner_token": params.LeaseOwnerToken, "prepare_copy_mode": params.PrepareCopyMode, "prepare_cow_min_size_kib": params.PrepareCOWMinSizeKiB})
 	if err != nil {
 		t.Fatal(err)
 	}

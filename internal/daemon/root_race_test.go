@@ -116,7 +116,7 @@ func TestPrepareQuarantinesUncertainGitAddAfterRootReplacement(t *testing.T) {
 	}
 	slot := testSlot(t, m, string(w.ID), id, 1, "PREPARING")
 	slotRoot := slot.Path
-	repos, err := m.slotRepos(slotRoot, w, resolved, 1, nil)
+	repos, err := m.slotRepos(slotRoot, w, resolved, 1, nil, config.PrepareOverride{})
 	if err != nil {
 		t.Fatal(err)
 	}
