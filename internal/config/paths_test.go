@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -74,5 +75,25 @@ func TestDerivedPathsFailClosedWithoutHome(t *testing.T) {
 		if err := operation(); err == nil {
 			t.Errorf("%s succeeded without HOME", name)
 		}
+	}
+}
+
+// ExpandHome は状態を持たないため、同時に呼ばれても互いに干渉しないことを確認する。
+func TestExpandHomeConcurrentCallsAreIndependent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var succeeded int
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := ExpandHome("$HOME/worktrees"); err == nil {
+				succeeded++
+			}
+		}()
+	}
+	wg.Wait()
+	if succeeded != 8 {
+		t.Fatalf("succeeded=%d, want 8", succeeded)
 	}
 }
