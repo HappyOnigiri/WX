@@ -10,6 +10,8 @@ CI_MAKEFLAGS := -j$(CI_JOBS) --keep-going $(if $(filter output-sync,$(.FEATURES)
 TOOLS_DIR := $(CURDIR)/.tools
 TOOLS_BIN := $(TOOLS_DIR)/bin
 NPM_BIN := $(TOOLS_DIR)/npm/node_modules/.bin
+CITEST ?=
+CI_TEST_ARTIFACT_DIR ?= artifacts/ci-tests
 GOLANGCI_VERSION ?= v2.13.2
 DEADCODE_VERSION ?= v0.49.0
 GOFUMPT_VERSION ?= v0.11.0
@@ -36,7 +38,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-hooks setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check workflow-lint workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-plan nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-hooks setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check workflow-lint reporter-check workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-plan nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -202,7 +204,11 @@ workflow-check: workflow-lint
 
 workflow-lint:
 	@test -x "$(TOOLS_BIN)/actionlint" || { echo "pinned actionlint is missing; run make setup"; exit 1; }
-	"$(TOOLS_BIN)/actionlint"
+	$(GO) run ./tools/workflowlint -actionlint "$(TOOLS_BIN)/actionlint"
+
+reporter-check:
+	command -v node >/dev/null
+	node --test .github/scripts/report-flaky-tests.test.cjs
 
 workflow-security-audit: setup-zizmor
 	@test -x "$(TOOLS_BIN)/zizmor" || { echo "pinned zizmor is missing; run make setup-zizmor"; exit 1; }
@@ -221,10 +227,19 @@ test-race:
 # race検査はCIの少コアランナーでCPU律速になり、単独で最長のinternal/daemonがジョブの下限を作る。
 # daemonと残りを別ジョブへ分けるため、対象パッケージだけが違う2つのtargetを用意する。
 test-race-daemon:
-	$(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE)
+	@if [ -n "$(CITEST)" ]; then \
+		"$(CITEST)" -profile race-daemon -report-dir "$(CI_TEST_ARTIFACT_DIR)/race-daemon" -- $(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE); \
+	else \
+		$(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE); \
+	fi
 
 test-race-rest:
-	$(GO) test $(RACE_TEST_ARGS) $$($(GO) list ./... | grep -v '/internal/daemon$$')
+	@if [ -n "$(CITEST)" ]; then \
+		packages="$$($(GO) list ./... | grep -v '/internal/daemon$$')"; \
+		"$(CITEST)" -profile race-rest -report-dir "$(CI_TEST_ARTIFACT_DIR)/race-rest" -- $(GO) test $(RACE_TEST_ARGS) $$packages; \
+	else \
+		$(GO) test $(RACE_TEST_ARGS) $$($(GO) list ./... | grep -v '/internal/daemon$$'); \
+	fi
 
 # ci-checksは-jで並列に走るため、2つのテストスイートが同時に実行されると資源が枯渇して失敗する。
 # coverage計測の完了を待たせ、同時実行だけを防ぐ。
@@ -235,7 +250,11 @@ ci-test-race: coverage-check
 # test-race-coverageは両者を同時に走らせた場合の比較・診断用に残す。
 test-coverage:
 	@mkdir -p coverage
-	$(GO) test -shuffle=on -count=1 -covermode=atomic -coverpkg=./... -coverprofile=coverage/all.out ./...
+	@if [ -n "$(CITEST)" ]; then \
+		"$(CITEST)" -profile coverage -report-dir "$(CI_TEST_ARTIFACT_DIR)/coverage" -coverprofile coverage/all.out -- $(GO) test -shuffle=on -count=1 -covermode=atomic -coverpkg=./... -coverprofile=coverage/all.out ./...; \
+	else \
+		$(GO) test -shuffle=on -count=1 -covermode=atomic -coverpkg=./... -coverprofile=coverage/all.out ./...; \
+	fi
 
 test-race-coverage:
 	@mkdir -p coverage
@@ -333,7 +352,7 @@ ci:
 
 # 静的検査の単一の入口。ローカルのci-checksとGitHub Actionsのstaticジョブはこのtargetだけを呼ぶ。
 # 検査一覧を両者へ複製すると片方だけ更新され、CIで適用漏れが起きるため、追加する検査はここへ繋ぐ。
-static-check: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check shell-check
+static-check: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check workflow-check reporter-check shell-check
 
 ci-checks: static-check coverage-check ci-test-race build-darwin version-check smoke release-check
 

@@ -318,3 +318,24 @@ func TestStatusArchivedSessionNoticeTracksTheSchemaVersion(t *testing.T) {
 		t.Fatalf("notice without a schema version=%q, want empty", notice)
 	}
 }
+
+// TestStatusDaemonSummarySeparatesDiscardedJobs は、既定の 1 行が取り消しを失敗と混ぜないことを固定する。
+// `wx clear` の取り消しは retention.failed_job まで残るので、混ぜると対処の要らない件数が失敗として読める。
+func TestStatusDaemonSummarySeparatesDiscardedJobs(t *testing.T) {
+	line := statusDaemonSummary(map[string]any{
+		"job_details": map[string]any{"pending": 0, "running": 0, "failed": 5, "discarded": 80},
+	})
+	if want := "Daemon running · Jobs 0 pending / 0 running / 5 failed / 80 discarded"; line != want {
+		t.Fatalf("daemon summary=%q, want %q", line, want)
+	}
+	// discarded を返さない daemon では件数を作らず、失敗側の値もそのまま出す。
+	legacy := statusDaemonSummary(map[string]any{"job_details": map[string]any{"pending": 0, "running": 0, "failed": 85}})
+	if want := "Daemon running · Jobs 0 pending / 0 running / 85 failed / — discarded"; legacy != want {
+		t.Fatalf("legacy daemon summary=%q, want %q", legacy, want)
+	}
+	// job_details が無い応答では pending だけが queued_jobs から分かる。
+	queued := statusDaemonSummary(map[string]any{"queued_jobs": 2})
+	if want := "Daemon running · Jobs 2 pending / — running / — failed / — discarded"; queued != want {
+		t.Fatalf("queued-only daemon summary=%q, want %q", queued, want)
+	}
+}

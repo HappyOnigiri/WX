@@ -354,7 +354,3 @@ func sortedPlacements(values map[string]state.Placement) []state.Placement {
 func placementKey(placement state.Placement) string {
 	return placement.RepositoryID + "\x00" + filepath.Clean(placement.RelativePath)
 }
-
-func samePlacement(a, b state.Placement) bool {
-	return a.Kind == b.Kind && a.SourcePath == b.SourcePath && a.ContentSHA256 == b.ContentSHA256
-}

@@ -204,13 +204,43 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 	if err := p.validateUpdating(ctx, repo, target, newOID, slotID, identity); err != nil {
 		return nil, err
 	}
-	if err := p.compactWorktree(ctx, repo, target, newOID, slotID, preparePhaseUpdate, identity); err != nil {
+	scope, err := p.updateCOWScope(ctx, repo, oldOID, newOID, previous, desired)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.compactWorktree(ctx, repo, target, newOID, slotID, preparePhaseUpdate, identity, scope); err != nil {
 		return nil, err
 	}
 	if err := p.validateUpdating(ctx, repo, target, newOID, slotID, identity); err != nil {
 		return nil, err
 	}
 	return desired, nil
+}
+
+// updateCOWScope は今回の更新が宛先へ書き直した path の集合を返す。
+// `checkout --detach --force` は旧OIDとの差分しか書かず、配置の更新は previous と desired に挙がった path だけを触る。
+// 集合の外は前回の準備が残した実体のままなので、候補から外しても宛先のbytesは変わらず、共有済みなら共有が続く。
+// 逆に前回共有できなかったpathを更新で共有し直すことは諦める。共有の水準は準備時に決まり、更新では増えない。
+// commentlint:allow-long -- 候補限定の根拠（bytesが変わらないこと）と代償（共有が増えないこと）はどちらも保守に要る
+func (p *Preparer) updateCOWScope(ctx context.Context, repo discovery.Repository, oldOID, newOID string, previous, desired []state.Placement) (*cowScope, error) {
+	// rename検出は報告を減らす方向にしか働かない（旧名が落ちる）ため切る。集合は多めに見積もる側へ倒す。
+	diff, err := p.Git.Run(ctx, string(repo.MainPath), "diff", "--name-only", "--no-renames", "-z", oldOID, newOID)
+	if err != nil {
+		return nil, err
+	}
+	rewritten := map[string]bool{}
+	for _, name := range strings.Split(diff.Stdout, "\x00") {
+		if name != "" {
+			rewritten[filepath.Clean(name)] = true
+		}
+	}
+	// 配置はignore対象に限るのでindexのentryとしては現れないが、集合の定義を「実際に触ったpath」へ揃えておく。
+	for _, placements := range [][]state.Placement{previous, desired} {
+		for _, placement := range placements {
+			rewritten[filepath.Clean(placement.RelativePath)] = true
+		}
+	}
+	return &cowScope{rewritten: rewritten}, nil
 }
 
 func unchangedPlacements(previous, desired []state.Placement) []state.Placement {
@@ -220,7 +250,7 @@ func unchangedPlacements(previous, desired []state.Placement) []state.Placement 
 	}
 	var out []state.Placement
 	for _, placement := range previous {
-		if next, ok := wanted[placementKey(placement)]; ok && samePlacement(placement, next) {
+		if next, ok := wanted[placementKey(placement)]; ok && placement.SameSource(next) {
 			out = append(out, placement)
 		}
 	}
@@ -303,7 +333,7 @@ func removeChangedPlacements(root *os.Root, previous, desired []state.Placement)
 		wanted[placementKey(placement)] = placement
 	}
 	for _, old := range previous {
-		if next, ok := wanted[placementKey(old)]; ok && samePlacement(old, next) {
+		if next, ok := wanted[placementKey(old)]; ok && old.SameSource(next) {
 			continue
 		}
 		if err := root.Remove(old.RelativePath); err != nil {
@@ -335,7 +365,7 @@ func materializeChangedPlacements(root *os.Root, previous, desired []state.Place
 		old[placementKey(placement)] = placement
 	}
 	for _, placement := range desired {
-		if prior, ok := old[placementKey(placement)]; ok && samePlacement(prior, placement) {
+		if prior, ok := old[placementKey(placement)]; ok && prior.SameSource(placement) {
 			continue
 		}
 		if err := ensureRootDirectory(root, filepath.Dir(placement.RelativePath)); err != nil {
