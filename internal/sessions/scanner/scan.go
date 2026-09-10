@@ -288,6 +288,8 @@ func mayMatch(tool, path, want string) bool {
 func resolveFile(ctx context.Context, path string, info os.FileInfo, state *scanState) (Session, bool, error) {
 	tool := state.agent
 	mtimeNS := info.ModTime().UnixNano()
+	// mtime と size は列挙時の stat から取る。cache ヒット時も同じ経路を通るため、両者の由来がずれない。
+	size := info.Size()
 	volume, volumeErr := state.volumeOf(filepath.Dir(path))
 	var before metacache.Validator
 	attrErr := volumeErr
@@ -297,7 +299,7 @@ func resolveFile(ctx context.Context, path string, info os.FileInfo, state *scan
 	if attrErr == nil {
 		if record, hit := state.reuse(path, before); hit {
 			state.opts.Stats.reused()
-			session, ok := sessionFrom(tool, path, record, mtimeNS)
+			session, ok := sessionFrom(tool, path, record, mtimeNS, size)
 			return session, ok, nil
 		}
 	}
@@ -317,7 +319,7 @@ func resolveFile(ctx context.Context, path string, info os.FileInfo, state *scan
 			state.store(path, before, record)
 		}
 	}
-	session, ok := sessionFrom(tool, path, record, mtimeNS)
+	session, ok := sessionFrom(tool, path, record, mtimeNS, size)
 	return session, ok, nil
 }
 
@@ -360,7 +362,7 @@ func recordFrom(tool, path string, meta fileMeta) metacache.Record {
 	}
 }
 
-func sessionFrom(tool, path string, record metacache.Record, mtimeNS int64) (Session, bool) {
+func sessionFrom(tool, path string, record metacache.Record, mtimeNS, size int64) (Session, bool) {
 	if record.Excluded {
 		return Session{}, false
 	}
@@ -371,6 +373,7 @@ func sessionFrom(tool, path string, record metacache.Record, mtimeNS int64) (Ses
 		CWD:       record.CWD,
 		StableID:  StableID(tool, record.NativeID),
 		Mtime:     float64(mtimeNS) / 1e9,
+		Size:      size,
 		RawPath:   path,
 	}, true
 }

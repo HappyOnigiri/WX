@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/textfmt"
 )
 
 // doctorProbeHint は静的検査だけを終えたときに、何をまだ見ていないかを伝える 1 行である。
@@ -45,7 +46,7 @@ func printProbeUsage(w io.Writer, probe diag.Probe) {
 	}
 	for _, repository := range probe.Repositories {
 		_, _ = fmt.Fprintf(w, "    %-24s %9s exclusive  %9s shared\n", repository.Name,
-			formatHumanBytes(repository.ExclusiveBytes), formatHumanBytes(repository.SharedBytes))
+			textfmt.HumanBytes(repository.ExclusiveBytes), textfmt.HumanBytes(repository.SharedBytes))
 	}
 }
 

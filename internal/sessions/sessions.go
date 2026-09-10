@@ -33,6 +33,9 @@ type (
 	PickOptions struct {
 		Tool  string
 		Scope *PickerScope
+		// StartWidened は picker を全 workspace 表示で開く。scope 判定は残すため、Ctrl-A で絞り込みへ戻せる。
+		// Continue は scope 内の最新を返す契約なので、この指定を見ない。
+		StartWidened bool
 	}
 	ContinueOptions = PickOptions
 )
@@ -75,7 +78,14 @@ func openCache() (*metacache.Cache, func()) {
 	return cache, func() { _ = cache.Close() }
 }
 
-func list(ctx context.Context, cfg config.Config, opts PickOptions) ([]scanner.Session, error) {
+// listItem は再開できる会話と、それが scope 内かの判定を組で保つ。
+// picker は scope の内外を切り替えて見せるため、走査結果を scope で捨てずにこのフラグで持ち回る。
+type listItem struct {
+	session scanner.Session
+	inScope bool
+}
+
+func list(ctx context.Context, cfg config.Config, opts PickOptions) ([]listItem, error) {
 	if opts.Tool != "claude" && opts.Tool != "codex" {
 		return nil, fmt.Errorf("unsupported agent: %s", opts.Tool)
 	}
@@ -85,17 +95,17 @@ func list(ctx context.Context, cfg config.Config, opts PickOptions) ([]scanner.S
 	if err != nil {
 		return nil, err
 	}
-	result := make([]scanner.Session, 0, len(items))
+	result := make([]listItem, 0, len(items))
 	for _, item := range items {
-		if item.Tool == opts.Tool && item.Target().Resumable() && matchesScope(item, opts.Scope) {
-			result = append(result, item)
+		if item.Tool == opts.Tool && item.Target().Resumable() {
+			result = append(result, listItem{session: item, inScope: matchesScope(item, opts.Scope)})
 		}
 	}
 	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].Mtime == result[j].Mtime {
-			return result[i].StableID < result[j].StableID
+		if result[i].session.Mtime == result[j].session.Mtime {
+			return result[i].session.StableID < result[j].session.StableID
 		}
-		return result[i].Mtime > result[j].Mtime
+		return result[i].session.Mtime > result[j].session.Mtime
 	})
 	return result, nil
 }
@@ -120,11 +130,15 @@ func Continue(ctx context.Context, cfg config.Config, opts ContinueOptions) (Res
 	if err != nil {
 		return ResumeTarget{}, false, err
 	}
+	// Continue は scope 内の最新だけを返す契約なので、picker と違い scope 外の会話は候補にしない。
 	for _, item := range items {
-		if opts.Scope != nil && opts.Scope.Annotations[item.StableID].InUse {
+		if !item.inScope {
 			continue
 		}
-		return item.Target(), true, nil
+		if opts.Scope != nil && opts.Scope.Annotations[item.session.StableID].InUse {
+			continue
+		}
+		return item.session.Target(), true, nil
 	}
 	return ResumeTarget{}, false, nil
 }
@@ -134,10 +148,25 @@ func Pick(ctx context.Context, cfg config.Config, opts PickOptions) (ResumeTarge
 	if err != nil {
 		return ResumeTarget{}, err
 	}
-	picker := tui.PickOptions{Label: opts.Tool}
+	sessionList, picker := pickerOptions(items, opts)
+	return tui.Pick(ctx, sessionList, picker)
+}
+
+// pickerOptions は走査結果を picker へ渡す形へ直す。scope が無いときは ScopeFilter を作らず、
+// picker 側に scope を判定できないことを伝える（picker はそのとき絞り込みも scope 表示もしない）。
+func pickerOptions(items []listItem, opts PickOptions) ([]scanner.Session, tui.PickOptions) {
+	sessionList := make([]scanner.Session, 0, len(items))
+	picker := tui.PickOptions{Label: opts.Tool, StartWidened: opts.StartWidened}
 	if opts.Scope != nil {
 		picker.Label += " · " + opts.Scope.Label
 		picker.Annotations = opts.Scope.Annotations
+		picker.Scope = &tui.ScopeFilter{InScope: make(map[string]bool, len(items))}
 	}
-	return tui.Pick(ctx, items, picker)
+	for _, item := range items {
+		sessionList = append(sessionList, item.session)
+		if picker.Scope != nil && item.inScope {
+			picker.Scope.InScope[item.session.StableID] = true
+		}
+	}
+	return sessionList, picker
 }
