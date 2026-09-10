@@ -84,6 +84,8 @@ lockfileのようにOIDへ依存する生成物は更新後も旧OIDのまま残
 `.worktreelink`に列挙したpathは、main worktree側の実体へ直接symlinkする（`createLinksAt`）。
 sourceが存在しない項目は、ファイル・ディレクトリを問わずその準備では省略し、sourceの出現・消失でslot再利用をfingerprintの存在状態変更により止める。
 sourceがsymlinkの項目と、ソースリポジトリのignore対象でない項目も同じく省略し、省略した対象と理由をdaemon logにwarnで残す。
+ignore判定は`git check-ignore`に委ねるので、ディレクトリを列挙するときは`/dir/*`ではなく`/dir`の形のruleが要り、配下にtracked fileを1つでも持つディレクトリはruleがあっても対象にならない。
+後者はignoreを通せてもtracked fileのcheckoutが実体を作り、次の宛先衝突で準備が失敗する。
 path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
 同じ扱いはworkspace rootのcopy/link source（`MaterializeRootAt`）と`.worktreeinclude`の一致にも適用し、既定名と明示名で挙動を分けない。
 workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
