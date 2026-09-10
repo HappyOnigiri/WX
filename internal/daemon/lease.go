@@ -62,6 +62,10 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	if err != nil {
 		return Lease{}, err
 	}
+	// 準備設定の上書きを伴う貸出は必ず cold start にする。既存 worktree の再利用や差分更新では
+	// 上書きが準備の一部にしか効かず、測る対象が上書きの効果にならない。
+	// 上書きを混ぜた fingerprint を持つ slot も、この経路を通らないため通常の貸出へ紛れない。
+	cold = cold || !attrs.Prepare.IsZero()
 	reuseStandby, _ := m.Config().ReuseStandbyForWorkspace(string(w.Root))
 	if !cold && reuseStandby {
 		return m.leaseReusableStandby(ctx, w, resolved, generation, branches, agent, pid, attrs)

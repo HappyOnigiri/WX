@@ -91,9 +91,10 @@ func (s *Store) ReserveSlot(ctx context.Context, slot Slot) error {
 	return tx.Commit()
 }
 
+// insertReservedSlotTx は予約行を書く。準備設定の上書きは、準備 job が走る時点で読めるようこの行へ残す。
 func insertReservedSlotTx(ctx context.Context, tx *sql.Tx, slot Slot) error {
 	t := now()
-	_, err := tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,owner_session_id,created_at,updated_at) VALUES(?,?,?,?,?,NULL,'ALLOCATING',?,?,?)`, slot.ID, nullString(slot.WorkspaceID), slot.Generation, slot.RootID, slot.RelPath, nullString(slot.OwnerSessionID), t, t)
+	_, err := tx.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,dir_identity,state,owner_session_id,prepare_override,created_at,updated_at) VALUES(?,?,?,?,?,NULL,'ALLOCATING',?,?,?,?)`, slot.ID, nullString(slot.WorkspaceID), slot.Generation, slot.RootID, slot.RelPath, nullString(slot.OwnerSessionID), nullString(slot.PrepareOverride), t, t)
 	return err
 }
 

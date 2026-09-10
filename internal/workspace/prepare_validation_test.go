@@ -36,7 +36,8 @@ func TestValidateReadyEnforcesItsOwnReadyStateProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	preparer.Ownership = readyStateRejectingOwnershipValidator{}
-	if err := preparer.ValidateReady(ctx, repo, target, head); err == nil || err.Error() != "ready-specific state proof rejected" {
+	err := preparer.ValidateReady(ctx, repo, target, head)
+	if !errors.Is(err, state.ErrOwnership) || !strings.Contains(err.Error(), "ready-specific state proof rejected") {
 		t.Fatalf("ValidateReady accepted despite its own state proof failing: %v", err)
 	}
 }

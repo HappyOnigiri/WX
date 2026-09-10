@@ -1,0 +1,192 @@
+package cli
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/HappyOnigiri/WX/internal/config"
+)
+
+// benchSweepRun は集計の入力になる1回分の結果を組む。
+func benchSweepRun(label string, early, full int64, exclusive, shared int64, measured bool) BenchRun {
+	run := BenchRun{Source: "cold", Config: BenchConfig{Label: label}, EarlyReadyMS: early, FullReadyMS: full}
+	if measured {
+		run.Usage = &BenchUsage{Measurement: "log2phys_first_last", ExclusiveBytes: exclusive, SharedBytes: shared}
+	}
+	return run
+}
+
+// 設定ごとの集計は、最初に測った設定の順で並び、時間の分布と使用量の中央値を持つ。
+// 失敗した回は分布に入れず件数だけを残す。
+func TestSummarizeBenchConfigsGroupsRunsByConfiguration(t *testing.T) {
+	failed := benchSweepRun("copy_mode=copy", 0, 0, 0, 0, false)
+	failed.Error = "full ready: preparation failed"
+	summaries := summarizeBenchConfigs([]BenchRun{
+		benchSweepRun("cow_min_size_kib=16", 3300, 40500, 175<<20, 1116<<20, true),
+		benchSweepRun("copy_mode=copy", 3400, 15200, 1291<<20, 0, true),
+		benchSweepRun("cow_min_size_kib=16", 3100, 37700, 165<<20, 1126<<20, true),
+		failed,
+		benchSweepRun("cow_min_size_kib=16", 3500, 41000, 185<<20, 1106<<20, true),
+	})
+	if len(summaries) != 2 || summaries[0].Config.Label != "cow_min_size_kib=16" || summaries[1].Config.Label != "copy_mode=copy" {
+		t.Fatalf("summaries=%+v, want the configurations in the order they were measured", summaries)
+	}
+	first := summaries[0]
+	if first.Runs != 3 || first.Failed != 0 {
+		t.Fatalf("first=%+v, want three successful runs", first)
+	}
+	if first.FullReady.MinMS != 37700 || first.FullReady.MedianMS != 40500 || first.FullReady.MaxMS != 41000 {
+		t.Fatalf("full ready=%+v, want min/median/max over the three runs", first.FullReady)
+	}
+	if first.EarlyReady.MinMS != 3100 || first.EarlyReady.MedianMS != 3300 || first.EarlyReady.MaxMS != 3500 {
+		t.Fatalf("early ready=%+v, want min/median/max over the three runs", first.EarlyReady)
+	}
+	if first.ExclusiveBytes == nil || *first.ExclusiveBytes != 175<<20 || first.SharedBytes == nil || *first.SharedBytes != 1116<<20 {
+		t.Fatalf("usage exclusive=%v shared=%v, want the median of the measured runs", first.ExclusiveBytes, first.SharedBytes)
+	}
+	second := summaries[1]
+	if second.Runs != 1 || second.Failed != 1 {
+		t.Fatalf("second=%+v, want one successful and one failed run", second)
+	}
+}
+
+// --runs が 1 のときも集計は最小・中央値・最大を持ち、3つが同値になる（表では1つに畳む）。
+func TestSummarizeBenchConfigsRepeatsTheSingleRunAcrossMinMedianMax(t *testing.T) {
+	summaries := summarizeBenchConfigs([]BenchRun{benchSweepRun("cow_min_size_kib=64", 3300, 28800, 951<<20, 340<<20, true)})
+	if len(summaries) != 1 {
+		t.Fatalf("summaries=%+v, want one configuration", summaries)
+	}
+	full := summaries[0].FullReady
+	if full.MinMS != 28800 || full.MedianMS != 28800 || full.MaxMS != 28800 {
+		t.Fatalf("full ready=%+v, want the single run repeated", full)
+	}
+	early := summaries[0].EarlyReady
+	if early.MinMS != 3300 || early.MedianMS != 3300 || early.MaxMS != 3300 {
+		t.Fatalf("early ready=%+v, want the single run repeated", early)
+	}
+}
+
+// 使用量を1回も測れなかった設定は、時間だけの行として出す。
+func TestPrintBenchConfigsReportsUnmeasuredUsageWithoutDroppingTheTimings(t *testing.T) {
+	summaries := summarizeBenchConfigs([]BenchRun{
+		benchSweepRun("cow_min_size_kib=16", 3300, 40500, 175<<20, 1116<<20, true),
+		benchSweepRun("copy_mode=copy", 3400, 15200, 0, 0, false),
+	})
+	stdout := captureLeaseStdout(t, func() { printBenchConfigs(summaries) })
+	for _, required := range []string{"cow_min_size_kib=16", "copy_mode=copy", "175.00 MiB", "40.500s", "15.200s"} {
+		if !strings.Contains(stdout, required) {
+			t.Fatalf("stdout=%q missing %s", stdout, required)
+		}
+	}
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	unmeasured := lines[len(lines)-1]
+	if !strings.HasSuffix(strings.TrimSpace(unmeasured), "-") {
+		t.Fatalf("row=%q, want the unmeasured usage reported as -", unmeasured)
+	}
+}
+
+// 上書きのない測定は設定名を名乗らず、比較行も出さない。従来の出力を変えないためである。
+func TestPrintBenchConfigsStaysSilentForTheCurrentConfiguration(t *testing.T) {
+	summaries := summarizeBenchConfigs([]BenchRun{benchSweepRun(benchCurrentConfigLabel, 3300, 40500, 0, 0, false)})
+	stdout := captureLeaseStdout(t, func() { printBenchConfigs(summaries) })
+	if stdout != "" {
+		t.Fatalf("stdout=%q, want no comparison table without --config", stdout)
+	}
+}
+
+// 上書きの表記は指定した key だけを並べ、run の行と比較行で同じ見出しになる。
+func TestBenchConfigOfLabelsTheOverride(t *testing.T) {
+	minSize := 0
+	labeled := benchConfigOf(config.PrepareOverride{CopyMode: config.CopyModeCOW, COWMinSizeKiB: &minSize})
+	if labeled.Label != "copy_mode=cow,cow_min_size_kib=0" {
+		t.Fatalf("label=%q, want both keys including the zero lower bound", labeled.Label)
+	}
+	if benchConfigOf(config.PrepareOverride{}).Label != benchCurrentConfigLabel {
+		t.Fatalf("label=%q, want the current configuration named", benchConfigOf(config.PrepareOverride{}).Label)
+	}
+}
+
+// --sweep は CoW 無しの基準線と下限の並びを、行を重複させずに測る設定として返す。
+func TestBenchSweepConfigsCoversTheBaselineAndEachLowerBound(t *testing.T) {
+	sweep := BenchSweepConfigs()
+	labels := make([]string, 0, len(sweep))
+	seen := map[string]bool{}
+	for _, override := range sweep {
+		if err := override.Validate(); err != nil {
+			t.Fatalf("override=%s: %v", override.String(), err)
+		}
+		label := override.String()
+		if seen[label] {
+			t.Fatalf("label=%q measured twice; each row of the comparison table must be one configuration", label)
+		}
+		seen[label] = true
+		labels = append(labels, label)
+	}
+	want := []string{
+		"copy_mode=copy",
+		"cow_min_size_kib=0", "cow_min_size_kib=4", "cow_min_size_kib=8", "cow_min_size_kib=16",
+		"cow_min_size_kib=32", "cow_min_size_kib=64", "cow_min_size_kib=128",
+	}
+	if strings.Join(labels, " ") != strings.Join(want, " ") {
+		t.Fatalf("labels=%v, want %v", labels, want)
+	}
+	// 下限を振る行は copy_mode を上書きせず、実効設定のまま比べる。
+	for _, override := range sweep[1:] {
+		if override.CopyMode != "" || override.COWMinSizeKiB == nil {
+			t.Fatalf("override=%+v, want only the lower bound overridden", override)
+		}
+	}
+	if sweep[0].COWMinSizeKiB != nil {
+		t.Fatalf("baseline=%+v, want no lower bound on the row that disables CoW sharing", sweep[0])
+	}
+}
+
+// 成功が1回だけの設定は、同じ値を3つ並べず実測値を1つ出す。見出しも分布を名乗らない。
+func TestPrintBenchConfigsPrintsTheSingleRunAsOneValue(t *testing.T) {
+	summaries := summarizeBenchConfigs([]BenchRun{
+		benchSweepRun("cow_min_size_kib=64", 3300, 28800, 951<<20, 340<<20, true),
+		benchSweepRun("copy_mode=copy", 3400, 15200, 1291<<20, 0, true),
+	})
+	stdout := captureLeaseStdout(t, func() { printBenchConfigs(summaries) })
+	if strings.Contains(stdout, "28.800s/") || strings.Contains(stdout, "min/median/max") {
+		t.Fatalf("stdout=%q, want the single run reported as one value", stdout)
+	}
+	for _, required := range []string{"28.800s", "15.200s"} {
+		if !strings.Contains(stdout, required) {
+			t.Fatalf("stdout=%q missing %s", stdout, required)
+		}
+	}
+}
+
+// 同じ設定を繰り返した場合は分布のまま出し、見出しも読み方を示す。
+func TestPrintBenchConfigsKeepsTheDistributionForRepeatedRuns(t *testing.T) {
+	summaries := summarizeBenchConfigs([]BenchRun{
+		benchSweepRun("cow_min_size_kib=64", 3300, 28800, 951<<20, 340<<20, true),
+		benchSweepRun("cow_min_size_kib=64", 3100, 27700, 951<<20, 340<<20, true),
+		benchSweepRun("cow_min_size_kib=64", 3500, 29500, 951<<20, 340<<20, true),
+		benchSweepRun("copy_mode=copy", 3400, 15200, 1291<<20, 0, true),
+	})
+	stdout := captureLeaseStdout(t, func() { printBenchConfigs(summaries) })
+	for _, required := range []string{"min/median/max", "27.700s/28.800s/29.500s", "15.200s"} {
+		if !strings.Contains(stdout, required) {
+			t.Fatalf("stdout=%q missing %s", stdout, required)
+		}
+	}
+}
+
+// 使用量の単位は大小によらず MiB に揃える。設定間で列を読み比べるためである。
+func TestFormatBenchBytesKeepsTheUnitAtMiB(t *testing.T) {
+	for _, tc := range []struct {
+		value int64
+		want  string
+	}{
+		{0, "0.00 MiB"},
+		{96 << 10, "0.09 MiB"},
+		{5 << 20, "5.00 MiB"},
+		{3 << 30, "3072.00 MiB"},
+	} {
+		if got := formatBenchBytes(tc.value); got != tc.want {
+			t.Fatalf("formatBenchBytes(%d)=%q, want %q", tc.value, got, tc.want)
+		}
+	}
+}

@@ -49,7 +49,7 @@ const (
 func (m *Manager) measureRootUsage(ctx context.Context) {
 	roots := m.knownRoots(ctx)
 	targetsAt := time.Now().UTC()
-	targets, err := m.slotUsageTargets(ctx)
+	targets, preparing, err := m.slotUsageTargets(ctx)
 	if err != nil {
 		m.log.Warn("list managed usage locations", "error", err)
 		return
@@ -73,6 +73,11 @@ func (m *Manager) measureRootUsage(ctx context.Context) {
 			continue
 		}
 		for slotID, slot := range usage.Slots {
+			// 準備中の slot は書き込みの途中を歩いているので、その途中経過をその slot の使用量として名乗らない。
+			// root 合計には配下の実体として数えたままにし、登録外の実体と読み違えられないようにする。
+			if preparing[slotID] {
+				continue
+			}
 			slots[slotID] = slotUsageSample{usage: slot, measuredAt: measuredAt}
 		}
 	}
@@ -182,6 +187,10 @@ func (m *Manager) measureSlotUsage(ctx context.Context, slotID string) {
 	if len(locations) == 0 {
 		return
 	}
+	// 準備完了の直後に呼ばれる処理だが、次の貸出で再び準備へ入った slot を測ると途中経過を載せてしまう。
+	if slotUsageUnderWrite(locations[0].SlotState) {
+		return
+	}
 	target := workspace.SlotUsageTarget{SlotID: slotID, RelPath: locations[0].RelPath, Repositories: map[string]string{}}
 	for _, location := range locations {
 		target.Repositories[location.DirName] = location.MainPath
@@ -229,14 +238,18 @@ func mergeSlotSharedFileCache(previous, measured workspace.SharedFileCache, relP
 
 // slotUsageTargets は測定対象の slot を root ごとにまとめる。
 // DB を読めない回は前回値を維持し、管理対象を登録外の容量へ誤分類しない。
-func (m *Manager) slotUsageTargets(ctx context.Context) (map[string][]workspace.SlotUsageTarget, error) {
+func (m *Manager) slotUsageTargets(ctx context.Context) (map[string][]workspace.SlotUsageTarget, map[string]bool, error) {
 	locations, err := m.store.SlotUsageLocations(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	targets := map[string][]workspace.SlotUsageTarget{}
+	preparing := map[string]bool{}
 	indexes := map[string]int{}
 	for _, location := range locations {
+		if slotUsageUnderWrite(location.SlotState) {
+			preparing[location.SlotID] = true
+		}
 		root := filepath.Clean(location.RootPath)
 		key := root + "\x00" + location.SlotID
 		index, known := indexes[key]
@@ -247,7 +260,17 @@ func (m *Manager) slotUsageTargets(ctx context.Context) (map[string][]workspace.
 		}
 		targets[root][index].Repositories[location.DirName] = location.MainPath
 	}
-	return targets, nil
+	return targets, preparing, nil
+}
+
+// slotUsageUnderWrite は worktree を書いている最中の slot state を判定する。
+// この間の実体は準備の途中経過でしかなく、完成後の使用量やコピー方式を表さない。
+func slotUsageUnderWrite(slotState string) bool {
+	switch slotState {
+	case "ALLOCATING", "REGISTERING", "PREPARING":
+		return true
+	}
+	return false
 }
 
 func (m *Manager) sharedFileCache(root string) workspace.SharedFileCache {

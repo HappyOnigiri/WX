@@ -3,11 +3,13 @@ package archive
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -269,40 +271,48 @@ func TestWorkspaceSnapshotPreconditionsAndPruneFailures(t *testing.T) {
 	}
 }
 
+// TestRestoreRevalidatesOwnershipAtHandoffs は Restore 中の所有権証明がどの回で失敗してもフェイルクローズすることを検査する。
+// 証明の回数と位置は CoW の共有単位や platform の CoW 可否で変わるため、handoff を名前で指さず実測した全回数を1回ずつ落とす。
+// 特定の回数を書くと、証明を増やした変更で狙う handoff がずれ、新しい証明が検査されないまま残る。
 func TestRestoreRevalidatesOwnershipAtHandoffs(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		failAt int
-	}{
-		{name: "before links", failAt: 5},
-		{name: "before restore handoff", failAt: 6},
-		{name: "after restore handoff", failAt: 7},
-		{name: "after resume prepare", failAt: 8},
-		{name: "after status", failAt: 9},
-		{name: "before finish", failAt: 10},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			repository, repo, manager, worktreeRoot := archiveFixture(t)
-			snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			validator := &countingOwnershipValidator{failAt: test.failAt}
-			manager.Preparer.Ownership = validator
-			target := filepath.Join(worktreeRoot, test.name, "root")
-			pointAtSlot(t, manager, worktreeRoot, target)
-			err = manager.Restore(context.Background(), repo, target, test.name, snapshot)
+	total, err := restoreWithFailingOwnership(t, "count", 0)
+	if err != nil {
+		t.Fatalf("restore without an injected failure=%v", err)
+	}
+	if total == 0 {
+		t.Fatal("restore validated ownership no times")
+	}
+	for failAt := 1; failAt <= total; failAt++ {
+		t.Run(fmt.Sprintf("call-%d", failAt), func(t *testing.T) {
+			calls, err := restoreWithFailingOwnership(t, fmt.Sprintf("call-%d", failAt), failAt)
 			if err == nil {
 				t.Fatal("restore succeeded after ownership proof was invalidated")
 			}
 			if !errors.Is(err, state.ErrOwnership) {
 				t.Fatalf("restore ownership error=%v", err)
 			}
-			if validator.calls < test.failAt {
-				t.Fatalf("ownership validator stopped at call %d, want at least %d", validator.calls, test.failAt)
+			if calls < failAt {
+				t.Fatalf("ownership validator stopped at call %d, want at least %d", calls, failAt)
 			}
 		})
 	}
+}
+
+// restoreWithFailingOwnership は所有権証明の failAt 回目だけを失敗させて Restore を1回実行し、証明の回数と結果を返す。
+// failAt が 0 なら失敗を注入せず、回数の実測だけを行う。
+func restoreWithFailingOwnership(t *testing.T, slotID string, failAt int) (int, error) {
+	t.Helper()
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator := &countingOwnershipValidator{failAt: failAt}
+	manager.Preparer.Ownership = validator
+	target := filepath.Join(worktreeRoot, slotID, "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
+	restoreErr := manager.Restore(context.Background(), repo, target, slotID, snapshot)
+	return validator.total(), restoreErr
 }
 
 func TestRemoveMissingWorktreeReportsEveryHandoffFailure(t *testing.T) {
@@ -373,12 +383,27 @@ func TestRemoveMissingWorktreeReportsEveryHandoffFailure(t *testing.T) {
 	}
 }
 
-type countingOwnershipValidator struct{ calls, failAt int }
+// countingOwnershipValidator は failAt 回目の証明だけを失敗させる。
+// CoW の batch は worker goroutine から証明を呼ぶため、計数は mutex で守る。
+type countingOwnershipValidator struct {
+	mu     sync.Mutex
+	calls  int
+	failAt int
+}
 
 func (v *countingOwnershipValidator) ValidateWorktreeOwnership(context.Context, state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error) {
+	v.mu.Lock()
 	v.calls++
-	if v.calls == v.failAt {
+	failed := v.calls == v.failAt
+	v.mu.Unlock()
+	if failed {
 		return state.WorktreeOwnership{}, errors.New("state proof changed")
 	}
 	return state.WorktreeOwnership{}, nil
+}
+
+func (v *countingOwnershipValidator) total() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.calls
 }

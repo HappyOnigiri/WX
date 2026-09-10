@@ -206,3 +206,29 @@ func TestManagerStatusFallsBackToTheDefaultWorktreePolicy(t *testing.T) {
 		t.Fatalf("workspace policy=%q, want %q", got, want)
 	}
 }
+
+// TestManagerStatusSplitsArchivedSessionDetails は status payload の session 診断の範囲を固定する。
+// session_details には非終端 session だけが載り、ARCHIVED は archived_session_details の集計へ移る。
+func TestManagerStatusSplitsArchivedSessionDetails(t *testing.T) {
+	ctx, manager, store, _, _, _ := managerCoverageFixture(t)
+	for _, session := range []state.Session{
+		{ID: "live", SlotID: "live", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("live")},
+		{ID: "archived", SlotID: "archived", State: "ARCHIVED", AgentKind: "codex", TokenHash: state.HashToken("archived")},
+	} {
+		if _, err := store.CreateSlotSession(ctx, testSlotRow(t, manager, "", session.SlotID, 0, "LEASED"), nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	status, err := manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, ok := status["session_details"].([]state.SessionDiagnostic)
+	if !ok || len(sessions) != 1 || sessions[0].ID != "live" {
+		t.Fatalf("session_details=%+v", status["session_details"])
+	}
+	archived, ok := status["archived_session_details"].(state.ArchivedSessionDiagnostic)
+	if !ok || archived.Count != 1 {
+		t.Fatalf("archived_session_details=%+v", status["archived_session_details"])
+	}
+}

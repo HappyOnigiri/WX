@@ -8,16 +8,22 @@ package rpc
 // LeaseKind が空なら従来の agent 起動である。LeaseOwner* は wx new を呼んだ親 session の
 // WX_SESSION_ID / WX_SESSION_TOKEN で、daemon は既存の session token 検証を通してから記録する。
 
+// PrepareCopyMode と PrepareCOWMinSizeKiB は、この貸出で準備する slot にだけ適用する設定の上書きである。
+// 空文字と null は上書きなしを表し、daemon の実効設定と設定ファイルはどちらも変更しない。
+// cow_min_size_kib は 0 が下限なしを意味するため、未指定と区別できるよう pointer で送る。
+
 // ResolveAndLeaseParams は Method "ResolveAndLease" の要求。
 type ResolveAndLeaseParams struct {
-	Agent               string   `json:"agent"`
-	Branches            []string `json:"branches"`
-	ClientPID           int      `json:"client_pid"`
-	CWD                 string   `json:"cwd"`
-	ForceWorktree       bool     `json:"force_worktree"`
-	LeaseKind           string   `json:"lease_kind"`
-	LeaseOwnerSessionID string   `json:"lease_owner_session_id"`
-	LeaseOwnerToken     string   `json:"lease_owner_token"`
+	Agent                string   `json:"agent"`
+	Branches             []string `json:"branches"`
+	ClientPID            int      `json:"client_pid"`
+	CWD                  string   `json:"cwd"`
+	ForceWorktree        bool     `json:"force_worktree"`
+	LeaseKind            string   `json:"lease_kind"`
+	LeaseOwnerSessionID  string   `json:"lease_owner_session_id"`
+	LeaseOwnerToken      string   `json:"lease_owner_token"`
+	PrepareCopyMode      string   `json:"prepare_copy_mode"`
+	PrepareCOWMinSizeKiB *int     `json:"prepare_cow_min_size_kib"`
 }
 
 // ResumeParams は Method "Resume" の要求。

@@ -120,6 +120,9 @@ const workspaceLastUsedSchemaVersion = 6
 // workspacePolicySchemaVersion は workspace_details.policy が導入された JSON schema 版である。
 const workspacePolicySchemaVersion = 14
 
+// archivedSessionSchemaVersion は archived_session_details が導入された JSON schema 版である。
+const archivedSessionSchemaVersion = 19
+
 func printStatusSummary(w io.Writer, payload map[string]any) {
 	workspaces := statusObjectList(payload["workspace_details"])
 	roots := statusObjectsSortedBy(statusObjectList(payload["worktree_roots"]), "path")
@@ -370,4 +373,38 @@ func statusWorkspaceLastUsedNotice(payload map[string]any) string {
 	}
 	schema, _ := statusInt(payload, "schema_version")
 	return fmt.Sprintf("LAST USED unavailable: daemon JSON schema %d has no workspace history; update the daemon.", schema)
+}
+
+func statusArchivedSessionsUnavailable(payload map[string]any) bool {
+	schema, ok := statusInt(payload, "schema_version")
+	return ok && schema < archivedSessionSchemaVersion
+}
+
+// statusArchivedSessionNotice は集計を返さない daemon 向けの注記である。
+// 旧 daemon の session_details には ARCHIVED が混ざるため、行を間引かず注記だけを添えて診断の欠落を防ぐ。
+func statusArchivedSessionNotice(payload map[string]any) string {
+	if !statusArchivedSessionsUnavailable(payload) {
+		return ""
+	}
+	schema, _ := statusInt(payload, "schema_version")
+	return fmt.Sprintf("Archived unavailable: daemon JSON schema %d has no archived session summary; the table above still lists archived sessions. Update the daemon.", schema)
+}
+
+// statusQuarantineCleanupNotices は隔離された実体のうち、コマンドで消せるものだけ削除手段を案内する。
+// unknown_paths・mismatched_refs には削除コマンドが無く（wx clear は未登録の実体に触れず、wx prune は unknown_refs だけを対象にする）、
+// 案内すると効かない操作を促すため、この 2 つには行を出さない。
+// commentlint:allow-long -- 案内しないカテゴリがある理由を残すため
+func statusQuarantineCleanupNotices(items []map[string]any) []string {
+	kinds := map[string]bool{}
+	for _, item := range items {
+		kinds[statusValueRaw(item, "kind")] = true
+	}
+	var notices []string
+	if kinds["slot"] {
+		notices = append(notices, "slot: wx clear deletes quarantined slots right away, without waiting out retention.quarantined.")
+	}
+	if kinds["unknown_refs"] {
+		notices = append(notices, "unknown_refs: wx prune deletes the recovery refs it can prove are safe to lose; wx prune --dry-run reports them first.")
+	}
+	return notices
 }

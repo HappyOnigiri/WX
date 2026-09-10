@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -15,6 +16,19 @@ import (
 type leaseAttrs struct {
 	Kind           string
 	OwnerSessionID string
+	// Prepare はこの貸出で準備する slot にだけ効く設定の上書きで、`wx bench` の設定比較が使う。
+	Prepare config.PrepareOverride
+}
+
+// withPrepareOverride は貸出要求の準備設定上書きを検証して attrs へ載せる。
+// 値が不正なまま準備へ進めると、測定用の設定が黙って既定へ落ちた結果を比較表に並べてしまう。
+func (a leaseAttrs) withPrepareOverride(copyMode string, cowMinSizeKiB *int) (leaseAttrs, error) {
+	override := config.PrepareOverride{CopyMode: copyMode, COWMinSizeKiB: cowMinSizeKiB}
+	if err := override.Validate(); err != nil {
+		return leaseAttrs{}, fmt.Errorf("prepare override: %w", err)
+	}
+	a.Prepare = override
+	return a, nil
 }
 
 // resolveLeaseAttrs は RPC 要求の貸出指定を検証し、親 session を既存の token 検証で確かめる。

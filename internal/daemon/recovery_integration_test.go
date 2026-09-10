@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/archive"
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/pool"
@@ -48,7 +49,7 @@ func TestCrashRecoveryConvergesAfterReadyAndRefsExist(t *testing.T) {
 	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	repos, err := m.slotRepos(slotRoot, w, resolved, 1, nil)
+	repos, err := m.slotRepos(slotRoot, w, resolved, 1, nil, config.PrepareOverride{})
 	if err != nil {
 		t.Fatal(err)
 	}
