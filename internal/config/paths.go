@@ -110,7 +110,15 @@ func ExpandHome(path string) (string, error) {
 	if !filepath.IsAbs(path) {
 		return "", errors.New("path must be absolute")
 	}
-	return filepath.Clean(path), nil
+	return trimTrailingSlash(filepath.Clean(path)), nil
+}
+
+// trimTrailingSlash はルートディレクトリを維持したまま、パス末尾の slash を除去する。
+func trimTrailingSlash(path string) string {
+	if path == string(filepath.Separator) {
+		return path
+	}
+	return strings.TrimRight(path, "/")
 }
 
 // expandTilde は先頭の `~`（単体または `~/` prefix）だけを home に展開する。

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -29,6 +30,28 @@ func TestExpandHomeExpandsTilde(t *testing.T) {
 	want := filepath.Join(home, "worktrees")
 	if got, err := ExpandHome("~/worktrees"); err != nil || got != want {
 		t.Fatalf("ExpandHome(~/worktrees)=%q err=%v want=%q", got, err, want)
+	}
+}
+
+func TestExpandHomeRemovesTrailingSlash(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "tilde", path: "~/worktrees/", want: filepath.Join(home, "worktrees")},
+		{name: "environment", path: "$HOME/worktrees///", want: filepath.Join(home, "worktrees")},
+		{name: "absolute", path: home + "/worktrees/", want: filepath.Join(home, "worktrees")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, err := ExpandHome(tt.path); err != nil || got != tt.want {
+				t.Fatalf("ExpandHome(%q)=%q err=%v want=%q", tt.path, got, err, tt.want)
+			}
+		})
 	}
 }
 
@@ -81,19 +104,19 @@ func TestDerivedPathsFailClosedWithoutHome(t *testing.T) {
 // ExpandHome は状態を持たないため、同時に呼ばれても互いに干渉しないことを確認する。
 func TestExpandHomeConcurrentCallsAreIndependent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	var succeeded int
+	var succeeded atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if _, err := ExpandHome("$HOME/worktrees"); err == nil {
-				succeeded++
+				succeeded.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
-	if succeeded != 8 {
-		t.Fatalf("succeeded=%d, want 8", succeeded)
+	if got := succeeded.Load(); got != 8 {
+		t.Fatalf("succeeded=%d, want 8", got)
 	}
 }
