@@ -124,7 +124,9 @@ SQLiteを開けなくても`DegradedHandler`が`Status`・`Doctor`・`RequestSto
 通常準備の開始は`slots.preparation_started_at`、全先行配置の完了は`slots.early_ready_at`へSQL CASで記録する。
 Early Readyの間もslotはPREPARINGであり、hookが使うWaitReadyは成功しない。
 WaitEarlyReadyは認証と終端状態を検査し、過去の完了時刻だけで失敗・隔離・終了済みのsessionを起動しない。
-二段階準備がdaemon crashなどで中断した場合は、部分checkoutや外部hookの完了を推測せず隔離し、自動で先頭から再実行しない。
+二段階準備がdaemon crashなどで中断した場合は、部分checkoutや外部hookの完了を推測せず、自動で先頭から再実行しない。
+貸出先sessionを持たない待機枠は`STALE`にしてGCの回収と補充へ回し、隔離して残さない。待機枠には利用者の作業が無いためである。
+貸出先sessionを持つslotは利用者が結果を待っているので、黙って作り直さず従来どおり隔離する。
 正常な実行中のlock待ちは同じ実行を継続し、全準備がREADYへ到達済みのslotとrestoreの回復処理はこの隔離条件に含めない。
 COLD repositoryの再補充へ貸し出す際は古い先行完了・開始記録を消し、新しい二巡を始める。
 UPDATEも書込み開始時刻を永続化し、開始後の中断は隔離する。

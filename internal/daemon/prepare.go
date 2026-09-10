@@ -94,15 +94,15 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	if len(repos) != len(resolved) {
 		return errors.New("slot repository metadata does not match resolved workspace")
 	}
-	if slot.State == "PREPARING" {
-		if err := m.prepareStagedSlot(ctx, slot, w, resolved, preparer); err != nil {
-			m.log.Error("slot preparation failed", "job_id", job.ID, "session_id", job.SessionID, "slot_id", id, "error", err)
-			return err
-		}
-	} else {
+	if slot.State != "PREPARING" {
 		return errors.New("restore preparation must use the restore job")
 	}
-	placements, err := m.capturePlacements(ctx, slot, w, resolved, preparer)
+	staged, err := m.prepareStagedSlot(ctx, slot, w, resolved, preparer)
+	if err != nil {
+		m.log.Error("slot preparation failed", "job_id", job.ID, "session_id", job.SessionID, "slot_id", id, "error", err)
+		return err
+	}
+	placements, err := m.capturePlacements(ctx, slot, w, resolved, preparer, staged)
 	if err != nil {
 		return err
 	}
@@ -132,7 +132,10 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	return nil
 }
 
-func (m *Manager) capturePlacements(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, preparer *workspace.Preparer) ([]state.Placement, error) {
+// capturePlacements は staged preparation が実際に使った計画から配置履歴を作る。
+// 記録のために include/link の規則を読み直さない。1 つの job の中で規則を 2 度読むと、その間の規則変更で配置済みの実体と記録が食い違い、slot ごと隔離される。
+// staged に無い repository はこの job で配置していないので、記録済みの配置履歴をそのまま残す。
+func (m *Manager) capturePlacements(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, preparer *workspace.Preparer, staged map[string][]state.Placement) ([]state.Placement, error) {
 	var placements []state.Placement
 	repositories, err := m.store.SlotRepositories(ctx, slot.ID)
 	if err != nil {
@@ -142,31 +145,34 @@ func (m *Manager) capturePlacements(ctx context.Context, slot state.Slot, w disc
 	for _, repository := range repositories {
 		byID[repository.RepositoryID] = repository
 	}
+	var recorded []state.Placement
 	for _, resolvedRepository := range resolved {
 		stored := byID[string(resolvedRepository.Repository.ID)]
 		if stored.State != "READY" {
 			continue
 		}
-		planned, err := preparer.RepositoryPlacements(ctx, resolvedRepository.Repository, resolvedRepository.OID)
-		if err != nil {
-			return nil, err
+		placed, ok := staged[stored.RepositoryID]
+		if !ok {
+			if recorded == nil {
+				if recorded, err = m.store.Placements(ctx, slot.ID); err != nil {
+					return nil, err
+				}
+			}
+			placements = append(placements, placementsFor(recorded, stored.RepositoryID)...)
+			continue
 		}
-		materialized, err := preparer.MaterializedPlacements(stored.WorktreePath, planned)
+		materialized, err := preparer.RecordMaterializedPlacements(stored.WorktreePath, placed)
 		if err != nil {
 			return nil, err
 		}
 		placements = append(placements, materialized...)
 	}
 	if w.Kind == "multi_repository" {
-		rootPlacements, err := workspace.RootPlacements(string(w.Root), preparer.Config.Workspaces[string(w.Root)])
-		if err != nil {
-			return nil, err
-		}
 		destination, err := domain.OpenRootAt(preparer.OwnedRoot, slot.RelPath)
 		if err != nil {
 			return nil, err
 		}
-		materialized, materializeErr := workspace.ExistingPlacements(destination, rootPlacements, false)
+		materialized, materializeErr := workspace.RecordPlacements(destination, staged[""])
 		_ = destination.Close()
 		if materializeErr != nil {
 			return nil, materializeErr

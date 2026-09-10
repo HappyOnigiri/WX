@@ -155,7 +155,7 @@ func TestPrepareStagedPlacesCloneAndRestoresDirtySources(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "big", "dirty.bin"), []byte(strings.Repeat("x", cowMinShareSize)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
+	if _, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{"big/clean.bin": clean, "big/dirty.bin": dirty} {
@@ -548,7 +548,7 @@ func TestPrepareStagedKeepsCheckoutBytesForConvertedPaths(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "big", "text.dat"), []byte(strings.ReplaceAll(committed, "\n", "\r\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
+	if _, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(target, "big", "text.dat"))
