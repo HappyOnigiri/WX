@@ -29,7 +29,7 @@ func TestRootStagesSelectWithinCopyAndLinkPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	if err := stage(root, true); err != nil {
+	if err := stage.Materialize(root, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"AGENTS.md", "configs/early", "shared/file"} {
@@ -48,7 +48,7 @@ func TestRootStagesSelectWithinCopyAndLinkPlan(t *testing.T) {
 	if err := root.WriteFile("configs/early", []byte("keep changes"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := stage(root, false); err != nil {
+	if err := stage.Materialize(root, false); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := root.ReadFile("configs/early"); err != nil || string(data) != "keep changes" {
@@ -91,7 +91,7 @@ func TestRootStagesRejectNestedSymlinksAndChangedCopyTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	if err := stage(root, false); err == nil {
+	if err := stage.Materialize(root, false); err == nil {
 		t.Fatal("changed source type was copied recursively")
 	}
 }

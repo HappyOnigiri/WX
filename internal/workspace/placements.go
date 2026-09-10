@@ -213,6 +213,58 @@ func (p *Preparer) MaterializedPlacements(target string, planned []state.Placeme
 	return ExistingPlacements(root, planned, true)
 }
 
+// RecordMaterializedPlacements は準備済みworktreeの実体から配置履歴を作る。
+func (p *Preparer) RecordMaterializedPlacements(target string, placed []state.Placement) ([]state.Placement, error) {
+	root, err := p.destinationRoot(target)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	return RecordPlacements(root, placed)
+}
+
+// RecordPlacements は配置に使った計画を実体と突き合わせ、記録する配置履歴を確定する。
+// copyのContentSHA256は配置先から読む。sourceを読み直すと、準備中にsourceが変わった場合に実体と食い違う記録になる。
+// 配置時に見送ったlinkは実体が無いので記録から落とす。
+func RecordPlacements(root *os.Root, placed []state.Placement) ([]state.Placement, error) {
+	if root == nil {
+		return nil, errors.New("placement destination is nil")
+	}
+	out := make([]state.Placement, 0, len(placed))
+	for _, placement := range placed {
+		info, err := root.Lstat(placement.RelativePath)
+		if errors.Is(err, os.ErrNotExist) && placement.Kind == "link" {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect materialized placement %s: %w", placement.RelativePath, err)
+		}
+		switch placement.Kind {
+		case "link":
+			if info.Mode()&os.ModeSymlink == 0 {
+				return nil, fmt.Errorf("materialized link %s changed shape", placement.RelativePath)
+			}
+			target, err := root.Readlink(placement.RelativePath)
+			if err != nil || target != placement.SourcePath {
+				return nil, fmt.Errorf("materialized link %s changed target", placement.RelativePath)
+			}
+		case "copy":
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("materialized copy %s changed shape", placement.RelativePath)
+			}
+			hash, err := hashRootFile(root, placement.RelativePath)
+			if err != nil {
+				return nil, fmt.Errorf("hash materialized copy %s: %w", placement.RelativePath, err)
+			}
+			placement.ContentSHA256 = hash
+		default:
+			return nil, fmt.Errorf("unknown placement kind %q", placement.Kind)
+		}
+		out = append(out, placement)
+	}
+	return out, nil
+}
+
 // ExistingPlacements は配置計画を実体と照合し、指定時は意図的に省略されたlinkを許容する。
 func ExistingPlacements(root *os.Root, planned []state.Placement, allowMissingLinks bool) ([]state.Placement, error) {
 	if root == nil {

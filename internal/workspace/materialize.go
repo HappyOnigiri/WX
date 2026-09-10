@@ -136,14 +136,18 @@ func MaterializeRootAt(log *slog.Logger, source string, destinationRoot *os.Root
 			return fmt.Errorf("copy workspace root path %s: %w", clean, err)
 		}
 	}
-	return materializeRootLinks(log, source, sourceRoot, destinationRoot, rules.Link)
+	_, err = materializeRootLinks(log, source, sourceRoot, destinationRoot, rules.Link)
+	return err
 }
 
-func materializeRootLinks(log *slog.Logger, source string, sourceRoot, destinationRoot *os.Root, links []string) error {
+// materializeRootLinks は workspace root の link を配置し、実際に link 形で置いた relative path を返す。
+// 戻り値は skip した link を配置履歴へ書かないために使う。
+func materializeRootLinks(log *slog.Logger, source string, sourceRoot, destinationRoot *os.Root, links []string) ([]string, error) {
+	var created []string
 	for _, rel := range links {
 		clean, err := safeRelative(rel)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		src := filepath.Join(source, clean)
 		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
@@ -151,28 +155,30 @@ func materializeRootLinks(log *slog.Logger, source string, sourceRoot, destinati
 				logSkip(log, "workspace link source is a symlink", "workspace_root", source, "path", clean)
 				continue
 			}
-			return fmt.Errorf("link workspace root path %s: %w", clean, err)
+			return nil, fmt.Errorf("link workspace root path %s: %w", clean, err)
 		}
 		if err := domain.ValidatePhysicalLeaf(src); err != nil {
-			return fmt.Errorf("workspace link source %s is not physical: %w", clean, err)
+			return nil, fmt.Errorf("workspace link source %s is not physical: %w", clean, err)
 		}
 		if err := ensureRootDirectory(destinationRoot, filepath.Dir(clean)); err != nil {
-			return err
+			return nil, err
 		}
 		if info, err := destinationRoot.Lstat(clean); err == nil {
 			if info.Mode()&os.ModeSymlink != 0 {
 				existing, readErr := destinationRoot.Readlink(clean)
 				if readErr == nil && existing == src {
+					created = append(created, clean)
 					continue
 				}
 			}
-			return fmt.Errorf("workspace root link collision %s", clean)
+			return nil, fmt.Errorf("workspace root link collision %s", clean)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+			return nil, err
 		}
 		if err := destinationRoot.Symlink(src, clean); err != nil {
-			return err
+			return nil, err
 		}
+		created = append(created, clean)
 	}
-	return nil
+	return created, nil
 }

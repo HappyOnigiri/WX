@@ -47,11 +47,13 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 	if err != nil {
 		return err
 	}
-	return p.createPlannedLinksAt(ctx, repo, sourceRoot, owner, relativeTarget, destinationIgnore, sources)
+	_, err = p.createPlannedLinksAt(ctx, repo, sourceRoot, owner, relativeTarget, destinationIgnore, sources)
+	return err
 }
 
 // createPlannedLinksAt は一度列挙した link のうち、今回の配置段階に属するものだけを検証・配置する。
-func (p *Preparer) createPlannedLinksAt(ctx context.Context, repo discovery.Repository, sourceRoot *os.Root, owner *os.Root, relativeTarget string, destinationIgnore bool, sources []linkSource) error {
+// 戻り値は実際に link 形で置いた relative path で、skip した link を配置履歴へ書かないために使う。
+func (p *Preparer) createPlannedLinksAt(ctx context.Context, repo discovery.Repository, sourceRoot *os.Root, owner *os.Root, relativeTarget string, destinationIgnore bool, sources []linkSource) ([]string, error) {
 	mainPath := string(repo.MainPath)
 	for _, link := range sources {
 		if link.symlink {
@@ -59,38 +61,39 @@ func (p *Preparer) createPlannedLinksAt(ctx context.Context, repo discovery.Repo
 		}
 	}
 	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
-		return err
+		return nil, err
 	}
 	if len(sources) == 0 {
 		destinationRoot, err := domain.OpenRootAt(owner, relativeTarget)
 		if err != nil {
-			return fmt.Errorf("open link destination: %w", err)
+			return nil, fmt.Errorf("open link destination: %w", err)
 		}
-		return destinationRoot.Close()
+		return nil, destinationRoot.Close()
 	}
 	if !hasPresentLinkSource(sources) {
-		return nil
+		return nil, nil
 	}
 	destinationRoot, err := domain.OpenRootAt(owner, relativeTarget)
 	if err != nil {
-		return fmt.Errorf("open link destination: %w", err)
+		return nil, fmt.Errorf("open link destination: %w", err)
 	}
 	defer func() { _ = destinationRoot.Close() }()
 	var destinationDirectory *os.File
 	if destinationIgnore {
 		destinationDirectory, err = destinationRoot.Open(".")
 		if err != nil {
-			return fmt.Errorf("open link destination for ignore check: %w", err)
+			return nil, fmt.Errorf("open link destination for ignore check: %w", err)
 		}
 		defer func() { _ = destinationDirectory.Close() }()
 	}
+	var created []string
 	for _, link := range sources {
 		if !link.present {
 			continue
 		}
 		current, err := inspectLinkSource(sourceRoot, link.relative)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !current.present {
 			continue
@@ -98,7 +101,7 @@ func (p *Preparer) createPlannedLinksAt(ctx context.Context, repo discovery.Repo
 		// 未 ignore の link を張ると worktree に追跡対象の差分を作るため、その 1 件だけ skip して prepare は続ける。
 		ignored, err := checkIgnored(ctx, p.Git, mainPath, link.relative)
 		if err != nil {
-			return fmt.Errorf("check source repository ignore rule for %q: %w", link.relative, err)
+			return nil, fmt.Errorf("check source repository ignore rule for %q: %w", link.relative, err)
 		}
 		if !ignored {
 			p.logSkip(".worktreelink path is not ignored by the source repository", "repository", mainPath, "path", link.relative)
@@ -107,7 +110,7 @@ func (p *Preparer) createPlannedLinksAt(ctx context.Context, repo discovery.Repo
 		if destinationDirectory != nil {
 			skip, err := pruneLinkNotIgnoredAtDestination(ctx, p.Git, destinationDirectory, destinationRoot, mainPath, link.relative)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if skip {
 				continue
@@ -116,37 +119,39 @@ func (p *Preparer) createPlannedLinksAt(ctx context.Context, repo discovery.Repo
 		source := filepath.Join(mainPath, link.relative)
 		destinationRelative := link.relative
 		if err := ensureRootDirectory(destinationRoot, filepath.Dir(destinationRelative)); err != nil {
-			return err
+			return nil, err
 		}
 		if info, err := destinationRoot.Lstat(destinationRelative); err == nil {
 			if info.Mode()&os.ModeSymlink != 0 {
 				existing, readErr := destinationRoot.Readlink(destinationRelative)
 				if readErr == nil && existing == source {
+					created = append(created, destinationRelative)
 					continue
 				}
 			}
-			return fmt.Errorf(".worktreelink target collision %s", link.relative)
+			return nil, fmt.Errorf(".worktreelink target collision %s", link.relative)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+			return nil, err
 		}
 		current, err = inspectLinkSource(sourceRoot, link.relative)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if !current.present {
 			continue
 		}
 		if err := destinationRoot.Symlink(source, destinationRelative); err != nil {
-			return err
+			return nil, err
 		}
+		created = append(created, destinationRelative)
 	}
 	// link を作り終えたあとに、pin した root と main path の pathname がまだ同じ実体を指すことを確認する。
 	// 単一ユーザー環境では作業中に main worktree が差し替わる状況は起きず、起きても次回の prepare で検出できるため、
 	// ループ内での毎回の再検証はせずループ前後の境界 2 回に絞る。
 	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return created, nil
 }
 
 // pruneLinkNotIgnoredAtDestination は、復元先の現在の ignore 規則で link 形が無視されるかを調べ、無視されないなら link を張らないと返す。

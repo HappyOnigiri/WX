@@ -91,6 +91,10 @@ path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗さ�
 workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
 
 新規準備は実際に配置したcopy/linkをfile単位で`slot_placements`へ記録する。
+記録はその準備が配置に使った計画そのものから作り、include/linkのruleを読み直さない。
+1つのPREPARE jobがruleを2度読むと、その間のrule変更で配置済みの実体と記録が食い違い、slotごと隔離される。
+copyの`content_sha256`もsourceではなく配置先から読み、記録がworktreeの実体を表すようにする。
+配置時に省略したlinkは実体が無いので記録に載せない。
 UPDATEは現行ruleとcopy元から作る新計画を旧履歴と比較し、追加・変更・削除とcopy/link切替を反映する。
 削除対象は記録済みpathだけなので、同じdirectoryにある履歴外生成物は保持する。
 配置履歴のない既存slotは完全一致なら貸出せるが、更新には使わない。
