@@ -24,9 +24,10 @@ func (c jobClass) String() string {
 	return "maintenance"
 }
 
-// maintenanceJobSlots は保守クラスの実行枠数。
-// preparation_concurrency=1 でも保守と利用者処理が互いの完了を待たないよう、利用者向けとは別に常に確保する。
-const maintenanceJobSlots = 1
+// maintenanceJobSlots は保守クラスの実行枠数。preparation_concurrency=1 でも保守と利用者処理が互いを待たないよう別に確保する。
+// 1 本だと大きい repository の補充・回収が枠を数十秒占め、他 workspace の補充が待って READY が枯れる。
+// 律速はディスク帯域ではなく枠数なので、2 本にすると個々の遅延より待ちの減少が上回る。
+const maintenanceJobSlots = 2
 
 // queuedJobCapacity はクラスごとの未実行キューの上限。
 // 溢れた分は PENDING の durable job として残り、maintainJobs の定期回収が拾う。

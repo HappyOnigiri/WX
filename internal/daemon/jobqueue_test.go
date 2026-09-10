@@ -56,8 +56,10 @@ func TestJobQueueKeepsBothClassesRunnableAtConcurrencyOne(t *testing.T) {
 	t.Parallel()
 	q := newJobQueue(1)
 	q.add(queuedJob{id: "restore", class: jobClassInteractive})
-	q.add(queuedJob{id: "remove", class: jobClassMaintenance})
-	for range 2 {
+	for i := range maintenanceJobSlots {
+		q.add(queuedJob{id: fmt.Sprintf("remove-%d", i), class: jobClassMaintenance})
+	}
+	for range 1 + maintenanceJobSlots {
 		if _, _, ok := q.take(); !ok {
 			t.Fatal("a class had no execution slot at preparation_concurrency=1")
 		}
