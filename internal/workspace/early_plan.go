@@ -12,6 +12,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 type copyEntry struct {
@@ -20,7 +21,14 @@ type copyEntry struct {
 }
 
 type earlyPlan struct {
-	log     *slog.Logger
+	log *slog.Logger
+	// repositoryID と sourcePath は placed を配置履歴の形へ写すための出所である。
+	// workspace root の計画では repositoryID を空にする。
+	repositoryID string
+	sourcePath   string
+	// placed はこの計画で実際に配置した項目である。
+	// 配置履歴は規則を読み直さずここから作り、準備中の規則変更で記録と実体がずれないようにする。
+	placed  map[string]state.Placement
 	copies  []copyEntry
 	links   []linkSource
 	tracked []string
@@ -30,6 +38,41 @@ type earlyPlan struct {
 	gitlinks []string
 	symlinks map[string]string
 	early    map[string]bool
+}
+
+// record は配置し終えた 1 件を配置履歴の候補へ加える。
+// 同じ path を早期と残りの両段階で配置することはないが、defaults と .worktreeinclude が重なる場合に備えて上書きで揃える。
+func (plan *earlyPlan) record(relative, kind string) {
+	if plan.placed == nil {
+		plan.placed = map[string]state.Placement{}
+	}
+	plan.placed[relative] = state.Placement{
+		RepositoryID: plan.repositoryID,
+		RelativePath: relative,
+		Kind:         kind,
+		SourcePath:   filepath.Join(plan.sourcePath, relative),
+	}
+}
+
+// recordCopies は今回の段階で copyAt が配置した file を記録する。ディレクトリは配置履歴に載せない。
+func (plan *earlyPlan) recordCopies(early bool) {
+	for _, entry := range plan.copies {
+		if entry.directory || plan.early[entry.path] != early {
+			continue
+		}
+		plan.record(entry.path, "copy")
+	}
+}
+
+func (plan *earlyPlan) recordLinks(relatives []string) {
+	for _, relative := range relatives {
+		plan.record(relative, "link")
+	}
+}
+
+// placements は配置に使った計画そのものを配置履歴の入力として返す。ContentSHA256 は配置先を読む側が埋める。
+func (plan *earlyPlan) placements() []state.Placement {
+	return sortedPlacements(plan.placed)
 }
 
 func earlyMatch(path string, candidates []string) bool {
@@ -164,6 +207,8 @@ func (plan *earlyPlan) collectCopies(source *os.Root, path string, keep func(str
 
 func (p *Preparer) planIncludes(repo discovery.Repository, plan *earlyPlan) error {
 	mainPath := string(repo.MainPath)
+	plan.repositoryID = string(repo.ID)
+	plan.sourcePath = mainPath
 	source, err := OpenPhysicalRoot(mainPath)
 	if err != nil {
 		return err
@@ -262,11 +307,17 @@ func (p *Preparer) materializePlan(ctx context.Context, repo discovery.Repositor
 	if err := plan.copyAt(source, destination, early); err != nil {
 		return err
 	}
+	plan.recordCopies(early)
 	var links []linkSource
 	for _, link := range plan.links {
 		if plan.early[link.relative] == early {
 			links = append(links, link)
 		}
 	}
-	return p.createPlannedLinksAt(ctx, repo, source, locked.root, locked.relative, true, links)
+	created, err := p.createPlannedLinksAt(ctx, repo, source, locked.root, locked.relative, true, links)
+	if err != nil {
+		return err
+	}
+	plan.recordLinks(created)
+	return nil
 }

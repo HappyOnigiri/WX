@@ -222,6 +222,16 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 			return nil
 		}
 		if slot.PreparationStartedAt != "" {
+			// 開始済みの二段階準備は部分 checkout や hook の完了を推測できないため、先頭から再実行しない。
+			// 待機枠には利用者の作業が無いので、隔離して残さず STALE にし、GC の回収と補充で作り直す。
+			// 貸出先の session を持つ slot は待っている利用者がいるので、黙って作り直さず従来どおり隔離する。
+			if slot.OwnerSessionID == "" {
+				if err := m.store.SetSlotState(ctx, job.SlotID, []string{"PREPARING", "FAILED"}, "STALE", "PREPARE_INTERRUPTED"); err != nil {
+					return retryableJobError{err}
+				}
+				m.log.Warn("recycled a standby slot whose staged preparation was interrupted", "slot_id", job.SlotID, "job_id", job.ID)
+				return nil
+			}
 			_ = m.store.SetSlotState(ctx, job.SlotID, []string{"PREPARING", "FAILED"}, "QUARANTINED", "PREPARE_AMBIGUOUS")
 			m.suspendStandbyReplenishment(ctx, job)
 			return fmt.Errorf("%w: staged preparation was interrupted; automatic replay is disabled", state.ErrOwnership)
