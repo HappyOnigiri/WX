@@ -78,6 +78,16 @@ func TestScanReusesUnchangedMetadataAcrossInvocations(t *testing.T) {
 	if !reflect.DeepEqual(cold, warm) {
 		t.Fatalf("warm sessions = %+v, want the cold result %+v", warm, cold)
 	}
+	// Size は列挙時の stat から取るので、cache ヒットでも欠けない。
+	for _, session := range warm {
+		info, err := os.Stat(session.RawPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if session.Size == 0 || session.Size != info.Size() {
+			t.Fatalf("warm size = %d, want %d for %s", session.Size, info.Size(), session.RawPath)
+		}
+	}
 
 	// 追記は size と mtime が変わるため再解析される。
 	file, err := os.OpenFile(first, os.O_APPEND|os.O_WRONLY, 0o600)

@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/HappyOnigiri/WX/internal/textfmt"
 )
 
 // printStatusDisplay は wx status の人間向け表示を担当する。
@@ -142,7 +144,7 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 			continue
 		}
 		root, _ := statusRawString(workspace, "root")
-		path := statusHomePath(root)
+		path := textfmt.HomePath(root)
 		if statusWorkspaceIsCurrent(workspace, roots) {
 			path += " *"
 		}
@@ -216,7 +218,7 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 	}
 	sort.Strings(remaining)
 	for _, root := range remaining {
-		writeStatusLine(w, statusHomePath(root)+" "+notes[root])
+		writeStatusLine(w, textfmt.HomePath(root)+" "+notes[root])
 	}
 }
 
@@ -242,7 +244,7 @@ func statusDaemonSummary(payload map[string]any) string {
 
 func statusDiskSummary(root map[string]any) string {
 	path, _ := statusRawString(root, "path")
-	path = statusDash(statusHomePath(path))
+	path = statusDash(textfmt.HomePath(path))
 	if message, ok := statusRawString(root, "error"); ok && message != "" {
 		return "Disk   measurement failed · " + path + " · " + message
 	}
@@ -257,12 +259,12 @@ func statusDiskSummary(root map[string]any) string {
 	if !ok {
 		return "Disk   measurement unavailable · " + path
 	}
-	line := "Disk   " + formatHumanBytes(exclusive) + " managed · " + path
+	line := "Disk   " + textfmt.HumanBytes(exclusive) + " managed · " + path
 	if measuredAt, ok := statusRawString(root, "measured_at"); ok && measuredAt != "" {
 		line += " · measured " + statusLocalDate(measuredAt) + " " + statusZoneLabel()
 	}
 	if unmanaged, ok := statusInt(root, "unmanaged_allocated_bytes"); ok && unmanaged > 0 {
-		line += "\nUnmanaged " + formatHumanBytes(unmanaged) + " · excluded from cleanup"
+		line += "\nUnmanaged " + textfmt.HumanBytes(unmanaged) + " · excluded from cleanup"
 	}
 	return line
 }

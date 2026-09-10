@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/HappyOnigiri/WX/internal/textfmt"
 )
 
 // 表示に使うタイムゾーン。テストが固定の地域時刻を検査するための差し替え点である。
@@ -26,25 +27,6 @@ func statusPathWithin(path, root string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func statusHomePath(path string) string {
-	if path == "" {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return path
-	}
-	home = filepath.Clean(home)
-	path = filepath.Clean(path)
-	if path == home {
-		return "~"
-	}
-	if rel, err := filepath.Rel(home, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return filepath.Join("~", rel)
-	}
-	return path
-}
-
 func statusDash(value string) string {
 	if value == "" {
 		return "—"
@@ -57,7 +39,7 @@ func statusHomeValue(object map[string]any, key string) string {
 	if !ok {
 		return "—"
 	}
-	return statusHomePath(statusRawValue(value))
+	return textfmt.HomePath(statusRawValue(value))
 }
 
 func statusLocalDate(raw string) string {
@@ -74,30 +56,6 @@ func statusZoneLabel() string {
 		return "LOCAL"
 	}
 	return name
-}
-
-func formatHumanBytes(value int64) string {
-	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
-	negative := value < 0
-	n := float64(value)
-	if negative {
-		n = -n
-	}
-	unit := 0
-	for n >= 1024 && unit < len(units)-1 {
-		n /= 1024
-		unit++
-	}
-	var number string
-	if unit == 0 || n == math.Trunc(n) {
-		number = strconv.FormatFloat(n, 'f', 0, 64)
-	} else {
-		number = strings.TrimRight(strings.TrimRight(strconv.FormatFloat(n, 'f', 2, 64), "0"), ".")
-	}
-	if negative {
-		number = "-" + number
-	}
-	return number + " " + units[unit]
 }
 
 func statusObjectList(value any) []map[string]any {
