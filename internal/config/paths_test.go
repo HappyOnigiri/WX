@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -107,19 +108,19 @@ func TestExpandHomeStripsTrailingSlash(t *testing.T) {
 // ExpandHome は状態を持たないため、同時に呼ばれても互いに干渉しないことを確認する。
 func TestExpandHomeConcurrentCallsAreIndependent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	var succeeded int
+	var succeeded atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if _, err := ExpandHome("$HOME/worktrees"); err == nil {
-				succeeded++
+				succeeded.Add(1)
 			}
 		}()
 	}
 	wg.Wait()
-	if succeeded != 8 {
-		t.Fatalf("succeeded=%d, want 8", succeeded)
+	if got := succeeded.Load(); got != 8 {
+		t.Fatalf("succeeded=%d, want 8", got)
 	}
 }
