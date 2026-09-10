@@ -316,7 +316,7 @@ func TestCOWCompactOwnedWorktreeSharesDonorBytes(t *testing.T) {
 	if err := unix.Stat(filepath.Join(target, "file"), &before); err != nil {
 		t.Fatal(err)
 	}
-	err = p.compactOwnedWorktree(context.Background(), repo, target, oid, testSlotID, preparePhaseCreate, identity)
+	err = p.compactOwnedWorktree(context.Background(), repo, target, oid, testSlotID, preparePhaseCreate, identity, nil)
 	if !cowAvailable() {
 		if !errors.Is(err, unix.ENOTSUP) {
 			t.Fatalf("unsupported clone error=%v", err)

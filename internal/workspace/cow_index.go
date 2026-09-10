@@ -89,6 +89,27 @@ func (p *Preparer) cowSourceIndexOIDs(ctx context.Context, source *os.Root) map[
 	return oids
 }
 
+// cowScope は compaction の候補を、その準備が実際に書き直した path へ限定する。
+// nil は限定なしを表し、新規準備と復元は宛先に共有済みの実体が無いため常に nil を渡す。
+type cowScope struct {
+	rewritten map[string]bool
+}
+
+// narrow は書き直していない path の entry を落とす。
+// 落とした path の宛先は前回の準備が作った実体そのままなので、共有済みなら共有のまま、そうでなければ通常 checkout のまま残る。
+func (s *cowScope) narrow(entries []cowIndexEntry) []cowIndexEntry {
+	if s == nil {
+		return entries
+	}
+	candidates := make([]cowIndexEntry, 0, len(s.rewritten))
+	for _, entry := range entries {
+		if s.rewritten[entry.name] {
+			candidates = append(candidates, entry)
+		}
+	}
+	return candidates
+}
+
 // selectCOWCandidates は main 側 index と blob OID が一致する entry だけを残す。
 // OID の一致は共有の根拠ではない（main が dirty なら内容は違う）ため、不一致を除く用途に限る。
 func selectCOWCandidates(entries []cowIndexEntry, sourceOIDs map[string]string) []cowIndexEntry {
