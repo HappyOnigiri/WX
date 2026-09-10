@@ -76,6 +76,23 @@ func TestManagerStatusReportsDaemonVersion(t *testing.T) {
 	}
 }
 
+func TestManagerStatusReportsDaemonUptimeSeconds(t *testing.T) {
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
+	manager.started = time.Now().Add(-37 * time.Second)
+
+	status, err := manager.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uptime, ok := status["uptime_seconds"].(int)
+	if !ok {
+		t.Fatalf("status uptime_seconds=%T %v, want int", status["uptime_seconds"], status["uptime_seconds"])
+	}
+	if uptime < 37 || uptime > 38 {
+		t.Fatalf("status uptime_seconds=%d, want roughly 37", uptime)
+	}
+}
+
 func TestDaemonVersionUsesEmbeddedBuildWithoutVCS(t *testing.T) {
 	embedded, configured := buildversion.EmbeddedString()
 	if !configured {
