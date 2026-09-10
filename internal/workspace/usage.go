@@ -18,12 +18,22 @@ type SlotUsageTarget struct {
 
 // SlotUsage は測定 1 回分の slot 使用量である。
 // SharedBytes は main worktree と block を共有していると判定したファイルの allocated 合計、Compared はその判定を試みたファイル数である。
+// Repositories は repository directory 名ごとの内訳で、repository の外にある slot 直下のファイルを含まないため合計は一致しない。
 type SlotUsage struct {
+	Files          int                        `json:"files"`
+	LogicalBytes   int64                      `json:"logical_bytes"`
+	AllocatedBytes int64                      `json:"allocated_bytes"`
+	Compared       int                        `json:"compared_files"`
+	SharedFiles    int                        `json:"shared_files"`
+	SharedBytes    int64                      `json:"shared_bytes"`
+	Repositories   map[string]RepositoryUsage `json:"repositories,omitempty"`
+}
+
+// RepositoryUsage は slot 内の repository 1 個分の使用量である。
+type RepositoryUsage struct {
 	Files          int   `json:"files"`
 	LogicalBytes   int64 `json:"logical_bytes"`
 	AllocatedBytes int64 `json:"allocated_bytes"`
-	Compared       int   `json:"compared_files"`
-	SharedFiles    int   `json:"shared_files"`
 	SharedBytes    int64 `json:"shared_bytes"`
 }
 
@@ -62,6 +72,7 @@ func SharingSupported() bool { return cowAvailable() }
 
 type usageRepository struct {
 	slotID   string
+	dirName  string
 	mainPath string
 }
 
@@ -113,7 +124,7 @@ func usagePrefixes(targets []SlotUsageTarget, samples map[string]SlotUsage) (map
 			if directory == "" || mainPath == "" {
 				continue
 			}
-			repositories[path.Join(relative, directory)] = usageRepository{slotID: target.SlotID, mainPath: mainPath}
+			repositories[path.Join(relative, directory)] = usageRepository{slotID: target.SlotID, dirName: directory, mainPath: mainPath}
 		}
 	}
 	return slots, repositories

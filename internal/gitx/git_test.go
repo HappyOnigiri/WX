@@ -440,3 +440,51 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(output))
 }
+
+// 失敗しなかった処理の出力も、失敗の stderr と同じ置き場・同じ命名で残せる必要がある。
+// 呼び出し側はここで返る path を診断へ載せるため、書けたかどうかを戻り値で区別できなければならない。
+func TestWriteDetailStoresContentUnderTheDetailDirectory(t *testing.T) {
+	detailDir := filepath.Join(t.TempDir(), "details")
+	path := WriteDetail(detailDir, "phase: post-checkout\nstderr:\nhook warned\n")
+	if path == "" {
+		t.Fatal("WriteDetail returned no path")
+	}
+	if filepath.Dir(path) != detailDir || filepath.Ext(path) != ".log" {
+		t.Fatalf("path = %q", path)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(content), "hook warned") {
+		t.Fatalf("content = %q: %v", content, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v: %v", info, err)
+	}
+}
+
+// 置き場を持たない runner でも診断の保存だけが落ちるようにする。
+func TestWriteDetailWithoutDetailDirectoryReturnsNoPath(t *testing.T) {
+	if path := WriteDetail("", "content"); path != "" {
+		t.Fatalf("path = %q, want empty", path)
+	}
+	if path := DetailPath("", "ID"); path != "" {
+		t.Fatalf("path = %q, want empty", path)
+	}
+	if path := DetailPath("/logs/details", ""); path != "" {
+		t.Fatalf("path = %q, want empty", path)
+	}
+}
+
+// 失敗を記録した側と後から読ませる側が同じ規則で path を組めないと、詳細ログへ辿れない。
+func TestDetailPathMatchesWhereFailuresAreWritten(t *testing.T) {
+	detailDir := filepath.Join(t.TempDir(), "details")
+	runner := &Runner{Timeout: 30 * time.Second, DetailDir: detailDir}
+	_, err := runner.Run(context.Background(), t.TempDir(), "rev-parse", "--git-dir")
+	var gitErr *Error
+	if !errors.As(err, &gitErr) {
+		t.Fatalf("err = %v, want a git error", err)
+	}
+	if _, statErr := os.Stat(DetailPath(detailDir, gitErr.FailureID)); statErr != nil {
+		t.Fatalf("detail log for failure %s: %v", gitErr.FailureID, statErr)
+	}
+}

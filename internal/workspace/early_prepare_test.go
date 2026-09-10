@@ -199,3 +199,50 @@ func TestPrepareStagedUsesRequestedAttributesAfterEarlyIncludes(t *testing.T) {
 		t.Fatalf("untracked early attributes changed checkout: %q, %v", data, err)
 	}
 }
+
+// exit 0 の post-checkout hook が出した出力は、準備を成功させたまま notice として残す。
+// 捨ててしまうと、hook が内部の失敗を飲み込んだ回を wx から正常と区別できない。
+func TestPrepareStagedRecordsHookOutputOfSuccessfulHook(t *testing.T) {
+	source, repo, preparer, _, target := prepareEdgesFixture(t)
+	preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	notices := &PrepareNotices{}
+	preparer.Notices = notices
+	oid := gitOutput(t, source, "rev-parse", "HEAD")
+	script := "#!/bin/sh\necho 'submodule update skipped' >&2\necho 'hook done'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(string(repo.CommonDir), "hooks", "post-checkout"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	recorded := notices.Notices()
+	if len(recorded) != 1 {
+		t.Fatalf("notices = %+v, want one entry", recorded)
+	}
+	if recorded[0].Phase != "post-checkout" || recorded[0].Target != target {
+		t.Fatalf("notice = %+v", recorded[0])
+	}
+	// `git hook run` は hook の stdout も stderr へ流すため、どちらへ出た行も同じ出力に現れる。
+	output := recorded[0].Stdout + recorded[0].Stderr
+	if !strings.Contains(output, "submodule update skipped") || !strings.Contains(output, "hook done") {
+		t.Fatalf("notice output = %+v", recorded[0])
+	}
+}
+
+// 出力を出さない hook では notice を作らない。区間を通っただけの回が診断へ並ぶのを避ける。
+func TestPrepareStagedRecordsNoNoticeForSilentHook(t *testing.T) {
+	source, repo, preparer, _, target := prepareEdgesFixture(t)
+	preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	notices := &PrepareNotices{}
+	preparer.Notices = notices
+	oid := gitOutput(t, source, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(string(repo.CommonDir), "hooks", "post-checkout"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if recorded := notices.Notices(); len(recorded) != 0 {
+		t.Fatalf("notices = %+v, want none", recorded)
+	}
+}

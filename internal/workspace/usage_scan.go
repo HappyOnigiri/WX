@@ -18,13 +18,14 @@ const usageMaxWorkers = 10
 
 // usageDirectory は測定中の directory 1 個の位置と、対応する共有元 directory である。
 // dir と main は task が閉じる descriptor で、main が nil の subtree では共有判定を行わない。
-// repo は repository の内側かを表し、共有元を開けなかった subtree でも Compared の対象は変えない。
+// repo は repository の内側かを表し、共有元を開けなかった subtree でも Compared の対象は変えない。repoName はその内訳の足し先である。
 type usageDirectory struct {
-	name   string
-	slotID string
-	repo   bool
-	dir    *os.File
-	main   *os.File
+	name     string
+	slotID   string
+	repo     bool
+	repoName string
+	dir      *os.File
+	main     *os.File
 }
 
 func (d usageDirectory) close() {
@@ -111,7 +112,7 @@ func (s *usageScan) measure(task usageDirectory) {
 			break
 		}
 	}
-	s.record(task.slotID, &totals)
+	s.record(task, &totals)
 }
 
 // visit は entry 1 件を集計へ足すか子 directory へ降り、走査を続けてよいかを返す。
@@ -181,9 +182,9 @@ func (s *usageScan) count(task usageDirectory, totals *usageDirectoryTotals, nam
 // childOf は子 directory の task を組む。slot と repository の境界はここで切り替え、
 // repository の内側では共有元も同じ 1 成分だけ降りる。共有元を開けない subtree は共有なしとして数える。
 func (s *usageScan) childOf(task usageDirectory, name, leaf string) (usageDirectory, error) {
-	child := usageDirectory{name: name, slotID: task.slotID, repo: task.repo}
+	child := usageDirectory{name: name, slotID: task.slotID, repo: task.repo, repoName: task.repoName}
 	if slotID, boundary := s.slots[name]; boundary {
-		child.slotID, child.repo = slotID, false
+		child.slotID, child.repo, child.repoName = slotID, false, ""
 	}
 	dir, err := openUsageChild(task.dir, leaf)
 	if err != nil {
@@ -194,7 +195,9 @@ func (s *usageScan) childOf(task usageDirectory, name, leaf string) (usageDirect
 	case boundary:
 		// 登録と違う slot の下に現れた repository path は、共有元を持たない普通の directory として数える。
 		child.repo = repository.slotID == child.slotID
+		child.repoName = ""
 		if child.repo {
+			child.repoName = repository.dirName
 			child.main = openUsageRepository(repository.mainPath)
 		}
 	case child.repo && task.main != nil:
@@ -219,22 +222,34 @@ func (s *usageScan) spawn(child usageDirectory) {
 }
 
 // record は directory 1 個分の集計を共有の合計へ移す。
-func (s *usageScan) record(slotID string, totals *usageDirectoryTotals) {
+// directory は 1 つの slot と 1 つの repository にしか属さないため、内訳の足し先は task が決める。
+func (s *usageScan) record(task usageDirectory, totals *usageDirectoryTotals) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.usage.UnmanagedBytes += totals.unmanaged
 	s.usage.LogicalBytes += totals.logical
 	s.usage.AllocatedBytes += totals.allocated
 	s.usage.SharedBytes += totals.shared
-	if slotID != "" {
-		sample := s.usage.Slots[slotID]
+	if task.slotID != "" {
+		sample := s.usage.Slots[task.slotID]
 		sample.Files += totals.sample.Files
 		sample.LogicalBytes += totals.sample.LogicalBytes
 		sample.AllocatedBytes += totals.sample.AllocatedBytes
 		sample.Compared += totals.sample.Compared
 		sample.SharedFiles += totals.sample.SharedFiles
 		sample.SharedBytes += totals.sample.SharedBytes
-		s.usage.Slots[slotID] = sample
+		if task.repoName != "" {
+			if sample.Repositories == nil {
+				sample.Repositories = map[string]RepositoryUsage{}
+			}
+			repository := sample.Repositories[task.repoName]
+			repository.Files += totals.sample.Files
+			repository.LogicalBytes += totals.sample.LogicalBytes
+			repository.AllocatedBytes += totals.sample.AllocatedBytes
+			repository.SharedBytes += totals.sample.SharedBytes
+			sample.Repositories[task.repoName] = repository
+		}
+		s.usage.Slots[task.slotID] = sample
 	}
 	for _, entry := range totals.cache {
 		s.cache[entry.name] = entry.state

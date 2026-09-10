@@ -115,7 +115,9 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		// worktree add の post-checkout と同じ null OID・新 HEAD・branch flag を使う。
 		// Git 自身に hook 選択と実行を任せ、未配置の相対 hooksPath も全展開後に解決する。
 		if err := p.timePhase("post-checkout", func() error {
-			_, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "hook", "run", "--ignore-missing", "post-checkout", "--", strings.Repeat("0", len(item.OID)), item.OID, "1")
+			result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "hook", "run", "--ignore-missing", "post-checkout", "--", strings.Repeat("0", len(item.OID)), item.OID, "1")
+			// exit 0 の hook が出した出力も残す。hook が内部の失敗を飲み込むと、捨てた時点で wx からは正常と区別できなくなる。
+			p.Notices.Add(PrepareNotice{Target: item.Target, Phase: "post-checkout", Stdout: result.Stdout, Stderr: result.Stderr})
 			return err
 		}); err != nil {
 			return err
