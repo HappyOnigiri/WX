@@ -39,7 +39,7 @@ func TestPickerMetaLineShowsAgeHomePathAndSize(t *testing.T) {
 		{Tool: "claude", SessionID: "full", Title: "full", CWD: home + "/wx/repo", Mtime: float64(fixedNow.Add(-7 * time.Hour).Unix()), Size: 1468006},
 		{Tool: "claude", SessionID: "bare", Title: "bare"},
 	}, PickOptions{Now: fixedNow})
-	if got, want := m.items[0].metaLine(80), "    7時間前 · ~/wx/repo · 1.4 MiB"; got != want {
+	if got, want := m.items[0].metaLine(80), "    7h ago · ~/wx/repo · 1.4 MiB"; got != want {
 		t.Errorf("meta=%q, want %q", got, want)
 	}
 	if got := m.items[1].metaLine(80); got != metaIndent {
@@ -47,15 +47,15 @@ func TestPickerMetaLineShowsAgeHomePathAndSize(t *testing.T) {
 	}
 
 	// 幅が足りないときは path の先頭だけを省き、相対時刻とサイズは残す。
-	narrow := m.items[0].metaLine(32)
-	if !strings.Contains(narrow, "7時間前") || !strings.Contains(narrow, "1.4 MiB") || !strings.Contains(narrow, "…") {
+	narrow := m.items[0].metaLine(31)
+	if !strings.Contains(narrow, "7h ago") || !strings.Contains(narrow, "1.4 MiB") || !strings.Contains(narrow, "…") {
 		t.Errorf("narrow meta=%q", narrow)
 	}
-	if got := displayWidth(narrow); got > 32 {
+	if got := displayWidth(narrow); got > 31 {
 		t.Errorf("narrow meta width=%d: %q", got, narrow)
 	}
 	// path へ回す幅が下限を割ると path ごと落ちる。
-	if got := m.items[0].metaLine(28); strings.Contains(got, "~") || !strings.Contains(got, "1.4 MiB") {
+	if got := m.items[0].metaLine(30); strings.Contains(got, "~") || !strings.Contains(got, "1.4 MiB") {
 		t.Errorf("path dropped meta=%q", got)
 	}
 }
@@ -66,18 +66,18 @@ func TestPickerNavigationUsesTwoLineRows(t *testing.T) {
 		items[i] = scanner.Session{Tool: "claude", SessionID: "session-id", Title: "session"}
 	}
 	m := newPickerModel(items, PickOptions{Now: fixedNow})
-	result, _ := m.Update(tea.WindowSizeMsg{Width: 24, Height: 11})
+	result, _ := m.Update(tea.WindowSizeMsg{Width: 24, Height: 13})
 	m = result.(pickerModel)
-	if got := m.visibleRows(); got != 4 {
-		t.Fatalf("visible rows=%d, want 4", got)
+	if got := m.visibleRows(); got != 3 {
+		t.Fatalf("visible rows=%d, want 3", got)
 	}
 
 	for range 4 {
 		result, _ = m.Update(keyPress("down"))
 		m = result.(pickerModel)
 	}
-	if m.selected != 4 || m.offset != 1 {
-		t.Fatalf("after down selected=%d offset=%d, want 4/1", m.selected, m.offset)
+	if m.selected != 4 || m.offset != 2 {
+		t.Fatalf("after down selected=%d offset=%d, want 4/2", m.selected, m.offset)
 	}
 	result, _ = m.Update(keyPress("ctrl+p"))
 	m = result.(pickerModel)
@@ -94,8 +94,8 @@ func TestPickerNavigationUsesTwoLineRows(t *testing.T) {
 	if m.selected != 5 {
 		t.Fatalf("after end selected=%d, want 5", m.selected)
 	}
-	if lines := strings.Count(m.View().Content, "\n") + 1; lines > 11 {
-		t.Fatalf("view lines=%d exceed height 11", lines)
+	if lines := strings.Count(m.View().Content, "\n") + 1; lines > 13 {
+		t.Fatalf("view lines=%d exceed height 13", lines)
 	}
 
 	// 狭い端末でも 1 件（2 行）は残す。
@@ -152,7 +152,7 @@ func TestPickerSearchNarrowsTitleAndPath(t *testing.T) {
 		t.Fatalf("no-match visible=%v", m.visible)
 	}
 	view := m.View().Content
-	if !strings.Contains(view, "条件に一致する会話がありません") || strings.Contains(view, "セッションがありません") {
+	if !strings.Contains(view, "no conversations match the current filter") || strings.Contains(view, "no sessions found") {
 		t.Fatalf("no-match view=%q", view)
 	}
 	result, cmd := m.Update(keyPress("enter"))
@@ -240,7 +240,7 @@ func TestPickerScopeToggleReusesOneScan(t *testing.T) {
 	if !m.scoped || len(m.visible) != 1 {
 		t.Fatalf("initial scoped=%v visible=%v", m.scoped, m.visible)
 	}
-	if view := m.View().Content; !strings.Contains(view, "(この workspace)") {
+	if view := m.View().Content; !strings.Contains(view, "(this workspace)") {
 		t.Fatalf("scoped header missing: %q", view)
 	}
 
@@ -249,7 +249,7 @@ func TestPickerScopeToggleReusesOneScan(t *testing.T) {
 	if m.scoped || len(m.visible) != 2 || m.selected != 0 {
 		t.Fatalf("widened scoped=%v visible=%v selected=%d", m.scoped, m.visible, m.selected)
 	}
-	if view := m.View().Content; !strings.Contains(view, "(全 workspace") || !strings.Contains(view, "elsewhere") {
+	if view := m.View().Content; !strings.Contains(view, "(all workspaces") || !strings.Contains(view, "elsewhere") {
 		t.Fatalf("widened view=%q", view)
 	}
 
@@ -282,7 +282,7 @@ func TestPickerStartWidenedKeepsScopeToggle(t *testing.T) {
 	if m.scoped || !m.scopeAware || len(m.visible) != 2 {
 		t.Fatalf("initial scoped=%v scopeAware=%v visible=%v", m.scoped, m.scopeAware, m.visible)
 	}
-	if view := m.View().Content; !strings.Contains(view, "(全 workspace") {
+	if view := m.View().Content; !strings.Contains(view, "(all workspaces") {
 		t.Fatalf("widened start view=%q", view)
 	}
 	if footer := m.footerLine(); !strings.Contains(footer, "Ctrl-A") {
@@ -310,13 +310,13 @@ func TestPickerWidenedViewMarksUnknownUsage(t *testing.T) {
 	if got := m.itemNote(m.items[0]); got != "復元可" {
 		t.Fatalf("in-scope note=%q, want the annotation only", got)
 	}
-	if got := m.itemNote(m.items[1]); got != "使用状況不明" {
+	if got := m.itemNote(m.items[1]); got != "usage unknown" {
 		t.Fatalf("out-of-scope note=%q", got)
 	}
 
 	result, _ := m.Update(keyPress("ctrl+a"))
 	m = result.(pickerModel)
-	if view := m.View().Content; !strings.Contains(view, "使用状況不明") || !strings.Contains(view, "使用状況は未判定") {
+	if view := m.View().Content; !strings.Contains(view, "usage unknown") || !strings.Contains(view, "usage outside this workspace is unknown") {
 		t.Fatalf("widened view=%q", view)
 	}
 
@@ -352,7 +352,7 @@ func TestPickerFooterListsEveryBinding(t *testing.T) {
 	items := []scanner.Session{{Tool: "claude", SessionID: "id", Title: "title", StableID: "id"}}
 	scoped := newPickerModel(items, PickOptions{Now: fixedNow, Scope: &ScopeFilter{InScope: map[string]bool{"id": true}}})
 	footer := scoped.footerLine()
-	for _, want := range []string{"↑↓", "Ctrl-N", "Ctrl-P", "PgUp", "PgDn", "Home/End", "Enter", "文字入力", "Ctrl-U", "Ctrl-A", "Esc 検索語クリア→キャンセル"} {
+	for _, want := range []string{"↑↓", "Ctrl-N", "Ctrl-P", "PgUp", "PgDn", "Home/End", "Enter select", "type to search", "Ctrl-U clear", "Ctrl-A workspace", "Esc clear → cancel"} {
 		if !strings.Contains(footer, want) {
 			t.Fatalf("footer omitted %q: %q", want, footer)
 		}
@@ -380,7 +380,7 @@ func TestPickerViewShowsLabelAnnotationAndFitsWidth(t *testing.T) {
 	result, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
 	m = result.(pickerModel)
 	view := m.View().Content
-	for _, want := range []string{"workspace", "復元可", "2時間前", "248.5 KiB", "検索: "} {
+	for _, want := range []string{"workspace", "復元可", "2h ago", "248.5 KiB", "Search: "} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("picker view omitted %q: %q", want, view)
 		}
@@ -429,4 +429,50 @@ func keyPress(name string) tea.KeyPressMsg {
 
 func displayWidth(s string) int {
 	return xansi.StringWidth(s)
+}
+
+// TestPickerViewSeparatesItemsAndDimsMeta は項目間の空行、メタ行の灰色、フッタ前の区切り線を確かめる。
+func TestPickerViewSeparatesItemsAndDimsMeta(t *testing.T) {
+	items := []scanner.Session{
+		{Tool: "claude", SessionID: "a", Title: "first", CWD: "/one", Mtime: float64(fixedNow.Add(-time.Hour).Unix()), Size: 2048, StableID: "a"},
+		{Tool: "claude", SessionID: "b", Title: "second", CWD: "/two", Mtime: float64(fixedNow.Add(-2 * time.Hour).Unix()), Size: 4096, StableID: "b"},
+	}
+	m := newPickerModel(items, PickOptions{Now: fixedNow})
+	result, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
+	m = result.(pickerModel)
+	lines := strings.Split(m.View().Content, "\n")
+
+	first := indexOfLineContaining(t, lines, "first")
+	second := indexOfLineContaining(t, lines, "second")
+	if second != first+3 || lines[first+2] != "" {
+		t.Fatalf("item rows are not separated by a blank line: %q", lines)
+	}
+	for _, index := range []int{first + 1, second + 1} {
+		if !strings.HasPrefix(lines[index], dimStart) || !strings.HasSuffix(lines[index], dimEnd) {
+			t.Errorf("meta line %d is not dimmed: %q", index, lines[index])
+		}
+	}
+
+	footer := len(lines) - 1
+	if !strings.Contains(lines[footer], "Enter select") {
+		t.Fatalf("last line is not the footer: %q", lines[footer])
+	}
+	if !strings.HasPrefix(lines[footer], dimStart) {
+		t.Errorf("footer is not dimmed: %q", lines[footer])
+	}
+	rule := lines[footer-1]
+	if strings.Count(rule, "─") != 120 || !strings.HasPrefix(rule, dimStart) {
+		t.Errorf("separator rule=%q, want a dimmed 120-cell line", rule)
+	}
+}
+
+func indexOfLineContaining(t *testing.T, lines []string, want string) int {
+	t.Helper()
+	for i, line := range lines {
+		if strings.Contains(line, want) {
+			return i
+		}
+	}
+	t.Fatalf("no line contains %q: %q", want, lines)
+	return -1
 }

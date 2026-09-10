@@ -61,7 +61,7 @@ func (c Client) ResolveSessionScope(ctx context.Context, root string) (sessions.
 		inUse := se.State == "STARTING" || se.State == "ACTIVE" || se.State == "RESTORING" || se.State == "UNBOUND"
 		text := ""
 		if inUse {
-			text = "使用中"
+			text = "in use"
 		}
 		for _, id := range ids {
 			if _, exists := scope.Annotations[id]; !exists || inUse {

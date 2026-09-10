@@ -65,6 +65,20 @@ const (
 	minPathWidth  = 8
 )
 
+// 補助情報を落ち着かせる灰色。bubbletea が端末の色能力に合わせて落とすため SGR を直に書き、
+// 前景色だけを既定へ戻して周囲の装飾を消さない。幅計算は着色前の素の文字列で行う。
+const (
+	dimStart = "\x1b[90m"
+	dimEnd   = "\x1b[39m"
+)
+
+func dimText(value string) string {
+	if value == "" {
+		return value
+	}
+	return dimStart + value + dimEnd
+}
+
 func metaJoin(age, path, size string) string {
 	parts := make([]string, 0, 3)
 	for _, part := range []string{age, path, size} {
@@ -285,12 +299,12 @@ func (m pickerModel) confirm() (tea.Model, tea.Cmd) {
 	}
 	item := m.items[m.visible[m.selected]]
 	if item.annotation.InUse {
-		m.status = "使用中のセッションは選択できません"
+		m.status = "this session is in use and cannot be selected"
 		return m, nil
 	}
 	target := item.session.Target()
 	if !target.Resumable() {
-		m.status = "このセッションは再開できません"
+		m.status = "this session cannot be resumed"
 		return m, nil
 	}
 	m.result = target
@@ -331,37 +345,42 @@ func (m *pickerModel) ensureVisible() {
 }
 
 // visibleRows は同時に出せる会話の件数を返す。1 件がタイトルとメタの 2 行を占め、
-// ヘッダ・検索行・フッタ（と status 行）は常に残す。狭い端末でも 1 件は出す。
+// 2 件目以降は前に区切りの空行が 1 行付く。ヘッダ・検索行・区切り線・フッタ（と status 行）は
+// 常に残す。狭い端末でも 1 件は出す。
 func (m pickerModel) visibleRows() int {
 	height := m.height
 	if height <= 0 {
 		height = 24
 	}
-	reserved := 3
+	reserved := 4
 	if m.status != "" {
 		reserved++
 	}
-	return max(1, (height-reserved)/2)
+	return max(1, (height-reserved+1)/3)
 }
 
 // emptyMessage は表示対象が無い理由を、会話そのものが無い場合と絞り込みで消えた場合で分ける。
 func (m pickerModel) emptyMessage() string {
 	if len(m.items) == 0 {
-		return "セッションがありません"
+		return "no sessions found"
 	}
-	return "条件に一致する会話がありません"
+	return "no conversations match the current filter"
 }
 
 func (m pickerModel) View() tea.View {
 	m.ensureVisible()
 	lines := make([]string, 0, m.height)
 	lines = append(lines, truncateLine(m.headerLine(), m.width))
-	lines = append(lines, truncateLine("検索: "+sanitizeLine(m.query), m.width))
+	lines = append(lines, truncateLine("Search: "+sanitizeLine(m.query), m.width))
 	if len(m.visible) == 0 {
 		lines = append(lines, truncateLine("  "+m.emptyMessage(), m.width))
 	} else {
 		end := min(len(m.visible), m.offset+m.visibleRows())
 		for i := m.offset; i < end; i++ {
+			if i > m.offset {
+				// 項目の区切りは空行で取り、タイトルとメタ行の対応を読み取りやすくする。
+				lines = append(lines, "")
+			}
 			item := m.items[m.visible[i]]
 			marker := "  "
 			if i == m.selected {
@@ -372,13 +391,14 @@ func (m pickerModel) View() tea.View {
 				line += "  [" + note + "]"
 			}
 			lines = append(lines, truncateLine(line, m.width))
-			lines = append(lines, item.metaLine(m.width))
+			lines = append(lines, dimText(item.metaLine(m.width)))
 		}
 	}
 	if m.status != "" {
 		lines = append(lines, truncateLine("! "+m.status, m.width))
 	}
-	lines = append(lines, truncateLine(m.footerLine(), m.width))
+	lines = append(lines, dimText(m.separatorLine()))
+	lines = append(lines, dimText(truncateLine(m.footerLine(), m.width)))
 	if height := max(1, m.height); len(lines) > height {
 		lines = lines[:height]
 	}
@@ -396,19 +416,24 @@ func (m pickerModel) headerLine() string {
 		return header
 	}
 	if m.scoped {
-		return header + "  (この workspace)"
+		return header + "  (this workspace)"
 	}
-	return header + "  (全 workspace・他 workspace の使用状況は未判定)"
+	return header + "  (all workspaces · usage outside this workspace is unknown)"
+}
+
+// separatorLine は一覧とフッタを分ける横線を端末幅で引く。
+func (m pickerModel) separatorLine() string {
+	return strings.Repeat("─", max(1, m.width))
 }
 
 // footerLine は割り当てているキーをすべて出す。文字入力を検索へ回した結果、
 // キー割り当ての手掛かりはこの行だけになるため、Esc が 2 段で効くことも表記する。
 func (m pickerModel) footerLine() string {
-	footer := "↑↓/Ctrl-N/Ctrl-P/PgUp/PgDn/Home/End 移動  Enter 選択  文字入力 検索  Ctrl-U 検索語消去"
+	footer := "↑↓/Ctrl-N/Ctrl-P/PgUp/PgDn/Home/End move  Enter select  type to search  Ctrl-U clear"
 	if m.scopeAware {
-		footer += "  Ctrl-A workspace切替"
+		footer += "  Ctrl-A workspace"
 	}
-	return footer + "  Esc 検索語クリア→キャンセル"
+	return footer + "  Esc clear → cancel"
 }
 
 func sessionTitle(session scanner.Session) string {
@@ -440,6 +465,9 @@ func sessionSize(session scanner.Session) string {
 	return textfmt.HumanBytes(session.Size)
 }
 
+// inUseNote は貸出中の注記で、呼び出し側が同じ文言を渡したときに二重に付けない判定にも使う。
+const inUseNote = "in use"
+
 // itemNote は scope 外の会話に使用状況の未判定を足す。注記の元は現在の workspace の貸出状況だけなので、
 // 他 workspace の会話に注記が無いことを「使用中でない」と読ませない。
 func (m pickerModel) itemNote(item pickerItem) string {
@@ -448,19 +476,19 @@ func (m pickerModel) itemNote(item pickerItem) string {
 		return note
 	}
 	if note == "" {
-		return "使用状況不明"
+		return "usage unknown"
 	}
-	return note + "・使用状況不明"
+	return note + " · usage unknown"
 }
 
 func itemNote(annotation Annotation) string {
 	note := sanitizeLine(annotation.Text)
 	if annotation.InUse {
 		if note == "" {
-			return "使用中"
+			return inUseNote
 		}
-		if note != "使用中" {
-			note += "・使用中"
+		if note != inUseNote {
+			note += " · " + inUseNote
 		}
 	}
 	return note

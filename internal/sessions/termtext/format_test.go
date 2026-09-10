@@ -12,14 +12,14 @@ func TestRelativeTime(t *testing.T) {
 		at   time.Time
 		want string
 	}{
-		{"future", now.Add(time.Hour), "たった今"},
-		{"just now", now.Add(-30 * time.Second), "たった今"},
-		{"minutes", now.Add(-9 * time.Minute), "9分前"},
-		{"minute boundary", now.Add(-59*time.Minute - 59*time.Second), "59分前"},
-		{"hours", now.Add(-7 * time.Hour), "7時間前"},
-		{"hour boundary", now.Add(-24*time.Hour + time.Second), "23時間前"},
-		{"days", now.Add(-25 * time.Hour), "1日前"},
-		{"many days", now.Add(-40 * 24 * time.Hour), "40日前"},
+		{"future", now.Add(time.Hour), "just now"},
+		{"just now", now.Add(-30 * time.Second), "just now"},
+		{"minutes", now.Add(-9 * time.Minute), "9m ago"},
+		{"minute boundary", now.Add(-59*time.Minute - 59*time.Second), "59m ago"},
+		{"hours", now.Add(-7 * time.Hour), "7h ago"},
+		{"hour boundary", now.Add(-24*time.Hour + time.Second), "23h ago"},
+		{"days", now.Add(-25 * time.Hour), "1d ago"},
+		{"many days", now.Add(-40 * 24 * time.Hour), "40d ago"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
