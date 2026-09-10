@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,11 +30,7 @@ func leaseWorktreeFixture(t *testing.T, options ...managerFixtureOption) (*manag
 // setLeaseExpiry は貸出の期限を直接書き換える。lease.ttl を待たずに期限掃引を確認するためである。
 func setLeaseExpiry(t *testing.T, databasePath, sessionID, expiresAt string) {
 	t.Helper()
-	raw, err := sql.Open("sqlite", databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = raw.Close() }()
+	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.ExecContext(context.Background(), `UPDATE sessions SET lease_expires_at=? WHERE id=?`, expiresAt, sessionID); err != nil {
 		t.Fatal(err)
 	}

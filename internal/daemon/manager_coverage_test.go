@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"io"
 	"log/slog"
@@ -294,11 +293,7 @@ func TestRegistryOrphanAndClosedStoreReconciliation(t *testing.T) {
 		t.Fatalf("missing workspace findings=%+v", manager.registrationFindings(ctx))
 	}
 
-	raw, err := sql.Open("sqlite", databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
+	raw := openTestDatabase(t, databasePath)
 	old := state.FormatTime(time.Now().Add(-time.Hour))
 	for _, candidate := range []struct {
 		id  string
@@ -361,7 +356,7 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 			[]state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID), DirName: dirName, State: "READY", BaseOID: resolved[0].OID, Fingerprint: fingerprint}}); err != nil {
 			t.Fatal(err)
 		}
-		raw := openManagerCoverageDB(t, databasePath)
+		raw := openTestDatabase(t, databasePath)
 		if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_finish_preparation BEFORE UPDATE ON slots BEGIN SELECT RAISE(FAIL, 'injected finish failure'); END`); err != nil {
 			t.Fatal(err)
 		}
@@ -408,7 +403,7 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 			state.Session{ID: id, WorkspaceID: string(workspaceRecord.ID), SlotID: id, State: "RELEASING", AgentKind: "coverage", TokenHash: state.HashToken(id)}, ""); err != nil {
 			t.Fatal(err)
 		}
-		raw := openManagerCoverageDB(t, databasePath)
+		raw := openTestDatabase(t, databasePath)
 		if _, err := raw.ExecContext(ctx, `UPDATE sessions SET released_at='not-a-time' WHERE id=?`, id); err != nil {
 			t.Fatal(err)
 		}
@@ -430,7 +425,7 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 			state.Session{ID: id, WorkspaceID: string(workspaceRecord.ID), SlotID: id, State: "RELEASING", AgentKind: "coverage", TokenHash: state.HashToken(id)}, ""); err != nil {
 			t.Fatal(err)
 		}
-		raw := openManagerCoverageDB(t, databasePath)
+		raw := openTestDatabase(t, databasePath)
 		if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_begin_snapshot BEFORE UPDATE OF state ON sessions WHEN NEW.state='SNAPSHOTTING' BEGIN SELECT RAISE(ABORT,'injected snapshot failure'); END`); err != nil {
 			t.Fatal(err)
 		}
@@ -453,7 +448,7 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 
 	t.Run("artifact recovery refs", func(t *testing.T) {
 		ctx, manager, _, _, _, databasePath := managerCoverageFixture(t)
-		raw := openManagerCoverageDB(t, databasePath)
+		raw := openTestDatabase(t, databasePath)
 		if _, err := raw.ExecContext(ctx, `DROP TABLE snapshots`); err != nil {
 			t.Fatal(err)
 		}
@@ -471,7 +466,7 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 			state.Session{ID: id, WorkspaceID: string(workspaceRecord.ID), SlotID: id, State: "ACTIVE", AgentKind: "coverage", ClientPID: 99999999, TokenHash: state.HashToken(id)}, ""); err != nil {
 			t.Fatal(err)
 		}
-		raw := openManagerCoverageDB(t, databasePath)
+		raw := openTestDatabase(t, databasePath)
 		if _, err := raw.ExecContext(ctx, `UPDATE sessions SET created_at=? WHERE id=?`, state.FormatTime(time.Now().Add(-time.Hour)), id); err != nil {
 			t.Fatal(err)
 		}
@@ -503,7 +498,7 @@ func TestManagerLateStageFaultBoundaries(t *testing.T) {
 		if _, err := store.CreateStandby(ctx, slotAtPath(t, manager, string(workspaceRecord.ID), standbyID, standbyPath, 1, "READY"), nil); err != nil {
 			t.Fatal(err)
 		}
-		raw := openManagerCoverageDB(t, databasePath)
+		raw := openTestDatabase(t, databasePath)
 		old := state.FormatTime(time.Now().Add(-time.Hour))
 		if _, err := raw.ExecContext(ctx, `UPDATE sessions SET archived_at=? WHERE id=?`, old, archivedID); err != nil {
 			t.Fatal(err)
@@ -589,7 +584,7 @@ func TestStatusHotStandbyUsesRepositoryLastLease(t *testing.T) {
 	manager.mu.Lock()
 	manager.cfg.Retention.HotStandby.Duration = time.Hour
 	manager.mu.Unlock()
-	raw := openManagerCoverageDB(t, databasePath)
+	raw := openTestDatabase(t, databasePath)
 	oldLease := time.Now().Add(-2 * time.Hour)
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(oldLease)); err != nil {
 		t.Fatal(err)
@@ -855,16 +850,6 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 			t.Fatalf("doctor reported closed store without a cause: %+v", sqlite)
 		}
 	})
-}
-
-func openManagerCoverageDB(t *testing.T, path string) *sql.DB {
-	t.Helper()
-	database, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	return database
 }
 
 func managerCoverageFixture(t *testing.T, kind ...string) (context.Context, *Manager, *state.Store, discovery.Workspace, []pool.Resolved, string) {

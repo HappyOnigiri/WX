@@ -24,8 +24,21 @@ type violation struct {
 	message string
 }
 
-// marker は検査を免除するコメントで、理由の記載を必須とする。
-var marker = regexp.MustCompile(`socketlint:allow-tempdir -- (.+)$`)
+// 免除コメントの識別子。規則ごとに分け、ある規則の免除が別の規則へ効かないようにする。
+const (
+	tempDirMarker     = "socketlint:allow-tempdir"
+	busyTimeoutMarker = "sqlitelint:allow-no-busy-timeout"
+)
+
+// markers は検査を免除するコメントで、理由の記載を必須とする。
+// 出力順を固定するため、map ではなく宣言順の slice で持つ。
+var markers = []struct {
+	name    string
+	pattern *regexp.Regexp
+}{
+	{tempDirMarker, regexp.MustCompile(tempDirMarker + ` -- (.+)$`)},
+	{busyTimeoutMarker, regexp.MustCompile(busyTimeoutMarker + ` -- (.+)$`)},
+}
 
 // socketNameSuffix はunix socketとして扱うファイル名の判定に使う。
 const socketNameSuffix = ".sock"
@@ -55,6 +68,50 @@ func joinCall(node ast.Expr) ([]ast.Expr, bool) {
 		return nil, false
 	}
 	return call.Args, true
+}
+
+// sqliteOpenCall は sql.Open 呼び出しならDSNの引数を返す。
+func sqliteOpenCall(call *ast.CallExpr) (ast.Expr, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Open" {
+		return nil, false
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok || pkg.Name != "sql" || len(call.Args) < 2 {
+		return nil, false
+	}
+	return call.Args[1], true
+}
+
+// calleeName は呼び出し先の関数名を返す。package修飾は落とし、末尾の識別子だけを見る。
+func calleeName(call *ast.CallExpr) string {
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		return fun.Name
+	case *ast.SelectorExpr:
+		return fun.Sel.Name
+	}
+	return ""
+}
+
+// busyTimeoutDSN はDSNの式が busy_timeout を指定していると読み取れるかを返す。
+// 文字列リテラルへの直書きと、DSNを組み立てるhelper（名前が DSN で終わる関数）の呼び出しを認める。
+func busyTimeoutDSN(dsn ast.Expr) bool {
+	found := false
+	ast.Inspect(dsn, func(node ast.Node) bool {
+		switch typed := node.(type) {
+		case *ast.BasicLit:
+			if typed.Kind == token.STRING && strings.Contains(typed.Value, "_busy_timeout") {
+				found = true
+			}
+		case *ast.CallExpr:
+			if strings.HasSuffix(calleeName(typed), "DSN") {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // socketLiteral は引数が socket 名の文字列リテラルならその値を返す。
@@ -104,9 +161,19 @@ func (d derived) record(left, right []ast.Expr) {
 	}
 }
 
-// checkFile は t.TempDir() 由来のパスからunix socketを組み立てている箇所を返す。
-// t.TempDir() のパスにはテスト名が入るため、テスト名が伸びるとsun_pathの上限を超えてbindが失敗する。
-func checkFile(path string, allowed map[int]bool) ([]violation, error) {
+// exemptions は免除コメントの行番号を規則ごとに持つ。
+type exemptions map[string]map[int]bool
+
+// allows は違反行、またはその直前の行に該当する免除コメントがあるかを返す。
+func (e exemptions) allows(marker string, line int) bool {
+	lines := e[marker]
+	return lines[line] || lines[line-1]
+}
+
+// checkFile は socket-tempdir と sqlite-busy-timeout の違反を返す。
+// t.TempDir() 由来の socket path はテスト名が伸びるとsun_pathの上限を超えてbindが失敗し、
+// busy_timeout のない sqlite 接続は他の書き手とlockが重なった瞬間に SQLITE_BUSY で落ちる。
+func checkFile(path string, allowed exemptions) ([]violation, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.AllErrors)
 	if err != nil {
@@ -124,7 +191,7 @@ func checkFile(path string, allowed map[int]bool) ([]violation, error) {
 	return issues, nil
 }
 
-func checkFunction(path string, fset *token.FileSet, function *ast.FuncDecl, allowed map[int]bool) []violation {
+func checkFunction(path string, fset *token.FileSet, function *ast.FuncDecl, allowed exemptions) []violation {
 	var issues []violation
 	names := derived{}
 	ast.Inspect(function, func(node ast.Node) bool {
@@ -132,6 +199,10 @@ func checkFunction(path string, fset *token.FileSet, function *ast.FuncDecl, all
 		case *ast.AssignStmt:
 			names.record(typed.Lhs, typed.Rhs)
 		case *ast.CallExpr:
+			line := fset.PositionFor(typed.Lparen, false).Line
+			if dsn, ok := sqliteOpenCall(typed); ok && !busyTimeoutDSN(dsn) && !allowed.allows(busyTimeoutMarker, line) {
+				issues = append(issues, violation{path, line, "sqlite-busy-timeout", fmt.Sprintf("sql.Open does not set _busy_timeout; use a DSN helper, or exempt with a `%s -- <理由>` comment", busyTimeoutMarker)})
+			}
 			args, ok := joinCall(typed)
 			if !ok {
 				return true
@@ -142,13 +213,12 @@ func checkFunction(path string, fset *token.FileSet, function *ast.FuncDecl, all
 					name = value
 				}
 			}
-			line := fset.PositionFor(typed.Lparen, false).Line
-			if name == "" || allowed[line] || allowed[line-1] {
+			if name == "" || allowed.allows(tempDirMarker, line) {
 				return true
 			}
 			for _, arg := range args {
 				if names.expr(arg) {
-					issues = append(issues, violation{path, line, "socket-tempdir", fmt.Sprintf("socket %q is built from t.TempDir(); use testsupport.SocketPath, or exempt with a `socketlint:allow-tempdir -- <理由>` comment", name)})
+					issues = append(issues, violation{path, line, "socket-tempdir", fmt.Sprintf("socket %q is built from t.TempDir(); use testsupport.SocketPath, or exempt with a `%s -- <理由>` comment", name, tempDirMarker)})
 					break
 				}
 			}
@@ -159,26 +229,31 @@ func checkFunction(path string, fset *token.FileSet, function *ast.FuncDecl, all
 }
 
 // markerLines は免除コメントの行番号と、理由を欠いた記載の違反を返す。
-func markerLines(path string) (map[int]bool, []violation, error) {
+func markerLines(path string) (exemptions, []violation, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.AllErrors)
 	if err != nil {
 		return nil, nil, err
 	}
-	allowed := map[int]bool{}
+	allowed := exemptions{}
 	var issues []violation
 	for _, group := range file.Comments {
 		for _, comment := range group.List {
 			line := fset.PositionFor(comment.Slash, false).Line
-			if !strings.Contains(comment.Text, "socketlint:allow-tempdir") {
-				continue
+			for _, marker := range markers {
+				if !strings.Contains(comment.Text, marker.name) {
+					continue
+				}
+				match := marker.pattern.FindStringSubmatch(comment.Text)
+				if len(match) != 2 || strings.TrimSpace(match[1]) == "" {
+					issues = append(issues, violation{path, line, "marker-format", fmt.Sprintf("%s requires ` -- <理由>`", marker.name)})
+					continue
+				}
+				if allowed[marker.name] == nil {
+					allowed[marker.name] = map[int]bool{}
+				}
+				allowed[marker.name][line] = true
 			}
-			match := marker.FindStringSubmatch(comment.Text)
-			if len(match) != 2 || strings.TrimSpace(match[1]) == "" {
-				issues = append(issues, violation{path, line, "marker-format", "socketlint:allow-tempdir requires ` -- <理由>`"})
-				continue
-			}
-			allowed[line] = true
 		}
 	}
 	return allowed, issues, nil

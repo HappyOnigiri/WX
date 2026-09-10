@@ -3,7 +3,6 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"log/slog"
 	"os"
@@ -41,15 +40,8 @@ func TestOrphanReconciliationWaitsForRegisteredAgentProcess(t *testing.T) {
 	if err := m.RegisterAgentProcess(ctx, "agent", "token", agent.Process.Pid); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := sql.Open("sqlite", f.DatabasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := openTestDatabase(t, f.DatabasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE sessions SET last_heartbeat_at=? WHERE id='agent'`, state.FormatTime(time.Now().Add(-time.Minute))); err != nil {
-		_ = raw.Close()
-		t.Fatal(err)
-	}
-	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}
 	m.reconcileOrphans(ctx)
@@ -101,15 +93,8 @@ func TestOrphanReconcileConvergesForQuarantinedSlotOwner(t *testing.T) {
 	if err := store.SetSlotState(ctx, "quarantined", []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := sql.Open("sqlite", f.DatabasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := openTestDatabase(t, f.DatabasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE sessions SET last_heartbeat_at=? WHERE id='quarantined'`, state.FormatTime(time.Now().Add(-time.Minute))); err != nil {
-		_ = raw.Close()
-		t.Fatal(err)
-	}
-	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}
 	m.reconcileOrphans(ctx)

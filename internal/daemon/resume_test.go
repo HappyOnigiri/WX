@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -164,11 +163,7 @@ func TestResumeRestoreJobWrapsSlotRepositoryStorageFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	raw, err := sql.Open("sqlite", databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
+	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.Exec(`DROP TABLE slot_repositories`); err != nil {
 		t.Fatal(err)
 	}

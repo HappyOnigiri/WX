@@ -13,7 +13,7 @@ func TestStandbyRegistrationFailureQuarantinesCreatedSlot(t *testing.T) {
 	cfg.Pool.WarmPerWorkspace = 1
 	manager.cfg = cfg
 	manager.mu.Unlock()
-	raw := openManagerCoverageDB(t, databasePath)
+	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_standby_job BEFORE INSERT ON jobs WHEN NEW.kind='PREPARE' BEGIN SELECT RAISE(ABORT,'injected standby registration failure'); END`); err != nil {
 		t.Fatal(err)
 	}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -31,6 +32,25 @@ func requireDaemonIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping daemon integration test in short mode")
 	}
+}
+
+// testDatabaseDSN は state.Store と同じ待機設定を持つ生接続用の DSN を組む。
+// busy_timeout を省いた接続は Manager の書込みと重なった瞬間に SQLITE_BUSY を即座に返すため、
+// 直接 DB を触るテストがそのタイミング次第で落ちる。
+func testDatabaseDSN(path string) string {
+	return (&url.URL{Scheme: "file", Path: path}).String() + "?_busy_timeout=5000"
+}
+
+// openTestDatabase は Store が公開しない列を読み書きするための生接続を開く。
+// close は t.Cleanup が行うため、途中で閉じる必要があるテストだけが自分で Close する。
+func openTestDatabase(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	database, err := sql.Open("sqlite", testDatabaseDSN(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	return database
 }
 
 // diagnosticLog は Manager のログを容量制限付きで保持する io.Writer である。
@@ -175,7 +195,7 @@ func (f *managerFixture) reportDiagnostics() {
 
 // jobDiagnostics は job の識別子と状態を読む。Store に一覧APIがないため fixture が持つ DB を直接読む。
 func (f *managerFixture) jobDiagnostics(ctx context.Context) string {
-	raw, err := sql.Open("sqlite", f.DatabasePath)
+	raw, err := sql.Open("sqlite", testDatabaseDSN(f.DatabasePath))
 	if err != nil {
 		return fmt.Sprintf("open error=%v", err)
 	}

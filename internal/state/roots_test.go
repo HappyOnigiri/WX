@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -426,7 +427,7 @@ func TestOpenRefusesADatabaseFromThePreviousWorktreeLayout(t *testing.T) {
 	// layout 前の database は既に user_version=1 を返すため migration loop は何も適用せず、
 	// この不一致を放置すると RPC が1回ずつ失敗して初めて表面化する。
 	path := filepath.Join(t.TempDir(), "state.db")
-	legacy, err := sql.Open("sqlite", path)
+	legacy, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path}).String()+"?_busy_timeout=5000")
 	if err != nil {
 		t.Fatal(err)
 	}

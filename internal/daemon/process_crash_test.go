@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -251,7 +250,7 @@ func crashRegistrationEntries(repository string) string {
 // crashStateDump は権威である DB の行をそのまま出す。列を選ばないのは、
 // schema が変わっても診断が黙って古い列だけを出し続けないようにするためである。
 func crashStateDump(storePath string) string {
-	database, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: storePath}).String()+"?_busy_timeout=5000")
+	database, err := sql.Open("sqlite", testDatabaseDSN(storePath))
 	if err != nil {
 		return fmt.Sprintf("open %s: %v\n", storePath, err)
 	}

@@ -153,7 +153,7 @@ func TestAllocateFailsWhenWorktreeRootCannotBeCreated(t *testing.T) {
 func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
-	raw := openManagerCoverageDB(t, databasePath)
+	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_allocate_insert BEFORE INSERT ON slots BEGIN SELECT RAISE(ABORT,'injected slot insert failure'); END`); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestAllocateReleasesLeaseWhenSessionPersistenceFails(t *testing.T) {
 func TestAllocateRegistrationFailureQuarantinesCreatedSlot(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t)
-	raw := openManagerCoverageDB(t, databasePath)
+	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `CREATE TRIGGER fail_allocate_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT,'injected session registration failure'); END`); err != nil {
 		t.Fatal(err)
 	}

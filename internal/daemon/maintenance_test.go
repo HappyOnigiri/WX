@@ -81,7 +81,7 @@ func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	raw := openManagerCoverageDB(t, databasePath)
+	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	w = registerTestWorkspace(t, store, w)
-	raw := openManagerCoverageDB(t, databasePath)
+	raw := openTestDatabase(t, databasePath)
 	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
 	}
