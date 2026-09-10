@@ -277,7 +277,7 @@ func TestCOWSharesFilesAcrossParallelBatches(t *testing.T) {
 		}
 		before[index] = info.Ino
 	}
-	if err := p.compactOwnedWorktree(context.Background(), repo, target, oid, testSlotID, preparePhaseCreate, identity); err != nil {
+	if err := p.compactOwnedWorktree(context.Background(), repo, target, oid, testSlotID, preparePhaseCreate, identity, nil); err != nil {
 		t.Fatal(err)
 	}
 	for index, name := range names {

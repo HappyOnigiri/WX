@@ -34,7 +34,8 @@ func cowLeftoverResult(stdout string) error {
 
 // compactWorktree は checkout/復元の最終 bytes を変えず、main と同内容の通常ファイルだけを共有する。
 // 貸出前にのみ呼び、Git の index（復元時の staged/unstaged の区別を含む）は作り直さない。
-func (p *Preparer) compactWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string) error {
+// scope は候補を限定する集合で、nil なら index 全体を候補にする。
+func (p *Preparer) compactWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string, scope *cowScope) error {
 	mode := p.Config.Storage.CopyMode
 	if mode == config.CopyModeCopy {
 		return nil
@@ -42,7 +43,7 @@ func (p *Preparer) compactWorktree(ctx context.Context, repo discovery.Repositor
 	if !cowAvailable() {
 		return p.cowFallback(ctx, mode, target, errors.New("CoW is unavailable on this platform"))
 	}
-	err := p.compactOwnedWorktree(ctx, repo, target, oid, slotID, phase, identity)
+	err := p.compactOwnedWorktree(ctx, repo, target, oid, slotID, phase, identity, scope)
 	return p.cowFallback(ctx, mode, target, err)
 }
 
@@ -69,7 +70,7 @@ func (p *Preparer) cowFallback(ctx context.Context, mode, target string, err err
 	return fmt.Errorf("compact worktree with CoW: %w", err)
 }
 
-func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string) error {
+func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string, scope *cowScope) error {
 	owner, relative, _, err := p.openOwnedRoot(p.RootPath, target)
 	if err != nil {
 		return err
@@ -112,7 +113,11 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 	}
 	stats := &cowStats{}
 	stats.entries.Store(int64(len(parsed)))
-	candidates := selectCOWCandidates(parsed, p.cowSourceIndexOIDs(ctx, source))
+	candidates := scope.narrow(parsed)
+	if len(candidates) > 0 {
+		// main 側 index の読み出しは候補が残る回だけ行う。書き直しが1件も無い更新では index 全体の解析がそのまま無駄になる。
+		candidates = selectCOWCandidates(candidates, p.cowSourceIndexOIDs(ctx, source))
+	}
 	stats.candidates.Store(int64(len(candidates)))
 	slotStates, repoStates := preparationOwnershipStates(phase)
 	// 所有権証明は batch の前後で行う。置換1件ごとの identity 検査は、path 解決が entry 数だけ積み上がり共有全体の3割を占めていた。

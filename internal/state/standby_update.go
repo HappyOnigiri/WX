@@ -10,6 +10,12 @@ type Placement struct {
 	RepositoryID, RelativePath, Kind, SourcePath, ContentSHA256 string
 }
 
+// SameSource は同じ path の配置2件が、置き直さずに使える同一の実体かを返す。
+// 更新の差分計算と貸出時の差分診断で同じ判定を使うため、規則はここだけに置く。
+func (p Placement) SameSource(other Placement) bool {
+	return p.Kind == other.Kind && p.SourcePath == other.SourcePath && p.ContentSHA256 == other.ContentSHA256
+}
+
 func (s *Store) Placements(ctx context.Context, slotID string) ([]Placement, error) {
 	return s.readPlacements(ctx, "slot_placements", slotID)
 }

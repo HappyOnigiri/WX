@@ -214,8 +214,10 @@ func (r *verboseStatusRenderer) renderJobs() {
 		pending, pendingOK := statusInt(jobs, "pending")
 		running, runningOK := statusInt(jobs, "running")
 		failed, failedOK := statusInt(jobs, "failed")
+		// discarded は failed と排他の内訳なので Total へ加える。持たない旧 payload では failed 側に含まれており、0 として足しても総数は変わらない。
+		discarded, _ := statusInt(jobs, "discarded")
 		if pendingOK && runningOK && failedOK {
-			r.field("  Total", strconv.FormatInt(pending+running+failed, 10))
+			r.field("  Total", strconv.FormatInt(pending+running+failed+discarded, 10))
 		} else {
 			r.field("  Total", "—")
 		}
@@ -223,7 +225,8 @@ func (r *verboseStatusRenderer) renderJobs() {
 		r.field("  Pending", statusValue(jobs, "pending"))
 		r.field("  Running", statusValue(jobs, "running"))
 		r.field("  Failed", statusValue(jobs, "failed"))
-		r.additional = appendStatusUnknown(r.additional, "job_details", jobs, map[string]bool{"pending": true, "running": true, "failed": true})
+		r.field("  Discarded", statusValue(jobs, "discarded"))
+		r.additional = appendStatusUnknown(r.additional, "job_details", jobs, map[string]bool{"pending": true, "running": true, "failed": true, "discarded": true})
 	case present:
 		r.field("  Details", "(none)")
 		r.field("  Queued", statusValue(r.payload, "queued_jobs"))

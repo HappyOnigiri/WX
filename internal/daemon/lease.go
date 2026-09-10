@@ -162,7 +162,9 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 		if len(branches) > 0 {
 			break
 		}
+		mismatch := m.describeReadyMismatch(ctx, ready, resolved)
 		_ = m.store.SetSlotState(ctx, ready.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
+		m.log.Info("ready standby retired after validation", append([]any{"workspace_id", w.ID, "slot_id", ready.ID}, mismatch.logArgs()...)...)
 	}
 	if attempts > 0 {
 		// 待機枠があったのにcold startへ落ちた事実は、記録しないと後から追跡できない。
@@ -211,7 +213,9 @@ func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspac
 				// 更新不適格なstandbyは残しても毎回cold startになるだけなので、非reuse経路と同じくSTALEにして補充へ回す。
 				// --branch指定を除くのは、main向けのstandbyをbranch要求のために捨てないためである。
 				_ = m.store.SetSlotState(ctx, candidate.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
-				m.log.Info("standby retired as not updateable", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr)
+				// 更新互換fingerprintの入力は保存していないため、現在値を添えて設定変更との対応を追えるようにする。
+				m.log.Info("standby retired as not updateable", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr,
+					"generation", candidate.Generation, "copy_mode", m.Config().Storage.CopyMode, "cow_min_size_kib", cowThresholdSummary(m.Config(), w))
 			default:
 				m.log.Info("standby update candidate rejected before writes", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr)
 			}

@@ -39,10 +39,13 @@ type (
 		StandbyExpiresAt string `json:"standby_expires_at,omitempty"`
 		Hot              bool   `json:"hot"`
 	}
+	// JobDiagnostic は job の件数で、Failed と Discarded は DB 上どちらも state='FAILED' の行を数える。
+	// 対処が必要な失敗と利用者が取り消した予定 job を読み分けられるように、error_code で分けて返す。
 	JobDiagnostic struct {
-		Pending int `json:"pending"`
-		Running int `json:"running"`
-		Failed  int `json:"failed"`
+		Pending   int `json:"pending"`
+		Running   int `json:"running"`
+		Failed    int `json:"failed"`
+		Discarded int `json:"discarded"`
 	}
 	SnapshotDiagnostic struct {
 		Count          int    `json:"count"`
@@ -338,7 +341,18 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 	if err := repositoryRows.Close(); err != nil {
 		return out, err
 	}
-	if err := s.db.QueryRowContext(ctx, `SELECT count(CASE WHEN state='PENDING' THEN 1 END),count(CASE WHEN state='RUNNING' THEN 1 END),count(CASE WHEN state='FAILED' THEN 1 END) FROM jobs`).Scan(&out.Jobs.Pending, &out.Jobs.Running, &out.Jobs.Failed); err != nil {
+	// FAILED は error_code で 2 列に分ける。取り消しは記録として FAILED のまま残るので、行を消さずに集計側で除く。
+	canceled := placeholders(len(canceledJobErrorCodes))
+	jobArgs := make([]any, 0, len(canceledJobErrorCodes)*2)
+	for range 2 {
+		for _, code := range canceledJobErrorCodes {
+			jobArgs = append(jobArgs, code)
+		}
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(CASE WHEN state='PENDING' THEN 1 END),count(CASE WHEN state='RUNNING' THEN 1 END),
+		count(CASE WHEN state='FAILED' AND COALESCE(error_code,'') NOT IN (`+canceled+`) THEN 1 END),
+		count(CASE WHEN state='FAILED' AND error_code IN (`+canceled+`) THEN 1 END) FROM jobs`, jobArgs...).
+		Scan(&out.Jobs.Pending, &out.Jobs.Running, &out.Jobs.Failed, &out.Jobs.Discarded); err != nil {
 		return out, err
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*),COALESCE(MIN(expires_at),'') FROM snapshots WHERE status='ARCHIVED'`).Scan(&out.Snapshots.Count, &out.Snapshots.EarliestExpiry); err != nil {
