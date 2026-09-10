@@ -9,29 +9,6 @@ import (
 	"time"
 )
 
-func TestFormatHumanBytesScalesUnitsAndTrimsFractions(t *testing.T) {
-	for _, testCase := range []struct {
-		value int64
-		want  string
-	}{
-		{value: 0, want: "0 B"},
-		{value: 1023, want: "1023 B"},
-		{value: 1024, want: "1 KiB"},
-		// 端数は小数第 2 位までにし、意味のない 0 と小数点は落とす。
-		{value: 1025, want: "1 KiB"},
-		{value: 1536, want: "1.5 KiB"},
-		{value: 1792, want: "1.75 KiB"},
-		{value: 365 * 1024 * 1024, want: "365 MiB"},
-		{value: -1536, want: "-1.5 KiB"},
-		// 単位表が尽きたら PiB のまま桁を増やし、未定義の単位へ進めない。
-		{value: 1 << 60, want: "1024 PiB"},
-	} {
-		if got := formatHumanBytes(testCase.value); got != testCase.want {
-			t.Fatalf("formatHumanBytes(%d)=%q, want %q", testCase.value, got, testCase.want)
-		}
-	}
-}
-
 func TestHumanDurationSecondsBuildsUnitsAndSurvivesMinInt64(t *testing.T) {
 	for _, testCase := range []struct {
 		seconds int64
@@ -58,21 +35,9 @@ func TestHumanDurationSecondsBuildsUnitsAndSurvivesMinInt64(t *testing.T) {
 	}
 }
 
-func TestStatusHomePathAbbreviatesOnlyPathsUnderHome(t *testing.T) {
+func TestStatusHomeValueAbbreviatesHomeAndDashesMissingKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	for _, testCase := range []struct{ path, want string }{
-		{path: "", want: ""},
-		{path: home, want: "~"},
-		{path: home + "/dev/wx", want: "~/dev/wx"},
-		// home の兄弟や外側の path は書き換えない。
-		{path: home + "-other", want: home + "-other"},
-		{path: "/elsewhere", want: "/elsewhere"},
-	} {
-		if got := statusHomePath(testCase.path); got != testCase.want {
-			t.Fatalf("statusHomePath(%q)=%q, want %q", testCase.path, got, testCase.want)
-		}
-	}
 	if got := statusHomeValue(map[string]any{"root": home + "/dev/wx"}, "root"); got != "~/dev/wx" {
 		t.Fatalf("statusHomeValue=%q", got)
 	}

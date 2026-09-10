@@ -11,6 +11,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/sessions/scanner"
 	"github.com/HappyOnigiri/WX/internal/sessions/termtext"
+	"github.com/HappyOnigiri/WX/internal/textfmt"
 )
 
 // ErrCancelled は選択を確定せずに picker を終了したことを示す。
@@ -126,7 +127,7 @@ func newPickerModel(items []scanner.Session, opts PickOptions) pickerModel {
 		annotation := opts.Annotations[session.StableID]
 		annotation.Text = sanitizeLine(annotation.Text)
 		title := sessionTitle(session)
-		cwd := sanitizeLine(termtext.HomePath(session.CWD))
+		cwd := sanitizeLine(textfmt.HomePath(session.CWD))
 		m.items = append(m.items, pickerItem{
 			session:    session,
 			title:      title,
@@ -423,7 +424,7 @@ func sessionSize(session scanner.Session) string {
 	if session.Size <= 0 {
 		return ""
 	}
-	return termtext.HumanBytes(session.Size)
+	return textfmt.HumanBytes(session.Size)
 }
 
 func itemNote(annotation Annotation) string {

@@ -15,6 +15,7 @@
 | SQLite・所有権証明 | `internal/state`、`migrations` |
 | workspace・リポジトリ解決 | `internal/discovery` |
 | path・ID・descriptor、Git実行、fchdir束縛、設定、LaunchAgent | `internal/domain`、`internal/gitx`、`internal/fdexec`、`internal/config`、`internal/launchd` |
+| 複数の画面で規則を共有する表示整形（バイト数・ホーム短縮） | `internal/textfmt` |
 
 `ResolveAndLease`・`Resume`の要求は`internal/rpc/params.go`の共有structで表し、CLIの送信とdaemonのstrict decodeが同じ宣言を使う。
 冪等キーはParamsのJSON文字列をそのまま比較するため、共有structはフィールドの宣言順（旧map実装の辞書順キー）とomitempty無しの出力を維持する。
