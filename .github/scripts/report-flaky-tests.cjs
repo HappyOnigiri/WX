@@ -194,32 +194,30 @@ function zipEntries(zipPath) {
   return names;
 }
 
+// アーカイブが申告する非圧縮の合計サイズを、展開の前に読む。
+function zipUncompressedSize(zipPath, artifactName) {
+  const summary = childProcess.execFileSync('unzip', ['-Z', '-t', zipPath], { encoding: 'utf8' });
+  const match = /(\d+)\s+bytes uncompressed/.exec(summary);
+  if (!match) fail(`${artifactName} has no readable archive summary`);
+  return Number(match[1]);
+}
+
+// アーティファクトはfork PRからも届くため、展開の前に上限を判定し、manifest.json以外は取り出さない。
+// unzip -pはディスクへ書かず、maxBufferが実際の展開量も頭打ちにするので、
+// 中央ディレクトリが小さいサイズを申告する高圧縮率のアーカイブでも被害が出ない。
 function readZipManifest(zipPath, artifactName) {
   const entries = zipEntries(zipPath);
   const manifestName = entries.find((name) => name === 'manifest.json' || name.endsWith('/manifest.json'));
   if (!manifestName) fail(`${artifactName} has no manifest.json`);
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-ci-report-'));
+  if (/[*?[\\]/.test(manifestName)) fail(`${artifactName} has an unsupported manifest.json entry name`);
+  if (zipUncompressedSize(zipPath, artifactName) > 100 * 1024 * 1024) fail(`${artifactName} expands beyond the size limit`);
+  let data;
   try {
-    childProcess.execFileSync('unzip', ['-qq', zipPath, '-d', directory]);
-    let total = 0;
-    const visit = (current) => {
-      for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-        const target = path.join(current, entry.name);
-        if (entry.isSymbolicLink()) fail(`${artifactName} contains a symbolic link`);
-        if (entry.isDirectory()) visit(target);
-        else {
-          const size = fs.statSync(target).size;
-          if (size > 20 * 1024 * 1024 || (total += size) > 100 * 1024 * 1024) fail(`${artifactName} expands beyond the size limit`);
-        }
-      }
-    };
-    visit(directory);
-    const manifestPath = path.join(directory, manifestName);
-    const value = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    return validateManifest(value, artifactName);
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
+    data = childProcess.execFileSync('unzip', ['-p', zipPath, manifestName], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+  } catch {
+    fail(`${artifactName} manifest.json could not be extracted within the size limit`);
   }
+  return validateManifest(JSON.parse(data), artifactName);
 }
 
 async function collectFromArtifacts({ github, owner, repo, runId, attempt, artifacts }) {

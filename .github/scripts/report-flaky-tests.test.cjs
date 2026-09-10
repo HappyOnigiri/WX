@@ -2,7 +2,26 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const childProcess = require('node:child_process');
 const reporter = require('./report-flaky-tests.cjs');
+
+function writeZip(t, files) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-ci-report-test-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const source = path.join(directory, 'source');
+  for (const [name, body] of Object.entries(files)) {
+    const target = path.join(source, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, typeof body === 'number' ? '' : body);
+    if (typeof body === 'number') fs.truncateSync(target, body);
+  }
+  const zipPath = path.join(directory, 'artifact.zip');
+  childProcess.execFileSync('zip', ['-qr', zipPath, '.'], { cwd: source });
+  return zipPath;
+}
 
 function manifest(runId, attempt, profile = 'coverage') {
   return {
@@ -108,6 +127,16 @@ test('rejects a path escape in an artifact manifest', () => {
   const value = manifest('10', '1');
   value.recoveries[0].declaration.path = '../outside.go';
   assert.throws(() => reporter.validateManifest(value), /repository-relative path/);
+});
+
+test('reads manifest.json out of an artifact zip', (t) => {
+  const zipPath = writeZip(t, { 'coverage/manifest.json': JSON.stringify(manifest('10', '1')), 'coverage/initial.log': 'log' });
+  assert.equal(reporter.readZipManifest(zipPath, 'ci-tests-coverage-10-1').profile, 'coverage');
+});
+
+test('rejects an artifact that expands beyond the size limit before extracting it', (t) => {
+  const zipPath = writeZip(t, { 'manifest.json': JSON.stringify(manifest('10', '1')), 'big.bin': 101 * 1024 * 1024 });
+  assert.throws(() => reporter.readZipManifest(zipPath, 'ci-tests-coverage-10-1'), /expands beyond the size limit/);
 });
 
 test('accepts a successful manifest without recoveries', () => {
