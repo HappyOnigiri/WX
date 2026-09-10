@@ -109,7 +109,7 @@ func TestCOWSkipsPathsWithADifferentSourceIndexBlob(t *testing.T) {
 	if err := unix.Stat(filepath.Join(target, "file"), &before); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.compactOwnedWorktree(context.Background(), repo, target, oid, testSlotID, preparePhaseCreate, identity); err != nil {
+	if err := p.compactOwnedWorktree(context.Background(), repo, target, oid, testSlotID, preparePhaseCreate, identity, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := unix.Stat(filepath.Join(target, "file"), &after); err != nil {
@@ -117,5 +117,23 @@ func TestCOWSkipsPathsWithADifferentSourceIndexBlob(t *testing.T) {
 	}
 	if before.Ino != after.Ino {
 		t.Fatalf("a path with a different source index blob was shared: %d -> %d", before.Ino, after.Ino)
+	}
+}
+
+// scope は今回の更新が書き直した path の entry だけを候補にする。
+// nil は限定なしで、宛先に共有済みの実体を持たない新規準備と復元がこの経路を使う。
+func TestCOWScopeNarrowsCandidatesToRewrittenPaths(t *testing.T) {
+	entries := []cowIndexEntry{{name: "rewritten", oid: "aaa"}, {name: "dir/kept", oid: "bbb"}}
+	scope := &cowScope{rewritten: map[string]bool{"rewritten": true, "absent": true}}
+	candidates := scope.narrow(entries)
+	if len(candidates) != 1 || candidates[0].name != "rewritten" {
+		t.Fatalf("candidates=%v", candidates)
+	}
+	if got := (&cowScope{}).narrow(entries); len(got) != 0 {
+		t.Fatalf("an empty scope kept candidates=%v", got)
+	}
+	var unlimited *cowScope
+	if got := unlimited.narrow(entries); len(got) != len(entries) {
+		t.Fatalf("candidates without a scope=%v", got)
 	}
 }

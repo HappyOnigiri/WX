@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
@@ -192,5 +195,110 @@ func TestUpdateKeepsMaterializedSubmoduleAndRejectsChangedGitlinks(t *testing.T)
 	err := f.preparer.ValidateUpdateCandidate(ctx, f.repo, f.target, sameGitlink, changedGitlink, nil, nil)
 	if !errors.Is(err, ErrUpdateIneligible) {
 		t.Fatalf("changed gitlink update error=%v, want ErrUpdateIneligible", err)
+	}
+}
+
+func updatePhaseCounts(timings *PhaseTimings) map[string]int {
+	counts := map[string]int{}
+	for _, phase := range timings.Phases() {
+		counts[phase.Name] = phase.Count
+	}
+	return counts
+}
+
+func updateTestInode(t *testing.T, path string) uint64 {
+	t.Helper()
+	var info unix.Stat_t
+	if err := unix.Stat(path, &info); err != nil {
+		t.Fatal(err)
+	}
+	return info.Ino
+}
+
+// UPDATE の compaction は、その更新が書き直した path だけを候補にする。
+// index 全体を候補に戻すと、前回の準備で共有済みのファイルへ置換経路を通し直し、所要時間が worktree の規模で決まる。
+func TestUpdateLimitsCOWCompactionToRewrittenPaths(t *testing.T) {
+	ctx := context.Background()
+	p, repo, _, target := cowFixture(t)
+	main := string(repo.MainPath)
+	if err := os.WriteFile(filepath.Join(main, "kept"), []byte(cowBody+"kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(main, "changed"), []byte(cowBody+"before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cowGit(t, main, "add", ".")
+	cowGit(t, main, "commit", "-m", "donors")
+	baseOID := cowGit(t, main, "rev-parse", "HEAD")
+	p.Config.Storage.CopyMode = config.CopyModeAuto
+	if err := p.Prepare(ctx, repo, target, baseOID, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(main, "changed"), []byte(cowBody+"after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cowGit(t, main, "add", ".")
+	cowGit(t, main, "commit", "-m", "rewrite one tracked file")
+	newOID := cowGit(t, main, "rev-parse", "HEAD")
+	scope, err := p.updateCOWScope(ctx, repo, baseOID, newOID, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scope.rewritten) != 1 || !scope.rewritten["changed"] {
+		t.Fatalf("scope=%v, want only the rewritten path", scope.rewritten)
+	}
+	before := updateTestInode(t, filepath.Join(target, "kept"))
+	p.Phases = &PhaseTimings{}
+	if _, err := p.UpdateLocked(ctx, repo, target, baseOID, newOID, testSlotID, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	counts := updatePhaseCounts(p.Phases)
+	if cowAvailable() && counts["cow.candidates"] != 1 {
+		t.Fatalf("cow.candidates=%d, want the single rewritten path", counts["cow.candidates"])
+	}
+	if after := updateTestInode(t, filepath.Join(target, "kept")); after != before {
+		t.Fatalf("an untouched path went through the replacement path again: %d -> %d", before, after)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "changed")); err != nil || string(data) != cowBody+"after\n" {
+		t.Fatalf("updated bytes=%d %v", len(data), err)
+	}
+}
+
+// include の配置だけが変わる更新は tracked file を1件も書き直さないため、置換経路へ入らない。
+// 実測ではこの形が最も遅く、共有対象すべてに compare から unlink までを通し直していた。
+func TestUpdateWithoutRewrittenTrackedPathsSkipsCOWReplacement(t *testing.T) {
+	ctx := context.Background()
+	p, repo, oid, target := cowFixture(t)
+	main := string(repo.MainPath)
+	p.Config.Storage.CopyMode = config.CopyModeAuto
+	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(main, ".env.local")
+	if err := os.WriteFile(source, []byte("included\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("included\n"))
+	desired := []state.Placement{{RelativePath: ".env.local", Kind: "copy", SourcePath: source, ContentSHA256: hex.EncodeToString(sum[:])}}
+	before := updateTestInode(t, filepath.Join(target, "file"))
+	p.Phases = &PhaseTimings{}
+	materialized, err := p.UpdateLocked(ctx, repo, target, oid, oid, testSlotID, nil, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(materialized) != 1 {
+		t.Fatalf("materialized=%v", materialized)
+	}
+	counts := updatePhaseCounts(p.Phases)
+	if cowAvailable() && counts["cow.entries"] == 0 {
+		t.Fatal("compaction never ran, so the zero replacement counts prove nothing")
+	}
+	for _, name := range []string{"cow.candidates", "cow.compare", "cow.clone", "cow.metadata", "cow.swap", "cow.verify", "cow.unlink"} {
+		if counts[name] != 0 {
+			t.Fatalf("%s=%d after an update that rewrote no tracked file", name, counts[name])
+		}
+	}
+	if after := updateTestInode(t, filepath.Join(target, "file")); after != before {
+		t.Fatalf("a shared file went through the replacement path again: %d -> %d", before, after)
 	}
 }

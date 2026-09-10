@@ -51,6 +51,12 @@ OIDの一致は共有の根拠には使わない（mainがdirtyなら内容は�
 mainのtree形状が異なる場合や、mainがこの処理中に変化した場合も、そのファイルだけを共有対象外として残りの処理を続ける。
 所有者・mode・flags・ACL・xattrが一致しないものも共有対象外とする。
 
+候補はindex全体だが、Hot StandbyのUPDATEだけは今回の更新が書き直したpathへ限定する（`updateCOWScope`）。
+限定の根拠は「checkoutが触らなかったpathの実体は前回の準備のまま残る」ことだけで、OIDの一致は根拠にしない。
+集合は旧OIDと要求OIDの差分に、`slot_placements`の旧履歴と新計画に挙がったpathを足したものである。
+したがって共有の水準は準備時に決まり、更新では増えない。前回共有できなかったpathをmainの状態が変わってから拾い直すことはしない。
+復元と新規準備は限定しない。宛先に共有済みの実体が無いため、絞ると共有が減るだけになる。
+
 `internal/workspace/cow.go`が復元の完了前に処理し、Gitのfilter、checkout hook、prepare commandによる結果を保持する。
 indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変えないため、復元した区別も保たれる。
 宛先の日時はFD経由で復元し、元ファイルとcloneをatomic swapしてから元inodeを検証して削除する。

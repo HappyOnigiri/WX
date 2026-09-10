@@ -248,7 +248,7 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 	}
 	if !p.sharedPlaced {
 		if err := p.timePhase("cow", func() error {
-			return p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity)
+			return p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity, nil)
 		}); err != nil {
 			return err
 		}
@@ -413,7 +413,7 @@ func (p *Preparer) PrepareResumeWithIdentity(ctx context.Context, repo discovery
 	if err := p.runPrepareWithIdentity(ctx, repo, target, expectedIdentity); err != nil {
 		return err
 	}
-	if err := p.compactWorktree(ctx, repo, target, oid, slotID, preparePhaseRestore, expectedIdentity); err != nil {
+	if err := p.compactWorktree(ctx, repo, target, oid, slotID, preparePhaseRestore, expectedIdentity, nil); err != nil {
 		return err
 	}
 	if err := p.VerifyWorktreeIdentity(target, expectedIdentity); err != nil {
