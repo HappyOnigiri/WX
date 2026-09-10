@@ -109,3 +109,10 @@ test('rejects a path escape in an artifact manifest', () => {
   value.recoveries[0].declaration.path = '../outside.go';
   assert.throws(() => reporter.validateManifest(value), /repository-relative path/);
 });
+
+test('accepts a successful manifest without recoveries', () => {
+  const value = manifest('10', '1');
+  delete value.recoveries;
+  assert.deepEqual(reporter.validateManifest(value).recoveries, []);
+  assert.equal(reporter.aggregateManifests([{ artifactName: 'coverage', manifest: value }], source).length, 0);
+});

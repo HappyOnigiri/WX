@@ -38,6 +38,7 @@ function validateManifest(value, artifactName = 'artifact') {
   if (value.api_head_sha && !SHA.test(value.api_head_sha)) fail(`${artifactName} has invalid api_head_sha`);
   if (value.run_id && !/^\d+$/.test(String(value.run_id))) fail(`${artifactName} has invalid run_id`);
   if (value.run_attempt && !/^\d+$/.test(String(value.run_attempt))) fail(`${artifactName} has invalid run_attempt`);
+  if (value.recoveries === undefined) value.recoveries = [];
   if (!Array.isArray(value.recoveries)) fail(`${artifactName} recoveries is not an array`);
   if (value.recoveries.length > 1000) fail(`${artifactName} has too many recoveries`);
   for (const [index, item] of value.recoveries.entries()) {
