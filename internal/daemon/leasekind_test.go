@@ -272,11 +272,11 @@ func TestReleaseLeaseDiscardsWithoutSaving(t *testing.T) {
 	if err := waitReady(ctx, m, 10*time.Second, lease.SessionID, lease.Token); err != nil {
 		t.Fatal(err)
 	}
-	// 保存ジョブが走っている間は削除を予約できないので、返却済みの貸出へ --discard を追いかけさせる。
-	waitUntil(t, 30*time.Second, func() bool {
-		reply, err := m.ReleaseLease(ctx, lease.SessionID, "wx-release", true)
-		return err == nil && reply["discarded"] == true
-	})
+	// 返却と同じ transaction で REMOVE を積むので、保存の完了を待たず 1 回で予約が通る。
+	reply, err := m.ReleaseLease(ctx, lease.SessionID, "wx-release", true)
+	if err != nil || reply["discarded"] != true {
+		t.Fatalf("release reply=%+v err=%v", reply, err)
+	}
 	waitUntil(t, 20*time.Second, func() bool {
 		slot, _ := store.Slot(ctx, lease.SessionID)
 		_, pathErr := os.Stat(lease.Path)

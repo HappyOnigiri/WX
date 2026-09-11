@@ -392,6 +392,19 @@ func (s *Store) Release(ctx context.Context, sessionID, workspaceID, slotID stri
 // ReleaseWithOutcome は Release の結果に加えて、隔離 slot のため snapshot を作らず session を終端したかを返す。
 // この終端では復旧 snapshot が残らないため、呼び出し側は成功として黙って閉じずに記録する。
 func (s *Store) ReleaseWithOutcome(ctx context.Context, sessionID, workspaceID, slotID string) (Job, bool, bool, error) {
+	return s.release(ctx, sessionID, workspaceID, slotID, false)
+}
+
+// ReleaseDiscardingWithOutcome は保存を省略する返却で、SNAPSHOT ジョブの代わりに REMOVE ジョブを同じ transaction で積む。
+// 利用者が明示した `wx release --discard` / `wx clear --discard` 専用で、自動の返却経路からは呼ばない。
+// slot が PREPARING で削除を予約できないときは、通常の返却と同じく changed=false を返して呼び出し側の後続経路へ委ねる。
+func (s *Store) ReleaseDiscardingWithOutcome(ctx context.Context, sessionID, workspaceID, slotID string) (Job, bool, bool, error) {
+	return s.release(ctx, sessionID, workspaceID, slotID, true)
+}
+
+// release は返却の本体で、discard が真なら保存を通さず削除を予約する。
+// 隔離 slot による終端・UNBOUND/RESTORING の終端・PREPARING の保留・二重返却の冪等は discard の指定に依らず同じに扱う。
+func (s *Store) release(ctx context.Context, sessionID, workspaceID, slotID string, discard bool) (Job, bool, bool, error) {
 	job, err := newJob("SNAPSHOT", workspaceID, slotID, sessionID)
 	if err != nil {
 		return Job{}, false, false, err
@@ -462,6 +475,29 @@ func (s *Store) ReleaseWithOutcome(ctx context.Context, sessionID, workspaceID, 
 	}
 	if slotState != "DRAINING" {
 		return Job{}, false, false, fmt.Errorf("slot %s cannot be released from %s", slotID, slotState)
+	}
+	if discard {
+		job, err = newJob("REMOVE", workspaceID, slotID, "")
+		if err != nil {
+			return Job{}, false, false, err
+		}
+		// slot を REMOVING にできないまま REMOVE を積むと、削除ジョブが再試行を使い切って slot を隔離する。
+		// そのため CAS の成功を確かめてからジョブを積む。
+		timestamp := now()
+		res, updateErr := tx.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED',pending_agent_session_id=NULL,released_at=COALESCE(released_at,?),archived_at=?,expires_at=? WHERE id=? AND state='RELEASING'`, timestamp, timestamp, timestamp, sessionID)
+		if updateErr != nil {
+			return Job{}, false, false, updateErr
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return Job{}, false, false, errors.New("session state changed before discarding release")
+		}
+		res, err = tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=? AND owner_session_id=? AND state='DRAINING'`, timestamp, slotID, sessionID)
+		if err != nil {
+			return Job{}, false, false, err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return Job{}, false, false, errors.New("slot state changed before discarding release")
+		}
 	}
 	if err := insertJob(ctx, tx, job); err != nil {
 		return Job{}, false, false, err
