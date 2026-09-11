@@ -130,7 +130,7 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 	}
 	m.schedule(job)
 	m.startBackground(m.runBackgroundGC)
-	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false}, false, nil
+	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slotPath, leasePathValue, repos)}, false, nil
 }
 
 // workspace未確定slot用の予約namespaceであり、通常のworkspace IDには"_"接頭辞を許さない。
@@ -161,6 +161,25 @@ func leasePath(slotPath, kind string, repos []state.SlotRepository) string {
 		return filepath.Join(slotPath, repos[0].DirName)
 	}
 	return slotPath
+}
+
+// leaseRepositoryDirs は lease path 直下の repository directory 名を、slot 作成時に記録した dir_name から返す。
+// 設定や remote 名から再計算すると dir_name の上書き・dir_source・重複時の suffix とずれ、
+// 存在しない path を渡された agent は黙って無視するため、記録済みの名前だけを権威にする。
+// commentlint:allow-long -- 再計算してはいけない理由を残す
+func leaseRepositoryDirs(slotPath, leasePathValue string, repos []state.SlotRepository) []string {
+	// 単一 repository の貸出は lease path が worktree そのもので、配下に渡す repository がない。
+	if leasePathValue != slotPath {
+		return nil
+	}
+	var dirs []string
+	for _, repo := range repos {
+		if repo.DirName == "" {
+			continue
+		}
+		dirs = append(dirs, repo.DirName)
+	}
+	return dirs
 }
 
 var errSlotPathExists = errors.New("unregistered slot path already exists")
