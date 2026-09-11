@@ -14,6 +14,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/tui"
 )
 
 // statusDisplayTimeout は Status/Doctor の制限時間。
@@ -95,12 +96,12 @@ func runDoctor(ctx context.Context, args []string) int {
 	defer cancel()
 	// 診断は daemon の応答待ちと接続失敗時のローカル検査で待たされるため、結果が出るまで待機行を出す。
 	// --json の出力は機械が読むため、端末でも待機行を出さない。
-	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout) && !*jsonOut, "diagnosing")
-	defer waiting.finish()
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout) && !*jsonOut, "diagnosing")
+	defer waiting.Finish()
 	var reply diag.Reply
 	if err := c.Call(staticCtx, "Doctor", struct{}{}, &reply); err != nil {
 		if !rpc.IsConnectError(err) {
-			waiting.finish()
+			waiting.Finish()
 			reportRPCError(err)
 			return 1
 		}
@@ -111,7 +112,7 @@ func runDoctor(ctx context.Context, args []string) int {
 		}
 	}
 	reply.Findings = append(reply.Findings, staleDaemonFindings(reply)...)
-	waiting.finish()
+	waiting.Finish()
 	if *probe {
 		code := runDoctorProbe(ctx, &reply, *jsonOut)
 		if code != 0 {

@@ -16,6 +16,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
+	"github.com/HappyOnigiri/WX/internal/tui"
 )
 
 // daemonWaitTimeout は同期的な daemon ライフサイクル操作の待機上限。
@@ -198,24 +199,24 @@ func startDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "starting")
-	defer waiting.finish()
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "starting")
+	defer waiting.Finish()
 	// 既に待受中なら目的の状態なので launchctl より先に報告する。
 	// ただし停止待ちが残る daemon は、最後のジョブ終了後に退出するため対象外とする。
 	if daemonListening(ctx, socket) {
 		switch reply, err := requestDaemonLifecycle(ctx, "RequestStart"); {
 		case err == nil:
 			if cancelled, _ := reply["stop_cancelled"].(bool); cancelled {
-				waiting.line("cancelled the pending stop of " + launchd.Label)
+				waiting.Line("cancelled the pending stop of " + launchd.Label)
 			}
 			if stopping, _ := reply["stop_pending"].(bool); !stopping {
-				waiting.finish()
+				waiting.Finish()
 				fmt.Println("already running", launchd.Label)
 				return 0
 			}
 			// 停止 signal 済みなので、目的の状態へは退出後に新しい daemon を起動するしかない。
 			if !waitForSocket(ctx, socket, false) {
-				waiting.finish()
+				waiting.Finish()
 				fmt.Fprintf(os.Stderr, "error: %s is stopping but did not exit within %s\n", launchd.Label, daemonWaitTimeout)
 				return 1
 			}
@@ -223,13 +224,13 @@ func startDaemon(ctx context.Context) int {
 			// 調査と呼び出しの間に daemon が消えた。いずれにせよ launchd 経由で戻す。
 		default:
 			// socket に応答があり目的の状態である。低下状態や旧 daemon もここに入り、停止待ちは保持しない。
-			waiting.finish()
+			waiting.Finish()
 			fmt.Println("already running", launchd.Label)
 			return 0
 		}
 	}
 	if err := startAndWaitForDaemon(ctx, socket); err != nil {
-		waiting.finish()
+		waiting.Finish()
 		if errors.Is(err, errNoDaemonAnswered) {
 			fmt.Fprintf(os.Stderr, "error: launchd was asked to start %s but no daemon answered %s within %s\n", launchd.Label, socket, daemonWaitTimeout)
 			return 1
@@ -240,7 +241,7 @@ func startDaemon(ctx context.Context) int {
 		}
 		return 1
 	}
-	waiting.finish()
+	waiting.Finish()
 	fmt.Println("started", launchd.Label)
 	return 0
 }
@@ -285,11 +286,11 @@ func stopDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "stopping")
-	defer waiting.finish()
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "stopping")
+	defer waiting.Finish()
 	reply, err := requestDaemonLifecycle(ctx, "RequestStop")
 	if err != nil {
-		waiting.finish()
+		waiting.Finish()
 		if rpc.IsConnectError(err) {
 			fmt.Println("already stopped", launchd.Label)
 			return 0
@@ -298,21 +299,21 @@ func stopDaemon(ctx context.Context) int {
 		return 1
 	}
 	if reason := lifecycleConflict(reply, "stop"); reason != "" {
-		waiting.finish()
+		waiting.Finish()
 		fmt.Fprintln(os.Stderr, "error:", reason)
 		return 1
 	}
 	if already, _ := reply["already_pending"].(bool); already {
 		// daemon が受け付ける SIGTERM は最初の一度だけなので、再要求せず待機を続ける。
-		waiting.line("stop was already requested; waiting for the daemon to exit")
+		waiting.Line("stop was already requested; waiting for the daemon to exit")
 	}
 	if !waitForSocket(ctx, socket, false) {
-		waiting.finish()
+		waiting.Finish()
 		fmt.Fprintf(os.Stderr, "error: %s accepted the stop request but did not exit within %s\n", launchd.Label, daemonWaitTimeout)
 		fmt.Fprintln(os.Stderr, gateWaitReason(reply))
 		return 1
 	}
-	waiting.finish()
+	waiting.Finish()
 	fmt.Println("stopped", launchd.Label)
 	return 0
 }
@@ -324,18 +325,18 @@ func restartDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "restarting daemon")
-	defer waiting.finish()
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "restarting daemon")
+	defer waiting.Finish()
 	guidance, err := restartAndWaitForDaemon(ctx, socket)
 	if err != nil {
-		waiting.finish()
+		waiting.Finish()
 		fmt.Fprintln(os.Stderr, "error:", err)
 		for _, line := range guidance {
 			fmt.Fprintln(os.Stderr, line)
 		}
 		return 1
 	}
-	waiting.finish()
+	waiting.Finish()
 	fmt.Println("restarted", launchd.Label)
 	return 0
 }

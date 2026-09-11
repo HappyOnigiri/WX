@@ -91,8 +91,8 @@ func setupOptions() setup.Options {
 			if err != nil {
 				return err
 			}
-			waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "starting daemon")
-			defer waiting.finish()
+			waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "starting daemon")
+			defer waiting.Finish()
 			return startAndWaitForDaemon(ctx, socket)
 		},
 		RestartDaemon: func(ctx context.Context) error {
@@ -100,8 +100,8 @@ func setupOptions() setup.Options {
 			if err != nil {
 				return err
 			}
-			waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "restarting daemon")
-			defer waiting.finish()
+			waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "restarting daemon")
+			defer waiting.Finish()
 			guidance, err := restartAndWaitForDaemon(ctx, socket)
 			if err != nil && len(guidance) > 0 {
 				return fmt.Errorf("%w; %s", err, strings.Join(guidance, "; "))
