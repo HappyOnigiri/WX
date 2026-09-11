@@ -275,7 +275,7 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			return fmt.Errorf("open workspace restore target root: %w", targetRootErr)
 		}
 		defer closeTargetRoot()
-		if err := archive.RestoreVerifiedWorkspace(ctx, verifiedWorkspace.snapshot, slot.Path, targetRoot, targetRootHandle, workspaceRecoveryExclusions(repos, rootRules)); err != nil {
+		if err := archive.RestoreVerifiedWorkspace(ctx, verifiedWorkspace.snapshot, slot.Path, targetRoot, targetRootHandle, workspaceRecoveryExclusions(repos), rootRules.Link...); err != nil {
 			m.quarantineWorkspaceArchiveFailure(ctx, id, err)
 			return fmt.Errorf("restore workspace root: %w", err)
 		}
@@ -361,20 +361,20 @@ func (m *Manager) recoveryUsable(ctx context.Context, sessionID string, w discov
 	return true, nil
 }
 
-// workspaceRecoveryExclusions は解決済みのroot ruleを受け取る。configだけを見るとmanifest由来のlinkが除外から漏れ、
-// 復元時のpruneがlinkを消してsnapshotがlink先を取り込む。
-func workspaceRecoveryExclusions(repos []state.SlotRepository, rules workspace.RootRules) []string {
-	// bundle root内のworktree、slot marker、.worktreelinkをsnapshot/prune対象から外す。
+// workspaceRecoveryExclusions は常に除外するpathだけを返す。link ruleはここに載せない。
+// ruleを読み直して除外を決めると、貸出中のrule変更でslot内の実体がtarから落ちて作業が消えるためである。
+// 除外のauthorityはsnapshot側が「slot内でsymlinkだったか」、復元側が「archiveにその pathがあるか」で、archive packageが判定する。
+func workspaceRecoveryExclusions(repos []state.SlotRepository) []string {
+	// bundle root内のworktreeとslot markerをsnapshot/prune対象から外す。
 	// source相対pathではなくslot_repositories.dir_nameを使わないとnested repositoryを消し得る。
-	links := rules.Link
-	excluded := make([]string, 0, 2*len(repos)+len(links))
+	// 復元では現在のslotのrepositoryから算出する必要がある。archive由来にすると、snapshot後に追加したworktree dirをpruneが消す。
+	excluded := make([]string, 0, 2*len(repos))
 	for _, repository := range repos {
 		if repository.DirName == "" {
 			continue
 		}
 		excluded = append(excluded, repository.DirName, workspace.OwnershipMarkerName(repository.RepositoryID))
 	}
-	excluded = append(excluded, links...)
 	return excluded
 }
 

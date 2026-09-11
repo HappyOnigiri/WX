@@ -122,7 +122,7 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 			if err != nil {
 				return err
 			}
-			rootSnapshot, err = archive.SnapshotWorkspaceAt(ctx, slot.Path, ownershipRoot, ownershipRootID, ownershipRootHandle, s.ID, workspaceRecoveryExclusions(repos, rootRules), expiry)
+			rootSnapshot, err = archive.SnapshotWorkspaceAt(ctx, slot.Path, ownershipRoot, ownershipRootID, ownershipRootHandle, s.ID, workspaceRecoveryExclusions(repos), expiry, rootRules.Link...)
 			if err != nil {
 				m.log.Error("workspace root snapshot failed", "session_id", s.ID, "error", err)
 				_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")

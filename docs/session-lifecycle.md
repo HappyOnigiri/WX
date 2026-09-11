@@ -46,6 +46,7 @@
 5. **アーカイブ** — SNAPSHOTジョブが2種類のスナップショットを取る。
    リポジトリごとのHEAD・index・worktreeは**ソースリポジトリ側の**保護オブジェクトとrefになる。
    multi-repository workspaceではさらに、workspace root自体のtarをwxのworktree root配下へ書き、`workspace_snapshots`行が指す。
+   rootのtarから落とすのはslot内でsymlinkだったpathだけで、実体のある作業はruleの変更にかかわらずtarへ入る。
 
    refの公開はDB行の永続化の後に行う。逆順だと、reconcileから見て正常なアーカイブが素性不明のrefに見える窓が開く。
 

@@ -37,7 +37,9 @@ var ErrWorkspaceSnapshotExpired = errors.New("workspace snapshot is no longer av
 // SnapshotWorkspaceAt は daemon が multi-repository slot に使う descriptor 束縛版である。 owner は ownershipRoot に対応する manager 所有の root
 // descriptor でなければならない。 bundle の読み取りと archive の書き込みを同じ物理 root に限定し、返す ArchivePath を SQLite に commit
 // する前にパス名の置換を拒否する。
-func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot, rootID string, owner *os.Root, sessionID string, excluded []string, expiry time.Time) (state.WorkspaceSnapshot, error) {
+// excluded は常に除外する path、linkCandidates は link になり得る候補で、bundle 内で symlink だったものだけを除外する。
+// commentlint:allow-long -- descriptor 束縛の理由と、2 種類の除外引数の違いを呼び出し側へ 1 箇所で示す
+func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot, rootID string, owner *os.Root, sessionID string, excluded []string, expiry time.Time, linkCandidates ...string) (state.WorkspaceSnapshot, error) {
 	if rootID == "" {
 		return state.WorkspaceSnapshot{}, errors.New("workspace ownership root generation is required")
 	}
@@ -74,6 +76,14 @@ func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot, rootID 
 		return state.WorkspaceSnapshot{}, fmt.Errorf("open pinned workspace bundle: %w", err)
 	}
 	defer func() { _ = bundle.Close() }()
+	linkExclusions, err := resolveBundleLinkExclusions(bundle, linkCandidates)
+	if err != nil {
+		return state.WorkspaceSnapshot{}, err
+	}
+	exclusions, err = normalizeWorkspaceExclusions(append(exclusions, linkExclusions...))
+	if err != nil {
+		return state.WorkspaceSnapshot{}, err
+	}
 	archiveRel := workspaceSnapshotRelativePath(sessionID)
 	temporaryRel := archiveRel + ".tmp-" + domain.StableID(sessionID, state.FormatTime(time.Now()))
 	output, err := owner.OpenFile(filepath.FromSlash(temporaryRel), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -317,7 +327,7 @@ func (v *VerifiedWorkspaceSnapshot) verifyUnchanged() error {
 
 // RestoreWorkspaceAt は archive を検証してから multi-repository bundle を復元する。
 // 検証と展開の間に別の準備を挟む復元 worker は、OpenVerifiedWorkspaceSnapshotAt と RestoreVerifiedWorkspace を使う。
-func RestoreWorkspaceAt(ctx context.Context, bundleRoot, targetOwnershipRoot string, targetRootHandle *os.Root, archiveOwnershipRoot string, archiveRootHandle *os.Root, snapshot state.WorkspaceSnapshot, excluded []string) error {
+func RestoreWorkspaceAt(ctx context.Context, bundleRoot, targetOwnershipRoot string, targetRootHandle *os.Root, archiveOwnershipRoot string, archiveRootHandle *os.Root, snapshot state.WorkspaceSnapshot, excluded []string, linkCandidates ...string) error {
 	if targetRootHandle == nil || archiveRootHandle == nil {
 		return errors.New("workspace restore root descriptor is nil")
 	}
@@ -326,12 +336,13 @@ func RestoreWorkspaceAt(ctx context.Context, bundleRoot, targetOwnershipRoot str
 		return err
 	}
 	defer func() { _ = verified.Close() }()
-	return RestoreVerifiedWorkspace(ctx, verified, bundleRoot, targetOwnershipRoot, targetRootHandle, excluded)
+	return RestoreVerifiedWorkspace(ctx, verified, bundleRoot, targetOwnershipRoot, targetRootHandle, excluded, linkCandidates...)
 }
 
 // RestoreVerifiedWorkspace は検証済み handle の内容だけを target へ展開する。
 // prune を始める前と展開を終えた後に archive の同一性を確かめ、途中で入れ替わった archive の内容を残さない。
-func RestoreVerifiedWorkspace(ctx context.Context, verified *VerifiedWorkspaceSnapshot, bundleRoot, targetOwnershipRoot string, targetRootHandle *os.Root, excluded []string) error {
+// excluded は常に除外する path、linkCandidates は link になり得る候補で、archive に entry の無いものだけを除外する。
+func RestoreVerifiedWorkspace(ctx context.Context, verified *VerifiedWorkspaceSnapshot, bundleRoot, targetOwnershipRoot string, targetRootHandle *os.Root, excluded []string, linkCandidates ...string) error {
 	if verified == nil || verified.file == nil {
 		return errors.New("workspace restore requires a verified snapshot")
 	}
@@ -359,6 +370,14 @@ func RestoreVerifiedWorkspace(ctx context.Context, verified *VerifiedWorkspaceSn
 		return err
 	}
 	defer func() { _ = root.Close() }()
+	linkExclusions, err := resolveArchiveLinkExclusions(verified.file, linkCandidates)
+	if err != nil {
+		return err
+	}
+	exclusions, err = normalizeWorkspaceExclusions(append(exclusions, linkExclusions...))
+	if err != nil {
+		return err
+	}
 	if _, err := verified.file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}

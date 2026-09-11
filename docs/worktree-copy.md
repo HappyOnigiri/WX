@@ -104,8 +104,10 @@ rootのlinkだけはignore判定を行わず（rootにGitが無い）、source�
 root直下のmanifestは、workspace rootがrepositoryのmain worktreeそのものである場合には読まない。
 そこはGitがcheckoutする領域で、配置しない実体をfingerprintへ混ぜると無関係なREADY slotを一斉に無効化する。
 
-rule解決は1箇所に集め、fingerprint・配置計画・配置履歴・復元時の除外が同じ結果を見るようにする。
-別々に読み直すと、除外から漏れたlinkを復元時のpruneが消し、snapshotがlink先を取り込む。
+rule解決は1箇所に集め、fingerprint・配置計画・配置履歴が同じ結果を見るようにする。
+workspace rootのtar・復元での除外はruleで決めない。
+snapshotはslot内でsymlinkだったpathだけを外し、復元の除外はarchiveが持つpathから決める。
+ruleを読み直して除外を決めると、貸出中のrule変更で実体のある作業がtarから落ちる。
 
 新規準備は実際に配置したcopy/linkをfile単位で`slot_placements`へ記録する。
 記録はその準備が配置に使った計画そのものから作り、include/linkのruleを読み直さない。
