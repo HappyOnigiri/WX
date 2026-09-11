@@ -35,6 +35,40 @@ func TestReleaseCreatesExactlyOneSnapshotJob(t *testing.T) {
 	}
 }
 
+// --discard の返却は保存を積まず、同じ transaction で削除まで予約する。
+// SNAPSHOT を積んでから取り消す経路では、保存が先に走り出すと予約が通らず再実行が要る。
+func TestReleaseDiscardingSchedulesRemovalWithoutSnapshot(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "wx-path", LeaseKind: LeaseKindPath, TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "LEASED"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	job, changed, quarantineExpired, err := store.ReleaseDiscardingWithOutcome(ctx, session.ID, session.WorkspaceID, session.SlotID)
+	if err != nil || !changed || quarantineExpired || job.Kind != "REMOVE" || job.SessionID != "" {
+		t.Fatalf("discarding release: changed=%v quarantineExpired=%v job=%+v err=%v", changed, quarantineExpired, job, err)
+	}
+	if _, changed, _, err := store.ReleaseDiscardingWithOutcome(ctx, session.ID, session.WorkspaceID, session.SlotID); err != nil || changed {
+		t.Fatalf("duplicate discarding release: changed=%v err=%v", changed, err)
+	}
+	var removeJobs, snapshotJobs int
+	if err := store.db.QueryRow(`SELECT sum(kind='REMOVE'),sum(kind='SNAPSHOT') FROM jobs WHERE slot_id='slot'`).Scan(&removeJobs, &snapshotJobs); err != nil {
+		t.Fatal(err)
+	}
+	if removeJobs != 1 || snapshotJobs != 0 {
+		t.Fatalf("jobs: remove=%d snapshot=%d, want 1 and 0", removeJobs, snapshotJobs)
+	}
+	stored, err := store.SessionByID(ctx, session.ID)
+	if err != nil || stored.State != "EXPIRED" {
+		t.Fatalf("session=%+v err=%v", stored, err)
+	}
+	slot, err := store.Slot(ctx, session.SlotID)
+	if err != nil || slot.State != "REMOVING" || slot.OwnerSessionID != "" {
+		t.Fatalf("slot=%+v err=%v", slot, err)
+	}
+}
+
 func TestReleaseCleansUpUnboundAndRestoringSessions(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

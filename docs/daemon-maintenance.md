@@ -94,6 +94,7 @@ UPDATEは利用者向け実行枠を使い、slot・STARTING session・jobの予
 
 貸出前のREADY・補充中のPREPARINGは`--standby`と`--all`だけが対象に含め、隔離slotは全modeで`ScheduleQuarantinedRemoval`へ載せる。
 `--discard`は保存を省略して削除を予約し、modeに永続化して再起動後も維持する。
+使用中のdetached lease（`wx new`）も、返却と同じtransactionでSNAPSHOTを積まずREMOVEへ載せ、保存待ちを経ずに削除待ちへ進める。
 実行中runへ合流できるのは対象範囲が同じmodeの再実行だけとする。
 `--all`の終了要求は`session_termination_requests`へ期限付きで記録し、heartbeatとagent登録の応答でclientへ渡す。
 signalを送るのはclientだけで、daemonは記録されたPIDへ触れない。

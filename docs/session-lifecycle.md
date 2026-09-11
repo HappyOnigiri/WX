@@ -65,11 +65,13 @@
 そのため`Store.OrphanCandidates`は`lease_kind<>'path'`で除外する。
 除外を忘れると`wx new`のworktreeは45秒で保存・返却されGCの対象になるため、ここがこの経路で最も静かに壊れる箇所である。
 
-`wx new`の返却契機は3つで、どれも既存の返却経路（session `RELEASING`→slot `DRAINING`→SNAPSHOTジョブ）へ載る。
+`wx new`の返却契機は3つで、`wx release --discard`を除きどれも既存の返却経路（session `RELEASING`→slot `DRAINING`→SNAPSHOTジョブ）へ載る。
 
 1. 親sessionの終了。`WX_SESSION_ID` / `WX_SESSION_TOKEN`を持つ環境からの要求は`sessions.lease_owner_session_id`へ親を記録し、親が使用中でなくなると`Store.OrphanedChildLeases`が拾う。
    resume chain専用の`parent_session_id`は流用しない。`internal/state/standby.go`が「親がEXPIRED」を条件にしているため、流用すると子貸出のstandby補充成功記録が親の終了まで入らない。
 2. `wx release <id>`の明示指定。session tokenを持たない経路なので、生きたclient / agentを持つ貸出は拒否する。
+   `--discard`だけは例外で、`Store.ReleaseDiscardingWithOutcome`が返却と同じtransactionでSNAPSHOTを積まずREMOVEを積む（session `EXPIRED`→slot `REMOVING`）。
+   保存を待たずに1回で削除が予約されるので、再実行の案内も`retention.ended_worktree`の猶予も無い。slotが`PREPARING`で予約できないときだけ、通常の返却と同じく保存経路へ載る。
 3. 設定`lease.ttl`の経過。`Store.ExpiredLeaseCandidates`が拾う。
 
 期限が来ても保存されてから返却され、返却後も`retention.ended_worktree`の間は実体が残り`wx shell --resume <id>`で復元できる。
