@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
@@ -24,8 +25,13 @@ const leaseProgressTimeout = 2 * time.Second
 // ここで待つ時間は経路の選択より前に属する。
 const leaseResolvingLabel = "Resolving workspace"
 
-// leaseQueuedPhase は job 待ち行列にいる間の表示。実行中の区間がまだ無いことを示す。
-const leaseQueuedPhase = "queued"
+// leaseQueuedLabel は準備 job が走り出す前の表示。
+// 区間の切れ目でも区間名は空になるため、daemon が job の実行中と答えた間はこの表示へ落とさない。
+const leaseQueuedLabel = "queued"
+
+// leaseSettledWidth は確定行の先頭に置く所要時間の幅。
+// 区間名の開始位置を揃えて、残した行を縦に読めるようにする。
+const leaseSettledWidth = 7
 
 // leaseRouteLabels は daemon.Lease.Route に対応する表示名である。
 var leaseRouteLabels = map[string]string{
@@ -43,16 +49,47 @@ func leaseRouteLabel(route string) string {
 	return "Preparing workspace"
 }
 
-// leaseProgress は貸出の準備を待つ間だけ stderr へ1行の進捗を出す。
-// stdout は wx new のパスや wx run の出力の契約に使われているため、混ぜない。
-// 進捗は装飾なので、RPC の失敗は表示を据え置くだけで貸出の結果を変えない。
+// leasePhase は表示中の準備区間である。区間名は repository ごとに繰り返すため、
+// 対象と何件目かを含めて同じ区間かどうかを判定する。
+type leasePhase struct {
+	name, target string
+	index, total int
+}
+
+// text は確定行と待機行に共通の区間表記を返す。
+func (k leasePhase) text() string {
+	if k.target == "" && k.total < 2 {
+		return k.name
+	}
+	label := k.target
+	if label == "" {
+		label = "workspace"
+	}
+	if k.total > 1 {
+		label += " (" + strconv.Itoa(k.index) + "/" + strconv.Itoa(k.total) + ")"
+	}
+	return label + " " + k.name
+}
+
+// leaseProgress は貸出の準備を待つ間だけ stderr へ進捗を出す。終わった区間は1行ずつ残し、待機行だけを描き替える。
+// 待機行は agent 起動の直前に消えるため、そこにしか出ない情報は速い準備では読めないまま消える。
+// stdout は wx new のパスや wx run の出力の契約に使われているため混ぜず、RPC の失敗も表示を据え置くだけにする。
 type leaseProgress struct {
 	bar     *tui.Progress
 	animate bool
-	label   string
+	route   string
 	started time.Time
-	cancel  context.CancelFunc
-	done    chan struct{}
+	// phase は待機行に出している区間。準備 job が始まる前と区間の切れ目では零値になる。
+	phase leasePhase
+	// elapsed は phase について最後に受け取った経過で、確定行の所要時間になる。
+	elapsed time.Duration
+	// queued は準備 job がまだ走っていないことを表示済みかどうかである。
+	queued bool
+	// settled は確定行を1行でも残したかどうかで、総括行を出すかの判断に使う。
+	settled  bool
+	finished bool
+	cancel   context.CancelFunc
+	done     chan struct{}
 }
 
 // startLeaseProgress は経路が決まる前の待機行を stderr へ開始する。
@@ -65,8 +102,7 @@ func startLeaseProgress() *leaseProgress {
 // 端末を用意できない環境でも取り直しと描き替えの契約を試験できる。
 func newLeaseProgress(w io.Writer, animate bool) *leaseProgress {
 	return &leaseProgress{
-		bar: tui.StartProgress(w, animate, leaseResolvingLabel), animate: animate,
-		label: leaseResolvingLabel, started: time.Now(),
+		bar: tui.StartProgress(w, animate, leaseResolvingLabel), animate: animate, started: time.Now(),
 	}
 }
 
@@ -76,8 +112,8 @@ func (p *leaseProgress) watch(ctx context.Context, client rpc.Client, lease daem
 	if !p.animate || p.cancel != nil {
 		return
 	}
-	p.label = leaseRouteLabel(lease.Route)
-	p.bar.Set(p.label, "")
+	p.route = leaseRouteLabel(lease.Route)
+	p.draw()
 	pollCtx, cancel := context.WithCancel(ctx)
 	p.cancel, p.done = cancel, make(chan struct{})
 	go p.poll(pollCtx, client, lease)
@@ -100,15 +136,64 @@ func (p *leaseProgress) poll(ctx context.Context, client rpc.Client, lease daemo
 		if err != nil {
 			continue
 		}
-		phase, elapsed := leaseQueuedPhase, time.Since(p.started)
-		if progress.Phase != "" {
-			phase, elapsed = progress.Phase, time.Duration(progress.PhaseElapsedMS)*time.Millisecond
-		}
-		p.bar.Set(p.label+": "+phase, fmt.Sprintf(" %ds", int(elapsed.Seconds())))
+		p.update(progress)
 	}
 }
 
-// finish は取り直しを止めてから待機行を消す。
+// update は受け取った現在位置を表示へ反映する。
+// 区間名が空になるのは job 待ちだけでなく区間の切れ目でも起きるため、
+// 準備 job が走っている間は直前の区間を据え置き、表示を待機中へ戻さない。
+func (p *leaseProgress) update(progress daemon.LeaseProgress) {
+	switch {
+	case progress.Phase != "":
+		phase := leasePhase{name: progress.Phase, target: progress.Target, index: progress.TargetIndex, total: progress.TargetTotal}
+		if phase != p.phase {
+			p.settle()
+			p.phase, p.queued = phase, false
+		}
+		p.elapsed = time.Duration(progress.PhaseElapsedMS) * time.Millisecond
+	case !progress.Running && p.phase == (leasePhase{}):
+		p.queued = true
+	}
+	p.draw()
+}
+
+// draw は待機行を現在の表示へ合わせる。末尾は貸出要求からの経過で、
+// 区間ごとの所要時間しか出さないと、全体でどれだけ待っているかが読めなくなる。
+func (p *leaseProgress) draw() {
+	p.bar.Set(p.label(), fmt.Sprintf("  %ds", int(time.Since(p.started).Seconds())))
+}
+
+func (p *leaseProgress) label() string {
+	if p.route == "" {
+		return leaseResolvingLabel
+	}
+	switch {
+	case p.phase != (leasePhase{}):
+		return p.route + ": " + p.phase.text()
+	case p.queued:
+		return p.route + ": " + leaseQueuedLabel
+	default:
+		return p.route
+	}
+}
+
+// settle は表示中の区間を確定行として残す。待機行は描き替えで消えるため、
+// 終わった区間はここでだけ記録に残り、後から準備のどこに時間が掛かったかを読める。
+func (p *leaseProgress) settle() {
+	if p.phase == (leasePhase{}) {
+		return
+	}
+	p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(p.elapsed), p.phase.text()))
+	p.settled = true
+}
+
+// formatLeaseDuration は所要時間を確定行の幅に収まる長さで返す。
+func formatLeaseDuration(d time.Duration) string {
+	return strconv.FormatFloat(d.Seconds(), 'f', 1, 64) + "s"
+}
+
+// finish は取り直しを止め、最後の区間と総括を残してから待機行を消す。
 // agent を前面へ出す前と結果を出力する前に必ず呼ぶ必要があるため、二度目以降は何もしない。
 func (p *leaseProgress) finish() {
 	if p.cancel != nil {
@@ -116,5 +201,13 @@ func (p *leaseProgress) finish() {
 		<-p.done
 		p.cancel = nil
 	}
+	if p.animate && !p.finished {
+		p.settle()
+		// 総括は準備を待った回にだけ出す。成否は呼び出し側が別に伝えるので、ここでは掛かった時間だけを残す。
+		if p.settled {
+			p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(time.Since(p.started)), p.route))
+		}
+	}
+	p.finished = true
 	p.bar.Finish()
 }

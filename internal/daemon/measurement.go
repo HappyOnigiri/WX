@@ -80,16 +80,18 @@ func (m *Manager) newPrepareTimer(slot state.Slot, preparer *workspace.Preparer)
 	return timer
 }
 
-// ActivePhase は slot で実行中の準備区間の名前と開始時刻を返す。
-// 準備が動いていない、または区間の切れ目では ok=false を返す。
-func (m *Manager) ActivePhase(slotID string) (name string, start time.Time, ok bool) {
+// ActivePhase は slot で実行中の準備区間を返す。
+// running は準備 job がその slot で走っていることを示し、区間の切れ目でも true のままである。
+// 区間の切れ目と job 待ち行列を区別できるよう、ok とは別に返す。
+func (m *Manager) ActivePhase(slotID string) (active workspace.ActivePhase, running, ok bool) {
 	m.mu.RLock()
 	timer := m.activePrepares[slotID]
 	m.mu.RUnlock()
 	if timer == nil {
-		return "", time.Time{}, false
+		return workspace.ActivePhase{}, false, false
 	}
-	return timer.timings.Active()
+	active, ok = timer.timings.Active()
+	return active, true, ok
 }
 
 // markEarly は Early Ready の到達時刻を記録する。二段階準備が一度だけ呼ぶ。

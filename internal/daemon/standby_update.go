@@ -331,11 +331,13 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 	for _, repository := range w.Repositories {
 		byID[string(repository.ID)] = repository
 	}
-	for _, stored := range repositories {
+	for index, stored := range repositories {
 		repository, ok := byID[stored.RepositoryID]
 		if !ok || stored.UpdateBaseOID == "" {
 			return errors.New("standby update metadata no longer matches the workspace")
 		}
+		// 更新の区間名も repository ごとに繰り返すため、実行中の表示が何件目かを読めるようにする。
+		preparer.Phases.Scope(workspace.RepositoryScope(repository, index+1, len(repositories)))
 		if err := m.store.MarkRepositoryUpdateRunning(ctx, slot.ID, stored.RepositoryID); err != nil {
 			return err
 		}

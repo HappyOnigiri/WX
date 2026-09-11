@@ -53,6 +53,11 @@ func TestLeaseProgressReportsTheRunningPhaseDuringColdStart(t *testing.T) {
 			}
 			if progress.Phase != "" {
 				seen[progress.Phase] = true
+				// 区間を観測できた回は準備 job が走っている。区間の切れ目と job 待ちを
+				// 区別できるよう、実行中である事実は区間名とは別に伝わる必要がある。
+				if !progress.Running {
+					t.Fatalf("progress=%+v, want the running flag while a phase is measured", progress)
+				}
 			}
 		}
 	}
@@ -63,8 +68,8 @@ func TestLeaseProgressReportsTheRunningPhaseDuringColdStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if progress.Phase != "" {
-		t.Fatalf("progress=%+v, want no running phase once preparation finished", progress)
+	if progress.Phase != "" || progress.Running {
+		t.Fatalf("progress=%+v, want no running preparation once it finished", progress)
 	}
 }
 
@@ -143,4 +148,58 @@ func waitForReadySlot(t *testing.T, f *managerFixture, repository string) string
 	slots, _ := f.Store.ListSlots(ctx, true)
 	t.Fatalf("no standby became READY; slots=%+v", slots)
 	return ""
+}
+
+// 複数 repository の workspace では、同じ区間名が repository の数だけ繰り返される。
+// 実行中の区間には対象と何件目かが付き、client はそれで進捗が何周目かを描き分ける。
+func TestLeaseProgressNamesTheRepositoryOfEachPhase(t *testing.T) {
+	requireDaemonIntegration(t)
+	f := runningManagerFixture(t, func(s *managerFixtureSetup) {
+		s.Config.Worktree.Undefined = "hot"
+		s.Config.Pool.WarmPerWorkspace = 0
+		s.Config.Discovery.ReconcileInterval.Duration = time.Hour
+		// 各 repository の準備を止め、repository ごとの区間を観測できる幅を作る。
+		sleep := config.Repository{Prepare: config.Prepare{Command: []string{"sh", "-c", "sleep 1"}}}
+		s.Config.Repositories = map[string]config.Repository{
+			filepath.Join(s.Root, "service"): sleep, filepath.Join(s.Root, "web"): sleep,
+		}
+	})
+	initGitRepo(t, filepath.Join(f.Root, "service"))
+	initGitRepo(t, filepath.Join(f.Root, "web"))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	lease, err := f.Manager.ResolveAndLease(ctx, f.Root, nil, "codex", 1, leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := make(chan error, 1)
+	go func() { ready <- f.Manager.WaitReady(ctx, lease.SessionID, lease.Token) }()
+	targets := map[string]int{}
+	for waiting := true; waiting; {
+		select {
+		case err := <-ready:
+			if err != nil {
+				t.Fatalf("wait for cold start: %v", err)
+			}
+			waiting = false
+		case <-time.After(20 * time.Millisecond):
+			progress, err := f.Manager.LeaseProgress(ctx, lease.SessionID, lease.Token)
+			if err != nil {
+				t.Fatalf("lease progress: %v", err)
+			}
+			if progress.Phase == "" || progress.Target == "" {
+				continue
+			}
+			if progress.TargetTotal != 2 || progress.TargetIndex < 1 || progress.TargetIndex > 2 {
+				t.Fatalf("progress=%+v, want the position among the two repositories", progress)
+			}
+			targets[progress.Target] = progress.TargetIndex
+		}
+	}
+	if targets["service"] == 0 || targets["web"] == 0 {
+		t.Fatalf("observed targets=%v, want a phase from each repository", targets)
+	}
+	if targets["service"] == targets["web"] {
+		t.Fatalf("observed targets=%v, want distinct positions per repository", targets)
+	}
 }

@@ -59,10 +59,20 @@ func (m *Manager) WaitEarlyReady(ctx context.Context, id, token string) error {
 
 // LeaseProgress は貸出の準備がいまどこにいるかである。表示専用で、準備の結果には関与しない。
 type LeaseProgress struct {
-	// State は slot の状態。job 待ち行列にいる間は Phase が空になるので、client はこちらで待機中と描き分ける。
+	// State は slot の状態。
 	State string `json:"state"`
+	// Running は準備 job がこの slot で走っていることを示す。
+	// Phase は区間の切れ目でも空になるため、job 待ち行列との区別はこちらで行う。
+	Running bool `json:"running,omitempty"`
 	// Phase は実行中の準備区間名。`wx bench` の区間名と同じ語彙である。
 	Phase string `json:"phase,omitempty"`
+	// Target は Phase が属する repository の、workspace root からの相対 path である。
+	// 区間名は repository ごとに繰り返すため、これが無いと表示が何周目かを読めない。
+	// workspace 全体に属する区間と単一 repository の workspace では空になる。
+	Target string `json:"target,omitempty"`
+	// TargetIndex は TargetTotal 件中の何件目かで、1 始まりである。対象を持たない区間では 0 になる。
+	TargetIndex int `json:"target_index,omitempty"`
+	TargetTotal int `json:"target_total,omitempty"`
 	// PhaseElapsedMS は Phase が始まってからの経過である。
 	PhaseElapsedMS int64 `json:"phase_elapsed_ms,omitempty"`
 }
@@ -77,10 +87,13 @@ func (m *Manager) LeaseProgress(ctx context.Context, id, token string) (LeasePro
 	if err != nil {
 		return LeaseProgress{}, err
 	}
-	progress := LeaseProgress{State: slot.State}
-	if name, start, ok := m.ActivePhase(id); ok {
-		progress.Phase = name
-		progress.PhaseElapsedMS = time.Since(start).Milliseconds()
+	active, running, ok := m.ActivePhase(id)
+	progress := LeaseProgress{State: slot.State, Running: running}
+	if ok {
+		progress.Phase = active.Name
+		progress.Target = active.Scope.Target
+		progress.TargetIndex, progress.TargetTotal = active.Scope.Index, active.Scope.Total
+		progress.PhaseElapsedMS = time.Since(active.Start).Milliseconds()
 	}
 	return progress, nil
 }

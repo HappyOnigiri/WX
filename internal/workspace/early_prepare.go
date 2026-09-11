@@ -37,7 +37,9 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 			repo.locked.close()
 		}
 	}()
-	for _, request := range repositories {
+	for index, request := range repositories {
+		// 区間名は repository ごとに同じものが繰り返されるため、進捗の表示が何周目かを読めるよう対象を添える。
+		p.Phases.Scope(RepositoryScope(request.Repository, index+1, len(repositories)))
 		root, target, err := p.prepareTarget(request.Target)
 		if err != nil {
 			return nil, err
@@ -69,6 +71,8 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 			return nil, err
 		}
 	}
+	// workspace root と全 repository をまとめて見る区間は、特定の repository には属さない。
+	p.Phases.Scope(PhaseScope{})
 	if rootStage != nil {
 		if err := p.timePhase("early-root", func() error { return rootStage(true) }); err != nil {
 			return nil, err
@@ -84,7 +88,8 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 	}); err != nil {
 		return nil, err
 	}
-	for _, item := range prepared {
+	for index, item := range prepared {
+		p.Phases.Scope(RepositoryScope(item.Repository, index+1, len(prepared)))
 		if err := p.validatePreparedTarget(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked.root, item.locked.relative, item.locked.identity, "validate remaining checkout"); err != nil {
 			return nil, err
 		}
@@ -129,6 +134,7 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 			return nil, err
 		}
 	}
+	p.Phases.Scope(PhaseScope{})
 	if rootStage != nil {
 		if err := p.timePhase("root", func() error { return rootStage(false) }); err != nil {
 			return nil, err
