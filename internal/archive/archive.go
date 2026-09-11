@@ -95,20 +95,26 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("check worktree cleanliness: %w", err)
 	}
-	clean := strings.TrimSpace(statusOutput) == ""
-	if clean {
-		flagged, flagErr := indexHidesWorktreeChanges(worktreeValue)
+	cleanSnapshot := func(headTree string) state.Snapshot {
+		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}
+	}
+	// status が clean なら HEAD tree との差分は flag 付き path にしか残り得ないため、一時 index への add をその path だけへ絞る。
+	// 60k file 規模の全件走査を避けつつ内容は今までどおり記録し、絞った結果が HEAD tree と一致すれば clean 短絡へ戻す。
+	var flaggedPaths []string
+	var headTree string
+	if strings.TrimSpace(statusOutput) == "" {
+		flags, flagErr := readIndexFlags(worktreeValue)
 		if flagErr != nil {
 			return state.Snapshot{}, flagErr
 		}
-		clean = !flagged
-	}
-	if clean {
-		headTree, err := worktreeValue(nil, "rev-parse", "HEAD^{tree}")
+		headTree, err = worktreeValue(nil, "rev-parse", "HEAD^{tree}")
 		if err != nil {
 			return state.Snapshot{}, fmt.Errorf("resolve clean HEAD tree: %w", err)
 		}
-		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+		flaggedPaths = flags.flagged()
+		if len(flaggedPaths) == 0 {
+			return cleanSnapshot(headTree), nil
+		}
 	}
 	indexTree, err := worktreeValue(nil, "write-tree")
 	if err != nil {
@@ -128,12 +134,20 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if _, err := worktreeRun(env, nil, "read-tree", head); err != nil {
 		return state.Snapshot{}, err
 	}
-	if _, err := worktreeRun(env, nil, "add", "-A", "--", "."); err != nil {
+	if len(flaggedPaths) > 0 {
+		if _, err := worktreeRun(env, literalPathspecs(flaggedPaths), "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
+			return state.Snapshot{}, err
+		}
+	} else if _, err := worktreeRun(env, nil, "add", "-A", "--", "."); err != nil {
 		return state.Snapshot{}, err
 	}
 	worktreeTree, err := worktreeValue(env, "write-tree")
 	if err != nil {
 		return state.Snapshot{}, err
+	}
+	// flag 付き path の内容が HEAD と同じなら記録すべき作業は無いため、recovery commit を作らず clean 短絡へ戻す。
+	if len(flaggedPaths) > 0 && worktreeTree == headTree {
+		return cleanSnapshot(headTree), nil
 	}
 	commitEnv := append([]string(nil), env...)
 	commitEnv = append(commitEnv,
@@ -147,25 +161,6 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	}
 	worktreeCommit := strings.TrimSpace(commitRes.Stdout)
 	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
-}
-
-// indexHidesWorktreeChanges は、git status が隠し得る assume-unchanged と skip-worktree の index 項目を調べる。
-// dirty snapshot はそれらを持たない一時 index を HEAD から再構築するため、`add -A` は現在の内容を記録する。
-// これらがあれば clean の短絡経路を使わず、追加の `git ls-files -v` は status が clean の場合だけ実行する。
-func indexHidesWorktreeChanges(worktreeValue func(env []string, args ...string) (string, error)) (bool, error) {
-	listing, err := worktreeValue(nil, "ls-files", "-v")
-	if err != nil {
-		return false, fmt.Errorf("inspect index stat flags: %w", err)
-	}
-	for _, line := range strings.Split(listing, "\n") {
-		if line == "" {
-			continue
-		}
-		if tag := line[0]; tag == 'S' || (tag >= 'a' && tag <= 'z') {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // recoveryRefTargets は snapshot が公開する ref と object の対応を返し、index tree ref も含める。

@@ -49,6 +49,9 @@
    確認は`resume.auto_fresh`が真なら省き、端末がなければnoticeを出して再開を続ける。
    やり直しは1回だけで、2回目の失敗はそのまま返す。
    ネイティブresumeは遅延バインドや`_unbound` slotを新規生成せず、clientが準備完了を前面で待ってから起動する。
+   clean baseを作る`post-checkout` hookが`skip-worktree`・`assume-unchanged`を付ける場合があるため、復元は`read-tree`の前に復元先indexのflagを外し、tree適用後に同じpathへ戻す。
+   flagが残ったままの`read-tree`はfileの書き換えを拒否するか素通りするので、外す操作はtree適用より前に置く。
+   flagの出所は復元先indexだけで、snapshotは一覧を持たない。session中に手で付けたflagは引き継がれず、そのpathの内容はflagのないtracked changeとして現れる。
    復元後のworktreeはtracked changesを含むため、貸出前の検査はcleanなworking treeを要求しない`ValidateOwnership`を使う。
    READY slotの再利用側は`ValidateReady`で、こちらはtracked cleanまで求める。
 

@@ -170,7 +170,7 @@ func TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects(t *tes
 }
 
 // TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded は、未 snapshot の作業を失わないための clean short-circuit を検証する。
-// `git status` は設定で内容を隠せる一方、dirty 経路の一時 index には assume-unchanged/skip-worktree bit がないため `add -A` は内容を記録する。
+// `git status` は設定で内容を隠せる一方、一時 index は HEAD から作り直して bit を持たないため、絞った `add -A` でも内容を記録する。
 // short-circuit が隠れた状態を信頼すると、recovery snapshot を作った後に slot worktree を物理削除して作業を失う。
 // commentlint:allow-long -- `git status` と一時 index の観測差が安全条件であるため
 func TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded(t *testing.T) {

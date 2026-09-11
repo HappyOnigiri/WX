@@ -13,6 +13,8 @@ leaf が symlink の場合はリンク自体を削除し、リンク先へは踏
 正常終了の未保存作業は snapshot で保護し、`wx clear --discard` が明示された場合だけ保存を省略する。
 `internal/archive` の clean 判定では `--untracked-files=all`・`--ignore-submodules=none` を維持する。
 既定値では Git 設定で隠れる変更を clean と誤判定し、保存せずに削除し得る。
+`skip-worktree`・`assume-unchanged` が付いた path も同じ理由で clean 短絡させず、内容を必ず記録する。
+`git status` が clean なら HEAD tree との差分はその path にしか残り得ないため、一時 index への `add` は対象をその path へ絞ってよい。記録する内容は絞る前と変わらない。
 準備・復元失敗などの隔離 slot は `retention.quarantined` の経過後に GC が回収し、`wx clear` はこの経過を待たずに回収する。
 
 実体化した submodule の per-worktree gitdir（`<common dir>/worktrees/<id>/modules/<name>`）は、slot 削除で管理ディレクトリごと一緒に消える。
