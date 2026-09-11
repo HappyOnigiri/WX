@@ -135,6 +135,11 @@ clientとagentの両プロセスが死んだsessionは返却する。
 `Manager.reconcileExpiredLeases`は周期処理と起動時一巡の両方に繋ぎ、`lease.ttl`の到来と親sessionの終了をここで拾う。
 `Manager.Release`の成功後にも子貸出の返却を呼ぶが、これは待ち時間の最適化であり、正しさの根拠は周期処理側に置く。
 
+保存の失敗で隔離するのは、所有権検証に落ちたものと、worktreeやarchiveへ書き始めた後に落ちたものだけとする。
+rule解決や設定の読み出しのように書込み前で副作用の無い失敗はjobを`FAILED`にするだけで、slotは`SNAPSHOTTING`のまま残す。
+原因を直せば次の一巡の`EnsureRecoveryJobs`が保存を作り直して終わるので、手動の出口しか持たない隔離へ倒さない。
+待つ間の理由は`wx doctor`がjobの記録から出す。
+
 隔離slotを持つsessionは`DRAINING`へ進めず、`EXPIRED`で終端させslotのownerだけを外す。
 slotは`QUARANTINED`のままworktree・snapshotを保持し、同じ返却の失敗が繰り返されるのを防ぐ。
 この扱いは`Release`の全経路に適用する。
