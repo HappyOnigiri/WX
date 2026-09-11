@@ -35,18 +35,6 @@ func (c Config) SubmodulesForWorkspace(root string) (bool, bool) {
 	return c.Worktree.Submodules, false
 }
 
-// WarmCountOverrides は workspace root ごとの明示的な待機枠数をコピーして返す。
-// 明示的な 0 も map の値として保持する。
-func (c Config) WarmCountOverrides() map[string]int {
-	overrides := make(map[string]int)
-	for root, workspace := range c.Workspaces {
-		if workspace.WarmCount != nil {
-			overrides[root] = *workspace.WarmCount
-		}
-	}
-	return overrides
-}
-
 // AddDirForWorkspace は workspace root に対する agent.add_dir の実効値と、個別指定の有無を返す。
 // Workspaces は NormalizePaths 済みであることを呼び出し側の契約とする。
 func (c Config) AddDirForWorkspace(root string) (string, bool) {
