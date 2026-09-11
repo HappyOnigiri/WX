@@ -33,7 +33,7 @@ func cleanFixture(t *testing.T) (*Manager, *state.Store, string) {
 }
 
 // beginCleanWithoutDriver は driver を起動せずに run を登録する。段階ごとの遷移を決定的に確かめる test が使う。
-func beginCleanWithoutDriver(t *testing.T, manager *Manager, store *state.Store, all, standby bool) string {
+func beginCleanWithoutDriver(t *testing.T, manager *Manager, store *state.Store, all, standby bool, discardOption ...bool) string {
 	t.Helper()
 	ctx := context.Background()
 	candidates, err := store.CleanCandidates(ctx)
@@ -42,7 +42,10 @@ func beginCleanWithoutDriver(t *testing.T, manager *Manager, store *state.Store,
 	}
 	targets := planCleanTargets(candidates, all, standby)
 	mode := cleanMode(all, standby)
-	runID, _, err := store.BeginCleanRun(ctx, "run", mode, targets, cleanWorkspaces(targets, mode != "normal"))
+	if len(discardOption) > 0 && discardOption[0] {
+		mode += "-discard"
+	}
+	runID, _, err := store.BeginCleanRun(ctx, "run", mode, targets, cleanWorkspaces(targets, all || standby))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +273,7 @@ func TestCleanRemovesUnusedStandbyAndFinishesTheRun(t *testing.T) {
 		t.Fatalf("slot after scheduling=%+v err=%v", stored, err)
 	}
 	// 削除ジョブの完了だけを監視し、worker を占有したまま待たないことを確かめる。
-	if err := store.FinishRemoval(ctx, "standby"); err != nil {
+	if _, err := store.FinishRemoval(ctx, "standby"); err != nil {
 		t.Fatal(err)
 	}
 	waitCleanTargetState(t, store, runID, "standby", cleanTargetDone)
@@ -319,7 +322,7 @@ func TestCleanDeletesQuarantinedSlotWithoutWaitingRetention(t *testing.T) {
 		t.Fatalf("quarantined slot after scheduling=%+v err=%v", scheduled, err)
 	}
 	// 削除ジョブの完了だけを監視し、worker を占有したまま待たないことを確かめる。
-	if err := store.FinishRemoval(ctx, "held"); err != nil {
+	if _, err := store.FinishRemoval(ctx, "held"); err != nil {
 		t.Fatal(err)
 	}
 	waitCleanTargetState(t, store, runID, "held", cleanTargetDone)
@@ -592,7 +595,7 @@ func TestCleanDiscardRecoversUnboundAndLeavesUnregisteredPaths(t *testing.T) {
 	if err := manager.removeRegisteredSlot(ctx, stored); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishRemoval(ctx, slot.ID); err != nil {
+	if _, err := store.FinishRemoval(ctx, slot.ID); err != nil {
 		t.Fatal(err)
 	}
 	waitCleanRunDone(t, store, runID)
@@ -601,6 +604,51 @@ func TestCleanDiscardRecoversUnboundAndLeavesUnregisteredPaths(t *testing.T) {
 	}
 	if _, err := os.Stat(unknown); err != nil {
 		t.Fatalf("unregistered path changed: %v", err)
+	}
+}
+
+// --discard の clean は detached lease を返却と同じ transaction で削除へ載せ、保存待ちを経ない。
+// SNAPSHOT を積んでから取り消す経路では、保存が走り出した slot が削除されずに残る。
+func TestCleanDiscardRemovesDetachedLeaseWithoutSnapshot(t *testing.T) {
+	manager, store, workspaceID := cleanFixture(t)
+	ctx := context.Background()
+	slot := testSlot(t, manager, workspaceID, "detached", 1, "LEASED")
+	session := state.Session{ID: "detached", WorkspaceID: workspaceID, SlotID: "detached", State: "ACTIVE", AgentKind: "wx-path", LeaseKind: state.LeaseKindPath, TokenHash: state.HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, slot, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	runID := beginCleanWithoutDriver(t, manager, store, true, false, true)
+	if _, err := manager.advanceClean(ctx, runID, map[string]time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	targets, err := store.CleanTargets(ctx, runID)
+	if err != nil || targetByID(targets, slot.ID).State != cleanTargetRemoving {
+		t.Fatalf("discarded target=%+v err=%v", targets, err)
+	}
+	stored, err := store.Slot(ctx, slot.ID)
+	if err != nil || stored.State != "REMOVING" {
+		t.Fatalf("slot=%+v err=%v", stored, err)
+	}
+	released, err := store.SessionByID(ctx, session.ID)
+	if err != nil || released.State != "EXPIRED" {
+		t.Fatalf("session=%+v err=%v", released, err)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removals := 0
+	for _, job := range jobs {
+		if job.SlotID != slot.ID {
+			continue
+		}
+		if job.Kind != "REMOVE" {
+			t.Fatalf("discarded lease scheduled a %s job", job.Kind)
+		}
+		removals++
+	}
+	if removals != 1 {
+		t.Fatalf("remove jobs=%d, want 1", removals)
 	}
 }
 

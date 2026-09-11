@@ -185,7 +185,13 @@ func TestDispatcherKeepsUserFacingJobsRunnableWhileMaintenanceIsBlocked(t *testi
 	}
 	m.mu.Unlock()
 	var scheduled []state.Job
-	for _, kind := range []string{"ENSURE_STANDBY", "ENSURE_STANDBY", "SNAPSHOT"} {
+	// 保守枠を全て塞いだうえで1件を待たせる。枠数を変えても「詰まった状態」を保つため個数は定数から決める。
+	kinds := make([]string, 0, maintenanceJobSlots+2)
+	for range maintenanceJobSlots + 1 {
+		kinds = append(kinds, "ENSURE_STANDBY")
+	}
+	kinds = append(kinds, "SNAPSHOT")
+	for _, kind := range kinds {
 		job, createErr := store.CreateJob(ctx, kind, "missing-workspace", "", "missing-session")
 		if createErr != nil {
 			t.Fatal(createErr)
@@ -213,7 +219,7 @@ func TestDispatcherKeepsUserFacingJobsRunnableWhileMaintenanceIsBlocked(t *testi
 		t.Fatalf("status while maintenance was blocked: %v", err)
 	}
 	if pending, running := m.jobQueue.counts(jobClassMaintenance); pending != 1 || running != maintenanceJobSlots {
-		t.Fatalf("maintenance pending=%d running=%d, want one waiting behind one running", pending, running)
+		t.Fatalf("maintenance pending=%d running=%d, want one waiting behind %d running", pending, running, maintenanceJobSlots)
 	}
 	close(release)
 	waitUntil(t, 5*time.Second, func() bool {

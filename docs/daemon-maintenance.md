@@ -6,9 +6,11 @@
 ## ジョブの分類と実行枠
 
 実行枠は利用者向けと保守用に分かれる。
-利用者向けの枠数は`pool.preparation_concurrency`（既定2）、保守用は常に1本で、保守へ利用者向けの枠を貸さない。
-`preparation_concurrency: 1`でも保守と利用者処理はそれぞれ1本の枠を持ち、資源上限は既定で3本同時になる。
-利用者向けが満杯のときの待ちと、物理ディスクの帯域競合は残る。
+利用者向けの枠数は`pool.preparation_concurrency`（既定2）、保守用は常に2本で、保守へ利用者向けの枠を貸さない。
+`preparation_concurrency: 1`でも保守と利用者処理はそれぞれ枠を持ち、資源上限は既定で4本同時になる。
+保守用が1本だと、大きいrepositoryの補充・回収が数十秒単位で枠を占め、他workspaceの補充がその後ろで待ってREADYが枯れる。
+2本にする根拠は、律速がディスク帯域ではなく枠数であること（同じrepositoryのPREPAREを並列に流すと壁時計が縮む）である。
+利用者向けが満杯のときの待ちと、保守が並走する間に利用者向けの処理が遅くなる分は残る。
 
 分類は`jobClassOf`が job rowの事実だけから決め、DBへ永続化しない。
 session付きPREPARE・RESTORE・SNAPSHOTを利用者向けとし、SNAPSHOTは保存と将来のresumeの前提なので利用者が明示的に待っているかによらずこのクラスに置く。
@@ -67,6 +69,9 @@ workspaces:
 除外記録はslotの状態や実体を変更せず、同じ成功の再処理で後発の失敗slotまで除外しない。
 復元成功や`SessionStart`による`ACTIVE`遷移だけでは除外記録を作らず、補充の契機にもならない。
 `QUARANTINED`は待機枠に数えないが、待機用PREPAREの失敗後は補充を停止することでGCとの作成・削除ループを防ぐ。
+削除中の`REMOVING`も`READY`へ戻らないため数えない。数えると返却直後の枠が削除の完了まで埋まり、その間に走った補充の確認が不足なしと判断して、次のreconcileまで待機枠が欠ける。
+削除の完了時は`FinishRemoval`が補充の再確認を同じtransactionで予約する。`ENSURE_STANDBY`が既にPENDING・RUNNINGなら積み増さず、clean実行中は予約しない。
+COLD化の`RETIRING`は完了後に`READY`へ戻るので枠に数える。
 
 個数を増やした設定の反映は次の保守一巡で不足分を補充する。減らした場合は準備中の処理を中断せず、完了後に余剰のREADY slotを既存GCが回収する。
 貸出中slotは回収せず、保持期間によるCOLD化もworkspaceごとの実効値が正のときだけ行う。
@@ -89,6 +94,7 @@ UPDATEは利用者向け実行枠を使い、slot・STARTING session・jobの予
 
 貸出前のREADY・補充中のPREPARINGは`--standby`と`--all`だけが対象に含め、隔離slotは全modeで`ScheduleQuarantinedRemoval`へ載せる。
 `--discard`は保存を省略して削除を予約し、modeに永続化して再起動後も維持する。
+使用中のdetached lease（`wx new`）も、返却と同じtransactionでSNAPSHOTを積まずREMOVEへ載せ、保存待ちを経ずに削除待ちへ進める。
 実行中runへ合流できるのは対象範囲が同じmodeの再実行だけとする。
 `--all`の終了要求は`session_termination_requests`へ期限付きで記録し、heartbeatとagent登録の応答でclientへ渡す。
 signalを送るのはclientだけで、daemonは記録されたPIDへ触れない。
@@ -113,6 +119,13 @@ clientとagentの両プロセスが死んだsessionは返却する。
 隔離slotを持つsessionは`DRAINING`へ進めず、`EXPIRED`で終端させslotのownerだけを外す。
 slotは`QUARANTINED`のままworktree・snapshotを保持し、同じ返却の失敗が繰り返されるのを防ぐ。
 この扱いは`Release`の全経路に適用する。
+
+記録したrecovery refがソースリポジトリに無いとき（リポジトリを消して同じpathに作り直した場合）は、`QuarantineMissingRecoveryRef`がsnapshot・session・slotを隔離する。
+この隔離からの出口は`wx discard-recovery <workspace-path>`だけで、GCもreconcileも隔離したsnapshotを自動では捨てない。
+`Manager.DiscardRecovery`が対象workspaceの`QUARANTINED`なsessionについてsnapshot行と`workspace_snapshots`行を消し、sessionを`EXPIRED`へ進め、そのsessionのslotを`ScheduleQuarantinedRemoval`で回収する。
+refが無いsnapshotからは復元できないため失う復元手段は無いが、slotのworktreeにある未保存の作業は消えるので、`--dry-run`で対象とpathを出せるようにしている。
+これを経ないと`wx forget`の前提（sessionは`EXPIRED`、snapshot行は無し、slotは`ARCHIVED`）を永久に満たせない。
+隔離するとref照合の期待一覧（`sn.status='ARCHIVED'`だけを見る）から外れて他のfindingが消えるため、行き止まり自体は`Manager.quarantinedRecoveryFindings`がworkspace単位のproblemとして報告する。
 復旧snapshotを作らない返却は`Store.ReleaseWithOutcome`で区別してWarnへ記録する（clientはRelease応答を読まない）。
 
 root世代登録が失敗するとallocationが`ErrOwnership`で落ち続けるため、周期処理はdescriptorを取り直して再登録を試みる。
@@ -124,7 +137,9 @@ SQLiteを開けなくても`DegradedHandler`が`Status`・`Doctor`・`RequestSto
 通常準備の開始は`slots.preparation_started_at`、全先行配置の完了は`slots.early_ready_at`へSQL CASで記録する。
 Early Readyの間もslotはPREPARINGであり、hookが使うWaitReadyは成功しない。
 WaitEarlyReadyは認証と終端状態を検査し、過去の完了時刻だけで失敗・隔離・終了済みのsessionを起動しない。
-二段階準備がdaemon crashなどで中断した場合は、部分checkoutや外部hookの完了を推測せず隔離し、自動で先頭から再実行しない。
+二段階準備がdaemon crashなどで中断した場合は、部分checkoutや外部hookの完了を推測せず、自動で先頭から再実行しない。
+貸出先sessionを持たない待機枠は`STALE`にしてGCの回収と補充へ回し、隔離して残さない。待機枠には利用者の作業が無いためである。
+貸出先sessionを持つslotは利用者が結果を待っているので、黙って作り直さず従来どおり隔離する。
 正常な実行中のlock待ちは同じ実行を継続し、全準備がREADYへ到達済みのslotとrestoreの回復処理はこの隔離条件に含めない。
 COLD repositoryの再補充へ貸し出す際は古い先行完了・開始記録を消し、新しい二巡を始める。
 UPDATEも書込み開始時刻を永続化し、開始後の中断は隔離する。
@@ -148,6 +163,9 @@ daemonへ接続できない場合とdegradedの場合は、store依存の検査�
 daemon接続なしで成立する検査は[`internal/diag`](../internal/diag/diag.go)に置く。
 storeを要する検査は[`doctor.go`](../internal/daemon/doctor.go)と[`doctor_recovery.go`](../internal/daemon/doctor_recovery.go)に置く。
 worktree rootのpath検査と登録検査は別のfindingとして両方保持し、登録状態でpath検査の結果を上書きしない。
+登録済みworkspaceに属さず照合すべきsnapshotも持たないrepository記録は、refsを読めなくてもproblemにせずinfoに留める。
+`repositories`の行を消す経路が無いため、forget後に残った記録をerrorにするとdoctorが恒久的に失敗する。
+登録済みworkspaceに属する repository の故障はこれまでどおりerrorとして報告する。
 準備・保存・復元の失敗は、上位の処理名で言い換えず`jobs.error_message`・`error_detail_path`から具体的な失敗理由と詳細ログの場所まで引き継ぐ。
 原因が記録されていない場合は特定できていないことを明示し、推測を原因として表示しない。
 

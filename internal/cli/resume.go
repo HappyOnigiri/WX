@@ -61,7 +61,7 @@ func (c Client) ResolveSessionScope(ctx context.Context, root string) (sessions.
 		inUse := se.State == "STARTING" || se.State == "ACTIVE" || se.State == "RESTORING" || se.State == "UNBOUND"
 		text := ""
 		if inUse {
-			text = "使用中"
+			text = "in use"
 		}
 		for _, id := range ids {
 			if _, exists := scope.Annotations[id]; !exists || inUse {
@@ -110,19 +110,21 @@ func (c Client) resolveResume(ctx context.Context, agent, cwd string, intent res
 		if err != nil {
 			return resumeTarget{}, false, err
 		}
-		var selectedScope *sessions.PickerScope = &scope
-		if intent.WidenScope {
-			selectedScope = nil
-		}
 		var target sessions.ResumeTarget
 		if intent.Kind == resumeIntentContinueLatest {
+			// Continue は候補を絞るだけなので、--all では scope ごと外して全 workspace の最新を採る。
+			var selectedScope *sessions.PickerScope = &scope
+			if intent.WidenScope {
+				selectedScope = nil
+			}
 			var found bool
 			target, found, err = sessions.Continue(ctx, c.Config.Sessions, sessions.ContinueOptions{Tool: agent, Scope: selectedScope})
 			if err == nil && !found {
 				err = errors.New("no conversation found for this workspace")
 			}
 		} else {
-			target, err = sessions.Pick(ctx, c.Config.Sessions, sessions.PickOptions{Tool: agent, Scope: selectedScope})
+			// picker には --all でも scope を渡し、初期表示だけ広げる。scope を捨てると Ctrl-A と注記が消える。
+			target, err = sessions.Pick(ctx, c.Config.Sessions, sessions.PickOptions{Tool: agent, Scope: &scope, StartWidened: intent.WidenScope})
 		}
 		if err != nil {
 			return resumeTarget{}, false, err

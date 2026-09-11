@@ -67,7 +67,7 @@ func TestPrepareStagedPreservesRulesIndexFilterAndHookContract(t *testing.T) {
 	}
 	early := false
 	var earlyInfo os.FileInfo
-	err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error {
+	_, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error {
 		early = true
 		for _, path := range []string{"AGENTS.md", "CLAUDE.md", "AGENTS.local.md", ".codex/config.toml", "local/early", "shared/value", "rules.filtered"} {
 			if _, err := os.Stat(filepath.Join(target, path)); err != nil {
@@ -134,7 +134,7 @@ func TestPrepareStagedDefaultsDisabledIncludesAndGitlinks(t *testing.T) {
 			gitCommand(t, source, "update-index", "--add", "--cacheinfo", "160000,"+oid+",module")
 			gitCommand(t, source, "commit", "-m", "gitlink")
 			oid = gitOutput(t, source, "rev-parse", "HEAD")
-			err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error {
+			_, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error {
 				for _, path := range defaultIncludeNames {
 					_, err := os.Stat(filepath.Join(target, path))
 					if enabled && err != nil {
@@ -163,7 +163,7 @@ func TestPrepareStagedDefaultsDisabledIncludesAndGitlinks(t *testing.T) {
 func TestPrepareStagedStopsBeforeRemainingWritesWhenEarlyCASFails(t *testing.T) {
 	_, repo, preparer, oid, target := prepareEdgesFixture(t)
 	failure := errors.New("early readiness CAS failed")
-	err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return failure })
+	_, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return failure })
 	if !errors.Is(err, failure) {
 		t.Fatalf("error=%v", err)
 	}
@@ -186,7 +186,7 @@ func TestPrepareStagedUsesRequestedAttributesAfterEarlyIncludes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, ".worktreeinclude"), []byte(".gitattributes\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error {
+	_, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error {
 		if _, err := os.Stat(filepath.Join(target, ".gitattributes")); err != nil {
 			t.Errorf("early attributes missing: %v", err)
 		}
@@ -212,7 +212,7 @@ func TestPrepareStagedRecordsHookOutputOfSuccessfulHook(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(string(repo.CommonDir), "hooks", "post-checkout"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
+	if _, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	recorded := notices.Notices()
@@ -239,7 +239,7 @@ func TestPrepareStagedRecordsNoNoticeForSilentHook(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(string(repo.CommonDir), "hooks", "post-checkout"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
+	if _, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if recorded := notices.Notices(); len(recorded) != 0 {

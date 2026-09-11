@@ -14,17 +14,19 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, preparer *workspace.Preparer) (prepareErr error) {
+// prepareStagedSlot は staged preparation を実行し、この呼び出しで実際に配置した include/link を
+// repository ID ごとに返す。workspace root の分は空 key に入れる。
+func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, preparer *workspace.Preparer) (staged map[string][]state.Placement, prepareErr error) {
 	ctx, release, err := preparer.LockSlot(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer release()
 	timer := m.newPrepareTimer(slot, preparer)
 	defer func() { timer.finish(prepareErr) }()
 	if err := m.store.BeginStagedPreparation(ctx, slot.ID); err != nil {
 		_ = m.store.SetSlotState(context.Background(), slot.ID, []string{"PREPARING", "FAILED"}, "QUARANTINED", "PREPARE_AMBIGUOUS")
-		return fmt.Errorf("%w: interrupted staged preparation: %w", state.ErrOwnership, err)
+		return nil, fmt.Errorf("%w: interrupted staged preparation: %w", state.ErrOwnership, err)
 	}
 	defer func() {
 		if prepareErr == nil {
@@ -54,29 +56,31 @@ func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w disc
 	for _, r := range resolved {
 		stored, err := m.store.SlotRepository(ctx, slot.ID, string(r.Repository.ID))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if stored.State == "COLD" {
 			continue
 		}
 		if stored.State == "READY" {
 			if err := preparer.ValidateSlotWorktreeOwnership(ctx, r.Repository, stored.WorktreePath, r.OID, slot.ID); err != nil {
-				return err
+				return nil, err
 			}
 			continue
 		}
 		if err := m.store.SetSlotRepositoryState(ctx, slot.ID, stored.RepositoryID, []string{"PREPARING"}, "PREPARE_RUNNING"); err != nil {
-			return err
+			return nil, err
 		}
 		requests = append(requests, workspace.Preparation{Repository: r.Repository, Target: stored.WorktreePath, OID: r.OID})
 	}
 	var rootStage func(bool) error
+	var rootPlan *workspace.RootStagePlan
 	if w.Kind == "multi_repository" {
-		materialize, err := workspace.PlanRootStages(m.log, string(w.Root), preparer.Config.Workspaces[string(w.Root)], preparer.Config.Readiness.EarlyPaths)
+		plan, err := workspace.PlanRootStages(m.log, string(w.Root), preparer.Config.Workspaces[string(w.Root)], preparer.Config.Readiness.EarlyPaths)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		rootStage = func(early bool) error { return m.materializeStagedRoot(ctx, slot, materialize, early) }
+		rootPlan = plan
+		rootStage = func(early bool) error { return m.materializeStagedRoot(ctx, slot, plan.Materialize, early) }
 	}
 	markEarly := func() error {
 		for _, request := range requests {
@@ -94,15 +98,19 @@ func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w disc
 		timer.markEarly()
 		return nil
 	}
-	if err := preparer.PrepareStaged(ctx, slot.ID, requests, rootStage, markEarly); err != nil {
-		return err
+	placed, err := preparer.PrepareStaged(ctx, slot.ID, requests, rootStage, markEarly)
+	if err != nil {
+		return nil, err
 	}
 	for _, request := range requests {
 		if err := m.store.SetSlotRepositoryState(ctx, slot.ID, string(request.Repository.ID), []string{"PREPARE_RUNNING"}, "READY"); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	if rootPlan != nil {
+		placed[""] = rootPlan.Placements()
+	}
+	return placed, nil
 }
 
 func (m *Manager) materializeStagedRoot(ctx context.Context, slot state.Slot, materialize func(*os.Root, bool) error, early bool) error {

@@ -109,6 +109,38 @@ func (f *reuseStandbyFixture) runPendingJobs(t *testing.T) {
 	t.Fatal("pending jobs did not settle")
 }
 
+// runPendingJobsOfKind は指定したkindの保留中jobだけを実行する。
+// 削除の後始末のように、続けて走る補充が同じpathへ新しいslotを作ると観測できなくなる結果を確かめるために使う。
+func (f *reuseStandbyFixture) runPendingJobsOfKind(t *testing.T, kind string) {
+	t.Helper()
+	ctx := context.Background()
+	jobs, err := f.store.RecoverJobs(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := 0
+	for _, job := range jobs {
+		if job.Kind != kind {
+			continue
+		}
+		claimed, err := f.store.ClaimJob(ctx, job.ID, "test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		runErr := f.manager.runRecoveredJob(ctx, claimed)
+		if err := f.store.FinishJob(ctx, claimed.ID, "test", runErr); err != nil {
+			t.Fatal(err)
+		}
+		if runErr != nil {
+			t.Fatalf("job %s kind=%s: %v", job.ID, job.Kind, runErr)
+		}
+		ran++
+	}
+	if ran == 0 {
+		t.Fatalf("no pending %s job", kind)
+	}
+}
+
 // settleStandby は補充が要る状態を解消する。GCがSTALE slotを畳む間は待機枠が埋まって見えるため、
 // 実daemonの周期reconcileと同じくensureStandbyをもう一度通す。
 func (f *reuseStandbyFixture) settleStandby(t *testing.T) {

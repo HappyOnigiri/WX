@@ -683,7 +683,7 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 		"mark archived":     func() error { return store.MarkArchived(ctx, "s", "s", now()) },
 		"begin snapshot":    func() error { return store.BeginSnapshot(ctx, "s", "s") },
 		"finish cold":       func() error { return store.FinishColdRepositoryRemoval(ctx, "s", "r") },
-		"finish removal":    func() error { return store.FinishRemoval(ctx, "s") },
+		"finish removal":    func() error { _, err := store.FinishRemoval(ctx, "s"); return err },
 		"prune roots":       func() error { return store.PruneRoots(ctx) },
 		"expire snapshots":  func() error { return store.ExpireSessionSnapshots(ctx, "s") },
 		"prune":             func() error { return store.PruneMetadata(ctx, now(), now(), now()) },

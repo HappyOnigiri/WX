@@ -90,20 +90,14 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	// clean worktree は HEAD の tree と commit で完全に表せるため、新しい object を作らず base OID と ref メタデータだけを記録する。
 	// dirty 経路より多くを clean と判定すると未 snapshot の作業を失うため、次の flag は必須である。
 	// ユーザー設定の status.showUntrackedFiles と submodule.<name>.ignore/diff.ignoreSubmodules は、一時 index の `add -A` が記録する内容を隠し得る。
+	// skip-worktree/assume-unchanged が付いた path は snapshot の対象外（HEAD の内容として扱う）なので、ここでは clean 判定に影響しない。
+	// 両 flag とも index と HEAD の差は隠さないため、status が clean なら flag 付き path に staged 内容が隠れていることもない。
 	// commentlint:allow-long -- 未 snapshot の作業を失わないための判定条件を説明する
 	statusOutput, err := worktreeValue(nil, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none")
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("check worktree cleanliness: %w", err)
 	}
-	clean := strings.TrimSpace(statusOutput) == ""
-	if clean {
-		flagged, flagErr := indexHidesWorktreeChanges(worktreeValue)
-		if flagErr != nil {
-			return state.Snapshot{}, flagErr
-		}
-		clean = !flagged
-	}
-	if clean {
+	if strings.TrimSpace(statusOutput) == "" {
 		headTree, err := worktreeValue(nil, "rev-parse", "HEAD^{tree}")
 		if err != nil {
 			return state.Snapshot{}, fmt.Errorf("resolve clean HEAD tree: %w", err)
@@ -113,6 +107,10 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	indexTree, err := worktreeValue(nil, "write-tree")
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("write index tree: %w", err)
+	}
+	flags, err := readIndexFlags(worktreeValue, nil)
+	if err != nil {
+		return state.Snapshot{}, err
 	}
 	tmpFile, err := os.CreateTemp("", ".wx-index-*")
 	if err != nil {
@@ -128,7 +126,12 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if _, err := worktreeRun(env, nil, "read-tree", head); err != nil {
 		return state.Snapshot{}, err
 	}
-	if _, err := worktreeRun(env, nil, "add", "-A", "--", "."); err != nil {
+	// 一時 index にも元 index と同じ flag を立ててから add するので、flag 付き path は HEAD の内容のまま記録される。
+	// add に pathspec を渡さないのは、pathspec が flag 付き path だけに一致すると git が sparse-checkout の逸脱として exit 1 にするためである。
+	if err := applyIndexFlags(worktreeRun, worktreeValue, env, flags); err != nil {
+		return state.Snapshot{}, err
+	}
+	if _, err := worktreeRun(env, nil, "add", "-A"); err != nil {
 		return state.Snapshot{}, err
 	}
 	worktreeTree, err := worktreeValue(env, "write-tree")
@@ -147,25 +150,6 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	}
 	worktreeCommit := strings.TrimSpace(commitRes.Stdout)
 	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
-}
-
-// indexHidesWorktreeChanges は、git status が隠し得る assume-unchanged と skip-worktree の index 項目を調べる。
-// dirty snapshot はそれらを持たない一時 index を HEAD から再構築するため、`add -A` は現在の内容を記録する。
-// これらがあれば clean の短絡経路を使わず、追加の `git ls-files -v` は status が clean の場合だけ実行する。
-func indexHidesWorktreeChanges(worktreeValue func(env []string, args ...string) (string, error)) (bool, error) {
-	listing, err := worktreeValue(nil, "ls-files", "-v")
-	if err != nil {
-		return false, fmt.Errorf("inspect index stat flags: %w", err)
-	}
-	for _, line := range strings.Split(listing, "\n") {
-		if line == "" {
-			continue
-		}
-		if tag := line[0]; tag == 'S' || (tag >= 'a' && tag <= 'z') {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // recoveryRefTargets は snapshot が公開する ref と object の対応を返し、index tree ref も含める。

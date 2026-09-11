@@ -327,6 +327,11 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 	if liveRecovery > 0 {
 		return errors.New("workspace has a workspace recovery snapshot; expire recovery state before forgetting it")
 	}
+	// 補充の再確認は workspace が消えれば意味を失うので、待ちのまま forget を断らせない。
+	// 実行中の job は他の kind と同じく forget を断る条件に残す。
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE kind='ENSURE_STANDBY' AND workspace_id=? AND state='PENDING'`, id); err != nil {
+		return err
+	}
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM jobs j WHERE j.state IN ('PENDING','RUNNING') AND (j.workspace_id=? OR EXISTS (SELECT 1 FROM sessions se WHERE se.id=j.session_id AND se.workspace_id=?))`, id, id).Scan(&liveRecovery); err != nil {
 		return err
 	}
@@ -348,6 +353,25 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// RegisteredRepositoryIDs は登録済み workspace に属する repository の id を返す。
+// forget などで所属が消えた記録と、まだ使う予定のある repository を区別するために使う。
+func (s *Store) RegisteredRepositoryIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT repository_id FROM workspace_repositories`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	registered := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		registered[id] = true
+	}
+	return registered, rows.Err()
 }
 
 func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error) {

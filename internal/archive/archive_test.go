@@ -170,92 +170,156 @@ func TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects(t *tes
 }
 
 // TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded は、未 snapshot の作業を失わないための clean short-circuit を検証する。
-// `git status` は設定で内容を隠せる一方、dirty 経路の一時 index には assume-unchanged/skip-worktree bit がないため `add -A` は内容を記録する。
+// ユーザー設定の status.showUntrackedFiles は `git status` から内容を隠す一方、dirty 経路の一時 index への `add -A` はそれを記録する。
 // short-circuit が隠れた状態を信頼すると、recovery snapshot を作った後に slot worktree を物理削除して作業を失う。
+// index flag による blinding は対象外である（flag 付き path は snapshot の対象外という契約のため、下の専用 test が扱う）。
 // commentlint:allow-long -- `git status` と一時 index の観測差が安全条件であるため
 func TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		blind   func(t *testing.T, repository string)
-		path    string
-		content string
-	}{
-		{
-			name: "untracked hidden by status.showUntrackedFiles",
-			blind: func(t *testing.T, repository string) {
-				gitCommand(t, repository, "config", "status.showUntrackedFiles", "no")
-				if err := os.WriteFile(filepath.Join(repository, "untracked"), []byte("unsaved\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			},
-			path:    "untracked",
-			content: "unsaved\n",
-		},
-		{
-			name: "modification hidden by assume-unchanged",
-			blind: func(t *testing.T, repository string) {
-				if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("unsaved\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				gitCommand(t, repository, "update-index", "--assume-unchanged", "tracked")
-			},
-			path:    "tracked",
-			content: "unsaved\n",
-		},
-		{
-			name: "modification hidden by skip-worktree",
-			blind: func(t *testing.T, repository string) {
-				if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("unsaved\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-				gitCommand(t, repository, "update-index", "--skip-worktree", "tracked")
-			},
-			path:    "tracked",
-			content: "unsaved\n",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			repository, repo, manager, worktreeRoot := archiveFixture(t)
-			test.blind(t, repository)
-			if status := gitCommand(t, repository, "status", "--porcelain=v1"); status != "" {
-				t.Fatalf("fixture does not actually blind git status: %q", status)
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
+	gitCommand(t, repository, "config", "status.showUntrackedFiles", "no")
+	if err := os.WriteFile(filepath.Join(repository, "untracked"), []byte("unsaved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status := gitCommand(t, repository, "status", "--porcelain=v1"); status != "" {
+		t.Fatalf("fixture does not actually blind git status: %q", status)
+	}
+	head := gitCommand(t, repository, "rev-parse", "HEAD")
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "blinded", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.WorktreeOID == head {
+		t.Fatal("clean shortcut was taken while git status was hiding worktree content")
+	}
+	target := filepath.Join(worktreeRoot, "restore", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+		t.Fatalf("restore from snapshot: %v", err)
+	}
+	restored, err := os.ReadFile(filepath.Join(target, "untracked"))
+	if err != nil {
+		t.Fatalf("hidden content was not restored: %v", err)
+	}
+	if string(restored) != "unsaved\n" {
+		t.Fatalf("restored untracked=%q, want %q", restored, "unsaved\n")
+	}
+}
+
+// TestSnapshotTreatsIndexFlaggedPathsAsHeadContent は、skip-worktree/assume-unchanged が付いた path を snapshot の対象外とする契約を検証する。
+// 個人設定を差し込む post-checkout hook などが flag を立てても clean 短絡は効き続け、その path の内容は HEAD のまま記録される。
+// commentlint:allow-long -- hook が flag を立てる運用と clean 短絡の関係を説明する
+func TestSnapshotTreatsIndexFlaggedPathsAsHeadContent(t *testing.T) {
+	for _, option := range []string{"--skip-worktree", "--assume-unchanged"} {
+		t.Run(strings.TrimPrefix(option, "--"), func(t *testing.T) {
+			repository, repo, manager, _ := archiveFixture(t)
+			if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("personal\n"), 0o600); err != nil {
+				t.Fatal(err)
 			}
+			gitCommand(t, repository, "update-index", option, "tracked")
 			head := gitCommand(t, repository, "rev-parse", "HEAD")
-			snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "blinded", time.Now().Add(time.Hour), nil)
+			snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "flagged", time.Now().Add(time.Hour), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if snapshot.WorktreeOID == head {
-				t.Fatal("clean shortcut was taken while git status was hiding worktree content")
-			}
-			target := filepath.Join(worktreeRoot, "restore", "root")
-			pointAtSlot(t, manager, worktreeRoot, target)
-			if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
-				t.Fatalf("restore from snapshot: %v", err)
-			}
-			restored, err := os.ReadFile(filepath.Join(target, test.path))
-			if err != nil {
-				t.Fatalf("hidden content was not restored: %v", err)
-			}
-			if string(restored) != test.content {
-				t.Fatalf("restored %s=%q, want %q", test.path, restored, test.content)
+			if snapshot.WorktreeOID != head {
+				t.Fatalf("clean shortcut was not taken for an index-flagged path: worktree=%s head=%s", snapshot.WorktreeOID, head)
 			}
 		})
 	}
 }
 
-// TestSnapshotFailsClosedWhenCleanlinessCannotBeDetermined は、clean 判定 probe の失敗時に short-circuit せず snapshot を中止することを検証する。
+// TestSnapshotRecordsOnlyUnflaggedEditsWhenWorktreeIsDirty は dirty 経路でも同じ契約が保たれることを検証する。
+// 一時 index へ元の flag を立ててから add するため、flag 付き path は HEAD の内容のまま、通常の編集だけが snapshot tree に入る。
+func TestSnapshotRecordsOnlyUnflaggedEditsWhenWorktreeIsDirty(t *testing.T) {
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
+	if err := os.WriteFile(filepath.Join(repository, "ordinary"), []byte("first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "ordinary")
+	gitCommand(t, repository, "commit", "-m", "ordinary")
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("personal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "update-index", "--skip-worktree", "tracked")
+	if err := os.WriteFile(filepath.Join(repository, "ordinary"), []byte("edited\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	head := gitCommand(t, repository, "rev-parse", "HEAD")
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "mixed", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.WorktreeOID == head {
+		t.Fatal("ordinary edit was dropped by the clean shortcut")
+	}
+	if blob := gitCommand(t, repository, "show", snapshot.WorktreeOID+":tracked"); blob != "base" {
+		t.Fatalf("snapshot recorded the skip-worktree content: %q", blob)
+	}
+	if blob := gitCommand(t, repository, "show", snapshot.WorktreeOID+":ordinary"); blob != "edited" {
+		t.Fatalf("snapshot did not record the ordinary edit: %q", blob)
+	}
+	target := filepath.Join(worktreeRoot, "restore", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+		t.Fatalf("restore from mixed snapshot: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "ordinary")); err != nil || string(data) != "edited\n" {
+		t.Fatalf("restored ordinary=%q err=%v", data, err)
+	}
+}
+
+// TestRestoreKeepsIndexFlaggedFileAndReinstatesFlags は、hook が flag を立て直した slot への復元を検証する。
+// skip-worktree の実ファイルは書き換えず、read-tree で消えた flag は復元後の index に戻っている必要がある。
+func TestRestoreKeepsIndexFlaggedFileAndReinstatesFlags(t *testing.T) {
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
+	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("source personal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "update-index", "--skip-worktree", "tracked")
+	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "flagged", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(worktreeRoot, "restore", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
+	if err := manager.Preparer.PrepareForRestore(context.Background(), repo, target, snapshot.HeadOID, "restore-slot"); err != nil {
+		t.Fatal(err)
+	}
+	// 復元先の hook が個人版を置いて flag を立てた状態を作る。
+	if err := os.WriteFile(filepath.Join(target, "tracked"), []byte("slot personal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, target, "update-index", "--skip-worktree", "tracked")
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+		t.Fatalf("restore into a slot with index flags: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "tracked")); err != nil || string(data) != "slot personal\n" {
+		t.Fatalf("restore overwrote the skip-worktree file: data=%q err=%v", data, err)
+	}
+	if listing := gitCommand(t, target, "ls-files", "-v", "tracked"); listing != "S tracked" {
+		t.Fatalf("skip-worktree flag was not reinstated: %q", listing)
+	}
+}
+
+// TestSnapshotFailsClosedWhenCleanlinessCannotBeDetermined は、clean 判定 probe と index flag の読取りが失敗したとき snapshot を中止することを検証する。
+// flag の読取りは dirty 経路でだけ走るため、その case は worktree を dirty にしてから注入する。
 func TestSnapshotFailsClosedWhenCleanlinessCannotBeDetermined(t *testing.T) {
 	for _, test := range []struct {
 		name    string
+		dirty   bool
 		pattern string
 		message string
 	}{
 		{name: "status", pattern: " status --porcelain=v1", message: "check worktree cleanliness"},
-		{name: "index stat flags", pattern: " ls-files -v", message: "inspect index stat flags"},
+		{name: "index stat flags", dirty: true, pattern: " ls-files -v", message: "inspect index stat flags"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository, repo, manager, _ := archiveFixture(t)
+			if test.dirty {
+				if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("dirty\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 			installGitFault(t, test.pattern, 1)
 			_, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "fault", time.Now().Add(time.Hour), nil)
 			if err == nil || !strings.Contains(err.Error(), test.message) {
@@ -492,7 +556,7 @@ func TestSnapshotPropagatesGitStageFailures(t *testing.T) {
 	}{
 		{name: "index tree", pattern: func(string) string { return " write-tree " }, occurrence: 1},
 		{name: "temporary index read", pattern: func(head string) string { return " read-tree " + head + " " }, occurrence: 1},
-		{name: "temporary index add", pattern: func(string) string { return " add -A -- . " }, occurrence: 1},
+		{name: "temporary index add", pattern: func(string) string { return " add -A " }, occurrence: 1},
 		{name: "worktree tree", pattern: func(string) string { return " write-tree " }, occurrence: 2},
 		{name: "worktree commit", pattern: func(string) string { return " commit-tree " }, occurrence: 1},
 		{name: "recovery ref creation", pattern: func(string) string { return " update-ref --create-reflog " }, occurrence: 1},
@@ -522,7 +586,7 @@ func TestRestorePropagatesGitVerificationFailures(t *testing.T) {
 		{name: "index restore", pattern: func(snapshot state.Snapshot) string { return " read-tree " + snapshot.IndexTreeOID + " " }, occurrence: 1},
 		{name: "index verification", pattern: func(state.Snapshot) string { return " write-tree " }, occurrence: 1},
 		{name: "verification index read", pattern: func(snapshot state.Snapshot) string { return " read-tree " + snapshot.HeadOID + " " }, occurrence: 1},
-		{name: "verification index add", pattern: func(state.Snapshot) string { return " add -A -- . " }, occurrence: 1},
+		{name: "verification index add", pattern: func(state.Snapshot) string { return " add -A " }, occurrence: 1},
 		{name: "worktree verification tree", pattern: func(state.Snapshot) string { return " write-tree " }, occurrence: 2},
 		{name: "expected tree lookup", pattern: func(snapshot state.Snapshot) string { return " rev-parse " + snapshot.WorktreeOID + "^{tree} " }, occurrence: 1},
 		{name: "status verification", pattern: func(state.Snapshot) string { return " status --porcelain=v2 " }, occurrence: 1},

@@ -58,10 +58,23 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err := m.Preparer.ValidateRestoringOwnership(ctx, repo, target, s.HeadOID, slotID); err != nil {
 			return fmt.Errorf("validate restore worktree before snapshot: %w", err)
 		}
+		// 復元先の index flag は外さない。外すと git が skip-worktree の実ファイルを tree の内容で上書きし、
+		// hook が slot ごとに作り直した個人設定を失う。snapshot 側も flag 付き path を HEAD の内容で記録しているため、
+		// entry は一致し `read-tree --reset -u` は flag を保ったまま通る。
+		// ただし assume-unchanged の実ファイルだけは entry が一致していても git が書き戻すので、wx 側では防げない。
+		// commentlint:allow-long -- flag を外さない理由と git 側の例外を説明する
+		flags, err := readIndexFlags(targetValue, nil)
+		if err != nil {
+			return err
+		}
 		if _, err := targetRun(nil, nil, "read-tree", "--reset", "-u", s.WorktreeOID+"^{tree}"); err != nil {
 			return err
 		}
 		if _, err := targetRun(nil, nil, "read-tree", s.IndexTreeOID); err != nil {
+			return err
+		}
+		// 2 本の read-tree は index を丸ごと置き換えて flag を落とすため、resume prepare より前に立て直す。
+		if err := applyIndexFlags(targetRun, targetValue, nil, flags); err != nil {
 			return err
 		}
 		if err := m.Preparer.PrepareResumeWithIdentity(ctx, repo, target, s.HeadOID, slotID, targetIdentity); err != nil {
@@ -100,7 +113,12 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if _, err := targetRun(env, nil, "read-tree", s.HeadOID); err != nil {
 			return err
 		}
-		if _, err := targetRun(env, nil, "add", "-A", "--", "."); err != nil {
+		// 検証用の一時 index にも同じ flag を立て、snapshot と同じ基準（flag 付き path は HEAD の内容）で tree を作る。
+		// snapshot 側と同じく add に pathspec を渡さない（渡すと flag 付き path だけに一致したとき git が exit 1 にする）。
+		if err := applyIndexFlags(targetRun, targetValue, env, flags); err != nil {
+			return err
+		}
+		if _, err := targetRun(env, nil, "add", "-A"); err != nil {
 			return err
 		}
 		actualWorktreeTree, err := targetValue(env, "write-tree")
