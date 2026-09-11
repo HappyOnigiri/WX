@@ -479,13 +479,22 @@ func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []st
 	mode := m.Config().WorktreeMode(string(w.Root))
 	lease := attrs
 	// 貸出コマンドは現在のディレクトリで動く選択肢を持たないため、off の workspace では方針の選び直しを促す。
-	if lease.Kind != "" && mode == "off" {
+	if isLeaseKind(lease.Kind) && mode == "off" {
 		return Lease{}, fmt.Errorf("workspace %s is configured not to use a worktree; change worktree.undefined or the workspace policy %s", w.Root, WorktreeDisabledMarker)
 	}
 	if !force && mode != "hot" && mode != "cold" {
+		if isLeaseKind(lease.Kind) {
+			return Lease{}, fmt.Errorf("worktree creation is not authorized; configure this workspace with: wx config --workspace %s worktree cold", shellQuote(string(w.Root)))
+		}
 		return Lease{}, errors.New("worktree creation is not authorized; select a worktree policy or use --worktree")
 	}
 	return m.leaseWorkspace(ctx, w, branches, agent, pid, force || mode == "cold", lease)
+}
+
+// shellQuote は POSIX shell の単一引用符で path を囲む。
+// 空白や shell 展開文字を含む workspace root でも、案内をそのまま実行できる形にする。
+func shellQuote(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", "'\\''") + "'"
 }
 
 // WorktreeDisabledMarker は worktree を使わない設定の workspace へ貸出コマンドが来たことを示す機械可読なトークンである。

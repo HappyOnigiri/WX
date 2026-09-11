@@ -449,6 +449,39 @@ func TestLeaseRefusesWorkspacesConfiguredWithoutAWorktree(t *testing.T) {
 	}
 }
 
+// 方針未設定の貸出コマンドには、解決済み workspace root へ設定を保存する案内を返す。
+func TestLeaseGuidanceUsesWorkspaceRootForNonAgentLeases(t *testing.T) {
+	t.Parallel()
+	f := manualManagerFixture(t, func(s *managerFixtureSetup) { s.Config.Worktree.Undefined = "ask" })
+	repo := filepath.Join(f.Root, "repo with 'quote' $HOME `tick`")
+	initGitRepo(t, repo)
+	nested := filepath.Join(repo, "nested", "cwd")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want := "worktree creation is not authorized; configure this workspace with: wx config --workspace '" + strings.ReplaceAll(repo, "'", "'\\''") + "' worktree cold"
+	for _, test := range []struct {
+		name  string
+		kind  string
+		agent string
+		pid   int
+	}{
+		{name: "shell", kind: state.LeaseKindShell, agent: "wx-shell", pid: os.Getpid()},
+		{name: "command", kind: state.LeaseKindCommand, agent: "wx-run", pid: os.Getpid()},
+		{name: "path", kind: state.LeaseKindPath, agent: "wx-path"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := f.Manager.leaseWithPolicy(context.Background(), nested, nil, test.agent, test.pid, false, leaseAttrs{Kind: test.kind})
+			if err == nil || err.Error() != want {
+				t.Fatalf("lease error=%v, want %q", err, want)
+			}
+			if strings.Contains(err.Error(), "--worktree") {
+				t.Fatalf("lease error=%v, must not suggest --worktree", err)
+			}
+		})
+	}
+}
+
 // 準備設定の上書きは貸出属性へ載る前に検証する。
 // 不正な値のまま準備へ進めると、測定用の設定が黙って既定へ落ちた結果を比較表に並べてしまう。
 func TestWithPrepareOverrideValidatesTheRequestedValues(t *testing.T) {
