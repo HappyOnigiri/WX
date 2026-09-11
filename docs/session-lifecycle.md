@@ -37,6 +37,9 @@
    multi-repository workspaceではさらに、workspace root自体のtarをwxのworktree root配下（`_recovery/workspace-snapshots/`）へ書き、`workspace_snapshots`行が指す。
    refの公開はDB行の永続化の後に行う。
    逆順だと、reconcileから見て正常なアーカイブが素性不明のrefに見える窓が開く。
+   index に`skip-worktree`か`assume-unchanged`が付いたpathはsnapshotの対象外で、HEADの内容として記録する。
+   hookが個人版の設定や認証情報をslotごとに置き換える運用では、これらのflagが常時立つためclean短絡が効かなくなり、内容もrecovery refに残ってしまう。
+   flag付きpathへの編集は保存されないが、両flagは「このファイルのローカル差分を見ない」という宣言なので、その責任は立てた側にある。
 6. **再開** — `wx resume`、`claude --resume`、`codex resume`はclientがagent session IDを解決し、`Resume`または`ResolveAndLease`へ合流させる。
    選択した会話と明示的な`wx resume <wx-session-id>`は同じRESTORE経路を使う。
    `--fresh`は会話を同じIDで再開しつつ現在のbaseからslotを作り、`--branch`は`--fresh`との併用時だけ使う。
@@ -50,6 +53,9 @@
    やり直しは1回だけで、2回目の失敗はそのまま返す。
    ネイティブresumeは遅延バインドや`_unbound` slotを新規生成せず、clientが準備完了を前面で待ってから起動する。
    復元後のworktreeはtracked changesを含むため、貸出前の検査はcleanなworking treeを要求しない`ValidateOwnership`を使う。
+   復元先のindex flagは外さず、`read-tree`で消えた分を立て直すだけにする。
+   外すとgitがflag付きの実ファイルをtreeの内容で上書きし、hookが置いたslot側の個人設定を失う。
+   ただし`assume-unchanged`の実ファイルは、flagを保っていても`read-tree --reset -u`がtreeの内容で書き戻す（git側の仕様でwxからは防げない）。
    READY slotの再利用側は`ValidateReady`で、こちらはtracked cleanまで求める。
 
 ## エージェント起動以外への貸出
