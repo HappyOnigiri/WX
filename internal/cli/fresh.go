@@ -32,6 +32,18 @@ type launchPlan struct {
 	ownerToken     string
 }
 
+// leaseBaseCWD は貸出の基準になる cwd を返す。
+// 記録済み session の再開は当時の workspace を復元し cwd を基準にしないため、空を返す。
+func (p launchPlan) leaseBaseCWD() string {
+	if p.resuming {
+		if p.target.WXSessionID != "" {
+			return ""
+		}
+		return p.target.CWD
+	}
+	return p.cwd
+}
+
 // rpcAgentKind は daemon へ送る agent_kind を返す。
 func (p launchPlan) rpcAgentKind() string {
 	if p.agentKind != "" {

@@ -190,6 +190,11 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 // launch は lease を取り、worktree の準備を待って agent を起動する。
 // 当時の worktree を復元できずに失敗し、新しい worktree での再開が選ばれたときだけ retry=true を返す。
 func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
+	// 貸出前に確認する。cancel されたら slot を作らずに終える。
+	if !c.confirmLinkedWorktreeBase(ctx, plan.leaseBaseCWD(), true) {
+		fmt.Fprintln(os.Stderr, "launch cancelled; no workspace was created")
+		return 1, false
+	}
 	var lease daemon.Lease
 	method := "ResolveAndLease"
 	newLease := func(cwd string) rpc.ResolveAndLeaseParams {
