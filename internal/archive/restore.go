@@ -58,10 +58,24 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err := m.Preparer.ValidateRestoringOwnership(ctx, repo, target, s.HeadOID, slotID); err != nil {
 			return fmt.Errorf("validate restore worktree before snapshot: %w", err)
 		}
+		// clean base を作る post-checkout hook が付けた skip-worktree/assume-unchanged は、
+		// read-tree に file の書き換えを拒否させるか素通りさせるため、tree 適用の前に外して後で戻す。
+		// snapshot は flag 一覧を持たず、出所は同じ source と同じ hook で作った復元先 index である。
+		flags, err := readIndexFlags(targetValue)
+		if err != nil {
+			return err
+		}
+		if err := clearIndexFlags(targetRun, flags); err != nil {
+			return err
+		}
 		if _, err := targetRun(nil, nil, "read-tree", "--reset", "-u", s.WorktreeOID+"^{tree}"); err != nil {
 			return err
 		}
 		if _, err := targetRun(nil, nil, "read-tree", s.IndexTreeOID); err != nil {
+			return err
+		}
+		// 復元先 index は session 中に手で付けた flag を知らないため、採取した path だけへ戻す。
+		if err := reapplyIndexFlags(targetRun, targetValue, flags); err != nil {
 			return err
 		}
 		if err := m.Preparer.PrepareResumeWithIdentity(ctx, repo, target, s.HeadOID, slotID, targetIdentity); err != nil {
