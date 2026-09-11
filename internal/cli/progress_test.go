@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 )
 
@@ -163,6 +164,23 @@ func TestLeaseProgressLeavesNothingWhenNothingWasWaitedFor(t *testing.T) {
 	waiting.finish()
 	if strings.Contains(out.String(), "\n") {
 		t.Fatalf("a lease that waited for no preparation left a line: %q", out.String())
+	}
+}
+
+// readiness.progress で進捗表示を切れる。既定は有効で、無効にすると端末でも描かない。
+// 端末判定はテストから作れないため、判定を引数で受ける経路で設定の効き方だけを確かめる。
+func TestLeaseProgressFollowsTheReadinessProgressSetting(t *testing.T) {
+	t.Parallel()
+	client := Client{Config: config.Defaults()}
+	if !client.leaseProgressEnabled(true) {
+		t.Fatal("the default configuration disabled the progress display")
+	}
+	if client.leaseProgressEnabled(false) {
+		t.Fatal("the progress display was enabled for a non-terminal output")
+	}
+	client.Config.Readiness.Progress = false
+	if client.leaseProgressEnabled(true) {
+		t.Fatal("readiness.progress=false still enabled the progress display")
 	}
 }
 

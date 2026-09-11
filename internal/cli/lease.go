@@ -147,7 +147,7 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 	defer cancelLease()
 	var lease daemon.Lease
 	// 進捗は stderr にだけ出す。wx new の stdout はパスと --json の契約なので混ぜられない。
-	waiting := startLeaseProgress()
+	waiting := c.startLeaseProgress()
 	defer waiting.finish()
 	if err := c.RPC.Call(leaseCtx, "ResolveAndLease", params, &lease); err != nil {
 		waiting.finish()

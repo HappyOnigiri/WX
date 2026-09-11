@@ -244,7 +244,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	defer cancelLease()
 	// 準備の待機は無表示だと cold start と待機枠更新の区別が付かない。
 	// 確認や結果の出力より前に必ず消す必要があるため、失敗経路でも都度 finish する。
-	waiting := startLeaseProgress()
+	waiting := c.startLeaseProgress()
 	defer waiting.finish()
 	if err := c.RPC.CallWithKey(leaseCtx, method, "launch:"+operationKey, params, &lease); err != nil {
 		waiting.finish()

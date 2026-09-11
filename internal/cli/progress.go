@@ -93,9 +93,15 @@ type leaseProgress struct {
 }
 
 // startLeaseProgress は経路が決まる前の待機行を stderr へ開始する。
-// stderr が端末でなければ何も描かず、LeaseProgress も一度も呼ばない。
-func startLeaseProgress() *leaseProgress {
-	return newLeaseProgress(os.Stderr, tui.IsTerminal(int(os.Stderr.Fd())))
+// readiness.progress が無効なときと stderr が端末でないときは何も描かず、LeaseProgress も一度も呼ばない。
+func (c Client) startLeaseProgress() *leaseProgress {
+	return newLeaseProgress(os.Stderr, c.leaseProgressEnabled(tui.IsTerminal(int(os.Stderr.Fd()))))
+}
+
+// leaseProgressEnabled は進捗を描くかを設定と出力先から決める。
+// 端末判定を引数で受けることで、端末を用意できない環境でも設定の効き方を試験できる。
+func (c Client) leaseProgressEnabled(terminal bool) bool {
+	return c.Config.Readiness.Progress && terminal
 }
 
 // newLeaseProgress は出力先と描画の有無を受け取る。出力先の判定を分けておくことで、
