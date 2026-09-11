@@ -119,7 +119,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		if method == "WaitEarlyReady" {
 			return map[string]bool{"ready": true}, h.Manager.WaitEarlyReady(ctx, p.SessionID, p.Token)
 		}
-		return map[string]bool{"ready": true}, h.Manager.WaitReady(ctx, p.SessionID, p.Token)
+		return h.waitReady(ctx, p.SessionID, p.Token)
 	case "BindAgentSession":
 		var p struct {
 			SessionID              string `json:"session_id"`
@@ -218,6 +218,41 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		return nil, errors.New("unknown RPC method")
 	}
 }
+
+// waitReady は READY を待ち、応答を受け取る client が先に消えた貸出を回収する。
+// 切断していれば待機は無意味なので打ち切り、まだ path を渡せていない path 貸出を返却する。
+// 切断通知の無い呼び出し（in-process の test など）は従来どおり timeout まで待つ。
+func (h Handler) waitReady(ctx context.Context, sessionID, token string) (any, error) {
+	peerClosed := rpc.PeerClosed(ctx)
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if peerClosed != nil {
+		go func() {
+			select {
+			case <-peerClosed:
+				cancel()
+			case <-waitCtx.Done():
+			}
+		}()
+	}
+	err := h.Manager.WaitReady(waitCtx, sessionID, token)
+	if err == nil {
+		return map[string]bool{"ready": true}, nil
+	}
+	select {
+	case <-peerClosed:
+		// 返却は client の消滅を補う後片付けなので、打ち切った待機の ctx からは切り離す。
+		releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), waitReadyReleaseTimeout)
+		defer releaseCancel()
+		h.Manager.ReleaseUnreceivedPathLease(releaseCtx, sessionID, token)
+	default:
+	}
+	return nil, err
+}
+
+// waitReadyReleaseTimeout は切断後の回収に与える時間である。
+// 要求側の deadline はもう無いが、保存経路の予約を取り切れる程度には待つ。
+const waitReadyReleaseTimeout = 10 * time.Second
 
 // dispatchWorkspaceMaintenance は workspace path 1 つを引数に取る保守操作を分けて受け持つ。
 // handled が false のときは他の method として扱う。

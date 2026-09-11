@@ -74,7 +74,16 @@
 そのため`Store.OrphanCandidates`は`lease_kind<>'path'`で除外する。
 除外を忘れると`wx new`のworktreeは45秒で保存・返却されGCの対象になるため、ここがこの経路で最も静かに壊れる箇所である。
 
+3つとも、貸出の取得から準備待ちの間だけ`signal.NotifyContext`でSIGINT・SIGTERM・SIGHUPを捕まえる（`internal/cli`の`interruptibleSetup`）。
+既定のdispositionのままCtrl-Cで即死すると、返却の`defer`が走らないまま貸出だけがdaemonに残るためである。
+捕捉はagentの起動直前に返し、以降のsignalは従来どおりagentへ中継する。
+
+client側の捕捉が効かない中断（`kill -9`・端末ごとの消滅）に備えて、daemon側でも`path`貸出だけを回収する。
+`internal/rpc`は接続ごとに切断通知を handler ctx へ載せ（`rpc.PeerClosed`）、`Handler.waitReady`はREADY前に接続が切れたら待機を打ち切って`lease-setup-failed`で返却する。
+対象を`path`に絞るのは、他の貸出は`client_pid`とheartbeatで回収できるのに対し、`wx new`だけがpathを渡す前の未受領のまま誰にも返されずに残るためである。
+
 `wx new`の返却契機は3つで、`wx release --discard`を除きどれも既存の返却経路（session `RELEASING`→slot `DRAINING`→SNAPSHOTジョブ）へ載る。
+どれも利用者へpathを渡せた後の話で、渡す前に中断された貸出は上の2経路がその場で返す。
 
 1. 親sessionの終了。`WX_SESSION_ID` / `WX_SESSION_TOKEN`を持つ環境からの要求は`sessions.lease_owner_session_id`へ親を記録し、親が使用中でなくなると`Store.OrphanedChildLeases`が拾う。
    resume chain専用の`parent_session_id`は流用しない。`internal/state/standby.go`が「親がEXPIRED」を条件にしているため、流用すると子貸出のstandby補充成功記録が親の終了まで入らない。
@@ -96,3 +105,5 @@ daemon側の入口は[`internal/daemon/resume.go`](../internal/daemon/resume.go)
 
 エージェント起動以外への貸出の入口は[`internal/cli/lease.go`](../internal/cli/lease.go)と[`internal/daemon/leasekind.go`](../internal/daemon/leasekind.go)である。
 代表テストは[`TestPathLeaseSurvivesOrphanReconcileAndExpiresThroughSnapshot`](../internal/daemon/leasekind_test.go)で、`wx new`の貸出がorphan回収を生き延び、期限到来で保存経路を通ることを通す。
+準備待ちの中断のclient側は[`TestRunLeaseNewReleasesTheLeaseWhenInterruptedBeforeReady`](../internal/cli/lease_interrupt_test.go)で通す。
+daemon側は[`TestWaitReadyReleasesThePathLeaseOfADisconnectedClient`](../internal/daemon/waitready_disconnect_test.go)で通す。
