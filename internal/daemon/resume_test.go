@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,16 +12,15 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
 func TestWorkspaceRecoveryExclusionsUseSlotDirectoryNames(t *testing.T) {
 	t.Parallel()
-	cfg := config.Defaults()
-	cfg.Workspaces["/src/bundle"] = config.Workspace{Link: []string{"shared"}}
 	w := discoveryWorkspaceForExclusions()
 	repos := []state.SlotRepository{{RepositoryID: "repo-1", DirName: "server"}}
-	got := workspaceRecoveryExclusions(w, repos, cfg)
-	want := map[string]bool{"server": true, ".wx-owner-repo-1": true, "shared": true}
+	got := workspaceRecoveryExclusions(repos)
+	want := map[string]bool{"server": true, ".wx-owner-repo-1": true}
 	if len(got) != len(want) {
 		t.Fatalf("exclusions=%v want keys %v", got, want)
 	}
@@ -32,8 +32,32 @@ func TestWorkspaceRecoveryExclusionsUseSlotDirectoryNames(t *testing.T) {
 	if containsString(got, w.Repositories[0].RelativePath) {
 		t.Fatalf("exclusions=%v still use the source-relative repository path", got)
 	}
-	if got := workspaceRecoveryExclusions(w, []state.SlotRepository{{RepositoryID: "repo-1"}}, config.Defaults()); len(got) != 0 {
+	if got := workspaceRecoveryExclusions([]state.SlotRepository{{RepositoryID: "repo-1"}}); len(got) != 0 {
 		t.Fatalf("nameless repository exclusions=%v", got)
+	}
+}
+
+// TestWorkspaceRecoveryExclusionsOmitManifestLinks は、root 直下の .worktreelink で宣言した link を常時除外へ載せないことを固定する。
+// link を rule から無条件に除外すると、貸出中に rule を書き換えただけで slot 内の実体が tar から落ちる。
+// link かどうかの判定は archive package が実体と archive から行う。
+func TestWorkspaceRecoveryExclusionsOmitManifestLinks(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".worktreelink"), []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "shared"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := workspace.ResolveRootRules(root, config.Workspace{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(rules.Link, "shared") {
+		t.Fatalf("root rules=%v missing the manifest link", rules.Link)
+	}
+	if got := workspaceRecoveryExclusions(nil); len(got) != 0 {
+		t.Fatalf("exclusions=%v must not carry link rules", got)
 	}
 }
 

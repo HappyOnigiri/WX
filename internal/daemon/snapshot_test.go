@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"archive/tar"
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -153,6 +156,88 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 			}
 		})
 	}
+}
+
+// TestSnapshotSessionKeepsRootWorkAddedToLinkRuleWhileLeased は、貸出中に root の .worktreelink へ追記された path の扱いを固定する。
+// rule を読み直して除外を決めていた頃は、slot に copy で実体配置された作業が tar から落ち、ended worktree の削除で失われた。
+func TestSnapshotSessionKeepsRootWorkAddedToLinkRuleWhileLeased(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "owned")
+	bundleRoot := filepath.Join(cfg.Storage.WorktreeRoot, "slot")
+	repositoryPath := filepath.Join(bundleRoot, "repository")
+	initGitRepo(t, repositoryPath)
+	// 貸出中に slot 内へ実体として置かれた作業を再現する。
+	if err := os.MkdirAll(filepath.Join(bundleRoot, "docs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleRoot, "docs", "note.md"), []byte("leased work\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	ctx := context.Background()
+	commonDir := gitOutput(t, repositoryPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repository := discovery.Repository{ID: "repository", MainPath: discoveryPath(repositoryPath), CommonDir: discoveryPath(commonDir), RelativePath: "repository", DefaultBranch: "main"}
+	w := registerTestWorkspace(t, store, discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "multi_repository", Repositories: []discovery.Repository{repository}})
+	session := state.Session{ID: "session", WorkspaceID: string(w.ID), SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	slotRepository := state.SlotRepository{RepositoryID: "repository", DirName: "repository", State: "LEASED", BaseOID: gitOutput(t, repositoryPath, "rev-parse", "HEAD")}
+	if _, err := store.CreateSlotSession(ctx, slotAtPath(t, manager, string(w.ID), "slot", bundleRoot, 1, "LEASED"), []state.SlotRepository{slotRepository}, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 返却の直前に、同じ path を link rule へ足す。
+	if err := os.WriteFile(filepath.Join(root, ".worktreelink"), []byte("docs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID); err != nil || !changed {
+		t.Fatalf("release changed=%v err=%v", changed, err)
+	}
+	released, err := store.SessionByID(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.snapshotSession(ctx, released); err != nil {
+		t.Fatal(err)
+	}
+	rootSnapshot, found, err := store.WorkspaceSnapshot(ctx, session.ID)
+	if err != nil || !found {
+		t.Fatalf("workspace snapshot found=%v err=%v", found, err)
+	}
+	names := workspaceArchiveEntryNames(t, rootSnapshot.ArchivePath)
+	if !containsString(names, "docs/note.md") {
+		t.Fatalf("workspace archive entries=%v dropped the materialized work", names)
+	}
+	if containsString(names, "repository") {
+		t.Fatalf("workspace archive entries=%v include the repository worktree", names)
+	}
+}
+
+func workspaceArchiveEntryNames(t *testing.T, path string) []string {
+	t.Helper()
+	file, err := os.Open(path) // #nosec G304 -- テストが直前に作った archive の path である。
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	names := []string{}
+	reader := tar.NewReader(file)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, header.Name)
+	}
+	return names
 }
 
 func TestSnapshotFailureQuarantinesSlotWithoutRemovingWorktreeMetadata(t *testing.T) {

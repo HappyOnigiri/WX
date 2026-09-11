@@ -93,6 +93,22 @@ ignore判定は`git check-ignore`に委ねるので、ディレクトリを列�
 
 workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。
 
+### 非Gitのworkspace root
+
+multi-repository workspaceのrootにはcheckoutが無く、root直下の実体はcopy/link ruleに載ったものだけがslotへ入る（既定名とroot直下manifestの書式は`wx config --help`）。
+agentはslotのworkspace rootをCWDとして起動するので既定でagent資産を持ち込むが、`.claude`を丸ごとは入れない。
+`settings.local.json`やmailboxのように実行中に書き換わる実体をfingerprintへ混ぜると、standbyの更新が止まらなくなるためである。
+欠落を準備失敗にするのは`workspaces.<root>.copy`で明示したpathだけで、既定名とincludeのglobは0件を許す。
+rootのlinkだけはignore判定を行わず（rootにGitが無い）、sourceの欠落も省略ではなく準備失敗として扱う。
+
+root直下のmanifestは、workspace rootがrepositoryのmain worktreeそのものである場合には読まない。
+そこはGitがcheckoutする領域で、配置しない実体をfingerprintへ混ぜると無関係なREADY slotを一斉に無効化する。
+
+rule解決は1箇所に集め、fingerprint・配置計画・配置履歴が同じ結果を見るようにする。
+workspace rootのtar・復元での除外はruleで決めない。
+snapshotはslot内でsymlinkだったpathだけを外し、復元の除外はarchiveが持つpathから決める。
+ruleを読み直して除外を決めると、貸出中のrule変更で実体のある作業がtarから落ちる。
+
 新規準備は実際に配置したcopy/linkをfile単位で`slot_placements`へ記録する。
 記録はその準備が配置に使った計画そのものから作り、include/linkのruleを読み直さない。
 1つのPREPARE jobがruleを2度読むと、その間のrule変更で配置済みの実体と記録が食い違い、slotごと隔離される。

@@ -140,31 +140,49 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 			}
 		}
 	}
-	workspaceRoot, err := repositoryWorkspaceRoot(repo)
-	if err != nil {
+	if err := fingerprintWorkspaceRoot(h, repo, c); err != nil {
 		return "", err
 	}
-	rules := c.Workspaces[workspaceRoot]
+	if err := writePrepareFingerprint(h, repo, c); err != nil {
+		return "", err
+	}
+	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// fingerprintWorkspaceRoot は workspace root の rule と、その rule が配置する実体を hash 化する。
+// rule の解決は消費側と同じ関数に任せ、配置しない実体を混ぜない。
+func fingerprintWorkspaceRoot(h hash.Hash, repo discovery.Repository, c config.Config) error {
+	workspaceRoot, err := repositoryWorkspaceRoot(repo)
+	if err != nil {
+		return err
+	}
+	rules, err := rootRulesForRepository(repo, workspaceRoot, c)
+	if err != nil {
+		return err
+	}
 	submodules, _ := c.SubmodulesForWorkspace(workspaceRoot)
 	_, _ = fmt.Fprintf(h, "workspace-root=%s\ncopy-rules=%q\nlink-rules=%q\nsubmodules=%t\n", workspaceRoot, rules.Copy, rules.Link, submodules)
 	copyNames, explicitCopies, err := workspaceRootCopyPlan(rules)
 	if err != nil {
-		return "", err
+		return err
 	}
 	workspaceRootHandle, err := OpenPhysicalRoot(workspaceRoot)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer func() { _ = workspaceRootHandle.Close() }()
 	presentCopies, err := validateWorkspaceRootCopySources(nil, workspaceRootHandle, workspaceRoot, copyNames, explicitCopies)
 	if err != nil {
-		return "", err
+		return err
 	}
 	seenCopies := map[string]bool{}
 	for _, name := range copyNames {
 		clean, err := safeRelative(name)
 		if err != nil {
-			return "", err
+			return err
 		}
 		if seenCopies[clean] {
 			continue
@@ -174,13 +192,13 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 			continue
 		}
 		if err := fingerprintRootPath(h, workspaceRootHandle, clean, clean); err != nil {
-			return "", err
+			return err
 		}
 	}
 	for _, name := range rules.Link {
 		clean, err := safeRelative(name)
 		if err != nil {
-			return "", err
+			return err
 		}
 		path := filepath.Join(workspaceRoot, clean)
 		// MaterializeRootAt が skip する source なので、fingerprint も内容ではなく skip した事実だけを混ぜる。
@@ -189,21 +207,15 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 				_, _ = fmt.Fprintf(h, "workspace-link=%s:skipped-symlink\n", clean)
 				continue
 			}
-			return "", err
+			return err
 		}
 		info, err := os.Lstat(path)
 		if err != nil {
-			return "", err
+			return err
 		}
 		_, _ = fmt.Fprintf(h, "workspace-link=%s:%s\n", clean, info.Mode())
 	}
-	if err := writePrepareFingerprint(h, repo, c); err != nil {
-		return "", err
-	}
-	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return nil
 }
 
 func writePrepareFingerprint(h hash.Hash, repo discovery.Repository, c config.Config) error {
@@ -222,8 +234,23 @@ func writePrepareFingerprint(h hash.Hash, repo discovery.Repository, c config.Co
 	return nil
 }
 
+// rootRulesForRepository は workspace root の rule を workspace の種別に合わせて解決する。
+// repository workspace では root が repository の main worktree そのもので、root 直下は Git が checkout する。
+// manifest も agent 資産の既定もここで効かせると、配置しない実体を fingerprint に混ぜて READY slot を無効化してしまう。
+func rootRulesForRepository(repo discovery.Repository, workspaceRoot string, c config.Config) (RootRules, error) {
+	if isRepositoryWorkspaceLayout(repo) {
+		return RootRulesFromConfig(c.Workspaces[workspaceRoot]), nil
+	}
+	return ResolveRootRules(workspaceRoot, c.Workspaces[workspaceRoot])
+}
+
+// isRepositoryWorkspaceLayout は repository が workspace root そのものかを返す。偽なら root は Git 管理外の multi-repository root である。
+func isRepositoryWorkspaceLayout(repo discovery.Repository) bool {
+	return repo.RelativePath == "" || filepath.Clean(repo.RelativePath) == "."
+}
+
 func repositoryWorkspaceRoot(repo discovery.Repository) (string, error) {
-	if repo.RelativePath == "" || filepath.Clean(repo.RelativePath) == "." {
+	if isRepositoryWorkspaceLayout(repo) {
 		return string(repo.MainPath), nil
 	}
 	rel, err := safeRelative(repo.RelativePath)

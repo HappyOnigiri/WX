@@ -93,13 +93,13 @@ func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "shared"), []byte("collision"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := MaterializeRoot(nil, source, target, config.Workspace{Link: []string{"shared"}}); err == nil {
+	if err := MaterializeRoot(nil, source, target, RootRulesFromConfig(config.Workspace{Link: []string{"shared"}})); err == nil {
 		t.Fatal("link collision succeeded")
 	}
-	if err := MaterializeRoot(nil, source, target, config.Workspace{Copy: []string{"../outside"}}); err == nil {
+	if err := MaterializeRoot(nil, source, target, RootRulesFromConfig(config.Workspace{Copy: []string{"../outside"}})); err == nil {
 		t.Fatal("unsafe copy succeeded")
 	}
-	if err := MaterializeRoot(nil, source, target, config.Workspace{Link: []string{"../outside"}}); err == nil {
+	if err := MaterializeRoot(nil, source, target, RootRulesFromConfig(config.Workspace{Link: []string{"../outside"}})); err == nil {
 		t.Fatal("unsafe link succeeded")
 	}
 }
@@ -115,12 +115,12 @@ func TestRuleConflictsAreRejectedBeforeMaterialization(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		rules config.Workspace
+		rules RootRules
 	}{
-		{name: "copy ancestor of link", rules: config.Workspace{Copy: []string{"shared"}, Link: []string{"shared/child"}}},
-		{name: "link ancestor of copy", rules: config.Workspace{Copy: []string{"shared/child"}, Link: []string{"shared"}}},
-		{name: "link ancestor of link", rules: config.Workspace{Link: []string{"shared", "shared/child"}}},
-		{name: "exact copy and link overlap", rules: config.Workspace{Copy: []string{"copy"}, Link: []string{"copy"}}},
+		{name: "copy ancestor of link", rules: RootRulesFromConfig(config.Workspace{Copy: []string{"shared"}, Link: []string{"shared/child"}})},
+		{name: "link ancestor of copy", rules: RootRulesFromConfig(config.Workspace{Copy: []string{"shared/child"}, Link: []string{"shared"}})},
+		{name: "link ancestor of link", rules: RootRulesFromConfig(config.Workspace{Link: []string{"shared", "shared/child"}})},
+		{name: "exact copy and link overlap", rules: RootRulesFromConfig(config.Workspace{Copy: []string{"copy"}, Link: []string{"copy"}})},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -425,7 +425,7 @@ func TestSkippedSourcesAreRecorded(t *testing.T) {
 		}
 	}
 	materialized := filepath.Join(base, "materialized")
-	rules := config.Workspace{Copy: []string{"copied"}, Link: []string{"linked"}}
+	rules := RootRulesFromConfig(config.Workspace{Copy: []string{"copied"}, Link: []string{"linked"}})
 	if err := MaterializeRoot(logger, workspaceRoot, materialized, rules); err != nil {
 		t.Fatalf("MaterializeRoot: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, "nested", "value"), []byte("value\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := MaterializeRoot(nil, repository, materializedTarget, config.Workspace{Copy: []string{"nested/value"}}); err == nil || !strings.Contains(err.Error(), "destination") {
+	if err := MaterializeRoot(nil, repository, materializedTarget, RootRulesFromConfig(config.Workspace{Copy: []string{"nested/value"}})); err == nil || !strings.Contains(err.Error(), "destination") {
 		t.Fatalf("copy destination through symlink ancestor succeeded: %v", err)
 	}
 }
@@ -995,7 +995,7 @@ func TestWorkspaceHelpersRejectUnreadableInputsAndUnwritableTargets(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(linkTarget, 0o700) })
-	if err := MaterializeRoot(nil, root, linkTarget, config.Workspace{Link: []string{"link-source"}}); err == nil {
+	if err := MaterializeRoot(nil, root, linkTarget, RootRulesFromConfig(config.Workspace{Link: []string{"link-source"}})); err == nil {
 		t.Fatal("workspace link created in unwritable target")
 	}
 }
@@ -1082,7 +1082,7 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	}
 
 	brokenSource, materialized := t.TempDir(), t.TempDir()
-	if err := MaterializeRoot(nil, brokenSource, materialized, config.Workspace{Link: []string{"missing"}}); err == nil {
+	if err := MaterializeRoot(nil, brokenSource, materialized, RootRulesFromConfig(config.Workspace{Link: []string{"missing"}})); err == nil {
 		t.Fatal("missing root link source succeeded")
 	}
 	if err := os.WriteFile(filepath.Join(brokenSource, "AGENTS.local.md"), []byte("rules"), 0o640); err != nil {
@@ -1091,7 +1091,7 @@ func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
 	if err := os.Symlink(filepath.Join(brokenSource, "AGENTS.local.md"), filepath.Join(materialized, "AGENTS.local.md")); err != nil {
 		t.Fatal(err)
 	}
-	if err := MaterializeRoot(nil, brokenSource, materialized, config.Workspace{}); err == nil {
+	if err := MaterializeRoot(nil, brokenSource, materialized, RootRulesFromConfig(config.Workspace{})); err == nil {
 		t.Fatal("root copy overwrote destination symlink")
 	}
 	if _, err := Fingerprint(1, head, discovery.Repository{MainPath: domain.CanonicalPath(brokenSource)}, cfg); err != nil {

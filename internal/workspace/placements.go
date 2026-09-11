@@ -14,7 +14,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -157,7 +156,7 @@ func (p *Preparer) trackedPathsAt(ctx context.Context, repo discovery.Repository
 	return tracked, nil
 }
 
-func RootPlacements(source string, rules config.Workspace) ([]state.Placement, error) {
+func RootPlacements(source string, rules RootRules) ([]state.Placement, error) {
 	source = filepath.Clean(source)
 	root, err := OpenPhysicalRoot(source)
 	if err != nil {

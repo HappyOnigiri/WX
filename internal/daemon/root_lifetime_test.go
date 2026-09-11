@@ -12,6 +12,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
 func rootLifetimeManager(t *testing.T, cfg config.Config, store *state.Store) *Manager {
@@ -773,7 +774,7 @@ func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing
 	if err := os.Mkdir(materialized, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.materializeWorkspaceRoot(source, materialized, config.Workspace{Copy: []string{"instructions"}}); err != nil {
+	if err := manager.materializeWorkspaceRoot(source, materialized, workspace.RootRulesFromConfig(config.Workspace{Copy: []string{"instructions"}})); err != nil {
 		t.Fatalf("descriptor-bound root materialization: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(materialized, "instructions")); err != nil || string(data) != "rules\n" {

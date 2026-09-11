@@ -775,6 +775,86 @@ func TestSnapshotWorkspacePropagatesPublishRenameFailure(t *testing.T) {
 	}
 }
 
+// TestWorkspaceSnapshotKeepsMaterializedWorkWhenLinkRuleAppears は、貸出中に link rule が増えた path の往復を固定する。
+// snapshot 時に実体だった path は tar に入り、復元では archive に entry があるので除外されない。
+// prune は materialize 済みの symlink を unlink するだけで link 先へ降りないため、source 側は無傷で残る。
+// この挙動が崩れると、rule を書き換えただけで slot の作業が失われるか、link 先の実体を消す。
+// commentlint:allow-long -- 往復のどこが壊れると何が失われるかを 1 箇所で説明する
+func TestWorkspaceSnapshotKeepsMaterializedWorkWhenLinkRuleAppears(t *testing.T) {
+	base := t.TempDir()
+	ownershipRoot := filepath.Join(base, "wx")
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.MkdirAll(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(base, "source", "docs")
+	writeWorkspaceTestFile(t, filepath.Join(source, "keep.md"), "source side\n", 0o600)
+	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "docs", "note.md"), "slot work\n", 0o600)
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "link-added", nil, time.Now().Add(time.Hour), "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 復元前の materialize が、増えた link rule に従って同じ path を symlink へ置き換える状況を作る。
+	if err := os.RemoveAll(filepath.Join(bundleRoot, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(source, filepath.Join(bundleRoot, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	assertWorkspaceTestFile(t, filepath.Join(bundleRoot, "docs", "note.md"), "slot work\n")
+	assertWorkspaceTestFile(t, filepath.Join(source, "keep.md"), "source side\n")
+	if info, err := os.Lstat(filepath.Join(bundleRoot, "docs")); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("restored docs mode=%v err=%v", info, err)
+	}
+}
+
+// TestWorkspaceSnapshotKeepsMaterializedCopyWhenLinkRuleDisappears は逆向きの往復を固定する。
+// snapshot 時に symlink だった path は tar に入らず、復元では archive に entry が無いので除外され、materialize した実体が prune を生き延びる。
+func TestWorkspaceSnapshotKeepsMaterializedCopyWhenLinkRuleDisappears(t *testing.T) {
+	base := t.TempDir()
+	ownershipRoot := filepath.Join(base, "wx")
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.MkdirAll(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(base, "source", "docs")
+	writeWorkspaceTestFile(t, filepath.Join(source, "keep.md"), "source side\n", 0o600)
+	if err := os.Symlink(source, filepath.Join(bundleRoot, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "AGENTS.md"), "rules\n", 0o600)
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "link-removed", nil, time.Now().Add(time.Hour), "docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Remove(filepath.Join(bundleRoot, "docs")); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceTestFile(t, filepath.Join(bundleRoot, "docs", "copied.md"), "materialized copy\n", 0o600)
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	assertWorkspaceTestFile(t, filepath.Join(bundleRoot, "docs", "copied.md"), "materialized copy\n")
+	assertWorkspaceTestFile(t, filepath.Join(bundleRoot, "AGENTS.md"), "rules\n")
+}
+
 func writeWorkspaceTestFile(t *testing.T, name, contents string, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {

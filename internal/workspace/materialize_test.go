@@ -26,7 +26,7 @@ func TestMaterializeRootCopiesLinksAndIsIdempotent(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(source, "shared"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	rules := config.Workspace{Copy: []string{"docs", "docs"}, Link: []string{"shared"}}
+	rules := RootRulesFromConfig(config.Workspace{Copy: []string{"docs", "docs"}, Link: []string{"shared"}})
 	if err := MaterializeRoot(nil, source, target, rules); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestWorkspaceRootDefaultSymlinkRuleIsSkipped(t *testing.T) {
 	if after != before {
 		t.Fatalf("default symlink changed fingerprint before=%s after=%s", before, after)
 	}
-	if err := MaterializeRoot(nil, source, target, config.Workspace{}); err != nil {
+	if err := MaterializeRoot(nil, source, target, RootRulesFromConfig(config.Workspace{})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(target, "AGENTS.md")); !errors.Is(err, os.ErrNotExist) {
@@ -71,7 +71,7 @@ func TestWorkspaceRootDefaultSymlinkRuleIsSkipped(t *testing.T) {
 	}
 	// 明示指定した名前も symlink なら既定名と同じく skip し、prepare を失敗させない。
 	explicitTarget := t.TempDir()
-	if err := MaterializeRoot(nil, source, explicitTarget, config.Workspace{Copy: []string{"AGENTS.md"}}); err != nil {
+	if err := MaterializeRoot(nil, source, explicitTarget, RootRulesFromConfig(config.Workspace{Copy: []string{"AGENTS.md"}})); err != nil {
 		t.Fatalf("explicit symlink copy error=%v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(explicitTarget, "AGENTS.md")); !errors.Is(err, os.ErrNotExist) {
@@ -84,7 +84,7 @@ func TestMaterializeRootRejectsMissingExplicitCopyBeforeWriting(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "AGENTS.md"), []byte("rules\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rules := config.Workspace{Copy: []string{"required.json"}}
+	rules := RootRulesFromConfig(config.Workspace{Copy: []string{"required.json"}})
 	err := MaterializeRoot(nil, source, target, rules)
 	if err == nil {
 		t.Fatal("missing explicit workspace copy succeeded")
@@ -111,7 +111,7 @@ func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = owner.Close() }()
-	if err := MaterializeRootAt(nil, source, owner, config.Workspace{Copy: []string{"copied.txt"}, Link: []string{"shared"}}); err != nil {
+	if err := MaterializeRootAt(nil, source, owner, RootRulesFromConfig(config.Workspace{Copy: []string{"copied.txt"}, Link: []string{"shared"}})); err != nil {
 		t.Fatalf("pinned materialization: %v", err)
 	}
 	data, err := owner.ReadFile("copied.txt")
@@ -122,7 +122,7 @@ func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
 	if err != nil || link != filepath.Join(source, "shared") {
 		t.Fatalf("pinned link=%q err=%v", link, err)
 	}
-	if err := MaterializeRootAt(nil, source, nil, config.Workspace{}); err == nil {
+	if err := MaterializeRootAt(nil, source, nil, RootRulesFromConfig(config.Workspace{})); err == nil {
 		t.Fatal("nil destination root was accepted")
 	}
 }
@@ -144,7 +144,7 @@ func TestMaterializeRootAtRejectsSymlinkAncestorInCopyRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = destinationRoot.Close() }()
-	rules := config.Workspace{Copy: []string{filepath.Join("linked", "value")}}
+	rules := RootRulesFromConfig(config.Workspace{Copy: []string{filepath.Join("linked", "value")}})
 	if err := MaterializeRootAt(nil, source, destinationRoot, rules); err == nil {
 		t.Fatal("workspace copy rule through a symlink ancestor was accepted")
 	}

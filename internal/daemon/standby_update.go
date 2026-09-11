@@ -130,7 +130,11 @@ func (m *Manager) planStandbyUpdate(ctx context.Context, w discovery.Workspace, 
 		plan.targets = append(plan.targets, state.SlotRepository{RepositoryID: stored.RepositoryID, RequestedRef: requested.RequestedRef, BaseOID: requested.OID, Fingerprint: fingerprint, CompatibilityFingerprint: compatibility, UpdateBaseOID: stored.BaseOID, UpdateFingerprint: stored.Fingerprint})
 	}
 	if w.Kind == "multi_repository" {
-		planned, err := workspace.RootPlacements(string(w.Root), m.Config().Workspaces[string(w.Root)])
+		rootRules, err := m.rootRules(w)
+		if err != nil {
+			return standbyUpdatePlan{}, err
+		}
+		planned, err := workspace.RootPlacements(string(w.Root), rootRules)
 		if err != nil {
 			return standbyUpdatePlan{}, err
 		}

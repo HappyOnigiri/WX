@@ -182,7 +182,13 @@ func (m *Manager) capturePlacements(ctx context.Context, slot state.Slot, w disc
 	return placements, nil
 }
 
-func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules config.Workspace) error {
+// rootRules は非Git workspace rootの配置ruleを、configとroot直下のmanifestから解決する。
+// 1つのjobでは解決を1回に保ち、計画・配置・記録・除外が同じ結果を見るようにする。
+func (m *Manager) rootRules(w discovery.Workspace) (workspace.RootRules, error) {
+	return workspace.ResolveRootRules(string(w.Root), m.Config().Workspaces[string(w.Root)])
+}
+
+func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules workspace.RootRules) error {
 	// SQLiteの所有権確認後もroot置換の窓を作らないよう、pathベースでmaterializeしない。
 	root, ok := m.rootForPath(slotPath)
 	if !ok {
