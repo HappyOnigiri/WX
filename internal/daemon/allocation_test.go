@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -234,5 +235,21 @@ func TestAllocationDoesNotAdoptExistingUnregisteredDirectory(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(target, "keep")); err != nil || string(data) != "keep" {
 		t.Fatalf("existing directory changed: %q %v", data, err)
+	}
+}
+
+func TestLeaseRepositoryDirsUsesRecordedDirNames(t *testing.T) {
+	t.Parallel()
+	slotPath := filepath.Join(string(filepath.Separator)+"wx", "wsp001", "slt001")
+	multi := []state.SlotRepository{{RepositoryID: "r1", DirName: "server"}, {RepositoryID: "r2", DirName: "web"}}
+	if got := leaseRepositoryDirs(slotPath, slotPath, multi); !slices.Equal(got, []string{"server", "web"}) {
+		t.Fatalf("multi-repository dirs=%v", got)
+	}
+	single := []state.SlotRepository{{RepositoryID: "r1", DirName: "WX"}}
+	if got := leaseRepositoryDirs(slotPath, filepath.Join(slotPath, "WX"), single); got != nil {
+		t.Fatalf("single-repository dirs=%v", got)
+	}
+	if got := leaseRepositoryDirs(slotPath, slotPath, []state.SlotRepository{{RepositoryID: "r1"}}); got != nil {
+		t.Fatalf("nameless repository dirs=%v", got)
 	}
 }

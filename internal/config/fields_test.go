@@ -16,7 +16,7 @@ func TestAllScalarFieldsCanBeSetAndReported(t *testing.T) {
 		"storage.worktree_root": "$HOME/wx", "storage.copy_mode": "cow", "storage.cow_min_size_kib": "64", "storage.repo_dir_source": "directory", "storage.backup_generations": "4", "storage.backup_retention": "24h",
 		"pool.warm_per_workspace": "2", "pool.preparation_concurrency": "3",
 		"retention.hot_standby": "1h", "retention.ended_worktree": "2h", "retention.quarantined": "12h", "retention.recovery_snapshot": "3h", "retention.expired_session_tombstone": "4h", "retention.failed_job": "5h", "retention.event_log": "6h",
-		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "readiness.mode": "full", "resume.auto_fresh": "true", "lease.ttl": "48h", "lease.shell": "/bin/zsh", "includes.default_agent_rules": "false", "logging.level": "debug",
+		"discovery.max_depth": "4", "discovery.max_entries": "500", "discovery.timeout": "7s", "discovery.reconcile_interval": "8s", "readiness.timeout": "9s", "readiness.mode": "full", "resume.auto_fresh": "true", "lease.ttl": "48h", "lease.shell": "/bin/zsh", "includes.default_agent_rules": "false", "agent.add_dir": "worktree", "logging.level": "debug",
 	}
 	var raw Config
 	for key, value := range values {
