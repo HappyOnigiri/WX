@@ -14,7 +14,8 @@
 
 分類は`jobClassOf`が job rowの事実だけから決め、DBへ永続化しない。
 session付きPREPARE・RESTORE・SNAPSHOTを利用者向けとし、SNAPSHOTは保存と将来のresumeの前提なので利用者が明示的に待っているかによらずこのクラスに置く。
-待機用PREPARE・ENSURE_STANDBY・自動REMOVE系は保守用とし、実行中のclean runが完了を待つREMOVEだけを`advanceRemoving`が毎回の監視で利用者向けへ昇格させる。
+待機用PREPARE・ENSURE_STANDBY・自動REMOVE系と、sessionを持たないUPDATE（待機中standbyのidle更新）は保守用とする。
+実行中のclean runが完了を待つREMOVEだけを`advanceRemoving`が毎回の監視で利用者向けへ昇格させる。
 
 `dispatchJobs`はクラス別の待ち行列から到着順に1件ずつ配り、枠を取ってから`ClaimJob`する。
 このためキュー待ちのジョブはattemptもjob leaseも消費せず、同じジョブIDの二重登録も配送前に落とす。
@@ -82,8 +83,17 @@ COLD化の`RETIRING`は完了後に`READY`へ戻るので枠に数える。
 worktreeにtracked変更が残っていて棄却した候補も同じ扱いにする。次の貸出でも同じ理由で棄却されるので、定期reconcileを待つ間だけREADYの見かけと実態がずれるためである。
 再試行で解消し得る理由（併走する遷移に負けた、Gitやファイル操作が失敗した）はSTALEにせず、候補を飛ばすだけにとどめる。
 `--branch`指定の貸出では回収しない。main向けのstandbyをbranch要求のために捨てないためである。
-OIDと配置の更新は貸出要求時だけ行い、要求時点のOID・配置計画・copy modeをDBへ固定する。
-UPDATEは利用者向け実行枠を使い、slot・STARTING session・jobの予約を同じtransactionで確定する。
+OIDと配置の更新は貸出要求時と保守一巡のidle更新で行い、その時点のOID・配置計画・copy modeをDBへ固定する。
+貸出要求のUPDATEは利用者向け実行枠を使い、slot・STARTING session・jobの予約を同じtransactionで確定する。
+
+idle更新（`refreshIdleStandbys`）は、完全一致しないが更新適合なREADY standbyを貸出を待たずに現在の要求へ合わせる。
+`.worktreeinclude`対象の書き換えのようにfingerprintだけがずれた待機枠を残すと、次の貸出がUPDATEの待ちを払い、`wx status`のREADYも実態とずれるためである。
+予約（`ReserveIdleStandbyUpdate`）はsessionを作らず`owner_session_id`を空のままPREPARINGへ移すので、更新中のslotは貸出候補から外れ、併走する貸出予約とは`slots`のcompare-and-swapで排他になる。
+jobはsessionを持たないため保守用の実行枠で走り、利用者向けの枠を奪わない。
+歯止めは3つで、1巡につき1件だけ始める、待機枠が全てREADYに落ち着いたworkspaceだけを対象にする、workspaceごとに`idleStandbyRefreshCooldown`（1分）の間隔を空ける。
+更新中はそのworkspaceのREADYが一時的に1本減るため、貸出が進行中のworkspaceでは始めない。
+完了は`FinishIdleStandbyUpdate`がREADYへ戻し、書込み開始後の中断は貸出付きの更新と同じく隔離する（自動再実行はしない）。
+更新に使えない候補はidle更新では回収せず、READYのまま残して貸出時の判断に委ねる。
 
 補充停止は`replenish_suspensions`に永続化し、定期reconcileと補充ジョブの双方で参照する。
 停止理由によらず、解除はそのworkspaceの手動起動（貸出・resume）の成功か`wx retry-standby`だけとし、既存sessionの返却では解除しない。
@@ -244,5 +254,7 @@ LaunchAgentには`ThrottleInterval=1`を設定し、連続再起動時のlaunchd
 
 GCの候補選択と削除の入口は[`internal/daemon/gc.go`](../internal/daemon/gc.go)、代表テストは[`TestGCRemovesRegisteredQuarantineWithoutCachedIdentity`](../internal/daemon/gc_integration_test.go)である。
 restart/stopのidleゲートの入口は[`internal/daemon/restart.go`](../internal/daemon/restart.go)、代表テストは[`TestPendingRestartWaitsForJobsAndRequests`](../internal/daemon/restart_test.go)である。
+待機中standbyのidle更新の入口は[`internal/daemon/standby_idle_update.go`](../internal/daemon/standby_idle_update.go)である。
+代表テストは[`TestIdleStandbyRefreshUpdatesMismatchedReadyBeforeLease`](../internal/daemon/standby_idle_update_test.go)で、貸出前にREADYが現在のmainへ揃うことを通す。
 準備時間の計測の入口はdaemon側が[`internal/daemon/measurement.go`](../internal/daemon/measurement.go)、client側が[`internal/cli/bench.go`](../internal/cli/bench.go)である。
 代表テストは[`TestPrepareMeasurementRecordsPhasesOfARealPreparation`](../internal/daemon/measurement_test.go)で、実際の準備が区間内訳を残すことを通す。

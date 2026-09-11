@@ -29,7 +29,13 @@ func jobClassOf(job state.Job) jobClass {
 			return jobClassInteractive
 		}
 		return jobClassMaintenance
-	case "UPDATE", "RESTORE", "SNAPSHOT":
+	case "UPDATE":
+		// session を持たない UPDATE は待機中の standby を先回りで合わせる保守で、待っている利用者がいない。
+		if job.SessionID == "" {
+			return jobClassMaintenance
+		}
+		return jobClassInteractive
+	case "RESTORE", "SNAPSHOT":
 		return jobClassInteractive
 	default:
 		return jobClassMaintenance
