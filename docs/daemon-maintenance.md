@@ -91,6 +91,8 @@ jobはsessionを持たないため保守用の実行枠で走り、利用者向�
 
 補充停止は`replenish_suspensions`に永続化し、定期reconcileと補充ジョブの双方で参照する。
 停止理由によらず、解除はそのworkspaceの手動起動（貸出・resume）の成功か`wx retry-standby`だけとし、既存sessionの返却では解除しない。
+`wx clear --all`は補充が有効な全workspaceを一度に止めるため、`wx retry-standby --all`で停止行のある全workspaceをまとめて戻せる。
+準備に失敗したFAILED slotは待機枠に数えるので、解除しただけでは不足が0のままになる。`wx retry-standby`は補充を予約する前にFAILED slotを削除予約へ載せ、REMOVINGへ移してから枠を数え直させる。
 
 ## clearとGC
 

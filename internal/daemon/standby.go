@@ -87,8 +87,9 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	return nil
 }
 
-// RetryStandby は環境修復を利用者が確認した後、workspace の補充停止を解除して補充を一度だけ予約する。
-// 停止理由（clean 由来か standby 失敗か）では区別せず、隔離 slot の状態・実体も変更しない。
+// RetryStandby は環境修復を利用者が確認した後、workspace の補充停止を停止理由によらず解除し、補充を一度だけ予約する。
+// 準備に失敗した FAILED slot は待機枠に数えるため、残すと補充の不足が 0 になる。停止解除と併せて削除予約へ載せる。
+// QUARANTINED slot の状態・実体は変更しない。
 func (m *Manager) RetryStandby(ctx context.Context, root string) (map[string]any, error) {
 	canonical, err := domain.Canonicalize(root)
 	if err != nil {
@@ -101,11 +102,14 @@ func (m *Manager) RetryStandby(ctx context.Context, root string) (map[string]any
 	if !m.standbyReplenishmentEnabled(w) {
 		return nil, errors.New("standby replenishment is disabled for this workspace")
 	}
+	// 停止解除を先に通す。clean 中はここで断られるので、拒否されたときは slot を触らない。
 	retry, err := m.store.RetryStandbyReplenishment(ctx, string(w.ID))
 	if err != nil {
 		return nil, err
 	}
 	m.clearStandbySuspensionWarned(string(w.ID))
+	// ENSURE_STANDBY の実行時点で FAILED が REMOVING になっているよう、補充の予約より先に回収を流す。
+	removed := m.scheduleFailedStandbyRemoval(ctx, string(w.ID))
 	scheduled := retry.Job.ID != "" && retry.Job.State == "PENDING"
 	if scheduled {
 		m.schedule(retry.Job)
@@ -113,7 +117,74 @@ func (m *Manager) RetryStandby(ctx context.Context, root string) (map[string]any
 	return map[string]any{
 		"workspace_id": w.ID, "root": w.Root, "generation": retry.Generation,
 		"resumed": retry.Suspended, "job_id": retry.Job.ID, "scheduled": scheduled,
+		"removed_failed": removed,
 	}, nil
+}
+
+// RetryStandbyFailure は `--all` で 1 つの workspace の解除に失敗した理由を表す。
+type RetryStandbyFailure struct {
+	Root  string `json:"root"`
+	Error string `json:"error"`
+}
+
+// RetryStandbyAllResult は `--all` の結果で、workspace ごとの応答と失敗の一覧を持つ。
+// Workspaces の要素は RetryStandby の応答と同じ形である。
+type RetryStandbyAllResult struct {
+	Workspaces []map[string]any      `json:"workspaces"`
+	Failures   []RetryStandbyFailure `json:"failures"`
+}
+
+// RetryStandbyAll は補充停止の記録があり、設定上まだ補充が有効な workspace を全て解除して、それぞれで補充を予約する。
+// `wx clear` は補充の有無を問わず停止を記録するため、絞らないと RetryStandby が拒否する workspace を対象にしてしまう。
+// 停止行を持たない補充計画の失敗は解除するものが無いので含めない。1 件の失敗では止めず、残りを処理して理由を集める。
+func (m *Manager) RetryStandbyAll(ctx context.Context) (RetryStandbyAllResult, error) {
+	suspended, err := m.store.StandbyReplenishmentDiagnostics(ctx)
+	if err != nil {
+		return RetryStandbyAllResult{}, err
+	}
+	result := RetryStandbyAllResult{Workspaces: []map[string]any{}, Failures: []RetryStandbyFailure{}}
+	for _, item := range suspended {
+		if !m.standbyReplenishmentEnabledForRoot(item.Root) {
+			continue
+		}
+		reply, retryErr := m.RetryStandby(ctx, item.Root)
+		if retryErr != nil {
+			if errors.Is(retryErr, state.ErrCleanInProgress) {
+				return result, retryErr
+			}
+			m.log.Error("standby replenishment retry failed", "root", item.Root, "error", retryErr)
+			result.Failures = append(result.Failures, RetryStandbyFailure{Root: item.Root, Error: retryErr.Error()})
+			continue
+		}
+		result.Workspaces = append(result.Workspaces, reply)
+	}
+	return result, nil
+}
+
+// scheduleFailedStandbyRemoval は workspace に残った FAILED slot を削除予約し、予約できた件数を返す。
+// REMOVING は待機枠に数えないため、削除の完了を待たずに ENSURE_STANDBY が新しい slot を作れる。
+// ScheduleQuarantinedRemoval は RUNNING job を持つ slot を弾く。準備が進行中で枠に数えるのが正しい状態なので、黙って残す。
+func (m *Manager) scheduleFailedStandbyRemoval(ctx context.Context, workspaceID string) int {
+	ids, err := m.store.FailedSlotIDs(ctx, workspaceID)
+	if err != nil {
+		m.log.Error("list failed standby slots failed", "workspace_id", workspaceID, "error", err)
+		return 0
+	}
+	removed := 0
+	for _, slotID := range ids {
+		job, changed, err := m.store.ScheduleQuarantinedRemoval(ctx, slotID)
+		if err != nil {
+			// 停止解除は済んでいるので、残りと補充の予約まで進める。取りこぼしは retry の再実行で直せる。
+			m.log.Error("failed standby removal scheduling failed", "slot_id", slotID, "error", err)
+			continue
+		}
+		if !changed {
+			continue
+		}
+		m.schedule(job)
+		removed++
+	}
+	return removed
 }
 
 // markStandbySuspensionWarned は補充停止の警告をまだ出していない workspace で true を返し、以降は false を返す。

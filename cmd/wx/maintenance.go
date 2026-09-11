@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/pflag"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
 func runGC(ctx context.Context, args []string) int {
@@ -152,14 +154,30 @@ func runForget(ctx context.Context, args []string) int {
 	return 0
 }
 
+// retryStandbyView は RetryStandby の workspace 1 件分の応答である。
+type retryStandbyView struct {
+	Root          string `json:"root"`
+	Generation    int    `json:"generation"`
+	Resumed       bool   `json:"resumed"`
+	Scheduled     bool   `json:"scheduled"`
+	RemovedFailed int    `json:"removed_failed"`
+}
+
+// retryStandbyAllTimeout は `--all` 1 回あたりの制限時間。
+// 解除と予約は workspace 数に比例するため、RPC の既定値より長い予算を与える。
+const retryStandbyAllTimeout = 40 * time.Second
+
 func runRetryStandby(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("retry-standby", pflag.ContinueOnError)
+	all := fs.Bool("all", false, "resume every workspace whose standby replenishment stopped")
 	fs.SetInterspersed(false)
 	fs.Usage = func() { commandUsage(os.Stdout, "retry-standby") }
 	if code, done := finishFlagParse(fs, "retry-standby", args); done {
 		return code
 	}
-	if fs.NArg() != 1 {
+	// path と --all はどちらか一方だけを受ける。両方でも両方無しでも対象が定まらない。
+	switch {
+	case *all && fs.NArg() != 0, !*all && fs.NArg() != 1:
 		commandUsage(os.Stderr, "retry-standby")
 		return 2
 	}
@@ -168,27 +186,63 @@ func runRetryStandby(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	var out struct {
-		Root       string `json:"root"`
-		Generation int    `json:"generation"`
-		Resumed    bool   `json:"resumed"`
-		Scheduled  bool   `json:"scheduled"`
+	if *all {
+		return retryStandbyAll(ctx, c)
 	}
-	if err := c.Call(ctx, "RetryStandby", map[string]string{"path": fs.Arg(0)}, &out); err != nil {
+	var out retryStandbyView
+	if err := c.Call(ctx, "RetryStandby", map[string]any{"path": fs.Arg(0)}, &out); err != nil {
 		reportRPCError(err)
 		return 1
 	}
 	if out.Root == "" {
 		out.Root = fs.Arg(0)
 	}
+	fmt.Println(retryStandbyLine(out))
+	return 0
+}
+
+func retryStandbyAll(ctx context.Context, c rpc.Client) int {
+	var out struct {
+		Workspaces []retryStandbyView `json:"workspaces"`
+		Failures   []struct {
+			Root  string `json:"root"`
+			Error string `json:"error"`
+		} `json:"failures"`
+	}
+	callCtx, cancel := context.WithTimeout(ctx, retryStandbyAllTimeout)
+	err := c.Call(callCtx, "RetryStandby", map[string]any{"all": true}, &out)
+	cancel()
+	if err != nil {
+		reportRPCError(err)
+		return 1
+	}
+	for _, w := range out.Workspaces {
+		fmt.Println(retryStandbyLine(w))
+	}
+	for _, failure := range out.Failures {
+		fmt.Fprintf(os.Stderr, "retry-standby %s: %s\n", failure.Root, failure.Error)
+	}
+	if len(out.Failures) > 0 {
+		return 1
+	}
+	if len(out.Workspaces) == 0 {
+		fmt.Println("no workspace has standby replenishment stopped")
+	}
+	return 0
+}
+
+func retryStandbyLine(out retryStandbyView) string {
 	state := "resumed"
 	if !out.Resumed {
 		state = "was not stopped"
 	}
-	if out.Scheduled {
-		fmt.Printf("standby replenishment %s for %s (generation %d; retry scheduled)\n", state, out.Root, out.Generation)
-	} else {
-		fmt.Printf("standby replenishment %s for %s (generation %d; retry already in progress)\n", state, out.Root, out.Generation)
+	retry := "retry scheduled"
+	if !out.Scheduled {
+		retry = "retry already in progress"
 	}
-	return 0
+	line := fmt.Sprintf("standby replenishment %s for %s (generation %d; %s", state, out.Root, out.Generation, retry)
+	if out.RemovedFailed > 0 {
+		line += fmt.Sprintf("; %d failed worktrees scheduled for removal", out.RemovedFailed)
+	}
+	return line + ")"
 }

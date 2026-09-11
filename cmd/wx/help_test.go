@@ -555,6 +555,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"prune", "--dry-run"},
 		{"clear", "--dry-run"},
 		{"retry-standby", home},
+		{"retry-standby", "--all"},
 		{"slots", "--all", "--json"},
 		{"slots"},
 		{"new"},
