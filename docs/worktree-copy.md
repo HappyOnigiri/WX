@@ -1,6 +1,8 @@
 # worktreeのコピーとリンク
 
 `storage.copy_mode`と共有下限`storage.cow_min_size_kib`の取り得る値・既定値・fallbackは`wx config --help`を参照する。
+どちらもrepository単位で個別指定でき、貸出1回の`--config`上書き、`repositories.<main worktree path>`の個別指定、globalの順に解決する。
+fingerprintにはrepositoryごとに解決した実効値を入れるので、schemaを上げずに、値が変わったrepositoryのREADY slotだけを無効にできる。
 
 共有には配置と置換の二方式がある。
 新規準備は配置方式で、共有できるtracked fileをcheckoutせずmainからcloneして置く。
@@ -168,6 +170,8 @@ post-checkoutは全tracked fileの配置後、残りのinclude/link・prepare co
 先行候補は`internal/workspace/includes.go`の`defaultEarlyPaths`に集約する。
 既定include名、トップレベルの指示ファイル、各エージェントの設定ディレクトリとGitHubの指示・agentディレクトリが対象になる。
 `readiness.early_paths`は候補への追加である。
+`repositories.<main worktree path>.readiness.early_paths`はglobal listの置き換えで、`defaultEarlyPaths`は置き換えても残る。
+非Gitのworkspace rootのステージはglobal値を使う。rootの規則はどのrepositoryにも属さず、和集合は「早期に出さない」約束を破り、積集合は空になりやすいためである。
 `src/AGENTS.md`のような深い指示ファイルは自動収集しない。
 配置に必要なignore・attributeと、tracked symlinkが指す予定済みの内部パスも先行させる。
 先行配置したファイルを、残りの配置で再checkout・再コピー・再リンクしない。
