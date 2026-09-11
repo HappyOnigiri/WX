@@ -89,6 +89,9 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	if result, handled, err := h.dispatchClean(ctx, method, raw); handled {
 		return result, err
 	}
+	if result, handled, err := h.dispatchWorkspaceMaintenance(ctx, method, raw); handled {
+		return result, err
+	}
 	if result, handled, err := h.dispatchLiveness(ctx, method, raw); handled {
 		return result, err
 	}
@@ -202,30 +205,6 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return nil, err
 		}
 		return h.Manager.Slots(ctx, p.All)
-	case "Forget":
-		var p struct {
-			Path string `json:"path"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return map[string]bool{"forgotten": true}, h.Manager.Forget(ctx, p.Path)
-	case "RetryStandby":
-		var p struct {
-			Path string `json:"path"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return h.Manager.RetryStandby(ctx, p.Path)
-	case "RetireStandby":
-		var p struct {
-			Path string `json:"path"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return h.Manager.RetireStandby(ctx, p.Path)
 	case "PrepareTimings":
 		var p struct {
 			SlotID    string `json:"slot_id"`
@@ -237,6 +216,53 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		return map[string]any{"measurements": h.Manager.PrepareMeasurements(p.SlotID, p.SessionID)}, nil
 	default:
 		return nil, errors.New("unknown RPC method")
+	}
+}
+
+// dispatchWorkspaceMaintenance は workspace path 1 つを引数に取る保守操作を分けて受け持つ。
+// handled が false のときは他の method として扱う。
+func (h Handler) dispatchWorkspaceMaintenance(ctx context.Context, method string, raw json.RawMessage) (any, bool, error) {
+	// 各 method の受け付ける field は method ごとに閉じる。共通の struct で decode すると、
+	// 使わない field を持つ要求まで受理して DisallowUnknownFields の検査が緩む。
+	switch method {
+	case "Forget":
+		var p struct {
+			Path string `json:"path"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		return map[string]bool{"forgotten": true}, true, h.Manager.Forget(ctx, p.Path)
+	case "DiscardRecovery":
+		var p struct {
+			Path   string `json:"path"`
+			DryRun bool   `json:"dry_run"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.DiscardRecovery(ctx, p.Path, p.DryRun)
+		return result, true, err
+	case "RetryStandby":
+		var p struct {
+			Path string `json:"path"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.RetryStandby(ctx, p.Path)
+		return result, true, err
+	case "RetireStandby":
+		var p struct {
+			Path string `json:"path"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.RetireStandby(ctx, p.Path)
+		return result, true, err
+	default:
+		return nil, false, nil
 	}
 }
 

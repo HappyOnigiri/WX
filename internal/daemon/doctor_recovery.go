@@ -47,6 +47,8 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 			Details: refs,
 		})
 	}
+	findings = append(findings, m.quarantinedRecoveryFindings(ctx)...)
+	findings = append(findings, unreadableRepositoryFindings(report.UnreadableRepositories)...)
 	findings = append(findings, missingArtifactFindings(report.Missing)...)
 	findings = append(findings, recoveryRefFindings(report.MismatchedRefs, report.MissingRefs)...)
 	for _, message := range report.Errors {
@@ -60,6 +62,46 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityOK,
 			Summary: "the registered slots and recovery refs match their artifacts",
+		})
+	}
+	return findings
+}
+
+// quarantinedRecoveryFindings は recovery ref を失って隔離された復元資産を workspace ごとに報告する。
+// 隔離すると ref の照合対象から外れて他の finding が消えるため、ここで報告しないと行き止まりが黙って残る。
+func (m *Manager) quarantinedRecoveryFindings(ctx context.Context) []diag.Finding {
+	groups, err := m.store.QuarantinedRecoveryGroups(ctx)
+	if err != nil {
+		return []diag.Finding{{
+			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityUnchecked,
+			Summary: "the quarantined recovery records could not be read", Cause: err.Error(),
+			Action: "fix the reported state database failure, then run wx doctor again",
+		}}
+	}
+	findings := make([]diag.Finding, 0, len(groups))
+	for _, group := range groups {
+		findings = append(findings, diag.Finding{
+			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityProblem,
+			Summary: "sessions of a workspace can no longer be restored because their recovery refs are gone", Target: group.Root,
+			Cause:  fmt.Sprintf("%d session(s) hold %d quarantined snapshot(s) whose recovery refs are not in the source repository, which also stops wx forget", group.Sessions, group.Snapshots),
+			Action: "check the sessions with wx discard-recovery " + group.Root + " --dry-run, then discard them with the same command without --dry-run; wx keeps the records until you do",
+		})
+	}
+	return findings
+}
+
+// unreadableRepositoryFindings は照合対象を持たない読めない repository 記録を参考情報として並べる。
+// 記録を消す操作は用意していないため対処は案内せず、doctor をこの記録で失敗させない。
+func unreadableRepositoryFindings(repositories []unreadableRepository) []diag.Finding {
+	sorted := append([]unreadableRepository{}, repositories...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].RepositoryID < sorted[j].RepositoryID })
+	findings := make([]diag.Finding, 0, len(sorted))
+	for _, repository := range sorted {
+		findings = append(findings, diag.Finding{
+			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityInfo,
+			Summary: "a repository record no longer points at a readable repository", Target: repository.Path,
+			Cause:  fmt.Sprintf("repository %s cannot be read (%s), and no snapshot in the database needs its recovery refs", repository.RepositoryID, repository.Cause),
+			Action: "no action is required; nothing wx owns depends on it, and wx registers the repository again if you use that path",
 		})
 	}
 	return findings
@@ -106,14 +148,21 @@ func recoveryRefFindings(mismatched, missing []recoveryRefIssue) []diag.Finding 
 		issues  []recoveryRefIssue
 		summary string
 		cause   string
+		action  string
 	}{
-		{mismatched, "a recovery ref does not point at the snapshot object", "the ref exists but its object ID differs from the one recorded for the snapshot"},
-		{missing, "a recovery ref recorded for a snapshot is missing", "the state database records the ref, but the source repository does not have it"},
+		{
+			mismatched, "a recovery ref does not point at the snapshot object", "the ref exists but its object ID differs from the one recorded for the snapshot",
+			"keep the repository as it is and check whether another tool rewrote refs/wx/recovery; the session that owns this snapshot can no longer be resumed from it",
+		},
+		{
+			missing, "a recovery ref recorded for a snapshot is missing", "the state database records the ref, but the source repository does not have it",
+			"keep the repository as it is and check whether it was recreated or another tool rewrote refs/wx/recovery; the session that owns this snapshot can no longer be resumed from it, and wx discard-recovery <workspace-path> discards the state it left behind",
+		},
 	} {
 		sorted := append([]recoveryRefIssue{}, group.issues...)
 		sort.Slice(sorted, func(i, j int) bool { return sorted[i].key() < sorted[j].key() })
 		for _, issue := range sorted {
-			severity, action := diag.SeverityProblem, "keep the repository as it is and check whether another tool rewrote refs/wx/recovery; the session that owns this snapshot can no longer be resumed from it"
+			severity, action := diag.SeverityProblem, group.action
 			if expiredRecoverySnapshot(issue.ExpiresAt) {
 				severity = diag.SeverityInfo
 				action = "no action is required; the snapshot behind this ref has expired and wx removes the record on its next collection"

@@ -333,8 +333,14 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 			candidate := state.OrphanCandidate{ID: target.SessionID, WorkspaceID: target.WorkspaceID, SlotID: target.SlotID}
 			// 返却が書き込めていない target を保存待ちへ進めると、保存を待つ相手がいないまま止まる。
 			// この巡回では進めず、次の巡回で返却からやり直す。
-			if err := m.releaseLeaseWithoutToken(ctx, candidate, "clean-release"); err != nil {
+			scheduled, err := m.releaseLeaseDiscarding(ctx, candidate, "clean-release", strings.HasSuffix(run.Mode, "-discard"))
+			if err != nil {
 				m.log.Error("lease release failed", "session_id", target.SessionID, "error", err)
+				return
+			}
+			// --discard は返却と同じ transaction で削除を積めるので、保存の完了を待たず削除待ちへ進める。
+			if scheduled {
+				m.moveCleanTarget(ctx, run.ID, target, cleanTargetRemoving, "")
 				return
 			}
 			m.moveCleanTarget(ctx, run.ID, target, cleanTargetSaving, "")

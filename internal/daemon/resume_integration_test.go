@@ -265,3 +265,59 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 		t.Fatalf("native fresh base=%s main=%s", got, gitOutput(t, repo, "rev-parse", "refs/heads/main"))
 	}
 }
+
+// TestResumeLeavesSkipWorktreePathsToTheHook は、post-checkout hook が tracked file を個人版へ置き換えて
+// skip-worktree を付ける repository でも、返却と resume が成功して slot を隔離しないことを検証する。
+// flag 付き path は snapshot の対象外なので、復元先の内容は hook が置いた個人版のままで flag も残る。
+func TestResumeLeavesSkipWorktreePathsToTheHook(t *testing.T) {
+	t.Parallel()
+	requireDaemonIntegration(t)
+	f := runningManagerFixture(t, func(s *managerFixtureSetup) {
+		s.Config.Pool.WarmPerWorkspace = 0
+		s.Config.Retention.EndedWorktree.Duration = 0
+		s.Config.Readiness.Timeout.Duration = 10 * time.Second
+	})
+	store, m := f.Store, f.Manager
+	repo := filepath.Join(f.Root, "repo")
+	initGitRepo(t, repo)
+	hook := "#!/bin/sh\nprintf 'personal\\n' > tracked.txt\ngit update-index --skip-worktree tracked.txt\n"
+	if err := os.WriteFile(filepath.Join(repo, ".git", "hooks", "post-checkout"), []byte(hook), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	lease, err := m.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(ctx, m, 30*time.Second, lease.SessionID, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	if listing := gitOutput(t, lease.Path, "ls-files", "-v", "tracked.txt"); listing != "S tracked.txt" {
+		t.Fatalf("post-checkout hook did not blind the leased worktree: %q", listing)
+	}
+	// flag 付き path への編集は契約どおり引き継がれない。ここでは復元先が hook の個人版に戻ることを確かめる。
+	if err := os.WriteFile(filepath.Join(lease.Path, "tracked.txt"), []byte("session\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status := gitOutput(t, lease.Path, "status", "--porcelain"); status != "" {
+		t.Fatalf("skip-worktree fixture does not blind git status: %q", status)
+	}
+	if err := m.Release(ctx, lease.SessionID, lease.Token, "test"); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 10*time.Second, func() bool { snaps, _ := store.Snapshots(ctx, lease.SessionID); return len(snaps) == 1 })
+	resumed, err := m.Resume(ctx, lease.SessionID, "codex", os.Getpid(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(ctx, m, 30*time.Second, resumed.SessionID, resumed.Token); err != nil {
+		t.Fatal(err)
+	}
+	worktree := boundWorktreePath(t, store, resumed.SessionID)
+	if data, err := os.ReadFile(filepath.Join(worktree, "tracked.txt")); err != nil || string(data) != "personal\n" {
+		t.Fatalf("restored tracked.txt=%q err=%v, want %q", data, err, "personal\n")
+	}
+	if listing := gitOutput(t, worktree, "ls-files", "-v", "tracked.txt"); listing != "S tracked.txt" {
+		t.Fatalf("skip-worktree was not reinstated after resume: %q", listing)
+	}
+}

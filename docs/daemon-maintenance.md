@@ -94,6 +94,7 @@ UPDATEは利用者向け実行枠を使い、slot・STARTING session・jobの予
 
 貸出前のREADY・補充中のPREPARINGは`--standby`と`--all`だけが対象に含め、隔離slotは全modeで`ScheduleQuarantinedRemoval`へ載せる。
 `--discard`は保存を省略して削除を予約し、modeに永続化して再起動後も維持する。
+使用中のdetached lease（`wx new`）も、返却と同じtransactionでSNAPSHOTを積まずREMOVEへ載せ、保存待ちを経ずに削除待ちへ進める。
 実行中runへ合流できるのは対象範囲が同じmodeの再実行だけとする。
 `--all`の終了要求は`session_termination_requests`へ期限付きで記録し、heartbeatとagent登録の応答でclientへ渡す。
 signalを送るのはclientだけで、daemonは記録されたPIDへ触れない。
@@ -118,6 +119,13 @@ clientとagentの両プロセスが死んだsessionは返却する。
 隔離slotを持つsessionは`DRAINING`へ進めず、`EXPIRED`で終端させslotのownerだけを外す。
 slotは`QUARANTINED`のままworktree・snapshotを保持し、同じ返却の失敗が繰り返されるのを防ぐ。
 この扱いは`Release`の全経路に適用する。
+
+記録したrecovery refがソースリポジトリに無いとき（リポジトリを消して同じpathに作り直した場合）は、`QuarantineMissingRecoveryRef`がsnapshot・session・slotを隔離する。
+この隔離からの出口は`wx discard-recovery <workspace-path>`だけで、GCもreconcileも隔離したsnapshotを自動では捨てない。
+`Manager.DiscardRecovery`が対象workspaceの`QUARANTINED`なsessionについてsnapshot行と`workspace_snapshots`行を消し、sessionを`EXPIRED`へ進め、そのsessionのslotを`ScheduleQuarantinedRemoval`で回収する。
+refが無いsnapshotからは復元できないため失う復元手段は無いが、slotのworktreeにある未保存の作業は消えるので、`--dry-run`で対象とpathを出せるようにしている。
+これを経ないと`wx forget`の前提（sessionは`EXPIRED`、snapshot行は無し、slotは`ARCHIVED`）を永久に満たせない。
+隔離するとref照合の期待一覧（`sn.status='ARCHIVED'`だけを見る）から外れて他のfindingが消えるため、行き止まり自体は`Manager.quarantinedRecoveryFindings`がworkspace単位のproblemとして報告する。
 復旧snapshotを作らない返却は`Store.ReleaseWithOutcome`で区別してWarnへ記録する（clientはRelease応答を読まない）。
 
 root世代登録が失敗するとallocationが`ErrOwnership`で落ち続けるため、周期処理はdescriptorを取り直して再登録を試みる。
@@ -155,6 +163,9 @@ daemonへ接続できない場合とdegradedの場合は、store依存の検査�
 daemon接続なしで成立する検査は[`internal/diag`](../internal/diag/diag.go)に置く。
 storeを要する検査は[`doctor.go`](../internal/daemon/doctor.go)と[`doctor_recovery.go`](../internal/daemon/doctor_recovery.go)に置く。
 worktree rootのpath検査と登録検査は別のfindingとして両方保持し、登録状態でpath検査の結果を上書きしない。
+登録済みworkspaceに属さず照合すべきsnapshotも持たないrepository記録は、refsを読めなくてもproblemにせずinfoに留める。
+`repositories`の行を消す経路が無いため、forget後に残った記録をerrorにするとdoctorが恒久的に失敗する。
+登録済みworkspaceに属する repository の故障はこれまでどおりerrorとして報告する。
 準備・保存・復元の失敗は、上位の処理名で言い換えず`jobs.error_message`・`error_detail_path`から具体的な失敗理由と詳細ログの場所まで引き継ぐ。
 原因が記録されていない場合は特定できていないことを明示し、推測を原因として表示しない。
 

@@ -355,6 +355,25 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 	return tx.Commit()
 }
 
+// RegisteredRepositoryIDs は登録済み workspace に属する repository の id を返す。
+// forget などで所属が消えた記録と、まだ使う予定のある repository を区別するために使う。
+func (s *Store) RegisteredRepositoryIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT repository_id FROM workspace_repositories`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	registered := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		registered[id] = true
+	}
+	return registered, rows.Err()
+}
+
 func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch,remote_name FROM repositories ORDER BY id`)
 	if err != nil {

@@ -10,10 +10,14 @@ slot の削除権限は DB の `slots` と `roots` の登録で決まる。
 削除は pin した root descriptor の配下に閉じ、root から leaf の親までの symlink は辿らない。
 leaf が symlink の場合はリンク自体を削除し、リンク先へは踏み込まない。
 
-正常終了の未保存作業は snapshot で保護し、`wx clear --discard` が明示された場合だけ保存を省略する。
+正常終了の未保存作業は snapshot で保護し、`wx clear --discard` と `wx release --discard` が明示された場合だけ保存を省略する。
 `internal/archive` の clean 判定では `--untracked-files=all`・`--ignore-submodules=none` を維持する。
 既定値では Git 設定で隠れる変更を clean と誤判定し、保存せずに削除し得る。
+`skip-worktree`・`assume-unchanged` が付いた path は例外で、snapshot の対象外として HEAD の内容で記録する。
+両 flag は「このファイルのローカル差分を見ない」という宣言であり、hook が置いた個人設定や認証情報を source の recovery object に残さないためである。
 準備・復元失敗などの隔離 slot は `retention.quarantined` の経過後に GC が回収し、`wx clear` はこの経過を待たずに回収する。
+recovery ref の欠損で隔離した snapshot・session は GC の対象にならず、`wx discard-recovery <workspace-path>` だけが破棄する。
+ref が無い snapshot は復元に使えないため、この破棄で失う復元手段は無い（[daemonの補充・回収・再起動](daemon-maintenance.md)）。
 
 実体化した submodule の per-worktree gitdir（`<common dir>/worktrees/<id>/modules/<name>`）は、slot 削除で管理ディレクトリごと一緒に消える。
 `worktree remove --force --force` が失敗した場合も `RemoveAll("worktrees/<id>")` が回収するため、wx が `.git` 配下を個別に削除する経路は持たない。

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -109,7 +108,7 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("write index tree: %w", err)
 	}
-	flags, err := readIndexFlags(worktreeRun, nil)
+	flags, err := readIndexFlags(worktreeValue, nil)
 	if err != nil {
 		return state.Snapshot{}, err
 	}
@@ -129,7 +128,7 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	}
 	// 一時 index にも元 index と同じ flag を立ててから add するので、flag 付き path は HEAD の内容のまま記録される。
 	// add に pathspec を渡さないのは、pathspec が flag 付き path だけに一致すると git が sparse-checkout の逸脱として exit 1 にするためである。
-	if err := applyIndexFlags(worktreeRun, env, flags); err != nil {
+	if err := applyIndexFlags(worktreeRun, worktreeValue, env, flags); err != nil {
 		return state.Snapshot{}, err
 	}
 	if _, err := worktreeRun(env, nil, "add", "-A"); err != nil {
@@ -151,70 +150,6 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	}
 	worktreeCommit := strings.TrimSpace(commitRes.Stdout)
 	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
-}
-
-// gitRunner は worktree 内で git を起動する口で、snapshot と restore が同じ helper を共有するための最小の形である。
-type gitRunner func(env []string, input []byte, args ...string) (gitx.Result, error)
-
-// indexFlags は index に立った skip-worktree と assume-unchanged の path を種類別に保持する。
-// snapshot と restore は同じ集合を一時 index と復元後の index へ立て、両者が同じ基準で tree を作る。
-type indexFlags struct {
-	skipWorktree    []string
-	assumeUnchanged []string
-}
-
-// readIndexFlags は `ls-files -v -z` から flag 付きの path を集める。
-// 出力は `<tag><空白><path>\0` で、`S` が skip-worktree、小文字が assume-unchanged を表す。
-// 両方立った entry は `S` としてしか出ないため、立て直すときに assume-unchanged 側は落ちる。
-func readIndexFlags(run gitRunner, env []string) (indexFlags, error) {
-	result, err := run(env, nil, "ls-files", "-v", "-z")
-	if err != nil {
-		return indexFlags{}, fmt.Errorf("inspect index stat flags: %w", err)
-	}
-	var flags indexFlags
-	for _, entry := range strings.Split(result.Stdout, "\x00") {
-		if entry == "" {
-			continue
-		}
-		tag := entry[0]
-		if tag != 'S' && (tag < 'a' || tag > 'z') {
-			continue
-		}
-		if len(entry) < 3 || entry[1] != ' ' {
-			return indexFlags{}, errors.New("invalid Git index entry for stat flags")
-		}
-		name := entry[2:]
-		if !filepath.IsLocal(name) || filepath.Clean(name) != name {
-			return indexFlags{}, errors.New("unsafe Git path for stat flags")
-		}
-		if tag == 'S' {
-			flags.skipWorktree = append(flags.skipWorktree, name)
-		} else {
-			flags.assumeUnchanged = append(flags.assumeUnchanged, name)
-		}
-	}
-	return flags, nil
-}
-
-// applyIndexFlags は env が指す index へ flag を立て直す。
-// path は NUL 区切りの stdin で渡すので、数や文字種に関わらず安全に扱える。
-func applyIndexFlags(run gitRunner, env []string, flags indexFlags) error {
-	for _, group := range []struct {
-		option string
-		paths  []string
-	}{
-		{option: "--skip-worktree", paths: flags.skipWorktree},
-		{option: "--assume-unchanged", paths: flags.assumeUnchanged},
-	} {
-		if len(group.paths) == 0 {
-			continue
-		}
-		input := []byte(strings.Join(group.paths, "\x00") + "\x00")
-		if _, err := run(env, input, "update-index", "-z", group.option, "--stdin"); err != nil {
-			return fmt.Errorf("apply index stat flags: %w", err)
-		}
-	}
-	return nil
 }
 
 // recoveryRefTargets は snapshot が公開する ref と object の対応を返し、index tree ref も含める。

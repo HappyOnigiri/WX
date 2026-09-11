@@ -70,6 +70,26 @@ func TestRecoveryRefFindingsExcludeExpiredSnapshots(t *testing.T) {
 	}
 }
 
+// 照合すべき snapshot を持たない repository 記録は、refs を読めなくても doctor を失敗させない。
+// repositories の行を消す経路が無く、problem にすると forget 後に恒久的な失敗が残るためである。
+func TestUnreadableRepositoryFindingsStayInformational(t *testing.T) {
+	findings := unreadableRepositoryFindings([]unreadableRepository{
+		{RepositoryID: "later", Path: "/gone/later", Cause: "git for-each-ref failed"},
+		{RepositoryID: "earlier", Path: "/gone/earlier", Cause: "git for-each-ref failed"},
+	})
+	if len(findings) != 2 || findings[0].Target != "/gone/earlier" {
+		t.Fatalf("findings=%+v", findings)
+	}
+	for _, finding := range findings {
+		if finding.Severity != diag.SeverityInfo || finding.Check != diag.CheckArtifactOwnership {
+			t.Fatalf("finding=%+v", finding)
+		}
+		if !strings.Contains(finding.Cause, "git for-each-ref failed") || finding.Action == "" {
+			t.Fatalf("finding without a cause or an action: %+v", finding)
+		}
+	}
+}
+
 func TestRecoveryFailureFindingSeparatesSaveFromRestore(t *testing.T) {
 	snapshot := recoveryFailureFinding(state.RecoveryFailure{
 		JobID: "job-1", Kind: "SNAPSHOT", SessionID: "session-1", SlotPath: "/root/slot",

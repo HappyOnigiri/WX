@@ -91,19 +91,31 @@ func resumeAgentMatches(agent, originalAgent, leaseKind, originalLeaseKind strin
 // orphan 回収・期限掃引・親連動・wx release が共有し、保存の要否と slot の遷移は Store が決める。
 // 書き込みの失敗は error で返す。再試行できる周期処理と wx release で扱いが違うためである。
 func (m *Manager) releaseLeaseWithoutToken(ctx context.Context, candidate state.OrphanCandidate, reason string) error {
-	job, changed, quarantineExpired, err := m.store.ReleaseWithOutcome(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
+	_, err := m.releaseLeaseDiscarding(ctx, candidate, reason, false)
+	return err
+}
+
+// releaseLeaseDiscarding は token を持たない返却を進め、discard が真なら保存を積まず削除を予約する。
+// 保存を省くのは利用者が明示した --discard だけなので、周期処理からの返却は releaseLeaseWithoutToken を使う。
+// 戻り値は削除を予約できたかで、偽なら slot は従来どおり保存経路に載っている（PREPARING などで予約が通らない場合を含む）。
+func (m *Manager) releaseLeaseDiscarding(ctx context.Context, candidate state.OrphanCandidate, reason string, discard bool) (bool, error) {
+	release := m.store.ReleaseWithOutcome
+	if discard {
+		release = m.store.ReleaseDiscardingWithOutcome
+	}
+	job, changed, quarantineExpired, err := release(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
 	if err != nil {
-		return fmt.Errorf("release lease %s (%s): %w", candidate.ID, reason, err)
+		return false, fmt.Errorf("release lease %s (%s): %w", candidate.ID, reason, err)
 	}
 	if quarantineExpired {
 		m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", candidate.ID, "slot_id", candidate.SlotID, "reason", reason)
 	}
 	if changed {
 		m.schedule(job)
-		return nil
+		return discard, nil
 	}
 	m.releaseLease(candidate.ID)
-	return nil
+	return false, nil
 }
 
 // leaseCandidateRunning は貸出のプロセスがまだ生きているかを返す。
@@ -171,9 +183,11 @@ func (m *Manager) ReleaseLease(ctx context.Context, sessionID, reason string, di
 	if !inUse && !discard {
 		return nil, fmt.Errorf("session %s is no longer in use (state %s)", sessionID, session.State)
 	}
+	scheduled := false
 	if inUse {
 		candidate := state.OrphanCandidate{ID: session.ID, WorkspaceID: session.WorkspaceID, SlotID: session.SlotID}
-		if err := m.releaseLeaseWithoutToken(ctx, candidate, reason); err != nil {
+		var err error
+		if scheduled, err = m.releaseLeaseDiscarding(ctx, candidate, reason, discard); err != nil {
 			return nil, err
 		}
 		// 親を返却したので、この貸出が用意した子貸出も待たずに返す。
@@ -181,6 +195,10 @@ func (m *Manager) ReleaseLease(ctx context.Context, sessionID, reason string, di
 	}
 	if !discard {
 		return map[string]any{"released": true, "session_id": sessionID, "discarded": false}, nil
+	}
+	// 返却と同じ transaction で削除を積めた場合は、保存の完了を待つ必要がないのでそのまま返す。
+	if scheduled {
+		return map[string]any{"released": true, "session_id": sessionID, "discarded": true}, nil
 	}
 	discarded, pending, err := m.discardLeaseSlot(ctx, session.SlotID)
 	if err != nil {
@@ -199,7 +217,7 @@ const (
 )
 
 // discardRemovalWait は保存ジョブの完了を待って削除を予約し直す上限である。
-// 返却で登録した SNAPSHOT が既に走っている間は予約が通らないため、短い間だけ待ってから応答する。
+// 返却済みの貸出を --discard で追いかける経路では、先に走り出した SNAPSHOT の間は予約が通らないため、短い間だけ待ってから応答する。
 // 待ち切れなかった場合は失敗にせず、保存が終わってからの再実行を CLI が案内する。
 const discardRemovalWait = 3 * time.Second
 

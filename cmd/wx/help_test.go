@@ -560,6 +560,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"new"},
 		{"new", "--json"},
 		{"release", "session"},
+		{"discard-recovery", home},
 		{"forget", home},
 		{"config"},
 		{"config", "logging.level", "warn"},
@@ -575,7 +576,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 			t.Fatalf("run(%v) exit=%d", args, exit)
 		}
 	}
-	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"prune", "extra"}, {"clear", "extra"}, {"clean"}, {"slots", "extra"}, {"sessions", "unknown"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
+	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"prune", "extra"}, {"clear", "extra"}, {"clean"}, {"slots", "extra"}, {"sessions", "unknown"}, {"discard-recovery"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
 		if exit := run(ctx, args); exit != 2 {
 			t.Fatalf("misuse run(%v) exit=%d", args, exit)
 		}
@@ -622,6 +623,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 		{"gc", "--dry-run"},
 		{"prune", "--dry-run"},
 		{"slots", "--all"},
+		{"discard-recovery", home},
 		{"forget", home},
 	} {
 		if exit := run(ctx, args); exit != 1 {
@@ -663,7 +665,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 }
 
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
-	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "slots", "config", "setup", "resume", "forget", "daemon", "shell", "run", "new", "release"} {
+	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "slots", "config", "setup", "resume", "discard-recovery", "forget", "daemon", "shell", "run", "new", "release"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			commandUsage(&output, command)
@@ -710,7 +712,7 @@ func TestHelpListsStayAligned(t *testing.T) {
 	var top bytes.Buffer
 	topUsage(&top)
 	texts["top"] = top.String()
-	for _, command := range []string{"status", "doctor", "gc", "clear", "retry-standby", "sessions", "config", "setup", "resume", "forget", "daemon", "hook", "shell", "run", "new", "release"} {
+	for _, command := range []string{"status", "doctor", "gc", "clear", "retry-standby", "sessions", "config", "setup", "resume", "discard-recovery", "forget", "daemon", "hook", "shell", "run", "new", "release"} {
 		var output bytes.Buffer
 		commandUsage(&output, command)
 		texts[command] = output.String()
