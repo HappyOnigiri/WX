@@ -243,6 +243,10 @@ func recoveryFailureFinding(failure state.RecoveryFailure) diag.Finding {
 		action = snapshotFailureAction(failure.SlotState)
 	}
 	details := []string{"job " + failure.JobID}
+	if failure.ParentSessionID != "" {
+		// 復元先の session は失敗後に終端するため、利用者が再開し直す対象として元 session を先に示す。
+		details = append(details, "restoring session "+failure.ParentSessionID)
+	}
 	if failure.SessionState != "" {
 		details = append(details, "session state "+failure.SessionState)
 	}
