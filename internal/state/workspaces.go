@@ -385,31 +385,9 @@ func (s *Store) PruneRepositories(ctx context.Context) (int, error) {
 // その組み合わせでは ValidateWorktreeOwnership が workspace link を欠いて必ず失敗するため、履歴 row も同じ transaction で消す。
 // commentlint:allow-long -- 履歴 row まで消してよい条件の根拠を残すため
 func pruneUnreferencedRepositories(ctx context.Context, tx *sql.Tx) (int, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT r.id FROM repositories r
-		WHERE NOT EXISTS (SELECT 1 FROM workspace_repositories wr WHERE wr.repository_id=r.id)
-		  AND NOT EXISTS (SELECT 1 FROM snapshots sn WHERE sn.repository_id=r.id)
-		  AND NOT EXISTS (SELECT 1 FROM slot_repositories sr JOIN slots sl ON sl.id=sr.slot_id
-		                  WHERE sr.repository_id=r.id AND NOT (sl.state='ARCHIVED' AND sl.workspace_id IS NULL))
-		  AND NOT EXISTS (SELECT 1 FROM session_repositories ser JOIN sessions se ON se.id=ser.session_id
-		                  WHERE ser.repository_id=r.id AND NOT (se.state='EXPIRED' AND se.workspace_id IS NULL))
-		ORDER BY r.id`)
+	// 削除は結果 row を読み切ってから行う。同じ transaction で開いたままの cursor に書き込みを重ねない。
+	ids, err := unreferencedRepositoryIDs(ctx, tx)
 	if err != nil {
-		return 0, err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
-			return 0, err
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return 0, err
-	}
-	if err := rows.Close(); err != nil {
 		return 0, err
 	}
 	for _, id := range ids {
@@ -425,6 +403,31 @@ func pruneUnreferencedRepositories(ctx context.Context, tx *sql.Tx) (int, error)
 		}
 	}
 	return len(ids), nil
+}
+
+// unreferencedRepositoryIDs は、workspace 登録・snapshot・終了していない slot/session のどれからも参照されない repository の id を返す。
+func unreferencedRepositoryIDs(ctx context.Context, tx *sql.Tx) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT r.id FROM repositories r
+		WHERE NOT EXISTS (SELECT 1 FROM workspace_repositories wr WHERE wr.repository_id=r.id)
+		  AND NOT EXISTS (SELECT 1 FROM snapshots sn WHERE sn.repository_id=r.id)
+		  AND NOT EXISTS (SELECT 1 FROM slot_repositories sr JOIN slots sl ON sl.id=sr.slot_id
+		                  WHERE sr.repository_id=r.id AND NOT (sl.state='ARCHIVED' AND sl.workspace_id IS NULL))
+		  AND NOT EXISTS (SELECT 1 FROM session_repositories ser JOIN sessions se ON se.id=ser.session_id
+		                  WHERE ser.repository_id=r.id AND NOT (se.state='EXPIRED' AND se.workspace_id IS NULL))
+		ORDER BY r.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // RegisteredRepositoryIDs は登録済み workspace に属する repository の id を返す。
