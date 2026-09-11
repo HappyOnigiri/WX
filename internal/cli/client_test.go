@@ -36,6 +36,8 @@ type launcherHandler struct {
 	// releaseLeaseReply と resumeStatus は貸出コマンドの test が応答を差し替える点である。nil なら既定の応答を返す。
 	releaseLeaseReply map[string]any
 	resumeStatus      map[string]any
+	// leaseErr は ResolveAndLease を失敗させる点である。nil なら既定の貸出を返す。
+	leaseErr error
 	// waitReadyErr は準備待ちを失敗させる点である。nil なら成功を返す。
 	waitReadyErr error
 	// waitReadyHook は準備待ちを止める点である。nil なら即座に成功を返す。
@@ -73,7 +75,11 @@ func (h *launcherHandler) Handle(ctx context.Context, method string, raw json.Ra
 			h.agentPID = params.AgentPID
 		}
 	}
+	leaseErr := h.leaseErr
 	h.mu.Unlock()
+	if method == "ResolveAndLease" && leaseErr != nil {
+		return nil, leaseErr
+	}
 	if method == "RegisterAgentProcess" && h.failRegister {
 		return nil, errors.New("injected registration failure")
 	}

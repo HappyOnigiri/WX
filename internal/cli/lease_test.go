@@ -207,6 +207,49 @@ func TestRunLeaseNewReturnsTheLeaseWhenPreparationFails(t *testing.T) {
 	}
 }
 
+// daemon から返った方針未設定の案内は、3 種類の貸出コマンドで stderr へそのまま伝える。
+func TestLeaseCommandsPropagateWorktreePolicyGuidance(t *testing.T) {
+	client, handler, _, ctx := leaseFixture(t)
+	want := "worktree creation is not authorized; configure this workspace with: wx config --workspace '/repo' worktree cold"
+	handler.mu.Lock()
+	handler.leaseErr = errors.New(want)
+	handler.mu.Unlock()
+	for _, test := range []struct {
+		name string
+		run  func() int
+	}{
+		{name: "shell", run: func() int { return client.RunLeaseShell(ctx, nil, "") }},
+		{name: "run", run: func() int { return client.RunLeaseCommand(ctx, []string{"true"}, nil, "") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stderr := captureStderrForLease(t, func() {
+				if got := test.run(); got != 1 {
+					t.Fatalf("%s exit=%d, want 1", test.name, got)
+				}
+			})
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("%s stderr=%q, want %q", test.name, stderr, want)
+			}
+		})
+	}
+	var code int
+	var stderr string
+	stdout := captureLeaseStdout(t, func() {
+		stderr = captureStderrForLease(t, func() {
+			code = client.RunLeaseNew(ctx, nil, true)
+		})
+	})
+	if code != 1 {
+		t.Fatalf("new --json exit=%d, want 1", code)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("new --json stdout=%q, want no policy guidance", stdout)
+	}
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("new --json stderr=%q, want %q", stderr, want)
+	}
+}
+
 // 親 session は ID と token の両方が揃ったときだけ要求へ載せる。
 func TestLeaseOwnerFromEnvironmentNeedsBothIdentityAndToken(t *testing.T) {
 	for name, test := range map[string]struct{ id, token, wantID string }{
