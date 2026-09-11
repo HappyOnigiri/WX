@@ -64,6 +64,9 @@ type (
 		Kind        string `json:"kind,omitempty"`
 		FailureCode string `json:"failure_code,omitempty"`
 	}
+	// StandbyReplenishmentDiagnostic は補充が進んでいない workspace 1 件である。
+	// Reason が SuspendReplenishReason* のときは `replenish_suspensions` の停止行で、SuspendedAt を持つ。
+	// StandbyReplenishReasonPlanFailure のときは停止行ではなく失敗した ENSURE_STANDBY で、SuspendedAt の代わりに FailedAt を持つ。
 	StandbyReplenishmentDiagnostic struct {
 		WorkspaceID string `json:"workspace_id"`
 		Root        string `json:"root"`
@@ -71,6 +74,7 @@ type (
 		Reason      string `json:"reason"`
 		Detail      string `json:"detail,omitempty"`
 		SuspendedAt string `json:"suspended_at,omitempty"`
+		FailedAt    string `json:"failed_at,omitempty"`
 		Action      string `json:"action,omitempty"`
 		// FailureCode 以降は停止の原因になった job から引き継ぐ失敗情報で、`wx clear` による停止では空になる。
 		// 上位の「準備に失敗」で止めず、失敗した操作そのものを報告するために持つ。
@@ -390,6 +394,55 @@ func (s *Store) StandbyReplenishmentDiagnostics(ctx context.Context) ([]StandbyR
 		var item StandbyReplenishmentDiagnostic
 		if err := rows.Scan(&item.WorkspaceID, &item.Root, &item.Generation, &item.Reason, &item.Detail, &item.SuspendedAt,
 			&item.FailureCode, &item.FailureMessage, &item.DetailPath); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+// StandbyReplenishReasonPlanFailure は補充計画（ENSURE_STANDBY）そのものが失敗したことを表す。
+// `replenish_suspensions` の停止理由ではなく、失敗した job から組み立てる診断上の理由である。
+// manifest の不正のように準備へ入る前で落ちる失敗は停止行を残さないため、停止と同じ列で報告するために分けて持つ。
+const StandbyReplenishReasonPlanFailure = "STANDBY_PLAN_FAILED"
+
+// UnresolvedStandbyPlanFailures は補充計画の失敗のうち、後続の ENSURE_STANDBY で解消していないものを workspace ごとに 1 件返す。
+// 同じ workspace に後続の ENSURE_STANDBY が実行待ち・実行中としてあるか、後に終わった job があれば、その失敗は最新ではないとして除く。
+// `wx clear` などが取り消した job は失敗でも後続でもないので、canceledJobErrorCodes の行は両側から外す。
+// 計画の失敗は slot を作らないので、この失敗だけでは補充が止まらず `replenish_suspensions` にも残らない。
+// 補充の枠が足りているかまでは判定しない。warm count は設定側にしかないため、呼び出し側が絞る。
+// commentlint:allow-long -- 停止行を持たない失敗をどの条件で未解消と見なすかが、この関数の契約そのものであるため
+func (s *Store) UnresolvedStandbyPlanFailures(ctx context.Context) ([]StandbyReplenishmentDiagnostic, error) {
+	canceled := placeholders(len(canceledJobErrorCodes))
+	args := make([]any, 0, len(canceledJobErrorCodes)*2)
+	for range 2 {
+		for _, code := range canceledJobErrorCodes {
+			args = append(args, code)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,j.id,
+		COALESCE(j.error_code,''),COALESCE(j.error_message,''),COALESCE(j.error_detail_path,''),COALESCE(j.finished_at,'')
+		FROM jobs j JOIN workspaces w ON w.id=j.workspace_id
+		WHERE j.kind='ENSURE_STANDBY' AND j.state='FAILED' AND COALESCE(j.error_code,'') NOT IN (`+canceled+`)
+		  AND NOT EXISTS (
+			SELECT 1 FROM jobs later
+			WHERE later.id<>j.id AND later.kind='ENSURE_STANDBY' AND later.workspace_id=j.workspace_id
+			  AND COALESCE(later.error_code,'') NOT IN (`+canceled+`)
+			  AND (later.state IN ('PENDING','RUNNING')
+				OR (later.state IN ('SUCCEEDED','FAILED')
+				  AND (COALESCE(later.finished_at,'')>COALESCE(j.finished_at,'')
+					OR (COALESCE(later.finished_at,'')=COALESCE(j.finished_at,'') AND later.id>j.id))))
+		  )
+		ORDER BY w.root_path,j.finished_at,j.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []StandbyReplenishmentDiagnostic{}
+	for rows.Next() {
+		item := StandbyReplenishmentDiagnostic{Reason: StandbyReplenishReasonPlanFailure}
+		if err := rows.Scan(&item.WorkspaceID, &item.Root, &item.Generation, &item.Detail,
+			&item.FailureCode, &item.FailureMessage, &item.DetailPath, &item.FailedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

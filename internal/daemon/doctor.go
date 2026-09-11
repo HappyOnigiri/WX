@@ -189,8 +189,8 @@ func registrationProblem(root, slotID, path string, err error) diag.Finding {
 	}
 }
 
-// standbyFindings は補充停止を停止理由ごとに分ける。
-// 準備失敗は失敗した job の原因まで引き継ぎ、`wx clear` による意図的な停止は参考に留める。
+// standbyFindings は補充が進んでいない workspace を理由ごとに分ける。
+// 準備失敗と補充計画の失敗は失敗した job の原因まで引き継ぎ、`wx clear` による意図的な停止は参考に留める。
 func (m *Manager) standbyFindings(ctx context.Context) []diag.Finding {
 	items, err := m.standbyReplenishmentReport(ctx)
 	if err != nil {
@@ -202,21 +202,35 @@ func (m *Manager) standbyFindings(ctx context.Context) []diag.Finding {
 	}
 	findings := make([]diag.Finding, 0, len(items)+1)
 	for _, item := range items {
-		findings = append(findings, standbySuspensionFinding(item))
+		findings = append(findings, standbyReplenishmentFinding(item))
 	}
 	if len(items) > 0 {
 		return findings
 	}
 	return append(findings, diag.Finding{
 		Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityOK,
-		Summary: "standby replenishment is not stopped", Details: []string{"0 suspended workspace(s)"},
+		Summary: "standby replenishment is not stopped", Details: []string{"0 suspended workspace(s)", "0 failed replenishment plan(s)"},
 	})
 }
 
-// standbySuspensionFinding は停止 1 件を理由ごとに説明する。
+// standbyReplenishmentFinding は補充が進んでいない workspace 1 件を理由ごとに説明する。
 // 既知でない理由は原因を特定できていないことを示し、`wx clear` などの既知の経路に帰属させない。
-func standbySuspensionFinding(item state.StandbyReplenishmentDiagnostic) diag.Finding {
+func standbyReplenishmentFinding(item state.StandbyReplenishmentDiagnostic) diag.Finding {
 	switch item.Reason {
+	case state.StandbyReplenishReasonPlanFailure:
+		// 計画の失敗は補充を止めないので、停止ではなく「枠が埋まらないまま繰り返し失敗している」ことを報告する。
+		details := []string{"job " + item.Detail}
+		if item.FailedAt != "" {
+			details = append(details, "failed at "+item.FailedAt)
+		}
+		return diag.Finding{
+			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityProblem,
+			Summary: "planning the standby worktrees failed, so the warm slots are not replenished", Target: item.Root,
+			Cause: jobFailureCause("standby replenishment job "+item.Detail, item.FailureCode, item.FailureMessage, item.DetailPath),
+			Action: "fix the reported cause, such as the .worktreeinclude or .worktreelink manifest; wx retries the plan on the next lease and maintenance tick, or run " +
+				item.Action + " to retry it now",
+			Details: details,
+		}
 	case state.SuspendReplenishReasonStandbyFailure:
 		return diag.Finding{
 			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityProblem,
