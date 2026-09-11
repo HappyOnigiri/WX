@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+
+	"github.com/HappyOnigiri/WX/internal/tui"
 )
 
 // cleanTargetView は Clean/CleanStatus が返す対象 1 件である。
@@ -86,8 +88,8 @@ type rpcCall func(ctx context.Context, method string, params, result any) error
 
 // waitForClean は run が閉じるまで進捗を取得し続ける。CLI を中断しても受付済みの処理は daemon が続ける。
 func waitForClean(ctx context.Context, call rpcCall, accepted cleanReplyView) (cleanReplyView, error) {
-	waiting := startProgress(os.Stdout, interactiveOutput(os.Stdout), "clearing")
-	defer waiting.finish()
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "clearing")
+	defer waiting.Finish()
 	current := accepted
 	for current.State == "RUNNING" {
 		select {
@@ -104,7 +106,7 @@ func waitForClean(ctx context.Context, call rpcCall, accepted cleanReplyView) (c
 		}
 		current = next
 	}
-	waiting.finish()
+	waiting.Finish()
 	return current, nil
 }
 

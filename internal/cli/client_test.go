@@ -44,6 +44,8 @@ type launcherHandler struct {
 	releaseReasons []string
 	// prepareTimings は PrepareTimings の応答を差し替える点である。nil なら既定の応答を返し、内訳なしとして扱われる。
 	prepareTimings map[string]any
+	// leaseProgress は LeaseProgress の応答を差し替える点である。nil なら実行中の区間なしとして扱われる。
+	leaseProgress map[string]any
 }
 
 func (h *launcherHandler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
@@ -89,6 +91,13 @@ func (h *launcherHandler) Handle(ctx context.Context, method string, raw json.Ra
 			return nil, waitReadyHook(ctx)
 		}
 		return map[string]bool{"ok": true}, nil
+	case "LeaseProgress":
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.leaseProgress != nil {
+			return h.leaseProgress, nil
+		}
+		return map[string]any{"state": "PREPARING"}, nil
 	case "ResumeStatus":
 		h.mu.Lock()
 		defer h.mu.Unlock()

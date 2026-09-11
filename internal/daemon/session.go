@@ -57,6 +57,47 @@ func (m *Manager) WaitEarlyReady(ctx context.Context, id, token string) error {
 	return m.waitReadiness(ctx, id, token, true)
 }
 
+// LeaseProgress は貸出の準備がいまどこにいるかである。表示専用で、準備の結果には関与しない。
+type LeaseProgress struct {
+	// State は slot の状態。
+	State string `json:"state"`
+	// Running は準備 job がこの slot で走っていることを示す。
+	// Phase は区間の切れ目でも空になるため、job 待ち行列との区別はこちらで行う。
+	Running bool `json:"running,omitempty"`
+	// Phase は実行中の準備区間名。`wx bench` の区間名と同じ語彙である。
+	Phase string `json:"phase,omitempty"`
+	// Target は Phase が属する repository の、workspace root からの相対 path である。
+	// 区間名は repository ごとに繰り返すため、これが無いと表示が何周目かを読めない。
+	// workspace 全体に属する区間と単一 repository の workspace では空になる。
+	Target string `json:"target,omitempty"`
+	// TargetIndex は TargetTotal 件中の何件目かで、1 始まりである。対象を持たない区間では 0 になる。
+	TargetIndex int `json:"target_index,omitempty"`
+	TargetTotal int `json:"target_total,omitempty"`
+	// PhaseElapsedMS は Phase が始まってからの経過である。
+	PhaseElapsedMS int64 `json:"phase_elapsed_ms,omitempty"`
+}
+
+// LeaseProgress は準備中の slot の現在位置を返す。認証は WaitReady と同じく session ID と token で行う。
+// slot ID は session ID と同じなので、貸出を持つ client だけが自分の準備を読める。
+func (m *Manager) LeaseProgress(ctx context.Context, id, token string) (LeaseProgress, error) {
+	if _, err := m.store.Session(ctx, id, token); err != nil {
+		return LeaseProgress{}, err
+	}
+	slot, err := m.store.Slot(ctx, id)
+	if err != nil {
+		return LeaseProgress{}, err
+	}
+	active, running, ok := m.ActivePhase(id)
+	progress := LeaseProgress{State: slot.State, Running: running}
+	if ok {
+		progress.Phase = active.Name
+		progress.Target = active.Scope.Target
+		progress.TargetIndex, progress.TargetTotal = active.Scope.Index, active.Scope.Total
+		progress.PhaseElapsedMS = time.Since(active.Start).Milliseconds()
+	}
+	return progress, nil
+}
+
 func (m *Manager) waitReadiness(ctx context.Context, id, token string, early bool) error {
 	if _, err := m.store.Session(ctx, id, token); err != nil {
 		return err

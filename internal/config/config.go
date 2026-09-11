@@ -92,6 +92,9 @@ type Readiness struct {
 	Mode       string   `yaml:"mode,omitempty"`
 	EarlyPaths []string `yaml:"early_paths,omitempty"`
 	Timeout    Duration `yaml:"timeout,omitempty"`
+	// Progress は準備待ちの進捗行を stderr へ出すかを決める。既定は有効で、無効にすると
+	// 待機中は何も出さずに準備の完了を待つ。端末でない出力先へは、この設定に関わらず出さない。
+	Progress bool `yaml:"progress,omitempty"`
 }
 
 // Resume は会話の再開時の既定の振る舞いを決める。
@@ -213,7 +216,7 @@ func Defaults() Config {
 		Pool:      Pool{WarmPerWorkspace: 1, PreparationConcurrency: 2},
 		Retention: Retention{Duration{168 * time.Hour}, Duration{time.Hour}, Duration{24 * time.Hour}, Duration{720 * time.Hour}, Duration{8760 * time.Hour}, Duration{168 * time.Hour}, Duration{168 * time.Hour}},
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
-		Readiness: Readiness{Mode: "early", Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false},
+		Readiness: Readiness{Mode: "early", Timeout: Duration{10 * time.Minute}, Progress: true}, Resume: Resume{AutoFresh: false},
 		Lease:    Lease{TTL: Duration{72 * time.Hour}},
 		Includes: Includes{DefaultAgentRules: true}, Agent: Agent{AddDir: AgentAddDirAlways}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),

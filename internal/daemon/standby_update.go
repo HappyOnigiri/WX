@@ -52,7 +52,7 @@ func (m *Manager) leaseMatchingReady(ctx context.Context, w discovery.Workspace,
 			return Lease{}, false, err
 		}
 		m.schedule(job)
-		return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories)}, true, nil
+		return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteColdStart}, true, nil
 	}
 	job, replenished, err := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session)
 	if err != nil {
@@ -60,7 +60,7 @@ func (m *Manager) leaseMatchingReady(ctx context.Context, w discovery.Workspace,
 		return Lease{}, false, err
 	}
 	m.handleNormalSessionSuccess(ctx, w, job, replenished)
-	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories)}, true, nil
+	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}, true, nil
 }
 
 // standbyUpdatePlan は READY standby を要求内容へ更新するための、予約前に確定した入力一式である。
@@ -183,7 +183,7 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 	}
 	m.log.Info("standby update reserved", append([]any{"workspace_id", w.ID, "slot_id", slot.ID}, mismatch.logArgs()...)...)
 	m.schedule(job)
-	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slot.Path, leasePathValue, repositories)}, true, nil
+	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slot.Path, leasePathValue, repositories), Route: RouteUpdate}, true, nil
 }
 
 // standbyStateRace は候補を奪われただけの一時的な失敗かを返す。slotの状態は変えず次の候補へ回す。
@@ -293,6 +293,10 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 		return err
 	}
 	defer releaseSlot()
+	// 更新も cold start と同じ器で測る。`wx bench` から更新の所要時間が見えるようにし、
+	// 待機中の client が読む実行中区間の表へもこの経路を載せるためである。
+	timer := m.newPrepareTimer(slot, preparer)
+	defer func() { timer.finish(updateErr) }()
 	if err := m.store.BeginStandbyUpdate(ctx, slot.ID); err != nil {
 		return err
 	}
@@ -327,11 +331,13 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 	for _, repository := range w.Repositories {
 		byID[string(repository.ID)] = repository
 	}
-	for _, stored := range repositories {
+	for index, stored := range repositories {
 		repository, ok := byID[stored.RepositoryID]
 		if !ok || stored.UpdateBaseOID == "" {
 			return errors.New("standby update metadata no longer matches the workspace")
 		}
+		// 更新の区間名も repository ごとに繰り返すため、実行中の表示が何件目かを読めるようにする。
+		preparer.Phases.Scope(workspace.RepositoryScope(repository, index+1, len(repositories)))
 		if err := m.store.MarkRepositoryUpdateRunning(ctx, slot.ID, stored.RepositoryID); err != nil {
 			return err
 		}

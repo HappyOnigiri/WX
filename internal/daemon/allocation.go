@@ -51,6 +51,14 @@ func (m *Manager) allocate(ctx context.Context, w discovery.Workspace, resolved 
 
 const idAllocationAttempts = 10
 
+// allocationRoute は新規 slot の貸出が積んだ job 種別を、client へ返す経路名へ写す。
+func allocationRoute(jobKind string) string {
+	if jobKind == "RESTORE" {
+		return RouteRestore
+	}
+	return RouteColdStart
+}
+
 func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, token string, w discovery.Workspace, resolved []pool.Resolved, generation int, agent string, pid int, attrs leaseAttrs, sessionState, slotState, jobKind, parent string, pendingAgentID ...string) (Lease, bool, error) {
 	relPath, err := slotRelPath(string(w.ID), id)
 	if err != nil {
@@ -130,7 +138,7 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 	}
 	m.schedule(job)
 	m.startBackground(m.runBackgroundGC)
-	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slotPath, leasePathValue, repos)}, false, nil
+	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slotPath, leasePathValue, repos), Route: allocationRoute(jobKind)}, false, nil
 }
 
 // workspace未確定slot用の予約namespaceであり、通常のworkspace IDには"_"接頭辞を許さない。

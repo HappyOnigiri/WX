@@ -423,3 +423,31 @@ func TestAgentAddDirConfigRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestReadinessProgressDefaultsOnAndTurnsOffFromYAML は進捗表示の既定が有効で、
+// 設定ファイルの false が既定へ埋め戻されずに残ることを確かめる。
+func TestReadinessProgressDefaultsOnAndTurnsOffFromYAML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if !Defaults().Readiness.Progress {
+		t.Fatal("readiness.progress default is off")
+	}
+	path := filepath.Join(home, ".config", "wx", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\nreadiness:\n  progress: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Readiness.Progress {
+		t.Fatal("readiness.progress=false was overwritten by the default")
+	}
+	// 同じ節の他のキーは既定のまま残る。
+	if cfg.Readiness.Mode != "early" {
+		t.Fatalf("readiness.mode=%q, want the default to stay", cfg.Readiness.Mode)
+	}
+}

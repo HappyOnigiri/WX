@@ -120,6 +120,16 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return map[string]bool{"ready": true}, h.Manager.WaitEarlyReady(ctx, p.SessionID, p.Token)
 		}
 		return h.waitReady(ctx, p.SessionID, p.Token)
+	case "LeaseProgress":
+		// 待機中の表示のために短い間隔で呼ばれる。params は WaitReady と共有せず、timeout_ms を受け付けない。
+		var p struct {
+			SessionID string `json:"session_id"`
+			Token     string `json:"token"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return h.Manager.LeaseProgress(ctx, p.SessionID, p.Token)
 	case "BindAgentSession":
 		var p struct {
 			SessionID              string `json:"session_id"`

@@ -99,6 +99,9 @@ type Manager struct {
 	beforeMaintenanceSweep func()
 	// prepareMeasurements は直近の準備の区間内訳。`wx bench` の診断専用で、状態としては扱わない。
 	prepareMeasurements []PrepareMeasurement
+	// activePrepares は実行中の準備・更新の計測を slot ID で引く表である。
+	// 計測は finish で初めて prepareMeasurements へ載るため、待機中の client へ現在の区間を見せるにはこちらを読む。
+	activePrepares map[string]*prepareTimer
 }
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {
@@ -116,7 +119,7 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 			prepareDetailDir = filepath.Join(filepath.Dir(logPath), "details")
 		}
 	}
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, rootUsage: map[string]rootUsageSample{}, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}, leases: map[string]func(){}, jobQueue: newJobQueue(cfg.Pool.PreparationConcurrency), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, rootUsage: map[string]rootUsageSample{}, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}, leases: map[string]func(){}, activePrepares: map[string]*prepareTimer{}, jobQueue: newJobQueue(cfg.Pool.PreparationConcurrency), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
 	m.watchExecutable(executable, executableErr)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {

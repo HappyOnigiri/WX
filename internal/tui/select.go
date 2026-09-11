@@ -1,4 +1,5 @@
-// Package tui は CLI 間で共有する対話的な選択画面を提供する。
+// Package tui は CLI と daemon client で共有する端末表示を提供する。
+// 対話的な選択画面と、待機中に1行を書き換え続ける進捗行が含まれる。
 package tui
 
 import (

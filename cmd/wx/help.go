@@ -243,7 +243,10 @@ readiness.early_paths adds literal repository-relative paths to the startup list
 edit it with wx config readiness.early_paths --add/--remove/--reset.
 Directories include their descendants; no glob patterns are expanded. Only paths
 already scheduled by checkout or copy/link rules are materialized. Workspace roots
-use the same selection. Absolute paths, escapes, the root itself, and .git are rejected.`)
+use the same selection. Absolute paths, escapes, the root itself, and .git are rejected.
+readiness.progress prints the preparation progress to stderr while a lease waits
+(default true); set it to false to wait without any output. A non-terminal stderr
+never gets the progress lines, whatever the setting says.`)
 	case "resume":
 		_, _ = fmt.Fprintln(w, `Usage: wx resume <wx-session-id> [claude|codex] [--fresh] [--branch <branch>] [agent-arguments...]
 

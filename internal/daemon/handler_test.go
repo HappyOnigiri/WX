@@ -21,7 +21,7 @@ func TestHandlerRejectsUnknownFieldsForEveryParameterizedMethod(t *testing.T) {
 	t.Parallel()
 	handler := Handler{}
 	methods := []string{
-		"ResolveAndLease", "WaitReady", "BindAgentSession",
+		"ResolveAndLease", "WaitReady", "LeaseProgress", "BindAgentSession",
 		"Release", "ReleaseLease", "Heartbeat", "RegisterAgentProcess", "Resume", "ResumeStatus", "WorkspaceScope", "GC", "Sessions", "Forget", "RetryStandby",
 	}
 	for _, method := range methods {

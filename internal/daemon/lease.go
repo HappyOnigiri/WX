@@ -24,6 +24,18 @@ import (
 // 同時プロセス数が repository 数のまま膨らまないよう上限を置く。
 const readyValidateMaxWorkers = 10
 
+// 貸出がどの経路で応答したかを表す Lease.Route の値。client は待機中の表示に使う。
+const (
+	// RouteReady は準備を待たずに貸出せた完全一致 READY である。
+	RouteReady = "ready"
+	// RouteUpdate は READY 待機枠を要求 OID へ更新してから貸出す経路である。
+	RouteUpdate = "update"
+	// RouteColdStart は worktree を新たに用意する経路である。COLD repository を含む READY の貸出もここに入る。
+	RouteColdStart = "cold-start"
+	// RouteRestore は会話の再開で当時の worktree を復元する経路である。
+	RouteRestore = "restore"
+)
+
 type Lease struct {
 	SessionID       string `json:"session_id"`
 	Token           string `json:"token"`
@@ -34,6 +46,9 @@ type Lease struct {
 	// RepositoryDirs は Path 直下の repository directory 名で、client が agent の --add-dir へ渡す。
 	// 単一 repository の貸出は Path が worktree そのものなので空になる。
 	RepositoryDirs []string `json:"repository_dirs,omitempty"`
+	// Route はこの貸出が選んだ経路（Route* のいずれか）である。
+	// 分岐を確定できるのは貸出の側だけなので、client へ推測させず応答に載せる。
+	Route string `json:"route,omitempty"`
 }
 
 // ResolveAndLease は cwd の workspace を解決して貸出す。
@@ -140,14 +155,14 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 				job, leaseErr := m.store.LeaseReadyWithCold(ctx, ready.ID, session)
 				if leaseErr == nil {
 					m.schedule(job)
-					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories)}, true, nil
+					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteColdStart}, true, nil
 				}
 				m.releaseLease(session.ID)
 				return Lease{}, false, nil
 			}
 			if replenishJob, replenished, leaseErr := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session); leaseErr == nil {
 				m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
-				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories)}, true, nil
+				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}, true, nil
 			}
 			m.releaseLease(session.ID)
 			return Lease{}, false, nil
