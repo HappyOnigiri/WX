@@ -14,8 +14,8 @@ type gitValueFunc func(env []string, args ...string) (string, error)
 type gitRunFunc func(env []string, input []byte, args ...string) (gitx.Result, error)
 
 // indexFlags は `git ls-files -v` が示す、stat 比較を抑止する index 項目をまとめる。
-// skipWorktree と assumeUnchanged は同じ path で両立し得るため、解除と再設定は種別ごとに行う。
-// paths は index に載る全 path で、tree 適用後に残っている path だけへ flag を戻すために使う。
+// skipWorktree と assumeUnchanged は同じ path で両立し得るため、設定は種別ごとに行う。
+// paths は index に載る全 path で、対象 index に実在する path だけへ flag を立てるために使う。
 type indexFlags struct {
 	skipWorktree    []string
 	assumeUnchanged []string
@@ -28,13 +28,8 @@ func (f indexFlags) blinding() bool {
 	return len(f.flaggedPaths) > 0
 }
 
-// flagged は flag が付いた path を index 順・重複なしで返す。
-func (f indexFlags) flagged() []string {
-	return f.flaggedPaths
-}
-
 // retain は、この index に実在する path だけを元の順序で残す。
-// update-index は index に無い path を渡すと失敗するため、再設定の前段で使う。
+// update-index は index に無い path を渡すと失敗するため、設定の前段で使う。
 func (f indexFlags) retain(paths []string) []string {
 	kept := make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -76,26 +71,15 @@ func parseIndexFlags(listing string) indexFlags {
 	return flags
 }
 
-// readIndexFlags は worktree の index から stat 比較を抑止する項目を読む。
-// 判定できないまま進むと未 snapshot の作業を失うため、呼び出し側は失敗を fail-closed として扱う。
-func readIndexFlags(value gitValueFunc) (indexFlags, error) {
-	listing, err := value(nil, "ls-files", "-v", "-z")
+// readIndexFlags は env が指す index から stat 比較を抑止する項目を読む。
+// env が nil なら worktree の index を、GIT_INDEX_FILE を含めば snapshot 用の一時 index を見る。
+// 判定できないまま進むと flag 付き path の個人版を記録し得るため、呼び出し側は失敗を fail-closed として扱う。
+func readIndexFlags(value gitValueFunc, env []string) (indexFlags, error) {
+	listing, err := value(env, "ls-files", "-v", "-z")
 	if err != nil {
 		return indexFlags{}, fmt.Errorf("inspect index stat flags: %w", err)
 	}
 	return parseIndexFlags(listing), nil
-}
-
-// literalPathspecs は path 一覧を `--pathspec-from-file=- --pathspec-file-nul` 向けの入力にする。
-// path に glob 文字が含まれ得るため `:(literal)` を前置し、意図しない範囲へ広げない。
-func literalPathspecs(paths []string) []byte {
-	var builder strings.Builder
-	for _, path := range paths {
-		builder.WriteString(":(literal)")
-		builder.WriteString(path)
-		builder.WriteByte(0)
-	}
-	return []byte(builder.String())
 }
 
 // nulPathList は path 一覧を `update-index -z --stdin` 向けの入力にする。
@@ -109,40 +93,29 @@ func nulPathList(paths []string) []byte {
 	return []byte(builder.String())
 }
 
-// clearIndexFlags は、read-tree が worktree の file を書き換えられるよう flag を外す。
-// skip-worktree の項目が残ったままの read-tree は、拒否されるか file を書き換えずに素通りする。
-func clearIndexFlags(run gitRunFunc, flags indexFlags) error {
-	if len(flags.skipWorktree) > 0 {
-		if _, err := run(nil, nulPathList(flags.skipWorktree), "update-index", "--no-skip-worktree", "-z", "--stdin"); err != nil {
-			return fmt.Errorf("clear skip-worktree before restore: %w", err)
-		}
-	}
-	if len(flags.assumeUnchanged) > 0 {
-		if _, err := run(nil, nulPathList(flags.assumeUnchanged), "update-index", "--no-assume-unchanged", "-z", "--stdin"); err != nil {
-			return fmt.Errorf("clear assume-unchanged before restore: %w", err)
-		}
-	}
-	return nil
-}
-
-// reapplyIndexFlags は tree 適用後に、採取時と同じ path へ flag を戻す。
-// tree が消した path は index に無く update-index が失敗するため、現在の index に残るものだけへ戻す。
-func reapplyIndexFlags(run gitRunFunc, value gitValueFunc, flags indexFlags) error {
+// applyIndexFlags は env が指す index へ、採取時と同じ path の flag を立てる。
+// snapshot は一時 index を元 index と同じ盲目度にするために、restore は read-tree が落とした flag を戻すために使う。
+// 対象 index に無い path は update-index が失敗させるため、そこに実在する path だけへ絞る。
+func applyIndexFlags(run gitRunFunc, value gitValueFunc, env []string, flags indexFlags) error {
 	if !flags.blinding() {
 		return nil
 	}
-	current, err := readIndexFlags(value)
+	current, err := readIndexFlags(value, env)
 	if err != nil {
 		return err
 	}
-	if skip := current.retain(flags.skipWorktree); len(skip) > 0 {
-		if _, err := run(nil, nulPathList(skip), "update-index", "--skip-worktree", "-z", "--stdin"); err != nil {
-			return fmt.Errorf("reapply skip-worktree after restore: %w", err)
+	for _, group := range []struct {
+		option string
+		paths  []string
+	}{
+		{option: "--skip-worktree", paths: current.retain(flags.skipWorktree)},
+		{option: "--assume-unchanged", paths: current.retain(flags.assumeUnchanged)},
+	} {
+		if len(group.paths) == 0 {
+			continue
 		}
-	}
-	if assume := current.retain(flags.assumeUnchanged); len(assume) > 0 {
-		if _, err := run(nil, nulPathList(assume), "update-index", "--assume-unchanged", "-z", "--stdin"); err != nil {
-			return fmt.Errorf("reapply assume-unchanged after restore: %w", err)
+		if _, err := run(env, nulPathList(group.paths), "update-index", "-z", group.option, "--stdin"); err != nil {
+			return fmt.Errorf("apply index stat flags: %w", err)
 		}
 	}
 	return nil
