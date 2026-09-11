@@ -95,17 +95,14 @@ workspace内の相対位置を保って再構成する処理は持たず、必�
 
 ### 非Gitのworkspace root
 
-multi-repository workspaceのrootにはcheckoutが無く、root直下の実体はcopy/link ruleに載ったものだけがslotへ入る。
-agentはslotのworkspace rootをCWDとして起動するので、既定で`.claude/skills` `.claude/agents` `.claude/commands` `.claude/hooks` `.codex/prompts`をコピーする。
-`.claude`を丸ごと入れないのは、`settings.local.json`やmailboxのように実行中に書き換わる実体をfingerprintへ混ぜると、standbyの更新が止まらなくなるためである。
-既定はlink ruleが所有するpathを避ける。linkした`.claude`の配下をcopy予定に残すと、rule衝突で準備が失敗する。
+multi-repository workspaceのrootにはcheckoutが無く、root直下の実体はcopy/link ruleに載ったものだけがslotへ入る（既定名とroot直下manifestの書式は`wx config --help`）。
+agentはslotのworkspace rootをCWDとして起動するので既定でagent資産を持ち込むが、`.claude`を丸ごとは入れない。
+`settings.local.json`やmailboxのように実行中に書き換わる実体をfingerprintへ混ぜると、standbyの更新が止まらなくなるためである。
+欠落を準備失敗にするのは`workspaces.<root>.copy`で明示したpathだけで、既定名とincludeのglobは0件を許す。
+rootのlinkだけはignore判定を行わず（rootにGitが無い）、sourceの欠落も省略ではなく準備失敗として扱う。
 
-root直下の`.worktreeinclude` / `.worktreelink`もrepo内と同じ書式で読み、`workspaces.<root>.copy` / `link`へ加算する。
-repo側との差は2点ある。
-linkはignore判定を行わない（rootにGitが無く、rootのlinkは元から検査していない）。
-linkのsourceが欠落していれば準備を失敗させる（rootのlinkは元から欠落を許さない。repo側は省略する）。
-includeのglobは0件マッチを許し、「configで明示したcopyだけが欠落を準備失敗にする」契約は保つ。
-root直下の同名fileはrepositoryのmain worktreeがworkspace rootそのものである場合には読まない。そこはGitがcheckoutする領域で、配置しない実体をfingerprintへ混ぜると無関係なREADY slotを一斉に無効化する。
+root直下のmanifestは、workspace rootがrepositoryのmain worktreeそのものである場合には読まない。
+そこはGitがcheckoutする領域で、配置しない実体をfingerprintへ混ぜると無関係なREADY slotを一斉に無効化する。
 
 rule解決は1箇所に集め、fingerprint・配置計画・配置履歴・復元時の除外が同じ結果を見るようにする。
 別々に読み直すと、除外から漏れたlinkを復元時のpruneが消し、snapshotがlink先を取り込む。
