@@ -396,3 +396,30 @@ func mustParseRaw(t *testing.T, document string) Config {
 	}
 	return raw
 }
+
+func TestAgentAddDirConfigRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if got, err := Load(); err != nil || got.Agent.AddDir != AgentAddDirAlways {
+		t.Fatalf("default=%q err=%v", got.Agent.AddDir, err)
+	}
+	for _, mode := range []string{AgentAddDirAlways, AgentAddDirWorktree, AgentAddDirOff} {
+		raw := Config{}
+		if err := SetField(&raw, "agent.add_dir", mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := Save(raw); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Load()
+		if err != nil || got.Agent.AddDir != mode {
+			t.Fatalf("mode=%q got=%q err=%v", mode, got.Agent.AddDir, err)
+		}
+	}
+	for _, mode := range []string{"", "ALWAYS", "invalid"} {
+		cfg := Defaults()
+		cfg.Agent.AddDir = mode
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("invalid mode accepted: %q", mode)
+		}
+	}
+}

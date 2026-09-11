@@ -37,6 +37,7 @@ type Config struct {
 	Resume       Resume                `yaml:"resume,omitempty"`
 	Lease        Lease                 `yaml:"lease,omitempty"`
 	Includes     Includes              `yaml:"includes,omitempty"`
+	Agent        Agent                 `yaml:"agent,omitempty"`
 	Sessions     sessionsconfig.Config `yaml:"sessions,omitempty"`
 	Workspaces   map[string]Workspace  `yaml:"workspaces,omitempty"`
 	Repositories map[string]Repository `yaml:"repositories,omitempty"`
@@ -122,6 +123,13 @@ type Workspace struct {
 type Includes struct {
 	DefaultAgentRules bool `yaml:"default_agent_rules,omitempty"`
 }
+
+// Agent は agent プロセスへ渡す引数の組み立て方を決める。
+type Agent struct {
+	// AddDir は CWD 直下の repository directory を agent の --add-dir へ渡す条件を決める。
+	// 複数 repository の workspace では agent の CWD が repository の親になり、渡さないと配下の .claude/skills などが読まれない。
+	AddDir string `yaml:"add_dir,omitempty"`
+}
 type Repository struct {
 	DefaultBranch string `yaml:"default_branch,omitempty"`
 	// DirName は slot 内の repository directory 名を固定する。
@@ -151,6 +159,16 @@ type Logging struct {
 const (
 	RepoDirSourceRemote    = "remote"
 	RepoDirSourceDirectory = "directory"
+)
+
+// AgentAddDir* は agent.add_dir の値である。
+const (
+	// AgentAddDirAlways は worktree を作るかどうかに関わらず、agent の CWD 直下の repository を渡す。
+	AgentAddDirAlways = "always"
+	// AgentAddDirWorktree は wx が用意した worktree で起動したときだけ渡し、worktree 無しの直起動では渡さない。
+	AgentAddDirWorktree = "worktree"
+	// AgentAddDirOff はどちらの起動でも渡さない。
+	AgentAddDirOff = "off"
 )
 
 const (
@@ -197,7 +215,7 @@ func Defaults() Config {
 		Discovery: Discovery{MaxDepth: 6, MaxEntries: 100000, Timeout: Duration{30 * time.Second}, ReconcileInterval: Duration{10 * time.Minute}, Exclude: []string{"node_modules", "vendor", ".venv", "venv", "tmp", "log"}},
 		Readiness: Readiness{Mode: "early", Timeout: Duration{10 * time.Minute}}, Resume: Resume{AutoFresh: false},
 		Lease:    Lease{TTL: Duration{72 * time.Hour}},
-		Includes: Includes{DefaultAgentRules: true}, Logging: Logging{Level: "info"},
+		Includes: Includes{DefaultAgentRules: true}, Agent: Agent{AddDir: AgentAddDirAlways}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
 		Workspaces: map[string]Workspace{}, Repositories: map[string]Repository{},
 	}
@@ -268,20 +286,8 @@ func Validate(c *Config) error {
 	if c.Version != 1 {
 		return fmt.Errorf("unsupported config version %d", c.Version)
 	}
-	if _, err := ExpandHome(c.Storage.WorktreeRoot); err != nil {
-		return fmt.Errorf("storage.worktree_root: %w", err)
-	}
-	if c.Storage.CopyMode != CopyModeAuto && c.Storage.CopyMode != CopyModeCOW && c.Storage.CopyMode != CopyModeCopy {
-		return errors.New("storage.copy_mode must be auto, cow, or copy")
-	}
-	if c.Storage.COWMinSizeKiB < 0 || c.Storage.COWMinSizeKiB > MaxCOWMinSizeKiB {
-		return fmt.Errorf("storage.cow_min_size_kib must be between 0 and %d", MaxCOWMinSizeKiB)
-	}
-	if c.Storage.BackupGenerations < 1 || c.Storage.BackupRetention.Duration < 0 {
-		return errors.New("storage backup_generations must be positive and backup_retention must not be negative")
-	}
-	if c.Storage.RepoDirSource != RepoDirSourceRemote && c.Storage.RepoDirSource != RepoDirSourceDirectory {
-		return fmt.Errorf("storage.repo_dir_source must be %s or %s", RepoDirSourceRemote, RepoDirSourceDirectory)
+	if err := validateStorage(&c.Storage); err != nil {
+		return err
 	}
 	for path, override := range c.Repositories {
 		if override.DirSource != "" && override.DirSource != RepoDirSourceRemote && override.DirSource != RepoDirSourceDirectory {
@@ -293,6 +299,9 @@ func Validate(c *Config) error {
 		if override.COWMinSizeKiB != nil && (*override.COWMinSizeKiB < 0 || *override.COWMinSizeKiB > MaxCOWMinSizeKiB) {
 			return fmt.Errorf("repositories.%s.cow_min_size_kib must be between 0 and %d", path, MaxCOWMinSizeKiB)
 		}
+	}
+	if c.Agent.AddDir != AgentAddDirAlways && c.Agent.AddDir != AgentAddDirWorktree && c.Agent.AddDir != AgentAddDirOff {
+		return fmt.Errorf("agent.add_dir must be %s, %s, or %s", AgentAddDirAlways, AgentAddDirWorktree, AgentAddDirOff)
 	}
 	if c.Pool.WarmPerWorkspace < 0 || c.Pool.PreparationConcurrency < 1 {
 		return errors.New("pool counts must be non-negative and concurrency must be at least 1")
@@ -315,6 +324,25 @@ func Validate(c *Config) error {
 	}
 	if err := c.Sessions.Validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateStorage(s *Storage) error {
+	if _, err := ExpandHome(s.WorktreeRoot); err != nil {
+		return fmt.Errorf("storage.worktree_root: %w", err)
+	}
+	if s.CopyMode != CopyModeAuto && s.CopyMode != CopyModeCOW && s.CopyMode != CopyModeCopy {
+		return errors.New("storage.copy_mode must be auto, cow, or copy")
+	}
+	if s.COWMinSizeKiB < 0 || s.COWMinSizeKiB > MaxCOWMinSizeKiB {
+		return fmt.Errorf("storage.cow_min_size_kib must be between 0 and %d", MaxCOWMinSizeKiB)
+	}
+	if s.BackupGenerations < 1 || s.BackupRetention.Duration < 0 {
+		return errors.New("storage backup_generations must be positive and backup_retention must not be negative")
+	}
+	if s.RepoDirSource != RepoDirSourceRemote && s.RepoDirSource != RepoDirSourceDirectory {
+		return fmt.Errorf("storage.repo_dir_source must be %s or %s", RepoDirSourceRemote, RepoDirSourceDirectory)
 	}
 	return nil
 }
