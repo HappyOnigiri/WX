@@ -29,7 +29,7 @@ slot・session・jobの状態は`internal/state.Store`を唯一の権威とし�
 Go側に状態のenum型や遷移ガードを作らない。
 隔離は`slots.state='QUARANTINED'`と`quarantined_artifacts`テーブルで表し、専用ディレクトリを作らない。
 
-スキーマ変更は`migrations/*.sql`に次の番号のファイルを追加し、`state.SchemaVersion`をファイル数へ手で揃える。
+スキーマ変更は`migrations/*.sql`の追加と`state.SchemaVersion`の更新で行う。
 既存ファイルの編集は適用済みDBに反映されない。
 旧worktreeレイアウトのDBとの互換・移行コードは持たず、該当する`state.db`は作り直す。
 `state.JSONSchemaVersion`はDB版と独立に、`--json`の出力形状が変わったときだけ上げる。
@@ -38,11 +38,9 @@ Go側に状態のenum型や遷移ガードを作らない。
 
 - 編集途中の短い確認には、Go編集時の構造検査を集めた`make check-fast`と、対象を絞る`make test-focus PKG=<パッケージ> RUN=<正規表現>`を使う。
 - `core.hooksPath`のlocal設定はuserレベルのhook dispatcherを覆い隠すため設定しない。
-  hookの正本は`scripts/hooks/`で、`make setup-hooks`が共通Gitディレクトリの`hooks/`へ複製する。
-  宛先が正本と異なると差分を見せて許可を求め、答えが無ければ既存を残して失敗する。非対話で上書きするときは`SETUP_HOOKS_ASSUME_YES=1`を付ける。
 - 機械的に判定できる規約は`tools/check*`の検査として実装し、`make ci`へ接続する。
   このAGENTS.mdやコメントでの指示は、静的に判定できない規約に限った最終手段とする。
-- 設計と無関係な行を踏むだけのテストでカバレッジの数字を作らず、プロセスやOSのアダプタは`coverage-exclusions.txt`に理由付きで除外する。
+- 設計と無関係な行を踏むだけのテストでカバレッジの数字を作らず、プロセスやOSのアダプタは`coverage-exclusions.txt`で除外する。
 - `internal/daemon`のトップレベルテストは、専用の一時ディレクトリ・DB・Managerだけを使うものに`t.Parallel()`を付ける。
   `t.Setenv`を自身かサブテストで呼ぶテスト、プロセス全体のgoroutine・fdを数えるテスト、短い待機に依存するテストは直列のまま残す。
 - READMEは紹介・導入を中心としたコンパクトな記載に留め、機能追加では追記せず、不整合が起きたときだけ修正する。
