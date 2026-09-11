@@ -24,7 +24,7 @@ Gitのworktree削除が失敗しても、worktree管理ディレクトリの一�
 両flagが「このファイルのローカル差分を見ない」という宣言であり、hookが置いた個人設定や認証情報をsourceのrecovery objectに残さないためである。
 
 準備・復元失敗などの隔離slotは`retention.quarantined`の経過後にGCが回収し、`wx clear`はこの経過を待たずに回収する。
-recovery refの欠損で隔離したsnapshot・sessionはGCが触らず、`wx discard-recovery`だけが破棄する（[daemonの補充・回収・再起動](daemon-maintenance.md)）。
+recovery refの欠損で隔離したsnapshot・sessionはGCが触らず、`wx discard-recovery`だけが破棄する（[daemonの補充と回収](daemon-maintenance.md)）。
 
 ## 既存worktreeを書き換える前の証明
 
