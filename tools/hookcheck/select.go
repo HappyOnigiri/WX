@@ -34,7 +34,9 @@ var checkOrder = []string{
 	"gitexec-check",
 	"fuzz-check",
 	"migrations-check",
+	"automation-check",
 	"docs-check",
+	"docs-index-check",
 	"shell-check",
 	"workflow-check",
 	"mod-tidy-check",
@@ -44,6 +46,7 @@ var checkOrder = []string{
 
 var makefileChecks = []string{
 	"fmt-check",
+	"automation-check",
 	"docs-check",
 	"shell-check",
 	"workflow-check",
@@ -95,14 +98,20 @@ func selectChecks(root string, files []changedFile) (selection, error) {
 			matched = true
 			result.addCheck("docs-check", reason)
 		}
+		if isDocsIndexPath(path) {
+			matched = true
+			result.addCheck("docs-index-check", reason)
+		}
 		if isShellPath(path) {
 			matched = true
 			result.addCheck("shell-check", reason)
+			result.addCheck("automation-check", reason)
 			result.addScriptTest(path, reason)
 		}
 		if isWorkflowPath(path) {
 			matched = true
 			result.addCheck("workflow-check", reason)
+			result.addCheck("automation-check", reason)
 			if isNightlyWorkflow(path) {
 				result.addCheck("fuzz-check", reason)
 			}
@@ -132,6 +141,7 @@ func selectChecks(root string, files []changedFile) (selection, error) {
 		}
 		if isHookToolPath(path) {
 			matched = true
+			result.addCheck("automation-check", reason)
 			result.addTest("./tools/hookcheck", reason, false)
 		}
 		if structuralCheck, ok := structuralTool(path); ok {
@@ -296,6 +306,11 @@ func isMarkdownPath(path string) bool {
 	return strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".markdown")
 }
 
+// 一覧の載せ忘れはAGENTS.mdとdocs/の対応でだけ起きるため、Markdown全体には広げない。
+func isDocsIndexPath(path string) bool {
+	return path == "AGENTS.md" || path == "docs" || strings.HasPrefix(path, "docs/")
+}
+
 // hook本体は拡張子を持てないため、scripts/hooks/直下は名前によらずshell扱いにする。
 func isShellPath(path string) bool {
 	if strings.HasPrefix(path, "scripts/hooks/") {
@@ -332,6 +347,8 @@ func structuralTool(path string) (string, bool) {
 		{"tools/checkfuzz/", "fuzz-check"},
 		{"tools/checkgitexec/", "gitexec-check"},
 		{"tools/checkmigrations/", "migrations-check"},
+		{"tools/checkautomation/", "automation-check"},
+		{"tools/checkdocsindex/", "docs-index-check"},
 	} {
 		if strings.HasPrefix(path, name.prefix) {
 			return name.check, true
@@ -354,6 +371,8 @@ func structuralPackage(path string) string {
 		"tools/checkfuzz/",
 		"tools/checkgitexec/",
 		"tools/checkmigrations/",
+		"tools/checkautomation/",
+		"tools/checkdocsindex/",
 	} {
 		if strings.HasPrefix(path, prefix) {
 			return "./" + strings.TrimSuffix(prefix, "/")
