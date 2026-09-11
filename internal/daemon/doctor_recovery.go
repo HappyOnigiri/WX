@@ -49,6 +49,7 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 	}
 	findings = append(findings, m.quarantinedRecoveryFindings(ctx)...)
 	findings = append(findings, unreadableRepositoryFindings(report.UnreadableRepositories)...)
+	findings = append(findings, refListFailureFindings(report.RefListFailures)...)
 	findings = append(findings, missingArtifactFindings(report.Missing)...)
 	findings = append(findings, recoveryRefFindings(report.MismatchedRefs, report.MissingRefs)...)
 	for _, message := range report.Errors {
@@ -91,7 +92,7 @@ func (m *Manager) quarantinedRecoveryFindings(ctx context.Context) []diag.Findin
 }
 
 // unreadableRepositoryFindings は照合対象を持たない読めない repository 記録を参考情報として並べる。
-// 記録を消す操作は用意していないため対処は案内せず、doctor をこの記録で失敗させない。
+// 回収は GC が行い利用者の操作を要さないため対処は案内せず、doctor をこの記録で失敗させない。
 func unreadableRepositoryFindings(repositories []unreadableRepository) []diag.Finding {
 	sorted := append([]unreadableRepository{}, repositories...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].RepositoryID < sorted[j].RepositoryID })
@@ -101,7 +102,24 @@ func unreadableRepositoryFindings(repositories []unreadableRepository) []diag.Fi
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityInfo,
 			Summary: "a repository record no longer points at a readable repository", Target: repository.Path,
 			Cause:  fmt.Sprintf("repository %s cannot be read (%s), and no snapshot in the database needs its recovery refs", repository.RepositoryID, repository.Cause),
-			Action: "no action is required; nothing wx owns depends on it, and wx registers the repository again if you use that path",
+			Action: "no action is required; wx removes the record on its next collection and registers the repository again if you use that path",
+		})
+	}
+	return findings
+}
+
+// refListFailureFindings は recovery ref を読めなかった repository を 1 件ずつ問題として並べる。
+// 影響はその repository の照合だけなので、他の検査結果を巻き込む unchecked ではなく対象つきの問題として出す。
+func refListFailureFindings(failures []unreadableRepository) []diag.Finding {
+	sorted := append([]unreadableRepository{}, failures...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].RepositoryID < sorted[j].RepositoryID })
+	findings := make([]diag.Finding, 0, len(sorted))
+	for _, failure := range sorted {
+		findings = append(findings, diag.Finding{
+			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityProblem,
+			Summary: "the recovery refs of one repository could not be listed", Target: failure.Path,
+			Cause:  fmt.Sprintf("repository %s is still in use, but its refs could not be read (%s); the other repositories were checked", failure.RepositoryID, failure.Cause),
+			Action: "make that path a readable Git repository again, or run wx forget on the workspaces that use it if you no longer need them",
 		})
 	}
 	return findings

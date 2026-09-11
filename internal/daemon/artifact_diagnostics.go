@@ -26,7 +26,7 @@ type recoveryRefIssue struct {
 func (i recoveryRefIssue) key() string { return i.RepositoryID + ":" + i.Ref }
 
 // unreadableRepository は refs を読めない repository 記録のうち、照合すべき snapshot を 1 件も持たないものである。
-// repositories の行を消す経路は無いため、これを ownership error にすると doctor が恒久的に失敗する。
+// GC の PruneRepositories が回収するまでの一時的な記録で、ownership error にすると回収までの間 doctor が失敗し続ける。
 type unreadableRepository struct{ RepositoryID, Path, Cause string }
 
 // artifactReport は worktree root と recovery ref の照合結果である。
@@ -39,7 +39,10 @@ type artifactReport struct {
 	MissingRefs    []recoveryRefIssue
 	// UnreadableRepositories は照合対象を持たない読めない repository で、問題ではなく参考情報である。
 	UnreadableRepositories []unreadableRepository
-	Errors                 []string
+	// RefListFailures は recovery ref を読めなかった repository のうち、まだ必要とされている記録である。
+	// 1 件の失敗で検査全体を止めないよう、repository 単位の問題として保持する。
+	RefListFailures []unreadableRepository
+	Errors          []string
 }
 
 // categories は従来の category ごとの文字列一覧へ畳み込む。
@@ -52,6 +55,11 @@ func (r artifactReport) categories() map[string]any {
 	unknownRefs, mismatchedRefs, missingRefs := refKeys(r.UnknownRefs), refKeys(r.MismatchedRefs), refKeys(r.MissingRefs)
 	unknownPaths := append([]string{}, r.UnknownPaths...)
 	diagnosticErrors := append([]string{}, r.Errors...)
+	// ref を読めなかった repository は doctor では repository 単位の問題として出すが、
+	// reconcile の記録と prune の結果では従来どおり errors に載せ、どの repository の話かを path で示す。
+	for _, failure := range r.RefListFailures {
+		diagnosticErrors = append(diagnosticErrors, refListFailureMessage(failure))
+	}
 	for _, values := range [][]string{unknownPaths, missingPaths, unknownRefs, mismatchedRefs, missingRefs, diagnosticErrors} {
 		sort.Strings(values)
 	}
@@ -60,6 +68,12 @@ func (r artifactReport) categories() map[string]any {
 		"unknown_refs": unknownRefs, "mismatched_refs": mismatchedRefs,
 		"missing_refs": missingRefs, "errors": diagnosticErrors,
 	}
+}
+
+// refListFailureMessage は recovery ref を読めなかった repository 1 件の説明である。
+// 読み手が対象の repository を path で特定できるようにする。
+func refListFailureMessage(failure unreadableRepository) string {
+	return fmt.Sprintf("list recovery refs for %s (%s): %s", failure.RepositoryID, failure.Path, failure.Cause)
 }
 
 func refKeys(issues []recoveryRefIssue) []string {
@@ -152,14 +166,16 @@ func (m *Manager) appendRecoveryRefIssues(ctx context.Context, report *artifactR
 		listed, listErr := m.git.Run(ctx, string(repository.MainPath), "for-each-ref", "--format=%(refname) %(objectname)", "refs/wx/recovery")
 		if listErr != nil {
 			// 登録済み workspace に属さず照合すべき snapshot も無い repository は、refs を読めなくても不明な点が残らない。
-			// workspace を forget した後に記録だけが残り、その path が Git リポジトリでなくなった場合である。
-			// repositories の行を消す経路が無いため、これを error にすると doctor が恒久的に失敗する。
+			// forget が記録を消さなかった頃の DB で、その path が Git リポジトリでなくなった場合に残る。
+			// 回収は GC の PruneRepositories が行うため、待つ間の失敗を利用者への問題にしない。
 			if len(expected) == 0 && registered != nil && !registered[string(repository.ID)] {
 				report.UnreadableRepositories = append(report.UnreadableRepositories,
 					unreadableRepository{RepositoryID: string(repository.ID), Path: string(repository.MainPath), Cause: listErr.Error()})
 				continue
 			}
-			report.Errors = append(report.Errors, fmt.Sprintf("list recovery refs for %s: %v", repository.ID, listErr))
+			// 失敗はこの repository の照合だけを止める。残りの repository と他の検査は続ける。
+			report.RefListFailures = append(report.RefListFailures,
+				unreadableRepository{RepositoryID: string(repository.ID), Path: string(repository.MainPath), Cause: listErr.Error()})
 			continue
 		}
 		actual := map[string]bool{}

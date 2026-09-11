@@ -162,6 +162,13 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 	if err := m.store.PruneRoots(ctx); err != nil {
 		progress.addFailed("roots", "retired worktree root metadata pruning failed", err)
 	}
+	// forget した workspace の repository 記録は、以前の版では残ったままになった。
+	// 実体が消えた path を doctor が検査し続けないよう、ここで回収する。Git リポジトリ自体には触れない。
+	if removed, err := m.store.PruneRepositories(ctx); err != nil {
+		progress.addFailed("repositories", "unreferenced repository metadata pruning failed", err)
+	} else if removed > 0 {
+		m.log.Info("pruned repository records that no workspace, snapshot, or live slot needs", "removed", removed)
+	}
 	return progress.GCResult, progress.err()
 }
 

@@ -352,7 +352,79 @@ func (s *Store) ForgetWorkspace(ctx context.Context, root string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM workspaces WHERE id=?`, id); err != nil {
 		return err
 	}
+	// workspace が消えると、その repository は登録のどこからも参照されなくなる。
+	// 記録だけを残すと doctor が毎回その path の recovery ref を読みに行き、実体が消えていれば恒久的に失敗する。
+	if _, err := pruneUnreferencedRepositories(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// PruneRepositories は、どの登録からも必要とされなくなった repository 記録を削除し、削除件数を返す。
+// forget の transaction 外に取り残された既存の記録を回収する保守経路で、Git リポジトリの実体には触れない。
+func (s *Store) PruneRepositories(ctx context.Context) (int, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	removed, err := pruneUnreferencedRepositories(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	return removed, tx.Commit()
+}
+
+// pruneUnreferencedRepositories は、workspace・snapshot・終了していない slot/session のどれからも参照されない repository を削除する。
+// forget 後に残るのは workspace 所属を失った ARCHIVED slot と EXPIRED session の履歴だけで、
+// その組み合わせでは ValidateWorktreeOwnership が workspace link を欠いて必ず失敗するため、履歴 row も同じ transaction で消す。
+// commentlint:allow-long -- 履歴 row まで消してよい条件の根拠を残すため
+func pruneUnreferencedRepositories(ctx context.Context, tx *sql.Tx) (int, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT r.id FROM repositories r
+		WHERE NOT EXISTS (SELECT 1 FROM workspace_repositories wr WHERE wr.repository_id=r.id)
+		  AND NOT EXISTS (SELECT 1 FROM snapshots sn WHERE sn.repository_id=r.id)
+		  AND NOT EXISTS (SELECT 1 FROM slot_repositories sr JOIN slots sl ON sl.id=sr.slot_id
+		                  WHERE sr.repository_id=r.id AND NOT (sl.state='ARCHIVED' AND sl.workspace_id IS NULL))
+		  AND NOT EXISTS (SELECT 1 FROM session_repositories ser JOIN sessions se ON se.id=ser.session_id
+		                  WHERE ser.repository_id=r.id AND NOT (se.state='EXPIRED' AND se.workspace_id IS NULL))
+		ORDER BY r.id`)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	for _, id := range ids {
+		// foreign key があるため、履歴の membership を先に消してから repository row を消す。
+		if _, err := tx.ExecContext(ctx, `DELETE FROM session_repositories WHERE repository_id=?`, id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM slot_repositories WHERE repository_id=?`, id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM repositories WHERE id=?`, id); err != nil {
+			return 0, err
+		}
+	}
+	return len(ids), nil
 }
 
 // RegisteredRepositoryIDs は登録済み workspace に属する repository の id を返す。
