@@ -750,3 +750,30 @@ func TestHelpListsStayAligned(t *testing.T) {
 		})
 	}
 }
+
+// TestLeaseHelpPointsAgentResumeAtWxResume は --resume の適用範囲が help から読み取れることを確認する。
+// agent の session を wx shell/run --resume へ渡すと daemon が
+// "resume agent does not match the original session" で拒否するため、代わりの入口を示す必要がある。
+func TestLeaseHelpPointsAgentResumeAtWxResume(t *testing.T) {
+	for _, command := range []string{"shell", "run"} {
+		t.Run(command, func(t *testing.T) {
+			var output bytes.Buffer
+			commandUsage(&output, command)
+			if !strings.Contains(output.String(), "wx resume <wx-session-id>") {
+				t.Fatalf("%s help does not point agent sessions at wx resume:\n%s", command, output.String())
+			}
+		})
+	}
+}
+
+// TestRunHelpDescribesWorkingDirectory は wx run の cwd が workspace の起点になることを help が示すか確認する。
+// source のサブディレクトリから起動しても同じ位置で実行され、元の path は WX_SOURCE_CWD にしか残らない。
+func TestRunHelpDescribesWorkingDirectory(t *testing.T) {
+	var output bytes.Buffer
+	commandUsage(&output, "run")
+	for _, want := range []string{"subdirectory", "WX_SOURCE_CWD"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("run help lacks %q:\n%s", want, output.String())
+		}
+	}
+}

@@ -19,6 +19,8 @@
    wxが作ったslot（`storage.worktree_root`配下）は貸出とsnapshotでHEADが動くのが前提なので、この確認の対象にしない。
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
    子プロセスには`WX_SESSION_ID`・`WX_SESSION_TOKEN`・`WX_DAEMON_SOCKET`などが渡り、以降のhookはこれを持つ場合だけ動く。
+   このディレクトリは`leasePath`が決めるslot側の起点（単一repositoryならslot内のworktree、それ以外はworkspace root）で、sourceのサブディレクトリから起動しても同じ位置になる。
+   呼び出し時のcwdは`WX_SOURCE_CWD`にだけ入るので、同じ相対位置で実行したいコマンドは自分でcdする。
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
    既定の`readiness.mode: early`では、hookが使える通常起動は`WaitEarlyReady`でGit登録と起動用ファイルの配置完了を待つ。
    その後の`wx hook user-prompt-submit`と`wx hook pre-tool-use`は従来どおり`WaitReady`を呼び、全準備が完了するまで操作を止める。
