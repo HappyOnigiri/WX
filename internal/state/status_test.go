@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -472,5 +473,119 @@ func TestStatusDiagnosticsSeparatesDiscardedJobsFromFailures(t *testing.T) {
 	want := JobDiagnostic{Pending: 1, Running: 1, Failed: 2, Discarded: 2}
 	if diagnostics.Jobs != want {
 		t.Fatalf("job diagnostics=%+v, want %+v", diagnostics.Jobs, want)
+	}
+}
+
+// 補充計画の失敗は停止行を残さないため、最新の失敗を job 行から拾って報告する。
+func TestUnresolvedStandbyPlanFailuresReportsTheLatestFailure(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	job, err := store.CreateJob(ctx, "ENSURE_STANDBY", "workspace", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, job, errors.New(`unsafe .worktreeinclude pattern "../escape"`), "JOB_FAILED", "/logs/ensure.log")
+	failures, err := store.UnresolvedStandbyPlanFailures(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("plan failures=%+v, want the failed ENSURE_STANDBY", failures)
+	}
+	item := failures[0]
+	if item.Reason != StandbyReplenishReasonPlanFailure || item.WorkspaceID != "workspace" || item.Root != "/workspace" {
+		t.Fatalf("plan failure=%+v", item)
+	}
+	if item.Detail != job.ID || item.FailureCode != "JOB_FAILED" || item.DetailPath != "/logs/ensure.log" || item.FailedAt == "" {
+		t.Fatalf("plan failure job fields=%+v", item)
+	}
+	if !strings.Contains(item.FailureMessage, "unsafe .worktreeinclude pattern") {
+		t.Fatalf("plan failure message=%q, want the recorded reason", item.FailureMessage)
+	}
+	// 2 度続けて失敗しても、報告するのは最新の 1 件だけにする。
+	second, err := store.CreateJob(ctx, "ENSURE_STANDBY", "workspace", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, second, errors.New("still unsafe"), "JOB_FAILED", "")
+	failures, err = store.UnresolvedStandbyPlanFailures(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].Detail != second.ID {
+		t.Fatalf("plan failures after a second failure=%+v", failures)
+	}
+}
+
+// 後続の補充計画が動いていれば、残った FAILED 行は未解消として報告しない。
+func TestUnresolvedStandbyPlanFailuresExcludesResolvedPlans(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	job, err := store.CreateJob(ctx, "ENSURE_STANDBY", "workspace", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, job, errors.New("transient failure"), "JOB_FAILED", "")
+	pending, err := store.CreateJob(ctx, "ENSURE_STANDBY", "workspace", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures, err := store.UnresolvedStandbyPlanFailures(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("plan failures while a later plan is pending=%+v", failures)
+	}
+	if _, err := store.ClaimJob(ctx, pending.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, pending.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	failures, err = store.UnresolvedStandbyPlanFailures(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("plan failures after a later plan succeeded=%+v", failures)
+	}
+}
+
+// `wx clear` などが取り消した job は失敗ではないので、報告にも解消の判定にも使わない。
+func TestUnresolvedStandbyPlanFailuresIgnoresDiscardedJobs(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	discarded, err := store.CreateJob(ctx, "ENSURE_STANDBY", "workspace", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, discarded, errors.New("discarded by wx clear"), JobErrorCodeDiscarded, "")
+	failures, err := store.UnresolvedStandbyPlanFailures(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("plan failures for a discarded job=%+v", failures)
+	}
+	failed, err := store.CreateJob(ctx, "ENSURE_STANDBY", "workspace", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, failed, errors.New("unsafe manifest"), "JOB_FAILED", "")
+	later, err := store.CreateJob(ctx, "ENSURE_STANDBY", "workspace", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, later, errors.New("discarded by wx clear"), JobErrorCodeDiscarded, "")
+	failures, err = store.UnresolvedStandbyPlanFailures(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 || failures[0].Detail != failed.ID {
+		t.Fatalf("plan failures after a discarded job=%+v", failures)
 	}
 }
