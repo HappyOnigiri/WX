@@ -74,6 +74,9 @@ indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変え�
 Darwinでは`Fclonefileat`を使い、Linuxでは`auto`が通常方式、`cow`がエラーになる。
 clone元と宛先は同じ対応volumeにある必要があり、通常checkout1個分の一時容量は必要である。
 コピー方式はfingerprintに含めるため、設定変更後の貸出では以前の方式で作ったREADY slotを再利用しない。
+再利用できないREADYは次の貸出まで残らない。
+`wx config`での保存はdaemonのreloadを起こし、reloadは保守を即時に一巡させるので、fingerprintが変わると全workspaceの既存READYが1秒未満でSTALEになりcoldで補充される。
+設定を戻した場合も同じくreloadが走り、作り直しの費用（cold準備1本ぶん × `workspaces.<root>.warm_count`）がもう一度かかる。
 `.worktreeinclude`、workspace rootのコピー、生成物、Git objectsや復旧snapshotの容量は、この設定の対象外である。
 `auto`が通常コピーへ落ちた回はdaemonのログにwarnとして残る。
 

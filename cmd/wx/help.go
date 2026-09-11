@@ -252,6 +252,9 @@ is returned when the shell exits: unfinished work is saved first, and the
 worktree stays for retention.ended_worktree so wx shell --resume <id> brings it
 back. wx clear --all can also ask the shell to stop.
 
+--resume only accepts sessions leased by wx shell, wx run, or wx new. Resume a
+session started by an agent with wx resume <wx-session-id> [claude|codex].
+
 The worktree is detached, as it is for every wx workspace; --branch only
 chooses the base commit, and creating or pushing a branch is left to you. The
 shell comes from lease.shell, then $SHELL, then /bin/sh.
@@ -269,6 +272,12 @@ current one.
 The workspace is returned when the command exits, and the same saving and
 retention as wx shell apply, so wx shell --resume <id> can reopen what the
 command left behind.
+
+--resume only accepts sessions leased by wx shell, wx run, or wx new. Resume a
+session started by an agent with wx resume <wx-session-id> [claude|codex].
+
+The command runs at the top of the workspace even when wx run is invoked from a
+subdirectory; the original directory is passed as WX_SOURCE_CWD.
 
 Options:
   --branch <branch|repo=branch>  choose a detached base (repeatable)
