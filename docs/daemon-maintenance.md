@@ -107,6 +107,12 @@ run実行中は`assertNoActiveClean`が貸出・復元・待機用作成の書�
 安全な処理境界の待機は`cleanBoundaryWait`で制限し、貸出を断ったまま無期限に待たない。
 GC候補の選択と保持期限は`gc.go`を参照し、隔離slotも通常の`REMOVE`で登録範囲を回収する。
 
+`wx forget`は`workspaces`行と同じtransactionで、どの登録からも参照されなくなった`repositories`行を消す。
+以前の版が残した記録はGCの`PruneRepositories`が同じ条件で回収する（`wx gc`と保守一巡の両方で走り、dry-runでは何も消さない）。
+消してよいのは、`workspace_repositories`にもsnapshotにも現れず、参照する slot が全て`ARCHIVED`、session が全て`EXPIRED`で、
+どちらもworkspace紐付けを失っている場合だけである。その組み合わせでは`ValidateWorktreeOwnership`がworkspace linkを欠いて必ず失敗し、
+履歴の`slot_repositories`・`session_repositories`行を残しても証明には使えない。Git リポジトリの実体には触れない。
+
 生きたclientもagentも持たない貸出（`wx new`）は終了要求の宛先がないため、`advancePending`は要求を積まずその場で返却して保存経路へ移す。
 `--all`無しで残す場合のskip理由も、停止を待つ`--all`ではなく`wx release <id>`を案内する。
 `wx shell` / `wx run`の強制停止は既存の`--all`経路で成立するので、`session_termination_requests`は貸出用に拡張しない。
@@ -166,8 +172,9 @@ daemon接続なしで成立する検査は[`internal/diag`](../internal/diag/dia
 storeを要する検査は[`doctor.go`](../internal/daemon/doctor.go)と[`doctor_recovery.go`](../internal/daemon/doctor_recovery.go)に置く。
 worktree rootのpath検査と登録検査は別のfindingとして両方保持し、登録状態でpath検査の結果を上書きしない。
 登録済みworkspaceに属さず照合すべきsnapshotも持たないrepository記録は、refsを読めなくてもproblemにせずinfoに留める。
-`repositories`の行を消す経路が無いため、forget後に残った記録をerrorにするとdoctorが恒久的に失敗する。
-登録済みworkspaceに属する repository の故障はこれまでどおりerrorとして報告する。
+この記録はGCの`PruneRepositories`が回収するまでの一時的なもので、errorにするとその間doctorが失敗し続ける。
+登録済みworkspaceに属する repository でrefsを読めない場合は、その`repositories`行1件のproblemとして対象pathつきで報告し、
+他のrepositoryの照合と他の検査は続ける（1件の失敗を検査全体のuncheckedにしない）。
 準備・保存・復元の失敗は、上位の処理名で言い換えず`jobs.error_message`・`error_detail_path`から具体的な失敗理由と詳細ログの場所まで引き継ぐ。
 原因が記録されていない場合は特定できていないことを明示し、推測を原因として表示しない。
 
