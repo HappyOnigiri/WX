@@ -80,11 +80,9 @@ func TestSessionLifecycleSoak(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		removed := 0
+		// REMOVE 完了時に待機枠補充の ENSURE_STANDBY が続くため、保留中の job を全て消化する。
+		processed := 0
 		for _, job := range jobs {
-			if job.Kind != "REMOVE" {
-				continue
-			}
 			claimed, err := store.ClaimJob(ctx, job.ID, "soak-gc")
 			if err != nil {
 				t.Fatal(err)
@@ -95,9 +93,9 @@ func TestSessionLifecycleSoak(t *testing.T) {
 			if err := store.FinishJob(ctx, claimed.ID, "soak-gc", nil); err != nil {
 				t.Fatal(err)
 			}
-			removed++
+			processed++
 		}
-		if removed == 0 {
+		if processed == 0 {
 			break
 		}
 	}
