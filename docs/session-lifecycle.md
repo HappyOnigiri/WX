@@ -12,6 +12,11 @@
    配置差が無い場合はmanifest・コピー方式・CoW共有下限のような配置に現れない入力が変わったことを示す。
    予約後は`slot_repositories`が更新後の値へ入れ替わり差を復元できないため、理由は比較したその場で組み立てる。
    この診断はUPDATEやcold startへ落ちた後だけ動かし、完全一致した貸出には余分なGit起動とファイル読み取りを持ち込まない。
+   cwdがwx管理外のlinked worktreeのとき、貸出はrepositoryのmain worktreeへ解決されるのでcwd側のHEADは反映されない。
+   HEADが食い違う場合はclientが貸出の前に`internal/cli/linked_worktree.go`で検出し、main worktreeのHEADで借りてよいかをYes既定で確認する。
+   確認を出せない場合（`wx new --json`、端末が無い起動）はnoticeをstderrへ出して従来どおり続ける。
+   fullscreenのagentが起動すると標準出力のnoticeは流れてしまうため、端末があるときは起動前の確認にする。
+   wxが作ったslot（`storage.worktree_root`配下）は貸出とsnapshotでHEADが動くのが前提なので、この確認の対象にしない。
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
    子プロセスには`WX_SESSION_ID`・`WX_SESSION_TOKEN`・`WX_DAEMON_SOCKET`などが渡り、以降のhookはこれを持つ場合だけ動く。
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。

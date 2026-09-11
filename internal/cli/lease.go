@@ -129,6 +129,11 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	// --json は機械向けの経路なので確認を出さず、notice だけ stderr へ出して続行する。
+	if !c.confirmLinkedWorktreeBase(ctx, cwd, !jsonOut) {
+		fmt.Fprintln(os.Stderr, "lease cancelled; no workspace was created")
+		return 1
+	}
 	ownerID, ownerToken := leaseOwnerFromEnvironment()
 	params := rpc.ResolveAndLeaseParams{
 		Agent: leaseAgentKindPath, Branches: branches, ClientPID: 0, CWD: cwd, ForceWorktree: c.forceWorktree,
