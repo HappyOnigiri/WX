@@ -99,6 +99,8 @@ multi-repository workspaceのrootにはcheckoutが無く、root直下の実体�
 agentはslotのworkspace rootをCWDとして起動するので既定でagent資産を持ち込むが、`.claude`を丸ごとは入れない。
 `settings.local.json`やmailboxのように実行中に書き換わる実体をfingerprintへ混ぜると、standbyの更新が止まらなくなるためである。
 欠落を準備失敗にするのは`workspaces.<root>.copy`で明示したpathだけで、既定名とincludeのglobは0件を許す。
+既定名は`.worktreelink`が所有するpathを譲り、rule衝突にしない。利用者が書いていない暗黙の追加が、明示したlinkを止めてはならないためである。
+includeのglobと`.worktreelink`に同じpathを書いた場合は利用者が明示した矛盾なので、そのまま準備失敗にする。
 rootのlinkだけはignore判定を行わず（rootにGitが無い）、sourceの欠落も省略ではなく準備失敗として扱う。
 
 root直下のmanifestは、workspace rootがrepositoryのmain worktreeそのものである場合には読まない。

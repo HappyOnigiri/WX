@@ -3,6 +3,7 @@ package workspace
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -93,6 +94,42 @@ func TestResolveRootRulesSkipsAgentAssetsOwnedByLinks(t *testing.T) {
 	target := t.TempDir()
 	if err := MaterializeRoot(nil, source, target, rules); err != nil {
 		t.Fatalf("linked agent directory should not conflict with the defaults: %v", err)
+	}
+}
+
+func TestResolveRootRulesSkipsDefaultCopyNamesOwnedByLinks(t *testing.T) {
+	source := t.TempDir()
+	writeRootFile(t, source, "AGENTS.md", "agents\n")
+	writeRootFile(t, source, ".worktreelink", "AGENTS.md\n")
+
+	rules, err := ResolveRootRules(source, config.Workspace{})
+	if err != nil {
+		t.Fatalf("default copy name claimed by a link must not conflict: %v", err)
+	}
+	if slices.Contains(rules.OptionalCopy, "AGENTS.md") {
+		t.Fatalf("optional copies=%v still claim the linked default name", rules.OptionalCopy)
+	}
+	if !slices.Contains(rules.Link, "AGENTS.md") {
+		t.Fatalf("manifest link was dropped: %+v", rules)
+	}
+	if !slices.Contains(rules.OptionalCopy, "CLAUDE.md") {
+		t.Fatalf("unrelated default copy names were dropped: %+v", rules)
+	}
+	target := t.TempDir()
+	if err := MaterializeRoot(nil, source, target, rules); err != nil {
+		t.Fatalf("linked default name should not conflict with the defaults: %v", err)
+	}
+	info, err := os.Lstat(filepath.Join(target, "AGENTS.md"))
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("linked default name was not materialized as a symlink: mode=%v err=%v", info, err)
+	}
+}
+
+// RootRulesFromConfig は repository の main worktree と同じ root で使い、manifest も既定名の除去も効かせない。
+func TestRootRulesFromConfigKeepsDefaultCopyNamesUnderLinks(t *testing.T) {
+	rules := RootRulesFromConfig(config.Workspace{Link: []string{"AGENTS.md"}})
+	if !slices.Contains(rules.OptionalCopy, "AGENTS.md") {
+		t.Fatalf("single-repository defaults changed: %+v", rules)
 	}
 }
 

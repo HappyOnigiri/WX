@@ -218,6 +218,58 @@ func TestSnapshotSessionKeepsRootWorkAddedToLinkRuleWhileLeased(t *testing.T) {
 	}
 }
 
+// TestSnapshotSessionKeepsSlotSnapshottingOnRootRuleFailure は、書込み前の rule 解決失敗を隔離へ倒さないことを固定する。
+// 隔離の出口は手動操作だけだが、この失敗は root の manifest を直せば次の一巡の復旧 job で終わるためである。
+func TestSnapshotSessionKeepsSlotSnapshottingOnRootRuleFailure(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	store, err := state.Open(filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "owned")
+	bundleRoot := filepath.Join(cfg.Storage.WorktreeRoot, "slot")
+	repositoryPath := filepath.Join(bundleRoot, "repository")
+	initGitRepo(t, repositoryPath)
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	ctx := context.Background()
+	commonDir := gitOutput(t, repositoryPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repository := discovery.Repository{ID: "repository", MainPath: discoveryPath(repositoryPath), CommonDir: discoveryPath(commonDir), RelativePath: "repository", DefaultBranch: "main"}
+	w := registerTestWorkspace(t, store, discovery.Workspace{ID: "workspace", Root: discoveryPath(root), Kind: "multi_repository", Repositories: []discovery.Repository{repository}})
+	session := state.Session{ID: "session", WorkspaceID: string(w.ID), SlotID: "slot", State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	slotRepository := state.SlotRepository{RepositoryID: "repository", DirName: "repository", State: "LEASED", BaseOID: gitOutput(t, repositoryPath, "rev-parse", "HEAD")}
+	if _, err := store.CreateSlotSession(ctx, slotAtPath(t, manager, string(w.ID), "slot", bundleRoot, 1, "LEASED"), []state.SlotRepository{slotRepository}, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	// include と link に同じ path を明示した矛盾で rule 解決を失敗させる。
+	if err := os.MkdirAll(filepath.Join(root, "shared"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".worktreeinclude"), []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".worktreelink"), []byte("shared\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := store.Release(ctx, session.ID, session.WorkspaceID, session.SlotID); err != nil || !changed {
+		t.Fatalf("release changed=%v err=%v", changed, err)
+	}
+	released, err := store.SessionByID(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.snapshotSession(ctx, released); err == nil {
+		t.Fatal("conflicting root rules were snapshotted without an error")
+	}
+	slot, err := store.Slot(ctx, session.SlotID)
+	if err != nil || slot.State != "SNAPSHOTTING" {
+		t.Fatalf("rule failure must leave the slot to the next recovery job: slot=%+v err=%v", slot, err)
+	}
+}
+
 func workspaceArchiveEntryNames(t *testing.T, path string) []string {
 	t.Helper()
 	file, err := os.Open(path) // #nosec G304 -- テストが直前に作った archive の path である。
