@@ -266,10 +266,10 @@ func TestExpiredExplicitResumeRequiresOptInAndUsesCurrentBase(t *testing.T) {
 	}
 }
 
-// TestResumeRestoresSkipWorktreeEntries は、post-checkout hook が tracked file を個人版へ置き換えて
-// skip-worktree を付ける repository でも、返却と resume が session の内容を保つことを検証する。
-// flag が残ったままの read-tree は復元を拒否するか素通りし、resume が毎回失敗して slot を隔離する。
-func TestResumeRestoresSkipWorktreeEntries(t *testing.T) {
+// TestResumeLeavesSkipWorktreePathsToTheHook は、post-checkout hook が tracked file を個人版へ置き換えて
+// skip-worktree を付ける repository でも、返却と resume が成功して slot を隔離しないことを検証する。
+// flag 付き path は snapshot の対象外なので、復元先の内容は hook が置いた個人版のままで flag も残る。
+func TestResumeLeavesSkipWorktreePathsToTheHook(t *testing.T) {
 	t.Parallel()
 	requireDaemonIntegration(t)
 	f := runningManagerFixture(t, func(s *managerFixtureSetup) {
@@ -295,6 +295,7 @@ func TestResumeRestoresSkipWorktreeEntries(t *testing.T) {
 	if listing := gitOutput(t, lease.Path, "ls-files", "-v", "tracked.txt"); listing != "S tracked.txt" {
 		t.Fatalf("post-checkout hook did not blind the leased worktree: %q", listing)
 	}
+	// flag 付き path への編集は契約どおり引き継がれない。ここでは復元先が hook の個人版に戻ることを確かめる。
 	if err := os.WriteFile(filepath.Join(lease.Path, "tracked.txt"), []byte("session\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -313,10 +314,10 @@ func TestResumeRestoresSkipWorktreeEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	worktree := boundWorktreePath(t, store, resumed.SessionID)
-	if data, err := os.ReadFile(filepath.Join(worktree, "tracked.txt")); err != nil || string(data) != "session\n" {
-		t.Fatalf("restored tracked.txt=%q err=%v, want %q", data, err, "session\n")
+	if data, err := os.ReadFile(filepath.Join(worktree, "tracked.txt")); err != nil || string(data) != "personal\n" {
+		t.Fatalf("restored tracked.txt=%q err=%v, want %q", data, err, "personal\n")
 	}
 	if listing := gitOutput(t, worktree, "ls-files", "-v", "tracked.txt"); listing != "S tracked.txt" {
-		t.Fatalf("skip-worktree was not reapplied after resume: %q", listing)
+		t.Fatalf("skip-worktree was not reinstated after resume: %q", listing)
 	}
 }
