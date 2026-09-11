@@ -211,6 +211,15 @@ standby worktrees prepared under the previous value.
 Commits made inside a worktree's submodule are lost when the slot is deleted,
 because snapshots can only record the gitlink. Push them before releasing.
 
+Agent directories (agent.add_dir):
+  always     pass every repository directory under the agent's working directory to --add-dir (default)
+  worktree   pass them only when the agent runs in a wx worktree
+  off        never pass them
+A workspace with several repositories puts the agent's working directory at the
+parent of those repositories, so their .claude/skills and other agent assets are
+only loaded when the directories are passed with --add-dir. A workspace that is
+a single repository has nothing to pass. Directories you pass yourself are kept.
+
 Copy mode (storage.copy_mode):
   auto  share identical checked-out files with APFS CoW; fall back to copies, but quarantine when ownership is unprovable (default)
   cow   fail preparation if CoW fails

@@ -90,35 +90,27 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	// clean worktree は HEAD の tree と commit で完全に表せるため、新しい object を作らず base OID と ref メタデータだけを記録する。
 	// dirty 経路より多くを clean と判定すると未 snapshot の作業を失うため、次の flag は必須である。
 	// ユーザー設定の status.showUntrackedFiles と submodule.<name>.ignore/diff.ignoreSubmodules は、一時 index の `add -A` が記録する内容を隠し得る。
+	// skip-worktree/assume-unchanged が付いた path は snapshot の対象外（HEAD の内容として扱う）なので、ここでは clean 判定に影響しない。
+	// 両 flag とも index と HEAD の差は隠さないため、status が clean なら flag 付き path に staged 内容が隠れていることもない。
 	// commentlint:allow-long -- 未 snapshot の作業を失わないための判定条件を説明する
 	statusOutput, err := worktreeValue(nil, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none")
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("check worktree cleanliness: %w", err)
 	}
-	cleanSnapshot := func(headTree string) state.Snapshot {
-		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}
-	}
-	// status が clean なら HEAD tree との差分は flag 付き path にしか残り得ないため、一時 index への add をその path だけへ絞る。
-	// 60k file 規模の全件走査を避けつつ内容は今までどおり記録し、絞った結果が HEAD tree と一致すれば clean 短絡へ戻す。
-	var flaggedPaths []string
-	var headTree string
 	if strings.TrimSpace(statusOutput) == "" {
-		flags, flagErr := readIndexFlags(worktreeValue)
-		if flagErr != nil {
-			return state.Snapshot{}, flagErr
-		}
-		headTree, err = worktreeValue(nil, "rev-parse", "HEAD^{tree}")
+		headTree, err := worktreeValue(nil, "rev-parse", "HEAD^{tree}")
 		if err != nil {
 			return state.Snapshot{}, fmt.Errorf("resolve clean HEAD tree: %w", err)
 		}
-		flaggedPaths = flags.flagged()
-		if len(flaggedPaths) == 0 {
-			return cleanSnapshot(headTree), nil
-		}
+		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
 	}
 	indexTree, err := worktreeValue(nil, "write-tree")
 	if err != nil {
 		return state.Snapshot{}, fmt.Errorf("write index tree: %w", err)
+	}
+	flags, err := readIndexFlags(worktreeValue, nil)
+	if err != nil {
+		return state.Snapshot{}, err
 	}
 	tmpFile, err := os.CreateTemp("", ".wx-index-*")
 	if err != nil {
@@ -134,20 +126,17 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if _, err := worktreeRun(env, nil, "read-tree", head); err != nil {
 		return state.Snapshot{}, err
 	}
-	if len(flaggedPaths) > 0 {
-		if _, err := worktreeRun(env, literalPathspecs(flaggedPaths), "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"); err != nil {
-			return state.Snapshot{}, err
-		}
-	} else if _, err := worktreeRun(env, nil, "add", "-A", "--", "."); err != nil {
+	// 一時 index にも元 index と同じ flag を立ててから add するので、flag 付き path は HEAD の内容のまま記録される。
+	// add に pathspec を渡さないのは、pathspec が flag 付き path だけに一致すると git が sparse-checkout の逸脱として exit 1 にするためである。
+	if err := applyIndexFlags(worktreeRun, worktreeValue, env, flags); err != nil {
+		return state.Snapshot{}, err
+	}
+	if _, err := worktreeRun(env, nil, "add", "-A"); err != nil {
 		return state.Snapshot{}, err
 	}
 	worktreeTree, err := worktreeValue(env, "write-tree")
 	if err != nil {
 		return state.Snapshot{}, err
-	}
-	// flag 付き path の内容が HEAD と同じなら記録すべき作業は無いため、recovery commit を作らず clean 短絡へ戻す。
-	if len(flaggedPaths) > 0 && worktreeTree == headTree {
-		return cleanSnapshot(headTree), nil
 	}
 	commitEnv := append([]string(nil), env...)
 	commitEnv = append(commitEnv,
