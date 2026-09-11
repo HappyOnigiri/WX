@@ -417,3 +417,41 @@ func TestResolveRejectsGitExecutionFailureBeforeMultiRepositoryFallback(t *testi
 		t.Fatalf("Git execution failure was accepted as a multi-repository workspace: %v", err)
 	}
 }
+
+// workspace 個別の discovery 設定は canonical な root をキーに引く。
+// symlink 経由で指した root でも同じ個別指定が効き、global の exclude は置き換わる。
+func TestResolveMultiRepositoryUsesWorkspaceDiscoveryOverrides(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shallow := filepath.Join(root, "shallow")
+	deep := filepath.Join(root, "a", "b", "deep")
+	vendored := filepath.Join(root, "vendor")
+	for _, path := range []string{shallow, deep, vendored} {
+		initDiscoveryRepository(t, path)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Discovery.Timeout.Duration = 5 * time.Second
+	depth := 1
+	// global は vendor を除外し deep まで届くが、個別指定は vendor を拾い deep を切る。
+	cfg.Workspaces[root] = config.Workspace{Discovery: config.WorkspaceDiscovery{MaxDepth: &depth, Exclude: []string{"unrelated"}}}
+	discoverer := Discoverer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+	for _, target := range []string{root, alias} {
+		workspace, err := discoverer.Resolve(context.Background(), target)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", target, err)
+		}
+		names := map[string]bool{}
+		for _, repository := range workspace.Repositories {
+			names[repository.RelativePath] = true
+		}
+		if !names["shallow"] || !names["vendor"] || names[filepath.Join("a", "b", "deep")] {
+			t.Fatalf("repositories=%v for %s, want the workspace overrides applied", names, target)
+		}
+	}
+}

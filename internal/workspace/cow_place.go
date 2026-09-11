@@ -253,7 +253,7 @@ func (c cowPlacement) complete() bool { return len(c.placed) > 0 && c.pending ==
 // checkout してから同内容へ差し替えるのに比べ、同じ bytes の書き出しと読み比べが1往復ぶん要らなくなる。
 func (p *Preparer) placeSharedFiles(ctx context.Context, repo discovery.Repository, item *stagedRepository, slotID string) (cowPlacement, error) {
 	// clone できない platform と copy 指定では1件も置かず、方式の判断は従来どおり compactWorktree に委ねる。
-	mode := p.Config.Storage.CopyMode
+	mode := p.Config.CopyMode(string(repo.MainPath))
 	if mode == config.CopyModeCopy || !cowAvailable() {
 		return cowPlacement{}, nil
 	}

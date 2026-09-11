@@ -75,7 +75,7 @@ func Serve(ctx context.Context) error {
 		rpcHandler = Handler{Manager: manager}
 		durable = store
 	}
-	server := &rpc.Server{Socket: socket, Handler: rpcHandler, Durable: durable, MaxHandlerTimeout: handlerCeiling(cfg.Readiness.Timeout.Duration)}
+	server := &rpc.Server{Socket: socket, Handler: rpcHandler, Durable: durable, MaxHandlerTimeout: handlerCeiling(cfg.MaxReadinessTimeout())}
 	logger.Info("daemon started", "socket", socket, "protocol_version", rpc.ProtocolVersion, "degraded", openErr != nil)
 	if err := server.Serve(ctx); err != nil {
 		return fmt.Errorf("serve daemon: %w", err)

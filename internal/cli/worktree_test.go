@@ -10,6 +10,13 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 )
 
+// selectMode は RunAgentWithPolicy と同じ順で workspace root を解決してから方針を決める。
+func selectMode(c Client, options WorktreeOptions) (string, error) {
+	ctx := context.Background()
+	root, rootErr := c.policyRoot(ctx)
+	return c.selectWorktreeMode(ctx, options, root, rootErr)
+}
+
 func TestPolicyOverridesDoNotSaveOrContactDaemon(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	client, err := New(config.Defaults())
@@ -20,7 +27,7 @@ func TestPolicyOverridesDoNotSaveOrContactDaemon(t *testing.T) {
 		options WorktreeOptions
 		want    string
 	}{{WorktreeOptions{Force: true}, "cold"}, {WorktreeOptions{Disable: true}, "off"}} {
-		got, err := client.selectWorktreeMode(context.Background(), test.options)
+		got, err := selectMode(client, test.options)
 		if err != nil || got != test.want {
 			t.Fatalf("got=%q err=%v", got, err)
 		}
@@ -80,16 +87,16 @@ func TestUndefinedPolicyRefusesNoninteractiveInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.selectWorktreeMode(context.Background(), WorktreeOptions{}); err == nil || !strings.Contains(err.Error(), "--no-worktree") {
+	if _, err := selectMode(client, WorktreeOptions{}); err == nil || !strings.Contains(err.Error(), "--no-worktree") {
 		t.Fatalf("err=%v", err)
 	}
 	for _, mode := range []string{"cold", "off", "hot"} {
 		client.Config.Worktree.Undefined = mode
-		got, err := client.selectWorktreeMode(context.Background(), WorktreeOptions{})
+		got, err := selectMode(client, WorktreeOptions{})
 		if got != mode || err != nil {
 			t.Fatalf("mode=%q err=%v", got, err)
 		}
-		if _, err := client.selectWorktreeMode(context.Background(), WorktreeOptions{Select: true}); err == nil {
+		if _, err := selectMode(client, WorktreeOptions{Select: true}); err == nil {
 			t.Fatal("reselection bypassed terminal")
 		}
 	}
@@ -112,7 +119,7 @@ func TestWorktreePolicyRejectsGitExecutionFailureBeforeDirectAgent(t *testing.T)
 	cfg.Worktree.Undefined = "off"
 	cfg.Workspaces[root] = config.Workspace{Worktree: "hot"}
 	client := Client{Config: cfg}
-	mode, err := client.selectWorktreeMode(context.Background(), WorktreeOptions{})
+	mode, err := selectMode(client, WorktreeOptions{})
 	if err == nil {
 		t.Fatalf("mode=%q; Git execution failure was allowed to select direct execution", mode)
 	}

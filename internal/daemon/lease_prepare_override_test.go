@@ -50,8 +50,8 @@ func TestPrepareOverrideReachesPreparerConfigAndFingerprint(t *testing.T) {
 	}
 	// 準備 job は貸出要求とは別のタイミングで走るため、Preparer の設定は slot の記録から組み立たなければならない。
 	prepareConfig, err := m.slotPrepareConfig(slot)
-	if err != nil || prepareConfig.Storage.CopyMode != config.CopyModeCopy || prepareConfig.Storage.COWMinSizeKiB != minSize {
-		t.Fatalf("prepare config=%+v err=%v", prepareConfig.Storage, err)
+	if err != nil || prepareConfig.CopyMode(repo) != config.CopyModeCopy || prepareConfig.COWMinSizeKiB(repo) != minSize {
+		t.Fatalf("prepare config copy_mode=%s cow_min_size_kib=%d err=%v", prepareConfig.CopyMode(repo), prepareConfig.COWMinSizeKiB(repo), err)
 	}
 	// 上書きは daemon の実効設定を変えない。変えると並走する他 workspace の準備まで巻き込む。
 	if effective := m.Config().Storage; effective.CopyMode != config.CopyModeAuto || effective.COWMinSizeKiB != config.DefaultCOWMinSizeKiB {

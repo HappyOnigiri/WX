@@ -39,18 +39,19 @@ func (s *Store) ColdRepositoryCandidates(ctx context.Context, hotBefore string) 
 
 // ColdRepositoryCandidatesForWarm は workspace ごとの待機枠数が正の workspace だけを COLD 化候補にする。
 // global が 0 でも個別設定が正なら、その workspace の保持期限処理を継続できる。
-func (s *Store) ColdRepositoryCandidatesForWarm(ctx context.Context, hotBefore string, defaultWarm int, overrides map[string]int) ([]ColdRepositoryCandidate, error) {
-	return s.coldRepositoryCandidates(ctx, hotBefore, func(root string) bool {
-		warm := defaultWarm
-		if override, ok := overrides[root]; ok {
-			warm = override
+// floor は最短の保持期間から作った緩い cutoff で、hotBefore が workspace root ごとの正確な cutoff を返す。
+func (s *Store) ColdRepositoryCandidatesForWarm(ctx context.Context, floor string, warm func(root string) int, hotBefore func(root string) string) ([]ColdRepositoryCandidate, error) {
+	return s.coldRepositoryCandidates(ctx, floor, func(root string, lastLeasedAt string) bool {
+		if warm(root) <= 0 {
+			return false
 		}
-		return warm > 0
+		// 一度も lease されていない repository は SQL の IS NULL 分岐と同じく常に cold 扱いにする。
+		return lastLeasedAt == "" || lastLeasedAt <= hotBefore(root)
 	})
 }
 
-func (s *Store) coldRepositoryCandidates(ctx context.Context, hotBefore string, include func(root string) bool) ([]ColdRepositoryCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sr.repository_id,rt.path||'/'||sl.rel_path||'/'||sr.dir_name,COALESCE(w.root_path,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN workspaces w ON w.id=sl.workspace_id JOIN slot_repositories sr ON sr.slot_id=sl.id JOIN repositories r ON r.id=sr.repository_id WHERE sl.owner_session_id IS NULL AND sl.state='READY' AND sr.state='READY' AND (r.last_leased_at IS NULL OR r.last_leased_at<=?) ORDER BY sl.id,sr.repository_id`, hotBefore)
+func (s *Store) coldRepositoryCandidates(ctx context.Context, hotBefore string, include func(root, lastLeasedAt string) bool) ([]ColdRepositoryCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,sr.repository_id,rt.path||'/'||sl.rel_path||'/'||sr.dir_name,COALESCE(w.root_path,''),COALESCE(r.last_leased_at,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN workspaces w ON w.id=sl.workspace_id JOIN slot_repositories sr ON sr.slot_id=sl.id JOIN repositories r ON r.id=sr.repository_id WHERE sl.owner_session_id IS NULL AND sl.state='READY' AND sr.state='READY' AND (r.last_leased_at IS NULL OR r.last_leased_at<=?) ORDER BY sl.id,sr.repository_id`, hotBefore)
 	if err != nil {
 		return nil, err
 	}
@@ -58,11 +59,11 @@ func (s *Store) coldRepositoryCandidates(ctx context.Context, hotBefore string, 
 	var out []ColdRepositoryCandidate
 	for rows.Next() {
 		var candidate ColdRepositoryCandidate
-		var root string
-		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.RepositoryID, &candidate.WorktreePath, &root); err != nil {
+		var root, lastLeasedAt string
+		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.RepositoryID, &candidate.WorktreePath, &root, &lastLeasedAt); err != nil {
 			return nil, err
 		}
-		if include != nil && !include(root) {
+		if include != nil && !include(root, lastLeasedAt) {
 			continue
 		}
 		out = append(out, candidate)
@@ -122,7 +123,9 @@ func (s *Store) FinishColdRepositoryRemoval(ctx context.Context, slotID, reposit
 	return tx.Commit()
 }
 
-func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm int, overrides ...map[string]int) ([]StandbyGCCandidate, error) {
+// StandbyGCCandidates は待機枠数を超えた READY と、すべての STALE を削除候補として返す。
+// warm は workspace root ごとの実効待機枠数を返す。root が空の行は workspace 未紐付けなので global 値で判定する。
+func (s *Store) StandbyGCCandidates(ctx context.Context, warm func(root string) int) ([]StandbyGCCandidate, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,sl.workspace_id,rt.path||'/'||sl.rel_path,sl.state,COALESCE(sl.ready_at,sl.created_at),COALESCE(w.root_path,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN workspaces w ON w.id=sl.workspace_id WHERE sl.owner_session_id IS NULL AND sl.state IN ('READY','STALE') ORDER BY sl.workspace_id,COALESCE(sl.ready_at,sl.created_at) DESC,sl.id`)
 	if err != nil {
 		return nil, err
@@ -132,17 +135,13 @@ func (s *Store) StandbyGCCandidates(ctx context.Context, hotBefore string, warm 
 	var out []StandbyGCCandidate
 	for rows.Next() {
 		var candidate StandbyGCCandidate
+		// ready_at は新しい順の並べ替えにだけ使う。保持期限との比較は待機枠数で決まるため行わない。
 		var readyAt string
 		var root string
 		if err := rows.Scan(&candidate.SlotID, &candidate.WorkspaceID, &candidate.Path, &candidate.State, &readyAt, &root); err != nil {
 			return nil, err
 		}
-		effectiveWarm := warm
-		if len(overrides) > 0 {
-			if override, ok := overrides[0][root]; ok {
-				effectiveWarm = override
-			}
-		}
+		effectiveWarm := warm(root)
 		if candidate.State == "STALE" {
 			out = append(out, candidate)
 			continue
@@ -344,8 +343,11 @@ func (s *Store) PruneMetadata(ctx context.Context, failedBefore, eventBefore, to
 	return tx.Commit()
 }
 
-func (s *Store) GCCandidates(ctx context.Context, before string) ([]GCCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,se.id,rt.path||'/'||sl.rel_path FROM slots sl JOIN roots rt ON rt.id=sl.root_id JOIN sessions se ON se.slot_id=sl.id WHERE sl.state='SNAPSHOTTED' AND se.archived_at<=?`, before)
+// GCCandidates は保持期限を過ぎた終了 worktree を返す。
+// floor は最短の保持期間から作った緩い cutoff で、before が workspace root ごとの正確な cutoff を返す。
+// root が空の行は workspace 未紐付け（slots.workspace_id が NULL）なので global 値で判定する。
+func (s *Store) GCCandidates(ctx context.Context, floor string, before func(root string) string) ([]GCCandidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,se.id,rt.path||'/'||sl.rel_path,COALESCE(w.root_path,''),se.archived_at FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN workspaces w ON w.id=sl.workspace_id JOIN sessions se ON se.slot_id=sl.id WHERE sl.state='SNAPSHOTTED' AND se.archived_at<=?`, floor)
 	if err != nil {
 		return nil, err
 	}
@@ -353,8 +355,12 @@ func (s *Store) GCCandidates(ctx context.Context, before string) ([]GCCandidate,
 	var out []GCCandidate
 	for rows.Next() {
 		var x GCCandidate
-		if err := rows.Scan(&x.SlotID, &x.SessionID, &x.Path); err != nil {
+		var root, archivedAt string
+		if err := rows.Scan(&x.SlotID, &x.SessionID, &x.Path, &root, &archivedAt); err != nil {
 			return nil, err
+		}
+		if before != nil && archivedAt > before(root) {
+			continue
 		}
 		out = append(out, x)
 	}

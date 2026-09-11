@@ -167,9 +167,10 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 		c.releaseLeaseToken(lease, "lease-setup-failed")
 	}()
 	if !lease.Ready {
-		waitCtx, cancel := context.WithTimeout(setupCtx, c.Config.Readiness.Timeout.Duration)
+		readinessTimeout := leaseReadinessTimeout(c.Config, lease)
+		waitCtx, cancel := context.WithTimeout(setupCtx, readinessTimeout)
 		waiting.watch(waitCtx, c.RPC, lease)
-		err := c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
+		err := c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(readinessTimeout.Milliseconds())}, nil)
 		waiting.finish()
 		cancel()
 		if err != nil {

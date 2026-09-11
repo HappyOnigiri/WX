@@ -706,10 +706,10 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 		"workspace roots":   func() error { _, err := store.WorkspaceRoots(ctx); return err },
 		"status":            func() error { _, err := store.Status(ctx); return err },
 		"slots":             func() error { _, err := store.ListSlots(ctx, true); return err },
-		"standby gc":        func() error { _, err := store.StandbyGCCandidates(ctx, now(), 1); return err },
+		"standby gc":        func() error { _, err := store.StandbyGCCandidates(ctx, constantWarm(1)); return err },
 		"cold candidates":   func() error { _, err := store.ColdRepositoryCandidates(ctx, now()); return err },
 		"expired snapshots": func() error { _, err := store.ExpiredSnapshots(ctx, now()); return err },
-		"gc candidates":     func() error { _, err := store.GCCandidates(ctx, now()); return err },
+		"gc candidates":     func() error { _, err := store.GCCandidates(ctx, now(), constantBefore(now())); return err },
 	} {
 		if err := operation(); err == nil {
 			t.Errorf("%s succeeded against damaged schema", name)

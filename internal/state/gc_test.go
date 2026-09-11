@@ -109,7 +109,7 @@ func TestStandbyGCKeepsWarmSlotsAndReportsStaleRows(t *testing.T) {
 	if err := store.SetSlotState(ctx, "stale", []string{"READY"}, "STALE", "TEST"); err != nil {
 		t.Fatal(err)
 	}
-	candidates, err := store.StandbyGCCandidates(ctx, now(), 1)
+	candidates, err := store.StandbyGCCandidates(ctx, constantWarm(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestStandbyGCUsesWorkspaceWarmOverrides(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	candidates, err := store.StandbyGCCandidates(ctx, now(), 0, map[string]int{"/positive": 1, "/zero": 0})
+	candidates, err := store.StandbyGCCandidates(ctx, warmByRoot(0, map[string]int{"/positive": 1, "/zero": 0}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestColdRepositoryCandidatesUseWorkspaceWarmOverrides(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	candidates, err := store.ColdRepositoryCandidatesForWarm(ctx, FormatTime(time.Now().Add(time.Hour)), 0, map[string]int{"/positive": 1})
+	candidates, err := store.ColdRepositoryCandidatesForWarm(ctx, FormatTime(time.Now().Add(time.Hour)), warmByRoot(0, map[string]int{"/positive": 1}), constantBefore(FormatTime(time.Now().Add(time.Hour))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestLifecycleCandidateQueriesCoverWarmStaleAndColdTransitions(t *testing.T)
 	if _, err := store.CreateStandby(ctx, stale, nil); err != nil {
 		t.Fatal(err)
 	}
-	if candidates, err := store.StandbyGCCandidates(ctx, FormatTime(time.Now().Add(time.Hour)), 1); err != nil || len(candidates) != 1 || candidates[0].SlotID != stale.ID {
+	if candidates, err := store.StandbyGCCandidates(ctx, constantWarm(1)); err != nil || len(candidates) != 1 || candidates[0].SlotID != stale.ID {
 		t.Fatalf("standby candidates=%+v err=%v", candidates, err)
 	}
 	if candidates, err := store.ColdRepositoryCandidates(ctx, FormatTime(time.Now().Add(time.Hour))); err != nil || len(candidates) != 1 || candidates[0].SlotID != ready.ID {
@@ -380,5 +380,98 @@ func TestHotRepositoryIDsIncludesInFlightLease(t *testing.T) {
 	hot, err = store.HotRepositoryIDs(ctx, hotBefore)
 	if err != nil || !hot["repository"] {
 		t.Fatalf("repository with an in-flight lease was cold: hot=%+v err=%v", hot, err)
+	}
+}
+
+// constantWarm は root によらず同じ待機枠数を返す。
+func constantWarm(n int) func(string) int { return func(string) int { return n } }
+
+// warmByRoot は root ごとの待機枠数を返し、指定の無い root には既定値を返す。
+func warmByRoot(base int, overrides map[string]int) func(string) int {
+	return func(root string) int {
+		if n, ok := overrides[root]; ok {
+			return n
+		}
+		return base
+	}
+}
+
+// constantBefore は root によらず同じ cutoff を返す。
+func constantBefore(before string) func(string) string { return func(string) string { return before } }
+
+// 終了 worktree の候補は workspace ごとの cutoff で決める。
+// SQL には最短の保持期間から作った緩い floor だけを置き、長い保持期間の slot は Go 側で落とす。
+func TestGCCandidatesApplyPerWorkspaceCutoffs(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedWorkspaceRows(t, store, "long", "/long", "repository", "long-repository", "/long", "/long/.git", "")
+	ctx := context.Background()
+	archivedAt := FormatTime(time.Now().Add(-30 * time.Minute))
+	for _, row := range []struct{ slot, workspace string }{{"short-slot", "workspace"}, {"long-slot", "long"}, {"orphan-slot", ""}} {
+		workspaceID := any(row.workspace)
+		if row.workspace == "" {
+			workspaceID = nil
+		}
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO slots(id,workspace_id,generation,root_id,rel_path,state,created_at,updated_at) VALUES(?,?,1,?,?,'SNAPSHOTTED',?,?)`, row.slot, workspaceID, testRootID, "x/"+row.slot, now(), now()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, `INSERT INTO sessions(id,workspace_id,slot_id,state,agent_kind,client_pid,session_token_hash,created_at,archived_at) VALUES(?,?,?,'ARCHIVED','codex',1,x'00',?,?)`, "session-"+row.slot, "workspace", row.slot, now(), archivedAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	floor := FormatTime(time.Now().Add(-time.Minute))
+	before := func(root string) string {
+		if root == "/long" {
+			return FormatTime(time.Now().Add(-time.Hour))
+		}
+		return floor
+	}
+	candidates, err := store.GCCandidates(ctx, floor, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		seen[candidate.SlotID] = true
+	}
+	// workspace 未紐付けの slot は global 値で判定する。
+	if !seen["short-slot"] || !seen["orphan-slot"] || seen["long-slot"] {
+		t.Fatalf("candidates=%v, want the longer retention respected", seen)
+	}
+}
+
+// COLD 化の判定も workspace ごとの cutoff で行う。
+func TestColdRepositoryCandidatesApplyPerWorkspaceCutoffs(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedWorkspaceRows(t, store, "long", "/long", "repository", "long-repository", "/long", "/long/.git", "")
+	ctx := context.Background()
+	leasedAt := FormatTime(time.Now().Add(-30 * time.Minute))
+	for _, repository := range []string{"repository", "long-repository"} {
+		if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id=?`, leasedAt, repository); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, row := range []struct{ slot, workspace, repository string }{
+		{"short-slot", "workspace", "repository"},
+		{"long-slot", "long", "long-repository"},
+	} {
+		if _, err := store.CreateStandby(ctx, Slot{ID: row.slot, WorkspaceID: row.workspace, Generation: 1, RootID: testRootID, RelPath: row.workspace + "/" + row.slot, State: "READY"}, []SlotRepository{{RepositoryID: row.repository, DirName: "repository", State: "READY", BaseOID: "head"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	floor := FormatTime(time.Now().Add(-time.Minute))
+	hotBefore := func(root string) string {
+		if root == "/long" {
+			return FormatTime(time.Now().Add(-time.Hour))
+		}
+		return floor
+	}
+	candidates, err := store.ColdRepositoryCandidatesForWarm(ctx, floor, constantWarm(1), hotBefore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].SlotID != "short-slot" {
+		t.Fatalf("cold candidates=%+v, want only the shorter retention", candidates)
 	}
 }

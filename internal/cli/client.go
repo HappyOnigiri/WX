@@ -284,7 +284,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	if plan.leaseKind == "" {
 		args = addDirArgs(leaseAddDirs(c.Config, lease), args)
 	}
-	envOverrides := []string{"WX_SESSION_ID=" + lease.SessionID, "WX_SESSION_TOKEN=" + lease.Token, "WX_DAEMON_SOCKET=" + c.RPC.Socket, "WX_WORKSPACE_ROOT=" + lease.Path, "WX_SOURCE_WORKSPACE=" + lease.SourceWorkspace, "WX_READINESS_TIMEOUT=" + c.Config.Readiness.Timeout.String(), "WX_SOURCE_CWD=" + plan.cwd}
+	envOverrides := []string{"WX_SESSION_ID=" + lease.SessionID, "WX_SESSION_TOKEN=" + lease.Token, "WX_DAEMON_SOCKET=" + c.RPC.Socket, "WX_WORKSPACE_ROOT=" + lease.Path, "WX_SOURCE_WORKSPACE=" + lease.SourceWorkspace, "WX_READINESS_TIMEOUT=" + leaseReadinessTimeout(c.Config, lease).String(), "WX_SOURCE_CWD=" + plan.cwd}
 	if plan.fresh {
 		envOverrides = append(envOverrides, "WX_RECOVERY_DISCARDED=1")
 	}
@@ -293,12 +293,13 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	// 会話の再開は復元と ID の移譲を完了してから agent を起動する。
 	if !lease.Ready {
 		method := "WaitReady"
-		if !plan.resuming && plan.leaseKind == "" && plan.hooksReady && c.Config.Readiness.Mode != "full" {
+		if !plan.resuming && plan.leaseKind == "" && plan.hooksReady && leaseReadinessMode(c.Config, lease) != "full" {
 			method = "WaitEarlyReady"
 		}
-		waitCtx, cancel := context.WithTimeout(setupCtx, c.Config.Readiness.Timeout.Duration)
+		readinessTimeout := leaseReadinessTimeout(c.Config, lease)
+		waitCtx, cancel := context.WithTimeout(setupCtx, readinessTimeout)
 		waiting.watch(waitCtx, c.RPC, lease)
-		err = c.RPC.Call(waitCtx, method, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
+		err = c.RPC.Call(waitCtx, method, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(readinessTimeout.Milliseconds())}, nil)
 		waiting.finish()
 		cancel()
 		if err != nil {

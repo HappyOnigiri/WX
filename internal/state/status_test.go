@@ -205,7 +205,7 @@ func TestStatusDiagnosticsAndGarbageCollectionCandidatesExposeRows(t *testing.T)
 	if jobs, err := store.RecoverJobs(ctx, true); err != nil || len(jobs) == 0 || jobs[0].ID != job.ID {
 		t.Fatalf("reclaimed jobs=%+v err=%v", jobs, err)
 	}
-	candidates, err := store.GCCandidates(ctx, FormatTime(time.Now().Add(time.Hour)))
+	candidates, err := store.GCCandidates(ctx, FormatTime(time.Now().Add(time.Hour)), constantBefore(FormatTime(time.Now().Add(time.Hour))))
 	if err != nil || len(candidates) != 1 || candidates[0].SlotID != "snapshot" || candidates[0].SessionID != session.ID {
 		t.Fatalf("GC candidates=%+v err=%v", candidates, err)
 	}

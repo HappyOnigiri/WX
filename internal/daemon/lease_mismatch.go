@@ -149,6 +149,17 @@ func cowThresholdSummary(c config.Config, w discovery.Workspace) string {
 	return strings.Join(parts, " ")
 }
 
+// copyModeSummary は workspace の各 repository へ効いているコピー方式を返す。
+// 更新互換fingerprintは repository ごとに解決した方式を含むため、global の値で代表させない。
+func copyModeSummary(c config.Config, w discovery.Workspace) string {
+	parts := make([]string, 0, len(w.Repositories))
+	for _, repository := range w.Repositories {
+		parts = append(parts, fmt.Sprintf("%s=%s", filepath.Base(string(repository.MainPath)), c.CopyMode(string(repository.MainPath))))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, " ")
+}
+
 // shortOID はログ用にOIDを短縮する。空文字列と短い値はそのまま返す。
 func shortOID(oid string) string {
 	if len(oid) <= 12 {

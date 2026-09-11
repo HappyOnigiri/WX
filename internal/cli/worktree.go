@@ -24,7 +24,8 @@ type WorktreeOptions struct {
 
 // SelectWorktreePolicy は agent を起動せず、現在の workspace の policy を選択して保存する。
 func (c Client) SelectWorktreePolicy(ctx context.Context) int {
-	if _, err := c.selectWorktreeMode(ctx, WorktreeOptions{Select: true}); err != nil {
+	root, rootErr := c.policyRoot(ctx)
+	if _, err := c.selectWorktreeMode(ctx, WorktreeOptions{Select: true}, root, rootErr); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
@@ -42,7 +43,9 @@ func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, bran
 		fmt.Fprintln(os.Stderr, "error: --fresh requires a resume operation")
 		return 2
 	}
-	mode, err := c.selectWorktreeMode(ctx, options)
+	// workspace root は agent.add_dir の解決キーでもあるため、worktree を作らない経路より先に一度だけ解決する。
+	root, rootErr := c.policyRoot(ctx)
+	mode, err := c.selectWorktreeMode(ctx, options, root, rootErr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
@@ -52,7 +55,7 @@ func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, bran
 			fmt.Fprintln(os.Stderr, "error: --branch and --fresh require a worktree")
 			return 2
 		}
-		return runDirectAgent(ctx, agent, addDirArgs(directAddDirs(c.Config), args))
+		return runDirectAgent(ctx, agent, addDirArgs(directAddDirs(c.Config, root), args))
 	}
 	c.forceWorktree = options.Force
 	// 保存直後の選択を、既に動いている daemon にも lease より先に反映する。
@@ -67,21 +70,29 @@ func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, bran
 	return c.RunAgent(ctx, agent, args, branches, fresh)
 }
 
-func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions) (string, error) {
+// policyRoot は設定を引くための workspace root を返す。
+// リポジトリ内なら main worktree、それ以外は CWD そのものになる。
+// 解決に失敗したときは空の root と理由を返し、root を必要としない経路は global 設定のまま進める。
+func (c Client) policyRoot(ctx context.Context) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: c.Config.Discovery.Timeout.Duration}, Config: c.Config}
+	return discoverer.PolicyRoot(ctx, cwd)
+}
+
+// selectWorktreeMode は worktree の方針を決める。root と rootErr は policyRoot の結果で、
+// 方針の決定に root が要る経路だけが rootErr で失敗する。
+func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions, root string, rootErr error) (string, error) {
 	if options.Disable {
 		return "off", nil
 	}
 	if options.Force {
 		return "cold", nil
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: c.Config.Discovery.Timeout.Duration}, Config: c.Config}
-	root, err := discoverer.PolicyRoot(ctx, cwd)
-	if err != nil {
-		return "", err
+	if rootErr != nil {
+		return "", rootErr
 	}
 	mode := c.Config.WorktreeMode(root)
 	if !options.Select && mode != "ask" {
@@ -97,7 +108,7 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions)
 	case "off":
 		initial = 2
 	}
-	mode, err = tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
+	mode, err := tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
 		Title: "Worktree policy", Description: "workspace: " + root, Initial: initial,
 		Options: []tui.Option{
 			{Value: "hot", Label: "Hot standby", Description: "keep a worktree ready for faster launches"},

@@ -53,7 +53,10 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	// 使用中の workspace へ COLD の待機枠を作らないようにする。
 	// 問い合わせの前後で確かめるのは、その間に貸出が終わると書き込みも進行中も見えなくなるためである。
 	leaseInFlight := m.workspaceLeaseInFlight(string(w.ID))
-	hotBefore := state.FormatTime(time.Now().UTC().Add(-cfg.Retention.HotStandby.Duration))
+	// HotRepositoryIDs は workspace を跨いで引くが、参照するのはこの workspace の repository だけなので、
+	// cutoff もこの workspace の実効保持期間で作れば足りる。
+	hotStandby, _ := cfg.HotStandbyForWorkspace(string(w.Root))
+	hotBefore := state.FormatTime(time.Now().UTC().Add(-hotStandby))
 	hot, err := m.store.HotRepositoryIDs(ctx, hotBefore)
 	if err != nil {
 		return err
@@ -216,7 +219,10 @@ func (m *Manager) standbyReplenishmentEnabled(w discovery.Workspace) bool {
 func (m *Manager) standbyReplenishmentEnabledForRoot(root string) bool {
 	cfg := m.Config()
 	warmCount, _ := cfg.WarmCountForWorkspace(root)
-	return cfg.WorktreeMode(root) == "hot" && warmCount >= 1 && cfg.Retention.HotStandby.Duration > 0
+	// 保持期間も workspace の実効値で見る。global だけで判定すると、個別指定が 0 の workspace で
+	// 補充だけが回り GC が即座に回収する往復になる。
+	hotStandby, _ := cfg.HotStandbyForWorkspace(root)
+	return cfg.WorktreeMode(root) == "hot" && warmCount >= 1 && hotStandby > 0
 }
 
 func (m *Manager) handleNormalSessionSuccess(ctx context.Context, w discovery.Workspace, replenishJob state.Job, replenished bool) {

@@ -224,4 +224,21 @@ func TestPinnedPrepareCommandRunsInsideValidatedWorktree(t *testing.T) {
 	if err := plain.runPrepareWithIdentity(ctx, repo, target, ""); err != nil {
 		t.Fatalf("default prepare timeout: %v", err)
 	}
+	// フォールバック先は repository 個別の readiness.timeout である。
+	// global だけを見ていると、遅い repository のために伸ばした待機予算が prepare command へ届かない。
+	cfg.Readiness.Timeout = config.Duration{}
+	cfg.Repositories[string(repo.MainPath)] = config.Repository{
+		Prepare:   config.Prepare{Command: []string{"/usr/bin/true"}},
+		Readiness: config.RepositoryReadiness{Timeout: &config.Duration{Duration: time.Minute}},
+	}
+	perRepository := &Preparer{Git: preparer.Git, Config: cfg, OwnedRoot: owner, RootPath: root}
+	if err := perRepository.runPrepareWithIdentity(ctx, repo, target, ""); err != nil {
+		t.Fatalf("repository readiness timeout fallback: %v", err)
+	}
+	// 個別指定の無い repository は global の 0 のまま失敗し、フォールバック元が変わっていないことを示す。
+	other := discovery.Repository{MainPath: repo.MainPath + "-other"}
+	cfg.Repositories[string(other.MainPath)] = config.Repository{Prepare: config.Prepare{Command: []string{"/usr/bin/true"}}}
+	if err := perRepository.runPrepareWithIdentity(ctx, other, target, ""); err == nil {
+		t.Fatal("a repository without an override accepted a non-positive timeout")
+	}
 }

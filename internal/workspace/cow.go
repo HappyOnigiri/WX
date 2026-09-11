@@ -36,7 +36,7 @@ func cowLeftoverResult(stdout string) error {
 // 貸出前にのみ呼び、Git の index（復元時の staged/unstaged の区別を含む）は作り直さない。
 // scope は候補を限定する集合で、nil なら index 全体を候補にする。
 func (p *Preparer) compactWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string, scope *cowScope) error {
-	mode := p.Config.Storage.CopyMode
+	mode := p.Config.CopyMode(string(repo.MainPath))
 	if mode == config.CopyModeCopy {
 		return nil
 	}

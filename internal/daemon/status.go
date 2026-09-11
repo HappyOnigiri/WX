@@ -44,6 +44,8 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	for index := range details.Workspaces {
 		details.Workspaces[index].Policy = cfg.WorktreeMode(details.Workspaces[index].Root)
 	}
+	// repository 行は所属 workspace を特定できないため、待機枠の期限は global の保持期間で出す。
+	// workspace 個別の実効値は wx config --workspace が示す。
 	for index := range details.Repositories {
 		details.Repositories[index].Hot = false
 		if leasedAt, parseErr := time.Parse(time.RFC3339Nano, details.Repositories[index].LastUsedAt); parseErr == nil {

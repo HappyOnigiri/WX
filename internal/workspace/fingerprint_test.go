@@ -414,3 +414,40 @@ func TestSubmodulePolicyChangesBothFingerprints(t *testing.T) {
 		}
 	}
 }
+
+// repository 個別の copy_mode は、その repository の fingerprint と更新互換 fingerprint だけを変える。
+// 個別指定が1つも無い設定では、以前と同じ値のままでなければ全 READY slot が無効になる。
+func TestFingerprintFollowsRepositoryCopyMode(t *testing.T) {
+	a := discovery.Repository{MainPath: domain.CanonicalPath(t.TempDir())}
+	b := discovery.Repository{MainPath: domain.CanonicalPath(t.TempDir())}
+	cfg := config.Defaults()
+	values := func() (string, string, string) {
+		t.Helper()
+		first, err := Fingerprint(1, "oid", a, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := Fingerprint(1, "oid", b, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		update, err := UpdateCompatibilityFingerprint(1, a, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return first, second, update
+	}
+	beforeA, beforeB, beforeUpdateA := values()
+	// 上書きの無い設定を組み直しても同じ値になる。schema を上げていないことの確認でもある。
+	if againA, againB, againUpdateA := values(); againA != beforeA || againB != beforeB || againUpdateA != beforeUpdateA {
+		t.Fatal("fingerprints changed without any override")
+	}
+	cfg.Repositories[string(a.MainPath)] = config.Repository{Storage: config.RepositoryStorage{CopyMode: config.CopyModeCopy}}
+	afterA, afterB, afterUpdateA := values()
+	if afterA == beforeA || afterUpdateA == beforeUpdateA {
+		t.Fatalf("a repository copy mode did not change its own fingerprint: %s %s", afterA, afterUpdateA)
+	}
+	if afterB != beforeB {
+		t.Fatalf("another repository's fingerprint changed: %s want=%s", afterB, beforeB)
+	}
+}

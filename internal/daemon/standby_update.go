@@ -52,7 +52,7 @@ func (m *Manager) leaseMatchingReady(ctx context.Context, w discovery.Workspace,
 			return Lease{}, false, err
 		}
 		m.schedule(job)
-		return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteColdStart}, true, nil
+		return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteColdStart}.withReadiness(m.Config(), w), true, nil
 	}
 	job, replenished, err := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session)
 	if err != nil {
@@ -60,7 +60,7 @@ func (m *Manager) leaseMatchingReady(ctx context.Context, w discovery.Workspace,
 		return Lease{}, false, err
 	}
 	m.handleNormalSessionSuccess(ctx, w, job, replenished)
-	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}, true, nil
+	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}.withReadiness(m.Config(), w), true, nil
 }
 
 // standbyUpdatePlan は READY standby を要求内容へ更新するための、予約前に確定した入力一式である。
@@ -187,7 +187,7 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 	}
 	m.log.Info("standby update reserved", append([]any{"workspace_id", w.ID, "slot_id", slot.ID}, mismatch.logArgs()...)...)
 	m.schedule(job)
-	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slot.Path, leasePathValue, repositories), Route: RouteUpdate}, true, nil
+	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slot.Path, leasePathValue, repositories), Route: RouteUpdate}.withReadiness(m.Config(), w), true, nil
 }
 
 // standbyStateRace は候補を奪われただけの一時的な失敗かを返す。slotの状態は変えず次の候補へ回す。
