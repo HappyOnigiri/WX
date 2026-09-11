@@ -79,6 +79,8 @@ COLD化の`RETIRING`は完了後に`READY`へ戻るので枠に数える。
 再利用が有効な定期reconcileはREADY slotを保存済みOIDと更新互換fingerprintで検証し、現在のmainとの差だけではSTALEにしない。
 配置履歴を持たないREADY slotは更新に使えないため、この検証の対象から外し、現在のmainと完全一致でなければSTALEにする。
 貸出時に更新不適格と判定した候補もSTALEにして回収・補充へ回す。残しても毎回Cold Startになる一方で待機枠を占有し続けるためである。
+worktreeにtracked変更が残っていて棄却した候補も同じ扱いにする。次の貸出でも同じ理由で棄却されるので、定期reconcileを待つ間だけREADYの見かけと実態がずれるためである。
+再試行で解消し得る理由（併走する遷移に負けた、Gitやファイル操作が失敗した）はSTALEにせず、候補を飛ばすだけにとどめる。
 `--branch`指定の貸出では回収しない。main向けのstandbyをbranch要求のために捨てないためである。
 OIDと配置の更新は貸出要求時だけ行い、要求時点のOID・配置計画・copy modeをDBへ固定する。
 UPDATEは利用者向け実行枠を使い、slot・STARTING session・jobの予約を同じtransactionで確定する。

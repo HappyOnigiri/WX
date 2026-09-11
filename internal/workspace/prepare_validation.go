@@ -307,6 +307,11 @@ func (p *Preparer) validateTrackedCleanOwned(ctx context.Context, target string,
 	return nil
 }
 
+// ErrTrackedChanges は worktree の tracked file に変更が残っていることを示す。
+// 再試行しても内容は変わらないため、貸出が READY standby をこの理由で棄却したら、
+// 呼び出し元は slot を READY のまま残さず回収して補充へ回す。
+var ErrTrackedChanges = errors.New("prepared worktree has tracked changes")
+
 func (p *Preparer) validateTrackedClean(ctx context.Context, target string) error {
 	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
 	if err != nil {
@@ -327,7 +332,7 @@ func (p *Preparer) validateTrackedClean(ctx context.Context, target string) erro
 		return err
 	}
 	if strings.TrimSpace(status.Stdout) != "" {
-		return errors.New("prepared worktree has tracked changes")
+		return ErrTrackedChanges
 	}
 	return nil
 }
