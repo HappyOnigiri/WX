@@ -192,6 +192,19 @@ func (f *reuseStandbyFixture) commitChangedAttributes(t *testing.T) {
 	gitRun(t, f.repository, "commit", "-m", "add attributes")
 }
 
+// dirtyStandbyTracked は standby の worktree にある tracked file を書き換え、READY 検証で棄却される状態にする。
+// 利用者や外部の道具が待機中の worktree を触った状況を再現する。
+func (f *reuseStandbyFixture) dirtyStandbyTracked(t *testing.T, slotID string) {
+	t.Helper()
+	repositoryState, err := f.store.SlotRepository(context.Background(), slotID, string(f.workspace.Repositories[0].ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repositoryState.WorktreePath, "tracked.txt"), []byte("edited outside wx\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStandbyRetiredWhenAttributesChangeAndReplenishmentRestoresWarmLease(t *testing.T) {
 	f := newReuseStandbyFixture(t)
 	ctx := context.Background()
@@ -240,6 +253,69 @@ func TestStandbyKeptReadyWhenBranchLeaseFindsItNotUpdateable(t *testing.T) {
 	if got := f.slotState(t, standby.ID); got != "READY" {
 		t.Fatalf("standby state=%s, want READY for a --branch lease", got)
 	}
+}
+
+func TestStandbyRetiredWhenReadyWorktreeHasTrackedChanges(t *testing.T) {
+	f := newReuseStandbyFixture(t)
+	ctx := context.Background()
+	standby := f.readyStandby(t)
+	f.dirtyStandbyTracked(t, standby.ID)
+	lease, err := f.manager.ResolveAndLease(ctx, f.repository, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID == standby.ID {
+		t.Fatalf("lease=%+v, want a cold start on another slot", lease)
+	}
+	// 棄却した候補をREADYのまま残すと、次の定期reconcileまでstatusのreadyが実態とずれる。
+	f.requireRetired(t, standby.ID)
+	f.settleStandby(t)
+	replenished := f.readyStandby(t)
+	if replenished.ID == standby.ID {
+		t.Fatalf("replenished slot=%s, want a new slot", replenished.ID)
+	}
+	warm, err := f.manager.ResolveAndLease(ctx, f.repository, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warm.SessionID != replenished.ID || !warm.Ready {
+		t.Fatalf("second lease=%+v, want warm lease of %s", warm, replenished.ID)
+	}
+}
+
+func TestStandbyKeptReadyWhenBranchLeaseFindsTrackedChanges(t *testing.T) {
+	f := newReuseStandbyFixture(t)
+	ctx := context.Background()
+	standby := f.readyStandby(t)
+	f.dirtyStandbyTracked(t, standby.ID)
+	lease, err := f.manager.ResolveAndLease(ctx, f.repository, []string{"main"}, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID == standby.ID {
+		t.Fatalf("lease=%+v, want a cold start on another slot", lease)
+	}
+	if got := f.slotState(t, standby.ID); got != "READY" {
+		t.Fatalf("standby state=%s, want READY for a --branch lease", got)
+	}
+}
+
+// 再利用を切った貸出でもtracked変更の候補は回収する。
+// 回収しないと候補の検証失敗がそのまま貸出のエラーになり、cold startにも落ちない。
+func TestStandbyRetiredWithTrackedChangesWithoutReuse(t *testing.T) {
+	f := newReuseStandbyFixture(t)
+	ctx := context.Background()
+	f.manager.cfg.Worktree.ReuseStandby = false
+	standby := f.readyStandby(t)
+	f.dirtyStandbyTracked(t, standby.ID)
+	lease, err := f.manager.ResolveAndLease(ctx, f.repository, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID == standby.ID {
+		t.Fatalf("lease=%+v, want a cold start on another slot", lease)
+	}
+	f.requireRetired(t, standby.ID)
 }
 
 func TestReconcileRetiresStandbyWithoutPlacementHistoryAndDoctorReportsIt(t *testing.T) {
