@@ -250,6 +250,11 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		}
 		args = resumeArgs(plan.agent, plan.target.AgentSessionID, lease.Path, rest)
 	}
+	// 複数 repository の workspace では CWD が repository の親になるため、配下の agent 資産は --add-dir でしか読まれない。
+	// 貸出コマンドは agent ではなく、この引数の作法を持たない。
+	if plan.leaseKind == "" {
+		args = addDirArgs(leaseAddDirs(c.Config, lease), args)
+	}
 	envOverrides := []string{"WX_SESSION_ID=" + lease.SessionID, "WX_SESSION_TOKEN=" + lease.Token, "WX_DAEMON_SOCKET=" + c.RPC.Socket, "WX_WORKSPACE_ROOT=" + lease.Path, "WX_SOURCE_WORKSPACE=" + lease.SourceWorkspace, "WX_READINESS_TIMEOUT=" + c.Config.Readiness.Timeout.String(), "WX_SOURCE_CWD=" + plan.cwd}
 	if plan.fresh {
 		envOverrides = append(envOverrides, "WX_RECOVERY_DISCARDED=1")

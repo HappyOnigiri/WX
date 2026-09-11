@@ -31,6 +31,9 @@ type Lease struct {
 	RootIdentity    string `json:"root_identity,omitempty"`
 	SourceWorkspace string `json:"source_workspace,omitempty"`
 	Ready           bool   `json:"ready"`
+	// RepositoryDirs は Path 直下の repository directory 名で、client が agent の --add-dir へ渡す。
+	// 単一 repository の貸出は Path が worktree そのものなので空になる。
+	RepositoryDirs []string `json:"repository_dirs,omitempty"`
 }
 
 // ResolveAndLease は cwd の workspace を解決して貸出す。
@@ -137,14 +140,14 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 				job, leaseErr := m.store.LeaseReadyWithCold(ctx, ready.ID, session)
 				if leaseErr == nil {
 					m.schedule(job)
-					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false}, true, nil
+					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories)}, true, nil
 				}
 				m.releaseLease(session.ID)
 				return Lease{}, false, nil
 			}
 			if replenishJob, replenished, leaseErr := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session); leaseErr == nil {
 				m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
-				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true}, true, nil
+				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories)}, true, nil
 			}
 			m.releaseLease(session.ID)
 			return Lease{}, false, nil
