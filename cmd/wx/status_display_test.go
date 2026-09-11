@@ -158,6 +158,34 @@ func TestPrintStatusSummaryMarksTheStoppedWorkspaceRow(t *testing.T) {
 	}
 }
 
+// 補充計画の失敗は補充を止めないので、停止とは違う注記で workspace 行に出す。
+func TestPrintStatusSummaryMarksThePlanFailureRow(t *testing.T) {
+	payload := map[string]any{
+		"workspace_details": []map[string]any{{"id": "w1", "root": "/repo", "policy": "hot", "ready": 0, "leased": 0}},
+		"job_details":       map[string]any{"pending": 0, "running": 0, "failed": 1},
+		"worktree_roots":    []map[string]any{},
+		"standby_replenishment": []map[string]any{
+			{"root": "/repo", "reason": "STANDBY_PLAN_FAILED", "detail": "job-9", "failed_at": "2026-09-11T00:00:00Z", "action": `wx retry-standby "/repo"`},
+		},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, false)
+	got := output.String()
+	if !strings.Contains(got, `! standby replenishment failed to plan new worktrees; run wx retry-standby "/repo"`) {
+		t.Fatalf("plan failure note missing:\n%s", got)
+	}
+	// -v では失敗時刻まで出し、未知キーとして Additional へ落とさない。
+	var verbose bytes.Buffer
+	printStatusDisplay(&verbose, payload, true)
+	detailed := verbose.String()
+	if !strings.Contains(detailed, "Failed: 2026-09-11T00:00:00Z") {
+		t.Fatalf("verbose plan failure output=%s", detailed)
+	}
+	if strings.Contains(detailed, "failed_at") {
+		t.Fatalf("verbose output reported failed_at as an unknown key:\n%s", detailed)
+	}
+}
+
 // 登録が消えた workspace の停止は表に載らないので、残余として別行で出す。
 func TestPrintStatusSummaryReportsStopsWithoutAWorkspaceRow(t *testing.T) {
 	payload := map[string]any{

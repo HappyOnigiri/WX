@@ -99,7 +99,7 @@ type statusWorkspaceRow struct {
 	sortKey, path, policy, ready, leased, last, note string
 }
 
-// statusReplenishmentNote は補充停止中の workspace 行に出す注記を作る。
+// statusReplenishmentNote は補充が進んでいない workspace 行に出す注記を作る。
 // 表の外へ独立行として出すと正常な行に埋もれるため、該当行自体へ理由と復帰手順を載せる。
 func statusReplenishmentNote(item map[string]any) string {
 	reason := "standby replenishment stopped"
@@ -108,6 +108,9 @@ func statusReplenishmentNote(item map[string]any) string {
 		reason += " after wx clear"
 	case "STANDBY_PREPARE_FAILED":
 		reason += " after a preparation failure"
+	case "STANDBY_PLAN_FAILED":
+		// 計画の失敗は補充を止めないので、停止とは書かずに枠が埋まっていないことを示す。
+		reason = "standby replenishment failed to plan new worktrees"
 	}
 	action := statusValueRaw(item, "action")
 	if action == "" {
