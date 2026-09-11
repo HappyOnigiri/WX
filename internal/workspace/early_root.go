@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -19,7 +18,7 @@ type RootStagePlan struct {
 
 // PlanRootStages は非 Git workspace root の通常の配置予定を二分する。
 // 明示 copy の必須検査は計画時に行い、追加 early_paths だけでは配置対象を増やさない。
-func PlanRootStages(log *slog.Logger, source string, rules config.Workspace, extra []string) (*RootStagePlan, error) {
+func PlanRootStages(log *slog.Logger, source string, rules RootRules, extra []string) (*RootStagePlan, error) {
 	sourceRoot, err := OpenPhysicalRoot(source)
 	if err != nil {
 		return nil, err

@@ -252,7 +252,11 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			}
 			return err
 		}
-		if err := m.materializeWorkspaceRoot(string(w.Root), slot.Path, m.Config().Workspaces[string(w.Root)]); err != nil {
+		rootRules, err := m.rootRules(w)
+		if err != nil {
+			return err
+		}
+		if err := m.materializeWorkspaceRoot(string(w.Root), slot.Path, rootRules); err != nil {
 			if errors.Is(err, state.ErrOwnership) {
 				_ = m.store.SetSlotState(context.Background(), id, []string{"RESTORING"}, "QUARANTINED", "WORKTREE_OWNERSHIP_UNCERTAIN")
 			} else {
@@ -271,7 +275,7 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			return fmt.Errorf("open workspace restore target root: %w", targetRootErr)
 		}
 		defer closeTargetRoot()
-		if err := archive.RestoreVerifiedWorkspace(ctx, verifiedWorkspace.snapshot, slot.Path, targetRoot, targetRootHandle, workspaceRecoveryExclusions(w, repos, m.Config())); err != nil {
+		if err := archive.RestoreVerifiedWorkspace(ctx, verifiedWorkspace.snapshot, slot.Path, targetRoot, targetRootHandle, workspaceRecoveryExclusions(repos, rootRules)); err != nil {
 			m.quarantineWorkspaceArchiveFailure(ctx, id, err)
 			return fmt.Errorf("restore workspace root: %w", err)
 		}
@@ -357,10 +361,12 @@ func (m *Manager) recoveryUsable(ctx context.Context, sessionID string, w discov
 	return true, nil
 }
 
-func workspaceRecoveryExclusions(w discovery.Workspace, repos []state.SlotRepository, cfg config.Config) []string {
+// workspaceRecoveryExclusions は解決済みのroot ruleを受け取る。configだけを見るとmanifest由来のlinkが除外から漏れ、
+// 復元時のpruneがlinkを消してsnapshotがlink先を取り込む。
+func workspaceRecoveryExclusions(repos []state.SlotRepository, rules workspace.RootRules) []string {
 	// bundle root内のworktree、slot marker、.worktreelinkをsnapshot/prune対象から外す。
 	// source相対pathではなくslot_repositories.dir_nameを使わないとnested repositoryを消し得る。
-	links := cfg.Workspaces[string(w.Root)].Link
+	links := rules.Link
 	excluded := make([]string, 0, 2*len(repos)+len(links))
 	for _, repository := range repos {
 		if repository.DirName == "" {

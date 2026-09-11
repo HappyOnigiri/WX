@@ -144,7 +144,10 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 	if err != nil {
 		return "", err
 	}
-	rules := c.Workspaces[workspaceRoot]
+	rules, err := rootRulesForRepository(repo, workspaceRoot, c)
+	if err != nil {
+		return "", err
+	}
 	submodules, _ := c.SubmodulesForWorkspace(workspaceRoot)
 	_, _ = fmt.Fprintf(h, "workspace-root=%s\ncopy-rules=%q\nlink-rules=%q\nsubmodules=%t\n", workspaceRoot, rules.Copy, rules.Link, submodules)
 	copyNames, explicitCopies, err := workspaceRootCopyPlan(rules)
@@ -222,8 +225,23 @@ func writePrepareFingerprint(h hash.Hash, repo discovery.Repository, c config.Co
 	return nil
 }
 
+// rootRulesForRepository は workspace root の rule を workspace の種別に合わせて解決する。
+// repository workspace では root が repository の main worktree そのもので、root 直下は Git が checkout する。
+// manifest も agent 資産の既定もここで効かせると、配置しない実体を fingerprint に混ぜて READY slot を無効化してしまう。
+func rootRulesForRepository(repo discovery.Repository, workspaceRoot string, c config.Config) (RootRules, error) {
+	if isRepositoryWorkspaceLayout(repo) {
+		return RootRulesFromConfig(c.Workspaces[workspaceRoot]), nil
+	}
+	return ResolveRootRules(workspaceRoot, c.Workspaces[workspaceRoot])
+}
+
+// isRepositoryWorkspaceLayout は repository が workspace root そのものかを返す。偽なら root は Git 管理外の multi-repository root である。
+func isRepositoryWorkspaceLayout(repo discovery.Repository) bool {
+	return repo.RelativePath == "" || filepath.Clean(repo.RelativePath) == "."
+}
+
 func repositoryWorkspaceRoot(repo discovery.Repository) (string, error) {
-	if repo.RelativePath == "" || filepath.Clean(repo.RelativePath) == "." {
+	if isRepositoryWorkspaceLayout(repo) {
 		return string(repo.MainPath), nil
 	}
 	rel, err := safeRelative(repo.RelativePath)

@@ -178,7 +178,7 @@ func TestMaterializeWorkspaceRootFailsWhenSlotDirectoryIsUnreadable(t *testing.T
 	t.Cleanup(func() { _ = os.Chmod(slotPath, 0o700) })
 
 	source := t.TempDir()
-	if err := manager.materializeWorkspaceRoot(source, slotPath, config.Workspace{}); err == nil {
+	if err := manager.materializeWorkspaceRoot(source, slotPath, workspace.RootRules{}); err == nil {
 		t.Fatal("workspace root materialization succeeded despite an unopenable slot directory")
 	}
 }

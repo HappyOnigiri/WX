@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
@@ -15,8 +14,8 @@ import (
 // tracked AGENTS.md は意図的に CLAUDE.md への symlink になり得る。Git が repository とともに checkout するため、workspace-root materializer は追従してはならない。
 var defaultWorkspaceRootCopyNames = []string{"AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md"}
 
-func workspaceRootCopyPlan(rules config.Workspace) ([]string, map[string]bool, error) {
-	copyNames := append([]string{}, defaultWorkspaceRootCopyNames...)
+func workspaceRootCopyPlan(rules RootRules) ([]string, map[string]bool, error) {
+	copyNames := append([]string{}, rules.OptionalCopy...)
 	copyNames = append(copyNames, rules.Copy...)
 	explicit := make(map[string]bool, len(rules.Copy))
 	for _, name := range rules.Copy {
@@ -70,7 +69,7 @@ func validateWorkspaceRootCopySources(log *slog.Logger, sourceRoot *os.Root, wor
 	return present, nil
 }
 
-func MaterializeRoot(log *slog.Logger, source, target string, rules config.Workspace) error {
+func MaterializeRoot(log *slog.Logger, source, target string, rules RootRules) error {
 	var err error
 	source, err = filepath.Abs(filepath.Clean(source))
 	if err != nil {
@@ -91,7 +90,7 @@ func MaterializeRoot(log *slog.Logger, source, target string, rules config.Works
 // MaterializeRootAt は workspace-level の copy/link rule を pin 済み destination namespace に materialize する。
 // daemon が manager-held wx root descriptor から slot root を開いた後、multi-repository slot に対して使う。
 // symlink の copy/link source は skip して log へ残し、materialize 全体は続行する。log は nil でよい。
-func MaterializeRootAt(log *slog.Logger, source string, destinationRoot *os.Root, rules config.Workspace) error {
+func MaterializeRootAt(log *slog.Logger, source string, destinationRoot *os.Root, rules RootRules) error {
 	if destinationRoot == nil {
 		return errors.New("workspace destination root is nil")
 	}

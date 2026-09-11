@@ -32,7 +32,7 @@ func TestRootPlacementsListsCopiesAndLinks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	placements, err := RootPlacements(source, config.Workspace{Copy: []string{"configs"}, Link: []string{"shared"}})
+	placements, err := RootPlacements(source, RootRulesFromConfig(config.Workspace{Copy: []string{"configs"}, Link: []string{"shared"}}))
 	if err != nil {
 		t.Fatal(err)
 	}

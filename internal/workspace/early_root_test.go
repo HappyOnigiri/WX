@@ -19,7 +19,7 @@ func TestRootStagesSelectWithinCopyAndLinkPlan(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rules := config.Workspace{Copy: []string{"configs"}, Link: []string{"shared"}}
+	rules := RootRulesFromConfig(config.Workspace{Copy: []string{"configs"}, Link: []string{"shared"}})
 	stage, err := PlanRootStages(nil, source, rules, []string{"configs/early", "shared/file", "unplanned"})
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestRootStagesSelectWithinCopyAndLinkPlan(t *testing.T) {
 	if _, err := root.Stat("configs/late"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PlanRootStages(nil, source, config.Workspace{Copy: []string{"missing"}}, nil); err == nil {
+	if _, err := PlanRootStages(nil, source, RootRulesFromConfig(config.Workspace{Copy: []string{"missing"}}), nil); err == nil {
 		t.Fatal("missing required copy accepted")
 	}
 }
@@ -70,13 +70,13 @@ func TestRootStagesRejectNestedSymlinksAndChangedCopyTypes(t *testing.T) {
 	if err := os.Symlink("/outside", filepath.Join(source, "configs", "link")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PlanRootStages(nil, source, config.Workspace{Copy: []string{"configs"}}, nil); err == nil {
+	if _, err := PlanRootStages(nil, source, RootRulesFromConfig(config.Workspace{Copy: []string{"configs"}}), nil); err == nil {
 		t.Fatal("nested copy symlink was accepted")
 	}
 	if err := os.WriteFile(filepath.Join(source, "leaf"), []byte("planned file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stage, err := PlanRootStages(nil, source, config.Workspace{Copy: []string{"leaf"}}, nil)
+	stage, err := PlanRootStages(nil, source, RootRulesFromConfig(config.Workspace{Copy: []string{"leaf"}}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

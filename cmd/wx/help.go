@@ -234,6 +234,20 @@ on the repository's file size distribution. Repository entries are a map, so
 edit them in the config file; wx config does not set them. Only the repositories
 whose effective limit changed lose the reuse of their READY standby worktrees.
 
+Workspace root files (multi-repository workspaces):
+The root itself has no checkout, so only these paths reach a slot: AGENTS.md,
+AGENTS.local.md, CLAUDE.md, CLAUDE.local.md, the agent asset directories
+.claude/skills, .claude/agents, .claude/commands, .claude/hooks and
+.codex/prompts, and whatever the rules below add. Missing paths are skipped.
+Add more with a .worktreeinclude (copied, glob patterns, no match is fine) and a
+.worktreelink (symlinked back to the root, literal paths that must exist) in the
+root itself, or with workspaces.<root>.copy and workspaces.<root>.link in the
+config file. Workspace entries are a map, so edit them in the config file; wx
+config does not set copy or link. A copy path set in the config must exist or
+preparation fails. A path cannot be both copied and linked. The root manifests
+apply to multi-repository workspaces only; inside a repository the same file
+names keep their repository meaning.
+
 Readiness (readiness.mode):
   early  wait for Git registration and startup files, then launch with readiness hooks (default)
   full   wait for checkout, includes, links, prepare commands, and final validation
