@@ -257,6 +257,11 @@ func TestReconcileRetiresStandbyWithoutPlacementHistoryAndDoctorReportsIt(t *tes
 	if got := f.slotState(t, standby.ID); got != "READY" {
 		t.Fatalf("standby with placement history=%s, want READY", got)
 	}
+	// idle更新で現在のmainへ揃うため、配置履歴を持たないslotの扱いを見るにはもう一度mainを進める。
+	if err := os.WriteFile(filepath.Join(f.repository, "tracked.txt"), []byte("advanced again\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repository, "commit", "-am", "advance main again")
 	raw := openTestDatabase(t, filepath.Join(f.root, "state.db"))
 	if _, err := raw.ExecContext(ctx, `UPDATE slots SET placement_history_complete=0 WHERE id=?`, standby.ID); err != nil {
 		t.Fatal(err)
