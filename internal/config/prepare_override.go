@@ -42,13 +42,10 @@ func (o PrepareOverride) Validate() error {
 }
 
 // Apply は上書きを反映した設定を返す。受け取った設定は変更しない。
+// Storage を書き換えるのではなく、解決ヘルパーが読む最上位層として載せる。
+// 書き換えでは repository 個別指定が上に残り、その repository でだけ上書きが黙って無効になる。
 func (o PrepareOverride) Apply(c Config) Config {
-	if o.CopyMode != "" {
-		c.Storage.CopyMode = o.CopyMode
-	}
-	if o.COWMinSizeKiB != nil {
-		c.Storage.COWMinSizeKiB = *o.COWMinSizeKiB
-	}
+	c.prepareOverride = o
 	return c
 }
 

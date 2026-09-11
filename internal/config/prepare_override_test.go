@@ -5,24 +5,45 @@ import (
 	"testing"
 )
 
-// 指定した key だけが実効設定を置き換え、残りは受け取った設定のままになる。
+// 指定した key だけが実効値を置き換え、残りは受け取った設定のままになる。
 func TestPrepareOverrideAppliesOnlyTheSpecifiedKeys(t *testing.T) {
 	t.Parallel()
 	base := Defaults()
 	base.Storage.CopyMode = CopyModeCOW
 	base.Storage.COWMinSizeKiB = 32
 	applied := PrepareOverride{CopyMode: CopyModeCopy}.Apply(base)
-	if applied.Storage.CopyMode != CopyModeCopy || applied.Storage.COWMinSizeKiB != 32 {
-		t.Fatalf("applied=%+v, want only the copy mode replaced", applied.Storage)
+	if applied.CopyMode("/repo") != CopyModeCopy || applied.COWMinSizeKiB("/repo") != 32 {
+		t.Fatalf("applied copy_mode=%s cow_min_size_kib=%d, want only the copy mode replaced", applied.CopyMode("/repo"), applied.COWMinSizeKiB("/repo"))
 	}
 	// 受け取った設定は変更しない。実効設定を差し替えると並走する準備まで巻き込む。
-	if base.Storage.CopyMode != CopyModeCOW {
+	if base.CopyMode("/repo") != CopyModeCOW {
 		t.Fatalf("base=%+v, want the received configuration left untouched", base.Storage)
 	}
 	zero := 0
 	lowered := PrepareOverride{COWMinSizeKiB: &zero}.Apply(base)
-	if lowered.Storage.COWMinSizeKiB != 0 || lowered.Storage.CopyMode != CopyModeCOW {
-		t.Fatalf("lowered=%+v, want the zero lower bound applied", lowered.Storage)
+	if lowered.COWMinSizeKiB("/repo") != 0 || lowered.CopyMode("/repo") != CopyModeCOW {
+		t.Fatalf("lowered copy_mode=%s cow_min_size_kib=%d, want the zero lower bound applied", lowered.CopyMode("/repo"), lowered.COWMinSizeKiB("/repo"))
+	}
+}
+
+// 貸出1回の上書きは repository 個別指定より優先される。
+// Storage を書き換える実装では個別指定が上に残り、その repository でだけ上書きが黙って無効になった。
+func TestPrepareOverrideWinsOverRepositoryOverride(t *testing.T) {
+	t.Parallel()
+	base := Defaults()
+	pinned := 64
+	base.Repositories["/repo"] = Repository{COWMinSizeKiB: &pinned, Storage: RepositoryStorage{CopyMode: CopyModeCOW}}
+	zero := 0
+	applied := PrepareOverride{CopyMode: CopyModeCopy, COWMinSizeKiB: &zero}.Apply(base)
+	if applied.CopyMode("/repo") != CopyModeCopy || applied.COWMinSizeKiB("/repo") != 0 {
+		t.Fatalf("copy_mode=%s cow_min_size_kib=%d, want the lease override to win", applied.CopyMode("/repo"), applied.COWMinSizeKiB("/repo"))
+	}
+	// 上書きの無い repository は個別指定のまま残る。
+	if applied.CopyMode("/other") != CopyModeCopy {
+		t.Fatalf("copy_mode=%s for an unlisted repository, want the lease override", applied.CopyMode("/other"))
+	}
+	if base.CopyMode("/repo") != CopyModeCOW || base.COWMinSizeKiB("/repo") != 64 {
+		t.Fatalf("base copy_mode=%s cow_min_size_kib=%d, want the repository override untouched", base.CopyMode("/repo"), base.COWMinSizeKiB("/repo"))
 	}
 }
 

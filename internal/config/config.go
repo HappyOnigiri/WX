@@ -43,6 +43,9 @@ type Config struct {
 	Repositories map[string]Repository `yaml:"repositories,omitempty"`
 	Logging      Logging               `yaml:"logging,omitempty"`
 	present      map[string]bool
+	// prepareOverride は貸出1回だけの準備設定の上書きで、設定ファイルにも workspaces/repositories にも現れない。
+	// 解決ヘルパーはこれを最上位に置き、repository 個別指定より優先する。
+	prepareOverride PrepareOverride
 }
 type WorktreePolicy struct {
 	Undefined    string `yaml:"undefined,omitempty"`
@@ -122,6 +125,30 @@ type Workspace struct {
 	// WarmCount は workspace 個別の待機枠数で、nil のときは pool.warm_per_workspace を継承する。
 	// ポインタで明示的な 0 と未指定を区別する。
 	WarmCount *int `yaml:"warm_count,omitempty"`
+	// Agent・Retention・Discovery は global の同名キー路をそのまま写した個別指定である。
+	// slot の本数・寿命・探索範囲は workspace の形（単一 repository か multi か）と容量事情で変わる。
+	Agent     WorkspaceAgent     `yaml:"agent,omitempty"`
+	Retention WorkspaceRetention `yaml:"retention,omitempty"`
+	Discovery WorkspaceDiscovery `yaml:"discovery,omitempty"`
+}
+
+// WorkspaceAgent は agent 節の workspace 個別指定である。空文字は未指定を表す。
+type WorkspaceAgent struct {
+	AddDir string `yaml:"add_dir,omitempty"`
+}
+
+// WorkspaceRetention は retention 節の workspace 個別指定である。
+// 0 にも「即時回収」の意味があるため、未指定と区別できるようポインタで持つ。
+type WorkspaceRetention struct {
+	HotStandby    *Duration `yaml:"hot_standby,omitempty"`
+	EndedWorktree *Duration `yaml:"ended_worktree,omitempty"`
+}
+
+// WorkspaceDiscovery は discovery 節の workspace 個別指定である。
+// Exclude は global list への追加ではなく置き換えで、実効値が設定ファイルだけで読めるようにする。
+type WorkspaceDiscovery struct {
+	MaxDepth *int     `yaml:"max_depth,omitempty"`
+	Exclude  []string `yaml:"exclude,omitempty"`
 }
 type Includes struct {
 	DefaultAgentRules bool `yaml:"default_agent_rules,omitempty"`
@@ -145,6 +172,23 @@ type Repository struct {
 	COWMinSizeKiB *int               `yaml:"cow_min_size_kib,omitempty"`
 	Prepare       Prepare            `yaml:"prepare,omitempty"`
 	Includes      RepositoryIncludes `yaml:"includes,omitempty"`
+	// Readiness・Storage は global の同名キー路をそのまま写した個別指定である。
+	// slot の中身を決める値は repository の prepare.command と checkout 規模で変わる。
+	Readiness RepositoryReadiness `yaml:"readiness,omitempty"`
+	Storage   RepositoryStorage   `yaml:"storage,omitempty"`
+}
+
+// RepositoryReadiness は readiness 節の repository 個別指定である。
+// EarlyPaths は global list の置き換えで、組み込みの既定 path は置き換えても常に残る。
+type RepositoryReadiness struct {
+	Mode       string    `yaml:"mode,omitempty"`
+	EarlyPaths []string  `yaml:"early_paths,omitempty"`
+	Timeout    *Duration `yaml:"timeout,omitempty"`
+}
+
+// RepositoryStorage は storage 節の repository 個別指定である。空文字は未指定を表す。
+type RepositoryStorage struct {
+	CopyMode string `yaml:"copy_mode,omitempty"`
 }
 type RepositoryIncludes struct {
 	DefaultAgentRules *bool `yaml:"default_agent_rules,omitempty"`
@@ -193,12 +237,29 @@ const (
 func (s Storage) COWMinShareSize() int64 { return int64(s.COWMinSizeKiB) << 10 }
 
 // COWMinSizeKiB は repository の CoW 共有下限（KiB）を解決する。
-// 個別指定が global 設定より優先される。
+// 貸出1回の上書き、repository 個別指定、global 設定の順に優先する。
+// mainPath は NormalizePaths 済み canonical path であることを呼び出し側の契約とする。
 func (c Config) COWMinSizeKiB(mainPath string) int {
+	if c.prepareOverride.COWMinSizeKiB != nil {
+		return *c.prepareOverride.COWMinSizeKiB
+	}
 	if override, ok := c.Repositories[mainPath]; ok && override.COWMinSizeKiB != nil {
 		return *override.COWMinSizeKiB
 	}
 	return c.Storage.COWMinSizeKiB
+}
+
+// CopyMode は repository のコピー方式を解決する。
+// 貸出1回の上書き、repository 個別指定、global 設定の順に優先する。
+// mainPath は NormalizePaths 済み canonical path であることを呼び出し側の契約とする。
+func (c Config) CopyMode(mainPath string) string {
+	if c.prepareOverride.CopyMode != "" {
+		return c.prepareOverride.CopyMode
+	}
+	if override, ok := c.Repositories[mainPath]; ok && override.Storage.CopyMode != "" {
+		return override.Storage.CopyMode
+	}
+	return c.Storage.CopyMode
 }
 
 // COWMinShareSize は repository の CoW 共有下限を bytes で返す。0 は下限なしを表す。
@@ -239,6 +300,9 @@ func (c Config) DefaultAgentRulesEnabled(mainPath string) bool {
 func (c Config) EffectiveEqual(other Config) bool {
 	c.present = nil
 	other.present = nil
+	// 貸出1回の上書きは設定ファイルの実効値ではないため、reload の差分判定からも外す。
+	c.prepareOverride = PrepareOverride{}
+	other.prepareOverride = PrepareOverride{}
 	return reflect.DeepEqual(c, other)
 }
 
@@ -285,6 +349,9 @@ func Validate(c *Config) error {
 		if workspace.WarmCount != nil && *workspace.WarmCount < 0 {
 			return fmt.Errorf("workspaces.%s.warm_count must not be negative", path)
 		}
+		if err := validateWorkspaceOverride(path, workspace); err != nil {
+			return err
+		}
 	}
 	if c.Version != 1 {
 		return fmt.Errorf("unsupported config version %d", c.Version)
@@ -302,6 +369,12 @@ func Validate(c *Config) error {
 		if override.COWMinSizeKiB != nil && (*override.COWMinSizeKiB < 0 || *override.COWMinSizeKiB > MaxCOWMinSizeKiB) {
 			return fmt.Errorf("repositories.%s.cow_min_size_kib must be between 0 and %d", path, MaxCOWMinSizeKiB)
 		}
+		normalized, err := validateRepositoryOverride(path, override)
+		if err != nil {
+			return err
+		}
+		// early_paths の正規化結果を書き戻し、Validate 後の値をそのまま消費側の実効値にする。
+		c.Repositories[path] = normalized
 	}
 	if c.Agent.AddDir != AgentAddDirAlways && c.Agent.AddDir != AgentAddDirWorktree && c.Agent.AddDir != AgentAddDirOff {
 		return fmt.Errorf("agent.add_dir must be %s, %s, or %s", AgentAddDirAlways, AgentAddDirWorktree, AgentAddDirOff)
@@ -331,6 +404,44 @@ func Validate(c *Config) error {
 	return nil
 }
 
+// validateWorkspaceOverride は workspace 個別指定のうち、global 側と同じ条件を課す項目を検査する。
+// discovery.exclude は global 側にも検査が無いため、ここでも検査しない。
+func validateWorkspaceOverride(path string, workspace Workspace) error {
+	if mode := workspace.Agent.AddDir; mode != "" && mode != AgentAddDirAlways && mode != AgentAddDirWorktree && mode != AgentAddDirOff {
+		return fmt.Errorf("workspaces.%s.agent.add_dir must be %s, %s, or %s", path, AgentAddDirAlways, AgentAddDirWorktree, AgentAddDirOff)
+	}
+	for key, d := range map[string]*Duration{"retention.hot_standby": workspace.Retention.HotStandby, "retention.ended_worktree": workspace.Retention.EndedWorktree} {
+		if d != nil && d.Duration < 0 {
+			return fmt.Errorf("workspaces.%s.%s must not be negative", path, key)
+		}
+	}
+	if workspace.Discovery.MaxDepth != nil && *workspace.Discovery.MaxDepth < 1 {
+		return fmt.Errorf("workspaces.%s.discovery.max_depth must be positive", path)
+	}
+	return nil
+}
+
+// validateRepositoryOverride は repository 個別指定を検査し、early_paths を正規化した個別指定を返す。
+func validateRepositoryOverride(path string, override Repository) (Repository, error) {
+	if mode := override.Readiness.Mode; mode != "" && mode != "early" && mode != "full" {
+		return Repository{}, fmt.Errorf("repositories.%s.readiness.mode must be early or full", path)
+	}
+	if override.Readiness.Timeout != nil && override.Readiness.Timeout.Duration <= 0 {
+		return Repository{}, fmt.Errorf("repositories.%s.readiness.timeout must be positive", path)
+	}
+	if mode := override.Storage.CopyMode; mode != "" && mode != CopyModeAuto && mode != CopyModeCOW && mode != CopyModeCopy {
+		return Repository{}, fmt.Errorf("repositories.%s.storage.copy_mode must be %s, %s, or %s", path, CopyModeAuto, CopyModeCOW, CopyModeCopy)
+	}
+	if override.Readiness.EarlyPaths != nil {
+		paths, err := validateEarlyPaths(override.Readiness.EarlyPaths, fmt.Sprintf("repositories.%s.readiness.early_paths", path))
+		if err != nil {
+			return Repository{}, err
+		}
+		override.Readiness.EarlyPaths = paths
+	}
+	return override, nil
+}
+
 func validateStorage(s *Storage) error {
 	if _, err := ExpandHome(s.WorktreeRoot); err != nil {
 		return fmt.Errorf("storage.worktree_root: %w", err)
@@ -352,49 +463,4 @@ func validateStorage(s *Storage) error {
 
 func validWorktreeMode(mode string, allowAsk bool) bool {
 	return mode == "hot" || mode == "cold" || mode == "off" || (allowAsk && mode == "ask")
-}
-
-// WorktreeMode は正規化済み workspace root の個別設定を優先し、未定義なら全体の方針を返す。
-func (c Config) WorktreeMode(root string) string {
-	if mode := c.Workspaces[root].Worktree; mode != "" {
-		return mode
-	}
-	return c.Worktree.Undefined
-}
-
-// WarmCountForWorkspace は workspace root に対する待機枠数と、個別設定の有無を返す。
-// Workspaces は NormalizePaths 済みであることを呼び出し側の契約とする。
-func (c Config) WarmCountForWorkspace(root string) (int, bool) {
-	if override := c.Workspaces[root].WarmCount; override != nil {
-		return *override, true
-	}
-	return c.Pool.WarmPerWorkspace, false
-}
-
-// ReuseStandbyForWorkspace は古い READY slot を貸出時に更新する実効方針を返す。
-func (c Config) ReuseStandbyForWorkspace(root string) (bool, bool) {
-	if override := c.Workspaces[root].ReuseStandby; override != nil {
-		return *override, true
-	}
-	return c.Worktree.ReuseStandby, false
-}
-
-// SubmodulesForWorkspace は準備時に submodule を実体化する実効方針と、個別指定の有無を返す。
-func (c Config) SubmodulesForWorkspace(root string) (bool, bool) {
-	if override := c.Workspaces[root].Submodules; override != nil {
-		return *override, true
-	}
-	return c.Worktree.Submodules, false
-}
-
-// WarmCountOverrides は workspace root ごとの明示的な待機枠数をコピーして返す。
-// 明示的な 0 も map の値として保持する。
-func (c Config) WarmCountOverrides() map[string]int {
-	overrides := make(map[string]int)
-	for root, workspace := range c.Workspaces {
-		if workspace.WarmCount != nil {
-			overrides[root] = *workspace.WarmCount
-		}
-	}
-	return overrides
 }
