@@ -136,7 +136,11 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 	leaseCtx, cancelLease := context.WithTimeout(ctx, c.discoveryTimeout())
 	defer cancelLease()
 	var lease daemon.Lease
+	// 進捗は stderr にだけ出す。wx new の stdout はパスと --json の契約なので混ぜられない。
+	waiting := startLeaseProgress()
+	defer waiting.finish()
 	if err := c.RPC.Call(leaseCtx, "ResolveAndLease", params, &lease); err != nil {
+		waiting.finish()
 		return reportLeaseError(err)
 	}
 	// パスを出力できないまま戻ると、利用者は session id を知らないので wx release もできない。
@@ -150,13 +154,16 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 	}()
 	if !lease.Ready {
 		waitCtx, cancel := context.WithTimeout(ctx, c.Config.Readiness.Timeout.Duration)
+		waiting.watch(waitCtx, c.RPC, lease)
 		err := c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
+		waiting.finish()
 		cancel()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error: workspace preparation:", err)
 			return 1
 		}
 	}
+	waiting.finish()
 	if jsonOut {
 		data, err := json.Marshal(leaseNewReply{SessionID: lease.SessionID, Path: lease.Path})
 		if err != nil {

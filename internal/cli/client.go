@@ -222,7 +222,12 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	}
 	leaseCtx, cancelLease := context.WithTimeout(ctx, budget)
 	defer cancelLease()
+	// 準備の待機は無表示だと cold start と待機枠更新の区別が付かない。
+	// 確認や結果の出力より前に必ず消す必要があるため、失敗経路でも都度 finish する。
+	waiting := startLeaseProgress()
+	defer waiting.finish()
 	if err := c.RPC.CallWithKey(leaseCtx, method, "launch:"+operationKey, params, &lease); err != nil {
+		waiting.finish()
 		if c.acceptsFreshWorkspace(ctx, plan, err) {
 			return 1, true
 		}
@@ -268,7 +273,9 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 			method = "WaitEarlyReady"
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, c.Config.Readiness.Timeout.Duration)
+		waiting.watch(waitCtx, c.RPC, lease)
 		err = c.RPC.Call(waitCtx, method, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
+		waiting.finish()
 		cancel()
 		if err != nil {
 			if c.acceptsFreshWorkspace(ctx, plan, err) {
@@ -278,6 +285,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 			return 1, false
 		}
 	}
+	waiting.finish()
 	// 起動前・準備待ちの間に終了要求が届いていたら、agent を起動せずにそのまま応答する。
 	if terminator.requested() {
 		fmt.Fprintln(os.Stderr, "wx clear asked this session to stop before the agent started")
