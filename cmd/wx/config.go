@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/spf13/pflag"
 
@@ -13,9 +12,53 @@ import (
 	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
+// configEdit は1回の設定更新の指示である。op は set・add・remove・reset のいずれか。
+type configEdit struct {
+	key   string
+	value string
+	op    string
+}
+
+const (
+	configOpSet    = "set"
+	configOpAdd    = "add"
+	configOpRemove = "remove"
+	configOpReset  = "reset"
+)
+
+// parseConfigEdit は位置引数を1件の更新指示へ解釈する。
+// 引数の個数が合わない場合は ok=false を返し、呼び出し側が usage を出して終了コード2にする。
+func parseConfigEdit(args []string) (configEdit, bool) {
+	if len(args) < 2 {
+		return configEdit{}, false
+	}
+	switch args[1] {
+	case "--add", "--remove":
+		if len(args) != 3 {
+			return configEdit{}, false
+		}
+		op := configOpAdd
+		if args[1] == "--remove" {
+			op = configOpRemove
+		}
+		return configEdit{key: args[0], value: args[2], op: op}, true
+	case "--reset":
+		if len(args) != 2 {
+			return configEdit{}, false
+		}
+		return configEdit{key: args[0], op: configOpReset}, true
+	default:
+		if len(args) != 2 {
+			return configEdit{}, false
+		}
+		return configEdit{key: args[0], value: args[1], op: configOpSet}, true
+	}
+}
+
 func runConfig(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
 	workspace := fs.String("workspace", "", "target a workspace-specific setting")
+	repository := fs.String("repository", "", "target a repository-specific setting")
 	// 設定値は「-」で始まることもあるため、最初の位置引数（キー）以降はフラグとして扱わない。
 	fs.SetInterspersed(false)
 	fs.Usage = func() { commandUsage(os.Stdout, "config") }
@@ -23,24 +66,21 @@ func runConfig(ctx context.Context, args []string) int {
 		return code
 	}
 	rest := fs.Args()
-	if *workspace != "" {
-		return runWorkspaceConfig(ctx, *workspace, rest)
+	if *workspace != "" && *repository != "" {
+		fmt.Fprintln(os.Stderr, "error: --workspace and --repository cannot be combined")
+		return 2
+	}
+	switch {
+	case *workspace != "":
+		return runScopeConfig(ctx, config.ScopeWorkspace, *workspace, rest)
+	case *repository != "":
+		return runScopeConfig(ctx, config.ScopeRepository, *repository, rest)
 	}
 	if len(rest) == 0 {
-		cfg, err := config.Load()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
-		}
-		path, _ := config.Path()
-		fmt.Println("Config:", path)
-		for _, f := range config.Fields(cfg) {
-			fmt.Printf("  %-42s = %s\n", f.Key, f.Value)
-		}
-		fmt.Printf("  %-42s = %q\n", "readiness.early_paths", cfg.Readiness.EarlyPaths)
-		return 0
+		return showGlobalConfig()
 	}
-	if len(rest) < 2 {
+	edit, ok := parseConfigEdit(rest)
+	if !ok {
 		commandUsage(os.Stderr, "config")
 		return 2
 	}
@@ -49,98 +89,67 @@ func runConfig(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	key := rest[0]
-	switch rest[1] {
-	case "--add":
-		if len(rest) != 3 {
-			commandUsage(os.Stderr, "config")
-			return 2
-		}
-		err = config.AppendList(&raw, key, rest[2])
-	case "--remove":
-		if len(rest) != 3 {
-			commandUsage(os.Stderr, "config")
-			return 2
-		}
-		err = config.RemoveList(&raw, key, rest[2])
-	case "--reset":
-		if len(rest) != 2 {
-			commandUsage(os.Stderr, "config")
-			return 2
-		}
-		// scalar と list で未設定へ戻す経路が違うため、キーの種別で振り分ける。
-		if config.IsListKey(key) {
-			err = config.ResetList(&raw, key)
-		} else {
-			err = config.ResetField(&raw, key)
-		}
-	default:
-		if len(rest) != 2 {
-			commandUsage(os.Stderr, "config")
-			return 2
-		}
-		err = config.SetField(&raw, key, rest[1])
-	}
-	if err != nil {
+	if err := applyGlobalEdit(&raw, edit); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	effective := config.Merge(config.Defaults(), raw)
-	if err := config.NormalizePaths(&effective); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	if err := config.Validate(&effective); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	if err := config.Save(raw); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	c, _ := rpcClient()
-	if err := c.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil {
-		fmt.Printf("saved; daemon reload pending: %s\n", rpcErrorMessage(err))
-	} else {
-		fmt.Println("saved and reloaded")
-	}
-	return 0
+	return saveConfig(ctx, raw)
 }
 
-func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
+func showGlobalConfig() int {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	root, err := resolveConfigWorkspace(ctx, cfg, path)
+	path, _ := config.Path()
+	fmt.Println("Config:", path)
+	for _, f := range config.Fields(cfg) {
+		fmt.Printf("  %-42s = %s\n", f.Key, f.Value)
+	}
+	for _, f := range config.Lists(cfg) {
+		fmt.Printf("  %-42s = %s\n", f.Key, f.Value)
+	}
+	return 0
+}
+
+func applyGlobalEdit(raw *config.Config, edit configEdit) error {
+	switch edit.op {
+	case configOpAdd:
+		return config.AppendList(raw, edit.key, edit.value)
+	case configOpRemove:
+		return config.RemoveList(raw, edit.key, edit.value)
+	case configOpReset:
+		// scalar と list で未設定へ戻す経路が違うため、キーの種別で振り分ける。
+		if config.IsListKey(edit.key) {
+			return config.ResetList(raw, edit.key)
+		}
+		return config.ResetField(raw, edit.key)
+	default:
+		return config.SetField(raw, edit.key, edit.value)
+	}
+}
+
+func runScopeConfig(ctx context.Context, scope config.Scope, path string, args []string) int {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	target, err := resolveConfigScope(ctx, cfg, scope, path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
 	if len(args) == 0 {
-		count, overridden := cfg.WarmCountForWorkspace(root)
-		countSource := "global"
-		if overridden {
-			countSource = "workspace"
+		fmt.Printf("%s: %s\n", scopeTitle(scope), target)
+		for _, f := range config.ScopeFields(cfg, scope, target) {
+			fmt.Printf("  %-42s = %s (source: %s)\n", f.Key, f.Value, f.Source)
 		}
-		reuse, reuseOverridden := cfg.ReuseStandbyForWorkspace(root)
-		reuseSource := "global"
-		if reuseOverridden {
-			reuseSource = "workspace"
-		}
-		submodules, submodulesOverridden := cfg.SubmodulesForWorkspace(root)
-		submodulesSource := "global"
-		if submodulesOverridden {
-			submodulesSource = "workspace"
-		}
-		fmt.Printf("Workspace: %s\n", root)
-		fmt.Printf("  warm_count = %d (source: %s)\n", count, countSource)
-		fmt.Printf("  reuse_standby = %t (source: %s)\n", reuse, reuseSource)
-		fmt.Printf("  submodules = %t (source: %s)\n", submodules, submodulesSource)
 		return 0
 	}
-	if len(args) != 2 || (args[0] != "warm_count" && args[0] != "reuse_standby" && args[0] != "submodules") {
+	edit, ok := parseConfigEdit(args)
+	if !ok {
 		commandUsage(os.Stderr, "config")
 		return 2
 	}
@@ -149,28 +158,31 @@ func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	switch args[0] {
-	case "warm_count":
-		switch args[1] {
-		case "--reset":
-			err = config.ResetWorkspaceWarmCount(&raw, root)
-		default:
-			count, parseErr := strconv.Atoi(args[1])
-			if parseErr != nil {
-				err = fmt.Errorf("warm_count must be an integer: %w", parseErr)
-			} else {
-				err = config.SetWorkspaceWarmCount(&raw, root, count)
-			}
-		}
-	case "reuse_standby":
-		err = setWorkspaceBool(&raw, root, args[0], args[1], config.SetWorkspaceReuseStandby, config.ResetWorkspaceReuseStandby)
-	default:
-		err = setWorkspaceBool(&raw, root, args[0], args[1], config.SetWorkspaceSubmodules, config.ResetWorkspaceSubmodules)
-	}
-	if err != nil {
+	if err := applyScopeEdit(&raw, scope, target, edit); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	return saveConfig(ctx, raw)
+}
+
+func applyScopeEdit(raw *config.Config, scope config.Scope, target string, edit configEdit) error {
+	switch edit.op {
+	case configOpAdd:
+		return config.AppendScopeList(raw, scope, target, edit.key, edit.value)
+	case configOpRemove:
+		return config.RemoveScopeList(raw, scope, target, edit.key, edit.value)
+	case configOpReset:
+		if config.IsScopeListKey(scope, edit.key) {
+			return config.ResetScopeList(raw, scope, target, edit.key)
+		}
+		return config.ResetScopeField(raw, scope, target, edit.key)
+	default:
+		return config.SetScopeField(raw, scope, target, edit.key, edit.value)
+	}
+}
+
+// saveConfig は更新した raw 設定を検証してから保存し、動いている daemon へ反映を促す。
+func saveConfig(ctx context.Context, raw config.Config) int {
 	effective := config.Merge(config.Defaults(), raw)
 	if err := config.NormalizePaths(&effective); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -193,19 +205,19 @@ func runWorkspaceConfig(ctx context.Context, path string, args []string) int {
 	return 0
 }
 
-// setWorkspaceBool は真偽値の workspace 個別設定を、--reset と値指定で同じ形に振り分ける。
-func setWorkspaceBool(raw *config.Config, root, key, value string, set func(*config.Config, string, bool) error, reset func(*config.Config, string) error) error {
-	if value == "--reset" {
-		return reset(raw, root)
+func scopeTitle(scope config.Scope) string {
+	if scope == config.ScopeRepository {
+		return "Repository"
 	}
-	enabled, err := strconv.ParseBool(value)
-	if err != nil {
-		return fmt.Errorf("%s must be true or false: %w", key, err)
-	}
-	return set(raw, root, enabled)
+	return "Workspace"
 }
 
-func resolveConfigWorkspace(ctx context.Context, cfg config.Config, path string) (string, error) {
+// resolveConfigScope は指定 path を設定キーと同じ表記の対象へ解決する。
+// workspace は repository なら main worktree、それ以外はそのディレクトリ。repository は repository 外を拒否する。
+func resolveConfigScope(ctx context.Context, cfg config.Config, scope config.Scope, path string) (string, error) {
 	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: cfg.Discovery.Timeout.Duration}, Config: cfg}
+	if scope == config.ScopeRepository {
+		return discoverer.MainWorktree(ctx, path)
+	}
 	return discoverer.PolicyRoot(ctx, path)
 }
