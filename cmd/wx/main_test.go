@@ -113,6 +113,7 @@ func TestDaemonUnavailableGuidanceIsSharedAcrossCommands(t *testing.T) {
 		{name: "gc", args: []string{"gc", "--dry-run"}},
 		{name: "prune", args: []string{"prune", "--dry-run"}},
 		{name: "clear", args: []string{"clear", "--dry-run"}},
+		{name: "discard-recovery", args: []string{"discard-recovery", "/nonexistent"}},
 		{name: "forget", args: []string{"forget", "/nonexistent"}},
 		{name: "retry-standby", args: []string{"retry-standby", "/nonexistent"}},
 	} {
@@ -375,6 +376,7 @@ func TestEverySubcommandHasAUniformPflagContract(t *testing.T) {
 		{name: "config", run: runConfig, helpExit: 0, helpOnStdout: true},
 		{name: "resume", run: runResume, helpExit: 0, helpOnStdout: true},
 		{name: "daemon", run: runDaemon, helpExit: 0, helpOnStdout: true},
+		{name: "discard-recovery", run: runDiscardRecovery, helpExit: 0, helpOnStdout: true},
 		{name: "forget", run: runForget, helpExit: 0, helpOnStdout: true},
 		{name: "hook", run: runHook, helpExit: 2, helpOnStdout: false},
 	}
