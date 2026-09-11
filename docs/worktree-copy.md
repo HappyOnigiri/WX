@@ -77,7 +77,7 @@ Hot StandbyのUPDATEは旧HEAD・tracked clean・所有権を確認してから�
 lockfileのようにOIDへ依存する生成物は更新後も旧OIDのまま残るので、都度の再生成が必要な場合は`workspaces.<root>.reuse_standby: false`で更新を止める。
 
 `.worktreeinclude`対象のファイルは内容のhashがfingerprintに入るため、1 byteの書き換えでもREADY全本が不一致になる。
-この不一致は貸出時のUPDATEで解消できるが、待たせないよう保守の一巡が待機中のREADYを先回りで更新する（[daemonの補充・回収・再起動](daemon-maintenance.md)の「standby補充」）。
+この不一致は貸出時のUPDATEで解消できるが、待たせないよう保守の一巡が待機中のREADYを先回りで更新する（[daemonの補充と回収](daemon-maintenance.md)の「standby補充」）。
 editorが書き換えるような設定ファイルを更新の契機にしたくない場合は、`.worktreelink`へ移すとsourceの実体へのsymlinkになり、内容はfingerprintに入らない。
 
 ## include / link

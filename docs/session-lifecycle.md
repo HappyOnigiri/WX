@@ -4,7 +4,7 @@
    launchdでのkickstartは接続自体に失敗したときだけ行う。応答が遅いだけの生きたdaemonを再起動しないためである。
    daemonはcwdからworkspaceを解決し、要求OIDと準備条件が完全一致するREADY slotを優先する。
    一致候補がなく`worktree.reuse_standby`が有効なら更新適合なHot StandbyをUPDATEジョブへ予約し、無ければPREPAREジョブでCold Startする。
-   更新適格の判定と不適格候補のSTALE化・補充は[daemonの補充・回収・再起動](daemon-maintenance.md)にある。
+   更新適格の判定と不適格候補のSTALE化・補充は[daemonの補充と回収](daemon-maintenance.md)にある。
 
    完全一致しなかった候補は、UPDATE予約・STALE化・cold startへの後退のいずれでも理由をdaemon logへ残す（`internal/daemon/lease_mismatch.go`）。
    理由は比較したその場で組み立てる。予約後は`slot_repositories`が更新後の値へ入れ替わり、差を後から復元できないためである。

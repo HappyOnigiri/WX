@@ -43,6 +43,8 @@ Go側に状態のenum型や遷移ガードを作らない。
 - 機械的に判定できる規約は`tools/check*`の検査として実装し、`make ci`へ接続する。
   このAGENTS.mdやコメントでの指示は、静的に判定できない規約に限った最終手段とする。
 - 設計と無関係な行を踏むだけのテストでカバレッジの数字を作らず、プロセスやOSのアダプタは`coverage-exclusions.txt`に理由付きで除外する。
+- `internal/daemon`のトップレベルテストは、専用の一時ディレクトリ・DB・Managerだけを使うものに`t.Parallel()`を付ける。
+  `t.Setenv`を自身かサブテストで呼ぶテスト、プロセス全体のgoroutine・fdを数えるテスト、短い待機に依存するテストは直列のまま残す。
 - READMEは紹介・導入を中心としたコンパクトな記載に留め、機能追加では追記せず、不整合が起きたときだけ修正する。
 
 ## コメント
@@ -71,7 +73,8 @@ mutation testingは使わない。
 - 起動・hook・返却・snapshot・resumeを扱うとき: [セッションと復元](docs/session-lifecycle.md)
 - CoW・include・linkの準備処理を扱うとき: [worktreeのコピーとリンク](docs/worktree-copy.md)
 - slots/statusの容量・コピー方式の計測を扱うとき: [使用量とCoWの観測](docs/storage-usage.md)
-- ジョブ・補充・clear・GC・障害回復・daemon再起動・`wx doctor`の診断を扱うとき、`internal/daemon`にテストを足すとき: [daemonの補充・回収・再起動](docs/daemon-maintenance.md)
+- ジョブ・補充・clear・GC・障害回復を扱うとき: [daemonの補充と回収](docs/daemon-maintenance.md)
+- `wx doctor`の診断・`wx bench`の計測・daemonのrestart/stopを扱うとき: [daemonの診断と再起動](docs/daemon-diagnostics.md)
 - 削除・上書き・所有権検証を扱うとき: [所有権証明](docs/ownership.md)
 - path・命名・root世代・workspaceのtarを扱うとき: [ディスク配置とroot世代](docs/storage-layout.md)
 - バージョンの埋め込み・リリースのworkflowを扱うとき: [バージョンとリリース](docs/release.md)
