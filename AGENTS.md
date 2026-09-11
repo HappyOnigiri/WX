@@ -56,7 +56,7 @@ Go側に状態のenum型や遷移ガードを作らない。
 
 ## 停止中の自動化
 
-セキュリティ・SBOM関連は手動opt-inのmake targetに留め、明示許可なしにCI・GitHub Actionsのトリガー・Git hookへ戻さない。
+セキュリティ・SBOM関連の自動実行を再開するにはユーザーの明示許可が必要である（接続の有無は`make automation-check`が検査する）。
 mutation testingは使わない。
 
 ## 作業別ドキュメント
