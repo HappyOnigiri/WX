@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -316,4 +318,91 @@ func (m *Manager) retireFailedSlotForForget(ctx context.Context, slotID string) 
 		return runErr
 	}
 	return m.store.FinishJob(ctx, claimed.ID, "wx-forget", nil)
+}
+
+// DiscardRecoveryTarget は破棄対象の session 1 件と、その session が使っていた slot である。
+type DiscardRecoveryTarget struct {
+	SessionID          string `json:"session_id"`
+	SlotID             string `json:"slot_id"`
+	SlotState          string `json:"slot_state"`
+	SlotPath           string `json:"slot_path"`
+	Snapshots          int    `json:"snapshots"`
+	WorkspaceSnapshots int    `json:"workspace_snapshots"`
+	Retired            bool   `json:"retired"`
+}
+
+// DiscardRecoveryResult は wx discard-recovery の結果である。DryRun のときは Targets だけを埋める。
+type DiscardRecoveryResult struct {
+	Root      string                  `json:"root"`
+	DryRun    bool                    `json:"dry_run"`
+	Targets   []DiscardRecoveryTarget `json:"targets"`
+	Discarded int                     `json:"discarded"`
+	Retired   int                     `json:"retired"`
+}
+
+// DiscardRecovery は workspace の QUARANTINED な復元資産を破棄し、その slot を ARCHIVED まで回収する。
+// 対象は recovery ref を失って復元不能になった session だけなので、他の session の snapshot には触れない。
+// 破棄後は wx forget の前提（session は EXPIRED、snapshot 行は無い、slot は ARCHIVED）が満たせる。
+func (m *Manager) DiscardRecovery(ctx context.Context, path string, dryRun bool) (DiscardRecoveryResult, error) {
+	canonical, err := domain.Canonicalize(path)
+	if err != nil {
+		return DiscardRecoveryResult{}, err
+	}
+	result := DiscardRecoveryResult{Root: string(canonical), DryRun: dryRun, Targets: []DiscardRecoveryTarget{}}
+	if _, err := m.store.WorkspaceByRoot(ctx, string(canonical)); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return result, fmt.Errorf("%s is not a registered workspace", canonical)
+		}
+		return result, fmt.Errorf("look up workspace %s: %w", canonical, err)
+	}
+	sessions, err := m.store.QuarantinedRecoverySessions(ctx, string(canonical))
+	if err != nil {
+		return result, err
+	}
+	for _, session := range sessions {
+		target := DiscardRecoveryTarget{
+			SessionID: session.SessionID, SlotID: session.SlotID, SlotState: session.SlotState, SlotPath: session.SlotPath,
+			Snapshots: session.Snapshots, WorkspaceSnapshots: session.WorkspaceSnapshots,
+		}
+		if dryRun {
+			result.Targets = append(result.Targets, target)
+			continue
+		}
+		if err := m.store.DiscardQuarantinedRecovery(ctx, session.SessionID); err != nil {
+			return result, fmt.Errorf("discard quarantined recovery state of session %s: %w", session.SessionID, err)
+		}
+		result.Discarded++
+		if session.SlotState == "QUARANTINED" {
+			retired, err := m.retireQuarantinedSlot(ctx, session.SlotID)
+			if err != nil {
+				return result, fmt.Errorf("retire quarantined slot %s: %w", session.SlotID, err)
+			}
+			target.Retired = retired
+			if retired {
+				result.Retired++
+			}
+		}
+		result.Targets = append(result.Targets, target)
+	}
+	return result, nil
+}
+
+// retireQuarantinedSlot は隔離 slot の worktree を今すぐ回収し、row を ARCHIVED へ進める。
+// 予約が取れなかった場合は他の回収が進んでいるので、失敗にせず retired=false を返す。
+func (m *Manager) retireQuarantinedSlot(ctx context.Context, slotID string) (bool, error) {
+	job, changed, err := m.store.ScheduleQuarantinedRemoval(ctx, slotID)
+	if err != nil {
+		return false, err
+	}
+	if !changed {
+		return false, nil
+	}
+	claimed, err := m.store.ClaimJob(ctx, job.ID, "wx-discard-recovery")
+	if err != nil {
+		return false, err
+	}
+	if runErr := m.runRecoveredJob(ctx, claimed); runErr != nil {
+		return false, runErr
+	}
+	return true, m.store.FinishJob(ctx, claimed.ID, "wx-discard-recovery", nil)
 }

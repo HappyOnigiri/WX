@@ -86,6 +86,52 @@ func runPrune(ctx context.Context, args []string) int {
 	return 0
 }
 
+func runDiscardRecovery(ctx context.Context, args []string) int {
+	fs := pflag.NewFlagSet("discard-recovery", pflag.ContinueOnError)
+	dry := fs.Bool("dry-run", false, "list what would be discarded without changing anything")
+	fs.Usage = func() { commandUsage(os.Stdout, "discard-recovery") }
+	if code, done := finishFlagParse(fs, "discard-recovery", args); done {
+		return code
+	}
+	if fs.NArg() != 1 {
+		commandUsage(os.Stderr, "discard-recovery")
+		return 2
+	}
+	c, err := rpcClient()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	var out daemon.DiscardRecoveryResult
+	if err := c.Call(ctx, "DiscardRecovery", map[string]any{"path": fs.Arg(0), "dry_run": *dry}, &out); err != nil {
+		reportRPCError(err)
+		return 1
+	}
+	printDiscardRecovery(out)
+	return 0
+}
+
+// printDiscardRecovery は対象を 1 件 1 行で出し、最後に件数をまとめる。
+// 対象が無いのは正常な状態なので、そのことだけを伝えて成功で終える。
+func printDiscardRecovery(out daemon.DiscardRecoveryResult) {
+	if len(out.Targets) == 0 {
+		fmt.Println("no quarantined recovery state for", out.Root)
+		return
+	}
+	for _, target := range out.Targets {
+		fmt.Printf("session %s (%d snapshot(s), %d workspace snapshot(s))\n", target.SessionID, target.Snapshots, target.WorkspaceSnapshots)
+		if target.SlotID != "" {
+			fmt.Printf("  slot %s %s %s\n", target.SlotID, target.SlotState, target.SlotPath)
+		}
+	}
+	if out.DryRun {
+		fmt.Printf("%d session(s) would be discarded\n", len(out.Targets))
+		fmt.Println("dry run: nothing was changed")
+		return
+	}
+	fmt.Printf("discarded %d session(s), retired %d slot(s)\n", out.Discarded, out.Retired)
+}
+
 func runForget(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("forget", pflag.ContinueOnError)
 	fs.SetInterspersed(false)

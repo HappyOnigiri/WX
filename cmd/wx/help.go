@@ -36,6 +36,7 @@ Commands:
   config [<key> ...]             show or update configuration
   setup [--check] [--remove]     review and complete, or remove, the wx setup
   resume <id> [agent] [args...]  restore a wx session
+  discard-recovery <workspace>   discard recovery state that lost its refs
   forget <workspace-path>        forget an inactive workspace
   daemon start|stop|restart      change whether the daemon is running
   daemon install|uninstall       register or remove the LaunchAgent`)
@@ -413,10 +414,31 @@ Options:
   --reuse                        keep standby worktrees and measure what the
                                  pool returns
   --json                         print machine-readable JSON`)
+	case "discard-recovery":
+		_, _ = fmt.Fprintln(w, `Usage: wx discard-recovery <workspace-path> [--dry-run]
+
+Discard the recovery state of the sessions whose recovery refs are gone from
+the source repository, so that workspace stops being reported by wx doctor and
+can be forgotten.
+
+A recovery ref disappears when the source repository is deleted and recreated
+at the same path. wx then quarantines the snapshots that recorded those refs,
+and they can no longer restore anything. This command deletes those snapshot
+records, ends their sessions, and deletes the worktrees of the slots they
+quarantined, unsaved work included. Sessions of other workspaces, and every
+session that still has its refs, are left alone. Run --dry-run first to see
+the sessions and worktree paths that would go.
+
+Options:
+  --dry-run  list what would be discarded without changing anything`)
 	case "forget":
 		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path>
 
-Forget an inactive workspace after all managed slots are safely archived.`)
+Forget an inactive workspace after all managed slots are safely archived.
+
+A workspace whose sessions were quarantined because their recovery refs are
+missing is refused until wx discard-recovery <workspace-path> discards that
+state.`)
 	case "daemon":
 		_, _ = fmt.Fprintln(w, `Usage: wx daemon <start|stop|restart|install|uninstall> [--foreground]
 

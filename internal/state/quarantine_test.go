@@ -170,3 +170,152 @@ func TestQuarantineMissingRecoveryRefPropagatesTransactionFaults(t *testing.T) {
 		}
 	})
 }
+
+// quarantinedRecoveryFixture は recovery ref を失って行き止まりになった session を 1 件作る。
+func quarantinedRecoveryFixture(t *testing.T, store *Store, slotState string) context.Context {
+	t.Helper()
+	ctx := context.Background()
+	seedWorkspace(t, store)
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("token")}
+	slot := Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: slotState}
+	if _, err := store.CreateSlotSession(ctx, slot, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSnapshot(ctx, Snapshot{
+		ID: "snapshot", SessionID: "session", RepositoryID: "repository", HeadOID: "head",
+		HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/worktree",
+		Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.QuarantineMissingRecoveryRef(ctx, "refs/wx/recovery/head"); err != nil {
+		t.Fatal(err)
+	}
+	return ctx
+}
+
+// TestDiscardQuarantinedRecoveryUnblocksForget は隔離からの唯一の出口が機能することを確認する。
+// この経路が無いと sessions は EXPIRED へ進めず、ForgetWorkspace の前提を永久に満たせない。
+func TestDiscardQuarantinedRecoveryUnblocksForget(t *testing.T) {
+	store := openTestStore(t)
+	ctx := quarantinedRecoveryFixture(t, store, "SNAPSHOTTED")
+	sessions, err := store.QuarantinedRecoverySessions(ctx, "/workspace")
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("quarantined recovery sessions=%+v err=%v", sessions, err)
+	}
+	got := sessions[0]
+	if got.SessionID != "session" || got.SlotID != "slot" || got.SlotState != "QUARANTINED" || got.Snapshots != 1 || got.WorkspaceSnapshots != 0 {
+		t.Fatalf("quarantined recovery session=%+v", got)
+	}
+	if err := store.ForgetWorkspace(ctx, "/workspace"); err == nil {
+		t.Fatal("forget completed while the quarantined recovery state was still recorded")
+	}
+	if err := store.DiscardQuarantinedRecovery(ctx, "session"); err != nil {
+		t.Fatalf("discard quarantined recovery: %v", err)
+	}
+	var sessionState, owner string
+	var snapshots int
+	if err := store.db.QueryRowContext(ctx, `SELECT se.state,COALESCE(sl.owner_session_id,''),(SELECT count(*) FROM snapshots sn WHERE sn.session_id=se.id) FROM sessions se JOIN slots sl ON sl.id=se.slot_id WHERE se.id='session'`).
+		Scan(&sessionState, &owner, &snapshots); err != nil {
+		t.Fatal(err)
+	}
+	if sessionState != "EXPIRED" || owner != "" || snapshots != 0 {
+		t.Fatalf("after discard: session=%q owner=%q snapshots=%d", sessionState, owner, snapshots)
+	}
+	// slot の worktree の回収は daemon 側の REMOVE job が行うため、ここでは回収後の状態を置いて前提の充足だけを見る。
+	if _, err := store.db.ExecContext(ctx, `UPDATE slots SET state='ARCHIVED' WHERE id='slot'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ForgetWorkspace(ctx, "/workspace"); err != nil {
+		t.Fatalf("forget after discarding the quarantined recovery state: %v", err)
+	}
+	if remaining, err := store.QuarantinedRecoverySessions(ctx, "/workspace"); err != nil || len(remaining) != 0 {
+		t.Fatalf("quarantined recovery sessions after forget=%+v err=%v", remaining, err)
+	}
+}
+
+// TestDiscardQuarantinedRecoveryRefusesOtherStates は破棄を隔離された session に限ることを確認する。
+func TestDiscardQuarantinedRecoveryRefusesOtherStates(t *testing.T) {
+	t.Run("not quarantined", func(t *testing.T) {
+		store := openTestStore(t)
+		ctx := context.Background()
+		seedWorkspace(t, store)
+		session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("token")}
+		slot := Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "SNAPSHOTTED"}
+		if _, err := store.CreateSlotSession(ctx, slot, nil, session, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DiscardQuarantinedRecovery(ctx, "session"); err == nil {
+			t.Fatal("an ARCHIVED session was discarded as quarantined recovery state")
+		}
+		var state string
+		if err := store.db.QueryRowContext(ctx, `SELECT state FROM sessions WHERE id='session'`).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state != "ARCHIVED" {
+			t.Fatalf("refused discard changed the session state to %q", state)
+		}
+	})
+	t.Run("active restore", func(t *testing.T) {
+		store := openTestStore(t)
+		ctx := quarantinedRecoveryFixture(t, store, "SNAPSHOTTED")
+		child := Session{ID: "child", WorkspaceID: "workspace", SlotID: "child-slot", State: "RESTORING", AgentKind: "codex", TokenHash: HashToken("child"), ParentSessionID: "session"}
+		childSlot := Slot{ID: "child-slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/child", State: "RESTORING"}
+		if _, err := store.CreateSlotSession(ctx, childSlot, nil, child, "RESTORE"); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DiscardQuarantinedRecovery(ctx, "session"); err == nil {
+			t.Fatal("recovery state with a running restore was discarded")
+		}
+		var snapshots int
+		if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM snapshots WHERE session_id='session'`).Scan(&snapshots); err != nil {
+			t.Fatal(err)
+		}
+		if snapshots != 1 {
+			t.Fatalf("refused discard removed %d snapshot(s)", 1-snapshots)
+		}
+	})
+}
+
+// TestQuarantinedRecoverySessionsStayWithinTheirWorkspace は破棄対象の限定を確認する。
+// 他 workspace の隔離 session を巻き添えにすると、利用者の作業が残る snapshot まで消えてしまう。
+func TestQuarantinedRecoverySessionsStayWithinTheirWorkspace(t *testing.T) {
+	store := openTestStore(t)
+	ctx := quarantinedRecoveryFixture(t, store, "SNAPSHOTTED")
+	seedWorkspaceRows(t, store, "other", "/other", "repository", "other-repository", "/other", "/other/.git", "")
+	other := Session{ID: "other-session", WorkspaceID: "other", SlotID: "other-slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("other")}
+	otherSlot := Slot{ID: "other-slot", WorkspaceID: "other", Generation: 1, RootID: testRootID, RelPath: "other/slot", State: "SNAPSHOTTED"}
+	if _, err := store.CreateSlotSession(ctx, otherSlot, nil, other, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSnapshot(ctx, Snapshot{
+		ID: "other-snapshot", SessionID: "other-session", RepositoryID: "other-repository", HeadOID: "head",
+		HeadRef: "refs/wx/recovery/other-head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/other-worktree",
+		Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := store.QuarantinedRecoverySessions(ctx, "/workspace")
+	if err != nil || len(sessions) != 1 || sessions[0].SessionID != "session" {
+		t.Fatalf("quarantined recovery sessions=%+v err=%v", sessions, err)
+	}
+	groups, err := store.QuarantinedRecoveryGroups(ctx)
+	if err != nil || len(groups) != 1 || groups[0].Root != "/workspace" || groups[0].Sessions != 1 || groups[0].Snapshots != 1 {
+		t.Fatalf("quarantined recovery groups=%+v err=%v", groups, err)
+	}
+	if err := store.DiscardQuarantinedRecovery(ctx, "session"); err != nil {
+		t.Fatal(err)
+	}
+	var snapshots int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM snapshots WHERE session_id='other-session'`).Scan(&snapshots); err != nil {
+		t.Fatal(err)
+	}
+	if snapshots != 1 {
+		t.Fatalf("snapshots of the untouched workspace=%d", snapshots)
+	}
+	// 破棄した workspace は診断の対象から消え、他 workspace の記録は残らない前提を満たす。
+	groups, err = store.QuarantinedRecoveryGroups(ctx)
+	if err != nil || len(groups) != 0 {
+		t.Fatalf("quarantined recovery groups after discard=%+v err=%v", groups, err)
+	}
+}

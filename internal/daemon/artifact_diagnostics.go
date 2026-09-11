@@ -25,6 +25,10 @@ type recoveryRefIssue struct {
 // key は reconcile・prune が使う `<repository_id>:<ref>` 形式を返す。
 func (i recoveryRefIssue) key() string { return i.RepositoryID + ":" + i.Ref }
 
+// unreadableRepository は refs を読めない repository 記録のうち、照合すべき snapshot を 1 件も持たないものである。
+// repositories の行を消す経路は無いため、これを ownership error にすると doctor が恒久的に失敗する。
+type unreadableRepository struct{ RepositoryID, Path, Cause string }
+
 // artifactReport は worktree root と recovery ref の照合結果である。
 // 表示側が「問題・参考・検査不能」を分けられる粒度で持ち、reconcile・prune が使う分類済み文字列は categories が作る。
 type artifactReport struct {
@@ -33,7 +37,9 @@ type artifactReport struct {
 	UnknownRefs    []recoveryRefIssue
 	MismatchedRefs []recoveryRefIssue
 	MissingRefs    []recoveryRefIssue
-	Errors         []string
+	// UnreadableRepositories は照合対象を持たない読めない repository で、問題ではなく参考情報である。
+	UnreadableRepositories []unreadableRepository
+	Errors                 []string
 }
 
 // categories は従来の category ごとの文字列一覧へ畳み込む。
@@ -127,6 +133,12 @@ func (m *Manager) appendRecoveryRefIssues(ctx context.Context, report *artifactR
 		report.Errors = append(report.Errors, err.Error())
 		return
 	}
+	// 所属の分からない repository は登録済みとして扱い、まだ使う予定のある記録の故障を参考情報へ落とさない。
+	registered, registeredErr := m.store.RegisteredRepositoryIDs(ctx)
+	if registeredErr != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("list registered repositories: %v", registeredErr))
+		registered = nil
+	}
 	for _, repository := range repositories {
 		expectedList, refsErr := m.store.RecoveryRefExpectations(ctx, string(repository.ID))
 		if refsErr != nil {
@@ -139,6 +151,14 @@ func (m *Manager) appendRecoveryRefIssues(ctx context.Context, report *artifactR
 		}
 		listed, listErr := m.git.Run(ctx, string(repository.MainPath), "for-each-ref", "--format=%(refname) %(objectname)", "refs/wx/recovery")
 		if listErr != nil {
+			// 登録済み workspace に属さず照合すべき snapshot も無い repository は、refs を読めなくても不明な点が残らない。
+			// workspace を forget した後に記録だけが残り、その path が Git リポジトリでなくなった場合である。
+			// repositories の行を消す経路が無いため、これを error にすると doctor が恒久的に失敗する。
+			if len(expected) == 0 && registered != nil && !registered[string(repository.ID)] {
+				report.UnreadableRepositories = append(report.UnreadableRepositories,
+					unreadableRepository{RepositoryID: string(repository.ID), Path: string(repository.MainPath), Cause: listErr.Error()})
+				continue
+			}
 			report.Errors = append(report.Errors, fmt.Sprintf("list recovery refs for %s: %v", repository.ID, listErr))
 			continue
 		}
