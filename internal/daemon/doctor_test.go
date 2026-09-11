@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -102,20 +103,20 @@ func TestJobFailureCauseKeepsTheRecordedReason(t *testing.T) {
 
 // 既知でない停止理由は原因を特定できていないことを示し、`wx clear` に帰属させない。
 func TestStandbySuspensionFindingSeparatesEachReason(t *testing.T) {
-	failure := standbySuspensionFinding(state.StandbyReplenishmentDiagnostic{
+	failure := standbyReplenishmentFinding(state.StandbyReplenishmentDiagnostic{
 		Root: "/root", Reason: state.SuspendReplenishReasonStandbyFailure, Detail: "job-1",
 		FailureCode: "PREPARE_FAILED", Action: "wx retry-standby \"/root\"",
 	})
 	if failure.Severity != diag.SeverityProblem || !strings.Contains(failure.Cause, "PREPARE_FAILED") {
 		t.Fatalf("preparation failure finding=%+v", failure)
 	}
-	clean := standbySuspensionFinding(state.StandbyReplenishmentDiagnostic{
+	clean := standbyReplenishmentFinding(state.StandbyReplenishmentDiagnostic{
 		Root: "/root", Reason: state.SuspendReplenishReasonClean, Detail: "run-1", Action: "wx retry-standby \"/root\"",
 	})
 	if clean.Severity != diag.SeverityInfo || !strings.Contains(clean.Cause, "wx clear") {
 		t.Fatalf("clean suspension finding=%+v", clean)
 	}
-	unknown := standbySuspensionFinding(state.StandbyReplenishmentDiagnostic{
+	unknown := standbyReplenishmentFinding(state.StandbyReplenishmentDiagnostic{
 		Root: "/root", Reason: "FUTURE_REASON", Detail: "detail-1", Action: "wx retry-standby \"/root\"",
 	})
 	if unknown.Severity != diag.SeverityInfo || strings.Contains(unknown.Cause, "wx clear") {
@@ -125,6 +126,29 @@ func TestStandbySuspensionFindingSeparatesEachReason(t *testing.T) {
 		if !strings.Contains(unknown.Cause, fragment) {
 			t.Fatalf("unknown suspension cause=%q, want %q", unknown.Cause, fragment)
 		}
+	}
+}
+
+// 補充計画（ENSURE_STANDBY）の失敗は停止行を持たないが、待機枠が埋まらない問題として失敗理由まで報告する。
+func TestStandbyReplenishmentFindingReportsPlanFailure(t *testing.T) {
+	finding := standbyReplenishmentFinding(state.StandbyReplenishmentDiagnostic{
+		Root: "/root", Reason: state.StandbyReplenishReasonPlanFailure, Detail: "job-9",
+		FailureCode: "JOB_FAILED", FailureMessage: `unsafe .worktreeinclude pattern "../escape"`,
+		DetailPath: "/logs/job-9.log", FailedAt: "2026-09-11T00:00:00Z", Action: "wx retry-standby \"/root\"",
+	})
+	if finding.Severity != diag.SeverityProblem || finding.Target != "/root" {
+		t.Fatalf("plan failure finding=%+v", finding)
+	}
+	for _, fragment := range []string{"job-9", "JOB_FAILED", "unsafe .worktreeinclude pattern", "/logs/job-9.log"} {
+		if !strings.Contains(finding.Cause, fragment) {
+			t.Fatalf("plan failure cause=%q, want %q", finding.Cause, fragment)
+		}
+	}
+	if !strings.Contains(finding.Action, "wx retry-standby") {
+		t.Fatalf("plan failure action=%q, want the retry command", finding.Action)
+	}
+	if !slices.Contains(finding.Details, "failed at 2026-09-11T00:00:00Z") {
+		t.Fatalf("plan failure details=%v, want the failure time", finding.Details)
 	}
 }
 
