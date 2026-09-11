@@ -52,7 +52,7 @@ func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, bran
 			fmt.Fprintln(os.Stderr, "error: --branch and --fresh require a worktree")
 			return 2
 		}
-		return runDirectAgent(ctx, agent, args)
+		return runDirectAgent(ctx, agent, addDirArgs(directAddDirs(c.Config), args))
 	}
 	c.forceWorktree = options.Force
 	// 保存直後の選択を、既に動いている daemon にも lease より先に反映する。
