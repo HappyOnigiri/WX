@@ -168,12 +168,15 @@ func (p *Preparer) destinationRoot(target string) (*os.Root, error) {
 }
 
 // UpdateLocked はmulti-repository全体でslot lockを保持する呼び出し元向けの更新処理である。
+// 区間名に update- 接頭辞を付けるのは、cold startの同名区間と合算されないようにするためである。
 func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, target, oldOID, newOID, slotID string, previous, desired []state.Placement) ([]state.Placement, error) {
 	identity, err := p.WorktreeIdentity(target)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.validateUpdating(ctx, repo, target, oldOID, slotID, identity); err != nil {
+	if err := p.timePhase("update-validate", func() error {
+		return p.validateUpdating(ctx, repo, target, oldOID, slotID, identity)
+	}); err != nil {
 		return nil, err
 	}
 	destination, err := p.destinationRoot(target)
@@ -181,37 +184,50 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 		return nil, err
 	}
 	defer func() { _ = destination.Close() }()
-	if err := validateRecordedPlacements(destination, previous); err != nil {
+	if err := p.timePhase("update-place", func() error {
+		if err := validateRecordedPlacements(destination, previous); err != nil {
+			return err
+		}
+		return removeChangedPlacements(destination, previous, desired)
+	}); err != nil {
 		return nil, err
 	}
-	if err := removeChangedPlacements(destination, previous, desired); err != nil {
-		return nil, err
-	}
-	if _, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", newOID); err != nil {
+	if err := p.timePhase("update-checkout", func() error {
+		_, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", newOID)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	retainedPrevious := unchangedPlacements(previous, desired)
-	desired, err = p.filterUpdateLinks(ctx, destination, desired)
-	if err != nil {
+	if err := p.timePhase("update-place", func() error {
+		desired, err = p.filterUpdateLinks(ctx, destination, desired)
+		if err != nil {
+			return err
+		}
+		if err := removeChangedPlacements(destination, retainedPrevious, desired); err != nil {
+			return err
+		}
+		return materializeChangedPlacements(destination, previous, desired)
+	}); err != nil {
 		return nil, err
 	}
-	if err := removeChangedPlacements(destination, retainedPrevious, desired); err != nil {
+	if err := p.timePhase("update-validate", func() error {
+		return p.validateUpdating(ctx, repo, target, newOID, slotID, identity)
+	}); err != nil {
 		return nil, err
 	}
-	if err := materializeChangedPlacements(destination, previous, desired); err != nil {
+	if err := p.timePhase("update-cow", func() error {
+		scope, err := p.updateCOWScope(ctx, repo, oldOID, newOID, previous, desired)
+		if err != nil {
+			return err
+		}
+		return p.compactWorktree(ctx, repo, target, newOID, slotID, preparePhaseUpdate, identity, scope)
+	}); err != nil {
 		return nil, err
 	}
-	if err := p.validateUpdating(ctx, repo, target, newOID, slotID, identity); err != nil {
-		return nil, err
-	}
-	scope, err := p.updateCOWScope(ctx, repo, oldOID, newOID, previous, desired)
-	if err != nil {
-		return nil, err
-	}
-	if err := p.compactWorktree(ctx, repo, target, newOID, slotID, preparePhaseUpdate, identity, scope); err != nil {
-		return nil, err
-	}
-	if err := p.validateUpdating(ctx, repo, target, newOID, slotID, identity); err != nil {
+	if err := p.timePhase("update-validate", func() error {
+		return p.validateUpdating(ctx, repo, target, newOID, slotID, identity)
+	}); err != nil {
 		return nil, err
 	}
 	return desired, nil
