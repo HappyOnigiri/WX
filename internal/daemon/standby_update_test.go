@@ -40,6 +40,12 @@ func newReuseStandbyFixture(t *testing.T) *reuseStandbyFixture {
 // newReuseStandbyFixtureWith は main repository の作り方だけを差し替えられる形で fixture を組む。
 func newReuseStandbyFixtureWith(t *testing.T, initRepository func(*testing.T, string)) *reuseStandbyFixture {
 	t.Helper()
+	return newReuseStandbyFixtureWithWarmCount(t, 1, initRepository)
+}
+
+// newReuseStandbyFixtureWithWarmCount は待機枠数と main repository の作り方を差し替えられる fixture を組む。
+func newReuseStandbyFixtureWithWarmCount(t *testing.T, warmCount int, initRepository func(*testing.T, string)) *reuseStandbyFixture {
+	t.Helper()
 	requireDaemonIntegration(t)
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -56,7 +62,7 @@ func newReuseStandbyFixtureWith(t *testing.T, initRepository func(*testing.T, st
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "hot"
-	cfg.Pool.WarmPerWorkspace = 1
+	cfg.Pool.WarmPerWorkspace = warmCount
 	m := testManager(t, cfg, store)
 	m.git = &gitx.Runner{Timeout: 30 * time.Second}
 	t.Cleanup(m.Close)
@@ -202,6 +208,52 @@ func (f *reuseStandbyFixture) dirtyStandbyTracked(t *testing.T, slotID string) {
 	}
 	if err := os.WriteFile(filepath.Join(repositoryState.WorktreePath, "tracked.txt"), []byte("edited outside wx\n"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 完全一致候補の探索中に見つけたdirty standbyは、後続の正常候補を貸し出しても退役させる。
+func TestStandbyRetiresDirtyCandidateBeforeLaterMatchingLease(t *testing.T) {
+	t.Parallel()
+	f := newReuseStandbyFixtureWithWarmCount(t, 2, initGitRepo)
+	ctx := context.Background()
+	candidates, err := f.store.ReadySlots(ctx, string(f.workspace.ID))
+	if err != nil || len(candidates) != 2 {
+		t.Fatalf("ready candidates=%+v err=%v, want two slots", candidates, err)
+	}
+	dirty, clean := candidates[0], candidates[1]
+	f.dirtyStandbyTracked(t, dirty.ID)
+
+	lease, err := f.manager.ResolveAndLease(ctx, f.repository, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID != clean.ID || !lease.Ready || lease.Route != RouteReady {
+		t.Fatalf("lease=%+v, want later clean candidate %s via ready route", lease, clean.ID)
+	}
+	f.requireRetired(t, dirty.ID)
+}
+
+// branch指定の貸出ではmain向けstandbyを捨てず、後続の正常候補だけを貸し出す。
+func TestStandbyKeepsDirtyCandidateForBranchLeaseBeforeLaterMatchingLease(t *testing.T) {
+	t.Parallel()
+	f := newReuseStandbyFixtureWithWarmCount(t, 2, initGitRepo)
+	ctx := context.Background()
+	candidates, err := f.store.ReadySlots(ctx, string(f.workspace.ID))
+	if err != nil || len(candidates) != 2 {
+		t.Fatalf("ready candidates=%+v err=%v, want two slots", candidates, err)
+	}
+	dirty, clean := candidates[0], candidates[1]
+	f.dirtyStandbyTracked(t, dirty.ID)
+
+	lease, err := f.manager.ResolveAndLease(ctx, f.repository, []string{"main"}, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID != clean.ID || !lease.Ready || lease.Route != RouteReady {
+		t.Fatalf("lease=%+v, want later clean candidate %s via ready route", lease, clean.ID)
+	}
+	if got := f.slotState(t, dirty.ID); got != "READY" {
+		t.Fatalf("dirty standby state=%s, want READY for a --branch lease", got)
 	}
 }
 

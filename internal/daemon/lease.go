@@ -234,6 +234,10 @@ func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspac
 			if errors.Is(matchErr, state.ErrOwnership) && !errors.Is(matchErr, state.ErrSlotStateIneligible) {
 				m.quarantineOwnershipFailure(candidate.ID, []string{"READY"}, matchErr)
 			}
+			if errors.Is(matchErr, workspace.ErrTrackedChanges) && len(branches) == 0 {
+				_ = m.store.SetSlotState(ctx, candidate.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
+				m.log.Info("ready standby retired after tracked changes were found", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", matchErr)
+			}
 			continue
 		}
 		if !matched {
