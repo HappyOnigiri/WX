@@ -24,6 +24,8 @@
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
    `readiness.mode: early`では、hookが使える通常起動はGit登録と起動用ファイルの配置までを待って起動し、以降の`user-prompt-submit`・`pre-tool-use` hookが全準備の完了まで操作を止める。
    `readiness.mode: full`またはhookが無い起動（`internal/hookconfig`が判定する）は、clientが起動前に全準備を待つ。
+   modeとtimeoutは`repositories.<main worktree path>.readiness.*`で個別指定でき、clientはrepositoryのmain pathを知らないためdaemonが貸出応答へ合成済みの実効値を載せる。
+   合成はslot内のいずれかが`full`なら`full`、timeoutは最長を採る。`full`要求の早期起動は約束を破るが、`early`要求を待たせるのは遅いだけで、最短のtimeoutでは最も遅いrepositoryが必ず失敗するためである。
    checkout hookやprepare commandが起動用の設定・指示を生成・更新する運用では、先行配置がその生成物を含められないため`full`を使う。
    完全一致したwarm slotは両方式とも即時起動する。
 

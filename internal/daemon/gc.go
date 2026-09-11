@@ -90,14 +90,28 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		progress.addFailed("metadata", "metadata candidate query failed", err)
 		return progress.GCResult, progress.err()
 	}
-	before := state.FormatTime(nowTime.Add(-cfg.Retention.EndedWorktree.Duration))
-	items, err := m.store.GCCandidates(ctx, before)
+	// SQL には最短の保持期間から作った緩い cutoff だけを置き、workspace ごとの正確な判定は Go 側で行う。
+	// 基準時刻は GC 一巡で共有し、問い合わせごとに現在時刻がずれないようにする。
+	endedFloor := state.FormatTime(nowTime.Add(-cfg.ShortestEndedWorktreeRetention()))
+	endedBefore := func(root string) string {
+		retention, _ := cfg.EndedWorktreeForWorkspace(root)
+		return state.FormatTime(nowTime.Add(-retention))
+	}
+	hotFloor := state.FormatTime(nowTime.Add(-cfg.ShortestHotStandbyRetention()))
+	hotBefore := func(root string) string {
+		retention, _ := cfg.HotStandbyForWorkspace(root)
+		return state.FormatTime(nowTime.Add(-retention))
+	}
+	warmFor := func(root string) int {
+		warm, _ := cfg.WarmCountForWorkspace(root)
+		return warm
+	}
+	items, err := m.store.GCCandidates(ctx, endedFloor, endedBefore)
 	if err != nil {
 		progress.addFailed("ended worktrees", "ended worktree candidate query failed", err)
 		return progress.GCResult, progress.err()
 	}
-	warmOverrides := cfg.WarmCountOverrides()
-	standbys, err := m.store.StandbyGCCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)), cfg.Pool.WarmPerWorkspace, warmOverrides)
+	standbys, err := m.store.StandbyGCCandidates(ctx, warmFor)
 	if err != nil {
 		progress.addFailed("standby worktrees", "standby candidate query failed", err)
 		return progress.GCResult, progress.err()
@@ -107,7 +121,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		progress.addFailed("quarantined worktrees", "quarantined candidate query failed", err)
 		return progress.GCResult, progress.err()
 	}
-	cold, err := m.store.ColdRepositoryCandidatesForWarm(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.HotStandby.Duration)), cfg.Pool.WarmPerWorkspace, warmOverrides)
+	cold, err := m.store.ColdRepositoryCandidatesForWarm(ctx, hotFloor, warmFor, hotBefore)
 	if err != nil {
 		progress.addFailed("cold repositories", "cold repository candidate query failed", err)
 		return progress.GCResult, progress.err()

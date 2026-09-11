@@ -115,12 +115,43 @@ func Fields(c Config) []Field {
 	return fields
 }
 
+// Lists はユーザーが設定できる list key と現在の実効値を宣言順に列挙する。
+func Lists(c Config) []Field {
+	var fields []Field
+	walkConfigLists(reflect.ValueOf(c), "", func(key string, fv reflect.Value) {
+		fields = append(fields, Field{key, fmt.Sprintf("%q", fv.Interface().([]string))})
+	})
+	return fields
+}
+
 // SetField は key の scalar field（duration、整数、真偽、文字列）として value を解析し代入する。
 // 範囲と enum の検証は後段の Validate が行う。
 func SetField(c *Config, key, value string) error {
 	field := configField(reflect.ValueOf(c).Elem(), key)
 	if !field.IsValid() {
 		return fmt.Errorf("unknown config key %q; run wx config to list available keys", key)
+	}
+	if err := parseInto(field, value); err != nil {
+		return err
+	}
+	if c.present == nil {
+		c.present = map[string]bool{}
+	}
+	c.present[key] = true
+	return nil
+}
+
+// parseInto は scalar field（duration、整数、真偽、文字列）として value を解析し代入する。
+// ポインタ leaf は個別指定で「明示的な 0 / false」と未指定を区別するために使うので、
+// 実体を確保してから同じ分岐へ渡す。
+func parseInto(field reflect.Value, value string) error {
+	if field.Kind() == reflect.Pointer {
+		allocated := reflect.New(field.Type().Elem())
+		if err := parseInto(allocated.Elem(), value); err != nil {
+			return err
+		}
+		field.Set(allocated)
+		return nil
 	}
 	switch {
 	case field.Type() == durationType:
@@ -144,10 +175,6 @@ func SetField(c *Config, key, value string) error {
 		}
 		field.SetInt(int64(n))
 	}
-	if c.present == nil {
-		c.present = map[string]bool{}
-	}
-	c.present[key] = true
 	return nil
 }
 

@@ -108,7 +108,7 @@ func TestReadModelsRejectRowsWithUnscannableFields(t *testing.T) {
 				"CREATE VIEW repositories AS SELECT 'repository' AS id,NULL AS last_leased_at",
 			},
 			check: func(store *Store) error {
-				_, err := store.StandbyGCCandidates(context.Background(), "later", 1)
+				_, err := store.StandbyGCCandidates(context.Background(), constantWarm(1))
 				return err
 			},
 		},
@@ -136,7 +136,7 @@ func TestReadModelsRejectRowsWithUnscannableFields(t *testing.T) {
 				"CREATE VIEW sessions AS SELECT 'session' AS id,'slot' AS slot_id,'archived' AS archived_at",
 			},
 			check: func(store *Store) error {
-				_, err := store.GCCandidates(context.Background(), "later")
+				_, err := store.GCCandidates(context.Background(), "later", constantBefore("later"))
 				return err
 			},
 		},
@@ -309,7 +309,7 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	_, _, err = store.ScheduleColdRepositoryRemoval(ctx, ColdRepositoryCandidate{SlotID: slot.ID, WorkspaceID: workspaceID, RepositoryID: "repository"})
 	requireError("ScheduleColdRepositoryRemoval", err)
 	requireError("FinishColdRepositoryRemoval", store.FinishColdRepositoryRemoval(ctx, slot.ID, "repository"))
-	_, err = store.StandbyGCCandidates(ctx, "before", 1)
+	_, err = store.StandbyGCCandidates(ctx, constantWarm(1))
 	requireError("StandbyGCCandidates", err)
 	_, _, err = store.ScheduleRemoval(ctx, slot.ID, session.ID)
 	requireError("ScheduleRemoval", err)
@@ -320,7 +320,7 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 	requireError("ExpiredSnapshots", err)
 	requireError("ExpireSessionSnapshots", store.ExpireSessionSnapshots(ctx, session.ID))
 	requireError("PruneMetadata", store.PruneMetadata(ctx, "failed", "events", "tombstones"))
-	_, err = store.GCCandidates(ctx, "before")
+	_, err = store.GCCandidates(ctx, "before", constantBefore("before"))
 	requireError("GCCandidates", err)
 	requireError("MarkSlotArchived", store.MarkSlotArchived(ctx, slot.ID))
 }
@@ -431,7 +431,7 @@ func TestRegistryReadModelsReturnCommittedLifecycleRows(t *testing.T) {
 	if candidates, err := store.ColdRepositoryCandidates(ctx, FormatTime(time.Now().Add(time.Hour))); err != nil || len(candidates) != 1 || candidates[0].RepositoryID != "repository" {
 		t.Fatalf("cold candidates=%+v err=%v", candidates, err)
 	}
-	if candidates, err := store.StandbyGCCandidates(ctx, now(), 0); err != nil || len(candidates) != 1 || candidates[0].SlotID != "ready" {
+	if candidates, err := store.StandbyGCCandidates(ctx, constantWarm(0)); err != nil || len(candidates) != 1 || candidates[0].SlotID != "ready" {
 		t.Fatalf("standby GC candidates=%+v err=%v", candidates, err)
 	}
 	if value, err := TokenHex(); err != nil || len(value) != 64 {
@@ -837,14 +837,14 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 			return err
 		},
 		"finish cold removal":      func() error { return store.FinishColdRepositoryRemoval(ctx, "canceled", "repository") },
-		"standby GC candidates":    func() error { _, err := store.StandbyGCCandidates(ctx, now(), 1); return err },
+		"standby GC candidates":    func() error { _, err := store.StandbyGCCandidates(ctx, constantWarm(1)); return err },
 		"schedule removal":         func() error { _, _, err := store.ScheduleRemoval(ctx, "canceled", "canceled"); return err },
 		"finish removal":           func() error { _, err := store.FinishRemoval(ctx, "canceled"); return err },
 		"prune roots":              func() error { return store.PruneRoots(ctx) },
 		"expired snapshots":        func() error { _, err := store.ExpiredSnapshots(ctx, now()); return err },
 		"expire session snapshots": func() error { return store.ExpireSessionSnapshots(ctx, "canceled") },
 		"prune metadata":           func() error { return store.PruneMetadata(ctx, now(), now(), now()) },
-		"GC candidates":            func() error { _, err := store.GCCandidates(ctx, now()); return err },
+		"GC candidates":            func() error { _, err := store.GCCandidates(ctx, now(), constantBefore(now())); return err },
 		"mark slot archived":       func() error { return store.MarkSlotArchived(ctx, "canceled") },
 	}
 	for name, operation := range operations {

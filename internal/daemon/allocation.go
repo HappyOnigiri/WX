@@ -138,7 +138,7 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 	}
 	m.schedule(job)
 	m.startBackground(m.runBackgroundGC)
-	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slotPath, leasePathValue, repos), Route: allocationRoute(jobKind)}, false, nil
+	return Lease{SessionID: id, Token: token, Path: leasePathValue, RootIdentity: leaseIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slotPath, leasePathValue, repos), Route: allocationRoute(jobKind)}.withReadiness(m.Config(), w), false, nil
 }
 
 // workspace未確定slot用の予約namespaceであり、通常のworkspace IDには"_"接頭辞を許さない。

@@ -79,6 +79,8 @@ func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w disc
 		if err != nil {
 			return nil, err
 		}
+		// workspace root のステージはどの repository にも属さない rule を扱うため、global の early_paths を使う。
+		// repository 個別値の和集合は「早期に出さない」約束を破り、積集合は空になりやすく、合成する自然な規則がない。
 		plan, err := workspace.PlanRootStages(m.log, string(w.Root), rootRules, preparer.Config.Readiness.EarlyPaths)
 		if err != nil {
 			return nil, err

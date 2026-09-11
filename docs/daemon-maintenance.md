@@ -37,8 +37,14 @@ slot lockは最上位のoperationで一度だけ取り、内側の経路には�
 
 `hot`なworkspaceのREADY slotを待機枠数まで補充する。
 枠数は`workspaces.<root>.warm_count`、`pool.warm_per_workspace`の順に継承する。
+保持期間も同じく`workspaces.<root>.retention.hot_standby`、`retention.hot_standby`の順、終了worktreeの保持は`workspaces.<root>.retention.ended_worktree`、`retention.ended_worktree`の順に継承する。
 workspace個別値は単一リポジトリではそのリポジトリのmain worktree、multi-repositoryではworkspace rootに適用する。
 枠数0はそのworkspaceの補充を無効にするが、個数指定だけで`hot`へは変更しない。
+保持期間0も同じく補充を無効にする。補充とGCは同じ実効値で判断するので、作っては即座に回収する往復は起きない。
+
+GCの問い合わせは最短の保持期間から作ったcutoffだけをSQLへ置き、workspaceごとの正確な判定はGo側で行う。
+最長で絞ると保持期間の短いworkspaceのslotが問い合わせから落ちる。
+workspaceに紐付かないslot（`slots.workspace_id`がNULL）はglobal値で判定する。
 
 `Store.HotRepositoryIDs`は`repositories.last_leased_at`で絞るが、貸出時の更新はworkspace単位なので、直後の補充では全リポジトリがhotになる。
 リポジトリごとの利用に絞るなら、`session_repositories`への実利用の記録と、`HotRepositoryIDs`・GCの`ColdRepositoryCandidates`の変更が対になる。

@@ -27,7 +27,8 @@ func addDirArgs(dirs, args []string) []string {
 // 絶対 path にするのは、codex の resume が --cd で CWD を移すため、相対名の解決先が起動時の CWD と変わり得るからである。
 // commentlint:allow-long -- 絶対 path にする理由を残す
 func leaseAddDirs(cfg config.Config, lease daemon.Lease) []string {
-	if cfg.Agent.AddDir == config.AgentAddDirOff {
+	// SourceWorkspace は daemon が返した canonical な workspace root で、設定キーと同じ表記になる。
+	if mode, _ := cfg.AddDirForWorkspace(lease.SourceWorkspace); mode == config.AgentAddDirOff {
 		return nil
 	}
 	dirs := make([]string, 0, len(lease.RepositoryDirs))
@@ -39,8 +40,9 @@ func leaseAddDirs(cfg config.Config, lease daemon.Lease) []string {
 
 // directAddDirs は worktree を作らない起動で、CWD 直下の repository を絶対 path で返す。
 // 直起動は daemon を通らず記録済みの名前がないため、実際にある directory だけを見る。
-func directAddDirs(cfg config.Config) []string {
-	if cfg.Agent.AddDir != config.AgentAddDirAlways {
+// root は設定を引くためだけの workspace root（解決できなければ空で global へ落ちる）で、走査する root は CWD のままにする。
+func directAddDirs(cfg config.Config, root string) []string {
+	if mode, _ := cfg.AddDirForWorkspace(root); mode != config.AgentAddDirAlways {
 		return nil
 	}
 	cwd, err := os.Getwd()

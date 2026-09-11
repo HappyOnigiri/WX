@@ -197,7 +197,7 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 		return &PrepareCommandError{FailureID: diagnostic.failureID, DetailPath: path, ExitCode: -1, Err: err}
 	}
 	if timeout <= 0 {
-		timeout = p.Config.Readiness.Timeout.Duration
+		timeout = p.Config.ReadinessForRepository(string(repo.MainPath)).Timeout.Duration
 	}
 	if timeout <= 0 {
 		err := errors.New("prepare timeout must be positive")

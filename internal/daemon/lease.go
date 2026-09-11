@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -49,6 +50,29 @@ type Lease struct {
 	// Route はこの貸出が選んだ経路（Route* のいずれか）である。
 	// 分岐を確定できるのは貸出の側だけなので、client へ推測させず応答に載せる。
 	Route string `json:"route,omitempty"`
+	// ReadinessMode と ReadinessTimeoutMS は slot 内の repository 個別指定を合成した実効値である。
+	// client は repository の main path を知らないため自分では解決できず、daemon が応答へ載せる。
+	// 空・0 のときは client の global 設定へ落ちる。
+	ReadinessMode      string `json:"readiness_mode,omitempty"`
+	ReadinessTimeoutMS int    `json:"readiness_timeout_ms,omitempty"`
+}
+
+// leaseReadiness は slot 内の repository の readiness 個別指定を1つの実効値へ合成する。
+// mode はどれかが full なら full にする。full 要求の早期起動は約束を破るが、early 要求を待たせるのは遅いだけである。
+// timeout は最長へ寄せる。最短にすると最も遅い repository が必ず timeout する。
+func leaseReadiness(cfg config.Config, repositories []discovery.Repository) (string, int) {
+	mode := ""
+	var timeout time.Duration
+	for _, repository := range repositories {
+		readiness := cfg.ReadinessForRepository(string(repository.MainPath))
+		if mode != "full" {
+			mode = readiness.Mode
+		}
+		if readiness.Timeout.Duration > timeout {
+			timeout = readiness.Timeout.Duration
+		}
+	}
+	return mode, int(timeout.Milliseconds())
 }
 
 // ResolveAndLease は cwd の workspace を解決して貸出す。
@@ -155,14 +179,14 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 				job, leaseErr := m.store.LeaseReadyWithCold(ctx, ready.ID, session)
 				if leaseErr == nil {
 					m.schedule(job)
-					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteColdStart}, true, nil
+					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteColdStart}.withReadiness(m.Config(), w), true, nil
 				}
 				m.releaseLease(session.ID)
 				return Lease{}, false, nil
 			}
 			if replenishJob, replenished, leaseErr := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session); leaseErr == nil {
 				m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
-				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}, true, nil
+				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}.withReadiness(m.Config(), w), true, nil
 			}
 			m.releaseLease(session.ID)
 			return Lease{}, false, nil
@@ -246,7 +270,7 @@ func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspac
 				_ = m.store.SetSlotState(ctx, candidate.ID, []string{"READY"}, "STALE", "READY_VALIDATION_FAILED")
 				// 更新互換fingerprintの入力は保存していないため、現在値を添えて設定変更との対応を追えるようにする。
 				m.log.Info("standby retired as not updateable", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr,
-					"generation", candidate.Generation, "copy_mode", m.Config().Storage.CopyMode, "cow_min_size_kib", cowThresholdSummary(m.Config(), w))
+					"generation", candidate.Generation, "copy_mode", copyModeSummary(m.Config(), w), "cow_min_size_kib", cowThresholdSummary(m.Config(), w))
 			default:
 				m.log.Info("standby update candidate rejected before writes", "workspace_id", w.ID, "slot_id", candidate.ID, "reason", updateErr)
 			}
@@ -482,4 +506,10 @@ func (m *Manager) resolveRetiredSlotPath(ctx context.Context, discoverer discove
 		return discovery.Workspace{}, cause
 	}
 	return w, nil
+}
+
+// withReadiness は貸出応答へ slot 単位の readiness 実効値を載せる。
+func (l Lease) withReadiness(cfg config.Config, w discovery.Workspace) Lease {
+	l.ReadinessMode, l.ReadinessTimeoutMS = leaseReadiness(cfg, w.Repositories)
+	return l
 }

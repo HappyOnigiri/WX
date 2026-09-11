@@ -195,8 +195,18 @@ func repositoryIsMainWorktree(root string, repo Repository) bool {
 func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace, error) {
 	ctx, cancel := context.WithTimeout(ctx, d.Config.Discovery.Timeout.Duration)
 	defer cancel()
+	// 設定キーは canonical path なので、個別指定を引くためだけに先に解決する。
+	// walk 自体は非 canonical な root のまま行う。ここで差し替えると rel の計算と
+	// repositoryIsMainWorktree の意味が変わるためで、解決の失敗は walk 後の Canonicalize が同じ文言で報告する。
+	configRoot := root
+	if canonical, err := domain.Canonicalize(root); err == nil {
+		configRoot = string(canonical)
+	}
+	excludeNames, _ := d.Config.DiscoveryExcludeForWorkspace(configRoot)
+	maxDepth, _ := d.Config.DiscoveryMaxDepthForWorkspace(configRoot)
+	// `.git` は個別指定の置き換え対象ではなく、常に除外する。
 	exclude := map[string]bool{".git": true}
-	for _, v := range d.Config.Discovery.Exclude {
+	for _, v := range excludeNames {
 		exclude[v] = true
 	}
 	wtRoot, _ := config.ExpandHome(d.Config.Storage.WorktreeRoot)
@@ -218,7 +228,7 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 		if rel != "." {
 			depth = strings.Count(rel, string(filepath.Separator)) + 1
 		}
-		if depth > d.Config.Discovery.MaxDepth && e.IsDir() {
+		if depth > maxDepth && e.IsDir() {
 			return filepath.SkipDir
 		}
 		if e.IsDir() && (exclude[e.Name()] || path == wtRoot) {
@@ -263,8 +273,13 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 	return Workspace{ID: domain.WorkspaceID(id), Root: canonical, Kind: "multi_repository", Repositories: repos}, nil
 }
 
-// PolicyRoot は探索や登録をせず、リポジトリなら main worktree、それ以外なら指定ディレクトリを返す。
-func (d *Discoverer) PolicyRoot(ctx context.Context, cwd string) (string, error) {
+// ErrNotRepository は MainWorktree が repository 外を指されたことを表す。
+// PolicyRoot はこれを指定ディレクトリそのものへ読み替える。
+var ErrNotRepository = errors.New("not inside a Git repository")
+
+// MainWorktree は探索や登録をせず、cwd を含む repository の main worktree を canonical path で返す。
+// repository 外は ErrNotRepository を返す。repositories の設定キーはこの path と同じ表記になる。
+func (d *Discoverer) MainWorktree(ctx context.Context, cwd string) (string, error) {
 	canonical, err := domain.Canonicalize(cwd)
 	if err != nil {
 		return "", err
@@ -276,7 +291,7 @@ func (d *Discoverer) PolicyRoot(ctx context.Context, cwd string) (string, error)
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		return string(canonical), nil
+		return "", fmt.Errorf("%s is %w", canonical, ErrNotRepository)
 	}
 	result, err := d.Git.Run(ctx, string(canonical), "worktree", "list", "--porcelain", "-z")
 	if err != nil {
@@ -288,4 +303,20 @@ func (d *Discoverer) PolicyRoot(ctx context.Context, cwd string) (string, error)
 	}
 	root, err := domain.Canonicalize(main)
 	return string(root), err
+}
+
+// PolicyRoot は探索や登録をせず、リポジトリなら main worktree、それ以外なら指定ディレクトリを返す。
+func (d *Discoverer) PolicyRoot(ctx context.Context, cwd string) (string, error) {
+	root, err := d.MainWorktree(ctx, cwd)
+	if err == nil {
+		return root, nil
+	}
+	if !errors.Is(err, ErrNotRepository) {
+		return "", err
+	}
+	canonical, canonicalErr := domain.Canonicalize(cwd)
+	if canonicalErr != nil {
+		return "", canonicalErr
+	}
+	return string(canonical), nil
 }

@@ -163,3 +163,58 @@ func TestConfigCommandListOperations(t *testing.T) {
 		t.Fatalf("reset config still contains custom path: %s", data)
 	}
 }
+
+// scope 指定は show・set・reset・list を同じ引数の形で受け、未知キーは global 経路と同じ終了コード1にする。
+func TestConfigCommandScopeOperations(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ctx := context.Background()
+	target := filepath.Join(home, "multi")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := runConfig(ctx, []string{"--workspace", target}); got != 0 {
+		t.Fatalf("workspace display exit=%d", got)
+	}
+	if got := runConfig(ctx, []string{"--workspace", target, "retention.hot_standby", "0s"}); got != 0 {
+		t.Fatalf("workspace set exit=%d", got)
+	}
+	raw, err := config.LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := config.Merge(config.Defaults(), raw)
+	if err := config.NormalizePaths(&effective); err != nil {
+		t.Fatal(err)
+	}
+	if hot, overridden := effective.HotStandbyForWorkspace(target); hot != 0 || !overridden {
+		t.Fatalf("hot standby=%s overridden=%v, want the explicit zero", hot, overridden)
+	}
+	if got := runConfig(ctx, []string{"--workspace", target, "discovery.exclude", "--add", "build"}); got != 0 {
+		t.Fatalf("workspace list add exit=%d", got)
+	}
+	if got := runConfig(ctx, []string{"--workspace", target, "retention.hot_standby", "--reset"}); got != 0 {
+		t.Fatalf("workspace reset exit=%d", got)
+	}
+	raw, err = config.LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 兄弟の list 指定は道連れにならない。
+	if got := raw.Workspaces[target]; got.Retention.HotStandby != nil || len(got.Discovery.Exclude) == 0 {
+		t.Fatalf("workspace override=%+v, want only the reset key dropped", got)
+	}
+	if got := runConfig(ctx, []string{"--workspace", target, "bogus", "1"}); got != 1 {
+		t.Fatalf("unknown workspace key exit=%d, want 1", got)
+	}
+	if got := runConfig(ctx, []string{"--workspace", target, "warm_count", "1", "extra"}); got != 2 {
+		t.Fatalf("wrong arity exit=%d, want 2", got)
+	}
+	if got := runConfig(ctx, []string{"--workspace", target, "--repository", target}); got != 2 {
+		t.Fatalf("combined scopes exit=%d, want 2", got)
+	}
+	// repository scope は repository の外を拒否する。
+	if got := runConfig(ctx, []string{"--repository", target, "readiness.mode", "full"}); got != 1 {
+		t.Fatalf("repository scope outside a repository exit=%d, want 1", got)
+	}
+}

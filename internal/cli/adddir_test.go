@@ -44,7 +44,7 @@ func TestAddDirModesDecideWorktreeAndDirectLaunch(t *testing.T) {
 		t.Chdir(root)
 		cfg := config.Defaults()
 		cfg.Agent.AddDir = test.mode
-		if got := directAddDirs(cfg); len(got) != test.wantDirectLen {
+		if got := directAddDirs(cfg, ""); len(got) != test.wantDirectLen {
 			t.Errorf("%s direct dirs=%v", test.mode, got)
 		}
 	}
@@ -128,5 +128,38 @@ func TestLaunchPassesRepositoryDirsToTheAgent(t *testing.T) {
 				t.Fatalf("args=%q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// add_dir は workspace 個別指定を優先する。
+// 貸出経路は daemon が返した canonical な source workspace を、直起動は解決した policy root をキーにする。
+func TestAddDirFollowsWorkspaceOverride(t *testing.T) {
+	slot := filepath.Join(string(filepath.Separator)+"wx", "wsp001", "slt001")
+	lease := daemon.Lease{Path: slot, SourceWorkspace: "/src/multi", RepositoryDirs: []string{"server"}}
+	cfg := config.Defaults()
+	cfg.Agent.AddDir = config.AgentAddDirAlways
+	cfg.Workspaces["/src/multi"] = config.Workspace{Agent: config.WorkspaceAgent{AddDir: config.AgentAddDirOff}}
+	if got := leaseAddDirs(cfg, lease); got != nil {
+		t.Fatalf("lease dirs=%v, want the workspace override to suppress them", got)
+	}
+	// 個別指定の無い workspace は global のまま。
+	if got := leaseAddDirs(cfg, daemon.Lease{Path: slot, SourceWorkspace: "/src/other", RepositoryDirs: []string{"server"}}); len(got) != 1 {
+		t.Fatalf("lease dirs=%v, want the global value", got)
+	}
+
+	root := t.TempDir()
+	for _, name := range []string{"server", "web"} {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(root)
+	cfg.Workspaces["/src/direct"] = config.Workspace{Agent: config.WorkspaceAgent{AddDir: config.AgentAddDirWorktree}}
+	if got := directAddDirs(cfg, "/src/direct"); got != nil {
+		t.Fatalf("direct dirs=%v, want the workspace override to suppress them", got)
+	}
+	// policy root の解決に失敗した直起動は空の root で global へ落ち、起動そのものは続く。
+	if got := directAddDirs(cfg, ""); len(got) != 2 {
+		t.Fatalf("direct dirs=%v, want the global value when the root is unknown", got)
 	}
 }

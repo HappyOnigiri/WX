@@ -197,7 +197,7 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 		}
 	}
 	item.plan.copies = copies
-	item.plan.split(p.Config.Readiness.EarlyPaths)
+	item.plan.split(p.Config.ReadinessForRepository(string(item.Repository.MainPath)).EarlyPaths)
 	return nil
 }
 

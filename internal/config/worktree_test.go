@@ -111,7 +111,7 @@ func TestWorkspaceWarmCountOverridePreservesOtherSettingsAndExplicitZero(t *test
 	raw := Config{Workspaces: map[string]Workspace{
 		"$HOME/alias": {Worktree: "hot", Copy: []string{".env"}, Link: []string{"cache"}},
 	}}
-	if err := SetWorkspaceWarmCount(&raw, repo, 0); err != nil {
+	if err := SetScopeField(&raw, ScopeWorkspace, repo, "warm_count", "0"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(raw); err != nil {
@@ -133,7 +133,7 @@ func TestWorkspaceWarmCountOverridePreservesOtherSettingsAndExplicitZero(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ResetWorkspaceWarmCount(&raw, repo); err != nil {
+	if err := ResetScopeField(&raw, ScopeWorkspace, repo, "warm_count"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(raw); err != nil {
@@ -159,7 +159,12 @@ func TestWorkspaceWarmCountValidationRejectsNegative(t *testing.T) {
 	if err := Validate(&cfg); err == nil {
 		t.Fatal("negative workspace warm count was accepted")
 	}
-	if err := SetWorkspaceWarmCount(&cfg, "/repo", -1); err == nil {
+	updated := Config{}
+	if err := SetScopeField(&updated, ScopeWorkspace, "/repo", "warm_count", "-1"); err != nil {
+		t.Fatal(err)
+	}
+	effective := Merge(Defaults(), updated)
+	if err := Validate(&effective); err == nil {
 		t.Fatal("negative workspace warm count update was accepted")
 	}
 }
@@ -172,7 +177,7 @@ func TestWorkspaceReuseStandbyOverridePreservesExplicitFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := Config{}
-	if err := SetWorkspaceReuseStandby(&raw, repo, false); err != nil {
+	if err := SetScopeField(&raw, ScopeWorkspace, repo, "reuse_standby", "false"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(raw); err != nil {
@@ -189,7 +194,7 @@ func TestWorkspaceReuseStandbyOverridePreservesExplicitFalse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ResetWorkspaceReuseStandby(&raw, repo); err != nil {
+	if err := ResetScopeField(&raw, ScopeWorkspace, repo, "reuse_standby"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(raw); err != nil {
@@ -212,7 +217,7 @@ func TestWorkspaceSubmodulesOverridePreservesExplicitFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := Config{}
-	if err := SetWorkspaceSubmodules(&raw, repo, false); err != nil {
+	if err := SetScopeField(&raw, ScopeWorkspace, repo, "submodules", "false"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(raw); err != nil {
@@ -229,7 +234,7 @@ func TestWorkspaceSubmodulesOverridePreservesExplicitFalse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ResetWorkspaceSubmodules(&raw, repo); err != nil {
+	if err := ResetScopeField(&raw, ScopeWorkspace, repo, "submodules"); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(raw); err != nil {
@@ -254,24 +259,24 @@ func TestWorkspaceOverrideResetKeepsSiblingOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := Config{}
-	if err := SetWorkspaceSubmodules(&raw, repo, false); err != nil {
+	if err := SetScopeField(&raw, ScopeWorkspace, repo, "submodules", "false"); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetWorkspaceWarmCount(&raw, repo, 3); err != nil {
+	if err := SetScopeField(&raw, ScopeWorkspace, repo, "warm_count", "3"); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetWorkspaceReuseStandby(&raw, repo, false); err != nil {
+	if err := SetScopeField(&raw, ScopeWorkspace, repo, "reuse_standby", "false"); err != nil {
 		t.Fatal(err)
 	}
-	for _, reset := range []func(*Config, string) error{ResetWorkspaceWarmCount, ResetWorkspaceReuseStandby} {
-		if err := reset(&raw, repo); err != nil {
+	for _, key := range []string{"warm_count", "reuse_standby"} {
+		if err := ResetScopeField(&raw, ScopeWorkspace, repo, key); err != nil {
 			t.Fatal(err)
 		}
 		if enabled, overridden := Merge(Defaults(), raw).SubmodulesForWorkspace(repo); enabled || !overridden {
 			t.Fatalf("submodules=%t overridden=%t after a sibling reset, want the override kept", enabled, overridden)
 		}
 	}
-	if err := ResetWorkspaceSubmodules(&raw, repo); err != nil {
+	if err := ResetScopeField(&raw, ScopeWorkspace, repo, "submodules"); err != nil {
 		t.Fatal(err)
 	}
 	if len(raw.Workspaces) != 0 {
