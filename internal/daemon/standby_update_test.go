@@ -378,6 +378,9 @@ func TestStandbyUpdateReusesSlotAndSkipsHooksAndPrepare(t *testing.T) {
 	if lease.SessionID != ready.ID || lease.Ready {
 		t.Fatalf("updated lease=%+v, want same slot behind readiness gate", lease)
 	}
+	if lease.Route != RouteUpdate {
+		t.Fatalf("lease route=%q, want the standby update route", lease.Route)
+	}
 	jobs, err = store.RecoverJobs(ctx, false)
 	if err != nil {
 		t.Fatal(err)
@@ -416,5 +419,17 @@ func TestStandbyUpdateReusesSlotAndSkipsHooksAndPrepare(t *testing.T) {
 		if err != nil || strings.Count(string(data), "\n") != want {
 			t.Fatalf("execution log %s=%q err=%v", path, data, err)
 		}
+	}
+	// 更新も cold start と同じ器で測る。区間が無いと `wx bench` から更新の所要時間が一切見えない。
+	measurements := m.PrepareMeasurements(ready.ID, "")
+	if len(measurements) == 0 {
+		t.Fatal("the standby update recorded no measurement")
+	}
+	recorded := map[string]bool{}
+	for _, phase := range measurements[0].Phases {
+		recorded[phase.Name] = true
+	}
+	if !recorded["update-checkout"] || !recorded["update-validate"] {
+		t.Fatalf("update phases=%+v, want the update- prefixed sections", measurements[0].Phases)
 	}
 }

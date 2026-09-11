@@ -52,7 +52,7 @@ func (m *Manager) leaseMatchingReady(ctx context.Context, w discovery.Workspace,
 			return Lease{}, false, err
 		}
 		m.schedule(job)
-		return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories)}, true, nil
+		return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteColdStart}, true, nil
 	}
 	job, replenished, err := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session)
 	if err != nil {
@@ -60,7 +60,7 @@ func (m *Manager) leaseMatchingReady(ctx context.Context, w discovery.Workspace,
 		return Lease{}, false, err
 	}
 	m.handleNormalSessionSuccess(ctx, w, job, replenished)
-	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories)}, true, nil
+	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}, true, nil
 }
 
 func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspace, slot state.Slot, resolved []pool.Resolved, agent string, pid int, attrs leaseAttrs) (Lease, bool, error) {
@@ -165,7 +165,7 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 	}
 	m.log.Info("standby update reserved", append([]any{"workspace_id", w.ID, "slot_id", slot.ID}, mismatch.logArgs()...)...)
 	m.schedule(job)
-	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slot.Path, leasePathValue, repositories)}, true, nil
+	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(slot.Path, leasePathValue, repositories), Route: RouteUpdate}, true, nil
 }
 
 // standbyStateRace は候補を奪われただけの一時的な失敗かを返す。slotの状態は変えず次の候補へ回す。
@@ -274,6 +274,10 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 		return err
 	}
 	defer releaseSlot()
+	// 更新も cold start と同じ器で測る。`wx bench` から更新の所要時間が見えるようにし、
+	// 待機中の client が読む実行中区間の表へもこの経路を載せるためである。
+	timer := m.newPrepareTimer(slot, preparer)
+	defer func() { timer.finish(updateErr) }()
 	if err := m.store.BeginStandbyUpdate(ctx, slot.ID); err != nil {
 		return err
 	}

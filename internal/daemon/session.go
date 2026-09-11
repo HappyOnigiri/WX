@@ -37,6 +37,34 @@ func (m *Manager) WaitEarlyReady(ctx context.Context, id, token string) error {
 	return m.waitReadiness(ctx, id, token, true)
 }
 
+// LeaseProgress は貸出の準備がいまどこにいるかである。表示専用で、準備の結果には関与しない。
+type LeaseProgress struct {
+	// State は slot の状態。job 待ち行列にいる間は Phase が空になるので、client はこちらで待機中と描き分ける。
+	State string `json:"state"`
+	// Phase は実行中の準備区間名。`wx bench` の区間名と同じ語彙である。
+	Phase string `json:"phase,omitempty"`
+	// PhaseElapsedMS は Phase が始まってからの経過である。
+	PhaseElapsedMS int64 `json:"phase_elapsed_ms,omitempty"`
+}
+
+// LeaseProgress は準備中の slot の現在位置を返す。認証は WaitReady と同じく session ID と token で行う。
+// slot ID は session ID と同じなので、貸出を持つ client だけが自分の準備を読める。
+func (m *Manager) LeaseProgress(ctx context.Context, id, token string) (LeaseProgress, error) {
+	if _, err := m.store.Session(ctx, id, token); err != nil {
+		return LeaseProgress{}, err
+	}
+	slot, err := m.store.Slot(ctx, id)
+	if err != nil {
+		return LeaseProgress{}, err
+	}
+	progress := LeaseProgress{State: slot.State}
+	if name, start, ok := m.ActivePhase(id); ok {
+		progress.Phase = name
+		progress.PhaseElapsedMS = time.Since(start).Milliseconds()
+	}
+	return progress, nil
+}
+
 func (m *Manager) waitReadiness(ctx context.Context, id, token string, early bool) error {
 	if _, err := m.store.Session(ctx, id, token); err != nil {
 		return err

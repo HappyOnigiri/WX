@@ -67,10 +67,29 @@ func (m *Manager) newPrepareTimer(slot state.Slot, preparer *workspace.Preparer)
 	timings := &workspace.PhaseTimings{}
 	notices := &workspace.PrepareNotices{}
 	preparer.Phases, preparer.Notices = timings, notices
-	return &prepareTimer{
+	timer := &prepareTimer{
 		manager: m, timings: timings, notices: notices, slotID: slot.ID, workspaceID: slot.WorkspaceID,
 		sessionID: slot.OwnerSessionID, started: time.Now(),
 	}
+	m.mu.Lock()
+	if m.activePrepares == nil {
+		m.activePrepares = map[string]*prepareTimer{}
+	}
+	m.activePrepares[timer.slotID] = timer
+	m.mu.Unlock()
+	return timer
+}
+
+// ActivePhase は slot で実行中の準備区間の名前と開始時刻を返す。
+// 準備が動いていない、または区間の切れ目では ok=false を返す。
+func (m *Manager) ActivePhase(slotID string) (name string, start time.Time, ok bool) {
+	m.mu.RLock()
+	timer := m.activePrepares[slotID]
+	m.mu.RUnlock()
+	if timer == nil {
+		return "", time.Time{}, false
+	}
+	return timer.timings.Active()
 }
 
 // markEarly は Early Ready の到達時刻を記録する。二段階準備が一度だけ呼ぶ。
@@ -86,6 +105,11 @@ func (t *prepareTimer) finish(prepareErr error) {
 	if t == nil {
 		return
 	}
+	t.manager.mu.Lock()
+	if t.manager.activePrepares[t.slotID] == t {
+		delete(t.manager.activePrepares, t.slotID)
+	}
+	t.manager.mu.Unlock()
 	measurement := PrepareMeasurement{
 		SlotID: t.slotID, WorkspaceID: t.workspaceID, SessionID: t.sessionID,
 		StartedAt: state.FormatTime(t.started.UTC()),
