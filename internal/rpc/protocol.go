@@ -185,6 +185,37 @@ func (c Client) callOnce(ctx context.Context, method, idempotencyKey string, par
 	return nil
 }
 
+// peerClosedKey は handler ctx へ載せる切断通知の key である。
+type peerClosedKey struct{}
+
+// WithPeerClosed は client の切断通知を handler ctx へ載せる。
+// server が接続ごとに呼び、handler を直接呼ぶ test も同じ経路で通知を渡せる。
+func WithPeerClosed(ctx context.Context, closed <-chan struct{}) context.Context {
+	return context.WithValue(ctx, peerClosedKey{}, closed)
+}
+
+// PeerClosed は client が応答を受け取らずに接続を閉じたら close される channel を返す。
+// 応答の宛先が居なくなったことしか示さないので、待機の打ち切りや貸出の回収の判断にだけ使う。
+// 通知が載っていない ctx では nil を返し、select は永久に待つ枝になる。
+func PeerClosed(ctx context.Context) <-chan struct{} {
+	closed, _ := ctx.Value(peerClosedKey{}).(<-chan struct{})
+	return closed
+}
+
+// watchPeerClose は要求の後の読み取りで client の切断を検知する。
+// この protocol は 1 接続 1 要求で要求の後に送信が無いため、読み取りが返るのは
+// 切断・deadline 超過・応答後の close に限られる。deadline は handler が ctx で扱うので除く。
+func watchPeerClose(conn net.Conn) <-chan struct{} {
+	closed := make(chan struct{})
+	go func() {
+		var scratch [1]byte
+		if _, err := conn.Read(scratch[:]); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+			close(closed)
+		}
+	}()
+	return closed
+}
+
 func watchContext(ctx context.Context, conn net.Conn) func() {
 	done := make(chan struct{})
 	if ctx.Done() == nil {
@@ -310,6 +341,8 @@ func (s *Server) serveConn(parent context.Context, conn net.Conn) {
 	}
 	ctx, cancel := context.WithDeadline(parent, handlerDeadline)
 	defer cancel()
+	// 長く待つ handler（WaitReady）が、応答を受け取る client の消滅を知るための通知である。
+	ctx = WithPeerClosed(ctx, watchPeerClose(conn))
 	if req.IdempotencyKey != "" {
 		entry, owner := s.idempotencyEntry(req)
 		switch {

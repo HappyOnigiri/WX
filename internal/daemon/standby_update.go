@@ -63,84 +63,102 @@ func (m *Manager) leaseMatchingReady(ctx context.Context, w discovery.Workspace,
 	return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}, true, nil
 }
 
-func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspace, slot state.Slot, resolved []pool.Resolved, agent string, pid int, attrs leaseAttrs) (Lease, bool, error) {
+// standbyUpdatePlan は READY standby を要求内容へ更新するための、予約前に確定した入力一式である。
+// mismatch は予約後に再計算できないため、判定に使った値から組み立てて持ち回る。
+type standbyUpdatePlan struct {
+	repositories []state.SlotRepository
+	targets      []state.SlotRepository
+	desired      []state.Placement
+	mismatch     readyMismatch
+}
+
+// planStandbyUpdate は READY standby の更新可否を検証し、予約に渡す target と配置を組み立てる。
+// 実体には触れず、適合しない場合は workspace.ErrUpdateIneligible などを返す。
+// 呼び出し側は root を保持してから呼ぶこと。貸出予約と idle 更新で判定をずらさないために共有する。
+func (m *Manager) planStandbyUpdate(ctx context.Context, w discovery.Workspace, slot state.Slot, resolved []pool.Resolved) (standbyUpdatePlan, error) {
 	if !slot.PlacementHistoryComplete || slot.OwnerSessionID != "" || slot.Generation == 0 {
-		return Lease{}, false, fmt.Errorf("%w: standby has no complete placement history", workspace.ErrUpdateIneligible)
+		return standbyUpdatePlan{}, fmt.Errorf("%w: standby has no complete placement history", workspace.ErrUpdateIneligible)
 	}
-	releaseRoot, err := m.holdRootForPath(slot.Path)
-	if err != nil {
-		return Lease{}, false, err
-	}
-	defer releaseRoot()
 	repositories, err := m.store.SlotRepositories(ctx, slot.ID)
 	if err != nil {
-		return Lease{}, false, err
+		return standbyUpdatePlan{}, err
 	}
 	if len(repositories) != len(resolved) {
-		return Lease{}, false, fmt.Errorf("%w: workspace repository set changed", workspace.ErrUpdateIneligible)
+		return standbyUpdatePlan{}, fmt.Errorf("%w: workspace repository set changed", workspace.ErrUpdateIneligible)
 	}
 	storedByID := make(map[string]state.SlotRepository, len(repositories))
 	for _, repository := range repositories {
 		if repository.State != "READY" || repository.CompatibilityFingerprint == "" {
-			return Lease{}, false, fmt.Errorf("%w: standby contains an unmaterialized or legacy repository", workspace.ErrUpdateIneligible)
+			return standbyUpdatePlan{}, fmt.Errorf("%w: standby contains an unmaterialized or legacy repository", workspace.ErrUpdateIneligible)
 		}
 		storedByID[repository.RepositoryID] = repository
 	}
 	previous, err := m.store.Placements(ctx, slot.ID)
 	if err != nil {
-		return Lease{}, false, err
+		return standbyUpdatePlan{}, err
 	}
 	preparer := m.newPreparer(m.Config(), slot)
-	var desired []state.Placement
-	var targets []state.SlotRepository
-	// 何がずれて更新になったかは予約後に再計算できないため、判定に使った値からここで組み立てる。
-	var mismatch readyMismatch
+	plan := standbyUpdatePlan{repositories: repositories}
 	for _, requested := range resolved {
 		stored, ok := storedByID[string(requested.Repository.ID)]
 		if !ok {
-			return Lease{}, false, fmt.Errorf("%w: workspace repository set changed", workspace.ErrUpdateIneligible)
+			return standbyUpdatePlan{}, fmt.Errorf("%w: workspace repository set changed", workspace.ErrUpdateIneligible)
 		}
 		compatibility, err := workspace.UpdateCompatibilityFingerprint(slot.Generation, requested.Repository, m.Config())
 		if err != nil {
-			return Lease{}, false, err
+			return standbyUpdatePlan{}, err
 		}
 		if compatibility != stored.CompatibilityFingerprint {
-			return Lease{}, false, fmt.Errorf("%w: standby preparation conditions changed", workspace.ErrUpdateIneligible)
+			return standbyUpdatePlan{}, fmt.Errorf("%w: standby preparation conditions changed", workspace.ErrUpdateIneligible)
 		}
 		fingerprint, err := workspace.Fingerprint(slot.Generation, requested.OID, requested.Repository, m.Config())
 		if err != nil {
-			return Lease{}, false, err
+			return standbyUpdatePlan{}, err
 		}
 		planned, err := preparer.RepositoryPlacements(ctx, requested.Repository, requested.OID)
 		if err != nil {
-			return Lease{}, false, err
+			return standbyUpdatePlan{}, err
 		}
 		oldRepositoryPlacements := placementsFor(previous, stored.RepositoryID)
 		if err := preparer.ValidateUpdateCandidate(ctx, requested.Repository, stored.WorktreePath, stored.BaseOID, requested.OID, oldRepositoryPlacements, planned); err != nil {
-			return Lease{}, false, err
+			return standbyUpdatePlan{}, err
 		}
-		if mismatch.reason == "" {
-			mismatch = updateMismatch(stored, requested, fingerprint, oldRepositoryPlacements, planned)
+		if plan.mismatch.reason == "" {
+			plan.mismatch = updateMismatch(stored, requested, fingerprint, oldRepositoryPlacements, planned)
 		}
-		desired = append(desired, planned...)
-		targets = append(targets, state.SlotRepository{RepositoryID: stored.RepositoryID, RequestedRef: requested.RequestedRef, BaseOID: requested.OID, Fingerprint: fingerprint, CompatibilityFingerprint: compatibility, UpdateBaseOID: stored.BaseOID, UpdateFingerprint: stored.Fingerprint})
+		plan.desired = append(plan.desired, planned...)
+		plan.targets = append(plan.targets, state.SlotRepository{RepositoryID: stored.RepositoryID, RequestedRef: requested.RequestedRef, BaseOID: requested.OID, Fingerprint: fingerprint, CompatibilityFingerprint: compatibility, UpdateBaseOID: stored.BaseOID, UpdateFingerprint: stored.Fingerprint})
 	}
 	if w.Kind == "multi_repository" {
 		planned, err := workspace.RootPlacements(string(w.Root), m.Config().Workspaces[string(w.Root)])
 		if err != nil {
-			return Lease{}, false, err
+			return standbyUpdatePlan{}, err
 		}
 		destination, err := domain.OpenRootAt(preparer.OwnedRoot, slot.RelPath)
 		if err != nil {
-			return Lease{}, false, err
+			return standbyUpdatePlan{}, err
 		}
 		validateErr := workspace.ValidateRootPlacements(destination, placementsFor(previous, ""), planned)
 		_ = destination.Close()
 		if validateErr != nil {
-			return Lease{}, false, validateErr
+			return standbyUpdatePlan{}, validateErr
 		}
-		desired = append(desired, planned...)
+		plan.desired = append(plan.desired, planned...)
 	}
+	return plan, nil
+}
+
+func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspace, slot state.Slot, resolved []pool.Resolved, agent string, pid int, attrs leaseAttrs) (Lease, bool, error) {
+	releaseRoot, err := m.holdRootForPath(slot.Path)
+	if err != nil {
+		return Lease{}, false, err
+	}
+	defer releaseRoot()
+	plan, err := m.planStandbyUpdate(ctx, w, slot, resolved)
+	if err != nil {
+		return Lease{}, false, err
+	}
+	repositories, targets, desired, mismatch := plan.repositories, plan.targets, plan.desired, plan.mismatch
 	leasePathValue := leasePath(slot.Path, w.Kind, repositories)
 	rootIdentity, err := m.ensureLeaseRoot(slot.Path, leasePathValue)
 	if err != nil {
@@ -249,7 +267,8 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 	if err != nil {
 		return err
 	}
-	if slot.State == "LEASED" && slot.UpdateCompletedAt != "" {
+	// 完了済みの更新を job の再配送で二度走らせない。貸出付きは LEASED、idle 更新は READY へ戻っている。
+	if slot.UpdateCompletedAt != "" && (slot.State == "LEASED" || (job.SessionID == "" && slot.State == "READY")) {
 		return nil
 	}
 	if slot.State != "PREPARING" {
@@ -339,6 +358,14 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 	}
 	if err := m.store.ReplaceUpdatePlacements(ctx, slot.ID, actualDesired); err != nil {
 		return err
+	}
+	if job.SessionID == "" {
+		if err := m.store.FinishIdleStandbyUpdate(ctx, slot.ID); err != nil {
+			return err
+		}
+		m.log.Info("standby idle update completed", "workspace_id", w.ID, "slot_id", slot.ID)
+		m.scheduleSlotUsageMeasurement(slot.ID)
+		return nil
 	}
 	releaseJob, released, replenishJob, replenished, err := m.store.FinishStandbyUpdate(ctx, slot.ID)
 	if err != nil {

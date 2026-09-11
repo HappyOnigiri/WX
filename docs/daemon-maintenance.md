@@ -14,7 +14,8 @@
 
 分類は`jobClassOf`が job rowの事実だけから決め、DBへ永続化しない。
 session付きPREPARE・RESTORE・SNAPSHOTを利用者向けとし、SNAPSHOTは保存と将来のresumeの前提なので利用者が明示的に待っているかによらずこのクラスに置く。
-待機用PREPARE・ENSURE_STANDBY・自動REMOVE系は保守用とし、実行中のclean runが完了を待つREMOVEだけを`advanceRemoving`が毎回の監視で利用者向けへ昇格させる。
+待機用PREPARE・ENSURE_STANDBY・自動REMOVE系と、sessionを持たないUPDATE（待機中standbyのidle更新）は保守用とする。
+実行中のclean runが完了を待つREMOVEだけを`advanceRemoving`が毎回の監視で利用者向けへ昇格させる。
 
 `dispatchJobs`はクラス別の待ち行列から到着順に1件ずつ配り、枠を取ってから`ClaimJob`する。
 このためキュー待ちのジョブはattemptもjob leaseも消費せず、同じジョブIDの二重登録も配送前に落とす。
@@ -79,9 +80,20 @@ COLD化の`RETIRING`は完了後に`READY`へ戻るので枠に数える。
 再利用が有効な定期reconcileはREADY slotを保存済みOIDと更新互換fingerprintで検証し、現在のmainとの差だけではSTALEにしない。
 配置履歴を持たないREADY slotは更新に使えないため、この検証の対象から外し、現在のmainと完全一致でなければSTALEにする。
 貸出時に更新不適格と判定した候補もSTALEにして回収・補充へ回す。残しても毎回Cold Startになる一方で待機枠を占有し続けるためである。
+worktreeにtracked変更が残っていて棄却した候補も同じ扱いにする。次の貸出でも同じ理由で棄却されるので、定期reconcileを待つ間だけREADYの見かけと実態がずれるためである。
+再試行で解消し得る理由（併走する遷移に負けた、Gitやファイル操作が失敗した）はSTALEにせず、候補を飛ばすだけにとどめる。
 `--branch`指定の貸出では回収しない。main向けのstandbyをbranch要求のために捨てないためである。
-OIDと配置の更新は貸出要求時だけ行い、要求時点のOID・配置計画・copy modeをDBへ固定する。
-UPDATEは利用者向け実行枠を使い、slot・STARTING session・jobの予約を同じtransactionで確定する。
+OIDと配置の更新は貸出要求時と保守一巡のidle更新で行い、その時点のOID・配置計画・copy modeをDBへ固定する。
+貸出要求のUPDATEは利用者向け実行枠を使い、slot・STARTING session・jobの予約を同じtransactionで確定する。
+
+idle更新（`refreshIdleStandbys`）は、完全一致しないが更新適合なREADY standbyを貸出を待たずに現在の要求へ合わせる。
+`.worktreeinclude`対象の書き換えのようにfingerprintだけがずれた待機枠を残すと、次の貸出がUPDATEの待ちを払い、`wx status`のREADYも実態とずれるためである。
+予約（`ReserveIdleStandbyUpdate`）はsessionを作らず`owner_session_id`を空のままPREPARINGへ移すので、更新中のslotは貸出候補から外れ、併走する貸出予約とは`slots`のcompare-and-swapで排他になる。
+jobはsessionを持たないため保守用の実行枠で走り、利用者向けの枠を奪わない。
+歯止めは3つで、1巡につき1件だけ始める、待機枠が全てREADYに落ち着いたworkspaceだけを対象にする、workspaceごとに`idleStandbyRefreshCooldown`（1分）の間隔を空ける。
+更新中はそのworkspaceのREADYが一時的に1本減るため、貸出が進行中のworkspaceでは始めない。
+完了は`FinishIdleStandbyUpdate`がREADYへ戻し、書込み開始後の中断は貸出付きの更新と同じく隔離する（自動再実行はしない）。
+更新に使えない候補はidle更新では回収せず、READYのまま残して貸出時の判断に委ねる。
 
 補充停止は`replenish_suspensions`に永続化し、定期reconcileと補充ジョブの双方で参照する。
 停止理由によらず、解除はそのworkspaceの手動起動（貸出・resume）の成功か`wx retry-standby`だけとし、既存sessionの返却では解除しない。
@@ -104,6 +116,12 @@ run実行中は`assertNoActiveClean`が貸出・復元・待機用作成の書�
 削除後に補充を停止するのは待機用slotを削除するmodeだけとする。
 安全な処理境界の待機は`cleanBoundaryWait`で制限し、貸出を断ったまま無期限に待たない。
 GC候補の選択と保持期限は`gc.go`を参照し、隔離slotも通常の`REMOVE`で登録範囲を回収する。
+
+`wx forget`は`workspaces`行と同じtransactionで、どの登録からも参照されなくなった`repositories`行を消す。
+以前の版が残した記録はGCの`PruneRepositories`が同じ条件で回収する（`wx gc`と保守一巡の両方で走り、dry-runでは何も消さない）。
+消してよいのは、`workspace_repositories`にもsnapshotにも現れず、参照する slot が全て`ARCHIVED`、session が全て`EXPIRED`で、
+どちらもworkspace紐付けを失っている場合だけである。その組み合わせでは`ValidateWorktreeOwnership`がworkspace linkを欠いて必ず失敗し、
+履歴の`slot_repositories`・`session_repositories`行を残しても証明には使えない。Git リポジトリの実体には触れない。
 
 生きたclientもagentも持たない貸出（`wx new`）は終了要求の宛先がないため、`advancePending`は要求を積まずその場で返却して保存経路へ移す。
 `--all`無しで残す場合のskip理由も、停止を待つ`--all`ではなく`wx release <id>`を案内する。
@@ -164,10 +182,23 @@ daemon接続なしで成立する検査は[`internal/diag`](../internal/diag/dia
 storeを要する検査は[`doctor.go`](../internal/daemon/doctor.go)と[`doctor_recovery.go`](../internal/daemon/doctor_recovery.go)に置く。
 worktree rootのpath検査と登録検査は別のfindingとして両方保持し、登録状態でpath検査の結果を上書きしない。
 登録済みworkspaceに属さず照合すべきsnapshotも持たないrepository記録は、refsを読めなくてもproblemにせずinfoに留める。
-`repositories`の行を消す経路が無いため、forget後に残った記録をerrorにするとdoctorが恒久的に失敗する。
-登録済みworkspaceに属する repository の故障はこれまでどおりerrorとして報告する。
+この記録はGCの`PruneRepositories`が回収するまでの一時的なもので、errorにするとその間doctorが失敗し続ける。
+登録済みworkspaceに属する repository でrefsを読めない場合は、その`repositories`行1件のproblemとして対象pathつきで報告し、
+他のrepositoryの照合と他の検査は続ける（1件の失敗を検査全体のuncheckedにしない）。
 準備・保存・復元の失敗は、上位の処理名で言い換えず`jobs.error_message`・`error_detail_path`から具体的な失敗理由と詳細ログの場所まで引き継ぐ。
 原因が記録されていない場合は特定できていないことを明示し、推測を原因として表示しない。
+
+未解消かどうかの判定は失敗の種類ごとに置き場所が違う。
+SNAPSHOTの失敗は保存対象のsession自身で判定し、後続のSNAPSHOTが成功・実行待ちならそこで解消とする。
+RESTOREの失敗は復元先sessionの状態では判定しない。
+復元先は失敗後にEXPIREDへ落ちるため、その条件では復元できていない状態がすべて解消済みに見える。
+代わりに復元元（`parent_session_id`）がARCHIVEDのまま、同じ元sessionへの後続RESTOREが成功・実行待ちのどちらでもないことを未解消の条件にする。
+元sessionは復元が成功して初めてEXPIREDになり、隔離slotを残した失敗も復元できていない事実は変わらないので除かない。
+
+補充計画（`ENSURE_STANDBY`）の失敗は`replenish_suspensions`に停止を残さない。
+manifestの不正のようにslotを作る前で落ちる失敗は補充を止めず、次の貸出と保守tickで同じ失敗を繰り返すためである。
+これを見落とさないよう、workspaceごとの最新の失敗した`ENSURE_STANDBY`を`standby_replenishment`の検査へ停止と同じ列で載せ、`wx status`にも注記として出す。
+判定は最新の失敗であることと待機枠が今も足りないことの両方で行い、後続の計画が枠を満たしていれば残ったFAILED行は報告しない。
 
 ## 準備時間の計測
 
@@ -223,5 +254,7 @@ LaunchAgentには`ThrottleInterval=1`を設定し、連続再起動時のlaunchd
 
 GCの候補選択と削除の入口は[`internal/daemon/gc.go`](../internal/daemon/gc.go)、代表テストは[`TestGCRemovesRegisteredQuarantineWithoutCachedIdentity`](../internal/daemon/gc_integration_test.go)である。
 restart/stopのidleゲートの入口は[`internal/daemon/restart.go`](../internal/daemon/restart.go)、代表テストは[`TestPendingRestartWaitsForJobsAndRequests`](../internal/daemon/restart_test.go)である。
+待機中standbyのidle更新の入口は[`internal/daemon/standby_idle_update.go`](../internal/daemon/standby_idle_update.go)である。
+代表テストは[`TestIdleStandbyRefreshUpdatesMismatchedReadyBeforeLease`](../internal/daemon/standby_idle_update_test.go)で、貸出前にREADYが現在のmainへ揃うことを通す。
 準備時間の計測の入口はdaemon側が[`internal/daemon/measurement.go`](../internal/daemon/measurement.go)、client側が[`internal/cli/bench.go`](../internal/cli/bench.go)である。
 代表テストは[`TestPrepareMeasurementRecordsPhasesOfARealPreparation`](../internal/daemon/measurement_test.go)で、実際の準備が区間内訳を残すことを通す。

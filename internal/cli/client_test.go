@@ -38,15 +38,27 @@ type launcherHandler struct {
 	resumeStatus      map[string]any
 	// waitReadyErr は準備待ちを失敗させる点である。nil なら成功を返す。
 	waitReadyErr error
+	// waitReadyHook は準備待ちを止める点である。nil なら即座に成功を返す。
+	waitReadyHook func(context.Context) error
+	// releaseReasons は Release 要求の reason を順に保持する。中断時の返却理由を検査する。
+	releaseReasons []string
 	// prepareTimings は PrepareTimings の応答を差し替える点である。nil なら既定の応答を返し、内訳なしとして扱われる。
 	prepareTimings map[string]any
 	// leaseProgress は LeaseProgress の応答を差し替える点である。nil なら実行中の区間なしとして扱われる。
 	leaseProgress map[string]any
 }
 
-func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
+func (h *launcherHandler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	h.mu.Lock()
 	h.methods = append(h.methods, method)
+	if method == "Release" {
+		var params struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(raw, &params) == nil {
+			h.releaseReasons = append(h.releaseReasons, params.Reason)
+		}
+	}
 	if method == "ResolveAndLease" {
 		if h.leaseParams == nil {
 			h.leaseParams = append(json.RawMessage(nil), raw...)
@@ -70,9 +82,13 @@ func (h *launcherHandler) Handle(_ context.Context, method string, raw json.RawM
 		return h.lease, nil
 	case "WaitReady":
 		h.mu.Lock()
-		defer h.mu.Unlock()
-		if h.waitReadyErr != nil {
-			return nil, h.waitReadyErr
+		waitReadyErr, waitReadyHook := h.waitReadyErr, h.waitReadyHook
+		h.mu.Unlock()
+		if waitReadyErr != nil {
+			return nil, waitReadyErr
+		}
+		if waitReadyHook != nil {
+			return nil, waitReadyHook(ctx)
 		}
 		return map[string]bool{"ok": true}, nil
 	case "LeaseProgress":

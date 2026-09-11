@@ -114,7 +114,8 @@ type leaseNewReply struct {
 }
 
 // RunLeaseNew は貸出してパスを 1 行出力する。呼び出しプロセスには随伴しない。
-// Release を defer せず heartbeat も張らないため、返却は親 session の終了・wx release・lease.ttl の 3 つになる。
+// path を渡せた貸出は Release を送らず heartbeat も張らないため、返却は親 session の終了・
+// wx release・lease.ttl の 3 つになる。渡せないまま終わるとき（失敗・signal による中断）だけ、その場で返却する。
 func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool) int {
 	if err := c.checkLeaseWorktreeMode(ctx); err != nil {
 		return reportLeaseError(err)
@@ -128,12 +129,21 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	// --json は機械向けの経路なので確認を出さず、notice だけ stderr へ出して続行する。
+	if !c.confirmLinkedWorktreeBase(ctx, cwd, !jsonOut) {
+		fmt.Fprintln(os.Stderr, "lease cancelled; no workspace was created")
+		return 1
+	}
 	ownerID, ownerToken := leaseOwnerFromEnvironment()
 	params := rpc.ResolveAndLeaseParams{
 		Agent: leaseAgentKindPath, Branches: branches, ClientPID: 0, CWD: cwd, ForceWorktree: c.forceWorktree,
 		LeaseKind: state.LeaseKindPath, LeaseOwnerSessionID: ownerID, LeaseOwnerToken: ownerToken,
 	}
-	leaseCtx, cancelLease := context.WithTimeout(ctx, c.discoveryTimeout())
+	// 貸出から準備待ちまでは signal を捕まえる。既定の disposition のまま Ctrl-C で即死すると、
+	// 下の返却が走らないまま誰も知らない貸出が残る。
+	setupCtx, stopSetupSignals := interruptibleSetup(ctx)
+	defer stopSetupSignals()
+	leaseCtx, cancelLease := context.WithTimeout(setupCtx, c.discoveryTimeout())
 	defer cancelLease()
 	var lease daemon.Lease
 	// 進捗は stderr にだけ出す。wx new の stdout はパスと --json の契約なので混ぜられない。
@@ -141,6 +151,10 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 	defer waiting.finish()
 	if err := c.RPC.Call(leaseCtx, "ResolveAndLease", params, &lease); err != nil {
 		waiting.finish()
+		if interruptedDuringSetup(ctx, setupCtx) {
+			fmt.Fprintln(os.Stderr, "interrupted before the workspace was leased")
+			return 1
+		}
 		return reportLeaseError(err)
 	}
 	// パスを出力できないまま戻ると、利用者は session id を知らないので wx release もできない。
@@ -153,12 +167,16 @@ func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool
 		c.releaseLeaseToken(lease, "lease-setup-failed")
 	}()
 	if !lease.Ready {
-		waitCtx, cancel := context.WithTimeout(ctx, c.Config.Readiness.Timeout.Duration)
+		waitCtx, cancel := context.WithTimeout(setupCtx, c.Config.Readiness.Timeout.Duration)
 		waiting.watch(waitCtx, c.RPC, lease)
 		err := c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
 		waiting.finish()
 		cancel()
 		if err != nil {
+			if interruptedDuringSetup(ctx, setupCtx) {
+				fmt.Fprintln(os.Stderr, "interrupted while the workspace was being prepared; releasing it")
+				return 1
+			}
 			fmt.Fprintln(os.Stderr, "error: workspace preparation:", err)
 			return 1
 		}

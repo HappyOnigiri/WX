@@ -85,6 +85,8 @@ type Manager struct {
 	inFlightReservations map[string]bool
 	// leasingWorkspaces は貸出処理が進行中の workspace の件数。補充が使用中の workspace を cold と判定しないために持つ。
 	leasingWorkspaces map[string]int
+	// idleStandbyRefreshes は workspace ごとに idle 更新を最後に始めた時刻。頻繁な fingerprint の変化で更新が連鎖しないための歯止め。
+	idleStandbyRefreshes map[string]time.Time
 	// maintenanceMu は registry reconcile と GC の一巡を1本に保つ。running 中の要求は dirty へ集約する。
 	maintenanceMu      sync.Mutex
 	maintenanceRunning bool

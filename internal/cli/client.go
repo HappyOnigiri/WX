@@ -187,9 +187,26 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 	return exit
 }
 
+// interruptibleSetup は貸出の取得と worktree の準備待ちの間だけ signal を捕まえる ctx を返す。
+// 既定の disposition のままだと Ctrl-C で client が即死し、返却の defer が走らないまま貸出が残る。
+// 返した stop は agent の起動前に呼び、以降の signal 中継は startAgent の Notify へ渡す。
+func interruptibleSetup(ctx context.Context) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+}
+
+// interruptedDuringSetup は待機が呼び出し側の cancel ではなく signal で終わったかを返す。
+func interruptedDuringSetup(ctx, setupCtx context.Context) bool {
+	return setupCtx.Err() != nil && ctx.Err() == nil
+}
+
 // launch は lease を取り、worktree の準備を待って agent を起動する。
 // 当時の worktree を復元できずに失敗し、新しい worktree での再開が選ばれたときだけ retry=true を返す。
 func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
+	// 貸出前に確認する。cancel されたら slot を作らずに終える。
+	if !c.confirmLinkedWorktreeBase(ctx, plan.leaseBaseCWD(), true) {
+		fmt.Fprintln(os.Stderr, "launch cancelled; no workspace was created")
+		return 1, false
+	}
 	var lease daemon.Lease
 	method := "ResolveAndLease"
 	newLease := func(cwd string) rpc.ResolveAndLeaseParams {
@@ -220,7 +237,10 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	if method == "Resume" && c.Config.Readiness.Timeout.Duration > 0 {
 		budget = c.Config.Readiness.Timeout.Duration
 	}
-	leaseCtx, cancelLease := context.WithTimeout(ctx, budget)
+	// 貸出から準備待ちまでは signal を捕まえ、中断でも返却の defer を走らせてから終える。
+	setupCtx, stopSetupSignals := interruptibleSetup(ctx)
+	defer stopSetupSignals()
+	leaseCtx, cancelLease := context.WithTimeout(setupCtx, budget)
 	defer cancelLease()
 	// 準備の待機は無表示だと cold start と待機枠更新の区別が付かない。
 	// 確認や結果の出力より前に必ず消す必要があるため、失敗経路でも都度 finish する。
@@ -228,6 +248,10 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	defer waiting.finish()
 	if err := c.RPC.CallWithKey(leaseCtx, method, "launch:"+operationKey, params, &lease); err != nil {
 		waiting.finish()
+		if interruptedDuringSetup(ctx, setupCtx) {
+			fmt.Fprintln(os.Stderr, "interrupted before the workspace was leased")
+			return 1, false
+		}
 		if c.acceptsFreshWorkspace(ctx, plan, err) {
 			return 1, true
 		}
@@ -272,12 +296,16 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		if !plan.resuming && plan.leaseKind == "" && plan.hooksReady && c.Config.Readiness.Mode != "full" {
 			method = "WaitEarlyReady"
 		}
-		waitCtx, cancel := context.WithTimeout(ctx, c.Config.Readiness.Timeout.Duration)
+		waitCtx, cancel := context.WithTimeout(setupCtx, c.Config.Readiness.Timeout.Duration)
 		waiting.watch(waitCtx, c.RPC, lease)
 		err = c.RPC.Call(waitCtx, method, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(c.Config.Readiness.Timeout.Milliseconds())}, nil)
 		waiting.finish()
 		cancel()
 		if err != nil {
+			if interruptedDuringSetup(ctx, setupCtx) {
+				fmt.Fprintln(os.Stderr, "interrupted while the workspace was being prepared; releasing it")
+				return 1, false
+			}
 			if c.acceptsFreshWorkspace(ctx, plan, err) {
 				return 1, true
 			}
@@ -291,6 +319,8 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		fmt.Fprintln(os.Stderr, "wx clear asked this session to stop before the agent started")
 		return 1, false
 	}
+	// ここから先の signal は agent へ中継するので、準備待ち用の捕捉は返す。
+	stopSetupSignals()
 	return c.startAgent(ctx, plan.agent, lease, args, env, terminator), false
 }
 

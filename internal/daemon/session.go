@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 func (m *Manager) Heartbeat(ctx context.Context, id, token string) error {
@@ -26,6 +28,24 @@ func processAlive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// ReleaseUnreceivedPathLease は、まだ path を渡せていない path 貸出を返却する。
+// wx new の待機が中断されると client は token ごと消えるが、path 貸出は client_pid も heartbeat も持たず
+// OrphanCandidates から外れるため、ここで返さないと lease.ttl まで slot を占める。path 以外は対象にしない。
+func (m *Manager) ReleaseUnreceivedPathLease(ctx context.Context, id, token string) {
+	session, err := m.store.Session(ctx, id, token)
+	if err != nil {
+		m.log.Warn("could not inspect a lease after its client disconnected", "session_id", id, "error", err)
+		return
+	}
+	if session.LeaseKind != state.LeaseKindPath || !sessionInUse(session.State) {
+		return
+	}
+	m.log.Info("releasing a path lease whose client disconnected before the workspace was ready", "session_id", id, "slot_id", session.SlotID)
+	if err := m.Release(ctx, id, token, "lease-setup-failed"); err != nil {
+		m.log.Error("lease release failed", "session_id", id, "error", err)
+	}
 }
 
 func (m *Manager) WaitReady(ctx context.Context, id, token string) error {

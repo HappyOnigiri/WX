@@ -251,12 +251,38 @@ func (m *Manager) standbyReplenishmentReport(ctx context.Context) ([]state.Stand
 	if err != nil {
 		return nil, err
 	}
+	planFailures, err := m.standbyPlanFailures(ctx)
+	if err != nil {
+		return nil, err
+	}
+	all = append(all, planFailures...)
 	out := make([]state.StandbyReplenishmentDiagnostic, 0, len(all))
 	for _, item := range all {
 		if !m.standbyReplenishmentEnabledForRoot(item.Root) {
 			continue
 		}
 		item.Action = "wx retry-standby " + strconv.Quote(item.Root)
+		out = append(out, item)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Root < out[j].Root })
+	return out, nil
+}
+
+// standbyPlanFailures は補充計画の失敗のうち、今も待機枠が足りない workspace の分だけを返す。
+// 計画の失敗は補充を止めないため、その後の計画が枠を満たしていれば残った FAILED 行は報告しない。
+// 枠は設定の warm count と現在の待機数の比較で見る。`replenish_suspensions` と違って停止の記録が無く、解消を残す場所が job 行しかないためである。
+func (m *Manager) standbyPlanFailures(ctx context.Context) ([]state.StandbyReplenishmentDiagnostic, error) {
+	failures, err := m.store.UnresolvedStandbyPlanFailures(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cfg := m.Config()
+	out := make([]state.StandbyReplenishmentDiagnostic, 0, len(failures))
+	for _, item := range failures {
+		warmCount, _ := cfg.WarmCountForWorkspace(item.Root)
+		if m.store.StandbyCount(ctx, item.WorkspaceID) >= warmCount {
+			continue
+		}
 		out = append(out, item)
 	}
 	return out, nil

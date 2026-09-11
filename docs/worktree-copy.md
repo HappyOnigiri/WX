@@ -74,6 +74,9 @@ indexはstat情報のrefreshだけを行い、staged/unstagedの区別は変え�
 Darwinでは`Fclonefileat`を使い、Linuxでは`auto`が通常方式、`cow`がエラーになる。
 clone元と宛先は同じ対応volumeにある必要があり、通常checkout1個分の一時容量は必要である。
 コピー方式はfingerprintに含めるため、設定変更後の貸出では以前の方式で作ったREADY slotを再利用しない。
+再利用できないREADYは次の貸出まで残らない。
+`wx config`での保存はdaemonのreloadを起こし、reloadは保守を即時に一巡させるので、fingerprintが変わると全workspaceの既存READYが1秒未満でSTALEになりcoldで補充される。
+設定を戻した場合も同じくreloadが走り、作り直しの費用（cold準備1本ぶん × `workspaces.<root>.warm_count`）がもう一度かかる。
 `.worktreeinclude`、workspace rootのコピー、生成物、Git objectsや復旧snapshotの容量は、この設定の対象外である。
 `auto`が通常コピーへ落ちた回はdaemonのログにwarnとして残る。
 
@@ -84,6 +87,10 @@ Hot StandbyのUPDATEは旧HEAD・tracked clean・所有権を確認してから�
 `.gitattributes`を除外するのは、`checkout-index`が内容の同じfileをstat cacheの一致で書き直さず、属性だけ変わったfileが旧属性のまま残るためである。
 更新では`prepare.command`を実行しない。
 lockfileのようにOIDへ依存する生成物は更新後も旧OIDのまま残るので、都度の再生成が必要な場合は`workspaces.<root>.reuse_standby: false`で更新を止める。
+
+`.worktreeinclude`対象のファイルは内容のhashがfingerprintに入るため、1 byteの書き換えでもREADY全本が不一致になる。
+この不一致は貸出時のUPDATEで解消できるが、待たせないよう保守の一巡が待機中のREADYを先回りで更新する（[daemonの補充・回収・再起動](daemon-maintenance.md)の「standby補充」）。
+editorが書き換えるような設定ファイルを更新の契機にしたくない場合は、`.worktreelink`へ移すとsourceの実体へのsymlinkになり、内容はfingerprintに入らない。
 
 ## include / link
 

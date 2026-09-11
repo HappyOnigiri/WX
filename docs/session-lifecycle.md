@@ -12,8 +12,15 @@
    配置差が無い場合はmanifest・コピー方式・CoW共有下限のような配置に現れない入力が変わったことを示す。
    予約後は`slot_repositories`が更新後の値へ入れ替わり差を復元できないため、理由は比較したその場で組み立てる。
    この診断はUPDATEやcold startへ落ちた後だけ動かし、完全一致した貸出には余分なGit起動とファイル読み取りを持ち込まない。
+   cwdがwx管理外のlinked worktreeのとき、貸出はrepositoryのmain worktreeへ解決されるのでcwd側のHEADは反映されない。
+   HEADが食い違う場合はclientが貸出の前に`internal/cli/linked_worktree.go`で検出し、main worktreeのHEADで借りてよいかをYes既定で確認する。
+   確認を出せない場合（`wx new --json`、端末が無い起動）はnoticeをstderrへ出して従来どおり続ける。
+   fullscreenのagentが起動すると標準出力のnoticeは流れてしまうため、端末があるときは起動前の確認にする。
+   wxが作ったslot（`storage.worktree_root`配下）は貸出とsnapshotでHEADが動くのが前提なので、この確認の対象にしない。
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
    子プロセスには`WX_SESSION_ID`・`WX_SESSION_TOKEN`・`WX_DAEMON_SOCKET`などが渡り、以降のhookはこれを持つ場合だけ動く。
+   このディレクトリは`leasePath`が決めるslot側の起点（単一repositoryならslot内のworktree、それ以外はworkspace root）で、sourceのサブディレクトリから起動しても同じ位置になる。
+   呼び出し時のcwdは`WX_SOURCE_CWD`にだけ入るので、同じ相対位置で実行したいコマンドは自分でcdする。
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
    既定の`readiness.mode: early`では、hookが使える通常起動は`WaitEarlyReady`でGit登録と起動用ファイルの配置完了を待つ。
    その後の`wx hook user-prompt-submit`と`wx hook pre-tool-use`は従来どおり`WaitReady`を呼び、全準備が完了するまで操作を止める。
@@ -72,7 +79,16 @@
 そのため`Store.OrphanCandidates`は`lease_kind<>'path'`で除外する。
 除外を忘れると`wx new`のworktreeは45秒で保存・返却されGCの対象になるため、ここがこの経路で最も静かに壊れる箇所である。
 
+3つとも、貸出の取得から準備待ちの間だけ`signal.NotifyContext`でSIGINT・SIGTERM・SIGHUPを捕まえる（`internal/cli`の`interruptibleSetup`）。
+既定のdispositionのままCtrl-Cで即死すると、返却の`defer`が走らないまま貸出だけがdaemonに残るためである。
+捕捉はagentの起動直前に返し、以降のsignalは従来どおりagentへ中継する。
+
+client側の捕捉が効かない中断（`kill -9`・端末ごとの消滅）に備えて、daemon側でも`path`貸出だけを回収する。
+`internal/rpc`は接続ごとに切断通知を handler ctx へ載せ（`rpc.PeerClosed`）、`Handler.waitReady`はREADY前に接続が切れたら待機を打ち切って`lease-setup-failed`で返却する。
+対象を`path`に絞るのは、他の貸出は`client_pid`とheartbeatで回収できるのに対し、`wx new`だけがpathを渡す前の未受領のまま誰にも返されずに残るためである。
+
 `wx new`の返却契機は3つで、`wx release --discard`を除きどれも既存の返却経路（session `RELEASING`→slot `DRAINING`→SNAPSHOTジョブ）へ載る。
+どれも利用者へpathを渡せた後の話で、渡す前に中断された貸出は上の2経路がその場で返す。
 
 1. 親sessionの終了。`WX_SESSION_ID` / `WX_SESSION_TOKEN`を持つ環境からの要求は`sessions.lease_owner_session_id`へ親を記録し、親が使用中でなくなると`Store.OrphanedChildLeases`が拾う。
    resume chain専用の`parent_session_id`は流用しない。`internal/state/standby.go`が「親がEXPIRED」を条件にしているため、流用すると子貸出のstandby補充成功記録が親の終了まで入らない。
@@ -94,3 +110,5 @@ daemon側の入口は[`internal/daemon/resume.go`](../internal/daemon/resume.go)
 
 エージェント起動以外への貸出の入口は[`internal/cli/lease.go`](../internal/cli/lease.go)と[`internal/daemon/leasekind.go`](../internal/daemon/leasekind.go)である。
 代表テストは[`TestPathLeaseSurvivesOrphanReconcileAndExpiresThroughSnapshot`](../internal/daemon/leasekind_test.go)で、`wx new`の貸出がorphan回収を生き延び、期限到来で保存経路を通ることを通す。
+準備待ちの中断のclient側は[`TestRunLeaseNewReleasesTheLeaseWhenInterruptedBeforeReady`](../internal/cli/lease_interrupt_test.go)で通す。
+daemon側は[`TestWaitReadyReleasesThePathLeaseOfADisconnectedClient`](../internal/daemon/waitready_disconnect_test.go)で通す。

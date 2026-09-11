@@ -235,6 +235,7 @@ func (m *Manager) reconcileRegistry(ctx context.Context) {
 		if err := m.ensureStandby(ctx, workspaceRecord); err != nil {
 			m.log.Error("workspace standby reconcile failed", "workspace_id", workspaceRecord.ID, "error", err)
 		}
+		m.refreshIdleStandbys(ctx, workspaceRecord, resolved)
 	}
 }
 
