@@ -374,6 +374,10 @@ func (r *verboseStatusRenderer) renderStandbyReplenishment() {
 		r.field("  Reason", statusValue(item, "reason"))
 		r.field("  Detail", statusValue(item, "detail"))
 		r.field("  Suspended", statusValue(item, "suspended_at"))
+		// 補充計画の失敗は停止行ではないため、停止時刻の代わりに失敗時刻を持つ。
+		if failedAt, _ := statusRawString(item, "failed_at"); failedAt != "" {
+			r.field("  Failed", failedAt)
+		}
 		r.field("  Action", statusValue(item, "action"))
 		// 準備失敗で止まった停止だけが失敗情報を持つ。`wx clear` による停止では行を作らない。
 		for _, failure := range []struct{ label, key string }{
@@ -384,7 +388,7 @@ func (r *verboseStatusRenderer) renderStandbyReplenishment() {
 			}
 		}
 		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("standby_replenishment[%d]", index), item, map[string]bool{
-			"workspace_id": true, "root": true, "generation": true, "reason": true, "detail": true, "suspended_at": true, "action": true,
+			"workspace_id": true, "root": true, "generation": true, "reason": true, "detail": true, "suspended_at": true, "failed_at": true, "action": true,
 			"failure_code": true, "failure_message": true, "detail_path": true,
 		})
 	}

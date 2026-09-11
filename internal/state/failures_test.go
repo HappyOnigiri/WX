@@ -129,3 +129,108 @@ func TestTruncateFailureMessageMarksWhatItDropped(t *testing.T) {
 		}
 	}
 }
+
+// createRestoreSession は復元元 session と、その復元用 session を 1 組作る。
+// 元 session は ARCHIVED、復元用は resume 中に作られる子 session を表す。
+func createRestoreSession(t *testing.T, store *Store, parentID, childID, childState string) {
+	t.Helper()
+	createSessionSlot(t, store, parentID, "ARCHIVED", "SNAPSHOTTED")
+	session := Session{
+		ID: childID, WorkspaceID: "workspace", SlotID: childID, ParentSessionID: parentID,
+		State: childState, AgentKind: "codex", TokenHash: HashToken(childID),
+	}
+	if _, err := store.CreateSlotSession(context.Background(),
+		Slot{ID: childID, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/" + childID, State: "QUARANTINED"},
+		nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 復元用 session が EXPIRED でも、元 session が ARCHIVED のままなら復元は済んでいない。
+func TestUnresolvedRecoveryFailuresReportsRestoreAfterTheRestoringSessionExpired(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	createRestoreSession(t, store, "origin", "restore", "EXPIRED")
+	job, err := store.CreateJob(ctx, "RESTORE", "workspace", "restore", "restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, job, errors.New("read-tree refused a skip-worktree path"), "RESTORE_FAILED", "/logs/restore.log")
+	failures, err := store.UnresolvedRecoveryFailures(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("unresolved failures=%+v, want the restore failure", failures)
+	}
+	failure := failures[0]
+	if failure.Kind != "RESTORE" || failure.ParentSessionID != "origin" || failure.SlotState != "QUARANTINED" {
+		t.Fatalf("failure=%+v", failure)
+	}
+	if !strings.Contains(failure.FailureMessage, "skip-worktree") || failure.DetailPath != "/logs/restore.log" {
+		t.Fatalf("failure cause=%+v, want the recorded reason and log path", failure)
+	}
+}
+
+// 同じ元 session への RESTORE が後から成功していれば、先の失敗は解消済みとして出さない。
+func TestUnresolvedRecoveryFailuresExcludesRestoreRetriedOnAnotherSession(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	createRestoreSession(t, store, "origin", "first", "EXPIRED")
+	failed, err := store.CreateJob(ctx, "RESTORE", "workspace", "first", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, failed, errors.New("transient failure"), "RESTORE_FAILED", "")
+	second := Session{
+		ID: "second", WorkspaceID: "workspace", SlotID: "second", ParentSessionID: "origin",
+		State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("second"),
+	}
+	if _, err := store.CreateSlotSession(ctx,
+		Slot{ID: "second", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/second", State: "LEASED"},
+		nil, second, ""); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := store.CreateJob(ctx, "RESTORE", "workspace", "second", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ClaimJob(ctx, retry.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, retry.ID, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	failures, err := store.UnresolvedRecoveryFailures(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("unresolved failures after a later restore succeeded=%+v", failures)
+	}
+}
+
+// 元 session が EXPIRED まで進んでいれば復元は完了しているので、残った失敗は報告しない。
+func TestUnresolvedRecoveryFailuresExcludesRestoreOfAnExpiredOrigin(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	createRestoreSession(t, store, "origin", "restore", "EXPIRED")
+	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED' WHERE id='origin'`); err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.CreateJob(ctx, "RESTORE", "workspace", "restore", "restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failJob(t, store, job, errors.New("failed before the retry succeeded"), "RESTORE_FAILED", "")
+	failures, err := store.UnresolvedRecoveryFailures(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("unresolved failures for a restored origin=%+v", failures)
+	}
+}

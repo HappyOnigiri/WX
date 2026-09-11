@@ -179,6 +179,18 @@ worktree rootのpath検査と登録検査は別のfindingとして両方保持�
 準備・保存・復元の失敗は、上位の処理名で言い換えず`jobs.error_message`・`error_detail_path`から具体的な失敗理由と詳細ログの場所まで引き継ぐ。
 原因が記録されていない場合は特定できていないことを明示し、推測を原因として表示しない。
 
+未解消かどうかの判定は失敗の種類ごとに置き場所が違う。
+SNAPSHOTの失敗は保存対象のsession自身で判定し、後続のSNAPSHOTが成功・実行待ちならそこで解消とする。
+RESTOREの失敗は復元先sessionの状態では判定しない。
+復元先は失敗後にEXPIREDへ落ちるため、その条件では復元できていない状態がすべて解消済みに見える。
+代わりに復元元（`parent_session_id`）がARCHIVEDのまま、同じ元sessionへの後続RESTOREが成功・実行待ちのどちらでもないことを未解消の条件にする。
+元sessionは復元が成功して初めてEXPIREDになり、隔離slotを残した失敗も復元できていない事実は変わらないので除かない。
+
+補充計画（`ENSURE_STANDBY`）の失敗は`replenish_suspensions`に停止を残さない。
+manifestの不正のようにslotを作る前で落ちる失敗は補充を止めず、次の貸出と保守tickで同じ失敗を繰り返すためである。
+これを見落とさないよう、workspaceごとの最新の失敗した`ENSURE_STANDBY`を`standby_replenishment`の検査へ停止と同じ列で載せ、`wx status`にも注記として出す。
+判定は最新の失敗であることと待機枠が今も足りないことの両方で行い、後続の計画が枠を満たしていれば残ったFAILED行は報告しない。
+
 ## 準備時間の計測
 
 `wx bench`は貸出からEARLY READY・FULL READYまでをclient側で測り、daemonが記録した区間内訳を添えて出す。
