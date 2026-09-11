@@ -291,9 +291,14 @@ func (h Handler) dispatchWorkspaceMaintenance(ctx context.Context, method string
 	case "RetryStandby":
 		var p struct {
 			Path string `json:"path"`
+			All  bool   `json:"all"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, true, err
+		}
+		if p.All {
+			result, err := h.Manager.RetryStandbyAll(ctx)
+			return result, true, err
 		}
 		result, err := h.Manager.RetryStandby(ctx, p.Path)
 		return result, true, err

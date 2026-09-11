@@ -30,7 +30,7 @@ Commands:
   gc [--dry-run]                 run retention cleanup
   prune [--all] [--dry-run]      delete recovery refs the database cannot explain
   clear [--all] [--standby]      delete managed worktrees now
-  retry-standby <workspace>      resume standby replenishment after it stopped
+  retry-standby [--all] [<path>] resume standby replenishment after it stopped
   slots [--all] [--json]         list managed wx slots and their disk usage
   bench [--runs <n>] [--json]    measure how long a workspace takes to prepare
   config [<key> ...]             show or update configuration
@@ -160,14 +160,21 @@ Options:
              them, changing nothing`)
 	case "retry-standby":
 		_, _ = fmt.Fprintln(w, `Usage: wx retry-standby <workspace-path>
+       wx retry-standby --all
 
 Resume automatic standby worktree replenishment for a workspace after wx
 stopped it, then retry replenishment in the current generation. Replenishment
 also resumes on its own once wx claude or wx codex succeeds for the workspace.
+Standby worktrees that failed to prepare still fill the warm count, so
+retry-standby schedules them for removal before it replenishes.
 Quarantined worktrees are left untouched; wx gc deletes them once
 retention.quarantined has passed, and wx clear deletes them right away.
 
-The workspace path is shown by wx status when standby replenishment is stopped.`)
+The workspace path is shown by wx status when standby replenishment is stopped.
+
+Options:
+  --all  resume every workspace whose replenishment stopped and whose
+         configuration still replenishes`)
 	case "config":
 		_, _ = fmt.Fprintln(w, `Usage: wx config
        wx config <key> <value>
