@@ -251,7 +251,9 @@ func TestReconcileRetiresStandbyWithoutPlacementHistoryAndDoctorReportsIt(t *tes
 	}
 	gitRun(t, f.repository, "commit", "-am", "advance main")
 	// 配置履歴を持つslotは、mainが進んだだけでは保存済み状態の検証で維持される。
+	// 保守の一巡はそのslotをidle更新へ回すため、更新のjobを流し切ってからREADYを確かめる。
 	f.manager.reconcileRegistry(ctx)
+	f.runPendingJobs(t)
 	if got := f.slotState(t, standby.ID); got != "READY" {
 		t.Fatalf("standby with placement history=%s, want READY", got)
 	}
