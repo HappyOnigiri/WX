@@ -203,16 +203,6 @@ func codexResumeShape(args []string) (codexResumeLocation, bool) {
 	return codexResumeLocation{}, false
 }
 
-// codexResumeSubcommandIndex は互換性のため native 形の resume 位置を返す。
-// exec 形を含む解析は codexResumeShape が担う。
-func codexResumeSubcommandIndex(args []string) (int, bool) {
-	shape, ok := codexResumeShape(args)
-	if !ok || shape.exec || shape.resumeIndex < 0 {
-		return 0, false
-	}
-	return shape.resumeIndex, true
-}
-
 // codexResumeFlagTakesValue は resume の位置引数探索から値付きフラグを除外する。
 // それ以外の引数は Rest に残すだけで、未知のフラグを wx 側で解釈しない。
 func codexResumeFlagTakesValue(arg string) bool {

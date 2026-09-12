@@ -163,10 +163,12 @@ func resumeArgsForIntent(agent, id, path string, intent resumeIntent) []string {
 			if intent.Kind == resumeIntentNone && len(prefix) == 0 {
 				return rest
 			}
-			args := append(prefix, "resume", "--cd", path)
+			args := cloneResumeArgs(prefix)
+			args = append(args, "resume", "--cd", path)
 			return append(args, rest...)
 		}
-		args := append(prefix, "resume", "--cd", path, id)
+		args := cloneResumeArgs(prefix)
+		args = append(args, "resume", "--cd", path, id)
 		return append(args, rest...)
 	}
 
