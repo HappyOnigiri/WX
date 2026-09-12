@@ -18,6 +18,7 @@ import (
 // TestPrepareRejectsOwnershipChangesAtEachRevalidationCheckpointは、prepareLockedの各再検証地点で所有権変更を失敗させる。
 // ownership validatorの失敗回数を変え、includes・links・prepare command・tracked-status・READY前後の全7回をfailAt=1..7で網羅する。
 func TestPrepareRejectsOwnershipChangesAtEachRevalidationCheckpoint(t *testing.T) {
+	t.Parallel()
 	for failAt := 1; failAt <= 7; failAt++ {
 		t.Run(fmt.Sprintf("failAt=%d", failAt), func(t *testing.T) {
 			_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -36,6 +37,7 @@ func TestPrepareRejectsOwnershipChangesAtEachRevalidationCheckpoint(t *testing.T
 // TestCopyIncludesAndCreateLinksPropagateDescriptorFaultsは、pinned modeのcopyIncludes/createLinks共通のroot descriptor欠落を確認する。
 // copyIncludesAt/createLinksAtでは検索不能なdestination targetを使い、既存テストのunpinned経路だけでは届かない障害を確認する。
 func TestCopyIncludesAndCreateLinksPropagateDescriptorFaults(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -77,6 +79,7 @@ func TestCopyIncludesAndCreateLinksPropagateDescriptorFaults(t *testing.T) {
 // TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarkerは、pinned modeのprepareLocked遅延cleanupを確認する。
 // prepare commandが失敗してもreserved worktreeをunlock・削除し、descriptor-bound ownership markerも削除しなければならない。
 func TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarker(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -108,6 +111,7 @@ func TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarker(t *testing.T
 // TestPrepareLockedTargetPropagatesRevalidationDescriptorFailureは、common-directory lock取得後に行うprepareLockedTarget固有のdescriptor再openを確認する。
 // path置換競合を防ぐ再検査であり、prepareTargetの先行検査前でも検索不能な設定rootは失敗しなければならない。
 func TestPrepareLockedTargetPropagatesRevalidationDescriptorFailure(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -125,6 +129,7 @@ func TestPrepareLockedTargetPropagatesRevalidationDescriptorFailure(t *testing.T
 // TestPrepareLockedTargetPropagatesParentCreationFailureは、「既存」と異なるMkdirAll失敗分岐を確認する。
 // targetの祖父母が書き込みを拒否するため、targetの親作成が恒久的なエラーになる。
 func TestPrepareLockedTargetPropagatesParentCreationFailure(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
 	workspaceDirectory := filepath.Join(root, testWorkspaceID)
@@ -143,6 +148,7 @@ func TestPrepareLockedTargetPropagatesParentCreationFailure(t *testing.T) {
 // TestPrepareLockedTargetPropagatesMarkerWriteFailureは、prepareLocked固有のmarkerErr分岐を確認する。
 // targetの親は存在してMkdirAllが成功するが書き込みを拒否するため、未作成targetの横へのmarker書き込みが失敗する。
 func TestPrepareLockedTargetPropagatesMarkerWriteFailure(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
 	slotDirectory := filepath.Dir(target)
@@ -162,6 +168,7 @@ func TestPrepareLockedTargetPropagatesMarkerWriteFailure(t *testing.T) {
 // TestPrepareResumeWithIdentityRejectsAMismatchedIdentityBeforeResumeは、PrepareResumeWithIdentity先頭のidentity証明を確認する。
 // 他のPrepareResumeでは空の（互換目的で常に通る）identityしか検査されない。
 func TestPrepareResumeWithIdentityRejectsAMismatchedIdentityBeforeResume(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -179,6 +186,7 @@ func TestPrepareResumeWithIdentityRejectsAMismatchedIdentityBeforeResume(t *test
 // TestPrepareResumeWithIdentityDetectsTargetReplacementDuringResumeCommandは、resume phaseのcommand後identity再検査を確認する。
 // 上のCREATE phaseと同じ置換をPrepareResumeWithIdentity固有の呼び出し順で検証する。
 func TestPrepareResumeWithIdentityDetectsTargetReplacementDuringResumeCommand(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -204,6 +212,7 @@ func TestPrepareResumeWithIdentityDetectsTargetReplacementDuringResumeCommand(t 
 // TestFinishRestoreWithIdentityRejectsAMismatchedIdentityBeforeUnlockは、FinishRestoreWithIdentity先頭のidentity証明を確認する。
 // 上のresume phaseと同じ条件を扱う。
 func TestFinishRestoreWithIdentityRejectsAMismatchedIdentityBeforeUnlock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -220,6 +229,7 @@ func TestFinishRestoreWithIdentityRejectsAMismatchedIdentityBeforeUnlock(t *test
 
 // TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailuresは、「repository欠落」と異なるadmin Git command失敗分岐を確認する。
 // 実在repositoryで特定のunlock/lock呼び出しを失敗させる。
+// testlint:allow-serial -- プロセス全体の環境（PATH と WX_FAULT_*）を変更するため
 func TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailures(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -251,6 +261,7 @@ func TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailures(t *testing.T) 
 // TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailuresは、existingTargetStateを直接呼び出してfilesystem error分岐を確認する。
 // 通常のPrepare flowではprepareLockedTargetが直前に同じLstatを行うため、独立して到達できない。
 func TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, _ := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -306,6 +317,7 @@ func TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailures(t *testing.T
 
 // TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailuresは、CREATE phaseのPREPARINGからREADYへの終了遷移を確認する。
 // 他では開始時のPREPARING lockだけが対象になる。
+// testlint:allow-serial -- プロセス全体の環境（PATH と WX_FAULT_*）を変更するため
 func TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailures(t *testing.T) {
 	t.Run("final unlock fails", func(t *testing.T) {
 		_, repo, preparer, head, target := prepareEdgesFixture(t)

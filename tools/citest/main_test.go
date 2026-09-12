@@ -12,8 +12,9 @@ func TestValidateConfigAcceptsAllProfiles(t *testing.T) {
 		Command:   []string{"go", "test", "./..."},
 	}
 	for _, profile := range []string{
-		"coverage", "race-daemon", "race-daemon-0", "race-daemon-1",
-		"race-state", "race-state-0", "race-state-1", "race-rest",
+		"coverage", "race-daemon-0", "race-daemon-1", "race-daemon-2",
+		"race-rest-0", "race-rest-1", "race-daemon", "race-state",
+		"race-state-0", "race-state-1", "race-rest",
 	} {
 		t.Run(profile, func(t *testing.T) {
 			cfg := base

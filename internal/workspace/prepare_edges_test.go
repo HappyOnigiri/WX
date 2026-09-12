@@ -53,6 +53,7 @@ exec "$WX_REAL_GIT" "$@"
 }
 
 func TestRestorePreparationResumeAndFinishLifecycle(t *testing.T) {
+	t.Parallel()
 	repository, repo, preparer, head, target := prepareEdgesFixture(t)
 	ctx := context.Background()
 	if err := preparer.PrepareForRestore(ctx, repo, target, head, "slot"); err != nil {
@@ -82,6 +83,7 @@ func TestRestorePreparationResumeAndFinishLifecycle(t *testing.T) {
 }
 
 func TestResumeAndFinishRestoreFailClosedAtBoundaries(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("resume validation", func(t *testing.T) {
 		_, repo, preparer, head, target := prepareEdgesFixture(t)
@@ -204,6 +206,7 @@ func prepareEdgesFixture(t *testing.T) (string, discovery.Repository, *Preparer,
 }
 
 func TestPinnedPreparerLifecycleAndDescriptorBoundCommands(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, restore := range []bool{false, true} {
 		t.Run(map[bool]string{false: "prepare", true: "restore"}[restore], func(t *testing.T) {
@@ -274,6 +277,7 @@ func TestPinnedPreparerLifecycleAndDescriptorBoundCommands(t *testing.T) {
 }
 
 func TestPreparerDescriptorOperationsRejectInvalidRootsAndIdentities(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -342,6 +346,7 @@ func TestPreparerDescriptorOperationsRejectInvalidRootsAndIdentities(t *testing.
 }
 
 func TestPreparationHelpersRejectInvalidPhaseAndOwnershipInputs(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	if slots, repos := preparationOwnershipStates(preparePhaseRestore); strings.Join(slots, ",") != "RESTORING" || strings.Join(repos, ",") != "RESTORING,RESTORE_RUNNING" {
 		t.Fatalf("restore states=%v/%v", slots, repos)
@@ -375,6 +380,7 @@ func TestPreparationHelpersRejectInvalidPhaseAndOwnershipInputs(t *testing.T) {
 }
 
 func TestPrepareReusesAnEmptyAllocationShellAndValidatesReadyState(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		t.Fatal(err)
@@ -406,6 +412,7 @@ func TestPrepareReusesAnEmptyAllocationShellAndValidatesReadyState(t *testing.T)
 }
 
 func TestPrepareRejectsUnsafeConfiguredWorktreeRoot(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	rootFile := filepath.Join(t.TempDir(), "root-file")
 	if err := os.WriteFile(rootFile, []byte("not a directory"), 0o600); err != nil {
@@ -420,6 +427,7 @@ func TestPrepareRejectsUnsafeConfiguredWorktreeRoot(t *testing.T) {
 }
 
 func TestPrepareRejectsWorktreeAlteredByThePrepareCommand(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		script  string
@@ -445,6 +453,7 @@ func TestPrepareRejectsWorktreeAlteredByThePrepareCommand(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（PATH と WX_FAULT_*）を変更するため
 func TestPrepareLeavesWorktreeForQuarantineWhenCleanupGitFails(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -480,6 +489,7 @@ func TestPrepareLeavesWorktreeForQuarantineWhenCleanupGitFails(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（PATH と WX_FAULT_*）を変更するため
 func TestPrepareOnAnExistingWorktreePropagatesInitialUnlockFailure(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -497,6 +507,7 @@ func TestPrepareOnAnExistingWorktreePropagatesInitialUnlockFailure(t *testing.T)
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（PATH と WX_FAULT_*）を変更するため
 func TestPrepareOnANewWorktreePropagatesLockFailure(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -510,6 +521,7 @@ func TestPrepareOnANewWorktreePropagatesLockFailure(t *testing.T) {
 }
 
 func TestPrepareRejectsStateOwnershipBeforeWritingMarker(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
 	if err := os.MkdirAll(root, 0o700); err != nil {

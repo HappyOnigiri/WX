@@ -34,6 +34,7 @@ func usageWrite(t *testing.T, dir, name, data string) {
 }
 
 func TestMeasureRootUsageAttributesFilesToSlots(t *testing.T) {
+	t.Parallel()
 	root, mainPath, targets := usageRoots(t)
 	slotRepo := filepath.Join(root.Name(), "workspace", "slot", "repo")
 	usageWrite(t, slotRepo, "nested/file", "slot content")
@@ -71,6 +72,7 @@ func TestMeasureRootUsageAttributesFilesToSlots(t *testing.T) {
 }
 
 func TestMeasureSlotUsageWalksOnlyThatSlot(t *testing.T) {
+	t.Parallel()
 	root, mainPath, targets := usageRoots(t)
 	slotRepo := filepath.Join(root.Name(), "workspace", "slot", "repo")
 	usageWrite(t, slotRepo, "nested/file", "shared content")
@@ -101,6 +103,7 @@ func TestMeasureSlotUsageWalksOnlyThatSlot(t *testing.T) {
 }
 
 func TestMeasureSlotUsageFailsWhenTheSlotIsGone(t *testing.T) {
+	t.Parallel()
 	root, _, _ := usageRoots(t)
 	target := SlotUsageTarget{SlotID: "slot", RelPath: "workspace/removed"}
 	if _, _, err := MeasureSlotUsage(context.Background(), root, target, nil); err == nil {
@@ -109,6 +112,7 @@ func TestMeasureSlotUsageFailsWhenTheSlotIsGone(t *testing.T) {
 }
 
 func TestMeasureRootUsageStopsOnCanceledContext(t *testing.T) {
+	t.Parallel()
 	root, _, targets := usageRoots(t)
 	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "file", "content")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -119,6 +123,7 @@ func TestMeasureRootUsageStopsOnCanceledContext(t *testing.T) {
 }
 
 func TestMeasureRootUsageIgnoresUnusableTargets(t *testing.T) {
+	t.Parallel()
 	root, mainPath, _ := usageRoots(t)
 	targets := []SlotUsageTarget{
 		{SlotID: "", RelPath: "workspace/slot"},
@@ -140,6 +145,7 @@ func TestMeasureRootUsageIgnoresUnusableTargets(t *testing.T) {
 
 // prefix 表は root 相対 path をキーにするので、走査は降りた先の path を 1 度引くだけで境界を判別できる。
 func TestUsagePrefixesKeysBoundariesByRootRelativePath(t *testing.T) {
+	t.Parallel()
 	samples := map[string]SlotUsage{}
 	slots, repositories := usagePrefixes([]SlotUsageTarget{
 		{SlotID: "slot", RelPath: "workspace/slot/", Repositories: map[string]string{"repo": "/main"}},

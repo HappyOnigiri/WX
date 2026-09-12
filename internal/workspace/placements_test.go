@@ -10,6 +10,7 @@ import (
 )
 
 func TestSortedPlacementsUsesRepositoryThenPath(t *testing.T) {
+	t.Parallel()
 	placements := sortedPlacements(map[string]state.Placement{
 		"b": {RepositoryID: "b", RelativePath: "z"},
 		"a": {RepositoryID: "a", RelativePath: "y"},
@@ -22,6 +23,7 @@ func TestSortedPlacementsUsesRepositoryThenPath(t *testing.T) {
 // TestRootPlacementsListsCopiesAndLinks は workspace root の配置計画が、copy を file 単位に開き
 // link を1件として返すことを確認する。standby の UPDATE はこの計画を旧配置履歴と比較する。
 func TestRootPlacementsListsCopiesAndLinks(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	for path, content := range map[string]string{"AGENTS.md": "root rules", "configs/app.yml": "config", "shared/file": "linked"} {
 		full := filepath.Join(source, path)

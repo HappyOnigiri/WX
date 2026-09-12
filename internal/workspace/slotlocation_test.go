@@ -13,6 +13,7 @@ import (
 // TestWorktreeDirNameAcceptsOnlyDirectSlotChildrenは、所有権要求が依存するlayout不変条件を固定する。
 // repository worktreeはslot directoryの直下1成分であり、それ以外は比較するdir_nameがないため安全側に失敗する。
 func TestWorktreeDirNameAcceptsOnlyDirectSlotChildren(t *testing.T) {
+	t.Parallel()
 	worktreeRoot := string(filepath.Separator) + "wx"
 	slotPath := filepath.Join(worktreeRoot, testSlotRelPath)
 	preparer := &Preparer{SlotPath: slotPath}
@@ -44,6 +45,7 @@ func TestWorktreeDirNameAcceptsOnlyDirectSlotChildren(t *testing.T) {
 // TestValidateStateOwnershipWithIdentityFailsClosedWithoutAnIdentityは、2つの状態所有権helperの違いを確認する。
 // identity付き形式ではdescriptor保持者がidentityを省略して通過できず、pathnameだけの証明が復活しない。
 func TestValidateStateOwnershipWithIdentityFailsClosedWithoutAnIdentity(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	slotPath := filepath.Join(string(filepath.Separator)+"wx", testSlotRelPath)
 	target := filepath.Join(slotPath, testRepositoryID)

@@ -20,6 +20,7 @@ import (
 )
 
 func TestCOWRunsGroupConsecutiveDirectories(t *testing.T) {
+	t.Parallel()
 	runs := splitCOWRuns([]cowIndexEntry{
 		{name: "a"},
 		{name: "b"},
@@ -47,6 +48,7 @@ func TestCOWRunsGroupConsecutiveDirectories(t *testing.T) {
 }
 
 func TestCOWShareSkipsFilesBelowMinimum(t *testing.T) {
+	t.Parallel()
 	a, b := cowRoots(t)
 	small := strings.Repeat("s", cowMinShareSize-1)
 	large := strings.Repeat("l", cowMinShareSize)
@@ -80,6 +82,7 @@ func TestCOWShareSkipsFilesBelowMinimum(t *testing.T) {
 
 // storage.cow_min_size_kib を0にすると下限がなくなり、数バイトのファイルまで共有対象になる。
 func TestCOWShareWithoutMinimumSharesEverySize(t *testing.T) {
+	t.Parallel()
 	a, b := cowRoots(t)
 	for _, root := range []*os.Root{a, b} {
 		cowWrite(t, root, "tiny", "t")
@@ -109,6 +112,7 @@ func TestCOWShareWithoutMinimumSharesEverySize(t *testing.T) {
 
 // main の tree 形状違いは共有対象外というだけなので、run 全体を skip して準備は続ける。
 func TestCOWShareSkipsSourceShapeMismatch(t *testing.T) {
+	t.Parallel()
 	a, b := cowRoots(t)
 	cowWrite(t, a, "dir", "a file where the destination has a directory")
 	if err := b.Mkdir("dir", 0o700); err != nil {
@@ -131,6 +135,7 @@ func TestCOWShareSkipsSourceShapeMismatch(t *testing.T) {
 }
 
 func TestCOWErrorsPreferOwnershipOverBenignFailures(t *testing.T) {
+	t.Parallel()
 	benign := errors.New("clone failed")
 	errs := &cowErrors{}
 	errs.add(nil)
@@ -160,6 +165,7 @@ func TestCOWErrorsPreferOwnershipOverBenignFailures(t *testing.T) {
 }
 
 func TestCOWBatchesStopSubmissionAfterFailure(t *testing.T) {
+	t.Parallel()
 	batches := [][]cowRun{{{directory: "0"}}, {{directory: "1"}}, {{directory: "2"}}, {{directory: "3"}}}
 	failure := errors.New("batch failed")
 	var started atomic.Int64
@@ -192,6 +198,7 @@ func TestCOWBatchesStopSubmissionAfterFailure(t *testing.T) {
 }
 
 func TestCOWWorkerCountStaysWithinBounds(t *testing.T) {
+	t.Parallel()
 	p := &Preparer{}
 	workers := p.cowWorkers()
 	if workers < 1 || workers > cowMaxWorkers {
@@ -206,6 +213,7 @@ func TestCOWWorkerCountStaysWithinBounds(t *testing.T) {
 // 証明は batch の前後で呼ばれるため、clone できない platform では直接検査する。
 // 失敗した証明も隔離判断の入力になるので、成否に関わらず結果を書き換えず計測へ残すことを確かめる。
 func TestCOWProofIsPassedThroughAndMeasured(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("proof failed")
 	stats := &cowStats{}
 	sharer := &cowSharer{proof: func() error { return failure }, stats: stats}
@@ -222,6 +230,7 @@ func TestCOWProofIsPassedThroughAndMeasured(t *testing.T) {
 }
 
 func TestCOWStatsAreLoggedWhenALoggerExists(t *testing.T) {
+	t.Parallel()
 	stats := &cowStats{}
 	stats.entries.Store(7)
 	stats.shared.Add(1)
@@ -239,6 +248,7 @@ func TestCOWStatsAreLoggedWhenALoggerExists(t *testing.T) {
 }
 
 // 並列と batch 分割を通した共有を、実際の準備結果に対して確かめる。
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWSharesFilesAcrossParallelBatches(t *testing.T) {
 	if !cowAvailable() {
 		t.Skip("CoW platform required")

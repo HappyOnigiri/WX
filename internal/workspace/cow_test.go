@@ -51,6 +51,7 @@ func cowWrite(t *testing.T, r *os.Root, name, data string) {
 }
 
 func TestCOWSkipsDifferentAndMissingFiles(t *testing.T) {
+	t.Parallel()
 	if !cowAvailable() {
 		t.Skip("APFS is required")
 	}
@@ -80,6 +81,7 @@ func TestCOWSkipsDifferentAndMissingFiles(t *testing.T) {
 
 // 所有権を証明できない回は clone も swap もせず、宛先をそのまま残す。
 func TestCOWStopsBeforeReplacingWhenOwnershipIsUnprovable(t *testing.T) {
+	t.Parallel()
 	if !cowAvailable() {
 		t.Skip("APFS is required")
 	}
@@ -104,6 +106,7 @@ func TestCOWStopsBeforeReplacingWhenOwnershipIsUnprovable(t *testing.T) {
 // swap で押し出した inode が自分の物でなければ、cleanup は消さずに残す。
 // 利用者が置き換えた実体を CoW の後始末で失わないための最後の検査で、証明を batch 単位にしても残る。
 func TestCOWLeafVerificationRejectsAReplacedInode(t *testing.T) {
+	t.Parallel()
 	_, b := cowRoots(t)
 	if err := b.Mkdir("dir", 0o700); err != nil {
 		t.Fatal(err)
@@ -148,6 +151,7 @@ func cowTemporaryName(t *testing.T, root *os.Root, directory string) (string, er
 }
 
 func TestCOWDoesNotFollowSourceSymlink(t *testing.T) {
+	t.Parallel()
 	a, b := cowRoots(t)
 	outside := t.TempDir()
 	os.WriteFile(filepath.Join(outside, "file"), []byte("same"), 0o600)
@@ -168,6 +172,7 @@ func TestCOWDoesNotFollowSourceSymlink(t *testing.T) {
 }
 
 func TestCOWFallbackModes(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("clone failed")
 	var logged bytes.Buffer
 	preparer := &Preparer{Log: slog.New(slog.NewTextHandler(&logged, nil))}
@@ -192,6 +197,7 @@ func TestCOWFallbackModes(t *testing.T) {
 
 // leaf helper は clone 成功後にしか呼ばれないため、CoW のない platform ではここだけが検査の機会になる。
 func TestCOWLeafVerificationRejectsReplacedInode(t *testing.T) {
+	t.Parallel()
 	_, b := cowRoots(t)
 	cowWrite(t, b, "file", "same")
 	parent, err := os.Open(b.Name())
@@ -230,6 +236,7 @@ func TestCOWLeafVerificationRejectsReplacedInode(t *testing.T) {
 }
 
 func TestCOWByteComparisonSpansChunks(t *testing.T) {
+	t.Parallel()
 	body := strings.Repeat("x", 300<<10)
 	for _, test := range []struct {
 		name, left, right string

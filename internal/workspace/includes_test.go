@@ -17,6 +17,7 @@ import (
 // tracked path を指す .worktreeinclude entry は無視され、worktree の内容は checkout が決める。
 // main worktree 側だけ内容を変えることで、コピーが起きていないことを見分ける。
 func TestWorktreeIncludeIgnoresTrackedPaths(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	worktreeRoot := filepath.Join(root, "worktrees")
@@ -70,6 +71,7 @@ func TestWorktreeIncludeIgnoresTrackedPaths(t *testing.T) {
 
 // directory include は tracked file の存在だけで省略せず、未追跡 file だけを materialize する。
 func TestWorktreeIncludeCopiesUntrackedFilesInsideTrackedDirectory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	target := filepath.Join(root, "target")
@@ -112,6 +114,7 @@ func TestWorktreeIncludeCopiesUntrackedFilesInsideTrackedDirectory(t *testing.T)
 }
 
 func TestWorktreeIncludeReturnsTrackedCheckGitErrors(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	target := filepath.Join(root, "target")
@@ -143,6 +146,7 @@ func TestWorktreeIncludeReturnsTrackedCheckGitErrors(t *testing.T) {
 }
 
 func TestDefaultIncludesCarryUntrackedRuleFilesWithoutAManifest(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "worktrees")
 	repository := filepath.Join(base, "repository")

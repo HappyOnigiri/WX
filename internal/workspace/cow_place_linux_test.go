@@ -16,6 +16,7 @@ import (
 // CoW の無い platform では clone が必ず失敗するので、先行配置は1件も置かずに失敗を上げる。
 // auto はその失敗を記録して通常 checkout へ委ね、strict な cow だけが準備を失敗させる。
 func TestCOWPlacementReportsCloneFailureWhereCoWIsUnsupported(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, item := stagedCOWFixture(t, map[string]string{"big/donor.bin": strings.Repeat("b", cowMinShareSize) + "\n"})
 	placement, err := preparer.placeOwnedSharedFiles(ctx, repo, item, testSlotID)
@@ -38,6 +39,7 @@ func TestCOWPlacementReportsCloneFailureWhereCoWIsUnsupported(t *testing.T) {
 
 // CoW の無い platform では共有経路へ入らないので、placeSharedFiles は1件も置かず失敗もしない。
 func TestPlaceSharedFilesSkipsEntirelyWhereCoWIsUnsupported(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, item := stagedCOWFixture(t, map[string]string{"big/donor.bin": strings.Repeat("b", cowMinShareSize) + "\n"})
 	placement, err := preparer.placeSharedFiles(ctx, repo, item, testSlotID)

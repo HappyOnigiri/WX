@@ -15,6 +15,7 @@ import (
 )
 
 func TestFingerprintRejectsMissingExplicitCopyAndAllowsMissingDefaults(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(source)}
 	cfg := config.Defaults()
@@ -36,6 +37,7 @@ func TestFingerprintRejectsMissingExplicitCopyAndAllowsMissingDefaults(t *testin
 }
 
 func TestFingerprintTracksMaterializedCopyInputs(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	if err := os.Mkdir(repository, 0o700); err != nil {
@@ -79,6 +81,7 @@ func TestFingerprintTracksMaterializedCopyInputs(t *testing.T) {
 }
 
 func TestFingerprintDistinguishesPrepareArgumentBoundaries(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
 	cfg := config.Defaults()
@@ -105,6 +108,7 @@ func TestFingerprintDistinguishesPrepareArgumentBoundaries(t *testing.T) {
 }
 
 func TestFingerprintSchemaMismatchInvalidatesPreviousValue(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
 	cfg := config.Defaults()
@@ -124,6 +128,7 @@ func TestFingerprintSchemaMismatchInvalidatesPreviousValue(t *testing.T) {
 // repository 個別の共有下限は、その repository の fingerprint だけを変える。
 // 同じ設定に居る他 repository の hash が動かないことが、READY standby を巻き添えで捨てない根拠になる。
 func TestFingerprintFollowsRepositoryCOWMinSize(t *testing.T) {
+	t.Parallel()
 	a := discovery.Repository{MainPath: domain.CanonicalPath(t.TempDir())}
 	b := discovery.Repository{MainPath: domain.CanonicalPath(t.TempDir())}
 	cfg := config.Defaults()
@@ -156,6 +161,7 @@ func TestFingerprintFollowsRepositoryCOWMinSize(t *testing.T) {
 }
 
 func TestFingerprintCoversRecursiveDuplicateAndWorkspaceLinkInputs(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "nested", "repository")
 	if err := os.MkdirAll(filepath.Join(repository, "included", "child"), 0o700); err != nil {
@@ -236,6 +242,7 @@ func TestFingerprintCoversRecursiveDuplicateAndWorkspaceLinkInputs(t *testing.T)
 }
 
 func TestFingerprintTracksDefaultIncludeContent(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	if err := os.Mkdir(repository, 0o700); err != nil {
@@ -301,6 +308,7 @@ func TestFingerprintTracksDefaultIncludeContent(t *testing.T) {
 // TestFingerprintRejectsAMissingRepositoryMainPathは、存在しないrepositoryに対するFingerprint先頭のphysical-path検査を確認する。
 // 別テストのsymlink祖先や入力不可のケースとは異なる。
 func TestFingerprintRejectsAMissingRepositoryMainPath(t *testing.T) {
+	t.Parallel()
 	missing := domain.CanonicalPath(filepath.Join(t.TempDir(), "missing-repository"))
 	if _, err := Fingerprint(1, "oid", discovery.Repository{MainPath: missing}, config.Defaults()); err == nil {
 		t.Fatal("fingerprint of a missing repository main path succeeded")
@@ -308,6 +316,7 @@ func TestFingerprintRejectsAMissingRepositoryMainPath(t *testing.T) {
 }
 
 func TestFingerprintAndRelativePathBoundaries(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "nested", "deep"), 0o700); err != nil {
 		t.Fatal(err)
@@ -382,6 +391,7 @@ func TestFingerprintAndRelativePathBoundaries(t *testing.T) {
 // submodule 方針は両 fingerprint に入り、方針変更後に旧方針の READY slot を再利用させない。
 // 更新経路の `checkout --detach --force` は submodule を実体化しないため、更新互換側にも必要である。
 func TestSubmodulePolicyChangesBothFingerprints(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(source)}
 	seenPrepare := map[string]bool{}
@@ -418,6 +428,7 @@ func TestSubmodulePolicyChangesBothFingerprints(t *testing.T) {
 // repository 個別の copy_mode は、その repository の fingerprint と更新互換 fingerprint だけを変える。
 // 個別指定が1つも無い設定では、以前と同じ値のままでなければ全 READY slot が無効になる。
 func TestFingerprintFollowsRepositoryCopyMode(t *testing.T) {
+	t.Parallel()
 	a := discovery.Repository{MainPath: domain.CanonicalPath(t.TempDir())}
 	b := discovery.Repository{MainPath: domain.CanonicalPath(t.TempDir())}
 	cfg := config.Defaults()

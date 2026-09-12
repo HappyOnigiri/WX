@@ -26,6 +26,7 @@ func (readyStateRejectingOwnershipValidator) ValidateWorktreeOwnership(_ context
 // TestValidateReadyEnforcesItsOwnReadyStateProofは、ValidateReadyが独自の狭い状態所有権検査を行うことを確認する。
 // 先に実行されたValidateOwnershipの広い証明だけに依存しない。
 func TestValidateReadyEnforcesItsOwnReadyStateProof(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -45,6 +46,7 @@ func TestValidateReadyEnforcesItsOwnReadyStateProof(t *testing.T) {
 // TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergenceは、markerに依存しないworktree自身の検査を確認する。
 // 削除済みtarget、欠落・安全でない.git marker、Git pointerとして機能しない.git fileを扱う。
 func TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergence(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("target removed after marker survives", func(t *testing.T) {
@@ -144,6 +146,7 @@ func TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergence(t 
 }
 
 func TestWorktreeOwnershipValidationCoversPhysicalAndGitBoundaries(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot

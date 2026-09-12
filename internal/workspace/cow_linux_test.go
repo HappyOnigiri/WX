@@ -12,6 +12,7 @@ func verifyTempDirSupportsCOW() error { return nil }
 
 // CoWのないplatformでは共有経路が必ず失敗し、通常コピーへ落ちる契約を保つ。
 func TestCOWUnsupportedPlatformRejectsSharing(t *testing.T) {
+	t.Parallel()
 	if cowAvailable() {
 		t.Fatal("linux reported CoW support")
 	}

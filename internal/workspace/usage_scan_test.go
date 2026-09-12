@@ -9,6 +9,7 @@ import (
 )
 
 func TestUsageJoinKeepsRootRelativePaths(t *testing.T) {
+	t.Parallel()
 	if got := usageJoin(".", "leaf"); got != "leaf" {
 		t.Fatalf("root child=%q", got)
 	}
@@ -19,6 +20,7 @@ func TestUsageJoinKeepsRootRelativePaths(t *testing.T) {
 
 // symlink は指し先へ降りずに 1 件として数える。辿ると slot の外の実体を管理容量に混ぜてしまう。
 func TestMeasureRootUsageCountsSymlinksWithoutFollowingThem(t *testing.T) {
+	t.Parallel()
 	root, _, targets := usageRoots(t)
 	slot := filepath.Join(root.Name(), "workspace", "slot")
 	outside := t.TempDir()
@@ -39,6 +41,7 @@ func TestMeasureRootUsageCountsSymlinksWithoutFollowingThem(t *testing.T) {
 
 // 登録と違う slot の下に現れた repository path は共有元を持たず、共有判定の対象にもしない。
 func TestMeasureRootUsageIgnoresRepositoriesOfAnotherSlot(t *testing.T) {
+	t.Parallel()
 	root, mainPath, _ := usageRoots(t)
 	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "file", "content")
 	usageWrite(t, mainPath, "file", "content")
@@ -62,6 +65,7 @@ func TestMeasureRootUsageIgnoresRepositoriesOfAnotherSlot(t *testing.T) {
 
 // 走査は directory ごとに並列に走るため、合計と cache が worker 間で落ちないことを検査する。
 func TestMeasureRootUsageAggregatesParallelDirectories(t *testing.T) {
+	t.Parallel()
 	root, mainPath, targets := usageRoots(t)
 	slotRepo := filepath.Join(root.Name(), "workspace", "slot", "repo")
 	const directories, perDirectory = 12, 8
@@ -97,6 +101,7 @@ func TestMeasureRootUsageAggregatesParallelDirectories(t *testing.T) {
 
 // 走査中に消えた entry は飛ばすだけにする。読めない entry は測定を失敗にして、部分集計を実測に見せない。
 func TestMeasureRootUsageFailsOnUnreadableDirectories(t *testing.T) {
+	t.Parallel()
 	root, _, targets := usageRoots(t)
 	blocked := filepath.Join(root.Name(), "workspace", "slot", "blocked")
 	if err := os.MkdirAll(blocked, 0o700); err != nil {
@@ -114,6 +119,7 @@ func TestMeasureRootUsageFailsOnUnreadableDirectories(t *testing.T) {
 
 // 共有元に無い directory の下は共有判定の対象に数えたまま、判定できないので cache へ残さない。
 func TestMeasureRootUsageComparesDirectoriesMissingFromTheSource(t *testing.T) {
+	t.Parallel()
 	root, mainPath, targets := usageRoots(t)
 	generated := filepath.Join(root.Name(), "workspace", "slot", "repo", "generated")
 	if err := os.MkdirAll(generated, 0o755); err != nil {

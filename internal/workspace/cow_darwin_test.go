@@ -29,6 +29,7 @@ func verifyTempDirSupportsCOW() error {
 }
 
 func TestCOWPreservesDestinationXattrs(t *testing.T) {
+	t.Parallel()
 	for _, matching := range []bool{true, false} {
 		a, b := cowRoots(t)
 		cowWrite(t, a, "file", "data")
@@ -73,6 +74,7 @@ func TestCOWPreservesDestinationXattrs(t *testing.T) {
 }
 
 func TestCOWCloneFailureLeavesOriginal(t *testing.T) {
+	t.Parallel()
 	a, b := cowRoots(t)
 	cowWrite(t, a, "file", "data")
 	cowWrite(t, b, "file", "data")
@@ -92,6 +94,7 @@ func TestCOWCloneFailureLeavesOriginal(t *testing.T) {
 }
 
 func TestCOWPreservesExplicitDestinationACL(t *testing.T) {
+	t.Parallel()
 	a, b := cowRoots(t)
 	cowWrite(t, a, "file", "data")
 	cowWrite(t, b, "file", "data")
@@ -129,6 +132,7 @@ func TestCOWPreservesExplicitDestinationACL(t *testing.T) {
 
 // clone が単なるバイトコピーに退行しても他のテストは通るため、ブロック共有そのものを見る。
 func TestCOWSharesBlocks(t *testing.T) {
+	t.Parallel()
 	a, b := cowRoots(t)
 	const size = 64 << 20
 	data := bytes.Repeat([]byte("wx-cow-block-sharing\n"), size/21)
@@ -161,6 +165,7 @@ func cowFreeBytes(root *os.Root) (int64, error) {
 // clone は file flags も複製するため、flags の付いた donor 側の実体は共有対象から外す。
 // 置いてしまうと slot 側の実体が書換えも削除もできなくなり、正常終了した slot の回収が止まる。
 func TestCOWShareableLeavesSkipsFlaggedDonorFiles(t *testing.T) {
+	t.Parallel()
 	source, _ := cowRoots(t)
 	cowWrite(t, source, "locked", strings.Repeat("l", cowMinShareSize))
 	cowWrite(t, source, "plain", strings.Repeat("p", cowMinShareSize))

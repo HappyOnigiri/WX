@@ -28,6 +28,7 @@ func waitForFile(t *testing.T, path string, timeout time.Duration) {
 // 同じ repository の別 slot の準備が始められることを確認する。
 // prepare 全体が common-directory lock を保持していると、この二つ目の準備は一つ目の完了まで進めない。
 func TestPrepareCommandDoesNotBlockAnotherSlotOfTheSameRepository(t *testing.T) {
+	t.Parallel()
 	_, repo, blocking, head, blockingTarget := prepareEdgesFixture(t)
 	root := blocking.Config.Storage.WorktreeRoot
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -69,6 +70,7 @@ func TestPrepareCommandDoesNotBlockAnotherSlotOfTheSameRepository(t *testing.T) 
 // TestPrepareExcludesConcurrentPreparationsOfTheSameSlot は、共通ロックを手放す区間でも
 // 同じ slot の準備が重ならないことを確認する。
 func TestPrepareExcludesConcurrentPreparationsOfTheSameSlot(t *testing.T) {
+	t.Parallel()
 	_, repo, first, head, target := prepareEdgesFixture(t)
 	root := first.Config.Storage.WorktreeRoot
 	if err := os.MkdirAll(root, 0o700); err != nil {

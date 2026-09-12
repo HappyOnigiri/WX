@@ -34,6 +34,7 @@ func containsRule(rules []string, want string) bool {
 }
 
 func TestResolveRootRulesAddsAgentAssetsAndManifestEntries(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	writeRootFile(t, source, filepath.Join(".claude", "skills", "local-design-memo", "SKILL.md"), "skill\n")
 	writeRootFile(t, source, ".envrc", "export A=1\n")
@@ -78,6 +79,7 @@ func TestResolveRootRulesAddsAgentAssetsAndManifestEntries(t *testing.T) {
 }
 
 func TestResolveRootRulesSkipsAgentAssetsOwnedByLinks(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	writeRootFile(t, source, filepath.Join(".claude", "skills", "SKILL.md"), "skill\n")
 	writeRootFile(t, source, ".worktreelink", ".claude\n")
@@ -98,6 +100,7 @@ func TestResolveRootRulesSkipsAgentAssetsOwnedByLinks(t *testing.T) {
 }
 
 func TestResolveRootRulesSkipsDefaultCopyNamesOwnedByLinks(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	writeRootFile(t, source, "AGENTS.md", "agents\n")
 	writeRootFile(t, source, ".worktreelink", "AGENTS.md\n")
@@ -127,6 +130,7 @@ func TestResolveRootRulesSkipsDefaultCopyNamesOwnedByLinks(t *testing.T) {
 
 // RootRulesFromConfig は repository の main worktree と同じ root で使い、manifest も既定名の除去も効かせない。
 func TestRootRulesFromConfigKeepsDefaultCopyNamesUnderLinks(t *testing.T) {
+	t.Parallel()
 	rules := RootRulesFromConfig(config.Workspace{Link: []string{"AGENTS.md"}})
 	if !slices.Contains(rules.OptionalCopy, "AGENTS.md") {
 		t.Fatalf("single-repository defaults changed: %+v", rules)
@@ -134,6 +138,7 @@ func TestRootRulesFromConfigKeepsDefaultCopyNamesUnderLinks(t *testing.T) {
 }
 
 func TestResolveRootRulesRejectsCopyAndLinkOverlap(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	writeRootFile(t, source, filepath.Join("shared", "value"), "shared\n")
 	writeRootFile(t, source, ".worktreeinclude", "shared\n")
@@ -149,6 +154,7 @@ func TestResolveRootRulesRejectsCopyAndLinkOverlap(t *testing.T) {
 }
 
 func TestResolveRootRulesWithoutManifestsKeepsConfigRules(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	rules, err := ResolveRootRules(source, config.Workspace{Copy: []string{"required.json"}, Link: []string{"shared"}})
 	if err != nil {
@@ -169,6 +175,7 @@ func TestResolveRootRulesWithoutManifestsKeepsConfigRules(t *testing.T) {
 // TestFingerprintIgnoresRootAgentAssetsForRepositoryWorkspace は単一 repository workspace の再利用判定が変わらないことを固定する。
 // root が repository の main worktree そのものなら root 直下は Git が checkout し、非 Git root 向けの既定を混ぜてはならない。
 func TestFingerprintIgnoresRootAgentAssetsForRepositoryWorkspace(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(source)}
 	cfg := config.Defaults()
@@ -187,6 +194,7 @@ func TestFingerprintIgnoresRootAgentAssetsForRepositoryWorkspace(t *testing.T) {
 }
 
 func TestFingerprintTracksRootAgentAssetsForMultiRepositoryWorkspace(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	if err := os.Mkdir(repository, 0o700); err != nil {
@@ -220,6 +228,7 @@ func TestFingerprintTracksRootAgentAssetsForMultiRepositoryWorkspace(t *testing.
 
 // TestPlanRootStagesPlacesRootAgentAssetsEarly は agent 起動前に root の skill が読めることを固定する。
 func TestPlanRootStagesPlacesRootAgentAssetsEarly(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	writeRootFile(t, source, filepath.Join(".claude", "skills", "SKILL.md"), "skill\n")
 	writeRootFile(t, source, "late.txt", "late\n")
