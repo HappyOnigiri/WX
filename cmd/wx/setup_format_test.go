@@ -60,6 +60,8 @@ func TestSetupTableKeepsColumnsAlignedInJapanese(t *testing.T) {
 }
 
 func TestSetupActionDescriptionsNameWhatChanges(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	step := setup.Step{ID: "hooks.codex", Target: "/home/user/.codex/hooks.json", Desired: "/home/user/.local/bin/wx", State: setup.StateDivergent}
 	for action, want := range map[setup.Action]string{
 		setup.ActionInstall: "/home/user/.codex/hooks.json",
@@ -105,6 +107,8 @@ func TestSetupActionDescriptionsNameWhatChanges(t *testing.T) {
 }
 
 func TestSetupWarningsReportStatesThatDidNotSettle(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	var out bytes.Buffer
 	printSetupWarnings(&out, "hooks.claude", setup.ActionInstall, setup.Step{State: setup.StateDivergent, Reasons: []string{"command_other_binary"}})
 	if !strings.Contains(out.String(), "warning: hooks.claude is divergent after install") || !strings.Contains(out.String(), "command_other_binary") {
