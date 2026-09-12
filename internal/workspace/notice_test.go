@@ -6,6 +6,7 @@ import (
 )
 
 func TestPrepareNoticesRecordsOutputInOrder(t *testing.T) {
+	t.Parallel()
 	notices := &PrepareNotices{}
 	notices.Add(PrepareNotice{Target: "/slot/repo", Phase: "post-checkout", Stderr: "hook warned\n"})
 	notices.Add(PrepareNotice{Target: "/slot/other", Phase: "post-checkout", Stdout: "hook said something\n"})
@@ -23,6 +24,7 @@ func TestPrepareNoticesRecordsOutputInOrder(t *testing.T) {
 
 // 出力の無い呼び出しまで記録すると、区間を通っただけの回が診断へ並んでしまう。
 func TestPrepareNoticesIgnoresEmptyOutput(t *testing.T) {
+	t.Parallel()
 	notices := &PrepareNotices{}
 	notices.Add(PrepareNotice{Target: "/slot/repo", Phase: "post-checkout"})
 	if got := notices.Notices(); len(got) != 0 {
@@ -32,6 +34,7 @@ func TestPrepareNoticesIgnoresEmptyOutput(t *testing.T) {
 
 // nil の器でも準備は同じ結果になり、記録だけが落ちる。
 func TestPrepareNoticesNilIsUsable(t *testing.T) {
+	t.Parallel()
 	var notices *PrepareNotices
 	notices.Add(PrepareNotice{Target: "/slot/repo", Phase: "post-checkout", Stderr: "output"})
 	if got := notices.Notices(); got != nil {
@@ -41,6 +44,7 @@ func TestPrepareNoticesNilIsUsable(t *testing.T) {
 
 // 準備は repository ごとに並列で進むため、記録は同時呼び出しで壊れてはならない。
 func TestPrepareNoticesAddsConcurrently(t *testing.T) {
+	t.Parallel()
 	notices := &PrepareNotices{}
 	var wait sync.WaitGroup
 	for index := range 16 {

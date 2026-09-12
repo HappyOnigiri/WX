@@ -12,6 +12,7 @@ import (
 // clone後の差し替えは、宛先のbytesとmetadataを保ったまま別inodeへ入れ替え、donorを書き換えない。
 // 一時ファイルはcleanupで消え、中断時の元ファイルを指す予約名が残らない。
 func TestCOWReplacementPreservesBytesAndTimes(t *testing.T) {
+	t.Parallel()
 	if !cowAvailable() {
 		t.Skip("APFS is required")
 	}
@@ -60,6 +61,7 @@ func TestCOWReplacementPreservesBytesAndTimes(t *testing.T) {
 
 // 先行配置のcloneは下限を超えるleafだけを置き、下限未満の宛先は作らないまま通常checkoutへ残す。
 func TestCOWPlacementClonesOnlyFilesAboveTheMinimum(t *testing.T) {
+	t.Parallel()
 	if !cowAvailable() {
 		t.Skip("APFS is required")
 	}

@@ -17,6 +17,7 @@ func cowIndexOutput(lines ...string) string {
 }
 
 func TestCOWIndexEntriesKeepShareableBlobs(t *testing.T) {
+	t.Parallel()
 	stdout := cowIndexOutput(
 		"100644 aaa 0\tfile",
 		"100755 bbb 0\tdir/script",
@@ -41,6 +42,7 @@ func TestCOWIndexEntriesKeepShareableBlobs(t *testing.T) {
 
 // 宛先 path の逸脱は skip では済まないため、解析の時点で失敗させる。
 func TestCOWIndexEntriesRejectUnsafeOutput(t *testing.T) {
+	t.Parallel()
 	for name, stdout := range map[string]string{
 		"missing_tab":   cowIndexOutput("100644 aaa 0 file"),
 		"short_header":  cowIndexOutput("100644 aaa\tfile"),
@@ -58,6 +60,7 @@ func TestCOWIndexEntriesRejectUnsafeOutput(t *testing.T) {
 
 // main 側は事前 skip の材料でしかないので、解釈できない行は表から落として共有対象外へ倒す。
 func TestCOWSourceIndexOIDsDropUnparsableEntries(t *testing.T) {
+	t.Parallel()
 	oids := parseCOWSourceIndexOIDs(cowIndexOutput(
 		"100644 aaa 0\tfile",
 		"100644 bbb 0 broken",
@@ -70,6 +73,7 @@ func TestCOWSourceIndexOIDsDropUnparsableEntries(t *testing.T) {
 }
 
 func TestCOWCandidatesKeepMatchingOIDs(t *testing.T) {
+	t.Parallel()
 	entries := []cowIndexEntry{
 		{name: "same", oid: "aaa"},
 		{name: "changed", oid: "bbb"},
@@ -86,6 +90,7 @@ func TestCOWCandidatesKeepMatchingOIDs(t *testing.T) {
 }
 
 // main 側 index の blob が違う path は、内容が一致していても clone せずに除外する。
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWSkipsPathsWithADifferentSourceIndexBlob(t *testing.T) {
 	p, repo, oid, target := cowFixture(t)
 	p.Config.Storage.CopyMode = config.CopyModeCopy
@@ -123,6 +128,7 @@ func TestCOWSkipsPathsWithADifferentSourceIndexBlob(t *testing.T) {
 // scope は今回の更新が書き直した path の entry だけを候補にする。
 // nil は限定なしで、宛先に共有済みの実体を持たない新規準備と復元がこの経路を使う。
 func TestCOWScopeNarrowsCandidatesToRewrittenPaths(t *testing.T) {
+	t.Parallel()
 	entries := []cowIndexEntry{{name: "rewritten", oid: "aaa"}, {name: "dir/kept", oid: "bbb"}}
 	scope := &cowScope{rewritten: map[string]bool{"rewritten": true, "absent": true}}
 	candidates := scope.narrow(entries)

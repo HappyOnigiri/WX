@@ -26,6 +26,7 @@ func (allowOwnershipValidator) ValidateWorktreeOwnership(context.Context, state.
 }
 
 func TestPinnedIncludeAndLinkMaterializationStayWithinRoot(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, "worktrees")
 	repository := filepath.Join(base, "repository")
@@ -81,6 +82,7 @@ func TestPinnedIncludeAndLinkMaterializationStayWithinRoot(t *testing.T) {
 }
 
 func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"", "../outside", "/absolute"} {
 		if _, err := safeRelative(path); err == nil {
 			t.Fatalf("safeRelative(%q) succeeded", path)
@@ -105,6 +107,7 @@ func TestWorkspacePathValidationAndCollisionsFailClosed(t *testing.T) {
 }
 
 func TestRuleConflictsAreRejectedBeforeMaterialization(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(source, "shared", "child"), 0o700); err != nil {
 		t.Fatal(err)
@@ -140,6 +143,7 @@ func TestRuleConflictsAreRejectedBeforeMaterialization(t *testing.T) {
 }
 
 func TestSafeGlobRejectsMalformedPatternWithoutMatches(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if _, err := safeGlob(root, "["); err == nil {
 		t.Fatal("malformed glob unexpectedly succeeded")
@@ -147,6 +151,7 @@ func TestSafeGlobRejectsMalformedPatternWithoutMatches(t *testing.T) {
 }
 
 func TestPhysicalManifestRejectsSymlinkRoot(t *testing.T) {
+	t.Parallel()
 	physical := t.TempDir()
 	if err := os.WriteFile(filepath.Join(physical, ".worktreeinclude"), []byte("secret\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -161,6 +166,7 @@ func TestPhysicalManifestRejectsSymlinkRoot(t *testing.T) {
 }
 
 func TestPrepareRejectsPathsOutsideRootSymlinksAndForeignContents(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = root
@@ -207,6 +213,7 @@ func TestPrepareRejectsPathsOutsideRootSymlinksAndForeignContents(t *testing.T) 
 }
 
 func TestPrepareClassifiesReplacedRootAsOwnershipUncertain(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	root := filepath.Join(base, "worktrees")
@@ -261,6 +268,7 @@ func TestPrepareClassifiesReplacedRootAsOwnershipUncertain(t *testing.T) {
 // 記述子に束縛された Git add 完了後に対象 leaf を別の物理 worktree へ置換できる。
 // 置換先をこの prepare job が予約した worktree として扱ってはならない。
 func TestPrepareRejectsTargetReplacementAfterGitAdd(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	root := filepath.Join(base, "worktrees")
@@ -325,6 +333,7 @@ func TestPrepareRejectsTargetReplacementAfterGitAdd(t *testing.T) {
 
 // Finding 1: 一致する Git worktree でも wx の所有権証明なしには再利用できない。
 func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	worktreeRoot := filepath.Join(root, "worktrees")
@@ -366,6 +375,7 @@ func TestPrepareRefusesForeignRegisteredWorktreeWithoutWxOwnershipProof(t *testi
 
 // TestSkippedSourcesAreRecorded は、skip した source が後から追える形で warn ログに残ることを確認する。
 func TestSkippedSourcesAreRecorded(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	if err := os.Mkdir(repository, 0o700); err != nil {
@@ -440,6 +450,7 @@ func TestSkippedSourcesAreRecorded(t *testing.T) {
 }
 
 func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	if err := os.Mkdir(repository, 0o700); err != nil {
@@ -500,6 +511,7 @@ func TestIncludeAndLinkPoliciesRejectUnsafeInputs(t *testing.T) {
 
 // Finding 4: source と destination の symlink 祖先は、それぞれのルートから逃げてはならない。
 func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	outside := filepath.Join(root, "outside")
@@ -610,6 +622,7 @@ func TestMaterializationRejectsSymlinkAncestors(t *testing.T) {
 }
 
 func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	worktreeRoot := filepath.Join(root, "worktrees")
@@ -713,6 +726,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 }
 
 func TestPatternFilesThatAreDirectoriesAreRejected(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	if err := os.Mkdir(repository, 0o700); err != nil {
@@ -760,6 +774,7 @@ func TestPatternFilesThatAreDirectoriesAreRejected(t *testing.T) {
 }
 
 func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	target := filepath.Join(root, "target")
@@ -899,6 +914,7 @@ func TestWorkspaceHelpersSurfaceFilesystemAndGitErrors(t *testing.T) {
 }
 
 func TestWorkspaceHelpersRejectUnreadableInputsAndUnwritableTargets(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	h := sha256.New()
 	owner, err := OpenPhysicalRoot(root)
@@ -1001,6 +1017,7 @@ func TestWorkspaceHelpersRejectUnreadableInputsAndUnwritableTargets(t *testing.T
 }
 
 func TestReadyValidationAndMaterializationEdgeCases(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	worktreeRoot := filepath.Join(root, "worktrees")

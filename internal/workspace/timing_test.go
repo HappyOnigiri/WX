@@ -10,6 +10,7 @@ import (
 
 // 区間は最初に現れた順で並び、同じ名前は回数と時間を足し合わせる。
 func TestPhaseTimingsAggregatesInFirstAppearanceOrder(t *testing.T) {
+	t.Parallel()
 	timings := &PhaseTimings{}
 	timings.Add("checkout", 1, time.Second)
 	timings.Add("cow", 1, 2*time.Second)
@@ -29,6 +30,7 @@ func TestPhaseTimingsAggregatesInFirstAppearanceOrder(t *testing.T) {
 
 // 回数 0 の記録は区間を作らない。名前だけの区間が内訳へ現れると、測っていない区間と区別できなくなる。
 func TestPhaseTimingsIgnoresEmptyObservations(t *testing.T) {
+	t.Parallel()
 	timings := &PhaseTimings{}
 	timings.Add("cow.shared", 0, time.Second)
 	if phases := timings.Phases(); len(phases) != 0 {
@@ -38,6 +40,7 @@ func TestPhaseTimingsIgnoresEmptyObservations(t *testing.T) {
 
 // 計測は準備結果を変えないため、器を持たない Preparer でも同じ経路が通る。
 func TestPhaseTimingsIsOptional(t *testing.T) {
+	t.Parallel()
 	var timings *PhaseTimings
 	timings.Observe("checkout", time.Now())
 	timings.Add("cow", 1, time.Second)
@@ -53,6 +56,7 @@ func TestPhaseTimingsIsOptional(t *testing.T) {
 
 // 失敗した区間も記録する。どこで止まったかが遅さの調査に必要だからである。
 func TestTimePhaseRecordsFailedRuns(t *testing.T) {
+	t.Parallel()
 	preparer := &Preparer{Phases: &PhaseTimings{}}
 	failure := errors.New("prepare command failed")
 	if err := preparer.timePhase("prepare-command", func() error { return failure }); !errors.Is(err, failure) {
@@ -66,6 +70,7 @@ func TestTimePhaseRecordsFailedRuns(t *testing.T) {
 
 // 実行中の区間は入れ子の最も内側を返し、終わった区間は残らない。
 func TestPhaseTimingsActiveReportsTheInnermostRunningPhase(t *testing.T) {
+	t.Parallel()
 	preparer := &Preparer{Phases: &PhaseTimings{}}
 	if _, ok := preparer.Phases.Active(); ok {
 		t.Fatal("a phase was reported as running before any phase started")
@@ -95,6 +100,7 @@ func TestPhaseTimingsActiveReportsTheInnermostRunningPhase(t *testing.T) {
 
 // 完了区間を足す Add と混ざっても、実行中として返すのは timePhase が包んだ区間だけである。
 func TestPhaseTimingsActiveIgnoresCompletedAggregates(t *testing.T) {
+	t.Parallel()
 	preparer := &Preparer{Phases: &PhaseTimings{}}
 	err := preparer.timePhase("cow", func() error {
 		preparer.Phases.Add("cow.compare", 4, time.Second)
@@ -111,6 +117,7 @@ func TestPhaseTimingsActiveIgnoresCompletedAggregates(t *testing.T) {
 
 // 器を持たない Preparer でも Active は落ちず、実行中なしを返す。
 func TestPhaseTimingsActiveIsOptional(t *testing.T) {
+	t.Parallel()
 	var timings *PhaseTimings
 	if _, ok := timings.Active(); ok {
 		t.Fatal("a nil recorder reported a running phase")
@@ -124,6 +131,7 @@ func TestPhaseTimingsActiveIsOptional(t *testing.T) {
 // 実行中の区間には、開始時点で設定していた対象が付く。
 // 区間名は repository ごとに繰り返すため、名前だけでは進捗が何周目かを読めない。
 func TestPhaseTimingsActiveCarriesTheScopeOfItsStart(t *testing.T) {
+	t.Parallel()
 	preparer := &Preparer{Phases: &PhaseTimings{}}
 	preparer.Phases.Scope(PhaseScope{Target: "app", Index: 1, Total: 5})
 	err := preparer.timePhase("checkout", func() error {

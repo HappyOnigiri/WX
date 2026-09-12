@@ -16,6 +16,7 @@ import (
 )
 
 func TestPrepareRequiresSQLiteOwnershipForForgedMatchingMarkerAndLock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	root := t.TempDir()
 	repositoryPath := filepath.Join(root, "repository")

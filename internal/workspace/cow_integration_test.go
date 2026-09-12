@@ -62,6 +62,7 @@ func cowFixture(t *testing.T) (*Preparer, discovery.Repository, string, string) 
 	return p, repo, cowGit(t, source, "rev-parse", "HEAD"), filepath.Join(slot, testRepositoryID)
 }
 
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWPreparationModesAndHook(t *testing.T) {
 	for _, mode := range []string{config.CopyModeAuto, config.CopyModeCOW, config.CopyModeCopy} {
 		t.Run(mode, func(t *testing.T) {
@@ -115,6 +116,8 @@ func TestCOWPreparationModesAndHook(t *testing.T) {
 // 共有下限を donor のサイズより大きくすると、auto でも1件も共有せず通常 checkout のまま残る。
 // 下限は配置方式と置換方式の両方を止めるため、prepare command が記録した inode が最後まで変わらない。
 // repository 個別指定の case は、global を下限なしに倒したうえで個別値だけが両方式へ届くことを見る。
+
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWPreparationSkipsSharingAboveTheConfiguredMinimum(t *testing.T) {
 	above := len(cowBody)/1024 + 1
 	for _, c := range []struct {
@@ -158,6 +161,7 @@ func TestCOWPreparationSkipsSharingAboveTheConfiguredMinimum(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWPrepareFallbackKeepsCheckout(t *testing.T) {
 	for _, mode := range []string{config.CopyModeAuto, config.CopyModeCOW, config.CopyModeCopy} {
 		t.Run(mode, func(t *testing.T) {
@@ -186,6 +190,7 @@ func TestCOWPrepareFallbackKeepsCheckout(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWRestorePreservesIndexAndDirtyBytes(t *testing.T) {
 	p, repo, oid, target := cowFixture(t)
 	if err := p.PrepareForRestore(context.Background(), repo, target, oid, testSlotID); err != nil {
@@ -216,6 +221,7 @@ func TestCOWRestorePreservesIndexAndDirtyBytes(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWReplayedTemporaryQuarantines(t *testing.T) {
 	if !cowAvailable() {
 		t.Skip("CoW platform required")
@@ -242,6 +248,7 @@ func TestCOWReplayedTemporaryQuarantines(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWModeChangesFingerprint(t *testing.T) {
 	p, repo, oid, _ := cowFixture(t)
 	seen := map[string]bool{}
@@ -258,6 +265,7 @@ func TestCOWModeChangesFingerprint(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWKeepsPathDependentFilterOutput(t *testing.T) {
 	p, repo, _, target := cowFixture(t)
 	source := string(repo.MainPath)
@@ -282,6 +290,7 @@ func TestCOWKeepsPathDependentFilterOutput(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWPreparationKeepsAmbiguousArtifacts(t *testing.T) {
 	if !cowAvailable() {
 		t.Skip("CoW platform required")
@@ -299,6 +308,7 @@ func TestCOWPreparationKeepsAmbiguousArtifacts(t *testing.T) {
 }
 
 // compactOwnedWorktreeは`auto`のfallbackに隠れるため、CoWのないplatformでも直接呼んで共有の手前までを検査する。
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestCOWCompactOwnedWorktreeSharesDonorBytes(t *testing.T) {
 	p, repo, oid, target := cowFixture(t)
 	p.Config.Storage.CopyMode = config.CopyModeCopy

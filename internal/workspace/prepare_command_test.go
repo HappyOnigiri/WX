@@ -18,6 +18,7 @@ import (
 )
 
 func TestPrepareCommandSuccessFailureAndTimeout(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	if err := os.Mkdir(repository, 0o700); err != nil {
@@ -121,6 +122,7 @@ func TestPrepareCommandSuccessFailureAndTimeout(t *testing.T) {
 }
 
 func TestPrepareCommandErrorUnwrapAndNilReceiver(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("prepare cause")
 	failure := &PrepareCommandError{Err: fmt.Errorf("wrapped: %w", cause)}
 	if !errors.Is(failure, cause) {
@@ -135,6 +137,7 @@ func TestPrepareCommandErrorUnwrapAndNilReceiver(t *testing.T) {
 // TestRunPrepareWithIdentityForcesDescriptorPathWhenIdentityExpectedは、非空identityがdescriptor-bound command経路を強制する分岐を確認する。
 // preparerがunpinnedでも設定rootが未作成ならopenに失敗し、identityを無視する通常のexec.Commandへ黙ってfallbackしてはならない。
 func TestRunPrepareWithIdentityForcesDescriptorPathWhenIdentityExpected(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, _, target := prepareEdgesFixture(t)
 	cfg := preparer.Config
 	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/true"}, Timeout: config.Duration{Duration: time.Second}}}}
@@ -147,6 +150,7 @@ func TestRunPrepareWithIdentityForcesDescriptorPathWhenIdentityExpected(t *testi
 // TestRunPrepareWithIdentityPropagatesTargetOpenFailureは、descriptor-bound経路でtarget openが失敗する分岐を確認する。
 // 設定rootは存在してopenOwnedRootが成功するが、targetは存在しないためディレクトリopenに失敗する。
 func TestRunPrepareWithIdentityPropagatesTargetOpenFailure(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, _, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -163,6 +167,7 @@ func TestRunPrepareWithIdentityPropagatesTargetOpenFailure(t *testing.T) {
 // TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommandは、command後のidentity検査を確認する。
 // prepare commandが終了前に同じpathのtargetを別directoryへ置換した場合、元のままではなく所有権不確かなidentity変更として検出する。
 func TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommand(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -187,6 +192,7 @@ func TestRunPrepareWithIdentityDetectsTargetReplacementDuringCommand(t *testing.
 }
 
 func TestPinnedPrepareCommandRunsInsideValidatedWorktree(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot

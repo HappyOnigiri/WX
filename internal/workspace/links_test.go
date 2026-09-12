@@ -15,6 +15,7 @@ import (
 )
 
 func TestWorktreeLinksRespectDestinationIgnoreRule(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	worktreeRoot := filepath.Join(base, "worktrees")
@@ -85,6 +86,7 @@ func TestWorktreeLinksRespectDestinationIgnoreRule(t *testing.T) {
 }
 
 func TestWorktreeLinksSkipMissingSourcesAndTrackPresence(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	worktreeRoot := filepath.Join(base, "worktrees")

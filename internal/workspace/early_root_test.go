@@ -9,6 +9,7 @@ import (
 )
 
 func TestRootStagesSelectWithinCopyAndLinkPlan(t *testing.T) {
+	t.Parallel()
 	source, target := t.TempDir(), t.TempDir()
 	for path, content := range map[string]string{"AGENTS.md": "root rules", "configs/early": "early", "configs/late": "late", "unplanned": "skip", "shared/file": "linked"} {
 		path = filepath.Join(source, path)
@@ -63,6 +64,7 @@ func TestRootStagesSelectWithinCopyAndLinkPlan(t *testing.T) {
 }
 
 func TestRootStagesRejectNestedSymlinksAndChangedCopyTypes(t *testing.T) {
+	t.Parallel()
 	source, target := t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(source, "configs"), 0o700); err != nil {
 		t.Fatal(err)
