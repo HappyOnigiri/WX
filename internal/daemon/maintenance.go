@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -283,7 +284,7 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 }
 
 func (m *Manager) Forget(ctx context.Context, path string) error {
-	canonical, err := domain.Canonicalize(path)
+	canonical, err := m.forgetRoot(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -300,6 +301,25 @@ func (m *Manager) Forget(ctx context.Context, path string) error {
 		}
 	}
 	return m.store.ForgetWorkspace(ctx, string(canonical))
+}
+
+// forgetRoot は forget 対象にする登録済み root path を決める。
+// root ごと消えた登録はcanonical化できず、登録を消す経路はforgetしかないため、その場合だけ
+// 絶対pathが`workspaces.root_path`と完全一致する登録を受け付ける。実体には触れない登録の削除に限る。
+func (m *Manager) forgetRoot(ctx context.Context, path string) (domain.CanonicalPath, error) {
+	canonical, err := domain.Canonicalize(path)
+	if err == nil {
+		return canonical, nil
+	}
+	absolute, absErr := filepath.Abs(path)
+	if absErr != nil {
+		return "", err
+	}
+	// 照合は登録時にcanonical化して保存した文字列との完全一致にし、打ち間違えたpathを黙って受け入れない。
+	if _, lookupErr := m.store.WorkspaceByRoot(ctx, absolute); lookupErr != nil {
+		return "", err
+	}
+	return domain.CanonicalPath(absolute), nil
 }
 
 func (m *Manager) retireFailedSlotForForget(ctx context.Context, slotID string) error {

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,6 +22,37 @@ func TestConfigEnvironmentsAreSortedAfterGlobal(t *testing.T) {
 	if len(got) != 5 || got[0].menuLabel() != "Global" || got[1].menuLabel() != "Workspace  alpha" ||
 		got[2].menuLabel() != "Workspace  zeta" || got[3].menuLabel() != "Repository  beta" || got[4].menuLabel() != "Repository  zeta" {
 		t.Fatalf("environments=%+v", got)
+	}
+}
+
+func TestV2ConfigEnvironmentsShowWorkspaceMembershipHierarchy(t *testing.T) {
+	cfg := config.DefaultsV2()
+	cfg.Workspaces["/tmp/product"] = config.Workspace{Discovered: true, Repositories: map[string]config.Repository{
+		"backend":  {Discovered: true},
+		"frontend": {},
+	}}
+	m := newModel(context.Background(), Options{Config: cfg})
+	got := m.configEnvironments()
+	labels := make([]string, 0, len(got))
+	for _, environment := range got {
+		labels = append(labels, environment.menuLabel())
+	}
+	want := []string{"System", "Workspace defaults", "Repository defaults", "Workspace  product", "  Repository defaults", "  Repository  backend", "  Repository  frontend (not discovered)"}
+	if !slices.Equal(labels, want) {
+		t.Fatalf("v2 environments=%v, want %v", labels, want)
+	}
+}
+
+func TestV2SystemEnvironmentUsesV2Fields(t *testing.T) {
+	cfg := config.DefaultsV2()
+	m := newModel(context.Background(), Options{Config: cfg})
+	m.tab = 2
+	fields := scopeFieldMap(m.environmentFields())
+	if _, ok := fields["storage.worktree_root"]; !ok {
+		t.Fatalf("system fields=%v, want system.storage.worktree_root", fields)
+	}
+	if _, ok := fields["worktree"]; ok {
+		t.Fatalf("system fields include workspace key: %v", fields)
 	}
 }
 

@@ -105,7 +105,7 @@ type Manager struct {
 }
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {
-	git := &gitx.Runner{Timeout: cfg.Readiness.Timeout.Duration}
+	git := &gitx.Runner{Timeout: cfg.MaxReadinessTimeout()}
 	executable, executableErr := os.Executable()
 	if executableErr == nil {
 		git.FDHelper = executable

@@ -27,9 +27,13 @@ func (p *Preparer) submodulePhase(ctx context.Context, repo discovery.Repository
 
 // submodulesEnabled は repository の属する workspace で submodule を実体化するかを解決する。
 func (p *Preparer) submodulesEnabled(repo discovery.Repository) (bool, error) {
-	root, err := repositoryWorkspaceRoot(repo)
-	if err != nil {
-		return false, err
+	root := p.workspaceRootForRepository(repo)
+	if root == "" {
+		return false, fmt.Errorf("resolve workspace root for repository %s", repo.MainPath)
+	}
+	resolved := p.Config.RepositoryFor(root, repo.RelativePath, string(repo.MainPath))
+	if resolved.Submodules != nil {
+		return *resolved.Submodules, nil
 	}
 	enabled, _ := p.Config.SubmodulesForWorkspace(root)
 	return enabled, nil

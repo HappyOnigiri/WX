@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
+	"strings"
 )
 
 var ErrConfigChanged = errors.New("config changed after preview")
@@ -21,8 +23,14 @@ const (
 // EditRequest は CLI と TUI が共有する1項目分の設定変更である。
 // Scope は global・workspace・repository のいずれかで、個別 scope では Target が必要になる。
 type EditRequest struct {
-	Scope     string
-	Target    string
+	Scope  string
+	Target string
+	// Repository は v2 の repository 編集で使う workspace 相対 membership path
+	// である。system/default/workspace scope と legacy v1 では空にする。
+	Repository string
+	// V2 は raw document がまだ v2 へ更新されていなくても、workspace/repository
+	// scope で明示的な v2 editor を使う指定である。
+	V2        bool
 	Key       string
 	Value     string
 	Operation EditOperation
@@ -92,6 +100,23 @@ func CommitEdit(preview EditPreview) error {
 }
 
 func applyEdit(raw *Config, request EditRequest) error {
+	if isV2EditRequest(*raw, request) {
+		switch request.Operation {
+		case EditSet:
+			return SetV2Field(raw, request.Scope, request.Target, request.Repository, request.Key, request.Value)
+		case EditAdd:
+			return AppendV2List(raw, request.Scope, request.Target, request.Repository, request.Key, request.Value)
+		case EditRemove:
+			return RemoveV2List(raw, request.Scope, request.Target, request.Repository, request.Key, request.Value)
+		case EditReset:
+			if isV2ListKey(request.Scope, request.Key) {
+				return ResetV2List(raw, request.Scope, request.Target, request.Repository, request.Key)
+			}
+			return ResetV2Field(raw, request.Scope, request.Target, request.Repository, request.Key)
+		default:
+			return fmt.Errorf("unknown config edit operation %q", request.Operation)
+		}
+	}
 	if request.Scope == "global" {
 		switch request.Operation {
 		case EditAdd:
@@ -143,6 +168,14 @@ func editValue(raw Config, request EditRequest) (string, error) {
 		}
 		return "", fmt.Errorf("unknown config key %q", request.Key)
 	}
+	if isV2EditRequest(raw, request) {
+		for _, field := range V2Fields(effective, raw, request.Scope, request.Target, request.Repository) {
+			if field.Key == request.Key {
+				return field.Value + " (source: " + field.Source + ")", nil
+			}
+		}
+		return "", fmt.Errorf("unknown %s config key %q", request.Scope, request.Key)
+	}
 	scope, err := parseEditScope(request.Scope)
 	if err != nil {
 		return "", err
@@ -157,6 +190,47 @@ func editValue(raw Config, request EditRequest) (string, error) {
 		}
 	}
 	return "", unknownScopeKey(scope, request.Key)
+}
+
+func isV2EditScope(scope string) bool {
+	switch scope {
+	case V2ScopeSystem, V2ScopeWorkspaceDefaults, V2ScopeRepositoryDefaults, V2ScopeWorkspace, V2ScopeRepository:
+		return true
+	default:
+		return false
+	}
+}
+
+func isV2EditRequest(raw Config, request EditRequest) bool {
+	if request.V2 {
+		return true
+	}
+	if request.Scope == V2ScopeSystem || request.Scope == V2ScopeWorkspaceDefaults || request.Scope == V2ScopeRepositoryDefaults {
+		return true
+	}
+	return raw.V2() && isV2EditScope(request.Scope)
+}
+
+func isV2ListKey(scope, key string) bool {
+	entry := reflect.Value{}
+	switch scope {
+	case V2ScopeSystem:
+		entry = reflect.ValueOf(SystemConfig{})
+	case V2ScopeWorkspaceDefaults:
+		entry = reflect.ValueOf(WorkspaceDefaults{})
+	case V2ScopeRepositoryDefaults:
+		entry = reflect.ValueOf(RepositoryDefaults{})
+	case V2ScopeWorkspace:
+		entry = reflect.ValueOf(Workspace{})
+	case V2ScopeRepository:
+		entry = reflect.ValueOf(Repository{})
+	}
+	if scope == V2ScopeWorkspace && strings.HasPrefix(key, "repository_defaults.") {
+		entry = reflect.ValueOf(RepositoryDefaults{})
+		key = strings.TrimPrefix(key, "repository_defaults.")
+	}
+	field := v2Field(entry, key)
+	return field.IsValid() && field.Kind() == reflect.Slice
 }
 
 func parseEditScope(value string) (Scope, error) {

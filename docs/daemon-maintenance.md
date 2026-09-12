@@ -5,7 +5,7 @@
 
 ## ジョブの分類と実行枠
 
-実行枠は利用者向け（`pool.preparation_concurrency`）と保守用（`maintenanceJobSlots`）に分かれ、保守へ利用者向けの枠を貸さない。
+実行枠は利用者向け（config v2 の `system.pool.preparation_concurrency`）と保守用（`maintenanceJobSlots`）に分かれ、保守へ利用者向けの枠を貸さない。
 どちらも他方の待ちで飢えないことを優先し、利用者向けが満杯のときの待ちと、保守が並走する間に利用者向けの処理が遅くなる分は受け入れる。
 
 分類は`jobClassOf`が job rowの事実だけから決め、DBへ永続化しない。
@@ -36,8 +36,9 @@ slot lockは最上位のoperationで一度だけ取り、内側の経路には�
 ## standby補充
 
 `hot`なworkspaceのREADY slotを待機枠数まで補充する。
-枠数は`workspaces.<root>.warm_count`、`pool.warm_per_workspace`の順に継承する。
-保持期間も同じく`workspaces.<root>.retention.hot_standby`、`retention.hot_standby`の順、終了worktreeの保持は`workspaces.<root>.retention.ended_worktree`、`retention.ended_worktree`の順に継承する。
+枠数は`workspaces.<root>.warm_count`、`workspace_defaults.warm_count`の順に継承する。
+保持期間も同じく`workspaces.<root>.retention.hot_standby`、`workspace_defaults.retention.hot_standby`の順に継承する。
+終了worktreeの保持は`workspaces.<root>.retention.ended_worktree`、`workspace_defaults.retention.ended_worktree`の順に継承する。
 workspace個別値は単一リポジトリではそのリポジトリのmain worktree、multi-repositoryではworkspace rootに適用する。
 枠数0はそのworkspaceの補充を無効にするが、個数指定だけで`hot`へは変更しない。
 保持期間0も同じく補充を無効にする。補充とGCは同じ実効値で判断するので、作っては即座に回収する往復は起きない。
@@ -67,7 +68,7 @@ COLD化の`RETIRING`は完了後に`READY`へ戻るので枠に数える。
 
 ### 再利用とSTALE化
 
-再利用は既定で有効（`worktree.reuse_standby`、workspace個別値で上書き可）で、無効にするとOID・fingerprint完全一致だけを貸す動作になる。
+再利用は既定で有効（`workspace_defaults.reuse_standby`、workspace個別値で上書き可）で、無効にするとOID・fingerprint完全一致だけを貸す動作になる。
 有効な場合の定期reconcileはREADY slotを保存済みOIDと更新互換fingerprintで検証し、現在のmainとの差だけではSTALEにしない。
 配置履歴を持たないREADY slotは更新に使えないため、この検証の対象から外し、現在のmainと完全一致でなければSTALEにする。
 

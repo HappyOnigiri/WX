@@ -135,7 +135,7 @@ func configFinding(configError string) Finding {
 func gitFinding(ctx context.Context, cfg config.Config, shared *gitx.Runner) Finding {
 	runner := shared
 	if runner == nil {
-		runner = &gitx.Runner{Timeout: cfg.Readiness.Timeout.Duration}
+		runner = &gitx.Runner{Timeout: cfg.MaxReadinessTimeout()}
 	}
 	result, err := runner.Run(ctx, "", "--version")
 	if err != nil {

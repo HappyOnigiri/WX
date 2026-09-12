@@ -24,5 +24,5 @@ func leaseReadinessTimeout(cfg config.Config, lease daemon.Lease) time.Duration 
 	if lease.ReadinessTimeoutMS > 0 {
 		return time.Duration(lease.ReadinessTimeoutMS) * time.Millisecond
 	}
-	return cfg.Readiness.Timeout.Duration
+	return cfg.MaxReadinessTimeout()
 }

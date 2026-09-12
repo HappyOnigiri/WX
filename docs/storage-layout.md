@@ -1,6 +1,6 @@
 # ディスク配置とroot世代
 
-worktree root（`storage.worktree_root`）配下は次の形になる。
+worktree root（config v2 の `system.storage.worktree_root`）配下は次の形になる。
 
 ```text
 <worktree_root>/<workspace-id>/<slot-id>/<RepoName>/
@@ -21,12 +21,12 @@ slot内の配置名の衝突判定も小文字化して行い（APFSが既定で
 単一リポジトリでCWDをリポジトリ直下にすることで、`.wx-owner-*`がCWDの親に残りエージェントから見えない。
 `Lease.Path`と`state.Slot.Path`（常にslotディレクトリ）を混同しないこと。
 
-`RepoName`の解決順序（`repositories.<main path>.dir_name`・`dir_source`と`storage.repo_dir_source`）は`internal/workspace/dirname.go`が持つ。
+`RepoName`の解決順序（config v2 の `workspaces.<root>.repositories.<relative>.dir_name`、同 membership の `dir_source`、`repository_defaults.dir_source`）は`internal/workspace/dirname.go`が持つ。
 採用した値は`slot_repositories.dir_name`へ記録して以後の権威にする。
 設定やremote URLが後から変わっても既存slotは記録済みの名前で動き続け、`workspace.Fingerprint`が準備入力を含むので新規slotから新しい設定を使う。
 
 参照するslotもスナップショットも無くなった`roots`行はGCが削除するが、ディレクトリの実体は消さない。
-`storage.worktree_root`を変えても既存slotが登録済みのroot世代で動き続けることは、`internal/daemon`の
+`system.storage.worktree_root`を変えても既存slotが登録済みのroot世代で動き続けることは、`internal/daemon`の
 [`TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot`](../internal/daemon/roots_integration_test.go)が固定している。
 
 multi_repositoryのworkspaceスナップショットは、slotディレクトリ自体をbundle rootとしてtarに詰める。

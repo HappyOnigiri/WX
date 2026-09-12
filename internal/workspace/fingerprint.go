@@ -34,10 +34,14 @@ func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c
 	if err != nil {
 		return "", err
 	}
-	submodules, _ := c.SubmodulesForWorkspace(workspaceRoot)
+	submodules := c.RepositoryFor(workspaceRoot, repo.RelativePath, string(repo.MainPath)).Submodules
+	if submodules == nil {
+		value, _ := c.SubmodulesForWorkspace(workspaceRoot)
+		submodules = &value
+	}
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\ncopy_mode=%s\ncow_min_size_kib=%d\nsubmodules=%t\n",
-		updateCompatibilitySchemaVersion, generation, c.CopyMode(string(repo.MainPath)), c.COWMinSizeKiB(string(repo.MainPath)), submodules)
+		updateCompatibilitySchemaVersion, generation, c.CopyModeForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath)), c.COWMinSizeKiBForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath)), *submodules)
 	if err := writePrepareFingerprint(h, repo, c); err != nil {
 		return "", err
 	}
@@ -60,6 +64,10 @@ func Fingerprint(generation int, oid string, repo discovery.Repository, c config
 
 func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	mainPath := string(repo.MainPath)
+	workspaceRoot, rootErr := repositoryWorkspaceRoot(repo)
+	if rootErr != nil {
+		return "", rootErr
+	}
 	sourceRoot, err := openPinnedRepositoryRoot(mainPath)
 	if err != nil {
 		return "", err
@@ -67,7 +75,7 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 	defer func() { _ = sourceRoot.Close() }()
 	h := sha256.New()
 	_, _ = fmt.Fprintf(h, "schema=%d\ngeneration=%d\noid=%s\ncopy_mode=%s\ncow_min_size_kib=%d\n",
-		schema, generation, oid, c.CopyMode(mainPath), c.COWMinSizeKiB(mainPath))
+		schema, generation, oid, c.CopyModeForWorkspaceRepository(workspaceRoot, repo.RelativePath, mainPath), c.COWMinSizeKiBForWorkspaceRepository(workspaceRoot, repo.RelativePath, mainPath))
 	var linkPatterns []string
 	for _, name := range []string{".worktreeinclude", ".worktreelink"} {
 		data, err := readPhysicalManifestAt(sourceRoot, name)
@@ -103,7 +111,7 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 	// default include は Fingerprint が Git runner を持たないため、copyIncludesAt の tracked 検査なしで hash 化する。
 	// tracked file も checkout に任せるため、main worktree の編集で再利用できた slot も cold start 時に再構築される。untracked file を除外すると古い local rule を持つ slot を渡してしまう。
 	// default file がない場合の切り替えで materialized worktree は変わらないため、設定自体は意図的に hash 化しない。
-	defaults, err := defaultIncludeCandidates(string(repo.MainPath), c)
+	defaults, err := defaultIncludeCandidatesForRepository(repo, c)
 	if err != nil {
 		return "", err
 	}
@@ -163,7 +171,13 @@ func fingerprintWorkspaceRoot(h hash.Hash, repo discovery.Repository, c config.C
 	if err != nil {
 		return err
 	}
-	submodules, _ := c.SubmodulesForWorkspace(workspaceRoot)
+	resolvedSubmodules := c.RepositoryFor(workspaceRoot, repo.RelativePath, string(repo.MainPath)).Submodules
+	var submodules bool
+	if resolvedSubmodules != nil {
+		submodules = *resolvedSubmodules
+	} else {
+		submodules, _ = c.SubmodulesForWorkspace(workspaceRoot)
+	}
 	_, _ = fmt.Fprintf(h, "workspace-root=%s\ncopy-rules=%q\nlink-rules=%q\nsubmodules=%t\n", workspaceRoot, rules.Copy, rules.Link, submodules)
 	copyNames, explicitCopies, err := workspaceRootCopyPlan(rules)
 	if err != nil {
@@ -219,8 +233,12 @@ func fingerprintWorkspaceRoot(h hash.Hash, repo discovery.Repository, c config.C
 }
 
 func writePrepareFingerprint(h hash.Hash, repo discovery.Repository, c config.Config) error {
-	o, ok := c.Repositories[string(repo.MainPath)]
-	if !ok {
+	workspaceRoot, err := repositoryWorkspaceRoot(repo)
+	if err != nil {
+		return err
+	}
+	o := c.RepositoryFor(workspaceRoot, repo.RelativePath, string(repo.MainPath))
+	if len(o.Prepare.Command) == 0 && o.Prepare.Version == "" {
 		return nil
 	}
 	prepareInput, err := json.Marshal(struct {
@@ -239,9 +257,9 @@ func writePrepareFingerprint(h hash.Hash, repo discovery.Repository, c config.Co
 // manifest も agent 資産の既定もここで効かせると、配置しない実体を fingerprint に混ぜて READY slot を無効化してしまう。
 func rootRulesForRepository(repo discovery.Repository, workspaceRoot string, c config.Config) (RootRules, error) {
 	if isRepositoryWorkspaceLayout(repo) {
-		return RootRulesFromConfig(c.Workspaces[workspaceRoot]), nil
+		return RootRulesFromConfig(c.WorkspaceFor(workspaceRoot)), nil
 	}
-	return ResolveRootRules(workspaceRoot, c.Workspaces[workspaceRoot])
+	return ResolveRootRules(workspaceRoot, c.WorkspaceFor(workspaceRoot))
 }
 
 // isRepositoryWorkspaceLayout は repository が workspace root そのものかを返す。偽なら root は Git 管理外の multi-repository root である。

@@ -3,6 +3,7 @@ package dashboard
 import (
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/setup"
@@ -20,19 +21,34 @@ func (m model) setupItems() []setup.Step {
 
 func (m model) configItems() []config.Metadata {
 	scope := "global"
+	repositoryDefaults := false
 	if environments := m.configEnvironments(); m.settingsOpen && m.settingsEnv < len(environments) {
 		scope = environments[m.settingsEnv].scope
+		repositoryDefaults = environments[m.settingsEnv].repositoryDefaults
 	}
 	items := make([]config.Metadata, 0, len(m.catalog))
 	for _, meta := range m.catalog {
-		if hasScope(meta.Scopes, scope) {
-			items = append(items, meta)
+		if !hasScope(meta.Scopes, scope) {
+			continue
 		}
+		if m.opts.Config.V2() && scope == config.V2ScopeWorkspace {
+			if meta.Key == "submodules" {
+				continue
+			}
+			isNested := strings.HasPrefix(meta.Key, "repository_defaults.")
+			if isNested != repositoryDefaults {
+				continue
+			}
+		}
+		items = append(items, meta)
 	}
 	return items
 }
 
 func (m model) configEnvironments() []environment {
+	if m.opts.Config.V2() {
+		return m.configV2Environments()
+	}
 	environments := []environment{{label: "Global", scope: "global"}}
 	paths := make([]string, 0, len(m.opts.Config.Workspaces))
 	for path := range m.opts.Config.Workspaces {
@@ -61,20 +77,74 @@ func (m model) configEnvironments() []environment {
 	return environments
 }
 
+func (m model) configV2Environments() []environment {
+	environments := []environment{
+		{label: "System", scope: config.V2ScopeSystem},
+		{label: "Workspace", scope: config.V2ScopeWorkspaceDefaults},
+		{label: "Repository", scope: config.V2ScopeRepositoryDefaults},
+	}
+	paths := make([]string, 0, len(m.opts.Config.Workspaces))
+	for path := range m.opts.Config.Workspaces {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		label := filepath.Base(path)
+		if label == "." || label == string(filepath.Separator) || label == "" {
+			label = path
+		}
+		if !m.opts.Config.Workspaces[path].Discovered {
+			label += " (not discovered)"
+		}
+		environments = append(environments, environment{label: label, target: path, scope: config.V2ScopeWorkspace})
+		// single-repository workspace には repository 個別編集階層を作らない。
+		// その repository defaults は workspace の子として編集し、multi-repository
+		// workspace だけ membership をさらに表示する。
+		environments = append(environments, environment{label: "Repository defaults", target: path, scope: config.V2ScopeWorkspace, repositoryDefaults: true})
+		members := make([]string, 0, len(m.opts.Config.Workspaces[path].Repositories))
+		for relative := range m.opts.Config.Workspaces[path].Repositories {
+			members = append(members, relative)
+		}
+		sort.Strings(members)
+		if len(members) > 1 {
+			for _, relative := range members {
+				label := relative
+				if !m.opts.Config.Workspaces[path].Repositories[relative].Discovered {
+					label += " (not discovered)"
+				}
+				environments = append(environments, environment{label: label, target: path, repository: relative, scope: config.V2ScopeRepository})
+			}
+		}
+	}
+	return environments
+}
+
 func (e environment) title() string {
 	switch e.scope {
-	case "workspace":
+	case config.V2ScopeWorkspace:
 		return "Workspace"
-	case "repository":
+	case config.V2ScopeRepository:
 		return "Repository"
+	case config.V2ScopeSystem:
+		return "System"
+	case config.V2ScopeWorkspaceDefaults:
+		return "Workspace defaults"
+	case config.V2ScopeRepositoryDefaults:
+		return "Repository defaults"
 	default:
 		return "Global"
 	}
 }
 
 func (e environment) menuLabel() string {
-	if e.scope == "global" {
+	if e.scope == "global" || e.scope == config.V2ScopeSystem || e.scope == config.V2ScopeWorkspaceDefaults || e.scope == config.V2ScopeRepositoryDefaults {
 		return e.title()
+	}
+	if e.repository != "" {
+		return "  " + e.title() + "  " + e.label
+	}
+	if e.repositoryDefaults {
+		return "  Repository defaults"
 	}
 	return e.title() + "  " + e.label
 }

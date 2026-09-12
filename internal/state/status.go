@@ -8,14 +8,23 @@ import (
 type Status struct{ Workspaces, Repositories, Ready, Leased, Failed, Active, Snapshots, Jobs, Quarantined int }
 
 type (
+	WorkspaceRepositoryMembership struct {
+		ID           string `json:"id"`
+		MainPath     string `json:"main_path"`
+		RelativePath string `json:"relative_path"`
+	}
 	WorkspaceDiagnostic struct {
 		ID           string `json:"id"`
 		Root         string `json:"root"`
+		Kind         string `json:"kind"`
 		Generation   int    `json:"generation"`
 		Repositories int    `json:"repositories"`
-		Ready        int    `json:"ready"`
-		Leased       int    `json:"leased"`
-		Failed       int    `json:"failed"`
+		// RepositoryMemberships は workspace-local membership の一覧である。
+		// 既存 status consumer のため legacy repositories count は変えない。
+		RepositoryMemberships []WorkspaceRepositoryMembership `json:"repository_memberships"`
+		Ready                 int                             `json:"ready"`
+		Leased                int                             `json:"leased"`
+		Failed                int                             `json:"failed"`
 		// LastUsedAt はその workspace で作られた session の created_at の最大値であり、一度も使っていない workspace では空になる。
 		// repositories.last_leased_at を使わないのは、repository 行を共有する別 workspace の貸出でも値が入り、workspace 自身の利用実績と区別できないためである。
 		LastUsedAt string `json:"last_used_at,omitempty"`
@@ -282,14 +291,15 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 
 func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error) {
 	var out StatusDiagnostics
-	workspaceRows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.generation,(SELECT count(*) FROM workspace_repositories wr WHERE wr.workspace_id=w.id),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='READY'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='LEASED'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state IN ('FAILED','QUARANTINED')),COALESCE((SELECT MAX(se.created_at) FROM sessions se WHERE se.workspace_id=w.id),'') FROM workspaces w ORDER BY w.root_path`)
+	workspaceRows, err := s.db.QueryContext(ctx, `SELECT w.id,w.root_path,w.kind,w.generation,(SELECT count(*) FROM workspace_repositories wr WHERE wr.workspace_id=w.id),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='READY'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state='LEASED'),(SELECT count(*) FROM slots sl WHERE sl.workspace_id=w.id AND sl.state IN ('FAILED','QUARANTINED')),COALESCE((SELECT MAX(se.created_at) FROM sessions se WHERE se.workspace_id=w.id),'') FROM workspaces w ORDER BY w.root_path`)
 	if err != nil {
 		return out, err
 	}
 	defer workspaceRows.Close()
 	for workspaceRows.Next() {
 		var item WorkspaceDiagnostic
-		if err := workspaceRows.Scan(&item.ID, &item.Root, &item.Generation, &item.Repositories, &item.Ready, &item.Leased, &item.Failed, &item.LastUsedAt); err != nil {
+		item.RepositoryMemberships = []WorkspaceRepositoryMembership{}
+		if err := workspaceRows.Scan(&item.ID, &item.Root, &item.Kind, &item.Generation, &item.Repositories, &item.Ready, &item.Leased, &item.Failed, &item.LastUsedAt); err != nil {
 			return out, err
 		}
 		out.Workspaces = append(out.Workspaces, item)
@@ -298,6 +308,30 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 		return out, err
 	}
 	if err := workspaceRows.Close(); err != nil {
+		return out, err
+	}
+	// membership は workspace ごとに discovery order を保つ。
+	// 複数 workspace で共有される flat な repository_details とは分けて返す。
+	membershipRows, err := s.db.QueryContext(ctx, `SELECT wr.workspace_id,r.id,r.main_worktree_path,wr.relative_path FROM workspace_repositories wr JOIN repositories r ON r.id=wr.repository_id ORDER BY wr.workspace_id,wr.ordinal`)
+	if err != nil {
+		return out, err
+	}
+	defer membershipRows.Close()
+	byWorkspace := make(map[string]int, len(out.Workspaces))
+	for i := range out.Workspaces {
+		byWorkspace[out.Workspaces[i].ID] = i
+	}
+	for membershipRows.Next() {
+		var workspaceID string
+		var membership WorkspaceRepositoryMembership
+		if err := membershipRows.Scan(&workspaceID, &membership.ID, &membership.MainPath, &membership.RelativePath); err != nil {
+			return out, err
+		}
+		if index, ok := byWorkspace[workspaceID]; ok {
+			out.Workspaces[index].RepositoryMemberships = append(out.Workspaces[index].RepositoryMemberships, membership)
+		}
+	}
+	if err := membershipRows.Err(); err != nil {
 		return out, err
 	}
 	// 終端 state を除外列挙で落とし、新しい state が増えても診断から消えないようにする。

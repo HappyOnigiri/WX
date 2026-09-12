@@ -201,7 +201,7 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			continue
 		}
 		if stored.State == "RESTORE_RUNNING" {
-			if override := m.Config().Repositories[string(r.Repository.MainPath)]; len(override.Prepare.Command) > 0 {
+			if override := m.Config().RepositoryFor(string(w.Root), r.Repository.RelativePath, string(r.Repository.MainPath)); len(override.Prepare.Command) > 0 {
 				err := errors.New("restore preparation command completion is ambiguous after interruption")
 				_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "RESTORE_AMBIGUOUS")
 				return err
