@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -107,6 +108,133 @@ func (f *submoduleFixture) moduleDir() string {
 
 func (f *submoduleFixture) submoduleTarget() string {
 	return filepath.Join(f.target, submodulePath)
+}
+
+func (f *submoduleFixture) commitGitmodules(t *testing.T, content string) string {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(f.repository, ".gitmodules"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, f.repository, "add", ".gitmodules")
+	gitCommand(t, f.repository, "commit", "-m", "update gitmodules")
+	return gitOutput(t, f.repository, "rev-parse", "HEAD")
+}
+
+func assertPreparedEmptyGitmodules(t *testing.T, f *submoduleFixture, content string) {
+	t.Helper()
+	got, err := os.ReadFile(filepath.Join(f.target, ".gitmodules"))
+	if err != nil {
+		t.Fatalf("prepared .gitmodules: %v", err)
+	}
+	if string(got) != content {
+		t.Fatalf("prepared .gitmodules=%q, want %q", got, content)
+	}
+	assertEmptyGitlinkDirectory(t, f.submoduleTarget())
+	if strings.Contains(f.logged.String(), "submodule") {
+		t.Fatalf("logged=%q, want no warning for an empty submodule definition", f.logged.String())
+	}
+}
+
+// Git の設定検索が空定義を返す各形式は、通常準備で submodule なしとして成功する。
+func TestPrepareTreatsEmptyGitmodulesAsNoSubmodules(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		content string
+	}{
+		{name: "zero-byte"},
+		{name: "whitespace", content: " \n\t\n"},
+		{name: "comments", content: "# no modules\n; still empty\n"},
+		{name: "other-keys", content: "[core]\n\tbare = false\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newSubmoduleFixture(t)
+			head := f.commitGitmodules(t, test.content)
+			if err := f.preparer.Prepare(context.Background(), f.repo, f.target, head, "slot"); err != nil {
+				t.Fatal(err)
+			}
+			assertPreparedEmptyGitmodules(t, f, test.content)
+		})
+	}
+}
+
+// 0-byte の .gitmodules は二段階準備の後半でも空定義として成功する。
+func TestPrepareStagedTreatsEmptyGitmodulesAsNoSubmodules(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	head := f.commitGitmodules(t, "")
+	if _, err := f.preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: f.repo, Target: f.target, OID: head}}, nil, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedEmptyGitmodules(t, f, "")
+}
+
+// 0-byte の .gitmodules は復元準備でも空定義として成功する。
+func TestPrepareForRestoreTreatsEmptyGitmodulesAsNoSubmodules(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	head := f.commitGitmodules(t, "")
+	if err := f.preparer.PrepareForRestore(context.Background(), f.repo, f.target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	assertPreparedEmptyGitmodules(t, f, "")
+}
+
+func TestPreparePropagatesInvalidGitmodulesConfig(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	head := f.commitGitmodules(t, "[submodule \""+submoduleName+"\"]\n\tpath = "+submodulePath+"\n\turl = ../child\n[broken\n")
+	err := f.preparer.Prepare(context.Background(), f.repo, f.target, head, "slot")
+	var gitErr *gitx.Error
+	if !errors.As(err, &gitErr) {
+		t.Fatalf("Prepare() error=%v, want the Git config error", err)
+	}
+	if gitErr.Result.Stderr == "" {
+		t.Fatalf("Git config error result=%+v, want diagnostics", gitErr.Result)
+	}
+}
+
+func TestIsEmptySubmoduleConfigRequiresAConfirmedEmptySearchFailure(t *testing.T) {
+	t.Parallel()
+	baseError := func(result gitx.Result) error { return &gitx.Error{Result: result} }
+	for _, test := range []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{name: "empty search", err: baseError(gitx.Result{ExitCode: 1}), want: true},
+		{name: "stdout", err: baseError(gitx.Result{ExitCode: 1, Stdout: "unexpected\n"})},
+		{name: "stderr", err: baseError(gitx.Result{ExitCode: 1, Stderr: "fatal\n"})},
+		{name: "other exit", err: baseError(gitx.Result{ExitCode: 2})},
+		{name: "ordinary error", err: errors.New("runner failed")},
+		{name: "cancelled context", ctx: emptySubmoduleCancelledContext(), err: baseError(gitx.Result{ExitCode: 1})},
+		{name: "deadline context", ctx: emptySubmoduleDeadlineContext(), err: baseError(gitx.Result{ExitCode: 1})},
+		{name: "wrapped cancellation", err: errors.Join(errors.New("runner failed"), context.Canceled)},
+		{name: "wrapped deadline", err: errors.Join(errors.New("runner failed"), context.DeadlineExceeded)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := test.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			if got := isEmptySubmoduleConfig(ctx, test.err); got != test.want {
+				t.Fatalf("isEmptySubmoduleConfig()=%t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func emptySubmoduleCancelledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+func emptySubmoduleDeadlineContext() context.Context {
+	ctx, _ := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	return ctx
 }
 
 // 実体化した submodule は内容・HEAD・origin が揃い、親は tracked-clean のまま残る。

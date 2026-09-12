@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,6 +86,9 @@ func (p *Preparer) planSubmodules(ctx context.Context, repo discovery.Repository
 	// 要求 OID の .gitmodules を worktree の実体に依らず読む。設定は checkout 前でも blob から解決できる。
 	entries, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "config", "--blob", oid+":.gitmodules", "--get-regexp", `^submodule\.`)
 	if err != nil {
+		if isEmptySubmoduleConfig(ctx, err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	declared, err := parseSubmoduleConfig(entries.Stdout)
@@ -107,6 +111,16 @@ func (p *Preparer) planSubmodules(ctx context.Context, repo discovery.Repository
 		return nil, nil
 	}
 	return p.resolveSubmoduleOIDs(ctx, target, identity, candidates)
+}
+
+// isEmptySubmoduleConfig は Git が設定検索の結果なしを返した場合だけ空定義と判定する。
+// context の中断や出力を伴う失敗は、実行障害・構文エラーとして呼び出し側へ返す。
+func isEmptySubmoduleConfig(ctx context.Context, err error) bool {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var gitErr *gitx.Error
+	return errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 && gitErr.Result.Stdout == "" && gitErr.Result.Stderr == ""
 }
 
 // resolveSubmoduleOIDs は候補 path の index entry から gitlink OID を引く。
