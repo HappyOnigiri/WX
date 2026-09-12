@@ -8,6 +8,7 @@ import (
 )
 
 func TestCreateSlotSessionCommitsJobAtomically(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -26,6 +27,7 @@ func TestCreateSlotSessionCommitsJobAtomically(t *testing.T) {
 }
 
 func TestCreateSlotSessionPropagatesLastLeasedAtFault(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -44,6 +46,7 @@ func TestCreateSlotSessionPropagatesLastLeasedAtFault(t *testing.T) {
 // 予約のCAS失敗には、その時点の行の値を添えて返す。
 // 失敗メッセージだけで、別経路（reconcileの隔離など）に遷移させられたのかを判別できるようにするためである。
 func TestReservationCASFailureReportsCurrentRow(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

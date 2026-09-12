@@ -36,7 +36,7 @@ func TestMultiRepositoryArchiveDoesNotQuarantineInFlightRecoveryRefs(t *testing.
 	if err := config.NormalizePaths(&cfg); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

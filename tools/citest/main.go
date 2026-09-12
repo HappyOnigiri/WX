@@ -131,7 +131,7 @@ func run(ctx context.Context, cfg config, output io.Writer) (int, error) {
 }
 
 func validateConfig(cfg config) error {
-	if cfg.Profile != "coverage" && cfg.Profile != "race-daemon" && cfg.Profile != "race-rest" {
+	if !supportedProfiles[cfg.Profile] {
 		return fmt.Errorf("unsupported profile %q", cfg.Profile)
 	}
 	if cfg.ReportDir == "" || cfg.RepoRoot == "" {
@@ -151,6 +151,17 @@ func validateConfig(cfg config) error {
 		return errors.New("test command must invoke go test")
 	}
 	return nil
+}
+
+var supportedProfiles = map[string]bool{
+	"coverage":      true,
+	"race-daemon":   true,
+	"race-daemon-0": true,
+	"race-daemon-1": true,
+	"race-state":    true,
+	"race-state-0":  true,
+	"race-state-1":  true,
+	"race-rest":     true,
 }
 
 func commandWithJSON(command []string) ([]string, error) {

@@ -10,6 +10,7 @@ import (
 )
 
 func TestColdRemovalSchedulingIsIdempotent(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -38,6 +39,7 @@ func TestColdRemovalSchedulingIsIdempotent(t *testing.T) {
 }
 
 func TestPruneMetadataReportsLateSchemaFaults(t *testing.T) {
+	t.Parallel()
 	for _, table := range []string{"sessions", "rpc_idempotency"} {
 		t.Run(table, func(t *testing.T) {
 			store := openTestStore(t)
@@ -52,6 +54,7 @@ func TestPruneMetadataReportsLateSchemaFaults(t *testing.T) {
 }
 
 func TestColdRemovalCompletionAndAdministrativeQueries(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -98,6 +101,7 @@ func TestColdRemovalCompletionAndAdministrativeQueries(t *testing.T) {
 }
 
 func TestStandbyGCKeepsWarmSlotsAndReportsStaleRows(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -126,6 +130,7 @@ func TestStandbyGCKeepsWarmSlotsAndReportsStaleRows(t *testing.T) {
 }
 
 func TestStandbyGCUsesWorkspaceWarmOverrides(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "zero", "/zero", "repository", "zero-repository", "/zero", "/zero/.git", "")
@@ -155,6 +160,7 @@ func TestStandbyGCUsesWorkspaceWarmOverrides(t *testing.T) {
 }
 
 func TestColdRepositoryCandidatesUseWorkspaceWarmOverrides(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "positive", "/positive", "repository", "positive-repository", "/positive", "/positive/.git", "")
@@ -179,6 +185,7 @@ func TestColdRepositoryCandidatesUseWorkspaceWarmOverrides(t *testing.T) {
 }
 
 func TestScheduleColdRepositoryRemovalPropagatesTransactionFaults(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	newColdSlot := func(t *testing.T, store *Store, id string) {
 		t.Helper()
@@ -216,6 +223,7 @@ func TestScheduleColdRepositoryRemovalPropagatesTransactionFaults(t *testing.T) 
 }
 
 func TestScheduleRemovalPropagatesJobInsertionFault(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -234,6 +242,7 @@ func TestScheduleRemovalPropagatesJobInsertionFault(t *testing.T) {
 }
 
 func TestFinishColdRepositoryRemovalPropagatesSlotReadyFault(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -252,6 +261,7 @@ func TestFinishColdRepositoryRemovalPropagatesSlotReadyFault(t *testing.T) {
 }
 
 func TestLifecycleCandidateQueriesCoverWarmStaleAndColdTransitions(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -284,6 +294,7 @@ func TestLifecycleCandidateQueriesCoverWarmStaleAndColdTransitions(t *testing.T)
 }
 
 func TestHotRepositoryIDsExcludesNeverLeasedAndStaleRepositories(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	w := discovery.Workspace{ID: "workspace", Root: "/workspace", Kind: "multi_repository", Repositories: []discovery.Repository{
@@ -320,6 +331,7 @@ func TestHotRepositoryIDsExcludesNeverLeasedAndStaleRepositories(t *testing.T) {
 // PruneMetadata の実処理と一致することを固定する。tombstone 化で agent_session_id が消えるため、
 // 処理済み session を数えると `wx gc --dry-run` が変化しない非ゼロ値を報告し続ける。
 func TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -350,6 +362,7 @@ func TestCountMetadataCandidatesStopsCountingAlreadyTombstonedSessions(t *testin
 // 貸出が進行中でlast_leased_atがまだ無いrepositoryも hot として返す。
 // 使用中のrepositoryをcoldと判定すると、補充が COLD の待機枠を作り、次の貸出が cold start になるためである。
 func TestHotRepositoryIDsIncludesInFlightLease(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -402,6 +415,7 @@ func constantBefore(before string) func(string) string { return func(string) str
 // 終了 worktree の候補は workspace ごとの cutoff で決める。
 // SQL には最短の保持期間から作った緩い floor だけを置き、長い保持期間の slot は Go 側で落とす。
 func TestGCCandidatesApplyPerWorkspaceCutoffs(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "long", "/long", "repository", "long-repository", "/long", "/long/.git", "")
@@ -442,6 +456,7 @@ func TestGCCandidatesApplyPerWorkspaceCutoffs(t *testing.T) {
 
 // COLD 化の判定も workspace ごとの cutoff で行う。
 func TestColdRepositoryCandidatesApplyPerWorkspaceCutoffs(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "long", "/long", "repository", "long-repository", "/long", "/long/.git", "")

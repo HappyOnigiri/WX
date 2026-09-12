@@ -15,7 +15,7 @@ import (
 
 func TestScheduleDropsWorkAfterCancellation(t *testing.T) {
 	t.Parallel()
-	store, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestScheduleLeavesOverflowForDurableRecovery(t *testing.T) {
 func TestWorkerStopsRetryingAfterBoundedAttempts(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestWorkerDefersLiveAgentDependencyWithoutRetryConsumption(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestJobClassOfSeparatesUserFacingWorkFromMaintenance(t *testing.T) {
 func TestDispatcherKeepsUserFacingJobsRunnableWhileMaintenanceIsBlocked(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

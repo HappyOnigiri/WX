@@ -17,7 +17,7 @@ import (
 func TestMaintenanceLoopHandlesReloadAndTimer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestForgetFailsClosedWhenAFailedSlotCannotBeRetired(t *testing.T) {
 	repository := filepath.Join(root, "repo")
 	initGitRepo(t, repository)
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestForgetRetiresFailedSlotBeforePermanentlyLeakingIt(t *testing.T) {
 	repository := filepath.Join(root, "repo")
 	initGitRepo(t, repository)
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestDiscardRecoveryRetiresQuarantinedSlotsAndUnblocksForget(t *testing.T) {
 	repository := filepath.Join(root, "repo")
 	initGitRepo(t, repository)
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}

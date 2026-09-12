@@ -111,7 +111,7 @@ func TestRetainLeaseRejectsPathOutsideKnownRoots(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

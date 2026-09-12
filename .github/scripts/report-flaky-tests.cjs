@@ -6,9 +6,34 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const childProcess = require('node:child_process');
 
-const PROFILES = new Set(['coverage', 'race-daemon', 'race-rest']);
+const PROFILE_CONTRACTS = Object.freeze([
+  Object.freeze({ profile: 'coverage', job: 'coverage-tests' }),
+  Object.freeze({ profile: 'race-daemon-0', job: 'race (daemon-0)' }),
+  Object.freeze({ profile: 'race-daemon-1', job: 'race (daemon-1)' }),
+  Object.freeze({ profile: 'race-state-0', job: 'race (state-0)' }),
+  Object.freeze({ profile: 'race-state-1', job: 'race (state-1)' }),
+  // 旧artifactを手動で再処理できるよう、以前のprofileも受け付ける。
+  Object.freeze({ profile: 'race-daemon', job: 'race (daemon)' }),
+  Object.freeze({ profile: 'race-state', job: 'race (state)' }),
+  Object.freeze({ profile: 'race-rest', job: 'race (rest)' }),
+]);
+const PROFILES = new Set(PROFILE_CONTRACTS.map(({ profile }) => profile));
+const PROFILE_PATTERN = PROFILE_CONTRACTS
+  .map(({ profile }) => profile)
+  .sort((a, b) => b.length - a.length)
+  .map((profile) => profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
+const ARTIFACT_PROFILE = new RegExp(`^ci-tests-(${PROFILE_PATTERN})-`);
 const SHA = /^[0-9a-f]{40}$/i;
 const MAX_TEXT = 12000;
+
+function profileFromArtifactName(name) {
+  return ARTIFACT_PROFILE.exec(name || '')?.[1] || '';
+}
+
+function artifactNamePattern(runId, attempt) {
+  return new RegExp(`^ci-tests-(${PROFILE_PATTERN})-${runId}-${attempt}$`);
+}
 
 function fail(message) {
   throw new Error(`invalid CI test report: ${message}`);
@@ -139,8 +164,8 @@ function aggregateManifests(manifests, source) {
   const groups = new Map();
   for (const item of manifests) {
     const manifest = validateManifest(item.manifest, item.artifactName);
-    const profileMatch = /^ci-tests-(coverage|race-daemon|race-rest)-/.exec(item.artifactName || '');
-    if (profileMatch && manifest.profile !== profileMatch[1]) fail(`${item.artifactName} profile does not match its artifact name`);
+    const artifactProfile = profileFromArtifactName(item.artifactName);
+    if (artifactProfile && manifest.profile !== artifactProfile) fail(`${item.artifactName} profile does not match its artifact name`);
     if (manifest.run_id && String(manifest.run_id) !== String(source.runId)) fail(`${item.artifactName} run_id does not match source run`);
     if (manifest.run_attempt && String(manifest.run_attempt) !== String(source.attempt)) fail(`${item.artifactName} run_attempt does not match source attempt`);
     manifest.artifact_name = item.artifactName;
@@ -240,8 +265,8 @@ async function collectFromArtifacts({ github, owner, repo, runId, attempt, artif
     fs.writeFileSync(file, data, { mode: 0o600 });
     try {
       const manifest = readZipManifest(file, artifact.name);
-      const match = /^ci-tests-(coverage|race-daemon|race-rest)-/.exec(artifact.name);
-      if (!match || manifest.profile !== match[1]) fail(`${artifact.name} profile does not match its artifact name`);
+      const artifactProfile = profileFromArtifactName(artifact.name);
+      if (!artifactProfile || manifest.profile !== artifactProfile) fail(`${artifact.name} profile does not match its artifact name`);
       result.push({ artifactName: artifact.name, manifest });
     } finally {
       fs.rmSync(path.dirname(file), { recursive: true, force: true });
@@ -268,7 +293,7 @@ async function run(options) {
     summary: (message) => options.core?.warning?.(message),
   };
   const jobs = await pages((page) => github.rest.actions.listJobsForWorkflowRun({ owner, repo, run_id: Number(runId), filter: 'all', per_page: 100, page }));
-  const jobProfiles = new Map([['coverage-tests', 'coverage'], ['race (daemon)', 'race-daemon'], ['race (rest)', 'race-rest']]);
+  const jobProfiles = new Map(PROFILE_CONTRACTS.map(({ job, profile }) => [job, profile]));
   const expected = new Set();
   const jobUrls = new Map();
   for (const job of jobs) {
@@ -280,14 +305,14 @@ async function run(options) {
     if (job.html_url) jobUrls.set(profile, job.html_url);
   }
   const artifacts = await pages((page) => github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: Number(runId), per_page: 100, page }));
-  const usable = artifacts.filter((artifact) => !artifact.expired && artifact.workflow_run?.id === Number(runId) && new RegExp(`^ci-tests-(coverage|race-daemon|race-rest)-${runId}-${attempt}$`).test(artifact.name));
+  const usable = artifacts.filter((artifact) => !artifact.expired && artifact.workflow_run?.id === Number(runId) && artifactNamePattern(runId, attempt).test(artifact.name));
   // 取りこぼした成果物は最後に失敗として報告する。
   // ここで打ち切ると、同じrunの他のジョブが記録した回復まで起票されない。
-  const missing = [...expected].filter((profile) => !usable.some((artifact) => artifact.name.startsWith(`ci-tests-${profile}-`)));
+  const missing = [...expected].filter((profile) => !usable.some((artifact) => profileFromArtifactName(artifact.name) === profile));
   for (const profile of missing) source.summary(`missing report artifact for ${profile}`);
   const reports = options.reports || await collectFromArtifacts({ github, owner, repo, runId, attempt, artifacts: usable });
   for (const report of reports) {
-    const profile = /^ci-tests-(coverage|race-daemon|race-rest)-/.exec(report.artifactName || '')?.[1] || report.manifest.profile;
+    const profile = profileFromArtifactName(report.artifactName) || report.manifest.profile;
     report.jobUrl = jobUrls.get(profile) || '';
   }
   const groups = aggregateManifests(reports, source);

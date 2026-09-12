@@ -29,6 +29,7 @@ func seedCleanSlot(t *testing.T, store *Store, slotID, slotState, sessionID, ses
 }
 
 func TestCleanCandidatesReportsEveryUnarchivedSlot(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedCleanSlot(t, store, "ready", "READY", "", "")
@@ -50,6 +51,7 @@ func TestCleanCandidatesReportsEveryUnarchivedSlot(t *testing.T) {
 }
 
 func TestBeginCleanRunJoinsSameModeAndRejectsOther(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -78,6 +80,7 @@ func TestBeginCleanRunJoinsSameModeAndRejectsOther(t *testing.T) {
 }
 
 func TestCleanRunBlocksNewLeasesUntilItFinishes(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -102,6 +105,7 @@ func TestCleanRunBlocksNewLeasesUntilItFinishes(t *testing.T) {
 }
 
 func TestCleanTargetTransitionsAndRunCompletion(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -141,6 +145,7 @@ func TestCleanTargetTransitionsAndRunCompletion(t *testing.T) {
 }
 
 func TestRunningCleanRunsSurviveForRestartResume(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -159,6 +164,7 @@ func TestRunningCleanRunsSurviveForRestartResume(t *testing.T) {
 }
 
 func TestSessionTerminationRequestIsSingleAndDeadlineBound(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedCleanSlot(t, store, "leased", "LEASED", "session", "ACTIVE")
@@ -202,6 +208,7 @@ func TestSessionTerminationRequestIsSingleAndDeadlineBound(t *testing.T) {
 }
 
 func TestDiscardRemovalPreservesActiveAndRunningWork(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := t.Context()

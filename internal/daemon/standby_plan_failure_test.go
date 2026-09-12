@@ -21,7 +21,7 @@ func TestStandbyPlanFailureIsReportedWhileTheWarmSlotsAreMissing(t *testing.T) {
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Pool.WarmPerWorkspace = 1
 	cfg.Workspaces = map[string]config.Workspace{repo: {Worktree: "hot"}}
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

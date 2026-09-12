@@ -101,7 +101,7 @@ func TestOwnedSlotDirectoriesListsOnlyPhysicalSlotDirectories(t *testing.T) {
 func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
 	t.Parallel()
 	base := t.TempDir()
-	store, err := state.Open(filepath.Join(base, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(base, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestRootRegistrationFailureReachesTheUserWithItsCause(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
-	store, err := state.Open(filepath.Join(base, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(base, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestArtifactDiagnosticsScanRetiredRootGenerations(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
-	store, err := state.Open(filepath.Join(base, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(base, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestArtifactDiagnosticsScanRetiredRootGenerations(t *testing.T) {
 func TestRegisterAndLoadRootGenerationsRepinRetiredRoots(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +347,7 @@ func TestLoadRootGenerationsRefusesAReplacedRootDirectory(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
-	store, err := state.Open(filepath.Join(base, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(base, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

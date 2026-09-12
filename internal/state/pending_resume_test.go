@@ -60,6 +60,7 @@ func newPendingResumeFixture(t *testing.T, parentMapped bool) (*Store, context.C
 }
 
 func TestPendingRestoreBindSameIDKeepsParentMapping(t *testing.T) {
+	t.Parallel()
 	store, ctx, parent, child := newPendingResumeFixture(t, true)
 	if err := store.BindAgentSession(ctx, child.ID, "native-pending"); err != nil {
 		t.Fatalf("bind pending restore: %v", err)
@@ -79,6 +80,7 @@ func TestPendingRestoreBindSameIDKeepsParentMapping(t *testing.T) {
 }
 
 func TestPendingRestoreBindForkIDClearsPendingAndBindsFork(t *testing.T) {
+	t.Parallel()
 	store, ctx, parent, child := newPendingResumeFixture(t, true)
 	if err := store.BindAgentSession(ctx, child.ID, "fork-agent"); err != nil {
 		t.Fatalf("bind forked restore: %v", err)
@@ -98,6 +100,7 @@ func TestPendingRestoreBindForkIDClearsPendingAndBindsFork(t *testing.T) {
 }
 
 func TestCreateSlotSessionRejectsConcurrentRestoreFork(t *testing.T) {
+	t.Parallel()
 	store, ctx, parent, _ := newPendingResumeFixture(t, false)
 	second := Session{
 		ID:              "pending-child-two",
@@ -122,6 +125,7 @@ func TestCreateSlotSessionRejectsConcurrentRestoreFork(t *testing.T) {
 }
 
 func TestPendingRestoreWithoutParentMappingActivatesChild(t *testing.T) {
+	t.Parallel()
 	store, ctx, parent, child := newPendingResumeFixture(t, false)
 	if _, _, err := store.FinishPreparationWithRelease(ctx, child.SlotID); err != nil {
 		t.Fatalf("finish restore without parent mapping: %v", err)
@@ -144,6 +148,7 @@ func TestPendingRestoreWithoutParentMappingActivatesChild(t *testing.T) {
 }
 
 func TestPendingRestoreMappingConflictRecordsWarning(t *testing.T) {
+	t.Parallel()
 	store, ctx, parent, child := newPendingResumeFixture(t, true)
 	if _, err := store.db.ExecContext(ctx, `CREATE TRIGGER ignore_pending_child_mapping BEFORE UPDATE ON sessions WHEN OLD.id='pending-child' AND NEW.pending_agent_session_id IS NULL BEGIN SELECT RAISE(IGNORE); END`); err != nil {
 		t.Fatal(err)

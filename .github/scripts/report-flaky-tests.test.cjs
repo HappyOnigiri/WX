@@ -58,10 +58,133 @@ test('groups coverage and race evidence under one issue key', () => {
   const groups = reporter.aggregateManifests([
     { artifactName: 'coverage', manifest: manifest('10', '1', 'coverage') },
     { artifactName: 'race', manifest: manifest('10', '1', 'race-daemon') },
+    { artifactName: 'race-state', manifest: manifest('10', '1', 'race-state') },
   ], source);
   assert.equal(groups.length, 1);
-  assert.equal(groups[0].items.length, 2);
+  assert.equal(groups[0].items.length, 3);
   assert.match(reporter.buildIssueBody(groups[0], source), /race-daemon/);
+  assert.match(reporter.buildIssueBody(groups[0], source), /race-state/);
+});
+
+test('associates a race-state report with its job URL', async () => {
+  const github = { rest: {
+    actions: {
+      getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: source.testSha, html_url: source.runUrl } }),
+      listJobsForWorkflowRun: async () => ({ data: { jobs: [{
+        name: 'race (state)',
+        html_url: 'https://github.com/HappyOnigiri/WX/actions/runs/10/job/state',
+        run_attempt: 1,
+        conclusion: 'success',
+        steps: [{ name: 'Upload CI test report', conclusion: 'success' }],
+      }] } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts: [{ id: 1, name: 'ci-tests-race-state-10-1', expired: false, workflow_run: { id: 10 } }] } }),
+    },
+    issues: {
+      listForRepo: async () => ({ data: [] }),
+      create: async () => ({ data: {} }),
+    },
+  } };
+  const result = await reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    reports: [{ artifactName: 'ci-tests-race-state-10-1', manifest: manifest('10', '1', 'race-state') }],
+  });
+  assert.equal(result.groups[0].items[0].jobUrl, 'https://github.com/HappyOnigiri/WX/actions/runs/10/job/state');
+});
+
+test('rejects a race-state artifact whose manifest names another profile', () => {
+  assert.throws(() => reporter.aggregateManifests([
+    { artifactName: 'ci-tests-race-state-10-1', manifest: manifest('10', '1', 'race-rest') },
+  ], source), /profile does not match its artifact name/);
+});
+
+test('collects every test-name race shard as a separate profile', async () => {
+  const shards = ['race-daemon-0', 'race-daemon-1', 'race-state-0', 'race-state-1'];
+  const jobs = shards.map((profile) => ({
+    name: `race (${profile.replace(/^race-/, '')})`,
+    html_url: `https://github.com/HappyOnigiri/WX/actions/runs/10/job/${profile}`,
+    run_attempt: 1,
+    conclusion: 'success',
+    steps: [{ name: 'Upload CI test report', conclusion: 'success' }],
+  }));
+  const artifacts = shards.map((profile, id) => ({
+    id: id + 1,
+    name: `ci-tests-${profile}-10-1`,
+    expired: false,
+    workflow_run: { id: 10 },
+  }));
+  const github = { rest: {
+    actions: {
+      getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: source.testSha, html_url: source.runUrl } }),
+      listJobsForWorkflowRun: async () => ({ data: { jobs } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts } }),
+    },
+    issues: {
+      listForRepo: async () => ({ data: [] }),
+      create: async () => ({ data: {} }),
+    },
+  } };
+  const reports = shards.map((profile) => ({
+    artifactName: `ci-tests-${profile}-10-1`,
+    manifest: manifest('10', '1', profile),
+  }));
+  const result = await reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    reports,
+  });
+  assert.equal(result.groups.length, 1);
+  assert.deepEqual(result.groups[0].items.map((item) => item.manifest.profile), shards);
+  assert.deepEqual(result.groups[0].items.map((item) => item.jobUrl), jobs.map((job) => job.html_url));
+});
+
+test('reports a missing test-name race shard independently', async () => {
+  const shards = ['race-daemon-0', 'race-daemon-1', 'race-state-0', 'race-state-1'];
+  const jobs = shards.map((profile) => ({
+    name: `race (${profile.replace(/^race-/, '')})`,
+    run_attempt: 1,
+    conclusion: 'success',
+    steps: [{ name: 'Upload CI test report', conclusion: 'success' }],
+  }));
+  const present = shards.slice(0, 3);
+  const artifacts = present.map((profile, id) => ({
+    id: id + 1,
+    name: `ci-tests-${profile}-10-1`,
+    expired: false,
+    workflow_run: { id: 10 },
+  }));
+  const warnings = [];
+  const github = { rest: {
+    actions: {
+      getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: source.testSha, html_url: source.runUrl } }),
+      listJobsForWorkflowRun: async () => ({ data: { jobs } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts } }),
+    },
+    issues: {
+      listForRepo: async () => ({ data: [] }),
+      create: async () => ({ data: {} }),
+    },
+  } };
+  const reports = present.map((profile) => ({
+    artifactName: `ci-tests-${profile}-10-1`,
+    manifest: manifest('10', '1', profile),
+  }));
+  await assert.rejects(reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    reports,
+    core: { warning: (message) => warnings.push(message) },
+  }), /missing report artifact for race-state-1/);
+  assert.deepEqual(warnings, ['missing report artifact for race-state-1']);
 });
 
 test('creates once and comments on a later occurrence of the same issue', async () => {
@@ -133,8 +256,12 @@ test('files the recoveries it has before failing on a missing artifact', async (
       listJobsForWorkflowRun: async () => ({ data: { jobs: [
         { name: 'coverage-tests', run_attempt: 1, conclusion: 'failure', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] },
         { name: 'race (daemon)', run_attempt: 1, conclusion: 'success', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] },
+        { name: 'race (state)', run_attempt: 1, conclusion: 'success', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] },
       ] } }),
-      listWorkflowRunArtifacts: async () => ({ data: { artifacts: [{ id: 1, name: 'ci-tests-race-daemon-10-1', expired: false, workflow_run: { id: 10 } }] } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts: [
+        { id: 1, name: 'ci-tests-race-daemon-10-1', expired: false, workflow_run: { id: 10 } },
+        { id: 2, name: 'ci-tests-race-state-10-1', expired: false, workflow_run: { id: 10 } },
+      ] } }),
     },
     issues: {
       listForRepo: async () => ({ data: issues }),

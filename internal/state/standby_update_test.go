@@ -7,6 +7,7 @@ import (
 )
 
 func TestStandbyUpdateReservationAndReleaseAreDurable(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -70,6 +71,7 @@ func TestStandbyUpdateReservationAndReleaseAreDurable(t *testing.T) {
 
 // idle 更新は session を作らず、完了後に slot を READY の待機枠へ戻す。
 func TestIdleStandbyUpdateKeepsSlotUnleasedAndReturnsToReady(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

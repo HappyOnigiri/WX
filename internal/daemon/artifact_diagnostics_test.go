@@ -60,7 +60,7 @@ func TestArtifactReportCategoriesDoNotMutateTheReport(t *testing.T) {
 func TestArtifactReportKeepsUnreferencedUnreadableRepositoriesOutOfErrors(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

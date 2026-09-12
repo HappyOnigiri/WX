@@ -8,6 +8,7 @@ import (
 )
 
 func TestReleaseDuringPreparationDefersSnapshotUntilPreparationFinishes(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -54,6 +55,7 @@ func TestReleaseDuringPreparationDefersSnapshotUntilPreparationFinishes(t *testi
 }
 
 func TestFinishPreparationLeasesSlotWhoseSessionBoundBeforePreparationFinished(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -83,6 +85,7 @@ func TestFinishPreparationLeasesSlotWhoseSessionBoundBeforePreparationFinished(t
 }
 
 func TestReadySlotsRejectsCorruptGenerationType(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	job, err := store.CreateStandby(context.Background(), Slot{ID: "ready-corrupt", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/ready-corrupt", State: "READY"}, nil)
@@ -98,6 +101,7 @@ func TestReadySlotsRejectsCorruptGenerationType(t *testing.T) {
 }
 
 func TestFinishPreparationSchedulesSnapshotAfterRelease(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -116,6 +120,7 @@ func TestFinishPreparationSchedulesSnapshotAfterRelease(t *testing.T) {
 }
 
 func TestPreparationRetryAndOwnerStateBranches(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("retry failed preparation", func(t *testing.T) {
 		store := openTestStore(t)
@@ -216,6 +221,7 @@ func TestPreparationRetryAndOwnerStateBranches(t *testing.T) {
 }
 
 func TestReadAndRestoreStateBoundaries(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -254,6 +260,7 @@ func TestReadAndRestoreStateBoundaries(t *testing.T) {
 }
 
 func TestReadySlotCountMatchesTheReadySlotCandidateSet(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -282,6 +289,7 @@ func TestReadySlotCountMatchesTheReadySlotCandidateSet(t *testing.T) {
 }
 
 func TestFinishPreparationWithReleasePropagatesSnapshotJobFault(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
