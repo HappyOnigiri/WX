@@ -73,8 +73,7 @@ jobs:
           retention-days: 30
       - run: git diff --exit-code
 
-  # 少コアのCIランナーではrace検査がCPU律速になり、単独で最長のinternal/daemonが下限を作る。
-  # daemon・state・restを別ランナーへ分け、待ち時間をその下限まで下げる。
+  # 少コアのCIランナーではrace検査がCPU律速になるため、daemon・stateをテスト名で分ける。
   race:
     name: race (${{ matrix.shard }})
     runs-on: ubuntu-24.04
@@ -82,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [daemon, state, rest]
+        shard: [daemon-0, daemon-1, state-0, state-1, rest]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -92,11 +91,14 @@ jobs:
         with:
           cache-name: race-${{ matrix.shard }}
           save-build-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - name: Build CI test runner
-        run: mkdir -p .tools/bin && go build -trimpath -o .tools/bin/citest ./tools/citest
+      - name: Build CI test runners
+        run: |
+          mkdir -p .tools/bin
+          go build -trimpath -o .tools/bin/citest ./tools/citest
+          go build -trimpath -o .tools/bin/testshard ./tools/testshard
       - env:
           RACE_SHARD: ${{ matrix.shard }}
-        run: make "test-race-$RACE_SHARD" CITEST=.tools/bin/citest
+        run: make "test-race-$RACE_SHARD" CITEST=.tools/bin/citest TESTSHARD=.tools/bin/testshard
       - name: Upload CI test report
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
