@@ -478,6 +478,8 @@ func TestTopUsageContract(t *testing.T) {
 }
 
 func TestBinaryHelpVersionAndMisuseContracts(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	binary := filepath.Join(t.TempDir(), "wx")
 	build := exec.Command("go", "build", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
@@ -666,6 +668,8 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 }
 
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "slots", "config", "setup", "resume", "discard-recovery", "forget", "daemon", "shell", "run", "new", "release"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
@@ -681,6 +685,8 @@ func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
 }
 
 func TestAgentPrefixAndCommandUsageFallbacks(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	if _, _, _, err := parseAgentPrefix(nil); err == nil {
 		t.Fatal("missing agent command was accepted")
 	}

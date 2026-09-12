@@ -229,6 +229,8 @@ func TestSetupInteractiveAppliesDefaultsAndReportsCancellation(t *testing.T) {
 // TestSetupStepValueReadsAPathOnlyForManual は manual を選んだときだけ入力を求めることを確認する。
 // default では 1 行も読まない。読んでしまうと選択直後の Enter が path として解釈される。
 func TestSetupStepValueReadsAPathOnlyForManual(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	var out, errOut bytes.Buffer
 	step := setup.Step{ID: "worktree_root", Desired: "$HOME/wx", Options: []setup.Action{setup.ActionDefault, setup.ActionManual}, Default: setup.ActionDefault}
 	entered := setupSession{
