@@ -41,6 +41,7 @@ func usageShareStat(t *testing.T, dir *os.File, leaf string) *unix.Stat_t {
 
 // size が違えば offset を比べるまでもなく共有していないので、判定だけを cache へ残す。
 func TestSharedLeafRecordsASizeMismatchWithoutComparingOffsets(t *testing.T) {
+	t.Parallel()
 	root, mainPath, _ := usageRoots(t)
 	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "file", "slot")
 	usageWrite(t, mainPath, "file", "main content")
@@ -53,6 +54,7 @@ func TestSharedLeafRecordsASizeMismatchWithoutComparingOffsets(t *testing.T) {
 }
 
 func TestSharedLeafReusesTheVerdictWhileBothSidesAreUnchanged(t *testing.T) {
+	t.Parallel()
 	root, mainPath, _ := usageRoots(t)
 	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "file", "same size ok")
 	usageWrite(t, mainPath, "file", "same size ok")
@@ -89,6 +91,7 @@ func usageShareStale(state SharedFileState, slotSide bool) SharedFileState {
 
 // 共有元を検証できない回は共有なしとして扱い、その回の判定を cache へ残さない。
 func TestSharedLeafDoesNotCacheAnUnverifiableSource(t *testing.T) {
+	t.Parallel()
 	root, mainPath, _ := usageRoots(t)
 	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "file", "shared content")
 	usageWrite(t, mainPath, "target", "shared content")
@@ -129,6 +132,7 @@ func usageShareOpen(t *testing.T, dir, name, data string) *os.File {
 // 比較に使った descriptor が観測時の実体のままなら一致とみなし、片側でも食い違えば判定を捨てる。
 // offset の比較が成立しない linux でも到達するよう、関数を直接呼ぶ。
 func TestSameUsageIdentitiesRejectsAnyMismatch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	source, target := usageShareOpen(t, dir, "source", "content"), usageShareOpen(t, dir, "target", "content")
 	sourceIdentity, err := usageFileIdentity(source)

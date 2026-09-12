@@ -15,6 +15,7 @@ import (
 )
 
 func TestPreparationHelpersRejectMissingDescriptorsAndUnsupportedTargets(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -52,6 +53,7 @@ func TestPreparationHelpersRejectMissingDescriptorsAndUnsupportedTargets(t *test
 }
 
 func TestFilesystemHelperMatrixCoversPhysicalGlobAndCopyBoundaries(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	destination := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(source, "nested", "deep"), 0o700); err != nil {
@@ -118,6 +120,7 @@ func TestFilesystemHelperMatrixCoversPhysicalGlobAndCopyBoundaries(t *testing.T)
 }
 
 func TestPhysicalManifestAndMarkerRemovalBoundaries(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if data, err := readPhysicalManifest(root, ".missing"); err != nil || data != nil {
 		t.Fatalf("missing physical manifest data=%q err=%v", data, err)

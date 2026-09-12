@@ -26,6 +26,7 @@ func cloneInto(t *testing.T, mainPath, name, slotRepo string) {
 }
 
 func TestMeasureRootUsageDetectsClonedAndRewrittenFiles(t *testing.T) {
+	t.Parallel()
 	root, mainPath, targets := usageRoots(t)
 	slotRepo := filepath.Join(root.Name(), "workspace", "slot", "repo")
 	usageWrite(t, mainPath, "shared", "shared content")
@@ -71,6 +72,7 @@ func TestMeasureRootUsageDetectsClonedAndRewrittenFiles(t *testing.T) {
 }
 
 func TestMeasureRootUsageRevalidatesTheCachedVerdict(t *testing.T) {
+	t.Parallel()
 	root, mainPath, targets := usageRoots(t)
 	slotRepo := filepath.Join(root.Name(), "workspace", "slot", "repo")
 	usageWrite(t, mainPath, "shared", "shared content")

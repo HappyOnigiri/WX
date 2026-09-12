@@ -5,6 +5,7 @@ import (
 )
 
 func TestEarlyPlanSelectsOnlyPlannedPathsAndSymlinkClosure(t *testing.T) {
+	t.Parallel()
 	paths := append(append([]string{}, defaultIncludeNames...), "AGENTS.md", ".claude/settings.json", ".codex/skills/x/SKILL.md", ".github/agents/review.md", "src/AGENTS.md", "config/custom.md", "internal/rules.md", "internal/next.md", "nested/.gitignore")
 	plan := earlyPlan{tracked: paths, symlinks: map[string]string{"AGENTS.md": "internal/rules.md", "internal/rules.md": "next.md"}}
 	plan.split([]string{"config", "missing"})

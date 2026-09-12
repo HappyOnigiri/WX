@@ -13,6 +13,7 @@ import (
 // TestRepositoryDirNameResolutionOrderは、文書化された解決順序を一度に一段ずつ確認する。
 // 固定dir_name、リポジトリ自身のdir_source、storage.repo_dir_source、最後にメインworktreeのディレクトリ名の順である。
 func TestRepositoryDirNameResolutionOrder(t *testing.T) {
+	t.Parallel()
 	repo := discovery.Repository{
 		ID:         "repo-id",
 		MainPath:   domain.CanonicalPath("/src/local-checkout"),
@@ -51,6 +52,7 @@ func TestRepositoryDirNameResolutionOrder(t *testing.T) {
 // TestRepositoryDirNameFallsBackWhenSourcesAreUnusableは、利用できない名前の候補から安全にフォールバックできることを確認する。
 // originのないリポジトリはディレクトリ名を使い、wxで使えない場合は常に有効な16進数のリポジトリIDを使う。
 func TestRepositoryDirNameFallsBackWhenSourcesAreUnusable(t *testing.T) {
+	t.Parallel()
 	noRemote := discovery.Repository{ID: "repo-id", MainPath: domain.CanonicalPath("/src/checkout")}
 	if got := RepositoryDirName(noRemote, config.Defaults()); got != "checkout" {
 		t.Fatalf("missing remote fallback=%q", got)
@@ -67,6 +69,7 @@ func TestRepositoryDirNameFallsBackWhenSourcesAreUnusable(t *testing.T) {
 }
 
 func TestSanitizeDirNameRejectsUnusableComponents(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{
 		"", ".", "..", "a/b", `a\b`, "_unbound", "with\x00null", "with\tcontrol",
 		// 所有権マーカーはslotディレクトリをリポジトリと共有するため、
@@ -110,6 +113,7 @@ func TestSanitizeDirNameRejectsUnusableComponents(t *testing.T) {
 // TestUniqueDirNameResolvesCaseInsensitiveCollisionsは、APFSの規則を固定する。
 // 大文字小文字だけが異なる名前はディスク上で同じディレクトリになるため、文字列が異なっても2つ目には接尾辞が必要である。
 func TestUniqueDirNameResolvesCaseInsensitiveCollisions(t *testing.T) {
+	t.Parallel()
 	taken := map[string]bool{}
 	if got := UniqueDirName("Repo", taken); got != "Repo" {
 		t.Fatalf("first name=%q", got)
@@ -131,6 +135,7 @@ func TestUniqueDirNameResolvesCaseInsensitiveCollisions(t *testing.T) {
 }
 
 func TestOwnershipMarkerNameIsDerivedFromRepositoryID(t *testing.T) {
+	t.Parallel()
 	if got := OwnershipMarkerName(testRepositoryID); got != ownershipMarkerPrefix+testRepositoryID {
 		t.Fatalf("exported marker name=%q", got)
 	}

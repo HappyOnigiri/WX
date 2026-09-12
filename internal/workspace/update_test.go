@@ -20,6 +20,7 @@ import (
 )
 
 func TestRejectChangedAttributesDetectsRootAndNestedChanges(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name       string
 		change     func(t *testing.T, repository string)
@@ -79,6 +80,7 @@ func writeTestFile(t *testing.T, path, content string) {
 }
 
 func TestPathsConflictAnyIncludesAncestors(t *testing.T) {
+	t.Parallel()
 	if !pathsConflictAny("cache", map[string]bool{"cache/file": true}) {
 		t.Fatal("ancestor collision was missed")
 	}
@@ -88,6 +90,7 @@ func TestPathsConflictAnyIncludesAncestors(t *testing.T) {
 }
 
 func TestValidateAndSyncRootPlacementsUpdatesRecordedCopyAndPreservesGeneratedFile(t *testing.T) {
+	t.Parallel()
 	source, target := t.TempDir(), t.TempDir()
 	sourcePath := filepath.Join(source, "config", "local.cfg")
 	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o700); err != nil {
@@ -129,6 +132,7 @@ func TestValidateAndSyncRootPlacementsUpdatesRecordedCopyAndPreservesGeneratedFi
 }
 
 func TestValidateAndSyncRootPlacementsReplacesRecordedDirectoryWithFile(t *testing.T) {
+	t.Parallel()
 	source, target := t.TempDir(), t.TempDir()
 	sourcePath := filepath.Join(source, "config")
 	if err := os.WriteFile(sourcePath, []byte("new\n"), 0o600); err != nil {
@@ -162,6 +166,7 @@ func TestValidateAndSyncRootPlacementsReplacesRecordedDirectoryWithFile(t *testi
 // gitlink が同一な更新は submodule の実体を残したまま通り、gitlink が変わる更新は不適格として弾かれる。
 // 更新経路は `checkout --detach --force` だけで submodule を触らないため、この2つが成り立つことが前提になる。
 func TestUpdateKeepsMaterializedSubmoduleAndRejectsChangedGitlinks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	f := newSubmoduleFixture(t)
 	if err := f.preparer.Prepare(ctx, f.repo, f.target, f.head, testSlotID); err != nil {
@@ -217,6 +222,7 @@ func updateTestInode(t *testing.T, path string) uint64 {
 
 // UPDATE の compaction は、その更新が書き直した path だけを候補にする。
 // index 全体を候補に戻すと、前回の準備で共有済みのファイルへ置換経路を通し直し、所要時間が worktree の規模で決まる。
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestUpdateLimitsCOWCompactionToRewrittenPaths(t *testing.T) {
 	ctx := context.Background()
 	p, repo, _, target := cowFixture(t)
@@ -266,6 +272,7 @@ func TestUpdateLimitsCOWCompactionToRewrittenPaths(t *testing.T) {
 
 // include の配置だけが変わる更新は tracked file を1件も書き直さないため、置換経路へ入らない。
 // 実測ではこの形が最も遅く、共有対象すべてに compare から unlink までを通し直していた。
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
 func TestUpdateWithoutRewrittenTrackedPathsSkipsCOWReplacement(t *testing.T) {
 	ctx := context.Background()
 	p, repo, oid, target := cowFixture(t)

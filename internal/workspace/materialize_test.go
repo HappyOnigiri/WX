@@ -13,6 +13,7 @@ import (
 )
 
 func TestMaterializeRootCopiesLinksAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	source, target := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "AGENTS.md"), []byte("rules\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -44,6 +45,7 @@ func TestMaterializeRootCopiesLinksAndIsIdempotent(t *testing.T) {
 }
 
 func TestWorkspaceRootDefaultSymlinkRuleIsSkipped(t *testing.T) {
+	t.Parallel()
 	source, target := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "CLAUDE.md"), []byte("rules\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -80,6 +82,7 @@ func TestWorkspaceRootDefaultSymlinkRuleIsSkipped(t *testing.T) {
 }
 
 func TestMaterializeRootRejectsMissingExplicitCopyBeforeWriting(t *testing.T) {
+	t.Parallel()
 	source, target := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "AGENTS.md"), []byte("rules\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -99,6 +102,7 @@ func TestMaterializeRootRejectsMissingExplicitCopyBeforeWriting(t *testing.T) {
 }
 
 func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
+	t.Parallel()
 	source, target := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "copied.txt"), []byte("pinned copy\n"), 0o640); err != nil {
 		t.Fatal(err)
@@ -130,6 +134,7 @@ func TestMaterializeRootAtUsesPinnedDestination(t *testing.T) {
 // TestMaterializeRootAtRejectsSymlinkAncestorInCopyRuleは、copy ruleの存在検査でErrNotExist以外を扱う分岐を確認する。
 // symlink祖先を通るcopy ruleは単なる「欠落」とせず拒否する。
 func TestMaterializeRootAtRejectsSymlinkAncestorInCopyRule(t *testing.T) {
+	t.Parallel()
 	source := t.TempDir()
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "value"), []byte("value"), 0o600); err != nil {

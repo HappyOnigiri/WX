@@ -15,6 +15,7 @@ import (
 )
 
 func TestCOWDirectoryStackReusesSharedPrefixes(t *testing.T) {
+	t.Parallel()
 	_, destination := cowRoots(t)
 	stack, err := newCOWDirectoryStack(destination, true)
 	if err != nil {
@@ -36,6 +37,7 @@ func TestCOWDirectoryStackReusesSharedPrefixes(t *testing.T) {
 
 // 読み取り側の stack は directory を作らない。donor に無い path は run ごと skip する材料になる。
 func TestCOWDirectoryStackReportsMissingWithoutCreating(t *testing.T) {
+	t.Parallel()
 	source, _ := cowRoots(t)
 	stack, err := newCOWDirectoryStack(source, false)
 	if err != nil {
@@ -52,6 +54,7 @@ func TestCOWDirectoryStackReportsMissingWithoutCreating(t *testing.T) {
 
 // 走査中に成分が symlink へ差し替わっても、pin した root の外は開かない。
 func TestCOWDirectoryStackRejectsSymlinkComponents(t *testing.T) {
+	t.Parallel()
 	source, _ := cowRoots(t)
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(source.Name(), "linked")); err != nil {
@@ -68,6 +71,7 @@ func TestCOWDirectoryStackRejectsSymlinkComponents(t *testing.T) {
 }
 
 func TestPlanCOWPlacementKeepsOnlyMatchingLateEntries(t *testing.T) {
+	t.Parallel()
 	plan := &earlyPlan{
 		tracked: []string{"early", "match", "mismatch", "symlink"},
 		oids: map[string]string{
@@ -95,6 +99,7 @@ func TestPlanCOWPlacementKeepsOnlyMatchingLateEntries(t *testing.T) {
 
 // 所有権を証明できない回は1件も置かない。証明は塊の入口で先に呼ぶ。
 func TestCOWPlacementStopsWhenOwnershipIsUnprovable(t *testing.T) {
+	t.Parallel()
 	source, destination := cowRoots(t)
 	cowWrite(t, source, "top", strings.Repeat("t", cowMinShareSize))
 	failure := errors.New("proof failed")
@@ -117,6 +122,7 @@ func TestCOWPlacementStopsWhenOwnershipIsUnprovable(t *testing.T) {
 
 // 塊は path 順に連続したまま分ける。共通接頭辞を持ち越せるのは連続している間だけである。
 func TestCOWChunksStayContiguous(t *testing.T) {
+	t.Parallel()
 	runs := splitCOWRuns([]cowIndexEntry{
 		{name: "a/one"}, {name: "a/two"}, {name: "b/one"}, {name: "c/one"}, {name: "d/one"},
 	})
@@ -135,6 +141,7 @@ func TestCOWChunksStayContiguous(t *testing.T) {
 // 新規準備は共有できる tracked file を clone で置き、main が dirty な path だけ通常 checkout へ落とす。
 // clone した内容は要求 OID と一致し、main の未コミット変更は宛先へ持ち込まない。
 func TestPrepareStagedPlacesCloneAndRestoresDirtySources(t *testing.T) {
+	t.Parallel()
 	if !cowAvailable() {
 		t.Skip("APFS is required")
 	}
@@ -230,6 +237,7 @@ func stagedCOWFixture(t *testing.T, contents map[string]string) (string, discove
 // 下限未満の候補しか無い準備は1件も clone せず、宛先へ余計な directory も作らない。
 // 事前 skip は OID の一致だけを見るため、下限の判定は donor の fstatat が担う。
 func TestCOWPlacementPlacesNothingWhenEveryCandidateIsBelowTheMinimum(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, item := stagedCOWFixture(t, map[string]string{"small/leaf.bin": "small\n"})
 	placement, err := preparer.placeOwnedSharedFiles(context.Background(), repo, item, testSlotID)
 	if err != nil {
@@ -245,6 +253,7 @@ func TestCOWPlacementPlacesNothingWhenEveryCandidateIsBelowTheMinimum(t *testing
 
 // donor 側の形状が候補と違う run は、共有できないというだけなので run ごと skip して準備を続ける。
 func TestCOWPlacementSkipsRunsTheDonorCannotProvide(t *testing.T) {
+	t.Parallel()
 	source, destination := cowRoots(t)
 	cowWrite(t, source, "file", strings.Repeat("f", cowMinShareSize))
 	placer := &cowPlacer{
@@ -268,6 +277,7 @@ func TestCOWPlacementSkipsRunsTheDonorCannotProvide(t *testing.T) {
 
 // 中断された回は残りの塊を処理しない。置いた分は隔離の判断材料として集計に残す。
 func TestCOWPlacementStopsOnCancellation(t *testing.T) {
+	t.Parallel()
 	source, destination := cowRoots(t)
 	cowWrite(t, source, "top", strings.Repeat("t", cowMinShareSize))
 	placer := &cowPlacer{
@@ -287,6 +297,7 @@ func TestCOWPlacementStopsOnCancellation(t *testing.T) {
 
 // 共有できるのは下限を超える通常ファイルだけで、directory・symlink・消えた leaf は候補から外す。
 func TestCOWShareableLeavesKeepsOnlyRegularFilesAboveTheMinimum(t *testing.T) {
+	t.Parallel()
 	source, _ := cowRoots(t)
 	cowWrite(t, source, "large", strings.Repeat("l", cowMinShareSize))
 	cowWrite(t, source, "small", strings.Repeat("s", cowMinShareSize-1))
@@ -323,6 +334,7 @@ func TestCOWShareableLeavesKeepsOnlyRegularFilesAboveTheMinimum(t *testing.T) {
 
 // 集計は塊ごとの worker から並行して呼ばれるため、同時に記録しても path を落とさない。
 func TestCOWPlacementRecordsPathsFromConcurrentChunks(t *testing.T) {
+	t.Parallel()
 	placer := &cowPlacer{stats: &cowStats{}, placed: map[string]bool{}}
 	var group sync.WaitGroup
 	for index := range 8 {
@@ -349,6 +361,7 @@ func TestCOWPlacementRecordsPathsFromConcurrentChunks(t *testing.T) {
 // clone した内容が要求 OID と違えば、その path だけ通常 checkout でやり直す。
 // main が dirty だった path はこの経路で要求 OID の内容へ戻る。
 func TestSettleCOWPlacementRepairsPathsThatDoNotMatchTheRequestedOID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, _, preparer, item := stagedCOWFixture(t, nil)
 	if err := preparer.checkoutStage(ctx, item, false, nil); err != nil {
@@ -390,6 +403,7 @@ func TestSettleCOWPlacementRepairsPathsThatDoNotMatchTheRequestedOID(t *testing.
 
 // index と内容が違う tracked path だけを返す。untracked file は準備の検査対象にしない。
 func TestTrackedChangedPathsReportsModifiedTrackedPathsOnly(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, _, preparer, item := stagedCOWFixture(t, nil)
 	if err := preparer.checkoutStage(ctx, item, false, nil); err != nil {
@@ -419,6 +433,7 @@ func TestTrackedChangedPathsReportsModifiedTrackedPathsOnly(t *testing.T) {
 
 // copy 指定では共有経路へ入らない。方式の判断は従来どおり後段の compactWorktree に委ねる。
 func TestPlaceSharedFilesSkipsWhenCopyIsRequested(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, item := stagedCOWFixture(t, map[string]string{"big/donor.bin": strings.Repeat("b", cowMinShareSize) + "\n"})
 	preparer.Config.Storage.CopyMode = config.CopyModeCopy
 	placement, err := preparer.placeSharedFiles(context.Background(), repo, item, testSlotID)
@@ -432,6 +447,7 @@ func TestPlaceSharedFilesSkipsWhenCopyIsRequested(t *testing.T) {
 
 // 先行配置は件数と段階別の所要時間を準備の区間内訳へ残す。`wx bench` がこの内訳を読む。
 func TestCOWPlacementRecordsPhaseBreakdown(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, item := stagedCOWFixture(t, map[string]string{"small/leaf.bin": "small\n"})
 	preparer.Phases = &PhaseTimings{}
 	if _, err := preparer.placeOwnedSharedFiles(context.Background(), repo, item, testSlotID); err != nil {
@@ -454,6 +470,7 @@ func TestCOWPlacementRecordsPhaseBreakdown(t *testing.T) {
 
 // --all は設定のある属性だけを出す。変換に関わらない属性と、変換を外す unset は候補に残す。
 func TestParseCOWConvertiblePathsKeepsOnlyConversionAttributes(t *testing.T) {
+	t.Parallel()
 	output := strings.Join([]string{
 		"binary.bin", "text", "unset",
 		"binary.bin", "diff", "unset",
@@ -476,6 +493,7 @@ func TestParseCOWConvertiblePathsKeepsOnlyConversionAttributes(t *testing.T) {
 // 変換の入る path は配置しない。配置後の tracked 検査は clean filter 越しの一致しか見ないため、
 // main の未コミット内容が blob へ戻る限り検査を通り、通常 checkout と違う bytes が残る。
 func TestShareableCOWPlacementsDropsConvertiblePaths(t *testing.T) {
+	t.Parallel()
 	large := strings.Repeat("x\n", cowMinShareSize)
 	_, _, preparer, item := stagedCOWFixture(t, map[string]string{
 		".gitattributes": "*.dat text\n",
@@ -497,6 +515,7 @@ func TestShareableCOWPlacementsDropsConvertiblePaths(t *testing.T) {
 
 // core.autocrlf は属性を持たない path にも効くので、有効な回は1件も配置せず置換方式へ回す。
 func TestShareableCOWPlacementsYieldsWhileAutocrlfConverts(t *testing.T) {
+	t.Parallel()
 	source, _, preparer, item := stagedCOWFixture(t, map[string]string{"big/plain.bin": strings.Repeat("x\n", cowMinShareSize)})
 	gitCommand(t, source, "config", "core.autocrlf", "input")
 	candidates := []cowIndexEntry{{name: "big/plain.bin"}}
@@ -511,6 +530,7 @@ func TestShareableCOWPlacementsYieldsWhileAutocrlfConverts(t *testing.T) {
 
 // 置けなかった候補が残る回は、配置方式だけで共有をやり切ったとは見なさない。
 func TestCOWPlacementIsCompleteOnlyWithoutPendingCandidates(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name      string
 		placement cowPlacement
@@ -528,6 +548,7 @@ func TestCOWPlacementIsCompleteOnlyWithoutPendingCandidates(t *testing.T) {
 
 // 変換の入る tracked file は、main の作業ファイルが blob と違う bytes でも通常 checkout の内容で貸し出す。
 func TestPrepareStagedKeepsCheckoutBytesForConvertedPaths(t *testing.T) {
+	t.Parallel()
 	if !cowAvailable() {
 		t.Skip("APFS is required")
 	}

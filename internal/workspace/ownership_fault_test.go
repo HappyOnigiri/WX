@@ -16,6 +16,7 @@ import (
 // TestEnsureOwnershipMarkerAtDirectFaultInjectionは、descriptorに束縛されたmarker writerの防御検査を直接確認する。
 // 公開入口はnil/不正ownerを先に拒否するため、marker親の権限障害でのみ残るMkdirAll・Lstat・OpenFileの失敗分岐へ到達できる。
 func TestEnsureOwnershipMarkerAtDirectFaultInjection(t *testing.T) {
+	t.Parallel()
 	marker := ownershipMarker{Version: ownershipMarkerVersion, SlotID: "slot", RootID: testRootID, RepositoryID: testRepositoryID, CommonDir: "common"}
 
 	if err := ensureOwnershipMarkerAt(nil, "marker", marker); err == nil {
@@ -78,6 +79,7 @@ func TestEnsureOwnershipMarkerAtDirectFaultInjection(t *testing.T) {
 // TestValidateOwnershipMarkerRejectsNonDirectoryTargetWithRequiredLeafは、検証で使うallowMissingTarget=falseのディレクトリ検査を確認する。
 // domain.ValidatePhysicalLeafはsymlink成分だけを拒否するため、通常ファイルを通過させ、後段のos.Lstat/IsDir検査で捕捉する。
 func TestValidateOwnershipMarkerRejectsNonDirectoryTargetWithRequiredLeaf(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	target := filepath.Join(root, "target-file")
 	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
@@ -97,6 +99,7 @@ func TestValidateOwnershipMarkerRejectsNonDirectoryTargetWithRequiredLeaf(t *tes
 // TestRegisteredWorktreeLockStatusMatchesSymlinkAliasedRegistrationsは、symlink祖先を通るGit登録も同じ実体として照合することを確認する。
 // 検査対象をleafに限定したため、祖先のsymlinkは canonical 比較で解決する。Gitが作成時に解決するため、管理ファイルをsymlink別名へ書き換えて再現する。
 func TestRegisteredWorktreeLockStatusMatchesSymlinkAliasedRegistrations(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	gitCommand(t, repository, "init", "-b", "main")
 	gitCommand(t, repository, "config", "user.name", "test")
@@ -146,6 +149,7 @@ func TestRegisteredWorktreeLockStatusMatchesSymlinkAliasedRegistrations(t *testi
 
 // TestRegisteredWorktreeLockReasonPropagatesUnresolvableTargetSymlinkLoopは、問い合わせ先のsymlink loopを解決できないエラーが「未検出」に変換されず伝播することを確認する。
 func TestRegisteredWorktreeLockReasonPropagatesUnresolvableTargetSymlinkLoop(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	gitCommand(t, repository, "init", "-b", "main")
 	gitCommand(t, repository, "config", "user.name", "test")
@@ -175,6 +179,7 @@ func TestRegisteredWorktreeLockReasonPropagatesUnresolvableTargetSymlinkLoop(t *
 // TestRegisteredWorktreeLockStatusAtSkipsRemovedWorktreeRegistrationは、削除途中で実体が消えたworktreeをGitが列挙できる場合のdescriptor open失敗を確認する。
 // stale登録はクラッシュや誤照合を起こさずスキップする。
 func TestRegisteredWorktreeLockStatusAtSkipsRemovedWorktreeRegistration(t *testing.T) {
+	t.Parallel()
 	repository := t.TempDir()
 	gitCommand(t, repository, "init", "-b", "main")
 	gitCommand(t, repository, "config", "user.name", "test")
@@ -212,6 +217,7 @@ func TestRegisteredWorktreeLockStatusAtSkipsRemovedWorktreeRegistration(t *testi
 // TestRemoveOwnershipMarkerAtPropagatesPermissionFailuresは、「削除済み」と異なるLstat失敗分岐を確認する。
 // markerのディレクトリを検索不能にし、os.ErrNotExistへの変換ではなく実際のエラーを返させる。
 func TestRemoveOwnershipMarkerAtPropagatesPermissionFailures(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	slotDirectory := filepath.Join(root, testSlotRelPath)
 	target := filepath.Join(slotDirectory, testRepositoryID)
@@ -239,6 +245,7 @@ func TestRemoveOwnershipMarkerAtPropagatesPermissionFailures(t *testing.T) {
 // TestNewOwnershipMarkerAtPropagatesDirectoryOpenFailureForExistingTargetは、対象自身のLstat後にディレクトリopenが失敗する分岐を確認する。
 // 親の検索は許可されても対象自身が検索を拒否する場合を扱う。
 func TestNewOwnershipMarkerAtPropagatesDirectoryOpenFailureForExistingTarget(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
@@ -262,6 +269,7 @@ func TestNewOwnershipMarkerAtPropagatesDirectoryOpenFailureForExistingTarget(t *
 // TestValidateRemovalOwnershipRejectsMalformedMarkerContentsは、ValidateRemovalOwnershipとdescriptor版がreadOwnershipMarkerの内容検証を伝播することを確認する。
 // 別テストの対象・common directoryのidentity検査だけで終わらないことを確認する。
 func TestValidateRemovalOwnershipRejectsMalformedMarkerContents(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
@@ -313,6 +321,7 @@ func TestValidateRemovalOwnershipRejectsMalformedMarkerContents(t *testing.T) {
 // TestOpenPhysicalRootPropagatesOwnedRootFailureOnUnsearchableParentは、OpenPhysicalRoot内のdomain.OpenOwnedRootエラー分岐を確認する。
 // 物理path検査は祖先の親の検索だけで済むが、直近の親をRootとして開くには親自身の検索権限も必要である。
 func TestOpenPhysicalRootPropagatesOwnedRootFailureOnUnsearchableParent(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	parent := filepath.Join(root, "parent")
 	target := filepath.Join(parent, "target")
@@ -331,6 +340,7 @@ func TestOpenPhysicalRootPropagatesOwnedRootFailureOnUnsearchableParent(t *testi
 // TestOpenPhysicalRootPropagatesReopenFailureOnUnsearchableTargetは、OpenPhysicalRoot内のOpenRootエラー分岐を確認する。
 // 物理pathとLstatは対象の親の検索だけで済むが、対象をRootとして再openするには対象自身の検索権限も必要である。
 func TestOpenPhysicalRootPropagatesReopenFailureOnUnsearchableTarget(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	target := filepath.Join(root, "blocked")
 	if err := os.Mkdir(target, 0o755); err != nil {

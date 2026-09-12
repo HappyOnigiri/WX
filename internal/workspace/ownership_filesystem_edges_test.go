@@ -21,6 +21,7 @@ import (
 )
 
 func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	slotDirectory := filepath.Join(root, testSlotRelPath)
 	target := filepath.Join(slotDirectory, testRepositoryID)
@@ -302,6 +303,7 @@ func TestOwnershipMarkerLifecycleAndMalformedProofs(t *testing.T) {
 // ownershipMarkerVersion引き上げ直後に既存slotが隔離される事故（レポート項目10）の再発を防ぐ。
 // preBumpVersionはownershipMarkerVersionシンボルではなくリテラル2で固定し、将来の引き上げでも動かさない。
 func TestOwnershipMarkerMinVersionAcceptsMarkersWrittenBeforeAWriteVersionBump(t *testing.T) {
+	t.Parallel()
 	const preBumpVersion = 2
 	if ownershipMarkerMinVersion != preBumpVersion {
 		t.Fatalf("test premise stale: ownershipMarkerMinVersion=%d, want %d", ownershipMarkerMinVersion, preBumpVersion)
@@ -339,6 +341,7 @@ func TestOwnershipMarkerMinVersionAcceptsMarkersWrittenBeforeAWriteVersionBump(t
 }
 
 func TestDescriptorBoundOwnershipMarkerLifecycle(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
@@ -385,6 +388,7 @@ func TestDescriptorBoundOwnershipMarkerLifecycle(t *testing.T) {
 }
 
 func TestDescriptorBoundOwnershipMarkerRejectsNamespaceAndProofChanges(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	slotDirectory := filepath.Join(root, testSlotRelPath)
 	target := filepath.Join(slotDirectory, testRepositoryID)
@@ -478,6 +482,7 @@ func TestDescriptorBoundOwnershipMarkerRejectsNamespaceAndProofChanges(t *testin
 }
 
 func TestPhysicalFilesystemRejectsNondirectoryAndInvalidTraversal(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	file := filepath.Join(root, "file")
 	if err := os.WriteFile(file, []byte("file"), 0o600); err != nil {
@@ -588,6 +593,7 @@ func TestPhysicalFilesystemRejectsNondirectoryAndInvalidTraversal(t *testing.T) 
 }
 
 func TestOwnershipMarkerCanBeCreatedBeforeGitAddsTheWorktree(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	slotDirectory := filepath.Join(root, testSlotRelPath)
 	if err := os.MkdirAll(slotDirectory, 0o700); err != nil {
@@ -612,6 +618,7 @@ func TestOwnershipMarkerCanBeCreatedBeforeGitAddsTheWorktree(t *testing.T) {
 }
 
 func TestOwnershipMarkerPathsAndPhysicalHelpers(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	target := filepath.Join(root, testSlotRelPath, testRepositoryID)
 	if err := os.MkdirAll(target, 0o700); err != nil {
@@ -755,6 +762,7 @@ func TestOwnershipMarkerPathsAndPhysicalHelpers(t *testing.T) {
 }
 
 func TestPhysicalCopyAndManifestHelpersRejectUnsafeShapes(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	source := filepath.Join(root, "source")
 	destination := filepath.Join(root, "destination")
@@ -871,6 +879,7 @@ func TestPhysicalCopyAndManifestHelpersRejectUnsafeShapes(t *testing.T) {
 }
 
 func TestWorktreeRecordAndCanonicalPathEdges(t *testing.T) {
+	t.Parallel()
 	records := gitx.ParseWorktreeRecords("noise\x00worktree /one\x00locked\x00worktree /two\x00locked reason\x00")
 	if len(records) != 2 || records[0].Path != "/one" || !records[0].Locked || records[0].LockReason != "" || records[1].LockReason != "reason" {
 		t.Fatalf("records=%+v", records)
@@ -898,6 +907,7 @@ func TestWorktreeRecordAndCanonicalPathEdges(t *testing.T) {
 }
 
 func TestFilesystemAndMarkerHelpersPropagateClosedDescriptorErrors(t *testing.T) {
+	t.Parallel()
 	rootPath := t.TempDir()
 	if err := os.WriteFile(filepath.Join(rootPath, "file"), []byte("data"), 0o600); err != nil {
 		t.Fatal(err)
@@ -980,6 +990,7 @@ func TestFilesystemAndMarkerHelpersPropagateClosedDescriptorErrors(t *testing.T)
 }
 
 func TestOwnershipDescriptorAndGitRecordBoundaryMatrix(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	common := filepath.Join(root, "common")
 	slotDirectory := filepath.Join(root, testSlotRelPath)
@@ -1098,6 +1109,7 @@ func TestOwnershipDescriptorAndGitRecordBoundaryMatrix(t *testing.T) {
 // TestValidateRegisteredWorktreeAtCoversLockAndSlotBoundariesは、descriptor版のlock/slot境界行列を確認する。
 // lexical-path版と概念は同じだが、可変target pathnameを解決しない別実装として管理される（RegisteredWorktreeLockStatusAtのdoc comment参照）。
 func TestValidateRegisteredWorktreeAtCoversLockAndSlotBoundaries(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
 	if err := os.MkdirAll(repository, 0o700); err != nil {

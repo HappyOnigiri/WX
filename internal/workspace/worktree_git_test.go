@@ -20,6 +20,7 @@ import (
 // NEW-2: Git の add syscall は記述子で予約した対象名前空間を使う必要がある。
 // 親を開いた後 Git 開始前にルートを置き換えても、ファイルと登録は逃げない。
 func TestAddWorktreeUsesReservedNamespaceAcrossRootReplacement(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	repository := filepath.Join(base, "repository")
 	root := filepath.Join(base, "worktrees")
@@ -86,6 +87,7 @@ func TestAddWorktreeUsesReservedNamespaceAcrossRootReplacement(t *testing.T) {
 // TestRunGitInWorktreeUnpinnedFastPathAndDescriptorFaultsは、descriptor処理を完全に省くunpinned/no-identity経路を確認する。
 // identityまたはpinned rootが関与した場合だけ発生するdescriptor束縛の障害も確認する。
 func TestRunGitInWorktreeUnpinnedFastPathAndDescriptorFaults(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -120,6 +122,7 @@ func TestRunGitInWorktreeUnpinnedFastPathAndDescriptorFaults(t *testing.T) {
 // TestWorktreeIdentityPropagatesDescriptorAndOpenFailuresは、WorktreeIdentityのdescriptor open失敗と後続のdirectory open失敗を確認する。
 // 前者は設定root、後者は祖先でなくtarget自身を検索不能にして再現する。
 func TestWorktreeIdentityPropagatesDescriptorAndOpenFailures(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -153,6 +156,7 @@ func TestWorktreeIdentityPropagatesDescriptorAndOpenFailures(t *testing.T) {
 // TestRemoveWorktreeAtRequiresAPinnedRootDescriptorは、pinned mode外のdescriptor-bound削除を拒否するguardを確認する。
 // 他のRemoveWorktreeAtテストは常にpinnedで実行するため、この分岐には到達しない。
 func TestRemoveWorktreeAtRequiresAPinnedRootDescriptor(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, _, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
 	if err := preparer.RemoveWorktreeAt(context.Background(), repo, root, target, "identity"); !errors.Is(err, state.ErrOwnership) {
@@ -160,6 +164,7 @@ func TestRemoveWorktreeAtRequiresAPinnedRootDescriptor(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（PATH と WX_FAULT_*）を変更するため
 func TestAddWorktreeWithIdentityRecognizesACleanFailedAdd(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -184,6 +189,7 @@ func TestAddWorktreeWithIdentityRecognizesACleanFailedAdd(t *testing.T) {
 	}
 }
 
+// testlint:allow-serial -- プロセス全体の環境（PATH）を変更するため
 func TestAddWorktreeWithIdentityQuarantinesAnInterruptedAdd(t *testing.T) {
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -226,6 +232,7 @@ func TestAddWorktreeWithIdentityQuarantinesAnInterruptedAdd(t *testing.T) {
 // TestAddWorktreeWithIdentityPropagatesLeafReservationFailureは、addWorktreeWithIdentityを直接呼び出してleaf予約のmkdirat失敗分岐を確認する。
 // 同じread-only parentで先に失敗するownership marker作成を迂回し、leaf既存とは別の分岐を対象にする。
 func TestAddWorktreeWithIdentityPropagatesLeafReservationFailure(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
 	slotDirectory := filepath.Dir(target)
@@ -255,6 +262,7 @@ func TestAddWorktreeWithIdentityPropagatesLeafReservationFailure(t *testing.T) {
 // TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommandは、runWorktreeAdminOwned固有のcommand前identity証明を直接確認する。
 // 上位のPrepare/RemoveWorktreeAt flowでは、意図的に誤ったidentityを与えるこの条件を検査しない。
 func TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommand(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -282,6 +290,7 @@ func TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommand(t *t
 
 // TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailabilityは、verifyPreparedTargetIdentityを直接呼び、target消失とidentity不一致の両失敗分岐を確認する。
 func TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
@@ -316,6 +325,7 @@ func TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability(t *testing
 // TestAddWorktreeWithIdentityRejectsAReservedLeafThatIsNotADirectoryは、mkdirat予約が既存leaf（os.ErrExist）を許容する分岐を確認する。
 // そのleafがaddWorktreeWithIdentityの次のopenに必要な物理directoryでない場合は拒否する。
 func TestAddWorktreeWithIdentityRejectsAReservedLeafThatIsNotADirectory(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, head, target := prepareEdgesFixture(t)
 	root := preparer.Config.Storage.WorktreeRoot
 	slotDirectory := filepath.Dir(target)

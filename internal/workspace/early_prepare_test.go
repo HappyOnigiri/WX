@@ -13,6 +13,7 @@ import (
 )
 
 func TestPrepareStagedPreservesRulesIndexFilterAndHookContract(t *testing.T) {
+	t.Parallel()
 	source, repo, preparer, _, target := prepareEdgesFixture(t)
 	preparer.Config.Storage.CopyMode = config.CopyModeCopy
 	files := map[string]string{
@@ -116,6 +117,7 @@ func TestPrepareStagedPreservesRulesIndexFilterAndHookContract(t *testing.T) {
 }
 
 func TestPrepareStagedDefaultsDisabledIncludesAndGitlinks(t *testing.T) {
+	t.Parallel()
 	for _, enabled := range []bool{true, false} {
 		name := "disabled"
 		if enabled {
@@ -161,6 +163,7 @@ func TestPrepareStagedDefaultsDisabledIncludesAndGitlinks(t *testing.T) {
 }
 
 func TestPrepareStagedStopsBeforeRemainingWritesWhenEarlyCASFails(t *testing.T) {
+	t.Parallel()
 	_, repo, preparer, oid, target := prepareEdgesFixture(t)
 	failure := errors.New("early readiness CAS failed")
 	_, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return failure })
@@ -176,6 +179,7 @@ func TestPrepareStagedStopsBeforeRemainingWritesWhenEarlyCASFails(t *testing.T) 
 }
 
 func TestPrepareStagedUsesRequestedAttributesAfterEarlyIncludes(t *testing.T) {
+	t.Parallel()
 	source, repo, preparer, oid, target := prepareEdgesFixture(t)
 	preparer.Config.Storage.CopyMode = config.CopyModeCopy
 	gitCommand(t, source, "config", "filter.wx.smudge", "sed s/base/filtered/")
@@ -203,6 +207,7 @@ func TestPrepareStagedUsesRequestedAttributesAfterEarlyIncludes(t *testing.T) {
 // exit 0 の post-checkout hook が出した出力は、準備を成功させたまま notice として残す。
 // 捨ててしまうと、hook が内部の失敗を飲み込んだ回を wx から正常と区別できない。
 func TestPrepareStagedRecordsHookOutputOfSuccessfulHook(t *testing.T) {
+	t.Parallel()
 	source, repo, preparer, _, target := prepareEdgesFixture(t)
 	preparer.Config.Storage.CopyMode = config.CopyModeCopy
 	notices := &PrepareNotices{}
@@ -231,6 +236,7 @@ func TestPrepareStagedRecordsHookOutputOfSuccessfulHook(t *testing.T) {
 
 // 出力を出さない hook では notice を作らない。区間を通っただけの回が診断へ並ぶのを避ける。
 func TestPrepareStagedRecordsNoNoticeForSilentHook(t *testing.T) {
+	t.Parallel()
 	source, repo, preparer, _, target := prepareEdgesFixture(t)
 	preparer.Config.Storage.CopyMode = config.CopyModeCopy
 	notices := &PrepareNotices{}

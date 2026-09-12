@@ -111,6 +111,7 @@ func (f *submoduleFixture) submoduleTarget() string {
 
 // 実体化した submodule は内容・HEAD・origin が揃い、親は tracked-clean のまま残る。
 func TestPrepareMaterializesSubmodule(t *testing.T) {
+	t.Parallel()
 	f := newSubmoduleFixture(t)
 	gitlink := submoduleGitlink(t, f.repository, f.head)
 	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
@@ -138,6 +139,7 @@ func TestPrepareMaterializesSubmodule(t *testing.T) {
 
 // restore 経路でも実体化する。単発準備と staged 準備で結線が別なため、両方を通す。
 func TestPrepareForRestoreMaterializesSubmodule(t *testing.T) {
+	t.Parallel()
 	f := newSubmoduleFixture(t)
 	gitlink := submoduleGitlink(t, f.repository, f.head)
 	if err := f.preparer.PrepareForRestore(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
@@ -150,6 +152,7 @@ func TestPrepareForRestoreMaterializesSubmodule(t *testing.T) {
 
 // ローカル module が無い場合は書き込む前に省略し、準備は成功して空ディレクトリのまま残る。
 func TestPrepareSkipsSubmoduleWithoutLocalModule(t *testing.T) {
+	t.Parallel()
 	f := newSubmoduleFixture(t)
 	if err := os.RemoveAll(f.moduleDir()); err != nil {
 		t.Fatal(err)
@@ -166,6 +169,7 @@ func TestPrepareSkipsSubmoduleWithoutLocalModule(t *testing.T) {
 // gitlink OID がローカル module に無い場合も書き込む前に省略する。
 // 実体化を始めてしまうと親が ` M <path>` の dirty で残り、その gitdir は wx が消せない場所にできる。
 func TestPrepareSkipsSubmoduleWithMissingCommit(t *testing.T) {
+	t.Parallel()
 	f := newSubmoduleFixture(t)
 	// child だけを進め、その commit を親の gitlink に据える。module clone は取得していないので解決できない。
 	if err := os.WriteFile(filepath.Join(f.child, "kid.txt"), []byte("ahead\n"), 0o600); err != nil {
@@ -193,6 +197,7 @@ func TestPrepareSkipsSubmoduleWithMissingCommit(t *testing.T) {
 // `-c submodule.<name>.url=` を与えた `submodule update --init` が共有 config へ何も書かないことに依存しているため、
 // 上流の挙動が変わったらここで落とす。
 func TestPrepareLeavesSourceRepositoryUnchanged(t *testing.T) {
+	t.Parallel()
 	f := newSubmoduleFixture(t)
 	configPath := filepath.Join(string(f.repo.CommonDir), "config")
 	before, err := os.ReadFile(configPath)
@@ -217,6 +222,7 @@ func TestPrepareLeavesSourceRepositoryUnchanged(t *testing.T) {
 
 // 方針を無効にした workspace では submodule 関連の Git を1回も起動しない。
 func TestPrepareSkipsSubmodulePhaseWhenDisabled(t *testing.T) {
+	t.Parallel()
 	f := newSubmoduleFixture(t)
 	f.preparer.Config.Worktree.Submodules = false
 	var invoked []string
@@ -234,6 +240,7 @@ func TestPrepareSkipsSubmodulePhaseWhenDisabled(t *testing.T) {
 
 // workspace 個別の上書きが global 方針より優先される。
 func TestSubmodulesForWorkspaceOverride(t *testing.T) {
+	t.Parallel()
 	f := newSubmoduleFixture(t)
 	root, err := repositoryWorkspaceRoot(f.repo)
 	if err != nil {
@@ -257,6 +264,7 @@ func TestSubmodulesForWorkspaceOverride(t *testing.T) {
 
 // .gitmodules から取り出す name と path は、module directory と worktree の外を指す値を拒否する。
 func TestParseSubmoduleConfigRejectsUnsafeNamesAndPaths(t *testing.T) {
+	t.Parallel()
 	for _, entries := range []string{
 		"submodule.../escape.path sub\nsubmodule.../escape.url ../child\n",
 		"submodule./absolute.path sub\nsubmodule./absolute.url ../child\n",
@@ -273,6 +281,7 @@ func TestParseSubmoduleConfigRejectsUnsafeNamesAndPaths(t *testing.T) {
 
 // nested name は末尾の属性名だけを剥がして取り出し、`/` や `.` を含む name を壊さない。
 func TestParseSubmoduleConfigKeepsNestedNames(t *testing.T) {
+	t.Parallel()
 	modules, err := parseSubmoduleConfig("submodule.modules/kid.v2.path sub/kid\nsubmodule.modules/kid.v2.url ../child\nsubmodule.other.branch main\n")
 	if err != nil {
 		t.Fatal(err)
@@ -315,6 +324,7 @@ func assertEmptyGitlinkDirectory(t *testing.T, path string) {
 
 // `.gitmodules` に url が無い entry は実体化しない。clone 後に origin を戻す先が無いためである。
 func TestPrepareSkipsSubmoduleWithoutURL(t *testing.T) {
+	t.Parallel()
 	f := newSubmoduleFixture(t)
 	if err := os.WriteFile(filepath.Join(f.repository, ".gitmodules"), []byte("[submodule \""+submoduleName+"\"]\n\tpath = "+submodulePath+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -333,6 +343,7 @@ func TestPrepareSkipsSubmoduleWithoutURL(t *testing.T) {
 
 // ローカル module に origin が無い場合も、戻し先が定まらないため実体化しない。
 func TestPrepareSkipsSubmoduleWithoutModuleOrigin(t *testing.T) {
+	t.Parallel()
 	f := newSubmoduleFixture(t)
 	gitCommand(t, f.moduleDir(), "--git-dir=.", "remote", "remove", "origin")
 	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
