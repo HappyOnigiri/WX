@@ -234,8 +234,8 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	// ResolveAndLease と Resume は daemon 側で repository discovery を同期実行する。
 	// cold な複数 repository root でも、discovery.timeout 内の探索を client 側の既定 timeout で中断しない。
 	budget := c.discoveryTimeout()
-	if method == "Resume" && c.Config.Readiness.Timeout.Duration > 0 {
-		budget = c.Config.Readiness.Timeout.Duration
+	if method == "Resume" && c.Config.MaxReadinessTimeout() > 0 {
+		budget = c.Config.MaxReadinessTimeout()
 	}
 	// 貸出から準備待ちまでは signal を捕まえ、中断でも返却の defer を走らせてから終える。
 	setupCtx, stopSetupSignals := interruptibleSetup(ctx)
@@ -257,6 +257,11 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		}
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1, false
+	}
+	if !lease.ReadinessProgress {
+		// readiness.progress は repository 文脈を daemon だけが解決できるため、
+		// global 設定で仮表示した resolving 行も lease 応答後に消す。
+		waiting.finish()
 	}
 	defer func() {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

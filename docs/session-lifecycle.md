@@ -3,7 +3,7 @@
 1. **貸出** — `wx claude`はworkspace rootのworktree方針を先に解決し、worktreeを使う場合だけ`ensureDaemon`でdaemonの生存を確認して`ResolveAndLease`を呼ぶ。
    launchdでのkickstartは接続自体に失敗したときだけ行う。応答が遅いだけの生きたdaemonを再起動しないためである。
    daemonはcwdからworkspaceを解決し、要求OIDと準備条件が完全一致するREADY slotを優先する。
-   一致候補がなく`worktree.reuse_standby`が有効なら更新適合なHot StandbyをUPDATEジョブへ予約し、無ければPREPAREジョブでCold Startする。
+   一致候補がなく `workspace_defaults.reuse_standby`（または workspace 個別値）が有効なら更新適合なHot StandbyをUPDATEジョブへ予約し、無ければPREPAREジョブでCold Startする。
    更新適格の判定と不適格候補のSTALE化・補充は[daemonの補充と回収](daemon-maintenance.md)にある。
 
    完全一致しなかった候補は、UPDATE予約・STALE化・cold startへの後退のいずれでも理由をdaemon logへ残す（`internal/daemon/lease_mismatch.go`）。
@@ -22,9 +22,11 @@
    呼び出し時のcwdは`WX_SOURCE_CWD`にだけ入るので、同じ相対位置で実行したいコマンドは自分でcdする。
 
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
-   `readiness.mode: early`では、hookが使える通常起動はGit登録と起動用ファイルの配置までを待って起動し、以降の`user-prompt-submit`・`pre-tool-use` hookが全準備の完了まで操作を止める。
-   `readiness.mode: full`またはhookが無い起動（`internal/hookconfig`が判定する）は、clientが起動前に全準備を待つ。
-   modeとtimeoutは`repositories.<main worktree path>.readiness.*`で個別指定でき、clientはrepositoryのmain pathを知らないためdaemonが貸出応答へ合成済みの実効値を載せる。
+   `repository_defaults.readiness.mode: early`では、hookが使える通常起動はGit登録と起動用ファイルの配置までを待って起動する。
+   以降の`user-prompt-submit`・`pre-tool-use` hookが全準備の完了まで操作を止める。
+   `repository_defaults.readiness.mode: full`またはhookが無い起動（`internal/hookconfig`が判定する）は、clientが起動前に全準備を待つ。
+   modeとtimeoutは `workspaces.<root>.repository_defaults.readiness.*` または `workspaces.<root>.repositories.<relative>.readiness.*` で上書きできる。
+   clientはrepositoryのmain pathを知らないため、daemonが貸出応答へ合成済みの実効値を載せる。
    合成はslot内のいずれかが`full`なら`full`、timeoutは最長を採る。`full`要求の早期起動は約束を破るが、`early`要求を待たせるのは遅いだけで、最短のtimeoutでは最も遅いrepositoryが必ず失敗するためである。
    checkout hookやprepare commandが起動用の設定・指示を生成・更新する運用では、先行配置がその生成物を含められないため`full`を使う。
    完全一致したwarm slotは両方式とも即時起動する。
@@ -109,10 +111,10 @@ client側の捕捉が効かない中断（`kill -9`・端末ごとの消滅）�
    resume chain専用の`parent_session_id`は流用しない。`internal/state/standby.go`が「親がEXPIRED」を条件にしているため、流用すると子貸出のstandby補充成功記録が親の終了まで入らない。
 2. `wx release <id>`の明示指定。session tokenを持たない経路なので、生きたclient / agentを持つ貸出は拒否する。
    `--discard`だけは例外で、`Store.ReleaseDiscardingWithOutcome`が返却と同じtransactionでSNAPSHOTを積まずREMOVEを積む（session `EXPIRED`→slot `REMOVING`）。
-   保存を待たずに1回で削除が予約されるので、再実行の案内も`retention.ended_worktree`の猶予も無い。slotが`PREPARING`で予約できないときだけ、通常の返却と同じく保存経路へ載る。
+   保存を待たずに1回で削除が予約されるので、再実行の案内も workspace の `retention.ended_worktree` の猶予も無い。slotが`PREPARING`で予約できないときだけ、通常の返却と同じく保存経路へ載る。
 3. 設定`lease.ttl`の経過。`Store.ExpiredLeaseCandidates`が拾う。
 
-期限が来ても保存されてから返却され、返却後も`retention.ended_worktree`の間は実体が残り`wx shell --resume <id>`で復元できる。
+期限が来ても保存されてから返却され、返却後も workspace の `retention.ended_worktree` の間は実体が残り`wx shell --resume <id>`で復元できる。
 ただしsnapshot後の編集は保存されない。
 `Manager.snapshotSession`の`processAlive(AgentPID)`ガードは`path`貸出では効かないため、期限到来時にSubAgentがまだ編集中のworktreeのsnapshotを取ることは起こり得る。
 `wx new`の主返却契機は親sessionの終了に置き、終わったら`wx release`で返す。

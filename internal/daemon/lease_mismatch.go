@@ -143,7 +143,8 @@ func placementDrift(previous, planned []state.Placement) string {
 func cowThresholdSummary(c config.Config, w discovery.Workspace) string {
 	parts := make([]string, 0, len(w.Repositories))
 	for _, repository := range w.Repositories {
-		parts = append(parts, fmt.Sprintf("%s=%d", filepath.Base(string(repository.MainPath)), c.COWMinSizeKiB(string(repository.MainPath))))
+		root := repositoryWorkspaceRootForLease(repository)
+		parts = append(parts, fmt.Sprintf("%s=%d", filepath.Base(string(repository.MainPath)), c.COWMinSizeKiBForWorkspaceRepository(root, repository.RelativePath, string(repository.MainPath))))
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, " ")
@@ -154,7 +155,8 @@ func cowThresholdSummary(c config.Config, w discovery.Workspace) string {
 func copyModeSummary(c config.Config, w discovery.Workspace) string {
 	parts := make([]string, 0, len(w.Repositories))
 	for _, repository := range w.Repositories {
-		parts = append(parts, fmt.Sprintf("%s=%s", filepath.Base(string(repository.MainPath)), c.CopyMode(string(repository.MainPath))))
+		root := repositoryWorkspaceRootForLease(repository)
+		parts = append(parts, fmt.Sprintf("%s=%s", filepath.Base(string(repository.MainPath)), c.CopyModeForWorkspaceRepository(root, repository.RelativePath, string(repository.MainPath))))
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, " ")

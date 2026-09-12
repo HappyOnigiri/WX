@@ -36,7 +36,9 @@ func cowLeftoverResult(stdout string) error {
 // 貸出前にのみ呼び、Git の index（復元時の staged/unstaged の区別を含む）は作り直さない。
 // scope は候補を限定する集合で、nil なら index 全体を候補にする。
 func (p *Preparer) compactWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string, scope *cowScope) error {
-	mode := p.Config.CopyMode(string(repo.MainPath))
+	mainPath := string(repo.MainPath)
+	workspaceRoot := p.workspaceRootForRepository(repo)
+	mode := p.Config.CopyModeForWorkspaceRepository(workspaceRoot, repo.RelativePath, mainPath)
 	if mode == config.CopyModeCopy {
 		return nil
 	}
@@ -71,6 +73,7 @@ func (p *Preparer) cowFallback(ctx context.Context, mode, target string, err err
 }
 
 func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string, scope *cowScope) error {
+	workspaceRoot := p.workspaceRootForRepository(repo)
 	owner, relative, _, err := p.openOwnedRoot(p.RootPath, target)
 	if err != nil {
 		return err
@@ -126,7 +129,7 @@ func (p *Preparer) compactOwnedWorktree(ctx context.Context, repo discovery.Repo
 		source:      source,
 		destination: destination,
 		proof:       func() error { return p.verifyPreparedTargetIdentity(owner, relative, identity) },
-		minSize:     p.Config.COWMinShareSize(string(repo.MainPath)),
+		minSize:     int64(p.Config.COWMinSizeKiBForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath))) * 1024,
 		stats:       stats,
 	}
 	batches := batchCOWRuns(splitCOWRuns(candidates), cowBatchSize)

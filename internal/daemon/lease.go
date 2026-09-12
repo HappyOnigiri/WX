@@ -52,27 +52,49 @@ type Lease struct {
 	Route string `json:"route,omitempty"`
 	// ReadinessMode と ReadinessTimeoutMS は slot 内の repository 個別指定を合成した実効値である。
 	// client は repository の main path を知らないため自分では解決できず、daemon が応答へ載せる。
-	// 空・0 のときは client の global 設定へ落ちる。
+	// 空・0 のときは client の global 設定へ落ちる。ReadinessProgress は
+	// repository ごとの表示設定を slot 全体へ合成した値で、client はこれを待機表示に使う。
+	// commentlint:allow-long -- readiness の実効値と表示設定を一つの貸出応答へ保持するため
 	ReadinessMode      string `json:"readiness_mode,omitempty"`
 	ReadinessTimeoutMS int    `json:"readiness_timeout_ms,omitempty"`
+	ReadinessProgress  bool   `json:"readiness_progress"`
 }
 
 // leaseReadiness は slot 内の repository の readiness 個別指定を1つの実効値へ合成する。
 // mode はどれかが full なら full にする。full 要求の早期起動は約束を破るが、early 要求を待たせるのは遅いだけである。
 // timeout は最長へ寄せる。最短にすると最も遅い repository が必ず timeout する。
 func leaseReadiness(cfg config.Config, repositories []discovery.Repository) (string, int) {
+	mode, timeout, _ := leaseReadinessDetails(cfg, "", repositories)
+	return mode, timeout
+}
+
+// leaseReadinessForWorkspace は workspace membership の文脈で repository 設定を
+// 解決する。上の legacy wrapper は repository path だけを持つ caller（主に互換テスト）
+// のために残す。
+func leaseReadinessForWorkspace(cfg config.Config, workspaceRoot string, repositories []discovery.Repository) (string, int) {
+	mode, timeout, _ := leaseReadinessDetails(cfg, workspaceRoot, repositories)
+	return mode, timeout
+}
+
+func leaseReadinessDetails(cfg config.Config, workspaceRoot string, repositories []discovery.Repository) (string, int, bool) {
 	mode := ""
 	var timeout time.Duration
+	progress := cfg.Readiness.Progress
 	for _, repository := range repositories {
-		readiness := cfg.ReadinessForRepository(string(repository.MainPath))
+		root := workspaceRoot
+		if root == "" {
+			root = repositoryWorkspaceRootForLease(repository)
+		}
+		readiness := cfg.ReadinessForWorkspaceRepository(root, repository.RelativePath, string(repository.MainPath))
 		if mode != "full" {
 			mode = readiness.Mode
 		}
 		if readiness.Timeout.Duration > timeout {
 			timeout = readiness.Timeout.Duration
 		}
+		progress = progress && readiness.Progress
 	}
-	return mode, int(timeout.Milliseconds())
+	return mode, int(timeout.Milliseconds()), progress
 }
 
 // ResolveAndLease は cwd の workspace を解決して貸出す。
@@ -523,6 +545,23 @@ func (m *Manager) resolveRetiredSlotPath(ctx context.Context, discoverer discove
 
 // withReadiness は貸出応答へ slot 単位の readiness 実効値を載せる。
 func (l Lease) withReadiness(cfg config.Config, w discovery.Workspace) Lease {
-	l.ReadinessMode, l.ReadinessTimeoutMS = leaseReadiness(cfg, w.Repositories)
+	l.ReadinessMode, l.ReadinessTimeoutMS, l.ReadinessProgress = leaseReadinessDetails(cfg, string(w.Root), w.Repositories)
 	return l
+}
+
+func repositoryWorkspaceRootForLease(repository discovery.Repository) string {
+	root := string(repository.MainPath)
+	relative := filepath.Clean(repository.RelativePath)
+	if relative == "." || relative == "" {
+		return root
+	}
+	for component := relative; component != "." && component != ""; {
+		root = filepath.Dir(root)
+		next := filepath.Dir(component)
+		if next == component {
+			break
+		}
+		component = next
+	}
+	return root
 }

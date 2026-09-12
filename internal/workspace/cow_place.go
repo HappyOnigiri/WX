@@ -253,7 +253,8 @@ func (c cowPlacement) complete() bool { return len(c.placed) > 0 && c.pending ==
 // checkout してから同内容へ差し替えるのに比べ、同じ bytes の書き出しと読み比べが1往復ぶん要らなくなる。
 func (p *Preparer) placeSharedFiles(ctx context.Context, repo discovery.Repository, item *stagedRepository, slotID string) (cowPlacement, error) {
 	// clone できない platform と copy 指定では1件も置かず、方式の判断は従来どおり compactWorktree に委ねる。
-	mode := p.Config.CopyMode(string(repo.MainPath))
+	workspaceRoot := p.workspaceRootForRepository(repo)
+	mode := p.Config.CopyModeForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath))
 	if mode == config.CopyModeCopy || !cowAvailable() {
 		return cowPlacement{}, nil
 	}
@@ -268,6 +269,7 @@ func (p *Preparer) placeSharedFiles(ctx context.Context, repo discovery.Reposito
 }
 
 func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Repository, item *stagedRepository, slotID string) (cowPlacement, error) {
+	workspaceRoot := p.workspaceRootForRepository(repo)
 	owner, relative, _, err := p.openOwnedRoot(p.RootPath, item.Target)
 	if err != nil {
 		return cowPlacement{}, err
@@ -297,7 +299,7 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 		source:      source,
 		destination: destination,
 		proof:       validate,
-		minSize:     p.Config.COWMinShareSize(string(repo.MainPath)),
+		minSize:     int64(p.Config.COWMinSizeKiBForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath))) * 1024,
 		stats:       stats,
 		placed:      make(map[string]bool, len(candidates)),
 	}

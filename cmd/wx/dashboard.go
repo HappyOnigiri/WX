@@ -88,7 +88,36 @@ func addDashboardEnvironments(ctx context.Context, cfg *config.Config) {
 			if _, exists := cfg.Workspaces[root]; !exists {
 				cfg.Workspaces[root] = config.Workspace{}
 			}
+			if cfg.V2() {
+				workspace := cfg.Workspaces[root]
+				workspace.Discovered = true
+				members, _ := item["repositories"].([]any)
+				if len(members) == 0 {
+					members, _ = item["repository_memberships"].([]any)
+				}
+				if len(members) > 0 {
+					if workspace.Repositories == nil {
+						workspace.Repositories = map[string]config.Repository{}
+					}
+					for _, rawMembership := range members {
+						membership, ok := rawMembership.(map[string]any)
+						if !ok {
+							continue
+						}
+						relative, _ := membership["relative_path"].(string)
+						if relative != "" {
+							repository := workspace.Repositories[relative]
+							repository.Discovered = true
+							workspace.Repositories[relative] = repository
+						}
+					}
+					cfg.Workspaces[root] = workspace
+				}
+			}
 		}
+	}
+	if cfg.V2() {
+		return
 	}
 	if cfg.Repositories == nil {
 		cfg.Repositories = map[string]config.Repository{}

@@ -77,12 +77,26 @@ func walkScopeFields(v reflect.Value, prefix string, visit func(key string, fiel
 		if tag == "" || tag == "-" {
 			continue
 		}
+		// readiness.progress は config v2 の repository leaf である。
+		// legacy の absolute-path scope API は変えず、v2Fields から別に公開する。
+		if prefix == "readiness" && tag == "progress" {
+			continue
+		}
+		// v2 の workspace repository_defaults と repository submodules は v2 editor
+		// から扱う。flat API を使う caller 向けに legacy scope の key set は保つ。
+		if tag == "repository_defaults" {
+			continue
+		}
 		key := tag
 		if prefix != "" {
 			key = prefix + "." + tag
 		}
 		fv := v.Field(i)
 		switch {
+		case fv.Kind() == reflect.Map:
+			// repositories は動的な相対 path map である。entry は明示的な
+			// workspace+repository scope で扱い、scope catalog の scalar key にはしない。
+			continue
 		case fv.Type() == durationType || fv.Type() == reflect.PointerTo(durationType):
 			visit(key, fv)
 		case fv.Kind() == reflect.Struct:
@@ -97,6 +111,9 @@ func walkScopeFields(v reflect.Value, prefix string, visit func(key string, fiel
 func ScopeKeys(s Scope) []string {
 	var keys []string
 	walkScopeFields(s.newEntry(), "", func(key string, _ reflect.Value) {
+		if s == ScopeRepository && key == "submodules" {
+			return
+		}
 		keys = append(keys, key)
 	})
 	return keys
@@ -400,17 +417,30 @@ func scopeFields(c, raw Config, s Scope, target string, resolveDefault bool) []S
 
 // formatScopeValue は設定値を一覧表示用の文字列にする。list は global 表示と同じ引用形式で出す。
 func formatScopeValue(fv reflect.Value) string {
+	if !fv.IsValid() {
+		return ""
+	}
 	if fv.Kind() == reflect.Pointer {
 		if fv.IsNil() {
 			return ""
 		}
 		fv = fv.Elem()
 	}
+	if !fv.IsValid() {
+		return ""
+	}
 	switch {
 	case fv.Type() == durationType:
 		return fv.Interface().(Duration).String()
 	case fv.Kind() == reflect.Slice:
-		return fmt.Sprintf("%q", fv.Interface().([]string))
+		if fv.Type().Elem().Kind() == reflect.String {
+			values := make([]string, fv.Len())
+			for i := range values {
+				values[i] = fv.Index(i).String()
+			}
+			return fmt.Sprintf("%q", values)
+		}
+		return fmt.Sprint(fv.Interface())
 	case fv.Kind() == reflect.String:
 		return fv.String()
 	case fv.Kind() == reflect.Bool:

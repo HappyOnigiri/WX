@@ -187,5 +187,5 @@ func (c Client) probeSlotView(ctx context.Context, slotID string) daemon.SlotVie
 
 // probeGit は検査用の Git runner を返す。検査は読み取りだけなので詳細ログの置き場は持たせない。
 func (c Client) probeGit() *gitx.Runner {
-	return &gitx.Runner{Timeout: c.Config.Readiness.Timeout.Duration}
+	return &gitx.Runner{Timeout: c.Config.MaxReadinessTimeout()}
 }

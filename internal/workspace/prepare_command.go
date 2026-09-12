@@ -184,8 +184,8 @@ func (d *prepareDiagnostic) finish(success bool, exitCode int, timedOut, cancele
 }
 
 func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Repository, target, expectedIdentity string) error {
-	override, ok := p.Config.Repositories[string(repo.MainPath)]
-	if !ok || len(override.Prepare.Command) == 0 {
+	override := p.repositoryConfig(repo)
+	if len(override.Prepare.Command) == 0 {
 		return nil
 	}
 	diagnostic := p.startPrepareDiagnostic(override.Prepare.Command)
@@ -197,7 +197,8 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 		return &PrepareCommandError{FailureID: diagnostic.failureID, DetailPath: path, ExitCode: -1, Err: err}
 	}
 	if timeout <= 0 {
-		timeout = p.Config.ReadinessForRepository(string(repo.MainPath)).Timeout.Duration
+		workspaceRoot := p.workspaceRootForRepository(repo)
+		timeout = p.Config.ReadinessForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath)).Timeout.Duration
 	}
 	if timeout <= 0 {
 		err := errors.New("prepare timeout must be positive")

@@ -214,7 +214,7 @@ func (p *Preparer) planIncludes(repo discovery.Repository, plan *earlyPlan) erro
 		return err
 	}
 	defer func() { _ = source.Close() }()
-	defaults, err := p.defaultIncludes(mainPath)
+	defaults, err := p.defaultIncludesForRepository(repo)
 	if err != nil {
 		return err
 	}

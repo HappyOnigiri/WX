@@ -34,6 +34,9 @@ func LogPath() (string, error) {
 }
 
 func NormalizePaths(c *Config) error {
+	if c != nil && c.V2() {
+		return normalizeV2Paths(c)
+	}
 	root, err := canonicalPath(c.Storage.WorktreeRoot)
 	if err != nil {
 		return fmt.Errorf("storage.worktree_root: %w", err)
@@ -64,6 +67,54 @@ func NormalizePaths(c *Config) error {
 	}
 	c.Repositories = repositories
 	return nil
+}
+
+// normalizeV2Paths は workspace root を正規化し、membership key を検証する。
+// 相対 repository key は絶対化せず workspace ごとに保持するため、同じ main repository を別設定で所属させられる。
+func normalizeV2Paths(c *Config) error {
+	root, err := canonicalPath(c.System.Storage.WorktreeRoot)
+	if err != nil {
+		return fmt.Errorf("system.storage.worktree_root: %w", err)
+	}
+	c.System.Storage.WorktreeRoot = root
+	// flatten field を直接読む互換 caller と値を揃える。
+	c.Storage.WorktreeRoot = root
+	workspaces := make(map[string]Workspace, len(c.Workspaces))
+	for path, override := range c.Workspaces {
+		canonical, err := canonicalPath(path)
+		if err != nil {
+			return fmt.Errorf("workspace override %q: %w", path, err)
+		}
+		if _, exists := workspaces[canonical]; exists {
+			return fmt.Errorf("workspace overrides collide at canonical path %s", canonical)
+		}
+		normalized, err := normalizeWorkspaceMemberships(canonical, override)
+		if err != nil {
+			return err
+		}
+		workspaces[canonical] = normalized
+	}
+	c.Workspaces = workspaces
+	return nil
+}
+
+func normalizeWorkspaceMemberships(root string, workspace Workspace) (Workspace, error) {
+	if workspace.Repositories == nil {
+		return workspace, nil
+	}
+	members := make(map[string]Repository, len(workspace.Repositories))
+	for rel, override := range workspace.Repositories {
+		clean, err := NormalizeRepositoryRelative(rel)
+		if err != nil {
+			return Workspace{}, fmt.Errorf("workspaces.%s.repositories.%s must be a workspace-relative path", root, rel)
+		}
+		if _, exists := members[clean]; exists {
+			return Workspace{}, fmt.Errorf("workspaces.%s.repositories collide at relative path %s", root, clean)
+		}
+		members[clean] = override
+	}
+	workspace.Repositories = members
+	return workspace, nil
 }
 
 func canonicalPath(path string) (string, error) {

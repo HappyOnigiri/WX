@@ -33,6 +33,11 @@ func walkConfigLeaves(v reflect.Value, prefix string, visit func(key string, fie
 		if prefix != "" {
 			key = prefix + "." + tag
 		}
+		// config v2 は疎な nested 表現を legacy 実効 view と併せて保持する。
+		// generic legacy field walker から両方を重複した編集 key として公開しない。
+		if prefix == "" && (tag == "system" || tag == "workspace_defaults" || tag == "repository_defaults") {
+			continue
+		}
 		fv := v.Field(i)
 		switch {
 		case fv.Type() == durationType:
@@ -63,6 +68,9 @@ func walkConfigLists(v reflect.Value, prefix string, visit func(key string, fiel
 		key := tag
 		if prefix != "" {
 			key = prefix + "." + tag
+		}
+		if prefix == "" && (tag == "system" || tag == "workspace_defaults" || tag == "repository_defaults") {
+			continue
 		}
 		fv := v.Field(i)
 		switch {

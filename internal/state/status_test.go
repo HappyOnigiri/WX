@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,33 @@ import (
 	"testing"
 	"time"
 )
+
+func TestWorkspaceDiagnosticJSONIncludesMembershipContext(t *testing.T) {
+	t.Parallel()
+	item := WorkspaceDiagnostic{
+		ID: "workspace", Root: "/workspace", Kind: "multi_repository", Generation: 3,
+		Repositories: 2, RepositoryMemberships: []WorkspaceRepositoryMembership{{ID: "repo", MainPath: "/src/repo", RelativePath: "frontend"}},
+	}
+	data, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["kind"] != "multi_repository" || payload["repositories"] != float64(2) {
+		t.Fatalf("workspace JSON=%v", payload)
+	}
+	members, ok := payload["repository_memberships"].([]any)
+	if !ok || len(members) != 1 {
+		t.Fatalf("workspace memberships=%v", payload["repository_memberships"])
+	}
+	member, ok := members[0].(map[string]any)
+	if !ok || member["id"] != "repo" || member["main_path"] != "/src/repo" || member["relative_path"] != "frontend" {
+		t.Fatalf("membership JSON=%v", members[0])
+	}
+}
 
 func TestStatusDiagnosticsFailsAtEachSchemaBoundary(t *testing.T) {
 	t.Parallel()

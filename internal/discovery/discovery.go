@@ -51,7 +51,7 @@ func (d *Discoverer) Resolve(ctx context.Context, cwd string) (Workspace, error)
 }
 
 func (d *Discoverer) repositoryWorkspace(ctx context.Context, root string) (Workspace, error) {
-	repo, err := d.inspectRepo(ctx, root, ".")
+	repo, err := d.inspectRepoForWorkspace(ctx, root, root, ".")
 	if err != nil {
 		return Workspace{}, err
 	}
@@ -92,6 +92,10 @@ func (d *Discoverer) ResolveFromCommonDir(ctx context.Context, commonDir string)
 }
 
 func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Repository, error) {
+	return d.inspectRepoForWorkspace(ctx, root, root, relative)
+}
+
+func (d *Discoverer) inspectRepoForWorkspace(ctx context.Context, workspaceRoot, root, relative string) (Repository, error) {
 	res, err := d.Git.Run(ctx, root, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return Repository{}, err
@@ -113,7 +117,8 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 		return Repository{}, err
 	}
 	branch := "main"
-	if override, ok := d.Config.Repositories[string(mainPath)]; ok && override.DefaultBranch != "" {
+	override := d.Config.RepositoryFor(workspaceRoot, relative, string(mainPath))
+	if override.DefaultBranch != "" {
 		branch = override.DefaultBranch
 	}
 	return Repository{ID: domain.RepositoryID(domain.StableID(string(common))), MainPath: mainPath, CommonDir: common, RelativePath: filepath.Clean(relative), RemoteName: d.remoteName(ctx, string(mainPath)), DefaultBranch: branch}, nil
@@ -241,7 +246,7 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 		}
 		gitPath := filepath.Join(path, ".git")
 		if _, err := os.Lstat(gitPath); err == nil {
-			repo, err := d.inspectRepo(ctx, path, rel)
+			repo, err := d.inspectRepoForWorkspace(ctx, configRoot, path, rel)
 			if err != nil {
 				return err
 			}

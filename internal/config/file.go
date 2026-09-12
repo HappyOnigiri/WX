@@ -221,6 +221,9 @@ func leafInterface(fv reflect.Value) any {
 }
 
 func (c Config) MarshalYAML() (any, error) {
+	if c.V2() {
+		return c.marshalV2YAML()
+	}
 	out := map[string]any{}
 	if c.has("version", false) {
 		out["version"] = c.Version
@@ -242,6 +245,26 @@ func (c Config) MarshalYAML() (any, error) {
 	}
 	if c.has("repositories", c.Repositories != nil) {
 		out["repositories"] = c.Repositories
+	}
+	return out, nil
+}
+
+// marshalV2YAML は v2 namespace だけを書き出す。legacy の flatten field は
+// memory 内の互換 projection であり、v2 file へ漏らしてはならない（次回の strict
+// load が二つの正本を検出するため）。
+func (c Config) marshalV2YAML() (any, error) {
+	out := map[string]any{"version": 2}
+	if c.has("system", !reflect.ValueOf(c.System).IsZero()) {
+		out["system"] = c.System
+	}
+	if c.has("workspace_defaults", !reflect.ValueOf(c.WorkspaceDefaults).IsZero()) {
+		out["workspace_defaults"] = c.WorkspaceDefaults
+	}
+	if c.has("repository_defaults", !reflect.ValueOf(c.RepositoryDefaults).IsZero()) {
+		out["repository_defaults"] = c.RepositoryDefaults
+	}
+	if c.has("workspaces", c.Workspaces != nil) {
+		out["workspaces"] = c.Workspaces
 	}
 	return out, nil
 }

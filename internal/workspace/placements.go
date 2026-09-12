@@ -27,7 +27,7 @@ func (p *Preparer) RepositoryPlacements(ctx context.Context, repo discovery.Repo
 		return nil, err
 	}
 	defer func() { _ = sourceRoot.Close() }()
-	defaults, err := p.defaultIncludes(mainPath)
+	defaults, err := p.defaultIncludesForRepository(repo)
 	if err != nil {
 		return nil, err
 	}

@@ -91,6 +91,7 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 		return err
 	}
 	preparer := m.newPreparer(prepareConfig, slot)
+	preparer.WorkspaceRoot = string(w.Root)
 	if len(repos) != len(resolved) {
 		return errors.New("slot repository metadata does not match resolved workspace")
 	}
@@ -185,7 +186,7 @@ func (m *Manager) capturePlacements(ctx context.Context, slot state.Slot, w disc
 // rootRules は非Git workspace rootの配置ruleを、configとroot直下のmanifestから解決する。
 // 1つのjobでは解決を1回に保ち、計画・配置・記録・除外が同じ結果を見るようにする。
 func (m *Manager) rootRules(w discovery.Workspace) (workspace.RootRules, error) {
-	return workspace.ResolveRootRules(string(w.Root), m.Config().Workspaces[string(w.Root)])
+	return workspace.ResolveRootRules(string(w.Root), m.Config().WorkspaceFor(string(w.Root)))
 }
 
 func (m *Manager) materializeWorkspaceRoot(source, slotPath string, rules workspace.RootRules) error {

@@ -23,13 +23,17 @@ const reservedDirNamePrefix = "_"
 // 名前は checkout の場所だけに影響し、所有権証明には影響しない。使用値は slot_repositories.dir_name に記録して以後の authority とし、設定/remote URL の変更は新規 slot だけに反映する。
 // commentlint:allow-long -- directory 名の解決順序と既存 slot の不変条件を説明する
 func RepositoryDirName(repo discovery.Repository, cfg config.Config) string {
-	override := cfg.Repositories[string(repo.MainPath)]
+	workspaceRoot, _ := repositoryWorkspaceRoot(repo)
+	override := cfg.RepositoryFor(workspaceRoot, repo.RelativePath, string(repo.MainPath))
 	if name, ok := sanitizeDirName(override.DirName); ok {
 		return name
 	}
 	source := override.DirSource
 	if source == "" {
 		source = cfg.Storage.RepoDirSource
+		if cfg.V2() {
+			source = cfg.RepositoryDefaults.DirSource
+		}
 	}
 	if source != config.RepoDirSourceDirectory {
 		if name, ok := sanitizeDirName(repo.RemoteName); ok {

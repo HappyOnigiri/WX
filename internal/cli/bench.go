@@ -261,7 +261,7 @@ func benchUsageMeasuredAfter(measuredAt string, notBefore time.Time) bool {
 }
 
 func (c Client) waitBenchReadiness(ctx context.Context, lease daemon.Lease, method string) error {
-	timeout := c.Config.Readiness.Timeout.Duration
+	timeout := leaseReadinessTimeout(c.Config, lease)
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	params := map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(timeout.Milliseconds())}

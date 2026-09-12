@@ -27,26 +27,123 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
 type Config struct {
-	Worktree     WorktreePolicy        `yaml:"worktree,omitempty"`
-	Version      int                   `yaml:"version,omitempty"`
-	Storage      Storage               `yaml:"storage,omitempty"`
-	Pool         Pool                  `yaml:"pool,omitempty"`
-	Retention    Retention             `yaml:"retention,omitempty"`
-	Discovery    Discovery             `yaml:"discovery,omitempty"`
-	Readiness    Readiness             `yaml:"readiness,omitempty"`
-	Resume       Resume                `yaml:"resume,omitempty"`
-	Lease        Lease                 `yaml:"lease,omitempty"`
-	Includes     Includes              `yaml:"includes,omitempty"`
-	Agent        Agent                 `yaml:"agent,omitempty"`
-	Sessions     sessionsconfig.Config `yaml:"sessions,omitempty"`
-	Workspaces   map[string]Workspace  `yaml:"workspaces,omitempty"`
-	Repositories map[string]Repository `yaml:"repositories,omitempty"`
-	Logging      Logging               `yaml:"logging,omitempty"`
-	present      map[string]bool
+	// Version 2 は machine-wide 設定を system と2つの global profile に分ける。
+	// 旧フィールドは既存 caller の実効値参照用にメモリへ残し、保存時は v2 形状だけを出力する。
+	System             SystemConfig          `yaml:"system,omitempty"`
+	WorkspaceDefaults  WorkspaceDefaults     `yaml:"workspace_defaults,omitempty"`
+	RepositoryDefaults RepositoryDefaults    `yaml:"repository_defaults,omitempty"`
+	Worktree           WorktreePolicy        `yaml:"worktree,omitempty"`
+	Version            int                   `yaml:"version,omitempty"`
+	Storage            Storage               `yaml:"storage,omitempty"`
+	Pool               Pool                  `yaml:"pool,omitempty"`
+	Retention          Retention             `yaml:"retention,omitempty"`
+	Discovery          Discovery             `yaml:"discovery,omitempty"`
+	Readiness          Readiness             `yaml:"readiness,omitempty"`
+	Resume             Resume                `yaml:"resume,omitempty"`
+	Lease              Lease                 `yaml:"lease,omitempty"`
+	Includes           Includes              `yaml:"includes,omitempty"`
+	Agent              Agent                 `yaml:"agent,omitempty"`
+	Sessions           sessionsconfig.Config `yaml:"sessions,omitempty"`
+	Workspaces         map[string]Workspace  `yaml:"workspaces,omitempty"`
+	Repositories       map[string]Repository `yaml:"repositories,omitempty"`
+	Logging            Logging               `yaml:"logging,omitempty"`
+	present            map[string]bool
 	// prepareOverride は貸出1回だけの準備設定の上書きで、設定ファイルにも workspaces/repositories にも現れない。
 	// 解決ヘルパーはこれを最上位に置き、repository 個別指定より優先する。
 	prepareOverride PrepareOverride
+	// v2Explicit は、すべて既定値で埋めた v2 実効値と、呼び出し側が Version
+	// だけを書き換えた legacy Config を区別する。
+	v2Explicit bool
 }
+
+// SystemConfig は daemon とマシン全体で共有する設定を保持する config v2 の
+// system 節である。Repository や Workspace に属する値をここへ置かないため、
+// global defaults を変更しても所属単位以外へ波及しないことを型で示す。
+type SystemConfig struct {
+	Storage   SystemStorage         `yaml:"storage,omitempty"`
+	Pool      SystemPool            `yaml:"pool,omitempty"`
+	Retention SystemRetention       `yaml:"retention,omitempty"`
+	Discovery SystemDiscovery       `yaml:"discovery,omitempty"`
+	Resume    Resume                `yaml:"resume,omitempty"`
+	Lease     Lease                 `yaml:"lease,omitempty"`
+	Sessions  sessionsconfig.Config `yaml:"sessions,omitempty"`
+	Logging   Logging               `yaml:"logging,omitempty"`
+}
+
+// SystemStorage は worktree root と state backup の設定である。
+type SystemStorage struct {
+	WorktreeRoot      string   `yaml:"worktree_root,omitempty"`
+	BackupGenerations int      `yaml:"backup_generations,omitempty"`
+	BackupRetention   Duration `yaml:"backup_retention,omitempty"`
+}
+
+// SystemPool は daemon 全体の worker 数である。
+type SystemPool struct {
+	PreparationConcurrency int `yaml:"preparation_concurrency,omitempty"`
+}
+
+// SystemRetention は workspace・repository に属さない保持期間である。
+type SystemRetention struct {
+	Quarantined             Duration `yaml:"quarantined,omitempty"`
+	RecoverySnapshot        Duration `yaml:"recovery_snapshot,omitempty"`
+	ExpiredSessionTombstone Duration `yaml:"expired_session_tombstone,omitempty"`
+	FailedJob               Duration `yaml:"failed_job,omitempty"`
+	EventLog                Duration `yaml:"event_log,omitempty"`
+}
+
+// SystemDiscovery は全 workspace の探索実行を制限する値である。
+type SystemDiscovery struct {
+	MaxEntries        int      `yaml:"max_entries,omitempty"`
+	Timeout           Duration `yaml:"timeout,omitempty"`
+	ReconcileInterval Duration `yaml:"reconcile_interval,omitempty"`
+}
+
+// WorkspaceDefaults は Workspace 設定の global 既定値である。list の nil
+// は組み込み既定値の継承、空 list は明示的な空を表す。
+type WorkspaceDefaults struct {
+	Worktree     string             `yaml:"worktree,omitempty"`
+	Copy         []string           `yaml:"copy,omitempty"`
+	Link         []string           `yaml:"link,omitempty"`
+	ReuseStandby *bool              `yaml:"reuse_standby,omitempty"`
+	WarmCount    *int               `yaml:"warm_count,omitempty"`
+	Agent        WorkspaceAgent     `yaml:"agent,omitempty"`
+	Retention    WorkspaceRetention `yaml:"retention,omitempty"`
+	Discovery    WorkspaceDiscovery `yaml:"discovery,omitempty"`
+}
+
+// RepositoryDefaults は Repository 設定の global 既定値である。
+// dir_name は membership ごとの配置名なのでここには持たせない。
+type RepositoryDefaults struct {
+	DefaultBranch string              `yaml:"default_branch,omitempty"`
+	DirSource     string              `yaml:"dir_source,omitempty"`
+	COWMinSizeKiB *int                `yaml:"cow_min_size_kib,omitempty"`
+	Submodules    *bool               `yaml:"submodules,omitempty"`
+	Prepare       Prepare             `yaml:"prepare,omitempty"`
+	Includes      RepositoryIncludes  `yaml:"includes,omitempty"`
+	Readiness     RepositoryReadiness `yaml:"readiness,omitempty"`
+	Storage       RepositoryStorage   `yaml:"storage,omitempty"`
+}
+
+// repositoryDefaultsAsRepository は v2 の global repository profile を既存の
+// repository 設定型へ写す。既存の準備コードはこの型を受け取るため、解決境界を
+// config package に閉じたまま段階的に移行できる。
+func repositoryDefaultsAsRepository(d RepositoryDefaults) Repository {
+	prepare := d.Prepare
+	prepare.Command = cloneStrings(prepare.Command)
+	readiness := d.Readiness
+	readiness.EarlyPaths = cloneStrings(readiness.EarlyPaths)
+	return Repository{
+		DefaultBranch: d.DefaultBranch,
+		DirSource:     d.DirSource,
+		COWMinSizeKiB: d.COWMinSizeKiB,
+		Submodules:    d.Submodules,
+		Prepare:       prepare,
+		Includes:      d.Includes,
+		Readiness:     readiness,
+		Storage:       d.Storage,
+	}
+}
+
 type WorktreePolicy struct {
 	Undefined    string `yaml:"undefined,omitempty"`
 	ReuseStandby bool   `yaml:"reuse_standby,omitempty"`
@@ -130,6 +227,15 @@ type Workspace struct {
 	Agent     WorkspaceAgent     `yaml:"agent,omitempty"`
 	Retention WorkspaceRetention `yaml:"retention,omitempty"`
 	Discovery WorkspaceDiscovery `yaml:"discovery,omitempty"`
+	// RepositoryDefaults はこの Workspace に所属する全 Repository の
+	// 共通上書きである。dir_name のような membership 専用値は含めない。
+	RepositoryDefaults RepositoryDefaults `yaml:"repository_defaults,omitempty"`
+	// Repositories は Workspace root からの正規化済み相対 path ごとの
+	// membership 設定である。旧 Config.Repositories とは異なり、同じ
+	// Repository を複数 Workspace で独立して設定できる。
+	Repositories map[string]Repository `yaml:"repositories,omitempty"`
+	// Discovered は dashboard が daemon status と config を統合するときだけ使う表示用印で、保存対象ではない。
+	Discovered bool `yaml:"-"`
 }
 
 // WorkspaceAgent は agent 節の workspace 個別指定である。空文字は未指定を表す。
@@ -169,13 +275,18 @@ type Repository struct {
 	// COWMinSizeKiB は repository 個別の CoW 共有下限（KiB）で、nil のときは storage.cow_min_size_kib を継承する。
 	// 最適な下限は repository のファイルサイズ分布で変わるため個別に指定できる。ポインタで明示的な 0（下限なし）と未指定を区別する。
 	// Repositories は map のため YAML で直接指定する。
-	COWMinSizeKiB *int               `yaml:"cow_min_size_kib,omitempty"`
-	Prepare       Prepare            `yaml:"prepare,omitempty"`
-	Includes      RepositoryIncludes `yaml:"includes,omitempty"`
+	COWMinSizeKiB *int `yaml:"cow_min_size_kib,omitempty"`
+	// Submodules は repository 個別の submodule 実体化方針で、nil は
+	// repository_defaults または組み込み既定値を継承する。
+	Submodules *bool              `yaml:"submodules,omitempty"`
+	Prepare    Prepare            `yaml:"prepare,omitempty"`
+	Includes   RepositoryIncludes `yaml:"includes,omitempty"`
 	// Readiness・Storage は global の同名キー路をそのまま写した個別指定である。
 	// slot の中身を決める値は repository の prepare.command と checkout 規模で変わる。
 	Readiness RepositoryReadiness `yaml:"readiness,omitempty"`
 	Storage   RepositoryStorage   `yaml:"storage,omitempty"`
+	// Discovered は dashboard が daemon の membership 一覧を統合するときだけ使う表示用印で、保存対象ではない。
+	Discovered bool `yaml:"-"`
 }
 
 // RepositoryReadiness は readiness 節の repository 個別指定である。
@@ -184,6 +295,7 @@ type RepositoryReadiness struct {
 	Mode       string    `yaml:"mode,omitempty"`
 	EarlyPaths []string  `yaml:"early_paths,omitempty"`
 	Timeout    *Duration `yaml:"timeout,omitempty"`
+	Progress   *bool     `yaml:"progress,omitempty"`
 }
 
 // RepositoryStorage は storage 節の repository 個別指定である。空文字は未指定を表す。
@@ -240,6 +352,9 @@ func (s Storage) COWMinShareSize() int64 { return int64(s.COWMinSizeKiB) << 10 }
 // 貸出1回の上書き、repository 個別指定、global 設定の順に優先する。
 // mainPath は NormalizePaths 済み canonical path であることを呼び出し側の契約とする。
 func (c Config) COWMinSizeKiB(mainPath string) int {
+	if c.V2() {
+		return c.COWMinSizeKiBForWorkspaceRepository("", ".", mainPath)
+	}
 	if c.prepareOverride.COWMinSizeKiB != nil {
 		return *c.prepareOverride.COWMinSizeKiB
 	}
@@ -253,6 +368,9 @@ func (c Config) COWMinSizeKiB(mainPath string) int {
 // 貸出1回の上書き、repository 個別指定、global 設定の順に優先する。
 // mainPath は NormalizePaths 済み canonical path であることを呼び出し側の契約とする。
 func (c Config) CopyMode(mainPath string) string {
+	if c.V2() {
+		return c.CopyModeForWorkspaceRepository("", ".", mainPath)
+	}
 	if c.prepareOverride.CopyMode != "" {
 		return c.prepareOverride.CopyMode
 	}
@@ -288,6 +406,9 @@ func Defaults() Config {
 // DefaultAgentRulesEnabled は repository へ既定の agent rule をコピーするか解決する。
 // 個別指定が global 設定より優先される。
 func (c Config) DefaultAgentRulesEnabled(mainPath string) bool {
+	if c.V2() {
+		return c.DefaultAgentRulesForWorkspaceRepository("", ".", mainPath)
+	}
 	if override, ok := c.Repositories[mainPath]; ok && override.Includes.DefaultAgentRules != nil {
 		return *override.Includes.DefaultAgentRules
 	}
@@ -307,6 +428,9 @@ func (c Config) EffectiveEqual(other Config) bool {
 }
 
 func Merge(d, raw Config) Config {
+	if raw.V2() {
+		return effectiveV2Defaults(raw)
+	}
 	r := d
 	if raw.has("version", raw.Version != 0) {
 		r.Version = raw.Version
@@ -336,6 +460,19 @@ func Merge(d, raw Config) Config {
 }
 
 func Validate(c *Config) error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	if c.V2() {
+		if c.Version == 2 && !c.v2Explicit {
+			return fmt.Errorf("unsupported config version %d", c.Version)
+		}
+		if err := ValidateV2Rules(c); err != nil {
+			return err
+		}
+	} else if c.Version != 1 {
+		return fmt.Errorf("unsupported config version %d", c.Version)
+	}
 	if err := validateReadiness(&c.Readiness); err != nil {
 		return err
 	}
@@ -352,9 +489,6 @@ func Validate(c *Config) error {
 		if err := validateWorkspaceOverride(path, workspace); err != nil {
 			return err
 		}
-	}
-	if c.Version != 1 {
-		return fmt.Errorf("unsupported config version %d", c.Version)
 	}
 	if err := validateStorage(&c.Storage); err != nil {
 		return err
@@ -423,6 +557,9 @@ func validateWorkspaceOverride(path string, workspace Workspace) error {
 
 // validateRepositoryOverride は repository 個別指定を検査し、early_paths を正規化した個別指定を返す。
 func validateRepositoryOverride(path string, override Repository) (Repository, error) {
+	if override.Prepare.Timeout.Duration < 0 {
+		return Repository{}, fmt.Errorf("repositories.%s.prepare.timeout must not be negative", path)
+	}
 	if mode := override.Readiness.Mode; mode != "" && mode != "early" && mode != "full" {
 		return Repository{}, fmt.Errorf("repositories.%s.readiness.mode must be early or full", path)
 	}
