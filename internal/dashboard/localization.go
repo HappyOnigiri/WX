@@ -2,13 +2,17 @@ package dashboard
 
 import (
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
-var dashboardPathPattern = regexp.MustCompile(`/[^\s\x1b]+`)
+// dashboardPathPattern は行頭か空白の直後から始まる絶対 path だけを捉える。
+// 語中の `/`（Enter/Esc、Tab/Shift+Tab、←/→ など）まで path 扱いにすると、
+// 退避した区間のラベルが翻訳されないまま残る。
+var dashboardPathPattern = regexp.MustCompile(`(?m)(?:^|\s)/[^\s\x1b]+`)
 
 // dashboardLanguage は設定から表示用の言語を取り出す。未設定・不正値は英語。
 func dashboardLanguage(value string) i18n.Language { return i18n.Normalize(value) }
@@ -22,10 +26,11 @@ func translateDashboard(text string, lang i18n.Language) string {
 	// 表示全体には daemon の status や workspace の絶対 path も含まれる。
 	// 固定ラベルの置換がそれらの値を壊さないよう、path だけ一時退避する。
 	paths := make([]string, 0)
-	text = dashboardPathPattern.ReplaceAllStringFunc(text, func(path string) string {
+	text = dashboardPathPattern.ReplaceAllStringFunc(text, func(match string) string {
+		slash := strings.IndexByte(match, '/')
 		index := len(paths)
-		paths = append(paths, path)
-		return "\x00wx-dashboard-path-" + strconv.Itoa(index) + "\x00"
+		paths = append(paths, match[slash:])
+		return match[:slash] + "\x00wx-dashboard-path-" + strconv.Itoa(index) + "\x00"
 	})
 	// LaunchAgent は macOS の機械的な service 名であり、単語 `Launch` の
 	// 置換に巻き込まない。画面上の固定ラベルだけを翻訳する。
@@ -45,7 +50,7 @@ func translateDashboard(text string, lang i18n.Language) string {
 		{"No status is available.", "状態を取得できません。"},
 		{"Could not load configuration: ", "設定を読み込めませんでした: "},
 		{"Choose what to launch", "起動するものを選択"},
-		{"Editable settings", "設定を編集"},
+		{"Editable settings", "編集できる設定"},
 		{"Environments", "環境"},
 		{"Diagnostic mode", "診断モード"},
 		{"Maintenance operation", "保守操作"},
@@ -55,6 +60,13 @@ func translateDashboard(text string, lang i18n.Language) string {
 		{"Running…", "実行中…"},
 		{"The result will appear here when the operation finishes.", "操作が完了すると結果がここに表示されます。"},
 		{"The operation produced no output.", "操作の出力はありません。"},
+		{"←/→ or Tab/Shift+Tab tabs", "←/→ または Tab/Shift+Tab でタブ切替"},
+		{"←/→ tabs", "←/→ でタブ切替"},
+		{"↑/↓ select environment", "↑/↓ で環境を選択"},
+		{"↑/↓ scroll result", "↑/↓ で結果をスクロール"},
+		{"↑/↓ select", "↑/↓ で選択"},
+		{"r refresh", "r で更新"},
+		{"Enter open", "Enter で開く"},
 		{"Enter confirm", "Enter で確定"},
 		{"Esc exit", "Esc で終了"},
 		{"Esc back", "Esc で戻る"},
@@ -64,7 +76,7 @@ func translateDashboard(text string, lang i18n.Language) string {
 		{"Verbose diagnostics", "詳細診断"},
 		{"Worktree probe", "Worktree 検査"},
 		{"Garbage collection", "ガベージコレクション"},
-		{"Clear sessions and standbys", "セッションと standby を削除"},
+		{"Clear sessions and standbys", "session と standby を削除"},
 		{"Prune recovery refs", "復旧 ref を整理"},
 		{"Retry standby replenishment", "standby 補充を再試行"},
 		{"Release a lease", "lease を返却"},
@@ -101,6 +113,9 @@ func translateDashboard(text string, lang i18n.Language) string {
 		{"All registered workspaces", "登録済みの全 workspace"},
 		{"Enter another path…", "別の path を入力…"},
 	}
+	// 短いラベルが長いラベルの一部を先に置き換えると（Maintenance と
+	// Maintenance operation など）長い方が二度と一致しないため、長い順に適用する。
+	sort.SliceStable(replacements, func(i, j int) bool { return len(replacements[i].en) > len(replacements[j].en) })
 	for _, replacement := range replacements {
 		text = strings.ReplaceAll(text, replacement.en, replacement.ja)
 	}
