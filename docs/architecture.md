@@ -17,6 +17,7 @@
 | path・ID・descriptor、Git実行、fchdir束縛、設定、LaunchAgent | `internal/domain`、`internal/gitx`、`internal/fdexec`、`internal/config`、`internal/launchd` |
 | 複数の画面で規則を共有する表示整形（バイト数・ホーム短縮） | `internal/textfmt` |
 | 対話的な選択UI | `internal/tui` |
+| 引数なしで起動する運用 dashboard と画面遷移 | `internal/dashboard` |
 
 `ResolveAndLease`・`Resume`の要求は`internal/rpc/params.go`の共有structで表し、片側だけの改名や型違いを防ぐためCLIの送信とdaemonのstrict decodeが同じ宣言を使う。
 冪等キーがJSON文字列の一致で判定される都合上、この型のJSON出力形状には同ファイルのコメントが記す制約がある。
@@ -32,3 +33,7 @@ statusの組み立ては`internal/daemon/status.go`に置き、`internal/diag`�
 help本文・config schema・SQLite migration・LaunchAgent plist・agent hook設定は手書きで維持し、shell completionは実装しない。
 agent hook設定のうちwxが所有・書き換えるのはwxエントリだけで、他者のエントリはそのまま残す。
 ただし準備完了契約の判定は同じファイルの他エントリに影響される。
+
+設定項目の型・キー・scope は `internal/config` の設定構造体から導出し、表示名・説明・選択肢・影響だけを同packageのcatalogに置く。
+設定変更はCLIとdashboardのどちらもpreviewとatomic saveを共有し、preview後に設定ファイルが変わった場合は保存しない。
+dashboardから起動・貸出・benchを行う場合は選択した作業元をAPIへ明示し、process全体のcwdは変更しない。

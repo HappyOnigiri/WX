@@ -266,10 +266,27 @@ func TestSetupRemoveReportsFailuresOnStderrAndExitsOne(t *testing.T) {
 // --check は何も変えない約束で、--remove は全部消す。取り違えは元に戻せない。
 func TestSetupRejectsRemoveCombinedWithTheReadOnlyModes(t *testing.T) {
 	setupCommandHome(t)
-	for _, args := range [][]string{{"--remove", "--check"}, {"--remove", "--update"}, {"--remove", "extra"}} {
+	for _, args := range [][]string{{"--remove", "--check"}, {"--remove", "--update"}, {"--remove", "extra"}, {"--item", "hooks.claude"}, {"--action", "install"}} {
 		if code := runSetup(context.Background(), args); code != 2 {
 			t.Fatalf("wx setup %v exited %d", args, code)
 		}
+	}
+}
+
+func TestSetupItemAppliesOnlyTheRequestedItem(t *testing.T) {
+	home, options := setupCommandHome(t)
+	var out, errOut bytes.Buffer
+	if code := runSetupItem(context.Background(), options, "worktree_root", setup.ActionDefault, "", &out, &errOut); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "worktree_root") {
+		t.Fatalf("output=%q", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "wx")); err != nil {
+		t.Fatalf("the requested worktree root was not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("another setup item was changed: %v", err)
 	}
 }
 

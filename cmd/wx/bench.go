@@ -12,6 +12,10 @@ import (
 )
 
 func runBench(ctx context.Context, args []string) int {
+	return runBenchFrom(ctx, args, "")
+}
+
+func runBenchFrom(ctx context.Context, args []string, cwd string) int {
 	fs := pflag.NewFlagSet("bench", pflag.ContinueOnError)
 	runs := fs.Int("runs", 1, "number of measured leases")
 	branches := fs.StringArray("branch", nil, "detached base branch")
@@ -35,7 +39,11 @@ func runBench(ctx context.Context, args []string) int {
 	if code != 0 {
 		return code
 	}
-	return client.RunBench(ctx, cli.BenchOptions{Runs: *runs, Branches: *branches, Reuse: *reuse, JSON: *jsonOut, Configs: overrides})
+	opts := cli.BenchOptions{Runs: *runs, Branches: *branches, Reuse: *reuse, JSON: *jsonOut, Configs: overrides}
+	if cwd != "" {
+		return client.RunBenchFrom(ctx, cwd, opts)
+	}
+	return client.RunBench(ctx, opts)
 }
 
 // benchConfigs は --sweep と --config の指定を貸出要求へ載せる上書きの並びへ直す。

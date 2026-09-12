@@ -14,18 +14,24 @@ import (
 )
 
 func Load() (Config, error) {
+	effective, _, err := LoadWithRaw()
+	return effective, err
+}
+
+// LoadWithRaw は検証・正規化済みの実効設定と、値の明示指定を識別できる raw 設定を返す。
+func LoadWithRaw() (Config, Config, error) {
 	raw, err := LoadRaw()
 	if err != nil {
-		return Config{}, err
+		return Config{}, Config{}, err
 	}
 	effective := Merge(Defaults(), raw)
 	if err := NormalizePaths(&effective); err != nil {
-		return Config{}, err
+		return Config{}, Config{}, err
 	}
 	if err := Validate(&effective); err != nil {
-		return Config{}, err
+		return Config{}, Config{}, err
 	}
-	return effective, nil
+	return effective, raw, nil
 }
 
 func LoadRaw() (Config, error) {

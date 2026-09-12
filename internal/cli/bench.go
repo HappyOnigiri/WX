@@ -66,6 +66,16 @@ type benchReply struct {
 // RunBench は貸出から Early Ready・Full Ready までを実測し、daemon 側の区間内訳と併せて出力する。
 // 既定では対象 workspace の待機中 standby を STALE にして cold start を測る。reuse では今のプールが返す経路をそのまま測る。
 func (c Client) RunBench(ctx context.Context, opts BenchOptions) int {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	return c.RunBenchFrom(ctx, cwd, opts)
+}
+
+// RunBenchFrom は TUI が明示した workspace を測り、process 全体の cwd に依存しない。
+func (c Client) RunBenchFrom(ctx context.Context, cwd string, opts BenchOptions) int {
 	if opts.Runs < 1 {
 		fmt.Fprintln(os.Stderr, "error: --runs must be at least 1")
 		return 2
@@ -75,15 +85,10 @@ func (c Client) RunBench(ctx context.Context, opts BenchOptions) int {
 		fmt.Fprintln(os.Stderr, "error: --config and --sweep cannot be combined with --reuse; each configuration is measured as a cold start")
 		return 2
 	}
-	if err := c.checkLeaseWorktreeMode(ctx); err != nil {
+	if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
 		return reportLeaseError(err)
 	}
 	if err := c.ensureDaemon(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}

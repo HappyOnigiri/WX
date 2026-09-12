@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/pflag"
@@ -37,15 +38,23 @@ func runSetup(ctx context.Context, args []string) int {
 	jsonOut := fs.Bool("json", false, "with --check, print machine-readable JSON")
 	update := fs.Bool("update", false, "offer only the items that diverged from what wx would write")
 	remove := fs.Bool("remove", false, "delete the configuration wx setup writes, leaving the shell startup file alone")
+	item := fs.String("item", "", "configure one setup item without walking through the others")
+	action := fs.String("action", "", "with --item, apply one of the actions reported for that item")
+	value := fs.String("value", "", "with a manual --item action, use this value")
 	fs.Usage = func() { commandUsage(os.Stdout, "setup") }
 	if code, done := finishFlagParse(fs, "setup", args); done {
 		return code
 	}
-	if fs.NArg() != 0 || (*jsonOut && !*check) || (*update && *check) || (*remove && (*check || *update)) {
+	individual := *item != "" || *action != "" || *value != ""
+	if fs.NArg() != 0 || (*jsonOut && !*check) || (*update && *check) || (*remove && (*check || *update)) ||
+		(individual && (*item == "" || *action == "" || *check || *update || *remove || *jsonOut)) {
 		commandUsage(os.Stderr, "setup")
 		return 2
 	}
 	options := setupOptions()
+	if individual {
+		return runSetupItem(ctx, options, *item, setup.Action(*action), *value, os.Stdout, os.Stderr)
+	}
 	if *check {
 		return runSetupCheck(ctx, options, *jsonOut, os.Stdout, os.Stderr)
 	}
@@ -68,6 +77,43 @@ func runSetup(ctx context.Context, args []string) int {
 		return runSetupUpdate(ctx, options, session)
 	}
 	return runSetupInteractive(ctx, options, session)
+}
+
+// runSetupItem は setup の 1 項目だけを非対話で適用する。
+// dashboard と自動化が全項目の walk を経ず、Collect が提示した操作をそのまま指定するための入口である。
+func runSetupItem(ctx context.Context, options setup.Options, id string, action setup.Action, value string, out, errOut io.Writer) int {
+	step, err := setup.CollectStep(ctx, options, id)
+	if err != nil {
+		_, _ = fmt.Fprintln(errOut, "error:", err)
+		return 1
+	}
+	if !slices.Contains(step.Options, action) {
+		available := make([]string, 0, len(step.Options))
+		for _, option := range step.Options {
+			available = append(available, string(option))
+		}
+		_, _ = fmt.Fprintf(errOut, "error: setup item %s does not offer action %s", id, action)
+		if len(available) > 0 {
+			_, _ = fmt.Fprintf(errOut, "; available actions: %s", strings.Join(available, ", "))
+		}
+		_, _ = fmt.Fprintln(errOut)
+		return 1
+	}
+	if action == setup.ActionManual && strings.TrimSpace(value) == "" {
+		_, _ = fmt.Fprintf(errOut, "error: setup item %s action manual requires --value\n", id)
+		return 2
+	}
+	note, err := setup.Apply(ctx, options, step, action, value)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "error: %s %s: %v\n", step.ID, action, err)
+		return 1
+	}
+	printSetupApplied(out, step, action)
+	printSetupNote(out, note)
+	if applied, collectErr := setup.CollectStep(ctx, options, id); collectErr == nil {
+		printSetupWarnings(errOut, id, action, applied)
+	}
+	return 0
 }
 
 // setupOptions は launchctl・socket・RPC の副作用を注入する。

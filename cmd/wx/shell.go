@@ -12,6 +12,10 @@ import (
 )
 
 func runShell(ctx context.Context, args []string) int {
+	return runShellFrom(ctx, args, "")
+}
+
+func runShellFrom(ctx context.Context, args []string, cwd string) int {
 	fs := pflag.NewFlagSet("shell", pflag.ContinueOnError)
 	branches := fs.StringArray("branch", nil, "detached base branch")
 	resume := fs.String("resume", "", "restore the worktree of a wx session")
@@ -30,6 +34,9 @@ func runShell(ctx context.Context, args []string) int {
 	client, code := leaseClient()
 	if code != 0 {
 		return code
+	}
+	if cwd != "" {
+		return client.RunLeaseShellFrom(ctx, cwd, *branches, *resume)
 	}
 	return client.RunLeaseShell(ctx, *branches, *resume)
 }

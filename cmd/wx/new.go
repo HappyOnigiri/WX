@@ -8,6 +8,10 @@ import (
 )
 
 func runNew(ctx context.Context, args []string) int {
+	return runNewFrom(ctx, args, "")
+}
+
+func runNewFrom(ctx context.Context, args []string, cwd string) int {
 	fs := pflag.NewFlagSet("new", pflag.ContinueOnError)
 	branches := fs.StringArray("branch", nil, "detached base branch")
 	jsonOut := fs.Bool("json", false, "print JSON")
@@ -22,6 +26,9 @@ func runNew(ctx context.Context, args []string) int {
 	client, code := leaseClient()
 	if code != 0 {
 		return code
+	}
+	if cwd != "" {
+		return client.RunLeaseNewFrom(ctx, cwd, *branches, *jsonOut)
 	}
 	return client.RunLeaseNew(ctx, *branches, *jsonOut)
 }

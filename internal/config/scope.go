@@ -325,12 +325,43 @@ func scopeOverrideKey(c *Config, s Scope, target string) (string, error) {
 	return canonical, nil
 }
 
-// ScopeField は個別指定の一覧行で、Source は値の出どころ（scope 名、global、unset）である。
+// ScopeField は設定の一覧行で、Source は scope 名・explicit・global・default・unset のいずれかである。
 type ScopeField struct{ Key, Value, Source string }
+
+// GlobalFields は global の実効値を、設定ファイルの明示値か default かとともに返す。
+func GlobalFields(c, raw Config) []ScopeField {
+	fields := append(Fields(c), Lists(c)...)
+	out := make([]ScopeField, 0, len(fields))
+	for _, field := range fields {
+		source := "default"
+		if globalFieldPresent(raw, field.Key) {
+			source = "explicit"
+		}
+		out = append(out, ScopeField{Key: field.Key, Value: field.Value, Source: source})
+	}
+	return out
+}
+
+func globalFieldPresent(raw Config, key string) bool {
+	if list := configListField(reflect.ValueOf(raw), key); list.IsValid() {
+		return listPresent(raw, key)
+	}
+	field := configField(reflect.ValueOf(raw), key)
+	return field.IsValid() && raw.has(key, !field.IsZero())
+}
 
 // ScopeFields は scope で指定できる全キーの実効値と出どころを宣言順に返す。
 // target は NormalizePaths 済み canonical path であることを呼び出し側の契約とする。
 func ScopeFields(c Config, s Scope, target string) []ScopeField {
+	return scopeFields(c, Config{}, s, target, false)
+}
+
+// ResolvedScopeFields は個別指定のない値を、global で明示された値と default まで遡って区別する。
+func ResolvedScopeFields(c, raw Config, s Scope, target string) []ScopeField {
+	return scopeFields(c, raw, s, target, true)
+}
+
+func scopeFields(c, raw Config, s Scope, target string, resolveDefault bool) []ScopeField {
 	entry := s.newEntry()
 	overrides := scopeMap(&c, s)
 	if !overrides.IsNil() {
@@ -358,7 +389,11 @@ func ScopeFields(c Config, s Scope, target string) []ScopeField {
 			fields = append(fields, ScopeField{key, "", "unset"})
 			return
 		}
-		fields = append(fields, ScopeField{key, formatScopeValue(source), "global"})
+		inheritedFrom := "global"
+		if resolveDefault && !globalFieldPresent(raw, globalKey) {
+			inheritedFrom = "default"
+		}
+		fields = append(fields, ScopeField{key, formatScopeValue(source), inheritedFrom})
 	})
 	return fields
 }

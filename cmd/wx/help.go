@@ -177,6 +177,7 @@ Options:
          configuration still replenishes`)
 	case "config":
 		_, _ = fmt.Fprintln(w, `Usage: wx config
+       wx config --describe <key>
        wx config <key> <value>
        wx config <key> --add <value>
        wx config <key> --remove <value>
@@ -185,6 +186,7 @@ Options:
        wx config --repository <path> [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
 
 Show effective configuration, or atomically update one supported scalar key or list.
+Use --describe to show a key's type, scopes, choices, purpose, and impact.
 
 --add and --remove take a list key: discovery.exclude, readiness.early_paths, or
 sessions.paths.<claude|codex>.sessions. --reset takes any of those list keys or any
@@ -513,6 +515,7 @@ Options:
                 to start the daemon. This is how the LaunchAgent runs wx.`)
 	case "setup":
 		_, _ = fmt.Fprintln(w, `Usage: wx setup [--check [--json]] [--update] [--remove]
+       wx setup --item <id> --action <action> [--value <value>]
 
 Walk through what wx needs to run on its own and apply the choices. Each item
 is offered with the choices its current state allows, so running setup again
@@ -547,7 +550,10 @@ Options:
   --json    with --check, print machine-readable JSON
   --update  offer only the items that no longer match what wx would write, and
             print nothing when there are none. The installer runs this.
-  --remove  delete the configuration wx setup writes and report what was kept`)
+  --remove  delete the configuration wx setup writes and report what was kept
+  --item    configure only this item (for example hooks.claude)
+  --action  apply one action offered for --item by wx setup --check
+  --value   value used by the manual action`)
 	case "hook":
 		_, _ = fmt.Fprintln(w, `Usage: wx hook <event>
 
