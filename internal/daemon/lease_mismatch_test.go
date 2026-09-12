@@ -33,7 +33,7 @@ func TestDescribeReadyMismatchNamesIncludePathAndOID(t *testing.T) {
 	}
 	gitRun(t, repository, "add", ".gitignore", ".worktreeinclude")
 	gitRun(t, repository, "commit", "-m", "add include rules")
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

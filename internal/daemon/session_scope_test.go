@@ -21,7 +21,7 @@ func TestWorkspaceScopeReportsRegistrationSlotPathsAndSessions(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
 	initGitRepo(t, repository)
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestWorkspaceScopeReportsRegistrationSlotPathsAndSessions(t *testing.T) {
 func TestWorkspaceScopeFailsOutsideAnyRepository(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestWorkspaceScopeResolvesRegisteredMultiRootWithoutWalking(t *testing.T) {
 	multiRoot := filepath.Join(root, "multi")
 	member := filepath.Join(multiRoot, "member")
 	initGitRepo(t, member)
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestWorkspaceScopeUsesSlotRecordsUnlessTheEntryBecameAnotherRepository(t *t
 	root := t.TempDir()
 	repository := filepath.Join(root, "repo")
 	initGitRepo(t, repository)
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestWorkspaceScopeFollowsRelocatedMainWorktree(t *testing.T) {
 	gitRun(t, root, "clone", "--bare", source, common)
 	gitRun(t, common, "worktree", "add", oldMain, "main")
 
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

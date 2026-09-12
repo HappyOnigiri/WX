@@ -45,6 +45,73 @@ func check(t *testing.T, body string) string {
 	return strings.Join(rules, ",")
 }
 
+func checkState(t *testing.T, source string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "internal", "state", "input_test.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("package state\n\nimport \"testing\"\n\n"+source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	allowed, markerIssues, err := markerLines(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := checkFile(path, allowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rules []string
+	for _, issue := range append(markerIssues, found...) {
+		rules = append(rules, issue.rule)
+	}
+	return strings.Join(rules, ",")
+}
+
+func TestStateTopLevelTestsRequireDirectParallel(t *testing.T) {
+	for _, test := range []struct {
+		name, source, rules string
+	}{
+		{"parallel", "func TestX(t *testing.T) {\n\tt.Parallel()\n}", ""},
+		{"serial marker", "// statelint:allow-serial -- uses a process-wide fixture\nfunc TestX(t *testing.T) {}", ""},
+		{"missing", "func TestX(t *testing.T) {}", "state-test-parallel"},
+		{"nested", "func TestX(t *testing.T) {\n\tt.Run(\"case\", func(t *testing.T) { t.Parallel() })\n}", "state-test-parallel"},
+		{"marker without reason", "// statelint:allow-serial\nfunc TestX(t *testing.T) {}", "marker-format,state-test-parallel"},
+		{"marker on parallel", "// statelint:allow-serial -- no longer needed\nfunc TestX(t *testing.T) {\n\tt.Parallel()\n}", "state-test-parallel-marker"},
+		{"helper and examples", "func TestMain(m *testing.M) {}\nfunc TestHelper() {}\nfunc ExampleState() {}\nfunc FuzzState(f *testing.F) {}\nfunc BenchmarkState(b *testing.B) {}", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := checkState(t, test.source); got != test.rules {
+				t.Fatalf("got %q, want %q", got, test.rules)
+			}
+		})
+	}
+}
+
+func TestStateParallelMarkerIsScopedToStatePackage(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "internal", "daemon", "input_test.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := "package daemon\n\nimport \"testing\"\n\n// statelint:allow-serial -- process-wide fixture\nfunc TestX(t *testing.T) {}\n"
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	allowed, markerIssues, err := markerLines(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := checkFile(path, allowed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(markerIssues) != 0 || len(found) != 1 || found[0].rule != stateParallelMarkerRule {
+		t.Fatalf("marker scope issues=%v found=%v", markerIssues, found)
+	}
+}
+
 func TestSocketTempDir(t *testing.T) {
 	for _, test := range []struct{ name, body, rules string }{
 		{"direct", "\ts := filepath.Join(t.TempDir(), \"wxd.sock\")\n\t_ = s", "socket-tempdir"},

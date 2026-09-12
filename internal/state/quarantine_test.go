@@ -8,6 +8,7 @@ import (
 )
 
 func TestQuarantineArtifactReportsFirstDetectionAndKeepsDetectedAt(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	inserted, err := store.QuarantineArtifact(ctx, "unknown_refs", "repo:refs/wx/recovery/a", "first")
@@ -33,6 +34,7 @@ func TestQuarantineArtifactReportsFirstDetectionAndKeepsDetectedAt(t *testing.T)
 }
 
 func TestPruneQuarantinedArtifactsOnlyTouchesRedetectedKinds(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	for _, record := range []struct{ kind, path string }{
@@ -71,6 +73,7 @@ func TestPruneQuarantinedArtifactsOnlyTouchesRedetectedKinds(t *testing.T) {
 }
 
 func TestQuarantineMissingRecoveryRefQuarantinesDurableMappings(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -100,6 +103,7 @@ func TestQuarantineMissingRecoveryRefQuarantinesDurableMappings(t *testing.T) {
 }
 
 func TestQuarantineRecoveryRefStopsAtDurableBoundaries(t *testing.T) {
+	t.Parallel()
 	t.Run("query", func(t *testing.T) {
 		store := openTestStore(t)
 		if _, err := store.db.Exec(`DROP TABLE snapshots`); err != nil {
@@ -129,6 +133,7 @@ func TestQuarantineRecoveryRefStopsAtDurableBoundaries(t *testing.T) {
 }
 
 func TestQuarantineMissingRecoveryRefPropagatesTransactionFaults(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	newSnapshotFixture := func(t *testing.T, id string) *Store {
 		t.Helper()
@@ -197,6 +202,7 @@ func quarantinedRecoveryFixture(t *testing.T, store *Store, slotState string) co
 // TestDiscardQuarantinedRecoveryUnblocksForget は隔離からの唯一の出口が機能することを確認する。
 // この経路が無いと sessions は EXPIRED へ進めず、ForgetWorkspace の前提を永久に満たせない。
 func TestDiscardQuarantinedRecoveryUnblocksForget(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := quarantinedRecoveryFixture(t, store, "SNAPSHOTTED")
 	sessions, err := store.QuarantinedRecoverySessions(ctx, "/workspace")
@@ -236,6 +242,7 @@ func TestDiscardQuarantinedRecoveryUnblocksForget(t *testing.T) {
 
 // TestDiscardQuarantinedRecoveryRefusesOtherStates は破棄を隔離された session に限ることを確認する。
 func TestDiscardQuarantinedRecoveryRefusesOtherStates(t *testing.T) {
+	t.Parallel()
 	t.Run("not quarantined", func(t *testing.T) {
 		store := openTestStore(t)
 		ctx := context.Background()
@@ -280,6 +287,7 @@ func TestDiscardQuarantinedRecoveryRefusesOtherStates(t *testing.T) {
 // TestQuarantinedRecoverySessionsStayWithinTheirWorkspace は破棄対象の限定を確認する。
 // 他 workspace の隔離 session を巻き添えにすると、利用者の作業が残る snapshot まで消えてしまう。
 func TestQuarantinedRecoverySessionsStayWithinTheirWorkspace(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := quarantinedRecoveryFixture(t, store, "SNAPSHOTTED")
 	seedWorkspaceRows(t, store, "other", "/other", "repository", "other-repository", "/other", "/other/.git", "")

@@ -7,7 +7,6 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 func TestObsoleteStandbyPreparationDoesNotSuspendCurrentGeneration(t *testing.T) {
@@ -20,7 +19,7 @@ func TestObsoleteStandbyPreparationDoesNotSuspendCurrentGeneration(t *testing.T)
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

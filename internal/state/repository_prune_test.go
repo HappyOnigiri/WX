@@ -40,6 +40,7 @@ func repositoryRows(t *testing.T, store *Store, repositoryID string) (repositori
 // forget は workspace を消しても repository 記録を残していたため、実体が消えた path を doctor が毎回検査し、
 // 恒久的に失敗していた。forget と同じ transaction で記録を消すことを確認する。
 func TestForgetWorkspaceRemovesTheRepositoryRecordItLeavesBehind(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -61,6 +62,7 @@ func TestForgetWorkspaceRemovesTheRepositoryRecordItLeavesBehind(t *testing.T) {
 // PruneRepositories は forget が記録を残していた頃の DB を回収する保守経路である。
 // 終了していない slot がまだ使う repository は残し、doctor の検査対象から外さない。
 func TestPruneRepositoriesCollectsLeftoversAndKeepsRepositoriesInUse(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -111,6 +113,7 @@ func TestPruneRepositoriesCollectsLeftoversAndKeepsRepositoriesInUse(t *testing.
 
 // 復元に必要な snapshot が残る repository は、slot も session も終わっていても消さない。
 func TestPruneRepositoriesKeepsRepositoriesWithRecoverySnapshots(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

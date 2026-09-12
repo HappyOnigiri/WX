@@ -9,6 +9,7 @@ import (
 )
 
 func TestBackupRetentionSkipsNonDatabaseEntriesAndPrunesOldGenerations(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

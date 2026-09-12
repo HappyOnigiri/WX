@@ -12,6 +12,7 @@ import (
 )
 
 func TestReleaseCreatesExactlyOneSnapshotJob(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -38,6 +39,7 @@ func TestReleaseCreatesExactlyOneSnapshotJob(t *testing.T) {
 // --discard の返却は保存を積まず、同じ transaction で削除まで予約する。
 // SNAPSHOT を積んでから取り消す経路では、保存が先に走り出すと予約が通らず再実行が要る。
 func TestReleaseDiscardingSchedulesRemovalWithoutSnapshot(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -70,6 +72,7 @@ func TestReleaseDiscardingSchedulesRemovalWithoutSnapshot(t *testing.T) {
 }
 
 func TestReleaseCleansUpUnboundAndRestoringSessions(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	for _, sessionState := range []string{"UNBOUND", "RESTORING"} {
@@ -101,6 +104,7 @@ func TestReleaseCleansUpUnboundAndRestoringSessions(t *testing.T) {
 // READY は UNBOUND slot が実際に遷移できる状態（PREPARING・RESTORING・QUARANTINED）ではなく、
 // session だけ先に EXPIRED へ進めた後の CAS ガードを踏ませるための人工的な状態である。
 func TestUnboundReleaseRollsBackWhenSlotStateChanged(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	session := Session{ID: "unbound", SlotID: "unbound", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("token")}
@@ -122,6 +126,7 @@ func TestUnboundReleaseRollsBackWhenSlotStateChanged(t *testing.T) {
 // 隔離 slot の owner は DRAINING へ進めないため、返却は session を終端させて owner を外す一度きりの操作になる。
 // これが成立しないと orphan reconcile が同じ session の返却を無限に再試行する。
 func TestReleaseExpiresSessionOwningQuarantinedSlot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, sessionState := range []string{"STARTING", "ACTIVE", "UNBOUND", "RESTORING"} {
 		t.Run(sessionState, func(t *testing.T) {
@@ -166,6 +171,7 @@ func TestReleaseExpiresSessionOwningQuarantinedSlot(t *testing.T) {
 }
 
 func TestAgentProcessRegistrationAndDependencyDeferral(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	if _, err := store.CreateSlotSession(ctx, Slot{ID: "agent", State: "LEASED", RootID: testRootID, RelPath: "_unbound/agent"}, nil, Session{ID: "agent", SlotID: "agent", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("token")}, ""); err != nil {
@@ -240,6 +246,7 @@ func TestAgentProcessRegistrationAndDependencyDeferral(t *testing.T) {
 }
 
 func TestColdLeaseRollsBackAtEveryPersistenceBoundary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		trigger string
@@ -282,6 +289,7 @@ func TestColdLeaseRollsBackAtEveryPersistenceBoundary(t *testing.T) {
 }
 
 func TestReleaseUnboundSessionSchedulesRemoval(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	session := Session{ID: "unbound", SlotID: "unbound", State: "UNBOUND", AgentKind: "codex", TokenHash: HashToken("token")}
@@ -303,6 +311,7 @@ func TestReleaseUnboundSessionSchedulesRemoval(t *testing.T) {
 }
 
 func TestLeaseReadyWithColdPromotesRepositoriesAndStartsPreparation(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -349,6 +358,7 @@ func TestLeaseReadyWithColdPromotesRepositoriesAndStartsPreparation(t *testing.T
 }
 
 func TestReleasePropagatesTransactionFaults(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("draining slot update fault", func(t *testing.T) {
@@ -413,6 +423,7 @@ func TestReleasePropagatesTransactionFaults(t *testing.T) {
 }
 
 func TestLeaseReadyPropagatesTransactionFaults(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("repository lease timestamp fault", func(t *testing.T) {

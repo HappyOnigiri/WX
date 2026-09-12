@@ -8,7 +8,6 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 // 会話に記録された cwd が畳まれた slot を指すとき、同じ workspace で新しい worktree を貸し出すことを確かめる。
@@ -21,7 +20,7 @@ func TestLeaseWithPolicyResolvesPathBelowRetiredSlot(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "cold"
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +60,7 @@ func TestLeaseWithPolicyKeepsResolveErrorOutsideSlots(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "cold"
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

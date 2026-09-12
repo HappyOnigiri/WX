@@ -11,6 +11,7 @@ import (
 )
 
 func TestRPCIdempotencyResultSurvivesStoreRestart(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	store, err := Open(path)
 	if err != nil {
@@ -68,6 +69,7 @@ func TestRPCIdempotencyResultSurvivesStoreRestart(t *testing.T) {
 }
 
 func TestRPCIdempotencyRejectsInvalidReservationTransitions(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	expiry := time.Now().Add(time.Hour)
@@ -113,6 +115,7 @@ func TestRPCIdempotencyRejectsInvalidReservationTransitions(t *testing.T) {
 }
 
 func TestRPCIdempotencyPropagatesReservationAndCompletionStorageFaults(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	expiry := time.Now().Add(time.Hour)

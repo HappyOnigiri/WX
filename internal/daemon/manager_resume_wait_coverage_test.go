@@ -46,7 +46,7 @@ func TestWaitForSnapshotReturnsImmediatelyWhenArchivedRecoveryIsUsable(t *testin
 func TestResumeWaitsForInFlightSnapshotBeforeEvaluatingRecovery(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestResumeWaitsForInFlightSnapshotBeforeEvaluatingRecovery(t *testing.T) {
 func TestResumeReportsIncompleteRecoverySnapshotAcrossRepositories(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

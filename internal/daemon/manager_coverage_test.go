@@ -251,7 +251,7 @@ func TestRegistryOrphanAndClosedStoreReconciliation(t *testing.T) {
 		t.Fatal(err)
 	}
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,7 +878,7 @@ func managerCoverageFixture(t *testing.T, kind ...string) (context.Context, *Man
 		workspaceRecord.Repositories[0].RelativePath = "."
 	}
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}

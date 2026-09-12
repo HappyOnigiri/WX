@@ -58,7 +58,7 @@ exit 1
 	t.Setenv("WX_RELOCATION_MAIN", newMain)
 	t.Setenv("WX_RELOCATION_COMMON", common)
 
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestMainWorktreeRelocationWithGitRegistryPreservesIdentityAndSessions(t *te
 		t.Fatalf("discovered common directory=%q, want %q", discovered.Repositories[0].CommonDir, common)
 	}
 
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

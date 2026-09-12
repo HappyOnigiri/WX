@@ -10,6 +10,7 @@ import (
 )
 
 func TestRecoverJobsReclaimsOnlyExpiredLease(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	job, err := store.CreateJob(ctx, "ENSURE_STANDBY", "", "", "")
@@ -39,6 +40,7 @@ func TestRecoverJobsReclaimsOnlyExpiredLease(t *testing.T) {
 }
 
 func TestEnsureRecoveryJobsReconstructsInterruptedSlotAndRepositoryWork(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -90,6 +92,7 @@ func TestEnsureRecoveryJobsReconstructsInterruptedSlotAndRepositoryWork(t *testi
 }
 
 func TestJobEventsRecordAttemptsRetriesAndElapsedTime(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	job, err := store.CreateJob(ctx, "PREPARE", "", "slot", "")
@@ -140,6 +143,7 @@ func TestJobEventsRecordAttemptsRetriesAndElapsedTime(t *testing.T) {
 }
 
 func TestNewJobPersistenceRollsBackOnLateDatabaseFaults(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		trigger string
@@ -197,6 +201,7 @@ func TestNewJobPersistenceRollsBackOnLateDatabaseFaults(t *testing.T) {
 }
 
 func TestEnsureRecoveryJobsReportsQueryAndInsertFaults(t *testing.T) {
+	t.Parallel()
 	t.Run("query", func(t *testing.T) {
 		store := openTestStore(t)
 		if _, err := store.db.Exec(`DROP TABLE slots`); err != nil {
@@ -222,6 +227,7 @@ func TestEnsureRecoveryJobsReportsQueryAndInsertFaults(t *testing.T) {
 }
 
 func TestJobClaimRollsBackWhenClaimedRowOrAuditEventChanges(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		trigger string
@@ -256,6 +262,7 @@ func TestJobClaimRollsBackWhenClaimedRowOrAuditEventChanges(t *testing.T) {
 }
 
 func TestEnsureRecoveryJobsPropagatesJobInsertionFault(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -278,6 +285,7 @@ func TestEnsureRecoveryJobsPropagatesJobInsertionFault(t *testing.T) {
 }
 
 func TestDeferJobPropagatesUpdateFault(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -297,6 +305,7 @@ func TestDeferJobPropagatesUpdateFault(t *testing.T) {
 }
 
 func TestRecoverJobsPropagatesReclaimUpdateFault(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	job, err := store.CreateJob(ctx, "ENSURE_STANDBY", "", "", "")

@@ -13,6 +13,7 @@ import (
 )
 
 func TestWorkspaceSnapshotMetadataGatesMultiRepositoryArchive(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	root := t.TempDir()
@@ -59,6 +60,7 @@ func TestWorkspaceSnapshotMetadataGatesMultiRepositoryArchive(t *testing.T) {
 }
 
 func TestRecoveryRefQueriesAndPendingMappingFailure(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -97,6 +99,7 @@ func TestRecoveryRefQueriesAndPendingMappingFailure(t *testing.T) {
 }
 
 func TestRecoveryRefExpectationsMarkActiveSnapshotJobInFlight(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -149,6 +152,7 @@ func TestRecoveryRefExpectationsMarkActiveSnapshotJobInFlight(t *testing.T) {
 }
 
 func TestActiveRestoreProtectsSnapshotAndParentBindingCanTransfer(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -188,6 +192,7 @@ func TestActiveRestoreProtectsSnapshotAndParentBindingCanTransfer(t *testing.T) 
 }
 
 func TestSaveSnapshotIsIdempotentButRejectsConflict(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -209,6 +214,7 @@ func TestSaveSnapshotIsIdempotentButRejectsConflict(t *testing.T) {
 }
 
 func TestSaveWorkspaceSnapshotPropagatesInsertionFault(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -224,6 +230,7 @@ func TestSaveWorkspaceSnapshotPropagatesInsertionFault(t *testing.T) {
 }
 
 func TestExpireSessionSnapshotsPropagatesDeletionFaults(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("repository snapshot deletion fault", func(t *testing.T) {
@@ -265,6 +272,7 @@ func TestExpireSessionSnapshotsPropagatesDeletionFaults(t *testing.T) {
 // index_recovery_ref 列の追加前に commit された row は ref が空なので、更新後の再実行では slot を quarantine せず
 // その列を補完する。一方、index tree が実際に異なる row は拒否し続ける。
 func TestSaveSnapshotRejectsConflictingIndexTree(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -287,6 +295,7 @@ func TestSaveSnapshotRejectsConflictingIndexTree(t *testing.T) {
 }
 
 func TestExpiredWorkspaceSnapshotWithoutRepositorySnapshots(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := t.Context()
@@ -314,6 +323,7 @@ func TestExpiredWorkspaceSnapshotWithoutRepositorySnapshots(t *testing.T) {
 
 // 作成途中と期限切れは復元の材料ではないため、実体を検査する doctor へ渡さない。
 func TestActiveWorkspaceSnapshotsExcludesPendingAndExpiredArchives(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

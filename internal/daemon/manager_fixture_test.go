@@ -151,7 +151,7 @@ func newManagerFixture(t *testing.T, options ...managerFixtureOption) *managerFi
 		t.Fatal(err)
 	}
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}

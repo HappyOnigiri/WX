@@ -11,6 +11,7 @@ import (
 )
 
 func TestReadModelsRejectRowsWithUnscannableFields(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		sql   []string
@@ -183,6 +184,7 @@ func TestReadModelsRejectRowsWithUnscannableFields(t *testing.T) {
 }
 
 func TestClosedStoreOperationsFailClosed(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -326,6 +328,7 @@ func TestClosedStoreOperationsFailClosed(t *testing.T) {
 }
 
 func TestMissingLifecycleRowsFailClosed(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	missing := "missing-lifecycle-row"
@@ -403,6 +406,7 @@ func TestMissingLifecycleRowsFailClosed(t *testing.T) {
 }
 
 func TestRegistryReadModelsReturnCommittedLifecycleRows(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -458,6 +462,7 @@ func TestRegistryReadModelsReturnCommittedLifecycleRows(t *testing.T) {
 }
 
 func TestStatePersistenceFaultsRemainFailClosed(t *testing.T) {
+	t.Parallel()
 	t.Run("restore membership copy", func(t *testing.T) {
 		store := openTestStore(t)
 		ctx := context.Background()
@@ -687,6 +692,7 @@ func TestStatePersistenceFaultsRemainFailClosed(t *testing.T) {
 }
 
 func TestStateLifecycleFaultsRemainFailClosed(t *testing.T) {
+	t.Parallel()
 	t.Run("restoring repository count", func(t *testing.T) {
 		store := openTestStore(t)
 		ctx := context.Background()
@@ -749,6 +755,7 @@ func TestStateLifecycleFaultsRemainFailClosed(t *testing.T) {
 }
 
 func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -855,6 +862,7 @@ func TestStoreMutationsFailClosedWhenContextIsCanceled(t *testing.T) {
 }
 
 func TestReleaseAndForgetRefuseDurableStateThatChangedUnderTheCaller(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("release defers while a slot is preparing", func(t *testing.T) {
@@ -905,6 +913,7 @@ func TestReleaseAndForgetRefuseDurableStateThatChangedUnderTheCaller(t *testing.
 }
 
 func TestReopeningAnExistingDatabaseSkipsAppliedMigrations(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	first, err := Open(path)
 	if err != nil {
@@ -930,6 +939,7 @@ func TestReopeningAnExistingDatabaseSkipsAppliedMigrations(t *testing.T) {
 // 定数だけが先に進むと旧 schema の database が新版として通るため、新規 database で両者の一致を検証する。
 // ファイル数との一致は tools/checkmigrations が静的に見る。
 func TestOpenSetsUserVersionToSchemaVersion(t *testing.T) {
+	t.Parallel()
 	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -945,6 +955,7 @@ func TestOpenSetsUserVersionToSchemaVersion(t *testing.T) {
 }
 
 func TestCreateStandbyPropagatesJobInsertionFault(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

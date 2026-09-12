@@ -24,7 +24,7 @@ func retryStandbyFixture(t *testing.T, mode string) (*Manager, *state.Store, dis
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = mode
 	cfg.Pool.WarmPerWorkspace = 1
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
