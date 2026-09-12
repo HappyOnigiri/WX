@@ -17,7 +17,7 @@ import (
 func BenchmarkHotLease(b *testing.B) {
 	ctx := context.Background()
 	root := b.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(b, filepath.Join(root, "state.db"))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func BenchmarkHotLease(b *testing.B) {
 
 func BenchmarkManagerStatus(b *testing.B) {
 	root := b.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(b, filepath.Join(root, "state.db"))
 	if err != nil {
 		b.Fatal(err)
 	}

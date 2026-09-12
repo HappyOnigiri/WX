@@ -32,6 +32,7 @@ func failJob(t *testing.T, store *Store, job Job, runErr error, failureCode, det
 }
 
 func TestUnresolvedRecoveryFailuresKeepsTheRecordedCause(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -61,6 +62,7 @@ func TestUnresolvedRecoveryFailuresKeepsTheRecordedCause(t *testing.T) {
 }
 
 func TestUnresolvedRecoveryFailuresExcludesResolvedHistory(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -90,6 +92,7 @@ func TestUnresolvedRecoveryFailuresExcludesResolvedHistory(t *testing.T) {
 }
 
 func TestUnresolvedRecoveryFailuresExcludesArchivedSessions(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -109,6 +112,7 @@ func TestUnresolvedRecoveryFailuresExcludesArchivedSessions(t *testing.T) {
 }
 
 func TestTruncateFailureMessageMarksWhatItDropped(t *testing.T) {
+	t.Parallel()
 	if got := truncateFailureMessage("short"); got != "short" {
 		t.Fatalf("short message=%q", got)
 	}
@@ -148,6 +152,7 @@ func createRestoreSession(t *testing.T, store *Store, parentID, childID, childSt
 
 // 復元用 session が EXPIRED でも、元 session が ARCHIVED のままなら復元は済んでいない。
 func TestUnresolvedRecoveryFailuresReportsRestoreAfterTheRestoringSessionExpired(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -175,6 +180,7 @@ func TestUnresolvedRecoveryFailuresReportsRestoreAfterTheRestoringSessionExpired
 
 // 同じ元 session への RESTORE が後から成功していれば、先の失敗は解消済みとして出さない。
 func TestUnresolvedRecoveryFailuresExcludesRestoreRetriedOnAnotherSession(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -214,6 +220,7 @@ func TestUnresolvedRecoveryFailuresExcludesRestoreRetriedOnAnotherSession(t *tes
 
 // 元 session が EXPIRED まで進んでいれば復元は完了しているので、残った失敗は報告しない。
 func TestUnresolvedRecoveryFailuresExcludesRestoreOfAnExpiredOrigin(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

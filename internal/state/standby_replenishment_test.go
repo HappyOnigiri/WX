@@ -27,6 +27,7 @@ func createFinishedFailedStandby(t *testing.T, store *Store, id string) {
 }
 
 func TestStandbyReplenishmentConsumesSuccessAndExcludesOnlyExistingFailures(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -74,6 +75,7 @@ func TestStandbyReplenishmentConsumesSuccessAndExcludesOnlyExistingFailures(t *t
 }
 
 func TestStandbyReplenishmentExcludesRestorationSuccess(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -105,6 +107,7 @@ func TestStandbyReplenishmentExcludesRestorationSuccess(t *testing.T) {
 }
 
 func TestLeaseReadyWithReplenishmentAndRecoveryAreIdempotent(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -137,6 +140,7 @@ func TestLeaseReadyWithReplenishmentAndRecoveryAreIdempotent(t *testing.T) {
 }
 
 func TestLeaseReadyWithReplenishmentRejectsColdRepositories(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -153,6 +157,7 @@ func TestLeaseReadyWithReplenishmentRejectsColdRepositories(t *testing.T) {
 }
 
 func TestCreateStandbyIfNeededRevalidatesCapacityAndGeneration(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -175,6 +180,7 @@ func TestCreateStandbyIfNeededRevalidatesCapacityAndGeneration(t *testing.T) {
 }
 
 func TestRegisterReservedStandbyRejectsChangedWorkspaceGeneration(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -213,6 +219,7 @@ func TestRegisterReservedStandbyRejectsChangedWorkspaceGeneration(t *testing.T) 
 
 // 隔離 slot は READY へ戻らないため待機枠に数えず、成功イベントを待たずに補充できる。
 func TestStandbyCountExcludesQuarantinedSlotsAndAllowsReplenishment(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -236,6 +243,7 @@ func TestStandbyCountExcludesQuarantinedSlotsAndAllowsReplenishment(t *testing.T
 
 // 補充停止は replenish_suspensions が唯一の権威で、隔離 slot の数は診断にも解除にも関与しない。
 func TestStandbyReplenishmentSuspensionDiagnosticsAndRetry(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -286,6 +294,7 @@ func TestStandbyReplenishmentSuspensionDiagnosticsAndRetry(t *testing.T) {
 }
 
 func TestRetryStandbyReplenishmentRefusesAnActiveClean(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -388,6 +397,7 @@ func TestFailedStandbySuspensionPreservesTheFirstReasonAndReportsWriteFailure(t 
 }
 
 func TestStandbyReplenishmentRollsBackOnEnsureJobFailure(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -441,6 +451,7 @@ func createReadyStandby(t *testing.T, store *Store, id string) {
 }
 
 func TestRemovingSlotFreesStandbyRoomAndRemovalSchedulesReplenishment(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -483,6 +494,7 @@ func TestRemovingSlotFreesStandbyRoomAndRemovalSchedulesReplenishment(t *testing
 }
 
 func TestRemovalDuringCleanDoesNotScheduleReplenishment(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

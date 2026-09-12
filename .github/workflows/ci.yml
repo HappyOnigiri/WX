@@ -27,6 +27,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-name: static
+          save-build-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Install pinned Go tools
         run: make setup-go-tools
       - name: Install markdown checker
@@ -58,6 +59,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-name: coverage
+          save-build-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Build CI test runner
         run: mkdir -p .tools/bin && go build -trimpath -o .tools/bin/citest ./tools/citest
       - run: make coverage-check CITEST=.tools/bin/citest
@@ -89,6 +91,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-name: race-${{ matrix.shard }}
+          save-build-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Build CI test runner
         run: mkdir -p .tools/bin && go build -trimpath -o .tools/bin/citest ./tools/citest
       - env:
@@ -134,6 +137,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-name: build
+          save-build-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       # 一時prefixへのinstall検証はmake smokeが --help/--version の確認込みで行うため、ここでは重複させない。
       - run: make build version-check smoke build-darwin release-check
       - run: go version -m bin/wx

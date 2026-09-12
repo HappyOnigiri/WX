@@ -17,7 +17,7 @@ import (
 func TestActiveRootAndRootIDForPathFailClosedWithoutARegisteredGeneration(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestRetryRootGenerationRecoversWithoutRestart(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
-	store, err := state.Open(filepath.Join(base, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(base, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestRetryRootGenerationLogsRepeatedFailuresOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := t.TempDir()
-	store, err := state.Open(filepath.Join(base, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(base, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

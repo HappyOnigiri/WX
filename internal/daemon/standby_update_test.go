@@ -54,7 +54,7 @@ func newReuseStandbyFixtureWithWarmCount(t *testing.T, warmCount int, initReposi
 	repository := filepath.Join(root, "repo")
 	initRepository(t, repository)
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +451,7 @@ func TestStandbyUpdateReusesSlotAndSkipsHooksAndPrepare(t *testing.T) {
 	}
 	gitRun(t, repository, "config", "core.hooksPath", hooks)
 	prepareLog := filepath.Join(root, "prepare.log")
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

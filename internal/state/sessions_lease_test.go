@@ -32,6 +32,7 @@ func candidateIDs(candidates []OrphanCandidate) map[string]bool {
 
 // 既存の agent 起動は貸出属性を書かないため、既定の 'agent' で読み戻る。
 func TestSessionLeaseColumnsDefaultToAgent(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -51,6 +52,7 @@ func TestSessionLeaseColumnsDefaultToAgent(t *testing.T) {
 
 // 貸出属性は書いたとおりに読み戻り、token 認証経路でも同じ値が返る。
 func TestSessionLeaseColumnsRoundTrip(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -69,6 +71,7 @@ func TestSessionLeaseColumnsRoundTrip(t *testing.T) {
 // path 貸出は heartbeat を張らないため、orphan 回収の候補から外れる。
 // shell / command 貸出は client を持つので従来どおり候補に残る。
 func TestOrphanCandidatesExcludePathLeases(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -90,6 +93,7 @@ func TestOrphanCandidatesExcludePathLeases(t *testing.T) {
 
 // 期限掃引は agent 起動を拾わず、期限が来た貸出だけを返す。
 func TestExpiredLeaseCandidatesSelectOnlyReachedDeadlines(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -120,6 +124,7 @@ func TestExpiredLeaseCandidatesSelectOnlyReachedDeadlines(t *testing.T) {
 
 // 親が使用中の間は子貸出を返却せず、親が返却された後だけ抽出する。
 func TestOrphanedChildLeasesFollowTheOwnerSession(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

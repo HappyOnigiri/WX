@@ -27,6 +27,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-name: release
+          save-build-cache: false
       - name: Build release assets
         env:
           RELEASE_BRANCH: ${{ github.event.pull_request.head.ref }}

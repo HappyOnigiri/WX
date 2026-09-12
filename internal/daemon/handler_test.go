@@ -43,7 +43,7 @@ func TestHandlerRejectsUnknownFieldsForEveryParameterizedMethod(t *testing.T) {
 func TestHandlerRoutesResumeAndFreshOperationsToManager(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestDegradedHandlerStillHonoursAStop(t *testing.T) {
 func TestHandlerRoutesAgentRegistrationAndConfigReload(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

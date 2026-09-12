@@ -22,7 +22,7 @@ import (
 func TestReleaseIsIdempotentAfterAlreadyReleasingSession(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(root) })
-			store, err := state.Open(filepath.Join(root, "state.db"))
+			store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -163,7 +163,7 @@ func TestSnapshotSessionFailsClosedAfterRepositorySnapshotWhenWorkspaceRootIsUns
 func TestSnapshotSessionKeepsRootWorkAddedToLinkRuleWhileLeased(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestSnapshotSessionKeepsRootWorkAddedToLinkRuleWhileLeased(t *testing.T) {
 func TestSnapshotSessionKeepsSlotSnapshottingOnRootRuleFailure(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestSnapshotFailureQuarantinesSlotWithoutRemovingWorktreeMetadata(t *testin
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "repository")
 	initGitRepo(t, repoPath)
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

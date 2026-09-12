@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 // 補充と GC は同じ workspace 個別の保持期間で判断する。
@@ -23,7 +22,7 @@ func TestStandbyReplenishmentFollowsWorkspaceHotStandby(t *testing.T) {
 	cfg.Retention.HotStandby.Duration = time.Hour
 	zero := config.Duration{}
 	cfg.Workspaces["/stopped"] = config.Workspace{Retention: config.WorkspaceRetention{HotStandby: &zero}}
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

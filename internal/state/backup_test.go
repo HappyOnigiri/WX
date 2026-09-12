@@ -98,6 +98,7 @@ func backupDirEntries(t *testing.T, store *Store) (databases, temporaries []stri
 // TestOnlineBackupLetsLeaseAndHeartbeatProceedBetweenSteps は backup が Store.writer を占有しないことを検査する。
 // 貸出 transaction と heartbeat 更新を別 goroutine で走らせ、backup 完了前に成功することを確認する。
 func TestOnlineBackupLetsLeaseAndHeartbeatProceedBetweenSteps(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	session := seedLeasableSlot(t, store, "standby")
@@ -142,6 +143,7 @@ func TestOnlineBackupLetsLeaseAndHeartbeatProceedBetweenSteps(t *testing.T) {
 // TestOnlineBackupWithConcurrentWritesStaysConsistent は並行書き込み下で完成した世代を別 Store で開き、
 // integrity_check と foreign key 整合性、registry の commit 済み内容を確認する。
 func TestOnlineBackupWithConcurrentWritesStaysConsistent(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	session := seedLeasableSlot(t, store, "standby")
@@ -227,6 +229,7 @@ func TestOnlineBackupWithConcurrentWritesStaysConsistent(t *testing.T) {
 // TestOnlineBackupDeadlineLeavesExistingGenerationsIntact は期限切れの backup が
 // 不完全な DB を完成品として残さず、既存の成功世代と lastBackup 相当の成果を壊さないことを検査する。
 func TestOnlineBackupDeadlineLeavesExistingGenerationsIntact(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	growDatabase(t, store)
@@ -253,6 +256,7 @@ func TestOnlineBackupDeadlineLeavesExistingGenerationsIntact(t *testing.T) {
 
 // TestOnlineBackupsSerializeWithoutBlockingWriters は同時 backup が gate で直列化されることを検査する。
 func TestOnlineBackupsSerializeWithoutBlockingWriters(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	growDatabase(t, store)
@@ -309,11 +313,8 @@ func TestOnlineBackupsSerializeWithoutBlockingWriters(t *testing.T) {
 
 // TestCloseWaitsForInflightBackup は Close が実行中の backup を取り消し、source 接続の返却を待つことを検査する。
 func TestCloseWaitsForInflightBackup(t *testing.T) {
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedRoot(t, store, testRootID, testRootPath, "root-identity", true)
+	t.Parallel()
+	store := openTestStore(t)
 	seedWorkspace(t, store)
 	growDatabase(t, store)
 
@@ -348,6 +349,7 @@ func TestCloseWaitsForInflightBackup(t *testing.T) {
 // TestBackupPublishFailureKeepsIncompleteCopyOutOfGenerations は rename の失敗が
 // 完成前の成果物を `.db` の世代集合へ入れないことを検査する。
 func TestBackupPublishFailureKeepsIncompleteCopyOutOfGenerations(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root, _, err := openBackupRootForTest(t, dir)
 	if err != nil {
@@ -379,6 +381,7 @@ func TestBackupPublishFailureKeepsIncompleteCopyOutOfGenerations(t *testing.T) {
 
 // TestRemoveOwnedBackupTempKeepsForeignEntries は名前が一致するだけの別実体を消さないことを検査する。
 func TestRemoveOwnedBackupTempKeepsForeignEntries(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root, _, err := openBackupRootForTest(t, dir)
 	if err != nil {
@@ -408,6 +411,7 @@ func TestRemoveOwnedBackupTempKeepsForeignEntries(t *testing.T) {
 
 // TestCopyIntoRejectsUnusableDestination は destination を開けない場合に driver の error を伝播することを検査する。
 func TestCopyIntoRejectsUnusableDestination(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	destination := filepath.Join(t.TempDir(), "directory")
 	if err := os.Mkdir(destination, 0o700); err != nil {
@@ -420,6 +424,7 @@ func TestCopyIntoRejectsUnusableDestination(t *testing.T) {
 
 // TestBackupBusyClassificationAndRetryWait は待って再試行する error の判定と待機の取消を検査する。
 func TestBackupBusyClassificationAndRetryWait(t *testing.T) {
+	t.Parallel()
 	if isBackupBusy(errors.New("not a sqlite error")) {
 		t.Fatal("a non-SQLite error was classified as busy")
 	}
@@ -438,6 +443,7 @@ func TestBackupBusyClassificationAndRetryWait(t *testing.T) {
 
 // TestPruneBackupsRejectsUnreadableDirectory は世代整理が directory を読めない場合に error を返すことを検査する。
 func TestPruneBackupsRejectsUnreadableDirectory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root, _, err := openBackupRootForTest(t, dir)
 	if err != nil {

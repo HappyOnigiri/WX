@@ -13,6 +13,7 @@ import (
 )
 
 func TestFailedStandbyBlocksUnboundedPoolRefill(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -39,6 +40,7 @@ func TestFailedStandbyBlocksUnboundedPoolRefill(t *testing.T) {
 }
 
 func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -115,6 +117,7 @@ func TestStateMachineRejectsStaleAndIncompleteTransitions(t *testing.T) {
 }
 
 func TestTransactionalTransitionsRollBackOnCompanionStateChanges(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -171,6 +174,7 @@ func TestTransactionalTransitionsRollBackOnCompanionStateChanges(t *testing.T) {
 }
 
 func TestStoreFilesystemCreationFailures(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	blocker := filepath.Join(root, "file")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
@@ -189,6 +193,7 @@ func TestStoreFilesystemCreationFailures(t *testing.T) {
 }
 
 func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
+	t.Parallel()
 	t.Run("create session repository metadata", func(t *testing.T) {
 		store := openTestStore(t)
 		seedWorkspace(t, store)
@@ -377,6 +382,7 @@ func TestCompanionTableFailuresRollBackStateTransactions(t *testing.T) {
 }
 
 func TestAdministrativeStateTransitionsAndQueries(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -426,6 +432,7 @@ func TestAdministrativeStateTransitionsAndQueries(t *testing.T) {
 }
 
 func TestOwnershipAndCompareAndSwapFailuresAreRejected(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -488,6 +495,7 @@ func TestOwnershipAndCompareAndSwapFailuresAreRejected(t *testing.T) {
 }
 
 func TestArchiveAndForgetAdministrativePaths(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -521,6 +529,7 @@ func TestArchiveAndForgetAdministrativePaths(t *testing.T) {
 }
 
 func TestOnlineBackupContainsCommittedRegistry(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	path, err := store.Backup(context.Background(), 2, time.Hour)
@@ -543,6 +552,7 @@ func TestOnlineBackupContainsCommittedRegistry(t *testing.T) {
 }
 
 func TestWALAllowsStatusReadWhileWriteTransactionIsOpen(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -570,6 +580,7 @@ func TestWALAllowsStatusReadWhileWriteTransactionIsOpen(t *testing.T) {
 }
 
 func TestEverySQLiteConnectionEnforcesPolicyPragmas(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	connections := make([]interface{ Close() error }, 0, 3)
@@ -600,6 +611,7 @@ func TestEverySQLiteConnectionEnforcesPolicyPragmas(t *testing.T) {
 }
 
 func TestCorruptDatabaseIsNotReplacedOrClaimed(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state.db")
 	original := []byte("not a sqlite database; preserve for recovery")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
@@ -619,6 +631,7 @@ func TestCorruptDatabaseIsNotReplacedOrClaimed(t *testing.T) {
 }
 
 func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	for _, table := range []string{"rpc_idempotency", "quarantined_artifacts", "workspace_snapshots", "snapshots", "jobs", "session_repositories", "sessions", "slot_repositories", "slots", "workspace_repositories", "repositories", "workspaces", "events"} {
 		if _, err := store.db.Exec(`DROP TABLE ` + table); err != nil {
@@ -731,6 +744,7 @@ func TestDamagedSchemaFailsEveryOperationWithoutRecreatingState(t *testing.T) {
 }
 
 func TestResumeOrphanAndBackupNontrivialPaths(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -819,6 +833,7 @@ func TestResumeOrphanAndBackupNontrivialPaths(t *testing.T) {
 }
 
 func TestRestoreActivationPreservesParentMappingAtEveryHandoffFailure(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		trigger string
@@ -873,7 +888,8 @@ const (
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := openTestStoreAtPath(t, path)
 	if err != nil {
 		t.Fatal(err)
 	}

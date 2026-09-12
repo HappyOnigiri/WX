@@ -91,7 +91,7 @@ func TestPrepareQuarantinesUncertainGitAddAfterRootReplacement(t *testing.T) {
 	cfg.Storage.WorktreeRoot = root
 	cfg.Pool.WarmPerWorkspace = 0
 	cfg.Readiness.Timeout.Duration = 5 * time.Second
-	store, err := state.Open(filepath.Join(base, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(base, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

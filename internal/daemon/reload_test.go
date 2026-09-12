@@ -8,13 +8,12 @@ import (
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 func TestReloadConfigDetectsSwappedUnchangedWorktreeRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +58,7 @@ func TestReloadConfigDetectsSwappedUnchangedWorktreeRoot(t *testing.T) {
 func TestReloadConfigIsIdempotentForAnUnchangedWorktreeRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +95,7 @@ func TestReloadConfigIsIdempotentForAnUnchangedWorktreeRoot(t *testing.T) {
 func TestReloadConfigFailsClosedWhileShuttingDown(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

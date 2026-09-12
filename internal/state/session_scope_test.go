@@ -8,6 +8,7 @@ import (
 )
 
 func TestWorkspaceSlotPathsIncludesRetiredRootsAndAllSlotStates(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedRoot(t, store, "root-retired", "/retired-wx", "retired-identity", false)
@@ -33,6 +34,7 @@ func TestWorkspaceSlotPathsIncludesRetiredRootsAndAllSlotStates(t *testing.T) {
 }
 
 func TestWorkspaceSessionScopesReturnsIdentityAndState(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "other-workspace", "/other", "single_repository", "other-repository", "/other/repository", "/other/repository/.git", "")
@@ -62,6 +64,7 @@ func TestWorkspaceSessionScopesReturnsIdentityAndState(t *testing.T) {
 }
 
 func TestPreviousWorktreeUsesParentSlotAndRepositoryShape(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedSessionScopeRepository(t, store, "repository-b")
@@ -121,6 +124,7 @@ func seedSessionScopeSlotRepository(t *testing.T, store *Store, slotID, reposito
 }
 
 func TestWorkspaceRootForSlotPathResolvesRetiredSlots(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "nested-workspace", "/nested", "repository", "nested-repository", "/nested", "/nested/.git", "")
@@ -154,6 +158,7 @@ func TestWorkspaceRootForSlotPathResolvesRetiredSlots(t *testing.T) {
 }
 
 func TestScopeWorkspaceForSlotPathReturnsIdentityOfLongestSlot(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "multi-workspace", "/multi", "multi_repository", "multi-repository", "/multi/repo", "/multi/repo/.git", "repo")
@@ -183,6 +188,7 @@ func TestScopeWorkspaceForSlotPathReturnsIdentityOfLongestSlot(t *testing.T) {
 }
 
 func TestScopeRepositoryWorkspaceMatchesOnlyUnambiguousRepositoryKind(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "multi-workspace", "/multi", "multi_repository", "multi-repository", "/multi/repo", "/multi/repo/.git", "repo")
@@ -205,6 +211,7 @@ func TestScopeRepositoryWorkspaceMatchesOnlyUnambiguousRepositoryKind(t *testing
 }
 
 func TestScopeMultiWorkspaceForRootMatchesExactRootOnly(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "multi-workspace", "/multi", "multi_repository", "multi-repository", "/multi/repo", "/multi/repo/.git", "repo")
@@ -224,6 +231,7 @@ func TestScopeMultiWorkspaceForRootMatchesExactRootOnly(t *testing.T) {
 }
 
 func TestWorkspaceHasCommonDirChecksCurrentMembership(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	seedWorkspaceRows(t, store, "multi-workspace", "/multi", "multi_repository", "multi-repository", "/multi/repo", "/multi/repo/.git", "repo")

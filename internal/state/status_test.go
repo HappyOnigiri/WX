@@ -11,6 +11,7 @@ import (
 )
 
 func TestStatusDiagnosticsFailsAtEachSchemaBoundary(t *testing.T) {
+	t.Parallel()
 	for _, table := range []string{"workspaces", "sessions", "repositories", "jobs", "snapshots", "quarantined_artifacts"} {
 		t.Run(table, func(t *testing.T) {
 			store := openTestStore(t)
@@ -27,6 +28,7 @@ func TestStatusDiagnosticsFailsAtEachSchemaBoundary(t *testing.T) {
 // TestStatusDiagnosticsReportsWorkspaceLastUsedFromSessions は workspace_details.last_used_at の集計元を固定する。
 // workspace 自身の session を数えるため、repository 数に関わらず値が入り、repository 行を共有する別 workspace の貸出では値が入らない。
 func TestStatusDiagnosticsReportsWorkspaceLastUsedFromSessions(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	seedWorkspaceRows(t, store, "multi", "/multi", "multi_repository", "multi-a", "/multi/a", "/multi/a/.git", "a")
@@ -97,6 +99,7 @@ func TestStatusDiagnosticsReportsWorkspaceLastUsedFromSessions(t *testing.T) {
 }
 
 func TestStatusDiagnosticsRejectsMalformedRows(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		sql  []string
@@ -121,6 +124,7 @@ func TestStatusDiagnosticsRejectsMalformedRows(t *testing.T) {
 }
 
 func TestStatusDiagnosticsRejectsUnscannableRows(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		sql  []string
@@ -170,6 +174,7 @@ func TestStatusDiagnosticsRejectsUnscannableRows(t *testing.T) {
 }
 
 func TestStatusDiagnosticsAndGarbageCollectionCandidatesExposeRows(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -214,6 +219,7 @@ func TestStatusDiagnosticsAndGarbageCollectionCandidatesExposeRows(t *testing.T)
 // TestListSlotsReturnsLiveSlotsWithRepositories は既定の一覧の範囲と REPO 列の元になる値を固定する。
 // 実体が残る slot（ARCHIVED 以外）を全て返し、multi-repository slot は dir_name 順に main worktree path を並べる。
 func TestListSlotsReturnsLiveSlotsWithRepositories(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	seedWorkspaceRows(t, store, "multi", "/multi", "multi_repository", "multi-a", "/multi/a", "/multi/a/.git", "a")
@@ -252,6 +258,7 @@ func TestListSlotsReturnsLiveSlotsWithRepositories(t *testing.T) {
 
 // 準備失敗で止まった補充は、停止行だけでは原因を説明できないため、失敗した job の理由を併せて返す。
 func TestStandbyReplenishmentDiagnosticsCarryTheFailedJobCause(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -296,6 +303,7 @@ func TestStandbyReplenishmentDiagnosticsCarryTheFailedJobCause(t *testing.T) {
 
 // 再試行待ちの error_code と成功した job は失敗の確定ではないため、失敗情報として引き継がない。
 func TestStandbyReplenishmentDiagnosticsIgnoreJobsThatHaveNotFailed(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -344,6 +352,7 @@ func TestStandbyReplenishmentDiagnosticsIgnoreJobsThatHaveNotFailed(t *testing.T
 // wx slots --json は貸出の種別・期限・親 session を行に載せる。
 // slot を手放した session の行（--all）でも同じ列が読めることを併せて確認する。
 func TestListSlotsCarryLeaseAttributes(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -386,6 +395,7 @@ func TestListSlotsCarryLeaseAttributes(t *testing.T) {
 // TestStatusDiagnosticsSplitsArchivedSessionsFromTheList は Sessions 診断の範囲を固定する。
 // 終端でない state は名前を問わず一覧に残り、ARCHIVED は集計だけに、EXPIRED はどちらにも出ない。
 func TestStatusDiagnosticsSplitsArchivedSessionsFromTheList(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -433,6 +443,7 @@ func TestStatusDiagnosticsSplitsArchivedSessionsFromTheList(t *testing.T) {
 
 // TestStatusDiagnosticsFailsWhenArchivedSessionColumnsAreMissing は、一覧が引けても集計が引けない DB を失敗として扱うことを固定する。
 func TestStatusDiagnosticsFailsWhenArchivedSessionColumnsAreMissing(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	for _, statement := range []string{
 		`DROP TABLE sessions`,
@@ -450,6 +461,7 @@ func TestStatusDiagnosticsFailsWhenArchivedSessionColumnsAreMissing(t *testing.T
 // TestStatusDiagnosticsSeparatesDiscardedJobsFromFailures は、state='FAILED' の job を error_code で 2 つに分けて数えることを固定する。
 // 取り消した予定 job は記録として FAILED のまま残るため、集計で除かないと対処が必要な失敗の件数が読めない。
 func TestStatusDiagnosticsSeparatesDiscardedJobsFromFailures(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	for _, job := range []struct{ id, state, code string }{
@@ -478,6 +490,7 @@ func TestStatusDiagnosticsSeparatesDiscardedJobsFromFailures(t *testing.T) {
 
 // 補充計画の失敗は停止行を残さないため、最新の失敗を job 行から拾って報告する。
 func TestUnresolvedStandbyPlanFailuresReportsTheLatestFailure(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -520,6 +533,7 @@ func TestUnresolvedStandbyPlanFailuresReportsTheLatestFailure(t *testing.T) {
 
 // 後続の補充計画が動いていれば、残った FAILED 行は未解消として報告しない。
 func TestUnresolvedStandbyPlanFailuresExcludesResolvedPlans(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -556,6 +570,7 @@ func TestUnresolvedStandbyPlanFailuresExcludesResolvedPlans(t *testing.T) {
 
 // `wx clear` などが取り消した job は失敗ではないので、報告にも解消の判定にも使わない。
 func TestUnresolvedStandbyPlanFailuresIgnoresDiscardedJobs(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

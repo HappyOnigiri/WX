@@ -19,7 +19,7 @@ func TestRefListFailureStaysScopedToItsRepository(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
