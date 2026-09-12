@@ -32,6 +32,8 @@ COVERAGE_EXCLUSIONS ?= coverage-exclusions.txt
 RACE_TEST_ARGS := -race -shuffle=on -count=1
 RACE_DAEMON_PACKAGE := ./internal/daemon
 RACE_STATE_PACKAGE := ./internal/state
+RACE_SHARD_COUNT := 2
+TESTSHARD ?= $(GO) run ./tools/testshard
 # darwin専用テストは internal/workspace にしかない。テスト名の一覧を二重管理せずパッケージ単位で実行する。
 DARWIN_TEST_PACKAGE := ./internal/workspace
 LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicode-3.0,Unlicense
@@ -39,7 +41,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-hooks setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check automation-check docs-index-check workflow-check workflow-lint reporter-check workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-state test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-plan nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-hooks setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check automation-check docs-index-check workflow-check workflow-lint reporter-check workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-daemon-0 test-race-daemon-1 test-race-state test-race-state-0 test-race-state-1 test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-plan nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -233,21 +235,35 @@ test:
 test-race:
 	$(GO) test $(RACE_TEST_ARGS) ./...
 
-# race検査はCIの少コアランナーでCPU律速になり、単独で最長のinternal/daemonがジョブの下限を作る。
-# daemon・state・残りを別ジョブへ分けるため、対象パッケージだけが違うtargetを用意する。
-test-race-daemon:
-	@if [ -n "$(CITEST)" ]; then \
-		"$(CITEST)" -profile race-daemon -report-dir "$(CI_TEST_ARTIFACT_DIR)/race-daemon" -- $(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE); \
+# race検査はCIの少コアランナーでCPU律速になるため、重量packageをテスト名で分ける。
+# patternはtestshardの1引数としてcitestまたはgo testへそのまま渡す。
+define run-race-test-shard
+	@set -eu; \
+	pattern="$$( $(TESTSHARD) -go "$(GO)" -package "$(1)" -count "$(RACE_SHARD_COUNT)" -index "$(2)" )"; \
+	test -n "$$pattern"; \
+	if [ -n "$(CITEST)" ]; then \
+		"$(CITEST)" -profile "$(3)" -report-dir "$(CI_TEST_ARTIFACT_DIR)/$(3)" -- $(GO) test $(RACE_TEST_ARGS) -run "$$pattern" "$(1)"; \
 	else \
-		$(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE); \
+		$(GO) test $(RACE_TEST_ARGS) -run "$$pattern" "$(1)"; \
 	fi
+endef
 
-test-race-state:
-	@if [ -n "$(CITEST)" ]; then \
-		"$(CITEST)" -profile race-state -report-dir "$(CI_TEST_ARTIFACT_DIR)/race-state" -- $(GO) test $(RACE_TEST_ARGS) $(RACE_STATE_PACKAGE); \
-	else \
-		$(GO) test $(RACE_TEST_ARGS) $(RACE_STATE_PACKAGE); \
-	fi
+test-race-daemon-0:
+	$(call run-race-test-shard,$(RACE_DAEMON_PACKAGE),0,race-daemon-0)
+
+test-race-daemon-1:
+	$(call run-race-test-shard,$(RACE_DAEMON_PACKAGE),1,race-daemon-1)
+
+test-race-state-0:
+	$(call run-race-test-shard,$(RACE_STATE_PACKAGE),0,race-state-0)
+
+test-race-state-1:
+	$(call run-race-test-shard,$(RACE_STATE_PACKAGE),1,race-state-1)
+
+# 旧targetは手動実行との互換性を保ち、2つの新しいshardをまとめて走らせる。
+test-race-daemon: test-race-daemon-0 test-race-daemon-1
+
+test-race-state: test-race-state-0 test-race-state-1
 
 test-race-rest:
 	@set -eu; \

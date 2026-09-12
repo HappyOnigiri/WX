@@ -8,12 +8,21 @@ const childProcess = require('node:child_process');
 
 const PROFILE_CONTRACTS = Object.freeze([
   Object.freeze({ profile: 'coverage', job: 'coverage-tests' }),
+  Object.freeze({ profile: 'race-daemon-0', job: 'race (daemon-0)' }),
+  Object.freeze({ profile: 'race-daemon-1', job: 'race (daemon-1)' }),
+  Object.freeze({ profile: 'race-state-0', job: 'race (state-0)' }),
+  Object.freeze({ profile: 'race-state-1', job: 'race (state-1)' }),
+  // 旧artifactを手動で再処理できるよう、以前のprofileも受け付ける。
   Object.freeze({ profile: 'race-daemon', job: 'race (daemon)' }),
   Object.freeze({ profile: 'race-state', job: 'race (state)' }),
   Object.freeze({ profile: 'race-rest', job: 'race (rest)' }),
 ]);
 const PROFILES = new Set(PROFILE_CONTRACTS.map(({ profile }) => profile));
-const PROFILE_PATTERN = PROFILE_CONTRACTS.map(({ profile }) => profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+const PROFILE_PATTERN = PROFILE_CONTRACTS
+  .map(({ profile }) => profile)
+  .sort((a, b) => b.length - a.length)
+  .map((profile) => profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
 const ARTIFACT_PROFILE = new RegExp(`^ci-tests-(${PROFILE_PATTERN})-`);
 const SHA = /^[0-9a-f]{40}$/i;
 const MAX_TEXT = 12000;
@@ -299,7 +308,7 @@ async function run(options) {
   const usable = artifacts.filter((artifact) => !artifact.expired && artifact.workflow_run?.id === Number(runId) && artifactNamePattern(runId, attempt).test(artifact.name));
   // 取りこぼした成果物は最後に失敗として報告する。
   // ここで打ち切ると、同じrunの他のジョブが記録した回復まで起票されない。
-  const missing = [...expected].filter((profile) => !usable.some((artifact) => artifact.name.startsWith(`ci-tests-${profile}-`)));
+  const missing = [...expected].filter((profile) => !usable.some((artifact) => profileFromArtifactName(artifact.name) === profile));
   for (const profile of missing) source.summary(`missing report artifact for ${profile}`);
   const reports = options.reports || await collectFromArtifacts({ github, owner, repo, runId, attempt, artifacts: usable });
   for (const report of reports) {

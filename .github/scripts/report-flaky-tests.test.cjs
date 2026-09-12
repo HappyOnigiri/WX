@@ -101,6 +101,92 @@ test('rejects a race-state artifact whose manifest names another profile', () =>
   ], source), /profile does not match its artifact name/);
 });
 
+test('collects every test-name race shard as a separate profile', async () => {
+  const shards = ['race-daemon-0', 'race-daemon-1', 'race-state-0', 'race-state-1'];
+  const jobs = shards.map((profile) => ({
+    name: `race (${profile.replace(/^race-/, '')})`,
+    html_url: `https://github.com/HappyOnigiri/WX/actions/runs/10/job/${profile}`,
+    run_attempt: 1,
+    conclusion: 'success',
+    steps: [{ name: 'Upload CI test report', conclusion: 'success' }],
+  }));
+  const artifacts = shards.map((profile, id) => ({
+    id: id + 1,
+    name: `ci-tests-${profile}-10-1`,
+    expired: false,
+    workflow_run: { id: 10 },
+  }));
+  const github = { rest: {
+    actions: {
+      getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: source.testSha, html_url: source.runUrl } }),
+      listJobsForWorkflowRun: async () => ({ data: { jobs } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts } }),
+    },
+    issues: {
+      listForRepo: async () => ({ data: [] }),
+      create: async () => ({ data: {} }),
+    },
+  } };
+  const reports = shards.map((profile) => ({
+    artifactName: `ci-tests-${profile}-10-1`,
+    manifest: manifest('10', '1', profile),
+  }));
+  const result = await reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    reports,
+  });
+  assert.equal(result.groups.length, 1);
+  assert.deepEqual(result.groups[0].items.map((item) => item.manifest.profile), shards);
+  assert.deepEqual(result.groups[0].items.map((item) => item.jobUrl), jobs.map((job) => job.html_url));
+});
+
+test('reports a missing test-name race shard independently', async () => {
+  const shards = ['race-daemon-0', 'race-daemon-1', 'race-state-0', 'race-state-1'];
+  const jobs = shards.map((profile) => ({
+    name: `race (${profile.replace(/^race-/, '')})`,
+    run_attempt: 1,
+    conclusion: 'success',
+    steps: [{ name: 'Upload CI test report', conclusion: 'success' }],
+  }));
+  const present = shards.slice(0, 3);
+  const artifacts = present.map((profile, id) => ({
+    id: id + 1,
+    name: `ci-tests-${profile}-10-1`,
+    expired: false,
+    workflow_run: { id: 10 },
+  }));
+  const warnings = [];
+  const github = { rest: {
+    actions: {
+      getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: source.testSha, html_url: source.runUrl } }),
+      listJobsForWorkflowRun: async () => ({ data: { jobs } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts } }),
+    },
+    issues: {
+      listForRepo: async () => ({ data: [] }),
+      create: async () => ({ data: {} }),
+    },
+  } };
+  const reports = present.map((profile) => ({
+    artifactName: `ci-tests-${profile}-10-1`,
+    manifest: manifest('10', '1', profile),
+  }));
+  await assert.rejects(reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    reports,
+    core: { warning: (message) => warnings.push(message) },
+  }), /missing report artifact for race-state-1/);
+  assert.deepEqual(warnings, ['missing report artifact for race-state-1']);
+});
+
 test('creates once and comments on a later occurrence of the same issue', async () => {
   const issues = [];
   const comments = new Map();
