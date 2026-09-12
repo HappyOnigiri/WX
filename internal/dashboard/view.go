@@ -162,10 +162,12 @@ func (m model) menuLines(width int) []string {
 	end := min(len(labels), m.offset+m.visibleRows())
 	for i := m.offset; i < end; i++ {
 		marker := "  "
+		label := labels[i]
 		if i == m.selected {
 			marker = accent + "❯ " + reset
+			label = accent + xansi.Strip(label) + reset
 		}
-		lines = append(lines, truncate(marker+labels[i], width))
+		lines = append(lines, truncate(marker+label, width))
 	}
 	if len(labels) == 0 {
 		lines = append(lines, "  No actions are available.")

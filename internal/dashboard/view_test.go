@@ -50,4 +50,30 @@ func TestSelectedTabUsesBackgroundInsteadOfBrackets(t *testing.T) {
 	}
 }
 
+func TestSelectedMenuItemUsesAccentColor(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	for _, setup := range []struct {
+		name         string
+		tab          int
+		settingsOpen bool
+	}{
+		{name: "launch", tab: 1},
+		{name: "settings", tab: 2, settingsOpen: true},
+	} {
+		t.Run(setup.name, func(t *testing.T) {
+			m.tab, m.settingsOpen = setup.tab, setup.settingsOpen
+			lines := m.menuLines(80)
+			if !strings.Contains(lines[2], reset+accent) {
+				t.Fatalf("selected menu item has no accent color: %q", lines[2])
+			}
+			if strings.Contains(lines[2], dim) {
+				t.Fatalf("selected menu item is only partially accented: %q", lines[2])
+			}
+			if strings.Contains(lines[3], reset+accent) {
+				t.Fatalf("unselected menu item uses accent color: %q", lines[3])
+			}
+		})
+	}
+}
+
 func testTime() time.Time { return time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local) }
