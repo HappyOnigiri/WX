@@ -63,7 +63,7 @@ func validateReferences(root string) error {
 			if !ok {
 				return true
 			}
-			argumentIndex := 0
+			var argumentIndex int
 			switch selector.Sel.Name {
 			case "T":
 				if ident, ok := selector.X.(*ast.Ident); !ok || ident.Name != "i18n" {
