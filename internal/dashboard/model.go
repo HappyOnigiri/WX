@@ -456,7 +456,8 @@ func (m *model) finishPending() {
 	args = append(args, m.pending.defaultArgs...)
 	workDir := ""
 	input := strings.TrimSpace(m.input)
-	if m.tab == 2 {
+	switch {
+	case m.tab == 2:
 		meta := m.configItems()[m.selected]
 		scope := "global"
 		if m.settingsEnv > 0 {
@@ -474,14 +475,16 @@ func (m *model) finishPending() {
 			args = append(args, "--add", input)
 		case config.EditRemove:
 			args = append(args, "--remove", input)
+		case config.EditSet:
+			args = append(args, input)
 		default:
 			args = append(args, input)
 		}
-	} else if m.tab == 5 && m.pending.command == "setup" {
+	case m.tab == 5 && m.pending.command == "setup":
 		if m.inputStage == "setup-value" {
 			args = append(args, "--value", input)
 		}
-	} else {
+	default:
 		if m.pending.workDir {
 			parts := strings.SplitN(input, "|", 2)
 			workDir = strings.TrimSpace(parts[0])

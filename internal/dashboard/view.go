@@ -41,15 +41,16 @@ func (m model) View() tea.View {
 		lines = append(lines, m.operationView()...)
 	}
 	footer := "←/→ or Tab/Shift+Tab tabs  ↑/↓ select  Enter confirm  Esc exit"
-	if m.tab == 0 && m.mode == modeList {
+	switch {
+	case m.tab == 0 && m.mode == modeList:
 		footer = "←/→ or Tab/Shift+Tab tabs  r refresh  Esc exit"
-	} else if m.tab == 2 && m.mode == modeList {
+	case m.tab == 2 && m.mode == modeList:
 		if m.settingsOpen {
 			footer = "←/→ tabs  ↑/↓ select  Enter edit  Esc environments"
 		} else {
 			footer = "←/→ tabs  ↑/↓ select environment  Enter open  Esc exit"
 		}
-	} else if m.mode == modeResult {
+	case m.mode == modeResult:
 		footer = "↑/↓ scroll result  Enter/Esc back"
 	}
 	lines = fitLines(lines, max(1, m.height-2), m.width)
