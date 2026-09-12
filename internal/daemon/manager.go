@@ -174,6 +174,8 @@ func (m *Manager) Close() {
 	<-done
 }
 
+// startBackground は fn を背景goroutineで起動し、起動したかを返す。
+// Close開始後はfalseを返して起動しないので、呼び出し側は失敗を通常経路として扱う。
 func (m *Manager) startBackground(fn func()) bool {
 	m.backgroundMu.Lock()
 	if m.backgroundClosing {
