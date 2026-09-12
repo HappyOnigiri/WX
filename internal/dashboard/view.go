@@ -27,16 +27,30 @@ func (m model) View() tea.View {
 	switch {
 	case m.mode == modeInput:
 		lines = append(lines, m.inputView()...)
+	case m.mode == modeChoice:
+		lines = append(lines, m.choiceView()...)
 	case m.mode == modeConfirm:
 		lines = append(lines, m.confirmView()...)
+	case m.mode == modeRunning:
+		lines = append(lines, m.runningView()...)
+	case m.mode == modeResult:
+		lines = append(lines, m.resultView()...)
 	case m.tab == 0:
 		lines = append(lines, m.statusView()...)
 	default:
 		lines = append(lines, m.operationView()...)
 	}
-	footer := "Tab/Shift+Tab タブ  ↑↓ 選択  Enter 決定  Esc 終了"
+	footer := "←/→ or Tab/Shift+Tab tabs  ↑/↓ select  Enter confirm  Esc exit"
 	if m.tab == 0 && m.mode == modeList {
-		footer = "Tab/Shift+Tab タブ  r 更新  ↑↓ スクロール  Esc 終了"
+		footer = "←/→ or Tab/Shift+Tab tabs  r refresh  Esc exit"
+	} else if m.tab == 2 && m.mode == modeList {
+		if m.settingsOpen {
+			footer = "←/→ tabs  ↑/↓ select  Enter edit  Esc environments"
+		} else {
+			footer = "←/→ tabs  ↑/↓ select environment  Enter open  Esc exit"
+		}
+	} else if m.mode == modeResult {
+		footer = "↑/↓ scroll result  Enter/Esc back"
 	}
 	lines = fitLines(lines, max(1, m.height-2), m.width)
 	lines = append(lines, strings.Repeat("─", max(1, m.width)), dim+truncate(footer, m.width)+reset)
@@ -61,7 +75,10 @@ func (m model) tabLine() string {
 func (m model) breadcrumb() string {
 	crumb := "wx / " + tabNames[m.tab]
 	if m.tab == 2 {
-		crumb += " / " + []string{"Global", "Workspace", "Repository"}[m.scope]
+		environments := m.configEnvironments()
+		if m.settingsOpen && m.settingsEnv < len(environments) {
+			crumb += " / " + environments[m.settingsEnv].label
+		}
 	}
 	if m.mode != modeList {
 		crumb += " / " + m.pending.label
@@ -70,29 +87,29 @@ func (m model) breadcrumb() string {
 }
 
 func (m model) statusView() []string {
-	lines := []string{accent + "稼働状況" + reset}
+	lines := []string{accent + "System status" + reset}
 	if m.loading && m.status == "" {
-		return append(lines, "", "  daemon から取得しています…")
+		return append(lines, "", "  Loading from the daemon…")
 	}
 	if m.statusErr != "" {
-		lines = append(lines, "", warn+"  更新失敗: "+truncate(m.statusErr, max(1, m.width-10))+reset)
+		lines = append(lines, "", warn+"  Refresh failed: "+truncate(m.statusErr, max(1, m.width-18))+reset)
 		if m.status != "" {
-			lines = append(lines, dim+"  最後に取得した値を表示しています。"+reset)
+			lines = append(lines, dim+"  Showing the last successful response."+reset)
 		}
 	}
 	if !m.statusAt.IsZero() {
 		age := time.Since(m.statusAt).Round(time.Second)
-		freshness := "更新 " + m.statusAt.Format("15:04:05")
+		freshness := "Updated " + m.statusAt.Format("15:04:05")
 		if age >= 4*time.Second {
-			freshness += fmt.Sprintf("（%s 前）", age)
+			freshness += fmt.Sprintf(" (%s ago)", age)
 		}
 		lines = append(lines, dim+"  "+freshness+reset, "")
 	}
 	statusLines := strings.Split(m.status, "\n")
-	start := min(m.offset, max(0, len(statusLines)-1))
-	end := min(len(statusLines), start+max(1, m.visibleRows()-3))
+	start := 0
+	end := min(len(statusLines), max(1, m.visibleRows()-3))
 	if len(statusLines) == 1 && statusLines[0] == "" {
-		lines = append(lines, "  表示できる状態はありません。")
+		lines = append(lines, "  No status is available.")
 	} else {
 		lines = append(lines, statusLines[start:end]...)
 	}
@@ -130,19 +147,7 @@ func (m model) stackedOperationView() []string {
 }
 
 func (m model) menuLines(width int) []string {
-	lines := []string{accent + m.menuTitle() + reset}
-	if m.tab == 2 {
-		scopes := []string{"Global", "Workspace", "Repository"}
-		parts := make([]string, len(scopes))
-		for i, scope := range scopes {
-			if i == m.scope {
-				parts[i] = accent + "[" + scope + "]" + reset
-			} else {
-				parts[i] = dim + scope + reset
-			}
-		}
-		lines = append(lines, strings.Join(parts, " "), "")
-	}
+	lines := []string{accent + m.menuTitle() + reset, ""}
 	labels := m.currentLabels()
 	end := min(len(labels), m.offset+m.visibleRows())
 	for i := m.offset; i < end; i++ {
@@ -153,7 +158,7 @@ func (m model) menuLines(width int) []string {
 		lines = append(lines, truncate(marker+labels[i], width))
 	}
 	if len(labels) == 0 {
-		lines = append(lines, "  操作はありません。")
+		lines = append(lines, "  No actions are available.")
 	}
 	return lines
 }
@@ -161,29 +166,51 @@ func (m model) menuLines(width int) []string {
 func (m model) menuTitle() string {
 	switch m.tab {
 	case 1:
-		return "起動するものを選ぶ"
+		return "Choose what to launch"
 	case 2:
-		return "設定項目"
+		if m.settingsOpen {
+			return "Editable settings"
+		}
+		return "Environments"
 	case 3:
-		return "診断方法"
+		return "Diagnostic mode"
 	case 4:
-		return "保守操作"
+		return "Maintenance operation"
 	default:
-		return "セットアップと daemon"
+		return "Integrations and daemon"
 	}
 }
 
 func (m model) currentLabels() []string {
 	if m.tab == 2 {
+		if !m.settingsOpen {
+			environments := m.configEnvironments()
+			labels := make([]string, 0, len(environments))
+			for _, environment := range environments {
+				labels = append(labels, environment.label)
+			}
+			return labels
+		}
 		items := m.configItems()
-		values := configValues(m.opts.Config)
+		values := m.environmentValues()
 		labels := make([]string, 0, len(items))
 		for _, item := range items {
 			value := values[item.Key]
 			if value == "" {
-				value = "継承 / 未設定"
+				value = "inherited / unset"
 			}
 			labels = append(labels, item.DisplayName+"  "+dim+value+reset)
+		}
+		return labels
+	}
+	if m.tab == 5 {
+		steps := m.setupItems()
+		labels := make([]string, 0, len(steps)+len(tabMenus[m.tab]))
+		for _, step := range steps {
+			labels = append(labels, step.Title+"  "+dim+string(step.State)+reset)
+		}
+		for _, item := range tabMenus[m.tab] {
+			labels = append(labels, item.label)
 		}
 		return labels
 	}
@@ -200,23 +227,61 @@ func (m model) descriptionLines(width int) []string {
 		return nil
 	}
 	if m.tab == 2 {
+		if !m.settingsOpen {
+			environments := m.configEnvironments()
+			environment := environments[m.selected]
+			lines := []string{soft + environment.label + reset}
+			if environment.target != "" {
+				lines = append(lines, dim+environment.target+reset)
+			}
+			lines = append(lines, "", warn+"Effective settings"+reset)
+			if environment.target == "" {
+				for _, field := range append(config.Fields(m.opts.Config), config.Lists(m.opts.Config)...) {
+					lines = append(lines, truncate(field.Key+" = "+field.Value, width))
+				}
+			} else {
+				for _, field := range config.ScopeFields(m.opts.Config, config.ScopeWorkspace, environment.target) {
+					lines = append(lines, truncate(field.Key+" = "+field.Value+" ("+field.Source+")", width))
+				}
+			}
+			return lines
+		}
 		meta := m.configItems()[m.selected]
 		lines := []string{soft + meta.DisplayName + reset, dim + meta.Key + " · " + string(meta.Kind) + reset, ""}
 		lines = append(lines, wrap(meta.Description, width)...)
-		lines = append(lines, "", warn+"変更の影響"+reset)
+		lines = append(lines, "", warn+"Impact"+reset)
 		lines = append(lines, wrap(meta.Impact, width)...)
 		if len(meta.Choices) > 0 {
-			lines = append(lines, "", "選択肢: "+strings.Join(meta.Choices, " / "))
+			lines = append(lines, "", "Choices: "+strings.Join(meta.Choices, " / "))
 		}
 		return lines
 	}
-	item := tabMenus[m.tab][m.selected]
+	if m.tab == 5 {
+		steps := m.setupItems()
+		if m.selected < len(steps) {
+			step := steps[m.selected]
+			lines := []string{soft + step.Title + reset, dim + step.ID + " · " + string(step.State) + reset, ""}
+			lines = append(lines, wrap(step.Detail, width)...)
+			if len(step.Reasons) > 0 {
+				lines = append(lines, "", warn+"Attention"+reset)
+				for _, reason := range step.Reasons {
+					lines = append(lines, wrap(reason, width)...)
+				}
+			}
+			return lines
+		}
+		return menuDescription(tabMenus[m.tab][m.selected-len(steps)], width)
+	}
+	return menuDescription(tabMenus[m.tab][m.selected], width)
+}
+
+func menuDescription(item menuItem, width int) []string {
 	lines := []string{soft + item.label + reset, ""}
 	lines = append(lines, wrap(item.description, width)...)
-	lines = append(lines, "", warn+"実行時の扱い"+reset)
+	lines = append(lines, "", warn+"Behavior"+reset)
 	lines = append(lines, wrap(item.impact, width)...)
 	if item.destructive {
-		lines = append(lines, "", warn+"この操作はデータを削除する場合があります。"+reset)
+		lines = append(lines, "", warn+"This operation may delete data."+reset)
 	}
 	return lines
 }
@@ -228,36 +293,83 @@ func (m model) inputView() []string {
 		m.inputHint,
 		soft + "> " + m.input + "█" + reset,
 		"",
-		dim + "複数の値が必要な操作は workspace path | 追加引数 の形で入力します。" + reset,
-		dim + "Enter 確認  Esc 戻る" + reset,
+		dim + "For workspace operations, use: workspace path | additional arguments" + reset,
+		dim + "Enter confirm  Esc back" + reset,
 	}
 }
 
+func (m model) choiceView() []string {
+	lines := []string{accent + m.pending.label + reset, "", "Choose a value or action:"}
+	for index, option := range m.choices {
+		marker := "  "
+		if index == m.choice {
+			marker = accent + "❯ " + reset
+		}
+		lines = append(lines, marker+option.label)
+	}
+	return append(lines, "", dim+"↑/↓ select  Enter confirm  Esc back"+reset)
+}
+
 func (m model) confirmView() []string {
-	lines := []string{accent + m.pending.label + reset, "", "この操作を実行しますか？"}
+	lines := []string{accent + m.pending.label + reset, "", "Run this operation?"}
 	if m.tab == 2 {
 		meta := m.configItems()[m.selected]
-		current := configValues(m.opts.Config)[meta.Key]
+		current := m.environmentValues()[meta.Key]
 		if current == "" {
-			current = "継承 / 未設定"
+			current = "inherited / unset"
 		}
-		lines = append(lines, "現在: "+current, "変更: "+strings.TrimSpace(m.input))
+		change := strings.TrimSpace(m.input)
+		if m.editOp == config.EditReset {
+			change = "Reset to default"
+		}
+		lines = append(lines, "Current: "+current, "Change: "+change)
 	}
 	if m.pending.workDir {
-		lines = append(lines, "対象: "+strings.TrimSpace(strings.SplitN(m.input, "|", 2)[0]))
+		lines = append(lines, "Target: "+strings.TrimSpace(strings.SplitN(m.input, "|", 2)[0]))
 	}
 	if m.input != "" {
-		lines = append(lines, "入力: "+m.input)
+		lines = append(lines, "Input: "+m.input)
 	}
 	if m.pending.destructive {
-		lines = append(lines, "", warn+"削除を伴う可能性があります。対象を確認してください。"+reset)
+		lines = append(lines, "", warn+"This may delete data. Check the target carefully."+reset)
 	}
-	return append(lines, "", soft+"Enter / y 実行"+reset+"  Esc / n 戻る")
+	return append(lines, "", soft+"Enter / y run"+reset+"  Esc / n back")
+}
+
+func (m model) runningView() []string {
+	return []string{accent + m.pending.label + reset, "", "Running…", dim + "The result will appear here when the operation finishes." + reset}
+}
+
+func (m model) resultView() []string {
+	title := fmt.Sprintf("%s — exit %d", m.pending.label, m.resultCode)
+	lines := []string{accent + title + reset, ""}
+	result := strings.Split(m.resultText, "\n")
+	if len(result) == 1 && result[0] == "" {
+		result[0] = "The operation produced no output."
+	}
+	start := min(m.offset, max(0, len(result)-1))
+	end := min(len(result), start+max(1, m.visibleRows()-2))
+	return append(lines, result[start:end]...)
 }
 
 func configValues(cfg config.Config) map[string]string {
 	values := map[string]string{}
 	for _, field := range append(config.Fields(cfg), config.Lists(cfg)...) {
+		values[field.Key] = field.Value
+	}
+	return values
+}
+
+func (m model) environmentValues() map[string]string {
+	if m.settingsEnv == 0 {
+		return configValues(m.opts.Config)
+	}
+	environments := m.configEnvironments()
+	if m.settingsEnv >= len(environments) {
+		return map[string]string{}
+	}
+	values := map[string]string{}
+	for _, field := range config.ScopeFields(m.opts.Config, config.ScopeWorkspace, environments[m.settingsEnv].target) {
 		values[field.Key] = field.Value
 	}
 	return values

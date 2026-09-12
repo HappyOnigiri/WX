@@ -9,7 +9,7 @@ func TestActionsCoverEveryInteractiveTab(t *testing.T) {
 	want := map[string]bool{
 		"claude": false, "codex": false, "resume": false, "shell": false, "run": false, "new": false,
 		"doctor": false, "gc": false, "clear": false, "prune": false, "retry-standby": false,
-		"release": false, "discard-recovery": false, "forget": false, "bench": false, "setup": false, "daemon": false,
+		"release": false, "discard-recovery": false, "forget": false, "bench": false, "daemon": false,
 	}
 	for tab, items := range tabMenus {
 		if tab == 0 || tab == 2 || len(items) == 0 {

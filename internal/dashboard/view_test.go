@@ -17,12 +17,12 @@ func TestViewUsesStatusPaneAndResponsiveOperationLayout(t *testing.T) {
 	m.status = "WORKSPACE  POLICY  READY  IN USE  LAST USED\n~/wx       hot     2      1       now"
 	m.width, m.height = 100, 24
 	wide := m.View().Content
-	if !strings.Contains(wide, "稼働状況") || strings.Contains(wide, " │ ") {
+	if !strings.Contains(wide, "System status") || strings.Contains(wide, " │ ") {
 		t.Fatalf("status view is not a single pane: %q", wide)
 	}
 	m.tab, m.width = 1, 70
 	narrow := m.View().Content
-	if !strings.Contains(narrow, "起動するものを選ぶ") || !strings.Contains(narrow, "選択した workspace") {
+	if !strings.Contains(narrow, "Choose what to launch") || !strings.Contains(narrow, "selected workspace") {
 		t.Fatalf("narrow operation view omitted stacked content: %q", narrow)
 	}
 	for _, line := range strings.Split(narrow, "\n") {

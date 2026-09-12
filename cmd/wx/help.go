@@ -515,6 +515,7 @@ Options:
                 to start the daemon. This is how the LaunchAgent runs wx.`)
 	case "setup":
 		_, _ = fmt.Fprintln(w, `Usage: wx setup [--check [--json]] [--update] [--remove]
+       wx setup --item <id> --action <action> [--value <value>]
 
 Walk through what wx needs to run on its own and apply the choices. Each item
 is offered with the choices its current state allows, so running setup again
@@ -549,7 +550,10 @@ Options:
   --json    with --check, print machine-readable JSON
   --update  offer only the items that no longer match what wx would write, and
             print nothing when there are none. The installer runs this.
-  --remove  delete the configuration wx setup writes and report what was kept`)
+  --remove  delete the configuration wx setup writes and report what was kept
+  --item    configure only this item (for example hooks.claude)
+  --action  apply one action offered for --item by wx setup --check
+  --value   value used by the manual action`)
 	case "hook":
 		_, _ = fmt.Fprintln(w, `Usage: wx hook <event>
 

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -38,6 +39,77 @@ func TestModelKeepsLastStatusWhenRefreshFails(t *testing.T) {
 	m = updated.(model)
 	if m.status != "Daemon running" || m.statusErr == "" {
 		t.Fatalf("status=%q err=%q", m.status, m.statusErr)
+	}
+}
+
+func TestStatusArrowKeysDoNotScroll(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.status = strings.Repeat("line\n", 30)
+	m.offset = 4
+	updated, _ := m.Update(key(tea.KeyDown))
+	if got := updated.(model).offset; got != 4 {
+		t.Fatalf("status offset=%d, want unchanged", got)
+	}
+}
+
+func TestLeftAndRightChangeTabs(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	updated, _ := m.Update(key(tea.KeyRight))
+	m = updated.(model)
+	if m.tab != 1 {
+		t.Fatalf("right tab=%d, want 1", m.tab)
+	}
+	updated, _ = m.Update(key(tea.KeyLeft))
+	if got := updated.(model).tab; got != 0 {
+		t.Fatalf("left tab=%d, want 0", got)
+	}
+}
+
+func TestSettingsNavigateFromEnvironmentToChoice(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Workspaces["/tmp/workspace-one"] = config.Workspace{}
+	m := newModel(context.Background(), Options{Config: cfg})
+	m.tab = 2
+	if got := m.currentLabels(); len(got) != 2 || got[0] != "Global" || got[1] != "workspace-one" {
+		t.Fatalf("environments=%v", got)
+	}
+	m.selected = 1
+	updated, _ := m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if !m.settingsOpen || m.settingsEnv != 1 || len(m.configItems()) == 0 {
+		t.Fatalf("settings state=%+v", m)
+	}
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if m.mode != modeChoice {
+		t.Fatalf("mode=%v, want choice", m.mode)
+	}
+	foundReset := false
+	for _, option := range m.choices {
+		foundReset = foundReset || option.op == config.EditReset
+	}
+	if !foundReset {
+		t.Fatal("configuration choices omitted Reset to default")
+	}
+}
+
+func TestInlineOperationKeepsTheDashboardOpenAndShowsResult(t *testing.T) {
+	m := newModel(context.Background(), Options{
+		Config:  config.Defaults(),
+		Execute: func(context.Context, Action) (string, int) { return "diagnostics complete", 1 },
+	})
+	m.tab = 3
+	updated, _ := m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	updated, cmd := m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if cmd == nil || m.mode != modeRunning {
+		t.Fatalf("mode=%v cmd=%v", m.mode, cmd)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(model)
+	if m.mode != modeResult || m.resultText != "diagnostics complete" || m.resultCode != 1 {
+		t.Fatalf("result state=%+v", m)
 	}
 }
 

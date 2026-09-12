@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/dashboard"
+	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
 func runDashboard(ctx context.Context) int {
@@ -25,9 +28,14 @@ func runDashboard(ctx context.Context) int {
 		if configErr != nil {
 			// 不正設定でも診断や daemon 操作は使えるよう、設定タブだけを既定値で表示する。
 			cfg = config.Defaults()
-			notice = "設定を読み込めません: " + configErr.Error()
+			notice = "Could not load configuration: " + configErr.Error()
 		}
-		action, runErr := dashboard.Run(ctx, dashboard.Options{Status: dashboardStatus, CWD: cwd, Config: cfg, Notice: notice})
+		addDashboardWorkspaces(ctx, &cfg)
+		steps, _ := setup.Collect(ctx, setupOptions())
+		action, runErr := dashboard.Run(ctx, dashboard.Options{
+			Status: dashboardStatus, CWD: cwd, Config: cfg, Setup: steps, Notice: notice,
+			Execute: runDashboardInlineAction, Refresh: refreshDashboardState,
+		})
 		if errors.Is(runErr, dashboard.ErrCancelled) {
 			return 0
 		}
@@ -36,8 +44,83 @@ func runDashboard(ctx context.Context) int {
 			return 1
 		}
 		code := runDashboardAction(ctx, action)
-		notice = fmt.Sprintf("%s を終了しました（exit %d）", action.Args[0], code)
+		notice = fmt.Sprintf("%s finished (exit %d)", action.Args[0], code)
 	}
+}
+
+func refreshDashboardState(ctx context.Context) (config.Config, []setup.Step, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return config.Config{}, nil, err
+	}
+	addDashboardWorkspaces(ctx, &cfg)
+	steps, err := setup.Collect(ctx, setupOptions())
+	return cfg, steps, err
+}
+
+// addDashboardWorkspaces は daemon に登録済みだが個別設定を持たない workspace も環境一覧へ加える。
+// 空の override は表示用の Config だけに置き、設定ファイルへは保存しない。
+func addDashboardWorkspaces(ctx context.Context, cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	c, err := rpcClient()
+	if err != nil {
+		return
+	}
+	callCtx, cancel := context.WithTimeout(ctx, statusDisplayTimeout)
+	defer cancel()
+	var payload map[string]any
+	if err := c.Call(callCtx, "Status", struct{}{}, &payload); err != nil {
+		return
+	}
+	if cfg.Workspaces == nil {
+		cfg.Workspaces = map[string]config.Workspace{}
+	}
+	details, ok := payload["workspace_details"].([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range details {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		root, ok := item["root"].(string)
+		if ok && root != "" {
+			if _, exists := cfg.Workspaces[root]; !exists {
+				cfg.Workspaces[root] = config.Workspace{}
+			}
+		}
+	}
+}
+
+// runDashboardInlineAction は端末を引き渡さない CLI 操作を子 process で実行し、TUI の描画先と出力を分離する。
+func runDashboardInlineAction(ctx context.Context, action dashboard.Action) (string, int) {
+	if len(action.Args) == 0 {
+		return "", 0
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return "error: " + err.Error(), 1
+	}
+	command := exec.CommandContext(ctx, binary, action.Args...)
+	if action.WorkDir != "" {
+		command.Dir = action.WorkDir
+	}
+	output, err := command.CombinedOutput()
+	text := strings.TrimSpace(string(output))
+	if err == nil {
+		return text, 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return text, exitErr.ExitCode()
+	}
+	if text != "" {
+		text += "\n"
+	}
+	return text + "error: " + err.Error(), 1
 }
 
 func dashboardStatus(ctx context.Context) (string, error) {
