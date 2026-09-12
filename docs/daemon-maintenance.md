@@ -42,6 +42,7 @@ slot lockは最上位のoperationで一度だけ取り、内側の経路には�
 workspace個別値は単一リポジトリではそのリポジトリのmain worktree、multi-repositoryではworkspace rootに適用する。
 枠数0はそのworkspaceの補充を無効にするが、個数指定だけで`hot`へは変更しない。
 保持期間0も同じく補充を無効にする。補充とGCは同じ実効値で判断するので、作っては即座に回収する往復は起きない。
+worktree方針も同じ対応で、`hot`以外のworkspaceはGCの待機枠数を0として扱い、方針を変える前のREADYを残さない。
 
 GCの問い合わせは最短の保持期間から作ったcutoffだけをSQLへ置き、workspaceごとの正確な判定はGo側で行う。
 最長で絞ると保持期間の短いworkspaceのslotが問い合わせから落ちる。
