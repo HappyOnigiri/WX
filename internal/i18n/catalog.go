@@ -177,8 +177,8 @@ func New(value string) *Localizer {
 	lang := Normalize(value)
 	bundle := goi18n.NewBundle(language.English)
 	for id, entry := range catalog {
-		bundle.AddMessages(language.English, &goi18n.Message{ID: id, Other: entry.EN})
-		bundle.AddMessages(language.Japanese, &goi18n.Message{ID: id, Other: entry.JA})
+		_ = bundle.AddMessages(language.English, &goi18n.Message{ID: id, Other: entry.EN})
+		_ = bundle.AddMessages(language.Japanese, &goi18n.Message{ID: id, Other: entry.JA})
 	}
 	return &Localizer{language: lang, value: goi18n.NewLocalizer(bundle, string(lang))}
 }

@@ -78,7 +78,7 @@ func runSetup(ctx context.Context, args []string) int {
 	// language 未記載の通常 setup だけ、最初の質問として表示言語を確認する。
 	// --update は install から無表示で呼ばれ、--check/--item/--remove は機械経路なので質問しない。
 	if languageUnset, loadErr := setupLanguageUnset(); loadErr != nil {
-		fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(loadErr.Error(), i18n.LanguageFromContext(ctx)))
+		_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(loadErr.Error(), i18n.LanguageFromContext(ctx)))
 		return 1
 	} else if languageUnset && !*update {
 		selected, selectErr := selectSetupLanguage(ctx, session)
@@ -86,7 +86,7 @@ func runSetup(ctx context.Context, args []string) int {
 			if errors.Is(selectErr, tui.ErrCancelled) {
 				return 1
 			}
-			fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(selectErr.Error(), i18n.LanguageFromContext(ctx)))
+			_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(selectErr.Error(), i18n.LanguageFromContext(ctx)))
 			return 1
 		}
 		ctx = i18n.WithLanguage(ctx, string(selected))

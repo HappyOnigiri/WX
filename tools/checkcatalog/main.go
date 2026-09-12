@@ -63,7 +63,7 @@ func validateReferences(root string) error {
 			if !ok {
 				return true
 			}
-			argumentIndex := -1
+			argumentIndex := 0
 			switch selector.Sel.Name {
 			case "T":
 				if ident, ok := selector.X.(*ast.Ident); !ok || ident.Name != "i18n" {
@@ -75,7 +75,7 @@ func validateReferences(root string) error {
 			default:
 				return true
 			}
-			if argumentIndex < 0 || argumentIndex >= len(call.Args) {
+			if argumentIndex >= len(call.Args) {
 				return true
 			}
 			literal, ok := call.Args[argumentIndex].(*ast.BasicLit)

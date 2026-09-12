@@ -28,7 +28,7 @@ func runDashboard(ctx context.Context) int {
 	for {
 		// ダッシュボード内で language を変更した操作の後も、次の画面・RPC へ
 		// 新しい設定を渡す。起動時の context は commandContext 済みでも更新する。
-		ctx = i18n.WithLanguage(ctx, string(config.LoadLanguage()))
+		ctx = i18n.WithLanguage(ctx, config.LoadLanguage())
 		cfg, rawConfig, configErr := config.LoadWithRaw()
 		if configErr != nil {
 			// 不正設定でも診断や daemon 操作は使えるよう、設定タブだけを既定値で表示する。

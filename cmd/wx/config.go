@@ -101,7 +101,7 @@ func runConfig(ctx context.Context, args []string) int {
 			fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
 			return 1
 		}
-		fmt.Fprintln(os.Stdout, effective.DisplayLanguage())
+		_, _ = fmt.Fprintln(os.Stdout, effective.DisplayLanguage())
 		return 0
 	}
 	switch {

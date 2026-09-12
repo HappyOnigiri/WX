@@ -11,8 +11,9 @@ import (
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 var ErrCancelled = errors.New("selection cancelled")
