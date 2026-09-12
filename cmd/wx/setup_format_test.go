@@ -50,11 +50,18 @@ func TestSetupTableKeepsColumnsAlignedInJapanese(t *testing.T) {
 	if !strings.HasPrefix(lines[0], "項目") {
 		t.Fatalf("the header is not localized:\n%s", out.String())
 	}
-	column := xansi.StringWidth(lines[0][:strings.Index(lines[0], "状態")])
+	header := strings.Index(lines[0], "状態")
+	if header < 0 {
+		t.Fatalf("the state column is missing:\n%s", out.String())
+	}
+	column := xansi.StringWidth(lines[0][:header])
 	for index, line := range lines[1:] {
 		at := strings.Index(line, string(steps[index].State))
-		if at < 0 || xansi.StringWidth(line[:at]) != column {
-			t.Fatalf("the state column starts at %d, want %d:\n%s", xansi.StringWidth(line[:at]), column, out.String())
+		if at < 0 {
+			t.Fatalf("row %d has no state:\n%s", index, out.String())
+		}
+		if got := xansi.StringWidth(line[:at]); got != column {
+			t.Fatalf("the state column starts at %d, want %d:\n%s", got, column, out.String())
 		}
 	}
 }

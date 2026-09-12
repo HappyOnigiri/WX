@@ -478,13 +478,14 @@ func TestTopUsageContract(t *testing.T) {
 }
 
 func TestBinaryHelpVersionAndMisuseContracts(t *testing.T) {
-	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
-	t.Setenv("HOME", t.TempDir())
 	binary := filepath.Join(t.TempDir(), "wx")
 	build := exec.Command("go", "build", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build wx: %v\n%s", err, output)
 	}
+	// 表示言語は設定から読むため、英語の表示を検査する子 process だけ空のホームを見る。
+	// go build も巻き込むと module cache を作り直し、その削除にも失敗する。
+	env := append(os.Environ(), "HOME="+t.TempDir())
 	tests := []struct {
 		args      []string
 		exit      int
@@ -499,6 +500,7 @@ func TestBinaryHelpVersionAndMisuseContracts(t *testing.T) {
 	}
 	for _, test := range tests {
 		command := exec.Command(binary, test.args...)
+		command.Env = env
 		var stdout, stderr bytes.Buffer
 		command.Stdout, command.Stderr = &stdout, &stderr
 		err := command.Run()
