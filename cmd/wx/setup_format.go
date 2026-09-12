@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"unicode/utf8"
+
+	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/setup"
@@ -24,13 +25,13 @@ var setupColumns = []struct {
 
 // printSetupTable は項目の状態を表で出す。
 // printDisplay は配列 of map を steps[0].id のように展開するため使わない。
-func printSetupTable(w io.Writer, steps []setup.Step) {
+// 幅は訳した見出しと値の表示幅から決める。英語の幅で桁を決めてから訳を入れると列がずれる。
+func printSetupTable(w io.Writer, lang i18n.Language, steps []setup.Step) {
 	widths := make([]int, len(setupColumns))
 	titles := make([]string, len(setupColumns))
-	lang := localizedUsageLanguage()
 	for index, column := range setupColumns {
 		titles[index] = localizeSetupColumn(column.title, lang)
-		widths[index] = max(utf8.RuneCountInString(column.title), column.min)
+		widths[index] = max(xansi.StringWidth(titles[index]), column.min)
 	}
 	rows := [][]string{titles}
 	for _, step := range steps {
@@ -39,7 +40,7 @@ func printSetupTable(w io.Writer, steps []setup.Step) {
 	}
 	for _, row := range rows[1:] {
 		for index, cell := range row {
-			widths[index] = max(widths[index], utf8.RuneCountInString(cell))
+			widths[index] = max(widths[index], xansi.StringWidth(cell))
 		}
 	}
 	for _, row := range rows {
@@ -48,11 +49,13 @@ func printSetupTable(w io.Writer, steps []setup.Step) {
 			if index > 0 {
 				line.WriteByte(' ')
 			}
+			line.WriteString(cell)
 			if index == len(row)-1 {
-				line.WriteString(cell)
 				continue
 			}
-			_, _ = fmt.Fprintf(&line, "%-*s", widths[index], cell)
+			if pad := widths[index] - xansi.StringWidth(cell); pad > 0 {
+				line.WriteString(strings.Repeat(" ", pad))
+			}
 		}
 		// 表示は stdout に出す。書込み失敗は対処できず、command の終了コードも変えない。
 		_, _ = fmt.Fprintln(w, strings.TrimRight(line.String(), " "))

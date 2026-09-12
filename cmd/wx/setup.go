@@ -323,7 +323,7 @@ func runSetupCheck(ctx context.Context, options setup.Options, jsonOut bool, out
 		}
 		return 0
 	}
-	printSetupTable(out, steps)
+	printSetupTable(out, i18n.LanguageFromContext(ctx), steps)
 	// 差分があっても 0 で終える。非 0 にすると install.sh や CI で「新規マシン = 失敗」になる。
 	return 0
 }
@@ -402,7 +402,7 @@ func runSetupInteractive(ctx context.Context, options setup.Options, session set
 		case setupOutcomeCancelled:
 			// 各項目は個別に冪等で再実行できるため巻き戻さない。適用済みを残したまま案内だけを出す。
 			_, _ = fmt.Fprintln(session.out, i18n.T(ctx, "setup.cancelled", nil))
-			printSetupTable(session.out, collectOrEmpty(ctx, options))
+			printSetupTable(session.out, i18n.LanguageFromContext(ctx), collectOrEmpty(ctx, options))
 			return 1
 		case setupOutcomeFailed:
 			failed = true
@@ -410,7 +410,7 @@ func runSetupInteractive(ctx context.Context, options setup.Options, session set
 		}
 	}
 	_, _ = fmt.Fprintln(session.out, "")
-	printSetupTable(session.out, collectOrEmpty(ctx, options))
+	printSetupTable(session.out, i18n.LanguageFromContext(ctx), collectOrEmpty(ctx, options))
 	if failed {
 		return 1
 	}

@@ -33,7 +33,8 @@ func runDashboard(ctx context.Context) int {
 		if configErr != nil {
 			// 不正設定でも診断や daemon 操作は使えるよう、設定タブだけを既定値で表示する。
 			cfg, rawConfig = config.Defaults(), config.Config{}
-			notice = i18n.T(ctx, "common.error", nil) + ": Could not load configuration: " + configErr.Error()
+			failure := i18n.T(ctx, "dashboard.config_load_failed", map[string]any{"Error": configErr.Error()})
+			notice = i18n.T(ctx, "common.error", nil) + ": " + failure
 		}
 		addDashboardEnvironments(ctx, &cfg)
 		steps, _ := setup.Collect(ctx, setupOptions())

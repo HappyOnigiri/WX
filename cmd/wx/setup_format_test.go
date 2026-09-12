@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	xansi "github.com/charmbracelet/x/ansi"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
@@ -15,7 +18,7 @@ func TestSetupTableKeepsColumnsAlignedAndShowsReasons(t *testing.T) {
 		{ID: "a-very-long-item-name", State: setup.StateNotApplicable, Default: setup.ActionKeep, Target: "/some/path"},
 	}
 	var out bytes.Buffer
-	printSetupTable(&out, steps)
+	printSetupTable(&out, i18n.English, steps)
 	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
 	if len(lines) != len(steps)+1 {
 		t.Fatalf("table rows=%d:\n%s", len(lines), out.String())
@@ -31,6 +34,28 @@ func TestSetupTableKeepsColumnsAlignedAndShowsReasons(t *testing.T) {
 	}
 	if !strings.Contains(lines[3], "/some/path") {
 		t.Fatalf("the target is not used as a fallback detail:\n%s", out.String())
+	}
+}
+
+// TestSetupTableKeepsColumnsAlignedInJapanese は、英語の見出し幅で桁を決めてから
+// 訳を入れて列がずれる退行を防ぐ。全角の見出しでも各列の開始位置は揃う。
+func TestSetupTableKeepsColumnsAlignedInJapanese(t *testing.T) {
+	steps := []setup.Step{
+		{ID: "worktree_root", State: setup.StatePresent, Default: setup.ActionKeep, Detail: "/home/user/wx"},
+		{ID: "hooks.claude", State: setup.StateDivergent, Default: setup.ActionUpdate, Detail: "4 wx entries"},
+	}
+	var out bytes.Buffer
+	printSetupTable(&out, i18n.Japanese, steps)
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if !strings.HasPrefix(lines[0], "項目") {
+		t.Fatalf("the header is not localized:\n%s", out.String())
+	}
+	column := xansi.StringWidth(lines[0][:strings.Index(lines[0], "状態")])
+	for index, line := range lines[1:] {
+		at := strings.Index(line, string(steps[index].State))
+		if at < 0 || xansi.StringWidth(line[:at]) != column {
+			t.Fatalf("the state column starts at %d, want %d:\n%s", xansi.StringWidth(line[:at]), column, out.String())
+		}
 	}
 }
 
