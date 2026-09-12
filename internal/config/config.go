@@ -511,6 +511,19 @@ func Merge(d, raw Config) Config {
 	return r
 }
 
+// validateLanguage は表示言語を正規化し、対応しない値を拒否する。
+func validateLanguage(c *Config) error {
+	if c.Language == "" && !c.has("language", false) {
+		// 呼び出し側が zero Config を組み立てても未記載＝英語として扱う。
+		// YAML で明示された空文字は present に残るため、下の不正値検査を通る。
+		c.Language = LanguageEnglish
+	}
+	if c.Language != LanguageEnglish && c.Language != LanguageJapanese {
+		return fmt.Errorf("language must be %s or %s", LanguageEnglish, LanguageJapanese)
+	}
+	return nil
+}
+
 func validateSchema(c *Config) error {
 	if c.V2() {
 		if c.Version == 2 && !c.v2Explicit {
@@ -532,13 +545,8 @@ func Validate(c *Config) error {
 	if err := validateSchema(c); err != nil {
 		return err
 	}
-	if c.Language == "" && !c.has("language", false) {
-		// 呼び出し側が zero Config を組み立てても未記載＝英語として扱う。
-		// YAML で明示された空文字は present に残るため、下の不正値検査を通る。
-		c.Language = LanguageEnglish
-	}
-	if c.Language != LanguageEnglish && c.Language != LanguageJapanese {
-		return fmt.Errorf("language must be %s or %s", LanguageEnglish, LanguageJapanese)
+	if err := validateLanguage(c); err != nil {
+		return err
 	}
 	if err := validateReadiness(&c.Readiness); err != nil {
 		return err
