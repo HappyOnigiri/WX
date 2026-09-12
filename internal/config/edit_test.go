@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +47,13 @@ func TestCommitEditRejectsExternalChanges(t *testing.T) {
 	}
 	if err := CommitEdit(preview); !errors.Is(err, ErrConfigChanged) {
 		t.Fatalf("CommitEdit error=%v", err)
+	}
+}
+
+func TestPreviewEditRejectsUnknownOperation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_, err := PreviewEdit(EditRequest{Scope: "global", Key: "logging.level", Value: "debug", Operation: EditOperation("replace")})
+	if err == nil || !strings.Contains(err.Error(), "unknown config edit operation") {
+		t.Fatalf("PreviewEdit error=%v", err)
 	}
 }

@@ -150,14 +150,11 @@ func Describe(key string, scope string) (Metadata, error) {
 		}
 	}
 	sort.Strings(keys)
-	return Metadata{}, fmt.Errorf("unknown %sconfig key %q; available keys: %s", scopePrefix(scope), key, strings.Join(keys, ", "))
-}
-
-func scopePrefix(scope string) string {
-	if scope == "" {
-		return ""
+	prefix := ""
+	if scope != "" {
+		prefix = scope + " "
 	}
-	return scope + " "
+	return Metadata{}, fmt.Errorf("unknown %sconfig key %q; available keys: %s", prefix, key, strings.Join(keys, ", "))
 }
 
 func contains(values []string, target string) bool {

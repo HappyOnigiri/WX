@@ -103,8 +103,10 @@ func applyEdit(raw *Config, request EditRequest) error {
 				return ResetList(raw, request.Key)
 			}
 			return ResetField(raw, request.Key)
-		default:
+		case EditSet:
 			return SetField(raw, request.Key, request.Value)
+		default:
+			return fmt.Errorf("unknown config edit operation %q", request.Operation)
 		}
 	}
 	scope, err := parseEditScope(request.Scope)
@@ -121,8 +123,10 @@ func applyEdit(raw *Config, request EditRequest) error {
 			return ResetScopeList(raw, scope, request.Target, request.Key)
 		}
 		return ResetScopeField(raw, scope, request.Target, request.Key)
-	default:
+	case EditSet:
 		return SetScopeField(raw, scope, request.Target, request.Key, request.Value)
+	default:
+		return fmt.Errorf("unknown config edit operation %q", request.Operation)
 	}
 }
 
