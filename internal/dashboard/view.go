@@ -52,7 +52,11 @@ func (m model) View() tea.View {
 			footer = "←/→ tabs  ↑/↓ select environment  Enter open  Esc exit"
 		}
 	case m.mode == modeResult:
-		footer = "↑/↓ scroll result  Enter/Esc back"
+		if m.maxResultOffset() > 0 {
+			footer = "↑/↓ scroll result  Enter/Esc back"
+		} else {
+			footer = "Enter/Esc back"
+		}
 	}
 	lines = fitLines(lines, max(1, m.height-2), m.width)
 	lines = append(lines, strings.Repeat("─", max(1, m.width)), dim+truncate(footer, m.width)+reset)
@@ -352,13 +356,30 @@ func (m model) runningView() []string {
 func (m model) resultView() []string {
 	title := fmt.Sprintf("%s — exit %d", m.pending.label, m.resultCode)
 	lines := []string{accent + title + reset, ""}
-	result := strings.Split(m.resultText, "\n")
-	if len(result) == 1 && result[0] == "" {
-		result[0] = "The operation produced no output."
-	}
+	result := m.resultLines()
 	start := min(m.offset, max(0, len(result)-1))
-	end := min(len(result), start+max(1, m.visibleRows()-2))
+	end := min(len(result), start+m.resultPageRows())
 	return append(lines, result[start:end]...)
+}
+
+func (m model) resultLines() []string {
+	if m.resultText == "" {
+		return []string{"The operation produced no output."}
+	}
+	return strings.Split(m.resultText, "\n")
+}
+
+// resultPageRows は View の tab・breadcrumb・結果見出しと footer を除いた出力行数である。
+func (m model) resultPageRows() int {
+	rows := m.height - 7
+	if m.opts.Notice != "" {
+		rows -= 2
+	}
+	return max(1, rows)
+}
+
+func (m model) maxResultOffset() int {
+	return max(0, len(m.resultLines())-m.resultPageRows())
 }
 
 func configValues(cfg config.Config) map[string]string {

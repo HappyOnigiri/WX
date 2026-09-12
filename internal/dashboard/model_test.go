@@ -124,4 +124,27 @@ func TestInlineOperationKeepsTheDashboardOpenAndShowsResult(t *testing.T) {
 	}
 }
 
+func TestResultScrollsOnlyWhenOutputExceedsTheScreen(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.mode, m.height, m.resultText = modeResult, 20, "first\nsecond"
+	updated, _ := m.Update(key(tea.KeyDown))
+	m = updated.(model)
+	if m.offset != 0 {
+		t.Fatalf("short result offset=%d, want 0", m.offset)
+	}
+	m.resultText = strings.Repeat("line\n", 20) + "last"
+	updated, _ = m.Update(key(tea.KeyDown))
+	m = updated.(model)
+	if m.offset != 1 {
+		t.Fatalf("long result offset=%d, want 1", m.offset)
+	}
+	for range 30 {
+		updated, _ = m.Update(key(tea.KeyDown))
+		m = updated.(model)
+	}
+	if m.offset != m.maxResultOffset() {
+		t.Fatalf("result offset=%d, max=%d", m.offset, m.maxResultOffset())
+	}
+}
+
 func key(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }

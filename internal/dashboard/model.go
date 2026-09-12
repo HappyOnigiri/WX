@@ -148,7 +148,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = max(1, msg.Width), max(1, msg.Height)
-		m.keepVisible()
+		if m.mode == modeResult {
+			m.offset = min(m.offset, m.maxResultOffset())
+		} else {
+			m.keepVisible()
+		}
 	case statusMsg:
 		m.loading = false
 		m.statusAt = msg.at
@@ -245,7 +249,7 @@ func (m model) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "up", "ctrl+p":
 			m.offset = max(0, m.offset-1)
 		case "down", "ctrl+n":
-			m.offset++
+			m.offset = min(m.maxResultOffset(), m.offset+1)
 		case "enter", "esc":
 			m.mode, m.offset = modeList, 0
 		}
