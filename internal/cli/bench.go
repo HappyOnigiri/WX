@@ -153,12 +153,6 @@ func (c Client) benchRuns(ctx context.Context, cwd, root string, opts BenchOptio
 	return reply, failed
 }
 
-// benchOnce は1回の貸出を測って返却する。失敗した回も、そこまでに測れた区間を結果に残す。
-// override はこの貸出の準備にだけ適用する設定で、設定ファイルと daemon の実効設定はどちらも変えない。
-func (c Client) benchOnce(ctx context.Context, cwd, root string, branches []string, reuse bool, override config.PrepareOverride) BenchRun {
-	return c.benchOnceForOutput(ctx, cwd, root, branches, reuse, override, true)
-}
-
 // benchOnceForOutput は JSON 経路では表示言語を要求へ載せず、機械向けの
 // JSON 契約と旧 daemon への payload を英語のまま保つ。
 func (c Client) benchOnceForOutput(ctx context.Context, cwd, root string, branches []string, reuse bool, override config.PrepareOverride, includeLanguage bool) BenchRun {
@@ -359,10 +353,6 @@ func (c Client) waitBenchIdle(ctx context.Context) {
 	}
 }
 
-func printBenchRun(index, runs int, run BenchRun) {
-	printBenchRunLanguage(index, runs, run, i18n.English)
-}
-
 func printBenchRunLanguage(index, runs int, run BenchRun, lang i18n.Language) {
 	runLabel := "run"
 	if lang == i18n.Japanese {
@@ -410,12 +400,6 @@ func printBenchRunLanguage(index, runs int, run BenchRun, lang i18n.Language) {
 		}
 		fmt.Printf("%s%-24s %9s  x%d\n", indent, phase.Name, elapsed, phase.Count)
 	}
-}
-
-// printBenchSummary は複数 run の中央値と最小・最大を出す。1回の実測はキャッシュ状態に強く左右されるためである。
-// 失敗が続いて成功が1回だけになった場合は、同じ値を3つ並べず実測値だけを出す。
-func printBenchSummary(runs []BenchRun) {
-	printBenchSummaryLanguage(runs, i18n.English)
 }
 
 func printBenchSummaryLanguage(runs []BenchRun, lang i18n.Language) {

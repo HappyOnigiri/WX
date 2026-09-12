@@ -190,12 +190,6 @@ func staleDaemonFindings(reply diag.Reply) []diag.Finding {
 	}}
 }
 
-// printDoctor は診断結果を出力する。--json は -v に左右されず全件を返す。
-// 実地検査の計測値は失敗ではないので finding の後に表で出し、実地検査をしていない回はそれが選べることを 1 行で案内する。
-func printDoctor(reply diag.Reply, jsonOut, verbose, probe bool) {
-	printDoctorLanguage(reply, jsonOut, verbose, probe, i18n.English)
-}
-
 func printDoctorLanguage(reply diag.Reply, jsonOut, verbose, probe bool, lang i18n.Language) {
 	if jsonOut {
 		data, _ := json.MarshalIndent(reply, "", "  ")

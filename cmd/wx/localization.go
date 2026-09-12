@@ -19,10 +19,6 @@ func commandContext(ctx context.Context) context.Context {
 	return i18n.WithLanguage(ctx, config.LoadLanguage())
 }
 
-func commandLocalizer() *i18n.Localizer {
-	return i18n.New(config.LoadLanguage())
-}
-
 // translateHelp は既存の長い help 本文を機械識別子を変えずに日本語へ寄せる。
 // 英語本文は既存契約をそのまま維持し、未翻訳の長文は安全に英語を残す。
 func translateHelp(text string, lang i18n.Language) string {

@@ -49,12 +49,6 @@ func runBenchFrom(ctx context.Context, args []string, cwd string) int {
 	return client.RunBench(ctx, opts)
 }
 
-// benchConfigs は --sweep と --config の指定を貸出要求へ載せる上書きの並びへ直す。
-// 値の誤りは daemon へ送る前に引数エラーで終える。測定を1回でも走らせると standby が退役するためである。
-func benchConfigs(sweep bool, specs []string) ([]config.PrepareOverride, int) {
-	return benchConfigsLanguage(sweep, specs, localizedUsageLanguage())
-}
-
 func benchConfigsLanguage(sweep bool, specs []string, lang i18n.Language) ([]config.PrepareOverride, int) {
 	// --sweep は測る設定の並び全体を指すため、--config を足すと並びの意味が二通りになる。
 	if sweep {

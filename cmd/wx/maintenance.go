@@ -124,12 +124,6 @@ func runDiscardRecovery(ctx context.Context, args []string) int {
 	return 0
 }
 
-// printDiscardRecovery は対象を 1 件 1 行で出し、最後に件数をまとめる。
-// 対象が無いのは正常な状態なので、そのことだけを伝えて成功で終える。
-func printDiscardRecovery(out daemon.DiscardRecoveryResult) {
-	printDiscardRecoveryLanguage(out, i18n.English)
-}
-
 func printDiscardRecoveryLanguage(out daemon.DiscardRecoveryResult, lang i18n.Language) {
 	var rendered bytes.Buffer
 	if len(out.Targets) == 0 {

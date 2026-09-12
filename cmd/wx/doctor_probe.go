@@ -65,12 +65,6 @@ func localizeProbeError(value string, lang i18n.Language) string {
 	return value
 }
 
-// printProbeUsage は準備した slot のディスク使用量をリポジトリ別に出す。
-// 測定を待てなかった回は 0 を実測値として読ませないよう、その旨だけを出す。
-func printProbeUsage(w io.Writer, probe diag.Probe) {
-	printProbeUsageLanguage(w, probe, i18n.English, "disk")
-}
-
 func printProbeUsageLanguage(w io.Writer, probe diag.Probe, lang i18n.Language, diskLabel string) {
 	exclusiveLabel, sharedLabel := "exclusive", "shared"
 	if lang == i18n.Japanese {

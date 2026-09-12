@@ -183,17 +183,6 @@ func New(value string) *Localizer {
 	return &Localizer{language: lang, value: goi18n.NewLocalizer(bundle, string(lang))}
 }
 
-// NewLocalizer は文字列 API の別名で、CLI の初期化コードから使う。
-func NewLocalizer(value string) *Localizer { return New(value) }
-
-// Language は Localizer の言語を返す。
-func (l *Localizer) Language() Language {
-	if l == nil {
-		return English
-	}
-	return l.language
-}
-
 // Localize は message ID を展開する。未知 ID は機械的な欠落が分かるよう ID 自体を返す。
 func (l *Localizer) Localize(id string, data any) string {
 	if l == nil {
