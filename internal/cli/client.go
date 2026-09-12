@@ -146,9 +146,10 @@ func (c Client) runAgentResolved(ctx context.Context, agent string, args, branch
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
-	target, resuming := resumeTarget{}, false
+	var target resumeTarget
+	resuming := resolved != nil
 	if resolved != nil {
-		target, resuming = *resolved, true
+		target = *resolved
 	} else if target, resuming, err = c.resolveResume(ctx, agent, cwd, intent, explicitResume); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
