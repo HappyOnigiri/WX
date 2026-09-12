@@ -239,19 +239,15 @@ func (s *Store) WorkspaceWithGeneration(ctx context.Context, id string) (discove
 	if err != nil {
 		return discovery.Workspace{}, 0, err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var r discovery.Repository
 		if err := rows.Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.RelativePath, &r.DefaultBranch, &r.RemoteName); err != nil {
-			_ = rows.Close()
 			return discovery.Workspace{}, 0, err
 		}
 		w.Repositories = append(w.Repositories, r)
 	}
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return discovery.Workspace{}, 0, err
-	}
-	if err := rows.Close(); err != nil {
 		return discovery.Workspace{}, 0, err
 	}
 	if err := tx.Commit(); err != nil {
