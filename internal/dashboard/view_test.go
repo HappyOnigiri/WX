@@ -113,4 +113,26 @@ func TestSelectedSetupItemKeepsStateSecondary(t *testing.T) {
 	}
 }
 
+func TestEffectiveSettingLineDimsInheritedValues(t *testing.T) {
+	for _, test := range []struct {
+		source string
+		dimmed bool
+	}{
+		{source: "explicit"},
+		{source: "workspace"},
+		{source: "repository"},
+		{source: "global", dimmed: true},
+		{source: "default", dimmed: true},
+		{source: "unset", dimmed: true},
+	} {
+		line := effectiveSettingLine(config.ScopeField{Key: "warm_count", Value: "1", Source: test.source}, 80)
+		if got := strings.HasPrefix(line, dim); got != test.dimmed {
+			t.Errorf("source %s dimmed=%v, want %v: %q", test.source, got, test.dimmed, line)
+		}
+		if plain := xansi.Strip(line); plain != "warm_count = 1 ("+test.source+")" {
+			t.Errorf("source %s line=%q", test.source, plain)
+		}
+	}
+}
+
 func testTime() time.Time { return time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local) }

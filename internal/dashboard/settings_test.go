@@ -71,3 +71,43 @@ func TestConfigChoicesLimitCustomInputToOpenEndedKinds(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvironmentFieldsDistinguishExplicitAndInheritedSources(t *testing.T) {
+	raw := config.Config{}
+	if err := config.SetField(&raw, "pool.warm_per_workspace", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SetScopeField(&raw, config.ScopeWorkspace, "/repo", "worktree", "hot"); err != nil {
+		t.Fatal(err)
+	}
+	effective := config.Merge(config.Defaults(), raw)
+	m := newModel(context.Background(), Options{Config: effective, RawConfig: raw})
+	m.tab = 2
+	global := scopeFieldMap(m.environmentFields())
+	if got := global["pool.warm_per_workspace"]; got.Value != "1" || got.Source != "explicit" {
+		t.Fatalf("explicit global=%+v", got)
+	}
+	if got := global["storage.cow_min_size_kib"]; got.Value != "16" || got.Source != "default" {
+		t.Fatalf("default global=%+v", got)
+	}
+
+	m.selected = 1
+	workspace := scopeFieldMap(m.environmentFields())
+	if got := workspace["worktree"]; got.Value != "hot" || got.Source != "workspace" {
+		t.Fatalf("workspace override=%+v", got)
+	}
+	if got := workspace["warm_count"]; got.Value != "1" || got.Source != "global" {
+		t.Fatalf("global inheritance=%+v", got)
+	}
+	if got := workspace["reuse_standby"]; got.Value != "true" || got.Source != "default" {
+		t.Fatalf("default inheritance=%+v", got)
+	}
+}
+
+func scopeFieldMap(fields []config.ScopeField) map[string]config.ScopeField {
+	values := make(map[string]config.ScopeField, len(fields))
+	for _, field := range fields {
+		values[field.Key] = field
+	}
+	return values
+}

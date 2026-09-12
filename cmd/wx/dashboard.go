@@ -24,16 +24,16 @@ func runDashboard(ctx context.Context) int {
 	}
 	notice := ""
 	for {
-		cfg, configErr := config.Load()
+		cfg, rawConfig, configErr := config.LoadWithRaw()
 		if configErr != nil {
 			// 不正設定でも診断や daemon 操作は使えるよう、設定タブだけを既定値で表示する。
-			cfg = config.Defaults()
+			cfg, rawConfig = config.Defaults(), config.Config{}
 			notice = "Could not load configuration: " + configErr.Error()
 		}
 		addDashboardEnvironments(ctx, &cfg)
 		steps, _ := setup.Collect(ctx, setupOptions())
 		action, runErr := dashboard.Run(ctx, dashboard.Options{
-			Status: dashboardStatus, CWD: cwd, Config: cfg, Setup: steps, Notice: notice,
+			Status: dashboardStatus, CWD: cwd, Config: cfg, RawConfig: rawConfig, Setup: steps, Notice: notice,
 			Execute: runDashboardInlineAction, Refresh: refreshDashboardState,
 		})
 		if errors.Is(runErr, dashboard.ErrCancelled) {
@@ -48,14 +48,14 @@ func runDashboard(ctx context.Context) int {
 	}
 }
 
-func refreshDashboardState(ctx context.Context) (config.Config, []setup.Step, error) {
-	cfg, err := config.Load()
+func refreshDashboardState(ctx context.Context) (config.Config, config.Config, []setup.Step, error) {
+	cfg, rawConfig, err := config.LoadWithRaw()
 	if err != nil {
-		return config.Config{}, nil, err
+		return config.Config{}, config.Config{}, nil, err
 	}
 	addDashboardEnvironments(ctx, &cfg)
 	steps, err := setup.Collect(ctx, setupOptions())
-	return cfg, steps, err
+	return cfg, rawConfig, steps, err
 }
 
 // addDashboardEnvironments は daemon に登録済みだが個別設定を持たない workspace と repository も環境一覧へ加える。

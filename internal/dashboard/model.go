@@ -19,17 +19,18 @@ var ErrCancelled = errors.New("dashboard cancelled")
 type (
 	StatusLoader func(context.Context) (string, error)
 	ActionRunner func(context.Context, Action) (string, int)
-	Refresher    func(context.Context) (config.Config, []setup.Step, error)
+	Refresher    func(context.Context) (config.Config, config.Config, []setup.Step, error)
 )
 
 type Options struct {
-	Status  StatusLoader
-	CWD     string
-	Config  config.Config
-	Setup   []setup.Step
-	Notice  string
-	Execute ActionRunner
-	Refresh Refresher
+	Status    StatusLoader
+	CWD       string
+	Config    config.Config
+	RawConfig config.Config
+	Setup     []setup.Step
+	Notice    string
+	Execute   ActionRunner
+	Refresh   Refresher
 }
 
 type statusMsg struct {
@@ -40,11 +41,12 @@ type statusMsg struct {
 type (
 	tickMsg      time.Time
 	executionMsg struct {
-		text   string
-		code   int
-		config config.Config
-		setup  []setup.Step
-		err    error
+		text      string
+		code      int
+		config    config.Config
+		rawConfig config.Config
+		setup     []setup.Step
+		err       error
 	}
 )
 
@@ -181,7 +183,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if environments := m.configEnvironments(); m.settingsOpen && m.settingsEnv < len(environments) {
 				selectedScope = environments[m.settingsEnv].scope
 			}
-			m.opts.Config, m.opts.Setup = msg.config, msg.setup
+			m.opts.Config, m.opts.RawConfig, m.opts.Setup = msg.config, msg.rawConfig, msg.setup
 			if m.target != "" {
 				switch selectedScope {
 				case "workspace":
@@ -592,7 +594,7 @@ func (m model) execute(action Action) tea.Cmd {
 		text, code := runner(ctx, action)
 		msg := executionMsg{text: text, code: code}
 		if refresh != nil {
-			msg.config, msg.setup, msg.err = refresh(ctx)
+			msg.config, msg.rawConfig, msg.setup, msg.err = refresh(ctx)
 		}
 		return msg
 	}

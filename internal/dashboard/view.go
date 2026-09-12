@@ -204,14 +204,15 @@ func (m model) currentLabels() []string {
 			return labels
 		}
 		items := m.configItems()
-		values := m.environmentValues()
+		fields := m.environmentFieldMap()
 		labels := make([]string, 0, len(items))
 		for _, item := range items {
-			value := values[item.Key]
+			field := fields[item.Key]
+			value := field.Value
 			if value == "" {
-				value = "inherited / unset"
+				value = "—"
 			}
-			labels = append(labels, item.DisplayName+"  "+dim+value+reset)
+			labels = append(labels, item.DisplayName+"  "+dim+value+" ("+field.Source+")"+reset)
 		}
 		return labels
 	}
@@ -247,14 +248,8 @@ func (m model) descriptionLines(width int) []string {
 				lines = append(lines, dim+environment.target+reset)
 			}
 			lines = append(lines, "", warn+"Effective settings"+reset)
-			if environment.target == "" {
-				for _, field := range append(config.Fields(m.opts.Config), config.Lists(m.opts.Config)...) {
-					lines = append(lines, truncate(field.Key+" = "+field.Value, width))
-				}
-			} else {
-				for _, field := range config.ScopeFields(m.opts.Config, environment.configScope(), environment.target) {
-					lines = append(lines, truncate(field.Key+" = "+field.Value+" ("+field.Source+")", width))
-				}
+			for _, field := range m.environmentFields() {
+				lines = append(lines, effectiveSettingLine(field, width))
 			}
 			return lines
 		}
@@ -386,28 +381,48 @@ func (m model) maxResultOffset() int {
 	return max(0, len(m.resultLines())-m.resultPageRows())
 }
 
-func configValues(cfg config.Config) map[string]string {
+func (m model) environmentValues() map[string]string {
 	values := map[string]string{}
-	for _, field := range append(config.Fields(cfg), config.Lists(cfg)...) {
+	for _, field := range m.environmentFields() {
 		values[field.Key] = field.Value
 	}
 	return values
 }
 
-func (m model) environmentValues() map[string]string {
-	if m.settingsEnv == 0 {
-		return configValues(m.opts.Config)
-	}
-	environments := m.configEnvironments()
-	if m.settingsEnv >= len(environments) {
-		return map[string]string{}
-	}
-	values := map[string]string{}
-	environment := environments[m.settingsEnv]
-	for _, field := range config.ScopeFields(m.opts.Config, environment.configScope(), environment.target) {
-		values[field.Key] = field.Value
+func (m model) environmentFieldMap() map[string]config.ScopeField {
+	values := map[string]config.ScopeField{}
+	for _, field := range m.environmentFields() {
+		values[field.Key] = field
 	}
 	return values
+}
+
+func (m model) environmentFields() []config.ScopeField {
+	environmentIndex := m.settingsEnv
+	if !m.settingsOpen {
+		environmentIndex = m.selected
+	}
+	if environmentIndex == 0 {
+		return config.GlobalFields(m.opts.Config, m.opts.RawConfig)
+	}
+	environments := m.configEnvironments()
+	if environmentIndex >= len(environments) {
+		return nil
+	}
+	environment := environments[environmentIndex]
+	return config.ResolvedScopeFields(m.opts.Config, m.opts.RawConfig, environment.configScope(), environment.target)
+}
+
+func effectiveSettingLine(field config.ScopeField, width int) string {
+	value := field.Value
+	if value == "" {
+		value = "—"
+	}
+	line := truncate(field.Key+" = "+value+" ("+field.Source+")", width)
+	if field.Source == "explicit" || field.Source == "workspace" || field.Source == "repository" {
+		return line
+	}
+	return dim + line + reset
 }
 
 func wrap(value string, width int) []string {

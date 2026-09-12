@@ -384,3 +384,34 @@ func TestScopeFieldsReportTheSource(t *testing.T) {
 		t.Fatalf("discovery.exclude=%+v, want the inherited global list", got)
 	}
 }
+
+func TestResolvedFieldsDistinguishExplicitGlobalAndDefault(t *testing.T) {
+	t.Parallel()
+	raw := Config{}
+	if err := SetField(&raw, "pool.warm_per_workspace", "1"); err != nil {
+		t.Fatal(err)
+	}
+	effective := Merge(Defaults(), raw)
+	global := map[string]ScopeField{}
+	for _, field := range GlobalFields(effective, raw) {
+		global[field.Key] = field
+	}
+	if got := global["pool.warm_per_workspace"]; got.Value != "1" || got.Source != "explicit" {
+		t.Fatalf("explicit global=%+v", got)
+	}
+	if got := global["storage.cow_min_size_kib"]; got.Value != "16" || got.Source != "default" {
+		t.Fatalf("default global=%+v", got)
+	}
+
+	effective.Workspaces["/repo"] = Workspace{}
+	resolved := map[string]ScopeField{}
+	for _, field := range ResolvedScopeFields(effective, raw, ScopeWorkspace, "/repo") {
+		resolved[field.Key] = field
+	}
+	if got := resolved["warm_count"]; got.Value != "1" || got.Source != "global" {
+		t.Fatalf("global inheritance=%+v", got)
+	}
+	if got := resolved["reuse_standby"]; got.Value != "true" || got.Source != "default" {
+		t.Fatalf("default inheritance=%+v", got)
+	}
+}
