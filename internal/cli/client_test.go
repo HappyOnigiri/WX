@@ -315,18 +315,7 @@ func TestRunAgentUsesForegroundReadyFallbackWhenHooksAreUnavailable(t *testing.T
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	waitUntilCLI(t, 3*time.Second, func() bool {
-		if _, err := os.Lstat(socket); err == nil {
-			return true
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("fallback test server stopped before listening: %v", err)
-			return false
-		default:
-			return false
-		}
-	})
+	waitForSocket(t, socket, done)
 	agentScript := filepath.Join(temp, "agent")
 	if err := os.WriteFile(agentScript, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
