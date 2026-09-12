@@ -296,7 +296,7 @@ func (s *Store) RegisterReservedStandby(ctx context.Context, slotID string, repo
 		}
 	}
 	t := now()
-	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',updated_at=? WHERE id=? AND state='REGISTERING' AND dir_identity IS NOT NULL AND owner_session_id IS NULL`, t, slotID)
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='PREPARING',updated_at=? WHERE id=? AND state='REGISTERING' AND dir_identity IS NOT NULL AND owner_session_id IS NULL AND generation=(SELECT w.generation FROM workspaces w WHERE w.id=slots.workspace_id)`, t, slotID)
 	if err != nil {
 		return Job{}, err
 	}

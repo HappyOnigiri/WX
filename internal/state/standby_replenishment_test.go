@@ -174,6 +174,43 @@ func TestCreateStandbyIfNeededRevalidatesCapacityAndGeneration(t *testing.T) {
 	}
 }
 
+func TestRegisterReservedStandbyRejectsChangedWorkspaceGeneration(t *testing.T) {
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	slot := Slot{ID: "reserved", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/reserved"}
+	reserved, err := store.ReserveStandbyIfNeeded(ctx, slot, 1)
+	if err != nil || !reserved {
+		t.Fatalf("reserve standby=%v err=%v", reserved, err)
+	}
+	if err := store.ConfirmSlotCreation(ctx, slot.ID, "slot-identity"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE workspaces SET generation=2 WHERE id='workspace'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.RegisterReservedStandby(ctx, slot.ID, []SlotRepository{{
+		RepositoryID: "repository", DirName: "repository", State: "READY",
+	}})
+	if err == nil {
+		t.Fatal("stale standby registration succeeded")
+	}
+	registered, err := store.Slot(ctx, slot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registered.State != "REGISTERING" {
+		t.Fatalf("stale standby state=%s, want REGISTERING", registered.State)
+	}
+	repos, err := store.SlotRepositories(ctx, slot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repos) != 0 {
+		t.Fatalf("stale standby repositories=%+v, want none", repos)
+	}
+}
+
 // 隔離 slot は READY へ戻らないため待機枠に数えず、成功イベントを待たずに補充できる。
 func TestStandbyCountExcludesQuarantinedSlotsAndAllowsReplenishment(t *testing.T) {
 	store := openTestStore(t)

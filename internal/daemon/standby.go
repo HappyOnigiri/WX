@@ -36,6 +36,14 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 		return nil
 	}
 	warmCount, _ := cfg.WarmCountForWorkspace(string(w.Root))
+	registered, generation, err := m.store.WorkspaceWithGeneration(ctx, string(w.ID))
+	if err != nil {
+		return err
+	}
+	// 呼び出し元が workspace を読む間に構成が変わることがある。世代と membership がずれていたら、保存済みの組へ戻す。
+	if !sameWorkspaceMembership(w, registered) {
+		w = registered
+	}
 	needed := warmCount - m.store.StandbyCount(ctx, string(w.ID))
 	if needed <= 0 {
 		return nil
@@ -45,9 +53,22 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 		m.log.Error("resolve standby base failed", "workspace_id", w.ID, "error", err)
 		return err
 	}
-	generation, err := m.store.WorkspaceGeneration(ctx, string(w.ID))
+	latest, latestGeneration, err := m.store.WorkspaceWithGeneration(ctx, string(w.ID))
 	if err != nil {
 		return err
+	}
+	if latestGeneration != generation || !sameWorkspaceMembership(w, latest) {
+		w = latest
+		generation = latestGeneration
+		needed = warmCount - m.store.StandbyCount(ctx, string(w.ID))
+		if needed <= 0 {
+			return nil
+		}
+		resolved, err = pool.ResolveBranches(ctx, m.git, w, nil)
+		if err != nil {
+			m.log.Error("resolve standby base after workspace update failed", "workspace_id", w.ID, "error", err)
+			return err
+		}
 	}
 	// 進行中の貸出はまだ last_leased_at を書いていないことがある。その workspace の repository は hot として扱い、
 	// 使用中の workspace へ COLD の待機枠を作らないようにする。
@@ -88,6 +109,19 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 		}
 	}
 	return nil
+}
+
+// sameWorkspaceMembership は caller の一時的な branch 上書きを保ったまま、世代を進める構成変更だけを検出する。
+func sameWorkspaceMembership(a, b discovery.Workspace) bool {
+	if a.ID != b.ID || a.Root != b.Root || a.Kind != b.Kind || len(a.Repositories) != len(b.Repositories) {
+		return false
+	}
+	for i := range a.Repositories {
+		if a.Repositories[i].ID != b.Repositories[i].ID || a.Repositories[i].RelativePath != b.Repositories[i].RelativePath {
+			return false
+		}
+	}
+	return true
 }
 
 // RetryStandby は環境修復を利用者が確認した後、workspace の補充停止を停止理由によらず解除し、補充を一度だけ予約する。
