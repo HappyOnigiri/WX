@@ -177,6 +177,7 @@ Options:
          configuration still replenishes`)
 	case "config":
 		_, _ = fmt.Fprintln(w, `Usage: wx config
+       wx config --describe <key>
        wx config <key> <value>
        wx config <key> --add <value>
        wx config <key> --remove <value>
@@ -185,6 +186,7 @@ Options:
        wx config --repository <path> [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
 
 Show effective configuration, or atomically update one supported scalar key or list.
+Use --describe to show a key's type, scopes, choices, purpose, and impact.
 
 --add and --remove take a list key: discovery.exclude, readiness.early_paths, or
 sessions.paths.<claude|codex>.sessions. --reset takes any of those list keys or any

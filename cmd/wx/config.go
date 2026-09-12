@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/pflag"
 
@@ -59,6 +60,7 @@ func runConfig(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
 	workspace := fs.String("workspace", "", "target a workspace-specific setting")
 	repository := fs.String("repository", "", "target a repository-specific setting")
+	describe := fs.String("describe", "", "describe a setting")
 	// 設定値は「-」で始まることもあるため、最初の位置引数（キー）以降はフラグとして扱わない。
 	fs.SetInterspersed(false)
 	fs.Usage = func() { commandUsage(os.Stdout, "config") }
@@ -69,6 +71,19 @@ func runConfig(ctx context.Context, args []string) int {
 	if *workspace != "" && *repository != "" {
 		fmt.Fprintln(os.Stderr, "error: --workspace and --repository cannot be combined")
 		return 2
+	}
+	if *describe != "" {
+		if len(rest) != 0 {
+			commandUsage(os.Stderr, "config")
+			return 2
+		}
+		scope := "global"
+		if *workspace != "" {
+			scope = config.ScopeWorkspace.String()
+		} else if *repository != "" {
+			scope = config.ScopeRepository.String()
+		}
+		return describeConfig(*describe, scope)
 	}
 	switch {
 	case *workspace != "":
@@ -84,16 +99,24 @@ func runConfig(ctx context.Context, args []string) int {
 		commandUsage(os.Stderr, "config")
 		return 2
 	}
-	raw, err := config.LoadRaw()
+	return executeConfigEdit(ctx, config.EditRequest{Scope: "global", Key: edit.key, Value: edit.value, Operation: config.EditOperation(edit.op)})
+}
+
+func describeConfig(key, scope string) int {
+	meta, err := config.Describe(key, scope)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	if err := applyGlobalEdit(&raw, edit); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
+	fmt.Printf("%s — %s\n", meta.Key, meta.DisplayName)
+	fmt.Printf("  Type: %s\n", meta.Kind)
+	fmt.Printf("  Scopes: %s\n", strings.Join(meta.Scopes, ", "))
+	if len(meta.Choices) > 0 {
+		fmt.Printf("  Choices: %s\n", strings.Join(meta.Choices, ", "))
 	}
-	return saveConfig(ctx, raw)
+	fmt.Printf("  %s\n", meta.Description)
+	fmt.Printf("  Impact: %s\n", meta.Impact)
+	return 0
 }
 
 func showGlobalConfig() int {
@@ -111,23 +134,6 @@ func showGlobalConfig() int {
 		fmt.Printf("  %-42s = %s\n", f.Key, f.Value)
 	}
 	return 0
-}
-
-func applyGlobalEdit(raw *config.Config, edit configEdit) error {
-	switch edit.op {
-	case configOpAdd:
-		return config.AppendList(raw, edit.key, edit.value)
-	case configOpRemove:
-		return config.RemoveList(raw, edit.key, edit.value)
-	case configOpReset:
-		// scalar と list で未設定へ戻す経路が違うため、キーの種別で振り分ける。
-		if config.IsListKey(edit.key) {
-			return config.ResetList(raw, edit.key)
-		}
-		return config.ResetField(raw, edit.key)
-	default:
-		return config.SetField(raw, edit.key, edit.value)
-	}
 }
 
 func runScopeConfig(ctx context.Context, scope config.Scope, path string, args []string) int {
@@ -153,46 +159,17 @@ func runScopeConfig(ctx context.Context, scope config.Scope, path string, args [
 		commandUsage(os.Stderr, "config")
 		return 2
 	}
-	raw, err := config.LoadRaw()
+	return executeConfigEdit(ctx, config.EditRequest{Scope: scope.String(), Target: target, Key: edit.key, Value: edit.value, Operation: config.EditOperation(edit.op)})
+}
+
+// executeConfigEdit は共通サービスで preview と保存を連続して行い、CLI の表示契約だけを担当する。
+func executeConfigEdit(ctx context.Context, request config.EditRequest) int {
+	preview, err := config.PreviewEdit(request)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	if err := applyScopeEdit(&raw, scope, target, edit); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	return saveConfig(ctx, raw)
-}
-
-func applyScopeEdit(raw *config.Config, scope config.Scope, target string, edit configEdit) error {
-	switch edit.op {
-	case configOpAdd:
-		return config.AppendScopeList(raw, scope, target, edit.key, edit.value)
-	case configOpRemove:
-		return config.RemoveScopeList(raw, scope, target, edit.key, edit.value)
-	case configOpReset:
-		if config.IsScopeListKey(scope, edit.key) {
-			return config.ResetScopeList(raw, scope, target, edit.key)
-		}
-		return config.ResetScopeField(raw, scope, target, edit.key)
-	default:
-		return config.SetScopeField(raw, scope, target, edit.key, edit.value)
-	}
-}
-
-// saveConfig は更新した raw 設定を検証してから保存し、動いている daemon へ反映を促す。
-func saveConfig(ctx context.Context, raw config.Config) int {
-	effective := config.Merge(config.Defaults(), raw)
-	if err := config.NormalizePaths(&effective); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	if err := config.Validate(&effective); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	if err := config.Save(raw); err != nil {
+	if err := config.CommitEdit(preview); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}

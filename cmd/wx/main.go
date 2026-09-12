@@ -12,6 +12,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/fdexec"
+	"github.com/HappyOnigiri/WX/internal/tui"
 	buildversion "github.com/HappyOnigiri/WX/internal/version"
 )
 
@@ -36,6 +37,9 @@ func main() {
 
 func run(ctx context.Context, args []string) int {
 	if len(args) == 0 {
+		if tui.IsTerminal(int(os.Stdin.Fd())) && tui.IsTerminal(int(os.Stdout.Fd())) {
+			return runDashboard(ctx)
+		}
 		topUsage(os.Stderr)
 		return 2
 	}

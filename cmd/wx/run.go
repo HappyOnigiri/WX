@@ -9,6 +9,10 @@ import (
 )
 
 func runRun(ctx context.Context, args []string) int {
+	return runRunFrom(ctx, args, "")
+}
+
+func runRunFrom(ctx context.Context, args []string, cwd string) int {
 	fs := pflag.NewFlagSet("run", pflag.ContinueOnError)
 	// コマンドの argv をそのまま渡すため、wx のオプションは先頭だけで解釈する。
 	fs.SetInterspersed(false)
@@ -29,6 +33,9 @@ func runRun(ctx context.Context, args []string) int {
 	client, code := leaseClient()
 	if code != 0 {
 		return code
+	}
+	if cwd != "" {
+		return client.RunLeaseCommandFrom(ctx, cwd, fs.Args(), *branches, *resume)
 	}
 	return client.RunLeaseCommand(ctx, fs.Args(), *branches, *resume)
 }

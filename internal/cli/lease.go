@@ -76,15 +76,19 @@ func (c Client) leasePlan(kind, agentKind, program string, args, branches []stri
 // lease 取得・defer Release・heartbeat・descriptor 束縛・signal 中継・wx clear --all への応答は
 // agent 起動と同じ launch 経路から得るため、ここでは agent 側の retry / fresh 分岐を持たない。
 func (c Client) runLease(ctx context.Context, kind, agentKind, program string, args, branches []string, resume string) int {
-	if err := c.checkLeaseWorktreeMode(ctx); err != nil {
-		return reportLeaseError(err)
-	}
-	if err := c.ensureDaemon(ctx); err != nil {
+	cwd, err := os.Getwd()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
+	return c.runLeaseFrom(ctx, cwd, kind, agentKind, program, args, branches, resume)
+}
+
+func (c Client) runLeaseFrom(ctx context.Context, cwd, kind, agentKind, program string, args, branches []string, resume string) int {
+	if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
+		return reportLeaseError(err)
+	}
+	if err := c.ensureDaemon(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
@@ -97,13 +101,24 @@ func (c Client) RunLeaseShell(ctx context.Context, branches []string, resume str
 	return c.runLease(ctx, state.LeaseKindShell, leaseAgentKindShell, c.leaseShell(), nil, branches, resume)
 }
 
+func (c Client) RunLeaseShellFrom(ctx context.Context, cwd string, branches []string, resume string) int {
+	return c.runLeaseFrom(ctx, cwd, state.LeaseKindShell, leaseAgentKindShell, c.leaseShell(), nil, branches, resume)
+}
+
 // RunLeaseCommand は worktree でコマンドを 1 回実行する。終了でその貸出は返却される。
 func (c Client) RunLeaseCommand(ctx context.Context, argv, branches []string, resume string) int {
+	return c.RunLeaseCommandFrom(ctx, "", argv, branches, resume)
+}
+
+func (c Client) RunLeaseCommandFrom(ctx context.Context, cwd string, argv, branches []string, resume string) int {
 	if len(argv) == 0 {
 		fmt.Fprintln(os.Stderr, "error: wx run needs a command after --")
 		return 2
 	}
-	return c.runLease(ctx, state.LeaseKindCommand, leaseAgentKindCommand, argv[0], argv[1:], branches, resume)
+	if cwd == "" {
+		return c.runLease(ctx, state.LeaseKindCommand, leaseAgentKindCommand, argv[0], argv[1:], branches, resume)
+	}
+	return c.runLeaseFrom(ctx, cwd, state.LeaseKindCommand, leaseAgentKindCommand, argv[0], argv[1:], branches, resume)
 }
 
 // leaseNewReply は wx new --json の出力である。session token は含めない。
@@ -117,15 +132,22 @@ type leaseNewReply struct {
 // path を渡せた貸出は Release を送らず heartbeat も張らないため、返却は親 session の終了・
 // wx release・lease.ttl の 3 つになる。渡せないまま終わるとき（失敗・signal による中断）だけ、その場で返却する。
 func (c Client) RunLeaseNew(ctx context.Context, branches []string, jsonOut bool) int {
-	if err := c.checkLeaseWorktreeMode(ctx); err != nil {
+	return c.RunLeaseNewFrom(ctx, "", branches, jsonOut)
+}
+
+func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []string, jsonOut bool) int {
+	if cwd == "" {
+		var err error
+		cwd, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+	}
+	if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
 		return reportLeaseError(err)
 	}
 	if err := c.ensureDaemon(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
@@ -265,6 +287,10 @@ func (c Client) checkLeaseWorktreeMode(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return c.checkLeaseWorktreeModeFrom(ctx, cwd)
+}
+
+func (c Client) checkLeaseWorktreeModeFrom(ctx context.Context, cwd string) error {
 	root, resolved := c.leasePolicyRoot(ctx, cwd)
 	if resolved && c.Config.WorktreeMode(root) == "off" {
 		return fmt.Errorf("workspace %s is configured not to use a worktree; change worktree.undefined or the workspace policy %s", root, daemon.WorktreeDisabledMarker)

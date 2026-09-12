@@ -39,12 +39,22 @@ func (c Client) SelectWorktreePolicy(ctx context.Context) int {
 
 // RunAgentWithPolicy は daemon の起動前に許可を解決し、対象外なら現在のディレクトリで通常起動する。
 func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, branches []string, fresh bool, options WorktreeOptions) int {
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	return c.RunAgentWithPolicyFrom(ctx, cwd, agent, args, branches, fresh, options)
+}
+
+// RunAgentWithPolicyFrom は TUI が明示した作業元を使い、process 全体の cwd を変更せずに agent を起動する。
+func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent string, args, branches []string, fresh bool, options WorktreeOptions) int {
 	if fresh && parseResumeIntent(agent, args).Kind == resumeIntentNone {
 		fmt.Fprintln(os.Stderr, "error: --fresh requires a resume operation")
 		return 2
 	}
 	// workspace root は agent.add_dir の解決キーでもあるため、worktree を作らない経路より先に一度だけ解決する。
-	root, rootErr := c.policyRoot(ctx)
+	root, rootErr := c.policyRootFrom(ctx, sourceCWD)
 	mode, err := c.selectWorktreeMode(ctx, options, root, rootErr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -55,7 +65,7 @@ func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, bran
 			fmt.Fprintln(os.Stderr, "error: --branch and --fresh require a worktree")
 			return 2
 		}
-		return runDirectAgent(ctx, agent, addDirArgs(directAddDirs(c.Config, root), args))
+		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirs(c.Config, root), args))
 	}
 	c.forceWorktree = options.Force
 	// 保存直後の選択を、既に動いている daemon にも lease より先に反映する。
@@ -67,7 +77,7 @@ func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, bran
 		fmt.Fprintln(os.Stderr, "error: reload worktree policy:", err)
 		return 1
 	}
-	return c.RunAgent(ctx, agent, args, branches, fresh)
+	return c.runAgentFrom(ctx, agent, args, branches, fresh, "", sourceCWD)
 }
 
 // policyRoot は設定を引くための workspace root を返す。
@@ -78,6 +88,10 @@ func (c Client) policyRoot(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return c.policyRootFrom(ctx, cwd)
+}
+
+func (c Client) policyRootFrom(ctx context.Context, cwd string) (string, error) {
 	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: c.Config.Discovery.Timeout.Duration}, Config: c.Config}
 	return discoverer.PolicyRoot(ctx, cwd)
 }
@@ -145,7 +159,12 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions,
 }
 
 func runDirectAgent(ctx context.Context, agent string, args []string) int {
+	return runDirectAgentFrom(ctx, "", agent, args)
+}
+
+func runDirectAgentFrom(ctx context.Context, cwd, agent string, args []string) int {
 	cmd := exec.CommandContext(ctx, agent, args...)
+	cmd.Dir = cwd
 	cmd.Env = childEnvironment(os.Environ(), nil)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	foreground := configureAgentProcess(cmd, int(os.Stdin.Fd()))

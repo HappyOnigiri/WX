@@ -72,6 +72,44 @@ func TestDirectAgentPreservesCWDArgumentsAndExitStatus(t *testing.T) {
 	}
 }
 
+func TestRunAgentWithPolicyFromUsesExplicitCWDWithoutChangingProcess(t *testing.T) {
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	output := filepath.Join(t.TempDir(), "cwd.txt")
+	binary := filepath.Join(t.TempDir(), "fake-agent")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\npwd > \"$1\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := client.RunAgentWithPolicyFrom(context.Background(), target, binary, []string{output}, nil, false, WorktreeOptions{Disable: true}); code != 0 {
+		t.Fatalf("exit=%d", code)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	physical, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != physical {
+		t.Fatalf("agent cwd=%q, want %q", strings.TrimSpace(string(data)), physical)
+	}
+	current, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current != original {
+		t.Fatalf("process cwd changed from %q to %q", original, current)
+	}
+}
+
 func TestUndefinedPolicyRefusesNoninteractiveInput(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
