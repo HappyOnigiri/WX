@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	accent = "\x1b[38;5;43m"
-	soft   = "\x1b[38;5;110m"
-	dim    = "\x1b[38;5;245m"
-	warn   = "\x1b[38;5;214m"
-	reset  = "\x1b[0m"
+	accent    = "\x1b[38;5;43m"
+	activeTab = "\x1b[38;5;16m\x1b[48;5;43m"
+	soft      = "\x1b[38;5;110m"
+	dim       = "\x1b[38;5;245m"
+	warn      = "\x1b[38;5;214m"
+	reset     = "\x1b[0m"
 )
 
 func (m model) View() tea.View {
@@ -65,7 +66,7 @@ func (m model) tabLine() string {
 	parts := []string{accent + "◉ wx" + reset}
 	for i, name := range tabNames {
 		if i == m.tab {
-			parts = append(parts, accent+"["+name+"]"+reset)
+			parts = append(parts, activeTab+" "+name+" "+reset)
 		} else {
 			parts = append(parts, dim+name+reset)
 		}

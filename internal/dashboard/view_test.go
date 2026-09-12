@@ -32,4 +32,15 @@ func TestViewUsesStatusPaneAndResponsiveOperationLayout(t *testing.T) {
 	}
 }
 
+func TestSelectedTabUsesBackgroundInsteadOfBrackets(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	line := m.tabLine()
+	if strings.Contains(line, "[Status]") {
+		t.Fatalf("selected tab still uses brackets: %q", line)
+	}
+	if !strings.Contains(line, "\x1b[48;5;43m Status ") {
+		t.Fatalf("selected tab has no background highlight: %q", line)
+	}
+}
+
 func testTime() time.Time { return time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local) }
