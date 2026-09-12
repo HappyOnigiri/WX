@@ -58,10 +58,47 @@ test('groups coverage and race evidence under one issue key', () => {
   const groups = reporter.aggregateManifests([
     { artifactName: 'coverage', manifest: manifest('10', '1', 'coverage') },
     { artifactName: 'race', manifest: manifest('10', '1', 'race-daemon') },
+    { artifactName: 'race-state', manifest: manifest('10', '1', 'race-state') },
   ], source);
   assert.equal(groups.length, 1);
-  assert.equal(groups[0].items.length, 2);
+  assert.equal(groups[0].items.length, 3);
   assert.match(reporter.buildIssueBody(groups[0], source), /race-daemon/);
+  assert.match(reporter.buildIssueBody(groups[0], source), /race-state/);
+});
+
+test('associates a race-state report with its job URL', async () => {
+  const github = { rest: {
+    actions: {
+      getWorkflowRun: async () => ({ data: { name: 'CI', path: '.github/workflows/ci.yml', run_attempt: 1, event: 'push', head_branch: 'main', head_sha: source.testSha, html_url: source.runUrl } }),
+      listJobsForWorkflowRun: async () => ({ data: { jobs: [{
+        name: 'race (state)',
+        html_url: 'https://github.com/HappyOnigiri/WX/actions/runs/10/job/state',
+        run_attempt: 1,
+        conclusion: 'success',
+        steps: [{ name: 'Upload CI test report', conclusion: 'success' }],
+      }] } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts: [{ id: 1, name: 'ci-tests-race-state-10-1', expired: false, workflow_run: { id: 10 } }] } }),
+    },
+    issues: {
+      listForRepo: async () => ({ data: [] }),
+      create: async () => ({ data: {} }),
+    },
+  } };
+  const result = await reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    reports: [{ artifactName: 'ci-tests-race-state-10-1', manifest: manifest('10', '1', 'race-state') }],
+  });
+  assert.equal(result.groups[0].items[0].jobUrl, 'https://github.com/HappyOnigiri/WX/actions/runs/10/job/state');
+});
+
+test('rejects a race-state artifact whose manifest names another profile', () => {
+  assert.throws(() => reporter.aggregateManifests([
+    { artifactName: 'ci-tests-race-state-10-1', manifest: manifest('10', '1', 'race-rest') },
+  ], source), /profile does not match its artifact name/);
 });
 
 test('creates once and comments on a later occurrence of the same issue', async () => {
@@ -133,8 +170,12 @@ test('files the recoveries it has before failing on a missing artifact', async (
       listJobsForWorkflowRun: async () => ({ data: { jobs: [
         { name: 'coverage-tests', run_attempt: 1, conclusion: 'failure', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] },
         { name: 'race (daemon)', run_attempt: 1, conclusion: 'success', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] },
+        { name: 'race (state)', run_attempt: 1, conclusion: 'success', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] },
       ] } }),
-      listWorkflowRunArtifacts: async () => ({ data: { artifacts: [{ id: 1, name: 'ci-tests-race-daemon-10-1', expired: false, workflow_run: { id: 10 } }] } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts: [
+        { id: 1, name: 'ci-tests-race-daemon-10-1', expired: false, workflow_run: { id: 10 } },
+        { id: 2, name: 'ci-tests-race-state-10-1', expired: false, workflow_run: { id: 10 } },
+      ] } }),
     },
     issues: {
       listForRepo: async () => ({ data: issues }),

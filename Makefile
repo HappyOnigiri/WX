@@ -31,6 +31,7 @@ CORE_COVERAGE_MIN ?= 85
 COVERAGE_EXCLUSIONS ?= coverage-exclusions.txt
 RACE_TEST_ARGS := -race -shuffle=on -count=1
 RACE_DAEMON_PACKAGE := ./internal/daemon
+RACE_STATE_PACKAGE := ./internal/state
 # darwin専用テストは internal/workspace にしかない。テスト名の一覧を二重管理せずパッケージ単位で実行する。
 DARWIN_TEST_PACKAGE := ./internal/workspace
 LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicode-3.0,Unlicense
@@ -38,7 +39,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-hooks setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check automation-check docs-index-check workflow-check workflow-lint reporter-check workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-plan nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-hooks setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check automation-check docs-index-check workflow-check workflow-lint reporter-check workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-state test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-plan nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -233,7 +234,7 @@ test-race:
 	$(GO) test $(RACE_TEST_ARGS) ./...
 
 # race検査はCIの少コアランナーでCPU律速になり、単独で最長のinternal/daemonがジョブの下限を作る。
-# daemonと残りを別ジョブへ分けるため、対象パッケージだけが違う2つのtargetを用意する。
+# daemon・state・残りを別ジョブへ分けるため、対象パッケージだけが違うtargetを用意する。
 test-race-daemon:
 	@if [ -n "$(CITEST)" ]; then \
 		"$(CITEST)" -profile race-daemon -report-dir "$(CI_TEST_ARTIFACT_DIR)/race-daemon" -- $(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE); \
@@ -241,12 +242,22 @@ test-race-daemon:
 		$(GO) test $(RACE_TEST_ARGS) $(RACE_DAEMON_PACKAGE); \
 	fi
 
-test-race-rest:
+test-race-state:
 	@if [ -n "$(CITEST)" ]; then \
-		packages="$$($(GO) list ./... | grep -v '/internal/daemon$$')"; \
+		"$(CITEST)" -profile race-state -report-dir "$(CI_TEST_ARTIFACT_DIR)/race-state" -- $(GO) test $(RACE_TEST_ARGS) $(RACE_STATE_PACKAGE); \
+	else \
+		$(GO) test $(RACE_TEST_ARGS) $(RACE_STATE_PACKAGE); \
+	fi
+
+test-race-rest:
+	@set -eu; \
+	packages="$$($(GO) list ./...)"; \
+	packages="$$(printf '%s\n' "$$packages" | awk '$$0 !~ /\/internal\/(daemon|state)$$/')"; \
+	test -n "$$packages"; \
+	if [ -n "$(CITEST)" ]; then \
 		"$(CITEST)" -profile race-rest -report-dir "$(CI_TEST_ARTIFACT_DIR)/race-rest" -- $(GO) test $(RACE_TEST_ARGS) $$packages; \
 	else \
-		$(GO) test $(RACE_TEST_ARGS) $$($(GO) list ./... | grep -v '/internal/daemon$$'); \
+		$(GO) test $(RACE_TEST_ARGS) $$packages; \
 	fi
 
 # ci-checksは-jで並列に走るため、2つのテストスイートが同時に実行されると資源が枯渇して失敗する。

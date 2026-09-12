@@ -131,7 +131,7 @@ func run(ctx context.Context, cfg config, output io.Writer) (int, error) {
 }
 
 func validateConfig(cfg config) error {
-	if cfg.Profile != "coverage" && cfg.Profile != "race-daemon" && cfg.Profile != "race-rest" {
+	if cfg.Profile != "coverage" && cfg.Profile != "race-daemon" && cfg.Profile != "race-state" && cfg.Profile != "race-rest" {
 		return fmt.Errorf("unsupported profile %q", cfg.Profile)
 	}
 	if cfg.ReportDir == "" || cfg.RepoRoot == "" {
