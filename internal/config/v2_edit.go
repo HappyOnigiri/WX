@@ -111,14 +111,6 @@ func v2WorkspaceKey(c *Config, root string) string {
 	return root
 }
 
-func ensurePresent(p map[string]bool, key string) map[string]bool {
-	if p == nil {
-		p = map[string]bool{}
-	}
-	p[key] = true
-	return p
-}
-
 func setV2SectionPresent(c *Config, key string, present bool) {
 	if c.present == nil {
 		if !present && c.Version != 2 {
@@ -126,14 +118,15 @@ func setV2SectionPresent(c *Config, key string, present bool) {
 		}
 		c.present = map[string]bool{}
 	}
-	if present {
+	switch {
+	case present:
 		c.present[key] = true
-	} else if c.Version == 2 {
+	case c.Version == 2:
 		// 最後の field を reset しても空の v2 section は残す。
 		// version だけの document は意図的に無効とし、明示した空 section で
 		// schema 選択を記録した疎な v2 document を有効に保つ。
 		c.present[key] = true
-	} else {
+	default:
 		delete(c.present, key)
 	}
 }
@@ -195,16 +188,6 @@ func v2Field(entry reflect.Value, key string) reflect.Value {
 		current = found
 	}
 	return current
-}
-
-func v2ScopeKey(scope, key string) (string, error) {
-	if scope == V2ScopeWorkspace && strings.HasPrefix(key, "repository_defaults.") {
-		return strings.TrimPrefix(key, "repository_defaults."), nil
-	}
-	if scope == V2ScopeWorkspaceDefaults && strings.HasPrefix(key, "repository_defaults.") {
-		return "", fmt.Errorf("repository_defaults is not a workspace default key")
-	}
-	return key, nil
 }
 
 func SetV2Field(c *Config, scope, root, rel, key, value string) error {

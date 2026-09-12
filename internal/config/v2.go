@@ -485,14 +485,13 @@ type RepositoryResolution struct {
 
 func (c Config) ResolveRepository(workspaceRoot, relativePath, mainPath string) RepositoryResolution {
 	sources := map[string]string{}
-	resolved := repositoryDefaultsAsRepository(c.RepositoryDefaults)
 	for key := range repositoryKeys() {
 		sources[key] = "default"
 	}
 	if c.V2() {
 		markRepositorySources(sources, c, workspaceRoot, relativePath)
 	}
-	resolved = c.RepositoryFor(workspaceRoot, relativePath, mainPath)
+	resolved := c.RepositoryFor(workspaceRoot, relativePath, mainPath)
 	return RepositoryResolution{Config: resolved, Sources: sources}
 }
 

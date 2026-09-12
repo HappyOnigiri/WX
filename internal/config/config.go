@@ -459,10 +459,7 @@ func Merge(d, raw Config) Config {
 	return r
 }
 
-func Validate(c *Config) error {
-	if c == nil {
-		return errors.New("config is nil")
-	}
+func validateSchema(c *Config) error {
 	if c.V2() {
 		if c.Version == 2 && !c.v2Explicit {
 			return fmt.Errorf("unsupported config version %d", c.Version)
@@ -472,6 +469,16 @@ func Validate(c *Config) error {
 		}
 	} else if c.Version != 1 {
 		return fmt.Errorf("unsupported config version %d", c.Version)
+	}
+	return nil
+}
+
+func Validate(c *Config) error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	if err := validateSchema(c); err != nil {
+		return err
 	}
 	if err := validateReadiness(&c.Readiness); err != nil {
 		return err

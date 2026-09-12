@@ -172,7 +172,7 @@ func fingerprintWorkspaceRoot(h hash.Hash, repo discovery.Repository, c config.C
 		return err
 	}
 	resolvedSubmodules := c.RepositoryFor(workspaceRoot, repo.RelativePath, string(repo.MainPath)).Submodules
-	submodules := false
+	var submodules bool
 	if resolvedSubmodules != nil {
 		submodules = *resolvedSubmodules
 	} else {

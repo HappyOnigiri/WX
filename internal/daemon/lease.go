@@ -68,14 +68,6 @@ func leaseReadiness(cfg config.Config, repositories []discovery.Repository) (str
 	return mode, timeout
 }
 
-// leaseReadinessForWorkspace は workspace membership の文脈で repository 設定を
-// 解決する。上の legacy wrapper は repository path だけを持つ caller（主に互換テスト）
-// のために残す。
-func leaseReadinessForWorkspace(cfg config.Config, workspaceRoot string, repositories []discovery.Repository) (string, int) {
-	mode, timeout, _ := leaseReadinessDetails(cfg, workspaceRoot, repositories)
-	return mode, timeout
-}
-
 func leaseReadinessDetails(cfg config.Config, workspaceRoot string, repositories []discovery.Repository) (string, int, bool) {
 	mode := ""
 	var timeout time.Duration

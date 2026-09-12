@@ -115,15 +115,6 @@ func defaultIncludeCandidatesForRepository(repo discovery.Repository, c config.C
 	return out, nil
 }
 
-// defaultIncludeCandidates は non-daemon caller 向けに main-path API を残しつつ
-// legacy/global resolver を使う。lifecycle caller は上の repository-aware variant を使う。
-func defaultIncludeCandidates(mainPath string, c config.Config) ([]string, error) {
-	if !c.DefaultAgentRulesEnabled(mainPath) {
-		return nil, nil
-	}
-	return defaultIncludeCandidatesForRepository(discovery.Repository{MainPath: domain.CanonicalPath(mainPath), RelativePath: "."}, c)
-}
-
 // defaultIncludes は候補を Git が追跡していない名前に絞る。一度の ls-files で一覧全体を調べ、tracked name は報告せず skip する。
 // これにより、repository がこれらの名前で file を commit していても prepare できる。
 func (p *Preparer) defaultIncludesForRepository(repo discovery.Repository) ([]string, error) {
@@ -154,10 +145,6 @@ func (p *Preparer) defaultIncludesForRepository(repo discovery.Repository) ([]st
 		out = append(out, candidate)
 	}
 	return out, nil
-}
-
-func (p *Preparer) defaultIncludes(mainPath string) ([]string, error) {
-	return p.defaultIncludesForRepository(discovery.Repository{MainPath: domain.CanonicalPath(mainPath), RelativePath: "."})
 }
 
 // copyIncludesAt は descriptor-bound な include materializer である。destinationRoot は pin 済み owner namespace から開き、すべての書き込みをその相対 path で行う。
