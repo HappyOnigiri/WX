@@ -101,8 +101,8 @@ test('rejects a race-state artifact whose manifest names another profile', () =>
   ], source), /profile does not match its artifact name/);
 });
 
-test('collects every test-name race shard as a separate profile', async () => {
-  const shards = ['race-daemon-0', 'race-daemon-1', 'race-state-0', 'race-state-1'];
+test('collects every weighted race shard as a separate profile', async () => {
+  const shards = ['race-daemon-0', 'race-daemon-1', 'race-daemon-2', 'race-rest-0', 'race-rest-1'];
   const jobs = shards.map((profile) => ({
     name: `race (${profile.replace(/^race-/, '')})`,
     html_url: `https://github.com/HappyOnigiri/WX/actions/runs/10/job/${profile}`,
@@ -144,8 +144,8 @@ test('collects every test-name race shard as a separate profile', async () => {
   assert.deepEqual(result.groups[0].items.map((item) => item.jobUrl), jobs.map((job) => job.html_url));
 });
 
-test('reports a missing test-name race shard independently', async () => {
-  const shards = ['race-daemon-0', 'race-daemon-1', 'race-state-0', 'race-state-1'];
+test('reports a missing weighted race shard independently', async () => {
+  const shards = ['race-daemon-0', 'race-daemon-1', 'race-daemon-2', 'race-rest-0', 'race-rest-1'];
   const jobs = shards.map((profile) => ({
     name: `race (${profile.replace(/^race-/, '')})`,
     run_attempt: 1,
@@ -183,8 +183,8 @@ test('reports a missing test-name race shard independently', async () => {
     sourceAttempt: source.attempt,
     reports,
     core: { warning: (message) => warnings.push(message) },
-  }), /missing report artifact for race-state-1/);
-  assert.deepEqual(warnings, ['missing report artifact for race-state-1']);
+  }), /missing report artifact for race-rest-0, race-rest-1/);
+  assert.deepEqual(warnings, ['missing report artifact for race-rest-0', 'missing report artifact for race-rest-1']);
 });
 
 test('creates once and comments on a later occurrence of the same issue', async () => {

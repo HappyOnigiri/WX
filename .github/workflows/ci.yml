@@ -73,7 +73,7 @@ jobs:
           retention-days: 30
       - run: git diff --exit-code
 
-  # 少コアのCIランナーではrace検査がCPU律速になるため、daemon・stateをテスト名で分ける。
+  # 少コアのCIランナーではrace検査がCPU律速になるため、実測重みでdaemon・restを分ける。
   race:
     name: race (${{ matrix.shard }})
     runs-on: ubuntu-24.04
@@ -81,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [daemon-0, daemon-1, state-0, state-1, rest]
+        shard: [daemon-0, daemon-1, daemon-2, rest-0, rest-1]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
