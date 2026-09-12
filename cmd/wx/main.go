@@ -12,6 +12,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/fdexec"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/tui"
 	buildversion "github.com/HappyOnigiri/WX/internal/version"
 )
@@ -36,18 +37,19 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) int {
+	ctx = commandContext(ctx)
 	if len(args) == 0 {
 		if tui.IsTerminal(int(os.Stdin.Fd())) && tui.IsTerminal(int(os.Stdout.Fd())) {
 			return runDashboard(ctx)
 		}
-		topUsage(os.Stderr)
+		topUsageLanguage(os.Stderr, i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	// 各サブコマンドが専用の pflag.FlagSet と --help/-h 処理を持つため、
 	// ここで「<command> --help」を先取りしない。
 	switch args[0] {
 	case "-h", "--help", "help":
-		topUsage(os.Stdout)
+		topUsageLanguage(os.Stdout, i18n.LanguageFromContext(ctx))
 		return 0
 	case "-v", "--version", "version":
 		fmt.Println("wx version " + versionString())
@@ -93,54 +95,63 @@ func run(ctx context.Context, args []string) int {
 	}
 	f, agentName, agentArgs, err := parseAgentPrefix(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		topUsage(os.Stderr)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
+		topUsageLanguage(os.Stderr, i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	if agentName == "" {
 		if len(f.branches) > 0 || f.fresh {
-			fmt.Fprintln(os.Stderr, "error: --branch and --fresh require an agent")
-			topUsage(os.Stderr)
+			if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+				fmt.Fprintln(os.Stderr, "エラー: --branch と --fresh には agent が必要です")
+			} else {
+				fmt.Fprintln(os.Stderr, "error: --branch and --fresh require an agent")
+			}
+			topUsageLanguage(os.Stderr, i18n.LanguageFromContext(ctx))
 			return 2
 		}
 		cfg, err := config.Load()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 			return 1
 		}
 		client, err := cli.New(cfg)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 			return 1
 		}
 		return client.SelectWorktreePolicy(ctx)
 	}
 	if agentName != "claude" && agentName != "codex" {
-		fmt.Fprintf(os.Stderr, "error: unknown command or agent %q\n", agentName)
-		topUsage(os.Stderr)
+		message := fmt.Sprintf("unknown command or agent %q", agentName)
+		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+			message = fmt.Sprintf("不明な command または agent %q です", agentName)
+		}
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
+		topUsageLanguage(os.Stderr, i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	client, err := cli.New(cfg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	return client.RunAgentWithPolicy(ctx, agentName, agentArgs, f.branches, f.fresh, cli.WorktreeOptions{Force: f.worktree, Disable: f.noWorktree, Select: f.selectWorktree})
 }
 
 func runHook(ctx context.Context, args []string) int {
+	ctx = commandContext(ctx)
 	// hook は agent 設定から呼ばれるため、--help は stderr と終了コード 2 の契約を持つ。
 	// pflag が help を表示済みの場合は重複させず、ContinueOnError が表示しない解析エラーだけ出力する。
 	fs := pflag.NewFlagSet("hook", pflag.ContinueOnError)
-	fs.Usage = func() { commandUsage(os.Stderr, "hook") }
+	fs.Usage = func() { commandUsageLanguage(os.Stderr, "hook", i18n.LanguageFromContext(ctx)) }
 	if err := fs.Parse(args); err != nil {
 		if !errors.Is(err, pflag.ErrHelp) {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 			fs.Usage()
 		}
 		return 2
@@ -150,7 +161,7 @@ func runHook(ctx context.Context, args []string) int {
 		return 2
 	}
 	if err := agent.RunHook(ctx, fs.Arg(0), os.Stdin); err != nil {
-		fmt.Fprintln(os.Stderr, "wx readiness blocked operation:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "rpc.readiness_blocked", nil)+":", err)
 		return 1
 	}
 	return 0

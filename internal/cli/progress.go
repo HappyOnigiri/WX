@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/tui"
 )
@@ -90,12 +92,13 @@ type leaseProgress struct {
 	finished bool
 	cancel   context.CancelFunc
 	done     chan struct{}
+	language i18n.Language
 }
 
 // startLeaseProgress は経路が決まる前の待機行を stderr へ開始する。
 // readiness.progress が無効なときと stderr が端末でないときは何も描かず、LeaseProgress も一度も呼ばない。
 func (c Client) startLeaseProgress() *leaseProgress {
-	return newLeaseProgress(os.Stderr, c.leaseProgressEnabled(tui.IsTerminal(int(os.Stderr.Fd()))))
+	return newLeaseProgressLanguage(os.Stderr, c.leaseProgressEnabled(tui.IsTerminal(int(os.Stderr.Fd()))), i18n.Normalize(c.Config.DisplayLanguage()))
 }
 
 // leaseProgressEnabled は進捗を描くかを設定と出力先から決める。
@@ -107,8 +110,12 @@ func (c Client) leaseProgressEnabled(terminal bool) bool {
 // newLeaseProgress は出力先と描画の有無を受け取る。出力先の判定を分けておくことで、
 // 端末を用意できない環境でも取り直しと描き替えの契約を試験できる。
 func newLeaseProgress(w io.Writer, animate bool) *leaseProgress {
+	return newLeaseProgressLanguage(w, animate, i18n.English)
+}
+
+func newLeaseProgressLanguage(w io.Writer, animate bool, lang i18n.Language) *leaseProgress {
 	return &leaseProgress{
-		bar: tui.StartProgress(w, animate, leaseResolvingLabel), animate: animate, started: time.Now(),
+		bar: tui.StartProgress(w, animate, localizedLeaseLabel(leaseResolvingLabel, lang)), animate: animate, started: time.Now(), language: lang,
 	}
 }
 
@@ -172,16 +179,38 @@ func (p *leaseProgress) draw() {
 
 func (p *leaseProgress) label() string {
 	if p.route == "" {
-		return leaseResolvingLabel
+		return localizedLeaseLabel(leaseResolvingLabel, p.language)
 	}
 	switch {
 	case p.phase != (leasePhase{}):
-		return p.route + ": " + p.phase.text()
+		return localizedLeaseLabel(p.route, p.language) + ": " + localizedLeaseLabel(p.phase.text(), p.language)
 	case p.queued:
-		return p.route + ": " + leaseQueuedLabel
+		return localizedLeaseLabel(p.route, p.language) + ": " + localizedLeaseLabel(leaseQueuedLabel, p.language)
 	default:
-		return p.route
+		return localizedLeaseLabel(p.route, p.language)
 	}
+}
+
+func localizedLeaseLabel(value string, lang i18n.Language) string {
+	if lang != i18n.Japanese {
+		return value
+	}
+	for _, replacement := range []struct{ en, ja string }{
+		{"Resolving workspace", "workspace を解決中"},
+		{"Ready standby", "準備済み standby"},
+		{"Standby update", "standby を更新中"},
+		{"Cold start", "cold start"},
+		{"Restoring workspace", "workspace を復元中"},
+		{"Preparing workspace", "workspace を準備中"},
+		{"create", "作成"},
+		{"restore", "復元"},
+		{"update", "更新"},
+		{"git-register", "Git 登録"},
+		{"queued", "待機中"},
+	} {
+		value = strings.ReplaceAll(value, replacement.en, replacement.ja)
+	}
+	return value
 }
 
 // settle は表示中の区間を確定行として残す。待機行は描き替えで消えるため、
@@ -190,7 +219,7 @@ func (p *leaseProgress) settle() {
 	if p.phase == (leasePhase{}) {
 		return
 	}
-	p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(p.elapsed), p.phase.text()))
+	p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(p.elapsed), localizedLeaseLabel(p.phase.text(), p.language)))
 	p.settled = true
 }
 
@@ -211,7 +240,7 @@ func (p *leaseProgress) finish() {
 		p.settle()
 		// 総括は準備を待った回にだけ出す。成否は呼び出し側が別に伝えるので、ここでは掛かった時間だけを残す。
 		if p.settled {
-			p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(time.Since(p.started)), p.route))
+			p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(time.Since(p.started)), localizedLeaseLabel(p.route, p.language)))
 		}
 	}
 	p.finished = true

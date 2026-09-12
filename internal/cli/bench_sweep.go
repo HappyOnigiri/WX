@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // benchCurrentConfigLabel は上書きを指定しなかった測定の表記である。
@@ -131,11 +132,21 @@ func benchMedianBytes(values []int64) *int64 {
 // printBenchConfigs は設定ごとの比較行を出す。
 // 上書きを指定しない1通りの測定では run ごとの出力と summary に同じ値が出ているため出さない。
 func printBenchConfigs(summaries []BenchConfigSummary) {
+	printBenchConfigsLanguage(summaries, i18n.English)
+}
+
+func printBenchConfigsLanguage(summaries []BenchConfigSummary, lang i18n.Language) {
 	if len(summaries) == 0 || (len(summaries) == 1 && summaries[0].Config.Label == benchCurrentConfigLabel) {
 		return
 	}
-	fmt.Println(benchConfigsHeadline(summaries))
-	fmt.Printf("  %-28s %5s %5s  %-24s %-24s %12s %12s\n", "config", "runs", "fail", "EARLY READY", "FULL READY", "exclusive", "shared")
+	headline := benchConfigsHeadline(summaries)
+	config, runs, fail, early, full, exclusive, shared := "config", "runs", "fail", "EARLY READY", "FULL READY", "exclusive", "shared"
+	if lang == i18n.Japanese {
+		headline = strings.ReplaceAll(strings.ReplaceAll(headline, "comparison by configuration", "設定ごとの比較"), "usage is the median of the measured runs", "使用量は測定値の中央値")
+		config, runs, fail, early, full, exclusive, shared = "設定", "回数", "失敗", "早期準備完了", "準備完了", "専有", "共有"
+	}
+	fmt.Println(headline)
+	fmt.Printf("  %-28s %5s %5s  %-24s %-24s %12s %12s\n", config, runs, fail, early, full, exclusive, shared)
 	for _, summary := range summaries {
 		fmt.Printf("  %-28s %5d %5d  %-24s %-24s %12s %12s\n",
 			summary.Config.Label, summary.Runs, summary.Failed,

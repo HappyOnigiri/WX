@@ -72,6 +72,27 @@ func TestStrictDecode(t *testing.T) {
 	}
 }
 
+func TestLoadLanguageFallsBackWhileFullLoadRejectsUnsupportedValue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\nlanguage: fr\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadLanguage(); got != LanguageEnglish {
+		t.Fatalf("fallback language=%q, want en", got)
+	}
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "language must be en or ja") {
+		t.Fatalf("Load error=%v", err)
+	}
+}
+
 func TestLoadRawRejectsMultipleYAMLDocuments(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

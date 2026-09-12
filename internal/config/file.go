@@ -18,6 +18,24 @@ func Load() (Config, error) {
 	return effective, err
 }
 
+// LoadLanguage は設定全体を検証せず、表示言語だけを安全に読み取る。
+// 起動初期の help・doctor は壊れた別項目があっても英語で利用できる必要があるため、
+// 読み取り失敗・未対応値・未記載をすべて英語へ戻す。
+func LoadLanguage() string {
+	raw, err := LoadRaw()
+	if err != nil || !raw.has("language", raw.Language != "") {
+		return LanguageEnglish
+	}
+	if raw.Language != LanguageEnglish && raw.Language != LanguageJapanese {
+		return LanguageEnglish
+	}
+	return raw.Language
+}
+
+// LanguageConfigured は raw 設定に language キーが明示されているかを返す。
+// 空文字も「明示された不正値」として true になるため、setup は再質問せず設定エラーを表示できる。
+func LanguageConfigured(raw Config) bool { return raw.has("language", raw.Language != "") }
+
 // LoadWithRaw は検証・正規化済みの実効設定と、値の明示指定を識別できる raw 設定を返す。
 func LoadWithRaw() (Config, Config, error) {
 	raw, err := LoadRaw()

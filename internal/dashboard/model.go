@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
@@ -103,6 +104,7 @@ type model struct {
 	settingsEnv  int
 	settingsOpen bool
 	catalog      []config.Metadata
+	lang         i18n.Language
 }
 
 func Run(ctx context.Context, opts Options) (Action, error) {
@@ -125,7 +127,7 @@ func Run(ctx context.Context, opts Options) (Action, error) {
 }
 
 func newModel(ctx context.Context, opts Options) model {
-	return model{ctx: ctx, opts: opts, width: 100, height: 28, loading: true, catalog: config.Catalog()}
+	return model{ctx: ctx, opts: opts, width: 100, height: 28, loading: true, catalog: config.Catalog(), lang: dashboardLanguage(opts.Config.DisplayLanguage())}
 }
 
 func (m model) Init() tea.Cmd {
@@ -184,6 +186,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selectedScope = environments[m.settingsEnv].scope
 			}
 			m.opts.Config, m.opts.RawConfig, m.opts.Setup = msg.config, msg.rawConfig, msg.setup
+			m.lang = dashboardLanguage(m.opts.Config.DisplayLanguage())
 			if m.target != "" {
 				switch selectedScope {
 				case "workspace":

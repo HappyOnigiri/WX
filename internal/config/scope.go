@@ -331,6 +331,19 @@ type ScopeField struct{ Key, Value, Source string }
 // GlobalFields は global の実効値を、設定ファイルの明示値か default かとともに返す。
 func GlobalFields(c, raw Config) []ScopeField {
 	fields := append(Fields(c), Lists(c)...)
+	// language は未記載でも実効値（英語）を持つ global 専用キーであり、
+	// Fields の疎な一覧から省いている。dashboard の設定画面では未記載時も
+	// 変更対象として見せる必要があるため、ここで default 行を補う。
+	hasLanguage := false
+	for _, field := range fields {
+		if field.Key == "language" {
+			hasLanguage = true
+			break
+		}
+	}
+	if !hasLanguage {
+		fields = append([]Field{{Key: "language", Value: c.DisplayLanguage()}}, fields...)
+	}
 	out := make([]ScopeField, 0, len(fields))
 	for _, field := range fields {
 		source := "default"

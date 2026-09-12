@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/sessions/scanner"
 	"github.com/HappyOnigiri/WX/internal/sessions/termtext"
 	"github.com/HappyOnigiri/WX/internal/textfmt"
@@ -45,6 +46,8 @@ type PickOptions struct {
 	StartWidened bool
 	// Now は相対時刻の基準時刻で、ゼロ値なら time.Now() を使う。テストが表示を固定するための差し替え点である。
 	Now time.Time
+	// Language は picker の固定ラベル表示言語。空文字は英語で、旧 caller と互換である。
+	Language string
 }
 
 type pickerItem struct {
@@ -119,6 +122,7 @@ type pickerModel struct {
 	width      int
 	height     int
 	status     string
+	language   i18n.Language
 	result     scanner.ResumeTarget
 	cancelled  bool
 }
@@ -134,6 +138,7 @@ func newPickerModel(items []scanner.Session, opts PickOptions) pickerModel {
 		scoped:     opts.Scope != nil && !opts.StartWidened,
 		width:      80,
 		height:     24,
+		language:   i18n.Normalize(opts.Language),
 	}
 	for _, session := range items {
 		tool := strings.ToLower(strings.TrimSpace(session.Tool))
@@ -363,16 +368,16 @@ func (m pickerModel) visibleRows() int {
 // emptyMessage は表示対象が無い理由を、会話そのものが無い場合と絞り込みで消えた場合で分ける。
 func (m pickerModel) emptyMessage() string {
 	if len(m.items) == 0 {
-		return "no sessions found"
+		return pickerText(m.language, "no sessions found")
 	}
-	return "no conversations match the current filter"
+	return pickerText(m.language, "no conversations match the current filter")
 }
 
 func (m pickerModel) View() tea.View {
 	m.ensureVisible()
 	lines := make([]string, 0, m.height)
 	lines = append(lines, truncateLine(m.headerLine(), m.width))
-	lines = append(lines, truncateLine("Search: "+sanitizeLine(m.query), m.width))
+	lines = append(lines, truncateLine(pickerText(m.language, "Search: "+sanitizeLine(m.query)), m.width))
 	if len(m.visible) == 0 {
 		lines = append(lines, truncateLine("  "+m.emptyMessage(), m.width))
 	} else {
@@ -389,14 +394,14 @@ func (m pickerModel) View() tea.View {
 			}
 			line := marker + item.title
 			if note := m.itemNote(item); note != "" {
-				line += "  [" + note + "]"
+				line += "  [" + pickerText(m.language, note) + "]"
 			}
 			lines = append(lines, truncateLine(line, m.width))
 			lines = append(lines, dimText(item.metaLine(m.width)))
 		}
 	}
 	if m.status != "" {
-		lines = append(lines, truncateLine("! "+m.status, m.width))
+		lines = append(lines, truncateLine("! "+pickerText(m.language, m.status), m.width))
 	}
 	lines = append(lines, dimText(m.separatorLine()))
 	lines = append(lines, dimText(truncateLine(m.footerLine(), m.width)))
@@ -417,9 +422,9 @@ func (m pickerModel) headerLine() string {
 		return header
 	}
 	if m.scoped {
-		return header + "  (this workspace)"
+		return header + "  " + pickerText(m.language, "(this workspace)")
 	}
-	return header + "  (all workspaces · usage outside this workspace is unknown)"
+	return header + "  " + pickerText(m.language, "(all workspaces · usage outside this workspace is unknown)")
 }
 
 // separatorLine は一覧とフッタを分ける横線を端末幅で引く。
@@ -434,7 +439,33 @@ func (m pickerModel) footerLine() string {
 	if m.scopeAware {
 		footer += "  Ctrl-A workspace"
 	}
-	return footer + "  Esc clear → cancel"
+	return pickerText(m.language, footer+"  Esc clear → cancel")
+}
+
+func pickerText(lang i18n.Language, text string) string {
+	if lang != i18n.Japanese {
+		return text
+	}
+	for _, replacement := range []struct{ en, ja string }{
+		{"Search: ", "検索: "},
+		{"(this workspace)", "（この workspace）"},
+		{"(all workspaces · usage outside this workspace is unknown)", "（全 workspace・workspace 外の使用状況は不明）"},
+		{"no sessions found", "セッションが見つかりません"},
+		{"no conversations match the current filter", "現在の絞り込みに一致する会話がありません"},
+		{"this session is in use and cannot be selected", "このセッションは使用中のため選択できません"},
+		{"this session cannot be resumed", "このセッションは再開できません"},
+		{"in use", "使用中"},
+		{"usage unknown", "使用状況不明"},
+		{"↑↓/Ctrl-N/Ctrl-P/PgUp/PgDn/Home/End move", "↑↓/Ctrl-N/Ctrl-P/PgUp/PgDn/Home/End 移動"},
+		{"Enter select", "Enter 選択"},
+		{"type to search", "入力して検索"},
+		{"Ctrl-U clear", "Ctrl-U クリア"},
+		{"Ctrl-A workspace", "Ctrl-A workspace"},
+		{"Esc clear → cancel", "Esc クリア → キャンセル"},
+	} {
+		text = strings.ReplaceAll(text, replacement.en, replacement.ja)
+	}
+	return text
 }
 
 func sessionTitle(session scanner.Session) string {

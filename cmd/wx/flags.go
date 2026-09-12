@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/pflag"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 type agentFlags struct {
@@ -51,8 +53,9 @@ func finishFlagParse(fs *pflag.FlagSet, name string, args []string) (code int, d
 			return 0, true
 		}
 		// ContinueOnError の pflag はエラーを書き出さないため、Usage と併せて stderr に表示する。
-		fmt.Fprintln(os.Stderr, "error:", err)
-		commandUsage(os.Stderr, name)
+		lang := localizedUsageLanguage()
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", err)
+		commandUsageLanguage(os.Stderr, name, lang)
 		return 2, true
 	}
 	return 0, false

@@ -10,6 +10,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -78,7 +79,7 @@ func (c Client) leasePlan(kind, agentKind, program string, args, branches []stri
 func (c Client) runLease(ctx context.Context, kind, agentKind, program string, args, branches []string, resume string) int {
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	return c.runLeaseFrom(ctx, cwd, kind, agentKind, program, args, branches, resume)
@@ -86,10 +87,10 @@ func (c Client) runLease(ctx context.Context, kind, agentKind, program string, a
 
 func (c Client) runLeaseFrom(ctx context.Context, cwd, kind, agentKind, program string, args, branches []string, resume string) int {
 	if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
-		return reportLeaseError(err)
+		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
 	if err := c.ensureDaemon(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	exit, _ := c.launch(ctx, c.leasePlan(kind, agentKind, program, args, branches, resume, cwd))
@@ -112,7 +113,8 @@ func (c Client) RunLeaseCommand(ctx context.Context, argv, branches []string, re
 
 func (c Client) RunLeaseCommandFrom(ctx context.Context, cwd string, argv, branches []string, resume string) int {
 	if len(argv) == 0 {
-		fmt.Fprintln(os.Stderr, "error: wx run needs a command after --")
+		lang := cliLanguage(c)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("wx run needs a command after --", lang))
 		return 2
 	}
 	if cwd == "" {
@@ -140,26 +142,31 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		var err error
 		cwd, err = os.Getwd()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			cliError(c, err)
 			return 1
 		}
 	}
 	if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
-		return reportLeaseError(err)
+		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
 	if err := c.ensureDaemon(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	// --json は機械向けの経路なので確認を出さず、notice だけ stderr へ出して続行する。
 	if !c.confirmLinkedWorktreeBase(ctx, cwd, !jsonOut) {
-		fmt.Fprintln(os.Stderr, "lease cancelled; no workspace was created")
+		fmt.Fprintln(os.Stderr, localizeCLIMessage("lease cancelled; no workspace was created", cliLanguage(c)))
 		return 1
 	}
 	ownerID, ownerToken := leaseOwnerFromEnvironment()
+	language := ""
+	if !jsonOut {
+		language = c.Config.LanguageForRPC()
+	}
 	params := rpc.ResolveAndLeaseParams{
 		Agent: leaseAgentKindPath, Branches: branches, ClientPID: 0, CWD: cwd, ForceWorktree: c.forceWorktree,
 		LeaseKind: state.LeaseKindPath, LeaseOwnerSessionID: ownerID, LeaseOwnerToken: ownerToken,
+		Language: language,
 	}
 	// 貸出から準備待ちまでは signal を捕まえる。既定の disposition のまま Ctrl-C で即死すると、
 	// 下の返却が走らないまま誰も知らない貸出が残る。
@@ -174,10 +181,10 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 	if err := c.RPC.Call(leaseCtx, "ResolveAndLease", params, &lease); err != nil {
 		waiting.finish()
 		if interruptedDuringSetup(ctx, setupCtx) {
-			fmt.Fprintln(os.Stderr, "interrupted before the workspace was leased")
+			fmt.Fprintln(os.Stderr, localizeCLIMessage("interrupted before the workspace was leased", cliLanguage(c)))
 			return 1
 		}
-		return reportLeaseError(err)
+		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
 	// パスを出力できないまま戻ると、利用者は session id を知らないので wx release もできない。
 	// path 貸出は heartbeat も orphan 回収も持たないため、返却しなければ lease.ttl まで slot が残る。
@@ -197,10 +204,10 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		cancel()
 		if err != nil {
 			if interruptedDuringSetup(ctx, setupCtx) {
-				fmt.Fprintln(os.Stderr, "interrupted while the workspace was being prepared; releasing it")
+				fmt.Fprintln(os.Stderr, localizeCLIMessage("interrupted while the workspace was being prepared; releasing it", cliLanguage(c)))
 				return 1
 			}
-			fmt.Fprintln(os.Stderr, "error: workspace preparation:", err)
+			fmt.Fprintln(os.Stderr, cliErrorPrefix(cliLanguage(c)), localizeCLIMessage("workspace preparation", cliLanguage(c))+":", err)
 			return 1
 		}
 	}
@@ -208,18 +215,18 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 	if jsonOut {
 		data, err := json.Marshal(leaseNewReply{SessionID: lease.SessionID, Path: lease.Path})
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			cliError(c, err)
 			return 1
 		}
 		if _, err := fmt.Println(string(data)); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			cliError(c, err)
 			return 1
 		}
 		handedOff = true
 		return 0
 	}
 	if _, err := fmt.Println(lease.Path); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	handedOff = true
@@ -238,7 +245,7 @@ func (c Client) releaseLeaseToken(lease daemon.Lease, reason string) {
 // daemon 側は生きた client / agent を持つ貸出を拒否する。
 func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard bool) int {
 	if err := c.ensureDaemon(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -249,35 +256,48 @@ func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard b
 		DiscardPending string `json:"discard_pending"`
 	}
 	if err := c.RPC.Call(callCtx, "ReleaseLease", map[string]any{"session_id": sessionID, "reason": "wx-release", "discard": discard}, &reply); err != nil {
-		return reportLeaseError(err)
+		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
+	lang := cliLanguage(c)
 	if reply.Discarded {
-		fmt.Println("released " + sessionID + " and scheduled its worktree for removal without requiring a snapshot")
+		if lang == i18n.Japanese {
+			fmt.Println(sessionID + " を返却しました。snapshot を作成せず worktree の削除を予約しました")
+		} else {
+			fmt.Println("released " + sessionID + " and scheduled its worktree for removal without requiring a snapshot")
+		}
 		return 0
 	}
 	if discard {
 		// 既に削除まで進んだ slot へ再実行を案内すると、何度実行しても変わらない指示になる。
 		// daemon が返す理由で、保存待ちの再実行と削除済みの報告を書き分ける。
 		if reply.DiscardPending == daemon.DiscardPendingRemoved {
-			fmt.Println("released " + sessionID + "; its worktree is already removed or scheduled for removal")
+			if lang == i18n.Japanese {
+				fmt.Println(sessionID + " を返却しました。worktree は削除済みか削除予約済みです")
+			} else {
+				fmt.Println("released " + sessionID + "; its worktree is already removed or scheduled for removal")
+			}
 			return 0
 		}
 		// 保存ジョブが走っている間は削除を予約できない。保存された事実を隠さず、再実行を案内する。
-		fmt.Println("released " + sessionID + "; the worktree is still being saved, so run wx release --discard " + sessionID + " again to remove it")
+		if lang == i18n.Japanese {
+			fmt.Println(sessionID + " を返却しました。worktree は保存中のため、削除するには wx release --discard " + sessionID + " を再実行してください")
+		} else {
+			fmt.Println("released " + sessionID + "; the worktree is still being saved, so run wx release --discard " + sessionID + " again to remove it")
+		}
 		return 0
 	}
-	fmt.Println("released " + sessionID)
+	if lang == i18n.Japanese {
+		fmt.Println(sessionID + " を返却しました")
+	} else {
+		fmt.Println("released " + sessionID)
+	}
 	return 0
 }
 
 // reportLeaseError は貸出コマンドの失敗を表示し、終了コードを決める。
 // worktree を使わない設定は利用者の指定の誤りなので、失敗（1）ではなく引数エラー（2）で終える。
 func reportLeaseError(err error) int {
-	fmt.Fprintln(os.Stderr, "error:", err)
-	if daemon.IsWorktreeDisabled(err) {
-		return 2
-	}
-	return 1
+	return reportLeaseErrorLanguage(err, i18n.English)
 }
 
 // checkLeaseWorktreeMode は worktree を使わない設定の workspace を貸出の前に断る。

@@ -27,6 +27,9 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 
 type Config struct {
+	// Language は CLI・TUI・daemon の利用者向け表示言語で、global 設定だけが持つ。
+	// 未記載は英語を意味し、workspace/repository の個別指定へは伝播しない。
+	Language     string                `yaml:"language,omitempty"`
 	Worktree     WorktreePolicy        `yaml:"worktree,omitempty"`
 	Version      int                   `yaml:"version,omitempty"`
 	Storage      Storage               `yaml:"storage,omitempty"`
@@ -47,6 +50,33 @@ type Config struct {
 	// 解決ヘルパーはこれを最上位に置き、repository 個別指定より優先する。
 	prepareOverride PrepareOverride
 }
+
+const (
+	LanguageEnglish  = "en"
+	LanguageJapanese = "ja"
+)
+
+// DisplayLanguage は設定を直接組み立てた呼び出し側も安全に表示できるよう、
+// 未設定・未対応値を英語へ戻して返す。
+func (c Config) DisplayLanguage() string {
+	if c.Language == LanguageJapanese {
+		return LanguageJapanese
+	}
+	return LanguageEnglish
+}
+
+// LanguageForRPC は要求へ載せる表示言語を返す。未記載の英語は旧クライアントと
+// 同じくフィールドを省略し、明示した英語と日本語だけを daemon へ伝える。
+func (c Config) LanguageForRPC() string {
+	if c.Language == LanguageJapanese {
+		return LanguageJapanese
+	}
+	if c.Language == LanguageEnglish && c.has("language", false) {
+		return LanguageEnglish
+	}
+	return ""
+}
+
 type WorktreePolicy struct {
 	Undefined    string `yaml:"undefined,omitempty"`
 	ReuseStandby bool   `yaml:"reuse_standby,omitempty"`
@@ -269,6 +299,7 @@ func (c Config) COWMinShareSize(mainPath string) int64 {
 
 func Defaults() Config {
 	return Config{
+		Language: LanguageEnglish,
 		Worktree: WorktreePolicy{Undefined: "ask", ReuseStandby: true, Submodules: true},
 		Version:  1, Storage: Storage{
 			WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, COWMinSizeKiB: DefaultCOWMinSizeKiB,
@@ -332,10 +363,24 @@ func Merge(d, raw Config) Config {
 	if raw.has("repositories", raw.Repositories != nil) {
 		r.Repositories = raw.Repositories
 	}
+	if raw.has("language", raw.Language != "") {
+		if r.present == nil {
+			r.present = map[string]bool{}
+		}
+		r.present["language"] = true
+	}
 	return r
 }
 
 func Validate(c *Config) error {
+	if c.Language == "" && !c.has("language", false) {
+		// 呼び出し側が zero Config を組み立てても未記載＝英語として扱う。
+		// YAML で明示された空文字は present に残るため、下の不正値検査を通る。
+		c.Language = LanguageEnglish
+	}
+	if c.Language != LanguageEnglish && c.Language != LanguageJapanese {
+		return fmt.Errorf("language must be %s or %s", LanguageEnglish, LanguageJapanese)
+	}
 	if err := validateReadiness(&c.Readiness); err != nil {
 		return err
 	}
