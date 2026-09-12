@@ -1,7 +1,7 @@
 # worktreeのコピーとリンク
 
-`storage.copy_mode`と共有下限`storage.cow_min_size_kib`の取り得る値・既定値・fallbackは`wx config --help`を参照する。
-どちらもrepository単位で個別指定でき、貸出1回の`--config`上書き、`repositories.<main worktree path>`の個別指定、globalの順に解決する。
+`repository_defaults.storage.copy_mode`と`repository_defaults.cow_min_size_kib`の取り得る値・既定値・fallbackは`wx config --help`を参照する。
+どちらも membership 単位で個別指定でき、貸出1回の`--config`上書き、`workspaces.<root>.repositories.<relative>`、workspaceの `repository_defaults`、global defaults の順に解決する。
 fingerprintにはrepositoryごとに解決した実効値を入れるので、schemaを上げずに、値が変わったrepositoryのREADY slotだけを無効にできる。
 
 共有には配置と置換の二方式がある。
@@ -14,7 +14,7 @@ fingerprintにはrepositoryごとに解決した実効値を入れるので、sc
 `cow`は全ファイルの共有や削減容量を保証する指定ではない。
 共有下限を0にしても無くなるのは下限による除外だけで、上の事前skipは残る。
 
-下限はglobalの`storage.cow_min_size_kib`と、repository個別の`repositories.<main worktree path>.cow_min_size_kib`（未指定ならglobalを継承）で決まる。
+下限は `repository_defaults.cow_min_size_kib` と、membership 個別の `workspaces.<root>.repositories.<relative>.cow_min_size_kib`（未指定なら上位を継承）で決まる。
 個別指定を許すのは、最適な下限がrepositoryのファイルサイズ分布に依存するためである。
 fingerprintにはrepositoryごとに解決した実効値が入るので、個別指定を足しても、実効値が変わらなかった他repositoryのREADY slotは再利用できる。
 
@@ -147,7 +147,7 @@ post-checkoutより前にするのは、ユーザーのhookがsubmoduleの中身
 単発準備・restore経路では`completePrepare`のinclude配置より前に実体化し、`.worktreeinclude`やprepare commandがsubmodule配下を前提にできるようにする。
 standbyのUPDATE経路は再同期しない。`rejectChangedGitlinks`が`.gitmodules`とgitlink OIDの完全一致しか通さないため、更新で実体が陳腐化することはない。
 
-方針は`worktree.submodules`とワークスペース別上書き`workspaces.<root>.submodules`で切り替える。
+方針は `repository_defaults.submodules` と、workspace の `repository_defaults.submodules` または membership 個別の `submodules` で切り替える。
 準備用fingerprintと更新互換fingerprintの両方に混ぜて、方針変更後に旧方針のREADY slotを再利用しない。
 更新互換側にも要るのは、更新経路がsubmoduleを実体化しないため`submodules=false`で作ったstandbyをtrue相当へ変換できないからである。
 
@@ -171,8 +171,8 @@ post-checkoutは全tracked fileの配置後、残りのinclude/link・prepare co
 
 先行候補は`internal/workspace/includes.go`の`defaultEarlyPaths`に集約する。
 既定include名、トップレベルの指示ファイル、各エージェントの設定ディレクトリとGitHubの指示・agentディレクトリが対象になる。
-`readiness.early_paths`は候補への追加である。
-`repositories.<main worktree path>.readiness.early_paths`はglobal listの置き換えで、`defaultEarlyPaths`は置き換えても残る。
+`repository_defaults.readiness.early_paths`は候補への追加である。
+workspace の `repository_defaults.readiness.early_paths` と membership 個別の同キーは上位 list の置き換えで、`defaultEarlyPaths`は置き換えても残る。
 非Gitのworkspace rootのステージはglobal値を使う。rootの規則はどのrepositoryにも属さず、和集合は「早期に出さない」約束を破り、積集合は空になりやすいためである。
 `src/AGENTS.md`のような深い指示ファイルは自動収集しない。
 配置に必要なignore・attributeと、tracked symlinkが指す予定済みの内部パスも先行させる。

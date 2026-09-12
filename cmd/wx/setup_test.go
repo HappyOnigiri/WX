@@ -86,6 +86,38 @@ func TestSetupLanguageSelectionSavesBeforeTheRemainingSteps(t *testing.T) {
 	}
 }
 
+// TestSetupLanguageSelectionWritesTheSystemSectionInV2 は、v2 設定では top-level の
+// language が検証で拒否されるため、setup が system.language へ書くことを守る。
+func TestSetupLanguageSelectionWritesTheSystemSectionInV2(t *testing.T) {
+	setupCommandHome(t)
+	path, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 2\nsystem:\n  pool:\n    preparation_concurrency: 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := setupSession{selector: func(context.Context, setup.Step) (setup.Action, error) {
+		return setup.Action(i18n.Japanese), nil
+	}}
+	if _, err := selectSetupLanguage(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "\nlanguage:") {
+		t.Fatalf("saved config carries a top-level language:\n%s", data)
+	}
+	if got := config.LoadLanguage(); got != config.LanguageJapanese {
+		t.Fatalf("saved language=%q, want ja", got)
+	}
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("saved config is not loadable: %v", err)
+	}
+}
+
 // TestSetupUpdatePrintsNothingWhenNothingDiverged は install.sh から毎回走る経路を守る。
 // 「変更なし」の 1 行が混ざるだけで通常の更新体験が壊れる。
 func TestSetupUpdatePrintsNothingWhenNothingDiverged(t *testing.T) {

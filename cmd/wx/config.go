@@ -63,6 +63,9 @@ func runConfig(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
 	workspace := fs.String("workspace", "", "target a workspace-specific setting")
 	repository := fs.String("repository", "", "target a repository-specific setting")
+	system := fs.Bool("system", false, "target system settings (config v2)")
+	workspaceDefaults := fs.Bool("workspace-defaults", false, "target workspace defaults (config v2)")
+	repositoryDefaults := fs.Bool("repository-defaults", false, "target repository defaults (config v2)")
 	describe := fs.String("describe", "", "describe a setting")
 	// 設定値は「-」で始まることもあるため、最初の位置引数（キー）以降はフラグとして扱わない。
 	fs.SetInterspersed(false)
@@ -71,6 +74,25 @@ func runConfig(ctx context.Context, args []string) int {
 		return code
 	}
 	rest := fs.Args()
+	raw, rawErr := config.LoadRaw()
+	v2 := rawErr == nil && raw.V2()
+	// 配布スクリプトと外部ツールが設定言語を取得する機械契約。現在の実効値だけを
+	// 1 行で返し、Config の人間向け一覧や reload の案内を混ぜない。
+	// scope を明示しない読み取りなので、v1 と v2 のどちらの設定でも同じ出力にする。
+	if *describe == "" && !*system && !*workspaceDefaults && !*repositoryDefaults &&
+		*workspace == "" && *repository == "" && len(rest) == 1 && rest[0] == "language" {
+		effective, _, err := config.LoadWithRaw()
+		if err != nil {
+			lang := i18n.LanguageFromContext(ctx)
+			fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
+			return 1
+		}
+		_, _ = fmt.Fprintln(os.Stdout, effective.DisplayLanguage())
+		return 0
+	}
+	if v2 || *system || *workspaceDefaults || *repositoryDefaults {
+		return runV2Config(ctx, *system, *workspaceDefaults, *repositoryDefaults, *workspace, *repository, *describe, rest)
+	}
 	if *workspace != "" && *repository != "" {
 		message := "--workspace and --repository cannot be combined"
 		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
@@ -92,18 +114,6 @@ func runConfig(ctx context.Context, args []string) int {
 		}
 		return describeConfig(*describe, scope)
 	}
-	// 配布スクリプトと外部ツールが設定言語を取得する機械契約。現在の実効値だけを
-	// 1 行で返し、Config の人間向け一覧や reload の案内を混ぜない。
-	if *workspace == "" && *repository == "" && len(rest) == 1 && rest[0] == "language" {
-		effective, _, err := config.LoadWithRaw()
-		if err != nil {
-			lang := i18n.LanguageFromContext(ctx)
-			fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
-			return 1
-		}
-		_, _ = fmt.Fprintln(os.Stdout, effective.DisplayLanguage())
-		return 0
-	}
 	switch {
 	case *workspace != "":
 		return runScopeConfig(ctx, config.ScopeWorkspace, *workspace, rest)
@@ -119,6 +129,177 @@ func runConfig(ctx context.Context, args []string) int {
 		return 2
 	}
 	return executeConfigEdit(ctx, config.EditRequest{Scope: "global", Key: edit.key, Value: edit.value, Operation: config.EditOperation(edit.op)})
+}
+
+// runV2Config は config v2 の明示的な scope 構文を処理する。
+// Repository 設定は常に workspace root と相対 membership path の組で指定し、
+// main path をキーにした global map は受け付けない。
+func runV2Config(ctx context.Context, system, workspaceDefaults, repositoryDefaults bool, workspacePath, repositoryPath, describe string, rest []string) int {
+	if system && (workspaceDefaults || repositoryDefaults || workspacePath != "" || repositoryPath != "") {
+		fmt.Fprintln(os.Stderr, "error: --system cannot be combined with another config scope")
+		return 2
+	}
+	if workspaceDefaults && (repositoryDefaults || workspacePath != "" || repositoryPath != "") {
+		fmt.Fprintln(os.Stderr, "error: --workspace-defaults cannot be combined with another config scope")
+		return 2
+	}
+	if repositoryPath != "" && workspacePath == "" {
+		fmt.Fprintln(os.Stderr, "error: --repository requires --workspace <root> in config v2")
+		return 2
+	}
+	if repositoryPath != "" && repositoryDefaults {
+		fmt.Fprintln(os.Stderr, "error: --repository and --repository-defaults cannot be combined")
+		return 2
+	}
+
+	cfg, raw, err := config.LoadWithRaw()
+	if err != nil {
+		// 新規環境では明示的な v2 scope の表示・編集を既定値で続けられる。
+		// 既存ファイルが壊れている場合はエラーとして扱う。
+		path, pathErr := config.Path()
+		if pathErr != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		if _, statErr := os.Stat(path); statErr != nil && os.IsNotExist(statErr) {
+			cfg, raw = config.DefaultsV2(), config.Config{}
+		} else {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+	}
+	if !cfg.V2() {
+		cfg = config.DefaultsV2()
+	}
+
+	scope, target, rel, nestedRepositoryDefaults, code := resolveV2Scope(ctx, cfg, system, workspaceDefaults, repositoryDefaults, workspacePath, repositoryPath)
+	if code != 0 {
+		return code
+	}
+	if describe != "" {
+		if len(rest) != 0 {
+			commandUsage(os.Stderr, "config")
+			return 2
+		}
+		describeScope := scope
+		if describeScope == "" {
+			describeScope = ""
+		}
+		if nestedRepositoryDefaults {
+			describe = "repository_defaults." + describe
+		}
+		return describeConfig(describe, describeScope)
+	}
+	if scope == "" {
+		if len(rest) == 0 {
+			return showV2GlobalConfig(cfg, raw)
+		}
+		fmt.Fprintln(os.Stderr, "error: config v2 requires an explicit scope (--system, --workspace-defaults, --repository-defaults, or --workspace)")
+		return 2
+	}
+	if len(rest) == 0 {
+		if scope == config.V2ScopeWorkspace {
+			if nestedRepositoryDefaults {
+				fmt.Printf("Repository defaults: %s\n", target)
+			} else {
+				fmt.Printf("Workspace: %s\n", target)
+			}
+		} else {
+			fmt.Printf("%s:\n", v2ScopeTitle(scope))
+		}
+		fields := config.V2Fields(cfg, raw, scope, target, rel)
+		if nestedRepositoryDefaults {
+			filtered := make([]config.ScopeField, 0, len(fields))
+			for _, field := range fields {
+				if strings.HasPrefix(field.Key, "repository_defaults.") {
+					filtered = append(filtered, field)
+				}
+			}
+			fields = filtered
+		}
+		for _, field := range fields {
+			fmt.Printf("  %-42s = %s (source: %s)\n", field.Key, field.Value, field.Source)
+		}
+		return 0
+	}
+	edit, ok := parseConfigEdit(rest)
+	if !ok {
+		commandUsage(os.Stderr, "config")
+		return 2
+	}
+	if nestedRepositoryDefaults {
+		edit.key = "repository_defaults." + edit.key
+	}
+	return executeConfigEdit(ctx, config.EditRequest{Scope: scope, Target: target, Repository: rel, V2: true, Key: edit.key, Value: edit.value, Operation: config.EditOperation(edit.op)})
+}
+
+func resolveV2Scope(ctx context.Context, cfg config.Config, system, workspaceDefaults, repositoryDefaults bool, workspacePath, repositoryPath string) (scope, target, rel string, nestedRepositoryDefaults bool, code int) {
+	switch {
+	case system:
+		return config.V2ScopeSystem, "", "", false, 0
+	case workspaceDefaults:
+		return config.V2ScopeWorkspaceDefaults, "", "", false, 0
+	case repositoryDefaults:
+		if workspacePath == "" {
+			return config.V2ScopeRepositoryDefaults, "", "", false, 0
+		}
+		root, err := resolveConfigScope(ctx, cfg, config.ScopeWorkspace, workspacePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return "", "", "", false, 1
+		}
+		return config.V2ScopeWorkspace, root, "", true, 0
+	case repositoryPath != "":
+		root, err := resolveConfigScope(ctx, cfg, config.ScopeWorkspace, workspacePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return "", "", "", false, 1
+		}
+		relative, err := config.NormalizeRepositoryRelative(repositoryPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return "", "", "", false, 2
+		}
+		configuredMulti := len(cfg.Workspaces[root].Repositories) > 1
+		if !configuredMulti {
+			discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: cfg.Discovery.Timeout.Duration}, Config: cfg}
+			workspace, err := discoverer.Resolve(ctx, root)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				return "", "", "", false, 1
+			}
+			configuredMulti = len(workspace.Repositories) > 1
+		}
+		if !configuredMulti {
+			fmt.Fprintln(os.Stderr, "error: individual repository settings require a multi-repository workspace")
+			return "", "", "", false, 2
+		}
+		return config.V2ScopeRepository, root, relative, false, 0
+	case workspacePath != "":
+		root, err := resolveConfigScope(ctx, cfg, config.ScopeWorkspace, workspacePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return "", "", "", false, 1
+		}
+		return config.V2ScopeWorkspace, root, "", false, 0
+	default:
+		return "", "", "", false, 0
+	}
+}
+
+func v2ScopeTitle(scope string) string {
+	switch scope {
+	case config.V2ScopeSystem:
+		return "System"
+	case config.V2ScopeWorkspaceDefaults:
+		return "Workspace defaults"
+	case config.V2ScopeRepositoryDefaults:
+		return "Repository defaults"
+	case config.V2ScopeRepository:
+		return "Repository"
+	default:
+		return "Configuration"
+	}
 }
 
 func describeConfig(key, scope string) int {
@@ -149,11 +330,14 @@ func describeConfig(key, scope string) int {
 }
 
 func showGlobalConfig() int {
-	cfg, err := config.Load()
+	cfg, raw, err := config.LoadWithRaw()
 	if err != nil {
 		lang := i18n.Normalize(config.LoadLanguage())
 		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
 		return 1
+	}
+	if cfg.V2() {
+		return showV2GlobalConfig(cfg, raw)
 	}
 	path, _ := config.Path()
 	var rendered bytes.Buffer
@@ -170,6 +354,21 @@ func showGlobalConfig() int {
 		fmt.Fprintf(&rendered, "  %-42s = %s\n", f.Key, f.Value)
 	}
 	fmt.Print(translateHumanOutput(rendered.String(), localizedUsageLanguage()))
+	return 0
+}
+
+func showV2GlobalConfig(cfg, raw config.Config) int {
+	path, _ := config.Path()
+	fmt.Println("Config:", path)
+	for _, scope := range []string{config.V2ScopeSystem, config.V2ScopeWorkspaceDefaults, config.V2ScopeRepositoryDefaults} {
+		fmt.Println(v2ScopeTitle(scope) + ":")
+		for _, field := range config.V2Fields(cfg, raw, scope, "", "") {
+			fmt.Printf("  %-42s = %s (source: %s)\n", field.Key, field.Value, field.Source)
+		}
+	}
+	if len(cfg.Workspaces) > 0 {
+		fmt.Printf("  workspaces = %d\n", len(cfg.Workspaces))
+	}
 	return 0
 }
 

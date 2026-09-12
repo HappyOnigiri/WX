@@ -186,6 +186,11 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		}
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
+	if !lease.ReadinessProgress {
+		// readiness.progress は repository 文脈を daemon だけが解決できるため、
+		// global 設定で仮表示した resolving 行も lease 応答後に消す。
+		waiting.finish()
+	}
 	// パスを出力できないまま戻ると、利用者は session id を知らないので wx release もできない。
 	// path 貸出は heartbeat も orphan 回収も持たないため、返却しなければ lease.ttl まで slot が残る。
 	handedOff := false

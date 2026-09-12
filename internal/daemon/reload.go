@@ -120,7 +120,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		m.rootRefs[newRoot] = &managedRoot{root: newHandle, identity: newIdentity}
 	}
 	m.cfg = cfg
-	m.git.SetTimeout(cfg.Readiness.Timeout.Duration)
+	m.git.SetTimeout(cfg.MaxReadinessTimeout())
 	if m.logLevel != nil {
 		m.logLevel.Set(slogLevel(cfg.Logging.Level))
 	}

@@ -75,7 +75,7 @@ func (m *Manager) prepareStagedSlot(ctx context.Context, slot state.Slot, w disc
 	var rootStage func(bool) error
 	var rootPlan *workspace.RootStagePlan
 	if w.Kind == "multi_repository" {
-		rootRules, err := workspace.ResolveRootRules(string(w.Root), preparer.Config.Workspaces[string(w.Root)])
+		rootRules, err := workspace.ResolveRootRules(string(w.Root), preparer.Config.WorkspaceFor(string(w.Root)))
 		if err != nil {
 			return nil, err
 		}

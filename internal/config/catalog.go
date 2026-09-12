@@ -86,6 +86,21 @@ var catalogTexts = map[string]catalogText{
 	"prepare.command":                     {"Preparation command", "Command run in this repository after checkout.", "A failure also fails slot preparation.", nil},
 	"prepare.timeout":                     {"Preparation command timeout", "Maximum time allowed for the preparation command.", "Values that are too short fail preparation.", nil},
 	"prepare.version":                     {"Preparation version", "Identifier used to intentionally invalidate earlier preparation.", "Existing standby slots are no longer reusable after this changes.", nil},
+	// v2 は明示 scope 内で同じ leaf 名を使う。workspace の nested
+	// repository_defaults だけは workspace key と衝突するため section prefix を残す。
+	"repository_defaults.default_branch":               {"Workspace repository default branch", "Default branch inherited by repositories in this workspace.", "Changes the starting point of new worktrees in this workspace.", nil},
+	"repository_defaults.dir_source":                   {"Workspace repository name source", "Naming source inherited by repositories in this workspace.", "Affects newly prepared repository placement names.", []string{"remote", "directory"}},
+	"repository_defaults.cow_min_size_kib":             {"Workspace repository minimum CoW size", "CoW threshold inherited by repositories in this workspace.", "Affected standby slots rebuild after this changes.", nil},
+	"repository_defaults.submodules":                   {"Workspace repository submodules", "Submodule policy inherited by repositories in this workspace.", "Existing standby slots rebuild after this changes.", nil},
+	"repository_defaults.prepare.command":              {"Workspace repository preparation command", "Preparation command inherited by repositories in this workspace.", "A failure fails preparation for affected repositories.", nil},
+	"repository_defaults.prepare.timeout":              {"Workspace repository preparation timeout", "Preparation timeout inherited by repositories in this workspace.", "Values that are too short fail preparation.", nil},
+	"repository_defaults.prepare.version":              {"Workspace repository preparation version", "Version identifier inherited by repositories in this workspace.", "Existing standby slots are no longer reusable after this changes.", nil},
+	"repository_defaults.includes.default_agent_rules": {"Workspace repository agent assets", "Whether standard agent files are inherited by repositories in this workspace.", "Changes preparation content for affected repositories.", nil},
+	"repository_defaults.readiness.mode":               {"Workspace repository readiness mode", "Readiness mode inherited by repositories in this workspace.", "Changes when agents may start.", []string{"early", "full"}},
+	"repository_defaults.readiness.early_paths":        {"Workspace repository early paths", "Early placement paths inherited by repositories in this workspace.", "Changes startup files available before full preparation.", nil},
+	"repository_defaults.readiness.timeout":            {"Workspace repository readiness timeout", "Readiness timeout inherited by repositories in this workspace.", "Values that are too short interrupt valid preparation.", nil},
+	"repository_defaults.readiness.progress":           {"Workspace repository readiness progress", "Whether preparation progress is shown while repositories in this workspace become ready.", "Only display changes; preparation behavior is unchanged.", nil},
+	"repository_defaults.storage.copy_mode":            {"Workspace repository copy mode", "Copy mode inherited by repositories in this workspace.", "Affected standby slots rebuild after this changes.", []string{"auto", "cow", "copy"}},
 }
 
 // Catalog は構造体から導出した全キーを、設定ファイルでの宣言順に返す。
@@ -112,6 +127,14 @@ func Catalog() []Metadata {
 	for _, scope := range []Scope{ScopeWorkspace, ScopeRepository} {
 		walkScopeFields(scope.newEntry(), "", func(key string, field reflect.Value) { add(key, field, scope.String()) })
 	}
+	// v2 は system/default の明示 scope でも同じ leaf を公開する。
+	// section 名を除いた key を共有し、`wx config --system storage.worktree_root`
+	// と v1 catalog が同じ設定を説明できるようにする。
+	walkV2Fields(reflect.ValueOf(SystemConfig{}), "", func(key string, field reflect.Value) { add(key, field, V2ScopeSystem) })
+	walkV2Fields(reflect.ValueOf(WorkspaceDefaults{}), "", func(key string, field reflect.Value) { add(key, field, V2ScopeWorkspaceDefaults) })
+	walkV2Fields(reflect.ValueOf(RepositoryDefaults{}), "", func(key string, field reflect.Value) { add(key, field, V2ScopeRepositoryDefaults) })
+	walkV2Fields(reflect.ValueOf(Repository{}), "", func(key string, field reflect.Value) { add(key, field, V2ScopeRepository) })
+	walkV2Fields(reflect.ValueOf(RepositoryDefaults{}), "repository_defaults", func(key string, field reflect.Value) { add(key, field, V2ScopeWorkspace) })
 	out := make([]Metadata, 0, len(order))
 	for _, key := range order {
 		out = append(out, *byKey[key])

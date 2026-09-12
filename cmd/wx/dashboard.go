@@ -67,10 +67,11 @@ func refreshDashboardState(ctx context.Context) (config.Config, config.Config, [
 	return cfg, rawConfig, steps, err
 }
 
-// addDashboardEnvironments は daemon に登録済みだが個別設定を持たない workspace と repository も環境一覧へ加える。
-// 空の override は表示用の Config だけに置き、設定ファイルへは保存しない。
+// addDashboardEnvironments は設定ファイルに書かれた workspace へ daemon 側の登録状況を重ねる。
+// 環境一覧の対象は設定済みの workspace だけに保ち、貸出のたびに増える一時ディレクトリや
+// 実体の消えた登録を設定対象として並べない。補う値は表示用で、設定ファイルへは保存しない。
 func addDashboardEnvironments(ctx context.Context, cfg *config.Config) {
-	if cfg == nil {
+	if cfg == nil || len(cfg.Workspaces) == 0 {
 		return
 	}
 	c, err := rpcClient()
@@ -83,8 +84,14 @@ func addDashboardEnvironments(ctx context.Context, cfg *config.Config) {
 	if err := c.Call(callCtx, "Status", struct{}{}, &payload); err != nil {
 		return
 	}
-	if cfg.Workspaces == nil {
-		cfg.Workspaces = map[string]config.Workspace{}
+	markDashboardRegistrations(cfg, payload)
+}
+
+// markDashboardRegistrations は Status 応答を設定済み workspace へ重ねる。
+// daemon への接続を伴わない純粋な合成として分け、表示対象の決め方をテストで固定する。
+func markDashboardRegistrations(cfg *config.Config, payload map[string]any) {
+	if !cfg.V2() {
+		return
 	}
 	workspaceDetails, _ := payload["workspace_details"].([]any)
 	for _, raw := range workspaceDetails {
@@ -92,28 +99,37 @@ func addDashboardEnvironments(ctx context.Context, cfg *config.Config) {
 		if !ok {
 			continue
 		}
-		root, ok := item["root"].(string)
-		if ok && root != "" {
-			if _, exists := cfg.Workspaces[root]; !exists {
-				cfg.Workspaces[root] = config.Workspace{}
-			}
-		}
-	}
-	if cfg.Repositories == nil {
-		cfg.Repositories = map[string]config.Repository{}
-	}
-	repositoryDetails, _ := payload["repository_details"].([]any)
-	for _, raw := range repositoryDetails {
-		item, ok := raw.(map[string]any)
-		if !ok {
+		root, _ := item["root"].(string)
+		if root == "" {
 			continue
 		}
-		mainPath, ok := item["main_path"].(string)
-		if ok && mainPath != "" {
-			if _, exists := cfg.Repositories[mainPath]; !exists {
-				cfg.Repositories[mainPath] = config.Repository{}
-			}
+		workspace, configured := cfg.Workspaces[root]
+		if !configured {
+			continue
 		}
+		workspace.Discovered = true
+		// membership は個別設定を書くまで設定ファイルに現れないため、設定済み workspace の配下に限って daemon の一覧から補う。
+		members, _ := item["repositories"].([]any)
+		if len(members) == 0 {
+			members, _ = item["repository_memberships"].([]any)
+		}
+		for _, rawMembership := range members {
+			membership, ok := rawMembership.(map[string]any)
+			if !ok {
+				continue
+			}
+			relative, _ := membership["relative_path"].(string)
+			if relative == "" {
+				continue
+			}
+			if workspace.Repositories == nil {
+				workspace.Repositories = map[string]config.Repository{}
+			}
+			repository := workspace.Repositories[relative]
+			repository.Discovered = true
+			workspace.Repositories[relative] = repository
+		}
+		cfg.Workspaces[root] = workspace
 	}
 }
 

@@ -70,9 +70,11 @@ type choice struct {
 }
 
 type environment struct {
-	label  string
-	target string
-	scope  string
+	label              string
+	target             string
+	repository         string
+	repositoryDefaults bool
+	scope              string
 }
 
 type model struct {
@@ -181,22 +183,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.resultText += "Refresh failed: " + msg.err.Error()
 		} else {
-			selectedScope := ""
+			selectedScope, selectedRepository := "", ""
 			if environments := m.configEnvironments(); m.settingsOpen && m.settingsEnv < len(environments) {
 				selectedScope = environments[m.settingsEnv].scope
+				selectedRepository = environments[m.settingsEnv].repository
 			}
 			m.opts.Config, m.opts.RawConfig, m.opts.Setup = msg.config, msg.rawConfig, msg.setup
 			m.lang = dashboardLanguage(m.opts.Config.DisplayLanguage())
 			if m.target != "" {
 				switch selectedScope {
-				case "workspace":
+				case config.V2ScopeWorkspace:
 					if m.opts.Config.Workspaces == nil {
 						m.opts.Config.Workspaces = map[string]config.Workspace{}
 					}
 					if _, ok := m.opts.Config.Workspaces[m.target]; !ok {
 						m.opts.Config.Workspaces[m.target] = config.Workspace{}
 					}
-				case "repository":
+				case config.V2ScopeRepository:
+					if m.opts.Config.V2() && m.settingsEnv < len(m.configEnvironments()) {
+						environment := m.configEnvironments()[m.settingsEnv]
+						if environment.repository != "" {
+							workspace := m.opts.Config.Workspaces[m.target]
+							if workspace.Repositories == nil {
+								workspace.Repositories = map[string]config.Repository{}
+							}
+							if _, ok := workspace.Repositories[environment.repository]; !ok {
+								workspace.Repositories[environment.repository] = config.Repository{}
+							}
+							m.opts.Config.Workspaces[m.target] = workspace
+							break
+						}
+					}
 					if m.opts.Config.Repositories == nil {
 						m.opts.Config.Repositories = map[string]config.Repository{}
 					}
@@ -205,7 +222,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				for index, environment := range m.configEnvironments() {
-					if environment.scope == selectedScope && environment.target == m.target {
+					if environment.scope == selectedScope && environment.target == m.target && environment.repository == selectedRepository {
 						m.settingsEnv = index
 						break
 					}
@@ -427,7 +444,7 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		meta := items[m.selected]
 		m.pending = menuItem{label: meta.DisplayName, command: "config"}
 		m.configMeta, m.target = meta, ""
-		if environment := m.configEnvironments()[m.settingsEnv]; environment.scope != "global" {
+		if environment := m.configEnvironments()[m.settingsEnv]; environment.scope != "global" && environment.scope != config.V2ScopeSystem && environment.scope != config.V2ScopeWorkspaceDefaults && environment.scope != config.V2ScopeRepositoryDefaults {
 			m.target = environment.target
 		}
 		m.showConfigChoices()
@@ -545,10 +562,23 @@ func (m *model) finishPending() {
 	switch {
 	case m.tab == 2:
 		meta := m.configItems()[m.selected]
-		scope := m.configEnvironments()[m.settingsEnv].scope
+		environment := m.configEnvironments()[m.settingsEnv]
+		scope := environment.scope
 		if scope != "global" {
-			workDir = m.target
-			args = append(args, "--"+scope, workDir)
+			switch {
+			case scope == config.V2ScopeRepository && environment.repository != "":
+				workDir = environment.target
+				args = append(args, "--workspace", environment.target, "--repository", environment.repository)
+			case scope == config.V2ScopeWorkspace && environment.repositoryDefaults:
+				workDir = environment.target
+				args = append(args, "--workspace", environment.target, "--repository-defaults")
+				meta.Key = strings.TrimPrefix(meta.Key, "repository_defaults.")
+			case scope == config.V2ScopeSystem || scope == config.V2ScopeWorkspaceDefaults || scope == config.V2ScopeRepositoryDefaults:
+				args = append(args, "--"+scope)
+			default:
+				workDir = m.target
+				args = append(args, "--"+scope, workDir)
+			}
 		}
 		args = append(args, meta.Key)
 		switch m.editOp {

@@ -35,6 +35,9 @@ type Preparer struct {
 	// 所有権検証は絶対 SlotPath の代わりにこれらを比較し、root の改名や再設定で別 directory が同じ slot に見えることを防ぐ。
 	RootID      string
 	SlotRelPath string
+	// WorkspaceRoot は config v2 の membership 設定を解決する canonical source
+	// workspace root である。空なら legacy の main-path lookup を使う。
+	WorkspaceRoot string
 	// Phases は準備の区間ごとの所要時間を集計する診断用の器である。
 	// nil でも準備は同じ結果になり、記録だけが落ちる。`wx bench` がこの内訳を読む。
 	Phases *PhaseTimings
@@ -51,6 +54,23 @@ type Preparer struct {
 	// cowWorkerCount は CoW 共有の並列度をテストから固定する内部フックである。
 	// 0 のままなら cowWorkers が既定値を決める。1 にすると共有順序が index の並び順で決定的になる。
 	cowWorkerCount int
+}
+
+// workspaceRootForRepository は membership の相対 path から source Workspace root を求める。
+// 明示 WorkspaceRoot を持たない旧 caller 用の fallback で、daemon の lease/prepare 経路は完全な値を渡す。
+func (p *Preparer) workspaceRootForRepository(repo discovery.Repository) string {
+	if p.WorkspaceRoot != "" {
+		return p.WorkspaceRoot
+	}
+	root, err := repositoryWorkspaceRoot(repo)
+	if err == nil {
+		return root
+	}
+	return ""
+}
+
+func (p *Preparer) repositoryConfig(repo discovery.Repository) config.Repository {
+	return p.Config.RepositoryFor(p.workspaceRootForRepository(repo), repo.RelativePath, string(repo.MainPath))
 }
 
 // logSkip は prepare が copy/link source を使わずに進んだ事実と理由を warn として残す。

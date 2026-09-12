@@ -403,6 +403,9 @@ func (m model) environmentFields() []config.ScopeField {
 		environmentIndex = m.selected
 	}
 	if environmentIndex == 0 {
+		if m.opts.Config.V2() {
+			return config.V2Fields(m.opts.Config, m.opts.RawConfig, config.V2ScopeSystem, "", "")
+		}
 		return config.GlobalFields(m.opts.Config, m.opts.RawConfig)
 	}
 	environments := m.configEnvironments()
@@ -410,6 +413,19 @@ func (m model) environmentFields() []config.ScopeField {
 		return nil
 	}
 	environment := environments[environmentIndex]
+	if m.opts.Config.V2() {
+		fields := config.V2Fields(m.opts.Config, m.opts.RawConfig, environment.scope, environment.target, environment.repository)
+		if environment.repositoryDefaults {
+			filtered := make([]config.ScopeField, 0, len(fields))
+			for _, field := range fields {
+				if strings.HasPrefix(field.Key, "repository_defaults.") {
+					filtered = append(filtered, field)
+				}
+			}
+			return filtered
+		}
+		return fields
+	}
 	return config.ResolvedScopeFields(m.opts.Config, m.opts.RawConfig, environment.configScope(), environment.target)
 }
 

@@ -197,48 +197,54 @@ Options:
 	case "config":
 		_, _ = fmt.Fprintln(w, `Usage: wx config
        wx config --describe <key>
-       wx config <key> <value>
-       wx config <key> --add <value>
-       wx config <key> --remove <value>
-       wx config <key> --reset
-       wx config --workspace <path> [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
-       wx config --repository <path> [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
+       wx config --system [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
+       wx config --workspace-defaults [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
+       wx config --repository-defaults [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
+       wx config --workspace <root> [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
+       wx config --workspace <root> --repository-defaults [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
+       wx config --workspace <root> --repository <relative-path> [<key> <value>|<key> --add <value>|<key> --remove <value>|<key> --reset]
 
 Show effective configuration, or atomically update one supported scalar key or list.
 Use --describe to show a key's type, scopes, choices, purpose, and impact.
 
---add and --remove take a list key: discovery.exclude, readiness.early_paths, or
-sessions.paths.<claude|codex>.sessions. --reset takes any of those list keys or any
-scalar key wx config lists; it drops the key from the config file so the built-in
-default applies again.
+--add and --remove take a list key such as discovery.exclude, readiness.early_paths,
+workspace copy/link, or sessions.paths.<claude|codex>.sessions, depending on scope.
+--reset takes any list or scalar key wx config lists; it drops the key from the file
+so the inherited or built-in default applies again.
 
-With --workspace or --repository, show every key that scope can override with its
-effective value and source, or update one of them. Both paths may be relative or a
-repository subdirectory; linked worktrees resolve to the repository's main worktree.
---repository rejects a path outside a Git repository, while --workspace keeps a
-non-repository directory as the workspace root. The two flags cannot be combined.
+Config v2 uses explicit scopes: --system, --workspace-defaults,
+--repository-defaults, --workspace <root>, or --workspace <root> together with
+--repository-defaults / --repository <relative-path>. Repository paths are
+workspace-relative membership keys; absolute paths, escapes, and a repository
+scope for a single-repository workspace are rejected. --repository cannot be
+used without --workspace.
 
-A workspace overrides worktree, copy, link, reuse_standby, submodules, warm_count,
-agent.add_dir, retention.hot_standby, retention.ended_worktree, discovery.max_depth
-and discovery.exclude. warm_count 0 disables replenishment, and so does
+With --workspace, show every Workspace key that scope can override with its
+effective value and source. --workspace <root> --repository-defaults edits the
+shared repository defaults for that Workspace. A multi-repository Workspace can
+also edit one membership with --repository <relative-path>. The old flat syntax
+is accepted only for a legacy version-1 file.
+
+A workspace overrides worktree, copy, link, reuse_standby, warm_count, agent.add_dir,
+retention.hot_standby, retention.ended_worktree, discovery.max_depth and
+discovery.exclude. warm_count 0 disables replenishment, and so does
 retention.hot_standby 0; reducing the count lets normal GC reclaim unused standby
 slots. reuse_standby controls whether an older READY standby is updated at lease
 time; the default is true, and false preserves exact-match cold-start behavior.
 
 A repository overrides default_branch, dir_name, dir_source, cow_min_size_kib,
 prepare.command, prepare.timeout, prepare.version, includes.default_agent_rules,
-readiness.mode, readiness.early_paths, readiness.timeout and storage.copy_mode. A
+readiness.mode, readiness.early_paths, readiness.timeout, readiness.progress and storage.copy_mode. A
 lease leasing several repositories waits in full mode if any of them asks for it,
 and uses the longest readiness.timeout among them.
 
-A list key set on a scope replaces the global list instead of extending it. The
-first --add copies the global list as it stands right then, so later changes to the
-global value no longer reach that scope; --reset drops the scope list and restores
-the global one. A repository readiness.early_paths does not apply to the shared
-workspace root stage of a multi-repository workspace, which keeps using the global
-list. --reset on any scalar key restores the inherited value.
+A list key set on a scope replaces the inherited list instead of extending it. The
+first --add copies the parent list as it stands right then, so later changes no longer
+reach that scope; --reset drops the scope list and restores its parent. A repository
+readiness.early_paths does not apply to the shared workspace root stage of a
+multi-repository workspace, which keeps using the workspace list.
 
-Submodules (worktree.submodules, default true):
+Submodules (repository_defaults.submodules, default true):
 Linked worktrees resolve a submodule's gitdir per worktree, so they cannot reuse
 the main repository's .git/modules/<name>. wx therefore clones each submodule
 from that local module, which stays offline and shares objects as hardlinks. A
@@ -260,19 +266,20 @@ parent of those repositories, so their .claude/skills and other agent assets are
 only loaded when the directories are passed with --add-dir. A workspace that is
 a single repository has nothing to pass. Directories you pass yourself are kept.
 
-Copy mode (storage.copy_mode):
+Copy mode (repository_defaults.storage.copy_mode):
   auto  share identical checked-out files with APFS CoW; fall back to copies, but quarantine when ownership is unprovable (default)
   cow   fail preparation if CoW fails
   copy  keep normal Git checkout files
-storage.cow_min_size_kib sets the smallest file CoW shares, in KiB (default 16).
+repository_defaults.cow_min_size_kib sets the smallest file CoW shares, in KiB (default 16).
 Files below it keep their normal checkout copy; 0 shares every eligible file, and
 a larger value trades disk savings for less per-file work. Changing it stops
 reuse of READY standby worktrees prepared under the previous value.
-A repository can override the limit and the copy mode with wx config --repository,
-since the best values depend on the repository's file size distribution and
-checkout. Only the repositories whose effective values changed lose the reuse of
-their READY standby worktrees. A --config override on a single lease wins over
-both the repository entry and the global setting.
+A repository can override the limit and the copy mode with wx config --workspace
+<root> --repository <relative-path>, since the best values depend on the
+repository's file size distribution and checkout. Only the repositories whose
+effective values changed lose the reuse of their READY standby worktrees. A
+--config override on a single lease wins over both the repository entry and the
+global setting.
 
 Workspace root files (multi-repository workspaces):
 The root itself has no checkout, so only these paths reach a slot: AGENTS.md,
@@ -281,7 +288,7 @@ AGENTS.local.md, CLAUDE.md, CLAUDE.local.md, the agent asset directories
 .codex/prompts, and whatever the rules below add. Missing paths are skipped.
 Add more with a .worktreeinclude (copied, glob patterns, no match is fine) and a
 .worktreelink (symlinked back to the root, literal paths that must exist) in the
-root itself, or with wx config --workspace <path> copy --add and link --add. A
+root itself, or with wx config --workspace <root> copy --add and link --add. A
 copy path set in the config must exist or preparation fails. A path cannot be both copied and linked. The root manifests
 apply to multi-repository workspaces only; inside a repository the same file
 names keep their repository meaning.
@@ -292,8 +299,9 @@ Readiness (readiness.mode):
 Without readiness hooks, both modes wait for full preparation. Resume and shell/run/new always wait for full preparation.
 Use full when checkout hooks or prepare commands generate or update startup settings.
 readiness.early_paths adds literal repository-relative paths to the startup list;
-edit it with wx config readiness.early_paths --add/--remove/--reset, or per
-repository with wx config --repository <path> readiness.early_paths --add.
+edit it with wx config --repository-defaults readiness.early_paths
+--add/--remove/--reset, or per repository with wx config --workspace <root>
+--repository <relative-path> readiness.early_paths --add.
 Directories include their descendants; no glob patterns are expanded. Only paths
 already scheduled by checkout or copy/link rules are materialized. Workspace roots
 use the same selection. Absolute paths, escapes, the root itself, and .git are rejected.

@@ -121,7 +121,13 @@ func selectSetupLanguage(ctx context.Context, session setupSession) (i18n.Langua
 	if err != nil {
 		return "", err
 	}
-	if err := config.SetField(&raw, "language", string(lang)); err != nil {
+	// v2 の表示言語は system 節が正本で、top-level への書き込みは検証で拒否される。
+	if raw.V2() {
+		err = config.SetV2Field(&raw, config.V2ScopeSystem, "", "", "language", string(lang))
+	} else {
+		err = config.SetField(&raw, "language", string(lang))
+	}
+	if err != nil {
 		return "", err
 	}
 	effective := config.Merge(config.Defaults(), raw)

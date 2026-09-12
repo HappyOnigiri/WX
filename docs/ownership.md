@@ -23,7 +23,7 @@ Gitのworktree削除が失敗しても、worktree管理ディレクトリの一�
 `skip-worktree`・`assume-unchanged`が付いたpathはsnapshotの対象から外す（記録のされ方は[セッションと復元](session-lifecycle.md)）。
 両flagが「このファイルのローカル差分を見ない」という宣言であり、hookが置いた個人設定や認証情報をsourceのrecovery objectに残さないためである。
 
-準備・復元失敗などの隔離slotは`retention.quarantined`の経過後にGCが回収し、`wx clear`はこの経過を待たずに回収する。
+準備・復元失敗などの隔離slotは config v2 の `system.retention.quarantined` の経過後にGCが回収し、`wx clear`はこの経過を待たずに回収する。
 recovery refの欠損で隔離したsnapshot・sessionはGCが触らず、`wx discard-recovery`だけが破棄する（[daemonの補充と回収](daemon-maintenance.md)）。
 
 ## 既存worktreeを書き換える前の証明
@@ -31,7 +31,7 @@ recovery refの欠損で隔離したsnapshot・sessionはGCが触らず、`wx di
 準備・復元・Hot Standby更新の前に、次の3つが同時に一致することを求める。
 
 1. **DBの行**（`ValidateWorktreeOwnership`） — 突き合わせるのは絶対pathではなく、root世代・root相対のslot path・slot内のリポジトリ配置名・inode identityの組である。
-   `storage.worktree_root`を変えても既存slotが登録済みのroot世代のまま寿命を全うできるようにするためである。
+   `system.storage.worktree_root`を変えても既存slotが登録済みのroot世代のまま寿命を全うできるようにするためである。
    identityは**fail closed**で、descriptorを握っている呼び出し元がidentityを渡したのに記録が空なら不一致として扱う。
    identityを渡さないのは、worktreeがまだ存在しないprepare前の検査だけである。
 2. **ファイルシステム上のマーカー** — slotディレクトリ直下のマーカー（`workspace.MarkerIdentity`）が、slotの識別情報と一致すること。
