@@ -327,3 +327,43 @@ func prepareTestStandby(ctx context.Context, t *testing.T, m *Manager, store *st
 	}
 	return ready
 }
+
+// TestForgetRemovesRegistrationWhoseRootIsGone は root ごと消えた登録も forget で解除できることを固定する。
+// doctor は root を解決できない登録にも forget を案内し、登録を消す経路は forget しかないため、
+// canonical 化できない path を一律に拒むとその登録には出口が無くなる。
+func TestForgetRemovesRegistrationWhoseRootIsGone(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	manager := testManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	workspaceRoot := filepath.Join(root, "gone")
+	if err := os.MkdirAll(workspaceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repository := discovery.Repository{ID: "repository", MainPath: discoveryPath(workspaceRoot), CommonDir: discoveryPath(filepath.Join(workspaceRoot, ".git")), DefaultBranch: "main"}
+	registerTestWorkspace(t, store, discovery.Workspace{ID: "workspace", Root: discoveryPath(workspaceRoot), Kind: "repository", Repositories: []discovery.Repository{repository}})
+	if err := os.RemoveAll(workspaceRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Forget(ctx, workspaceRoot); err != nil {
+		t.Fatalf("Forget error=%v, want the registration to be removed", err)
+	}
+	if _, err := store.WorkspaceByRoot(ctx, workspaceRoot); err == nil {
+		t.Fatal("workspace is still registered after forget")
+	}
+	// 登録の無い path は実体が無くても受け付けない。打ち間違えを黙って成功させないためである。
+	if err := manager.Forget(ctx, filepath.Join(root, "never-registered")); err == nil {
+		t.Fatal("unregistered path was forgotten")
+	}
+}
