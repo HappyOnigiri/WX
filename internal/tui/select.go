@@ -12,6 +12,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 var ErrCancelled = errors.New("selection cancelled")
@@ -27,6 +29,8 @@ type Selection struct {
 	Description string
 	Options     []Option
 	Initial     int
+	// Language は固定ラベルの表示言語。空文字は英語で、既存 caller と互換である。
+	Language string
 }
 
 // Select は上下キーで移動し Enter で確定する。Esc/Ctrl+C と context の中断では値を返さず、端末状態を復元する。
@@ -87,7 +91,7 @@ func (m selectionModel) content() string {
 		if m.confirmed {
 			return fmt.Sprintf("✓ %s: %s\n", singleLine(m.selection.Title), singleLine(m.selection.Options[m.cursor].Label))
 		}
-		return "Selection cancelled.\n"
+		return selectionText(m.selection.Language, "Selection cancelled.") + "\n"
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "\n? %s\n", singleLine(m.selection.Title))
@@ -114,8 +118,21 @@ func (m selectionModel) content() string {
 		}
 		fmt.Fprintf(&out, "%s\n", line)
 	}
-	out.WriteString("\n  ↑/↓ move · enter select · esc cancel\n")
+	out.WriteString("\n  " + selectionText(m.selection.Language, "↑/↓ move · enter select · esc cancel") + "\n")
 	return out.String()
+}
+
+func selectionText(value, text string) string {
+	if i18n.Normalize(value) != i18n.Japanese {
+		return text
+	}
+	for _, replacement := range []struct{ en, ja string }{
+		{"Selection cancelled.", "選択をキャンセルしました。"},
+		{"↑/↓ move · enter select · esc cancel", "↑/↓ 移動 · Enter 選択 · Esc キャンセル"},
+	} {
+		text = strings.ReplaceAll(text, replacement.en, replacement.ja)
+	}
+	return text
 }
 
 // green は選択中の行を緑にする。

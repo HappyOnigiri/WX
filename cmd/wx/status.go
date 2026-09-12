@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/tui"
@@ -23,6 +25,7 @@ import (
 const statusDisplayTimeout = 40 * time.Second
 
 func runRPCDisplay(ctx context.Context, method string, args []string) int {
+	ctx = commandContext(ctx)
 	// doctor は接続エラー時に独自のフォールバックを持つため、互換用の経路として残す。
 	if strings.EqualFold(method, "Doctor") {
 		return runDoctor(ctx, args)
@@ -34,17 +37,17 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	if strings.EqualFold(method, "Status") {
 		verbose = fs.BoolP("verbose", "v", false, "show detailed status")
 	}
-	fs.Usage = func() { commandUsage(os.Stdout, name) }
+	fs.Usage = func() { commandUsageLanguage(os.Stdout, name, i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, name, args); done {
 		return code
 	}
 	if fs.NArg() != 0 {
-		commandUsage(os.Stderr, name)
+		commandUsageLanguage(os.Stderr, name, i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	c, err := rpcClient()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		reportRPCErrorContext(ctx, err)
 		return 1
 	}
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -53,8 +56,12 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 		defer cancel()
 	}
 	var out map[string]any
-	if err := c.Call(ctx, method, struct{}{}, &out); err != nil {
-		reportRPCError(err)
+	params := any(struct{}{})
+	if !*jsonOut {
+		params = map[string]string{"language": string(i18n.LanguageFromContext(ctx))}
+	}
+	if err := c.Call(ctx, method, params, &out); err != nil {
+		reportRPCErrorContext(ctx, err)
 		return 1
 	}
 	data, _ := json.MarshalIndent(out, "", "  ")
@@ -62,9 +69,13 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	case *jsonOut:
 		fmt.Println(string(data))
 	case verbose != nil:
-		printStatusDisplay(os.Stdout, out, *verbose)
+		var rendered bytes.Buffer
+		printStatusDisplay(&rendered, out, *verbose)
+		fmt.Print(translateHumanOutput(rendered.String(), i18n.LanguageFromContext(ctx)))
 	default:
-		printDisplay(os.Stdout, out)
+		var rendered bytes.Buffer
+		printDisplay(&rendered, out)
+		fmt.Print(translateHumanOutput(rendered.String(), i18n.LanguageFromContext(ctx)))
 	}
 	return 0
 }
@@ -73,21 +84,22 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 // socket に応答する daemon がなくてもローカルの事実を報告するが、接続済み daemon の要求失敗にはフォールバックしない。
 // 終了コードは診断結果が決め、引数不正だけを 2 として区別する。
 func runDoctor(ctx context.Context, args []string) int {
+	ctx = commandContext(ctx)
 	fs := pflag.NewFlagSet("doctor", pflag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "print JSON")
 	verbose := fs.BoolP("verbose", "v", false, "show passing checks and extra diagnostics")
 	probe := fs.Bool("probe", false, "prepare a worktree in each registered workspace and check it")
-	fs.Usage = func() { commandUsage(os.Stdout, "doctor") }
+	fs.Usage = func() { commandUsageLanguage(os.Stdout, "doctor", i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, "doctor", args); done {
 		return code
 	}
 	if fs.NArg() != 0 {
-		commandUsage(os.Stderr, "doctor")
+		commandUsageLanguage(os.Stderr, "doctor", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	c, err := rpcClient()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		reportRPCErrorContext(ctx, err)
 		return 1
 	}
 	// 静的検査は daemon の 1 往復で終わるため制限時間を置く。
@@ -96,13 +108,21 @@ func runDoctor(ctx context.Context, args []string) int {
 	defer cancel()
 	// 診断は daemon の応答待ちと接続失敗時のローカル検査で待たされるため、結果が出るまで待機行を出す。
 	// --json の出力は機械が読むため、端末でも待機行を出さない。
-	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout) && !*jsonOut, "diagnosing")
+	progressLabel := "diagnosing"
+	if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+		progressLabel = "診断中"
+	}
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout) && !*jsonOut, progressLabel)
 	defer waiting.Finish()
 	var reply diag.Reply
-	if err := c.Call(staticCtx, "Doctor", struct{}{}, &reply); err != nil {
+	params := any(struct{}{})
+	if !*jsonOut {
+		params = map[string]string{"language": string(i18n.LanguageFromContext(ctx))}
+	}
+	if err := c.Call(staticCtx, "Doctor", params, &reply); err != nil {
 		if !rpc.IsConnectError(err) {
 			waiting.Finish()
-			reportRPCError(err)
+			reportRPCErrorContext(ctx, err)
 			return 1
 		}
 		reply = diag.Reply{
@@ -119,7 +139,7 @@ func runDoctor(ctx context.Context, args []string) int {
 			return code
 		}
 	}
-	printDoctor(reply, *jsonOut, *verbose, *probe)
+	printDoctorLanguage(reply, *jsonOut, *verbose, *probe, i18n.LanguageFromContext(ctx))
 	return diag.ExitCode(reply)
 }
 
@@ -170,18 +190,18 @@ func staleDaemonFindings(reply diag.Reply) []diag.Finding {
 	}}
 }
 
-// printDoctor は診断結果を出力する。--json は -v に左右されず全件を返す。
-// 実地検査の計測値は失敗ではないので finding の後に表で出し、実地検査をしていない回はそれが選べることを 1 行で案内する。
-func printDoctor(reply diag.Reply, jsonOut, verbose, probe bool) {
+func printDoctorLanguage(reply diag.Reply, jsonOut, verbose, probe bool, lang i18n.Language) {
 	if jsonOut {
 		data, _ := json.MarshalIndent(reply, "", "  ")
 		fmt.Println(string(data))
 		return
 	}
-	diag.Render(os.Stdout, reply, verbose)
-	printDoctorProbes(os.Stdout, reply.Probes, verbose)
+	var rendered bytes.Buffer
+	diag.RenderLanguage(&rendered, reply, verbose, lang)
+	printDoctorProbesLanguage(&rendered, reply.Probes, verbose, lang)
 	if !probe {
 		// 表示は stdout に出す。書込み失敗は対処できず、command の終了コードも変えない。
-		_, _ = fmt.Fprintln(os.Stdout, doctorProbeHint)
+		_, _ = fmt.Fprintln(&rendered, doctorProbeHint)
 	}
+	_, _ = fmt.Fprint(os.Stdout, translateHumanOutput(rendered.String(), lang))
 }

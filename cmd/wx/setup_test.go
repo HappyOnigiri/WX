@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/setup"
 	"github.com/HappyOnigiri/WX/internal/tui"
 )
@@ -57,6 +59,62 @@ func TestSetupCheckReportsStateWithoutChangingAnything(t *testing.T) {
 	// state.JSONSchemaVersion は wx status / wx doctor の互換契約なので setup の payload には載せない。
 	if strings.Contains(jsonOut.String(), "schema_version") {
 		t.Fatalf("the setup payload carries a schema version:\n%s", jsonOut.String())
+	}
+}
+
+func TestSetupLanguageSelectionSavesBeforeTheRemainingSteps(t *testing.T) {
+	setupCommandHome(t)
+	unset, err := setupLanguageUnset()
+	if err != nil || !unset {
+		t.Fatalf("language unset=%v err=%v", unset, err)
+	}
+	session := setupSession{selector: func(_ context.Context, step setup.Step) (setup.Action, error) {
+		if step.Title != "Display language / 表示言語" || step.Default != setup.Action(i18n.English) {
+			t.Fatalf("language step=%+v", step)
+		}
+		return setup.Action(i18n.Japanese), nil
+	}}
+	selected, err := selectSetupLanguage(context.Background(), session)
+	if err != nil || selected != i18n.Japanese {
+		t.Fatalf("selected=%q err=%v", selected, err)
+	}
+	if got := config.LoadLanguage(); got != config.LanguageJapanese {
+		t.Fatalf("saved language=%q, want ja", got)
+	}
+	if unset, err := setupLanguageUnset(); err != nil || unset {
+		t.Fatalf("language unset after selection=%v err=%v", unset, err)
+	}
+}
+
+// TestSetupLanguageSelectionWritesTheSystemSectionInV2 は、v2 設定では top-level の
+// language が検証で拒否されるため、setup が system.language へ書くことを守る。
+func TestSetupLanguageSelectionWritesTheSystemSectionInV2(t *testing.T) {
+	setupCommandHome(t)
+	path, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 2\nsystem:\n  pool:\n    preparation_concurrency: 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := setupSession{selector: func(context.Context, setup.Step) (setup.Action, error) {
+		return setup.Action(i18n.Japanese), nil
+	}}
+	if _, err := selectSetupLanguage(context.Background(), session); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "\nlanguage:") {
+		t.Fatalf("saved config carries a top-level language:\n%s", data)
+	}
+	if got := config.LoadLanguage(); got != config.LanguageJapanese {
+		t.Fatalf("saved language=%q, want ja", got)
+	}
+	if _, err := config.Load(); err != nil {
+		t.Fatalf("saved config is not loadable: %v", err)
 	}
 }
 

@@ -41,7 +41,7 @@ LICENSE_ALLOWLIST := Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0,Unicod
 # 汎用ルールではこの信頼境界を表せないため、明示実行するgosecだけで除外する。
 GOSEC_EXCLUDES := G104,G115,G202,G204,G302,G304,G306
 
-.PHONY: setup setup-hooks setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check automation-check docs-index-check workflow-check workflow-lint reporter-check workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-daemon-0 test-race-daemon-1 test-race-state test-race-state-0 test-race-state-1 test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-plan nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
+.PHONY: setup setup-hooks setup-go-tools setup-external-tools setup-security-tools setup-sbom-tools setup-markdownlint setup-zizmor check-shellcheck build install fmt fmt-check vet lint deadcode mod-tidy-check generated-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check automation-check docs-index-check catalog-check workflow-check workflow-lint reporter-check workflow-security-audit shell-check static-check test test-race test-race-daemon test-race-daemon-0 test-race-state test-race-state-0 test-race-rest ci-test-race test-coverage test-race-coverage coverage-check portable-test test-focus test-darwin check-fast concurrency-test build-darwin reproducible-build version-check smoke govulncheck dependency-check gosec license-check secret-check sbom security-local ci ci-checks hook-pre-commit hook-plan nightly-race fuzz fault-check crash-check soak-check resource-leak-check clean
 
 setup: setup-go-tools setup-external-tools
 
@@ -202,6 +202,9 @@ gitexec-check:
 # 番号の欠番・重複と定数の据え置きはDBを開くまで表面化しないため、この検査で落とす。
 migrations-check:
 	$(GO) run ./tools/checkmigrations
+
+catalog-check:
+	$(GO) run ./tools/checkcatalog
 
 # 停止中のセキュリティ・SBOM関連targetの再接続。名前の出現ではなく自動実行経路への接続を見る。
 automation-check:
@@ -387,7 +390,7 @@ ci:
 
 # 静的検査の単一の入口。ローカルのci-checksとGitHub Actionsのstaticジョブはこのtargetだけを呼ぶ。
 # 検査一覧を両者へ複製すると片方だけ更新され、CIで適用漏れが起きるため、追加する検査はここへ繋ぐ。
-static-check: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check automation-check docs-index-check workflow-check reporter-check shell-check
+static-check: fmt-check lint deadcode mod-tidy-check docs-check comments-check tests-check lines-check testlayout-check fuzz-check gitexec-check migrations-check catalog-check automation-check docs-index-check workflow-check reporter-check shell-check
 
 ci-checks: static-check coverage-check ci-test-race build-darwin version-check smoke release-check
 

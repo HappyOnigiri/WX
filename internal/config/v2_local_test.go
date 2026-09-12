@@ -138,3 +138,52 @@ func TestV2SystemSessionPathsMergePerTool(t *testing.T) {
 		t.Fatalf("codex session paths=%v, want built-in fallback", got)
 	}
 }
+
+func TestV2LanguageLivesInSystemSection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, _ := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 2\nsystem:\n  language: ja\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	effective, raw, err := LoadWithRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.DisplayLanguage() != LanguageJapanese || effective.LanguageForRPC() != LanguageJapanese {
+		t.Fatalf("language=%q rpc=%q", effective.DisplayLanguage(), effective.LanguageForRPC())
+	}
+	if got := LoadLanguage(); got != LanguageJapanese {
+		t.Fatalf("LoadLanguage=%q, want ja", got)
+	}
+	if !LanguageConfigured(raw) {
+		t.Fatal("system.language was not detected as configured")
+	}
+	// v2 の保存は system 節だけを書き出すため、top-level へ漏らさない。
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "language: ja") || strings.Contains(string(data), "\nlanguage:") {
+		t.Fatalf("saved=%s", data)
+	}
+}
+
+func TestV2RejectsTopLevelLanguage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, _ := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := "version: 2\nlanguage: ja\nsystem:\n  pool:\n    preparation_concurrency: 2\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "top-level language") {
+		t.Fatalf("Load error=%v, want top-level language rejection", err)
+	}
+}

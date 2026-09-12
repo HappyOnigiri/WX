@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // configEdit は1回の設定更新の指示である。op は set・add・remove・reset のいずれか。
@@ -57,6 +59,7 @@ func parseConfigEdit(args []string) (configEdit, bool) {
 }
 
 func runConfig(ctx context.Context, args []string) int {
+	ctx = commandContext(ctx)
 	fs := pflag.NewFlagSet("config", pflag.ContinueOnError)
 	workspace := fs.String("workspace", "", "target a workspace-specific setting")
 	repository := fs.String("repository", "", "target a repository-specific setting")
@@ -66,23 +69,41 @@ func runConfig(ctx context.Context, args []string) int {
 	describe := fs.String("describe", "", "describe a setting")
 	// 設定値は「-」で始まることもあるため、最初の位置引数（キー）以降はフラグとして扱わない。
 	fs.SetInterspersed(false)
-	fs.Usage = func() { commandUsage(os.Stdout, "config") }
+	fs.Usage = func() { commandUsageLanguage(os.Stdout, "config", i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, "config", args); done {
 		return code
 	}
 	rest := fs.Args()
 	raw, rawErr := config.LoadRaw()
 	v2 := rawErr == nil && raw.V2()
+	// 配布スクリプトと外部ツールが設定言語を取得する機械契約。現在の実効値だけを
+	// 1 行で返し、Config の人間向け一覧や reload の案内を混ぜない。
+	// scope を明示しない読み取りなので、v1 と v2 のどちらの設定でも同じ出力にする。
+	if *describe == "" && !*system && !*workspaceDefaults && !*repositoryDefaults &&
+		*workspace == "" && *repository == "" && len(rest) == 1 && rest[0] == "language" {
+		effective, _, err := config.LoadWithRaw()
+		if err != nil {
+			lang := i18n.LanguageFromContext(ctx)
+			fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
+			return 1
+		}
+		_, _ = fmt.Fprintln(os.Stdout, effective.DisplayLanguage())
+		return 0
+	}
 	if v2 || *system || *workspaceDefaults || *repositoryDefaults {
 		return runV2Config(ctx, *system, *workspaceDefaults, *repositoryDefaults, *workspace, *repository, *describe, rest)
 	}
 	if *workspace != "" && *repository != "" {
-		fmt.Fprintln(os.Stderr, "error: --workspace and --repository cannot be combined")
+		message := "--workspace and --repository cannot be combined"
+		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+			message = "--workspace と --repository は併用できません"
+		}
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
 		return 2
 	}
 	if *describe != "" {
 		if len(rest) != 0 {
-			commandUsage(os.Stderr, "config")
+			commandUsageLanguage(os.Stderr, "config", i18n.LanguageFromContext(ctx))
 			return 2
 		}
 		scope := "global"
@@ -104,7 +125,7 @@ func runConfig(ctx context.Context, args []string) int {
 	}
 	edit, ok := parseConfigEdit(rest)
 	if !ok {
-		commandUsage(os.Stderr, "config")
+		commandUsageLanguage(os.Stderr, "config", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	return executeConfigEdit(ctx, config.EditRequest{Scope: "global", Key: edit.key, Value: edit.value, Operation: config.EditOperation(edit.op)})
@@ -284,37 +305,55 @@ func v2ScopeTitle(scope string) string {
 func describeConfig(key, scope string) int {
 	meta, err := config.Describe(key, scope)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		lang := localizedUsageLanguage()
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
 		return 1
 	}
-	fmt.Printf("%s — %s\n", meta.Key, meta.DisplayName)
-	fmt.Printf("  Type: %s\n", meta.Kind)
-	fmt.Printf("  Scopes: %s\n", strings.Join(meta.Scopes, ", "))
-	if len(meta.Choices) > 0 {
-		fmt.Printf("  Choices: %s\n", strings.Join(meta.Choices, ", "))
+	lang := localizedUsageLanguage()
+	name := meta.DisplayName
+	if meta.Key == "language" && lang == i18n.Japanese {
+		name = i18n.New(string(lang)).Localize("config.display_name", nil)
 	}
-	fmt.Printf("  %s\n", meta.Description)
-	fmt.Printf("  Impact: %s\n", meta.Impact)
+	description := translateHumanOutput(meta.Description, lang)
+	impact := translateHumanOutput(meta.Impact, lang)
+	var rendered bytes.Buffer
+	fmt.Fprintf(&rendered, "%s — %s\n", meta.Key, name)
+	fmt.Fprintf(&rendered, "  Type: %s\n", meta.Kind)
+	fmt.Fprintf(&rendered, "  Scopes: %s\n", strings.Join(meta.Scopes, ", "))
+	if len(meta.Choices) > 0 {
+		fmt.Fprintf(&rendered, "  Choices: %s\n", strings.Join(meta.Choices, ", "))
+	}
+	fmt.Fprintf(&rendered, "  %s\n", description)
+	fmt.Fprintf(&rendered, "  Impact: %s\n", impact)
+	fmt.Print(translateHumanOutput(rendered.String(), lang))
 	return 0
 }
 
 func showGlobalConfig() int {
 	cfg, raw, err := config.LoadWithRaw()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		lang := i18n.Normalize(config.LoadLanguage())
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
 		return 1
 	}
 	if cfg.V2() {
 		return showV2GlobalConfig(cfg, raw)
 	}
 	path, _ := config.Path()
-	fmt.Println("Config:", path)
+	var rendered bytes.Buffer
+	fmt.Fprintln(&rendered, "Config:", path)
+	// language は未記載でも英語という実効値を返すため、Fields の疎な表示除外とは別に出す。
+	fmt.Fprintf(&rendered, "  %-42s = %s\n", "language", cfg.DisplayLanguage())
 	for _, f := range config.Fields(cfg) {
-		fmt.Printf("  %-42s = %s\n", f.Key, f.Value)
+		if f.Key == "language" {
+			continue
+		}
+		fmt.Fprintf(&rendered, "  %-42s = %s\n", f.Key, f.Value)
 	}
 	for _, f := range config.Lists(cfg) {
-		fmt.Printf("  %-42s = %s\n", f.Key, f.Value)
+		fmt.Fprintf(&rendered, "  %-42s = %s\n", f.Key, f.Value)
 	}
+	fmt.Print(translateHumanOutput(rendered.String(), localizedUsageLanguage()))
 	return 0
 }
 
@@ -336,24 +375,28 @@ func showV2GlobalConfig(cfg, raw config.Config) int {
 func runScopeConfig(ctx context.Context, scope config.Scope, path string, args []string) int {
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		lang := i18n.Normalize(config.LoadLanguage())
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
 		return 1
 	}
 	target, err := resolveConfigScope(ctx, cfg, scope, path)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		lang := i18n.Normalize(config.LoadLanguage())
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
 		return 1
 	}
 	if len(args) == 0 {
-		fmt.Printf("%s: %s\n", scopeTitle(scope), target)
+		var rendered bytes.Buffer
+		fmt.Fprintf(&rendered, "%s: %s\n", scopeTitle(scope), target)
 		for _, f := range config.ScopeFields(cfg, scope, target) {
-			fmt.Printf("  %-42s = %s (source: %s)\n", f.Key, f.Value, f.Source)
+			fmt.Fprintf(&rendered, "  %-42s = %s (source: %s)\n", f.Key, f.Value, f.Source)
 		}
+		fmt.Print(translateHumanOutput(rendered.String(), localizedUsageLanguage()))
 		return 0
 	}
 	edit, ok := parseConfigEdit(args)
 	if !ok {
-		commandUsage(os.Stderr, "config")
+		commandUsageLanguage(os.Stderr, "config", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	return executeConfigEdit(ctx, config.EditRequest{Scope: scope.String(), Target: target, Key: edit.key, Value: edit.value, Operation: config.EditOperation(edit.op)})
@@ -361,20 +404,25 @@ func runScopeConfig(ctx context.Context, scope config.Scope, path string, args [
 
 // executeConfigEdit は共通サービスで preview と保存を連続して行い、CLI の表示契約だけを担当する。
 func executeConfigEdit(ctx context.Context, request config.EditRequest) int {
+	ctx = commandContext(ctx)
 	preview, err := config.PreviewEdit(request)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		lang := i18n.LanguageFromContext(ctx)
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
 		return 1
 	}
 	if err := config.CommitEdit(preview); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		lang := i18n.LanguageFromContext(ctx)
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
 		return 1
 	}
 	c, _ := rpcClient()
 	if err := c.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil {
-		fmt.Printf("saved; daemon reload pending: %s\n", rpcErrorMessage(err))
+		lang := i18n.Normalize(config.LoadLanguage())
+		message := i18n.New(string(lang)).Localize("common.saved_pending", nil)
+		fmt.Printf("%s: %s\n", message, rpcErrorMessageLanguage(err, lang))
 	} else {
-		fmt.Println("saved and reloaded")
+		fmt.Println(i18n.New(config.LoadLanguage()).Localize("common.saved", nil))
 	}
 	return 0
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/textfmt"
 )
 
@@ -15,19 +16,31 @@ const doctorProbeHint = "Nothing above was checked by preparing a worktree; run 
 // printDoctorProbes は実地検査が測った値を workspace ごとのブロックで出す。
 // ここに出るのはすべて計測値で、良し悪しの判定は finding が持つ。
 func printDoctorProbes(w io.Writer, probes []diag.Probe, verbose bool) {
+	printDoctorProbesLanguage(w, probes, verbose, i18n.English)
+}
+
+func printDoctorProbesLanguage(w io.Writer, probes []diag.Probe, verbose bool, lang i18n.Language) {
+	probeLabel, errorLabel, leaseLabel, earlyLabel, fullLabel, prepareLabel, diskLabel := "probe", "error", "lease", "EARLY READY", "FULL READY", "prepare job", "disk"
+	if lang == i18n.Japanese {
+		probeLabel, errorLabel, leaseLabel, earlyLabel, fullLabel, prepareLabel, diskLabel = "検査", "エラー", "貸出", "早期準備完了", "準備完了", "準備 job", "ディスク"
+	}
 	for _, probe := range probes {
 		_, _ = fmt.Fprintln(w)
-		_, _ = fmt.Fprintln(w, "probe "+probe.Workspace)
+		_, _ = fmt.Fprintln(w, probeLabel+" "+probe.Workspace)
 		if probe.Error != "" {
-			_, _ = fmt.Fprintln(w, "  error         "+probe.Error)
+			_, _ = fmt.Fprintf(w, "  %-13s %s\n", errorLabel, localizeProbeError(probe.Error, lang))
 		}
-		_, _ = fmt.Fprintf(w, "  lease         %s\n", formatProbeDuration(probe.LeaseMS))
-		_, _ = fmt.Fprintf(w, "  EARLY READY   %s\n", formatProbeDuration(probe.EarlyReadyMS))
-		_, _ = fmt.Fprintf(w, "  FULL READY    %s\n", formatProbeDuration(probe.FullReadyMS))
-		printProbeUsage(w, probe)
+		_, _ = fmt.Fprintf(w, "  %-13s %s\n", leaseLabel, formatProbeDuration(probe.LeaseMS))
+		_, _ = fmt.Fprintf(w, "  %-13s %s\n", earlyLabel, formatProbeDuration(probe.EarlyReadyMS))
+		_, _ = fmt.Fprintf(w, "  %-13s %s\n", fullLabel, formatProbeDuration(probe.FullReadyMS))
+		printProbeUsageLanguage(w, probe, lang, diskLabel)
 		if probe.PhasesUnavailable {
 			// 計測は daemon のメモリにしか残らないため、引けなかったことを黙って内訳なしにしない。
-			_, _ = fmt.Fprintln(w, "  prepare job   breakdown unavailable; the daemon no longer holds the measurement")
+			if lang == i18n.Japanese {
+				_, _ = fmt.Fprintf(w, "  %-13s 準備の内訳を利用できません。daemon に計測値が残っていません\n", prepareLabel)
+			} else {
+				_, _ = fmt.Fprintf(w, "  %-13s breakdown unavailable; the daemon no longer holds the measurement\n", prepareLabel)
+			}
 		}
 		if verbose {
 			printProbePhases(w, probe.Phases)
@@ -35,18 +48,45 @@ func printDoctorProbes(w io.Writer, probes []diag.Probe, verbose bool) {
 	}
 }
 
-// printProbeUsage は準備した slot のディスク使用量をリポジトリ別に出す。
-// 測定を待てなかった回は 0 を実測値として読ませないよう、その旨だけを出す。
-func printProbeUsage(w io.Writer, probe diag.Probe) {
+func localizeProbeError(value string, lang i18n.Language) string {
+	if lang != i18n.Japanese {
+		return value
+	}
+	for _, replacement := range []struct{ en, ja string }{
+		{"retire standby:", "standby を退役:"},
+		{"lease:", "貸出:"},
+		{"early ready:", "早期準備完了:"},
+		{"full ready:", "準備完了:"},
+	} {
+		if strings.HasPrefix(value, replacement.en) {
+			return replacement.ja + strings.TrimPrefix(value, replacement.en)
+		}
+	}
+	return value
+}
+
+func printProbeUsageLanguage(w io.Writer, probe diag.Probe, lang i18n.Language, diskLabel string) {
+	exclusiveLabel, sharedLabel := "exclusive", "shared"
+	if lang == i18n.Japanese {
+		exclusiveLabel, sharedLabel = "専有", "共有"
+	}
 	switch {
 	case probe.Usage == diag.ProbeUsageMeasured && len(probe.Repositories) == 0:
-		_, _ = fmt.Fprintln(w, "  disk          no repository was measured in the prepared slot")
+		if lang == i18n.Japanese {
+			_, _ = fmt.Fprintf(w, "  %-13s 準備済み slot で測定された repository はありません\n", diskLabel)
+		} else {
+			_, _ = fmt.Fprintf(w, "  %-13s no repository was measured in the prepared slot\n", diskLabel)
+		}
 	case probe.Usage != diag.ProbeUsageMeasured:
-		_, _ = fmt.Fprintln(w, "  disk          "+probe.Usage+"; the daemon had not finished measuring the prepared slot")
+		if lang == i18n.Japanese {
+			_, _ = fmt.Fprintf(w, "  %-13s %s。daemon は準備済み slot の測定を完了していません\n", diskLabel, probe.Usage)
+		} else {
+			_, _ = fmt.Fprintf(w, "  %-13s %s; the daemon had not finished measuring the prepared slot\n", diskLabel, probe.Usage)
+		}
 	}
 	for _, repository := range probe.Repositories {
-		_, _ = fmt.Fprintf(w, "    %-24s %9s exclusive  %9s shared\n", repository.Name,
-			textfmt.HumanBytes(repository.ExclusiveBytes), textfmt.HumanBytes(repository.SharedBytes))
+		_, _ = fmt.Fprintf(w, "    %-24s %9s %-4s  %9s %s\n", repository.Name,
+			textfmt.HumanBytes(repository.ExclusiveBytes), exclusiveLabel, textfmt.HumanBytes(repository.SharedBytes), sharedLabel)
 	}
 }
 

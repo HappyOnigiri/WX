@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/setup"
@@ -33,6 +34,7 @@ type setupSession struct {
 }
 
 func runSetup(ctx context.Context, args []string) int {
+	ctx = commandContext(ctx)
 	fs := pflag.NewFlagSet("setup", pflag.ContinueOnError)
 	check := fs.Bool("check", false, "report the current state without changing anything")
 	jsonOut := fs.Bool("json", false, "with --check, print machine-readable JSON")
@@ -41,14 +43,14 @@ func runSetup(ctx context.Context, args []string) int {
 	item := fs.String("item", "", "configure one setup item without walking through the others")
 	action := fs.String("action", "", "with --item, apply one of the actions reported for that item")
 	value := fs.String("value", "", "with a manual --item action, use this value")
-	fs.Usage = func() { commandUsage(os.Stdout, "setup") }
+	fs.Usage = func() { commandUsageLanguage(os.Stdout, "setup", i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, "setup", args); done {
 		return code
 	}
 	individual := *item != "" || *action != "" || *value != ""
 	if fs.NArg() != 0 || (*jsonOut && !*check) || (*update && *check) || (*remove && (*check || *update)) ||
 		(individual && (*item == "" || *action == "" || *check || *update || *remove || *jsonOut)) {
-		commandUsage(os.Stderr, "setup")
+		commandUsageLanguage(os.Stderr, "setup", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	options := setupOptions()
@@ -68,23 +70,91 @@ func runSetup(ctx context.Context, args []string) int {
 			// --update は install.sh から自動起動されるため、対応が要ることを伝えるだけにとどめる。
 			return reportSetupUpdateWithoutTerminal(ctx, options, os.Stderr)
 		}
-		fmt.Fprintln(os.Stderr, "error:", err)
-		fmt.Fprintln(os.Stderr, "run wx setup --check to see the current state without a terminal")
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "setup.check_hint", nil))
 		return 1
 	}
 	defer closeSession()
+	// language 未記載の通常 setup だけ、最初の質問として表示言語を確認する。
+	// --update は install から無表示で呼ばれ、--check/--item/--remove は機械経路なので質問しない。
+	if languageUnset, loadErr := setupLanguageUnset(); loadErr != nil {
+		_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(loadErr.Error(), i18n.LanguageFromContext(ctx)))
+		return 1
+	} else if languageUnset && !*update {
+		selected, selectErr := selectSetupLanguage(ctx, session)
+		if selectErr != nil {
+			if errors.Is(selectErr, tui.ErrCancelled) {
+				return 1
+			}
+			_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(selectErr.Error(), i18n.LanguageFromContext(ctx)))
+			return 1
+		}
+		ctx = i18n.WithLanguage(ctx, string(selected))
+	}
 	if *update {
 		return runSetupUpdate(ctx, options, session)
 	}
 	return runSetupInteractive(ctx, options, session)
 }
 
+func setupLanguageUnset() (bool, error) {
+	raw, err := config.LoadRaw()
+	if err != nil {
+		return false, err
+	}
+	return !config.LanguageConfigured(raw), nil
+}
+
+// selectSetupLanguage は setup の他の項目より先に表示言語だけを保存する。
+// 選択をキャンセルした場合は config.yaml を作成せず、次回 setup で再び尋ねる。
+func selectSetupLanguage(ctx context.Context, session setupSession) (i18n.Language, error) {
+	step := setup.Step{ID: "language", Title: "Display language / 表示言語", Detail: "Choose English or 日本語 for wx messages.", Options: []setup.Action{setup.Action(i18n.English), setup.Action(i18n.Japanese)}, Default: setup.Action(i18n.English)}
+	choice, err := session.selector(ctx, step)
+	if err != nil {
+		return "", err
+	}
+	lang, err := i18n.Parse(string(choice))
+	if err != nil {
+		return "", err
+	}
+	raw, err := config.LoadRaw()
+	if err != nil {
+		return "", err
+	}
+	// v2 の表示言語は system 節が正本で、top-level への書き込みは検証で拒否される。
+	if raw.V2() {
+		err = config.SetV2Field(&raw, config.V2ScopeSystem, "", "", "language", string(lang))
+	} else {
+		err = config.SetField(&raw, "language", string(lang))
+	}
+	if err != nil {
+		return "", err
+	}
+	effective := config.Merge(config.Defaults(), raw)
+	if err := config.NormalizePaths(&effective); err != nil {
+		return "", err
+	}
+	if err := config.Validate(&effective); err != nil {
+		return "", err
+	}
+	if err := config.Save(raw); err != nil {
+		return "", err
+	}
+	return lang, nil
+}
+
 // runSetupItem は setup の 1 項目だけを非対話で適用する。
 // dashboard と自動化が全項目の walk を経ず、Collect が提示した操作をそのまま指定するための入口である。
 func runSetupItem(ctx context.Context, options setup.Options, id string, action setup.Action, value string, out, errOut io.Writer) int {
+	ctx = commandContext(ctx)
+	lang := i18n.LanguageFromContext(ctx)
+	errorPrefix := "error:"
+	if lang == i18n.Japanese {
+		errorPrefix = "エラー:"
+	}
 	step, err := setup.CollectStep(ctx, options, id)
 	if err != nil {
-		_, _ = fmt.Fprintln(errOut, "error:", err)
+		_, _ = fmt.Fprintln(errOut, errorPrefix, localizeSetupError(err.Error(), lang))
 		return 1
 	}
 	if !slices.Contains(step.Options, action) {
@@ -92,20 +162,20 @@ func runSetupItem(ctx context.Context, options setup.Options, id string, action 
 		for _, option := range step.Options {
 			available = append(available, string(option))
 		}
-		_, _ = fmt.Fprintf(errOut, "error: setup item %s does not offer action %s", id, action)
+		_, _ = fmt.Fprintf(errOut, "%s %s", errorPrefix, localizeSetupError(fmt.Sprintf("setup item %s does not offer action %s", id, action), lang))
 		if len(available) > 0 {
-			_, _ = fmt.Fprintf(errOut, "; available actions: %s", strings.Join(available, ", "))
+			_, _ = fmt.Fprintf(errOut, "%s", localizeSetupError("; available actions: "+strings.Join(available, ", "), lang))
 		}
 		_, _ = fmt.Fprintln(errOut)
 		return 1
 	}
 	if action == setup.ActionManual && strings.TrimSpace(value) == "" {
-		_, _ = fmt.Fprintf(errOut, "error: setup item %s action manual requires --value\n", id)
+		_, _ = fmt.Fprintf(errOut, "%s %s\n", errorPrefix, localizeSetupError(fmt.Sprintf("setup item %s action manual requires --value", id), lang))
 		return 2
 	}
 	note, err := setup.Apply(ctx, options, step, action, value)
 	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "error: %s %s: %v\n", step.ID, action, err)
+		_, _ = fmt.Fprintf(errOut, "%s %s %s: %s\n", errorPrefix, step.ID, action, localizeSetupError(err.Error(), lang))
 		return 1
 	}
 	printSetupApplied(out, step, action)
@@ -137,7 +207,7 @@ func setupOptions() setup.Options {
 			if err != nil {
 				return err
 			}
-			waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "starting daemon")
+			waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), i18n.T(ctx, "progress.starting", nil)+" daemon")
 			defer waiting.Finish()
 			return startAndWaitForDaemon(ctx, socket)
 		},
@@ -146,7 +216,7 @@ func setupOptions() setup.Options {
 			if err != nil {
 				return err
 			}
-			waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "restarting daemon")
+			waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), i18n.T(ctx, "progress.restarting", nil)+" daemon")
 			defer waiting.Finish()
 			guidance, err := restartAndWaitForDaemon(ctx, socket)
 			if err != nil && len(guidance) > 0 {
@@ -215,13 +285,21 @@ func interactiveSetupSession(ctx context.Context, out, errOut io.Writer) (setupS
 
 // selectSetupAction は 1 項目の選択肢を TUI で出す。TUI は stderr へ書き、結果行と要約は stdout に残す。
 func selectSetupAction(ctx context.Context, input io.Reader, errOut io.Writer, step setup.Step) (setup.Action, error) {
-	selection := tui.Selection{Title: step.Title, Description: setupStepDescription(step)}
+	selection := tui.Selection{Title: step.Title, Description: setupStepDescription(step), Language: string(i18n.LanguageFromContext(ctx))}
 	for index, option := range step.Options {
 		if option == step.Default {
 			selection.Initial = index
 		}
+		label := string(option)
+		if step.ID == "language" {
+			if option == setup.Action(i18n.English) {
+				label = "English"
+			} else if option == setup.Action(i18n.Japanese) {
+				label = "日本語"
+			}
+		}
 		selection.Options = append(selection.Options, tui.Option{
-			Value: string(option), Label: string(option), Description: setupActionDescription(step, option),
+			Value: string(option), Label: label, Description: setupActionDescription(step, option),
 		})
 	}
 	answer, err := tui.Select(ctx, input, errOut, selection)
@@ -232,14 +310,15 @@ func selectSetupAction(ctx context.Context, input io.Reader, errOut io.Writer, s
 }
 
 func runSetupCheck(ctx context.Context, options setup.Options, jsonOut bool, out, errOut io.Writer) int {
+	ctx = commandContext(ctx)
 	steps, err := setup.Collect(ctx, options)
 	if err != nil {
-		_, _ = fmt.Fprintln(errOut, "error:", err)
+		_, _ = fmt.Fprintln(errOut, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	if jsonOut {
 		if err := writeSetupJSON(out, steps); err != nil {
-			_, _ = fmt.Fprintln(errOut, "error:", err)
+			_, _ = fmt.Fprintln(errOut, i18n.T(ctx, "common.error", nil)+":", err)
 			return 1
 		}
 		return 0
@@ -252,6 +331,7 @@ func runSetupCheck(ctx context.Context, options setup.Options, jsonOut bool, out
 // runSetupRemove は wx setup が書き込んだ設定を消し、結果と消さなかった path を出す。
 // 削除は 1 項目の失敗で打ち切らない。途中で止めると、残った項目を消す手段が利用者に残らない。
 func runSetupRemove(ctx context.Context, options setup.Options, out, errOut io.Writer) int {
+	ctx = commandContext(ctx)
 	removal := setup.Remove(ctx, options)
 	printSetupRemoval(out, errOut, removal)
 	if removal.Failed() {
@@ -262,6 +342,7 @@ func runSetupRemove(ctx context.Context, options setup.Options, out, errOut io.W
 
 // reportSetupUpdateWithoutTerminal は端末が無いときに、対応が要る項目だけを 1 行で伝えて 0 を返す。
 func reportSetupUpdateWithoutTerminal(ctx context.Context, options setup.Options, errOut io.Writer) int {
+	ctx = commandContext(ctx)
 	steps, err := setup.Collect(ctx, options)
 	if err != nil {
 		return 0
@@ -274,26 +355,31 @@ func reportSetupUpdateWithoutTerminal(ctx context.Context, options setup.Options
 	for _, step := range divergent {
 		names = append(names, step.ID)
 	}
-	_, _ = fmt.Fprintf(errOut, "wx setup: %s need attention; run wx setup to review them\n", strings.Join(names, ", "))
+	_, _ = fmt.Fprintln(errOut, i18n.New(string(i18n.LanguageFromContext(ctx))).Localize("setup.no_terminal_update", map[string]any{"Items": strings.Join(names, ", ")}))
 	return 0
 }
 
 // runSetupUpdate は divergent な項目だけを提示する。
 // 0 件のときは stdout / stderr へ 1 byte も書かない。install.sh から毎回走るため、通常の更新では姿を見せない。
 func runSetupUpdate(ctx context.Context, options setup.Options, session setupSession) int {
+	ctx = commandContext(ctx)
 	steps, err := setup.Collect(ctx, options)
 	if err != nil {
-		_, _ = fmt.Fprintln(session.errOut, "error:", err)
+		_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(err.Error(), i18n.LanguageFromContext(ctx)))
 		return 1
 	}
 	divergent := setup.Divergent(steps)
 	if len(divergent) == 0 {
 		return 0
 	}
-	_, _ = fmt.Fprintf(session.errOut, "wx setup: %d item(s) no longer match what wx would write.\n", len(divergent))
+	if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+		_, _ = fmt.Fprintln(session.errOut, i18n.New(string(i18n.Japanese)).Localize("setup.items_changed", map[string]any{"Count": len(divergent)}))
+	} else {
+		_, _ = fmt.Fprintf(session.errOut, "wx setup: %d item(s) no longer match what wx would write.\n", len(divergent))
+	}
 	failed := false
 	for _, step := range divergent {
-		if applySetupStep(ctx, options, session, step) == setupOutcomeFailed {
+		if applySetupStep(ctx, options, session, localizeSetupStep(step, i18n.LanguageFromContext(ctx))) == setupOutcomeFailed {
 			failed = true
 		}
 	}
@@ -304,17 +390,18 @@ func runSetupUpdate(ctx context.Context, options setup.Options, session setupSes
 }
 
 func runSetupInteractive(ctx context.Context, options setup.Options, session setupSession) int {
+	ctx = commandContext(ctx)
 	steps, err := setup.Collect(ctx, options)
 	if err != nil {
-		_, _ = fmt.Fprintln(session.errOut, "error:", err)
+		_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(err.Error(), i18n.LanguageFromContext(ctx)))
 		return 1
 	}
 	failed := false
 	for _, step := range steps {
-		switch applySetupStep(ctx, options, session, step) {
+		switch applySetupStep(ctx, options, session, localizeSetupStep(step, i18n.LanguageFromContext(ctx))) {
 		case setupOutcomeCancelled:
 			// 各項目は個別に冪等で再実行できるため巻き戻さない。適用済みを残したまま案内だけを出す。
-			_, _ = fmt.Fprintln(session.out, "cancelled; the items already applied are kept. Run wx setup again to finish.")
+			_, _ = fmt.Fprintln(session.out, i18n.T(ctx, "setup.cancelled", nil))
 			printSetupTable(session.out, collectOrEmpty(ctx, options))
 			return 1
 		case setupOutcomeFailed:
@@ -350,7 +437,7 @@ func applySetupStep(ctx context.Context, options setup.Options, session setupSes
 		if errors.Is(err, tui.ErrCancelled) {
 			return setupOutcomeCancelled
 		}
-		_, _ = fmt.Fprintln(session.errOut, "error:", err)
+		_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(err.Error(), i18n.LanguageFromContext(ctx)))
 		return setupOutcomeFailed
 	}
 	value := ""
@@ -360,13 +447,13 @@ func applySetupStep(ctx context.Context, options setup.Options, session setupSes
 			if errors.Is(err, tui.ErrCancelled) {
 				return setupOutcomeCancelled
 			}
-			_, _ = fmt.Fprintln(session.errOut, "error:", err)
+			_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", localizeSetupError(err.Error(), i18n.LanguageFromContext(ctx)))
 			return setupOutcomeFailed
 		}
 	}
 	note, err := setup.Apply(ctx, options, step, action, value)
 	if err != nil {
-		_, _ = fmt.Fprintf(session.errOut, "error: %s %s: %v\n", step.ID, action, err)
+		_, _ = fmt.Fprintf(session.errOut, "%s: %s %s: %s\n", i18n.T(ctx, "common.error", nil), step.ID, action, localizeSetupError(err.Error(), i18n.LanguageFromContext(ctx)))
 		return setupOutcomeFailed
 	}
 	printSetupApplied(session.out, step, action)
@@ -383,7 +470,11 @@ func setupStepValue(session setupSession, step setup.Step) (string, error) {
 	if step.ID != "worktree_root" {
 		return "", nil
 	}
-	_, _ = fmt.Fprintf(session.errOut, "Enter the worktree root path [%s]: ", step.Desired)
+	if localizedUsageLanguage() == i18n.Japanese {
+		_, _ = fmt.Fprintf(session.errOut, "Worktree root の path を入力してください [%s]: ", step.Desired)
+	} else {
+		_, _ = fmt.Fprintf(session.errOut, "Enter the worktree root path [%s]: ", step.Desired)
+	}
 	line, err := session.readLine()
 	if err != nil && line == "" {
 		return "", err

@@ -3,9 +3,20 @@ package main
 import (
 	"fmt"
 	"io"
+
+	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 func topUsage(w io.Writer) {
+	topUsageLanguage(w, i18n.English)
+}
+
+func topUsageLanguage(w io.Writer, lang i18n.Language) {
+	writeUsage(w, topUsageEnglish, lang)
+}
+
+func topUsageEnglish(w io.Writer) {
 	_, _ = fmt.Fprintln(w, `Usage: wx [wx-options] <claude|codex> [agent-arguments...]
        wx <command> [options]
 
@@ -43,6 +54,14 @@ Commands:
 }
 
 func commandUsage(w io.Writer, name string) {
+	commandUsageLanguage(w, name, localizedUsageLanguage())
+}
+
+func commandUsageLanguage(w io.Writer, name string, lang i18n.Language) {
+	writeUsage(w, func(out io.Writer) { commandUsageEnglish(out, name) }, lang)
+}
+
+func commandUsageEnglish(w io.Writer, name string) {
 	switch name {
 	case "status":
 		_, _ = fmt.Fprintln(w, `Usage: wx status [--verbose] [--json]
@@ -568,6 +587,12 @@ Options:
 Run a wx agent hook event read from stdin. Invoked by agent hook
 configuration, not normally run directly.`)
 	default:
-		topUsage(w)
+		topUsageEnglish(w)
 	}
+}
+
+// localizedUsageLanguage is kept separate from commandLanguage so tests can render
+// help for a chosen language without mutating process-wide configuration.
+func localizedUsageLanguage() i18n.Language {
+	return i18n.Normalize(config.LoadLanguage())
 }

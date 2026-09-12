@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
@@ -26,12 +27,14 @@ var setupColumns = []struct {
 func printSetupTable(w io.Writer, steps []setup.Step) {
 	widths := make([]int, len(setupColumns))
 	titles := make([]string, len(setupColumns))
+	lang := localizedUsageLanguage()
 	for index, column := range setupColumns {
-		titles[index] = column.title
+		titles[index] = localizeSetupColumn(column.title, lang)
 		widths[index] = max(utf8.RuneCountInString(column.title), column.min)
 	}
 	rows := [][]string{titles}
 	for _, step := range steps {
+		step = localizeSetupStep(step, lang)
 		rows = append(rows, []string{step.ID, string(step.State), string(step.Default), setupStepDetail(step)})
 	}
 	for _, row := range rows[1:] {
@@ -68,6 +71,49 @@ func setupStepDetail(step setup.Step) string {
 	return step.Target
 }
 
+func localizeSetupColumn(value string, lang i18n.Language) string {
+	if lang != i18n.Japanese {
+		return value
+	}
+	switch value {
+	case "ITEM":
+		return "項目"
+	case "STATE":
+		return "状態"
+	case "ACTION":
+		return "操作"
+	case "DETAIL":
+		return "詳細"
+	default:
+		return value
+	}
+}
+
+// localizeSetupStep は表示用のラベルだけを置き換え、ID・state・action と
+// path や外部エラーを含む可変値はそのまま残す。JSON 出力はこの関数を通さない。
+func localizeSetupStep(step setup.Step, lang i18n.Language) setup.Step {
+	if lang != i18n.Japanese {
+		return step
+	}
+	switch step.ID {
+	case "prerequisites":
+		step.Title = "前提条件"
+	case "worktree_root":
+		step.Title = "Worktree root"
+	case "shell_path":
+		step.Title = "Shell の PATH"
+	case "hooks.claude":
+		step.Title = "Agent hook (claude)"
+	case "hooks.codex":
+		step.Title = "Agent hook (codex)"
+	case "launch_agent":
+		step.Title = "LaunchAgent"
+	case "daemon":
+		step.Title = "Daemon"
+	}
+	return step
+}
+
 // setupStepDescription は TUI の見出しの下に出す 1 行で、何が変わるのかを示す。
 func setupStepDescription(step setup.Step) string {
 	parts := make([]string, 0, 3)
@@ -84,6 +130,15 @@ func setupStepDescription(step setup.Step) string {
 // setupActionDescription は選択肢ごとに、実際に書き込む path と内容の要約を出す。
 // chezmoi などの置き換えという性質上、何が変わるか示さないと選べない。
 func setupActionDescription(step setup.Step, action setup.Action) string {
+	lang := localizedUsageLanguage()
+	if step.ID == "language" {
+		if action == setup.Action(i18n.English) {
+			return "wx の表示を英語にする"
+		}
+		if action == setup.Action(i18n.Japanese) {
+			return "wx の表示を日本語にする"
+		}
+	}
 	if step.ID == "daemon" {
 		if description := setupDaemonActionDescription(action); description != "" {
 			return description
@@ -95,21 +150,42 @@ func setupActionDescription(step setup.Step, action setup.Action) string {
 	}
 	switch action {
 	case setup.ActionInstall:
+		if lang == i18n.Japanese {
+			return summarizeSetupChange(step) + " を " + target + " に書き込みます"
+		}
 		return "write " + summarizeSetupChange(step) + " to " + target
 	case setup.ActionUpdate:
+		if lang == i18n.Japanese {
+			return target + " の wx 部分を " + summarizeSetupChange(step) + " に更新します"
+		}
 		return "replace the wx part of " + target + " with " + summarizeSetupChange(step)
 	case setup.ActionKeep:
+		if lang == i18n.Japanese {
+			return target + " をそのままにします"
+		}
 		return "leave " + target + " as it is"
 	case setup.ActionRemove:
+		if lang == i18n.Japanese {
+			return target + " から wx の管理部分を削除します"
+		}
 		return "remove what wx manages from " + target
 	case setup.ActionSkip:
+		if lang == i18n.Japanese {
+			return "今回は何もしません。後で wx setup を再実行できます"
+		}
 		return "do nothing now; wx setup can be run again later"
 	// start と restart は daemon だけの操作で、文言は setupDaemonActionDescription が先に返す。
 	case setup.ActionStart, setup.ActionRestart:
 		return ""
 	case setup.ActionDefault:
+		if lang == i18n.Japanese {
+			return summarizeSetupChange(step) + " を " + target + " に書き込みます"
+		}
 		return "write " + summarizeSetupChange(step) + " to " + target
 	case setup.ActionManual:
+		if lang == i18n.Japanese {
+			return target + " に書き込む別の path を入力します"
+		}
 		return "type another path to write to " + target
 	default:
 		return ""
@@ -120,12 +196,22 @@ func setupActionDescription(step setup.Step, action setup.Action) string {
 // daemon は設定ファイルへ何も書かないため、書き込みの文型を当てると config.yaml を変えると誤解させる。
 // 起動は launchd.Start（-k なしの kickstart）なので、稼働中の daemon は終了させない。
 func setupDaemonActionDescription(action setup.Action) string {
+	lang := localizedUsageLanguage()
 	switch action {
 	case setup.ActionStart:
+		if lang == i18n.Japanese {
+			return "wx daemon を起動し、local socket の応答を待ちます"
+		}
 		return "start the wx daemon and wait for the local socket to answer"
 	case setup.ActionRestart:
+		if lang == i18n.Japanese {
+			return "daemon が idle になってから再起動し、置き換わった daemon の応答を待ちます"
+		}
 		return "ask the daemon to restart once it is idle, then wait for the replacement to answer"
 	case setup.ActionKeep:
+		if lang == i18n.Japanese {
+			return "実行中の daemon をそのままにします"
+		}
 		return "leave the running daemon as it is"
 	// install・update・remove は daemon に出ず、default と manual は値の入力を伴う項目だけのものである。
 	case setup.ActionInstall, setup.ActionUpdate, setup.ActionRemove, setup.ActionSkip, setup.ActionDefault, setup.ActionManual:
@@ -146,6 +232,7 @@ func summarizeSetupChange(step setup.Step) string {
 }
 
 func printSetupSkipped(w io.Writer, step setup.Step) {
+	step = localizeSetupStep(step, localizedUsageLanguage())
 	line := fmt.Sprintf("%-14s %-14s %s", step.ID, step.State, setupStepDetail(step))
 	_, _ = fmt.Fprintln(w, strings.TrimRight(line, " "))
 	for _, reason := range step.Reasons[min(1, len(step.Reasons)):] {
@@ -167,16 +254,29 @@ func printSetupNote(w io.Writer, note string) {
 
 // printSetupWarnings は適用後に期待した状態にならなかった項目を警告として残す。フローは止めない。
 func printSetupWarnings(w io.Writer, id string, action setup.Action, applied setup.Step) {
+	lang := localizedUsageLanguage()
+	prefix := "warning: "
+	if lang == i18n.Japanese {
+		prefix = "警告: "
+	}
 	switch {
 	case action == setup.ActionRemove && applied.State != setup.StateAbsent && applied.State != setup.StateNotApplicable:
-		_, _ = fmt.Fprintf(w, "warning: %s is still %s after remove\n", id, applied.State)
+		if lang == i18n.Japanese {
+			_, _ = fmt.Fprintf(w, "警告: %s は remove 後も %s です\n", id, applied.State)
+		} else {
+			_, _ = fmt.Fprintf(w, "%s%s is still %s after remove\n", prefix, id, applied.State)
+		}
 	case action != setup.ActionRemove && applied.State != setup.StatePresent:
-		_, _ = fmt.Fprintf(w, "warning: %s is %s after %s\n", id, applied.State, action)
+		if lang == i18n.Japanese {
+			_, _ = fmt.Fprintf(w, "警告: %s は %s 後も %s です\n", id, action, applied.State)
+		} else {
+			_, _ = fmt.Fprintf(w, "%s%s is %s after %s\n", prefix, id, applied.State, action)
+		}
 	default:
 		return
 	}
 	for _, reason := range applied.Reasons {
-		_, _ = fmt.Fprintln(w, "warning:   "+reason)
+		_, _ = fmt.Fprintln(w, prefix+"  "+reason)
 	}
 }
 
@@ -187,14 +287,22 @@ const setupLeftoverPrefix = "leftover"
 // printSetupRemoval は削除結果を項目ごとに 1 行で出し、消さなかった path を最後にまとめる。
 // 失敗は stderr に出し、成功した項目の行は stdout に残す。片付けの続きを利用者が判断できるようにするためである。
 func printSetupRemoval(out, errOut io.Writer, removal setup.Removal) {
+	lang := localizedUsageLanguage()
 	for _, result := range removal.Results {
 		if result.Err != nil {
-			_, _ = fmt.Fprintf(errOut, "error: %s: %v\n", result.ID, result.Err)
+			prefix := "error: "
+			if lang == i18n.Japanese {
+				prefix = "エラー: "
+			}
+			_, _ = fmt.Fprintf(errOut, "%s%s: %v\n", prefix, result.ID, result.Err)
 			continue
 		}
 		note := result.Note
 		if note == "" {
 			note = "nothing to remove"
+			if lang == i18n.Japanese {
+				note = "削除するものはありません"
+			}
 		}
 		_, _ = fmt.Fprintf(out, "%-14s %s\n", result.ID, note)
 	}
@@ -202,7 +310,11 @@ func printSetupRemoval(out, errOut io.Writer, removal setup.Removal) {
 		return
 	}
 	_, _ = fmt.Fprintln(out, "")
-	_, _ = fmt.Fprintln(out, "wx kept these; they hold saved work and records:")
+	if lang == i18n.Japanese {
+		_, _ = fmt.Fprintln(out, "wx は保存済みの作業と記録を含む次の path を残しました:")
+	} else {
+		_, _ = fmt.Fprintln(out, "wx kept these; they hold saved work and records:")
+	}
 	for _, path := range removal.Leftovers {
 		_, _ = fmt.Fprintf(out, "%-14s %s\n", setupLeftoverPrefix, path)
 	}

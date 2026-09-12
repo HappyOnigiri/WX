@@ -60,7 +60,7 @@ func (m model) View() tea.View {
 	}
 	lines = fitLines(lines, max(1, m.height-2), m.width)
 	lines = append(lines, strings.Repeat("─", max(1, m.width)), dim+truncate(footer, m.width)+reset)
-	view := tea.NewView(strings.Join(lines, "\n"))
+	view := tea.NewView(translateDashboard(strings.Join(lines, "\n"), m.lang))
 	view.AltScreen = true
 	view.WindowTitle = "wx control desk"
 	return view

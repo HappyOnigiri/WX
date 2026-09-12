@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -26,11 +27,21 @@ type DegradedHandler struct {
 // 応答を書き終えるまで SIGTERM を遅らせる。listener の終了で RPC 接続が破棄されるためである。
 const degradedStopDelay = 100 * time.Millisecond
 
-func (h DegradedHandler) Handle(ctx context.Context, method string, _ json.RawMessage) (any, error) {
+func (h DegradedHandler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	var language struct {
+		Language string `json:"language,omitempty"`
+	}
+	if method == "Status" || method == "Doctor" {
+		if err := decodeLanguage(raw, &language); err != nil {
+			return nil, err
+		}
+	}
+	ctx = i18n.WithLanguage(ctx, language.Language)
+	loc := i18n.New(string(i18n.LanguageFromContext(ctx)))
 	previousLayout := errors.Is(h.OpenError, state.ErrPreviousWorktreeLayout)
-	message := fmt.Sprintf("SQLite state is unavailable: %v", h.OpenError)
+	message := fmt.Sprintf("%s: %v", loc.Localize("rpc.sqlite_unavailable", nil), h.OpenError)
 	if !previousLayout {
-		message += fmt.Sprintf("; restore a verified backup from %s.backups or preserve the database for wx doctor", h.DatabasePath)
+		message += fmt.Sprintf("; %s %s.backups %s", loc.Localize("rpc.restore_backup", nil), h.DatabasePath, loc.Localize("rpc.preserve_for_doctor", nil))
 	}
 	switch method {
 	case "Ping":
@@ -39,10 +50,11 @@ func (h DegradedHandler) Handle(ctx context.Context, method string, _ json.RawMe
 	case "Status":
 		return map[string]any{"schema_version": state.JSONSchemaVersion, "db_schema_version": state.SchemaVersion, "protocol_version": 1, "degraded": true, "database_path": h.DatabasePath, "error": message}, nil
 	case "Doctor":
-		return diag.Reply{
+		reply := diag.Reply{
 			SchemaVersion: state.JSONSchemaVersion, DBSchemaVersion: state.SchemaVersion, Degraded: true,
 			Findings: diag.DegradedFindings(ctx, h.DatabasePath, h.OpenError, previousLayout),
-		}, nil
+		}
+		return diag.LocalizeReply(reply, i18n.LanguageFromContext(ctx)), nil
 	case "RequestStop":
 		// Degraded mode は状態を変更せず予約もないため、manager のアイドルゲートを通さない。
 		// ここを拒否すると、調査対象の DB を開いたデーモンを停止する手段が失われる。
@@ -53,7 +65,7 @@ func (h DegradedHandler) Handle(ctx context.Context, method string, _ json.RawMe
 		time.AfterFunc(degradedStopDelay, func() { _ = terminate() })
 		return map[string]any{"degraded": true, "stop_pending": true, "pid": os.Getpid()}, nil
 	default:
-		return nil, errors.New("wx daemon is read-only degraded: " + message)
+		return nil, errors.New(loc.Localize("rpc.degraded_read_only", map[string]any{"Message": message}))
 	}
 }
 
@@ -64,6 +76,15 @@ func decode(raw json.RawMessage, v any) error {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.DisallowUnknownFields()
 	return d.Decode(v)
+}
+
+// decodeLanguage は既存の Status/Doctor が受け付けていた追加パラメータを保ちつつ、
+// 新しい language だけを取り出す。診断系の要求は旧クライアントとの互換性を優先する。
+func decodeLanguage(raw json.RawMessage, v any) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	return json.Unmarshal(raw, v)
 }
 
 // dispatch 全体を in-flight として数える。応答途中の kickstart を防ぐため、decode 失敗を含む全 method を囲む。
@@ -169,9 +190,23 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		}
 		return h.Manager.WorkspaceScope(ctx, p.CWD)
 	case "Status":
-		return h.Manager.Status(ctx)
+		var p struct {
+			Language string `json:"language,omitempty"`
+		}
+		if err := decodeLanguage(raw, &p); err != nil {
+			return nil, err
+		}
+		return h.Manager.Status(i18n.WithLanguage(ctx, p.Language))
 	case "Doctor":
-		return h.Manager.Doctor(ctx), nil
+		var p struct {
+			Language string `json:"language,omitempty"`
+		}
+		if err := decodeLanguage(raw, &p); err != nil {
+			return nil, err
+		}
+		localizedCtx := i18n.WithLanguage(ctx, p.Language)
+		reply := h.Manager.Doctor(localizedCtx)
+		return diag.LocalizeReply(reply, i18n.LanguageFromContext(localizedCtx)), nil
 	case "GC":
 		var p struct {
 			DryRun bool `json:"dry_run"`
@@ -364,6 +399,7 @@ func (h Handler) dispatchLease(ctx context.Context, method string, raw json.RawM
 		if err := decode(raw, &p); err != nil {
 			return nil, true, err
 		}
+		ctx = i18n.WithLanguage(ctx, p.Language)
 		attrs, err := h.Manager.resolveLeaseAttrs(ctx, p.LeaseKind, p.LeaseOwnerSessionID, p.LeaseOwnerToken)
 		if err != nil {
 			return nil, true, err
@@ -379,6 +415,7 @@ func (h Handler) dispatchLease(ctx context.Context, method string, raw json.RawM
 		if err := decode(raw, &p); err != nil {
 			return nil, true, err
 		}
+		ctx = i18n.WithLanguage(ctx, p.Language)
 		attrs, err := h.Manager.resolveLeaseAttrs(ctx, p.LeaseKind, p.LeaseOwnerSessionID, p.LeaseOwnerToken)
 		if err != nil {
 			return nil, true, err

@@ -1,30 +1,34 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 
 	"github.com/spf13/pflag"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 func runSlots(ctx context.Context, args []string) int {
+	ctx = commandContext(ctx)
 	fs := pflag.NewFlagSet("slots", pflag.ContinueOnError)
 	all := fs.Bool("all", false, "also list sessions that no longer hold a slot")
 	jsonOut := fs.Bool("json", false, "print JSON")
-	fs.Usage = func() { commandUsage(os.Stdout, "slots") }
+	fs.Usage = func() { commandUsageLanguage(os.Stdout, "slots", i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, "slots", args); done {
 		return code
 	}
 	if fs.NArg() != 0 {
-		commandUsage(os.Stderr, "slots")
+		commandUsageLanguage(os.Stderr, "slots", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	c, _ := rpcClient()
 	var out []map[string]any
 	if err := c.Call(ctx, "Slots", map[string]bool{"all": *all}, &out); err != nil {
-		reportRPCError(err)
+		reportRPCErrorContext(ctx, err)
 		return 1
 	}
 	if *jsonOut {
@@ -39,6 +43,8 @@ func runSlots(ctx context.Context, args []string) int {
 			slotCopyMode(s), slotSizeMB(s), slotField(s, "path"),
 		})
 	}
-	printSlotTable(os.Stdout, rows)
+	var rendered bytes.Buffer
+	printSlotTable(&rendered, rows)
+	fmt.Print(translateHumanOutput(rendered.String(), i18n.LanguageFromContext(ctx)))
 	return 0
 }

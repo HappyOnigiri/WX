@@ -107,6 +107,11 @@ func configListField(v reflect.Value, key string) reflect.Value {
 func Fields(c Config) []Field {
 	var fields []Field
 	walkConfigLeaves(reflect.ValueOf(c), "", func(key string, fv reflect.Value) {
+		// language は既定値が英語で、既存の設定一覧の行数・順序を変えない。
+		// 明示値（または日本語）だけは一覧へ出し、CLI の global 表示は実効値を別途先頭へ載せる。
+		if key == "language" && c.Language == LanguageEnglish && !c.has(key, false) {
+			return
+		}
 		var value string
 		switch {
 		case fv.Type() == durationType:

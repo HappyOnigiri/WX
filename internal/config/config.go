@@ -29,25 +29,29 @@ func (d Duration) MarshalYAML() (any, error) { return d.String(), nil }
 type Config struct {
 	// Version 2 は machine-wide 設定を system と2つの global profile に分ける。
 	// 旧フィールドは既存 caller の実効値参照用にメモリへ残し、保存時は v2 形状だけを出力する。
-	System             SystemConfig          `yaml:"system,omitempty"`
-	WorkspaceDefaults  WorkspaceDefaults     `yaml:"workspace_defaults,omitempty"`
-	RepositoryDefaults RepositoryDefaults    `yaml:"repository_defaults,omitempty"`
-	Worktree           WorktreePolicy        `yaml:"worktree,omitempty"`
-	Version            int                   `yaml:"version,omitempty"`
-	Storage            Storage               `yaml:"storage,omitempty"`
-	Pool               Pool                  `yaml:"pool,omitempty"`
-	Retention          Retention             `yaml:"retention,omitempty"`
-	Discovery          Discovery             `yaml:"discovery,omitempty"`
-	Readiness          Readiness             `yaml:"readiness,omitempty"`
-	Resume             Resume                `yaml:"resume,omitempty"`
-	Lease              Lease                 `yaml:"lease,omitempty"`
-	Includes           Includes              `yaml:"includes,omitempty"`
-	Agent              Agent                 `yaml:"agent,omitempty"`
-	Sessions           sessionsconfig.Config `yaml:"sessions,omitempty"`
-	Workspaces         map[string]Workspace  `yaml:"workspaces,omitempty"`
-	Repositories       map[string]Repository `yaml:"repositories,omitempty"`
-	Logging            Logging               `yaml:"logging,omitempty"`
-	present            map[string]bool
+	System             SystemConfig       `yaml:"system,omitempty"`
+	WorkspaceDefaults  WorkspaceDefaults  `yaml:"workspace_defaults,omitempty"`
+	RepositoryDefaults RepositoryDefaults `yaml:"repository_defaults,omitempty"`
+	// Language は CLI・TUI・daemon の利用者向け表示言語で、global 設定だけが持つ。
+	// 未記載は英語を意味し、workspace/repository の個別指定へは伝播しない。
+	// v2 の正本は system.language で、この field はその flatten view である。
+	Language     string                `yaml:"language,omitempty"`
+	Worktree     WorktreePolicy        `yaml:"worktree,omitempty"`
+	Version      int                   `yaml:"version,omitempty"`
+	Storage      Storage               `yaml:"storage,omitempty"`
+	Pool         Pool                  `yaml:"pool,omitempty"`
+	Retention    Retention             `yaml:"retention,omitempty"`
+	Discovery    Discovery             `yaml:"discovery,omitempty"`
+	Readiness    Readiness             `yaml:"readiness,omitempty"`
+	Resume       Resume                `yaml:"resume,omitempty"`
+	Lease        Lease                 `yaml:"lease,omitempty"`
+	Includes     Includes              `yaml:"includes,omitempty"`
+	Agent        Agent                 `yaml:"agent,omitempty"`
+	Sessions     sessionsconfig.Config `yaml:"sessions,omitempty"`
+	Workspaces   map[string]Workspace  `yaml:"workspaces,omitempty"`
+	Repositories map[string]Repository `yaml:"repositories,omitempty"`
+	Logging      Logging               `yaml:"logging,omitempty"`
+	present      map[string]bool
 	// prepareOverride は貸出1回だけの準備設定の上書きで、設定ファイルにも workspaces/repositories にも現れない。
 	// 解決ヘルパーはこれを最上位に置き、repository 個別指定より優先する。
 	prepareOverride PrepareOverride
@@ -56,10 +60,51 @@ type Config struct {
 	v2Explicit bool
 }
 
+const (
+	LanguageEnglish  = "en"
+	LanguageJapanese = "ja"
+)
+
+// DisplayLanguage は設定を直接組み立てた呼び出し側も安全に表示できるよう、
+// 未設定・未対応値を英語へ戻して返す。
+func (c Config) DisplayLanguage() string {
+	if c.Language == LanguageJapanese {
+		return LanguageJapanese
+	}
+	return LanguageEnglish
+}
+
+// LanguageForRPC は要求へ載せる表示言語を返す。未記載の英語は旧クライアントと
+// 同じくフィールドを省略し、明示した英語と日本語だけを daemon へ伝える。
+func (c Config) LanguageForRPC() string {
+	if c.Language == LanguageJapanese {
+		return LanguageJapanese
+	}
+	if _, explicit := c.rawLanguage(); explicit && c.Language == LanguageEnglish {
+		return LanguageEnglish
+	}
+	return ""
+}
+
+// rawLanguage は v1 の top-level と v2 の system.language のどちらで書かれていても、
+// 設定ファイルで明示された表示言語を取り出す。値の妥当性は検証しない。
+// 設定ファイル由来でない Config は未記載として扱い、既定値を明示指定と誤認しない。
+func (c Config) rawLanguage() (string, bool) {
+	if c.has("system.language", false) {
+		return c.System.Language, true
+	}
+	if c.has("language", false) {
+		return c.Language, true
+	}
+	return "", false
+}
+
 // SystemConfig は daemon とマシン全体で共有する設定を保持する config v2 の
 // system 節である。Repository や Workspace に属する値をここへ置かないため、
 // global defaults を変更しても所属単位以外へ波及しないことを型で示す。
 type SystemConfig struct {
+	// Language は v2 における表示言語の正本で、top-level の Language はこの flatten view である。
+	Language  string                `yaml:"language,omitempty"`
 	Storage   SystemStorage         `yaml:"storage,omitempty"`
 	Pool      SystemPool            `yaml:"pool,omitempty"`
 	Retention SystemRetention       `yaml:"retention,omitempty"`
@@ -387,6 +432,7 @@ func (c Config) COWMinShareSize(mainPath string) int64 {
 
 func Defaults() Config {
 	return Config{
+		Language: LanguageEnglish,
 		Worktree: WorktreePolicy{Undefined: "ask", ReuseStandby: true, Submodules: true},
 		Version:  1, Storage: Storage{
 			WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, COWMinSizeKiB: DefaultCOWMinSizeKiB,
@@ -456,7 +502,26 @@ func Merge(d, raw Config) Config {
 	if raw.has("repositories", raw.Repositories != nil) {
 		r.Repositories = raw.Repositories
 	}
+	if raw.has("language", raw.Language != "") {
+		if r.present == nil {
+			r.present = map[string]bool{}
+		}
+		r.present["language"] = true
+	}
 	return r
+}
+
+// validateLanguage は表示言語を正規化し、対応しない値を拒否する。
+func validateLanguage(c *Config) error {
+	if c.Language == "" && !c.has("language", false) {
+		// 呼び出し側が zero Config を組み立てても未記載＝英語として扱う。
+		// YAML で明示された空文字は present に残るため、下の不正値検査を通る。
+		c.Language = LanguageEnglish
+	}
+	if c.Language != LanguageEnglish && c.Language != LanguageJapanese {
+		return fmt.Errorf("language must be %s or %s", LanguageEnglish, LanguageJapanese)
+	}
+	return nil
 }
 
 func validateSchema(c *Config) error {
@@ -478,6 +543,9 @@ func Validate(c *Config) error {
 		return errors.New("config is nil")
 	}
 	if err := validateSchema(c); err != nil {
+		return err
+	}
+	if err := validateLanguage(c); err != nil {
 		return err
 	}
 	if err := validateReadiness(&c.Readiness); err != nil {

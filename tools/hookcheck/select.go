@@ -34,6 +34,7 @@ var checkOrder = []string{
 	"gitexec-check",
 	"fuzz-check",
 	"migrations-check",
+	"catalog-check",
 	"automation-check",
 	"docs-check",
 	"docs-index-check",
@@ -53,6 +54,7 @@ var makefileChecks = []string{
 	"check-fast",
 	"gitexec-check",
 	"fuzz-check",
+	"catalog-check",
 }
 
 func selectChecks(root string, files []changedFile) (selection, error) {
@@ -349,6 +351,7 @@ func structuralTool(path string) (string, bool) {
 		{"tools/checkmigrations/", "migrations-check"},
 		{"tools/checkautomation/", "automation-check"},
 		{"tools/checkdocsindex/", "docs-index-check"},
+		{"tools/checkcatalog/", "catalog-check"},
 	} {
 		if strings.HasPrefix(path, name.prefix) {
 			return name.check, true
@@ -373,6 +376,7 @@ func structuralPackage(path string) string {
 		"tools/checkmigrations/",
 		"tools/checkautomation/",
 		"tools/checkdocsindex/",
+		"tools/checkcatalog/",
 	} {
 		if strings.HasPrefix(path, prefix) {
 			return "./" + strings.TrimSuffix(prefix, "/")
