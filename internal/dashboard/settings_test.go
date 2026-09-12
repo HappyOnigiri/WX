@@ -36,7 +36,7 @@ func TestLaunchOffersRegisteredWorkspacesAndCustomInput(t *testing.T) {
 	}
 	updated, _ = m.Update(key(tea.KeyEnter))
 	m = updated.(model)
-	if m.target != "/tmp/workspace-one" || m.inputStage != "workdir-args" {
+	if m.target != "/tmp/workspace-one" || m.mode != modeChoice || m.inputStage != "arguments-choice" {
 		t.Fatalf("target=%q stage=%q", m.target, m.inputStage)
 	}
 }
@@ -53,5 +53,21 @@ func TestRepositoryEnvironmentBuildsRepositoryConfigAction(t *testing.T) {
 	if len(m.result.Args) != 5 || m.result.Args[0] != "config" || m.result.Args[1] != "--repository" ||
 		m.result.Args[2] != "/tmp/repository-one" || m.result.Args[3] != m.configMeta.Key || m.result.Args[4] != "changed" {
 		t.Fatalf("repository action=%v", m.result.Args)
+	}
+}
+
+func TestConfigChoicesLimitCustomInputToOpenEndedKinds(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	for _, meta := range m.catalog {
+		m.configMeta = meta
+		m.showConfigChoices()
+		hasCustomSet := false
+		for _, option := range m.choices {
+			hasCustomSet = hasCustomSet || option.label == "Enter a custom value…"
+		}
+		wantCustomSet := meta.Kind == config.KindInteger || meta.Kind == config.KindDuration || (meta.Kind == config.KindString && len(meta.Choices) == 0)
+		if hasCustomSet != wantCustomSet {
+			t.Errorf("%s custom set=%v, want %v for kind=%s choices=%v", meta.Key, hasCustomSet, wantCustomSet, meta.Kind, meta.Choices)
+		}
 	}
 }

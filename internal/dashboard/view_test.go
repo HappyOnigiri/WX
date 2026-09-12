@@ -51,14 +51,19 @@ func TestSelectedTabUsesBackgroundInsteadOfBrackets(t *testing.T) {
 }
 
 func TestSelectedMenuItemUsesAccentColor(t *testing.T) {
-	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	cfg := config.Defaults()
+	cfg.Workspaces["/tmp/workspace-one"] = config.Workspace{}
+	m := newModel(context.Background(), Options{Config: cfg})
 	for _, setup := range []struct {
 		name         string
 		tab          int
 		settingsOpen bool
 	}{
 		{name: "launch", tab: 1},
+		{name: "settings environments", tab: 2},
 		{name: "settings", tab: 2, settingsOpen: true},
+		{name: "maintenance", tab: 4},
+		{name: "system", tab: 5},
 	} {
 		t.Run(setup.name, func(t *testing.T) {
 			m.tab, m.settingsOpen = setup.tab, setup.settingsOpen
@@ -73,6 +78,16 @@ func TestSelectedMenuItemUsesAccentColor(t *testing.T) {
 				t.Fatalf("unselected menu item uses accent color: %q", lines[3])
 			}
 		})
+	}
+}
+
+func TestSelectedChoiceUsesAccentColor(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.pending = tabMenus[4][0]
+	m.showArgumentChoices()
+	lines := m.choiceView()
+	if !strings.Contains(lines[3], reset+accent) {
+		t.Fatalf("selected choice has no accent color: %q", lines[3])
 	}
 }
 

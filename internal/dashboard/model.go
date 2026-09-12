@@ -63,6 +63,7 @@ type choice struct {
 	label string
 	value string
 	op    config.EditOperation
+	input bool
 }
 
 type environment struct {
@@ -313,7 +314,7 @@ func (m model) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mode, m.input = modeList, ""
 	case "enter":
 		required := m.pending.inputNeeded
-		if m.inputStage == "workdir" || (m.inputStage != "workdir-args" && m.pending.workDir) {
+		if m.inputStage == "workdir" || m.inputStage == "target-value" || (m.inputStage != "workdir-args" && m.pending.workDir) {
 			required = true
 		}
 		if strings.TrimSpace(m.input) == "" && required {
@@ -325,13 +326,12 @@ func (m model) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.showConfigChoices()
 		case "config-value", "setup-value":
 			m.mode = modeConfirm
+		case "target-value":
+			m.target, m.input = strings.TrimSpace(m.input), ""
+			m.afterTargetChoice()
 		case "workdir":
 			m.target, m.input = strings.TrimSpace(m.input), ""
-			if m.pending.inputLabel != "" {
-				m.inputHint, m.inputStage = m.pending.inputLabel, "workdir-args"
-			} else {
-				m.mode = modeConfirm
-			}
+			m.afterWorkdirChoice()
 		case "workdir-args":
 			m.mode = modeConfirm
 		default:
@@ -450,6 +450,19 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		m.showWorkspaceChoices()
 		return m, nil
 	}
+	if m.pending.targetWorkspace {
+		m.showTargetChoices()
+		return m, nil
+	}
+	if m.pending.targetInput {
+		m.inputHint, m.inputStage = m.pending.inputLabel, "target-value"
+		m.mode, m.input = modeInput, ""
+		return m, nil
+	}
+	if len(m.pending.argumentChoices) > 0 {
+		m.showArgumentChoices()
+		return m, nil
+	}
 	if m.pending.inputLabel != "" {
 		m.inputHint = m.pending.inputLabel
 		m.mode, m.input = modeInput, ""
@@ -467,7 +480,7 @@ func (m model) choose() (tea.Model, tea.Cmd) {
 	if m.tab == 2 {
 		m.editOp = selected.op
 		m.input = selected.value
-		if selected.op != config.EditReset && selected.value == "" {
+		if selected.input {
 			m.inputHint, m.inputStage = "Value", "config-value"
 			m.mode = modeInput
 		} else {
@@ -485,16 +498,29 @@ func (m model) choose() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.pending.workDir {
+	switch m.inputStage {
+	case "workdir-choice":
 		m.target, m.input = selected.value, ""
-		switch {
-		case selected.value == "":
+		if selected.input {
 			m.inputHint, m.inputStage = "Workspace path", "workdir"
 			m.mode = modeInput
-		case m.pending.inputLabel != "":
-			m.inputHint, m.inputStage = m.pending.inputLabel, "workdir-args"
+		} else {
+			m.afterWorkdirChoice()
+		}
+	case "target-choice":
+		m.target, m.input = selected.value, ""
+		if selected.input {
+			m.inputHint, m.inputStage = "Workspace path", "target-value"
 			m.mode = modeInput
-		default:
+		} else {
+			m.afterTargetChoice()
+		}
+	case "arguments-choice":
+		m.input = selected.value
+		if selected.input {
+			m.inputHint, m.inputStage = m.pending.inputLabel, "arguments"
+			m.mode = modeInput
+		} else {
 			m.mode = modeConfirm
 		}
 	}
@@ -532,6 +558,9 @@ func (m *model) finishPending() {
 			args = append(args, "--value", input)
 		}
 	default:
+		if m.pending.targetWorkspace || m.pending.targetInput {
+			args = append(args, m.target)
+		}
 		if m.pending.workDir {
 			workDir = m.target
 			if workDir == "" {

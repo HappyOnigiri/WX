@@ -313,10 +313,12 @@ func (m model) choiceView() []string {
 	lines := []string{accent + m.pending.label + reset, "", "Choose a value or action:"}
 	for index, option := range m.choices {
 		marker := "  "
+		label := option.label
 		if index == m.choice {
 			marker = accent + "❯ " + reset
+			label = accent + label + reset
 		}
-		lines = append(lines, marker+option.label)
+		lines = append(lines, marker+label)
 	}
 	return append(lines, "", dim+"↑/↓ select  Enter confirm  Esc back"+reset)
 }
@@ -335,9 +337,9 @@ func (m model) confirmView() []string {
 		}
 		lines = append(lines, "Current: "+current, "Change: "+change)
 	}
-	if m.pending.workDir {
+	if m.pending.workDir || m.pending.targetWorkspace || m.pending.targetInput {
 		target := m.target
-		if target == "" {
+		if target == "" && m.pending.workDir {
 			target = strings.TrimSpace(strings.SplitN(m.input, "|", 2)[0])
 		}
 		lines = append(lines, "Target: "+target)

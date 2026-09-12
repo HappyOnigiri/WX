@@ -102,27 +102,65 @@ func (m *model) showConfigChoices() {
 			choice{label: "Enabled", value: "true", op: config.EditSet},
 			choice{label: "Disabled", value: "false", op: config.EditSet})
 	}
-	if len(m.choices) == 0 || meta.Kind == config.KindInteger || meta.Kind == config.KindDuration || meta.Kind == config.KindString {
-		m.choices = append(m.choices, choice{label: "Enter a custom value…", op: config.EditSet})
+	if meta.Kind == config.KindInteger || meta.Kind == config.KindDuration || (len(m.choices) == 0 && meta.Kind != config.KindList) {
+		m.choices = append(m.choices, choice{label: "Enter a custom value…", op: config.EditSet, input: true})
 	}
 	if meta.Kind == config.KindList {
 		m.choices = append(m.choices,
-			choice{label: "Add a value…", op: config.EditAdd},
-			choice{label: "Remove a value…", op: config.EditRemove})
+			choice{label: "Add a value…", op: config.EditAdd, input: true},
+			choice{label: "Remove a value…", op: config.EditRemove, input: true})
 	}
 	m.choices = append(m.choices, choice{label: "Reset to default", op: config.EditReset})
 	m.mode, m.inputStage = modeChoice, ""
 }
 
 func (m *model) showWorkspaceChoices() {
-	m.choices, m.choice, m.inputStage = nil, 0, ""
+	m.choices, m.choice, m.inputStage = nil, 0, "workdir-choice"
 	for _, environment := range m.configEnvironments() {
 		if environment.scope == "workspace" {
 			m.choices = append(m.choices, choice{label: environment.label + " — " + environment.target, value: environment.target})
 		}
 	}
-	m.choices = append(m.choices, choice{label: "Enter another path…"})
+	m.choices = append(m.choices, choice{label: "Enter another path…", input: true})
 	m.mode = modeChoice
+}
+
+func (m *model) showTargetChoices() {
+	m.choices, m.choice, m.inputStage = nil, 0, "target-choice"
+	if m.pending.targetAll {
+		m.choices = append(m.choices, choice{label: "All registered workspaces", value: "--all"})
+	}
+	for _, environment := range m.configEnvironments() {
+		if environment.scope == "workspace" {
+			m.choices = append(m.choices, choice{label: environment.label + " — " + environment.target, value: environment.target})
+		}
+	}
+	m.choices = append(m.choices, choice{label: "Enter another path…", input: true})
+	m.mode = modeChoice
+}
+
+func (m *model) showArgumentChoices() {
+	m.choices = append(m.choices[:0], m.pending.argumentChoices...)
+	m.choice, m.inputStage, m.mode = 0, "arguments-choice", modeChoice
+}
+
+func (m *model) afterWorkdirChoice() {
+	switch {
+	case len(m.pending.argumentChoices) > 0:
+		m.showArgumentChoices()
+	case m.pending.inputLabel != "":
+		m.inputHint, m.inputStage, m.mode = m.pending.inputLabel, "workdir-args", modeInput
+	default:
+		m.mode = modeConfirm
+	}
+}
+
+func (m *model) afterTargetChoice() {
+	if len(m.pending.argumentChoices) > 0 {
+		m.showArgumentChoices()
+	} else {
+		m.mode = modeConfirm
+	}
 }
 
 func hasScope(scopes []string, scope string) bool {

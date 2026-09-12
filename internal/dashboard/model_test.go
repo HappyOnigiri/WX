@@ -26,8 +26,15 @@ func TestModelBuildsActionWithExplicitWorkspace(t *testing.T) {
 	m.input = "/tmp/project"
 	updated, _ = m.Update(key(tea.KeyEnter))
 	m = updated.(model)
-	if m.mode != modeInput || m.inputStage != "workdir-args" {
-		t.Fatalf("mode=%v stage=%q, want argument input", m.mode, m.inputStage)
+	if m.mode != modeChoice || m.inputStage != "arguments-choice" {
+		t.Fatalf("mode=%v stage=%q, want argument choice", m.mode, m.inputStage)
+	}
+	updated, _ = m.Update(key(tea.KeyDown))
+	m = updated.(model)
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if m.mode != modeInput || m.inputStage != "arguments" {
+		t.Fatalf("mode=%v stage=%q, want custom argument input", m.mode, m.inputStage)
 	}
 	m.input = "--dangerously-skip-permissions"
 	updated, _ = m.Update(key(tea.KeyEnter))
@@ -39,6 +46,59 @@ func TestModelBuildsActionWithExplicitWorkspace(t *testing.T) {
 	}
 	if got := m.result.Args; len(got) != 2 || got[0] != "claude" || got[1] != "--dangerously-skip-permissions" {
 		t.Fatalf("args=%v", got)
+	}
+}
+
+func TestOptionalArgumentsAlwaysStartWithChoices(t *testing.T) {
+	for tab, items := range tabMenus {
+		for _, item := range items {
+			if item.inputLabel != "" && !item.inputNeeded && len(item.argumentChoices) == 0 {
+				t.Errorf("tab %d item %q opens unrestricted optional input", tab, item.label)
+			}
+		}
+	}
+}
+
+func TestReleaseChoosesWhetherToDiscardAfterSessionInput(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.tab, m.selected = 4, 4
+	updated, _ := m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if m.mode != modeInput || m.inputStage != "target-value" {
+		t.Fatalf("release mode=%v stage=%q, want session input", m.mode, m.inputStage)
+	}
+	m.input = "session-1"
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if m.mode != modeChoice || m.inputStage != "arguments-choice" || len(m.choices) != 2 {
+		t.Fatalf("release choices=%+v mode=%v stage=%q", m.choices, m.mode, m.inputStage)
+	}
+	m.choice = 1
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	m.finishPending()
+	if got := m.result.Args; len(got) != 3 || got[0] != "release" || got[1] != "session-1" || got[2] != "--discard" {
+		t.Fatalf("release action=%v", got)
+	}
+}
+
+func TestMaintenanceTargetsAndModesStartWithChoices(t *testing.T) {
+	tests := []struct {
+		selected int
+		stage    string
+	}{
+		{selected: 0, stage: "arguments-choice"},
+		{selected: 3, stage: "target-choice"},
+		{selected: 5, stage: "target-choice"},
+	}
+	for _, test := range tests {
+		m := newModel(context.Background(), Options{Config: config.Defaults()})
+		m.tab, m.selected = 4, test.selected
+		updated, _ := m.Update(key(tea.KeyEnter))
+		m = updated.(model)
+		if m.mode != modeChoice || m.inputStage != test.stage {
+			t.Errorf("item %d mode=%v stage=%q, want choice stage %q", test.selected, m.mode, m.inputStage, test.stage)
+		}
 	}
 }
 
