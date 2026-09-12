@@ -1,4 +1,4 @@
-// testshard は go test -list の結果を安定した名前単位のbucketへ分ける。
+// testshard は go test の対象を実測時間の重みで安定したbucketへ分ける。
 package main
 
 import (
@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"go/token"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"regexp"
@@ -31,31 +32,139 @@ func commandMain(ctx context.Context, args []string, output, errorOutput io.Writ
 	flags.SetOutput(errorOutput)
 	goCommand := flags.String("go", "go", "Go executable used to list tests")
 	packageName := flags.String("package", "", "package passed to go test")
+	packageList := flags.String("packages", "", "whitespace-separated packages for package mode")
+	flags.StringVar(packageList, "package-list", "", "whitespace-separated packages for package mode")
 	bucketCount := flags.Int("count", 0, "number of buckets")
 	bucketIndex := flags.Int("index", -1, "zero-based bucket index")
+	mode := flags.String("mode", "test", "split mode: test or package")
+	flags.StringVar(mode, "kind", "test", "split mode: test or package")
+	weightPath := flags.String("weights", "", "JSON file containing measured test and package weights")
+	flags.StringVar(weightPath, "weight-file", "", "JSON file containing measured test and package weights")
+	flags.StringVar(weightPath, "weight", "", "JSON file containing measured test and package weights")
+	writeWeightsPath := flags.String("write-weights", "", "write weights collected from report JSONL files")
+	flags.StringVar(writeWeightsPath, "generate-weights", "", "write weights collected from report JSONL files")
+	reportsPath := flags.String("reports", "", "root containing citest report directories")
+	flags.StringVar(reportsPath, "reports-dir", "", "root containing citest report directories")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if flags.NArg() != 0 {
+	if *writeWeightsPath != "" {
+		if flags.NArg() != 0 || strings.TrimSpace(*reportsPath) == "" {
+			_, _ = fmt.Fprintln(errorOutput, "testshard: -reports is required and positional arguments are not allowed when writing weights")
+			return 2
+		}
+		if err := writeWeights(*reportsPath, *writeWeightsPath); err != nil {
+			_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	*mode = canonicalMode(*mode)
+	if flags.NArg() != 0 && *mode != "package" {
 		_, _ = fmt.Fprintln(errorOutput, "testshard: unexpected positional arguments")
 		return 2
 	}
-	if err := validateConfig(*goCommand, *packageName, *bucketCount, *bucketIndex); err != nil {
+	if err := validateMode(*mode); err != nil {
 		_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", err)
 		return 2
 	}
-	names, err := listNames(ctx, *goCommand, *packageName)
+	if err := validateConfig(*goCommand, *packageName, *bucketCount, *bucketIndex); err != nil && *mode == "test" {
+		_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", err)
+		return 2
+	}
+	if err := validateBuckets(*bucketCount, *bucketIndex); err != nil {
+		_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", err)
+		return 2
+	}
+	table, err := loadWeights(*weightPath)
+	if err != nil {
+		_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", err)
+		return 2
+	}
+	var selected []string
+	switch *mode {
+	case "test":
+		names, listErr := listNames(ctx, *goCommand, *packageName)
+		if listErr != nil {
+			_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", listErr)
+			return 1
+		}
+		if strings.TrimSpace(*weightPath) == "" {
+			selected, err = selectBucket(names, *bucketCount, *bucketIndex)
+		} else {
+			selected, err = selectWeightedTestBucket(names, *packageName, *bucketCount, *bucketIndex, table)
+		}
+	case "package":
+		packages, listErr := parsePackageInput(*packageList)
+		if listErr != nil {
+			_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", listErr)
+			return 2
+		}
+		if len(packages) == 0 {
+			packages, listErr = parsePackageInput(*packageName)
+			if listErr != nil {
+				_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", listErr)
+				return 2
+			}
+		}
+		for _, argument := range flags.Args() {
+			argumentPackages, parseErr := parsePackageInput(argument)
+			if parseErr != nil {
+				_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", parseErr)
+				return 2
+			}
+			packages = append(packages, argumentPackages...)
+		}
+		selected, err = selectWeightedPackageBucket(packages, *bucketCount, *bucketIndex, table)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", err)
 		return 1
 	}
-	selected, err := selectBucket(names, *bucketCount, *bucketIndex)
-	if err != nil {
-		_, _ = fmt.Fprintf(errorOutput, "testshard: %v\n", err)
-		return 1
+	if *mode == "package" {
+		_, _ = fmt.Fprintln(output, strings.Join(selected, "\n"))
+	} else {
+		_, _ = fmt.Fprintln(output, runPattern(selected))
 	}
-	_, _ = fmt.Fprintln(output, runPattern(selected))
 	return 0
+}
+
+func parsePackageInput(value string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	if info, err := os.Stat(value); err == nil {
+		if info.Mode().IsRegular() {
+			data, readErr := os.ReadFile(value)
+			if readErr != nil {
+				return nil, fmt.Errorf("read package list %q: %w", value, readErr)
+			}
+			value = string(data)
+		}
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool { return unicode.IsSpace(r) || r == ',' })
+	return fields, nil
+}
+
+func validateMode(mode string) error {
+	switch canonicalMode(mode) {
+	case "test", "package":
+		return nil
+	default:
+		return fmt.Errorf("unknown split mode %q (want test or package)", mode)
+	}
+}
+
+func canonicalMode(mode string) string {
+	switch mode {
+	case "tests":
+		return "test"
+	case "packages":
+		return "package"
+	default:
+		return mode
+	}
 }
 
 func validateConfig(goCommand, packageName string, count, index int) error {
@@ -156,7 +265,31 @@ func testPrefixName(name, prefix string) bool {
 	return !unicode.IsLower(runeValue)
 }
 
-func selectBucket(names []string, count, index int) ([]string, error) {
+func selectBucket(names []string, count, index int, weights ...map[string]float64) ([]string, error) {
+	if len(weights) > 1 {
+		return nil, errors.New("at most one weight map is allowed")
+	}
+	if len(weights) == 1 {
+		return selectWeightedBucket(names, count, index, func(name string) (float64, bool) {
+			weight, ok := weights[0][name]
+			return weight, ok
+		}, medianWeightValues(weights[0]))
+	}
+	return selectHashBucket(names, count, index)
+}
+
+func medianWeightValues(weights map[string]float64) float64 {
+	values := make([]float64, 0, len(weights))
+	for _, weight := range weights {
+		if validWeight(weight) {
+			values = append(values, weight)
+		}
+	}
+	return medianWeight(values)
+}
+
+// selectHashBucket は旧呼び出し側との互換用に残す。CLIの既定経路は重み付き分割である。
+func selectHashBucket(names []string, count, index int) ([]string, error) {
 	if err := validateBuckets(count, index); err != nil {
 		return nil, err
 	}
@@ -182,6 +315,97 @@ func selectBucket(names []string, count, index int) ([]string, error) {
 	}
 	sort.Strings(selected)
 	return selected, nil
+}
+
+// selectWeightedTestBucket は単一パッケージのトップレベルテストを分割する。
+func selectWeightedTestBucket(names []string, packageName string, count, index int, table weightTable) ([]string, error) {
+	return selectWeightedBucket(names, count, index, func(name string) (float64, bool) {
+		return table.testWeight(packageName, name)
+	}, table.testMedian())
+}
+
+// selectWeightedPackageBucket はパッケージ名を分割する。package modeでは
+// go listの結果をそのまま入力とし、go test -listを実行しない。
+func selectWeightedPackageBucket(packages []string, count, index int, table weightTable) ([]string, error) {
+	if len(packages) == 0 {
+		return nil, errors.New("package list is empty")
+	}
+	for _, packageName := range packages {
+		if strings.TrimSpace(packageName) == "" || strings.IndexFunc(packageName, unicode.IsControl) >= 0 {
+			return nil, fmt.Errorf("invalid package name %q", packageName)
+		}
+	}
+	return selectWeightedBucket(packages, count, index, table.packageWeight, table.packageMedian())
+}
+
+// selectWeightedBucket は重みの降順（同値なら名前順）で最も軽いbucketへ詰めるLPT。
+// lookupに無い項目にはmedianを与え、入力順によらず同じ所属を返す。
+func selectWeightedBucket(names []string, count, index int, lookup func(string) (float64, bool), median float64) ([]string, error) {
+	if err := validateBuckets(count, index); err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		return nil, errors.New("item list is empty")
+	}
+	if median <= 0 || !validWeight(median) {
+		median = 1
+	}
+	seen := make(map[string]bool, len(names))
+	items := make([]weightedItem, 0, len(names))
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" || strings.IndexFunc(name, unicode.IsControl) >= 0 {
+			return nil, fmt.Errorf("invalid item name %q", name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate item name %q", name)
+		}
+		seen[name] = true
+		weight, ok := lookup(name)
+		if !ok {
+			weight = median
+		}
+		if !validWeight(weight) {
+			return nil, fmt.Errorf("invalid weight for %q: %v", name, weight)
+		}
+		items = append(items, weightedItem{Name: name, Weight: weight})
+	}
+	sort.Slice(items, func(left, right int) bool {
+		if items[left].Weight != items[right].Weight {
+			return items[left].Weight > items[right].Weight
+		}
+		return items[left].Name < items[right].Name
+	})
+	buckets := make([]weightedBucket, count)
+	for _, item := range items {
+		bucketIndex := 0
+		for candidate := 1; candidate < len(buckets); candidate++ {
+			if buckets[candidate].Total < buckets[bucketIndex].Total {
+				bucketIndex = candidate
+			}
+		}
+		buckets[bucketIndex].Names = append(buckets[bucketIndex].Names, item.Name)
+		buckets[bucketIndex].Total += item.Weight
+	}
+	if len(buckets[index].Names) == 0 {
+		return nil, fmt.Errorf("bucket %d of %d has no items", index, count)
+	}
+	selected := append([]string(nil), buckets[index].Names...)
+	sort.Strings(selected)
+	return selected, nil
+}
+
+type weightedItem struct {
+	Name   string
+	Weight float64
+}
+
+type weightedBucket struct {
+	Names []string
+	Total float64
+}
+
+func validWeight(weight float64) bool {
+	return !math.IsNaN(weight) && !math.IsInf(weight, 0) && weight >= 0
 }
 
 // bucketForName はSHA-256の先頭8byteを名前のUTF-8列へ適用し、countで剰余を取る。

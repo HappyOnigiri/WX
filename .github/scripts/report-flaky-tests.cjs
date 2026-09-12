@@ -10,9 +10,12 @@ const PROFILE_CONTRACTS = Object.freeze([
   Object.freeze({ profile: 'coverage', job: 'coverage-tests' }),
   Object.freeze({ profile: 'race-daemon-0', job: 'race (daemon-0)' }),
   Object.freeze({ profile: 'race-daemon-1', job: 'race (daemon-1)' }),
+  Object.freeze({ profile: 'race-daemon-2', job: 'race (daemon-2)' }),
+  Object.freeze({ profile: 'race-rest-0', job: 'race (rest-0)' }),
+  Object.freeze({ profile: 'race-rest-1', job: 'race (rest-1)' }),
+  // 旧artifactを手動で再処理できるよう、以前のprofileも受け付ける。
   Object.freeze({ profile: 'race-state-0', job: 'race (state-0)' }),
   Object.freeze({ profile: 'race-state-1', job: 'race (state-1)' }),
-  // 旧artifactを手動で再処理できるよう、以前のprofileも受け付ける。
   Object.freeze({ profile: 'race-daemon', job: 'race (daemon)' }),
   Object.freeze({ profile: 'race-state', job: 'race (state)' }),
   Object.freeze({ profile: 'race-rest', job: 'race (rest)' }),

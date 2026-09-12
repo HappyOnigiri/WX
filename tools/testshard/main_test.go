@@ -185,6 +185,78 @@ func TestSelectBucketIsOrderIndependentAndCoversEveryName(t *testing.T) {
 	}
 }
 
+func TestSelectWeightedTestBucketUsesLPTAndIsOrderIndependent(t *testing.T) {
+	table := weightTable{
+		tests: map[string]map[string]float64{
+			"./internal/daemon": {
+				"TestAlpha": 10,
+				"TestBeta":  8,
+				"TestGamma": 7,
+				"TestDelta": 1,
+			},
+		},
+		packages: map[string]float64{},
+		flat:     map[string]float64{},
+	}
+	names := []string{"TestDelta", "TestGamma", "TestAlpha", "TestBeta"}
+	want := [][]string{{"TestAlpha", "TestDelta"}, {"TestBeta", "TestGamma"}}
+	for index := range want {
+		got, err := selectWeightedTestBucket(names, "./internal/daemon", 2, index, table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want[index]) {
+			t.Fatalf("bucket %d=%v, want %v", index, got, want[index])
+		}
+	}
+}
+
+func TestSelectBucketAcceptsAWeightMap(t *testing.T) {
+	names := []string{"TestAlpha", "TestBeta"}
+	for index, want := range [][]string{{"TestAlpha"}, {"TestBeta"}} {
+		got, err := selectBucket(names, 2, index, map[string]float64{"TestAlpha": 2, "TestBeta": 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("bucket %d=%v, want %v", index, got, want)
+		}
+	}
+}
+
+func TestSelectWeightedBucketUsesMedianForUnknownItems(t *testing.T) {
+	names := []string{"TestKnown", "TestMissing", "TestOther"}
+	weights := map[string]float64{"TestKnown": 10, "TestOther": 2}
+	bucket, err := selectWeightedBucket(names, 2, 1, func(name string) (float64, bool) {
+		weight, ok := weights[name]
+		return weight, ok
+	}, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(bucket, []string{"TestMissing", "TestOther"}) {
+		t.Fatalf("bucket=%v, want [TestMissing TestOther]", bucket)
+	}
+}
+
+func TestSelectWeightedPackageBucketNormalizesRelativePackageNames(t *testing.T) {
+	table := weightTable{
+		tests: map[string]map[string]float64{},
+		packages: map[string]float64{
+			"github.com/example/heavy": 10,
+			"github.com/example/light": 1,
+		},
+		flat: map[string]float64{},
+	}
+	got, err := selectWeightedPackageBucket([]string{"./github.com/example/light", "./github.com/example/heavy"}, 2, 0, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{"./github.com/example/heavy"}) {
+		t.Fatalf("bucket=%v, want heavy package", got)
+	}
+}
+
 func TestCommandMainEmitsOneRunPattern(t *testing.T) {
 	t.Parallel()
 	var output, errorOutput bytes.Buffer
@@ -199,6 +271,33 @@ func TestCommandMainEmitsOneRunPattern(t *testing.T) {
 	}
 	if errorOutput.Len() != 0 {
 		t.Fatalf("stderr=%q", errorOutput.String())
+	}
+}
+
+func TestCommandMainPackageModePrintsWeightedPackages(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	code := commandMain(context.Background(), []string{
+		"-mode", "package", "-packages", "example/light example/heavy",
+		"-count", "2", "-index", "0",
+	}, &output, &errorOutput)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errorOutput.String())
+	}
+	if got, want := strings.TrimSpace(output.String()), "example/heavy"; got != want {
+		t.Fatalf("packages=%q, want %q", got, want)
+	}
+}
+
+func TestCommandMainPackageModeAcceptsPackageDirectoryArguments(t *testing.T) {
+	var output, errorOutput bytes.Buffer
+	code := commandMain(context.Background(), []string{
+		"-mode", "package", "-package", "./internal/daemon", "-count", "2", "-index", "1", "./internal/state",
+	}, &output, &errorOutput)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errorOutput.String())
+	}
+	if got, want := strings.TrimSpace(output.String()), "./internal/state"; got != want {
+		t.Fatalf("packages=%q, want %q", got, want)
 	}
 }
 

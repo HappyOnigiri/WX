@@ -158,10 +158,14 @@ var supportedProfiles = map[string]bool{
 	"race-daemon":   true,
 	"race-daemon-0": true,
 	"race-daemon-1": true,
-	"race-state":    true,
-	"race-state-0":  true,
-	"race-state-1":  true,
-	"race-rest":     true,
+	"race-daemon-2": true,
+	"race-rest-0":   true,
+	"race-rest-1":   true,
+	// 旧artifactを手動で再処理できるよう、以前のprofileも受け付ける。
+	"race-state":   true,
+	"race-state-0": true,
+	"race-state-1": true,
+	"race-rest":    true,
 }
 
 func commandWithJSON(command []string) ([]string, error) {
