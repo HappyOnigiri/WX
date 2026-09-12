@@ -158,10 +158,6 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions,
 	return mode, nil
 }
 
-func runDirectAgent(ctx context.Context, agent string, args []string) int {
-	return runDirectAgentFrom(ctx, "", agent, args)
-}
-
 func runDirectAgentFrom(ctx context.Context, cwd, agent string, args []string) int {
 	cmd := exec.CommandContext(ctx, agent, args...)
 	cmd.Dir = cwd

@@ -282,14 +282,6 @@ func reportLeaseError(err error) int {
 
 // checkLeaseWorktreeMode は worktree を使わない設定の workspace を貸出の前に断る。
 // 貸出コマンドは現在のディレクトリで動く選択肢を持たないため、方針の選び直しを促すほうが親切である。
-func (c Client) checkLeaseWorktreeMode(ctx context.Context) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-	return c.checkLeaseWorktreeModeFrom(ctx, cwd)
-}
-
 func (c Client) checkLeaseWorktreeModeFrom(ctx context.Context, cwd string) error {
 	root, resolved := c.leasePolicyRoot(ctx, cwd)
 	if resolved && c.Config.WorktreeMode(root) == "off" {
