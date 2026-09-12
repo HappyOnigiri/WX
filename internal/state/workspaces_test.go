@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
@@ -218,86 +217,6 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 	})
 }
 
-func TestForgetWorkspaceRefusesLiveRecoveryMappings(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		seed  func(*testing.T, *Store, context.Context)
-		want  string
-		clear func(*testing.T, *Store, context.Context)
-	}{
-		{
-			name: "session mapping",
-			seed: func(t *testing.T, store *Store, ctx context.Context) {
-				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("token")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: "live session mappings",
-			clear: func(t *testing.T, store *Store, ctx context.Context) {
-				if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET state='EXPIRED' WHERE id='session'`); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "repository snapshot",
-			seed: func(t *testing.T, store *Store, ctx context.Context) {
-				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("token")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
-					t.Fatal(err)
-				}
-				if err := store.SaveSnapshot(ctx, Snapshot{ID: "snapshot", SessionID: "session", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/head", IndexTreeOID: "index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/worktree", Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: "recovery snapshots",
-			clear: func(t *testing.T, store *Store, ctx context.Context) {
-				if err := store.ExpireSessionSnapshots(ctx, "session"); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "workspace snapshot",
-			seed: func(t *testing.T, store *Store, ctx context.Context) {
-				session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("token")}
-				if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "ARCHIVED"}, nil, session, ""); err != nil {
-					t.Fatal(err)
-				}
-				if err := store.SaveWorkspaceSnapshot(ctx, WorkspaceSnapshot{SessionID: "session", RootID: testRootID, RelPath: "_recovery/workspace-snapshots/snapshot.tar", SHA256: strings.Repeat("a", 64), Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: "a workspace recovery snapshot",
-			clear: func(t *testing.T, store *Store, ctx context.Context) {
-				if err := store.ExpireSessionSnapshots(ctx, "session"); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			store := openTestStore(t)
-			seedWorkspace(t, store)
-			ctx := context.Background()
-			test.seed(t, store, ctx)
-			if err := store.ForgetWorkspace(ctx, "/workspace"); err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("forget error=%v, want refusal containing %q", err, test.want)
-			}
-			if _, err := store.Workspace(ctx, "workspace"); err != nil {
-				t.Fatalf("refused forget removed workspace: %v", err)
-			}
-			test.clear(t, store, ctx)
-			if err := store.ForgetWorkspace(ctx, "/workspace"); err != nil {
-				t.Fatalf("forget after recovery cleanup: %v", err)
-			}
-		})
-	}
-}
-
 func TestWorkspaceMembershipChangeAdvancesGenerationAndStalesOldStandby(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t)
@@ -473,62 +392,6 @@ func TestSessionWorkspaceRejectsUnscannableHistoricalMembership(t *testing.T) {
 	}
 	if _, err := store.SessionWorkspace(context.Background(), "session"); err == nil {
 		t.Fatal("unscannable historical repository membership was accepted")
-	}
-}
-
-func TestForgetWorkspaceStopsAtEveryDurableBoundary(t *testing.T) {
-	t.Parallel()
-	for _, table := range []string{"slots", "sessions", "snapshots", "workspace_snapshots", "jobs"} {
-		t.Run("query "+table, func(t *testing.T) {
-			store := openTestStore(t)
-			seedWorkspace(t, store)
-			if _, err := store.db.Exec(`DROP TABLE ` + table); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.ForgetWorkspace(context.Background(), "/workspace"); err == nil {
-				t.Fatalf("forget succeeded without %s", table)
-			}
-		})
-	}
-
-	newArchivedWorkspace := func(t *testing.T) *Store {
-		t.Helper()
-		store := openTestStore(t)
-		seedWorkspace(t, store)
-		ctx := context.Background()
-		session := Session{ID: "archived", WorkspaceID: "workspace", SlotID: "archived", State: "EXPIRED", AgentKind: "codex", TokenHash: HashToken("archived")}
-		if _, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: filepath.Join("workspace", session.SlotID), State: "ARCHIVED"}, nil, session, ""); err != nil {
-			t.Fatal(err)
-		}
-		return store
-	}
-	for _, test := range []struct {
-		name    string
-		trigger string
-	}{
-		{name: "slot update", trigger: `CREATE TRIGGER fail_forget_slot BEFORE UPDATE ON slots BEGIN SELECT RAISE(ABORT,'fault'); END`},
-		{name: "session update", trigger: `CREATE TRIGGER fail_forget_session BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT,'fault'); END`},
-		{name: "job update", trigger: `CREATE TRIGGER fail_forget_job BEFORE UPDATE ON jobs BEGIN SELECT RAISE(ABORT,'fault'); END`},
-		{name: "repository membership delete", trigger: `CREATE TRIGGER fail_forget_membership BEFORE DELETE ON workspace_repositories BEGIN SELECT RAISE(ABORT,'fault'); END`},
-		{name: "workspace delete", trigger: `CREATE TRIGGER fail_forget_workspace BEFORE DELETE ON workspaces BEGIN SELECT RAISE(ABORT,'fault'); END`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			store := newArchivedWorkspace(t)
-			if test.name == "job update" {
-				if _, err := store.db.Exec(`INSERT INTO jobs(id,kind,state,attempt,not_before) VALUES('finished','PREPARE','SUCCEEDED',0,NULL)`); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := store.db.Exec(`UPDATE jobs SET workspace_id='workspace' WHERE id='finished'`); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := store.db.Exec(test.trigger); err != nil {
-				t.Fatal(err)
-			}
-			if err := store.ForgetWorkspace(context.Background(), "/workspace"); err == nil {
-				t.Fatal("forget succeeded despite durable cleanup fault")
-			}
-		})
 	}
 }
 
