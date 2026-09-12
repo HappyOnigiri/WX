@@ -70,7 +70,7 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 		fmt.Println(string(data))
 	case verbose != nil:
 		var rendered bytes.Buffer
-		printStatusDisplay(&rendered, out, *verbose)
+		printStatusDisplay(&rendered, out, *verbose, i18n.LanguageFromContext(ctx))
 		fmt.Print(translateHumanOutput(rendered.String(), i18n.LanguageFromContext(ctx)))
 	default:
 		var rendered bytes.Buffer

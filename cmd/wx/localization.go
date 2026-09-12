@@ -291,6 +291,30 @@ func writeUsage(w io.Writer, render func(io.Writer), lang i18n.Language) {
 	_, _ = io.WriteString(w, translateHelp(out.String(), lang))
 }
 
+// statusTableHeaders は表の見出しの訳で、列を持つ表示の桁を決める前に使う。
+// 括弧付きの見出し（LAST USED (JST) など）があるため前方一致で照合し、残りは原文で連結する。
+// translateHumanOutput と同じ訳語を使うが、こちらは表示層より前に適用するので二重には当たらない。
+var statusTableHeaders = []struct{ en, ja string }{
+	{"WORKSPACE", "ワークスペース"},
+	{"LAST USED", "最終使用"},
+	{"IN USE", "使用中"},
+	{"POLICY", "方針"},
+	{"NOTE", "注記"},
+}
+
+// localizeStatusHeader は表の見出し 1 つを訳す。見出し以外の行には使わない。
+func localizeStatusHeader(value string, lang i18n.Language) string {
+	if lang != i18n.Japanese {
+		return value
+	}
+	for _, replacement := range statusTableHeaders {
+		if strings.HasPrefix(value, replacement.en) {
+			return replacement.ja + value[len(replacement.en):]
+		}
+	}
+	return value
+}
+
 // translateHumanOutput は固定ラベルだけを置き換える軽量な表示層である。
 // payload の path・ID・状態値・外部コマンドの原文は変更しないため、JSON と
 // 診断の可変値を同じ renderer から安全に再利用できる。

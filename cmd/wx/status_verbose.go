@@ -6,19 +6,23 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // verboseStatusRenderer は RPC map を変更せず、既知項目の後ろに未対応項目を追加する状態を持つ。
+// lang は表の見出しを組む前に解決するために持つ。行の値はここでは訳さない。
 type verboseStatusRenderer struct {
 	w          io.Writer
+	lang       i18n.Language
 	payload    map[string]any
 	knownTop   map[string]bool
 	additional []displayPair
 }
 
 // printVerboseStatus は診断応答を運用上のまとまりに分け、全ての項目を失わずに表示する。
-func printVerboseStatus(w io.Writer, payload map[string]any) {
-	renderer := &verboseStatusRenderer{w: w, payload: payload, knownTop: map[string]bool{}}
+func printVerboseStatus(w io.Writer, payload map[string]any, lang i18n.Language) {
+	renderer := &verboseStatusRenderer{w: w, lang: lang, payload: payload, knownTop: map[string]bool{}}
 	renderer.renderWorkspaces()
 	renderer.renderRepositories()
 	renderer.renderSessions()
@@ -83,7 +87,7 @@ func statusWorkspaceRepositories(item map[string]any) string {
 }
 
 func (r *verboseStatusRenderer) lineTable(headers []string, rows [][]string, present bool) {
-	writeStatusTable(r.w, headers, rows)
+	writeStatusTable(r.w, r.lang, headers, rows)
 	if len(rows) == 0 {
 		if present {
 			r.line("  (none)")

@@ -11,12 +11,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/textfmt"
 )
 
 // printStatusDisplay は wx status の人間向け表示を担当する。
 // RPC payload は daemon が JSON 契約を所有するため、表示側ではコピーだけを解釈する。
-func printStatusDisplay(w io.Writer, payload map[string]any, verbose bool) {
+// lang は表の見出しにだけ効く。列を持たない行は translateHumanOutput が後段で訳す。
+func printStatusDisplay(w io.Writer, payload map[string]any, verbose bool, lang i18n.Language) {
 	payload = normalizeStatusPayload(payload)
 	if degraded, ok := payload["degraded"].(bool); ok && degraded {
 		printDegradedStatus(w, payload, verbose)
@@ -28,10 +30,10 @@ func printStatusDisplay(w io.Writer, payload map[string]any, verbose bool) {
 		return
 	}
 	if verbose {
-		printVerboseStatus(w, payload)
+		printVerboseStatus(w, payload, lang)
 		return
 	}
-	printStatusSummary(w, payload)
+	printStatusSummary(w, payload, lang)
 }
 
 // normalizeStatusPayload は RPC の JSON decode 結果とテスト用の型付き診断値を同じ形に揃える。
@@ -128,7 +130,7 @@ const workspacePolicySchemaVersion = 14
 // archivedSessionSchemaVersion は archived_session_details が導入された JSON schema 版である。
 const archivedSessionSchemaVersion = 19
 
-func printStatusSummary(w io.Writer, payload map[string]any) {
+func printStatusSummary(w io.Writer, payload map[string]any, lang i18n.Language) {
 	workspaces := statusObjectList(payload["workspace_details"])
 	roots := statusObjectsSortedBy(statusObjectList(payload["worktree_roots"]), "path")
 
@@ -180,7 +182,7 @@ func printStatusSummary(w io.Writer, payload map[string]any) {
 	if noted {
 		header = append(header, "NOTE")
 	}
-	writeStatusTable(w, header, func() [][]string {
+	writeStatusTable(w, lang, header, func() [][]string {
 		out := make([][]string, 0, len(rows))
 		for _, row := range rows {
 			cells := []string{row.path, row.policy, row.ready, row.leased, row.last}

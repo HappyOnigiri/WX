@@ -191,7 +191,7 @@ func dashboardStatus(ctx context.Context) (string, error) {
 		return "", errors.New(rpcErrorMessageLanguage(err, i18n.LanguageFromContext(ctx)))
 	}
 	var out bytes.Buffer
-	printStatusDisplay(&out, payload, false)
+	printStatusDisplay(&out, payload, false, i18n.LanguageFromContext(ctx))
 	return translateHumanOutput(out.String(), i18n.LanguageFromContext(ctx)), nil
 }
 
