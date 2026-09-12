@@ -222,6 +222,44 @@ func (s *Store) Workspace(ctx context.Context, id string) (discovery.Workspace, 
 	return w, rows.Err()
 }
 
+// WorkspaceWithGeneration は workspace の repository membership と generation を同じ read transaction で返す。
+// 補充計画はこの2つを組み合わせて slot を登録するため、別々の問い合わせで世代だけ新しく読む窓を作らない。
+func (s *Store) WorkspaceWithGeneration(ctx context.Context, id string) (discovery.Workspace, int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return discovery.Workspace{}, 0, err
+	}
+	defer tx.Rollback()
+	var w discovery.Workspace
+	var generation int
+	if err := tx.QueryRowContext(ctx, `SELECT id,root_path,kind,generation FROM workspaces WHERE id=?`, id).Scan(&w.ID, &w.Root, &w.Kind, &generation); err != nil {
+		return discovery.Workspace{}, 0, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,wr.relative_path,r.default_branch,r.remote_name FROM workspace_repositories wr JOIN repositories r ON r.id=wr.repository_id WHERE wr.workspace_id=? ORDER BY wr.ordinal`, id)
+	if err != nil {
+		return discovery.Workspace{}, 0, err
+	}
+	for rows.Next() {
+		var r discovery.Repository
+		if err := rows.Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.RelativePath, &r.DefaultBranch, &r.RemoteName); err != nil {
+			_ = rows.Close()
+			return discovery.Workspace{}, 0, err
+		}
+		w.Repositories = append(w.Repositories, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return discovery.Workspace{}, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return discovery.Workspace{}, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return discovery.Workspace{}, 0, err
+	}
+	return w, generation, nil
+}
+
 func (s *Store) WorkspaceByRoot(ctx context.Context, root string) (discovery.Workspace, error) {
 	var id string
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM workspaces WHERE root_path=?`, root).Scan(&id); err != nil {
