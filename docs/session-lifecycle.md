@@ -1,6 +1,7 @@
 # セッションと復元
 
-1. **貸出** — `wx claude`はworkspace rootのworktree方針を先に解決し、worktreeを使う場合だけ`ensureDaemon`でdaemonの生存を確認して`ResolveAndLease`を呼ぶ。
+1. **貸出** — `wx claude`は起動場所のworkspace rootのworktree方針を先に解決し、worktreeを使う場合だけ`ensureDaemon`でdaemonの生存を確認して`ResolveAndLease`を呼ぶ。
+   会話IDを指定した再開だけは方針の解決より先に会話を解決する（「再開」参照）。
    launchdでのkickstartは接続自体に失敗したときだけ行う。応答が遅いだけの生きたdaemonを再起動しないためである。
    daemonはcwdからworkspaceを解決し、要求OIDと準備条件が完全一致するREADY slotを優先する。
    一致候補がなく `workspace_defaults.reuse_standby`（または workspace 個別値）が有効なら更新適合なHot StandbyをUPDATEジョブへ予約し、無ければPREPAREジョブでCold Startする。
@@ -60,6 +61,15 @@
 
 6. **再開** — `wx resume`、`claude --resume`、`codex resume`はclientがagent session IDを解決し、`Resume`または`ResolveAndLease`へ合流させる。
    選択した会話と明示的な`wx resume <wx-session-id>`は同じRESTORE経路を使う。
+
+   会話IDを指定した再開は、worktreeを使うかを起動場所ではなく会話の側で決める。
+   記録済みsessionの復元先は当時のworkspaceで起動場所と無関係なので、起動場所の方針は判断材料にならない。
+   `-w` / `-n` / `-s`を明示した起動だけはその指定を優先し、この判定へ入らない。
+   wx管理外の会話は、会話に記録されたcwdのworkspaceの方針で決める。
+   判定を`WorktreePolicy`としてdaemonへ置くのは、畳まれたslotのpathを登録済みのworkspace rootへ読み替えられるのがdaemonだけだからである。
+   worktreeを作らない方針のときと、cwdもworkspaceも解決できないときは、worktree無しで会話だけ再開しnoticeで理由と`wx config --workspace <root> worktree cold`を伝える。
+   会話の再開自体はcwdに依存しないので、ここで失敗にはしない。
+   起動場所の方針で決め続けると、巨大なmulti-repository workspaceのcwdを持つ会話を再開しただけでそこにworktreeを作ることになる。
 
    当時のworktreeを復元できないときは会話の再開を優先し、新しいworktreeで再開してよいかをYes既定で確認して`--fresh`と同じ経路へ倒す。
    復元不能はdaemonが`recovery=unavailable`を失敗メッセージに載せて伝え、clientはRESTORE系のfailure codeとEXPIRED snapshotの両方をこの確認に集約する。

@@ -142,6 +142,8 @@ type resumeLaunchHandler struct {
 	history map[string][]json.RawMessage
 	lease   daemon.Lease
 	status  resumeStatus
+	// policy は WorktreePolicy の応答である。零値は workspace を解決できなかったことを表す。
+	policy daemon.WorktreePolicyReply
 	// waitReadyErrors と leaseErrors は該当 method の応答を呼び出し順に決める。使い切った後は成功に戻る。
 	waitReadyErrors []error
 	leaseErrors     map[string][]error
@@ -187,6 +189,8 @@ func (h *resumeLaunchHandler) Handle(_ context.Context, method string, raw json.
 			return nil, h.resumeErr
 		}
 		return h.status, nil
+	case "WorktreePolicy":
+		return h.policy, nil
 	case "Resume", "ResolveAndLease":
 		return h.lease, nil
 	case "WaitReady":

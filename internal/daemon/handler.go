@@ -168,6 +168,14 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			return nil, err
 		}
 		return h.Manager.WorkspaceScope(ctx, p.CWD)
+	case "WorktreePolicy":
+		var p struct {
+			CWD string `json:"cwd"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return h.Manager.WorktreePolicy(ctx, p.CWD), nil
 	case "Status":
 		return h.Manager.Status(ctx)
 	case "Doctor":
