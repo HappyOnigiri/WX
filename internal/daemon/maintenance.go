@@ -455,7 +455,7 @@ func (m *Manager) removeForgottenWorkspaceSnapshot(ctx context.Context, sessionI
 		}
 		return true
 	}
-	defer ownerHandle.Close()
+	defer func() { _ = ownerHandle.Close() }()
 	if err := removeRegisteredSnapshot(ownerHandle, snapshot.RelPath); err != nil {
 		m.log.Warn("forget left a workspace snapshot behind", "session_id", sessionID, "path", snapshot.ArchivePath, "error", err)
 	}
