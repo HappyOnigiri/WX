@@ -8,6 +8,7 @@ import (
 )
 
 func TestStagedReadinessCASAndPublicSlotShape(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	createSessionSlot(t, store, "early", "STARTING", "PREPARING")

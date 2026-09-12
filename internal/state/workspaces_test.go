@@ -13,6 +13,7 @@ import (
 )
 
 func TestSessionRepositoryMembershipSurvivesWorkspaceReconciliation(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	root := t.TempDir()
@@ -56,6 +57,7 @@ func TestSessionRepositoryMembershipSurvivesWorkspaceReconciliation(t *testing.T
 }
 
 func TestCanonicalWorkspaceKeepsSlotsWhenMainWorktreeMoves(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	oldMain := filepath.Join(t.TempDir(), "old-main")
@@ -114,6 +116,7 @@ func TestCanonicalWorkspaceKeepsSlotsWhenMainWorktreeMoves(t *testing.T) {
 }
 
 func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("duplicate common directory identity", func(t *testing.T) {
@@ -216,6 +219,7 @@ func TestCanonicalWorkspaceRelocationRejectsConflictsWithoutMutation(t *testing.
 }
 
 func TestForgetWorkspaceRefusesLiveRecoveryMappings(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		seed  func(*testing.T, *Store, context.Context)
@@ -295,6 +299,7 @@ func TestForgetWorkspaceRefusesLiveRecoveryMappings(t *testing.T) {
 }
 
 func TestWorkspaceMembershipChangeAdvancesGenerationAndStalesOldStandby(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	w := discovery.Workspace{ID: "propos", Root: "/workspace", Kind: "multi_repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/workspace/repository", CommonDir: "/workspace/repository/.git", RelativePath: "repository", DefaultBranch: "main"}}}
@@ -330,6 +335,7 @@ func TestWorkspaceMembershipChangeAdvancesGenerationAndStalesOldStandby(t *testi
 }
 
 func TestUpsertWorkspaceGenerationRejectsKindChangeAtSameRoot(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		existing  discovery.Workspace
@@ -386,6 +392,7 @@ func TestUpsertWorkspaceGenerationRejectsKindChangeAtSameRoot(t *testing.T) {
 }
 
 func TestUpsertWorkspaceGenerationRejectsSameKindRootIdentityChange(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	existing := discovery.Workspace{
@@ -410,6 +417,7 @@ func TestUpsertWorkspaceGenerationRejectsSameKindRootIdentityChange(t *testing.T
 }
 
 func TestSessionWorkspaceRejectsEmptyMembershipAndMissingSession(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -432,6 +440,7 @@ func TestSessionWorkspaceRejectsEmptyMembershipAndMissingSession(t *testing.T) {
 }
 
 func TestSessionWorkspaceRejectsMissingHistoricalMembership(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -445,6 +454,7 @@ func TestSessionWorkspaceRejectsMissingHistoricalMembership(t *testing.T) {
 }
 
 func TestSessionWorkspaceRejectsUnscannableHistoricalMembership(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	statements := []string{
 		"DROP TABLE sessions",
@@ -467,6 +477,7 @@ func TestSessionWorkspaceRejectsUnscannableHistoricalMembership(t *testing.T) {
 }
 
 func TestForgetWorkspaceStopsAtEveryDurableBoundary(t *testing.T) {
+	t.Parallel()
 	for _, table := range []string{"slots", "sessions", "snapshots", "workspace_snapshots", "jobs"} {
 		t.Run("query "+table, func(t *testing.T) {
 			store := openTestStore(t)
@@ -522,6 +533,7 @@ func TestForgetWorkspaceStopsAtEveryDurableBoundary(t *testing.T) {
 }
 
 func TestUpsertWorkspaceGenerationPropagatesMembershipTransactionFaults(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	baseWorkspace := func() discovery.Workspace {
 		return discovery.Workspace{ID: "propos", Root: "/workspace", Kind: "multi_repository", Repositories: []discovery.Repository{{ID: "repository", MainPath: "/workspace/repository", CommonDir: "/workspace/repository/.git", RelativePath: "repository", DefaultBranch: "main"}}}

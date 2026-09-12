@@ -18,7 +18,7 @@ import (
 func cleanFixture(t *testing.T) (*Manager, *state.Store, string) {
 	t.Helper()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

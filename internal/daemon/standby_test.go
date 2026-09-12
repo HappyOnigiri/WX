@@ -38,7 +38,7 @@ func TestStandbyTreatsWorkspaceWithInFlightLeaseAsHot(t *testing.T) {
 			cfg.Pool.WarmPerWorkspace = 1
 			cfg.Retention.HotStandby.Duration = time.Hour
 			cfg.Discovery.ReconcileInterval.Duration = time.Hour
-			store, err := state.Open(filepath.Join(root, "state.db"))
+			store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

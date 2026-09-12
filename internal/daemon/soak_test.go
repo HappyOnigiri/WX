@@ -26,7 +26,7 @@ func TestSessionLifecycleSoak(t *testing.T) {
 		t.Fatalf("invalid WX_SOAK_SESSIONS=%q", raw)
 	}
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

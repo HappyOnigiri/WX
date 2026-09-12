@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 // reloadFixture は設定ファイルを持つ manager を用意し、実効設定を daemon の現在値へ揃えた状態から始める。
@@ -18,7 +17,7 @@ func reloadFixture(t *testing.T, body string) (*Manager, string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

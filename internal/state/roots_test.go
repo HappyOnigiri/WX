@@ -13,6 +13,7 @@ import (
 )
 
 func TestEnsureActiveRootRegistersAndRetiresGenerations(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 
@@ -84,6 +85,7 @@ func TestEnsureActiveRootRegistersAndRetiresGenerations(t *testing.T) {
 }
 
 func TestEnsureActiveRootRequiresPathAndIdentity(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	for _, test := range []struct{ path, identity string }{{"", "identity"}, {"/wx-next", ""}, {"", ""}} {
@@ -96,6 +98,7 @@ func TestEnsureActiveRootRequiresPathAndIdentity(t *testing.T) {
 // TestEnsureActiveRootRefusesAnInodeChangeWithLiveReferences は root identity 規則のフェイルクローズ側を検証する。
 // wx の管理下で置換された root directory は、wx が元に書いた directory 内 location を durable row がまだ主張する間は採用できない。
 func TestEnsureActiveRootRefusesAnInodeChangeWithLiveReferences(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("slot reference", func(t *testing.T) {
 		store := openTestStore(t)
@@ -137,6 +140,7 @@ func TestEnsureActiveRootRefusesAnInodeChangeWithLiveReferences(t *testing.T) {
 // TestEnsureActiveRootAdoptsAnInodeChangeWithNoReferences はもう一方を検証する。
 // ユーザーが root directory を削除し wx が再作成しても state を取り残さない場合は、永続拒否せず row を更新する。
 func TestEnsureActiveRootAdoptsAnInodeChangeWithNoReferences(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	id, err := store.EnsureActiveRoot(ctx, testRootPath, "recreated-identity")
@@ -155,6 +159,7 @@ func TestEnsureActiveRootAdoptsAnInodeChangeWithNoReferences(t *testing.T) {
 // TestEnsureActiveRootUpgradesTheLegacyIdentityFormat は、device 番号を含む旧記録の移行を検証する。
 // macOS の device 番号は再起動で変わるため、inode が一致する間は root 配下の記録ごと現行形式へ書き換え、参照を保ったまま登録を続ける。
 func TestEnsureActiveRootUpgradesTheLegacyIdentityFormat(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
@@ -187,6 +192,7 @@ func TestEnsureActiveRootUpgradesTheLegacyIdentityFormat(t *testing.T) {
 
 // TestEnsureActiveRootRefusesALegacyRecordWithAnotherInode は、形式移行が inode の不一致を通さないことを検証する。
 func TestEnsureActiveRootRefusesALegacyRecordWithAnotherInode(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
@@ -221,6 +227,7 @@ func seedLegacyIdentities(t *testing.T, store *Store, root, slot, repository str
 }
 
 func TestPruneRootsKeepsReferencedAndActiveGenerations(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -253,6 +260,7 @@ func TestPruneRootsKeepsReferencedAndActiveGenerations(t *testing.T) {
 
 // TestPruneRootsDeletesAGenerationOnceItsSnapshotIsGone は、上の参照検査における workspace_snapshots 側を検証する。
 func TestPruneRootsDeletesAGenerationOnceItsSnapshotIsGone(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -289,6 +297,7 @@ func TestPruneRootsDeletesAGenerationOnceItsSnapshotIsGone(t *testing.T) {
 }
 
 func TestIsIDCollisionRecognisesOnlyConstraintViolations(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	_, err := store.db.ExecContext(ctx, `INSERT INTO roots(id,path,identity,active,created_at) VALUES(?,?,?,1,?)`, testRootID, "/duplicate", "identity", now())
@@ -321,6 +330,7 @@ func TestIsIDCollisionRecognisesOnlyConstraintViolations(t *testing.T) {
 // TestNewUnusedShortIDSkipsTakenIdentifiers は、生成器が対象 table を参照することを検証する。
 // これにより random workspace ID が upsert の ON CONFLICT 経由で既存 row を密かに奪わない。
 func TestNewUnusedShortIDSkipsTakenIdentifiers(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	id, err := newUnusedShortID(ctx, store.db, "roots")
@@ -341,6 +351,7 @@ func TestNewUnusedShortIDSkipsTakenIdentifiers(t *testing.T) {
 // TestSlotAndRepositoryPathsComposeFromTheirRootGeneration は read 側の派生規則を固定する。
 // absolute path は保存しないため、retired generation の slot もその generation の root 配下を返す。
 func TestSlotAndRepositoryPathsComposeFromTheirRootGeneration(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -379,6 +390,7 @@ func TestSlotAndRepositoryPathsComposeFromTheirRootGeneration(t *testing.T) {
 // TestSlotLayoutUniquenessIsPerRootGeneration は新 layout が依存する schema 制約を検証する。
 // root generation ごとに slot directory は1つ、slot ごとに repository directory 名は1つである。
 func TestSlotLayoutUniquenessIsPerRootGeneration(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -410,6 +422,7 @@ func TestSlotLayoutUniquenessIsPerRootGeneration(t *testing.T) {
 }
 
 func TestValidateWorktreeOwnershipRejectsAMultiComponentRepositoryDirectory(t *testing.T) {
+	t.Parallel()
 	// filepath.IsLocal は "a/b" を受理するため、記録する dir_name は深さを明示的に拒否する。
 	// repository worktree は slot directory の直下でなければならず、UNIQUE(slot_id, dir_name) だけでは強制できない。
 	if err := validateOwnershipComponent("repository directory", "nested/repository"); err == nil {
@@ -424,6 +437,7 @@ func TestValidateWorktreeOwnershipRejectsAMultiComponentRepositoryDirectory(t *t
 }
 
 func TestOpenRefusesADatabaseFromThePreviousWorktreeLayout(t *testing.T) {
+	t.Parallel()
 	// layout 前の database は既に user_version=1 を返すため migration loop は何も適用せず、
 	// この不一致を放置すると RPC が1回ずつ失敗して初めて表面化する。
 	path := filepath.Join(t.TempDir(), "state.db")

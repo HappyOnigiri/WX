@@ -8,13 +8,12 @@ import (
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/config"
-	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 func TestWaitReadyIncludesPrepareDiagnosticMetadata(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +46,7 @@ func TestWaitReadyMarksRestoreFailuresAsUnavailableRecovery(t *testing.T) {
 	t.Parallel()
 	for code, wantMarker := range map[string]bool{"RESTORE_FAILED": true, "PREPARE_FAILED": false} {
 		root := t.TempDir()
-		store, err := state.Open(filepath.Join(root, "state.db"))
+		store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -26,6 +26,7 @@ func bindAgentSessionForTest(t *testing.T, store *Store, id, agentID string) {
 }
 
 func TestBindAgentSessionReplacesVerifiedForkMapping(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	createAgentBindSession(t, store, "fork-root")
@@ -44,6 +45,7 @@ func TestBindAgentSessionReplacesVerifiedForkMapping(t *testing.T) {
 }
 
 func TestBindAgentSessionNormalBindIsIdempotent(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	createAgentBindSession(t, store, "idempotent-root")
@@ -54,6 +56,7 @@ func TestBindAgentSessionNormalBindIsIdempotent(t *testing.T) {
 }
 
 func TestBindAgentSessionRejectsForkWhenSourceChanged(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	createAgentBindSession(t, store, "changed-root")
@@ -69,6 +72,7 @@ func TestBindAgentSessionRejectsForkWhenSourceChanged(t *testing.T) {
 }
 
 func TestBindAgentSessionRejectsForkWhenTargetIsOwned(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	createAgentBindSession(t, store, "target-root")
@@ -86,6 +90,7 @@ func TestBindAgentSessionRejectsForkWhenTargetIsOwned(t *testing.T) {
 }
 
 func TestBindAgentSessionRejectsDelayedForkAfterReplacement(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	ctx := context.Background()
 	createAgentBindSession(t, store, "retry-root")

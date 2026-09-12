@@ -26,8 +26,11 @@ type violation struct {
 
 // 免除コメントの識別子。規則ごとに分け、ある規則の免除が別の規則へ効かないようにする。
 const (
-	tempDirMarker     = "socketlint:allow-tempdir"
-	busyTimeoutMarker = "sqlitelint:allow-no-busy-timeout"
+	tempDirMarker           = "socketlint:allow-tempdir"
+	busyTimeoutMarker       = "sqlitelint:allow-no-busy-timeout"
+	stateParallelMarker     = "statelint:allow-serial"
+	stateParallelRule       = "state-test-parallel"
+	stateParallelMarkerRule = "state-test-parallel-marker"
 )
 
 // markers は検査を免除するコメントで、理由の記載を必須とする。
@@ -38,6 +41,7 @@ var markers = []struct {
 }{
 	{tempDirMarker, regexp.MustCompile(tempDirMarker + ` -- (.+)$`)},
 	{busyTimeoutMarker, regexp.MustCompile(busyTimeoutMarker + ` -- (.+)$`)},
+	{stateParallelMarker, regexp.MustCompile(stateParallelMarker + ` -- (.+)$`)},
 }
 
 // socketNameSuffix はunix socketとして扱うファイル名の判定に使う。
@@ -188,7 +192,140 @@ func checkFile(path string, allowed exemptions) ([]violation, error) {
 		}
 		issues = append(issues, checkFunction(path, fset, function, allowed)...)
 	}
+	issues = append(issues, checkStateParallel(path, fset, file, allowed)...)
 	return issues, nil
+}
+
+// isStateTestPath は state package のテストだけを並列化規則の対象にする。
+func isStateTestPath(path string) bool {
+	clean := filepath.ToSlash(filepath.Clean(path))
+	return strings.Contains("/"+clean+"/", "/internal/state/") && strings.HasSuffix(clean, "_test.go")
+}
+
+// isTestingT は関数引数が *testing.T かを返す。TestMain や補助関数を誤って対象にしないために使う。
+func isTestingT(function *ast.FuncDecl) bool {
+	if function.Type.Params == nil || len(function.Type.Params.List) == 0 {
+		return false
+	}
+	parameter := function.Type.Params.List[0].Type
+	star, ok := parameter.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := star.X.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "T" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && packageName.Name == "testing"
+}
+
+// isStateTopLevelTest は state package の通常の TestXxx だけを判定対象にする。
+func isStateTopLevelTest(function *ast.FuncDecl) bool {
+	return function.Recv == nil && function.Name != nil && function.Name.Name != "TestMain" && strings.HasPrefix(function.Name.Name, "Test") && isTestingT(function)
+}
+
+// parallelCall は t.Parallel() の直接呼び出しかを返す。別の scope にある呼び出しは親テストを並列化しない。
+func parallelCall(statement ast.Stmt, parameter string) bool {
+	expression, ok := statement.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := expression.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Parallel" || len(call.Args) != 0 {
+		return false
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	return ok && receiver.Name == parameter
+}
+
+// testingTParameter は *testing.T の引数名を返す。
+func testingTParameter(function *ast.FuncDecl) (string, bool) {
+	if !isTestingT(function) {
+		return "", false
+	}
+	field := function.Type.Params.List[0]
+	if len(field.Names) != 1 || field.Names[0].Name == "_" {
+		return "", false
+	}
+	return field.Names[0].Name, true
+}
+
+// hasTopLevelParallel は関数本体直下にある t.Parallel() だけを認める。
+func hasTopLevelParallel(function *ast.FuncDecl) bool {
+	parameter, ok := testingTParameter(function)
+	if !ok || function.Body == nil {
+		return false
+	}
+	for _, statement := range function.Body.List {
+		if parallelCall(statement, parameter) {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedMarkerLines(lines map[int]bool) []int {
+	ordered := make([]int, 0, len(lines))
+	for line := range lines {
+		ordered = append(ordered, line)
+	}
+	sort.Ints(ordered)
+	return ordered
+}
+
+// checkStateParallel は state の各トップレベルテストが直接 t.Parallel() を呼ぶことを検査する。
+// 直列を保つ必要があるテストだけは、関数宣言の直前に理由付き免除 marker を置ける。
+func checkStateParallel(path string, fset *token.FileSet, file *ast.File, allowed exemptions) []violation {
+	markerLines := allowed[stateParallelMarker]
+	if len(markerLines) == 0 && !isStateTestPath(path) {
+		return nil
+	}
+	if !isStateTestPath(path) {
+		issues := make([]violation, 0, len(markerLines))
+		for _, line := range sortedMarkerLines(markerLines) {
+			issues = append(issues, violation{path: path, line: line, rule: stateParallelMarkerRule, message: fmt.Sprintf("%s is only valid on a state top-level test", stateParallelMarker)})
+		}
+		return issues
+	}
+
+	var issues []violation
+	consumedMarkers := map[int]bool{}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || !isStateTopLevelTest(function) {
+			continue
+		}
+		line := fset.PositionFor(function.Pos(), false).Line
+		markerLine := 0
+		if markerLines[line] {
+			markerLine = line
+		} else if markerLines[line-1] {
+			markerLine = line - 1
+		}
+		if markerLine != 0 {
+			consumedMarkers[markerLine] = true
+		}
+		if hasTopLevelParallel(function) {
+			if markerLine != 0 {
+				issues = append(issues, violation{path: path, line: markerLine, rule: stateParallelMarkerRule, message: fmt.Sprintf("%s is only valid for a serial state test", stateParallelMarker)})
+			}
+			continue
+		}
+		if markerLine == 0 {
+			issues = append(issues, violation{path: path, line: line, rule: stateParallelRule, message: "state top-level test must call t.Parallel() directly, or use a reasoned statelint:allow-serial marker"})
+		}
+	}
+	for _, line := range sortedMarkerLines(markerLines) {
+		if !consumedMarkers[line] {
+			issues = append(issues, violation{path: path, line: line, rule: stateParallelMarkerRule, message: fmt.Sprintf("%s must immediately precede a serial state top-level test", stateParallelMarker)})
+		}
+	}
+	return issues
 }
 
 func checkFunction(path string, fset *token.FileSet, function *ast.FuncDecl, allowed exemptions) []violation {

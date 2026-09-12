@@ -27,7 +27,7 @@ func TestLeasePolicyAndStandbyPermissions(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 			cfg.Worktree.Undefined = mode
-			store, err := state.Open(filepath.Join(root, "state.db"))
+			store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -73,7 +73,7 @@ func TestColdPolicyDoesNotLeaseExistingReadySlot(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "hot"
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestStandbyReplenishmentStopsAfterAPreparationFailure(t *testing.T) {
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "hot"
 	cfg.Pool.WarmPerWorkspace = 1
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestStandbySuspensionIsHiddenWithoutReplenishment(t *testing.T) {
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
 	cfg.Worktree.Undefined = "off"
 	cfg.Pool.WarmPerWorkspace = 1
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

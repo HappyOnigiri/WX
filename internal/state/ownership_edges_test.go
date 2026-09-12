@@ -14,6 +14,7 @@ import (
 )
 
 func TestOwnershipPathHelpersRejectUnsafeInputs(t *testing.T) {
+	t.Parallel()
 	tempRoot, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +105,7 @@ func TestOwnershipPathHelpersRejectUnsafeInputs(t *testing.T) {
 // TestValidateOwnershipRelativeRejectsUnsafeLocations は、所有権の両入口が request と
 // 記録済み row の全 root-relative location に適用する共通ガードを検証する。
 func TestValidateOwnershipRelativeRejectsUnsafeLocations(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"", ".", "..", "/absolute", "../escape", "trailing/", "double//slash", "./here"} {
 		if err := validateOwnershipRelative("slot path", value); err == nil {
 			t.Errorf("unsafe relative location %q accepted", value)
@@ -149,7 +151,7 @@ func newOwnershipFixture(t *testing.T) ownershipFixture {
 			t.Fatal(err)
 		}
 	}
-	store, err := Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +200,7 @@ func (f ownershipFixture) slotRequest() SlotOwnershipRequest {
 }
 
 func TestValidateWorktreeOwnershipProvesRecordedLocation(t *testing.T) {
+	t.Parallel()
 	f := newOwnershipFixture(t)
 	ctx := context.Background()
 	proof, err := f.store.ValidateWorktreeOwnership(ctx, f.worktreeRequest())
@@ -219,6 +222,7 @@ func TestValidateWorktreeOwnershipProvesRecordedLocation(t *testing.T) {
 }
 
 func TestValidateWorktreeOwnershipRejectsIncompleteRequests(t *testing.T) {
+	t.Parallel()
 	f := newOwnershipFixture(t)
 	ctx := context.Background()
 	if _, err := (*Store)(nil).ValidateWorktreeOwnership(ctx, f.worktreeRequest()); !errors.Is(err, ErrOwnership) {
@@ -261,6 +265,7 @@ func TestValidateWorktreeOwnershipRejectsIncompleteRequests(t *testing.T) {
 }
 
 func TestValidateWorktreeOwnershipRejectsEveryIdentityBoundary(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	cases := []struct {
 		name    string
@@ -336,6 +341,7 @@ func TestValidateWorktreeOwnershipRejectsEveryIdentityBoundary(t *testing.T) {
 // TestValidateWorktreeOwnershipAcceptsAMatchingIdentity は fail-closed な identity 規則の成功側を検証する。
 // wx が記録した identity を caller が提示すれば受理されるため、上の拒否は identity の提示自体ではなく不一致による。
 func TestValidateWorktreeOwnershipAcceptsAMatchingIdentity(t *testing.T) {
+	t.Parallel()
 	f := newOwnershipFixture(t)
 	ctx := context.Background()
 	if err := f.store.RecordSlotRepositoryIdentity(ctx, f.slotID, f.repository, "16777220:9911"); err != nil {
@@ -353,6 +359,7 @@ func TestValidateWorktreeOwnershipAcceptsAMatchingIdentity(t *testing.T) {
 }
 
 func TestValidateSlotOwnershipBoundaries(t *testing.T) {
+	t.Parallel()
 	f := newOwnershipFixture(t)
 	ctx := context.Background()
 	if err := f.store.ValidateSlotOwnership(ctx, f.slotRequest()); err != nil {
@@ -424,6 +431,7 @@ func TestValidateSlotOwnershipBoundaries(t *testing.T) {
 
 // TestValidateSlotOwnershipAcceptsAMatchingIdentity は、上の identity 不一致による拒否と対になる。
 func TestValidateSlotOwnershipAcceptsAMatchingIdentity(t *testing.T) {
+	t.Parallel()
 	f := newOwnershipFixture(t)
 	ctx := context.Background()
 	if _, err := f.store.db.ExecContext(ctx, `UPDATE slots SET dir_identity='16777220:7' WHERE id=?`, f.slotID); err != nil {
@@ -437,6 +445,7 @@ func TestValidateSlotOwnershipAcceptsAMatchingIdentity(t *testing.T) {
 }
 
 func TestCanonicalWorkspaceKeepsNewRepositoryIdentity(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	common := t.TempDir()
 	w := discovery.Workspace{
@@ -459,6 +468,7 @@ func TestCanonicalWorkspaceKeepsNewRepositoryIdentity(t *testing.T) {
 // TestSlotStateMismatchIsDistinguishableFromOwnershipDoubt は、state だけが食い違う失敗を
 // 呼び出し元が再取得で回復できるよう、位置・identity の不一致と区別できることを検証する。
 func TestSlotStateMismatchIsDistinguishableFromOwnershipDoubt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	f := newOwnershipFixture(t)
 	if _, err := f.store.db.ExecContext(ctx, `UPDATE slots SET state='LEASED' WHERE id=?`, f.slotID); err != nil {

@@ -74,7 +74,7 @@ func TestGCDiscoversArchivedSlotOnClosedRetiredRoot(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(oldRoot, "slot"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestReloadUniqueRootsRetiresDescriptorsWithinBound(t *testing.T) {
 	if err := os.Mkdir(initialRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestRetiredRootSurvivesInflightOperationUntilRelease(t *testing.T) {
 	if err := os.Mkdir(newRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestLeaseReleaseRetiresOldRootDescriptor(t *testing.T) {
 	if err := os.Mkdir(newRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestConcurrentCloseReloadAndAllocationHasNoUseAfterClose(t *testing.T) {
 	if err := os.Mkdir(newRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +341,7 @@ func TestReloadRejectsSamePathRootInodeReplacementAtomically(t *testing.T) {
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestReloadRejectsReplacementOfClosedHistoricalRoot(t *testing.T) {
 	if err := os.Mkdir(newRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestRootReplacementQuarantinesPreparationBeforeDescriptorAcquire(t *testing
 	if err := os.Mkdir(newRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +513,7 @@ func TestRootStatusMeasuresCurrentRegisteredRootPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "owned.txt"), []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +549,7 @@ func TestReloadRejectsOverlappingRootWhileGenerationIsHeld(t *testing.T) {
 	if err := os.MkdirAll(nestedRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +583,7 @@ func TestConcurrentCloseIsIdempotent(t *testing.T) {
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(home, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +694,7 @@ func TestPinnedRootOperationsValidateAndMaterializeThroughDescriptors(t *testing
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.Open(filepath.Join(base, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(base, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

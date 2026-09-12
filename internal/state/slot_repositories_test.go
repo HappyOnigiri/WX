@@ -7,6 +7,7 @@ import (
 )
 
 func TestRecordSlotRepositoryIdentityRequiresAnExistingRow(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()
@@ -35,6 +36,7 @@ func TestRecordSlotRepositoryIdentityRequiresAnExistingRow(t *testing.T) {
 }
 
 func TestRestoringRepositoryMetadataAndSnapshotExpiryBoundaries(t *testing.T) {
+	t.Parallel()
 	store := openTestStore(t)
 	seedWorkspace(t, store)
 	ctx := context.Background()

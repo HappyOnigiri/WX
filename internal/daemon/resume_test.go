@@ -96,7 +96,7 @@ func TestResumeRestoreJobQuarantinesWhenParentSnapshotJobFailed(t *testing.T) {
 func TestResumeRestoreJobQuarantinesOnIncompleteRepositorySnapshotSet(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestResumeRestoreJobWrapsSlotRepositoryStorageFailure(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	databasePath := filepath.Join(root, "state.db")
-	store, err := state.Open(databasePath)
+	store, err := openTestStoreAtPath(t, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}

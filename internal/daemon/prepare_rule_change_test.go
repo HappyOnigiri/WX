@@ -16,7 +16,7 @@ import (
 // standbyPrepareJobFixture は待機用 slot を1つ作り、その PREPARE job を実行直前まで用意する。
 func standbyPrepareJobFixture(t *testing.T, cfg config.Config, root, repository string) (*state.Store, *Manager, discovery.Workspace, state.Job) {
 	t.Helper()
-	store, err := state.Open(filepath.Join(root, "state.db"))
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
