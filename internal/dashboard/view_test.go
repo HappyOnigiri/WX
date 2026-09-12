@@ -38,8 +38,15 @@ func TestSelectedTabUsesBackgroundInsteadOfBrackets(t *testing.T) {
 	if strings.Contains(line, "[Status]") {
 		t.Fatalf("selected tab still uses brackets: %q", line)
 	}
-	if !strings.Contains(line, "\x1b[48;5;43m Status ") {
+	if !strings.Contains(line, "\x1b[48;5;43mStatus") {
 		t.Fatalf("selected tab has no background highlight: %q", line)
+	}
+	want := xansi.Strip(line)
+	for tab := range tabNames {
+		m.tab = tab
+		if got := xansi.Strip(m.tabLine()); got != want {
+			t.Fatalf("tab %d changed tab positions: got %q, want %q", tab, got, want)
+		}
 	}
 }
 

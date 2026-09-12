@@ -70,7 +70,7 @@ func (m model) tabLine() string {
 	parts := []string{accent + "◉ wx" + reset}
 	for i, name := range tabNames {
 		if i == m.tab {
-			parts = append(parts, activeTab+" "+name+" "+reset)
+			parts = append(parts, activeTab+name+reset)
 		} else {
 			parts = append(parts, dim+name+reset)
 		}
