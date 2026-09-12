@@ -79,7 +79,11 @@ func (m model) breadcrumb() string {
 	if m.tab == 2 {
 		environments := m.configEnvironments()
 		if m.settingsOpen && m.settingsEnv < len(environments) {
-			crumb += " / " + environments[m.settingsEnv].label
+			environment := environments[m.settingsEnv]
+			crumb += " / " + environment.title()
+			if environment.scope != "global" {
+				crumb += " / " + environment.label
+			}
 		}
 	}
 	if m.mode != modeList {
@@ -189,7 +193,7 @@ func (m model) currentLabels() []string {
 			environments := m.configEnvironments()
 			labels := make([]string, 0, len(environments))
 			for _, environment := range environments {
-				labels = append(labels, environment.label)
+				labels = append(labels, environment.menuLabel())
 			}
 			return labels
 		}
@@ -232,7 +236,7 @@ func (m model) descriptionLines(width int) []string {
 		if !m.settingsOpen {
 			environments := m.configEnvironments()
 			environment := environments[m.selected]
-			lines := []string{soft + environment.label + reset}
+			lines := []string{soft + environment.menuLabel() + reset, dim + "Scope: " + environment.title() + reset}
 			if environment.target != "" {
 				lines = append(lines, dim+environment.target+reset)
 			}
@@ -242,7 +246,7 @@ func (m model) descriptionLines(width int) []string {
 					lines = append(lines, truncate(field.Key+" = "+field.Value, width))
 				}
 			} else {
-				for _, field := range config.ScopeFields(m.opts.Config, config.ScopeWorkspace, environment.target) {
+				for _, field := range config.ScopeFields(m.opts.Config, environment.configScope(), environment.target) {
 					lines = append(lines, truncate(field.Key+" = "+field.Value+" ("+field.Source+")", width))
 				}
 			}
@@ -295,7 +299,6 @@ func (m model) inputView() []string {
 		m.inputHint,
 		soft + "> " + m.input + "█" + reset,
 		"",
-		dim + "For workspace operations, use: workspace path | additional arguments" + reset,
 		dim + "Enter confirm  Esc back" + reset,
 	}
 }
@@ -327,7 +330,11 @@ func (m model) confirmView() []string {
 		lines = append(lines, "Current: "+current, "Change: "+change)
 	}
 	if m.pending.workDir {
-		lines = append(lines, "Target: "+strings.TrimSpace(strings.SplitN(m.input, "|", 2)[0]))
+		target := m.target
+		if target == "" {
+			target = strings.TrimSpace(strings.SplitN(m.input, "|", 2)[0])
+		}
+		lines = append(lines, "Target: "+target)
 	}
 	if m.input != "" {
 		lines = append(lines, "Input: "+m.input)
@@ -371,7 +378,8 @@ func (m model) environmentValues() map[string]string {
 		return map[string]string{}
 	}
 	values := map[string]string{}
-	for _, field := range config.ScopeFields(m.opts.Config, config.ScopeWorkspace, environments[m.settingsEnv].target) {
+	environment := environments[m.settingsEnv]
+	for _, field := range config.ScopeFields(m.opts.Config, environment.configScope(), environment.target) {
 		values[field.Key] = field.Value
 	}
 	return values

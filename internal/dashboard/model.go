@@ -68,6 +68,7 @@ type choice struct {
 type environment struct {
 	label  string
 	target string
+	scope  string
 }
 
 type model struct {
@@ -171,13 +172,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.resultText += "Refresh failed: " + msg.err.Error()
 		} else {
+			selectedScope := ""
+			if environments := m.configEnvironments(); m.settingsOpen && m.settingsEnv < len(environments) {
+				selectedScope = environments[m.settingsEnv].scope
+			}
 			m.opts.Config, m.opts.Setup = msg.config, msg.setup
-			if m.settingsOpen && m.target != "" {
-				if m.opts.Config.Workspaces == nil {
-					m.opts.Config.Workspaces = map[string]config.Workspace{}
+			if m.target != "" {
+				switch selectedScope {
+				case "workspace":
+					if m.opts.Config.Workspaces == nil {
+						m.opts.Config.Workspaces = map[string]config.Workspace{}
+					}
+					if _, ok := m.opts.Config.Workspaces[m.target]; !ok {
+						m.opts.Config.Workspaces[m.target] = config.Workspace{}
+					}
+				case "repository":
+					if m.opts.Config.Repositories == nil {
+						m.opts.Config.Repositories = map[string]config.Repository{}
+					}
+					if _, ok := m.opts.Config.Repositories[m.target]; !ok {
+						m.opts.Config.Repositories[m.target] = config.Repository{}
+					}
 				}
-				if _, ok := m.opts.Config.Workspaces[m.target]; !ok {
-					m.opts.Config.Workspaces[m.target] = config.Workspace{}
+				for index, environment := range m.configEnvironments() {
+					if environment.scope == selectedScope && environment.target == m.target {
+						m.settingsEnv = index
+						break
+					}
 				}
 			}
 		}
@@ -287,7 +308,11 @@ func (m model) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.mode, m.input = modeList, ""
 	case "enter":
-		if strings.TrimSpace(m.input) == "" && (m.pending.inputNeeded || m.pending.workDir || m.inputStage != "") {
+		required := m.pending.inputNeeded
+		if m.inputStage == "workdir" || (m.inputStage != "workdir-args" && m.pending.workDir) {
+			required = true
+		}
+		if strings.TrimSpace(m.input) == "" && required {
 			return m, nil
 		}
 		switch m.inputStage {
@@ -295,6 +320,15 @@ func (m model) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.target, m.input = strings.TrimSpace(m.input), ""
 			m.showConfigChoices()
 		case "config-value", "setup-value":
+			m.mode = modeConfirm
+		case "workdir":
+			m.target, m.input = strings.TrimSpace(m.input), ""
+			if m.pending.inputLabel != "" {
+				m.inputHint, m.inputStage = m.pending.inputLabel, "workdir-args"
+			} else {
+				m.mode = modeConfirm
+			}
+		case "workdir-args":
 			m.mode = modeConfirm
 		default:
 			m.mode = modeConfirm
@@ -379,8 +413,8 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		meta := items[m.selected]
 		m.pending = menuItem{label: meta.DisplayName, command: "config"}
 		m.configMeta, m.target = meta, ""
-		if m.settingsEnv > 0 {
-			m.target = m.configEnvironments()[m.settingsEnv].target
+		if environment := m.configEnvironments()[m.settingsEnv]; environment.scope != "global" {
+			m.target = environment.target
 		}
 		m.showConfigChoices()
 		return m, nil
@@ -408,14 +442,12 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		}
 		m.pending = items[m.selected]
 	}
-	if m.pending.inputLabel != "" || m.pending.workDir {
+	if m.pending.workDir {
+		m.showWorkspaceChoices()
+		return m, nil
+	}
+	if m.pending.inputLabel != "" {
 		m.inputHint = m.pending.inputLabel
-		if m.pending.workDir {
-			m.inputHint = "workspace path"
-			if m.pending.inputLabel != "" {
-				m.inputHint += " | " + m.pending.inputLabel
-			}
-		}
 		m.mode, m.input = modeInput, ""
 		return m, nil
 	}
@@ -447,6 +479,20 @@ func (m model) choose() (tea.Model, tea.Cmd) {
 		} else {
 			m.mode = modeConfirm
 		}
+		return m, nil
+	}
+	if m.pending.workDir {
+		m.target, m.input = selected.value, ""
+		switch {
+		case selected.value == "":
+			m.inputHint, m.inputStage = "Workspace path", "workdir"
+			m.mode = modeInput
+		case m.pending.inputLabel != "":
+			m.inputHint, m.inputStage = m.pending.inputLabel, "workdir-args"
+			m.mode = modeInput
+		default:
+			m.mode = modeConfirm
+		}
 	}
 	return m, nil
 }
@@ -459,10 +505,7 @@ func (m *model) finishPending() {
 	switch {
 	case m.tab == 2:
 		meta := m.configItems()[m.selected]
-		scope := "global"
-		if m.settingsEnv > 0 {
-			scope = "workspace"
-		}
+		scope := m.configEnvironments()[m.settingsEnv].scope
 		if scope != "global" {
 			workDir = m.target
 			args = append(args, "--"+scope, workDir)
@@ -486,15 +529,18 @@ func (m *model) finishPending() {
 		}
 	default:
 		if m.pending.workDir {
-			parts := strings.SplitN(input, "|", 2)
-			workDir = strings.TrimSpace(parts[0])
+			workDir = m.target
 			if workDir == "" {
-				workDir = m.opts.CWD
-			}
-			if len(parts) == 2 {
-				input = strings.TrimSpace(parts[1])
-			} else {
-				input = ""
+				parts := strings.SplitN(input, "|", 2)
+				workDir = strings.TrimSpace(parts[0])
+				if workDir == "" {
+					workDir = m.opts.CWD
+				}
+				if len(parts) == 2 {
+					input = strings.TrimSpace(parts[1])
+				} else {
+					input = ""
+				}
 			}
 		}
 		args = append(args, splitArgs(input)...)

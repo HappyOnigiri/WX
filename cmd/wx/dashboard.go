@@ -30,7 +30,7 @@ func runDashboard(ctx context.Context) int {
 			cfg = config.Defaults()
 			notice = "Could not load configuration: " + configErr.Error()
 		}
-		addDashboardWorkspaces(ctx, &cfg)
+		addDashboardEnvironments(ctx, &cfg)
 		steps, _ := setup.Collect(ctx, setupOptions())
 		action, runErr := dashboard.Run(ctx, dashboard.Options{
 			Status: dashboardStatus, CWD: cwd, Config: cfg, Setup: steps, Notice: notice,
@@ -53,14 +53,14 @@ func refreshDashboardState(ctx context.Context) (config.Config, []setup.Step, er
 	if err != nil {
 		return config.Config{}, nil, err
 	}
-	addDashboardWorkspaces(ctx, &cfg)
+	addDashboardEnvironments(ctx, &cfg)
 	steps, err := setup.Collect(ctx, setupOptions())
 	return cfg, steps, err
 }
 
-// addDashboardWorkspaces は daemon に登録済みだが個別設定を持たない workspace も環境一覧へ加える。
+// addDashboardEnvironments は daemon に登録済みだが個別設定を持たない workspace と repository も環境一覧へ加える。
 // 空の override は表示用の Config だけに置き、設定ファイルへは保存しない。
-func addDashboardWorkspaces(ctx context.Context, cfg *config.Config) {
+func addDashboardEnvironments(ctx context.Context, cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
@@ -77,11 +77,8 @@ func addDashboardWorkspaces(ctx context.Context, cfg *config.Config) {
 	if cfg.Workspaces == nil {
 		cfg.Workspaces = map[string]config.Workspace{}
 	}
-	details, ok := payload["workspace_details"].([]any)
-	if !ok {
-		return
-	}
-	for _, raw := range details {
+	workspaceDetails, _ := payload["workspace_details"].([]any)
+	for _, raw := range workspaceDetails {
 		item, ok := raw.(map[string]any)
 		if !ok {
 			continue
@@ -90,6 +87,22 @@ func addDashboardWorkspaces(ctx context.Context, cfg *config.Config) {
 		if ok && root != "" {
 			if _, exists := cfg.Workspaces[root]; !exists {
 				cfg.Workspaces[root] = config.Workspace{}
+			}
+		}
+	}
+	if cfg.Repositories == nil {
+		cfg.Repositories = map[string]config.Repository{}
+	}
+	repositoryDetails, _ := payload["repository_details"].([]any)
+	for _, raw := range repositoryDetails {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		mainPath, ok := item["main_path"].(string)
+		if ok && mainPath != "" {
+			if _, exists := cfg.Repositories[mainPath]; !exists {
+				cfg.Repositories[mainPath] = config.Repository{}
 			}
 		}
 	}

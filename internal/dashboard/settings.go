@@ -20,8 +20,8 @@ func (m model) setupItems() []setup.Step {
 
 func (m model) configItems() []config.Metadata {
 	scope := "global"
-	if m.settingsOpen && m.settingsEnv > 0 {
-		scope = "workspace"
+	if environments := m.configEnvironments(); m.settingsOpen && m.settingsEnv < len(environments) {
+		scope = environments[m.settingsEnv].scope
 	}
 	items := make([]config.Metadata, 0, len(m.catalog))
 	for _, meta := range m.catalog {
@@ -33,7 +33,7 @@ func (m model) configItems() []config.Metadata {
 }
 
 func (m model) configEnvironments() []environment {
-	environments := []environment{{label: "Global"}}
+	environments := []environment{{label: "Global", scope: "global"}}
 	paths := make([]string, 0, len(m.opts.Config.Workspaces))
 	for path := range m.opts.Config.Workspaces {
 		paths = append(paths, path)
@@ -44,9 +44,46 @@ func (m model) configEnvironments() []environment {
 		if label == "." || label == string(filepath.Separator) || label == "" {
 			label = path
 		}
-		environments = append(environments, environment{label: label, target: path})
+		environments = append(environments, environment{label: label, target: path, scope: "workspace"})
+	}
+	paths = paths[:0]
+	for path := range m.opts.Config.Repositories {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		label := filepath.Base(path)
+		if label == "." || label == string(filepath.Separator) || label == "" {
+			label = path
+		}
+		environments = append(environments, environment{label: label, target: path, scope: "repository"})
 	}
 	return environments
+}
+
+func (e environment) title() string {
+	switch e.scope {
+	case "workspace":
+		return "Workspace"
+	case "repository":
+		return "Repository"
+	default:
+		return "Global"
+	}
+}
+
+func (e environment) menuLabel() string {
+	if e.scope == "global" {
+		return e.title()
+	}
+	return e.title() + "  " + e.label
+}
+
+func (e environment) configScope() config.Scope {
+	if e.scope == "repository" {
+		return config.ScopeRepository
+	}
+	return config.ScopeWorkspace
 }
 
 func (m *model) showConfigChoices() {
@@ -75,6 +112,17 @@ func (m *model) showConfigChoices() {
 	}
 	m.choices = append(m.choices, choice{label: "Reset to default", op: config.EditReset})
 	m.mode, m.inputStage = modeChoice, ""
+}
+
+func (m *model) showWorkspaceChoices() {
+	m.choices, m.choice, m.inputStage = nil, 0, ""
+	for _, environment := range m.configEnvironments() {
+		if environment.scope == "workspace" {
+			m.choices = append(m.choices, choice{label: environment.label + " — " + environment.target, value: environment.target})
+		}
+	}
+	m.choices = append(m.choices, choice{label: "Enter another path…"})
+	m.mode = modeChoice
 }
 
 func hasScope(scopes []string, scope string) bool {

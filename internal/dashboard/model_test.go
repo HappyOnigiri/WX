@@ -15,10 +15,21 @@ func TestModelBuildsActionWithExplicitWorkspace(t *testing.T) {
 	m.tab = 1
 	updated, _ := m.Update(key(tea.KeyEnter))
 	m = updated.(model)
+	if m.mode != modeChoice {
+		t.Fatalf("mode=%v, want workspace choice", m.mode)
+	}
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
 	if m.mode != modeInput {
 		t.Fatalf("mode=%v, want input", m.mode)
 	}
-	m.input = "/tmp/project | --dangerously-skip-permissions"
+	m.input = "/tmp/project"
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if m.mode != modeInput || m.inputStage != "workdir-args" {
+		t.Fatalf("mode=%v stage=%q, want argument input", m.mode, m.inputStage)
+	}
+	m.input = "--dangerously-skip-permissions"
 	updated, _ = m.Update(key(tea.KeyEnter))
 	m = updated.(model)
 	updated, _ = m.Update(key(tea.KeyEnter))
@@ -70,7 +81,7 @@ func TestSettingsNavigateFromEnvironmentToChoice(t *testing.T) {
 	cfg.Workspaces["/tmp/workspace-one"] = config.Workspace{}
 	m := newModel(context.Background(), Options{Config: cfg})
 	m.tab = 2
-	if got := m.currentLabels(); len(got) != 2 || got[0] != "Global" || got[1] != "workspace-one" {
+	if got := m.currentLabels(); len(got) != 2 || got[0] != "Global" || got[1] != "Workspace  workspace-one" {
 		t.Fatalf("environments=%v", got)
 	}
 	m.selected = 1

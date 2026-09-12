@@ -24,12 +24,12 @@ var tabNames = []string{"Status", "Launch", "Settings", "Doctor", "Maintenance",
 
 var tabMenus = map[int][]menuItem{
 	1: {
-		{label: "Launch Claude", description: "Launch Claude in a worktree for the selected workspace.", impact: "Uses the same worktree policy and readiness rules as the CLI.", command: "claude", workDir: true, external: true},
-		{label: "Launch Codex", description: "Launch Codex in a worktree for the selected workspace.", impact: "Hands terminal control to Codex and releases the lease after it exits.", command: "codex", workDir: true, external: true},
+		{label: "Launch Claude", description: "Launch Claude in a worktree for the selected workspace.", impact: "Uses the same worktree policy and readiness rules as the CLI.", command: "claude", inputLabel: "optional Claude arguments", workDir: true, external: true},
+		{label: "Launch Codex", description: "Launch Codex in a worktree for the selected workspace.", impact: "Hands terminal control to Codex and releases the lease after it exits.", command: "codex", inputLabel: "optional Codex arguments", workDir: true, external: true},
 		{label: "Resume a conversation", description: "Restore saved work for a wx session ID.", impact: "Does not silently fall back to a fresh worktree if restoration fails.", command: "resume", inputLabel: "wx session ID", inputNeeded: true, external: true},
-		{label: "Open a shell", description: "Open a shell in a leased worktree for the selected workspace.", impact: "Saves unfinished work and releases the lease when the shell exits.", command: "shell", workDir: true, external: true},
+		{label: "Open a shell", description: "Open a shell in a leased worktree for the selected workspace.", impact: "Saves unfinished work and releases the lease when the shell exits.", command: "shell", inputLabel: "optional shell arguments", workDir: true, external: true},
 		{label: "Run a command", description: "Run one command and its arguments in a leased worktree.", impact: "Passes the executable and arguments as separate values.", command: "run", inputLabel: "command and arguments", inputNeeded: true, workDir: true, external: true},
-		{label: "Create a path lease", description: "Create a worktree lease and print its path and session ID.", impact: "The lease remains until its parent session, an explicit release, or its TTL ends it.", command: "new", workDir: true},
+		{label: "Create a path lease", description: "Create a worktree lease and print its path and session ID.", impact: "The lease remains until its parent session, an explicit release, or its TTL ends it.", command: "new", inputLabel: "optional lease arguments", workDir: true},
 	},
 	3: {
 		{label: "Standard diagnostics", description: "Check configuration, the daemon, database, and slots.", impact: "Still reports facts available locally when the daemon is unavailable.", command: "doctor"},
