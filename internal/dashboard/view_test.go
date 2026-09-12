@@ -9,6 +9,7 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
 func TestViewUsesStatusPaneAndResponsiveOperationLayout(t *testing.T) {
@@ -58,10 +59,11 @@ func TestSelectedMenuItemUsesAccentColor(t *testing.T) {
 		name         string
 		tab          int
 		settingsOpen bool
+		hasDetail    bool
 	}{
 		{name: "launch", tab: 1},
 		{name: "settings environments", tab: 2},
-		{name: "settings", tab: 2, settingsOpen: true},
+		{name: "settings", tab: 2, settingsOpen: true, hasDetail: true},
 		{name: "maintenance", tab: 4},
 		{name: "system", tab: 5},
 	} {
@@ -71,8 +73,8 @@ func TestSelectedMenuItemUsesAccentColor(t *testing.T) {
 			if !strings.Contains(lines[2], reset+accent) {
 				t.Fatalf("selected menu item has no accent color: %q", lines[2])
 			}
-			if strings.Contains(lines[2], dim) {
-				t.Fatalf("selected menu item is only partially accented: %q", lines[2])
+			if got := strings.Contains(lines[2], dim); got != setup.hasDetail {
+				t.Fatalf("selected menu detail style=%v, want %v: %q", got, setup.hasDetail, lines[2])
 			}
 			if strings.Contains(lines[3], reset+accent) {
 				t.Fatalf("unselected menu item uses accent color: %q", lines[3])
@@ -82,12 +84,32 @@ func TestSelectedMenuItemUsesAccentColor(t *testing.T) {
 }
 
 func TestSelectedChoiceUsesAccentColor(t *testing.T) {
-	m := newModel(context.Background(), Options{Config: config.Defaults()})
-	m.pending = tabMenus[4][0]
-	m.showArgumentChoices()
+	cfg := config.Defaults()
+	cfg.Workspaces["/tmp/workspace-one"] = config.Workspace{}
+	m := newModel(context.Background(), Options{Config: cfg})
+	m.pending = tabMenus[1][0]
+	m.showWorkspaceChoices()
 	lines := m.choiceView()
 	if !strings.Contains(lines[3], reset+accent) {
 		t.Fatalf("selected choice has no accent color: %q", lines[3])
+	}
+	if !strings.Contains(lines[3], accent+"workspace-one "+dim+"— /tmp/workspace-one") {
+		t.Fatalf("workspace path is not styled as secondary information: %q", lines[3])
+	}
+}
+
+func TestSelectedSetupItemKeepsStateSecondary(t *testing.T) {
+	m := newModel(context.Background(), Options{
+		Config: config.Defaults(),
+		Setup: []setup.Step{{
+			ID: "hooks.claude", Title: "Claude hooks", State: setup.StatePresent,
+			Options: []setup.Action{setup.ActionKeep},
+		}},
+	})
+	m.tab = 5
+	line := m.menuLines(80)[2]
+	if !strings.Contains(line, accent+"Claude hooks  "+dim+"present") {
+		t.Fatalf("setup state is not styled as secondary information: %q", line)
 	}
 }
 

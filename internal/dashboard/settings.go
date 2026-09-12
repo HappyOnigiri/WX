@@ -118,7 +118,7 @@ func (m *model) showWorkspaceChoices() {
 	m.choices, m.choice, m.inputStage = nil, 0, "workdir-choice"
 	for _, environment := range m.configEnvironments() {
 		if environment.scope == "workspace" {
-			m.choices = append(m.choices, choice{label: environment.label + " — " + environment.target, value: environment.target})
+			m.choices = append(m.choices, choice{label: labelWithDetail(environment.label, "— "+environment.target), value: environment.target})
 		}
 	}
 	m.choices = append(m.choices, choice{label: "Enter another path…", input: true})
@@ -132,7 +132,7 @@ func (m *model) showTargetChoices() {
 	}
 	for _, environment := range m.configEnvironments() {
 		if environment.scope == "workspace" {
-			m.choices = append(m.choices, choice{label: environment.label + " — " + environment.target, value: environment.target})
+			m.choices = append(m.choices, choice{label: labelWithDetail(environment.label, "— "+environment.target), value: environment.target})
 		}
 	}
 	m.choices = append(m.choices, choice{label: "Enter another path…", input: true})

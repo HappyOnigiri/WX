@@ -237,7 +237,7 @@ func (m model) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.choice = min(len(m.choices)-1, m.choice+1)
 		case "enter":
 			return m.choose()
-		case "esc":
+		case "left", "esc":
 			m.mode = modeList
 		}
 		return m, nil
@@ -278,7 +278,12 @@ func (m model) updateKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		m.changeTab(-1)
 	case "left":
-		m.changeTab(-1)
+		if m.tab == 2 && m.settingsOpen {
+			m.settingsOpen = false
+			m.selected, m.offset = m.settingsEnv, 0
+		} else {
+			m.changeTab(-1)
+		}
 	case "right":
 		m.changeTab(1)
 	case "up", "ctrl+p":

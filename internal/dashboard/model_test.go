@@ -136,6 +136,34 @@ func TestLeftAndRightChangeTabs(t *testing.T) {
 	}
 }
 
+func TestLeftReturnsFromNestedMenus(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.tab = 1
+	updated, _ := m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	updated, _ = m.Update(key(tea.KeyLeft))
+	m = updated.(model)
+	if m.tab != 1 || m.mode != modeList {
+		t.Fatalf("workspace choice left returned tab=%d mode=%v", m.tab, m.mode)
+	}
+
+	m.tab, m.settingsOpen, m.settingsEnv, m.selected = 2, true, 0, 0
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	updated, _ = m.Update(key(tea.KeyLeft))
+	m = updated.(model)
+	if m.tab != 2 || m.mode != modeList || !m.settingsOpen {
+		t.Fatalf("setting choice left returned tab=%d mode=%v open=%v", m.tab, m.mode, m.settingsOpen)
+	}
+
+	m.selected = 1
+	updated, _ = m.Update(key(tea.KeyLeft))
+	m = updated.(model)
+	if m.tab != 2 || m.settingsOpen || m.selected != 0 {
+		t.Fatalf("settings left returned tab=%d open=%v selected=%d", m.tab, m.settingsOpen, m.selected)
+	}
+}
+
 func TestSettingsNavigateFromEnvironmentToChoice(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Workspaces["/tmp/workspace-one"] = config.Workspace{}

@@ -47,7 +47,7 @@ func (m model) View() tea.View {
 		footer = "←/→ or Tab/Shift+Tab tabs  r refresh  Esc exit"
 	case m.tab == 2 && m.mode == modeList:
 		if m.settingsOpen {
-			footer = "←/→ tabs  ↑/↓ select  Enter edit  Esc environments"
+			footer = "←/Esc environments  → tabs  ↑/↓ select  Enter edit"
 		} else {
 			footer = "←/→ tabs  ↑/↓ select environment  Enter open  Esc exit"
 		}
@@ -165,7 +165,7 @@ func (m model) menuLines(width int) []string {
 		label := labels[i]
 		if i == m.selected {
 			marker = accent + "❯ " + reset
-			label = accent + xansi.Strip(label) + reset
+			label = accent + label + reset
 		}
 		lines = append(lines, truncate(marker+label, width))
 	}
@@ -320,7 +320,7 @@ func (m model) choiceView() []string {
 		}
 		lines = append(lines, marker+label)
 	}
-	return append(lines, "", dim+"↑/↓ select  Enter confirm  Esc back"+reset)
+	return append(lines, "", dim+"↑/↓ select  Enter confirm  ←/Esc back"+reset)
 }
 
 func (m model) confirmView() []string {
@@ -431,6 +431,10 @@ func truncate(value string, width int) string {
 		return value
 	}
 	return xansi.Truncate(value, width, "…")
+}
+
+func labelWithDetail(label, detail string) string {
+	return label + " " + dim + detail + reset
 }
 
 func padANSI(value string, width int) string {
