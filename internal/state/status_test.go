@@ -244,6 +244,28 @@ func TestStatusDiagnosticsAndGarbageCollectionCandidatesExposeRows(t *testing.T)
 	}
 }
 
+func TestStatusDiagnosticsIncludesSlotFailureDetailPath(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "quarantine-detail", WorkspaceID: "workspace", SlotID: "quarantine-detail", State: "RESTORING", AgentKind: "codex", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: session.WorkspaceID, Generation: 1, RootID: testRootID, RelPath: "workspace/quarantine-detail", State: "RESTORING"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	detailPath := "/logs/git-restore-failure.log"
+	if err := store.SetSlotStateWithDetail(ctx, session.SlotID, []string{"RESTORING"}, "QUARANTINED", "RESTORE_FAILED:git-failure", detailPath); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics, err := store.StatusDiagnostics(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diagnostics.Quarantine) != 1 || diagnostics.Quarantine[0].DetailPath != detailPath {
+		t.Fatalf("quarantine diagnostics=%+v, want detail path %q", diagnostics.Quarantine, detailPath)
+	}
+}
+
 // TestListSlotsReturnsLiveSlotsWithRepositories は既定の一覧の範囲と REPO 列の元になる値を固定する。
 // 実体が残る slot（ARCHIVED 以外）を全て返し、multi-repository slot は dir_name 順に main worktree path を並べる。
 func TestListSlotsReturnsLiveSlotsWithRepositories(t *testing.T) {

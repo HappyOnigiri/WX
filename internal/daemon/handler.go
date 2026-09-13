@@ -466,6 +466,16 @@ func (h Handler) dispatchLease(ctx context.Context, method string, raw json.RawM
 		}
 		result, err := h.Manager.ReleaseLease(ctx, p.SessionID, p.Reason, p.Discard)
 		return result, true, err
+	case "ReleaseStatus":
+		var p struct {
+			SessionID string `json:"session_id"`
+			JobID     string `json:"job_id"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.ReleaseStatus(ctx, p.SessionID, p.JobID)
+		return result, true, err
 	default:
 		return nil, false, nil
 	}

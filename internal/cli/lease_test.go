@@ -274,7 +274,7 @@ func TestRunLeaseReleaseReportsWhatHappened(t *testing.T) {
 	client, handler, _, ctx := leaseFixture(t)
 	handler.releaseLeaseReply = map[string]any{"released": true, "discarded": true}
 	stdout := captureLeaseStdout(t, func() {
-		if exit := client.RunLeaseRelease(ctx, "session", true); exit != 0 {
+		if exit := client.RunLeaseRelease(ctx, "session", true, false, false); exit != 0 {
 			t.Fatalf("RunLeaseRelease exit=%d", exit)
 		}
 	})
@@ -284,7 +284,7 @@ func TestRunLeaseReleaseReportsWhatHappened(t *testing.T) {
 	// 保存が先に走った場合は、保存された事実と再実行を案内する。
 	handler.releaseLeaseReply = map[string]any{"released": true, "discarded": false}
 	stdout = captureLeaseStdout(t, func() {
-		if exit := client.RunLeaseRelease(ctx, "session", true); exit != 0 {
+		if exit := client.RunLeaseRelease(ctx, "session", true, false, false); exit != 0 {
 			t.Fatalf("RunLeaseRelease exit=%d", exit)
 		}
 	})
@@ -294,7 +294,7 @@ func TestRunLeaseReleaseReportsWhatHappened(t *testing.T) {
 	// 既に削除まで進んだ slot では、何度実行しても変わらない再実行を案内しない。
 	handler.releaseLeaseReply = map[string]any{"released": true, "discarded": false, "discard_pending": daemon.DiscardPendingRemoved}
 	stdout = captureLeaseStdout(t, func() {
-		if exit := client.RunLeaseRelease(ctx, "session", true); exit != 0 {
+		if exit := client.RunLeaseRelease(ctx, "session", true, false, false); exit != 0 {
 			t.Fatalf("RunLeaseRelease exit=%d", exit)
 		}
 	})
@@ -302,12 +302,77 @@ func TestRunLeaseReleaseReportsWhatHappened(t *testing.T) {
 		t.Fatalf("already removed output=%q", stdout)
 	}
 	stdout = captureLeaseStdout(t, func() {
-		if exit := client.RunLeaseRelease(ctx, "session", false); exit != 0 {
+		if exit := client.RunLeaseRelease(ctx, "session", false, false, false); exit != 0 {
 			t.Fatalf("RunLeaseRelease exit=%d", exit)
 		}
 	})
 	if strings.TrimSpace(stdout) != "released session" {
 		t.Fatalf("release output=%q", stdout)
+	}
+}
+
+func TestRunLeaseReleaseWaitsAndPrintsOneJSONLine(t *testing.T) {
+	client, handler, _, ctx := leaseFixture(t)
+	handler.releaseLeaseReply = map[string]any{"released": true, "discarded": false, "job_id": "job-1", "job_kind": "SNAPSHOT"}
+	handler.releaseStatusReplies = []map[string]any{
+		{"session_id": "session", "job_id": "job-1", "job_kind": "SNAPSHOT", "state": "PENDING", "slot_state": "DRAINING", "session_state": "RELEASING"},
+		{"session_id": "session", "job_id": "job-1", "job_kind": "SNAPSHOT", "state": "SUCCEEDED", "slot_state": "SNAPSHOTTED", "session_state": "ARCHIVED"},
+	}
+	stdout := captureLeaseStdout(t, func() {
+		if exit := client.RunLeaseRelease(ctx, "session", false, true, true); exit != 0 {
+			t.Fatalf("RunLeaseRelease --wait --json exit=%d", exit)
+		}
+	})
+	if strings.Count(strings.TrimSpace(stdout), "\n") != 0 {
+		t.Fatalf("JSON output has more than one line: %q", stdout)
+	}
+	var reply map[string]any
+	if err := json.Unmarshal([]byte(stdout), &reply); err != nil {
+		t.Fatalf("JSON output=%q err=%v", stdout, err)
+	}
+	if reply["state"] != "SUCCEEDED" || reply["slot_state"] != "SNAPSHOTTED" || reply["job_id"] != "job-1" {
+		t.Fatalf("final JSON=%v", reply)
+	}
+	handler.mu.Lock()
+	calls := handler.releaseStatusCalls
+	handler.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("ReleaseStatus calls=%d, want 2", calls)
+	}
+}
+
+func TestRunLeaseReleaseWaitReportsFailureAndDetailPath(t *testing.T) {
+	client, handler, _, ctx := leaseFixture(t)
+	handler.releaseLeaseReply = map[string]any{"released": true, "discarded": false, "job_id": "job-2", "job_kind": "SNAPSHOT"}
+	handler.releaseStatusReplies = []map[string]any{{
+		"session_id": "session", "job_id": "job-2", "job_kind": "SNAPSHOT", "state": "FAILED", "slot_state": "QUARANTINED", "session_state": "ARCHIVED",
+		"failure_code": "SNAPSHOT_FAILED:git-failure", "failure_message": "git failed", "detail_path": "/tmp/details/git-failure.log",
+	}}
+	var code int
+	stdout := captureLeaseStdout(t, func() { code = client.RunLeaseRelease(ctx, "session", false, true, true) })
+	if code != 1 {
+		t.Fatalf("RunLeaseRelease failed wait exit=%d, want 1", code)
+	}
+	var reply map[string]any
+	if err := json.Unmarshal([]byte(stdout), &reply); err != nil {
+		t.Fatalf("JSON output=%q err=%v", stdout, err)
+	}
+	if reply["failure_code"] != "SNAPSHOT_FAILED:git-failure" || reply["detail_path"] != "/tmp/details/git-failure.log" {
+		t.Fatalf("failure JSON=%v", reply)
+	}
+}
+
+func TestRunLeaseReleaseDoesNotPollWithoutAJob(t *testing.T) {
+	client, handler, _, ctx := leaseFixture(t)
+	handler.releaseLeaseReply = map[string]any{"released": true, "discarded": false}
+	if exit := client.RunLeaseRelease(ctx, "session", false, true, false); exit != 0 {
+		t.Fatalf("RunLeaseRelease without job exit=%d", exit)
+	}
+	handler.mu.Lock()
+	calls := handler.releaseStatusCalls
+	handler.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("ReleaseStatus calls=%d, want 0", calls)
 	}
 }
 

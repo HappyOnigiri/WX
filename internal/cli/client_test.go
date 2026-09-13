@@ -34,8 +34,11 @@ type launcherHandler struct {
 	// slots は Slots の応答を差し替える点である。nil なら失敗を返し、使用量を引けない daemon として扱われる。
 	slots []daemon.SlotView
 	// releaseLeaseReply と resumeStatus は貸出コマンドの test が応答を差し替える点である。nil なら既定の応答を返す。
-	releaseLeaseReply map[string]any
-	resumeStatus      map[string]any
+	releaseLeaseReply    map[string]any
+	releaseStatusReplies []map[string]any
+	releaseStatusErr     error
+	releaseStatusCalls   int
+	resumeStatus         map[string]any
 	// leaseErr は ResolveAndLease を失敗させる点である。nil なら既定の貸出を返す。
 	leaseErr error
 	// waitReadyErr は準備待ちを失敗させる点である。nil なら成功を返す。
@@ -118,6 +121,23 @@ func (h *launcherHandler) Handle(ctx context.Context, method string, raw json.Ra
 			return h.releaseLeaseReply, nil
 		}
 		return map[string]any{"released": true, "discarded": false}, nil
+	case "ReleaseStatus":
+		h.mu.Lock()
+		h.releaseStatusCalls++
+		call := h.releaseStatusCalls
+		statusErr := h.releaseStatusErr
+		replies := h.releaseStatusReplies
+		h.mu.Unlock()
+		if statusErr != nil {
+			return nil, statusErr
+		}
+		if len(replies) > 0 {
+			if call > len(replies) {
+				call = len(replies)
+			}
+			return replies[call-1], nil
+		}
+		return map[string]any{"state": "SUCCEEDED"}, nil
 	case "Slots":
 		h.mu.Lock()
 		defer h.mu.Unlock()

@@ -140,7 +140,7 @@ func (m *Manager) settleJobAttempt(work queuedJob, job state.Job, owner string, 
 			} else {
 				_ = m.store.SetSlotState(context.Background(), job.SlotID, []string{"PREPARING", "RESTORING", "FAILED", "REMOVING", "RETIRING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED")
 			}
-			if finishErr := m.finishJob(context.Background(), work.id, owner, err); finishErr != nil {
+			if finishErr := m.finishJob(context.Background(), job, owner, err); finishErr != nil {
 				m.log.Error("finish exhausted job failed", "job_id", work.id, "error", finishErr)
 			}
 			m.releaseLease(job.SessionID)
@@ -155,7 +155,7 @@ func (m *Manager) settleJobAttempt(work queuedJob, job state.Job, owner string, 
 		m.scheduleDelayed(job, delay)
 		return
 	}
-	if finishErr := m.finishJob(context.Background(), work.id, owner, err); finishErr != nil {
+	if finishErr := m.finishJob(context.Background(), job, owner, err); finishErr != nil {
 		m.log.Error("finish job failed", "job_id", work.id, "error", finishErr)
 	}
 	m.releaseLease(job.SessionID)
@@ -205,16 +205,19 @@ func (m *Manager) recoverJobs(reclaimAll bool) {
 	}
 }
 
-func (m *Manager) finishJob(ctx context.Context, id, owner string, runErr error) error {
+func (m *Manager) finishJob(ctx context.Context, job state.Job, owner string, runErr error) error {
 	var prepareErr *workspace.PrepareCommandError
 	if errors.As(runErr, &prepareErr) {
 		failureCode := "PREPARE_FAILED"
 		if prepareErr.FailureID != "" {
 			failureCode += ":" + prepareErr.FailureID
 		}
-		return m.store.FinishJobWithDetail(ctx, id, owner, runErr, failureCode, prepareErr.DetailPath)
+		return m.store.FinishJobWithDetail(ctx, job.ID, owner, runErr, failureCode, prepareErr.DetailPath)
 	}
-	return m.store.FinishJob(ctx, id, owner, runErr)
+	if failureCode, detailPath, ok := gitFailureInfo(job.Kind, runErr, m.prepareDetailDir); ok {
+		return m.store.FinishJobWithDetail(ctx, job.ID, owner, runErr, failureCode, detailPath)
+	}
+	return m.store.FinishJob(ctx, job.ID, owner, runErr)
 }
 
 func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {

@@ -72,6 +72,7 @@ type (
 		Path        string `json:"path"`
 		Kind        string `json:"kind,omitempty"`
 		FailureCode string `json:"failure_code,omitempty"`
+		DetailPath  string `json:"detail_path,omitempty"`
 	}
 	// StandbyReplenishmentDiagnostic は補充が進んでいない workspace 1 件である。
 	// Reason が SuspendReplenishReason* のときは `replenish_suspensions` の停止行で、SuspendedAt を持つ。
@@ -411,14 +412,14 @@ func (s *Store) StatusDiagnostics(ctx context.Context) (StatusDiagnostics, error
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*),COALESCE(MIN(expires_at),'') FROM snapshots WHERE status='ARCHIVED'`).Scan(&out.Snapshots.Count, &out.Snapshots.EarliestExpiry); err != nil {
 		return out, err
 	}
-	quarantineRows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path||'/'||sl.rel_path,'slot',COALESCE(sl.failure_code,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id WHERE sl.state='QUARANTINED' UNION ALL SELECT '',path,kind,reason FROM quarantined_artifacts ORDER BY 2`)
+	quarantineRows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path||'/'||sl.rel_path,'slot',COALESCE(sl.failure_code,''),COALESCE(sl.failure_detail_path,'') FROM slots sl JOIN roots rt ON rt.id=sl.root_id WHERE sl.state='QUARANTINED' UNION ALL SELECT '',path,kind,reason,'' FROM quarantined_artifacts ORDER BY 2`)
 	if err != nil {
 		return out, err
 	}
 	defer quarantineRows.Close()
 	for quarantineRows.Next() {
 		var item QuarantineDiagnostic
-		if err := quarantineRows.Scan(&item.ID, &item.Path, &item.Kind, &item.FailureCode); err != nil {
+		if err := quarantineRows.Scan(&item.ID, &item.Path, &item.Kind, &item.FailureCode, &item.DetailPath); err != nil {
 			return out, err
 		}
 		out.Quarantine = append(out.Quarantine, item)

@@ -42,6 +42,18 @@ func TestWaitReadyIncludesPrepareDiagnosticMetadata(t *testing.T) {
 	}
 }
 
+func TestReadPrepareDiagnosticAcceptsGitExitStatus(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "git-failure.log")
+	if err := os.WriteFile(path, []byte("exit_status: 128\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metadata := readPrepareDiagnostic(path)
+	if !metadata.HasExitCode || metadata.ExitCode != 128 {
+		t.Fatalf("prepare diagnostic=%+v, want exit_status 128", metadata)
+	}
+}
+
 func TestWaitReadyMarksRestoreFailuresAsUnavailableRecovery(t *testing.T) {
 	t.Parallel()
 	for code, wantMarker := range map[string]bool{"RESTORE_FAILED": true, "PREPARE_FAILED": false} {

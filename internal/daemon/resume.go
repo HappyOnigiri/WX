@@ -229,6 +229,8 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 					failureCode += ":" + prepareErr.FailureID
 				}
 				_ = m.store.SetSlotStateWithDetail(ctx, id, []string{"RESTORING"}, "QUARANTINED", failureCode, prepareErr.DetailPath)
+			} else if failureCode, detailPath, ok := gitFailureInfo("RESTORE", err, m.prepareDetailDir); ok {
+				_ = m.store.SetSlotStateWithDetail(ctx, id, []string{"RESTORING"}, "QUARANTINED", failureCode, detailPath)
 			} else {
 				_ = m.store.SetSlotState(ctx, id, []string{"RESTORING"}, "QUARANTINED", "RESTORE_FAILED")
 			}

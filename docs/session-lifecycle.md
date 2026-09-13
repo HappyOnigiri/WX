@@ -153,6 +153,7 @@ client側の捕捉が効かない中断（`kill -9`・端末ごとの消滅）�
 2. `wx release <id>`の明示指定。session tokenを持たない経路なので、生きたclient / agentを持つ貸出は拒否する。
    `--discard`だけは例外で、`Store.ReleaseDiscardingWithOutcome`が返却と同じtransactionでSNAPSHOTを積まずREMOVEを積む（session `EXPIRED`→slot `REMOVING`）。
    保存を待たずに1回で削除が予約されるので、再実行の案内も workspace の `retention.ended_worktree` の猶予も無い。slotが`PREPARING`で予約できないときだけ、通常の返却と同じく保存経路へ載る。
+   `wx release`は返却の受付と保存・削除の完了が別で、既定では受付だけを返す。`--wait`を指定すると、その返却で積まれた保存または削除の完了まで待てる。
 3. 設定`lease.ttl`の経過。`Store.ExpiredLeaseCandidates`が拾う。
 
 期限が来ても保存されてから返却され、返却後も workspace の `retention.ended_worktree` の間は実体が残り`wx shell --resume <id>`で復元できる。
