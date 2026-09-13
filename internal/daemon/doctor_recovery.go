@@ -30,12 +30,19 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 	// 表示された対象が `wx clear --unmanaged` で必ず解消できる、という関係を doctor 側でも保つためである。
 	unmanaged, unmanagedErrs := m.scanUnmanagedArtifacts(ctx)
 	if len(unmanaged) > 0 {
+		cause, causeMessage := unmanagedArtifactCause(unmanaged)
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityInfo,
 			Summary: "a worktree root holds entities the database does not explain",
-			Cause:   unmanagedArtifactCause(unmanaged),
+			Cause:   cause,
 			Action:  "review them with wx clear --unmanaged --dry-run, then run wx clear --unmanaged to delete them",
+			// Details は登録外の実体の path そのものなので訳さない。
 			Details: unmanagedArtifactPaths(unmanaged),
+			Messages: diag.FindingMessages{
+				Summary: message("diag.ownership.unmanaged"),
+				Cause:   causeMessage,
+				Action:  message("diag.action.clear_unmanaged"),
+			},
 		})
 	}
 	if len(report.UnknownRefs) > 0 {
@@ -46,7 +53,13 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 			Summary: "orphan recovery refs remain in a source repository",
 			Cause:   fmt.Sprintf("%d ref(s) under refs/wx/recovery have no snapshot record in the state database", len(refs)),
 			Action:  "review them with wx prune --dry-run, then run wx prune to remove them",
+			// Details は ref 名そのものなので訳さない。
 			Details: refs,
+			Messages: diag.FindingMessages{
+				Summary: message("diag.ownership.orphan_refs"),
+				Cause:   message("diag.ownership.orphan_refs_cause", "Count", len(refs)),
+				Action:  message("diag.action.prune_refs"),
+			},
 		})
 	}
 	findings = append(findings, m.quarantinedRecoveryFindings(ctx)...)
@@ -56,17 +69,23 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 	findings = append(findings, recoveryRefFindings(report.MismatchedRefs, report.MissingRefs)...)
 	findings = append(findings, submoduleRefFindings(report.SubmoduleRefIssues)...)
 	// 同じ root の同じ失敗を照合と列挙の両方が報告するので、文言で畳んで 1 件ずつにする。
-	for _, message := range mergedOwnershipErrors(report.Errors, unmanagedErrs) {
+	// Cause は照合と列挙が出した失敗の本文そのものなので訳さない。
+	for _, reason := range mergedOwnershipErrors(report.Errors, unmanagedErrs) {
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityUnchecked,
-			Summary: "an ownership check could not be completed", Cause: message,
+			Summary: "an ownership check could not be completed", Cause: reason,
 			Action: "fix the reported cause; wx cannot tell whether the affected artifact is still needed until then",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.ownership.incomplete"),
+				Action:  message("diag.action.fix_ownership_cause"),
+			},
 		})
 	}
 	if len(findings) == 0 {
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityOK,
-			Summary: "the registered slots and recovery refs match their artifacts",
+			Summary:  "the registered slots and recovery refs match their artifacts",
+			Messages: diag.FindingMessages{Summary: message("diag.ownership.match")},
 		})
 	}
 	return findings
@@ -74,7 +93,7 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 
 // unmanagedArtifactCause は登録外の実体を種別ごとの件数で説明する。
 // 対処が「自分で消す」から「wx clear --unmanaged で消す」へ変わったので、何が消えるのかを種別で示す。
-func unmanagedArtifactCause(artifacts []unmanagedArtifact) string {
+func unmanagedArtifactCause(artifacts []unmanagedArtifact) (string, i18n.Message) {
 	directories, snapshots := 0, 0
 	for _, artifact := range artifacts {
 		if artifact.Kind == unmanagedWorkspaceSnapshot {
@@ -84,7 +103,8 @@ func unmanagedArtifactCause(artifacts []unmanagedArtifact) string {
 		directories++
 	}
 	return fmt.Sprintf("%d slot directory/directories and %d workspace snapshot archive(s) under the wx namespaces have no database record; wx neither adopts them nor deletes them on its own",
-		directories, snapshots)
+			directories, snapshots),
+		message("diag.ownership.unmanaged_cause", "Directories", directories, "Snapshots", snapshots)
 }
 
 // mergedOwnershipErrors は照合と列挙が出した失敗を、同じ文言を 1 件に畳んで順序を保ったまま返す。
@@ -111,8 +131,11 @@ func (m *Manager) quarantinedRecoveryFindings(ctx context.Context) []diag.Findin
 		return []diag.Finding{{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityUnchecked,
 			Summary: "the quarantined recovery records could not be read", Cause: err.Error(),
-			Action:   "fix the reported state database failure, then run wx doctor again",
-			Messages: diag.FindingMessages{Action: i18n.Message{ID: "diag.action.fix_state_database"}},
+			Action: "fix the reported state database failure, then run wx doctor again",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.recovery.quarantine_unreadable"),
+				Action:  message("diag.action.fix_state_database"),
+			},
 		}}
 	}
 	findings := make([]diag.Finding, 0, len(groups))
@@ -122,6 +145,11 @@ func (m *Manager) quarantinedRecoveryFindings(ctx context.Context) []diag.Findin
 			Summary: "sessions of a workspace can no longer be restored because their recovery refs are gone", Target: group.Root,
 			Cause:  fmt.Sprintf("%d session(s) hold %d quarantined snapshot(s) whose recovery refs are not in the source repository, which also stops wx forget", group.Sessions, group.Snapshots),
 			Action: "check the sessions with wx discard-recovery " + group.Root + " --dry-run, then discard them with the same command without --dry-run; wx keeps the records until you do",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.recovery.quarantined_sessions"),
+				Cause:   message("diag.recovery.quarantined_sessions_cause", "Sessions", group.Sessions, "Snapshots", group.Snapshots),
+				Action:  message("diag.action.discard_recovery", "Root", group.Root),
+			},
 		})
 	}
 	return findings
@@ -139,6 +167,11 @@ func unreadableRepositoryFindings(repositories []unreadableRepository) []diag.Fi
 			Summary: "a repository record no longer points at a readable repository", Target: repository.Path,
 			Cause:  fmt.Sprintf("repository %s cannot be read (%s), and no snapshot in the database needs its recovery refs", repository.RepositoryID, repository.Cause),
 			Action: "no action is required; wx removes the record on its next collection and registers the repository again if you use that path",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.ownership.repository_unreadable"),
+				Cause:   message("diag.ownership.repository_unreadable_cause", "Repository", repository.RepositoryID, "Error", repository.Cause),
+				Action:  message("diag.action.repository_record_cleanup"),
+			},
 		})
 	}
 	return findings
@@ -156,6 +189,11 @@ func refListFailureFindings(failures []unreadableRepository) []diag.Finding {
 			Summary: "the recovery refs of one repository could not be listed", Target: failure.Path,
 			Cause:  fmt.Sprintf("repository %s is still in use, but its refs could not be read (%s); the other repositories were checked", failure.RepositoryID, failure.Cause),
 			Action: "make that path a readable Git repository again, or run wx forget on the workspaces that use it if you no longer need them",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.ownership.ref_list_failed"),
+				Cause:   message("diag.ownership.ref_list_failed_cause", "Repository", failure.RepositoryID, "Error", failure.Cause),
+				Action:  message("diag.action.restore_repository"),
+			},
 		})
 	}
 	return findings
@@ -172,6 +210,11 @@ func missingArtifactFindings(missing []missingArtifact) []diag.Finding {
 				Summary: "a snapshotted slot directory is missing", Target: item.Path,
 				Cause:  fmt.Sprintf("slot %s is SNAPSHOTTED, so its work is already saved, and only the leftover directory is gone", item.SlotID),
 				Action: "no action is required; wx quarantines the slot record and its collection removes it",
+				Messages: diag.FindingMessages{
+					Summary: message("diag.ownership.snapshotted_missing"),
+					Cause:   message("diag.ownership.snapshotted_missing_cause", "SlotID", item.SlotID),
+					Action:  message("diag.action.slot_quarantine_cleanup"),
+				},
 			})
 			continue
 		}
@@ -181,6 +224,11 @@ func missingArtifactFindings(missing []missingArtifact) []diag.Finding {
 				Summary: "a registered slot directory is missing", Target: item.Path,
 				Cause:  fmt.Sprintf("slot %s is %s, and its directory does not exist", item.SlotID, item.State),
 				Action: "no action is required; wx recreates or reclaims the slot on its own",
+				Messages: diag.FindingMessages{
+					Summary: message("diag.ownership.slot_missing"),
+					Cause:   message("diag.ownership.slot_missing_cause", "SlotID", item.SlotID, "State", item.State),
+					Action:  message("diag.action.slot_self_heal"),
+				},
 			})
 			continue
 		}
@@ -189,6 +237,11 @@ func missingArtifactFindings(missing []missingArtifact) []diag.Finding {
 			Summary: "a slot directory that still holds work is missing", Target: item.Path,
 			Cause:  fmt.Sprintf("slot %s is %s, so wx still needs its directory, but the directory does not exist", item.SlotID, item.State),
 			Action: "restore the directory from your own backup if you need its unsaved work; wx cannot recreate it, and the slot stays quarantined until you remove it with wx clear",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.ownership.working_slot_missing"),
+				Cause:   message("diag.ownership.working_slot_missing_cause", "SlotID", item.SlotID, "State", item.State),
+				Action:  message("diag.action.restore_slot_directory"),
+			},
 		})
 	}
 	return findings
@@ -199,31 +252,42 @@ func missingArtifactFindings(missing []missingArtifact) []diag.Finding {
 func recoveryRefFindings(mismatched, missing []recoveryRefIssue) []diag.Finding {
 	findings := []diag.Finding{}
 	for _, group := range []struct {
-		issues  []recoveryRefIssue
-		summary string
-		cause   string
-		action  string
+		issues    []recoveryRefIssue
+		summary   string
+		cause     string
+		action    string
+		summaryID string
+		causeID   string
+		actionID  string
 	}{
 		{
 			mismatched, "a recovery ref does not point at the snapshot object", "the ref exists but its object ID differs from the one recorded for the snapshot",
 			"keep the repository as it is and check whether another tool rewrote refs/wx/recovery; the session that owns this snapshot can no longer be resumed from it",
+			"diag.recovery.ref_mismatched", "diag.recovery.ref_mismatched_cause", "diag.action.recovery_ref_mismatched",
 		},
 		{
 			missing, "a recovery ref recorded for a snapshot is missing", "the state database records the ref, but the source repository does not have it",
 			"keep the repository as it is and check whether it was recreated or another tool rewrote refs/wx/recovery; the session that owns this snapshot can no longer be resumed from it, and wx discard-recovery <workspace-path> discards the state it left behind",
+			"diag.recovery.ref_missing", "diag.recovery.ref_missing_cause", "diag.action.recovery_ref_missing",
 		},
 	} {
 		sorted := append([]recoveryRefIssue{}, group.issues...)
 		sort.Slice(sorted, func(i, j int) bool { return sorted[i].key() < sorted[j].key() })
 		for _, issue := range sorted {
-			severity, action := diag.SeverityProblem, group.action
+			severity, action, actionID := diag.SeverityProblem, group.action, group.actionID
 			if expiredRecoverySnapshot(issue.ExpiresAt) {
 				severity = diag.SeverityInfo
 				action = "no action is required; the snapshot behind this ref has expired and wx removes the record on its next collection"
+				actionID = "diag.action.recovery_ref_expired"
 			}
 			findings = append(findings, diag.Finding{
 				Check: diag.CheckArtifactOwnership, Severity: severity, Summary: group.summary, Target: issue.key(),
 				Cause: group.cause, Action: action,
+				Messages: diag.FindingMessages{
+					Summary: message(group.summaryID),
+					Cause:   message(group.causeID),
+					Action:  message(actionID),
+				},
 			})
 		}
 	}
@@ -249,23 +313,35 @@ func submoduleRefFindings(issues []submoduleRefIssue) []diag.Finding {
 				Summary: "an orphan submodule recovery ref remains in a local module", Target: issue.ModuleDir,
 				Cause:  "ref " + issue.Ref + " has no submodule snapshot record in the state database",
 				Action: "remove it yourself with git update-ref -d inside that module if you no longer need it; wx prune does not cover the module ref store",
+				Messages: diag.FindingMessages{
+					Summary: message("diag.recovery.submodule_ref_orphan"),
+					Cause:   message("diag.recovery.submodule_ref_orphan_cause", "Ref", issue.Ref),
+					Action:  message("diag.action.submodule_ref_orphan"),
+				},
 			})
 			continue
 		}
 		severity, action := diag.SeverityProblem, "keep the module as it is and check whether another tool rewrote refs/wx/recovery in it; the work saved for submodule "+issue.Path+" can no longer be restored"
+		actionMessage := message("diag.action.submodule_ref_broken", "Path", issue.Path)
 		if expiredRecoverySnapshot(issue.ExpiresAt) {
 			severity = diag.SeverityInfo
 			action = "no action is required; the snapshot behind this ref has expired and wx removes the record on its next collection"
+			actionMessage = message("diag.action.recovery_ref_expired")
 		}
 		summary := "a submodule recovery ref recorded for a snapshot is missing"
 		cause := "the state database records ref " + issue.Ref + " for submodule " + issue.Path + ", but its local module does not have it"
+		summaryMessage := message("diag.recovery.submodule_ref_missing")
+		causeMessage := message("diag.recovery.submodule_ref_missing_cause", "Ref", issue.Ref, "Path", issue.Path)
 		if issue.Kind == submoduleRefMismatched {
 			summary = "a submodule recovery ref does not point at the snapshot object"
 			cause = "ref " + issue.Ref + " exists in the local module of submodule " + issue.Path + " but its object ID differs from the recorded one"
+			summaryMessage = message("diag.recovery.submodule_ref_mismatched")
+			causeMessage = message("diag.recovery.submodule_ref_mismatched_cause", "Ref", issue.Ref, "Path", issue.Path)
 		}
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: severity, Summary: summary, Target: issue.ModuleDir,
 			Cause: cause, Action: action,
+			Messages: diag.FindingMessages{Summary: summaryMessage, Cause: causeMessage, Action: actionMessage},
 		})
 	}
 	return findings
@@ -292,8 +368,11 @@ func (m *Manager) recoveryFailureFindings(ctx context.Context) []diag.Finding {
 		return []diag.Finding{{
 			Check: diag.CheckRecoveryJobs, Severity: diag.SeverityProblem,
 			Summary: "the recovery job history could not be read", Cause: err.Error(),
-			Action:   "fix the reported state database failure, then run wx doctor again",
-			Messages: diag.FindingMessages{Action: i18n.Message{ID: "diag.action.fix_state_database"}},
+			Action: "fix the reported state database failure, then run wx doctor again",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.recovery.history_unreadable"),
+				Action:  message("diag.action.fix_state_database"),
+			},
 		}}
 	}
 	findings := make([]diag.Finding, 0, len(failures)+1)
@@ -306,6 +385,10 @@ func (m *Manager) recoveryFailureFindings(ctx context.Context) []diag.Finding {
 	return append(findings, diag.Finding{
 		Check: diag.CheckRecoveryJobs, Severity: diag.SeverityOK,
 		Summary: "no save or restore failure is outstanding", Details: []string{"0 unresolved failure(s)"},
+		Messages: diag.FindingMessages{
+			Summary: message("diag.recovery.no_failure"),
+			Details: []i18n.Message{message("diag.detail.no_unresolved_failures")},
+		},
 	})
 }
 
@@ -315,40 +398,56 @@ func recoveryFailureFinding(failure state.RecoveryFailure) diag.Finding {
 		target = "session " + failure.SessionID
 	}
 	summary := "restoring a session workspace failed and has not been retried"
+	summaryMessage := message("diag.recovery.restore_failed")
 	action := "fix the reported cause, then resume that conversation again; wx keeps the recovery snapshot until its retention elapses"
+	actionMessage := message("diag.action.retry_restore")
 	if failure.Kind == "SNAPSHOT" {
 		summary = "saving a session workspace failed, so its work is not snapshotted"
-		action = snapshotFailureAction(failure.SlotState)
+		summaryMessage = message("diag.recovery.snapshot_failed")
+		action, actionMessage = snapshotFailureAction(failure.SlotState)
 	}
 	details := []string{"job " + failure.JobID}
+	detailMessages := []i18n.Message{message("diag.detail.job", "JobID", failure.JobID)}
 	if failure.ParentSessionID != "" {
 		// 復元先の session は失敗後に終端するため、利用者が再開し直す対象として元 session を先に示す。
 		details = append(details, "restoring session "+failure.ParentSessionID)
+		detailMessages = append(detailMessages, message("diag.detail.restoring_session", "SessionID", failure.ParentSessionID))
 	}
 	if failure.SessionState != "" {
 		details = append(details, "session state "+failure.SessionState)
+		detailMessages = append(detailMessages, message("diag.detail.session_state", "State", failure.SessionState))
 	}
 	if failure.SlotState != "" {
 		details = append(details, "slot state "+failure.SlotState)
+		detailMessages = append(detailMessages, message("diag.detail.slot_state", "State", failure.SlotState))
 	}
 	if failure.FinishedAt != "" {
 		details = append(details, "failed at "+failure.FinishedAt)
+		detailMessages = append(detailMessages, message("diag.detail.failed_at", "Time", failure.FinishedAt))
 	}
+	cause, causeMessage := jobFailureCause(failure.Kind+" job "+failure.JobID,
+		message("diag.recovery.job_operation", "Kind", failure.Kind, "JobID", failure.JobID),
+		failure.FailureCode, failure.FailureMessage, failure.DetailPath)
 	return diag.Finding{
 		Check: diag.CheckRecoveryJobs, Severity: diag.SeverityProblem, Summary: summary, Target: target,
-		Cause:   jobFailureCause(failure.Kind+" job "+failure.JobID, failure.FailureCode, failure.FailureMessage, failure.DetailPath),
+		Cause:   cause,
 		Action:  action,
 		Details: details,
+		Messages: diag.FindingMessages{
+			Summary: summaryMessage, Cause: causeMessage, Action: actionMessage, Details: detailMessages,
+		},
 	}
 }
 
 // snapshotFailureAction は保存失敗後の対処を slot の状態で分ける。
 // 隔離済みの slot は session が終端しており、再終了しても snapshot を作り直さないため、手動退避だけを案内する。
-func snapshotFailureAction(slotState string) string {
+func snapshotFailureAction(slotState string) (string, i18n.Message) {
 	if slotState == "QUARANTINED" {
-		return "copy anything you need out of the slot directory yourself; wx cannot retry the snapshot for a quarantined slot, and the slot stays until you remove it with wx clear"
+		return "copy anything you need out of the slot directory yourself; wx cannot retry the snapshot for a quarantined slot, and the slot stays until you remove it with wx clear",
+			message("diag.action.snapshot_quarantined")
 	}
-	return "fix the reported cause and leave the slot alone; wx recreates the snapshot job while the slot is still returning, and you can copy anything you need out of the slot directory first"
+	return "fix the reported cause and leave the slot alone; wx recreates the snapshot job while the slot is still returning, and you can copy anything you need out of the slot directory first",
+		message("diag.action.snapshot_retry")
 }
 
 // workspaceSnapshotFindings は復元に使える workspace snapshot の実体を軽量に検査する。
@@ -360,8 +459,11 @@ func (m *Manager) workspaceSnapshotFindings(ctx context.Context) []diag.Finding 
 		return []diag.Finding{{
 			Check: diag.CheckWorkspaceSnapshots, Severity: diag.SeverityProblem,
 			Summary: "the workspace snapshot records could not be read", Cause: err.Error(),
-			Action:   "fix the reported state database failure, then run wx doctor again",
-			Messages: diag.FindingMessages{Action: i18n.Message{ID: "diag.action.fix_state_database"}},
+			Action: "fix the reported state database failure, then run wx doctor again",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.snapshot.records_unreadable"),
+				Action:  message("diag.action.fix_state_database"),
+			},
 		}}
 	}
 	findings := make([]diag.Finding, 0, len(snapshots)+1)
@@ -377,6 +479,10 @@ func (m *Manager) workspaceSnapshotFindings(ctx context.Context) []diag.Finding 
 		Check: diag.CheckWorkspaceSnapshots, Severity: diag.SeverityOK,
 		Summary: "the workspace snapshot archives are in place",
 		Details: []string{strconv.Itoa(len(snapshots)) + " archive(s) checked without reading their contents"},
+		Messages: diag.FindingMessages{
+			Summary: message("diag.snapshot.in_place"),
+			Details: []i18n.Message{message("diag.detail.archives_checked", "Count", len(snapshots))},
+		},
 	})
 }
 
@@ -390,6 +496,11 @@ func (m *Manager) workspaceSnapshotFinding(snapshot state.WorkspaceSnapshot, at 
 			Summary: "a workspace snapshot archive is outside the known wx roots", Target: snapshot.ArchivePath,
 			Cause:  fmt.Sprintf("session %s records this archive, but no registered root contains it", snapshot.SessionID),
 			Action: "restore the worktree root that held the archive, or accept that this session cannot be resumed and let its snapshot expire",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.snapshot.outside_roots"),
+				Cause:   message("diag.snapshot.outside_roots_cause", "SessionID", snapshot.SessionID),
+				Action:  message("diag.action.restore_snapshot_root"),
+			},
 		}, true
 	}
 	owner, release, err := m.existingRootDescriptor(root)
@@ -399,6 +510,11 @@ func (m *Manager) workspaceSnapshotFinding(snapshot state.WorkspaceSnapshot, at 
 			Summary: "a workspace snapshot archive could not be inspected", Target: snapshot.ArchivePath,
 			Cause:  fmt.Sprintf("open the owning root %s: %v", root, err),
 			Action: "fix the reported cause on that root, then run wx doctor again",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.snapshot.uninspectable"),
+				Cause:   message("diag.snapshot.open_root_cause", "Root", root, "Error", err.Error()),
+				Action:  message("diag.action.fix_root_then_doctor"),
+			},
 		}, true
 	}
 	defer release()
@@ -414,6 +530,11 @@ func (m *Manager) workspaceSnapshotFinding(snapshot state.WorkspaceSnapshot, at 
 			Summary: "a workspace snapshot cannot be used for restore", Target: snapshot.ArchivePath,
 			Cause:  fmt.Sprintf("session %s: %v", snapshot.SessionID, validateErr),
 			Action: "keep the archive as it is and check the path, its access, and the mount it lives on; the repositories of that session still restore from their recovery refs",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.snapshot.unusable"),
+				Cause:   message("diag.snapshot.unusable_cause", "SessionID", snapshot.SessionID, "Error", validateErr.Error()),
+				Action:  message("diag.action.check_snapshot_archive"),
+			},
 		}, true
 	}
 }

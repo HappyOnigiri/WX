@@ -89,13 +89,15 @@ func TestRootRegistrationFindingKeepsRetryGuidance(t *testing.T) {
 }
 
 func TestJobFailureCauseKeepsTheRecordedReason(t *testing.T) {
-	cause := jobFailureCause("prepare job job-1", "PREPARE_FAILED", "copy /src/AGENTS.md to /slot/AGENTS.md: permission denied", "/logs/job-1.log")
+	cause, _ := jobFailureCause("prepare job job-1", message("diag.standby.job_prepare", "Detail", "job-1"),
+		"PREPARE_FAILED", "copy /src/AGENTS.md to /slot/AGENTS.md: permission denied", "/logs/job-1.log")
 	for _, fragment := range []string{"prepare job job-1", "PREPARE_FAILED", "permission denied", "/logs/job-1.log"} {
 		if !strings.Contains(cause, fragment) {
 			t.Fatalf("cause=%q, want %q", cause, fragment)
 		}
 	}
-	unknown := jobFailureCause("SNAPSHOT job job-2", "JOB_FAILED", "", "")
+	unknown, _ := jobFailureCause("SNAPSHOT job job-2",
+		message("diag.recovery.job_operation", "Kind", "SNAPSHOT", "JobID", "job-2"), "JOB_FAILED", "", "")
 	if !strings.Contains(unknown, "not recorded") || strings.Contains(unknown, "(command output") {
 		t.Fatalf("cause without a recorded reason=%q, want it to say the root cause is unknown", unknown)
 	}
