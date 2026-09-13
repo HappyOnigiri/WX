@@ -25,16 +25,21 @@ func TestLocalizeErrorNilYieldsEmptyString(t *testing.T) {
 	}
 }
 
-func TestLocalizeDaemonAndSetupTextJapanese(t *testing.T) {
-	got := localizeDaemonText("the daemon is not managed by launchd", i18n.Japanese)
-	if got != "daemon は launchd に管理されていません" {
-		t.Fatalf("daemon text=%q", got)
+// localizedMessage は ID を持たないとき行ごと省けるよう空文字を返す。
+func TestLocalizedMessageResolvesPerLanguage(t *testing.T) {
+	msg := localizedMessage{id: "daemon.no_answer", data: map[string]any{"Label": "com.example.wx", "Socket": "/tmp/wx.sock", "Timeout": "60s"}}
+	english := msg.text(i18n.New(string(i18n.English)))
+	if english != "launchd was asked to start com.example.wx but no daemon answered /tmp/wx.sock within 60s" {
+		t.Fatalf("english=%q", english)
 	}
-	if got := localizeDaemonText("the daemon is not managed by launchd", i18n.English); got != "the daemon is not managed by launchd" {
-		t.Fatalf("English daemon text=%q", got)
+	japanese := msg.text(i18n.New(string(i18n.Japanese)))
+	// Label・Socket・Timeout は payload 由来なので、日本語でも原文のまま残る。
+	for _, want := range []string{"com.example.wx", "/tmp/wx.sock", "60s", "起動を依頼しました"} {
+		if !strings.Contains(japanese, want) {
+			t.Fatalf("japanese=%q missing %q", japanese, want)
+		}
 	}
-	setup := localizeSetupError("setup item hooks.claude action manual requires --value", i18n.Japanese)
-	if !strings.Contains(setup, "setup 項目 hooks.claude") || !strings.Contains(setup, "--value が必要です") {
-		t.Fatalf("setup error=%q", setup)
+	if empty := (localizedMessage{}); !empty.empty() || empty.text(i18n.New(string(i18n.Japanese))) != "" {
+		t.Fatalf("empty message resolved to %q", empty.text(i18n.New(string(i18n.Japanese))))
 	}
 }

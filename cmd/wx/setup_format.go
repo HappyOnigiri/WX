@@ -14,28 +14,29 @@ import (
 
 // setupColumns は wx setup の表の列と並びで、最後の DETAIL は行末なので幅を持たない。
 var setupColumns = []struct {
-	title string
-	min   int
+	id  string
+	min int
 }{
-	{title: "ITEM", min: 14},
-	{title: "STATE", min: 14},
-	{title: "ACTION", min: 8},
-	{title: "DETAIL"},
+	{id: "setup.column.item", min: 14},
+	{id: "setup.column.state", min: 14},
+	{id: "setup.column.action", min: 8},
+	{id: "setup.column.detail"},
 }
 
 // printSetupTable は項目の状態を表で出す。
 // printDisplay は配列 of map を steps[0].id のように展開するため使わない。
 // 幅は訳した見出しと値の表示幅から決める。英語の幅で桁を決めてから訳を入れると列がずれる。
 func printSetupTable(w io.Writer, lang i18n.Language, steps []setup.Step) {
+	loc := i18n.New(string(lang))
 	widths := make([]int, len(setupColumns))
 	titles := make([]string, len(setupColumns))
 	for index, column := range setupColumns {
-		titles[index] = localizeSetupColumn(column.title, lang)
+		titles[index] = loc.Localize(column.id, nil)
 		widths[index] = max(xansi.StringWidth(titles[index]), column.min)
 	}
 	rows := [][]string{titles}
 	for _, step := range steps {
-		step = localizeSetupStep(step, lang)
+		step = localizeSetupStep(step, loc)
 		rows = append(rows, []string{step.ID, string(step.State), string(step.Default), setupStepDetail(step)})
 	}
 	for _, row := range rows[1:] {
@@ -74,45 +75,25 @@ func setupStepDetail(step setup.Step) string {
 	return step.Target
 }
 
-func localizeSetupColumn(value string, lang i18n.Language) string {
-	if lang != i18n.Japanese {
-		return value
-	}
-	switch value {
-	case "ITEM":
-		return "項目"
-	case "STATE":
-		return "状態"
-	case "ACTION":
-		return "操作"
-	case "DETAIL":
-		return "詳細"
-	default:
-		return value
-	}
-}
-
 // localizeSetupStep は表示用のラベルだけを置き換え、ID・state・action と
 // path や外部エラーを含む可変値はそのまま残す。JSON 出力はこの関数を通さない。
-func localizeSetupStep(step setup.Step, lang i18n.Language) setup.Step {
-	if lang != i18n.Japanese {
-		return step
-	}
+// 表に出ない ID は setup package が付けた Title のまま残す。
+func localizeSetupStep(step setup.Step, loc *i18n.Localizer) setup.Step {
 	switch step.ID {
 	case "prerequisites":
-		step.Title = "前提条件"
+		step.Title = loc.Localize("setup.prerequisites", nil)
 	case "worktree_root":
-		step.Title = "Worktree root"
+		step.Title = loc.Localize("setup.worktree_root", nil)
 	case "shell_path":
-		step.Title = "Shell の PATH"
+		step.Title = loc.Localize("setup.item.shell_path", nil)
 	case "hooks.claude":
-		step.Title = "Agent hook (claude)"
+		step.Title = loc.Localize("setup.item.hooks_claude", nil)
 	case "hooks.codex":
-		step.Title = "Agent hook (codex)"
+		step.Title = loc.Localize("setup.item.hooks_codex", nil)
 	case "launch_agent":
-		step.Title = "LaunchAgent"
+		step.Title = loc.Localize("setup.launch_agent", nil)
 	case "daemon":
-		step.Title = "Daemon"
+		step.Title = loc.Localize("setup.daemon", nil)
 	}
 	return step
 }
@@ -133,17 +114,17 @@ func setupStepDescription(step setup.Step) string {
 // setupActionDescription は選択肢ごとに、実際に書き込む path と内容の要約を出す。
 // chezmoi などの置き換えという性質上、何が変わるか示さないと選べない。
 func setupActionDescription(step setup.Step, action setup.Action) string {
-	lang := localizedUsageLanguage()
+	loc := i18n.New(string(localizedUsageLanguage()))
 	if step.ID == "language" {
 		if action == setup.Action(i18n.English) {
-			return "wx の表示を英語にする"
+			return loc.Localize("setup.language.english", nil)
 		}
 		if action == setup.Action(i18n.Japanese) {
-			return "wx の表示を日本語にする"
+			return loc.Localize("setup.language.japanese", nil)
 		}
 	}
 	if step.ID == "daemon" {
-		if description := setupDaemonActionDescription(action); description != "" {
+		if description := setupDaemonActionDescription(loc, action); description != "" {
 			return description
 		}
 	}
@@ -151,45 +132,24 @@ func setupActionDescription(step setup.Step, action setup.Action) string {
 	if target == "" {
 		target = "the wx configuration"
 	}
+	data := map[string]any{"Target": target, "Change": summarizeSetupChange(step)}
 	switch action {
-	case setup.ActionInstall:
-		if lang == i18n.Japanese {
-			return summarizeSetupChange(step) + " を " + target + " に書き込みます"
-		}
-		return "write " + summarizeSetupChange(step) + " to " + target
+	// install と default はどちらも新規の書き込みなので、同じ文型で説明する。
+	case setup.ActionInstall, setup.ActionDefault:
+		return loc.Localize("setup.action.write", data)
 	case setup.ActionUpdate:
-		if lang == i18n.Japanese {
-			return target + " の wx 部分を " + summarizeSetupChange(step) + " に更新します"
-		}
-		return "replace the wx part of " + target + " with " + summarizeSetupChange(step)
+		return loc.Localize("setup.action.replace", data)
 	case setup.ActionKeep:
-		if lang == i18n.Japanese {
-			return target + " をそのままにします"
-		}
-		return "leave " + target + " as it is"
+		return loc.Localize("setup.action.keep", data)
 	case setup.ActionRemove:
-		if lang == i18n.Japanese {
-			return target + " から wx の管理部分を削除します"
-		}
-		return "remove what wx manages from " + target
+		return loc.Localize("setup.action.remove", data)
 	case setup.ActionSkip:
-		if lang == i18n.Japanese {
-			return "今回は何もしません。後で wx setup を再実行できます"
-		}
-		return "do nothing now; wx setup can be run again later"
+		return loc.Localize("setup.action.skip", data)
 	// start と restart は daemon だけの操作で、文言は setupDaemonActionDescription が先に返す。
 	case setup.ActionStart, setup.ActionRestart:
 		return ""
-	case setup.ActionDefault:
-		if lang == i18n.Japanese {
-			return summarizeSetupChange(step) + " を " + target + " に書き込みます"
-		}
-		return "write " + summarizeSetupChange(step) + " to " + target
 	case setup.ActionManual:
-		if lang == i18n.Japanese {
-			return target + " に書き込む別の path を入力します"
-		}
-		return "type another path to write to " + target
+		return loc.Localize("setup.action.manual", data)
 	default:
 		return ""
 	}
@@ -198,24 +158,14 @@ func setupActionDescription(step setup.Step, action setup.Action) string {
 // setupDaemonActionDescription は daemon だけの文言を返す。扱わない操作には空を返し、共通の文型に任せる。
 // daemon は設定ファイルへ何も書かないため、書き込みの文型を当てると config.yaml を変えると誤解させる。
 // 起動は launchd.Start（-k なしの kickstart）なので、稼働中の daemon は終了させない。
-func setupDaemonActionDescription(action setup.Action) string {
-	lang := localizedUsageLanguage()
+func setupDaemonActionDescription(loc *i18n.Localizer, action setup.Action) string {
 	switch action {
 	case setup.ActionStart:
-		if lang == i18n.Japanese {
-			return "wx daemon を起動し、local socket の応答を待ちます"
-		}
-		return "start the wx daemon and wait for the local socket to answer"
+		return loc.Localize("setup.daemon.start", nil)
 	case setup.ActionRestart:
-		if lang == i18n.Japanese {
-			return "daemon が idle になってから再起動し、置き換わった daemon の応答を待ちます"
-		}
-		return "ask the daemon to restart once it is idle, then wait for the replacement to answer"
+		return loc.Localize("setup.daemon.restart", nil)
 	case setup.ActionKeep:
-		if lang == i18n.Japanese {
-			return "実行中の daemon をそのままにします"
-		}
-		return "leave the running daemon as it is"
+		return loc.Localize("setup.daemon.keep", nil)
 	// install・update・remove は daemon に出ず、default と manual は値の入力を伴う項目だけのものである。
 	case setup.ActionInstall, setup.ActionUpdate, setup.ActionRemove, setup.ActionSkip, setup.ActionDefault, setup.ActionManual:
 		return ""
@@ -235,7 +185,7 @@ func summarizeSetupChange(step setup.Step) string {
 }
 
 func printSetupSkipped(w io.Writer, step setup.Step) {
-	step = localizeSetupStep(step, localizedUsageLanguage())
+	step = localizeSetupStep(step, i18n.New(string(localizedUsageLanguage())))
 	line := fmt.Sprintf("%-14s %-14s %s", step.ID, step.State, setupStepDetail(step))
 	_, _ = fmt.Fprintln(w, strings.TrimRight(line, " "))
 	for _, reason := range step.Reasons[min(1, len(step.Reasons)):] {
@@ -257,24 +207,13 @@ func printSetupNote(w io.Writer, note string) {
 
 // printSetupWarnings は適用後に期待した状態にならなかった項目を警告として残す。フローは止めない。
 func printSetupWarnings(w io.Writer, id string, action setup.Action, applied setup.Step) {
-	lang := localizedUsageLanguage()
-	prefix := "warning: "
-	if lang == i18n.Japanese {
-		prefix = "警告: "
-	}
+	loc := i18n.New(string(localizedUsageLanguage()))
+	prefix := loc.Localize("setup.warning_prefix", nil)
 	switch {
 	case action == setup.ActionRemove && applied.State != setup.StateAbsent && applied.State != setup.StateNotApplicable:
-		if lang == i18n.Japanese {
-			_, _ = fmt.Fprintf(w, "警告: %s は remove 後も %s です\n", id, applied.State)
-		} else {
-			_, _ = fmt.Fprintf(w, "%s%s is still %s after remove\n", prefix, id, applied.State)
-		}
+		_, _ = fmt.Fprintln(w, prefix+loc.Localize("setup.still_present", map[string]any{"Item": id, "State": string(applied.State)}))
 	case action != setup.ActionRemove && applied.State != setup.StatePresent:
-		if lang == i18n.Japanese {
-			_, _ = fmt.Fprintf(w, "警告: %s は %s 後も %s です\n", id, action, applied.State)
-		} else {
-			_, _ = fmt.Fprintf(w, "%s%s is %s after %s\n", prefix, id, applied.State, action)
-		}
+		_, _ = fmt.Fprintln(w, prefix+loc.Localize("setup.unexpected_state", map[string]any{"Item": id, "State": string(applied.State), "Action": string(action)}))
 	default:
 		return
 	}
@@ -290,22 +229,15 @@ const setupLeftoverPrefix = "leftover"
 // printSetupRemoval は削除結果を項目ごとに 1 行で出し、消さなかった path を最後にまとめる。
 // 失敗は stderr に出し、成功した項目の行は stdout に残す。片付けの続きを利用者が判断できるようにするためである。
 func printSetupRemoval(out, errOut io.Writer, removal setup.Removal) {
-	lang := localizedUsageLanguage()
+	loc := i18n.New(string(localizedUsageLanguage()))
 	for _, result := range removal.Results {
 		if result.Err != nil {
-			prefix := "error: "
-			if lang == i18n.Japanese {
-				prefix = "エラー: "
-			}
-			_, _ = fmt.Fprintf(errOut, "%s%s: %v\n", prefix, result.ID, result.Err)
+			_, _ = fmt.Fprintf(errOut, "%s: %s: %v\n", loc.Localize("common.error", nil), result.ID, result.Err)
 			continue
 		}
 		note := result.Note
 		if note == "" {
-			note = "nothing to remove"
-			if lang == i18n.Japanese {
-				note = "削除するものはありません"
-			}
+			note = loc.Localize("setup.nothing_to_remove", nil)
 		}
 		_, _ = fmt.Fprintf(out, "%-14s %s\n", result.ID, note)
 	}
@@ -313,11 +245,7 @@ func printSetupRemoval(out, errOut io.Writer, removal setup.Removal) {
 		return
 	}
 	_, _ = fmt.Fprintln(out, "")
-	if lang == i18n.Japanese {
-		_, _ = fmt.Fprintln(out, "wx は保存済みの作業と記録を含む次の path を残しました:")
-	} else {
-		_, _ = fmt.Fprintln(out, "wx kept these; they hold saved work and records:")
-	}
+	_, _ = fmt.Fprintln(out, loc.Localize("setup.kept_paths", nil))
 	for _, path := range removal.Leftovers {
 		_, _ = fmt.Fprintf(out, "%-14s %s\n", setupLeftoverPrefix, path)
 	}

@@ -78,7 +78,7 @@ func localizedSetupSteps(ctx context.Context, steps []setup.Step) []setup.Step {
 	lang := i18n.LanguageFromContext(ctx)
 	out := make([]setup.Step, 0, len(steps))
 	for _, step := range steps {
-		out = append(out, localizeSetupStep(step, lang))
+		out = append(out, localizeSetupStep(step, i18n.New(string(lang))))
 	}
 	return out
 }

@@ -6,25 +6,27 @@ import (
 	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
-// localization_message.go は daemon・setup・設定検証が出す固定メッセージだけを訳す。
+// localization_message.go は固定文を描画の直前まで未解決のまま持ち回る道具と、
+// 設定検証の固定エラーだけを訳す変換をまとめる。
 // path・key・外部コマンドのエラー文字列は原文のまま残す。
 
-func localizeDaemonText(text string, lang i18n.Language) string {
-	if lang != i18n.Japanese {
-		return text
-	}
-	return applyTranslations(text, []translation{
-		{"cancelled the pending stop of", "保留中の停止要求をキャンセルしました:"},
-		{"stop was already requested; waiting for the daemon to exit", "停止要求は送信済みです。daemon の終了を待っています"},
-		{"run wx daemon install to register the LaunchAgent first", "LaunchAgent を登録するには wx daemon install を実行してください"},
-		{"stop it with wx daemon stop and start it again with wx daemon start", "wx daemon stop で停止し、wx daemon start で再起動してください"},
-		{"the daemon is not managed by launchd", "daemon は launchd に管理されていません"},
-		{"accepted the restart request but was not replaced within", "再起動要求を受理しましたが、次の daemon に置き換わらないまま期限を超えました"},
-		{"accepted the stop request but did not exit within", "停止要求を受理しましたが、終了しないまま期限を超えました"},
-		{"launchd was asked to start", "launchd に起動を依頼しました"},
-		{"but no daemon answered", "が daemon から応答を受け取れませんでした"},
-	})
+// localizedMessage は固定文を message ID と template データの組で保持する。
+// 値を組み立てた層が訳語を選ばずに済み、表示側が言語を 1 度だけ解決できる。
+type localizedMessage struct {
+	id   string
+	data map[string]any
 }
+
+// text は message ID を解決する。ID が空なら空文字を返し、呼び出し側が行ごと省ける。
+func (m localizedMessage) text(loc *i18n.Localizer) string {
+	if m.id == "" {
+		return ""
+	}
+	return loc.Localize(m.id, m.data)
+}
+
+// empty は解決すべき固定文を持たないことを示す。
+func (m localizedMessage) empty() bool { return m.id == "" }
 
 // localizeErrorText は設定検証などの固定エラーだけを翻訳し、path・key・外部エラーの値は残す。
 func localizeErrorText(text string, lang i18n.Language) string {
@@ -39,16 +41,4 @@ func localizeError(err error, lang i18n.Language) string {
 		return ""
 	}
 	return localizeErrorText(err.Error(), lang)
-}
-
-func localizeSetupError(text string, lang i18n.Language) string {
-	if lang != i18n.Japanese {
-		return text
-	}
-	return applyTranslations(text, []translation{
-		{"setup item ", "setup 項目 "},
-		{" does not offer action ", " は操作 "},
-		{"; available actions: ", "。利用可能な操作: "},
-		{" action manual requires --value", " の manual 操作には --value が必要です"},
-	})
 }
