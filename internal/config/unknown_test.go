@@ -1,0 +1,141 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// writeConfigFile は HOME 配下の設定ファイルへ document を書き、その path を返す。
+func writeConfigFile(t *testing.T, document string) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// 未知キーの検出は yaml.v3 のエラー文言に依存するため、取りこぼすと「報告されない」という無言の失敗になる。
+// トップレベル・既知節の下・動的キーの下の3形をここで押さえる。
+func TestLoadRawReportsUnknownKeysWithTheirLines(t *testing.T) {
+	document := "version: 1\nlanguage: ja\npool:\n  warm_per_workspace: 2\n  worm_per_workspace: 3\nworkspaces:\n  demo:\n    worktree: /tmp/demo\n    bogus: 1\n"
+	writeConfigFile(t, document)
+	raw, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+	// 未知キーの隣に書かれた既知キーの値は落とさない。
+	if raw.Pool.WarmPerWorkspace != 2 {
+		t.Fatalf("warm_per_workspace=%d, want 2", raw.Pool.WarmPerWorkspace)
+	}
+	if got := raw.Workspaces["demo"].Worktree; got != "/tmp/demo" {
+		t.Fatalf("workspaces.demo.worktree=%q, want /tmp/demo", got)
+	}
+	want := []UnknownKey{
+		{Key: "language", Line: 2},
+		{Key: "pool.worm_per_workspace", Line: 5},
+		{Key: "workspaces.demo.bogus", Line: 9},
+	}
+	got := raw.UnknownKeys()
+	if len(got) != len(want) {
+		t.Fatalf("unknown keys=%+v, want %+v", got, want)
+	}
+	for _, key := range want {
+		if !slices.Contains(got, key) {
+			t.Fatalf("unknown keys=%+v, want to contain %+v", got, key)
+		}
+	}
+}
+
+// 未知キーがあっても実効設定は作れ、CLIもdaemonも起動できる。未知キーは Merge 後も残す。
+func TestLoadKeepsUnknownKeysInTheEffectiveConfig(t *testing.T) {
+	writeConfigFile(t, "version: 2\nsystem:\n  language: ja\n")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.UnknownKeys(); len(got) != 1 || got[0].Key != "system.language" || got[0].Line != 3 {
+		t.Fatalf("unknown keys=%+v", got)
+	}
+	// 未知キーの有無は実効値ではないため、reload の差分判定に影響させない。
+	stripped := cfg
+	stripped.unknown = nil
+	if !cfg.EffectiveEqual(stripped) {
+		t.Fatal("an unknown key changed the effective configuration")
+	}
+}
+
+// 型の不一致や重複 document は値として解釈できないため、従来どおり load を失敗させる。
+func TestLoadRawStillRejectsUninterpretableValues(t *testing.T) {
+	writeConfigFile(t, "version: 1\npool:\n  warm_per_workspace: two\n")
+	if _, err := LoadRaw(); err == nil {
+		t.Fatal("a malformed value was accepted")
+	}
+}
+
+// 保存で未知キーを消すと、旧版のwxで `wx config set` を通しただけで新版の設定が失われる。
+func TestSaveKeepsUnknownKeysInPlace(t *testing.T) {
+	document := "version: 2\nsystem:\n  language: ja\n  pool:\n    workers: 4\nreporting:\n  level: verbose\n  targets:\n    - a\n    - b\n"
+	path := writeConfigFile(t, document)
+	raw, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+	if err := SetV2Field(&raw, V2ScopeSystem, "", "", "pool.preparation_concurrency", "3"); err != nil {
+		t.Fatalf("SetV2Field: %v", err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 既存の節の中の未知キーと、節ごと未知の場合の両方を保つ。後者は出力に無い親を作る経路になる。
+	for _, want := range []string{"language: ja", "reporting:", "level: verbose", "- a", "- b", "preparation_concurrency: 3"} {
+		if !strings.Contains(string(saved), want) {
+			t.Fatalf("saved configuration does not contain %q:\n%s", want, saved)
+		}
+	}
+	reloaded, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw after Save: %v", err)
+	}
+	if got := reloaded.UnknownKeys(); len(got) != 3 {
+		t.Fatalf("unknown keys after Save=%+v, want language, reporting.level and reporting.targets", got)
+	}
+	if reloaded.System.Pool.PreparationConcurrency != 3 {
+		t.Fatalf("preparation_concurrency=%d, want 3", reloaded.System.Pool.PreparationConcurrency)
+	}
+}
+
+// 文言依存を1箇所へ閉じたので、そのfunctionの解析をここで固定する。
+func TestParseUnknownField(t *testing.T) {
+	for _, test := range []struct {
+		name, message, field string
+		line                 int
+		ok                   bool
+	}{
+		{name: "unknown field", message: "line 2: field language not found in type config.SystemConfig", field: "language", line: 2, ok: true},
+		{name: "name with a space", message: "line 12: field odd key not found in type config.Pool", field: "odd key", line: 12, ok: true},
+		{name: "type mismatch", message: "line 3: cannot unmarshal !!str `two` into int"},
+		{name: "duplicate field", message: "line 4: field pool already set in type config.Config"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			line, field, ok := parseUnknownField(test.message)
+			if ok != test.ok || field != test.field || line != test.line {
+				t.Fatalf("parseUnknownField(%q)=(%d, %q, %v), want (%d, %q, %v)", test.message, line, field, ok, test.line, test.field, test.ok)
+			}
+		})
+	}
+}

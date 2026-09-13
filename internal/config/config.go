@@ -48,6 +48,8 @@ type Config struct {
 	Repositories       map[string]Repository `yaml:"repositories,omitempty"`
 	Logging            Logging               `yaml:"logging,omitempty"`
 	present            map[string]bool
+	// unknown は設定ファイルにあった wx が解釈しないキーで、doctor の報告と保存時の差し戻しに使う。
+	unknown []unknownEntry
 	// prepareOverride は貸出1回だけの準備設定の上書きで、設定ファイルにも workspaces/repositories にも現れない。
 	// 解決ヘルパーはこれを最上位に置き、repository 個別指定より優先する。
 	prepareOverride PrepareOverride
@@ -421,6 +423,9 @@ func (c Config) DefaultAgentRulesEnabled(mainPath string) bool {
 func (c Config) EffectiveEqual(other Config) bool {
 	c.present = nil
 	other.present = nil
+	// 未知キーは実効値ではないため、その有無だけで設定変更とみなさない。
+	c.unknown = nil
+	other.unknown = nil
 	// 貸出1回の上書きは設定ファイルの実効値ではないため、reload の差分判定からも外す。
 	c.prepareOverride = PrepareOverride{}
 	other.prepareOverride = PrepareOverride{}
@@ -428,10 +433,14 @@ func (c Config) EffectiveEqual(other Config) bool {
 }
 
 func Merge(d, raw Config) Config {
+	// 未知キーは実効設定にも引き継ぐ。daemon が持つのは Merge 後の Config であり、doctor はそこから報告する。
 	if raw.V2() {
-		return effectiveV2Defaults(raw)
+		v2 := effectiveV2Defaults(raw)
+		v2.unknown = raw.unknown
+		return v2
 	}
 	r := d
+	r.unknown = raw.unknown
 	if raw.has("version", raw.Version != 0) {
 		r.Version = raw.Version
 	}

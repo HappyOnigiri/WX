@@ -7,6 +7,8 @@
 `--json`は`-v`によらず全findingを返す。消費側の契約なので、絞り込みを足すなら`state.JSONSchemaVersion`を上げる。
 `findings`を返せない古いdaemonの応答は正常と読ませず、CLIが`wx daemon restart`を促すproblemを足す。
 
+wxが解釈しないキーは読み込みを止める側ではなく、config検査のproblemとして報告する側に置く。
+
 daemon接続なしで成立する検査は[`internal/diag`](../internal/diag/diag.go)に置き、storeを要する検査はdaemon側に残す。
 daemonへ接続できない場合とdegradedの場合はstore依存の検査をuncheckedで並べ、同じ故障を検査ごとに繰り返さない。
 
