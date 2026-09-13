@@ -353,7 +353,13 @@ func (m *Manager) expireWorkspaceSnapshots(ctx context.Context, expiredSessions 
 				ok = false
 				break
 			}
-			if err := archiveManager.DeleteSnapshotRefs(ctx, repo, snapshot); err != nil {
+			submodules, submodulesErr := m.store.SubmoduleSnapshots(ctx, sessionID, snapshot.RepositoryID)
+			if submodulesErr != nil {
+				progress.addFailed("snapshot "+sessionID+"/"+snapshot.RepositoryID, "submodule snapshot metadata could not be read", submodulesErr)
+				ok = false
+				break
+			}
+			if err := archiveManager.DeleteSnapshotRefs(ctx, repo, snapshot, submodules); err != nil {
 				progress.addFailed("snapshot "+sessionID+"/"+snapshot.RepositoryID, "snapshot recovery refs could not be deleted", err)
 				ok = false
 				break

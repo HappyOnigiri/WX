@@ -153,10 +153,20 @@ standbyのUPDATE経路は再同期しない。`rejectChangedGitlinks`が`.gitmod
 準備用fingerprintと更新互換fingerprintの両方に混ぜて、方針変更後に旧方針のREADY slotを再利用しない。
 更新互換側にも要るのは、更新経路がsubmoduleを実体化しないため`submodules=false`で作ったstandbyをtrue相当へ変換できないからである。
 
-**worktree内のsubmoduleで作ったコミットはslot削除で失われる。**
-snapshotはgitlinkしか記録できず（`internal/archive`の一時indexへの`add -A`も同じ）、救う手段を持たないためである。submodule側の変更はpushしてからslotを返す。
+snapshotは子のHEAD（branch名を含む）・index・worktree・未追跡file・停止中rebaseを、子1件につき1本の「capsule commit」へ畳んで保存する。
+capsuleはsourceのローカルmodule（`<common>/modules/<name>`）へfetchし、親のrecovery refと同じ寿命のrefで保護する。
+親のobject storeへ置かないのは、復元側の実体化が必ずそのローカルmoduleからcloneするためで、親が進めたgitlinkのcommitをclone時点で解決できなくなる。
+対象は未保全と判定した子だけにする。cleanな子はprepareの実体化で元に戻るので、submoduleを多数持つrepositoryでGitの起動を増やさない。
+子1件の保存失敗はsnapshot全体を失敗させず、その子を未保全の記録として残す。
+
+復元は子を親の`read-tree`より前に戻す。親のsnapshot treeは子の移動後HEADをgitlinkとして持つため、順序を入れ替えると親の一致検証が必ず失敗する。
+その`read-tree`には`--no-recurse-submodules`が要る。付けないとGitが実体化済みの子をgitlinkの内容へ戻し、直前に復元した作業ファイルとHEADのbranchを消す。
+
+**次の条件は今も保存されない。**
+入れ子submoduleの中身、Git LFSの実体、ローカルmoduleを持たない子、未解消indexを持つ子、ignored fileである。
+これらは未保全として記録し、slotを自動回収から外す。submodule側の変更はpushしてからslotを返す。
 submodule checkoutのCoW共有も行わない。prepareのCoWフェーズより後に実体化するため、1 slotあたりのcheckout分は共有されない。
-入れ子submoduleの再帰（`--recursive`）は扱わない。
+入れ子submoduleの再帰（`--recursive`）は扱わない。実体化しないので保存対象も無いが、利用者が自分で実体化した孫の変化は検出して保護する。
 
 ## 起動用ファイルの先行配置
 

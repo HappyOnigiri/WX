@@ -41,6 +41,32 @@ func initGitRepoWithSubmodule(t *testing.T, path string) {
 	gitRun(t, path, "commit", "-m", "add submodule")
 }
 
+// conflictInSubmodule は貸出中の子の index に未解消の衝突を残す。
+// wx は未解消 index の子を capsule へ保存できないため、保護が必要な状態を作る最短の手順である。
+func conflictInSubmodule(t *testing.T, worktree string) {
+	t.Helper()
+	child := filepath.Join(worktree, daemonSubmodulePath)
+	base := gitOutput(t, child, "rev-parse", "HEAD")
+	gitRun(t, child, "checkout", "-b", "theirs")
+	writeSubmoduleFile(t, child, "theirs\n")
+	gitRun(t, child, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-am", "theirs")
+	gitRun(t, child, "checkout", "-b", "ours", base)
+	writeSubmoduleFile(t, child, "ours\n")
+	gitRun(t, child, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-am", "ours")
+	command := exec.Command("git", "-c", "user.name=test", "-c", "user.email=test@example.com", "merge", "theirs")
+	command.Dir = child
+	if out, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("the merge in the submodule did not conflict:\n%s", out)
+	}
+}
+
+func writeSubmoduleFile(t *testing.T, child, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(child, "tracked.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func gitRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)

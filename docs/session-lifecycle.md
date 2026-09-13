@@ -64,6 +64,9 @@
    `rebase -i`のedit停止はworking treeがcleanなので、この保存はclean短絡の側でも行う。
    未解消indexを伴う停止（conflict停止）は対象外で、従来どおり`write-tree`の失敗として隔離する。
 
+   submoduleは子1件を1本のcommitへ畳んで保存し、公開先だけが親と違う（[worktreeのコピーとリンク](worktree-copy.md)）。
+   保存できた子は未保全の記録から外れるため、`unsaved_submodules`に残るのは「wxが保存できない条件」だけになる。
+
    indexに`skip-worktree`か`assume-unchanged`が付いたpathはsnapshotの対象外で、HEADの内容として記録する（[所有権証明](ownership.md)）。
    hookが個人版の設定や認証情報をslotごとに置き換える運用ではこれらのflagが常時立つため、clean短絡が効かなくなる。
    flag付きpathへの編集は保存されないが、両flagは「このファイルのローカル差分を見ない」という宣言なので、その責任は立てた側にある。
@@ -92,6 +95,9 @@
    復元不能はdaemonが`recovery=unavailable`を失敗メッセージに載せて伝え、clientはRESTORE系のfailure codeとEXPIRED snapshotの両方をこの確認に集約する。
    確認は`resume.auto_fresh`が真なら省き、端末がなければnoticeを出して再開を続ける。
    やり直しは繰り返さず、新しいworktreeでの失敗はそのまま返す。
+
+   復元はsubmoduleを親より先に戻す。親のsnapshotは子の移動後HEADをgitlinkとして持つため、後に回すと親の一致検証が必ず不一致になる。
+   子の復元失敗は復元全体の失敗として扱い、原因を隔離に残す。中途半端に戻した子を黙って抱えるより、利用者が気づける方を選ぶ。
 
    再開前の`ResumeStatus`はarchive本文までは検証せず、`integrity`に`not_checked`を返す。
    archive本文のSHA256はRESTORE予約でGC保護を得た後、復元workerがtargetを変える前に1度だけ検証し、検証済みdescriptorをそのまま展開へ渡す。

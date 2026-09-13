@@ -44,7 +44,7 @@ func TestSnapshotAndRestoreCarryWorkOutsideTheSparseCone(t *testing.T) {
 	}
 	target := filepath.Join(worktreeRoot, "restore", "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
-	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot, nil); err != nil {
 		t.Fatalf("restore a snapshot holding work outside the sparse cone: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(target, "outside", "new")); err != nil || string(data) != "out of cone\n" {
@@ -75,7 +75,7 @@ func TestSnapshotAndRestoreCarryWorkOutsideTheSparseCone(t *testing.T) {
 	}
 	again := filepath.Join(worktreeRoot, "restore-again", "root")
 	pointAtSlot(t, manager, worktreeRoot, again)
-	if err := manager.Restore(context.Background(), repo, again, "restore-again-slot", second); err != nil {
+	if err := manager.Restore(context.Background(), repo, again, "restore-again-slot", second, nil); err != nil {
 		t.Fatalf("restore the second snapshot: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(again, "outside", "new")); err != nil || string(data) != "still out of cone\n" {
