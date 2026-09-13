@@ -355,3 +355,45 @@ func TestActiveWorkspaceSnapshotsExcludesPendingAndExpiredArchives(t *testing.T)
 		t.Fatalf("archive path=%q", active[0].ArchivePath)
 	}
 }
+
+// 停止中 rebase の recovery ref が期待一覧から漏れると、`wx doctor` は UnknownRefs として報告し、
+// GC は削除候補の除外から外す。保存は成功したまま進行情報だけが後から消えるため、静かな失敗になる。
+func TestGitStateRecoveryRefIsExpectedAndReverseLookedUp(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "rebase", WorkspaceID: "workspace", SlotID: "rebase", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("rebase")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "rebase", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/rebase", State: "SNAPSHOTTED"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	gitStateRef := "refs/wx/recovery/rebase/repository/gitstate"
+	snapshot := Snapshot{ID: "snapshot", SessionID: "rebase", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/rebase/repository/head", IndexTreeOID: "index", IndexRef: "refs/wx/recovery/rebase/repository/index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/rebase/repository/worktree", GitStateOID: "gitstate", GitStateRef: gitStateRef, Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}
+	if err := store.SaveSnapshot(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	expectations, err := store.RecoveryRefExpectations(ctx, "repository")
+	if err != nil || len(expectations) != 4 {
+		t.Fatalf("recovery ref expectations=%+v err=%v", expectations, err)
+	}
+	found := false
+	for _, expectation := range expectations {
+		if expectation.Ref == gitStateRef {
+			found = expectation.OID == "gitstate"
+		}
+	}
+	if !found {
+		t.Fatalf("rebase state ref is not expected: %+v", expectations)
+	}
+	if stored, err := store.Snapshots(ctx, "rebase"); err != nil || len(stored) != 1 || stored[0].GitStateOID != "gitstate" || stored[0].GitStateRef != gitStateRef {
+		t.Fatalf("stored snapshot=%+v err=%v", stored, err)
+	}
+	// ref が消えたときの逆引きは 4 本すべてを辿る。gitstate を外すと、進行情報だけ失った snapshot が復元可能なまま残る。
+	if err := store.QuarantineMissingRecoveryRef(ctx, gitStateRef); err != nil {
+		t.Fatal(err)
+	}
+	quarantined, err := store.Snapshots(ctx, "rebase")
+	if err != nil || len(quarantined) != 1 || quarantined[0].Status != "QUARANTINED" {
+		t.Fatalf("quarantined snapshot=%+v err=%v", quarantined, err)
+	}
+}

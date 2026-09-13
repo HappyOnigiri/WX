@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -36,13 +35,12 @@ func runGC(ctx context.Context, args []string) int {
 		reportRPCErrorContext(ctx, err)
 		return 1
 	}
-	var rendered bytes.Buffer
-	fmt.Fprintf(&rendered, "candidates: %d\n", out.Candidates)
-	fmt.Fprintf(&rendered, "scheduled: %d\n", out.Scheduled)
-	fmt.Fprintf(&rendered, "completed: %d\n", out.Completed)
-	fmt.Fprintf(&rendered, "pending: %d\n", out.Pending)
-	fmt.Fprintf(&rendered, "failed: %d\n", out.Failed)
-	fmt.Print(translateHumanOutput(rendered.String(), i18n.LanguageFromContext(ctx)))
+	r := newTextRenderer(os.Stdout, i18n.LanguageFromContext(ctx))
+	r.line("gc.candidates", map[string]any{"Count": out.Candidates})
+	r.line("gc.scheduled", map[string]any{"Count": out.Scheduled})
+	r.line("gc.completed", map[string]any{"Count": out.Completed})
+	r.line("gc.pending", map[string]any{"Count": out.Pending})
+	r.line("gc.failed", map[string]any{"Count": out.Failed})
 	for _, reason := range out.Reasons {
 		fmt.Fprintf(os.Stderr, "gc %s (%s): %s\n", reason.Target, reason.Status, reason.Reason)
 	}
@@ -75,18 +73,16 @@ func runPrune(ctx context.Context, args []string) int {
 		reportRPCErrorContext(ctx, err)
 		return 1
 	}
+	r := newTextRenderer(os.Stdout, i18n.LanguageFromContext(ctx))
 	if out.DryRun {
-		fmt.Print(translateHumanOutput(fmt.Sprintf("deletable: %d\n", out.Deleted), i18n.LanguageFromContext(ctx)))
+		r.line("prune.deletable", map[string]any{"Count": out.Deleted})
 	} else {
-		fmt.Print(translateHumanOutput(fmt.Sprintf("deleted: %d\n", out.Deleted), i18n.LanguageFromContext(ctx)))
+		r.line("prune.deleted", map[string]any{"Count": out.Deleted})
 	}
-	fmt.Print(translateHumanOutput(fmt.Sprintf("kept: %d\n", out.Kept), i18n.LanguageFromContext(ctx)))
+	r.line("prune.kept", map[string]any{"Count": out.Kept})
+	errors := newTextRenderer(os.Stderr, i18n.LanguageFromContext(ctx))
 	for _, ref := range out.KeptRefs {
-		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-			fmt.Fprintf(os.Stderr, "保持 %s (%s): %d 個の object が到達不能になります\n", ref.Ref, ref.Repository, ref.UnreachableObjects)
-		} else {
-			fmt.Fprintf(os.Stderr, "kept %s (%s): %d objects would become unreachable\n", ref.Ref, ref.Repository, ref.UnreachableObjects)
-		}
+		errors.line("prune.kept_ref", map[string]any{"Ref": ref.Ref, "Repository": ref.Repository, "Count": ref.UnreachableObjects})
 	}
 	for _, message := range out.Errors {
 		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
@@ -125,26 +121,25 @@ func runDiscardRecovery(ctx context.Context, args []string) int {
 }
 
 func printDiscardRecoveryLanguage(out daemon.DiscardRecoveryResult, lang i18n.Language) {
-	var rendered bytes.Buffer
+	r := newTextRenderer(os.Stdout, lang)
 	if len(out.Targets) == 0 {
-		fmt.Fprintln(&rendered, "no quarantined recovery state for", out.Root)
-		fmt.Print(translateHumanOutput(rendered.String(), lang))
+		r.line("discard_recovery.none", map[string]any{"Path": out.Root})
 		return
 	}
 	for _, target := range out.Targets {
-		fmt.Fprintf(&rendered, "session %s (%d snapshot(s), %d workspace snapshot(s))\n", target.SessionID, target.Snapshots, target.WorkspaceSnapshots)
+		r.line("discard_recovery.session", map[string]any{
+			"SessionID": target.SessionID, "Snapshots": target.Snapshots, "WorkspaceSnapshots": target.WorkspaceSnapshots,
+		})
 		if target.SlotID != "" {
-			fmt.Fprintf(&rendered, "  slot %s %s %s\n", target.SlotID, target.SlotState, target.SlotPath)
+			r.indentLine(2, "discard_recovery.slot", map[string]any{"SlotID": target.SlotID, "State": target.SlotState, "Path": target.SlotPath})
 		}
 	}
 	if out.DryRun {
-		fmt.Fprintf(&rendered, "%d session(s) would be discarded\n", len(out.Targets))
-		fmt.Fprintln(&rendered, "dry run: nothing was changed")
-		fmt.Print(translateHumanOutput(rendered.String(), lang))
+		r.line("discard_recovery.dry_run_count", map[string]any{"Count": len(out.Targets)})
+		r.line("discard_recovery.dry_run", nil)
 		return
 	}
-	fmt.Fprintf(&rendered, "discarded %d session(s), retired %d slot(s)\n", out.Discarded, out.Retired)
-	fmt.Print(translateHumanOutput(rendered.String(), lang))
+	r.line("discard_recovery.result", map[string]any{"Sessions": out.Discarded, "Slots": out.Retired})
 }
 
 // forgetTimeout は `wx forget` 1 回あたりの制限時間。
@@ -173,26 +168,26 @@ func runForget(ctx context.Context, args []string) int {
 		reportRPCErrorContext(ctx, err)
 		return 1
 	}
-	var rendered bytes.Buffer
-	fmt.Fprintln(&rendered, "forgotten", fs.Arg(0))
-	if line := forgetReclaimLine(out); line != "" {
-		fmt.Fprintln(&rendered, line)
-	}
-	fmt.Print(translateHumanOutput(rendered.String(), i18n.LanguageFromContext(ctx)))
+	r := newTextRenderer(os.Stdout, i18n.LanguageFromContext(ctx))
+	r.line("forget.done", map[string]any{"Path": fs.Arg(0)})
+	printForgetReclaim(r, out)
 	return 0
 }
 
-// forgetReclaimLine は解除のために消したものを1行にまとめる。何も消していなければ空を返す。
-func forgetReclaimLine(out daemon.ForgetResult) string {
+// printForgetReclaim は解除のために消したものを1行にまとめる。何も消していなければ何も出さない。
+// 破棄の有無で ID を分け、訳文の語順を日本語側で決められるようにする。
+func printForgetReclaim(r *textRenderer, out daemon.ForgetResult) {
 	if out.ReclaimedSlots+out.DiscardedSessions+out.DiscardedSnapshots+out.DiscardedWorkspaceSnapshots == 0 {
-		return ""
+		return
 	}
-	line := fmt.Sprintf("reclaimed %d worktree(s)", out.ReclaimedSlots)
 	if out.DiscardedSessions == 0 {
-		return line
+		r.line("forget.reclaimed", map[string]any{"Slots": out.ReclaimedSlots})
+		return
 	}
-	return fmt.Sprintf("%s; discarded %d session(s), %d snapshot(s), %d workspace snapshot(s)",
-		line, out.DiscardedSessions, out.DiscardedSnapshots, out.DiscardedWorkspaceSnapshots)
+	r.line("forget.reclaimed_discarded", map[string]any{
+		"Slots": out.ReclaimedSlots, "Sessions": out.DiscardedSessions,
+		"Snapshots": out.DiscardedSnapshots, "WorkspaceSnapshots": out.DiscardedWorkspaceSnapshots,
+	})
 }
 
 // retryStandbyView は RetryStandby の workspace 1 件分の応答である。
@@ -239,7 +234,8 @@ func runRetryStandby(ctx context.Context, args []string) int {
 	if out.Root == "" {
 		out.Root = fs.Arg(0)
 	}
-	fmt.Println(retryStandbyLineLanguage(out, i18n.LanguageFromContext(ctx)))
+	r := newTextRenderer(os.Stdout, i18n.LanguageFromContext(ctx))
+	r.raw(retryStandbyLine(r, out))
 	return 0
 }
 
@@ -259,60 +255,44 @@ func retryStandbyAll(ctx context.Context, c rpc.Client) int {
 		return 1
 	}
 	lang := i18n.LanguageFromContext(ctx)
+	r := newTextRenderer(os.Stdout, lang)
 	for _, w := range out.Workspaces {
-		fmt.Println(retryStandbyLineLanguage(w, lang))
+		r.raw(retryStandbyLine(r, w))
 	}
+	errors := newTextRenderer(os.Stderr, lang)
 	for _, failure := range out.Failures {
-		if lang == i18n.Japanese {
-			fmt.Fprintf(os.Stderr, "retry-standby %s: 再試行に失敗しました: %s\n", failure.Root, failure.Error)
-		} else {
-			fmt.Fprintf(os.Stderr, "retry-standby %s: %s\n", failure.Root, failure.Error)
-		}
+		errors.line("retry_standby.failed", map[string]any{"Root": failure.Root, "Error": failure.Error})
 	}
 	if len(out.Failures) > 0 {
 		return 1
 	}
 	if len(out.Workspaces) == 0 {
-		if lang == i18n.Japanese {
-			fmt.Println("standby 補充が停止している workspace はありません")
-		} else {
-			fmt.Println("no workspace has standby replenishment stopped")
-		}
+		r.line("retry_standby.none", nil)
 	}
 	return 0
 }
 
-func retryStandbyLine(out retryStandbyView) string {
-	state := "resumed"
-	if !out.Resumed {
-		state = "was not stopped"
+// retryStandbyLine は再開の結果を 1 行で返す。
+// 訳文の断片を連結すると日本語の語順を訳文側で決められないため、状態の組み合わせごとに ID を分ける。
+func retryStandbyLine(r *textRenderer, out retryStandbyView) string {
+	data := map[string]any{"Root": out.Root, "Generation": out.Generation, "Removed": out.RemovedFailed}
+	removed := out.RemovedFailed > 0
+	switch {
+	case out.Resumed && out.Scheduled && removed:
+		return r.Localize("retry_standby.resumed_scheduled_removed", data)
+	case out.Resumed && out.Scheduled:
+		return r.Localize("retry_standby.resumed_scheduled", data)
+	case out.Resumed && removed:
+		return r.Localize("retry_standby.resumed_in_progress_removed", data)
+	case out.Resumed:
+		return r.Localize("retry_standby.resumed_in_progress", data)
+	case out.Scheduled && removed:
+		return r.Localize("retry_standby.running_scheduled_removed", data)
+	case out.Scheduled:
+		return r.Localize("retry_standby.running_scheduled", data)
+	case removed:
+		return r.Localize("retry_standby.running_in_progress_removed", data)
+	default:
+		return r.Localize("retry_standby.running_in_progress", data)
 	}
-	retry := "retry scheduled"
-	if !out.Scheduled {
-		retry = "retry already in progress"
-	}
-	line := fmt.Sprintf("standby replenishment %s for %s (generation %d; %s", state, out.Root, out.Generation, retry)
-	if out.RemovedFailed > 0 {
-		line += fmt.Sprintf("; %d failed worktrees scheduled for removal", out.RemovedFailed)
-	}
-	return line + ")"
-}
-
-func retryStandbyLineLanguage(out retryStandbyView, lang i18n.Language) string {
-	if lang != i18n.Japanese {
-		return retryStandbyLine(out)
-	}
-	state := "再開しました"
-	if !out.Resumed {
-		state = "停止状態ではありません"
-	}
-	retry := "再試行を予約しました"
-	if !out.Scheduled {
-		retry = "再試行は進行中です"
-	}
-	line := fmt.Sprintf("standby 補充を %s: %s（世代 %d、%s", state, out.Root, out.Generation, retry)
-	if out.RemovedFailed > 0 {
-		line += fmt.Sprintf("、失敗した worktree %d 件を削除予約", out.RemovedFailed)
-	}
-	return line + "）"
 }

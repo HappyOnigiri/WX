@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -12,6 +11,22 @@ import (
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
+
+// changedAgainstHead は snapshot の worktree tree が HEAD と異なる path を返す。
+// 復元先で実体を書き戻す対象を、作業が実際にあった path だけに絞るために使う。
+func changedAgainstHead(value gitValueFunc, s state.Snapshot) ([]string, error) {
+	listing, err := value(nil, "diff-tree", "-r", "--name-only", "-z", s.HeadOID+"^{tree}", s.WorktreeOID+"^{tree}")
+	if err != nil {
+		return nil, fmt.Errorf("list paths changed in snapshot: %w", err)
+	}
+	var paths []string
+	for _, path := range strings.Split(listing, "\x00") {
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths, nil
+}
 
 func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target, slotID string, s state.Snapshot) error {
 	if expiry, err := time.Parse(time.RFC3339Nano, s.ExpiresAt); err != nil || !expiry.After(time.Now()) {
@@ -70,6 +85,21 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if _, err := targetRun(nil, nil, "read-tree", "--reset", "-u", s.WorktreeOID+"^{tree}"); err != nil {
 			return err
 		}
+		// 復元先は sparse 条件を受け継いでいるため、直前の read-tree は範囲外の path を skip-worktree にして
+		// 実体を書かない。範囲外で行った作業はここで書き戻す。index がまだ snapshot の worktree tree を指す
+		// この位置でしか worktree 側の内容は取り出せない。次の read-tree は index を staged 内容へ置き換え、
+		// 未 staged で追加された path の entry は消える。
+		// HEAD と差の無い範囲外 path は対象にせず skip-worktree のまま残すので、sparse の利得は損なわない。
+		// commentlint:allow-long -- この位置でしか復元できない理由を説明する
+		changed, err := changedAgainstHead(targetValue, s)
+		if err != nil {
+			return err
+		}
+		materialized, err := materializeSkipped(targetRun, targetValue, changed)
+		if err != nil {
+			return err
+		}
+		flags = flags.without(materialized)
 		if _, err := targetRun(nil, nil, "read-tree", s.IndexTreeOID); err != nil {
 			return err
 		}
@@ -99,16 +129,11 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		// 一時 index への add -A で作業ツリー全体を再計算し、snapshot の tree と比較する。
 		// read-tree の後に resume prepare が動くため、prepare command や補助リンクが作った差分はここでしか検出できない。
 		// 後続の status は終了コードしか見ておらず代替にならない。
-		tmpFile, err := os.CreateTemp("", ".wx-verify-index-*")
+		tmp, cleanup, err := temporaryIndex("restore", ".wx-verify-index-*")
 		if err != nil {
-			return fmt.Errorf("create temporary restore index: %w", err)
+			return err
 		}
-		tmp := tmpFile.Name()
-		if err := tmpFile.Close(); err != nil {
-			_ = os.Remove(tmp)
-			return fmt.Errorf("close temporary restore index: %w", err)
-		}
-		defer func() { _ = os.Remove(tmp) }()
+		defer cleanup()
 		env := []string{"GIT_INDEX_FILE=" + tmp}
 		if _, err := targetRun(env, nil, "read-tree", s.HeadOID); err != nil {
 			return err
@@ -118,7 +143,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err := applyIndexFlags(targetRun, targetValue, env, flags); err != nil {
 			return err
 		}
-		if _, err := targetRun(env, nil, "add", "-A"); err != nil {
+		if _, err := targetRun(env, nil, addWorktreeArgs()...); err != nil {
 			return err
 		}
 		actualWorktreeTree, err := targetValue(env, "write-tree")
@@ -134,6 +159,18 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		}
 		if err := m.Preparer.VerifyWorktreeIdentity(target, targetIdentity); err != nil {
 			return fmt.Errorf("validate restored worktree identity: %w", err)
+		}
+		// 停止中 rebase の書き戻しは既存の検証をすべて終えた後に置く。
+		// read-tree の後には resume prepare と tree 一致検証が続くため、その相手を rebase 中のリポジトリにしないという意図である。
+		wantGitState := ""
+		if s.GitStateOID != "" {
+			wantGitState, err = m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", s.GitStateOID+"^{tree}")
+			if err != nil {
+				return fmt.Errorf("resolve snapshot rebase state tree: %w", err)
+			}
+		}
+		if err := restoreGitState(targetValue, targetRun, wantGitState); err != nil {
+			return fmt.Errorf("restore in-progress rebase state: %w", err)
 		}
 		// ここでの ownership 再証明は行わない。
 		// 直前の PrepareResumeWithIdentity と直後の FinishRestoreWithIdentity が同じ検査を行い、その間は読み取りだけである。

@@ -3,18 +3,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/textfmt"
 )
 
@@ -286,33 +283,10 @@ func statusQuarantineReason(item map[string]any) string {
 	return statusRawValue(value)
 }
 
-func writeStatusLine(w io.Writer, line string) {
-	_, _ = fmt.Fprintln(w, line)
-}
-
-func writeStatusField(w io.Writer, label, value string) {
-	if value == "" {
-		value = "(empty)"
-	}
-	// 長い error・path・opaque ID は値を失わないよう継続行へ送り、短い値は 1 行に収める。
-	if strings.Contains(value, "\n") || utf8.RuneCountInString(value) > 120 {
-		writeStatusLine(w, label+":")
-		for _, line := range strings.Split(value, "\n") {
-			writeStatusLine(w, "    "+line)
-		}
-		return
-	}
-	writeStatusLine(w, label+": "+value)
-}
-
-// writeStatusTable は見出しを訳してから桁を決める。英語の幅で桁を決めた後に
-// 表示層で訳を入れると、見出しだけが行の値からずれる。
+// writeStatusTable は解決済みの見出しを受け取り、表示幅で桁を決める。
+// 訳を桁計算より後に入れると見出しだけが行の値からずれるため、解決は呼び出し側の責務とする。
 // 幅は rune 数ではなく表示幅で測る。日本語の見出しは rune 数の 2 倍の桁を占める。
-func writeStatusTable(w io.Writer, lang i18n.Language, headers []string, rows [][]string) {
-	headers = append([]string(nil), headers...)
-	for index, header := range headers {
-		headers[index] = localizeStatusHeader(header, lang)
-	}
+func writeStatusTable(r *textRenderer, headers []string, rows [][]string) {
 	widths := make([]int, len(headers))
 	for index, header := range headers {
 		widths[index] = xansi.StringWidth(header)
@@ -342,7 +316,7 @@ func writeStatusTable(w io.Writer, lang i18n.Language, headers []string, rows []
 				line.WriteString(strings.Repeat(" ", padding))
 			}
 		}
-		writeStatusLine(w, line.String())
+		r.raw(line.String())
 	}
 	writeRow(nil)
 	for _, row := range rows {
