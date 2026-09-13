@@ -30,9 +30,9 @@ func main() {
 	}
 }
 
-// validateReferences は静的文字列として書かれた i18n.T / Localize の ID を
-// カタログと照合する。可変 ID は機械的に判定できないため対象外にし、未知 ID
-// の追加だけを catalog-check で CI に止めさせる。
+// validateReferences は literal として書かれた ID をカタログと照合する。可変 ID は機械的に
+// 判定できないため対象外にし、未知 ID の追加だけを catalog-check で CI に止めさせる。
+// ただし field と indentLine はラベル位置にデータが流れる経路なので、literal 以外を拒否する。
 func validateReferences(root string) error {
 	known := i18n.Catalog()
 	var problems []string
@@ -64,14 +64,19 @@ func validateReferences(root string) error {
 				return true
 			}
 			var argumentIndex int
+			// field はラベルを message ID で解決する描画ヘルパである。ID を literal に
+			// 限ることで、payload のキーや path をラベル位置へ流す経路を dataField だけに残す。
+			requireLiteral := false
 			switch selector.Sel.Name {
 			case "T":
 				if ident, ok := selector.X.(*ast.Ident); !ok || ident.Name != "i18n" {
 					return true
 				}
 				argumentIndex = 1
-			case "Localize":
+			case "Localize", "line":
 				argumentIndex = 0
+			case "field", "indentLine":
+				argumentIndex, requireLiteral = 1, true
 			default:
 				return true
 			}
@@ -80,6 +85,11 @@ func validateReferences(root string) error {
 			}
 			literal, ok := call.Args[argumentIndex].(*ast.BasicLit)
 			if !ok || literal.Kind != token.STRING {
+				if requireLiteral {
+					position := fset.Position(call.Args[argumentIndex].Pos())
+					problems = append(problems, fmt.Sprintf("%s:%d: %s needs a literal message ID; use dataField when the label comes from the payload",
+						position.Filename, position.Line, selector.Sel.Name))
+				}
 				return true
 			}
 			id, err := strconv.Unquote(literal.Value)

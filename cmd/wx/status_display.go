@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
+
+	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/textfmt"
@@ -17,11 +17,12 @@ import (
 
 // printStatusDisplay は wx status の人間向け表示を担当する。
 // RPC payload は daemon が JSON 契約を所有するため、表示側ではコピーだけを解釈する。
-// lang は表の見出しにだけ効く。列を持たない行は translateHumanOutput が後段で訳す。
+// 固定文は描画時に lang で解決し、payload の値は訳を通さずそのまま書く。
 func printStatusDisplay(w io.Writer, payload map[string]any, verbose bool, lang i18n.Language) {
 	payload = normalizeStatusPayload(payload)
+	r := newTextRenderer(w, lang)
 	if degraded, ok := payload["degraded"].(bool); ok && degraded {
-		printDegradedStatus(w, payload, verbose)
+		printDegradedStatus(r, payload, verbose)
 		return
 	}
 	if !statusPayloadLooksStructured(payload) {
@@ -30,10 +31,10 @@ func printStatusDisplay(w io.Writer, payload map[string]any, verbose bool, lang 
 		return
 	}
 	if verbose {
-		printVerboseStatus(w, payload, lang)
+		printVerboseStatus(r, payload)
 		return
 	}
-	printStatusSummary(w, payload, lang)
+	printStatusSummary(r, payload)
 }
 
 // normalizeStatusPayload は RPC の JSON decode 結果とテスト用の型付き診断値を同じ形に揃える。
@@ -64,16 +65,16 @@ func statusPayloadLooksStructured(payload map[string]any) bool {
 	return false
 }
 
-func printDegradedStatus(w io.Writer, payload map[string]any, verbose bool) {
-	line := "Daemon degraded"
+func printDegradedStatus(r *textRenderer, payload map[string]any, verbose bool) {
 	if message, ok := payload["error"]; ok {
-		line += " · " + statusRawValue(message)
+		r.line("status.daemon.degraded_error", map[string]any{"Error": statusRawValue(message)})
+	} else {
+		r.line("status.daemon.degraded", nil)
 	}
-	writeStatusLine(w, line)
 
 	// degraded 応答では件数を信頼できないため、error と database_path だけを表示し、ゼロ件を補わない。
 	if _, ok := payload["database_path"]; ok {
-		writeStatusField(w, "Database", statusHomeValue(payload, "database_path"))
+		r.field(0, "status.field.database", statusHomeValue(payload, "database_path"))
 	}
 	if !verbose {
 		return
@@ -91,9 +92,9 @@ func printDegradedStatus(w io.Writer, payload map[string]any, verbose bool) {
 		return
 	}
 	sort.SliceStable(additional, func(i, j int) bool { return additional[i].key < additional[j].key })
-	writeStatusLine(w, "Additional")
+	r.line("status.section.additional", nil)
 	for _, pair := range additional {
-		writeStatusField(w, "  "+pair.key, pair.value)
+		r.dataField(2, pair.key, pair.value)
 	}
 }
 
@@ -103,22 +104,24 @@ type statusWorkspaceRow struct {
 
 // statusReplenishmentNote は補充が進んでいない workspace 行に出す注記を作る。
 // 表の外へ独立行として出すと正常な行に埋もれるため、該当行自体へ理由と復帰手順を載せる。
-func statusReplenishmentNote(item map[string]any) string {
-	reason := "standby replenishment stopped"
+func statusReplenishmentNote(r *textRenderer, item map[string]any) string {
+	id := "status.standby.stopped"
 	switch statusValueRaw(item, "reason") {
 	case "CLEAN":
-		reason += " after wx clear"
+		id = "status.standby.stopped_clean"
 	case "STANDBY_PREPARE_FAILED":
-		reason += " after a preparation failure"
+		id = "status.standby.stopped_prepare"
 	case "STANDBY_PLAN_FAILED":
 		// 計画の失敗は補充を止めないので、停止とは書かずに枠が埋まっていないことを示す。
-		reason = "standby replenishment failed to plan new worktrees"
+		id = "status.standby.plan_failed"
 	}
+	reason := r.Localize(id, nil)
+	// action は daemon が返すコマンド文字列なので、訳さず不透明値として埋める。
 	action := statusValueRaw(item, "action")
 	if action == "" {
-		return "! " + reason
+		return r.Localize("status.standby.note", map[string]any{"Reason": reason})
 	}
-	return "! " + reason + "; run " + action
+	return r.Localize("status.standby.note_action", map[string]any{"Reason": reason, "Action": action})
 }
 
 // workspaceLastUsedSchemaVersion は workspace_details.last_used_at が導入された JSON schema 版である。
@@ -130,7 +133,7 @@ const workspacePolicySchemaVersion = 14
 // archivedSessionSchemaVersion は archived_session_details が導入された JSON schema 版である。
 const archivedSessionSchemaVersion = 19
 
-func printStatusSummary(w io.Writer, payload map[string]any, lang i18n.Language) {
+func printStatusSummary(r *textRenderer, payload map[string]any) {
 	workspaces := statusObjectList(payload["workspace_details"])
 	roots := statusObjectsSortedBy(statusObjectList(payload["worktree_roots"]), "path")
 
@@ -139,7 +142,7 @@ func printStatusSummary(w io.Writer, payload map[string]any, lang i18n.Language)
 	notes := map[string]string{}
 	for _, item := range statusObjectList(payload["standby_replenishment"]) {
 		root, _ := statusRawString(item, "root")
-		notes[root] = statusReplenishmentNote(item)
+		notes[root] = statusReplenishmentNote(r, item)
 	}
 
 	rows := make([]statusWorkspaceRow, 0, len(workspaces))
@@ -178,11 +181,15 @@ func printStatusSummary(w io.Writer, payload map[string]any, lang i18n.Language)
 	for _, row := range rows {
 		noted = noted || row.note != ""
 	}
-	header := []string{"WORKSPACE", "POLICY", "READY", "IN USE", "LAST USED (" + statusZoneLabel() + ")"}
-	if noted {
-		header = append(header, "NOTE")
+	// 見出しは表を組む前に解決する。訳し終えた文字列の表示幅で桁を決めないと、見出しだけが行の値からずれる。
+	header := []string{
+		r.Localize("status.table.workspace", nil), r.Localize("status.table.policy", nil), r.Localize("status.table.ready", nil),
+		r.Localize("status.table.in_use", nil), r.Localize("status.table.last_used_zone", map[string]any{"Zone": statusZoneLabel()}),
 	}
-	writeStatusTable(w, lang, header, func() [][]string {
+	if noted {
+		header = append(header, r.Localize("status.table.note", nil))
+	}
+	writeStatusTable(r, header, func() [][]string {
 		out := make([][]string, 0, len(rows))
 		for _, row := range rows {
 			cells := []string{row.path, row.policy, row.ready, row.leased, row.last}
@@ -193,28 +200,28 @@ func printStatusSummary(w io.Writer, payload map[string]any, lang i18n.Language)
 		}
 		return out
 	}())
-	if notice := statusWorkspaceLastUsedNotice(payload); notice != "" {
-		writeStatusLine(w, notice)
+	if notice := statusWorkspaceLastUsedNotice(r, payload); notice != "" {
+		r.raw(notice)
 	}
-	if notice := statusWorkspacePolicyNotice(payload); notice != "" {
-		writeStatusLine(w, notice)
+	if notice := statusWorkspacePolicyNotice(r, payload); notice != "" {
+		r.raw(notice)
 	}
 	if len(rows) == 0 {
 		// 空の registry でも表のヘッダーを残し、(none) を件数の 0 と混同させない。
-		writeStatusLine(w, "(none)")
+		r.raw("(none)")
 		// 全行を絞り込みで落としたときだけ、(none) を登録ゼロと読み違えないよう隠した件数を添える。
 		if hidden := len(workspaces); hidden > 0 {
-			writeStatusLine(w, statusHiddenWorkspaceNotice(hidden))
+			r.raw(statusHiddenWorkspaceNotice(r, hidden))
 		}
 	}
 
-	writeStatusLine(w, "")
-	writeStatusLine(w, statusDaemonSummary(payload))
+	r.raw("")
+	r.raw(statusDaemonSummary(r, payload))
 	for _, root := range roots {
-		writeStatusLine(w, statusDiskSummary(root))
+		r.raw(statusDiskSummary(r, root))
 	}
 	if len(roots) == 0 {
-		writeStatusLine(w, "Disk   (none)")
+		r.raw(statusSummaryLabel(r, "status.label.disk") + "(none)")
 	}
 	// workspace 表に載せられなかった停止（登録が消えた workspace など）だけを残余として出す。
 	remaining := make([]string, 0, len(notes))
@@ -223,53 +230,77 @@ func printStatusSummary(w io.Writer, payload map[string]any, lang i18n.Language)
 	}
 	sort.Strings(remaining)
 	for _, root := range remaining {
-		writeStatusLine(w, textfmt.HomePath(root)+" "+notes[root])
+		r.raw(textfmt.HomePath(root) + " " + notes[root])
 	}
 }
 
-func statusDaemonSummary(payload map[string]any) string {
+// statusSummaryLabel は要約行の先頭ラベルを、同じ列で始まる行どうしが揃う幅まで詰めて返す。
+// 訳文へ桁合わせの空白を埋め込むと、訳語を変えた瞬間に桁がずれるため、幅はここで測る。
+func statusSummaryLabel(r *textRenderer, id string) string {
+	width := 0
+	for _, aligned := range []string{"status.label.daemon", "status.label.disk"} {
+		if w := xansi.StringWidth(r.Localize(aligned, nil)); w > width {
+			width = w
+		}
+	}
+	label := r.Localize(id, nil)
+	return label + strings.Repeat(" ", width-xansi.StringWidth(label)) + " "
+}
+
+// statusDaemonSummary は daemon の状態と job の内訳を 1 行にまとめる。
+// 状態値と job の状態名は daemon の JSON 契約の値なので、訳文の中でも英語のまま残す。
+func statusDaemonSummary(r *textRenderer, payload map[string]any) string {
 	state := "running"
 	if pending, ok := statusBool(payload, "stop_pending"); ok && pending {
 		state = "stopping"
 	} else if pending, ok := statusBool(payload, "restart_pending"); ok && pending {
 		state = "restarting"
 	}
-	line := "Daemon " + state
+	label := statusSummaryLabel(r, "status.label.daemon")
 	// discarded は `wx clear` などが取り消した予定 job で、failed とは対処の要否が違う。
 	// 失敗が 0 でも取り消しが積み上がるので、失敗件数の読み違いを防ぐため既定の 1 行に並べて出す。
-	if jobs, ok := payload["job_details"].(map[string]any); ok {
-		line += " · Jobs " + statusCountOrDash(jobs, "pending") + " pending / " + statusCountOrDash(jobs, "running") + " running / " + statusCountOrDash(jobs, "failed") + " failed / " + statusCountOrDash(jobs, "discarded") + " discarded"
-		return line
+	jobs, ok := payload["job_details"].(map[string]any)
+	if !ok {
+		queued, hasQueued := statusInt(payload, "queued_jobs")
+		if !hasQueued {
+			return label + state
+		}
+		jobs = map[string]any{"pending": queued}
 	}
-	if queued, ok := statusInt(payload, "queued_jobs"); ok {
-		line += " · Jobs " + strconv.FormatInt(queued, 10) + " pending / — running / — failed / — discarded"
-	}
-	return line
+	return label + r.Localize("status.daemon.summary_jobs", map[string]any{
+		"State": state, "Pending": statusCountOrDash(jobs, "pending"), "Running": statusCountOrDash(jobs, "running"),
+		"Failed": statusCountOrDash(jobs, "failed"), "Discarded": statusCountOrDash(jobs, "discarded"),
+	})
 }
 
-func statusDiskSummary(root map[string]any) string {
+func statusDiskSummary(r *textRenderer, root map[string]any) string {
+	label := statusSummaryLabel(r, "status.label.disk")
 	path, _ := statusRawString(root, "path")
 	path = statusDash(textfmt.HomePath(path))
 	if message, ok := statusRawString(root, "error"); ok && message != "" {
-		return "Disk   measurement failed · " + path + " · " + message
+		return label + r.Localize("status.disk.failed", map[string]any{"Path": path, "Error": message})
 	}
 	// 使用量は daemon の周期処理が測った値で、要求時点のものではない。0 を実測値と誤読させないため未測定は数値を出さない。
 	if measurement, _ := statusRawString(root, "measurement"); measurement == "pending" {
-		return "Disk   measuring · " + path
+		return label + r.Localize("status.disk.measuring", map[string]any{"Path": path})
 	}
 	// wx が言う disk 使用量は main worktree と共有していない分だけで、slot ごとの SIZE 列と同じ量を指す。
 	// 満額の allocated_bytes は --json と --verbose にだけ出し、要約では単位を混ぜない。
 	// managed は登録外を集計した Unmanaged 行との区別であり、専有量と満額の区別ではない。
 	exclusive, ok := statusInt(root, "exclusive_bytes")
 	if !ok {
-		return "Disk   measurement unavailable · " + path
+		return label + r.Localize("status.disk.unavailable", map[string]any{"Path": path})
 	}
-	line := "Disk   " + textfmt.HumanBytes(exclusive) + " managed · " + path
+	data := map[string]any{"Size": textfmt.HumanBytes(exclusive), "Path": path}
+	// 計測日時の有無で ID を分け、訳文の中で日時の置き場所を日本語側が決められるようにする。
+	line := label + r.Localize("status.disk.managed", data)
 	if measuredAt, ok := statusRawString(root, "measured_at"); ok && measuredAt != "" {
-		line += " · measured " + statusLocalDate(measuredAt) + " " + statusZoneLabel()
+		data["Time"], data["Zone"] = statusLocalDate(measuredAt), statusZoneLabel()
+		line = label + r.Localize("status.disk.managed_measured", data)
 	}
 	if unmanaged, ok := statusInt(root, "unmanaged_allocated_bytes"); ok && unmanaged > 0 {
-		line += "\nUnmanaged " + textfmt.HumanBytes(unmanaged) + " · excluded from cleanup"
+		line += "\n" + r.Localize("status.label.unmanaged", nil) + " " +
+			r.Localize("status.disk.unmanaged", map[string]any{"Size": textfmt.HumanBytes(unmanaged)})
 	}
 	return line
 }
@@ -337,20 +368,20 @@ func statusWorkspacePolicyUnavailable(payload map[string]any) bool {
 	return ok && schema < workspacePolicySchemaVersion
 }
 
-func statusWorkspacePolicyNotice(payload map[string]any) string {
+func statusWorkspacePolicyNotice(r *textRenderer, payload map[string]any) string {
 	if !statusWorkspacePolicyUnavailable(payload) {
 		return ""
 	}
 	schema, _ := statusInt(payload, "schema_version")
-	return fmt.Sprintf("POLICY unavailable: daemon JSON schema %d has no workspace policy; update the daemon.", schema)
+	return r.Localize("status.notice.policy_unavailable", map[string]any{"Schema": schema})
 }
 
 // statusHiddenWorkspaceNotice は表が空になったときだけ添える、隠した登録の件数と確認手段の案内である。
-func statusHiddenWorkspaceNotice(hidden int) string {
+func statusHiddenWorkspaceNotice(r *textRenderer, hidden int) string {
 	if hidden == 1 {
-		return "1 registered workspace uses no worktree; run wx status --verbose to list it"
+		return r.Localize("status.notice.hidden_workspace", nil)
 	}
-	return fmt.Sprintf("%d registered workspaces use no worktree; run wx status --verbose to list them", hidden)
+	return r.Localize("status.notice.hidden_workspaces", map[string]any{"Count": hidden})
 }
 
 func statusWorkspaceLastUsed(payload, workspace map[string]any) string {
@@ -376,12 +407,12 @@ func statusWorkspaceLastUsedUnavailable(payload map[string]any) bool {
 	return ok && schema < workspaceLastUsedSchemaVersion
 }
 
-func statusWorkspaceLastUsedNotice(payload map[string]any) string {
+func statusWorkspaceLastUsedNotice(r *textRenderer, payload map[string]any) string {
 	if !statusWorkspaceLastUsedUnavailable(payload) {
 		return ""
 	}
 	schema, _ := statusInt(payload, "schema_version")
-	return fmt.Sprintf("LAST USED unavailable: daemon JSON schema %d has no workspace history; update the daemon.", schema)
+	return r.Localize("status.notice.last_used_unavailable", map[string]any{"Schema": schema})
 }
 
 func statusArchivedSessionsUnavailable(payload map[string]any) bool {
@@ -391,29 +422,29 @@ func statusArchivedSessionsUnavailable(payload map[string]any) bool {
 
 // statusArchivedSessionNotice は集計を返さない daemon 向けの注記である。
 // 旧 daemon の session_details には ARCHIVED が混ざるため、行を間引かず注記だけを添えて診断の欠落を防ぐ。
-func statusArchivedSessionNotice(payload map[string]any) string {
+func statusArchivedSessionNotice(r *textRenderer, payload map[string]any) string {
 	if !statusArchivedSessionsUnavailable(payload) {
 		return ""
 	}
 	schema, _ := statusInt(payload, "schema_version")
-	return fmt.Sprintf("Archived unavailable: daemon JSON schema %d has no archived session summary; the table above still lists archived sessions. Update the daemon.", schema)
+	return r.Localize("status.notice.archived_unavailable", map[string]any{"Schema": schema})
 }
 
 // statusQuarantineCleanupNotices は隔離された実体のうち、コマンドで消せるものだけ削除手段を案内する。
 // unknown_paths・mismatched_refs には削除コマンドが無く（wx clear は未登録の実体に触れず、wx prune は unknown_refs だけを対象にする）、
 // 案内すると効かない操作を促すため、この 2 つには行を出さない。
 // commentlint:allow-long -- 案内しないカテゴリがある理由を残すため
-func statusQuarantineCleanupNotices(items []map[string]any) []string {
+func statusQuarantineCleanupNotices(r *textRenderer, items []map[string]any) []string {
 	kinds := map[string]bool{}
 	for _, item := range items {
 		kinds[statusValueRaw(item, "kind")] = true
 	}
 	var notices []string
 	if kinds["slot"] {
-		notices = append(notices, "slot: wx clear deletes quarantined slots right away, without waiting out retention.quarantined.")
+		notices = append(notices, r.Localize("status.notice.quarantine_slot", nil))
 	}
 	if kinds["unknown_refs"] {
-		notices = append(notices, "unknown_refs: wx prune deletes the recovery refs it can prove are safe to lose; wx prune --dry-run reports them first.")
+		notices = append(notices, r.Localize("status.notice.quarantine_refs", nil))
 	}
 	return notices
 }

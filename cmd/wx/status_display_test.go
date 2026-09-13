@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -251,7 +252,7 @@ func TestStatusDiskSummaryDistinguishesPendingFromMeasuredUsage(t *testing.T) {
 			want: "Disk   measurement failed · /repo/wx · root is not registered",
 		},
 	} {
-		if got := statusDiskSummary(testCase.root); got != testCase.want {
+		if got := statusDiskSummary(newTextRenderer(io.Discard, i18n.English), testCase.root); got != testCase.want {
 			t.Fatalf("%s: disk summary=%q, want %q", testCase.name, got, testCase.want)
 		}
 	}
@@ -338,15 +339,16 @@ func TestPrintStatusSummaryOmitsHiddenNoticeForAnEmptyRegistry(t *testing.T) {
 
 // TestStatusArchivedSessionNoticeTracksTheSchemaVersion は集計を返さない daemon の判定境界を固定する。
 func TestStatusArchivedSessionNoticeTracksTheSchemaVersion(t *testing.T) {
-	if notice := statusArchivedSessionNotice(map[string]any{"schema_version": archivedSessionSchemaVersion}); notice != "" {
+	r := newTextRenderer(io.Discard, i18n.English)
+	if notice := statusArchivedSessionNotice(r, map[string]any{"schema_version": archivedSessionSchemaVersion}); notice != "" {
 		t.Fatalf("current schema notice=%q, want empty", notice)
 	}
-	notice := statusArchivedSessionNotice(map[string]any{"schema_version": archivedSessionSchemaVersion - 1})
+	notice := statusArchivedSessionNotice(r, map[string]any{"schema_version": archivedSessionSchemaVersion - 1})
 	if !strings.Contains(notice, "18") || !strings.Contains(notice, "still lists archived sessions") {
 		t.Fatalf("legacy schema notice=%q", notice)
 	}
 	// schema_version を返さない応答では版を判定できないため、注記も劣化表示も出さない。
-	if notice := statusArchivedSessionNotice(map[string]any{}); notice != "" {
+	if notice := statusArchivedSessionNotice(r, map[string]any{}); notice != "" {
 		t.Fatalf("notice without a schema version=%q, want empty", notice)
 	}
 }
@@ -354,28 +356,28 @@ func TestStatusArchivedSessionNoticeTracksTheSchemaVersion(t *testing.T) {
 // TestStatusDaemonSummarySeparatesDiscardedJobs は、既定の 1 行が取り消しを失敗と混ぜないことを固定する。
 // `wx clear` の取り消しは retention.failed_job まで残るので、混ぜると対処の要らない件数が失敗として読める。
 func TestStatusDaemonSummarySeparatesDiscardedJobs(t *testing.T) {
-	line := statusDaemonSummary(map[string]any{
+	r := newTextRenderer(io.Discard, i18n.English)
+	line := statusDaemonSummary(r, map[string]any{
 		"job_details": map[string]any{"pending": 0, "running": 0, "failed": 5, "discarded": 80},
 	})
 	if want := "Daemon running · Jobs 0 pending / 0 running / 5 failed / 80 discarded"; line != want {
 		t.Fatalf("daemon summary=%q, want %q", line, want)
 	}
 	// discarded を返さない daemon では件数を作らず、失敗側の値もそのまま出す。
-	legacy := statusDaemonSummary(map[string]any{"job_details": map[string]any{"pending": 0, "running": 0, "failed": 85}})
+	legacy := statusDaemonSummary(r, map[string]any{"job_details": map[string]any{"pending": 0, "running": 0, "failed": 85}})
 	if want := "Daemon running · Jobs 0 pending / 0 running / 85 failed / — discarded"; legacy != want {
 		t.Fatalf("legacy daemon summary=%q, want %q", legacy, want)
 	}
 	// job_details が無い応答では pending だけが queued_jobs から分かる。
-	queued := statusDaemonSummary(map[string]any{"queued_jobs": 2})
+	queued := statusDaemonSummary(r, map[string]any{"queued_jobs": 2})
 	if want := "Daemon running · Jobs 2 pending / — running / — failed / — discarded"; queued != want {
 		t.Fatalf("queued-only daemon summary=%q, want %q", queued, want)
 	}
 }
 
-// TestPrintStatusSummaryJapaneseHeaderSurvivesTheDisplayLayer は、表示層が
-// 訳し終えた見出しを再度置換しないことを検査する。二重に置換すると、桁を決めた
-// 後の見出しだけが伸び縮みし、行の値からずれる。
-func TestPrintStatusSummaryJapaneseHeaderSurvivesTheDisplayLayer(t *testing.T) {
+// TestPrintStatusSummaryJapaneseHeaderAlignsWithTheRows は、見出しを桁計算より前に
+// 解決していることを検査する。英語の幅で桁を決めた後に訳すと、見出しだけが行の値からずれる。
+func TestPrintStatusSummaryJapaneseHeaderAlignsWithTheRows(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	previousLocation := statusDisplayLocation
@@ -397,9 +399,6 @@ func TestPrintStatusSummaryJapaneseHeaderSurvivesTheDisplayLayer(t *testing.T) {
 		t.Fatalf("summary did not resolve the header before the table:\n%s", rendered)
 	}
 	header := statusHeaderLine(rendered, "ワークスペース")
-	if got := statusHeaderLine(translateHumanOutput(rendered, i18n.Japanese), "ワークスペース"); got != header {
-		t.Fatalf("display layer rewrote the header=%q, want %q", got, header)
-	}
 	// 見出しの次の行は workspace の行で、path の列は見出しと同じ桁で始まる。
 	row := statusLineAfter(rendered, header)
 	if want := xansi.StringWidth("ワークスペース") + 1; !strings.HasPrefix(row, "~/dev/wx"+strings.Repeat(" ", want-xansi.StringWidth("~/dev/wx")-1)+" ") {
@@ -424,4 +423,91 @@ func statusLineAfter(text, line string) string {
 		}
 	}
 	return ""
+}
+
+// TestPrintStatusSummaryJapaneseKeepsPathsAndTimesVerbatim は本件の回帰テストである。
+// 出力全文へ辞書を当てていたときは `~/dev/ReleaseActions` が `~/dev/Release操作s` になった。
+// 固定文は描画時に解決し、payload の path・時刻・zone は訳を通さないことを固定する。
+func TestPrintStatusSummaryJapaneseKeepsPathsAndTimesVerbatim(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	previousLocation := statusDisplayLocation
+	statusDisplayLocation = time.FixedZone("JST", 9*60*60)
+	t.Cleanup(func() { statusDisplayLocation = previousLocation })
+
+	payload := map[string]any{
+		"schema_version": 20,
+		"workspace_details": []map[string]any{
+			{"id": "a", "root": home + "/dev/ReleaseActions", "policy": "hot", "ready": 1, "leased": 0, "last_used_at": "2026-09-04T22:16:00Z"},
+			{"id": "b", "root": home + "/dev/StopTotalRunning", "policy": "cold", "ready": 0, "leased": 1, "last_used_at": "2026-09-04T22:16:00Z"},
+		},
+		"job_details": map[string]any{"pending": 0, "running": 0, "failed": 0, "discarded": 0},
+		"worktree_roots": []map[string]any{
+			{"path": home + "/wx/Action", "active": true, "exclusive_bytes": 65 * 1024 * 1024, "measured_at": "2026-09-13T01:57:00Z", "unmanaged_allocated_bytes": 1024 * 1024},
+		},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, false, i18n.Japanese)
+	rendered := output.String()
+	for _, want := range []string{"~/dev/ReleaseActions", "~/dev/StopTotalRunning", "~/wx/Action", "09/13 10:57", "JST"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("Japanese summary lost the opaque value %q:\n%s", want, rendered)
+		}
+	}
+	// 辞書による全文置換が戻ると、path・状態値の中の語がこれらへ化ける。
+	for _, unwanted := range []string{"操作", "停止", "合計", "実行中"} {
+		if strings.Contains(rendered, unwanted) {
+			t.Fatalf("Japanese summary translated a data value into %q:\n%s", unwanted, rendered)
+		}
+	}
+}
+
+// TestStatusDiskSummaryAlignsTheLabelWithTheDaemonLine は、桁合わせの空白が訳文ではなく
+// 表示幅の計算で決まることを固定する。訳文へ空白を埋めると訳語の変更で桁がずれる。
+func TestStatusDiskSummaryAlignsTheLabelWithTheDaemonLine(t *testing.T) {
+	for _, lang := range []i18n.Language{i18n.English, i18n.Japanese} {
+		r := newTextRenderer(io.Discard, lang)
+		daemon := statusSummaryLabel(r, "status.label.daemon")
+		disk := statusSummaryLabel(r, "status.label.disk")
+		if xansi.StringWidth(daemon) != xansi.StringWidth(disk) {
+			t.Fatalf("%s: daemon label %q and disk label %q have different widths", lang, daemon, disk)
+		}
+	}
+	// 英語の出力は移行前とバイト一致でなければならない。
+	if got := statusSummaryLabel(newTextRenderer(io.Discard, i18n.English), "status.label.disk"); got != "Disk   " {
+		t.Fatalf("English disk label=%q", got)
+	}
+}
+
+// TestPrintVerboseStatusJapaneseKeepsPayloadValues は、詳細表示でも節見出しだけが訳され、
+// ID・path・時刻・reason コードが原文のまま残ることを固定する。
+func TestPrintVerboseStatusJapaneseKeepsPayloadValues(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	payload := map[string]any{
+		"schema_version": 20,
+		"workspace_details": []map[string]any{
+			{"id": "wsActionTotal", "root": home + "/dev/ReleaseActions", "policy": "hot", "ready": 1, "leased": 0, "last_used_at": "2026-09-04T22:16:00Z"},
+		},
+		"quarantine": []map[string]any{
+			{"id": "slotStop", "kind": "slot", "failure_code": "STANDBY_PREPARE_FAILED", "path": home + "/wx/Action/slot"},
+		},
+		"standby_replenishment": []map[string]any{
+			{"root": home + "/dev/ReleaseActions", "reason": "STANDBY_PREPARE_FAILED", "action": "wx retry-standby ~/dev/ReleaseActions"},
+		},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, true, i18n.Japanese)
+	rendered := output.String()
+	if !strings.Contains(rendered, "ワークスペース") || !strings.Contains(rendered, "隔離") {
+		t.Fatalf("verbose Japanese did not translate the section headings:\n%s", rendered)
+	}
+	for _, want := range []string{
+		"wsActionTotal", "~/dev/ReleaseActions", "slotStop", "STANDBY_PREPARE_FAILED",
+		"2026-09-04T22:16:00Z", "wx retry-standby ~/dev/ReleaseActions",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("verbose Japanese lost the opaque value %q:\n%s", want, rendered)
+		}
+	}
 }
