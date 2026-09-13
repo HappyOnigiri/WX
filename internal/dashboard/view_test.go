@@ -61,7 +61,8 @@ func TestJapaneseOperationViewKeepsColumnsAligned(t *testing.T) {
 	if !strings.Contains(frame, "保持期間を過ぎたデータを削除") {
 		t.Fatalf("menu label is not localized: %q", frame)
 	}
-	if strings.Contains(frame, "retention period has passed") {
+	// 英語の説明が残っていないことを確かめる。label にも含まれない英語の一文を選ぶ。
+	if strings.Contains(frame, "wx keeps for a fixed period") {
 		t.Fatalf("description is not localized: %q", frame)
 	}
 }
@@ -174,9 +175,12 @@ func TestSetupItemsRenderInTheConfiguredLanguage(t *testing.T) {
 			t.Fatalf("description %q is missing from %q", want, description)
 		}
 	}
-	// 解決できなかった message は ID が出る。ID が残っていないことを確かめる。
-	if strings.Contains(description, "setup.reason.") || strings.Contains(description, "setup.detail.") {
-		t.Fatalf("an unresolved message id reached the screen: %q", description)
+	// 解決できなかった message は ID が画面へ出る。項目 ID（hooks.claude）以外に
+	// message ID の形をした語が残っていないことを確かめる。
+	for _, prefix := range []string{"setup.", "wx.setup.", "dashboard.", "hook.finding."} {
+		if strings.Contains(description, prefix) || strings.Contains(menu, prefix) {
+			t.Fatalf("an unresolved message id (%s…) reached the screen: %q", prefix, menu+description)
+		}
 	}
 }
 

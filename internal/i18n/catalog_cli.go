@@ -108,10 +108,12 @@ var cliCatalog = map[string]Entry{
 	"cli.probe.release_failed":         {EN: "warning: release probe lease {{.SessionID}}: {{.Error}}", JA: "警告: probe 用貸出 {{.SessionID}} の返却に失敗: {{.Error}}"},
 
 	// wx.setup.column.* / wx.setup.item.* / wx.setup.action.* は wx setup の表と選択肢のラベルである。
-	"wx.setup.column.item":              {EN: "ITEM", JA: "項目"},
-	"wx.setup.column.state":             {EN: "STATE", JA: "状態"},
-	"wx.setup.column.action":            {EN: "ACTION", JA: "操作"},
-	"wx.setup.column.detail":            {EN: "DETAIL", JA: "詳細"},
+	"wx.setup.column.item":   {EN: "ITEM", JA: "項目"},
+	"wx.setup.column.state":  {EN: "STATE", JA: "状態"},
+	"wx.setup.column.action": {EN: "ACTION", JA: "操作"},
+	"wx.setup.column.detail": {EN: "DETAIL", JA: "詳細"},
+	// 表の見出しと散文のラベルは別に持つ。共有すると、片方の推敲がもう片方の見た目を壊す。
+	"wx.setup.state_label":              {EN: "state", JA: "状態"},
 	"wx.setup.item.prerequisites":       {EN: "Prerequisites", JA: "前提条件"},
 	"wx.setup.item.worktree_root":       {EN: "Worktree root", JA: "Worktree root"},
 	"wx.setup.item.shell_path":          {EN: "Shell PATH", JA: "Shell の PATH"},

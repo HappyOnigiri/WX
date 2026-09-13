@@ -35,7 +35,8 @@ func TestSetupTableKeepsColumnsAlignedAndShowsReasons(t *testing.T) {
 			t.Fatalf("the STATE column is not aligned:\n%s", out.String())
 		}
 	}
-	if !strings.Contains(out.String(), "does not match what this wx would write") {
+	// 訳文そのものではなく、理由の message が解決されて列に入ったことを確かめる。
+	if !strings.Contains(out.String(), i18n.New(string(i18n.English)).Localize("setup.reason.plist_stale", nil)) {
 		t.Fatalf("the reason is not shown:\n%s", out.String())
 	}
 	if !strings.Contains(lines[3], "/some/path") {
@@ -127,7 +128,7 @@ func TestSetupWarningsReportStatesThatDidNotSettle(t *testing.T) {
 	var out bytes.Buffer
 	printSetupWarnings(&out, "hooks.claude", setup.ActionInstall, setup.Step{State: setup.StateDivergent, Reasons: []i18n.Message{{ID: "setup.reason.plist_stale"}}})
 	if !strings.Contains(out.String(), "warning: hooks.claude is divergent after install") ||
-		!strings.Contains(out.String(), "does not match what this wx would write") {
+		!strings.Contains(out.String(), i18n.New(string(i18n.English)).Localize("setup.reason.plist_stale", nil)) {
 		t.Fatalf("warning=%q", out.String())
 	}
 	out.Reset()
@@ -145,8 +146,11 @@ func TestSetupWarningsReportStatesThatDidNotSettle(t *testing.T) {
 	printSetupSkipped(&out, setup.Step{ID: "prerequisites", State: setup.StatePresent, Reasons: []i18n.Message{
 		{ID: "setup.reason.home_unresolved"}, {ID: "setup.reason.shell_unknown"},
 	}})
-	if !strings.Contains(out.String(), "home directory cannot be resolved") || !strings.Contains(out.String(), "which startup file this shell reads") {
-		t.Fatalf("skipped step=%q", out.String())
+	english := i18n.New(string(i18n.English))
+	for _, id := range []string{"setup.reason.home_unresolved", "setup.reason.shell_unknown"} {
+		if !strings.Contains(out.String(), english.Localize(id, nil)) {
+			t.Fatalf("skipped step lost %s: %q", id, out.String())
+		}
 	}
 	out.Reset()
 	printSetupApplied(&out, setup.Step{ID: "daemon"}, setup.ActionInstall)

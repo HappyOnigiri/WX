@@ -178,11 +178,10 @@ func collectLaunchAgent() Step {
 		return step
 	}
 	if status == launchd.PlistUnknown {
-		detail := ""
 		if statusErr != nil {
-			detail = statusErr.Error()
+			return unknownStep(step, message("setup.reason.plist_uncomparable_error", "Error", statusErr.Error()))
 		}
-		return unknownStep(step, message("setup.reason.plist_uncomparable", "Error", detail))
+		return unknownStep(step, message("setup.reason.plist_uncomparable"))
 	}
 	if permission, reason := diag.DiagnosticPathMessage(path, 0, 0o600); permission != "ok" {
 		step.State = StateDivergent
@@ -299,11 +298,12 @@ func applyHooks(step Step, action Action) (i18n.Message, error) {
 		return i18n.Message{}, err
 	}
 	if result.State.Status != hookconfig.StatusCurrent {
-		reason := i18n.Message{}
-		if messages := result.State.Messages(); len(messages) > 0 {
-			reason = messages[0]
+		// 受理されない理由は 1 件に絞らない。書き込んだのに受理されない状況では、
+		// 残り全ての finding が次に何を直すかの手掛かりになる。
+		if reasons := joinMessages(result.State.Messages()); reasons.ID != "" {
+			return i18n.Message{}, messageError("setup.error.hooks_not_ready_reasons", "Path", result.Resolved, "Reason", reasons)
 		}
-		return i18n.Message{}, i18n.NewError("setup.error.hooks_not_ready", map[string]any{"Path": result.Resolved, "Reason": reason})
+		return i18n.Message{}, messageError("setup.error.hooks_not_ready", "Path", result.Resolved)
 	}
 	return hookApplyNote(result), nil
 }

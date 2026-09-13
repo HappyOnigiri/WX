@@ -131,7 +131,7 @@ var configCatalog = map[string]Entry{
 	"config.lease.shell.impact":      {EN: "Leave it empty to use the shell from the environment.", JA: "空にすると、環境の設定にあるシェルを使います。"},
 
 	"config.includes.default_agent_rules.name":        {EN: "Place the standard agent instruction files", JA: "標準のエージェント指示ファイルを配置する"},
-	"config.includes.default_agent_rules.description": {EN: "Whether the usual agent instruction files, such as the ones that are not committed to the repository, are placed into the worktree.", JA: "リポジトリに commit していないものを含め、通常のエージェント指示ファイルを worktree へ置くかどうかです。"},
+	"config.includes.default_agent_rules.description": {EN: "Whether the standard agent instruction files that Git does not track, such as CLAUDE.local.md, are copied from the workspace into the worktree. Tracked files arrive with the checkout and are unaffected.", JA: "CLAUDE.local.md のように Git が追跡しない標準のエージェント指示ファイルを、workspace から worktree へコピーするかどうかです。追跡されているファイルは checkout で入るため、この設定の対象外です。"},
 	"config.includes.default_agent_rules.impact":      {EN: "When disabled, only the paths configured explicitly are placed.", JA: "無効にすると、明示的に設定した path だけを配置します。"},
 
 	"config.agent.add_dir.name":        {EN: "Extra directories given to the agent", JA: "エージェントへ渡す追加ディレクトリ"},

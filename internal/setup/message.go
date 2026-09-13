@@ -25,6 +25,19 @@ func messageError(id string, pairs ...any) error {
 	return i18n.NewError(id, message(id, pairs...).Data)
 }
 
+// joinMessages は複数の理由を 1 つの message へまとめる。解決は表示言語で行うため、
+// ここで連結するのは message であって文字列ではない。空の一覧には空の message を返す。
+func joinMessages(values []i18n.Message) i18n.Message {
+	switch len(values) {
+	case 0:
+		return i18n.Message{}
+	case 1:
+		return values[0]
+	default:
+		return message("setup.reason.joined", "First", values[0], "Rest", joinMessages(values[1:]))
+	}
+}
+
 // pathProblem は path の検査結果を理由 1 件にする。
 // diag が message を持たない結果（Lstat の失敗）は外部由来の本文なので、原文のまま本文へ載せる。
 func pathProblem(path, result string, reason i18n.Message) i18n.Message {

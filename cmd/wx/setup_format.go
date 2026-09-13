@@ -84,7 +84,7 @@ func setupStepDescription(localizer *i18n.Localizer, step setup.Step) string {
 	if text := localizer.Message(step.Detail); text != "" {
 		parts = append(parts, text)
 	}
-	parts = append(parts, localizer.Localize("wx.setup.column.state", nil)+": "+setupStateLabel(localizer, step.State))
+	parts = append(parts, localizer.Localize("wx.setup.state_label", nil)+": "+setupStateLabel(localizer, step.State))
 	if step.Target != "" {
 		parts = append(parts, step.Target)
 	}
@@ -232,11 +232,11 @@ const setupLeftoverPrefix = "leftover"
 
 // printSetupRemoval は削除結果を項目ごとに 1 行で出し、消さなかった path を最後にまとめる。
 // 失敗は stderr に出し、成功した項目の行は stdout に残す。片付けの続きを利用者が判断できるようにするためである。
-func printSetupRemoval(out, errOut io.Writer, removal setup.Removal) {
-	localizer := i18n.New(string(localizedUsageLanguage()))
+func printSetupRemoval(out, errOut io.Writer, lang i18n.Language, removal setup.Removal) {
+	localizer := i18n.New(string(lang))
 	for _, result := range removal.Results {
 		if result.Err != nil {
-			_, _ = fmt.Fprintf(errOut, "%s %s: %v\n", localizer.Localize("cli.error_prefix", nil), result.ID, result.Err)
+			_, _ = fmt.Fprintf(errOut, "%s %s: %s\n", localizer.Localize("cli.error_prefix", nil), result.ID, localizer.Error(result.Err))
 			continue
 		}
 		note := localizer.Message(result.Note)

@@ -63,8 +63,8 @@ var setupCatalog = map[string]Entry{
 		JA: "{{.Path}} は独自の書き方で {{.Directory}} を PATH へ加えているため、wx が編集する必要はありません。",
 	},
 	"setup.detail.launch_agent": {
-		EN: "A LaunchAgent plist that starts the wx daemon at login and restarts it if it exits; without it, every wx command has to wait for a daemon that nobody started.",
-		JA: "ログイン時に wx daemon を起動し、終了したら起動し直す LaunchAgent の plist です。これが無いと、daemon を誰も起動していない状態で wx コマンドを実行することになります。",
+		EN: "A LaunchAgent plist that starts the wx daemon at login and starts it again if it exits abnormally; without it, every wx command has to wait for a daemon that nobody started.",
+		JA: "ログイン時に wx daemon を起動し、異常終了したときは起動し直す LaunchAgent の plist です。これが無いと、daemon を誰も起動していない状態で wx コマンドを実行することになります。",
 	},
 	"setup.detail.hooks_agent_missing": {
 		EN: "{{.Agent}} is not on PATH, so wx does not configure its hooks. Install {{.Agent}} and run wx setup again if you want to launch it from wx.",
@@ -114,6 +114,12 @@ var setupCatalog = map[string]Entry{
 		JA: "wx の設定ファイルを読み取れません: {{.Error}}",
 	},
 	"setup.reason.plist_uncomparable": {
+		EN: "the installed LaunchAgent plist cannot be compared with what wx would write",
+		JA: "登録済みの LaunchAgent plist を、wx が書き込む内容と比較できません",
+	},
+	// 理由が外部 error として分かっているときだけ本文へ添える。原因の分からない場合に空の
+	// プレースホルダを展開すると、末尾にコロンだけが残る。
+	"setup.reason.plist_uncomparable_error": {
 		EN: "the installed LaunchAgent plist cannot be compared with what wx would write: {{.Error}}",
 		JA: "登録済みの LaunchAgent plist を、wx が書き込む内容と比較できません: {{.Error}}",
 	},
@@ -162,6 +168,9 @@ var setupCatalog = map[string]Entry{
 		JA: "daemon は応答しましたが要求が失敗したため、wx が使えない状態で動いています。再起動するとプロセスを入れ替えます: {{.Error}}",
 	},
 
+	// setup.reason.joined は複数の理由を 1 行へ並べるための区切りで、本文は両側の message が持つ。
+	"setup.reason.joined": {EN: "{{.First}}; {{.Rest}}", JA: "{{.First}}。{{.Rest}}"},
+
 	// setup.note.* は適用の結果として、差分から読み取れない事実（書き換えた実体と控え）を伝える。
 	"setup.note.wrote":           {EN: "wrote {{.Path}}", JA: "{{.Path}} に書き込みました"},
 	"setup.note.wrote_backup":    {EN: "wrote {{.Path}}; the previous file is kept at {{.Backup}}", JA: "{{.Path}} に書き込みました。直前の内容は {{.Backup}} に残しています"},
@@ -181,25 +190,27 @@ var setupCatalog = map[string]Entry{
 		JA: "{{.Path}} は保存しましたが、実行中の daemon が拒否しました: {{.Error}}",
 	},
 	"setup.error.hooks_not_ready": {
+		EN: "{{.Path}} was written but the hooks are still not in a form wx accepts",
+		JA: "{{.Path}} には書き込みましたが、hook は wx が受理する形になっていません",
+	},
+	"setup.error.hooks_not_ready_reasons": {
 		EN: "{{.Path}} was written but the hooks are still not in a form wx accepts: {{.Reason}}",
 		JA: "{{.Path}} には書き込みましたが、hook は wx が受理する形になっていません: {{.Reason}}",
 	},
 	"setup.error.unknown_step":   {EN: "unknown setup item {{.Item}}", JA: "setup 項目 {{.Item}} は存在しません"},
 	"setup.error.step_not_apply": {EN: "setup item {{.Item}} cannot be applied", JA: "setup 項目 {{.Item}} は適用できません"},
-	"setup.error.needs_terminal": {EN: "wx setup needs a terminal for its questions", JA: "wx setup の質問には端末が必要です"},
 
 	// hook.finding.raw は message ID を持たない finding の逃げ道で、機械向けの英語をそのまま本文にする。
 	"hook.finding.raw": {EN: "{{.Detail}}", JA: "{{.Detail}}"},
 
 	// hook.finding.* は agent hook 設定を wx が受理しなかった理由である。
 	// 1 つの Code に複数の事情がある場合は、事情ごとに ID を分ける。
-	"hook.finding.unsupported_agent":   {EN: "wx does not know how to configure hooks for {{.Detail}}", JA: "wx は {{.Detail}} の hook 設定に対応していません"},
-	"hook.finding.agent_not_installed": {EN: "{{.Detail}} is not installed, so wx does not write its hooks", JA: "{{.Detail}} が導入されていないため、wx は hook を書き込みません"},
-	"hook.finding.target_unreadable":   {EN: "{{.Path}} could not be read: {{.Detail}}", JA: "{{.Path}} を読み取れません: {{.Detail}}"},
-	"hook.finding.target_not_regular":  {EN: "{{.Path}} is not a regular file, so wx will neither judge nor edit it", JA: "{{.Path}} は通常ファイルではないため、wx は判定も編集もしません"},
-	"hook.finding.target_empty":        {EN: "{{.Path}} is empty, and the agent cannot read hooks from an empty file", JA: "{{.Path}} が空です。空のファイルから agent は hook を読み取れません"},
-	"hook.finding.target_too_large":    {EN: "{{.Path}} is larger than the 4 MiB wx will parse", JA: "{{.Path}} は wx が解析する上限（4 MiB）を超えています"},
-	"hook.finding.target_unparsable":   {EN: "{{.Path}} is not valid JSON, so wx cannot tell what is registered: {{.Detail}}", JA: "{{.Path}} は JSON として壊れているため、登録内容を判定できません: {{.Detail}}"},
+	"hook.finding.unsupported_agent":  {EN: "wx does not know how to configure hooks for {{.Detail}}", JA: "wx は {{.Detail}} の hook 設定に対応していません"},
+	"hook.finding.target_unreadable":  {EN: "{{.Path}} could not be read: {{.Detail}}", JA: "{{.Path}} を読み取れません: {{.Detail}}"},
+	"hook.finding.target_not_regular": {EN: "{{.Path}} is not a regular file, so wx will neither judge nor edit it", JA: "{{.Path}} は通常ファイルではないため、wx は判定も編集もしません"},
+	"hook.finding.target_empty":       {EN: "{{.Path}} is empty, and the agent cannot read hooks from an empty file", JA: "{{.Path}} が空です。空のファイルから agent は hook を読み取れません"},
+	"hook.finding.target_too_large":   {EN: "{{.Path}} is larger than the 4 MiB wx will parse", JA: "{{.Path}} は wx が解析する上限（4 MiB）を超えています"},
+	"hook.finding.target_unparsable":  {EN: "{{.Path}} is not valid JSON, so wx cannot tell what is registered: {{.Detail}}", JA: "{{.Path}} は JSON として壊れているため、登録内容を判定できません: {{.Detail}}"},
 	"hook.finding.target_duplicate_key": {
 		EN: "{{.Path}} has duplicate JSON keys; wx will not edit the file until they are removed: {{.Detail}}",
 		JA: "{{.Path}} に JSON キーの重複があります。取り除くまで wx はこのファイルを編集しません: {{.Detail}}",

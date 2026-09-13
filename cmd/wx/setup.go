@@ -344,8 +344,11 @@ func runSetupCheck(ctx context.Context, options setup.Options, jsonOut bool, out
 // 削除は 1 項目の失敗で打ち切らない。途中で止めると、残った項目を消す手段が利用者に残らない。
 func runSetupRemove(ctx context.Context, options setup.Options, out, errOut io.Writer) int {
 	ctx = commandContext(ctx)
+	// 表示言語は削除の前に確定させる。Remove が config.yaml を消すため、後から読むと
+	// 設定していた言語を失い、結果だけが英語で出る。
+	lang := i18n.LanguageFromContext(ctx)
 	removal := setup.Remove(ctx, options)
-	printSetupRemoval(out, errOut, removal)
+	printSetupRemoval(out, errOut, lang, removal)
 	if removal.Failed() {
 		return 1
 	}

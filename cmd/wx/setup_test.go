@@ -301,6 +301,30 @@ func TestSetupRemoveReportsLeftoversInAParsableShape(t *testing.T) {
 	}
 }
 
+// TestSetupRemoveKeepsTheDisplayLanguageItDeletes は、--remove の結果が設定していた言語で出ることを守る。
+// Remove は config.yaml ごと消すため、削除の後に表示言語を読むと英語へ落ちる。
+func TestSetupRemoveKeepsTheDisplayLanguageItDeletes(t *testing.T) {
+	home, options := setupCommandHome(t)
+	if err := os.MkdirAll(filepath.Join(home, ".config", "wx"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "wx", "config.yaml"), []byte("language: ja\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 言語は context に載せず、設定ファイルから読ませる。実際の CLI と同じ経路で、
+	// 削除の後に読み直すと言語を失うことを捕まえるためである。
+	var out, errOut bytes.Buffer
+	if code := runSetupRemove(context.Background(), options, &out, &errOut); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	want := i18n.New(string(i18n.Japanese)).Localize("setup.note.deleted", map[string]any{
+		"Path": filepath.Join(home, ".config", "wx", "config.yaml"),
+	})
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("the removal result is not in the configured language:\n%s", out.String())
+	}
+}
+
 // TestSetupRemoveReportsFailuresOnStderrAndExitsOne は失敗した項目だけを stderr へ出し、成功分の行を stdout に残すことを確認する。
 func TestSetupRemoveReportsFailuresOnStderrAndExitsOne(t *testing.T) {
 	home, options := setupCommandHome(t)

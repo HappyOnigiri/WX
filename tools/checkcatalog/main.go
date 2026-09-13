@@ -55,8 +55,16 @@ func validateReferences(root string) error {
 			return fmt.Errorf("parse %s: %w", path, err)
 		}
 		ast.Inspect(file, func(node ast.Node) bool {
+			if composite, ok := node.(*ast.CompositeLit); ok {
+				problems = append(problems, messageLiteralProblems(fset, known, composite)...)
+				return true
+			}
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
+				return true
+			}
+			if name, ok := plainCallName(call); ok {
+				problems = append(problems, unknownIDProblem(fset, known, call, 0, name)...)
 				return true
 			}
 			selector, ok := call.Fun.(*ast.SelectorExpr)
@@ -73,8 +81,18 @@ func validateReferences(root string) error {
 					return true
 				}
 				argumentIndex = 1
-			case "Localize", "line":
+			case "Localize", "LocalizeOr", "line":
 				argumentIndex = 0
+			case "NewError":
+				if ident, ok := selector.X.(*ast.Ident); !ok || ident.Name != "i18n" {
+					return true
+				}
+				argumentIndex = 0
+			case "WrapError":
+				if ident, ok := selector.X.(*ast.Ident); !ok || ident.Name != "i18n" {
+					return true
+				}
+				argumentIndex = 1
 			case "field", "indentLine":
 				argumentIndex, requireLiteral = 1, true
 			default:
@@ -109,4 +127,66 @@ func validateReferences(root string) error {
 		return fmt.Errorf("catalog references:\n%s", strings.Join(problems, "\n"))
 	}
 	return nil
+}
+
+// plainCallName は message ID を第 1 引数に取る package 内ヘルパの呼び出しを見分ける。
+// internal/setup の message・messageError は表示文を組み立てる唯一の入口なので、
+// 生成側が増えても未知 ID がそこから画面へ出ないようにする。
+func plainCallName(call *ast.CallExpr) (string, bool) {
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	switch ident.Name {
+	case "message", "messageError":
+		return ident.Name, true
+	default:
+		return "", false
+	}
+}
+
+// messageLiteralProblems は i18n.Message{ID: "..."} の ID をカタログと照合する。
+// 生成側が message ID を直接書く経路はこの複合リテラルが最も多い。
+func messageLiteralProblems(fset *token.FileSet, known map[string]i18n.Entry, composite *ast.CompositeLit) []string {
+	selector, ok := composite.Type.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Message" {
+		return nil
+	}
+	if ident, ok := selector.X.(*ast.Ident); !ok || ident.Name != "i18n" {
+		return nil
+	}
+	var problems []string
+	for _, element := range composite.Elts {
+		pair, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		if key, ok := pair.Key.(*ast.Ident); !ok || key.Name != "ID" {
+			continue
+		}
+		problems = append(problems, unknownID(fset, known, pair.Value)...)
+	}
+	return problems
+}
+
+// unknownIDProblem は呼び出しの指定位置の引数を照合する。literal でない ID は可変 ID として見逃す。
+func unknownIDProblem(fset *token.FileSet, known map[string]i18n.Entry, call *ast.CallExpr, index int, _ string) []string {
+	if index >= len(call.Args) {
+		return nil
+	}
+	return unknownID(fset, known, call.Args[index])
+}
+
+// unknownID は式が literal の message ID なら、カタログに無いことを問題として返す。
+func unknownID(fset *token.FileSet, known map[string]i18n.Entry, expression ast.Expr) []string {
+	literal, ok := expression.(*ast.BasicLit)
+	if !ok || literal.Kind != token.STRING {
+		return nil
+	}
+	id, err := strconv.Unquote(literal.Value)
+	if err != nil || strings.TrimSpace(id) == "" || known[id].EN != "" {
+		return nil
+	}
+	position := fset.Position(literal.Pos())
+	return []string{fmt.Sprintf("%s:%d: unknown message ID %q", position.Filename, position.Line, id)}
 }
