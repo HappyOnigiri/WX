@@ -821,7 +821,7 @@ func TestManagerConfigurationAndStoreFailureBranches(t *testing.T) {
 			"bind agent": func() error { return manager.BindAgentSession(ctx, "missing", "token", "agent") },
 			"release":    func() error { return manager.Release(ctx, "missing", "token", "coverage") },
 			"snapshot":   func() error { return manager.snapshotSession(ctx, state.Session{SlotID: "missing"}) },
-			"forget":     func() error { return manager.Forget(ctx, t.TempDir()) },
+			"forget":     func() error { _, err := manager.Forget(ctx, t.TempDir(), false); return err },
 			"registration report": func() error {
 				issues := registrationIssues(manager.registrationFindings(ctx))
 				if len(issues) == 0 || issues[0].Severity != diag.SeverityProblem {

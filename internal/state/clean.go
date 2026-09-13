@@ -294,6 +294,10 @@ const SuspendReplenishReasonClean = "CLEAN"
 // SuspendReplenishReasonStandbyFailure は待機用slotの準備が失敗した後の補充停止を表す。detail は失敗した job の ID である。
 const SuspendReplenishReasonStandbyFailure = "STANDBY_PREPARE_FAILED"
 
+// SuspendReplenishReasonForget は `wx forget` が待機用slotを回収する間の補充停止を表す。detail は workspace root path である。
+// 解除に成功すれば行ごと消えるので、残っている停止は途中で失敗した forget を指す。
+const SuspendReplenishReasonForget = "FORGET"
+
 // SuspendReplenish は workspace の待機用 worktree 補充を停止する。
 // 既に停止中なら理由を上書きせず、最初に止めた理由と時刻を残す。
 func (s *Store) SuspendReplenish(ctx context.Context, workspaceID, reason, detail string) error {

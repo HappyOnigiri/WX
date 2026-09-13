@@ -37,7 +37,7 @@ Commands:
   setup [--check] [--remove]     review and complete, or remove, the wx setup
   resume <id> [agent] [args...]  restore a wx session
   discard-recovery <workspace>   discard recovery state that lost its refs
-  forget <workspace-path>        forget an inactive workspace
+  forget <workspace-path>        stop managing a workspace
   daemon start|stop|restart      change whether the daemon is running
   daemon install|uninstall       register or remove the LaunchAgent`)
 }
@@ -495,13 +495,24 @@ the sessions and worktree paths that would go.
 Options:
   --dry-run  list what would be discarded without changing anything`)
 	case "forget":
-		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path>
+		_, _ = fmt.Fprintln(w, `Usage: wx forget <workspace-path> [--discard-recovery]
 
-Forget an inactive workspace after all managed slots are safely archived.
+Stop managing a workspace, reclaiming the worktrees wx still owns for it.
 
-A workspace whose sessions were quarantined because their recovery refs are
-missing is refused until wx discard-recovery <workspace-path> discards that
-state.`)
+Standby worktrees are reclaimed on the way out: they hold no work of yours.
+A workspace that is still in use is refused, whatever the flags: end its
+sessions, or run wx release <id>, and run wx forget again.
+
+Recovery state is kept, and the workspace is refused until you say to throw it
+away. That state is the released sessions wx can still restore, their snapshots
+and the recovery refs in the source repository, and the worktrees of the
+sessions that were quarantined because their refs are gone. The refusal counts
+what is there. --discard-recovery deletes all of it, unsaved work included, and
+then forgets the workspace.
+
+Options:
+  --discard-recovery  discard the recovery state of this workspace instead of
+                      refusing to forget it`)
 	case "daemon":
 		_, _ = fmt.Fprintln(w, `Usage: wx daemon <start|stop|restart|install|uninstall> [--foreground]
 
