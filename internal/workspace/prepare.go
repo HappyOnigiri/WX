@@ -46,8 +46,7 @@ type Preparer struct {
 	Notices *PrepareNotices
 	// SlotLocks は同じ slot へ書く操作を直列化する共有の lock 表である。
 	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、daemon は全 Preparer と archive.Manager へ同じ表を渡す。
-	SlotLocks  *gitx.KeyedLocks
-	noCheckout bool
+	SlotLocks *gitx.KeyedLocks
 	// sharedPlaced は共有できる tracked file を checkout の前に clone で置き切ったことを表す。
 	// この回は置き換え方式の共有を行わない。置けなかった候補が残る回は、それを共有できる方式が他に無いため省かない。
 	sharedPlaced bool
@@ -187,8 +186,18 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 			_ = removeOwnershipMarkerAt(lockedRoot, root, target, string(repo.ID))
 		}
 	}()
+	// `worktree add` が checkout しない分をここで展開する。hook の実行位置を wx が決めるためこの 1 コマンドだけ hook を止め、post-checkout は completePrepare が実行する。
+	// 中断した復元の再実行（locked.existing）でも飛ばさず `--force` で要求 OID へ揃える。未展開のまま READY にせず、復元本体の read-tree が後段で snapshot を当て直す。
+	// `--no-recurse-submodules` が無いと、実体化前の submodule index を reset できず checkout ごと失敗する（gitdir は linked worktree 側の `$GIT_DIR/modules/<name>` に解決される）。
+	if err := p.timePhase("checkout", func() error {
+		_, err := p.RunGitInWorktree(ctx, target, targetIdentity, nil, nil, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", "--no-recurse-submodules", oid)
+		return err
+	}); err != nil {
+		return err
+	}
 	if err := p.completePrepare(ctx, repo, target, oid, slotID, phase, locked,
 		func() error { return p.submodulePhase(ctx, repo, target, oid, targetIdentity) },
+		func() error { return p.runPostCheckout(ctx, target, targetIdentity, oid) },
 		func() error { return p.copyIncludesAt(repo, lockedRoot, lockedRelativeTarget) },
 		func() error { return p.createLinksAt(ctx, repo, lockedRoot, lockedRelativeTarget, true) }); err != nil {
 		return err
@@ -198,8 +207,8 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 }
 
 // completePrepare は配置後の command・CoW・最終検証を通常準備と二段階準備で共有する。
-// submodules は二段階準備では既に済んでいるため、その経路からは何もしない callback を受ける。
-func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, locked *lockedTarget, submodules, includes, links func() error) error {
+// submodules と postCheckout は二段階準備では既に済んでいるため、その経路からは何もしない callback を受ける。
+func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, locked *lockedTarget, submodules, postCheckout, includes, links func() error) error {
 	lockedRoot, lockedRelativeTarget, targetIdentity := locked.root, locked.relative, locked.identity
 	if locked.existing {
 		if err := p.rejectCOWTemporaries(ctx, target, targetIdentity); err != nil {
@@ -213,6 +222,11 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 	}
 	// include・link・prepare command が submodule 配下を前提にできるよう、配置より前に実体化する。
 	if err := p.timePhase("submodule", submodules); err != nil {
+		return err
+	}
+	// post-checkout は submodule の実体化後・include/link の配置前に実行する。
+	// hook が submodule の中身を前提にでき、かつ wx が置く include/link をまだ見ない位置である。
+	if err := p.timePhase("post-checkout", postCheckout); err != nil {
 		return err
 	}
 	if err := p.timePhase("place", includes); err != nil {
@@ -291,6 +305,16 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 		return err
 	}
 	return nil
+}
+
+// runPostCheckout は tracked file の配置後に post-checkout を 1 度だけ実行する。
+// `worktree add` の post-checkout と同じ null OID・新 HEAD・branch flag を渡し、Git 自身に hook 選択と実行を任せる。
+// 未配置の相対 hooksPath も全展開後なら解決できる。
+func (p *Preparer) runPostCheckout(ctx context.Context, target, identity, oid string) error {
+	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "hook", "run", "--ignore-missing", "post-checkout", "--", strings.Repeat("0", len(oid)), oid, "1")
+	// exit 0 の hook が出した出力も残す。hook が内部の失敗を飲み込むと、捨てた時点で wx からは正常と区別できなくなる。
+	p.Notices.Add(PrepareNotice{Target: target, Phase: "post-checkout", Stdout: result.Stdout, Stderr: result.Stderr})
+	return err
 }
 
 // beginPrepare は common-directory lock を保持する最初の区間である。

@@ -142,9 +142,11 @@ gitlink OIDを解決できないまま実体化を始めると親がdirtyな`M <
 この状態に到達させないことが設計の要点なので、判定は全て書込み前に済ませ、書き始めた後の失敗（clone・checkout・set-url）とnameの不正は省略せず準備を失敗させる。
 `.git/worktrees/<id>/modules/<name>`はpinしたroot descriptorの外なので、wxはここを個別に削除しない（[所有権証明](ownership.md)）。
 
-実行位置は残りの展開のpost-checkoutより前で、EARLY READYには含めない。
+実行位置は経路を問わずpost-checkoutより前で、EARLY READYには含めない。
+新規準備・復元とも順序はsubmodule → post-checkout → include/linkで揃える。
 post-checkoutより前にするのは、ユーザーのhookがsubmoduleの中身を前提にできるようにし、hook側の`git submodule update`もno-opで済ませるためである。
-単発準備・restore経路では`completePrepare`のinclude配置より前に実体化し、`.worktreeinclude`やprepare commandがsubmodule配下を前提にできるようにする。
+include配置より前にするのは、`.worktreeinclude`やprepare commandがsubmodule配下を前提にできるようにするためである。
+tracked fileを展開するcheckoutは、実体化前のsubmodule indexをGitにresetさせない（linked worktreeでは`$GIT_DIR/modules/<name>`が無く失敗する）。gitlinkの空ディレクトリだけがそこで作られる。
 standbyのUPDATE経路は再同期しない。`rejectChangedGitlinks`が`.gitmodules`とgitlink OIDの完全一致しか通さないため、更新で実体が陳腐化することはない。
 
 方針は `repository_defaults.submodules` と、workspace の `repository_defaults.submodules` または membership 個別の `submodules` で切り替える。
@@ -162,7 +164,9 @@ submodule checkoutのCoW共有も行わない。prepareのCoWフェーズより�
 tracked fileは元worktreeの未コミット内容を取り込まず、Gitのfilter・属性・実行権限・symlinkの形を保持する。
 残りの展開ではGitのparallel checkoutを使い、並列度はリポジトリ設定に依らずwxが毎回指定する。
 残りの展開は、共有できるtracked fileのclone、残りのcheckout、内容の照合の順で行う。
-post-checkoutは全tracked fileの配置後、残りのinclude/link・prepare commandより前に一度だけ実行する。
+post-checkoutは経路を問わず、全tracked fileの配置後、include/link・prepare commandより前に一度だけwxが実行する。
+そのため`git worktree add`はどの経路でもcheckoutさせない（`--no-checkout`はindexも空にするので展開は必ずwxが行う）。
+復元・単発準備の展開だけは`core.hooksPath=/dev/null`付きの`checkout`で行い、その1コマンドの間はreference-transactionを含む他のhookも動かない。
 
 先行配置した未追跡ファイルに`.gitattributes`がある回だけ、checkoutの属性を要求OIDから読み、後段のfilterが変わることを防ぐ。
 無い回に読み直さないのは、worktree上の`.gitattributes`が既に要求OIDの内容と一致し、treeからの属性再読込が大きなリポジトリではcheckout全体を目に見えて遅らせるためである。
