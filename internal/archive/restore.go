@@ -171,29 +171,10 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err := m.Preparer.VerifyWorktreeIdentity(target, targetIdentity); err != nil {
 			return fmt.Errorf("validate restored worktree identity: %w", err)
 		}
-		// 衝突 stage の書き戻しは既存の検証をすべて終えた後に置く。
-		// 未解消 path が index に無い窓を prepare と一致検証へ持ち込まないためである。
-		wantConflict := ""
-		if s.ConflictOID != "" {
-			wantConflict, err = m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", s.ConflictOID+"^{tree}")
-			if err != nil {
-				return fmt.Errorf("resolve snapshot conflict state tree: %w", err)
-			}
-		}
-		if err := restoreConflictIndex(targetValue, targetRun, wantConflict); err != nil {
-			return fmt.Errorf("restore unmerged index: %w", err)
-		}
-		// 停止中の操作の制御ファイルも同じ位置で書き戻す。
+		// 衝突 stage と停止中の操作の書き戻しは既存の検証をすべて終えた後に置く。
 		// read-tree の後には resume prepare と tree 一致検証が続くため、その相手を操作進行中のリポジトリにしないという意図である。
-		wantGitState := ""
-		if s.GitStateOID != "" {
-			wantGitState, err = m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", s.GitStateOID+"^{tree}")
-			if err != nil {
-				return fmt.Errorf("resolve snapshot operation state tree: %w", err)
-			}
-		}
-		if err := restoreGitState(targetValue, targetRun, wantGitState); err != nil {
-			return fmt.Errorf("restore in-progress operation state: %w", err)
+		if err := m.restoreOperationState(ctx, repo, targetValue, targetRun, s); err != nil {
+			return err
 		}
 		// ここでの ownership 再証明は行わない。
 		// 直前の PrepareResumeWithIdentity と直後の FinishRestoreWithIdentity が同じ検査を行い、その間は読み取りだけである。
@@ -202,4 +183,32 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		}
 		return nil
 	})
+}
+
+// restoreOperationState は衝突 stage と操作制御ファイルを、既存の復元検証後に書き戻す。
+func (m *Manager) restoreOperationState(ctx context.Context, repo discovery.Repository, value gitValueFunc, run gitRunner, s state.Snapshot) error {
+	// 衝突 stage は index に未解消 path が無い窓を prepare と一致検証へ持ち込まないため最後に積む。
+	wantConflict := ""
+	if s.ConflictOID != "" {
+		resolved, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", s.ConflictOID+"^{tree}")
+		if err != nil {
+			return fmt.Errorf("resolve snapshot conflict state tree: %w", err)
+		}
+		wantConflict = resolved
+	}
+	if err := restoreConflictIndex(value, run, wantConflict); err != nil {
+		return fmt.Errorf("restore unmerged index: %w", err)
+	}
+	wantGitState := ""
+	if s.GitStateOID != "" {
+		resolved, err := m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", s.GitStateOID+"^{tree}")
+		if err != nil {
+			return fmt.Errorf("resolve snapshot operation state tree: %w", err)
+		}
+		wantGitState = resolved
+	}
+	if err := restoreGitState(value, run, wantGitState); err != nil {
+		return fmt.Errorf("restore in-progress operation state: %w", err)
+	}
+	return nil
 }
