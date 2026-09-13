@@ -81,6 +81,7 @@ func (m *Manager) maintainLifecycle() {
 	m.reconcileOrphans(m.ctx)
 	m.reconcileExpiredLeases(m.ctx)
 	m.maybeBackup(m.ctx)
+	m.maybeCheckUpdate(m.ctx)
 	m.runMaintenance()
 	m.measureRootUsage(m.ctx)
 	for {
@@ -103,6 +104,7 @@ func (m *Manager) maintainLifecycle() {
 			m.reconcileArtifacts(m.ctx)
 			m.reconcileOrphans(m.ctx)
 			m.maybeBackup(m.ctx)
+			m.maybeCheckUpdate(m.ctx)
 			m.runMaintenance()
 			m.measureRootUsage(m.ctx)
 		}

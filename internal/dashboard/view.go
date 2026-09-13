@@ -66,6 +66,8 @@ func (m model) footer() string {
 		return strings.Join(parts, "  ")
 	}
 	switch {
+	case m.tab == 0 && m.mode == modeList && m.opts.Update.Available:
+		return hint("dashboard.footer.tabs_full", "dashboard.footer.refresh", "dashboard.footer.select", "dashboard.footer.enter_confirm", "dashboard.footer.esc_exit")
 	case m.tab == 0 && m.mode == modeList:
 		return hint("dashboard.footer.tabs_full", "dashboard.footer.refresh", "dashboard.footer.esc_exit")
 	case m.tab == 2 && m.mode == modeList && m.settingsOpen:
@@ -115,8 +117,11 @@ func (m model) breadcrumb() string {
 
 func (m model) statusView() []string {
 	lines := []string{accent + m.t("dashboard.status") + reset}
+	// 動いている wx の版を見出しの直後へ出す。daemon 側の版は status 本文が持つため重ねない。
+	lines = append(lines, dim+"  "+m.tf("dashboard.version", map[string]any{"Version": m.opts.Version})+reset)
 	if m.loading && m.status == "" {
-		return append(lines, "", "  "+m.t("dashboard.loading"))
+		// 読み込み中でも更新項目は出す。footer と itemCount が項目ありと言う間に画面から消さない。
+		return append(append(lines, "", "  "+m.t("dashboard.loading")), m.updateLines()...)
 	}
 	if m.statusErr != "" {
 		failure := m.tf("dashboard.refresh_failed", map[string]any{"Error": truncate(m.statusErr, max(1, m.width-18))})
@@ -134,15 +139,31 @@ func (m model) statusView() []string {
 		}
 		lines = append(lines, dim+"  "+freshness+reset, "")
 	}
+	// 本文の行数は、実際に積んだ見出し行と更新項目の行から引く。
+	// 固定値で引くと行を足すたびに末尾が黙って欠ける。
+	update := m.updateLines()
 	statusLines := strings.Split(m.status, "\n")
-	start := 0
-	end := min(len(statusLines), max(1, m.visibleRows()-3))
+	end := min(len(statusLines), max(1, m.visibleRows()-len(lines)-len(update)))
 	if len(statusLines) == 1 && statusLines[0] == "" {
 		lines = append(lines, "  "+m.t("dashboard.no_status"))
 	} else {
-		lines = append(lines, statusLines[start:end]...)
+		lines = append(lines, statusLines[:end]...)
 	}
-	return lines
+	return append(lines, update...)
+}
+
+// updateLines は状態画面の更新項目である。menuLines を通らないため、選択行の強調はここで書く。
+func (m model) updateLines() []string {
+	if !m.opts.Update.Available {
+		return nil
+	}
+	label := m.tf("dashboard.update.available", map[string]any{"Version": m.opts.Update.Version})
+	marker := "  "
+	if m.selected == 0 {
+		marker = accent + "❯ " + reset
+		label = accent + label + reset
+	}
+	return []string{"", truncate(marker+label, m.width), dim + truncate("  "+m.opts.Update.URL, m.width) + reset}
 }
 
 func (m model) operationView() []string {

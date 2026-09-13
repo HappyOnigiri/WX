@@ -51,6 +51,8 @@ func TestMenuMessagesResolve(t *testing.T) {
 		}
 	}
 	check(tabIDs...)
+	// 状態タブの更新項目は tabMenus に無いため、個別に照合しないと ID の欠落を見逃す。
+	check(updateMenuItem.labelID, updateMenuItem.descriptionID, updateMenuItem.impactID)
 	localizer := i18n.New(string(i18n.Japanese))
 	for _, items := range tabMenus {
 		for _, item := range items {

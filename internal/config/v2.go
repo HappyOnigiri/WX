@@ -33,6 +33,7 @@ func DefaultsV2() Config {
 	cow := legacy.Storage.COWMinSizeKiB
 	include := legacy.Includes.DefaultAgentRules
 	progress := legacy.Readiness.Progress
+	autoCheck := legacy.Update.AutoCheck
 	return Config{
 		Version:    2,
 		v2Explicit: true,
@@ -43,6 +44,7 @@ func DefaultsV2() Config {
 			Retention: SystemRetention{Quarantined: legacy.Retention.Quarantined, RecoverySnapshot: legacy.Retention.RecoverySnapshot, ExpiredSessionTombstone: legacy.Retention.ExpiredSessionTombstone, FailedJob: legacy.Retention.FailedJob, EventLog: legacy.Retention.EventLog},
 			Discovery: SystemDiscovery{MaxEntries: legacy.Discovery.MaxEntries, Timeout: legacy.Discovery.Timeout, ReconcileInterval: legacy.Discovery.ReconcileInterval},
 			Resume:    legacy.Resume, Lease: legacy.Lease, Sessions: legacy.Sessions, Logging: legacy.Logging,
+			Update: SystemUpdate{AutoCheck: &autoCheck},
 		},
 		WorkspaceDefaults: WorkspaceDefaults{
 			Worktree:     legacy.Worktree.Undefined,
@@ -87,7 +89,7 @@ func effectiveV2Defaults(raw Config) Config {
 func markLegacyPresentFromValue(raw Config, present map[string]bool) {
 	value := reflect.ValueOf(raw)
 	typeOfValue := value.Type()
-	for _, tag := range []string{"worktree", "storage", "pool", "retention", "discovery", "readiness", "resume", "lease", "includes", "agent", "sessions", "logging"} {
+	for _, tag := range []string{"worktree", "storage", "pool", "retention", "discovery", "readiness", "resume", "lease", "includes", "agent", "sessions", "logging", "update"} {
 		for index := 0; index < typeOfValue.NumField(); index++ {
 			fieldInfo := typeOfValue.Field(index)
 			fieldTag, _, _ := strings.Cut(fieldInfo.Tag.Get("yaml"), ",")
@@ -230,6 +232,9 @@ func overlaySystem(dst *SystemConfig, src SystemConfig, raw Config) {
 	if raw.has("system.logging.level", src.Logging.Level != "") {
 		dst.Logging.Level = src.Logging.Level
 	}
+	if raw.has("system.update.auto_check", src.Update.AutoCheck != nil) {
+		dst.Update.AutoCheck = src.Update.AutoCheck
+	}
 	// sessions.paths は tool ごとの list を持つため、片方だけを指定した
 	// sparse section でももう片方の組み込み値を失わないよう leaf 単位で重ねる。
 	if raw.has("system.sessions.paths.claude.sessions", src.Sessions.Paths.Claude.Sessions != nil) {
@@ -336,6 +341,7 @@ func flattenV2(c *Config) {
 	c.Includes.DefaultAgentRules = derefBool(r.Includes.DefaultAgentRules)
 	c.Agent.AddDir = w.Agent.AddDir
 	c.Resume, c.Lease, c.Sessions, c.Logging = s.Resume, s.Lease, s.Sessions, s.Logging
+	c.Update.AutoCheck = derefBool(s.Update.AutoCheck)
 }
 
 func derefBool(v *bool) bool {
@@ -698,7 +704,7 @@ func ValidateV2Rules(c *Config) error {
 		if c.present["language"] {
 			return errors.New("config version 2 does not allow top-level language; set system.language")
 		}
-		for _, section := range []string{"worktree", "storage", "pool", "retention", "discovery", "readiness", "resume", "lease", "includes", "agent", "sessions", "repositories", "logging"} {
+		for _, section := range []string{"worktree", "storage", "pool", "retention", "discovery", "readiness", "resume", "lease", "includes", "agent", "sessions", "repositories", "logging", "update"} {
 			if c.present[section] {
 				return fmt.Errorf("config version 2 does not allow legacy section %q", section)
 			}

@@ -470,7 +470,7 @@ func TestTopUsageContract(t *testing.T) {
 	var b bytes.Buffer
 	topUsage(&b)
 	got := b.String()
-	for _, want := range []string{"Usage: wx", "Global options:", "Commands:", "claude [arguments", "resume conversation from the current base", "slots [--all]", "daemon install|uninstall", "shell [--resume <id>]", "release <id> [--discard]"} {
+	for _, want := range []string{"Usage: wx", "Global options:", "Commands:", "claude [arguments", "resume conversation from the current base", "slots [--all]", "daemon install|uninstall", "shell [--resume <id>]", "release <id> [--discard]", "update [--apply]"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("help missing %q:\n%s", want, got)
 		}
@@ -673,7 +673,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
 	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
 	t.Setenv("HOME", t.TempDir())
-	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "slots", "config", "setup", "resume", "discard-recovery", "forget", "daemon", "shell", "run", "new", "release"} {
+	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "slots", "config", "setup", "resume", "discard-recovery", "forget", "update", "daemon", "shell", "run", "new", "release"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
 			commandUsage(&output, command)
@@ -722,7 +722,7 @@ func TestHelpListsStayAligned(t *testing.T) {
 	var top bytes.Buffer
 	topUsage(&top)
 	texts["top"] = top.String()
-	for _, command := range []string{"status", "doctor", "gc", "clear", "retry-standby", "sessions", "config", "setup", "resume", "discard-recovery", "forget", "daemon", "hook", "shell", "run", "new", "release"} {
+	for _, command := range []string{"status", "doctor", "gc", "clear", "retry-standby", "sessions", "config", "setup", "resume", "discard-recovery", "forget", "update", "daemon", "hook", "shell", "run", "new", "release"} {
 		var output bytes.Buffer
 		commandUsage(&output, command)
 		texts[command] = output.String()

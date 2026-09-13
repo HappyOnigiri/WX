@@ -40,6 +40,7 @@ Commands:
   resume <id> [agent] [args...]  restore a wx session
   discard-recovery <workspace>   discard recovery state that lost its refs
   forget <workspace-path>        stop managing a workspace
+  update [--apply]               check for a newer wx and install it
   daemon start|stop|restart      change whether the daemon is running
   daemon install|uninstall       register or remove the LaunchAgent`,
 		JA: `使い方: wx [wx-options] <claude|codex> [agent-arguments...]
@@ -74,6 +75,7 @@ Commands:
   resume <id> [agent] [args...]  wx session を復元
   discard-recovery <workspace>   ref を失った復旧状態を破棄
   forget <workspace-path>        workspace の管理を解除
+  update [--apply]               新しい wx を確認して導入
   daemon start|stop|restart      daemon の稼働状態を変更
   daemon install|uninstall       LaunchAgent を登録または削除`,
 	},

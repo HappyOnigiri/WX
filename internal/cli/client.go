@@ -230,6 +230,8 @@ func interruptedDuringSetup(ctx, setupCtx context.Context) bool {
 // launch は lease を取り、worktree の準備を待って agent を起動する。
 // 当時の worktree を復元できずに失敗し、新しい worktree での再開が選ばれたときだけ retry=true を返す。
 func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
+	// 新しいリリースの案内は進捗表示より前の 1 行にする。daemon の記録を読むだけで、失敗しても起動は続く。
+	c.announceUpdate(ctx)
 	// 貸出前に確認する。cancel されたら slot を作らずに終える。
 	if !c.confirmLinkedWorktreeBase(ctx, plan.leaseBaseCWD(), true) {
 		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.launch_cancelled", nil))

@@ -32,6 +32,20 @@ type Options struct {
 	Notice    string
 	Execute   ActionRunner
 	Refresh   Refresher
+	// Version は動いている wx の表示版である。internal/version へ依存境界を広げないため文字列で受け取る。
+	Version string
+	// Update は起動時に一度だけ読んだ更新情報である。状態の再取得に相乗りさせると
+	// 項目数が 0 と 1 の間で揺れ、選択が範囲外を指す窓が開くため、tick では更新しない。
+	Update UpdateInfo
+}
+
+// UpdateInfo は状態画面へ出す更新の有無である。
+type UpdateInfo struct {
+	// Available は新しいリリースがあるかどうかで、更新項目の有無を決める。
+	Available bool
+	// Version は新しいリリースのタグ、URL はその page である。
+	Version string
+	URL     string
 }
 
 type statusMsg struct {
@@ -423,6 +437,8 @@ func (m *model) changeTab(delta int) {
 
 func (m *model) move(delta int) {
 	if m.tab == 0 {
+		// 状態画面は本文を offset で送らないため、更新項目の範囲内で選択だけを動かす。
+		m.selected = min(max(0, m.selected+delta), max(0, m.itemCount()-1))
 		return
 	}
 	count := m.itemCount()
@@ -448,6 +464,9 @@ func (m model) visibleRows() int { return max(2, m.height-9) }
 
 func (m model) itemCount() int {
 	if m.tab == 0 {
+		if m.opts.Update.Available {
+			return 1
+		}
 		return 0
 	}
 	if m.tab == 2 {
@@ -464,6 +483,12 @@ func (m model) itemCount() int {
 
 func (m model) activate() (tea.Model, tea.Cmd) {
 	if m.tab == 0 {
+		if !m.opts.Update.Available {
+			return m, nil
+		}
+		m.pending = updateMenuItem
+		m.pendingLabel = m.t(updateMenuItem.labelID)
+		m.mode = modeConfirm
 		return m, nil
 	}
 	if m.tab == 2 {

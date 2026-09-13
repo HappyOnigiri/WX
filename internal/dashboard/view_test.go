@@ -207,3 +207,49 @@ func TestEffectiveSettingLineDimsInheritedValues(t *testing.T) {
 }
 
 func testTime() time.Time { return time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local) }
+
+// TestStatusViewShowsTheRunningVersionAndTheUpdateItem は、状態画面が版を示し、
+// 更新があるときだけ選べる項目を出すことを守る。状態タブは 2 カラム化しないので区切りも出さない。
+func TestStatusViewShowsTheRunningVersionAndTheUpdateItem(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults(), Version: "v1.0.0"})
+	m.loading, m.status, m.statusAt = false, "DAEMON  running", testTime()
+	m.width, m.height = 100, 24
+	plain := xansi.Strip(m.View().Content)
+	if !strings.Contains(plain, "Running wx v1.0.0") {
+		t.Fatalf("status view has no running version: %q", plain)
+	}
+	if strings.Contains(plain, "A newer wx is available") {
+		t.Fatalf("an update item appeared without an update: %q", plain)
+	}
+	m.opts.Update = UpdateInfo{Available: true, Version: "v1.1.0", URL: "https://example.test/v1.1.0"}
+	withUpdate := m.View().Content
+	plain = xansi.Strip(withUpdate)
+	if !strings.Contains(plain, "A newer wx is available: v1.1.0") || !strings.Contains(plain, "https://example.test/v1.1.0") {
+		t.Fatalf("status view omits the update item: %q", plain)
+	}
+	if strings.Contains(withUpdate, " │ ") {
+		t.Fatalf("status view became a two column layout: %q", withUpdate)
+	}
+	if !strings.Contains(m.footer(), "Enter") {
+		t.Fatalf("footer has no enter hint while an update item is selectable: %q", m.footer())
+	}
+}
+
+// TestStatusViewKeepsTheUpdateItemVisibleOnALongStatus は、本文の行数を固定値で引くと
+// 末尾が黙って欠ける退行を防ぐ。更新項目は画面に収まり、全体は端末の高さを超えない。
+func TestStatusViewKeepsTheUpdateItemVisibleOnALongStatus(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults(), Version: "v1.0.0"})
+	m.loading, m.statusAt = false, testTime()
+	m.status = strings.TrimSuffix(strings.Repeat("status line\n", 60), "\n")
+	m.opts.Update = UpdateInfo{Available: true, Version: "v1.1.0", URL: "https://example.test/v1.1.0"}
+	for _, height := range []int{14, 24, 40} {
+		m.width, m.height = 100, height
+		content := m.View().Content
+		if lines := strings.Count(content, "\n") + 1; lines > height {
+			t.Fatalf("height=%d produced %d lines", height, lines)
+		}
+		if !strings.Contains(xansi.Strip(content), "A newer wx is available: v1.1.0") {
+			t.Fatalf("height=%d dropped the update item: %q", height, content)
+		}
+	}
+}

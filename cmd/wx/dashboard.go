@@ -10,12 +10,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/dashboard"
 	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/setup"
+	"github.com/HappyOnigiri/WX/internal/update"
 )
 
 func runDashboard(ctx context.Context) int {
@@ -42,6 +46,7 @@ func runDashboard(ctx context.Context) int {
 		action, runErr := dashboard.Run(ctx, dashboard.Options{
 			Status: dashboardStatus, CWD: cwd, Config: cfg, RawConfig: rawConfig, Setup: steps, Notice: notice,
 			Execute: runDashboardInlineAction, Refresh: refreshDashboardState,
+			Version: versionString(), Update: dashboardUpdate(ctx),
 		})
 		if errors.Is(runErr, dashboard.ErrCancelled) {
 			return 0
@@ -50,9 +55,73 @@ func runDashboard(ctx context.Context) int {
 			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+": dashboard:", runErr)
 			return 1
 		}
+		before, hadFingerprint := executableFingerprint()
 		code := runDashboardAction(ctx, action)
+		if action.Args[0] == "update" && updateReplacedBinary(before, hadFingerprint, code) {
+			// この画面を動かしているのは置き換えられる前のバイナリなので、ループの先頭へは戻さない。
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "wx.update.restart_dashboard", nil))
+			return code
+		}
 		notice = i18n.T(ctx, "wx.dashboard.finished", map[string]any{"Command": action.Args[0], "Code": code})
 	}
+}
+
+// executableFingerprint は実行中のバイナリの更新時刻と大きさを返す。
+// install.sh は別の実体を書いて置き換えるため、実行の前後で比べると置き換えの有無が分かる。
+// 実行ファイルを辿れない場合は false を返し、呼び出し側は終了コードだけで判断する。
+func executableFingerprint() (string, bool) {
+	path, err := os.Executable()
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	return strconv.FormatInt(info.ModTime().UnixNano(), 10) + "/" + strconv.FormatInt(info.Size(), 10), true
+}
+
+// updateReplacedBinary は update の実行がバイナリを置き換えたかを返す。
+// 失敗して途中で終えた実行も、すでに最新で何もしなかった実行も置き換えていない。
+// 置き換えていないのに再起動の案内を出すと、失敗の直後に成功の案内が続いて更新済みと誤解される。
+func updateReplacedBinary(before string, hadFingerprint bool, code int) bool {
+	if code != 0 {
+		return false
+	}
+	after, ok := executableFingerprint()
+	if !hadFingerprint || !ok {
+		return true
+	}
+	return after != before
+}
+
+// updateStatusTimeout は確認結果の読み取りに与える上限である。
+// 読むのは state の1行だけで、これは状態画面が開くより前に同期で呼ばれる。
+// 使用量の集計まで含む statusDisplayTimeout を与えると、応答の遅い daemon で画面が長く出ない。
+const updateStatusTimeout = 2 * time.Second
+
+// dashboardUpdate は daemon が持つ確認結果を状態画面へ渡す。
+// daemon が古くて method を知らない場合も、応答が得られない場合も、更新なしとして静かに扱う。
+func dashboardUpdate(ctx context.Context) dashboard.UpdateInfo {
+	c, err := rpcClient()
+	if err != nil {
+		return dashboard.UpdateInfo{}
+	}
+	callCtx, cancel := context.WithTimeout(ctx, updateStatusTimeout)
+	defer cancel()
+	var status daemon.UpdateStatus
+	// 案内権は消費しない。状態画面の項目は常時表示で、対話起動の 1 回だけの案内とは役割が違う。
+	if err := c.Call(callCtx, "UpdateStatus", rpc.UpdateStatusParams{ClaimAnnouncement: false}, &status); err != nil {
+		return dashboard.UpdateInfo{}
+	}
+	if !status.Available || !update.Newer(versionString(), status.LatestVersion) {
+		return dashboard.UpdateInfo{}
+	}
+	url := status.ReleaseURL
+	if url == "" {
+		url = update.ReleasesPage
+	}
+	return dashboard.UpdateInfo{Available: true, Version: status.LatestVersion, URL: url}
 }
 
 func refreshDashboardState(ctx context.Context) (config.Config, config.Config, []setup.Step, error) {

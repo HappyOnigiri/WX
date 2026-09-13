@@ -45,7 +45,11 @@ type Manager struct {
 	beforeSlotRootCreate func()
 	beforeRootClose      func()
 	// beforeJobRun は job の実行直前に呼ぶ試験用の barrier。実行枠のクラス分離を実際の配送経路で確かめるために持つ。
-	beforeJobRun       func(state.Job)
+	beforeJobRun func(state.Job)
+	// updateProbe は更新確認の外部依存（配布用ビルド判定・手元の版・最新リリースの取得）の差し替え点。
+	// production では nil のままにする。テストバイナリは必ず開発ビルドになるため、
+	// この seam が無いと確認処理の分岐を一切通せず、通せる形にすると実ネットワークへ出てしまう。
+	updateProbe        *updateProbe
 	executablePath     string
 	executableBaseline executableSnapshot
 	executableWatch    bool

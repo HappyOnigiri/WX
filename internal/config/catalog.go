@@ -70,6 +70,7 @@ var catalogTexts = map[string]catalogText{
 	"lease.shell":                         {"Shell executable", "Shell path used by wx shell.", "An empty value uses the environment default.", nil},
 	"includes.default_agent_rules":        {"Default agent assets", "Includes standard agent instruction files in worktrees.", "When disabled, only explicitly configured includes are placed.", nil},
 	"agent.add_dir":                       {"Additional agent directories", "Controls when repositories are passed as additional agent directories.", "Changes which repositories and assets the agent can load.", []string{"always", "worktree", "off"}},
+	"update.auto_check":                   {"Automatic update check", "Lets the daemon check GitHub Releases for a newer wx in the background.", "When disabled, wx never reaches GitHub on its own and new releases are not announced.", nil},
 	"logging.level":                       {"Log level", "Controls detail written to the daemon log.", "More detailed levels increase log volume.", []string{"debug", "info", "warn", "error"}},
 	"sessions.paths.claude.sessions":      {"Claude session paths", "Directories searched for Claude conversation history.", "Changes which conversations appear as resume candidates.", nil},
 	"sessions.paths.codex.sessions":       {"Codex session paths", "Directories searched for Codex conversation history.", "Changes which conversations appear as resume candidates.", nil},
