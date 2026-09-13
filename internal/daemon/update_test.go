@@ -75,8 +75,8 @@ func TestUpdateCheckIsSkippedForDevelopmentBuildsAndWhenDisabled(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if status.Enabled || status.Announce {
-				t.Fatalf("status=%+v, want the feature reported as off", status)
+			if status.Announce {
+				t.Fatalf("status=%+v, want no announcement while the check is off", status)
 			}
 		})
 	}
@@ -126,8 +126,8 @@ func TestFailedUpdateCheckStillAdvancesTheDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Error == "" || status.CheckedAt == "" || status.Available {
-		t.Fatalf("status=%+v, want the failure reported without an update", status)
+	if status.Available || status.LatestVersion != "" {
+		t.Fatalf("status=%+v, want no update reported after a failed check", status)
 	}
 }
 

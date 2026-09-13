@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/update"
 )
 
@@ -18,8 +17,6 @@ const updateCheckDeadline = 15 * time.Second
 // UpdateStatus は daemon が知っている更新の有無で、CLI と TUI はこれを読むだけにする。
 // 手元のバイナリの版は呼び出し側が自分で持つため、ここには含めない。
 type UpdateStatus struct {
-	// Enabled は自動確認が働く条件（配布用ビルドかつ設定で有効）を満たすかどうかである。
-	Enabled bool `json:"enabled"`
 	// LatestVersion は最後に成功した確認で見えた公開済みの最新タグである。未確認なら空になる。
 	LatestVersion string `json:"latest_version"`
 	// ReleaseURL は LatestVersion の人間向け page である。
@@ -28,10 +25,6 @@ type UpdateStatus struct {
 	Available bool `json:"available"`
 	// Announce は、要求した呼び出しがこの版の案内権を取れたかどうかである。版ごとに1回だけ true になる。
 	Announce bool `json:"announce"`
-	// CheckedAt は最後に確認を試みた時刻で、失敗した確認でも進む。未確認なら空になる。
-	CheckedAt string `json:"checked_at"`
-	// Error は最後の確認の失敗内容である。成功すると空に戻る。
-	Error string `json:"error"`
 }
 
 // updateProbe は更新確認が触る外部の値をまとめた差し替え点である。
@@ -93,6 +86,9 @@ func (m *Manager) maybeCheckUpdate(ctx context.Context) {
 	defer cancel()
 	release, checkErr := probe.latest(checkCtx)
 	if checkErr != nil {
+		// 失敗は記録するだけでは誰も読まない。オフラインやレート制限で確認が止まり続けても
+		// 案内が黙って出なくなるだけなので、調査の手掛かりを log に残す。
+		m.log.Warn("update check failed", "error", checkErr)
 		if recordErr := m.store.RecordUpdateCheck(ctx, "", "", checkErr.Error()); recordErr != nil {
 			m.log.Error("update check result could not be recorded", "error", recordErr)
 		}
@@ -107,17 +103,15 @@ func (m *Manager) maybeCheckUpdate(ctx context.Context) {
 // 取れたときに Announce を true にする。TUI と wx update は常時表示・明示実行なので claim しない。
 func (m *Manager) UpdateState(ctx context.Context, claim bool) (UpdateStatus, error) {
 	probe := m.resolveUpdateProbe()
-	status := UpdateStatus{Enabled: m.updateCheckEnabled(probe)}
+	enabled := m.updateCheckEnabled(probe)
+	var status UpdateStatus
 	record, err := m.store.UpdateCheck(ctx)
 	if err != nil {
 		return UpdateStatus{}, err
 	}
-	status.LatestVersion, status.ReleaseURL, status.Error = record.LatestVersion, record.ReleaseURL, record.LastError
-	if !record.CheckedAt.IsZero() {
-		status.CheckedAt = state.FormatTime(record.CheckedAt)
-	}
+	status.LatestVersion, status.ReleaseURL = record.LatestVersion, record.ReleaseURL
 	status.Available = update.Newer(probe.current(), record.LatestVersion)
-	if !claim || !status.Available || !status.Enabled {
+	if !claim || !status.Available || !enabled {
 		return status, nil
 	}
 	claimed, err := m.store.ClaimUpdateAnnouncement(ctx, record.LatestVersion)
