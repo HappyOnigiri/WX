@@ -118,7 +118,7 @@ var cliCatalog = map[string]Entry{
 	"cli.probe.progress":               {EN: "probing {{.Root}}", JA: "検査中 {{.Root}}"},
 	"cli.probe.release_failed":         {EN: "warning: release probe lease {{.SessionID}}: {{.Error}}", JA: "警告: probe 用貸出 {{.SessionID}} の返却に失敗: {{.Error}}"},
 
-	// wx.setup.column.* / wx.setup.item.* / wx.setup.action.* は wx setup の表と選択肢のラベルである。
+	// wx.update.* は wx update と更新の案内の表示文である。
 	"wx.update.development":          {EN: "wx {{.Version}} is a development build; automatic update checks and wx update are disabled for it.", JA: "wx {{.Version}} は開発ビルドです。自動の更新確認と wx update は行いません。"},
 	"wx.update.current":              {EN: "wx {{.Version}} is the latest release.", JA: "wx {{.Version}} が最新のリリースです。"},
 	"wx.update.available":            {EN: "A newer wx is available: {{.Current}} → {{.Latest}}", JA: "新しい wx があります: {{.Current}} → {{.Latest}}"},
@@ -128,6 +128,7 @@ var cliCatalog = map[string]Entry{
 	"wx.update.restart_dashboard":    {EN: "wx was replaced; start wx again to return to this screen.", JA: "wx を置き換えました。この画面へ戻るには wx をもう一度起動してください。"},
 	"wx.update.notice":               {EN: "A newer wx is available: {{.Current}} → {{.Latest}}", JA: "新しい wx があります: {{.Current}} → {{.Latest}}"},
 
+	// wx.setup.column.* / wx.setup.item.* / wx.setup.action.* は wx setup の表と選択肢のラベルである。
 	"wx.setup.column.item":   {EN: "ITEM", JA: "項目"},
 	"wx.setup.column.state":  {EN: "STATE", JA: "状態"},
 	"wx.setup.column.action": {EN: "ACTION", JA: "操作"},
