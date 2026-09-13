@@ -67,6 +67,10 @@ func runUpdate(ctx context.Context, args []string) int {
 // updateCheckTimeout は `wx update` が最新リリースの問い合わせを待つ上限である。
 const updateCheckTimeout = 20 * time.Second
 
+// installScriptTimeout は install.sh のダウンロードを待つ上限である。
+// 確認の問い合わせとは取得するものが違うので、updateCheckTimeout とは別に持つ。
+const installScriptTimeout = 20 * time.Second
+
 // applyUpdate は最新タグの install.sh を取り直して実行する。
 // checksum 検証・版番号の照合・atomic な置換・daemon の再起動は install.sh が持つため、ここでは再実装しない。
 func applyUpdate(ctx context.Context, r *textRenderer, release update.Release) int {
@@ -110,7 +114,7 @@ func fetchInstallScript(ctx context.Context, tag string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: updateCheckTimeout}
+	client := &http.Client{Timeout: installScriptTimeout}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err

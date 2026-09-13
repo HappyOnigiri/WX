@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/HappyOnigiri/WX/internal/version"
 )
@@ -59,12 +58,9 @@ func CurrentVersion() string { return version.String() }
 type Checker struct {
 	// Endpoint は空なら LatestReleaseAPI を使う。
 	Endpoint string
-	// Client は空なら既定の timeout 付き client を使う。
+	// Client は空なら http.DefaultClient を使う。上限は呼び出し側が context に付ける。
 	Client *http.Client
 }
-
-// checkTimeout は保守の一巡に相乗りする確認へ与える上限である。daemon の一巡を待たせないため短く取る。
-const checkTimeout = 10 * time.Second
 
 // maxResponseBytes は応答の読み取り上限である。リリース説明文は長くなりうるので、必要な field を読める範囲で切る。
 const maxResponseBytes = 1 << 20
@@ -77,7 +73,9 @@ func (c Checker) Latest(ctx context.Context) (Release, error) {
 	}
 	client := c.Client
 	if client == nil {
-		client = &http.Client{Timeout: checkTimeout}
+		// client 側に上限を持たせると、呼び出し側が宣言した context の期限より先に切れて
+		// 宣言が効かなくなる。呼び出しはいずれも期限付きの context を渡す。
+		client = http.DefaultClient
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
