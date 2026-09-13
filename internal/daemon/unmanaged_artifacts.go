@@ -83,22 +83,27 @@ func snapshotRootOf(snapshot state.WorkspaceSnapshot) string {
 }
 
 // scanUnmanagedArtifacts は全 root 世代の登録外実体を列挙する。
-// 列挙できなかった root は errs に落とし、他の root の結果は返す。全部は見えていないことを呼び出し側が扱えるようにするためである。
+// 列挙できなかった root は errs に種別つきで落とし、他の root の結果は返す。全部は見えていないことと、原因ごとの対処を呼び出し側が出せるようにするためである。
 // reconcile の隔離記録・警告ログ・`wx prune` の対象範囲はここを経由しない。副作用の広い経路を広げない判断による。
-func (m *Manager) scanUnmanagedArtifacts(ctx context.Context) (artifacts []unmanagedArtifact, errs []string) {
+func (m *Manager) scanUnmanagedArtifacts(ctx context.Context) (artifacts []unmanagedArtifact, errs []ownershipFailure) {
 	expected, err := m.unmanagedExpectationSet(ctx)
 	if err != nil {
-		return nil, []string{fmt.Sprintf("list registered artifacts: %v", err)}
+		return nil, []ownershipFailure{{Kind: ownershipFailureStore, Message: fmt.Sprintf("list registered artifacts: %v", err)}}
 	}
 	roots, rootsErr := m.rootPathsFromStore(ctx)
 	if rootsErr != nil {
-		errs = append(errs, fmt.Sprintf("list worktree root generations: %v", rootsErr))
+		errs = append(errs, ownershipFailure{
+			Kind: ownershipFailureStore, Message: fmt.Sprintf("list worktree root generations: %v", rootsErr),
+		})
 	}
 	artifacts = []unmanagedArtifact{}
 	for _, root := range roots {
 		found, err := m.unmanagedArtifactsOfRoot(root, expected)
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("inspect root %s: %v", root, err))
+			errs = append(errs, ownershipFailure{
+				Kind: ownershipFailureRootPath, Target: root,
+				Message: fmt.Sprintf("inspect root %s: %v", root, err),
+			})
 			continue
 		}
 		artifacts = append(artifacts, found...)

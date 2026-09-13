@@ -115,3 +115,18 @@ func TestProbeAgentKindIsNotALeaseCommand(t *testing.T) {
 		t.Fatal("path lease kind is empty")
 	}
 }
+
+// 貸出まで辿り着けない失敗は、standby の回収と貸出そのもので手順が違う。
+func TestProbeLeaseProblemSplitsTheStageActions(t *testing.T) {
+	retire := probeLeaseProblem("/roots/ws", newProbeStage(probeStageRetireStandby, errors.New("boom")))
+	if !strings.Contains(retire.Action, "wx clear --standby") {
+		t.Fatalf("retire standby action=%q, want the standby removal path", retire.Action)
+	}
+	lease := probeLeaseProblem("/roots/ws", newProbeStage(probeStageLease, errors.New("boom")))
+	if !strings.Contains(lease.Action, "worktree_registration") || !strings.Contains(lease.Action, "/roots/ws") {
+		t.Fatalf("lease action=%q, want the registration finding of that workspace", lease.Action)
+	}
+	if retire.Action == lease.Action {
+		t.Fatalf("both stages share the action %q", retire.Action)
+	}
+}

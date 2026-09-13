@@ -25,10 +25,11 @@ func (c Client) probeWorktreeFindings(ctx context.Context, root, leasePath strin
 		return []diag.Finding{{
 			Check: diag.CheckProbe, Severity: diag.SeverityUnchecked, Summary: "the prepared worktree could not be inspected",
 			Target: leasePath, Cause: err.Error(),
-			Action: "fix the reported cause on the leased path, then run wx doctor --probe again", DependsOn: diag.CheckProbe,
+			Action:    fmt.Sprintf("check that %s is readable by you and that its volume is mounted, then run wx doctor --probe again", leasePath),
+			DependsOn: diag.CheckProbe,
 			Messages: diag.FindingMessages{
 				Summary: message("diag.probe.worktree_uninspectable"),
-				Action:  message("diag.action.probe_fix_lease_path"),
+				Action:  message("diag.action.probe_check_lease_path", "Path", leasePath),
 			},
 		}}
 	}
@@ -103,10 +104,11 @@ func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktre
 		return []diag.Finding{{
 			Check: diag.CheckProbeSubmodule, Severity: diag.SeverityUnchecked, Summary: "the submodules of a prepared worktree could not be checked",
 			Target: worktree, Cause: err.Error(),
-			Action: "fix the reported Git failure, then run wx doctor --probe again", DependsOn: diag.CheckProbe,
+			Action:    fmt.Sprintf("run git -C %s ls-files --stage yourself to see why Git fails there, then run wx doctor --probe again", worktree),
+			DependsOn: diag.CheckProbe,
 			Messages: diag.FindingMessages{
 				Summary: message("diag.probe.submodules_unchecked"),
-				Action:  message("diag.action.probe_fix_git"),
+				Action:  message("diag.action.probe_run_git_ls_files", "Path", worktree),
 			},
 		}}
 	}
@@ -212,10 +214,11 @@ func probeTrackedFindings(ctx context.Context, git *gitx.Runner, worktree string
 		return diag.Finding{
 			Check: diag.CheckProbeTracked, Severity: diag.SeverityUnchecked, Summary: "the tracked files of a prepared worktree could not be checked",
 			Target: worktree, Cause: err.Error(),
-			Action: "fix the reported Git failure, then run wx doctor --probe again", DependsOn: diag.CheckProbe,
+			Action:    fmt.Sprintf("run git -C %s status yourself to see why Git fails there, then run wx doctor --probe again", worktree),
+			DependsOn: diag.CheckProbe,
 			Messages: diag.FindingMessages{
 				Summary: message("diag.probe.tracked_unchecked"),
-				Action:  message("diag.action.probe_fix_git"),
+				Action:  message("diag.action.probe_run_git_status", "Path", worktree),
 			},
 		}
 	}

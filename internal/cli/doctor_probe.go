@@ -44,12 +44,13 @@ func (c Client) RunDoctorProbe(ctx context.Context, progress io.Writer) ([]diag.
 	if err != nil {
 		return []diag.Finding{{
 			Check: diag.CheckProbe, Severity: diag.SeverityUnchecked, Summary: "the workspace probe did not run",
-			Cause:  "the registered workspaces could not be read from the daemon: " + err.Error(),
-			Action: "fix the reported daemon failure, then run wx doctor --probe again", DependsOn: diag.CheckDaemon,
+			Cause:     "the registered workspaces could not be read from the daemon: " + err.Error(),
+			Action:    "run wx daemon restart, then run wx doctor --probe again; if the restart does not help, run wx doctor and read its daemon and state database findings",
+			DependsOn: diag.CheckDaemon,
 			Messages: diag.FindingMessages{
 				Summary: i18n.Message{ID: "diag.probe.not_run"},
 				Cause:   i18n.Message{ID: "diag.probe.workspaces_unreadable", Data: map[string]any{"Error": err.Error()}},
-				Action:  i18n.Message{ID: "diag.action.probe_fix_daemon"},
+				Action:  i18n.Message{ID: "diag.action.probe_restart_daemon"},
 			},
 		}}, nil
 	}
@@ -110,7 +111,7 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 	// 前の workspace の返却・削除・補充と並走させると、測るのが準備の重さではなくなる。
 	c.waitBenchIdle(ctx)
 	if _, err := c.retireStandby(ctx, root); err != nil {
-		stage := newProbeStage("retire standby", err)
+		stage := newProbeStage(probeStageRetireStandby, err)
 		probe.Error, probe.ErrorMessage = stage.text, stage.message
 		return probe, []diag.Finding{probeLeaseProblem(root, stage)}
 	}
@@ -125,7 +126,7 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 	defer cancelLease()
 	var lease daemon.Lease
 	if err := c.RPC.Call(leaseCtx, "ResolveAndLease", params, &lease); err != nil {
-		stage := newProbeStage("lease", err)
+		stage := newProbeStage(probeStageLease, err)
 		probe.Error, probe.ErrorMessage = stage.text, stage.message
 		return probe, []diag.Finding{probeLeaseProblem(root, stage)}
 	}
@@ -133,13 +134,13 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 	defer c.releaseProbeLease(lease)
 	findings := []diag.Finding{}
 	if err := c.waitBenchReadiness(ctx, lease, "WaitEarlyReady"); err != nil {
-		stage := newProbeStage("early ready", err)
+		stage := newProbeStage(probeStageEarlyReady, err)
 		probe.Error, probe.ErrorMessage = stage.text, stage.message
 		return probe, append(findings, probePrepareProblem(root, lease.Path, stage))
 	}
 	probe.EarlyReadyMS = time.Since(started).Milliseconds()
 	if err := c.waitBenchReadiness(ctx, lease, "WaitReady"); err != nil {
-		stage := newProbeStage("full ready", err)
+		stage := newProbeStage(probeStageFullReady, err)
 		probe.Error, probe.ErrorMessage = stage.text, stage.message
 		return probe, append(findings, probePrepareProblem(root, lease.Path, stage))
 	}
