@@ -45,7 +45,7 @@ func TestRestoreUsesDestinationIgnoreRulesAndRetainsTreeValidation(t *testing.T)
 	}
 	target := filepath.Join(worktreeRoot, "slot", "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
-	if err := manager.Restore(context.Background(), repo, target, "slot", snapshot); err != nil {
+	if err := manager.Restore(context.Background(), repo, target, "slot", snapshot, nil); err != nil {
 		t.Fatalf("restore with directory-only ignore: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(target, ".tools")); !os.IsNotExist(err) {
@@ -57,7 +57,7 @@ func TestRestoreUsesDestinationIgnoreRulesAndRetainsTreeValidation(t *testing.T)
 	}
 	mismatchTarget := filepath.Join(worktreeRoot, "slot-mismatch", "root")
 	pointAtSlot(t, manager, worktreeRoot, mismatchTarget)
-	if err := manager.Restore(context.Background(), repo, mismatchTarget, "slot-mismatch", snapshot); err == nil || !strings.Contains(err.Error(), "restored working tree does not match snapshot") {
+	if err := manager.Restore(context.Background(), repo, mismatchTarget, "slot-mismatch", snapshot, nil); err == nil || !strings.Contains(err.Error(), "restored working tree does not match snapshot") {
 		t.Fatalf("ordinary restored tree difference error=%v", err)
 	}
 }

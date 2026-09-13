@@ -46,9 +46,17 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 
 // snapshotRepository は repository 1 個を保存し、保存できなかった submodule 作業を記録用の形へ畳んで返す。
 // 理由コードは検出側が固定順で並べたものを `,` で連ね、DB へは 1 submodule 1 行として渡す。
+// 子の snapshot 行は snapshots への外部キーを持つため、同じ永続化の中で SaveSnapshot の後に書く。
 func (m *Manager) snapshotRepository(ctx context.Context, archiveManager *archive.Manager, repo discovery.Repository, worktree, sessionID string, expiry time.Time) ([]state.UnsavedSubmodule, error) {
-	_, unsaved, err := archiveManager.SnapshotWithPersistence(ctx, repo, worktree, sessionID, expiry, func(snapshot state.Snapshot) error {
-		return m.store.SaveSnapshot(ctx, snapshot)
+	_, unsaved, err := archiveManager.SnapshotWithPersistence(ctx, repo, worktree, sessionID, expiry, func(snapshot state.Snapshot, capsules []archive.SubmoduleCapsule) error {
+		if err := m.store.SaveSnapshot(ctx, snapshot); err != nil {
+			return err
+		}
+		submodules := make([]state.SubmoduleSnapshot, 0, len(capsules))
+		for _, capsule := range capsules {
+			submodules = append(submodules, capsule.Snapshot(sessionID, string(repo.ID)))
+		}
+		return m.store.ReplaceSubmoduleSnapshots(ctx, sessionID, string(repo.ID), submodules)
 	})
 	if err != nil {
 		return nil, err

@@ -214,7 +214,13 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			return err
 		}
 		repositoryPath := repos[i].WorktreePath // #nosec G602 -- equal slice lengths are checked before the loop.
-		if err := archiveManager.Restore(ctx, r.Repository, repositoryPath, id, snaps[string(r.Repository.ID)]); err != nil {
+		snapshot := snaps[string(r.Repository.ID)]
+		// 子の snapshot は archive が state を持たない形を保つため、ここで読んで値として渡す。
+		submodules, submodulesErr := m.store.SubmoduleSnapshots(ctx, snapshot.SessionID, string(r.Repository.ID))
+		if submodulesErr != nil {
+			return submodulesErr
+		}
+		if err := archiveManager.Restore(ctx, r.Repository, repositoryPath, id, snapshot, submodules); err != nil {
 			m.log.Error("restore failed", "slot_id", id, "repository_id", r.Repository.ID, "error", err)
 			var prepareErr *workspace.PrepareCommandError
 			if errors.As(err, &prepareErr) {

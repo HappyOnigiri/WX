@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -25,6 +27,20 @@ type recoveryRefIssue struct {
 // key は reconcile・prune が使う `<repository_id>:<ref>` 形式を返す。
 func (i recoveryRefIssue) key() string { return i.RepositoryID + ":" + i.Ref }
 
+// submodule capsule ref の照合結果の種別である。削除の識別子体系は広げないため、報告の中でだけ使う。
+const (
+	submoduleRefUnknown    = "unknown"
+	submoduleRefMismatched = "mismatched"
+	submoduleRefMissing    = "missing"
+)
+
+// submoduleRefIssue は子の capsule ref 1 件の不整合である。
+// 公開先が repository ごとの ref store ではないため、対象は ref 名ではなくローカル module の path で示す。
+// ExpiresAt は ref を支える親 snapshot の期限で、unknown ref（DB に記録が無い）では空になる。
+type submoduleRefIssue struct {
+	Kind, ModuleDir, Path, Ref, ExpiresAt string
+}
+
 // unreadableRepository は refs を読めない repository 記録のうち、照合すべき snapshot を 1 件も持たないものである。
 // GC の PruneRepositories が回収するまでの一時的な記録で、ownership error にすると回収までの間 doctor が失敗し続ける。
 type unreadableRepository struct{ RepositoryID, Path, Cause string }
@@ -42,7 +58,10 @@ type artifactReport struct {
 	// RefListFailures は recovery ref を読めなかった repository のうち、まだ必要とされている記録である。
 	// 1 件の失敗で検査全体を止めないよう、repository 単位の問題として保持する。
 	RefListFailures []unreadableRepository
-	Errors          []string
+	// SubmoduleRefIssues は子の capsule ref の不整合である。ref store が repository ごとではないため、
+	// reconcile・prune が使う categories には載せず、doctor の報告だけで扱う。
+	SubmoduleRefIssues []submoduleRefIssue
+	Errors             []string
 }
 
 // categories は従来の category ごとの文字列一覧へ畳み込む。
@@ -211,6 +230,70 @@ func (m *Manager) appendRecoveryRefIssues(ctx context.Context, report *artifactR
 		for ref, expectation := range expected {
 			if !actual[ref] && !expectation.InFlight {
 				report.MissingRefs = append(report.MissingRefs, recoveryRefIssue{RepositoryID: string(repository.ID), Ref: ref, ExpiresAt: expectation.ExpiresAt})
+			}
+		}
+		m.appendSubmoduleRefIssues(ctx, report, repository)
+	}
+}
+
+// appendSubmoduleRefIssues は子の capsule ref を、それぞれの source のローカル module で照合する。
+// 対象は submodule_snapshots の行を持つ module だけで、行の無い module は走査しない。
+// `wx prune` の識別子は単一の ref store を前提にした `<repository_id>:<ref>` なので、ここでは報告だけを行い削除の対象にしない。
+func (m *Manager) appendSubmoduleRefIssues(ctx context.Context, report *artifactReport, repository discovery.Repository) {
+	expectations, err := m.store.SubmoduleRecoveryRefExpectations(ctx, string(repository.ID))
+	if err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("read submodule recovery refs for %s: %v", repository.ID, err))
+		return
+	}
+	if len(expectations) == 0 {
+		return
+	}
+	commonModules := filepath.Join(string(repository.CommonDir), "modules")
+	expected := map[string]map[string]state.SubmoduleRecoveryRef{}
+	for _, expectation := range expectations {
+		if expected[expectation.Name] == nil {
+			expected[expectation.Name] = map[string]state.SubmoduleRecoveryRef{}
+		}
+		expected[expectation.Name][expectation.Ref] = expectation
+	}
+	names := make([]string, 0, len(expected))
+	for name := range expected {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		moduleDir := filepath.Join(commonModules, name)
+		if !domain.IsWithin(commonModules, moduleDir) {
+			report.Errors = append(report.Errors, fmt.Sprintf("submodule %s of %s resolves outside the module directory", name, repository.ID))
+			continue
+		}
+		listed, listErr := m.git.Run(ctx, moduleDir, "--git-dir=.", "for-each-ref", "--format=%(refname) %(objectname)", "refs/wx/recovery")
+		if listErr != nil {
+			// module ごと読めない場合、その module の子は復元できない。欠落と同じ重さで報告する。
+			for _, expectation := range expected[name] {
+				report.SubmoduleRefIssues = append(report.SubmoduleRefIssues, submoduleRefIssue{Kind: submoduleRefMissing, ModuleDir: moduleDir, Path: expectation.Path, Ref: expectation.Ref, ExpiresAt: expectation.ExpiresAt})
+			}
+			continue
+		}
+		actual := map[string]bool{}
+		for _, line := range strings.Split(strings.TrimSpace(listed.Stdout), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				continue
+			}
+			ref, oid := fields[0], fields[1]
+			actual[ref] = true
+			want, known := expected[name][ref]
+			switch {
+			case !known:
+				report.SubmoduleRefIssues = append(report.SubmoduleRefIssues, submoduleRefIssue{Kind: submoduleRefUnknown, ModuleDir: moduleDir, Ref: ref})
+			case want.OID != oid:
+				report.SubmoduleRefIssues = append(report.SubmoduleRefIssues, submoduleRefIssue{Kind: submoduleRefMismatched, ModuleDir: moduleDir, Path: want.Path, Ref: ref, ExpiresAt: want.ExpiresAt})
+			}
+		}
+		for ref, expectation := range expected[name] {
+			if !actual[ref] {
+				report.SubmoduleRefIssues = append(report.SubmoduleRefIssues, submoduleRefIssue{Kind: submoduleRefMissing, ModuleDir: moduleDir, Path: expectation.Path, Ref: ref, ExpiresAt: expectation.ExpiresAt})
 			}
 		}
 	}

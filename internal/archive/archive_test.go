@@ -117,22 +117,22 @@ func TestSnapshotRefsAreIdempotentAndDeletionChecksOwnership(t *testing.T) {
 	}
 	conflict := snapshot
 	conflict.HeadOID = strings.Repeat("0", 40)
-	if err := manager.DeleteSnapshotRefs(context.Background(), repo, conflict); err == nil {
+	if err := manager.DeleteSnapshotRefs(context.Background(), repo, conflict, nil); err == nil {
 		t.Fatal("conflicting recovery ref deletion succeeded")
 	}
-	if err := manager.DeleteSnapshotRefs(context.Background(), repo, snapshot); err != nil {
+	if err := manager.DeleteSnapshotRefs(context.Background(), repo, snapshot, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.DeleteSnapshotRefs(context.Background(), repo, snapshot); err != nil {
+	if err := manager.DeleteSnapshotRefs(context.Background(), repo, snapshot, nil); err != nil {
 		t.Fatalf("idempotent ref deletion: %v", err)
 	}
 	expired := state.Snapshot{ExpiresAt: time.Now().Add(-time.Second).Format(time.RFC3339Nano)}
-	if err := manager.Restore(context.Background(), repo, filepath.Join(temp, "restore"), "slot", expired); err == nil {
+	if err := manager.Restore(context.Background(), repo, filepath.Join(temp, "restore"), "slot", expired, nil); err == nil {
 		t.Fatal("expired restore succeeded")
 	}
 	unavailable := snapshot
 	unavailable.ExpiresAt = expires.Format(time.RFC3339Nano)
-	if err := manager.Restore(context.Background(), repo, filepath.Join(temp, "restore"), "slot", unavailable); err == nil {
+	if err := manager.Restore(context.Background(), repo, filepath.Join(temp, "restore"), "slot", unavailable, nil); err == nil {
 		t.Fatal("restore with deleted refs succeeded")
 	}
 }
@@ -158,7 +158,7 @@ func TestSnapshotOfCleanWorktreeReusesHeadInsteadOfCreatingContentObjects(t *tes
 	}
 	target := filepath.Join(worktreeRoot, "restore", "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
-	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot, nil); err != nil {
 		t.Fatalf("restore from clean snapshot: %v", err)
 	}
 	if status := gitCommand(t, target, "status", "--porcelain"); status != "" {
@@ -193,7 +193,7 @@ func TestSnapshotDoesNotTakeCleanShortcutWhenGitStatusIsBlinded(t *testing.T) {
 	}
 	target := filepath.Join(worktreeRoot, "restore", "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
-	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot, nil); err != nil {
 		t.Fatalf("restore from snapshot: %v", err)
 	}
 	restored, err := os.ReadFile(filepath.Join(target, "untracked"))
@@ -260,7 +260,7 @@ func TestSnapshotRecordsOnlyUnflaggedEditsWhenWorktreeIsDirty(t *testing.T) {
 	}
 	target := filepath.Join(worktreeRoot, "restore", "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
-	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot, nil); err != nil {
 		t.Fatalf("restore from mixed snapshot: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(target, "ordinary")); err != nil || string(data) != "edited\n" {
@@ -290,7 +290,7 @@ func TestRestoreKeepsIndexFlaggedFileAndReinstatesFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitCommand(t, target, "update-index", "--skip-worktree", "tracked")
-	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot, nil); err != nil {
 		t.Fatalf("restore into a slot with index flags: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(target, "tracked")); err != nil || string(data) != "slot personal\n" {
@@ -333,7 +333,7 @@ func TestSnapshotWithPersistenceCommitsMetadataBeforePublishingRefs(t *testing.T
 	repository, repo, manager, _ := archiveFixture(t)
 	ctx := context.Background()
 	persisted := false
-	snapshot, _, err := manager.SnapshotWithPersistence(ctx, repo, repository, "durable-boundary", time.Now().Add(time.Hour), func(snapshot state.Snapshot) error {
+	snapshot, _, err := manager.SnapshotWithPersistence(ctx, repo, repository, "durable-boundary", time.Now().Add(time.Hour), func(snapshot state.Snapshot, _ []SubmoduleCapsule) error {
 		persisted = true
 		listed, listErr := manager.Git.Run(ctx, repository, "for-each-ref", "--format=%(refname)", "refs/wx/recovery")
 		if listErr != nil {
@@ -363,7 +363,7 @@ func TestSnapshotWithPersistenceCommitsMetadataBeforePublishingRefs(t *testing.T
 func TestSnapshotWithPersistenceDoesNotPublishRefsWhenMetadataPersistenceFails(t *testing.T) {
 	repository, repo, manager, _ := archiveFixture(t)
 	wantErr := errors.New("metadata transaction rolled back")
-	_, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "persistence-failure", time.Now().Add(time.Hour), func(state.Snapshot) error {
+	_, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "persistence-failure", time.Now().Add(time.Hour), func(state.Snapshot, []SubmoduleCapsule) error {
 		return wantErr
 	})
 	if !errors.Is(err, wantErr) {
@@ -424,7 +424,7 @@ func TestArchiveRejectsUnownedAndMismatchedWorktrees(t *testing.T) {
 	}
 
 	invalidRef := state.Snapshot{HeadRef: "not a ref", HeadOID: head, WorktreeRef: "also bad", WorktreeOID: head}
-	if err := manager.DeleteSnapshotRefs(ctx, repo, invalidRef); err == nil || !strings.Contains(err.Error(), "invalid recovery ref") {
+	if err := manager.DeleteSnapshotRefs(ctx, repo, invalidRef, nil); err == nil || !strings.Contains(err.Error(), "invalid recovery ref") {
 		t.Fatalf("invalid ref deletion error=%v", err)
 	}
 	if err := manager.RemoveWorktree(ctx, repo, root, registered, head); err != nil {
@@ -468,14 +468,14 @@ func TestRestorePropagatesPreparationAndIndexFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Restore(context.Background(), repo, filepath.Join(root, "outside"), "outside", snapshot); err == nil || !strings.Contains(err.Error(), "outside") {
+	if err := manager.Restore(context.Background(), repo, filepath.Join(root, "outside"), "outside", snapshot, nil); err == nil || !strings.Contains(err.Error(), "outside") {
 		t.Fatalf("outside restore error=%v", err)
 	}
 	badIndex := snapshot
 	badIndex.IndexTreeOID = "not-an-object"
 	target := filepath.Join(worktreeRoot, "bad-index", "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
-	if err := manager.Restore(context.Background(), repo, target, "bad-index", badIndex); err == nil {
+	if err := manager.Restore(context.Background(), repo, target, "bad-index", badIndex, nil); err == nil {
 		t.Fatal("restore with invalid index tree succeeded")
 	}
 	for ref, want := range map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID} {
@@ -531,7 +531,7 @@ func TestRestoreRunsPrepareCommandAfterSnapshotTreeAndIndex(t *testing.T) {
 	}
 	target := filepath.Join(worktreeRoot, "slot", "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
-	if err := manager.Restore(context.Background(), repo, target, "slot", snapshot); err != nil {
+	if err := manager.Restore(context.Background(), repo, target, "slot", snapshot, nil); err != nil {
 		t.Fatalf("restore failed: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(target, "state.txt")); err != nil || string(data) != "snapshot\n" {
@@ -602,7 +602,7 @@ func TestRestorePropagatesGitVerificationFailures(t *testing.T) {
 			installGitFault(t, test.pattern(snapshot), test.occurrence)
 			target := filepath.Join(worktreeRoot, "fault", "root")
 			pointAtSlot(t, manager, worktreeRoot, target)
-			if err := manager.Restore(context.Background(), repo, target, "fault", snapshot); err == nil {
+			if err := manager.Restore(context.Background(), repo, target, "fault", snapshot, nil); err == nil {
 				t.Fatal("restore succeeded despite injected Git failure")
 			}
 		})
@@ -618,7 +618,7 @@ func TestDeleteSnapshotRefsPropagatesGitFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			installGitFault(t, pattern, 1)
-			if err := manager.DeleteSnapshotRefs(context.Background(), repo, snapshot); err == nil {
+			if err := manager.DeleteSnapshotRefs(context.Background(), repo, snapshot, nil); err == nil {
 				t.Fatal("snapshot ref deletion succeeded despite injected Git failure")
 			}
 		})

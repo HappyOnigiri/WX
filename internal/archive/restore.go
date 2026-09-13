@@ -28,7 +28,8 @@ func changedAgainstHead(value gitValueFunc, s state.Snapshot) ([]string, error) 
 	return paths, nil
 }
 
-func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target, slotID string, s state.Snapshot) error {
+// Restore は snapshot を復元先 worktree へ戻す。submodules は子 1 件ずつの snapshot で、親より先に戻す。
+func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target, slotID string, s state.Snapshot, submodules []state.SubmoduleSnapshot) error {
 	if expiry, err := time.Parse(time.RFC3339Nano, s.ExpiresAt); err != nil || !expiry.After(time.Now()) {
 		return errors.New("recovery snapshot has expired")
 	}
@@ -70,8 +71,16 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 				return fmt.Errorf("recovery ref %s changed during restore", ref)
 			}
 		}
+		if err := m.verifySubmoduleCapsuleRefs(ctx, repo, submodules); err != nil {
+			return err
+		}
 		if err := m.Preparer.ValidateRestoringOwnership(ctx, repo, target, s.HeadOID, slotID); err != nil {
 			return fmt.Errorf("validate restore worktree before snapshot: %w", err)
+		}
+		// 子は親の read-tree より前に戻す。親の snapshot worktree tree は子の移動後 HEAD を gitlink として持つため、
+		// 後に回すと親の tree 一致検証が必ず不一致になる。
+		if err := m.restoreSubmodules(repo, targetValue, targetRun, submodules); err != nil {
+			return err
 		}
 		// 復元先の index flag は外さない。外すと git が skip-worktree の実ファイルを tree の内容で上書きし、
 		// hook が slot ごとに作り直した個人設定を失う。snapshot 側も flag 付き path を HEAD の内容で記録しているため、
@@ -82,7 +91,9 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err != nil {
 			return err
 		}
-		if _, err := targetRun(nil, nil, "read-tree", "--reset", "-u", s.WorktreeOID+"^{tree}"); err != nil {
+		// --no-recurse-submodules が無いと、この read-tree は実体化済みの子を gitlink の内容へ戻し、
+		// 直前に復元した子の作業ファイルと HEAD の branch を消してしまう。
+		if _, err := targetRun(nil, nil, "read-tree", "--reset", "-u", "--no-recurse-submodules", s.WorktreeOID+"^{tree}"); err != nil {
 			return err
 		}
 		// 復元先は sparse 条件を受け継いでいるため、直前の read-tree は範囲外の path を skip-worktree にして
