@@ -8,19 +8,18 @@ import (
 // UpdateCheck は daemon が最後に行った更新確認の記録である。
 // 失敗した確認も CheckedAt を進めるため、LastError が空でないときの CheckedAt は「最後に試した時刻」を表す。
 type UpdateCheck struct {
-	CheckedAt        time.Time
-	LatestVersion    string
-	ReleaseURL       string
-	LastError        string
-	AnnouncedVersion string
+	CheckedAt     time.Time
+	LatestVersion string
+	ReleaseURL    string
+	LastError     string
 }
 
 // UpdateCheck は singleton 行を読む。migration が初期行を入れるため、行の欠落は想定しない。
 func (s *Store) UpdateCheck(ctx context.Context) (UpdateCheck, error) {
 	var record UpdateCheck
 	var checkedAt string
-	row := s.db.QueryRowContext(ctx, `SELECT checked_at,latest_version,release_url,last_error,announced_version FROM update_checks WHERE id=1`)
-	if err := row.Scan(&checkedAt, &record.LatestVersion, &record.ReleaseURL, &record.LastError, &record.AnnouncedVersion); err != nil {
+	row := s.db.QueryRowContext(ctx, `SELECT checked_at,latest_version,release_url,last_error FROM update_checks WHERE id=1`)
+	if err := row.Scan(&checkedAt, &record.LatestVersion, &record.ReleaseURL, &record.LastError); err != nil {
 		return UpdateCheck{}, err
 	}
 	if checkedAt != "" {
@@ -35,7 +34,7 @@ func (s *Store) UpdateCheck(ctx context.Context) (UpdateCheck, error) {
 
 // RecordUpdateCheck は1回の確認の結果を書く。失敗（failure が非空）でも checked_at を進め、
 // オフラインが続く間に保守の一巡ごとへ確認が張り付いてレート制限へ触れるのを防ぐ。
-// 失敗時は直前に取得できていた版と URL を残し、案内済みの版も変えない。
+// 失敗時は直前に取得できていた版と URL を残す。
 func (s *Store) RecordUpdateCheck(ctx context.Context, latest, releaseURL, failure string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -47,8 +46,8 @@ func (s *Store) RecordUpdateCheck(ctx context.Context, latest, releaseURL, failu
 	return err
 }
 
-// ClaimUpdateAnnouncement は version についての案内権を1回だけ渡す。
-// 条件付き UPDATE が1行を変えられた呼び出しだけ true を返すので、複数の起動が同時に案内を出すことはない。
+// ClaimUpdateAnnouncement は version についての案内権を1回だけ渡す。案内済みの版を履歴へ入れ、
+// 1行を足せた呼び出しだけ true を返す。直前の版だけを覚えると、最新が A→B→A と動いたとき A が二度案内される。
 // 権利を取った process が案内の前に落ちるとその版は案内されないが、重ねて出すより望ましいとして許容する。
 func (s *Store) ClaimUpdateAnnouncement(ctx context.Context, version string) (bool, error) {
 	if version == "" {
@@ -56,7 +55,7 @@ func (s *Store) ClaimUpdateAnnouncement(ctx context.Context, version string) (bo
 	}
 	s.writer.Lock()
 	defer s.writer.Unlock()
-	result, err := s.db.ExecContext(ctx, `UPDATE update_checks SET announced_version=? WHERE id=1 AND announced_version<>?`, version, version)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO update_announcements(version,announced_at) VALUES(?,?) ON CONFLICT(version) DO NOTHING`, version, now())
 	if err != nil {
 		return false, err
 	}

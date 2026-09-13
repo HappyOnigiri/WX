@@ -15,7 +15,7 @@ func TestUpdateCheckStartsEmptyAndRecordsBothOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !initial.CheckedAt.IsZero() || initial.LatestVersion != "" || initial.AnnouncedVersion != "" {
+	if !initial.CheckedAt.IsZero() || initial.LatestVersion != "" || initial.ReleaseURL != "" {
 		t.Fatalf("initial update check=%+v, want an empty singleton row", initial)
 	}
 	if err := store.RecordUpdateCheck(ctx, "v1.2.3", "https://example.test/v1.2.3", ""); err != nil {
@@ -79,5 +79,13 @@ func TestClaimUpdateAnnouncementHandsTheVersionToOneCallerOnly(t *testing.T) {
 	}
 	if empty {
 		t.Fatal("an empty version was claimed")
+	}
+	// 非公開と再公開で最新が A→B→A と戻る場合がある。直前の版だけを覚えると A が二度案内される。
+	revisited, err := store.ClaimUpdateAnnouncement(ctx, "v1.2.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revisited {
+		t.Fatal("a version was claimed again after the latest release moved away and back")
 	}
 }
