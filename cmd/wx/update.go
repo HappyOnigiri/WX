@@ -123,5 +123,14 @@ func fetchInstallScript(ctx context.Context, tag string) ([]byte, error) {
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("install.sh download failed: %s", response.Status)
 	}
-	return io.ReadAll(io.LimitReader(response.Body, installScriptLimit))
+	// 上限より1 byte 多く読み、切り詰めた script をそのまま bash へ渡さない。
+	// 切り詰めを黙って返すと、失敗が内容の破損ではなく bash の構文 error としてしか見えない。
+	script, err := io.ReadAll(io.LimitReader(response.Body, installScriptLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(script) > installScriptLimit {
+		return nil, fmt.Errorf("install.sh is larger than %d bytes", installScriptLimit)
+	}
+	return script, nil
 }
