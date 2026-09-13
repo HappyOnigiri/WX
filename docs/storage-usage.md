@@ -6,7 +6,8 @@
 走査量はroot配下のファイル数に比例するため、貸出・`wx clear`・status表示のどの要求経路にも持ち込まず、測定はすべてbackgroundで走らせる。
 
 測る契機は`Discovery.ReconcileInterval`ごとの周期測定と、使用量が変わった直後の測り直し要求である。
-要求はslotの準備・snapshotの保存・`wx clear`のrunが閉じた時点で出し、周期測定を待たずにroot合計を追随させる。
+要求はslotの準備・snapshotの保存・`wx clear`のrunが閉じた時点と、`wx clear --unmanaged`が1件でも削除した時点で出し、
+周期測定を待たずにroot合計を追随させる。
 要求は1本に畳み、走っている間に届いた分は次の1巡へまとめる。walkを要求の数だけ重ねないためである。
 slotの準備が終わった直後はそのslotだけを先に測る。
 このため周期測定は、対象一覧を撮った時刻より新しい実測を上書きしない。上書きすると準備直後に測った値が次の周期まで消える。
@@ -16,7 +17,7 @@ slotの削除が終わった時点では測り直さず、そのslotの実測分
 `wx clear`は削除に加えて保存でsnapshotを増やすので、差し引きだけでは足りない増減をrunが閉じた後の測り直しで合わせる。
 
 書き込みの途中にあるslotは、走査しても配置の途中経過しか見えないため、その値をそのslotの使用量として公開しない。
-ただし実体はroot合計に数えたままにして、準備中の割当量が`Unmanaged`（登録外の実体）へ移らないようにする。
+ただし実体はroot合計に数えたままにして、準備中のslotだけroot合計から欠けることのないようにする。
 この結果、再び準備へ入ったslotは前の準備で測った値を次の周期で落とし、`measurement`は`pending`へ戻る。
 
 最初の測定が終わるまでは`measurement=pending`とし、0を実測値に見せない。pendingを長く出さないよう、最初の測定はdaemonの起動直後に1度走らせる。
@@ -47,15 +48,24 @@ repositoryの外に置かれたslot直下のファイルはどの内訳にも入
 ## 表示する使用量の方針
 
 `wx status`の`Disk`はDB登録済みの非ARCHIVED slotとworkspace snapshotを集計対象とする。
-終了済み・隔離済みslotも含み、登録外の実体は`Unmanaged`として別に出す。
-診断用の`quarantined_artifacts`だけに記録されたpathは管理対象に含めない。
+終了済み・隔離済みslotも含み、診断用の`quarantined_artifacts`だけに記録されたpathは管理対象に含めない。
+
+走査するのはwxの予約namespace（slotを並べるworkspace ID・`_unbound`と、workspace snapshotの置き場）の配下だけで、
+worktree root配下でもそれ以外の場所に置かれた実体は測らない。
+その範囲で登録が説明しない実体を`Unmanaged`として数え、`wx clear --unmanaged`が削除できる集合と一致させる。
+表示された未管理量を必ず解消できる、という関係を保つためである。
+slotはdirectoryとして、workspace snapshotはファイル1個として登録されるので、
+走査はdirectory境界の表とファイル名の表を別に持ち、後者をentry1件ごとに引く。
+snapshotの登録をdirectory境界だけで判定すると、ファイルの登録は必ず境界に現れず登録外へ落ちる。
+`Unmanaged`は要約には出さず、`wx status --verbose`と`--json`にだけ残す。対処を要する利用者だけが読む値だからである。
 
 表示する値は常にexclusive（共有blockを除いた専有分）とし、`wx slots`のSIZE列とDisk行で同じ量を指す。
 そろえることでSIZE列の合計とroot合計が同じ意味になり、どちらもslotを消したときに実際に空く量の下限を示す。
 表示ではexclusiveやallocatedのような内訳の語を出さず、単に使用量として扱う。
 利用者に2つの数字を並べて選ばせない方が、どちらが本物かという判断を持ち込まずに済むためである。
-Disk行に付く`managed`は管理対象と登録外の区別であり、専有分と満額の区別ではない。
+Disk行に付く`managed`は管理対象であることを示し、専有分と満額の区別ではない。対になる`Unmanaged`は`--verbose`にある。
 
 `allocated_bytes`は`du`との突き合わせにしか使わないため、`--json`と`wx status --verbose`にだけ残す。
-`du -sh`はcloneを割り引かず登録外の実体も数えるので、必ずDisk行より大きく出る。
-差の内訳はmain worktreeと共有しているblock（slotを消しても解放されない）と、`Unmanaged`に出る登録外の割当量である。
+`du -sh`はcloneを割り引かずwxが測らない実体も数えるので、必ずDisk行より大きく出る。
+差の内訳は、main worktreeと共有しているblock（slotを消しても解放されない）、`Unmanaged`に出る予約namespace配下の登録外の割当量、
+そして予約namespaceの外に置かれたwx管理外の実体である。最後の1つはwxが測らないので、差は`wx`の数字だけでは説明し切れない。

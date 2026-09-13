@@ -15,7 +15,7 @@ const usageShareName = "workspace/slot/repo/file"
 func usageShareTask(t *testing.T, root *os.Root, mainPath string, previous SharedFileCache) (*usageScan, usageDirectory) {
 	t.Helper()
 	targets := []SlotUsageTarget{{SlotID: "slot", RelPath: "workspace/slot", Repositories: map[string]string{"repo": mainPath}}}
-	scan := newUsageScan(context.Background(), targets, previous)
+	scan := newUsageScan(context.Background(), targets, nil, previous)
 	dir, err := openUsageDirectory(root, "workspace/slot/repo")
 	if err != nil {
 		t.Fatal(err)

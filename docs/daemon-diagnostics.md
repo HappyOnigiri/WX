@@ -18,6 +18,11 @@ worktree rootのpath検査と登録検査は別のfindingとして両方保持�
 登録済みworkspaceに属さず照合すべきsnapshotも持たないrepository記録は、refsを読めなくてもproblemにせずinfoに留める。
 GCの`PruneRepositories`が回収するまでの一時的な記録であり、errorにするとその間doctorが失敗し続けるためである。
 
+DBが説明しない実体は、対処が利用者の判断に委ねられるためinfoに留め、一覧は`-v`のときだけ`Details`に出す。
+findingの材料はreconcileが隔離記録へ入れる集合ではなく、`wx clear --unmanaged`が削除できる集合そのものにする。
+表示した対象を必ず解消できるようにするためで、reconcileの隔離記録・毎周期の警告ログ・`wx prune`の対象範囲は従来の狭い集合のまま広げない。
+副作用の大きい経路を診断の都合で広げないという判断であり、両者の範囲が意図的に違うことをここに残す。
+
 準備・保存・復元の失敗は、上位の処理名で言い換えず`jobs.error_message`・`error_detail_path`から具体的な失敗理由と詳細ログの場所まで引き継ぐ。
 原因が記録されていない場合は特定できていないことを明示し、推測を原因として表示しない。
 

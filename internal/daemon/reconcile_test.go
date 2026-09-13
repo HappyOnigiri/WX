@@ -117,6 +117,8 @@ func TestOwnedPathExistsReportsUnreadablePath(t *testing.T) {
 	}
 }
 
+// ownedRootArtifactPaths の対象は reconcile の隔離記録の範囲そのものなので、`_recovery` 配下を含めない。
+// 削除できる実体の広い列挙は scanUnmanagedArtifacts が持ち、そちらのテストが `_recovery` 配下を対象として固定する。
 func TestOwnedRootArtifactPathsSkipsIncompleteWorkspaceAndUnboundEntries(t *testing.T) {
 	t.Parallel()
 	_, manager, _, workspaceRecord, _, _ := managerCoverageFixture(t)

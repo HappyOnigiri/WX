@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -533,7 +534,12 @@ func TestRootStatusMeasuresCurrentRegisteredRootPath(t *testing.T) {
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "replacement.txt"), []byte("replacement"), 0o600); err != nil {
+	// 測定は予約 namespace の配下しか数えないので、差し替え後の実体もその配下に置く。
+	snapshots := filepath.Join(root, filepath.FromSlash(archive.WorkspaceSnapshotDirectory))
+	if err := os.MkdirAll(snapshots, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snapshots, "replacement.tar"), []byte("replacement"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if usage, _, err := manager.rootDirectoryUsage(t.Context(), root, nil, nil); err != nil || usage.AllocatedBytes != 0 || usage.UnmanagedBytes == 0 {

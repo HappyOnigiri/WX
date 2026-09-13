@@ -26,15 +26,16 @@ var requiredSlotStates = map[string]bool{
 func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 	report := m.artifactOwnershipReport(ctx)
 	findings := []diag.Finding{}
-	if len(report.UnknownPaths) > 0 {
-		paths := append([]string{}, report.UnknownPaths...)
-		sort.Strings(paths)
+	// 登録外の実体は reconcile が記録する狭い集合ではなく、削除できる集合そのものを材料にする。
+	// 表示された対象が `wx clear --unmanaged` で必ず解消できる、という関係を doctor 側でも保つためである。
+	unmanaged, unmanagedErrs := m.scanUnmanagedArtifacts(ctx)
+	if len(unmanaged) > 0 {
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityInfo,
-			Summary: "a worktree root holds paths that are not registered slots",
-			Cause:   fmt.Sprintf("%d path(s) under the wx roots have no slot record; wx neither adopts nor deletes them", len(paths)),
-			Action:  "inspect them yourself and remove them manually if you no longer need them",
-			Details: paths,
+			Summary: "a worktree root holds entities the database does not explain",
+			Cause:   unmanagedArtifactCause(unmanaged),
+			Action:  "review them with wx clear --unmanaged --dry-run, then run wx clear --unmanaged to delete them",
+			Details: unmanagedArtifactPaths(unmanaged),
 		})
 	}
 	if len(report.UnknownRefs) > 0 {
@@ -53,7 +54,8 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 	findings = append(findings, refListFailureFindings(report.RefListFailures)...)
 	findings = append(findings, missingArtifactFindings(report.Missing)...)
 	findings = append(findings, recoveryRefFindings(report.MismatchedRefs, report.MissingRefs)...)
-	for _, message := range report.Errors {
+	// 同じ root の同じ失敗を照合と列挙の両方が報告するので、文言で畳んで 1 件ずつにする。
+	for _, message := range mergedOwnershipErrors(report.Errors, unmanagedErrs) {
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityUnchecked,
 			Summary: "an ownership check could not be completed", Cause: message,
@@ -67,6 +69,37 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 		})
 	}
 	return findings
+}
+
+// unmanagedArtifactCause は登録外の実体を種別ごとの件数で説明する。
+// 対処が「自分で消す」から「wx clear --unmanaged で消す」へ変わったので、何が消えるのかを種別で示す。
+func unmanagedArtifactCause(artifacts []unmanagedArtifact) string {
+	directories, snapshots := 0, 0
+	for _, artifact := range artifacts {
+		if artifact.Kind == unmanagedWorkspaceSnapshot {
+			snapshots++
+			continue
+		}
+		directories++
+	}
+	return fmt.Sprintf("%d slot directory/directories and %d workspace snapshot archive(s) under the wx namespaces have no database record; wx neither adopts them nor deletes them on its own",
+		directories, snapshots)
+}
+
+// mergedOwnershipErrors は照合と列挙が出した失敗を、同じ文言を 1 件に畳んで順序を保ったまま返す。
+func mergedOwnershipErrors(groups ...[]string) []string {
+	seen := map[string]bool{}
+	merged := []string{}
+	for _, group := range groups {
+		for _, message := range group {
+			if seen[message] {
+				continue
+			}
+			seen[message] = true
+			merged = append(merged, message)
+		}
+	}
+	return merged
 }
 
 // quarantinedRecoveryFindings は recovery ref を失って隔離された復元資産を workspace ごとに報告する。
