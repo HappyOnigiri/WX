@@ -214,16 +214,13 @@ func (p *Preparer) planIncludes(repo discovery.Repository, plan *earlyPlan) erro
 		return err
 	}
 	defer func() { _ = source.Close() }()
-	defaults, err := p.defaultIncludesForRepository(repo)
+	// 矛盾したruleの回はここで失敗し、checkoutもfileの列挙も行わない。
+	rules, err := p.resolveRepositoryRules(repo, source)
 	if err != nil {
 		return err
 	}
-	for _, path := range defaults {
+	for _, path := range rules.defaults {
 		plan.copies = append(plan.copies, copyEntry{path: path})
-	}
-	patterns, err := readPhysicalPatternsAt(source, ".worktreeinclude")
-	if err != nil {
-		return err
 	}
 	tracked, err := p.trackedIncludePaths(repo)
 	if err != nil {
@@ -232,37 +229,12 @@ func (p *Preparer) planIncludes(repo discovery.Repository, plan *earlyPlan) erro
 	keep := func(path string) (bool, error) {
 		return !tracked[filepath.Clean(path)], nil
 	}
-	for _, pattern := range patterns {
-		clean := filepath.Clean(pattern)
-		if filepath.IsAbs(pattern) || clean == ".." || strings.HasPrefix(clean, "../") {
-			return fmt.Errorf("unsafe .worktreeinclude pattern %q", pattern)
-		}
-		matches, err := safeGlob(mainPath, pattern)
-		if err != nil {
+	for _, rel := range rules.includes {
+		if err := plan.collectCopies(source, rel, keep); err != nil {
 			return err
 		}
-		for _, match := range matches {
-			rel, err := filepath.Rel(mainPath, match)
-			if err != nil {
-				return err
-			}
-			rel, err = safeRelative(rel)
-			if err != nil {
-				return err
-			}
-			if err := plan.collectCopies(source, rel, keep); err != nil {
-				return err
-			}
-		}
 	}
-	patterns, err = readPhysicalPatternsAt(source, ".worktreelink")
-	if err != nil {
-		return err
-	}
-	if err := validateRuleConflicts(nil, patterns); err != nil {
-		return err
-	}
-	plan.links, err = inspectLinkSources(source, patterns)
+	plan.links, err = inspectLinkSources(source, rules.links)
 	return err
 }
 

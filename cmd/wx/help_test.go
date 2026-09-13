@@ -581,7 +581,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 			t.Fatalf("run(%v) exit=%d", args, exit)
 		}
 	}
-	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"prune", "extra"}, {"clear", "extra"}, {"clean"}, {"slots", "extra"}, {"sessions", "unknown"}, {"discard-recovery"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
+	for _, args := range [][]string{{}, {"unknown"}, {"--unknown", "codex"}, {"status", "extra"}, {"status", "--unknown"}, {"gc", "extra"}, {"prune", "extra"}, {"clear", "one", "two"}, {"clean"}, {"slots", "extra"}, {"sessions", "unknown"}, {"discard-recovery"}, {"forget"}, {"resume"}, {"resume", "session", "invalid"}, {"daemon", "unknown"}, {"hook"}, {"--fresh", "codex"}} {
 		if exit := run(ctx, args); exit != 2 {
 			t.Fatalf("misuse run(%v) exit=%d", args, exit)
 		}

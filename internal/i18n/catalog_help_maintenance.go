@@ -152,16 +152,23 @@ Options:
   --dry-run  削除対象を報告し、何も変更しない`,
 	},
 	"help.command.clear": {
-		EN: `Usage: wx clear [--all] [--standby] [--discard] [--dry-run]
+		EN: `Usage: wx clear [<workspace-path>] [--all] [--standby] [--discard] [--replenish] [--dry-run]
        wx clear --unmanaged [--dry-run]
 
 Delete the worktrees wx manages without waiting for their retention period.
 Work is saved first: recovery data, session history, and workspace
 registrations stay, and their retention follows the existing settings.
 
+Without a workspace path, every registered workspace is cleared. Given one,
+only the slots of that workspace are targeted; the path is never guessed from
+the current directory, and slots whose workspace wx cannot determine are left
+alone. New sessions and resumes are still refused for every workspace while
+the clear runs, not only for the one named.
+
 Standby worktrees waiting for the next session are kept unless --standby or
 --all is given. Once they are deleted, wx does not replenish them until the
-affected workspace is used again.
+affected workspace is used again, or until --replenish, given together with
+--standby or --all, resumes it once the clear finishes.
 
 Without --all, sessions that are in use are left alone. With --all, wx asks
 those sessions to stop, waits up to 30s for each of them, and deletes only the
@@ -195,18 +202,23 @@ Options:
   --all        ask sessions in use to stop, then delete what stopped, standby
                worktrees included
   --discard    delete selected worktrees without saving unfinished work
+  --replenish  resume standby replenishment once the clear finishes; requires
+               --standby or --all, and skips workspaces that kept a failed or
+               quarantined target
   --standby    delete standby worktrees too
   --unmanaged  delete the entities under the wx namespaces that the database
                does not explain; cannot be combined with the options above
   --dry-run    report the targets and the reasons wx cannot process some of
                them, changing nothing`,
-		JA: `使い方: wx clear [--all] [--standby] [--discard] [--dry-run]
+		JA: `使い方: wx clear [<workspace-path>] [--all] [--standby] [--discard] [--replenish] [--dry-run]
        wx clear --unmanaged [--dry-run]
 
 保持期間を待たずに wx の管理 worktree を削除します。
 最初に作業を保存します。復旧データ、session 履歴、workspace 登録は残り、保持期間は既存設定に従います。
 
-次の session を待つ standby worktree は --standby または --all を指定しない限り残します。削除すると、その workspace が再び使われるまで wx は補充しません。
+workspace path を省略すると登録済みの全 workspace が対象です。指定するとその workspace の slot だけを対象にします。path はカレントディレクトリからは推定せず、workspace を確定できない slot は対象外です。path を指定しても、clear 中は指定した workspace に限らず全 workspace の新しい session と resume を拒否します。
+
+次の session を待つ standby worktree は --standby または --all を指定しない限り残します。削除すると、その workspace が再び使われるまで wx は補充しません。--standby または --all と併せて --replenish を指定すると、clear の完了後に補充を再開します。
 
 --all なしでは使用中の session を残します。--all では session に停止を求め、各 session を最大30秒待って、停止したものだけを削除します。強制終了はしません。
 
@@ -222,6 +234,8 @@ Options:
   --all        使用中 session に停止を求め、停止したものを削除（standby
                worktree を含む）
   --discard    未完了の作業を保存せず選択した worktree を削除
+  --replenish  clear の完了後に standby 補充を再開。--standby または --all
+               が必要で、失敗・隔離が残った workspace は再開しない
   --standby    standby worktree も削除
   --unmanaged  wx の予約 namespace 配下で database が説明しない実体を削除。
                上記のオプションとは併用できない

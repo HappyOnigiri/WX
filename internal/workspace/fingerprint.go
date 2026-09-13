@@ -111,7 +111,7 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 	// default include は Fingerprint が Git runner を持たないため、copyIncludesAt の tracked 検査なしで hash 化する。
 	// tracked file も checkout に任せるため、main worktree の編集で再利用できた slot も cold start 時に再構築される。untracked file を除外すると古い local rule を持つ slot を渡してしまう。
 	// default file がない場合の切り替えで materialized worktree は変わらないため、設定自体は意図的に hash 化しない。
-	defaults, err := defaultIncludeCandidatesForRepository(repo, c)
+	defaults, err := defaultIncludeCandidatesForRepository(repo, c, linkPatterns)
 	if err != nil {
 		return "", err
 	}

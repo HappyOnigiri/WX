@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -67,10 +68,16 @@ func cleanMode(all, standby bool) string {
 // 通常の clean は使用中の session と待機用 slot を対象外とし、--standby は待機用を、--all は加えて起動・復元途中も含める。
 // 隔離 slot は retention.quarantined の残りを問わず全 mode で削除対象にする。削除範囲は DB の登録で決める。
 // 未保全の submodule 作業を持つ slot は discard 無しでは残す。clear の契約は「作業は先に保存する」だが、この作業は保存できないためである。
-// commentlint:allow-long -- mode ごとの対象範囲と、保存できない作業を残す理由を 1 か所に残す
-func planCleanTargets(candidates []state.CleanCandidate, all, standby, discard bool) []state.CleanTarget {
+// workspaceID が空でなければその workspace の slot だけを対象にし、範囲外は SKIPPED ではなく target を作らずに落とす。
+// SKIPPED にすると利用者が指定していない workspace の slot が結果に並び、件数も指定した範囲を表さなくなる。
+// 帰属が確定していない slot（workspace_id が空）は、範囲指定の命令では巻き込まない。
+// commentlint:allow-long -- mode ごとの対象範囲と、保存できない作業や範囲外の候補を残す理由を 1 か所に残す
+func planCleanTargets(candidates []state.CleanCandidate, workspaceID string, all, standby, discard bool) []state.CleanTarget {
 	out := make([]state.CleanTarget, 0, len(candidates))
 	for _, candidate := range candidates {
+		if workspaceID != "" && candidate.WorkspaceID != workspaceID {
+			continue
+		}
 		target := state.CleanTarget{
 			SlotID: candidate.SlotID, WorkspaceID: candidate.WorkspaceID,
 			SessionID: candidate.SessionID, Path: candidate.Path, State: cleanTargetPending,
@@ -161,38 +168,58 @@ func cleanSummary(targets []state.CleanTarget) map[string]int {
 }
 
 func cleanReply(run state.CleanRun, targets []state.CleanTarget, dryRun bool) map[string]any {
-	return map[string]any{
+	reply := map[string]any{
 		"run_id": run.ID, "mode": run.Mode, "state": run.State,
 		"dry_run": dryRun, "targets": targets, "summary": cleanSummary(targets),
+		"replenish_pending": run.Replenish && run.ReplenishState != state.CleanReplenishDone,
 	}
+	if run.ReplenishResult != "" {
+		reply["replenish"] = json.RawMessage(run.ReplenishResult)
+	}
+	return reply
+}
+
+// CleanRequest は `wx clear` 1 回分の指示である。Path が空なら全 workspace を対象にする。
+type CleanRequest struct {
+	Path      string
+	All       bool
+	Standby   bool
+	Discard   bool
+	DryRun    bool
+	Replenish bool
 }
 
 // Clean は保持期限を待たずに wx 管理下の worktree を削除する。
 // dry-run は終了要求・補充停止・ジョブ登録・隔離を含め一切状態を変更せず、調査時点の見込みだけを返す。
-func (m *Manager) Clean(ctx context.Context, all, standby, dryRun bool, discardOption ...bool) (map[string]any, error) {
+// Path は dry-run でも先に検証する。打ち間違えた path で「対象なし」とだけ返すと、消えていないことに気付けないためである。
+func (m *Manager) Clean(ctx context.Context, request CleanRequest) (map[string]any, error) {
+	workspaceID, err := m.cleanScope(ctx, request.Path)
+	if err != nil {
+		return nil, err
+	}
 	candidates, err := m.store.CleanCandidates(ctx)
 	if err != nil {
 		return nil, err
 	}
-	mode := cleanMode(all, standby)
-	discard := len(discardOption) > 0 && discardOption[0]
-	if discard {
+	mode := cleanMode(request.All, request.Standby)
+	if request.Discard {
 		mode += "-discard"
 	}
-	targets := planCleanTargets(candidates, all, standby, discard)
-	if dryRun {
+	targets := planCleanTargets(candidates, workspaceID, request.All, request.Standby, request.Discard)
+	if request.DryRun {
 		return cleanReply(state.CleanRun{Mode: mode, State: "DRY_RUN"}, targets, true), nil
 	}
 	id, err := domain.NewShortID()
 	if err != nil {
 		return nil, err
 	}
-	runID, joined, err := m.store.BeginCleanRun(ctx, id, mode, targets, cleanWorkspaces(targets, all || standby))
+	accepted := state.CleanRun{ID: id, Mode: mode, WorkspaceID: workspaceID, Replenish: request.Replenish}
+	runID, joined, err := m.store.BeginCleanRun(ctx, accepted, targets, cleanWorkspaces(targets, request.All || request.Standby))
 	if err != nil {
 		return nil, err
 	}
 	if joined {
-		m.log.Info("joined the clean already in progress", "run_id", runID, "mode", mode)
+		m.log.Info("joined the clean already in progress", "run_id", runID, "mode", mode, "workspace_id", workspaceID)
 	}
 	m.startCleanDriver(runID)
 	run, stored, err := m.store.CleanRunByID(ctx, runID)
@@ -200,6 +227,22 @@ func (m *Manager) Clean(ctx context.Context, all, standby, dryRun bool, discardO
 		return nil, err
 	}
 	return cleanReply(run, stored, false), nil
+}
+
+// cleanScope は path 指定を workspace ID へ解決する。path が空なら全 workspace を表す空文字を返す。
+func (m *Manager) cleanScope(ctx context.Context, path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	canonical, err := domain.Canonicalize(path)
+	if err != nil {
+		return "", err
+	}
+	w, err := m.store.WorkspaceByRoot(ctx, string(canonical))
+	if err != nil {
+		return "", fmt.Errorf("%s is not a registered workspace: %w", canonical, err)
+	}
+	return string(w.ID), nil
 }
 
 // CleanStatus は run 1 件の現在の進捗を返す。CLI は短い RPC の繰り返しで完了まで待つ。
@@ -212,6 +255,8 @@ func (m *Manager) CleanStatus(ctx context.Context, runID string) (map[string]any
 }
 
 // resumeCleanRuns は daemon 再起動後に、受付済みの run を同じ対象と期限で再開する。
+// 補充再開だけが残った run は driver では拾えないので、閉じた run の掃き出しを別に行う。
+// 再開の途中で落ちた claim もここで引き受け直す。
 func (m *Manager) resumeCleanRuns(ctx context.Context) {
 	runs, err := m.store.RunningCleanRuns(ctx)
 	if err != nil {
@@ -220,6 +265,14 @@ func (m *Manager) resumeCleanRuns(ctx context.Context) {
 	}
 	for _, run := range runs {
 		m.startCleanDriver(run.ID)
+	}
+	pending, err := m.store.PendingCleanReplenishRuns(ctx)
+	if err != nil {
+		m.log.Error("list pending clean replenishments failed", "error", err)
+		return
+	}
+	for _, run := range pending {
+		m.runCleanReplenish(ctx, run.ID, true)
 	}
 }
 
@@ -261,6 +314,8 @@ func (m *Manager) driveClean(runID string) {
 		}
 		if done {
 			m.log.Info("clean finished", "run_id", runID)
+			// 補充再開は run が閉じた後にしか置けない。RUNNING の間は assertNoActiveClean が停止解除を断るためである。
+			m.runCleanReplenish(m.ctx, runID, false)
 			// 削除分は forgetSlotUsage が引くが、保存で増えた snapshot や隔離で残った実体は測り直さないと合わない。
 			// run を閉じた後に background で測るので、`wx clear` の応答は walk を待たない。
 			m.remeasureRootUsage()
@@ -532,6 +587,7 @@ func (m *Manager) replenishSuspended(ctx context.Context, workspaceID string) bo
 
 // resumeReplenish は手動起動（貸出・resume）が成功した workspace の補充を再開する。
 // clean 由来か standby の準備失敗かで区別しない。停止理由が何であれ、成功が環境の回復を示すためである。
+// `wx clear --replenish` の再開はこの経路ではなく、補充の予約まで行う RetryStandby を通す。
 func (m *Manager) resumeReplenish(ctx context.Context, workspaceID string) {
 	if workspaceID == "" {
 		return
