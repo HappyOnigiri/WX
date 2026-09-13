@@ -158,6 +158,20 @@ func TestLeaseProgressSettlesTheTotalOnce(t *testing.T) {
 	}
 }
 
+// 準備を待った起動の総括には、経路だけでなく client が実際に選んだ readiness を残す。
+func TestLeaseProgressSummaryIncludesEffectiveReadiness(t *testing.T) {
+	t.Parallel()
+	out := &syncWriter{}
+	waiting := newLeaseProgress(out, true)
+	waiting.route, waiting.routed = daemon.RouteColdStart, true
+	waiting.setReadiness(readinessEarly)
+	waiting.update(daemon.LeaseProgress{State: "PREPARING", Running: true, Phase: "checkout", PhaseElapsedMS: 100})
+	waiting.finish()
+	if got := out.String(); !strings.Contains(got, "readiness=early") || !strings.Contains(got, "Cold start\n") {
+		t.Fatalf("summary=%q, want effective readiness and route", got)
+	}
+}
+
 // 準備を待たずに終えた回は総括を残さない。貸出のたびに1行増えると、待たなかったことが読み取れない。
 func TestLeaseProgressLeavesNothingWhenNothingWasWaitedFor(t *testing.T) {
 	t.Parallel()

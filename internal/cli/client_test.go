@@ -341,8 +341,13 @@ func TestRunAgentUsesForegroundReadyFallbackWhenHooksAreUnavailable(t *testing.T
 		t.Fatal(err)
 	}
 	client := Client{RPC: rpc.Client{Socket: socket, Timeout: time.Second}, Config: config.Defaults()}
-	if exit := client.runAgent(ctx, agentScript, nil, nil, false, ""); exit != 0 {
-		t.Fatalf("RunAgent exit=%d", exit)
+	stderr := captureStderrForLease(t, func() {
+		if exit := client.runAgent(ctx, agentScript, nil, nil, false, ""); exit != 0 {
+			t.Fatalf("RunAgent exit=%d", exit)
+		}
+	})
+	if !strings.Contains(stderr, "wx setup") {
+		t.Fatalf("stderr=%q, want guidance to configure readiness hooks", stderr)
 	}
 	handler.mu.Lock()
 	methods := append([]string(nil), handler.methods...)

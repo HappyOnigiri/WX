@@ -42,6 +42,14 @@ var leaseRouteIDs = map[string]string{
 	daemon.RouteRestore:   "cli.progress.route.restore",
 }
 
+// leaseReadinessIDs は実効 readiness の値を表示名へ写す。
+// 値そのものは判定側の契約なので、表示文だけを i18n へ置く。
+var leaseReadinessIDs = map[string]string{
+	readinessReady: "cli.progress.readiness.ready",
+	readinessEarly: "cli.progress.readiness.early",
+	readinessFull:  "cli.progress.readiness.full",
+}
+
 // leasePhaseIDs は daemon が報告する区間名のうち、値域が固定のものだけを表示名へ写す。
 // 未知の区間名は daemon 由来の値なので訳さず、原文のまま出す。
 var leasePhaseIDs = map[string]string{
@@ -58,6 +66,17 @@ func leaseRouteLabel(localizer *i18n.Localizer, route string) string {
 		return localizer.Localize(id, nil)
 	}
 	return localizer.Localize("cli.progress.route.preparing", nil)
+}
+
+// leaseReadinessLabel は実効 readiness の表示名を返す。未知の値でも表示を止めない。
+func leaseReadinessLabel(localizer *i18n.Localizer, mode string) string {
+	if id, ok := leaseReadinessIDs[mode]; ok {
+		return localizer.Localize(id, nil)
+	}
+	if mode == "" {
+		return localizer.Localize("cli.progress.readiness.unknown", nil)
+	}
+	return "readiness=" + mode
 }
 
 // leasePhaseName は区間名を表示名へ写す。
@@ -112,9 +131,12 @@ type leaseProgress struct {
 	// settled は確定行を1行でも残したかどうかで、総括行を出すかの判断に使う。
 	settled  bool
 	finished bool
-	cancel   context.CancelFunc
-	done     chan struct{}
-	language i18n.Language
+	// readiness は貸出後に client が選んだ実効 readiness。待機しなかったテスト用の
+	// zero value では従来どおり経路だけを総括へ出す。
+	readiness string
+	cancel    context.CancelFunc
+	done      chan struct{}
+	language  i18n.Language
 }
 
 // startLeaseProgress は経路が決まる前の待機行を stderr へ開始する。
@@ -199,6 +221,30 @@ func (p *leaseProgress) draw() {
 	p.bar.Set(p.label(), fmt.Sprintf("  %ds", int(time.Since(p.started).Seconds())))
 }
 
+// setReadiness は貸出応答後に実効 readiness を記録する。
+func (p *leaseProgress) setReadiness(mode string) {
+	p.readiness = mode
+}
+
+// line は待機行を一時的に確定させて案内を出す。animate が無効でも tui.Progress.Line は
+// 通常の一行出力として働くため、progress 設定や端末の有無に左右されない。
+func (p *leaseProgress) line(text string) {
+	p.bar.Line(text)
+}
+
+// summary は総括行の表示を組み立てる。経路を末尾へ置くことで、既存の経路表示と
+// 進捗を読む利用者の視線を保ちつつ、実効 readiness も同じ行で確認できる。
+func (p *leaseProgress) summary(localizer *i18n.Localizer) string {
+	route := leaseRouteLabel(localizer, p.route)
+	if p.readiness == "" {
+		return route
+	}
+	return localizer.Localize("cli.progress.summary", map[string]any{
+		"Readiness": leaseReadinessLabel(localizer, p.readiness),
+		"Route":     route,
+	})
+}
+
 func (p *leaseProgress) label() string {
 	localizer := i18n.New(string(p.language))
 	if !p.routed {
@@ -242,7 +288,8 @@ func (p *leaseProgress) finish() {
 		p.settle()
 		// 総括は準備を待った回にだけ出す。成否は呼び出し側が別に伝えるので、ここでは掛かった時間だけを残す。
 		if p.settled {
-			p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(time.Since(p.started)), leaseRouteLabel(i18n.New(string(p.language)), p.route)))
+			localizer := i18n.New(string(p.language))
+			p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(time.Since(p.started)), p.summary(localizer)))
 		}
 	}
 	p.finished = true
