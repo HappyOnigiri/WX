@@ -10,6 +10,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -76,7 +77,8 @@ func (m *Manager) quarantinedRecoveryFindings(ctx context.Context) []diag.Findin
 		return []diag.Finding{{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityUnchecked,
 			Summary: "the quarantined recovery records could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
+			Action:   "fix the reported state database failure, then run wx doctor again",
+			Messages: diag.FindingMessages{Action: i18n.Message{ID: "diag.action.fix_state_database"}},
 		}}
 	}
 	findings := make([]diag.Finding, 0, len(groups))
@@ -215,7 +217,8 @@ func (m *Manager) recoveryFailureFindings(ctx context.Context) []diag.Finding {
 		return []diag.Finding{{
 			Check: diag.CheckRecoveryJobs, Severity: diag.SeverityProblem,
 			Summary: "the recovery job history could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
+			Action:   "fix the reported state database failure, then run wx doctor again",
+			Messages: diag.FindingMessages{Action: i18n.Message{ID: "diag.action.fix_state_database"}},
 		}}
 	}
 	findings := make([]diag.Finding, 0, len(failures)+1)
@@ -282,7 +285,8 @@ func (m *Manager) workspaceSnapshotFindings(ctx context.Context) []diag.Finding 
 		return []diag.Finding{{
 			Check: diag.CheckWorkspaceSnapshots, Severity: diag.SeverityProblem,
 			Summary: "the workspace snapshot records could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
+			Action:   "fix the reported state database failure, then run wx doctor again",
+			Messages: diag.FindingMessages{Action: i18n.Message{ID: "diag.action.fix_state_database"}},
 		}}
 	}
 	findings := make([]diag.Finding, 0, len(snapshots)+1)

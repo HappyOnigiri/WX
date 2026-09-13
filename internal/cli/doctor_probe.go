@@ -34,6 +34,10 @@ func (c Client) RunDoctorProbe(ctx context.Context, progress io.Writer) ([]diag.
 		return []diag.Finding{{
 			Check: diag.CheckProbe, Severity: diag.SeverityUnchecked, Summary: "the workspace probe did not run",
 			Cause: err.Error(), Action: "start the wx daemon, then run wx doctor --probe again", DependsOn: diag.CheckDaemon,
+			Messages: diag.FindingMessages{
+				Summary: i18n.Message{ID: "diag.probe.not_run"},
+				Action:  i18n.Message{ID: "diag.action.probe_start_daemon"},
+			},
 		}}, nil
 	}
 	workspaces, err := c.probeWorkspaces(ctx)
@@ -42,6 +46,11 @@ func (c Client) RunDoctorProbe(ctx context.Context, progress io.Writer) ([]diag.
 			Check: diag.CheckProbe, Severity: diag.SeverityUnchecked, Summary: "the workspace probe did not run",
 			Cause:  "the registered workspaces could not be read from the daemon: " + err.Error(),
 			Action: "fix the reported daemon failure, then run wx doctor --probe again", DependsOn: diag.CheckDaemon,
+			Messages: diag.FindingMessages{
+				Summary: i18n.Message{ID: "diag.probe.not_run"},
+				Cause:   i18n.Message{ID: "diag.probe.workspaces_unreadable", Data: map[string]any{"Error": err.Error()}},
+				Action:  i18n.Message{ID: "diag.action.probe_fix_daemon"},
+			},
 		}}, nil
 	}
 	if len(workspaces) == 0 {
@@ -49,17 +58,18 @@ func (c Client) RunDoctorProbe(ctx context.Context, progress io.Writer) ([]diag.
 			Check: diag.CheckProbe, Severity: diag.SeverityInfo, Summary: "no workspace was probed",
 			Cause:  "no registered workspace uses a wx worktree, so there was nothing to prepare and check",
 			Action: "no action is required; run wx new or an agent command in a repository to register one",
+			Messages: diag.FindingMessages{
+				Summary: i18n.Message{ID: "diag.probe.none"},
+				Cause:   i18n.Message{ID: "diag.probe.none_cause"},
+				Action:  i18n.Message{ID: "diag.action.probe_register"},
+			},
 		}}, nil
 	}
 	findings, probes := []diag.Finding{}, []diag.Probe{}
 	for _, root := range workspaces {
 		if progress != nil {
 			// 実地検査は workspace 1 個あたり数十秒かかるため、どこまで進んだかを都度出す。
-			line := "probing " + root
-			if cliLanguage(c) == i18n.Japanese {
-				line = "検査中 " + root
-			}
-			_, _ = fmt.Fprintln(progress, line)
+			_, _ = fmt.Fprintln(progress, cliLocalizer(c).Localize("cli.probe.progress", map[string]any{"Root": root}))
 		}
 		probe, workspaceFindings := c.probeWorkspace(ctx, root)
 		probes = append(probes, probe)
@@ -100,8 +110,9 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 	// 前の workspace の返却・削除・補充と並走させると、測るのが準備の重さではなくなる。
 	c.waitBenchIdle(ctx)
 	if _, err := c.retireStandby(ctx, root); err != nil {
-		probe.Error = "retire standby: " + err.Error()
-		return probe, []diag.Finding{probeLeaseProblem(root, probe.Error)}
+		stage := newProbeStage("retire standby", err)
+		probe.Error, probe.ErrorMessage = stage.text, stage.message
+		return probe, []diag.Finding{probeLeaseProblem(root, stage)}
 	}
 	ownerID, ownerToken := leaseOwnerFromEnvironment()
 	params := rpc.ResolveAndLeaseParams{
@@ -114,20 +125,23 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 	defer cancelLease()
 	var lease daemon.Lease
 	if err := c.RPC.Call(leaseCtx, "ResolveAndLease", params, &lease); err != nil {
-		probe.Error = "lease: " + err.Error()
-		return probe, []diag.Finding{probeLeaseProblem(root, probe.Error)}
+		stage := newProbeStage("lease", err)
+		probe.Error, probe.ErrorMessage = stage.text, stage.message
+		return probe, []diag.Finding{probeLeaseProblem(root, stage)}
 	}
 	probe.SlotID, probe.Path, probe.LeaseMS = lease.SessionID, lease.Path, time.Since(started).Milliseconds()
 	defer c.releaseProbeLease(lease)
 	findings := []diag.Finding{}
 	if err := c.waitBenchReadiness(ctx, lease, "WaitEarlyReady"); err != nil {
-		probe.Error = "early ready: " + err.Error()
-		return probe, append(findings, probePrepareProblem(root, lease.Path, probe.Error))
+		stage := newProbeStage("early ready", err)
+		probe.Error, probe.ErrorMessage = stage.text, stage.message
+		return probe, append(findings, probePrepareProblem(root, lease.Path, stage))
 	}
 	probe.EarlyReadyMS = time.Since(started).Milliseconds()
 	if err := c.waitBenchReadiness(ctx, lease, "WaitReady"); err != nil {
-		probe.Error = "full ready: " + err.Error()
-		return probe, append(findings, probePrepareProblem(root, lease.Path, probe.Error))
+		stage := newProbeStage("full ready", err)
+		probe.Error, probe.ErrorMessage = stage.text, stage.message
+		return probe, append(findings, probePrepareProblem(root, lease.Path, stage))
 	}
 	probe.FullReadyMS = time.Since(started).Milliseconds()
 	measurement := c.prepareMeasurement(ctx, lease.SessionID)
@@ -154,12 +168,9 @@ func (c Client) releaseProbeLease(lease daemon.Lease) {
 	defer cancel()
 	params := map[string]any{"session_id": lease.SessionID, "reason": "wx-doctor-probe", "discard": true}
 	if err := c.RPC.Call(releaseCtx, "ReleaseLease", params, nil); err != nil {
-		lang := cliLanguage(c)
-		if lang == i18n.Japanese {
-			fmt.Fprintln(os.Stderr, "警告: probe 用貸出 "+lease.SessionID+" の返却に失敗:", err)
-		} else {
-			fmt.Fprintln(os.Stderr, "warning: release probe lease "+lease.SessionID+":", err)
-		}
+		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.probe.release_failed", map[string]any{
+			"SessionID": lease.SessionID, "Error": err.Error(),
+		}))
 	}
 }
 

@@ -117,8 +117,8 @@ func TestPickerEnterRejectsInUseAndReturnsTarget(t *testing.T) {
 	})
 	result, cmd := m.Update(keyPress("enter"))
 	m = result.(pickerModel)
-	if cmd != nil || m.status == "" || m.result.Resumable() {
-		t.Fatalf("in-use enter status=%q target=%+v cmd=%v", m.status, m.result, cmd)
+	if cmd != nil || m.statusID == "" || m.result.Resumable() {
+		t.Fatalf("in-use enter status=%q target=%+v cmd=%v", m.statusID, m.result, cmd)
 	}
 
 	result, _ = m.Update(keyPress("down"))
@@ -157,8 +157,8 @@ func TestPickerSearchNarrowsTitleAndPath(t *testing.T) {
 	}
 	result, cmd := m.Update(keyPress("enter"))
 	m = result.(pickerModel)
-	if cmd != nil || m.result.Resumable() || m.status == "" {
-		t.Fatalf("no-match enter status=%q cmd=%v", m.status, cmd)
+	if cmd != nil || m.result.Resumable() || m.statusID == "" {
+		t.Fatalf("no-match enter status=%q cmd=%v", m.statusID, cmd)
 	}
 
 	result, _ = m.Update(keyPress("backspace"))

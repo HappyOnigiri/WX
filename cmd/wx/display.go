@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // slotColumn は slots 表の 1 列である。min は値が短いときも保つ既定幅で、列の入れ替わりを目立たせないために置く。
@@ -137,34 +138,33 @@ func replyInt(reply map[string]any, key string) int {
 
 // lifecycleConflict は反対の要求を拒否した daemon が実行中の操作を示す。
 // 送信済みの signal は取り消せないため、要求した状態を待つだけでは期限を消費する。
-func lifecycleConflict(reply map[string]any, wanted string) string {
+func lifecycleConflict(reply map[string]any, wanted string) i18n.Message {
 	if conflict, _ := reply["conflict"].(bool); !conflict {
-		return ""
+		return i18n.Message{}
 	}
 	if stopping, _ := reply["stop_pending"].(bool); stopping && wanted != "stop" {
-		return "the daemon is already stopping; wait for it to exit and run wx daemon start"
+		return i18n.Message{ID: "cli.daemon.stopping"}
 	}
 	if restarting, _ := reply["restart_pending"].(bool); restarting && wanted != "restart" {
-		return "the daemon is already restarting; run the command again once the replacement is up"
+		return i18n.Message{ID: "cli.daemon.restarting"}
 	}
-	return ""
+	return i18n.Message{}
 }
 
 // gateWaitReason は要求受理時のスナップショットに基づき、daemon が待っていた理由を説明する。
 // 受理後の状態は問い合わせず、待機中の RPC でゲートの判断材料を増やさない。
-func gateWaitReason(reply map[string]any) string {
+func gateWaitReason(reply map[string]any) i18n.Message {
 	if jobs := replyInt(reply, "queued_jobs"); jobs > 0 {
-		return fmt.Sprintf("%d job(s) were still queued when the request was accepted; the daemon waits for them to finish", jobs)
+		return i18n.Message{ID: "wx.daemon.gate.queued_jobs", Data: map[string]any{"Count": jobs}}
 	}
 	if inflight := replyInt(reply, "inflight_requests"); inflight > 0 {
-		return fmt.Sprintf("%d other request(s) were still in flight when the request was accepted", inflight)
+		return i18n.Message{ID: "wx.daemon.gate.inflight", Data: map[string]any{"Count": inflight}}
 	}
-	reason := "the daemon was idle when the request was accepted, so a long-running request or job arrived after that"
 	logPath, err := config.LogPath()
 	if err != nil {
-		return reason + "; check the daemon log for the requests and jobs that followed"
+		return i18n.Message{ID: "wx.daemon.gate.idle"}
 	}
-	return fmt.Sprintf("%s; check %s for the requests and jobs that followed", reason, logPath)
+	return i18n.Message{ID: "wx.daemon.gate.idle_log", Data: map[string]any{"Path": logPath}}
 }
 
 // displayKeyWidth は表示行の key 列の最小幅。

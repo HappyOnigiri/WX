@@ -103,11 +103,7 @@ func runDoctor(ctx context.Context, args []string) int {
 	defer cancel()
 	// 診断は daemon の応答待ちと接続失敗時のローカル検査で待たされるため、結果が出るまで待機行を出す。
 	// --json の出力は機械が読むため、端末でも待機行を出さない。
-	progressLabel := "diagnosing"
-	if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-		progressLabel = "診断中"
-	}
-	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout) && !*jsonOut, progressLabel)
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout) && !*jsonOut, i18n.T(ctx, "progress.diagnosing", nil))
 	defer waiting.Finish()
 	var reply diag.Reply
 	params := any(struct{}{})
@@ -175,6 +171,11 @@ func staleDaemonFindings(reply diag.Reply) []diag.Finding {
 			Cause: fmt.Sprintf("the daemon answers with JSON schema %d, which wx doctor can read, but its reply carried no check result at all",
 				reply.SchemaVersion),
 			Action: "check the daemon log for the failed reply, then run wx doctor again",
+			Messages: diag.FindingMessages{
+				Summary: i18n.Message{ID: "diag.daemon.no_findings"},
+				Cause:   i18n.Message{ID: "diag.daemon.empty_reply", Data: map[string]any{"Schema": reply.SchemaVersion}},
+				Action:  i18n.Message{ID: "diag.action.check_daemon_log"},
+			},
 		}}
 	}
 	return []diag.Finding{{
@@ -182,10 +183,24 @@ func staleDaemonFindings(reply diag.Reply) []diag.Finding {
 		Cause: fmt.Sprintf("the daemon answers with JSON schema %d, and wx doctor needs schema %d or newer to read its results",
 			reply.SchemaVersion, diag.FindingsSchemaVersion),
 		Action: "run wx daemon restart so the daemon runs this wx binary, then run wx doctor again",
+		Messages: diag.FindingMessages{
+			Summary: i18n.Message{ID: "diag.daemon.no_findings"},
+			Cause: i18n.Message{ID: "diag.daemon.old_schema", Data: map[string]any{
+				"Schema": reply.SchemaVersion, "Required": diag.FindingsSchemaVersion,
+			}},
+			Action: i18n.Message{ID: "diag.action.daemon_restart_wx"},
+		},
 	}}
 }
 
 func printDoctorLanguage(reply diag.Reply, jsonOut, verbose, probe bool, lang i18n.Language) {
+	// CLI 側で作った finding は message ID を持つため、ここで表示言語を確定させる。
+	// --json は機械向けの契約なので、表示言語にかかわらず英語で解決する。
+	resolveLanguage := lang
+	if jsonOut {
+		resolveLanguage = i18n.English
+	}
+	reply = diag.Resolve(reply, resolveLanguage)
 	if jsonOut {
 		data, _ := json.MarshalIndent(reply, "", "  ")
 		fmt.Println(string(data))

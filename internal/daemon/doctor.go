@@ -10,6 +10,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -129,7 +130,8 @@ func (m *Manager) registrationFindings(ctx context.Context) []diag.Finding {
 		return []diag.Finding{{
 			Check: diag.CheckWorktreeRegistration, Severity: diag.SeverityProblem,
 			Summary: "the registered workspaces could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
+			Action:   "fix the reported state database failure, then run wx doctor again",
+			Messages: diag.FindingMessages{Action: i18n.Message{ID: "diag.action.fix_state_database"}},
 		}}
 	}
 	findings := []diag.Finding{}
@@ -198,7 +200,8 @@ func (m *Manager) standbyFindings(ctx context.Context) []diag.Finding {
 		return []diag.Finding{{
 			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityProblem,
 			Summary: "the standby replenishment state could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
+			Action:   "fix the reported state database failure, then run wx doctor again",
+			Messages: diag.FindingMessages{Action: i18n.Message{ID: "diag.action.fix_state_database"}},
 		}}
 	}
 	findings := make([]diag.Finding, 0, len(items)+1)

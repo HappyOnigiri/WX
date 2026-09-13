@@ -20,27 +20,27 @@ func printDoctorProbes(w io.Writer, probes []diag.Probe, verbose bool) {
 }
 
 func printDoctorProbesLanguage(w io.Writer, probes []diag.Probe, verbose bool, lang i18n.Language) {
-	probeLabel, errorLabel, leaseLabel, earlyLabel, fullLabel, prepareLabel, diskLabel := "probe", "error", "lease", "EARLY READY", "FULL READY", "prepare job", "disk"
-	if lang == i18n.Japanese {
-		probeLabel, errorLabel, leaseLabel, earlyLabel, fullLabel, prepareLabel, diskLabel = "検査", "エラー", "貸出", "早期準備完了", "準備完了", "準備 job", "ディスク"
-	}
+	localizer := i18n.New(string(lang))
+	probeLabel := localizer.Localize("wx.probe.label", nil)
+	errorLabel := localizer.Localize("wx.probe.error", nil)
+	leaseLabel := localizer.Localize("wx.probe.lease", nil)
+	earlyLabel := localizer.Localize("wx.probe.early_ready", nil)
+	fullLabel := localizer.Localize("wx.probe.full_ready", nil)
+	prepareLabel := localizer.Localize("wx.probe.prepare_job", nil)
+	diskLabel := localizer.Localize("wx.probe.disk", nil)
 	for _, probe := range probes {
 		_, _ = fmt.Fprintln(w)
 		_, _ = fmt.Fprintln(w, probeLabel+" "+probe.Workspace)
 		if probe.Error != "" {
-			_, _ = fmt.Fprintf(w, "  %-13s %s\n", errorLabel, localizeProbeError(probe.Error, lang))
+			_, _ = fmt.Fprintf(w, "  %-13s %s\n", errorLabel, probeErrorText(localizer, probe))
 		}
 		_, _ = fmt.Fprintf(w, "  %-13s %s\n", leaseLabel, formatProbeDuration(probe.LeaseMS))
 		_, _ = fmt.Fprintf(w, "  %-13s %s\n", earlyLabel, formatProbeDuration(probe.EarlyReadyMS))
 		_, _ = fmt.Fprintf(w, "  %-13s %s\n", fullLabel, formatProbeDuration(probe.FullReadyMS))
-		printProbeUsageLanguage(w, probe, lang, diskLabel)
+		printProbeUsageLanguage(w, probe, localizer, diskLabel)
 		if probe.PhasesUnavailable {
 			// 計測は daemon のメモリにしか残らないため、引けなかったことを黙って内訳なしにしない。
-			if lang == i18n.Japanese {
-				_, _ = fmt.Fprintf(w, "  %-13s 準備の内訳を利用できません。daemon に計測値が残っていません\n", prepareLabel)
-			} else {
-				_, _ = fmt.Fprintf(w, "  %-13s breakdown unavailable; the daemon no longer holds the measurement\n", prepareLabel)
-			}
+			_, _ = fmt.Fprintf(w, "  %-13s %s\n", prepareLabel, localizer.Localize("wx.probe.breakdown_unavailable", nil))
 		}
 		if verbose {
 			printProbePhases(w, probe.Phases)
@@ -48,41 +48,23 @@ func printDoctorProbesLanguage(w io.Writer, probes []diag.Probe, verbose bool, l
 	}
 }
 
-func localizeProbeError(value string, lang i18n.Language) string {
-	if lang != i18n.Japanese {
-		return value
+// probeErrorText は失敗した区間だけを訳す。原因は外部由来の本文なので原文のまま残す。
+func probeErrorText(localizer *i18n.Localizer, probe diag.Probe) string {
+	if text := localizer.Message(probe.ErrorMessage); text != "" {
+		return text
 	}
-	for _, replacement := range []struct{ en, ja string }{
-		{"retire standby:", "standby を退役:"},
-		{"lease:", "貸出:"},
-		{"early ready:", "早期準備完了:"},
-		{"full ready:", "準備完了:"},
-	} {
-		if strings.HasPrefix(value, replacement.en) {
-			return replacement.ja + strings.TrimPrefix(value, replacement.en)
-		}
-	}
-	return value
+	return probe.Error
 }
 
-func printProbeUsageLanguage(w io.Writer, probe diag.Probe, lang i18n.Language, diskLabel string) {
-	exclusiveLabel, sharedLabel := "exclusive", "shared"
-	if lang == i18n.Japanese {
-		exclusiveLabel, sharedLabel = "専有", "共有"
-	}
+func printProbeUsageLanguage(w io.Writer, probe diag.Probe, localizer *i18n.Localizer, diskLabel string) {
+	exclusiveLabel := localizer.Localize("wx.probe.exclusive", nil)
+	sharedLabel := localizer.Localize("wx.probe.shared", nil)
 	switch {
 	case probe.Usage == diag.ProbeUsageMeasured && len(probe.Repositories) == 0:
-		if lang == i18n.Japanese {
-			_, _ = fmt.Fprintf(w, "  %-13s 準備済み slot で測定された repository はありません\n", diskLabel)
-		} else {
-			_, _ = fmt.Fprintf(w, "  %-13s no repository was measured in the prepared slot\n", diskLabel)
-		}
+		_, _ = fmt.Fprintf(w, "  %-13s %s\n", diskLabel, localizer.Localize("wx.probe.no_repository", nil))
 	case probe.Usage != diag.ProbeUsageMeasured:
-		if lang == i18n.Japanese {
-			_, _ = fmt.Fprintf(w, "  %-13s %s。daemon は準備済み slot の測定を完了していません\n", diskLabel, probe.Usage)
-		} else {
-			_, _ = fmt.Fprintf(w, "  %-13s %s; the daemon had not finished measuring the prepared slot\n", diskLabel, probe.Usage)
-		}
+		_, _ = fmt.Fprintf(w, "  %-13s %s\n", diskLabel,
+			localizer.Localize("wx.probe.usage_incomplete", map[string]any{"Usage": probe.Usage}))
 	}
 	for _, repository := range probe.Repositories {
 		_, _ = fmt.Fprintf(w, "    %-24s %9s %-4s  %9s %s\n", repository.Name,

@@ -33,6 +33,7 @@ var guidance = []string{
 	"- Do not translate payload values (paths, IDs, state names, times, external errors); pass them as template data.",
 	fmt.Sprintf("- Record an exception in %s as `<path><TAB>%s|%s<TAB><reason>`; the reason is required.", exclusionsFileName, kindExempt, kindBacklog),
 	fmt.Sprintf("- %s entries stay reported as warnings; clear one by migrating the file and deleting its line.", kindBacklog),
+	"- Delete the line of a file that no longer holds a Japanese literal, and of a path that is no longer scanned; a stale entry is an error.",
 }
 
 func main() {
@@ -98,6 +99,9 @@ func loadExclusions(root string) (map[string]string, error) {
 func scan(root string, kinds map[string]string) (problems, warnings []string, err error) {
 	fset := token.NewFileSet()
 	backlog := map[string]bool{}
+	// seen は走査で見つけた登録済み path、japaneseFound はそのうち日本語リテラルが残っていたものである。
+	// どちらにも入らない登録は、移行済みか存在しない path を指しているので stale として落とす。
+	seen, japaneseFound := map[string]bool{}, map[string]bool{}
 	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -117,9 +121,9 @@ func scan(root string, kinds map[string]string) (problems, warnings []string, er
 			return relErr
 		}
 		relative = filepath.ToSlash(relative)
-		kind := kinds[relative]
-		if kind == kindExempt {
-			return nil
+		kind, excluded := kinds[relative]
+		if excluded {
+			seen[relative] = true
 		}
 		file, parseErr := parser.ParseFile(fset, path, nil, 0)
 		if parseErr != nil {
@@ -134,8 +138,13 @@ func scan(root string, kinds map[string]string) (problems, warnings []string, er
 			if unquoteErr != nil || !japanese(value) {
 				return true
 			}
-			if kind == kindBacklog {
-				backlog[relative] = true
+			if excluded {
+				// exempt はファイルごと対象外、backlog は未移行の残務として警告だけを出す。
+				// どちらも「まだ日本語がある」ことを記録し、不要になった行を stale として検出する。
+				japaneseFound[relative] = true
+				if kind == kindBacklog {
+					backlog[relative] = true
+				}
 				return true
 			}
 			position := fset.Position(literal.Pos())
@@ -149,6 +158,14 @@ func scan(root string, kinds map[string]string) (problems, warnings []string, er
 	}
 	for path := range backlog {
 		warnings = append(warnings, path+": still carries Japanese string literals (backlog)")
+	}
+	for path, kind := range kinds {
+		switch {
+		case !seen[path]:
+			problems = append(problems, fmt.Sprintf("%s: %s entry names a file that is not scanned; delete the line", path, kind))
+		case !japaneseFound[path]:
+			problems = append(problems, fmt.Sprintf("%s: %s entry has no Japanese string literal left; delete the line", path, kind))
+		}
 	}
 	sort.Strings(problems)
 	sort.Strings(warnings)

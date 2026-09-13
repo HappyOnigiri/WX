@@ -1,5 +1,7 @@
 package diag
 
+import "github.com/HappyOnigiri/WX/internal/i18n"
+
 // 実地検査が返す検査名。findings と同じ名前空間なので `--json` の識別子としてそのまま使える。
 const (
 	CheckProbe          = "probe"
@@ -36,6 +38,9 @@ type Probe struct {
 	Phases            []ProbePhase `json:"phases,omitempty"`
 	PhasesUnavailable bool         `json:"phases_unavailable,omitempty"`
 	Error             string       `json:"error,omitempty"`
+	// ErrorMessage は Error を表示言語で組み直すための解決前の表示文である。
+	// JSON の形は変えないため出力せず、Error が英語の契約を持ち続ける。
+	ErrorMessage i18n.Message `json:"-"`
 }
 
 // ProbeRepository は準備した slot の repository 1 個分のディスク使用量である。

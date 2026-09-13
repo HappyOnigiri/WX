@@ -139,13 +139,15 @@ func printBenchConfigsLanguage(summaries []BenchConfigSummary, lang i18n.Languag
 	if len(summaries) == 0 || (len(summaries) == 1 && summaries[0].Config.Label == benchCurrentConfigLabel) {
 		return
 	}
-	headline := benchConfigsHeadline(summaries)
-	config, runs, fail, early, full, exclusive, shared := "config", "runs", "fail", "EARLY READY", "FULL READY", "exclusive", "shared"
-	if lang == i18n.Japanese {
-		headline = strings.ReplaceAll(strings.ReplaceAll(headline, "comparison by configuration", "設定ごとの比較"), "usage is the median of the measured runs", "使用量は測定値の中央値")
-		config, runs, fail, early, full, exclusive, shared = "設定", "回数", "失敗", "早期準備完了", "準備完了", "専有", "共有"
-	}
-	fmt.Println(headline)
+	localizer := i18n.New(string(lang))
+	config := localizer.Localize("cli.bench.sweep.config", nil)
+	runs := localizer.Localize("cli.bench.sweep.runs", nil)
+	fail := localizer.Localize("cli.bench.sweep.fail", nil)
+	early := localizer.Localize("cli.bench.early_ready", nil)
+	full := localizer.Localize("cli.bench.full_ready", nil)
+	exclusive := localizer.Localize("cli.bench.exclusive", nil)
+	shared := localizer.Localize("cli.bench.shared", nil)
+	fmt.Println(localizer.Localize(benchConfigsHeadlineID(summaries), nil))
 	fmt.Printf("  %-28s %5s %5s  %-24s %-24s %12s %12s\n", config, runs, fail, early, full, exclusive, shared)
 	for _, summary := range summaries {
 		fmt.Printf("  %-28s %5d %5d  %-24s %-24s %12s %12s\n",
@@ -155,15 +157,15 @@ func printBenchConfigsLanguage(summaries []BenchConfigSummary, lang i18n.Languag
 	}
 }
 
-// benchConfigsHeadline は表の読み方を示す見出しを作る。
+// benchConfigsHeadlineID は表の読み方を示す見出しの message ID を返す。
 // どの設定も1回しか測れていないときは分布を畳んでいないので、min/median/max とは名乗らない。
-func benchConfigsHeadline(summaries []BenchConfigSummary) string {
+func benchConfigsHeadlineID(summaries []BenchConfigSummary) string {
 	for _, summary := range summaries {
 		if summary.Runs > 1 {
-			return "comparison by configuration (min/median/max, usage is the median of the measured runs)"
+			return "cli.bench.sweep.headline_stats"
 		}
 	}
-	return "comparison by configuration (usage is the median of the measured runs)"
+	return "cli.bench.sweep.headline_single"
 }
 
 // formatBenchStat は分布を1列へ畳む。成功した回がない設定は時間を名乗らず `-` を出す。

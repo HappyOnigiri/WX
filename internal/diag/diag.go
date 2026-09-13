@@ -12,6 +12,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 )
 
@@ -75,6 +76,10 @@ func LocalFindings(ctx context.Context, reason error) []Finding {
 		Check: CheckDaemon, Severity: SeverityProblem, Summary: "the wx daemon could not be reached",
 		Target: pathOrEmpty(config.SocketPath), Cause: cause,
 		Action: "run wx daemon start; if it is not installed as a LaunchAgent, run wx daemon install",
+		Messages: FindingMessages{
+			Summary: i18n.Message{ID: "diag.daemon.unreachable"},
+			Action:  i18n.Message{ID: "diag.action.daemon_start_install"},
+		},
 	})
 	return append(findings, UncheckedFindings(CheckDaemon, append([]string{CheckSQLite}, StoreDependentChecks()...)...)...)
 }
@@ -97,6 +102,11 @@ func UncheckedFindings(dependsOn string, checks ...string) []Finding {
 		findings = append(findings, Finding{
 			Check: check, Severity: SeverityUnchecked, Summary: "this check did not run",
 			Cause: daemonUnavailable, Action: "fix the failure this check depends on, then run wx doctor again", DependsOn: dependsOn,
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.unchecked.summary"},
+				Cause:   i18n.Message{ID: "diag.unchecked.cause"},
+				Action:  i18n.Message{ID: "diag.action.fix_dependency"},
+			},
 		})
 	}
 	return findings
@@ -112,13 +122,16 @@ func DegradedFindings(ctx context.Context, databasePath string, openError error,
 		cfg = config.Defaults()
 	}
 	action := fmt.Sprintf("preserve %s for investigation and restore a verified backup from %s.backups, then restart the daemon", databasePath, databasePath)
+	actionMessage := i18n.Message{ID: "diag.action.sqlite_restore", Data: map[string]any{"Path": databasePath}}
 	if previousLayout {
 		action = fmt.Sprintf("stop the daemon and remove %s; wx creates the current layout on the next start", databasePath)
+		actionMessage = i18n.Message{ID: "diag.action.sqlite_remove", Data: map[string]any{"Path": databasePath}}
 	}
 	findings := SharedFindings(ctx, cfg, configError, SharedOptions{})
 	findings = append(findings, Finding{
 		Check: CheckSQLite, Severity: SeverityProblem, Summary: "the daemon is running read-only because its SQLite state is unavailable",
 		Target: databasePath, Cause: openError.Error(), Action: action,
+		Messages: FindingMessages{Summary: i18n.Message{ID: "diag.sqlite.degraded"}, Action: actionMessage},
 	})
 	return append(findings, UncheckedFindings(CheckSQLite, StoreDependentChecks()...)...)
 }
@@ -132,6 +145,10 @@ func configFinding(cfg config.Config, configError string) Finding {
 			Check: CheckConfig, Severity: SeverityProblem, Summary: "the configuration could not be loaded",
 			Target: target, Cause: configError,
 			Action: "fix the reported entry in the configuration file, then run wx config reload",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.config.load_failed"},
+				Action:  i18n.Message{ID: "diag.action.fix_config_entry"},
+			},
 		}
 	}
 	if unknown := cfg.UnknownKeys(); len(unknown) > 0 {
@@ -145,9 +162,17 @@ func configFinding(cfg config.Config, configError string) Finding {
 			Target:  target, Cause: "wx ignored these entries: " + strings.Join(details, ", "),
 			Action:  "correct the spelling of the reported entries or delete those lines, then run wx config reload",
 			Details: details,
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.config.unknown_keys"},
+				Cause:   i18n.Message{ID: "diag.config.ignored_entries", Data: map[string]any{"Entries": strings.Join(details, ", ")}},
+				Action:  i18n.Message{ID: "diag.action.fix_unknown_keys"},
+			},
 		}
 	}
-	return Finding{Check: CheckConfig, Severity: SeverityOK, Summary: "the configuration is loaded", Target: target}
+	return Finding{
+		Check: CheckConfig, Severity: SeverityOK, Summary: "the configuration is loaded", Target: target,
+		Messages: FindingMessages{Summary: i18n.Message{ID: "diag.config.loaded"}},
+	}
 }
 
 func gitFinding(ctx context.Context, cfg config.Config, shared *gitx.Runner) Finding {
@@ -161,11 +186,16 @@ func gitFinding(ctx context.Context, cfg config.Config, shared *gitx.Runner) Fin
 			Check: CheckGit, Severity: SeverityProblem, Summary: "git could not be executed", Target: "git",
 			Cause:  err.Error(),
 			Action: "install Git or fix PATH and the executable permission of git, then run wx doctor again",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.git.failed"},
+				Action:  i18n.Message{ID: "diag.action.install_git"},
+			},
 		}
 	}
 	return Finding{
 		Check: CheckGit, Severity: SeverityOK, Summary: "git is available", Target: "git",
-		Details: []string{singleLine(result.Stdout)},
+		Details:  []string{singleLine(result.Stdout)},
+		Messages: FindingMessages{Summary: i18n.Message{ID: "diag.git.available"}},
 	}
 }
 
@@ -177,6 +207,10 @@ func socketFinding() Finding {
 		return Finding{
 			Check: CheckSocket, Severity: SeverityProblem, Summary: "the daemon socket path could not be resolved",
 			Cause: err.Error(), Action: "check that HOME points to your home directory, then run wx doctor again",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.socket.path_unresolved"},
+				Action:  i18n.Message{ID: "diag.action.check_home"},
+			},
 		}
 	}
 	return pathFinding(pathSpec{
@@ -185,6 +219,10 @@ func socketFinding() Finding {
 		missing:       "the daemon socket does not exist; the daemon creates it when it starts",
 		missingAction: "run wx daemon start if you expect the daemon to be running",
 		repairAction:  "remove or fix the reported path so the daemon can bind its own socket, then run wx daemon start",
+		summaryID:     "diag.socket.unusable",
+		missingID:     "diag.socket.missing",
+		missingID2:    "diag.action.start_if_expected",
+		repairID:      "diag.action.fix_socket_path",
 	})
 }
 
@@ -196,6 +234,10 @@ func stateDatabaseFinding() Finding {
 		return Finding{
 			Check: CheckStateDatabase, Severity: SeverityProblem, Summary: "the state database path could not be resolved",
 			Cause: err.Error(), Action: "check that HOME points to your home directory, then run wx doctor again",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.state_db.path_unresolved"},
+				Action:  i18n.Message{ID: "diag.action.check_home"},
+			},
 		}
 	}
 	return pathFinding(pathSpec{
@@ -204,6 +246,10 @@ func stateDatabaseFinding() Finding {
 		missing:       "the state database does not exist yet; the daemon creates it when it starts",
 		missingAction: "run wx daemon start if you expect the daemon to be running",
 		repairAction:  "restore the file type and its 0600 owner-only access; keep the current file for investigation instead of deleting it",
+		summaryID:     "diag.state_db.unusable",
+		missingID:     "diag.state_db.missing",
+		missingID2:    "diag.action.start_if_expected",
+		repairID:      "diag.action.restore_state_db",
 	})
 }
 
@@ -213,6 +259,11 @@ func launchAgentFinding(restartPending bool) Finding {
 			Check: CheckLaunchAgent, Severity: SeverityInfo, Summary: "the LaunchAgent content check is deferred",
 			Cause:  "a daemon restart is pending, and the running process cannot render the plist of the replacement binary",
 			Action: "run wx doctor again once the replacement daemon is up",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.launch_agent.deferred"},
+				Cause:   i18n.Message{ID: "diag.launch_agent.restart"},
+				Action:  i18n.Message{ID: "diag.action.rerun_after_restart"},
+			},
 		}
 	}
 	path, err := launchd.PlistPath()
@@ -220,44 +271,77 @@ func launchAgentFinding(restartPending bool) Finding {
 		return Finding{
 			Check: CheckLaunchAgent, Severity: SeverityProblem, Summary: "the LaunchAgent plist path could not be resolved",
 			Cause: err.Error(), Action: "check that HOME points to your home directory, then run wx doctor again",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.launch_agent.unresolved"},
+				Action:  i18n.Message{ID: "diag.action.check_home"},
+			},
 		}
 	}
-	if result, statErr := inspectPath(path, 0, 0o600); result != "ok" {
+	if result, resultMessage, statErr := inspectPathDetail(path, 0, 0o600); result != "ok" {
 		if errors.Is(statErr, os.ErrNotExist) {
 			return Finding{
 				Check: CheckLaunchAgent, Severity: SeverityProblem, Summary: "the wx LaunchAgent is not installed",
 				Target: path, Cause: "the LaunchAgent plist does not exist, so the daemon does not start on login",
 				Action: "run wx daemon install",
+				Messages: FindingMessages{
+					Summary: i18n.Message{ID: "diag.launch_agent.not_installed"},
+					Cause:   i18n.Message{ID: "diag.launch_agent.plist_missing"},
+					Action:  i18n.Message{ID: "diag.action.daemon_install"},
+				},
 			}
 		}
 		return Finding{
 			Check: CheckLaunchAgent, Severity: SeverityProblem, Summary: "the LaunchAgent plist is not usable",
 			Target: path, Cause: result, Action: "run wx daemon install to rewrite the plist with owner-only access",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.launch_agent.plist_unusable"},
+				Cause:   resultMessage,
+				Action:  i18n.Message{ID: "diag.action.rewrite_plist"},
+			},
 		}
 	}
 	status, err := launchd.CurrentPlistStatus()
 	switch status {
 	case launchd.PlistCurrent:
-		return Finding{Check: CheckLaunchAgent, Severity: SeverityOK, Summary: "the LaunchAgent plist matches this binary", Target: path}
+		return Finding{
+			Check: CheckLaunchAgent, Severity: SeverityOK, Summary: "the LaunchAgent plist matches this binary", Target: path,
+			Messages: FindingMessages{Summary: i18n.Message{ID: "diag.launch_agent.plist_current"}},
+		}
 	case launchd.PlistStale:
 		return Finding{
 			Check: CheckLaunchAgent, Severity: SeverityProblem, Summary: "the LaunchAgent plist does not match this binary",
 			Target: path, Cause: "the installed plist differs from the one this wx binary renders, so login starts a different daemon",
 			Action: "run wx daemon install",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.launch_agent.plist_stale"},
+				Cause:   i18n.Message{ID: "diag.launch_agent.stale_cause"},
+				Action:  i18n.Message{ID: "diag.action.daemon_install"},
+			},
 		}
 	case launchd.PlistUnknown:
 		cause := "the installed plist could not be compared with the one this wx binary renders"
+		causeMessage := i18n.Message{ID: "diag.launch_agent.compare_cause"}
 		if err != nil {
-			cause = err.Error()
+			cause, causeMessage = err.Error(), i18n.Message{}
 		}
 		return Finding{
 			Check: CheckLaunchAgent, Severity: SeverityUnchecked, Summary: "the LaunchAgent plist could not be compared",
 			Target: path, Cause: cause, Action: "run wx daemon install to reinstall the plist from this binary",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.launch_agent.compare_failed"},
+				Cause:   causeMessage,
+				Action:  i18n.Message{ID: "diag.action.reinstall_plist"},
+			},
 		}
 	}
 	return Finding{
 		Check: CheckLaunchAgent, Severity: SeverityUnchecked, Summary: "the LaunchAgent plist could not be compared",
 		Target: path, Cause: "the plist comparison returned an unknown status", Action: "run wx daemon install to reinstall the plist from this binary",
+		Messages: FindingMessages{
+			Summary: i18n.Message{ID: "diag.launch_agent.compare_failed"},
+			Cause:   i18n.Message{ID: "diag.launch_agent.unknown_status"},
+			Action:  i18n.Message{ID: "diag.action.reinstall_plist"},
+		},
 	}
 }
 
@@ -270,6 +354,10 @@ func worktreeRootFinding(cfg config.Config) Finding {
 			Check: CheckWorktreeRoot, Severity: SeverityProblem, Summary: "the configured worktree root could not be resolved",
 			Target: cfg.Storage.WorktreeRoot, Cause: err.Error(),
 			Action: "fix storage.worktree_root in the configuration file, then run wx config reload",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.worktree_root.unresolved"},
+				Action:  i18n.Message{ID: "diag.action.fix_worktree_root"},
+			},
 		}
 	}
 	return pathFinding(pathSpec{
@@ -278,6 +366,10 @@ func worktreeRootFinding(cfg config.Config) Finding {
 		missing:       "the worktree root does not exist yet; wx creates it when it registers the root",
 		missingAction: "run wx daemon start if you expect slots to be prepared",
 		repairAction:  "fix the path, its 0700 owner-only access, or the mount it lives on; wx retries the registration on each reconcile",
+		summaryID:     "diag.worktree_root.unusable",
+		missingID:     "diag.worktree_root.missing",
+		missingID2:    "diag.action.start_for_slots",
+		repairID:      "diag.action.fix_worktree_path",
 	})
 }
 
@@ -290,6 +382,7 @@ func readinessHookFindings() []Finding {
 			findings = append(findings, Finding{
 				Check: CheckReadinessHooks, Severity: SeverityOK,
 				Summary: "readiness hooks are configured", Target: agent,
+				Messages: FindingMessages{Summary: i18n.Message{ID: "diag.hooks.configured"}},
 			})
 			continue
 		}
@@ -298,6 +391,11 @@ func readinessHookFindings() []Finding {
 			Summary: "readiness hooks are missing or invalid", Target: agent,
 			Cause:  "the agent has no valid wx readiness hooks, so wx waits for readiness in the foreground",
 			Action: "no action is required; configure the hooks only to skip the foreground wait",
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.hooks.missing"},
+				Cause:   i18n.Message{ID: "diag.hooks.missing_cause"},
+				Action:  i18n.Message{ID: "diag.action.hooks_optional"},
+			},
 		})
 	}
 	return findings
@@ -307,25 +405,41 @@ func readinessHookFindings() []Finding {
 type pathSpec struct {
 	check, path, summary                 string
 	missing, missingAction, repairAction string
-	requiredType, requiredPerm           os.FileMode
+	// summaryID・missingID・missingID2・repairID は同じ文の message ID である。
+	// 表示は Resolve が解決し、JSON へ出る英語本文は上の文字列がそのまま担う。
+	summaryID, missingID, missingID2, repairID string
+	requiredType, requiredPerm                 os.FileMode
 }
 
 // pathFinding は種別・権限の検査結果を finding へ写す。
 // 欠損は起動前の正常な状態か、別の検査が報告する故障の結果なので、問題ではなく参考として返す。
 func pathFinding(spec pathSpec) Finding {
-	result, err := inspectPath(spec.path, spec.requiredType, spec.requiredPerm)
+	result, resultMessage, err := inspectPathDetail(spec.path, spec.requiredType, spec.requiredPerm)
 	switch {
 	case result == "ok":
-		return Finding{Check: spec.check, Severity: SeverityOK, Summary: "the path is usable", Target: spec.path}
+		return Finding{
+			Check: spec.check, Severity: SeverityOK, Summary: "the path is usable", Target: spec.path,
+			Messages: FindingMessages{Summary: i18n.Message{ID: "diag.path.ok"}},
+		}
 	case errors.Is(err, os.ErrNotExist):
 		return Finding{
 			Check: spec.check, Severity: SeverityInfo, Summary: "the path does not exist", Target: spec.path,
 			Cause: spec.missing, Action: spec.missingAction,
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: "diag.path.missing"},
+				Cause:   i18n.Message{ID: spec.missingID},
+				Action:  i18n.Message{ID: spec.missingID2},
+			},
 		}
 	default:
 		return Finding{
 			Check: spec.check, Severity: SeverityProblem, Summary: spec.summary, Target: spec.path,
 			Cause: result, Action: spec.repairAction,
+			Messages: FindingMessages{
+				Summary: i18n.Message{ID: spec.summaryID},
+				Cause:   resultMessage,
+				Action:  i18n.Message{ID: spec.repairID},
+			},
 		}
 	}
 }
@@ -349,27 +463,36 @@ func DiagnosticPath(path string, requiredType os.FileMode, requiredPerm os.FileM
 // inspectPath は判定結果に加えて Lstat の失敗を返す。
 // 欠損と権限不足では対処が変わるため、呼び出し側は文面ではなく err で分岐する。
 func inspectPath(path string, requiredType os.FileMode, requiredPerm os.FileMode) (string, error) {
+	result, _, err := inspectPathDetail(path, requiredType, requiredPerm)
+	return result, err
+}
+
+// inspectPathDetail は判定結果に、その表示文を解決する message も添えて返す。
+// Lstat の失敗だけは外部由来の本文なので message を持たず、原文のまま表示する。
+func inspectPathDetail(path string, requiredType os.FileMode, requiredPerm os.FileMode) (string, i18n.Message, error) {
 	if path == "" {
-		return "path unavailable", nil
+		return "path unavailable", i18n.Message{ID: "diag.path.unavailable"}, nil
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
-		return err.Error(), err
+		return err.Error(), i18n.Message{}, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return "unsafe symlink", nil
+		return "unsafe symlink", i18n.Message{ID: "diag.path.unsafe_symlink"}, nil
 	}
 	if requiredType == os.ModeDir && !info.IsDir() {
-		return "not a directory", nil
+		return "not a directory", i18n.Message{ID: "diag.path.not_directory"}, nil
 	}
 	if requiredType == os.ModeSocket && info.Mode()&os.ModeSocket == 0 {
-		return "not a Unix socket", nil
+		return "not a Unix socket", i18n.Message{ID: "diag.path.not_socket"}, nil
 	}
 	if requiredType == 0 && !info.Mode().IsRegular() {
-		return "not a regular file", nil
+		return "not a regular file", i18n.Message{ID: "diag.path.not_regular"}, nil
 	}
 	if info.Mode().Perm() != requiredPerm {
-		return fmt.Sprintf("unsafe permissions %04o; expected %04o", info.Mode().Perm(), requiredPerm), nil
+		actual, expected := fmt.Sprintf("%04o", info.Mode().Perm()), fmt.Sprintf("%04o", requiredPerm)
+		return fmt.Sprintf("unsafe permissions %s; expected %s", actual, expected),
+			i18n.Message{ID: "diag.path.unsafe_permissions", Data: map[string]any{"Actual": actual, "Expected": expected}}, nil
 	}
-	return "ok", nil
+	return "ok", i18n.Message{}, nil
 }

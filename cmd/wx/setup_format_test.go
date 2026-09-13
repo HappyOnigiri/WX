@@ -108,7 +108,7 @@ func TestSetupActionDescriptionsNameWhatChanges(t *testing.T) {
 	if got := setupStepDescription(setup.Step{State: setup.StateUnknown, Reasons: []string{"why"}}); !strings.Contains(got, "why") {
 		t.Fatalf("description=%q", got)
 	}
-	if got := summarizeSetupChange(setup.Step{}); got != "the wx entries" {
+	if got := summarizeSetupChange(i18n.New(string(i18n.English)), setup.Step{}); got != "the wx entries" {
 		t.Fatalf("summary=%q", got)
 	}
 }

@@ -17,15 +17,3 @@ func TestCommandContextKeepsExistingLanguage(t *testing.T) {
 		t.Fatal("commandContext left the context without a language")
 	}
 }
-
-// applyTranslations は宣言順に適用する。後の要素が前の訳出を上書きできることで順序を確かめる。
-func TestApplyTranslationsFollowsDeclarationOrder(t *testing.T) {
-	ordered := []translation{{"ab", "X"}, {"a", "Y"}}
-	if got := applyTranslations("aba", ordered); got != "XY" {
-		t.Fatalf("ordered=%q", got)
-	}
-	reversed := []translation{{"a", "Y"}, {"ab", "X"}}
-	if got := applyTranslations("aba", reversed); got != "YbY" {
-		t.Fatalf("reversed=%q", got)
-	}
-}

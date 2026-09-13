@@ -9,22 +9,24 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // 経路の表示名は貸出応答の Route から引く。未知の経路でも表示を止めない。
 func TestLeaseRouteLabelCoversEveryRouteAndFallsBack(t *testing.T) {
 	t.Parallel()
+	localizer := i18n.New(string(i18n.English))
 	for route, want := range map[string]string{
 		daemon.RouteReady:     "Ready standby",
 		daemon.RouteUpdate:    "Standby update",
 		daemon.RouteColdStart: "Cold start",
 		daemon.RouteRestore:   "Restoring workspace",
 	} {
-		if got := leaseRouteLabel(route); got != want {
+		if got := leaseRouteLabel(localizer, route); got != want {
 			t.Fatalf("leaseRouteLabel(%q)=%q, want %q", route, got, want)
 		}
 	}
-	if got := leaseRouteLabel(""); got == "" {
+	if got := leaseRouteLabel(localizer, ""); got == "" {
 		t.Fatal("an unknown route produced an empty label")
 	}
 }
@@ -95,13 +97,13 @@ func TestLeaseProgressKeepsThePhaseBetweenIntervals(t *testing.T) {
 	t.Parallel()
 	out := &syncWriter{}
 	waiting := newLeaseProgress(out, true)
-	waiting.route = leaseRouteLabel(daemon.RouteColdStart)
+	waiting.route, waiting.routed = daemon.RouteColdStart, true
 	waiting.update(daemon.LeaseProgress{State: "PREPARING", Running: true, Phase: "checkout", PhaseElapsedMS: 300})
 	waiting.update(daemon.LeaseProgress{State: "PREPARING", Running: true})
 	if got := waiting.label(); got != "Cold start: checkout" {
 		t.Fatalf("label=%q, want the previous phase to stay while the job runs", got)
 	}
-	if strings.Contains(out.String(), leaseQueuedLabel) {
+	if strings.Contains(out.String(), "queued") {
 		t.Fatalf("the gap between phases was drawn as waiting: %q", out.String())
 	}
 }
@@ -110,9 +112,9 @@ func TestLeaseProgressKeepsThePhaseBetweenIntervals(t *testing.T) {
 func TestLeaseProgressShowsQueuedOnlyBeforeTheJobRuns(t *testing.T) {
 	t.Parallel()
 	waiting := newLeaseProgress(&syncWriter{}, true)
-	waiting.route = leaseRouteLabel(daemon.RouteColdStart)
+	waiting.route, waiting.routed = daemon.RouteColdStart, true
 	waiting.update(daemon.LeaseProgress{State: "PREPARING"})
-	if got := waiting.label(); got != "Cold start: "+leaseQueuedLabel {
+	if got := waiting.label(); got != "Cold start: queued" {
 		t.Fatalf("label=%q, want the queued label before the job starts", got)
 	}
 	waiting.update(daemon.LeaseProgress{State: "PREPARING", Running: true, Phase: "git-register"})
@@ -127,7 +129,7 @@ func TestLeaseProgressLabelsTheRepositoryOfEachPhase(t *testing.T) {
 	t.Parallel()
 	out := &syncWriter{}
 	waiting := newLeaseProgress(out, true)
-	waiting.route = leaseRouteLabel(daemon.RouteColdStart)
+	waiting.route, waiting.routed = daemon.RouteColdStart, true
 	waiting.update(daemon.LeaseProgress{State: "PREPARING", Running: true, Phase: "checkout", Target: "app", TargetIndex: 1, TargetTotal: 5, PhaseElapsedMS: 400})
 	if got := waiting.label(); got != "Cold start: app (1/5) checkout" {
 		t.Fatalf("label=%q, want the repository and its position", got)
@@ -147,7 +149,7 @@ func TestLeaseProgressSettlesTheTotalOnce(t *testing.T) {
 	t.Parallel()
 	out := &syncWriter{}
 	waiting := newLeaseProgress(out, true)
-	waiting.route = leaseRouteLabel(daemon.RouteColdStart)
+	waiting.route, waiting.routed = daemon.RouteColdStart, true
 	waiting.update(daemon.LeaseProgress{State: "PREPARING", Running: true, Phase: "checkout", PhaseElapsedMS: 100})
 	waiting.finish()
 	waiting.finish()
