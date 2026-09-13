@@ -24,7 +24,7 @@ func TestSnapshotRecordsStoppedRebaseState(t *testing.T) {
 		t.Fatalf("edit stop must leave a clean worktree, got:\n%s", status)
 	}
 	expires := time.Now().Add(time.Hour)
-	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "rebase", expires, nil)
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "rebase", expires, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestSnapshotRecordsStoppedRebaseState(t *testing.T) {
 		t.Fatalf("parents must be lexicographically ordered to keep the commit OID stable: %v", parents)
 	}
 	// SNAPSHOT job の再実行は同じ OID を出す必要がある。出ないと SaveSnapshot の ON CONFLICT が不一致で失敗する。
-	replayed, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "rebase", expires, nil)
+	replayed, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "rebase", expires, nil)
 	if err != nil || replayed.GitStateOID != snapshot.GitStateOID {
 		t.Fatalf("replayed rebase state=%q want %q err=%v", replayed.GitStateOID, snapshot.GitStateOID, err)
 	}
@@ -64,7 +64,7 @@ func TestSnapshotRecordsStoppedRebaseState(t *testing.T) {
 // 進行中 rebase が無い session は、従来の snapshot と同じ 3 本の ref だけを公開する。
 func TestSnapshotWithoutRebaseRecordsNoGitState(t *testing.T) {
 	repository, repo, manager, _ := archiveFixture(t)
-	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "plain", time.Now().Add(time.Hour), nil)
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "plain", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

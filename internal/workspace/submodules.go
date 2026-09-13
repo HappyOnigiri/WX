@@ -77,14 +77,56 @@ func (p *Preparer) materializeSubmodules(ctx context.Context, repo discovery.Rep
 	return nil
 }
 
-// planSubmodules は要求 OID の submodule を列挙する。
-// .gitmodules を持たない repository はここで終わり、追加の Git 起動は1回だけになる。
+// Submodule は rev の `.gitmodules` と index から確定した submodule 1 件の公開表現である。
+// Name は source repository の `<common>/modules/<name>` を指し、Path は worktree 上の配置先を指す。
+// OID は index の gitlink で、rev の tree の値ではない。貸出中に親が gitlink を進めた結果を見るためである。
+type Submodule struct {
+	Name string
+	Path string
+	OID  string
+}
+
+// Submodules は rev の `.gitmodules` に宣言され、index に gitlink がある submodule を返す。
+// prepare の実体化と、返却時の未保全検出が同じ列挙を通るようにするための入口である。
+// `.gitmodules` を持たない rev では Git を1回起動して空を返す。
+func (p *Preparer) Submodules(ctx context.Context, target, rev, identity string) ([]Submodule, error) {
+	modules, err := p.declaredSubmodules(ctx, target, rev, identity)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Submodule, 0, len(modules))
+	for _, module := range modules {
+		out = append(out, Submodule{Name: module.name, Path: module.path, OID: module.oid})
+	}
+	return out, nil
+}
+
+// planSubmodules は要求 OID の submodule のうち、実体化できる entry だけを列挙する。
 func (p *Preparer) planSubmodules(ctx context.Context, repo discovery.Repository, target, oid, identity string) ([]submodule, error) {
-	if !gitProbe(p.RunGitInWorktree(ctx, target, identity, nil, nil, "cat-file", "-e", oid+":.gitmodules")) {
+	declared, err := p.declaredSubmodules(ctx, target, oid, identity)
+	if err != nil {
+		return nil, err
+	}
+	var modules []submodule
+	for _, module := range declared {
+		if module.url == "" {
+			// url が無い entry は clone 後に origin を戻す先が無いため実体化しない。
+			p.logSkip("submodule has no url in .gitmodules", "repository", string(repo.MainPath), "submodule", module.name)
+			continue
+		}
+		modules = append(modules, module)
+	}
+	return modules, nil
+}
+
+// declaredSubmodules は rev の .gitmodules と index から submodule を確定する。
+// .gitmodules を持たない repository はここで終わり、追加の Git 起動は1回だけになる。
+func (p *Preparer) declaredSubmodules(ctx context.Context, target, rev, identity string) ([]submodule, error) {
+	if !gitProbe(p.RunGitInWorktree(ctx, target, identity, nil, nil, "cat-file", "-e", rev+":.gitmodules")) {
 		return nil, nil
 	}
 	// 要求 OID の .gitmodules を worktree の実体に依らず読む。設定は checkout 前でも blob から解決できる。
-	entries, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "config", "--blob", oid+":.gitmodules", "--get-regexp", `^submodule\.`)
+	entries, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "config", "--blob", rev+":.gitmodules", "--get-regexp", `^submodule\.`)
 	if err != nil {
 		if isEmptySubmoduleConfig(ctx, err) {
 			return nil, nil
@@ -98,11 +140,6 @@ func (p *Preparer) planSubmodules(ctx context.Context, repo discovery.Repository
 	var candidates []submodule
 	for _, module := range declared {
 		if module.path == "" {
-			continue
-		}
-		if module.url == "" {
-			// url が無い entry は clone 後に origin を戻す先が無いため実体化しない。
-			p.logSkip("submodule has no url in .gitmodules", "repository", string(repo.MainPath), "submodule", module.name)
 			continue
 		}
 		candidates = append(candidates, module)

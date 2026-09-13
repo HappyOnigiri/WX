@@ -75,7 +75,7 @@ func TestSnapshotAndRestoreLeaveHookBlindedPathsToTheHook(t *testing.T) {
 			installSkipWorktreeHook(t, string(repo.CommonDir), test.flag)
 			blindSource(t, repository, test.flag, "session\n")
 			head := gitCommand(t, repository, "rev-parse", "HEAD")
-			snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "blinded", time.Now().Add(time.Hour), nil)
+			snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "blinded", time.Now().Add(time.Hour), nil)
 			if err != nil {
 				t.Fatal(err)
 			}

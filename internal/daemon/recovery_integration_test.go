@@ -104,7 +104,7 @@ func TestCrashRecoveryConvergesAfterReadyAndRefsExist(t *testing.T) {
 		t.Fatal(err)
 	}
 	archiveManager := archive.Manager{Git: runner, Preparer: &preparer, Ownership: store}
-	first, err := archiveManager.SnapshotWithPersistence(ctx, resolved[0].Repository, repos[0].WorktreePath, id, releasedAt.Add(cfg.Retention.RecoverySnapshot.Duration), nil)
+	first, _, err := archiveManager.SnapshotWithPersistence(ctx, resolved[0].Repository, repos[0].WorktreePath, id, releasedAt.Add(cfg.Retention.RecoverySnapshot.Duration), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

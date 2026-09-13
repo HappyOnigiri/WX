@@ -73,7 +73,7 @@ func TestRemovalJobReplaysAfterPhysicalDeletionBeforeStateCommit(t *testing.T) {
 	}
 	archiveManager := archive.Manager{Git: runner, Preparer: &preparer, Ownership: store}
 	expires := time.Now().Add(time.Hour)
-	snapshot, err := archiveManager.SnapshotWithPersistence(ctx, w.Repositories[0], filepath.Join(slotRoot, repos[0].DirName), id, expires, nil)
+	snapshot, _, err := archiveManager.SnapshotWithPersistence(ctx, w.Repositories[0], filepath.Join(slotRoot, repos[0].DirName), id, expires, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

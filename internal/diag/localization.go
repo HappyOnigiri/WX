@@ -202,6 +202,13 @@ var diagnosticReplacements = []struct{ en, ja string }{
 	{"a workspace could not be leased for the probe", "probe 用に workspace を貸し出せませんでした"},
 	{"fix the reported cause; wx cannot hand this workspace to an agent until then", "報告された原因を修正してください。それまで wx はこの workspace を agent に渡せません"},
 	{"a workspace could not be prepared for the probe", "probe 用に workspace を準備できませんでした"},
+	{"no slot is held back by unsaved submodule work", "未保全の submodule 作業で残っている slot はありません"},
+	{"a slot holds submodule work that its recovery snapshot does not contain", "recovery snapshot に入らない submodule 作業を持つ slot があります"},
+	{"the unsaved submodule records could not be read", "未保全 submodule の記録を読み取れません"},
+	{"the recovery snapshot covers only the parent repository, and ", "recovery snapshot は親 repository しか保存せず、この slot の "},
+	{" submodule(s) of this slot hold work outside it", " 個の submodule にその外側の作業が残っています"},
+	{"commit and push that work from inside the submodule, or copy it out of the slot directory yourself; wx keeps this slot out of automatic reclamation until you delete it with wx clear --discard, but the recovery snapshot of the parent still expires on its own retention, and resuming that session stops working once it does", "submodule の中で commit して push するか、slot directory から自分で退避してください。wx clear --discard で削除するまで wx はこの slot を自動回収の対象にしません。ただし親の recovery snapshot は保持期限で失効し、失効後はその session を再開できなくなります"},
+	{"fix the reported state database failure, then run wx doctor again", "報告された状態データベースの失敗を修正し、wx doctor を再実行してください"},
 	{"read the reported detail log for the failing command, fix its cause, then run wx doctor --probe again", "失敗した command の detail log を読み、原因を修正して wx doctor --probe を再実行してください"},
 }
 

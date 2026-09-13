@@ -39,6 +39,7 @@ func (m *Manager) Doctor(ctx context.Context) diag.Reply {
 	findings = append(findings, m.artifactFindings(ctx)...)
 	findings = append(findings, m.recoveryFailureFindings(ctx)...)
 	findings = append(findings, m.workspaceSnapshotFindings(ctx)...)
+	findings = append(findings, m.unsavedSubmoduleFindings(ctx)...)
 	return doctorReply(findings)
 }
 

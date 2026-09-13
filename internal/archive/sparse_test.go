@@ -31,7 +31,7 @@ func TestSnapshotAndRestoreCarryWorkOutsideTheSparseCone(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, "outside", "new"), []byte("out of cone\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "sparse", time.Now().Add(time.Hour), nil)
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "sparse", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatalf("snapshot with work outside the sparse cone: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestSnapshotAndRestoreCarryWorkOutsideTheSparseCone(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(target, "outside", "new"), []byte("still out of cone\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	second, err := manager.SnapshotWithPersistence(context.Background(), repo, target, "sparse-again", time.Now().Add(time.Hour), nil)
+	second, _, err := manager.SnapshotWithPersistence(context.Background(), repo, target, "sparse-again", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatalf("snapshot the restored out-of-cone work: %v", err)
 	}
