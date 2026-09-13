@@ -916,3 +916,19 @@ func closedChannel() chan struct{} {
 	close(done)
 	return done
 }
+
+// 新しい CLI が古い daemon に当たった場合だけ、未対応の method として案内を出し分ける。
+// 判定を文言の一致に寄せているので、送信側と同じ定数から組み立てた応答でだけ true になることを固定する。
+func TestIsUnknownMethodMatchesOnlyTheDaemonReplyForAnUnsupportedMethod(t *testing.T) {
+	t.Parallel()
+	unsupported := fmt.Errorf("%s: %s", "REQUEST_FAILED", UnknownMethodMessage)
+	if !IsUnknownMethod(unsupported) {
+		t.Fatalf("the reply for an unsupported method was not recognized: %v", unsupported)
+	}
+	if IsUnknownMethod(nil) {
+		t.Fatal("a successful call was classified as an unsupported method")
+	}
+	if IsUnknownMethod(errors.New("REQUEST_FAILED: slot record is unreadable")) {
+		t.Fatal("an application error was classified as an unsupported method")
+	}
+}
