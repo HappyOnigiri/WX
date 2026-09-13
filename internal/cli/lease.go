@@ -286,7 +286,7 @@ func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard, 
 	if wait && reply.JobID != "" {
 		if !jsonOut {
 			localizer := cliLocalizer(c)
-			fmt.Fprintln(os.Stdout, localizer.Localize("cli.release.accepted", map[string]any{"SessionID": sessionID, "Kind": reply.JobKind, "JobID": reply.JobID}))
+			_, _ = fmt.Fprintln(os.Stdout, localizer.Localize("cli.release.accepted", map[string]any{"SessionID": sessionID, "Kind": reply.JobKind, "JobID": reply.JobID}))
 		}
 		statusErr := c.waitForRelease(ctx, &reply, jsonOut)
 		if statusErr != nil {
