@@ -1,0 +1,81 @@
+package workspace
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// shallow module は clone を止めず、object 共有不可の事実だけを warn に残す。
+func TestPrepareMaterializesShallowSubmoduleWithWarning(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	if err := os.WriteFile(filepath.Join(f.moduleDir(), "shallow"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(f.submoduleTarget(), "kid.txt")); err != nil {
+		t.Fatalf("shallow submodule content: %v", err)
+	}
+	logged := f.logged.String()
+	if !strings.Contains(logged, "object sharing is unavailable") || !strings.Contains(logged, "shallow") {
+		t.Fatalf("logged=%q, want a shallow object-sharing warning", logged)
+	}
+}
+
+// promisor module に要求 OID が無い場合は clone を始めず、per-worktree の module gitdir も作らない。
+func TestPrepareSkipsMissingPromisorObjectBeforeWriting(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	if err := os.WriteFile(filepath.Join(f.child, "kid.txt"), []byte("ahead\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, f.child, "add", ".")
+	gitCommand(t, f.child, "commit", "-m", "child ahead")
+	ahead := gitOutput(t, f.child, "rev-parse", "HEAD")
+	gitCommand(t, f.repository, "update-index", "--cacheinfo", "160000,"+ahead+","+submodulePath)
+	gitCommand(t, f.repository, "commit", "-m", "advance gitlink")
+	head := gitOutput(t, f.repository, "rev-parse", "HEAD")
+	gitCommand(t, f.moduleDir(), "--git-dir=.", "config", "remote.origin.promisor", "true")
+	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	assertEmptyGitlinkDirectory(t, f.submoduleTarget())
+	gitDir := gitOutput(t, f.target, "rev-parse", "--path-format=absolute", "--git-dir")
+	if _, err := os.Stat(filepath.Join(gitDir, "modules", submoduleName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("per-worktree module gitdir stat error=%v, want not exist", err)
+	}
+	if !strings.Contains(f.logged.String(), "promisor local module") {
+		t.Fatalf("logged=%q, want a promisor skip warning", f.logged.String())
+	}
+}
+
+// object が揃った promisor module は従来どおり実体化する。
+func TestPrepareMaterializesCompletePromisorSubmodule(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	gitCommand(t, f.moduleDir(), "--git-dir=.", "config", "remote.origin.promisor", "true")
+	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(f.submoduleTarget(), "kid.txt")); err != nil {
+		t.Fatalf("promisor submodule content: %v", err)
+	}
+}
+
+func TestSubmodulesAtRevisionReadsGitlinkFromTree(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	modules, err := f.preparer.SubmodulesAtRevision(context.Background(), f.repository, f.head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modules) != 1 || modules[0].Name != submoduleName || modules[0].Path != submodulePath || modules[0].OID != submoduleGitlink(t, f.repository, f.head) {
+		t.Fatalf("modules=%+v, want the gitlink from %s", modules, f.head)
+	}
+}

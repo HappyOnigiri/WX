@@ -130,7 +130,11 @@ UPDATEは現行ruleとcopy元から作る新計画を旧履歴と比較し、追
 linked worktreeではGitがsubmoduleのgitdirを`$GIT_DIR/modules/<name>`（=`.git/worktrees/<id>/modules/<name>`）に解決するため、mainが持つ`.git/modules/<name>`を再利用できない。
 何もしないとsubmoduleは空ディレクトリのまま残り、ネットワークclone以外に埋める手段がない。
 そこでwxはmain側の`.git/modules/<name>`をclone元として実体化する。
-objectsはローカルcloneのhardlinkで共有され、共有`.git`側のディスクは増えない。
+通常のlocal moduleではobjectsがローカルcloneのhardlinkで共有され、共有`.git`側のディスクは増えない。
+ただしmoduleがshallowだとGitのlocal最適化が無効になり、objectsは共有されずsource repository側へ複製される。
+moduleがpromisor（partial clone）で要求gitlinkのobjectが不足している場合はcheckout後に失敗するため、wxは書き込む前にそのsubmoduleを省略する。
+要求objectが揃っているpromisorは実体化できるが、slot側へpromisor設定は引き継がれない。
+これらの条件は`wx doctor`の`submodule_sharing`でも確認でき、shallowはwarnを残して実体化を続ける。
 
 cloneに必要なconfigは必ず`-c`引数で渡す。
 `internal/gitx`の環境サニタイズが`GIT_CONFIG_*`を落とすため、repo-local configや環境変数では子のcloneプロセスに効かない。
