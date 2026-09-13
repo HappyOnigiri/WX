@@ -338,6 +338,8 @@ func captureStdout(t *testing.T, fn func()) string {
 }
 
 func TestRunHookHelpPrintsUsageAndExitsTwo(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	for _, args := range [][]string{{"--help"}, {"-h"}} {
 		stderr := captureStderr(t, func() {
 			if code := runHook(context.Background(), args); code != 2 {

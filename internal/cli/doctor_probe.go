@@ -11,6 +11,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -54,7 +55,11 @@ func (c Client) RunDoctorProbe(ctx context.Context, progress io.Writer) ([]diag.
 	for _, root := range workspaces {
 		if progress != nil {
 			// 実地検査は workspace 1 個あたり数十秒かかるため、どこまで進んだかを都度出す。
-			_, _ = fmt.Fprintln(progress, "probing "+root)
+			line := "probing " + root
+			if cliLanguage(c) == i18n.Japanese {
+				line = "検査中 " + root
+			}
+			_, _ = fmt.Fprintln(progress, line)
 		}
 		probe, workspaceFindings := c.probeWorkspace(ctx, root)
 		probes = append(probes, probe)
@@ -102,6 +107,7 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 	params := rpc.ResolveAndLeaseParams{
 		Agent: probeAgentKind, ClientPID: 0, CWD: root, ForceWorktree: c.forceWorktree,
 		LeaseKind: state.LeaseKindPath, LeaseOwnerSessionID: ownerID, LeaseOwnerToken: ownerToken,
+		Language: c.Config.LanguageForRPC(),
 	}
 	started := time.Now()
 	leaseCtx, cancelLease := context.WithTimeout(ctx, c.discoveryTimeout())
@@ -148,7 +154,12 @@ func (c Client) releaseProbeLease(lease daemon.Lease) {
 	defer cancel()
 	params := map[string]any{"session_id": lease.SessionID, "reason": "wx-doctor-probe", "discard": true}
 	if err := c.RPC.Call(releaseCtx, "ReleaseLease", params, nil); err != nil {
-		fmt.Fprintln(os.Stderr, "warning: release probe lease "+lease.SessionID+":", err)
+		lang := cliLanguage(c)
+		if lang == i18n.Japanese {
+			fmt.Fprintln(os.Stderr, "警告: probe 用貸出 "+lease.SessionID+" の返却に失敗:", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "warning: release probe lease "+lease.SessionID+":", err)
+		}
 	}
 }
 

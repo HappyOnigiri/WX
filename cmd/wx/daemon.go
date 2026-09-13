@@ -14,6 +14,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/tui"
@@ -135,19 +136,20 @@ func requestDaemonLifecycle(ctx context.Context, method string) (map[string]any,
 }
 
 func runDaemon(ctx context.Context, args []string) int {
+	ctx = commandContext(ctx)
 	fs := pflag.NewFlagSet("daemon", pflag.ContinueOnError)
 	foreground := fs.Bool("foreground", false, "with start, run the daemon in this process")
-	fs.Usage = func() { commandUsage(os.Stdout, "daemon") }
+	fs.Usage = func() { commandUsageLanguage(os.Stdout, "daemon", i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, "daemon", args); done {
 		return code
 	}
 	if fs.NArg() != 1 {
-		commandUsage(os.Stderr, "daemon")
+		commandUsageLanguage(os.Stderr, "daemon", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	action := fs.Arg(0)
 	if *foreground && action != "start" {
-		commandUsage(os.Stderr, "daemon")
+		commandUsageLanguage(os.Stderr, "daemon", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	switch action {
@@ -156,7 +158,7 @@ func runDaemon(ctx context.Context, args []string) int {
 			signalCtx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 			if err := daemon.Serve(signalCtx); err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
+				fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 				return 1
 			}
 			return 0
@@ -167,27 +169,27 @@ func runDaemon(ctx context.Context, args []string) int {
 	case "install":
 		binary, err := launchd.ResolveBinary()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 			return 1
 		}
 		logPath, _ := config.LogPath()
 		if err := launchd.Install(ctx, binary, logPath); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 			return 1
 		}
-		fmt.Println("installed", launchd.Label)
+		fmt.Println(i18n.T(ctx, "common.installed", nil), launchd.Label)
 		return 0
 	case "uninstall":
 		if err := launchd.Uninstall(ctx); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 			return 1
 		}
-		fmt.Println("uninstalled", launchd.Label)
+		fmt.Println(i18n.T(ctx, "common.uninstalled", nil), launchd.Label)
 		return 0
 	case "restart":
 		return restartDaemon(ctx)
 	default:
-		commandUsage(os.Stderr, "daemon")
+		commandUsageLanguage(os.Stderr, "daemon", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 }
@@ -196,10 +198,10 @@ func runDaemon(ctx context.Context, args []string) int {
 func startDaemon(ctx context.Context) int {
 	socket, err := config.SocketPath()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
-	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "starting")
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), i18n.T(ctx, "progress.starting", nil))
 	defer waiting.Finish()
 	// 既に待受中なら目的の状態なので launchctl より先に報告する。
 	// ただし停止待ちが残る daemon は、最後のジョブ終了後に退出するため対象外とする。
@@ -207,17 +209,25 @@ func startDaemon(ctx context.Context) int {
 		switch reply, err := requestDaemonLifecycle(ctx, "RequestStart"); {
 		case err == nil:
 			if cancelled, _ := reply["stop_cancelled"].(bool); cancelled {
-				waiting.Line("cancelled the pending stop of " + launchd.Label)
+				if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+					waiting.Line("保留中の停止要求をキャンセルしました: " + launchd.Label)
+				} else {
+					waiting.Line(i18n.T(ctx, "common.cancelled", nil) + " the pending stop of " + launchd.Label)
+				}
 			}
 			if stopping, _ := reply["stop_pending"].(bool); !stopping {
 				waiting.Finish()
-				fmt.Println("already running", launchd.Label)
+				fmt.Println(i18n.T(ctx, "common.already_running", nil), launchd.Label)
 				return 0
 			}
 			// 停止 signal 済みなので、目的の状態へは退出後に新しい daemon を起動するしかない。
 			if !waitForSocket(ctx, socket, false) {
 				waiting.Finish()
-				fmt.Fprintf(os.Stderr, "error: %s is stopping but did not exit within %s\n", launchd.Label, daemonWaitTimeout)
+				if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+					fmt.Fprintf(os.Stderr, "%s %s は停止処理中ですが、%s 以内に終了しませんでした\n", i18n.T(ctx, "common.error", nil)+":", launchd.Label, daemonWaitTimeout)
+				} else {
+					fmt.Fprintf(os.Stderr, "%s %s is stopping but did not exit within %s\n", i18n.T(ctx, "common.error", nil)+":", launchd.Label, daemonWaitTimeout)
+				}
 				return 1
 			}
 		case rpc.IsConnectError(err):
@@ -225,24 +235,33 @@ func startDaemon(ctx context.Context) int {
 		default:
 			// socket に応答があり目的の状態である。低下状態や旧 daemon もここに入り、停止待ちは保持しない。
 			waiting.Finish()
-			fmt.Println("already running", launchd.Label)
+			fmt.Println(i18n.T(ctx, "common.already_running", nil), launchd.Label)
 			return 0
 		}
 	}
 	if err := startAndWaitForDaemon(ctx, socket); err != nil {
 		waiting.Finish()
+		lang := i18n.LanguageFromContext(ctx)
 		if errors.Is(err, errNoDaemonAnswered) {
-			fmt.Fprintf(os.Stderr, "error: launchd was asked to start %s but no daemon answered %s within %s\n", launchd.Label, socket, daemonWaitTimeout)
+			if lang == i18n.Japanese {
+				fmt.Fprintf(os.Stderr, "%s launchd に %s の起動を依頼しましたが、%s 以内に %s から daemon の応答がありませんでした\n", i18n.T(ctx, "common.error", nil)+":", launchd.Label, socket, daemonWaitTimeout)
+			} else {
+				fmt.Fprintf(os.Stderr, "%s launchd was asked to start %s but no daemon answered %s within %s\n", i18n.T(ctx, "common.error", nil)+":", launchd.Label, socket, daemonWaitTimeout)
+			}
 			return 1
 		}
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", localizeDaemonText(err.Error(), lang))
 		if errors.Is(err, launchd.ErrServiceMissing) {
-			fmt.Fprintln(os.Stderr, "run wx daemon install to register the LaunchAgent first")
+			if lang == i18n.Japanese {
+				fmt.Fprintln(os.Stderr, "LaunchAgent を登録するには wx daemon install を実行してください")
+			} else {
+				fmt.Fprintln(os.Stderr, "run wx daemon install to register the LaunchAgent first")
+			}
 		}
 		return 1
 	}
 	waiting.Finish()
-	fmt.Println("started", launchd.Label)
+	fmt.Println(i18n.T(ctx, "common.started", nil), launchd.Label)
 	return 0
 }
 
@@ -283,38 +302,39 @@ func startAndWaitForDaemon(ctx context.Context, socket string) error {
 func stopDaemon(ctx context.Context) int {
 	socket, err := config.SocketPath()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
-	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "stopping")
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), i18n.T(ctx, "progress.stopping", nil))
 	defer waiting.Finish()
 	reply, err := requestDaemonLifecycle(ctx, "RequestStop")
 	if err != nil {
 		waiting.Finish()
 		if rpc.IsConnectError(err) {
-			fmt.Println("already stopped", launchd.Label)
+			fmt.Println(i18n.T(ctx, "common.already_stopped", nil), launchd.Label)
 			return 0
 		}
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	if reason := lifecycleConflict(reply, "stop"); reason != "" {
 		waiting.Finish()
-		fmt.Fprintln(os.Stderr, "error:", reason)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", localizeDaemonText(reason, i18n.LanguageFromContext(ctx)))
 		return 1
 	}
 	if already, _ := reply["already_pending"].(bool); already {
 		// daemon が受け付ける SIGTERM は最初の一度だけなので、再要求せず待機を続ける。
-		waiting.Line("stop was already requested; waiting for the daemon to exit")
+		waiting.Line(localizeDaemonText("stop was already requested; waiting for the daemon to exit", i18n.LanguageFromContext(ctx)))
 	}
 	if !waitForSocket(ctx, socket, false) {
 		waiting.Finish()
-		fmt.Fprintf(os.Stderr, "error: %s accepted the stop request but did not exit within %s\n", launchd.Label, daemonWaitTimeout)
-		fmt.Fprintln(os.Stderr, gateWaitReason(reply))
+		lang := i18n.LanguageFromContext(ctx)
+		fmt.Fprintf(os.Stderr, "%s %s\n", i18n.T(ctx, "common.error", nil)+":", localizeDaemonText(fmt.Sprintf("%s accepted the stop request but did not exit within %s", launchd.Label, daemonWaitTimeout), lang))
+		fmt.Fprintln(os.Stderr, localizeDaemonText(gateWaitReason(reply), lang))
 		return 1
 	}
 	waiting.Finish()
-	fmt.Println("stopped", launchd.Label)
+	fmt.Println(i18n.T(ctx, "common.stopped", nil), launchd.Label)
 	return 0
 }
 
@@ -322,22 +342,23 @@ func stopDaemon(ctx context.Context) int {
 func restartDaemon(ctx context.Context) int {
 	socket, err := config.SocketPath()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
-	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), "restarting daemon")
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), i18n.T(ctx, "progress.restarting", nil)+" daemon")
 	defer waiting.Finish()
 	guidance, err := restartAndWaitForDaemon(ctx, socket)
 	if err != nil {
 		waiting.Finish()
-		fmt.Fprintln(os.Stderr, "error:", err)
+		lang := i18n.LanguageFromContext(ctx)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", localizeDaemonText(err.Error(), lang))
 		for _, line := range guidance {
-			fmt.Fprintln(os.Stderr, line)
+			fmt.Fprintln(os.Stderr, localizeDaemonText(line, lang))
 		}
 		return 1
 	}
 	waiting.Finish()
-	fmt.Println("restarted", launchd.Label)
+	fmt.Println(i18n.T(ctx, "common.restarted", nil), launchd.Label)
 	return 0
 }
 

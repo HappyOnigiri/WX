@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	xansi "github.com/charmbracelet/x/ansi"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
@@ -15,7 +18,7 @@ func TestSetupTableKeepsColumnsAlignedAndShowsReasons(t *testing.T) {
 		{ID: "a-very-long-item-name", State: setup.StateNotApplicable, Default: setup.ActionKeep, Target: "/some/path"},
 	}
 	var out bytes.Buffer
-	printSetupTable(&out, steps)
+	printSetupTable(&out, i18n.English, steps)
 	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
 	if len(lines) != len(steps)+1 {
 		t.Fatalf("table rows=%d:\n%s", len(lines), out.String())
@@ -34,7 +37,38 @@ func TestSetupTableKeepsColumnsAlignedAndShowsReasons(t *testing.T) {
 	}
 }
 
+// TestSetupTableKeepsColumnsAlignedInJapanese は、英語の見出し幅で桁を決めてから
+// 訳を入れて列がずれる退行を防ぐ。全角の見出しでも各列の開始位置は揃う。
+func TestSetupTableKeepsColumnsAlignedInJapanese(t *testing.T) {
+	steps := []setup.Step{
+		{ID: "worktree_root", State: setup.StatePresent, Default: setup.ActionKeep, Detail: "/home/user/wx"},
+		{ID: "hooks.claude", State: setup.StateDivergent, Default: setup.ActionUpdate, Detail: "4 wx entries"},
+	}
+	var out bytes.Buffer
+	printSetupTable(&out, i18n.Japanese, steps)
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if !strings.HasPrefix(lines[0], "項目") {
+		t.Fatalf("the header is not localized:\n%s", out.String())
+	}
+	header := strings.Index(lines[0], "状態")
+	if header < 0 {
+		t.Fatalf("the state column is missing:\n%s", out.String())
+	}
+	column := xansi.StringWidth(lines[0][:header])
+	for index, line := range lines[1:] {
+		at := strings.Index(line, string(steps[index].State))
+		if at < 0 {
+			t.Fatalf("row %d has no state:\n%s", index, out.String())
+		}
+		if got := xansi.StringWidth(line[:at]); got != column {
+			t.Fatalf("the state column starts at %d, want %d:\n%s", got, column, out.String())
+		}
+	}
+}
+
 func TestSetupActionDescriptionsNameWhatChanges(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	step := setup.Step{ID: "hooks.codex", Target: "/home/user/.codex/hooks.json", Desired: "/home/user/.local/bin/wx", State: setup.StateDivergent}
 	for action, want := range map[setup.Action]string{
 		setup.ActionInstall: "/home/user/.codex/hooks.json",
@@ -80,6 +114,8 @@ func TestSetupActionDescriptionsNameWhatChanges(t *testing.T) {
 }
 
 func TestSetupWarningsReportStatesThatDidNotSettle(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	var out bytes.Buffer
 	printSetupWarnings(&out, "hooks.claude", setup.ActionInstall, setup.Step{State: setup.StateDivergent, Reasons: []string{"command_other_binary"}})
 	if !strings.Contains(out.String(), "warning: hooks.claude is divergent after install") || !strings.Contains(out.String(), "command_other_binary") {

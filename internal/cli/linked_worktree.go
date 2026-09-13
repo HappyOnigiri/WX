@@ -10,6 +10,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/tui"
 )
 
@@ -87,19 +88,34 @@ func (c Client) confirmLinkedWorktreeBase(ctx context.Context, cwd string, inter
 	if !mismatched {
 		return true
 	}
-	fmt.Fprintf(os.Stderr, "the current directory is a linked worktree of %s at HEAD %s; wx leases a workspace from the main worktree %s at HEAD %s\n",
-		base.Path, shortOID(base.Head), base.MainPath, shortOID(base.MainHead))
+	lang := cliLanguage(c)
+	if lang == i18n.Japanese {
+		fmt.Fprintf(os.Stderr, "現在のディレクトリは %s の linked worktree（HEAD %s）です。wx は main worktree %s（HEAD %s）から workspace を貸し出します\n",
+			base.Path, shortOID(base.Head), base.MainPath, shortOID(base.MainHead))
+	} else {
+		fmt.Fprintf(os.Stderr, "the current directory is a linked worktree of %s at HEAD %s; wx leases a workspace from the main worktree %s at HEAD %s\n",
+			base.Path, shortOID(base.Head), base.MainPath, shortOID(base.MainHead))
+	}
 	if !interactive || !tui.IsTerminal(int(os.Stdin.Fd())) || !tui.IsTerminal(int(os.Stderr.Fd())) {
-		fmt.Fprintln(os.Stderr, "notice: no terminal is attached for the confirmation; leasing a workspace from the main worktree's HEAD")
+		if lang == i18n.Japanese {
+			fmt.Fprintln(os.Stderr, "通知: 確認用の端末がないため、main worktree の HEAD から workspace を貸し出します")
+		} else {
+			fmt.Fprintln(os.Stderr, "notice: no terminal is attached for the confirmation; leasing a workspace from the main worktree's HEAD")
+		}
 		return true
 	}
+	title, yesLabel, yesDescription, noLabel, noDescription := "The current directory is a linked worktree. Lease a workspace from the main worktree's HEAD?", "Yes", "use the main worktree's HEAD "+shortOID(base.MainHead), "No", "cancel; rerun from the main worktree or pass --branch"
+	if lang == i18n.Japanese {
+		title, yesLabel, yesDescription, noLabel, noDescription = "現在のディレクトリは linked worktree です。main worktree の HEAD から workspace を貸し出しますか？", "はい", "main worktree の HEAD "+shortOID(base.MainHead)+" を使う", "いいえ", "キャンセル。main worktree から再実行するか --branch を指定"
+	}
 	answer, err := tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
-		Title:       "The current directory is a linked worktree. Lease a workspace from the main worktree's HEAD?",
+		Title:       title,
 		Description: base.Path + " -> " + base.MainPath,
 		Initial:     0,
+		Language:    string(lang),
 		Options: []tui.Option{
-			{Value: "yes", Label: "Yes", Description: "use the main worktree's HEAD " + shortOID(base.MainHead)},
-			{Value: "no", Label: "No", Description: "cancel; rerun from the main worktree or pass --branch"},
+			{Value: "yes", Label: yesLabel, Description: yesDescription},
+			{Value: "no", Label: noLabel, Description: noDescription},
 		},
 	})
 	return err == nil && answer == "yes"

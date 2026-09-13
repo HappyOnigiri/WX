@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 func TestPrintVerboseStatusDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
@@ -13,7 +15,7 @@ func TestPrintVerboseStatusDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
 		"workspace_details": []map[string]any{{"id": "old", "root": "/repo/old", "repositories": 1, "ready": 1, "leased": 0}},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, true)
+	printStatusDisplay(&output, payload, true, i18n.English)
 	got := output.String()
 	if !strings.Contains(got, "unknown") || !strings.Contains(got, "LAST USED unavailable: daemon JSON schema 5") {
 		t.Fatalf("verbose legacy workspace output did not distinguish unavailable LAST USED:\n%s", got)
@@ -40,7 +42,7 @@ func TestPrintVerboseStatusRetainsDetailsAndUnknownFields(t *testing.T) {
 		"new_top_level":            map[string]any{"answer": 0},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, true)
+	printStatusDisplay(&output, payload, true, i18n.English)
 	got := output.String()
 	for _, want := range []string{
 		"Workspaces", "FAILED (FAILED + QUARANTINED)", "LAST USED", "2026-09-05T00:02:00Z", "Repositories", "Sessions", "Daemon", "Config", "Backup", "Pool", "Jobs", "Snapshots", "Storage", "Retention", "Quarantine",
@@ -77,7 +79,7 @@ func TestPrintVerboseStatusKeepsWorkspacesHiddenFromTheSummary(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, true)
+	printStatusDisplay(&output, payload, true, i18n.English)
 	got := output.String()
 	for _, want := range []string{"POLICY", "HOT", "OFF", "/archive"} {
 		if !strings.Contains(got, want) {
@@ -98,7 +100,7 @@ func TestPrintVerboseStatusListsSessionsAsATable(t *testing.T) {
 		"archived_session_details": map[string]any{"count": 0},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, true)
+	printStatusDisplay(&output, payload, true, i18n.English)
 	got := output.String()
 	for _, want := range []string{"ID", "AGENT", "STATE", "CREATED (", "ELAPSED", "1m 1s", "Archived: 0 (earliest archived —, latest expiry —)"} {
 		if !strings.Contains(got, want) {
@@ -112,13 +114,13 @@ func TestPrintVerboseStatusListsSessionsAsATable(t *testing.T) {
 
 	empty := map[string]any{"schema_version": 19, "session_details": []map[string]any{}, "archived_session_details": map[string]any{}}
 	output.Reset()
-	printStatusDisplay(&output, empty, true)
+	printStatusDisplay(&output, empty, true, i18n.English)
 	if got := output.String(); !strings.Contains(got, "(none)") || !strings.Contains(got, "Archived: (none)") {
 		t.Fatalf("empty session details did not render (none):\n%s", got)
 	}
 
 	output.Reset()
-	printStatusDisplay(&output, map[string]any{"schema_version": 19, "workspace_details": []map[string]any{}}, true)
+	printStatusDisplay(&output, map[string]any{"schema_version": 19, "workspace_details": []map[string]any{}}, true, i18n.English)
 	if got := output.String(); !strings.Contains(got, "(unset)") || !strings.Contains(got, "Archived: —") {
 		t.Fatalf("missing session details did not render (unset):\n%s", got)
 	}
@@ -135,7 +137,7 @@ func TestPrintVerboseStatusKeepsArchivedSessionsFromLegacyDaemons(t *testing.T) 
 		},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, true)
+	printStatusDisplay(&output, payload, true, i18n.English)
 	got := output.String()
 	for _, want := range []string{"Archived: unknown", "daemon JSON schema 18 has no archived session summary", "s2", "ARCHIVED"} {
 		if !strings.Contains(got, want) {
@@ -159,7 +161,7 @@ func TestPrintVerboseStatusListsRepositoriesAsATable(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, true)
+	printStatusDisplay(&output, payload, true, i18n.English)
 	got := output.String()
 	for _, want := range []string{"ID", "PATH", "HOT", "LAST USED", "STANDBY READY", "STANDBY EXPIRES", "r1 /repo/a true", "09/05 09:10", "09/12 09:10"} {
 		if !strings.Contains(got, want) {
@@ -180,13 +182,13 @@ func TestPrintVerboseStatusListsRepositoriesAsATable(t *testing.T) {
 	}
 
 	output.Reset()
-	printStatusDisplay(&output, map[string]any{"schema_version": 19, "repository_details": []map[string]any{}}, true)
+	printStatusDisplay(&output, map[string]any{"schema_version": 19, "repository_details": []map[string]any{}}, true, i18n.English)
 	if got := output.String(); !strings.Contains(got, "(none)") {
 		t.Fatalf("empty repository details did not render (none):\n%s", got)
 	}
 
 	output.Reset()
-	printStatusDisplay(&output, map[string]any{"schema_version": 19, "worktree_roots": []map[string]any{}}, true)
+	printStatusDisplay(&output, map[string]any{"schema_version": 19, "worktree_roots": []map[string]any{}}, true, i18n.English)
 	if got := output.String(); !strings.Contains(got, "(unset)") {
 		t.Fatalf("missing repository details did not render (unset):\n%s", got)
 	}
@@ -204,7 +206,7 @@ func TestPrintVerboseStatusListsQuarantineAsATable(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, true)
+	printStatusDisplay(&output, payload, true, i18n.English)
 	got := output.String()
 	for _, want := range []string{"ID KIND REASON", "PATH", "q1 slot OWNERSHIP", "q2 slot PREPARE_AMBIGUOUS", "q3 —"} {
 		if !strings.Contains(got, want) {
@@ -241,7 +243,7 @@ func TestPrintVerboseStatusListsQuarantineAsATable(t *testing.T) {
 			{"id": "", "path": "repo:refs/wx/recovery/a/b/head", "kind": "unknown_refs", "failure_code": "recovery ref is not explained by the current database"},
 			{"id": "", "path": "repo:refs/wx/recovery/a/b/index", "kind": "mismatched_refs", "failure_code": "recovery ref points at an object the current database does not expect"},
 		},
-	}, true)
+	}, true, i18n.English)
 	got = output.String()
 	if !strings.Contains(got, "unknown_refs: wx prune deletes the recovery refs") {
 		t.Fatalf("quarantine table did not point at wx prune:\n%s", got)
@@ -251,7 +253,7 @@ func TestPrintVerboseStatusListsQuarantineAsATable(t *testing.T) {
 	}
 
 	output.Reset()
-	printStatusDisplay(&output, map[string]any{"schema_version": 19, "worktree_roots": []map[string]any{}, "quarantine": []map[string]any{}}, true)
+	printStatusDisplay(&output, map[string]any{"schema_version": 19, "worktree_roots": []map[string]any{}, "quarantine": []map[string]any{}}, true, i18n.English)
 	if got := output.String(); !strings.Contains(got, "Quarantine\n") || !strings.Contains(got, "(none)") {
 		t.Fatalf("empty quarantine did not render (none):\n%s", got)
 	}

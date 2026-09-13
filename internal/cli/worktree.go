@@ -12,6 +12,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/tui"
 )
@@ -26,12 +27,13 @@ type WorktreeOptions struct {
 func (c Client) SelectWorktreePolicy(ctx context.Context) int {
 	root, rootErr := c.policyRoot(ctx)
 	if _, err := c.selectWorktreeMode(ctx, WorktreeOptions{Select: true}, root, rootErr); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	// 起動している daemon があれば、次の agent 起動を待たずに保存済み設定を反映する。
 	if err := c.RPC.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil && !rpc.IsConnectError(err) {
-		fmt.Fprintln(os.Stderr, "error: reload worktree policy:", err)
+		lang := cliLanguage(c)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("reload worktree policy:", lang), err)
 		return 1
 	}
 	return 0
@@ -41,7 +43,7 @@ func (c Client) SelectWorktreePolicy(ctx context.Context) int {
 func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, branches []string, fresh bool, options WorktreeOptions) int {
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	return c.RunAgentWithPolicyFrom(ctx, cwd, agent, args, branches, fresh, options)
@@ -51,7 +53,8 @@ func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, bran
 func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent string, args, branches []string, fresh bool, options WorktreeOptions) int {
 	intent := parseResumeIntent(agent, args)
 	if fresh && intent.Kind == resumeIntentNone {
-		fmt.Fprintln(os.Stderr, "error: --fresh requires a resume operation")
+		lang := cliLanguage(c)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--fresh requires a resume operation", lang))
 		return 2
 	}
 	// 会話 ID を指定した再開は、起動場所ではなく会話の側で worktree の可否を決める。
@@ -64,12 +67,13 @@ func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent str
 	root, rootErr := c.policyRootFrom(ctx, sourceCWD)
 	mode, err := c.selectWorktreeMode(ctx, options, root, rootErr)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	if mode == "off" {
 		if len(branches) > 0 || fresh {
-			fmt.Fprintln(os.Stderr, "error: --branch and --fresh require a worktree")
+			lang := cliLanguage(c)
+			fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--branch and --fresh require a worktree", lang))
 			return 2
 		}
 		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirs(c.Config, root), args))
@@ -77,11 +81,12 @@ func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent str
 	c.forceWorktree = options.Force
 	// 保存直後の選択を、既に動いている daemon にも lease より先に反映する。
 	if err := c.ensureDaemon(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	if err := c.RPC.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil {
-		fmt.Fprintln(os.Stderr, "error: reload worktree policy:", err)
+		lang := cliLanguage(c)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("reload worktree policy:", lang), err)
 		return 1
 	}
 	return c.runAgentFrom(ctx, agent, args, branches, fresh, "", sourceCWD)
@@ -129,12 +134,23 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions,
 	case "off":
 		initial = 2
 	}
+	lang := cliLanguage(c)
+	title, description := "Worktree policy", "workspace: "+root
+	hotLabel, hotDescription := "Hot standby", "keep a worktree ready for faster launches"
+	coldLabel, coldDescription := "Cold start", "create a worktree when launching an agent"
+	offLabel, offDescription := "No worktree", "run the agent in the current directory"
+	if lang == i18n.Japanese {
+		title, description = "Worktree の方針", "workspace: "+root
+		hotLabel, hotDescription = "Hot standby", "高速起動のため worktree を準備しておく"
+		coldLabel, coldDescription = "Cold start", "agent 起動時に worktree を作成する"
+		offLabel, offDescription = "Worktree なし", "現在のディレクトリで agent を実行する"
+	}
 	mode, err := tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
-		Title: "Worktree policy", Description: "workspace: " + root, Initial: initial,
+		Title: title, Description: description, Initial: initial, Language: string(lang),
 		Options: []tui.Option{
-			{Value: "hot", Label: "Hot standby", Description: "keep a worktree ready for faster launches"},
-			{Value: "cold", Label: "Cold start", Description: "create a worktree when launching an agent"},
-			{Value: "off", Label: "No worktree", Description: "run the agent in the current directory"},
+			{Value: "hot", Label: hotLabel, Description: hotDescription},
+			{Value: "cold", Label: coldLabel, Description: coldDescription},
+			{Value: "off", Label: offLabel, Description: offDescription},
 		},
 	})
 	if err != nil {
@@ -175,7 +191,8 @@ func runDirectAgentFrom(ctx context.Context, cwd, agent string, args []string) i
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		lang := i18n.LanguageFromContext(ctx)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage(err.Error(), lang))
 		return 1
 	}
 	if foreground {
@@ -197,6 +214,7 @@ func runDirectAgentFrom(ctx context.Context, cwd, agent string, args []string) i
 	if errors.As(err, &exit) {
 		return exit.ExitCode()
 	}
-	fmt.Fprintln(os.Stderr, "error:", err)
+	lang := i18n.LanguageFromContext(ctx)
+	fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage(err.Error(), lang))
 	return 1
 }

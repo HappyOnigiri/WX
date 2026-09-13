@@ -37,6 +37,7 @@ type catalogText struct {
 }
 
 var catalogTexts = map[string]catalogText{
+	"language":                            {"Display language", "Language used for human-readable CLI, TUI, and daemon messages.", "Changes display text only; JSON output remains in English.", []string{"en", "ja"}},
 	"worktree.undefined":                  {"Default worktree policy", "Controls worktree use for workspaces without an explicit policy.", "Changes how the next agent session starts.", []string{"ask", "hot", "cold", "off"}},
 	"worktree.reuse_standby":              {"Reuse standby worktrees", "Updates an older READY worktree to the requested OID and reuses it.", "When disabled, a non-matching lease uses a cold start.", nil},
 	"worktree.submodules":                 {"Prepare submodules", "Prepares worktree submodules through local clones.", "Existing standby slots are no longer reusable after this changes.", nil},

@@ -19,8 +19,8 @@ func TestConfigEnvironmentsAreSortedAfterGlobal(t *testing.T) {
 	cfg.Repositories["/src/beta"] = config.Repository{}
 	m := newModel(context.Background(), Options{Config: cfg})
 	got := m.configEnvironments()
-	if len(got) != 5 || got[0].menuLabel() != "Global" || got[1].menuLabel() != "Workspace  alpha" ||
-		got[2].menuLabel() != "Workspace  zeta" || got[3].menuLabel() != "Repository  beta" || got[4].menuLabel() != "Repository  zeta" {
+	if len(got) != 5 || m.environmentMenuLabel(got[0]) != "Global" || m.environmentMenuLabel(got[1]) != "Workspace  alpha" ||
+		m.environmentMenuLabel(got[2]) != "Workspace  zeta" || m.environmentMenuLabel(got[3]) != "Repository  beta" || m.environmentMenuLabel(got[4]) != "Repository  zeta" {
 		t.Fatalf("environments=%+v", got)
 	}
 }
@@ -35,7 +35,7 @@ func TestV2ConfigEnvironmentsShowWorkspaceMembershipHierarchy(t *testing.T) {
 	got := m.configEnvironments()
 	labels := make([]string, 0, len(got))
 	for _, environment := range got {
-		labels = append(labels, environment.menuLabel())
+		labels = append(labels, m.environmentMenuLabel(environment))
 	}
 	want := []string{"System", "Workspace defaults", "Repository defaults", "Workspace  product", "  Repository defaults", "  Repository  backend", "  Repository  frontend (not discovered)"}
 	if !slices.Equal(labels, want) {
@@ -79,7 +79,7 @@ func TestRepositoryEnvironmentBuildsRepositoryConfigAction(t *testing.T) {
 	m := newModel(context.Background(), Options{Config: cfg})
 	m.tab, m.settingsOpen, m.settingsEnv, m.selected = 2, true, 1, 0
 	m.configMeta = m.configItems()[0]
-	m.pending = menuItem{label: m.configMeta.DisplayName, command: "config"}
+	m.pending, m.pendingLabel = menuItem{command: "config"}, m.configMeta.DisplayName
 	m.target, m.editOp, m.input = "/tmp/repository-one", config.EditSet, "changed"
 	m.finishPending()
 	if len(m.result.Args) != 5 || m.result.Args[0] != "config" || m.result.Args[1] != "--repository" ||

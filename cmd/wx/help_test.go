@@ -483,6 +483,9 @@ func TestBinaryHelpVersionAndMisuseContracts(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build wx: %v\n%s", err, output)
 	}
+	// 表示言語は設定から読むため、英語の表示を検査する子 process だけ空のホームを見る。
+	// go build も巻き込むと module cache を作り直し、その削除にも失敗する。
+	env := append(os.Environ(), "HOME="+t.TempDir())
 	tests := []struct {
 		args      []string
 		exit      int
@@ -497,6 +500,7 @@ func TestBinaryHelpVersionAndMisuseContracts(t *testing.T) {
 	}
 	for _, test := range tests {
 		command := exec.Command(binary, test.args...)
+		command.Env = env
 		var stdout, stderr bytes.Buffer
 		command.Stdout, command.Stderr = &stdout, &stderr
 		err := command.Run()
@@ -666,6 +670,8 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 }
 
 func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	for _, command := range []string{"status", "doctor", "gc", "prune", "clear", "retry-standby", "slots", "config", "setup", "resume", "discard-recovery", "forget", "daemon", "shell", "run", "new", "release"} {
 		t.Run(command, func(t *testing.T) {
 			var output bytes.Buffer
@@ -681,6 +687,8 @@ func TestEveryPublicSubcommandHasSpecificHelp(t *testing.T) {
 }
 
 func TestAgentPrefixAndCommandUsageFallbacks(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	if _, _, _, err := parseAgentPrefix(nil); err == nil {
 		t.Fatal("missing agent command was accepted")
 	}
