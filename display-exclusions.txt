@@ -1,0 +1,32 @@
+# 正確な repository-relative path	exempt|backlog	理由
+# exempt は恒久的に対象外、backlog は描画時ローカライズへ移していない残務（警告として毎回報告される）。
+internal/i18n/catalog.go	exempt	The message catalog itself; this is where the Japanese text belongs.
+tools/checkcomments/main.go	exempt	Defines the full-width character range the comment-length check measures; not user-facing display.
+tools/checkdocsindex/main.go	exempt	Matches the Japanese heading and entry shape that AGENTS.md prescribes for docs/; not user-facing display.
+tools/checktests/main.go	exempt	Quotes the Japanese exemption-comment syntax the repository conventions define; not user-facing display.
+cmd/wx/localization.go	backlog	translateHelp / localizeDaemonText / localizeSetupError still replace substrings in rendered output.
+cmd/wx/doctor_probe.go	backlog	Probe labels and prose are still chosen inline by language instead of a message ID.
+cmd/wx/config.go	backlog	Flag-conflict message is still chosen inline by language.
+cmd/wx/daemon.go	backlog	Daemon lifecycle progress and guidance lines are still chosen inline by language.
+cmd/wx/dashboard.go	backlog	Action result and target errors are still chosen inline by language.
+cmd/wx/main.go	backlog	Top-level command errors are still chosen inline by language.
+cmd/wx/resume.go	backlog	Resume guidance is still chosen inline by language.
+cmd/wx/run.go	backlog	Command argument errors are still chosen inline by language.
+cmd/wx/shell.go	backlog	Shell launch errors are still chosen inline by language.
+cmd/wx/setup.go	backlog	Setup prompts and results are still chosen inline by language.
+cmd/wx/setup_format.go	backlog	Setup item rendering is still chosen inline by language.
+cmd/wx/status.go	backlog	Doctor progress label is still chosen inline by language.
+internal/cli/localization.go	backlog	localizeCLIMessage still replaces substrings in rendered output.
+internal/cli/bench.go	backlog	Benchmark report labels are still chosen inline by language.
+internal/cli/bench_sweep.go	backlog	Benchmark sweep report labels are still chosen inline by language.
+internal/cli/client.go	backlog	Lease and readiness messages are still chosen inline by language.
+internal/cli/doctor_probe.go	backlog	Probe progress lines are still chosen inline by language.
+internal/cli/fresh.go	backlog	Fresh-worktree guidance is still chosen inline by language.
+internal/cli/lease.go	backlog	Lease guidance is still chosen inline by language.
+internal/cli/linked_worktree.go	backlog	Linked-worktree guidance is still chosen inline by language.
+internal/cli/progress.go	backlog	Progress phase labels are still translated by an en to ja table.
+internal/cli/resume.go	backlog	Resume guidance is still chosen inline by language.
+internal/cli/worktree.go	backlog	Worktree preparation guidance is still chosen inline by language.
+internal/diag/localization.go	backlog	The diagnostics replacement table still rewrites rendered findings.
+internal/sessions/tui/picker.go	backlog	Picker labels are still translated by an en to ja table.
+internal/tui/select.go	backlog	Selection prompt labels are still translated by an en to ja table.
