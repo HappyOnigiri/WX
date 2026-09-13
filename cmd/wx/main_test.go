@@ -14,6 +14,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/testsupport"
@@ -80,6 +81,58 @@ func TestRunRPCDisplaySortsHumanReadableOutputByKey(t *testing.T) {
 			t.Fatalf("keys were not printed in sorted order: %q", stdout)
 		}
 		lastIndex = index
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// languageRecordingStatusHandler は Status の params に language が載ったかを記録する。
+type languageRecordingStatusHandler struct{ params []json.RawMessage }
+
+func (h *languageRecordingStatusHandler) Handle(_ context.Context, _ string, params json.RawMessage) (any, error) {
+	h.params = append(h.params, params)
+	return map[string]any{
+		"schema_version":    20,
+		"workspace_details": []any{map[string]any{"id": "a", "root": "/dev/ReleaseActions", "policy": "hot", "ready": 1, "leased": 0}},
+		"job_details":       map[string]any{"pending": 0, "running": 0, "failed": 0, "discarded": 0},
+	}, nil
+}
+
+// TestRunRPCDisplayJSONStaysInEnglish は、--json が言語を daemon へ送らず、
+// 出力にも日本語が混ざらないことを固定する。JSON は機械向けの契約である。
+func TestRunRPCDisplayJSONStaysInEnglish(t *testing.T) {
+	// /tmp 配下の短い HOME で Unix socket path を sun_path の長さ上限内に収める。
+	home, err := os.MkdirTemp("/tmp", "wx-status-json-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	socket, err := config.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(i18n.WithLanguage(context.Background(), string(i18n.Japanese)))
+	defer cancel()
+	handler := &languageRecordingStatusHandler{}
+	server := &rpc.Server{Socket: socket, Handler: handler}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	testsupport.WaitForSocket(t, socket, done)
+	stdout := captureStdout(t, func() {
+		if code := runRPCDisplay(ctx, "Status", []string{"--json"}); code != 0 {
+			t.Fatalf("runRPCDisplay exit=%d", code)
+		}
+	})
+	if len(handler.params) != 1 || strings.Contains(string(handler.params[0]), "language") {
+		t.Fatalf("--json sent a language to the daemon: %q", handler.params)
+	}
+	for _, r := range stdout {
+		if r > 0x7f {
+			t.Fatalf("--json output carried a non-ASCII character %q: %q", r, stdout)
+		}
 	}
 	cancel()
 	if err := <-done; err != nil {

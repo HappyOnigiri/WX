@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"sort"
 	"time"
@@ -70,30 +68,19 @@ func runClean(ctx context.Context, args []string) int {
 		return 1
 	}
 	lang := i18n.LanguageFromContext(ctx)
+	r := newTextRenderer(os.Stdout, lang)
 	if *dry {
-		var rendered bytes.Buffer
-		printCleanTargets(&rendered, reply.Targets)
-		fmt.Fprintln(&rendered, cleanSummaryLineLanguage(reply.Summary, lang))
-		if lang == i18n.Japanese {
-			fmt.Fprintln(&rendered, "dry run: 変更はありません。この時点の確認による推定値です")
-		} else {
-			fmt.Fprintln(&rendered, "dry run: nothing was changed, and these are estimates from the time of this check")
-		}
-		fmt.Print(translateHumanOutput(rendered.String(), lang))
+		printCleanTargets(r, reply.Targets)
+		r.raw(cleanSummaryLine(r, reply.Summary))
+		r.line("clean.dry_run", nil)
 		return 0
 	}
 	final, waitErr := waitForClean(ctx, c.Call, reply)
-	var rendered bytes.Buffer
-	printCleanTargets(&rendered, final.Targets)
-	fmt.Fprintln(&rendered, cleanSummaryLineLanguage(final.Summary, lang))
-	fmt.Print(translateHumanOutput(rendered.String(), lang))
+	printCleanTargets(r, final.Targets)
+	r.raw(cleanSummaryLine(r, final.Summary))
 	if waitErr != nil {
 		reportRPCErrorContext(ctx, waitErr)
-		if lang == i18n.Japanese {
-			fmt.Fprintf(os.Stderr, "daemon は clear %s の処理を続けています。再参加するには wx clear をもう一度実行してください\n", final.RunID)
-		} else {
-			fmt.Fprintf(os.Stderr, "the daemon keeps working on clear %s; run wx clear again to rejoin it\n", final.RunID)
-		}
+		newTextRenderer(os.Stderr, lang).line("clean.rejoin", map[string]any{"RunID": final.RunID})
 		return 1
 	}
 	return cleanExitCode(final)
@@ -104,10 +91,7 @@ type rpcCall func(ctx context.Context, method string, params, result any) error
 
 // waitForClean は run が閉じるまで進捗を取得し続ける。CLI を中断しても受付済みの処理は daemon が続ける。
 func waitForClean(ctx context.Context, call rpcCall, accepted cleanReplyView) (cleanReplyView, error) {
-	label := "clearing"
-	if localizedUsageLanguage() == i18n.Japanese {
-		label = "削除中"
-	}
+	label := i18n.New(string(localizedUsageLanguage())).Localize("progress.clearing", nil)
 	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), label)
 	defer waiting.Finish()
 	current := accepted
@@ -146,23 +130,26 @@ func cleanExitCode(reply cleanReplyView) int {
 	return 0
 }
 
-func printCleanTargets(w io.Writer, targets []cleanTargetView) {
+// printCleanTargets は daemon が返した対象を 1 件ずつ出す。
+// 状態・slot ID・path・理由はいずれも payload の値なので訳さない。
+func printCleanTargets(r *textRenderer, targets []cleanTargetView) {
 	if len(targets) == 0 {
-		_, _ = fmt.Fprintln(w, "no managed worktrees to clear")
+		r.line("clean.no_targets", nil)
 		return
 	}
 	for _, target := range targets {
-		_, _ = fmt.Fprintf(w, "%-12s %-10s %s\n", target.State, target.SlotID, target.Path)
+		r.raw(fmt.Sprintf("%-12s %-10s %s", target.State, target.SlotID, target.Path))
 		if target.Reason != "" {
-			_, _ = fmt.Fprintf(w, "%-12s %-10s %s\n", "", "", target.Reason)
+			r.raw(fmt.Sprintf("%-12s %-10s %s", "", "", target.Reason))
 		}
 	}
 }
 
 // cleanSummaryLine は状態別の件数を、件数 0 の状態を省いて 1 行にまとめる。
-func cleanSummaryLine(summary map[string]int) string {
+// 状態名は daemon の JSON 契約の値なので、訳文の中でも原文のまま並べる。
+func cleanSummaryLine(r *textRenderer, summary map[string]int) string {
 	if len(summary) == 0 {
-		return "0 targets"
+		return r.Localize("clean.summary_zero", nil)
 	}
 	keys := make([]string, 0, len(summary))
 	for key, count := range summary {
@@ -172,31 +159,9 @@ func cleanSummaryLine(summary map[string]int) string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	line := fmt.Sprintf("%d target(s)", summary["total"])
+	line := r.Localize("clean.summary_total", map[string]any{"Count": summary["total"]})
 	for _, key := range keys {
-		line += fmt.Sprintf(", %s %d", key, summary[key])
-	}
-	return line
-}
-
-func cleanSummaryLineLanguage(summary map[string]int, lang i18n.Language) string {
-	if lang != i18n.Japanese {
-		return cleanSummaryLine(summary)
-	}
-	if len(summary) == 0 {
-		return "0 件"
-	}
-	keys := make([]string, 0, len(summary))
-	for key, count := range summary {
-		if key == "total" || count == 0 {
-			continue
-		}
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	line := fmt.Sprintf("%d 件", summary["total"])
-	for _, key := range keys {
-		line += fmt.Sprintf("、%s %d", key, summary[key])
+		line += r.Localize("clean.summary_item", map[string]any{"Key": key, "Count": summary[key]})
 	}
 	return line
 }

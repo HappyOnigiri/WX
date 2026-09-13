@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -310,23 +309,30 @@ func describeConfig(key, scope string) int {
 		return 1
 	}
 	lang := localizedUsageLanguage()
+	r := newTextRenderer(os.Stdout, lang)
 	name := meta.DisplayName
 	if meta.Key == "language" && lang == i18n.Japanese {
-		name = i18n.New(string(lang)).Localize("config.display_name", nil)
+		name = r.Localize("config.display_name", nil)
 	}
-	description := translateHumanOutput(meta.Description, lang)
-	impact := translateHumanOutput(meta.Impact, lang)
-	var rendered bytes.Buffer
-	fmt.Fprintf(&rendered, "%s — %s\n", meta.Key, name)
-	fmt.Fprintf(&rendered, "  Type: %s\n", meta.Kind)
-	fmt.Fprintf(&rendered, "  Scopes: %s\n", strings.Join(meta.Scopes, ", "))
+	r.raw(meta.Key + " — " + name)
+	r.field(2, "config.describe.type", string(meta.Kind))
+	r.field(2, "config.describe.scopes", strings.Join(meta.Scopes, ", "))
 	if len(meta.Choices) > 0 {
-		fmt.Fprintf(&rendered, "  Choices: %s\n", strings.Join(meta.Choices, ", "))
+		r.field(2, "config.describe.choices", strings.Join(meta.Choices, ", "))
 	}
-	fmt.Fprintf(&rendered, "  %s\n", description)
-	fmt.Fprintf(&rendered, "  Impact: %s\n", impact)
-	fmt.Print(translateHumanOutput(rendered.String(), lang))
+	r.raw("  " + configKeyText(r, meta.Key, "description", meta.Description))
+	r.field(2, "config.describe.impact", configKeyText(r, meta.Key, "impact", meta.Impact))
 	return 0
+}
+
+// configKeyText は設定キーの散文を動的 ID で引き、カタログに無いキーは英語の原文をそのまま返す。
+// 全キーの散文を訳す前でも、訳のあるキーだけが訳文になる。
+func configKeyText(r *textRenderer, key, kind, fallback string) string {
+	id := "config." + key + "." + kind
+	if _, known := i18n.Catalog()[id]; !known {
+		return fallback
+	}
+	return r.Localize(id, nil)
 }
 
 func showGlobalConfig() int {
@@ -340,20 +346,19 @@ func showGlobalConfig() int {
 		return showV2GlobalConfig(cfg, raw)
 	}
 	path, _ := config.Path()
-	var rendered bytes.Buffer
-	fmt.Fprintln(&rendered, "Config:", path)
+	r := newTextRenderer(os.Stdout, localizedUsageLanguage())
+	r.line("config.show.path", map[string]any{"Path": path})
 	// language は未記載でも英語という実効値を返すため、Fields の疎な表示除外とは別に出す。
-	fmt.Fprintf(&rendered, "  %-42s = %s\n", "language", cfg.DisplayLanguage())
+	r.raw(fmt.Sprintf("  %-42s = %s", "language", cfg.DisplayLanguage()))
 	for _, f := range config.Fields(cfg) {
 		if f.Key == "language" {
 			continue
 		}
-		fmt.Fprintf(&rendered, "  %-42s = %s\n", f.Key, f.Value)
+		r.raw(fmt.Sprintf("  %-42s = %s", f.Key, f.Value))
 	}
 	for _, f := range config.Lists(cfg) {
-		fmt.Fprintf(&rendered, "  %-42s = %s\n", f.Key, f.Value)
+		r.raw(fmt.Sprintf("  %-42s = %s", f.Key, f.Value))
 	}
-	fmt.Print(translateHumanOutput(rendered.String(), localizedUsageLanguage()))
 	return 0
 }
 
@@ -386,12 +391,11 @@ func runScopeConfig(ctx context.Context, scope config.Scope, path string, args [
 		return 1
 	}
 	if len(args) == 0 {
-		var rendered bytes.Buffer
-		fmt.Fprintf(&rendered, "%s: %s\n", scopeTitle(scope), target)
+		r := newTextRenderer(os.Stdout, localizedUsageLanguage())
+		r.line("config.show.scope", map[string]any{"Title": scopeTitle(scope), "Target": target})
 		for _, f := range config.ScopeFields(cfg, scope, target) {
-			fmt.Fprintf(&rendered, "  %-42s = %s (source: %s)\n", f.Key, f.Value, f.Source)
+			r.raw(fmt.Sprintf("  %-42s = %s (%s)", f.Key, f.Value, r.Localize("config.show.source", map[string]any{"Value": f.Source})))
 		}
-		fmt.Print(translateHumanOutput(rendered.String(), localizedUsageLanguage()))
 		return 0
 	}
 	edit, ok := parseConfigEdit(args)

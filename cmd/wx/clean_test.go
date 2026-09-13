@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 func TestCleanExitCodeSeparatesFailuresFromExcludedSessions(t *testing.T) {
@@ -31,12 +34,13 @@ func TestCleanExitCodeSeparatesFailuresFromExcludedSessions(t *testing.T) {
 
 func TestPrintCleanTargetsShowsPathsAndReasons(t *testing.T) {
 	var out bytes.Buffer
-	printCleanTargets(&out, nil)
+	r := newTextRenderer(&out, i18n.English)
+	printCleanTargets(r, nil)
 	if !strings.Contains(out.String(), "no managed worktrees to clear") {
 		t.Fatalf("empty output=%q", out.String())
 	}
 	out.Reset()
-	printCleanTargets(&out, []cleanTargetView{
+	printCleanTargets(r, []cleanTargetView{
 		{SlotID: "abc", Path: "/wx/workspace/abc", State: "DONE"},
 		{SlotID: "def", Path: "/wx/workspace/def", State: "SKIPPED", Reason: "session xyz is in use"},
 	})
@@ -49,10 +53,11 @@ func TestPrintCleanTargetsShowsPathsAndReasons(t *testing.T) {
 }
 
 func TestCleanSummaryLineOmitsEmptyStates(t *testing.T) {
-	if got := cleanSummaryLine(nil); got != "0 targets" {
+	r := newTextRenderer(io.Discard, i18n.English)
+	if got := cleanSummaryLine(r, nil); got != "0 targets" {
 		t.Fatalf("empty summary=%q", got)
 	}
-	got := cleanSummaryLine(map[string]int{"total": 3, "DONE": 2, "SKIPPED": 1, "FAILED": 0})
+	got := cleanSummaryLine(r, map[string]int{"total": 3, "DONE": 2, "SKIPPED": 1, "FAILED": 0})
 	if got != "3 target(s), DONE 2, SKIPPED 1" {
 		t.Fatalf("summary=%q", got)
 	}

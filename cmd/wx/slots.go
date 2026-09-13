@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,8 +42,7 @@ func runSlots(ctx context.Context, args []string) int {
 			slotCopyMode(s), slotSizeMB(s), slotField(s, "path"),
 		})
 	}
-	var rendered bytes.Buffer
-	printSlotTable(&rendered, rows)
-	fmt.Print(translateHumanOutput(rendered.String(), i18n.LanguageFromContext(ctx)))
+	// 見出しは全て大文字の機械的な列名で、訳語を持たない。表の値も payload の原文をそのまま出す。
+	printSlotTable(os.Stdout, rows)
 	return 0
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,13 +68,9 @@ func runRPCDisplay(ctx context.Context, method string, args []string) int {
 	case *jsonOut:
 		fmt.Println(string(data))
 	case verbose != nil:
-		var rendered bytes.Buffer
-		printStatusDisplay(&rendered, out, *verbose, i18n.LanguageFromContext(ctx))
-		fmt.Print(translateHumanOutput(rendered.String(), i18n.LanguageFromContext(ctx)))
+		printStatusDisplay(os.Stdout, out, *verbose, i18n.LanguageFromContext(ctx))
 	default:
-		var rendered bytes.Buffer
-		printDisplay(&rendered, out)
-		fmt.Print(translateHumanOutput(rendered.String(), i18n.LanguageFromContext(ctx)))
+		printDisplay(os.Stdout, out)
 	}
 	return 0
 }
@@ -196,12 +191,10 @@ func printDoctorLanguage(reply diag.Reply, jsonOut, verbose, probe bool, lang i1
 		fmt.Println(string(data))
 		return
 	}
-	var rendered bytes.Buffer
-	diag.RenderLanguage(&rendered, reply, verbose, lang)
-	printDoctorProbesLanguage(&rendered, reply.Probes, verbose, lang)
+	// 表示は stdout に出す。書込み失敗は対処できず、command の終了コードも変えない。
+	diag.RenderLanguage(os.Stdout, reply, verbose, lang)
+	printDoctorProbesLanguage(os.Stdout, reply.Probes, verbose, lang)
 	if !probe {
-		// 表示は stdout に出す。書込み失敗は対処できず、command の終了コードも変えない。
-		_, _ = fmt.Fprintln(&rendered, doctorProbeHint)
+		_, _ = fmt.Fprintln(os.Stdout, i18n.New(string(lang)).Localize("doctor.probe_hint", nil))
 	}
-	_, _ = fmt.Fprint(os.Stdout, translateHumanOutput(rendered.String(), lang))
 }
