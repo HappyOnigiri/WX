@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
-	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/tui"
 )
 
@@ -69,32 +68,20 @@ func (c Client) acceptsFreshWorkspace(ctx context.Context, plan launchPlan, err 
 // confirmFreshResume は当時の worktree を復元できないとき、新しい worktree で会話を再開してよいか確認する。
 // 既定は Yes で、resume.auto_fresh が真なら確認を省き、端末がなければ会話の再開を優先して notice を出したうえで進む。
 func (c Client) confirmFreshResume(ctx context.Context, sessionID, reason string) bool {
-	lang := cliLanguage(c)
-	if lang == i18n.Japanese {
-		fmt.Fprintf(os.Stderr, "wx session %s は記録された worktree を復元できません: %s\n", sessionID, reason)
-	} else {
-		fmt.Fprintf(os.Stderr, "wx session %s cannot restore its recorded worktree: %s\n", sessionID, reason)
-	}
+	loc := cliLocalizer(c)
+	fmt.Fprintln(os.Stderr, loc.Localize("cli.fresh_cannot_restore", map[string]any{"SessionID": sessionID, "Reason": reason}))
 	if c.Config.Resume.AutoFresh {
-		if lang == i18n.Japanese {
-			fmt.Fprintln(os.Stderr, "通知: resume.auto_fresh が有効なため、現在の base から新しい workspace で会話を再開します")
-		} else {
-			fmt.Fprintln(os.Stderr, "notice: resume.auto_fresh is enabled; resuming the conversation in a new workspace from the current base")
-		}
+		fmt.Fprintln(os.Stderr, loc.Localize("cli.fresh_auto", nil))
 		return true
 	}
 	if !tui.IsTerminal(int(os.Stdin.Fd())) || !tui.IsTerminal(int(os.Stderr.Fd())) {
-		if lang == i18n.Japanese {
-			fmt.Fprintln(os.Stderr, "通知: 確認用の端末がないため、現在の base から新しい workspace で会話を再開します")
-		} else {
-			fmt.Fprintln(os.Stderr, "notice: no terminal is attached for the confirmation; resuming the conversation in a new workspace from the current base")
-		}
+		fmt.Fprintln(os.Stderr, loc.Localize("cli.fresh_no_terminal", nil))
 		return true
 	}
-	title, yesLabel, yesDescription, noLabel, noDescription := "Recovery worktree is unavailable. Resume the conversation in a new workspace?", "Yes", "create a new worktree from the current base", "No", "cancel the launch"
-	if lang == i18n.Japanese {
-		title, yesLabel, yesDescription, noLabel, noDescription = "復元用 worktree を利用できません。新しい workspace で会話を再開しますか？", "はい", "現在の base から新しい worktree を作成", "いいえ", "起動をキャンセル"
-	}
+	title := loc.Localize("cli.fresh_title", nil)
+	yesLabel, yesDescription := loc.Localize("common.yes", nil), loc.Localize("cli.fresh_yes", nil)
+	noLabel, noDescription := loc.Localize("common.no", nil), loc.Localize("cli.fresh_no", nil)
+	lang := cliLanguage(c)
 	answer, err := tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
 		Title:       title,
 		Description: "wx session " + sessionID,

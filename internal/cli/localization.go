@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+
+	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/i18n"
@@ -11,77 +14,65 @@ import (
 
 func cliLanguage(c Client) i18n.Language { return i18n.Normalize(c.Config.DisplayLanguage()) }
 
-func cliErrorPrefix(lang i18n.Language) string {
-	if lang == i18n.Japanese {
-		return "エラー:"
+// cliLocalizer は表示言語を 1 度だけ解決する。i18n.T と i18n.New は
+// 呼ぶたびに go-i18n の bundle を組み直すため、行ごとには呼ばない。
+func cliLocalizer(c Client) *i18n.Localizer { return i18n.New(c.Config.DisplayLanguage()) }
+
+// cliErrorPrefix は stderr の行頭に置く「error:」相当である。
+func cliErrorPrefix(loc *i18n.Localizer) string { return loc.Localize("common.error", nil) + ":" }
+
+// localizedError は wx 自身が作った固定文のエラーである。
+// Error は英語を返して機械経路と wrap 済みの文脈を保ち、表示は message ID を利用者の言語で解決する。
+type localizedError struct {
+	id   string
+	data map[string]any
+	err  error
+}
+
+func (e *localizedError) Error() string {
+	return i18n.New(string(i18n.English)).Localize(e.id, e.data)
+}
+
+// Unwrap は元の失敗を残す。errors.Is での判定経路をこの型が断ち切らないようにする。
+func (e *localizedError) Unwrap() error { return e.err }
+
+// newLocalizedError は固定文のエラーを作る。cause は表示に使わず、判定のために保持する。
+func newLocalizedError(id string, data map[string]any, cause error) error {
+	return &localizedError{id: id, data: data, err: cause}
+}
+
+// localizeCLIError は wx が作った固定文のエラーだけを訳す。
+// daemon や外部コマンドから来たエラー本文は、訳語が値の一部に一致して壊れないよう原文のまま返す。
+func localizeCLIError(loc *i18n.Localizer, err error) string {
+	var localized *localizedError
+	if errors.As(err, &localized) {
+		return loc.Localize(localized.id, localized.data)
 	}
-	return "error:"
+	return err.Error()
 }
 
 func cliError(c Client, err error) {
-	lang := cliLanguage(c)
-	fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage(err.Error(), lang))
+	loc := cliLocalizer(c)
+	fmt.Fprintln(os.Stderr, cliErrorPrefix(loc), localizeCLIError(loc, err))
 }
 
-func localizeCLIMessage(text string, lang i18n.Language) string {
-	if lang != i18n.Japanese {
-		return text
-	}
-	for _, replacement := range []struct{ en, ja string }{
-		{"--workspace and --repository cannot be combined", "--workspace と --repository は併用できません"},
-		{"wx run needs a command after --", "wx run には -- の後にコマンドが必要です"},
-		{"--runs must be at least 1", "--runs は 1 以上で指定してください"},
-		{"--config and --sweep cannot be combined with --reuse; each configuration is measured as a cold start", "--config と --sweep は --reuse と併用できません。各設定は cold start として計測します"},
-		{"cannot resolve a wx workspace from ", "次の場所から wx workspace を解決できません: "},
-		{"; run wx bench --reuse to measure without retiring standby worktrees", "。standby worktree を回収せずに計測するには wx bench --reuse を実行してください"},
-		{" is configured not to use a worktree; change worktree.undefined or the workspace policy ", " は worktree を使わない設定です。worktree.undefined または workspace policy を変更してください "},
-		{"policy saved but daemon reload failed: ", "方針は保存しましたが daemon の再読み込みに失敗しました: "},
-		{"reload worktree policy:", "worktree 方針の再読み込み:"},
-		{"lease root identity changed (expected ", "lease root の identity が変わりました（期待値 "},
-		{"resolve workspace history: ", "workspace history を解決できません: "},
-		{"; run wx daemon restart if the daemon has not been updated", "。daemon が更新されていなければ wx daemon restart を実行してください"},
-		{"no conversation found for this workspace", "この workspace に会話が見つかりません"},
-		{"unknown resume intent", "不明な resume 指示です"},
-		{"--fresh requires a resume operation", "--fresh には resume 操作が必要です"},
-		{"--branch requires --fresh when resuming", "resume 時の --branch には --fresh が必要です"},
-		{"--branch and --fresh require a worktree", "--branch と --fresh には worktree が必要です"},
-		{"wx session ", "wx session "},
-		{" holds a lease, not an agent conversation; use wx shell --resume ", " は lease を保持しており agent の会話ではありません。wx shell --resume "},
-		{"create operation identity", "操作識別子を作成"},
-		{"pin workspace CWD", "workspace の CWD を固定"},
-		{"locate wx descriptor helper", "wx descriptor helper を見つける"},
-		{"prepare agent", "agent を準備"},
-		{"register agent process", "agent process を登録"},
-		{"reload worktree policy", "worktree 方針を再読み込み"},
-		{"wx daemon is reachable but this request did not complete", "wx daemon には接続できますが、要求を完了できませんでした"},
-		{"wx daemon is unavailable", "wx daemon は利用できません"},
-		{"wx daemon did not become ready", "wx daemon の準備が完了しませんでした"},
-		{"run wx doctor", "wx doctor を実行してください"},
-		{"LaunchAgent plist is stale; run wx daemon install", "LaunchAgent plist が古いため wx daemon install を実行してください"},
-		{"interrupted before the workspace was leased", "workspace の貸出前に中断されました"},
-		{"interrupted while the workspace was being prepared; releasing it", "workspace の準備中に中断されました。貸出を返却します"},
-		{"workspace preparation", "workspace の準備"},
-		{"retire standby", "standby を回収"},
-		{"lease:", "貸出:"},
-		{"early ready:", "早期準備完了:"},
-		{"full ready:", "準備完了:"},
-		{"lease cancelled; no workspace was created", "貸出をキャンセルしました。workspace は作成されませんでした"},
-		{"launch cancelled; no workspace was created", "起動をキャンセルしました。workspace は作成されませんでした"},
-		{"wx clear asked this session to stop before the agent started", "agent の起動前に wx clear から停止要求を受けました"},
-		{"selected conversation has no working directory", "選択した会話に作業ディレクトリがありません"},
-		{"worktree policy requires a terminal; use wx --worktree or wx --no-worktree, or configure worktree.undefined", "worktree の方針選択には端末が必要です。wx --worktree / wx --no-worktree を使うか worktree.undefined を設定してください"},
-		{"the daemon is already stopping; wait for it to exit and run wx daemon start", "daemon は停止処理中です。終了を待って wx daemon start を実行してください"},
-		{"the daemon is already restarting; run the command again once the replacement is up", "daemon は再起動処理中です。置き換え後にもう一度実行してください"},
-	} {
-		text = strings.ReplaceAll(text, replacement.en, replacement.ja)
-	}
-	return text
-}
-
-func reportLeaseErrorLanguage(err error, lang i18n.Language) int {
-	fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage(err.Error(), lang))
+func reportLeaseErrorLocalized(loc *i18n.Localizer, err error) int {
+	fmt.Fprintln(os.Stderr, cliErrorPrefix(loc), localizeCLIError(loc, err))
 	if daemon.IsWorktreeDisabled(err) {
 		return 2
 	}
 	return 1
+}
+
+// padDisplay は表示幅で桁を揃える。訳語に空白を埋め込むと訳を変えた瞬間に桁がずれるため、
+// 幅はここで測ってから連結する。left が真なら右寄せにする。
+func padDisplay(value string, width int, left bool) string {
+	pad := width - xansi.StringWidth(value)
+	if pad <= 0 {
+		return value
+	}
+	if left {
+		return strings.Repeat(" ", pad) + value
+	}
+	return value + strings.Repeat(" ", pad)
 }

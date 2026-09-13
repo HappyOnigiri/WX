@@ -139,31 +139,36 @@ func printBenchConfigsLanguage(summaries []BenchConfigSummary, lang i18n.Languag
 	if len(summaries) == 0 || (len(summaries) == 1 && summaries[0].Config.Label == benchCurrentConfigLabel) {
 		return
 	}
-	headline := benchConfigsHeadline(summaries)
-	config, runs, fail, early, full, exclusive, shared := "config", "runs", "fail", "EARLY READY", "FULL READY", "exclusive", "shared"
-	if lang == i18n.Japanese {
-		headline = strings.ReplaceAll(strings.ReplaceAll(headline, "comparison by configuration", "設定ごとの比較"), "usage is the median of the measured runs", "使用量は測定値の中央値")
-		config, runs, fail, early, full, exclusive, shared = "設定", "回数", "失敗", "早期準備完了", "準備完了", "専有", "共有"
-	}
-	fmt.Println(headline)
-	fmt.Printf("  %-28s %5s %5s  %-24s %-24s %12s %12s\n", config, runs, fail, early, full, exclusive, shared)
+	loc := i18n.New(string(lang))
+	fmt.Println(loc.Localize(benchConfigsHeadline(summaries), nil))
+	fmt.Println(benchConfigRow(
+		loc.Localize("bench.config", nil), loc.Localize("bench.runs", nil), loc.Localize("bench.fail", nil),
+		loc.Localize("bench.early_ready", nil), loc.Localize("bench.full_ready", nil),
+		loc.Localize("bench.exclusive", nil), loc.Localize("bench.shared", nil)))
 	for _, summary := range summaries {
-		fmt.Printf("  %-28s %5d %5d  %-24s %-24s %12s %12s\n",
-			summary.Config.Label, summary.Runs, summary.Failed,
+		fmt.Println(benchConfigRow(
+			summary.Config.Label, strconv.Itoa(summary.Runs), strconv.Itoa(summary.Failed),
 			formatBenchStat(summary.Runs, summary.EarlyReady), formatBenchStat(summary.Runs, summary.FullReady),
-			formatBenchOptionalBytes(summary.ExclusiveBytes), formatBenchOptionalBytes(summary.SharedBytes))
+			formatBenchOptionalBytes(summary.ExclusiveBytes), formatBenchOptionalBytes(summary.SharedBytes)))
 	}
 }
 
-// benchConfigsHeadline は表の読み方を示す見出しを作る。
+// benchConfigRow は比較表の 1 行を組み立てる。幅は表示幅で測るため、見出しを訳しても桁がずれない。
+func benchConfigRow(config, runs, fail, early, full, exclusive, shared string) string {
+	return "  " + padDisplay(config, 28, false) + " " + padDisplay(runs, 5, true) + " " + padDisplay(fail, 5, true) +
+		"  " + padDisplay(early, 24, false) + " " + padDisplay(full, 24, false) +
+		" " + padDisplay(exclusive, 12, true) + " " + padDisplay(shared, 12, true)
+}
+
+// benchConfigsHeadline は表の読み方を示す見出しの message ID を返す。
 // どの設定も1回しか測れていないときは分布を畳んでいないので、min/median/max とは名乗らない。
 func benchConfigsHeadline(summaries []BenchConfigSummary) string {
 	for _, summary := range summaries {
 		if summary.Runs > 1 {
-			return "comparison by configuration (min/median/max, usage is the median of the measured runs)"
+			return "bench.headline_distribution"
 		}
 	}
-	return "comparison by configuration (usage is the median of the measured runs)"
+	return "bench.headline"
 }
 
 // formatBenchStat は分布を1列へ畳む。成功した回がない設定は時間を名乗らず `-` を出す。

@@ -9,23 +9,36 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // 経路の表示名は貸出応答の Route から引く。未知の経路でも表示を止めない。
 func TestLeaseRouteLabelCoversEveryRouteAndFallsBack(t *testing.T) {
 	t.Parallel()
+	english := i18n.New(string(i18n.English))
 	for route, want := range map[string]string{
 		daemon.RouteReady:     "Ready standby",
 		daemon.RouteUpdate:    "Standby update",
 		daemon.RouteColdStart: "Cold start",
 		daemon.RouteRestore:   "Restoring workspace",
 	} {
-		if got := leaseRouteLabel(route); got != want {
+		if got := english.Localize(leaseRouteLabel(route), nil); got != want {
 			t.Fatalf("leaseRouteLabel(%q)=%q, want %q", route, got, want)
 		}
 	}
-	if got := leaseRouteLabel(""); got == "" {
+	if got := english.Localize(leaseRouteLabel(""), nil); got == "" {
 		t.Fatal("an unknown route produced an empty label")
+	}
+}
+
+// 日本語表示でも経路名だけを訳し、daemon が返す区間名と repository 名は原文のまま残す。
+func TestLeaseProgressJapaneseKeepsPhaseNamesVerbatim(t *testing.T) {
+	t.Parallel()
+	waiting := newLeaseProgressLanguage(&syncWriter{}, true, i18n.Japanese)
+	waiting.route = leaseRouteLabel(daemon.RouteUpdate)
+	waiting.update(daemon.LeaseProgress{State: "PREPARING", Running: true, Phase: "git-register", Target: "ReleaseActions", TargetIndex: 1, TargetTotal: 2})
+	if got := waiting.label(); got != "standby を更新中: ReleaseActions (1/2) git-register" {
+		t.Fatalf("label=%q", got)
 	}
 }
 
@@ -101,7 +114,7 @@ func TestLeaseProgressKeepsThePhaseBetweenIntervals(t *testing.T) {
 	if got := waiting.label(); got != "Cold start: checkout" {
 		t.Fatalf("label=%q, want the previous phase to stay while the job runs", got)
 	}
-	if strings.Contains(out.String(), leaseQueuedLabel) {
+	if strings.Contains(out.String(), "queued") {
 		t.Fatalf("the gap between phases was drawn as waiting: %q", out.String())
 	}
 }
@@ -112,7 +125,7 @@ func TestLeaseProgressShowsQueuedOnlyBeforeTheJobRuns(t *testing.T) {
 	waiting := newLeaseProgress(&syncWriter{}, true)
 	waiting.route = leaseRouteLabel(daemon.RouteColdStart)
 	waiting.update(daemon.LeaseProgress{State: "PREPARING"})
-	if got := waiting.label(); got != "Cold start: "+leaseQueuedLabel {
+	if got := waiting.label(); got != "Cold start: queued" {
 		t.Fatalf("label=%q, want the queued label before the job starts", got)
 	}
 	waiting.update(daemon.LeaseProgress{State: "PREPARING", Running: true, Phase: "git-register"})

@@ -10,7 +10,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
-	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/tui"
 )
 
@@ -88,26 +87,18 @@ func (c Client) confirmLinkedWorktreeBase(ctx context.Context, cwd string, inter
 	if !mismatched {
 		return true
 	}
-	lang := cliLanguage(c)
-	if lang == i18n.Japanese {
-		fmt.Fprintf(os.Stderr, "現在のディレクトリは %s の linked worktree（HEAD %s）です。wx は main worktree %s（HEAD %s）から workspace を貸し出します\n",
-			base.Path, shortOID(base.Head), base.MainPath, shortOID(base.MainHead))
-	} else {
-		fmt.Fprintf(os.Stderr, "the current directory is a linked worktree of %s at HEAD %s; wx leases a workspace from the main worktree %s at HEAD %s\n",
-			base.Path, shortOID(base.Head), base.MainPath, shortOID(base.MainHead))
-	}
+	loc := cliLocalizer(c)
+	fmt.Fprintln(os.Stderr, loc.Localize("cli.linked_worktree_base", map[string]any{
+		"Path": base.Path, "Head": shortOID(base.Head), "MainPath": base.MainPath, "MainHead": shortOID(base.MainHead),
+	}))
 	if !interactive || !tui.IsTerminal(int(os.Stdin.Fd())) || !tui.IsTerminal(int(os.Stderr.Fd())) {
-		if lang == i18n.Japanese {
-			fmt.Fprintln(os.Stderr, "通知: 確認用の端末がないため、main worktree の HEAD から workspace を貸し出します")
-		} else {
-			fmt.Fprintln(os.Stderr, "notice: no terminal is attached for the confirmation; leasing a workspace from the main worktree's HEAD")
-		}
+		fmt.Fprintln(os.Stderr, loc.Localize("cli.linked_worktree_no_terminal", nil))
 		return true
 	}
-	title, yesLabel, yesDescription, noLabel, noDescription := "The current directory is a linked worktree. Lease a workspace from the main worktree's HEAD?", "Yes", "use the main worktree's HEAD "+shortOID(base.MainHead), "No", "cancel; rerun from the main worktree or pass --branch"
-	if lang == i18n.Japanese {
-		title, yesLabel, yesDescription, noLabel, noDescription = "現在のディレクトリは linked worktree です。main worktree の HEAD から workspace を貸し出しますか？", "はい", "main worktree の HEAD "+shortOID(base.MainHead)+" を使う", "いいえ", "キャンセル。main worktree から再実行するか --branch を指定"
-	}
+	title := loc.Localize("cli.linked_worktree_title", nil)
+	yesLabel, yesDescription := loc.Localize("common.yes", nil), loc.Localize("cli.linked_worktree_yes", map[string]any{"Head": shortOID(base.MainHead)})
+	noLabel, noDescription := loc.Localize("common.no", nil), loc.Localize("cli.linked_worktree_no", nil)
+	lang := cliLanguage(c)
 	answer, err := tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
 		Title:       title,
 		Description: base.Path + " -> " + base.MainPath,

@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
@@ -23,32 +22,32 @@ const leaseProgressInterval = 200 * time.Millisecond
 // 表示のための呼び出しが daemon の応答遅延で溜まらないよう、間隔の数倍で打ち切る。
 const leaseProgressTimeout = 2 * time.Second
 
-// leaseResolvingLabel は経路が決まる前の表示。ResolveAndLease は workspace の解決を同期で行うため、
+// leaseResolvingLabel は経路が決まる前の表示の message ID。ResolveAndLease は workspace の解決を同期で行うため、
 // ここで待つ時間は経路の選択より前に属する。
-const leaseResolvingLabel = "Resolving workspace"
+const leaseResolvingLabel = "lease.resolving"
 
-// leaseQueuedLabel は準備 job が走り出す前の表示。
+// leaseQueuedLabel は準備 job が走り出す前の表示の message ID。
 // 区間の切れ目でも区間名は空になるため、daemon が job の実行中と答えた間はこの表示へ落とさない。
-const leaseQueuedLabel = "queued"
+const leaseQueuedLabel = "lease.queued"
 
 // leaseSettledWidth は確定行の先頭に置く所要時間の幅。
 // 区間名の開始位置を揃えて、残した行を縦に読めるようにする。
 const leaseSettledWidth = 7
 
-// leaseRouteLabels は daemon.Lease.Route に対応する表示名である。
+// leaseRouteLabels は daemon.Lease.Route に対応する表示名の message ID である。
 var leaseRouteLabels = map[string]string{
-	daemon.RouteReady:     "Ready standby",
-	daemon.RouteUpdate:    "Standby update",
-	daemon.RouteColdStart: "Cold start",
-	daemon.RouteRestore:   "Restoring workspace",
+	daemon.RouteReady:     "lease.route.ready",
+	daemon.RouteUpdate:    "lease.route.update",
+	daemon.RouteColdStart: "lease.route.cold",
+	daemon.RouteRestore:   "lease.route.restore",
 }
 
-// leaseRouteLabel は経路の表示名を返す。未知の経路でも表示は止めない。
+// leaseRouteLabel は経路の表示名の message ID を返す。未知の経路でも表示は止めない。
 func leaseRouteLabel(route string) string {
-	if label, ok := leaseRouteLabels[route]; ok {
-		return label
+	if id, ok := leaseRouteLabels[route]; ok {
+		return id
 	}
-	return "Preparing workspace"
+	return "lease.route.preparing"
 }
 
 // leasePhase は表示中の準備区間である。区間名は repository ごとに繰り返すため、
@@ -93,6 +92,8 @@ type leaseProgress struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 	language i18n.Language
+	// localizer は待機行の固定文を解決する。言語は開始時に 1 度だけ決める。
+	localizer *i18n.Localizer
 }
 
 // startLeaseProgress は経路が決まる前の待機行を stderr へ開始する。
@@ -115,7 +116,8 @@ func newLeaseProgress(w io.Writer, animate bool) *leaseProgress {
 
 func newLeaseProgressLanguage(w io.Writer, animate bool, lang i18n.Language) *leaseProgress {
 	return &leaseProgress{
-		bar: tui.StartProgress(w, animate, localizedLeaseLabel(leaseResolvingLabel, lang)), animate: animate, started: time.Now(), language: lang,
+		bar:     tui.StartProgress(w, animate, i18n.New(string(lang)).Localize(leaseResolvingLabel, nil)),
+		animate: animate, started: time.Now(), language: lang, localizer: i18n.New(string(lang)),
 	}
 }
 
@@ -177,40 +179,20 @@ func (p *leaseProgress) draw() {
 	p.bar.Set(p.label(), fmt.Sprintf("  %ds", int(time.Since(p.started).Seconds())))
 }
 
+// label は待機行の文面を組み立てる。経路名と待機の表記だけを訳し、
+// 区間名と対象の repository は daemon が返す値なので原文のまま連結する。
 func (p *leaseProgress) label() string {
 	if p.route == "" {
-		return localizedLeaseLabel(leaseResolvingLabel, p.language)
+		return p.localizer.Localize(leaseResolvingLabel, nil)
 	}
 	switch {
 	case p.phase != (leasePhase{}):
-		return localizedLeaseLabel(p.route, p.language) + ": " + localizedLeaseLabel(p.phase.text(), p.language)
+		return p.localizer.Localize(p.route, nil) + ": " + p.phase.text()
 	case p.queued:
-		return localizedLeaseLabel(p.route, p.language) + ": " + localizedLeaseLabel(leaseQueuedLabel, p.language)
+		return p.localizer.Localize(p.route, nil) + ": " + p.localizer.Localize(leaseQueuedLabel, nil)
 	default:
-		return localizedLeaseLabel(p.route, p.language)
+		return p.localizer.Localize(p.route, nil)
 	}
-}
-
-func localizedLeaseLabel(value string, lang i18n.Language) string {
-	if lang != i18n.Japanese {
-		return value
-	}
-	for _, replacement := range []struct{ en, ja string }{
-		{"Resolving workspace", "workspace を解決中"},
-		{"Ready standby", "準備済み standby"},
-		{"Standby update", "standby を更新中"},
-		{"Cold start", "cold start"},
-		{"Restoring workspace", "workspace を復元中"},
-		{"Preparing workspace", "workspace を準備中"},
-		{"create", "作成"},
-		{"restore", "復元"},
-		{"update", "更新"},
-		{"git-register", "Git 登録"},
-		{"queued", "待機中"},
-	} {
-		value = strings.ReplaceAll(value, replacement.en, replacement.ja)
-	}
-	return value
 }
 
 // settle は表示中の区間を確定行として残す。待機行は描き替えで消えるため、
@@ -219,7 +201,7 @@ func (p *leaseProgress) settle() {
 	if p.phase == (leasePhase{}) {
 		return
 	}
-	p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(p.elapsed), localizedLeaseLabel(p.phase.text(), p.language)))
+	p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(p.elapsed), p.phase.text()))
 	p.settled = true
 }
 
@@ -240,7 +222,7 @@ func (p *leaseProgress) finish() {
 		p.settle()
 		// 総括は準備を待った回にだけ出す。成否は呼び出し側が別に伝えるので、ここでは掛かった時間だけを残す。
 		if p.settled {
-			p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(time.Since(p.started)), localizedLeaseLabel(p.route, p.language)))
+			p.bar.Line(fmt.Sprintf("%*s  %s", leaseSettledWidth, formatLeaseDuration(time.Since(p.started)), p.localizer.Localize(p.route, nil)))
 		}
 	}
 	p.finished = true

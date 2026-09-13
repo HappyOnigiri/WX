@@ -5,17 +5,6 @@ tools/checkcomments/main.go	exempt	Defines the full-width character range the co
 tools/checkdocsindex/main.go	exempt	Matches the Japanese heading and entry shape that AGENTS.md prescribes for docs/; not user-facing display.
 tools/checktests/main.go	exempt	Quotes the Japanese exemption-comment syntax the repository conventions define; not user-facing display.
 cmd/wx/localization_help.go	backlog	translateHelp still replaces substrings in rendered help output.
-internal/cli/localization.go	backlog	localizeCLIMessage still replaces substrings in rendered output.
-internal/cli/bench.go	backlog	Benchmark report labels are still chosen inline by language.
-internal/cli/bench_sweep.go	backlog	Benchmark sweep report labels are still chosen inline by language.
-internal/cli/client.go	backlog	Lease and readiness messages are still chosen inline by language.
-internal/cli/doctor_probe.go	backlog	Probe progress lines are still chosen inline by language.
-internal/cli/fresh.go	backlog	Fresh-worktree guidance is still chosen inline by language.
-internal/cli/lease.go	backlog	Lease guidance is still chosen inline by language.
-internal/cli/linked_worktree.go	backlog	Linked-worktree guidance is still chosen inline by language.
-internal/cli/progress.go	backlog	Progress phase labels are still translated by an en to ja table.
-internal/cli/resume.go	backlog	Resume guidance is still chosen inline by language.
-internal/cli/worktree.go	backlog	Worktree preparation guidance is still chosen inline by language.
 internal/diag/localization.go	backlog	The diagnostics replacement table still rewrites rendered findings.
 internal/sessions/tui/picker.go	backlog	Picker labels are still translated by an en to ja table.
 internal/tui/select.go	backlog	Selection prompt labels are still translated by an en to ja table.
