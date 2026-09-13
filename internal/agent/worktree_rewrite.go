@@ -407,6 +407,11 @@ const shellSeparators = ";&|\n\r()<>"
 // lexShellCommand は command を shell の演算子で segment へ分け、各 segment を語へ分解する。
 // 引用が閉じない場合も途中までの語を返して ok=false とし、候補を見つけた側が deny に倒せるようにする。
 // 厳密な shell の解釈ではなく、単一の simple command かどうかを見分けるのに足りる近似である。
+// 最初の `<<` で読むのをやめ、heredoc の本文を語彙解析へ入れない。
+// 終端語を同定しないのは、引用形・`<<-`・複数 heredoc・未終端を取り違えると
+// 本文の範囲が伸び縮みし、近似の穴が増えるためである。候補が減る方向にしか効かないので、
+// 本文の後ろに書いた `git worktree add` は素通しになる（`<<<` も本文とみなす）。
+// commentlint:allow-long -- 終端語を見ない選択と、その代償である素通しを残す
 func lexShellCommand(command string) (segments [][]shellWord, ok bool) {
 	var segment []shellWord
 	var word strings.Builder
@@ -427,6 +432,7 @@ func lexShellCommand(command string) (segments [][]shellWord, ok bool) {
 			segment = nil
 		}
 	}
+scan:
 	for index := 0; index < len(command); index++ {
 		char := command[index]
 		switch {
@@ -453,6 +459,8 @@ func lexShellCommand(command string) (segments [][]shellWord, ok bool) {
 			quote, started = char, true
 		case char == ' ' || char == '\t':
 			flushWord()
+		case char == '<' && index+1 < len(command) && command[index+1] == '<':
+			break scan
 		case strings.IndexByte(shellSeparators, char) >= 0:
 			flushSegment()
 		case char == '$' || char == '`':

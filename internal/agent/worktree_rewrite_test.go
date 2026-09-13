@@ -44,6 +44,16 @@ func TestClassifyWorktreeAddCommand(t *testing.T) {
 		{name: "echo", command: `echo "git worktree add"`, decision: worktreeAddIgnore},
 		{name: "grep", command: `grep -rn "worktree add" .`, decision: worktreeAddIgnore},
 		{name: "make", command: "make test-focus PKG=./internal/workspace RUN=WorktreeAdd", decision: worktreeAddIgnore},
+		{name: "heredoc body", command: "cat > note.md <<'EOF'\ngit worktree add x main\nEOF", decision: worktreeAddIgnore},
+		{name: "heredoc body unquoted delimiter", command: "cat > s.sh <<EOF\n  git worktree add x\nEOF", decision: worktreeAddIgnore},
+		{name: "heredoc body dash", command: "cat > s.sh <<-EOF\n\tgit worktree add x\n\tEOF", decision: worktreeAddIgnore},
+		{name: "heredoc body nested shell", command: "cat > s.sh <<'EOF'\nsh -c 'git worktree add x'\nEOF", decision: worktreeAddIgnore},
+		{name: "heredoc body apostrophe", command: "cat > note.md <<'EOF'\ndon't run git worktree add here\nEOF", decision: worktreeAddIgnore},
+		// 本文の後ろの候補は素通しになる。終端語を同定しない代償で、誤 deny より軽いと判断した。
+		{name: "worktree add after heredoc", command: "cat <<'EOF'\ntext\nEOF\ngit worktree add x", decision: worktreeAddIgnore},
+		{name: "here string", command: "grep worktree <<< 'git worktree add x'", decision: worktreeAddIgnore},
+		{name: "heredoc after candidate", command: "git worktree add x && cat <<'EOF'\ntext\nEOF", decision: worktreeAddDeny, reason: denyReasonCompound},
+		{name: "quoted heredoc operator", command: `git worktree add x && echo "a << b"`, decision: worktreeAddDeny, reason: denyReasonCompound},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
