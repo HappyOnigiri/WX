@@ -3,10 +3,12 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -310,5 +312,104 @@ func TestStandbySuspensionIsHiddenWithoutReplenishment(t *testing.T) {
 	}
 	if !strings.Contains(blocked[0].Action, "wx retry-standby") {
 		t.Fatalf("standby recovery action=%q", blocked[0].Action)
+	}
+}
+
+// 会話に記録された cwd で worktree の可否を決めるため、WorktreePolicy が lease と同じ workspace の方針を返すことを確かめる。
+// 畳まれた slot の path は client 側では読み替えられないので、ここで workspace root へ解決できることも合わせて確かめる。
+func TestWorktreePolicyResolvesWorkspaceAndRetiredSlotPath(t *testing.T) {
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	initGitRepo(t, repo)
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "cold"
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	m := testManager(t, cfg, store)
+	defer m.Close()
+	ctx := context.Background()
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerTestWorkspace(t, store, w)
+
+	policy := m.WorktreePolicy(ctx, repo)
+	if !policy.Resolved || policy.Root != string(w.Root) || policy.Mode != "cold" {
+		t.Fatalf("policy for the repository=%+v, want root=%s mode=cold", policy, w.Root)
+	}
+
+	lease, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
+	if err != nil || lease.Path == "" {
+		t.Fatalf("lease=%+v err=%v", lease, err)
+	}
+	// slot を畳んだ後の cwd を模す。path の実体はなく、slot の配下という位置だけが残る。
+	retired := m.WorktreePolicy(ctx, filepath.Join(lease.Path, "gone", "repo"))
+	if !retired.Resolved || retired.Root != string(w.Root) || retired.Mode != "cold" {
+		t.Fatalf("policy for a retired slot path=%+v, want root=%s mode=cold", retired, w.Root)
+	}
+}
+
+// 解決できない cwd を失敗にせず Resolved=false で返すことを確かめる。
+// 呼び出し側はこれを受けて worktree 無しで会話を再開するため、ここで失敗にすると再開の手段がなくなる。
+func TestWorktreePolicyReportsUnresolvedInsteadOfFailing(t *testing.T) {
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	m := testManager(t, cfg, store)
+	defer m.Close()
+
+	if policy := m.WorktreePolicy(context.Background(), filepath.Join(root, "missing")); policy.Resolved {
+		t.Fatalf("policy for a missing path=%+v, want unresolved", policy)
+	}
+}
+
+// Git repository でない cwd は、その directory 自身を root とする方針を返すことを確かめる。
+// 巨大な multi repository workspace へ worktree を作らせないための判定がここに載る。
+func TestWorktreePolicyUsesDirectoryItselfOutsideRepositories(t *testing.T) {
+	requireDaemonIntegration(t)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(root, "plain")
+	if err := os.MkdirAll(plain, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "off"
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	m := testManager(t, cfg, store)
+	defer m.Close()
+
+	policy := m.WorktreePolicy(context.Background(), plain)
+	if !policy.Resolved || policy.Root != plain || policy.Mode != "off" {
+		t.Fatalf("policy=%+v, want root=%s mode=off", policy, plain)
+	}
+
+	// client は method 名と cwd のキーだけで判定を引くため、RPC の経路も合わせて確かめる。
+	raw, err := Handler{Manager: m}.Handle(context.Background(), "WorktreePolicy", json.RawMessage(`{"cwd":`+strconv.Quote(plain)+`}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply, ok := raw.(WorktreePolicyReply); !ok || reply != policy {
+		t.Fatalf("RPC reply=%#v, want %+v", raw, policy)
 	}
 }

@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/sessions"
 	"github.com/HappyOnigiri/WX/internal/sessions/identity"
 )
@@ -140,6 +142,110 @@ func (c Client) resolveResume(ctx context.Context, agent, cwd string, intent res
 	default:
 		return resumeTarget{}, false, errors.New("unknown resume intent")
 	}
+}
+
+// runResumeByID は会話 ID を指定した再開を、起動場所の worktree policy を見ずに実行する。
+// 記録済み session は当時の workspace を復元するため方針を問わず、管理外の会話は会話の cwd 側の方針で決める。
+// 会話を引けなかった ID も通常起動へは戻さず、worktree を作らずに agent へ渡す。
+func (c Client) runResumeByID(ctx context.Context, sourceCWD, agent string, args, branches []string, fresh bool, intent resumeIntent) int {
+	if err := validateResumeOptions(intent, "", fresh, branches); err != nil {
+		cliError(c, err)
+		return 2
+	}
+	if err := c.ensureDaemon(ctx); err != nil {
+		cliError(c, err)
+		return 1
+	}
+	target, found, err := c.lookupResume(ctx, agent, intent.AgentSessionID)
+	if err != nil {
+		cliError(c, err)
+		return 1
+	}
+	// 引けない ID を「存在しない会話」と断定しない。Lookup は agent の記録形式に依存し、取りこぼし得る。
+	// 新しい会話として worktree を消費するより、worktree 無しで agent へ渡して可否を委ねる。
+	// 実在すれば再開でき、実在しなければ agent 自身が理由を示して非 0 で終わる。
+	if !found {
+		lang := cliLanguage(c)
+		if fresh || len(branches) > 0 {
+			fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--branch and --fresh require a worktree", lang))
+			return 2
+		}
+		if lang == i18n.Japanese {
+			fmt.Fprintf(os.Stderr, "通知: wx に会話 %s の記録がないため、worktree を作らずに再開します\n", intent.AgentSessionID)
+		} else {
+			fmt.Fprintf(os.Stderr, "notice: resuming without a worktree; wx has no record of conversation %s\n", intent.AgentSessionID)
+		}
+		root, _ := c.policyRootFrom(ctx, sourceCWD)
+		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirsFrom(c.Config, root, sourceCWD), args))
+	}
+	if target.WXSessionID == "" {
+		if direct, ok := c.resolveDirectResume(ctx, sourceCWD, target.CWD); ok {
+			if fresh || len(branches) > 0 {
+				lang := cliLanguage(c)
+				fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--branch and --fresh require a worktree", lang))
+				return 2
+			}
+			return runDirectAgentFrom(ctx, direct.cwd, agent, addDirArgs(directAddDirsFrom(c.Config, direct.root, direct.cwd), args))
+		}
+	}
+	return c.runAgentResolved(ctx, agent, args, branches, fresh, "", sourceCWD, &target)
+}
+
+// directResume は worktree を作らない再開の起動先である。
+// root は設定を引くための workspace root で、決められなければ空になり global 設定へ落ちる。
+type directResume struct{ cwd, root string }
+
+// resolveDirectResume は管理外の会話を worktree 無しで再開するかを、会話の cwd 側の方針で決める。
+// 判定を daemon へ委ねるのは、畳まれた slot の path を workspace root へ読み替えられるのが daemon だけだからである。
+// 解決できない cwd と問い合わせの失敗はどちらも worktree 無しにする。
+// 起動場所の巨大な workspace へ worktree を作るより、会話だけ再開して利用者に選ばせるほうが安全側である。
+// commentlint:allow-long -- daemon へ委ねる理由と、失敗時に worktree を作らない理由を残す
+func (c Client) resolveDirectResume(ctx context.Context, sourceCWD, conversationCWD string) (directResume, bool) {
+	policy := c.resumeWorktreePolicy(ctx, conversationCWD)
+	if !policy.Resolved {
+		recorded := conversationCWD
+		if recorded == "" {
+			recorded = sourceCWD
+		}
+		fmt.Fprintf(os.Stderr, "notice: resuming without a worktree; no workspace could be resolved for %s\n", recorded)
+		return directResume{cwd: resumeStartDirectory(sourceCWD, conversationCWD, "")}, true
+	}
+	if policy.Mode == "hot" || policy.Mode == "cold" {
+		return directResume{}, false
+	}
+	fmt.Fprintf(os.Stderr, "notice: resuming without a worktree; workspace %s has worktree policy %q\n", policy.Root, policy.Mode)
+	fmt.Fprintf(os.Stderr, "notice: run wx config --workspace %s worktree cold to resume this conversation in a worktree\n", shellQuote(policy.Root))
+	return directResume{cwd: resumeStartDirectory(sourceCWD, conversationCWD, policy.Root), root: policy.Root}, true
+}
+
+func (c Client) resumeWorktreePolicy(ctx context.Context, cwd string) daemon.WorktreePolicyReply {
+	var reply daemon.WorktreePolicyReply
+	callCtx, cancel := context.WithTimeout(ctx, c.discoveryTimeout())
+	defer cancel()
+	if err := c.RPC.Call(callCtx, "WorktreePolicy", map[string]string{"cwd": cwd}, &reply); err != nil {
+		return daemon.WorktreePolicyReply{}
+	}
+	return reply
+}
+
+// resumeStartDirectory は worktree を作らない再開で agent を起動するディレクトリを決める。
+// 会話の cwd を最優先にし、畳まれた slot のように実体が無いときは workspace root、
+// どちらも使えなければ起動場所へ落ちる。会話の再開自体は cwd に依存しないため、ここで失敗にはしない。
+func resumeStartDirectory(sourceCWD, conversationCWD, root string) string {
+	for _, candidate := range []string{conversationCWD, root} {
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return sourceCWD
+}
+
+// shellQuote は POSIX shell の単一引用符で path を囲み、案内をそのまま実行できる形にする。
+func shellQuote(path string) string {
+	return "'" + strings.ReplaceAll(path, "'", "'\\''") + "'"
 }
 
 func resumeArgs(agent, id, path string, rest []string) []string {
