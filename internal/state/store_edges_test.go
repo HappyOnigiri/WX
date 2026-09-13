@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -906,7 +907,7 @@ func TestReleaseAndForgetRefuseDurableStateThatChangedUnderTheCaller(t *testing.
 		if _, err := store.CreateJob(ctx, "REMOVE", "workspace", "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.ForgetWorkspace(ctx, "/workspace"); err == nil || !strings.Contains(err.Error(), "pending recovery jobs") {
+		if err := store.ForgetWorkspace(ctx, "/workspace"); !errors.Is(err, ErrWorkspaceInUse) {
 			t.Fatalf("forget ignored pending job: %v", err)
 		}
 	})

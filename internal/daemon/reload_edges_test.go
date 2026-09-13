@@ -57,10 +57,10 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if err := m.WaitReady(readyCtx, lease.SessionID, lease.Token); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Forget(ctx, repository); err == nil {
+	if _, err := m.Forget(ctx, repository, false); err == nil {
 		t.Fatal("active workspace was forgotten")
 	}
-	if err := m.Forget(ctx, filepath.Join(home, "missing")); err == nil {
+	if _, err := m.Forget(ctx, filepath.Join(home, "missing"), false); err == nil {
 		t.Fatal("unknown workspace was forgotten")
 	}
 

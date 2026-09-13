@@ -242,13 +242,91 @@ func shellQuote(path string) string {
 }
 
 func resumeArgs(agent, id, path string, rest []string) []string {
-	if id == "" {
-		return rest
+	return resumeArgsForIntent(agent, id, path, resumeIntent{Kind: resumeIntentNone, Rest: rest})
+}
+
+// resumeArgsForIntent は wx の復元先を agent の resume 形式へ組み立てる。
+// codex は native と exec で --cd と resume の位置が異なるため、解析時の前置引数を保ったまま差し込む。
+func resumeArgsForIntent(agent, id, path string, intent resumeIntent) []string {
+	if agent != "codex" {
+		if id == "" {
+			return append([]string(nil), intent.Rest...)
+		}
+		return append([]string{"--resume", id}, intent.Rest...)
 	}
-	if agent == "codex" {
-		return append([]string{"resume", "--cd", path, id}, rest...)
+
+	prefix := stripCodexCDArgs(intent.Prefix)
+	rest := stripCodexCDArgs(intent.Rest)
+	if !intent.CodexExec {
+		if id == "" {
+			if intent.Kind == resumeIntentNone && len(prefix) == 0 {
+				return rest
+			}
+			args := cloneResumeArgs(prefix)
+			args = append(args, "resume", "--cd", path)
+			return append(args, rest...)
+		}
+		args := cloneResumeArgs(prefix)
+		args = append(args, "resume", "--cd", path, id)
+		return append(args, rest...)
 	}
-	return append([]string{"--resume", id}, rest...)
+
+	execIndex := codexExecIndex(prefix)
+	if execIndex < 0 {
+		// 解析結果が壊れていても、exec 形を失わずに起動できる既定位置へ戻す。
+		prefix = append([]string(nil), "exec")
+		execIndex = 0
+	}
+	args := append([]string(nil), prefix[:execIndex+1]...)
+	args = append(args, "--cd", path)
+	args = append(args, prefix[execIndex+1:]...)
+	args = append(args, "resume")
+	if id != "" {
+		args = append(args, id)
+	}
+	return append(args, rest...)
+}
+
+// codexExecIndex は前置引数に含まれる exec（または alias e）の位置を返す。
+func codexExecIndex(args []string) int {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return -1
+		}
+		if strings.HasPrefix(arg, "-") {
+			if codexResumeFlagTakesValue(arg) && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		if arg == "exec" || arg == "e" {
+			return i
+		}
+		return -1
+	}
+	return -1
+}
+
+// codexExecResumeParts は明示的な wx resume で、まだ resume を含まない exec 引数を分割する。
+// 通常の wx codex 起動ではこの形を解釈せず、利用者の argv をそのまま渡す。
+func codexExecResumeParts(args []string) (prefix, rest []string, ok bool) {
+	shape, found := codexResumeShape(args)
+	if !found || !shape.exec {
+		return nil, nil, false
+	}
+	prefixEnd, restStart := shape.prefixEnd, shape.prefixEnd
+	if shape.resumeIndex >= 0 {
+		prefixEnd = shape.resumeIndex
+		restStart = shape.resumeIndex + 1
+	}
+	prefix = stripCodexCDArgs(args[:prefixEnd])
+	if shape.resumeIndex >= 0 {
+		rest = parseCodexResumeTail(args[restStart:]).Rest
+	} else {
+		rest = stripCodexCDArgs(args[restStart:])
+	}
+	return prefix, rest, true
 }
 
 func (c Client) RunAgent(ctx context.Context, agent string, args, branches []string, fresh bool) int {

@@ -134,8 +134,13 @@ func printDiscardRecovery(out daemon.DiscardRecoveryResult) {
 	fmt.Printf("discarded %d session(s), retired %d slot(s)\n", out.Discarded, out.Retired)
 }
 
+// forgetTimeout は `wx forget` 1 回あたりの制限時間。
+// 待機 worktree の回収と復元資産の破棄を同期実行するため、RPC の既定値より長い予算を与える。
+const forgetTimeout = 60 * time.Second
+
 func runForget(ctx context.Context, args []string) int {
 	fs := pflag.NewFlagSet("forget", pflag.ContinueOnError)
+	discard := fs.Bool("discard-recovery", false, "discard the recovery state of this workspace instead of refusing")
 	fs.SetInterspersed(false)
 	fs.Usage = func() { commandUsage(os.Stdout, "forget") }
 	if code, done := finishFlagParse(fs, "forget", args); done {
@@ -146,12 +151,32 @@ func runForget(ctx context.Context, args []string) int {
 		return 2
 	}
 	c, _ := rpcClient()
-	if err := c.Call(ctx, "Forget", map[string]string{"path": fs.Arg(0)}, nil); err != nil {
+	var out daemon.ForgetResult
+	callCtx, cancel := context.WithTimeout(ctx, forgetTimeout)
+	err := c.Call(callCtx, "Forget", map[string]any{"path": fs.Arg(0), "discard_recovery": *discard}, &out)
+	cancel()
+	if err != nil {
 		reportRPCError(err)
 		return 1
 	}
 	fmt.Println("forgotten", fs.Arg(0))
+	if line := forgetReclaimLine(out); line != "" {
+		fmt.Println(line)
+	}
 	return 0
+}
+
+// forgetReclaimLine は解除のために消したものを1行にまとめる。何も消していなければ空を返す。
+func forgetReclaimLine(out daemon.ForgetResult) string {
+	if out.ReclaimedSlots+out.DiscardedSessions+out.DiscardedSnapshots+out.DiscardedWorkspaceSnapshots == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("reclaimed %d worktree(s)", out.ReclaimedSlots)
+	if out.DiscardedSessions == 0 {
+		return line
+	}
+	return fmt.Sprintf("%s; discarded %d session(s), %d snapshot(s), %d workspace snapshot(s)",
+		line, out.DiscardedSessions, out.DiscardedSnapshots, out.DiscardedWorkspaceSnapshots)
 }
 
 // retryStandbyView は RetryStandby の workspace 1 件分の応答である。

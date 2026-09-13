@@ -280,12 +280,14 @@ func (h Handler) dispatchWorkspaceMaintenance(ctx context.Context, method string
 	switch method {
 	case "Forget":
 		var p struct {
-			Path string `json:"path"`
+			Path            string `json:"path"`
+			DiscardRecovery bool   `json:"discard_recovery"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, true, err
 		}
-		return map[string]bool{"forgotten": true}, true, h.Manager.Forget(ctx, p.Path)
+		result, err := h.Manager.Forget(ctx, p.Path, p.DiscardRecovery)
+		return result, true, err
 	case "DiscardRecovery":
 		var p struct {
 			Path   string `json:"path"`

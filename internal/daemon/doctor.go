@@ -238,6 +238,14 @@ func standbyReplenishmentFinding(item state.StandbyReplenishmentDiagnostic) diag
 			Cause:  jobFailureCause("prepare job "+item.Detail, item.FailureCode, item.FailureMessage, item.DetailPath),
 			Action: "fix the reported cause, then run " + item.Action,
 		}
+	case state.SuspendReplenishReasonForget:
+		// 解除まで進めば停止行も消えるため、残っているのは forget が途中で失敗したことを意味する。
+		return diag.Finding{
+			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityProblem,
+			Summary: "wx forget stopped the replenishment and did not finish", Target: item.Root,
+			Cause:  fmt.Sprintf("wx forget stopped the replenishment of %s and the workspace is still registered", item.Detail),
+			Action: "run wx forget " + item.Root + " again, or run " + item.Action + " to keep the workspace and resume it",
+		}
 	case state.SuspendReplenishReasonClean:
 		return diag.Finding{
 			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityInfo,

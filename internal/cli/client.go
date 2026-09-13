@@ -146,6 +146,9 @@ func (c Client) runAgentResolved(ctx context.Context, agent string, args, branch
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
+	if explicitResume == "" && intent.Notice {
+		fmt.Fprintln(os.Stderr, "notice: codex exec resume needs a session ID or --last; starting in a new workspace without restoring a snapshot")
+	}
 	var target resumeTarget
 	resuming := resolved != nil
 	if resolved != nil {
@@ -154,7 +157,7 @@ func (c Client) runAgentResolved(ctx context.Context, agent string, args, branch
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	plan := launchPlan{agent: agent, args: args, branches: branches, cwd: cwd, explicitResume: explicitResume, intentRest: intent.Rest, target: target, resuming: resuming, fresh: fresh}
+	plan := launchPlan{agent: agent, args: args, branches: branches, cwd: cwd, explicitResume: explicitResume, intentKind: intent.Kind, intentPrefix: intent.Prefix, intentRest: intent.Rest, intentCodexExec: intent.CodexExec, target: target, resuming: resuming, fresh: fresh}
 	if resuming {
 		if target.WXSessionID != "" {
 			var status resumeStatus
@@ -169,6 +172,14 @@ func (c Client) runAgentResolved(ctx context.Context, agent string, args, branch
 			}
 			if plan.agent == "" {
 				plan.agent = status.Agent
+			}
+			if explicitResume != "" && plan.agent == "codex" {
+				// agent 省略の wx resume は初回解析時に種別が分からないため、status 解決後に Codex の形を確定する。
+				resolvedIntent := parseCodexResumeIntent(plan.args)
+				plan.intentKind = resolvedIntent.Kind
+				plan.intentPrefix = resolvedIntent.Prefix
+				plan.intentRest = resolvedIntent.Rest
+				plan.intentCodexExec = resolvedIntent.CodexExec
 			}
 			plan.target.Agent = plan.agent
 			if plan.target.AgentSessionID == "" {
@@ -288,11 +299,18 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	args := plan.args
 	// 貸出コマンドは会話 ID を argv へ渡す agent の作法を持たないため、引数はそのまま実行する。
 	if plan.resuming && plan.leaseKind == "" {
-		rest := plan.intentRest
+		intent := resumeIntent{Kind: plan.intentKind, Prefix: plan.intentPrefix, Rest: plan.intentRest, CodexExec: plan.intentCodexExec}
 		if plan.explicitResume != "" {
-			rest = plan.args
+			if plan.agent != "codex" || (!plan.intentCodexExec && plan.intentKind == resumeIntentNone) {
+				intent.Prefix = nil
+				intent.Rest = plan.args
+			} else if plan.intentKind == resumeIntentNone {
+				if prefix, rest, ok := codexExecResumeParts(plan.args); ok {
+					intent.Prefix, intent.Rest = prefix, rest
+				}
+			}
 		}
-		args = resumeArgs(plan.agent, plan.target.AgentSessionID, lease.Path, rest)
+		args = resumeArgsForIntent(plan.agent, plan.target.AgentSessionID, lease.Path, intent)
 	}
 	// 複数 repository の workspace では CWD が repository の親になるため、配下の agent 資産は --add-dir でしか読まれない。
 	// 貸出コマンドは agent ではなく、この引数の作法を持たない。
