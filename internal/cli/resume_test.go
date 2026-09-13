@@ -44,6 +44,58 @@ func TestResumeArgsBuildsAgentSpecificResumeCommands(t *testing.T) {
 	}
 }
 
+func TestResumeArgsForIntentBuildsCodexExecCommands(t *testing.T) {
+	tests := []struct {
+		name   string
+		id     string
+		path   string
+		intent resumeIntent
+		want   []string
+	}{
+		{
+			name:   "exec native id",
+			id:     "codex-session",
+			path:   "/tmp/slot",
+			intent: resumeIntent{Prefix: []string{"exec"}, CodexExec: true, Rest: []string{"--json"}},
+			want:   []string{"exec", "--cd", "/tmp/slot", "resume", "codex-session", "--json"},
+		},
+		{
+			name:   "exec options stay after cd",
+			id:     "codex-session",
+			path:   "/tmp/slot",
+			intent: resumeIntent{Prefix: []string{"--model", "o3", "e", "--json"}, CodexExec: true, Rest: []string{"prompt"}},
+			want:   []string{"--model", "o3", "e", "--cd", "/tmp/slot", "--json", "resume", "codex-session", "prompt"},
+		},
+		{
+			name:   "exec removes caller cd",
+			id:     "codex-session",
+			path:   "/tmp/slot",
+			intent: resumeIntent{Prefix: []string{"exec", "--cd", "/other"}, CodexExec: true, Rest: []string{"-C=/another", "--json"}},
+			want:   []string{"exec", "--cd", "/tmp/slot", "resume", "codex-session", "--json"},
+		},
+		{
+			name:   "exec without native id keeps shape",
+			path:   "/tmp/slot",
+			intent: resumeIntent{Prefix: []string{"exec", "--json"}, CodexExec: true, Rest: []string{"prompt"}},
+			want:   []string{"exec", "--cd", "/tmp/slot", "--json", "resume", "prompt"},
+		},
+		{
+			name:   "native without native id keeps shape",
+			path:   "/tmp/slot",
+			intent: resumeIntent{Kind: resumeIntentPicker, Rest: []string{"--json"}},
+			want:   []string{"resume", "--cd", "/tmp/slot", "--json"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := resumeArgsForIntent("codex", test.id, test.path, test.intent)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("resumeArgsForIntent(%q, %q, %q, %#v)=%v, want %v", "codex", test.id, test.path, test.intent, got, test.want)
+			}
+		})
+	}
+}
+
 func TestResolveResumeHandlesNoneAndExplicitWXSession(t *testing.T) {
 	client := Client{Config: config.Defaults()}
 	ctx := context.Background()
