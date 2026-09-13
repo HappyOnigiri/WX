@@ -4,7 +4,8 @@ internal/i18n/catalog.go	exempt	The message catalog itself; this is where the Ja
 tools/checkcomments/main.go	exempt	Defines the full-width character range the comment-length check measures; not user-facing display.
 tools/checkdocsindex/main.go	exempt	Matches the Japanese heading and entry shape that AGENTS.md prescribes for docs/; not user-facing display.
 tools/checktests/main.go	exempt	Quotes the Japanese exemption-comment syntax the repository conventions define; not user-facing display.
-cmd/wx/localization.go	backlog	translateHelp / localizeDaemonText / localizeSetupError still replace substrings in rendered output.
+cmd/wx/localization_help.go	backlog	translateHelp still replaces substrings in rendered help output.
+cmd/wx/localization_message.go	backlog	localizeDaemonText and localizeSetupError still replace substrings in rendered output.
 cmd/wx/doctor_probe.go	backlog	Probe labels and prose are still chosen inline by language instead of a message ID.
 cmd/wx/config.go	backlog	Flag-conflict message is still chosen inline by language.
 cmd/wx/daemon.go	backlog	Daemon lifecycle progress and guidance lines are still chosen inline by language.

@@ -68,6 +68,8 @@ func TestAddWorktreeUsesReservedNamespaceAcrossRootReplacement(t *testing.T) {
 			t.Fatalf("install replacement root: %v", err)
 		}
 	})
+	// addWorktreeは`--no-checkout`で登録するだけなので、作られたworktreeはindexも内容も空である。
+	// この検査の対象は予約namespaceとGit登録の向き先だけで、展開は呼び出し側の区間が行う。
 	if err := p.addWorktree(context.Background(), repo, owner, target, filepath.Join("slot", "root"), head); err != nil {
 		t.Fatalf("descriptor-bound worktree add failed: %v", err)
 	}

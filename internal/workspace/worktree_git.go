@@ -87,11 +87,9 @@ func (p *Preparer) addWorktreeWithIdentity(ctx context.Context, repo discovery.R
 	}
 	defer func() { _ = targetDirectory.Close() }()
 	// `--git-dir` は cwd を変えず source repository を特定する。`-C` では target を repo.MainPath 基準に解決し、上で確立した descriptor-bound namespace を失う。
-	args := []string{"--git-dir", string(repo.CommonDir), "worktree", "add", "--detach"}
-	if p.noCheckout {
-		args = append(args, "--no-checkout")
-	}
-	args = append(args, ".", oid)
+	// `--no-checkout` はどの経路でも外さない。Git に checkout させると post-checkout が worktree add の内側で走り、
+	// tracked file の配置位置と hook の実行位置を wx が決められなくなる。index も空で戻るため、展開は呼び出し側が行う。
+	args := []string{"--git-dir", string(repo.CommonDir), "worktree", "add", "--detach", "--no-checkout", ".", oid}
 	_, err = p.Git.RunAt(ctx, targetDirectory, nil, nil, args...)
 	if err == nil {
 		return targetIdentity, nil

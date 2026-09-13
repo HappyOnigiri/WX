@@ -175,6 +175,10 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 	}
 	defer releaseRoot()
 	archiveManager := m.newArchiveManager(m.Config(), slotState)
+	// 復元でも post-checkout の出力を捨てない。復元は準備ではないので計測は積まず、warn と詳細ログだけを残す。
+	notices := &workspace.PrepareNotices{}
+	archiveManager.Preparer.Notices = notices
+	defer func() { m.recordPrepareNotices(notices.Notices()) }()
 	// multi-repository の workspace archive は、repository の復元で target を変え始めるより前に 1 度だけ検証する。
 	// 検証済み descriptor をそのまま展開へ渡すため、path からの再 open と再 hash は行わない。
 	var verifiedWorkspace *verifiedWorkspaceArchive

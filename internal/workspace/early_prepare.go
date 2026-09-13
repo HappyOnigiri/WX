@@ -28,8 +28,8 @@ type stagedRepository struct {
 // 呼び出し元は slot lock を保持し、開始を永続化しておく。失敗時も部分展開を削除せず残す。rootStage は非 Git workspace root の配置、earlyReady は全先行配置の永続化を受け持つ。
 // 戻り値は repository ID ごとの、この呼び出しで実際に配置した include/link である。呼び出し元は規則を読み直さずこれを配置履歴にする。読み直すと、準備中の規則変更で記録と実体が食い違う。
 func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositories []Preparation, rootStage func(bool) error, earlyReady func() error) (map[string][]state.Placement, error) {
+	// sharedPlaced をこの呼び出しの内側だけで持つため、複製した Preparer で進める。
 	stagedPreparer := *p
-	stagedPreparer.noCheckout = true
 	p = &stagedPreparer
 	var prepared []*stagedRepository
 	defer func() {
@@ -117,17 +117,13 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		}); err != nil {
 			return nil, err
 		}
-		// worktree add の post-checkout と同じ null OID・新 HEAD・branch flag を使う。
-		// Git 自身に hook 選択と実行を任せ、未配置の相対 hooksPath も全展開後に解決する。
 		if err := p.timePhase("post-checkout", func() error {
-			result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "hook", "run", "--ignore-missing", "post-checkout", "--", strings.Repeat("0", len(item.OID)), item.OID, "1")
-			// exit 0 の hook が出した出力も残す。hook が内部の失敗を飲み込むと、捨てた時点で wx からは正常と区別できなくなる。
-			p.Notices.Add(PrepareNotice{Target: item.Target, Phase: "post-checkout", Stdout: result.Stdout, Stderr: result.Stderr})
-			return err
+			return p.runPostCheckout(ctx, item.Target, item.locked.identity, item.OID)
 		}); err != nil {
 			return nil, err
 		}
 		if err := p.completePrepare(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked,
+			func() error { return nil },
 			func() error { return nil },
 			func() error { return p.materializePlan(ctx, item.Repository, item.locked, &item.plan, false) },
 			func() error { return nil }); err != nil {
