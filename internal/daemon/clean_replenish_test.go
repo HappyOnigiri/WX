@@ -31,21 +31,23 @@ func removeStandbyAndFinish(t *testing.T, store *state.Store, runID, slotID stri
 	waitCleanRunDone(t, store, runID)
 }
 
-// waitReplenishResumed は補充停止が解除されるまで待つ。解除は run を閉じた後の別処理なので、run の完了だけでは足りない。
-func waitReplenishResumed(t *testing.T, store *state.Store, workspaceID string) {
+// waitCleanReplenishDone は再開処理が記録まで終わるのを待つ。
+// 再開は run を閉じた後の別処理なので、run の完了だけでは足りない。
+// 停止の解除は再開処理の途中で起きるので、解除だけを待つと ReplenishState と ReplenishResult が未記入のことがある。
+func waitCleanReplenishDone(t *testing.T, store *state.Store, runID string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		suspended, err := store.ReplenishSuspended(context.Background(), workspaceID)
+		run, _, err := store.CleanRunByID(context.Background(), runID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !suspended {
+		if run.ReplenishState == state.CleanReplenishDone {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("standby replenishment for %s stayed suspended", workspaceID)
+	t.Fatalf("clean replenishment for run %s did not finish", runID)
 }
 
 func TestCleanReplenishResumesTheWorkspaceItStopped(t *testing.T) {
@@ -64,7 +66,7 @@ func TestCleanReplenishResumesTheWorkspaceItStopped(t *testing.T) {
 		t.Fatalf("accepted reply=%v", reply)
 	}
 	removeStandbyAndFinish(t, store, runID, "standby")
-	waitReplenishResumed(t, store, workspaceID)
+	waitCleanReplenishDone(t, store, runID)
 	run, _, err := store.CleanRunByID(ctx, runID)
 	if err != nil || run.ReplenishState != state.CleanReplenishDone {
 		t.Fatalf("run after replenishment=%+v err=%v", run, err)
@@ -96,7 +98,7 @@ func TestCleanReplenishRunsOnlyOncePerRun(t *testing.T) {
 	}
 	runID, _ := reply["run_id"].(string)
 	removeStandbyAndFinish(t, store, runID, "standby")
-	waitReplenishResumed(t, store, workspaceID)
+	waitCleanReplenishDone(t, store, runID)
 	// 再開後に改めて止めた停止行を、閉じた run の再実行が解除しないことを確かめる。
 	if err := store.SuspendReplenish(ctx, workspaceID, state.SuspendReplenishReasonStandbyFailure, "job"); err != nil {
 		t.Fatal(err)
