@@ -374,15 +374,19 @@ func (h Handler) dispatchClean(ctx context.Context, method string, raw json.RawM
 	switch method {
 	case "Clean":
 		var p struct {
-			All     bool `json:"all"`
-			Standby bool `json:"standby"`
-			DryRun  bool `json:"dry_run"`
-			Discard bool `json:"discard"`
+			Path      string `json:"path"`
+			All       bool   `json:"all"`
+			Standby   bool   `json:"standby"`
+			DryRun    bool   `json:"dry_run"`
+			Discard   bool   `json:"discard"`
+			Replenish bool   `json:"replenish"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, true, err
 		}
-		result, err := h.Manager.Clean(ctx, p.All, p.Standby, p.DryRun, p.Discard)
+		result, err := h.Manager.Clean(ctx, CleanRequest{
+			Path: p.Path, All: p.All, Standby: p.Standby, Discard: p.Discard, DryRun: p.DryRun, Replenish: p.Replenish,
+		})
 		return result, true, err
 	case "CleanUnmanaged":
 		// clean run を作らないので進捗の問い合わせは無く、この 1 往復で完結する。

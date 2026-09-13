@@ -99,19 +99,25 @@ jobはsessionを持たないため保守用の実行枠で走り、利用者向�
 ### 補充停止
 
 補充停止は`replenish_suspensions`に永続化し、定期reconcileと補充ジョブの双方で参照する。
-停止理由によらず、解除はそのworkspaceの手動起動（貸出・resume）の成功か`wx retry-standby`だけとし、既存sessionの返却では解除しない。
+停止理由によらず、解除はそのworkspaceの手動起動（貸出・resume）の成功か`wx retry-standby`、`wx clear --replenish`だけとし、既存sessionの返却では解除しない。
 `wx clear --all`は補充が有効な全workspaceを一度に止めるため、`wx retry-standby --all`で停止行のある全workspaceをまとめて戻せる。
 準備に失敗したFAILED slotは待機枠に数えるので、解除しただけでは不足が0のままになる。`wx retry-standby`は補充を予約する前にFAILED slotを削除予約へ載せ、REMOVINGへ移してから枠を数え直させる。
 
 ## clearとGC
 
-`clean.go`は受付時点で全workspace・全root世代から対象を確定し、対象と期限を永続化する。
+`clean.go`は受付時点で対象と期限を確定し、永続化する。
+対象範囲はworkspaceで絞れるが、root世代では絞らない。「保持期間を待たず今消す」という契約と、世代をまたいで同じ`slots.workspace_id`を持つ実装の双方に一致するためである。
+帰属を確定できないslotは、範囲を指定した命令では対象にしない。
 `Manager.driveClean`はbackgroundで既存ジョブを監視し、workerを占有したまま別ジョブを待たない。
 削除は通常の`Release`→`SNAPSHOT`→`ScheduleRemoval`→`REMOVE`へ載せる。
 隔離slotはmodeによらず`ScheduleQuarantinedRemoval`へ載せる。
 `--discard`は保存を省略して削除を予約し、modeに永続化して再起動後も維持する。
 使用中のdetached lease（`wx new`）も、返却と同じtransactionでSNAPSHOTを積まずREMOVEへ載せ、保存待ちを経ずに削除待ちへ進める。
-実行中runへ合流できるのは対象範囲が同じmodeの再実行だけとする。
+実行中runへ合流できるのは、modeと対象範囲がどちらも同じ再実行だけとする。
+
+`--replenish`の補充再開はrunを閉じた後に置く。停止解除は貸出側と同じ検査を通るので、RUNNINGの間は必ず断られるためである。
+再開する対象はrunが記録した停止行から引く。targetから復元し直すと、受付時点でどのworkspaceを止めたかを再現できない。
+失敗・隔離が残ったworkspaceは戻さない。停止は「作って即消す往復」を防ぐためにあり、環境の回復確認は`wx retry-standby`に委ねる契約だからである。
 
 `--unmanaged`はこのrun機構に載せない。`clean_targets`はslot IDを要求し、登録外の実体は持たないためである。
 専用のRPCで列挙と削除をその場で終えるので、modeも進捗の問い合わせも持たず、`assertNoActiveClean`による貸出の停止も補充停止も伴わない。
