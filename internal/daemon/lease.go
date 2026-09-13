@@ -193,14 +193,14 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 				job, leaseErr := m.store.LeaseReadyWithCold(ctx, ready.ID, session)
 				if leaseErr == nil {
 					m.schedule(job)
-					return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteColdStart}.withReadiness(m.Config(), w), true, nil
+					return m.withReadiness(Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: false, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteColdStart}, w), true, nil
 				}
 				m.releaseLease(session.ID)
 				return Lease{}, false, nil
 			}
 			if replenishJob, replenished, leaseErr := m.store.LeaseReadyWithReplenishment(ctx, ready.ID, session); leaseErr == nil {
 				m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
-				return Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}.withReadiness(m.Config(), w), true, nil
+				return m.withReadiness(Lease{SessionID: session.ID, Token: token, Path: leasePathValue, RootIdentity: rootIdentity, SourceWorkspace: string(w.Root), Ready: true, RepositoryDirs: leaseRepositoryDirs(ready.Path, leasePathValue, repositories), Route: RouteReady}, w), true, nil
 			}
 			m.releaseLease(session.ID)
 			return Lease{}, false, nil
@@ -560,6 +560,21 @@ func (m *Manager) resolveRetiredSlotPath(ctx context.Context, discoverer discove
 // withReadiness は貸出応答へ slot 単位の readiness 実効値を載せる。
 func (l Lease) withReadiness(cfg config.Config, w discovery.Workspace) Lease {
 	l.ReadinessMode, l.ReadinessTimeoutMS, l.ReadinessProgress = leaseReadinessDetails(cfg, string(w.Root), w.Repositories)
+	return l
+}
+
+// withReadiness は応答へ readiness の実効値を載せ、貸出時点の選択を daemon log に残す。
+// repository の設定を client が再計算できないため、貸出と同じ値をここで一度だけ記録する。
+func (m *Manager) withReadiness(l Lease, w discovery.Workspace) Lease {
+	cfg := m.Config()
+	l = l.withReadiness(cfg, w)
+	mode := l.ReadinessMode
+	if mode == "" {
+		mode = cfg.Readiness.Mode
+	}
+	if m.log != nil {
+		m.log.Info("lease readiness resolved", "session_id", l.SessionID, "workspace_id", w.ID, "route", l.Route, "readiness_mode", mode, "readiness_timeout_ms", l.ReadinessTimeoutMS, "readiness_progress", l.ReadinessProgress)
+	}
 	return l
 }
 
