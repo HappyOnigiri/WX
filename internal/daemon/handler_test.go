@@ -22,7 +22,7 @@ func TestHandlerRejectsUnknownFieldsForEveryParameterizedMethod(t *testing.T) {
 	handler := Handler{}
 	methods := []string{
 		"ResolveAndLease", "WaitReady", "LeaseProgress", "BindAgentSession",
-		"Release", "ReleaseLease", "Heartbeat", "RegisterAgentProcess", "Resume", "ResumeStatus", "WorkspaceScope", "GC", "Sessions", "Forget", "RetryStandby",
+		"Release", "ReleaseLease", "Heartbeat", "RegisterAgentProcess", "Resume", "ResumeStatus", "WorkspaceScope", "WorktreePolicy", "GC", "Sessions", "Forget", "RetryStandby",
 	}
 	for _, method := range methods {
 		if _, err := handler.Handle(context.Background(), method, json.RawMessage(`{"unexpected":true}`)); err == nil {

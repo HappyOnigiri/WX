@@ -13,25 +13,32 @@ import (
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/dashboard"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
 func runDashboard(ctx context.Context) int {
+	ctx = commandContext(ctx)
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	notice := ""
 	for {
+		// ダッシュボード内で language を変更した操作の後も、次の画面・RPC へ
+		// 新しい設定を渡す。起動時の context は commandContext 済みでも更新する。
+		ctx = i18n.WithLanguage(ctx, config.LoadLanguage())
 		cfg, rawConfig, configErr := config.LoadWithRaw()
 		if configErr != nil {
 			// 不正設定でも診断や daemon 操作は使えるよう、設定タブだけを既定値で表示する。
 			cfg, rawConfig = config.Defaults(), config.Config{}
-			notice = "Could not load configuration: " + configErr.Error()
+			failure := i18n.T(ctx, "dashboard.config_load_failed", map[string]any{"Error": configErr.Error()})
+			notice = i18n.T(ctx, "common.error", nil) + ": " + failure
 		}
 		addDashboardEnvironments(ctx, &cfg)
 		steps, _ := setup.Collect(ctx, setupOptions())
+		steps = localizedSetupSteps(ctx, steps)
 		action, runErr := dashboard.Run(ctx, dashboard.Options{
 			Status: dashboardStatus, CWD: cwd, Config: cfg, RawConfig: rawConfig, Setup: steps, Notice: notice,
 			Execute: runDashboardInlineAction, Refresh: refreshDashboardState,
@@ -40,11 +47,15 @@ func runDashboard(ctx context.Context) int {
 			return 0
 		}
 		if runErr != nil {
-			fmt.Fprintln(os.Stderr, "error: dashboard:", runErr)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+": dashboard:", runErr)
 			return 1
 		}
 		code := runDashboardAction(ctx, action)
-		notice = fmt.Sprintf("%s finished (exit %d)", action.Args[0], code)
+		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+			notice = fmt.Sprintf("%s が終了しました（終了コード %d）", action.Args[0], code)
+		} else {
+			notice = fmt.Sprintf("%s finished (exit %d)", action.Args[0], code)
+		}
 	}
 }
 
@@ -55,7 +66,21 @@ func refreshDashboardState(ctx context.Context) (config.Config, config.Config, [
 	}
 	addDashboardEnvironments(ctx, &cfg)
 	steps, err := setup.Collect(ctx, setupOptions())
-	return cfg, rawConfig, steps, err
+	return cfg, rawConfig, localizedSetupSteps(ctx, steps), err
+}
+
+// localizedSetupSteps は dashboard へ渡す前に表示用ラベルを解決する。
+// 見出しの幅はラベルの実幅から決まるため、レイアウトより後に訳すと列がずれる。
+func localizedSetupSteps(ctx context.Context, steps []setup.Step) []setup.Step {
+	if len(steps) == 0 {
+		return steps
+	}
+	lang := i18n.LanguageFromContext(ctx)
+	out := make([]setup.Step, 0, len(steps))
+	for _, step := range steps {
+		out = append(out, localizeSetupStep(step, lang))
+	}
+	return out
 }
 
 // addDashboardEnvironments は設定ファイルに書かれた workspace へ daemon 側の登録状況を重ねる。
@@ -126,12 +151,13 @@ func markDashboardRegistrations(cfg *config.Config, payload map[string]any) {
 
 // runDashboardInlineAction は端末を引き渡さない CLI 操作を子 process で実行し、TUI の描画先と出力を分離する。
 func runDashboardInlineAction(ctx context.Context, action dashboard.Action) (string, int) {
+	ctx = commandContext(ctx)
 	if len(action.Args) == 0 {
 		return "", 0
 	}
 	binary, err := os.Executable()
 	if err != nil {
-		return "error: " + err.Error(), 1
+		return i18n.T(ctx, "common.error", nil) + ": " + err.Error(), 1
 	}
 	command := exec.CommandContext(ctx, binary, action.Args...)
 	if action.WorkDir != "" {
@@ -149,10 +175,11 @@ func runDashboardInlineAction(ctx context.Context, action dashboard.Action) (str
 	if text != "" {
 		text += "\n"
 	}
-	return text + "error: " + err.Error(), 1
+	return text + i18n.T(ctx, "common.error", nil) + ": " + err.Error(), 1
 }
 
 func dashboardStatus(ctx context.Context) (string, error) {
+	ctx = commandContext(ctx)
 	c, err := rpcClient()
 	if err != nil {
 		return "", err
@@ -160,12 +187,12 @@ func dashboardStatus(ctx context.Context) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, statusDisplayTimeout)
 	defer cancel()
 	var payload map[string]any
-	if err := c.Call(callCtx, "Status", struct{}{}, &payload); err != nil {
-		return "", errors.New(rpcErrorMessage(err))
+	if err := c.Call(callCtx, "Status", map[string]string{"language": string(i18n.LanguageFromContext(ctx))}, &payload); err != nil {
+		return "", errors.New(rpcErrorMessageLanguage(err, i18n.LanguageFromContext(ctx)))
 	}
 	var out bytes.Buffer
-	printStatusDisplay(&out, payload, false)
-	return out.String(), nil
+	printStatusDisplay(&out, payload, false, i18n.LanguageFromContext(ctx))
+	return translateHumanOutput(out.String(), i18n.LanguageFromContext(ctx)), nil
 }
 
 func runDashboardAction(ctx context.Context, action dashboard.Action) int {
@@ -176,7 +203,11 @@ func runDashboardAction(ctx context.Context, action dashboard.Action) int {
 	if action.WorkDir != "" {
 		info, err := os.Stat(cwd)
 		if err != nil || !info.IsDir() {
-			fmt.Fprintf(os.Stderr, "error: dashboard target %q is not an accessible directory\n", action.WorkDir)
+			message := fmt.Sprintf("dashboard target %q is not an accessible directory", action.WorkDir)
+			if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+				message = fmt.Sprintf("dashboard の対象 %q は利用可能な directory ではありません", action.WorkDir)
+			}
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
 			return 1
 		}
 	}
@@ -185,12 +216,12 @@ func runDashboardAction(ctx context.Context, action dashboard.Action) int {
 	case "claude", "codex":
 		cfg, err := config.Load()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 			return 1
 		}
 		client, err := cli.New(cfg)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 			return 1
 		}
 		return client.RunAgentWithPolicyFrom(ctx, cwd, command, args, nil, false, cli.WorktreeOptions{})

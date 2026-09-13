@@ -101,6 +101,135 @@ func TestRunResumeCodexAddsResumeCDAndNativeID(t *testing.T) {
 	stop()
 }
 
+func TestRunAgentCodexExecResumeRestoresAndBuildsExecArgs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(t.TempDir(), "new-codex-slot")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "launch-record")
+	t.Setenv("WX_TEST_LAUNCH_RECORD", record)
+	t.Setenv("WX_TEST_EVENT_RECORD", filepath.Join(t.TempDir(), "launch-events"))
+	agent := writeLaunchRecorder(t, "codex")
+	prependPath(t, filepath.Dir(agent))
+	handler := &resumeLaunchHandler{
+		lease:  daemon.Lease{SessionID: "codex-session", Token: "codex-token", Path: workspace, Ready: true},
+		status: resumeStatus{WXSessionID: "old-codex", Agent: "codex", AgentSessionID: "native-codex"},
+	}
+	client, stop := serveResumeLaunchRPC(t, handler)
+
+	if exit := client.RunAgent(context.Background(), "codex", []string{"exec", "resume", "native-codex", "--json"}, nil, false); exit != 0 {
+		t.Fatalf("RunAgent exit=%d", exit)
+	}
+	launch := readLaunchRecord(t, record)
+	want := "exec --cd " + workspace + " resume native-codex --json"
+	if got := launch["args"]; got != want {
+		t.Fatalf("Codex exec resume args=%q, want %q; record=%v", got, want, launch)
+	}
+	methods := handler.methodsSnapshot()
+	if !containsMethod(methods, "Resume") || containsMethod(methods, "ResolveAndLease") {
+		t.Fatalf("Codex exec resume RPC methods=%v, want Resume without ResolveAndLease", methods)
+	}
+	stop()
+}
+
+func TestRunAgentCodexExecResumeWithoutSelectorStartsFreshWithNotice(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(t.TempDir(), "new-codex-slot")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "launch-record")
+	t.Setenv("WX_TEST_LAUNCH_RECORD", record)
+	t.Setenv("WX_TEST_EVENT_RECORD", filepath.Join(t.TempDir(), "launch-events"))
+	agent := writeLaunchRecorder(t, "codex")
+	prependPath(t, filepath.Dir(agent))
+	handler := &resumeLaunchHandler{
+		lease: daemon.Lease{SessionID: "codex-session", Token: "codex-token", Path: workspace, Ready: true},
+	}
+	client, stop := serveResumeLaunchRPC(t, handler)
+
+	var exit int
+	stderr := captureStderrForLease(t, func() {
+		exit = client.RunAgent(context.Background(), "codex", []string{"exec", "resume"}, nil, false)
+	})
+	if exit != 0 {
+		t.Fatalf("RunAgent exit=%d", exit)
+	}
+	if !strings.Contains(stderr, "without restoring a snapshot") {
+		t.Fatalf("stderr=%q, want the snapshot notice", stderr)
+	}
+	launch := readLaunchRecord(t, record)
+	if got := launch["args"]; got != "exec resume" {
+		t.Fatalf("Codex exec resume without selector args=%q, want original args; record=%v", got, launch)
+	}
+	methods := handler.methodsSnapshot()
+	if containsMethod(methods, "Resume") || !containsMethod(methods, "ResolveAndLease") {
+		t.Fatalf("Codex exec resume without selector RPC methods=%v, want ResolveAndLease without Resume", methods)
+	}
+	stop()
+}
+
+func TestRunResumeCodexExecInsertsResumeAfterExec(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(t.TempDir(), "new-codex-slot")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "launch-record")
+	t.Setenv("WX_TEST_LAUNCH_RECORD", record)
+	t.Setenv("WX_TEST_EVENT_RECORD", filepath.Join(t.TempDir(), "launch-events"))
+	agent := writeLaunchRecorder(t, "codex")
+	prependPath(t, filepath.Dir(agent))
+	handler := &resumeLaunchHandler{
+		lease:  daemon.Lease{SessionID: "codex-session", Token: "codex-token", Path: workspace, Ready: true},
+		status: resumeStatus{WXSessionID: "old-codex", Agent: "codex", AgentSessionID: "native-codex"},
+	}
+	client, stop := serveResumeLaunchRPC(t, handler)
+
+	if exit := client.RunResume(context.Background(), "old-codex", "codex", []string{"exec", "--json", "prompt"}, nil, false); exit != 0 {
+		t.Fatalf("RunResume exit=%d", exit)
+	}
+	launch := readLaunchRecord(t, record)
+	want := "exec --cd " + workspace + " --json resume native-codex prompt"
+	if got := launch["args"]; got != want {
+		t.Fatalf("Codex explicit exec resume args=%q, want %q; record=%v", got, want, launch)
+	}
+	stop()
+}
+
+func TestRunResumeCodexExecInfersAgentAfterWXSessionLookup(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	workspace := filepath.Join(t.TempDir(), "new-codex-slot")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "launch-record")
+	t.Setenv("WX_TEST_LAUNCH_RECORD", record)
+	t.Setenv("WX_TEST_EVENT_RECORD", filepath.Join(t.TempDir(), "launch-events"))
+	agent := writeLaunchRecorder(t, "codex")
+	prependPath(t, filepath.Dir(agent))
+	handler := &resumeLaunchHandler{
+		lease:  daemon.Lease{SessionID: "codex-session", Token: "codex-token", Path: workspace, Ready: true},
+		status: resumeStatus{WXSessionID: "old-codex", Agent: "codex", AgentSessionID: "native-codex"},
+	}
+	client, stop := serveResumeLaunchRPC(t, handler)
+
+	if exit := client.RunResume(context.Background(), "old-codex", "", []string{"exec", "--json", "prompt"}, nil, false); exit != 0 {
+		t.Fatalf("RunResume exit=%d", exit)
+	}
+	launch := readLaunchRecord(t, record)
+	want := "exec --cd " + workspace + " --json resume native-codex prompt"
+	if got := launch["args"]; got != want {
+		t.Fatalf("Codex inferred exec resume args=%q, want %q; record=%v", got, want, launch)
+	}
+	stop()
+}
+
 func TestRunAgentUnknownResumeIDPassesOriginalArgumentsThrough(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -142,6 +271,8 @@ type resumeLaunchHandler struct {
 	history map[string][]json.RawMessage
 	lease   daemon.Lease
 	status  resumeStatus
+	// policy は WorktreePolicy の応答である。零値は workspace を解決できなかったことを表す。
+	policy daemon.WorktreePolicyReply
 	// waitReadyErrors と leaseErrors は該当 method の応答を呼び出し順に決める。使い切った後は成功に戻る。
 	waitReadyErrors []error
 	leaseErrors     map[string][]error
@@ -187,6 +318,8 @@ func (h *resumeLaunchHandler) Handle(_ context.Context, method string, raw json.
 			return nil, h.resumeErr
 		}
 		return h.status, nil
+	case "WorktreePolicy":
+		return h.policy, nil
 	case "Resume", "ResolveAndLease":
 		return h.lease, nil
 	case "WaitReady":

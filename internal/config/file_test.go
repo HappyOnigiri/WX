@@ -57,7 +57,8 @@ func TestSaveRejectsNonRegularConfigPath(t *testing.T) {
 	}
 }
 
-func TestStrictDecode(t *testing.T) {
+// 未知のキーは値の解釈から外すだけで、load は成功させる。報告は doctor が行う。
+func TestDecodeAcceptsUnknownKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	path := filepath.Join(home, ".config", "wx", "config.yaml")
@@ -67,7 +68,32 @@ func TestStrictDecode(t *testing.T) {
 	if err := os.WriteFile(path, []byte("pool:\n  unknown: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "field unknown") {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.UnknownKeys(); len(got) != 1 || got[0].Key != "pool.unknown" {
+		t.Fatalf("unknown keys=%+v, want pool.unknown", got)
+	}
+}
+
+func TestLoadLanguageFallsBackWhileFullLoadRejectsUnsupportedValue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 1\nlanguage: fr\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadLanguage(); got != LanguageEnglish {
+		t.Fatalf("fallback language=%q, want en", got)
+	}
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "language must be en or ja") {
 		t.Fatalf("Load error=%v", err)
 	}
 }
@@ -121,11 +147,20 @@ func TestLoadIgnoresRemovedGitConcurrencyKey(t *testing.T) {
 	if raw.has("pool.git_concurrency_per_repository", false) {
 		t.Fatal("removed key is still recorded as present")
 	}
+	// 削除済みキーは恒久的な problem にしないため、未知キーとして報告しない。
+	if got := raw.UnknownKeys(); len(got) != 0 {
+		t.Fatalf("unknown keys=%+v, want the removed key to be ignored", got)
+	}
 	if err := os.WriteFile(path, []byte("version: 1\ngit_concurrency_per_repository: 4\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(); err == nil {
-		t.Fatal("top-level unknown key was accepted")
+	top, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// 同名でもトップレベルは削除済みキーではないため、未知キーとして報告する。
+	if got := top.UnknownKeys(); len(got) != 1 || got[0].Key != "git_concurrency_per_repository" {
+		t.Fatalf("unknown keys=%+v, want the top-level key to be reported", got)
 	}
 }
 

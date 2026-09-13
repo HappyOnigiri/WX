@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 func TestHumanDurationSecondsBuildsUnitsAndSurvivesMinInt64(t *testing.T) {
@@ -204,17 +206,31 @@ func TestWriteStatusFieldSendsLongAndMultilineValuesToContinuationLines(t *testi
 
 func TestWriteStatusTablePadsEveryColumnButTheLast(t *testing.T) {
 	var output bytes.Buffer
-	writeStatusTable(&output, []string{"A", "BB"}, [][]string{{"xxx", "y"}, {"z"}})
+	writeStatusTable(&output, i18n.English, []string{"A", "BB"}, [][]string{{"xxx", "y"}, {"z"}})
 	// 幅は列ごとの最長値で決まり、末尾列は余白を付けない。列の足りない行は見出しの値で埋まる。
 	want := "A   BB\nxxx y\nz   BB\n"
 	if got := output.String(); got != want {
 		t.Fatalf("table=%q, want %q", got, want)
 	}
 	var wide bytes.Buffer
-	writeStatusTable(&wide, []string{"PATH"}, [][]string{{"あい"}})
-	// 幅は rune 数で数え、全角を含む値でも桁が崩れない。
+	writeStatusTable(&wide, i18n.English, []string{"PATH"}, [][]string{{"あい"}})
+	// 末尾列は余白を付けないため、全角を含む値でも表示はそのまま残る。
 	if got := wide.String(); got != "PATH\nあい\n" {
 		t.Fatalf("wide table=%q", got)
+	}
+}
+
+func TestWriteStatusTableAlignsTranslatedHeadersByDisplayWidth(t *testing.T) {
+	var output bytes.Buffer
+	// 見出しは表を組む前に訳す。英語の幅で桁を決めると、見出しだけが行の値からずれる。
+	writeStatusTable(&output, i18n.Japanese, []string{"WORKSPACE", "POLICY"}, [][]string{{"~/wx", "hot"}})
+	want := "ワークスペース 方針\n~/wx           hot\n"
+	if got := output.String(); got != want {
+		t.Fatalf("table=%q, want %q", got, want)
+	}
+	// 後段の表示層は訳し終えた見出しを変えない。二重に置換すると桁が再び崩れる。
+	if got := translateHumanOutput(output.String(), i18n.Japanese); got != want {
+		t.Fatalf("translated table=%q, want %q", got, want)
 	}
 }
 

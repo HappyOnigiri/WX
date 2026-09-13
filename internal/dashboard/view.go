@@ -1,7 +1,6 @@
 package dashboard
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -18,6 +17,14 @@ const (
 	dim       = "\x1b[38;5;245m"
 	warn      = "\x1b[38;5;214m"
 	reset     = "\x1b[0m"
+)
+
+// 2 カラムの下限。左は解決済みラベルの実幅から決めるので、言語で語長が変わっても
+// 区切りの位置は content と一致する。右が下限を割るときは縦積みへ落とす。
+const (
+	minLeftColumn  = 24
+	minRightColumn = 32
+	columnGap      = 3
 )
 
 func (m model) View() tea.View {
@@ -41,34 +48,44 @@ func (m model) View() tea.View {
 	default:
 		lines = append(lines, m.operationView()...)
 	}
-	footer := "←/→ or Tab/Shift+Tab tabs  ↑/↓ select  Enter confirm  Esc exit"
-	switch {
-	case m.tab == 0 && m.mode == modeList:
-		footer = "←/→ or Tab/Shift+Tab tabs  r refresh  Esc exit"
-	case m.tab == 2 && m.mode == modeList:
-		if m.settingsOpen {
-			footer = "←/Esc environments  → tabs  ↑/↓ select  Enter edit"
-		} else {
-			footer = "←/→ tabs  ↑/↓ select environment  Enter open  Esc exit"
-		}
-	case m.mode == modeResult:
-		if m.maxResultOffset() > 0 {
-			footer = "↑/↓ scroll result  Enter/Esc back"
-		} else {
-			footer = "Enter/Esc back"
-		}
-	}
 	lines = fitLines(lines, max(1, m.height-2), m.width)
-	lines = append(lines, strings.Repeat("─", max(1, m.width)), dim+truncate(footer, m.width)+reset)
+	lines = append(lines, strings.Repeat("─", max(1, m.width)), dim+truncate(m.footer(), m.width)+reset)
 	view := tea.NewView(strings.Join(lines, "\n"))
 	view.AltScreen = true
 	view.WindowTitle = "wx control desk"
 	return view
 }
 
+// footer は現在の画面で使える操作案内を、言語を解決した断片から組み立てる。
+func (m model) footer() string {
+	hint := func(ids ...string) string {
+		parts := make([]string, 0, len(ids))
+		for _, id := range ids {
+			parts = append(parts, m.t(id))
+		}
+		return strings.Join(parts, "  ")
+	}
+	switch {
+	case m.tab == 0 && m.mode == modeList:
+		return hint("dashboard.footer.tabs_full", "dashboard.footer.refresh", "dashboard.footer.esc_exit")
+	case m.tab == 2 && m.mode == modeList && m.settingsOpen:
+		return hint("dashboard.footer.env_back", "dashboard.footer.tabs_right", "dashboard.footer.select", "dashboard.footer.enter_edit")
+	case m.tab == 2 && m.mode == modeList:
+		return hint("dashboard.footer.tabs", "dashboard.footer.select_env", "dashboard.footer.enter_open", "dashboard.footer.esc_exit")
+	case m.mode == modeResult && m.maxResultOffset() > 0:
+		return hint("dashboard.footer.scroll", "dashboard.footer.enter_esc_back")
+	case m.mode == modeResult:
+		return hint("dashboard.footer.enter_esc_back")
+	}
+	return hint("dashboard.footer.tabs_full", "dashboard.footer.select", "dashboard.footer.enter_confirm", "dashboard.footer.esc_exit")
+}
+
+func (m model) tabName(tab int) string { return m.t(tabIDs[tab]) }
+
 func (m model) tabLine() string {
 	parts := []string{accent + "◉ wx" + reset}
-	for i, name := range tabNames {
+	for i := range tabIDs {
+		name := m.tabName(i)
 		if i == m.tab {
 			parts = append(parts, activeTab+name+reset)
 		} else {
@@ -79,39 +96,41 @@ func (m model) tabLine() string {
 }
 
 func (m model) breadcrumb() string {
-	crumb := "wx / " + tabNames[m.tab]
+	crumb := "wx / " + m.tabName(m.tab)
 	if m.tab == 2 {
 		environments := m.configEnvironments()
 		if m.settingsOpen && m.settingsEnv < len(environments) {
 			environment := environments[m.settingsEnv]
-			crumb += " / " + environment.title()
+			crumb += " / " + m.environmentTitle(environment)
 			if environment.scope != "global" {
 				crumb += " / " + environment.label
 			}
 		}
 	}
 	if m.mode != modeList {
-		crumb += " / " + m.pending.label
+		crumb += " / " + m.pendingLabel
 	}
 	return truncate(crumb, m.width)
 }
 
 func (m model) statusView() []string {
-	lines := []string{accent + "System status" + reset}
+	lines := []string{accent + m.t("dashboard.status") + reset}
 	if m.loading && m.status == "" {
-		return append(lines, "", "  Loading from the daemon…")
+		return append(lines, "", "  "+m.t("dashboard.loading"))
 	}
 	if m.statusErr != "" {
-		lines = append(lines, "", warn+"  Refresh failed: "+truncate(m.statusErr, max(1, m.width-18))+reset)
+		failure := m.tf("dashboard.refresh_failed", map[string]any{"Error": truncate(m.statusErr, max(1, m.width-18))})
+		lines = append(lines, "", warn+"  "+failure+reset)
 		if m.status != "" {
-			lines = append(lines, dim+"  Showing the last successful response."+reset)
+			lines = append(lines, dim+"  "+m.t("dashboard.last_response")+reset)
 		}
 	}
 	if !m.statusAt.IsZero() {
 		age := time.Since(m.statusAt).Round(time.Second)
-		freshness := "Updated " + m.statusAt.Format("15:04:05")
+		data := map[string]any{"Time": m.statusAt.Format("15:04:05"), "Age": age.String()}
+		freshness := m.tf("dashboard.updated", data)
 		if age >= 4*time.Second {
-			freshness += fmt.Sprintf(" (%s ago)", age)
+			freshness = m.tf("dashboard.updated_age", data)
 		}
 		lines = append(lines, dim+"  "+freshness+reset, "")
 	}
@@ -119,7 +138,7 @@ func (m model) statusView() []string {
 	start := 0
 	end := min(len(statusLines), max(1, m.visibleRows()-3))
 	if len(statusLines) == 1 && statusLines[0] == "" {
-		lines = append(lines, "  No status is available.")
+		lines = append(lines, "  "+m.t("dashboard.no_status"))
 	} else {
 		lines = append(lines, statusLines[start:end]...)
 	}
@@ -130,9 +149,12 @@ func (m model) operationView() []string {
 	if m.width < 92 {
 		return m.stackedOperationView()
 	}
-	leftWidth := max(34, m.width*45/100)
-	rightWidth := max(20, m.width-leftWidth-3)
-	left := m.menuLines(leftWidth)
+	left := m.menuLines(m.width)
+	leftWidth := m.leftColumnWidth(left)
+	rightWidth := m.width - leftWidth - columnGap
+	if rightWidth < minRightColumn {
+		return m.stackedOperationView()
+	}
 	right := m.descriptionLines(rightWidth)
 	height := max(len(left), len(right))
 	lines := make([]string, 0, height)
@@ -147,6 +169,18 @@ func (m model) operationView() []string {
 		lines = append(lines, padANSI(l, leftWidth)+dim+" │ "+reset+r)
 	}
 	return lines
+}
+
+// leftColumnWidth は解決済みのメニュー行の実幅から左カラムを決める。
+// 言語ごとの語長の差を幅へ反映し、余った幅は説明側へ渡す。
+func (m model) leftColumnWidth(lines []string) int {
+	natural := 0
+	for _, line := range lines {
+		natural = max(natural, xansi.StringWidth(line))
+	}
+	lower := max(minLeftColumn, m.width*30/100)
+	upper := max(lower, m.width*55/100)
+	return min(max(natural+2, lower), upper)
 }
 
 func (m model) stackedOperationView() []string {
@@ -170,7 +204,7 @@ func (m model) menuLines(width int) []string {
 		lines = append(lines, truncate(marker+label, width))
 	}
 	if len(labels) == 0 {
-		lines = append(lines, "  No actions are available.")
+		lines = append(lines, "  "+m.t("dashboard.no_actions"))
 	}
 	return lines
 }
@@ -178,18 +212,18 @@ func (m model) menuLines(width int) []string {
 func (m model) menuTitle() string {
 	switch m.tab {
 	case 1:
-		return "Choose what to launch"
+		return m.t("dashboard.choose_launch")
 	case 2:
 		if m.settingsOpen {
-			return "Editable settings"
+			return m.t("dashboard.editable_settings")
 		}
-		return "Environments"
+		return m.t("dashboard.environments")
 	case 3:
-		return "Diagnostic mode"
+		return m.t("dashboard.diagnostic_mode")
 	case 4:
-		return "Maintenance operation"
+		return m.t("dashboard.maintenance")
 	default:
-		return "Integrations and daemon"
+		return m.t("dashboard.integrations")
 	}
 }
 
@@ -199,7 +233,7 @@ func (m model) currentLabels() []string {
 			environments := m.configEnvironments()
 			labels := make([]string, 0, len(environments))
 			for _, environment := range environments {
-				labels = append(labels, environment.menuLabel())
+				labels = append(labels, m.environmentMenuLabel(environment))
 			}
 			return labels
 		}
@@ -212,7 +246,7 @@ func (m model) currentLabels() []string {
 			if value == "" {
 				value = "—"
 			}
-			labels = append(labels, item.DisplayName+"  "+dim+value+" ("+field.Source+")"+reset)
+			labels = append(labels, m.settingDisplayName(item)+"  "+dim+value+" ("+field.Source+")"+reset)
 		}
 		return labels
 	}
@@ -223,14 +257,14 @@ func (m model) currentLabels() []string {
 			labels = append(labels, step.Title+"  "+dim+string(step.State)+reset)
 		}
 		for _, item := range tabMenus[m.tab] {
-			labels = append(labels, item.label)
+			labels = append(labels, m.t(item.labelID))
 		}
 		return labels
 	}
 	items := tabMenus[m.tab]
 	labels := make([]string, 0, len(items))
 	for _, item := range items {
-		labels = append(labels, item.label)
+		labels = append(labels, m.t(item.labelID))
 	}
 	return labels
 }
@@ -243,23 +277,25 @@ func (m model) descriptionLines(width int) []string {
 		if !m.settingsOpen {
 			environments := m.configEnvironments()
 			environment := environments[m.selected]
-			lines := []string{soft + environment.menuLabel() + reset, dim + "Scope: " + environment.title() + reset}
+			scope := m.tf("dashboard.scope", map[string]any{"Scope": m.environmentTitle(environment)})
+			lines := []string{soft + m.environmentMenuLabel(environment) + reset, dim + scope + reset}
 			if environment.target != "" {
 				lines = append(lines, dim+environment.target+reset)
 			}
-			lines = append(lines, "", warn+"Effective settings"+reset)
+			lines = append(lines, "", warn+m.t("dashboard.effective_settings")+reset)
 			for _, field := range m.environmentFields() {
 				lines = append(lines, effectiveSettingLine(field, width))
 			}
 			return lines
 		}
 		meta := m.configItems()[m.selected]
-		lines := []string{soft + meta.DisplayName + reset, dim + meta.Key + " · " + string(meta.Kind) + reset, ""}
-		lines = append(lines, wrap(meta.Description, width)...)
-		lines = append(lines, "", warn+"Impact"+reset)
-		lines = append(lines, wrap(meta.Impact, width)...)
+		lines := []string{soft + m.settingDisplayName(meta) + reset, dim + meta.Key + " · " + string(meta.Kind) + reset, ""}
+		lines = append(lines, wrap(m.settingDescription(meta), width)...)
+		lines = append(lines, "", warn+m.t("dashboard.impact")+reset)
+		lines = append(lines, wrap(m.settingImpact(meta), width)...)
 		if len(meta.Choices) > 0 {
-			lines = append(lines, "", "Choices: "+strings.Join(meta.Choices, " / "))
+			choices := m.tf("dashboard.choices", map[string]any{"Choices": strings.Join(meta.Choices, " / ")})
+			lines = append(lines, "", choices)
 		}
 		return lines
 	}
@@ -270,42 +306,42 @@ func (m model) descriptionLines(width int) []string {
 			lines := []string{soft + step.Title + reset, dim + step.ID + " · " + string(step.State) + reset, ""}
 			lines = append(lines, wrap(step.Detail, width)...)
 			if len(step.Reasons) > 0 {
-				lines = append(lines, "", warn+"Attention"+reset)
+				lines = append(lines, "", warn+m.t("dashboard.attention")+reset)
 				for _, reason := range step.Reasons {
 					lines = append(lines, wrap(reason, width)...)
 				}
 			}
 			return lines
 		}
-		return menuDescription(tabMenus[m.tab][m.selected-len(steps)], width)
+		return m.menuDescription(tabMenus[m.tab][m.selected-len(steps)], width)
 	}
-	return menuDescription(tabMenus[m.tab][m.selected], width)
+	return m.menuDescription(tabMenus[m.tab][m.selected], width)
 }
 
-func menuDescription(item menuItem, width int) []string {
-	lines := []string{soft + item.label + reset, ""}
-	lines = append(lines, wrap(item.description, width)...)
-	lines = append(lines, "", warn+"Behavior"+reset)
-	lines = append(lines, wrap(item.impact, width)...)
+func (m model) menuDescription(item menuItem, width int) []string {
+	lines := []string{soft + m.t(item.labelID) + reset, ""}
+	lines = append(lines, wrap(m.t(item.descriptionID), width)...)
+	lines = append(lines, "", warn+m.t("dashboard.behavior")+reset)
+	lines = append(lines, wrap(m.t(item.impactID), width)...)
 	if item.destructive {
-		lines = append(lines, "", warn+"This operation may delete data."+reset)
+		lines = append(lines, "", warn+m.t("dashboard.destructive_note")+reset)
 	}
 	return lines
 }
 
 func (m model) inputView() []string {
 	return []string{
-		accent + m.pending.label + reset,
+		accent + m.pendingLabel + reset,
 		"",
 		m.inputHint,
 		soft + "> " + m.input + "█" + reset,
 		"",
-		dim + "Enter confirm  Esc back" + reset,
+		dim + m.t("dashboard.footer.enter_confirm") + "  " + m.t("dashboard.footer.esc_back") + reset,
 	}
 }
 
 func (m model) choiceView() []string {
-	lines := []string{accent + m.pending.label + reset, "", "Choose a value or action:"}
+	lines := []string{accent + m.pendingLabel + reset, "", m.t("dashboard.choose_value")}
 	for index, option := range m.choices {
 		marker := "  "
 		label := option.label
@@ -315,45 +351,48 @@ func (m model) choiceView() []string {
 		}
 		lines = append(lines, marker+label)
 	}
-	return append(lines, "", dim+"↑/↓ select  Enter confirm  ←/Esc back"+reset)
+	hint := m.t("dashboard.footer.select") + "  " + m.t("dashboard.footer.enter_confirm") + "  " + m.t("dashboard.footer.left_esc_back")
+	return append(lines, "", dim+hint+reset)
 }
 
 func (m model) confirmView() []string {
-	lines := []string{accent + m.pending.label + reset, "", "Run this operation?"}
+	lines := []string{accent + m.pendingLabel + reset, "", m.t("dashboard.confirm")}
 	if m.tab == 2 {
 		meta := m.configItems()[m.selected]
 		current := m.environmentValues()[meta.Key]
 		if current == "" {
-			current = "inherited / unset"
+			current = m.t("dashboard.inherited")
 		}
 		change := strings.TrimSpace(m.input)
 		if m.editOp == config.EditReset {
-			change = "Reset to default"
+			change = m.t("dashboard.reset_default")
 		}
-		lines = append(lines, "Current: "+current, "Change: "+change)
+		lines = append(lines,
+			m.tf("dashboard.current", map[string]any{"Value": current}),
+			m.tf("dashboard.change", map[string]any{"Value": change}))
 	}
 	if m.pending.workDir || m.pending.targetWorkspace || m.pending.targetInput {
 		target := m.target
 		if target == "" && m.pending.workDir {
 			target = strings.TrimSpace(strings.SplitN(m.input, "|", 2)[0])
 		}
-		lines = append(lines, "Target: "+target)
+		lines = append(lines, m.tf("dashboard.target", map[string]any{"Value": target}))
 	}
 	if m.input != "" {
-		lines = append(lines, "Input: "+m.input)
+		lines = append(lines, m.tf("dashboard.input", map[string]any{"Value": m.input}))
 	}
 	if m.pending.destructive {
-		lines = append(lines, "", warn+"This may delete data. Check the target carefully."+reset)
+		lines = append(lines, "", warn+m.t("dashboard.destructive_confirm")+reset)
 	}
-	return append(lines, "", soft+"Enter / y run"+reset+"  Esc / n back")
+	return append(lines, "", soft+m.t("dashboard.confirm_run")+reset+"  "+m.t("dashboard.confirm_back"))
 }
 
 func (m model) runningView() []string {
-	return []string{accent + m.pending.label + reset, "", "Running…", dim + "The result will appear here when the operation finishes." + reset}
+	return []string{accent + m.pendingLabel + reset, "", m.t("dashboard.running"), dim + m.t("dashboard.running_note") + reset}
 }
 
 func (m model) resultView() []string {
-	title := fmt.Sprintf("%s — exit %d", m.pending.label, m.resultCode)
+	title := m.tf("dashboard.result_title", map[string]any{"Label": m.pendingLabel, "Code": m.resultCode})
 	lines := []string{accent + title + reset, ""}
 	result := m.resultLines()
 	start := min(m.offset, max(0, len(result)-1))
@@ -363,7 +402,7 @@ func (m model) resultView() []string {
 
 func (m model) resultLines() []string {
 	if m.resultText == "" {
-		return []string{"The operation produced no output."}
+		return []string{m.t("dashboard.result_empty")}
 	}
 	return strings.Split(m.resultText, "\n")
 }

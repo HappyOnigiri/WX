@@ -10,27 +10,33 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 func runResume(ctx context.Context, args []string) int {
+	ctx = commandContext(ctx)
 	if len(args) == 0 {
-		commandUsage(os.Stderr, "resume")
+		commandUsageLanguage(os.Stderr, "resume", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	if args[0] == "--help" || args[0] == "-h" {
-		commandUsage(os.Stdout, "resume")
+		commandUsageLanguage(os.Stdout, "resume", i18n.LanguageFromContext(ctx))
 		return 0
 	}
 	if strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "error: unknown flag", args[0])
-		commandUsage(os.Stderr, "resume")
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+": unknown flag", args[0])
+		commandUsageLanguage(os.Stderr, "resume", i18n.LanguageFromContext(ctx))
 		return 2
 	}
 	id := args[0]
 	rest := args[1:]
 	agentName := ""
 	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") && rest[0] != "claude" && rest[0] != "codex" {
-		fmt.Fprintln(os.Stderr, "error: agent must be claude or codex")
+		message := "agent must be claude or codex"
+		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+			message = "agent は claude または codex で指定してください"
+		}
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
 		return 2
 	}
 	if len(rest) > 0 && (rest[0] == "claude" || rest[0] == "codex") {
@@ -46,17 +52,21 @@ func runResume(ctx context.Context, args []string) int {
 		return code
 	}
 	if len(*branches) > 0 && !*fresh {
-		fmt.Fprintln(os.Stderr, "error: --branch requires --fresh when resuming")
+		message := "--branch requires --fresh when resuming"
+		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
+			message = "resume 時の --branch には --fresh が必要です"
+		}
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
 		return 2
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	client, err := cli.New(cfg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	return client.RunResume(ctx, id, agentName, agentArgs, *branches, *fresh)

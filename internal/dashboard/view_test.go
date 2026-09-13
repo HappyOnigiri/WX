@@ -33,6 +33,38 @@ func TestViewUsesStatusPaneAndResponsiveOperationLayout(t *testing.T) {
 	}
 }
 
+// TestJapaneseOperationViewKeepsColumnsAligned は、英語の幅で padding を決めた
+// 後に翻訳して区切りがずれる退行を防ぐ。全角を含む行でも区切りは同じ列に並ぶ。
+func TestJapaneseOperationViewKeepsColumnsAligned(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Language = config.LanguageJapanese
+	m := newModel(context.Background(), Options{Config: cfg})
+	m.tab, m.width, m.height = 4, 145, 30
+	lines := m.operationView()
+	column := -1
+	for _, line := range lines {
+		plain := xansi.Strip(line)
+		index := strings.Index(plain, "│")
+		if index < 0 {
+			t.Fatalf("two column line has no separator: %q", plain)
+		}
+		width := xansi.StringWidth(plain[:index])
+		if column < 0 {
+			column = width
+		}
+		if width != column {
+			t.Fatalf("separator column=%d, want %d: %q", width, column, plain)
+		}
+	}
+	frame := strings.Join(lines, "\n")
+	if !strings.Contains(frame, "ガベージコレクション") {
+		t.Fatalf("menu label is not localized: %q", frame)
+	}
+	if strings.Contains(frame, "Collect managed data") {
+		t.Fatalf("description is not localized: %q", frame)
+	}
+}
+
 func TestSelectedTabUsesBackgroundInsteadOfBrackets(t *testing.T) {
 	m := newModel(context.Background(), Options{Config: config.Defaults()})
 	line := m.tabLine()
@@ -43,7 +75,7 @@ func TestSelectedTabUsesBackgroundInsteadOfBrackets(t *testing.T) {
 		t.Fatalf("selected tab has no background highlight: %q", line)
 	}
 	want := xansi.Strip(line)
-	for tab := range tabNames {
+	for tab := range tabIDs {
 		m.tab = tab
 		if got := xansi.Strip(m.tabLine()); got != want {
 			t.Fatalf("tab %d changed tab positions: got %q, want %q", tab, got, want)

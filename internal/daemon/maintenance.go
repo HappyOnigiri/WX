@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/pool"
@@ -283,24 +286,180 @@ func (m *Manager) reconcileOrphans(ctx context.Context) {
 	}
 }
 
-func (m *Manager) Forget(ctx context.Context, path string) error {
+// ForgetResult は wx forget が登録を解除するまでに回収・破棄した件数である。
+type ForgetResult struct {
+	Root                        string `json:"root"`
+	ReclaimedSlots              int    `json:"reclaimed_slots"`
+	DiscardedSessions           int    `json:"discarded_sessions"`
+	DiscardedSnapshots          int    `json:"discarded_snapshots"`
+	DiscardedWorkspaceSnapshots int    `json:"discarded_workspace_snapshots"`
+}
+
+// Forget は workspace 登録を解除し、その前に自分で回収できる slot を同期的に回収する。
+// 貸出中の実体が残る場合はフラグによらず断る。復元資産が残る場合は discardRecovery のときだけ破棄して進む。
+func (m *Manager) Forget(ctx context.Context, path string, discardRecovery bool) (ForgetResult, error) {
 	canonical, err := m.forgetRoot(ctx, path)
+	if err != nil {
+		return ForgetResult{}, err
+	}
+	result := ForgetResult{Root: string(canonical)}
+	w, lookupErr := m.store.WorkspaceByRoot(ctx, string(canonical))
+	if lookupErr != nil {
+		// 登録を読めない場合は実体に触れず、同じ理由で失敗する ForgetWorkspace の検査へ委ねる。
+		return result, m.store.ForgetWorkspace(ctx, string(canonical))
+	}
+	blockers, err := m.store.WorkspaceForgetBlockers(ctx, string(canonical))
+	if err != nil {
+		return result, err
+	}
+	// 断る理由は実体を1つも消す前に判定する。回収してから断ると、待機枠と補充だけが失われる。
+	if err := blockers.Err(); err != nil && (!discardRecovery || errors.Is(err, state.ErrWorkspaceInUse)) {
+		return result, err
+	}
+	// FinishRemoval は削除のたびに補充を予約するため、回収の前に止める。
+	// 止めずに消すと hot な workspace では補充が走り、解除が実行中の job で落ちるか slot が復活する。
+	if err := m.store.SuspendReplenish(ctx, string(w.ID), state.SuspendReplenishReasonForget, string(canonical)); err != nil {
+		return result, err
+	}
+	if discardRecovery {
+		if err := m.discardWorkspaceRecovery(ctx, string(w.ID), &result); err != nil {
+			return result, err
+		}
+	}
+	if err := m.reclaimSlotsForForget(ctx, string(w.ID), discardRecovery, &result); err != nil {
+		return result, err
+	}
+	return result, m.store.ForgetWorkspace(ctx, string(canonical))
+}
+
+// reclaimSlotsForForget は forget が自分で消してよい slot の worktree を今すぐ回収する。
+// 状態ごとに予約の経路が違うのは、検査すべき競合が違うためである。
+func (m *Manager) reclaimSlotsForForget(ctx context.Context, workspaceID string, discardRecovery bool, result *ForgetResult) error {
+	slots, err := m.store.ReclaimableSlots(ctx, workspaceID)
 	if err != nil {
 		return err
 	}
-	// FAILED slotを先にretireしないとworkspace IDが消え、worktreeの所有権を永久に証明できなくなる。
-	if w, lookupErr := m.store.WorkspaceByRoot(ctx, string(canonical)); lookupErr == nil {
-		failed, failedErr := m.store.FailedSlotIDs(ctx, string(w.ID))
-		if failedErr != nil {
-			return failedErr
-		}
-		for _, slotID := range failed {
-			if err := m.retireFailedSlotForForget(ctx, slotID); err != nil {
-				return fmt.Errorf("retire failed slot %s before forgetting workspace: %w", slotID, err)
+	for _, slot := range slots {
+		var job state.Job
+		var changed bool
+		switch slot.State {
+		case "FAILED":
+			job, changed, err = m.store.ScheduleFailedSlotRemoval(ctx, slot.ID)
+		case "READY", "STALE":
+			job, changed, err = m.store.ScheduleRemoval(ctx, slot.ID, "")
+		case "SNAPSHOTTED":
+			if !discardRecovery {
+				continue
 			}
+			job, changed, err = m.store.ScheduleDiscardRemoval(ctx, slot.ID)
+		case "QUARANTINED":
+			if !discardRecovery {
+				continue
+			}
+			job, changed, err = m.store.ScheduleQuarantinedRemoval(ctx, slot.ID)
+		default:
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("reclaim %s slot %s before forgetting workspace: %w", slot.State, slot.ID, err)
+		}
+		reclaimed, err := m.runForgetRemoval(ctx, job, changed)
+		if err != nil {
+			return fmt.Errorf("reclaim %s slot %s before forgetting workspace: %w", slot.State, slot.ID, err)
+		}
+		if reclaimed {
+			result.ReclaimedSlots++
 		}
 	}
-	return m.store.ForgetWorkspace(ctx, string(canonical))
+	return nil
+}
+
+// runForgetRemoval は予約した REMOVE job をその場で実行する。
+// 即時に消せなくても REMOVING job を残し、通常の recovery が完了するまで Forget を収束させない。
+// 予約が取れなかった場合は他の回収が進んでいるので、失敗にせず false を返す。
+func (m *Manager) runForgetRemoval(ctx context.Context, job state.Job, changed bool) (bool, error) {
+	if !changed {
+		return false, nil
+	}
+	claimed, err := m.store.ClaimJob(ctx, job.ID, "wx-forget")
+	if err != nil {
+		return false, err
+	}
+	if runErr := m.runRecoveredJob(ctx, claimed); runErr != nil {
+		return false, runErr
+	}
+	return true, m.store.FinishJob(ctx, claimed.ID, "wx-forget", nil)
+}
+
+// discardWorkspaceRecovery は workspace に残る復元資産を破棄する。
+// GC の期限切れ処理と違い、ソースリポジトリや保存先を開けなくても解除を止めず、消し残しは警告に出す。
+// root ごと消えた workspace ではこの削除が必ず失敗し、止めると登録を永久に消せないためである。
+func (m *Manager) discardWorkspaceRecovery(ctx context.Context, workspaceID string, result *ForgetResult) error {
+	sessions, err := m.store.RecoveryStateSessions(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	archiveManager := m.newArchiveManager(m.Config(), state.Slot{})
+	for _, session := range sessions {
+		snapshots, err := m.store.Snapshots(ctx, session.ID)
+		if err != nil {
+			return err
+		}
+		for _, snapshot := range snapshots {
+			m.deleteForgottenSnapshotRefs(ctx, &archiveManager, snapshot)
+			result.DiscardedSnapshots++
+		}
+		if m.removeForgottenWorkspaceSnapshot(ctx, session.ID) {
+			result.DiscardedWorkspaceSnapshots++
+		}
+		if session.State == "QUARANTINED" {
+			// 隔離した session は ARCHIVED を経ずに終端させる専用経路でしか行を消せない。
+			if err := m.store.DiscardQuarantinedRecovery(ctx, session.ID); err != nil {
+				return fmt.Errorf("discard quarantined recovery state of session %s: %w", session.ID, err)
+			}
+		} else if err := m.store.ExpireSessionSnapshots(ctx, session.ID); err != nil {
+			return fmt.Errorf("discard recovery state of session %s: %w", session.ID, err)
+		}
+		result.DiscardedSessions++
+	}
+	return nil
+}
+
+// deleteForgottenSnapshotRefs はソースリポジトリ側の recovery ref を消す。失敗しても解除は続ける。
+func (m *Manager) deleteForgottenSnapshotRefs(ctx context.Context, archiveManager *archive.Manager, snapshot state.Snapshot) {
+	repo, err := m.store.Repository(ctx, snapshot.RepositoryID)
+	if err != nil {
+		m.log.Warn("forget could not read the repository of a discarded snapshot", "session_id", snapshot.SessionID, "repository_id", snapshot.RepositoryID, "error", err)
+		return
+	}
+	if err := archiveManager.DeleteSnapshotRefs(ctx, repo, snapshot); err != nil {
+		m.log.Warn("forget left recovery refs behind", "session_id", snapshot.SessionID, "repository_id", snapshot.RepositoryID, "error", err)
+	}
+}
+
+// removeForgottenWorkspaceSnapshot は保存済みの workspace snapshot を消し、対象があったかを返す。
+func (m *Manager) removeForgottenWorkspaceSnapshot(ctx context.Context, sessionID string) bool {
+	snapshot, found, err := m.store.WorkspaceSnapshot(ctx, sessionID)
+	if err != nil {
+		m.log.Warn("forget could not read a workspace snapshot record", "session_id", sessionID, "error", err)
+		return false
+	}
+	if !found {
+		return false
+	}
+	owner := strings.TrimSuffix(snapshot.ArchivePath, string(filepath.Separator)+snapshot.RelPath)
+	ownerHandle, err := os.OpenRoot(owner)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			m.log.Warn("forget left a workspace snapshot behind", "session_id", sessionID, "path", snapshot.ArchivePath, "error", err)
+		}
+		return true
+	}
+	defer func() { _ = ownerHandle.Close() }()
+	if err := removeRegisteredSnapshot(ownerHandle, snapshot.RelPath); err != nil {
+		m.log.Warn("forget left a workspace snapshot behind", "session_id", sessionID, "path", snapshot.ArchivePath, "error", err)
+	}
+	return true
 }
 
 // forgetRoot は forget 対象にする登録済み root path を決める。
@@ -320,25 +479,6 @@ func (m *Manager) forgetRoot(ctx context.Context, path string) (domain.Canonical
 		return "", err
 	}
 	return domain.CanonicalPath(absolute), nil
-}
-
-func (m *Manager) retireFailedSlotForForget(ctx context.Context, slotID string) error {
-	// 即時に消せなくてもREMOVING jobを残し、通常のrecoveryが完了するまでForgetを収束させない。
-	job, changed, err := m.store.ScheduleFailedSlotRemoval(ctx, slotID)
-	if err != nil {
-		return err
-	}
-	if !changed {
-		return nil
-	}
-	claimed, err := m.store.ClaimJob(ctx, job.ID, "wx-forget")
-	if err != nil {
-		return err
-	}
-	if runErr := m.runRecoveredJob(ctx, claimed); runErr != nil {
-		return runErr
-	}
-	return m.store.FinishJob(ctx, claimed.ID, "wx-forget", nil)
 }
 
 // DiscardRecoveryTarget は破棄対象の session 1 件と、その session が使っていた slot である。
