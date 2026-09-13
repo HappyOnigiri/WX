@@ -58,6 +58,7 @@ var catalog = map[string]Entry{
 	"setup.display_language.prompt":   {EN: "Choose the display language", JA: "表示言語を選択してください"},
 	"setup.display_language.english":  {EN: "English", JA: "English"},
 	"setup.display_language.japanese": {EN: "日本語", JA: "日本語"},
+	"setup.mode.title":                {EN: "How should wx be set up?", JA: "セットアップの進め方"},
 	"setup.cancelled":                 {EN: "cancelled; the items already applied are kept. Run wx setup again to finish.", JA: "キャンセルしました。適用済みの項目は保持されています。wx setup を再実行して残りを完了してください。"},
 	"setup.needs_terminal":            {EN: "wx setup needs a terminal for its questions", JA: "wx setup の質問には端末が必要です"},
 	"setup.check_hint":                {EN: "run wx setup --check to see the current state without a terminal", JA: "端末なしで現在の状態を見るには wx setup --check を実行してください"},
