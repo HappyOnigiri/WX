@@ -47,10 +47,19 @@ type Error struct {
 	cause     error
 }
 
+// Error は失敗の要約を返す。ExitCode が負のとき、git は終了ステータスを返しておらず
+// 起動失敗か signal 終了なので、数値の代わりに cause（chdir 失敗・PATH 不在・timeout など）を本文へ出す。
+// Result.Stderr は載せない。hook が stderr へ出した内容が公開エラーへ漏れないようにするためである。
 func (e *Error) Error() string {
 	command := "command"
 	if len(e.Args) > 0 {
 		command = e.Args[0]
+	}
+	if e.Result.ExitCode < 0 {
+		if e.cause == nil {
+			return fmt.Sprintf("git %s failed without an exit status (failure %s)", command, e.FailureID)
+		}
+		return fmt.Sprintf("git %s failed without an exit status: %s (failure %s)", command, e.cause, e.FailureID)
 	}
 	return fmt.Sprintf("git %s failed with exit %d (failure %s)", command, e.Result.ExitCode, e.FailureID)
 }
@@ -148,7 +157,7 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 			if err != nil {
 				res := Result{ExitCode: -1, Elapsed: time.Since(start)}
 				failureID := newFailureID()
-				r.writeFailureDetail(failureID, args, res)
+				r.writeFailureDetail(failureID, args, res, err)
 				return res, &Error{Args: append([]string(nil), args...), Result: res, FailureID: failureID, Class: ErrorClassExecution, cause: err}
 			}
 			r.invokeBeforeRunAt(args)
@@ -172,11 +181,12 @@ func (r *Runner) runEnvInput(ctx context.Context, dir string, dirFile *os.File, 
 		}
 		if attempt >= 3 || !isLockConflict(res.Stderr) {
 			failureID := newFailureID()
-			r.writeFailureDetail(failureID, args, res)
 			cause := err
 			if contextErr := ctx.Err(); contextErr != nil {
 				cause = contextErr
 			}
+			// 表示と詳細ログで同じ原因が出るよう、差し替え後の cause を渡す。
+			r.writeFailureDetail(failureID, args, res, cause)
 			return res, &Error{Args: append([]string(nil), args...), Result: res, FailureID: failureID, Class: classifyError(args, res), cause: cause}
 		}
 		delay := time.Duration(25*(1<<attempt)) * time.Millisecond
@@ -288,16 +298,22 @@ func writeDetail(detailDir, id, content string) string {
 }
 
 // FormatCommandDetail は Git 1 回分の実行内容と出力を詳細ログの本文へ整える。
-func FormatCommandDetail(args []string, result Result) string {
+// cause は起動失敗のように stderr が空になる失敗の原因で、nil なら行ごと省く。
+// 複数行になり得る stderr は末尾へ置く。
+func FormatCommandDetail(args []string, result Result, cause error) string {
 	quotedArgs := make([]string, len(args))
 	for index, argument := range args {
 		quotedArgs[index] = strconv.Quote(argument)
 	}
-	return fmt.Sprintf("command: git %s\nexit_status: %d\nelapsed: %s\nstderr:\n%s", strings.Join(quotedArgs, " "), result.ExitCode, result.Elapsed, result.Stderr)
+	causeLine := ""
+	if cause != nil {
+		causeLine = fmt.Sprintf("cause: %s\n", cause)
+	}
+	return fmt.Sprintf("command: git %s\nexit_status: %d\n%selapsed: %s\nstderr:\n%s", strings.Join(quotedArgs, " "), result.ExitCode, causeLine, result.Elapsed, result.Stderr)
 }
 
-func (r *Runner) writeFailureDetail(id string, args []string, result Result) {
-	_ = writeDetail(r.getDetailDir(), id, FormatCommandDetail(args, result))
+func (r *Runner) writeFailureDetail(id string, args []string, result Result, cause error) {
+	_ = writeDetail(r.getDetailDir(), id, FormatCommandDetail(args, result, cause))
 }
 
 func isLockConflict(stderr string) bool {
