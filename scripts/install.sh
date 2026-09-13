@@ -49,6 +49,9 @@ main() {
   local asset=wx-darwin-arm64
   local base_url="https://github.com/HappyOnigiri/WX/releases/download/$release_version"
   local checksum checksum_name actual registered_binary='' needs_install=true
+  # 初回インストールだけ setup を対話で通す。言語を尋ねる条件と同じ判定にし、
+  # 「言語を聞いた回は進め方も聞く」という見え方を揃える。
+  local first_install=true interactive=false setup_status=0
   local plist="$HOME/Library/LaunchAgents/com.user.wx.plist"
   [ ! -d "$destination" ] || fail "$destination is a directory"
 
@@ -56,6 +59,7 @@ main() {
   # 古い binary は新規扱いとして TTY で確認し、非対話なら英語を採用する。
   local existing_language=''
   if [ -x "$destination" ]; then
+    first_install=false
     existing_language=$("$destination" config language 2>/dev/null || true)
     case "$existing_language" in
       en|ja) language="$existing_language" ;;
@@ -74,17 +78,20 @@ main() {
         ;;
     esac
   fi
-  if [ -z "$existing_language" ] && [ -r /dev/tty ] && exec 3<>/dev/tty; then
+  if [ -r /dev/tty ] && exec 3<>/dev/tty; then
     if [ -t 3 ]; then
-      answer=''
-      printf '%s' "$(msg choose_language)" >&3
-      IFS= read -r answer <&3 || answer=''
-      case "$answer" in
-        ja|JA|j|J|日本語) language=ja ;;
-        en|EN|e|E|English|'') language=en ;;
-        *) language=en ;;
-      esac
-      printf '\n' >&3
+      interactive=true
+      if [ -z "$existing_language" ]; then
+        answer=''
+        printf '%s' "$(msg choose_language)" >&3
+        IFS= read -r answer <&3 || answer=''
+        case "$answer" in
+          ja|JA|j|J|日本語) language=ja ;;
+          en|EN|e|E|English|'') language=en ;;
+          *) language=en ;;
+        esac
+        printf '\n' >&3
+      fi
     fi
     exec 3>&-
   fi
@@ -146,16 +153,26 @@ main() {
     fail "binary installed, but daemon restart did not complete"
   fi
 
-  # 新規か更新かの判定は wx 側の状態に寄せる。--update は対応が要る項目だけを提示し、
-  # 何もなければ無出力で 0 を返す。set -euo pipefail で install 全体を落とさないよう終了コードは吸収する。
-  PATH="$install_dir:$PATH" "$destination" setup --update || true
+  # 初回かつ端末があるときだけ、おすすめ設定を選べるフルの setup を通す。
+  # それ以外では --update が対応の要る項目だけを提示し、何もなければ無出力で 0 を返す。
+  # 端末が無いまま setup を呼ぶと、非対話インストールに不要な案内を出して 1 を返す。
+  # set -euo pipefail で install 全体を落とさないよう終了コードは吸収する。
+  if [ "$first_install" = true ] && [ "$interactive" = true ]; then
+    PATH="$install_dir:$PATH" "$destination" setup || setup_status=$?
+  else
+    PATH="$install_dir:$PATH" "$destination" setup --update || setup_status=$?
+  fi
 
   msg finish
-  # 利用者が実行するコマンドを展開せず表示する。
+  # 利用者が実行するコマンドを展開せず表示する。現在の端末には shell 起動ファイルの書き換えが効かないため、
+  # setup を通した初回でもこの案内は出す。
   # shellcheck disable=SC2016
   echo '  export PATH="$HOME/.local/bin:$PATH"'
   msg path_hint
-  msg setup_hint
+  # setup を完了できた回は残りの設定が無いので、setup への導線を繰り返さない。
+  if [ "$first_install" != true ] || [ "$interactive" != true ] || [ "$setup_status" -ne 0 ]; then
+    msg setup_hint
+  fi
   msg run_hint
 }
 

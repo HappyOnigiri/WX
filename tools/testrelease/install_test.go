@@ -28,8 +28,8 @@ func TestInstallRegistersDaemonAndPinsRelease(t *testing.T) {
 	if !strings.Contains(output, `export PATH="$HOME/.local/bin:$PATH"`) {
 		t.Fatalf("missing PATH instructions: %s", output)
 	}
-	// --update は absent を提示しないため、新規インストール直後は何も出ない。
-	// この 1 行が新規利用者にとって setup への唯一の導線になる。
+	// 端末があれば初回はフルの setup を通すが、テストは常に端末なしで走るため --update に落ちる。
+	// --update は absent を提示しないので何も出ず、この 1 行が setup への唯一の導線になる。
 	if !strings.Contains(output, "run wx setup") {
 		t.Fatalf("missing setup guidance: %s", output)
 	}

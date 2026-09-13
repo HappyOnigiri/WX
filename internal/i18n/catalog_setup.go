@@ -24,6 +24,9 @@ var setupCatalog = map[string]Entry{
 	"setup.action.manual":  {EN: "Type a path yourself", JA: "path を自分で入力する"},
 	"setup.action.start":   {EN: "Start the daemon", JA: "daemon を起動する"},
 	"setup.action.restart": {EN: "Replace the running daemon", JA: "実行中の daemon を入れ替える"},
+	// recommended と custom は項目へ適用する操作ではなく、wx setup 冒頭で進め方を選ぶための値である。
+	"setup.action.recommended": {EN: "Use the recommended settings", JA: "おすすめ設定にする"},
+	"setup.action.custom":      {EN: "Review every item myself", JA: "項目ごとに自分で選ぶ"},
 
 	// setup.summary.* は表の 1 行に収める要約で、wx setup --check の DETAIL 列に出す。
 	// 何のための項目かという説明は setup.detail.* が持つ。
