@@ -10,6 +10,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/gitx"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // gitlinkIndexMode は index が submodule の commit を指す entry の mode である。
@@ -25,6 +26,10 @@ func (c Client) probeWorktreeFindings(ctx context.Context, root, leasePath strin
 			Check: diag.CheckProbe, Severity: diag.SeverityUnchecked, Summary: "the prepared worktree could not be inspected",
 			Target: leasePath, Cause: err.Error(),
 			Action: "fix the reported cause on the leased path, then run wx doctor --probe again", DependsOn: diag.CheckProbe,
+			Messages: diag.FindingMessages{
+				Summary: message("diag.probe.worktree_uninspectable"),
+				Action:  message("diag.action.probe_fix_lease_path"),
+			},
 		}}
 	}
 	if len(worktrees) == 0 {
@@ -33,6 +38,11 @@ func (c Client) probeWorktreeFindings(ctx context.Context, root, leasePath strin
 			Target: leasePath,
 			Cause:  fmt.Sprintf("wx reported the slot leased for %s as ready, but neither the leased path nor any directory in it is the top level of a Git worktree", root),
 			Action: "run wx doctor --probe -v to see the preparation phases, then check the source repositories of this workspace",
+			Messages: diag.FindingMessages{
+				Summary: message("diag.probe.no_worktree"),
+				Cause:   message("diag.probe.no_worktree_cause", "Root", root),
+				Action:  message("diag.action.probe_check_sources"),
+			},
 		}}
 	}
 	findings := []diag.Finding{}
@@ -94,6 +104,10 @@ func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktre
 			Check: diag.CheckProbeSubmodule, Severity: diag.SeverityUnchecked, Summary: "the submodules of a prepared worktree could not be checked",
 			Target: worktree, Cause: err.Error(),
 			Action: "fix the reported Git failure, then run wx doctor --probe again", DependsOn: diag.CheckProbe,
+			Messages: diag.FindingMessages{
+				Summary: message("diag.probe.submodules_unchecked"),
+				Action:  message("diag.action.probe_fix_git"),
+			},
 		}}
 	}
 	findings := []diag.Finding{}
@@ -107,6 +121,12 @@ func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktre
 				Cause: fmt.Sprintf("the index of the worktree prepared for %s records the submodule at %s as commit %s, but its directory could not be read: %v",
 					root, gitlink.path, gitlink.oid, err),
 				Action: submoduleAction(root, gitlink.path),
+				Messages: diag.FindingMessages{
+					Summary: message("diag.probe.submodule_missing"),
+					Cause: message("diag.probe.submodule_missing_cause",
+						"Root", root, "Path", gitlink.path, "Commit", gitlink.oid, "Error", err.Error()),
+					Action: submoduleActionMessage(root, gitlink.path),
+				},
 			})
 			continue
 		}
@@ -119,6 +139,12 @@ func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktre
 			Cause: fmt.Sprintf("the index of the worktree prepared for %s records the submodule at %s as commit %s, but the directory wx prepared for it is empty, so an agent working there sees no submodule content",
 				root, gitlink.path, gitlink.oid),
 			Action: submoduleAction(root, gitlink.path),
+			Messages: diag.FindingMessages{
+				Summary: message("diag.probe.submodule_empty"),
+				Cause: message("diag.probe.submodule_empty_cause",
+					"Root", root, "Path", gitlink.path, "Commit", gitlink.oid),
+				Action: submoduleActionMessage(root, gitlink.path),
+			},
 		})
 	}
 	if len(findings) > 0 {
@@ -128,6 +154,10 @@ func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktre
 		Check: diag.CheckProbeSubmodule, Severity: diag.SeverityOK,
 		Summary: "every submodule recorded in the index has content", Target: worktree,
 		Details: []string{fmt.Sprintf("%d submodule(s) checked", len(gitlinks))},
+		Messages: diag.FindingMessages{
+			Summary: message("diag.probe.submodules_ok"),
+			Details: []i18n.Message{message("diag.detail.submodules_checked", "Count", len(gitlinks))},
+		},
 	}}
 }
 
@@ -135,6 +165,11 @@ func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktre
 func submoduleAction(root, submodule string) string {
 	return fmt.Sprintf("initialize %s in the source repository of %s so the preparation can place it, or stop the post-checkout hook from expecting it in wx worktrees; wx does not populate submodules itself",
 		submodule, root)
+}
+
+// submoduleActionMessage は submoduleAction と同じ対処を表示言語で解決するための message である。
+func submoduleActionMessage(root, submodule string) i18n.Message {
+	return message("diag.action.probe_init_submodule", "Path", submodule, "Root", root)
 }
 
 // gitlinkEntry は index の gitlink 1 件の path と commit である。
@@ -178,6 +213,10 @@ func probeTrackedFindings(ctx context.Context, git *gitx.Runner, worktree string
 			Check: diag.CheckProbeTracked, Severity: diag.SeverityUnchecked, Summary: "the tracked files of a prepared worktree could not be checked",
 			Target: worktree, Cause: err.Error(),
 			Action: "fix the reported Git failure, then run wx doctor --probe again", DependsOn: diag.CheckProbe,
+			Messages: diag.FindingMessages{
+				Summary: message("diag.probe.tracked_unchecked"),
+				Action:  message("diag.action.probe_fix_git"),
+			},
 		}
 	}
 	changes := strings.TrimSpace(result.Stdout)
@@ -185,6 +224,7 @@ func probeTrackedFindings(ctx context.Context, git *gitx.Runner, worktree string
 		return diag.Finding{
 			Check: diag.CheckProbeTracked, Severity: diag.SeverityOK,
 			Summary: "the prepared worktree has no tracked change", Target: worktree,
+			Messages: diag.FindingMessages{Summary: message("diag.probe.tracked_clean")},
 		}
 	}
 	return diag.Finding{
@@ -192,5 +232,10 @@ func probeTrackedFindings(ctx context.Context, git *gitx.Runner, worktree string
 		Target: worktree,
 		Cause:  "git status reports modified tracked files in a worktree wx just prepared, so an agent would start on a base that is not the requested commit: " + changes,
 		Action: "check the post-checkout hook and the prepare command of this workspace for writes to tracked files, then run wx doctor --probe again",
+		Messages: diag.FindingMessages{
+			Summary: message("diag.probe.tracked_changes"),
+			Cause:   message("diag.probe.tracked_changes_cause", "Changes", changes),
+			Action:  message("diag.action.probe_check_prepare_writes"),
+		},
 	}
 }

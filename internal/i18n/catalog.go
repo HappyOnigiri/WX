@@ -554,6 +554,7 @@ var validationData = map[string]any{
 	"Entries": "", "Required": 0, "Actual": "", "Expected": "", "Phase": "", "Marker": "", "Head": "",
 	"MainPath": "", "MainHead": "", "Total": 0, "Runs": 0, "Item": "", "Actions": "", "Kind": "", "Route": "",
 	"Hint": "", "Step": "", "First": "", "Rest": "", "Detail": "", "Directory": "", "Events": "", "Binary": "", "Resolved": "", "Event": "", "Begin": "", "End": "", "Backup": "", "Usage": "", "Query": "", "Name": "", "Command": "", "Timeout": "", "Socket": "", "Guidance": "", "Default": "", "Change": "", "Agent": "",
+	"Operation": "", "Cause": "", "Directories": 0, "Commit": "", "Changes": "", "JobID": "",
 }
 
 // ValidateCatalog は両言語の空欄と、go-i18n が解釈できない template を検出する。
