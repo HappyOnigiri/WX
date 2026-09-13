@@ -49,8 +49,8 @@ func unsavedSubmoduleFinding(slot state.ProtectedSlot) diag.Finding {
 		Check: diag.CheckUnsavedSubmodules, Severity: diag.SeverityProblem,
 		Summary: "a slot holds submodule work that its recovery snapshot does not contain",
 		Target:  slot.Path,
-		Cause:   "the recovery snapshot covers only the parent repository, and " + strconv.Itoa(len(slot.Submodules)) + " submodule(s) of this slot hold work outside it",
-		Action:  "commit and push that work from inside the submodule, or copy it out of the slot directory yourself; wx keeps this slot out of automatic reclamation until you delete it with wx clear --discard, but the recovery snapshot of the parent still expires on its own retention, and resuming that session stops working once it does",
+		Cause:   "the recovery snapshot saves each submodule it can, and " + strconv.Itoa(len(slot.Submodules)) + " submodule(s) of this slot hold work it cannot save",
+		Action:  "commit and push that work from inside the submodule, or copy it out of the slot directory yourself; wx keeps this slot out of automatic reclamation until you delete it with wx clear --discard, but the recovery snapshot still expires on its own retention, and resuming that session stops working once it does",
 		Details: details,
 		Messages: diag.FindingMessages{
 			Summary: i18n.Message{ID: "diag.submodule.unsaved"},

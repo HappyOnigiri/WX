@@ -18,7 +18,7 @@ func TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase(t *testing.T
 		repository, repo, manager, _ := archiveFixture(t)
 		installGitFault(t, " rev-parse HEAD ", 1)
 		persistCalled := false
-		if _, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "capture-failure", time.Now().Add(time.Hour), func(state.Snapshot) error {
+		if _, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "capture-failure", time.Now().Add(time.Hour), func(state.Snapshot, []SubmoduleCapsule) error {
 			persistCalled = true
 			return nil
 		}); err == nil {
@@ -33,7 +33,7 @@ func TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase(t *testing.T
 		repository, repo, manager, _ := archiveFixture(t)
 		installGitFault(t, " update-ref --create-reflog ", 1)
 		persistCalled := false
-		if _, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "publish-failure", time.Now().Add(time.Hour), func(state.Snapshot) error {
+		if _, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "publish-failure", time.Now().Add(time.Hour), func(state.Snapshot, []SubmoduleCapsule) error {
 			persistCalled = true
 			return nil
 		}); err == nil {
@@ -72,7 +72,7 @@ func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T)
 		t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
 		target := filepath.Join(worktreeRoot, "tmp-restore", "root")
 		pointAtSlot(t, manager, worktreeRoot, target)
-		if err := manager.Restore(context.Background(), repo, target, "tmp-restore", snapshot); err == nil || !strings.Contains(err.Error(), "temporary restore index") {
+		if err := manager.Restore(context.Background(), repo, target, "tmp-restore", snapshot, nil); err == nil || !strings.Contains(err.Error(), "temporary restore index") {
 			t.Fatalf("restore succeeded despite an unusable TMPDIR: %v", err)
 		}
 	})
@@ -89,7 +89,7 @@ func TestRestorePropagatesRelockedRecoveryRefVerificationFailure(t *testing.T) {
 	installGitFault(t, " rev-parse --verify refs/wx/recovery", 1)
 	target := filepath.Join(worktreeRoot, "relock-fault", "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
-	if err := manager.Restore(context.Background(), repo, target, "relock-fault", snapshot); err == nil || !strings.Contains(err.Error(), "changed during restore") {
+	if err := manager.Restore(context.Background(), repo, target, "relock-fault", snapshot, nil); err == nil || !strings.Contains(err.Error(), "changed during restore") {
 		t.Fatalf("restore succeeded despite an injected relocked verification failure: %v", err)
 	}
 }

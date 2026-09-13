@@ -159,11 +159,11 @@ func TestArchiveGitValueAndRestorePreconditions(t *testing.T) {
 		t.Fatal(err)
 	}
 	noPreparer := &Manager{Git: manager.Git}
-	if err := noPreparer.Restore(context.Background(), repo, filepath.Join(filepath.Dir(repository), "target"), "slot", snapshot); err == nil || !strings.Contains(err.Error(), "preparer") {
+	if err := noPreparer.Restore(context.Background(), repo, filepath.Join(filepath.Dir(repository), "target"), "slot", snapshot, nil); err == nil || !strings.Contains(err.Error(), "preparer") {
 		t.Fatalf("restore precondition error=%v", err)
 	}
 	snapshot.ExpiresAt = "not-time"
-	if err := noPreparer.Restore(context.Background(), repo, repository, "slot", snapshot); err == nil {
+	if err := noPreparer.Restore(context.Background(), repo, repository, "slot", snapshot, nil); err == nil {
 		t.Fatal("invalid expiry restore succeeded")
 	}
 }
@@ -311,7 +311,7 @@ func restoreWithFailingOwnership(t *testing.T, slotID string, failAt int) (int, 
 	manager.Preparer.Ownership = validator
 	target := filepath.Join(worktreeRoot, slotID, "root")
 	pointAtSlot(t, manager, worktreeRoot, target)
-	restoreErr := manager.Restore(context.Background(), repo, target, slotID, snapshot)
+	restoreErr := manager.Restore(context.Background(), repo, target, slotID, snapshot, nil)
 	return validator.total(), restoreErr
 }
 

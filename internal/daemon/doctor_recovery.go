@@ -53,6 +53,7 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 	findings = append(findings, refListFailureFindings(report.RefListFailures)...)
 	findings = append(findings, missingArtifactFindings(report.Missing)...)
 	findings = append(findings, recoveryRefFindings(report.MismatchedRefs, report.MissingRefs)...)
+	findings = append(findings, submoduleRefFindings(report.SubmoduleRefIssues)...)
 	for _, message := range report.Errors {
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityUnchecked,
@@ -192,6 +193,47 @@ func recoveryRefFindings(mismatched, missing []recoveryRefIssue) []diag.Finding 
 				Cause: group.cause, Action: action,
 			})
 		}
+	}
+	return findings
+}
+
+// submoduleRefFindings は子の capsule ref の不整合を報告する。対象はローカル module の path で示す。
+// ref の公開先が repository ごとの ref store ではないため、`wx prune` の `<repository_id>:<ref>` では指せず削除も案内できない。
+// 欠落と不一致はその submodule の作業が復元できないことの予告なので、期限内なら問題として出す。
+func submoduleRefFindings(issues []submoduleRefIssue) []diag.Finding {
+	sorted := append([]submoduleRefIssue{}, issues...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].ModuleDir != sorted[j].ModuleDir {
+			return sorted[i].ModuleDir < sorted[j].ModuleDir
+		}
+		return sorted[i].Ref < sorted[j].Ref
+	})
+	findings := make([]diag.Finding, 0, len(sorted))
+	for _, issue := range sorted {
+		if issue.Kind == submoduleRefUnknown {
+			findings = append(findings, diag.Finding{
+				Check: diag.CheckArtifactOwnership, Severity: diag.SeverityInfo,
+				Summary: "an orphan submodule recovery ref remains in a local module", Target: issue.ModuleDir,
+				Cause:  "ref " + issue.Ref + " has no submodule snapshot record in the state database",
+				Action: "remove it yourself with git update-ref -d inside that module if you no longer need it; wx prune does not cover the module ref store",
+			})
+			continue
+		}
+		severity, action := diag.SeverityProblem, "keep the module as it is and check whether another tool rewrote refs/wx/recovery in it; the work saved for submodule "+issue.Path+" can no longer be restored"
+		if expiredRecoverySnapshot(issue.ExpiresAt) {
+			severity = diag.SeverityInfo
+			action = "no action is required; the snapshot behind this ref has expired and wx removes the record on its next collection"
+		}
+		summary := "a submodule recovery ref recorded for a snapshot is missing"
+		cause := "the state database records ref " + issue.Ref + " for submodule " + issue.Path + ", but its local module does not have it"
+		if issue.Kind == submoduleRefMismatched {
+			summary = "a submodule recovery ref does not point at the snapshot object"
+			cause = "ref " + issue.Ref + " exists in the local module of submodule " + issue.Path + " but its object ID differs from the recorded one"
+		}
+		findings = append(findings, diag.Finding{
+			Check: diag.CheckArtifactOwnership, Severity: severity, Summary: summary, Target: issue.ModuleDir,
+			Cause: cause, Action: action,
+		})
 	}
 	return findings
 }

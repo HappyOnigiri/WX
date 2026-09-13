@@ -84,7 +84,7 @@ func TestSnapshotAndRestoreLeaveHookBlindedPathsToTheHook(t *testing.T) {
 			}
 			target := filepath.Join(worktreeRoot, "restore", "root")
 			pointAtSlot(t, manager, worktreeRoot, target)
-			if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot); err != nil {
+			if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot, nil); err != nil {
 				t.Fatalf("restore into a worktree with flagged index entries: %v", err)
 			}
 			if listing := gitCommand(t, target, "ls-files", "-v", "tracked"); listing != test.tag {

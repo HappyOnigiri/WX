@@ -25,7 +25,7 @@ const (
 // submoduleFixture は、ソース repository の linked worktree を slot に見立てた検出用の一式を用意する。
 // 子の gitdir が linked worktree 側（`$GIT_DIR/modules/<name>`）に分かれる本番と同じ配置になるため、
 // 子で作った commit がソースのローカル module に無い状態を実機どおり再現できる。
-func submoduleFixture(t *testing.T) (string, discovery.Repository, *Manager) {
+func submoduleFixture(t *testing.T) (string, discovery.Repository, *Manager, string) {
 	t.Helper()
 	root := t.TempDir()
 	worktreeRoot := filepath.Join(root, "worktrees")
@@ -55,7 +55,7 @@ func submoduleFixture(t *testing.T) (string, discovery.Repository, *Manager) {
 	}
 	t.Cleanup(func() { _ = owner.Close() })
 	preparer := &workspace.Preparer{Git: runner, Config: cfg, Ownership: allowOwnershipValidator{}, OwnedRoot: owner, RootPath: worktreeRoot}
-	return worktree, repo, &Manager{Git: runner, Preparer: preparer, Ownership: allowOwnershipValidator{}}
+	return worktree, repo, &Manager{Git: runner, Preparer: preparer, Ownership: allowOwnershipValidator{}}, worktreeRoot
 }
 
 func initRepository(t *testing.T, path, file string) {
@@ -70,76 +70,17 @@ func initRepository(t *testing.T, path, file string) {
 	gitCommand(t, path, "commit", "-m", "initial")
 }
 
-// snapshot が保存するのは親の HEAD・index・worktree だけなので、子に残る作業は種別ごとに検出される。
-// 親が gitlink を commit した後は status が clean になるため、その場合も検出できることを同じ表で固定する。
-func TestSnapshotReportsUnsavedSubmoduleWork(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		arrange func(t *testing.T, worktree string)
-		want    []string
-	}{
-		{name: "clean", arrange: func(*testing.T, string) {}},
-		{
-			name: "unstaged edit in the submodule",
-			arrange: func(t *testing.T, worktree string) {
-				writeFile(t, filepath.Join(worktree, submodulePath, "tracked.txt"), "edited\n")
-			},
-			want: []string{ReasonModified},
-		},
-		{
-			name: "partially staged edit in the submodule",
-			arrange: func(t *testing.T, worktree string) {
-				submodule := filepath.Join(worktree, submodulePath)
-				writeFile(t, filepath.Join(submodule, "tracked.txt"), "staged\n")
-				gitCommand(t, submodule, "add", "tracked.txt")
-				writeFile(t, filepath.Join(submodule, "tracked.txt"), "staged then edited\n")
-			},
-			want: []string{ReasonModified},
-		},
-		{
-			name: "untracked file in the submodule",
-			arrange: func(t *testing.T, worktree string) {
-				writeFile(t, filepath.Join(worktree, submodulePath, "scratch.txt"), "note\n")
-			},
-			want: []string{ReasonUntracked},
-		},
-		{
-			name: "commit that the parent has not recorded",
-			arrange: func(t *testing.T, worktree string) {
-				commitInSubmodule(t, worktree)
-			},
-			want: []string{ReasonCommitMoved},
-		},
-		{
-			name: "gitlink the parent committed without pushing the child",
-			arrange: func(t *testing.T, worktree string) {
-				commitInSubmodule(t, worktree)
-				gitCommand(t, worktree, "add", submodulePath)
-				gitCommand(t, worktree, "commit", "-m", "bump submodule")
-			},
-			want: []string{ReasonMissingObject},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			worktree, repo, manager := submoduleFixture(t)
-			test.arrange(t, worktree)
-			_, unsaved, err := manager.SnapshotWithPersistence(context.Background(), repo, worktree, "session", time.Now().Add(time.Hour), nil)
-			if err != nil {
-				t.Fatalf("snapshot: %v", err)
-			}
-			if len(test.want) == 0 {
-				if len(unsaved) != 0 {
-					t.Fatalf("unsaved submodules=%+v, want none", unsaved)
-				}
-				return
-			}
-			if len(unsaved) != 1 || unsaved[0].Path != submodulePath {
-				t.Fatalf("unsaved submodules=%+v, want one entry for %s", unsaved, submodulePath)
-			}
-			if strings.Join(unsaved[0].Reasons, ",") != strings.Join(test.want, ",") {
-				t.Fatalf("reasons=%v, want %v", unsaved[0].Reasons, test.want)
-			}
-		})
+// clean な子は prepare の実体化だけで元に戻るため、capsule を作らず記録も残さない。
+// 保存できる作業を持つ子の往復は TestSnapshotAndRestorePreservesSubmoduleWork が、
+// 保存できない条件は TestSnapshotRecordsSubmoduleWorkItCannotSave が固定する。
+func TestSnapshotReportsNoUnsavedWorkForACleanSubmodule(t *testing.T) {
+	worktree, repo, manager, _ := submoduleFixture(t)
+	_, unsaved, err := manager.SnapshotWithPersistence(context.Background(), repo, worktree, "session", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if len(unsaved) != 0 {
+		t.Fatalf("unsaved submodules=%+v, want none", unsaved)
 	}
 }
 
@@ -185,7 +126,7 @@ func TestStatusSubmoduleReasonsReadsOnlyTheSubmoduleField(t *testing.T) {
 // 列挙が失敗しても snapshot は成功させ、判定不能として保護側へ倒す。
 // 親の保存は既に済んでおり、ここで失敗させると resume の手段まで失うためである。
 func TestSnapshotKeepsGoingWhenTheSubmoduleProbeFails(t *testing.T) {
-	worktree, repo, manager := submoduleFixture(t)
+	worktree, repo, manager, _ := submoduleFixture(t)
 	installGitFault(t, " config --blob HEAD:.gitmodules", 1)
 	_, unsaved, err := manager.SnapshotWithPersistence(context.Background(), repo, worktree, "probe-failure", time.Now().Add(time.Hour), nil)
 	if err != nil {
