@@ -21,6 +21,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/fdexec"
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/tui"
@@ -123,12 +124,12 @@ func (c Client) runAgent(ctx context.Context, agent string, args, branches []str
 
 func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume, sourceCWD string) int {
 	if err := c.ensureDaemon(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	if sourceCWD != "" {
@@ -136,15 +137,19 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 	}
 	intent := parseResumeIntent(agent, args)
 	if err := validateResumeOptions(intent, explicitResume, fresh, branches); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 2
 	}
 	if explicitResume == "" && intent.Notice {
-		fmt.Fprintln(os.Stderr, "notice: codex exec resume needs a session ID or --last; starting in a new workspace without restoring a snapshot")
+		if cliLanguage(c) == i18n.Japanese {
+			fmt.Fprintln(os.Stderr, "通知: codex exec resume には session ID か --last が必要です。snapshot を復元せず新しい workspace で起動します")
+		} else {
+			fmt.Fprintln(os.Stderr, "notice: codex exec resume needs a session ID or --last; starting in a new workspace without restoring a snapshot")
+		}
 	}
 	target, resuming, err := c.resolveResume(ctx, agent, cwd, intent, explicitResume)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	plan := launchPlan{agent: agent, args: args, branches: branches, cwd: cwd, explicitResume: explicitResume, intentKind: intent.Kind, intentPrefix: intent.Prefix, intentRest: intent.Rest, intentCodexExec: intent.CodexExec, target: target, resuming: resuming, fresh: fresh}
@@ -152,12 +157,14 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 		if target.WXSessionID != "" {
 			var status resumeStatus
 			if err := c.RPC.Call(ctx, "ResumeStatus", map[string]string{"wx_session_id": target.WXSessionID}, &status); err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
+				cliError(c, err)
 				return 1
 			}
 			// wx resume は会話の再開なので、agent を持たない貸出 session は受け付けない。
 			if leaseAgentKind(status.Agent) {
-				fmt.Fprintf(os.Stderr, "error: wx session %s holds a lease, not an agent conversation; use wx shell --resume %s\n", target.WXSessionID, target.WXSessionID)
+				lang := cliLanguage(c)
+				message := fmt.Sprintf("wx session %s holds a lease, not an agent conversation; use wx shell --resume %s", target.WXSessionID, target.WXSessionID)
+				fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage(message, lang))
 				return 2
 			}
 			if plan.agent == "" {
@@ -177,13 +184,13 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 			}
 			if !plan.fresh && status.Expired {
 				if !c.confirmFreshResume(ctx, target.WXSessionID, resumeUnavailableReason(status)) {
-					fmt.Fprintln(os.Stderr, "resume cancelled; no workspace was created")
+					fmt.Fprintln(os.Stderr, localizeCLIMessage("resume cancelled; no workspace was created", cliLanguage(c)))
 					return 1
 				}
 				plan.fresh = true
 			}
 		} else if target.CWD == "" {
-			fmt.Fprintln(os.Stderr, "error: selected conversation has no working directory")
+			fmt.Fprintln(os.Stderr, cliErrorPrefix(cliLanguage(c)), localizeCLIMessage("selected conversation has no working directory", cliLanguage(c)))
 			return 1
 		}
 	}
@@ -215,7 +222,7 @@ func interruptedDuringSetup(ctx, setupCtx context.Context) bool {
 func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	// 貸出前に確認する。cancel されたら slot を作らずに終える。
 	if !c.confirmLinkedWorktreeBase(ctx, plan.leaseBaseCWD(), true) {
-		fmt.Fprintln(os.Stderr, "launch cancelled; no workspace was created")
+		fmt.Fprintln(os.Stderr, localizeCLIMessage("launch cancelled; no workspace was created", cliLanguage(c)))
 		return 1, false
 	}
 	var lease daemon.Lease
@@ -224,6 +231,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		return rpc.ResolveAndLeaseParams{
 			Agent: plan.rpcAgentKind(), Branches: plan.branches, ClientPID: os.Getpid(), CWD: cwd, ForceWorktree: c.forceWorktree,
 			LeaseKind: plan.leaseKind, LeaseOwnerSessionID: plan.ownerSessionID, LeaseOwnerToken: plan.ownerToken,
+			Language: c.Config.LanguageForRPC(),
 		}
 	}
 	params := any(newLease(plan.cwd))
@@ -233,13 +241,15 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		params = rpc.ResumeParams{
 			Agent: plan.rpcAgentKind(), AgentSessionID: plan.target.AgentSessionID, Branches: plan.branches, ClientPID: os.Getpid(), Fresh: plan.fresh,
 			LeaseKind: plan.leaseKind, LeaseOwnerSessionID: plan.ownerSessionID, LeaseOwnerToken: plan.ownerToken, WXSessionID: plan.target.WXSessionID,
+			Language: c.Config.LanguageForRPC(),
 		}
 	case plan.resuming:
 		params = newLease(plan.target.CWD)
 	}
 	operationKey, err := domain.NewID()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error: create operation identity:", err)
+		lang := cliLanguage(c)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("create operation identity", lang)+":", err)
 		return 1, false
 	}
 	// ResolveAndLease と Resume は daemon 側で repository discovery を同期実行する。
@@ -260,13 +270,13 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	if err := c.RPC.CallWithKey(leaseCtx, method, "launch:"+operationKey, params, &lease); err != nil {
 		waiting.finish()
 		if interruptedDuringSetup(ctx, setupCtx) {
-			fmt.Fprintln(os.Stderr, "interrupted before the workspace was leased")
+			fmt.Fprintln(os.Stderr, localizeCLIMessage("interrupted before the workspace was leased", cliLanguage(c)))
 			return 1, false
 		}
 		if c.acceptsFreshWorkspace(ctx, plan, err) {
 			return 1, true
 		}
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1, false
 	}
 	if !lease.ReadinessProgress {
@@ -327,20 +337,20 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		cancel()
 		if err != nil {
 			if interruptedDuringSetup(ctx, setupCtx) {
-				fmt.Fprintln(os.Stderr, "interrupted while the workspace was being prepared; releasing it")
+				fmt.Fprintln(os.Stderr, localizeCLIMessage("interrupted while the workspace was being prepared; releasing it", cliLanguage(c)))
 				return 1, false
 			}
 			if c.acceptsFreshWorkspace(ctx, plan, err) {
 				return 1, true
 			}
-			fmt.Fprintln(os.Stderr, "error: workspace preparation:", err)
+			fmt.Fprintln(os.Stderr, cliErrorPrefix(cliLanguage(c)), localizeCLIMessage("workspace preparation", cliLanguage(c))+":", err)
 			return 1, false
 		}
 	}
 	waiting.finish()
 	// 起動前・準備待ちの間に終了要求が届いていたら、agent を起動せずにそのまま応答する。
 	if terminator.requested() {
-		fmt.Fprintln(os.Stderr, "wx clear asked this session to stop before the agent started")
+		fmt.Fprintln(os.Stderr, localizeCLIMessage("wx clear asked this session to stop before the agent started", cliLanguage(c)))
 		return 1, false
 	}
 	// ここから先の signal は agent へ中継するので、準備待ち用の捕捉は返す。
@@ -352,7 +362,8 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease, args, env []string, terminator *agentTerminator) int {
 	leaseDirectory, err := openLeaseDirectory(c.Config, lease)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error: pin workspace CWD:", err)
+		lang := cliLanguage(c)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("pin workspace CWD", lang)+":", err)
 		return 1
 	}
 	defer func() { _ = leaseDirectory.Close() }()
@@ -363,12 +374,14 @@ func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease
 	// lexical wx root が rename・symlink・実体置換されても agent CWD は lease inode を指す。
 	helper, helperErr := os.Executable()
 	if helperErr != nil {
-		fmt.Fprintln(os.Stderr, "error: locate wx descriptor helper:", helperErr)
+		lang := cliLanguage(c)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("locate wx descriptor helper", lang)+":", helperErr)
 		return 1
 	}
 	cmd, err := fdexec.Start(ctx, helper, leaseDirectory, env, append([]string{agent}, args...)...)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error: prepare agent:", err)
+		lang := cliLanguage(c)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("prepare agent", lang)+":", err)
 		return 1
 	}
 	cmd.Stdin = os.Stdin
@@ -380,7 +393,7 @@ func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease
 	defer signal.Stop(signals)
 	done := make(chan error, 1)
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		cliError(c, err)
 		return 1
 	}
 	if foreground {
@@ -393,7 +406,8 @@ func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease
 	if registerErr != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		fmt.Fprintln(os.Stderr, "error: register agent process:", registerErr)
+		lang := cliLanguage(c)
+		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("register agent process", lang)+":", registerErr)
 		return 1
 	}
 	terminator.adopt(cmd)
@@ -413,7 +427,7 @@ func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease
 	if errors.As(runErr, &exit) {
 		return exit.ExitCode()
 	}
-	fmt.Fprintln(os.Stderr, "error:", runErr)
+	cliError(c, runErr)
 	return 1
 }
 

@@ -6,6 +6,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	xansi "github.com/charmbracelet/x/ansi"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // statusRowMatches は表の行を path で探し、空白を 1 つに畳んだ残りの列が columns と一致するかを返す。
@@ -53,7 +57,7 @@ func TestPrintStatusSummaryReadsWorkspaceLastUsedAndRoots(t *testing.T) {
 		"stop_pending":    false,
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, false)
+	printStatusDisplay(&output, payload, false, i18n.English)
 	got := output.String()
 	for _, want := range []string{
 		"WORKSPACE",
@@ -101,7 +105,7 @@ func TestPrintStatusSummaryDistinguishesLegacyWorkspaceLastUsed(t *testing.T) {
 		"job_details":        map[string]any{"pending": 0, "running": 0, "failed": 0},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, false)
+	printStatusDisplay(&output, payload, false, i18n.English)
 	got := output.String()
 	if !statusRowMatches(got, "~/dev/old", "unknown 1 0 unknown") {
 		t.Fatalf("legacy workspace did not show unavailable LAST USED:\n%s", got)
@@ -136,7 +140,7 @@ func TestPrintStatusSummaryMarksTheStoppedWorkspaceRow(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, false)
+	printStatusDisplay(&output, payload, false, i18n.English)
 	got := output.String()
 	if !strings.Contains(got, "NOTE") {
 		t.Fatalf("note column missing:\n%s", got)
@@ -169,14 +173,14 @@ func TestPrintStatusSummaryMarksThePlanFailureRow(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, false)
+	printStatusDisplay(&output, payload, false, i18n.English)
 	got := output.String()
 	if !strings.Contains(got, `! standby replenishment failed to plan new worktrees; run wx retry-standby "/repo"`) {
 		t.Fatalf("plan failure note missing:\n%s", got)
 	}
 	// -v では失敗時刻まで出し、未知キーとして Additional へ落とさない。
 	var verbose bytes.Buffer
-	printStatusDisplay(&verbose, payload, true)
+	printStatusDisplay(&verbose, payload, true, i18n.English)
 	detailed := verbose.String()
 	if !strings.Contains(detailed, "Failed: 2026-09-11T00:00:00Z") {
 		t.Fatalf("verbose plan failure output=%s", detailed)
@@ -195,7 +199,7 @@ func TestPrintStatusSummaryReportsStopsWithoutAWorkspaceRow(t *testing.T) {
 		"standby_replenishment": []map[string]any{{"root": "/gone", "reason": "CLEAN", "detail": "run-1", "action": `wx retry-standby "/gone"`}},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, false)
+	printStatusDisplay(&output, payload, false, i18n.English)
 	got := output.String()
 	if !strings.Contains(got, `/gone ! standby replenishment stopped after wx clear; run wx retry-standby "/gone"`) {
 		t.Fatalf("leftover suspension missing:\n%s", got)
@@ -204,7 +208,7 @@ func TestPrintStatusSummaryReportsStopsWithoutAWorkspaceRow(t *testing.T) {
 
 func TestPrintDegradedStatusDoesNotInventCounts(t *testing.T) {
 	var output bytes.Buffer
-	printStatusDisplay(&output, map[string]any{"degraded": true, "database_path": "/state.db", "error": "SQLite is unavailable"}, false)
+	printStatusDisplay(&output, map[string]any{"degraded": true, "database_path": "/state.db", "error": "SQLite is unavailable"}, false, i18n.English)
 	got := output.String()
 	if !strings.Contains(got, "Daemon degraded · SQLite is unavailable") || !strings.Contains(got, "Database: /state.db") {
 		t.Fatalf("degraded output=%q", got)
@@ -270,7 +274,7 @@ func TestPrintStatusSummaryListsOnlyWorkspacesThatUseAWorktree(t *testing.T) {
 		"worktree_roots": []map[string]any{},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, false)
+	printStatusDisplay(&output, payload, false, i18n.English)
 	got := output.String()
 	for _, want := range []struct{ path, columns string }{
 		{path: "/hot", columns: "HOT 0 0 —"},
@@ -304,7 +308,7 @@ func TestPrintStatusSummaryNotesHiddenWorkspacesWhenNoRowRemains(t *testing.T) {
 		"worktree_roots": []map[string]any{},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, false)
+	printStatusDisplay(&output, payload, false, i18n.English)
 	got := output.String()
 	for _, want := range []string{"(none)", "2 registered workspaces use no worktree; run wx status --verbose to list them"} {
 		if !strings.Contains(got, want) {
@@ -322,7 +326,7 @@ func TestPrintStatusSummaryOmitsHiddenNoticeForAnEmptyRegistry(t *testing.T) {
 		"worktree_roots":    []map[string]any{},
 	}
 	var output bytes.Buffer
-	printStatusDisplay(&output, payload, false)
+	printStatusDisplay(&output, payload, false, i18n.English)
 	got := output.String()
 	if !strings.Contains(got, "(none)") {
 		t.Fatalf("summary missing %q:\n%s", "(none)", got)
@@ -366,4 +370,58 @@ func TestStatusDaemonSummarySeparatesDiscardedJobs(t *testing.T) {
 	if want := "Daemon running · Jobs 2 pending / — running / — failed / — discarded"; queued != want {
 		t.Fatalf("queued-only daemon summary=%q, want %q", queued, want)
 	}
+}
+
+// TestPrintStatusSummaryJapaneseHeaderSurvivesTheDisplayLayer は、表示層が
+// 訳し終えた見出しを再度置換しないことを検査する。二重に置換すると、桁を決めた
+// 後の見出しだけが伸び縮みし、行の値からずれる。
+func TestPrintStatusSummaryJapaneseHeaderSurvivesTheDisplayLayer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	previousLocation := statusDisplayLocation
+	statusDisplayLocation = time.FixedZone("JST", 9*60*60)
+	t.Cleanup(func() { statusDisplayLocation = previousLocation })
+
+	payload := map[string]any{
+		"schema_version": 14,
+		"workspace_details": []map[string]any{
+			{"id": "wx", "root": home + "/dev/wx", "policy": "hot", "repositories": 1, "ready": 1, "leased": 0, "last_used_at": "2026-09-04T22:16:00Z"},
+		},
+		"job_details":    map[string]any{"pending": 0, "running": 0, "failed": 0},
+		"worktree_roots": []map[string]any{{"path": home + "/wx", "active": true}},
+	}
+	var output bytes.Buffer
+	printStatusDisplay(&output, payload, false, i18n.Japanese)
+	rendered := output.String()
+	if !strings.Contains(rendered, "ワークスペース 方針") {
+		t.Fatalf("summary did not resolve the header before the table:\n%s", rendered)
+	}
+	header := statusHeaderLine(rendered, "ワークスペース")
+	if got := statusHeaderLine(translateHumanOutput(rendered, i18n.Japanese), "ワークスペース"); got != header {
+		t.Fatalf("display layer rewrote the header=%q, want %q", got, header)
+	}
+	// 見出しの次の行は workspace の行で、path の列は見出しと同じ桁で始まる。
+	row := statusLineAfter(rendered, header)
+	if want := xansi.StringWidth("ワークスペース") + 1; !strings.HasPrefix(row, "~/dev/wx"+strings.Repeat(" ", want-xansi.StringWidth("~/dev/wx")-1)+" ") {
+		t.Fatalf("row does not start the second column at %d:\nheader=%q\nrow=%q", want, header, row)
+	}
+}
+
+func statusHeaderLine(text, prefix string) string {
+	for line := range strings.SplitSeq(text, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	return ""
+}
+
+func statusLineAfter(text, line string) string {
+	lines := strings.Split(text, "\n")
+	for index, candidate := range lines {
+		if candidate == line && index+1 < len(lines) {
+			return lines[index+1]
+		}
+	}
+	return ""
 }

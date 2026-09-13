@@ -93,10 +93,7 @@ func (m model) configV2Environments() []environment {
 		if label == "." || label == string(filepath.Separator) || label == "" {
 			label = path
 		}
-		if !m.opts.Config.Workspaces[path].Discovered {
-			label += " (not discovered)"
-		}
-		environments = append(environments, environment{label: label, target: path, scope: config.V2ScopeWorkspace})
+		environments = append(environments, environment{label: label, target: path, scope: config.V2ScopeWorkspace, missing: !m.opts.Config.Workspaces[path].Discovered})
 		// single-repository workspace には repository 個別編集階層を作らない。
 		// その repository defaults は workspace の子として編集し、multi-repository
 		// workspace だけ membership をさらに表示する。
@@ -108,45 +105,69 @@ func (m model) configV2Environments() []environment {
 		sort.Strings(members)
 		if len(members) > 1 {
 			for _, relative := range members {
-				label := relative
-				if !m.opts.Config.Workspaces[path].Repositories[relative].Discovered {
-					label += " (not discovered)"
-				}
-				environments = append(environments, environment{label: label, target: path, repository: relative, scope: config.V2ScopeRepository})
+				missing := !m.opts.Config.Workspaces[path].Repositories[relative].Discovered
+				environments = append(environments, environment{label: relative, target: path, repository: relative, scope: config.V2ScopeRepository, missing: missing})
 			}
 		}
 	}
 	return environments
 }
 
-func (e environment) title() string {
+func (m model) environmentTitle(e environment) string {
 	switch e.scope {
 	case config.V2ScopeWorkspace:
-		return "Workspace"
+		return m.t("dashboard.workspace")
 	case config.V2ScopeRepository:
-		return "Repository"
+		return m.t("dashboard.repository")
 	case config.V2ScopeSystem:
-		return "System"
+		return m.t("dashboard.system")
 	case config.V2ScopeWorkspaceDefaults:
-		return "Workspace defaults"
+		return m.t("dashboard.workspace_defaults")
 	case config.V2ScopeRepositoryDefaults:
-		return "Repository defaults"
+		return m.t("dashboard.repository_defaults")
 	default:
-		return "Global"
+		return m.t("dashboard.global")
 	}
 }
 
-func (e environment) menuLabel() string {
+func (m model) environmentMenuLabel(e environment) string {
 	if e.scope == "global" || e.scope == config.V2ScopeSystem || e.scope == config.V2ScopeWorkspaceDefaults || e.scope == config.V2ScopeRepositoryDefaults {
-		return e.title()
+		return m.environmentTitle(e)
+	}
+	label := e.label
+	if e.missing {
+		label += " " + m.t("dashboard.not_discovered")
 	}
 	if e.repository != "" {
-		return "  " + e.title() + "  " + e.label
+		return "  " + m.environmentTitle(e) + "  " + label
 	}
 	if e.repositoryDefaults {
-		return "  Repository defaults"
+		return "  " + m.t("dashboard.repository_defaults")
 	}
-	return e.title() + "  " + e.label
+	return m.environmentTitle(e) + "  " + label
+}
+
+// settingDisplayName / settingDescription / settingImpact は config catalog の
+// 英語のまま持つ説明を、TUI で訳がある key だけ差し替える。
+func (m model) settingDisplayName(meta config.Metadata) string {
+	if meta.Key == "language" {
+		return m.t("config.display_name")
+	}
+	return meta.DisplayName
+}
+
+func (m model) settingDescription(meta config.Metadata) string {
+	if meta.Key == "language" {
+		return m.t("config.language.description")
+	}
+	return meta.Description
+}
+
+func (m model) settingImpact(meta config.Metadata) string {
+	if meta.Key == "language" {
+		return m.t("config.language.impact")
+	}
+	return meta.Impact
 }
 
 func (e environment) configScope() config.Scope {
@@ -161,7 +182,8 @@ func (m *model) showConfigChoices() {
 	m.choices, m.choice = nil, 0
 	if meta.Kind == config.KindInteger || meta.Kind == config.KindDuration {
 		if current := m.environmentValues()[meta.Key]; current != "" {
-			m.choices = append(m.choices, choice{label: "Keep current value: " + current, value: current, op: config.EditSet})
+			label := m.tf("dashboard.keep_current", map[string]any{"Value": current})
+			m.choices = append(m.choices, choice{label: label, value: current, op: config.EditSet})
 		}
 	}
 	for _, value := range meta.Choices {
@@ -169,18 +191,18 @@ func (m *model) showConfigChoices() {
 	}
 	if meta.Kind == config.KindBoolean {
 		m.choices = append(m.choices,
-			choice{label: "Enabled", value: "true", op: config.EditSet},
-			choice{label: "Disabled", value: "false", op: config.EditSet})
+			choice{label: m.t("dashboard.enabled"), value: "true", op: config.EditSet},
+			choice{label: m.t("dashboard.disabled"), value: "false", op: config.EditSet})
 	}
 	if meta.Kind == config.KindInteger || meta.Kind == config.KindDuration || (len(m.choices) == 0 && meta.Kind != config.KindList) {
-		m.choices = append(m.choices, choice{label: "Enter a custom value…", op: config.EditSet, input: true})
+		m.choices = append(m.choices, choice{label: m.t("dashboard.enter_custom"), op: config.EditSet, input: true})
 	}
 	if meta.Kind == config.KindList {
 		m.choices = append(m.choices,
-			choice{label: "Add a value…", op: config.EditAdd, input: true},
-			choice{label: "Remove a value…", op: config.EditRemove, input: true})
+			choice{label: m.t("dashboard.add_value"), op: config.EditAdd, input: true},
+			choice{label: m.t("dashboard.remove_value"), op: config.EditRemove, input: true})
 	}
-	m.choices = append(m.choices, choice{label: "Reset to default", op: config.EditReset})
+	m.choices = append(m.choices, choice{label: m.t("dashboard.reset_default"), op: config.EditReset})
 	m.mode, m.inputStage = modeChoice, ""
 }
 
@@ -191,42 +213,42 @@ func (m *model) showWorkspaceChoices() {
 			m.choices = append(m.choices, choice{label: labelWithDetail(environment.label, "— "+environment.target), value: environment.target})
 		}
 	}
-	m.choices = append(m.choices, choice{label: "Enter another path…", input: true})
+	m.choices = append(m.choices, choice{label: m.t("dashboard.another_path"), input: true})
 	m.mode = modeChoice
 }
 
 func (m *model) showTargetChoices() {
 	m.choices, m.choice, m.inputStage = nil, 0, "target-choice"
 	if m.pending.targetAll {
-		m.choices = append(m.choices, choice{label: "All registered workspaces", value: "--all"})
+		m.choices = append(m.choices, choice{label: m.t("dashboard.all_workspaces"), value: "--all"})
 	}
 	for _, environment := range m.configEnvironments() {
 		if environment.scope == "workspace" {
 			m.choices = append(m.choices, choice{label: labelWithDetail(environment.label, "— "+environment.target), value: environment.target})
 		}
 	}
-	m.choices = append(m.choices, choice{label: "Enter another path…", input: true})
+	m.choices = append(m.choices, choice{label: m.t("dashboard.another_path"), input: true})
 	m.mode = modeChoice
 }
 
 func (m *model) showArgumentChoices() {
-	m.choices = append(m.choices[:0], m.pending.argumentChoices...)
+	m.choices = append(m.choices[:0], m.pending.argumentChoices(m.messages)...)
 	m.choice, m.inputStage, m.mode = 0, "arguments-choice", modeChoice
 }
 
 func (m *model) afterWorkdirChoice() {
 	switch {
-	case len(m.pending.argumentChoices) > 0:
+	case m.pending.argumentChoices != nil:
 		m.showArgumentChoices()
-	case m.pending.inputLabel != "":
-		m.inputHint, m.inputStage, m.mode = m.pending.inputLabel, "workdir-args", modeInput
+	case m.pending.inputLabelID != "":
+		m.inputHint, m.inputStage, m.mode = m.t(m.pending.inputLabelID), "workdir-args", modeInput
 	default:
 		m.mode = modeConfirm
 	}
 }
 
 func (m *model) afterTargetChoice() {
-	if len(m.pending.argumentChoices) > 0 {
+	if m.pending.argumentChoices != nil {
 		m.showArgumentChoices()
 	} else {
 		m.mode = modeConfirm

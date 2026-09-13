@@ -124,7 +124,7 @@ func (c Client) resolveResume(ctx context.Context, agent, cwd string, intent res
 			}
 		} else {
 			// picker には --all でも scope を渡し、初期表示だけ広げる。scope を捨てると Ctrl-A と注記が消える。
-			target, err = sessions.Pick(ctx, c.Config.Sessions, sessions.PickOptions{Tool: agent, Scope: &scope, StartWidened: intent.WidenScope})
+			target, err = sessions.Pick(ctx, c.Config.Sessions, sessions.PickOptions{Tool: agent, Scope: &scope, StartWidened: intent.WidenScope, Language: c.Config.DisplayLanguage()})
 		}
 		if err != nil {
 			return resumeTarget{}, false, err

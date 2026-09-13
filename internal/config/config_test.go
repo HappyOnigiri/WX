@@ -48,6 +48,29 @@ func TestDefaultsAndZeroDurationOverride(t *testing.T) {
 	}
 }
 
+func TestLanguageDefaultsAndValidation(t *testing.T) {
+	if got := Defaults().DisplayLanguage(); got != LanguageEnglish {
+		t.Fatalf("default language=%q, want en", got)
+	}
+	valid := Defaults()
+	valid.Language = LanguageJapanese
+	if err := Validate(&valid); err != nil {
+		t.Fatalf("Japanese language rejected: %v", err)
+	}
+	invalid := Defaults()
+	invalid.Language = "fr"
+	if err := Validate(&invalid); err == nil || !strings.Contains(err.Error(), "language must be en or ja") {
+		t.Fatalf("invalid language error=%v", err)
+	}
+}
+
+func TestGlobalFieldsIncludesLanguageWhenUnset(t *testing.T) {
+	fields := GlobalFields(Defaults(), Config{})
+	if len(fields) == 0 || fields[0].Key != "language" || fields[0].Value != LanguageEnglish || fields[0].Source != "default" {
+		t.Fatalf("global language field=%+v", fields[:min(1, len(fields))])
+	}
+}
+
 func TestDefaultAgentRulesResolution(t *testing.T) {
 	repository := filepath.Join(t.TempDir(), "repository")
 	cfg := Defaults()

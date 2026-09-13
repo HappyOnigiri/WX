@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
@@ -73,7 +74,10 @@ type environment struct {
 	target             string
 	repository         string
 	repositoryDefaults bool
-	scope              string
+	// missing は daemon が実体を検出できない登録である。表示だけの区別で、
+	// 注記は言語ごとに変わるため label には含めない。
+	missing bool
+	scope   string
 }
 
 type model struct {
@@ -89,6 +93,7 @@ type model struct {
 	inputHint    string
 	inputStage   string
 	pending      menuItem
+	pendingLabel string
 	configMeta   config.Metadata
 	target       string
 	editOp       config.EditOperation
@@ -105,7 +110,16 @@ type model struct {
 	settingsEnv  int
 	settingsOpen bool
 	catalog      []config.Metadata
+	lang         i18n.Language
+	messages     *i18n.Localizer
 }
+
+// t は表示用の固定文を現在の言語で解決する。View が幅を決める前に呼ぶこと。
+// レイアウト後に翻訳すると padding が英語の幅のまま残り、列がずれる。
+func (m model) t(id string) string { return m.messages.Localize(id, nil) }
+
+// tf は値を差し込む固定文を解決する。
+func (m model) tf(id string, data any) string { return m.messages.Localize(id, data) }
 
 func Run(ctx context.Context, opts Options) (Action, error) {
 	if ctx == nil {
@@ -127,7 +141,11 @@ func Run(ctx context.Context, opts Options) (Action, error) {
 }
 
 func newModel(ctx context.Context, opts Options) model {
-	return model{ctx: ctx, opts: opts, width: 100, height: 28, loading: true, catalog: config.Catalog()}
+	lang := i18n.Normalize(opts.Config.DisplayLanguage())
+	return model{
+		ctx: ctx, opts: opts, width: 100, height: 28, loading: true,
+		catalog: config.Catalog(), lang: lang, messages: i18n.New(string(lang)),
+	}
 }
 
 func (m model) Init() tea.Cmd {
@@ -179,7 +197,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.resultText != "" {
 				m.resultText += "\n"
 			}
-			m.resultText += "Refresh failed: " + msg.err.Error()
+			m.resultText += m.tf("dashboard.refresh_failed", map[string]any{"Error": msg.err.Error()})
 		} else {
 			selectedScope, selectedRepository := "", ""
 			if environments := m.configEnvironments(); m.settingsOpen && m.settingsEnv < len(environments) {
@@ -187,6 +205,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selectedRepository = environments[m.settingsEnv].repository
 			}
 			m.opts.Config, m.opts.RawConfig, m.opts.Setup = msg.config, msg.rawConfig, msg.setup
+			m.lang = i18n.Normalize(m.opts.Config.DisplayLanguage())
+			m.messages = i18n.New(string(m.lang))
 			if m.target != "" {
 				switch selectedScope {
 				case config.V2ScopeWorkspace:
@@ -375,7 +395,7 @@ func (m model) updateInput(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) changeTab(delta int) {
-	m.tab = (m.tab + delta + len(tabNames)) % len(tabNames)
+	m.tab = (m.tab + delta + len(tabIDs)) % len(tabIDs)
 	m.selected, m.offset, m.mode, m.input, m.settingsOpen = 0, 0, modeList, "", false
 }
 
@@ -439,7 +459,8 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		meta := items[m.selected]
-		m.pending = menuItem{label: meta.DisplayName, command: "config"}
+		m.pending = menuItem{command: "config"}
+		m.pendingLabel = m.settingDisplayName(meta)
 		m.configMeta, m.target = meta, ""
 		if environment := m.configEnvironments()[m.settingsEnv]; environment.scope != "global" && environment.scope != config.V2ScopeSystem && environment.scope != config.V2ScopeWorkspaceDefaults && environment.scope != config.V2ScopeRepositoryDefaults {
 			m.target = environment.target
@@ -451,7 +472,8 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		setupItems := m.setupItems()
 		if m.selected < len(setupItems) {
 			step := setupItems[m.selected]
-			m.pending = menuItem{label: step.Title, command: "setup", defaultArgs: []string{"--item", step.ID}}
+			m.pending = menuItem{command: "setup", defaultArgs: []string{"--item", step.ID}}
+			m.pendingLabel = step.Title
 			m.choices = make([]choice, 0, len(step.Options))
 			for _, option := range step.Options {
 				m.choices = append(m.choices, choice{label: strings.ToUpper(string(option)), value: string(option)})
@@ -463,12 +485,14 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.pending = tabMenus[m.tab][m.selected-len(setupItems)]
+		m.pendingLabel = m.t(m.pending.labelID)
 	} else {
 		items := tabMenus[m.tab]
 		if len(items) == 0 {
 			return m, nil
 		}
 		m.pending = items[m.selected]
+		m.pendingLabel = m.t(m.pending.labelID)
 	}
 	if m.pending.workDir {
 		m.showWorkspaceChoices()
@@ -479,16 +503,16 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.pending.targetInput {
-		m.inputHint, m.inputStage = m.pending.inputLabel, "target-value"
+		m.inputHint, m.inputStage = m.t(m.pending.inputLabelID), "target-value"
 		m.mode, m.input = modeInput, ""
 		return m, nil
 	}
-	if len(m.pending.argumentChoices) > 0 {
+	if m.pending.argumentChoices != nil {
 		m.showArgumentChoices()
 		return m, nil
 	}
-	if m.pending.inputLabel != "" {
-		m.inputHint = m.pending.inputLabel
+	if m.pending.inputLabelID != "" {
+		m.inputHint = m.t(m.pending.inputLabelID)
 		m.mode, m.input = modeInput, ""
 		return m, nil
 	}
@@ -505,7 +529,7 @@ func (m model) choose() (tea.Model, tea.Cmd) {
 		m.editOp = selected.op
 		m.input = selected.value
 		if selected.input {
-			m.inputHint, m.inputStage = "Value", "config-value"
+			m.inputHint, m.inputStage = m.t("dashboard.value_prompt"), "config-value"
 			m.mode = modeInput
 		} else {
 			m.mode = modeConfirm
@@ -515,7 +539,7 @@ func (m model) choose() (tea.Model, tea.Cmd) {
 	if m.tab == 5 && m.pending.command == "setup" {
 		m.pending.defaultArgs = append(m.pending.defaultArgs, "--action", selected.value)
 		if selected.value == string(setup.ActionManual) {
-			m.inputHint, m.inputStage, m.input = "Value", "setup-value", ""
+			m.inputHint, m.inputStage, m.input = m.t("dashboard.value_prompt"), "setup-value", ""
 			m.mode = modeInput
 		} else {
 			m.mode = modeConfirm
@@ -526,7 +550,7 @@ func (m model) choose() (tea.Model, tea.Cmd) {
 	case "workdir-choice":
 		m.target, m.input = selected.value, ""
 		if selected.input {
-			m.inputHint, m.inputStage = "Workspace path", "workdir"
+			m.inputHint, m.inputStage = m.t("dashboard.workspace_path"), "workdir"
 			m.mode = modeInput
 		} else {
 			m.afterWorkdirChoice()
@@ -534,7 +558,7 @@ func (m model) choose() (tea.Model, tea.Cmd) {
 	case "target-choice":
 		m.target, m.input = selected.value, ""
 		if selected.input {
-			m.inputHint, m.inputStage = "Workspace path", "target-value"
+			m.inputHint, m.inputStage = m.t("dashboard.workspace_path"), "target-value"
 			m.mode = modeInput
 		} else {
 			m.afterTargetChoice()
@@ -542,7 +566,7 @@ func (m model) choose() (tea.Model, tea.Cmd) {
 	case "arguments-choice":
 		m.input = selected.value
 		if selected.input {
-			m.inputHint, m.inputStage = m.pending.inputLabel, "arguments"
+			m.inputHint, m.inputStage = m.t(m.pending.inputLabelID), "arguments"
 			m.mode = modeInput
 		} else {
 			m.mode = modeConfirm

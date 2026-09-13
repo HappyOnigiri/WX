@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -36,6 +37,7 @@ func DefaultsV2() Config {
 		Version:    2,
 		v2Explicit: true,
 		System: SystemConfig{
+			Language:  legacy.Language,
 			Storage:   SystemStorage{WorktreeRoot: legacy.Storage.WorktreeRoot, BackupGenerations: legacy.Storage.BackupGenerations, BackupRetention: legacy.Storage.BackupRetention},
 			Pool:      SystemPool{PreparationConcurrency: legacy.Pool.PreparationConcurrency},
 			Retention: SystemRetention{Quarantined: legacy.Retention.Quarantined, RecoverySnapshot: legacy.Retention.RecoverySnapshot, ExpiredSessionTombstone: legacy.Retention.ExpiredSessionTombstone, FailedJob: legacy.Retention.FailedJob, EventLog: legacy.Retention.EventLog},
@@ -175,6 +177,9 @@ func cloneRepositories(in map[string]Repository) map[string]Repository {
 }
 
 func overlaySystem(dst *SystemConfig, src SystemConfig, raw Config) {
+	if raw.has("system.language", src.Language != "") {
+		dst.Language = src.Language
+	}
 	if raw.has("system.storage.worktree_root", src.Storage.WorktreeRoot != "") {
 		dst.Storage.WorktreeRoot = src.Storage.WorktreeRoot
 	}
@@ -312,6 +317,7 @@ func overlayRepositoryDefaults(dst *RepositoryDefaults, src RepositoryDefaults, 
 // 投影結果を決定的にし、workspace membership map は変更しない。
 func flattenV2(c *Config) {
 	s, w, r := c.System, c.WorkspaceDefaults, c.RepositoryDefaults
+	c.Language = s.Language
 	c.Worktree.Undefined, c.Worktree.ReuseStandby = w.Worktree, derefBool(w.ReuseStandby)
 	c.Worktree.Submodules = derefBool(r.Submodules)
 	c.Storage.WorktreeRoot, c.Storage.BackupGenerations, c.Storage.BackupRetention = s.Storage.WorktreeRoot, s.Storage.BackupGenerations, s.Storage.BackupRetention
@@ -674,6 +680,9 @@ func ValidateV2Rules(c *Config) error {
 	// legacy flat section を併記すると優先順位が曖昧になり、scope にない値を
 	// consumer が読むため受け付けない。
 	if c.present != nil {
+		if c.present["language"] {
+			return errors.New("config version 2 does not allow top-level language; set system.language")
+		}
 		for _, section := range []string{"worktree", "storage", "pool", "retention", "discovery", "readiness", "resume", "lease", "includes", "agent", "sessions", "repositories", "logging"} {
 			if c.present[section] {
 				return fmt.Errorf("config version 2 does not allow legacy section %q", section)

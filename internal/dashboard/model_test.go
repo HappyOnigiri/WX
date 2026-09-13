@@ -52,8 +52,8 @@ func TestModelBuildsActionWithExplicitWorkspace(t *testing.T) {
 func TestOptionalArgumentsAlwaysStartWithChoices(t *testing.T) {
 	for tab, items := range tabMenus {
 		for _, item := range items {
-			if item.inputLabel != "" && !item.inputNeeded && len(item.argumentChoices) == 0 {
-				t.Errorf("tab %d item %q opens unrestricted optional input", tab, item.label)
+			if item.inputLabelID != "" && !item.inputNeeded && item.argumentChoices == nil {
+				t.Errorf("tab %d item %q opens unrestricted optional input", tab, item.labelID)
 			}
 		}
 	}
