@@ -70,14 +70,15 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 	findings = append(findings, submoduleRefFindings(report.SubmoduleRefIssues)...)
 	// 同じ root の同じ失敗を照合と列挙の両方が報告するので、文言で畳んで 1 件ずつにする。
 	// Cause は照合と列挙が出した失敗の本文そのものなので訳さない。
-	for _, reason := range mergedOwnershipErrors(report.Errors, unmanagedErrs) {
+	for _, failure := range mergedOwnershipErrors(report.Errors, unmanagedErrs) {
+		action, actionMessage := ownershipFailureAction(failure)
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityUnchecked,
-			Summary: "an ownership check could not be completed", Cause: reason,
-			Action: "fix the reported cause; wx cannot tell whether the affected artifact is still needed until then",
+			Summary: "an ownership check could not be completed", Target: failure.Target, Cause: failure.Message,
+			Action: action,
 			Messages: diag.FindingMessages{
 				Summary: message("diag.ownership.incomplete"),
-				Action:  message("diag.action.fix_ownership_cause"),
+				Action:  actionMessage,
 			},
 		})
 	}
@@ -108,19 +109,40 @@ func unmanagedArtifactCause(artifacts []unmanagedArtifact) (string, i18n.Message
 }
 
 // mergedOwnershipErrors は照合と列挙が出した失敗を、同じ文言を 1 件に畳んで順序を保ったまま返す。
-func mergedOwnershipErrors(groups ...[]string) []string {
+func mergedOwnershipErrors(groups ...[]ownershipFailure) []ownershipFailure {
 	seen := map[string]bool{}
-	merged := []string{}
+	merged := []ownershipFailure{}
 	for _, group := range groups {
-		for _, message := range group {
-			if seen[message] {
+		for _, failure := range group {
+			if seen[failure.Message] {
 				continue
 			}
-			seen[message] = true
-			merged = append(merged, message)
+			seen[failure.Message] = true
+			merged = append(merged, failure)
 		}
 	}
 	return merged
+}
+
+// ownershipFailureAction は照合を完了できなかった原因の種別ごとに手順を返す。
+// 判定できない実体は wx が採用も削除もしないため、対処は「読めるようにする」か「登録を畳む」のどちらかになる。
+func ownershipFailureAction(failure ownershipFailure) (string, i18n.Message) {
+	switch failure.Kind {
+	case ownershipFailureStore:
+		return stateQueryFailureAction()
+	case ownershipFailureSlotPath:
+		return fmt.Sprintf("check that %s is readable by you and that its volume is mounted, then run wx doctor again; wx neither adopts nor deletes a slot it cannot inspect", failure.Target),
+			message("diag.action.check_slot_path", "Path", failure.Target)
+	case ownershipFailureRootPath:
+		return fmt.Sprintf("check that %s is a directory you own with 0700 access and that its volume is mounted, then run wx doctor again", failure.Target),
+			message("diag.action.check_root_path", "Path", failure.Target)
+	case ownershipFailureRepositoryRef:
+		return fmt.Sprintf("run git -C %s for-each-ref refs/wx/recovery to see what wx reads there, then run wx doctor again", failure.Target),
+			message("diag.action.check_recovery_refs", "Path", failure.Target)
+	default:
+		return "run wx doctor again after making the target in the cause readable; wx cannot tell whether the affected artifact is still needed until it can read it",
+			message("diag.action.retry_ownership_check")
+	}
 }
 
 // quarantinedRecoveryFindings は recovery ref を失って隔離された復元資産を workspace ごとに報告する。
@@ -128,15 +150,10 @@ func mergedOwnershipErrors(groups ...[]string) []string {
 func (m *Manager) quarantinedRecoveryFindings(ctx context.Context) []diag.Finding {
 	groups, err := m.store.QuarantinedRecoveryGroups(ctx)
 	if err != nil {
-		return []diag.Finding{{
-			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityUnchecked,
-			Summary: "the quarantined recovery records could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
-			Messages: diag.FindingMessages{
-				Summary: message("diag.recovery.quarantine_unreadable"),
-				Action:  message("diag.action.fix_state_database"),
-			},
-		}}
+		finding := stateQueryProblem(diag.CheckArtifactOwnership,
+			"the quarantined recovery records could not be read", message("diag.recovery.quarantine_unreadable"), "", err)
+		finding.Severity = diag.SeverityUnchecked
+		return []diag.Finding{finding}
 	}
 	findings := make([]diag.Finding, 0, len(groups))
 	for _, group := range groups {
@@ -188,11 +205,11 @@ func refListFailureFindings(failures []unreadableRepository) []diag.Finding {
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityProblem,
 			Summary: "the recovery refs of one repository could not be listed", Target: failure.Path,
 			Cause:  fmt.Sprintf("repository %s is still in use, but its refs could not be read (%s); the other repositories were checked", failure.RepositoryID, failure.Cause),
-			Action: "make that path a readable Git repository again, or run wx forget on the workspaces that use it if you no longer need them",
+			Action: fmt.Sprintf("run git -C %s rev-parse --git-dir to see why wx cannot read it, and restore it from its remote if it is gone; if you no longer need the workspaces that use it, run wx forget <workspace-path> on each and then wx forget --discard-recovery <workspace-path> for the ones it refuses while they still hold recovery state", failure.Path),
 			Messages: diag.FindingMessages{
 				Summary: message("diag.ownership.ref_list_failed"),
 				Cause:   message("diag.ownership.ref_list_failed_cause", "Repository", failure.RepositoryID, "Error", failure.Cause),
-				Action:  message("diag.action.restore_repository"),
+				Action:  message("diag.action.restore_repository", "Path", failure.Path),
 			},
 		})
 	}
@@ -365,15 +382,8 @@ func expiredRecoverySnapshot(expiresAt string) bool {
 func (m *Manager) recoveryFailureFindings(ctx context.Context) []diag.Finding {
 	failures, err := m.store.UnresolvedRecoveryFailures(ctx)
 	if err != nil {
-		return []diag.Finding{{
-			Check: diag.CheckRecoveryJobs, Severity: diag.SeverityProblem,
-			Summary: "the recovery job history could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
-			Messages: diag.FindingMessages{
-				Summary: message("diag.recovery.history_unreadable"),
-				Action:  message("diag.action.fix_state_database"),
-			},
-		}}
+		return []diag.Finding{stateQueryProblem(diag.CheckRecoveryJobs,
+			"the recovery job history could not be read", message("diag.recovery.history_unreadable"), "", err)}
 	}
 	findings := make([]diag.Finding, 0, len(failures)+1)
 	for _, failure := range failures {
@@ -399,12 +409,13 @@ func recoveryFailureFinding(failure state.RecoveryFailure) diag.Finding {
 	}
 	summary := "restoring a session workspace failed and has not been retried"
 	summaryMessage := message("diag.recovery.restore_failed")
-	action := "fix the reported cause, then resume that conversation again; wx keeps the recovery snapshot until its retention elapses"
-	actionMessage := message("diag.action.retry_restore")
+	lead, leadMessage := jobFailureLead(failure.DetailPath)
+	action := lead + ", correct what it reports, then resume that conversation again; wx keeps the recovery snapshot until its retention elapses"
+	actionMessage := message("diag.action.retry_restore", "Lead", leadMessage)
 	if failure.Kind == "SNAPSHOT" {
 		summary = "saving a session workspace failed, so its work is not snapshotted"
 		summaryMessage = message("diag.recovery.snapshot_failed")
-		action, actionMessage = snapshotFailureAction(failure.SlotState)
+		action, actionMessage = snapshotFailureAction(failure.SlotState, lead, leadMessage)
 	}
 	details := []string{"job " + failure.JobID}
 	detailMessages := []i18n.Message{message("diag.detail.job", "JobID", failure.JobID)}
@@ -441,13 +452,13 @@ func recoveryFailureFinding(failure state.RecoveryFailure) diag.Finding {
 
 // snapshotFailureAction は保存失敗後の対処を slot の状態で分ける。
 // 隔離済みの slot は session が終端しており、再終了しても snapshot を作り直さないため、手動退避だけを案内する。
-func snapshotFailureAction(slotState string) (string, i18n.Message) {
+func snapshotFailureAction(slotState, lead string, leadMessage i18n.Message) (string, i18n.Message) {
 	if slotState == "QUARANTINED" {
 		return "copy anything you need out of the slot directory yourself; wx cannot retry the snapshot for a quarantined slot, and the slot stays until you remove it with wx clear",
 			message("diag.action.snapshot_quarantined")
 	}
-	return "fix the reported cause and leave the slot alone; wx recreates the snapshot job while the slot is still returning, and you can copy anything you need out of the slot directory first",
-		message("diag.action.snapshot_retry")
+	return lead + ", correct what it reports and leave the slot alone; wx recreates the snapshot job while the slot is still returning, and you can copy anything you need out of the slot directory first",
+		message("diag.action.snapshot_retry", "Lead", leadMessage)
 }
 
 // workspaceSnapshotFindings は復元に使える workspace snapshot の実体を軽量に検査する。
@@ -456,15 +467,8 @@ func (m *Manager) workspaceSnapshotFindings(ctx context.Context) []diag.Finding 
 	at := time.Now()
 	snapshots, err := m.store.ActiveWorkspaceSnapshots(ctx, state.FormatTime(at))
 	if err != nil {
-		return []diag.Finding{{
-			Check: diag.CheckWorkspaceSnapshots, Severity: diag.SeverityProblem,
-			Summary: "the workspace snapshot records could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
-			Messages: diag.FindingMessages{
-				Summary: message("diag.snapshot.records_unreadable"),
-				Action:  message("diag.action.fix_state_database"),
-			},
-		}}
+		return []diag.Finding{stateQueryProblem(diag.CheckWorkspaceSnapshots,
+			"the workspace snapshot records could not be read", message("diag.snapshot.records_unreadable"), "", err)}
 	}
 	findings := make([]diag.Finding, 0, len(snapshots)+1)
 	for _, snapshot := range snapshots {
@@ -509,11 +513,11 @@ func (m *Manager) workspaceSnapshotFinding(snapshot state.WorkspaceSnapshot, at 
 			Check: diag.CheckWorkspaceSnapshots, Severity: diag.SeverityUnchecked,
 			Summary: "a workspace snapshot archive could not be inspected", Target: snapshot.ArchivePath,
 			Cause:  fmt.Sprintf("open the owning root %s: %v", root, err),
-			Action: "fix the reported cause on that root, then run wx doctor again",
+			Action: fmt.Sprintf("check that %s is a directory you own with 0700 access and that its volume is mounted, then run wx doctor again", root),
 			Messages: diag.FindingMessages{
 				Summary: message("diag.snapshot.uninspectable"),
 				Cause:   message("diag.snapshot.open_root_cause", "Root", root, "Error", err.Error()),
-				Action:  message("diag.action.fix_root_then_doctor"),
+				Action:  message("diag.action.check_root_path", "Path", root),
 			},
 		}, true
 	}

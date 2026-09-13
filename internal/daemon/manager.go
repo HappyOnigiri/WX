@@ -16,25 +16,28 @@ import (
 )
 
 type Manager struct {
-	mu                   sync.RWMutex
-	cfg                  config.Config
-	store                *state.Store
-	git                  *gitx.Runner
-	log                  *slog.Logger
-	started              time.Time
-	lastReload           time.Time
-	reloadError          string
-	lastBackup           time.Time
-	backupError          string
-	roots                map[string]bool
-	rootRefs             map[string]*managedRoot
-	retiredRefs          map[string][]*managedRoot
-	rootIdentities       map[string]string
-	rootIDs              map[string]string
-	rootUsage            map[string]rootUsageSample
-	slotUsage            map[string]slotUsageSample
-	sharedFiles          map[string]workspace.SharedFileCache
-	rootError            string
+	mu             sync.RWMutex
+	cfg            config.Config
+	store          *state.Store
+	git            *gitx.Runner
+	log            *slog.Logger
+	started        time.Time
+	lastReload     time.Time
+	reloadError    string
+	lastBackup     time.Time
+	backupError    string
+	roots          map[string]bool
+	rootRefs       map[string]*managedRoot
+	retiredRefs    map[string][]*managedRoot
+	rootIdentities map[string]string
+	rootIDs        map[string]string
+	rootUsage      map[string]rootUsageSample
+	slotUsage      map[string]slotUsageSample
+	sharedFiles    map[string]workspace.SharedFileCache
+	rootError      string
+	// rootErrorKind は rootError の原因の種別で、doctor が対処を分けるために持つ。
+	// status の JSON は従来どおり本文だけを載せるため、ここには出さない。
+	rootErrorKind        string
 	rootRetryLogged      string
 	rootCond             *sync.Cond
 	rootClosing          bool

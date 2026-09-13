@@ -22,7 +22,7 @@ func TestArtifactReportCategoriesKeepTheSortedStringShape(t *testing.T) {
 			{RepositoryID: "repo", Ref: "refs/wx/recovery/mismatched", ExpiresAt: "2026-01-01T00:00:00Z"},
 		},
 		MissingRefs: []recoveryRefIssue{{RepositoryID: "repo", Ref: "refs/wx/recovery/missing"}},
-		Errors:      []string{"inspect slot slot-2: boom"},
+		Errors:      []ownershipFailure{{Kind: ownershipFailureSlotPath, Target: "/root/slot-2", Message: "inspect slot slot-2: boom"}},
 	}
 	categories := report.categories()
 	if got := categories["unknown_paths"].([]string); !slices.Equal(got, []string{"/root/a", "/root/b"}) {

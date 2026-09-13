@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -21,7 +24,8 @@ import (
 func (m *Manager) Doctor(ctx context.Context) diag.Reply {
 	m.mu.RLock()
 	reloadError, restartPending, cfg := m.reloadError, m.restartPending, m.cfg
-	rootError, backupError, lastBackup := m.rootError, m.backupError, m.lastBackup
+	rootError, rootErrorKind := m.rootError, m.rootErrorKind
+	backupError, lastBackup := m.backupError, m.lastBackup
 	m.mu.RUnlock()
 	findings := diag.SharedFindings(ctx, cfg, reloadError, diag.SharedOptions{RestartPending: restartPending, Git: m.git})
 	pid, version := strconv.Itoa(os.Getpid()), daemonVersion()
@@ -39,7 +43,7 @@ func (m *Manager) Doctor(ctx context.Context) diag.Reply {
 		},
 	})
 	// backup と root 登録の結果は daemon が保持しているため、store を読めなくても報告できる。
-	findings = append(findings, sqliteBackupFinding(backupError, lastBackup), rootRegistrationFinding(rootError))
+	findings = append(findings, sqliteBackupFinding(backupError, lastBackup), rootRegistrationFinding(rootErrorKind, rootError))
 	if err := m.store.Ping(ctx); err != nil {
 		findings = append(findings, sqliteProblemFinding(err))
 		return doctorReply(append(findings, diag.UncheckedFindings(diag.CheckSQLite, storeQueryChecks()...)...))
@@ -98,6 +102,28 @@ func sqliteProblemFinding(err error) diag.Finding {
 	}
 }
 
+// stateQueryFailureAction は state database への問い合わせが失敗したときの対処を返す。
+// Doctor は m.store.Ping を通ってからこの経路へ来るため、database は開けており個々のクエリだけが失敗している。
+// 手順は「失敗したクエリを daemon log で読む」から始め、繰り返すときの保全と復元まで sqliteProblemFinding と同じ経路へ繋ぐ。
+func stateQueryFailureAction() (string, i18n.Message) {
+	path, log := statePathForDisplay(), daemonLogPathForDisplay()
+	if path == "" || log == "" {
+		return "read the daemon log for the failing query, then run wx doctor again; if the same query keeps failing, stop the daemon, preserve the state database for investigation and restore a verified backup of it",
+			message("diag.action.state_query_failed")
+	}
+	return fmt.Sprintf("read %s for the failing query, then run wx doctor again; if the same query keeps failing, stop the daemon, preserve %s for investigation and restore a verified backup from %s.backups", log, path, path),
+		message("diag.action.state_query_failed_path", "Log", log, "Path", path)
+}
+
+// daemonLogPathForDisplay は daemon log の path を表示用に返す。解決できない場合は空にする。
+func daemonLogPathForDisplay() string {
+	path, err := config.LogPath()
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
 // sqliteBackupFinding は保持している未解消の backup 失敗を報告する。
 // 失敗は次の周期で再試行されるため、対処は原因の解消だけにする。
 func sqliteBackupFinding(backupError string, lastBackup time.Time) diag.Finding {
@@ -119,20 +145,32 @@ func sqliteBackupFinding(backupError string, lastBackup time.Time) diag.Finding 
 			Messages: diag.FindingMessages{Summary: message("diag.sqlite_backup.none"), Details: detailMessages},
 		}
 	}
+	action, actionMessage := backupDirectoryAction(target)
 	return diag.Finding{
 		Check: diag.CheckSQLiteBackup, Severity: diag.SeverityProblem, Summary: "the SQLite online backup failed",
 		Target: target, Cause: backupError,
-		Action: "fix the reported cause on the backups directory, such as free space or write access; wx retries the backup on its next cycle",
+		Action: action,
 		Messages: diag.FindingMessages{
 			Summary: message("diag.sqlite_backup.failed"),
-			Action:  message("diag.action.fix_backup_directory"),
+			Action:  actionMessage,
 		},
 	}
 }
 
+// backupDirectoryAction は backup 先を名指しして、確かめる順に手順を並べる。
+// 失敗の種別は daemon に残らないため、調べる先を backups directory 1 箇所へ絞ることで手順にする。
+func backupDirectoryAction(target string) (string, i18n.Message) {
+	if target == "" {
+		return "check the free space of the volume that holds the state database and your write access to its .backups directory; wx retries the backup on its next cycle",
+			message("diag.action.check_backup_directory")
+	}
+	return fmt.Sprintf("run df -h %s and ls -ld %s to check the free space and your write access there; wx retries the backup on its next cycle", target, target),
+		message("diag.action.check_backup_directory_path", "Path", target)
+}
+
 // rootRegistrationFinding は root の登録結果だけを報告する。
 // path 自体の検査は diag.SharedFindings が別の finding で返し、どちらも互いの結果を上書きしない。
-func rootRegistrationFinding(rootError string) diag.Finding {
+func rootRegistrationFinding(kind, rootError string) diag.Finding {
 	if rootError == "" {
 		return diag.Finding{
 			Check: diag.CheckWorktreeRootRegistration, Severity: diag.SeverityOK,
@@ -140,14 +178,36 @@ func rootRegistrationFinding(rootError string) diag.Finding {
 			Messages: diag.FindingMessages{Summary: message("diag.worktree_root.registered")},
 		}
 	}
+	action, actionMessage := rootRegistrationAction(kind)
 	return diag.Finding{
 		Check: diag.CheckWorktreeRootRegistration, Severity: diag.SeverityProblem,
 		Summary: "the worktree root could not be registered", Cause: rootError,
-		Action: "fix the reported cause on the configured root, such as its permissions or the mount it lives on; wx retries the registration on each reconcile and needs no restart",
+		Action: action,
 		Messages: diag.FindingMessages{
 			Summary: message("diag.worktree_root.unregistered"),
-			Action:  message("diag.action.fix_root_registration"),
+			Action:  actionMessage,
 		},
+	}
+}
+
+// rootRegistrationAction は root 登録の失敗の種別ごとに手順を返す。
+// 種別を持たない記録（起動前から残る文字列）は、確かめる順に並べた既定の手順へ落とす。
+func rootRegistrationAction(kind string) (string, i18n.Message) {
+	switch kind {
+	case rootFailureIdentity:
+		return "recreate the directory storage.worktree_root points at and make it readable by you; wx retries the registration on each reconcile and needs no restart",
+			message("diag.action.root_identity_unreadable")
+	case rootFailureStore:
+		return stateQueryFailureAction()
+	case rootFailurePath:
+		return "give storage.worktree_root an absolute path, or set HOME if it starts with ~, then run wx config reload",
+			message("diag.action.root_path_unexpandable")
+	case rootFailureDescriptor:
+		return "check that storage.worktree_root points at a directory you own with 0700 access, that every component of it is a directory, and that its volume is mounted; wx retries the registration on each reconcile and needs no restart",
+			message("diag.action.root_descriptor_unusable")
+	default:
+		return "check the directory storage.worktree_root points at: that it exists, that you own it with 0700 access, and that its volume is mounted; wx retries the registration on each reconcile and needs no restart",
+			message("diag.action.check_root_directory")
 	}
 }
 
@@ -156,13 +216,14 @@ func rootRegistrationFinding(rootError string) diag.Finding {
 func (m *Manager) registrationFindings(ctx context.Context) []diag.Finding {
 	roots, err := m.store.WorkspaceRoots(ctx)
 	if err != nil {
+		action, actionMessage := stateQueryFailureAction()
 		return []diag.Finding{{
 			Check: diag.CheckWorktreeRegistration, Severity: diag.SeverityProblem,
 			Summary: "the registered workspaces could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
+			Action: action,
 			Messages: diag.FindingMessages{
 				Summary: message("diag.registration.workspaces_unreadable"),
-				Action:  message("diag.action.fix_state_database"),
+				Action:  actionMessage,
 			},
 		}}
 	}
@@ -172,17 +233,19 @@ func (m *Manager) registrationFindings(ctx context.Context) []diag.Finding {
 	for _, root := range roots {
 		workspaceRecord, resolveErr := m.resolveRegisteredWorkspace(ctx, root, &discoverer)
 		if resolveErr != nil {
-			findings = append(findings, registrationProblem(root, "", "", resolveErr))
+			findings = append(findings, workspaceResolveProblem(root, resolveErr))
 			continue
 		}
 		resolved, resolveErr := pool.ResolveBranches(ctx, m.git, workspaceRecord, nil)
 		if resolveErr != nil {
-			findings = append(findings, registrationProblem(root, "", "", resolveErr))
+			findings = append(findings, branchResolveProblem(root, resolveErr))
 			continue
 		}
 		slots, slotsErr := m.store.ReadySlots(ctx, string(workspaceRecord.ID))
 		if slotsErr != nil {
-			findings = append(findings, registrationProblem(root, "", "", slotsErr))
+			findings = append(findings, stateQueryProblem(diag.CheckWorktreeRegistration,
+				"the standby slots of a registered workspace could not be read",
+				message("diag.registration.slots_unreadable"), root, slotsErr))
 			continue
 		}
 		reuse, _ := m.Config().ReuseStandbyForWorkspace(string(workspaceRecord.Root))
@@ -191,7 +254,7 @@ func (m *Manager) registrationFindings(ctx context.Context) []diag.Finding {
 			valid, validationErr := m.standbyReadyUsable(ctx, slot, workspaceRecord, resolved, reuse)
 			switch {
 			case validationErr != nil:
-				findings = append(findings, registrationProblem(root, slot.ID, slot.Path, validationErr))
+				findings = append(findings, standbyCheckProblem(root, slot.ID, slot.Path, validationErr))
 			case !valid:
 				findings = append(findings, diag.Finding{
 					Check: diag.CheckWorktreeRegistration, Severity: diag.SeverityInfo,
@@ -217,25 +280,90 @@ func (m *Manager) registrationFindings(ctx context.Context) []diag.Finding {
 	})
 }
 
-func registrationProblem(root, slotID, path string, err error) diag.Finding {
-	target := root
-	if path != "" {
-		target = path
+// stateQueryProblem は state database のクエリ失敗を、失敗した読み取りを名指しして報告する。
+// 原因は err の本文そのものなので、訳さず原文のまま残す。
+func stateQueryProblem(check, summary string, summaryMessage i18n.Message, target string, err error) diag.Finding {
+	action, actionMessage := stateQueryFailureAction()
+	return diag.Finding{
+		Check: check, Severity: diag.SeverityProblem, Summary: summary, Target: target, Cause: err.Error(),
+		Action:   action,
+		Messages: diag.FindingMessages{Summary: summaryMessage, Action: actionMessage},
 	}
-	// slot ID が無い場合の原因は err の本文そのものなので、訳さず原文のまま残す。
-	cause, causeMessage := err.Error(), i18n.Message{}
-	if slotID != "" {
-		cause = fmt.Sprintf("slot %s: %s", slotID, cause)
-		causeMessage = message("diag.registration.slot_cause", "SlotID", slotID, "Error", err.Error())
+}
+
+// workspaceResolveProblem は登録済み workspace を再発見できなかった失敗を、root の実体の有無で分ける。
+// root ごと消えている場合は直す先が無いので、登録の解除だけを手順にする。
+func workspaceResolveProblem(root string, err error) diag.Finding {
+	action, actionMessage := workspaceResolveAction(root, err)
+	return diag.Finding{
+		Check: diag.CheckWorktreeRegistration, Severity: diag.SeverityProblem,
+		// Cause は再発見が返した本文そのものなので、訳さず原文のまま残す。
+		Summary: "a registered workspace could not be checked", Target: root, Cause: err.Error(),
+		Action: action,
+		Messages: diag.FindingMessages{
+			Summary: message("diag.registration.workspace_unchecked"),
+			Action:  actionMessage,
+		},
+	}
+}
+
+func workspaceResolveAction(root string, err error) (string, i18n.Message) {
+	if errors.Is(err, fs.ErrNotExist) {
+		// 解除は登録済みの root 文字列との一致で成立するため、実体が消えていても wx forget は使える。
+		// 復旧状態が残っていると素の wx forget は拒否して件数を出すので、それを読んでから破棄させる。
+		return fmt.Sprintf("the workspace directory is gone, so only unregistering is left: run wx forget %s to see how much recovery state it still holds, then run wx forget --discard-recovery %s to discard that state and unregister it", root, root),
+			message("diag.action.forget_missing_workspace", "Root", root)
+	}
+	return fmt.Sprintf("check that %s still holds the source repositories wx registered, for example with git -C %s status; run wx forget %s if you no longer use this workspace", root, root, root),
+		message("diag.action.check_workspace_repositories", "Root", root)
+}
+
+// branchResolveProblem は貸出に使う branch を解決できなかった失敗を報告する。
+// 既定 branch の欠落は設定で指し直せるため、そこだけ別の手順にする。
+func branchResolveProblem(root string, err error) diag.Finding {
+	action, actionMessage := branchResolveAction(root, err)
+	return diag.Finding{
+		Check: diag.CheckWorktreeRegistration, Severity: diag.SeverityProblem,
+		// Cause は branch 解決が返した本文そのものなので、訳さず原文のまま残す。
+		Summary: "the branches of a registered workspace could not be resolved", Target: root, Cause: err.Error(),
+		Action: action,
+		Messages: diag.FindingMessages{
+			Summary: message("diag.registration.branches_unresolved"),
+			Action:  actionMessage,
+		},
+	}
+}
+
+func branchResolveAction(root string, err error) (string, i18n.Message) {
+	var missing *pool.MissingDefaultBranchError
+	if !errors.As(err, &missing) {
+		return fmt.Sprintf("run git -C %s rev-parse HEAD to see why Git cannot read the refs of this workspace; wx cannot lease a slot from it until that works", root),
+			message("diag.action.check_workspace_refs", "Root", root)
+	}
+	// 単一 repository の workspace は membership scope を拒まれるので、そこだけ repository defaults を案内する。
+	scope := "--repository-defaults"
+	if clean := filepath.Clean(missing.RepositoryRelativePath); clean != "." {
+		scope = "--repository " + clean
+	}
+	return fmt.Sprintf("point the default branch at one this repository has with wx config --workspace %s %s default_branch <branch-name>, or run wx forget %s if you no longer use this workspace", root, scope, root),
+		message("diag.action.set_default_branch", "Root", root, "Scope", scope)
+}
+
+// standbyCheckProblem は READY slot 1 件の検証が失敗したことを、その slot の path を対象にして報告する。
+func standbyCheckProblem(root, slotID, path string, err error) diag.Finding {
+	target := path
+	if target == "" {
+		target = root
 	}
 	return diag.Finding{
 		Check: diag.CheckWorktreeRegistration, Severity: diag.SeverityProblem,
-		Summary: "a registered workspace could not be checked", Target: target, Cause: cause,
-		Action: "fix the reported cause, such as the source repository, its branches, or the state database; wx cannot lease a slot from this workspace until then",
+		Summary: "a standby slot could not be checked", Target: target,
+		Cause:  fmt.Sprintf("slot %s: %s", slotID, err.Error()),
+		Action: fmt.Sprintf("check that %s is readable by you and that its volume is mounted; run wx clear --standby to drop the standby slots wx cannot check, and wx prepares a new one the next time this workspace is used", target),
 		Messages: diag.FindingMessages{
-			Summary: message("diag.registration.workspace_unchecked"),
-			Cause:   causeMessage,
-			Action:  message("diag.action.fix_workspace_check"),
+			Summary: message("diag.registration.standby_unchecked"),
+			Cause:   message("diag.registration.slot_cause", "SlotID", slotID, "Error", err.Error()),
+			Action:  message("diag.action.check_standby_slot", "Path", target),
 		},
 	}
 }
@@ -245,15 +373,8 @@ func registrationProblem(root, slotID, path string, err error) diag.Finding {
 func (m *Manager) standbyFindings(ctx context.Context) []diag.Finding {
 	items, err := m.standbyReplenishmentReport(ctx)
 	if err != nil {
-		return []diag.Finding{{
-			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityProblem,
-			Summary: "the standby replenishment state could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
-			Messages: diag.FindingMessages{
-				Summary: message("diag.standby.unreadable"),
-				Action:  message("diag.action.fix_state_database"),
-			},
-		}}
+		return []diag.Finding{stateQueryProblem(diag.CheckStandbyReplenishment,
+			"the standby replenishment state could not be read", message("diag.standby.unreadable"), "", err)}
 	}
 	findings := make([]diag.Finding, 0, len(items)+1)
 	for _, item := range items {
@@ -290,17 +411,18 @@ func standbyReplenishmentFinding(item state.StandbyReplenishmentDiagnostic) diag
 		cause, causeMessage := jobFailureCause("standby replenishment job "+item.Detail,
 			message("diag.standby.job_replenishment", "Detail", item.Detail),
 			item.FailureCode, item.FailureMessage, item.DetailPath)
+		lead, leadMessage := jobFailureLead(item.DetailPath)
 		return diag.Finding{
 			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityProblem,
 			Summary: "planning the standby worktrees failed, so the warm slots are not replenished", Target: item.Root,
 			Cause: cause,
-			Action: "fix the reported cause, such as the .worktreeinclude or .worktreelink manifest; wx retries the plan on the next lease and maintenance tick, or run " +
-				item.Action + " to retry it now",
+			Action: lead + ", correct what it names in the .worktreeinclude or .worktreelink manifest of " + item.Root +
+				", then run " + item.Action + "; wx also retries the plan on the next lease and maintenance tick",
 			Details: details,
 			Messages: diag.FindingMessages{
 				Summary: message("diag.standby.plan_failed"),
 				Cause:   causeMessage,
-				Action:  message("diag.action.fix_standby_plan", "Action", item.Action),
+				Action:  message("diag.action.fix_standby_plan", "Lead", leadMessage, "Root", item.Root, "Action", item.Action),
 				Details: detailMessages,
 			},
 		}
@@ -308,15 +430,16 @@ func standbyReplenishmentFinding(item state.StandbyReplenishmentDiagnostic) diag
 		cause, causeMessage := jobFailureCause("prepare job "+item.Detail,
 			message("diag.standby.job_prepare", "Detail", item.Detail),
 			item.FailureCode, item.FailureMessage, item.DetailPath)
+		lead, leadMessage := jobFailureLead(item.DetailPath)
 		return diag.Finding{
 			Check: diag.CheckStandbyReplenishment, Severity: diag.SeverityProblem,
 			Summary: "standby worktree preparation failed and replenishment is stopped", Target: item.Root,
 			Cause:  cause,
-			Action: "fix the reported cause, then run " + item.Action,
+			Action: lead + ", correct what it reports in " + item.Root + ", then run " + item.Action + " to start the replenishment again",
 			Messages: diag.FindingMessages{
 				Summary: message("diag.standby.prepare_failed"),
 				Cause:   causeMessage,
-				Action:  message("diag.action.fix_then_run", "Action", item.Action),
+				Action:  message("diag.action.retry_standby_prepare", "Lead", leadMessage, "Root", item.Root, "Action", item.Action),
 			},
 		}
 	case state.SuspendReplenishReasonForget:
@@ -358,6 +481,19 @@ func standbyReplenishmentFinding(item state.StandbyReplenishmentDiagnostic) diag
 			},
 		}
 	}
+}
+
+// jobFailureLead は失敗した job を調べる先を 1 箇所へ絞った書き出しを返す。
+// 対処の先頭をここに固定し、失敗の種別を daemon が持たない場合でも「どこを読むか」までは示す。
+// 戻り値は対処の前半なので、呼び出し側が続きを繋いで 1 文にする。
+func jobFailureLead(detailPath string) (string, i18n.Message) {
+	if detailPath != "" {
+		return "read " + detailPath + " for the command that failed", message("diag.action.read_detail_log", "Path", detailPath)
+	}
+	if log := daemonLogPathForDisplay(); log != "" {
+		return "read " + log + " for the failed job", message("diag.action.read_daemon_log", "Path", log)
+	}
+	return "read the daemon log for the failed job", message("diag.action.read_daemon_log_unknown")
 }
 
 // jobFailureCause は job の失敗を「失敗した操作・記録された理由・詳細ログの場所」の順で 1 行にまとめる。

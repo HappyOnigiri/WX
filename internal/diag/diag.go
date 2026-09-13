@@ -144,7 +144,7 @@ func configFinding(cfg config.Config, configError string) Finding {
 		return Finding{
 			Check: CheckConfig, Severity: SeverityProblem, Summary: "the configuration could not be loaded",
 			Target: target, Cause: configError,
-			Action: "fix the reported entry in the configuration file, then run wx config reload",
+			Action: "correct the entry named in the cause in the configuration file, then run wx config reload",
 			Messages: FindingMessages{
 				Summary: i18n.Message{ID: "diag.config.load_failed"},
 				Action:  i18n.Message{ID: "diag.action.fix_config_entry"},
@@ -218,7 +218,7 @@ func socketFinding() Finding {
 		summary:       "the daemon socket is not usable",
 		missing:       "the daemon socket does not exist; the daemon creates it when it starts",
 		missingAction: "run wx daemon start if you expect the daemon to be running",
-		repairAction:  "remove or fix the reported path so the daemon can bind its own socket, then run wx daemon start",
+		repairAction:  "delete the file at the target path, or restore its Unix socket type and 0600 owner-only access, so the daemon can bind its own socket, then run wx daemon start",
 		summaryID:     "diag.socket.unusable",
 		missingID:     "diag.socket.missing",
 		missingID2:    "diag.action.start_if_expected",

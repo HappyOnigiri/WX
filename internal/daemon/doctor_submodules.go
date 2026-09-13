@@ -16,15 +16,8 @@ import (
 func (m *Manager) unsavedSubmoduleFindings(ctx context.Context) []diag.Finding {
 	slots, err := m.store.ProtectedSlots(ctx)
 	if err != nil {
-		return []diag.Finding{{
-			Check: diag.CheckUnsavedSubmodules, Severity: diag.SeverityProblem,
-			Summary: "the unsaved submodule records could not be read", Cause: err.Error(),
-			Action: "fix the reported state database failure, then run wx doctor again",
-			Messages: diag.FindingMessages{
-				Summary: i18n.Message{ID: "diag.submodule.unreadable"},
-				Action:  i18n.Message{ID: "diag.action.fix_state_database"},
-			},
-		}}
+		return []diag.Finding{stateQueryProblem(diag.CheckUnsavedSubmodules,
+			"the unsaved submodule records could not be read", i18n.Message{ID: "diag.submodule.unreadable"}, "", err)}
 	}
 	if len(slots) == 0 {
 		return []diag.Finding{{

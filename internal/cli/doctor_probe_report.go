@@ -89,17 +89,30 @@ func prepareNoticeFindings(root string, notices []daemon.PrepareNotice) []diag.F
 	return findings
 }
 
+// probeLeaseProblem は貸出まで辿り着けなかった失敗を、失敗した区間ごとの手順で報告する。
+// RPC の error code はほぼ REQUEST_FAILED に潰れるため、分類の材料は区間名だけである。
 func probeLeaseProblem(root string, stage probeStage) diag.Finding {
+	action, actionMessage := probeLeaseAction(root, stage.name)
 	return diag.Finding{
 		Check: diag.CheckProbe, Severity: diag.SeverityProblem, Summary: "a workspace could not be leased for the probe",
 		Target: root, Cause: stage.text,
-		Action: "fix the reported cause; wx cannot hand this workspace to an agent until then",
+		Action: action,
 		Messages: diag.FindingMessages{
 			Summary: i18n.Message{ID: "diag.probe.lease_failed"},
 			Cause:   stage.message,
-			Action:  i18n.Message{ID: "diag.action.probe_lease_failed"},
+			Action:  actionMessage,
 		},
 	}
+}
+
+func probeLeaseAction(root, stage string) (string, i18n.Message) {
+	if stage == probeStageRetireStandby {
+		// standby を回収できないうちは、実地検査が測るのが cold start の重さではなくなる。
+		return "run wx clear --standby to drop the standby worktrees yourself, then run wx doctor --probe again",
+			i18n.Message{ID: "diag.action.probe_clear_standby"}
+	}
+	return fmt.Sprintf("run wx doctor and read its worktree_registration finding for %s; that check reports why wx refuses to lease this workspace", root),
+		i18n.Message{ID: "diag.action.probe_read_registration", Data: map[string]any{"Root": root}}
 }
 
 func probePrepareProblem(root, path string, stage probeStage) diag.Finding {
@@ -115,9 +128,18 @@ func probePrepareProblem(root, path string, stage probeStage) diag.Finding {
 	}
 }
 
-// probeStage は実地検査が失敗した区間である。text は Probe.Error と JSON へ出る英語本文で、
-// message はそれを表示言語で解決するための ID を持つ。
+// 実地検査の区間名である。対処は区間ごとに違うため、報告側がこの値で手順を分ける。
+const (
+	probeStageRetireStandby = "retire standby"
+	probeStageLease         = "lease"
+	probeStageEarlyReady    = "early ready"
+	probeStageFullReady     = "full ready"
+)
+
+// probeStage は実地検査が失敗した区間である。name は手順を分けるための区間名、
+// text は Probe.Error と JSON へ出る英語本文で、message はそれを表示言語で解決するための ID を持つ。
 type probeStage struct {
+	name    string
 	text    string
 	message i18n.Message
 }
@@ -125,14 +147,15 @@ type probeStage struct {
 // probeStageIDs は区間ごとの message ID である。区間名は wx が決める固定の列挙なので訳し、
 // 続く原因は外部由来の本文としてそのまま埋め込む。
 var probeStageIDs = map[string]string{
-	"retire standby": "diag.probe.stage.retire_standby",
-	"lease":          "diag.probe.stage.lease",
-	"early ready":    "diag.probe.stage.early_ready",
-	"full ready":     "diag.probe.stage.full_ready",
+	probeStageRetireStandby: "diag.probe.stage.retire_standby",
+	probeStageLease:         "diag.probe.stage.lease",
+	probeStageEarlyReady:    "diag.probe.stage.early_ready",
+	probeStageFullReady:     "diag.probe.stage.full_ready",
 }
 
 func newProbeStage(stage string, err error) probeStage {
 	return probeStage{
+		name:    stage,
 		text:    stage + ": " + err.Error(),
 		message: i18n.Message{ID: probeStageIDs[stage], Data: map[string]any{"Error": err.Error()}},
 	}

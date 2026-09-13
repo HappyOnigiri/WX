@@ -1,12 +1,16 @@
 package daemon
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -79,10 +83,10 @@ func TestSQLiteBackupFindingReportsTheLastSuccess(t *testing.T) {
 }
 
 func TestRootRegistrationFindingKeepsRetryGuidance(t *testing.T) {
-	if ok := rootRegistrationFinding(""); ok.Severity != diag.SeverityOK {
+	if ok := rootRegistrationFinding("", ""); ok.Severity != diag.SeverityOK {
 		t.Fatalf("registered root finding=%+v", ok)
 	}
-	failed := rootRegistrationFinding("mount is read-only")
+	failed := rootRegistrationFinding(rootFailureDescriptor, "mount is read-only")
 	if failed.Severity != diag.SeverityProblem || !strings.Contains(failed.Action, "reconcile") {
 		t.Fatalf("failed root finding=%+v, want the automatic retry in its action", failed)
 	}
@@ -163,4 +167,73 @@ func registrationIssues(findings []diag.Finding) []diag.Finding {
 		}
 	}
 	return out
+}
+
+// 登録検査の対処は原因の種別で分かれる。判定が効いていることを、種別ごとの手順の違いで固定する。
+func TestRegistrationProblemsSeparateTheirActionsByCause(t *testing.T) {
+	missingRoot := workspaceResolveProblem("/roots/ws", fmt.Errorf("canonicalize %q: %w", "/roots/ws", fs.ErrNotExist))
+	if !strings.Contains(missingRoot.Action, "wx forget --discard-recovery /roots/ws") {
+		t.Fatalf("missing root action=%q, want the unregister path", missingRoot.Action)
+	}
+	unreadable := workspaceResolveProblem("/roots/ws", errors.New("rediscover workspace root: exit status 128"))
+	if strings.Contains(unreadable.Action, "--discard-recovery") || !strings.Contains(unreadable.Action, "git -C /roots/ws status") {
+		t.Fatalf("unreadable workspace action=%q, want the repository check and no discard", unreadable.Action)
+	}
+	slots := stateQueryProblem(diag.CheckWorktreeRegistration, "the standby slots of a registered workspace could not be read",
+		message("diag.registration.slots_unreadable"), "/roots/ws", errors.New("read slots: database is locked"))
+	for _, other := range []diag.Finding{missingRoot, unreadable} {
+		if slots.Action == other.Action {
+			t.Fatalf("state database action=%q must differ from %q", slots.Action, other.Action)
+		}
+	}
+	if !strings.Contains(slots.Action, "backup") {
+		t.Fatalf("state database action=%q, want the preserve-and-restore path", slots.Action)
+	}
+}
+
+// 既定 branch の欠落は sentinel error で判定し、workspace の構成に合う config scope を案内する。
+func TestBranchResolveProblemPointsAtTheRepositoryScope(t *testing.T) {
+	single := branchResolveProblem("/roots/ws", fmt.Errorf("resolve branches: %w",
+		&pool.MissingDefaultBranchError{Branch: "main", RepositoryRelativePath: "."}))
+	if !strings.Contains(single.Action, "wx config --workspace /roots/ws --repository-defaults default_branch") {
+		t.Fatalf("single repository action=%q, want the repository defaults scope", single.Action)
+	}
+	multi := branchResolveProblem("/roots/ws", &pool.MissingDefaultBranchError{Branch: "main", RepositoryRelativePath: "api"})
+	if !strings.Contains(multi.Action, "wx config --workspace /roots/ws --repository api default_branch") {
+		t.Fatalf("multi repository action=%q, want the membership scope", multi.Action)
+	}
+	other := branchResolveProblem("/roots/ws", errors.New("fatal: bad object HEAD"))
+	if strings.Contains(other.Action, "wx config") || !strings.Contains(other.Action, "git -C /roots/ws rev-parse HEAD") {
+		t.Fatalf("ref failure action=%q, want the Git check and no config command", other.Action)
+	}
+}
+
+// root 登録の失敗は種別ごとに直す先が違うので、同じ対処へ畳まない。
+func TestRootRegistrationActionsDifferByKind(t *testing.T) {
+	seen := map[string]string{}
+	for _, kind := range []string{rootFailureIdentity, rootFailureStore, rootFailurePath, rootFailureDescriptor, ""} {
+		action := rootRegistrationFinding(kind, "boom").Action
+		if action == "" {
+			t.Fatalf("root failure %q has no action", kind)
+		}
+		if previous, repeated := seen[action]; repeated {
+			t.Fatalf("root failure %q repeats the action of %q: %q", kind, previous, action)
+		}
+		seen[action] = kind
+	}
+}
+
+// 所有権の照合を完了できない失敗も、読めなかった対象ごとに調べる先を変える。
+func TestOwnershipFailureActionsNameTheirTarget(t *testing.T) {
+	slot, _ := ownershipFailureAction(ownershipFailure{Kind: ownershipFailureSlotPath, Target: "/roots/ws/slot", Message: "boom"})
+	root, _ := ownershipFailureAction(ownershipFailure{Kind: ownershipFailureRootPath, Target: "/roots", Message: "boom"})
+	refs, _ := ownershipFailureAction(ownershipFailure{Kind: ownershipFailureRepositoryRef, Target: "/repos/one", Message: "boom"})
+	for target, action := range map[string]string{"/roots/ws/slot": slot, "/roots": root, "/repos/one": refs} {
+		if !strings.Contains(action, target) {
+			t.Fatalf("action=%q, want the target %q", action, target)
+		}
+	}
+	if !strings.Contains(refs, "for-each-ref") {
+		t.Fatalf("repository ref action=%q, want the ref listing command", refs)
+	}
 }

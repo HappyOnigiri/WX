@@ -2,12 +2,15 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -19,10 +22,20 @@ func localizableDoctorFindings() []diag.Finding {
 		sqliteBackupFinding("", time.Time{}),
 		sqliteBackupFinding("", time.Unix(1700000000, 0).UTC()),
 		sqliteBackupFinding("write backup: no space left on device", time.Time{}),
-		rootRegistrationFinding(""),
-		rootRegistrationFinding("register root generation: inode identity changed"),
-		registrationProblem("/root", "", "", errors.New("resolve branches: no such ref")),
-		registrationProblem("/root", "slot-1", "/root/slot-1", errors.New("read slot: permission denied")),
+		rootRegistrationFinding("", ""),
+		rootRegistrationFinding(rootFailureIdentity, "worktree root /root has no readable inode identity"),
+		rootRegistrationFinding(rootFailureStore, "register root generation: database is locked"),
+		rootRegistrationFinding(rootFailurePath, "expand ~: HOME is not set"),
+		rootRegistrationFinding(rootFailureDescriptor, "open physical worktree root: not a directory"),
+		rootRegistrationFinding("", "register root generation: inode identity changed"),
+		workspaceResolveProblem("/root", fmt.Errorf("canonicalize %q: %w", "/root", fs.ErrNotExist)),
+		workspaceResolveProblem("/root", errors.New("rediscover workspace root /root: exit status 128")),
+		branchResolveProblem("/root", &pool.MissingDefaultBranchError{Branch: "main", RepositoryRelativePath: "."}),
+		branchResolveProblem("/root", &pool.MissingDefaultBranchError{Branch: "main", RepositoryRelativePath: "api"}),
+		branchResolveProblem("/root", errors.New("resolve branches: no such ref")),
+		stateQueryProblem(diag.CheckWorktreeRegistration, "the standby slots of a registered workspace could not be read",
+			message("diag.registration.slots_unreadable"), "/root", errors.New("read slots: database is locked")),
+		standbyCheckProblem("/root", "slot-1", "/root/slot-1", errors.New("read slot: permission denied")),
 	}
 	for _, reason := range []string{
 		state.StandbyReplenishReasonPlanFailure, state.SuspendReplenishReasonStandbyFailure,
