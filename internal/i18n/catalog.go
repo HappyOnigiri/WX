@@ -39,7 +39,6 @@ var catalog = map[string]Entry{
 	"common.restarted":                {EN: "restarted", JA: "再起動しました"},
 	"common.installed":                {EN: "installed", JA: "インストールしました"},
 	"common.uninstalled":              {EN: "uninstalled", JA: "アンインストールしました"},
-	"common.cancelled":                {EN: "cancelled", JA: "キャンセルしました"},
 	"common.yes":                      {EN: "Yes", JA: "はい"},
 	"common.no":                       {EN: "No", JA: "いいえ"},
 	"common.none":                     {EN: "(none)", JA: "（なし）"},
@@ -80,11 +79,6 @@ var catalog = map[string]Entry{
 	"rpc.restore_backup":              {EN: "restore a verified backup from", JA: "検証済みバックアップから復元するか"},
 	"rpc.preserve_for_doctor":         {EN: "or preserve the database for wx doctor", JA: "データベースを保全して wx doctor で調査してください"},
 	"rpc.degraded_read_only":          {EN: "wx daemon is read-only degraded: {{.Message}}", JA: "wx daemon は読み取り専用の縮退状態です: {{.Message}}"},
-	"cli.interrupted":                 {EN: "interrupted before the workspace was leased", JA: "workspace の貸出前に中断されました"},
-	"cli.interrupted_preparing":       {EN: "interrupted while the workspace was being prepared; releasing it", JA: "workspace の準備中に中断されました。貸出を返却します"},
-	"cli.workspace_preparation":       {EN: "workspace preparation", JA: "workspace の準備"},
-	"cli.resume_cancelled":            {EN: "resume cancelled; no workspace was created", JA: "再開をキャンセルしました。workspace は作成されませんでした"},
-	"cli.clear_stop":                  {EN: "wx clear asked this session to stop before the agent started", JA: "agent の起動前に wx clear から停止要求を受けました"},
 	"dashboard.status":                {EN: "System status", JA: "システム状態"},
 	"dashboard.loading":               {EN: "Loading from the daemon…", JA: "daemon から読み込み中…"},
 	"dashboard.refresh_failed":        {EN: "Refresh failed: {{.Error}}", JA: "更新に失敗しました: {{.Error}}"},
@@ -250,11 +244,6 @@ var catalog = map[string]Entry{
 	"menu.daemon_restart.impact":      {EN: "Also activates an updated wx binary.", JA: "更新した wx バイナリも有効になります。"},
 	"config.language.description":     {EN: "Language used for human-readable CLI, TUI, and daemon messages.", JA: "CLI・TUI・daemon の人間向け表示に使う言語。"},
 	"config.language.impact":          {EN: "Changes display text only; JSON output remains in English.", JA: "表示だけを変更し、JSON 出力は英語のままです。"},
-	"help.usage":                      {EN: "Usage", JA: "使い方"},
-	"help.global_options":             {EN: "Global options:", JA: "全体オプション:"},
-	"help.commands":                   {EN: "Commands:", JA: "コマンド:"},
-	"help.show_help":                  {EN: "show help", JA: "ヘルプを表示"},
-	"help.show_version":               {EN: "show version", JA: "バージョンを表示"},
 	// status.* は wx status の描画時ローカライズで使う。訳文には固定文だけを置き、
 	// path・ID・状態値・時刻・外部エラーはテンプレートのプレースホルダへ不透明値として渡す。
 	"status.section.additional":                 {EN: "Additional", JA: "追加情報"},
@@ -412,6 +401,22 @@ var catalog = map[string]Entry{
 	"config.show.scope":                         {EN: "{{.Title}}: {{.Target}}", JA: "{{.Title}}: {{.Target}}"},
 }
 
+// init は help 本文を同じ catalog へ統合し、Localize・ValidateCatalog・checkcatalog が
+// 短い表示文と同じ経路で扱えるようにする。ID の重複は起動時に落とす。
+func init() {
+	// 領域ごとのファイルへ分けたカタログを 1 つの map へ束ねる。
+	// Localize・ValidateCatalog・checkcatalog がどの領域も同じ経路で扱えるようにするためで、
+	// ID の重複は起動時に落とす。
+	for _, part := range []map[string]Entry{diagCatalog, cliCatalog, helpCatalogSession, helpCatalogMaintenance, helpCatalogConfig} {
+		for id, entry := range part {
+			if _, exists := catalog[id]; exists {
+				panic("duplicate message id: " + id)
+			}
+			catalog[id] = entry
+		}
+	}
+}
+
 type contextKey struct{}
 
 // Parse は対応する言語だけを受け付ける。空文字は未指定として英語を返す。
@@ -422,7 +427,7 @@ func Parse(value string) (Language, error) {
 	case Japanese:
 		return Japanese, nil
 	default:
-		return "", fmt.Errorf("language must be en or ja")
+		return "", NewError("config.language.invalid", nil)
 	}
 }
 
@@ -505,6 +510,13 @@ func T(ctx context.Context, id string, data any) string {
 	return New(string(LanguageFromContext(ctx))).Localize(id, data)
 }
 
+// HasMessage は ID がカタログにあるかを返す。可変 ID を引く描画側が、
+// 未知 ID をそのまま表示させずに fallback を選ぶために使う。
+func HasMessage(id string) bool {
+	_, known := catalog[id]
+	return known
+}
+
 // Catalog は静的検査やテストが利用できる読み取り専用コピーを返す。
 func Catalog() map[string]Entry {
 	out := make(map[string]Entry, len(catalog))
@@ -524,6 +536,9 @@ var validationData = map[string]any{
 	"Ref": "", "Repository": "", "RunID": "", "SessionID": "", "SlotID": "", "Slots": 0, "Sessions": 0,
 	"Snapshots": 0, "WorkspaceSnapshots": 0, "Earliest": "", "Latest": "", "Pending": "", "Running": "",
 	"Failed": "", "Discarded": "", "Age": "", "Scope": "", "Choices": "", "Label": "", "Code": 0, "Message": "",
+	"Entries": "", "Required": 0, "Actual": "", "Expected": "", "Phase": "", "Marker": "", "Head": "",
+	"MainPath": "", "MainHead": "", "Total": 0, "Runs": 0, "Item": "", "Actions": "", "Kind": "", "Route": "",
+	"Hint": "", "Step": "", "Usage": "", "Query": "", "Name": "", "Command": "", "Timeout": "", "Socket": "", "Guidance": "", "Default": "", "Change": "", "Agent": "",
 }
 
 // ValidateCatalog は両言語の空欄と、go-i18n が解釈できない template を検出する。

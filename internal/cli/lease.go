@@ -113,8 +113,8 @@ func (c Client) RunLeaseCommand(ctx context.Context, argv, branches []string, re
 
 func (c Client) RunLeaseCommandFrom(ctx context.Context, cwd string, argv, branches []string, resume string) int {
 	if len(argv) == 0 {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("wx run needs a command after --", lang))
+		localizer := cliLocalizer(c)
+		fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.run_needs_command", nil))
 		return 2
 	}
 	if cwd == "" {
@@ -155,7 +155,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 	}
 	// --json は機械向けの経路なので確認を出さず、notice だけ stderr へ出して続行する。
 	if !c.confirmLinkedWorktreeBase(ctx, cwd, !jsonOut) {
-		fmt.Fprintln(os.Stderr, localizeCLIMessage("lease cancelled; no workspace was created", cliLanguage(c)))
+		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.lease_cancelled", nil))
 		return 1
 	}
 	ownerID, ownerToken := leaseOwnerFromEnvironment()
@@ -181,7 +181,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 	if err := c.RPC.Call(leaseCtx, "ResolveAndLease", params, &lease); err != nil {
 		waiting.finish()
 		if interruptedDuringSetup(ctx, setupCtx) {
-			fmt.Fprintln(os.Stderr, localizeCLIMessage("interrupted before the workspace was leased", cliLanguage(c)))
+			fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.interrupted", nil))
 			return 1
 		}
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
@@ -209,10 +209,10 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		cancel()
 		if err != nil {
 			if interruptedDuringSetup(ctx, setupCtx) {
-				fmt.Fprintln(os.Stderr, localizeCLIMessage("interrupted while the workspace was being prepared; releasing it", cliLanguage(c)))
+				fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.interrupted_preparing", nil))
 				return 1
 			}
-			fmt.Fprintln(os.Stderr, cliErrorPrefix(cliLanguage(c)), localizeCLIMessage("workspace preparation", cliLanguage(c))+":", err)
+			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
 			return 1
 		}
 	}
@@ -263,39 +263,24 @@ func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard b
 	if err := c.RPC.Call(callCtx, "ReleaseLease", map[string]any{"session_id": sessionID, "reason": "wx-release", "discard": discard}, &reply); err != nil {
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
-	lang := cliLanguage(c)
+	localizer := cliLocalizer(c)
+	data := map[string]any{"SessionID": sessionID}
 	if reply.Discarded {
-		if lang == i18n.Japanese {
-			fmt.Println(sessionID + " を返却しました。snapshot を作成せず worktree の削除を予約しました")
-		} else {
-			fmt.Println("released " + sessionID + " and scheduled its worktree for removal without requiring a snapshot")
-		}
+		fmt.Println(localizer.Localize("cli.release.discarded", data))
 		return 0
 	}
 	if discard {
 		// 既に削除まで進んだ slot へ再実行を案内すると、何度実行しても変わらない指示になる。
 		// daemon が返す理由で、保存待ちの再実行と削除済みの報告を書き分ける。
 		if reply.DiscardPending == daemon.DiscardPendingRemoved {
-			if lang == i18n.Japanese {
-				fmt.Println(sessionID + " を返却しました。worktree は削除済みか削除予約済みです")
-			} else {
-				fmt.Println("released " + sessionID + "; its worktree is already removed or scheduled for removal")
-			}
+			fmt.Println(localizer.Localize("cli.release.already_removed", data))
 			return 0
 		}
 		// 保存ジョブが走っている間は削除を予約できない。保存された事実を隠さず、再実行を案内する。
-		if lang == i18n.Japanese {
-			fmt.Println(sessionID + " を返却しました。worktree は保存中のため、削除するには wx release --discard " + sessionID + " を再実行してください")
-		} else {
-			fmt.Println("released " + sessionID + "; the worktree is still being saved, so run wx release --discard " + sessionID + " again to remove it")
-		}
+		fmt.Println(localizer.Localize("cli.release.saving", data))
 		return 0
 	}
-	if lang == i18n.Japanese {
-		fmt.Println(sessionID + " を返却しました")
-	} else {
-		fmt.Println("released " + sessionID)
-	}
+	fmt.Println(localizer.Localize("cli.release.done", data))
 	return 0
 }
 
@@ -310,7 +295,7 @@ func reportLeaseError(err error) int {
 func (c Client) checkLeaseWorktreeModeFrom(ctx context.Context, cwd string) error {
 	root, resolved := c.leasePolicyRoot(ctx, cwd)
 	if resolved && c.Config.WorktreeMode(root) == "off" {
-		return fmt.Errorf("workspace %s is configured not to use a worktree; change worktree.undefined or the workspace policy %s", root, daemon.WorktreeDisabledMarker)
+		return daemon.WorktreeDisabledError(root)
 	}
 	return nil
 }

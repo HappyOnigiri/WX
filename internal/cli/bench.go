@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	xansi "github.com/charmbracelet/x/ansi"
+
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/i18n"
@@ -55,6 +57,10 @@ type BenchRun struct {
 	Measurement    *daemon.PrepareMeasurement `json:"measurement,omitempty"`
 	Usage          *BenchUsage                `json:"usage,omitempty"`
 	Error          string                     `json:"error,omitempty"`
+	// Stage・Cause は Error を表示言語で組み直すための内訳である。
+	// JSON の形は変えないため出力せず、Error が英語の契約を持ち続ける。
+	Stage string `json:"-"`
+	Cause string `json:"-"`
 }
 
 // benchReply は `wx bench --json` の出力である。Configs は設定ごとの集計で、表の比較行と同じ値を持つ。
@@ -78,14 +84,14 @@ func (c Client) RunBench(ctx context.Context, opts BenchOptions) int {
 // RunBenchFrom は TUI が明示した workspace を測り、process 全体の cwd に依存しない。
 func (c Client) RunBenchFrom(ctx context.Context, cwd string, opts BenchOptions) int {
 	if opts.Runs < 1 {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--runs must be at least 1", lang))
+		localizer := cliLocalizer(c)
+		fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.bench.runs_minimum", nil))
 		return 2
 	}
 	// 設定を振る測定は cold start を前提とするため、プールが返すものを測る --reuse とは両立しない。
 	if opts.Reuse && len(opts.Configs) > 0 {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--config and --sweep cannot be combined with --reuse; each configuration is measured as a cold start", lang))
+		localizer := cliLocalizer(c)
+		fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.bench.reuse_conflict", nil))
 		return 2
 	}
 	if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
@@ -98,9 +104,9 @@ func (c Client) RunBenchFrom(ctx context.Context, cwd string, opts BenchOptions)
 	// standby を退役させる要求は workspace root で宛先を指すため、cold start の測定だけが root の解決を要する。
 	root, resolved := c.leasePolicyRoot(ctx, cwd)
 	if !resolved && !opts.Reuse {
-		lang := cliLanguage(c)
-		message := "cannot resolve a wx workspace from " + cwd + "; run wx bench --reuse to measure without retiring standby worktrees"
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage(message, lang))
+		localizer := cliLocalizer(c)
+		fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil),
+			localizer.Localize("cli.bench.unresolved_workspace", map[string]any{"Path": cwd}))
 		return 2
 	}
 	reply, failed := c.benchRuns(ctx, cwd, root, opts)
@@ -160,7 +166,7 @@ func (c Client) benchOnceForOutput(ctx context.Context, cwd, root string, branch
 	if !reuse {
 		retired, err := c.retireStandby(ctx, root)
 		if err != nil {
-			run.Error = "retire standby: " + err.Error()
+			setBenchRunError(&run, "retire standby", err)
 			return run
 		}
 		run.RetiredStandby = retired
@@ -183,7 +189,7 @@ func (c Client) benchOnceForOutput(ctx context.Context, cwd, root string, branch
 	defer cancelLease()
 	var lease daemon.Lease
 	if err := c.RPC.Call(leaseCtx, "ResolveAndLease", params, &lease); err != nil {
-		run.Error = "lease: " + err.Error()
+		setBenchRunError(&run, "lease", err)
 		return run
 	}
 	run.SessionID, run.Path = lease.SessionID, lease.Path
@@ -196,13 +202,13 @@ func (c Client) benchOnceForOutput(ctx context.Context, cwd, root string, branch
 		return run
 	}
 	if err := c.waitBenchReadiness(ctx, lease, "WaitEarlyReady"); err != nil {
-		run.Error = "early ready: " + err.Error()
+		setBenchRunError(&run, "early ready", err)
 		run.Measurement = c.prepareMeasurement(ctx, lease.SessionID)
 		return run
 	}
 	run.EarlyReadyMS = time.Since(started).Milliseconds()
 	if err := c.waitBenchReadiness(ctx, lease, "WaitReady"); err != nil {
-		run.Error = "full ready: " + err.Error()
+		setBenchRunError(&run, "full ready", err)
 		run.Measurement = c.prepareMeasurement(ctx, lease.SessionID)
 		return run
 	}
@@ -316,12 +322,9 @@ func (c Client) releaseBenchLease(lease daemon.Lease) {
 	defer cancel()
 	params := map[string]any{"session_id": lease.SessionID, "reason": "wx-bench", "discard": true}
 	if err := c.RPC.Call(releaseCtx, "ReleaseLease", params, nil); err != nil {
-		lang := cliLanguage(c)
-		if lang == i18n.Japanese {
-			fmt.Fprintln(os.Stderr, "警告: bench の貸出 "+lease.SessionID+" の返却に失敗:", err)
-		} else {
-			fmt.Fprintln(os.Stderr, "warning: release bench lease "+lease.SessionID+":", err)
-		}
+		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.bench.release_failed", map[string]any{
+			"SessionID": lease.SessionID, "Error": err.Error(),
+		}))
 	}
 }
 
@@ -354,33 +357,26 @@ func (c Client) waitBenchIdle(ctx context.Context) {
 }
 
 func printBenchRunLanguage(index, runs int, run BenchRun, lang i18n.Language) {
-	runLabel := "run"
-	if lang == i18n.Japanese {
-		runLabel = "測定"
-	}
-	fmt.Printf("%s %d/%d  %s  %s\n", runLabel, index, runs, run.Source, run.Config.Label)
+	localizer := i18n.New(string(lang))
+	fmt.Printf("%s %d/%d  %s  %s\n", localizer.Localize("cli.bench.run", nil), index, runs, run.Source, run.Config.Label)
 	if run.Error != "" {
-		fmt.Println("  " + cliErrorPrefix(lang) + " " + localizeCLIMessage(run.Error, lang))
+		fmt.Println("  " + localizer.Localize("cli.error_prefix", nil) + " " + benchRunErrorText(localizer, run))
 	}
-	leaseLabel, retiredLabel, earlyLabel, fullLabel, usageLabel, prepareLabel := "lease", "retired", "EARLY READY", "FULL READY", "slot usage", "prepare job"
-	if lang == i18n.Japanese {
-		leaseLabel, retiredLabel, earlyLabel, fullLabel, usageLabel, prepareLabel = "貸出", "退役", "早期準備完了", "準備完了", "slot 使用量", "準備 job"
-	}
+	leaseLabel := localizer.Localize("cli.bench.lease", nil)
+	retiredLabel := localizer.Localize("cli.bench.retired", nil)
+	earlyLabel := localizer.Localize("cli.bench.early_ready", nil)
+	fullLabel := localizer.Localize("cli.bench.full_ready", nil)
+	usageLabel := localizer.Localize("cli.bench.slot_usage", nil)
+	prepareLabel := localizer.Localize("cli.bench.prepare_job", nil)
 	fmt.Printf("  %-13s %s\n", leaseLabel, formatBenchDuration(run.LeaseMS))
 	if run.Source == "cold" && run.RetiredStandby > 0 {
-		slotsLabel := "standby slot(s)"
-		if lang == i18n.Japanese {
-			slotsLabel = "standby slot"
-		}
-		fmt.Printf("  %-13s %d %s\n", retiredLabel, run.RetiredStandby, slotsLabel)
+		fmt.Printf("  %-13s %d %s\n", retiredLabel, run.RetiredStandby, localizer.Localize("cli.bench.standby_slots", nil))
 	}
 	fmt.Printf("  %-13s %s\n", earlyLabel, formatBenchDuration(run.EarlyReadyMS))
 	fmt.Printf("  %-13s %s\n", fullLabel, formatBenchDuration(run.FullReadyMS))
 	if run.Usage != nil {
-		exclusiveLabel, sharedLabel := "exclusive", "shared"
-		if lang == i18n.Japanese {
-			exclusiveLabel, sharedLabel = "専有", "共有"
-		}
+		exclusiveLabel := localizer.Localize("cli.bench.exclusive", nil)
+		sharedLabel := localizer.Localize("cli.bench.shared", nil)
 		fmt.Printf("  %-13s %s %s · %s %s (%s)\n", usageLabel,
 			formatBenchBytes(run.Usage.ExclusiveBytes), exclusiveLabel, formatBenchBytes(run.Usage.SharedBytes), sharedLabel, run.Usage.Measurement)
 	}
@@ -402,6 +398,29 @@ func printBenchRunLanguage(index, runs int, run BenchRun, lang i18n.Language) {
 	}
 }
 
+// benchStageIDs は run.Error の先頭に置く区間の message ID である。
+// JSON へ出る Error は英語のまま保ち、表示だけを訳す。
+var benchStageIDs = map[string]string{
+	"retire standby": "cli.bench.stage.retire_standby",
+	"lease":          "cli.bench.stage.lease",
+	"early ready":    "cli.bench.stage.early_ready",
+	"full ready":     "cli.bench.stage.full_ready",
+}
+
+// setBenchRunError は失敗した区間と原因を run へ記録する。
+func setBenchRunError(run *BenchRun, stage string, err error) {
+	run.Error = stage + ": " + err.Error()
+	run.Stage, run.Cause = stage, err.Error()
+}
+
+// benchRunErrorText は区間名だけを訳し、原因は外部由来の本文として原文で残す。
+func benchRunErrorText(localizer *i18n.Localizer, run BenchRun) string {
+	if id, known := benchStageIDs[run.Stage]; known {
+		return localizer.Localize(id, map[string]any{"Error": run.Cause})
+	}
+	return run.Error
+}
+
 func printBenchSummaryLanguage(runs []BenchRun, lang i18n.Language) {
 	early, full := []int64{}, []int64{}
 	for _, run := range runs {
@@ -414,15 +433,22 @@ func printBenchSummaryLanguage(runs []BenchRun, lang i18n.Language) {
 	if len(full) == 0 {
 		return
 	}
-	if lang == i18n.Japanese {
-		fmt.Printf("成功した測定 %d 件の概要\n", len(full))
-		fmt.Printf("  早期準備完了  %s\n", formatBenchDistribution(early))
-		fmt.Printf("  準備完了      %s\n", formatBenchDistribution(full))
-		return
+	localizer := i18n.New(string(lang))
+	fmt.Println(localizer.Localize("cli.bench.summary_title", map[string]any{"Count": len(full)}))
+	fmt.Printf("  %s %s\n", padBenchLabel(localizer.Localize("cli.bench.early_ready", nil)), formatBenchDistribution(early))
+	fmt.Printf("  %s %s\n", padBenchLabel(localizer.Localize("cli.bench.full_ready", nil)), formatBenchDistribution(full))
+}
+
+// benchSummaryLabelWidth は概要のラベル列の表示幅である。
+const benchSummaryLabelWidth = 13
+
+// padBenchLabel はラベルを表示幅で右詰めする。訳語は英語より幅が広くなるため、
+// バイト数で桁を決めると分布の開始位置がずれる。
+func padBenchLabel(label string) string {
+	if pad := benchSummaryLabelWidth - xansi.StringWidth(label); pad > 0 {
+		return label + strings.Repeat(" ", pad)
 	}
-	fmt.Printf("summary of %d successful run(s)\n", len(full))
-	fmt.Printf("  EARLY READY   %s\n", formatBenchDistribution(early))
-	fmt.Printf("  FULL READY    %s\n", formatBenchDistribution(full))
+	return label
 }
 
 // formatBenchDistribution は分布を1行で書く。成功が1回だけなら分布ではないので、実測値をそのまま出す。

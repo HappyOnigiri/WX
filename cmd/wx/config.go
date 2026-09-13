@@ -83,7 +83,7 @@ func runConfig(ctx context.Context, args []string) int {
 		effective, _, err := config.LoadWithRaw()
 		if err != nil {
 			lang := i18n.LanguageFromContext(ctx)
-			fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
+			fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
 			return 1
 		}
 		_, _ = fmt.Fprintln(os.Stdout, effective.DisplayLanguage())
@@ -93,11 +93,7 @@ func runConfig(ctx context.Context, args []string) int {
 		return runV2Config(ctx, *system, *workspaceDefaults, *repositoryDefaults, *workspace, *repository, *describe, rest)
 	}
 	if *workspace != "" && *repository != "" {
-		message := "--workspace and --repository cannot be combined"
-		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-			message = "--workspace と --repository は併用できません"
-		}
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", i18n.T(ctx, "wx.config.scope_conflict", nil))
 		return 2
 	}
 	if *describe != "" {
@@ -305,7 +301,7 @@ func describeConfig(key, scope string) int {
 	meta, err := config.Describe(key, scope)
 	if err != nil {
 		lang := localizedUsageLanguage()
-		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
 		return 1
 	}
 	lang := localizedUsageLanguage()
@@ -339,7 +335,7 @@ func showGlobalConfig() int {
 	cfg, raw, err := config.LoadWithRaw()
 	if err != nil {
 		lang := i18n.Normalize(config.LoadLanguage())
-		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
 		return 1
 	}
 	if cfg.V2() {
@@ -381,13 +377,13 @@ func runScopeConfig(ctx context.Context, scope config.Scope, path string, args [
 	cfg, err := config.Load()
 	if err != nil {
 		lang := i18n.Normalize(config.LoadLanguage())
-		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
 		return 1
 	}
 	target, err := resolveConfigScope(ctx, cfg, scope, path)
 	if err != nil {
 		lang := i18n.Normalize(config.LoadLanguage())
-		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
 		return 1
 	}
 	if len(args) == 0 {
@@ -412,12 +408,12 @@ func executeConfigEdit(ctx context.Context, request config.EditRequest) int {
 	preview, err := config.PreviewEdit(request)
 	if err != nil {
 		lang := i18n.LanguageFromContext(ctx)
-		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
 		return 1
 	}
 	if err := config.CommitEdit(preview); err != nil {
 		lang := i18n.LanguageFromContext(ctx)
-		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", localizeError(err, lang))
+		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
 		return 1
 	}
 	c, _ := rpcClient()

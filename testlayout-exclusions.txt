@@ -13,3 +13,8 @@ internal/testsupport/socket.go	exempt	Test-only helper package; the packages tha
 internal/tui/terminal_other.go	exempt	Fallback build-tag variant for platforms other than darwin and linux; terminal detection is exercised on darwin and linux.
 internal/diag/probe.go	exempt	Probe result type declarations and constants only; the probe behavior is exercised by internal/cli and cmd/wx tests.
 internal/cli/doctor_probe.go	exempt	Daemon RPC round-trip and progress-output adapter recorded in coverage-exclusions.txt; the probe results are exercised by doctor_probe_report_test.go.
+internal/i18n/catalog_cli.go	exempt	A message table with no logic; ValidateCatalog in catalog_test.go covers every entry of the merged catalog.
+internal/i18n/catalog_diag.go	exempt	A message table with no logic; ValidateCatalog in catalog_test.go covers every entry of the merged catalog.
+internal/i18n/catalog_help.go	exempt	A message table with no logic; ValidateCatalog in catalog_test.go covers every entry of the merged catalog.
+internal/i18n/catalog_help_config.go	exempt	A message table with no logic; ValidateCatalog in catalog_test.go covers every entry of the merged catalog.
+internal/i18n/catalog_help_maintenance.go	exempt	A message table with no logic; ValidateCatalog in catalog_test.go covers every entry of the merged catalog.

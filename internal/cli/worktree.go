@@ -32,8 +32,7 @@ func (c Client) SelectWorktreePolicy(ctx context.Context) int {
 	}
 	// 起動している daemon があれば、次の agent 起動を待たずに保存済み設定を反映する。
 	if err := c.RPC.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil && !rpc.IsConnectError(err) {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("reload worktree policy:", lang), err)
+		reportStepError(cliLanguage(c), "cli.step.reload_policy", err)
 		return 1
 	}
 	return 0
@@ -53,8 +52,8 @@ func (c Client) RunAgentWithPolicy(ctx context.Context, agent string, args, bran
 func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent string, args, branches []string, fresh bool, options WorktreeOptions) int {
 	intent := parseResumeIntent(agent, args)
 	if fresh && intent.Kind == resumeIntentNone {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--fresh requires a resume operation", lang))
+		localizer := cliLocalizer(c)
+		fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.resume.fresh_required", nil))
 		return 2
 	}
 	// 会話 ID を指定した再開は、起動場所ではなく会話の側で worktree の可否を決める。
@@ -72,8 +71,8 @@ func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent str
 	}
 	if mode == "off" {
 		if len(branches) > 0 || fresh {
-			lang := cliLanguage(c)
-			fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--branch and --fresh require a worktree", lang))
+			localizer := cliLocalizer(c)
+			fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.resume.branch_needs_worktree", nil))
 			return 2
 		}
 		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirs(c.Config, root), args))
@@ -85,8 +84,7 @@ func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent str
 		return 1
 	}
 	if err := c.RPC.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("reload worktree policy:", lang), err)
+		reportStepError(cliLanguage(c), "cli.step.reload_policy", err)
 		return 1
 	}
 	return c.runAgentFrom(ctx, agent, args, branches, fresh, "", sourceCWD)
@@ -125,7 +123,7 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions,
 		return mode, nil
 	}
 	if !tui.IsTerminal(int(os.Stdin.Fd())) || !tui.IsTerminal(int(os.Stderr.Fd())) {
-		return "", errors.New("worktree policy requires a terminal; use wx --worktree or wx --no-worktree, or configure worktree.undefined")
+		return "", i18n.NewError("cli.worktree_needs_terminal", nil)
 	}
 	initial := 1
 	switch mode {
@@ -135,22 +133,14 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions,
 		initial = 2
 	}
 	lang := cliLanguage(c)
-	title, description := "Worktree policy", "workspace: "+root
-	hotLabel, hotDescription := "Hot standby", "keep a worktree ready for faster launches"
-	coldLabel, coldDescription := "Cold start", "create a worktree when launching an agent"
-	offLabel, offDescription := "No worktree", "run the agent in the current directory"
-	if lang == i18n.Japanese {
-		title, description = "Worktree の方針", "workspace: "+root
-		hotLabel, hotDescription = "Hot standby", "高速起動のため worktree を準備しておく"
-		coldLabel, coldDescription = "Cold start", "agent 起動時に worktree を作成する"
-		offLabel, offDescription = "Worktree なし", "現在のディレクトリで agent を実行する"
-	}
+	localizer := i18n.New(string(lang))
 	mode, err := tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
-		Title: title, Description: description, Initial: initial, Language: string(lang),
+		Title: localizer.Localize("cli.policy.title", nil), Description: "workspace: " + root,
+		Initial: initial, Language: string(lang),
 		Options: []tui.Option{
-			{Value: "hot", Label: hotLabel, Description: hotDescription},
-			{Value: "cold", Label: coldLabel, Description: coldDescription},
-			{Value: "off", Label: offLabel, Description: offDescription},
+			{Value: "hot", Label: localizer.Localize("cli.policy.hot", nil), Description: localizer.Localize("cli.policy.hot_description", nil)},
+			{Value: "cold", Label: localizer.Localize("cli.policy.cold", nil), Description: localizer.Localize("cli.policy.cold_description", nil)},
+			{Value: "off", Label: localizer.Localize("cli.policy.off", nil), Description: localizer.Localize("cli.policy.off_description", nil)},
 		},
 	})
 	if err != nil {
@@ -175,7 +165,7 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions,
 	}
 	if mode == "off" {
 		if err := c.RPC.Call(ctx, "ReloadConfig", struct{}{}, nil); err != nil && !rpc.IsConnectError(err) {
-			return "", fmt.Errorf("policy saved but daemon reload failed: %w", err)
+			return "", i18n.WrapError(err, "cli.policy_reload_failed", map[string]any{"Error": err.Error()})
 		}
 	}
 	return mode, nil
@@ -191,8 +181,7 @@ func runDirectAgentFrom(ctx context.Context, cwd, agent string, args []string) i
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)
 	if err := cmd.Start(); err != nil {
-		lang := i18n.LanguageFromContext(ctx)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage(err.Error(), lang))
+		reportErrorLanguage(i18n.LanguageFromContext(ctx), err)
 		return 1
 	}
 	if foreground {
@@ -214,7 +203,6 @@ func runDirectAgentFrom(ctx context.Context, cwd, agent string, args []string) i
 	if errors.As(err, &exit) {
 		return exit.ExitCode()
 	}
-	lang := i18n.LanguageFromContext(ctx)
-	fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage(err.Error(), lang))
+	reportErrorLanguage(i18n.LanguageFromContext(ctx), err)
 	return 1
 }

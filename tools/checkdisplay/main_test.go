@@ -93,3 +93,29 @@ func TestJapaneseIgnoresLatinAndSymbols(t *testing.T) {
 		}
 	}
 }
+
+// TestScanReportsStaleExclusions は、移行を終えたファイルと存在しない path の登録を
+// 残したままにできないことを固定する。残ると、後戻りを検出できない免除が積み上がる。
+func TestScanReportsStaleExclusions(t *testing.T) {
+	root := t.TempDir()
+	writeSample(t, root, "migrated.go", "package sample\n\nfunc f() string { return \"stopped\" }\n")
+	problems, warnings, err := scan(root, map[string]string{
+		"migrated.go": kindBacklog,
+		"gone.go":     kindExempt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings=%v, want none", warnings)
+	}
+	if len(problems) != 2 {
+		t.Fatalf("problems=%v, want one per stale entry", problems)
+	}
+	if !strings.Contains(problems[0], "gone.go") || !strings.Contains(problems[0], "not scanned") {
+		t.Fatalf("missing-path problem=%q", problems[0])
+	}
+	if !strings.Contains(problems[1], "migrated.go") || !strings.Contains(problems[1], "no Japanese string literal left") {
+		t.Fatalf("migrated-file problem=%q", problems[1])
+	}
+}

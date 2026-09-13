@@ -90,10 +90,10 @@ func (c Client) checkDaemon(ctx context.Context) error {
 		return nil
 	}
 	if !rpc.IsConnectError(err) {
-		return fmt.Errorf("wx daemon is reachable but this request did not complete (%w); refusing to restart a socket that may still be serving other sessions, run wx doctor, or wx daemon restart if the daemon predates this wx", err)
+		return i18n.WrapError(err, "cli.daemon.request_incomplete", map[string]any{"Error": err.Error()})
 	}
 	if err := launchd.Kickstart(ctx); err != nil {
-		return daemonRecoveryError("wx daemon is unavailable", err)
+		return daemonRecoveryError("cli.daemon.unavailable", err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -102,20 +102,23 @@ func (c Client) checkDaemon(ctx context.Context) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return daemonRecoveryError("wx daemon did not become ready", nil)
+	return daemonRecoveryError("cli.daemon.not_ready", nil)
 }
 
 // daemonRecoveryError は通常は doctor を案内し、現在の executable と plist が不一致なら daemon install を案内する。
 // plist を検査できなくても、元の接続失敗を別の失敗に置き換えない。
-func daemonRecoveryError(prefix string, cause error) error {
-	hint := "run wx doctor"
+func daemonRecoveryError(reasonID string, cause error) error {
+	hint := i18n.Message{ID: "cli.daemon.hint_doctor"}
 	if status, err := launchd.CurrentPlistStatus(); err == nil && status == launchd.PlistStale {
-		hint = "LaunchAgent plist is stale; run wx daemon install"
+		hint = i18n.Message{ID: "cli.daemon.hint_install"}
 	}
+	reason := i18n.Message{ID: reasonID}
 	if cause != nil {
-		return fmt.Errorf("%s (%w); %s", prefix, cause, hint)
+		return i18n.WrapError(cause, "cli.daemon.recovery", map[string]any{
+			"Reason": reason, "Error": cause.Error(), "Hint": hint,
+		})
 	}
-	return errors.New(prefix + "; " + hint)
+	return i18n.NewError("cli.daemon.recovery_no_cause", map[string]any{"Reason": reason, "Hint": hint})
 }
 
 func (c Client) runAgent(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume string) int {
@@ -148,11 +151,7 @@ func (c Client) runAgentResolved(ctx context.Context, agent string, args, branch
 		return 2
 	}
 	if explicitResume == "" && intent.Notice {
-		if cliLanguage(c) == i18n.Japanese {
-			fmt.Fprintln(os.Stderr, "通知: codex exec resume には session ID か --last が必要です。snapshot を復元せず新しい workspace で起動します")
-		} else {
-			fmt.Fprintln(os.Stderr, "notice: codex exec resume needs a session ID or --last; starting in a new workspace without restoring a snapshot")
-		}
+		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.notice.codex_exec_resume", nil))
 	}
 	var target resumeTarget
 	resuming := resolved != nil
@@ -172,9 +171,9 @@ func (c Client) runAgentResolved(ctx context.Context, agent string, args, branch
 			}
 			// wx resume は会話の再開なので、agent を持たない貸出 session は受け付けない。
 			if leaseAgentKind(status.Agent) {
-				lang := cliLanguage(c)
-				message := fmt.Sprintf("wx session %s holds a lease, not an agent conversation; use wx shell --resume %s", target.WXSessionID, target.WXSessionID)
-				fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage(message, lang))
+				localizer := cliLocalizer(c)
+				fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil),
+					localizer.Localize("cli.resume.lease_not_agent", map[string]any{"SessionID": target.WXSessionID}))
 				return 2
 			}
 			if plan.agent == "" {
@@ -194,13 +193,14 @@ func (c Client) runAgentResolved(ctx context.Context, agent string, args, branch
 			}
 			if !plan.fresh && status.Expired {
 				if !c.confirmFreshResume(ctx, target.WXSessionID, resumeUnavailableReason(status)) {
-					fmt.Fprintln(os.Stderr, localizeCLIMessage("resume cancelled; no workspace was created", cliLanguage(c)))
+					fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.resume_cancelled", nil))
 					return 1
 				}
 				plan.fresh = true
 			}
 		} else if target.CWD == "" {
-			fmt.Fprintln(os.Stderr, cliErrorPrefix(cliLanguage(c)), localizeCLIMessage("selected conversation has no working directory", cliLanguage(c)))
+			localizer := cliLocalizer(c)
+			fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.no_working_directory", nil))
 			return 1
 		}
 	}
@@ -232,7 +232,7 @@ func interruptedDuringSetup(ctx, setupCtx context.Context) bool {
 func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	// 貸出前に確認する。cancel されたら slot を作らずに終える。
 	if !c.confirmLinkedWorktreeBase(ctx, plan.leaseBaseCWD(), true) {
-		fmt.Fprintln(os.Stderr, localizeCLIMessage("launch cancelled; no workspace was created", cliLanguage(c)))
+		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.launch_cancelled", nil))
 		return 1, false
 	}
 	var lease daemon.Lease
@@ -258,8 +258,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	}
 	operationKey, err := domain.NewID()
 	if err != nil {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("create operation identity", lang)+":", err)
+		reportStepError(cliLanguage(c), "cli.step.create_identity", err)
 		return 1, false
 	}
 	// ResolveAndLease と Resume は daemon 側で repository discovery を同期実行する。
@@ -280,7 +279,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	if err := c.RPC.CallWithKey(leaseCtx, method, "launch:"+operationKey, params, &lease); err != nil {
 		waiting.finish()
 		if interruptedDuringSetup(ctx, setupCtx) {
-			fmt.Fprintln(os.Stderr, localizeCLIMessage("interrupted before the workspace was leased", cliLanguage(c)))
+			fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.interrupted", nil))
 			return 1, false
 		}
 		if c.acceptsFreshWorkspace(ctx, plan, err) {
@@ -347,20 +346,20 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		cancel()
 		if err != nil {
 			if interruptedDuringSetup(ctx, setupCtx) {
-				fmt.Fprintln(os.Stderr, localizeCLIMessage("interrupted while the workspace was being prepared; releasing it", cliLanguage(c)))
+				fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.interrupted_preparing", nil))
 				return 1, false
 			}
 			if c.acceptsFreshWorkspace(ctx, plan, err) {
 				return 1, true
 			}
-			fmt.Fprintln(os.Stderr, cliErrorPrefix(cliLanguage(c)), localizeCLIMessage("workspace preparation", cliLanguage(c))+":", err)
+			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
 			return 1, false
 		}
 	}
 	waiting.finish()
 	// 起動前・準備待ちの間に終了要求が届いていたら、agent を起動せずにそのまま応答する。
 	if terminator.requested() {
-		fmt.Fprintln(os.Stderr, localizeCLIMessage("wx clear asked this session to stop before the agent started", cliLanguage(c)))
+		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.clear_stop", nil))
 		return 1, false
 	}
 	// ここから先の signal は agent へ中継するので、準備待ち用の捕捉は返す。
@@ -372,8 +371,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease, args, env []string, terminator *agentTerminator) int {
 	leaseDirectory, err := openLeaseDirectory(c.Config, lease)
 	if err != nil {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("pin workspace CWD", lang)+":", err)
+		reportStepError(cliLanguage(c), "cli.step.pin_cwd", err)
 		return 1
 	}
 	defer func() { _ = leaseDirectory.Close() }()
@@ -384,14 +382,12 @@ func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease
 	// lexical wx root が rename・symlink・実体置換されても agent CWD は lease inode を指す。
 	helper, helperErr := os.Executable()
 	if helperErr != nil {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("locate wx descriptor helper", lang)+":", helperErr)
+		reportStepError(cliLanguage(c), "cli.step.locate_helper", helperErr)
 		return 1
 	}
 	cmd, err := fdexec.Start(ctx, helper, leaseDirectory, env, append([]string{agent}, args...)...)
 	if err != nil {
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("prepare agent", lang)+":", err)
+		reportStepError(cliLanguage(c), "cli.step.prepare_agent", err)
 		return 1
 	}
 	cmd.Stdin = os.Stdin
@@ -416,8 +412,7 @@ func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease
 	if registerErr != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		lang := cliLanguage(c)
-		fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("register agent process", lang)+":", registerErr)
+		reportStepError(cliLanguage(c), "cli.step.register_agent", registerErr)
 		return 1
 	}
 	terminator.adopt(cmd)
@@ -491,7 +486,7 @@ func openLeaseDirectory(cfg config.Config, lease daemon.Lease) (*os.File, error)
 	}
 	if lease.RootIdentity != "" && identity != lease.RootIdentity {
 		_ = directory.Close()
-		return nil, fmt.Errorf("lease root identity changed (expected %s, got %s)", lease.RootIdentity, identity)
+		return nil, i18n.NewError("cli.lease_root_identity", map[string]any{"Expected": lease.RootIdentity, "Actual": identity})
 	}
 	return directory, nil
 }

@@ -70,39 +70,24 @@ func (c Client) acceptsFreshWorkspace(ctx context.Context, plan launchPlan, err 
 // 既定は Yes で、resume.auto_fresh が真なら確認を省き、端末がなければ会話の再開を優先して notice を出したうえで進む。
 func (c Client) confirmFreshResume(ctx context.Context, sessionID, reason string) bool {
 	lang := cliLanguage(c)
-	if lang == i18n.Japanese {
-		fmt.Fprintf(os.Stderr, "wx session %s は記録された worktree を復元できません: %s\n", sessionID, reason)
-	} else {
-		fmt.Fprintf(os.Stderr, "wx session %s cannot restore its recorded worktree: %s\n", sessionID, reason)
-	}
+	localizer := i18n.New(string(lang))
+	fmt.Fprintln(os.Stderr, localizer.Localize("cli.fresh.unavailable", map[string]any{"SessionID": sessionID, "Reason": reason}))
 	if c.Config.Resume.AutoFresh {
-		if lang == i18n.Japanese {
-			fmt.Fprintln(os.Stderr, "通知: resume.auto_fresh が有効なため、現在の base から新しい workspace で会話を再開します")
-		} else {
-			fmt.Fprintln(os.Stderr, "notice: resume.auto_fresh is enabled; resuming the conversation in a new workspace from the current base")
-		}
+		fmt.Fprintln(os.Stderr, localizer.Localize("cli.fresh.auto", nil))
 		return true
 	}
 	if !tui.IsTerminal(int(os.Stdin.Fd())) || !tui.IsTerminal(int(os.Stderr.Fd())) {
-		if lang == i18n.Japanese {
-			fmt.Fprintln(os.Stderr, "通知: 確認用の端末がないため、現在の base から新しい workspace で会話を再開します")
-		} else {
-			fmt.Fprintln(os.Stderr, "notice: no terminal is attached for the confirmation; resuming the conversation in a new workspace from the current base")
-		}
+		fmt.Fprintln(os.Stderr, localizer.Localize("cli.fresh.no_terminal", nil))
 		return true
 	}
-	title, yesLabel, yesDescription, noLabel, noDescription := "Recovery worktree is unavailable. Resume the conversation in a new workspace?", "Yes", "create a new worktree from the current base", "No", "cancel the launch"
-	if lang == i18n.Japanese {
-		title, yesLabel, yesDescription, noLabel, noDescription = "復元用 worktree を利用できません。新しい workspace で会話を再開しますか？", "はい", "現在の base から新しい worktree を作成", "いいえ", "起動をキャンセル"
-	}
 	answer, err := tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
-		Title:       title,
+		Title:       localizer.Localize("cli.fresh.title", nil),
 		Description: "wx session " + sessionID,
 		Initial:     0,
 		Language:    string(lang),
 		Options: []tui.Option{
-			{Value: "yes", Label: yesLabel, Description: yesDescription},
-			{Value: "no", Label: noLabel, Description: noDescription},
+			{Value: "yes", Label: localizer.Localize("common.yes", nil), Description: localizer.Localize("cli.fresh.yes_description", nil)},
+			{Value: "no", Label: localizer.Localize("common.no", nil), Description: localizer.Localize("cli.fresh.no_description", nil)},
 		},
 	})
 	return err == nil && answer == "yes"

@@ -494,7 +494,7 @@ func (m *Manager) leaseWithPolicy(ctx context.Context, cwd string, branches []st
 	lease := attrs
 	// 貸出コマンドは現在のディレクトリで動く選択肢を持たないため、off の workspace では方針の選び直しを促す。
 	if isLeaseKind(lease.Kind) && mode == "off" {
-		return Lease{}, fmt.Errorf("workspace %s is configured not to use a worktree; change worktree.undefined or the workspace policy %s", w.Root, WorktreeDisabledMarker)
+		return Lease{}, WorktreeDisabledError(string(w.Root))
 	}
 	if !force && mode != "hot" && mode != "cold" {
 		if isLeaseKind(lease.Kind) {
@@ -518,6 +518,28 @@ const WorktreeDisabledMarker = "worktree=disabled"
 // IsWorktreeDisabled は貸出コマンドが worktree を使わない workspace で断られたかを返す。
 func IsWorktreeDisabled(err error) bool {
 	return err != nil && strings.Contains(err.Error(), WorktreeDisabledMarker)
+}
+
+// worktreeDisabledSuffix は marker まで含めた固定の後半である。
+const worktreeDisabledSuffix = " is configured not to use a worktree; change worktree.undefined or the workspace policy " + WorktreeDisabledMarker
+
+// WorktreeDisabledError は worktree を使わない workspace への貸出を断る error を返す。
+// 文面を 1 か所に閉じることで、RPC 越しに文字列で届いた後も WorktreeDisabledRoot が読み解ける。
+func WorktreeDisabledError(root string) error {
+	return errors.New("workspace " + root + worktreeDisabledSuffix)
+}
+
+// WorktreeDisabledRoot は WorktreeDisabledError の文面から workspace root を取り出す。
+// RPC は message ID を運ばないため、CLI が表示言語で組み直すにはここで分解するしかない。
+func WorktreeDisabledRoot(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	text := err.Error()
+	if !strings.HasPrefix(text, "workspace ") || !strings.HasSuffix(text, worktreeDisabledSuffix) {
+		return "", false
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(text, "workspace "), worktreeDisabledSuffix), true
 }
 
 // resolveRetiredSlotPath は解決できなかった cwd が畳まれた slot のものなら、その slot の workspace root で解決し直す。

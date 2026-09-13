@@ -8,6 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	sessionsconfig "github.com/HappyOnigiri/WX/internal/sessions/config"
 )
 
@@ -528,7 +529,7 @@ func validateLanguage(c *Config) error {
 		c.Language = LanguageEnglish
 	}
 	if c.Language != LanguageEnglish && c.Language != LanguageJapanese {
-		return fmt.Errorf("language must be %s or %s", LanguageEnglish, LanguageJapanese)
+		return i18n.NewError("config.language.invalid", nil)
 	}
 	return nil
 }

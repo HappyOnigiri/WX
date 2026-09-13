@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,7 +46,7 @@ func (c Client) ResolveSessionScope(ctx context.Context, root string) (sessions.
 	callCtx, cancel := context.WithTimeout(ctx, c.discoveryTimeout())
 	defer cancel()
 	if err := c.RPC.Call(callCtx, "WorkspaceScope", map[string]string{"cwd": root}, &wire); err != nil {
-		return sessions.PickerScope{}, fmt.Errorf("resolve workspace history: %w; run wx daemon restart if the daemon has not been updated", err)
+		return sessions.PickerScope{}, i18n.WrapError(err, "cli.resume.history_failed", map[string]any{"Error": err.Error()})
 	}
 	scope := sessions.PickerScope{Label: filepath.Base(wire.Root), Annotations: map[string]sessions.Annotation{}}
 	scope.Roots = append(scope.Roots, sessions.ScopeRoot{Prefix: wire.Root, Label: scope.Label})
@@ -122,7 +121,7 @@ func (c Client) resolveResume(ctx context.Context, agent, cwd string, intent res
 			var found bool
 			target, found, err = sessions.Continue(ctx, c.Config.Sessions, sessions.ContinueOptions{Tool: agent, Scope: selectedScope})
 			if err == nil && !found {
-				err = errors.New("no conversation found for this workspace")
+				err = i18n.NewError("cli.resume.no_conversation", nil)
 			}
 		} else {
 			// picker には --all でも scope を渡し、初期表示だけ広げる。scope を捨てると Ctrl-A と注記が消える。
@@ -140,7 +139,7 @@ func (c Client) resolveResume(ctx context.Context, agent, cwd string, intent res
 		}
 		return resumeTarget{Agent: target.Tool, AgentSessionID: target.SessionID, CWD: target.CWD}, true, nil
 	default:
-		return resumeTarget{}, false, errors.New("unknown resume intent")
+		return resumeTarget{}, false, i18n.NewError("cli.resume.unknown_intent", nil)
 	}
 }
 
@@ -165,24 +164,20 @@ func (c Client) runResumeByID(ctx context.Context, sourceCWD, agent string, args
 	// 新しい会話として worktree を消費するより、worktree 無しで agent へ渡して可否を委ねる。
 	// 実在すれば再開でき、実在しなければ agent 自身が理由を示して非 0 で終わる。
 	if !found {
-		lang := cliLanguage(c)
+		localizer := cliLocalizer(c)
 		if fresh || len(branches) > 0 {
-			fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--branch and --fresh require a worktree", lang))
+			fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.resume.branch_needs_worktree", nil))
 			return 2
 		}
-		if lang == i18n.Japanese {
-			fmt.Fprintf(os.Stderr, "通知: wx に会話 %s の記録がないため、worktree を作らずに再開します\n", intent.AgentSessionID)
-		} else {
-			fmt.Fprintf(os.Stderr, "notice: resuming without a worktree; wx has no record of conversation %s\n", intent.AgentSessionID)
-		}
+		fmt.Fprintln(os.Stderr, localizer.Localize("cli.notice.resume_without_record", map[string]any{"SessionID": intent.AgentSessionID}))
 		root, _ := c.policyRootFrom(ctx, sourceCWD)
 		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirsFrom(c.Config, root, sourceCWD), args))
 	}
 	if target.WXSessionID == "" {
 		if direct, ok := c.resolveDirectResume(ctx, sourceCWD, target.CWD); ok {
 			if fresh || len(branches) > 0 {
-				lang := cliLanguage(c)
-				fmt.Fprintln(os.Stderr, cliErrorPrefix(lang), localizeCLIMessage("--branch and --fresh require a worktree", lang))
+				localizer := cliLocalizer(c)
+				fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.resume.branch_needs_worktree", nil))
 				return 2
 			}
 			return runDirectAgentFrom(ctx, direct.cwd, agent, addDirArgs(directAddDirsFrom(c.Config, direct.root, direct.cwd), args))
@@ -347,10 +342,10 @@ func (c Client) RunResume(ctx context.Context, id, agent string, args, branches 
 func validateResumeOptions(intent resumeIntent, explicit string, fresh bool, branches []string) error {
 	resuming := intent.Kind != resumeIntentNone || explicit != ""
 	if fresh && !resuming {
-		return errors.New("--fresh requires a resume operation")
+		return i18n.NewError("cli.resume.fresh_required", nil)
 	}
 	if len(branches) > 0 && !fresh && resuming {
-		return errors.New("--branch requires --fresh when resuming")
+		return i18n.NewError("cli.resume.branch_needs_fresh", nil)
 	}
 	return nil
 }

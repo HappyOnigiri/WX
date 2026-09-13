@@ -5,6 +5,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // Severity は診断 1 件の扱いである。検出側がこの値を決め、表示側は文面から重大さを判定しない。
@@ -35,6 +37,18 @@ type Finding struct {
 	// DependsOn は未検査の原因になった検査の名前である。
 	// その検査の問題を表示済みなら、同じ故障を独立した問題として重複表示しない。
 	DependsOn string `json:"depends_on,omitempty"`
+	// Messages は解決前の表示文である。RPC・JSON には解決済みの文字列だけを載せるため
+	// 出力せず、Resolve が言語を決めてから上の string フィールドを埋める。
+	Messages FindingMessages `json:"-"`
+}
+
+// FindingMessages は Finding の表示文を message ID で持つ。
+// 外部コマンドの出力など訳さない本文は Message を持たず、string フィールドへ直接入れる。
+type FindingMessages struct {
+	Summary i18n.Message
+	Cause   i18n.Message
+	Action  i18n.Message
+	Details []i18n.Message
 }
 
 // Reply は `wx doctor` の応答である。findings は `-v` に左右されず全件を持つ。

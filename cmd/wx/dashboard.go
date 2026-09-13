@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/cli"
@@ -51,11 +52,7 @@ func runDashboard(ctx context.Context) int {
 			return 1
 		}
 		code := runDashboardAction(ctx, action)
-		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-			notice = fmt.Sprintf("%s が終了しました（終了コード %d）", action.Args[0], code)
-		} else {
-			notice = fmt.Sprintf("%s finished (exit %d)", action.Args[0], code)
-		}
+		notice = i18n.T(ctx, "wx.dashboard.finished", map[string]any{"Command": action.Args[0], "Code": code})
 	}
 }
 
@@ -78,7 +75,7 @@ func localizedSetupSteps(ctx context.Context, steps []setup.Step) []setup.Step {
 	lang := i18n.LanguageFromContext(ctx)
 	out := make([]setup.Step, 0, len(steps))
 	for _, step := range steps {
-		out = append(out, localizeSetupStep(step, lang))
+		out = append(out, localizeSetupStep(step, i18n.New(string(lang))))
 	}
 	return out
 }
@@ -203,11 +200,8 @@ func runDashboardAction(ctx context.Context, action dashboard.Action) int {
 	if action.WorkDir != "" {
 		info, err := os.Stat(cwd)
 		if err != nil || !info.IsDir() {
-			message := fmt.Sprintf("dashboard target %q is not an accessible directory", action.WorkDir)
-			if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-				message = fmt.Sprintf("dashboard の対象 %q は利用可能な directory ではありません", action.WorkDir)
-			}
-			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":",
+				i18n.T(ctx, "wx.dashboard.bad_target", map[string]any{"Target": strconv.Quote(action.WorkDir)}))
 			return 1
 		}
 	}

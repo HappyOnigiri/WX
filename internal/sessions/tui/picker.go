@@ -121,10 +121,11 @@ type pickerModel struct {
 	offset     int
 	width      int
 	height     int
-	status     string
-	language   i18n.Language
-	result     scanner.ResumeTarget
-	cancelled  bool
+	// statusID は一覧の下に出す注意書きの message ID である。
+	statusID  string
+	language  i18n.Language
+	result    scanner.ResumeTarget
+	cancelled bool
 }
 
 func newPickerModel(items []scanner.Session, opts PickOptions) pickerModel {
@@ -202,7 +203,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// bracketed paste は KeyPressMsg では届かないため、貼り付けた path やタイトルも検索語として受ける。
 		if text := termtext.Sanitize(msg.Content, ""); text != "" {
 			m.query += text
-			m.status = ""
+			m.statusID = ""
 			m.resetSelection()
 		}
 		return m, nil
@@ -232,27 +233,27 @@ func (m pickerModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+a":
 		if m.scopeAware {
 			m.scoped = !m.scoped
-			m.status = ""
+			m.statusID = ""
 			m.resetSelection()
 		}
 	case "backspace":
 		if m.query != "" {
 			runes := []rune(m.query)
 			m.query = string(runes[:len(runes)-1])
-			m.status = ""
+			m.statusID = ""
 			m.resetSelection()
 		}
 	case "ctrl+u":
 		if m.query != "" {
 			m.query = ""
-			m.status = ""
+			m.statusID = ""
 			m.resetSelection()
 		}
 	case "esc":
 		// 検索語があるときはまずそれを消し、空のときだけ選択を諦める。
 		if m.query != "" {
 			m.query = ""
-			m.status = ""
+			m.statusID = ""
 			m.resetSelection()
 			return m, nil
 		}
@@ -264,7 +265,7 @@ func (m pickerModel) updateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	default:
 		if text := searchText(msg); text != "" {
 			m.query += text
-			m.status = ""
+			m.statusID = ""
 			m.resetSelection()
 		}
 	}
@@ -286,7 +287,7 @@ func (m *pickerModel) moveBy(delta int) {
 
 func (m *pickerModel) moveTo(index int) {
 	m.selected = min(max(0, index), max(0, len(m.visible)-1))
-	m.status = ""
+	m.statusID = ""
 	m.ensureVisible()
 }
 
@@ -300,17 +301,17 @@ func (m *pickerModel) resetSelection() {
 
 func (m pickerModel) confirm() (tea.Model, tea.Cmd) {
 	if len(m.visible) == 0 {
-		m.status = m.emptyMessage()
+		m.statusID = m.emptyMessageID()
 		return m, nil
 	}
 	item := m.items[m.visible[m.selected]]
 	if item.annotation.InUse {
-		m.status = "this session is in use and cannot be selected"
+		m.statusID = "tui.picker.in_use_blocked"
 		return m, nil
 	}
 	target := item.session.Target()
 	if !target.Resumable() {
-		m.status = "this session cannot be resumed"
+		m.statusID = "tui.picker.not_resumable"
 		return m, nil
 	}
 	m.result = target
@@ -359,27 +360,28 @@ func (m pickerModel) visibleRows() int {
 		height = 24
 	}
 	reserved := 4
-	if m.status != "" {
+	if m.statusID != "" {
 		reserved++
 	}
 	return max(1, (height-reserved+1)/3)
 }
 
-// emptyMessage は表示対象が無い理由を、会話そのものが無い場合と絞り込みで消えた場合で分ける。
-func (m pickerModel) emptyMessage() string {
+// emptyMessageID は表示対象が無い理由を、会話そのものが無い場合と絞り込みで消えた場合で分ける。
+func (m pickerModel) emptyMessageID() string {
 	if len(m.items) == 0 {
-		return pickerText(m.language, "no sessions found")
+		return "tui.picker.no_sessions"
 	}
-	return pickerText(m.language, "no conversations match the current filter")
+	return "tui.picker.no_match"
 }
 
 func (m pickerModel) View() tea.View {
 	m.ensureVisible()
+	localizer := i18n.New(string(m.language))
 	lines := make([]string, 0, m.height)
 	lines = append(lines, truncateLine(m.headerLine(), m.width))
-	lines = append(lines, truncateLine(pickerText(m.language, "Search: "+sanitizeLine(m.query)), m.width))
+	lines = append(lines, truncateLine(localizer.Localize("tui.picker.search", map[string]any{"Query": sanitizeLine(m.query)}), m.width))
 	if len(m.visible) == 0 {
-		lines = append(lines, truncateLine("  "+m.emptyMessage(), m.width))
+		lines = append(lines, truncateLine("  "+localizer.Localize(m.emptyMessageID(), nil), m.width))
 	} else {
 		end := min(len(m.visible), m.offset+m.visibleRows())
 		for i := m.offset; i < end; i++ {
@@ -394,14 +396,14 @@ func (m pickerModel) View() tea.View {
 			}
 			line := marker + item.title
 			if note := m.itemNote(item); note != "" {
-				line += "  [" + pickerText(m.language, note) + "]"
+				line += "  [" + note + "]"
 			}
 			lines = append(lines, truncateLine(line, m.width))
 			lines = append(lines, dimText(item.metaLine(m.width)))
 		}
 	}
-	if m.status != "" {
-		lines = append(lines, truncateLine("! "+pickerText(m.language, m.status), m.width))
+	if m.statusID != "" {
+		lines = append(lines, truncateLine("! "+localizer.Localize(m.statusID, nil), m.width))
 	}
 	lines = append(lines, dimText(m.separatorLine()))
 	lines = append(lines, dimText(truncateLine(m.footerLine(), m.width)))
@@ -421,10 +423,11 @@ func (m pickerModel) headerLine() string {
 	if !m.scopeAware {
 		return header
 	}
+	localizer := i18n.New(string(m.language))
 	if m.scoped {
-		return header + "  " + pickerText(m.language, "(this workspace)")
+		return header + "  " + localizer.Localize("tui.picker.this_workspace", nil)
 	}
-	return header + "  " + pickerText(m.language, "(all workspaces · usage outside this workspace is unknown)")
+	return header + "  " + localizer.Localize("tui.picker.all_workspaces", nil)
 }
 
 // separatorLine は一覧とフッタを分ける横線を端末幅で引く。
@@ -435,37 +438,19 @@ func (m pickerModel) separatorLine() string {
 // footerLine は割り当てているキーをすべて出す。文字入力を検索へ回した結果、
 // キー割り当ての手掛かりはこの行だけになるため、Esc が 2 段で効くことも表記する。
 func (m pickerModel) footerLine() string {
-	footer := "↑↓/Ctrl-N/Ctrl-P/PgUp/PgDn/Home/End move  Enter select  type to search  Ctrl-U clear"
+	localizer := i18n.New(string(m.language))
+	// 断片ごとに解決してから連結する。訳文を持たない語句をそのまま並べるより、
+	// どの語が独立した表示単位かが ID として残る。
+	ids := []string{"tui.picker.footer.move", "tui.picker.footer.select", "tui.picker.footer.search", "tui.picker.footer.clear"}
 	if m.scopeAware {
-		footer += "  Ctrl-A workspace"
+		ids = append(ids, "tui.picker.footer.scope")
 	}
-	return pickerText(m.language, footer+"  Esc clear → cancel")
-}
-
-func pickerText(lang i18n.Language, text string) string {
-	if lang != i18n.Japanese {
-		return text
+	ids = append(ids, "tui.picker.footer.cancel")
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, localizer.Localize(id, nil))
 	}
-	for _, replacement := range []struct{ en, ja string }{
-		{"Search: ", "検索: "},
-		{"(this workspace)", "（この workspace）"},
-		{"(all workspaces · usage outside this workspace is unknown)", "（全 workspace・workspace 外の使用状況は不明）"},
-		{"no sessions found", "セッションが見つかりません"},
-		{"no conversations match the current filter", "現在の絞り込みに一致する会話がありません"},
-		{"this session is in use and cannot be selected", "このセッションは使用中のため選択できません"},
-		{"this session cannot be resumed", "このセッションは再開できません"},
-		{"in use", "使用中"},
-		{"usage unknown", "使用状況不明"},
-		{"↑↓/Ctrl-N/Ctrl-P/PgUp/PgDn/Home/End move", "↑↓/Ctrl-N/Ctrl-P/PgUp/PgDn/Home/End 移動"},
-		{"Enter select", "Enter 選択"},
-		{"type to search", "入力して検索"},
-		{"Ctrl-U clear", "Ctrl-U クリア"},
-		{"Ctrl-A workspace", "Ctrl-A workspace"},
-		{"Esc clear → cancel", "Esc クリア → キャンセル"},
-	} {
-		text = strings.ReplaceAll(text, replacement.en, replacement.ja)
-	}
-	return text
+	return strings.Join(parts, "  ")
 }
 
 func sessionTitle(session scanner.Session) string {
@@ -503,25 +488,32 @@ const inUseNote = "in use"
 // itemNote は scope 外の会話に使用状況の未判定を足す。注記の元は現在の workspace の貸出状況だけなので、
 // 他 workspace の会話に注記が無いことを「使用中でない」と読ませない。
 func (m pickerModel) itemNote(item pickerItem) string {
-	note := itemNote(item.annotation)
+	localizer := i18n.New(string(m.language))
+	note := itemNote(localizer, item.annotation)
 	if !m.scopeAware || item.inScope {
 		return note
 	}
+	unknown := localizer.Localize("tui.picker.usage_unknown", nil)
 	if note == "" {
-		return "usage unknown"
+		return unknown
 	}
-	return note + " · usage unknown"
+	return note + " · " + unknown
 }
 
-func itemNote(annotation Annotation) string {
+// itemNote は呼び出し側が渡した注記に、貸出中の表示を足す。
+// 注記そのものは payload なので訳さないが、呼び出し側が同じ意味を英語で渡した場合は
+// 二重表示にせず、貸出中の表示だけを出す。
+func itemNote(localizer *i18n.Localizer, annotation Annotation) string {
 	note := sanitizeLine(annotation.Text)
+	if note == inUseNote {
+		note = ""
+	}
 	if annotation.InUse {
+		inUse := localizer.Localize("tui.picker.in_use", nil)
 		if note == "" {
-			return inUseNote
+			return inUse
 		}
-		if note != inUseNote {
-			note += " · " + inUseNote
-		}
+		return note + " · " + inUse
 	}
 	return note
 }

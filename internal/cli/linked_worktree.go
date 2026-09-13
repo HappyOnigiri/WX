@@ -89,33 +89,22 @@ func (c Client) confirmLinkedWorktreeBase(ctx context.Context, cwd string, inter
 		return true
 	}
 	lang := cliLanguage(c)
-	if lang == i18n.Japanese {
-		fmt.Fprintf(os.Stderr, "現在のディレクトリは %s の linked worktree（HEAD %s）です。wx は main worktree %s（HEAD %s）から workspace を貸し出します\n",
-			base.Path, shortOID(base.Head), base.MainPath, shortOID(base.MainHead))
-	} else {
-		fmt.Fprintf(os.Stderr, "the current directory is a linked worktree of %s at HEAD %s; wx leases a workspace from the main worktree %s at HEAD %s\n",
-			base.Path, shortOID(base.Head), base.MainPath, shortOID(base.MainHead))
-	}
+	localizer := i18n.New(string(lang))
+	fmt.Fprintln(os.Stderr, localizer.Localize("cli.linked.detected", map[string]any{
+		"Path": base.Path, "Head": shortOID(base.Head), "MainPath": base.MainPath, "MainHead": shortOID(base.MainHead),
+	}))
 	if !interactive || !tui.IsTerminal(int(os.Stdin.Fd())) || !tui.IsTerminal(int(os.Stderr.Fd())) {
-		if lang == i18n.Japanese {
-			fmt.Fprintln(os.Stderr, "通知: 確認用の端末がないため、main worktree の HEAD から workspace を貸し出します")
-		} else {
-			fmt.Fprintln(os.Stderr, "notice: no terminal is attached for the confirmation; leasing a workspace from the main worktree's HEAD")
-		}
+		fmt.Fprintln(os.Stderr, localizer.Localize("cli.linked.no_terminal", nil))
 		return true
 	}
-	title, yesLabel, yesDescription, noLabel, noDescription := "The current directory is a linked worktree. Lease a workspace from the main worktree's HEAD?", "Yes", "use the main worktree's HEAD "+shortOID(base.MainHead), "No", "cancel; rerun from the main worktree or pass --branch"
-	if lang == i18n.Japanese {
-		title, yesLabel, yesDescription, noLabel, noDescription = "現在のディレクトリは linked worktree です。main worktree の HEAD から workspace を貸し出しますか？", "はい", "main worktree の HEAD "+shortOID(base.MainHead)+" を使う", "いいえ", "キャンセル。main worktree から再実行するか --branch を指定"
-	}
 	answer, err := tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
-		Title:       title,
+		Title:       localizer.Localize("cli.linked.title", nil),
 		Description: base.Path + " -> " + base.MainPath,
 		Initial:     0,
 		Language:    string(lang),
 		Options: []tui.Option{
-			{Value: "yes", Label: yesLabel, Description: yesDescription},
-			{Value: "no", Label: noLabel, Description: noDescription},
+			{Value: "yes", Label: localizer.Localize("common.yes", nil), Description: localizer.Localize("cli.linked.yes_description", map[string]any{"Head": shortOID(base.MainHead)})},
+			{Value: "no", Label: localizer.Localize("common.no", nil), Description: localizer.Localize("cli.linked.no_description", nil)},
 		},
 	})
 	return err == nil && answer == "yes"

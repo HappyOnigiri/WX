@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/spf13/pflag"
 
@@ -101,11 +102,7 @@ func run(ctx context.Context, args []string) int {
 	}
 	if agentName == "" {
 		if len(f.branches) > 0 || f.fresh {
-			if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-				fmt.Fprintln(os.Stderr, "エラー: --branch と --fresh には agent が必要です")
-			} else {
-				fmt.Fprintln(os.Stderr, "error: --branch and --fresh require an agent")
-			}
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", i18n.T(ctx, "wx.branch_needs_agent", nil))
 			topUsageLanguage(os.Stderr, i18n.LanguageFromContext(ctx))
 			return 2
 		}
@@ -122,11 +119,8 @@ func run(ctx context.Context, args []string) int {
 		return client.SelectWorktreePolicy(ctx)
 	}
 	if agentName != "claude" && agentName != "codex" {
-		message := fmt.Sprintf("unknown command or agent %q", agentName)
-		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-			message = fmt.Sprintf("不明な command または agent %q です", agentName)
-		}
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":",
+			i18n.T(ctx, "wx.unknown_command", map[string]any{"Name": strconv.Quote(agentName)}))
 		topUsageLanguage(os.Stderr, i18n.LanguageFromContext(ctx))
 		return 2
 	}

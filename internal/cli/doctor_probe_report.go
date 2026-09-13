@@ -6,6 +6,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // probeUsage は slot の測定結果を probe の内訳へ写す。
@@ -36,6 +37,7 @@ func probeSharingFindings(root, path string, slot daemon.SlotView) []diag.Findin
 		return []diag.Finding{{
 			Check: diag.CheckProbeSharing, Severity: diag.SeverityOK,
 			Summary: "the prepared worktree shares blocks with the main worktrees", Target: path,
+			Messages: diag.FindingMessages{Summary: i18n.Message{ID: "diag.probe.sharing_ok"}},
 		}}
 	}
 	return []diag.Finding{{
@@ -43,6 +45,11 @@ func probeSharingFindings(root, path string, slot daemon.SlotView) []diag.Findin
 		Summary: "the prepared worktree shares no block with the main worktrees", Target: path,
 		Cause:  fmt.Sprintf("no file of the slot prepared for %s was found to share blocks with its main worktree, so the copy took the full size", root),
 		Action: "no action is required; check that the worktree root and the repositories live on the same APFS volume if you expect CoW sharing",
+		Messages: diag.FindingMessages{
+			Summary: i18n.Message{ID: "diag.probe.sharing_none"},
+			Cause:   i18n.Message{ID: "diag.probe.sharing_none_cause", Data: map[string]any{"Root": root}},
+			Action:  i18n.Message{ID: "diag.action.probe_cow_volume"},
+		},
 	}}
 }
 
@@ -52,36 +59,82 @@ func prepareNoticeFindings(root string, notices []daemon.PrepareNotice) []diag.F
 	findings := make([]diag.Finding, 0, len(notices))
 	for _, notice := range notices {
 		cause := fmt.Sprintf("the %s phase of the preparation for %s finished without failing but wrote output", notice.Phase, root)
+		data := map[string]any{"Phase": notice.Phase, "Root": root}
+		causeMessage := i18n.Message{ID: "diag.probe.prepare_output_cause", Data: data}
+		// notice.Output は準備 command の出力そのものなので、detail の 1 件目は訳さない。
 		details := []string{notice.Output}
+		detailMessages := []i18n.Message{{}}
 		if notice.Truncated {
 			details = append(details, "the output was truncated for this report")
+			detailMessages = append(detailMessages, i18n.Message{ID: "diag.probe.output_truncated"})
 		}
 		if notice.DetailPath != "" {
 			cause += " (full output in " + notice.DetailPath + ")"
+			data["Path"] = notice.DetailPath
+			causeMessage = i18n.Message{ID: "diag.probe.output_detail_path", Data: data}
 		}
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckPrepareOutput, Severity: diag.SeverityInfo,
 			Summary: "the preparation wrote output without failing", Target: notice.Target, Cause: cause,
 			Action:  "no action is required unless the output reports a failure the hook swallowed; run wx doctor --probe -v to read it",
 			Details: details,
+			Messages: diag.FindingMessages{
+				Summary: i18n.Message{ID: "diag.probe.prepare_output"},
+				Cause:   causeMessage,
+				Action:  i18n.Message{ID: "diag.action.probe_read_output"},
+				Details: detailMessages,
+			},
 		})
 	}
 	return findings
 }
 
-func probeLeaseProblem(root, cause string) diag.Finding {
+func probeLeaseProblem(root string, stage probeStage) diag.Finding {
 	return diag.Finding{
 		Check: diag.CheckProbe, Severity: diag.SeverityProblem, Summary: "a workspace could not be leased for the probe",
-		Target: root, Cause: cause,
+		Target: root, Cause: stage.text,
 		Action: "fix the reported cause; wx cannot hand this workspace to an agent until then",
+		Messages: diag.FindingMessages{
+			Summary: i18n.Message{ID: "diag.probe.lease_failed"},
+			Cause:   stage.message,
+			Action:  i18n.Message{ID: "diag.action.probe_lease_failed"},
+		},
 	}
 }
 
-func probePrepareProblem(root, path, cause string) diag.Finding {
+func probePrepareProblem(root, path string, stage probeStage) diag.Finding {
 	return diag.Finding{
 		Check: diag.CheckProbe, Severity: diag.SeverityProblem, Summary: "a workspace could not be prepared for the probe",
-		Target: probeTarget(root, path), Cause: cause,
+		Target: probeTarget(root, path), Cause: stage.text,
 		Action: "read the reported detail log for the failing command, fix its cause, then run wx doctor --probe again",
+		Messages: diag.FindingMessages{
+			Summary: i18n.Message{ID: "diag.probe.prepare_failed"},
+			Cause:   stage.message,
+			Action:  i18n.Message{ID: "diag.action.probe_prepare_failed"},
+		},
+	}
+}
+
+// probeStage は実地検査が失敗した区間である。text は Probe.Error と JSON へ出る英語本文で、
+// message はそれを表示言語で解決するための ID を持つ。
+type probeStage struct {
+	text    string
+	message i18n.Message
+}
+
+// probeStageIDs は区間ごとの message ID である。区間名は wx が決める固定の列挙なので訳し、
+// 続く原因は外部由来の本文としてそのまま埋め込む。
+var probeStageIDs = map[string]string{
+	"retire standby": "diag.probe.stage.retire_standby",
+	"lease":          "diag.probe.stage.lease",
+	"early ready":    "diag.probe.stage.early_ready",
+	"full ready":     "diag.probe.stage.full_ready",
+}
+
+func newProbeStage(stage string, err error) probeStage {
+	return probeStage{
+		text:    stage + ": " + err.Error(),
+		message: i18n.Message{ID: probeStageIDs[stage], Data: map[string]any{"Error": err.Error()}},
 	}
 }
 

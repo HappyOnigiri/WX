@@ -209,11 +209,7 @@ func startDaemon(ctx context.Context) int {
 		switch reply, err := requestDaemonLifecycle(ctx, "RequestStart"); {
 		case err == nil:
 			if cancelled, _ := reply["stop_cancelled"].(bool); cancelled {
-				if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-					waiting.Line("保留中の停止要求をキャンセルしました: " + launchd.Label)
-				} else {
-					waiting.Line(i18n.T(ctx, "common.cancelled", nil) + " the pending stop of " + launchd.Label)
-				}
+				waiting.Line(i18n.T(ctx, "wx.daemon.stop_cancelled", map[string]any{"Label": launchd.Label}))
 			}
 			if stopping, _ := reply["stop_pending"].(bool); !stopping {
 				waiting.Finish()
@@ -223,11 +219,8 @@ func startDaemon(ctx context.Context) int {
 			// 停止 signal 済みなので、目的の状態へは退出後に新しい daemon を起動するしかない。
 			if !waitForSocket(ctx, socket, false) {
 				waiting.Finish()
-				if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-					fmt.Fprintf(os.Stderr, "%s %s は停止処理中ですが、%s 以内に終了しませんでした\n", i18n.T(ctx, "common.error", nil)+":", launchd.Label, daemonWaitTimeout)
-				} else {
-					fmt.Fprintf(os.Stderr, "%s %s is stopping but did not exit within %s\n", i18n.T(ctx, "common.error", nil)+":", launchd.Label, daemonWaitTimeout)
-				}
+				fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":",
+					i18n.T(ctx, "wx.daemon.stop_not_finished", map[string]any{"Label": launchd.Label, "Timeout": daemonWaitTimeout.String()}))
 				return 1
 			}
 		case rpc.IsConnectError(err):
@@ -241,22 +234,15 @@ func startDaemon(ctx context.Context) int {
 	}
 	if err := startAndWaitForDaemon(ctx, socket); err != nil {
 		waiting.Finish()
-		lang := i18n.LanguageFromContext(ctx)
+		localizer := i18n.New(string(i18n.LanguageFromContext(ctx)))
 		if errors.Is(err, errNoDaemonAnswered) {
-			if lang == i18n.Japanese {
-				fmt.Fprintf(os.Stderr, "%s launchd に %s の起動を依頼しましたが、%s 以内に %s から daemon の応答がありませんでした\n", i18n.T(ctx, "common.error", nil)+":", launchd.Label, socket, daemonWaitTimeout)
-			} else {
-				fmt.Fprintf(os.Stderr, "%s launchd was asked to start %s but no daemon answered %s within %s\n", i18n.T(ctx, "common.error", nil)+":", launchd.Label, socket, daemonWaitTimeout)
-			}
+			fmt.Fprintln(os.Stderr, localizer.Localize("common.error", nil)+":",
+				localizer.Localize("wx.daemon.no_answer", map[string]any{"Label": launchd.Label, "Socket": socket, "Timeout": daemonWaitTimeout.String()}))
 			return 1
 		}
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", localizeDaemonText(err.Error(), lang))
+		fmt.Fprintln(os.Stderr, localizer.Localize("common.error", nil)+":", localizer.Error(err))
 		if errors.Is(err, launchd.ErrServiceMissing) {
-			if lang == i18n.Japanese {
-				fmt.Fprintln(os.Stderr, "LaunchAgent を登録するには wx daemon install を実行してください")
-			} else {
-				fmt.Fprintln(os.Stderr, "run wx daemon install to register the LaunchAgent first")
-			}
+			fmt.Fprintln(os.Stderr, localizer.Localize("wx.daemon.install_first", nil))
 		}
 		return 1
 	}
@@ -317,20 +303,21 @@ func stopDaemon(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
-	if reason := lifecycleConflict(reply, "stop"); reason != "" {
+	localizer := i18n.New(string(i18n.LanguageFromContext(ctx)))
+	if reason := lifecycleConflict(reply, "stop"); reason.ID != "" {
 		waiting.Finish()
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", localizeDaemonText(reason, i18n.LanguageFromContext(ctx)))
+		fmt.Fprintln(os.Stderr, localizer.Localize("common.error", nil)+":", localizer.Message(reason))
 		return 1
 	}
 	if already, _ := reply["already_pending"].(bool); already {
 		// daemon が受け付ける SIGTERM は最初の一度だけなので、再要求せず待機を続ける。
-		waiting.Line(localizeDaemonText("stop was already requested; waiting for the daemon to exit", i18n.LanguageFromContext(ctx)))
+		waiting.Line(localizer.Localize("wx.daemon.stop_requested", nil))
 	}
 	if !waitForSocket(ctx, socket, false) {
 		waiting.Finish()
-		lang := i18n.LanguageFromContext(ctx)
-		fmt.Fprintf(os.Stderr, "%s %s\n", i18n.T(ctx, "common.error", nil)+":", localizeDaemonText(fmt.Sprintf("%s accepted the stop request but did not exit within %s", launchd.Label, daemonWaitTimeout), lang))
-		fmt.Fprintln(os.Stderr, localizeDaemonText(gateWaitReason(reply), lang))
+		fmt.Fprintln(os.Stderr, localizer.Localize("common.error", nil)+":",
+			localizer.Localize("wx.daemon.stop_timeout", map[string]any{"Label": launchd.Label, "Timeout": daemonWaitTimeout.String()}))
+		fmt.Fprintln(os.Stderr, localizer.Message(gateWaitReason(reply)))
 		return 1
 	}
 	waiting.Finish()
@@ -350,10 +337,10 @@ func restartDaemon(ctx context.Context) int {
 	guidance, err := restartAndWaitForDaemon(ctx, socket)
 	if err != nil {
 		waiting.Finish()
-		lang := i18n.LanguageFromContext(ctx)
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", localizeDaemonText(err.Error(), lang))
+		localizer := i18n.New(string(i18n.LanguageFromContext(ctx)))
+		fmt.Fprintln(os.Stderr, localizer.Localize("common.error", nil)+":", localizer.Error(err))
 		for _, line := range guidance {
-			fmt.Fprintln(os.Stderr, localizeDaemonText(line, lang))
+			fmt.Fprintln(os.Stderr, localizer.Message(line))
 		}
 		return 1
 	}
@@ -365,7 +352,7 @@ func restartDaemon(ctx context.Context) int {
 // restartAndWaitForDaemon は実行中の daemon 自身に再起動を依頼し、別 process へ置き換わるまで待つ。
 // kickstart は実行中 RPC を切断して不確定な idempotency reservation を残し得るため、daemon の gate が idle まで待つ。
 // guidance は失敗の対処を示す行で、error が nil のときは空である。呼び出し側は error に続けて出す。
-func restartAndWaitForDaemon(ctx context.Context, socket string) ([]string, error) {
+func restartAndWaitForDaemon(ctx context.Context, socket string) ([]i18n.Message, error) {
 	reply, err := requestDaemonLifecycle(ctx, "RequestRestart")
 	if err != nil {
 		if !rpc.IsConnectError(err) {
@@ -374,26 +361,30 @@ func restartAndWaitForDaemon(ctx context.Context, socket string) ([]string, erro
 		// socket に応答がなく保護すべき処理もないため、daemon の再起動は launchd に任せる。
 		if err := launchd.Kickstart(ctx); err != nil {
 			if errors.Is(err, launchd.ErrServiceMissing) {
-				return []string{"run wx daemon install to register the LaunchAgent first"}, err
+				return []i18n.Message{{ID: "wx.daemon.install_first"}}, err
 			}
 			return nil, err
 		}
 		if !waitForSocket(ctx, socket, true) {
-			return nil, fmt.Errorf("launchd was asked to start %s but no daemon answered %s within %s", launchd.Label, socket, daemonWaitTimeout)
+			return nil, i18n.NewError("wx.daemon.no_answer", map[string]any{
+				"Label": launchd.Label, "Socket": socket, "Timeout": daemonWaitTimeout.String(),
+			})
 		}
 		return nil, nil
 	}
-	if reason := lifecycleConflict(reply, "restart"); reason != "" {
-		return nil, errors.New(reason)
+	if reason := lifecycleConflict(reply, "restart"); reason.ID != "" {
+		return nil, i18n.NewError(reason.ID, reason.Data)
 	}
 	// 手動起動の daemon は自分自身を kickstart しないため、待っても置き換わらない。
 	// 旧 daemon では項目が欠落するので、欠落を「未管理」と解釈して再起動を拒否しない。
 	if managed, ok := reply["launchd_managed"].(bool); ok && !managed {
-		guidance := []string{"stop it with wx daemon stop and start it again with wx daemon start"}
-		return guidance, fmt.Errorf("the daemon answering %s is not managed by launchd, so it cannot restart itself", socket)
+		guidance := []i18n.Message{{ID: "wx.daemon.restart_manually"}}
+		return guidance, i18n.NewError("wx.daemon.unmanaged", map[string]any{"Socket": socket})
 	}
 	if !waitForDaemonReplacement(ctx, socket, replyInt(reply, "pid")) {
-		return []string{gateWaitReason(reply)}, fmt.Errorf("%s accepted the restart request but was not replaced within %s", launchd.Label, daemonWaitTimeout)
+		return []i18n.Message{gateWaitReason(reply)}, i18n.NewError("wx.daemon.restart_timeout", map[string]any{
+			"Label": launchd.Label, "Timeout": daemonWaitTimeout.String(),
+		})
 	}
 	return nil, nil
 }

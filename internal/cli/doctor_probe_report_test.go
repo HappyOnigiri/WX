@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -93,14 +94,14 @@ func TestPrepareNoticeFindingsAreEmptyWithoutNotices(t *testing.T) {
 // 問題は cause と action が両方揃っていないと、利用者が次の一手を決められない。
 func TestProbeProblemFindingsCarryCauseAndAction(t *testing.T) {
 	for _, finding := range []diag.Finding{
-		probeLeaseProblem("/root", "lease: refused"),
-		probePrepareProblem("/root", "/slot", "full ready: timed out"),
+		probeLeaseProblem("/root", newProbeStage("lease", errors.New("refused"))),
+		probePrepareProblem("/root", "/slot", newProbeStage("full ready", errors.New("timed out"))),
 	} {
 		if finding.Severity != diag.SeverityProblem || finding.Cause == "" || finding.Action == "" {
 			t.Fatalf("finding = %+v", finding)
 		}
 	}
-	if got := probePrepareProblem("/root", "", "lease: refused"); got.Target != "/root" {
+	if got := probePrepareProblem("/root", "", newProbeStage("lease", errors.New("refused"))); got.Target != "/root" {
 		t.Fatalf("target without a leased path = %q", got.Target)
 	}
 }

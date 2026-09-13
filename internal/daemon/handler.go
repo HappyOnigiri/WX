@@ -54,7 +54,7 @@ func (h DegradedHandler) Handle(ctx context.Context, method string, raw json.Raw
 			SchemaVersion: state.JSONSchemaVersion, DBSchemaVersion: state.SchemaVersion, Degraded: true,
 			Findings: diag.DegradedFindings(ctx, h.DatabasePath, h.OpenError, previousLayout),
 		}
-		return diag.LocalizeReply(reply, i18n.LanguageFromContext(ctx)), nil
+		return diag.Resolve(reply, i18n.LanguageFromContext(ctx)), nil
 	case "RequestStop":
 		// Degraded mode は状態を変更せず予約もないため、manager のアイドルゲートを通さない。
 		// ここを拒否すると、調査対象の DB を開いたデーモンを停止する手段が失われる。
@@ -201,7 +201,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		}
 		localizedCtx := i18n.WithLanguage(ctx, p.Language)
 		reply := h.Manager.Doctor(localizedCtx)
-		return diag.LocalizeReply(reply, i18n.LanguageFromContext(localizedCtx)), nil
+		return diag.Resolve(reply, i18n.LanguageFromContext(localizedCtx)), nil
 	case "GC":
 		var p struct {
 			DryRun bool `json:"dry_run"`
