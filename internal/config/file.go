@@ -77,22 +77,18 @@ func LoadRaw() (Config, error) {
 	if err := scan.Decode(&extra); !errors.Is(err, io.EOF) {
 		return Config{}, errors.New("config contains multiple YAML documents")
 	}
-	strict := data
-	if dropRemovedKeys(&doc) {
-		// 削除済みキーが書かれたままの既存configを読めるよう、KnownFields(true)へ渡す前に取り除く。
-		// 元のdataは行番号を保つためそのまま使い、書き換えは実際に該当キーがあったときだけ行う。
-		cleaned, err := yaml.Marshal(&doc)
-		if err != nil {
-			return Config{}, err
-		}
-		strict = cleaned
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(strict))
-	dec.KnownFields(true)
 	var c Config
-	if err := dec.Decode(&c); err != nil {
+	// 未知のキーは値の解釈から外すだけで読み込みを失敗させない。報告は doctor が行う。
+	if err := yaml.Unmarshal(data, &c); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", p, err)
 	}
+	unknown, err := detectUnknownKeys(data, &doc)
+	if err != nil {
+		return Config{}, fmt.Errorf("decode %s: %w", p, err)
+	}
+	c.unknown = unknown
+	// 削除済みキーは present と保存から落とし、書かれたままの既存configを次のSaveで整理する。
+	dropRemovedKeys(&doc)
 	c.present = collectKeys(&doc)
 	return c, nil
 }
@@ -101,12 +97,11 @@ func LoadRaw() (Config, error) {
 // 値の解釈は行わないため、`wx config set` などによる次回のSaveで file からも消える。
 var removedKeys = []string{"pool.git_concurrency_per_repository"}
 
-// dropRemovedKeys は doc から removedKeys の項目を取り除き、1件でも取り除いたらtrueを返す。
-func dropRemovedKeys(doc *yaml.Node) bool {
+// dropRemovedKeys は doc から removedKeys の項目を取り除く。
+func dropRemovedKeys(doc *yaml.Node) {
 	if len(doc.Content) == 0 {
-		return false
+		return
 	}
-	dropped := false
 	for _, key := range removedKeys {
 		section, leaf, nested := strings.Cut(key, ".")
 		if !nested {
@@ -116,11 +111,8 @@ func dropRemovedKeys(doc *yaml.Node) bool {
 		if section != "" {
 			mapping = mappingValue(mapping, section)
 		}
-		if removeMappingKey(mapping, leaf) {
-			dropped = true
-		}
+		removeMappingKey(mapping, leaf)
 	}
-	return dropped
 }
 
 // mappingValue は mapping node の key に対応する値を返す。mapping でなければ nil を返す。
@@ -243,6 +235,15 @@ func leafInterface(fv reflect.Value) any {
 }
 
 func (c Config) MarshalYAML() (any, error) {
+	known, err := c.marshalKnownYAML()
+	if err != nil {
+		return nil, err
+	}
+	return c.applyUnknownKeys(known)
+}
+
+// marshalKnownYAML は wx が解釈するキーだけで出力を組み立てる。
+func (c Config) marshalKnownYAML() (any, error) {
 	if c.V2() {
 		return c.marshalV2YAML()
 	}

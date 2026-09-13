@@ -153,7 +153,8 @@ func TestLocalFindingsReportTheDaemonAndLeaveStoreChecksUnchecked(t *testing.T) 
 	}
 }
 
-func TestLocalFindingsReportAnInvalidConfiguration(t *testing.T) {
+// 未知のキーは load を失敗させないが、設定が意図どおりに効いていないため config 検査の問題として報告する。
+func TestLocalFindingsReportUnknownConfigurationKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	configPath, err := config.Path()
@@ -163,10 +164,22 @@ func TestLocalFindingsReportAnInvalidConfiguration(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte("unknown: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("version: 1\nunknown: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	findings := LocalFindings(context.Background(), nil)
+	unknown := findingFor(t, findings, CheckConfig)
+	if unknown.Severity != SeverityProblem || unknown.Target != configPath || !strings.Contains(unknown.Cause, "unknown (line 2)") {
+		t.Fatalf("config finding=%+v", unknown)
+	}
+	if len(unknown.Details) != 1 || unknown.Details[0] != "unknown (line 2)" {
+		t.Fatalf("config finding details=%+v", unknown.Details)
+	}
+	// 値として解釈できない設定は今までどおり読み込みを失敗させ、その原因を報告する。
+	if err := os.WriteFile(configPath, []byte("version: 1\nretention:\n  hot_standby: nope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	findings = LocalFindings(context.Background(), nil)
 	invalid := findingFor(t, findings, CheckConfig)
 	if invalid.Severity != SeverityProblem || invalid.Target != configPath || invalid.Cause == "" {
 		t.Fatalf("config finding=%+v", invalid)

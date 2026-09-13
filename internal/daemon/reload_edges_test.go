@@ -166,7 +166,8 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if got := m.Config().Storage.WorktreeRoot; got != newRoot {
 		t.Fatalf("failed reload replaced active root with %q", got)
 	}
-	if err := os.WriteFile(configPath, []byte("unknown: true\n"), 0o600); err != nil {
+	// 未知のキーは load を失敗させないため、値として解釈できない記述で reload を失敗させる。
+	if err := os.WriteFile(configPath, []byte("version: 1\nretention:\n  hot_standby: nope\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.reloadConfig(false); err == nil {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/gitx"
@@ -48,7 +49,7 @@ type SharedOptions struct {
 // SharedFindings は daemon の SQLite store を必要としない診断を実行する。
 // daemon は reload 失敗後も最後の有効設定を保持できるため configError は呼び出し側から渡す。
 func SharedFindings(ctx context.Context, cfg config.Config, configError string, opts SharedOptions) []Finding {
-	findings := []Finding{configFinding(configError), gitFinding(ctx, cfg, opts.Git)}
+	findings := []Finding{configFinding(cfg, configError), gitFinding(ctx, cfg, opts.Git)}
 	findings = append(findings, socketFinding(), stateDatabaseFinding(), launchAgentFinding(opts.RestartPending))
 	findings = append(findings, worktreeRootFinding(cfg))
 	return append(findings, readinessHookFindings()...)
@@ -120,16 +121,31 @@ func DegradedFindings(ctx context.Context, databasePath string, openError error,
 	return append(findings, UncheckedFindings(CheckSQLite, StoreDependentChecks()...)...)
 }
 
-func configFinding(configError string) Finding {
+// configFinding は設定の読み込み結果を報告する。読み込みに失敗した場合は未知キーを列挙できないため、
+// その原因だけを返す。読めた場合でも wx が解釈しないキーが残っていれば、対象を示して問題として扱う。
+func configFinding(cfg config.Config, configError string) Finding {
 	target := pathOrEmpty(config.Path)
-	if configError == "" {
-		return Finding{Check: CheckConfig, Severity: SeverityOK, Summary: "the configuration is loaded", Target: target}
+	if configError != "" {
+		return Finding{
+			Check: CheckConfig, Severity: SeverityProblem, Summary: "the configuration could not be loaded",
+			Target: target, Cause: configError,
+			Action: "fix the reported entry in the configuration file, then run wx config reload",
+		}
 	}
-	return Finding{
-		Check: CheckConfig, Severity: SeverityProblem, Summary: "the configuration could not be loaded",
-		Target: target, Cause: configError,
-		Action: "fix the reported entry in the configuration file, then run wx config reload",
+	if unknown := cfg.UnknownKeys(); len(unknown) > 0 {
+		details := make([]string, 0, len(unknown))
+		for _, key := range unknown {
+			details = append(details, fmt.Sprintf("%s (line %d)", key.Key, key.Line))
+		}
+		return Finding{
+			Check: CheckConfig, Severity: SeverityProblem,
+			Summary: "the configuration was loaded, but it contains entries wx does not recognize",
+			Target:  target, Cause: "wx ignored these entries: " + strings.Join(details, ", "),
+			Action:  "correct the spelling of the reported entries or delete those lines, then run wx config reload",
+			Details: details,
+		}
 	}
+	return Finding{Check: CheckConfig, Severity: SeverityOK, Summary: "the configuration is loaded", Target: target}
 }
 
 func gitFinding(ctx context.Context, cfg config.Config, shared *gitx.Runner) Finding {

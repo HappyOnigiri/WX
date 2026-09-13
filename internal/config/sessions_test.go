@@ -97,7 +97,8 @@ func TestSessionsListOperationsPreserveUserNotation(t *testing.T) {
 	}
 }
 
-func TestSessionsRemovedSettingsAreRejected(t *testing.T) {
+// sessions の廃止済み設定は wx が解釈しないキーとして扱い、読み込みは失敗させずに報告だけを行う。
+func TestSessionsRemovedSettingsAreReportedAsUnknown(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	path, err := Path()
@@ -110,8 +111,12 @@ func TestSessionsRemovedSettingsAreRejected(t *testing.T) {
 	if err := os.WriteFile(path, []byte("sessions:\n  index:\n    refresh_ttl_seconds: 0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadRaw(); err == nil || !strings.Contains(err.Error(), "field index") {
-		t.Fatalf("removed sessions setting error=%v", err)
+	raw, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw: %v", err)
+	}
+	if got := raw.UnknownKeys(); len(got) != 1 || got[0].Key != "sessions.index" {
+		t.Fatalf("unknown keys=%+v, want sessions.index", got)
 	}
 }
 

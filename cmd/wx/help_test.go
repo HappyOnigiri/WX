@@ -650,7 +650,8 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte("unknown: true\n"), 0o600); err != nil {
+	// 未知のキーは load を失敗させないため、値として解釈できない記述で失敗させる。
+	if err := os.WriteFile(configPath, []byte("version: 1\nretention:\n  hot_standby: nope\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
