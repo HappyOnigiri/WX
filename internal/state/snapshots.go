@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 )
 
+// GitStateOID / GitStateRef は停止中 rebase の制御ファイルを保持する commit を指す。
+// 進行中 rebase が無い session では両方とも空で、既存 snapshot と同じ形になる。
 type Snapshot struct {
-	ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, IndexRef, WorktreeOID, WorktreeRef, Status, CreatedAt, ExpiresAt string
+	ID, SessionID, RepositoryID, HeadOID, HeadRef, IndexTreeOID, IndexRef, WorktreeOID, WorktreeRef, GitStateOID, GitStateRef, Status, CreatedAt, ExpiresAt string
 }
 
 type RecoveryRefExpectation struct {
@@ -29,13 +31,14 @@ func (s *Store) SaveSnapshot(ctx context.Context, x Snapshot) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	var ok int
-	err := s.db.QueryRowContext(ctx, `INSERT INTO snapshots(id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+	err := s.db.QueryRowContext(ctx, `INSERT INTO snapshots(id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,git_state_oid,git_state_recovery_ref,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(session_id,repository_id) DO UPDATE SET status=excluded.status
 		WHERE snapshots.id=excluded.id AND snapshots.head_oid=excluded.head_oid AND snapshots.head_recovery_ref=excluded.head_recovery_ref
 		  AND snapshots.index_tree_oid=excluded.index_tree_oid AND snapshots.index_recovery_ref=excluded.index_recovery_ref
 		  AND snapshots.worktree_snapshot_oid=excluded.worktree_snapshot_oid AND snapshots.worktree_recovery_ref=excluded.worktree_recovery_ref
+		  AND snapshots.git_state_oid=excluded.git_state_oid AND snapshots.git_state_recovery_ref=excluded.git_state_recovery_ref
 		RETURNING 1`,
-		x.ID, x.SessionID, x.RepositoryID, x.HeadOID, x.HeadRef, x.IndexTreeOID, x.IndexRef, x.WorktreeOID, x.WorktreeRef, x.Status, x.CreatedAt, x.ExpiresAt).Scan(&ok)
+		x.ID, x.SessionID, x.RepositoryID, x.HeadOID, x.HeadRef, x.IndexTreeOID, x.IndexRef, x.WorktreeOID, x.WorktreeRef, x.GitStateOID, x.GitStateRef, x.Status, x.CreatedAt, x.ExpiresAt).Scan(&ok)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("snapshot metadata conflicts with an existing recovery snapshot")
 	}
@@ -43,7 +46,7 @@ func (s *Store) SaveSnapshot(ctx context.Context, x Snapshot) error {
 }
 
 func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,status,created_at,expires_at FROM snapshots WHERE session_id=? ORDER BY repository_id`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,session_id,repository_id,head_oid,head_recovery_ref,index_tree_oid,index_recovery_ref,worktree_snapshot_oid,worktree_recovery_ref,git_state_oid,git_state_recovery_ref,status,created_at,expires_at FROM snapshots WHERE session_id=? ORDER BY repository_id`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +54,7 @@ func (s *Store) Snapshots(ctx context.Context, sessionID string) ([]Snapshot, er
 	var out []Snapshot
 	for rows.Next() {
 		var x Snapshot
-		if err := rows.Scan(&x.ID, &x.SessionID, &x.RepositoryID, &x.HeadOID, &x.HeadRef, &x.IndexTreeOID, &x.IndexRef, &x.WorktreeOID, &x.WorktreeRef, &x.Status, &x.CreatedAt, &x.ExpiresAt); err != nil {
+		if err := rows.Scan(&x.ID, &x.SessionID, &x.RepositoryID, &x.HeadOID, &x.HeadRef, &x.IndexTreeOID, &x.IndexRef, &x.WorktreeOID, &x.WorktreeRef, &x.GitStateOID, &x.GitStateRef, &x.Status, &x.CreatedAt, &x.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, x)
@@ -192,7 +195,12 @@ func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string
 		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM inflight i WHERE i.session_id=sn.session_id) THEN 1 ELSE 0 END
 		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
 		WHERE sn.repository_id=? AND sn.status='ARCHIVED' AND sn.index_recovery_ref<>''
-		ORDER BY 1`, at, repositoryID, repositoryID, repositoryID)
+		UNION ALL
+		SELECT sn.git_state_recovery_ref,sn.git_state_oid,sn.session_id,se.state,sn.expires_at,
+		   CASE WHEN se.state IN ('RELEASING','SNAPSHOTTING') AND EXISTS (SELECT 1 FROM inflight i WHERE i.session_id=sn.session_id) THEN 1 ELSE 0 END
+		FROM snapshots sn JOIN sessions se ON se.id=sn.session_id
+		WHERE sn.repository_id=? AND sn.status='ARCHIVED' AND sn.git_state_recovery_ref<>''
+		ORDER BY 1`, at, repositoryID, repositoryID, repositoryID, repositoryID)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +219,7 @@ func (s *Store) RecoveryRefExpectations(ctx context.Context, repositoryID string
 }
 
 func (s *Store) ExpiredSnapshots(ctx context.Context, before string) ([]Snapshot, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sn.id,sn.session_id,sn.repository_id,sn.head_oid,sn.head_recovery_ref,sn.index_tree_oid,sn.index_recovery_ref,sn.worktree_snapshot_oid,sn.worktree_recovery_ref,sn.status,sn.created_at,sn.expires_at FROM snapshots sn JOIN sessions se ON se.id=sn.session_id JOIN slots sl ON sl.id=se.slot_id WHERE se.state IN ('ARCHIVED','EXPIRED') AND sl.state='ARCHIVED' AND sn.status='ARCHIVED' AND sn.expires_at<=? AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING')) ORDER BY sn.session_id,sn.repository_id`, before)
+	rows, err := s.db.QueryContext(ctx, `SELECT sn.id,sn.session_id,sn.repository_id,sn.head_oid,sn.head_recovery_ref,sn.index_tree_oid,sn.index_recovery_ref,sn.worktree_snapshot_oid,sn.worktree_recovery_ref,sn.git_state_oid,sn.git_state_recovery_ref,sn.status,sn.created_at,sn.expires_at FROM snapshots sn JOIN sessions se ON se.id=sn.session_id JOIN slots sl ON sl.id=se.slot_id WHERE se.state IN ('ARCHIVED','EXPIRED') AND sl.state='ARCHIVED' AND sn.status='ARCHIVED' AND sn.expires_at<=? AND NOT EXISTS (SELECT 1 FROM sessions child JOIN jobs j ON j.session_id=child.id WHERE child.parent_session_id=se.id AND j.kind='RESTORE' AND j.state IN ('PENDING','RUNNING')) ORDER BY sn.session_id,sn.repository_id`, before)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +227,7 @@ func (s *Store) ExpiredSnapshots(ctx context.Context, before string) ([]Snapshot
 	var out []Snapshot
 	for rows.Next() {
 		var snapshot Snapshot
-		if err := rows.Scan(&snapshot.ID, &snapshot.SessionID, &snapshot.RepositoryID, &snapshot.HeadOID, &snapshot.HeadRef, &snapshot.IndexTreeOID, &snapshot.IndexRef, &snapshot.WorktreeOID, &snapshot.WorktreeRef, &snapshot.Status, &snapshot.CreatedAt, &snapshot.ExpiresAt); err != nil {
+		if err := rows.Scan(&snapshot.ID, &snapshot.SessionID, &snapshot.RepositoryID, &snapshot.HeadOID, &snapshot.HeadRef, &snapshot.IndexTreeOID, &snapshot.IndexRef, &snapshot.WorktreeOID, &snapshot.WorktreeRef, &snapshot.GitStateOID, &snapshot.GitStateRef, &snapshot.Status, &snapshot.CreatedAt, &snapshot.ExpiresAt); err != nil {
 			return nil, err
 		}
 		out = append(out, snapshot)

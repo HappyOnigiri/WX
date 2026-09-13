@@ -85,8 +85,18 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	headRef := fmt.Sprintf("refs/wx/recovery/%s/%s/head", sessionID, repo.ID)
 	worktreeRef := fmt.Sprintf("refs/wx/recovery/%s/%s/worktree", sessionID, repo.ID)
 	indexRef := fmt.Sprintf("refs/wx/recovery/%s/%s/index", sessionID, repo.ID)
+	gitStateRef := fmt.Sprintf("refs/wx/recovery/%s/%s/gitstate", sessionID, repo.ID)
 	id := domain.StableID("snapshot", sessionID, string(repo.ID))
 	created := time.Now().UTC()
+	// 停止中 rebase の制御ファイルは worktree 専用 gitdir にあり tree にも index にも現れないため、clean 判定より前に別途採取する。
+	// `rebase -i` の edit 停止は working tree が clean なので、下の短絡経路にも同じ値を載せる必要がある。
+	gitState, err := captureGitState(worktreeValue, worktreeRun, head)
+	if err != nil {
+		return state.Snapshot{}, fmt.Errorf("capture in-progress rebase state: %w", err)
+	}
+	if gitState == "" {
+		gitStateRef = ""
+	}
 	// clean worktree は HEAD の tree と commit で完全に表せるため、新しい object を作らず base OID と ref メタデータだけを記録する。
 	// dirty 経路より多くを clean と判定すると未 snapshot の作業を失うため、次の flag は必須である。
 	// ユーザー設定の status.showUntrackedFiles と submodule.<name>.ignore/diff.ignoreSubmodules は、一時 index の `add -A` が記録する内容を隠し得る。
@@ -102,7 +112,7 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 		if err != nil {
 			return state.Snapshot{}, fmt.Errorf("resolve clean HEAD tree: %w", err)
 		}
-		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, GitStateOID: gitState, GitStateRef: gitStateRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
 	}
 	indexTree, err := worktreeValue(nil, "write-tree")
 	if err != nil {
@@ -112,16 +122,11 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if err != nil {
 		return state.Snapshot{}, err
 	}
-	tmpFile, err := os.CreateTemp("", ".wx-index-*")
+	tmp, cleanup, err := temporaryIndex("snapshot", ".wx-index-*")
 	if err != nil {
-		return state.Snapshot{}, fmt.Errorf("create temporary snapshot index: %w", err)
+		return state.Snapshot{}, err
 	}
-	tmp := tmpFile.Name()
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return state.Snapshot{}, fmt.Errorf("close temporary snapshot index: %w", err)
-	}
-	defer func() { _ = os.Remove(tmp) }()
+	defer cleanup()
 	env := []string{"GIT_INDEX_FILE=" + tmp}
 	if _, err := worktreeRun(env, nil, "read-tree", head); err != nil {
 		return state.Snapshot{}, err
@@ -138,18 +143,12 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if err != nil {
 		return state.Snapshot{}, err
 	}
-	commitEnv := append([]string(nil), env...)
-	commitEnv = append(commitEnv,
-		"GIT_AUTHOR_NAME=wx", "GIT_AUTHOR_EMAIL=wx@localhost",
-		"GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost",
-		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
-	)
-	commitRes, err := worktreeRun(commitEnv, []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
+	commitRes, err := worktreeRun(recoveryCommitEnv(env), []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
 	if err != nil {
 		return state.Snapshot{}, err
 	}
 	worktreeCommit := strings.TrimSpace(commitRes.Stdout)
-	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, GitStateOID: gitState, GitStateRef: gitStateRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
 }
 
 // recoveryRefTargets は snapshot が公開する ref と object の対応を返し、index tree ref も含める。
@@ -158,6 +157,10 @@ func recoveryRefTargets(snapshot state.Snapshot) map[string]string {
 	targets := map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID}
 	if snapshot.IndexRef != "" {
 		targets[snapshot.IndexRef] = snapshot.IndexTreeOID
+	}
+	// 停止中 rebase を保持する commit は復元後の HEAD から到達できないため、ref が無ければ GC が制御ファイルごと回収する。
+	if snapshot.GitStateRef != "" {
+		targets[snapshot.GitStateRef] = snapshot.GitStateOID
 	}
 	return targets
 }
@@ -211,6 +214,31 @@ func (m *Manager) DeleteSnapshotRefs(ctx context.Context, repo discovery.Reposit
 		}
 		return nil
 	})
+}
+
+// temporaryIndex は GIT_INDEX_FILE に渡す空の一時 index を作り、path と後始末を返す。
+// 作成直後の 0 byte file を git は空 index として読むため、呼び出し側は用途に応じて read-tree するか、そのまま積み上げる。
+func temporaryIndex(label, pattern string) (string, func(), error) {
+	file, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return "", nil, fmt.Errorf("create temporary %s index: %w", label, err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("close temporary %s index: %w", label, err)
+	}
+	return path, func() { _ = os.Remove(path) }, nil
+}
+
+// recoveryCommitEnv は recovery commit の author/committer を固定する。
+// SNAPSHOT job の再実行が同じ commit OID を出さないと、SaveSnapshot の ON CONFLICT が不一致として失敗する。
+func recoveryCommitEnv(env []string) []string {
+	return append(append([]string(nil), env...),
+		"GIT_AUTHOR_NAME=wx", "GIT_AUTHOR_EMAIL=wx@localhost",
+		"GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost",
+		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
+	)
 }
 
 func (m *Manager) gitValue(ctx context.Context, dir string, env []string, args ...string) (string, error) {
