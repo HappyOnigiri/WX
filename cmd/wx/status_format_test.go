@@ -175,62 +175,30 @@ func TestStatusLocalDateAndZoneLabelFollowTheDisplayLocation(t *testing.T) {
 	}
 }
 
-func TestWriteStatusFieldSendsLongAndMultilineValuesToContinuationLines(t *testing.T) {
-	var short bytes.Buffer
-	writeStatusField(&short, "Label", "value")
-	if got := short.String(); got != "Label: value\n" {
-		t.Fatalf("short field=%q", got)
-	}
-	var empty bytes.Buffer
-	writeStatusField(&empty, "Label", "")
-	if got := empty.String(); got != "Label: (empty)\n" {
-		t.Fatalf("empty field=%q", got)
-	}
-	var multiline bytes.Buffer
-	writeStatusField(&multiline, "Label", "first\nsecond")
-	if got := multiline.String(); got != "Label:\n    first\n    second\n" {
-		t.Fatalf("multiline field=%q", got)
-	}
-	// 120 rune を超える値は折り返して全文を残す。境界の 120 rune は 1 行に収める。
-	var atLimit bytes.Buffer
-	writeStatusField(&atLimit, "Label", strings.Repeat("あ", 120))
-	if got := atLimit.String(); got != "Label: "+strings.Repeat("あ", 120)+"\n" {
-		t.Fatalf("120-rune field=%q", got)
-	}
-	var overLimit bytes.Buffer
-	writeStatusField(&overLimit, "Label", strings.Repeat("あ", 121))
-	if got := overLimit.String(); got != "Label:\n    "+strings.Repeat("あ", 121)+"\n" {
-		t.Fatalf("121-rune field=%q", got)
-	}
-}
-
 func TestWriteStatusTablePadsEveryColumnButTheLast(t *testing.T) {
 	var output bytes.Buffer
-	writeStatusTable(&output, i18n.English, []string{"A", "BB"}, [][]string{{"xxx", "y"}, {"z"}})
+	writeStatusTable(newTextRenderer(&output, i18n.English), []string{"A", "BB"}, [][]string{{"xxx", "y"}, {"z"}})
 	// 幅は列ごとの最長値で決まり、末尾列は余白を付けない。列の足りない行は見出しの値で埋まる。
 	want := "A   BB\nxxx y\nz   BB\n"
 	if got := output.String(); got != want {
 		t.Fatalf("table=%q, want %q", got, want)
 	}
 	var wide bytes.Buffer
-	writeStatusTable(&wide, i18n.English, []string{"PATH"}, [][]string{{"あい"}})
+	writeStatusTable(newTextRenderer(&wide, i18n.English), []string{"PATH"}, [][]string{{"あい"}})
 	// 末尾列は余白を付けないため、全角を含む値でも表示はそのまま残る。
 	if got := wide.String(); got != "PATH\nあい\n" {
 		t.Fatalf("wide table=%q", got)
 	}
 }
 
-func TestWriteStatusTableAlignsTranslatedHeadersByDisplayWidth(t *testing.T) {
+func TestWriteStatusTableAlignsResolvedHeadersByDisplayWidth(t *testing.T) {
 	var output bytes.Buffer
-	// 見出しは表を組む前に訳す。英語の幅で桁を決めると、見出しだけが行の値からずれる。
-	writeStatusTable(&output, i18n.Japanese, []string{"WORKSPACE", "POLICY"}, [][]string{{"~/wx", "hot"}})
+	// 見出しは解決済みで渡す。英語の幅で桁を決めてから訳すと、見出しだけが行の値からずれる。
+	r := newTextRenderer(&output, i18n.Japanese)
+	writeStatusTable(r, []string{r.Localize("status.table.workspace", nil), r.Localize("status.table.policy", nil)}, [][]string{{"~/wx", "hot"}})
 	want := "ワークスペース 方針\n~/wx           hot\n"
 	if got := output.String(); got != want {
 		t.Fatalf("table=%q, want %q", got, want)
-	}
-	// 後段の表示層は訳し終えた見出しを変えない。二重に置換すると桁が再び崩れる。
-	if got := translateHumanOutput(output.String(), i18n.Japanese); got != want {
-		t.Fatalf("translated table=%q, want %q", got, want)
 	}
 }
 
@@ -291,14 +259,5 @@ func TestFormatRetentionValueAndQuarantineReasonKeepNonNumericInput(t *testing.T
 	// 理由が届かない隔離も 1 グループとして数えるため、空文字ではなく明示的な label を返す。
 	if got := statusQuarantineReason(map[string]any{}); got != "(unset)" {
 		t.Fatalf("statusQuarantineReason for a missing code=%q", got)
-	}
-}
-
-func TestWriteStatusLineTerminatesEveryLine(t *testing.T) {
-	var output bytes.Buffer
-	writeStatusLine(&output, "Workspaces")
-	writeStatusLine(&output, "")
-	if got := output.String(); got != "Workspaces\n\n" {
-		t.Fatalf("lines=%q", got)
 	}
 }

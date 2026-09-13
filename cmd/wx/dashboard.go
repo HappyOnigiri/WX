@@ -192,7 +192,7 @@ func dashboardStatus(ctx context.Context) (string, error) {
 	}
 	var out bytes.Buffer
 	printStatusDisplay(&out, payload, false, i18n.LanguageFromContext(ctx))
-	return translateHumanOutput(out.String(), i18n.LanguageFromContext(ctx)), nil
+	return out.String(), nil
 }
 
 func runDashboardAction(ctx context.Context, action dashboard.Action) int {
