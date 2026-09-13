@@ -80,7 +80,8 @@ func (c Client) RunDoctorProbe(ctx context.Context, progress io.Writer) ([]diag.
 }
 
 // probeWorkspaces は worktree を使う登録済み workspace の root を昇順で返す。
-// 方針が off の workspace は貸出そのものを断られるため、検査の対象にしない。
+// 方針が off・ask の workspace は貸出そのものを断られるため、検査の対象にしない。
+// ask の選択には端末が要り、probe は非対話で走るので方針を決めようがない。
 func (c Client) probeWorkspaces(ctx context.Context) ([]string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, c.discoveryTimeout())
 	defer cancel()
@@ -95,7 +96,7 @@ func (c Client) probeWorkspaces(ctx context.Context) ([]string, error) {
 	}
 	roots := make([]string, 0, len(status.Workspaces))
 	for _, item := range status.Workspaces {
-		if item.Root == "" || item.Policy == "off" {
+		if item.Root == "" || item.Policy == "off" || item.Policy == "ask" {
 			continue
 		}
 		roots = append(roots, item.Root)

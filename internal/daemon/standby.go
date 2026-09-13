@@ -174,6 +174,8 @@ type RetryStandbyAllResult struct {
 // RetryStandbyAll は補充停止の記録があり、設定上まだ補充が有効な workspace を全て解除して、それぞれで補充を予約する。
 // `wx clear` は補充の有無を問わず停止を記録するため、絞らないと RetryStandby が拒否する workspace を対象にしてしまう。
 // 停止行を持たない補充計画の失敗は解除するものが無いので含めない。1 件の失敗では止めず、残りを処理して理由を集める。
+// 現に停止している workspace を停止理由を問わず戻すので、1 つの run が止めた分だけを戻す `wx clear --replenish` とは対象の決め方が違う。
+// commentlint:allow-long -- 対象の絞り込みの根拠と、似た経路との違いを 1 か所に残す
 func (m *Manager) RetryStandbyAll(ctx context.Context) (RetryStandbyAllResult, error) {
 	suspended, err := m.store.StandbyReplenishmentDiagnostics(ctx)
 	if err != nil {
