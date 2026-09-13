@@ -21,6 +21,11 @@ if [ "$1" = setup ]; then
   [ "setup" != "${FAKE_FAIL:-}" ] || exit 23
   exit 0
 fi
+if [ "$1" = config ]; then
+  # 問い合わせと保存を同じ log へ残し、初回に language を書かないことを検査できるようにする。
+  echo "config $2 $3" >> "$FAKE_CONFIG_LOG"
+  exit 0
+fi
 [ "$1" = daemon ] || exit 64
 echo "$2" >> "$FAKE_WX_LOG"
 [ "$2" != "${FAKE_FAIL:-}" ] || exit 23
@@ -111,6 +116,7 @@ func (f installFixture) run(t *testing.T, environment ...string) (string, error)
 		"TMPDIR=" + f.root, "FAKE_ASSETS=" + f.assets,
 		"FAKE_WX_LOG=" + filepath.Join(f.root, "wx.log"),
 		"FAKE_CURL_LOG=" + filepath.Join(f.root, "curl.log"),
+		"FAKE_CONFIG_LOG=" + filepath.Join(f.root, "config.log"),
 	}, environment...)
 	output, err := command.CombinedOutput()
 	return string(output), err

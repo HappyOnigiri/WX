@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -193,13 +194,24 @@ func TestSetupInteractiveAppliesDefaultsAndReportsCancellation(t *testing.T) {
 	installed := 0
 	options.InstallLaunchAgent = func(context.Context) error { installed++; return nil }
 	var out, errOut bytes.Buffer
+	var asked []string
 	session := setupSession{
 		out: &out, errOut: &errOut,
-		selector: func(_ context.Context, step setup.Step) (setup.Action, error) { return step.Default, nil },
+		selector: func(_ context.Context, step setup.Step) (setup.Action, error) {
+			asked = append(asked, step.ID)
+			if step.ID == setupModeStepID {
+				return setupModeCustom, nil
+			}
+			return step.Default, nil
+		},
 		readLine: func() (string, error) { return "\n", nil },
 	}
 	if code := runSetupInteractive(context.Background(), options, session); code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	// 詳細設定では進め方の質問に続けて、操作を持つ項目を 1 つずつ尋ねる。
+	if asked[0] != setupModeStepID || !slices.Contains(asked, "worktree_root") || !slices.Contains(asked, "launch_agent") {
+		t.Fatalf("asked=%v", asked)
 	}
 	if installed != 1 {
 		t.Fatalf("the LaunchAgent was installed %d time(s)", installed)
@@ -214,7 +226,11 @@ func TestSetupInteractiveAppliesDefaultsAndReportsCancellation(t *testing.T) {
 		t.Fatalf("the information-only step was not shown:\n%s", out.String())
 	}
 
-	cancelling := setupSession{out: &out, errOut: &errOut, selector: func(context.Context, setup.Step) (setup.Action, error) {
+	// 進め方の質問を通してから、最初の項目でキャンセルする。
+	cancelling := setupSession{out: &out, errOut: &errOut, selector: func(_ context.Context, step setup.Step) (setup.Action, error) {
+		if step.ID == setupModeStepID {
+			return setupModeCustom, nil
+		}
 		return "", tui.ErrCancelled
 	}}
 	out.Reset()
@@ -223,6 +239,61 @@ func TestSetupInteractiveAppliesDefaultsAndReportsCancellation(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "items already applied are kept") {
 		t.Fatalf("cancellation guidance is missing:\n%s", out.String())
+	}
+	// 進め方の質問そのもののキャンセルは、案内を出さずに終える。言語の質問と同じ扱いである。
+	out.Reset()
+	refusing := setupSession{out: &out, errOut: &errOut, selector: func(context.Context, setup.Step) (setup.Action, error) {
+		return "", tui.ErrCancelled
+	}}
+	if code := runSetupInteractive(context.Background(), options, refusing); code != 1 {
+		t.Fatalf("cancelled mode question exit=%d", code)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("the cancelled mode question wrote output:\n%s", out.String())
+	}
+}
+
+// TestSetupInteractiveRecommendedAppliesEveryDefaultWithoutAsking は、おすすめ設定が
+// 進め方の 1 問だけで完了し、各項目へ Step.Default を適用することを確認する。
+func TestSetupInteractiveRecommendedAppliesEveryDefaultWithoutAsking(t *testing.T) {
+	home, options := setupCommandHome(t)
+	installed := 0
+	options.InstallLaunchAgent = func(context.Context) error { installed++; return nil }
+	var out, errOut bytes.Buffer
+	asked := 0
+	session := setupSession{
+		out: &out, errOut: &errOut,
+		selector: func(_ context.Context, step setup.Step) (setup.Action, error) {
+			asked++
+			if step.ID != setupModeStepID {
+				t.Fatalf("the recommended walk asked about %s", step.ID)
+			}
+			return setupModeRecommended, nil
+		},
+		readLine: func() (string, error) { t.Fatal("the recommended walk asked for a path"); return "", nil },
+	}
+	if code := runSetupInteractive(context.Background(), options, session); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if asked != 1 {
+		t.Fatalf("the recommended walk asked %d question(s)", asked)
+	}
+	if installed != 1 {
+		t.Fatalf("the LaunchAgent was installed %d time(s)", installed)
+	}
+	// おすすめ設定では既定の worktree root と、shell 起動ファイルへの PATH 追記まで適用する。
+	// agent hook は claude・codex が PATH に無いこの環境では操作を持たないため、対象にならない。
+	if _, err := os.Stat(filepath.Join(home, "wx")); err != nil {
+		t.Fatalf("the default worktree root was not created: %v", err)
+	}
+	if !strings.Contains(readCommandFile(t, filepath.Join(home, ".zshrc")), ".local/bin") {
+		t.Fatal("the PATH block was not written")
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "wx", "config.yaml")); err != nil {
+		t.Fatalf("the configuration was not written: %v", err)
+	}
+	if !strings.Contains(out.String(), "prerequisites") {
+		t.Fatalf("the information-only step was not shown:\n%s", out.String())
 	}
 }
 

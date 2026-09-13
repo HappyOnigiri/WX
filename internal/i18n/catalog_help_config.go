@@ -243,6 +243,10 @@ Walk through what wx needs to run on its own and apply the choices. Each item
 is offered with the choices its current state allows, so running setup again
 after a completed setup changes nothing.
 
+The first question chooses how to continue. The recommended settings apply the
+suggested action for every item and ask nothing else; the detailed walk offers
+each item one by one. --update, --check, --item and --remove never ask it.
+
 The items are the prerequisites, storage.worktree_root, the shell PATH entry,
 the LaunchAgent, the Claude and Codex hook entries, and the daemon. wx owns
 the wx entries of the agent hook configuration: it writes a dedicated group
@@ -282,6 +286,8 @@ Options:
 wx が単独で動くために必要な項目を確認し、選択を適用します。各項目は
 現在の状態で選べる操作だけを提示するため、setup を再実行しても
 完了済みの設定は変わりません。
+
+最初の質問で進め方を選びます。おすすめ設定は全項目に推奨操作を適用し、以降は質問しません。詳細設定は項目を1つずつ提示します。--update・--check・--item・--remove では質問しません。
 
 The items are the prerequisites, storage.worktree_root, the shell PATH entry,
 the LaunchAgent, the Claude and Codex hook entries, and the daemon. wx owns
