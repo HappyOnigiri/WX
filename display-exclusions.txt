@@ -5,4 +5,4 @@ internal/i18n/catalog_help.go	exempt	The help part of the message catalog; this 
 tools/checkcomments/main.go	exempt	Defines the full-width character range the comment-length check measures; not user-facing display.
 tools/checkdocsindex/main.go	exempt	Matches the Japanese heading and entry shape that AGENTS.md prescribes for docs/; not user-facing display.
 tools/checktests/main.go	exempt	Quotes the Japanese exemption-comment syntax the repository conventions define; not user-facing display.
-internal/diag/localization.go	backlog	The diagnostics replacement table still rewrites rendered findings.
+internal/diag/localization.go	exempt	Findings are localized by the daemon before they cross the JSON contract (diag.Finding has no message-id field), so moving this to render-time localization needs a wire-format change and a FindingsSchemaVersion bump.
