@@ -17,7 +17,7 @@ import (
 )
 
 // SubmoduleCapsule は snapshot が保存した子 repository 1 件である。
-// CapsuleOID は子の worktree tree を持ち、親に HEAD・index tree 用 commit・停止中 rebase 用 commit を並べた commit で、
+// CapsuleOID は子の worktree tree を持ち、親に HEAD・index tree 用 commit・停止中の操作用 commit を並べた commit で、
 // この 1 本の ref だけで保存した全 object の到達性を確保する。復元は commit の親子関係を辿らず、記録した各 OID を直接使う。
 // ModuleDir は ref の公開先である source のローカル module、GitDir は capsule を作った子の gitdir で公開の fetch 元になる。
 // commentlint:allow-long -- capsule 1 本で到達性を確保する構造と、公開の向きを保守時に確認できるようにする
@@ -122,7 +122,7 @@ type nestedSubmodule struct {
 	reasons []string
 }
 
-// captureSubmodule は子 1 件の HEAD・index・worktree・停止中 rebase を capsule commit へ畳み、子の gitdir に ref を作る。
+// captureSubmodule は子 1 件の HEAD・index・worktree・停止中の操作を capsule commit へ畳み、子の gitdir に ref を作る。
 // 未追跡 file と未 push commit は worktree tree と HEAD から到達できるため、この 1 本で一緒に保護される。
 // 公開（ローカル module への fetch）は行わない。親と同じく、DB へ記録してから publish するためである。
 func captureSubmodule(parentValue gitValueFunc, parentRun gitRunFunc, sessionID, repositoryID string, module workspace.Submodule, moduleDir string) (SubmoduleCapsule, []nestedSubmodule, error) {
@@ -153,7 +153,7 @@ func captureSubmodule(parentValue gitValueFunc, parentRun gitRunFunc, sessionID,
 	}
 	gitState, err := captureGitState(value, gitRunner(run), head)
 	if err != nil {
-		return SubmoduleCapsule{}, nested, fmt.Errorf("capture submodule rebase state: %w", err)
+		return SubmoduleCapsule{}, nested, fmt.Errorf("capture submodule operation state: %w", err)
 	}
 	indexCommit, err := run(recoveryCommitEnv(nil), []byte("wx submodule index snapshot\n"), "commit-tree", indexTree, "-p", head)
 	if err != nil {
@@ -319,7 +319,7 @@ func (m *Manager) verifySubmoduleCapsuleRefs(ctx context.Context, repo discovery
 	return nil
 }
 
-// restoreSubmodule は子 1 件へ capsule を取り込み、HEAD・worktree・index・停止中 rebase を保存時の状態へ戻す。
+// restoreSubmodule は子 1 件へ capsule を取り込み、HEAD・worktree・index・停止中の操作を保存時の状態へ戻す。
 // 取り込みの向きは保存時と逆で、ローカル module から子の gitdir へ fetch する。
 func restoreSubmodule(parentValue gitValueFunc, parentRun gitRunFunc, sub state.SubmoduleSnapshot, moduleDir string) error {
 	value, run := submoduleGit(parentValue, parentRun, sub.Path)
@@ -355,12 +355,12 @@ func restoreSubmodule(parentValue gitValueFunc, parentRun gitRunFunc, sub state.
 	if sub.GitStateOID != "" {
 		resolved, err := value(nil, "rev-parse", sub.GitStateOID+"^{tree}")
 		if err != nil {
-			return fmt.Errorf("resolve rebase state tree: %w", err)
+			return fmt.Errorf("resolve operation state tree: %w", err)
 		}
 		wantGitState = resolved
 	}
 	if err := restoreGitState(value, gitRunner(run), wantGitState); err != nil {
-		return fmt.Errorf("restore in-progress rebase state: %w", err)
+		return fmt.Errorf("restore in-progress operation state: %w", err)
 	}
 	return verifyRestoredSubmodule(value, run, sub)
 }

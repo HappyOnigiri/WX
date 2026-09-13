@@ -171,17 +171,29 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err := m.Preparer.VerifyWorktreeIdentity(target, targetIdentity); err != nil {
 			return fmt.Errorf("validate restored worktree identity: %w", err)
 		}
-		// 停止中 rebase の書き戻しは既存の検証をすべて終えた後に置く。
-		// read-tree の後には resume prepare と tree 一致検証が続くため、その相手を rebase 中のリポジトリにしないという意図である。
+		// 衝突 stage の書き戻しは既存の検証をすべて終えた後に置く。
+		// 未解消 path が index に無い窓を prepare と一致検証へ持ち込まないためである。
+		wantConflict := ""
+		if s.ConflictOID != "" {
+			wantConflict, err = m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", s.ConflictOID+"^{tree}")
+			if err != nil {
+				return fmt.Errorf("resolve snapshot conflict state tree: %w", err)
+			}
+		}
+		if err := restoreConflictIndex(targetValue, targetRun, wantConflict); err != nil {
+			return fmt.Errorf("restore unmerged index: %w", err)
+		}
+		// 停止中の操作の制御ファイルも同じ位置で書き戻す。
+		// read-tree の後には resume prepare と tree 一致検証が続くため、その相手を操作進行中のリポジトリにしないという意図である。
 		wantGitState := ""
 		if s.GitStateOID != "" {
 			wantGitState, err = m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", s.GitStateOID+"^{tree}")
 			if err != nil {
-				return fmt.Errorf("resolve snapshot rebase state tree: %w", err)
+				return fmt.Errorf("resolve snapshot operation state tree: %w", err)
 			}
 		}
 		if err := restoreGitState(targetValue, targetRun, wantGitState); err != nil {
-			return fmt.Errorf("restore in-progress rebase state: %w", err)
+			return fmt.Errorf("restore in-progress operation state: %w", err)
 		}
 		// ここでの ownership 再証明は行わない。
 		// 直前の PrepareResumeWithIdentity と直後の FinishRestoreWithIdentity が同じ検査を行い、その間は読み取りだけである。
