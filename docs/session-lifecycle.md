@@ -40,6 +40,10 @@
    受理条件は`<絶対パス> hook <event>`ちょうどの形なので、agent設定側に条件分岐ラッパーを挟んでも受理されない。
    `WX_SESSION_ID`の有無による素通りはwx側（`internal/agent/hook.go`）で判定するため、ラッパーはそもそも不要である。
 
+   `pre-tool-use` hookは準備完了を待つほか、agentが単独で実行しようとした`git worktree add`をツール入力の書き換えで`wx new`へ写す。
+   素のworktreeはslotの準備も保存も返却も受けられないためで、安全に写せない形は写し方を案内して拒否する。
+   判定はコマンド文字列の静的な解析だけで行い、候補を同定できない入力は通す。
+
    `wx hook session-start`はエージェント側のネイティブなセッションIDをwxのセッションへ結び付ける。
    Codexのrewind / forkは、transcript metadataの`forked_from_id`とhook payloadの新IDを照合できた場合だけ旧IDから新IDへmappingを移管し、照合できなければ通常のbindとして扱う。
    RESTORING中に届いたIDは`pending_agent_session_id`として保持し、復元成功後に親から新しいセッションへ移譲する。

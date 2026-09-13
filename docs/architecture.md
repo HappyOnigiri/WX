@@ -6,7 +6,7 @@
 | 責務 | 実装の入口 |
 | --- | --- |
 | 引数解析・RPC・子プロセス起動と信号中継 | `cmd/wx`、`internal/cli` |
-| hook実行・同期的な準備完了契約の判定・agent hook設定のwxエントリの書き込み | `internal/agent`、`internal/hookconfig` |
+| hook実行・同期的な準備完了契約の判定・agentのworktree作成をwxの貸出へ写す判定・agent hook設定のwxエントリの書き込み | `internal/agent`、`internal/hookconfig` |
 | セットアップ項目の収集と適用 | `internal/setup` |
 | 会話選択 | `internal/sessions` |
 | Unix socket通信・冪等キーによる重複抑止・要求契約型 | `internal/rpc` |
