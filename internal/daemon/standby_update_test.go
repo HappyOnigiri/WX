@@ -568,3 +568,136 @@ func TestStandbyUpdateReusesSlotAndSkipsHooksAndPrepare(t *testing.T) {
 		t.Fatalf("update phases=%+v, want the update- prefixed sections", measurements[0].Phases)
 	}
 }
+
+// runStandbyUpdateWithPrepareInputs は tracked diff だけを変えた standby 更新を実行し、
+// prepare の実行回数と更新計測の区間を返す。
+func runStandbyUpdateWithPrepareInputs(t *testing.T, inputs []string) (int, map[string]bool) {
+	t.Helper()
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repository := filepath.Join(root, "repo")
+	initGitRepo(t, repository)
+	prepareLog := filepath.Join(root, "prepare.log")
+	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
+	cfg.Pool.WarmPerWorkspace = 1
+	cfg.Repositories = map[string]config.Repository{repository: {
+		Prepare: config.Prepare{
+			Command: []string{"sh", "-c", "printf 'prepare\\n' >> " + prepareLog},
+			Inputs:  inputs,
+		},
+	}}
+	m := testManager(t, cfg, store)
+	m.git = &gitx.Runner{Timeout: 10 * time.Second}
+	defer m.Close()
+	ctx := context.Background()
+	discoverer := discovery.Discoverer{Git: m.git, Config: cfg}
+	w, err := discoverer.Resolve(ctx, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = registerTestWorkspace(t, store, w)
+	raw := openTestDatabase(t, filepath.Join(root, "state.db"))
+	defer raw.Close()
+	if _, err := raw.ExecContext(ctx, `UPDATE repositories SET last_leased_at=?`, state.FormatTime(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ensureStandby(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("prepare jobs=%+v err=%v", jobs, err)
+	}
+	prepareJob, err := store.ClaimJob(ctx, jobs[0].ID, "prepare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, prepareJob); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, prepareJob.ID, "prepare", nil); err != nil {
+		t.Fatal(err)
+	}
+	ready, ok, err := store.ReadySlot(ctx, string(w.ID))
+	if err != nil || !ok {
+		t.Fatalf("ready=%+v ok=%t err=%v", ready, ok, err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("updated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repository, "add", "tracked.txt")
+	gitRun(t, repository, "commit", "-m", "update tracked input")
+	lease, err := m.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID != ready.ID || lease.Route != RouteUpdate {
+		t.Fatalf("lease=%+v, want update of standby %s", lease, ready.ID)
+	}
+	jobs, err = store.RecoverJobs(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var update state.Job
+	for _, job := range jobs {
+		if job.Kind == "UPDATE" {
+			update = job
+		}
+	}
+	if update.ID == "" {
+		t.Fatalf("jobs=%+v, want UPDATE", jobs)
+	}
+	claimed, err := store.ClaimJob(ctx, update.ID, "update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishJob(ctx, claimed.ID, "update", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.WaitReady(ctx, lease.SessionID, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(prepareLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	phases := map[string]bool{}
+	measurements := m.PrepareMeasurements(ready.ID, "")
+	if len(measurements) == 0 {
+		t.Fatal("standby update recorded no measurement")
+	}
+	for _, phase := range measurements[0].Phases {
+		phases[phase.Name] = true
+	}
+	return strings.Count(string(data), "\n"), phases
+}
+
+func TestStandbyUpdateRerunsPrepareWhenInputChanges(t *testing.T) {
+	lines, phases := runStandbyUpdateWithPrepareInputs(t, []string{"tracked.txt"})
+	if lines != 2 {
+		t.Fatalf("prepare log lines=%d, want initial and update command", lines)
+	}
+	if !phases["update-prepare-command"] {
+		t.Fatalf("update phases=%v, want update-prepare-command", phases)
+	}
+}
+
+func TestStandbyUpdateSkipsPrepareWhenInputDoesNotChange(t *testing.T) {
+	lines, phases := runStandbyUpdateWithPrepareInputs(t, []string{"config"})
+	if lines != 1 {
+		t.Fatalf("prepare log lines=%d, want initial command only", lines)
+	}
+	if phases["update-prepare-command"] {
+		t.Fatalf("update phases=%v, did not want update-prepare-command", phases)
+	}
+}

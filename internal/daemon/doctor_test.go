@@ -193,6 +193,11 @@ func TestRegistrationProblemsSeparateTheirActionsByCause(t *testing.T) {
 
 // 既定 branch の欠落は sentinel error で判定し、workspace の構成に合う config scope を案内する。
 func TestBranchResolveProblemPointsAtTheRepositoryScope(t *testing.T) {
+	unresolved := branchResolveProblem("/roots/ws", &pool.UnresolvedDefaultBranchError{RepositoryRelativePath: "api"})
+	if !strings.Contains(unresolved.Action, "git -C /roots/ws/api remote set-head origin --auto") ||
+		!strings.Contains(unresolved.Action, "wx config --workspace /roots/ws --repository api default_branch") {
+		t.Fatalf("unresolved action=%q, want remote-head and explicit config guidance", unresolved.Action)
+	}
 	single := branchResolveProblem("/roots/ws", fmt.Errorf("resolve branches: %w",
 		&pool.MissingDefaultBranchError{Branch: "main", RepositoryRelativePath: "."}))
 	if !strings.Contains(single.Action, "wx config --workspace /roots/ws --repository-defaults default_branch") {

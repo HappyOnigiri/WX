@@ -175,7 +175,7 @@ var configCatalog = map[string]Entry{
 	"config.warm_count.impact":      {EN: "More standbys mean faster launches and more disk in use. Zero turns automatic replenishment off for this workspace.", JA: "多いほど起動は速くなり、ディスクの使用量は増えます。0 にするとこの workspace の自動補充を行いません。"},
 
 	"config.default_branch.name":        {EN: "Branch new worktrees start from", JA: "worktree の起点ブランチ"},
-	"config.default_branch.description": {EN: "The branch a new worktree of this repository is checked out from when no branch is given.", JA: "ブランチを指定しなかったとき、このリポジトリの新しい worktree をどのブランチから作るかです。"},
+	"config.default_branch.description": {EN: "The explicit branch a new worktree of this repository is checked out from when no branch is given; when unset, wx resolves one from the repository's Git refs.", JA: "ブランチを指定しなかったとき、このリポジトリの新しい worktree をどのブランチから作るかを明示します。未設定なら wx がリポジトリの Git ref から自動解決します。"},
 	"config.default_branch.impact":      {EN: "Changes the starting point of the work in newly prepared worktrees.", JA: "新しく準備する worktree での作業の出発点が変わります。"},
 
 	"config.dir_name.name":        {EN: "Directory name for this repository", JA: "このリポジトリのディレクトリ名"},
@@ -194,6 +194,10 @@ var configCatalog = map[string]Entry{
 	"config.prepare.command.description": {EN: "A command wx runs in this repository once the files are in place, for setup such as installing dependencies.", JA: "ファイルを配置した後に、このリポジトリで wx が実行するコマンドです。依存関係の導入などの下準備に使います。"},
 	"config.prepare.command.impact":      {EN: "If the command fails, the worktree is not handed over: the preparation fails with it.", JA: "コマンドが失敗すると worktree は貸し出されず、準備ごと失敗します。"},
 
+	"config.prepare.inputs.name":        {EN: "Paths that trigger preparation on standby updates", JA: "standby 更新で準備を再実行する path"},
+	"config.prepare.inputs.description": {EN: "Repository-relative path patterns whose changes make wx rerun the preparation command while updating a standby worktree.", JA: "standby worktree の更新中に変更されると、準備コマンドを再実行する repository 相対の path pattern です。"},
+	"config.prepare.inputs.impact":      {EN: "Only matching tracked or placed paths add the preparation command to standby updates; an empty list keeps the existing behavior.", JA: "一致した tracked または配置 path がある更新だけ準備コマンドを追加で実行します。空の list なら従来どおりです。"},
+
 	"config.prepare.timeout.name":        {EN: "Time limit for that command", JA: "そのコマンドの時間制限"},
 	"config.prepare.timeout.description": {EN: "How long the command run after checkout may take before it is stopped.", JA: "チェックアウト後のコマンドを、打ち切るまでどれだけ実行してよいかです。"},
 	"config.prepare.timeout.impact":      {EN: "A limit that is too short fails preparation that would have succeeded.", JA: "短すぎると、成功していたはずの準備が失敗します。"},
@@ -203,7 +207,7 @@ var configCatalog = map[string]Entry{
 	"config.prepare.version.impact":      {EN: "Changing it makes the existing standby worktrees unusable, so they are prepared again.", JA: "変更すると既存の standby worktree は使えなくなり、準備し直しになります。"},
 
 	"config.repository_defaults.default_branch.name":        {EN: "Default starting branch for this workspace", JA: "この workspace の既定の起点ブランチ"},
-	"config.repository_defaults.default_branch.description": {EN: "The starting branch used by the repositories of this workspace that do not set one themselves.", JA: "この workspace のリポジトリのうち、自分で指定していないものが使う起点ブランチです。"},
+	"config.repository_defaults.default_branch.description": {EN: "The explicit starting branch used by the repositories of this workspace that do not set one themselves; when unset, wx resolves one from each repository's Git refs.", JA: "この workspace のリポジトリのうち、自分で指定していないものが使う起点ブランチを明示します。未設定なら wx が各リポジトリの Git ref から自動解決します。"},
 	"config.repository_defaults.default_branch.impact":      {EN: "Changes the starting point of newly prepared worktrees in this workspace.", JA: "この workspace で新しく準備する worktree の出発点が変わります。"},
 
 	"config.repository_defaults.dir_source.name":        {EN: "Default directory-name source for this workspace", JA: "この workspace の既定のディレクトリ名の決め方"},
@@ -221,6 +225,10 @@ var configCatalog = map[string]Entry{
 	"config.repository_defaults.prepare.command.name":        {EN: "Default post-checkout command for this workspace", JA: "この workspace の既定のチェックアウト後コマンド"},
 	"config.repository_defaults.prepare.command.description": {EN: "The command run after checkout in the repositories of this workspace that do not set one themselves.", JA: "この workspace のリポジトリのうち、自分で指定していないもので、チェックアウト後に実行するコマンドです。"},
 	"config.repository_defaults.prepare.command.impact":      {EN: "If it fails, preparation of the affected repositories fails with it.", JA: "失敗すると、影響を受けるリポジトリの準備も失敗します。"},
+
+	"config.repository_defaults.prepare.inputs.name":        {EN: "Default paths that trigger preparation on standby updates", JA: "この workspace の standby 更新で準備を再実行する既定 path"},
+	"config.repository_defaults.prepare.inputs.description": {EN: "Path patterns inherited by repositories in this workspace that make wx rerun the preparation command when a standby is updated.", JA: "この workspace のリポジトリが継承し、standby 更新時に準備コマンドを再実行する契機となる path pattern です。"},
+	"config.repository_defaults.prepare.inputs.impact":      {EN: "Matching changes rerun preparation for the affected worktrees before they are handed over.", JA: "一致する変更があれば、影響を受ける worktree を貸し出す前に準備を再実行します。"},
 
 	"config.repository_defaults.prepare.timeout.name":        {EN: "Default command time limit for this workspace", JA: "この workspace の既定のコマンド時間制限"},
 	"config.repository_defaults.prepare.timeout.description": {EN: "The time limit for that command in the repositories of this workspace that do not set one themselves.", JA: "この workspace のリポジトリのうち、自分で指定していないものでの、そのコマンドの時間制限です。"},

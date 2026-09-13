@@ -336,18 +336,37 @@ func branchResolveProblem(root string, err error) diag.Finding {
 }
 
 func branchResolveAction(root string, err error) (string, i18n.Message) {
+	var unresolved *pool.UnresolvedDefaultBranchError
+	if errors.As(err, &unresolved) {
+		scope := repositoryDefaultBranchScope(unresolved.RepositoryRelativePath)
+		repositoryPath := repositoryDefaultBranchPath(root, unresolved.RepositoryRelativePath)
+		return fmt.Sprintf("set the remote default branch with git -C %s remote set-head origin --auto, or configure it with wx config --workspace %s %s default_branch <branch-name>", repositoryPath, root, scope),
+			message("diag.action.resolve_default_branch", "Root", root, "Repository", repositoryPath, "Scope", scope)
+	}
 	var missing *pool.MissingDefaultBranchError
 	if !errors.As(err, &missing) {
 		return fmt.Sprintf("run git -C %s rev-parse HEAD to see why Git cannot read the refs of this workspace; wx cannot lease a slot from it until that works", root),
 			message("diag.action.check_workspace_refs", "Root", root)
 	}
-	// 単一 repository の workspace は membership scope を拒まれるので、そこだけ repository defaults を案内する。
-	scope := "--repository-defaults"
-	if clean := filepath.Clean(missing.RepositoryRelativePath); clean != "." {
-		scope = "--repository " + clean
-	}
+	scope := repositoryDefaultBranchScope(missing.RepositoryRelativePath)
 	return fmt.Sprintf("point the default branch at one this repository has with wx config --workspace %s %s default_branch <branch-name>, or run wx forget %s if you no longer use this workspace", root, scope, root),
 		message("diag.action.set_default_branch", "Root", root, "Scope", scope)
+}
+
+// repositoryDefaultBranchScope は workspace の形に応じて、既定 branch を設定する scope を選ぶ。
+func repositoryDefaultBranchScope(relativePath string) string {
+	// 単一 repository の workspace は membership scope を拒まれるので、そこだけ repository defaults を案内する。
+	if clean := filepath.Clean(relativePath); clean != "." {
+		return "--repository " + clean
+	}
+	return "--repository-defaults"
+}
+
+func repositoryDefaultBranchPath(root, relativePath string) string {
+	if clean := filepath.Clean(relativePath); clean != "." {
+		return filepath.Join(root, clean)
+	}
+	return root
 }
 
 // standbyCheckProblem は READY slot 1 件の検証が失敗したことを、その slot の path を対象にして報告する。

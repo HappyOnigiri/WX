@@ -49,6 +49,12 @@ if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ]; then
   printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
   exit 0
 fi
+if [ "$1" = "symbolic-ref" ]; then
+  exit 1
+fi
+if [ "$1" = "remote" ]; then
+  exit 0
+fi
 exit 1
 `
 	if err := os.WriteFile(filepath.Join(fakeBin, "git"), []byte(fakeGit), 0o700); err != nil {

@@ -75,8 +75,9 @@ Hot StandbyのUPDATEは旧HEAD・tracked clean・所有権を確認してから�
 更新用Git操作だけは`core.hooksPath=/dev/null`をコマンド単位で指定し、checkout filterと属性処理は維持する。
 `.gitattributes`の差、submodule構成・gitlink変更、未登録のuntracked/ignored pathとの衝突、更新互換fingerprintの不一致は書込み前にCold Startへ戻す。
 `.gitattributes`を除外するのは、`checkout-index`が内容の同じfileをstat cacheの一致で書き直さず、属性だけ変わったfileが旧属性のまま残るためである。
-更新では`prepare.command`を実行しない。
-lockfileのようにOIDへ依存する生成物は更新後も旧OIDのまま残るので、都度の再生成が必要な場合は`workspaces.<root>.reuse_standby: false`で更新を止める。
+更新は既定では`prepare.command`を実行しない。
+`prepare.inputs`に挙げたpathが旧OIDと要求OIDの間で変わった場合、または配置が変わった場合に限り、更新後のworktreeで`prepare.command`を実行する。
+宣言しない生成物は旧OIDのまま残るので、更新そのものを止めたい場合は`workspaces.<root>.reuse_standby: false`が残る。
 
 `.worktreeinclude`対象のファイルは内容のhashがfingerprintに入るため、1 byteの書き換えでもREADY全本が不一致になる。
 この不一致は貸出時のUPDATEで解消できるが、待たせないよう保守の一巡が待機中のREADYを先回りで更新する（[daemonの補充と回収](daemon-maintenance.md)の「standby補充」）。
