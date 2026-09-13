@@ -211,6 +211,10 @@ func (s *Store) FinishRemoval(ctx context.Context, slotID string) (Job, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM standby_replenish_exclusions WHERE slot_id=?`, slotID); err != nil {
 		return Job{}, err
 	}
+	// 実体が消えた後は保護する対象が無いので、未保全 submodule の記録も同じ transaction で片付ける。
+	if _, err := tx.ExecContext(ctx, `DELETE FROM unsaved_submodules WHERE slot_id=?`, slotID); err != nil {
+		return Job{}, err
+	}
 	job, err := replenishAfterRemovalTx(ctx, tx, slotID)
 	if err != nil {
 		return Job{}, err
@@ -343,11 +347,27 @@ func (s *Store) PruneMetadata(ctx context.Context, failedBefore, eventBefore, to
 	return tx.Commit()
 }
 
-// GCCandidates は保持期限を過ぎた終了 worktree を返す。
+// GCCandidates は保持期限を過ぎた終了 worktree のうち、自動回収してよいものを返す。
 // floor は最短の保持期間から作った緩い cutoff で、before が workspace root ごとの正確な cutoff を返す。
 // root が空の行は workspace 未紐付け（slots.workspace_id が NULL）なので global 値で判定する。
+// 未保全の submodule 作業を記録した slot は除く。自動と明示の削除の境界をここに置き、`wx clear` や `wx forget` が使う ScheduleRemoval 自体は変えない。
+// commentlint:allow-long -- cutoff の二段構えと、自動回収だけを止める理由を 1 か所に残す
 func (s *Store) GCCandidates(ctx context.Context, floor string, before func(root string) string) ([]GCCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,se.id,rt.path||'/'||sl.rel_path,COALESCE(w.root_path,''),se.archived_at FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN workspaces w ON w.id=sl.workspace_id JOIN sessions se ON se.slot_id=sl.id WHERE sl.state='SNAPSHOTTED' AND se.archived_at<=?`, floor)
+	return s.endedWorktreeCandidates(ctx, floor, before, false)
+}
+
+// ProtectedGCCandidates は、保持期限を過ぎていながら未保全の submodule 作業のために残す終了 worktree を返す。
+// `wx gc` が「候補だが回収しない」ことを理由つきで報告できるようにするためだけに使う。
+func (s *Store) ProtectedGCCandidates(ctx context.Context, floor string, before func(root string) string) ([]GCCandidate, error) {
+	return s.endedWorktreeCandidates(ctx, floor, before, true)
+}
+
+func (s *Store) endedWorktreeCandidates(ctx context.Context, floor string, before func(root string) string, protected bool) ([]GCCandidate, error) {
+	condition := "NOT EXISTS"
+	if protected {
+		condition = "EXISTS"
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,se.id,rt.path||'/'||sl.rel_path,COALESCE(w.root_path,''),se.archived_at FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN workspaces w ON w.id=sl.workspace_id JOIN sessions se ON se.slot_id=sl.id WHERE sl.state='SNAPSHOTTED' AND se.archived_at<=? AND `+condition+` (SELECT 1 FROM unsaved_submodules us WHERE us.slot_id=sl.id)`, floor)
 	if err != nil {
 		return nil, err
 	}

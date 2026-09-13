@@ -126,6 +126,9 @@ type SlotSummary struct {
 	// Repositories は行に紐づくソースリポジトリの main worktree のフルパスで、multi-repo workspace では複数入る。
 	// 表示側で basename へ縮めるため、ここでは短縮しない。
 	Repositories []string `json:"repositories,omitempty"`
+	// UnsavedSubmodules は snapshot に入らなかった submodule の path で、この slot が自動回収から外れていることを示す。
+	// 理由と対処は `wx doctor` が出すため、ここには path だけを載せる。
+	UnsavedSubmodules []string `json:"unsaved_submodules,omitempty"`
 }
 
 // ListSlots は回収前（ARCHIVED 以外）の slot をすべて返し、SIZE 列の合計が `wx status` の Disk 行と同じ範囲を指すようにする。
@@ -162,6 +165,15 @@ func (s *Store) ListSlots(ctx context.Context, all bool) ([]SlotSummary, error) 
 	}
 	if err := s.fillSlotRepositories(ctx, out); err != nil {
 		return nil, err
+	}
+	protected, err := s.unsavedSubmodulePaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for index := range out {
+		if paths, ok := protected[out[index].SlotID]; ok {
+			out[index].UnsavedSubmodules = paths
+		}
 	}
 	return out, nil
 }

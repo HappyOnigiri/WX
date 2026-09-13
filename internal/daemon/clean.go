@@ -66,7 +66,9 @@ func cleanMode(all, standby bool) string {
 // planCleanTargets は受付時点の候補から対象と除外理由を確定する。
 // 通常の clean は使用中の session と待機用 slot を対象外とし、--standby は待機用を、--all は加えて起動・復元途中も含める。
 // 隔離 slot は retention.quarantined の残りを問わず全 mode で削除対象にする。削除範囲は DB の登録で決める。
-func planCleanTargets(candidates []state.CleanCandidate, all, standby bool) []state.CleanTarget {
+// 未保全の submodule 作業を持つ slot は discard 無しでは残す。clear の契約は「作業は先に保存する」だが、この作業は保存できないためである。
+// commentlint:allow-long -- mode ごとの対象範囲と、保存できない作業を残す理由を 1 か所に残す
+func planCleanTargets(candidates []state.CleanCandidate, all, standby, discard bool) []state.CleanTarget {
 	out := make([]state.CleanTarget, 0, len(candidates))
 	for _, candidate := range candidates {
 		target := state.CleanTarget{
@@ -74,6 +76,8 @@ func planCleanTargets(candidates []state.CleanCandidate, all, standby bool) []st
 			SessionID: candidate.SessionID, Path: candidate.Path, State: cleanTargetPending,
 		}
 		switch {
+		case !discard && candidate.UnsavedSubmodules > 0:
+			target.State, target.Reason = cleanTargetSkipped, unsavedSubmoduleSkipReason(candidate)
 		case standbySlot(candidate):
 			if !all && !standby {
 				target.State, target.Reason = cleanTargetSkipped, "standby worktree is not in use; rerun with --standby to delete it"
@@ -99,6 +103,11 @@ func skipReasonInUse(candidate state.CleanCandidate) string {
 		return "session " + candidate.SessionID + " holds a lease from wx new; run wx release " + candidate.SessionID + " to return it"
 	}
 	return "session " + candidate.SessionID + " is in use; rerun with --all to ask it to stop"
+}
+
+// unsavedSubmoduleSkipReason は、snapshot に入らなかった submodule 作業のために残す slot の理由を返す。
+func unsavedSubmoduleSkipReason(candidate state.CleanCandidate) string {
+	return fmt.Sprintf("%d submodule(s) hold work wx could not snapshot; run wx doctor for the details, or rerun with --discard to delete it anyway", candidate.UnsavedSubmodules)
 }
 
 // unsavedDataRisk は、使用中の slot を停止後に削除してよいと証明できない理由を返す。証明できる場合は空文字を返す。
@@ -166,10 +175,11 @@ func (m *Manager) Clean(ctx context.Context, all, standby, dryRun bool, discardO
 		return nil, err
 	}
 	mode := cleanMode(all, standby)
-	if len(discardOption) > 0 && discardOption[0] {
+	discard := len(discardOption) > 0 && discardOption[0]
+	if discard {
 		mode += "-discard"
 	}
-	targets := planCleanTargets(candidates, all, standby)
+	targets := planCleanTargets(candidates, all, standby, discard)
 	if dryRun {
 		return cleanReply(state.CleanRun{Mode: mode, State: "DRY_RUN"}, targets, true), nil
 	}
