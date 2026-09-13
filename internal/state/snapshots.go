@@ -91,6 +91,29 @@ func (s *Store) WorkspaceSnapshot(ctx context.Context, sessionID string) (Worksp
 	return x, err == nil, err
 }
 
+// RegisteredWorkspaceSnapshots は status・期限で絞らずに全 workspace snapshot の置き場所を返す。
+// 期限切れは status ではなく行の削除で表すため、行が残っている限り実体は wx が自分のものと主張している。
+// 登録外の実体を列挙する側はこの集合を期待集合にし、回収待ちの archive を登録外として消しにいかない。
+func (s *Store) RegisteredWorkspaceSnapshots(ctx context.Context) ([]WorkspaceSnapshot, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT ws.session_id,ws.root_id,rt.path,ws.rel_path,ws.sha256,ws.status,ws.created_at,ws.expires_at
+		FROM workspace_snapshots ws JOIN roots rt ON rt.id=ws.root_id ORDER BY rt.path,ws.rel_path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []WorkspaceSnapshot{}
+	for rows.Next() {
+		var x WorkspaceSnapshot
+		var rootPath string
+		if err := rows.Scan(&x.SessionID, &x.RootID, &rootPath, &x.RelPath, &x.SHA256, &x.Status, &x.CreatedAt, &x.ExpiresAt); err != nil {
+			return nil, err
+		}
+		x.ArchivePath = filepath.Join(rootPath, x.RelPath)
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
 // ActiveWorkspaceSnapshots は復元に使える見込みの workspace snapshot を返す。
 // 作成途中（status が ARCHIVED 以外）と期限切れは復元の材料ではないため、実体を検査する呼び出し側の負荷も含めてここで外す。
 func (s *Store) ActiveWorkspaceSnapshots(ctx context.Context, at string) ([]WorkspaceSnapshot, error) {

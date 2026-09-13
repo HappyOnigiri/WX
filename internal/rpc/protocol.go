@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -65,6 +66,15 @@ type Client struct {
 
 // connectRetryInterval は ConnectRetry の間隔。再起動後の数百 ms の空白を秒単位の予算内で覆う。
 const connectRetryInterval = 100 * time.Millisecond
+
+// UnknownMethodMessage は daemon が受け付けない method へ返す文言である。
+// 新しい CLI が古い daemon に当たった場合の案内を出し分けるため、送信側と判定側で同じ値を使う。
+const UnknownMethodMessage = "unknown RPC method"
+
+// IsUnknownMethod は呼び出した method をその daemon が知らなかったかを返す。
+func IsUnknownMethod(err error) bool {
+	return err != nil && strings.Contains(err.Error(), UnknownMethodMessage)
+}
 
 // ConnectError は接続確立中の失敗（socket 不在、拒否、送信前の timeout）を包む。
 // 接続確立後の失敗は包まないため、IsConnectError で未待受と応答遅延を区別できる。

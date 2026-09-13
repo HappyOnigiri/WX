@@ -304,11 +304,14 @@ func (r *verboseStatusRenderer) renderStorage() {
 		// Disk size は要約の Disk と同じ量で、Allocated と Shared はその内訳として du との差を説明するために出す。
 		r.text.field(4, "status.field.disk_size", statusExactBytes(root, "exclusive_bytes"))
 		r.text.field(4, "status.field.allocated", statusExactBytes(root, "allocated_bytes"))
+		// Unmanaged は予約 namespace 配下で DB が説明しない実体の割当量で、Allocated には含まれない。
+		// 要約には出さず、対処（wx clear --unmanaged）を要する利用者だけが読む位置に置く。
+		r.text.field(4, "status.field.unmanaged", statusExactBytes(root, "unmanaged_allocated_bytes"))
 		r.text.field(4, "status.field.shared", statusExactBytes(root, "shared_bytes"))
 		r.text.field(4, "status.field.measurement", statusValue(root, "measurement"))
 		r.text.field(4, "status.field.measured_at", statusValue(root, "measured_at"))
 		r.text.field(4, "status.field.error", statusValue(root, "error"))
-		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("worktree_roots[%d]", index), root, map[string]bool{"path": true, "active": true, "bytes": true, "allocated_bytes": true, "shared_bytes": true, "exclusive_bytes": true, "measurement": true, "measured_at": true, "error": true})
+		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("worktree_roots[%d]", index), root, map[string]bool{"path": true, "active": true, "bytes": true, "allocated_bytes": true, "unmanaged_allocated_bytes": true, "shared_bytes": true, "exclusive_bytes": true, "measurement": true, "measured_at": true, "error": true})
 	}
 }
 

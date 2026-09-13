@@ -17,4 +17,4 @@ func workspaceSnapshotRelPath(sessionID string) string {
 
 // recoveryNamespace は wx root 直下で workspace recovery archive を保持する最上位項目である。
 // これを塞いだり衝突させたりするテストは、本番定数から名前を導出して重複を避ける。
-var recoveryNamespace = strings.Split(workspaceSnapshotDirectory, "/")[0]
+var recoveryNamespace = strings.Split(WorkspaceSnapshotDirectory, "/")[0]

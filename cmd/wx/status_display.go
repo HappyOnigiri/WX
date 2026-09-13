@@ -285,8 +285,7 @@ func statusDiskSummary(r *textRenderer, root map[string]any) string {
 		return label + r.Localize("status.disk.measuring", map[string]any{"Path": path})
 	}
 	// wx が言う disk 使用量は main worktree と共有していない分だけで、slot ごとの SIZE 列と同じ量を指す。
-	// 満額の allocated_bytes は --json と --verbose にだけ出し、要約では単位を混ぜない。
-	// managed は登録外を集計した Unmanaged 行との区別であり、専有量と満額の区別ではない。
+	// 満額の allocated_bytes と登録外の実体の量は --json と --verbose にだけ出し、要約では単位を混ぜない。
 	exclusive, ok := statusInt(root, "exclusive_bytes")
 	if !ok {
 		return label + r.Localize("status.disk.unavailable", map[string]any{"Path": path})
@@ -297,10 +296,6 @@ func statusDiskSummary(r *textRenderer, root map[string]any) string {
 	if measuredAt, ok := statusRawString(root, "measured_at"); ok && measuredAt != "" {
 		data["Time"], data["Zone"] = statusLocalDate(measuredAt), statusZoneLabel()
 		line = label + r.Localize("status.disk.managed_measured", data)
-	}
-	if unmanaged, ok := statusInt(root, "unmanaged_allocated_bytes"); ok && unmanaged > 0 {
-		line += "\n" + r.Localize("status.label.unmanaged", nil) + " " +
-			r.Localize("status.disk.unmanaged", map[string]any{"Size": textfmt.HumanBytes(unmanaged)})
 	}
 	return line
 }
@@ -431,9 +426,10 @@ func statusArchivedSessionNotice(r *textRenderer, payload map[string]any) string
 }
 
 // statusQuarantineCleanupNotices は隔離された実体のうち、コマンドで消せるものだけ削除手段を案内する。
-// unknown_paths・mismatched_refs には削除コマンドが無く（wx clear は未登録の実体に触れず、wx prune は unknown_refs だけを対象にする）、
-// 案内すると効かない操作を促すため、この 2 つには行を出さない。
-// commentlint:allow-long -- 案内しないカテゴリがある理由を残すため
+// unknown_paths・mismatched_refs にはここで案内できる削除コマンドが無い（wx prune は unknown_refs だけを対象にする）。
+// unknown_paths は reconcile が記録する狭い集合で、wx clear --unmanaged が消せる範囲とは一致しないため、
+// 案内は対象を列挙できる wx doctor の finding 側に置き、この行では出さない。
+// commentlint:allow-long -- 案内しないカテゴリがある理由と、案内の置き場所を残すため
 func statusQuarantineCleanupNotices(r *textRenderer, items []map[string]any) []string {
 	kinds := map[string]bool{}
 	for _, item := range items {

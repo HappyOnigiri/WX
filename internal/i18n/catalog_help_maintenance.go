@@ -19,9 +19,11 @@ a worktree is left to --verbose and --json.
 
 Disk reports what the managed slots and snapshots occupy on their own: blocks
 they still share with the main worktrees are excluded, so it sums with the
-SIZE(MB) column of wx slots and stays below what du reports. Paths outside the
-database are listed separately as Unmanaged. --verbose adds the full allocated
-size and the shared part behind it.
+SIZE(MB) column of wx slots and stays below what du reports. --verbose adds the
+full allocated size, the shared part behind it, and Unmanaged: the entities
+under the wx namespaces that the database does not explain, which
+wx clear --unmanaged deletes. Anything you put elsewhere under the worktree
+root is neither measured nor reported.
 
 Options:
   --verbose, -v  show detailed status instead of the summary
@@ -38,8 +40,9 @@ workspace の要約、または daemon・pool・session・retention・disk の�
 Disk は管理 slot と snapshot が単独で占める容量を示します。
 main worktree と共有している block は除外するため、
 SIZE(MB) wx slots の列と合計でき、du より小さくなります。
-database 外の path は Unmanaged として別に表示します。--verbose では割当全体と
-共有部分も追加表示します。
+--verbose では割当全体と共有部分に加え、wx の予約 namespace 配下で database が
+説明しない実体を Unmanaged として表示します。これは wx clear --unmanaged で
+削除できます。worktree root 配下でもそれ以外の場所に置いた実体は測定も表示もしません。
 
 オプション:
   --verbose, -v  要約の代わりに詳細な状態を表示
@@ -72,7 +75,8 @@ lease.ttl.
 
 Options:
   --probe        prepare a worktree in every registered workspace and check it
-  --verbose, -v  show passing checks, informational results, and extra diagnostics
+  --verbose, -v  show passing checks, informational results including the
+                 entities the database does not explain, and extra diagnostics
   --json         print machine-readable JSON with every result regardless of --verbose`,
 		JA: `使い方: wx doctor [--probe] [--verbose] [--json]
 
@@ -91,7 +95,8 @@ cold start を計測します。これらは通常の GC で回収され、そ�
 
 オプション:
   --probe        登録済み各 workspace で worktree を準備して検査
-  --verbose, -v  成功した検査、情報、追加の診断を表示
+  --verbose, -v  成功した検査、database が説明しない実体の一覧を含む情報、
+                 追加の診断を表示
   --json         機械可読 JSON を表示 --verbose に関係なく全結果を`,
 	},
 	"help.command.gc": {
@@ -148,6 +153,7 @@ Options:
 	},
 	"help.command.clear": {
 		EN: `Usage: wx clear [--all] [--standby] [--discard] [--dry-run]
+       wx clear --unmanaged [--dry-run]
 
 Delete the worktrees wx manages without waiting for their retention period.
 Work is saved first: recovery data, session history, and workspace
@@ -164,8 +170,17 @@ ones that stopped; nothing is killed.
 Quarantined slots are deleted in every mode, without waiting out
 retention.quarantined. Database registration authorizes deletion, including slots with
 missing identity records or changed markers, locks, and HEAD. Unregistered
-directories are left alone. With --discard, unfinished work is deleted without
-requiring a successful snapshot. Sessions in use still require --all.
+directories are left alone unless --unmanaged is given. With --discard,
+unfinished work is deleted without requiring a successful snapshot. Sessions in
+use still require --all.
+
+--unmanaged deletes what the database does not explain instead of what it does:
+the unregistered slot directories under the wx namespaces and the unregistered
+archives in the workspace snapshot directory, including the temporary file a
+save is still writing. Running it while a session is being saved loses that
+unsaved work. It cannot be combined with --all, --standby, or --discard, and it
+leaves the worktree registrations inside the source repositories alone; run
+git worktree prune there if they bother you.
 
 The command waits for every target to finish. Interrupting it does not stop
 the daemon, and running it again rejoins the clear already in progress. While
@@ -173,16 +188,20 @@ a clear runs, new sessions and resumes are refused.
 
 Exit status is 0 when every target succeeded or there was nothing to do, 1
 when something failed, was quarantined, or did not finish, and 2 for an
-argument error. Keeping sessions in use or standby worktrees is not a failure.
+argument error or an unsupported combination of options. Keeping sessions in
+use or standby worktrees is not a failure.
 
 Options:
-  --all      ask sessions in use to stop, then delete what stopped, standby
-             worktrees included
-  --discard  delete selected worktrees without saving unfinished work
-  --standby  delete standby worktrees too
-  --dry-run  report the targets and the reasons wx cannot process some of
-             them, changing nothing`,
+  --all        ask sessions in use to stop, then delete what stopped, standby
+               worktrees included
+  --discard    delete selected worktrees without saving unfinished work
+  --standby    delete standby worktrees too
+  --unmanaged  delete the entities under the wx namespaces that the database
+               does not explain; cannot be combined with the options above
+  --dry-run    report the targets and the reasons wx cannot process some of
+               them, changing nothing`,
 		JA: `使い方: wx clear [--all] [--standby] [--discard] [--dry-run]
+       wx clear --unmanaged [--dry-run]
 
 保持期間を待たずに wx の管理 worktree を削除します。
 最初に作業を保存します。復旧データ、session 履歴、workspace 登録は残り、保持期間は既存設定に従います。
@@ -191,19 +210,23 @@ Options:
 
 --all なしでは使用中の session を残します。--all では session に停止を求め、各 session を最大30秒待って、停止したものだけを削除します。強制終了はしません。
 
-隔離された slot は全モードで retention.quarantined を待たずに削除します。database の登録が削除を認可するため、identity record、marker、lock、HEAD が変わった slot や欠落した slot も対象です。未登録の directory は残します。--discard では snapshot 成功を待たず未完了の作業を削除します。使用中 session には引き続き --all が必要です。
+隔離された slot は全モードで retention.quarantined を待たずに削除します。database の登録が削除を認可するため、identity record、marker、lock、HEAD が変わった slot や欠落した slot も対象です。未登録の directory は --unmanaged を指定しない限り残します。--discard では snapshot 成功を待たず未完了の作業を削除します。使用中 session には引き続き --all が必要です。
+
+--unmanaged は database が説明する実体ではなく、説明しない実体を削除します。対象は wx の予約 namespace 配下の未登録 slot directory と、workspace snapshot 置き場の未登録 archive（保存中の一時ファイルを含む）です。保存の最中に実行すると、その未保存の作業を失います。--all・--standby・--discard とは併用できません。元 repository 側の worktree 登録には触れないため、気になる場合はそちらで git worktree prune を実行してください。
 
 全対象の完了を待ちます。中断しても daemon は停止せず、再実行すると進行中の clear に再参加します。clear 中は新しい session と resume を拒否します。
 
-全対象が成功または対象なしなら終了コード0、失敗・隔離・未完了があれば1、引数エラーなら2です。使用中 session や standby worktree を残しても失敗ではありません。
+全対象が成功または対象なしなら終了コード0、失敗・隔離・未完了があれば1、引数エラーとオプションの併用違反なら2です。使用中 session や standby worktree を残しても失敗ではありません。
 
 オプション:
-  --all      使用中 session に停止を求め、停止したものを削除（standby
-             worktree を含む）
-  --discard  未完了の作業を保存せず選択した worktree を削除
-  --standby  standby worktree も削除
-  --dry-run  対象と、wx が処理できない理由を報告し、
-             何も変更しない`,
+  --all        使用中 session に停止を求め、停止したものを削除（standby
+               worktree を含む）
+  --discard    未完了の作業を保存せず選択した worktree を削除
+  --standby    standby worktree も削除
+  --unmanaged  wx の予約 namespace 配下で database が説明しない実体を削除。
+               上記のオプションとは併用できない
+  --dry-run    対象と、wx が処理できない理由を報告し、
+               何も変更しない`,
 	},
 	"help.command.retry-standby": {
 		EN: `Usage: wx retry-standby <workspace-path>

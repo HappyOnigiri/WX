@@ -26,6 +26,12 @@ func usageRoots(t *testing.T) (*os.Root, string, []SlotUsageTarget) {
 	return root, mainPath, targets
 }
 
+// testUsageNamespaces は daemon が渡す予約 namespace と同じ形の降下条件を返す。
+// 綴りの正は internal/daemon 側にあり、ここでは走査の分岐だけを再現する。
+func testUsageNamespaces() []UsageNamespace {
+	return []UsageNamespace{{Path: "_unbound"}, {Path: "_recovery/workspace-snapshots", Files: true}}
+}
+
 func usageWrite(t *testing.T, dir, name, data string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
@@ -39,10 +45,15 @@ func TestMeasureRootUsageAttributesFilesToSlots(t *testing.T) {
 	slotRepo := filepath.Join(root.Name(), "workspace", "slot", "repo")
 	usageWrite(t, slotRepo, "nested/file", "slot content")
 	usageWrite(t, mainPath, "nested/file", "main content")
-	// slot の外にある実体は管理容量に含めず、登録外の容量として報告する。
+	// slot を並べる namespace 配下の登録外 directory は、管理容量に含めず登録外の容量として報告する。
+	if err := os.MkdirAll(filepath.Join(root.Name(), "workspace", "other-slot"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	usageWrite(t, filepath.Join(root.Name(), "workspace", "other-slot"), "leftover", "leftover content")
+	// root 直下の無関係な実体は列挙も削除もできないので、どちらの数字にも入れない。
 	usageWrite(t, root.Name(), "outside", "outside content")
 
-	usage, cache, err := MeasureRootUsage(context.Background(), root, targets, nil)
+	usage, cache, err := MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +128,7 @@ func TestMeasureRootUsageStopsOnCanceledContext(t *testing.T) {
 	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "file", "content")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := MeasureRootUsage(ctx, root, targets, nil); err == nil {
+	if _, _, err := MeasureRootUsage(ctx, root, targets, testUsageNamespaces(), nil); err == nil {
 		t.Fatal("canceled measurement succeeded")
 	}
 }
@@ -131,7 +142,7 @@ func TestMeasureRootUsageIgnoresUnusableTargets(t *testing.T) {
 		{SlotID: "escaping", RelPath: ".."},
 		{SlotID: "slot", RelPath: "workspace/slot", Repositories: map[string]string{"": mainPath, "repo": ""}},
 	}
-	usage, _, err := MeasureRootUsage(context.Background(), root, targets, nil)
+	usage, _, err := MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,11 +158,16 @@ func TestMeasureRootUsageIgnoresUnusableTargets(t *testing.T) {
 func TestUsagePrefixesKeysBoundariesByRootRelativePath(t *testing.T) {
 	t.Parallel()
 	samples := map[string]SlotUsage{}
-	slots, repositories := usagePrefixes([]SlotUsageTarget{
+	slots, files, repositories := usagePrefixes([]SlotUsageTarget{
 		{SlotID: "slot", RelPath: "workspace/slot/", Repositories: map[string]string{"repo": "/main"}},
+		{SlotID: "snapshot:session", RelPath: "_recovery/workspace-snapshots/a.tar", File: true},
 	}, samples)
 	if slots["workspace/slot"] != "slot" || len(slots) != 1 {
 		t.Fatalf("slots=%+v", slots)
+	}
+	// ファイルの登録は directory 境界に現れないため、別の表へ入る。
+	if files["_recovery/workspace-snapshots/a.tar"] != "snapshot:session" || len(files) != 1 {
+		t.Fatalf("files=%+v", files)
 	}
 	repository, ok := repositories["workspace/slot/repo"]
 	if !ok || repository.slotID != "slot" || repository.mainPath != "/main" {
