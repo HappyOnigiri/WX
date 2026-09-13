@@ -82,6 +82,8 @@ func (m *Manager) submoduleSharingFindings(ctx context.Context) []diag.Finding {
 					findings = append(findings, submodulePromisorFinding(source, module.Name))
 				case workspace.SubmoduleSharingShallow:
 					findings = append(findings, submoduleShallowFinding(source, module.Name))
+				case workspace.SubmoduleSharingAvailable, workspace.SubmoduleSharingObjectMissing:
+					// 通常 module の完全性と欠落は既存の prepare skip 診断に任せる。
 				}
 			}
 		}
