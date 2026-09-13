@@ -118,7 +118,7 @@ func TestRetryRootGenerationLogsRepeatedFailuresOnce(t *testing.T) {
 	t.Cleanup(manager.Close)
 	logs := &strings.Builder{}
 	manager.log = slog.New(slog.NewTextHandler(logs, nil))
-	manager.setRootError("startup registration failed")
+	manager.setRootError(rootFailureStore, "startup registration failed")
 
 	manager.retryRootGeneration(ctx)
 	manager.retryRootGeneration(ctx)
@@ -137,7 +137,7 @@ func TestRetryRootGenerationLogsRepeatedFailuresOnce(t *testing.T) {
 	}
 
 	// 理由が変われば再度記録する。
-	manager.setRootError("another reason")
+	manager.setRootError(rootFailureStore, "another reason")
 	manager.mu.Lock()
 	manager.rootRetryLogged = "another reason"
 	manager.mu.Unlock()

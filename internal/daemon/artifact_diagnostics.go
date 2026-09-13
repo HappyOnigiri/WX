@@ -41,6 +41,24 @@ type submoduleRefIssue struct {
 	Kind, ModuleDir, Path, Ref, ExpiresAt string
 }
 
+// 所有権の照合を完了できなかった原因の種別である。doctor がこの値で対処を分けるので、
+// 「どこを見て何を実行するか」が同じ失敗だけを同じ種別にまとめる。
+const (
+	// ownershipFailureStore は state database への問い合わせが失敗した記録である。
+	ownershipFailureStore = "store"
+	// ownershipFailureSlotPath は登録済み slot の実体を確かめられなかった記録である。
+	ownershipFailureSlotPath = "slot_path"
+	// ownershipFailureRootPath は root 世代の中身を列挙できなかった記録である。
+	ownershipFailureRootPath = "root_path"
+	// ownershipFailureRepositoryRef は repository の recovery ref を読めなかった・解釈できなかった記録である。
+	ownershipFailureRepositoryRef = "repository_ref"
+)
+
+// ownershipFailure は所有権の照合を完了できなかった 1 件である。
+// Message は reconcile の記録と `wx prune` の結果へそのまま載る本文で、
+// Kind と Target は doctor が対処と対象を分けるためだけに持つ。
+type ownershipFailure struct{ Kind, Target, Message string }
+
 // unreadableRepository は refs を読めない repository 記録のうち、照合すべき snapshot を 1 件も持たないものである。
 // GC の PruneRepositories が回収するまでの一時的な記録で、ownership error にすると回収までの間 doctor が失敗し続ける。
 type unreadableRepository struct{ RepositoryID, Path, Cause string }
@@ -61,7 +79,8 @@ type artifactReport struct {
 	// SubmoduleRefIssues は子の capsule ref の不整合である。ref store が repository ごとではないため、
 	// reconcile・prune が使う categories には載せず、doctor の報告だけで扱う。
 	SubmoduleRefIssues []submoduleRefIssue
-	Errors             []string
+	// Errors は照合を完了できなかった記録である。種別を落とさずに持ち、doctor が原因ごとに対処を出せるようにする。
+	Errors []ownershipFailure
 }
 
 // categories は従来の category ごとの文字列一覧へ畳み込む。
@@ -73,7 +92,10 @@ func (r artifactReport) categories() map[string]any {
 	}
 	unknownRefs, mismatchedRefs, missingRefs := refKeys(r.UnknownRefs), refKeys(r.MismatchedRefs), refKeys(r.MissingRefs)
 	unknownPaths := append([]string{}, r.UnknownPaths...)
-	diagnosticErrors := append([]string{}, r.Errors...)
+	diagnosticErrors := make([]string, 0, len(r.Errors)+len(r.RefListFailures))
+	for _, failure := range r.Errors {
+		diagnosticErrors = append(diagnosticErrors, failure.Message)
+	}
 	// ref を読めなかった repository は doctor では repository 単位の問題として出すが、
 	// reconcile の記録と prune の結果では従来どおり errors に載せ、どの repository の話かを path で示す。
 	for _, failure := range r.RefListFailures {
@@ -114,11 +136,11 @@ func (m *Manager) artifactOwnershipReport(ctx context.Context) artifactReport {
 	report := artifactReport{
 		UnknownPaths: []string{}, Missing: []missingArtifact{},
 		UnknownRefs: []recoveryRefIssue{}, MismatchedRefs: []recoveryRefIssue{}, MissingRefs: []recoveryRefIssue{},
-		Errors: []string{},
+		Errors: []ownershipFailure{},
 	}
 	artifacts, err := m.store.SlotArtifacts(ctx)
 	if err != nil {
-		report.Errors = append(report.Errors, err.Error())
+		report.Errors = append(report.Errors, ownershipFailure{Kind: ownershipFailureStore, Message: err.Error()})
 		return report
 	}
 	expectedPaths := expectedSlotPaths(artifacts)
@@ -129,7 +151,10 @@ func (m *Manager) artifactOwnershipReport(ctx context.Context) artifactReport {
 		}
 		exists, statErr := m.ownedPathExists(clean)
 		if statErr != nil {
-			report.Errors = append(report.Errors, fmt.Sprintf("inspect slot %s: %v", artifact.ID, statErr))
+			report.Errors = append(report.Errors, ownershipFailure{
+				Kind: ownershipFailureSlotPath, Target: clean,
+				Message: fmt.Sprintf("inspect slot %s: %v", artifact.ID, statErr),
+			})
 		} else if !exists {
 			report.Missing = append(report.Missing, missingArtifact{SlotID: artifact.ID, Path: clean, State: artifact.State})
 		}
@@ -153,12 +178,17 @@ func expectedSlotPaths(artifacts []state.SlotArtifact) map[string]state.SlotArti
 func (m *Manager) appendUnknownRootPaths(ctx context.Context, report *artifactReport, expectedPaths map[string]state.SlotArtifact) {
 	roots, rootsErr := m.rootPathsFromStore(ctx)
 	if rootsErr != nil {
-		report.Errors = append(report.Errors, fmt.Sprintf("list worktree root generations: %v", rootsErr))
+		report.Errors = append(report.Errors, ownershipFailure{
+			Kind: ownershipFailureStore, Message: fmt.Sprintf("list worktree root generations: %v", rootsErr),
+		})
 	}
 	for _, root := range roots {
 		paths, pathsErr := m.ownedRootArtifactPaths(root)
 		if pathsErr != nil {
-			report.Errors = append(report.Errors, fmt.Sprintf("inspect root %s: %v", root, pathsErr))
+			report.Errors = append(report.Errors, ownershipFailure{
+				Kind: ownershipFailureRootPath, Target: root,
+				Message: fmt.Sprintf("inspect root %s: %v", root, pathsErr),
+			})
 			continue
 		}
 		for _, path := range paths {
@@ -173,19 +203,24 @@ func (m *Manager) appendUnknownRootPaths(ctx context.Context, report *artifactRe
 func (m *Manager) appendRecoveryRefIssues(ctx context.Context, report *artifactReport) {
 	repositories, err := m.store.Repositories(ctx)
 	if err != nil {
-		report.Errors = append(report.Errors, err.Error())
+		report.Errors = append(report.Errors, ownershipFailure{Kind: ownershipFailureStore, Message: err.Error()})
 		return
 	}
 	// 所属の分からない repository は登録済みとして扱い、まだ使う予定のある記録の故障を参考情報へ落とさない。
 	registered, registeredErr := m.store.RegisteredRepositoryIDs(ctx)
 	if registeredErr != nil {
-		report.Errors = append(report.Errors, fmt.Sprintf("list registered repositories: %v", registeredErr))
+		report.Errors = append(report.Errors, ownershipFailure{
+			Kind: ownershipFailureStore, Message: fmt.Sprintf("list registered repositories: %v", registeredErr),
+		})
 		registered = nil
 	}
 	for _, repository := range repositories {
 		expectedList, refsErr := m.store.RecoveryRefExpectations(ctx, string(repository.ID))
 		if refsErr != nil {
-			report.Errors = append(report.Errors, fmt.Sprintf("read recovery refs for %s: %v", repository.ID, refsErr))
+			report.Errors = append(report.Errors, ownershipFailure{
+				Kind: ownershipFailureStore, Target: string(repository.MainPath),
+				Message: fmt.Sprintf("read recovery refs for %s: %v", repository.ID, refsErr),
+			})
 			continue
 		}
 		expected := map[string]state.RecoveryRefExpectation{}
@@ -214,7 +249,10 @@ func (m *Manager) appendRecoveryRefIssues(ctx context.Context, report *artifactR
 				continue
 			}
 			if len(fields) != 2 {
-				report.Errors = append(report.Errors, fmt.Sprintf("parse recovery ref listing for %s: %q", repository.ID, line))
+				report.Errors = append(report.Errors, ownershipFailure{
+					Kind: ownershipFailureRepositoryRef, Target: string(repository.MainPath),
+					Message: fmt.Sprintf("parse recovery ref listing for %s: %q", repository.ID, line),
+				})
 				continue
 			}
 			ref, oid := fields[0], fields[1]
@@ -242,7 +280,10 @@ func (m *Manager) appendRecoveryRefIssues(ctx context.Context, report *artifactR
 func (m *Manager) appendSubmoduleRefIssues(ctx context.Context, report *artifactReport, repository discovery.Repository) {
 	expectations, err := m.store.SubmoduleRecoveryRefExpectations(ctx, string(repository.ID))
 	if err != nil {
-		report.Errors = append(report.Errors, fmt.Sprintf("read submodule recovery refs for %s: %v", repository.ID, err))
+		report.Errors = append(report.Errors, ownershipFailure{
+			Kind: ownershipFailureStore, Target: string(repository.MainPath),
+			Message: fmt.Sprintf("read submodule recovery refs for %s: %v", repository.ID, err),
+		})
 		return
 	}
 	if len(expectations) == 0 {
@@ -264,7 +305,10 @@ func (m *Manager) appendSubmoduleRefIssues(ctx context.Context, report *artifact
 	for _, name := range names {
 		moduleDir := filepath.Join(commonModules, name)
 		if !domain.IsWithin(commonModules, moduleDir) {
-			report.Errors = append(report.Errors, fmt.Sprintf("submodule %s of %s resolves outside the module directory", name, repository.ID))
+			report.Errors = append(report.Errors, ownershipFailure{
+				Kind: ownershipFailureRepositoryRef, Target: moduleDir,
+				Message: fmt.Sprintf("submodule %s of %s resolves outside the module directory", name, repository.ID),
+			})
 			continue
 		}
 		listed, listErr := m.git.Run(ctx, moduleDir, "--git-dir=.", "for-each-ref", "--format=%(refname) %(objectname)", "refs/wx/recovery")

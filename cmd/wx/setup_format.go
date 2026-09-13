@@ -84,7 +84,10 @@ func setupStepDescription(localizer *i18n.Localizer, step setup.Step) string {
 	if text := localizer.Message(step.Detail); text != "" {
 		parts = append(parts, text)
 	}
-	parts = append(parts, localizer.Localize("wx.setup.state_label", nil)+": "+setupStateLabel(localizer, step.State))
+	// language と setup_mode はその場で合成した質問で、項目の状態を持たない。空の状態を出すと「状態: 」だけが残る。
+	if step.State != "" {
+		parts = append(parts, localizer.Localize("wx.setup.state_label", nil)+": "+setupStateLabel(localizer, step.State))
+	}
 	if step.Target != "" {
 		parts = append(parts, step.Target)
 	}
@@ -121,6 +124,15 @@ func setupActionDescription(localizer *i18n.Localizer, step setup.Step, action s
 		}
 		if action == setup.Action(i18n.Japanese) {
 			return localizer.Localize("wx.setup.action.language_japanese", nil)
+		}
+	}
+	// recommended / custom は書き込み先を持たないので、共通の文型ではなく専用の説明を出す。
+	if step.ID == setupModeStepID {
+		if action == setupModeRecommended {
+			return localizer.Localize("wx.setup.action.recommended", nil)
+		}
+		if action == setupModeCustom {
+			return localizer.Localize("wx.setup.action.custom", nil)
 		}
 	}
 	if step.ID == "daemon" {

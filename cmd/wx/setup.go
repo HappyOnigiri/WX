@@ -97,6 +97,31 @@ func runSetup(ctx context.Context, args []string) int {
 	return runSetupInteractive(ctx, options, session)
 }
 
+// setupModeStepID は wx setup 冒頭の進め方の質問で、項目の walk より前に 1 度だけ出す。
+// recommended と custom は項目へ適用できる操作ではないため、setup.Action の定数には加えない。
+const setupModeStepID = "setup_mode"
+
+const (
+	setupModeRecommended setup.Action = "recommended"
+	setupModeCustom      setup.Action = "custom"
+)
+
+// selectSetupMode は推奨操作をまとめて適用するか、項目ごとに選ぶかを尋ねる。
+func selectSetupMode(ctx context.Context, session setupSession) (recommended bool, err error) {
+	step := setup.Step{
+		ID:      setupModeStepID,
+		Title:   i18n.Message{ID: "setup.mode.title"},
+		Detail:  i18n.Message{ID: "wx.setup.mode_detail"},
+		Options: []setup.Action{setupModeRecommended, setupModeCustom},
+		Default: setupModeRecommended,
+	}
+	choice, err := session.selector(ctx, step)
+	if err != nil {
+		return false, err
+	}
+	return choice == setupModeRecommended, nil
+}
+
 func setupLanguageUnset() (bool, error) {
 	raw, err := config.LoadRaw()
 	if err != nil {
@@ -406,6 +431,15 @@ func runSetupUpdate(ctx context.Context, options setup.Options, session setupSes
 
 func runSetupInteractive(ctx context.Context, options setup.Options, session setupSession) int {
 	ctx = commandContext(ctx)
+	// 進め方は項目を集める前に尋ねる。おすすめを選んだ利用者には、以降の質問を 1 つも出さない。
+	recommended, err := selectSetupMode(ctx, session)
+	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return 1
+		}
+		_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", i18n.LocalizeError(err, i18n.LanguageFromContext(ctx)))
+		return 1
+	}
 	steps, err := setup.Collect(ctx, options)
 	if err != nil {
 		_, _ = fmt.Fprintln(session.errOut, i18n.T(ctx, "common.error", nil)+":", i18n.LocalizeError(err, i18n.LanguageFromContext(ctx)))
@@ -413,7 +447,11 @@ func runSetupInteractive(ctx context.Context, options setup.Options, session set
 	}
 	failed := false
 	for _, step := range steps {
-		switch applySetupStep(ctx, options, session, step) {
+		apply := applySetupStep
+		if recommended {
+			apply = applyRecommendedSetupStep
+		}
+		switch apply(ctx, options, session, step) {
 		case setupOutcomeCancelled:
 			// 各項目は個別に冪等で再実行できるため巻き戻さない。適用済みを残したまま案内だけを出す。
 			_, _ = fmt.Fprintln(session.out, i18n.T(ctx, "setup.cancelled", nil))
@@ -441,7 +479,6 @@ const (
 )
 
 // applySetupStep は 1 項目を提示し、選ばれた操作を適用してからその項目だけを集め直す。
-// 期待した状態にならなくても警告として記録し、フローは続行する。
 func applySetupStep(ctx context.Context, options setup.Options, session setupSession, step setup.Step) setupOutcome {
 	if len(step.Options) == 0 {
 		printSetupSkipped(session.out, step)
@@ -466,6 +503,22 @@ func applySetupStep(ctx context.Context, options setup.Options, session setupSes
 			return setupOutcomeFailed
 		}
 	}
+	return applySetupAction(ctx, options, session, step, action, value)
+}
+
+// applyRecommendedSetupStep は質問せず step.Default を適用する。推奨値の決定は internal/setup が持ち、ここでは選び直さない。
+// value は空のままにする。worktree_root の default は setup.Apply が step.Desired を使うため、既定 path を組み立て直す必要がない。
+func applyRecommendedSetupStep(ctx context.Context, options setup.Options, session setupSession, step setup.Step) setupOutcome {
+	if len(step.Options) == 0 {
+		printSetupSkipped(session.out, step)
+		return setupOutcomeDone
+	}
+	return applySetupAction(ctx, options, session, step, step.Default, "")
+}
+
+// applySetupAction は決まった操作を適用し、結果とその項目の集め直しを出す。
+// 期待した状態にならなくても警告として記録し、フローは続行する。
+func applySetupAction(ctx context.Context, options setup.Options, session setupSession, step setup.Step, action setup.Action, value string) setupOutcome {
 	note, err := setup.Apply(ctx, options, step, action, value)
 	if err != nil {
 		_, _ = fmt.Fprintf(session.errOut, "%s: %s %s: %s\n", i18n.T(ctx, "common.error", nil), step.ID, action, i18n.LocalizeError(err, i18n.LanguageFromContext(ctx)))

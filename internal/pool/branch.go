@@ -15,6 +15,17 @@ type Resolved struct {
 	RequestedRef, OID string
 }
 
+// MissingDefaultBranchError は repository の既定 branch が解決できなかったことを表す。
+// 診断はこの失敗を「設定で既定 branch を指し直す」対処へ結び付けるため、
+// 呼び出し側が errors.As で判定できるよう branch 名と workspace 相対 path を保つ。
+type MissingDefaultBranchError struct {
+	Branch, RepositoryRelativePath string
+}
+
+func (e *MissingDefaultBranchError) Error() string {
+	return fmt.Sprintf("default branch %q is missing in repository %s", e.Branch, e.RepositoryRelativePath)
+}
+
 func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspace, specs []string) ([]Resolved, error) {
 	global := ""
 	qualified := map[string]string{}
@@ -98,7 +109,7 @@ func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 				return nil, err
 			}
 			if !ok {
-				return nil, fmt.Errorf("default branch %q is missing in repository %s", branch, repo.RelativePath)
+				return nil, &MissingDefaultBranchError{Branch: branch, RepositoryRelativePath: repo.RelativePath}
 			}
 		}
 		out = append(out, Resolved{Repository: repo, RequestedRef: branch, OID: oid})

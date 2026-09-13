@@ -28,8 +28,8 @@ func TestInstallRegistersDaemonAndPinsRelease(t *testing.T) {
 	if !strings.Contains(output, `export PATH="$HOME/.local/bin:$PATH"`) {
 		t.Fatalf("missing PATH instructions: %s", output)
 	}
-	// --update は absent を提示しないため、新規インストール直後は何も出ない。
-	// この 1 行が新規利用者にとって setup への唯一の導線になる。
+	// 端末があれば初回はフルの setup を通すが、テストは常に端末なしで走るため --update に落ちる。
+	// --update は absent を提示しないので何も出ず、この 1 行が setup への唯一の導線になる。
 	if !strings.Contains(output, "run wx setup") {
 		t.Fatalf("missing setup guidance: %s", output)
 	}
@@ -41,6 +41,35 @@ func TestInstallRegistersDaemonAndPinsRelease(t *testing.T) {
 		t.Fatalf("installed permissions: %v, %v", info, err)
 	}
 	assertNoInstallTemps(t, f)
+}
+
+// TestInstallLeavesTheLanguageToSetupOnFirstInstall は、初回インストールが language を
+// 書かないことを固定する。既定値でも書くと設定済みと判定され、setup の表示言語の質問が
+// 出なくなる（cmd/wx/setup.go の setupLanguageUnset）。
+func TestInstallLeavesTheLanguageToSetupOnFirstInstall(t *testing.T) {
+	t.Parallel()
+	f := newInstallFixture(t)
+	if output, err := f.run(t); err != nil {
+		t.Fatalf("install: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, "config.log")); !os.IsNotExist(err) {
+		t.Fatalf("the installer touched the language: %v, %q", err, readFile(t, filepath.Join(f.root, "config.log")))
+	}
+}
+
+// TestInstallCarriesTheConfiguredLanguageForward は、更新で既存の設定を新 binary へ
+// 引き継ぐことを確認する。`config language` を持たない旧 binary からの移行経路である。
+func TestInstallCarriesTheConfiguredLanguageForward(t *testing.T) {
+	t.Parallel()
+	f := newInstallFixture(t)
+	f.existing(t, f.destination())
+	writeFile(t, filepath.Join(f.home, ".config", "wx", "config.yaml"), "language: ja\n", 0o644)
+	if output, err := f.run(t, "FAKE_LAUNCHCTL_STATUS=0"); err != nil {
+		t.Fatalf("update: %v\n%s", err, output)
+	}
+	if got := readFile(t, filepath.Join(f.root, "config.log")); !strings.Contains(got, "config language ja") {
+		t.Fatalf("the configured language was not carried forward: %q", got)
+	}
 }
 
 func TestInstallUpdatesAndMigratesDaemon(t *testing.T) {

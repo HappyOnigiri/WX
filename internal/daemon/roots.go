@@ -11,6 +11,19 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
+// root 登録が失敗した原因の種別である。doctor がこの値で対処を分けるので、
+// 「どこを直すか」が同じ失敗だけを同じ種別にまとめる。
+const (
+	// rootFailureIdentity は root の inode identity を読めなかった失敗である。実体そのものが無いか読めない。
+	rootFailureIdentity = "identity"
+	// rootFailureStore は root 世代の登録を state database へ書けなかった失敗である。
+	rootFailureStore = "store"
+	// rootFailurePath は設定値から root の path を組み立てられなかった失敗である。
+	rootFailurePath = "path"
+	// rootFailureDescriptor は root の descriptor を開けなかった失敗である。権限・種別・mount が疑わしい。
+	rootFailureDescriptor = "descriptor"
+)
+
 func (m *Manager) registerRootGeneration(ctx context.Context, root, identity string) {
 	if err := m.ensureRootGeneration(ctx, root, identity); err != nil {
 		m.log.Error("register worktree root generation failed", "path", root, "error", err)
@@ -23,18 +36,18 @@ func (m *Manager) registerRootGeneration(ctx context.Context, root, identity str
 func (m *Manager) ensureRootGeneration(ctx context.Context, root, identity string) error {
 	if identity == "" {
 		err := fmt.Errorf("worktree root %s has no readable inode identity", root)
-		m.setRootError(err.Error())
+		m.setRootError(rootFailureIdentity, err.Error())
 		return err
 	}
 	id, err := m.store.EnsureActiveRoot(ctx, root, identity)
 	if err != nil {
-		m.setRootError(err.Error())
+		m.setRootError(rootFailureStore, err.Error())
 		return err
 	}
 	m.mu.Lock()
 	m.ensureRootStateLocked()
 	m.rootIDs[root] = id
-	m.rootError = ""
+	m.rootError, m.rootErrorKind = "", ""
 	m.rootRetryLogged = ""
 	m.mu.Unlock()
 	return nil
@@ -52,17 +65,18 @@ func (m *Manager) retryRootGeneration(ctx context.Context) {
 	configured := m.Config().Storage.WorktreeRoot
 	root, err := config.ExpandHome(configured)
 	if err != nil {
-		m.recordRootRetryFailure(configured, err)
+		m.recordRootRetryFailure(rootFailurePath, configured, err)
 		return
 	}
 	root = filepath.Clean(root)
 	identity, err := m.retryRootIdentity(root)
 	if err != nil {
-		m.recordRootRetryFailure(root, err)
+		m.recordRootRetryFailure(rootFailureDescriptor, root, err)
 		return
 	}
 	if err := m.ensureRootGeneration(ctx, root, identity); err != nil {
-		m.recordRootRetryFailure(root, err)
+		// 種別は ensureRootGeneration が記録済みなので、ここでは log の重複だけを抑える。
+		m.logRootRetryFailure(root, err)
 		return
 	}
 	m.log.Info("worktree root generation registration recovered", "path", root)
@@ -92,11 +106,16 @@ func (m *Manager) retryRootIdentity(root string) (string, error) {
 	return identity, nil
 }
 
-// recordRootRetryFailure は再試行の失敗をrootErrorへ反映し、理由が変わらない連続失敗はログを1回に抑える。
-func (m *Manager) recordRootRetryFailure(root string, err error) {
+// recordRootRetryFailure は再試行の失敗を種別つきでrootErrorへ反映し、ログの重複を抑えて記録する。
+func (m *Manager) recordRootRetryFailure(kind, root string, err error) {
+	m.setRootError(kind, err.Error())
+	m.logRootRetryFailure(root, err)
+}
+
+// logRootRetryFailure は再試行の失敗を記録し、理由が変わらない連続失敗はログを1回に抑える。
+func (m *Manager) logRootRetryFailure(root string, err error) {
 	message := err.Error()
 	m.mu.Lock()
-	m.rootError = message
 	repeated := m.rootRetryLogged == message
 	m.rootRetryLogged = message
 	m.mu.Unlock()
@@ -106,9 +125,10 @@ func (m *Manager) recordRootRetryFailure(root string, err error) {
 	m.log.Error("retry worktree root generation registration failed", "path", root, "error", err)
 }
 
-func (m *Manager) setRootError(message string) {
+// setRootError は失敗の本文と、doctor が対処を分けるための種別を対で置き換える。
+func (m *Manager) setRootError(kind, message string) {
 	m.mu.Lock()
-	m.rootError = message
+	m.rootError, m.rootErrorKind = message, kind
 	m.mu.Unlock()
 }
 

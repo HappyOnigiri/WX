@@ -52,7 +52,14 @@ READMEは`releases/latest/download/`の固定URLを案内し、インストー�
 LaunchAgentの登録が生きていないか別パスを指している場合は、`daemon install`のbootoutより先に`daemon stop`の完了を確認し、停止が失敗したらバイナリを置き換えない。
 登録・起動・再起動が失敗した場合は配置済みのバイナリを残して復旧コマンドを表示する。
 LaunchAgentに登録されるのは`launchd.ResolveBinary`がPATHから解決した`wx`なので、インストーラーは配置先をPATHの先頭に置いて`daemon install`を呼び、別のインストール先が登録されるのを防ぐ。
-シェル設定とエージェントのhook設定は変更しない。
+初回インストールで端末があるときだけ`wx setup`を対話で通し、利用者が「おすすめ設定」を選べばシェル起動ファイルへのPATH追記とエージェントのhook登録まで適用する。
+更新と非対話のインストールでは`wx setup --update`だけを呼び、シェル設定とhook設定は変更しない。
+
+表示言語を含め、利用者への質問はインストーラーではなく`wx setup`が持つ。
+選択肢の見え方を1箇所へ揃えるためで、インストーラーは初回に言語を書き込まない。
+書き込むと設定済みと判定され、setupの言語の質問が出なくなる。
+その代わり初回インストールではsetupが始まるまでの出力が英語になり、以降の案内はsetupが保存した値を読み戻して出す。
+更新では既存のbinaryか`config.yaml`から読んだ言語を最初から使う。
 
 開発用checkoutの`make install`はバイナリを置くだけなので、daemonの登録と更新反映は`wx daemon install`・`wx daemon restart`を自分で実行する。
 
