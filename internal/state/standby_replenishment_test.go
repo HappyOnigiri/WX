@@ -301,7 +301,7 @@ func TestRetryStandbyReplenishmentRefusesAnActiveClean(t *testing.T) {
 	if err := store.SuspendReplenish(ctx, "workspace", SuspendReplenishReasonStandbyFailure, "job-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.BeginCleanRun(ctx, "clean", "normal", nil, nil); err != nil {
+	if _, _, err := store.BeginCleanRun(ctx, CleanRun{ID: "clean", Mode: "normal"}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RetryStandbyReplenishment(ctx, "workspace"); !errors.Is(err, ErrCleanInProgress) {

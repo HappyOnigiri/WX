@@ -92,6 +92,7 @@ func clearChoices(l *i18n.Localizer) []choice {
 		{label: l.Localize("dashboard.clear_default", nil)},
 		{label: l.Localize("dashboard.clear_preview_standby", nil), value: "--standby --dry-run"},
 		{label: l.Localize("dashboard.clear_standby", nil), value: "--standby"},
+		{label: l.Localize("dashboard.clear_standby_refill", nil), value: "--standby --replenish"},
 		{label: l.Localize("dashboard.custom_arguments", nil), input: true},
 	}
 }
