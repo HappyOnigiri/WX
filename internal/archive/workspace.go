@@ -21,10 +21,10 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
-// workspaceSnapshotDirectory は worktree root 内に置く。pin 済み root descriptor、
+// WorkspaceSnapshotDirectory は worktree root 内に置く。pin 済み root descriptor、
 // holdVerifiedRootForPath の削除前検査、下の決定的なパス再計算はすべてこの root を基準にする。
-// "_" 接頭辞により orphan scan の対象外になる。scan は "_" で始まらない最上位項目を workspace とみなす。
-const workspaceSnapshotDirectory = "_recovery/workspace-snapshots"
+// "_" 接頭辞により orphan scan の対象外になる。scan は "_" で始まらない最上位項目を workspace とみなし、使用量測定の降下範囲と登録外実体の列挙も同じ綴りを要するため公開する。
+const WorkspaceSnapshotDirectory = "_recovery/workspace-snapshots"
 
 // ErrWorkspaceSnapshotIntegrity は archive 本文の破損・置換・読み取り障害を表す。
 // 期限切れや metadata 不足とは区別する。呼び出し元はこれを見て、新しい worktree への自動 fresh 再開へ倒さない失敗として扱う。
@@ -56,7 +56,7 @@ func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot, rootID 
 	if err := verifyPinnedRootPath(ownershipRoot, owner); err != nil {
 		return state.WorkspaceSnapshot{}, err
 	}
-	if err := owner.MkdirAll(filepath.FromSlash(workspaceSnapshotDirectory), 0o700); err != nil {
+	if err := owner.MkdirAll(filepath.FromSlash(WorkspaceSnapshotDirectory), 0o700); err != nil {
 		return state.WorkspaceSnapshot{}, fmt.Errorf("create workspace recovery directory safely: %w", err)
 	}
 	root, rootErr := filepath.Abs(filepath.Clean(ownershipRoot))
@@ -121,7 +121,7 @@ func SnapshotWorkspaceAt(ctx context.Context, bundleRoot, ownershipRoot, rootID 
 		return state.WorkspaceSnapshot{}, err
 	}
 	keepTemporary = false
-	if directory, err := owner.Open(filepath.FromSlash(workspaceSnapshotDirectory)); err == nil {
+	if directory, err := owner.Open(filepath.FromSlash(WorkspaceSnapshotDirectory)); err == nil {
 		err = directory.Sync()
 		_ = directory.Close()
 		if err != nil {
@@ -536,7 +536,7 @@ func DeleteWorkspaceSnapshotAt(ctx context.Context, ownershipRoot string, owner 
 	if err := verifyPinnedRootPath(ownershipRoot, owner); err != nil {
 		return err
 	}
-	if directory, err := owner.Open(filepath.FromSlash(workspaceSnapshotDirectory)); err == nil {
+	if directory, err := owner.Open(filepath.FromSlash(WorkspaceSnapshotDirectory)); err == nil {
 		syncErr := directory.Sync()
 		_ = directory.Close()
 		return syncErr
@@ -631,7 +631,7 @@ func verifyWorkspaceSnapshotDigest(ctx context.Context, file *os.File, snapshot 
 
 func workspaceSnapshotRelativePath(sessionID string) string {
 	name := domain.StableID("workspace-snapshot", sessionID) + ".tar"
-	return path.Join(workspaceSnapshotDirectory, name)
+	return path.Join(WorkspaceSnapshotDirectory, name)
 }
 
 func normalizeWorkspaceExclusions(values []string) ([]string, error) {

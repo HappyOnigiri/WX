@@ -36,7 +36,7 @@ func TestPrintVerboseStatusRetainsDetailsAndUnknownFields(t *testing.T) {
 		"archived_session_details": map[string]any{"count": 434, "earliest_archived_at": "2026-08-01T00:00:00Z", "latest_expires_at": "2026-10-01T00:00:00Z"},
 		"job_details":              map[string]any{"pending": 1, "running": 0, "failed": 2, "discarded": 3},
 		"snapshot_details":         map[string]any{"count": 2, "earliest_expiry": "2026-09-06T00:00:00Z"},
-		"worktree_roots":           []map[string]any{{"path": "/repo/wx", "active": false, "bytes": 123, "allocated_bytes": 456, "shared_bytes": 400, "exclusive_bytes": 56, "measurement": "st_blocks_x_512", "error": ""}},
+		"worktree_roots":           []map[string]any{{"path": "/repo/wx", "active": false, "bytes": 123, "allocated_bytes": 456, "unmanaged_allocated_bytes": 789, "shared_bytes": 400, "exclusive_bytes": 56, "measurement": "st_blocks_x_512", "error": ""}},
 		"retention_seconds":        map[string]any{"hot_standby": 604800, "ended_worktree": 3600, "quarantined": 86400, "recovery_snapshot": 0, "expired_session_tombstone": 31536000, "failed_job": 1, "event_log": 2, "lease_ttl": 259200},
 		"quarantine":               []map[string]any{{"id": "q1", "path": "/bad/one", "failure_code": "OWNERSHIP"}, {"id": "q2", "path": "/bad/two", "failure_code": "OWNERSHIP"}},
 		"new_top_level":            map[string]any{"answer": 0},
@@ -46,7 +46,7 @@ func TestPrintVerboseStatusRetainsDetailsAndUnknownFields(t *testing.T) {
 	got := output.String()
 	for _, want := range []string{
 		"Workspaces", "FAILED (FAILED + QUARANTINED)", "LAST USED", "2026-09-05T00:02:00Z", "Repositories", "Sessions", "Daemon", "Config", "Backup", "Pool", "Jobs", "Snapshots", "Storage", "Retention", "Quarantine",
-		"future: kept", "123 bytes", "456 bytes", "604800s (7 days)", "q1 —    OWNERSHIP /bad/one", "new_top_level.answer: 0",
+		"future: kept", "123 bytes", "456 bytes", "Unmanaged: 789 bytes", "604800s (7 days)", "q1 —    OWNERSHIP /bad/one", "new_top_level.answer: 0",
 		// 取り消しは failed と別の行にし、Total では両方を数える。
 		"Discarded: 3", "Total: 6",
 		"Archived: 434 (earliest archived 2026-08-01T00:00:00Z, latest expiry 2026-10-01T00:00:00Z)",
@@ -58,6 +58,10 @@ func TestPrintVerboseStatusRetainsDetailsAndUnknownFields(t *testing.T) {
 	// last_used_at は既知キーなので、列として出るだけで Additional 側には現れない。
 	if strings.Contains(got, "workspaces[0].last_used_at") {
 		t.Fatalf("known workspace key leaked into additional fields:\n%s", got)
+	}
+	// Unmanaged は既知キーなので、Storage 節に出るだけで Additional 側へは重ねない。
+	if strings.Contains(got, "worktree_roots[0].unmanaged_allocated_bytes") {
+		t.Fatalf("the unmanaged field leaked into additional fields:\n%s", got)
 	}
 	// base_oids は表の列から外したが既知キーのままなので、どこにも出ない。
 	if strings.Contains(got, "sessions[0].base_oids") || strings.Contains(got, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") {

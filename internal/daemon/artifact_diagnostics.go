@@ -121,10 +121,9 @@ func (m *Manager) artifactOwnershipReport(ctx context.Context) artifactReport {
 		report.Errors = append(report.Errors, err.Error())
 		return report
 	}
-	expectedPaths := map[string]state.SlotArtifact{}
+	expectedPaths := expectedSlotPaths(artifacts)
 	for _, artifact := range artifacts {
 		clean := filepath.Clean(artifact.Path)
-		expectedPaths[clean] = artifact
 		if artifact.State == "ARCHIVED" || artifact.State == "REMOVING" {
 			continue
 		}
@@ -138,6 +137,17 @@ func (m *Manager) artifactOwnershipReport(ctx context.Context) artifactReport {
 	m.appendUnknownRootPaths(ctx, &report, expectedPaths)
 	m.appendRecoveryRefIssues(ctx, &report)
 	return report
+}
+
+// expectedSlotPaths は DB が説明する slot 実体の絶対 path 集合を返す。
+// state で絞らないのは、回収途中（実体は消したが ARCHIVED の記録前）の登録を登録外と読み替えないためである。
+// doctor の照合と登録外実体の列挙が同じ集合を見るよう、判定の出所をここ 1 か所にする。
+func expectedSlotPaths(artifacts []state.SlotArtifact) map[string]state.SlotArtifact {
+	expected := make(map[string]state.SlotArtifact, len(artifacts))
+	for _, artifact := range artifacts {
+		expected[filepath.Clean(artifact.Path)] = artifact
+	}
+	return expected
 }
 
 func (m *Manager) appendUnknownRootPaths(ctx context.Context, report *artifactReport, expectedPaths map[string]state.SlotArtifact) {

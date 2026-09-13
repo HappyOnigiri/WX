@@ -157,9 +157,9 @@ func (m *Manager) rootPathsFromStore(ctx context.Context) ([]string, error) {
 	return paths, err
 }
 
-func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
-	// 列挙単位は<workspace-id>/<slot-id>または_unbound/<slot-id>のslot directoryである。
-	// configurable root内の無関係なdirectoryをartifactと誤認しないよう、namespaceの形も検証する。
+// withVerifiedRoot は root 世代を pin し、descriptor と path 名が同じ namespace を指すことを確かめて fn を呼ぶ。
+// 列挙と削除を同じ descriptor の上で閉じるため、pin の作法を 1 か所にまとめている。
+func (m *Manager) withVerifiedRoot(root string, fn func(owner *os.Root) error) error {
 	root = filepath.Clean(root)
 	m.mu.RLock()
 	active, known := m.roots[root]
@@ -172,16 +172,37 @@ func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
 		_, release, err = m.existingRootDescriptor(root)
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer release()
 	owner := m.rootHandleForRoot(root)
 	if owner == nil {
-		return nil, fmt.Errorf("%w: root descriptor is unavailable", state.ErrOwnership)
+		return fmt.Errorf("%w: root descriptor is unavailable", state.ErrOwnership)
 	}
 	if err := verifyRootDescriptorPath(root, owner); err != nil {
+		return err
+	}
+	return fn(owner)
+}
+
+func (m *Manager) ownedRootArtifactPaths(root string) ([]string, error) {
+	root = filepath.Clean(root)
+	var paths []string
+	err := m.withVerifiedRoot(root, func(owner *os.Root) error {
+		var listErr error
+		paths, listErr = ownedRootArtifactPathsAt(owner, root)
+		return listErr
+	})
+	if err != nil {
 		return nil, err
 	}
+	return paths, nil
+}
+
+// ownedRootArtifactPathsAt は pin 済み root 上の slot directory を列挙する。
+// 列挙単位は<workspace-id>/<slot-id>または_unbound/<slot-id>のslot directoryである。
+// configurable root内の無関係なdirectoryをartifactと誤認しないよう、namespaceの形も検証する。
+func ownedRootArtifactPathsAt(owner *os.Root, root string) ([]string, error) {
 	entries, err := fs.ReadDir(owner.FS(), ".")
 	if errors.Is(err, os.ErrNotExist) {
 		entries = nil

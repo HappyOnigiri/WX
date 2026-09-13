@@ -140,7 +140,7 @@ func TestArchivePathAndWorkspaceRuleHelpers(t *testing.T) {
 	if !workspacePathContainsExclusion("repo", []string{"repo/file"}) || workspacePathContainsExclusion("repo/file", []string{"repo"}) {
 		t.Fatal("workspace exclusion ancestor boundary failed")
 	}
-	if got := workspaceSnapshotRelativePath("session"); got != path.Join(workspaceSnapshotDirectory, domain.StableID("workspace-snapshot", "session")+".tar") {
+	if got := workspaceSnapshotRelativePath("session"); got != path.Join(WorkspaceSnapshotDirectory, domain.StableID("workspace-snapshot", "session")+".tar") {
 		t.Fatalf("snapshot relative path=%q", got)
 	}
 }
