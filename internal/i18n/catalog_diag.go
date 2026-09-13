@@ -158,6 +158,22 @@ var diagCatalog = map[string]Entry{
 	"diag.standby.job_replenishment":  {EN: "standby replenishment job {{.Detail}}", JA: "standby 補充 job {{.Detail}}"},
 	"diag.standby.job_prepare":        {EN: "prepare job {{.Detail}}", JA: "prepare job {{.Detail}}"},
 
+	// diag.capacity.* は準備前に見積もった volume 別の必要容量である。
+	"diag.capacity.workspaces_unreadable": {EN: "the preparation capacity checks could not read registered workspaces", JA: "準備容量の検査で登録済み workspace を読み取れません"},
+	"diag.capacity.none":                  {EN: "no registered workspace needs a preparation capacity check", JA: "容量検査が必要な登録済み workspace はありません"},
+	"diag.capacity.unchecked":             {EN: "the preparation capacity could not be estimated", JA: "準備容量を見積もれません"},
+	"diag.capacity.ok":                    {EN: "the next worktree fits the available preparation capacity", JA: "次の worktree は利用可能な準備容量に収まります"},
+	"diag.capacity.insufficient":          {EN: "the next worktree cannot be prepared with the available capacity", JA: "利用可能な容量では次の worktree を準備できません"},
+	"diag.capacity.warm_short":            {EN: "the configured standby capacity does not fit on this volume", JA: "設定された standby 容量がこの volume に収まりません"},
+	"diag.capacity.sparse":                {EN: "preparation capacity was measured but sparse checkout makes it non-blocking", JA: "準備容量を測定しましたが sparse checkout のため block には使いません"},
+	"diag.capacity.ok_cause":              {EN: "one worktree for {{.Root}} needs {{.Required}} and the volume has {{.Free}} free", JA: "{{.Root}} の worktree 1 件には {{.Required}} が必要で、volume の空きは {{.Free}} です"},
+	"diag.capacity.insufficient_cause":    {EN: "one worktree for {{.Root}} needs {{.Required}} on {{.Target}}, but only {{.Free}} is free", JA: "{{.Target}} の {{.Root}} 用 worktree 1 件には {{.Required}} が必要ですが、空きは {{.Free}} だけです"},
+	"diag.capacity.warm_cause":            {EN: "one worktree needs {{.One}} and {{.Count}} warm slot(s) need {{.Warm}}, while {{.Target}} has {{.Free}} free", JA: "worktree 1 件には {{.One}}、warm slot {{.Count}} 件には {{.Warm}} が必要ですが、{{.Target}} の空きは {{.Free}} です"},
+	"diag.capacity.sparse_cause":          {EN: "the estimate for {{.Root}} includes the full tree while sparse checkout may materialize fewer paths", JA: "{{.Root}} の見積りは full tree を含みますが、sparse checkout では実体化する path が少ない可能性があります"},
+	"diag.capacity.action_unchecked":      {EN: "fix the reported workspace or repository problem, then run wx doctor again", JA: "報告された workspace または repository の問題を直し、wx doctor を再実行してください"},
+	"diag.capacity.action_none":           {EN: "no action is required", JA: "対処は不要です"},
+	"diag.capacity.action_free":           {EN: "free space on {{.Target}}, then retry the worktree preparation", JA: "{{.Target}} の空きを増やしてから worktree の準備を再試行してください"},
+
 	// diag.job.* は失敗した job の原因を、記録されている項目の有無で組み立てる。
 	// Operation は呼び出し側が作る入れ子 message で、Reason は記録された失敗理由の原文である。
 	"diag.job.failed_code_reason":  {EN: "{{.Operation}} failed with {{.Code}}: {{.Reason}}", JA: "{{.Operation}} が {{.Code}} で失敗しました: {{.Reason}}"},
@@ -247,6 +263,9 @@ var diagCatalog = map[string]Entry{
 	"diag.detail.slot_state":                {EN: "slot state {{.State}}", JA: "slot の状態 {{.State}}"},
 	"diag.detail.archives_checked":          {EN: "{{.Count}} archive(s) checked without reading their contents", JA: "{{.Count}} 件の archive を内容を読まずに検査しました"},
 	"diag.detail.submodules_checked":        {EN: "{{.Count}} submodule(s) checked", JA: "{{.Count}} 件の submodule を検査しました"},
+	"diag.detail.capacity_one":              {EN: "one slot: {{.Value}}", JA: "slot 1 件: {{.Value}}"},
+	"diag.detail.capacity_warm":             {EN: "warm_count {{.Count}}: {{.Value}}", JA: "warm_count {{.Count}}: {{.Value}}"},
+	"diag.detail.capacity_repository":       {EN: "repository: worktree {{.Worktree}}, LFS expanded {{.LFS}}, LFS cache {{.Cache}}, missing LFS object(s) {{.Missing}}, CoW avoidable {{.COW}}", JA: "repository: worktree {{.Worktree}}、LFS 展開 {{.LFS}}、LFS cache {{.Cache}}、欠落 LFS object {{.Missing}} 件、CoW 回避可能 {{.COW}}"},
 
 	// diag.action.* の追加分。同じ文面は新規登録せず既存の ID を指す。
 	"diag.action.check_state_db":                     {EN: "check that the state database is readable and writable by you", JA: "状態データベースを自分が読み書きできることを確認してください"},

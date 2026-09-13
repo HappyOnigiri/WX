@@ -65,7 +65,7 @@ Go側に状態のenum型や遷移ガードを作らない。
 - パッケージの責務・依存境界を変えるとき: [責務境界](docs/architecture.md)
 - 起動・hook・返却・snapshot・resumeを扱うとき: [セッションと復元](docs/session-lifecycle.md)
 - CoW・include・linkの準備処理を扱うとき: [worktreeのコピーとリンク](docs/worktree-copy.md)
-- slots/statusの容量・コピー方式の計測を扱うとき: [使用量とCoWの観測](docs/storage-usage.md)
+- slots/statusの容量・コピー方式の計測や準備前診断を扱うとき: [使用量とCoWの観測](docs/storage-usage.md)
 - ジョブ・補充・clear・GC・障害回復を扱うとき: [daemonの補充と回収](docs/daemon-maintenance.md)
 - `wx doctor`の診断・`wx bench`の計測・daemonのrestart/stopを扱うとき: [daemonの診断と再起動](docs/daemon-diagnostics.md)
 - 削除・上書き・所有権検証を扱うとき: [所有権証明](docs/ownership.md)
