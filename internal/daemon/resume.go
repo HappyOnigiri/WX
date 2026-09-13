@@ -179,6 +179,12 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 	notices := &workspace.PrepareNotices{}
 	archiveManager.Preparer.Notices = notices
 	defer func() { m.recordPrepareNotices(notices.Notices()) }()
+	// clean base の worktree add と LFS smudge が始まる前に容量を確認する。
+	// 不足時は RESTORING を FAILED として残し、restore 経路の通常の隔離処理へ
+	// 落とさない。空きを作った後に retry-standby と同じ再実行経路を使える。
+	if err := m.enforcePrepareCapacity(ctx, slotState, w, resolved, repos, m.Config()); err != nil {
+		return err
+	}
 	// multi-repository の workspace archive は、repository の復元で target を変え始めるより前に 1 度だけ検証する。
 	// 検証済み descriptor をそのまま展開へ渡すため、path からの再 open と再 hash は行わない。
 	var verifiedWorkspace *verifiedWorkspaceArchive

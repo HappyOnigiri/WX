@@ -1,0 +1,517 @@
+package workspace
+
+import (
+	"bufio"
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/gitx"
+)
+
+// LFSPointer は Git LFS pointer に含まれる object と展開後の大きさである。
+// pointer ではない blob は容量見積りでこの値を持たない。
+type LFSPointer struct {
+	OID  string
+	Size int64
+}
+
+// LFSObjectInfo は準備時に参照する LFS object の診断情報である。
+// Cached が false の object だけが、準備時に common directory 側へ新たに書かれる。
+type LFSObjectInfo struct {
+	OID       string   `json:"oid"`
+	Size      int64    `json:"size"`
+	Cached    bool     `json:"cached"`
+	CacheSize int64    `json:"cache_size,omitempty"`
+	CachePath string   `json:"cache_path,omitempty"`
+	Paths     []string `json:"paths,omitempty"`
+}
+
+// CapacityEstimate は repository 1 件を 1 slot へ準備する際の、書込み下限である。
+// WorktreeBytes と LFSCacheBytes は異なる volume に載り得るので分けて返す。
+type CapacityEstimate struct {
+	WorktreeBytes     int64           `json:"worktree_bytes"`
+	LFSCacheBytes     int64           `json:"lfs_cache_bytes"`
+	LFSExpandedBytes  int64           `json:"lfs_expanded_bytes"`
+	BlobBytes         int64           `json:"blob_bytes"`
+	TransformedBytes  int64           `json:"transformed_bytes"`
+	COWAvoidableBytes int64           `json:"cow_avoidable_bytes"`
+	LFSObjects        int             `json:"lfs_objects"`
+	MissingLFSObjects int             `json:"missing_lfs_objects"`
+	Sparse            bool            `json:"sparse"`
+	LFS               []LFSObjectInfo `json:"lfs,omitempty"`
+}
+
+type capacityTreeEntry struct {
+	Mode string
+	OID  string
+	Size int64
+	Path string
+}
+
+// maxLFSPointerBytes は pointer として解析する blob の上限で、巨大な誤判定 blob
+// を診断 daemon の一時メモリへ複製しないために置く。
+const maxLFSPointerBytes = 1 << 20
+
+// ParseLFSPointer は pointer の形式を検証し、展開後サイズと SHA-256 object を返す。
+// Git LFS の仕様にない内容は pointer として扱わず、呼び出し側が blob サイズへ
+// 安全に倒せるよう false を返す。
+func ParseLFSPointer(data []byte) (LFSPointer, bool) {
+	version, oidValue, sizeValue := "", "", ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		key, value, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "version":
+			version = strings.TrimSpace(value)
+		case "oid":
+			value = strings.TrimSpace(value)
+			if strings.HasPrefix(value, "sha256:") {
+				oidValue = strings.TrimSpace(strings.TrimPrefix(value, "sha256:"))
+			}
+		case "size":
+			sizeValue = strings.TrimSpace(value)
+		}
+	}
+	if version != "https://git-lfs.github.com/spec/v1" || len(oidValue) != 64 {
+		return LFSPointer{}, false
+	}
+	if _, err := hex.DecodeString(oidValue); err != nil {
+		return LFSPointer{}, false
+	}
+	size, err := strconv.ParseInt(sizeValue, 10, 64)
+	if err != nil || size < 0 {
+		return LFSPointer{}, false
+	}
+	return LFSPointer{OID: "sha256:" + strings.ToLower(oidValue), Size: size}, true
+}
+
+func parseLFSPointer(data []byte) (LFSPointer, bool) { return ParseLFSPointer(data) }
+
+// EstimateCapacity は要求 OID を checkout するために確実に書かれる bytes の下限を
+// Git の tree・属性・source index から組み立てる。検査に失敗した場合は daemon が
+// 準備を拒否せず warn として扱えるよう error を返す。
+func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Repository, oid string) (CapacityEstimate, error) {
+	if p == nil || p.Git == nil {
+		return CapacityEstimate{}, errors.New("capacity estimate requires a Git runner")
+	}
+	oid = strings.TrimSpace(oid)
+	if oid == "" {
+		return CapacityEstimate{}, errors.New("capacity estimate requires a requested object")
+	}
+	tree, err := p.capacityGit(ctx, repo, nil, "ls-tree", "-r", "-l", "-z", oid)
+	if err != nil {
+		return CapacityEstimate{}, fmt.Errorf("list requested tree for capacity estimate: %w", err)
+	}
+	entries, err := parseCapacityTree(tree.Stdout)
+	if err != nil {
+		return CapacityEstimate{}, err
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+	}
+	convertible := map[string]bool{}
+	lfsPaths := map[string]bool{}
+	if len(paths) > 0 {
+		attrs, attrErr := p.capacityGit(ctx, repo, []byte(strings.Join(paths, "\x00")+"\x00"), "check-attr", "--cached", "--all", "--stdin", "-z")
+		if attrErr != nil {
+			return CapacityEstimate{}, fmt.Errorf("read checkout attributes for capacity estimate: %w", attrErr)
+		}
+		convertible = parseCOWConvertiblePaths(attrs.Stdout)
+		lfsPaths = parseLFSFilterPaths(attrs.Stdout)
+	}
+	sourceIndex, err := p.capacityGit(ctx, repo, nil, "ls-files", "--stage", "-z")
+	if err != nil {
+		return CapacityEstimate{}, fmt.Errorf("read source index for capacity estimate: %w", err)
+	}
+	sourceOIDs := parseCOWSourceIndexOIDs(sourceIndex.Stdout)
+	autocrlf, err := p.capacityGit(ctx, repo, nil, "config", "--default", "false", "--get", "core.autocrlf")
+	if err != nil {
+		return CapacityEstimate{}, fmt.Errorf("read core.autocrlf for capacity estimate: %w", err)
+	}
+	sparse, err := p.capacityGit(ctx, repo, nil, "config", "--default", "false", "--get", "core.sparseCheckout")
+	if err != nil {
+		return CapacityEstimate{}, fmt.Errorf("read sparse checkout setting for capacity estimate: %w", err)
+	}
+	targetTracked := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		targetTracked[entry.Path] = true
+	}
+	result := CapacityEstimate{Sparse: gitBoolTrue(sparse.Stdout)}
+	if err := p.addRepositoryCopyBytes(repo, &result, targetTracked); err != nil {
+		return CapacityEstimate{}, fmt.Errorf("inspect repository copy sources for capacity estimate: %w", err)
+	}
+	early := p.capacityEarlyPaths(repo, entries)
+
+	// LFS pointer は blob ごとに一度だけ読み、同じ object を複数 path が参照しても
+	// cache 側の書込みは二重に数えない。
+	blobOIDs := make([]string, 0)
+	seenBlob := map[string]bool{}
+	for _, entry := range entries {
+		if !lfsPaths[entry.Path] || seenBlob[entry.OID] {
+			continue
+		}
+		seenBlob[entry.OID] = true
+		blobOIDs = append(blobOIDs, entry.OID)
+	}
+	pointers, err := p.readCapacityBlobs(ctx, repo, blobOIDs)
+	if err != nil {
+		return CapacityEstimate{}, err
+	}
+	objects := map[string]*LFSObjectInfo{}
+	for _, entry := range entries {
+		result.BlobBytes = addBytes(result.BlobBytes, entry.Size)
+		if convertible[entry.Path] {
+			result.TransformedBytes = addBytes(result.TransformedBytes, entry.Size)
+		}
+		if lfsPaths[entry.Path] {
+			pointer, pointerOK := pointers[entry.OID]
+			written := entry.Size
+			if pointerOK {
+				written = pointer.Size
+				result.LFSExpandedBytes = addBytes(result.LFSExpandedBytes, written)
+				object := objects[pointer.OID]
+				if object == nil {
+					object = &LFSObjectInfo{OID: pointer.OID, Size: pointer.Size, CachePath: lfsCachePath(repo, pointer.OID)}
+					objects[pointer.OID] = object
+				}
+				object.Paths = append(object.Paths, entry.Path)
+			} else {
+				// pointer として読めない blob は smudge 済み等の可能性がある。
+				// 実際に tree にある blob サイズを下限に使い、cache の不足を推測しない。
+				result.LFSExpandedBytes = addBytes(result.LFSExpandedBytes, written)
+			}
+			result.WorktreeBytes = addBytes(result.WorktreeBytes, written)
+			continue
+		}
+		result.WorktreeBytes = addBytes(result.WorktreeBytes, entry.Size)
+	}
+
+	// 変換系属性が一つでもある回は配置方式を最後まで完了できず、後段の
+	// compactWorktree が checkout 済みの bytes を置換する。従って peak の下限を
+	// CoW で割り引けるのは、変換なしで確実に候補を置ける回だけである。
+	canCOW := p.capacityCOWEnabled(repo, strings.TrimSpace(autocrlf.Stdout), convertible, lfsPaths)
+	if canCOW {
+		minSize := int64(p.Config.COWMinSizeKiBForWorkspaceRepository(p.workspaceRootForRepository(repo), repo.RelativePath, string(repo.MainPath))) * 1024
+		for _, entry := range entries {
+			if entry.Mode != "100644" && entry.Mode != "100755" || entry.Size < minSize || sourceOIDs[entry.Path] != entry.OID || early[entry.Path] {
+				continue
+			}
+			result.COWAvoidableBytes = addBytes(result.COWAvoidableBytes, entry.Size)
+			// 配置方式で避けられる bytes だけを worktree の必要量から引く。
+			result.WorktreeBytes -= entry.Size
+		}
+	}
+	for _, object := range objects {
+		cached, size, err := capacityCacheState(object.CachePath)
+		if err != nil {
+			return CapacityEstimate{}, fmt.Errorf("inspect LFS cache object %s: %w", object.OID, err)
+		}
+		object.Cached, object.CacheSize = cached, size
+		if !cached {
+			result.MissingLFSObjects++
+			result.LFSCacheBytes = addBytes(result.LFSCacheBytes, object.Size)
+		}
+		result.LFSObjects++
+		result.LFS = append(result.LFS, *object)
+	}
+	sort.Slice(result.LFS, func(i, j int) bool { return result.LFS[i].OID < result.LFS[j].OID })
+	return result, nil
+}
+
+func gitBoolTrue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "yes", "on", "1":
+		return true
+	default:
+		return false
+	}
+}
+
+// CapacityEstimate は呼び出し側が既存の名前で検索しやすいよう、短い別名も提供する。
+func (p *Preparer) CapacityEstimate(ctx context.Context, repo discovery.Repository, oid string) (CapacityEstimate, error) {
+	return p.EstimateCapacity(ctx, repo, oid)
+}
+
+func (p *Preparer) capacityGit(ctx context.Context, repo discovery.Repository, input []byte, args ...string) (gitx.Result, error) {
+	return p.Git.RunEnvInput(ctx, string(repo.MainPath), nil, input, append([]string{"--no-optional-locks"}, args...)...)
+}
+
+func parseCapacityTree(stdout string) ([]capacityTreeEntry, error) {
+	entries := make([]capacityTreeEntry, 0)
+	for _, record := range strings.Split(stdout, "\x00") {
+		if record == "" {
+			continue
+		}
+		header, path, ok := strings.Cut(record, "\t")
+		fields := strings.Fields(header)
+		if !ok || len(fields) < 4 {
+			return nil, errors.New("invalid Git tree entry for capacity estimate")
+		}
+		if fields[1] != "blob" || fields[3] == "-" || fields[0] == "120000" {
+			continue
+		}
+		size, err := strconv.ParseInt(fields[3], 10, 64)
+		if err != nil || size < 0 {
+			return nil, fmt.Errorf("invalid Git tree blob size for %s", path)
+		}
+		if filepath.IsAbs(path) || filepath.Clean(path) != path || path == "." || path == ".." || strings.HasPrefix(path, "../") {
+			return nil, fmt.Errorf("unsafe Git tree path %q", path)
+		}
+		entries = append(entries, capacityTreeEntry{Mode: fields[0], OID: fields[2], Size: size, Path: path})
+	}
+	return entries, nil
+}
+
+func parseLFSFilterPaths(stdout string) map[string]bool {
+	fields := strings.Split(stdout, "\x00")
+	paths := map[string]bool{}
+	for index := 0; index+2 < len(fields); index += 3 {
+		if fields[index+1] == "filter" && fields[index+2] == "lfs" {
+			paths[fields[index]] = true
+		}
+	}
+	return paths
+}
+
+func (p *Preparer) readCapacityBlobs(ctx context.Context, repo discovery.Repository, oids []string) (map[string]LFSPointer, error) {
+	pointers := map[string]LFSPointer{}
+	if len(oids) == 0 {
+		return pointers, nil
+	}
+	input := strings.Join(oids, "\n") + "\n"
+	result, err := p.capacityGit(ctx, repo, []byte(input), "cat-file", "--batch")
+	if err != nil {
+		return nil, fmt.Errorf("read LFS pointer blobs: %w", err)
+	}
+	reader := bufio.NewReader(strings.NewReader(result.Stdout))
+	for _, requested := range oids {
+		header, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("read LFS pointer header for %s: %w", requested, err)
+		}
+		fields := strings.Fields(strings.TrimSpace(header))
+		if len(fields) != 3 || fields[1] != "blob" {
+			return nil, fmt.Errorf("invalid LFS pointer header for %s", requested)
+		}
+		size, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil || size < 0 {
+			return nil, fmt.Errorf("invalid LFS pointer blob size for %s", requested)
+		}
+		if size > maxLFSPointerBytes {
+			if _, err := io.CopyN(io.Discard, reader, size); err != nil {
+				return nil, fmt.Errorf("skip oversized LFS pointer blob for %s: %w", requested, err)
+			}
+			if separator, err := reader.ReadByte(); err != nil || separator != '\n' {
+				return nil, fmt.Errorf("invalid LFS pointer blob separator for %s", requested)
+			}
+			continue
+		}
+		data := make([]byte, size)
+		if _, err := io.ReadFull(reader, data); err != nil {
+			return nil, fmt.Errorf("read LFS pointer blob for %s: %w", requested, err)
+		}
+		if separator, err := reader.ReadByte(); err != nil || separator != '\n' {
+			return nil, fmt.Errorf("invalid LFS pointer blob separator for %s", requested)
+		}
+		if pointer, ok := ParseLFSPointer(data); ok {
+			pointers[requested] = pointer
+		}
+	}
+	return pointers, nil
+}
+
+func (p *Preparer) capacityCOWEnabled(repo discovery.Repository, autocrlf string, convertible, lfs map[string]bool) bool {
+	if !cowAvailable() || p.Config.CopyModeForWorkspaceRepository(p.workspaceRootForRepository(repo), repo.RelativePath, string(repo.MainPath)) == config.CopyModeCopy {
+		return false
+	}
+	if strings.TrimSpace(autocrlf) != "false" || len(convertible) != 0 || len(lfs) != 0 {
+		return false
+	}
+	return true
+}
+
+func (p *Preparer) capacityEarlyPaths(repo discovery.Repository, entries []capacityTreeEntry) map[string]bool {
+	workspaceRoot := p.workspaceRootForRepository(repo)
+	readiness := p.Config.ReadinessForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath))
+	candidates := append(append([]string{}, defaultEarlyPaths...), readiness.EarlyPaths...)
+	early := make(map[string]bool)
+	for _, entry := range entries {
+		base := filepath.Base(entry.Path)
+		if earlyMatch(entry.Path, candidates) || base == ".gitignore" || base == ".gitattributes" {
+			early[entry.Path] = true
+		}
+	}
+	return early
+}
+
+func (p *Preparer) addRepositoryCopyBytes(repo discovery.Repository, estimate *CapacityEstimate, targetTracked map[string]bool) error {
+	plan := &earlyPlan{}
+	if err := p.planIncludes(repo, plan); err != nil {
+		return err
+	}
+	source, err := openPinnedRepositoryRoot(string(repo.MainPath))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = source.Close() }()
+	seen := map[string]bool{}
+	for _, entry := range plan.copies {
+		if entry.directory || seen[entry.path] || targetTracked[entry.path] {
+			continue
+		}
+		seen[entry.path] = true
+		info, err := domain.PhysicalPathInfo(source, entry.path)
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			estimate.WorktreeBytes = addBytes(estimate.WorktreeBytes, info.Size())
+		}
+	}
+	return nil
+}
+
+func lfsCachePath(repo discovery.Repository, oid string) string {
+	value := strings.TrimPrefix(strings.ToLower(oid), "sha256:")
+	if len(value) != 64 {
+		return filepath.Join(string(repo.CommonDir), "lfs", "objects")
+	}
+	return filepath.Join(string(repo.CommonDir), "lfs", "objects", value[:2], value[2:4], value[4:])
+}
+
+func capacityCacheState(path string) (bool, int64, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, 0, nil
+	}
+	return true, info.Size(), nil
+}
+
+func addBytes(current, value int64) int64 {
+	if value < 0 || current > int64(^uint64(0)>>1)-value {
+		return int64(^uint64(0) >> 1)
+	}
+	return current + value
+}
+
+// EstimateRootCopyBytes は非 Git workspace root の copy rule が source から
+// 持ち込む regular file の合計を返す。OptionalCopy の欠落と top-level symlink は
+// materialize と同じく無視し、Copy の欠落や配下の symlink は診断不能として返す。
+func EstimateRootCopyBytes(sourcePath string, rules RootRules) (int64, error) {
+	source, err := OpenPhysicalRoot(sourcePath)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = source.Close() }()
+	total := int64(0)
+	seen := map[string]bool{}
+	for _, item := range rules.Copy {
+		clean, err := safeRelative(item)
+		if err != nil {
+			return 0, err
+		}
+		item = clean
+		if seen[item] {
+			continue
+		}
+		seen[item] = true
+		if skip, err := skipRootCopySymlink(source, item, false); err != nil {
+			return 0, err
+		} else if skip {
+			continue
+		}
+		var itemErr error
+		total, itemErr = addRootCopyPath(source, item, total)
+		if itemErr != nil {
+			return 0, itemErr
+		}
+	}
+	for _, item := range rules.OptionalCopy {
+		clean, err := safeRelative(item)
+		if err != nil {
+			return 0, err
+		}
+		item = clean
+		if seen[item] {
+			continue
+		}
+		seen[item] = true
+		if skip, err := skipRootCopySymlink(source, item, true); err != nil {
+			return 0, err
+		} else if skip {
+			continue
+		}
+		var itemErr error
+		total, itemErr = addRootCopyPath(source, item, total)
+		if itemErr != nil {
+			return 0, itemErr
+		}
+	}
+	return total, nil
+}
+
+func skipRootCopySymlink(source *os.Root, relative string, optional bool) (bool, error) {
+	info, err := source.Lstat(relative)
+	if errors.Is(err, os.ErrNotExist) && optional {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.Mode()&os.ModeSymlink != 0, nil
+}
+
+func addRootCopyPath(source *os.Root, relative string, total int64) (int64, error) {
+	relative = filepath.Clean(relative)
+	if relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+		return 0, fmt.Errorf("unsafe workspace root copy path %q", relative)
+	}
+	info, err := domain.PhysicalPathInfo(source, relative)
+	if err != nil {
+		return 0, err
+	}
+	if info.Mode().IsRegular() {
+		return addBytes(total, info.Size()), nil
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("workspace root copy source %s is not a regular file", relative)
+	}
+	directory, _, err := domain.OpenDirectoryAt(source, relative)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = directory.Close() }()
+	names, err := directory.Readdirnames(-1)
+	if err != nil {
+		return 0, err
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		total, err = addRootCopyPath(source, filepath.Join(relative, name), total)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return total, nil
+}

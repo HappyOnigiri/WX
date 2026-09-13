@@ -69,3 +69,20 @@ Disk行に付く`managed`は管理対象であることを示し、専有分と�
 `du -sh`はcloneを割り引かずwxが測らない実体も数えるので、必ずDisk行より大きく出る。
 差の内訳は、main worktreeと共有しているblock（slotを消しても解放されない）、`Unmanaged`に出る予約namespace配下の登録外の割当量、
 そして予約namespaceの外に置かれたwx管理外の実体である。最後の1つはwxが測らないので、差は`wx`の数字だけでは説明し切れない。
+
+## 準備前の容量診断
+
+準備を始める前に、要求された tree を checkout したとき確実に書かれる bytes の下限を見積もり、worktree root と repository の Git common directory を volume ごとに空き容量と比較する。
+LFS の `filter` 属性が付いた path は tree にある pointer の大きさではなく、pointer が示す展開後の object size を worktree 側へ積む。
+common directory の LFS cache に無い object は、その object size を cache 側の必要量として別に積む。
+同じ object を複数 path が参照しても cache の書込みは一度だけ数える。
+
+見積もりは下限なので、submodule の先の tree や準備中に変わり得る実体は含めない。
+変換属性や LFS がある回は checkout 後の置換方式になり得るため、peak を CoW 共有で割り引かない。
+変換なしで配置方式を最後まで完了できる候補だけ、既存 source index と同じ blob を共有できる分を worktree の必要量から除く。
+sparse checkout は実体化 path が tree 全体より少なくなり得るため、測定結果を doctor の参考情報に留め、準備を容量だけで拒否しない。
+
+空き容量は path 名を辿り直さず、既に pin した root または開いた common directory の descriptor から `f_bavail × f_bsize` で得る。
+これは非特権プロセスが利用できる量であり、予約領域を含む `f_bfree` より準備の判定に適している。
+容量不足を検出した準備は書込み開始前に FAILED として終え、途中失敗の隔離や自動再試行へ進めない。
+Git・属性・statfs の読み出しに失敗して見積もれない回は、診断へ警告を残したうえで従来の準備を続ける。
