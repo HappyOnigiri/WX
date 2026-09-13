@@ -124,6 +124,9 @@ run実行中は`assertNoActiveClean`が貸出・復元・待機用作成の書�
 待機用slotを対象に含めるのは`--standby`と`--all`だけで、削除後に補充を停止するのもその範囲に限る。
 安全な処理境界の待機は`cleanBoundaryWait`で制限し、貸出を断ったまま無期限に待たない。
 
+終了worktreeの候補からは、未保全のsubmodule作業を記録したslotを外す（[所有権証明](ownership.md)）。
+除外は候補選択に置き、`wx clear`・`wx forget`と共有する`ScheduleRemoval`は変えない。自動と明示の削除の境界がそこにあるためである。
+
 GCの候補選択と削除の入口は[`internal/daemon/gc.go`](../internal/daemon/gc.go)で、隔離slotも通常の`REMOVE`で登録範囲を回収する。
 登録だけを根拠に隔離slotを回収することは[`TestGCRemovesRegisteredQuarantineWithoutCachedIdentity`](../internal/daemon/gc_integration_test.go)が固定している。
 

@@ -40,9 +40,10 @@ func beginCleanWithoutDriver(t *testing.T, manager *Manager, store *state.Store,
 	if err != nil {
 		t.Fatal(err)
 	}
-	targets := planCleanTargets(candidates, all, standby)
+	discard := len(discardOption) > 0 && discardOption[0]
+	targets := planCleanTargets(candidates, all, standby, discard)
 	mode := cleanMode(all, standby)
-	if len(discardOption) > 0 && discardOption[0] {
+	if discard {
 		mode += "-discard"
 	}
 	runID, _, err := store.BeginCleanRun(ctx, "run", mode, targets, cleanWorkspaces(targets, all || standby))
@@ -117,7 +118,7 @@ func TestPlanCleanTargetsSeparatesUnusedInUseAndUnprovableSlots(t *testing.T) {
 		{SlotID: "restoring", SlotState: "RESTORING", SessionID: "restore", SessionState: "RESTORING", ParentSnapshots: 1},
 		{SlotID: "lost-restore", SlotState: "RESTORING", SessionID: "restore2", SessionState: "RESTORING"},
 	}
-	normal := planCleanTargets(candidates, false, false)
+	normal := planCleanTargets(candidates, false, false, false)
 	// 待機用 slot は貸出前でも残す。世代遅れの STALE は再利用されないので待機用として扱わない。
 	for _, slotID := range []string{"standby", "replenishing"} {
 		if got := targetByID(normal, slotID); got.State != cleanTargetSkipped || got.Reason == "" {
@@ -138,7 +139,7 @@ func TestPlanCleanTargetsSeparatesUnusedInUseAndUnprovableSlots(t *testing.T) {
 		t.Fatalf("in-use slot in normal mode=%+v", got)
 	}
 	// --standby は待機用だけを加え、使用中の session には触れない。
-	standby := planCleanTargets(candidates, false, true)
+	standby := planCleanTargets(candidates, false, true, false)
 	for _, slotID := range []string{"standby", "replenishing"} {
 		if got := targetByID(standby, slotID).State; got != cleanTargetPending {
 			t.Fatalf("--standby target %s state=%s", slotID, got)
@@ -147,7 +148,7 @@ func TestPlanCleanTargetsSeparatesUnusedInUseAndUnprovableSlots(t *testing.T) {
 	if got := targetByID(standby, "active"); got.State != cleanTargetSkipped || got.Reason == "" {
 		t.Fatalf("in-use slot in standby mode=%+v", got)
 	}
-	all := planCleanTargets(candidates, true, false)
+	all := planCleanTargets(candidates, true, false, false)
 	for _, slotID := range []string{"standby", "replenishing"} {
 		if got := targetByID(all, slotID).State; got != cleanTargetPending {
 			t.Fatalf("--all target %s state=%s", slotID, got)
@@ -659,7 +660,7 @@ func TestPlanCleanTargetsGuideDetachedLeasesToRelease(t *testing.T) {
 		{SlotID: "detached", SlotState: "LEASED", SessionID: "path-lease", SessionState: "ACTIVE", LeaseKind: state.LeaseKindPath},
 		{SlotID: "shell", SlotState: "LEASED", SessionID: "shell-lease", SessionState: "ACTIVE", LeaseKind: state.LeaseKindShell},
 		{SlotID: "agent", SlotState: "LEASED", SessionID: "agent-session", SessionState: "ACTIVE", LeaseKind: state.LeaseKindAgent},
-	}, false, false)
+	}, false, false, false)
 	if got := targetByID(targets, "detached"); got.State != cleanTargetSkipped || !strings.Contains(got.Reason, "wx release path-lease") {
 		t.Fatalf("detached lease target=%+v", got)
 	}
@@ -671,7 +672,7 @@ func TestPlanCleanTargetsGuideDetachedLeasesToRelease(t *testing.T) {
 	// --all では貸出も対象に入る。
 	all := planCleanTargets([]state.CleanCandidate{
 		{SlotID: "detached", SlotState: "LEASED", SessionID: "path-lease", SessionState: "ACTIVE", LeaseKind: state.LeaseKindPath},
-	}, true, false)
+	}, true, false, false)
 	if got := targetByID(all, "detached").State; got != cleanTargetPending {
 		t.Fatalf("--all detached lease state=%s", got)
 	}

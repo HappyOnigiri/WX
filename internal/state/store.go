@@ -36,7 +36,7 @@ type Store struct {
 	backupStepBarrier func()
 }
 
-const SchemaVersion = 10
+const SchemaVersion = 12
 
 // ErrPreviousWorktreeLayout は、wx が意図的に migration path を持たない旧 worktree layout の state database を示す。
 var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree layout")
@@ -53,7 +53,7 @@ var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree l
 // 23 は workspace_details へ workspace kind と repository membership の
 // id/main_path/relative_path 一覧を加えた。repository_details は従来どおり。
 // commentlint:allow-long -- schema 版ごとの変更点を辿れるようにするため
-const JSONSchemaVersion = 23
+const JSONSchemaVersion = 24
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

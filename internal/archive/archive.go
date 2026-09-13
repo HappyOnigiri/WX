@@ -33,40 +33,49 @@ func (m *Manager) lockSlot(ctx context.Context) (context.Context, func(), error)
 
 // SnapshotWithPersistence は、正確な ref 名と object ID の永続化後に recovery ref を公開する。
 // 永続化失敗時は ref を公開せず、公開失敗時は永続行を残すので、reconcile は未完了 archive と無関係な ref を区別できる。
-func (m *Manager) SnapshotWithPersistence(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time, persist func(state.Snapshot) error) (state.Snapshot, error) {
+// 第 2 戻り値は snapshot に入らなかった submodule の作業で、呼び出し元はこれを持つ slot を自動回収から外す。
+func (m *Manager) SnapshotWithPersistence(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time, persist func(state.Snapshot) error) (state.Snapshot, []UnsavedSubmodule, error) {
 	ctx, releaseSlot, err := m.lockSlot(ctx)
 	if err != nil {
-		return state.Snapshot{}, err
+		return state.Snapshot{}, nil, err
 	}
 	defer releaseSlot()
 	var snapshot state.Snapshot
+	var unsaved []UnsavedSubmodule
 	if err := m.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(ctx context.Context) error {
 		var err error
-		snapshot, err = m.snapshotObjects(ctx, repo, worktree, sessionID, expiry)
+		snapshot, unsaved, err = m.snapshotObjects(ctx, repo, worktree, sessionID, expiry)
 		return err
 	}); err != nil {
-		return state.Snapshot{}, err
+		return state.Snapshot{}, nil, err
 	}
 	if persist != nil {
 		if err := persist(snapshot); err != nil {
-			return state.Snapshot{}, err
+			return state.Snapshot{}, nil, err
 		}
 	}
 	if err := m.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(ctx context.Context) error {
 		return m.publishSnapshotRefs(ctx, repo, snapshot)
 	}); err != nil {
-		return state.Snapshot{}, err
+		return state.Snapshot{}, nil, err
 	}
-	return snapshot, nil
+	return snapshot, unsaved, nil
 }
 
-func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, error) {
+// addWorktreeArgs は、一時 index へ worktree の現状を取り込む add の引数を返す。
+// --sparse が無いと sparse 範囲外に実体があるだけで add が逸脱として失敗し、そこでの作業を保存できない。
+// skip-worktree 付きの path は --sparse でも HEAD の内容のまま残るため、flag 付き path を外す方針と競合しない。
+func addWorktreeArgs() []string {
+	return []string{"add", "-A", "--sparse"}
+}
+
+func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, []UnsavedSubmodule, error) {
 	if m.Preparer == nil {
-		return state.Snapshot{}, errors.New("snapshot requires a workspace preparer")
+		return state.Snapshot{}, nil, errors.New("snapshot requires a workspace preparer")
 	}
 	worktreeIdentity, err := m.Preparer.WorktreeIdentity(worktree)
 	if err != nil {
-		return state.Snapshot{}, fmt.Errorf("%w: capture worktree identity before snapshot: %w", state.ErrOwnership, err)
+		return state.Snapshot{}, nil, fmt.Errorf("%w: capture worktree identity before snapshot: %w", state.ErrOwnership, err)
 	}
 	worktreeValue := func(env []string, args ...string) (string, error) {
 		result, runErr := m.Preparer.RunGitInWorktree(ctx, worktree, worktreeIdentity, env, nil, args...)
@@ -80,76 +89,80 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	}
 	head, err := worktreeValue(nil, "rev-parse", "HEAD")
 	if err != nil {
-		return state.Snapshot{}, err
+		return state.Snapshot{}, nil, err
 	}
 	headRef := fmt.Sprintf("refs/wx/recovery/%s/%s/head", sessionID, repo.ID)
 	worktreeRef := fmt.Sprintf("refs/wx/recovery/%s/%s/worktree", sessionID, repo.ID)
 	indexRef := fmt.Sprintf("refs/wx/recovery/%s/%s/index", sessionID, repo.ID)
+	gitStateRef := fmt.Sprintf("refs/wx/recovery/%s/%s/gitstate", sessionID, repo.ID)
 	id := domain.StableID("snapshot", sessionID, string(repo.ID))
 	created := time.Now().UTC()
+	// 停止中 rebase の制御ファイルは worktree 専用 gitdir にあり tree にも index にも現れないため、clean 判定より前に別途採取する。
+	// `rebase -i` の edit 停止は working tree が clean なので、下の短絡経路にも同じ値を載せる必要がある。
+	gitState, err := captureGitState(worktreeValue, worktreeRun, head)
+	if err != nil {
+		return state.Snapshot{}, nil, fmt.Errorf("capture in-progress rebase state: %w", err)
+	}
+	if gitState == "" {
+		gitStateRef = ""
+	}
 	// clean worktree は HEAD の tree と commit で完全に表せるため、新しい object を作らず base OID と ref メタデータだけを記録する。
 	// dirty 経路より多くを clean と判定すると未 snapshot の作業を失うため、次の flag は必須である。
 	// ユーザー設定の status.showUntrackedFiles と submodule.<name>.ignore/diff.ignoreSubmodules は、一時 index の `add -A` が記録する内容を隠し得る。
 	// skip-worktree/assume-unchanged が付いた path は snapshot の対象外（HEAD の内容として扱う）なので、ここでは clean 判定に影響しない。
 	// 両 flag とも index と HEAD の差は隠さないため、status が clean なら flag 付き path に staged 内容が隠れていることもない。
-	// commentlint:allow-long -- 未 snapshot の作業を失わないための判定条件を説明する
-	statusOutput, err := worktreeValue(nil, "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none")
+	// porcelain=v2 は submodule の状態を行ごとの 3 列目に載せる。clean 判定と未保全 submodule の検出を同じ 1 回の出力から行い、
+	// 2 回起動して観測時点がずれた結果、判定と保存の内容が食い違うことを防ぐ。
+	// core.quotePath=false は非 ASCII の path をそのまま読むためで、制御文字を含む path は Git が従来どおり quote する。
+	// commentlint:allow-long -- 未 snapshot の作業を失わないための判定条件と、status を 1 回だけ起動する理由を説明する
+	statusOutput, err := worktreeValue(nil, "-c", "core.quotePath=false", "status", "--porcelain=v2", "--untracked-files=all", "--ignore-submodules=none")
 	if err != nil {
-		return state.Snapshot{}, fmt.Errorf("check worktree cleanliness: %w", err)
+		return state.Snapshot{}, nil, fmt.Errorf("check worktree cleanliness: %w", err)
 	}
+	// 親が gitlink を commit した後は status が clean になるため、検出は clean・dirty の両分岐で走らせる。
+	unsaved := m.unsavedSubmodules(ctx, repo, worktree, worktreeIdentity, statusOutput)
 	if strings.TrimSpace(statusOutput) == "" {
 		headTree, err := worktreeValue(nil, "rev-parse", "HEAD^{tree}")
 		if err != nil {
-			return state.Snapshot{}, fmt.Errorf("resolve clean HEAD tree: %w", err)
+			return state.Snapshot{}, nil, fmt.Errorf("resolve clean HEAD tree: %w", err)
 		}
-		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, GitStateOID: gitState, GitStateRef: gitStateRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, unsaved, nil
 	}
 	indexTree, err := worktreeValue(nil, "write-tree")
 	if err != nil {
-		return state.Snapshot{}, fmt.Errorf("write index tree: %w", err)
+		return state.Snapshot{}, nil, fmt.Errorf("write index tree: %w", err)
 	}
 	flags, err := readIndexFlags(worktreeValue, nil)
 	if err != nil {
-		return state.Snapshot{}, err
+		return state.Snapshot{}, nil, err
 	}
-	tmpFile, err := os.CreateTemp("", ".wx-index-*")
+	tmp, cleanup, err := temporaryIndex("snapshot", ".wx-index-*")
 	if err != nil {
-		return state.Snapshot{}, fmt.Errorf("create temporary snapshot index: %w", err)
+		return state.Snapshot{}, nil, err
 	}
-	tmp := tmpFile.Name()
-	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return state.Snapshot{}, fmt.Errorf("close temporary snapshot index: %w", err)
-	}
-	defer func() { _ = os.Remove(tmp) }()
+	defer cleanup()
 	env := []string{"GIT_INDEX_FILE=" + tmp}
 	if _, err := worktreeRun(env, nil, "read-tree", head); err != nil {
-		return state.Snapshot{}, err
+		return state.Snapshot{}, nil, err
 	}
 	// 一時 index にも元 index と同じ flag を立ててから add するので、flag 付き path は HEAD の内容のまま記録される。
 	// add に pathspec を渡さないのは、pathspec が flag 付き path だけに一致すると git が sparse-checkout の逸脱として exit 1 にするためである。
 	if err := applyIndexFlags(worktreeRun, worktreeValue, env, flags); err != nil {
-		return state.Snapshot{}, err
+		return state.Snapshot{}, nil, err
 	}
-	if _, err := worktreeRun(env, nil, "add", "-A"); err != nil {
-		return state.Snapshot{}, err
+	if _, err := worktreeRun(env, nil, addWorktreeArgs()...); err != nil {
+		return state.Snapshot{}, nil, err
 	}
 	worktreeTree, err := worktreeValue(env, "write-tree")
 	if err != nil {
-		return state.Snapshot{}, err
+		return state.Snapshot{}, nil, err
 	}
-	commitEnv := append([]string(nil), env...)
-	commitEnv = append(commitEnv,
-		"GIT_AUTHOR_NAME=wx", "GIT_AUTHOR_EMAIL=wx@localhost",
-		"GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost",
-		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
-	)
-	commitRes, err := worktreeRun(commitEnv, []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
+	commitRes, err := worktreeRun(recoveryCommitEnv(env), []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
 	if err != nil {
-		return state.Snapshot{}, err
+		return state.Snapshot{}, nil, err
 	}
 	worktreeCommit := strings.TrimSpace(commitRes.Stdout)
-	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, nil
+	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, GitStateOID: gitState, GitStateRef: gitStateRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, unsaved, nil
 }
 
 // recoveryRefTargets は snapshot が公開する ref と object の対応を返し、index tree ref も含める。
@@ -158,6 +171,10 @@ func recoveryRefTargets(snapshot state.Snapshot) map[string]string {
 	targets := map[string]string{snapshot.HeadRef: snapshot.HeadOID, snapshot.WorktreeRef: snapshot.WorktreeOID}
 	if snapshot.IndexRef != "" {
 		targets[snapshot.IndexRef] = snapshot.IndexTreeOID
+	}
+	// 停止中 rebase を保持する commit は復元後の HEAD から到達できないため、ref が無ければ GC が制御ファイルごと回収する。
+	if snapshot.GitStateRef != "" {
+		targets[snapshot.GitStateRef] = snapshot.GitStateOID
 	}
 	return targets
 }
@@ -211,6 +228,31 @@ func (m *Manager) DeleteSnapshotRefs(ctx context.Context, repo discovery.Reposit
 		}
 		return nil
 	})
+}
+
+// temporaryIndex は GIT_INDEX_FILE に渡す空の一時 index を作り、path と後始末を返す。
+// 作成直後の 0 byte file を git は空 index として読むため、呼び出し側は用途に応じて read-tree するか、そのまま積み上げる。
+func temporaryIndex(label, pattern string) (string, func(), error) {
+	file, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return "", nil, fmt.Errorf("create temporary %s index: %w", label, err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", nil, fmt.Errorf("close temporary %s index: %w", label, err)
+	}
+	return path, func() { _ = os.Remove(path) }, nil
+}
+
+// recoveryCommitEnv は recovery commit の author/committer を固定する。
+// SNAPSHOT job の再実行が同じ commit OID を出さないと、SaveSnapshot の ON CONFLICT が不一致として失敗する。
+func recoveryCommitEnv(env []string) []string {
+	return append(append([]string(nil), env...),
+		"GIT_AUTHOR_NAME=wx", "GIT_AUTHOR_EMAIL=wx@localhost",
+		"GIT_COMMITTER_NAME=wx", "GIT_COMMITTER_EMAIL=wx@localhost",
+		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
+	)
 }
 
 func (m *Manager) gitValue(ctx context.Context, dir string, env []string, args ...string) (string, error) {

@@ -102,7 +102,7 @@ func (s *Store) QuarantineMissingRecoveryRef(ctx context.Context, ref string) er
 		return err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT session_id FROM snapshots WHERE head_recovery_ref=? OR worktree_recovery_ref=? OR index_recovery_ref=?`, ref, ref, ref)
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT session_id FROM snapshots WHERE head_recovery_ref=? OR worktree_recovery_ref=? OR index_recovery_ref=? OR git_state_recovery_ref=?`, ref, ref, ref, ref)
 	if err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func (s *Store) QuarantineMissingRecoveryRef(ctx context.Context, ref string) er
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE snapshots SET status='QUARANTINED' WHERE head_recovery_ref=? OR worktree_recovery_ref=? OR index_recovery_ref=?`, ref, ref, ref); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE snapshots SET status='QUARANTINED' WHERE head_recovery_ref=? OR worktree_recovery_ref=? OR index_recovery_ref=? OR git_state_recovery_ref=?`, ref, ref, ref, ref); err != nil {
 		return err
 	}
 	for _, sessionID := range sessions {

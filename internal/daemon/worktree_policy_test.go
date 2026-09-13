@@ -112,9 +112,12 @@ func TestColdPolicyDoesNotLeaseExistingReadySlot(t *testing.T) {
 	if err != nil || lease.SessionID == ready.ID {
 		t.Fatalf("lease=%+v ready=%s err=%v", lease, ready.ID, err)
 	}
-	after, ok, err := store.ReadySlot(ctx, string(w.ID))
-	if err != nil || !ok || after.ID != ready.ID {
-		t.Fatalf("standby changed: %+v err=%v", after, err)
+	// 待機中の slot は貸出に使われない。cold へ変えた workspace の待機枠は 0 になり、
+	// 新規貸出が起こす背景 GC が並走して READY を回収するため、READY のまま残ることは求めない。
+	// 貸出が奪っていないことは owner が付かないことで確かめる（GC は owner を NULL のまま REMOVING にする）。
+	standby, err := store.Slot(ctx, ready.ID)
+	if err != nil || standby.OwnerSessionID != "" || (standby.State != "READY" && standby.State != "REMOVING") {
+		t.Fatalf("standby taken by the cold lease: %+v err=%v", standby, err)
 	}
 }
 

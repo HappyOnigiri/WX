@@ -35,6 +35,8 @@ type CleanCandidate struct {
 	ParentSnapshots int
 	// LeaseKind は貸出の性質で、使用中の slot を残すときの案内先（agent の停止か wx release か）を分けるために使う。
 	LeaseKind string
+	// UnsavedSubmodules は snapshot に入らなかった submodule 作業の記録数で、`--discard` 無しの削除を断る根拠に使う。
+	UnsavedSubmodules int
 }
 
 // CleanTarget は clean run が追跡する 1 対象の永続状態である。
@@ -69,7 +71,8 @@ func (s *Store) CleanCandidates(ctx context.Context) ([]CleanCandidate, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,COALESCE(sl.workspace_id,''),sl.state,COALESCE(sl.owner_session_id,''),COALESCE(se.state,''),rt.path||'/'||sl.rel_path,
  (SELECT COUNT(*) FROM slot_repositories sr WHERE sr.slot_id=sl.id),
  (SELECT COUNT(*) FROM snapshots sn WHERE sn.session_id=COALESCE(se.parent_session_id,'') AND sn.status='ARCHIVED'),
- COALESCE(se.lease_kind,'')
+ COALESCE(se.lease_kind,''),
+ (SELECT COUNT(*) FROM unsaved_submodules us WHERE us.slot_id=sl.id)
  FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN sessions se ON se.id=sl.owner_session_id
  WHERE sl.state<>'ARCHIVED' ORDER BY sl.id`)
 	if err != nil {
@@ -79,7 +82,7 @@ func (s *Store) CleanCandidates(ctx context.Context) ([]CleanCandidate, error) {
 	var out []CleanCandidate
 	for rows.Next() {
 		var c CleanCandidate
-		if err := rows.Scan(&c.SlotID, &c.WorkspaceID, &c.SlotState, &c.SessionID, &c.SessionState, &c.Path, &c.Repositories, &c.ParentSnapshots, &c.LeaseKind); err != nil {
+		if err := rows.Scan(&c.SlotID, &c.WorkspaceID, &c.SlotState, &c.SessionID, &c.SessionState, &c.Path, &c.Repositories, &c.ParentSnapshots, &c.LeaseKind, &c.UnsavedSubmodules); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
