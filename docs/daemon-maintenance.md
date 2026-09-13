@@ -113,6 +113,10 @@ jobはsessionを持たないため保守用の実行枠で走り、利用者向�
 使用中のdetached lease（`wx new`）も、返却と同じtransactionでSNAPSHOTを積まずREMOVEへ載せ、保存待ちを経ずに削除待ちへ進める。
 実行中runへ合流できるのは対象範囲が同じmodeの再実行だけとする。
 
+`--unmanaged`はこのrun機構に載せない。`clean_targets`はslot IDを要求し、登録外の実体は持たないためである。
+専用のRPCで列挙と削除をその場で終えるので、modeも進捗の問い合わせも持たず、`assertNoActiveClean`による貸出の停止も補充停止も伴わない。
+他のmodeとは対象が重ならないので併用は受け付けず、削除後は使用量の測り直しだけを要求する。
+
 終了要求は`--all`だけが`session_termination_requests`へ期限付きで記録し、heartbeatとagent登録の応答でclientへ渡す。
 signalを送るのはclientだけで、daemonは記録されたPIDへ触れない。
 期限内に停止を確認できない対象は失敗として閉じ、遅れた終了は通常の返却へ戻す。

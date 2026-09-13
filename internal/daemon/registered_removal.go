@@ -138,8 +138,24 @@ func (m *Manager) removeGitRegistrationLocked(ctx context.Context, common, targe
 
 // removeRegisteredSnapshot は期限切れの登録済み archive を内容の一致に依存せず削除する。
 func removeRegisteredSnapshot(owner *os.Root, relative string) error {
+	if err := removeOwnedPath(owner, relative); err != nil {
+		if errors.Is(err, errInvalidOwnedPath) {
+			return errors.New("invalid registered snapshot path")
+		}
+		return err
+	}
+	return nil
+}
+
+// errInvalidOwnedPath は root 相対として扱えない path を表す。呼び出し側が対象に応じた文言へ言い換える。
+var errInvalidOwnedPath = errors.New("path is not a root-relative entry")
+
+// removeOwnedPath は pin 済み root の descriptor 相対で 1 件を削除する。
+// 親成分が symlink なら拒否し、root の外へ出る path 名での代替は行わない。
+// ファイルと directory で手順は変わらないため、登録済みの archive と登録外の実体が同じ経路を通る。
+func removeOwnedPath(owner *os.Root, relative string) error {
 	if !filepath.IsLocal(relative) || relative == "." {
-		return errors.New("invalid registered snapshot path")
+		return fmt.Errorf("%w: %s", errInvalidOwnedPath, relative)
 	}
 	if _, err := domain.PhysicalPathInfo(owner, filepath.Dir(relative)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
