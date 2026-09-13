@@ -34,7 +34,7 @@ func TestMeasureRootUsageDetectsClonedAndRewrittenFiles(t *testing.T) {
 	cloneInto(t, mainPath, "shared", slotRepo)
 	cloneInto(t, mainPath, "diverged", slotRepo)
 
-	usage, cache, err := MeasureRootUsage(context.Background(), root, targets, nil)
+	usage, cache, err := MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestMeasureRootUsageDetectsClonedAndRewrittenFiles(t *testing.T) {
 
 	// 貸出後の書き換えは共有を解く。準備時の記録ではなく実測なので、次の測定でそのまま減る。
 	usageWrite(t, slotRepo, "diverged", "rewritten content")
-	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, cache)
+	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestMeasureRootUsageDetectsClonedAndRewrittenFiles(t *testing.T) {
 
 	// source 側を同じサイズで書き換えても、source identity の変化を検出して共有を解く。
 	usageWrite(t, mainPath, "shared", "updatedcontent")
-	usage, _, err = MeasureRootUsage(context.Background(), root, targets, cache)
+	usage, _, err = MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestMeasureRootUsageRevalidatesTheCachedVerdict(t *testing.T) {
 	slotRepo := filepath.Join(root.Name(), "workspace", "slot", "repo")
 	usageWrite(t, mainPath, "shared", "shared content")
 	cloneInto(t, mainPath, "shared", slotRepo)
-	usage, cache, err := MeasureRootUsage(context.Background(), root, targets, nil)
+	usage, cache, err := MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestMeasureRootUsageRevalidatesTheCachedVerdict(t *testing.T) {
 	if err := os.Rename(filepath.Join(mainPath, "replacement"), filepath.Join(mainPath, "shared")); err != nil {
 		t.Fatal(err)
 	}
-	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, cache)
+	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestMeasureRootUsageRevalidatesTheCachedVerdict(t *testing.T) {
 	if err := os.Symlink("symlink-target", filepath.Join(mainPath, "shared")); err != nil {
 		t.Fatal(err)
 	}
-	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, cache)
+	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestMeasureRootUsageRevalidatesTheCachedVerdict(t *testing.T) {
 	if err := os.Remove(filepath.Join(mainPath, "shared")); err != nil {
 		t.Fatal(err)
 	}
-	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, cache)
+	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestMeasureRootUsageRevalidatesTheCachedVerdict(t *testing.T) {
 	}
 	usageWrite(t, mainPath, "shared", "shared content")
 	cloneInto(t, mainPath, "shared", slotRepo)
-	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, cache)
+	usage, cache, err = MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), cache)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
@@ -264,11 +265,20 @@ func (m *Manager) slotUsageTargets(ctx context.Context) (map[string][]workspace.
 		if !known {
 			index = len(targets[root])
 			indexes[key] = index
-			targets[root] = append(targets[root], workspace.SlotUsageTarget{SlotID: location.SlotID, RelPath: location.RelPath, Repositories: map[string]string{}})
+			targets[root] = append(targets[root], workspace.SlotUsageTarget{SlotID: location.SlotID, RelPath: location.RelPath, Repositories: map[string]string{}, File: location.File})
 		}
 		targets[root][index].Repositories[location.DirName] = location.MainPath
 	}
 	return targets, preparing, nil
+}
+
+// usageNamespaces は root 直下で走査してよい wx の予約 namespace を返す。
+// 綴りは作成側の定数を出所にし、測定側が wx の layout を覚え直さなくて済むようにする。
+func usageNamespaces() []workspace.UsageNamespace {
+	return []workspace.UsageNamespace{
+		{Path: unboundNamespace},
+		{Path: archive.WorkspaceSnapshotDirectory, Files: true},
+	}
 }
 
 // slotUsageUnderWrite は worktree を書いている最中の slot state を判定する。
@@ -294,7 +304,7 @@ func (m *Manager) rootDirectoryUsage(ctx context.Context, root string, targets [
 		return workspace.RootUsage{}, nil, err
 	}
 	defer func() { _ = owner.Close() }()
-	return workspace.MeasureRootUsage(ctx, owner, targets, previous)
+	return workspace.MeasureRootUsage(ctx, owner, targets, usageNamespaces(), previous)
 }
 
 // usageRootDescriptor は測定用に root を pin し、path 名ではなく descriptor で走査できるようにする。

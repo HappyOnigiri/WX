@@ -26,15 +26,16 @@ var requiredSlotStates = map[string]bool{
 func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 	report := m.artifactOwnershipReport(ctx)
 	findings := []diag.Finding{}
-	if len(report.UnknownPaths) > 0 {
-		paths := append([]string{}, report.UnknownPaths...)
-		sort.Strings(paths)
+	// 登録外の実体は reconcile が記録する狭い集合ではなく、削除できる集合そのものを材料にする。
+	// 表示された対象が `wx clear --unmanaged` で必ず解消できる、という関係を doctor 側でも保つためである。
+	unmanaged, unmanagedErrs := m.scanUnmanagedArtifacts(ctx)
+	if len(unmanaged) > 0 {
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityInfo,
-			Summary: "a worktree root holds paths that are not registered slots",
-			Cause:   fmt.Sprintf("%d path(s) under the wx roots have no slot record; wx neither adopts nor deletes them", len(paths)),
-			Action:  "inspect them yourself and remove them manually if you no longer need them",
-			Details: paths,
+			Summary: "a worktree root holds entities the database does not explain",
+			Cause:   unmanagedArtifactCause(unmanaged),
+			Action:  "review them with wx clear --unmanaged --dry-run, then run wx clear --unmanaged to delete them",
+			Details: unmanagedArtifactPaths(unmanaged),
 		})
 	}
 	if len(report.UnknownRefs) > 0 {
@@ -53,7 +54,9 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 	findings = append(findings, refListFailureFindings(report.RefListFailures)...)
 	findings = append(findings, missingArtifactFindings(report.Missing)...)
 	findings = append(findings, recoveryRefFindings(report.MismatchedRefs, report.MissingRefs)...)
-	for _, message := range report.Errors {
+	findings = append(findings, submoduleRefFindings(report.SubmoduleRefIssues)...)
+	// 同じ root の同じ失敗を照合と列挙の両方が報告するので、文言で畳んで 1 件ずつにする。
+	for _, message := range mergedOwnershipErrors(report.Errors, unmanagedErrs) {
 		findings = append(findings, diag.Finding{
 			Check: diag.CheckArtifactOwnership, Severity: diag.SeverityUnchecked,
 			Summary: "an ownership check could not be completed", Cause: message,
@@ -67,6 +70,37 @@ func (m *Manager) artifactFindings(ctx context.Context) []diag.Finding {
 		})
 	}
 	return findings
+}
+
+// unmanagedArtifactCause は登録外の実体を種別ごとの件数で説明する。
+// 対処が「自分で消す」から「wx clear --unmanaged で消す」へ変わったので、何が消えるのかを種別で示す。
+func unmanagedArtifactCause(artifacts []unmanagedArtifact) string {
+	directories, snapshots := 0, 0
+	for _, artifact := range artifacts {
+		if artifact.Kind == unmanagedWorkspaceSnapshot {
+			snapshots++
+			continue
+		}
+		directories++
+	}
+	return fmt.Sprintf("%d slot directory/directories and %d workspace snapshot archive(s) under the wx namespaces have no database record; wx neither adopts them nor deletes them on its own",
+		directories, snapshots)
+}
+
+// mergedOwnershipErrors は照合と列挙が出した失敗を、同じ文言を 1 件に畳んで順序を保ったまま返す。
+func mergedOwnershipErrors(groups ...[]string) []string {
+	seen := map[string]bool{}
+	merged := []string{}
+	for _, group := range groups {
+		for _, message := range group {
+			if seen[message] {
+				continue
+			}
+			seen[message] = true
+			merged = append(merged, message)
+		}
+	}
+	return merged
 }
 
 // quarantinedRecoveryFindings は recovery ref を失って隔離された復元資産を workspace ごとに報告する。
@@ -192,6 +226,47 @@ func recoveryRefFindings(mismatched, missing []recoveryRefIssue) []diag.Finding 
 				Cause: group.cause, Action: action,
 			})
 		}
+	}
+	return findings
+}
+
+// submoduleRefFindings は子の capsule ref の不整合を報告する。対象はローカル module の path で示す。
+// ref の公開先が repository ごとの ref store ではないため、`wx prune` の `<repository_id>:<ref>` では指せず削除も案内できない。
+// 欠落と不一致はその submodule の作業が復元できないことの予告なので、期限内なら問題として出す。
+func submoduleRefFindings(issues []submoduleRefIssue) []diag.Finding {
+	sorted := append([]submoduleRefIssue{}, issues...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].ModuleDir != sorted[j].ModuleDir {
+			return sorted[i].ModuleDir < sorted[j].ModuleDir
+		}
+		return sorted[i].Ref < sorted[j].Ref
+	})
+	findings := make([]diag.Finding, 0, len(sorted))
+	for _, issue := range sorted {
+		if issue.Kind == submoduleRefUnknown {
+			findings = append(findings, diag.Finding{
+				Check: diag.CheckArtifactOwnership, Severity: diag.SeverityInfo,
+				Summary: "an orphan submodule recovery ref remains in a local module", Target: issue.ModuleDir,
+				Cause:  "ref " + issue.Ref + " has no submodule snapshot record in the state database",
+				Action: "remove it yourself with git update-ref -d inside that module if you no longer need it; wx prune does not cover the module ref store",
+			})
+			continue
+		}
+		severity, action := diag.SeverityProblem, "keep the module as it is and check whether another tool rewrote refs/wx/recovery in it; the work saved for submodule "+issue.Path+" can no longer be restored"
+		if expiredRecoverySnapshot(issue.ExpiresAt) {
+			severity = diag.SeverityInfo
+			action = "no action is required; the snapshot behind this ref has expired and wx removes the record on its next collection"
+		}
+		summary := "a submodule recovery ref recorded for a snapshot is missing"
+		cause := "the state database records ref " + issue.Ref + " for submodule " + issue.Path + ", but its local module does not have it"
+		if issue.Kind == submoduleRefMismatched {
+			summary = "a submodule recovery ref does not point at the snapshot object"
+			cause = "ref " + issue.Ref + " exists in the local module of submodule " + issue.Path + " but its object ID differs from the recorded one"
+		}
+		findings = append(findings, diag.Finding{
+			Check: diag.CheckArtifactOwnership, Severity: severity, Summary: summary, Target: issue.ModuleDir,
+			Cause: cause, Action: action,
+		})
 	}
 	return findings
 }

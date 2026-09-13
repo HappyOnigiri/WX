@@ -240,8 +240,8 @@ func (s *Store) listDetachedSessions(ctx context.Context) ([]SlotSummary, error)
 }
 
 // SlotUsageLocation は使用量測定のために slot 内の repository 1 個の置き場所を表す。
-// SlotState は測定した値をその slot の使用量として名乗ってよいかの判断に使う。
-// snapshot の行は slot ではないので空になる。
+// SlotState は測定した値をその slot の使用量として名乗ってよいかの判断に使い、snapshot の行は slot ではないので空になる。
+// File は RelPath が directory ではなくファイル 1 個を指すことを表し、走査側の突き合わせ先を分ける。
 type SlotUsageLocation struct {
 	SlotID    string
 	SlotState string
@@ -249,17 +249,20 @@ type SlotUsageLocation struct {
 	RelPath   string
 	DirName   string
 	MainPath  string
+	File      bool
 }
 
 // slotUsageLocationQuery はDB 管理下で回収前の slot の置き場所を引く。
-const slotUsageLocationQuery = `SELECT sl.id,sl.state,rt.path,sl.rel_path,COALESCE(sr.dir_name,''),COALESCE(r.main_worktree_path,'')
+const slotUsageLocationQuery = `SELECT sl.id,sl.state,rt.path,sl.rel_path,COALESCE(sr.dir_name,''),COALESCE(r.main_worktree_path,''),0
  FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN slot_repositories sr ON sr.slot_id=sl.id LEFT JOIN repositories r ON r.id=sr.repository_id
  WHERE sl.state <> 'ARCHIVED'`
 
 // SlotUsageLocations は回収前の slot と workspace snapshot を返す。
+// snapshot は status で絞らない。行が残っている限り wx が自分のものと主張している実体であり、
+// 登録外実体の列挙が使う期待集合と同じ範囲にしないと、片方が管理下・片方が登録外と食い違うためである。
 func (s *Store) SlotUsageLocations(ctx context.Context) ([]SlotUsageLocation, error) {
 	return s.slotUsageLocations(ctx, slotUsageLocationQuery+`
- UNION ALL SELECT 'snapshot:'||ws.session_id,'',rt.path,ws.rel_path,'','' FROM workspace_snapshots ws JOIN roots rt ON rt.id=ws.root_id WHERE ws.status <> 'EXPIRED'`)
+ UNION ALL SELECT 'snapshot:'||ws.session_id,'',rt.path,ws.rel_path,'','',1 FROM workspace_snapshots ws JOIN roots rt ON rt.id=ws.root_id`)
 }
 
 // SlotUsageLocationsForSlot は slot 1 個分の測定対象を返す。
@@ -277,7 +280,7 @@ func (s *Store) slotUsageLocations(ctx context.Context, query string, args ...an
 	var out []SlotUsageLocation
 	for rows.Next() {
 		var x SlotUsageLocation
-		if err := rows.Scan(&x.SlotID, &x.SlotState, &x.RootPath, &x.RelPath, &x.DirName, &x.MainPath); err != nil {
+		if err := rows.Scan(&x.SlotID, &x.SlotState, &x.RootPath, &x.RelPath, &x.DirName, &x.MainPath, &x.File); err != nil {
 			return nil, err
 		}
 		out = append(out, x)

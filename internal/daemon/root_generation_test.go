@@ -123,6 +123,8 @@ func TestOwnedRootArtifactPathsScansOnlyWxNamespaces(t *testing.T) {
 	for _, directory := range []string{
 		workspaceSlot,
 		unboundSlot,
+		// `_recovery` 配下は slot directory ではないので、この列挙の対象にしない。
+		// workspace snapshot の置き場の登録外実体は scanUnmanagedArtifacts が別に拾う。
 		filepath.Join(rootPath, "_recovery", "whatever"),
 		filepath.Join(rootPath, "unrelated-project", "src"),
 		filepath.Join(rootPath, "toolong01", "slt003"),

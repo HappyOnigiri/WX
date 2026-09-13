@@ -16,16 +16,40 @@ import (
 // 費用の大半は openat・fstatat・fcntl の待ちなので、CPU 数まで重ねると実時間が縮む。
 const usageMaxWorkers = 10
 
+// usageScope は directory 1 個が root 配下のどの層にあるかを表し、降下先と集計対象の entry を決める。
+// wx の予約 namespace の外へ降りないことと、列挙（`wx clear --unmanaged`）の対象と同じ実体だけを数えることをこの区別で担保する。
+type usageScope uint8
+
+const (
+	// usageScopeTree は slot の内側で、すべての entry を数えて子へ降りる。
+	usageScopeTree usageScope = iota
+	// usageScopeRoot は root 直下で、予約 namespace と登録済み対象の先頭成分、short ID 形の directory へだけ降りる。
+	usageScopeRoot
+	// usageScopeGate は予約 namespace の途中成分で、その namespace へ続く子だけへ降りる。
+	usageScopeGate
+	// usageScopeNamespace は slot を並べる層で、登録の有無を問わず子 directory へ降りる。直下のファイルは数えない。
+	usageScopeNamespace
+	// usageScopeSnapshots は workspace snapshot の置き場で、直下のファイルだけを数え、子 directory へは降りない。
+	usageScopeSnapshots
+)
+
 // usageDirectory は測定中の directory 1 個の位置と、対応する共有元 directory である。
 // dir と main は task が閉じる descriptor で、main が nil の subtree では共有判定を行わない。
 // repo は repository の内側かを表し、共有元を開けなかった subtree でも Compared の対象は変えない。repoName はその内訳の足し先である。
 type usageDirectory struct {
 	name     string
 	slotID   string
+	scope    usageScope
 	repo     bool
 	repoName string
 	dir      *os.File
 	main     *os.File
+}
+
+// countsFiles はこの層の非 directory entry を集計へ入れてよいかを返す。
+// 登録済みのファイルは層を問わず数えるため、判定は登録に当たらなかった entry にだけ効く。
+func (d usageDirectory) countsFiles() bool {
+	return d.scope == usageScopeTree || d.scope == usageScopeSnapshots
 }
 
 func (d usageDirectory) close() {
@@ -41,14 +65,23 @@ type usageCacheEntry struct {
 	state SharedFileState
 }
 
+// usageFileSample は directory 内で見つけた「ファイル 1 個の登録」1 件分の集計である。
+// directory の slot とは別の slot に属し得るため、sample へは混ぜずに足し先を持ったまま運ぶ。
+type usageFileSample struct {
+	slotID string
+	usage  SlotUsage
+}
+
 // usageDirectoryTotals は directory 1 個分の集計である。
 // directory 内の entry は必ず同じ slot に属するため、slot 別に分けずに 1 つの sample へ足す。
+// ファイル単位で登録された対象だけがこの前提から外れるので、files に足し先ごと分けて持つ。
 type usageDirectoryTotals struct {
 	unmanaged int64
 	logical   int64
 	allocated int64
 	shared    int64
 	sample    SlotUsage
+	files     []usageFileSample
 	cache     []usageCacheEntry
 }
 
@@ -58,6 +91,8 @@ type usageScan struct {
 	ctx      context.Context
 	previous SharedFileCache
 	slots    map[string]string
+	files    map[string]string
+	entries  map[string]usageScope
 	repos    map[string]usageRepository
 	gate     chan struct{}
 	wait     sync.WaitGroup
@@ -68,11 +103,11 @@ type usageScan struct {
 	failure error
 }
 
-func newUsageScan(ctx context.Context, targets []SlotUsageTarget, previous SharedFileCache) *usageScan {
+func newUsageScan(ctx context.Context, targets []SlotUsageTarget, namespaces []UsageNamespace, previous SharedFileCache) *usageScan {
 	usage := RootUsage{Slots: map[string]SlotUsage{}}
-	slots, repos := usagePrefixes(targets, usage.Slots)
+	slots, files, repos := usagePrefixes(targets, usage.Slots)
 	return &usageScan{
-		ctx: ctx, previous: previous, slots: slots, repos: repos,
+		ctx: ctx, previous: previous, slots: slots, files: files, entries: usageEntryScopes(targets, namespaces), repos: repos,
 		gate:  make(chan struct{}, min(runtime.NumCPU(), usageMaxWorkers)),
 		usage: usage, cache: SharedFileCache{},
 	}
@@ -126,9 +161,12 @@ func (s *usageScan) visit(task usageDirectory, totals *usageDirectoryTotals, lea
 		s.count(task, totals, name, leaf, &stat)
 		return true
 	}
-	child, err := s.childOf(task, name, leaf)
+	child, descend, err := s.childOf(task, name, leaf)
 	if err != nil {
 		return s.tolerate(err)
+	}
+	if !descend {
+		return true
 	}
 	s.spawn(child)
 	return true
@@ -150,8 +188,18 @@ func usageEntryVanished(err error) bool {
 }
 
 // count は entry 1 件を集計へ足し、repository の内側にある通常ファイルだけ共有判定へ回す。
+// ファイル 1 個で登録された対象は directory の境界に現れないので、登録外かを判定する前にファイルの表を引く。
 func (s *usageScan) count(task usageDirectory, totals *usageDirectoryTotals, name, leaf string, stat *unix.Stat_t) {
 	allocated := stat.Blocks * 512
+	if slotID, registered := s.files[name]; registered {
+		s.countRegisteredFile(totals, slotID, allocated, stat)
+		return
+	}
+	if !task.countsFiles() {
+		// 予約 namespace の外と、slot を並べる層に置かれたファイルは wx の管理対象ではない。
+		// 列挙が拾わない実体を測ると、表示した未管理量を `wx clear --unmanaged` で解消できなくなる。
+		return
+	}
 	if task.slotID == "" {
 		totals.unmanaged += allocated
 		return
@@ -179,16 +227,61 @@ func (s *usageScan) count(task usageDirectory, totals *usageDirectoryTotals, nam
 	}
 }
 
+// countRegisteredFile はファイル 1 個で登録された対象を、その登録の slot と root 合計へ足す。
+// 共有元を持たない archive なので CoW の比較は行わず、Compared にも数えない。
+func (s *usageScan) countRegisteredFile(totals *usageDirectoryTotals, slotID string, allocated int64, stat *unix.Stat_t) {
+	sample := SlotUsage{Files: 1, AllocatedBytes: allocated}
+	totals.allocated += allocated
+	if stat.Mode&unix.S_IFMT == unix.S_IFREG {
+		sample.LogicalBytes = stat.Size
+		totals.logical += stat.Size
+	}
+	totals.files = append(totals.files, usageFileSample{slotID: slotID, usage: sample})
+}
+
+// childScope は子 directory へ降りてよいかと、降りた先の層を返す。
+// root と予約 namespace の途中成分では、登録済み対象と予約名の成分、および slot を並べる short ID 形の名前だけを通す。
+func (s *usageScan) childScope(task usageDirectory, name, leaf string) (usageScope, bool) {
+	if _, boundary := s.slots[name]; boundary {
+		return usageScopeTree, true
+	}
+	switch task.scope {
+	case usageScopeTree, usageScopeNamespace:
+		return usageScopeTree, true
+	case usageScopeSnapshots:
+		// 登録は directory を指さないので、この層の directory は列挙も削除もされない。測るだけでは合わなくなる。
+		return 0, false
+	case usageScopeRoot, usageScopeGate:
+		if scope, allowed := s.entries[name]; allowed {
+			return scope, true
+		}
+		if task.scope == usageScopeRoot && domain.ValidShortID(leaf) {
+			return usageScopeNamespace, true
+		}
+		return 0, false
+	}
+	return 0, false
+}
+
 // childOf は子 directory の task を組む。slot と repository の境界はここで切り替え、
 // repository の内側では共有元も同じ 1 成分だけ降りる。共有元を開けない subtree は共有なしとして数える。
-func (s *usageScan) childOf(task usageDirectory, name, leaf string) (usageDirectory, error) {
-	child := usageDirectory{name: name, slotID: task.slotID, repo: task.repo, repoName: task.repoName}
+// 降りてはいけない子には descend=false を返し、descriptor を開かない。
+func (s *usageScan) childOf(task usageDirectory, name, leaf string) (usageDirectory, bool, error) {
+	scope, descend := s.childScope(task, name, leaf)
+	if !descend {
+		return usageDirectory{}, false, nil
+	}
+	child := usageDirectory{name: name, slotID: task.slotID, scope: scope, repo: task.repo, repoName: task.repoName}
+	if scope != usageScopeTree {
+		// slot より上の層は slot に属さない。登録外 directory と同じ扱いにし、内訳の足し先を持たせない。
+		child.slotID, child.repo, child.repoName = "", false, ""
+	}
 	if slotID, boundary := s.slots[name]; boundary {
 		child.slotID, child.repo, child.repoName = slotID, false, ""
 	}
 	dir, err := openUsageChild(task.dir, leaf)
 	if err != nil {
-		return usageDirectory{}, err
+		return usageDirectory{}, false, err
 	}
 	child.dir = dir
 	switch repository, boundary := s.repos[name]; {
@@ -203,7 +296,7 @@ func (s *usageScan) childOf(task usageDirectory, name, leaf string) (usageDirect
 	case child.repo && task.main != nil:
 		child.main = openUsageChildOrNil(task.main, leaf)
 	}
-	return child, nil
+	return child, true, nil
 }
 
 // spawn は子 directory を worker へ渡す。枠が空いていなければ呼び出し元の goroutine で降り、待ち合わせで詰まらせない。
@@ -250,6 +343,13 @@ func (s *usageScan) record(task usageDirectory, totals *usageDirectoryTotals) {
 			sample.Repositories[task.repoName] = repository
 		}
 		s.usage.Slots[task.slotID] = sample
+	}
+	for _, file := range totals.files {
+		sample := s.usage.Slots[file.slotID]
+		sample.Files += file.usage.Files
+		sample.LogicalBytes += file.usage.LogicalBytes
+		sample.AllocatedBytes += file.usage.AllocatedBytes
+		s.usage.Slots[file.slotID] = sample
 	}
 	for _, entry := range totals.cache {
 		s.cache[entry.name] = entry.state

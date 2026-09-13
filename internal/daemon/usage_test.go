@@ -236,7 +236,8 @@ func TestRootDirectoryUsageFailsWhenAnEntryIsUnreadable(t *testing.T) {
 	t.Parallel()
 	_, manager, _, _, _, _ := managerCoverageFixture(t)
 	root := manager.Config().Storage.WorktreeRoot
-	blocked := filepath.Join(root, "blocked")
+	// 走査は予約 namespace の配下へしか降りないので、読めない entry もその配下に置く。
+	blocked := filepath.Join(root, unboundNamespace, "blocked")
 	if _, _, err := manager.createSlotRoot(blocked, blocked); err != nil {
 		t.Fatal(err)
 	}

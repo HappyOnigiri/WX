@@ -6,6 +6,12 @@ slotの削除権限はDBの`slots`・`roots`の登録だけで決まる。
 登録済みpathの実体は、inode・marker・Git lock・HEADが食い違っていても回収し、workspace紐付けやrepository identityを失った隔離slotも対象になる。
 逆に登録外の実体は`quarantined_artifacts`へ診断として記録するだけで、その記録は削除権限にならない（[AGENTS.md](../AGENTS.md)の不変条件）。
 
+登録外の実体を消すのは利用者が明示する`wx clear --unmanaged`だけで、これはslotとして採用する経路ではない。
+DBへは何も登録せず、reconcileやGCの対象にもしない。自動経路から呼ばないのは、削除の根拠が登録ではなく利用者の指示だからである。
+対象はwxの予約namespace配下でDBが説明しない実体に限り、元repository側の`worktrees/<name>`には触れない。
+登録が無い以上その実体がどのcommon directoryに属すかを証明できず、名前の推測で共有Git側を消すと破壊的操作をroot descriptorの配下に閉じられないためである。
+残ったGit側の登録は利用者の`git worktree prune`に委ねる。
+
 削除はpinしたroot descriptorの配下に閉じ、rootからleafの親までのsymlinkは辿らない。
 leafがsymlinkの場合はリンク自体を削除し、リンク先へは踏み込まない。
 

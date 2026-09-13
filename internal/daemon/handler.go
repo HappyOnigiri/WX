@@ -255,7 +255,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		}
 		return map[string]any{"measurements": h.Manager.PrepareMeasurements(p.SlotID, p.SessionID)}, nil
 	default:
-		return nil, errors.New("unknown RPC method")
+		return nil, errors.New(rpc.UnknownMethodMessage)
 	}
 }
 
@@ -383,6 +383,16 @@ func (h Handler) dispatchClean(ctx context.Context, method string, raw json.RawM
 			return nil, true, err
 		}
 		result, err := h.Manager.Clean(ctx, p.All, p.Standby, p.DryRun, p.Discard)
+		return result, true, err
+	case "CleanUnmanaged":
+		// clean run を作らないので進捗の問い合わせは無く、この 1 往復で完結する。
+		var p struct {
+			DryRun bool `json:"dry_run"`
+		}
+		if err := decode(raw, &p); err != nil {
+			return nil, true, err
+		}
+		result, err := h.Manager.CleanUnmanaged(ctx, p.DryRun)
 		return result, true, err
 	case "CleanStatus":
 		var p struct {

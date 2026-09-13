@@ -45,14 +45,20 @@ func runClean(ctx context.Context, args []string) int {
 	all := fs.Bool("all", false, "ask sessions in use to stop, then delete what stopped, standby worktrees included")
 	standby := fs.Bool("standby", false, "delete standby worktrees too")
 	discard := fs.Bool("discard", false, "delete selected worktrees without saving unfinished work")
+	unmanaged := fs.Bool("unmanaged", false, "delete the entities under the wx namespaces that the database does not explain")
 	dry := fs.Bool("dry-run", false, "show what would be deleted without changing anything")
 	fs.Usage = func() { commandUsageLanguage(os.Stdout, "clear", i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, "clear", args); done {
 		return code
 	}
-	if fs.NArg() != 0 {
+	// --unmanaged は登録済み slot を 1 件も対象にせず、他の mode と対象が重ならない。
+	// 併用を受け付けると、どちらの範囲を消したのかが結果から読めなくなる。
+	if fs.NArg() != 0 || (*unmanaged && (*all || *standby || *discard)) {
 		commandUsageLanguage(os.Stderr, "clear", i18n.LanguageFromContext(ctx))
 		return 2
+	}
+	if *unmanaged {
+		return runCleanUnmanaged(ctx, *dry)
 	}
 	c, err := rpcClient()
 	if err != nil {

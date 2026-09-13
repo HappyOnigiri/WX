@@ -210,7 +210,7 @@ func TestIsEmptySubmoduleConfigRequiresAConfirmedEmptySearchFailure(t *testing.T
 		{name: "other exit", err: baseError(gitx.Result{ExitCode: 2})},
 		{name: "ordinary error", err: errors.New("runner failed")},
 		{name: "cancelled context", ctx: emptySubmoduleCancelledContext(), err: baseError(gitx.Result{ExitCode: 1})},
-		{name: "deadline context", ctx: emptySubmoduleDeadlineContext(), err: baseError(gitx.Result{ExitCode: 1})},
+		{name: "deadline context", ctx: emptySubmoduleDeadlineContext(t), err: baseError(gitx.Result{ExitCode: 1})},
 		{name: "wrapped cancellation", err: errors.Join(errors.New("runner failed"), context.Canceled)},
 		{name: "wrapped deadline", err: errors.Join(errors.New("runner failed"), context.DeadlineExceeded)},
 	} {
@@ -232,8 +232,10 @@ func emptySubmoduleCancelledContext() context.Context {
 	return ctx
 }
 
-func emptySubmoduleDeadlineContext() context.Context {
-	ctx, _ := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+func emptySubmoduleDeadlineContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	t.Cleanup(cancel)
 	return ctx
 }
 

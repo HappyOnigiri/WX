@@ -443,7 +443,7 @@ func TestPrintStatusSummaryJapaneseKeepsPathsAndTimesVerbatim(t *testing.T) {
 		},
 		"job_details": map[string]any{"pending": 0, "running": 0, "failed": 0, "discarded": 0},
 		"worktree_roots": []map[string]any{
-			{"path": home + "/wx/Action", "active": true, "exclusive_bytes": 65 * 1024 * 1024, "measured_at": "2026-09-13T01:57:00Z", "unmanaged_allocated_bytes": 1024 * 1024},
+			{"path": home + "/wx/Action", "active": true, "exclusive_bytes": 65 * 1024 * 1024, "measured_at": "2026-09-13T01:57:00Z"},
 		},
 	}
 	var output bytes.Buffer

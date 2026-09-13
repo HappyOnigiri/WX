@@ -432,7 +432,12 @@ func (m *Manager) deleteForgottenSnapshotRefs(ctx context.Context, archiveManage
 		m.log.Warn("forget could not read the repository of a discarded snapshot", "session_id", snapshot.SessionID, "repository_id", snapshot.RepositoryID, "error", err)
 		return
 	}
-	if err := archiveManager.DeleteSnapshotRefs(ctx, repo, snapshot); err != nil {
+	submodules, submodulesErr := m.store.SubmoduleSnapshots(ctx, snapshot.SessionID, snapshot.RepositoryID)
+	if submodulesErr != nil {
+		m.log.Warn("forget could not read the submodule snapshots of a discarded snapshot", "session_id", snapshot.SessionID, "repository_id", snapshot.RepositoryID, "error", submodulesErr)
+		return
+	}
+	if err := archiveManager.DeleteSnapshotRefs(ctx, repo, snapshot, submodules); err != nil {
 		m.log.Warn("forget left recovery refs behind", "session_id", snapshot.SessionID, "repository_id", snapshot.RepositoryID, "error", err)
 	}
 }
