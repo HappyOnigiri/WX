@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -61,15 +62,23 @@ func TestMultiRepositoryBundleAndRootRules(t *testing.T) {
 		t.Fatalf("active repository count=%d err=%v", len(activeRepos), err)
 	}
 	initGitRepo(t, filepath.Join(root, "api"))
-	m.reconcileRegistry(context.Background())
-	updated, err := store.WorkspaceByRoot(context.Background(), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	generation, err := store.WorkspaceGeneration(context.Background(), string(updated.ID))
-	if err != nil || generation != 2 {
-		t.Fatalf("updated generation=%d err=%v", generation, err)
-	}
+	// 再探索は待機用 slot の準備が触るのと同じ repository を読むため、1 回の reconcile が
+	// 一時的な Git の失敗で世代を上げないことがある。daemon はその失敗を記録して次の周期で拾い直すので、
+	// テストも同じく繰り返し、最終的に新しい repository が登録されることだけを確かめる。
+	var updated discovery.Workspace
+	waitUntil(t, 10*time.Second, func() bool {
+		m.reconcileRegistry(context.Background())
+		w, err := store.WorkspaceByRoot(context.Background(), root)
+		if err != nil {
+			return false
+		}
+		generation, err := store.WorkspaceGeneration(context.Background(), string(w.ID))
+		if err != nil || generation != 2 {
+			return false
+		}
+		updated = w
+		return true
+	})
 	activeRepos, err = store.SlotRepositories(context.Background(), lease.SessionID)
 	if err != nil || len(activeRepos) != 2 {
 		t.Fatalf("active session membership changed: count=%d err=%v", len(activeRepos), err)
