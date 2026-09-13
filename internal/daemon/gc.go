@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/archive"
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -78,6 +79,19 @@ func (p *gcProgress) err() error {
 	return errors.Join(p.errs...)
 }
 
+// gcWarmFor は GC が workspace ごとに保持する待機枠数を返す。
+// worktree 方針が hot 以外の workspace は補充が止まっている（standbyReplenishmentEnabledForRoot）ので 0 とし、
+// 方針を変える前に作られた READY が待機枠数のぶんだけ残り続けないようにする。
+func gcWarmFor(cfg config.Config) func(root string) int {
+	return func(root string) int {
+		if cfg.WorktreeMode(root) != "hot" {
+			return 0
+		}
+		warm, _ := cfg.WarmCountForWorkspace(root)
+		return warm
+	}
+}
+
 func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 	progress := newGCProgress()
 	cfg := m.Config()
@@ -102,10 +116,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		retention, _ := cfg.HotStandbyForWorkspace(root)
 		return state.FormatTime(nowTime.Add(-retention))
 	}
-	warmFor := func(root string) int {
-		warm, _ := cfg.WarmCountForWorkspace(root)
-		return warm
-	}
+	warmFor := gcWarmFor(cfg)
 	items, err := m.store.GCCandidates(ctx, endedFloor, endedBefore)
 	if err != nil {
 		progress.addFailed("ended worktrees", "ended worktree candidate query failed", err)
