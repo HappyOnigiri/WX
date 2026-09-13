@@ -54,14 +54,44 @@ func runDashboard(ctx context.Context) int {
 			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+": dashboard:", runErr)
 			return 1
 		}
+		before, hadFingerprint := executableFingerprint()
 		code := runDashboardAction(ctx, action)
-		if action.Args[0] == "update" {
+		if action.Args[0] == "update" && updateReplacedBinary(before, hadFingerprint, code) {
 			// この画面を動かしているのは置き換えられる前のバイナリなので、ループの先頭へは戻さない。
 			fmt.Fprintln(os.Stderr, i18n.T(ctx, "wx.update.restart_dashboard", nil))
 			return code
 		}
 		notice = i18n.T(ctx, "wx.dashboard.finished", map[string]any{"Command": action.Args[0], "Code": code})
 	}
+}
+
+// executableFingerprint は実行中のバイナリの更新時刻と大きさを返す。
+// install.sh は別の実体を書いて置き換えるため、実行の前後で比べると置き換えの有無が分かる。
+// 実行ファイルを辿れない場合は false を返し、呼び出し側は終了コードだけで判断する。
+func executableFingerprint() (string, bool) {
+	path, err := os.Executable()
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	return strconv.FormatInt(info.ModTime().UnixNano(), 10) + "/" + strconv.FormatInt(info.Size(), 10), true
+}
+
+// updateReplacedBinary は update の実行がバイナリを置き換えたかを返す。
+// 失敗して途中で終えた実行も、すでに最新で何もしなかった実行も置き換えていない。
+// 置き換えていないのに再起動の案内を出すと、失敗の直後に成功の案内が続いて更新済みと誤解される。
+func updateReplacedBinary(before string, hadFingerprint bool, code int) bool {
+	if code != 0 {
+		return false
+	}
+	after, ok := executableFingerprint()
+	if !hadFingerprint || !ok {
+		return true
+	}
+	return after != before
 }
 
 // dashboardUpdate は daemon が持つ確認結果を状態画面へ渡す。

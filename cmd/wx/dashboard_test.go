@@ -30,3 +30,26 @@ func TestDashboardActionReusesCommandDispatch(t *testing.T) {
 		t.Fatalf("stdout=%q", stdout)
 	}
 }
+
+// TestUpdateReplacedBinaryTracksTheExecutable は、置き換えが起きた実行だけを置き換えと数えることを守る。
+// 失敗した実行や、すでに最新で何もしなかった実行まで置き換えと数えると、
+// 状態画面が失敗の直後に再起動の案内を出し、更新済みだと誤解させる。
+func TestUpdateReplacedBinaryTracksTheExecutable(t *testing.T) {
+	before, ok := executableFingerprint()
+	if !ok {
+		t.Skip("the test binary cannot be stat'ed")
+	}
+	if updateReplacedBinary(before, true, 1) {
+		t.Fatal("a failed update was counted as a replacement")
+	}
+	if updateReplacedBinary(before, true, 0) {
+		t.Fatal("an unchanged executable was counted as a replacement")
+	}
+	if !updateReplacedBinary("stale-fingerprint", true, 0) {
+		t.Fatal("a changed executable was not counted as a replacement")
+	}
+	// 実行ファイルを辿れない場合は比較材料がないので、終了コードだけで判断する。
+	if !updateReplacedBinary("", false, 0) {
+		t.Fatal("a successful update without a fingerprint was not counted as a replacement")
+	}
+}
