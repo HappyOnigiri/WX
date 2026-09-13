@@ -10,8 +10,6 @@ language=en
 msg() {
   local key=${1:-}
   case "$language:$key" in
-    ja:choose_language) printf '%s' 'Display language / 表示言語 [English/日本語] (既定: English): ' ;;
-    en:choose_language) printf '%s' 'Display language [English/Japanese] (default: English): ' ;;
     ja:downloading) printf 'wx %s をダウンロード中...\n' "$2" ;;
     en:downloading) printf 'Downloading wx %s...\n' "$2" ;;
     ja:installed) printf 'wx %s を %s にインストールしました\n' "$2" "$3" ;;
@@ -49,14 +47,14 @@ main() {
   local asset=wx-darwin-arm64
   local base_url="https://github.com/HappyOnigiri/WX/releases/download/$release_version"
   local checksum checksum_name actual registered_binary='' needs_install=true
-  # 初回インストールだけ setup を対話で通す。言語を尋ねる条件と同じ判定にし、
-  # 「言語を聞いた回は進め方も聞く」という見え方を揃える。
-  local first_install=true interactive=false setup_status=0
+  # 初回インストールだけ setup を対話で通す。表示言語を含む全ての質問は setup の TUI が持ち、
+  # インストーラーは尋ねない。選択肢の見え方を 1 箇所に揃えるためである。
+  local first_install=true interactive=false setup_status=0 selected_language=''
   local plist="$HOME/Library/LaunchAgents/com.user.wx.plist"
   [ ! -d "$destination" ] || fail "$destination is a directory"
 
-  # 既存 binary の設定を最優先し、update で言語を再質問しない。取得できない
-  # 古い binary は新規扱いとして TTY で確認し、非対話なら英語を採用する。
+  # 既存 binary の設定を最優先し、update でインストーラーの出力を利用者の言語で出す。
+  # 取得できない古い binary と初回インストールでは英語を使い、値の決定は setup へ委ねる。
   local existing_language=''
   if [ -x "$destination" ]; then
     first_install=false
@@ -78,20 +76,11 @@ main() {
         ;;
     esac
   fi
+  # curl | bash では stdin がパイプに置き換わるため、端末の有無は制御端末で判定する。
+  # setup も同じ /dev/tty を開くので、ここで対話と判定した回は setup も対話で動く。
   if [ -r /dev/tty ] && exec 3<>/dev/tty; then
     if [ -t 3 ]; then
       interactive=true
-      if [ -z "$existing_language" ]; then
-        answer=''
-        printf '%s' "$(msg choose_language)" >&3
-        IFS= read -r answer <&3 || answer=''
-        case "$answer" in
-          ja|JA|j|J|日本語) language=ja ;;
-          en|EN|e|E|English|'') language=en ;;
-          *) language=en ;;
-        esac
-        printf '\n' >&3
-      fi
     fi
     exec 3>&-
   fi
@@ -134,9 +123,13 @@ main() {
   staged=''
   msg installed "$release_version" "$destination"
 
-  # 検証済み binary の config command で選択値を atomic save する。開発用の
-  # fixture binary などが command を持たない場合だけ互換のため続行する。
-  PATH="$install_dir:$PATH" "$destination" config language "$language" >/dev/null 2>&1 || true
+  # 旧 binary から引き継いだ値だけを、検証済み binary の config command で atomic save する。
+  # 初回インストールでは書かない。ここで既定値を書くと language が設定済みになり、
+  # setup の表示言語の質問が出なくなる（cmd/wx/setup.go の setupLanguageUnset）。
+  # 開発用の fixture binary などが command を持たない場合だけ互換のため続行する。
+  if [ -n "$existing_language" ]; then
+    PATH="$install_dir:$PATH" "$destination" config language "$existing_language" >/dev/null 2>&1 || true
+  fi
 
   # ResolveBinary は PATH 上の wx を優先するため、別のインストール先を登録させない。
   if [ "$needs_install" = true ]; then
@@ -159,6 +152,11 @@ main() {
   # set -euo pipefail で install 全体を落とさないよう終了コードは吸収する。
   if [ "$first_install" = true ] && [ "$interactive" = true ]; then
     PATH="$install_dir:$PATH" "$destination" setup || setup_status=$?
+    # 表示言語は setup の中で選ばれるため、残りの案内はその結果を読み戻してから出す。
+    selected_language=$("$destination" config language 2>/dev/null || true)
+    case "$selected_language" in
+      en|ja) language="$selected_language" ;;
+    esac
   else
     PATH="$install_dir:$PATH" "$destination" setup --update || setup_status=$?
   fi
