@@ -32,11 +32,7 @@ func runResume(ctx context.Context, args []string) int {
 	rest := args[1:]
 	agentName := ""
 	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") && rest[0] != "claude" && rest[0] != "codex" {
-		message := "agent must be claude or codex"
-		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-			message = "agent は claude または codex で指定してください"
-		}
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", i18n.T(ctx, "flag.agent_invalid", nil))
 		return 2
 	}
 	if len(rest) > 0 && (rest[0] == "claude" || rest[0] == "codex") {
@@ -52,11 +48,7 @@ func runResume(ctx context.Context, args []string) int {
 		return code
 	}
 	if len(*branches) > 0 && !*fresh {
-		message := "--branch requires --fresh when resuming"
-		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-			message = "resume 時の --branch には --fresh が必要です"
-		}
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", i18n.T(ctx, "flag.branch_requires_fresh", nil))
 		return 2
 	}
 	cfg, err := config.Load()

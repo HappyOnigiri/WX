@@ -31,11 +31,7 @@ func runRunFrom(ctx context.Context, args []string, cwd string) int {
 		return 2
 	}
 	if len(*branches) > 0 && *resume != "" {
-		message := "--branch and --resume choose different bases; use one of them"
-		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-			message = "--branch と --resume は異なる base を選ぶため、どちらか一方を使ってください"
-		}
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", i18n.T(ctx, "flag.branch_resume_exclusive", nil))
 		return 2
 	}
 	client, code := leaseClient()

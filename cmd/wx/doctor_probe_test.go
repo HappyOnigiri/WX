@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 func TestPrintDoctorProbesShowsTimesAndRepositoryUsage(t *testing.T) {
@@ -77,5 +78,21 @@ func TestPrintDoctorProbesWritesNothingWithoutProbes(t *testing.T) {
 	printDoctorProbes(&out, nil, true)
 	if out.Len() != 0 {
 		t.Fatalf("output = %q, want empty", out.String())
+	}
+}
+
+// 日本語表示でも workspace path・計測値・error 本文は原文のまま残す。
+func TestPrintDoctorProbesJapaneseKeepsPayloadVerbatim(t *testing.T) {
+	var out bytes.Buffer
+	printDoctorProbesLanguage(&out, []diag.Probe{{
+		Workspace: "/repos/ReleaseActions", Error: "retire standby: exit status 128",
+		LeaseMS: 120, Usage: diag.ProbeUsageMeasured,
+		Repositories: []diag.ProbeRepository{{Name: "ReleaseActions", ExclusiveBytes: 1536}},
+	}}, false, i18n.Japanese)
+	text := out.String()
+	for _, want := range []string{"/repos/ReleaseActions", "retire standby: exit status 128", "0.120s", "ReleaseActions", "検査 ", "貸出", "専有"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("output %q lacks %q", text, want)
+		}
 	}
 }

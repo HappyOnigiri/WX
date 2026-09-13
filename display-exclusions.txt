@@ -5,14 +5,6 @@ tools/checkcomments/main.go	exempt	Defines the full-width character range the co
 tools/checkdocsindex/main.go	exempt	Matches the Japanese heading and entry shape that AGENTS.md prescribes for docs/; not user-facing display.
 tools/checktests/main.go	exempt	Quotes the Japanese exemption-comment syntax the repository conventions define; not user-facing display.
 cmd/wx/localization_help.go	backlog	translateHelp still replaces substrings in rendered help output.
-cmd/wx/doctor_probe.go	backlog	Probe labels and prose are still chosen inline by language instead of a message ID.
-cmd/wx/config.go	backlog	Flag-conflict message is still chosen inline by language.
-cmd/wx/dashboard.go	backlog	Action result and target errors are still chosen inline by language.
-cmd/wx/main.go	backlog	Top-level command errors are still chosen inline by language.
-cmd/wx/resume.go	backlog	Resume guidance is still chosen inline by language.
-cmd/wx/run.go	backlog	Command argument errors are still chosen inline by language.
-cmd/wx/shell.go	backlog	Shell launch errors are still chosen inline by language.
-cmd/wx/status.go	backlog	Doctor progress label is still chosen inline by language.
 internal/cli/localization.go	backlog	localizeCLIMessage still replaces substrings in rendered output.
 internal/cli/bench.go	backlog	Benchmark report labels are still chosen inline by language.
 internal/cli/bench_sweep.go	backlog	Benchmark sweep report labels are still chosen inline by language.

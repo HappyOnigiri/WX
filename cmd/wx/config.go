@@ -93,11 +93,7 @@ func runConfig(ctx context.Context, args []string) int {
 		return runV2Config(ctx, *system, *workspaceDefaults, *repositoryDefaults, *workspace, *repository, *describe, rest)
 	}
 	if *workspace != "" && *repository != "" {
-		message := "--workspace and --repository cannot be combined"
-		if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-			message = "--workspace と --repository は併用できません"
-		}
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", message)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", i18n.T(ctx, "flag.workspace_repository_exclusive", nil))
 		return 2
 	}
 	if *describe != "" {

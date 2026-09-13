@@ -103,11 +103,7 @@ func runDoctor(ctx context.Context, args []string) int {
 	defer cancel()
 	// 診断は daemon の応答待ちと接続失敗時のローカル検査で待たされるため、結果が出るまで待機行を出す。
 	// --json の出力は機械が読むため、端末でも待機行を出さない。
-	progressLabel := "diagnosing"
-	if i18n.LanguageFromContext(ctx) == i18n.Japanese {
-		progressLabel = "診断中"
-	}
-	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout) && !*jsonOut, progressLabel)
+	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout) && !*jsonOut, i18n.T(ctx, "progress.diagnosing", nil))
 	defer waiting.Finish()
 	var reply diag.Reply
 	params := any(struct{}{})
