@@ -150,24 +150,21 @@ func (m model) environmentMenuLabel(e environment) string {
 // settingDisplayName / settingDescription / settingImpact は config catalog の
 // 英語のまま持つ説明を、TUI で訳がある key だけ差し替える。
 func (m model) settingDisplayName(meta config.Metadata) string {
-	if meta.Key == "language" {
-		return m.t("config.display_name")
-	}
-	return meta.DisplayName
+	return m.settingText(meta.Key, "name", meta.DisplayName)
 }
 
 func (m model) settingDescription(meta config.Metadata) string {
-	if meta.Key == "language" {
-		return m.t("config.language.description")
-	}
-	return meta.Description
+	return m.settingText(meta.Key, "description", meta.Description)
 }
 
 func (m model) settingImpact(meta config.Metadata) string {
-	if meta.Key == "language" {
-		return m.t("config.language.impact")
-	}
-	return meta.Impact
+	return m.settingText(meta.Key, "impact", meta.Impact)
+}
+
+// settingText は設定キーの散文を動的 ID で引く。ID の組み立て方は wx config describe と同じで、
+// カタログに無いキーは config が持つ英語の原文へ落とす。
+func (m model) settingText(key, kind, fallback string) string {
+	return m.messages.LocalizeOr("config."+key+"."+kind, fallback)
 }
 
 func (e environment) configScope() config.Scope {

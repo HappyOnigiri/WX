@@ -25,7 +25,8 @@ func TestDashboardActionReusesCommandDispatch(t *testing.T) {
 			t.Fatalf("exit=%d", code)
 		}
 	})
-	if !strings.Contains(stdout, "Readiness mode") {
+	// 表示名は表示言語で変わるため、照合は設定キーと選択肢で行う。
+	if !strings.Contains(stdout, "readiness.mode") || !strings.Contains(stdout, "early, full") {
 		t.Fatalf("stdout=%q", stdout)
 	}
 }

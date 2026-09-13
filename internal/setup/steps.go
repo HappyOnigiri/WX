@@ -3,7 +3,6 @@ package setup
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 )
 
@@ -26,18 +26,24 @@ const (
 
 // collectPrerequisites は質問しない情報項目で、以降の項目が前提にしている事実を先に見せる。
 func collectPrerequisites(ctx context.Context) Step {
-	step := Step{ID: stepPrerequisites, Title: "Prerequisites", State: StatePresent, Default: ActionKeep, Detail: "checked without changing anything"}
+	step := Step{
+		ID: stepPrerequisites, Title: message("wx.setup.item.prerequisites"), State: StatePresent, Default: ActionKeep,
+		Summary: message("setup.summary.prerequisites"), Detail: message("setup.detail.prerequisites"),
+	}
 	runner := &gitx.Runner{}
 	if _, err := runner.Run(ctx, "", "--version"); err != nil {
 		step.State = StateUnknown
-		step.Reasons = append(step.Reasons, "git is unavailable: "+err.Error())
+		step.Reasons = append(step.Reasons, message("setup.reason.git_unavailable", "Error", err.Error()))
 	}
 	binary, err := hookconfig.ResolveHookBinary()
 	if err != nil {
 		step.State = StateUnknown
-		step.Reasons = append(step.Reasons, err.Error())
+		step.Reasons = append(step.Reasons, message("setup.reason.hook_binary_unresolved", "Error", err.Error()))
 	} else {
 		step.Desired = binary
+		if step.State == StatePresent {
+			step.Detail = message("setup.detail.prerequisites_binary", "Binary", binary)
+		}
 	}
 	step.Reasons = append(step.Reasons, developmentBuildReasons(binary)...)
 	return step
@@ -45,38 +51,39 @@ func collectPrerequisites(ctx context.Context) Step {
 
 // developmentBuildReasons は、書き込む command と判定基準の wx が食い違う開発 build を警告する。
 // この状態で書くと、書いた直後に divergent と表示される。
-func developmentBuildReasons(binary string) []string {
+func developmentBuildReasons(binary string) []i18n.Message {
 	running, err := os.Executable()
 	if err != nil || binary == "" {
 		return nil
 	}
 	current, err := hookconfig.CurrentExecutable()
 	if err != nil {
-		return []string{"the running wx cannot be identified: " + err.Error()}
+		return []i18n.Message{message("setup.reason.running_wx_unknown", "Error", err.Error())}
 	}
 	resolved, err := filepath.EvalSymlinks(binary)
 	if err != nil || resolved == current {
 		return nil
 	}
-	return []string{fmt.Sprintf("this wx runs from %s but hooks would name %s; install wx first so both agree", running, binary)}
+	return []i18n.Message{message("setup.reason.development_build", "Running", running, "Binary", binary)}
 }
 
 // collectWorktreeRoot は storage.worktree_root の記載とディレクトリの実体を見る。
 // 実効値は展開・symlink 解決を経るため既定リテラルと一致しない。比較は raw 値と Defaults の生文字列で行う。
 func collectWorktreeRoot() Step {
-	step := Step{ID: stepWorktreeRoot, Title: "Worktree root", Desired: config.Defaults().Storage.WorktreeRoot}
+	step := Step{ID: stepWorktreeRoot, Title: message("wx.setup.item.worktree_root"), Desired: config.Defaults().Storage.WorktreeRoot}
 	path, err := config.Path()
 	if err != nil {
-		return unknownStep(step, err.Error())
+		return unknownStep(step, message("setup.reason.config_unreadable", "Error", err.Error()))
 	}
 	step.Target = path
 	raw, err := config.LoadRaw()
 	if err != nil {
-		return unknownStep(step, err.Error())
+		return unknownStep(step, message("setup.reason.config_unreadable", "Error", err.Error()))
 	}
 	step.Current = raw.Storage.WorktreeRoot
 	if step.Current == "" {
-		step.Detail = "storage.worktree_root is not written; wx would use " + step.Desired
+		step.Summary = message("setup.summary.worktree_root_unset", "Default", step.Desired)
+		step.Detail = message("setup.detail.worktree_root_unset", "Default", step.Desired)
 		// 未記載のときは path そのものを決めてもらう。書かずに済ませる skip は既定値での運用と結果が同じなので置かない。
 		step.Options, step.Default = []Action{ActionDefault, ActionManual}, ActionDefault
 		step.State = StateAbsent
@@ -85,12 +92,13 @@ func collectWorktreeRoot() Step {
 	step.Desired = step.Current
 	expanded, err := config.ExpandHome(step.Current)
 	if err != nil {
-		return unknownStep(step, err.Error())
+		return unknownStep(step, message("setup.reason.config_unreadable", "Error", err.Error()))
 	}
-	step.Detail = expanded
-	if result := diag.DiagnosticPath(expanded, os.ModeDir, 0o700); result != "ok" {
+	step.Summary = message("setup.summary.worktree_root_path", "Path", expanded)
+	step.Detail = message("setup.detail.worktree_root_path", "Path", expanded)
+	if result, reason := diag.DiagnosticPathMessage(expanded, os.ModeDir, 0o700); result != "ok" {
 		step.State = StateDivergent
-		step.Reasons = append(step.Reasons, expanded+": "+result)
+		step.Reasons = append(step.Reasons, pathProblem(expanded, result, reason))
 		step.Options, step.Default = stepOptions(StateDivergent, worktreeRootActions)
 		return step
 	}
@@ -142,7 +150,7 @@ func applyWorktreeRoot(ctx context.Context, options Options, step Step, _ Action
 	// ここで全エラーを捨てると daemon が変更を拒否しても成功と表示され、旧 root が使われ続ける。
 	if options.ReloadConfig != nil {
 		if err := options.ReloadConfig(ctx); err != nil {
-			return fmt.Errorf("%s was saved but the running daemon rejected it: %w", step.Target, err)
+			return i18n.WrapError(err, "setup.error.daemon_rejected_config", map[string]any{"Path": step.Target, "Error": i18n.ErrorValue(err)})
 		}
 	}
 	return nil
@@ -151,10 +159,13 @@ func applyWorktreeRoot(ctx context.Context, options Options, step Step, _ Action
 // collectLaunchAgent は plist の内容と permission の両方を見る。
 // CurrentPlistStatus は byte 比較だけで permission を見ないため、setup が keep と言った直後に doctor が NG を返す矛盾が起きる。
 func collectLaunchAgent() Step {
-	step := Step{ID: stepLaunchAgent, Title: "LaunchAgent", Detail: "starts the wx daemon at login"}
+	step := Step{
+		ID: stepLaunchAgent, Title: message("wx.setup.item.launch_agent"),
+		Summary: message("setup.summary.launch_agent"), Detail: message("setup.detail.launch_agent"),
+	}
 	path, err := launchd.PlistPath()
 	if err != nil {
-		return unknownStep(step, err.Error())
+		return unknownStep(step, message("setup.reason.plist_uncomparable", "Error", err.Error()))
 	}
 	step.Target = path
 	if binary, err := launchd.ResolveBinary(); err == nil {
@@ -167,21 +178,20 @@ func collectLaunchAgent() Step {
 		return step
 	}
 	if status == launchd.PlistUnknown {
-		reason := "unable to compare the LaunchAgent plist"
 		if statusErr != nil {
-			reason += ": " + statusErr.Error()
+			return unknownStep(step, message("setup.reason.plist_uncomparable_error", "Error", statusErr.Error()))
 		}
-		return unknownStep(step, reason)
+		return unknownStep(step, message("setup.reason.plist_uncomparable"))
 	}
-	if permission := diag.DiagnosticPath(path, 0, 0o600); permission != "ok" {
+	if permission, reason := diag.DiagnosticPathMessage(path, 0, 0o600); permission != "ok" {
 		step.State = StateDivergent
-		step.Reasons = append(step.Reasons, path+": "+permission)
+		step.Reasons = append(step.Reasons, pathProblem(path, permission, reason))
 		step.Options, step.Default = stepOptions(StateDivergent, allActions)
 		return step
 	}
 	if status == launchd.PlistStale {
 		step.State = StateDivergent
-		step.Reasons = append(step.Reasons, "the installed plist does not match what this wx would write")
+		step.Reasons = append(step.Reasons, message("setup.reason.plist_stale"))
 		step.Options, step.Default = stepOptions(StateDivergent, allActions)
 		return step
 	}
@@ -195,39 +205,43 @@ var allActions = []Action{ActionInstall, ActionUpdate, ActionKeep, ActionRemove,
 func applyLaunchAgent(ctx context.Context, options Options, action Action) error {
 	if action == ActionRemove {
 		if options.UninstallLaunchAgent == nil {
-			return errors.New("removing the LaunchAgent is not available here")
+			return i18n.NewError("setup.error.launch_agent_remove_unavailable", nil)
 		}
 		return options.UninstallLaunchAgent(ctx)
 	}
 	if options.InstallLaunchAgent == nil {
-		return errors.New("installing the LaunchAgent is not available here")
+		return i18n.NewError("setup.error.launch_agent_install_unavailable", nil)
 	}
 	return options.InstallLaunchAgent(ctx)
 }
 
 // collectHooks は agent hook 設定を見る。判定と書き込みは internal/hookconfig が同じ受理条件で行う。
 func collectHooks(agent string) Step {
-	step := Step{ID: "hooks." + agent, Title: "Agent hooks (" + agent + ")"}
+	step := Step{ID: "hooks." + agent, Title: message("wx.setup.item.hooks", "Agent", agent)}
 	if !hookconfig.AgentInstalled(agent) {
 		step.State = StateNotApplicable
 		step.Default = ActionKeep
-		step.Detail = agent + " is not on PATH, so wx does not configure its hooks"
+		step.Summary = message("setup.summary.hooks_agent_missing", "Agent", agent)
+		step.Detail = message("setup.detail.hooks_agent_missing", "Agent", agent)
 		return step
 	}
 	state, err := hookconfig.Inspect(agent)
 	if err != nil {
-		return unknownStep(step, err.Error())
+		return unknownStep(step, message("setup.reason.hook_binary_unresolved", "Error", err.Error()))
 	}
 	step.Target = state.Path
 	step.Current = state.Executable
-	step.Reasons = state.Reasons()
+	step.Reasons = state.Messages()
 	if binary, err := hookconfig.ResolveHookBinary(); err == nil {
 		step.Desired = binary
 	}
-	step.Detail = fmt.Sprintf("%s in %s", hookEventSummary(), state.Path)
+	events := hookEventNames()
+	detail := []any{"Count", len(events), "Events", joinComma(events), "Path", state.Path, "Agent", agent}
+	step.Summary = message("setup.summary.hooks_entries", detail...)
+	step.Detail = message("setup.detail.hooks_entries", detail...)
 	if command, err := hookconfig.HookCommand("SessionStart"); err == nil {
-		// 選択肢の説明に実際の command を出さないと、何が書き込まれるのか選ぶ前に分からない。
-		step.Detail += ", such as " + command
+		// 実際の command を出さないと、何が書き込まれるのか選ぶ前に分からない。
+		step.Detail = message("setup.detail.hooks_entries_command", append(detail, "Command", command)...)
 	}
 	switch state.Status {
 	case hookconfig.StatusUnsupported:
@@ -245,13 +259,13 @@ func collectHooks(agent string) Step {
 	return step
 }
 
-// hookEventSummary は書き込む event 名を 1 行にする。
-func hookEventSummary() string {
+// hookEventNames は wx が書き込む event 名を、設定ファイルへ書く順で返す。
+func hookEventNames() []string {
 	names := make([]string, 0, len(hookconfig.Events()))
 	for _, event := range hookconfig.Events() {
 		names = append(names, event.Name)
 	}
-	return fmt.Sprintf("%d wx entries (%s)", len(names), joinComma(names))
+	return names
 }
 
 func joinComma(values []string) string {
@@ -267,7 +281,7 @@ func joinComma(values []string) string {
 
 // applyHooks は hook エントリを書き、書き換えた実体と控えの path を note として返す。
 // 控えは wx の状態ディレクトリへ置くので、出力に出さないと利用者は写しの場所を知る手段がない。
-func applyHooks(step Step, action Action) (string, error) {
+func applyHooks(step Step, action Action) (i18n.Message, error) {
 	agent := "claude"
 	if step.ID == stepHooksCodex {
 		agent = "codex"
@@ -275,43 +289,50 @@ func applyHooks(step Step, action Action) (string, error) {
 	if action == ActionRemove {
 		result, err := hookconfig.Remove(agent)
 		if err != nil {
-			return "", err
+			return i18n.Message{}, err
 		}
 		return hookApplyNote(result), nil
 	}
 	result, err := hookconfig.Install(agent)
 	if err != nil {
-		return "", err
+		return i18n.Message{}, err
 	}
 	if result.State.Status != hookconfig.StatusCurrent {
-		return "", fmt.Errorf("%s was written but the readiness contract is still not satisfied: %v", result.Resolved, result.State.Reasons())
+		// 受理されない理由は 1 件に絞らない。書き込んだのに受理されない状況では、
+		// 残り全ての finding が次に何を直すかの手掛かりになる。
+		if reasons := joinMessages(result.State.Messages()); reasons.ID != "" {
+			return i18n.Message{}, messageError("setup.error.hooks_not_ready_reasons", "Path", result.Resolved, "Reason", reasons)
+		}
+		return i18n.Message{}, messageError("setup.error.hooks_not_ready", "Path", result.Resolved)
 	}
 	return hookApplyNote(result), nil
 }
 
 // hookApplyNote は書き換えた実体と控えの path を 1 行にする。何も書かなかったときは空を返す。
-func hookApplyNote(result hookconfig.Result) string {
+func hookApplyNote(result hookconfig.Result) i18n.Message {
 	if !result.Changed {
-		return ""
+		return i18n.Message{}
 	}
-	note := "wrote " + result.Resolved
 	if result.Backup != "" {
-		note += "; backup at " + result.Backup
+		return message("setup.note.wrote_backup", "Path", result.Resolved, "Backup", result.Backup)
 	}
-	return note
+	return message("setup.note.wrote", "Path", result.Resolved)
 }
 
 // collectDaemon は socket へ接続するだけで満足せず、Status を 1 回呼んで応答の中身まで確かめる。
 func collectDaemon(ctx context.Context, options Options) Step {
-	step := Step{ID: stepDaemon, Title: "Daemon", Detail: "wx daemon answers the local socket"}
+	step := Step{
+		ID: stepDaemon, Title: message("wx.setup.item.daemon"),
+		Summary: message("setup.summary.daemon"), Detail: message("setup.detail.daemon"),
+	}
 	if options.DaemonStatus == nil {
-		return unknownStep(step, "the daemon cannot be queried here")
+		return unknownStep(step, message("setup.reason.daemon_unqueryable"))
 	}
 	responding, err := options.DaemonStatus(ctx)
 	switch {
 	case err != nil:
 		step.State = StateDivergent
-		step.Reasons = append(step.Reasons, "the daemon answered but the request failed: "+err.Error())
+		step.Reasons = append(step.Reasons, message("setup.reason.daemon_broken", "Error", err.Error()))
 		// 応答するが壊れている daemon は起動依頼では直らないので、別 process へ入れ替える restart を出す。
 		step.Options, step.Default = []Action{ActionRestart, ActionKeep}, ActionRestart
 	case responding:
@@ -329,17 +350,17 @@ func collectDaemon(ctx context.Context, options Options) Step {
 func applyDaemon(ctx context.Context, options Options, action Action) error {
 	if action == ActionRestart {
 		if options.RestartDaemon == nil {
-			return errors.New("restarting the daemon is not available here")
+			return i18n.NewError("setup.error.daemon_restart_unavailable", nil)
 		}
 		return options.RestartDaemon(ctx)
 	}
 	if options.StartDaemon == nil {
-		return errors.New("starting the daemon is not available here")
+		return i18n.NewError("setup.error.daemon_start_unavailable", nil)
 	}
 	return options.StartDaemon(ctx)
 }
 
-func unknownStep(step Step, reason string) Step {
+func unknownStep(step Step, reason i18n.Message) Step {
 	step.State = StateUnknown
 	step.Reasons = append(step.Reasons, reason)
 	step.Options, step.Default = stepOptions(StateUnknown, nil)

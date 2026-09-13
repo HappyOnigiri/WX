@@ -34,7 +34,10 @@ help本文・config schema・SQLite migration・LaunchAgent plist・agent hook�
 agent hook設定のうちwxが所有・書き換えるのはwxエントリだけで、他者のエントリはそのまま残す。
 ただし準備完了契約の判定は同じファイルの他エントリに影響される。
 
-設定項目の型・キー・scope は `internal/config` の設定構造体から導出し、表示名・説明・選択肢・影響だけを同packageのcatalogに置く。
+設定項目の型・キー・scope は `internal/config` の設定構造体から導出し、選択肢と英語の原文だけを同packageのcatalogに置く。
+利用者へ見せる表示名・説明・影響は`internal/i18n`のcatalogが両言語で持ち、描画側が設定キーから message ID を組み立てて解決する。
+`internal/setup`も同じ方針で、項目の見出し・説明・理由・適用結果を解決前のmessageで返し、訳文は持たない。
+機械が読む`--json`出力だけは、表示言語にかかわらず英語で解決する。
 wxが知らないキーは読み込みを失敗させず、値の解釈から外したうえで保存時も元の記述のまま残す。
 キーを増減させたバージョンのwxを行き来しても設定が壊れないようにするためで、外したキーは`wx doctor`が対象と行番号つきで報告する。
 設定変更はCLIとdashboardのどちらもpreviewとatomic saveを共有し、preview後に設定ファイルが変わった場合は保存しない。
