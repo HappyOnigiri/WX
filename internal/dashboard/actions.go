@@ -37,6 +37,14 @@ var tabIDs = []string{
 	"dashboard.tab.system",
 }
 
+// updateMenuItem は状態タブにだけ出る更新項目である。tabMenus[0] を作ると currentLabels と
+// descriptionLines の既定分岐へ tab 0 が流れ、状態画面の代わりに operationView が出るため、ここへ単体で置く。
+// 置き換えられる前のバイナリが TUI を動かしているので、実行は別 process へ渡す。
+var updateMenuItem = menuItem{
+	labelID: "menu.update.label", descriptionID: "menu.update.description", impactID: "menu.update.impact",
+	command: "update", defaultArgs: []string{"--apply"}, external: true,
+}
+
 var tabMenus = map[int][]menuItem{
 	1: {
 		{labelID: "menu.claude.label", descriptionID: "menu.claude.description", impactID: "menu.claude.impact", command: "claude", inputLabelID: "menu.claude.input", workDir: true, argumentChoices: defaultOrCustomArguments("dashboard.default_launch"), external: true},

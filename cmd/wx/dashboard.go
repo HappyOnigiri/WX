@@ -13,9 +13,12 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/dashboard"
 	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/setup"
+	"github.com/HappyOnigiri/WX/internal/update"
 )
 
 func runDashboard(ctx context.Context) int {
@@ -42,6 +45,7 @@ func runDashboard(ctx context.Context) int {
 		action, runErr := dashboard.Run(ctx, dashboard.Options{
 			Status: dashboardStatus, CWD: cwd, Config: cfg, RawConfig: rawConfig, Setup: steps, Notice: notice,
 			Execute: runDashboardInlineAction, Refresh: refreshDashboardState,
+			Version: versionString(), Update: dashboardUpdate(ctx),
 		})
 		if errors.Is(runErr, dashboard.ErrCancelled) {
 			return 0
@@ -51,8 +55,37 @@ func runDashboard(ctx context.Context) int {
 			return 1
 		}
 		code := runDashboardAction(ctx, action)
+		if action.Args[0] == "update" {
+			// この画面を動かしているのは置き換えられる前のバイナリなので、ループの先頭へは戻さない。
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "wx.update.restart_dashboard", nil))
+			return code
+		}
 		notice = i18n.T(ctx, "wx.dashboard.finished", map[string]any{"Command": action.Args[0], "Code": code})
 	}
+}
+
+// dashboardUpdate は daemon が持つ確認結果を状態画面へ渡す。
+// daemon が古くて method を知らない場合も、応答が得られない場合も、更新なしとして静かに扱う。
+func dashboardUpdate(ctx context.Context) dashboard.UpdateInfo {
+	c, err := rpcClient()
+	if err != nil {
+		return dashboard.UpdateInfo{}
+	}
+	callCtx, cancel := context.WithTimeout(ctx, statusDisplayTimeout)
+	defer cancel()
+	var status daemon.UpdateStatus
+	// 案内権は消費しない。状態画面の項目は常時表示で、対話起動の 1 回だけの案内とは役割が違う。
+	if err := c.Call(callCtx, "UpdateStatus", rpc.UpdateStatusParams{ClaimAnnouncement: false}, &status); err != nil {
+		return dashboard.UpdateInfo{}
+	}
+	if !status.Available || !update.Newer(versionString(), status.LatestVersion) {
+		return dashboard.UpdateInfo{}
+	}
+	url := status.ReleaseURL
+	if url == "" {
+		url = update.ReleasesPage
+	}
+	return dashboard.UpdateInfo{Available: true, Version: status.LatestVersion, URL: url}
 }
 
 func refreshDashboardState(ctx context.Context) (config.Config, config.Config, []setup.Step, error) {

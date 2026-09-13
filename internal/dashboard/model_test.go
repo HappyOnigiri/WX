@@ -236,3 +236,67 @@ func TestResultScrollsOnlyWhenOutputExceedsTheScreen(t *testing.T) {
 }
 
 func key(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }
+
+// TestStatusTabActivatesTheUpdateItemOnlyWhenAnUpdateExists は、状態タブのカーソルと Enter の
+// 出し分けを守る。更新が無いときは従来どおり選択も offset も動かず、Enter も何もしない。
+func TestStatusTabActivatesTheUpdateItemOnlyWhenAnUpdateExists(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults(), Version: "v1.0.0"})
+	m.offset = 3
+	updated, _ := m.Update(key(tea.KeyDown))
+	m = updated.(model)
+	if m.itemCount() != 0 || m.selected != 0 || m.offset != 3 {
+		t.Fatalf("count=%d selected=%d offset=%d, want an inert status tab", m.itemCount(), m.selected, m.offset)
+	}
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if m.mode != modeList {
+		t.Fatalf("mode=%v, want the status tab to ignore enter", m.mode)
+	}
+
+	m.opts.Update = UpdateInfo{Available: true, Version: "v1.1.0", URL: "https://example.test/v1.1.0"}
+	updated, _ = m.Update(key(tea.KeyDown))
+	m = updated.(model)
+	if m.itemCount() != 1 || m.selected != 0 || m.offset != 3 {
+		t.Fatalf("count=%d selected=%d offset=%d, want the single item selected and the offset untouched", m.itemCount(), m.selected, m.offset)
+	}
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if m.mode != modeConfirm || m.pending.command != "update" {
+		t.Fatalf("mode=%v pending=%q, want the update confirmation", m.mode, m.pending.command)
+	}
+	m.finishPending()
+	if got := strings.Join(m.result.Args, " "); got != "update --apply" || m.result.WorkDir != "" {
+		t.Fatalf("action=%q workdir=%q, want an update --apply with no working directory", got, m.result.WorkDir)
+	}
+	if !m.pending.external {
+		t.Fatal("the update runs inside the dashboard process, which is the binary being replaced")
+	}
+}
+
+// TestStatusTabSelectionStaysInRangeWhenTheUpdateItemDisappears は、項目が消えた瞬間に
+// 選択が範囲外を指さないことを守る。
+func TestStatusTabSelectionStaysInRangeWhenTheUpdateItemDisappears(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults(), Version: "v1.0.0"})
+	m.opts.Update = UpdateInfo{Available: true, Version: "v1.1.0"}
+	updated, _ := m.Update(key(tea.KeyDown))
+	m = updated.(model)
+	m.opts.Update = UpdateInfo{}
+	if m.selected >= max(1, m.itemCount()) && m.itemCount() != 0 {
+		t.Fatalf("selected=%d count=%d", m.selected, m.itemCount())
+	}
+	updated, _ = m.Update(key(tea.KeyEnter))
+	if got := updated.(model).mode; got != modeList {
+		t.Fatalf("mode=%v, want enter ignored once the update item is gone", got)
+	}
+}
+
+// TestStatusTabStillRefreshesWithTheUpdateItemPresent は、r キーの再読込が更新項目と衝突しないことを守る。
+func TestStatusTabStillRefreshesWithTheUpdateItemPresent(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults(), Version: "v1.0.0"})
+	m.loading = false
+	m.opts.Update = UpdateInfo{Available: true, Version: "v1.1.0"}
+	updated, cmd := m.Update(key('r'))
+	if cmd == nil || !updated.(model).loading {
+		t.Fatal("r did not start a status refresh while the update item is present")
+	}
+}
