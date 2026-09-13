@@ -298,6 +298,46 @@ source repository を同じ path で削除・再作成すると recovery ref が
 オプション:
   --dry-run  変更せず破棄対象を一覧表示`,
 	},
+	"help.command.update": {
+		EN: `Usage: wx update [--apply]
+
+Report whether a newer wx has been released, and install it with --apply.
+
+Without --apply nothing is changed: wx asks GitHub for the latest release and
+prints the version and its page. --apply asks again and then runs the install.sh
+attached to that release, which downloads the binary, verifies its checksum and
+version, replaces the installed wx, and restarts the daemon. That is the same
+command used for the first install, so there is one installation path.
+
+Both forms ask GitHub at the time you run them, rather than reading what the
+daemon last saw, so --apply never installs a release that is newer than yours
+but older than the latest.
+
+A development build (the version ends in -dev) is left alone: its version cannot
+be compared with a release tag, and install.sh would not replace it where it is.
+Distribution is macOS arm64 only, so --apply refuses elsewhere.
+
+The daemon checks for new releases on its own as well, and says so on the status
+screen and once per release when you start an agent. Turn that off with
+wx config update.auto_check false; this command still works.
+
+Options:
+  --apply  install the latest release`,
+		JA: `使い方: wx update [--apply]
+
+新しい wx が公開されているかを報告し、--apply で導入します。
+
+--apply なしでは何も変更しません。GitHub に最新リリースを尋ね、バージョンとその page を表示します。--apply はもう一度尋ねてから、そのリリースに添付された install.sh を実行します。install.sh はバイナリを取得し、checksum とバージョンを検証し、インストール済みの wx を置き換えて daemon を再起動します。初回インストールと同じ command なので、導入経路は 1 つに保たれます。
+
+どちらの形でも実行時点で GitHub に尋ね、daemon が最後に見た結果は使いません。そのため --apply が、現在より新しくても最新ではないリリースを入れることはありません。
+
+開発ビルド（バージョンが -dev で終わるもの）はそのままにします。リリースタグと比較できず、install.sh の置き換え先とも一致しないためです。配布対象は macOS arm64 だけなので、他の環境では --apply を拒否します。
+
+新しいリリースの確認は daemon も行い、状態画面と、agent 起動時にリリースごと 1 回お知らせします。止めるには wx config update.auto_check false を実行してください。この command は止めても動きます。
+
+オプション:
+  --apply  最新のリリースを導入する`,
+	},
 	"help.command.forget": {
 		EN: `Usage: wx forget <workspace-path> [--discard-recovery]
 

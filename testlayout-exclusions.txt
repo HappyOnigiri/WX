@@ -20,3 +20,4 @@ internal/i18n/catalog_help_config.go	exempt	A message table with no logic; Valid
 internal/i18n/catalog_help_maintenance.go	exempt	A message table with no logic; ValidateCatalog in catalog_test.go covers every entry of the merged catalog.
 internal/i18n/catalog_setup.go	exempt	A message table with no logic; ValidateCatalog in catalog_test.go covers every entry of the merged catalog.
 internal/i18n/catalog_config.go	exempt	A message table with no logic; ValidateCatalog in catalog_test.go covers every entry of the merged catalog.
+cmd/wx/update.go	exempt	Stdio, HTTPS download, and install.sh process adapter recorded in coverage-exclusions.txt; the command behavior is exercised by dispatch_matrix_test.go.

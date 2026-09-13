@@ -93,6 +93,8 @@ func run(ctx context.Context, args []string) int {
 		return runDiscardRecovery(ctx, args[1:])
 	case "forget":
 		return runForget(ctx, args[1:])
+	case "update":
+		return runUpdate(ctx, args[1:])
 	}
 	f, agentName, agentArgs, err := parseAgentPrefix(args)
 	if err != nil {

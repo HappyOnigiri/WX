@@ -86,6 +86,12 @@ func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
 		{name: "release missing id", args: []string{"release"}, want: 2},
 		{name: "release unavailable", args: []string{"release", "session"}, want: 1},
 		{name: "forget unavailable", args: []string{"forget", "/tmp/workspace"}, want: 1},
+		{name: "update extra argument", args: []string{"update", "extra"}, want: 2},
+		{name: "update unknown flag", args: []string{"update", "--not-a-flag"}, want: 2},
+		// テストバイナリは開発ビルドなので、確認も更新も行わずその旨だけを出して 0 で終える。
+		// これが実ネットワークへ出ないことの保証でもある。
+		{name: "update on a development build", args: []string{"update"}, want: 0},
+		{name: "update apply on a development build", args: []string{"update", "--apply"}, want: 0},
 		{name: "agent daemon unavailable", args: []string{"codex"}, want: 1},
 	}
 	for _, test := range cases {
