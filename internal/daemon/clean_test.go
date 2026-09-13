@@ -15,7 +15,8 @@ import (
 )
 
 // cleanFixture は clean の対象選定と進行を確かめるための manager・store・workspace を用意する。
-func cleanFixture(t *testing.T) (*Manager, *state.Store, string) {
+// options は補充を有効にするなど、既定の設定を test 側で変えるために使う。
+func cleanFixture(t *testing.T, options ...func(*config.Config)) (*Manager, *state.Store, string) {
 	t.Helper()
 	root := t.TempDir()
 	store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
@@ -25,6 +26,9 @@ func cleanFixture(t *testing.T) (*Manager, *state.Store, string) {
 	t.Cleanup(func() { _ = store.Close() })
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	for _, option := range options {
+		option(&cfg)
+	}
 	manager := testManager(t, cfg, store)
 	t.Cleanup(manager.Close)
 	repository := discovery.Repository{ID: "repository", MainPath: discoveryPath(filepath.Join(root, "repository")), CommonDir: discoveryPath(filepath.Join(root, "repository", ".git")), DefaultBranch: "main"}
@@ -41,12 +45,12 @@ func beginCleanWithoutDriver(t *testing.T, manager *Manager, store *state.Store,
 		t.Fatal(err)
 	}
 	discard := len(discardOption) > 0 && discardOption[0]
-	targets := planCleanTargets(candidates, all, standby, discard)
+	targets := planCleanTargets(candidates, "", all, standby, discard)
 	mode := cleanMode(all, standby)
 	if discard {
 		mode += "-discard"
 	}
-	runID, _, err := store.BeginCleanRun(ctx, "run", mode, targets, cleanWorkspaces(targets, all || standby))
+	runID, _, err := store.BeginCleanRun(ctx, state.CleanRun{ID: "run", Mode: mode}, targets, cleanWorkspaces(targets, all || standby))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +122,7 @@ func TestPlanCleanTargetsSeparatesUnusedInUseAndUnprovableSlots(t *testing.T) {
 		{SlotID: "restoring", SlotState: "RESTORING", SessionID: "restore", SessionState: "RESTORING", ParentSnapshots: 1},
 		{SlotID: "lost-restore", SlotState: "RESTORING", SessionID: "restore2", SessionState: "RESTORING"},
 	}
-	normal := planCleanTargets(candidates, false, false, false)
+	normal := planCleanTargets(candidates, "", false, false, false)
 	// 待機用 slot は貸出前でも残す。世代遅れの STALE は再利用されないので待機用として扱わない。
 	for _, slotID := range []string{"standby", "replenishing"} {
 		if got := targetByID(normal, slotID); got.State != cleanTargetSkipped || got.Reason == "" {
@@ -139,7 +143,7 @@ func TestPlanCleanTargetsSeparatesUnusedInUseAndUnprovableSlots(t *testing.T) {
 		t.Fatalf("in-use slot in normal mode=%+v", got)
 	}
 	// --standby は待機用だけを加え、使用中の session には触れない。
-	standby := planCleanTargets(candidates, false, true, false)
+	standby := planCleanTargets(candidates, "", false, true, false)
 	for _, slotID := range []string{"standby", "replenishing"} {
 		if got := targetByID(standby, slotID).State; got != cleanTargetPending {
 			t.Fatalf("--standby target %s state=%s", slotID, got)
@@ -148,7 +152,7 @@ func TestPlanCleanTargetsSeparatesUnusedInUseAndUnprovableSlots(t *testing.T) {
 	if got := targetByID(standby, "active"); got.State != cleanTargetSkipped || got.Reason == "" {
 		t.Fatalf("in-use slot in standby mode=%+v", got)
 	}
-	all := planCleanTargets(candidates, true, false, false)
+	all := planCleanTargets(candidates, "", true, false, false)
 	for _, slotID := range []string{"standby", "replenishing"} {
 		if got := targetByID(all, slotID).State; got != cleanTargetPending {
 			t.Fatalf("--all target %s state=%s", slotID, got)
@@ -200,7 +204,7 @@ func TestCleanDryRunChangesNothing(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
 		t.Fatal(err)
 	}
-	reply, err := manager.Clean(ctx, false, true, true)
+	reply, err := manager.Clean(ctx, CleanRequest{Standby: true, DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +234,7 @@ func TestCleanKeepsStandbyWorktreesUntilTheyAreAskedFor(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
 		t.Fatal(err)
 	}
-	reply, err := manager.Clean(ctx, false, false, false)
+	reply, err := manager.Clean(ctx, CleanRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +261,7 @@ func TestCleanRemovesUnusedStandbyAndFinishesTheRun(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
 		t.Fatal(err)
 	}
-	reply, err := manager.Clean(ctx, false, true, false)
+	reply, err := manager.Clean(ctx, CleanRequest{Standby: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +283,7 @@ func TestCleanRemovesUnusedStandbyAndFinishesTheRun(t *testing.T) {
 	}
 	waitCleanTargetState(t, store, runID, "standby", cleanTargetDone)
 	waitCleanRunDone(t, store, runID)
-	// 補充停止は run の完了では解除せず、次に貸出・resume が成功するまで残る。
+	// --replenish を付けない限り、補充停止は run の完了では解除せず、次に貸出・resume が成功するまで残る。
 	if suspended, err := store.ReplenishSuspended(ctx, workspaceID); err != nil || !suspended {
 		t.Fatalf("replenishment resumed too early: %v err=%v", suspended, err)
 	}
@@ -312,7 +316,7 @@ func TestCleanDeletesQuarantinedSlotWithoutWaitingRetention(t *testing.T) {
 	if err != nil || len(candidates) != 0 {
 		t.Fatalf("gc candidates=%+v err=%v", candidates, err)
 	}
-	reply, err := manager.Clean(ctx, false, false, false)
+	reply, err := manager.Clean(ctx, CleanRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +341,7 @@ func TestCleanDeletesQuarantinedSlotWithoutWaitingRetention(t *testing.T) {
 func TestCleanKeepsQuarantinedSlotWhoseOwnershipCannotBeProven(t *testing.T) {
 	manager, store, slot := quarantinedCleanFixture(t)
 	ctx := context.Background()
-	reply, err := manager.Clean(ctx, true, false, false)
+	reply, err := manager.Clean(ctx, CleanRequest{All: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +373,7 @@ func TestCleanAllRequestsTerminationAndTimesOutWithoutKilling(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 通常モードは使用中の session に触れない。
-	normal, err := manager.Clean(ctx, false, false, true)
+	normal, err := manager.Clean(ctx, CleanRequest{DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,11 +496,11 @@ func TestCleanRunRefusesNewLeasesAndRejoinsInsteadOfDuplicating(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
 		t.Fatal(err)
 	}
-	first, err := manager.Clean(ctx, false, true, false)
+	first, err := manager.Clean(ctx, CleanRequest{Standby: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := manager.Clean(ctx, false, true, false)
+	second, err := manager.Clean(ctx, CleanRequest{Standby: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +509,7 @@ func TestCleanRunRefusesNewLeasesAndRejoinsInsteadOfDuplicating(t *testing.T) {
 	}
 	// 待機用 worktree を含めるかは mode の一部なので、対象の違う再実行は合流させない。
 	for _, conflicting := range []struct{ all, standby bool }{{all: true}, {}} {
-		if _, err := manager.Clean(ctx, conflicting.all, conflicting.standby, false); !IsCleanConflict(err) {
+		if _, err := manager.Clean(ctx, CleanRequest{All: conflicting.all, Standby: conflicting.standby}); !IsCleanConflict(err) {
 			t.Fatalf("mode conflict for all=%v standby=%v err=%v", conflicting.all, conflicting.standby, err)
 		}
 	}
@@ -517,6 +521,33 @@ func TestCleanRunRefusesNewLeasesAndRejoinsInsteadOfDuplicating(t *testing.T) {
 	}
 }
 
+// workspace を指定した clear は、他の workspace と帰属を確定できない slot を対象一覧にも載せない。
+// SKIPPED で並べると、利用者が指定していない範囲の slot が結果と件数に混ざる。
+func TestPlanCleanTargetsLimitsTheScopeToTheNamedWorkspace(t *testing.T) {
+	t.Parallel()
+	candidates := []state.CleanCandidate{
+		{SlotID: "mine", WorkspaceID: "workspace", SlotState: "READY"},
+		{SlotID: "other", WorkspaceID: "another", SlotState: "READY"},
+		{SlotID: "unbound", SlotState: "UNBOUND", SessionID: "resume", SessionState: "UNBOUND"},
+	}
+	targets := planCleanTargets(candidates, "workspace", false, true, false)
+	if len(targets) != 1 || targets[0].SlotID != "mine" || targets[0].State != cleanTargetPending {
+		t.Fatalf("scoped targets=%+v", targets)
+	}
+	// 範囲を指定しない clear は従来どおり帰属未確定の候補も拾う。
+	if all := planCleanTargets(candidates, "", false, true, false); len(all) != 3 {
+		t.Fatalf("unscoped targets=%+v", all)
+	}
+}
+
+// 打ち間違えた path で「対象なし」とだけ返さないよう、dry-run でも path を先に検証する。
+func TestCleanRejectsAnUnregisteredWorkspacePathEvenInDryRun(t *testing.T) {
+	manager, _, _ := cleanFixture(t)
+	if _, err := manager.Clean(context.Background(), CleanRequest{Path: filepath.Join(t.TempDir(), "missing"), DryRun: true}); err == nil {
+		t.Fatal("an unregistered workspace path was accepted")
+	}
+}
+
 func TestCleanStatusReportsAcceptedRunAndResumesAfterRestart(t *testing.T) {
 	manager, store, workspaceID := cleanFixture(t)
 	ctx := context.Background()
@@ -524,7 +555,7 @@ func TestCleanStatusReportsAcceptedRunAndResumesAfterRestart(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
 		t.Fatal(err)
 	}
-	reply, err := manager.Clean(ctx, false, true, false)
+	reply, err := manager.Clean(ctx, CleanRequest{Standby: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,7 +580,7 @@ func TestCleanStatusReportsAcceptedRunAndResumesAfterRestart(t *testing.T) {
 func TestReplenishSuspensionStopsStandbyCreation(t *testing.T) {
 	manager, store, workspaceID := cleanFixture(t)
 	ctx := context.Background()
-	if _, _, err := store.BeginCleanRun(ctx, "run", "normal", nil, []string{workspaceID}); err != nil {
+	if _, _, err := store.BeginCleanRun(ctx, state.CleanRun{ID: "run", Mode: "normal"}, nil, []string{workspaceID}); err != nil {
 		t.Fatal(err)
 	}
 	workspaceRecord, err := store.Workspace(ctx, workspaceID)
@@ -580,7 +611,7 @@ func TestCleanDiscardRecoversUnboundAndLeavesUnregisteredPaths(t *testing.T) {
 	if err := os.MkdirAll(unknown, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	reply, err := manager.Clean(ctx, false, false, false, true)
+	reply, err := manager.Clean(ctx, CleanRequest{Discard: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,7 +691,7 @@ func TestPlanCleanTargetsGuideDetachedLeasesToRelease(t *testing.T) {
 		{SlotID: "detached", SlotState: "LEASED", SessionID: "path-lease", SessionState: "ACTIVE", LeaseKind: state.LeaseKindPath},
 		{SlotID: "shell", SlotState: "LEASED", SessionID: "shell-lease", SessionState: "ACTIVE", LeaseKind: state.LeaseKindShell},
 		{SlotID: "agent", SlotState: "LEASED", SessionID: "agent-session", SessionState: "ACTIVE", LeaseKind: state.LeaseKindAgent},
-	}, false, false, false)
+	}, "", false, false, false)
 	if got := targetByID(targets, "detached"); got.State != cleanTargetSkipped || !strings.Contains(got.Reason, "wx release path-lease") {
 		t.Fatalf("detached lease target=%+v", got)
 	}
@@ -672,7 +703,7 @@ func TestPlanCleanTargetsGuideDetachedLeasesToRelease(t *testing.T) {
 	// --all では貸出も対象に入る。
 	all := planCleanTargets([]state.CleanCandidate{
 		{SlotID: "detached", SlotState: "LEASED", SessionID: "path-lease", SessionState: "ACTIVE", LeaseKind: state.LeaseKindPath},
-	}, true, false, false)
+	}, "", true, false, false)
 	if got := targetByID(all, "detached").State; got != cleanTargetPending {
 		t.Fatalf("--all detached lease state=%s", got)
 	}

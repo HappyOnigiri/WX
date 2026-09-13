@@ -67,7 +67,7 @@ func TestEndedWorktreeWithUnsavedSubmoduleWorkSurvivesGC(t *testing.T) {
 		t.Fatal("wx doctor did not report the protected slot")
 	}
 	// --discard 無しの clear は理由つきで残す。保存できない作業を黙って消さないためである。
-	dry, err := m.Clean(ctx, false, false, true)
+	dry, err := m.Clean(ctx, CleanRequest{DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestEndedWorktreeWithUnsavedSubmoduleWorkSurvivesGC(t *testing.T) {
 	if target.State != cleanTargetSkipped || !strings.Contains(target.Reason, "--discard") {
 		t.Fatalf("clear target without --discard=%+v", target)
 	}
-	if _, err := m.Clean(ctx, false, false, false, true); err != nil {
+	if _, err := m.Clean(ctx, CleanRequest{Discard: true}); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, 30*time.Second, func() bool {

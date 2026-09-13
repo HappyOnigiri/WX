@@ -12,13 +12,21 @@ import (
 // 予約済み slot を再貸出しないため、判定は貸出側の書き込みトランザクション内で行う。
 var ErrCleanInProgress = errors.New("wx clear is in progress; retry once it finishes")
 
-// ErrCleanModeConflict は実行中の clean と異なる mode の要求を断る。同じ mode の再実行は既存 run へ合流する。
-var ErrCleanModeConflict = errors.New("a wx clear with a different mode is already running")
+// ErrCleanModeConflict は実行中の clean と mode か対象範囲が異なる要求を断る。
+// mode と対象 workspace の両方が一致する再実行だけが既存 run へ合流する。
+var ErrCleanModeConflict = errors.New("a wx clear with a different mode or scope is already running")
 
 // clean run と target の state 名。遷移は SQL の compare-and-swap で検証する。
 const (
 	CleanRunRunning = "RUNNING"
 	CleanRunDone    = "DONE"
+)
+
+// clean run の補充再開の進行状態。空文字は未着手で、CAS で RUNNING を 1 度だけ獲得する。
+const (
+	CleanReplenishPending = ""
+	CleanReplenishRunning = "RUNNING"
+	CleanReplenishDone    = "DONE"
 )
 
 // CleanCandidate は clean の対象選定に必要な、slot 1 件分の読み取り専用スナップショットである。
@@ -51,10 +59,16 @@ type CleanTarget struct {
 }
 
 // CleanRun は受付済みの clean 1 件を表す。
+// WorkspaceID が空文字の run は全 workspace を対象にする。
+// Replenish 以降は run を閉じた後の補充再開の指示と進行で、daemon 再起動後も同じ指示で再開できるよう run に持たせる。
 type CleanRun struct {
-	ID    string `json:"id"`
-	Mode  string `json:"mode"`
-	State string `json:"state"`
+	ID              string `json:"id"`
+	Mode            string `json:"mode"`
+	State           string `json:"state"`
+	WorkspaceID     string `json:"workspace_id,omitempty"`
+	Replenish       bool   `json:"replenish,omitempty"`
+	ReplenishState  string `json:"replenish_state,omitempty"`
+	ReplenishResult string `json:"replenish_result,omitempty"`
 }
 
 // TerminationRequest は clean が session へ出した期限付きの終了要求である。daemon は signal を送らず、client が応答する。
@@ -90,10 +104,20 @@ func (s *Store) CleanCandidates(ctx context.Context) ([]CleanCandidate, error) {
 	return out, rows.Err()
 }
 
+// cleanRunColumns は CleanRun を読む全経路で同じ列と順序を使い、scanCleanRun と対にする。
+const cleanRunColumns = `id,mode,state,workspace_id,replenish,replenish_state,COALESCE(replenish_result,'')`
+
+func scanCleanRun(row rowScanner) (CleanRun, error) {
+	var run CleanRun
+	if err := row.Scan(&run.ID, &run.Mode, &run.State, &run.WorkspaceID, &run.Replenish, &run.ReplenishState, &run.ReplenishResult); err != nil {
+		return CleanRun{}, err
+	}
+	return run, nil
+}
+
 // ActiveCleanRun は実行中の clean を返す。CLI の合流判定と、貸出側の競合判定の説明に使う。
 func (s *Store) ActiveCleanRun(ctx context.Context) (CleanRun, bool, error) {
-	var run CleanRun
-	err := s.db.QueryRowContext(ctx, `SELECT id,mode,state FROM clean_runs WHERE state=? ORDER BY created_at LIMIT 1`, CleanRunRunning).Scan(&run.ID, &run.Mode, &run.State)
+	run, err := scanCleanRun(s.db.QueryRowContext(ctx, `SELECT `+cleanRunColumns+` FROM clean_runs WHERE state=? ORDER BY created_at LIMIT 1`, CleanRunRunning))
 	if errors.Is(err, sql.ErrNoRows) {
 		return CleanRun{}, false, nil
 	}
@@ -101,8 +125,11 @@ func (s *Store) ActiveCleanRun(ctx context.Context) (CleanRun, bool, error) {
 }
 
 // BeginCleanRun は run と対象一式を 1 トランザクションで登録する。
-// 同じ mode の実行中 run があれば新しい対象を作らずその ID を返し、終了要求と削除ジョブを重複させない。
-func (s *Store) BeginCleanRun(ctx context.Context, id, mode string, targets []CleanTarget, suspend []string) (string, bool, error) {
+// mode と対象 workspace が一致する実行中 run があれば新しい対象を作らずその ID を返し、終了要求と削除ジョブを重複させない。
+// 合流するとき、要求側だけが補充再開を求めていれば既存 run の指示を上げる。
+// 指示は上げるだけで下げない。後からの要求は追加であり、指示なしの再実行が先行の約束を取り消すのは驚きになるためである。
+// commentlint:allow-long -- 合流の条件と、補充再開の指示を上げるだけにする理由を呼び出し側へ残す
+func (s *Store) BeginCleanRun(ctx context.Context, run CleanRun, targets []CleanTarget, suspend []string) (string, bool, error) {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -110,18 +137,26 @@ func (s *Store) BeginCleanRun(ctx context.Context, id, mode string, targets []Cl
 		return "", false, err
 	}
 	defer tx.Rollback()
-	var existingID, existingMode string
-	err = tx.QueryRowContext(ctx, `SELECT id,mode FROM clean_runs WHERE state=? ORDER BY created_at LIMIT 1`, CleanRunRunning).Scan(&existingID, &existingMode)
+	var existingID, existingMode, existingWorkspace string
+	err = tx.QueryRowContext(ctx, `SELECT id,mode,workspace_id FROM clean_runs WHERE state=? ORDER BY created_at LIMIT 1`, CleanRunRunning).Scan(&existingID, &existingMode, &existingWorkspace)
 	switch {
-	case err == nil && existingMode == mode:
+	case err == nil && existingMode == run.Mode && existingWorkspace == run.WorkspaceID:
+		if run.Replenish {
+			if _, err := tx.ExecContext(ctx, `UPDATE clean_runs SET replenish=1,updated_at=? WHERE id=? AND replenish=0`, now(), existingID); err != nil {
+				return "", false, err
+			}
+			return existingID, true, tx.Commit()
+		}
 		return existingID, true, nil
 	case err == nil:
-		return "", false, fmt.Errorf("%w: run %s is in %s mode", ErrCleanModeConflict, existingID, existingMode)
+		return "", false, fmt.Errorf("%w: run %s is in %s mode with scope %q", ErrCleanModeConflict, existingID, existingMode, existingWorkspace)
 	case !errors.Is(err, sql.ErrNoRows):
 		return "", false, err
 	}
 	t := now()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO clean_runs(id,mode,state,created_at,updated_at) VALUES(?,?,?,?,?)`, id, mode, CleanRunRunning, t, t); err != nil {
+	id := run.ID
+	if _, err := tx.ExecContext(ctx, `INSERT INTO clean_runs(id,mode,state,workspace_id,replenish,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`,
+		id, run.Mode, CleanRunRunning, run.WorkspaceID, run.Replenish, t, t); err != nil {
 		return "", false, err
 	}
 	for _, target := range targets {
@@ -143,8 +178,8 @@ func (s *Store) BeginCleanRun(ctx context.Context, id, mode string, targets []Cl
 
 // CleanRunByID は run 1 件と、その全対象を返す。
 func (s *Store) CleanRunByID(ctx context.Context, id string) (CleanRun, []CleanTarget, error) {
-	var run CleanRun
-	if err := s.db.QueryRowContext(ctx, `SELECT id,mode,state FROM clean_runs WHERE id=?`, id).Scan(&run.ID, &run.Mode, &run.State); err != nil {
+	run, err := scanCleanRun(s.db.QueryRowContext(ctx, `SELECT `+cleanRunColumns+` FROM clean_runs WHERE id=?`, id))
+	if err != nil {
 		return CleanRun{}, nil, err
 	}
 	targets, err := s.CleanTargets(ctx, id)
@@ -171,15 +206,25 @@ func (s *Store) CleanTargets(ctx context.Context, runID string) ([]CleanTarget, 
 
 // RunningCleanRuns は daemon 再起動後に再開すべき run を返す。
 func (s *Store) RunningCleanRuns(ctx context.Context) ([]CleanRun, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,mode,state FROM clean_runs WHERE state=? ORDER BY created_at`, CleanRunRunning)
+	return s.cleanRuns(ctx, `WHERE state=? ORDER BY created_at`, CleanRunRunning)
+}
+
+// PendingCleanReplenishRuns は run を閉じたが補充再開が終わっていない run を返す。
+// daemon が再開の直前や途中で落ちると RunningCleanRuns では拾えないため、起動時の掃き出しはこちらを使う。
+func (s *Store) PendingCleanReplenishRuns(ctx context.Context) ([]CleanRun, error) {
+	return s.cleanRuns(ctx, `WHERE state=? AND replenish=1 AND replenish_state<>? ORDER BY created_at`, CleanRunDone, CleanReplenishDone)
+}
+
+func (s *Store) cleanRuns(ctx context.Context, where string, args ...any) ([]CleanRun, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+cleanRunColumns+` FROM clean_runs `+where, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []CleanRun
 	for rows.Next() {
-		var run CleanRun
-		if err := rows.Scan(&run.ID, &run.Mode, &run.State); err != nil {
+		run, err := scanCleanRun(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, run)
@@ -272,6 +317,59 @@ func (s *Store) FinishCleanRun(ctx context.Context, runID string) (bool, error) 
 	return n == 1, nil
 }
 
+// ClaimCleanReplenish は閉じた run の補充再開を 1 度だけ引き受ける。
+// 引き受けられたときだけ true を返し、driver の再起動や再開の重複実行では false になる。
+// fromRunning が true のときは中断で RUNNING に残った claim も引き受ける。daemon 起動時の掃き出しだけが指定する。
+func (s *Store) ClaimCleanReplenish(ctx context.Context, runID string, fromRunning bool) (bool, error) {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	states := []string{CleanReplenishPending}
+	if fromRunning {
+		states = append(states, CleanReplenishRunning)
+	}
+	args := append([]any{CleanReplenishRunning, now(), runID, CleanRunDone}, stringsToAny(states)...)
+	res, err := s.db.ExecContext(ctx, `UPDATE clean_runs SET replenish_state=?,updated_at=? WHERE id=? AND state=? AND replenish=1 AND replenish_state IN (`+placeholders(len(states))+`)`, args...)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+// FinishCleanReplenish は引き受け済みの補充再開を結果とともに閉じる。
+func (s *Store) FinishCleanReplenish(ctx context.Context, runID, result string) error {
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	res, err := s.db.ExecContext(ctx, `UPDATE clean_runs SET replenish_state=?,replenish_result=?,updated_at=? WHERE id=? AND replenish_state=?`,
+		CleanReplenishDone, result, now(), runID, CleanReplenishRunning)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("clean run %s does not hold a replenish claim", runID)
+	}
+	return nil
+}
+
+// CleanSuspendedWorkspaces は、この run が止めた workspace の ID を返す。
+// 後続の clean が同じ workspace を止めると detail が上書きされるので、先行 run の対象からは自然に外れる。
+func (s *Store) CleanSuspendedWorkspaces(ctx context.Context, runID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT workspace_id FROM replenish_suspensions WHERE reason=? AND detail=? ORDER BY workspace_id`, SuspendReplenishReasonClean, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // ReplenishSuspended は workspace の待機用 worktree 補充が停止中かを返す。
 // 停止は永続化してあるため、daemon 再起動後の定期 reconcile でも再生成されない。
 func (s *Store) ReplenishSuspended(ctx context.Context, workspaceID string) (bool, error) {
@@ -283,7 +381,8 @@ func (s *Store) ReplenishSuspended(ctx context.Context, workspaceID string) (boo
 }
 
 // ResumeReplenish は workspace の補充停止を解除する。
-// 呼ぶのは手動起動（新規貸出・resume）が成功した時点と `wx retry-standby` の 2 経路だけで、停止理由では区別しない。
+// 呼ぶのは手動起動（新規貸出・resume）が成功した時点だけで、停止理由では区別しない。
+// `wx retry-standby` と `wx clear --replenish` は補充の予約まで同じ transaction で行うため、RetryStandbyReplenishment を通る。
 func (s *Store) ResumeReplenish(ctx context.Context, workspaceID string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
