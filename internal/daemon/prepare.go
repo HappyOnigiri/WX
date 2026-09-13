@@ -98,6 +98,12 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	if slot.State != "PREPARING" {
 		return errors.New("restore preparation must use the restore job")
 	}
+	// 容量検査は staged preparation が BeginStagedPreparation で開始を記録する前に
+	// 行う。不足をその後に返すと、early_prepare の defer が worktree を QUARANTINED
+	// へ倒し、1 byte も書いていない slot を手動回収へ送ってしまう。
+	if err := m.enforcePrepareCapacity(ctx, slot, w, resolved, repos, prepareConfig); err != nil {
+		return err
+	}
 	staged, err := m.prepareStagedSlot(ctx, slot, w, resolved, preparer)
 	if err != nil {
 		m.log.Error("slot preparation failed", "job_id", job.ID, "session_id", job.SessionID, "slot_id", id, "error", err)

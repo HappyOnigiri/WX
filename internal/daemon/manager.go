@@ -109,6 +109,13 @@ type Manager struct {
 	// activePrepares は実行中の準備・更新の計測を slot ID で引く表である。
 	// 計測は finish で初めて prepareMeasurements へ載るため、待機中の client へ現在の区間を見せるにはこちらを読む。
 	activePrepares map[string]*prepareTimer
+	// freeSpace は容量 preflight の statfs をテストから差し替えるための hook である。
+	// nil の本番経路は descriptor から domain.VolumeFreeBytes を呼ぶ。
+	freeSpace func(*os.File) (string, int64, error)
+	// capacityCache は同じ repository/OID を doctor と準備が続けて読むときの
+	// Git 読み出しを共有する。容量計測は診断専用で、Store へは保存しない。
+	capacityMu    sync.Mutex
+	capacityCache map[string]workspace.CapacityEstimate
 }
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {
@@ -126,7 +133,7 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 			prepareDetailDir = filepath.Join(filepath.Dir(logPath), "details")
 		}
 	}
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, rootUsage: map[string]rootUsageSample{}, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}, leases: map[string]func(){}, activePrepares: map[string]*prepareTimer{}, jobQueue: newJobQueue(cfg.Pool.PreparationConcurrency), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, rootUsage: map[string]rootUsageSample{}, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}, capacityCache: map[string]workspace.CapacityEstimate{}, leases: map[string]func(){}, activePrepares: map[string]*prepareTimer{}, jobQueue: newJobQueue(cfg.Pool.PreparationConcurrency), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
 	m.watchExecutable(executable, executableErr)
 	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {

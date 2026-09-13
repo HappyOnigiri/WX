@@ -123,7 +123,7 @@ func (p *Preparer) defaultIncludesForRepository(repo discovery.Repository, linkP
 	if len(candidates) == 0 {
 		return nil, nil
 	}
-	listed, err := p.Git.Run(context.Background(), mainPath, append([]string{"ls-files", "-z", "--"}, candidates...)...)
+	listed, err := p.Git.Run(context.Background(), mainPath, append([]string{"--no-optional-locks", "ls-files", "-z", "--"}, candidates...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +250,7 @@ func (p *Preparer) copyIncludePath(tracked map[string]bool, sourceRoot *os.Root,
 // trackedIncludePaths は main の tracked path 全体を一度の ls-files で読み、include 候補の判定を map 参照にする。
 // 候補1件ごとに Git を起動すると、大きな repository では index 読み込みの起動費用が候補数だけ積み上がる。
 func (p *Preparer) trackedIncludePaths(repo discovery.Repository) (map[string]bool, error) {
-	listed, err := p.Git.Run(context.Background(), string(repo.MainPath), "ls-files", "-z")
+	listed, err := p.Git.Run(context.Background(), string(repo.MainPath), "--no-optional-locks", "ls-files", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("list tracked includes: %w", err)
 	}

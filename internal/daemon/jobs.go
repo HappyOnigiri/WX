@@ -206,6 +206,14 @@ func (m *Manager) recoverJobs(reclaimAll bool) {
 }
 
 func (m *Manager) finishJob(ctx context.Context, job state.Job, owner string, runErr error) error {
+	var capacityErr *InsufficientPrepareSpaceError
+	if errors.As(runErr, &capacityErr) {
+		code := "PREPARE_INSUFFICIENT_SPACE"
+		if job.Kind == "RESTORE" {
+			code = "RESTORE_INSUFFICIENT_SPACE"
+		}
+		return m.store.FinishJobWithDetail(ctx, job.ID, owner, runErr, code, "")
+	}
 	var prepareErr *workspace.PrepareCommandError
 	if errors.As(runErr, &prepareErr) {
 		failureCode := "PREPARE_FAILED"
@@ -263,6 +271,12 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 			return err
 		}
 		if err := m.prepareSlotWithJob(ctx, job.SlotID, w, resolved, repos, job); err != nil {
+			var capacityErr *InsufficientPrepareSpaceError
+			if errors.As(err, &capacityErr) {
+				// 容量不足は preflight で slot を FAILED へ遷移済みで、書込みも
+				// retry budget の消費も無い。補充停止や隔離への fallback は行わない。
+				return err
+			}
 			m.suspendStandbyReplenishment(ctx, job)
 			if errors.Is(err, state.ErrOwnership) {
 				return err
