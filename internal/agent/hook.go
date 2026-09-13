@@ -36,11 +36,17 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		return err
 	}
 	var payload HookInput
-	if event == "session-start" {
+	var toolPayload []byte
+	switch event {
+	case "session-start":
 		payload, err = decodeHookPayload(input)
 		if err != nil {
 			return err
 		}
+	case "pre-tool-use":
+		// stdin は WaitReady より先に読み切る。読まずに待つと、command が大きいときに
+		// agent 側の write が pipe buffer で止まり、双方が待ち合って deadlock する。
+		toolPayload = readHookPayload(input)
 	}
 	// hook の失敗は agent 操作を止めるため、binary 置換後の再起動中も接続を再試行する。
 	// 空の DB では最短 22ms だが、launchd の遅延、migration、復旧 job、root descriptor を考慮して予算は 2 秒とする。
@@ -87,7 +93,12 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		return client.Call(waitCtx, "WaitReady", map[string]any{"session_id": wxID, "token": token, "timeout_ms": int(timeout.Milliseconds())}, nil)
+		if err := client.Call(waitCtx, "WaitReady", map[string]any{"session_id": wxID, "token": token, "timeout_ms": int(timeout.Milliseconds())}, nil); err != nil {
+			return err
+		}
+		// 判定は readiness の後に出す。書き換え先の wx new は準備の終わった workspace からしか貸し出せない。
+		writePreToolUseDecision(toolPayload)
+		return nil
 	case "session-end":
 		releaseCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 		defer cancel()
@@ -160,6 +171,16 @@ func decodeHookPayload(input io.Reader) (HookInput, error) {
 		return HookInput{}, fmt.Errorf("decode hook payload: %w", err)
 	}
 	return payload, nil
+}
+
+// readHookPayload は pre-tool-use hook の標準入力を読む。
+// 判定に使えない入力（読み取り失敗・空）は nil を返し、readiness 待ちだけを行う形に倒す。
+func readHookPayload(input io.Reader) []byte {
+	data, err := io.ReadAll(io.LimitReader(input, 1<<20))
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 func modeFlag(name string) (bool, error) {

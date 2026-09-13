@@ -82,6 +82,7 @@ func clearHookEnvironment(t *testing.T) {
 		"WX_DAEMON_SOCKET",
 		"WX_READINESS_TIMEOUT",
 		"WX_RECOVERY_DISCARDED",
+		"WX_WORKSPACE_ROOT",
 	} {
 		t.Setenv(key, "")
 	}
