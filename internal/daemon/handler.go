@@ -119,6 +119,9 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	if result, handled, err := h.dispatchLease(ctx, method, raw); handled {
 		return result, err
 	}
+	if result, handled, err := h.dispatchWorkspaceQuery(ctx, method, raw); handled {
+		return result, err
+	}
 	switch method {
 	case "Ping":
 		// 状態を読まず何も変更しない応答確認。起動前の接続確認が Status の集計を待たないために置く。
@@ -181,22 +184,6 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		return map[string]bool{"released": true}, h.Manager.Release(ctx, p.SessionID, p.Token, p.Reason)
 	case "ResumeStatus":
 		return h.resumeStatusRPC(ctx, raw)
-	case "WorkspaceScope":
-		var p struct {
-			CWD string `json:"cwd"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return h.Manager.WorkspaceScope(ctx, p.CWD)
-	case "WorktreePolicy":
-		var p struct {
-			CWD string `json:"cwd"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		return h.Manager.WorktreePolicy(ctx, p.CWD), nil
 	case "Status":
 		var p struct {
 			Language string `json:"language,omitempty"`
@@ -306,6 +293,27 @@ func (h Handler) waitReady(ctx context.Context, sessionID, token string) (any, e
 // waitReadyReleaseTimeout は切断後の回収に与える時間である。
 // 要求側の deadline はもう無いが、保存経路の予約を取り切れる程度には待つ。
 const waitReadyReleaseTimeout = 10 * time.Second
+
+// dispatchWorkspaceQuery は cwd から workspace の属性を引くだけの問い合わせを分けて受け持つ。
+// handled が false のときは他の method として扱う。
+func (h Handler) dispatchWorkspaceQuery(ctx context.Context, method string, raw json.RawMessage) (any, bool, error) {
+	switch method {
+	case "WorkspaceScope", "WorktreePolicy":
+	default:
+		return nil, false, nil
+	}
+	var p struct {
+		CWD string `json:"cwd"`
+	}
+	if err := decode(raw, &p); err != nil {
+		return nil, true, err
+	}
+	if method == "WorktreePolicy" {
+		return h.Manager.WorktreePolicy(ctx, p.CWD), true, nil
+	}
+	scope, err := h.Manager.WorkspaceScope(ctx, p.CWD)
+	return scope, true, err
+}
 
 // dispatchWorkspaceMaintenance は workspace path 1 つを引数に取る保守操作を分けて受け持つ。
 // handled が false のときは他の method として扱う。
