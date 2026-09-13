@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -130,16 +129,11 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		// 一時 index への add -A で作業ツリー全体を再計算し、snapshot の tree と比較する。
 		// read-tree の後に resume prepare が動くため、prepare command や補助リンクが作った差分はここでしか検出できない。
 		// 後続の status は終了コードしか見ておらず代替にならない。
-		tmpFile, err := os.CreateTemp("", ".wx-verify-index-*")
+		tmp, cleanup, err := temporaryIndex("restore", ".wx-verify-index-*")
 		if err != nil {
-			return fmt.Errorf("create temporary restore index: %w", err)
+			return err
 		}
-		tmp := tmpFile.Name()
-		if err := tmpFile.Close(); err != nil {
-			_ = os.Remove(tmp)
-			return fmt.Errorf("close temporary restore index: %w", err)
-		}
-		defer func() { _ = os.Remove(tmp) }()
+		defer cleanup()
 		env := []string{"GIT_INDEX_FILE=" + tmp}
 		if _, err := targetRun(env, nil, "read-tree", s.HeadOID); err != nil {
 			return err
@@ -165,6 +159,18 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		}
 		if err := m.Preparer.VerifyWorktreeIdentity(target, targetIdentity); err != nil {
 			return fmt.Errorf("validate restored worktree identity: %w", err)
+		}
+		// 停止中 rebase の書き戻しは既存の検証をすべて終えた後に置く。
+		// read-tree の後には resume prepare と tree 一致検証が続くため、その相手を rebase 中のリポジトリにしないという意図である。
+		wantGitState := ""
+		if s.GitStateOID != "" {
+			wantGitState, err = m.gitValue(ctx, string(repo.MainPath), nil, "rev-parse", s.GitStateOID+"^{tree}")
+			if err != nil {
+				return fmt.Errorf("resolve snapshot rebase state tree: %w", err)
+			}
+		}
+		if err := restoreGitState(targetValue, targetRun, wantGitState); err != nil {
+			return fmt.Errorf("restore in-progress rebase state: %w", err)
 		}
 		// ここでの ownership 再証明は行わない。
 		// 直前の PrepareResumeWithIdentity と直後の FinishRestoreWithIdentity が同じ検査を行い、その間は読み取りだけである。
