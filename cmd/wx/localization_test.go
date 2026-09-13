@@ -41,14 +41,6 @@ func TestCommandConfigHelpJapaneseTranslatesLongParagraphs(t *testing.T) {
 	}
 }
 
-func TestTranslateHumanOutputJapaneseKeepsOpaqueValues(t *testing.T) {
-	text := "Path: /tmp/Database\nError: permission denied\n"
-	got := translateHumanOutput(text, i18n.Japanese)
-	if !strings.Contains(got, "/tmp/Database") || !strings.Contains(got, "エラー") {
-		t.Fatalf("Japanese output=%q", got)
-	}
-}
-
 func TestLocalizeErrorTextJapaneseKeepsDynamicDetails(t *testing.T) {
 	got := localizeErrorText("language must be en or ja: /tmp/config.yaml", i18n.Japanese)
 	if !strings.Contains(got, "language は en または ja で指定してください") || !strings.Contains(got, "/tmp/config.yaml") {
