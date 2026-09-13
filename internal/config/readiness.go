@@ -41,3 +41,20 @@ func validateEarlyPaths(values []string, key string) ([]string, error) {
 	}
 	return paths, nil
 }
+
+// validatePrepareInputs は prepare.inputs の各要素を repository 相対の安全な
+// path pattern として検査し、clean と重複除去を済ませた並びを返す。
+func validatePrepareInputs(values []string, key string) ([]string, error) {
+	paths, err := validateEarlyPaths(values, key)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range paths {
+		for _, segment := range strings.Split(path, string(filepath.Separator)) {
+			if _, err := filepath.Match(segment, ""); err != nil {
+				return nil, fmt.Errorf("invalid %s pattern %q: %w", key, path, err)
+			}
+		}
+	}
+	return paths, nil
+}

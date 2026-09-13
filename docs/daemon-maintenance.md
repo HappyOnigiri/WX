@@ -91,6 +91,7 @@ jobはsessionを持たないため保守用の実行枠で走り、利用者向�
 歯止めは3つで、1巡につき1件だけ始める、待機枠が全てREADYに落ち着いたworkspaceだけを対象にする、workspaceごとに一定のcooldownを空ける。
 更新中はそのworkspaceのREADYが一時的に1本減るため、貸出が進行中のworkspaceでは始めない。
 完了は`FinishIdleStandbyUpdate`がREADYへ戻し、書込み開始後の中断は貸出付きの更新と同じく隔離する（自動再実行はしない）。
+入力変更に応じた`prepare.command`の再実行も、貸出時の更新と同じくidle更新で行う。
 更新に使えない候補はidle更新では回収せず、READYのまま残して貸出時の判断に委ねる。
 
 入口は[`internal/daemon/standby_idle_update.go`](../internal/daemon/standby_idle_update.go)である。

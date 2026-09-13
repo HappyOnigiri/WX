@@ -194,6 +194,10 @@ var configCatalog = map[string]Entry{
 	"config.prepare.command.description": {EN: "A command wx runs in this repository once the files are in place, for setup such as installing dependencies.", JA: "ファイルを配置した後に、このリポジトリで wx が実行するコマンドです。依存関係の導入などの下準備に使います。"},
 	"config.prepare.command.impact":      {EN: "If the command fails, the worktree is not handed over: the preparation fails with it.", JA: "コマンドが失敗すると worktree は貸し出されず、準備ごと失敗します。"},
 
+	"config.prepare.inputs.name":        {EN: "Paths that trigger preparation on standby updates", JA: "standby 更新で準備を再実行する path"},
+	"config.prepare.inputs.description": {EN: "Repository-relative path patterns whose changes make wx rerun the preparation command while updating a standby worktree.", JA: "standby worktree の更新中に変更されると、準備コマンドを再実行する repository 相対の path pattern です。"},
+	"config.prepare.inputs.impact":      {EN: "Only matching tracked or placed paths add the preparation command to standby updates; an empty list keeps the existing behavior.", JA: "一致した tracked または配置 path がある更新だけ準備コマンドを追加で実行します。空の list なら従来どおりです。"},
+
 	"config.prepare.timeout.name":        {EN: "Time limit for that command", JA: "そのコマンドの時間制限"},
 	"config.prepare.timeout.description": {EN: "How long the command run after checkout may take before it is stopped.", JA: "チェックアウト後のコマンドを、打ち切るまでどれだけ実行してよいかです。"},
 	"config.prepare.timeout.impact":      {EN: "A limit that is too short fails preparation that would have succeeded.", JA: "短すぎると、成功していたはずの準備が失敗します。"},
@@ -221,6 +225,10 @@ var configCatalog = map[string]Entry{
 	"config.repository_defaults.prepare.command.name":        {EN: "Default post-checkout command for this workspace", JA: "この workspace の既定のチェックアウト後コマンド"},
 	"config.repository_defaults.prepare.command.description": {EN: "The command run after checkout in the repositories of this workspace that do not set one themselves.", JA: "この workspace のリポジトリのうち、自分で指定していないもので、チェックアウト後に実行するコマンドです。"},
 	"config.repository_defaults.prepare.command.impact":      {EN: "If it fails, preparation of the affected repositories fails with it.", JA: "失敗すると、影響を受けるリポジトリの準備も失敗します。"},
+
+	"config.repository_defaults.prepare.inputs.name":        {EN: "Default paths that trigger preparation on standby updates", JA: "この workspace の standby 更新で準備を再実行する既定 path"},
+	"config.repository_defaults.prepare.inputs.description": {EN: "Path patterns inherited by repositories in this workspace that make wx rerun the preparation command when a standby is updated.", JA: "この workspace のリポジトリが継承し、standby 更新時に準備コマンドを再実行する契機となる path pattern です。"},
+	"config.repository_defaults.prepare.inputs.impact":      {EN: "Matching changes rerun preparation for the affected worktrees before they are handed over.", JA: "一致する変更があれば、影響を受ける worktree を貸し出す前に準備を再実行します。"},
 
 	"config.repository_defaults.prepare.timeout.name":        {EN: "Default command time limit for this workspace", JA: "この workspace の既定のコマンド時間制限"},
 	"config.repository_defaults.prepare.timeout.description": {EN: "The time limit for that command in the repositories of this workspace that do not set one themselves.", JA: "この workspace のリポジトリのうち、自分で指定していないものでの、そのコマンドの時間制限です。"},

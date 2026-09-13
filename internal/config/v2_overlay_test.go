@@ -70,6 +70,8 @@ repository_defaults:
     command:
       - make
       - setup
+    inputs:
+      - config
     timeout: 12m
     version: v9
   includes:

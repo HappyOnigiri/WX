@@ -21,7 +21,7 @@ Show effective configuration, or atomically update one supported scalar key or l
 Use --describe to show a key's type, scopes, choices, purpose, and impact.
 
 --add and --remove take a list key such as discovery.exclude, readiness.early_paths,
-workspace copy/link, or sessions.paths.<claude|codex>.sessions, depending on scope.
+prepare.inputs, workspace copy/link, or sessions.paths.<claude|codex>.sessions, depending on scope.
 --reset takes any list or scalar key wx config lists; it drops the key from the file
 so the inherited or built-in default applies again.
 
@@ -46,7 +46,7 @@ slots. reuse_standby controls whether an older READY standby is updated at lease
 time; the default is true, and false preserves exact-match cold-start behavior.
 
 A repository overrides default_branch, dir_name, dir_source, cow_min_size_kib,
-prepare.command, prepare.timeout, prepare.version, includes.default_agent_rules,
+prepare.command, prepare.inputs, prepare.timeout, prepare.version, includes.default_agent_rules,
 readiness.mode, readiness.early_paths, readiness.timeout, readiness.progress and storage.copy_mode. A
 lease leasing several repositories waits in full mode if any of them asks for it,
 and uses the longest readiness.timeout among them.
@@ -56,6 +56,10 @@ first --add copies the parent list as it stands right then, so later changes no 
 reach that scope; --reset drops the scope list and restores its parent. A repository
 readiness.early_paths does not apply to the shared workspace root stage of a
 multi-repository workspace, which keeps using the workspace list.
+
+prepare.inputs contains repository-relative path patterns. When a tracked change or
+include/link placement change matches one, wx reruns prepare.command during a standby
+update; an unset or empty list keeps the existing no-rerun behavior.
 
 Submodules (repository_defaults.submodules, default true):
 Linked worktrees resolve a submodule's gitdir per worktree, so they cannot reuse
@@ -134,7 +138,7 @@ never gets the progress lines, whatever the setting says.`,
 --describe で key の型、scope、選択肢、目的、影響を表示します。
 
 --add and --remove take a list key such as discovery.exclude, readiness.early_paths,
-workspace copy/link, or sessions.paths.<claude|codex>.sessions, depending on scope.
+prepare.inputs, workspace copy/link, or sessions.paths.<claude|codex>.sessions, depending on scope.
 --reset takes any list or scalar key wx config lists; it drops the key from the file
 so the inherited or built-in default applies again.
 
@@ -159,7 +163,7 @@ slots. reuse_standby controls whether an older READY standby is updated at lease
 time; the default is true, and false preserves exact-match cold-start behavior.
 
 A repository overrides default_branch, dir_name, dir_source, cow_min_size_kib,
-prepare.command, prepare.timeout, prepare.version, includes.default_agent_rules,
+prepare.command, prepare.inputs, prepare.timeout, prepare.version, includes.default_agent_rules,
 readiness.mode, readiness.early_paths, readiness.timeout, readiness.progress and storage.copy_mode. A
 lease leasing several repositories waits in full mode if any of them asks for it,
 and uses the longest readiness.timeout among them.
@@ -169,6 +173,10 @@ first --add copies the parent list as it stands right then, so later changes no 
 reach that scope; --reset drops the scope list and restores its parent. A repository
 readiness.early_paths does not apply to the shared workspace root stage of a
 multi-repository workspace, which keeps using the workspace list.
+
+prepare.inputs contains repository-relative path patterns. When a tracked change or
+include/link placement change matches one, wx reruns prepare.command during a standby
+update; an unset or empty list keeps the existing no-rerun behavior.
 
 Submodules (repository_defaults.submodules, default true):
 Linked worktrees resolve a submodule's gitdir per worktree, so they cannot reuse

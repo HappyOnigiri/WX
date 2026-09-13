@@ -232,6 +232,9 @@ func fingerprintWorkspaceRoot(h hash.Hash, repo discovery.Repository, c config.C
 	return nil
 }
 
+// writePrepareFingerprint は準備コマンドと明示した version だけを fingerprint へ含める。
+// prepare.inputs は更新時に現在の Git 差分と配置差分を判定するための値で、設定を追加しただけで
+// 既存の READY slot を一斉に無効化しないよう fingerprint へは含めない。
 func writePrepareFingerprint(h hash.Hash, repo discovery.Repository, c config.Config) error {
 	workspaceRoot, err := repositoryWorkspaceRoot(repo)
 	if err != nil {
