@@ -101,6 +101,16 @@ func (p *Preparer) Submodules(ctx context.Context, target, rev, identity string)
 	return out, nil
 }
 
+// SubmodulesAtRevision は source repository の rev の tree から submodule を列挙する。
+// doctor は worktree の index を持たないため、.gitmodules の候補 path だけを ls-tree へ渡す。
+func (p *Preparer) SubmodulesAtRevision(ctx context.Context, repository, rev string) ([]Submodule, error) {
+	declared, err := p.declaredSubmodulesAtTree(ctx, repository, rev)
+	if err != nil {
+		return nil, err
+	}
+	return p.resolveSubmoduleOIDsFromTree(ctx, repository, rev, declared)
+}
+
 // planSubmodules は要求 OID の submodule のうち、実体化できる entry だけを列挙する。
 func (p *Preparer) planSubmodules(ctx context.Context, repo discovery.Repository, target, oid, identity string) ([]submodule, error) {
 	declared, err := p.declaredSubmodules(ctx, target, oid, identity)
@@ -150,6 +160,32 @@ func (p *Preparer) declaredSubmodules(ctx context.Context, target, rev, identity
 	return p.resolveSubmoduleOIDs(ctx, target, identity, candidates)
 }
 
+// declaredSubmodulesAtTree は rev の .gitmodules から候補を作る。
+// source repository の現在 index を読まないので、doctor は要求 OID と同じ tree を診断できる。
+func (p *Preparer) declaredSubmodulesAtTree(ctx context.Context, repository, rev string) ([]submodule, error) {
+	if !gitProbe(p.Git.Run(ctx, repository, "cat-file", "-e", rev+":.gitmodules")) {
+		return nil, nil
+	}
+	entries, err := p.Git.Run(ctx, repository, "config", "--blob", rev+":.gitmodules", "--get-regexp", `^submodule\.`)
+	if err != nil {
+		if isEmptySubmoduleConfig(ctx, err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	declared, err := parseSubmoduleConfig(entries.Stdout)
+	if err != nil {
+		return nil, err
+	}
+	var candidates []submodule
+	for _, module := range declared {
+		if module.path != "" {
+			candidates = append(candidates, module)
+		}
+	}
+	return candidates, nil
+}
+
 // isEmptySubmoduleConfig は Git が設定検索の結果なしを返した場合だけ空定義と判定する。
 // context の中断や出力を伴う失敗は、実行障害・構文エラーとして呼び出し側へ返す。
 func isEmptySubmoduleConfig(ctx context.Context, err error) bool {
@@ -195,6 +231,44 @@ func (p *Preparer) resolveSubmoduleOIDs(ctx context.Context, target, identity st
 		}
 		module.oid = oid
 		modules = append(modules, module)
+	}
+	return modules, nil
+}
+
+// resolveSubmoduleOIDsFromTree は候補 path だけを要求 OID の tree へ問い合わせる。
+func (p *Preparer) resolveSubmoduleOIDsFromTree(ctx context.Context, repository, rev string, candidates []submodule) ([]Submodule, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	args := []string{"ls-tree", "-z", rev, "--"}
+	for _, module := range candidates {
+		args = append(args, module.path)
+	}
+	tree, err := p.Git.Run(ctx, repository, args...)
+	if err != nil {
+		return nil, err
+	}
+	gitlinks := map[string]string{}
+	for _, entry := range strings.Split(tree.Stdout, "\x00") {
+		if entry == "" {
+			continue
+		}
+		metadata, path, ok := strings.Cut(entry, "\t")
+		fields := strings.Fields(metadata)
+		if !ok || len(fields) != 3 {
+			return nil, fmt.Errorf("invalid tree entry")
+		}
+		if fields[0] == "160000" {
+			gitlinks[filepath.Clean(path)] = fields[2]
+		}
+	}
+	modules := make([]Submodule, 0, len(candidates))
+	for _, module := range candidates {
+		oid, ok := gitlinks[module.path]
+		if !ok {
+			continue
+		}
+		modules = append(modules, Submodule{Name: module.name, Path: module.path, OID: oid})
 	}
 	return modules, nil
 }
@@ -290,19 +364,31 @@ func (p *Preparer) submoduleUpstream(ctx context.Context, source string, module 
 		p.logSkip("submodule has no local module in the source repository", "submodule", module.name, "module_dir", source)
 		return "", false
 	}
-	// gitlink OID がローカルに無いまま clone すると親が ` M <path>` の dirty で残り、
-	// その gitdir は wx が消せない場所にできる。書き込む前にここで弾く。
-	if !gitProbe(p.Git.Run(ctx, source, "--git-dir=.", "cat-file", "-e", module.oid+"^{commit}")) {
+	inspection, inspectErr := InspectSubmodule(ctx, p.Git, source, module.oid)
+	if inspectErr != nil {
+		p.logSkip("submodule local module could not be inspected", "submodule", module.name, "module_dir", source, "error", inspectErr)
+		return "", false
+	}
+	// promisor で要求 OID が無いまま clone すると checkout が書込み後に失敗するため、
+	// shallow でない通常 module の欠落 OID と同じく、書き込む前に省略する。
+	if inspection.Status() == SubmoduleSharingPromisorMissing {
+		p.logSkip("submodule object is missing from the promisor local module", "submodule", module.name, "oid", module.oid)
+		return "", false
+	}
+	if inspection.Status() == SubmoduleSharingObjectMissing {
+		// gitlink OID がローカル module に無いまま clone すると親が ` M <path>` の dirty で残り、
+		// その gitdir は wx が消せない場所にできる。書き込む前にここで弾く。
 		p.logSkip("submodule commit is missing from the local module", "submodule", module.name, "oid", module.oid)
 		return "", false
 	}
-	origin, originErr := p.Git.Run(ctx, source, "--git-dir=.", "config", "--get", "remote.origin.url")
-	upstream := strings.TrimSpace(origin.Stdout)
-	if originErr != nil || upstream == "" {
+	if inspection.Status() == SubmoduleSharingShallow && p.Log != nil {
+		p.Log.Warn("submodule object sharing is unavailable because the local module is shallow", "submodule", module.name, "module_dir", source)
+	}
+	if inspection.OriginURL == "" {
 		p.logSkip("submodule local module has no origin url", "submodule", module.name, "module_dir", source)
 		return "", false
 	}
-	return upstream, true
+	return inspection.OriginURL, true
 }
 
 // gitProbe は Git の終了状態だけを見て前置き検査の結果を返す。
