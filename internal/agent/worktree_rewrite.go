@@ -43,7 +43,7 @@ const (
 const rewriteContext = `wx replaced the command with wx new, which leases a workspace that wx prepares, tracks and returns.
 - Use the path printed by wx new. wx chooses the path, so the path in the original command was never created.
 - The leased workspace is detached. Run "git branch <name> HEAD" inside it when the work needs a branch.
-- Do not run wx release. The lease is returned when this session ends.
+- No need to run wx release: the lease is returned when this session ends.
 - wx new can take a while when no prepared slot is standing by.`
 
 const (
@@ -153,9 +153,9 @@ func writePreToolUseDecision(payload []byte) {
 	_, _ = fmt.Fprintln(os.Stdout, string(encoded))
 }
 
-// commandRunsInWorkspace は cwd が貸出中の workspace の配下かを判定する。
-// 管理外の入れ子 clone での git worktree add を wx new へ写すのは誤りなので、
-// 配下だと確かめられない場合と根拠が無い場合は書き換えの対象から外す。
+// commandRunsInWorkspace は cwd がこの session へ貸し出した workspace の配下かを判定する。
+// 別の session の workspace で走る呼び出しを書き換えないための判定で、配下の入れ子 clone は区別しない。
+// どの repository への git worktree add かはコマンド文字列からは決まらないためである。
 func commandRunsInWorkspace(cwd, workspaceRoot string) bool {
 	// cwd を載せない agent があるため、cwd が無いことだけを理由に判定を諦めない。
 	if cwd == "" {
