@@ -66,13 +66,15 @@
 
    refの公開はDB行の永続化の後に行う。逆順だと、reconcileから見て正常なアーカイブが素性不明のrefに見える窓が開く。
 
-   停止中rebaseの進行情報はtreeにもindexにも現れないため、worktree専用gitdirの制御ファイルを別のrefで保存する。
+   停止中merge/rebase/cherry-pickなどの進行情報はtreeにもindexにも現れないため、worktree専用gitdirの制御ファイルを別のrefで保存する。
    ファイル内容を持つtreeと、復元後のHEADから到達できないcommit（`orig-head`・`onto`・`stopped-sha`など）を親に並べたcommitを1本作り、他のrecovery refと同じ経路で保護・回収する。
    `rebase -i`のedit停止はworking treeがcleanなので、この保存はclean短絡の側でも行う。
-   未解消indexを伴う停止（conflict停止）は対象外で、従来どおり`write-tree`の失敗として隔離する。
+   未解消indexを伴う停止では、stage 1/2/3を`stages/<stage>/`へ、`AUTO_MERGE`のtreeを`auto-merge/`へ畳んだ衝突artifactも別のrefで保存する。
+   index treeには未解消pathを入れず、復元の全検証が終わった最後にstageを積み直すことで、返却前と同じ解消待ち状態を再現する。
 
    submoduleは子1件を1本のcommitへ畳んで保存し、公開先だけが親と違う（[worktreeのコピーとリンク](worktree-copy.md)）。
    保存できた子は未保全の記録から外れるため、`unsaved_submodules`に残るのは「wxが保存できない条件」だけになる。
+   子の未解消 index は capsule の対象外で、`UNMERGED_INDEX` の未保全理由として slot を自動回収から保護する。
 
    indexに`skip-worktree`か`assume-unchanged`が付いたpathはsnapshotの対象外で、HEADの内容として記録する（[所有権証明](ownership.md)）。
    hookが個人版の設定や認証情報をslotごとに置き換える運用ではこれらのflagが常時立つため、clean短絡が効かなくなる。
@@ -113,8 +115,8 @@
 
    ネイティブresumeは遅延バインドや`_unbound` slotを新規生成せず、clientが準備完了を前面で待ってから起動する。
 
-   停止中rebaseの制御ファイルは、HEAD・index・worktreeの一致検証をすべて終えた最後に書き戻す。
-   先に書くと、その後に走るresume prepareとtree一致検証がrebase中のリポジトリを相手にすることになる。
+   停止中の操作の制御ファイルは、HEAD・index・worktreeの一致検証をすべて終えた最後に書き戻す。
+   先に書くと、その後に走るresume prepareとtree一致検証が操作進行中のリポジトリを相手にすることになる。
    書き戻しの前には対象pathを必ず削除するので、再利用されたslotが前の貸出の進行情報を引き継がない。
 
    復元後のworktreeはtracked changesを含むため、貸出前の検査はcleanなworking treeを要求しない`ValidateOwnership`を使う。

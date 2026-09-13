@@ -356,8 +356,8 @@ func TestActiveWorkspaceSnapshotsExcludesPendingAndExpiredArchives(t *testing.T)
 	}
 }
 
-// 停止中 rebase の recovery ref が期待一覧から漏れると、`wx doctor` は UnknownRefs として報告し、
-// GC は削除候補の除外から外す。保存は成功したまま進行情報だけが後から消えるため、静かな失敗になる。
+// 停止中の操作と未解消 index の recovery ref が期待一覧から漏れると、`wx doctor` は UnknownRefs として報告し、
+// GC は削除候補の除外から外す。保存は成功したまま復元資産だけが後から消えるため、静かな失敗になる。
 func TestGitStateRecoveryRefIsExpectedAndReverseLookedUp(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t)
@@ -368,12 +368,13 @@ func TestGitStateRecoveryRefIsExpectedAndReverseLookedUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitStateRef := "refs/wx/recovery/rebase/repository/gitstate"
-	snapshot := Snapshot{ID: "snapshot", SessionID: "rebase", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/rebase/repository/head", IndexTreeOID: "index", IndexRef: "refs/wx/recovery/rebase/repository/index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/rebase/repository/worktree", GitStateOID: "gitstate", GitStateRef: gitStateRef, Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}
+	conflictRef := "refs/wx/recovery/rebase/repository/conflict"
+	snapshot := Snapshot{ID: "snapshot", SessionID: "rebase", RepositoryID: "repository", HeadOID: "head", HeadRef: "refs/wx/recovery/rebase/repository/head", IndexTreeOID: "index", IndexRef: "refs/wx/recovery/rebase/repository/index", WorktreeOID: "worktree", WorktreeRef: "refs/wx/recovery/rebase/repository/worktree", GitStateOID: "gitstate", GitStateRef: gitStateRef, ConflictOID: "conflict", ConflictRef: conflictRef, Status: "ARCHIVED", CreatedAt: now(), ExpiresAt: FormatTime(time.Now().Add(time.Hour))}
 	if err := store.SaveSnapshot(ctx, snapshot); err != nil {
 		t.Fatal(err)
 	}
 	expectations, err := store.RecoveryRefExpectations(ctx, "repository")
-	if err != nil || len(expectations) != 4 {
+	if err != nil || len(expectations) != 5 {
 		t.Fatalf("recovery ref expectations=%+v err=%v", expectations, err)
 	}
 	found := false
@@ -382,14 +383,20 @@ func TestGitStateRecoveryRefIsExpectedAndReverseLookedUp(t *testing.T) {
 			found = expectation.OID == "gitstate"
 		}
 	}
-	if !found {
-		t.Fatalf("rebase state ref is not expected: %+v", expectations)
+	conflictFound := false
+	for _, expectation := range expectations {
+		if expectation.Ref == conflictRef {
+			conflictFound = expectation.OID == "conflict"
+		}
 	}
-	if stored, err := store.Snapshots(ctx, "rebase"); err != nil || len(stored) != 1 || stored[0].GitStateOID != "gitstate" || stored[0].GitStateRef != gitStateRef {
+	if !found || !conflictFound {
+		t.Fatalf("recovery state refs are not expected: %+v", expectations)
+	}
+	if stored, err := store.Snapshots(ctx, "rebase"); err != nil || len(stored) != 1 || stored[0].GitStateOID != "gitstate" || stored[0].GitStateRef != gitStateRef || stored[0].ConflictOID != "conflict" || stored[0].ConflictRef != conflictRef {
 		t.Fatalf("stored snapshot=%+v err=%v", stored, err)
 	}
-	// ref が消えたときの逆引きは 4 本すべてを辿る。gitstate を外すと、進行情報だけ失った snapshot が復元可能なまま残る。
-	if err := store.QuarantineMissingRecoveryRef(ctx, gitStateRef); err != nil {
+	// ref が消えたときの逆引きは 5 本すべてを辿る。衝突 artifact を外すと、stage だけ失った snapshot が復元可能なまま残る。
+	if err := store.QuarantineMissingRecoveryRef(ctx, conflictRef); err != nil {
 		t.Fatal(err)
 	}
 	quarantined, err := store.Snapshots(ctx, "rebase")

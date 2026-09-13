@@ -78,6 +78,9 @@ func TestSnapshotWithoutRebaseRecordsNoGitState(t *testing.T) {
 	if strings.Contains(refs, "gitstate") {
 		t.Fatalf("published an unexpected rebase state ref:\n%s", refs)
 	}
+	if strings.Contains(refs, "conflict") {
+		t.Fatalf("published an unexpected conflict state ref:\n%s", refs)
+	}
 }
 
 // 復元は書き戻しの前に必ず削除する。再利用された slot が前の貸出の進行情報を引き継ぐと、
