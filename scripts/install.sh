@@ -4,6 +4,30 @@ set -euo pipefail
 # Release CI がこの値を埋め込み、インストーラーとバイナリを同じタグへ固定する。
 release_version='@WX_RELEASE_VERSION@'
 
+# 初回の shell 出力はバイナリを取得する前でも読めるよう、macOS 標準の
+# 小さな keyed catalog だけを使う。未知の文は英語へ戻す。
+language=en
+msg() {
+  local key=${1:-}
+  case "$language:$key" in
+    ja:choose_language) printf '%s' 'Display language / 表示言語 [English/日本語] (既定: English): ' ;;
+    en:choose_language) printf '%s' 'Display language [English/Japanese] (default: English): ' ;;
+    ja:downloading) printf 'wx %s をダウンロード中...\n' "$2" ;;
+    en:downloading) printf 'Downloading wx %s...\n' "$2" ;;
+    ja:installed) printf 'wx %s を %s にインストールしました\n' "$2" "$3" ;;
+    en:installed) printf 'Installed wx %s to %s\n' "$2" "$3" ;;
+    ja:finish) printf '%s\n' 'この端末で wx を使うには:' ;;
+    en:finish) printf '%s\n' 'To use wx in this terminal, run:' ;;
+    ja:path_hint) printf '%s\n' '新しい terminal では shell 設定（例: ~/.zshrc）にもこの行を追加してください。' ;;
+    en:path_hint) printf '%s\n' 'Add that line to your shell configuration (for example, ~/.zshrc) for new terminals.' ;;
+    ja:setup_hint) printf '%s\n' 'wx setup を実行すると agent hook を登録し、残りの設定を確認します。' ;;
+    en:setup_hint) printf '%s\n' 'To finish the setup, run wx setup. It registers the agent hooks and reviews the rest.' ;;
+    ja:run_hint) printf '%s\n' 'その後、repository で wx claude または wx codex を実行してください。' ;;
+    en:run_hint) printf '%s\n' 'Then run wx claude or wx codex from your repository.' ;;
+    *) printf '%s' "$key" ;;
+  esac
+}
+
 fail() {
   echo "wx install: $*" >&2
   exit 1
@@ -28,12 +52,49 @@ main() {
   local plist="$HOME/Library/LaunchAgents/com.user.wx.plist"
   [ ! -d "$destination" ] || fail "$destination is a directory"
 
+  # 既存 binary の設定を最優先し、update で言語を再質問しない。取得できない
+  # 古い binary は新規扱いとして TTY で確認し、非対話なら英語を採用する。
+  local existing_language=''
+  if [ -x "$destination" ]; then
+    existing_language=$("$destination" config language 2>/dev/null || true)
+    case "$existing_language" in
+      en|ja) language="$existing_language" ;;
+      *)
+        existing_language=''
+        # 旧 binary が config language をまだ提供しなくても、既存の global
+        # 設定を読めれば update で質問を出さず、その値を新 binary へ引き継ぐ。
+        local config_path="$HOME/.config/wx/config.yaml"
+        if [ -r "$config_path" ]; then
+          existing_language=$(awk '$1 == "language:" {print $2; exit}' "$config_path" 2>/dev/null || true)
+          case "$existing_language" in
+            en|ja) language="$existing_language" ;;
+            *) existing_language='' ;;
+          esac
+        fi
+        ;;
+    esac
+  fi
+  if [ -z "$existing_language" ] && [ -r /dev/tty ] && exec 3<>/dev/tty; then
+    if [ -t 3 ]; then
+      answer=''
+      printf '%s' "$(msg choose_language)" >&3
+      IFS= read -r answer <&3 || answer=''
+      case "$answer" in
+        ja|JA|j|J|日本語) language=ja ;;
+        en|EN|e|E|English|'') language=en ;;
+        *) language=en ;;
+      esac
+      printf '\n' >&3
+    fi
+    exec 3>&-
+  fi
+
   scratch=$(mktemp -d "${TMPDIR:-/tmp}/wx-install.XXXXXX")
   staged=''
   trap 'rm -rf "$scratch"; if [ -n "$staged" ]; then rm -f "$staged"; fi' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  echo "Downloading wx $release_version..."
+  msg downloading "$release_version"
   curl --fail --silent --show-error --location "$base_url/$asset" --output "$scratch/$asset" ||
     fail "download failed; the installed binary was not changed"
   curl --fail --silent --show-error --location "$base_url/checksums.txt" --output "$scratch/checksums.txt" ||
@@ -64,7 +125,11 @@ main() {
   install -m 0755 "$scratch/$asset" "$staged"
   mv -f "$staged" "$destination"
   staged=''
-  echo "Installed wx $release_version to $destination"
+  msg installed "$release_version" "$destination"
+
+  # 検証済み binary の config command で選択値を atomic save する。開発用の
+  # fixture binary などが command を持たない場合だけ互換のため続行する。
+  PATH="$install_dir:$PATH" "$destination" config language "$language" >/dev/null 2>&1 || true
 
   # ResolveBinary は PATH 上の wx を優先するため、別のインストール先を登録させない。
   if [ "$needs_install" = true ]; then
@@ -85,13 +150,13 @@ main() {
   # 何もなければ無出力で 0 を返す。set -euo pipefail で install 全体を落とさないよう終了コードは吸収する。
   PATH="$install_dir:$PATH" "$destination" setup --update || true
 
-  echo 'To use wx in this terminal, run:'
+  msg finish
   # 利用者が実行するコマンドを展開せず表示する。
   # shellcheck disable=SC2016
   echo '  export PATH="$HOME/.local/bin:$PATH"'
-  echo 'Add that line to your shell configuration (for example, ~/.zshrc) for new terminals.'
-  echo 'To finish the setup, run wx setup. It registers the agent hooks and reviews the rest.'
-  echo 'Then run wx claude or wx codex from your repository.'
+  msg path_hint
+  msg setup_hint
+  msg run_hint
 }
 
 main "$@"

@@ -12,6 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	xansi "github.com/charmbracelet/x/ansi"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/textfmt"
 )
 
@@ -302,15 +305,22 @@ func writeStatusField(w io.Writer, label, value string) {
 	writeStatusLine(w, label+": "+value)
 }
 
-func writeStatusTable(w io.Writer, headers []string, rows [][]string) {
+// writeStatusTable は見出しを訳してから桁を決める。英語の幅で桁を決めた後に
+// 表示層で訳を入れると、見出しだけが行の値からずれる。
+// 幅は rune 数ではなく表示幅で測る。日本語の見出しは rune 数の 2 倍の桁を占める。
+func writeStatusTable(w io.Writer, lang i18n.Language, headers []string, rows [][]string) {
+	headers = append([]string(nil), headers...)
+	for index, header := range headers {
+		headers[index] = localizeStatusHeader(header, lang)
+	}
 	widths := make([]int, len(headers))
 	for index, header := range headers {
-		widths[index] = utf8.RuneCountInString(header)
+		widths[index] = xansi.StringWidth(header)
 	}
 	for _, row := range rows {
 		for index := range headers {
 			if index < len(row) {
-				if width := utf8.RuneCountInString(row[index]); width > widths[index] {
+				if width := xansi.StringWidth(row[index]); width > widths[index] {
 					widths[index] = width
 				}
 			}
@@ -327,7 +337,7 @@ func writeStatusTable(w io.Writer, headers []string, rows [][]string) {
 				line.WriteByte(' ')
 			}
 			line.WriteString(value)
-			padding := widths[index] - utf8.RuneCountInString(value)
+			padding := widths[index] - xansi.StringWidth(value)
 			if index < len(headers)-1 {
 				line.WriteString(strings.Repeat(" ", padding))
 			}

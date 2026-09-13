@@ -161,6 +161,11 @@ func editValue(raw Config, request EditRequest) (string, error) {
 		return "", err
 	}
 	if request.Scope == "global" {
+		// language は未記載でも実効値を持つため Fields の疎な一覧からは省いているが、
+		// CLI/TUI からは常に編集可能な global key として扱う。
+		if request.Key == "language" {
+			return effective.DisplayLanguage(), nil
+		}
 		for _, field := range append(Fields(effective), Lists(effective)...) {
 			if field.Key == request.Key {
 				return field.Value, nil

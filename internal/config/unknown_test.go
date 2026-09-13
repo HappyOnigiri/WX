@@ -28,7 +28,7 @@ func writeConfigFile(t *testing.T, document string) string {
 // 未知キーの検出は yaml.v3 のエラー文言に依存するため、取りこぼすと「報告されない」という無言の失敗になる。
 // トップレベル・既知節の下・動的キーの下の3形をここで押さえる。
 func TestLoadRawReportsUnknownKeysWithTheirLines(t *testing.T) {
-	document := "version: 1\nlanguage: ja\npool:\n  warm_per_workspace: 2\n  worm_per_workspace: 3\nworkspaces:\n  demo:\n    worktree: /tmp/demo\n    bogus: 1\n"
+	document := "version: 1\nlanugage: ja\npool:\n  warm_per_workspace: 2\n  worm_per_workspace: 3\nworkspaces:\n  demo:\n    worktree: /tmp/demo\n    bogus: 1\n"
 	writeConfigFile(t, document)
 	raw, err := LoadRaw()
 	if err != nil {
@@ -42,7 +42,7 @@ func TestLoadRawReportsUnknownKeysWithTheirLines(t *testing.T) {
 		t.Fatalf("workspaces.demo.worktree=%q, want /tmp/demo", got)
 	}
 	want := []UnknownKey{
-		{Key: "language", Line: 2},
+		{Key: "lanugage", Line: 2},
 		{Key: "pool.worm_per_workspace", Line: 5},
 		{Key: "workspaces.demo.bogus", Line: 9},
 	}
@@ -59,12 +59,12 @@ func TestLoadRawReportsUnknownKeysWithTheirLines(t *testing.T) {
 
 // 未知キーがあっても実効設定は作れ、CLIもdaemonも起動できる。未知キーは Merge 後も残す。
 func TestLoadKeepsUnknownKeysInTheEffectiveConfig(t *testing.T) {
-	writeConfigFile(t, "version: 2\nsystem:\n  language: ja\n")
+	writeConfigFile(t, "version: 2\nsystem:\n  lanugage: ja\n")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := cfg.UnknownKeys(); len(got) != 1 || got[0].Key != "system.language" || got[0].Line != 3 {
+	if got := cfg.UnknownKeys(); len(got) != 1 || got[0].Key != "system.lanugage" || got[0].Line != 3 {
 		t.Fatalf("unknown keys=%+v", got)
 	}
 	// 未知キーの有無は実効値ではないため、reload の差分判定に影響させない。
@@ -85,7 +85,7 @@ func TestLoadRawStillRejectsUninterpretableValues(t *testing.T) {
 
 // 保存で未知キーを消すと、旧版のwxで `wx config set` を通しただけで新版の設定が失われる。
 func TestSaveKeepsUnknownKeysInPlace(t *testing.T) {
-	document := "version: 2\nsystem:\n  language: ja\n  pool:\n    workers: 4\nreporting:\n  level: verbose\n  targets:\n    - a\n    - b\n"
+	document := "version: 2\nsystem:\n  lanugage: ja\n  pool:\n    workers: 4\nreporting:\n  level: verbose\n  targets:\n    - a\n    - b\n"
 	path := writeConfigFile(t, document)
 	raw, err := LoadRaw()
 	if err != nil {
@@ -102,7 +102,7 @@ func TestSaveKeepsUnknownKeysInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 既存の節の中の未知キーと、節ごと未知の場合の両方を保つ。後者は出力に無い親を作る経路になる。
-	for _, want := range []string{"language: ja", "reporting:", "level: verbose", "- a", "- b", "preparation_concurrency: 3"} {
+	for _, want := range []string{"lanugage: ja", "reporting:", "level: verbose", "- a", "- b", "preparation_concurrency: 3"} {
 		if !strings.Contains(string(saved), want) {
 			t.Fatalf("saved configuration does not contain %q:\n%s", want, saved)
 		}
@@ -112,7 +112,7 @@ func TestSaveKeepsUnknownKeysInPlace(t *testing.T) {
 		t.Fatalf("LoadRaw after Save: %v", err)
 	}
 	if got := reloaded.UnknownKeys(); len(got) != 3 {
-		t.Fatalf("unknown keys after Save=%+v, want language, reporting.level and reporting.targets", got)
+		t.Fatalf("unknown keys after Save=%+v, want lanugage, reporting.level and reporting.targets", got)
 	}
 	if reloaded.System.Pool.PreparationConcurrency != 3 {
 		t.Fatalf("preparation_concurrency=%d, want 3", reloaded.System.Pool.PreparationConcurrency)

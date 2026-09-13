@@ -96,6 +96,8 @@ func TestWaitForCleanReportsPollFailuresWithTheLastKnownState(t *testing.T) {
 }
 
 func TestRunClearRejectsPositionalArguments(t *testing.T) {
+	// 表示言語は設定から読むため、英語の表示を検査するテストは空のホームを見る。
+	t.Setenv("HOME", t.TempDir())
 	if code := runClean(context.Background(), []string{"extra"}); code != 2 {
 		t.Fatalf("exit code=%d", code)
 	}

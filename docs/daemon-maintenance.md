@@ -127,6 +127,20 @@ run実行中は`assertNoActiveClean`が貸出・復元・待機用作成の書�
 GCの候補選択と削除の入口は[`internal/daemon/gc.go`](../internal/daemon/gc.go)で、隔離slotも通常の`REMOVE`で登録範囲を回収する。
 登録だけを根拠に隔離slotを回収することは[`TestGCRemovesRegisteredQuarantineWithoutCachedIdentity`](../internal/daemon/gc_integration_test.go)が固定している。
 
+### forgetが自分で消すもの
+
+`wx forget`は、貸出中のもの（`LEASED`などのslot・終了していないsession・実行待ちのjob）が残る間は断り、案内はsessionの停止か`wx release`にする。
+それ以外の未貸出slot（`READY`・`STALE`・`FAILED`）は利用者の作業を含まないため、断らずにその場で回収する。
+回収のたびに`FinishRemoval`が補充を予約するので、先に`SuspendReplenish`で止めてから消す。
+止めずに消すと`hot`なworkspaceでは補充が走り、解除が実行中のjobで落ちるか待機枠が復活する。
+解除に成功すれば停止行も一緒に消えるため、残っている`FORGET`の停止は途中で失敗したforgetを指し、`wx doctor`がそう報告する。
+
+復元資産（`ARCHIVED`のsessionとそのsnapshot・recovery ref・保存ファイル、隔離したsession・slot）は既定では消さず、断る理由を`--discard-recovery`の案内付きで返す。
+`wx clear`が既定で復旧データを残し`--discard`を要求するのと同じ分担で、名前が示す「管理の解除」に破棄を含めない。
+破棄する場合も、GCの期限切れ処理と違いソースリポジトリや保存先を開けなくても解除は止めない。
+root ごと消えた登録ではその削除が必ず失敗し、止めると登録を消す経路が無くなるためである。
+消し残したrefとファイルは警告に残す。
+
 ### 忘れたrepository記録の回収
 
 `wx forget`は`workspaces`行と同じtransactionで、どの登録からも参照されなくなった`repositories`行を消す。
@@ -155,9 +169,9 @@ slotは`QUARANTINED`のままworktree・snapshotを保持し、同じ返却の�
 ### recovery refを失ったworkspace
 
 記録したrecovery refがソースリポジトリに無いとき（リポジトリを消して同じpathに作り直した場合）は、`QuarantineMissingRecoveryRef`がsnapshot・session・slotを隔離する。
-この隔離からの出口は`wx discard-recovery <workspace-path>`だけで、GCもreconcileも隔離したsnapshotを自動では捨てない。
+GCもreconcileも隔離したsnapshotを自動では捨てず、出口は`wx discard-recovery <workspace-path>`と`wx forget --discard-recovery`の2つだけとする。
+登録を残したまま隔離だけを解消する用途があるので、`wx discard-recovery`は`wx forget`に統合せず残す。
 refが無いsnapshotからは復元できないため`Manager.DiscardRecovery`で失う復元手段は無いが、slotのworktreeにある未保存の作業は消えるので、`--dry-run`で対象とpathを出せるようにしている。
-これを経ないと`wx forget`の前提（sessionは`EXPIRED`、snapshot行は無し、slotは`ARCHIVED`）を永久に満たせない。
 隔離するとref照合の期待一覧（`sn.status='ARCHIVED'`だけを見る）から外れて他のfindingが消えるため、行き止まり自体は`Manager.quarantinedRecoveryFindings`がworkspace単位のproblemとして報告する。
 復旧snapshotを作らない返却は`Store.ReleaseWithOutcome`で区別してWarnへ記録する（clientはRelease応答を読まない）。
 
