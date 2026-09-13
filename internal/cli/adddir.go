@@ -42,11 +42,17 @@ func leaseAddDirs(cfg config.Config, lease daemon.Lease) []string {
 // 直起動は daemon を通らず記録済みの名前がないため、実際にある directory だけを見る。
 // root は設定を引くためだけの workspace root（解決できなければ空で global へ落ちる）で、走査する root は CWD のままにする。
 func directAddDirs(cfg config.Config, root string) []string {
-	if mode, _ := cfg.AddDirForWorkspace(root); mode != config.AgentAddDirAlways {
-		return nil
-	}
 	cwd, err := os.Getwd()
 	if err != nil {
+		return nil
+	}
+	return directAddDirsFrom(cfg, root, cwd)
+}
+
+// directAddDirsFrom は走査する directory を明示する。
+// 会話の cwd で再開する直起動は、起動場所ではなくその cwd 直下の repository を渡す。
+func directAddDirsFrom(cfg config.Config, root, cwd string) []string {
+	if mode, _ := cfg.AddDirForWorkspace(root); mode != config.AgentAddDirAlways {
 		return nil
 	}
 	return childRepositoryDirs(cwd)

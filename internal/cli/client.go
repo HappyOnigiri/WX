@@ -123,6 +123,13 @@ func (c Client) runAgent(ctx context.Context, agent string, args, branches []str
 }
 
 func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume, sourceCWD string) int {
+	return c.runAgentResolved(ctx, agent, args, branches, fresh, explicitResume, sourceCWD, nil)
+}
+
+// runAgentResolved は再開先を解決済みで受け取れる起動経路である。
+// resolved が nil のときだけここで resolveResume を呼ぶ。起動場所の policy より先に会話を解決した経路は、
+// 同じ問い合わせを二度行わず、picker の再表示も起こさないよう解決済みの結果を渡す。
+func (c Client) runAgentResolved(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume, sourceCWD string, resolved *resumeTarget) int {
 	if err := c.ensureDaemon(ctx); err != nil {
 		cliError(c, err)
 		return 1
@@ -147,8 +154,11 @@ func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches [
 			fmt.Fprintln(os.Stderr, "notice: codex exec resume needs a session ID or --last; starting in a new workspace without restoring a snapshot")
 		}
 	}
-	target, resuming, err := c.resolveResume(ctx, agent, cwd, intent, explicitResume)
-	if err != nil {
+	var target resumeTarget
+	resuming := resolved != nil
+	if resolved != nil {
+		target = *resolved
+	} else if target, resuming, err = c.resolveResume(ctx, agent, cwd, intent, explicitResume); err != nil {
 		cliError(c, err)
 		return 1
 	}
