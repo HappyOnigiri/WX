@@ -15,16 +15,19 @@ type launchPlan struct {
 	agent string
 	// agentKind は daemon へ渡す agent_kind である。空なら agent をそのまま使う。
 	// 貸出コマンドは実行するプログラムと表示・--resume 照合用の種別が異なるため分けて持つ。
-	agentKind      string
-	args           []string
-	branches       []string
-	cwd            string
-	explicitResume string
-	intentRest     []string
-	target         resumeTarget
-	resuming       bool
-	fresh          bool
-	hooksReady     bool
+	agentKind       string
+	args            []string
+	branches        []string
+	cwd             string
+	explicitResume  string
+	intentKind      resumeIntentKind
+	intentPrefix    []string
+	intentRest      []string
+	intentCodexExec bool
+	target          resumeTarget
+	resuming        bool
+	fresh           bool
+	hooksReady      bool
 	// leaseKind 以下は agent 起動以外への貸出（wx shell / wx run）の属性である。
 	// leaseKind が空なら従来の agent 起動で、owner は wx new 由来の親 session を指す。
 	leaseKind      string

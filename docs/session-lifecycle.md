@@ -58,7 +58,7 @@
    hookが個人版の設定や認証情報をslotごとに置き換える運用ではこれらのflagが常時立つため、clean短絡が効かなくなる。
    flag付きpathへの編集は保存されないが、両flagは「このファイルのローカル差分を見ない」という宣言なので、その責任は立てた側にある。
 
-6. **再開** — `wx resume`、`claude --resume`、`codex resume`はclientがagent session IDを解決し、`Resume`または`ResolveAndLease`へ合流させる。
+6. **再開** — `wx resume`、`claude --resume`、`codex resume`、`codex exec resume`はclientがagent session IDを解決し、`Resume`または`ResolveAndLease`へ合流させる。
    選択した会話と明示的な`wx resume <wx-session-id>`は同じRESTORE経路を使う。
 
    当時のworktreeを復元できないときは会話の再開を優先し、新しいworktreeで再開してよいかをYes既定で確認して`--fresh`と同じ経路へ倒す。
