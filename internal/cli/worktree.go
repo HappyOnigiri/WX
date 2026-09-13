@@ -58,9 +58,7 @@ func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent str
 	// 記録済み session の復元先は起動場所と無関係で、管理外の会話も当時の workspace の方針に従うのが利用者の期待に近い。
 	// worktree の指定を明示した起動はその指定を優先するため、この経路へ入れない。
 	if intent.Kind == resumeIntentLookup && options == (WorktreeOptions{}) {
-		if exit, handled := c.runResumeByID(ctx, sourceCWD, agent, args, branches, fresh, intent); handled {
-			return exit
-		}
+		return c.runResumeByID(ctx, sourceCWD, agent, args, branches, fresh, intent)
 	}
 	// workspace root は agent.add_dir の解決キーでもあるため、worktree を作らない経路より先に一度だけ解決する。
 	root, rootErr := c.policyRootFrom(ctx, sourceCWD)

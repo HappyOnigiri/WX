@@ -71,6 +71,10 @@
    会話の再開自体はcwdに依存しないので、ここで失敗にはしない。
    起動場所の方針で決め続けると、巨大なmulti-repository workspaceのcwdを持つ会話を再開しただけでそこにworktreeを作ることになる。
 
+   wxもagentの履歴も引けないIDは、新しい会話の開始として扱わずworktree無しでagentへ渡す。
+   履歴の走査はagentの記録形式に依存し、実在する会話を取りこぼし得るのでwx側で「存在しない」と断定しない。
+   実在すれば再開でき、実在しなければagent自身が理由を示して非0で終わる。どちらもworktreeを消費しない。
+
    当時のworktreeを復元できないときは会話の再開を優先し、新しいworktreeで再開してよいかをYes既定で確認して`--fresh`と同じ経路へ倒す。
    復元不能はdaemonが`recovery=unavailable`を失敗メッセージに載せて伝え、clientはRESTORE系のfailure codeとEXPIRED snapshotの両方をこの確認に集約する。
    確認は`resume.auto_fresh`が真なら省き、端末がなければnoticeを出して再開を続ける。

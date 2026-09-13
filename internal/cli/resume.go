@@ -144,36 +144,44 @@ func (c Client) resolveResume(ctx context.Context, agent, cwd string, intent res
 }
 
 // runResumeByID は会話 ID を指定した再開を、起動場所の worktree policy を見ずに実行する。
-// 会話を引けなかったときだけ handled=false を返し、通常の起動経路へ委ねる。
 // 記録済み session は当時の workspace を復元するため方針を問わず、管理外の会話は会話の cwd 側の方針で決める。
-func (c Client) runResumeByID(ctx context.Context, sourceCWD, agent string, args, branches []string, fresh bool, intent resumeIntent) (int, bool) {
+// 会話を引けなかった ID も通常起動へは戻さず、worktree を作らずに agent へ渡す。
+func (c Client) runResumeByID(ctx context.Context, sourceCWD, agent string, args, branches []string, fresh bool, intent resumeIntent) int {
 	if err := validateResumeOptions(intent, "", fresh, branches); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 2, true
+		return 2
 	}
 	if err := c.ensureDaemon(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1, true
+		return 1
 	}
 	target, found, err := c.lookupResume(ctx, agent, intent.AgentSessionID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1, true
+		return 1
 	}
-	// wx も agent の履歴も知らない ID は再開ではないため、通常起動と同じく起動場所の方針で扱う。
+	// 引けない ID を「存在しない会話」と断定しない。Lookup は agent の記録形式に依存し、取りこぼし得る。
+	// 新しい会話として worktree を消費するより、worktree 無しで agent へ渡して可否を委ねる。
+	// 実在すれば再開でき、実在しなければ agent 自身が理由を示して非 0 で終わる。
 	if !found {
-		return 0, false
+		if fresh || len(branches) > 0 {
+			fmt.Fprintln(os.Stderr, "error: --branch and --fresh require a worktree")
+			return 2
+		}
+		fmt.Fprintf(os.Stderr, "notice: resuming without a worktree; wx has no record of conversation %s\n", intent.AgentSessionID)
+		root, _ := c.policyRootFrom(ctx, sourceCWD)
+		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirsFrom(c.Config, root, sourceCWD), args))
 	}
 	if target.WXSessionID == "" {
 		if direct, ok := c.resolveDirectResume(ctx, sourceCWD, target.CWD); ok {
 			if fresh || len(branches) > 0 {
 				fmt.Fprintln(os.Stderr, "error: --branch and --fresh require a worktree")
-				return 2, true
+				return 2
 			}
-			return runDirectAgentFrom(ctx, direct.cwd, agent, addDirArgs(directAddDirsFrom(c.Config, direct.root, direct.cwd), args)), true
+			return runDirectAgentFrom(ctx, direct.cwd, agent, addDirArgs(directAddDirsFrom(c.Config, direct.root, direct.cwd), args))
 		}
 	}
-	return c.runAgentResolved(ctx, agent, args, branches, fresh, "", sourceCWD, &target), true
+	return c.runAgentResolved(ctx, agent, args, branches, fresh, "", sourceCWD, &target)
 }
 
 // directResume は worktree を作らない再開の起動先である。

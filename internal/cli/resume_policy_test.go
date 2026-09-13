@@ -175,3 +175,68 @@ func TestResumeByIDKeepsExplicitWorktreeOverrides(t *testing.T) {
 		t.Fatalf("agent cwd=%q, want the launch directory %q", launch["pwd"], source)
 	}
 }
+
+// wx も agent の履歴も引けない ID は、新しい会話として worktree を消費せずに agent へ渡すことを確かめる。
+// 実在しない ID なら agent 自身が理由を示して終わり、取りこぼしなら再開できる。
+func TestResumeByIDWithoutRecordStartsWithoutWorktree(t *testing.T) {
+	source, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, _ := launchRecordFixture(t)
+	handler := &resumeLaunchHandler{
+		resumeErr: errors.New("sql: no rows in result set"),
+		// 引けなかった ID では会話の cwd が無いため、policy の問い合わせ自体が起きない。
+		policy: daemon.WorktreePolicyReply{Root: source, Mode: "hot", Resolved: true},
+	}
+	client, _ := resumePolicyClient(t, handler, "hot")
+	id := "44444444-4444-4444-8444-444444444444"
+
+	if exit := client.RunAgentWithPolicyFrom(context.Background(), source, "claude", []string{"--resume", id}, nil, false, WorktreeOptions{}); exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	for _, method := range handler.methodsSnapshot() {
+		if method == "Resume" || method == "ResolveAndLease" || method == "WorktreePolicy" {
+			t.Fatalf("an unresolved conversation consumed a worktree; methods=%v", handler.methodsSnapshot())
+		}
+	}
+	launch := readLaunchRecord(t, record)
+	if launch["pwd"] != source {
+		t.Fatalf("agent cwd=%q, want the launch directory %q", launch["pwd"], source)
+	}
+	if launch["args"] != "--resume "+id {
+		t.Fatalf("agent args=%q", launch["args"])
+	}
+}
+
+// codex の `resume <id>` も同じ経路を通り、引けない ID で worktree を作らないことを確かめる。
+func TestResumeByIDWithoutRecordStartsWithoutWorktreeForCodex(t *testing.T) {
+	source, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "launch-record")
+	t.Setenv("WX_TEST_LAUNCH_RECORD", record)
+	t.Setenv("WX_TEST_EVENT_RECORD", filepath.Join(t.TempDir(), "launch-events"))
+	agent := writeLaunchRecorder(t, "codex")
+	prependPath(t, filepath.Dir(agent))
+	handler := &resumeLaunchHandler{resumeErr: errors.New("sql: no rows in result set")}
+	client, _ := resumePolicyClient(t, handler, "hot")
+	id := "55555555-5555-4555-8555-555555555555"
+
+	if exit := client.RunAgentWithPolicyFrom(context.Background(), source, "codex", []string{"resume", id}, nil, false, WorktreeOptions{}); exit != 0 {
+		t.Fatalf("exit=%d", exit)
+	}
+	for _, method := range handler.methodsSnapshot() {
+		if method == "Resume" || method == "ResolveAndLease" {
+			t.Fatalf("an unresolved conversation consumed a worktree; methods=%v", handler.methodsSnapshot())
+		}
+	}
+	launch := readLaunchRecord(t, record)
+	if launch["pwd"] != source {
+		t.Fatalf("agent cwd=%q, want the launch directory %q", launch["pwd"], source)
+	}
+	if launch["args"] != "resume "+id {
+		t.Fatalf("agent args=%q", launch["args"])
+	}
+}
