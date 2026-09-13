@@ -126,6 +126,12 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	case "Ping":
 		// 状態を読まず何も変更しない応答確認。起動前の接続確認が Status の集計を待たないために置く。
 		return map[string]any{"protocol_version": rpc.ProtocolVersion, "degraded": false, "pid": os.Getpid()}, nil
+	case "UpdateStatus":
+		var p rpc.UpdateStatusParams
+		if err := decode(raw, &p); err != nil {
+			return nil, err
+		}
+		return h.Manager.UpdateState(ctx, p.ClaimAnnouncement)
 	case "WaitReady", "WaitEarlyReady":
 		var p struct {
 			SessionID string `json:"session_id"`

@@ -138,6 +138,10 @@ var configCatalog = map[string]Entry{
 	"config.agent.add_dir.description": {EN: "When wx passes the repositories of a workspace to the agent as additional directories it may read: always, only when working in a worktree (worktree), or never (off).", JA: "workspace のリポジトリを、エージェントが読める追加ディレクトリとして渡す条件です。常に渡す（always）、worktree で作業するときだけ渡す（worktree）、渡さない（off）から選びます。"},
 	"config.agent.add_dir.impact":      {EN: "Changes which repositories and files the agent can read.", JA: "エージェントが読めるリポジトリとファイルが変わります。"},
 
+	"config.update.auto_check.name":        {EN: "Check for new versions", JA: "新しいバージョンを確認する"},
+	"config.update.auto_check.description": {EN: "Whether the daemon occasionally asks GitHub whether a newer wx has been released, so that the status screen and an interactive launch can tell you about it.", JA: "新しい wx が公開されていないかを daemon が時々 GitHub に尋ねるかどうかです。状態画面と対話的な起動でお知らせするために使います。"},
+	"config.update.auto_check.impact":      {EN: "When disabled, wx never contacts GitHub on its own; wx update still checks when you run it yourself.", JA: "無効にすると、wx が自分から GitHub へ接続することはなくなります。自分で実行する wx update は無効でも確認します。"},
+
 	"config.logging.level.name":        {EN: "Log detail", JA: "ログの詳しさ"},
 	"config.logging.level.description": {EN: "How much detail the daemon writes to its log file.", JA: "daemon がログファイルへどこまで詳しく書くかです。"},
 	"config.logging.level.impact":      {EN: "A more detailed level helps diagnosis and produces much more log.", JA: "詳しくすると調査はしやすくなりますが、ログの量は大きく増えます。"},

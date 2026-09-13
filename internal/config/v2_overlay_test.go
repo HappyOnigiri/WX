@@ -44,6 +44,8 @@ system:
           - ~/custom-codex
   logging:
     level: debug
+  update:
+    auto_check: false
 workspace_defaults:
   worktree: cold
   copy:

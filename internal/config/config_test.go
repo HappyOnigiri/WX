@@ -474,3 +474,56 @@ func TestReadinessProgressDefaultsOnAndTurnsOffFromYAML(t *testing.T) {
 		t.Fatalf("readiness.mode=%q, want the default to stay", cfg.Readiness.Mode)
 	}
 }
+
+// TestUpdateAutoCheckDefaultsOnAndTurnsOffInBothVersions は、既定で有効な真偽値が
+// v1 と v2 のどちらの書き方でも false のまま残ることを確かめる。
+// v2 側をポインタにし忘れると、明示した false が既定の true へ埋め戻される。
+func TestUpdateAutoCheckDefaultsOnAndTurnsOffInBothVersions(t *testing.T) {
+	if !Defaults().Update.AutoCheck {
+		t.Fatal("update.auto_check default is off")
+	}
+	if v2 := DefaultsV2().System.Update.AutoCheck; v2 == nil || !*v2 {
+		t.Fatal("the v2 built-in value for system.update.auto_check is not on")
+	}
+	for _, test := range []struct{ name, document string }{
+		{name: "v1", document: "version: 1\nupdate:\n  auto_check: false\n"},
+		{name: "v2", document: "version: 2\nsystem:\n  update:\n    auto_check: false\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			path := filepath.Join(home, ".config", "wx", "config.yaml")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(test.document), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Update.AutoCheck {
+				t.Fatal("update.auto_check=false was overwritten by the default")
+			}
+		})
+	}
+}
+
+// TestConfigVersionTwoRejectsATopLevelUpdateSection は、v2 で legacy 節を併記した設定を
+// 拒否する一覧へ update を入れ忘れる退行を防ぐ。忘れると、書いた値が読まれないまま静かに通る。
+func TestConfigVersionTwoRejectsATopLevelUpdateSection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".config", "wx", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	document := "version: 2\nsystem:\n  language: ja\nupdate:\n  auto_check: false\n"
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "update") {
+		t.Fatalf("load error=%v, want the legacy update section refused", err)
+	}
+}

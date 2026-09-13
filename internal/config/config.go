@@ -52,6 +52,7 @@ type Config struct {
 	Workspaces   map[string]Workspace  `yaml:"workspaces,omitempty"`
 	Repositories map[string]Repository `yaml:"repositories,omitempty"`
 	Logging      Logging               `yaml:"logging,omitempty"`
+	Update       Update                `yaml:"update,omitempty"`
 	present      map[string]bool
 	// unknown は設定ファイルにあった wx が解釈しないキーで、doctor の報告と保存時の差し戻しに使う。
 	unknown []unknownEntry
@@ -116,6 +117,7 @@ type SystemConfig struct {
 	Lease     Lease                 `yaml:"lease,omitempty"`
 	Sessions  sessionsconfig.Config `yaml:"sessions,omitempty"`
 	Logging   Logging               `yaml:"logging,omitempty"`
+	Update    SystemUpdate          `yaml:"update,omitempty"`
 }
 
 // SystemStorage は worktree root と state backup の設定である。
@@ -259,6 +261,17 @@ type Lease struct {
 	TTL Duration `yaml:"ttl,omitempty"`
 	// Shell は wx shell が起動するシェルを固定する。空なら $SHELL、それも無ければ /bin/sh を使う。
 	Shell string `yaml:"shell,omitempty"`
+}
+
+// Update は新しいリリースを wx 自身が確認するかどうかの方針で、legacy の flatten view である。
+type Update struct {
+	AutoCheck bool `yaml:"auto_check,omitempty"`
+}
+
+// SystemUpdate は config v2 における Update の正本である。
+// 既定が有効なため、未記載と明示した false を区別できるようポインタで持つ。
+type SystemUpdate struct {
+	AutoCheck *bool `yaml:"auto_check,omitempty"`
 }
 
 type Workspace struct {
@@ -450,6 +463,7 @@ func Defaults() Config {
 		Lease:    Lease{TTL: Duration{72 * time.Hour}},
 		Includes: Includes{DefaultAgentRules: true}, Agent: Agent{AddDir: AgentAddDirAlways}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
+		Update:     Update{AutoCheck: true},
 		Workspaces: map[string]Workspace{}, Repositories: map[string]Repository{},
 	}
 }

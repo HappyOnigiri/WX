@@ -40,3 +40,12 @@ type ResumeParams struct {
 	WXSessionID         string   `json:"wx_session_id"`
 	Language            string   `json:"language,omitempty"`
 }
+
+// UpdateStatusParams は Method "UpdateStatus" の要求。読み取りだけの method なので冪等キーには使わず、
+// フィールド宣言順の縛りも効かない。表示文は CLI と TUI が組み立てるため language は持たない。
+// DisallowUnknownFields の decode を旧 daemon でも壊さないよう、後からの field 追加は行わない。
+type UpdateStatusParams struct {
+	// ClaimAnnouncement は、この呼び出しがその版の案内権を要求するかどうかである。
+	// 対話起動の CLI だけが true で呼び、TUI と wx update は常時表示・明示実行なので false で呼ぶ。
+	ClaimAnnouncement bool `json:"claim_announcement"`
+}
