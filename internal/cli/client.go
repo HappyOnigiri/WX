@@ -288,6 +288,11 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		cliError(c, err)
 		return 1, false
 	}
+	readiness := readinessForLease(c.Config, lease, plan.resuming, plan.leaseKind, plan.hooksReady)
+	waiting.setReadiness(readiness.Mode)
+	if readiness.Reason == readinessReasonHooksUnavailable {
+		waiting.line(cliLocalizer(c).Localize("cli.readiness.hooks_missing", nil))
+	}
 	if !lease.ReadinessProgress {
 		// readiness.progress は repository 文脈を daemon だけが解決できるため、
 		// global 設定で仮表示した resolving 行も lease 応答後に消す。
@@ -334,14 +339,10 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	// 通常起動も先行配置を待つ。hook が使える Early Ready だけ残りの準備と重ねる。
 	// 会話の再開は復元と ID の移譲を完了してから agent を起動する。
 	if !lease.Ready {
-		method := "WaitReady"
-		if !plan.resuming && plan.leaseKind == "" && plan.hooksReady && leaseReadinessMode(c.Config, lease) != "full" {
-			method = "WaitEarlyReady"
-		}
 		readinessTimeout := leaseReadinessTimeout(c.Config, lease)
 		waitCtx, cancel := context.WithTimeout(setupCtx, readinessTimeout)
 		waiting.watch(waitCtx, c.RPC, lease)
-		err = c.RPC.Call(waitCtx, method, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(readinessTimeout.Milliseconds())}, nil)
+		err = c.RPC.Call(waitCtx, readiness.WaitMethod, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(readinessTimeout.Milliseconds())}, nil)
 		waiting.finish()
 		cancel()
 		if err != nil {

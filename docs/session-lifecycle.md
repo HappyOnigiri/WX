@@ -32,6 +32,13 @@
    checkout hookやprepare commandが起動用の設定・指示を生成・更新する運用では、先行配置がその生成物を含められないため`full`を使う。
    完全一致したwarm slotは両方式とも即時起動する。
 
+   起動時に準備を待った場合、client は総括行へ実際に使った readiness（`ready` / `early` / `full`）を表示する。
+   設定が`early`でも hook が未整備なら`full`へ後退するため、その理由と`wx setup`の案内を stderr へ表示する。
+   `readiness.progress`が無効な場合や stderr が端末でない場合も、この案内だけは残す。
+   再開、`wx shell` / `wx run` / `wx new`、`readiness.mode: full`による全準備待ちは意図した経路なので、hook の案内は出さない。
+   daemon log には貸出時の実効 mode と、client が呼んだ`early` / `full`待機を記録する。
+   fallback理由は client が hook の可否を判定するため client 側だけで表示し、旧 daemon との RPC 互換性を保つため要求パラメータへ追加しない。
+
    UPDATE中はEarly Readyを公開せず、通常起動も`wx shell/run/new`も全repository・workspace rootの更新完了を待つ。
    resume・restoreは全準備を待ち、UPDATE経路を使わない。
    起動前の待機中もheartbeat・終了要求・失敗時のReleaseを維持する。

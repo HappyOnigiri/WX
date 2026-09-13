@@ -140,6 +140,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			ctx, cancel = context.WithTimeout(ctx, time.Duration(p.TimeoutMS)*time.Millisecond)
 			defer cancel()
 		}
+		h.logReadinessWait(p.SessionID, method)
 		if method == "WaitEarlyReady" {
 			return map[string]bool{"ready": true}, h.Manager.WaitEarlyReady(ctx, p.SessionID, p.Token)
 		}
@@ -257,6 +258,19 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	default:
 		return nil, errors.New(rpc.UnknownMethodMessage)
 	}
+}
+
+// logReadinessWait は client が選んだ待機経路を、実際に呼ばれた RPC として記録する。
+// mode=early の貸出が hook 未整備で full へ後退した場合も、daemon log から追跡できる。
+func (h Handler) logReadinessWait(sessionID, method string) {
+	if h.Manager == nil || h.Manager.log == nil {
+		return
+	}
+	wait := "full"
+	if method == "WaitEarlyReady" {
+		wait = "early"
+	}
+	h.Manager.log.Info("workspace readiness wait", "session_id", sessionID, "wait", wait, "method", method)
 }
 
 // waitReady は READY を待ち、応答を受け取る client が先に消えた貸出を回収する。
