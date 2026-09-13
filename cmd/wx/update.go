@@ -85,7 +85,7 @@ func runUpdate(ctx context.Context, args []string) int {
 	defer cancel()
 	release, err := adapters.latest(checkCtx)
 	if err != nil {
-		fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
+		_, _ = fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	current := adapters.current()
@@ -113,28 +113,28 @@ const installScriptTimeout = 20 * time.Second
 // checksum 検証・版番号の照合・atomic な置換・daemon の再起動は install.sh が持つため、ここでは再実装しない。
 func applyUpdate(ctx context.Context, adapters updateAdapters, r *textRenderer, release update.Release) int {
 	if !adapters.supported() {
-		fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", i18n.T(ctx, "wx.update.unsupported_platform", nil))
+		_, _ = fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", i18n.T(ctx, "wx.update.unsupported_platform", nil))
 		return 1
 	}
 	script, err := adapters.fetchScript(ctx, release.Tag)
 	if err != nil {
-		fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
+		_, _ = fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	dir, err := os.MkdirTemp("", "wx-update-")
 	if err != nil {
-		fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
+		_, _ = fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "install.sh")
 	if err := os.WriteFile(path, script, 0o600); err != nil {
-		fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
+		_, _ = fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	r.line("wx.update.running", map[string]any{"Latest": release.Tag})
 	if err := adapters.runScript(ctx, path); err != nil {
-		fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
+		_, _ = fmt.Fprintln(adapters.stderr, i18n.T(ctx, "common.error", nil)+":", err)
 		return 1
 	}
 	return 0
