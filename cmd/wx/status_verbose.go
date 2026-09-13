@@ -384,11 +384,16 @@ func (r *verboseStatusRenderer) renderQuarantine() {
 		rows = append(rows, []string{statusDash(id), statusDash(kind), statusQuarantineReason(item), statusHomeValue(item, "path")})
 	}
 	r.lineTable(r.headers("status.table.id", "status.table.kind", "status.table.reason", "status.table.path"), rows, present)
+	for _, item := range sorted {
+		if detailPath, _ := statusRawString(item, "detail_path"); detailPath != "" {
+			r.text.dataField(2, r.text.Localize("status.field.failure_log", nil), statusHomeValue(item, "detail_path"))
+		}
+	}
 	for _, notice := range statusQuarantineCleanupNotices(r.text, sorted) {
 		r.text.raw("  " + notice)
 	}
 	for index, item := range items {
-		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("quarantine[%d]", index), item, map[string]bool{"id": true, "path": true, "kind": true, "failure_code": true})
+		r.additional = appendStatusUnknown(r.additional, fmt.Sprintf("quarantine[%d]", index), item, map[string]bool{"id": true, "path": true, "kind": true, "failure_code": true, "detail_path": true})
 	}
 }
 

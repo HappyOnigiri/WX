@@ -91,31 +91,31 @@ func resumeAgentMatches(agent, originalAgent, leaseKind, originalLeaseKind strin
 // orphan 回収・期限掃引・親連動・wx release が共有し、保存の要否と slot の遷移は Store が決める。
 // 書き込みの失敗は error で返す。再試行できる周期処理と wx release で扱いが違うためである。
 func (m *Manager) releaseLeaseWithoutToken(ctx context.Context, candidate state.OrphanCandidate, reason string) error {
-	_, err := m.releaseLeaseDiscarding(ctx, candidate, reason, false)
+	_, _, err := m.releaseLeaseDiscarding(ctx, candidate, reason, false)
 	return err
 }
 
 // releaseLeaseDiscarding は token を持たない返却を進め、discard が真なら保存を積まず削除を予約する。
 // 保存を省くのは利用者が明示した --discard だけなので、周期処理からの返却は releaseLeaseWithoutToken を使う。
 // 戻り値は削除を予約できたかで、偽なら slot は従来どおり保存経路に載っている（PREPARING などで予約が通らない場合を含む）。
-func (m *Manager) releaseLeaseDiscarding(ctx context.Context, candidate state.OrphanCandidate, reason string, discard bool) (bool, error) {
+func (m *Manager) releaseLeaseDiscarding(ctx context.Context, candidate state.OrphanCandidate, reason string, discard bool) (state.Job, bool, error) {
 	release := m.store.ReleaseWithOutcome
 	if discard {
 		release = m.store.ReleaseDiscardingWithOutcome
 	}
 	job, changed, quarantineExpired, err := release(ctx, candidate.ID, candidate.WorkspaceID, candidate.SlotID)
 	if err != nil {
-		return false, fmt.Errorf("release lease %s (%s): %w", candidate.ID, reason, err)
+		return state.Job{}, false, fmt.Errorf("release lease %s (%s): %w", candidate.ID, reason, err)
 	}
 	if quarantineExpired {
 		m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", candidate.ID, "slot_id", candidate.SlotID, "reason", reason)
 	}
 	if changed {
 		m.schedule(job)
-		return discard, nil
+		return job, discard, nil
 	}
 	m.releaseLease(candidate.ID)
-	return false, nil
+	return state.Job{}, false, nil
 }
 
 // leaseCandidateRunning は貸出のプロセスがまだ生きているかを返す。
@@ -183,28 +183,40 @@ func (m *Manager) ReleaseLease(ctx context.Context, sessionID, reason string, di
 	if !inUse && !discard {
 		return nil, fmt.Errorf("session %s is no longer in use (state %s)", sessionID, session.State)
 	}
-	scheduled := false
+	var scheduled state.Job
 	if inUse {
 		candidate := state.OrphanCandidate{ID: session.ID, WorkspaceID: session.WorkspaceID, SlotID: session.SlotID}
 		var err error
-		if scheduled, err = m.releaseLeaseDiscarding(ctx, candidate, reason, discard); err != nil {
+		if scheduled, _, err = m.releaseLeaseDiscarding(ctx, candidate, reason, discard); err != nil {
 			return nil, err
 		}
 		// 親を返却したので、この貸出が用意した子貸出も待たずに返す。
 		m.releaseOrphanedChildLeases(ctx)
 	}
 	if !discard {
-		return map[string]any{"released": true, "session_id": sessionID, "discarded": false}, nil
+		return releaseLeaseReply(sessionID, false, "", scheduled, scheduled.ID != ""), nil
 	}
 	// 返却と同じ transaction で削除を積めた場合は、保存の完了を待つ必要がないのでそのまま返す。
-	if scheduled {
-		return map[string]any{"released": true, "session_id": sessionID, "discarded": true}, nil
+	if scheduled.ID != "" {
+		return releaseLeaseReply(sessionID, true, "", scheduled, true), nil
 	}
-	discarded, pending, err := m.discardLeaseSlot(ctx, session.SlotID)
+	removal, discarded, pending, err := m.discardLeaseSlot(ctx, session.SlotID)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"released": true, "session_id": sessionID, "discarded": discarded, "discard_pending": pending}, nil
+	return releaseLeaseReply(sessionID, discarded, pending, removal, removal.ID != ""), nil
+}
+
+// releaseLeaseReply は返却受付と、そこで積んだ job の追跡情報を同じ JSON にまとめる。
+func releaseLeaseReply(sessionID string, discarded bool, pending string, job state.Job, scheduled bool) map[string]any {
+	reply := map[string]any{"released": true, "session_id": sessionID, "discarded": discarded}
+	if pending != "" {
+		reply["discard_pending"] = pending
+	}
+	if scheduled && job.ID != "" {
+		reply["job_id"], reply["job_kind"] = job.ID, job.Kind
+	}
+	return reply
 }
 
 // ReleaseLease の discard_pending が返す、削除を予約できなかった理由である。
@@ -223,31 +235,31 @@ const discardRemovalWait = 3 * time.Second
 
 // discardLeaseSlot は保存を要求せず slot の削除を予約する。
 // 予約できたかと、できなかった理由（DiscardPending*）を返す。
-func (m *Manager) discardLeaseSlot(ctx context.Context, slotID string) (bool, string, error) {
+func (m *Manager) discardLeaseSlot(ctx context.Context, slotID string) (state.Job, bool, string, error) {
 	deadline := time.Now().Add(discardRemovalWait)
 	for {
 		job, changed, err := m.store.ScheduleDiscardRemoval(ctx, slotID)
 		if err != nil {
-			return false, "", err
+			return state.Job{}, false, "", err
 		}
 		if changed {
 			m.schedule(job)
-			return true, "", nil
+			return job, true, "", nil
 		}
 		// 既に保管済み・削除中の slot は待っても予約が通らないので、待たずに理由を返す。
 		slot, err := m.store.Slot(ctx, slotID)
 		if err != nil {
-			return false, "", err
+			return state.Job{}, false, "", err
 		}
 		if slot.State == "ARCHIVED" || slot.State == "REMOVING" {
-			return false, DiscardPendingRemoved, nil
+			return state.Job{}, false, DiscardPendingRemoved, nil
 		}
 		if time.Now().After(deadline) {
-			return false, DiscardPendingSaving, nil
+			return state.Job{}, false, DiscardPendingSaving, nil
 		}
 		select {
 		case <-ctx.Done():
-			return false, "", ctx.Err()
+			return state.Job{}, false, "", ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}

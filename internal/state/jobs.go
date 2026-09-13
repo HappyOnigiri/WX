@@ -12,7 +12,7 @@ import (
 
 type Job struct {
 	ID, Kind, WorkspaceID, SlotID, SessionID, RepositoryID, State string
-	ErrorCode, ErrorDetailPath                                    string
+	ErrorCode, ErrorMessage, ErrorDetailPath                      string
 	Attempt                                                       int
 }
 
@@ -77,13 +77,21 @@ func (s *Store) ClaimJob(ctx context.Context, id, owner string) (Job, error) {
 	// 副作用で動く AFTER trigger の変更を反映しない。trigger が claim 直後の row を削除した場合も、別 SELECT なら消失を検出して
 	// claim を失敗させ transaction を rollback できるが、RETURNING では見逃す。
 	var j Job
-	if err := tx.QueryRowContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt,COALESCE(error_code,''),COALESCE(error_detail_path,'') FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt, &j.ErrorCode, &j.ErrorDetailPath); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt,COALESCE(error_code,''),COALESCE(error_message,''),COALESCE(error_detail_path,'') FROM jobs WHERE id=?`, id).Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt, &j.ErrorCode, &j.ErrorMessage, &j.ErrorDetailPath); err != nil {
 		return Job{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO events(time,level,kind,workspace_id,slot_id,session_id,repository_id,message) VALUES(?,?,?,?,?,?,?,?)`, now(), "info", "job_started", nullString(j.WorkspaceID), nullString(j.SlotID), nullString(j.SessionID), nullString(j.RepositoryID), fmt.Sprintf("kind=%s attempt=%d", j.Kind, j.Attempt)); err != nil {
 		return Job{}, err
 	}
 	return j, tx.Commit()
+}
+
+// JobByID は完了待ちの対象を job ID で読む。retry で state が戻っても同じ ID を追跡できる。
+func (s *Store) JobByID(ctx context.Context, id string) (Job, error) {
+	var job Job
+	err := s.db.QueryRowContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt,COALESCE(error_code,''),COALESCE(error_message,''),COALESCE(error_detail_path,'') FROM jobs WHERE id=?`, id).
+		Scan(&job.ID, &job.Kind, &job.WorkspaceID, &job.SlotID, &job.SessionID, &job.RepositoryID, &job.State, &job.Attempt, &job.ErrorCode, &job.ErrorMessage, &job.ErrorDetailPath)
+	return job, err
 }
 
 func (s *Store) RenewJob(ctx context.Context, id, owner string) error {
@@ -209,7 +217,7 @@ func (s *Store) RecoverJobs(ctx context.Context, reclaimAll bool) ([]Job, error)
 	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt,COALESCE(error_code,''),COALESCE(error_detail_path,'') FROM jobs WHERE state='PENDING' ORDER BY not_before,id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,COALESCE(workspace_id,''),COALESCE(slot_id,''),COALESCE(session_id,''),COALESCE(repository_id,''),state,attempt,COALESCE(error_code,''),COALESCE(error_message,''),COALESCE(error_detail_path,'') FROM jobs WHERE state='PENDING' ORDER BY not_before,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +225,7 @@ func (s *Store) RecoverJobs(ctx context.Context, reclaimAll bool) ([]Job, error)
 	var out []Job
 	for rows.Next() {
 		var j Job
-		if err := rows.Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt, &j.ErrorCode, &j.ErrorDetailPath); err != nil {
+		if err := rows.Scan(&j.ID, &j.Kind, &j.WorkspaceID, &j.SlotID, &j.SessionID, &j.RepositoryID, &j.State, &j.Attempt, &j.ErrorCode, &j.ErrorMessage, &j.ErrorDetailPath); err != nil {
 			return nil, err
 		}
 		out = append(out, j)

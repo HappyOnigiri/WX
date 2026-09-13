@@ -52,8 +52,9 @@ var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree l
 // 22 は `wx status --json` の standby_replenishment へ補充計画の失敗（reason STANDBY_PLAN_FAILED と failed_at）を加えた。
 // 23 は workspace_details へ workspace kind と repository membership の
 // id/main_path/relative_path 一覧を加えた。repository_details は従来どおり。
+// 25 は wx status --json の quarantine 要素へ slot の詳細ログ path を加えた。
 // commentlint:allow-long -- schema 版ごとの変更点を辿れるようにするため
-const JSONSchemaVersion = 24
+const JSONSchemaVersion = 25
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

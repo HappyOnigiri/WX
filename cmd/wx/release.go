@@ -13,6 +13,8 @@ func runRelease(ctx context.Context, args []string) int {
 	ctx = commandContext(ctx)
 	fs := pflag.NewFlagSet("release", pflag.ContinueOnError)
 	discard := fs.Bool("discard", false, "return the lease without saving unfinished work")
+	wait := fs.Bool("wait", false, "wait for saving or removal to finish")
+	jsonOut := fs.Bool("json", false, "print the result as JSON")
 	fs.Usage = func() { commandUsageLanguage(os.Stdout, "release", i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, "release", args); done {
 		return code
@@ -25,5 +27,5 @@ func runRelease(ctx context.Context, args []string) int {
 	if code != 0 {
 		return code
 	}
-	return client.RunLeaseRelease(ctx, fs.Arg(0), *discard)
+	return client.RunLeaseRelease(ctx, fs.Arg(0), *discard, *wait, *jsonOut)
 }

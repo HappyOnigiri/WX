@@ -13,6 +13,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/tui"
 )
 
 // agent_kind へ入れる貸出コマンドの種別。表示（wx slots の AGENT 列）と --resume の照合に使う。
@@ -246,25 +247,90 @@ func (c Client) releaseLeaseToken(lease daemon.Lease, reason string) {
 	_ = c.RPC.CallWithKey(releaseCtx, "Release", "release:"+lease.SessionID+":"+reason, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "reason": reason}, nil)
 }
 
+type releaseReply struct {
+	SessionID      string `json:"session_id"`
+	Released       bool   `json:"released"`
+	Discarded      bool   `json:"discarded"`
+	DiscardPending string `json:"discard_pending,omitempty"`
+	JobID          string `json:"job_id,omitempty"`
+	JobKind        string `json:"job_kind,omitempty"`
+	State          string `json:"state,omitempty"`
+	SlotState      string `json:"slot_state,omitempty"`
+	SessionState   string `json:"session_state,omitempty"`
+	FailureCode    string `json:"failure_code,omitempty"`
+	FailureMessage string `json:"failure_message,omitempty"`
+	DetailPath     string `json:"detail_path,omitempty"`
+}
+
+const (
+	releasePollInterval  = 500 * time.Millisecond
+	releaseStatusTimeout = 5 * time.Second
+)
+
 // RunLeaseRelease は貸出を明示的に返却する。session token を持たない経路なので、
 // daemon 側は生きた client / agent を持つ貸出を拒否する。
-func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard bool) int {
+func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard, wait, jsonOut bool) int {
 	if err := c.ensureDaemon(ctx); err != nil {
 		cliError(c, err)
 		return 1
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	var reply struct {
-		Released       bool   `json:"released"`
-		Discarded      bool   `json:"discarded"`
-		DiscardPending string `json:"discard_pending"`
-	}
+	reply := releaseReply{SessionID: sessionID}
 	if err := c.RPC.Call(callCtx, "ReleaseLease", map[string]any{"session_id": sessionID, "reason": "wx-release", "discard": discard}, &reply); err != nil {
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
+	if reply.SessionID == "" {
+		reply.SessionID = sessionID
+	}
+	if wait && reply.JobID != "" {
+		if !jsonOut {
+			localizer := cliLocalizer(c)
+			fmt.Fprintln(os.Stdout, localizer.Localize("cli.release.accepted", map[string]any{"SessionID": sessionID, "Kind": reply.JobKind, "JobID": reply.JobID}))
+		}
+		statusErr := c.waitForRelease(ctx, &reply, jsonOut)
+		if statusErr != nil {
+			if jsonOut {
+				if err := printReleaseJSON(reply); err != nil {
+					cliError(c, err)
+				}
+			}
+			localizer := cliLocalizer(c)
+			if ctx.Err() != nil {
+				fmt.Fprintln(os.Stderr, localizer.Localize("cli.release.interrupted", nil))
+			} else {
+				fmt.Fprintln(os.Stderr, localizer.Localize("cli.release.status_failed", map[string]any{"Error": statusErr.Error()}))
+			}
+			return 1
+		}
+	}
+	if jsonOut {
+		if err := printReleaseJSON(reply); err != nil {
+			cliError(c, err)
+			return 1
+		}
+		if wait && releaseFailed(reply) {
+			return 1
+		}
+		return 0
+	}
 	localizer := cliLocalizer(c)
 	data := map[string]any{"SessionID": sessionID}
+	if wait && reply.JobID != "" {
+		if releaseFailed(reply) {
+			code, path := reply.FailureCode, reply.DetailPath
+			if code == "" {
+				code = "JOB_FAILED"
+			}
+			if path == "" {
+				path = "unavailable"
+			}
+			fmt.Fprintln(os.Stderr, localizer.Localize("cli.release.failed", map[string]any{"SessionID": sessionID, "Code": code, "Path": path}))
+			return 1
+		}
+		fmt.Println(localizer.Localize("cli.release.completed", map[string]any{"SessionID": sessionID, "Kind": reply.JobKind}))
+		return 0
+	}
 	if reply.Discarded {
 		fmt.Println(localizer.Localize("cli.release.discarded", data))
 		return 0
@@ -282,6 +348,82 @@ func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard b
 	}
 	fmt.Println(localizer.Localize("cli.release.done", data))
 	return 0
+}
+
+// waitForRelease は返却時に積まれた job を同じ ID で追跡し、終端状態まで待つ。
+// 待機中に CLI が中断されても daemon の job は継続するため、最後の状態は呼び出し側へ残す。
+func (c Client) waitForRelease(ctx context.Context, reply *releaseReply, jsonOut bool) error {
+	localizer := cliLocalizer(c)
+	progress := tui.StartProgress(os.Stderr, tui.InteractiveOutput(os.Stderr) && !jsonOut, localizer.Localize("progress.releasing", nil))
+	defer progress.Finish()
+	for {
+		if reply.State == "SUCCEEDED" || reply.State == "FAILED" || (reply.State == "" && reply.SlotState != "") {
+			return nil
+		}
+		var next releaseReply
+		callCtx, cancel := context.WithTimeout(ctx, releaseStatusTimeout)
+		err := c.RPC.Call(callCtx, "ReleaseStatus", map[string]string{"session_id": reply.SessionID, "job_id": reply.JobID}, &next)
+		cancel()
+		if err != nil {
+			return err
+		}
+		mergeReleaseStatus(reply, next)
+		if next.State == "" {
+			// job が既に GC されていても ReleaseStatus は session/slot の状態を返す。
+			return nil
+		}
+		if reply.State == "SUCCEEDED" || reply.State == "FAILED" || (reply.State == "" && reply.SlotState != "") {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(releasePollInterval):
+		}
+	}
+}
+
+func mergeReleaseStatus(reply *releaseReply, status releaseReply) {
+	if status.SessionID != "" {
+		reply.SessionID = status.SessionID
+	}
+	if status.JobID != "" {
+		reply.JobID = status.JobID
+	}
+	if status.JobKind != "" {
+		reply.JobKind = status.JobKind
+	}
+	if status.State != "" || status.JobID != "" {
+		reply.State = status.State
+	}
+	if status.SlotState != "" {
+		reply.SlotState = status.SlotState
+	}
+	if status.SessionState != "" {
+		reply.SessionState = status.SessionState
+	}
+	if status.FailureCode != "" {
+		reply.FailureCode = status.FailureCode
+	}
+	if status.FailureMessage != "" {
+		reply.FailureMessage = status.FailureMessage
+	}
+	if status.DetailPath != "" {
+		reply.DetailPath = status.DetailPath
+	}
+}
+
+func releaseFailed(reply releaseReply) bool {
+	return reply.State == "FAILED" || reply.SlotState == "QUARANTINED"
+}
+
+func printReleaseJSON(reply releaseReply) error {
+	data, err := json.Marshal(reply)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Println(string(data))
+	return err
 }
 
 // reportLeaseError は貸出コマンドの失敗を表示し、終了コードを決める。

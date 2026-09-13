@@ -69,6 +69,7 @@ var catalog = map[string]Entry{
 	"progress.restarting":             {EN: "restarting", JA: "再起動中"},
 	"progress.stopping":               {EN: "stopping", JA: "停止中"},
 	"progress.clearing":               {EN: "clearing", JA: "削除中"},
+	"progress.releasing":              {EN: "releasing", JA: "返却中"},
 	"progress.diagnosing":             {EN: "diagnosing", JA: "診断中"},
 	"progress.preparing":              {EN: "preparing", JA: "準備中"},
 	"rpc.daemon_unavailable":          {EN: "wx daemon is not running or still starting; try again shortly", JA: "wx daemon は起動していないか、起動中です。しばらくしてから再試行してください"},

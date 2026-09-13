@@ -203,7 +203,7 @@ func readPrepareDiagnostic(path string) prepareDiagnosticMetadata {
 		switch key {
 		case "failure_id":
 			metadata.FailureID = strings.TrimSpace(value)
-		case "exit_code":
+		case "exit_code", "exit_status":
 			if exitCode, parseErr := strconv.Atoi(strings.TrimSpace(value)); parseErr == nil {
 				metadata.ExitCode, metadata.HasExitCode = exitCode, true
 			}

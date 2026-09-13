@@ -202,7 +202,7 @@ wx release と wx shell --resume に渡す session id は wx slots または
   --json                         session id と path を JSON で表示`,
 	},
 	"help.command.release": {
-		EN: `Usage: wx release <wx-session-id> [--discard]
+		EN: `Usage: wx release <wx-session-id> [--discard] [--wait] [--json]
 
 Return a workspace leased by wx new without waiting for lease.ttl. Unfinished
 work is saved first, and the worktree stays for retention.ended_worktree so
@@ -215,10 +215,20 @@ Only leases with no running process are returned this way. A workspace held by
 wx shell or wx run is returned when that shell or command exits, and one held
 by an agent when that agent exits; wx clear --all asks either of them to stop.
 
+By default this command reports that the return was accepted while the save or
+removal runs in the background. --wait waits for that job to finish and exits 1
+if it fails or quarantines the slot. Interrupting --wait leaves the daemon job
+running; use wx doctor to check it.
+
+Exit status is 0 when the request succeeds, 1 for an RPC or waited-job failure,
+and 2 for invalid arguments.
+
 Options:
   --discard  return the lease without saving unfinished work, and remove the
-             worktree instead of keeping it for retention.ended_worktree`,
-		JA: `使い方: wx release <wx-session-id> [--discard]
+             worktree instead of keeping it for retention.ended_worktree
+  --wait     wait for the snapshot or removal job and report its final state
+  --json     print one machine-readable JSON result line`,
+		JA: `使い方: wx release <wx-session-id> [--discard] [--wait] [--json]
 
 wx new で貸し出した workspace を lease.ttl を待たずに返却します。未完了の
 作業は先に保存し、worktree は retention.ended_worktree の間残るため、
@@ -231,9 +241,15 @@ wx shell --resume <id> で再開できます。
 wx shell / wx run は shell または command の終了時、保持する
 agent は agent 終了時に返却されます。wx clear --all はいずれにも停止を求めます。
 
+既定では返却を受け付けたことだけを表示し、保存または削除は daemon がバックグラウンドで続けます。--wait はその job の完了まで待ち、失敗または slot の隔離で終了コード 1 を返します。--wait を中断しても daemon の job は続くため、wx doctor で状態を確認してください。
+
+終了コードは、要求成功が 0、RPC または待機した job の失敗が 1、引数不正が 2 です。
+
 オプション:
   --discard  未保存の作業を保存せず貸出を返却し、
-             worktree を retention.ended_worktree に残さず削除`,
+             worktree を retention.ended_worktree に残さず削除
+  --wait     snapshot または削除 job の完了を待ち、最終状態を表示
+  --json     機械可読な JSON の結果を 1 行で表示`,
 	},
 	"help.command.slots": {
 		EN: `Usage: wx slots [--all] [--json]

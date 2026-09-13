@@ -110,7 +110,11 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 		unsaved, err := m.snapshotRepository(ctx, &archiveManager, repo, sr.WorktreePath, s.ID, expiry)
 		if err != nil {
 			m.log.Error("snapshot failed", "session_id", s.ID, "repository_id", repo.ID, "error", err)
-			_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
+			code, detail, ok := gitFailureInfo("SNAPSHOT", err, m.prepareDetailDir)
+			if !ok {
+				code = "SNAPSHOT_FAILED"
+			}
+			_ = m.store.SetSlotStateWithDetail(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", code, detail)
 			return err
 		}
 		// 記録は MarkArchived より前に置く。順序が逆だと、SNAPSHOTTED へ移ってから記録するまでの間に GC が回収し得る。
@@ -141,7 +145,11 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 		}
 		if found {
 			if err := archive.ValidateWorkspaceSnapshotAt(ctx, ownershipRoot, ownershipRootHandle, rootSnapshot, time.Now()); err != nil {
-				_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
+				code, detail, ok := gitFailureInfo("SNAPSHOT", err, m.prepareDetailDir)
+				if !ok {
+					code = "SNAPSHOT_FAILED"
+				}
+				_ = m.store.SetSlotStateWithDetail(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", code, detail)
 				return fmt.Errorf("validate workspace root snapshot: %w", err)
 			}
 		} else {
@@ -156,7 +164,11 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 			rootSnapshot, err = archive.SnapshotWorkspaceAt(ctx, slot.Path, ownershipRoot, ownershipRootID, ownershipRootHandle, s.ID, workspaceRecoveryExclusions(repos), expiry, rootRules.Link...)
 			if err != nil {
 				m.log.Error("workspace root snapshot failed", "session_id", s.ID, "error", err)
-				_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
+				code, detail, ok := gitFailureInfo("SNAPSHOT", err, m.prepareDetailDir)
+				if !ok {
+					code = "SNAPSHOT_FAILED"
+				}
+				_ = m.store.SetSlotStateWithDetail(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", code, detail)
 				return err
 			}
 			if err := m.store.SaveWorkspaceSnapshot(ctx, rootSnapshot); err != nil {
