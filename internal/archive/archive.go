@@ -99,13 +99,14 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	worktreeRef := fmt.Sprintf("refs/wx/recovery/%s/%s/worktree", sessionID, repo.ID)
 	indexRef := fmt.Sprintf("refs/wx/recovery/%s/%s/index", sessionID, repo.ID)
 	gitStateRef := fmt.Sprintf("refs/wx/recovery/%s/%s/gitstate", sessionID, repo.ID)
+	conflictRef := fmt.Sprintf("refs/wx/recovery/%s/%s/conflict", sessionID, repo.ID)
 	id := domain.StableID("snapshot", sessionID, string(repo.ID))
 	created := time.Now().UTC()
-	// 停止中 rebase の制御ファイルは worktree 専用 gitdir にあり tree にも index にも現れないため、clean 判定より前に別途採取する。
+	// 停止中の操作の制御ファイルは worktree 専用 gitdir にあり tree にも index にも現れないため、clean 判定より前に別途採取する。
 	// `rebase -i` の edit 停止は working tree が clean なので、下の短絡経路にも同じ値を載せる必要がある。
 	gitState, err := captureGitState(worktreeValue, worktreeRun, head)
 	if err != nil {
-		return state.Snapshot{}, nil, nil, fmt.Errorf("capture in-progress rebase state: %w", err)
+		return state.Snapshot{}, nil, nil, fmt.Errorf("capture in-progress operation state: %w", err)
 	}
 	if gitState == "" {
 		gitStateRef = ""
@@ -132,11 +133,18 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 		if err != nil {
 			return state.Snapshot{}, nil, nil, fmt.Errorf("resolve clean HEAD tree: %w", err)
 		}
-		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, GitStateOID: gitState, GitStateRef: gitStateRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, unsaved, capsules, nil
+		return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: headTree, IndexRef: indexRef, WorktreeOID: head, WorktreeRef: worktreeRef, GitStateOID: gitState, GitStateRef: gitStateRef, ConflictRef: "", ConflictOID: "", Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, unsaved, capsules, nil
 	}
-	indexTree, err := worktreeValue(nil, "write-tree")
+	indexTree, conflict, err := captureConflictState(worktreeValue, worktreeRun, head)
 	if err != nil {
-		return state.Snapshot{}, nil, nil, fmt.Errorf("write index tree: %w", err)
+		return state.Snapshot{}, nil, nil, err
+	}
+	if conflict == "" {
+		indexTree, err = worktreeValue(nil, "write-tree")
+		if err != nil {
+			return state.Snapshot{}, nil, nil, fmt.Errorf("write index tree: %w", err)
+		}
+		conflictRef = ""
 	}
 	flags, err := readIndexFlags(worktreeValue, nil)
 	if err != nil {
@@ -168,7 +176,7 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 		return state.Snapshot{}, nil, nil, err
 	}
 	worktreeCommit := strings.TrimSpace(commitRes.Stdout)
-	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, GitStateOID: gitState, GitStateRef: gitStateRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, unsaved, capsules, nil
+	return state.Snapshot{ID: id, SessionID: sessionID, RepositoryID: string(repo.ID), HeadOID: head, HeadRef: headRef, IndexTreeOID: indexTree, IndexRef: indexRef, WorktreeOID: worktreeCommit, WorktreeRef: worktreeRef, GitStateOID: gitState, GitStateRef: gitStateRef, ConflictOID: conflict, ConflictRef: conflictRef, Status: "ARCHIVED", CreatedAt: state.FormatTime(created), ExpiresAt: state.FormatTime(expiry)}, unsaved, capsules, nil
 }
 
 // recoveryRefTargets は snapshot が公開する ref と object の対応を返し、index tree ref も含める。
@@ -178,9 +186,12 @@ func recoveryRefTargets(snapshot state.Snapshot) map[string]string {
 	if snapshot.IndexRef != "" {
 		targets[snapshot.IndexRef] = snapshot.IndexTreeOID
 	}
-	// 停止中 rebase を保持する commit は復元後の HEAD から到達できないため、ref が無ければ GC が制御ファイルごと回収する。
+	// 停止中の操作を保持する commit は復元後の HEAD から到達できないため、ref が無ければ GC が制御ファイルごと回収する。
 	if snapshot.GitStateRef != "" {
 		targets[snapshot.GitStateRef] = snapshot.GitStateOID
+	}
+	if snapshot.ConflictRef != "" {
+		targets[snapshot.ConflictRef] = snapshot.ConflictOID
 	}
 	return targets
 }

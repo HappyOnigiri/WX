@@ -13,11 +13,11 @@ import (
 	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
-// gitStateDirectories と gitStateFiles は、停止中 rebase の進行情報を持つ worktree 専用 gitdir 直下の path である。
-// merge backend は rebase-merge/、apply backend は rebase-apply/ を使い、どちらも tree にも index にも現れない。
+// gitStateDirectories と gitStateFiles は、停止中の merge/rebase/cherry-pick 等の進行情報を持つ
+// worktree 専用 gitdir 直下の path である。どれも tree にも index にも現れない。
 var (
-	gitStateDirectories = []string{"rebase-apply", "rebase-merge"}
-	gitStateFiles       = []string{"AUTO_MERGE", "ORIG_HEAD", "REBASE_HEAD"}
+	gitStateDirectories = []string{"rebase-apply", "rebase-merge", "sequencer"}
+	gitStateFiles       = []string{"AUTO_MERGE", "CHERRY_PICK_HEAD", "MERGE_AUTOSTASH", "MERGE_HEAD", "MERGE_MODE", "MERGE_MSG", "MERGE_RR", "ORIG_HEAD", "REBASE_HEAD", "REVERT_HEAD", "SQUASH_MSG"}
 )
 
 // gitStateCommitParents は、制御ファイルのうち復元後の HEAD から到達できない commit を指すものである。
@@ -30,6 +30,10 @@ var gitStateCommitParents = []string{
 	"rebase-merge/onto",
 	"rebase-merge/orig-head",
 	"rebase-merge/stopped-sha",
+	"MERGE_HEAD",
+	"CHERRY_PICK_HEAD",
+	"REVERT_HEAD",
+	"MERGE_AUTOSTASH",
 }
 
 // gitStateEntry は gitdir 相対の制御ファイル 1 件を表す。path は slash 区切りで、tree の path にそのまま使う。
@@ -60,7 +64,7 @@ func openGitStateRoot(value func(env []string, args ...string) (string, error)) 
 }
 
 // collectGitState は pin した gitdir から制御ファイルを読み、path 順に並べて返す。
-// 1 件も無ければ進行中 rebase が無いことを表す空 slice を返す。
+// 1 件も無ければ進行中の操作が無いことを表す空 slice を返す。
 // regular file 以外を見つけた場合は、内容を取りこぼしたまま成功にしないためにエラーにする。
 func collectGitState(root *os.Root) ([]gitStateEntry, error) {
 	var entries []gitStateEntry
@@ -123,7 +127,7 @@ func collectGitStateDirectory(root *os.Root, directory string) ([]gitStateEntry,
 			return nil, err
 		}
 		if !ok {
-			return nil, fmt.Errorf("%s disappeared while reading rebase state", child)
+			return nil, fmt.Errorf("%s disappeared while reading git state", child)
 		}
 		entries = append(entries, entry)
 	}
@@ -155,7 +159,7 @@ func writeGitStateTree(run gitRunner, entries []gitStateEntry) (string, error) {
 	if len(entries) == 0 {
 		return "", nil
 	}
-	tmp, cleanup, err := temporaryIndex("rebase state", ".wx-gitstate-index-*")
+	tmp, cleanup, err := temporaryIndex("git state", ".wx-gitstate-index-*")
 	if err != nil {
 		return "", err
 	}
@@ -163,7 +167,7 @@ func writeGitStateTree(run gitRunner, entries []gitStateEntry) (string, error) {
 	env := []string{"GIT_INDEX_FILE=" + tmp}
 	// 作成直後の 0 byte file を git は「小さすぎる index」として拒むため、空 index として初期化してから積み上げる。
 	if _, err := run(env, nil, "read-tree", "--empty"); err != nil {
-		return "", fmt.Errorf("initialize rebase state index: %w", err)
+		return "", fmt.Errorf("initialize git state index: %w", err)
 	}
 	for _, entry := range entries {
 		blob, err := run(env, entry.content, "hash-object", "-w", "--stdin")
@@ -177,7 +181,7 @@ func writeGitStateTree(run gitRunner, entries []gitStateEntry) (string, error) {
 	}
 	tree, err := run(env, nil, "write-tree")
 	if err != nil {
-		return "", fmt.Errorf("write rebase state tree: %w", err)
+		return "", fmt.Errorf("write git state tree: %w", err)
 	}
 	return strings.TrimSpace(tree.Stdout), nil
 }
@@ -191,21 +195,26 @@ func gitStateParents(run gitRunner, entries []gitStateEntry, head string) []stri
 	}
 	parents := []string{head}
 	for _, name := range gitStateCommitParents {
-		candidate, ok := byPath[name]
-		if !ok || candidate == "" || slices.Contains(parents, candidate) {
+		content, ok := byPath[name]
+		if !ok {
 			continue
 		}
-		if _, err := run(nil, nil, "cat-file", "-e", candidate+"^{commit}"); err != nil {
-			continue
+		for _, candidate := range strings.Fields(content) {
+			if candidate == "" || slices.Contains(parents, candidate) {
+				continue
+			}
+			if _, err := run(nil, nil, "cat-file", "-e", candidate+"^{commit}"); err != nil {
+				continue
+			}
+			parents = append(parents, candidate)
 		}
-		parents = append(parents, candidate)
 	}
 	slices.Sort(parents)
 	return slices.Compact(parents)
 }
 
-// captureGitState は停止中 rebase の制御ファイルを 1 本の commit にまとめ、その OID を返す。
-// 進行中 rebase が無ければ空文字を返し、object も ref も作らない。
+// captureGitState は停止中の操作の制御ファイルを 1 本の commit にまとめ、その OID を返す。
+// 進行中の操作が無ければ空文字を返し、object も ref も作らない。
 func captureGitState(value func(env []string, args ...string) (string, error), run gitRunner, head string) (string, error) {
 	root, err := openGitStateRoot(value)
 	if err != nil {
@@ -226,13 +235,13 @@ func captureGitState(value func(env []string, args ...string) (string, error), r
 	}
 	commit, err := run(recoveryCommitEnv(nil), []byte("wx rebase state snapshot\n"), args...)
 	if err != nil {
-		return "", fmt.Errorf("commit rebase state: %w", err)
+		return "", fmt.Errorf("commit git state: %w", err)
 	}
 	return strings.TrimSpace(commit.Stdout), nil
 }
 
 // restoreGitState は復元先 gitdir の制御ファイルを snapshot の内容へ揃える。
-// snapshot に進行中 rebase が無くても削除だけは行い、再利用された slot が古い進行情報を引き継がないようにする。
+// snapshot に進行中の操作が無くても削除だけは行い、再利用された slot が古い進行情報を引き継がないようにする。
 // 書き戻した内容から tree を再計算して照合し、一致しなければ復元を失敗させる。
 func restoreGitState(value func(env []string, args ...string) (string, error), run gitRunner, wantTree string) error {
 	root, err := openGitStateRoot(value)
@@ -258,7 +267,7 @@ func restoreGitState(value func(env []string, args ...string) (string, error), r
 		return err
 	}
 	if tree != wantTree {
-		return errors.New("restored rebase state does not match snapshot")
+		return errors.New("restored git state does not match snapshot")
 	}
 	return nil
 }
@@ -280,7 +289,7 @@ func clearGitState(root *os.Root) error {
 func expandGitStateTree(root *os.Root, run gitRunner, tree string) error {
 	listing, err := run(nil, nil, "ls-tree", "-r", "-z", tree)
 	if err != nil {
-		return fmt.Errorf("list rebase state tree: %w", err)
+		return fmt.Errorf("list git state tree: %w", err)
 	}
 	for _, record := range strings.Split(listing.Stdout, "\x00") {
 		if record == "" {
@@ -289,7 +298,7 @@ func expandGitStateTree(root *os.Root, run gitRunner, tree string) error {
 		meta, relative, found := strings.Cut(record, "\t")
 		fields := strings.Fields(meta)
 		if !found || len(fields) != 3 {
-			return fmt.Errorf("unexpected rebase state tree record %q", record)
+			return fmt.Errorf("unexpected git state tree record %q", record)
 		}
 		if err := writeGitStateEntry(root, run, fields[2], relative); err != nil {
 			return err

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
 // 経路の表示名は貸出応答の Route から引く。未知の経路でも表示を止めない。
@@ -155,6 +157,31 @@ func TestLeaseProgressSettlesTheTotalOnce(t *testing.T) {
 	waiting.finish()
 	if got := strings.Count(out.String(), "Cold start\n"); got != 1 {
 		t.Fatalf("the total was written %d times, want exactly one summary: %q", got, out.String())
+	}
+}
+
+// 準備を待った起動の総括には、経路だけでなく client が実際に選んだ readiness を残す。
+func TestLeaseProgressSummaryIncludesEffectiveReadiness(t *testing.T) {
+	t.Parallel()
+	out := &syncWriter{}
+	waiting := newLeaseProgress(out, true)
+	waiting.route, waiting.routed = daemon.RouteColdStart, true
+	waiting.setReadiness(readinessEarly)
+	waiting.update(daemon.LeaseProgress{State: "PREPARING", Running: true, Phase: "checkout", PhaseElapsedMS: 100})
+	waiting.finish()
+	if got := out.String(); !strings.Contains(got, "readiness=early") || !strings.Contains(got, "Cold start\n") {
+		t.Fatalf("summary=%q, want effective readiness and route", got)
+	}
+}
+
+// lease 応答で進捗が無効になった後は、終了済みの表示を再び watch して RPC を発生させない。
+func TestLeaseProgressDoesNotWatchAfterFinish(t *testing.T) {
+	t.Parallel()
+	waiting := newLeaseProgress(&syncWriter{}, true)
+	waiting.finish()
+	waiting.watch(context.Background(), rpc.Client{}, daemon.Lease{SessionID: "session", Token: "token"})
+	if waiting.cancel != nil {
+		t.Fatal("finished progress started a polling goroutine")
 	}
 }
 

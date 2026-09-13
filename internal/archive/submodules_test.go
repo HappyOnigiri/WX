@@ -105,6 +105,7 @@ func TestStatusSubmoduleReasonsReadsOnlyTheSubmoduleField(t *testing.T) {
 		"1 .M S.M. 160000 160000 160000 aaa bbb sub/edited",
 		"1 .M S..U 160000 160000 160000 aaa bbb sub/untracked",
 		"2 R. SC.. 160000 160000 160000 aaa bbb R100 sub/moved\tsub/old",
+		"u UU S..U 160000 160000 160000 160000 aaa bbb ccc sub/conflicted",
 		"? scratch.txt",
 		"",
 	}, "\n")
@@ -113,9 +114,10 @@ func TestStatusSubmoduleReasonsReadsOnlyTheSubmoduleField(t *testing.T) {
 		t.Fatalf("a non-submodule entry was reported: %+v", got)
 	}
 	for path, want := range map[string]string{
-		"sub/edited":    ReasonModified,
-		"sub/untracked": ReasonUntracked,
-		"sub/moved":     ReasonCommitMoved,
+		"sub/edited":     ReasonModified,
+		"sub/untracked":  ReasonUntracked,
+		"sub/moved":      ReasonCommitMoved,
+		"sub/conflicted": ReasonUntracked,
 	} {
 		if len(got[path]) != 1 || got[path][0] != want {
 			t.Fatalf("reasons for %s=%v, want [%s]", path, got[path], want)

@@ -187,6 +187,11 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		}
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
+	readiness := readinessForLease(c.Config, lease, false, state.LeaseKindPath, false)
+	waiting.setReadiness(readiness.Mode)
+	if readiness.Reason == readinessReasonHooksUnavailable {
+		waiting.line(cliLocalizer(c).Localize("cli.readiness.hooks_missing", nil))
+	}
 	if !lease.ReadinessProgress {
 		// readiness.progress は repository 文脈を daemon だけが解決できるため、
 		// global 設定で仮表示した resolving 行も lease 応答後に消す。
@@ -205,7 +210,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		readinessTimeout := leaseReadinessTimeout(c.Config, lease)
 		waitCtx, cancel := context.WithTimeout(setupCtx, readinessTimeout)
 		waiting.watch(waitCtx, c.RPC, lease)
-		err := c.RPC.Call(waitCtx, "WaitReady", map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(readinessTimeout.Milliseconds())}, nil)
+		err := c.RPC.Call(waitCtx, readiness.WaitMethod, map[string]any{"session_id": lease.SessionID, "token": lease.Token, "timeout_ms": int(readinessTimeout.Milliseconds())}, nil)
 		waiting.finish()
 		cancel()
 		if err != nil {

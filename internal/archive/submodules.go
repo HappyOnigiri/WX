@@ -65,7 +65,8 @@ func (m *Manager) submoduleWork(ctx context.Context, repo discovery.Repository, 
 }
 
 // statusSubmoduleReasons は porcelain v2 の submodule field から未保全の理由を path ごとに集める。
-// 見るのは 3 列目だけで、`N...` は submodule ではない。rename・copy の `2` 行にも同じ field が並ぶため両方を対象にする。
+// 見るのは 3 列目だけで、`N...` は submodule ではない。rename・copy の `2` 行と、
+// 未解消 index の `u` 行にも同じ判定を通す。
 func statusSubmoduleReasons(output string) map[string][]string {
 	out := map[string][]string{}
 	for _, line := range strings.Split(output, "\n") {
@@ -86,6 +87,12 @@ func statusSubmoduleReasons(output string) map[string][]string {
 				continue
 			}
 			path, _, _ = strings.Cut(fields[9], "\t")
+		case strings.HasPrefix(line, "u "):
+			fields = strings.SplitN(line, " ", 11)
+			if len(fields) != 11 {
+				continue
+			}
+			path = fields[10]
 		default:
 			continue
 		}

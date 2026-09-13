@@ -29,3 +29,34 @@ func TestLeaseReadinessPrefersTheLeaseResponse(t *testing.T) {
 		t.Fatalf("timeout=%s, want the global fallback", got)
 	}
 }
+
+// 起動条件の優先順位を固定する。特に early 設定でも hook が無ければ full へ後退し、
+// 再開や貸出コマンドでは hook の有無にかかわらず意図した full 待機になる。
+func TestReadinessForLeaseSelectsTheEffectiveGate(t *testing.T) {
+	t.Parallel()
+	cfg := config.Defaults()
+	tests := []struct {
+		name                     string
+		lease                    daemon.Lease
+		resuming                 bool
+		leaseKind                string
+		hooksReady               bool
+		mode, reason, waitMethod string
+	}{
+		{name: "ready standby", lease: daemon.Lease{Ready: true}, hooksReady: false, mode: readinessReady},
+		{name: "resume wins", resuming: true, leaseKind: "wx-shell", hooksReady: true, mode: readinessFull, reason: readinessReasonResume, waitMethod: "WaitReady"},
+		{name: "lease wins", leaseKind: "wx-run", hooksReady: false, mode: readinessFull, reason: readinessReasonLease, waitMethod: "WaitReady"},
+		{name: "configured full", lease: daemon.Lease{ReadinessMode: readinessFull}, hooksReady: true, mode: readinessFull, reason: readinessReasonConfiguredFull, waitMethod: "WaitReady"},
+		{name: "missing hooks", lease: daemon.Lease{ReadinessMode: readinessEarly}, hooksReady: false, mode: readinessFull, reason: readinessReasonHooksUnavailable, waitMethod: "WaitReady"},
+		{name: "early hooks", lease: daemon.Lease{ReadinessMode: readinessEarly}, hooksReady: true, mode: readinessEarly, waitMethod: "WaitEarlyReady"},
+		{name: "global fallback", hooksReady: true, mode: readinessEarly, waitMethod: "WaitEarlyReady"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			decision := readinessForLease(cfg, test.lease, test.resuming, test.leaseKind, test.hooksReady)
+			if decision.Mode != test.mode || decision.Reason != test.reason || decision.WaitMethod != test.waitMethod {
+				t.Fatalf("decision=%+v, want mode=%q reason=%q method=%q", decision, test.mode, test.reason, test.waitMethod)
+			}
+		})
+	}
+}
