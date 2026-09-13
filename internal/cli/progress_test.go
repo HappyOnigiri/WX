@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/i18n"
+	"github.com/HappyOnigiri/WX/internal/rpc"
 )
 
 // 経路の表示名は貸出応答の Route から引く。未知の経路でも表示を止めない。
@@ -169,6 +171,17 @@ func TestLeaseProgressSummaryIncludesEffectiveReadiness(t *testing.T) {
 	waiting.finish()
 	if got := out.String(); !strings.Contains(got, "readiness=early") || !strings.Contains(got, "Cold start\n") {
 		t.Fatalf("summary=%q, want effective readiness and route", got)
+	}
+}
+
+// lease 応答で進捗が無効になった後は、終了済みの表示を再び watch して RPC を発生させない。
+func TestLeaseProgressDoesNotWatchAfterFinish(t *testing.T) {
+	t.Parallel()
+	waiting := newLeaseProgress(&syncWriter{}, true)
+	waiting.finish()
+	waiting.watch(context.Background(), rpc.Client{}, daemon.Lease{SessionID: "session", Token: "token"})
+	if waiting.cancel != nil {
+		t.Fatal("finished progress started a polling goroutine")
 	}
 }
 

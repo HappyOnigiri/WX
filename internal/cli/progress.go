@@ -166,7 +166,7 @@ func newLeaseProgressLanguage(w io.Writer, animate bool, lang i18n.Language) *le
 // watch は経路のラベルへ切り替え、準備の現在位置を取り直し続ける。
 // ctx は待機を打ち切る呼び出し側の context で、finish が返るまでに取り直しは止まる。
 func (p *leaseProgress) watch(ctx context.Context, client rpc.Client, lease daemon.Lease) {
-	if !p.animate || p.cancel != nil {
+	if !p.animate || p.cancel != nil || p.finished {
 		return
 	}
 	p.route, p.routed = lease.Route, true
