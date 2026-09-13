@@ -254,7 +254,7 @@ func (m model) currentLabels() []string {
 		steps := m.setupItems()
 		labels := make([]string, 0, len(steps)+len(tabMenus[m.tab]))
 		for _, step := range steps {
-			labels = append(labels, step.Title+"  "+dim+string(step.State)+reset)
+			labels = append(labels, m.msg(step.Title)+"  "+dim+m.setupStateLabel(step.State)+reset)
 		}
 		for _, item := range tabMenus[m.tab] {
 			labels = append(labels, m.t(item.labelID))
@@ -303,12 +303,15 @@ func (m model) descriptionLines(width int) []string {
 		steps := m.setupItems()
 		if m.selected < len(steps) {
 			step := steps[m.selected]
-			lines := []string{soft + step.Title + reset, dim + step.ID + " · " + string(step.State) + reset, ""}
-			lines = append(lines, wrap(step.Detail, width)...)
+			lines := []string{soft + m.msg(step.Title) + reset, dim + step.ID + " · " + m.setupStateLabel(step.State) + reset, ""}
+			lines = append(lines, wrap(m.msg(step.Detail), width)...)
+			if step.Target != "" {
+				lines = append(lines, "", warn+m.t("dashboard.target_file")+reset, dim+step.Target+reset)
+			}
 			if len(step.Reasons) > 0 {
 				lines = append(lines, "", warn+m.t("dashboard.attention")+reset)
 				for _, reason := range step.Reasons {
-					lines = append(lines, wrap(reason, width)...)
+					lines = append(lines, wrap(m.msg(reason), width)...)
 				}
 			}
 			return lines

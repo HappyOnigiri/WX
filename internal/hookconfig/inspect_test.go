@@ -91,7 +91,7 @@ func TestInspectDocumentClassifiesSeedsByBlockedAndMatched(t *testing.T) {
 		{data: `{}`},
 		{data: `nonsense`, blocked: true},
 	} {
-		report := inspectDocument([]byte(test.data), required, executable)
+		report := inspectDocument("settings.json", []byte(test.data), required, executable)
 		if report.blocked != test.blocked || report.matched["SessionStart"] != test.matched {
 			t.Fatalf("blocked=%v matched=%v want %v,%v for %s", report.blocked, report.matched["SessionStart"], test.blocked, test.matched, test.data)
 		}

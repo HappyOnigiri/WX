@@ -1,0 +1,48 @@
+package setup
+
+import (
+	"testing"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
+)
+
+// TestMessageBuildsTemplateData は、名前と値を交互に並べる書き方が template のデータになることと、
+// 名前だけが余った呼び出しでもその名前を捨てることを確認する。
+// 値の欠けた名前を template へ渡すと、表示に <no value> が出る。
+func TestMessageBuildsTemplateData(t *testing.T) {
+	value := message("setup.reason.startup_unreadable", "Path", "/home/user/.zshrc", "Error", "permission denied")
+	if got := englishText(value); got != "/home/user/.zshrc could not be read: permission denied" {
+		t.Fatalf("resolved=%q", got)
+	}
+	if plain := message("setup.reason.home_unresolved"); plain.Data != nil {
+		t.Fatalf("a message without fields carried data: %+v", plain.Data)
+	}
+	if odd := message("setup.reason.home_unresolved", "Path"); len(odd.Data) != 0 {
+		t.Fatalf("an unpaired name reached the template data: %+v", odd.Data)
+	}
+}
+
+// TestMessageErrorKeepsItsIdentity は、適用の失敗が message ID を持つ error として返り、
+// 表示言語で解決できることを確認する。ID を失うと日本語設定でも英語のまま表示される。
+func TestMessageErrorKeepsItsIdentity(t *testing.T) {
+	err := messageError("setup.error.daemon_rejected_config", "Path", "/home/user/config.yaml", "Error", "busy")
+	if got := i18n.LocalizeError(err, i18n.English); got != "/home/user/config.yaml was saved but the running daemon rejected it: busy" {
+		t.Fatalf("english=%q", got)
+	}
+	if got := i18n.LocalizeError(err, i18n.Japanese); got == i18n.LocalizeError(err, i18n.English) {
+		t.Fatalf("the japanese text did not differ from the english one: %q", got)
+	}
+}
+
+// TestPathProblemFallsBackToTheRawResult は、diag が message を持たない判定（Lstat の失敗）で
+// 原文が本文として残ることを確認する。ここで message を要求すると、理由が空のまま表示される。
+func TestPathProblemFallsBackToTheRawResult(t *testing.T) {
+	raw := pathProblem("/home/user/wx", "no such file or directory", i18n.Message{})
+	if got := englishText(raw); got != "/home/user/wx: no such file or directory" {
+		t.Fatalf("raw=%q", got)
+	}
+	known := pathProblem("/home/user/wx", "not a directory", i18n.Message{ID: "diag.path.not_directory"})
+	if got := englishText(known); got != "/home/user/wx: not a directory" {
+		t.Fatalf("known=%q", got)
+	}
+}

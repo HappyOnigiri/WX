@@ -29,6 +29,11 @@ func (r *textRenderer) Localize(id string, data map[string]any) string {
 	return r.localizer.Localize(id, data)
 }
 
+// LocalizeOr は組み立てた可変 ID を引き、カタログに無い ID は fallback を返す。
+func (r *textRenderer) LocalizeOr(id, fallback string) string {
+	return r.localizer.LocalizeOr(id, fallback)
+}
+
 // line は固定文だけの 1 行を書く。
 func (r *textRenderer) line(id string, data map[string]any) {
 	r.raw(r.Localize(id, data))

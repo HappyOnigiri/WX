@@ -306,11 +306,7 @@ func describeConfig(key, scope string) int {
 	}
 	lang := localizedUsageLanguage()
 	r := newTextRenderer(os.Stdout, lang)
-	name := meta.DisplayName
-	if meta.Key == "language" && lang == i18n.Japanese {
-		name = r.Localize("config.display_name", nil)
-	}
-	r.raw(meta.Key + " — " + name)
+	r.raw(meta.Key + " — " + configKeyText(r, meta.Key, "name", meta.DisplayName))
 	r.field(2, "config.describe.type", string(meta.Kind))
 	r.field(2, "config.describe.scopes", strings.Join(meta.Scopes, ", "))
 	if len(meta.Choices) > 0 {
@@ -324,11 +320,7 @@ func describeConfig(key, scope string) int {
 // configKeyText は設定キーの散文を動的 ID で引き、カタログに無いキーは英語の原文をそのまま返す。
 // 全キーの散文を訳す前でも、訳のあるキーだけが訳文になる。
 func configKeyText(r *textRenderer, key, kind, fallback string) string {
-	id := "config." + key + "." + kind
-	if _, known := i18n.Catalog()[id]; !known {
-		return fallback
-	}
-	return r.Localize(id, nil)
+	return r.LocalizeOr("config."+key+"."+kind, fallback)
 }
 
 func showGlobalConfig() int {

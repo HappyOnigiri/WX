@@ -460,6 +460,13 @@ func DiagnosticPath(path string, requiredType os.FileMode, requiredPerm os.FileM
 	return result
 }
 
+// DiagnosticPathMessage は DiagnosticPath の判定に、表示言語で解決する message を添えて返す。
+// Lstat の失敗だけは外部由来の本文なので message を持たず、呼び出し側が原文を包む。
+func DiagnosticPathMessage(path string, requiredType os.FileMode, requiredPerm os.FileMode) (string, i18n.Message) {
+	result, message, _ := inspectPathDetail(path, requiredType, requiredPerm)
+	return result, message
+}
+
 // inspectPath は判定結果に加えて Lstat の失敗を返す。
 // 欠損と権限不足では対処が変わるため、呼び出し側は文面ではなく err で分岐する。
 func inspectPath(path string, requiredType os.FileMode, requiredPerm os.FileMode) (string, error) {

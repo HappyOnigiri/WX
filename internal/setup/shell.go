@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // shell の起動ファイルに書き込むブロックの目印。update と remove を可能にするために付ける。
@@ -34,59 +36,66 @@ func defaultBinDirectory() string {
 // collectShellPath は $SHELL から起動ファイルを選び、wx のブロックの有無と内容を見る。
 // 起動ファイル自体が symlink のことがあるため（dotfile 管理）、書き込みはせず unknown として案内だけを出す。
 func collectShellPath() Step {
-	step := Step{ID: stepShellPath, Title: "Shell PATH"}
+	step := Step{ID: stepShellPath, Title: message("wx.setup.item.shell_path")}
 	binDirectory := defaultBinDirectory()
 	if binDirectory == "" {
-		return unknownStep(step, "the home directory cannot be resolved")
+		return unknownStep(step, message("setup.reason.home_unresolved"))
 	}
 	step.Desired = binDirectory
 	path, err := shellStartupFile()
 	if err != nil {
-		return unknownStep(step, err.Error())
+		return unknownStep(step, message("setup.reason.shell_unknown"))
 	}
 	step.Target = path
-	step.Detail = "adds " + binDirectory + " to PATH for new terminals"
+	step.Summary = message("setup.summary.shell_path_block", "Directory", binDirectory)
+	step.Detail = message("setup.detail.shell_path_block", "Directory", binDirectory, "Path", path)
 	info, err := os.Lstat(path)
 	switch {
 	case err == nil && info.Mode()&os.ModeSymlink != 0:
-		return unknownStep(step, path+" is a symlink; take it out of dotfile management or add the line yourself")
+		return unknownStep(step, message("setup.reason.startup_symlink", "Path", path))
 	case err == nil && !info.Mode().IsRegular():
-		return unknownStep(step, path+" is not a regular file")
+		return unknownStep(step, message("setup.reason.startup_not_regular", "Path", path))
 	case err != nil && !errors.Is(err, os.ErrNotExist):
-		return unknownStep(step, err.Error())
+		return unknownStep(step, message("setup.reason.startup_unreadable", "Path", path, "Error", err.Error()))
 	}
 	contents := ""
 	if err == nil {
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
-			return unknownStep(step, readErr.Error())
+			return unknownStep(step, message("setup.reason.startup_unreadable", "Path", path, "Error", readErr.Error()))
 		}
 		contents = string(data)
 	}
 	block, found, terminated := shellManagedBlock(contents)
 	switch {
 	case found && !terminated:
-		return unknownStep(step, path+" has "+shellBlockBegin+" without "+shellBlockEnd+"; restore the missing end marker or remove the block yourself")
+		return unknownStep(step, unterminatedBlock(path))
 	case found && block == shellBlock(binDirectory):
 		step.State = StatePresent
 	case found:
 		step.State = StateDivergent
-		step.Reasons = append(step.Reasons, "the block managed by wx does not match what wx would write")
+		step.Reasons = append(step.Reasons, message("setup.reason.block_divergent"))
 	case startupFileAddsDirectory(contents, binDirectory):
 		// 起動ファイルが別の書き方で PATH へ加えているので、wx が触る理由がない。
 		step.State = StatePresent
-		step.Detail = path + " already adds " + binDirectory + " to PATH"
+		step.Summary = message("setup.summary.shell_path_external", "Path", path, "Directory", binDirectory)
+		step.Detail = message("setup.detail.shell_path_external", "Path", path, "Directory", binDirectory)
 		step.Options, step.Default = stepOptions(StatePresent, []Action{ActionKeep})
 		return step
 	default:
 		step.State = StateAbsent
 		if directoryOnPath(binDirectory) {
 			// export だけした利用者はここに来る。現プロセスの PATH を present の根拠にすると、新しい端末で PATH を失う。
-			step.Reasons = append(step.Reasons, binDirectory+" is on PATH in this session, but no line in "+path+" adds it for new terminals")
+			step.Reasons = append(step.Reasons, message("setup.reason.path_session_only", "Directory", binDirectory, "Path", path))
 		}
 	}
 	step.Options, step.Default = stepOptions(step.State, allActions)
 	return step
+}
+
+// unterminatedBlock は開始 marker だけが残った起動ファイルの理由を作る。収集と書き込みの両方から使う。
+func unterminatedBlock(path string) i18n.Message {
+	return message("setup.reason.block_unterminated", "Path", path, "Begin", shellBlockBegin, "End", shellBlockEnd)
 }
 
 // shellStartupFile は $SHELL の basename から、対話 shell が読む起動ファイルを選ぶ。
@@ -101,7 +110,7 @@ func shellStartupFile() (string, error) {
 	case "bash":
 		return filepath.Join(home, ".bash_profile"), nil
 	default:
-		return "", errors.New("wx cannot tell which startup file this shell reads; add the PATH line yourself")
+		return "", i18n.NewError("setup.reason.shell_unknown", nil)
 	}
 }
 
@@ -172,7 +181,7 @@ func directoryOnPath(directory string) bool {
 func applyShellPath(step Step, action Action) error {
 	path := step.Target
 	if path == "" {
-		return errors.New("the shell startup file is unknown")
+		return i18n.NewError("setup.error.startup_file_unknown", nil)
 	}
 	contents := ""
 	data, err := os.ReadFile(path)
@@ -186,7 +195,7 @@ func applyShellPath(step Step, action Action) error {
 	switch {
 	case found && !terminated:
 		// 収集時に unknown で弾く状態だが、その後にファイルが変わっていることもあるので書く前に確かめる。
-		return errors.New(path + " has " + shellBlockBegin + " without " + shellBlockEnd + "; wx cannot tell where its block ends")
+		return messageError("setup.reason.block_unterminated", "Path", path, "Begin", shellBlockBegin, "End", shellBlockEnd)
 	case found:
 		contents = strings.Replace(contents, block, "", 1)
 	}
@@ -209,7 +218,7 @@ func applyShellPath(step Step, action Action) error {
 func writeStartupFile(path string, data []byte, mode os.FileMode) error {
 	// rename は symlink 自体を置き換え、dotfile リポジトリとの接続を黙って切る。収集時に unknown で弾く形だが、書く前にも確かめる。
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return errors.New(path + " is a symlink; take it out of dotfile management or add the line yourself")
+		return messageError("setup.reason.startup_symlink", "Path", path)
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

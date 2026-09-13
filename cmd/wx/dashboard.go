@@ -39,7 +39,6 @@ func runDashboard(ctx context.Context) int {
 		}
 		addDashboardEnvironments(ctx, &cfg)
 		steps, _ := setup.Collect(ctx, setupOptions())
-		steps = localizedSetupSteps(ctx, steps)
 		action, runErr := dashboard.Run(ctx, dashboard.Options{
 			Status: dashboardStatus, CWD: cwd, Config: cfg, RawConfig: rawConfig, Setup: steps, Notice: notice,
 			Execute: runDashboardInlineAction, Refresh: refreshDashboardState,
@@ -63,21 +62,7 @@ func refreshDashboardState(ctx context.Context) (config.Config, config.Config, [
 	}
 	addDashboardEnvironments(ctx, &cfg)
 	steps, err := setup.Collect(ctx, setupOptions())
-	return cfg, rawConfig, localizedSetupSteps(ctx, steps), err
-}
-
-// localizedSetupSteps は dashboard へ渡す前に表示用ラベルを解決する。
-// 見出しの幅はラベルの実幅から決まるため、レイアウトより後に訳すと列がずれる。
-func localizedSetupSteps(ctx context.Context, steps []setup.Step) []setup.Step {
-	if len(steps) == 0 {
-		return steps
-	}
-	lang := i18n.LanguageFromContext(ctx)
-	out := make([]setup.Step, 0, len(steps))
-	for _, step := range steps {
-		out = append(out, localizeSetupStep(step, i18n.New(string(lang))))
-	}
-	return out
+	return cfg, rawConfig, steps, err
 }
 
 // addDashboardEnvironments は設定ファイルに書かれた workspace へ daemon 側の登録状況を重ねる。

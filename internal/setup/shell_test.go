@@ -72,8 +72,8 @@ func TestShellPathStaysQuietWhenTheStartupFileAlreadyAddsTheDirectory(t *testing
 			if step.State != StatePresent || len(step.Options) != 0 {
 				t.Fatalf("startup file already adds the directory=%+v", step)
 			}
-			if !strings.Contains(step.Detail, "already adds") {
-				t.Fatalf("detail=%q", step.Detail)
+			if step.Detail.ID != "setup.detail.shell_path_external" {
+				t.Fatalf("detail=%+v", step.Detail)
 			}
 		})
 	}
@@ -90,7 +90,7 @@ func TestShellPathIgnoresTheProcessPathWhenTheStartupFileHasNoLine(t *testing.T)
 	if step.State != StateAbsent {
 		t.Fatalf("exported but not persisted=%+v", step)
 	}
-	if !strings.Contains(strings.Join(step.Reasons, " "), "on PATH in this session") {
+	if !hasMessageID(step.Reasons, "setup.reason.path_session_only") {
 		t.Fatalf("reasons=%v", step.Reasons)
 	}
 }
@@ -119,7 +119,7 @@ func TestShellPathRefusesUnknownShellsAndManagedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	step := collectShellPath()
-	if step.State != StateUnknown || len(step.Options) != 0 || !strings.Contains(strings.Join(step.Reasons, " "), "symlink") {
+	if step.State != StateUnknown || len(step.Options) != 0 || !hasMessageID(step.Reasons, "setup.reason.startup_symlink") {
 		t.Fatalf("symlinked startup file=%+v", step)
 	}
 	if _, err := Apply(context.Background(), fixture.options(), Step{ID: stepShellPath}, ActionInstall, ""); err == nil {
@@ -153,7 +153,7 @@ func TestShellPathRefusesAnUnterminatedBlock(t *testing.T) {
 	if step.State != StateUnknown || len(step.Options) != 0 {
 		t.Fatalf("unterminated block=%+v", step)
 	}
-	if !strings.Contains(strings.Join(step.Reasons, " "), shellBlockEnd) {
+	if !strings.Contains(englishJoin(step.Reasons), shellBlockEnd) {
 		t.Fatalf("reasons=%v", step.Reasons)
 	}
 	for _, action := range []Action{ActionUpdate, ActionRemove} {

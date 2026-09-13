@@ -8,8 +8,9 @@ package setup
 
 import (
 	"context"
-	"fmt"
 	"slices"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // Action は 1 つの項目に対して選べる操作である。
@@ -45,14 +46,18 @@ const (
 	StateNotApplicable State = "not_applicable"
 )
 
-// Step は wx setup が提示する 1 項目である。
-// Options が空の項目は質問せず、Detail と Reasons だけを見せて次へ進む。
+// Step は wx setup が提示する 1 項目である。Options が空の項目は質問せず、Detail と Reasons だけを見せて次へ進む。
+// Title・Detail・Reasons は解決前の message で持つ。表示言語は描画する側が決めるため、
+// この package は訳文も、言語ごとに組み立てた文字列も持たない。
 type Step struct {
-	ID      string
-	Title   string
-	State   State
-	Detail  string
-	Reasons []string
+	ID    string
+	Title i18n.Message
+	State State
+	// Summary は表の 1 行に収める要約、Detail は何のための項目かという説明である。
+	// 表と選択画面では読み手に使える幅が違うので、片方を切り詰めて共有しない。
+	Summary i18n.Message
+	Detail  i18n.Message
+	Reasons []i18n.Message
 	Target  string
 	Current string
 	Desired string
@@ -127,7 +132,7 @@ func CollectStep(ctx context.Context, options Options, id string) (Step, error) 
 			return step, nil
 		}
 	}
-	return Step{}, fmt.Errorf("unknown setup step %q", id)
+	return Step{}, i18n.NewError("setup.error.unknown_step", map[string]any{"Item": id})
 }
 
 // Pending は対応が要る項目、つまり absent または divergent の項目があるかを返す。
@@ -157,23 +162,23 @@ func Divergent(steps []Step) []Step {
 
 // Apply は選ばれた操作を適用する。value は値の入力を伴う項目でだけ使う。
 // keep と skip は何もしないので、呼び出し側は結果だけを見ればよい。
-// note は利用者へ見せる 1 行の補足で、書き換えた実体や控えの path のように差分から読み取れない事実を返す。
-func Apply(ctx context.Context, options Options, step Step, action Action, value string) (note string, err error) {
+// note は利用者へ見せる 1 行の補足を解決前の message で返し、書き換えた実体や控えの path のように差分から読み取れない事実を伝える。
+func Apply(ctx context.Context, options Options, step Step, action Action, value string) (note i18n.Message, err error) {
 	if action == ActionKeep || action == ActionSkip {
-		return "", nil
+		return i18n.Message{}, nil
 	}
 	switch step.ID {
 	case stepWorktreeRoot:
-		return "", applyWorktreeRoot(ctx, options, step, action, value)
+		return i18n.Message{}, applyWorktreeRoot(ctx, options, step, action, value)
 	case stepShellPath:
-		return "", applyShellPath(step, action)
+		return i18n.Message{}, applyShellPath(step, action)
 	case stepLaunchAgent:
-		return "", applyLaunchAgent(ctx, options, action)
+		return i18n.Message{}, applyLaunchAgent(ctx, options, action)
 	case stepHooksClaude, stepHooksCodex:
 		return applyHooks(step, action)
 	case stepDaemon:
-		return "", applyDaemon(ctx, options, action)
+		return i18n.Message{}, applyDaemon(ctx, options, action)
 	default:
-		return "", fmt.Errorf("setup step %q cannot be applied", step.ID)
+		return i18n.Message{}, i18n.NewError("setup.error.step_not_apply", map[string]any{"Item": step.ID})
 	}
 }

@@ -178,7 +178,7 @@ func TestInspectDocumentRequiresEachConfiguredEvent(t *testing.T) {
 // 受理判定の本番経路をそのまま呼び、テスト側で bool へ畳む。
 func documentMatchesEvery(t *testing.T, data string, required map[string]string, executable string) bool {
 	t.Helper()
-	report := inspectDocument([]byte(data), required, executable)
+	report := inspectDocument("settings.json", []byte(data), required, executable)
 	if report.blocked {
 		return false
 	}

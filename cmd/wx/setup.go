@@ -70,7 +70,7 @@ func runSetup(ctx context.Context, args []string) int {
 			// --update は install.sh から自動起動されるため、対応が要ることを伝えるだけにとどめる。
 			return reportSetupUpdateWithoutTerminal(ctx, options, os.Stderr)
 		}
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
+		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", i18n.LocalizeError(err, i18n.LanguageFromContext(ctx)))
 		fmt.Fprintln(os.Stderr, i18n.T(ctx, "setup.check_hint", nil))
 		return 1
 	}
@@ -110,8 +110,8 @@ func setupLanguageUnset() (bool, error) {
 func selectSetupLanguage(ctx context.Context, session setupSession) (i18n.Language, error) {
 	step := setup.Step{
 		ID:      "language",
-		Title:   i18n.T(ctx, "setup.display_language.title", nil),
-		Detail:  i18n.T(ctx, "wx.setup.language_detail", nil),
+		Title:   i18n.Message{ID: "setup.display_language.title"},
+		Detail:  i18n.Message{ID: "wx.setup.language_detail"},
 		Options: []setup.Action{setup.Action(i18n.English), setup.Action(i18n.Japanese)},
 		Default: setup.Action(i18n.English),
 	}
@@ -184,7 +184,7 @@ func runSetupItem(ctx context.Context, options setup.Options, id string, action 
 		return 1
 	}
 	printSetupApplied(out, step, action)
-	printSetupNote(out, note)
+	printSetupNote(out, lang, note)
 	if applied, collectErr := setup.CollectStep(ctx, options, id); collectErr == nil {
 		printSetupWarnings(errOut, id, action, applied)
 	}
@@ -276,7 +276,7 @@ func interactiveSetupSession(ctx context.Context, out, errOut io.Writer) (setupS
 	}
 	if !setupIsTerminal(int(input.Fd())) {
 		closeInput()
-		return setupSession{}, nil, errors.New("wx setup needs a terminal for its questions")
+		return setupSession{}, nil, i18n.NewError("setup.needs_terminal", nil)
 	}
 	reader := bufio.NewReader(input)
 	session := setupSession{
@@ -292,12 +292,17 @@ func interactiveSetupSession(ctx context.Context, out, errOut io.Writer) (setupS
 
 // selectSetupAction は 1 項目の選択肢を TUI で出す。TUI は stderr へ書き、結果行と要約は stdout に残す。
 func selectSetupAction(ctx context.Context, input io.Reader, errOut io.Writer, step setup.Step) (setup.Action, error) {
-	selection := tui.Selection{Title: step.Title, Description: setupStepDescription(step), Language: string(i18n.LanguageFromContext(ctx))}
+	localizer := i18n.New(string(i18n.LanguageFromContext(ctx)))
+	selection := tui.Selection{
+		Title:       localizer.Message(step.Title),
+		Description: setupStepDescription(localizer, step),
+		Language:    string(i18n.LanguageFromContext(ctx)),
+	}
 	for index, option := range step.Options {
 		if option == step.Default {
 			selection.Initial = index
 		}
-		label := string(option)
+		label := setupActionLabel(localizer, option)
 		if step.ID == "language" {
 			if option == setup.Action(i18n.English) {
 				label = i18n.T(ctx, "setup.display_language.english", nil)
@@ -306,7 +311,7 @@ func selectSetupAction(ctx context.Context, input io.Reader, errOut io.Writer, s
 			}
 		}
 		selection.Options = append(selection.Options, tui.Option{
-			Value: string(option), Label: label, Description: setupActionDescription(step, option),
+			Value: string(option), Label: label, Description: setupActionDescription(localizer, step, option),
 		})
 	}
 	answer, err := tui.Select(ctx, input, errOut, selection)
@@ -339,8 +344,11 @@ func runSetupCheck(ctx context.Context, options setup.Options, jsonOut bool, out
 // 削除は 1 項目の失敗で打ち切らない。途中で止めると、残った項目を消す手段が利用者に残らない。
 func runSetupRemove(ctx context.Context, options setup.Options, out, errOut io.Writer) int {
 	ctx = commandContext(ctx)
+	// 表示言語は削除の前に確定させる。Remove が config.yaml を消すため、後から読むと
+	// 設定していた言語を失い、結果だけが英語で出る。
+	lang := i18n.LanguageFromContext(ctx)
 	removal := setup.Remove(ctx, options)
-	printSetupRemoval(out, errOut, removal)
+	printSetupRemoval(out, errOut, lang, removal)
 	if removal.Failed() {
 		return 1
 	}
@@ -386,7 +394,7 @@ func runSetupUpdate(ctx context.Context, options setup.Options, session setupSes
 	}
 	failed := false
 	for _, step := range divergent {
-		if applySetupStep(ctx, options, session, localizeSetupStep(step, i18n.New(string(i18n.LanguageFromContext(ctx))))) == setupOutcomeFailed {
+		if applySetupStep(ctx, options, session, step) == setupOutcomeFailed {
 			failed = true
 		}
 	}
@@ -405,7 +413,7 @@ func runSetupInteractive(ctx context.Context, options setup.Options, session set
 	}
 	failed := false
 	for _, step := range steps {
-		switch applySetupStep(ctx, options, session, localizeSetupStep(step, i18n.New(string(i18n.LanguageFromContext(ctx))))) {
+		switch applySetupStep(ctx, options, session, step) {
 		case setupOutcomeCancelled:
 			// 各項目は個別に冪等で再実行できるため巻き戻さない。適用済みを残したまま案内だけを出す。
 			_, _ = fmt.Fprintln(session.out, i18n.T(ctx, "setup.cancelled", nil))
@@ -464,7 +472,7 @@ func applySetupStep(ctx context.Context, options setup.Options, session setupSes
 		return setupOutcomeFailed
 	}
 	printSetupApplied(session.out, step, action)
-	printSetupNote(session.out, note)
+	printSetupNote(session.out, i18n.LanguageFromContext(ctx), note)
 	if applied, err := setup.CollectStep(ctx, options, step.ID); err == nil {
 		printSetupWarnings(session.errOut, step.ID, action, applied)
 	}
