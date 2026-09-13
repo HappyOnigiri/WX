@@ -215,7 +215,7 @@ type Storage struct {
 type Pool struct {
 	WarmPerWorkspace int `yaml:"warm_per_workspace,omitempty"`
 	// PreparationConcurrency は利用者が完了を待つ準備・復元・保存の同時実行数である。
-	// 待機枠の補充と自動削除はこの枠を使わず、別に確保した保守枠で動く（maintenanceJobSlots 本）。
+	// 待機枠の補充と自動削除はこの枠を使わず、internal/daemon の maintenanceJobSlots 本の保守枠で動く。
 	PreparationConcurrency int `yaml:"preparation_concurrency,omitempty"`
 }
 type Retention struct {

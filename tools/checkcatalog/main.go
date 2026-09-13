@@ -142,9 +142,12 @@ func validateReferences(root string) error {
 	return nil
 }
 
-// messageHelpers は message ID を第 1 引数 `id string` に取る package 内ヘルパの名前を集める。
-// 名前だけで判定すると、別 package の同名関数（message(format string, ...)）を
-// 未知 ID として誤検知する。宣言の形まで見て、同じ package のものだけを対象にする。
+// messageHelpers は message ID を第 1 引数に取る package 内ヘルパの名前を集める。
+// 名前だけで判定すると、別 package の同名関数（message(format string, ...) string）を
+// 未知 ID として誤検知する。同じ package にあること、第 1 引数が string であること、
+// 戻り値が i18n.Message か error であることまで見て対象を決める。
+// 引数名は条件にしない。名前の変更で検査が黙って無効になる。
+// commentlint:allow-long -- 誤検知を避ける条件と、引数名を条件にしない理由の両方が判定の根拠である
 func messageHelpers(fset *token.FileSet, directory string) (map[string]bool, error) {
 	packages, err := parser.ParseDir(fset, directory, nil, 0)
 	if err != nil {
@@ -164,9 +167,6 @@ func messageHelpers(fset *token.FileSet, directory string) (map[string]bool, err
 					continue
 				}
 				first := function.Type.Params.List[0]
-				if len(first.Names) != 1 || first.Names[0].Name != "id" {
-					continue
-				}
 				if ident, ok := first.Type.(*ast.Ident); !ok || ident.Name != "string" {
 					continue
 				}
@@ -187,6 +187,10 @@ func messageLiteralProblems(fset *token.FileSet, known map[string]i18n.Entry, co
 	if elementType, ok := messageContainer(composite.Type); ok {
 		var problems []string
 		for _, element := range composite.Elts {
+			// map と index 付きの要素は KeyValueExpr になる。値だけが message である。
+			if pair, ok := element.(*ast.KeyValueExpr); ok {
+				element = pair.Value
+			}
 			inner, ok := element.(*ast.CompositeLit)
 			if !ok {
 				continue
@@ -216,8 +220,7 @@ func messageLiteralProblems(fset *token.FileSet, known map[string]i18n.Entry, co
 }
 
 // returnsMessageOrError は宣言の最初の戻り値が i18n.Message か error かを返す。
-// 第 1 引数の名前だけで判定すると、message(id string) string のような別用途の
-// ヘルパまで message ID の生成経路として扱ってしまう。
+// これが対象を絞る主な条件で、message(id string) string のような別用途のヘルパを外す。
 func returnsMessageOrError(function *ast.FuncDecl) bool {
 	if function.Type.Results == nil || len(function.Type.Results.List) == 0 {
 		return false
@@ -242,16 +245,22 @@ func isMessageType(expression ast.Expr) bool {
 
 // messageContainer は i18n.Message を要素に持つ slice・array・map なら、その要素型を返す。
 // 要素の型は複合リテラルで省略できるため、要素へ降りるときに補う必要がある。
+// 入れ子のコンテナも受けるので、[][]i18n.Message のような形でも要素まで辿れる。
 func messageContainer(expression ast.Expr) (ast.Expr, bool) {
+	var element ast.Expr
 	switch container := expression.(type) {
 	case *ast.ArrayType:
-		if isMessageType(container.Elt) {
-			return container.Elt, true
-		}
+		element = container.Elt
 	case *ast.MapType:
-		if isMessageType(container.Value) {
-			return container.Value, true
-		}
+		element = container.Value
+	default:
+		return nil, false
+	}
+	if isMessageType(element) {
+		return element, true
+	}
+	if _, ok := messageContainer(element); ok {
+		return element, true
 	}
 	return nil, false
 }
