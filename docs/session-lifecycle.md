@@ -59,6 +59,10 @@
    hookが個人版の設定や認証情報をslotごとに置き換える運用ではこれらのflagが常時立つため、clean短絡が効かなくなる。
    flag付きpathへの編集は保存されないが、両flagは「このファイルのローカル差分を見ない」という宣言なので、その責任は立てた側にある。
 
+   sparse範囲外に現れた実体は、このflag方針の例外としてsnapshotに含める。
+   範囲外のtracked pathは実体を持たないので編集しようがなく、保存されるのは範囲外に新しく作られたものだけで、flag付きpathの扱いとは競合しない。
+   resumeはsparse条件を保ったまま戻すので、範囲外でもHEADと差の無いpathは実体を持たないままになる。
+
 6. **再開** — `wx resume`、`claude --resume`、`codex resume`、`codex exec resume`はclientがagent session IDを解決し、`Resume`または`ResolveAndLease`へ合流させる。
    選択した会話と明示的な`wx resume <wx-session-id>`は同じRESTORE経路を使う。
 
@@ -94,6 +98,10 @@
    外すとgitがflag付きの実ファイルをtreeの内容で上書きし、hookが置いたslot側の個人設定を失う。
    snapshotがflag付きpathをHEADの内容で記録しているためentryは一致し、flagを保ったままの`read-tree --reset -u`も拒否されない。
    ただし`assume-unchanged`の実ファイルは、flagを保っていても`read-tree --reset -u`がtreeの内容で書き戻す（git側の仕様でwxからは防げない）。
+
+   sparse範囲外の作業だけは、flagを外して実体を書き出す。
+   対象はsnapshotのworktree treeがHEADと差を持つpathに限るので、範囲外でも作業の無いpathはflagを保ち実体を持たない。
+   書き出せるのはindexがsnapshotのworktree treeを指す間だけなので、2本の`read-tree`の間で行う。
 
 貸出からsnapshot・復元までGit状態が保たれることは、`internal/daemon`の[`TestLeaseArchiveAndRestorePreservesGitState`](../internal/daemon/resume_integration_test.go)が固定している。
 

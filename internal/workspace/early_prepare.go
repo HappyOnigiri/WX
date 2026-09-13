@@ -147,7 +147,11 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 	if _, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "read-tree", item.OID); err != nil {
 		return err
 	}
-	result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "ls-files", "--stage", "-z")
+	if err := p.applySparseCheckout(ctx, item); err != nil {
+		return err
+	}
+	// -v は各 entry の先頭に tag を足す。tag を読んで sparse 範囲外を除いたうえで、後続の判定は tag 抜きの 3 field で行う。
+	result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "ls-files", "--stage", "-v", "-z")
 	if err != nil {
 		return err
 	}
@@ -159,8 +163,16 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 		}
 		metadata, path, ok := strings.Cut(entry, "\t")
 		fields := strings.Fields(metadata)
-		if !ok || len(fields) != 3 {
+		if !ok || len(fields) != 4 {
 			return fmt.Errorf("invalid index entry")
+		}
+		tag := fields[0]
+		fields = fields[1:]
+		// skip-worktree が立つのは sparse 範囲外の path である。plan から除くことで展開・CoW 配置・
+		// placement 記録・include の上書き判定がまとめて範囲内だけを見る。範囲外を checkout-index へ
+		// 渡すと git が exit 1 にし、その時点までの path を書き出したまま準備が失敗する。
+		if tag == "S" || tag == "s" {
+			continue
 		}
 		if fields[0] == "160000" {
 			item.plan.gitlinks = append(item.plan.gitlinks, path)
@@ -195,6 +207,24 @@ func (p *Preparer) buildEarlyPlan(ctx context.Context, item *stagedRepository) e
 	item.plan.copies = copies
 	item.plan.split(p.Config.ReadinessForWorkspaceRepository(p.workspaceRootForRepository(item.Repository), item.Repository.RelativePath, string(item.Repository.MainPath)).EarlyPaths)
 	return nil
+}
+
+// applySparseCheckout は read-tree が作った index へ、worktree が受け継いだ sparse 条件を反映する。
+// `git worktree add` は sparse の設定自体を複製するが、プレーンな read-tree は条件を適用しないため、
+// この一手を挟まないと設定と index が食い違ったまま範囲外まで展開される。
+// reapply は範囲外の実体を削除するので、worktree がまだ空である read-tree 直後にだけ呼べる。
+// sparse でない repository では reapply が失敗するため、事前に config で切り分ける。
+// commentlint:allow-long -- 呼ぶ位置を誤ると範囲外の実体を消すため、前提と制約を明示する
+func (p *Preparer) applySparseCheckout(ctx context.Context, item *stagedRepository) error {
+	enabled, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "config", "--default", "false", "--type=bool", "--get", "core.sparseCheckout")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(enabled.Stdout) != "true" {
+		return nil
+	}
+	_, err = p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "sparse-checkout", "reapply")
+	return err
 }
 
 // checkoutStage は plan のうち early 区分が一致する tracked path を展開する。

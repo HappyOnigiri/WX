@@ -40,6 +40,29 @@ func (f indexFlags) retain(paths []string) []string {
 	return kept
 }
 
+// without は、指定 path の flag を落とした写しを返す。
+// 実体を worktree へ書き出した path は、以後 index ではなく worktree の内容が正になるため、
+// 採取時の flag を立て直すと内容が HEAD へ巻き戻り、snapshot との照合も合わなくなる。
+func (f indexFlags) without(paths []string) indexFlags {
+	if len(paths) == 0 {
+		return f
+	}
+	removed := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		removed[path] = struct{}{}
+	}
+	keep := func(list []string) []string {
+		kept := make([]string, 0, len(list))
+		for _, path := range list {
+			if _, dropped := removed[path]; !dropped {
+				kept = append(kept, path)
+			}
+		}
+		return kept
+	}
+	return indexFlags{skipWorktree: keep(f.skipWorktree), assumeUnchanged: keep(f.assumeUnchanged), flaggedPaths: keep(f.flaggedPaths), paths: f.paths}
+}
+
 // parseIndexFlags は `git ls-files -v -z` の `<tag><SP><path>\0` 列を解析する。
 // tag の 'S' は skip-worktree、小文字は assume-unchanged を表し、's' は両方が立っている状態である。
 func parseIndexFlags(listing string) indexFlags {
@@ -91,6 +114,40 @@ func nulPathList(paths []string) []byte {
 		builder.WriteByte(0)
 	}
 	return []byte(builder.String())
+}
+
+// materializeSkipped は、渡した path のうち index で skip-worktree が立つものを worktree へ書き出し、書き出した path を返す。
+// sparse 範囲外で行った作業を restore で戻すために使い、内容は呼び出し時点の index から取る。
+// checkout-index は skip-worktree 付きの path を渡されると、それ以前の path を書き出したうえで失敗するため先に flag を外す。
+// commentlint:allow-long -- flag を外してから書き出す順序が入れ替えられない理由を説明する
+func materializeSkipped(run gitRunFunc, value gitValueFunc, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	current, err := readIndexFlags(value, nil)
+	if err != nil {
+		return nil, err
+	}
+	skipped := make(map[string]struct{}, len(current.skipWorktree))
+	for _, path := range current.skipWorktree {
+		skipped[path] = struct{}{}
+	}
+	targets := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, ok := skipped[path]; ok {
+			targets = append(targets, path)
+		}
+	}
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	if _, err := run(nil, nulPathList(targets), "update-index", "-z", "--no-skip-worktree", "--stdin"); err != nil {
+		return nil, fmt.Errorf("clear skip-worktree before materializing: %w", err)
+	}
+	if _, err := run(nil, nulPathList(targets), "checkout-index", "-f", "-z", "--stdin"); err != nil {
+		return nil, fmt.Errorf("materialize paths outside the sparse cone: %w", err)
+	}
+	return targets, nil
 }
 
 // applyIndexFlags は env が指す index へ、採取時と同じ path の flag を立てる。

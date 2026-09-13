@@ -60,6 +60,13 @@ func (m *Manager) SnapshotWithPersistence(ctx context.Context, repo discovery.Re
 	return snapshot, nil
 }
 
+// addWorktreeArgs は、一時 index へ worktree の現状を取り込む add の引数を返す。
+// --sparse が無いと sparse 範囲外に実体があるだけで add が逸脱として失敗し、そこでの作業を保存できない。
+// skip-worktree 付きの path は --sparse でも HEAD の内容のまま残るため、flag 付き path を外す方針と競合しない。
+func addWorktreeArgs() []string {
+	return []string{"add", "-A", "--sparse"}
+}
+
 func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository, worktree, sessionID string, expiry time.Time) (state.Snapshot, error) {
 	if m.Preparer == nil {
 		return state.Snapshot{}, errors.New("snapshot requires a workspace preparer")
@@ -131,7 +138,7 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if err := applyIndexFlags(worktreeRun, worktreeValue, env, flags); err != nil {
 		return state.Snapshot{}, err
 	}
-	if _, err := worktreeRun(env, nil, "add", "-A"); err != nil {
+	if _, err := worktreeRun(env, nil, addWorktreeArgs()...); err != nil {
 		return state.Snapshot{}, err
 	}
 	worktreeTree, err := worktreeValue(env, "write-tree")
