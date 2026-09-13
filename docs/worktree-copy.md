@@ -168,6 +168,12 @@ post-checkoutは経路を問わず、全tracked fileの配置後、include/link�
 そのため`git worktree add`はどの経路でもcheckoutさせない（`--no-checkout`はindexも空にするので展開は必ずwxが行う）。
 復元・単発準備の展開だけは`core.hooksPath=/dev/null`付きの`checkout`で行い、その1コマンドの間はreference-transactionを含む他のhookも動かない。
 
+sparse-checkoutを設定したリポジトリでは、`git worktree add`が設定自体を新しいworktreeへ複製する。
+展開もこれに従い、通常の`git worktree add`と同じpath集合だけを実体化する。
+条件の解釈はwxが持たず、indexへ反映したうえでskip-worktreeが立ったpathを展開対象から外す。
+この除外はCoW配置・配置履歴・includeの上書き判定にも同じ起点から効く。
+通常準備の`read-tree`は条件を適用しないため反映が要るのに対し、復元・単発準備の`checkout`はGitが条件を見るので追加の処理を持たない。
+
 先行配置した未追跡ファイルに`.gitattributes`がある回だけ、checkoutの属性を要求OIDから読み、後段のfilterが変わることを防ぐ。
 無い回に読み直さないのは、worktree上の`.gitattributes`が既に要求OIDの内容と一致し、treeからの属性再読込が大きなリポジトリではcheckout全体を目に見えて遅らせるためである。
 この回はcheckoutと配置後のtracked検査が違う属性を見るため、配置方式を使わず置換方式へ共有を任せる。

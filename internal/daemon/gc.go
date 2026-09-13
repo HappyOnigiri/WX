@@ -122,6 +122,11 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		progress.addFailed("ended worktrees", "ended worktree candidate query failed", err)
 		return progress.GCResult, progress.err()
 	}
+	protected, err := m.store.ProtectedGCCandidates(ctx, endedFloor, endedBefore)
+	if err != nil {
+		progress.addFailed("ended worktrees", "protected ended worktree query failed", err)
+		return progress.GCResult, progress.err()
+	}
 	standbys, err := m.store.StandbyGCCandidates(ctx, warmFor)
 	if err != nil {
 		progress.addFailed("standby worktrees", "standby candidate query failed", err)
@@ -166,7 +171,8 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 			totalCold++
 		}
 	}
-	progress.Candidates = metadataCount + len(items) + len(standbys) + len(quarantined) + len(expiredSessions) + totalCold
+	// 保護中の slot も候補には数える。保持期限は過ぎており、数から消すと回収されない理由を読む手掛かりが無くなる。
+	progress.Candidates = metadataCount + len(items) + len(protected) + len(standbys) + len(quarantined) + len(expiredSessions) + totalCold
 	if dry {
 		// dry-run は状態を変更せず、候補が処理されずに残る見込みを pending として報告する。
 		progress.Pending = progress.Candidates
@@ -180,6 +186,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 	progress.merge(m.scheduleColdRepositoryRemovals(ctx, cold, wholeSlotRemoval))
 	progress.merge(m.scheduleStandbyRemovals(ctx, standbys))
 	progress.merge(m.scheduleEndedWorktreeRemovals(ctx, items))
+	progress.merge(reportProtectedWorktrees(protected))
 	progress.merge(m.scheduleQuarantinedRemovals(ctx, quarantined))
 	archiveManager := m.newArchiveManager(cfg, state.Slot{})
 	progress.merge(m.expireWorkspaceSnapshots(ctx, expiredSessions, &archiveManager))
@@ -235,6 +242,16 @@ func (m *Manager) scheduleStandbyRemovals(ctx context.Context, candidates []stat
 	progress := newGCProgress()
 	for _, candidate := range candidates {
 		progress.merge(m.scheduleRemovalCandidate(ctx, candidate.SlotID, candidate.Path, "", "standby removal scheduling failed"))
+	}
+	return progress
+}
+
+// reportProtectedWorktrees は、未保全の submodule 作業のために残した終了 worktree を保留として報告する。
+// 削除は予約しない。回収の出口は利用者が明示するコマンドだけである。
+func reportProtectedWorktrees(candidates []state.GCCandidate) gcProgress {
+	progress := newGCProgress()
+	for _, candidate := range candidates {
+		progress.addPending("worktree "+candidate.SlotID, "submodule work is not snapshotted; run wx doctor for the details, or wx clear --discard to delete it anyway", nil)
 	}
 	return progress
 }

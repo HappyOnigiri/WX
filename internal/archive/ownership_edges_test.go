@@ -154,7 +154,7 @@ func TestArchiveGitValueAndRestorePreconditions(t *testing.T) {
 	if _, err := manager.gitValue(context.Background(), repository, nil, "rev-parse", "not-a-ref"); err == nil {
 		t.Fatal("invalid Git value succeeded")
 	}
-	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "precondition", time.Now().Add(time.Hour), nil)
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "precondition", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestRestoreRevalidatesOwnershipAtHandoffs(t *testing.T) {
 func restoreWithFailingOwnership(t *testing.T, slotID string, failAt int) (int, error) {
 	t.Helper()
 	repository, repo, manager, worktreeRoot := archiveFixture(t)
-	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

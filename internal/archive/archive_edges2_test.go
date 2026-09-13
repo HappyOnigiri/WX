@@ -18,7 +18,7 @@ func TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase(t *testing.T
 		repository, repo, manager, _ := archiveFixture(t)
 		installGitFault(t, " rev-parse HEAD ", 1)
 		persistCalled := false
-		if _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "capture-failure", time.Now().Add(time.Hour), func(state.Snapshot) error {
+		if _, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "capture-failure", time.Now().Add(time.Hour), func(state.Snapshot) error {
 			persistCalled = true
 			return nil
 		}); err == nil {
@@ -33,7 +33,7 @@ func TestSnapshotWithPersistencePropagatesFailuresInEachLockedPhase(t *testing.T
 		repository, repo, manager, _ := archiveFixture(t)
 		installGitFault(t, " update-ref --create-reflog ", 1)
 		persistCalled := false
-		if _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "publish-failure", time.Now().Add(time.Hour), func(state.Snapshot) error {
+		if _, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "publish-failure", time.Now().Add(time.Hour), func(state.Snapshot) error {
 			persistCalled = true
 			return nil
 		}); err == nil {
@@ -58,14 +58,14 @@ func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T)
 			t.Fatal(err)
 		}
 		t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
-		if _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "tmp-failure", time.Now().Add(time.Hour), nil); err == nil || !strings.Contains(err.Error(), "temporary snapshot index") {
+		if _, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "tmp-failure", time.Now().Add(time.Hour), nil); err == nil || !strings.Contains(err.Error(), "temporary snapshot index") {
 			t.Fatalf("snapshot succeeded despite an unusable TMPDIR: %v", err)
 		}
 	})
 
 	t.Run("restore temporary index", func(t *testing.T) {
 		repository, repo, manager, worktreeRoot := archiveFixture(t)
-		snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
+		snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +82,7 @@ func TestSnapshotAndRestorePropagateTemporaryIndexCreationFailures(t *testing.T)
 // ref 検証は lock 取得後の一度だけなので、最初の該当呼出しがその検証になる。
 func TestRestorePropagatesRelockedRecoveryRefVerificationFailure(t *testing.T) {
 	repository, repo, manager, worktreeRoot := archiveFixture(t)
-	snapshot, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "source", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

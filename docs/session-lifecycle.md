@@ -55,9 +55,18 @@
 
    refの公開はDB行の永続化の後に行う。逆順だと、reconcileから見て正常なアーカイブが素性不明のrefに見える窓が開く。
 
+   停止中rebaseの進行情報はtreeにもindexにも現れないため、worktree専用gitdirの制御ファイルを別のrefで保存する。
+   ファイル内容を持つtreeと、復元後のHEADから到達できないcommit（`orig-head`・`onto`・`stopped-sha`など）を親に並べたcommitを1本作り、他のrecovery refと同じ経路で保護・回収する。
+   `rebase -i`のedit停止はworking treeがcleanなので、この保存はclean短絡の側でも行う。
+   未解消indexを伴う停止（conflict停止）は対象外で、従来どおり`write-tree`の失敗として隔離する。
+
    indexに`skip-worktree`か`assume-unchanged`が付いたpathはsnapshotの対象外で、HEADの内容として記録する（[所有権証明](ownership.md)）。
    hookが個人版の設定や認証情報をslotごとに置き換える運用ではこれらのflagが常時立つため、clean短絡が効かなくなる。
    flag付きpathへの編集は保存されないが、両flagは「このファイルのローカル差分を見ない」という宣言なので、その責任は立てた側にある。
+
+   sparse範囲外に現れた実体は、このflag方針の例外としてsnapshotに含める。
+   範囲外のtracked pathは実体を持たないので編集しようがなく、保存されるのは範囲外に新しく作られたものだけで、flag付きpathの扱いとは競合しない。
+   resumeはsparse条件を保ったまま戻すので、範囲外でもHEADと差の無いpathは実体を持たないままになる。
 
 6. **再開** — `wx resume`、`claude --resume`、`codex resume`、`codex exec resume`はclientがagent session IDを解決し、`Resume`または`ResolveAndLease`へ合流させる。
    選択した会話と明示的な`wx resume <wx-session-id>`は同じRESTORE経路を使う。
@@ -87,6 +96,10 @@
 
    ネイティブresumeは遅延バインドや`_unbound` slotを新規生成せず、clientが準備完了を前面で待ってから起動する。
 
+   停止中rebaseの制御ファイルは、HEAD・index・worktreeの一致検証をすべて終えた最後に書き戻す。
+   先に書くと、その後に走るresume prepareとtree一致検証がrebase中のリポジトリを相手にすることになる。
+   書き戻しの前には対象pathを必ず削除するので、再利用されたslotが前の貸出の進行情報を引き継がない。
+
    復元後のworktreeはtracked changesを含むため、貸出前の検査はcleanなworking treeを要求しない`ValidateOwnership`を使う。
    READY slotの再利用側は`ValidateReady`で、こちらはtracked cleanまで求める。
 
@@ -94,6 +107,10 @@
    外すとgitがflag付きの実ファイルをtreeの内容で上書きし、hookが置いたslot側の個人設定を失う。
    snapshotがflag付きpathをHEADの内容で記録しているためentryは一致し、flagを保ったままの`read-tree --reset -u`も拒否されない。
    ただし`assume-unchanged`の実ファイルは、flagを保っていても`read-tree --reset -u`がtreeの内容で書き戻す（git側の仕様でwxからは防げない）。
+
+   sparse範囲外の作業だけは、flagを外して実体を書き出す。
+   対象はsnapshotのworktree treeがHEADと差を持つpathに限るので、範囲外でも作業の無いpathはflagを保ち実体を持たない。
+   書き出せるのはindexがsnapshotのworktree treeを指す間だけなので、2本の`read-tree`の間で行う。
 
 貸出からsnapshot・復元までGit状態が保たれることは、`internal/daemon`の[`TestLeaseArchiveAndRestorePreservesGitState`](../internal/daemon/resume_integration_test.go)が固定している。
 

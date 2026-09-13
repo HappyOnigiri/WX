@@ -3,10 +3,12 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -40,6 +42,22 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 	// 正しさの根拠は reconcileExpiredLeases 側にあり、ここは待ち時間の最適化である。
 	m.releaseOrphanedChildLeases(ctx)
 	return nil
+}
+
+// snapshotRepository は repository 1 個を保存し、保存できなかった submodule 作業を記録用の形へ畳んで返す。
+// 理由コードは検出側が固定順で並べたものを `,` で連ね、DB へは 1 submodule 1 行として渡す。
+func (m *Manager) snapshotRepository(ctx context.Context, archiveManager *archive.Manager, repo discovery.Repository, worktree, sessionID string, expiry time.Time) ([]state.UnsavedSubmodule, error) {
+	_, unsaved, err := archiveManager.SnapshotWithPersistence(ctx, repo, worktree, sessionID, expiry, func(snapshot state.Snapshot) error {
+		return m.store.SaveSnapshot(ctx, snapshot)
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]state.UnsavedSubmodule, 0, len(unsaved))
+	for _, entry := range unsaved {
+		out = append(out, state.UnsavedSubmodule{RepositoryID: string(repo.ID), Path: entry.Path, Reasons: strings.Join(entry.Reasons, ",")})
+	}
+	return out, nil
 }
 
 func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
@@ -81,13 +99,18 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 		if err != nil {
 			return err
 		}
-		_, err = archiveManager.SnapshotWithPersistence(ctx, repo, sr.WorktreePath, s.ID, expiry, func(snapshot state.Snapshot) error {
-			return m.store.SaveSnapshot(ctx, snapshot)
-		})
+		unsaved, err := m.snapshotRepository(ctx, &archiveManager, repo, sr.WorktreePath, s.ID, expiry)
 		if err != nil {
 			m.log.Error("snapshot failed", "session_id", s.ID, "repository_id", repo.ID, "error", err)
 			_ = m.store.SetSlotState(ctx, s.SlotID, []string{"SNAPSHOTTING"}, "QUARANTINED", "SNAPSHOT_FAILED")
 			return err
+		}
+		// 記録は MarkArchived より前に置く。順序が逆だと、SNAPSHOTTED へ移ってから記録するまでの間に GC が回収し得る。
+		if err := m.store.ReplaceUnsavedSubmodules(ctx, s.SlotID, string(repo.ID), unsaved); err != nil {
+			return err
+		}
+		if len(unsaved) > 0 {
+			m.log.Warn("submodule work could not be snapshotted, so the slot is kept out of automatic reclamation", "session_id", s.ID, "slot_id", s.SlotID, "repository_id", repo.ID, "submodules", len(unsaved))
 		}
 	}
 	workspaceKind, err := m.store.SessionWorkspaceKind(ctx, s.ID)

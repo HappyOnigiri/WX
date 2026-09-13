@@ -33,6 +33,7 @@ const (
 	CheckArtifactOwnership        = "artifact_ownership"
 	CheckRecoveryJobs             = "recovery_jobs"
 	CheckWorkspaceSnapshots       = "workspace_snapshots"
+	CheckUnsavedSubmodules        = "unsaved_submodules"
 )
 
 // daemonUnavailable は daemon の応答が無いために実施できない検査の原因である。
@@ -84,6 +85,7 @@ func StoreDependentChecks() []string {
 	return []string{
 		CheckSQLiteBackup, CheckWorktreeRootRegistration, CheckWorktreeRegistration,
 		CheckStandbyReplenishment, CheckArtifactOwnership, CheckRecoveryJobs, CheckWorkspaceSnapshots,
+		CheckUnsavedSubmodules,
 	}
 }
 

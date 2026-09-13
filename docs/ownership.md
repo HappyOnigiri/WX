@@ -13,6 +13,9 @@ leafがsymlinkの場合はリンク自体を削除し、リンク先へは踏み
 Gitのworktree削除が失敗しても、worktree管理ディレクトリの一括削除が同じ回収を担保するため、失敗経路にも個別削除を足さない。
 破壊的操作をpinしたroot descriptor配下に閉じる不変条件を、submoduleのために広げないためである。
 
+停止中rebaseの保存復元だけはworktree専用gitdirの制御ファイルを読み書きするため、そのgitdir自身をpinしたdescriptorを追加の書き込み境界として扱う。
+書き込みはこのdescriptor配下に閉じ、共有Gitディレクトリ本体と他worktreeのgitdirには触れない。
+
 ## 削除で失われる作業の保護
 
 正常終了の未保存作業はsnapshotで保護し、`--discard`が明示された場合だけ保存を省略する。
@@ -22,6 +25,12 @@ Gitのworktree削除が失敗しても、worktree管理ディレクトリの一�
 
 `skip-worktree`・`assume-unchanged`が付いたpathはsnapshotの対象から外す（記録のされ方は[セッションと復元](session-lifecycle.md)）。
 両flagが「このファイルのローカル差分を見ない」という宣言であり、hookが置いた個人設定や認証情報をsourceのrecovery objectに残さないためである。
+
+snapshotは親repositoryのHEAD・index・worktreeだけを保存するため、submodule側に残る作業は保存されない。
+返却時のsnapshotでそれを検出したslotは、終了worktreeの自動回収（GC）と`--discard`無しの`wx clear`の対象から外し、`wx doctor`が退避と削除の手順を出す。
+検出は未保存の事実が確定するsnapshot時に一度だけ行い、後から再判定して保護を解かない。
+判定できなかった場合も保護する側へ倒し、snapshot自体は成功させる（親の保存は済んでおり、ここで隔離するとresumeの手段まで失う）。
+削除の出口は`wx clear --discard`のように利用者が明示するコマンドだけとする。
 
 準備・復元失敗などの隔離slotは config v2 の `system.retention.quarantined` の経過後にGCが回収し、`wx clear`はこの経過を待たずに回収する。
 recovery refの欠損で隔離したsnapshot・sessionはGCが触らず、`wx discard-recovery`だけが破棄する（[daemonの補充と回収](daemon-maintenance.md)）。
