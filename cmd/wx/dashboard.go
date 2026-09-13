@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/cli"
 	"github.com/HappyOnigiri/WX/internal/config"
@@ -94,6 +95,11 @@ func updateReplacedBinary(before string, hadFingerprint bool, code int) bool {
 	return after != before
 }
 
+// updateStatusTimeout は確認結果の読み取りに与える上限である。
+// 読むのは state の1行だけで、これは状態画面が開くより前に同期で呼ばれる。
+// 使用量の集計まで含む statusDisplayTimeout を与えると、応答の遅い daemon で画面が長く出ない。
+const updateStatusTimeout = 2 * time.Second
+
 // dashboardUpdate は daemon が持つ確認結果を状態画面へ渡す。
 // daemon が古くて method を知らない場合も、応答が得られない場合も、更新なしとして静かに扱う。
 func dashboardUpdate(ctx context.Context) dashboard.UpdateInfo {
@@ -101,7 +107,7 @@ func dashboardUpdate(ctx context.Context) dashboard.UpdateInfo {
 	if err != nil {
 		return dashboard.UpdateInfo{}
 	}
-	callCtx, cancel := context.WithTimeout(ctx, statusDisplayTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, updateStatusTimeout)
 	defer cancel()
 	var status daemon.UpdateStatus
 	// 案内権は消費しない。状態画面の項目は常時表示で、対話起動の 1 回だけの案内とは役割が違う。
