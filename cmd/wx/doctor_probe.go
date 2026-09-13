@@ -61,7 +61,7 @@ func printProbeUsageLanguage(w io.Writer, probe diag.Probe, loc *i18n.Localizer)
 	case probe.Usage == diag.ProbeUsageMeasured && len(probe.Repositories) == 0:
 		printProbeField(w, loc, "doctor.probe.disk", loc.Localize("doctor.probe.no_repository", nil))
 	case probe.Usage != diag.ProbeUsageMeasured:
-		printProbeField(w, loc, "doctor.probe.disk", loc.Localize("doctor.probe.usage_incomplete", map[string]any{"State": string(probe.Usage)}))
+		printProbeField(w, loc, "doctor.probe.disk", loc.Localize("doctor.probe.usage_incomplete", map[string]any{"State": probe.Usage}))
 	}
 	exclusiveLabel := loc.Localize("doctor.probe.exclusive", nil)
 	sharedLabel := loc.Localize("doctor.probe.shared", nil)

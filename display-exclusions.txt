@@ -1,8 +1,8 @@
 # 正確な repository-relative path	exempt|backlog	理由
 # exempt は恒久的に対象外、backlog は描画時ローカライズへ移していない残務（警告として毎回報告される）。
 internal/i18n/catalog.go	exempt	The message catalog itself; this is where the Japanese text belongs.
+internal/i18n/catalog_help.go	exempt	The help part of the message catalog; this is where the Japanese text belongs.
 tools/checkcomments/main.go	exempt	Defines the full-width character range the comment-length check measures; not user-facing display.
 tools/checkdocsindex/main.go	exempt	Matches the Japanese heading and entry shape that AGENTS.md prescribes for docs/; not user-facing display.
 tools/checktests/main.go	exempt	Quotes the Japanese exemption-comment syntax the repository conventions define; not user-facing display.
-cmd/wx/localization_help.go	backlog	translateHelp still replaces substrings in rendered help output.
 internal/diag/localization.go	backlog	The diagnostics replacement table still rewrites rendered findings.

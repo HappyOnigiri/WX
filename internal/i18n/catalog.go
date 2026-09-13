@@ -26,9 +26,24 @@ type Entry struct {
 	JA string
 }
 
-// catalog は機能単位の短い表示文をまとめたもの。新しい ID を追加するときは
+// catalog は表示文の全体である。機能単位の短い文はここに置き、
+// 分量の大きい help 本文だけを catalog_help.go の helpCatalog へ分けている。
+var catalog = withHelpCatalog(baseCatalog)
+
+// withHelpCatalog は help 本文を合流させる。ID が重なれば起動前に気付けるよう panic する。
+func withHelpCatalog(base map[string]Entry) map[string]Entry {
+	for id, entry := range helpCatalog {
+		if _, duplicate := base[id]; duplicate {
+			panic("duplicate message id: " + id)
+		}
+		base[id] = entry
+	}
+	return base
+}
+
+// baseCatalog は機能単位の短い表示文をまとめたもの。新しい ID を追加するときは
 // 英語と日本語を同じブロックへ置き、ValidateCatalog が空欄を検出できるようにする。
-var catalog = map[string]Entry{
+var baseCatalog = map[string]Entry{
 	"common.error":                       {EN: "error", JA: "エラー"},
 	"common.saved":                       {EN: "saved and reloaded", JA: "保存して再読み込みしました"},
 	"common.saved_pending":               {EN: "saved; daemon reload pending", JA: "保存しました（daemon の再読み込み待ち）"},
@@ -345,11 +360,6 @@ var catalog = map[string]Entry{
 	"menu.daemon_restart.impact":         {EN: "Also activates an updated wx binary.", JA: "更新した wx バイナリも有効になります。"},
 	"config.language.description":        {EN: "Language used for human-readable CLI, TUI, and daemon messages.", JA: "CLI・TUI・daemon の人間向け表示に使う言語。"},
 	"config.language.impact":             {EN: "Changes display text only; JSON output remains in English.", JA: "表示だけを変更し、JSON 出力は英語のままです。"},
-	"help.usage":                         {EN: "Usage", JA: "使い方"},
-	"help.global_options":                {EN: "Global options:", JA: "全体オプション:"},
-	"help.commands":                      {EN: "Commands:", JA: "コマンド:"},
-	"help.show_help":                     {EN: "show help", JA: "ヘルプを表示"},
-	"help.show_version":                  {EN: "show version", JA: "バージョンを表示"},
 	// status.* は wx status の描画時ローカライズで使う。訳文には固定文だけを置き、
 	// path・ID・状態値・時刻・外部エラーはテンプレートのプレースホルダへ不透明値として渡す。
 	"status.section.additional":                 {EN: "Additional", JA: "追加情報"},
