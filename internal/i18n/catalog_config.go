@@ -51,7 +51,7 @@ var configCatalog = map[string]Entry{
 	"config.pool.warm_per_workspace.impact":      {EN: "More standbys mean faster launches and more disk in use. Zero turns automatic replenishment off.", JA: "多いほど起動は速くなり、ディスクの使用量は増えます。0 にすると自動補充を行いません。"},
 
 	"config.pool.preparation_concurrency.name":        {EN: "How many preparations run at once", JA: "同時に走る準備処理の数"},
-	"config.pool.preparation_concurrency.description": {EN: "The maximum number of preparation, restore, and save jobs the daemon runs at the same time.", JA: "daemon が同時に実行する準備・復元・保存ジョブの上限です。"},
+	"config.pool.preparation_concurrency.description": {EN: "How many preparation, restore, and save jobs a user is waiting on may run at the same time. Replenishing and reclaiming standby worktrees runs in its own slots and is not limited by this value.", JA: "利用者が完了を待つ準備・復元・保存を、同時に何本まで実行するかです。standby worktree の補充と回収は専用の枠で動くため、この値では止まりません。"},
 	"config.pool.preparation_concurrency.impact":      {EN: "A higher value finishes a queue sooner but puts more load on CPU and disk.", JA: "大きくすると待ち行列は早く片付きますが、CPU とディスクの負荷が上がります。"},
 
 	"config.retention.hot_standby.name":        {EN: "How long an unused standby stays ready", JA: "未使用 standby を保つ期間"},
@@ -131,7 +131,7 @@ var configCatalog = map[string]Entry{
 	"config.lease.shell.impact":      {EN: "Leave it empty to use the shell from the environment.", JA: "空にすると、環境の設定にあるシェルを使います。"},
 
 	"config.includes.default_agent_rules.name":        {EN: "Place the standard agent instruction files", JA: "標準のエージェント指示ファイルを配置する"},
-	"config.includes.default_agent_rules.description": {EN: "Whether the standard agent instruction files that Git does not track, such as CLAUDE.local.md, are copied from the workspace into the worktree. Tracked files arrive with the checkout and are unaffected.", JA: "CLAUDE.local.md のように Git が追跡しない標準のエージェント指示ファイルを、workspace から worktree へコピーするかどうかです。追跡されているファイルは checkout で入るため、この設定の対象外です。"},
+	"config.includes.default_agent_rules.description": {EN: "Whether the standard agent instruction files that Git does not track, such as CLAUDE.local.md, are copied from the source repository into the worktree. Tracked files arrive with the checkout and are unaffected.", JA: "CLAUDE.local.md のように Git が追跡しない標準のエージェント指示ファイルを、ソースリポジトリから worktree へコピーするかどうかです。追跡されているファイルは checkout で入るため、この設定の対象外です。"},
 	"config.includes.default_agent_rules.impact":      {EN: "When disabled, only the paths configured explicitly are placed.", JA: "無効にすると、明示的に設定した path だけを配置します。"},
 
 	"config.agent.add_dir.name":        {EN: "Extra directories given to the agent", JA: "エージェントへ渡す追加ディレクトリ"},
@@ -159,7 +159,7 @@ var configCatalog = map[string]Entry{
 	"config.copy.impact":      {EN: "Changes what a worktree contains, so the standby worktrees prepared from the old list are rebuilt.", JA: "worktree の内容が変わるため、古い一覧で用意した standby worktree は作り直しになります。"},
 
 	"config.link.name":        {EN: "Paths linked back to the workspace", JA: "workspace へリンクする path"},
-	"config.link.description": {EN: "Paths that are linked back to the workspace root instead of being copied, for large or shared content such as caches.", JA: "コピーではなく workspace root へリンクする path です。キャッシュのように大きい、または共有したい内容に使います。"},
+	"config.link.description": {EN: "Paths under a workspace root that is not a Git repository which are linked back to that root instead of being copied, for large or shared content such as caches.", JA: "Git リポジトリではない workspace root の下で、コピーではなくその root へリンクする path です。キャッシュのように大きい、または共有したい内容に使います。"},
 	"config.link.impact":      {EN: "Every worktree reads and writes the same content, so a change in one is seen by all of them.", JA: "どの worktree も同じ実体を読み書きするため、一方の変更が他方にも見えます。"},
 
 	"config.reuse_standby.name":        {EN: "Reuse standbys in this workspace", JA: "この workspace で standby を再利用する"},
