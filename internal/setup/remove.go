@@ -9,13 +9,14 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 )
 
 // RemoveResult は 1 項目の削除結果である。Note は消した実体や控えの path のように、項目名から読み取れない事実だけを持つ。
 type RemoveResult struct {
 	ID   string
-	Note string
+	Note i18n.Message
 	Err  error
 }
 
@@ -65,7 +66,7 @@ func removeHooks(agent string) RemoveResult {
 		return result
 	}
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		result.Note = "no hook configuration at " + path
+		result.Note = message("setup.note.no_hook_config", "Path", path)
 		return result
 	}
 	removed, err := hookconfig.Remove(agent)
@@ -88,18 +89,18 @@ func removeLaunchAgent(ctx context.Context, options Options) RemoveResult {
 		return result
 	}
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		result.Note = "no LaunchAgent at " + path
+		result.Note = message("setup.note.no_launch_agent", "Path", path)
 		return result
 	}
 	if options.UninstallLaunchAgent == nil {
-		result.Err = errors.New("removing the LaunchAgent is not available here")
+		result.Err = i18n.NewError("setup.error.launch_agent_remove_unavailable", nil)
 		return result
 	}
 	if err := options.UninstallLaunchAgent(ctx); err != nil {
 		result.Err = err
 		return result
 	}
-	result.Note = "removed " + path
+	result.Note = message("setup.note.removed", "Path", path)
 	return result
 }
 
@@ -114,7 +115,7 @@ func removeConfigFile() RemoveResult {
 	}
 	switch err := os.Remove(path); {
 	case err == nil:
-		result.Note = "deleted " + path
+		result.Note = message("setup.note.deleted", "Path", path)
 	case errors.Is(err, os.ErrNotExist):
 	default:
 		result.Err = err

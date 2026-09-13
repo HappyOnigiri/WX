@@ -121,6 +121,28 @@ func (m model) t(id string) string { return m.messages.Localize(id, nil) }
 // tf は値を差し込む固定文を解決する。
 func (m model) tf(id string, data any) string { return m.messages.Localize(id, data) }
 
+// msg は生成側が組み立てた解決前の message を現在の言語で解決する。
+func (m model) msg(value i18n.Message) string { return m.messages.Message(value) }
+
+// setupStateLabel は setup 項目の状態を利用者向けの言葉にする。
+// 未知の状態は機械値のまま出し、表示だけが静かに空になる経路を作らない。
+func (m model) setupStateLabel(state setup.State) string {
+	id := "setup.state." + string(state)
+	if !i18n.HasMessage(id) {
+		return string(state)
+	}
+	return m.t(id)
+}
+
+// setupActionLabel は setup の選択肢を利用者向けの言葉にする。
+func (m model) setupActionLabel(action setup.Action) string {
+	id := "setup.action." + string(action)
+	if !i18n.HasMessage(id) {
+		return strings.ToUpper(string(action))
+	}
+	return m.t(id)
+}
+
 func Run(ctx context.Context, opts Options) (Action, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -473,10 +495,10 @@ func (m model) activate() (tea.Model, tea.Cmd) {
 		if m.selected < len(setupItems) {
 			step := setupItems[m.selected]
 			m.pending = menuItem{command: "setup", defaultArgs: []string{"--item", step.ID}}
-			m.pendingLabel = step.Title
+			m.pendingLabel = m.msg(step.Title)
 			m.choices = make([]choice, 0, len(step.Options))
 			for _, option := range step.Options {
-				m.choices = append(m.choices, choice{label: strings.ToUpper(string(option)), value: string(option)})
+				m.choices = append(m.choices, choice{label: m.setupActionLabel(option), value: string(option)})
 				if option == step.Default {
 					m.choice = len(m.choices) - 1
 				}

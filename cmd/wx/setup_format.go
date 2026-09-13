@@ -23,9 +23,12 @@ var setupColumns = []struct {
 	{id: "wx.setup.column.detail"},
 }
 
-// printSetupTable は項目の状態を表で出す。
-// printDisplay は配列 of map を steps[0].id のように展開するため使わない。
-// 幅は訳した見出しと値の表示幅から決める。英語の幅で桁を決めてから訳を入れると列がずれる。
+// printSetupTable は項目の状態を表で出す。ITEM・STATE・ACTION は --item と --action へそのまま渡す
+// 機械値なので訳さず、訳すのは見出しと DETAIL だけにする。利用者向けの言い換えは dashboard と
+// 選択画面が担当する。
+// printDisplay は配列 of map を steps[0].id のように展開するため使わず、幅は訳した見出しと値の
+// 表示幅から決める。英語の幅で桁を決めてから訳を入れると列がずれる。
+// commentlint:allow-long -- 機械値を訳さない理由と、幅を訳語から決める理由の両方を失うと退行する
 func printSetupTable(w io.Writer, lang i18n.Language, steps []setup.Step) {
 	localizer := i18n.New(string(lang))
 	widths := make([]int, len(setupColumns))
@@ -36,8 +39,7 @@ func printSetupTable(w io.Writer, lang i18n.Language, steps []setup.Step) {
 	}
 	rows := [][]string{titles}
 	for _, step := range steps {
-		step = localizeSetupStep(step, localizer)
-		rows = append(rows, []string{step.ID, string(step.State), string(step.Default), setupStepDetail(step)})
+		rows = append(rows, []string{step.ID, string(step.State), string(step.Default), setupStepDetail(localizer, step)})
 	}
 	for _, row := range rows[1:] {
 		for index, cell := range row {
@@ -64,56 +66,55 @@ func printSetupTable(w io.Writer, lang i18n.Language, steps []setup.Step) {
 }
 
 // setupStepDetail は表の最終列に出す 1 行で、理由があれば先に見せる。
-// absent だけは例外とする。未登録の理由は event ごとの欠落の列挙になり、何を書くのかの説明の方が役に立つ。
-func setupStepDetail(step setup.Step) string {
+// absent だけは例外とする。未登録の理由は event ごとの欠落の列挙になり、何を書くのかの要約の方が役に立つ。
+func setupStepDetail(localizer *i18n.Localizer, step setup.Step) string {
 	if len(step.Reasons) > 0 && step.State != setup.StateAbsent {
-		return step.Reasons[0]
+		return localizer.Message(step.Reasons[0])
 	}
-	if step.Detail != "" {
-		return step.Detail
+	if text := localizer.Message(step.Summary); text != "" {
+		return text
 	}
 	return step.Target
 }
 
-// setupItemIDs は項目の見出しを表示言語で解決するための message ID である。
-var setupItemIDs = map[string]string{
-	"prerequisites": "wx.setup.item.prerequisites",
-	"worktree_root": "wx.setup.item.worktree_root",
-	"shell_path":    "wx.setup.item.shell_path",
-	"launch_agent":  "wx.setup.item.launch_agent",
-	"daemon":        "wx.setup.item.daemon",
-}
-
-// localizeSetupStep は表示用のラベルだけを置き換え、ID・state・action と
-// path や外部エラーを含む可変値はそのまま残す。JSON 出力はこの関数を通さない。
-func localizeSetupStep(step setup.Step, localizer *i18n.Localizer) setup.Step {
-	if id, known := setupItemIDs[step.ID]; known {
-		step.Title = localizer.Localize(id, nil)
-		return step
+// setupStepDescription は選択画面の見出しの下に出す説明で、この項目が何のためにあるのか、
+// 今どういう状態なのか、どのファイルを読み書きするのかを示す。
+func setupStepDescription(localizer *i18n.Localizer, step setup.Step) string {
+	parts := make([]string, 0, 4)
+	if text := localizer.Message(step.Detail); text != "" {
+		parts = append(parts, text)
 	}
-	if agent, found := strings.CutPrefix(step.ID, "hooks."); found {
-		step.Title = localizer.Localize("wx.setup.item.hooks", map[string]any{"Agent": agent})
-	}
-	return step
-}
-
-// setupStepDescription は TUI の見出しの下に出す 1 行で、何が変わるのかを示す。
-func setupStepDescription(step setup.Step) string {
-	parts := make([]string, 0, 3)
+	parts = append(parts, localizer.Localize("wx.setup.column.state", nil)+": "+setupStateLabel(localizer, step.State))
 	if step.Target != "" {
 		parts = append(parts, step.Target)
 	}
-	parts = append(parts, "state: "+string(step.State))
 	if len(step.Reasons) > 0 {
-		parts = append(parts, step.Reasons[0])
+		parts = append(parts, localizer.Message(step.Reasons[0]))
 	}
 	return strings.Join(parts, " · ")
 }
 
+// setupStateLabel は state の機械値を利用者向けの言葉にする。未知の状態は機械値のまま出す。
+func setupStateLabel(localizer *i18n.Localizer, state setup.State) string {
+	id := "setup.state." + string(state)
+	if !i18n.HasMessage(id) {
+		return string(state)
+	}
+	return localizer.Localize(id, nil)
+}
+
+// setupActionLabel は選択肢の短いラベルを表示言語で返す。未知の操作は機械値のまま出す。
+func setupActionLabel(localizer *i18n.Localizer, action setup.Action) string {
+	id := "setup.action." + string(action)
+	if !i18n.HasMessage(id) {
+		return string(action)
+	}
+	return localizer.Localize(id, nil)
+}
+
 // setupActionDescription は選択肢ごとに、実際に書き込む path と内容の要約を出す。
 // chezmoi などの置き換えという性質上、何が変わるか示さないと選べない。
-func setupActionDescription(step setup.Step, action setup.Action) string {
-	localizer := i18n.New(string(localizedUsageLanguage()))
+func setupActionDescription(localizer *i18n.Localizer, step setup.Step, action setup.Action) string {
 	if step.ID == "language" {
 		if action == setup.Action(i18n.English) {
 			return localizer.Localize("wx.setup.action.language_english", nil)
@@ -173,21 +174,21 @@ func setupDaemonActionDescription(localizer *i18n.Localizer, action setup.Action
 }
 
 func summarizeSetupChange(localizer *i18n.Localizer, step setup.Step) string {
-	if step.Detail != "" && step.Desired == "" {
-		return step.Detail
-	}
 	if step.Desired != "" {
 		return step.Desired
+	}
+	if text := localizer.Message(step.Summary); text != "" {
+		return text
 	}
 	return localizer.Localize("wx.setup.default_change", nil)
 }
 
 func printSetupSkipped(w io.Writer, step setup.Step) {
-	step = localizeSetupStep(step, i18n.New(string(localizedUsageLanguage())))
-	line := fmt.Sprintf("%-14s %-14s %s", step.ID, step.State, setupStepDetail(step))
+	localizer := i18n.New(string(localizedUsageLanguage()))
+	line := fmt.Sprintf("%-14s %-14s %s", step.ID, step.State, setupStepDetail(localizer, step))
 	_, _ = fmt.Fprintln(w, strings.TrimRight(line, " "))
 	for _, reason := range step.Reasons[min(1, len(step.Reasons)):] {
-		_, _ = fmt.Fprintln(w, "               "+reason)
+		_, _ = fmt.Fprintln(w, "               "+localizer.Message(reason))
 	}
 }
 
@@ -196,11 +197,12 @@ func printSetupApplied(w io.Writer, step setup.Step, action setup.Action) {
 }
 
 // printSetupNote は適用の補足を字下げして出す。差分から読み取れない事実だけを持つので、空なら何も出さない。
-func printSetupNote(w io.Writer, note string) {
-	if note == "" {
+func printSetupNote(w io.Writer, lang i18n.Language, note i18n.Message) {
+	text := i18n.New(string(lang)).Message(note)
+	if text == "" {
 		return
 	}
-	_, _ = fmt.Fprintf(w, "%-14s %s\n", "", note)
+	_, _ = fmt.Fprintf(w, "%-14s %s\n", "", text)
 }
 
 // printSetupWarnings は適用後に期待した状態にならなかった項目を警告として残す。フローは止めない。
@@ -220,7 +222,7 @@ func printSetupWarnings(w io.Writer, id string, action setup.Action, applied set
 		return
 	}
 	for _, reason := range applied.Reasons {
-		_, _ = fmt.Fprintln(w, prefix+"  "+reason)
+		_, _ = fmt.Fprintln(w, prefix+"  "+localizer.Message(reason))
 	}
 }
 
@@ -237,7 +239,7 @@ func printSetupRemoval(out, errOut io.Writer, removal setup.Removal) {
 			_, _ = fmt.Fprintf(errOut, "%s %s: %v\n", localizer.Localize("cli.error_prefix", nil), result.ID, result.Err)
 			continue
 		}
-		note := result.Note
+		note := localizer.Message(result.Note)
 		if note == "" {
 			note = localizer.Localize("wx.setup.nothing_to_remove", nil)
 		}
@@ -273,16 +275,23 @@ type setupStepJSON struct {
 	Default string   `json:"default"`
 }
 
+// writeSetupJSON は --check --json の payload を書く。機械が読む出力なので、
+// 表示言語に関わらず英語で解決する。
 func writeSetupJSON(w io.Writer, steps []setup.Step) error {
+	english := i18n.New(string(i18n.English))
 	payload := setupPayload{Pending: setup.Pending(steps)}
 	for _, step := range steps {
 		options := make([]string, 0, len(step.Options))
 		for _, option := range step.Options {
 			options = append(options, string(option))
 		}
+		reasons := make([]string, 0, len(step.Reasons))
+		for _, reason := range step.Reasons {
+			reasons = append(reasons, english.Message(reason))
+		}
 		payload.Steps = append(payload.Steps, setupStepJSON{
-			ID: step.ID, Title: step.Title, State: string(step.State), Detail: step.Detail,
-			Reasons: step.Reasons, Target: step.Target, Current: step.Current, Desired: step.Desired,
+			ID: step.ID, Title: english.Message(step.Title), State: string(step.State), Detail: english.Message(step.Summary),
+			Reasons: reasons, Target: step.Target, Current: step.Current, Desired: step.Desired,
 			Options: options, Default: string(step.Default),
 		})
 	}

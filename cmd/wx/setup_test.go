@@ -69,7 +69,7 @@ func TestSetupLanguageSelectionSavesBeforeTheRemainingSteps(t *testing.T) {
 		t.Fatalf("language unset=%v err=%v", unset, err)
 	}
 	session := setupSession{selector: func(_ context.Context, step setup.Step) (setup.Action, error) {
-		if step.Title != "Display language / 表示言語" || step.Default != setup.Action(i18n.English) {
+		if step.Title.ID != "setup.display_language.title" || step.Default != setup.Action(i18n.English) {
 			t.Fatalf("language step=%+v", step)
 		}
 		return setup.Action(i18n.Japanese), nil

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // Event は wx が登録する hook event と、その event を処理する wx サブコマンドを表す。
@@ -93,12 +95,15 @@ const (
 )
 
 // Finding は判定の理由 1 件である。Blocking が真の finding があると Available は必ず false になる。
+// Message は表示言語で解決する同じ理由で、String が返す英語は log・JSON・テストのための機械向け表現である。
+// 同じ Code でも事情ごとに文面が変わるため、message ID は Code ではなく生成した場所が決める。
 type Finding struct {
 	Code     FindingCode
 	Event    string
 	Path     string
 	Detail   string
 	Blocking bool
+	Message  i18n.Message
 }
 
 func (f Finding) String() string {
@@ -136,13 +141,31 @@ func (s State) Blocking() []Finding {
 	return out
 }
 
-// Reasons は利用者に見せる 1 行説明の一覧を返す。
+// Reasons は機械向けの 1 行説明の一覧を返す。表示には Messages を使う。
 func (s State) Reasons() []string {
 	out := make([]string, 0, len(s.Findings))
 	for _, finding := range s.Findings {
 		out = append(out, finding.String())
 	}
 	return out
+}
+
+// Messages は利用者へ見せる理由を、解決前の message として返す。
+func (s State) Messages() []i18n.Message {
+	out := make([]i18n.Message, 0, len(s.Findings))
+	for _, finding := range s.Findings {
+		out = append(out, finding.DisplayMessage())
+	}
+	return out
+}
+
+// DisplayMessage は表示用の message を返す。message ID を持たない finding は、
+// 英語の機械向け表現をそのまま本文として通す。
+func (f Finding) DisplayMessage() i18n.Message {
+	if f.Message.ID != "" {
+		return f.Message
+	}
+	return i18n.Message{ID: "hook.finding.raw", Data: map[string]any{"Detail": f.String()}}
 }
 
 // TargetPath は agent の hook 設定の読み書き対象を、ファイルが存在しなくても返す。
@@ -190,7 +213,10 @@ func Inspect(agent string) (State, error) {
 	state := State{Agent: agent, Matched: map[string]bool{}}
 	if agent != "claude" && agent != "codex" {
 		state.Status = StatusUnsupported
-		state.Findings = append(state.Findings, Finding{Code: FindingUnsupportedAgent, Detail: agent, Blocking: true})
+		state.Findings = append(state.Findings, Finding{
+			Code: FindingUnsupportedAgent, Detail: agent, Blocking: true,
+			Message: i18n.Message{ID: "hook.finding.unsupported_agent", Data: map[string]any{"Detail": agent}},
+		})
 		return state, nil
 	}
 	path, err := TargetPath(agent)
@@ -200,7 +226,11 @@ func Inspect(agent string) (State, error) {
 	state.Path = path
 	if shadowed := shadowedPath(agent, path); shadowed != "" {
 		state.Shadowed = shadowed
-		state.Findings = append(state.Findings, Finding{Code: FindingLocalSettingsShadow, Path: shadowed, Detail: "settings.local.json takes precedence over " + shadowed})
+		state.Findings = append(state.Findings, Finding{
+			Code: FindingLocalSettingsShadow, Path: shadowed,
+			Detail:  "settings.local.json takes precedence over " + shadowed,
+			Message: i18n.Message{ID: "hook.finding.local_settings_shadow", Data: map[string]any{"Path": shadowed}},
+		})
 	}
 	executable, findings := runningExecutable()
 	if len(findings) > 0 {
@@ -216,7 +246,7 @@ func Inspect(agent string) (State, error) {
 	data, readFindings, readable := readHookConfig(path)
 	state.Findings = append(state.Findings, readFindings...)
 	if readable {
-		report := inspectDocument(data, eventCommands(), executable)
+		report := inspectDocument(path, data, eventCommands(), executable)
 		state.Matched = report.matched
 		state.Findings = append(state.Findings, report.findings...)
 	}
@@ -228,7 +258,10 @@ func Inspect(agent string) (State, error) {
 func runningExecutable() (string, []Finding) {
 	executable, err := CurrentExecutable()
 	if err != nil {
-		return "", []Finding{{Code: FindingExecutableUnknown, Detail: err.Error(), Blocking: true}}
+		return "", []Finding{{
+			Code: FindingExecutableUnknown, Detail: err.Error(), Blocking: true,
+			Message: i18n.Message{ID: "hook.finding.executable_unknown", Data: map[string]any{"Detail": err.Error()}},
+		}}
 	}
 	return executable, nil
 }
@@ -249,32 +282,57 @@ func readHookConfig(path string) ([]byte, []Finding, bool) {
 		return nil, nil, false
 	}
 	if err != nil {
-		return nil, []Finding{{Code: FindingTargetUnreadable, Path: path, Detail: err.Error(), Blocking: true}}, false
+		return nil, []Finding{unreadableTarget(path, err)}, false
 	}
 	if !info.Mode().IsRegular() {
-		return nil, []Finding{{Code: FindingTargetNotRegular, Path: path, Blocking: true}}, false
+		return nil, []Finding{{
+			Code: FindingTargetNotRegular, Path: path, Blocking: true,
+			Message: i18n.Message{ID: "hook.finding.target_not_regular", Data: map[string]any{"Path": path}},
+		}}, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, []Finding{{Code: FindingTargetUnreadable, Path: path, Detail: err.Error(), Blocking: true}}, false
+		return nil, []Finding{unreadableTarget(path, err)}, false
 	}
 	switch {
 	case len(data) == 0:
-		return nil, []Finding{{Code: FindingTargetEmpty, Path: path, Blocking: true}}, false
+		return nil, []Finding{{
+			Code: FindingTargetEmpty, Path: path, Blocking: true,
+			Message: i18n.Message{ID: "hook.finding.target_empty", Data: map[string]any{"Path": path}},
+		}}, false
 	case len(data) > maxHookConfigSize:
-		return nil, []Finding{{Code: FindingTargetTooLarge, Path: path, Blocking: true}}, false
+		return nil, []Finding{{
+			Code: FindingTargetTooLarge, Path: path, Blocking: true,
+			Message: i18n.Message{ID: "hook.finding.target_too_large", Data: map[string]any{"Path": path}},
+		}}, false
 	}
 	// 判定は読み側と同じ後勝ちの復号で行う。重複キーを blocking にすると、agent 自身は hook を実行できる設定で
 	// wx だけが hook 無しと判断し、前面 readiness 待ちの縮退状態へ戻る。fail closed が要るのは編集経路だけである。
 	var probe map[string]json.RawMessage
 	if err := decodeJSON(data, &probe); err != nil {
-		return nil, []Finding{{Code: FindingTargetUnparsable, Path: path, Detail: err.Error(), Blocking: true}}, false
+		return nil, []Finding{{
+			Code: FindingTargetUnparsable, Path: path, Detail: err.Error(), Blocking: true,
+			Message: i18n.Message{ID: "hook.finding.target_unparsable", Data: map[string]any{"Path": path, "Detail": err.Error()}},
+		}}, false
 	}
 	var findings []Finding
 	if _, err := decodeDocument(data); err != nil && errors.Is(err, errDuplicateKey) {
-		findings = append(findings, Finding{Code: FindingTargetDuplicateKey, Path: path, Detail: err.Error() + "; wx will not edit this file until the duplicates are removed"})
+		findings = append(findings, Finding{
+			Code: FindingTargetDuplicateKey, Path: path,
+			Detail:  err.Error() + "; wx will not edit this file until the duplicates are removed",
+			Message: i18n.Message{ID: "hook.finding.target_duplicate_key", Data: map[string]any{"Path": path, "Detail": err.Error()}},
+		})
 	}
 	return data, findings, true
+}
+
+// unreadableTarget は設定ファイルを読めなかった finding を作る。読み取り失敗は Stat と ReadFile の
+// 両方で起こり、利用者への説明は同じなので 1 か所にまとめる。
+func unreadableTarget(path string, err error) Finding {
+	return Finding{
+		Code: FindingTargetUnreadable, Path: path, Detail: err.Error(), Blocking: true,
+		Message: i18n.Message{ID: "hook.finding.target_unreadable", Data: map[string]any{"Path": path, "Detail": err.Error()}},
+	}
 }
 
 // targetLayoutFindings は dotfile 管理下の設定ファイルを検出する。
@@ -289,12 +347,21 @@ func targetLayoutFindings(path string) []Finding {
 	if info.Mode()&os.ModeSymlink != 0 {
 		resolved, err = filepath.EvalSymlinks(path)
 		if err != nil {
-			return []Finding{{Code: FindingTargetSymlink, Path: path, Detail: err.Error(), Blocking: true}}
+			return []Finding{{
+				Code: FindingTargetSymlink, Path: path, Detail: err.Error(), Blocking: true,
+				Message: i18n.Message{ID: "hook.finding.target_symlink_broken", Data: map[string]any{"Path": path, "Detail": err.Error()}},
+			}}
 		}
-		out = append(out, Finding{Code: FindingTargetSymlink, Path: path, Detail: "resolves to " + resolved})
+		out = append(out, Finding{
+			Code: FindingTargetSymlink, Path: path, Detail: "resolves to " + resolved,
+			Message: i18n.Message{ID: "hook.finding.target_symlink", Data: map[string]any{"Path": path, "Resolved": resolved}},
+		})
 	}
 	if repository := enclosingRepository(resolved); repository != "" {
-		out = append(out, Finding{Code: FindingTargetInRepository, Path: resolved, Detail: "inside the repository " + repository})
+		out = append(out, Finding{
+			Code: FindingTargetInRepository, Path: resolved, Detail: "inside the repository " + repository,
+			Message: i18n.Message{ID: "hook.finding.target_in_repository", Data: map[string]any{"Path": resolved, "Repository": repository}},
+		})
 	}
 	return out
 }

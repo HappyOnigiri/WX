@@ -5,9 +5,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/launchd"
 )
 
@@ -197,5 +199,72 @@ func TestApplyRejectsUnknownStepsAndSkipsNoOps(t *testing.T) {
 	}
 	if _, err := CollectStep(ctx, Options{}, "nonsense"); err == nil {
 		t.Fatal("an unknown step was collected")
+	}
+}
+
+// englishText は message を英語で解決する。表示文そのものを確かめるテストが使う。
+func englishText(value i18n.Message) string {
+	return i18n.New(string(i18n.English)).Message(value)
+}
+
+// englishJoin は理由の一覧を英語で 1 行にする。
+func englishJoin(values []i18n.Message) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, englishText(value))
+	}
+	return strings.Join(parts, " ")
+}
+
+// hasMessageID は message ID の有無を返す。訳文の推敲でテストが壊れないよう、照合は ID で行う。
+func hasMessageID(values []i18n.Message, id string) bool {
+	for _, value := range values {
+		if value.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestStatesAndActionsHaveDisplayText は、state と action の機械値がそのまま画面へ出ないよう、
+// 表示用の message が全ての値に揃っていることを守る。描画側は未知の値を機械値のまま出すため、
+// この検査が無いと値を増やしたときだけ英語の識別子が画面に残る。
+func TestStatesAndActionsHaveDisplayText(t *testing.T) {
+	for _, state := range []State{StateAbsent, StatePresent, StateDivergent, StateUnknown, StateNotApplicable} {
+		if id := "setup.state." + string(state); !i18n.HasMessage(id) {
+			t.Errorf("message %q is missing; the state %q would be shown as a machine value", id, state)
+		}
+	}
+	for _, action := range []Action{
+		ActionInstall, ActionUpdate, ActionKeep, ActionRemove, ActionSkip,
+		ActionDefault, ActionManual, ActionStart, ActionRestart,
+	} {
+		if id := "setup.action." + string(action); !i18n.HasMessage(id) {
+			t.Errorf("message %q is missing; the action %q would be shown as a machine value", id, action)
+		}
+	}
+}
+
+// TestCollectReturnsUnresolvedMessages は、収集した項目が表示文ではなく message を返すことを守る。
+// 見出しが欠けると画面のラベルが空になり、要約も理由も無い項目は表の DETAIL 列が空欄で並ぶ。
+func TestCollectReturnsUnresolvedMessages(t *testing.T) {
+	fixture := newSetupFixture(t)
+	steps, err := Collect(context.Background(), fixture.options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) == 0 {
+		t.Fatal("Collect returned no steps")
+	}
+	for _, step := range steps {
+		if step.Title.ID == "" {
+			t.Errorf("step %q has no title message", step.ID)
+		}
+		if step.Summary.ID == "" && step.Target == "" && len(step.Reasons) == 0 {
+			t.Errorf("step %q has nothing to show in the detail column", step.ID)
+		}
+		if englishText(step.Title) == step.Title.ID {
+			t.Errorf("step %q has a title id that is not in the catalog: %q", step.ID, step.Title.ID)
+		}
 	}
 }

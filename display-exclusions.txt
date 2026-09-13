@@ -7,6 +7,8 @@ internal/i18n/catalog_diag.go	exempt	The wx doctor part of the message catalog; 
 internal/i18n/catalog_help.go	exempt	The help catalog for wx itself and the lease commands; this is where the Japanese help text belongs.
 internal/i18n/catalog_help_config.go	exempt	The help catalog for the configuration commands; this is where the Japanese help text belongs.
 internal/i18n/catalog_help_maintenance.go	exempt	The help catalog for the maintenance commands; this is where the Japanese help text belongs.
+internal/i18n/catalog_setup.go	exempt	The wx setup and agent hook part of the message catalog; this is where the Japanese text belongs.
+internal/i18n/catalog_config.go	exempt	The configuration-item part of the message catalog; this is where the Japanese text belongs.
 tools/checkcomments/main.go	exempt	Defines the full-width character range the comment-length check measures; not user-facing display.
 tools/checkdocsindex/main.go	exempt	Matches the Japanese heading and entry shape that AGENTS.md prescribes for docs/; not user-facing display.
 tools/checktests/main.go	exempt	Quotes the Japanese exemption-comment syntax the repository conventions define; not user-facing display.

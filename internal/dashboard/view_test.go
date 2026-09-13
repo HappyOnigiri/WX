@@ -9,6 +9,7 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
@@ -23,7 +24,7 @@ func TestViewUsesStatusPaneAndResponsiveOperationLayout(t *testing.T) {
 	}
 	m.tab, m.width = 1, 70
 	narrow := m.View().Content
-	if !strings.Contains(narrow, "Choose what to launch") || !strings.Contains(narrow, "selected workspace") {
+	if !strings.Contains(narrow, "Choose what to run in a borrowed worktree") || !strings.Contains(narrow, "selected workspace") {
 		t.Fatalf("narrow operation view omitted stacked content: %q", narrow)
 	}
 	for _, line := range strings.Split(narrow, "\n") {
@@ -57,10 +58,10 @@ func TestJapaneseOperationViewKeepsColumnsAligned(t *testing.T) {
 		}
 	}
 	frame := strings.Join(lines, "\n")
-	if !strings.Contains(frame, "ガベージコレクション") {
+	if !strings.Contains(frame, "保持期間を過ぎたデータを削除") {
 		t.Fatalf("menu label is not localized: %q", frame)
 	}
-	if strings.Contains(frame, "Collect managed data") {
+	if strings.Contains(frame, "retention period has passed") {
 		t.Fatalf("description is not localized: %q", frame)
 	}
 }
@@ -133,15 +134,49 @@ func TestSelectedChoiceUsesAccentColor(t *testing.T) {
 func TestSelectedSetupItemKeepsStateSecondary(t *testing.T) {
 	m := newModel(context.Background(), Options{
 		Config: config.Defaults(),
-		Setup: []setup.Step{{
-			ID: "hooks.claude", Title: "Claude hooks", State: setup.StatePresent,
-			Options: []setup.Action{setup.ActionKeep},
-		}},
+		Setup:  []setup.Step{hooksStep()},
 	})
 	m.tab = 5
 	line := m.menuLines(80)[2]
-	if !strings.Contains(line, accent+"Claude hooks  "+dim+"present") {
+	if !strings.Contains(line, accent+"Agent hooks (claude)  "+dim+"configured as wx expects") {
 		t.Fatalf("setup state is not styled as secondary information: %q", line)
+	}
+}
+
+// hooksStep は setup が返す形の項目で、見出し・説明・理由をすべて解決前の message で持つ。
+func hooksStep() setup.Step {
+	return setup.Step{
+		ID:      "hooks.claude",
+		Title:   i18n.Message{ID: "wx.setup.item.hooks", Data: map[string]any{"Agent": "claude"}},
+		State:   setup.StatePresent,
+		Detail:  i18n.Message{ID: "setup.detail.launch_agent"},
+		Target:  "/home/user/.claude/settings.json",
+		Reasons: []i18n.Message{{ID: "setup.reason.plist_stale"}},
+		Options: []setup.Action{setup.ActionKeep},
+	}
+}
+
+// TestSetupItemsRenderInTheConfiguredLanguage は、システムタブの見出し・状態・説明・理由が
+// 表示言語で解決されることを検査する。setup は message ID だけを返すので、
+// 解決を落とすと画面に ID がそのまま出る。
+func TestSetupItemsRenderInTheConfiguredLanguage(t *testing.T) {
+	japanese := config.Defaults()
+	japanese.Language = config.LanguageJapanese
+	m := newModel(context.Background(), Options{Config: japanese, Setup: []setup.Step{hooksStep()}})
+	m.tab = 5
+	menu := strings.Join(m.menuLines(80), "\n")
+	if !strings.Contains(menu, "Agent hook (claude)") || !strings.Contains(menu, "設定済み") {
+		t.Fatalf("menu is not localized: %q", menu)
+	}
+	description := strings.Join(m.descriptionLines(80), "\n")
+	for _, want := range []string{"hooks.claude", "LaunchAgent", "/home/user/.claude/settings.json", "登録済みの plist"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("description %q is missing from %q", want, description)
+		}
+	}
+	// 解決できなかった message は ID が出る。ID が残っていないことを確かめる。
+	if strings.Contains(description, "setup.reason.") || strings.Contains(description, "setup.detail.") {
+		t.Fatalf("an unresolved message id reached the screen: %q", description)
 	}
 }
 

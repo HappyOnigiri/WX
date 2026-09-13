@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/HappyOnigiri/WX/internal/i18n"
 )
 
 // codexPolicyFindings は有効な hooks.json があっても user hook を無効にし得る Codex 設定を調べる。
@@ -13,28 +15,49 @@ import (
 func codexPolicyFindings() []Finding {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return []Finding{{Code: FindingCodexConfigUnusable, Detail: err.Error(), Blocking: true}}
+		return []Finding{{
+			Code: FindingCodexConfigUnusable, Detail: err.Error(), Blocking: true,
+			Message: i18n.Message{ID: "hook.finding.codex_home_unknown", Data: map[string]any{"Detail": err.Error()}},
+		}}
 	}
 	for _, path := range []string{filepath.Join(home, ".codex", "config.toml"), "/etc/codex/config.toml"} {
 		if _, err := regularHookPath(path); errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
-			return []Finding{{Code: FindingCodexConfigUnusable, Path: path, Detail: err.Error(), Blocking: true}}
+			return []Finding{codexConfigUnusable(path, err.Error())}
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return []Finding{{Code: FindingCodexConfigUnusable, Path: path, Detail: err.Error(), Blocking: true}}
+			return []Finding{codexConfigUnusable(path, err.Error())}
 		}
 		if len(data) > maxHookConfigSize {
-			return []Finding{{Code: FindingCodexConfigUnusable, Path: path, Detail: "the file is larger than the 4MiB limit", Blocking: true}}
+			return []Finding{{
+				Code: FindingCodexConfigUnusable, Path: path, Detail: "the file is larger than the 4MiB limit", Blocking: true,
+				Message: i18n.Message{ID: "hook.finding.codex_config_too_large", Data: map[string]any{"Path": path}},
+			}}
 		}
 		if enabled, parsable := codexHooksConfigState(data); !parsable {
-			return []Finding{{Code: FindingCodexConfigUnusable, Path: path, Detail: "wx cannot interpret this TOML, so Codex hooks are treated as disabled", Blocking: true}}
+			return []Finding{{
+				Code: FindingCodexConfigUnusable, Path: path, Detail: "wx cannot interpret this TOML, so Codex hooks are treated as disabled", Blocking: true,
+				Message: i18n.Message{ID: "hook.finding.codex_config_unparsable", Data: map[string]any{"Path": path}},
+			}}
 		} else if !enabled {
-			return []Finding{{Code: FindingCodexFeatureOff, Path: path, Detail: "set hooks = true under [features] to let Codex run user hooks", Blocking: true}}
+			return []Finding{{
+				Code: FindingCodexFeatureOff, Path: path, Detail: "set hooks = true under [features] to let Codex run user hooks", Blocking: true,
+				Message: i18n.Message{ID: "hook.finding.codex_feature_disabled", Data: map[string]any{"Path": path}},
+			}}
 		}
 	}
 	return nil
+}
+
+// codexConfigUnusable は Codex 設定を読めなかった finding を作る。読めない事情は複数あるが、
+// 利用者への説明は「hook が無効として扱われる」で同じなので 1 か所にまとめる。
+func codexConfigUnusable(path, detail string) Finding {
+	return Finding{
+		Code: FindingCodexConfigUnusable, Path: path, Detail: detail, Blocking: true,
+		Message: i18n.Message{ID: "hook.finding.codex_config_unusable", Data: map[string]any{"Path": path, "Detail": detail}},
+	}
 }
 
 // codexHooksConfigState は config.toml の [features] hooks を読み、有効かと解釈できたかを返す。

@@ -136,7 +136,7 @@ func TestLaunchAgentReportsPermissionsAndStaleContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	loose := collectLaunchAgent()
-	if loose.State != StateDivergent || !strings.Contains(strings.Join(loose.Reasons, " "), "unsafe permissions") {
+	if loose.State != StateDivergent || !strings.Contains(englishJoin(loose.Reasons), "unsafe permissions") {
 		t.Fatalf("loose plist permissions=%+v", loose)
 	}
 	if err := os.WriteFile(path, []byte("<plist/>"), 0o600); err != nil {
@@ -242,12 +242,12 @@ func TestHooksApplyReportsTheWrittenPathAndBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(note, target) {
-		t.Fatalf("the written path is missing from %q", note)
+	if !strings.Contains(englishText(note), target) {
+		t.Fatalf("the written path is missing from %+v", note)
 	}
 	backup := filepath.Join(fixture.home, "Library", "Application Support", "wx", "backups", "claude-settings.json")
-	if !strings.Contains(note, backup) {
-		t.Fatalf("the backup path is missing from %q", note)
+	if !strings.Contains(englishText(note), backup) {
+		t.Fatalf("the backup path is missing from %+v", note)
 	}
 	if _, err := os.Stat(backup); err != nil {
 		t.Fatal(err)
@@ -257,8 +257,8 @@ func TestHooksApplyReportsTheWrittenPathAndBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again != "" {
-		t.Fatalf("an unchanged apply produced a note: %q", again)
+	if again.ID != "" {
+		t.Fatalf("an unchanged apply produced a note: %+v", again)
 	}
 }
 
@@ -288,7 +288,7 @@ func TestPrerequisitesWarnAboutDevelopmentBuilds(t *testing.T) {
 	}
 	t.Setenv("PATH", filepath.Dir(other)+":/usr/bin:/bin")
 	warned := collectPrerequisites(context.Background())
-	if !strings.Contains(strings.Join(warned.Reasons, " "), "install wx first") {
+	if !hasMessageID(warned.Reasons, "setup.reason.development_build") {
 		t.Fatalf("a development build was not reported: %+v", warned)
 	}
 	t.Setenv("PATH", t.TempDir())
