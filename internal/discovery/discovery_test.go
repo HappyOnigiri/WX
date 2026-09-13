@@ -42,6 +42,127 @@ func TestResolveRepositoryUsesMainWorktreeAndConfiguredBranch(t *testing.T) {
 	}
 }
 
+func TestResolveRepositoryAutoResolvesDefaultBranchFromGitEvidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		prepare  func(*testing.T, string)
+		want     string
+		wantZero bool
+	}{
+		{
+			name: "origin head",
+			prepare: func(t *testing.T, repository string) {
+				runDiscoveryGit(t, repository, "branch", "develop")
+				runDiscoveryGit(t, repository, "remote", "add", "origin", "https://example.invalid/project.git")
+				runDiscoveryGit(t, repository, "update-ref", "refs/remotes/origin/develop", "HEAD")
+				runDiscoveryGit(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+			},
+			want: "develop",
+		},
+		{
+			name: "stale origin head falls back to main",
+			prepare: func(t *testing.T, repository string) {
+				runDiscoveryGit(t, repository, "remote", "add", "origin", "https://example.invalid/project.git")
+				runDiscoveryGit(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/deleted")
+			},
+			want: "main",
+		},
+		{
+			name: "single non-origin remote head",
+			prepare: func(t *testing.T, repository string) {
+				runDiscoveryGit(t, repository, "branch", "trunk")
+				runDiscoveryGit(t, repository, "remote", "add", "upstream", "https://example.invalid/project.git")
+				runDiscoveryGit(t, repository, "update-ref", "refs/remotes/upstream/trunk", "HEAD")
+				runDiscoveryGit(t, repository, "symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/trunk")
+			},
+			want: "trunk",
+		},
+		{
+			name:    "main convention",
+			prepare: func(t *testing.T, repository string) {},
+			want:    "main",
+		},
+		{
+			name: "master convention",
+			prepare: func(t *testing.T, repository string) {
+				runDiscoveryGit(t, repository, "branch", "-m", "master")
+			},
+			want: "master",
+		},
+		{
+			name: "single local branch",
+			prepare: func(t *testing.T, repository string) {
+				runDiscoveryGit(t, repository, "branch", "-m", "trunk")
+			},
+			want: "trunk",
+		},
+		{
+			name: "ambiguous local branches",
+			prepare: func(t *testing.T, repository string) {
+				runDiscoveryGit(t, repository, "branch", "-m", "develop")
+				runDiscoveryGit(t, repository, "branch", "feature")
+			},
+			wantZero: true,
+		},
+		{
+			name: "ambiguous remotes skip remote heads",
+			prepare: func(t *testing.T, repository string) {
+				runDiscoveryGit(t, repository, "branch", "trunk")
+				runDiscoveryGit(t, repository, "remote", "add", "upstream", "https://example.invalid/upstream.git")
+				runDiscoveryGit(t, repository, "remote", "add", "mirror", "https://example.invalid/mirror.git")
+				runDiscoveryGit(t, repository, "update-ref", "refs/remotes/upstream/HEAD", "HEAD")
+				runDiscoveryGit(t, repository, "symbolic-ref", "refs/remotes/upstream/HEAD", "refs/remotes/upstream/trunk")
+			},
+			want: "main",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := filepath.Join(t.TempDir(), "repository")
+			initDiscoveryRepository(t, repository)
+			test.prepare(t, repository)
+			discoverer := Discoverer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+			workspace, err := discoverer.Resolve(context.Background(), repository)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := workspace.Repositories[0].DefaultBranch
+			if test.wantZero {
+				if got != "" {
+					t.Fatalf("default branch=%q, want unresolved", got)
+				}
+				return
+			}
+			if got != test.want {
+				t.Fatalf("default branch=%q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestResolveRepositoryExplicitDefaultBranchWinsWithoutAutoResolution(t *testing.T) {
+	repository := filepath.Join(t.TempDir(), "repository")
+	initDiscoveryRepository(t, repository)
+	runDiscoveryGit(t, repository, "branch", "develop")
+	runDiscoveryGit(t, repository, "remote", "add", "origin", "https://example.invalid/project.git")
+	runDiscoveryGit(t, repository, "update-ref", "refs/remotes/origin/develop", "HEAD")
+	runDiscoveryGit(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+	mainPath, err := domain.Canonicalize(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Repositories[string(mainPath)] = config.Repository{DefaultBranch: "main"}
+	discoverer := Discoverer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+	workspace, err := discoverer.Resolve(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := workspace.Repositories[0].DefaultBranch; got != "main" {
+		t.Fatalf("default branch=%q, want explicit main", got)
+	}
+}
+
 func TestResolveMultiRepositoryHonorsExclusionsDepthAndWorktreeRoot(t *testing.T) {
 	root := t.TempDir()
 	included := filepath.Join(root, "group", "included")

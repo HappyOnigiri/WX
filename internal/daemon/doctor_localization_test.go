@@ -32,6 +32,7 @@ func localizableDoctorFindings() []diag.Finding {
 		workspaceResolveProblem("/root", errors.New("rediscover workspace root /root: exit status 128")),
 		branchResolveProblem("/root", &pool.MissingDefaultBranchError{Branch: "main", RepositoryRelativePath: "."}),
 		branchResolveProblem("/root", &pool.MissingDefaultBranchError{Branch: "main", RepositoryRelativePath: "api"}),
+		branchResolveProblem("/root", &pool.UnresolvedDefaultBranchError{RepositoryRelativePath: "api"}),
 		branchResolveProblem("/root", errors.New("resolve branches: no such ref")),
 		stateQueryProblem(diag.CheckWorktreeRegistration, "the standby slots of a registered workspace could not be read",
 			message("diag.registration.slots_unreadable"), "/root", errors.New("read slots: database is locked")),

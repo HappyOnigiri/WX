@@ -51,7 +51,7 @@ func DefaultsV2() Config {
 			Discovery: WorkspaceDiscovery{MaxDepth: &legacy.Discovery.MaxDepth, Exclude: cloneStrings(legacy.Discovery.Exclude)},
 		},
 		RepositoryDefaults: RepositoryDefaults{
-			DefaultBranch: "main", DirSource: legacy.Storage.RepoDirSource, COWMinSizeKiB: &cow, Submodules: &submodules,
+			DirSource: legacy.Storage.RepoDirSource, COWMinSizeKiB: &cow, Submodules: &submodules,
 			Includes: RepositoryIncludes{DefaultAgentRules: &include}, Readiness: RepositoryReadiness{Mode: legacy.Readiness.Mode, EarlyPaths: cloneStrings(legacy.Readiness.EarlyPaths), Timeout: &legacy.Readiness.Timeout, Progress: &progress},
 			Storage: RepositoryStorage{CopyMode: legacy.Storage.CopyMode},
 		},

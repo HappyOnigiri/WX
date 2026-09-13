@@ -175,7 +175,7 @@ var configCatalog = map[string]Entry{
 	"config.warm_count.impact":      {EN: "More standbys mean faster launches and more disk in use. Zero turns automatic replenishment off for this workspace.", JA: "多いほど起動は速くなり、ディスクの使用量は増えます。0 にするとこの workspace の自動補充を行いません。"},
 
 	"config.default_branch.name":        {EN: "Branch new worktrees start from", JA: "worktree の起点ブランチ"},
-	"config.default_branch.description": {EN: "The branch a new worktree of this repository is checked out from when no branch is given.", JA: "ブランチを指定しなかったとき、このリポジトリの新しい worktree をどのブランチから作るかです。"},
+	"config.default_branch.description": {EN: "The explicit branch a new worktree of this repository is checked out from when no branch is given; when unset, wx resolves one from the repository's Git refs.", JA: "ブランチを指定しなかったとき、このリポジトリの新しい worktree をどのブランチから作るかを明示します。未設定なら wx がリポジトリの Git ref から自動解決します。"},
 	"config.default_branch.impact":      {EN: "Changes the starting point of the work in newly prepared worktrees.", JA: "新しく準備する worktree での作業の出発点が変わります。"},
 
 	"config.dir_name.name":        {EN: "Directory name for this repository", JA: "このリポジトリのディレクトリ名"},
@@ -203,7 +203,7 @@ var configCatalog = map[string]Entry{
 	"config.prepare.version.impact":      {EN: "Changing it makes the existing standby worktrees unusable, so they are prepared again.", JA: "変更すると既存の standby worktree は使えなくなり、準備し直しになります。"},
 
 	"config.repository_defaults.default_branch.name":        {EN: "Default starting branch for this workspace", JA: "この workspace の既定の起点ブランチ"},
-	"config.repository_defaults.default_branch.description": {EN: "The starting branch used by the repositories of this workspace that do not set one themselves.", JA: "この workspace のリポジトリのうち、自分で指定していないものが使う起点ブランチです。"},
+	"config.repository_defaults.default_branch.description": {EN: "The explicit starting branch used by the repositories of this workspace that do not set one themselves; when unset, wx resolves one from each repository's Git refs.", JA: "この workspace のリポジトリのうち、自分で指定していないものが使う起点ブランチを明示します。未設定なら wx が各リポジトリの Git ref から自動解決します。"},
 	"config.repository_defaults.default_branch.impact":      {EN: "Changes the starting point of newly prepared worktrees in this workspace.", JA: "この workspace で新しく準備する worktree の出発点が変わります。"},
 
 	"config.repository_defaults.dir_source.name":        {EN: "Default directory-name source for this workspace", JA: "この workspace の既定のディレクトリ名の決め方"},
