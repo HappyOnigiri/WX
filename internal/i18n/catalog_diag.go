@@ -108,4 +108,10 @@ var diagCatalog = map[string]Entry{
 	"diag.action.probe_read_output":    {EN: "no action is required unless the output reports a failure the hook swallowed; run wx doctor --probe -v to read it", JA: "hook が隠した失敗を出力が示していない限り対処は不要です。読むには wx doctor --probe -v を実行してください"},
 	"diag.action.daemon_restart_wx":    {EN: "run wx daemon restart so the daemon runs this wx binary, then run wx doctor again", JA: "この wx binary で daemon を動かすため wx daemon restart を実行し、wx doctor を再実行してください"},
 	"diag.action.check_daemon_log":     {EN: "check the daemon log for the failed reply, then run wx doctor again", JA: "失敗した応答を daemon log で確認し、wx doctor を再実行してください"},
+	"diag.action.fix_state_database":   {EN: "fix the reported state database failure, then run wx doctor again", JA: "報告された状態データベースの失敗を修正し、wx doctor を再実行してください"},
+	"diag.submodule.unreadable":        {EN: "the unsaved submodule records could not be read", JA: "未保全 submodule の記録を読み取れません"},
+	"diag.submodule.none":              {EN: "no slot is held back by unsaved submodule work", JA: "未保全の submodule 作業で残っている slot はありません"},
+	"diag.submodule.unsaved":           {EN: "a slot holds submodule work that its recovery snapshot does not contain", JA: "recovery snapshot に入らない submodule 作業を持つ slot があります"},
+	"diag.submodule.unsaved_cause":     {EN: "the recovery snapshot covers only the parent repository, and {{.Count}} submodule(s) of this slot hold work outside it", JA: "recovery snapshot は親 repository しか保存せず、この slot の {{.Count}} 個の submodule にその外側の作業が残っています"},
+	"diag.submodule.unsaved_action":    {EN: "commit and push that work from inside the submodule, or copy it out of the slot directory yourself; wx keeps this slot out of automatic reclamation until you delete it with wx clear --discard, but the recovery snapshot of the parent still expires on its own retention, and resuming that session stops working once it does", JA: "submodule の中で commit して push するか、slot directory から自分で退避してください。wx clear --discard で削除するまで wx はこの slot を自動回収の対象にしません。ただし親の recovery snapshot は保持期限で失効し、失効後はその session を再開できなくなります"},
 }
