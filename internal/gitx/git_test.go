@@ -101,11 +101,16 @@ func TestErrorFormattingUsesFallbackAndFirstArgument(t *testing.T) {
 		{
 			name: "fallback",
 			err:  &Error{Result: Result{ExitCode: -1}, FailureID: "fallback-id"},
-			want: "git command failed with exit -1 (failure fallback-id)",
+			want: "git command failed without an exit status (failure fallback-id)",
+		},
+		{
+			name: "no exit status with cause",
+			err:  &Error{Args: []string{"for-each-ref"}, Result: Result{ExitCode: -1}, FailureID: "cause-id", cause: errors.New("chdir /gone: no such file or directory")},
+			want: "git for-each-ref failed without an exit status: chdir /gone: no such file or directory (failure cause-id)",
 		},
 		{
 			name: "first argument",
-			err:  &Error{Args: []string{"status", "--short"}, Result: Result{ExitCode: 7}, FailureID: "status-id"},
+			err:  &Error{Args: []string{"status", "--short"}, Result: Result{ExitCode: 7}, FailureID: "status-id", cause: errors.New("exit status 7")},
 			want: "git status failed with exit 7 (failure status-id)",
 		},
 	}
@@ -163,6 +168,37 @@ func TestRunPreservesGitExecutableFailureCause(t *testing.T) {
 	}
 	if !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("error=%v does not preserve executable-not-found cause", err)
+	}
+}
+
+// 起動段階の失敗は終了ステータスも stderr も残さないため、公開エラーと詳細ログの両方に OS の原因が要る。
+func TestRunReportsStartFailureCauseInErrorAndDetail(t *testing.T) {
+	bin := t.TempDir()
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	detailDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	_, err := (&Runner{DetailDir: detailDir}).Run(context.Background(), missing, "for-each-ref")
+	var gitError *Error
+	if !errors.As(err, &gitError) {
+		t.Fatalf("error=%v", err)
+	}
+	if !strings.Contains(err.Error(), "no such file or directory") {
+		t.Fatalf("error=%q does not carry the start failure cause", err)
+	}
+	if strings.Contains(err.Error(), "exit -1") {
+		t.Fatalf("error=%q still reports a meaningless exit code", err)
+	}
+	detail, readErr := os.ReadFile(filepath.Join(detailDir, gitError.FailureID+".log"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(detail), "cause: ") || !strings.Contains(string(detail), "no such file or directory") {
+		t.Fatalf("detail=%q does not carry the start failure cause", detail)
 	}
 }
 
