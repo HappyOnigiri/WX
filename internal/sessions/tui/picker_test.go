@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	xansi "github.com/charmbracelet/x/ansi"
 
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/sessions/scanner"
 )
 
@@ -475,4 +476,19 @@ func indexOfLineContaining(t *testing.T, lines []string, want string) int {
 	}
 	t.Fatalf("no line contains %q: %q", want, lines)
 	return -1
+}
+
+// 検索語と annotation は利用者・payload 由来なので、日本語表示でも訳を通さず原文のまま出す。
+func TestPickerJapaneseKeepsQueryAndAnnotationVerbatim(t *testing.T) {
+	model := newPickerModel([]scanner.Session{}, PickOptions{Language: string(i18n.Japanese)})
+	model.query = "in use"
+	model.width, model.height = 120, 20
+	view := model.View().Content
+	if !strings.Contains(view, "検索: in use") {
+		t.Fatalf("view=%q lacks the verbatim query", view)
+	}
+	note := itemNote(i18n.New(string(i18n.Japanese)), Annotation{Text: "wx-release pending", InUse: true})
+	if note != "wx-release pending · 使用中" {
+		t.Fatalf("note=%q", note)
+	}
 }

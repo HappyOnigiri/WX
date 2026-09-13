@@ -6,5 +6,3 @@ tools/checkdocsindex/main.go	exempt	Matches the Japanese heading and entry shape
 tools/checktests/main.go	exempt	Quotes the Japanese exemption-comment syntax the repository conventions define; not user-facing display.
 cmd/wx/localization_help.go	backlog	translateHelp still replaces substrings in rendered help output.
 internal/diag/localization.go	backlog	The diagnostics replacement table still rewrites rendered findings.
-internal/sessions/tui/picker.go	backlog	Picker labels are still translated by an en to ja table.
-internal/tui/select.go	backlog	Selection prompt labels are still translated by an en to ja table.
