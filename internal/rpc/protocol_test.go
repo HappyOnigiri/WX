@@ -377,10 +377,12 @@ func TestClientServerRoundTripWithoutParentDeadline(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if time.Now().After(deadline) {
-			t.Fatal("socket was not created")
+			t.Fatal("socket did not accept a connection")
 		}
-		info, err := os.Lstat(socket)
-		if err == nil && info.Mode()&os.ModeSocket != 0 {
+		// bind(2) が socket file を作った時点ではまだ listen(2) 前で、接続は ECONNREFUSED になる。
+		// file の存在ではなく接続の成否で待ち、負荷の高い環境で listen 前に Call しないようにする。
+		if probe, err := net.Dial("unix", socket); err == nil {
+			_ = probe.Close()
 			break
 		}
 		select {

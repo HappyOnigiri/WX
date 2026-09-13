@@ -473,26 +473,29 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, fres
 	return lease, nil
 }
 
+// waitForSnapshot は session の保存完了を待つ。
+// readiness timeout は状態の変化を待つ時間だけを区切り、状態の読み取りには掛けない。
+// 読み取りにも掛けると、隔離や期限切れという終端の理由が deadline exceeded に化ける。
 func (m *Manager) waitForSnapshot(ctx context.Context, sessionID string) (state.Session, []state.Snapshot, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, m.Config().Readiness.Timeout.Duration)
 	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		session, err := m.store.SessionByID(waitCtx, sessionID)
+		session, err := m.store.SessionByID(ctx, sessionID)
 		if err != nil {
 			return state.Session{}, nil, err
 		}
-		snapshots, err := m.store.Snapshots(waitCtx, sessionID)
+		snapshots, err := m.store.Snapshots(ctx, sessionID)
 		if err != nil {
 			return state.Session{}, nil, err
 		}
 		if session.State == "ARCHIVED" {
-			w, workspaceErr := m.store.SessionWorkspace(waitCtx, sessionID)
+			w, workspaceErr := m.store.SessionWorkspace(ctx, sessionID)
 			if workspaceErr != nil {
 				return session, snapshots, workspaceErr
 			}
-			usable, usableErr := m.recoveryUsable(waitCtx, sessionID, w, snapshots, time.Now())
+			usable, usableErr := m.recoveryUsable(ctx, sessionID, w, snapshots, time.Now())
 			if usableErr != nil {
 				return session, snapshots, usableErr
 			}
@@ -503,7 +506,7 @@ func (m *Manager) waitForSnapshot(ctx context.Context, sessionID string) (state.
 		if session.State == "EXPIRED" {
 			return session, snapshots, errors.New("session recovery snapshot expired while waiting for archive")
 		}
-		slot, err := m.store.Slot(waitCtx, session.SlotID)
+		slot, err := m.store.Slot(ctx, session.SlotID)
 		if err == nil && (slot.State == "FAILED" || slot.State == "QUARANTINED") {
 			return session, snapshots, fmt.Errorf("session archive failed: slot is %s", slot.State)
 		}
