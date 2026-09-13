@@ -79,14 +79,11 @@ var defaultEarlyPaths = append(append([]string{}, defaultIncludeNames...),
 
 // defaultIncludeCandidates は main worktree に regular physical file として存在する default 名を返す。
 // .worktreelink にある名前は明示的な link rule が所有するため除外する。存在しなくても、この一覧は全 repository に適用されるのでエラーにしない。
-func defaultIncludeCandidatesForRepository(repo discovery.Repository, c config.Config) ([]string, error) {
+// linkPatterns は呼び出し側が読んだ .worktreelink の内容で、同じjobの中で判定の根拠がずれないよう受け取る。
+func defaultIncludeCandidatesForRepository(repo discovery.Repository, c config.Config, linkPatterns []string) ([]string, error) {
 	mainPath := string(repo.MainPath)
 	if !c.DefaultAgentRulesForWorkspaceRepository(repositoryRootForConfig(repo), repo.RelativePath, mainPath) {
 		return nil, nil
-	}
-	linkPatterns, err := readPhysicalPatterns(mainPath, ".worktreelink")
-	if err != nil {
-		return nil, err
 	}
 	linked := map[string]bool{}
 	for _, pattern := range linkPatterns {
@@ -117,9 +114,9 @@ func defaultIncludeCandidatesForRepository(repo discovery.Repository, c config.C
 
 // defaultIncludes は候補を Git が追跡していない名前に絞る。一度の ls-files で一覧全体を調べ、tracked name は報告せず skip する。
 // これにより、repository がこれらの名前で file を commit していても prepare できる。
-func (p *Preparer) defaultIncludesForRepository(repo discovery.Repository) ([]string, error) {
+func (p *Preparer) defaultIncludesForRepository(repo discovery.Repository, linkPatterns []string) ([]string, error) {
 	mainPath := string(repo.MainPath)
-	candidates, err := defaultIncludeCandidatesForRepository(repo, p.Config)
+	candidates, err := defaultIncludeCandidatesForRepository(repo, p.Config, linkPatterns)
 	if err != nil {
 		return nil, err
 	}
@@ -150,13 +147,14 @@ func (p *Preparer) defaultIncludesForRepository(repo discovery.Repository) ([]st
 // copyIncludesAt は descriptor-bound な include materializer である。destinationRoot は pin 済み owner namespace から開き、すべての書き込みをその相対 path で行う。
 // destination syscall に lexical target pathname は決して使わない。
 func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, relativeTarget string) error {
-	patterns, err := readPhysicalPatterns(string(repo.MainPath), ".worktreeinclude")
+	rulesRoot, err := openPinnedRepositoryRoot(string(repo.MainPath))
 	if err != nil {
 		return err
 	}
-	defaults, err := p.defaultIncludesForRepository(repo)
-	if err != nil {
-		return err
+	rules, rulesErr := p.resolveRepositoryRules(repo, rulesRoot)
+	_ = rulesRoot.Close()
+	if rulesErr != nil {
+		return rulesErr
 	}
 	tracked, err := p.trackedIncludePaths(repo)
 	if err != nil {
@@ -168,7 +166,7 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 	}
 	defer func() { _ = destinationRoot.Close() }()
 	// 同じ path の最終内容を明示的な .worktreeinclude entry が決められるよう、default を先に適用する。
-	for _, rel := range defaults {
+	for _, rel := range rules.defaults {
 		sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
 		if sourceErr != nil {
 			return sourceErr
@@ -179,33 +177,15 @@ func (p *Preparer) copyIncludesAt(repo discovery.Repository, owner *os.Root, rel
 			return fmt.Errorf("copy default include %s: %w", rel, copyErr)
 		}
 	}
-	for _, pattern := range patterns {
-		clean := filepath.Clean(pattern)
-		if filepath.IsAbs(pattern) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("unsafe .worktreeinclude pattern %q", pattern)
+	for _, rel := range rules.includes {
+		sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
+		if sourceErr != nil {
+			return sourceErr
 		}
-		matches, err := safeGlob(string(repo.MainPath), pattern)
-		if err != nil {
-			return err
-		}
-		for _, src := range matches {
-			rel, err := filepath.Rel(string(repo.MainPath), src)
-			if err != nil {
-				return err
-			}
-			rel, err = safeRelative(rel)
-			if err != nil {
-				return fmt.Errorf("unsafe .worktreeinclude match %q: %w", src, err)
-			}
-			sourceRoot, sourceErr := OpenPhysicalRoot(string(repo.MainPath))
-			if sourceErr != nil {
-				return sourceErr
-			}
-			copyErr := p.copyIncludePath(tracked, sourceRoot, rel, destinationRoot, rel)
-			_ = sourceRoot.Close()
-			if copyErr != nil {
-				return copyErr
-			}
+		copyErr := p.copyIncludePath(tracked, sourceRoot, rel, destinationRoot, rel)
+		_ = sourceRoot.Close()
+		if copyErr != nil {
+			return copyErr
 		}
 	}
 	return nil

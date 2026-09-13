@@ -27,34 +27,16 @@ func (p *Preparer) RepositoryPlacements(ctx context.Context, repo discovery.Repo
 		return nil, err
 	}
 	defer func() { _ = sourceRoot.Close() }()
-	defaults, err := p.defaultIncludesForRepository(repo)
+	rules, err := p.resolveRepositoryRules(repo, sourceRoot)
 	if err != nil {
 		return nil, err
-	}
-	patterns, err := readPhysicalPatternsAt(sourceRoot, ".worktreeinclude")
-	if err != nil {
-		return nil, err
-	}
-	copyRoots := append([]string{}, defaults...)
-	for _, pattern := range patterns {
-		matches, globErr := safeGlob(mainPath, pattern)
-		if globErr != nil {
-			return nil, globErr
-		}
-		for _, match := range matches {
-			rel, relErr := filepath.Rel(mainPath, match)
-			if relErr != nil {
-				return nil, relErr
-			}
-			copyRoots = append(copyRoots, rel)
-		}
 	}
 	tracked, err := p.trackedPathsAt(ctx, repo, oid)
 	if err != nil {
 		return nil, err
 	}
 	placements := make(map[string]state.Placement)
-	for _, root := range copyRoots {
+	for _, root := range rules.copyRules() {
 		clean, err := safeRelative(root)
 		if err != nil {
 			return nil, err
@@ -63,14 +45,7 @@ func (p *Preparer) RepositoryPlacements(ctx context.Context, repo discovery.Repo
 			return nil, err
 		}
 	}
-	linkPatterns, err := readPhysicalPatternsAt(sourceRoot, ".worktreelink")
-	if err != nil {
-		return nil, err
-	}
-	if err := validateRuleConflicts(copyRoots, linkPatterns); err != nil {
-		return nil, err
-	}
-	links, err := inspectLinkSources(sourceRoot, linkPatterns)
+	links, err := inspectLinkSources(sourceRoot, rules.links)
 	if err != nil {
 		return nil, err
 	}
