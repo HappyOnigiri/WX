@@ -15,7 +15,7 @@ type Resolved struct {
 	RequestedRef, OID string
 }
 
-// MissingDefaultBranchError は repository の既定 branch が解決できなかったことを表す。
+// MissingDefaultBranchError は明示された repository の既定 branch が存在しないことを表す。
 // 診断はこの失敗を「設定で既定 branch を指し直す」対処へ結び付けるため、
 // 呼び出し側が errors.As で判定できるよう branch 名と workspace 相対 path を保つ。
 type MissingDefaultBranchError struct {
@@ -24,6 +24,17 @@ type MissingDefaultBranchError struct {
 
 func (e *MissingDefaultBranchError) Error() string {
 	return fmt.Sprintf("default branch %q is missing in repository %s", e.Branch, e.RepositoryRelativePath)
+}
+
+// UnresolvedDefaultBranchError は明示設定にも Git の実体にも貸出の起点が見つからなかったことを表す。
+// MissingDefaultBranchError は明示された branch が消えた場合に限って使い、この error は
+// origin/HEAD や default_branch の設定を促す診断へ結び付ける。
+type UnresolvedDefaultBranchError struct {
+	RepositoryRelativePath string
+}
+
+func (e *UnresolvedDefaultBranchError) Error() string {
+	return fmt.Sprintf("default branch could not be resolved for repository %s; set a remote HEAD or configure default_branch", e.RepositoryRelativePath)
 }
 
 func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspace, specs []string) ([]Resolved, error) {
@@ -74,6 +85,9 @@ func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 		}
 		if matched == 0 && len(applicable) == 1 {
 			repo := applicable[0]
+			if repo.DefaultBranch == "" {
+				return nil, &UnresolvedDefaultBranchError{RepositoryRelativePath: repo.RelativePath}
+			}
 			return nil, fmt.Errorf("branch %q does not exist in repository %s; refusing to use default branch %q", global, repo.RelativePath, repo.DefaultBranch)
 		}
 		if matched == 0 && len(applicable) > 1 {
@@ -95,6 +109,9 @@ func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 		if q, ok := qualified[string(repo.ID)]; ok {
 			branch = q
 		}
+		if branch == "" {
+			return nil, &UnresolvedDefaultBranchError{RepositoryRelativePath: repo.RelativePath}
+		}
 		oid, ok, err := gitx.ResolveRef(ctx, git, string(repo.MainPath), branch)
 		if err != nil {
 			return nil, err
@@ -102,6 +119,9 @@ func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 		if !ok {
 			if _, qualified := qualified[string(repo.ID)]; qualified {
 				return nil, fmt.Errorf("branch %q does not exist in repository %s", branch, repo.RelativePath)
+			}
+			if repo.DefaultBranch == "" {
+				return nil, &UnresolvedDefaultBranchError{RepositoryRelativePath: repo.RelativePath}
 			}
 			branch = repo.DefaultBranch
 			oid, ok, err = gitx.ResolveRef(ctx, git, string(repo.MainPath), branch)

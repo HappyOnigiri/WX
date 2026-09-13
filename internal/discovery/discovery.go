@@ -116,10 +116,13 @@ func (d *Discoverer) inspectRepoForWorkspace(ctx context.Context, workspaceRoot,
 	if err != nil {
 		return Repository{}, err
 	}
-	branch := "main"
 	override := d.Config.RepositoryFor(workspaceRoot, relative, string(mainPath))
-	if override.DefaultBranch != "" {
-		branch = override.DefaultBranch
+	branch := override.DefaultBranch
+	if branch == "" {
+		branch, err = d.resolveDefaultBranch(ctx, string(mainPath))
+		if err != nil {
+			return Repository{}, fmt.Errorf("resolve default branch for %s: %w", mainPath, err)
+		}
 	}
 	return Repository{ID: domain.RepositoryID(domain.StableID(string(common))), MainPath: mainPath, CommonDir: common, RelativePath: filepath.Clean(relative), RemoteName: d.remoteName(ctx, string(mainPath)), DefaultBranch: branch}, nil
 }

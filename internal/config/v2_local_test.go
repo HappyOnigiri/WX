@@ -7,6 +7,12 @@ import (
 	"testing"
 )
 
+func TestDefaultsV2LeavesDefaultBranchForDiscovery(t *testing.T) {
+	if got := DefaultsV2().RepositoryDefaults.DefaultBranch; got != "" {
+		t.Fatalf("default branch=%q, want unset so discovery can resolve it", got)
+	}
+}
+
 func TestV2LocalRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

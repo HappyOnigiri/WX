@@ -17,6 +17,9 @@
    fullscreenのagentが起動すると標準出力のnoticeは流れてしまうため、端末があるときは起動**前**の確認にする。
    wxが作ったslotは貸出とsnapshotでHEADが動くのが前提なので、この確認の対象にしない。
 
+   branchを指定しない貸出では、明示された設定を最優先し、未設定ならGitの既定branchの参照とローカルの候補を順に検証して起点を決める。
+   根拠が一つも成立しない場合は自動で選ばず、remoteの既定参照を設定するかbranchを明示するよう診断して停止する。
+
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
    子プロセスにはセッションID・token・daemon socketが渡り、以降のhookはこれらを持つ場合だけ動く。
    起動位置は`leasePath`が決めるslot側の起点（単一repositoryならslot内のworktree、それ以外はworkspace root）で、sourceのサブディレクトリから起動しても同じ位置になる。

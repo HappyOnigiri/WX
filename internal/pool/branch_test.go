@@ -98,6 +98,15 @@ func TestResolveBranchesRejectsAmbiguousAndMissingSpecifications(t *testing.T) {
 	if _, err := ResolveBranches(context.Background(), runner, broken, nil); err == nil {
 		t.Fatal("Git execution failure succeeded")
 	}
+	var unresolved *UnresolvedDefaultBranchError
+	emptyDefault := w
+	emptyDefault.Repositories = append([]discovery.Repository(nil), w.Repositories...)
+	emptyDefault.Repositories[0].DefaultBranch = ""
+	if _, err := ResolveBranches(context.Background(), runner, emptyDefault, nil); !errors.As(err, &unresolved) {
+		t.Fatalf("empty default branch error=%v, want UnresolvedDefaultBranchError", err)
+	} else if unresolved.RepositoryRelativePath != "services/api" || strings.Contains(err.Error(), `default branch ""`) {
+		t.Fatalf("unresolved default branch error=%q, want repository path and no empty branch name", err)
+	}
 }
 
 func TestResolveBranchesPropagatesGlobalResolutionFailure(t *testing.T) {

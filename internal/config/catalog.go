@@ -79,7 +79,7 @@ var catalogTexts = map[string]catalogText{
 	"reuse_standby":                       {"Workspace standby reuse", "Overrides READY slot update policy for this workspace.", "Overrides the global standby reuse setting.", nil},
 	"submodules":                          {"Workspace submodules", "Overrides submodule preparation for this workspace.", "Overrides the global submodule setting.", nil},
 	"warm_count":                          {"Workspace standby count", "READY slots maintained for this workspace.", "Zero disables automatic replenishment for this workspace.", nil},
-	"default_branch":                      {"Default branch", "Branch used as the detached base for this repository.", "Affects the starting point of new worktrees.", nil},
+	"default_branch":                      {"Default branch", "Explicit branch used as the detached base; when empty, wx resolves one from the repository's Git refs.", "Affects the starting point of new worktrees.", nil},
 	"dir_name":                            {"Placement directory name", "Fixes the repository directory name inside a slot.", "Affects placement in newly prepared workspaces.", nil},
 	"dir_source":                          {"Placement name source", "Chooses how this repository directory name is derived.", "Overrides the global naming policy.", []string{"remote", "directory"}},
 	"cow_min_size_kib":                    {"Repository minimum CoW size", "Minimum file size eligible for CoW sharing in this repository.", "Rebuilds standby slots for the repository.", nil},
@@ -88,7 +88,7 @@ var catalogTexts = map[string]catalogText{
 	"prepare.version":                     {"Preparation version", "Identifier used to intentionally invalidate earlier preparation.", "Existing standby slots are no longer reusable after this changes.", nil},
 	// v2 は明示 scope 内で同じ leaf 名を使う。workspace の nested
 	// repository_defaults だけは workspace key と衝突するため section prefix を残す。
-	"repository_defaults.default_branch":               {"Workspace repository default branch", "Default branch inherited by repositories in this workspace.", "Changes the starting point of new worktrees in this workspace.", nil},
+	"repository_defaults.default_branch":               {"Workspace repository default branch", "Explicit branch inherited by repositories in this workspace; when empty, wx resolves one from each repository's Git refs.", "Changes the starting point of new worktrees in this workspace.", nil},
 	"repository_defaults.dir_source":                   {"Workspace repository name source", "Naming source inherited by repositories in this workspace.", "Affects newly prepared repository placement names.", []string{"remote", "directory"}},
 	"repository_defaults.cow_min_size_kib":             {"Workspace repository minimum CoW size", "CoW threshold inherited by repositories in this workspace.", "Affected standby slots rebuild after this changes.", nil},
 	"repository_defaults.submodules":                   {"Workspace repository submodules", "Submodule policy inherited by repositories in this workspace.", "Existing standby slots rebuild after this changes.", nil},
