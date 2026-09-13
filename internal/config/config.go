@@ -178,6 +178,7 @@ type RepositoryDefaults struct {
 func repositoryDefaultsAsRepository(d RepositoryDefaults) Repository {
 	prepare := d.Prepare
 	prepare.Command = cloneStrings(prepare.Command)
+	prepare.Inputs = cloneStrings(prepare.Inputs)
 	readiness := d.Readiness
 	readiness.EarlyPaths = cloneStrings(readiness.EarlyPaths)
 	return Repository{
@@ -355,6 +356,7 @@ type RepositoryIncludes struct {
 }
 type Prepare struct {
 	Command []string `yaml:"command,omitempty"`
+	Inputs  []string `yaml:"inputs,omitempty"`
 	Timeout Duration `yaml:"timeout,omitempty"`
 	Version string   `yaml:"version,omitempty"`
 }
@@ -644,6 +646,13 @@ func validateWorkspaceOverride(path string, workspace Workspace) error {
 func validateRepositoryOverride(path string, override Repository) (Repository, error) {
 	if override.Prepare.Timeout.Duration < 0 {
 		return Repository{}, fmt.Errorf("repositories.%s.prepare.timeout must not be negative", path)
+	}
+	if override.Prepare.Inputs != nil {
+		inputs, err := validatePrepareInputs(override.Prepare.Inputs, fmt.Sprintf("repositories.%s.prepare.inputs", path))
+		if err != nil {
+			return Repository{}, err
+		}
+		override.Prepare.Inputs = inputs
 	}
 	if mode := override.Readiness.Mode; mode != "" && mode != "early" && mode != "full" {
 		return Repository{}, fmt.Errorf("repositories.%s.readiness.mode must be early or full", path)

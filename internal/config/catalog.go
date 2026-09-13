@@ -84,6 +84,7 @@ var catalogTexts = map[string]catalogText{
 	"dir_source":                          {"Placement name source", "Chooses how this repository directory name is derived.", "Overrides the global naming policy.", []string{"remote", "directory"}},
 	"cow_min_size_kib":                    {"Repository minimum CoW size", "Minimum file size eligible for CoW sharing in this repository.", "Rebuilds standby slots for the repository.", nil},
 	"prepare.command":                     {"Preparation command", "Command run in this repository after checkout.", "A failure also fails slot preparation.", nil},
+	"prepare.inputs":                      {"Preparation input paths", "Repository-relative path patterns that trigger the preparation command during standby updates.", "Matching changes rerun preparation before the updated worktree is handed over.", nil},
 	"prepare.timeout":                     {"Preparation command timeout", "Maximum time allowed for the preparation command.", "Values that are too short fail preparation.", nil},
 	"prepare.version":                     {"Preparation version", "Identifier used to intentionally invalidate earlier preparation.", "Existing standby slots are no longer reusable after this changes.", nil},
 	// v2 は明示 scope 内で同じ leaf 名を使う。workspace の nested
@@ -93,6 +94,7 @@ var catalogTexts = map[string]catalogText{
 	"repository_defaults.cow_min_size_kib":             {"Workspace repository minimum CoW size", "CoW threshold inherited by repositories in this workspace.", "Affected standby slots rebuild after this changes.", nil},
 	"repository_defaults.submodules":                   {"Workspace repository submodules", "Submodule policy inherited by repositories in this workspace.", "Existing standby slots rebuild after this changes.", nil},
 	"repository_defaults.prepare.command":              {"Workspace repository preparation command", "Preparation command inherited by repositories in this workspace.", "A failure fails preparation for affected repositories.", nil},
+	"repository_defaults.prepare.inputs":               {"Workspace repository preparation inputs", "Path patterns inherited by repositories in this workspace that trigger preparation during standby updates.", "Matching changes rerun preparation before affected worktrees are handed over.", nil},
 	"repository_defaults.prepare.timeout":              {"Workspace repository preparation timeout", "Preparation timeout inherited by repositories in this workspace.", "Values that are too short fail preparation.", nil},
 	"repository_defaults.prepare.version":              {"Workspace repository preparation version", "Version identifier inherited by repositories in this workspace.", "Existing standby slots are no longer reusable after this changes.", nil},
 	"repository_defaults.includes.default_agent_rules": {"Workspace repository agent assets", "Whether standard agent files are inherited by repositories in this workspace.", "Changes preparation content for affected repositories.", nil},

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -116,6 +117,40 @@ func TestV2ExplicitEmptyListsOverrideTheirParents(t *testing.T) {
 	}
 	if got := effective.RepositoryFor("/workspace", ".", "").Readiness.EarlyPaths; got == nil || len(got) != len(globalEarly) {
 		t.Fatalf("repository early_paths=%v, want inherited values", got)
+	}
+}
+
+// prepare.inputs は global・workspace・membership の各 list を追加合成せず、
+// 値が明示された階層で置き換える。明示 empty も親の値を消す指定として保つ。
+func TestV2PrepareInputsInheritByReplacement(t *testing.T) {
+	raw := Config{
+		Version: 2, v2Explicit: true,
+		RepositoryDefaults: RepositoryDefaults{Prepare: Prepare{Inputs: []string{"global"}}},
+		Workspaces: map[string]Workspace{
+			"/workspace": {
+				RepositoryDefaults: RepositoryDefaults{Prepare: Prepare{Inputs: []string{"workspace"}}},
+				Repositories: map[string]Repository{
+					"backend": {Prepare: Prepare{Inputs: []string{"member"}}},
+					"empty":   {Prepare: Prepare{Inputs: []string{}}},
+				},
+			},
+		},
+	}
+	effective := Merge(Defaults(), raw)
+	if err := Validate(&effective); err != nil {
+		t.Fatal(err)
+	}
+	if got := effective.RepositoryFor("/workspace", "backend", "").Prepare.Inputs; !reflect.DeepEqual(got, []string{"member"}) {
+		t.Fatalf("membership inputs=%v, want member replacement", got)
+	}
+	if got := effective.RepositoryFor("/workspace", "frontend", "").Prepare.Inputs; !reflect.DeepEqual(got, []string{"workspace"}) {
+		t.Fatalf("workspace inputs=%v, want workspace replacement", got)
+	}
+	if got := effective.RepositoryFor("/workspace", "empty", "").Prepare.Inputs; got == nil || len(got) != 0 {
+		t.Fatalf("empty membership inputs=%v, want explicit empty replacement", got)
+	}
+	if got := effective.RepositoryFor("/other", "frontend", "").Prepare.Inputs; !reflect.DeepEqual(got, []string{"global"}) {
+		t.Fatalf("global inputs=%v, want global fallback", got)
 	}
 }
 

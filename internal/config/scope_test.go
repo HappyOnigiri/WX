@@ -31,6 +31,7 @@ var scopeSamples = map[Scope]map[string]string{
 		"dir_source":                   "directory",
 		"cow_min_size_kib":             "64",
 		"prepare.command":              "make",
+		"prepare.inputs":               "config",
 		"prepare.timeout":              "5m0s",
 		"prepare.version":              "v1",
 		"includes.default_agent_rules": "false",
@@ -65,13 +66,13 @@ var scopeInvalid = map[Scope]map[string]string{
 // scopeUnvalidated は値域を持たず、Validate が通してよいキーである。
 var scopeUnvalidated = map[Scope][]string{
 	ScopeWorkspace:  {"copy", "link", "reuse_standby", "submodules", "discovery.exclude"},
-	ScopeRepository: {"default_branch", "dir_name", "prepare.command", "prepare.version", "includes.default_agent_rules", "readiness.early_paths"},
+	ScopeRepository: {"default_branch", "dir_name", "prepare.command", "prepare.inputs", "prepare.version", "includes.default_agent_rules", "readiness.early_paths"},
 }
 
 // scopeOnlyKeys は継承元の global キーを持たない、scope 固有のキーである。
 var scopeOnlyKeys = map[string]bool{
 	"copy": true, "link": true, "dir_name": true, "default_branch": true,
-	"prepare.command": true, "prepare.timeout": true, "prepare.version": true,
+	"prepare.command": true, "prepare.inputs": true, "prepare.timeout": true, "prepare.version": true,
 }
 
 func scopeTestHome(t *testing.T) string {
@@ -337,6 +338,30 @@ func TestRepositoryEarlyPathsAreValidatedAndNormalized(t *testing.T) {
 	got := cfg.ReadinessForRepository(target).EarlyPaths
 	if len(got) != 2 || got[0] != "docs" || got[1] != "src" {
 		t.Fatalf("early paths=%v, want cleaned and deduplicated values", got)
+	}
+}
+
+// repository の prepare.inputs は early_paths と同じ安全条件に加え、各 path segment を
+// filepath.Match で解釈できる pattern に限定し、clean と重複除去を済ませて保存する。
+func TestRepositoryPrepareInputsAreValidatedAndNormalized(t *testing.T) {
+	home := scopeTestHome(t)
+	target := scopeTestTarget(t, home)
+	for _, unsafe := range []string{"/abs", "../escape", ".git/config", "..", "["} {
+		cfg := Defaults()
+		cfg.Repositories[target] = Repository{Prepare: Prepare{Inputs: []string{unsafe}}}
+		if err := Validate(&cfg); err == nil {
+			t.Fatalf("prepare input %q was accepted", unsafe)
+		}
+	}
+	cfg := Defaults()
+	cfg.Repositories[target] = Repository{Prepare: Prepare{Inputs: []string{"config/", "config", "./src/*", "src/*"}}}
+	if err := Validate(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.RepositoryFor("", "", target).Prepare.Inputs
+	want := []string{"config", "src/*"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("prepare inputs=%v, want cleaned and deduplicated values %v", got, want)
 	}
 }
 

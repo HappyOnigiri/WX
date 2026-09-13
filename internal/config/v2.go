@@ -156,6 +156,7 @@ func cloneWorkspaces(in map[string]Workspace) map[string]Workspace {
 		v.Copy = cloneStrings(v.Copy)
 		v.Link = cloneStrings(v.Link)
 		v.Discovery.Exclude = cloneStrings(v.Discovery.Exclude)
+		v.RepositoryDefaults.Prepare.Inputs = cloneStrings(v.RepositoryDefaults.Prepare.Inputs)
 		v.RepositoryDefaults.Readiness.EarlyPaths = cloneStrings(v.RepositoryDefaults.Readiness.EarlyPaths)
 		v.Repositories = cloneRepositories(v.Repositories)
 		out[k] = v
@@ -170,6 +171,7 @@ func cloneRepositories(in map[string]Repository) map[string]Repository {
 	out := make(map[string]Repository, len(in))
 	for k, v := range in {
 		v.Prepare.Command = cloneStrings(v.Prepare.Command)
+		v.Prepare.Inputs = cloneStrings(v.Prepare.Inputs)
 		v.Readiness.EarlyPaths = cloneStrings(v.Readiness.EarlyPaths)
 		out[k] = v
 	}
@@ -286,6 +288,9 @@ func overlayRepositoryDefaults(dst *RepositoryDefaults, src RepositoryDefaults, 
 	}
 	if raw.has("repository_defaults.prepare.command", src.Prepare.Command != nil) {
 		dst.Prepare.Command = cloneStrings(src.Prepare.Command)
+	}
+	if raw.has("repository_defaults.prepare.inputs", src.Prepare.Inputs != nil) {
+		dst.Prepare.Inputs = cloneStrings(src.Prepare.Inputs)
 	}
 	if raw.has("repository_defaults.prepare.timeout", src.Prepare.Timeout.Duration != 0) {
 		dst.Prepare.Timeout = src.Prepare.Timeout
@@ -456,6 +461,9 @@ func mergeRepositoryDefaults(dst *RepositoryDefaults, src RepositoryDefaults) {
 	if src.Prepare.Command != nil {
 		dst.Prepare.Command = cloneStrings(src.Prepare.Command)
 	}
+	if src.Prepare.Inputs != nil {
+		dst.Prepare.Inputs = cloneStrings(src.Prepare.Inputs)
+	}
 	if src.Prepare.Timeout.Duration != 0 {
 		dst.Prepare.Timeout = src.Prepare.Timeout
 	}
@@ -502,7 +510,7 @@ func (c Config) ResolveRepository(workspaceRoot, relativePath, mainPath string) 
 }
 
 func repositoryKeys() map[string]struct{} {
-	return map[string]struct{}{"default_branch": {}, "dir_source": {}, "cow_min_size_kib": {}, "submodules": {}, "prepare.command": {}, "prepare.timeout": {}, "prepare.version": {}, "includes.default_agent_rules": {}, "readiness.mode": {}, "readiness.early_paths": {}, "readiness.timeout": {}, "readiness.progress": {}, "storage.copy_mode": {}, "dir_name": {}}
+	return map[string]struct{}{"default_branch": {}, "dir_source": {}, "cow_min_size_kib": {}, "submodules": {}, "prepare.command": {}, "prepare.inputs": {}, "prepare.timeout": {}, "prepare.version": {}, "includes.default_agent_rules": {}, "readiness.mode": {}, "readiness.early_paths": {}, "readiness.timeout": {}, "readiness.progress": {}, "storage.copy_mode": {}, "dir_name": {}}
 }
 
 func markRepositorySources(s map[string]string, c Config, root, rel string) {
@@ -526,6 +534,7 @@ func markRepositorySources(s map[string]string, c Config, root, rel string) {
 		"cow_min_size_kib":             present("cow_min_size_kib", global.COWMinSizeKiB != nil),
 		"submodules":                   present("submodules", global.Submodules != nil),
 		"prepare.command":              present("prepare.command", global.Prepare.Command != nil),
+		"prepare.inputs":               present("prepare.inputs", global.Prepare.Inputs != nil),
 		"prepare.timeout":              present("prepare.timeout", global.Prepare.Timeout.Duration != 0),
 		"prepare.version":              present("prepare.version", global.Prepare.Version != ""),
 		"includes.default_agent_rules": present("includes.default_agent_rules", global.Includes.DefaultAgentRules != nil),
@@ -566,6 +575,9 @@ func markRepositoryValueSources(s map[string]string, d Repository, source string
 	}
 	if d.Prepare.Command != nil {
 		s["prepare.command"] = source
+	}
+	if d.Prepare.Inputs != nil {
+		s["prepare.inputs"] = source
 	}
 	if d.Prepare.Timeout.Duration != 0 {
 		s["prepare.timeout"] = source
@@ -618,6 +630,9 @@ func mergeRepositoryValue(dst *Repository, src Repository) {
 	}
 	if src.Prepare.Command != nil {
 		dst.Prepare.Command = cloneStrings(src.Prepare.Command)
+	}
+	if src.Prepare.Inputs != nil {
+		dst.Prepare.Inputs = cloneStrings(src.Prepare.Inputs)
 	}
 	if src.Prepare.Timeout.Duration != 0 {
 		dst.Prepare.Timeout = src.Prepare.Timeout
@@ -739,6 +754,13 @@ func validateRepositoryDefaults(key string, d RepositoryDefaults) (RepositoryDef
 	}
 	if d.Prepare.Timeout.Duration < 0 {
 		return RepositoryDefaults{}, fmt.Errorf("%s.prepare.timeout must not be negative", key)
+	}
+	if d.Prepare.Inputs != nil {
+		inputs, err := validatePrepareInputs(d.Prepare.Inputs, key+".prepare.inputs")
+		if err != nil {
+			return RepositoryDefaults{}, err
+		}
+		d.Prepare.Inputs = inputs
 	}
 	if d.Readiness.Mode != "" && d.Readiness.Mode != "early" && d.Readiness.Mode != "full" {
 		return RepositoryDefaults{}, fmt.Errorf("%s.readiness.mode must be early or full", key)

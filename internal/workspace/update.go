@@ -211,6 +211,22 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 	}); err != nil {
 		return nil, err
 	}
+	changedInputs, err := p.prepareInputChanges(ctx, repo, oldOID, newOID, previous, desired)
+	if err != nil {
+		return nil, err
+	}
+	if len(changedInputs) > 0 {
+		if p.Log != nil {
+			for _, path := range changedInputs {
+				p.Log.Info("standby update rerunning prepare command", "repository", string(repo.MainPath), "input_path", path, "old_oid", oldOID, "new_oid", newOID)
+			}
+		}
+		if err := p.timePhase("update-prepare-command", func() error {
+			return p.runPrepareWithIdentity(ctx, repo, target, identity)
+		}); err != nil {
+			return nil, err
+		}
+	}
 	if err := p.timePhase("update-validate", func() error {
 		return p.validateUpdating(ctx, repo, target, newOID, slotID, identity)
 	}); err != nil {
