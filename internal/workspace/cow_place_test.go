@@ -210,7 +210,6 @@ func stagedCOWFixture(t *testing.T, contents map[string]string) (string, discove
 	}
 	oid := gitOutput(t, source, "rev-parse", "HEAD")
 	staged := *preparer
-	staged.noCheckout = true
 	ctx := context.Background()
 	root, target, err := staged.prepareTarget(target)
 	if err != nil {

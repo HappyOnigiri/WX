@@ -59,6 +59,7 @@ cold startを測るため、既定では対象workspaceの待機中READY slotを
 失敗せずに出力だけを残した区間は`workspace.PrepareNotices`が集め、計測と同じ経路で引ける。
 exit 0のpost-checkout hookが内部の失敗を飲み込んでも、出力を捨てるとwxからは正常と区別できないためである。
 本文はdaemon logへwarnで出し、全文は失敗のstderrと同じ詳細ログへ書く。
+復元もpost-checkoutを実行するため同じ記録を残すが、準備ではないので計測履歴には積まない。
 
 ## restart / stopのidleゲート
 
