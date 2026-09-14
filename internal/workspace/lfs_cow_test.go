@@ -1,9 +1,12 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,5 +141,37 @@ func TestCompactLFSObjectsLeavesCacheOnVerificationFailure(t *testing.T) {
 	entries, err := os.ReadDir(cacheDir)
 	if err != nil || len(entries) != 1 || strings.HasPrefix(entries[0].Name(), cowTemporaryPrefix) {
 		t.Fatalf("cache temporary entries=%v err=%v", entries, err)
+	}
+}
+
+func TestCompactLFSObjectsSkipsWithoutCoW(t *testing.T) {
+	t.Parallel()
+	if cowAvailable() {
+		t.Skip("Linux-only")
+	}
+	preparer := &Preparer{Config: config.Defaults()}
+	repo := discovery.Repository{MainPath: "/repo", RelativePath: "."}
+	result, err := preparer.CompactLFSObjects(context.Background(), repo, "/worktree", []LFSObjectCandidate{{
+		Path:    "weights.bin",
+		Pointer: LFSPointer{OID: "sha256:" + strings.Repeat("a", 64), Size: 1},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skipped != 1 || result.Replaced != 0 || result.Failed != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestLFSCompactionLogsSkipAndFailure(t *testing.T) {
+	t.Parallel()
+	var logged bytes.Buffer
+	preparer := &Preparer{Log: slog.New(slog.NewTextHandler(&logged, nil))}
+	candidate := LFSObjectCandidate{Path: "weights.bin", Pointer: LFSPointer{OID: "sha256:" + strings.Repeat("a", 64)}}
+	preparer.logLFSCompactionSkip(candidate, errLFSNotEligible)
+	preparer.logLFSCompactionFailure(candidate, errors.New("test failure"))
+	output := logged.String()
+	if !strings.Contains(output, "LFS cache CoW skipped") || !strings.Contains(output, "LFS cache CoW failed") {
+		t.Fatalf("log output=%q", output)
 	}
 }

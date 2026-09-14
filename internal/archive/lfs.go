@@ -77,27 +77,28 @@ type snapshotTreeChange struct {
 func parseSnapshotTreeDiff(output string) ([]snapshotTreeChange, error) {
 	parts := strings.Split(output, "\x00")
 	changes := make([]snapshotTreeChange, 0, len(parts))
-	for index := 0; index < len(parts); index++ {
+	for index := 0; index < len(parts); {
 		record := parts[index]
+		index++
 		if record == "" {
 			continue
 		}
-		tab := strings.IndexByte(record, '\t')
-		if tab < 0 {
+		if index >= len(parts) || parts[index] == "" {
 			return nil, errors.New("invalid Git tree diff record")
 		}
-		fields := strings.Fields(record[:tab])
+		path := parts[index]
+		index++
+		fields := strings.Fields(record)
 		if len(fields) < 5 || !strings.HasPrefix(fields[0], ":") {
 			return nil, errors.New("invalid Git tree diff header")
 		}
 		status := fields[4]
-		path := record[tab+1:]
 		if len(status) > 0 && (status[0] == 'R' || status[0] == 'C') {
-			if index+1 >= len(parts) || parts[index+1] == "" {
+			if index >= len(parts) || parts[index] == "" {
 				return nil, errors.New("invalid Git tree rename record")
 			}
-			index++
 			path = parts[index]
+			index++
 		}
 		if !validSnapshotPath(path) {
 			return nil, fmt.Errorf("unsafe Git tree path %q", path)
