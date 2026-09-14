@@ -56,9 +56,6 @@ type Preparer struct {
 	// LFSObjects は repository ID ごとの checkout 完全性検証に使う object 一覧である。
 	// nil の repository は従来経路との互換のため検証しない。
 	LFSObjects map[string][]LFSObjectInfo
-	// sharedPlaced は親の共有対象を checkout の前に clone で置き切ったことを表す。
-	// submodule の checkout は後段で実体化するため、この値にかかわらず専用の置換共有を行う。
-	sharedPlaced bool
 	// cowWorkerCount は CoW 共有の並列度をテストから固定する内部フックである。
 	// 0 のままなら cowWorkers が既定値を決める。1 にすると共有順序が index の並び順で決定的になる。
 	cowWorkerCount int
@@ -211,7 +208,7 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 		return err
 	}
 	var submoduleResult submodulePhaseResult
-	if err := p.completePrepare(ctx, repo, target, oid, slotID, phase, locked, &submoduleResult,
+	if err := p.completePrepare(ctx, repo, target, oid, slotID, phase, locked, cowPlacement{}, &submoduleResult,
 		func() error {
 			var err error
 			submoduleResult, err = p.submodulePhaseWithResult(ctx, repo, target, oid, targetIdentity)
@@ -230,7 +227,7 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 
 // completePrepare は配置後の command・CoW・最終検証を通常準備と二段階準備で共有する。
 // submodules と postCheckout は二段階準備では既に済んでいるため、その経路からは何もしない callback を受ける。
-func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, locked *lockedTarget, submoduleResult *submodulePhaseResult, submodules, postCheckout, includes, links func() error) error {
+func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, locked *lockedTarget, placement cowPlacement, submoduleResult *submodulePhaseResult, submodules, postCheckout, includes, links func() error) error {
 	lockedRoot, lockedRelativeTarget, targetIdentity := locked.root, locked.relative, locked.identity
 	if locked.existing {
 		if err := p.rejectCOWTemporaries(ctx, target, targetIdentity); err != nil {
@@ -302,13 +299,15 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 		// archive.Manager が snapshot の tree/index を復元し、resume-phase command を実行するまで RESTORING lock を保持する。
 		return nil
 	}
-	if !p.sharedPlaced {
+	if !placement.complete() {
 		if err := p.timePhase("cow", func() error {
-			return p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity, nil)
+			return p.compactWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity, placement.scope())
 		}); err != nil {
 			return err
 		}
 	}
+	// submodule の checkout は親の配置方式より後に実体化するため、その対象に入らない。
+	// 親の配置が完了した回でも、submodule だけは専用の置換共有を必ず行う。
 	if err := p.timePhase("submodule-cow", func() error {
 		return p.compactSubmoduleWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity, submoduleResult, locked.existing)
 	}); err != nil {
