@@ -158,10 +158,15 @@ moduleがpromisor（partial clone）で要求gitlinkのobjectが不足してい�
 要求objectが揃っているpromisorは実体化できるが、slot側へpromisor設定は引き継がれない。
 これらの条件は`wx doctor`の`submodule_sharing`でも確認でき、shallowはwarnを残して実体化を続ける。
 
+大量のsubmoduleは宣言を先に収集し、local moduleの適格判定を有界のworker poolで並列に行う。
+実体化は`git submodule update --init --jobs=N`へまとめて渡し、clone後のorigin復元だけを子ごとの有界な並列処理に分ける。
+並列度`N`はrepository設定に依らずwxが毎回指定する。argvと`-c`設定値が大きくなる場合はpathの塊を逐次に実行する。
+同じ上限をindex/treeのgitlink列挙にも適用し、子の数に依らずGitへ渡すpathの長さを抑える。
 cloneに必要なconfigは必ず`-c`引数で渡す。
 `internal/gitx`の環境サニタイズが`GIT_CONFIG_*`を落とすため、repo-local configや環境変数では子のcloneプロセスに効かない。
-この形は共有`.git/config`へ何も書かないので、ソースリポジトリは不変のまま保たれる。
+`--`へ渡すpathと`-c submodule.<name>.url=<source>`は同じ塊から1対1で組み立てる。この形は共有`.git/config`へ何も書かないので、ソースリポジトリは不変のまま保たれる。
 この性質に依存しているため、`internal/workspace/submodules_test.go`の`TestPrepareLeavesSourceRepositoryUnchanged`で恒久的に固定する。
+post-checkout hookへは実体化できたpathだけをactiveとして渡し、省略した子の再帰的な初期化も防ぐ。
 
 cloneの直後にsubmoduleの`origin`をローカルmoduleの`remote.origin.url`へ戻す。
 戻さないと`git push`がmainの`.git/modules`へ入る。`.gitmodules`のurlは`../child`のような相対表記の解決がsuperprojectのremote基準になるので、自前で解決するとGitと食い違う。

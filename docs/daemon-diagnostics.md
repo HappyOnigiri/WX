@@ -54,7 +54,7 @@ benchと同じstandby退役を必ず伴うため、実行中と直後は対象wo
 区間はPREPAREジョブの実行中に`workspace.PhaseTimings`が集計し、`internal/daemon/measurement.go`がdaemonのメモリに直近の一定件数だけを持つ。
 計測は診断であって状態ではないので、`state.Store`にもスキーマにも入れない。daemon再起動で消えるのは仕様である。
 
-ドットを含む区間名はCoW共有の並列worker間の合計で、親区間の実時間を超えることがある。
+ドットを含む区間名は並列worker間の合計で、親区間の実時間を超えることがある。
 区間の合計はEARLY/FULL READYと一致しない。所有権証明・キュー待ち・貸出解決のように計測していない時間が残るためである。
 
 使用量は返却の直前に`wx slots`から引き、貸出を要求した時刻より前の`measured_at`は前の準備の値として採らず次の測定を待つ（測定契機は[使用量とCoWの観測](storage-usage.md)）。
