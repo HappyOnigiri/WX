@@ -23,6 +23,7 @@ func (p *Preparer) submodulePhase(ctx context.Context, repo discovery.Repository
 	if !enabled {
 		return nil
 	}
+	p.SubmoduleOutcomes.BeginRepository(string(repo.MainPath))
 	return p.materializeSubmodules(ctx, repo, target, oid, identity)
 }
 
@@ -66,13 +67,15 @@ func (p *Preparer) materializeSubmodules(ctx context.Context, repo discovery.Rep
 		if !domain.IsWithin(commonModules, source) {
 			return fmt.Errorf("submodule %q resolves outside the source repository module directory", module.name)
 		}
-		upstream, eligible := p.submoduleUpstream(ctx, source, module)
+		upstream, eligible, reason := p.submoduleUpstreamWithReason(ctx, source, module)
 		if !eligible {
+			p.recordSubmoduleOutcome(repo, module, SubmoduleActionSkipped, reason)
 			continue
 		}
 		if err := p.cloneSubmodule(ctx, target, identity, module, source, upstream); err != nil {
 			return err
 		}
+		p.recordSubmoduleOutcome(repo, module, SubmoduleActionMaterialized, "")
 	}
 	return nil
 }
@@ -122,11 +125,21 @@ func (p *Preparer) planSubmodules(ctx context.Context, repo discovery.Repository
 		if module.url == "" {
 			// url が無い entry は clone 後に origin を戻す先が無いため実体化しない。
 			p.logSkip("submodule has no url in .gitmodules", "repository", string(repo.MainPath), "submodule", module.name)
+			p.recordSubmoduleOutcome(repo, module, SubmoduleActionSkipped, SubmoduleReasonURLMissing)
 			continue
 		}
 		modules = append(modules, module)
 	}
 	return modules, nil
+}
+
+func (p *Preparer) recordSubmoduleOutcome(repo discovery.Repository, module submodule, action SubmoduleAction, reason string) {
+	if p.SubmoduleOutcomes == nil {
+		return
+	}
+	p.SubmoduleOutcomes.Add(SubmoduleOutcome{
+		Repository: string(repo.MainPath), Path: module.path, Depth: 1, Action: action, Reason: reason,
+	})
 }
 
 // declaredSubmodules は rev の .gitmodules と index から submodule を確定する。
@@ -359,36 +372,41 @@ func splitSubmoduleKey(key string) (string, string, bool) {
 // ここで再実装すると Git と食い違う。ローカル module の origin は Git 自身が解決した結果である。
 // commentlint:allow-long -- .gitmodules の相対 url を自前解決しない理由を保守時に確認できるようにする
 func (p *Preparer) submoduleUpstream(ctx context.Context, source string, module submodule) (string, bool) {
+	upstream, eligible, _ := p.submoduleUpstreamWithReason(ctx, source, module)
+	return upstream, eligible
+}
+
+func (p *Preparer) submoduleUpstreamWithReason(ctx context.Context, source string, module submodule) (string, bool, string) {
 	info, statErr := os.Stat(source)
 	if statErr != nil || !info.IsDir() {
 		p.logSkip("submodule has no local module in the source repository", "submodule", module.name, "module_dir", source)
-		return "", false
+		return "", false, SubmoduleReasonLocalModule
 	}
 	inspection, inspectErr := InspectSubmodule(ctx, p.Git, source, module.oid)
 	if inspectErr != nil {
 		p.logSkip("submodule local module could not be inspected", "submodule", module.name, "module_dir", source, "error", inspectErr)
-		return "", false
+		return "", false, SubmoduleReasonInspectionFailed
 	}
 	// promisor で要求 OID が無いまま clone すると checkout が書込み後に失敗するため、
 	// shallow でない通常 module の欠落 OID と同じく、書き込む前に省略する。
 	if inspection.Status() == SubmoduleSharingPromisorMissing {
 		p.logSkip("submodule object is missing from the promisor local module", "submodule", module.name, "oid", module.oid)
-		return "", false
+		return "", false, SubmoduleReasonObjectMissing
 	}
 	if inspection.Status() == SubmoduleSharingObjectMissing {
 		// gitlink OID がローカル module に無いまま clone すると親が ` M <path>` の dirty で残り、
 		// その gitdir は wx が消せない場所にできる。書き込む前にここで弾く。
 		p.logSkip("submodule commit is missing from the local module", "submodule", module.name, "oid", module.oid)
-		return "", false
+		return "", false, SubmoduleReasonObjectMissing
 	}
 	if inspection.Status() == SubmoduleSharingShallow && p.Log != nil {
 		p.Log.Warn("submodule object sharing is unavailable because the local module is shallow", "submodule", module.name, "module_dir", source)
 	}
 	if inspection.OriginURL == "" {
 		p.logSkip("submodule local module has no origin url", "submodule", module.name, "module_dir", source)
-		return "", false
+		return "", false, SubmoduleReasonOriginMissing
 	}
-	return inspection.OriginURL, true
+	return inspection.OriginURL, true, ""
 }
 
 // gitProbe は Git の終了状態だけを見て前置き検査の結果を返す。

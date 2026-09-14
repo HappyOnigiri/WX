@@ -70,6 +70,21 @@ func TestProbeSubmoduleFindingsAcceptPopulatedSubmodule(t *testing.T) {
 	}
 }
 
+func TestProbeSubmoduleFindingsIgnorePreparedOutOfScopePath(t *testing.T) {
+	worktree := probeWorktreeFixture(t)
+	if err := os.Mkdir(filepath.Join(worktree, "vendor"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	probeGitCommand(t, worktree, "update-index", "--add", "--cacheinfo", "160000,"+strings.Repeat("a", 40)+",vendor")
+	findings := probeSubmoduleFindings(context.Background(), probeTestGit(), "/root", worktree, map[string]bool{"vendor": true})
+	if len(findings) != 1 || findings[0].Severity != diag.SeverityOK {
+		t.Fatalf("findings = %+v", findings)
+	}
+	if !strings.Contains(strings.Join(findings[0].Details, "\n"), "outside the preparation range") {
+		t.Fatalf("details = %+v", findings[0].Details)
+	}
+}
+
 // 準備は完了時に同じ検査を通しているため、ここでの差分は準備後に worktree が書き換わったことを意味する。
 func TestProbeTrackedFindingsReportModifiedTrackedFile(t *testing.T) {
 	worktree := probeWorktreeFixture(t)

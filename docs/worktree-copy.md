@@ -160,6 +160,8 @@ standbyのUPDATE経路は再同期しない。`rejectChangedGitlinks`が`.gitmod
 準備用fingerprintと更新互換fingerprintの両方に混ぜて、方針変更後に旧方針のREADY slotを再利用しない。
 更新互換側にも要るのは、更新経路がsubmoduleを実体化しないため`submodules=false`で作ったstandbyをtrue相当へ変換できないからである。
 
+準備した範囲と省略した対象は、`wx bench` と `wx doctor --probe -v` の準備計測で確認できる。
+
 snapshotは子のHEAD（branch名を含む）・index・worktree・未追跡file・停止中rebaseを、子1件につき1本の「capsule commit」へ畳んで保存する。
 capsuleはsourceのローカルmodule（`<common>/modules/<name>`）へfetchし、親のrecovery refと同じ寿命のrefで保護する。
 親のobject storeへ置かないのは、復元側の実体化が必ずそのローカルmoduleからcloneするためで、親が進めたgitlinkのcommitをclone時点で解決できなくなる。

@@ -89,6 +89,72 @@ func prepareNoticeFindings(root string, notices []daemon.PrepareNotice) []diag.F
 	return findings
 }
 
+func prepareSubmoduleProbeReport(report *daemon.PrepareSubmoduleReport) *diag.ProbeSubmoduleReport {
+	if report == nil {
+		return nil
+	}
+	converted := &diag.ProbeSubmoduleReport{Truncated: report.Truncated}
+	for _, summary := range report.Summaries {
+		converted.Summaries = append(converted.Summaries, diag.ProbeSubmoduleSummary{
+			Repository: summary.Repository, Depth: summary.Depth, Materialized: summary.Materialized,
+			OutOfScope: summary.OutOfScope, Skipped: summary.Skipped, Unreachable: summary.Unreachable,
+		})
+	}
+	for _, detail := range report.Details {
+		converted.Details = append(converted.Details, diag.ProbeSubmoduleDetail{
+			Repository: detail.Repository, Path: detail.Path, Depth: detail.Depth,
+			Action: detail.Action, Reason: detail.Reason,
+		})
+	}
+	return converted
+}
+
+func excludedSubmodulePaths(report *daemon.PrepareSubmoduleReport) map[string]bool {
+	if report == nil || report.Truncated {
+		return nil
+	}
+	paths := map[string]bool{}
+	for _, detail := range report.Details {
+		if detail.Action == "out_of_scope" {
+			paths[detail.Path] = true
+		}
+	}
+	return paths
+}
+
+func prepareSubmoduleFindings(root string, report *daemon.PrepareSubmoduleReport) []diag.Finding {
+	if report == nil {
+		return nil
+	}
+	findings := make([]diag.Finding, 0)
+	for _, detail := range report.Details {
+		var summaryID, causeID string
+		severity := diag.SeverityInfo
+		switch detail.Action {
+		case "skipped":
+			summaryID, causeID, severity = "diag.probe.submodule_skipped", "diag.probe.submodule_skipped_cause", diag.SeverityProblem
+		case "unreachable":
+			summaryID, causeID = "diag.probe.submodule_unreachable", "diag.probe.submodule_unreachable_cause"
+		default:
+			continue
+		}
+		findings = append(findings, diag.Finding{
+			Check: diag.CheckProbeSubmodule, Severity: severity,
+			Summary: "a prepared submodule was not available", Target: detail.Path,
+			Cause:   fmt.Sprintf("the preparation for %s classified submodule %s as %s (%s)", root, detail.Path, detail.Action, detail.Reason),
+			Action:  "make the submodule source and requested commit available, then run wx doctor --probe again",
+			Details: []string{fmt.Sprintf("repository=%s depth=%d", detail.Repository, detail.Depth)},
+			Messages: diag.FindingMessages{
+				Summary: message(summaryID),
+				Cause:   message(causeID, "Root", root, "Path", detail.Path, "Reason", detail.Reason),
+				Action:  message("diag.action.probe_submodule_prepare"),
+				Details: []i18n.Message{message("diag.probe.submodule_detail", "Repository", detail.Repository, "Depth", detail.Depth)},
+			},
+		})
+	}
+	return findings
+}
+
 // probeLeaseProblem は貸出まで辿り着けなかった失敗を、失敗した区間ごとの手順で報告する。
 // RPC の error code はほぼ REQUEST_FAILED に潰れるため、分類の材料は区間名だけである。
 func probeLeaseProblem(root string, stage probeStage) diag.Finding {
