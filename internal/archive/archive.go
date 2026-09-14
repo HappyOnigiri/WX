@@ -171,6 +171,13 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if err != nil {
 		return state.Snapshot{}, nil, nil, err
 	}
+	if candidates, candidateErr := snapshotLFSObjects(worktreeRun, env, head, worktreeTree); candidateErr != nil {
+		m.logLFSOptimizationWarning("collect changed LFS objects", candidateErr)
+	} else if len(candidates) > 0 {
+		if _, compactErr := m.Preparer.CompactLFSObjects(ctx, repo, worktree, candidates); compactErr != nil {
+			m.logLFSOptimizationWarning("compact changed LFS objects", compactErr)
+		}
+	}
 	commitRes, err := worktreeRun(recoveryCommitEnv(env), []byte("wx recovery snapshot\n"), "commit-tree", worktreeTree, "-p", head)
 	if err != nil {
 		return state.Snapshot{}, nil, nil, err
