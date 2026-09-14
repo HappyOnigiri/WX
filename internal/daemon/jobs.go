@@ -214,6 +214,14 @@ func (m *Manager) finishJob(ctx context.Context, job state.Job, owner string, ru
 		}
 		return m.store.FinishJobWithDetail(ctx, job.ID, owner, runErr, code, "")
 	}
+	var lfsErr *MissingLFSObjectsError
+	if errors.As(runErr, &lfsErr) {
+		code := "PREPARE_LFS_MISSING"
+		if job.Kind == "RESTORE" {
+			code = "RESTORE_LFS_MISSING"
+		}
+		return m.store.FinishJobWithDetail(ctx, job.ID, owner, runErr, code, "")
+	}
 	var prepareErr *workspace.PrepareCommandError
 	if errors.As(runErr, &prepareErr) {
 		failureCode := "PREPARE_FAILED"
@@ -275,6 +283,12 @@ func (m *Manager) runRecoveredJob(ctx context.Context, job state.Job) error {
 			if errors.As(err, &capacityErr) {
 				// 容量不足は preflight で slot を FAILED へ遷移済みで、書込みも
 				// retry budget の消費も無い。補充停止や隔離への fallback は行わない。
+				return err
+			}
+			var lfsErr *MissingLFSObjectsError
+			if errors.As(err, &lfsErr) {
+				// source 側に object が無い状態は再試行で自然に解消しない。
+				// preflight が slot を FAILED へ遷移済みなので補充停止や隔離へ倒さない。
 				return err
 			}
 			m.suspendStandbyReplenishment(ctx, job)

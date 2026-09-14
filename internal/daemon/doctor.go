@@ -60,6 +60,7 @@ func (m *Manager) Doctor(ctx context.Context) diag.Reply {
 	findings = append(findings, m.unsavedSubmoduleFindings(ctx)...)
 	findings = append(findings, m.submoduleSharingFindings(ctx)...)
 	findings = append(findings, m.prepareCapacityFindings(ctx)...)
+	findings = append(findings, m.lfsObjectFindings(ctx)...)
 	return doctorReply(findings)
 }
 

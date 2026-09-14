@@ -34,7 +34,7 @@ func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Pre
 		DetailDir: m.prepareDetailDir,
 		OwnedRoot: ownedRoot, RootPath: filepath.Clean(root),
 		RootID: slot.RootID, SlotRelPath: slot.RelPath,
-		SlotLocks: &m.slotLocks,
+		SlotLocks: &m.slotLocks, LFSLocks: &m.lfsLocks,
 	}
 }
 
@@ -101,8 +101,12 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	// 容量検査は staged preparation が BeginStagedPreparation で開始を記録する前に
 	// 行う。不足をその後に返すと、early_prepare の defer が worktree を QUARANTINED
 	// へ倒し、1 byte も書いていない slot を手動回収へ送ってしまう。
-	if err := m.enforcePrepareCapacity(ctx, slot, w, resolved, repos, prepareConfig); err != nil {
+	capacityReport, err := m.enforcePrepareCapacity(ctx, slot, w, resolved, repos, prepareConfig)
+	if err != nil {
 		return err
+	}
+	if !capacityReport.Sparse {
+		preparer.LFSObjects = lfsObjectsByRepository(capacityReport)
 	}
 	staged, err := m.prepareStagedSlot(ctx, slot, w, resolved, preparer)
 	if err != nil {

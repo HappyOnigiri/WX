@@ -93,6 +93,25 @@ path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗さ�
 `.worktreeinclude`と`.worktreelink`が同じpathを指す設定も利用者が明示した矛盾なので、配置を始める前に、原因のrepositoryと両manifestを名指しして準備を失敗させる。
 新規準備・復元・standbyの更新と貸出の照合は同じrule解決を共有するので、判定は経路によらず一致する。
 
+## Git LFS cache の欠落と修復
+
+LFS pointer が示す object の cache は、Git common directory（source repository が共有する Git directory）の `lfs/objects/<先頭2桁>/<次の2桁>/<64桁OID>` に置かれる。
+wx はこの source repository の cache にだけ検証済み object を追加し、HEAD・index・追跡ファイルには書き込まない。
+
+cache object が無い、または pointer の size と異なる場合、wx は source repository の working tree にある同じ path だけを修復候補にする。
+候補は physical な regular file で size が一致するものに限り、実際に cache へ置く前に内容を SHA-256 と OID で検証する。
+検証済みの bytes は同じ directory の一時ファイルへ書き切って fsync し、rename で原子的に install する。
+破損 cache を検証なしで削除したり、source の別の path や LFS server から補ったりはしない。
+
+`wx doctor` の `lfs_objects` は候補の有無を size だけで報告する。
+doctor は cache や source の本文を hash しないため、候補ありの表示は保証ではなく、hash 不一致なら次の準備は FAILED になる。
+候補の無い object が残る場合は source repository で `git lfs fetch` を実行する。
+準備前に修復できない回は worktree へ書き始めず FAILED とし、slot を隔離も自動再試行もしない。
+
+checkout 後は LFS path が pointer text のまま残っていないかを size で検証する。
+不完全な path が一つでもあれば準備を失敗させ、書込み後の既存の隔離経路で slot を貸し出さない。
+early-ready は設計上の部分 worktree なので、この完全性検証は残りの checkout 後だけに行う。
+
 ignore判定は`git check-ignore`に委ねるので、ディレクトリを列挙するときは`/dir/*`ではなく`/dir`の形のruleが要る。
 また配下にtracked fileを1つでも持つディレクトリは、ignoreを通せても対象にならない。tracked fileのcheckoutが実体を作り、次の宛先衝突で準備が失敗するためである。
 
