@@ -418,13 +418,6 @@ func (p *Preparer) shareableCOWPlacementsWithLFS(ctx context.Context, item *stag
 	return kept, len(candidates) - len(kept), lfsPointers, nil
 }
 
-// convertibleCOWPaths は候補のうち、属性によって checkout の bytes が blob と変わり得る path を返す。
-// --cached は index の .gitattributes を読む指定で、tracked file を未配置の worktree で checkout が参照する側と同じになる。
-func (p *Preparer) convertibleCOWPaths(ctx context.Context, item *stagedRepository, candidates []cowIndexEntry) (map[string]bool, error) {
-	convertible, _, err := p.convertibleCOWPathsWithLFS(ctx, item, candidates)
-	return convertible, err
-}
-
 // convertibleCOWPathsWithLFS は check-attr の1回の出力から、全変換属性と
 // filter=lfsだけの path を同時に取り出す。
 func (p *Preparer) convertibleCOWPathsWithLFS(ctx context.Context, item *stagedRepository, candidates []cowIndexEntry) (map[string]bool, map[string]bool, error) {

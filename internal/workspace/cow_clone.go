@@ -17,12 +17,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// placeFile は1件を clone し、置けたかを返す。
-// 置けなかった leaf は通常 checkout に回るだけなので、共有できない理由では準備を止めない。
-func (c *cowPlacer) placeFile(source, destination *os.File, directory, leaf string) (bool, error) {
-	return c.placeFileContext(context.Background(), source, destination, directory, leaf)
-}
-
 func (c *cowPlacer) placeFileContext(ctx context.Context, source, destination *os.File, directory, leaf string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err

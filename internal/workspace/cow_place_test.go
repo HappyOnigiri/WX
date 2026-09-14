@@ -208,7 +208,19 @@ func stagedCOWFixture(t *testing.T, contents map[string]string) (string, discove
 		}
 	}
 	if len(contents) > 0 {
-		gitCommand(t, source, "add", ".")
+		if strings.Contains(contents[".gitattributes"], "filter=lfs") {
+			// GitHub runner に git-lfs があっても、fixture の index blob は入力した bytes をそのまま使う。
+			gitCommand(t, source, "add", ".gitattributes")
+			for name := range contents {
+				if name == ".gitattributes" {
+					continue
+				}
+				oid := gitOutput(t, source, "hash-object", "-w", name)
+				gitCommand(t, source, "update-index", "--add", "--cacheinfo", "100644,"+oid+","+name)
+			}
+		} else {
+			gitCommand(t, source, "add", ".")
+		}
 		gitCommand(t, source, "commit", "-m", "staged")
 	}
 	oid := gitOutput(t, source, "rev-parse", "HEAD")
