@@ -1,26 +1,20 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-)
 
-// test2jsonのOutputに残るshuffle seedの表記を抽出する。
-var shufflePattern = regexp.MustCompile(`(?i)(?:shuffle seed|test\.shuffle)[ :=]+([0-9]+)`)
+	"github.com/HappyOnigiri/WX/tools/internal/gotest"
+)
 
 func executeRun(ctx context.Context, cfg config, command []string, label, coverage string, output io.Writer) (testResult, error) {
 	started := now()
@@ -28,7 +22,7 @@ func executeRun(ctx context.Context, cfg config, command []string, label, covera
 	jsonPath := filepath.Join(cfg.ReportDir, label+".jsonl")
 	stderrPath := filepath.Join(cfg.ReportDir, label+".stderr")
 	logPath := filepath.Join(cfg.ReportDir, label+".log")
-	result := testResult{Tests: make(map[string][]testEvent), ShuffleByPackage: make(map[string]string), StartedAt: started}
+	result := testResult{Tests: make(map[gotest.TestID][]testEvent), ShuffleByPackage: make(map[string]string), StartedAt: started}
 	files, err := createRunFiles(jsonPath, stderrPath, logPath)
 	if err != nil {
 		return result, err
@@ -37,18 +31,18 @@ func executeRun(ctx context.Context, cfg config, command []string, label, covera
 	// ジョブがtimeoutで打ち切られても、どのテストで止まったかを残す必要がある。
 	// 出力は終了後にまとめず、実行中に成果物とジョブログへ流す。
 	sink := newSyncWriter(files.log, output)
-	events := &eventText{out: sink}
+	events := gotest.NewTextWriter(sink)
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = cfg.RepoRoot
 	cmd.Env = os.Environ()
 	cmd.Stdout = io.MultiWriter(files.json, events)
 	cmd.Stderr = io.MultiWriter(files.stderr, sink)
 	runErr := cmd.Run()
-	events.flush()
+	events.Flush()
 	if err := files.close(); err != nil {
 		return result, err
 	}
-	result.Exit, result.Signal = exitDetails(runErr)
+	result.Exit, result.Signal = gotest.ExitDetails(runErr)
 	if runErr != nil && result.Exit == 0 {
 		result.Exit = 1
 	}
@@ -56,7 +50,7 @@ func executeRun(ctx context.Context, cfg config, command []string, label, covera
 	if err != nil {
 		return result, err
 	}
-	if err := parseJSONL(data, &result); err != nil {
+	if err := gotest.ParseJSONL(data, &result); err != nil {
 		return result, fmt.Errorf("parse %s JSON: %w", label, err)
 	}
 	excerpt, err := tailFile(logPath, 4000)
@@ -69,9 +63,9 @@ func executeRun(ctx context.Context, cfg config, command []string, label, covera
 		if err != nil {
 			return result, err
 		}
-		result.Shuffle = findShuffle(string(stderrData))
+		result.Shuffle = gotest.FindShuffle(string(stderrData))
 	}
-	classifyResult(&result)
+	gotest.Classify(&result)
 	result.FinishedAt = now()
 	if runErr != nil && ctx.Err() != nil {
 		result.Anomaly = "test process interrupted: " + ctx.Err().Error()
@@ -150,190 +144,6 @@ func (w *syncWriter) Write(data []byte) (int, error) {
 		_, _ = writer.Write(data)
 	}
 	return len(data), nil
-}
-
-// eventTextはtest2jsonの行からOutputだけを取り出して流す。
-// JSONとして読めない行はそのまま流し、枠外に出たビルドエラーなども失わない。
-type eventText struct {
-	out  io.Writer
-	line []byte
-}
-
-func (w *eventText) Write(data []byte) (int, error) {
-	w.line = append(w.line, data...)
-	for {
-		index := bytes.IndexByte(w.line, '\n')
-		if index < 0 {
-			break
-		}
-		w.emit(w.line[:index+1])
-		w.line = append(w.line[:0], w.line[index+1:]...)
-	}
-	// 改行の来ない長大な行でメモリを持ち続けないよう、parseJSONLと同じ上限で吐き出す。
-	if len(w.line) > 16*1024*1024 {
-		w.flush()
-	}
-	return len(data), nil
-}
-
-func (w *eventText) flush() {
-	if len(w.line) == 0 {
-		return
-	}
-	w.emit(w.line)
-	w.line = w.line[:0]
-}
-
-func (w *eventText) emit(line []byte) {
-	var event testEvent
-	if err := json.Unmarshal(line, &event); err != nil {
-		_, _ = w.out.Write(line)
-		return
-	}
-	if event.Output == "" {
-		return
-	}
-	_, _ = io.WriteString(w.out, event.Output)
-}
-
-func parseJSONL(data []byte, result *testResult) error {
-	if result.Tests == nil {
-		result.Tests = make(map[string][]testEvent)
-	}
-	if result.ShuffleByPackage == nil {
-		result.ShuffleByPackage = make(map[string]string)
-	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	// 生成されたdiffなどで出力行が長くなっても証拠を切り詰めない。
-	scanner.Buffer(make([]byte, 4096), 16*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
-		}
-		var event testEvent
-		if err := json.Unmarshal(line, &event); err != nil {
-			result.Malformed = true
-			continue
-		}
-		result.Events = append(result.Events, event)
-		if seed := findShuffle(event.Output); seed != "" {
-			if result.Shuffle == "" {
-				result.Shuffle = seed
-			}
-			if event.Package != "" {
-				result.ShuffleByPackage[event.Package] = seed
-			}
-		}
-		if event.Package != "" {
-			if result.Package == "" {
-				result.Package = event.Package
-			}
-			if event.Test != "" {
-				key := event.Package + "\x00" + event.Test
-				result.Tests[key] = append(result.Tests[key], event)
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func classifyResult(result *testResult) {
-	namedFailures := failedTests(*result)
-	packageFailures := make(map[string]bool)
-	packageTerminals := make(map[string]bool)
-	packageStarts := make(map[string]bool)
-	for _, event := range result.Events {
-		if event.Package != "" && event.Test == "" {
-			switch event.Action {
-			case "start":
-				packageStarts[event.Package] = true
-			case "pass", "fail", "skip":
-				packageTerminals[event.Package] = true
-				if event.Action == "fail" {
-					packageFailures[event.Package] = true
-				}
-			}
-		}
-		if event.Action == "fail" && event.Test == "" && event.FailedBuild != "" {
-			result.Anomaly = "build failure: " + event.FailedBuild
-		}
-		// 名前付きテストに紐づく出力は、recover済みpanicの記録やエラー文字列の検証でも
-		// "panic:"を含み得る。異常として扱うのはテスト名の無い出力だけに限る。
-		if event.Test == "" && strings.Contains(strings.ToLower(event.Output), "panic:") {
-			result.Anomaly = "panic outside a named test"
-		}
-	}
-	if result.Malformed {
-		result.Anomaly = "test2json output contained malformed JSON"
-	}
-	for packageName := range packageFailures {
-		if len(namedFailures[packageName]) == 0 && result.Anomaly == "" {
-			result.Anomaly = "package failed without a named test: " + packageName
-		}
-	}
-	for packageName := range packageStarts {
-		if !packageTerminals[packageName] && result.Anomaly == "" {
-			result.Anomaly = "package did not reach a terminal test2json event: " + packageName
-		}
-	}
-	if result.Exit != 0 && len(namedFailures) == 0 && result.Anomaly == "" {
-		result.Anomaly = "test process failed without a named test failure"
-	}
-	if result.Exit < 0 && result.Anomaly == "" {
-		result.Anomaly = "test process terminated by " + result.Signal
-	}
-	result.Status = "passed"
-	if result.Exit != 0 || len(failedTests(*result)) > 0 || result.Anomaly != "" {
-		result.Status = "failed"
-	}
-}
-
-func failedTests(result testResult) map[string][]string {
-	failed := make(map[string][]string)
-	for key, events := range result.Tests {
-		if len(events) == 0 {
-			continue
-		}
-		last := events[len(events)-1]
-		if last.Action != "fail" {
-			continue
-		}
-		parts := strings.SplitN(key, "\x00", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		failed[parts[0]] = append(failed[parts[0]], parts[1])
-	}
-	for packageName := range failed {
-		sortStrings(failed[packageName])
-	}
-	return failed
-}
-
-func exitDetails(err error) (int, string) {
-	if err == nil {
-		return 0, ""
-	}
-	var exitError *exec.ExitError
-	if !errors.As(err, &exitError) {
-		return 1, ""
-	}
-	if status, ok := exitError.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-		return -1, status.Signal().String()
-	}
-	return exitError.ExitCode(), ""
-}
-
-func findShuffle(log string) string {
-	match := shufflePattern.FindStringSubmatch(log)
-	if len(match) == 2 {
-		return match[1]
-	}
-	return ""
 }
 
 func goVersion() string {
