@@ -14,8 +14,29 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 )
+
+func (p *Preparer) compactLFSObjectsWithRoots(ctx context.Context, repo discovery.Repository, worktree string, candidates []LFSObjectCandidate) (result LFSCompactionResult, resultErr error) {
+	owner, relative, closeOwner, err := p.openOwnedRoot(p.RootPath, filepath.Clean(worktree))
+	if err != nil {
+		return result, err
+	}
+	defer closeOwner()
+	donorRoot, err := domain.OpenRootAt(owner, relative)
+	if err != nil {
+		return result, fmt.Errorf("open LFS worktree donor: %w", err)
+	}
+	defer func() { _ = donorRoot.Close() }()
+	commonRoot, err := OpenPhysicalRoot(string(repo.CommonDir))
+	if err != nil {
+		return result, fmt.Errorf("open LFS cache root: %w", err)
+	}
+	defer func() { _ = commonRoot.Close() }()
+
+	return p.compactLFSBatch(ctx, donorRoot, commonRoot, candidates, compactLFSObject)
+}
 
 func compactLFSObject(ctx context.Context, donorRoot, commonRoot *os.Root, candidate LFSObjectCandidate) (replaced bool, reclaimed int64, resultErr error) {
 	directory, leaf, ok := lfsObjectRelative(candidate.Pointer)

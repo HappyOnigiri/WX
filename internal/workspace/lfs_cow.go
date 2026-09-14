@@ -3,13 +3,10 @@ package workspace
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
-	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
 // LFSObjectCandidate は snapshot で新しく現れた LFS pointer と、その path である。
@@ -50,23 +47,7 @@ func (p *Preparer) CompactLFSObjects(ctx context.Context, repo discovery.Reposit
 		}
 		return result, nil
 	}
-	owner, relative, closeOwner, err := p.openOwnedRoot(p.RootPath, filepath.Clean(worktree))
-	if err != nil {
-		return result, err
-	}
-	defer closeOwner()
-	donorRoot, err := domain.OpenRootAt(owner, relative)
-	if err != nil {
-		return result, fmt.Errorf("open LFS worktree donor: %w", err)
-	}
-	defer func() { _ = donorRoot.Close() }()
-	commonRoot, err := OpenPhysicalRoot(string(repo.CommonDir))
-	if err != nil {
-		return result, fmt.Errorf("open LFS cache root: %w", err)
-	}
-	defer func() { _ = commonRoot.Close() }()
-
-	return p.compactLFSBatch(ctx, donorRoot, commonRoot, candidates, compactLFSObject)
+	return p.compactLFSObjectsWithRoots(ctx, repo, worktree, candidates)
 }
 
 // compactLFSBatch は各 object の結果を集約し、1件の失敗で残りの候補を止めない。
