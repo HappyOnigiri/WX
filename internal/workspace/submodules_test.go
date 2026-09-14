@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -264,6 +265,117 @@ func TestPrepareMaterializesSubmodule(t *testing.T) {
 	// objects はローカル clone の hardlink で共有され、共有 .git 側のディスクを増やさない。
 	if info, err := os.Stat(filepath.Join(f.target, ".git")); err != nil {
 		t.Fatalf("worktree gitdir link: %v %v", info, err)
+	}
+}
+
+// 複数の子は一括 update へまとめ、各子の origin 復元だけを個別に行う。
+func TestPrepareMaterializesMultipleSubmodulesInOneUpdate(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	secondChild := filepath.Join(filepath.Dir(f.child), "second-child")
+	if err := os.Mkdir(secondChild, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	initTestRepository(t, secondChild)
+	if err := os.WriteFile(filepath.Join(secondChild, "second.txt"), []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, secondChild, "add", ".")
+	gitCommand(t, secondChild, "commit", "-m", "second initial")
+	gitCommand(t, f.repository, "-c", "protocol.file.allow=always", "submodule", "add", "--name", "modules/second", "../second-child", "sub/second")
+	gitCommand(t, f.repository, "add", ".")
+	gitCommand(t, f.repository, "commit", "-m", "add second submodule")
+	f.head = gitOutput(t, f.repository, "rev-parse", "HEAD")
+	// 共有 config に submodule の url/active が無い状態でも、update の -c だけで実体化できることを確認する。
+	gitCommand(t, f.repository, "config", "--remove-section", "submodule."+submoduleName)
+	gitCommand(t, f.repository, "config", "--remove-section", "submodule.modules/second")
+	configPath := filepath.Join(string(f.repo.CommonDir), "config")
+	f.preparer.submoduleWorkerCount = 1
+	f.preparer.Phases = &PhaseTimings{}
+	var mu sync.Mutex
+	var invoked [][]string
+	f.runner.SetBeforeRunAtHook(func(args []string) {
+		mu.Lock()
+		defer mu.Unlock()
+		invoked = append(invoked, append([]string(nil), args...))
+	})
+	beforeConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	afterConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeConfig, afterConfig) {
+		t.Fatalf("source repository config changed:\nbefore:\n%s\nafter:\n%s", beforeConfig, afterConfig)
+	}
+	for _, item := range []struct {
+		path   string
+		origin string
+		file   string
+	}{
+		{path: submodulePath, origin: f.child, file: "kid.txt"},
+		{path: "sub/second", origin: secondChild, file: "second.txt"},
+	} {
+		target := filepath.Join(f.target, item.path)
+		if _, err := os.Stat(filepath.Join(target, item.file)); err != nil {
+			t.Fatalf("submodule %s content: %v", item.path, err)
+		}
+		if origin := gitOutput(t, target, "remote", "get-url", "origin"); origin != item.origin {
+			t.Fatalf("submodule %s origin=%s, want %s", item.path, origin, item.origin)
+		}
+	}
+	updates := 0
+	for _, args := range invoked {
+		joined := strings.Join(args, " ")
+		if !strings.Contains(joined, "submodule update") {
+			continue
+		}
+		updates++
+		if !strings.Contains(joined, "--jobs=1") || !strings.Contains(joined, "submodule.modules/kid.url=") || !strings.Contains(joined, "submodule.modules/second.url=") {
+			t.Fatalf("bulk submodule update args=%v", args)
+		}
+		if !strings.Contains(joined, "sub/kid") || !strings.Contains(joined, "sub/second") {
+			t.Fatalf("bulk submodule update omitted path: %v", args)
+		}
+	}
+	if updates != 1 {
+		t.Fatalf("submodule update invocations=%d, want one; commands=%v", updates, invoked)
+	}
+	phases := map[string]Phase{}
+	for _, phase := range f.preparer.Phases.Phases() {
+		phases[phase.Name] = phase
+	}
+	for _, name := range []string{"submodule.declared", "submodule.eligible", "submodule.inspect", "submodule.materialize", "submodule.origin"} {
+		if _, ok := phases[name]; !ok {
+			t.Fatalf("phase %q missing from %+v", name, phases)
+		}
+	}
+	if phases["submodule.declared"].Count != 2 || phases["submodule.eligible"].Count != 2 || phases["submodule.inspect"].Count != 2 || phases["submodule.materialize"].Count != 1 || phases["submodule.origin"].Count != 2 {
+		t.Fatalf("submodule phase counts=%+v", phases)
+	}
+}
+
+// origin 復元の書込みが1件でも失敗した場合は、実体化済みの準備を成功扱いにしない。
+func TestPrepareFailsWhenSubmoduleOriginRestoreFails(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	f.preparer.submoduleWorkerCount = 1
+	failed := false
+	f.runner.SetBeforeRunAtHook(func(args []string) {
+		if failed || len(args) < 4 || args[0] != "-C" || args[1] != submodulePath || args[2] != "remote" || args[3] != "set-url" {
+			return
+		}
+		failed = true
+		gitCommand(t, filepath.Join(f.target, submodulePath), "config", "--remove-section", "remote.origin")
+	})
+	err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot")
+	if err == nil || !strings.Contains(err.Error(), "restore submodule") {
+		t.Fatalf("Prepare() error=%v, want origin restore failure", err)
 	}
 }
 

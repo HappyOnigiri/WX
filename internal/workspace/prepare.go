@@ -53,6 +53,9 @@ type Preparer struct {
 	// cowWorkerCount は CoW 共有の並列度をテストから固定する内部フックである。
 	// 0 のままなら cowWorkers が既定値を決める。1 にすると共有順序が index の並び順で決定的になる。
 	cowWorkerCount int
+	// submoduleWorkerCount は submodule 準備の並列度をテストから固定する内部フックである。
+	// 0 のままなら submoduleWorkers が既定値を決める。1 にすると検査・origin 復元の順序が決定的になる。
+	submoduleWorkerCount int
 }
 
 // workspaceRootForRepository は membership の相対 path から source Workspace root を求める。
@@ -195,9 +198,16 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 	}); err != nil {
 		return err
 	}
+	var submoduleResult submodulePhaseResult
 	if err := p.completePrepare(ctx, repo, target, oid, slotID, phase, locked,
-		func() error { return p.submodulePhase(ctx, repo, target, oid, targetIdentity) },
-		func() error { return p.runPostCheckout(ctx, target, targetIdentity, oid) },
+		func() error {
+			var err error
+			submoduleResult, err = p.submodulePhaseWithResult(ctx, repo, target, oid, targetIdentity)
+			return err
+		},
+		func() error {
+			return p.runPostCheckoutWithSubmodules(ctx, repo, target, targetIdentity, oid, submoduleResult)
+		},
 		func() error { return p.copyIncludesAt(repo, lockedRoot, lockedRelativeTarget) },
 		func() error { return p.createLinksAt(ctx, repo, lockedRoot, lockedRelativeTarget, true) }); err != nil {
 		return err
