@@ -2,8 +2,13 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -29,6 +34,43 @@ var (
 	errLFSVerification = errors.New("LFS object verification failed")
 	errLFSNotEligible  = errors.New("LFS object is not eligible for CoW")
 )
+
+// verifyLFSClone は clone した実体の size と SHA-256 を pointer と照合する。
+// clean filter の結果には依存せず、読み取り中の context cancel も即座に返す。
+func verifyLFSClone(ctx context.Context, file *os.File, pointer LFSPointer) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() != pointer.Size {
+		return fmt.Errorf("%w: got size %d, want %d", errLFSVerification, info.Size(), pointer.Size)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	hash := sha256.New()
+	buffer := make([]byte, 128<<10)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		count, err := file.Read(buffer)
+		if count > 0 {
+			_, _ = hash.Write(buffer[:count])
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+	got := "sha256:" + hex.EncodeToString(hash.Sum(nil))
+	if got != strings.ToLower(pointer.OID) {
+		return fmt.Errorf("%w: got %s, want %s", errLFSVerification, got, pointer.OID)
+	}
+	return nil
+}
 
 // CompactLFSObjects は worktree の実体を検証済み CoW clone として cache に保存する。
 // 失敗は呼び出し側が snapshot を継続できるよう集約して返すが、cache の bytes は変更しない。

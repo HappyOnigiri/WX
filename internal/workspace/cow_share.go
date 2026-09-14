@@ -43,10 +43,14 @@ func (s *cowStage) logArgs(name string) []any {
 
 // cowStats は共有処理の内訳を集計する。準備結果は変えず、遅い区間の特定にだけ使う。
 type cowStats struct {
-	entries     atomic.Int64
-	candidates  atomic.Int64
-	shared      atomic.Int64
-	skippedSize atomic.Int64
+	entries    atomic.Int64
+	candidates atomic.Int64
+	// lfsCandidates は wx 自身の pointer 検証を通す配置候補の件数である。
+	lfsCandidates atomic.Int64
+	shared        atomic.Int64
+	skippedSize   atomic.Int64
+	// skippedLFSSize は donor の展開済み size が pointer と違い、clone 前に落とした件数である。
+	skippedLFSSize atomic.Int64
 	// skippedFlags は file flags が付いていて共有できない donor 側の実体の件数である。
 	skippedFlags atomic.Int64
 	// pending は配置方式では置けなかったが置換方式ならまだ共有できる候補の件数である。
@@ -57,6 +61,8 @@ type cowStats struct {
 	open      cowStage
 	compare   cowStage
 	clone     cowStage
+	// lfsVerify は配置方式で clone した LFS 実体を pointer と照合した回数と所要時間である。
+	lfsVerify cowStage
 	metadata  cowStage
 	swap      cowStage
 	verify    cowStage
@@ -67,7 +73,9 @@ type cowStats struct {
 func (s *cowStats) logArgs() []any {
 	args := []any{
 		"entries", s.entries.Load(), "candidates", s.candidates.Load(),
+		"lfs_candidates", s.lfsCandidates.Load(),
 		"shared", s.shared.Load(), "skipped_size", s.skippedSize.Load(),
+		"skipped_lfs_size", s.skippedLFSSize.Load(),
 		"skipped_flags", s.skippedFlags.Load(), "pending", s.pending.Load(),
 	}
 	for _, stage := range []struct {
@@ -79,6 +87,7 @@ func (s *cowStats) logArgs() []any {
 		{"open", &s.open},
 		{"compare", &s.compare},
 		{"clone", &s.clone},
+		{"lfs_verify", &s.lfsVerify},
 		{"metadata", &s.metadata},
 		{"swap", &s.swap},
 		{"verify", &s.verify},
@@ -347,8 +356,10 @@ func (s *cowStats) recordCOWPhases(timings *PhaseTimings, prefix string) {
 	}{
 		{prefix + ".entries", s.entries.Load()},
 		{prefix + ".candidates", s.candidates.Load()},
+		{prefix + ".lfs_candidates", s.lfsCandidates.Load()},
 		{prefix + ".shared", s.shared.Load()},
 		{prefix + ".skipped_size", s.skippedSize.Load()},
+		{prefix + ".skipped_lfs_size", s.skippedLFSSize.Load()},
 		{prefix + ".skipped_flags", s.skippedFlags.Load()},
 		{prefix + ".pending", s.pending.Load()},
 	} {
@@ -363,6 +374,7 @@ func (s *cowStats) recordCOWPhases(timings *PhaseTimings, prefix string) {
 		{prefix + ".open", &s.open},
 		{prefix + ".compare", &s.compare},
 		{prefix + ".clone", &s.clone},
+		{prefix + ".lfs_verify", &s.lfsVerify},
 		{prefix + ".metadata", &s.metadata},
 		{prefix + ".swap", &s.swap},
 		{prefix + ".verify", &s.verify},

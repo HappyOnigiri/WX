@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"strings"
@@ -92,5 +94,78 @@ func TestCOWPlacementClonesOnlyFilesAboveTheMinimum(t *testing.T) {
 	}
 	if stats.skippedSize.Load() != 1 || stats.shared.Load() != 2 {
 		t.Fatalf("skipped=%d shared=%d", stats.skippedSize.Load(), stats.shared.Load())
+	}
+}
+
+func TestCOWPlacementVerifiesLFSCloneBeforeRecordingIt(t *testing.T) {
+	t.Parallel()
+	if !cowAvailable() {
+		t.Skip("APFS is required")
+	}
+	data := []byte(strings.Repeat("weight", 4096))
+	hash := sha256.Sum256(data)
+	pointer := LFSPointer{OID: "sha256:" + hex.EncodeToString(hash[:]), Size: int64(len(data))}
+	for _, testCase := range []struct {
+		name       string
+		pointer    LFSPointer
+		wantPlaced bool
+	}{
+		{name: "matching", pointer: pointer, wantPlaced: true},
+		{name: "mismatching oid", pointer: LFSPointer{OID: "sha256:" + strings.Repeat("a", 64), Size: int64(len(data))}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			source, destination := cowRoots(t)
+			cowWrite(t, source, "weights.bin", string(data))
+			stats := &cowStats{}
+			placer := &cowPlacer{
+				source: source, destination: destination, proof: func() error { return nil }, minSize: 0,
+				stats: stats, lfsPointers: map[string]LFSPointer{"weights.bin": testCase.pointer}, placed: map[string]bool{},
+			}
+			if err := placer.placeChunk(context.Background(), splitCOWRuns([]cowIndexEntry{{name: "weights.bin"}}), func() error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			_, statErr := destination.Stat("weights.bin")
+			if testCase.wantPlaced {
+				if !placer.placed["weights.bin"] || statErr != nil {
+					t.Fatalf("placed=%v stat=%v", placer.placed, statErr)
+				}
+				if stats.lfsVerify.count.Load() != 1 {
+					t.Fatalf("LFS verification count=%d", stats.lfsVerify.count.Load())
+				}
+				return
+			}
+			if len(placer.placed) != 0 || !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("mismatched clone remained: placed=%v stat=%v", placer.placed, statErr)
+			}
+		})
+	}
+}
+
+func TestCOWPlacementSkipsLFSDonorWithUnexpectedSizeBeforeClone(t *testing.T) {
+	t.Parallel()
+	if !cowAvailable() {
+		t.Skip("APFS is required")
+	}
+	source, destination := cowRoots(t)
+	data := strings.Repeat("weight", 4096)
+	cowWrite(t, source, "weights.bin", data)
+	stats := &cowStats{}
+	placer := &cowPlacer{
+		minSize: 0, stats: stats,
+		lfsPointers: map[string]LFSPointer{"weights.bin": {OID: "sha256:" + strings.Repeat("a", 64), Size: int64(len(data) + 1)}},
+	}
+	base, err := source.Open(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer base.Close()
+	if got := placer.shareableLeaves(base, []string{"weights.bin"}); len(got) != 0 {
+		t.Fatalf("unexpected LFS donor candidates=%v", got)
+	}
+	if stats.skippedLFSSize.Load() != 1 {
+		t.Fatalf("skipped LFS size=%d", stats.skippedLFSSize.Load())
+	}
+	if _, err := destination.Stat("weights.bin"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination was modified: %v", err)
 	}
 }

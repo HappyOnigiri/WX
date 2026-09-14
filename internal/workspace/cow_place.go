@@ -86,6 +86,9 @@ type cowPlacer struct {
 	proof       func() error
 	minSize     int64
 	stats       *cowStats
+	// lfsPointers は filter=lfs だけの tracked pathについて、要求 blobから読んだ pointer を持つ。
+	// 配置方式で置いた clone の bytes を Git の clean filter に頼らず検証するために使う。
+	lfsPointers map[string]LFSPointer
 	mu          sync.Mutex
 	placed      map[string]bool
 }
@@ -149,7 +152,7 @@ func (c *cowPlacer) placeChunk(ctx context.Context, chunk []cowRun, gate func() 
 		c.stats.directory.observe(start)
 		// 下限を超える leaf が1つも無い directory では宛先を作らない。
 		// 宛先の作成と open は共有の有無に関わらず directory 数だけ積み上がり、後段の checkout がどのみち作る。
-		shareable := c.shareableLeaves(sourceDirectory, run.leaves)
+		shareable := c.shareableLeavesAt(sourceDirectory, run.directory, run.leaves)
 		if len(shareable) == 0 {
 			continue
 		}
@@ -160,7 +163,7 @@ func (c *cowPlacer) placeChunk(ctx context.Context, chunk []cowRun, gate func() 
 		}
 		c.stats.directory.observe(start)
 		for _, leaf := range shareable {
-			done, err := c.placeFile(sourceDirectory, destinationDirectory, run.directory, leaf)
+			done, err := c.placeFileContext(ctx, sourceDirectory, destinationDirectory, run.directory, leaf)
 			if err != nil {
 				return err
 			}
@@ -173,8 +176,14 @@ func (c *cowPlacer) placeChunk(ctx context.Context, chunk []cowRun, gate func() 
 }
 
 // shareableLeaves は donor 側の fstatat だけで、下限を超える通常ファイルの leaf を選ぶ。
-// 候補の過半は下限未満で落ちるため、先に宛先を用意すると使わない mkdir と open がその分だけ積み上がる。
+// root 直下の単独 run 用で、nested run は shareableLeavesAt を使う。
 func (c *cowPlacer) shareableLeaves(source *os.File, leaves []string) []string {
+	return c.shareableLeavesAt(source, ".", leaves)
+}
+
+// shareableLeavesAt は donor 側の fstatat だけで、下限を超える通常ファイルの leaf を選ぶ。
+// LFS path は展開後 size と donor の size が違う回に clone せず、通常 checkout へ任せる。
+func (c *cowPlacer) shareableLeavesAt(source *os.File, directory string, leaves []string) []string {
 	start := time.Now()
 	defer func() { c.stats.stat.observe(start) }()
 	shareable := leaves[:0:0]
@@ -194,6 +203,10 @@ func (c *cowPlacer) shareableLeaves(source *os.File, leaves []string) []string {
 		}
 		if info.Size < c.minSize {
 			c.stats.skippedSize.Add(1)
+			continue
+		}
+		if pointer, ok := c.lfsPointers[joinCOWPath(directory, leaf)]; ok && info.Size != pointer.Size {
+			c.stats.skippedLFSSize.Add(1)
 			continue
 		}
 		shareable = append(shareable, leaf)
@@ -287,13 +300,14 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 		return cowPlacement{}, err
 	}
 	defer func() { _ = source.Close() }()
-	candidates, excluded, err := p.shareableCOWPlacements(ctx, item, planCOWPlacement(&item.plan, p.cowSourceIndexOIDs(ctx, source)))
+	candidates, excluded, lfsPointers, err := p.shareableCOWPlacementsWithLFS(ctx, item, planCOWPlacement(&item.plan, p.cowSourceIndexOIDs(ctx, source)))
 	if err != nil {
 		return cowPlacement{}, err
 	}
 	stats := &cowStats{}
 	stats.entries.Store(int64(len(item.plan.tracked)))
 	stats.candidates.Store(int64(len(candidates)))
+	stats.lfsCandidates.Store(int64(len(lfsPointers)))
 	stats.pending.Store(int64(excluded))
 	placer := &cowPlacer{
 		source:      source,
@@ -301,6 +315,7 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 		proof:       validate,
 		minSize:     int64(p.Config.COWMinSizeKiBForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath))) * 1024,
 		stats:       stats,
+		lfsPointers: lfsPointers,
 		placed:      make(map[string]bool, len(candidates)),
 	}
 	slotStates, repoStates := preparationOwnershipStates(preparePhaseCreate)
@@ -338,39 +353,81 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 // 配置後の tracked 検査は clean filter 越しの一致しか見ないため、変換が入る path では
 // main の未コミット内容が blob へ戻る限り検査を通り、通常 checkout と違う bytes が残る。
 func (p *Preparer) shareableCOWPlacements(ctx context.Context, item *stagedRepository, candidates []cowIndexEntry) ([]cowIndexEntry, int, error) {
+	kept, excluded, _, err := p.shareableCOWPlacementsWithLFS(ctx, item, candidates)
+	return kept, excluded, err
+}
+
+// shareableCOWPlacementsWithLFS は変換属性を持つ候補を選り分け、LFS pointer と
+// 照合できた path だけを配置方式へ戻す。返す pointer は clone 後の検証に使う。
+func (p *Preparer) shareableCOWPlacementsWithLFS(ctx context.Context, item *stagedRepository, candidates []cowIndexEntry) ([]cowIndexEntry, int, map[string]LFSPointer, error) {
+	lfsPointers := map[string]LFSPointer{}
 	if len(candidates) == 0 {
-		return nil, 0, nil
+		return nil, 0, lfsPointers, nil
 	}
 	// core.autocrlf は属性を持たない path にも効くため、有効な回は path 単位に選り分けず全件を置換方式へ回す。
 	// core.eol と core.checkRoundtripEncoding は対応する属性が付いた path にしか効かないので、属性側の判定で足りる。
 	result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, nil, "config", "--default", "false", "--get", "core.autocrlf")
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	if value := strings.TrimSpace(result.Stdout); value != "false" {
 		p.logSkip("CoW placement yields to the replacement method while core.autocrlf converts content", "repository", string(item.Repository.MainPath), "core.autocrlf", value)
-		return nil, len(candidates), nil
+		return nil, len(candidates), lfsPointers, nil
 	}
-	convertible, err := p.convertibleCOWPaths(ctx, item, candidates)
+	convertible, lfsOnly, err := p.convertibleCOWPathsWithLFS(ctx, item, candidates)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	if len(convertible) == 0 {
-		return candidates, 0, nil
+		return candidates, 0, lfsPointers, nil
+	}
+	lfsOIDs := make([]string, 0)
+	seenOIDs := map[string]bool{}
+	for _, entry := range candidates {
+		if !lfsOnly[entry.name] || entry.oid == "" {
+			continue
+		}
+		if !seenOIDs[entry.oid] {
+			seenOIDs[entry.oid] = true
+			lfsOIDs = append(lfsOIDs, entry.oid)
+		}
+	}
+	pointers := map[string]LFSPointer{}
+	if len(lfsOIDs) > 0 {
+		var readErr error
+		pointers, readErr = p.readCOWLFSBlobPointers(ctx, item, lfsOIDs)
+		if readErr != nil {
+			return nil, 0, nil, readErr
+		}
 	}
 	kept := make([]cowIndexEntry, 0, len(candidates))
 	for _, entry := range candidates {
-		if convertible[entry.name] {
+		if !convertible[entry.name] {
+			kept = append(kept, entry)
 			continue
 		}
-		kept = append(kept, entry)
+		if !lfsOnly[entry.name] {
+			continue
+		}
+		pointer, ok := pointers[entry.oid]
+		if ok {
+			kept = append(kept, entry)
+			lfsPointers[entry.name] = pointer
+		}
 	}
-	return kept, len(candidates) - len(kept), nil
+	return kept, len(candidates) - len(kept), lfsPointers, nil
 }
 
 // convertibleCOWPaths は候補のうち、属性によって checkout の bytes が blob と変わり得る path を返す。
 // --cached は index の .gitattributes を読む指定で、tracked file を未配置の worktree で checkout が参照する側と同じになる。
 func (p *Preparer) convertibleCOWPaths(ctx context.Context, item *stagedRepository, candidates []cowIndexEntry) (map[string]bool, error) {
+	convertible, _, err := p.convertibleCOWPathsWithLFS(ctx, item, candidates)
+	return convertible, err
+}
+
+// convertibleCOWPathsWithLFS は check-attr の1回の出力から、全変換属性と
+// filter=lfsだけの path を同時に取り出す。
+func (p *Preparer) convertibleCOWPathsWithLFS(ctx context.Context, item *stagedRepository, candidates []cowIndexEntry) (map[string]bool, map[string]bool, error) {
 	var input strings.Builder
 	for _, entry := range candidates {
 		input.WriteString(entry.name)
@@ -378,9 +435,28 @@ func (p *Preparer) convertibleCOWPaths(ctx context.Context, item *stagedReposito
 	}
 	result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, []byte(input.String()), "check-attr", "--cached", "--all", "--stdin", "-z")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return parseCOWConvertiblePaths(result.Stdout), nil
+	convertible, lfsOnly := parseCOWAttributes(result.Stdout)
+	return convertible, lfsOnly, nil
+}
+
+// readCOWLFSBlobPointers は target worktree の index と同じ object store から
+// LFS候補の blob を一括で読み、pointer として解析できた OID だけを返す。
+func (p *Preparer) readCOWLFSBlobPointers(ctx context.Context, item *stagedRepository, oids []string) (map[string]LFSPointer, error) {
+	if len(oids) == 0 {
+		return map[string]LFSPointer{}, nil
+	}
+	input := strings.Join(oids, "\n") + "\n"
+	result, err := p.RunGitInWorktree(ctx, item.Target, item.locked.identity, nil, []byte(input), "--no-optional-locks", "cat-file", "--batch")
+	if err != nil {
+		return nil, fmt.Errorf("read LFS pointer blobs for CoW placement: %w", err)
+	}
+	pointers, err := parseLFSPointerBatch(result.Stdout, oids, true)
+	if err != nil {
+		return nil, fmt.Errorf("parse LFS pointer blobs for CoW placement: %w", err)
+	}
+	return pointers, nil
 }
 
 // cowConversionAttributes は、checkout が書く bytes を index の blob と変え得る属性である。
@@ -388,17 +464,36 @@ var cowConversionAttributes = map[string]bool{
 	"text": true, "eol": true, "crlf": true, "ident": true, "filter": true, "working-tree-encoding": true,
 }
 
+// parseCOWAttributes は check-attr --all -z の出力から、変換属性の集合と
+// filter=lfsだけで構成される path を返す。unset は変換を発生させないので数えない。
+func parseCOWAttributes(stdout string) (map[string]bool, map[string]bool) {
+	fields := strings.Split(stdout, "\x00")
+	convertible := map[string]bool{}
+	conversionCounts := map[string]int{}
+	lfsOnly := map[string]bool{}
+	for index := 0; index+2 < len(fields); index += 3 {
+		path, attribute, value := fields[index], fields[index+1], fields[index+2]
+		if !cowConversionAttributes[attribute] || value == "unset" {
+			continue
+		}
+		convertible[path] = true
+		conversionCounts[path]++
+		if attribute == "filter" && value == "lfs" {
+			lfsOnly[path] = true
+		}
+	}
+	for path := range lfsOnly {
+		if conversionCounts[path] != 1 {
+			delete(lfsOnly, path)
+		}
+	}
+	return convertible, lfsOnly
+}
+
 // parseCOWConvertiblePaths は `check-attr --all -z` の path・属性・値の3つ組から、変換の入り得る path を集める。
 // --all は設定のある属性だけを出すので、変換に関わらない属性と、変換を外す unset は読み飛ばす。
 func parseCOWConvertiblePaths(stdout string) map[string]bool {
-	fields := strings.Split(stdout, "\x00")
-	convertible := map[string]bool{}
-	for index := 0; index+2 < len(fields); index += 3 {
-		if !cowConversionAttributes[fields[index+1]] || fields[index+2] == "unset" {
-			continue
-		}
-		convertible[fields[index]] = true
-	}
+	convertible, _ := parseCOWAttributes(stdout)
 	return convertible
 }
 

@@ -321,13 +321,23 @@ func (p *Preparer) readCapacityBlobs(ctx context.Context, repo discovery.Reposit
 	if err != nil {
 		return nil, fmt.Errorf("read LFS pointer blobs: %w", err)
 	}
-	reader := bufio.NewReader(strings.NewReader(result.Stdout))
+	return parseLFSPointerBatch(result.Stdout, oids, false)
+}
+
+// parseLFSPointerBatch は `cat-file --batch` の blob を pointer として読む。
+// missing を許す呼び出しでは、その object だけを pointer 無しとして返す。
+func parseLFSPointerBatch(stdout string, oids []string, allowMissing bool) (map[string]LFSPointer, error) {
+	pointers := map[string]LFSPointer{}
+	reader := bufio.NewReader(strings.NewReader(stdout))
 	for _, requested := range oids {
 		header, err := reader.ReadString('\n')
 		if err != nil {
 			return nil, fmt.Errorf("read LFS pointer header for %s: %w", requested, err)
 		}
 		fields := strings.Fields(strings.TrimSpace(header))
+		if allowMissing && len(fields) == 2 && fields[1] == "missing" {
+			continue
+		}
 		if len(fields) != 3 || fields[1] != "blob" {
 			return nil, fmt.Errorf("invalid LFS pointer header for %s", requested)
 		}
