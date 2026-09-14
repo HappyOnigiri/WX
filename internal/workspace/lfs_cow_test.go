@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -160,6 +161,85 @@ func TestCompactLFSObjectsSkipsWithoutCoW(t *testing.T) {
 	}
 	if result.Skipped != 1 || result.Replaced != 0 || result.Failed != 0 {
 		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestCompactLFSObjectsHandlesEmptyAndNilPreparers(t *testing.T) {
+	t.Parallel()
+	var preparer *Preparer
+	if result, err := preparer.CompactLFSObjects(context.Background(), discovery.Repository{}, "", nil); err != nil || result != (LFSCompactionResult{}) {
+		t.Fatalf("empty candidates result=%+v err=%v", result, err)
+	}
+	_, err := preparer.CompactLFSObjects(context.Background(), discovery.Repository{}, "", []LFSObjectCandidate{{Path: "weights.bin"}})
+	if err == nil || !strings.Contains(err.Error(), "requires a preparer") {
+		t.Fatalf("nil preparer error=%v", err)
+	}
+}
+
+func TestCompactLFSObjectsSkipsInCopyModeWithLog(t *testing.T) {
+	t.Parallel()
+	var logged bytes.Buffer
+	cfg := config.Defaults()
+	cfg.Storage.CopyMode = config.CopyModeCopy
+	preparer := &Preparer{Config: cfg, Log: slog.New(slog.NewTextHandler(&logged, nil))}
+	result, err := preparer.CompactLFSObjects(context.Background(), discovery.Repository{MainPath: "/repo", RelativePath: "."}, "/worktree", []LFSObjectCandidate{{Path: "weights.bin"}})
+	if err != nil || result.Skipped != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if !strings.Contains(logged.String(), "reason=\"copy mode or unsupported platform\"") {
+		t.Fatalf("log output=%q", logged.String())
+	}
+}
+
+func TestLFSCompactionBatchAggregatesResults(t *testing.T) {
+	t.Parallel()
+	var logged bytes.Buffer
+	preparer := &Preparer{Log: slog.New(slog.NewTextHandler(&logged, nil))}
+	failure := errors.New("test failure")
+	candidates := []LFSObjectCandidate{
+		{Path: "verified"},
+		{Path: "failed"},
+		{Path: "ineligible"},
+		{Path: "replaced"},
+	}
+	compact := func(_ context.Context, _, _ *os.Root, candidate LFSObjectCandidate) (bool, int64, error) {
+		switch candidate.Path {
+		case "verified":
+			return false, 0, fmt.Errorf("%w: test", errLFSVerification)
+		case "failed":
+			return false, 0, failure
+		case "replaced":
+			return true, 7, nil
+		default:
+			return false, 0, nil
+		}
+	}
+	result, err := preparer.compactLFSBatch(context.Background(), nil, nil, candidates, compact)
+	if !errors.Is(err, failure) {
+		t.Fatalf("batch error=%v", err)
+	}
+	if result.Replaced != 1 || result.ReclaimedBytes != 7 || result.Skipped != 2 || result.Failed != 1 {
+		t.Fatalf("batch result=%+v", result)
+	}
+	output := logged.String()
+	for _, message := range []string{"LFS cache CoW skipped", "LFS cache CoW failed", "LFS cache CoW replacement"} {
+		if !strings.Contains(output, message) {
+			t.Fatalf("log output=%q missing %q", output, message)
+		}
+	}
+}
+
+func TestLFSCompactionBatchCountsCanceledCandidates(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	preparer := &Preparer{}
+	result, err := preparer.compactLFSBatch(ctx, nil, nil, []LFSObjectCandidate{{Path: "one"}, {Path: "two"}}, func(context.Context, *os.Root, *os.Root, LFSObjectCandidate) (bool, int64, error) {
+		t.Fatal("canceled batch called compact function")
+		return false, 0, nil
+	})
+	if !errors.Is(err, context.Canceled) || result.Failed != 2 {
+		t.Fatalf("canceled result=%+v err=%v", result, err)
 	}
 }
 

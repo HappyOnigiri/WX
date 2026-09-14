@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/HappyOnigiri/WX/internal/config"
@@ -24,6 +25,8 @@ type LFSCompactionResult struct {
 	Skipped        int
 	Failed         int
 }
+
+type lfsCompactFunc func(context.Context, *os.Root, *os.Root, LFSObjectCandidate) (bool, int64, error)
 
 var (
 	errLFSVerification = errors.New("LFS object verification failed")
@@ -63,6 +66,12 @@ func (p *Preparer) CompactLFSObjects(ctx context.Context, repo discovery.Reposit
 	}
 	defer func() { _ = commonRoot.Close() }()
 
+	return p.compactLFSBatch(ctx, donorRoot, commonRoot, candidates, compactLFSObject)
+}
+
+// compactLFSBatch は各 object の結果を集約し、1件の失敗で残りの候補を止めない。
+// platform adapter を引数に分けることで、CoW の有無にかかわらずこの契約を検証できる。
+func (p *Preparer) compactLFSBatch(ctx context.Context, donorRoot, commonRoot *os.Root, candidates []LFSObjectCandidate, compact lfsCompactFunc) (result LFSCompactionResult, resultErr error) {
 	var errs []error
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
@@ -70,7 +79,7 @@ func (p *Preparer) CompactLFSObjects(ctx context.Context, repo discovery.Reposit
 			errs = append(errs, err)
 			break
 		}
-		replaced, bytes, err := compactLFSObject(ctx, donorRoot, commonRoot, candidate)
+		replaced, bytes, err := compact(ctx, donorRoot, commonRoot, candidate)
 		if err != nil {
 			if errors.Is(err, errLFSVerification) {
 				result.Skipped++
