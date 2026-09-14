@@ -125,8 +125,8 @@ func TestCOWSkipsPathsWithADifferentSourceIndexBlob(t *testing.T) {
 	}
 }
 
-// scope は今回の更新が書き直した path の entry だけを候補にする。
-// nil は限定なしで、宛先に共有済みの実体を持たない新規準備と復元がこの経路を使う。
+// scope は今回の更新が書き直した path だけを残すか、先行配置で共有した path を除外する。
+// scope 自体が空なら限定なしで、配置方式が1件も置けない回もこの経路を使う。
 func TestCOWScopeNarrowsCandidatesToRewrittenPaths(t *testing.T) {
 	t.Parallel()
 	entries := []cowIndexEntry{{name: "rewritten", oid: "aaa"}, {name: "dir/kept", oid: "bbb"}}
@@ -135,8 +135,15 @@ func TestCOWScopeNarrowsCandidatesToRewrittenPaths(t *testing.T) {
 	if len(candidates) != 1 || candidates[0].name != "rewritten" {
 		t.Fatalf("candidates=%v", candidates)
 	}
-	if got := (&cowScope{}).narrow(entries); len(got) != 0 {
-		t.Fatalf("an empty scope kept candidates=%v", got)
+	if got := (&cowScope{}).narrow(entries); len(got) != len(entries) {
+		t.Fatalf("an empty scope narrowed candidates=%v", got)
+	}
+	if got := (&cowScope{rewritten: map[string]bool{}}).narrow(entries); len(got) != 0 {
+		t.Fatalf("an empty rewritten set kept candidates=%v", got)
+	}
+	excluded := (&cowScope{excluded: map[string]bool{"rewritten": true}}).narrow(entries)
+	if len(excluded) != 1 || excluded[0].name != "dir/kept" {
+		t.Fatalf("excluded candidates=%v", excluded)
 	}
 	var unlimited *cowScope
 	if got := unlimited.narrow(entries); len(got) != len(entries) {

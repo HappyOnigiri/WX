@@ -545,6 +545,23 @@ func TestCOWPlacementIsCompleteOnlyWithoutPendingCandidates(t *testing.T) {
 	}
 }
 
+// 先行配置で clone に成功した path は、置換方式の候補から除外する。
+func TestCOWPlacementScopeExcludesPlacedPaths(t *testing.T) {
+	t.Parallel()
+	entries := []cowIndexEntry{{name: "placed", oid: "aaa"}, {name: "pending", oid: "bbb"}}
+	scope := (cowPlacement{placed: map[string]bool{"placed": true}, pending: 1}).scope()
+	if scope == nil {
+		t.Fatal("a placement with a clone has no scope")
+	}
+	candidates := scope.narrow(entries)
+	if len(candidates) != 1 || candidates[0].name != "pending" {
+		t.Fatalf("candidates=%v", candidates)
+	}
+	if scope := (cowPlacement{}).scope(); scope != nil {
+		t.Fatalf("an empty placement created a scope=%+v", scope)
+	}
+}
+
 // 変換の入る tracked file は、main の作業ファイルが blob と違う bytes でも通常 checkout の内容で貸し出す。
 func TestPrepareStagedKeepsCheckoutBytesForConvertedPaths(t *testing.T) {
 	t.Parallel()
@@ -577,5 +594,52 @@ func TestPrepareStagedKeepsCheckoutBytesForConvertedPaths(t *testing.T) {
 	}
 	if string(got) != committed {
 		t.Fatalf("the prepared worktree kept the donor bytes: %d bytes", len(got))
+	}
+}
+
+// 変換対象が残る回でも、先行配置済みの path を後段の置換候補へ戻さない。
+func TestPrepareStagedExcludesPlacedPathsFromReplacement(t *testing.T) {
+	t.Parallel()
+	if !cowAvailable() {
+		t.Skip("APFS is required")
+	}
+	source, repo, preparer, _, target := prepareEdgesFixture(t)
+	plain := strings.Repeat("plain\n", cowMinShareSize)
+	converted := strings.Repeat("converted\n", cowMinShareSize)
+	if err := os.Mkdir(filepath.Join(source, "big"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{".gitattributes": "*.dat text\n", "big/plain.bin": plain, "big/text.dat": converted} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCommand(t, source, "add", ".")
+	gitCommand(t, source, "commit", "-m", "converted and plain files")
+	oid := gitOutput(t, source, "rev-parse", "HEAD")
+	// 変換対象だけ donor を変更し、先行配置できる path は要求 OID のままにする。
+	if err := os.WriteFile(filepath.Join(source, "big", "text.dat"), []byte(strings.ReplaceAll(converted, "\n", "\r\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preparer.Phases = &PhaseTimings{}
+	if _, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, phase := range preparer.Phases.Phases() {
+		counts[phase.Name] = phase.Count
+	}
+	if counts["cow-place.shared"] != 1 || counts["cow-place.pending"] != 1 {
+		t.Fatalf("placement phases=%v, want one placed and one pending path", counts)
+	}
+	if counts["cow.entries"] == 0 || counts["cow.candidates"] != counts["cow.entries"]-1 {
+		t.Fatalf("cow phases=%v, want one fewer candidate than index entries for the placed path", counts)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "big", "plain.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != plain {
+		t.Fatalf("the placed path content differs from the requested OID")
 	}
 }

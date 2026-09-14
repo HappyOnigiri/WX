@@ -249,6 +249,16 @@ type cowPlacement struct {
 // false の回に貸出前の置換方式を省くと、配置から外れた候補がどの方式でも共有されないまま残る。
 func (c cowPlacement) complete() bool { return len(c.placed) > 0 && c.pending == 0 }
 
+// scope は配置方式で clone に成功した path を後段の候補から除外する集合へ変換する。
+// clone 直後の tracked 検査を通った実体は要求 OID の内容なので、後段で再比較・再cloneする必要がない。
+// 1件も置けなかった回は除外集合を作らず、従来どおり置換方式が全候補を調べる。
+func (c cowPlacement) scope() *cowScope {
+	if len(c.placed) == 0 {
+		return nil
+	}
+	return &cowScope{excluded: c.placed}
+}
+
 // placeSharedFiles は残りの checkout より先に、main と同内容になり得る tracked file を clone で配置する。
 // checkout してから同内容へ差し替えるのに比べ、同じ bytes の書き出しと読み比べが1往復ぶん要らなくなる。
 func (p *Preparer) placeSharedFiles(ctx context.Context, repo discovery.Repository, item *stagedRepository, slotID string) (cowPlacement, error) {
