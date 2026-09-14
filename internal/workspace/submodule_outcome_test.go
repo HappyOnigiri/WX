@@ -25,6 +25,9 @@ func TestSubmoduleOutcomesSnapshotSortsResults(t *testing.T) {
 	if again[0].Path == "changed" {
 		t.Fatal("Snapshot returned mutable internal storage")
 	}
+	if got := results.Outcomes(); len(got) != 3 {
+		t.Fatalf("Outcomes() returned %d items, want 3", len(got))
+	}
 }
 
 func TestSubmoduleOutcomesNilIsSafe(t *testing.T) {

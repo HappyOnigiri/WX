@@ -366,16 +366,11 @@ func splitSubmoduleKey(key string) (string, string, bool) {
 	return rest[:index], rest[index+1:], true
 }
 
-// submoduleUpstream は main のローカル module が clone 元として使えるかを判定し、clone 後に戻す origin を返す。
+// submoduleUpstreamWithReason は main のローカル module が clone 元として使えるかを判定し、clone 後に戻す origin と理由を返す。
 // 戻す origin は .gitmodules の url ではなくローカル module の `remote.origin.url` を使う。
 // .gitmodules の url は `../child` のような相対表記があり、その解決は superproject の remote 基準になるため、
 // ここで再実装すると Git と食い違う。ローカル module の origin は Git 自身が解決した結果である。
 // commentlint:allow-long -- .gitmodules の相対 url を自前解決しない理由を保守時に確認できるようにする
-func (p *Preparer) submoduleUpstream(ctx context.Context, source string, module submodule) (string, bool) {
-	upstream, eligible, _ := p.submoduleUpstreamWithReason(ctx, source, module)
-	return upstream, eligible
-}
-
 func (p *Preparer) submoduleUpstreamWithReason(ctx context.Context, source string, module submodule) (string, bool, string) {
 	info, statErr := os.Stat(source)
 	if statErr != nil || !info.IsDir() {

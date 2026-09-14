@@ -84,9 +84,6 @@ func (o *SubmoduleOutcomes) Add(outcome SubmoduleOutcome) {
 	o.items = append(o.items, outcome)
 }
 
-// Record は Add と同じく結果を 1 件加える。
-func (o *SubmoduleOutcomes) Record(outcome SubmoduleOutcome) { o.Add(outcome) }
-
 // Snapshot は登録された repository と結果を安定した順序で返す。
 func (o *SubmoduleOutcomes) Snapshot() ([]string, []SubmoduleOutcome) {
 	if o == nil {

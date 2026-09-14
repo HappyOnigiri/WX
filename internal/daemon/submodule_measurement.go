@@ -126,7 +126,7 @@ func (m *Manager) recordPrepareSubmodules(outcomes *workspace.SubmoduleOutcomes)
 		}
 		report.Details = append(report.Details, PrepareSubmoduleDetail{
 			Repository: item.Repository, Path: item.Path, Depth: item.Depth,
-			Action: string(item.Action), Reason: item.Reason,
+			Action: item.Action, Reason: item.Reason,
 		})
 	}
 	if m.log != nil {
