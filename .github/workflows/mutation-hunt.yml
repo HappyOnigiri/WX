@@ -1,0 +1,271 @@
+name: Mutation Hunt
+
+# 変異を手動で探索し、生存した判定だけをissueへ記録する。
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: Packages to mutate (space-separated; empty means all packages)
+        required: false
+        default: ""
+      groups:
+        description: Number of shards for lightweight packages (1-20)
+        required: false
+        default: "4"
+      workers:
+        description: Gremlins workers per shard (1-16)
+        required: false
+        default: "2"
+      timeout-coefficient:
+        description: Gremlins timeout coefficient (1-100)
+        required: false
+        default: "12"
+      mutators:
+        description: Mutator set (boundary or default)
+        required: false
+        default: boundary
+
+permissions:
+  contents: read
+
+# 手動で始めた探索を後続のdispatchで捨てないよう、実行中のrunは打ち切らない。
+concurrency:
+  group: mutation-hunt-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan the hunt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      timeout: ${{ steps.plan.outputs.timeout }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: mutation-hunt-plan
+      - id: plan
+        name: Validate inputs and build package matrix
+        shell: bash
+        env:
+          HUNT_PACKAGES: ${{ inputs.packages }}
+          HUNT_GROUPS: ${{ inputs.groups }}
+          HUNT_WORKERS: ${{ inputs.workers }}
+          HUNT_TIMEOUT_COEFFICIENT: ${{ inputs.timeout-coefficient }}
+          HUNT_MUTATORS: ${{ inputs.mutators }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error title=Invalid input::$1"; exit 1; }
+          case "$HUNT_GROUPS" in ''|*[!0-9]*) fail "groups must be a number";; esac
+          case "$HUNT_WORKERS" in ''|*[!0-9]*) fail "workers must be a number";; esac
+          case "$HUNT_TIMEOUT_COEFFICIENT" in ''|*[!0-9]*) fail "timeout-coefficient must be a number";; esac
+          [ "$HUNT_GROUPS" -ge 1 ] && [ "$HUNT_GROUPS" -le 20 ] || fail "groups must be 1-20"
+          [ "$HUNT_WORKERS" -ge 1 ] && [ "$HUNT_WORKERS" -le 16 ] || fail "workers must be 1-16"
+          [ "$HUNT_TIMEOUT_COEFFICIENT" -ge 1 ] && [ "$HUNT_TIMEOUT_COEFFICIENT" -le 100 ] || fail "timeout-coefficient must be 1-100"
+          case "$HUNT_MUTATORS" in boundary|default) ;; *) fail "mutators must be boundary or default";; esac
+
+          module=$(go list -m)
+          to_local_packages() {
+            while IFS= read -r import_path; do
+              case "$import_path" in
+                "$module") package=".";;
+                "$module"/*) package="./${import_path#"$module"/}";;
+                *) continue;;
+              esac
+              case "$package" in
+                ./tools/*|./internal/testsupport) continue;;
+              esac
+              printf '%s\n' "$package"
+            done
+          }
+
+          if [ -n "$HUNT_PACKAGES" ]; then
+            selected_file=$(mktemp)
+            trap 'rm -f "$selected_file"' EXIT
+            read -r -a requested <<<"$HUNT_PACKAGES"
+            for pattern in "${requested[@]}"; do
+              listed=$(go list "$pattern") || fail "cannot resolve package pattern $pattern"
+              printf '%s\n' "$listed" | to_local_packages >>"$selected_file"
+            done
+            mapfile -t packages < <(sort -u "$selected_file")
+          else
+            mapfile -t packages < <(go list ./... | to_local_packages | sort -u)
+          fi
+          ((${#packages[@]} > 0)) || fail "no packages selected"
+
+          matrix='[]'
+          light_count=0
+          declare -a buckets
+          for ((index = 1; index <= HUNT_GROUPS; index++)); do buckets[index]=''; done
+          for package in "${packages[@]}"; do
+            case "$package" in
+              ./internal/daemon|./internal/workspace|./internal/archive|./internal/cli|./cmd/wx)
+                id="package-${package#./}"
+                id=${id//\//-}
+                matrix=$(jq -c --arg id "$id" --arg packages "$package" '. + [{id: $id, packages: $packages}]' <<<"$matrix")
+                ;;
+              *)
+                ((bucket = light_count % HUNT_GROUPS + 1))
+                buckets[bucket]+="$package "
+                light_count=$((light_count + 1))
+                ;;
+            esac
+          done
+          for ((index = 1; index <= HUNT_GROUPS; index++)); do
+            packages_in_group="${buckets[index]%% }"
+            [ -n "$packages_in_group" ] || continue
+            matrix=$(jq -c --arg id "group-$index" --arg packages "$packages_in_group" '. + [{id: $id, packages: $packages}]' <<<"$matrix")
+          done
+          # 係数はGremlinsのテストtimeoutへ渡す値であり、jobの後始末分を別に確保する。
+          ((timeout = HUNT_TIMEOUT_COEFFICIENT * 5 + 30))
+          [ "$timeout" -le 360 ] || timeout=360
+          {
+            echo "matrix=$matrix"
+            echo "timeout=$timeout"
+          } >>"$GITHUB_OUTPUT"
+
+  hunt:
+    name: ${{ matrix.id }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-name: mutation-hunt-${{ matrix.id }}
+      - name: Install mutation tools
+        run: |
+          make setup-mutation-tools
+          mkdir -p .tools/bin
+          go build -trimpath -o .tools/bin/mutationreport ./tools/mutationreport
+      - name: Run mutation hunt
+        shell: bash
+        env:
+          HUNT_ID: ${{ matrix.id }}
+          HUNT_PACKAGES: ${{ matrix.packages }}
+          HUNT_WORKERS: ${{ inputs.workers }}
+          HUNT_TIMEOUT_COEFFICIENT: ${{ inputs.timeout-coefficient }}
+          HUNT_MUTATORS: ${{ inputs.mutators }}
+          HUNT_RUN_ID: ${{ github.run_id }}
+          HUNT_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p mutation-results mutation-artifacts
+          read -r -a packages <<<"$HUNT_PACKAGES"
+          failures=0
+          mutants=0
+          killed=0
+          lived=0
+          not_covered=0
+          not_viable=0
+          timed_out=0
+          for package in "${packages[@]}"; do
+            profile="${package#./}"
+            safe_profile=${profile//\//-}
+            result="mutation-results/$safe_profile.json"
+            manifest="mutation-artifacts/$safe_profile/manifest.json"
+            mkdir -p "$(dirname "$manifest")"
+            args=(unleash "$package" -o "$result" --workers "$HUNT_WORKERS" --timeout-coefficient "$HUNT_TIMEOUT_COEFFICIENT")
+            if [ "$HUNT_MUTATORS" = boundary ]; then
+              args+=(--arithmetic-base=false --conditionals-boundary=true --conditionals-negation=false --increment-decrement=true --invert-negatives=false --invert-assignments=false --invert-bitwise=false --invert-bwassign=false --invert-logical=false --invert-loopctrl=false --remove-self-assignments=false)
+            fi
+            echo "profile: gremlins ${args[*]}"
+            .tools/bin/gremlins "${args[@]}"
+            gremlins_status=$?
+            if [ "$gremlins_status" -ne 0 ] || [ ! -s "$result" ]; then
+              echo "::error title=Gremlins failed::$package (exit $gremlins_status)"
+              failures=$((failures + 1))
+              continue
+            fi
+            command_string="gremlins ${args[*]}"
+            .tools/bin/mutationreport -root "$GITHUB_WORKSPACE" -profile "$profile" -input "$result" -output "$manifest" -run-id "$HUNT_RUN_ID" -run-attempt "$HUNT_RUN_ATTEMPT" -command "$command_string"
+            report_status=$?
+            if [ "$report_status" -ne 0 ]; then
+              echo "::error title=Mutation report failed::$package (exit $report_status)"
+              failures=$((failures + 1))
+              continue
+            fi
+            values=$(jq -r '[.totals.mutants, .totals.killed, .totals.lived, .totals.not_covered, .totals.not_viable, .totals.timed_out, (.survivors | length)] | @tsv' "$manifest")
+            read -r one_mutants one_killed one_lived one_not_covered one_not_viable one_timed_out one_survivors <<<"$values"
+            mutants=$((mutants + one_mutants))
+            killed=$((killed + one_killed))
+            lived=$((lived + one_lived))
+            not_covered=$((not_covered + one_not_covered))
+            not_viable=$((not_viable + one_not_viable))
+            timed_out=$((timed_out + one_timed_out))
+            if [ "$one_survivors" -gt 0 ]; then failures=$((failures + one_survivors)); fi
+          done
+          {
+            echo "## Mutation hunt: \`$HUNT_ID\`"
+            echo
+            echo "- Packages: \`$HUNT_PACKAGES\`"
+            echo "- Mutants: $mutants (killed $killed, lived $lived, not covered $not_covered, timed out $timed_out, not viable $not_viable)"
+            echo "- Unexcluded survivors: $((failures > 0 ? failures : 0))"
+            if [ "$timed_out" -gt 0 ]; then
+              echo
+              echo "Timed out mutations are not treated as survivors; inspect this run before trusting a clean result."
+            fi
+            if [ "$lived" -gt 0 ]; then
+              echo
+              echo "### Surviving mutations"
+              echo
+              jq -r '.survivors[] | "- `" + .declaration.path + ":" + .declaration.function + "` " + .original + " → " + .mutated' mutation-artifacts/*/manifest.json 2>/dev/null || true
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+          test "$failures" -eq 0
+      - name: Verify read-only hunt
+        if: always()
+        run: git diff --exit-code
+      - if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: mutation-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: mutation-artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+  report:
+    name: Report mutation survivors
+    needs: hunt
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - if: always()
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: mutation-artifacts
+      - if: always()
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const reporter = require('./.github/scripts/report-mutants.cjs');
+            await reporter.run({
+              github,
+              context,
+              core,
+              reportDir: 'mutation-artifacts',
+            });
