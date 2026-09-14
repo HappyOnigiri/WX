@@ -1,7 +1,19 @@
 // citest は通常のGoテストを観測し、名前付き失敗だけを1回再実行する。
 package main
 
-import "time"
+import (
+	"time"
+
+	"github.com/HappyOnigiri/WX/tools/internal/gotest"
+)
+
+// citest は go test -json の解析と宣言解決を tools/internal/gotest と共有する。
+// manifest の JSON 契約は gotest.Declaration 側のタグで決まる。
+type (
+	testEvent   = gotest.Event
+	testResult  = gotest.Result
+	declaration = gotest.Declaration
+)
 
 type config struct {
 	Profile         string
@@ -10,47 +22,6 @@ type config struct {
 	RepoRoot        string
 	GoCommand       string
 	Command         []string
-}
-
-type testEvent struct {
-	Time        string  `json:"Time,omitempty"`
-	Action      string  `json:"Action,omitempty"`
-	Package     string  `json:"Package,omitempty"`
-	Test        string  `json:"Test,omitempty"`
-	Elapsed     float64 `json:"Elapsed,omitempty"`
-	Output      string  `json:"Output,omitempty"`
-	FailedBuild string  `json:"FailedBuild,omitempty"`
-}
-
-type testResult struct {
-	Package          string
-	Events           []testEvent
-	Tests            map[string][]testEvent
-	StartedAt        time.Time
-	FinishedAt       time.Time
-	Status           string
-	Exit             int
-	Signal           string
-	Malformed        bool
-	Anomaly          string
-	Shuffle          string
-	ShuffleByPackage map[string]string
-	LogExcerpt       string
-}
-
-type packageDeclaration struct {
-	ImportPath   string   `json:"ImportPath"`
-	Dir          string   `json:"Dir"`
-	GoFiles      []string `json:"GoFiles"`
-	TestGoFiles  []string `json:"TestGoFiles"`
-	XTestGoFiles []string `json:"XTestGoFiles"`
-}
-
-type declaration struct {
-	Package  string `json:"package"`
-	Path     string `json:"path"`
-	Function string `json:"function"`
-	Line     int    `json:"line"`
 }
 
 type retryRecord struct {
