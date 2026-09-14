@@ -201,7 +201,10 @@ capsuleはsourceのローカルmodule（`<common>/modules/<name>`）へfetchし�
 **次の条件は今も保存されない。**
 入れ子submoduleの中身、Git LFSの実体、ローカルmoduleを持たない子、未解消indexを持つ子、ignored fileである。
 これらは未保全として記録し、slotを自動回収から外す。submodule側の変更はpushしてからslotを返す。
-submodule checkoutのCoW共有も行わない。prepareのCoWフェーズより後に実体化するため、1 slotあたりのcheckout分は共有されない。
+実体化済みsubmoduleのcheckoutは、親のCoW後に`submodule-cow`区間で置換方式の共有対象にする。
+共有元はmain worktreeの同じ子pathで、親と同じ`copy_mode`・共有下限・所有権証明を使う。
+Gitのindexから実体化済みのgitlinkだけを列挙し、`submodule.active`をコマンド単位で指定して子のtracked entryをまとめて読み出すため、共有configや子の設定は書き換えない。
+先行配置方式の親CoWが完了した回と、通常準備・復元のいずれでも同じ区間を通る。配置方式を子へ広げること、入れ子submoduleの再帰、子のLFS実体は対象外である。
 入れ子submoduleの再帰（`--recursive`）は扱わない。実体化しないので保存対象も無いが、利用者が自分で実体化した孫の変化は検出して保護する。
 
 ## 起動用ファイルの先行配置
