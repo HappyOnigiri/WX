@@ -94,8 +94,7 @@ jobs:
           HUNT_COUNT: ${{ inputs.count }}
           HUNT_MINUTES: ${{ inputs.minutes }}
         run: |
-          set -uo pipefail
-          mkdir -p hunt-logs
+          set -euo pipefail
           args=(test -race -shuffle=on "-count=$HUNT_COUNT" -timeout=45m)
           if [ -n "$HUNT_RUN" ]; then
             args+=("-run=$HUNT_RUN")
@@ -106,55 +105,19 @@ jobs:
           echo "profile: go ${args[*]}"
           nproc
           go version
-          deadline=$((HUNT_MINUTES * 60))
-          start=$SECONDS
-          round=0
-          failures=0
-          longest=0
-          while [ $((SECONDS - start)) -lt "$deadline" ]; do
-            round=$((round + 1))
-            log="hunt-logs/round-$round.log"
-            echo "=== round $round starts at $((SECONDS - start))s"
-            began=$SECONDS
-            if go "${args[@]}" >"$log" 2>&1; then
-              # 成功したラウンドのログは残さない。artifactを失敗の分だけにするため。
-              rm -f "$log"
-            else
-              failures=$((failures + 1))
-              echo "=== failure in round $round"
-              grep -E "^--- FAIL|^    --- FAIL|^FAIL" "$log" | head -n 20
-            fi
-            elapsed=$((SECONDS - began))
-            [ "$elapsed" -gt "$longest" ] && longest=$elapsed
-            # 期限のすぐ手前で始めたラウンドがjobのtimeoutで切られると結果が残らないので、
-            # 直近で最も長かったラウンドが収まらない残り時間なら打ち切る。
-            if [ $((deadline - (SECONDS - start))) -lt "$longest" ]; then
-              echo "=== stopping: the remaining time is shorter than the longest round (${longest}s)"
-              break
-            fi
-          done
-          echo "=== rounds=$round failures=$failures elapsed=$((SECONDS - start))s"
-          {
-            echo "## Flake hunt: \`$HUNT_ID\`"
-            echo
-            echo "- Profile: \`go ${args[*]}\`"
-            echo "- Rounds: $round"
-            echo "- Failed rounds: $failures"
-            echo
-            if [ "$failures" -gt 0 ]; then
-              echo "### Failing tests"
-              echo
-              echo '```'
-              # 所要時間はラウンドごとに違うので、テスト名だけで数えられるよう落とす。
-              cat hunt-logs/round-*.log 2>/dev/null | grep -Eo "^ *--- FAIL: [^ ]+" |
-                sed -E 's/^ *--- FAIL: //' | sort | uniq -c | sort -rn
-              echo '```'
-              echo
-              echo "Full logs of the failed rounds are attached as \`hunt-logs-$HUNT_ID\`."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          test "$failures" -eq 0
+          # ラウンドの繰り返し・期限の判定・テスト単位の集計はhuntreportが行う。
+          # go test -jsonのstdoutを壊さないよう、シェル側でstderrへまとめない。
+          go run ./tools/huntreport -id "$HUNT_ID" -minutes "$HUNT_MINUTES" -log-dir hunt-logs -- go "${args[@]}"
       - if: always()
+        name: Upload flake hunt report
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: flake-hunt-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/flake-hunt/${{ matrix.id }}/manifest.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - if: always()
+        name: Upload flake hunt logs
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
           name: hunt-logs-${{ matrix.id }}

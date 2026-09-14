@@ -215,9 +215,9 @@ func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Reposito
 		result.WorktreeBytes = addBytes(result.WorktreeBytes, entry.Size)
 	}
 
-	// 変換系属性が一つでもある回は配置方式を最後まで完了できず、後段の
-	// compactWorktree が checkout 済みの bytes を置換する。従って peak の下限を
-	// CoW で割り引けるのは、変換なしで確実に候補を置ける回だけである。
+	// 変換系属性がある回は配置方式で共有できない path が残り、後段の置換方式で
+	// 変換後の bytes が必要になる可能性がある。配置済み path の重複は除外するが、
+	// peak の下限を CoW で割り引く条件は変換なしの回に限り、楽観側へ見積もらない。
 	canCOW := p.capacityCOWEnabled(repo, strings.TrimSpace(autocrlf.Stdout), convertible, lfsPaths)
 	if canCOW {
 		minSize := int64(p.Config.COWMinSizeKiBForWorkspaceRepository(p.workspaceRootForRepository(repo), repo.RelativePath, string(repo.MainPath))) * 1024

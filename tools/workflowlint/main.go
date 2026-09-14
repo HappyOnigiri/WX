@@ -45,23 +45,18 @@ func commandMain(ctx context.Context, args []string, out, errOut io.Writer) erro
 	if err := validateQueue(*workflow); err != nil {
 		return err
 	}
+	if err := validateTriggerNames(filepath.Dir(*workflow), *workflow); err != nil {
+		return err
+	}
 	return runActionlint(ctx, *actionlint, out)
 }
 
 func validateQueue(path string) error {
-	data, err := os.ReadFile(path)
+	root, err := documentRoot(path)
 	if err != nil {
 		return err
 	}
-	var document yaml.Node
-	if err := yaml.Unmarshal(data, &document); err != nil {
-		return fmt.Errorf("parse %s: %w", path, err)
-	}
-	root := document.Content
-	if len(root) == 0 || root[0].Kind != yaml.MappingNode {
-		return errors.New("workflowlint: workflow root is not a mapping")
-	}
-	concurrency := mappingValue(root[0], "concurrency")
+	concurrency := mappingValue(root, "concurrency")
 	if concurrency == nil || concurrency.Kind != yaml.MappingNode {
 		return errors.New("workflowlint: concurrency mapping is required")
 	}
@@ -70,6 +65,95 @@ func validateQueue(path string) error {
 		return errors.New("workflowlint: concurrency.queue must be max")
 	}
 	return nil
+}
+
+// validateTriggerNames は workflow_run の workflows: に並ぶ名前が、
+// 同じディレクトリのworkflowのname:として実在することを確かめる。
+// GitHubは名前が一致しないtriggerを黙って無視するので、起票経路が静かに止まる。
+func validateTriggerNames(dir, path string) error {
+	names, err := workflowNames(dir)
+	if err != nil {
+		return err
+	}
+	triggers, err := triggerWorkflows(path)
+	if err != nil {
+		return err
+	}
+	for _, name := range triggers {
+		if !names[name] {
+			return fmt.Errorf("workflowlint: %s triggers on workflow %q, which no workflow declares as its name", path, name)
+		}
+	}
+	return nil
+}
+
+func workflowNames(dir string) (map[string]bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if extension := filepath.Ext(entry.Name()); extension != ".yml" && extension != ".yaml" {
+			continue
+		}
+		root, err := documentRoot(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		if name := mappingValue(root, "name"); name != nil && name.Kind == yaml.ScalarNode {
+			names[name.Value] = true
+		}
+	}
+	return names, nil
+}
+
+func triggerWorkflows(path string) ([]string, error) {
+	root, err := documentRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	// YAML 1.1の "on" は真偽値として読まれるため、true でも引けるようにする。
+	trigger := mappingValue(root, "on")
+	if trigger == nil {
+		trigger = mappingValue(root, "true")
+	}
+	if trigger == nil || trigger.Kind != yaml.MappingNode {
+		return nil, nil
+	}
+	workflowRun := mappingValue(trigger, "workflow_run")
+	if workflowRun == nil || workflowRun.Kind != yaml.MappingNode {
+		return nil, nil
+	}
+	list := mappingValue(workflowRun, "workflows")
+	if list == nil || list.Kind != yaml.SequenceNode {
+		return nil, nil
+	}
+	var names []string
+	for _, item := range list.Content {
+		if item.Kind == yaml.ScalarNode {
+			names = append(names, item.Value)
+		}
+	}
+	return names, nil
+}
+
+func documentRoot(path string) (*yaml.Node, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("workflowlint: %s root is not a mapping", path)
+	}
+	return document.Content[0], nil
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
