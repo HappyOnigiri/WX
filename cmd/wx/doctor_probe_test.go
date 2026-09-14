@@ -46,6 +46,28 @@ func TestPrintDoctorProbesShowsPhasesWithVerbose(t *testing.T) {
 	}
 }
 
+func TestPrintDoctorProbesShowsSubmoduleRangeOnlyWithVerbose(t *testing.T) {
+	probe := diag.Probe{
+		Workspace: "/repos/app",
+		Submodules: &diag.ProbeSubmoduleReport{
+			Summaries: []diag.ProbeSubmoduleSummary{{Repository: "/repos/app", Depth: 1, Materialized: 2, OutOfScope: 1, Skipped: 1}},
+			Details:   []diag.ProbeSubmoduleDetail{{Path: "vendor/missing", Action: "skipped", Reason: "object_missing"}},
+		},
+	}
+	var compact bytes.Buffer
+	printDoctorProbes(&compact, []diag.Probe{probe}, false)
+	if strings.Contains(compact.String(), "vendor/missing") || strings.Contains(compact.String(), "materialized") {
+		t.Fatalf("non-verbose output=%q, want no submodule range", compact.String())
+	}
+	var verbose bytes.Buffer
+	printDoctorProbes(&verbose, []diag.Probe{probe}, true)
+	for _, want := range []string{"submodules", "/repos/app depth 1", "vendor/missing", "skipped"} {
+		if !strings.Contains(verbose.String(), want) {
+			t.Fatalf("verbose output=%q lacks %q", verbose.String(), want)
+		}
+	}
+}
+
 // 測定を待てなかった回に 0 バイトを並べると、実測値として読まれてしまう。
 func TestPrintDoctorProbesSaysWhenUsageIsPending(t *testing.T) {
 	var out bytes.Buffer

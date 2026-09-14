@@ -147,6 +147,7 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 	}
 	probe.FullReadyMS = time.Since(started).Milliseconds()
 	measurement := c.prepareMeasurement(ctx, lease.SessionID)
+	var excludedSubmodules map[string]bool
 	if measurement == nil {
 		probe.PhasesUnavailable = true
 	} else {
@@ -154,8 +155,11 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 			probe.Phases = append(probe.Phases, diag.ProbePhase{Name: phase.Name, Count: phase.Count, MS: phase.MS})
 		}
 		findings = append(findings, prepareNoticeFindings(root, measurement.Notices)...)
+		probe.Submodules = prepareSubmoduleProbeReport(measurement.Submodules)
+		findings = append(findings, prepareSubmoduleFindings(root, measurement.Submodules)...)
+		excludedSubmodules = excludedSubmodulePaths(measurement.Submodules)
 	}
-	findings = append(findings, c.probeWorktreeFindings(ctx, root, lease.Path)...)
+	findings = append(findings, c.probeWorktreeFindingsWithExclusions(ctx, root, lease.Path, excludedSubmodules)...)
 	slot := c.probeSlotView(ctx, lease.SessionID)
 	probe.Usage, probe.Repositories = probeUsage(slot)
 	return probe, append(findings, probeSharingFindings(root, lease.Path, slot)...)

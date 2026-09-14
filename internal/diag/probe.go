@@ -35,9 +35,10 @@ type Probe struct {
 	Usage        string            `json:"usage"`
 	Repositories []ProbeRepository `json:"repositories,omitempty"`
 	// Phases は daemon が保持している区間内訳である。daemon 再起動などで引けない回は PhasesUnavailable が立つ。
-	Phases            []ProbePhase `json:"phases,omitempty"`
-	PhasesUnavailable bool         `json:"phases_unavailable,omitempty"`
-	Error             string       `json:"error,omitempty"`
+	Phases            []ProbePhase          `json:"phases,omitempty"`
+	PhasesUnavailable bool                  `json:"phases_unavailable,omitempty"`
+	Submodules        *ProbeSubmoduleReport `json:"submodules,omitempty"`
+	Error             string                `json:"error,omitempty"`
 	// ErrorMessage は Error を表示言語で組み直すための解決前の表示文である。
 	// JSON の形は変えないため出力せず、Error が英語の契約を持ち続ける。
 	ErrorMessage i18n.Message `json:"-"`
@@ -58,4 +59,30 @@ type ProbePhase struct {
 	Name  string `json:"name"`
 	Count int    `json:"count"`
 	MS    int64  `json:"ms"`
+}
+
+// ProbeSubmoduleSummary は準備対象を repository と深さごとに集計した値である。
+type ProbeSubmoduleSummary struct {
+	Repository   string `json:"repository"`
+	Depth        int    `json:"depth"`
+	Materialized int    `json:"materialized"`
+	OutOfScope   int    `json:"out_of_scope"`
+	Skipped      int    `json:"skipped"`
+	Unreachable  int    `json:"unreachable"`
+}
+
+// ProbeSubmoduleDetail は submodule 1 件の機械可読な結果である。
+type ProbeSubmoduleDetail struct {
+	Repository string `json:"repository"`
+	Path       string `json:"path"`
+	Depth      int    `json:"depth"`
+	Action     string `json:"action"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// ProbeSubmoduleReport は準備計測から doctor の応答へ移した submodule 結果である。
+type ProbeSubmoduleReport struct {
+	Summaries []ProbeSubmoduleSummary `json:"summaries"`
+	Details   []ProbeSubmoduleDetail  `json:"details,omitempty"`
+	Truncated bool                    `json:"truncated,omitempty"`
 }

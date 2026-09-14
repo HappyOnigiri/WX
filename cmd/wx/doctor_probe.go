@@ -44,8 +44,37 @@ func printDoctorProbesLanguage(w io.Writer, probes []diag.Probe, verbose bool, l
 		}
 		if verbose {
 			printProbePhases(w, probe.Phases)
+			printProbeSubmodulesLanguage(w, probe.Submodules, localizer)
 		}
 	}
+}
+
+func printProbeSubmodulesLanguage(w io.Writer, report *diag.ProbeSubmoduleReport, localizer *i18n.Localizer) {
+	if report == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "    %s\n", localizer.Localize("wx.probe.submodules", nil))
+	for _, summary := range report.Summaries {
+		_, _ = fmt.Fprintf(w, "      %s\n", localizer.Localize("wx.probe.submodule_summary", map[string]any{
+			"Repository": summary.Repository, "Depth": summary.Depth, "Materialized": summary.Materialized,
+			"OutOfScope": summary.OutOfScope, "Skipped": summary.Skipped, "Unreachable": summary.Unreachable,
+		}))
+	}
+	for _, detail := range report.Details {
+		if detail.Action != "skipped" && detail.Action != "unreachable" {
+			continue
+		}
+		_, _ = fmt.Fprintf(w, "      %s\n", localizer.Localize("wx.probe.submodule_detail", map[string]any{
+			"Action": submoduleActionLabel(localizer, detail.Action), "Path": detail.Path, "Reason": detail.Reason,
+		}))
+	}
+	if report.Truncated {
+		_, _ = fmt.Fprintln(w, localizer.Localize("wx.probe.submodule_truncated", nil))
+	}
+}
+
+func submoduleActionLabel(localizer *i18n.Localizer, action string) string {
+	return localizer.LocalizeOr("wx.probe.submodule_action."+action, action)
 }
 
 // probeErrorText は失敗した区間だけを訳す。原因は外部由来の本文なので原文のまま残す。

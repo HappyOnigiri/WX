@@ -69,7 +69,10 @@ clone元と宛先は同じ対応volumeにある必要があり、通常checkout1
 コピー方式と共有下限はfingerprintに含めるため、設定変更後の貸出では以前の設定で作ったREADY slotを再利用しない。
 `wx config`での保存はdaemonのreloadを起こし、reloadは保守を即時に一巡させるので、fingerprintが変わると全workspaceの既存READYがSTALEになりcoldで補充される。
 設定を戻した場合も同じくreloadが走り、作り直しの費用（cold準備1本ぶん × `workspaces.<root>.warm_count`）がもう一度かかる。
-`.worktreeinclude`、workspace rootのコピー、生成物、Git objectsや復旧snapshotの容量は、この設定の対象外である。
+`.worktreeinclude`、workspace rootのコピー、生成物、復旧snapshotの容量は、この設定の対象外である。
+通常のGit objectsも対象外である。
+ただしsnapshot後に親repositoryのLFS cache objectをworktree実体から検証付きCoW cloneへ差し替える処理は、この共有方式に従う。
+`storage.copy_mode`が`copy`のrepositoryでは、この処理を行わない。
 
 Hot StandbyのUPDATEは旧HEAD・tracked clean・所有権を確認してから、要求時に固定したOIDへdetachedのまま切り替える。
 更新用Git操作だけは`core.hooksPath=/dev/null`をコマンド単位で指定し、checkout filterと属性処理は維持する。
@@ -178,6 +181,8 @@ standbyのUPDATE経路は再同期しない。`rejectChangedGitlinks`が`.gitmod
 方針は `repository_defaults.submodules` と、workspace の `repository_defaults.submodules` または membership 個別の `submodules` で切り替える。
 準備用fingerprintと更新互換fingerprintの両方に混ぜて、方針変更後に旧方針のREADY slotを再利用しない。
 更新互換側にも要るのは、更新経路がsubmoduleを実体化しないため`submodules=false`で作ったstandbyをtrue相当へ変換できないからである。
+
+準備した範囲と省略した対象は、`wx bench` と `wx doctor --probe -v` の準備計測で確認できる。
 
 snapshotは子のHEAD（branch名を含む）・index・worktree・未追跡file・停止中rebaseを、子1件につき1本の「capsule commit」へ畳んで保存する。
 capsuleはsourceのローカルmodule（`<common>/modules/<name>`）へfetchし、親のrecovery refと同じ寿命のrefで保護する。

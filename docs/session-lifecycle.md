@@ -64,6 +64,7 @@
 
 5. **アーカイブ** — SNAPSHOTジョブが2種類のスナップショットを取る。
    リポジトリごとのHEAD・index・worktreeは**ソースリポジトリ側の**保護オブジェクトとrefになる。
+   snapshotで新しく現れたLFS objectは、worktree実体とのOID・サイズ検証を通したCoW共有の対象になる（[worktreeのコピーとリンク](worktree-copy.md)）。
    multi-repository workspaceではさらに、workspace root自体のtarをwxのworktree root配下へ書き、`workspace_snapshots`行が指す。
    rootのtarから落とすのはslot内でsymlinkだったpathだけで、実体のある作業はruleの変更にかかわらずtarへ入る。
 
