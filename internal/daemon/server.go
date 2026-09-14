@@ -68,9 +68,10 @@ func Serve(ctx context.Context) error {
 		logger.Error("daemon entered read-only degraded mode", "database", dbPath, "error", openErr)
 	} else {
 		defer func() { _ = store.Close() }()
-		manager := New(cfg, store, logger, true)
+		manager := newManager(cfg, store, logger, true)
 		manager.git.SetDetailDir(filepath.Dir(logPath) + string(os.PathSeparator) + "details")
 		manager.logLevel = &level
+		manager.start()
 		defer manager.Close()
 		rpcHandler = Handler{Manager: manager}
 		durable = store
