@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 )
@@ -621,6 +623,7 @@ func TestPrepareStagedExcludesPlacedPathsFromReplacement(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "big", "text.dat"), []byte(strings.ReplaceAll(converted, "\n", "\r\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	preparer.Config.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "ls -i big/plain.bin > .before-inode"}}}}
 	preparer.Phases = &PhaseTimings{}
 	if _, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
 		t.Fatal(err)
@@ -634,6 +637,21 @@ func TestPrepareStagedExcludesPlacedPathsFromReplacement(t *testing.T) {
 	}
 	if counts["cow.entries"] == 0 || counts["cow.candidates"] != counts["cow.entries"]-1 {
 		t.Fatalf("cow phases=%v, want one fewer candidate than index entries for the placed path", counts)
+	}
+	captured, err := os.ReadFile(filepath.Join(target, ".before-inode"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := strconv.ParseUint(strings.Fields(string(captured))[0], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after unix.Stat_t
+	if err := unix.Stat(filepath.Join(target, "big", "plain.bin"), &after); err != nil {
+		t.Fatal(err)
+	}
+	if before != after.Ino {
+		t.Fatalf("the placed path was replaced after prepare command: before=%d after=%d", before, after.Ino)
 	}
 	got, err := os.ReadFile(filepath.Join(target, "big", "plain.bin"))
 	if err != nil {
