@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -129,6 +130,11 @@ func runningManagerFixture(t *testing.T, options ...managerFixtureOption) *manag
 	t.Helper()
 	f := newManagerFixture(t, options...)
 	f.Manager = New(f.Config, f.Store, slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	// 詳細ログは daemon 起動時にしか設定されないため、fixture では明示的に置き場を与える。
+	// Git の失敗は公開 error に stderr を載せないので、これが無いと CI の失敗から残るのは失敗 ID だけになる。
+	details := filepath.Join(f.Root, "details")
+	f.Manager.prepareDetailDir = details
+	f.Manager.git.SetDetailDir(details)
 	t.Cleanup(f.cleanup)
 	return f
 }
@@ -191,6 +197,38 @@ func (f *managerFixture) reportDiagnostics() {
 		f.t.Logf("slot=%+v error=%v repositories=%+v error=%v", slot, slotErr, repositories, repositoriesErr)
 	}
 	f.t.Logf("jobs:\n%s", f.jobDiagnostics(ctx))
+	if detail := f.failureDetails(); detail != "" {
+		f.t.Logf("failure details:\n%s", detail)
+	}
+}
+
+// failureDetailLimit は 1 件の詳細ログから診断へ出す本文の上限である。
+const failureDetailLimit = 4 << 10
+
+// failureDetails は Git と prepare command が残した詳細ログを読む。
+// error 文面は hook の出力が漏れないよう stderr を載せないので、失敗した Git の stderr はここにしか残らない。
+func (f *managerFixture) failureDetails() string {
+	entries, err := os.ReadDir(f.Manager.prepareDetailDir)
+	if err != nil {
+		return ""
+	}
+	var report strings.Builder
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(f.Manager.prepareDetailDir, entry.Name())
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			fmt.Fprintf(&report, "%s read error=%v\n", entry.Name(), readErr)
+			continue
+		}
+		if len(content) > failureDetailLimit {
+			content = content[:failureDetailLimit]
+		}
+		fmt.Fprintf(&report, "%s:\n%s\n", entry.Name(), content)
+	}
+	return report.String()
 }
 
 // jobDiagnostics は job の識別子と状態を読む。Store に一覧APIがないため fixture が持つ DB を直接読む。
