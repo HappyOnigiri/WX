@@ -177,8 +177,15 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 	archiveManager := m.newArchiveManager(m.Config(), slotState)
 	// 復元でも post-checkout の出力を捨てない。復元は準備ではないので計測は積まず、warn と詳細ログだけを残す。
 	notices := &workspace.PrepareNotices{}
-	archiveManager.Preparer.Notices = notices
-	defer func() { m.recordPrepareNotices(notices.Notices()) }()
+	submodules := &workspace.SubmoduleOutcomes{}
+	archiveManager.Preparer.Notices, archiveManager.Preparer.SubmoduleOutcomes = notices, submodules
+	recordedDiagnostics := false
+	defer func() {
+		if !recordedDiagnostics {
+			m.recordPrepareNotices(notices.Notices())
+			m.recordPrepareSubmodules(submodules)
+		}
+	}()
 	// clean base の worktree add と LFS smudge が始まる前に容量を確認する。
 	// 不足時は RESTORING を FAILED として残し、restore 経路の通常の隔離処理へ
 	// 落とさない。空きを作った後に retry-standby と同じ再実行経路を使える。
@@ -298,6 +305,10 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 			return fmt.Errorf("restore workspace root: %w", err)
 		}
 	}
+	// READY が見えた時点で復元の診断も読めるよう、状態遷移より前にログへ確定する。
+	m.recordPrepareNotices(notices.Notices())
+	m.recordPrepareSubmodules(submodules)
+	recordedDiagnostics = true
 	if _, _, err = m.store.FinishPreparationWithRelease(ctx, id); err != nil {
 		return err
 	}

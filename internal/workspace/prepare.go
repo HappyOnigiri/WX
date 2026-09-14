@@ -44,6 +44,9 @@ type Preparer struct {
 	// Notices は成功したまま出力を残した区間を集める診断用の器である。
 	// nil でも準備は同じ結果になり、記録だけが落ちる。`wx doctor --probe` がこの記録を読む。
 	Notices *PrepareNotices
+	// SubmoduleOutcomes は submodule の準備範囲と結果を集める診断用の器である。
+	// nil でも準備は同じ結果になり、記録だけが落ちる。`wx bench` と `wx doctor --probe` が読む。
+	SubmoduleOutcomes *SubmoduleOutcomes
 	// SlotLocks は同じ slot へ書く操作を直列化する共有の lock 表である。
 	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、daemon は全 Preparer と archive.Manager へ同じ表を渡す。
 	SlotLocks *gitx.KeyedLocks

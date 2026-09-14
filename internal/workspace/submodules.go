@@ -37,6 +37,7 @@ func (p *Preparer) submodulePhaseWithResult(ctx context.Context, repo discovery.
 	if !enabled {
 		return submodulePhaseResult{}, nil
 	}
+	p.SubmoduleOutcomes.BeginRepository(string(repo.MainPath))
 	return p.materializeSubmodulesWithResult(ctx, repo, target, oid, identity)
 }
 
@@ -106,7 +107,11 @@ func (p *Preparer) materializeSubmodulesWithResult(ctx context.Context, repo dis
 	for index, module := range declared {
 		if module.url == "" {
 			// url が無い entry は clone 後に origin を戻す先が無いため実体化しない。
-			decisions[index] = submoduleProbe{skipMessage: "submodule has no url in .gitmodules", skipArgs: []any{"repository", string(repo.MainPath), "submodule", module.name}}
+			decisions[index] = submoduleProbe{
+				skipMessage: "submodule has no url in .gitmodules",
+				skipArgs:    []any{"repository", string(repo.MainPath), "submodule", module.name},
+				skipReason:  SubmoduleReasonURLMissing,
+			}
 			continue
 		}
 		source := filepath.Join(commonModules, module.name)
@@ -118,6 +123,7 @@ func (p *Preparer) materializeSubmodulesWithResult(ctx context.Context, repo dis
 	if len(candidates) == 0 {
 		for index, module := range declared {
 			decisions[index].log(p, module)
+			p.recordSubmoduleOutcome(repo, module, SubmoduleActionSkipped, decisions[index].skipReason)
 			stats.skipped.Add(1)
 		}
 		return phaseResult, nil
@@ -149,6 +155,7 @@ func (p *Preparer) materializeSubmodulesWithResult(ctx context.Context, repo dis
 		decision := decisions[index]
 		if !decision.eligible {
 			decision.log(p, module)
+			p.recordSubmoduleOutcome(repo, module, SubmoduleActionSkipped, decision.skipReason)
 			stats.skipped.Add(1)
 			continue
 		}
@@ -188,6 +195,10 @@ func (p *Preparer) materializeSubmodulesWithResult(ctx context.Context, repo dis
 	}); err != nil {
 		return submodulePhaseResult{}, err
 	}
+	// 実体化は batch 単位で進むため、origin 復元まで通った時点で宣言順にまとめて記録する。
+	for _, module := range eligible {
+		p.recordSubmoduleOutcome(repo, module.module, SubmoduleActionMaterialized, "")
+	}
 	return phaseResult, nil
 }
 
@@ -223,6 +234,15 @@ func (p *Preparer) SubmodulesAtRevision(ctx context.Context, repository, rev str
 		return nil, err
 	}
 	return p.resolveSubmoduleOIDsFromTree(ctx, repository, rev, declared)
+}
+
+func (p *Preparer) recordSubmoduleOutcome(repo discovery.Repository, module submodule, action SubmoduleAction, reason string) {
+	if p.SubmoduleOutcomes == nil {
+		return
+	}
+	p.SubmoduleOutcomes.Add(SubmoduleOutcome{
+		Repository: string(repo.MainPath), Path: module.path, Depth: 1, Action: action, Reason: reason,
+	})
 }
 
 // declaredSubmodules は rev の .gitmodules と index から submodule を確定する。
@@ -455,7 +475,7 @@ func splitSubmoduleKey(key string) (string, string, bool) {
 	return rest[:index], rest[index+1:], true
 }
 
-// submoduleUpstream は main のローカル module が clone 元として使えるかを判定し、clone 後に戻す origin を返す。
+// submoduleUpstreamWithReason は main のローカル module が clone 元として使えるかを判定し、clone 後に戻す origin と理由を返す。
 // 戻す origin は .gitmodules の url ではなくローカル module の `remote.origin.url` を使う。
 // .gitmodules の url は `../child` のような相対表記があり、その解決は superproject の remote 基準になるため、
 // ここで再実装すると Git と食い違う。ローカル module の origin は Git 自身が解決した結果である。
@@ -477,8 +497,10 @@ type submoduleProbe struct {
 	eligible    bool
 	skipMessage string
 	skipArgs    []any
-	source      string
-	shallow     bool
+	// skipReason は省略を SubmoduleOutcomes へ記録するための機械向け識別子である。
+	skipReason string
+	source     string
+	shallow    bool
 }
 
 func (s submoduleProbe) log(p *Preparer, module submodule) {
@@ -503,6 +525,7 @@ func (p *Preparer) inspectSubmoduleUpstream(ctx context.Context, source string, 
 		return submoduleProbe{
 			skipMessage: "submodule has no local module in the source repository",
 			skipArgs:    []any{"submodule", module.name, "module_dir", source},
+			skipReason:  SubmoduleReasonLocalModule,
 		}, nil
 	}
 	inspection, inspectErr := InspectSubmodule(ctx, p.Git, source, module.oid)
@@ -513,6 +536,7 @@ func (p *Preparer) inspectSubmoduleUpstream(ctx context.Context, source string, 
 		return submoduleProbe{
 			skipMessage: "submodule local module could not be inspected",
 			skipArgs:    []any{"submodule", module.name, "module_dir", source, "error", inspectErr},
+			skipReason:  SubmoduleReasonInspectionFailed,
 		}, nil
 	}
 	// promisor で要求 OID が無いまま clone すると checkout が書込み後に失敗するため、
@@ -521,6 +545,7 @@ func (p *Preparer) inspectSubmoduleUpstream(ctx context.Context, source string, 
 		return submoduleProbe{
 			skipMessage: "submodule object is missing from the promisor local module",
 			skipArgs:    []any{"submodule", module.name, "oid", module.oid},
+			skipReason:  SubmoduleReasonObjectMissing,
 		}, nil
 	}
 	if inspection.Status() == SubmoduleSharingObjectMissing {
@@ -529,12 +554,14 @@ func (p *Preparer) inspectSubmoduleUpstream(ctx context.Context, source string, 
 		return submoduleProbe{
 			skipMessage: "submodule commit is missing from the local module",
 			skipArgs:    []any{"submodule", module.name, "oid", module.oid},
+			skipReason:  SubmoduleReasonObjectMissing,
 		}, nil
 	}
 	if inspection.OriginURL == "" {
 		return submoduleProbe{
 			skipMessage: "submodule local module has no origin url",
 			skipArgs:    []any{"submodule", module.name, "module_dir", source},
+			skipReason:  SubmoduleReasonOriginMissing,
 			source:      source,
 			shallow:     inspection.Status() == SubmoduleSharingShallow,
 		}, nil

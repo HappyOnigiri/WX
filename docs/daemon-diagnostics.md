@@ -46,6 +46,7 @@ manifestの不正のようにslotを作る前で落ちる失敗は補充を止�
 `--probe`は実際に貸し出して準備する動的検査で、駆動はCLIが`wx bench`と同じRPC列で行い、daemonにprobe専用の処理を持たない。
 検査結果は他と同じ`Finding`としてfindingsへ合流させ、所要時間とディスク使用量は失敗ではないので`Reply.Probes`へ分けて出す。
 benchと同じstandby退役を必ず伴うため、実行中と直後は対象workspaceの起動が遅くなる。
+準備範囲外として選択されなかったsubmoduleは、空のdirectoryでも`probe_submodule`の問題にしない。
 
 ## 準備時間の計測
 
@@ -65,6 +66,10 @@ cold startを測るため、既定では対象workspaceの待機中READY slotを
 exit 0のpost-checkout hookが内部の失敗を飲み込んでも、出力を捨てるとwxからは正常と区別できないためである。
 本文はdaemon logへwarnで出し、全文は失敗のstderrと同じ詳細ログへ書く。
 復元もpost-checkoutを実行するため同じ記録を残すが、準備ではないので計測履歴には積まない。
+
+submoduleの実体化・範囲外・省略・到達不能の結果も、同じ準備計測へ集計と明細を載せる。
+テキスト表示は省略・到達不能のpathだけを出し、JSONは機械向けの区分と理由を含む。
+これらは診断専用で永続化せず、daemon再起動で消える。
 
 ## restart / stopのidleゲート
 

@@ -396,6 +396,31 @@ func printBenchRunLanguage(index, runs int, run BenchRun, lang i18n.Language) {
 		}
 		fmt.Printf("%s%-24s %9s  x%d\n", indent, phase.Name, elapsed, phase.Count)
 	}
+	printBenchSubmodules(run.Measurement.Submodules, localizer)
+}
+
+func printBenchSubmodules(report *daemon.PrepareSubmoduleReport, localizer *i18n.Localizer) {
+	if report == nil {
+		return
+	}
+	fmt.Printf("    %s\n", localizer.Localize("cli.bench.submodules", nil))
+	for _, summary := range report.Summaries {
+		fmt.Printf("      %s\n", localizer.Localize("cli.bench.submodule_summary", map[string]any{
+			"Repository": summary.Repository, "Depth": summary.Depth, "Materialized": summary.Materialized,
+			"OutOfScope": summary.OutOfScope, "Skipped": summary.Skipped, "Unreachable": summary.Unreachable,
+		}))
+	}
+	for _, detail := range report.Details {
+		if detail.Action != "skipped" && detail.Action != "unreachable" {
+			continue
+		}
+		fmt.Printf("      %s\n", localizer.Localize("cli.bench.submodule_detail", map[string]any{
+			"Action": localizer.LocalizeOr("cli.bench.submodule_action."+detail.Action, detail.Action), "Path": detail.Path, "Reason": detail.Reason,
+		}))
+	}
+	if report.Truncated {
+		fmt.Println(localizer.Localize("cli.bench.submodule_truncated", nil))
+	}
 }
 
 // benchStageIDs は run.Error の先頭に置く区間の message ID である。
