@@ -84,6 +84,56 @@ func TestCompactLFSObjectsReplacesVerifiedObject(t *testing.T) {
 	}
 }
 
+func TestVerifyLFSCloneChecksSizeAndHash(t *testing.T) {
+	t.Parallel()
+	data := []byte(strings.Repeat("weight", 128))
+	hash := sha256.Sum256(data)
+	pointer := LFSPointer{OID: "sha256:" + hex.EncodeToString(hash[:]), Size: int64(len(data))}
+	path := filepath.Join(t.TempDir(), "weights.bin")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyLFSClone(context.Background(), file, pointer); err != nil {
+		file.Close()
+		t.Fatalf("matching LFS clone rejected: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err = os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := pointer
+	wrong.OID = "sha256:" + strings.Repeat("a", 64)
+	if err := verifyLFSClone(context.Background(), file, wrong); !errors.Is(err, errLFSVerification) {
+		file.Close()
+		t.Fatalf("hash mismatch error=%v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err = os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong = pointer
+	wrong.Size++
+	if err := verifyLFSClone(context.Background(), file, wrong); !errors.Is(err, errLFSVerification) {
+		file.Close()
+		t.Fatalf("size mismatch error=%v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCompactLFSObjectsLeavesCacheOnVerificationFailure(t *testing.T) {
 	t.Parallel()
 	if !cowAvailable() {
