@@ -30,6 +30,16 @@ func TestPrepareSharesSubmoduleCheckout(t *testing.T) {
 	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
 		t.Fatal(err)
 	}
+	if !cowAvailable() {
+		identity, err := f.preparer.WorktreeIdentity(f.target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.preparer.compactOwnedSubmoduleWorktree(context.Background(), f.repo, f.target, f.head, "slot", preparePhaseCreate, identity, false); !errors.Is(err, unix.ENOTSUP) {
+			t.Fatalf("unsupported submodule CoW error=%v", err)
+		}
+		return
+	}
 	before, err := os.ReadFile(filepath.Join(f.target, ".before-submodule-inode"))
 	if err != nil {
 		t.Fatal(err)
@@ -79,6 +89,16 @@ func TestPrepareStagedSharesSubmoduleCheckout(t *testing.T) {
 	})
 	if _, err := f.preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: f.repo, Target: f.target, OID: f.head}}, nil, func() error { return nil }); err != nil {
 		t.Fatal(err)
+	}
+	if !cowAvailable() {
+		identity, err := f.preparer.WorktreeIdentity(f.target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.preparer.compactOwnedSubmoduleWorktree(context.Background(), f.repo, f.target, f.head, "slot", preparePhaseCreate, identity, false); !errors.Is(err, unix.ENOTSUP) {
+			t.Fatalf("unsupported staged submodule CoW error=%v", err)
+		}
+		return
 	}
 	var after unix.Stat_t
 	if err := unix.Stat(filepath.Join(f.target, submodulePath, "kid.txt"), &after); err != nil {
@@ -135,6 +155,13 @@ func TestPrepareResumeRejectsSubmoduleCOWTemporary(t *testing.T) {
 	identity, err := f.preparer.WorktreeIdentity(f.target)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !cowAvailable() {
+		err = f.preparer.compactOwnedSubmoduleWorktree(context.Background(), f.repo, f.target, f.head, "slot", preparePhaseRestore, identity, true)
+		if !errors.Is(err, state.ErrOwnership) {
+			t.Fatalf("unsupported resume error=%v, want ownership failure", err)
+		}
+		return
 	}
 	err = f.preparer.PrepareResumeWithIdentity(context.Background(), f.repo, f.target, f.head, "slot", identity)
 	if !errors.Is(err, state.ErrOwnership) {
