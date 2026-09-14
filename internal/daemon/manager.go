@@ -122,6 +122,15 @@ type Manager struct {
 }
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {
+	m := newManager(cfg, store, logger, exclusiveStartup...)
+	m.start()
+	return m
+}
+
+// newManager は背景処理を起動せずに Manager を組み立てる。
+// 詳細ログの置き場や動的ログ水準のように、起動後は同期せずに書けないフィールドを
+// 呼び出し側が設定できるよう、起動は start に分けている。
+func newManager(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {
 	git := &gitx.Runner{Timeout: cfg.MaxReadinessTimeout()}
 	executable, executableErr := os.Executable()
 	if executableErr == nil {
@@ -154,11 +163,16 @@ func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveSt
 	m.loadRootGenerations(context.Background())
 	m.recoverJobs(reclaimAll)
 	m.reconcileStandbyReplenishments(context.Background())
+	return m
+}
+
+// start は worker と周期処理を起動する。
+// 起動より前に書いたフィールドだけが背景処理から安全に読めるため、呼んだ後は設定を変えない。
+func (m *Manager) start() {
 	m.wg.Add(3)
 	go func() { defer m.wg.Done(); m.dispatchJobs() }()
 	go func() { defer m.wg.Done(); m.maintainJobs() }()
 	go func() { defer m.wg.Done(); m.maintainLifecycle() }()
-	return m
 }
 
 func (m *Manager) Close() {

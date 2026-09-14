@@ -129,12 +129,14 @@ func manualManagerFixture(t *testing.T, options ...managerFixtureOption) *manage
 func runningManagerFixture(t *testing.T, options ...managerFixtureOption) *managerFixture {
 	t.Helper()
 	f := newManagerFixture(t, options...)
-	f.Manager = New(f.Config, f.Store, slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	f.Manager = newManager(f.Config, f.Store, slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	// 詳細ログは daemon 起動時にしか設定されないため、fixture では明示的に置き場を与える。
 	// Git の失敗は公開 error に stderr を載せないので、これが無いと CI の失敗から残るのは失敗 ID だけになる。
+	// 背景処理は置き場を同期せずに読むため、設定は start より前に済ませる。
 	details := filepath.Join(f.Root, "details")
 	f.Manager.prepareDetailDir = details
 	f.Manager.git.SetDetailDir(details)
+	f.Manager.start()
 	t.Cleanup(f.cleanup)
 	return f
 }
