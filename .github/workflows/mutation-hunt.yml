@@ -165,6 +165,8 @@ jobs:
           set +e
           set -uo pipefail
           mkdir -p mutation-results mutation-artifacts
+          survivor_ids=$(mktemp)
+          trap 'rm -f "$survivor_ids"' EXIT
           read -r -a packages <<<"$HUNT_PACKAGES"
           failures=0
           mutants=0
@@ -207,14 +209,19 @@ jobs:
             not_covered=$((not_covered + one_not_covered))
             not_viable=$((not_viable + one_not_viable))
             timed_out=$((timed_out + one_timed_out))
-            if [ "$one_survivors" -gt 0 ]; then failures=$((failures + one_survivors)); fi
+            if [ "$one_survivors" -gt 0 ]; then
+              jq -r '.survivors[].id' "$manifest" >>"$survivor_ids"
+              failures=$((failures + one_survivors))
+            fi
           done
+          unique_survivors=0
+          if [ -s "$survivor_ids" ]; then unique_survivors=$(sort -u "$survivor_ids" | wc -l | tr -d ' '); fi
           {
             echo "## Mutation hunt: \`$HUNT_ID\`"
             echo
             echo "- Packages: \`$HUNT_PACKAGES\`"
             echo "- Mutants: $mutants (killed $killed, lived $lived, not covered $not_covered, timed out $timed_out, not viable $not_viable)"
-            echo "- Unexcluded survivors: $((failures > 0 ? failures : 0))"
+            echo "- Unexcluded survivors: $unique_survivors"
             if [ "$timed_out" -gt 0 ]; then
               echo
               echo "Timed out mutations are not treated as survivors; inspect this run before trusting a clean result."
@@ -223,7 +230,7 @@ jobs:
               echo
               echo "### Surviving mutations"
               echo
-              jq -r '.survivors[] | "- `" + .declaration.path + ":" + .declaration.function + "` " + .original + " → " + .mutated' mutation-artifacts/*/manifest.json 2>/dev/null || true
+              jq -rs '[.[].survivors[]] | unique_by(.id)[] | "- `" + .declaration.path + ":" + .declaration.function + "` " + .original + " → " + .mutated' mutation-artifacts/*/manifest.json 2>/dev/null || true
             fi
           } >>"$GITHUB_STEP_SUMMARY"
           test "$failures" -eq 0

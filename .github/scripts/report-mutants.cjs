@@ -5,8 +5,12 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const SHA = /^[0-9a-f]{40}$/iu;
+const MUTATION_ID = /^[0-9a-f]{64}$/u;
+const MUTATION_ID_VERSION = 'wx-mutation-id-v1';
 const MAX_TEXT = 12000;
 const TOTAL_KEYS = Object.freeze(['mutants', 'killed', 'lived', 'not_covered', 'not_viable', 'timed_out']);
+const MUTATION_LABEL = 'mutation';
+const MUTATION_LABEL_DESCRIPTION = 'Mutation Hunt automatic detection record';
 
 function fail(message) {
   throw new Error(`invalid mutation report: ${message}`);
@@ -42,9 +46,33 @@ function validateDeclaration(value, name) {
   return value;
 }
 
+function mutationId(survivor) {
+  const declaration = survivor.declaration;
+  const canonical = [
+    MUTATION_ID_VERSION,
+    declaration.path,
+    declaration.function,
+    survivor.mutator,
+    String(survivor.line),
+    String(survivor.column),
+    survivor.original,
+    survivor.mutated,
+  ].join('\n');
+  return crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
+}
+
+function sameMutation(a, b) {
+  return a.id === b.id &&
+    a.declaration.path === b.declaration.path &&
+    a.declaration.function === b.declaration.function &&
+    a.mutator === b.mutator &&
+    a.line === b.line && a.column === b.column &&
+    a.original === b.original && a.mutated === b.mutated;
+}
+
 function validateManifest(value, artifactName = 'artifact') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${artifactName} is not an object`);
-  if (value.schema_version !== 1) fail(`${artifactName} has unsupported schema_version`);
+  if (value.schema_version !== 2) fail(`${artifactName} has unsupported schema_version`);
   relativePath(value.profile, `${artifactName} profile`);
   if (value.run_id !== undefined && !/^\d+$/u.test(String(value.run_id))) fail(`${artifactName} has invalid run_id`);
   if (value.run_attempt !== undefined && !/^\d+$/u.test(String(value.run_attempt))) fail(`${artifactName} has invalid run_attempt`);
@@ -63,13 +91,36 @@ function validateManifest(value, artifactName = 'artifact') {
     }
     text(item.original, `${artifactName} survivor ${index} original`, 200);
     text(item.mutated, `${artifactName} survivor ${index} mutated`, 200);
+    if (!MUTATION_ID.test(item.id) || mutationId(item) !== item.id) fail(`${artifactName} survivor ${index} has an invalid mutation ID`);
   }
   if (!Array.isArray(value.excluded) || value.excluded.length > 10000) fail(`${artifactName} excluded is not an array`);
   for (const [index, item] of value.excluded.entries()) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) fail(`${artifactName} excluded ${index} is not an object`);
     relativePath(item.path, `${artifactName} excluded ${index} path`);
-    text(item.function, `${artifactName} excluded ${index} function`, 500);
+    const functionName = text(item.function, `${artifactName} excluded ${index} function`, 500);
+    if (!functionName || /[\r\n]/u.test(functionName)) fail(`${artifactName} excluded ${index} has an invalid function`);
+    if (!MUTATION_ID.test(item.id)) fail(`${artifactName} excluded ${index} has an invalid mutation ID`);
     text(item.reason, `${artifactName} excluded ${index} reason`, 2000);
+    const hasDetails = ['mutator', 'line', 'column', 'original', 'mutated', 'status'].some((key) => item[key] !== undefined);
+    if (hasDetails) {
+      text(item.mutator, `${artifactName} excluded ${index} mutator`, 200);
+      if (!Number.isInteger(item.line) || item.line < 1 || !Number.isInteger(item.column) || item.column < 1) {
+        fail(`${artifactName} excluded ${index} has an invalid location`);
+      }
+      text(item.original, `${artifactName} excluded ${index} original`, 200);
+      text(item.mutated, `${artifactName} excluded ${index} mutated`, 200);
+      text(item.status, `${artifactName} excluded ${index} status`, 100);
+      const details = {
+        id: item.id,
+        declaration: { path: item.path, function: item.function },
+        mutator: item.mutator,
+        line: item.line,
+        column: item.column,
+        original: item.original,
+        mutated: item.mutated,
+      };
+      if (mutationId(details) !== item.id) fail(`${artifactName} excluded ${index} has inconsistent mutation details`);
+    }
   }
   return value;
 }
@@ -95,17 +146,28 @@ function jobLink(url) {
   return url ? sanitizeText(url, 2000) : 'not recorded';
 }
 
-function excerpt(manifest, survivor, jobUrl = '') {
+function observationExcerpt(manifest, survivor, jobUrl = '') {
   const totals = manifest.totals;
   return [
     `- profile: \`${sanitize(manifest.profile, 500)}\``,
-    `- mutator: \`${sanitize(survivor.mutator, 200)}\``,
-    `- mutation: \`${sanitize(survivor.original, 100)}\` → \`${sanitize(survivor.mutated, 100)}\``,
-    `- location: ${sanitizeText(`${survivor.line}:${survivor.column}`, 100)}`,
     `- job: ${jobLink(jobUrl)}`,
     `- test commit: \`${sanitize(manifest.test_sha || 'unknown', 100)}\``,
     `- command: \`${sanitize(manifest.command.join(' '), 2000)}\``,
     `- totals: mutants ${totals.mutants}; killed ${totals.killed}; lived ${totals.lived}; not covered ${totals.not_covered}; timed out ${totals.timed_out}; not viable ${totals.not_viable}`,
+  ].join('\n');
+}
+
+function mutationExcerpt(item) {
+  const survivor = item.survivor;
+  return [
+    `- mutation ID: \`${sanitize(item.id, 100)}\``,
+    `- mutator: \`${sanitize(survivor.mutator, 200)}\``,
+    `- mutation: \`${sanitize(survivor.original, 100)}\` → \`${sanitize(survivor.mutated, 100)}\``,
+    `- location: ${sanitizeText(`${survivor.line}:${survivor.column}`, 100)}`,
+    '',
+    '  observations:',
+    ...item.observations.flatMap((observation) => observationExcerpt(observation.manifest, observation.survivor, observation.jobUrl)
+      .split('\n').map((line) => `  ${line}`)),
   ].join('\n');
 }
 
@@ -122,9 +184,7 @@ function buildIssueBody(group, source) {
     '',
     'The mutation survived the selected test suite:',
   ];
-  for (const item of group.items) {
-    lines.push('', excerpt(item.manifest, item.survivor, item.jobUrl));
-  }
+  for (const item of group.items) lines.push('', mutationExcerpt(item));
   return lines.join('\n').slice(0, 60000);
 }
 
@@ -133,7 +193,7 @@ function buildIssueComment(group, source) {
     group.marker,
     `Mutation survivor observed in [Mutation Hunt run ${source.runId}](${source.runUrl}) (attempt ${source.attempt}).`,
     '',
-    ...group.items.map((item) => excerpt(item.manifest, item.survivor, item.jobUrl)),
+    ...group.items.map((item) => mutationExcerpt(item)),
   ].join('\n').slice(0, 60000);
 }
 
@@ -144,6 +204,7 @@ function artifactId(name) {
 
 function aggregateManifests(manifests, source) {
   const groups = new Map();
+  const mutations = new Map();
   for (const item of manifests) {
     const manifest = validateManifest(item.manifest, item.artifactName || 'artifact');
     if (manifest.run_id !== undefined && String(manifest.run_id) !== String(source.runId)) fail(`${item.artifactName} run_id does not match source run`);
@@ -161,7 +222,15 @@ function aggregateManifests(manifests, source) {
         };
         groups.set(key, group);
       }
-      group.items.push({ manifest, survivor, jobUrl: item.jobUrl || '' });
+      let mutation = mutations.get(survivor.id);
+      if (!mutation) {
+        mutation = { id: survivor.id, survivor, observations: [] };
+        mutations.set(survivor.id, mutation);
+        group.items.push(mutation);
+      } else if (!sameMutation(mutation.survivor, survivor)) {
+        fail(`mutation ID ${survivor.id} has conflicting mutation details`);
+      }
+      mutation.observations.push({ manifest, survivor, jobUrl: item.jobUrl || '' });
     }
   }
   return [...groups.values()].sort((a, b) => a.title.localeCompare(b.title));
@@ -186,15 +255,85 @@ async function listComments(github, owner, repo, issueNumber) {
   return pages((page) => github.rest.issues.listComments({ owner, repo, issue_number: issueNumber, per_page: 100, page }));
 }
 
-async function upsertGroup({ github, owner, repo, group, source }) {
+function isNotFound(error) {
+  return error?.status === 404 || error?.response?.status === 404;
+}
+
+function labelNames(labels) {
+  return (Array.isArray(labels) ? labels : []).map((label) => typeof label === 'string' ? label : label?.name).filter(Boolean);
+}
+
+async function ensureMutationLabel({ github, owner, repo }) {
+  const api = github?.rest?.issues;
+  if (!api) throw new Error('GitHub issues API is required for mutation labels');
+  if (api.getLabel) {
+    try {
+      const result = await api.getLabel({ owner, repo, name: MUTATION_LABEL });
+      if (result?.data?.name !== MUTATION_LABEL) fail('mutation label lookup returned an unexpected label');
+      return;
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  } else if (api.listLabelsForRepo) {
+    const labels = await pages((page) => api.listLabelsForRepo({ owner, repo, per_page: 100, page }));
+    if (labels.some((label) => label?.name === MUTATION_LABEL)) return;
+  } else {
+    throw new Error('GitHub issues label API is required for mutation labels');
+  }
+  if (!api.createLabel) throw new Error('GitHub issues createLabel API is required for mutation labels');
+  const result = await api.createLabel({
+    owner,
+    repo,
+    name: MUTATION_LABEL,
+    description: MUTATION_LABEL_DESCRIPTION,
+    color: '1d76db',
+  });
+  const created = result?.data;
+  if (!created || created.name !== MUTATION_LABEL) fail('mutation label creation returned an unexpected label');
+}
+
+async function addMutationLabel({ github, owner, repo, issue }) {
+  const api = github?.rest?.issues;
+  if (!api?.addLabels) throw new Error('GitHub issues addLabels API is required for mutation labels');
+  const result = await api.addLabels({ owner, repo, issue_number: issue.number, labels: [MUTATION_LABEL] });
+  if (Array.isArray(result?.data) && !labelNames(result.data).includes(MUTATION_LABEL)) {
+    throw new Error(`mutation label was not applied to issue #${issue.number}`);
+  }
+}
+
+async function ensureIssueMutationLabel({ github, owner, repo, issue }) {
+  if (labelNames(issue.labels).includes(MUTATION_LABEL)) return;
+  await addMutationLabel({ github, owner, repo, issue });
+}
+
+async function backfillMutationLabels({ github, owner, repo, issues }) {
+  await ensureMutationLabel({ github, owner, repo });
+  const candidates = issues || await listIssues(github, owner, repo);
+  let updated = 0;
+  for (const issue of candidates) {
+    if (issue.pull_request || typeof issue.title !== 'string' || !issue.title.startsWith('[mutation] ')) continue;
+    if (!labelNames(issue.labels).includes(MUTATION_LABEL)) {
+      await ensureIssueMutationLabel({ github, owner, repo, issue });
+      updated += 1;
+    }
+  }
+  return updated;
+}
+
+async function upsertGroup({ github, owner, repo, group, source, labelReady = false }) {
+  if (!labelReady) await ensureMutationLabel({ github, owner, repo });
   const issues = await listIssues(github, owner, repo);
   const matching = issues.filter((item) => item.title === group.title).sort((a, b) => a.number - b.number);
   const issue = matching[0];
   if (matching.length > 1 && source.summary) source.summary(`duplicate issue titles for ${group.title}: ${matching.slice(1).map((item) => item.number).join(', ')}`);
   if (!issue) {
-    await github.rest.issues.create({ owner, repo, title: group.title, body: buildIssueBody(group, source) });
+    const created = await github.rest.issues.create({ owner, repo, title: group.title, body: buildIssueBody(group, source), labels: [MUTATION_LABEL] });
+    const createdIssue = created?.data;
+    if (!createdIssue?.number) throw new Error('mutation issue creation returned no issue number');
+    await addMutationLabel({ github, owner, repo, issue: createdIssue });
     return 'created';
   }
+  await ensureIssueMutationLabel({ github, owner, repo, issue });
   const comments = await listComments(github, owner, repo, issue.number);
   const found = [issue.body || '', ...comments.map((item) => item.body || '')].some((body) => body.includes(group.marker));
   if (found) return 'already-recorded';
@@ -268,8 +407,9 @@ async function run(options) {
     if (value.totals.timed_out > 0 && source.summary) source.summary(`${report.artifactName}: ${value.totals.timed_out} mutation(s) timed out`);
     if (value.totals.not_covered > 0 && source.summary) source.summary(`${report.artifactName}: ${value.totals.not_covered} mutation(s) not covered`);
   }
+  if (groups.length > 0) await ensureMutationLabel({ github, owner, repo });
   const results = [];
-  for (const group of groups) results.push({ title: group.title, action: await upsertGroup({ github, owner, repo, group, source }) });
+  for (const group of groups) results.push({ title: group.title, action: await upsertGroup({ github, owner, repo, group, source, labelReady: groups.length > 0 }) });
   const survivorCount = groups.reduce((total, group) => total + group.items.length, 0);
   const summary = `mutation reports: ${reports.length} artifact(s), ${survivorCount} survivor(s), ${results.filter((item) => item.action === 'created').length} issue(s) created, ${results.filter((item) => item.action === 'commented' || item.action === 'reopened-commented').length} commented`;
   if (options.core?.summary) await options.core.summary.addHeading('Mutation hunt reports').addRaw(`${summary}\n`).write();
@@ -278,11 +418,14 @@ async function run(options) {
 
 module.exports = {
   aggregateManifests,
+  backfillMutationLabels,
   buildIssueBody,
   buildIssueComment,
   collectManifests,
+  ensureMutationLabel,
   issueTitle,
   marker,
+  mutationId,
   run,
   upsertGroup,
   validateManifest,

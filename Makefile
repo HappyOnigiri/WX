@@ -244,6 +244,7 @@ reporter-check:
 # Gremlinsは結果をissueへ記録する手動検査なので、通常のCI依存閉包には入れない。
 mutation-check:
 	@test -n "$(PKG)" || { echo "PKG is required; e.g. make mutation-check PKG=./internal/config"; exit 1; }
+	@test -z "$(FILE)" || test -z "$(MUTATION_ID)" || { echo "FILE and MUTATION_ID are mutually exclusive"; exit 1; }
 	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned gremlins is missing; run make setup-mutation-tools"; exit 1; }
 	@set -eu; \
 	package="$(PKG)"; profile="$${package#./}"; \
@@ -258,7 +259,8 @@ mutation-check:
 	"$(TOOLS_BIN)/gremlins" "$${args[@]}"; \
 	command_string="gremlins $${args[*]}"; \
 	$(GO) run ./tools/mutationreport -root "$(CURDIR)" -profile "$$profile" -input "$$result" \
-		-output "$$manifest" -exclusions "$(CURDIR)/mutation-exclusions.txt" -command "$$command_string" -fail-on-survivors
+		-output "$$manifest" -exclusions "$(CURDIR)/mutation-exclusions.txt" -command "$$command_string" \
+		$(if $(FILE),-file "$(FILE)",) $(if $(MUTATION_ID),-mutation-id "$(MUTATION_ID)",) -fail-on-survivors
 
 workflow-security-audit: setup-zizmor
 	@test -x "$(TOOLS_BIN)/zizmor" || { echo "pinned zizmor is missing; run make setup-zizmor"; exit 1; }
