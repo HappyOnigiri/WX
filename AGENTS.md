@@ -68,6 +68,7 @@ Go側に状態のenum型や遷移ガードを作らない。
 - slots/statusの容量・コピー方式の計測や準備前診断を扱うとき: [使用量とCoWの観測](docs/storage-usage.md)
 - ジョブ・補充・clear・GC・障害回復を扱うとき: [daemonの補充と回収](docs/daemon-maintenance.md)
 - `wx doctor`の診断・`wx bench`の計測・daemonのrestart/stopを扱うとき: [daemonの診断と再起動](docs/daemon-diagnostics.md)
+- mutation hunt・変異結果のissue起票を扱うとき: [Mutation testing](docs/mutation-testing.md)
 - 削除・上書き・所有権検証を扱うとき: [所有権証明](docs/ownership.md)
 - path・命名・root世代・workspaceのtarを扱うとき: [ディスク配置とroot世代](docs/storage-layout.md)
 - バージョンの埋め込み・リリースのworkflowを扱うとき: [バージョンとリリース](docs/release.md)
