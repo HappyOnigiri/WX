@@ -215,7 +215,7 @@ func stagedCOWFixture(t *testing.T, contents map[string]string) (string, discove
 				if name == ".gitattributes" {
 					continue
 				}
-				oid := gitOutput(t, source, "hash-object", "-w", name)
+				oid := gitOutput(t, source, "hash-object", "--no-filters", "-w", name)
 				gitCommand(t, source, "update-index", "--add", "--cacheinfo", "100644,"+oid+","+name)
 			}
 		} else {
