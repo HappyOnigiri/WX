@@ -399,7 +399,7 @@ func collectMutationRecords(root, packageDir string, result gremlinsResult) (mut
 				if previous.Status != record.Status {
 					return mutationCollection{}, fmt.Errorf("duplicate mutation ID %s has conflicting statuses", record.ID)
 				}
-				continue
+				return mutationCollection{}, fmt.Errorf("duplicate mutation ID %s appears more than once", record.ID)
 			}
 			collection.byID[record.ID] = record
 			collection.records = append(collection.records, record)
@@ -409,6 +409,9 @@ func collectMutationRecords(root, packageDir string, result gremlinsResult) (mut
 }
 
 func mutationRecordFor(source *sourceFile, mutation gremlinsMutation) (mutationRecord, error) {
+	if !knownMutationStatus(mutation.Status) {
+		return mutationRecord{}, fmt.Errorf("unsupported mutation status %q", mutation.Status)
+	}
 	declaration, ok := source.declarationAtLine(mutation.Line)
 	if !ok {
 		return mutationRecord{}, fmt.Errorf("%s:%d: no enclosing function declaration", source.repository, mutation.Line)
@@ -667,11 +670,12 @@ func filterRecords(records []mutationRecord, keep func(mutationRecord) bool) []m
 func countRecords(records []mutationRecord) totals {
 	var result totals
 	for _, record := range records {
-		result.Mutants++
 		switch record.Status {
 		case "KILLED":
+			result.Mutants++
 			result.Killed++
 		case "LIVED":
+			result.Mutants++
 			result.Lived++
 		case "NOT COVERED":
 			result.NotCovered++
@@ -682,6 +686,15 @@ func countRecords(records []mutationRecord) totals {
 		}
 	}
 	return result
+}
+
+func knownMutationStatus(status string) bool {
+	switch status {
+	case "KILLED", "LIVED", "NOT COVERED", "NOT VIABLE", "TIMED OUT":
+		return true
+	default:
+		return false
+	}
 }
 
 func (source *sourceFile) mutationTokens(mutation gremlinsMutation) (string, string, error) {

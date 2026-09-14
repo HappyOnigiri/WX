@@ -74,6 +74,21 @@ test('deduplicates one mutation across profiles while retaining observations', (
   assert.equal(body.match(/mutation ID:/gu).length, 1);
   assert.equal(body.match(/`&gt;=` → `&gt;`/gu).length, 1);
   assert.equal(body.match(/profile:/gu).length, 2);
+  const expectedObservations = [
+    '  observations:',
+    '  - profile: `internal/sessions`',
+    '  - job: not recorded',
+    `  - test commit: \`${sha}\``,
+    '  - command: `gremlins unleash ./internal/sessions`',
+    '  - totals: mutants 12; killed 8; lived 1; not covered 2; timed out 0; not viable 1',
+    '  - profile: `internal/sessions/scanner`',
+    '  - job: not recorded',
+    `  - test commit: \`${sha}\``,
+    '  - command: `gremlins unleash ./internal/sessions/scanner`',
+    '  - totals: mutants 12; killed 8; lived 1; not covered 2; timed out 0; not viable 1',
+  ].join('\n');
+  assert.ok(body.includes(expectedObservations), body);
+  assert.doesNotMatch(body, /,\s+- job:/u);
 });
 
 test('rejects conflicting details for a shared mutation ID', () => {
@@ -117,13 +132,136 @@ test('creates once, suppresses the same marker, and reopens closed issues', asyn
   } } };
   const group = reporter.aggregateManifests([{ artifactName: 'mutation-config-10-1', manifest: manifest() }], source)[0];
   assert.equal(await reporter.upsertGroup({ github, owner: source.owner, repo: source.repo, group, source }), 'created');
+  assert.deepEqual(issues[0].labels.map((label) => label.name), ['mutation']);
   assert.equal(await reporter.upsertGroup({ github, owner: source.owner, repo: source.repo, group, source }), 'already-recorded');
   issues[0].body = '';
   issues[0].state = 'closed';
   const laterSource = { ...source, runId: '11', runUrl: 'https://github.com/HappyOnigiri/WX/actions/runs/11' };
   const later = reporter.aggregateManifests([{ artifactName: 'mutation-config-11-1', manifest: manifest('11') }], laterSource)[0];
   assert.equal(await reporter.upsertGroup({ github, owner: source.owner, repo: source.repo, group: later, source: laterSource }), 'reopened-commented');
+  assert.deepEqual(issues[0].labels.map((label) => label.name), ['mutation']);
   assert.deepEqual(calls, [['create', 1], ['update', 'open'], ['comment', 1]]);
+});
+
+test('creates the mutation label with defaults after a 404 lookup', async () => {
+  const requests = [];
+  const github = { rest: { issues: {
+    getLabel: async () => { const error = new Error('missing'); error.status = 404; throw error; },
+    createLabel: async (request) => { requests.push(request); return { data: { name: 'mutation' } }; },
+  } } };
+  await reporter.ensureMutationLabel({ github, owner: source.owner, repo: source.repo });
+  assert.deepEqual(requests, [{
+    owner: source.owner,
+    repo: source.repo,
+    name: 'mutation',
+    description: 'Mutation Hunt automatic detection record',
+    color: '1d76db',
+  }]);
+});
+
+test('adds mutation to an existing issue without removing other labels', async () => {
+  const issue = {
+    number: 7,
+    title: '[mutation] internal/config/duration.go: parseDuration',
+    body: '',
+    state: 'open',
+    labels: [{ name: 'bug' }],
+  };
+  const added = [];
+  let removed = 0;
+  const github = { rest: { issues: {
+    getLabel: async () => ({ data: { name: 'mutation' } }),
+    listForRepo: async () => ({ data: [issue] }),
+    listComments: async () => ({ data: [] }),
+    addLabels: async ({ issue_number, labels }) => {
+      added.push({ issue_number, labels });
+      issue.labels.push(...labels.map((name) => ({ name })));
+      return { data: issue.labels };
+    },
+    removeLabels: async () => { removed += 1; throw new Error('labels must not be removed'); },
+    createComment: async () => ({ data: {} }),
+    update: async () => ({ data: issue }),
+  } } };
+  const group = reporter.aggregateManifests([{ artifactName: 'mutation-config-10-1', manifest: manifest() }], source)[0];
+  assert.equal(await reporter.upsertGroup({ github, owner: source.owner, repo: source.repo, group, source }), 'commented');
+  assert.deepEqual(added, [{ issue_number: 7, labels: ['mutation'] }]);
+  assert.equal(removed, 0);
+  assert.deepEqual(issue.labels.map((label) => label.name), ['bug', 'mutation']);
+});
+
+test('backfills only unlabeled mutation issues', async () => {
+  const issues = [
+    { number: 1, title: '[mutation] internal/config/duration.go: parseDuration', labels: [] },
+    { number: 2, title: '[mutation] internal/config/other.go: parseOther', labels: [{ name: 'mutation' }] },
+    { number: 3, title: '[bug] unrelated issue', labels: [] },
+    { number: 4, title: '[mutation] internal/config/pr.go: parsePR', labels: [], pull_request: { url: 'pull' } },
+  ];
+  const added = [];
+  const github = { rest: { issues: {
+    getLabel: async () => ({ data: { name: 'mutation' } }),
+    addLabels: async ({ issue_number, labels }) => {
+      added.push({ issue_number, labels });
+      const issue = issues.find((item) => item.number === issue_number);
+      issue.labels.push(...labels.map((name) => ({ name })));
+      return { data: issue.labels };
+    },
+  } } };
+  assert.equal(await reporter.backfillMutationLabels({ github, owner: source.owner, repo: source.repo, issues }), 1);
+  assert.deepEqual(added, [{ issue_number: 1, labels: ['mutation'] }]);
+  assert.deepEqual(issues[1].labels.map((label) => label.name), ['mutation']);
+  assert.deepEqual(issues[2].labels, []);
+  assert.deepEqual(issues[3].labels, []);
+});
+
+test('propagates label lookup, creation, and attachment errors', async () => {
+  const lookupError = new Error('lookup failed');
+  await assert.rejects(
+    reporter.ensureMutationLabel({
+      github: { rest: { issues: { getLabel: async () => { throw lookupError; } } } },
+      owner: source.owner,
+      repo: source.repo,
+    }),
+    lookupError,
+  );
+
+  const createError = new Error('create failed');
+  const missing = new Error('missing');
+  missing.status = 404;
+  await assert.rejects(
+    reporter.ensureMutationLabel({
+      github: { rest: { issues: {
+        getLabel: async () => { throw missing; },
+        createLabel: async () => { throw createError; },
+      } } },
+      owner: source.owner,
+      repo: source.repo,
+    }),
+    createError,
+  );
+
+  const attachError = new Error('attach failed');
+  const issue = {
+    number: 8,
+    title: '[mutation] internal/config/duration.go: parseDuration',
+    body: '',
+    state: 'open',
+    labels: [],
+  };
+  const group = reporter.aggregateManifests([{ artifactName: 'mutation-config-10-1', manifest: manifest() }], source)[0];
+  await assert.rejects(
+    reporter.upsertGroup({
+      github: { rest: { issues: {
+        getLabel: async () => ({ data: { name: 'mutation' } }),
+        listForRepo: async () => ({ data: [issue] }),
+        addLabels: async () => { throw attachError; },
+      } } },
+      owner: source.owner,
+      repo: source.repo,
+      group,
+      source,
+    }),
+    attachError,
+  );
 });
 
 test('uses job URLs and warnings in the run orchestration', async () => {

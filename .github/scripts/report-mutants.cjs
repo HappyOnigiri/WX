@@ -166,7 +166,7 @@ function mutationExcerpt(item) {
     `- location: ${sanitizeText(`${survivor.line}:${survivor.column}`, 100)}`,
     '',
     '  observations:',
-    ...item.observations.map((observation) => observationExcerpt(observation.manifest, observation.survivor, observation.jobUrl)
+    ...item.observations.flatMap((observation) => observationExcerpt(observation.manifest, observation.survivor, observation.jobUrl)
       .split('\n').map((line) => `  ${line}`)),
   ].join('\n');
 }

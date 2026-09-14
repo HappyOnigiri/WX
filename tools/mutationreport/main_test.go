@@ -9,14 +9,20 @@ import (
 )
 
 func mutationFixture(t *testing.T, source, exclusions string, result gremlinsResult) (manifest, error) {
+	return mutationFixtureFiles(t, map[string]string{"sample.go": source}, exclusions, result, "")
+}
+
+func mutationFixtureFiles(t *testing.T, sources map[string]string, exclusions string, result gremlinsResult, targetFile string) (manifest, error) {
 	t.Helper()
 	root := t.TempDir()
 	packageDir := filepath.Join(root, "internal", "sample")
 	if err := os.MkdirAll(packageDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(packageDir, "sample.go"), []byte(source), 0o600); err != nil {
-		t.Fatal(err)
+	for name, source := range sources {
+		if err := os.WriteFile(filepath.Join(packageDir, name), []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	exclusionsPath := filepath.Join(root, "mutation-exclusions.txt")
 	if err := os.WriteFile(exclusionsPath, []byte(exclusions), 0o600); err != nil {
@@ -25,7 +31,7 @@ func mutationFixture(t *testing.T, source, exclusions string, result gremlinsRes
 	return buildManifest(convertOptions{
 		Root: root, PackageDir: "internal/sample", Profile: "./internal/sample",
 		Exclusions: exclusionsPath, TestSHA: strings.Repeat("a", 40),
-		Command: []string{"gremlins", "unleash", "./internal/sample"},
+		Command: []string{"gremlins", "unleash", "./internal/sample"}, TargetFile: targetFile,
 	}, result)
 }
 
@@ -74,6 +80,9 @@ func (worker) Run(value int) int {
 	}
 	if got := value.Survivors[1].Declaration.Path; got != "internal/sample/sample.go" {
 		t.Fatalf("path=%q", got)
+	}
+	if got, want := value.Totals, (totals{Mutants: 3, Killed: 1, Lived: 2}); got != want {
+		t.Fatalf("package totals=%#v want %#v", got, want)
 	}
 }
 
@@ -264,5 +273,193 @@ func live(value int) int {
 	}, result)
 	if err == nil || !strings.Contains(err.Error(), "not present") {
 		t.Fatalf("missing file err=%v", err)
+	}
+}
+
+func TestBuildManifestFileTargetCountsGremlinsStatusesWithoutOtherFiles(t *testing.T) {
+	source := `package sample
+
+func target(value int) int {
+	if value >= 1 {
+		return value
+	}
+	if value > 2 {
+		return value
+	}
+	if value <= 3 {
+		return value
+	}
+	if value < 4 {
+		return value
+	}
+	if value >= 5 {
+		return value
+	}
+	return value
+}
+`
+	other := `package sample
+
+func other(value int) int {
+	if value >= 1 {
+		return value
+	}
+	return value
+}
+`
+	result := gremlinsResult{
+		// 局所指定ではパッケージ全体のraw totalsではなく、対象ファイルのrecordを集計する。
+		MutantsTotal: 99, MutantsKilled: 98, MutantsLived: 1,
+		Files: []gremlinsFile{
+			{Filename: "sample.go", Mutations: []gremlinsMutation{
+				{Type: "CONDITIONALS_BOUNDARY", Status: "KILLED", Line: 4, Column: 11},
+				{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 7, Column: 11},
+				{Type: "CONDITIONALS_BOUNDARY", Status: "NOT COVERED", Line: 10, Column: 11},
+				{Type: "CONDITIONALS_BOUNDARY", Status: "TIMED OUT", Line: 13, Column: 11},
+				{Type: "CONDITIONALS_BOUNDARY", Status: "NOT VIABLE", Line: 16, Column: 11},
+			}},
+			{Filename: "other.go", Mutations: []gremlinsMutation{
+				{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11},
+			}},
+		},
+	}
+	value, err := mutationFixtureFiles(t, map[string]string{"sample.go": source, "other.go": other}, "", result, "internal/sample/sample.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := value.Totals, (totals{Mutants: 2, Killed: 1, Lived: 1, NotCovered: 1, NotViable: 1, TimedOut: 1}); got != want {
+		t.Fatalf("file totals=%#v want %#v", got, want)
+	}
+	if len(value.Survivors) != 1 {
+		t.Fatalf("unexpected survivors=%#v", value.Survivors)
+	}
+}
+
+func TestBuildManifestFileTargetKeepsLivedMutationForFailOnSurvivors(t *testing.T) {
+	source := `package sample
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`
+	result := gremlinsResult{Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{
+		{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11},
+	}}}}
+	value, err := mutationFixtureFiles(t, map[string]string{"sample.go": source}, "", result, "internal/sample/sample.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Survivors) != 1 || value.Totals.Mutants != 1 || value.Totals.Lived != 1 {
+		t.Fatalf("lived target was not retained: manifest=%#v", value)
+	}
+}
+
+func TestCommandMainFileTargetFailsOnLivedSurvivor(t *testing.T) {
+	root := t.TempDir()
+	packageDir := filepath.Join(root, "internal", "sample")
+	if err := os.MkdirAll(packageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := `package sample
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`
+	if err := os.WriteFile(filepath.Join(packageDir, "sample.go"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(root, "gremlins.json")
+	data, err := json.Marshal(gremlinsResult{Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{
+		{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = commandMain(nil, []string{
+		"-root", root, "-profile", "./internal/sample", "-input", input,
+		"-output", filepath.Join(root, "manifest.json"), "-file", "internal/sample/sample.go",
+		"-fail-on-survivors", "-test-sha", strings.Repeat("a", 40),
+	}, os.Stdout, os.Stderr)
+	if err == nil || !errorsIsSurvivor(err) {
+		t.Fatalf("file target survivor should fail: err=%v", err)
+	}
+}
+
+func TestBuildManifestFileTargetAllowsListedFileWithNoMutations(t *testing.T) {
+	target := `package sample
+
+func target(value int) int {
+	return value
+}
+`
+	other := `package sample
+
+func other(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`
+	result := gremlinsResult{
+		MutantsTotal: 1, MutantsLived: 1,
+		Files: []gremlinsFile{
+			{Filename: "sample.go"},
+			{Filename: "other.go", Mutations: []gremlinsMutation{{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11}}},
+		},
+	}
+	value, err := mutationFixtureFiles(t, map[string]string{"sample.go": target, "other.go": other}, "", result, "internal/sample/sample.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Totals != (totals{}) || len(value.Survivors) != 0 {
+		t.Fatalf("listed empty file should have empty local result: manifest=%#v", value)
+	}
+}
+
+func TestBuildManifestRejectsUnknownMutationStatus(t *testing.T) {
+	source := `package sample
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`
+	result := gremlinsResult{Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{
+		{Type: "CONDITIONALS_BOUNDARY", Status: "UNKNOWN", Line: 4, Column: 11},
+	}}}}
+	_, err := mutationFixture(t, source, "", result)
+	if err == nil || !strings.Contains(err.Error(), "unsupported mutation status") {
+		t.Fatalf("unknown status err=%v", err)
+	}
+}
+
+func TestBuildManifestRejectsIdenticalDuplicateMutationID(t *testing.T) {
+	source := `package sample
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`
+	mutation := gremlinsMutation{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11}
+	result := gremlinsResult{Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{mutation, mutation}}}}
+	_, err := mutationFixture(t, source, "", result)
+	if err == nil || !strings.Contains(err.Error(), "duplicate mutation ID") {
+		t.Fatalf("duplicate mutation err=%v", err)
 	}
 }
