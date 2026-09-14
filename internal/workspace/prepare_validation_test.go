@@ -216,3 +216,34 @@ func TestWorktreeOwnershipValidationCoversPhysicalAndGitBoundaries(t *testing.T)
 		t.Fatal("symlink .git marker accepted")
 	}
 }
+
+// TestValidateOwnershipReportsCancellationInsteadOfOwnershipFailureは、中断がstate.ErrOwnershipへ畳まれないことを確認する。
+// HEADの検査はGitの失敗内容を見ずに結論だけを返すため、ここで中断を握り潰すとcancelしただけのslotがWORKTREE_OWNERSHIP_UNCERTAINで隔離される。
+func TestValidateOwnershipReportsCancellationInsteadOfOwnershipFailure(t *testing.T) {
+	t.Parallel()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reached := false
+	preparer.Git.SetBeforeRunAtHook(func(args []string) {
+		if reached || strings.Join(args, " ") != "rev-parse HEAD" {
+			return
+		}
+		reached = true
+		cancel()
+	})
+	err := preparer.ValidateOwnership(ctx, repo, target, head)
+	if !reached {
+		t.Fatal("HEAD verification barrier was not reached")
+	}
+	if !errors.Is(err, context.Canceled) || errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("canceled ownership validation returned %v, want a cancellation", err)
+	}
+}
