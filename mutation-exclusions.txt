@@ -1,1 +1,3 @@
-# <repo-relative path>:<function>\t<reason>
+# 除外は変異のソース上の同一性へ厳密に適用する。
+# <repository-relative path>\t<mutation-id>\t<reason>
+# IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。

@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,13 +19,15 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
 const (
-	manifestSchemaVersion = 1
+	manifestSchemaVersion = 2
+	mutationIDVersion     = "wx-mutation-id-v1"
 	defaultExclusionsFile = "mutation-exclusions.txt"
 )
 
@@ -58,6 +62,7 @@ type declaration struct {
 }
 
 type survivor struct {
+	ID          string      `json:"id"`
 	Declaration declaration `json:"declaration"`
 	Mutator     string      `json:"mutator"`
 	Line        int         `json:"line"`
@@ -67,8 +72,15 @@ type survivor struct {
 }
 
 type excluded struct {
+	ID       string `json:"id"`
 	Path     string `json:"path"`
 	Function string `json:"function"`
+	Mutator  string `json:"mutator"`
+	Line     int    `json:"line"`
+	Column   int    `json:"column"`
+	Original string `json:"original"`
+	Mutated  string `json:"mutated"`
+	Status   string `json:"status"`
 	Reason   string `json:"reason"`
 }
 
@@ -94,9 +106,9 @@ type manifest struct {
 }
 
 type exclusion struct {
-	Path     string
-	Function string
-	Reason   string
+	Path   string
+	ID     string
+	Reason string
 }
 
 type convertOptions struct {
@@ -109,6 +121,19 @@ type convertOptions struct {
 	RunAttempt string
 	TestSHA    string
 	Command    []string
+	TargetFile string
+	MutationID string
+}
+
+type mutationRecord struct {
+	ID          string
+	Declaration declaration
+	Mutator     string
+	Line        int
+	Column      int
+	Original    string
+	Mutated     string
+	Status      string
 }
 
 type sourceFile struct {
@@ -174,6 +199,10 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	runAttempt := flags.String("run-attempt", os.Getenv("GITHUB_RUN_ATTEMPT"), "workflow run attempt")
 	testSHA := flags.String("test-sha", "", "source commit SHA; empty reads HEAD through internal/gitx")
 	command := flags.String("command", "", "command recorded in the manifest")
+	targetFile := flags.String("file", "", "repository-relative file to validate")
+	targetFileAlias := flags.String("target-file", "", "alias for -file")
+	mutationID := flags.String("mutation-id", "", "mutation ID to validate")
+	mutationIDAlias := flags.String("id", "", "alias for -mutation-id")
 	failOnSurvivors := flags.Bool("fail-on-survivors", false, "return an error after writing a manifest with survivors")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -187,6 +216,21 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	if *profile == "" {
 		return errors.New("mutationreport: -profile is required")
 	}
+	if *targetFile != "" && *targetFileAlias != "" && *targetFile != *targetFileAlias {
+		return errors.New("mutationreport: -file and -target-file disagree")
+	}
+	if *mutationID != "" && *mutationIDAlias != "" && *mutationID != *mutationIDAlias {
+		return errors.New("mutationreport: -mutation-id and -id disagree")
+	}
+	if *targetFile == "" {
+		*targetFile = *targetFileAlias
+	}
+	if *mutationID == "" {
+		*mutationID = *mutationIDAlias
+	}
+	if *targetFile != "" && *mutationID != "" {
+		return errors.New("mutationreport: -file and -mutation-id cannot be used together")
+	}
 	data, err := os.ReadFile(*input)
 	if err != nil {
 		return fmt.Errorf("read Gremlins result: %w", err)
@@ -199,7 +243,7 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	value, err := buildManifest(convertOptions{
 		Root: *root, PackageDir: *packageDir, Profile: *profile, Input: *input,
 		Exclusions: *exclusions, RunID: *runID, RunAttempt: *runAttempt,
-		TestSHA: *testSHA, Command: commands,
+		TestSHA: *testSHA, Command: commands, TargetFile: *targetFile, MutationID: *mutationID,
 	}, result)
 	if err != nil {
 		return err
@@ -240,6 +284,20 @@ func buildManifest(options convertOptions, result gremlinsResult) (manifest, err
 	if err != nil {
 		return manifest{}, err
 	}
+	targetFile := ""
+	if options.TargetFile != "" {
+		targetFile, err = repositoryTargetPath(root, options.TargetFile)
+		if err != nil {
+			return manifest{}, err
+		}
+	}
+	targetID := strings.TrimSpace(options.MutationID)
+	if targetID != "" && !validMutationID(targetID) {
+		return manifest{}, fmt.Errorf("invalid mutation ID %q", options.MutationID)
+	}
+	if targetFile != "" && targetID != "" {
+		return manifest{}, errors.New("file and mutation ID cannot be used together")
+	}
 	exclusionsPath := options.Exclusions
 	if exclusionsPath == "" {
 		exclusionsPath = defaultExclusionsFile
@@ -254,73 +312,41 @@ func buildManifest(options convertOptions, result gremlinsResult) (manifest, err
 	activeExclusions := make(map[string]exclusion)
 	for _, item := range exclusions {
 		if exclusionApplies(item.Path, root, packageDir) {
-			activeExclusions[item.Path+":"+item.Function] = item
+			activeExclusions[item.ID] = item
 		}
 	}
-	sources := make(map[string]*sourceFile)
-	var survivors []survivor
-	excludedByKey := make(map[string]excluded)
-	timedOut := 0
-	for _, listed := range result.Files {
-		for _, mutation := range listed.Mutations {
-			if mutation.Status == "TIMED OUT" {
-				timedOut++
-			}
-			if mutation.Status != "LIVED" {
-				continue
-			}
-			source, err := sourceFor(sources, root, packageDir, listed.Filename)
-			if err != nil {
-				return manifest{}, err
-			}
-			declaration, ok := source.declarationAtLine(mutation.Line)
-			if !ok {
-				return manifest{}, fmt.Errorf("%s:%d: no enclosing function declaration", source.repository, mutation.Line)
-			}
-			original, mutated, err := source.mutationTokens(mutation)
-			if err != nil {
-				return manifest{}, fmt.Errorf("%s:%d:%d: %w", source.repository, mutation.Line, mutation.Column, err)
-			}
-			key := declaration.Path + ":" + declaration.Function
-			if item, ok := activeExclusions[key]; ok {
-				excludedByKey[key] = excluded{Path: item.Path, Function: item.Function, Reason: item.Reason}
-				continue
-			}
-			survivors = append(survivors, survivor{
-				Declaration: declaration,
-				Mutator:     mutation.Type,
-				Line:        mutation.Line, Column: mutation.Column,
-				Original: original, Mutated: mutated,
-			})
-		}
+	collection, err := collectMutationRecords(root, packageDir, result)
+	if err != nil {
+		return manifest{}, err
 	}
-	for key := range activeExclusions {
-		path, function, ok := strings.Cut(key, ":")
-		if !ok {
-			return manifest{}, fmt.Errorf("invalid exclusion key %q", key)
-		}
-		source, err := sourceForRepositoryPath(sources, root, path)
-		if err != nil {
-			return manifest{}, fmt.Errorf("%s: stale exclusion for %s: %w", options.Exclusions, key, err)
-		}
-		if !source.hasFunction(function) {
-			return manifest{}, fmt.Errorf("%s: stale exclusion for %s", options.Exclusions, key)
-		}
+	if err := validateActiveExclusions(exclusionsPath, activeExclusions, collection.byID); err != nil {
+		return manifest{}, err
 	}
+	selected, err := selectRecords(collection, targetFile, targetID)
+	if err != nil {
+		return manifest{}, err
+	}
+	survivors, ignored := splitRecords(selected, activeExclusions)
 	survivors = sortSurvivors(survivors)
 	if survivors == nil {
 		survivors = []survivor{}
-	}
-	ignored := make([]excluded, 0, len(excludedByKey))
-	for _, item := range excludedByKey {
-		ignored = append(ignored, item)
 	}
 	sort.Slice(ignored, func(i, j int) bool {
 		if ignored[i].Path != ignored[j].Path {
 			return ignored[i].Path < ignored[j].Path
 		}
-		return ignored[i].Function < ignored[j].Function
+		return ignored[i].ID < ignored[j].ID
 	})
+	selectedTotals := countRecords(selected)
+	allTotals := countRecords(collection.records)
+	if targetFile == "" && targetID == "" {
+		selectedTotals.Mutants = result.MutantsTotal
+		selectedTotals.Killed = result.MutantsKilled
+		selectedTotals.Lived = result.MutantsLived
+		selectedTotals.NotCovered = result.MutantsNotCovered
+		selectedTotals.NotViable = result.MutantsNotViable
+		selectedTotals.TimedOut = allTotals.TimedOut
+	}
 	sha := options.TestSHA
 	if sha == "" {
 		sha = gitSHA(root)
@@ -335,12 +361,126 @@ func buildManifest(options convertOptions, result gremlinsResult) (manifest, err
 		RunID:         options.RunID, RunAttempt: options.RunAttempt, TestSHA: sha,
 		Command: command,
 		Totals: totals{
-			Mutants: result.MutantsTotal, Killed: result.MutantsKilled,
-			Lived: result.MutantsLived, NotCovered: result.MutantsNotCovered,
-			NotViable: result.MutantsNotViable, TimedOut: timedOut,
+			Mutants: selectedTotals.Mutants, Killed: selectedTotals.Killed,
+			Lived: selectedTotals.Lived, NotCovered: selectedTotals.NotCovered,
+			NotViable: selectedTotals.NotViable, TimedOut: selectedTotals.TimedOut,
 		},
 		Survivors: survivors, Excluded: ignored,
 	}, nil
+}
+
+type mutationCollection struct {
+	records     []mutationRecord
+	byID        map[string]mutationRecord
+	listedPaths map[string]bool
+}
+
+func collectMutationRecords(root, packageDir string, result gremlinsResult) (mutationCollection, error) {
+	collection := mutationCollection{
+		byID:        make(map[string]mutationRecord),
+		listedPaths: make(map[string]bool),
+	}
+	sources := make(map[string]*sourceFile)
+	for _, listed := range result.Files {
+		source, err := sourceFor(sources, root, packageDir, listed.Filename)
+		if err != nil {
+			return mutationCollection{}, err
+		}
+		collection.listedPaths[source.repository] = true
+		for _, mutation := range listed.Mutations {
+			record, err := mutationRecordFor(source, mutation)
+			if err != nil {
+				return mutationCollection{}, err
+			}
+			if previous, exists := collection.byID[record.ID]; exists {
+				if !sameMutationRecord(previous, record) {
+					return mutationCollection{}, fmt.Errorf("duplicate mutation ID %s has conflicting mutation details", record.ID)
+				}
+				if previous.Status != record.Status {
+					return mutationCollection{}, fmt.Errorf("duplicate mutation ID %s has conflicting statuses", record.ID)
+				}
+				continue
+			}
+			collection.byID[record.ID] = record
+			collection.records = append(collection.records, record)
+		}
+	}
+	return collection, nil
+}
+
+func mutationRecordFor(source *sourceFile, mutation gremlinsMutation) (mutationRecord, error) {
+	declaration, ok := source.declarationAtLine(mutation.Line)
+	if !ok {
+		return mutationRecord{}, fmt.Errorf("%s:%d: no enclosing function declaration", source.repository, mutation.Line)
+	}
+	original, mutated, err := source.mutationTokens(mutation)
+	if err != nil {
+		return mutationRecord{}, fmt.Errorf("%s:%d:%d: %w", source.repository, mutation.Line, mutation.Column, err)
+	}
+	return mutationRecord{
+		ID:          mutationID(declaration.Path, declaration.Function, mutation.Type, mutation.Line, mutation.Column, original, mutated),
+		Declaration: declaration, Mutator: mutation.Type, Line: mutation.Line, Column: mutation.Column,
+		Original: original, Mutated: mutated, Status: mutation.Status,
+	}, nil
+}
+
+func validateActiveExclusions(path string, active map[string]exclusion, records map[string]mutationRecord) error {
+	for id, item := range active {
+		record, ok := records[id]
+		if !ok {
+			return fmt.Errorf("%s: stale exclusion for %s", path, id)
+		}
+		if record.Declaration.Path != item.Path {
+			return fmt.Errorf("%s: exclusion %s does not match path %s", path, id, item.Path)
+		}
+	}
+	return nil
+}
+
+func selectRecords(collection mutationCollection, targetFile, targetID string) ([]mutationRecord, error) {
+	selected := collection.records
+	if targetFile != "" {
+		if !collection.listedPaths[targetFile] {
+			return nil, fmt.Errorf("target file %s was not present in Gremlins results", targetFile)
+		}
+		selected = filterRecords(collection.records, func(record mutationRecord) bool { return record.Declaration.Path == targetFile })
+	}
+	if targetID == "" {
+		return selected, nil
+	}
+	matches := filterRecords(collection.records, func(record mutationRecord) bool { return record.ID == targetID })
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("mutation ID %s was not present in Gremlins results", targetID)
+	}
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("mutation ID %s matched %d results", targetID, len(matches))
+	}
+	if matches[0].Status != "KILLED" {
+		return nil, fmt.Errorf("mutation ID %s has status %s; only KILLED is successful", targetID, matches[0].Status)
+	}
+	return matches, nil
+}
+
+func splitRecords(records []mutationRecord, exclusions map[string]exclusion) ([]survivor, []excluded) {
+	var survivors []survivor
+	var ignored []excluded
+	for _, record := range records {
+		if item, ok := exclusions[record.ID]; ok {
+			ignored = append(ignored, excluded{
+				ID: record.ID, Path: record.Declaration.Path, Function: record.Declaration.Function,
+				Mutator: record.Mutator, Line: record.Line, Column: record.Column,
+				Original: record.Original, Mutated: record.Mutated, Status: record.Status, Reason: item.Reason,
+			})
+			continue
+		}
+		if record.Status == "LIVED" {
+			survivors = append(survivors, survivor{
+				ID: record.ID, Declaration: record.Declaration, Mutator: record.Mutator,
+				Line: record.Line, Column: record.Column, Original: record.Original, Mutated: record.Mutated,
+			})
+		}
+	}
+	return survivors, ignored
 }
 
 func packageDirectory(root, configured, profile string) (string, error) {
@@ -380,14 +520,6 @@ func sourceFor(cache map[string]*sourceFile, root, packageDir, fileName string) 
 		return nil, fmt.Errorf("%s is not a package-relative source path", fileName)
 	}
 	return sourceForPath(cache, root, filepath.Join(packageDir, clean))
-}
-
-func sourceForRepositoryPath(cache map[string]*sourceFile, root, repository string) (*sourceFile, error) {
-	clean := filepath.Clean(filepath.FromSlash(repository))
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("%s is not a repository-relative source path", repository)
-	}
-	return sourceForPath(cache, root, filepath.Join(root, clean))
 }
 
 func sourceForPath(cache map[string]*sourceFile, root, path string) (*sourceFile, error) {
@@ -447,6 +579,36 @@ func repositoryRelative(root, path string) (string, error) {
 	return filepath.ToSlash(relative), nil
 }
 
+func repositoryTargetPath(root, value string) (string, error) {
+	clean, err := repositoryPath(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid target file %q: %w", value, err)
+	}
+	return repositoryRelative(root, filepath.Join(root, filepath.FromSlash(clean)))
+}
+
+func repositoryPath(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", errors.New("path is required")
+	}
+	normalized := strings.ReplaceAll(trimmed, "\\", "/")
+	if strings.HasPrefix(normalized, "/") || filepath.IsAbs(filepath.FromSlash(normalized)) {
+		return "", errors.New("path must be repository-relative")
+	}
+	parts := strings.Split(normalized, "/")
+	for _, part := range parts {
+		if part == ".." {
+			return "", errors.New("path must be repository-relative")
+		}
+	}
+	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(normalized)))
+	if clean == "." || clean == "" || strings.HasPrefix(clean, "../") {
+		return "", errors.New("path must be repository-relative")
+	}
+	return clean, nil
+}
+
 func (source *sourceFile) declarationAtLine(line int) (declaration, bool) {
 	var found declarationRange
 	foundRange := false
@@ -466,13 +628,60 @@ func (source *sourceFile) declarationAtLine(line int) (declaration, bool) {
 	return found.declaration, true
 }
 
-func (source *sourceFile) hasFunction(name string) bool {
-	for _, item := range source.declarations {
-		if item.declaration.Function == name {
-			return true
+func mutationID(path, function, mutator string, line, column int, original, mutated string) string {
+	canonical := strings.Join([]string{
+		mutationIDVersion, path, function, mutator,
+		strconv.Itoa(line), strconv.Itoa(column), original, mutated,
+	}, "\n")
+	digest := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(digest[:])
+}
+
+func validMutationID(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+func sameMutationRecord(a, b mutationRecord) bool {
+	return a.ID == b.ID && a.Declaration == b.Declaration && a.Mutator == b.Mutator &&
+		a.Line == b.Line && a.Column == b.Column && a.Original == b.Original && a.Mutated == b.Mutated
+}
+
+func filterRecords(records []mutationRecord, keep func(mutationRecord) bool) []mutationRecord {
+	filtered := make([]mutationRecord, 0, len(records))
+	for _, record := range records {
+		if keep(record) {
+			filtered = append(filtered, record)
+		}
+	}
+	return filtered
+}
+
+func countRecords(records []mutationRecord) totals {
+	var result totals
+	for _, record := range records {
+		result.Mutants++
+		switch record.Status {
+		case "KILLED":
+			result.Killed++
+		case "LIVED":
+			result.Lived++
+		case "NOT COVERED":
+			result.NotCovered++
+		case "NOT VIABLE":
+			result.NotViable++
+		case "TIMED OUT":
+			result.TimedOut++
+		}
+	}
+	return result
 }
 
 func (source *sourceFile) mutationTokens(mutation gremlinsMutation) (string, string, error) {
@@ -534,34 +743,31 @@ func loadExclusions(path string) ([]exclusion, error) {
 	seen := make(map[string]bool)
 	scanner := bufio.NewScanner(file)
 	for lineNumber := 1; scanner.Scan(); lineNumber++ {
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(strings.TrimSuffix(scanner.Text(), "\r"))
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) != 2 || strings.TrimSpace(fields[0]) == "" || strings.TrimSpace(fields[1]) == "" {
-			return nil, fmt.Errorf("%s:%d: every entry needs path:function and a reason separated by one tab", path, lineNumber)
+		if len(fields) != 3 || strings.TrimSpace(fields[0]) == "" || strings.TrimSpace(fields[1]) == "" || strings.TrimSpace(fields[2]) == "" {
+			return nil, fmt.Errorf("%s:%d: every entry needs path, mutation ID, and reason separated by tabs", path, lineNumber)
 		}
-		key := strings.TrimSpace(fields[0])
-		separator := strings.LastIndexByte(key, ':')
-		if separator <= 0 || separator == len(key)-1 {
-			return nil, fmt.Errorf("%s:%d: target must be <repository path>:<function>", path, lineNumber)
+		relative, err := repositoryPath(fields[0])
+		if err != nil {
+			return nil, fmt.Errorf("%s:%d: %w", path, lineNumber, err)
 		}
-		relative := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(key[:separator]))))
-		if relative == "." || relative == ".." || strings.HasPrefix(relative, "../") || filepath.IsAbs(relative) {
-			return nil, fmt.Errorf("%s:%d: target path must be repository-relative", path, lineNumber)
+		id := strings.TrimSpace(fields[1])
+		if !validMutationID(id) {
+			return nil, fmt.Errorf("%s:%d: mutation ID must be 64 lowercase hexadecimal characters", path, lineNumber)
 		}
-		function := strings.TrimSpace(key[separator+1:])
-		if function == "" {
-			return nil, fmt.Errorf("%s:%d: function is required", path, lineNumber)
+		reason := strings.TrimSpace(fields[2])
+		if strings.ContainsAny(reason, "\r\n") || len(reason) > 2000 {
+			return nil, fmt.Errorf("%s:%d: reason is invalid", path, lineNumber)
 		}
-		exclusion := exclusion{Path: relative, Function: function, Reason: strings.TrimSpace(fields[1])}
-		unique := exclusion.Path + ":" + exclusion.Function
-		if seen[unique] {
-			return nil, fmt.Errorf("%s:%d: duplicate exclusion %s", path, lineNumber, unique)
+		if seen[id] {
+			return nil, fmt.Errorf("%s:%d: duplicate exclusion %s", path, lineNumber, id)
 		}
-		seen[unique] = true
-		result = append(result, exclusion)
+		seen[id] = true
+		result = append(result, exclusion{Path: relative, ID: id, Reason: reason})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -589,7 +795,10 @@ func sortSurvivors(value []survivor) []survivor {
 		if a.Column != b.Column {
 			return a.Column < b.Column
 		}
-		return a.Mutator < b.Mutator
+		if a.Mutator != b.Mutator {
+			return a.Mutator < b.Mutator
+		}
+		return a.ID < b.ID
 	})
 	return value
 }

@@ -93,7 +93,8 @@ func live(value int) int {
 			Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11,
 		}}}},
 	}
-	value, err := mutationFixture(t, source, "internal/sample/sample.go:live\tcomparison is intentionally equivalent\n", result)
+	id := mutationID("internal/sample/sample.go", "live", "CONDITIONALS_BOUNDARY", 4, 11, "<", "<=")
+	value, err := mutationFixture(t, source, "internal/sample/sample.go\t"+id+"\tcomparison is intentionally equivalent\n", result)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,21 +104,21 @@ func live(value int) int {
 	if value.Excluded[0].Reason != "comparison is intentionally equivalent" {
 		t.Fatalf("excluded=%#v", value.Excluded)
 	}
-	_, err = mutationFixture(t, source, "internal/sample/sample.go:gone\tstale\n", result)
+	_, err = mutationFixture(t, source, "internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\tstale\n", result)
 	if err == nil || !strings.Contains(err.Error(), "stale exclusion") {
 		t.Fatalf("stale exclusion error=%v", err)
 	}
 }
 
-func TestLoadExclusionsRequiresTwoColumnsAndReason(t *testing.T) {
+func TestLoadExclusionsRequiresPathIDAndReason(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mutation-exclusions.txt")
-	if err := os.WriteFile(path, []byte("internal/sample/sample.go:live\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadExclusions(path); err == nil {
 		t.Fatal("malformed exclusion accepted")
 	}
-	if err := os.WriteFile(path, []byte("internal/sample/sample.go:live\treason\ninternal/sample/sample.go:live\tagain\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\treason\ninternal/sample/other.go\t"+strings.Repeat("0", 64)+"\tagain\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadExclusions(path); err == nil || !strings.Contains(err.Error(), "duplicate") {
@@ -157,4 +158,111 @@ func TestCommandMainWritesManifestAndCanFailOnSurvivor(t *testing.T) {
 
 func errorsIsSurvivor(err error) bool {
 	return err != nil && strings.Contains(err.Error(), errSurvivors.Error())
+}
+
+func TestMutationIDFixedVector(t *testing.T) {
+	got := mutationID("internal/config/duration.go", "parseDuration", "CONDITIONALS_BOUNDARY", 43, 12, ">=", ">")
+	want := "8f58df524fcb072e70af7462216f0880cf5bdde384c38b74bb7bbf2f4a2414d7"
+	if got != want {
+		t.Fatalf("mutation ID=%q want %q", got, want)
+	}
+}
+
+func TestBuildManifestExcludesOneMutationWithoutHidingItsSibling(t *testing.T) {
+	source := `package sample
+
+func live(value int) int {
+	if value < 1 {
+		return value
+	}
+	if value > 3 {
+		return value
+	}
+	return value
+}
+`
+	result := gremlinsResult{
+		MutantsTotal: 2, MutantsLived: 2,
+		Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{
+			{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11},
+			{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 7, Column: 11},
+		}}},
+	}
+	firstID := mutationID("internal/sample/sample.go", "live", "CONDITIONALS_BOUNDARY", 4, 11, "<", "<=")
+	value, err := mutationFixture(t, source, "internal/sample/sample.go\t"+firstID+"\tknown equivalent\n", result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Survivors) != 1 || len(value.Excluded) != 1 {
+		t.Fatalf("manifest=%#v", value)
+	}
+	if value.Survivors[0].ID == firstID || value.Excluded[0].ID != firstID {
+		t.Fatalf("exact exclusion was not applied: manifest=%#v", value)
+	}
+}
+
+func TestBuildManifestMutationIDTargetOnlyAcceptsKilled(t *testing.T) {
+	source := `package sample
+
+func live(value int) int {
+	if value < 1 {
+		return value
+	}
+	return value
+}
+`
+	id := mutationID("internal/sample/sample.go", "live", "CONDITIONALS_BOUNDARY", 4, 11, "<", "<=")
+	for _, status := range []string{"KILLED", "LIVED", "NOT COVERED", "TIMED OUT", "NOT VIABLE"} {
+		result := gremlinsResult{MutantsTotal: 1, Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{{
+			Type: "CONDITIONALS_BOUNDARY", Status: status, Line: 4, Column: 11,
+		}}}}}
+		root := t.TempDir()
+		packageDir := filepath.Join(root, "internal", "sample")
+		if err := os.MkdirAll(packageDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(packageDir, "sample.go"), []byte(source), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		value, err := buildManifest(convertOptions{
+			Root: root, PackageDir: "internal/sample", Profile: "./internal/sample",
+			Exclusions: filepath.Join(root, "mutation-exclusions.txt"), TestSHA: strings.Repeat("a", 40),
+			MutationID: id,
+		}, result)
+		if status == "KILLED" {
+			if err != nil || value.Totals.Killed != 1 || len(value.Survivors) != 0 {
+				t.Fatalf("killed target value=%#v err=%v", value, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), "only KILLED") {
+			t.Fatalf("status %s target err=%v", status, err)
+		}
+	}
+}
+
+func TestBuildManifestFileTargetRejectsMissingResultFile(t *testing.T) {
+	source := `package sample
+func live(value int) int {
+	if value < 1 { return value }
+	return value
+}
+`
+	result := gremlinsResult{MutantsTotal: 1, MutantsLived: 1, Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{{
+		Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 3, Column: 11,
+	}}}}}
+	root := t.TempDir()
+	packageDir := filepath.Join(root, "internal", "sample")
+	if err := os.MkdirAll(packageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "sample.go"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := buildManifest(convertOptions{
+		Root: root, PackageDir: "internal/sample", Profile: "./internal/sample",
+		Exclusions: filepath.Join(root, "mutation-exclusions.txt"), TestSHA: strings.Repeat("a", 40),
+		TargetFile: "internal/sample/missing.go",
+	}, result)
+	if err == nil || !strings.Contains(err.Error(), "not present") {
+		t.Fatalf("missing file err=%v", err)
+	}
 }
