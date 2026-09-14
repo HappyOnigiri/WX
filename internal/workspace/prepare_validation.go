@@ -27,6 +27,16 @@ func (p *Preparer) validatePreparedTarget(ctx context.Context, repo discovery.Re
 	return nil
 }
 
+// interrupted は中断由来の失敗をそのまま返し、それ以外では nil を返す。
+// HEAD の検査は Git の失敗内容を見ずに結論だけを返すため、中断を区別せずに畳むと cancel しただけの slot が
+// WORKTREE_OWNERSHIP_UNCERTAIN で隔離される。呼び出し側は結論を組み立てる前にこれで中断を切り分ける。
+func interrupted(err error) error {
+	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+		return err
+	}
+	return nil
+}
+
 func (p *Preparer) validateExistingWorktree(ctx context.Context, repo discovery.Repository, target, oid string) error {
 	return p.validateExistingWorktreeOwnedForPhase(ctx, repo, target, oid, "", preparePhaseCreate)
 }
@@ -115,9 +125,15 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 		return errors.New("common Git directory does not match")
 	}
 	head, err := p.runGitInDirectory(ctx, targetRoot, "rev-parse", "HEAD")
+	if interrupt := interrupted(err); interrupt != nil {
+		return interrupt
+	}
 	detached := false
 	if err == nil {
 		_, detachedErr := p.runGitInDirectory(ctx, targetRoot, "symbolic-ref", "-q", "HEAD")
+		if interrupt := interrupted(detachedErr); interrupt != nil {
+			return interrupt
+		}
 		detached = detachedErr != nil
 	}
 	if err != nil || strings.TrimSpace(head.Stdout) != oid || !detached {
