@@ -53,8 +53,9 @@ var ErrPreviousWorktreeLayout = errors.New("wx database uses previous worktree l
 // 23 は workspace_details へ workspace kind と repository membership の
 // id/main_path/relative_path 一覧を加えた。repository_details は従来どおり。
 // 25 は wx status --json の quarantine 要素へ slot の詳細ログ path を加えた。
+// 26 は wx doctor --json と wx bench --json の準備計測へ submodule 範囲を加えた。
 // commentlint:allow-long -- schema 版ごとの変更点を辿れるようにするため
-const JSONSchemaVersion = 25
+const JSONSchemaVersion = 26
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

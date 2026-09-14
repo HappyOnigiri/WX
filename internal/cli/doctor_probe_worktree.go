@@ -19,6 +19,10 @@ const gitlinkIndexMode = "160000"
 // probeWorktreeFindings は貸し出した worktree が実際に使える状態かを読み取りだけで確かめる。
 // エージェントは wx が作った worktree で作業するため、ここで見るのはその前提が成り立っているかである。
 func (c Client) probeWorktreeFindings(ctx context.Context, root, leasePath string) []diag.Finding {
+	return c.probeWorktreeFindingsWithExclusions(ctx, root, leasePath, nil)
+}
+
+func (c Client) probeWorktreeFindingsWithExclusions(ctx context.Context, root, leasePath string, excluded map[string]bool) []diag.Finding {
 	git := c.probeGit()
 	worktrees, err := probeWorktrees(ctx, git, leasePath)
 	if err != nil {
@@ -48,7 +52,7 @@ func (c Client) probeWorktreeFindings(ctx context.Context, root, leasePath strin
 	}
 	findings := []diag.Finding{}
 	for _, worktree := range worktrees {
-		findings = append(findings, probeSubmoduleFindings(ctx, git, root, worktree)...)
+		findings = append(findings, probeSubmoduleFindings(ctx, git, root, worktree, excluded)...)
 		findings = append(findings, probeTrackedFindings(ctx, git, worktree))
 	}
 	return findings
@@ -98,7 +102,7 @@ func worktreeTopLevel(ctx context.Context, git *gitx.Runner, path string) bool {
 
 // probeSubmoduleFindings は index が commit を指しているのに実体が空の submodule を報告する。
 // 準備完了時の tracked-status 検査は未初期化 submodule を変更と見なさないため、この状態は準備を通り抜けて READY になる。
-func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktree string) []diag.Finding {
+func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktree string, excluded ...map[string]bool) []diag.Finding {
 	result, err := git.Run(ctx, worktree, "ls-files", "--stage", "-z")
 	if err != nil {
 		return []diag.Finding{{
@@ -114,7 +118,16 @@ func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktre
 	}
 	findings := []diag.Finding{}
 	gitlinks := parseGitlinks(result.Stdout)
+	excludedCount := 0
+	excludedPaths := map[string]bool{}
+	if len(excluded) > 0 && excluded[0] != nil {
+		excludedPaths = excluded[0]
+	}
 	for _, gitlink := range gitlinks {
+		if excludedPaths[gitlink.path] {
+			excludedCount++
+			continue
+		}
 		populated, err := directoryPopulated(filepath.Join(worktree, gitlink.path))
 		if err != nil {
 			findings = append(findings, diag.Finding{
@@ -152,13 +165,19 @@ func probeSubmoduleFindings(ctx context.Context, git *gitx.Runner, root, worktre
 	if len(findings) > 0 {
 		return findings
 	}
+	details := []string{fmt.Sprintf("%d submodule(s) checked", len(gitlinks)-excludedCount)}
+	detailMessages := []i18n.Message{message("diag.detail.submodules_checked", "Count", len(gitlinks)-excludedCount)}
+	if excludedCount > 0 {
+		details = append(details, fmt.Sprintf("%d submodule(s) were outside the preparation range", excludedCount))
+		detailMessages = append(detailMessages, message("diag.detail.submodules_out_of_scope", "Count", excludedCount))
+	}
 	return []diag.Finding{{
 		Check: diag.CheckProbeSubmodule, Severity: diag.SeverityOK,
 		Summary: "every submodule recorded in the index has content", Target: worktree,
-		Details: []string{fmt.Sprintf("%d submodule(s) checked", len(gitlinks))},
+		Details: details,
 		Messages: diag.FindingMessages{
 			Summary: message("diag.probe.submodules_ok"),
-			Details: []i18n.Message{message("diag.detail.submodules_checked", "Count", len(gitlinks))},
+			Details: detailMessages,
 		},
 	}}
 }

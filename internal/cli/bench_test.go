@@ -13,6 +13,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/i18n"
 	"github.com/HappyOnigiri/WX/internal/rpc"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -85,6 +86,26 @@ func TestRunBenchJSONCarriesThePhaseBreakdown(t *testing.T) {
 	measurement := reply.Runs[0].Measurement
 	if measurement == nil || len(measurement.Phases) != 3 || measurement.TotalMS != 4300 {
 		t.Fatalf("measurement=%+v, want the daemon breakdown", measurement)
+	}
+}
+
+func TestPrintBenchRunShowsSubmoduleRange(t *testing.T) {
+	stdout := captureLeaseStdout(t, func() {
+		printBenchRunLanguage(1, 1, BenchRun{
+			Source: "cold", Config: BenchConfig{},
+			Measurement: &daemon.PrepareMeasurement{
+				TotalMS: 1000,
+				Submodules: &daemon.PrepareSubmoduleReport{
+					Summaries: []daemon.PrepareSubmoduleSummary{{Repository: "/repo", Depth: 1, Materialized: 2, Skipped: 1}},
+					Details:   []daemon.PrepareSubmoduleDetail{{Path: "vendor/missing", Action: "skipped", Reason: "object_missing"}},
+				},
+			},
+		}, i18n.English)
+	})
+	for _, want := range []string{"submodules", "/repo depth 1", "vendor/missing", "skipped"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout=%q lacks %q", stdout, want)
+		}
 	}
 }
 

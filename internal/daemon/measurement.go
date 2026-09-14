@@ -38,16 +38,17 @@ type PrepareNotice struct {
 
 // PrepareMeasurement は1回の準備の節目と区間内訳である。daemon のメモリにだけ残り、再起動で消える。
 type PrepareMeasurement struct {
-	SlotID       string          `json:"slot_id"`
-	WorkspaceID  string          `json:"workspace_id"`
-	SessionID    string          `json:"session_id,omitempty"`
-	StartedAt    string          `json:"started_at"`
-	EarlyReadyMS int64           `json:"early_ready_ms"`
-	TotalMS      int64           `json:"total_ms"`
-	Failed       bool            `json:"failed"`
-	Error        string          `json:"error,omitempty"`
-	Phases       []PreparePhase  `json:"phases"`
-	Notices      []PrepareNotice `json:"notices,omitempty"`
+	SlotID       string                  `json:"slot_id"`
+	WorkspaceID  string                  `json:"workspace_id"`
+	SessionID    string                  `json:"session_id,omitempty"`
+	StartedAt    string                  `json:"started_at"`
+	EarlyReadyMS int64                   `json:"early_ready_ms"`
+	TotalMS      int64                   `json:"total_ms"`
+	Failed       bool                    `json:"failed"`
+	Error        string                  `json:"error,omitempty"`
+	Phases       []PreparePhase          `json:"phases"`
+	Notices      []PrepareNotice         `json:"notices,omitempty"`
+	Submodules   *PrepareSubmoduleReport `json:"submodules,omitempty"`
 }
 
 // prepareTimer は1回の準備の節目を測り、終了時に計測を Manager へ渡す。
@@ -55,6 +56,7 @@ type prepareTimer struct {
 	manager     *Manager
 	timings     *workspace.PhaseTimings
 	notices     *workspace.PrepareNotices
+	submodules  *workspace.SubmoduleOutcomes
 	slotID      string
 	workspaceID string
 	sessionID   string
@@ -62,13 +64,14 @@ type prepareTimer struct {
 	early       time.Time
 }
 
-// newPrepareTimer は計測を開始し、Preparer へ区間集計と notice の器を差す。
+// newPrepareTimer は計測を開始し、Preparer へ区間・notice・submodule結果の器を差す。
 func (m *Manager) newPrepareTimer(slot state.Slot, preparer *workspace.Preparer) *prepareTimer {
 	timings := &workspace.PhaseTimings{}
 	notices := &workspace.PrepareNotices{}
-	preparer.Phases, preparer.Notices = timings, notices
+	submodules := &workspace.SubmoduleOutcomes{}
+	preparer.Phases, preparer.Notices, preparer.SubmoduleOutcomes = timings, notices, submodules
 	timer := &prepareTimer{
-		manager: m, timings: timings, notices: notices, slotID: slot.ID, workspaceID: slot.WorkspaceID,
+		manager: m, timings: timings, notices: notices, submodules: submodules, slotID: slot.ID, workspaceID: slot.WorkspaceID,
 		sessionID: slot.OwnerSessionID, started: time.Now(),
 	}
 	m.mu.Lock()
@@ -129,6 +132,7 @@ func (t *prepareTimer) finish(prepareErr error) {
 	}
 	measurement.Phases = orderPreparePhases(measurement.Phases)
 	measurement.Notices = t.manager.recordPrepareNotices(t.notices.Notices())
+	measurement.Submodules = t.manager.recordPrepareSubmodules(t.submodules)
 	t.manager.recordPrepareMeasurement(measurement)
 }
 
