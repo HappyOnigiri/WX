@@ -47,6 +47,24 @@ func TestWorkspaceResolversPreferOverrides(t *testing.T) {
 	}
 }
 
+func TestFetchDefaultBranchResolverPreservesExplicitFalse(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultsV2()
+	if enabled, overridden := cfg.FetchDefaultBranchForWorkspace("/plain"); enabled || overridden {
+		t.Fatalf("default fetch=%v overridden=%v, want disabled default", enabled, overridden)
+	}
+	global := true
+	local := false
+	cfg.WorkspaceDefaults.FetchDefaultBranch = &global
+	cfg.Workspaces["/plain"] = Workspace{FetchDefaultBranch: &local}
+	if enabled, overridden := cfg.FetchDefaultBranchForWorkspace("/plain"); enabled || !overridden {
+		t.Fatalf("workspace fetch=%v overridden=%v, want explicit false", enabled, overridden)
+	}
+	if enabled, overridden := cfg.FetchDefaultBranchForWorkspace("/other"); !enabled || overridden {
+		t.Fatalf("global fetch=%v overridden=%v, want global true", enabled, overridden)
+	}
+}
+
 // GC の SQL へ渡す floor は最短の保持期間から作る。最長で絞ると、短い個別指定の slot が問い合わせから落ちる。
 func TestRetentionFloorsUseTheShortestRetention(t *testing.T) {
 	t.Parallel()

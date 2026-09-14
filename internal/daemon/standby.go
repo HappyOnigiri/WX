@@ -27,6 +27,13 @@ func (m *Manager) reconcileStandbyReplenishments(ctx context.Context) {
 }
 
 func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) error {
+	return m.ensureStandbyResolved(ctx, w, nil)
+}
+
+// ensureStandbyResolved は呼び出し元が既に解決した base を渡せる補充経路である。
+// reconcile では READY 検証・補充・idle 更新が同じ branch 解決結果を共有し、1巡で
+// 同じ repository を fetch し直さないようにする。
+func (m *Manager) ensureStandbyResolved(ctx context.Context, w discovery.Workspace, resolved []pool.Resolved) error {
 	cfg := m.Config()
 	if !m.standbyReplenishmentEnabled(w) {
 		return nil
@@ -48,10 +55,12 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 	if needed <= 0 {
 		return nil
 	}
-	resolved, err := pool.ResolveBranches(ctx, m.git, w, nil)
-	if err != nil {
-		m.log.Error("resolve standby base failed", "workspace_id", w.ID, "error", err)
-		return err
+	if resolved == nil {
+		resolved, err = m.resolveBranches(ctx, w, nil)
+		if err != nil {
+			m.log.Error("resolve standby base failed", "workspace_id", w.ID, "error", err)
+			return err
+		}
 	}
 	latest, latestGeneration, err := m.store.WorkspaceWithGeneration(ctx, string(w.ID))
 	if err != nil {
@@ -64,7 +73,7 @@ func (m *Manager) ensureStandby(ctx context.Context, w discovery.Workspace) erro
 		if needed <= 0 {
 			return nil
 		}
-		resolved, err = pool.ResolveBranches(ctx, m.git, w, nil)
+		resolved, err = m.resolveBranches(ctx, w, nil)
 		if err != nil {
 			m.log.Error("resolve standby base after workspace update failed", "workspace_id", w.ID, "error", err)
 			return err

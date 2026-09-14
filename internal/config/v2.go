@@ -29,6 +29,7 @@ func (c Config) RepositoryDefaultsIsZero() bool {
 func DefaultsV2() Config {
 	legacy := Defaults()
 	trueValue, warm := legacy.Worktree.ReuseStandby, legacy.Pool.WarmPerWorkspace
+	fetchDefaultBranch := legacy.Worktree.FetchDefaultBranch
 	submodules := legacy.Worktree.Submodules
 	cow := legacy.Storage.COWMinSizeKiB
 	include := legacy.Includes.DefaultAgentRules
@@ -48,7 +49,7 @@ func DefaultsV2() Config {
 		},
 		WorkspaceDefaults: WorkspaceDefaults{
 			Worktree:     legacy.Worktree.Undefined,
-			ReuseStandby: &trueValue, WarmCount: &warm, Agent: WorkspaceAgent{AddDir: legacy.Agent.AddDir},
+			ReuseStandby: &trueValue, FetchDefaultBranch: &fetchDefaultBranch, WarmCount: &warm, Agent: WorkspaceAgent{AddDir: legacy.Agent.AddDir},
 			Retention: WorkspaceRetention{HotStandby: &legacy.Retention.HotStandby, EndedWorktree: &legacy.Retention.EndedWorktree},
 			Discovery: WorkspaceDiscovery{MaxDepth: &legacy.Discovery.MaxDepth, Exclude: cloneStrings(legacy.Discovery.Exclude)},
 		},
@@ -258,6 +259,9 @@ func overlayWorkspaceDefaults(dst *WorkspaceDefaults, src WorkspaceDefaults, raw
 	if raw.has("workspace_defaults.reuse_standby", src.ReuseStandby != nil) {
 		dst.ReuseStandby = src.ReuseStandby
 	}
+	if raw.has("workspace_defaults.fetch_default_branch", src.FetchDefaultBranch != nil) {
+		dst.FetchDefaultBranch = src.FetchDefaultBranch
+	}
 	if raw.has("workspace_defaults.warm_count", src.WarmCount != nil) {
 		dst.WarmCount = src.WarmCount
 	}
@@ -328,7 +332,7 @@ func overlayRepositoryDefaults(dst *RepositoryDefaults, src RepositoryDefaults, 
 func flattenV2(c *Config) {
 	s, w, r := c.System, c.WorkspaceDefaults, c.RepositoryDefaults
 	c.Language = s.Language
-	c.Worktree.Undefined, c.Worktree.ReuseStandby = w.Worktree, derefBool(w.ReuseStandby)
+	c.Worktree.Undefined, c.Worktree.ReuseStandby, c.Worktree.FetchDefaultBranch = w.Worktree, derefBool(w.ReuseStandby), derefBool(w.FetchDefaultBranch)
 	c.Worktree.Submodules = derefBool(r.Submodules)
 	c.Storage.WorktreeRoot, c.Storage.BackupGenerations, c.Storage.BackupRetention = s.Storage.WorktreeRoot, s.Storage.BackupGenerations, s.Storage.BackupRetention
 	c.Storage.CopyMode, c.Storage.COWMinSizeKiB, c.Storage.RepoDirSource = r.Storage.CopyMode, derefInt(r.COWMinSizeKiB), r.DirSource
@@ -399,6 +403,7 @@ func (c Config) WorkspaceFor(root string) Workspace {
 		base.Copy = cloneStrings(d.Copy)
 		base.Link = cloneStrings(d.Link)
 		base.ReuseStandby = d.ReuseStandby
+		base.FetchDefaultBranch = d.FetchDefaultBranch
 		base.WarmCount = d.WarmCount
 		base.Agent = d.Agent
 		base.Retention = d.Retention
@@ -423,6 +428,9 @@ func mergeWorkspace(dst *Workspace, src Workspace) {
 	}
 	if src.ReuseStandby != nil {
 		dst.ReuseStandby = src.ReuseStandby
+	}
+	if src.FetchDefaultBranch != nil {
+		dst.FetchDefaultBranch = src.FetchDefaultBranch
 	}
 	if src.Submodules != nil {
 		dst.Submodules = src.Submodules

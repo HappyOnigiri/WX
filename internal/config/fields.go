@@ -176,7 +176,14 @@ func parseInto(field reflect.Value, value string) error {
 	case field.Kind() == reflect.String:
 		field.SetString(value)
 	case field.Kind() == reflect.Bool:
-		b, err := strconv.ParseBool(value)
+		normalized := value
+		switch strings.ToLower(value) {
+		case "on":
+			normalized = "true"
+		case "off":
+			normalized = "false"
+		}
+		b, err := strconv.ParseBool(normalized)
 		if err != nil {
 			return err
 		}

@@ -30,6 +30,22 @@ func TestV2EditTracksLeafPresenceForSourceDisplay(t *testing.T) {
 	}
 }
 
+func TestV2FetchDefaultBranchAcceptsOnAndOff(t *testing.T) {
+	var raw Config
+	if err := SetV2Field(&raw, V2ScopeWorkspaceDefaults, "", "", "fetch_default_branch", "on"); err != nil {
+		t.Fatal(err)
+	}
+	if raw.WorkspaceDefaults.FetchDefaultBranch == nil || !*raw.WorkspaceDefaults.FetchDefaultBranch {
+		t.Fatalf("fetch_default_branch=%v, want true", raw.WorkspaceDefaults.FetchDefaultBranch)
+	}
+	if err := SetV2Field(&raw, V2ScopeWorkspaceDefaults, "", "", "fetch_default_branch", "off"); err != nil {
+		t.Fatal(err)
+	}
+	if raw.WorkspaceDefaults.FetchDefaultBranch == nil || *raw.WorkspaceDefaults.FetchDefaultBranch {
+		t.Fatalf("fetch_default_branch=%v, want false", raw.WorkspaceDefaults.FetchDefaultBranch)
+	}
+}
+
 func TestV2ResetLastFieldKeepsAnExplicitSchemaSection(t *testing.T) {
 	var raw Config
 	if err := SetV2Field(&raw, V2ScopeSystem, "", "", "pool.preparation_concurrency", "3"); err != nil {

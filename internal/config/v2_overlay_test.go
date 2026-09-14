@@ -53,6 +53,7 @@ workspace_defaults:
   link:
     - node_modules
   reuse_standby: false
+  fetch_default_branch: true
   warm_count: 3
   agent:
     add_dir: worktree

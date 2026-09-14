@@ -47,6 +47,22 @@ func (c Config) ReuseStandbyForWorkspace(root string) (bool, bool) {
 	return c.Worktree.ReuseStandby, false
 }
 
+// FetchDefaultBranchForWorkspace は branch 未指定の貸出前に origin の既定 branch を
+// fetch する実効方針と、workspace 個別指定の有無を返す。
+func (c Config) FetchDefaultBranchForWorkspace(root string) (bool, bool) {
+	if c.V2() {
+		w := c.WorkspaceFor(root)
+		if w.FetchDefaultBranch != nil {
+			return *w.FetchDefaultBranch, c.Workspaces[root].FetchDefaultBranch != nil
+		}
+		return c.Worktree.FetchDefaultBranch, false
+	}
+	if override := c.Workspaces[root].FetchDefaultBranch; override != nil {
+		return *override, true
+	}
+	return c.Worktree.FetchDefaultBranch, false
+}
+
 // SubmodulesForWorkspace は準備時に submodule を実体化する実効方針と、個別指定の有無を返す。
 func (c Config) SubmodulesForWorkspace(root string) (bool, bool) {
 	if c.V2() {
