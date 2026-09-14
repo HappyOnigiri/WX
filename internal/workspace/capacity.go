@@ -26,6 +26,16 @@ type LFSPointer struct {
 	Size int64
 }
 
+// LFSCacheState は common directory の cache object を、pointer の期待値と
+// 比較した結果である。診断と準備が同じ分類を使えるよう内部値として保持する。
+type LFSCacheState string
+
+const (
+	LFSCacheHealthy LFSCacheState = "healthy"
+	LFSCacheMissing LFSCacheState = "missing"
+	LFSCacheCorrupt LFSCacheState = "corrupt"
+)
+
 // LFSObjectInfo は準備時に参照する LFS object の診断情報である。
 // Cached が false の object だけが、準備時に common directory 側へ新たに書かれる。
 type LFSObjectInfo struct {
@@ -35,11 +45,15 @@ type LFSObjectInfo struct {
 	CacheSize int64    `json:"cache_size,omitempty"`
 	CachePath string   `json:"cache_path,omitempty"`
 	Paths     []string `json:"paths,omitempty"`
+	// CacheState は JSON 形状へは出さず、欠落と破損を修復側へ伝える。
+	CacheState LFSCacheState `json:"-"`
 }
 
 // CapacityEstimate は repository 1 件を 1 slot へ準備する際の、書込み下限である。
 // WorktreeBytes と LFSCacheBytes は異なる volume に載り得るので分けて返す。
 type CapacityEstimate struct {
+	// RepositoryID は daemon が同じ report の repository と LFS 内訳を対応付けるための内部値である。
+	RepositoryID      string          `json:"-"`
 	WorktreeBytes     int64           `json:"worktree_bytes"`
 	LFSCacheBytes     int64           `json:"lfs_cache_bytes"`
 	LFSExpandedBytes  int64           `json:"lfs_expanded_bytes"`
@@ -221,8 +235,17 @@ func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Reposito
 		if err != nil {
 			return CapacityEstimate{}, fmt.Errorf("inspect LFS cache object %s: %w", object.OID, err)
 		}
-		object.Cached, object.CacheSize = cached, size
-		if !cached {
+		object.CacheSize = size
+		object.Cached = cached && size == object.Size
+		switch {
+		case !cached:
+			object.CacheState = LFSCacheMissing
+		case size != object.Size:
+			object.CacheState = LFSCacheCorrupt
+		default:
+			object.CacheState = LFSCacheHealthy
+		}
+		if !object.Cached {
 			result.MissingLFSObjects++
 			result.LFSCacheBytes = addBytes(result.LFSCacheBytes, object.Size)
 		}
@@ -391,7 +414,8 @@ func lfsCachePath(repo discovery.Repository, oid string) string {
 	if len(value) != 64 {
 		return filepath.Join(string(repo.CommonDir), "lfs", "objects")
 	}
-	return filepath.Join(string(repo.CommonDir), "lfs", "objects", value[:2], value[2:4], value[4:])
+	// git-lfs は先頭 2 桁・次の 2 桁で directory を分け、leaf には OID 全体を使う。
+	return filepath.Join(string(repo.CommonDir), "lfs", "objects", value[:2], value[2:4], value)
 }
 
 func capacityCacheState(path string) (bool, int64, error) {

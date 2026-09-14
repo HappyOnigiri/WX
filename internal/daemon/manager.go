@@ -112,6 +112,9 @@ type Manager struct {
 	// freeSpace は容量 preflight の statfs をテストから差し替えるための hook である。
 	// nil の本番経路は descriptor から domain.VolumeFreeBytes を呼ぶ。
 	freeSpace func(*os.File) (string, int64, error)
+	// lfsLocks は common directory ごとの cache 修復を直列化する。
+	// Git metadata を守る lock とは分け、source の hash と cache rename だけを待たせる。
+	lfsLocks gitx.KeyedLocks
 	// capacityCache は同じ repository/OID を doctor と準備が続けて読むときの
 	// Git 読み出しを共有する。容量計測は診断専用で、Store へは保存しない。
 	capacityMu    sync.Mutex

@@ -174,6 +174,22 @@ var diagCatalog = map[string]Entry{
 	"diag.capacity.action_none":           {EN: "no action is required", JA: "対処は不要です"},
 	"diag.capacity.action_free":           {EN: "free space on {{.Target}}, then retry the worktree preparation", JA: "{{.Target}} の空きを増やしてから worktree の準備を再試行してください"},
 
+	// diag.lfs_objects.* は LFS cache の欠落・破損と source working tree の候補を表す。
+	"diag.lfs_objects.workspaces_unreadable": {EN: "the registered workspaces for LFS object checks could not be read", JA: "LFS object 検査で登録済み workspace を読み取れません"},
+	"diag.lfs_objects.none":                  {EN: "no registered repository needs an LFS object check", JA: "LFS object 検査が必要な登録済み repository はありません"},
+	"diag.lfs_objects.unchecked":             {EN: "the LFS object check could not be completed", JA: "LFS object 検査を完了できません"},
+	"diag.lfs_objects.unchecked_action":      {EN: "fix the reported workspace or repository problem, then run wx doctor again", JA: "報告された workspace または repository の問題を直し、wx doctor を再実行してください"},
+	"diag.lfs_objects.ok":                    {EN: "the repository LFS cache objects are present with the expected sizes", JA: "repository の LFS cache object は期待した size で存在します"},
+	"diag.lfs_objects.repairable":            {EN: "LFS cache objects are missing but have size-matching source candidates", JA: "LFS cache object は欠落していますが size が一致する source 候補があります"},
+	"diag.lfs_objects.repairable_cause":      {EN: "{{.Count}} LFS object(s), {{.Bytes}} total, are absent or have the wrong cache size; the source candidates have only been checked by size", JA: "合計 {{.Bytes}} の LFS object {{.Count}} 件が欠落または cache size 不一致です。source 候補は size だけを確認しています"},
+	"diag.lfs_objects.repairable_action":     {EN: "the next worktree preparation will hash and install these candidates when possible", JA: "次の worktree 準備で候補を hash 検証し、可能なら install します"},
+	"diag.lfs_objects.missing":               {EN: "LFS cache objects are missing and cannot be repaired from the source worktree", JA: "LFS cache object が欠落し source worktree から修復できません"},
+	"diag.lfs_objects.missing_cause":         {EN: "{{.Missing}} of {{.Count}} missing or corrupt LFS object(s) have no source file whose size matches the pointer", JA: "欠落または破損した LFS object {{.Count}} 件のうち {{.Missing}} 件は pointer と size が一致する source file を持ちません"},
+	"diag.lfs_objects.missing_action":        {EN: "run git lfs fetch in {{.Path}} to restore the missing objects, then run wx doctor again", JA: "不足 object を復元するため {{.Path}} で git lfs fetch を実行し、wx doctor を再実行してください"},
+	"diag.detail.lfs_candidate":              {EN: "object {{.OID}} ({{.Size}}): size-matching source candidate {{.Path}}; hash will be verified during preparation", JA: "object {{.OID}}（{{.Size}}）：size が一致する source 候補 {{.Path}}。hash は準備中に検証します"},
+	"diag.detail.lfs_missing":                {EN: "object {{.OID}} ({{.Size}}): no size-matching source candidate", JA: "object {{.OID}}（{{.Size}}）：size が一致する source 候補がありません"},
+	"diag.detail.lfs_checked":                {EN: "{{.Count}} LFS object(s) checked", JA: "LFS object {{.Count}} 件を検査しました"},
+
 	// diag.job.* は失敗した job の原因を、記録されている項目の有無で組み立てる。
 	// Operation は呼び出し側が作る入れ子 message で、Reason は記録された失敗理由の原文である。
 	"diag.job.failed_code_reason":  {EN: "{{.Operation}} failed with {{.Code}}: {{.Reason}}", JA: "{{.Operation}} が {{.Code}} で失敗しました: {{.Reason}}"},

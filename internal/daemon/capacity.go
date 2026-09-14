@@ -26,6 +26,10 @@ import (
 // budget を消費しない終端エラーとして扱う。
 var ErrInsufficientPrepareSpace = errors.New("insufficient space for worktree preparation")
 
+// ErrMissingLFSObjects は、容量を確保できても source から検証できない
+// LFS object が残り、worktree への書込みを始められないことを表す。
+var ErrMissingLFSObjects = errors.New("missing LFS objects cannot be repaired locally")
+
 // CapacityVolume は volume ごとの必要量と空き容量である。
 type CapacityVolume struct {
 	Volume           string
@@ -67,6 +71,34 @@ func (e *InsufficientPrepareSpaceError) Error() string {
 }
 
 func (e *InsufficientPrepareSpaceError) Unwrap() error { return ErrInsufficientPrepareSpace }
+
+// MissingLFSObjectsError は準備前の cache 修復で残った object を呼び出し側へ渡す。
+// 容量不足と同じく retry budget を消費せず、preparation state は FAILED のままにする。
+type MissingLFSObjectsError struct {
+	Report     CapacityReport
+	Repository string
+	Failures   []workspace.LFSRepairFailure
+	Err        error
+}
+
+func (e *MissingLFSObjectsError) Error() string {
+	if e == nil {
+		return ErrMissingLFSObjects.Error()
+	}
+	if e.Err != nil {
+		return ErrMissingLFSObjects.Error() + ": " + e.Err.Error()
+	}
+	parts := make([]string, 0, len(e.Failures))
+	for _, failure := range e.Failures {
+		parts = append(parts, failure.Error())
+	}
+	if len(parts) == 0 {
+		return ErrMissingLFSObjects.Error()
+	}
+	return ErrMissingLFSObjects.Error() + ": " + strings.Join(parts, "; ")
+}
+
+func (e *MissingLFSObjectsError) Unwrap() error { return ErrMissingLFSObjects }
 
 // checkPrepareCapacity は target OID の準備が書込みを始める前に必要とする
 // volume 別の容量を求める。Git/statfs が読めない回は report を返さず error と
@@ -150,6 +182,7 @@ func (m *Manager) checkPrepareCapacity(ctx context.Context, slot state.Slot, w d
 		if estimateErr != nil {
 			return CapacityReport{}, fmt.Errorf("estimate repository %s capacity: %w", item.Repository.MainPath, estimateErr)
 		}
+		estimate.RepositoryID = string(item.Repository.ID)
 		report.Repositories = append(report.Repositories, estimate)
 		report.Sparse = report.Sparse || estimate.Sparse
 		addWorktree(rootVolume, string(item.Repository.MainPath), capacityMul(estimate.WorktreeBytes, multiplier))
@@ -237,30 +270,107 @@ func (m *Manager) volumeFreeBytes(file *os.File) (string, int64, error) {
 
 // enforcePrepareCapacity は PREPARING/RESTORING の state transition を容量不足
 // の書込み前に確定する。測定不能は warn のみで成功扱いにする。
-func (m *Manager) enforcePrepareCapacity(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, cfg config.Config) error {
+func (m *Manager) enforcePrepareCapacity(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, cfg config.Config) (CapacityReport, error) {
 	report, err := m.checkPrepareCapacity(ctx, slot, w, resolved, repos, cfg, 1)
 	if err != nil {
 		if m.log != nil {
 			m.log.Warn("prepare capacity estimate unavailable; continuing without preflight", "slot_id", slot.ID, "error", err)
 		}
-		return nil
+		return CapacityReport{}, nil
 	}
 	if report.Sparse {
 		if m.log != nil {
 			m.log.Warn("sparse checkout makes the capacity estimate non-blocking", "slot_id", slot.ID)
 		}
-		return nil
+		return report, nil
 	}
 	for _, volume := range report.Volumes {
 		if volume.Required <= volume.Free {
 			continue
 		}
-		if err := m.store.SetSlotState(ctx, slot.ID, []string{slot.State}, "FAILED", "PREPARE_INSUFFICIENT_SPACE"); err != nil {
-			return err
+		code := "PREPARE_INSUFFICIENT_SPACE"
+		if slot.State == "RESTORING" {
+			code = "RESTORE_INSUFFICIENT_SPACE"
 		}
-		return &InsufficientPrepareSpaceError{Report: report}
+		if err := m.store.SetSlotState(ctx, slot.ID, []string{slot.State}, "FAILED", code); err != nil {
+			return report, err
+		}
+		return report, &InsufficientPrepareSpaceError{Report: report}
+	}
+	// report.Repositories には、容量検査を通った repository の LFS 内訳が
+	// そのまま残る。容量が足りてから cache を修復することで、修復不能でも
+	// staged preparation の書込みと隔離を開始しない。
+	preparer := m.newPreparer(cfg, slot)
+	preparer.WorkspaceRoot = string(w.Root)
+	byID := make(map[string]discovery.Repository, len(resolved))
+	for _, item := range resolved {
+		byID[string(item.Repository.ID)] = item.Repository
+	}
+	for _, estimate := range report.Repositories {
+		if len(estimate.LFS) == 0 || estimate.MissingLFSObjects == 0 || estimate.RepositoryID == "" {
+			continue
+		}
+		repo, ok := byID[estimate.RepositoryID]
+		if !ok {
+			continue
+		}
+		repaired, repairErr := preparer.RepairLFSObjects(ctx, repo, estimate.LFS)
+		m.invalidateCapacityCache(repo)
+		if repairErr != nil {
+			failure := &MissingLFSObjectsError{Report: report, Repository: estimate.RepositoryID, Err: repairErr}
+			if err := m.markLFSPreflightFailed(ctx, slot); err != nil {
+				return report, err
+			}
+			return report, failure
+		}
+		if len(repaired.Unresolved) == 0 {
+			continue
+		}
+		failure := &MissingLFSObjectsError{Report: report, Repository: estimate.RepositoryID, Failures: repaired.Unresolved}
+		if err := m.markLFSPreflightFailed(ctx, slot); err != nil {
+			return report, err
+		}
+		return report, failure
+	}
+	return report, nil
+}
+
+func (m *Manager) invalidateCapacityCache(repo discovery.Repository) {
+	if m == nil {
+		return
+	}
+	prefix := string(repo.ID) + "\x00"
+	// 要求 OID は cache key に含まれるが、修復後の doctor が古い欠落を表示し
+	// 続けないことを優先し、同 repository の要求 OID をまとめて無効化する。
+	m.capacityMu.Lock()
+	for key := range m.capacityCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(m.capacityCache, key)
+		}
+	}
+	m.capacityMu.Unlock()
+}
+
+func (m *Manager) markLFSPreflightFailed(ctx context.Context, slot state.Slot) error {
+	code := "PREPARE_LFS_MISSING"
+	if slot.State == "RESTORING" {
+		code = "RESTORE_LFS_MISSING"
+	}
+	if err := m.store.SetSlotState(ctx, slot.ID, []string{slot.State}, "FAILED", code); err != nil {
+		return err
 	}
 	return nil
+}
+
+func lfsObjectsByRepository(report CapacityReport) map[string][]workspace.LFSObjectInfo {
+	objects := make(map[string][]workspace.LFSObjectInfo)
+	for _, estimate := range report.Repositories {
+		if estimate.RepositoryID == "" || len(estimate.LFS) == 0 {
+			continue
+		}
+		objects[estimate.RepositoryID] = append([]workspace.LFSObjectInfo(nil), estimate.LFS...)
+	}
+	return objects
 }
 
 func capacityMul(value int64, multiplier int) int64 {

@@ -50,6 +50,12 @@ type Preparer struct {
 	// SlotLocks は同じ slot へ書く操作を直列化する共有の lock 表である。
 	// prepare が common-directory lock を手放す区間の排他をこれが引き受けるため、daemon は全 Preparer と archive.Manager へ同じ表を渡す。
 	SlotLocks *gitx.KeyedLocks
+	// LFSLocks は common directory の cache object を修復する排他である。
+	// Git metadata の lock と分け、hash と cache への rename が他の準備を長時間止めないようにする。
+	LFSLocks *gitx.KeyedLocks
+	// LFSObjects は repository ID ごとの checkout 完全性検証に使う object 一覧である。
+	// nil の repository は従来経路との互換のため検証しない。
+	LFSObjects map[string][]LFSObjectInfo
 	// sharedPlaced は共有できる tracked file を checkout の前に clone で置き切ったことを表す。
 	// この回は置き換え方式の共有を行わない。置けなかった候補が残る回は、それを共有できる方式が他に無いため省かない。
 	sharedPlaced bool
@@ -199,6 +205,9 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 		_, err := p.RunGitInWorktree(ctx, target, targetIdentity, nil, nil, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", "--no-recurse-submodules", oid)
 		return err
 	}); err != nil {
+		return err
+	}
+	if err := p.verifyPreparedLFS(lockedRoot, lockedRelativeTarget, repo); err != nil {
 		return err
 	}
 	var submoduleResult submodulePhaseResult

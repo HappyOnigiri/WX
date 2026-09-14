@@ -160,3 +160,54 @@ func capacityGitOutput(t *testing.T, directory string, args ...string) string {
 	}
 	return strings.TrimSpace(result.Stdout)
 }
+
+// cache に object がある場合の分類（size 一致=healthy、不一致=corrupt）を、
+// 修復側が根拠にする CacheState として確認する。
+func TestEstimateCapacityClassifiesCachedLFSObjects(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.email", "wx@example.invalid")
+	gitCommand(t, repository, "config", "user.name", "wx")
+	if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte("*.bin filter=lfs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	healthyOID, corruptOID := strings.Repeat("b", 64), strings.Repeat("c", 64)
+	for name, oid := range map[string]string{"healthy.bin": healthyOID, "corrupt.bin": corruptOID} {
+		pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + oid + "\nsize 123\n"
+		if err := os.WriteFile(filepath.Join(repository, name), []byte(pointer), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "lfs pointers")
+	head := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+	common := capacityGitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common), RelativePath: "."}
+	for oid, size := range map[string]int{healthyOID: 123, corruptOID: 7} {
+		cached := lfsCachePath(repo, "sha256:"+oid)
+		if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cached, make([]byte, size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Defaults()
+	cfg.Storage.CopyMode = config.CopyModeCopy
+	p := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+	estimate, err := p.EstimateCapacity(context.Background(), repo, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if estimate.LFSObjects != 2 || estimate.MissingLFSObjects != 1 {
+		t.Fatalf("estimate=%+v", estimate)
+	}
+	states := map[string]LFSCacheState{}
+	for _, object := range estimate.LFS {
+		states[object.OID] = object.CacheState
+	}
+	if states["sha256:"+healthyOID] != LFSCacheHealthy || states["sha256:"+corruptOID] != LFSCacheCorrupt {
+		t.Fatalf("LFS cache states=%v", states)
+	}
+}
