@@ -89,23 +89,33 @@ func (p *Preparer) cowSourceIndexOIDs(ctx context.Context, source *os.Root) map[
 	return oids
 }
 
-// cowScope は compaction の候補を、その準備が実際に書き直した path へ限定する。
-// nil は限定なしを表し、新規準備と復元は宛先に共有済みの実体が無いため常に nil を渡す。
+// cowScope は compaction の候補を、書き直した path へ限定するか、既に共有した path を除外する。
+// 新規準備は除外だけ、UPDATE は限定だけを使い、両方の集合を同時には持たない。
+// pointer と集合の両方が nil なら限定なしを表す。
 type cowScope struct {
 	rewritten map[string]bool
+	excluded  map[string]bool
 }
 
-// narrow は書き直していない path の entry を落とす。
-// 落とした path の宛先は前回の準備が作った実体そのままなので、共有済みなら共有のまま、そうでなければ通常 checkout のまま残る。
+// narrow は scope の集合に従って候補を絞る。
+// 除外した path の宛先は先行配置が作った実体そのままなので、後段で再比較・再cloneしない。
 func (s *cowScope) narrow(entries []cowIndexEntry) []cowIndexEntry {
-	if s == nil {
+	if s == nil || s.rewritten == nil && s.excluded == nil {
 		return entries
 	}
-	candidates := make([]cowIndexEntry, 0, len(s.rewritten))
+	capacity := len(entries)
+	if s.rewritten != nil && len(s.rewritten) < capacity {
+		capacity = len(s.rewritten)
+	}
+	candidates := make([]cowIndexEntry, 0, capacity)
 	for _, entry := range entries {
-		if s.rewritten[entry.name] {
-			candidates = append(candidates, entry)
+		if s.rewritten != nil && !s.rewritten[entry.name] {
+			continue
 		}
+		if s.excluded != nil && s.excluded[entry.name] {
+			continue
+		}
+		candidates = append(candidates, entry)
 	}
 	return candidates
 }
