@@ -288,7 +288,7 @@ func (e *cowErrors) result(ctx context.Context) error {
 
 // runCOWBatches は着手済みの batch を完走させ、失敗後は新規 batch の投入だけを止める。
 // derived context の cancel は使わない。内部 cancel が集約結果に混ざると auto でも hard fail するためである。
-func runCOWBatches(ctx context.Context, workers int, batches [][]cowRun, share func(context.Context, []cowRun) error) error {
+func runCOWBatches[T any](ctx context.Context, workers int, batches [][]T, share func(context.Context, []T) error) error {
 	if workers < 1 {
 		workers = 1
 	}
