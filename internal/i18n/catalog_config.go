@@ -18,6 +18,10 @@ var configCatalog = map[string]Entry{
 	"config.worktree.reuse_standby.description": {EN: "Whether a standby worktree prepared from an older commit may be updated to the requested commit and handed over, instead of being rebuilt.", JA: "古い commit で用意した standby worktree を、作り直さずに要求された commit へ更新して貸し出してよいかどうかです。"},
 	"config.worktree.reuse_standby.impact":      {EN: "When disabled, a launch that does not match a standby has to prepare from scratch and waits longer.", JA: "無効にすると、standby と一致しない起動は一から準備することになり、待ち時間が長くなります。"},
 
+	"config.worktree.fetch_default_branch.name":        {EN: "Fetch the default branch", JA: "既定ブランチを fetch する"},
+	"config.worktree.fetch_default_branch.description": {EN: "Whether wx fetches the origin default branch before a worktree lease that does not specify a branch.", JA: "branch を指定しない worktree の貸出前に、wx が origin の既定ブランチを fetch するかどうかです。"},
+	"config.worktree.fetch_default_branch.impact":      {EN: "When enabled, a fast-forward origin commit can become the base without changing the source checkout; explicit --branch leases are unchanged.", JA: "有効にすると、source の checkout を変えずに fast-forward した origin commit を起点にできます。--branch を明示した貸出は変わりません。"},
+
 	"config.worktree.submodules.name":        {EN: "Prepare submodules", JA: "submodule を準備する"},
 	"config.worktree.submodules.description": {EN: "Whether the submodules of a repository are checked out in the worktree, through local clones.", JA: "リポジトリの submodule を、ローカル clone を経由して worktree にも用意するかどうかです。"},
 	"config.worktree.submodules.impact":      {EN: "Changing this makes the existing standby worktrees unusable, so they are rebuilt.", JA: "変更すると既存の standby worktree は使えなくなり、作り直しになります。"},
@@ -169,6 +173,10 @@ var configCatalog = map[string]Entry{
 	"config.reuse_standby.name":        {EN: "Reuse standbys in this workspace", JA: "この workspace で standby を再利用する"},
 	"config.reuse_standby.description": {EN: "Overrides, for this workspace, whether a standby worktree may be updated to the requested commit and reused.", JA: "standby worktree を要求された commit へ更新して再利用してよいかを、この workspace だけ上書きします。"},
 	"config.reuse_standby.impact":      {EN: "Takes precedence over the global setting for this workspace only.", JA: "この workspace に限り、全体の設定より優先されます。"},
+
+	"config.fetch_default_branch.name":        {EN: "Fetch the default branch in this workspace", JA: "この workspace で既定ブランチを fetch する"},
+	"config.fetch_default_branch.description": {EN: "Overrides, for this workspace, whether wx fetches origin's default branch before leases that do not specify a branch.", JA: "branch を指定しない貸出の前に origin の既定ブランチを fetch するかを、この workspace だけ上書きします。"},
+	"config.fetch_default_branch.impact":      {EN: "A fast-forward origin commit can become the base of new or updated READY worktrees; explicit --branch leases are unchanged.", JA: "fast-forward した origin commit が新規または更新する READY worktree の起点になります。--branch を明示した貸出は変わりません。"},
 
 	"config.submodules.name":        {EN: "Prepare submodules in this workspace", JA: "この workspace で submodule を準備する"},
 	"config.submodules.description": {EN: "Overrides, for this workspace, whether submodules are checked out in the worktree.", JA: "worktree に submodule を用意するかを、この workspace だけ上書きします。"},

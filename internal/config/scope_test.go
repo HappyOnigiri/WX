@@ -17,6 +17,7 @@ var scopeSamples = map[Scope]map[string]string{
 		"copy":                     ".env",
 		"link":                     "cache",
 		"reuse_standby":            "false",
+		"fetch_default_branch":     "false",
 		"submodules":               "false",
 		"warm_count":               "2",
 		"agent.add_dir":            "off",
@@ -65,7 +66,7 @@ var scopeInvalid = map[Scope]map[string]string{
 
 // scopeUnvalidated は値域を持たず、Validate が通してよいキーである。
 var scopeUnvalidated = map[Scope][]string{
-	ScopeWorkspace:  {"copy", "link", "reuse_standby", "submodules", "discovery.exclude"},
+	ScopeWorkspace:  {"copy", "link", "reuse_standby", "fetch_default_branch", "submodules", "discovery.exclude"},
 	ScopeRepository: {"default_branch", "dir_name", "prepare.command", "prepare.inputs", "prepare.version", "includes.default_agent_rules", "readiness.early_paths"},
 }
 

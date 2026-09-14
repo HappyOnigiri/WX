@@ -13,7 +13,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/archive"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
-	"github.com/HappyOnigiri/WX/internal/pool"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -220,7 +219,7 @@ func (m *Manager) reconcileRegistry(ctx context.Context) {
 			m.log.Error("workspace registry update failed", "workspace_id", workspaceRecord.ID, "error", err)
 			continue
 		}
-		resolved, err := pool.ResolveBranches(ctx, m.git, workspaceRecord, nil)
+		resolved, err := m.resolveBranches(ctx, workspaceRecord, nil)
 		if err != nil {
 			m.log.Error("workspace base reconcile failed", "workspace_id", workspaceRecord.ID, "error", err)
 			continue
@@ -238,7 +237,7 @@ func (m *Manager) reconcileRegistry(ctx context.Context) {
 				m.log.Warn("READY slot failed startup reconciliation", "slot_id", slot.ID, "error", validationErr)
 			}
 		}
-		if err := m.ensureStandby(ctx, workspaceRecord); err != nil {
+		if err := m.ensureStandbyResolved(ctx, workspaceRecord, resolved); err != nil {
 			m.log.Error("workspace standby reconcile failed", "workspace_id", workspaceRecord.ID, "error", err)
 		}
 		m.refreshIdleStandbys(ctx, workspaceRecord, resolved)

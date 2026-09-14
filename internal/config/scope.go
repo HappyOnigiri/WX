@@ -44,12 +44,13 @@ func (s Scope) newEntry() reflect.Value {
 // scopeGlobalAliases は global と名前が違う既存キーの継承元である。
 // これらは global のキー路をミラーする前から使われている歴史的な別名なので、改名せず表で受ける。
 var scopeGlobalAliases = map[string]string{
-	"worktree":         "worktree.undefined",
-	"reuse_standby":    "worktree.reuse_standby",
-	"submodules":       "worktree.submodules",
-	"warm_count":       "pool.warm_per_workspace",
-	"dir_source":       "storage.repo_dir_source",
-	"cow_min_size_kib": "storage.cow_min_size_kib",
+	"worktree":             "worktree.undefined",
+	"reuse_standby":        "worktree.reuse_standby",
+	"fetch_default_branch": "worktree.fetch_default_branch",
+	"submodules":           "worktree.submodules",
+	"warm_count":           "pool.warm_per_workspace",
+	"dir_source":           "storage.repo_dir_source",
+	"cow_min_size_kib":     "storage.cow_min_size_kib",
 }
 
 // globalKeyForScopeKey は scope キーの継承元となる global キーを返す。

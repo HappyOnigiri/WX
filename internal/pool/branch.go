@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,22 @@ import (
 type Resolved struct {
 	Repository        discovery.Repository
 	RequestedRef, OID string
+}
+
+// FetchWarning は既定 branch の更新を採用できず、従来どおりローカル ref を
+// 起点にした理由である。fetch は repository ごとに独立して扱うため、1 件の
+// 警告で workspace 全体の解決を失敗させない。
+type FetchWarning struct {
+	Repository discovery.Repository
+	Operation  string
+	Err        error
+}
+
+func (w FetchWarning) Error() string {
+	if w.Err == nil {
+		return w.Operation
+	}
+	return fmt.Sprintf("%s: %v", w.Operation, w.Err)
 }
 
 // MissingDefaultBranchError は明示された repository の既定 branch が存在しないことを表す。
@@ -38,6 +55,19 @@ func (e *UnresolvedDefaultBranchError) Error() string {
 }
 
 func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspace, specs []string) ([]Resolved, error) {
+	return resolveBranches(ctx, git, w, specs, false, nil)
+}
+
+// ResolveBranchesWithFetch は branch 未指定のときだけ各 repository の origin 既定
+// branch を common-directory lock 下で fetch し、local branch が remote の祖先で
+// ある場合に限って remote OID を採用する。fetch の失敗は warning へ渡して local
+// OID へ戻し、context のキャンセルや通常の ref 解決障害だけを error とする。
+// commentlint:allow-long -- fetch と fallback の契約を公開関数の doc comment にまとめる
+func ResolveBranchesWithFetch(ctx context.Context, git *gitx.Runner, w discovery.Workspace, specs []string, warn func(FetchWarning)) ([]Resolved, error) {
+	return resolveBranches(ctx, git, w, specs, true, warn)
+}
+
+func resolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspace, specs []string, fetchDefault bool, warn func(FetchWarning)) ([]Resolved, error) {
 	global := ""
 	qualified := map[string]string{}
 	for _, s := range specs {
@@ -112,11 +142,25 @@ func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 		if branch == "" {
 			return nil, &UnresolvedDefaultBranchError{RepositoryRelativePath: repo.RelativePath}
 		}
-		oid, ok, err := gitx.ResolveRef(ctx, git, string(repo.MainPath), branch)
+		var (
+			oid string
+			ok  bool
+			err error
+		)
+		if fetchDefault && len(specs) == 0 {
+			oid, ok, err = resolveFetchedDefaultBranch(ctx, git, repo, branch, warn)
+		} else {
+			oid, ok, err = gitx.ResolveRef(ctx, git, string(repo.MainPath), branch)
+		}
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
+			if fetchDefault && len(specs) == 0 {
+				// fetch 経路で local ref も失われている場合、古い remote-tracking
+				// ref を採用すると fetch 失敗の一部更新を隠してしまう。
+				return nil, &MissingDefaultBranchError{Branch: branch, RepositoryRelativePath: repo.RelativePath}
+			}
 			if _, qualified := qualified[string(repo.ID)]; qualified {
 				return nil, fmt.Errorf("branch %q does not exist in repository %s", branch, repo.RelativePath)
 			}
@@ -135,6 +179,105 @@ func ResolveBranches(ctx context.Context, git *gitx.Runner, w discovery.Workspac
 		out = append(out, Resolved{Repository: repo, RequestedRef: branch, OID: oid})
 	}
 	return out, nil
+}
+
+// resolveFetchedDefaultBranch は fetch を common-directory lock 下で行い、取得後に
+// ref と祖先関係を判定する。local branch が無い repository では remote OID だけを
+// 採用し、remote が後退・分岐したときは local OID を維持する。
+func resolveFetchedDefaultBranch(ctx context.Context, git *gitx.Runner, repo discovery.Repository, branch string, warn func(FetchWarning)) (string, bool, error) {
+	var fetched bool
+	err := git.WithCommonDirLock(ctx, string(repo.CommonDir), func(lockCtx context.Context) error {
+		fetchErr := fetchDefaultBranch(lockCtx, git, repo, branch)
+		if fetchErr != nil {
+			if lockCtx.Err() != nil {
+				return fetchErr
+			}
+			issueFetchWarning(warn, FetchWarning{Repository: repo, Operation: "fetch default branch", Err: fetchErr})
+			return nil
+		}
+		fetched = true
+		return nil
+	})
+	if err != nil {
+		return "", false, err
+	}
+	if !fetched {
+		return resolveLocalDefaultBranch(ctx, git, repo, branch)
+	}
+
+	// fetch 成功後は判定に使う ref だけを調べる。ここで gitx.ResolveRef を呼ぶと
+	// local を優先するため、remote ref の欠落を見落とす。
+	local, localOK, localErr := resolveExactRef(ctx, git, string(repo.MainPath), "refs/heads/"+branch)
+	if localErr != nil {
+		if ctx.Err() != nil {
+			return "", false, localErr
+		}
+		issueFetchWarning(warn, FetchWarning{Repository: repo, Operation: "resolve local default branch", Err: localErr})
+		return resolveLocalDefaultBranch(ctx, git, repo, branch)
+	}
+	remote, remoteOK, remoteErr := resolveExactRef(ctx, git, string(repo.MainPath), "refs/remotes/origin/"+branch)
+	if remoteErr != nil {
+		if ctx.Err() != nil {
+			return "", false, remoteErr
+		}
+		issueFetchWarning(warn, FetchWarning{Repository: repo, Operation: "resolve fetched default branch", Err: remoteErr})
+		return resolveLocalDefaultBranch(ctx, git, repo, branch)
+	}
+	if !remoteOK {
+		issueFetchWarning(warn, FetchWarning{Repository: repo, Operation: "fetched default branch ref is missing", Err: errors.New("remote-tracking ref is missing after fetch")})
+		return resolveLocalDefaultBranch(ctx, git, repo, branch)
+	}
+	if !localOK {
+		return remote, true, nil
+	}
+
+	_, err = git.Run(ctx, string(repo.MainPath), "merge-base", "--is-ancestor", local, remote)
+	if err == nil {
+		return remote, true, nil
+	}
+	// exit 1 は祖先でないことを示すため、remote の後退・分岐として local を使う。
+	var gitErr *gitx.Error
+	if errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 && gitErr.Result.Stderr == "" {
+		return local, true, nil
+	}
+	if ctx.Err() != nil {
+		return "", false, err
+	}
+	issueFetchWarning(warn, FetchWarning{Repository: repo, Operation: "check default branch fast-forward", Err: err})
+	return local, true, nil
+}
+
+func resolveLocalDefaultBranch(ctx context.Context, git *gitx.Runner, repo discovery.Repository, branch string) (string, bool, error) {
+	return resolveExactRef(ctx, git, string(repo.MainPath), "refs/heads/"+branch)
+}
+
+func fetchDefaultBranch(ctx context.Context, git *gitx.Runner, repo discovery.Repository, branch string) error {
+	// 明示した refspec と --no-tags/--no-write-fetch-head により、remote-tracking
+	// ref だけを更新し、source branch・tag・FETCH_HEAD は変更しない。
+	refspec := "+refs/heads/" + branch + ":refs/remotes/origin/" + branch
+	_, err := git.Run(ctx, string(repo.MainPath), "fetch", "--no-tags", "--no-write-fetch-head", "origin", refspec)
+	return err
+}
+
+func resolveExactRef(ctx context.Context, git *gitx.Runner, repo, ref string) (string, bool, error) {
+	res, err := git.Run(ctx, repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err == nil {
+		return strings.TrimSpace(res.Stdout), true, nil
+	}
+	if ctx.Err() != nil {
+		return "", false, err
+	}
+	var gitErr *gitx.Error
+	if errors.As(err, &gitErr) && gitErr.Result.ExitCode == 1 && gitErr.Result.Stderr == "" {
+		return "", false, nil
+	}
+	return "", false, err
+}
+
+func issueFetchWarning(warn func(FetchWarning), warning FetchWarning) {
+	if warn != nil {
+		warn(warning)
+	}
 }
 
 func matchRepositories(repos []discovery.Repository, selector string) []discovery.Repository {

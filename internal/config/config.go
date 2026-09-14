@@ -151,14 +151,17 @@ type SystemDiscovery struct {
 // WorkspaceDefaults は Workspace 設定の global 既定値である。list の nil
 // は組み込み既定値の継承、空 list は明示的な空を表す。
 type WorkspaceDefaults struct {
-	Worktree     string             `yaml:"worktree,omitempty"`
-	Copy         []string           `yaml:"copy,omitempty"`
-	Link         []string           `yaml:"link,omitempty"`
-	ReuseStandby *bool              `yaml:"reuse_standby,omitempty"`
-	WarmCount    *int               `yaml:"warm_count,omitempty"`
-	Agent        WorkspaceAgent     `yaml:"agent,omitempty"`
-	Retention    WorkspaceRetention `yaml:"retention,omitempty"`
-	Discovery    WorkspaceDiscovery `yaml:"discovery,omitempty"`
+	Worktree     string   `yaml:"worktree,omitempty"`
+	Copy         []string `yaml:"copy,omitempty"`
+	Link         []string `yaml:"link,omitempty"`
+	ReuseStandby *bool    `yaml:"reuse_standby,omitempty"`
+	// FetchDefaultBranch は branch 未指定の貸出前に origin の既定 branch を fetch するかを決める。
+	// nil は組み込み既定値（false）を継承し、明示 false と未指定を区別する。
+	FetchDefaultBranch *bool              `yaml:"fetch_default_branch,omitempty"`
+	WarmCount          *int               `yaml:"warm_count,omitempty"`
+	Agent              WorkspaceAgent     `yaml:"agent,omitempty"`
+	Retention          WorkspaceRetention `yaml:"retention,omitempty"`
+	Discovery          WorkspaceDiscovery `yaml:"discovery,omitempty"`
 }
 
 // RepositoryDefaults は Repository 設定の global 既定値である。
@@ -198,6 +201,8 @@ func repositoryDefaultsAsRepository(d RepositoryDefaults) Repository {
 type WorktreePolicy struct {
 	Undefined    string `yaml:"undefined,omitempty"`
 	ReuseStandby bool   `yaml:"reuse_standby,omitempty"`
+	// FetchDefaultBranch は branch 未指定の貸出前に origin の既定 branch を fetch するかを決める。
+	FetchDefaultBranch bool `yaml:"fetch_default_branch,omitempty"`
 	// Submodules は準備時に submodule を worktree へ実体化するかを決める。
 	// linked worktree の submodule gitdir は共有できないため、有効なときは main の `.git/modules/<name>` からローカル clone する。
 	Submodules bool `yaml:"submodules,omitempty"`
@@ -279,6 +284,8 @@ type Workspace struct {
 	Copy         []string `yaml:"copy,omitempty"`
 	Link         []string `yaml:"link,omitempty"`
 	ReuseStandby *bool    `yaml:"reuse_standby,omitempty"`
+	// FetchDefaultBranch は workspace_defaults.fetch_default_branch をこの workspace だけ上書きする。
+	FetchDefaultBranch *bool `yaml:"fetch_default_branch,omitempty"`
 	// Submodules は workspace 個別の submodule 実体化方針で、nil のときは worktree.submodules を継承する。
 	Submodules *bool `yaml:"submodules,omitempty"`
 	// WarmCount は workspace 個別の待機枠数で、nil のときは pool.warm_per_workspace を継承する。
@@ -451,7 +458,7 @@ func (c Config) COWMinShareSize(mainPath string) int64 {
 func Defaults() Config {
 	return Config{
 		Language: LanguageEnglish,
-		Worktree: WorktreePolicy{Undefined: "ask", ReuseStandby: true, Submodules: true},
+		Worktree: WorktreePolicy{Undefined: "ask", ReuseStandby: true, FetchDefaultBranch: false, Submodules: true},
 		Version:  1, Storage: Storage{
 			WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, COWMinSizeKiB: DefaultCOWMinSizeKiB,
 			RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour},
