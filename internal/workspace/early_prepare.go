@@ -124,7 +124,7 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		}); err != nil {
 			return nil, err
 		}
-		if err := p.completePrepare(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked, placement,
+		if err := p.completePrepare(ctx, item.Repository, item.Target, item.OID, slotID, preparePhaseCreate, item.locked, placement, &submoduleResult,
 			func() error { return nil },
 			func() error { return nil },
 			func() error { return p.materializePlan(ctx, item.Repository, item.locked, &item.plan, false) },

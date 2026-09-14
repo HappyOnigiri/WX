@@ -208,7 +208,7 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 		return err
 	}
 	var submoduleResult submodulePhaseResult
-	if err := p.completePrepare(ctx, repo, target, oid, slotID, phase, locked, cowPlacement{},
+	if err := p.completePrepare(ctx, repo, target, oid, slotID, phase, locked, cowPlacement{}, &submoduleResult,
 		func() error {
 			var err error
 			submoduleResult, err = p.submodulePhaseWithResult(ctx, repo, target, oid, targetIdentity)
@@ -227,7 +227,7 @@ func (p *Preparer) prepareOwned(ctx context.Context, repo discovery.Repository, 
 
 // completePrepare は配置後の command・CoW・最終検証を通常準備と二段階準備で共有する。
 // submodules と postCheckout は二段階準備では既に済んでいるため、その経路からは何もしない callback を受ける。
-func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, locked *lockedTarget, placement cowPlacement, submodules, postCheckout, includes, links func() error) error {
+func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, locked *lockedTarget, placement cowPlacement, submoduleResult *submodulePhaseResult, submodules, postCheckout, includes, links func() error) error {
 	lockedRoot, lockedRelativeTarget, targetIdentity := locked.root, locked.relative, locked.identity
 	if locked.existing {
 		if err := p.rejectCOWTemporaries(ctx, target, targetIdentity); err != nil {
@@ -305,6 +305,13 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 		}); err != nil {
 			return err
 		}
+	}
+	// submodule の checkout は親の配置方式より後に実体化するため、その対象に入らない。
+	// 親の配置が完了した回でも、submodule だけは専用の置換共有を必ず行う。
+	if err := p.timePhase("submodule-cow", func() error {
+		return p.compactSubmoduleWorktree(ctx, repo, target, oid, slotID, phase, targetIdentity, submoduleResult, locked.existing)
+	}); err != nil {
+		return err
 	}
 	// inode 交換で index の stat cache が陳腐化するため、貸出前に refresh して再ハッシュを PREPARING 側で払う。
 	// tracked 内容が変わっていないことの独立検証も兼ねる。先行配置した回も、配置した path 以外の検証はここだけが行う。
@@ -477,6 +484,11 @@ func (p *Preparer) PrepareResumeWithIdentity(ctx context.Context, repo discovery
 		return err
 	}
 	if err := p.compactWorktree(ctx, repo, target, oid, slotID, preparePhaseRestore, expectedIdentity, nil); err != nil {
+		return err
+	}
+	if err := p.timePhase("submodule-cow", func() error {
+		return p.compactSubmoduleWorktree(ctx, repo, target, oid, slotID, preparePhaseRestore, expectedIdentity, nil, true)
+	}); err != nil {
 		return err
 	}
 	if err := p.VerifyWorktreeIdentity(target, expectedIdentity); err != nil {

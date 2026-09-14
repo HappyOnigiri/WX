@@ -45,6 +45,30 @@ func parseCOWIndexEntries(stdout string) ([]cowIndexEntry, error) {
 	return entries, nil
 }
 
+// parseCOWGitlinkPaths は宛先 index の gitlink entry から子の配置 path を取り出す。
+// 子の checkout を共有する入口でだけ使い、mode 160000 以外の entry は無視する。
+func parseCOWGitlinkPaths(stdout string) ([]string, error) {
+	var paths []string
+	for _, entry := range strings.Split(stdout, "\x00") {
+		if entry == "" {
+			continue
+		}
+		header, name, ok := strings.Cut(entry, "\t")
+		fields := strings.Fields(header)
+		if !ok || len(fields) != 3 {
+			return nil, errors.New("invalid Git index entry for submodule CoW")
+		}
+		if fields[0] != "160000" || fields[2] != "0" {
+			continue
+		}
+		if !filepath.IsLocal(name) || filepath.Clean(name) != name {
+			return nil, errors.New("unsafe Git path for submodule CoW")
+		}
+		paths = append(paths, name)
+	}
+	return paths, nil
+}
+
 // parseCOWSourceIndexOIDs は main 側 index を path から blob OID への表にする。
 // 事前 skip の材料でしかないため、解釈できない行は表へ載せず、その path を共有対象外へ倒す。
 func parseCOWSourceIndexOIDs(stdout string) map[string]string {

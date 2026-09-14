@@ -442,7 +442,12 @@ func TestPrepareLeavesSourceRepositoryUnchanged(t *testing.T) {
 	t.Parallel()
 	f := newSubmoduleFixture(t)
 	configPath := filepath.Join(string(f.repo.CommonDir), "config")
+	moduleIndexPath := filepath.Join(f.moduleDir(), "index")
 	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moduleIndexBefore, err := os.ReadFile(moduleIndexPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,6 +461,13 @@ func TestPrepareLeavesSourceRepositoryUnchanged(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatalf("source repository config changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	moduleIndexAfter, err := os.ReadFile(moduleIndexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(moduleIndexBefore, moduleIndexAfter) {
+		t.Fatalf("source submodule index changed")
 	}
 	if status := gitOutput(t, f.repository, "status", "--porcelain", "--ignore-submodules=none"); status != statusBefore {
 		t.Fatalf("source worktree status=%q, want the unchanged %q", status, statusBefore)
