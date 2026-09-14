@@ -219,7 +219,7 @@ func TestResolveBranchesWithFetchKeepsDivergedLocalBranch(t *testing.T) {
 	git(t, repoPath, "commit", "--allow-empty", "-m", "local")
 	localOID := gitOut(t, repoPath, "rev-parse", "HEAD")
 	remotePath := filepath.Join(root, "remote")
-	git(t, root, "clone", origin, remotePath)
+	git(t, root, "clone", "--branch", "main", origin, remotePath)
 	git(t, remotePath, "config", "user.name", "test")
 	git(t, remotePath, "config", "user.email", "test@example.com")
 	git(t, remotePath, "commit", "--allow-empty", "-m", "remote")

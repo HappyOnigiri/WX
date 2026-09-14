@@ -97,7 +97,7 @@ func initRemoteRepository(t *testing.T, path string) {
 	gitRun(t, parent, "init", "--bare", origin)
 	gitRun(t, path, "remote", "add", "origin", origin)
 	gitRun(t, path, "push", "-u", "origin", "main")
-	gitRun(t, parent, "clone", origin, filepath.Join(parent, "remote"))
+	gitRun(t, parent, "clone", "--branch", "main", origin, filepath.Join(parent, "remote"))
 	gitRun(t, filepath.Join(parent, "remote"), "config", "user.name", "test")
 	gitRun(t, filepath.Join(parent, "remote"), "config", "user.email", "test@example.com")
 }
