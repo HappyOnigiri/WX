@@ -3,11 +3,9 @@ package workspace
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,34 +157,6 @@ func compactLFSObject(ctx context.Context, donorRoot, commonRoot *os.Root, candi
 	}
 	cleanupExpected = originalInfo
 	return true, candidate.Pointer.Size, nil
-}
-
-func verifyLFSClone(ctx context.Context, file *os.File, pointer LFSPointer) error {
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	hash := sha256.New()
-	buffer := make([]byte, 128<<10)
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		count, err := file.Read(buffer)
-		if count > 0 {
-			_, _ = hash.Write(buffer[:count])
-		}
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-	}
-	got := "sha256:" + hex.EncodeToString(hash.Sum(nil))
-	if got != strings.ToLower(pointer.OID) {
-		return fmt.Errorf("%w: got %s, want %s", errLFSVerification, got, pointer.OID)
-	}
-	return nil
 }
 
 func removeLFSCoWTemporaries(parent *os.File) error {

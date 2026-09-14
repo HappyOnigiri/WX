@@ -17,9 +17,10 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
-// placeFile は1件を clone し、置けたかを返す。
-// 置けなかった leaf は通常 checkout に回るだけなので、共有できない理由では準備を止めない。
-func (c *cowPlacer) placeFile(source, destination *os.File, directory, leaf string) (bool, error) {
+func (c *cowPlacer) placeFileContext(ctx context.Context, source, destination *os.File, directory, leaf string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	start := time.Now()
 	fd, err := unix.Openat(int(source.Fd()), leaf, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -40,6 +41,31 @@ func (c *cowPlacer) placeFile(source, destination *os.File, directory, leaf stri
 			return false, nil
 		}
 		return false, fmt.Errorf("clone %s: %w", joinCOWPath(directory, leaf), cloneErr)
+	}
+	if pointer, ok := c.lfsPointers[joinCOWPath(directory, leaf)]; ok {
+		candidate, openErr := openCOWLeaf(destination, leaf)
+		if openErr != nil {
+			if removeErr := unix.Unlinkat(int(destination.Fd()), leaf, 0); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return false, fmt.Errorf("%w: remove unverified LFS clone %s: %w", state.ErrOwnership, joinCOWPath(directory, leaf), removeErr)
+			}
+			return false, nil
+		}
+		verifyStart := time.Now()
+		verifyErr := verifyLFSClone(ctx, candidate, pointer)
+		c.stats.lfsVerify.observe(verifyStart)
+		closeErr := candidate.Close()
+		if verifyErr != nil || closeErr != nil {
+			if removeErr := unix.Unlinkat(int(destination.Fd()), leaf, 0); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return false, fmt.Errorf("%w: remove unverified LFS clone %s: %w", state.ErrOwnership, joinCOWPath(directory, leaf), removeErr)
+			}
+			if errors.Is(verifyErr, context.Canceled) || errors.Is(verifyErr, context.DeadlineExceeded) {
+				return false, verifyErr
+			}
+			if closeErr != nil {
+				return false, nil
+			}
+			return false, nil
+		}
 	}
 	c.stats.shared.Add(1)
 	return true, nil

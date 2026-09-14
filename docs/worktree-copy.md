@@ -23,14 +23,16 @@ fingerprintにはrepositoryごとに解決した実効値が入るので、個�
 残りのcheckoutより前に候補をcloneし、置けたpathをcheckoutの対象から外す。
 checkoutしてから同内容へ差し替えるのに比べ、同じbytesの書き出しと読み比べが1往復ぶん要らない。
 
-内容が要求OIDと一致するかは自前で比較せず、cloneの直後にGitのtracked検査へ判定させ、一致しないpathだけを`checkout-index --force`でやり直す。
-したがってmainがdirtyなpathやclone中にmainが変わったpathは通常checkoutへ落ちるだけで、準備は成功し共有されないpathが増える。
+通常のtracked pathは、cloneの直後にGitのtracked検査へ内容を判定させ、一致しないpathだけを`checkout-index --force`でやり直す。
+mainがdirtyなpathやclone中にmainが変わったpathは通常checkoutへ落ちるだけで、準備は成功し共有されないpathが増える。
 やり直しても一致しないpathが残る回だけ準備を失敗させる。
 この検査はcloneしたファイルがindexにstat情報を持たないために内容を実際に読むので、貸出前の`tracked-status-refresh`はstatの確認だけで済む。
 
-tracked検査はclean filterを通した一致しか見ないため、変換の入るpathは配置の候補から外す。
-外さないと、mainの未コミット内容がblobへ戻る限り検査を通り、通常checkoutと違うbytesが宛先に残る。
-除外の対象は`check-attr --cached --all`が変換系の属性を報告するpathで、`core.autocrlf`が有効な回とcheckoutの属性を要求OIDから読む回は1件も置かない。
+tracked検査はclean filterを通した一致しか見ないため、`text`・`eol`・`working-tree-encoding`など変換の入るpathは配置の候補から外す。
+ただし`filter=lfs`だけを持ち、indexのblobがLFS pointerとして解析できるpathは例外として候補へ戻す。
+clone後にwxがpointerのsizeとSHA-256を実体へ照合し、検証に失敗したcloneはそのpathだけunlinkして通常checkoutへ戻すため、clean filterの実装に判定を委ねない。
+`core.autocrlf`が有効な回とcheckoutの属性を要求OIDから読む回は、LFSの例外を含めて1件も置かない。
+配置後のtracked検査は残りのpathのstat情報をindexへ反映するために行い、LFS pathの完全性検証はその後に行う。
 
 cloneはmode・xattr・ACLを元の実体から複製する。
 modeの差は要求OIDとのtracked検査で通常checkoutへ落ちるが、file flagsが付いた実体は置くとslotが書換えも削除もできなくなるため候補から外す。

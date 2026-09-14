@@ -103,10 +103,10 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		if err := p.timePhase("checkout", func() error { return p.checkoutStage(ctx, item, false, placement.placed) }); err != nil {
 			return nil, err
 		}
-		if err := p.verifyPreparedLFS(item.locked.root, item.locked.relative, item.Repository); err != nil {
+		if err := p.timePhase("cow-verify", func() error { return p.settleCOWPlacement(ctx, item, placement.placed) }); err != nil {
 			return nil, err
 		}
-		if err := p.timePhase("cow-verify", func() error { return p.settleCOWPlacement(ctx, item, placement.placed) }); err != nil {
+		if err := p.verifyPreparedLFS(item.locked.root, item.locked.relative, item.Repository); err != nil {
 			return nil, err
 		}
 		// post-checkout より前に実体化する。ユーザーの hook が submodule を前提にできるようにし、

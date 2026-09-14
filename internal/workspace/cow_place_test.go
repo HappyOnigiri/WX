@@ -2,7 +2,10 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -207,7 +210,19 @@ func stagedCOWFixture(t *testing.T, contents map[string]string) (string, discove
 		}
 	}
 	if len(contents) > 0 {
-		gitCommand(t, source, "add", ".")
+		if strings.Contains(contents[".gitattributes"], "filter=lfs") {
+			// GitHub runner に git-lfs があっても、fixture の index blob は入力した bytes をそのまま使う。
+			gitCommand(t, source, "add", ".gitattributes")
+			for name := range contents {
+				if name == ".gitattributes" {
+					continue
+				}
+				oid := gitOutput(t, source, "hash-object", "--no-filters", "-w", name)
+				gitCommand(t, source, "update-index", "--add", "--cacheinfo", "100644,"+oid+","+name)
+			}
+		} else {
+			gitCommand(t, source, "add", ".")
+		}
 		gitCommand(t, source, "commit", "-m", "staged")
 	}
 	oid := gitOutput(t, source, "rev-parse", "HEAD")
@@ -488,6 +503,140 @@ func TestParseCOWConvertiblePathsKeepsOnlyConversionAttributes(t *testing.T) {
 		if !got[path] {
 			t.Fatalf("convertible=%v", got)
 		}
+	}
+}
+
+func TestParseCOWAttributesRecognizesOnlyLFSFilterAsLFSPlacement(t *testing.T) {
+	t.Parallel()
+	output := strings.Join([]string{
+		"weights.bin", "filter", "lfs",
+		"weights.bin", "diff", "unset",
+		"text.dat", "text", "set",
+		"mixed.bin", "filter", "lfs",
+		"mixed.bin", "text", "set",
+	}, "\x00") + "\x00"
+	convertible, lfsOnly := parseCOWAttributes(output)
+	if len(convertible) != 3 || !convertible["weights.bin"] || !convertible["text.dat"] || !convertible["mixed.bin"] {
+		t.Fatalf("convertible=%v", convertible)
+	}
+	if len(lfsOnly) != 1 || !lfsOnly["weights.bin"] {
+		t.Fatalf("lfsOnly=%v", lfsOnly)
+	}
+}
+
+func TestShareableCOWPlacementsKeepsValidLFSOnlyPaths(t *testing.T) {
+	t.Parallel()
+	data := []byte(strings.Repeat("weight", 4096))
+	hash := sha256.Sum256(data)
+	value := hex.EncodeToString(hash[:])
+	pointer := fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", value, len(data))
+	source, _, preparer, item := stagedCOWFixture(t, map[string]string{
+		".gitattributes":  "*.bin filter=lfs\n",
+		"big/weights.bin": pointer,
+	})
+	if err := os.WriteFile(filepath.Join(source, "big", "weights.bin"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := cowIndexEntry{name: "big/weights.bin", oid: item.plan.oids["big/weights.bin"]}
+	kept, excluded, pointers, err := preparer.shareableCOWPlacementsWithLFS(context.Background(), item, []cowIndexEntry{entry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 || kept[0].name != entry.name || excluded != 0 {
+		t.Fatalf("kept=%v excluded=%d", kept, excluded)
+	}
+	got, ok := pointers[entry.name]
+	if !ok || got.OID != "sha256:"+value || got.Size != int64(len(data)) {
+		t.Fatalf("pointers=%v", pointers)
+	}
+}
+
+func TestShareableCOWPlacementsDropsInvalidOrCombinedLFSPaths(t *testing.T) {
+	t.Parallel()
+	t.Run("invalid pointer", func(t *testing.T) {
+		_, _, preparer, item := stagedCOWFixture(t, map[string]string{
+			".gitattributes":  "*.bin filter=lfs\n",
+			"big/weights.bin": "not a pointer\n",
+		})
+		entry := cowIndexEntry{name: "big/weights.bin", oid: item.plan.oids["big/weights.bin"]}
+		kept, excluded, err := preparer.shareableCOWPlacements(context.Background(), item, []cowIndexEntry{entry})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(kept) != 0 || excluded != 1 {
+			t.Fatalf("kept=%v excluded=%d", kept, excluded)
+		}
+	})
+	t.Run("combined conversion", func(t *testing.T) {
+		_, _, preparer, item := stagedCOWFixture(t, map[string]string{
+			".gitattributes":  "*.bin text filter=lfs\n",
+			"big/weights.bin": "not a pointer\n",
+		})
+		entry := cowIndexEntry{name: "big/weights.bin", oid: item.plan.oids["big/weights.bin"]}
+		kept, excluded, err := preparer.shareableCOWPlacements(context.Background(), item, []cowIndexEntry{entry})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(kept) != 0 || excluded != 1 {
+			t.Fatalf("kept=%v excluded=%d", kept, excluded)
+		}
+	})
+}
+
+func TestPrepareStagedPlacesVerifiedLFSCloneWithoutReplacementPass(t *testing.T) {
+	t.Parallel()
+	if !cowAvailable() {
+		t.Skip("APFS is required")
+	}
+	source, repo, preparer, _, target := prepareEdgesFixture(t)
+	data := []byte(strings.Repeat("weight", 4096))
+	hash := sha256.Sum256(data)
+	value := hex.EncodeToString(hash[:])
+	pointer := fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", value, len(data))
+	if err := os.Mkdir(filepath.Join(source, "big"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, ".gitattributes"), []byte("*.bin filter=lfs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "big", "weights.bin"), []byte(pointer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	filterDir := t.TempDir()
+	clean := filepath.Join(filterDir, "clean")
+	pointerFile := filepath.Join(filterDir, "pointer")
+	if err := os.WriteFile(pointerFile, []byte(pointer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(clean, []byte(fmt.Sprintf("#!/bin/sh\ncat %q\n", pointerFile)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, source, "config", "filter.lfs.clean", clean)
+	gitCommand(t, source, "config", "filter.lfs.smudge", "cat")
+	gitCommand(t, source, "add", ".")
+	gitCommand(t, source, "commit", "-m", "lfs file")
+	oid := gitOutput(t, source, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(source, "big", "weights.bin"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	preparer.LFSObjects = map[string][]LFSObjectInfo{"repository": {{OID: "sha256:" + value, Size: int64(len(data)), Paths: []string{"big/weights.bin"}}}}
+	preparer.Phases = &PhaseTimings{}
+	if _, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "big", "weights.bin"))
+	if err != nil || string(got) != string(data) {
+		t.Fatalf("prepared LFS bytes differ: len=%d err=%v", len(got), err)
+	}
+	counts := map[string]int{}
+	for _, phase := range preparer.Phases.Phases() {
+		counts[phase.Name] = phase.Count
+	}
+	if counts["cow-place.lfs_verify"] != 1 {
+		t.Fatalf("LFS verification phase=%d all=%v", counts["cow-place.lfs_verify"], counts)
+	}
+	if counts["cow"] != 0 {
+		t.Fatalf("replacement CoW unexpectedly ran: %v", counts)
 	}
 }
 
