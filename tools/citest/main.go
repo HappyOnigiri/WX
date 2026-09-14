@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/HappyOnigiri/WX/tools/internal/gotest"
 )
 
 func main() {
@@ -89,7 +91,7 @@ func run(ctx context.Context, cfg config, output io.Writer) (int, error) {
 			man.Initial.Coverage = "initial.out"
 		}
 	}
-	failed := failedTests(initialResult)
+	failed := gotest.FailedTests(initialResult)
 	switch {
 	case initialResult.Anomaly != "":
 		man.Status = "failed"

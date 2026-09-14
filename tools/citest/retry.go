@@ -7,20 +7,24 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/HappyOnigiri/WX/tools/internal/gotest"
 )
 
 func resolveFailedDeclarations(ctx context.Context, cfg config, failed map[string][]string) (map[string]map[string]declaration, []string) {
 	resolved := make(map[string]map[string]declaration)
 	var diagnostics []string
+	resolver := &gotest.Resolver{GoCommand: cfg.GoCommand, RepoRoot: cfg.RepoRoot}
 	for packageName, tests := range failed {
-		decls, err := declarations(ctx, cfg, packageName)
+		found, err := resolver.Declarations(ctx, packageName)
 		if err != nil {
 			diagnostics = append(diagnostics, fmt.Sprintf("%s: resolve test declarations: %v", packageName, err))
 			continue
 		}
+		decls := found[packageName]
 		resolved[packageName] = make(map[string]declaration)
 		for _, testName := range tests {
-			root := rootTestName(testName)
+			root := gotest.RootTestName(testName)
 			decl, ok := decls[root]
 			if !ok {
 				diagnostics = append(diagnostics, fmt.Sprintf("%s: no declaration for %s", packageName, root))
@@ -126,12 +130,12 @@ func retryRecovered(result testResult, packageName string, expected []string) (b
 	if result.Anomaly != "" {
 		return false, result.Anomaly
 	}
-	failed := failedTests(result)
+	failed := gotest.FailedTests(result)
 	if len(failed[packageName]) > 0 {
 		return false, "retry reported another named test failure"
 	}
 	for _, name := range expected {
-		events := result.Tests[packageName+"\x00"+name]
+		events := result.Tests[gotest.TestID{Package: packageName, Test: name}]
 		if !hasAction(events, "run") || !hasAction(events, "pass") || hasAction(events, "skip") {
 			return false, "retry did not pass every originally failed test"
 		}
@@ -241,13 +245,6 @@ func replacePackages(command []string, packageName string) []string {
 	return result
 }
 
-func rootTestName(name string) string {
-	if index := strings.IndexByte(name, '/'); index >= 0 {
-		return name[:index]
-	}
-	return name
-}
-
 func safeName(packageName string) string {
 	name := strings.NewReplacer("/", "_", "\\", "_", ".", "_").Replace(packageName)
 	if name == "" {
@@ -263,7 +260,7 @@ func safeName(packageName string) string {
 func failedNamesForRoot(names []string, root string) []string {
 	var result []string
 	for _, name := range names {
-		if rootTestName(name) == root {
+		if gotest.RootTestName(name) == root {
 			result = append(result, name)
 		}
 	}
