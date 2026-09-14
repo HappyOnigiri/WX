@@ -23,6 +23,7 @@ func TestRestoreMaterializesSubmoduleBeforePostCheckout(t *testing.T) {
 	}
 	// hook 自身が submodule の中身と include の未配置を検査するため、復元が成功した時点で前後関係は満たされている。
 	// 残るのは実行回数で、1 回の復元につき post-checkout がちょうど 1 回であることを数える。
+	f.waitPrepareCompleted(t)
 	if runs := f.hookRuns(t); runs != 2 {
 		t.Fatalf("post-checkout ran %d times, want one for the cold start and one for the restore", runs)
 	}
@@ -44,6 +45,7 @@ func TestRestoreReportsOutputOfASuccessfulHook(t *testing.T) {
 	t.Parallel()
 	f := newRestoreHookFixture(t, restoreNoticeHook)
 	f.leaseSnapshotAndRestore(t)
+	f.waitPrepareCompleted(t)
 	logs := f.logs.tail()
 	notices := strings.Count(logs, "prepare produced output without failing")
 	if notices != 2 {
@@ -149,6 +151,18 @@ func (f *restoreHookFixture) leaseSnapshotAndRestore(t *testing.T) string {
 		t.Fatalf("restored snapshot content: %v", err)
 	}
 	return resumed.Path
+}
+
+// waitPrepareCompleted は準備と復元の job が終わるまで待つ。
+// 早期 readiness は post-checkout より前に解けるため、貸出が返った時点では hook の実行も notice log もまだ起きていない。
+// hook の実行と notice log はどちらも job の中で済ませるので、job が残っていない時点でどちらも観測できる。
+func (f *restoreHookFixture) waitPrepareCompleted(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	waitUntil(t, 30*time.Second, func() bool {
+		diagnostics, err := f.Store.StatusDiagnostics(ctx)
+		return err == nil && diagnostics.Jobs.Pending == 0 && diagnostics.Jobs.Running == 0
+	})
 }
 
 // hookRuns は count file の行数から post-checkout の実行回数を返す。
