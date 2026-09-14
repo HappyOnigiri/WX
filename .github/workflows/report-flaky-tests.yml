@@ -1,17 +1,19 @@
 name: Report flaky tests
 
+# workflows: の名前は各workflowのname:と一致していなければ静かに発火しなくなる。
+# tools/workflowlintが実在のname:と突き合わせる。
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [CI, Flake Hunt]
     types: [completed]
   workflow_dispatch:
     inputs:
       run_id:
-        description: Source CI run ID
+        description: Source CI or Flake Hunt run ID
         required: true
         type: string
       run_attempt:
-        description: Source CI run attempt
+        description: Source CI or Flake Hunt run attempt
         required: true
         type: string
 

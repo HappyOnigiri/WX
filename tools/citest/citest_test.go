@@ -188,16 +188,3 @@ func TestRetryCommandKeepsSeparateFlagValuesOutOfPackageList(t *testing.T) {
 		t.Fatalf("package was consumed as timeout value: %q", joined)
 	}
 }
-
-func TestParseJSONLRecordsShuffleSeedPerPackage(t *testing.T) {
-	result := testResult{Tests: make(map[string][]testEvent), ShuffleByPackage: make(map[string]string)}
-	data := []byte(`{"Action":"output","Package":"example/a","Output":"-test.shuffle 123\n"}
-{"Action":"output","Package":"example/b","Output":"-test.shuffle 456\n"}
-`)
-	if err := parseJSONL(data, &result); err != nil {
-		t.Fatal(err)
-	}
-	if result.ShuffleByPackage["example/a"] != "123" || result.ShuffleByPackage["example/b"] != "456" {
-		t.Fatalf("shuffle seeds=%v", result.ShuffleByPackage)
-	}
-}

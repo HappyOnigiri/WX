@@ -311,3 +311,212 @@ test('accepts a successful manifest without recoveries', () => {
   assert.deepEqual(reporter.validateManifest(value).recoveries, []);
   assert.equal(reporter.aggregateManifests([{ artifactName: 'coverage', manifest: value }], source).length, 0);
 });
+
+function huntManifest(huntId, overrides = {}) {
+  return {
+    schema_version: 1,
+    kind: 'flake-hunt',
+    hunt_id: huntId,
+    command: ['go', 'test', '-json', '-race', '-shuffle=on', '-count=10', './...'],
+    count: '10',
+    rounds: 4,
+    failed_rounds: 1,
+    anomaly_rounds: 0,
+    run_id: '10',
+    run_attempt: '1',
+    test_sha: '0123456789abcdef0123456789abcdef01234567',
+    round_records: [
+      { round: 1, status: 'passed', shuffle: '111' },
+      { round: 2, status: 'failed', shuffle: '222' },
+    ],
+    tests: [{
+      package: 'example.test',
+      declaration: { path: 'internal/example/flaky_test.go', function: 'TestFlaky', line: 12 },
+      subtests: ['TestFlaky', 'TestFlaky/sub test'],
+      pass_count: 39,
+      fail_count: 1,
+      skip_count: 0,
+      log_excerpt: '    flaky_test.go:12: boom',
+    }],
+    ...overrides,
+  };
+}
+
+const huntSource = { ...source, kind: 'hunt', runUrl: 'https://github.com/HappyOnigiri/WX/actions/runs/10' };
+
+function huntGithub({ jobs = [], artifacts = [], issues = [], comments = new Map(), calls = [] } = {}) {
+  return { rest: {
+    actions: {
+      getWorkflowRun: async () => ({ data: { name: 'Flake Hunt', path: '.github/workflows/flake-hunt.yml', run_attempt: 1, event: 'workflow_dispatch', head_branch: 'main', head_sha: source.testSha, html_url: huntSource.runUrl } }),
+      listJobsForWorkflowRun: async () => ({ data: { jobs } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts } }),
+    },
+    issues: {
+      listForRepo: async () => ({ data: issues }),
+      listComments: async ({ issue_number: number }) => ({ data: comments.get(number) || [] }),
+      create: async (request) => { const issue = { number: issues.length + 1, title: request.title, body: request.body, state: 'open' }; issues.push(issue); calls.push(['create', request.title]); return { data: issue }; },
+      createComment: async ({ issue_number: number, body }) => { const list = comments.get(number) || []; list.push({ body }); comments.set(number, list); calls.push(['comment', number]); return { data: {} }; },
+      update: async ({ state }) => { calls.push(['update', state]); return { data: {} }; },
+    },
+  } };
+}
+
+test('files a hunt observation under the same issue title as CI', () => {
+  const groups = reporter.aggregateHuntManifests([
+    { artifactName: 'flake-hunt-hunt-1-10-1', huntId: 'hunt-1', manifest: huntManifest('hunt-1') },
+    { artifactName: 'flake-hunt-hunt-2-10-1', huntId: 'hunt-2', manifest: huntManifest('hunt-2') },
+  ], huntSource);
+  assert.equal(groups.length, 1);
+  const ciGroups = reporter.aggregateManifests([{ artifactName: 'coverage', manifest: manifest('10', '1') }], source);
+  assert.equal(groups[0].title, ciGroups[0].title);
+  assert.equal(groups[0].title, '[flaky] internal/example/flaky_test.go: TestFlaky');
+  // markerはpath・functionとrunから決まるので、同じrunのCIとhuntで同じ値になる。
+  assert.equal(groups[0].marker, ciGroups[0].marker);
+  const body = reporter.buildIssueBody(groups[0], huntSource);
+  assert.match(body, /Flake Hunt repeated this test profile/);
+  assert.match(body, /78 pass, 2 fail, 0 skip across 2 container\(s\)/);
+  assert.match(body, /containers: 2; rounds: 8 \(failed 2, anomalous 0\)/);
+  assert.match(body, /hunt-1#2=222/);
+  assert.match(body, /boom/);
+});
+
+test('reports only tests that both passed and failed across rounds', () => {
+  const deterministic = huntManifest('hunt-1');
+  deterministic.tests[0].pass_count = 0;
+  deterministic.tests[0].fail_count = 4;
+  assert.equal(reporter.aggregateHuntManifests([{ artifactName: 'flake-hunt-hunt-1-10-1', manifest: deterministic }], huntSource).length, 0);
+  const neverFailed = huntManifest('hunt-1');
+  neverFailed.tests[0].fail_count = 0;
+  assert.equal(reporter.aggregateHuntManifests([{ artifactName: 'flake-hunt-hunt-1-10-1', manifest: neverFailed }], huntSource).length, 0);
+});
+
+// コンテナ横断で合算してから判定するので、片方だけを見れば決定的に見える失敗も救える。
+test('combines containers before deciding whether a test is flaky', () => {
+  const failing = huntManifest('hunt-1');
+  failing.tests[0].pass_count = 0;
+  failing.tests[0].fail_count = 2;
+  const passing = huntManifest('hunt-2');
+  passing.tests[0].fail_count = 0;
+  passing.tests[0].pass_count = 40;
+  const groups = reporter.aggregateHuntManifests([
+    { artifactName: 'flake-hunt-hunt-1-10-1', manifest: failing },
+    { artifactName: 'flake-hunt-hunt-2-10-1', manifest: passing },
+  ], huntSource);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].pass, 40);
+  assert.equal(groups[0].fail, 2);
+});
+
+test('does not file an issue from a hunt that only ran one round', () => {
+  const single = huntManifest('hunt-1', { rounds: 1, failed_rounds: 1 });
+  assert.equal(reporter.aggregateHuntManifests([{ artifactName: 'flake-hunt-hunt-1-10-1', manifest: single }], huntSource).length, 0);
+});
+
+test('rejects a hunt manifest whose hunt_id does not match its artifact name', () => {
+  assert.throws(() => reporter.aggregateHuntManifests([
+    { artifactName: 'flake-hunt-hunt-1-10-1', huntId: 'hunt-1', manifest: huntManifest('hunt-2') },
+  ], huntSource), /invalid flake hunt report: .*hunt_id does not match/);
+});
+
+test('rejects a path escape in a hunt manifest', () => {
+  const value = huntManifest('hunt-1');
+  value.tests[0].declaration.path = '../outside.go';
+  assert.throws(() => reporter.validateHuntManifest(value), /invalid flake hunt report: .*repository-relative path/);
+});
+
+test('rejects a hunt manifest with unbounded counts', () => {
+  const value = huntManifest('hunt-1');
+  value.tests[0].pass_count = -1;
+  assert.throws(() => reporter.validateHuntManifest(value), /is not a bounded count/);
+  assert.throws(() => reporter.validateHuntManifest(huntManifest('hunt-1', { kind: 'ci' })), /is not a flake hunt report/);
+});
+
+test('warns instead of failing when a hunt container reports nothing', async () => {
+  const warnings = [];
+  const github = huntGithub({
+    jobs: [
+      { name: 'hunt-1', run_attempt: 1, conclusion: 'failure', steps: [{ name: 'Upload flake hunt report', conclusion: 'success' }] },
+      { name: 'hunt-2', run_attempt: 1, conclusion: 'failure', steps: [{ name: 'Upload flake hunt report', conclusion: 'success' }] },
+    ],
+    artifacts: [{ id: 1, name: 'flake-hunt-hunt-1-10-1', expired: false, workflow_run: { id: 10 } }],
+  });
+  const result = await reporter.run({
+    github, owner: source.owner, repo: source.repo, sourceRunId: '10', sourceAttempt: '1',
+    core: { warning: (message) => warnings.push(message) },
+    reports: [{ artifactName: 'flake-hunt-hunt-1-10-1', huntId: 'hunt-1', manifest: huntManifest('hunt-1') }],
+  });
+  assert.deepEqual(warnings, ['missing flake hunt report for hunt-2']);
+  assert.deepEqual(result.results.map((item) => item.action), ['created']);
+});
+
+test('skips a hunt manifest written by an unknown schema version', async () => {
+  const warnings = [];
+  const github = huntGithub({});
+  const result = await reporter.run({
+    github, owner: source.owner, repo: source.repo, sourceRunId: '10', sourceAttempt: '1',
+    core: { warning: (message) => warnings.push(message) },
+    reports: [{ artifactName: 'flake-hunt-hunt-1-10-1', huntId: 'hunt-1', manifest: huntManifest('hunt-1', { schema_version: 99 }) }],
+  });
+  assert.deepEqual(warnings, ['skipping flake-hunt-hunt-1-10-1: unsupported schema_version']);
+  assert.equal(result.results.length, 0);
+});
+
+test('comments on the issue a CI run already opened for the same test', async () => {
+  const calls = [];
+  const issues = [{ number: 7, title: '[flaky] internal/example/flaky_test.go: TestFlaky', body: 'opened by CI', state: 'closed' }];
+  const github = huntGithub({ issues, calls });
+  const result = await reporter.run({
+    github, owner: source.owner, repo: source.repo, sourceRunId: '10', sourceAttempt: '1',
+    reports: [{ artifactName: 'flake-hunt-hunt-1-10-1', huntId: 'hunt-1', manifest: huntManifest('hunt-1') }],
+  });
+  assert.deepEqual(result.results.map((item) => item.action), ['reopened-commented']);
+  assert.deepEqual(calls, [['update', 'open'], ['comment', 7]]);
+});
+
+test('records a hunt observation only once per run', async () => {
+  const comments = new Map();
+  const issues = [];
+  const github = huntGithub({ issues, comments });
+  const options = {
+    github, owner: source.owner, repo: source.repo, sourceRunId: '10', sourceAttempt: '1',
+    reports: [{ artifactName: 'flake-hunt-hunt-1-10-1', huntId: 'hunt-1', manifest: huntManifest('hunt-1') }],
+  };
+  assert.deepEqual((await reporter.run(options)).results.map((item) => item.action), ['created']);
+  assert.deepEqual((await reporter.run(options)).results.map((item) => item.action), ['already-recorded']);
+});
+
+test('caps how many issues one run opens', async () => {
+  const tests = [];
+  for (let index = 0; index < 25; index += 1) {
+    tests.push({
+      package: 'example.test',
+      declaration: { path: `internal/example/flaky${String(index).padStart(2, '0')}_test.go`, function: 'TestFlaky', line: 12 },
+      subtests: ['TestFlaky'],
+      pass_count: 3,
+      fail_count: 1,
+      skip_count: 0,
+    });
+  }
+  const github = huntGithub({});
+  const result = await reporter.run({
+    github, owner: source.owner, repo: source.repo, sourceRunId: '10', sourceAttempt: '1',
+    reports: [{ artifactName: 'flake-hunt-hunt-1-10-1', huntId: 'hunt-1', manifest: huntManifest('hunt-1', { tests }) }],
+  });
+  assert.equal(result.results.length, 20);
+  assert.equal(result.skipped.length, 5);
+});
+
+test('rejects a workflow that is not in the contract table', async () => {
+  const github = { rest: { actions: {
+    getWorkflowRun: async () => ({ data: { name: 'Flake Hunt', path: '.github/workflows/nightly.yml' } }),
+  } } };
+  await assert.rejects(reporter.run({ github, owner: source.owner, repo: source.repo, sourceRunId: '10', sourceAttempt: '1' }), /not a supported workflow/);
+});
+
+test('keeps hunt artifact content from breaking out of markdown', () => {
+  const value = huntManifest('hunt-1');
+  value.tests[0].package = 'evil`![](https://attacker.example/pixel.png)';
+  const body = reporter.buildIssueBody(reporter.aggregateHuntManifests([{ artifactName: 'flake-hunt-hunt-1-10-1', manifest: value }], huntSource)[0], huntSource);
+  assert.ok(!body.includes('evil`'), body);
+  assert.match(body, /^- package: `evil｀!\[\]\(https:\/\/attacker\.example\/pixel\.png\)`$/mu);
+});
