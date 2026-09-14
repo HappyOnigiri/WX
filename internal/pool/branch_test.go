@@ -14,6 +14,15 @@ import (
 	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
+func TestFetchWarningErrorIncludesOperationAndCause(t *testing.T) {
+	if got := (FetchWarning{Operation: "fetch"}).Error(); got != "fetch" {
+		t.Fatalf("warning without cause=%q, want fetch", got)
+	}
+	if got := (FetchWarning{Operation: "fetch", Err: errors.New("network")}).Error(); got != "fetch: network" {
+		t.Fatalf("warning with cause=%q, want fetch: network", got)
+	}
+}
+
 func TestResolveBranchesFallbackAndOverride(t *testing.T) {
 	root := t.TempDir()
 	a := initRepo(t, filepath.Join(root, "a"))
