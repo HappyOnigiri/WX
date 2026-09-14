@@ -680,6 +680,7 @@ func countRecords(records []mutationRecord) totals {
 		case "NOT COVERED":
 			result.NotCovered++
 		case "NOT VIABLE":
+			result.Mutants++
 			result.NotViable++
 		case "TIMED OUT":
 			result.TimedOut++

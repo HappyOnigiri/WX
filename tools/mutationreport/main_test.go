@@ -327,7 +327,7 @@ func other(value int) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := value.Totals, (totals{Mutants: 2, Killed: 1, Lived: 1, NotCovered: 1, NotViable: 1, TimedOut: 1}); got != want {
+	if got, want := value.Totals, (totals{Mutants: 3, Killed: 1, Lived: 1, NotCovered: 1, NotViable: 1, TimedOut: 1}); got != want {
 		t.Fatalf("file totals=%#v want %#v", got, want)
 	}
 	if len(value.Survivors) != 1 {
