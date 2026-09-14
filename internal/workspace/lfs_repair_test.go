@@ -224,3 +224,89 @@ func TestVerifyLFSPathsAtRejectsPointerSizedMismatch(t *testing.T) {
 		t.Fatal("pointer-sized worktree was accepted")
 	}
 }
+
+func TestPreparerVerifyPreparedLFSUsesRepositoryObjects(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "asset.bin"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	repo := discovery.Repository{ID: "repo"}
+	preparer := &Preparer{LFSObjects: map[string][]LFSObjectInfo{
+		string(repo.ID): {{OID: "sha256:" + strings.Repeat("a", 64), Size: 7, Paths: []string{"asset.bin"}}},
+	}}
+	if err := preparer.verifyPreparedLFS(root, ".", repo); err != nil {
+		t.Fatalf("verify prepared LFS: %v", err)
+	}
+	if err := (&Preparer{}).verifyPreparedLFS(root, ".", discovery.Repository{ID: "other"}); err != nil {
+		t.Fatalf("verify without repository objects: %v", err)
+	}
+	var nilPreparer *Preparer
+	if err := nilPreparer.verifyPreparedLFS(root, ".", repo); err != nil {
+		t.Fatalf("verify with nil preparer: %v", err)
+	}
+}
+
+func TestLFSRepairRejectsInvalidOID(t *testing.T) {
+	t.Parallel()
+	source, common := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "asset.bin"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(source), CommonDir: domain.CanonicalPath(common)}
+	object := LFSObjectInfo{OID: "not-an-oid", Size: 7, Paths: []string{"asset.bin"}, CacheState: LFSCacheMissing}
+	result, err := (&Preparer{}).RepairLFSObjects(context.Background(), repo, []LFSObjectInfo{object})
+	if err != nil || len(result.Unresolved) != 1 || result.Unresolved[0].Reason != LFSRepairWriteFailure {
+		t.Fatalf("repair result=%+v err=%v", result, err)
+	}
+}
+
+func TestLFSRepairLeavesSymlinkDestinationUntouched(t *testing.T) {
+	t.Parallel()
+	source, common, outside := t.TempDir(), t.TempDir(), t.TempDir()
+	data := []byte("content")
+	digest := sha256.Sum256(data)
+	oid := "sha256:" + fmt.Sprintf("%x", digest[:])
+	if err := os.WriteFile(filepath.Join(source, "asset.bin"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := lfsCachePath(discovery.Repository{CommonDir: domain.CanonicalPath(common)}, oid)
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(outside, "untouched")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, destination); err != nil {
+		t.Fatal(err)
+	}
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(source), CommonDir: domain.CanonicalPath(common)}
+	object := LFSObjectInfo{OID: oid, Size: int64(len(data)), Paths: []string{"asset.bin"}, CacheState: LFSCacheMissing}
+	result, err := (&Preparer{}).RepairLFSObjects(context.Background(), repo, []LFSObjectInfo{object})
+	if err != nil || len(result.Unresolved) != 1 || result.Unresolved[0].Reason != LFSRepairWriteFailure {
+		t.Fatalf("repair result=%+v err=%v", result, err)
+	}
+	info, err := os.Lstat(destination)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("cache destination changed: info=%v err=%v", info, err)
+	}
+	got, err := os.ReadFile(outsideFile)
+	if err != nil || string(got) != "outside" {
+		t.Fatalf("symlink target changed: content=%q err=%v", got, err)
+	}
+}
+
+func TestDiagnoseLFSObjectsReportsMissingSourceRepository(t *testing.T) {
+	t.Parallel()
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(filepath.Join(t.TempDir(), "missing"))}
+	_, err := DiagnoseLFSObjects(repo, []LFSObjectInfo{{OID: "sha256:" + strings.Repeat("a", 64), Size: 1, Paths: []string{"asset.bin"}, CacheState: LFSCacheMissing}})
+	if err == nil {
+		t.Fatal("diagnosis succeeded for a missing source repository")
+	}
+}

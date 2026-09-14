@@ -30,7 +30,7 @@ func (m *Manager) lfsObjectFindings(ctx context.Context) []diag.Finding {
 	for _, root := range roots {
 		workspaceRecord, resolveErr := m.resolveRegisteredWorkspace(ctx, root, &discoverer)
 		if resolveErr != nil {
-			findings = append(findings, lfsObjectUncheckedFinding(string(root), resolveErr))
+			findings = append(findings, lfsObjectUncheckedFinding(root, resolveErr))
 			continue
 		}
 		resolved, resolveErr := pool.ResolveBranches(ctx, m.git, workspaceRecord, nil)
