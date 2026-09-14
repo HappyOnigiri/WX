@@ -7,23 +7,38 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
+// submodulePhaseResult は submodule の実体化結果を post-checkout hook へ渡すための一時値である。
+// 省略した子を hook が再初期化しないよう、宣言順の適格判定も保持する。
+type submodulePhaseResult struct {
+	enabled   bool
+	declared  []submodule
+	decisions []submoduleProbe
+}
+
 // submodulePhase は submodule 実体化を prepare の1区間として呼ぶ入口である。
 // 方針が無効な workspace では Git を1回も起動しない。
 func (p *Preparer) submodulePhase(ctx context.Context, repo discovery.Repository, target, oid, identity string) error {
+	_, err := p.submodulePhaseWithResult(ctx, repo, target, oid, identity)
+	return err
+}
+
+func (p *Preparer) submodulePhaseWithResult(ctx context.Context, repo discovery.Repository, target, oid, identity string) (submodulePhaseResult, error) {
 	enabled, err := p.submodulesEnabled(repo)
 	if err != nil {
-		return err
+		return submodulePhaseResult{}, err
 	}
 	if !enabled {
-		return nil
+		return submodulePhaseResult{}, nil
 	}
-	return p.materializeSubmodules(ctx, repo, target, oid, identity)
+	p.SubmoduleOutcomes.BeginRepository(string(repo.MainPath))
+	return p.materializeSubmodulesWithResult(ctx, repo, target, oid, identity)
 }
 
 // submodulesEnabled は repository の属する workspace で submodule を実体化するかを解決する。
@@ -50,31 +65,141 @@ type submodule struct {
 	oid  string
 }
 
+// materializedSubmodule は実体化と origin 復元に必要な値を適格判定後に固定した1件である。
+type materializedSubmodule struct {
+	module   submodule
+	source   string
+	upstream string
+}
+
+type submoduleProbeInput struct {
+	index  int
+	module submodule
+}
+
 // materializeSubmodules は要求 OID の submodule を worktree へ実体化する。
 // linked worktree では Git が submodule の gitdir を per-worktree の `$GIT_DIR/modules/<name>` に解決し、main の
 // `.git/modules/<name>` を再利用できないため、そのローカル module から clone してネットワークを使わずに済ませる。
 // ローカルに必要な object が無い場合は書き込む前に省略して warn を残し、準備自体は成功させる。
 // commentlint:allow-long -- linked worktree で毎回ネットワーク clone に落ちる理由と、省略して成功させる方針の根拠を残す
 func (p *Preparer) materializeSubmodules(ctx context.Context, repo discovery.Repository, target, oid, identity string) error {
-	modules, err := p.planSubmodules(ctx, repo, target, oid, identity)
-	if err != nil {
-		return err
+	_, err := p.materializeSubmodulesWithResult(ctx, repo, target, oid, identity)
+	return err
+}
+
+// materializeSubmodulesWithResult は materializeSubmodules と同じ処理を行い、hook 用の判定結果も返す。
+func (p *Preparer) materializeSubmodulesWithResult(ctx context.Context, repo discovery.Repository, target, oid, identity string) (submodulePhaseResult, error) {
+	if err := ctx.Err(); err != nil {
+		return submodulePhaseResult{}, err
 	}
+	stats := &submoduleStats{}
+	defer stats.recordSubmodulePhases(p.Phases)
+	workers := p.submoduleWorkers()
+	declared, err := p.declaredSubmodules(ctx, target, oid, identity)
+	if err != nil {
+		return submodulePhaseResult{}, err
+	}
+	stats.declared.Store(int64(len(declared)))
 	commonModules := filepath.Join(string(repo.CommonDir), "modules")
-	for _, module := range modules {
-		source := filepath.Join(commonModules, module.name)
-		if !domain.IsWithin(commonModules, source) {
-			return fmt.Errorf("submodule %q resolves outside the source repository module directory", module.name)
-		}
-		upstream, eligible := p.submoduleUpstream(ctx, source, module)
-		if !eligible {
+	decisions := make([]submoduleProbe, len(declared))
+	phaseResult := submodulePhaseResult{enabled: true, declared: declared, decisions: decisions}
+	var candidates []submoduleProbeInput
+	for index, module := range declared {
+		if module.url == "" {
+			// url が無い entry は clone 後に origin を戻す先が無いため実体化しない。
+			decisions[index] = submoduleProbe{
+				skipMessage: "submodule has no url in .gitmodules",
+				skipArgs:    []any{"repository", string(repo.MainPath), "submodule", module.name},
+				skipReason:  SubmoduleReasonURLMissing,
+			}
 			continue
 		}
-		if err := p.cloneSubmodule(ctx, target, identity, module, source, upstream); err != nil {
+		source := filepath.Join(commonModules, module.name)
+		if !domain.IsWithin(commonModules, source) {
+			return submodulePhaseResult{}, fmt.Errorf("submodule %q resolves outside the source repository module directory", module.name)
+		}
+		candidates = append(candidates, submoduleProbeInput{index: index, module: module})
+	}
+	if len(candidates) == 0 {
+		for index, module := range declared {
+			decisions[index].log(p, module)
+			p.recordSubmoduleOutcome(repo, module, SubmoduleActionSkipped, decisions[index].skipReason)
+			stats.skipped.Add(1)
+		}
+		return phaseResult, nil
+	}
+
+	// source module の読み取りだけを worker pool へ渡し、warn は宣言順にまとめて出す。
+	probeBatches := make([][]submoduleProbeInput, 0, len(candidates))
+	for _, candidate := range candidates {
+		probeBatches = append(probeBatches, []submoduleProbeInput{candidate})
+	}
+	probeErr := runCOWBatches(ctx, workers, probeBatches, func(ctx context.Context, batch []submoduleProbeInput) error {
+		input := batch[0]
+		module := input.module
+		source := filepath.Join(commonModules, module.name)
+		start := time.Now()
+		decision, err := p.inspectSubmoduleUpstream(ctx, source, module)
+		stats.inspect.observe(start)
+		if err != nil {
 			return err
 		}
+		decisions[input.index] = decision
+		return nil
+	})
+	if probeErr != nil {
+		return submodulePhaseResult{}, probeErr
 	}
-	return nil
+	var eligible []materializedSubmodule
+	for index, module := range declared {
+		decision := decisions[index]
+		if !decision.eligible {
+			decision.log(p, module)
+			p.recordSubmoduleOutcome(repo, module, SubmoduleActionSkipped, decision.skipReason)
+			stats.skipped.Add(1)
+			continue
+		}
+		decision.log(p, module)
+		eligible = append(eligible, materializedSubmodule{module: module, source: filepath.Join(commonModules, module.name), upstream: decision.upstream})
+	}
+	stats.eligible.Store(int64(len(eligible)))
+	phaseResult.decisions = decisions
+	if len(eligible) == 0 {
+		return phaseResult, nil
+	}
+
+	materializeBatches := batchSubmoduleMaterialization(eligible, workers)
+	for _, batch := range materializeBatches {
+		start := time.Now()
+		_, updateErr := p.RunGitInWorktree(ctx, target, identity, nil, nil, submoduleUpdateArgs(batch, workers)...)
+		stats.materialize.observe(start)
+		if updateErr != nil {
+			return submodulePhaseResult{}, fmt.Errorf("materialize submodules: %w", updateErr)
+		}
+	}
+
+	// 各子の config は独立しているので、clone 後の origin 復元だけを worker pool へ渡す。
+	originBatches := make([][]materializedSubmodule, 0, len(eligible))
+	for _, module := range eligible {
+		originBatches = append(originBatches, []materializedSubmodule{module})
+	}
+	if err := runCOWBatches(ctx, workers, originBatches, func(ctx context.Context, batch []materializedSubmodule) error {
+		module := batch[0]
+		start := time.Now()
+		_, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "-C", module.module.path, "remote", "set-url", "origin", module.upstream)
+		stats.origin.observe(start)
+		if err != nil {
+			return fmt.Errorf("restore submodule %s origin: %w", module.module.path, err)
+		}
+		return nil
+	}); err != nil {
+		return submodulePhaseResult{}, err
+	}
+	// 実体化は batch 単位で進むため、origin 復元まで通った時点で宣言順にまとめて記録する。
+	for _, module := range eligible {
+		p.recordSubmoduleOutcome(repo, module.module, SubmoduleActionMaterialized, "")
+	}
+	return phaseResult, nil
 }
 
 // Submodule は rev の `.gitmodules` と index から確定した submodule 1 件の公開表現である。
@@ -111,22 +236,13 @@ func (p *Preparer) SubmodulesAtRevision(ctx context.Context, repository, rev str
 	return p.resolveSubmoduleOIDsFromTree(ctx, repository, rev, declared)
 }
 
-// planSubmodules は要求 OID の submodule のうち、実体化できる entry だけを列挙する。
-func (p *Preparer) planSubmodules(ctx context.Context, repo discovery.Repository, target, oid, identity string) ([]submodule, error) {
-	declared, err := p.declaredSubmodules(ctx, target, oid, identity)
-	if err != nil {
-		return nil, err
+func (p *Preparer) recordSubmoduleOutcome(repo discovery.Repository, module submodule, action SubmoduleAction, reason string) {
+	if p.SubmoduleOutcomes == nil {
+		return
 	}
-	var modules []submodule
-	for _, module := range declared {
-		if module.url == "" {
-			// url が無い entry は clone 後に origin を戻す先が無いため実体化しない。
-			p.logSkip("submodule has no url in .gitmodules", "repository", string(repo.MainPath), "submodule", module.name)
-			continue
-		}
-		modules = append(modules, module)
-	}
-	return modules, nil
+	p.SubmoduleOutcomes.Add(SubmoduleOutcome{
+		Repository: string(repo.MainPath), Path: module.path, Depth: 1, Action: action, Reason: reason,
+	})
 }
 
 // declaredSubmodules は rev の .gitmodules と index から submodule を確定する。
@@ -199,28 +315,31 @@ func isEmptySubmoduleConfig(ctx context.Context, err error) bool {
 // resolveSubmoduleOIDs は候補 path の index entry から gitlink OID を引く。
 // `ls-tree -r` は大 repository で全 tree を走査するため使わず、候補 path だけを index に問い合わせる。
 func (p *Preparer) resolveSubmoduleOIDs(ctx context.Context, target, identity string, candidates []submodule) ([]submodule, error) {
-	args := []string{"ls-files", "--stage", "-z", "--"}
-	for _, module := range candidates {
-		args = append(args, module.path)
-	}
-	staged, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, args...)
-	if err != nil {
-		return nil, err
-	}
+	base := []string{"ls-files", "--stage", "-z", "--"}
 	gitlinks := map[string]string{}
-	for _, entry := range strings.Split(staged.Stdout, "\x00") {
-		if entry == "" {
-			continue
+	for _, batch := range batchSubmoduleArgs(candidates, base, func(module submodule) []string { return []string{module.path} }) {
+		args := append([]string(nil), base...)
+		for _, module := range batch {
+			args = append(args, module.path)
 		}
-		metadata, path, ok := strings.Cut(entry, "\t")
-		fields := strings.Fields(metadata)
-		if !ok || len(fields) != 3 {
-			return nil, fmt.Errorf("invalid index entry")
+		staged, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, args...)
+		if err != nil {
+			return nil, err
 		}
-		if fields[0] != "160000" {
-			continue
+		for _, entry := range strings.Split(staged.Stdout, "\x00") {
+			if entry == "" {
+				continue
+			}
+			metadata, path, ok := strings.Cut(entry, "\t")
+			fields := strings.Fields(metadata)
+			if !ok || len(fields) != 3 {
+				return nil, fmt.Errorf("invalid index entry")
+			}
+			if fields[0] != "160000" {
+				continue
+			}
+			gitlinks[filepath.Clean(path)] = fields[1]
 		}
-		gitlinks[filepath.Clean(path)] = fields[1]
 	}
 	var modules []submodule
 	for _, module := range candidates {
@@ -240,26 +359,29 @@ func (p *Preparer) resolveSubmoduleOIDsFromTree(ctx context.Context, repository,
 	if len(candidates) == 0 {
 		return nil, nil
 	}
-	args := []string{"ls-tree", "-z", rev, "--"}
-	for _, module := range candidates {
-		args = append(args, module.path)
-	}
-	tree, err := p.Git.Run(ctx, repository, args...)
-	if err != nil {
-		return nil, err
-	}
+	base := []string{"ls-tree", "-z", rev, "--"}
 	gitlinks := map[string]string{}
-	for _, entry := range strings.Split(tree.Stdout, "\x00") {
-		if entry == "" {
-			continue
+	for _, batch := range batchSubmoduleArgs(candidates, base, func(module submodule) []string { return []string{module.path} }) {
+		args := append([]string(nil), base...)
+		for _, module := range batch {
+			args = append(args, module.path)
 		}
-		metadata, path, ok := strings.Cut(entry, "\t")
-		fields := strings.Fields(metadata)
-		if !ok || len(fields) != 3 {
-			return nil, fmt.Errorf("invalid tree entry")
+		tree, err := p.Git.Run(ctx, repository, args...)
+		if err != nil {
+			return nil, err
 		}
-		if fields[0] == "160000" {
-			gitlinks[filepath.Clean(path)] = fields[2]
+		for _, entry := range strings.Split(tree.Stdout, "\x00") {
+			if entry == "" {
+				continue
+			}
+			metadata, path, ok := strings.Cut(entry, "\t")
+			fields := strings.Fields(metadata)
+			if !ok || len(fields) != 3 {
+				return nil, fmt.Errorf("invalid tree entry")
+			}
+			if fields[0] == "160000" {
+				gitlinks[filepath.Clean(path)] = fields[2]
+			}
 		}
 	}
 	modules := make([]Submodule, 0, len(candidates))
@@ -353,65 +475,100 @@ func splitSubmoduleKey(key string) (string, string, bool) {
 	return rest[:index], rest[index+1:], true
 }
 
-// submoduleUpstream は main のローカル module が clone 元として使えるかを判定し、clone 後に戻す origin を返す。
+// submoduleUpstreamWithReason は main のローカル module が clone 元として使えるかを判定し、clone 後に戻す origin と理由を返す。
 // 戻す origin は .gitmodules の url ではなくローカル module の `remote.origin.url` を使う。
 // .gitmodules の url は `../child` のような相対表記があり、その解決は superproject の remote 基準になるため、
 // ここで再実装すると Git と食い違う。ローカル module の origin は Git 自身が解決した結果である。
 // commentlint:allow-long -- .gitmodules の相対 url を自前解決しない理由を保守時に確認できるようにする
 func (p *Preparer) submoduleUpstream(ctx context.Context, source string, module submodule) (string, bool) {
+	decision, err := p.inspectSubmoduleUpstream(ctx, source, module)
+	if err != nil {
+		p.logSkip("submodule local module could not be inspected", "submodule", module.name, "module_dir", source, "error", err)
+		return "", false
+	}
+	decision.log(p, module)
+	return decision.upstream, decision.eligible
+}
+
+// submoduleProbe は source module の読み取り結果と、後で出す warn の内容を持つ。
+// 検査を並列に行っても、ログは宣言順に出せるように書込みを遅らせる。
+type submoduleProbe struct {
+	upstream    string
+	eligible    bool
+	skipMessage string
+	skipArgs    []any
+	// skipReason は省略を SubmoduleOutcomes へ記録するための機械向け識別子である。
+	skipReason string
+	source     string
+	shallow    bool
+}
+
+func (s submoduleProbe) log(p *Preparer, module submodule) {
+	if s.shallow && p.Log != nil {
+		p.Log.Warn("submodule object sharing is unavailable because the local module is shallow", "submodule", module.name, "module_dir", s.source)
+	}
+	if !s.eligible {
+		if s.skipMessage != "" {
+			p.logSkip(s.skipMessage, s.skipArgs...)
+		}
+		return
+	}
+}
+
+func (p *Preparer) inspectSubmoduleUpstream(ctx context.Context, source string, module submodule) (submoduleProbe, error) {
+	if err := ctx.Err(); err != nil {
+		return submoduleProbe{}, err
+	}
 	info, statErr := os.Stat(source)
 	if statErr != nil || !info.IsDir() {
-		p.logSkip("submodule has no local module in the source repository", "submodule", module.name, "module_dir", source)
-		return "", false
+		//nolint:nilerr // local module不在は検査失敗ではなく想定した省略である。
+		return submoduleProbe{
+			skipMessage: "submodule has no local module in the source repository",
+			skipArgs:    []any{"submodule", module.name, "module_dir", source},
+			skipReason:  SubmoduleReasonLocalModule,
+		}, nil
 	}
 	inspection, inspectErr := InspectSubmodule(ctx, p.Git, source, module.oid)
 	if inspectErr != nil {
-		p.logSkip("submodule local module could not be inspected", "submodule", module.name, "module_dir", source, "error", inspectErr)
-		return "", false
+		if ctx.Err() != nil || errors.Is(inspectErr, context.Canceled) || errors.Is(inspectErr, context.DeadlineExceeded) {
+			return submoduleProbe{}, inspectErr
+		}
+		return submoduleProbe{
+			skipMessage: "submodule local module could not be inspected",
+			skipArgs:    []any{"submodule", module.name, "module_dir", source, "error", inspectErr},
+			skipReason:  SubmoduleReasonInspectionFailed,
+		}, nil
 	}
 	// promisor で要求 OID が無いまま clone すると checkout が書込み後に失敗するため、
 	// shallow でない通常 module の欠落 OID と同じく、書き込む前に省略する。
 	if inspection.Status() == SubmoduleSharingPromisorMissing {
-		p.logSkip("submodule object is missing from the promisor local module", "submodule", module.name, "oid", module.oid)
-		return "", false
+		return submoduleProbe{
+			skipMessage: "submodule object is missing from the promisor local module",
+			skipArgs:    []any{"submodule", module.name, "oid", module.oid},
+			skipReason:  SubmoduleReasonObjectMissing,
+		}, nil
 	}
 	if inspection.Status() == SubmoduleSharingObjectMissing {
 		// gitlink OID がローカル module に無いまま clone すると親が ` M <path>` の dirty で残り、
 		// その gitdir は wx が消せない場所にできる。書き込む前にここで弾く。
-		p.logSkip("submodule commit is missing from the local module", "submodule", module.name, "oid", module.oid)
-		return "", false
-	}
-	if inspection.Status() == SubmoduleSharingShallow && p.Log != nil {
-		p.Log.Warn("submodule object sharing is unavailable because the local module is shallow", "submodule", module.name, "module_dir", source)
+		return submoduleProbe{
+			skipMessage: "submodule commit is missing from the local module",
+			skipArgs:    []any{"submodule", module.name, "oid", module.oid},
+			skipReason:  SubmoduleReasonObjectMissing,
+		}, nil
 	}
 	if inspection.OriginURL == "" {
-		p.logSkip("submodule local module has no origin url", "submodule", module.name, "module_dir", source)
-		return "", false
+		return submoduleProbe{
+			skipMessage: "submodule local module has no origin url",
+			skipArgs:    []any{"submodule", module.name, "module_dir", source},
+			skipReason:  SubmoduleReasonOriginMissing,
+			source:      source,
+			shallow:     inspection.Status() == SubmoduleSharingShallow,
+		}, nil
 	}
-	return inspection.OriginURL, true
+	return submoduleProbe{upstream: inspection.OriginURL, eligible: true, source: source, shallow: inspection.Status() == SubmoduleSharingShallow}, nil
 }
 
 // gitProbe は Git の終了状態だけを見て前置き検査の結果を返す。
 // object や commit の有無を確かめる用途で、失敗は「無い」と同じに扱い error として伝播させない。
 func gitProbe(_ gitx.Result, err error) bool { return err == nil }
-
-// cloneSubmodule はローカル module から submodule を実体化し、origin を上流へ戻す。
-// clone と origin の復元を分けないのは、origin がローカル module を指したまま残ると `git push` が
-// main の `.git/modules` に入るためである。set-url の失敗は準備失敗にして中途半端な origin を残さない。
-func (p *Preparer) cloneSubmodule(ctx context.Context, target, identity string, module submodule, source, upstream string) error {
-	// config は必ず `-c` で渡す。gitx の環境サニタイズが GIT_CONFIG_* を落とし、repo-local config は子の clone プロセスに効かない。
-	// protocol.file.allow はローカル path からの clone を許可するために必要である。
-	args := []string{
-		"-c", "protocol.file.allow=always",
-		"-c", "submodule." + module.name + ".url=" + source,
-		"submodule", "update", "--init", "--", module.path,
-	}
-	if _, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, args...); err != nil {
-		return fmt.Errorf("materialize submodule %s: %w", module.path, err)
-	}
-	// RunGitInWorktree は worktree root に fchdir で束縛するため、submodule 内で動かすには `-C` を渡す。
-	if _, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "-C", module.path, "remote", "set-url", "origin", upstream); err != nil {
-		return fmt.Errorf("restore submodule %s origin: %w", module.path, err)
-	}
-	return nil
-}

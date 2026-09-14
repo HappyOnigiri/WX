@@ -91,6 +91,42 @@ func TestPrepareNoticeFindingsAreEmptyWithoutNotices(t *testing.T) {
 	}
 }
 
+func TestPrepareSubmoduleFindingsClassifySkippedAndUnreachable(t *testing.T) {
+	report := &daemon.PrepareSubmoduleReport{
+		Summaries: []daemon.PrepareSubmoduleSummary{{Repository: "/repo", Depth: 1, Skipped: 1, Unreachable: 1}},
+		Details: []daemon.PrepareSubmoduleDetail{
+			{Repository: "/repo", Path: "vendor/missing", Depth: 1, Action: "skipped", Reason: "object_missing"},
+			{Repository: "/repo", Path: "vendor/missing/nested", Depth: 2, Action: "unreachable", Reason: "ancestor_skipped"},
+		},
+	}
+	findings := prepareSubmoduleFindings("/root", report)
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want two", findings)
+	}
+	if findings[0].Severity != diag.SeverityProblem || findings[1].Severity != diag.SeverityInfo {
+		t.Fatalf("severities = %s, %s", findings[0].Severity, findings[1].Severity)
+	}
+	for _, finding := range findings {
+		if finding.Check != diag.CheckProbeSubmodule || finding.Target == "" || finding.Cause == "" || finding.Action == "" {
+			t.Fatalf("finding = %+v", finding)
+		}
+		if finding.Messages.Summary.ID == "" || finding.Messages.Cause.ID == "" || finding.Messages.Action.ID == "" {
+			t.Fatalf("finding messages = %+v", finding.Messages)
+		}
+	}
+}
+
+func TestExcludedSubmodulePathsAvoidIncompleteRange(t *testing.T) {
+	report := &daemon.PrepareSubmoduleReport{Details: []daemon.PrepareSubmoduleDetail{{Path: "vendor/ignored", Action: "out_of_scope"}}}
+	if got := excludedSubmodulePaths(report); len(got) != 1 || !got["vendor/ignored"] {
+		t.Fatalf("excluded paths = %+v", got)
+	}
+	report.Truncated = true
+	if got := excludedSubmodulePaths(report); got != nil {
+		t.Fatalf("truncated excluded paths = %+v, want nil", got)
+	}
+}
+
 // 問題は cause と action が両方揃っていないと、利用者が次の一手を決められない。
 func TestProbeProblemFindingsCarryCauseAndAction(t *testing.T) {
 	for _, finding := range []diag.Finding{

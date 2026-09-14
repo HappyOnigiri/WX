@@ -112,13 +112,16 @@ func (p *Preparer) PrepareStaged(ctx context.Context, slotID string, repositorie
 		}
 		// post-checkout より前に実体化する。ユーザーの hook が submodule を前提にできるようにし、
 		// hook 側の `git submodule update` も no-op で済ませるためである。
+		var submoduleResult submodulePhaseResult
 		if err := p.timePhase("submodule", func() error {
-			return p.submodulePhase(ctx, item.Repository, item.Target, item.OID, item.locked.identity)
+			var err error
+			submoduleResult, err = p.submodulePhaseWithResult(ctx, item.Repository, item.Target, item.OID, item.locked.identity)
+			return err
 		}); err != nil {
 			return nil, err
 		}
 		if err := p.timePhase("post-checkout", func() error {
-			return p.runPostCheckout(ctx, item.Target, item.locked.identity, item.OID)
+			return p.runPostCheckoutWithSubmodules(ctx, item.Repository, item.Target, item.locked.identity, item.OID, submoduleResult)
 		}); err != nil {
 			return nil, err
 		}
