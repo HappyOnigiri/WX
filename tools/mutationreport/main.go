@@ -331,6 +331,9 @@ func buildManifest(options convertOptions, result gremlinsResult) (manifest, err
 	if survivors == nil {
 		survivors = []survivor{}
 	}
+	if ignored == nil {
+		ignored = []excluded{}
+	}
 	sort.Slice(ignored, func(i, j int) bool {
 		if ignored[i].Path != ignored[j].Path {
 			return ignored[i].Path < ignored[j].Path

@@ -119,6 +119,41 @@ func live(value int) int {
 	}
 }
 
+func TestBuildManifestEncodesEmptyExcludedAsArray(t *testing.T) {
+	source := `package sample
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`
+	result := gremlinsResult{
+		MutantsTotal: 1, MutantsKilled: 1,
+		Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{{
+			Type: "CONDITIONALS_BOUNDARY", Status: "KILLED", Line: 4, Column: 11,
+		}}}},
+	}
+	value, err := mutationFixture(t, source, "", result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Excluded json.RawMessage `json:"excluded"`
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(payload.Excluded); got != "[]" {
+		t.Fatalf("encoded excluded=%s, want []", got)
+	}
+}
+
 func TestLoadExclusionsRequiresPathIDAndReason(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mutation-exclusions.txt")
 	if err := os.WriteFile(path, []byte("internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\n"), 0o600); err != nil {
