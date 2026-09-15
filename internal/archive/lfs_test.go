@@ -11,6 +11,27 @@ import (
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
+func TestSnapshotTreeDiffCursorProgress(t *testing.T) {
+	tests := []struct {
+		name     string
+		previous int
+		current  int
+		wantErr  bool
+	}{
+		{name: "retreated", previous: 1, current: 0, wantErr: true},
+		{name: "unchanged", previous: 1, current: 1, wantErr: true},
+		{name: "advanced", previous: 1, current: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSnapshotTreeDiffProgress(tt.previous, tt.current)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateSnapshotTreeDiffProgress(%d, %d) error=%v, wantErr=%v", tt.previous, tt.current, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestParseSnapshotTreeDiffSelectsNewRegularBlobs(t *testing.T) {
 	old := strings.Repeat("1", 40)
 	newOID := strings.Repeat("2", 40)

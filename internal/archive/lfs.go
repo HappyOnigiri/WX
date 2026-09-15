@@ -74,12 +74,23 @@ type snapshotTreeChange struct {
 	path   string
 }
 
+func validateSnapshotTreeDiffProgress(previous, current int) error {
+	if current <= previous {
+		return fmt.Errorf("Git tree diff cursor did not advance: %d -> %d", previous, current)
+	}
+	return nil
+}
+
 func parseSnapshotTreeDiff(output string) ([]snapshotTreeChange, error) {
 	parts := strings.Split(output, "\x00")
 	changes := make([]snapshotTreeChange, 0, len(parts))
 	for index := 0; index < len(parts); {
 		record := parts[index]
+		previousIndex := index
 		index++
+		if err := validateSnapshotTreeDiffProgress(previousIndex, index); err != nil {
+			return nil, err
+		}
 		if record == "" {
 			continue
 		}
@@ -87,7 +98,11 @@ func parseSnapshotTreeDiff(output string) ([]snapshotTreeChange, error) {
 			return nil, errors.New("invalid Git tree diff record")
 		}
 		path := parts[index]
+		previousIndex = index
 		index++
+		if err := validateSnapshotTreeDiffProgress(previousIndex, index); err != nil {
+			return nil, err
+		}
 		fields := strings.Fields(record)
 		if len(fields) < 5 || !strings.HasPrefix(fields[0], ":") {
 			return nil, errors.New("invalid Git tree diff header")
@@ -98,7 +113,11 @@ func parseSnapshotTreeDiff(output string) ([]snapshotTreeChange, error) {
 				return nil, errors.New("invalid Git tree rename record")
 			}
 			path = parts[index]
+			previousIndex = index
 			index++
+			if err := validateSnapshotTreeDiffProgress(previousIndex, index); err != nil {
+				return nil, err
+			}
 		}
 		if !validSnapshotPath(path) {
 			return nil, fmt.Errorf("unsafe Git tree path %q", path)
