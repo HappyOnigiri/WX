@@ -239,11 +239,13 @@ workflow-lint:
 reporter-check:
 	command -v node >/dev/null
 	node --test .github/scripts/report-flaky-tests.test.cjs
+	node --test .github/scripts/mutation-plan.test.cjs
 	node --test .github/scripts/report-mutants.test.cjs
 
 # Gremlinsは結果をissueへ記録する手動検査なので、通常のCI依存閉包には入れない。
 mutation-check:
 	@test -n "$(PKG)" || { echo "PKG is required; e.g. make mutation-check PKG=./internal/config"; exit 1; }
+	@case "$(PKG)" in ./internal/fdexec|internal/fdexec) echo "internal/fdexec is excluded from Mutation Hunt: process/OS adapter (unix.Close, unix.Exec, os.Exit)"; exit 1;; esac
 	@test -z "$(FILE)" || test -z "$(MUTATION_ID)" || { echo "FILE and MUTATION_ID are mutually exclusive"; exit 1; }
 	@test -x "$(TOOLS_BIN)/gremlins" || { echo "pinned gremlins is missing; run make setup-mutation-tools"; exit 1; }
 	@set -eu; \

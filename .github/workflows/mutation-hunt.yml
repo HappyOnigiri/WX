@@ -40,6 +40,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      shards: ${{ steps.plan.outputs.shards }}
       timeout: ${{ steps.plan.outputs.timeout }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -97,35 +98,19 @@ jobs:
             mapfile -t packages < <(go list ./... | to_local_packages | sort -u)
           fi
           ((${#packages[@]} > 0)) || fail "no packages selected"
-
-          matrix='[]'
-          light_count=0
-          declare -a buckets
-          for ((index = 1; index <= HUNT_GROUPS; index++)); do buckets[index]=''; done
-          for package in "${packages[@]}"; do
-            case "$package" in
-              ./internal/daemon|./internal/workspace|./internal/archive|./internal/cli|./cmd/wx)
-                id="package-${package#./}"
-                id=${id//\//-}
-                matrix=$(jq -c --arg id "$id" --arg packages "$package" '. + [{id: $id, packages: $packages}]' <<<"$matrix")
-                ;;
-              *)
-                ((bucket = light_count % HUNT_GROUPS + 1))
-                buckets[bucket]+="$package "
-                light_count=$((light_count + 1))
-                ;;
-            esac
-          done
-          for ((index = 1; index <= HUNT_GROUPS; index++)); do
-            packages_in_group="${buckets[index]%% }"
-            [ -n "$packages_in_group" ] || continue
-            matrix=$(jq -c --arg id "group-$index" --arg packages "$packages_in_group" '. + [{id: $id, packages: $packages}]' <<<"$matrix")
-          done
+          plan=$(printf '%s\n' "${packages[@]}" | node .github/scripts/mutation-plan.cjs --groups "$HUNT_GROUPS" --root "$GITHUB_WORKSPACE") || fail "cannot build mutation shard plan"
+          while IFS=$'\t' read -r package reason; do
+            [ -n "$package" ] || continue
+            echo "::notice title=Mutation package excluded::$package: $reason"
+          done < <(jq -r '.excluded[] | [.package, .reason] | @tsv' <<<"$plan")
+          matrix=$(jq -c '.matrix' <<<"$plan")
+          (($(jq 'length' <<<"$matrix") > 0)) || fail "no packages remain after exclusions (internal/fdexec is not a mutation target)"
           # 係数はGremlinsのテストtimeoutへ渡す値であり、jobの後始末分を別に確保する。
           ((timeout = HUNT_TIMEOUT_COEFFICIENT * 5 + 30))
           [ "$timeout" -le 360 ] || timeout=360
           {
             echo "matrix=$matrix"
+            echo "shards=$matrix"
             echo "timeout=$timeout"
           } >>"$GITHUB_OUTPUT"
 
@@ -161,13 +146,46 @@ jobs:
           HUNT_MUTATORS: ${{ inputs.mutators }}
           HUNT_RUN_ID: ${{ github.run_id }}
           HUNT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          HUNT_EXCLUDE_FILES: ${{ matrix.exclude_files }}
         run: |
           set +e
           set -uo pipefail
           mkdir -p mutation-results mutation-artifacts
           survivor_ids=$(mktemp)
-          trap 'rm -f "$survivor_ids"' EXIT
+          heartbeat_pid=''
+          stop_resource_heartbeat() {
+            if [ -n "$heartbeat_pid" ]; then
+              kill "$heartbeat_pid" 2>/dev/null || true
+              wait "$heartbeat_pid" 2>/dev/null || true
+              heartbeat_pid=''
+            fi
+          }
+          resource_heartbeat() {
+            while :; do
+              available_memory=$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null || true)
+              process_count=$(ps -e -o pid= 2>/dev/null | wc -l | tr -d ' ' || true)
+              process_snapshot=$(ps -e -o rss=,pcpu= 2>/dev/null | awk '{rss += $1; cpu += $2} END {printf "rss_kib=%d cpu_percent=%.1f", rss, cpu}' || true)
+              echo "::notice title=Mutation resource heartbeat::$HUNT_ID ${process_snapshot:-rss_kib=unknown cpu_percent=unknown} processes=${process_count:-unknown} mem_available_kib=${available_memory:-unknown}"
+              sleep 30
+            done
+          }
+          start_resource_heartbeat() {
+            resource_heartbeat &
+            heartbeat_pid=$!
+          }
+          cleanup() {
+            stop_resource_heartbeat
+            rm -f "$survivor_ids"
+          }
+          on_signal() {
+            cleanup
+            exit 143
+          }
+          trap cleanup EXIT
+          trap on_signal INT TERM
           read -r -a packages <<<"$HUNT_PACKAGES"
+          exclude_files=()
+          if [ -n "$HUNT_EXCLUDE_FILES" ]; then read -r -a exclude_files <<<"$HUNT_EXCLUDE_FILES"; fi
           failures=0
           mutants=0
           killed=0
@@ -182,12 +200,15 @@ jobs:
             manifest="mutation-artifacts/$safe_profile/manifest.json"
             mkdir -p "$(dirname "$manifest")"
             args=(unleash "$package" -o "$result" --workers "$HUNT_WORKERS" --timeout-coefficient "$HUNT_TIMEOUT_COEFFICIENT")
+            for exclude_file in "${exclude_files[@]}"; do args+=(--exclude-files "$exclude_file"); done
             if [ "$HUNT_MUTATORS" = boundary ]; then
               args+=(--arithmetic-base=false --conditionals-boundary=true --conditionals-negation=false --increment-decrement=true --invert-negatives=false --invert-assignments=false --invert-bitwise=false --invert-bwassign=false --invert-logical=false --invert-loopctrl=false --remove-self-assignments=false)
             fi
             echo "profile: gremlins ${args[*]}"
+            start_resource_heartbeat
             .tools/bin/gremlins "${args[@]}"
             gremlins_status=$?
+            stop_resource_heartbeat
             if [ "$gremlins_status" -ne 0 ] || [ ! -s "$result" ]; then
               echo "::error title=Gremlins failed::$package (exit $gremlins_status)"
               failures=$((failures + 1))
@@ -247,7 +268,7 @@ jobs:
 
   report:
     name: Report mutation survivors
-    needs: hunt
+    needs: [plan, hunt]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -269,10 +290,14 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const expectedShards = JSON.parse(process.env.EXPECTED_SHARDS);
             const reporter = require('./.github/scripts/report-mutants.cjs');
             await reporter.run({
               github,
               context,
               core,
               reportDir: 'mutation-artifacts',
+              expectedShards,
             });
+        env:
+          EXPECTED_SHARDS: ${{ needs.plan.outputs.shards }}
