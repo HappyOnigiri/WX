@@ -134,6 +134,27 @@ func TestTruncateFailureMessageMarksWhatItDropped(t *testing.T) {
 	}
 }
 
+// TestTruncateFailureMessageHandlesExactLimitAndInvalidContinuation は上限の境界と、
+// rune の途中から始まる入力でも切り捨て位置を負数にしないことを固定する。
+func TestTruncateFailureMessageHandlesExactLimitAndInvalidContinuation(t *testing.T) {
+	t.Parallel()
+	exact := strings.Repeat("x", maxFailureMessage)
+	if got := truncateFailureMessage(exact); got != exact {
+		t.Fatalf("message at exact limit=%q, want unchanged input", got)
+	}
+
+	// 先頭から continuation byte が続く入力は、UTF-8 として不正でも error string にはなり得る。
+	// 上限位置から 0 まで戻ったとき、0 の位置を再度調べず suffix だけを返す。
+	invalid := strings.Repeat("\x80", maxFailureMessage+1)
+	got := truncateFailureMessage(invalid)
+	if got != " ... (truncated)" {
+		t.Fatalf("invalid UTF-8 prefix result=%q, want truncation marker", got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("invalid UTF-8 prefix result is not valid UTF-8: %q", got)
+	}
+}
+
 // createRestoreSession は復元元 session と、その復元用 session を 1 組作る。
 // 元 session は ARCHIVED、復元用は resume 中に作られる子 session を表す。
 func createRestoreSession(t *testing.T, store *Store, parentID, childID, childState string) {

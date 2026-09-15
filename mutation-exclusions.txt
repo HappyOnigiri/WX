@@ -1,3 +1,4 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/state/backup.go	5a7b938d73bf8a81c16a022cb311c8c98ae24f2696efe45ac3f4718fa14c1467	backups directory の entry 名は一意で、sort.Slice の比較で同名の異なる要素は現れないため > と >= は観測可能な結果を変えない
