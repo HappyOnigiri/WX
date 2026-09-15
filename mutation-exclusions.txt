@@ -1,3 +1,7 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/dashboard/view.go	f7900377cbc6e864e471ddcd583361b108839e47af7bf5c1c5f8d8d8e1b54758	rightWidth は leftColumnWidth の上限により minRightColumn との等号へ到達しない
+internal/dashboard/view.go	1863979060f71c8458e9f606cde99978a396900f45c5632e24ec9ab30cb8292c	表示幅がちょうど収まる wrap は折り返しても同じ1行になり比較が同値
+internal/dashboard/view.go	e904469ec6dd2e22b2d56c6a34beb8888ab092747f2b4c3b7caa00db54427b0e	表示幅と等しい padANSI は padding 0 の分岐と同じ文字列を返す
+internal/dashboard/view.go	cf0533d65d115e9db620857f80f427360be8b29acdce405102a877e5093fdf86	行数と高さが等しい fitLines は切り出しても同じ全行を返す
