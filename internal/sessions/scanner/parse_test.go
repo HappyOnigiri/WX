@@ -74,15 +74,27 @@ func TestReadMetadataUnwrapsCodexWrappersAndSubagents(t *testing.T) {
 }
 
 func TestCodexIDFromPathAcceptsOnlyUUIDSuffixes(t *testing.T) {
-	for path, want := range map[string]string{
-		"/h/rollout-2026-09-06T00-00-00-019e8bd5-4230-7403-b1aa-b48f42e564dc.jsonl": "019e8bd5-4230-7403-b1aa-b48f42e564dc",
-		"/h/rollout-short.jsonl": "",
-		"/h/rollout-2026-09-06T00-00-00-019e8bd5-4230-7403-b1aa-zzzzzzzzzzzz.jsonl": "",
-		"/h/rollout-2026-09-06T00-00-00-019e8bd5-4230-7403-b1aa-b48f42e5.jsonl":     "",
-	} {
-		if got := codexIDFromPath(path); got != want {
-			t.Errorf("codexIDFromPath(%q) = %q, want %q", path, got, want)
-		}
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		// 余分な prefix がない UUID だけのファイル名も、ちょうど 5 パーツとして受け入れる。
+		{name: "bare UUID", path: "/h/019e8bd5-4230-7403-b1aa-b48f42e564dc.jsonl", want: "019e8bd5-4230-7403-b1aa-b48f42e564dc"},
+		{name: "rollout UUID", path: "/h/rollout-2026-09-06T00-00-00-019e8bd5-4230-7403-b1aa-b48f42e564dc.jsonl", want: "019e8bd5-4230-7403-b1aa-b48f42e564dc"},
+		// 各許可範囲の端点（a/f と A/F）も有効な hexadecimal として扱う。
+		{name: "hexadecimal endpoints", path: "/h/aaaaaaaa-aaaa-4aaa-8aaa-ffffffffffff.jsonl", want: "aaaaaaaa-aaaa-4aaa-8aaa-ffffffffffff"},
+		{name: "uppercase hexadecimal endpoints", path: "/h/AAAAAAAA-AAAA-4AAA-8AAA-FFFFFFFFFFFF.jsonl", want: "AAAAAAAA-AAAA-4AAA-8AAA-FFFFFFFFFFFF"},
+		{name: "short", path: "/h/rollout-short.jsonl"},
+		{name: "non-hexadecimal", path: "/h/rollout-2026-09-06T00-00-00-019e8bd5-4230-7403-b1aa-zzzzzzzzzzzz.jsonl"},
+		{name: "short UUID part", path: "/h/rollout-2026-09-06T00-00-00-019e8bd5-4230-7403-b1aa-b48f42e5.jsonl"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codexIDFromPath(tt.path); got != tt.want {
+				t.Fatalf("codexIDFromPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
 	}
 }
 

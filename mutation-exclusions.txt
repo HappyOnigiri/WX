@@ -1,3 +1,8 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/sessions/scanner/parse.go	bad725cfe570ff4e5b531ee0ac92f7fd25035b87145a806edbc743ca1557c81e	空の ReadBytes 結果は parseLine が空行として無視するため、len(line) の > と >= は同じ動作になる
+internal/sessions/scanner/parse.go	5dd081195fffcee78e1f8cd74f09fa406c46d1298dc34bdad71a7508e90820b8	item.Item が空の場合は json.Unmarshal が必ず失敗して item を変更しないため、len(item.Item) の > と >= は同じ動作になる
+internal/sessions/scanner/parse.go	1206ca64ead7bae8e92cda8fffa45bf98a9573dfbb5a583d1276fef608fe82c3	strings.IndexByte は text[start:] の先頭の < より後で検索するため openEnd が 0 にならず、< と <= は同じ動作になる
+internal/sessions/scanner/parse.go	8e5fcd2641c0ad00c598134375643d4e1e114cd439ffe98c7172dba3a9dee48d	close が 0 の空ブロックではどちらの分岐も空文字列を返すため、< と <= は同じ動作になる
+internal/sessions/scanner/parse.go	e26b8179153a744a65fe3b48d617b5f5507a5911190fe961b9af04ad3bd5e99c	len(runes) が上限と同じ場合はスライス結果が元の文字列と同じため、<= と < は同じ動作になる
