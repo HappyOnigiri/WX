@@ -54,6 +54,11 @@ func TestClassifyWorktreeAddCommand(t *testing.T) {
 		{name: "here string", command: "grep worktree <<< 'git worktree add x'", decision: worktreeAddIgnore},
 		{name: "heredoc after candidate", command: "git worktree add x && cat <<'EOF'\ntext\nEOF", decision: worktreeAddDeny, reason: denyReasonCompound},
 		{name: "quoted heredoc operator", command: `git worktree add x && echo "a << b"`, decision: worktreeAddDeny, reason: denyReasonCompound},
+		{name: "assignment-only command", command: "WX_FLAG=value", decision: worktreeAddIgnore},
+		{name: "git global option without subcommand", command: "git --quiet", decision: worktreeAddIgnore},
+		{name: "git worktree without subcommand", command: "git worktree", decision: worktreeAddIgnore},
+		{name: "nested shell without command", command: "sh -c", decision: worktreeAddIgnore},
+		{name: "nested shell with unrelated arguments", command: "sh foo bar", decision: worktreeAddIgnore},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -66,6 +71,66 @@ func TestClassifyWorktreeAddCommand(t *testing.T) {
 			}
 			if verdict.reason != test.reason {
 				t.Fatalf("reason=%q, want %q", verdict.reason, test.reason)
+			}
+		})
+	}
+}
+
+func TestIsAssignmentWordBoundaries(t *testing.T) {
+	tests := []struct {
+		word string
+		want bool
+	}{
+		{word: "", want: false},
+		{word: "=value", want: false},
+		{word: "NAME=", want: true},
+		{word: "NAME=value", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.word, func(t *testing.T) {
+			if got := isAssignmentWord(test.word); got != test.want {
+				t.Fatalf("isAssignmentWord(%q)=%v, want %v", test.word, got, test.want)
+			}
+		})
+	}
+}
+
+func TestIsHexObjectNameBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{name: "", want: false},
+		{name: "000000", want: false},
+		{name: "0000000", want: true},
+		{name: strings.Repeat("0", 40), want: true},
+		{name: strings.Repeat("0", 41), want: false},
+		{name: "9999999", want: true},
+		{name: "fffffff", want: true},
+		{name: "AAAAAAA", want: true},
+		{name: "FFFFFFF", want: true},
+		{name: "ggggggg", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isHexObjectName(test.name); got != test.want {
+				t.Fatalf("isHexObjectName(%q)=%v, want %v", test.name, got, test.want)
+			}
+		})
+	}
+}
+
+func TestLexShellCommandDoesNotEmitEmptySegments(t *testing.T) {
+	for _, command := range []string{"", ";", "git status;"} {
+		t.Run(command, func(t *testing.T) {
+			segments, ok := lexShellCommand(command)
+			if !ok {
+				t.Fatalf("lexShellCommand(%q) reported malformed input", command)
+			}
+			for index, segment := range segments {
+				if len(segment) == 0 {
+					t.Fatalf("lexShellCommand(%q) emitted empty segment at index %d", command, index)
+				}
 			}
 		})
 	}
