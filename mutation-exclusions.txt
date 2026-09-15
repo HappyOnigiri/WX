@@ -1,3 +1,5 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
-# IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+# IDはmanifestが出力する64桁のSHA-256。等価変異だけを具体的な理由付きで記録する。
+internal/diag/localization.go	e3e7484d2d1897f1ce72d006bdd6a3a2004a0355b0b60c1c406e9f5eb6b0c900	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
+internal/diag/report.go	f68b4b16f0be0ace924d17540222855dff80ff996b6137917624dfaa1b3fd193	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
