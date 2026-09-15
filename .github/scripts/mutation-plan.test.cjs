@@ -162,6 +162,10 @@ test('workflow wires planned shards, archive exclusions, and resource diagnostic
   assert.match(workflow, /duration-seconds/u);
   assert.match(workflow, /SECONDS=0/u);
   assert.match(workflow, /\.unweighted\[\]/u);
+  assert.match(workflow, /if \[ "\$gremlins_status" -ne 0 \]; then/u);
+  assert.match(workflow, /if \[ -e "\$result" \]; then/u);
+  assert.match(workflow, /\[ ! -f "\$result" \] \|\| \[ ! -s "\$result" \]/u);
+  assert.match(workflow, /report_args\+=\(-empty-result\)/u);
   assert.match(makefile, /\.\/internal\/fdexec\|internal\/fdexec/u);
   assert.match(makefile, /mutation-weights/u);
 });
