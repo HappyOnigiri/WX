@@ -1,3 +1,7 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/sessions/sessions.go	7d31964550c6814b8cfe4de5e6b00d727a0cfab9fd2e1a73bb995ca83a3eb889	StableID は native session ID から生成され、同一 native ID の重複は事前に deduplicate されるため、実行可能な要素では < と <= が同じ順序になる等価変異。
+internal/sessions/sessions.go	13bda29932bbdc27f85f90ed3e860d20e8d5561dfa39561431e961fa0c313317	直前の Mtime == 判定が真なら StableID 比較へ戻り、偽なら > と >= は同じ結果になるため等価。
+internal/sessions/tui/picker.go	f80eff3357a695a53b441204c67ce3d4dc1e754e9fb52a4c9a73e8aa2871eb04	selected == offset では offset = selected が同値代入になるため、< と <= は表示範囲を変えない等価変異。
+internal/sessions/tui/picker.go	a4e7a29c2154afc416ab08b5151e51721353a5c1e19c4f3a3a9717255d43c4b9	len(lines) == height では lines[:height] が元の全行と同じため、> と >= は表示結果を変えない等価変異。
