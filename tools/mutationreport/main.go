@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/HappyOnigiri/WX/internal/gitx"
 )
@@ -117,12 +118,24 @@ type convertOptions struct {
 	Profile    string
 	Input      string
 	Exclusions string
+	ShardFiles []string
 	RunID      string
 	RunAttempt string
 	TestSHA    string
 	Command    []string
 	TargetFile string
 	MutationID string
+}
+
+type stringListFlag []string
+
+func (value *stringListFlag) String() string {
+	return strings.Join(*value, " ")
+}
+
+func (value *stringListFlag) Set(item string) error {
+	*value = append(*value, item)
+	return nil
 }
 
 type mutationRecord struct {
@@ -195,6 +208,9 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	input := flags.String("input", "", "Gremlins JSON result")
 	output := flags.String("output", "-", "manifest output path, or - for stdout")
 	exclusions := flags.String("exclusions", defaultExclusionsFile, "mutation exclusions file")
+	var shardFiles stringListFlag
+	flags.Var(&shardFiles, "shard-files", "repository-relative files assigned to this shard (repeatable)")
+	flags.Var(&shardFiles, "files", "alias for -shard-files")
 	runID := flags.String("run-id", os.Getenv("GITHUB_RUN_ID"), "workflow run ID")
 	runAttempt := flags.String("run-attempt", os.Getenv("GITHUB_RUN_ATTEMPT"), "workflow run attempt")
 	testSHA := flags.String("test-sha", "", "source commit SHA; empty reads HEAD through internal/gitx")
@@ -242,7 +258,7 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	commands := strings.Fields(*command)
 	value, err := buildManifest(convertOptions{
 		Root: *root, PackageDir: *packageDir, Profile: *profile, Input: *input,
-		Exclusions: *exclusions, RunID: *runID, RunAttempt: *runAttempt,
+		Exclusions: *exclusions, ShardFiles: shardFiles, RunID: *runID, RunAttempt: *runAttempt,
 		TestSHA: *testSHA, Command: commands, TargetFile: *targetFile, MutationID: *mutationID,
 	}, result)
 	if err != nil {
@@ -284,6 +300,10 @@ func buildManifest(options convertOptions, result gremlinsResult) (manifest, err
 	if err != nil {
 		return manifest{}, err
 	}
+	shardFiles, err := normalizeShardFiles(root, packageDir, options.ShardFiles)
+	if err != nil {
+		return manifest{}, err
+	}
 	targetFile := ""
 	if options.TargetFile != "" {
 		targetFile, err = repositoryTargetPath(root, options.TargetFile)
@@ -311,12 +331,15 @@ func buildManifest(options convertOptions, result gremlinsResult) (manifest, err
 	}
 	activeExclusions := make(map[string]exclusion)
 	for _, item := range exclusions {
-		if exclusionApplies(item.Path, root, packageDir) {
+		if exclusionApplies(item.Path, root, packageDir) && (len(shardFiles) == 0 || shardFiles[item.Path]) {
 			activeExclusions[item.ID] = item
 		}
 	}
 	collection, err := collectMutationRecords(root, packageDir, result)
 	if err != nil {
+		return manifest{}, err
+	}
+	if err := validateShardResults(collection, shardFiles); err != nil {
 		return manifest{}, err
 	}
 	if err := validateActiveExclusions(exclusionsPath, activeExclusions, collection.byID); err != nil {
@@ -376,6 +399,58 @@ type mutationCollection struct {
 	records     []mutationRecord
 	byID        map[string]mutationRecord
 	listedPaths map[string]bool
+}
+
+func parseShardFiles(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool { return unicode.IsSpace(r) || r == ',' })
+}
+
+func normalizeShardFiles(root, packageDir string, values []string) (map[string]bool, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	relativePackage, err := repositoryRelative(root, packageDir)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]bool, len(values))
+	for _, raw := range values {
+		parts := parseShardFiles(raw)
+		if len(parts) == 0 {
+			return nil, fmt.Errorf("invalid shard file %q: path is required", raw)
+		}
+		for _, value := range parts {
+			path, err := repositoryPath(value)
+			if err != nil {
+				return nil, fmt.Errorf("invalid shard file %q: %w", value, err)
+			}
+			if relativePackage != "." && path != relativePackage && !strings.HasPrefix(path, relativePackage+"/") {
+				return nil, fmt.Errorf("shard file %s is outside package %s", path, relativePackage)
+			}
+			if result[path] {
+				return nil, fmt.Errorf("shard file %s is listed more than once", path)
+			}
+			result[path] = true
+		}
+	}
+	return result, nil
+}
+
+func validateShardResults(collection mutationCollection, shardFiles map[string]bool) error {
+	if len(shardFiles) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(collection.listedPaths))
+	for path := range collection.listedPaths {
+		if !shardFiles[path] {
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	sort.Strings(paths)
+	return fmt.Errorf("Gremlins result contains files outside shard: %s", strings.Join(paths, ", "))
 }
 
 func collectMutationRecords(root, packageDir string, result gremlinsResult) (mutationCollection, error) {

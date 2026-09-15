@@ -13,6 +13,10 @@ func mutationFixture(t *testing.T, source, exclusions string, result gremlinsRes
 }
 
 func mutationFixtureFiles(t *testing.T, sources map[string]string, exclusions string, result gremlinsResult, targetFile string) (manifest, error) {
+	return mutationFixtureFilesWithShard(t, sources, exclusions, result, targetFile, nil)
+}
+
+func mutationFixtureFilesWithShard(t *testing.T, sources map[string]string, exclusions string, result gremlinsResult, targetFile string, shardFiles []string) (manifest, error) {
 	t.Helper()
 	root := t.TempDir()
 	packageDir := filepath.Join(root, "internal", "sample")
@@ -30,7 +34,7 @@ func mutationFixtureFiles(t *testing.T, sources map[string]string, exclusions st
 	}
 	return buildManifest(convertOptions{
 		Root: root, PackageDir: "internal/sample", Profile: "./internal/sample",
-		Exclusions: exclusionsPath, TestSHA: strings.Repeat("a", 40),
+		Exclusions: exclusionsPath, ShardFiles: shardFiles, TestSHA: strings.Repeat("a", 40),
 		Command: []string{"gremlins", "unleash", "./internal/sample"}, TargetFile: targetFile,
 	}, result)
 }
@@ -496,5 +500,90 @@ func target(value int) int {
 	_, err := mutationFixture(t, source, "", result)
 	if err == nil || !strings.Contains(err.Error(), "duplicate mutation ID") {
 		t.Fatalf("duplicate mutation err=%v", err)
+	}
+}
+
+func TestBuildManifestShardScopeIgnoresExclusionForAnotherShard(t *testing.T) {
+	sources := map[string]string{
+		"sample.go": `package sample
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`,
+		"other.go": `package sample
+
+func other(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`,
+	}
+	result := gremlinsResult{Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{{
+		Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11,
+	}}}}}
+	value, err := mutationFixtureFilesWithShard(t, sources,
+		"internal/sample/other.go\t"+strings.Repeat("0", 64)+"\texcluded in another shard\n", result, "", []string{"internal/sample/sample.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Survivors) != 1 {
+		t.Fatalf("manifest=%#v", value)
+	}
+}
+
+func TestBuildManifestShardScopeRejectsResultOutsideShard(t *testing.T) {
+	sources := map[string]string{
+		"sample.go": `package sample
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`,
+		"other.go": `package sample
+
+func other(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`,
+	}
+	result := gremlinsResult{Files: []gremlinsFile{
+		{Filename: "sample.go", Mutations: []gremlinsMutation{{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11}}},
+		{Filename: "other.go", Mutations: []gremlinsMutation{{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11}}},
+	}}
+	_, err := mutationFixtureFilesWithShard(t, sources, "", result, "", []string{"internal/sample/sample.go"})
+	if err == nil || !strings.Contains(err.Error(), "outside shard") {
+		t.Fatalf("outside shard error=%v", err)
+	}
+}
+
+func TestBuildManifestShardScopeStillRejectsStaleAssignedExclusion(t *testing.T) {
+	source := `package sample
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`
+	result := gremlinsResult{Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{{
+		Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11,
+	}}}}}
+	_, err := mutationFixtureFilesWithShard(t, map[string]string{"sample.go": source},
+		"internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\tstale assigned exclusion\n", result, "", []string{"internal/sample/sample.go"})
+	if err == nil || !strings.Contains(err.Error(), "stale exclusion") {
+		t.Fatalf("stale assigned exclusion error=%v", err)
 	}
 }

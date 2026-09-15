@@ -5,7 +5,7 @@ mutation huntは、行を通過したことだけでは見つからない境界�
 - mutatorを境界系へ絞るのは、既定の否定変異が`err != nil`のような分岐を大量に占め、既存のカバレッジゲートと同じ軸を重ねてしまうためである。
 - `make ci`へ接続しないのは、変異ごとにテスト全体を複製して実行するコストと、判定対象を人が読み解く時間を通常のゲートへ持ち込まないためである。
 - `internal/state`の中核ロジックへ届かない変異があるのは、遷移の比較がSQL文字列にあり、GoのAST変異対象ではないためである。
-- パッケージ単位のmatrixに分けるのは、変異1件ごとの実行時間がパッケージのテスト重量に比例し、重量級だけを独立して観測する必要があるためである。
+- 重量級パッケージをファイル単位のshardへ分けるのは、変異1件ごとの実行時間がパッケージのテスト重量に比例し、単一パッケージの処理を並列化するためである。
 
 各manifestはschema 2で、変異のソース上の同一性を表す`id`を持つ。
 IDは`wx-mutation-id-v1`、repository-relative path、関数名、mutator、行、列、
@@ -37,10 +37,13 @@ APIの書き込みは行わない。全shardが有効なmanifestを生成し、s
 含むprocess/OS adapterがhosted runnerの通信断や終了を起こし得るため、通常の列挙でも
 明示指定でもGremlinsを起動せず、planの診断へ除外理由を残す。
 
-`internal/archive`はproduction Go sourceを固定のshard定義へ排他的に割り当てる。各shardは
-別artifactへ出力し、Gremlinsの`--exclude-files`で他shardのsourceと`*_test.go`を除外する。
-plan時に実ファイル一覧と定義を比較するため、sourceの追加・削除・重複割り当ては実行前に
-失敗する。mutation IDとmanifestの`profile`はshard分割前と同じ契約を保つ。
+`internal/archive`はsourceの追加・削除・重複割り当てをplan時に検証しつつ、ファイル分割せず
+パッケージ単位で実行する。mutation IDとmanifestの`profile`はshard分割前と同じ契約を保つ。
+
+daemon、cli、workspaceの重量級パッケージは、huntジョブ自身がGremlinsのdry-run結果から
+RUNNABLE変異数を数え、ファイル単位のLPTで担当範囲を決める。担当外のsourceは
+`--exclude-files`で除外し、manifest生成時にも担当ファイル集合を検証するため、除外漏れや
+shard間の結果混入を検出できる。
 
 Gremlins実行中は、機密値や環境変数を出力しない軽量なresource heartbeatをログへ記録する。
 heartbeatは実行の正常終了・失敗・signalで必ず停止し、診断の失敗はmutation結果の判定を

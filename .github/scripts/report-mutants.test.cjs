@@ -357,6 +357,17 @@ test('rejects incomplete, duplicate, and unexpected mutation shards', () => {
   ], [{ id: 'config', profiles: ['internal/config'] }], source), /expected run ID and attempt/);
 });
 
+test('accepts multiple file shards that report the same package profile', () => {
+  const expected = [
+    { id: 'daemon-1', profiles: ['internal/daemon'] },
+    { id: 'daemon-2', profiles: ['internal/daemon'] },
+  ];
+  assert.doesNotThrow(() => reporter.validateShardCompleteness([
+    { artifactName: 'mutation-daemon-1-10-1', manifest: emptyManifest('10', '1', 'internal/daemon') },
+    { artifactName: 'mutation-daemon-2-10-1', manifest: emptyManifest('10', '1', 'internal/daemon') },
+  ], expected, source));
+});
+
 test('does not write issues when a planned shard is missing', async () => {
   let writes = 0;
   const github = { rest: {

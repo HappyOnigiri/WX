@@ -14,11 +14,20 @@ const DEDICATED_PACKAGES = new Set([
   'cmd/wx',
 ]);
 
+// 重量級パッケージはhunt側でdry-runの変異数を計測してファイル分割する。
+const DYNAMIC_SHARD_COUNTS = Object.freeze({
+  'internal/daemon': 4,
+  'internal/cli': 2,
+  'internal/workspace': 2,
+});
+
 // archive の production source は固定の shard 定義で管理し、追加・削除を自動で吸収しない。
 const ARCHIVE_SHARDS = Object.freeze([
-  Object.freeze({ id: 'package-internal-archive-shard-1', files: Object.freeze(['archive.go', 'conflict.go', 'gitstate.go', 'lfs.go']) }),
-  Object.freeze({ id: 'package-internal-archive-shard-2', files: Object.freeze(['orphan_refs.go', 'remove.go', 'restore.go', 'skip_worktree.go']) }),
-  Object.freeze({ id: 'package-internal-archive-shard-3', files: Object.freeze(['submodule_capsule.go', 'submodules.go', 'workspace.go', 'workspace_exclusions.go']) }),
+  Object.freeze({ id: 'package-internal-archive', files: Object.freeze([
+    'archive.go', 'conflict.go', 'gitstate.go', 'lfs.go', 'orphan_refs.go', 'remove.go',
+    'restore.go', 'skip_worktree.go', 'submodule_capsule.go', 'submodules.go', 'workspace.go',
+    'workspace_exclusions.go',
+  ]) }),
 ]);
 
 function packageProfile(value) {
@@ -64,7 +73,7 @@ function validateArchiveSharding(root, definitions = ARCHIVE_SHARDS) {
   const seenIDs = new Set();
   const seenFiles = new Map();
   for (const shard of definitions) {
-    if (!shard || typeof shard.id !== 'string' || !/^package-internal-archive-shard-[1-9]\d*$/u.test(shard.id)) {
+    if (!shard || typeof shard.id !== 'string' || !/^package-internal-archive(?:-shard-[1-9]\d*)?$/u.test(shard.id)) {
       throw new Error('archive shard has an invalid ID');
     }
     if (seenIDs.has(shard.id)) throw new Error(`archive shard ${shard.id} is duplicated`);
@@ -96,13 +105,32 @@ function archiveExcludeFiles(allSources, selectedSources) {
   return ['_test\\.go$'].concat(allSources.filter((file) => !selected.has(file)).map((file) => `${regexpEscape(file)}$`));
 }
 
-function shardEntry(id, packages, profiles, excludeFiles = []) {
+function shardEntry(id, packages, profiles, excludeFiles = [], options = {}) {
   return {
     id,
     packages: packages.join(' '),
     profiles: profiles.join(' '),
     exclude_files: excludeFiles.join(' '),
+    shard_count: options.shardCount || 1,
+    shard_index: options.shardIndex || 0,
+    shard: (options.shardIndex || 0) + 1,
+    shards: options.shardCount || 1,
+    shard_files: (options.shardFiles || []).join(' '),
   };
+}
+
+function dedicatedShardEntries(profile) {
+  const count = DYNAMIC_SHARD_COUNTS[profile] || 1;
+  const packageName = packagePath(profile);
+  const baseID = `package-${profile.replaceAll('/', '-')}`;
+  if (count === 1) return [shardEntry(baseID, [packageName], [profile])];
+  return Array.from({ length: count }, (_, index) => shardEntry(
+    `${baseID}-${index + 1}`,
+    [packageName],
+    [profile],
+    [],
+    { shardCount: count, shardIndex: index },
+  ));
 }
 
 function buildPlan({ packages, groups = 4, root = process.cwd() }) {
@@ -119,10 +147,11 @@ function buildPlan({ packages, groups = 4, root = process.cwd() }) {
           ['./internal/archive'],
           ['internal/archive'],
           archiveExcludeFiles(archive.sources, shard.files),
+          { shardFiles: shard.files.map((file) => `internal/archive/${file}`) },
         ));
       }
     } else if (DEDICATED_PACKAGES.has(profile)) {
-      matrix.push(shardEntry(`package-${profile.replaceAll('/', '-')}`, [packagePath(profile)], [profile]));
+      matrix.push(...dedicatedShardEntries(profile));
     } else {
       light.push(profile);
     }
@@ -174,6 +203,7 @@ if (require.main === module) {
 module.exports = {
   ARCHIVE_SHARDS,
   DEDICATED_PACKAGES,
+  DYNAMIC_SHARD_COUNTS,
   EXCLUDED_PACKAGES,
   archiveExcludeFiles,
   buildPlan,

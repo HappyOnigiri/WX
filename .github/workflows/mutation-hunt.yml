@@ -136,6 +136,7 @@ jobs:
           make setup-mutation-tools
           mkdir -p .tools/bin
           go build -trimpath -o .tools/bin/mutationreport ./tools/mutationreport
+          go build -trimpath -o .tools/bin/mutationshard ./tools/mutationshard
       - name: Run mutation hunt
         shell: bash
         env:
@@ -147,6 +148,9 @@ jobs:
           HUNT_RUN_ID: ${{ github.run_id }}
           HUNT_RUN_ATTEMPT: ${{ github.run_attempt }}
           HUNT_EXCLUDE_FILES: ${{ matrix.exclude_files }}
+          HUNT_SHARD_COUNT: ${{ matrix.shard_count }}
+          HUNT_SHARD_INDEX: ${{ matrix.shard_index }}
+          HUNT_SHARD_FILES: ${{ matrix.shard_files }}
         run: |
           set +e
           set -uo pipefail
@@ -184,6 +188,8 @@ jobs:
           trap cleanup EXIT
           trap on_signal INT TERM
           read -r -a packages <<<"$HUNT_PACKAGES"
+          matrix_shard_files=()
+          if [ -n "$HUNT_SHARD_FILES" ]; then read -r -a matrix_shard_files <<<"$HUNT_SHARD_FILES"; fi
           exclude_files=()
           if [ -n "$HUNT_EXCLUDE_FILES" ]; then read -r -a exclude_files <<<"$HUNT_EXCLUDE_FILES"; fi
           failures=0
@@ -197,8 +203,47 @@ jobs:
             profile="${package#./}"
             safe_profile=${profile//\//-}
             result="mutation-results/$safe_profile.json"
+            dry_result="mutation-results/$safe_profile-dry-run.json"
             manifest="mutation-artifacts/$safe_profile/manifest.json"
             mkdir -p "$(dirname "$manifest")"
+            shard_files=("${matrix_shard_files[@]}")
+            if [ "$HUNT_SHARD_COUNT" -gt 1 ]; then
+              dry_args=(unleash "$package" --dry-run -o "$dry_result" --workers "$HUNT_WORKERS" --timeout-coefficient "$HUNT_TIMEOUT_COEFFICIENT")
+              if [ "$HUNT_MUTATORS" = boundary ]; then
+                dry_args+=(--arithmetic-base=false --conditionals-boundary=true --conditionals-negation=false --increment-decrement=true --invert-negatives=false --invert-assignments=false --invert-bitwise=false --invert-bwassign=false --invert-logical=false --invert-loopctrl=false --remove-self-assignments=false)
+              fi
+              echo "profile: gremlins ${dry_args[*]}"
+              start_resource_heartbeat
+              .tools/bin/gremlins "${dry_args[@]}"
+              dry_status=$?
+              stop_resource_heartbeat
+              if [ "$dry_status" -ne 0 ] || [ ! -s "$dry_result" ]; then
+                echo "::error title=Gremlins dry-run failed::$package (exit $dry_status)"
+                failures=$((failures + 1))
+                continue
+              fi
+              shard_json=$(.tools/bin/mutationshard -input "$dry_result" -count "$HUNT_SHARD_COUNT" -index "$HUNT_SHARD_INDEX")
+              shard_status=$?
+              if [ "$shard_status" -ne 0 ] || [ -z "$shard_json" ]; then
+                echo "::error title=Mutation shard planning failed::$package (exit $shard_status)"
+                failures=$((failures + 1))
+                continue
+              fi
+              if ! jq -e '(.files | type == "array" and length > 0) and (.exclude_files | type == "array")' >/dev/null <<<"$shard_json"; then
+                echo "::error title=Mutation shard planning failed::$package returned an invalid file set"
+                failures=$((failures + 1))
+                continue
+              fi
+              mapfile -t shard_file_names < <(jq -r '.files[]' <<<"$shard_json")
+              if [ "${#shard_file_names[@]}" -eq 0 ]; then
+                echo "::error title=Mutation shard planning failed::$package returned an empty file set"
+                failures=$((failures + 1))
+                continue
+              fi
+              shard_files=()
+              for shard_file in "${shard_file_names[@]}"; do shard_files+=("$profile/$shard_file"); done
+              mapfile -t exclude_files < <(jq -r '.exclude_files[]?' <<<"$shard_json")
+            fi
             args=(unleash "$package" -o "$result" --workers "$HUNT_WORKERS" --timeout-coefficient "$HUNT_TIMEOUT_COEFFICIENT")
             for exclude_file in "${exclude_files[@]}"; do args+=(--exclude-files "$exclude_file"); done
             if [ "$HUNT_MUTATORS" = boundary ]; then
@@ -215,7 +260,9 @@ jobs:
               continue
             fi
             command_string="gremlins ${args[*]}"
-            .tools/bin/mutationreport -root "$GITHUB_WORKSPACE" -profile "$profile" -input "$result" -output "$manifest" -run-id "$HUNT_RUN_ID" -run-attempt "$HUNT_RUN_ATTEMPT" -command "$command_string"
+            report_args=(-root "$GITHUB_WORKSPACE" -profile "$profile" -input "$result" -output "$manifest" -run-id "$HUNT_RUN_ID" -run-attempt "$HUNT_RUN_ATTEMPT" -command "$command_string")
+            if [ "${#shard_files[@]}" -gt 0 ]; then report_args+=(-shard-files "${shard_files[*]}"); fi
+            .tools/bin/mutationreport "${report_args[@]}"
             report_status=$?
             if [ "$report_status" -ne 0 ]; then
               echo "::error title=Mutation report failed::$package (exit $report_status)"
