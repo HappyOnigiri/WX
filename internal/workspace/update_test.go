@@ -311,10 +311,10 @@ func TestUpdateWithoutRewrittenTrackedPathsSkipsCOWReplacement(t *testing.T) {
 	}
 }
 
-// skip-worktree の付いた path が差分に乗る更新は、書込みを始める前に不適格として弾く。
-// force checkout でもこの path は更新できず、書込み後に失敗すると slot が隔離されてしまうためである。
+// flag 付きの path が差分に乗るだけでは弾かない。更新は flag を解除して checkout し、内容を戻す。
+// 弾くのは要求OIDで通常 file として残らない場合だけで、そこは flag を張り直す先が無い。
 // testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
-func TestValidateUpdateCandidateRejectsFlaggedIndexPathsInTheDiff(t *testing.T) {
+func TestValidateUpdateCandidateRejectsOnlyUnrestorableFlaggedIndexPaths(t *testing.T) {
 	ctx := context.Background()
 	p, repo, _, target := cowFixture(t)
 	main := string(repo.MainPath)
@@ -342,11 +342,17 @@ func TestValidateUpdateCandidateRejectsFlaggedIndexPathsInTheDiff(t *testing.T) 
 		t.Fatalf("a flag outside the diff must stay eligible: %v", err)
 	}
 	cowGit(t, target, "update-index", "--skip-worktree", "file")
-	err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil)
+	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
+		t.Fatalf("a restorable flagged path must stay eligible: %v", err)
+	}
+	cowGit(t, main, "rm", "-q", "file")
+	cowGit(t, main, "commit", "-m", "delete the flagged file")
+	deletedOID := cowGit(t, main, "rev-parse", "HEAD")
+	err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, deletedOID, nil, nil)
 	if !errors.Is(err, ErrUpdateIneligible) {
-		t.Fatalf("flagged update error=%v, want ErrUpdateIneligible", err)
+		t.Fatalf("flagged path deleted at the requested OID: error=%v, want ErrUpdateIneligible", err)
 	}
 	if !strings.Contains(err.Error(), "file") {
-		t.Fatalf("error=%v, want it to name the path that blocks the checkout", err)
+		t.Fatalf("error=%v, want it to name the path that cannot be restored", err)
 	}
 }

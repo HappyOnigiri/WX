@@ -4,40 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 	"time"
 )
-
-func TestParseIndexFlagsSeparatesSkipWorktreeFromAssumeUnchanged(t *testing.T) {
-	listing := "H plain\x00S skipped\x00h assumed\x00s both\x00M unmerged\x00S skipped\x00\x00"
-	flags := parseIndexFlags(listing)
-	if want := []string{"skipped", "both"}; !reflect.DeepEqual(flags.skipWorktree, want) {
-		t.Fatalf("skip-worktree=%v, want %v", flags.skipWorktree, want)
-	}
-	if want := []string{"assumed", "both"}; !reflect.DeepEqual(flags.assumeUnchanged, want) {
-		t.Fatalf("assume-unchanged=%v, want %v", flags.assumeUnchanged, want)
-	}
-	if !flags.blinding() {
-		t.Fatal("listing with stat flags was not reported as blinding")
-	}
-	if want := []string{"plain", "both"}; !reflect.DeepEqual(flags.retain([]string{"plain", "gone", "both"}), want) {
-		t.Fatalf("retain kept %v, want %v", flags.retain([]string{"plain", "gone", "both"}), want)
-	}
-}
-
-func TestParseIndexFlagsIgnoresEmptyListing(t *testing.T) {
-	flags := parseIndexFlags("")
-	if flags.blinding() || len(flags.paths) != 0 {
-		t.Fatalf("empty listing produced %+v", flags)
-	}
-}
-
-func TestNulPathListEncodesNulSeparatedEntries(t *testing.T) {
-	if got, want := string(nulPathList([]string{"a*.txt", "b"})), "a*.txt\x00b\x00"; got != want {
-		t.Fatalf("nulPathList=%q, want %q", got, want)
-	}
-}
 
 // installSkipWorktreeHook は、checkout のたびに tracked file を個人版へ置き換えて skip-worktree を付ける source 側 hook を入れる。
 // wx が作る clean base はこの hook を通るため、restore は復元先 index に flag が付いた状態から始まる。
