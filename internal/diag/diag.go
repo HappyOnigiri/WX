@@ -33,6 +33,7 @@ const (
 	CheckStandbyReplenishment     = "standby_replenishment"
 	CheckArtifactOwnership        = "artifact_ownership"
 	CheckRecoveryJobs             = "recovery_jobs"
+	CheckQuarantinedSlots         = "quarantined_slots"
 	CheckWorkspaceSnapshots       = "workspace_snapshots"
 	CheckUnsavedSubmodules        = "unsaved_submodules"
 	CheckSubmoduleSharing         = "submodule_sharing"
@@ -92,7 +93,7 @@ func LocalFindings(ctx context.Context, reason error) []Finding {
 func StoreDependentChecks() []string {
 	return []string{
 		CheckSQLiteBackup, CheckWorktreeRootRegistration, CheckWorktreeRegistration,
-		CheckStandbyReplenishment, CheckArtifactOwnership, CheckRecoveryJobs, CheckWorkspaceSnapshots,
+		CheckStandbyReplenishment, CheckArtifactOwnership, CheckRecoveryJobs, CheckQuarantinedSlots, CheckWorkspaceSnapshots,
 		CheckUnsavedSubmodules, CheckSubmoduleSharing, CheckPrepareCapacity,
 		CheckLFSObjects,
 	}
