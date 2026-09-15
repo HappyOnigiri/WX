@@ -63,9 +63,20 @@ func TestSubmoduleSharingDoctorReportsShallowAndPromisorStates(t *testing.T) {
 			if err := test.prepare(f, w, source); err != nil {
 				t.Fatal(err)
 			}
-			finding := findSubmoduleSharingFinding(t, f.Manager.submoduleSharingFindings(ctx), test.severity, source)
+			findings := f.Manager.submoduleSharingFindings(ctx)
+			finding := findSubmoduleSharingFinding(t, findings, test.severity, source)
 			if finding.Cause == "" || finding.Action == "" {
 				t.Fatalf("finding=%+v, want cause and action", finding)
+			}
+			var checked diag.Finding
+			for _, candidate := range findings {
+				if candidate.Check == diag.CheckSubmoduleSharing && candidate.Severity == diag.SeverityOK {
+					checked = candidate
+					break
+				}
+			}
+			if len(checked.Details) != 1 || checked.Details[0] != "1 local submodule module(s) checked" {
+				t.Fatalf("checked finding=%+v, want one checked module", checked)
 			}
 		})
 	}
