@@ -103,6 +103,10 @@ jobs:
             [ -n "$package" ] || continue
             echo "::notice title=Mutation package excluded::$package: $reason"
           done < <(jq -r '.excluded[] | [.package, .reason] | @tsv' <<<"$plan")
+          while IFS= read -r package; do
+            [ -n "$package" ] || continue
+            echo "::notice title=Mutation package unweighted::$package (using the weights median)"
+          done < <(jq -r '.unweighted[]? // empty' <<<"$plan")
           matrix=$(jq -c '.matrix' <<<"$plan")
           (($(jq 'length' <<<"$matrix") > 0)) || fail "no packages remain after exclusions (internal/fdexec is not a mutation target)"
           # 係数はGremlinsのテストtimeoutへ渡す値であり、jobの後始末分を別に確保する。
@@ -206,6 +210,7 @@ jobs:
             dry_result="mutation-results/$safe_profile-dry-run.json"
             manifest="mutation-artifacts/$safe_profile/manifest.json"
             mkdir -p "$(dirname "$manifest")"
+            SECONDS=0
             shard_files=("${matrix_shard_files[@]}")
             if [ "$HUNT_SHARD_COUNT" -gt 1 ]; then
               dry_args=(unleash "$package" --dry-run -o "$dry_result" --workers "$HUNT_WORKERS" --timeout-coefficient "$HUNT_TIMEOUT_COEFFICIENT")
@@ -253,9 +258,10 @@ jobs:
             start_resource_heartbeat
             .tools/bin/gremlins "${args[@]}"
             gremlins_status=$?
+            duration=$SECONDS
             stop_resource_heartbeat
             command_string="gremlins ${args[*]}"
-            report_args=(-root "$GITHUB_WORKSPACE" -profile "$profile" -output "$manifest" -run-id "$HUNT_RUN_ID" -run-attempt "$HUNT_RUN_ATTEMPT" -command "$command_string")
+            report_args=(-root "$GITHUB_WORKSPACE" -profile "$profile" -output "$manifest" -run-id "$HUNT_RUN_ID" -run-attempt "$HUNT_RUN_ATTEMPT" -duration-seconds "$duration" -command "$command_string")
             if [ "$gremlins_status" -ne 0 ]; then
               echo "::error title=Gremlins failed::$package (exit $gremlins_status)"
               failures=$((failures + 1))

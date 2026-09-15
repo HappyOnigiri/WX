@@ -7,7 +7,7 @@ mutation huntは、行を通過したことだけでは見つからない境界�
 - `internal/state`の中核ロジックへ届かない変異があるのは、遷移の比較がSQL文字列にあり、GoのAST変異対象ではないためである。
 - 重量級パッケージをファイル単位のshardへ分けるのは、変異1件ごとの実行時間がパッケージのテスト重量に比例し、単一パッケージの処理を並列化するためである。
 
-各manifestはschema 2で、変異のソース上の同一性を表す`id`を持つ。
+各manifestはschema 3で、変異のソース上の同一性を表す`id`を持ち、計測できた場合はGremlins実行の実測秒も記録する。
 IDは`wx-mutation-id-v1`、repository-relative path、関数名、mutator、行、列、
 元のtoken、変異後のtokenを順に改行で連結し、SHA-256を16進化した値である。
 run、attempt、profile、test commitはIDへ含めないため、同じ変異を複数profileが観測しても
@@ -47,6 +47,11 @@ daemon、cli、workspaceの重量級パッケージは、huntジョブ自身がG
 RUNNABLE変異数を数え、ファイル単位のLPTで担当範囲を決める。担当外のsourceは
 `--exclude-files`で除外し、manifest生成時にも担当ファイル集合を検証するため、除外漏れや
 shard間の結果混入を検出できる。
+
+lightweight packageのgroup配分は、manifestの実測秒をfull runのartifactから
+`make mutation-weights`で集計した重みを使う。重みファイルは人が確認してコミットし、
+未計測のprofileはplanで中央値へ退避してnoticeに記録する。partial dispatchのartifactから
+重みを更新しない。
 
 Gremlins実行中は、機密値や環境変数を出力しない軽量なresource heartbeatをログへ記録する。
 heartbeatは実行の正常終了・失敗・signalで必ず停止し、診断の失敗はmutation結果の判定を

@@ -75,6 +75,56 @@ test('planner creates a normal shard for remaining packages', () => {
   assert.equal(plan.excluded[0].package, './internal/fdexec');
 });
 
+test('light packages use deterministic weighted LPT and compact group IDs', () => {
+  const weights = {
+    version: 1,
+    run_id: 'run-1',
+    packages: { 'internal/config': 10, 'internal/state': 8, 'internal/foo': 7, 'internal/bar': 1 },
+  };
+  const values = ['./internal/bar', './internal/state', './internal/foo', './internal/config'];
+  const first = planner.buildPlan({ packages: values, groups: 3, root, weights });
+  const second = planner.buildPlan({ packages: [...values].reverse(), groups: 3, root, weights });
+  assert.deepEqual(first.matrix, second.matrix);
+  assert.deepEqual(first.matrix.map((item) => [item.id, item.profiles]), [
+    ['group-1', 'internal/config'],
+    ['group-2', 'internal/state'],
+    ['group-3', 'internal/bar internal/foo'],
+  ]);
+  assert.deepEqual(first.unweighted, []);
+});
+
+test('unknown light packages use the weight-file median and are reported', () => {
+  const plan = planner.buildPlan({
+    packages: ['./internal/state', './internal/config', './internal/unknown'],
+    groups: 2,
+    root,
+    weights: { version: 1, run_id: 'run-1', packages: { 'internal/config': 10, 'unrelated/profile': 2 } },
+  });
+  assert.deepEqual(plan.matrix.map((item) => item.profiles), ['internal/config', 'internal/state internal/unknown']);
+  assert.deepEqual(plan.unweighted, ['internal/state', 'internal/unknown']);
+});
+
+test('weights loader tolerates a missing file and rejects malformed values', () => {
+  const missing = planner.loadMutationWeights(path.join(os.tmpdir(), 'wx-mutation-weights-does-not-exist.json'));
+  assert.deepEqual(missing.packages, {});
+  for (const value of [
+    {},
+    { version: 2, packages: {} },
+    { version: 1, packages: { '../outside': 1 } },
+    { version: 1, packages: { 'internal/config': -1 } },
+    { version: 1, packages: { 'internal/config': Infinity } },
+  ]) {
+    assert.throws(() => planner.validateMutationWeights(value), /mutation weights/);
+  }
+});
+
+test('median weight uses all values and falls back for empty or zero tables', () => {
+  assert.equal(planner.medianWeight([9, 1, 5]), 5);
+  assert.equal(planner.medianWeight([10, 2]), 6);
+  assert.equal(planner.medianWeight([]), 1);
+  assert.equal(planner.medianWeight([0, 0]), 1);
+});
+
 test('heavy packages expand into deterministic file-shard matrix entries', () => {
   const plan = planner.buildPlan({
     packages: ['./internal/daemon', './internal/cli', './internal/workspace', './cmd/wx'],
@@ -109,9 +159,13 @@ test('workflow wires planned shards, archive exclusions, and resource diagnostic
   assert.match(workflow, /--dry-run/u);
   assert.match(workflow, /-shard-files/u);
   assert.match(workflow, /Mutation resource heartbeat/u);
+  assert.match(workflow, /duration-seconds/u);
+  assert.match(workflow, /SECONDS=0/u);
+  assert.match(workflow, /\.unweighted\[\]/u);
   assert.match(workflow, /if \[ "\$gremlins_status" -ne 0 \]; then/u);
   assert.match(workflow, /if \[ -e "\$result" \]; then/u);
   assert.match(workflow, /\[ ! -f "\$result" \] \|\| \[ ! -s "\$result" \]/u);
   assert.match(workflow, /report_args\+=\(-empty-result\)/u);
   assert.match(makefile, /\.\/internal\/fdexec\|internal\/fdexec/u);
+  assert.match(makefile, /mutation-weights/u);
 });

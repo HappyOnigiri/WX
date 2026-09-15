@@ -30,6 +30,10 @@ const ARCHIVE_SHARDS = Object.freeze([
   ]) }),
 ]);
 
+const MUTATION_WEIGHTS_VERSION = 1;
+const DEFAULT_MUTATION_WEIGHTS = path.join(__dirname, 'mutation-weights.json');
+const PROFILE_KEY = /^(?:\.|[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*)$/u;
+
 function packageProfile(value) {
   const normalized = String(value || '').replaceAll('\\', '/').trim();
   if (normalized === '.') return '.';
@@ -38,6 +42,97 @@ function packageProfile(value) {
 
 function packagePath(profile) {
   return profile === '.' ? '.' : `./${profile}`;
+}
+
+function validateMutationWeights(value, source = 'mutation weights') {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${source} must be an object`);
+  if (value.version !== MUTATION_WEIGHTS_VERSION) throw new Error(`${source} has unsupported version`);
+  if (!value.packages || typeof value.packages !== 'object' || Array.isArray(value.packages)) {
+    throw new Error(`${source} packages must be an object`);
+  }
+  const packages = {};
+  for (const [profile, weight] of Object.entries(value.packages)) {
+    if (!PROFILE_KEY.test(profile)) throw new Error(`${source} has an invalid profile key ${profile}`);
+    if (typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0) {
+      throw new Error(`${source} has an invalid weight for ${profile}`);
+    }
+    packages[profile] = weight;
+  }
+  return {
+    version: MUTATION_WEIGHTS_VERSION,
+    run_id: value.run_id === undefined ? '' : String(value.run_id),
+    packages,
+  };
+}
+
+function loadMutationWeights(input = DEFAULT_MUTATION_WEIGHTS) {
+  if (input && typeof input === 'object') return validateMutationWeights(input);
+  const weightPath = String(input || DEFAULT_MUTATION_WEIGHTS);
+  let data;
+  try {
+    data = fs.readFileSync(weightPath, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return { version: MUTATION_WEIGHTS_VERSION, run_id: '', packages: {} };
+    }
+    throw new Error(`read mutation weights ${weightPath}: ${error.message}`);
+  }
+  let value;
+  try {
+    value = JSON.parse(data);
+  } catch (error) {
+    throw new Error(`parse mutation weights ${weightPath}: ${error.message}`);
+  }
+  return validateMutationWeights(value, `mutation weights ${weightPath}`);
+}
+
+function medianWeight(values) {
+  const sorted = values.filter((value) => Number.isFinite(value) && value >= 0).sort((a, b) => a - b);
+  if (sorted.length === 0) return 1;
+  const middle = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+  return median > 0 && Number.isFinite(median) ? median : 1;
+}
+
+// 重みの降順（同値は名前順）で、最も軽いbucketへ詰めるLPTを使う。
+function allocateWeightedBuckets(profiles, count, weights) {
+  if (!Number.isInteger(count) || count < 1 || count > 20) throw new Error('groups must be 1-20');
+  const table = weights || { packages: {} };
+  const packages = table.packages || (table.version === undefined ? table : {});
+  for (const [profile, weight] of Object.entries(packages)) {
+    if (typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0) {
+      throw new Error(`mutation weights has an invalid weight for ${profile}`);
+    }
+  }
+  const values = Object.values(packages);
+  const median = medianWeight(values);
+  const unweighted = [];
+  const items = profiles.map((profile) => {
+    if (!Object.prototype.hasOwnProperty.call(packages, profile)) unweighted.push(profile);
+    return {
+      profile,
+      weight: Object.prototype.hasOwnProperty.call(packages, profile) ? packages[profile] : median,
+    };
+  });
+  items.sort((left, right) => {
+    if (right.weight !== left.weight) return right.weight - left.weight;
+    return left.profile < right.profile ? -1 : left.profile > right.profile ? 1 : 0;
+  });
+  const buckets = Array.from({ length: count }, () => ({ profiles: [], total: 0 }));
+  for (const item of items) {
+    let target = 0;
+    for (let index = 1; index < buckets.length; index += 1) {
+      if (buckets[index].total < buckets[target].total) target = index;
+    }
+    buckets[target].profiles.push(item.profile);
+    buckets[target].total += item.weight;
+  }
+  for (const bucket of buckets) bucket.profiles.sort();
+  return {
+    buckets: buckets.filter((bucket) => bucket.profiles.length > 0),
+    unweighted: unweighted.sort(),
+    median,
+  };
 }
 
 function filterPackages(values) {
@@ -133,10 +228,12 @@ function dedicatedShardEntries(profile) {
   ));
 }
 
-function buildPlan({ packages, groups = 4, root = process.cwd() }) {
+function buildPlan({ packages, groups = 4, root = process.cwd(), weights, weightPath, weightsPath }) {
   if (!Number.isInteger(groups) || groups < 1 || groups > 20) throw new Error('groups must be 1-20');
   const archive = validateArchiveSharding(root);
   const filtered = filterPackages(packages);
+  const weightInput = weights !== undefined ? weights : weightPath !== undefined ? weightPath : weightsPath;
+  const weightTable = loadMutationWeights(weightInput);
   const matrix = [];
   const light = [];
   for (const profile of filtered.selected) {
@@ -156,31 +253,39 @@ function buildPlan({ packages, groups = 4, root = process.cwd() }) {
       light.push(profile);
     }
   }
-  const buckets = Array.from({ length: groups }, () => []);
-  light.forEach((profile, index) => buckets[index % groups].push(profile));
-  buckets.forEach((bucket, index) => {
-    if (bucket.length === 0) return;
+  const allocation = allocateWeightedBuckets(light, groups, weightTable);
+  allocation.buckets.forEach((bucket, index) => {
     matrix.push(shardEntry(
       `group-${index + 1}`,
-      bucket.map(packagePath),
-      bucket,
+      bucket.profiles.map(packagePath),
+      bucket.profiles,
     ));
   });
   return {
     matrix,
     expectedShards: matrix,
     excluded: filtered.excluded,
+    unweighted: allocation.unweighted,
     archiveSources: archive.sources,
   };
 }
 
 function parseArguments(argv) {
-  const options = { groups: 4, root: process.cwd() };
+  const options = { groups: 4, root: process.cwd(), weights: DEFAULT_MUTATION_WEIGHTS };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === '--groups') options.groups = Number(argv[++index]);
-    else if (argument === '--root') options.root = argv[++index];
-    else throw new Error(`unknown argument ${argument}`);
+    if (argument === '--groups') {
+      if (index + 1 >= argv.length) throw new Error(`${argument} requires a value`);
+      options.groups = Number(argv[++index]);
+    } else if (argument === '--root') {
+      if (index + 1 >= argv.length) throw new Error(`${argument} requires a value`);
+      options.root = argv[++index];
+    } else if (argument === '--weights' || argument === '--weight-file' || argument === '--weight') {
+      if (index + 1 >= argv.length) throw new Error(`${argument} requires a value`);
+      options.weights = argv[++index];
+    } else {
+      throw new Error(`unknown argument ${argument}`);
+    }
   }
   return options;
 }
@@ -205,11 +310,18 @@ module.exports = {
   DEDICATED_PACKAGES,
   DYNAMIC_SHARD_COUNTS,
   EXCLUDED_PACKAGES,
+  DEFAULT_MUTATION_WEIGHTS,
+  MUTATION_WEIGHTS_VERSION,
+  allocateWeightedBuckets,
   archiveExcludeFiles,
   buildPlan,
   filterPackages,
+  loadWeights: loadMutationWeights,
+  loadMutationWeights,
+  medianWeight,
   packagePath,
   packageProfile,
   productionArchiveSources,
+  validateMutationWeights,
   validateArchiveSharding,
 };

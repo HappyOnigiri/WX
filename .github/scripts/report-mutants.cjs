@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const SHA = /^[0-9a-f]{40}$/iu;
 const MUTATION_ID = /^[0-9a-f]{64}$/u;
 const MUTATION_ID_VERSION = 'wx-mutation-id-v1';
+const MUTATION_MANIFEST_SCHEMA_VERSION = 3;
 const MAX_TEXT = 12000;
 const TOTAL_KEYS = Object.freeze(['mutants', 'killed', 'lived', 'not_covered', 'not_viable', 'timed_out']);
 const MUTATION_LABEL = 'mutation';
@@ -72,11 +73,15 @@ function sameMutation(a, b) {
 
 function validateManifest(value, artifactName = 'artifact') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${artifactName} is not an object`);
-  if (value.schema_version !== 2) fail(`${artifactName} has unsupported schema_version`);
+  if (value.schema_version !== MUTATION_MANIFEST_SCHEMA_VERSION) fail(`${artifactName} has unsupported schema_version`);
   relativePath(value.profile, `${artifactName} profile`);
   if (value.run_id !== undefined && !/^\d+$/u.test(String(value.run_id))) fail(`${artifactName} has invalid run_id`);
   if (value.run_attempt !== undefined && !/^\d+$/u.test(String(value.run_attempt))) fail(`${artifactName} has invalid run_attempt`);
   if (value.test_sha !== undefined && value.test_sha !== '' && !SHA.test(value.test_sha)) fail(`${artifactName} has invalid test_sha`);
+  if (value.duration_seconds !== undefined &&
+      (typeof value.duration_seconds !== 'number' || !Number.isFinite(value.duration_seconds) || value.duration_seconds < 0)) {
+    fail(`${artifactName} has invalid duration_seconds`);
+  }
   if (!Array.isArray(value.command) || value.command.length === 0 || value.command.length > 100) fail(`${artifactName} has invalid command`);
   value.command.forEach((item, index) => text(item, `${artifactName} command ${index}`, 2000));
   if (!value.totals || typeof value.totals !== 'object' || Array.isArray(value.totals)) fail(`${artifactName} has no totals`);
@@ -517,6 +522,7 @@ module.exports = {
   issueTitle,
   marker,
   mutationId,
+  MUTATION_MANIFEST_SCHEMA_VERSION,
   run,
   upsertGroup,
   validateShardCompleteness,
