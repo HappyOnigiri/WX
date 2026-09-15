@@ -24,6 +24,30 @@ func (s *Store) SlotArtifacts(ctx context.Context) ([]SlotArtifact, error) {
 	return artifacts, rows.Err()
 }
 
+// QuarantinedSlot は隔離された slot を、失敗の原因まで辿れる形で表す。
+type QuarantinedSlot struct{ SlotID, Path, FailureCode, FailureDetailPath, UpdatedAt string }
+
+// QuarantinedSlots は隔離された slot を古い順に返す。
+// 隔離は自動では解けず retention まで枠を占めるため、診断は state だけを見て件数を数える。
+func (s *Store) QuarantinedSlots(ctx context.Context) ([]QuarantinedSlot, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sl.id,rt.path||'/'||sl.rel_path,COALESCE(sl.failure_code,''),COALESCE(sl.failure_detail_path,''),sl.updated_at
+		FROM slots sl JOIN roots rt ON rt.id=sl.root_id
+		WHERE sl.state='QUARANTINED' ORDER BY sl.updated_at,sl.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []QuarantinedSlot
+	for rows.Next() {
+		var slot QuarantinedSlot
+		if err := rows.Scan(&slot.SlotID, &slot.Path, &slot.FailureCode, &slot.FailureDetailPath, &slot.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, slot)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) QuarantineMissingSlot(ctx context.Context, id, reason string) error {
 	return s.SetSlotState(ctx, id, []string{"ALLOCATING", "REGISTERING", "PREPARING", "READY", "LEASED", "DRAINING", "SNAPSHOTTING", "SNAPSHOTTED", "UNBOUND", "RESTORING", "RETIRING", "REMOVING", "FAILED", "STALE"}, "QUARANTINED", reason)
 }

@@ -86,6 +86,12 @@ func localizableDoctorFindings() []diag.Finding {
 	findings = append(findings, recoveryFailureFinding(state.RecoveryFailure{
 		JobID: "job-2", Kind: "RESTORE", SessionID: "session-2", ParentSessionID: "session-1",
 	}))
+	// 隔離の原因は失敗 code と詳細ログの有無で分岐する。
+	findings = append(findings, quarantinedSlotFinding(state.QuarantinedSlot{
+		SlotID: "slot-1", Path: "/root/slot-1", FailureCode: "UPDATE_FAILED",
+		FailureDetailPath: "/logs/slot-1.log", UpdatedAt: "2024-01-01T00:00:00Z",
+	}))
+	findings = append(findings, quarantinedSlotFinding(state.QuarantinedSlot{SlotID: "slot-2", Path: "/root/slot-2"}))
 	return findings
 }
 
@@ -116,6 +122,7 @@ func TestManagerDoctorReadFailuresKeepTheirEnglishText(t *testing.T) {
 	findings = append(findings, manager.standbyFindings(ctx)...)
 	findings = append(findings, manager.quarantinedRecoveryFindings(ctx)...)
 	findings = append(findings, manager.recoveryFailureFindings(ctx)...)
+	findings = append(findings, manager.quarantinedSlotFindings(ctx)...)
 	findings = append(findings, manager.workspaceSnapshotFindings(ctx)...)
 	findings = append(findings, manager.unsavedSubmoduleFindings(ctx)...)
 	assertEnglishTextUnchanged(t, findings)

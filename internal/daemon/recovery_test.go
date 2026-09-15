@@ -37,3 +37,33 @@ func TestIsRecoveryUnavailableReadsTheMarker(t *testing.T) {
 		t.Fatal("the marker must be recognized inside a wrapped RPC message")
 	}
 }
+
+func TestColdStartRetryableCoversUpdateFailuresOnly(t *testing.T) {
+	t.Parallel()
+	for code, want := range map[string]bool{
+		"UPDATE_FAILED":                true,
+		"UPDATE_FAILED:prepare-id":     true,
+		"UPDATE_AMBIGUOUS":             false,
+		"RESTORE_FAILED":               false,
+		"PREPARE_FAILED":               false,
+		"WORKTREE_OWNERSHIP_UNCERTAIN": false,
+		"":                             false,
+	} {
+		if got := coldStartRetryable(code); got != want {
+			t.Errorf("coldStartRetryable(%q)=%t, want %t", code, got, want)
+		}
+	}
+}
+
+func TestIsColdStartRetryableReadsTheMarker(t *testing.T) {
+	t.Parallel()
+	if IsColdStartRetryable(nil) {
+		t.Fatal("a missing error must not report a retryable cold start")
+	}
+	if IsColdStartRetryable(errors.New("readiness failed " + RecoveryUnavailableMarker)) {
+		t.Fatal("a recovery failure must not report a retryable cold start")
+	}
+	if !IsColdStartRetryable(errors.New("readiness failed " + ColdStartRetryableMarker + " detail_path=unavailable")) {
+		t.Fatal("the marker must be recognized inside a wrapped RPC message")
+	}
+}

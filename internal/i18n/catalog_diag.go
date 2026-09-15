@@ -216,6 +216,14 @@ var diagCatalog = map[string]Entry{
 	"diag.ownership.working_slot_missing":        {EN: "a slot directory that still holds work is missing", JA: "作業が残っている slot directory がありません"},
 	"diag.ownership.working_slot_missing_cause":  {EN: "slot {{.SlotID}} is {{.State}}, so wx still needs its directory, but the directory does not exist", JA: "slot {{.SlotID}} は {{.State}} なので wx はまだその directory を必要としますが、directory が存在しません"},
 
+	// diag.quarantine.* は隔離された slot の検査結果である。
+	"diag.quarantine.slots_unreadable":     {EN: "the quarantined slots could not be read", JA: "隔離された slot を読み取れません"},
+	"diag.quarantine.no_slot":              {EN: "no slot is quarantined", JA: "隔離された slot はありません"},
+	"diag.quarantine.slot":                 {EN: "a slot is quarantined, so its worktree stays out of service", JA: "slot が隔離されており、その worktree は使われないままです"},
+	"diag.quarantine.cause":                {EN: "the slot was quarantined without a recorded failure code", JA: "この slot は失敗 code が記録されないまま隔離されました"},
+	"diag.quarantine.cause_code":           {EN: "the slot was quarantined with {{.Code}}", JA: "この slot は {{.Code}} で隔離されました"},
+	"diag.quarantine.cause_no_detail_path": {EN: "{{.Cause}}; no command output was recorded for it", JA: "{{.Cause}}。command の出力は記録されていません"},
+
 	// diag.recovery.* は復元に使う記録と ref の検査結果である。
 	"diag.recovery.quarantine_unreadable":          {EN: "the quarantined recovery records could not be read", JA: "隔離された復元記録を読み取れません"},
 	"diag.recovery.quarantined_sessions":           {EN: "sessions of a workspace can no longer be restored because their recovery refs are gone", JA: "recovery ref が失われたため、workspace の session を復元できません"},
@@ -283,6 +291,9 @@ var diagCatalog = map[string]Entry{
 	"diag.detail.restoring_session":         {EN: "restoring session {{.SessionID}}", JA: "復元元の session {{.SessionID}}"},
 	"diag.detail.session_state":             {EN: "session state {{.State}}", JA: "session の状態 {{.State}}"},
 	"diag.detail.slot_state":                {EN: "slot state {{.State}}", JA: "slot の状態 {{.State}}"},
+	"diag.detail.slot":                      {EN: "slot {{.SlotID}}", JA: "slot {{.SlotID}}"},
+	"diag.detail.quarantined_at":            {EN: "quarantined at {{.Time}}", JA: "隔離時刻 {{.Time}}"},
+	"diag.detail.no_quarantined_slots":      {EN: "0 quarantined slot(s)", JA: "隔離された slot は 0 件"},
 	"diag.detail.archives_checked":          {EN: "{{.Count}} archive(s) checked without reading their contents", JA: "{{.Count}} 件の archive を内容を読まずに検査しました"},
 	"diag.detail.submodules_checked":        {EN: "{{.Count}} submodule(s) checked", JA: "{{.Count}} 件の submodule を検査しました"},
 	"diag.detail.submodules_out_of_scope":   {EN: "{{.Count}} submodule(s) were outside the preparation range", JA: "{{.Count}} 件の submodule は準備範囲外でした"},
@@ -300,6 +311,7 @@ var diagCatalog = map[string]Entry{
 	"diag.action.resume_after_review":                {EN: "run {{.Action}} to resume it once you know the stop was not needed", JA: "停止が不要だったと分かったら {{.Action}} を実行して再開してください"},
 	"diag.action.clear_unmanaged":                    {EN: "review them with wx clear --unmanaged --dry-run, then run wx clear --unmanaged to delete them", JA: "wx clear --unmanaged --dry-run で内容を確認し、wx clear --unmanaged を実行して削除してください"},
 	"diag.action.prune_refs":                         {EN: "review them with wx prune --dry-run, then run wx prune to remove them", JA: "wx prune --dry-run で内容を確認し、wx prune を実行して削除してください"},
+	"diag.action.clear_quarantined_slot":             {EN: "{{.Lead}}, then release the quarantined capacity with wx clear; wx keeps the worktree until you do or until the quarantine retention elapses", JA: "{{.Lead}}、その後 wx clear で隔離された枠を解放してください。解放するか保持期限が過ぎるまで wx は worktree を残します"},
 	"diag.action.discard_recovery":                   {EN: "check the sessions with wx discard-recovery {{.Root}} --dry-run, then discard them with the same command without --dry-run; wx keeps the records until you do", JA: "wx discard-recovery {{.Root}} --dry-run で session を確認し、--dry-run を外した同じ command で破棄してください。破棄するまで wx は記録を保持します"},
 	"diag.action.repository_record_cleanup":          {EN: "no action is required; wx removes the record on its next collection and registers the repository again if you use that path", JA: "対処は不要です。wx は次の回収で記録を削除し、その path を使えば repository を再登録します"},
 	"diag.action.restore_repository":                 {EN: "run git -C {{.Path}} rev-parse --git-dir to see why wx cannot read it, and restore it from its remote if it is gone; if you no longer need the workspaces that use it, run wx forget <workspace-path> on each and then wx forget --discard-recovery <workspace-path> for the ones it refuses while they still hold recovery state", JA: "git -C {{.Path}} rev-parse --git-dir を実行して読み取れない理由を確認し、失われているなら remote から復元してください。利用している workspace が不要なら、それぞれに wx forget <workspace-path> を実行し、復旧状態が残って拒否されたものには wx forget --discard-recovery <workspace-path> を実行してください"},

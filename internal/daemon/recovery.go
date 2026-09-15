@@ -16,6 +16,16 @@ var restoreFailureCodes = map[string]bool{
 	"SNAPSHOT_UNAVAILABLE": true,
 }
 
+// ColdStartRetryableMarker は、いま使った worktree に固有の失敗で、作り直せば成功する見込みを示す機械可読なトークンである。
+// RecoveryUnavailableMarker と同じく RPC の失敗文字列へ載せ、client はこの印だけで作り直しを決める。
+const ColdStartRetryableMarker = "cold_start=retryable"
+
+// coldStartFailureCodes は「既存の worktree を書き換えようとしたから失敗した」ことが確かな slot の failure code である。
+// prepare と共有する code は新しい worktree でも同じ失敗を繰り返し得るため、restoreFailureCodes と同じ基準で含めない。
+var coldStartFailureCodes = map[string]bool{
+	"UPDATE_FAILED": true,
+}
+
 // recoveryUnavailable は slot の failure code が復元不能を表すかを返す。
 // RESTORE_FAILED には prepare command の failure ID が ":" で連結されることがある。
 func recoveryUnavailable(failureCode string) bool {
@@ -23,7 +33,18 @@ func recoveryUnavailable(failureCode string) bool {
 	return restoreFailureCodes[head]
 }
 
+// coldStartRetryable は slot の failure code が、いま使った worktree に固有の失敗を表すかを返す。
+func coldStartRetryable(failureCode string) bool {
+	head, _, _ := strings.Cut(failureCode, ":")
+	return coldStartFailureCodes[head]
+}
+
 // IsRecoveryUnavailable は Resume・WaitReady の失敗が、当時のworktreeを復元できないことによるものかを返す。
 func IsRecoveryUnavailable(err error) bool {
 	return err != nil && strings.Contains(err.Error(), RecoveryUnavailableMarker)
+}
+
+// IsColdStartRetryable は ResolveAndLease・WaitReady の失敗が、worktree を作り直せば解消する見込みかを返す。
+func IsColdStartRetryable(err error) bool {
+	return err != nil && strings.Contains(err.Error(), ColdStartRetryableMarker)
 }

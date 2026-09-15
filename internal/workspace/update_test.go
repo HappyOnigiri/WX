@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -307,5 +308,45 @@ func TestUpdateWithoutRewrittenTrackedPathsSkipsCOWReplacement(t *testing.T) {
 	}
 	if after := updateTestInode(t, filepath.Join(target, "file")); after != before {
 		t.Fatalf("a shared file went through the replacement path again: %d -> %d", before, after)
+	}
+}
+
+// skip-worktree の付いた path が差分に乗る更新は、書込みを始める前に不適格として弾く。
+// force checkout でもこの path は更新できず、書込み後に失敗すると slot が隔離されてしまうためである。
+// testlint:allow-serial -- プロセス全体の環境（HOME）を変更するため
+func TestValidateUpdateCandidateRejectsFlaggedIndexPathsInTheDiff(t *testing.T) {
+	ctx := context.Background()
+	p, repo, _, target := cowFixture(t)
+	main := string(repo.MainPath)
+	if err := os.WriteFile(filepath.Join(main, "other"), []byte("other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cowGit(t, main, "add", ".")
+	cowGit(t, main, "commit", "-m", "add a tracked file the update leaves alone")
+	baseOID := cowGit(t, main, "rev-parse", "HEAD")
+	if err := p.Prepare(ctx, repo, target, baseOID, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(main, "file"), []byte(cowBody+"after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cowGit(t, main, "add", ".")
+	cowGit(t, main, "commit", "-m", "rewrite a tracked file")
+	newOID := cowGit(t, main, "rev-parse", "HEAD")
+	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
+		t.Fatalf("an update without index flags must stay eligible: %v", err)
+	}
+	// 差分に乗らない path の flag は checkout を妨げないので、更新は適格なままである。
+	cowGit(t, target, "update-index", "--skip-worktree", "other")
+	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
+		t.Fatalf("a flag outside the diff must stay eligible: %v", err)
+	}
+	cowGit(t, target, "update-index", "--skip-worktree", "file")
+	err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil)
+	if !errors.Is(err, ErrUpdateIneligible) {
+		t.Fatalf("flagged update error=%v, want ErrUpdateIneligible", err)
+	}
+	if !strings.Contains(err.Error(), "file") {
+		t.Fatalf("error=%v, want it to name the path that blocks the checkout", err)
 	}
 }

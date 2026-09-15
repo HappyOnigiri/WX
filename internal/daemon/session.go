@@ -138,11 +138,16 @@ func (m *Manager) waitReadiness(ctx context.Context, id, token string, early boo
 				exitCode = strconv.Itoa(metadata.ExitCode)
 			}
 			// 復元の失敗は marker で区別する。client は会話の再開を優先し、新しい worktree で作り直してよいか確認する。
-			recovery := ""
-			if recoveryUnavailable(slot.FailureCode) {
-				recovery = " " + RecoveryUnavailableMarker
+			// 待機枠の更新に固有の失敗も marker で区別し、client は確認を出さずに cold start で起動し直す。
+			// 二つの集合は互いに素なので、marker は多くとも 1 つしか付かない。
+			marker := ""
+			switch {
+			case recoveryUnavailable(slot.FailureCode):
+				marker = " " + RecoveryUnavailableMarker
+			case coldStartRetryable(slot.FailureCode):
+				marker = " " + ColdStartRetryableMarker
 			}
-			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s%s detail_path=%s exit_code=%s timed_out=%t canceled=%t; run `wx status` or `wx doctor` for details", slot.State, failureID, recovery, detailPath, exitCode, metadata.TimedOut, metadata.Canceled)
+			return fmt.Errorf("workspace readiness failed: state=%s failure_id=%s%s detail_path=%s exit_code=%s timed_out=%t canceled=%t; run `wx status` or `wx doctor` for details", slot.State, failureID, marker, detailPath, exitCode, metadata.TimedOut, metadata.Canceled)
 		}
 		if early {
 			session, sessionErr := m.store.Session(ctx, id, token)

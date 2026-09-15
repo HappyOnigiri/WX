@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -325,5 +326,36 @@ func TestQuarantinedRecoverySessionsStayWithinTheirWorkspace(t *testing.T) {
 	groups, err = store.QuarantinedRecoveryGroups(ctx)
 	if err != nil || len(groups) != 0 {
 		t.Fatalf("quarantined recovery groups after discard=%+v err=%v", groups, err)
+	}
+}
+
+// QuarantinedSlots は隔離された slot だけを、失敗の記録つきで返す。
+func TestQuarantinedSlotsListOnlyQuarantinedSlots(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	for _, slot := range []Slot{
+		{ID: "quarantined", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/quarantined", State: "PREPARING"},
+		{ID: "ready", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/ready", State: "PREPARING"},
+	} {
+		session := Session{ID: slot.ID, WorkspaceID: "workspace", SlotID: slot.ID, State: "STARTING", AgentKind: "codex", TokenHash: HashToken("token")}
+		if _, err := store.CreateSlotSession(ctx, slot, nil, session, "PREPARE"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetSlotStateWithDetail(ctx, "quarantined", []string{"PREPARING"}, "QUARANTINED", "UPDATE_FAILED", "/logs/quarantined.log"); err != nil {
+		t.Fatal(err)
+	}
+	slots, err := store.QuarantinedSlots(ctx)
+	if err != nil || len(slots) != 1 {
+		t.Fatalf("quarantined slots=%+v err=%v", slots, err)
+	}
+	got := slots[0]
+	if got.SlotID != "quarantined" || got.FailureCode != "UPDATE_FAILED" || got.FailureDetailPath != "/logs/quarantined.log" {
+		t.Fatalf("quarantined slot=%+v", got)
+	}
+	if got.UpdatedAt == "" || !strings.HasSuffix(got.Path, filepath.Join("workspace", "quarantined")) {
+		t.Fatalf("quarantined slot=%+v, want a resolved path and an update time", got)
 	}
 }

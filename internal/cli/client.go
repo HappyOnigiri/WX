@@ -205,13 +205,13 @@ func (c Client) runAgentResolved(ctx context.Context, agent string, args, branch
 		}
 	}
 	plan.hooksReady = hookconfig.Available(plan.agent)
-	// 復元できない worktree で失敗したときだけ、会話の再開を優先して新しい worktree で 1 度だけやり直す。
-	exit, retry := c.launch(ctx, plan)
-	if !retry {
+	// 復元できない worktree と、作り直せば済む worktree の失敗だけ 1 度だけやり直す。
+	// 2 度目の結果は成否にかかわらずそのまま返し、再試行を繰り返さない。
+	exit, relaunch := c.launch(ctx, plan)
+	if relaunch == nil {
 		return exit
 	}
-	plan.fresh = true
-	exit, _ = c.launch(ctx, plan)
+	exit, _ = c.launch(ctx, *relaunch)
 	return exit
 }
 
@@ -228,14 +228,14 @@ func interruptedDuringSetup(ctx, setupCtx context.Context) bool {
 }
 
 // launch は lease を取り、worktree の準備を待って agent を起動する。
-// 当時の worktree を復元できずに失敗し、新しい worktree での再開が選ばれたときだけ retry=true を返す。
-func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
+// やり直す価値のある失敗で終わったときだけ、やり直しに使う plan を返す。
+func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) {
 	// 新しいリリースの案内は進捗表示より前の 1 行にする。daemon の記録を読むだけで、失敗しても起動は続く。
 	c.announceUpdate(ctx)
 	// 貸出前に確認する。cancel されたら slot を作らずに終える。
 	if !c.confirmLinkedWorktreeBase(ctx, plan.leaseBaseCWD(), true) {
 		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.launch_cancelled", nil))
-		return 1, false
+		return 1, nil
 	}
 	var lease daemon.Lease
 	method := "ResolveAndLease"
@@ -261,7 +261,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 	operationKey, err := domain.NewID()
 	if err != nil {
 		reportStepError(cliLanguage(c), "cli.step.create_identity", err)
-		return 1, false
+		return 1, nil
 	}
 	// ResolveAndLease と Resume は daemon 側で repository discovery を同期実行する。
 	// cold な複数 repository root でも、discovery.timeout 内の探索を client 側の既定 timeout で中断しない。
@@ -282,13 +282,13 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		waiting.finish()
 		if interruptedDuringSetup(ctx, setupCtx) {
 			fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.interrupted", nil))
-			return 1, false
+			return 1, nil
 		}
-		if c.acceptsFreshWorkspace(ctx, plan, err) {
-			return 1, true
+		if relaunch := c.relaunchPlan(ctx, plan, err); relaunch != nil {
+			return 1, relaunch
 		}
 		cliError(c, err)
-		return 1, false
+		return 1, nil
 	}
 	readiness := readinessForLease(c.Config, lease, plan.resuming, plan.leaseKind, plan.hooksReady)
 	waiting.setReadiness(readiness.Mode)
@@ -350,24 +350,24 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, bool) {
 		if err != nil {
 			if interruptedDuringSetup(ctx, setupCtx) {
 				fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.interrupted_preparing", nil))
-				return 1, false
+				return 1, nil
 			}
-			if c.acceptsFreshWorkspace(ctx, plan, err) {
-				return 1, true
+			if relaunch := c.relaunchPlan(ctx, plan, err); relaunch != nil {
+				return 1, relaunch
 			}
 			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
-			return 1, false
+			return 1, nil
 		}
 	}
 	waiting.finish()
 	// 起動前・準備待ちの間に終了要求が届いていたら、agent を起動せずにそのまま応答する。
 	if terminator.requested() {
 		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.clear_stop", nil))
-		return 1, false
+		return 1, nil
 	}
 	// ここから先の signal は agent へ中継するので、準備待ち用の捕捉は返す。
 	stopSetupSignals()
-	return c.startAgent(ctx, plan.agent, lease, args, env, terminator), false
+	return c.startAgent(ctx, plan.agent, lease, args, env, terminator), nil
 }
 
 // startAgent は lease の inode に束縛した CWD で agent を起動し、終了 status を返す。
