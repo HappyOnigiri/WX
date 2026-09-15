@@ -6,3 +6,4 @@ internal/archive/archive.go	baed407ed40068db40d4d98b5127f46da2355b5de87f28be7448
 internal/archive/conflict.go	721b8035d636469630012eb6e1e137f5b777c863030c5aa586404d224e6341dd	path が異なる場合だけ比較する != ガードの内側なので、path の < と <= は同じ動作になる
 internal/archive/conflict.go	4f3cd7c30f7614859e3896858652716523b4079964c405374785646f37995f83	stage が異なる場合だけ比較する != ガードの内側なので、stage の < と <= は同じ動作になる
 internal/archive/conflict.go	f0ead1333c69e263182ecab7d17c1fa254b9e78cbae9ff98b3cad537d8625cfe	同一 path と stage の重複をソート前に拒否するため、stage の < と <= の同値差へ到達しない
+internal/archive/workspace.go	7911d2bf6de6e2b8384305ba06077d7f7112b6282b1dbdd533056d6bb571cacf	read は非負で、read == 0 のとき buffer[:0] をハッシュへ書いても結果は変わらないため、> と >= は同じ動作になる
