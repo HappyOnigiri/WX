@@ -31,14 +31,18 @@ func (p *Preparer) ValidateUpdateCandidate(ctx context.Context, repo discovery.R
 	if err := p.rejectChangedAttributes(ctx, repo, oldOID, newOID); err != nil {
 		return err
 	}
-	if err := p.rejectFlaggedIndexPaths(ctx, repo, target, oldOID, newOID); err != nil {
-		return err
-	}
 	root, err := p.destinationRoot(target)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = root.Close() }()
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		return err
+	}
+	if err := p.rejectUnrestorableFlaggedPaths(ctx, repo, target, identity, oldOID, newOID, root); err != nil {
+		return err
+	}
 	if err := validateRecordedPlacements(root, previous); err != nil {
 		return fmt.Errorf("%w: %w", ErrUpdateIneligible, err)
 	}
@@ -86,59 +90,6 @@ func (p *Preparer) rejectChangedAttributes(ctx context.Context, repo discovery.R
 		return fmt.Errorf("%w: .gitattributes changed between the standby and the requested OID", ErrUpdateIneligible)
 	}
 	return nil
-}
-
-// rejectFlaggedIndexPaths は、stat比較を抑止するindex flagの付いたpathが差分に乗る更新を不適格として扱う。
-// `core.sparseCheckout=false`のworktreeでは、skip-worktree・assume-unchangedの付いたpathをforce checkoutでも更新できず、
-// `Entry ... not uptodate. Cannot merge.`で落ちる。書込み後の失敗は隔離になるため、書込み前にここで弾いてcold startへ戻す。
-// commentlint:allow-long -- 事前に弾く理由（書込み後だと隔離になること）は、検査を消すときの判断に要る
-func (p *Preparer) rejectFlaggedIndexPaths(ctx context.Context, repo discovery.Repository, target, oldOID, newOID string) error {
-	flagged, err := p.flaggedIndexPaths(ctx, target)
-	if err != nil {
-		return err
-	}
-	if len(flagged) == 0 {
-		return nil
-	}
-	// rename検出は旧名を落として集合を狭めるため切る。updateCOWScopeと同じく多めに見積もる側へ倒す。
-	diff, err := p.Git.Run(ctx, string(repo.MainPath), "diff", "--name-only", "--no-renames", "-z", oldOID, newOID)
-	if err != nil {
-		return err
-	}
-	for _, name := range strings.Split(diff.Stdout, "\x00") {
-		if name == "" {
-			continue
-		}
-		if flagged[filepath.Clean(name)] {
-			return fmt.Errorf("%w: index flag on %s blocks the checkout to the requested OID", ErrUpdateIneligible, name)
-		}
-	}
-	return nil
-}
-
-// flaggedIndexPaths はworktreeのindexでstat比較を抑止されているpathを返す。
-// `ls-files -v -z`のtagは'S'がskip-worktree、小文字がassume-unchangedで、's'は両方が立った状態である。
-// 読み取れないまま進むと隔離に至るので、失敗はそのまま返してfail-closedにする。
-func (p *Preparer) flaggedIndexPaths(ctx context.Context, target string) (map[string]bool, error) {
-	identity, err := p.WorktreeIdentity(target)
-	if err != nil {
-		return nil, err
-	}
-	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "ls-files", "-v", "-z")
-	if err != nil {
-		return nil, err
-	}
-	flagged := map[string]bool{}
-	for _, entry := range strings.Split(result.Stdout, "\x00") {
-		if len(entry) < 3 || entry[1] != ' ' {
-			continue
-		}
-		tag, path := entry[0], entry[2:]
-		if tag == 'S' || (tag >= 'a' && tag <= 'z') {
-			flagged[filepath.Clean(path)] = true
-		}
-	}
-	return flagged, nil
 }
 
 func (p *Preparer) rejectChangedGitlinks(ctx context.Context, repo discovery.Repository, oldOID, newOID string) error {
@@ -249,8 +200,7 @@ func (p *Preparer) UpdateLocked(ctx context.Context, repo discovery.Repository, 
 		return nil, err
 	}
 	if err := p.timePhase("update-checkout", func() error {
-		_, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", "--force", newOID)
-		return err
+		return p.checkoutUpdate(ctx, repo, target, identity, oldOID, newOID, destination)
 	}); err != nil {
 		return nil, err
 	}
