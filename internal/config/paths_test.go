@@ -50,6 +50,31 @@ func TestNormalizePathsResolvesSymlinksAndRejectsCanonicalCollisions(t *testing.
 	}
 }
 
+// symlink の先にまだ存在しない一階層を指定しても、その suffix を保ったまま正規化する。
+func TestCanonicalPathPreservesSingleMissingSuffixAfterSymlink(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "real")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := canonicalPath(filepath.Join(alias, "future"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(real, "future")
+	if got != want {
+		t.Fatalf("canonical path=%q, want %q", got, want)
+	}
+}
+
 func TestDerivedPathsFailClosedWithoutHome(t *testing.T) {
 	previousHome, hadHome := os.LookupEnv("HOME")
 	if err := os.Unsetenv("HOME"); err != nil {

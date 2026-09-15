@@ -93,3 +93,23 @@ func TestMaxReadinessTimeoutCoversRepositoryOverrides(t *testing.T) {
 		t.Fatalf("max readiness timeout=%s, want the longest repository override", got)
 	}
 }
+
+// global と同じ timeout の個別指定は、最大値を変更しない。
+func TestMaxReadinessTimeoutKeepsEqualOverride(t *testing.T) {
+	t.Parallel()
+	cfg := Defaults()
+	equal := cfg.Readiness.Timeout
+	cfg.Repositories["/same"] = Repository{Readiness: RepositoryReadiness{Timeout: &equal}}
+	if got := cfg.MaxReadinessTimeout(); got != equal.Duration {
+		t.Fatalf("max readiness timeout=%s, want the equal global value", got)
+	}
+}
+
+// global と同じ retention は、最短値を変更しない。
+func TestMinDurationKeepsEqualOverride(t *testing.T) {
+	t.Parallel()
+	base := time.Hour
+	if got := minDuration(base, map[string]time.Duration{"/same": base}); got != base {
+		t.Fatalf("minimum duration=%s, want the equal base value", got)
+	}
+}
