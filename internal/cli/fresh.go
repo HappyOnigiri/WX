@@ -66,6 +66,29 @@ func (c Client) acceptsFreshWorkspace(ctx context.Context, plan launchPlan, err 
 	return c.confirmFreshResume(ctx, plan.target.WXSessionID, err.Error())
 }
 
+// acceptsColdStart は、起動の失敗がいま使った worktree に固有で、作り直せば成功する見込みかを返す。
+// 会話の再開を対象にしないのは、当時の worktree を捨てる判断が acceptsFreshWorkspace の確認の責務だからである。
+// 確認を出さないのは、まだ誰にも渡していない worktree を作り直すだけで、失われるものが無いためである。
+func (c Client) acceptsColdStart(plan launchPlan, err error) bool {
+	return !plan.resuming && daemon.IsColdStartRetryable(err)
+}
+
+// relaunchPlan は 1 度だけやり直す価値のある失敗かを判定し、やり直しに使う plan を返す。
+// やり直さない失敗では nil を返す。再試行が 1 度きりであることは呼び出し元が保証する。
+func (c Client) relaunchPlan(ctx context.Context, plan launchPlan, err error) *launchPlan {
+	switch {
+	case c.acceptsFreshWorkspace(ctx, plan, err):
+		next := plan
+		next.fresh = true
+		return &next
+	case c.acceptsColdStart(plan, err):
+		// 失敗した slot は隔離済みで貸出候補から外れているため、同じ要求をもう一度出せば別の枠か cold start へ回る。
+		next := plan
+		return &next
+	}
+	return nil
+}
+
 // confirmFreshResume は当時の worktree を復元できないとき、新しい worktree で会話を再開してよいか確認する。
 // 既定は Yes で、resume.auto_fresh が真なら確認を省き、端末がなければ会話の再開を優先して notice を出したうえで進む。
 func (c Client) confirmFreshResume(ctx context.Context, sessionID, reason string) bool {

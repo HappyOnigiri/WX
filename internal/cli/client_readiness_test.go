@@ -44,9 +44,9 @@ func TestLaunchReadinessModeAndFailureGate(t *testing.T) {
 			cfg.Readiness.Mode = tc.mode
 			client, stop := serveResumeLaunchRPCWithConfig(t, handler, cfg)
 			defer stop()
-			exit, retry := client.launch(context.Background(), launchPlan{agent: "claude", hooksReady: tc.hooks, cwd: root})
-			if retry || (exit == 0) == tc.fail {
-				t.Fatalf("exit=%d retry=%t", exit, retry)
+			exit, relaunch := client.launch(context.Background(), launchPlan{agent: "claude", hooksReady: tc.hooks, cwd: root})
+			if relaunch != nil || (exit == 0) == tc.fail {
+				t.Fatalf("exit=%d relaunch=%v", exit, relaunch)
 			}
 			methods := handler.methodsSnapshot()
 			if tc.method != "" && !containsMethod(methods, tc.method) {

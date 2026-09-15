@@ -54,9 +54,15 @@ func TestReadPrepareDiagnosticAcceptsGitExitStatus(t *testing.T) {
 	}
 }
 
-func TestWaitReadyMarksRestoreFailuresAsUnavailableRecovery(t *testing.T) {
+// 失敗 code ごとに、readiness エラーへ載る marker が client の分岐と一致することを確かめる。
+// 空文字は marker を付けない code である。
+func TestWaitReadyMarksSlotFailuresForTheClient(t *testing.T) {
 	t.Parallel()
-	for code, wantMarker := range map[string]bool{"RESTORE_FAILED": true, "PREPARE_FAILED": false} {
+	for code, wantMarker := range map[string]string{
+		"RESTORE_FAILED": RecoveryUnavailableMarker,
+		"UPDATE_FAILED":  ColdStartRetryableMarker,
+		"PREPARE_FAILED": "",
+	} {
 		root := t.TempDir()
 		store, err := openTestStoreAtPath(t, filepath.Join(root, "state.db"))
 		if err != nil {
@@ -78,8 +84,10 @@ func TestWaitReadyMarksRestoreFailuresAsUnavailableRecovery(t *testing.T) {
 		if err == nil {
 			t.Fatalf("%s slot passed readiness", code)
 		}
-		if got := strings.Contains(err.Error(), RecoveryUnavailableMarker); got != wantMarker {
-			t.Fatalf("%s readiness error=%v marker=%t, want %t", code, err, got, wantMarker)
+		for _, marker := range []string{RecoveryUnavailableMarker, ColdStartRetryableMarker} {
+			if got := strings.Contains(err.Error(), marker); got != (marker == wantMarker) {
+				t.Fatalf("%s readiness error=%v contains %q=%t, want marker %q", code, err, marker, got, wantMarker)
+			}
 		}
 	}
 }

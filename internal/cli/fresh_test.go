@@ -159,3 +159,56 @@ func TestAcceptsFreshWorkspaceIgnoresUnrelatedLaunches(t *testing.T) {
 		t.Fatal("a recovery failure on a managed resume must be retried")
 	}
 }
+
+// updateFailure は standby 更新に失敗して隔離された slot で、WaitReady が返す形の失敗である。
+func updateFailure() error {
+	return errors.New("workspace readiness failed: state=QUARANTINED failure_id=UPDATE_FAILED " + daemon.ColdStartRetryableMarker + " detail_path=unavailable exit_code=unknown timed_out=false canceled=false")
+}
+
+func TestRunAgentRetriesWithAColdStartWhenTheStandbyUpdateFailed(t *testing.T) {
+	handler := &resumeLaunchHandler{
+		lease:           daemon.Lease{SessionID: "update-session", Token: "update-token", Ready: false},
+		waitReadyErrors: []error{updateFailure()},
+	}
+	client, record := newResumeLaunchFixture(t, handler, config.Defaults())
+
+	if exit := client.runAgentFrom(context.Background(), "claude", nil, nil, false, "", t.TempDir()); exit != 0 {
+		t.Fatalf("runAgentFrom exit=%d, want 0", exit)
+	}
+	if attempts := handler.historyFor("ResolveAndLease"); len(attempts) != 2 {
+		t.Fatalf("ResolveAndLease attempts=%d, want 2", len(attempts))
+	}
+	// cold start は当時の worktree を捨てる経路ではないので、fresh 起動の印を立ててはならない。
+	if launch := readLaunchRecord(t, record); launch["WX_RECOVERY_DISCARDED"] != "" {
+		t.Fatalf("WX_RECOVERY_DISCARDED=%q, want it unset", launch["WX_RECOVERY_DISCARDED"])
+	}
+}
+
+func TestRunAgentStopsAfterOneColdStartRetry(t *testing.T) {
+	handler := &resumeLaunchHandler{
+		lease:           daemon.Lease{SessionID: "update-session", Token: "update-token", Ready: false},
+		waitReadyErrors: []error{updateFailure(), updateFailure()},
+	}
+	client, _ := newResumeLaunchFixture(t, handler, config.Defaults())
+
+	if exit := client.runAgentFrom(context.Background(), "claude", nil, nil, false, "", t.TempDir()); exit != 1 {
+		t.Fatalf("runAgentFrom exit=%d, want 1", exit)
+	}
+	if attempts := handler.historyFor("ResolveAndLease"); len(attempts) != 2 {
+		t.Fatalf("ResolveAndLease attempts=%d, want exactly 2", len(attempts))
+	}
+}
+
+func TestAcceptsColdStartIgnoresUnrelatedLaunches(t *testing.T) {
+	client := Client{Config: config.Defaults()}
+	retryable := updateFailure()
+	if client.acceptsColdStart(launchPlan{resuming: true, target: resumeTarget{WXSessionID: "old-session"}}, retryable) {
+		t.Fatal("a resume must keep the fresh-workspace confirmation instead of a silent cold start")
+	}
+	if client.acceptsColdStart(launchPlan{}, restoreFailure()) {
+		t.Fatal("a recovery failure must not be retried as a cold start")
+	}
+	if !client.acceptsColdStart(launchPlan{}, retryable) {
+		t.Fatal("an update failure on a normal launch must be retried with a cold start")
+	}
+}

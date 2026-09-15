@@ -121,8 +121,8 @@ func TestLaunchPassesRepositoryDirsToTheAgent(t *testing.T) {
 			cfg.Agent.AddDir = test.mode
 			client, stop := serveResumeLaunchRPCWithConfig(t, &resumeLaunchHandler{lease: lease, eventLog: eventLog}, cfg)
 			defer stop()
-			if exit, retry := client.launch(context.Background(), launchPlan{agent: "claude", args: []string{"-p"}, cwd: root}); exit != 0 || retry {
-				t.Fatalf("exit=%d retry=%t", exit, retry)
+			if exit, relaunch := client.launch(context.Background(), launchPlan{agent: "claude", args: []string{"-p"}, cwd: root}); exit != 0 || relaunch != nil {
+				t.Fatalf("exit=%d relaunch=%v", exit, relaunch)
 			}
 			if got, want := readLaunchRecord(t, record)["args"], strings.ReplaceAll(test.want, "{root}", root); got != want {
 				t.Fatalf("args=%q, want %q", got, want)
