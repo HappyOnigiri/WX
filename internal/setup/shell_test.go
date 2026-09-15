@@ -142,6 +142,17 @@ func TestShellBlockQuotesAnUnexpectedDirectory(t *testing.T) {
 	}
 }
 
+// TestShellManagedBlockRecognizesBoundaryMarkers は、開始 marker が先頭にあり、
+// 終了 marker が直後に続く最小の block も完全な block として扱うことを確認する。
+// どちらも marker の位置が 0 になるため、通常の本文を挟んだ例だけでは境界を検査できない。
+func TestShellManagedBlockRecognizesBoundaryMarkers(t *testing.T) {
+	contents := shellBlockBegin + shellBlockEnd
+	block, found, terminated := shellManagedBlock(contents)
+	if !found || !terminated || block != contents {
+		t.Fatalf("boundary block=%q,%v,%v", block, found, terminated)
+	}
+}
+
 // TestShellPathRefusesAnUnterminatedBlock は終了 marker が無いとき、後続の利用者の設定を消さないことを確認する。
 func TestShellPathRefusesAnUnterminatedBlock(t *testing.T) {
 	fixture := newSetupFixture(t)
