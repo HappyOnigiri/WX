@@ -1,3 +1,4 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/rpc/protocol.go	aee6956bc0a5f79179d90dca8952aa591581045f4d9ce93fc3942dd9d331e253	ConnectRetry==0ではretryUntilを呼び出し開始前に設定するため、<=を<へ変えても期限判定が必ず終了し、観測可能な挙動が変わらない等価変異。
