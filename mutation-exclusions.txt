@@ -1,3 +1,7 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/daemon/capacity.go	03a6f8f6ea47bd5f58d148339ef07e89cb5ae0d358cf58cf65aedac1292051ac	multiplier=1 はどちらの分岐でも 1 を代入するため < と <= の変更に観測可能な差がない
+internal/daemon/capacity.go	e61972ef60bf6a277f258600baed33462bd12817ef179b28a8a307ca1743f851	上限ちょうどでは厳密比較を包含比較へ変えても結果は MaxInt64 のまま変わらない
+internal/daemon/capacity.go	c30d5682a946dab55694d8163cbe32ad800bcd8a19dd5590c4854f078fb29017	積がちょうど MaxInt64 のとき両分岐は同じ飽和値を返す
+internal/daemon/capacity.go	6dde83c14d20a78fceff79105bdfb10296b36fd6fbc688d9005cce0cc109aff2	warm_count=0 では worktree 容量を 0 倍するためどちらの分岐でも結果が 0 になる

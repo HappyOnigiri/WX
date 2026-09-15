@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"math"
 	"os"
 	"testing"
 
@@ -48,6 +49,43 @@ func TestPrepareCapacityShortageFailsBeforeStagedPreparation(t *testing.T) {
 	}
 }
 
+func TestEnforcePrepareCapacityAllowsExactCapacity(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t, "repository")
+	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 0, nil }
+	slotID := domain.StableID("capacity", "exact")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.enforcePrepareCapacity(ctx, slot, workspaceRecord, nil, nil, manager.Config()); err != nil {
+		t.Fatalf("exact capacity was rejected: %v", err)
+	}
+	got, err := store.Slot(ctx, slotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "PREPARING" {
+		t.Fatalf("slot after exact capacity check=%+v, want PREPARING", got)
+	}
+}
+
+func TestCapacityMathHandlesZeroAndOverflowBoundaries(t *testing.T) {
+	t.Parallel()
+	if got := capacityMul(0, 1); got != 0 {
+		t.Fatalf("capacityMul(0, 1)=%d, want zero", got)
+	}
+	if got := capacityMul(2, 3); got != 6 {
+		t.Fatalf("capacityMul(2, 3)=%d, want six", got)
+	}
+	if got := capacityMul(math.MaxInt64, 2); got != math.MaxInt64 {
+		t.Fatalf("capacityMul overflow=%d, want MaxInt64", got)
+	}
+	if got := capacityAdd(math.MaxInt64, 1); got != math.MaxInt64 {
+		t.Fatalf("capacityAdd overflow=%d, want MaxInt64", got)
+	}
+}
+
 func TestCapacityReportFindingsTreatSparseCheckoutAsNonBlocking(t *testing.T) {
 	t.Parallel()
 	report := CapacityReport{
@@ -72,5 +110,17 @@ func TestCapacityReportFindingsCountsSharedLFSCacheOnce(t *testing.T) {
 	}
 	if findings[0].Details[1] != "warm_count 2: 250 B" {
 		t.Fatalf("warm detail=%q, want shared cache counted once", findings[0].Details[1])
+	}
+}
+
+func TestCapacityReportFindingsDoesNotAddSharedBytesWithoutWarmSlots(t *testing.T) {
+	t.Parallel()
+	report := CapacityReport{Volumes: []CapacityVolume{{Volume: "v", Target: "/worktrees", Required: 100, Free: 100, WorktreeRequired: 100, SharedRequired: 50}}}
+	findings := capacityReportFindings("/workspace", report, 0)
+	if len(findings) != 1 || len(findings[0].Details) < 2 {
+		t.Fatalf("findings=%+v", findings)
+	}
+	if findings[0].Details[1] != "warm_count 0: 0 B" {
+		t.Fatalf("warm detail=%q, want no standby capacity", findings[0].Details[1])
 	}
 }
