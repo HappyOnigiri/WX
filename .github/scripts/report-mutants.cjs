@@ -202,6 +202,96 @@ function artifactId(name) {
   return match?.[1] || '';
 }
 
+function expectedProfiles(value, name) {
+  let profiles = value;
+  if (typeof profiles === 'string') profiles = profiles.trim().split(/\s+/u).filter(Boolean);
+  if (!Array.isArray(profiles) || profiles.length === 0) fail(`${name} has no expected profiles`);
+  const normalized = profiles.map((profile) => {
+    if (typeof profile !== 'string') fail(`${name} has an invalid profile`);
+    const value = profile.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/+$/u, '');
+    if (!value || value === '.') fail(`${name} has an invalid profile`);
+    return value;
+  });
+  if (new Set(normalized).size !== normalized.length) fail(`${name} has duplicate profiles`);
+  return normalized;
+}
+
+function normalizeExpectedShards(value) {
+  let shards = value;
+  if (typeof shards === 'string') {
+    try {
+      shards = JSON.parse(shards);
+    } catch (error) {
+      fail(`expected shards are not valid JSON: ${error.message}`);
+    }
+  }
+  if (!Array.isArray(shards) || shards.length === 0) fail('expected shards are empty');
+  return shards.map((item, index) => {
+    const name = `expected shard ${index}`;
+    if (typeof item === 'string') {
+      text(item, `${name} ID`, 500);
+      if (!item) fail(`${name} has an empty ID`);
+      return { id: item, profiles: null };
+    }
+    if (!item || typeof item !== 'object' || Array.isArray(item)) fail(`${name} is not an object`);
+    const id = text(item.id, `${name} ID`, 500);
+    if (!id) fail(`${name} has an empty ID`);
+    const profiles = expectedProfiles(item.profiles ?? item.profile ?? item.packages, name);
+    return { id, profiles };
+  });
+}
+
+function validateShardCompleteness(reports, expectedShards, source) {
+  const expected = normalizeExpectedShards(expectedShards);
+  const expectedById = new Map();
+  for (const shard of expected) {
+    if (expectedById.has(shard.id)) fail(`expected shard ${shard.id} is duplicated`);
+    expectedById.set(shard.id, shard);
+  }
+  if (!Array.isArray(reports) || reports.length === 0) fail('no mutation manifests were downloaded');
+  const observed = new Map();
+  const suffix = `-${source.runId}-${source.attempt}`;
+  for (const report of reports) {
+    const artifactName = text(report?.artifactName, 'manifest artifact name', 1000);
+    const prefix = 'mutation-';
+    if (!artifactName.startsWith(prefix) || !artifactName.endsWith(suffix)) {
+      fail(`${artifactName} does not contain the expected run ID and attempt`);
+    }
+    const id = artifactName.slice(prefix.length, artifactName.length - suffix.length);
+    if (!id || !expectedById.has(id)) fail(`${artifactName} is not an expected mutation shard`);
+    const manifest = validateManifest(report.manifest, artifactName);
+    if (manifest.run_id === undefined || String(manifest.run_id) !== String(source.runId)) {
+      fail(`${artifactName} run_id does not match source run`);
+    }
+    if (manifest.run_attempt === undefined || String(manifest.run_attempt) !== String(source.attempt)) {
+      fail(`${artifactName} run_attempt does not match source attempt`);
+    }
+    const shard = expectedById.get(id);
+    if (shard.profiles && !shard.profiles.includes(manifest.profile)) {
+      fail(`${artifactName} contains unexpected profile ${manifest.profile}`);
+    }
+    let profiles = observed.get(id);
+    if (!profiles) {
+      profiles = new Set();
+      observed.set(id, profiles);
+    }
+    if (profiles.has(manifest.profile)) fail(`${artifactName} contains a duplicate profile ${manifest.profile}`);
+    profiles.add(manifest.profile);
+  }
+  for (const shard of expected) {
+    const profiles = observed.get(shard.id);
+    if (!profiles) fail(`expected mutation shard ${shard.id} is missing`);
+    if (shard.profiles) {
+      const missing = shard.profiles.filter((profile) => !profiles.has(profile));
+      const unexpected = [...profiles].filter((profile) => !shard.profiles.includes(profile));
+      if (missing.length > 0 || unexpected.length > 0) {
+        fail(`mutation shard ${shard.id} profiles are incomplete (missing: ${missing.join(', ') || 'none'}; unexpected: ${unexpected.join(', ') || 'none'})`);
+      }
+    }
+  }
+  return { expected, observed };
+}
+
 function aggregateManifests(manifests, source) {
   const groups = new Map();
   const mutations = new Map();
@@ -400,6 +490,7 @@ async function run(options) {
     }
   }
   const reports = options.reports || collectManifests(options.reportDir || 'artifacts/mutation');
+  validateShardCompleteness(reports, options.expectedShards, source);
   for (const report of reports) report.jobUrl = report.jobUrl || jobUrls.get(artifactId(report.artifactName)) || source.runUrl;
   const groups = aggregateManifests(reports, source);
   for (const report of reports) {
@@ -428,5 +519,6 @@ module.exports = {
   mutationId,
   run,
   upsertGroup,
+  validateShardCompleteness,
   validateManifest,
 };

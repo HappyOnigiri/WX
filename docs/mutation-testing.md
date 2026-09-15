@@ -23,3 +23,25 @@ mutationreportで判定する。`FILE=internal/config/duration.go`を追加す�
 変異だけを合否判定し、`MUTATION_ID=<64桁のID>`を追加すると対象が結果中で一意に
 `KILLED`のときだけ成功する。局所指定はGremlins自体の探索範囲を狭めるものではない。
 `FILE`と`MUTATION_ID`は同時に指定できない。
+
+## workflowの観測契約
+
+planは、実行するshardのIDとそのshardが生成するmanifestの`profile`一覧を機械可読な
+出力としてreportへ渡す。reportはartifact名のshard ID・run ID・attemptとmanifestの
+`profile`を照合し、予定したshardの欠落・重複・予期しないshard・不正なmanifestを
+副作用のない検証で拒否する。この検証が終わるまで、mutation labelを含むGitHub Issues
+APIの書き込みは行わない。全shardが有効なmanifestを生成し、survivorが0件の場合は
+正常な空結果である。
+
+`internal/fdexec`はMutation Huntの対象外である。`unix.Close`、`unix.Exec`、`os.Exit`を
+含むprocess/OS adapterがhosted runnerの通信断や終了を起こし得るため、通常の列挙でも
+明示指定でもGremlinsを起動せず、planの診断へ除外理由を残す。
+
+`internal/archive`はproduction Go sourceを固定のshard定義へ排他的に割り当てる。各shardは
+別artifactへ出力し、Gremlinsの`--exclude-files`で他shardのsourceと`*_test.go`を除外する。
+plan時に実ファイル一覧と定義を比較するため、sourceの追加・削除・重複割り当ては実行前に
+失敗する。mutation IDとmanifestの`profile`はshard分割前と同じ契約を保つ。
+
+Gremlins実行中は、機密値や環境変数を出力しない軽量なresource heartbeatをログへ記録する。
+heartbeatは実行の正常終了・失敗・signalで必ず停止し、診断の失敗はmutation結果の判定を
+上書きしない。runner側のshutdown原因はこのログと実運用の再実行結果を合わせて判断する。

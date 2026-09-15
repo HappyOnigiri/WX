@@ -43,6 +43,13 @@ function manifest(runId = '10', attempt = '1', profile = 'internal/config') {
   };
 }
 
+function emptyManifest(runId = '10', attempt = '1', profile = 'internal/config') {
+  const value = manifest(runId, attempt, profile);
+  value.totals = { mutants: 0, killed: 0, lived: 0, not_covered: 0, not_viable: 0, timed_out: 0 };
+  value.survivors = [];
+  return value;
+}
+
 test('uses the shared deterministic mutation ID vector', () => {
   assert.equal(manifest().survivors[0].id, '8f58df524fcb072e70af7462216f0880cf5bdde384c38b74bb7bbf2f4a2414d7');
 });
@@ -289,6 +296,7 @@ test('uses job URLs and warnings in the run orchestration', async () => {
     sourceAttempt: source.attempt,
     sourceRun: { event: source.event, head_branch: source.ref, head_sha: sha, html_url: source.runUrl },
     reports: [{ artifactName: 'mutation-config-10-1', manifest: manifest() }],
+    expectedShards: [{ id: 'config', profiles: ['internal/config'] }],
     core: { warning: (message) => warnings.push(message) },
   });
   assert.equal(result.survivorCount, 1);
@@ -327,4 +335,89 @@ test('collects manifests from downloaded artifact directories', () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('rejects incomplete, duplicate, and unexpected mutation shards', () => {
+  const expected = [
+    { id: 'config', profiles: ['internal/config'] },
+    { id: 'state', profiles: ['internal/state'] },
+  ];
+  assert.throws(() => reporter.validateShardCompleteness([
+    { artifactName: 'mutation-config-10-1', manifest: emptyManifest() },
+  ], expected, source), /expected mutation shard state is missing/);
+  assert.throws(() => reporter.validateShardCompleteness([
+    { artifactName: 'mutation-config-10-1', manifest: emptyManifest() },
+    { artifactName: 'mutation-config-10-1', manifest: emptyManifest() },
+  ], [{ id: 'config', profiles: ['internal/config'] }], source), /duplicate profile/);
+  assert.throws(() => reporter.validateShardCompleteness([
+    { artifactName: 'mutation-other-10-1', manifest: emptyManifest() },
+  ], [{ id: 'config', profiles: ['internal/config'] }], source), /not an expected mutation shard/);
+  assert.throws(() => reporter.validateShardCompleteness([
+    { artifactName: 'mutation-config-10-2', manifest: emptyManifest('10', '1') },
+  ], [{ id: 'config', profiles: ['internal/config'] }], source), /expected run ID and attempt/);
+});
+
+test('does not write issues when a planned shard is missing', async () => {
+  let writes = 0;
+  const github = { rest: {
+    actions: { listJobsForWorkflowRun: async () => ({ data: { jobs: [] } }) },
+    issues: {
+      getLabel: async () => { writes += 1; return { data: { name: 'mutation' } }; },
+      create: async () => { writes += 1; return { data: { number: 1 } }; },
+      addLabels: async () => { writes += 1; return { data: [] }; },
+      update: async () => { writes += 1; return { data: {} }; },
+      createComment: async () => { writes += 1; return { data: {} }; },
+      listForRepo: async () => ({ data: [] }),
+      listComments: async () => ({ data: [] }),
+    },
+  } };
+  await assert.rejects(reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    sourceRun: { event: source.event, head_branch: source.ref, head_sha: sha, html_url: source.runUrl },
+    reports: [{ artifactName: 'mutation-config-10-1', manifest: emptyManifest() }],
+    expectedShards: [
+      { id: 'config', profiles: ['internal/config'] },
+      { id: 'state', profiles: ['internal/state'] },
+    ],
+  }), /expected mutation shard state is missing/);
+  assert.equal(writes, 0);
+});
+
+test('accepts all planned empty manifests without issue writes', async () => {
+  let writes = 0;
+  const github = { rest: {
+    actions: { listJobsForWorkflowRun: async () => ({ data: { jobs: [] } }) },
+    issues: {
+      getLabel: async () => { writes += 1; return { data: { name: 'mutation' } }; },
+      create: async () => { writes += 1; return { data: { number: 1 } }; },
+      addLabels: async () => { writes += 1; return { data: [] }; },
+      update: async () => { writes += 1; return { data: {} }; },
+      createComment: async () => { writes += 1; return { data: {} }; },
+      listForRepo: async () => ({ data: [] }),
+      listComments: async () => ({ data: [] }),
+    },
+  } };
+  const result = await reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    sourceRun: { event: source.event, head_branch: source.ref, head_sha: sha, html_url: source.runUrl },
+    reports: [
+      { artifactName: 'mutation-config-10-1', manifest: emptyManifest('10', '1', 'internal/config') },
+      { artifactName: 'mutation-state-10-1', manifest: emptyManifest('10', '1', 'internal/state') },
+    ],
+    expectedShards: [
+      { id: 'config', profiles: ['internal/config'] },
+      { id: 'state', profiles: ['internal/state'] },
+    ],
+  });
+  assert.equal(result.survivorCount, 0);
+  assert.deepEqual(result.results, []);
+  assert.equal(writes, 0);
 });
