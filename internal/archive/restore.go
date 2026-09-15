@@ -110,7 +110,7 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if err != nil {
 			return err
 		}
-		flags = flags.without(materialized)
+		flags = flags.Without(materialized)
 		if _, err := targetRun(nil, nil, "read-tree", s.IndexTreeOID); err != nil {
 			return err
 		}
