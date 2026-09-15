@@ -1,3 +1,5 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/config/resolve.go\tdf0500dc5444d7b32e6cd2f206ad1918c54245a78913b1466d56ca971a31be7b\t同じtimeoutの代入では戻り値が変わらない等価変異
+internal/config/resolve.go\t456d2e0cf300eaec9ebe52137fd2282ae88a18d00953168e23c3203e441985f9\t同じretentionの代入では戻り値が変わらない等価変異
