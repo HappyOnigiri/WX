@@ -30,8 +30,11 @@ planは、実行するshardのIDとそのshardが生成するmanifestの`profile
 出力としてreportへ渡す。reportはartifact名のshard ID・run ID・attemptとmanifestの
 `profile`を照合し、予定したshardの欠落・重複・予期しないshard・不正なmanifestを
 副作用のない検証で拒否する。この検証が終わるまで、mutation labelを含むGitHub Issues
-APIの書き込みは行わない。全shardが有効なmanifestを生成し、survivorが0件の場合は
-正常な空結果である。
+APIの書き込みは行わない。Gremlinsがexit 0で結果ファイルを作らない場合は、測定済みの
+mutation 0件として`mutationreport`の空結果モードでschema 2のmanifestを生成する。
+空manifestも通常と同じprofile、実行情報、command、exclusion、shard、repository境界の
+検証を通し、全shardが有効なmanifestを生成して初めて正常な空結果になる。非0終了、0バイト
+結果、不正JSON、artifactやmanifestの欠落は空結果へ読み替えず失敗として扱う。
 
 `internal/fdexec`はMutation Huntの対象外である。`unix.Close`、`unix.Exec`、`os.Exit`を
 含むprocess/OS adapterがhosted runnerの通信断や終了を起こし得るため、通常の列挙でも

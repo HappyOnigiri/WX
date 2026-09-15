@@ -254,13 +254,24 @@ jobs:
             .tools/bin/gremlins "${args[@]}"
             gremlins_status=$?
             stop_resource_heartbeat
-            if [ "$gremlins_status" -ne 0 ] || [ ! -s "$result" ]; then
+            command_string="gremlins ${args[*]}"
+            report_args=(-root "$GITHUB_WORKSPACE" -profile "$profile" -output "$manifest" -run-id "$HUNT_RUN_ID" -run-attempt "$HUNT_RUN_ATTEMPT" -command "$command_string")
+            if [ "$gremlins_status" -ne 0 ]; then
               echo "::error title=Gremlins failed::$package (exit $gremlins_status)"
               failures=$((failures + 1))
               continue
             fi
-            command_string="gremlins ${args[*]}"
-            report_args=(-root "$GITHUB_WORKSPACE" -profile "$profile" -input "$result" -output "$manifest" -run-id "$HUNT_RUN_ID" -run-attempt "$HUNT_RUN_ATTEMPT" -command "$command_string")
+            if [ -e "$result" ]; then
+              if [ ! -f "$result" ] || [ ! -s "$result" ]; then
+                echo "::error title=Gremlins result is empty or not a regular file::$package"
+                failures=$((failures + 1))
+                continue
+              fi
+              report_args+=(-input "$result")
+            else
+              echo "::notice title=Gremlins returned no mutations::$package (exit 0; recording an empty manifest)"
+              report_args+=(-empty-result)
+            fi
             if [ "${#shard_files[@]}" -gt 0 ]; then report_args+=(-shard-files "${shard_files[*]}"); fi
             .tools/bin/mutationreport "${report_args[@]}"
             report_status=$?
