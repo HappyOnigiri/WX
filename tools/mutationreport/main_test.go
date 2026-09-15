@@ -2,11 +2,67 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// manifestの版はreport-mutants.cjsの入力検証と対になるため、変更時に同時更新を要求する。
+func TestManifestContractSchemaVersion(t *testing.T) {
+	if manifestSchemaVersion != 3 {
+		t.Fatalf("schema version=%d; update .github/scripts/report-mutants.cjs before changing it", manifestSchemaVersion)
+	}
+}
+
+func TestBuildManifestRecordsMeasuredDuration(t *testing.T) {
+	root := t.TempDir()
+	packageDir := filepath.Join(root, "internal", "sample")
+	if err := os.MkdirAll(packageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "sample.go"), []byte("package sample\nfunc target(value int) int { return value }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := buildManifest(convertOptions{
+		Root: root, PackageDir: "internal/sample", Profile: "./internal/sample",
+		Exclusions: filepath.Join(root, "mutation-exclusions.txt"), DurationSeconds: 1.25,
+	}, gremlinsResult{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.DurationSeconds != 1.25 {
+		t.Fatalf("duration=%v, want 1.25", value.DurationSeconds)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"duration_seconds":1.25`) {
+		t.Fatalf("encoded manifest=%s", encoded)
+	}
+}
+
+func TestBuildManifestRejectsInvalidDuration(t *testing.T) {
+	for _, duration := range []float64{-1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		root := t.TempDir()
+		packageDir := filepath.Join(root, "internal", "sample")
+		if err := os.MkdirAll(packageDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(packageDir, "sample.go"), []byte("package sample\nfunc target(value int) int { return value }\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := buildManifest(convertOptions{
+			Root: root, PackageDir: "internal/sample", Profile: "./internal/sample",
+			Exclusions: filepath.Join(root, "mutation-exclusions.txt"), DurationSeconds: duration,
+		}, gremlinsResult{})
+		if err == nil || !strings.Contains(err.Error(), "duration") {
+			t.Fatalf("duration=%v error=%v", duration, err)
+		}
+	}
+}
 
 func mutationFixture(t *testing.T, source, exclusions string, result gremlinsResult) (manifest, error) {
 	return mutationFixtureFiles(t, map[string]string{"sample.go": source}, exclusions, result, "")
@@ -155,6 +211,9 @@ func target(value int) int {
 	}
 	if got := string(payload.Excluded); got != "[]" {
 		t.Fatalf("encoded excluded=%s, want []", got)
+	}
+	if strings.Contains(string(encoded), `"duration_seconds"`) {
+		t.Fatalf("unmeasured manifest should omit duration_seconds: %s", encoded)
 	}
 }
 

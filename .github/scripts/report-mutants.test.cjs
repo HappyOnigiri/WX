@@ -31,7 +31,7 @@ function manifest(runId = '10', attempt = '1', profile = 'internal/config') {
   };
   survivor.id = reporter.mutationId(survivor);
   return {
-    schema_version: 2,
+    schema_version: 3,
     profile,
     run_id: runId,
     run_attempt: attempt,
@@ -309,6 +309,17 @@ test('rejects unsafe paths and mismatched run metadata', () => {
   value.survivors[0].declaration.path = '../outside.go';
   assert.throws(() => reporter.validateManifest(value), /repository-relative path/);
   assert.throws(() => reporter.aggregateManifests([{ artifactName: 'mutation-config-10-1', manifest: manifest('11') }], source), /run_id does not match/);
+});
+
+test('validates optional measured duration', () => {
+  const value = manifest();
+  value.duration_seconds = 1.5;
+  assert.equal(reporter.validateManifest(value).duration_seconds, 1.5);
+  for (const duration of [-1, NaN, Infinity, -Infinity, '1']) {
+    const invalid = manifest();
+    invalid.duration_seconds = duration;
+    assert.throws(() => reporter.validateManifest(invalid), /duration_seconds/);
+  }
 });
 
 test('sanitizes markdown metacharacters in artifact values', () => {

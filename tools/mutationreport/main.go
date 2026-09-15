@@ -16,6 +16,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,7 +28,7 @@ import (
 )
 
 const (
-	manifestSchemaVersion = 2
+	manifestSchemaVersion = 3
 	mutationIDVersion     = "wx-mutation-id-v1"
 	defaultExclusionsFile = "mutation-exclusions.txt"
 )
@@ -95,15 +96,16 @@ type totals struct {
 }
 
 type manifest struct {
-	SchemaVersion int        `json:"schema_version"`
-	Profile       string     `json:"profile"`
-	RunID         string     `json:"run_id,omitempty"`
-	RunAttempt    string     `json:"run_attempt,omitempty"`
-	TestSHA       string     `json:"test_sha,omitempty"`
-	Command       []string   `json:"command"`
-	Totals        totals     `json:"totals"`
-	Survivors     []survivor `json:"survivors"`
-	Excluded      []excluded `json:"excluded"`
+	SchemaVersion   int        `json:"schema_version"`
+	Profile         string     `json:"profile"`
+	RunID           string     `json:"run_id,omitempty"`
+	RunAttempt      string     `json:"run_attempt,omitempty"`
+	TestSHA         string     `json:"test_sha,omitempty"`
+	DurationSeconds float64    `json:"duration_seconds,omitempty"`
+	Command         []string   `json:"command"`
+	Totals          totals     `json:"totals"`
+	Survivors       []survivor `json:"survivors"`
+	Excluded        []excluded `json:"excluded"`
 }
 
 type exclusion struct {
@@ -113,18 +115,19 @@ type exclusion struct {
 }
 
 type convertOptions struct {
-	Root       string
-	PackageDir string
-	Profile    string
-	Input      string
-	Exclusions string
-	ShardFiles []string
-	RunID      string
-	RunAttempt string
-	TestSHA    string
-	Command    []string
-	TargetFile string
-	MutationID string
+	Root            string
+	PackageDir      string
+	Profile         string
+	Input           string
+	Exclusions      string
+	ShardFiles      []string
+	RunID           string
+	RunAttempt      string
+	TestSHA         string
+	DurationSeconds float64
+	Command         []string
+	TargetFile      string
+	MutationID      string
 }
 
 type stringListFlag []string
@@ -214,6 +217,7 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	runID := flags.String("run-id", os.Getenv("GITHUB_RUN_ID"), "workflow run ID")
 	runAttempt := flags.String("run-attempt", os.Getenv("GITHUB_RUN_ATTEMPT"), "workflow run attempt")
 	testSHA := flags.String("test-sha", "", "source commit SHA; empty reads HEAD through internal/gitx")
+	durationSeconds := flags.Float64("duration-seconds", 0, "Gremlins execution duration in seconds; zero means unmeasured")
 	command := flags.String("command", "", "command recorded in the manifest")
 	targetFile := flags.String("file", "", "repository-relative file to validate")
 	targetFileAlias := flags.String("target-file", "", "alias for -file")
@@ -231,6 +235,9 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	}
 	if *profile == "" {
 		return errors.New("mutationreport: -profile is required")
+	}
+	if !validDurationSeconds(*durationSeconds) {
+		return fmt.Errorf("mutationreport: -duration-seconds must be a finite non-negative number, got %v", *durationSeconds)
 	}
 	if *targetFile != "" && *targetFileAlias != "" && *targetFile != *targetFileAlias {
 		return errors.New("mutationreport: -file and -target-file disagree")
@@ -259,7 +266,7 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	value, err := buildManifest(convertOptions{
 		Root: *root, PackageDir: *packageDir, Profile: *profile, Input: *input,
 		Exclusions: *exclusions, ShardFiles: shardFiles, RunID: *runID, RunAttempt: *runAttempt,
-		TestSHA: *testSHA, Command: commands, TargetFile: *targetFile, MutationID: *mutationID,
+		TestSHA: *testSHA, DurationSeconds: *durationSeconds, Command: commands, TargetFile: *targetFile, MutationID: *mutationID,
 	}, result)
 	if err != nil {
 		return err
@@ -288,6 +295,9 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 }
 
 func buildManifest(options convertOptions, result gremlinsResult) (manifest, error) {
+	if !validDurationSeconds(options.DurationSeconds) {
+		return manifest{}, fmt.Errorf("invalid duration_seconds %v", options.DurationSeconds)
+	}
 	root, err := filepath.Abs(options.Root)
 	if err != nil {
 		return manifest{}, fmt.Errorf("resolve repository root: %w", err)
@@ -385,7 +395,8 @@ func buildManifest(options convertOptions, result gremlinsResult) (manifest, err
 		SchemaVersion: manifestSchemaVersion,
 		Profile:       profile,
 		RunID:         options.RunID, RunAttempt: options.RunAttempt, TestSHA: sha,
-		Command: command,
+		DurationSeconds: options.DurationSeconds,
+		Command:         command,
 		Totals: totals{
 			Mutants: selectedTotals.Mutants, Killed: selectedTotals.Killed,
 			Lived: selectedTotals.Lived, NotCovered: selectedTotals.NotCovered,
@@ -393,6 +404,10 @@ func buildManifest(options convertOptions, result gremlinsResult) (manifest, err
 		},
 		Survivors: survivors, Excluded: ignored,
 	}, nil
+}
+
+func validDurationSeconds(value float64) bool {
+	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 type mutationCollection struct {
