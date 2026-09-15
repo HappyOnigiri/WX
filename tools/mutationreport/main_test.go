@@ -204,6 +204,105 @@ func TestCommandMainWritesManifestAndCanFailOnSurvivor(t *testing.T) {
 	}
 }
 
+func TestCommandMainRequiresExactlyOneResultMode(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "neither", args: []string{"-profile", "./internal/sample"}},
+		{name: "both", args: []string{"-profile", "./internal/sample", "-input", "result.json", "-empty-result"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := commandMain(nil, test.args, os.Stdout, os.Stderr)
+			if err == nil || !strings.Contains(err.Error(), "exactly one of -input and -empty-result") {
+				t.Fatalf("result mode error=%v", err)
+			}
+		})
+	}
+}
+
+func TestCommandMainWritesEmptyInternalVersionArtifact(t *testing.T) {
+	root := t.TempDir()
+	packageDir := filepath.Join(root, "internal", "version")
+	if err := os.MkdirAll(packageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "version.go"), []byte("package version\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exclusions := filepath.Join(root, "mutation-exclusions.txt")
+	if err := os.WriteFile(exclusions, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(root, "mutation-artifacts", "internal", "version", "manifest.json")
+	command := []string{"gremlins", "unleash", "./internal/version", "--workers", "2"}
+	err := commandMain(nil, []string{
+		"-root", root, "-profile", "./internal/version", "-empty-result", "-output", output,
+		"-exclusions", exclusions, "-shard-files", "internal/version/version.go",
+		"-run-id", "35006713198", "-run-attempt", "1", "-test-sha", strings.Repeat("c", 40),
+		"-command", strings.Join(command, " "),
+	}, os.Stdout, os.Stderr)
+	if err != nil {
+		t.Fatalf("empty result command failed: %v", err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read empty artifact: %v", err)
+	}
+	var value manifest
+	if err := json.Unmarshal(data, &value); err != nil {
+		t.Fatalf("decode empty manifest: %v", err)
+	}
+	if value.SchemaVersion != manifestSchemaVersion || value.Profile != "internal/version" {
+		t.Fatalf("manifest identity=%#v", value)
+	}
+	if value.RunID != "35006713198" || value.RunAttempt != "1" || value.TestSHA != strings.Repeat("c", 40) {
+		t.Fatalf("manifest provenance=%#v", value)
+	}
+	if got, want := strings.Join(value.Command, " "), strings.Join(command, " "); got != want {
+		t.Fatalf("manifest command=%q want %q", got, want)
+	}
+	if value.Totals != (totals{}) || value.Survivors == nil || len(value.Survivors) != 0 || value.Excluded == nil || len(value.Excluded) != 0 {
+		t.Fatalf("empty manifest=%#v", value)
+	}
+	var arrays struct {
+		Survivors json.RawMessage `json:"survivors"`
+		Excluded  json.RawMessage `json:"excluded"`
+	}
+	if err := json.Unmarshal(data, &arrays); err != nil {
+		t.Fatalf("decode empty arrays: %v", err)
+	}
+	if string(arrays.Survivors) != "[]" || string(arrays.Excluded) != "[]" {
+		t.Fatalf("empty arrays survivors=%s excluded=%s", arrays.Survivors, arrays.Excluded)
+	}
+}
+
+func TestBuildManifestEmptyResultValidatesShardAndExclusionBoundaries(t *testing.T) {
+	source := `package sample
+
+func target(value int) int {
+	return value
+}
+`
+	value, err := mutationFixtureFilesWithShard(t, map[string]string{"sample.go": source}, "", gremlinsResult{}, "", []string{"internal/sample/sample.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Totals != (totals{}) || len(value.Survivors) != 0 || len(value.Excluded) != 0 {
+		t.Fatalf("empty shard manifest=%#v", value)
+	}
+	_, err = mutationFixtureFilesWithShard(t, map[string]string{"sample.go": source}, "", gremlinsResult{}, "", []string{"internal/other.go"})
+	if err == nil || !strings.Contains(err.Error(), "outside package") {
+		t.Fatalf("shard boundary error=%v", err)
+	}
+	_, err = mutationFixtureFilesWithShard(t, map[string]string{"sample.go": source},
+		"internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\tstale assigned exclusion\n", gremlinsResult{}, "", []string{"internal/sample/sample.go"})
+	if err == nil || !strings.Contains(err.Error(), "stale exclusion") {
+		t.Fatalf("empty stale exclusion error=%v", err)
+	}
+}
+
 func errorsIsSurvivor(err error) bool {
 	return err != nil && strings.Contains(err.Error(), errSurvivors.Error())
 }

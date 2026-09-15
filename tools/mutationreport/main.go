@@ -206,6 +206,7 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	packageDir := flags.String("package-dir", "", "package directory relative to the repository root")
 	profile := flags.String("profile", "", "package profile")
 	input := flags.String("input", "", "Gremlins JSON result")
+	emptyResult := flags.Bool("empty-result", false, "generate an empty manifest without a Gremlins result (mutually exclusive with -input)")
 	output := flags.String("output", "-", "manifest output path, or - for stdout")
 	exclusions := flags.String("exclusions", defaultExclusionsFile, "mutation exclusions file")
 	var shardFiles stringListFlag
@@ -226,8 +227,8 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 		}
 		return err
 	}
-	if *input == "" {
-		return errors.New("mutationreport: -input is required")
+	if (*input == "") != *emptyResult {
+		return errors.New("mutationreport: exactly one of -input and -empty-result is required")
 	}
 	if *profile == "" {
 		return errors.New("mutationreport: -profile is required")
@@ -247,13 +248,15 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	if *targetFile != "" && *mutationID != "" {
 		return errors.New("mutationreport: -file and -mutation-id cannot be used together")
 	}
-	data, err := os.ReadFile(*input)
-	if err != nil {
-		return fmt.Errorf("read Gremlins result: %w", err)
-	}
 	var result gremlinsResult
-	if err := json.Unmarshal(data, &result); err != nil {
-		return fmt.Errorf("decode Gremlins result: %w", err)
+	if !*emptyResult {
+		data, err := os.ReadFile(*input)
+		if err != nil {
+			return fmt.Errorf("read Gremlins result: %w", err)
+		}
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("decode Gremlins result: %w", err)
+		}
 	}
 	commands := strings.Fields(*command)
 	value, err := buildManifest(convertOptions{

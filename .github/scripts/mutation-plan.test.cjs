@@ -109,5 +109,9 @@ test('workflow wires planned shards, archive exclusions, and resource diagnostic
   assert.match(workflow, /--dry-run/u);
   assert.match(workflow, /-shard-files/u);
   assert.match(workflow, /Mutation resource heartbeat/u);
+  assert.match(workflow, /if \[ "\$gremlins_status" -ne 0 \]; then/u);
+  assert.match(workflow, /if \[ -e "\$result" \]; then/u);
+  assert.match(workflow, /\[ ! -f "\$result" \] \|\| \[ ! -s "\$result" \]/u);
+  assert.match(workflow, /report_args\+=\(-empty-result\)/u);
   assert.match(makefile, /\.\/internal\/fdexec\|internal\/fdexec/u);
 });
