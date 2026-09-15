@@ -81,6 +81,9 @@ Hot StandbyのUPDATEは旧HEAD・tracked clean・所有権を確認してから�
 更新用Git操作だけは`core.hooksPath=/dev/null`をコマンド単位で指定し、checkout filterと属性処理は維持する。
 `.gitattributes`の差、submodule構成・gitlink変更、未登録のuntracked/ignored pathとの衝突、更新互換fingerprintの不一致は書込み前にCold Startへ戻す。
 `.gitattributes`を除外するのは、`checkout-index`が内容の同じfileをstat cacheの一致で書き直さず、属性だけ変わったfileが旧属性のまま残るためである。
+skip-worktree・assume-unchangedの付いたpathが旧OIDと要求OIDの差分に乗る場合も、同じく書込み前にCold Startへ戻す。
+`core.sparseCheckout=false`のworktreeではこのpathを`--force`でも更新できず、書込み後に落ちると隔離になるためである。
+post-checkout hookが個人設定を配置してこのflagを張る構成では、その設定fileを変更したcommitへの更新がこれに当たる。
 更新は既定では`prepare.command`を実行しない。
 `prepare.inputs`に挙げたpathが旧OIDと要求OIDの間で変わった場合、または配置が変わった場合に限り、更新後のworktreeで`prepare.command`を実行する。
 宣言しない生成物は旧OIDのまま残るので、更新そのものを止めたい場合は`workspaces.<root>.reuse_standby: false`が残る。
