@@ -4,6 +4,9 @@
 internal/diag/localization.go	e3e7484d2d1897f1ce72d006bdd6a3a2004a0355b0b60c1c406e9f5eb6b0c900	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
 internal/diag/report.go	f68b4b16f0be0ace924d17540222855dff80ff996b6137917624dfaa1b3fd193	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/workspace/capacity.go	5089858eb2542afec07b22d40f870f1610f991fda18b1d9c0df51a676bae6820	LFS entries are collected in a map keyed by normalized OID, so result.LFS contains no equal OIDs; < and <= are observationally equivalent to sort.Slice.
+internal/workspace/capacity.go	1977aed12887dfb00a3ac8c295facf6fd01c9cddd83ce1a4dd93e286bc403c28	The saturation branch returns MaxInt64 on and above the exact boundary, so > and >= produce the same result for every int64 input.
+internal/workspace/lfs_cow.go	1d38e6daff0fb16e766b629e7dea2ee663cbff77f6d68a7f1f5b97308cc47c3d	os.File.Read guarantees a non-negative count and hashing a zero-length slice is a no-op, so >0 and >=0 are observationally equivalent.
 internal/daemon/capacity.go	03a6f8f6ea47bd5f58d148339ef07e89cb5ae0d358cf58cf65aedac1292051ac	multiplier=1 はどちらの分岐でも 1 を代入するため < と <= の変更に観測可能な差がない
 internal/daemon/capacity.go	e61972ef60bf6a277f258600baed33462bd12817ef179b28a8a307ca1743f851	上限ちょうどでは厳密比較を包含比較へ変えても結果は MaxInt64 のまま変わらない
 internal/daemon/capacity.go	c30d5682a946dab55694d8163cbe32ad800bcd8a19dd5590c4854f078fb29017	積がちょうど MaxInt64 のとき両分岐は同じ飽和値を返す
