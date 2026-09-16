@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/setup"
 )
 
 func TestConfigEnvironmentsAreSortedAfterGlobal(t *testing.T) {
@@ -133,6 +134,58 @@ func TestEnvironmentFieldsDistinguishExplicitAndInheritedSources(t *testing.T) {
 	}
 	if got := workspace["reuse_standby"]; got.Value != "true" || got.Source != "default" {
 		t.Fatalf("default inheritance=%+v", got)
+	}
+}
+
+// TestConfigItemsIgnoresOutOfRangeSettingsEnvironment は、環境一覧の末尾を越えた選択位置を
+// グローバル設定として扱い、設定項目の構築で panic しないことを守る。
+func TestConfigItemsIgnoresOutOfRangeSettingsEnvironment(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.settingsOpen = true
+	m.settingsEnv = len(m.configEnvironments())
+
+	got := m.configItems()
+	m.settingsOpen = false
+	want := m.configItems()
+	if len(got) != len(want) {
+		t.Fatalf("out-of-range items=%d, global items=%d", len(got), len(want))
+	}
+	for index := range want {
+		if got[index].Key != want[index].Key {
+			t.Fatalf("item %d key=%q, want global key=%q", index, got[index].Key, want[index].Key)
+		}
+	}
+}
+
+func TestV2ConfigEnvironmentsSkipRepositoryMenuForSingleMember(t *testing.T) {
+	cfg := config.DefaultsV2()
+	cfg.Workspaces["/tmp/single"] = config.Workspace{Discovered: true, Repositories: map[string]config.Repository{
+		"only": {},
+	}}
+	m := newModel(context.Background(), Options{Config: cfg})
+	got := m.configEnvironments()
+	labels := make([]string, 0, len(got))
+	for _, environment := range got {
+		labels = append(labels, m.environmentMenuLabel(environment))
+	}
+	want := []string{"System", "Workspace defaults", "Repository defaults", "Workspace  single", "  Repository defaults"}
+	if !slices.Equal(labels, want) {
+		t.Fatalf("v2 environments=%v, want %v", labels, want)
+	}
+}
+
+func TestSetupItemsExcludeStepsWithoutChoices(t *testing.T) {
+	m := newModel(context.Background(), Options{
+		Config: config.Defaults(),
+		Setup: []setup.Step{
+			{ID: "informational"},
+			{ID: "actionable", Options: []setup.Action{setup.ActionInstall}},
+			{ID: "daemon", Options: []setup.Action{setup.ActionStart}},
+		},
+	})
+	got := m.setupItems()
+	if len(got) != 1 || got[0].ID != "actionable" {
+		t.Fatalf("setup items=%+v, want only the actionable non-daemon step", got)
 	}
 }
 
