@@ -3,7 +3,30 @@ package cli
 import (
 	"reflect"
 	"testing"
+	"time"
 )
+
+const resumeParserTestTimeout = time.Second
+
+// runResumeParserWithTimeout は変異で parser が無限ループしても、テスト全体を待たせない。
+// 正常な parser は即時に返るため、ここでの失敗は変異を KILLED と判定させる。
+func runResumeParserWithTimeout[T any](t *testing.T, fn func() T) T {
+	t.Helper()
+	result := make(chan T, 1)
+	go func() {
+		result <- fn()
+	}()
+	timer := time.NewTimer(resumeParserTestTimeout)
+	defer timer.Stop()
+	select {
+	case value := <-result:
+		return value
+	case <-timer.C:
+		t.Fatalf("resume parser did not return within %s", resumeParserTestTimeout)
+		var zero T
+		return zero
+	}
+}
 
 // exec だけの入力は、後続引数を読むことなく明示的な resume の前置として扱う。
 func TestCodexResumeShapeAcceptsExecWithoutFollowingArguments(t *testing.T) {

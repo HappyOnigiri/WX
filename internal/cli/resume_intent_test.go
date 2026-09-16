@@ -68,7 +68,9 @@ func TestParseResumeIntentCodex(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseResumeIntent("codex", tt.args)
+			got := runResumeParserWithTimeout(t, func() resumeIntent {
+				return parseResumeIntent("codex", tt.args)
+			})
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("parseResumeIntent(codex, %v) = %#v, want %#v", tt.args, got, tt.want)
 			}

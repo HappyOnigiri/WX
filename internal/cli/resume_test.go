@@ -88,7 +88,9 @@ func TestResumeArgsForIntentBuildsCodexExecCommands(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := resumeArgsForIntent("codex", test.id, test.path, test.intent)
+			got := runResumeParserWithTimeout(t, func() []string {
+				return resumeArgsForIntent("codex", test.id, test.path, test.intent)
+			})
 			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("resumeArgsForIntent(%q, %q, %q, %#v)=%v, want %v", "codex", test.id, test.path, test.intent, got, test.want)
 			}
