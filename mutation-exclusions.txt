@@ -8,6 +8,7 @@ internal/daemon/capacity.go	03a6f8f6ea47bd5f58d148339ef07e89cb5ae0d358cf58cf65ae
 internal/daemon/capacity.go	e61972ef60bf6a277f258600baed33462bd12817ef179b28a8a307ca1743f851	上限ちょうどでは厳密比較を包含比較へ変えても結果は MaxInt64 のまま変わらない
 internal/daemon/capacity.go	c30d5682a946dab55694d8163cbe32ad800bcd8a19dd5590c4854f078fb29017	積がちょうど MaxInt64 のとき両分岐は同じ飽和値を返す
 internal/daemon/capacity.go	6dde83c14d20a78fceff79105bdfb10296b36fd6fbc688d9005cce0cc109aff2	warm_count=0 では worktree 容量を 0 倍するためどちらの分岐でも結果が 0 になる
+internal/daemon/jobqueue.go	70670d52db8df1e03ff0210b86d4f66419c08b58dd7a4de29c9aa52aa266493d	実行枠の下限値1では < と <= のどちらでも同じ値を代入し、通知を含む後続処理も変わらないため観測可能な差がない
 internal/agent/worktree_rewrite.go	cda4e3e085855efe2d77f535d7f5c9f576cd0af56981c0d8812f415c179b7866	candidates は segment ごとに高々1回だけ増え、candidates > 1 は len(segments) > 1 と同時に必ず真になるため、++ を -- に変えても判定結果が変わらない。
 internal/agent/worktree_rewrite.go	23bfaa307b941e4757825f20730f686c5d826bac5fca1102960f562aa4cdd9ed	flags 分岐に入る value は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
 internal/agent/worktree_rewrite.go	d662e53c29b955f0cd0bc0e91030e654587b49fa70cda2f132ff94d590e9e0e7	flags 分岐に入る name は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
