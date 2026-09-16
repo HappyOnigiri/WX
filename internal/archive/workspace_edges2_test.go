@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"archive/tar"
 	"context"
 	"os"
 	"path/filepath"
@@ -68,5 +69,34 @@ func TestPruneWorkspaceRootDescendsThroughNonExcludedAncestor(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(bundleRoot, "outer", "extra.txt")); !os.IsNotExist(err) {
 		t.Fatalf("non-excluded sibling under a kept ancestor survived pruning: %v", err)
+	}
+}
+
+// TestWorkspaceRestoreAcceptsZeroLengthRegularFile は、空の regular file を
+// 不正な負サイズと区別して復元する境界を検証する。
+func TestWorkspaceRestoreAcceptsZeroLengthRegularFile(t *testing.T) {
+	ownershipRoot := t.TempDir()
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := writeWorkspaceArchive(t, ownershipRoot, "zero-length", []tar.Header{
+		{Name: "empty.txt", Typeflag: tar.TypeReg, Mode: 0o640, Size: 0},
+	})
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+
+	if err := RestoreWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, owner, ownershipRoot, owner, snapshot, nil); err != nil {
+		t.Fatalf("restore zero-length regular file: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(bundleRoot, "empty.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != 0 || info.Mode().Perm() != 0o640 {
+		t.Fatalf("restored empty file info=%v", info)
 	}
 }

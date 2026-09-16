@@ -46,6 +46,16 @@ func TestV2FetchDefaultBranchAcceptsOnAndOff(t *testing.T) {
 	}
 }
 
+// v2 の未知 key は struct の全 field を調べ終えた時点で拒否し、末尾の
+// field を越えて reflect が panic しない。
+func TestV2EditRejectsUnknownKeyAtStructBoundary(t *testing.T) {
+	var raw Config
+	err := SetV2Field(&raw, V2ScopeSystem, "", "", "not_a_config_key", "value")
+	if err == nil || !strings.Contains(err.Error(), "unknown system config key") {
+		t.Fatalf("unknown key error=%v", err)
+	}
+}
+
 func TestV2ResetLastFieldKeepsAnExplicitSchemaSection(t *testing.T) {
 	var raw Config
 	if err := SetV2Field(&raw, V2ScopeSystem, "", "", "pool.preparation_concurrency", "3"); err != nil {
