@@ -36,6 +36,8 @@ mutation 0件として`mutationreport`の空結果モードでschema 2のmanifes
 検証を通し、全shardが有効なmanifestを生成して初めて正常な空結果になる。非0終了、0バイト
 結果、不正JSON、artifactやmanifestの欠落は空結果へ読み替えず失敗として扱う。
 
+workflow_dispatchでは起動時にissue起票を抑止できる。抑止中もshardの整合検証と集計は同じ経路で行われ、起票候補はstep summaryへ記録される。
+
 `internal/fdexec`はMutation Huntの対象外である。`unix.Close`、`unix.Exec`、`os.Exit`を
 含むprocess/OS adapterがhosted runnerの通信断や終了を起こし得るため、通常の列挙でも
 明示指定でもGremlinsを起動せず、planの診断へ除外理由を残す。
