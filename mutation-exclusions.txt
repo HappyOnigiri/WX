@@ -1,6 +1,9 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/agent/worktree_rewrite.go	cda4e3e085855efe2d77f535d7f5c9f576cd0af56981c0d8812f415c179b7866	candidates は segment ごとに高々1回だけ増え、candidates > 1 は len(segments) > 1 と同時に必ず真になるため、++ を -- に変えても判定結果が変わらない。
+internal/agent/worktree_rewrite.go	23bfaa307b941e4757825f20730f686c5d826bac5fca1102960f562aa4cdd9ed	flags 分岐に入る value は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
+internal/agent/worktree_rewrite.go	d662e53c29b955f0cd0bc0e91030e654587b49fa70cda2f132ff94d590e9e0e7	flags 分岐に入る name は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
 internal/dashboard/view.go	f7900377cbc6e864e471ddcd583361b108839e47af7bf5c1c5f8d8d8e1b54758	rightWidth は leftColumnWidth の上限により minRightColumn との等号へ到達しない
 internal/dashboard/view.go	1863979060f71c8458e9f606cde99978a396900f45c5632e24ec9ab30cb8292c	表示幅がちょうど収まる wrap は折り返しても同じ1行になり比較が同値
 internal/dashboard/view.go	e904469ec6dd2e22b2d56c6a34beb8888ab092747f2b4c3b7caa00db54427b0e	表示幅と等しい padANSI は padding 0 の分岐と同じ文字列を返す
