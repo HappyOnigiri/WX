@@ -3,3 +3,7 @@
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
 internal/cli/bench.go	e55e3f56e6d51e015ac6b94498ffbe5c2f42a0766d5ca03cbd6922bcda3104d4	表示幅とラベル幅が同じ場合は0個の空白を追加するだけで、>と>=の結果が同じため
 internal/cli/bench.go	4e555599ca50a2f1677d7b139a6538a17ef2b6e77b41fc9299e00a51952f89d0	sort.Sliceの比較子を<=にしてもint64の同値要素の値列は変わらず、sortedCopyの結果が同じため
+internal/archive/archive.go	baed407ed40068db40d4d98b5127f46da2355b5de87f28be74481c2ddfd254a8	空の候補は CompactLFSObjects が先頭で no-op を返すため、len の > と >= は同じ動作になる
+internal/archive/conflict.go	721b8035d636469630012eb6e1e137f5b777c863030c5aa586404d224e6341dd	path が異なる場合だけ比較する != ガードの内側なので、path の < と <= は同じ動作になる
+internal/archive/conflict.go	4f3cd7c30f7614859e3896858652716523b4079964c405374785646f37995f83	stage が異なる場合だけ比較する != ガードの内側なので、stage の < と <= は同じ動作になる
+internal/archive/conflict.go	f0ead1333c69e263182ecab7d17c1fa254b9e78cbae9ff98b3cad537d8625cfe	同一 path と stage の重複をソート前に拒否するため、stage の < と <= の同値差へ到達しない
