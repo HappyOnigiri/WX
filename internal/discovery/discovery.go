@@ -73,22 +73,26 @@ func (d *Discoverer) ResolveFromCommonDir(ctx context.Context, commonDir string)
 	if err != nil {
 		return Workspace{}, err
 	}
-	res, err := d.Git.Run(ctx, string(common), "worktree", "list", "--porcelain", "-z")
-	if err != nil {
-		return Workspace{}, err
-	}
-	main := FirstWorktreePath(res.Stdout)
-	if main == "" {
-		return Workspace{}, errors.New("git did not report a main worktree from its common directory")
-	}
-	workspace, err := d.repositoryWorkspace(ctx, main)
-	if err != nil {
-		return Workspace{}, err
-	}
-	if len(workspace.Repositories) != 1 || workspace.Repositories[0].CommonDir != common {
-		return Workspace{}, errors.New("Git common directory identity changed during rediscovery")
-	}
-	return workspace, nil
+	var workspace Workspace
+	err = d.Git.WithCommonDirLock(ctx, string(common), func(lockCtx context.Context) error {
+		res, err := d.Git.Run(lockCtx, string(common), "worktree", "list", "--porcelain", "-z")
+		if err != nil {
+			return err
+		}
+		main := FirstWorktreePath(res.Stdout)
+		if main == "" {
+			return errors.New("git did not report a main worktree from its common directory")
+		}
+		workspace, err = d.repositoryWorkspace(lockCtx, main)
+		if err != nil {
+			return err
+		}
+		if len(workspace.Repositories) != 1 || workspace.Repositories[0].CommonDir != common {
+			return errors.New("Git common directory identity changed during rediscovery")
+		}
+		return nil
+	})
+	return workspace, err
 }
 
 func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Repository, error) {
@@ -96,19 +100,7 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 }
 
 func (d *Discoverer) inspectRepoForWorkspace(ctx context.Context, workspaceRoot, root, relative string) (Repository, error) {
-	res, err := d.Git.Run(ctx, root, "worktree", "list", "--porcelain", "-z")
-	if err != nil {
-		return Repository{}, err
-	}
-	main := FirstWorktreePath(res.Stdout)
-	if main == "" {
-		return Repository{}, errors.New("git did not report a main worktree")
-	}
-	mainPath, err := domain.Canonicalize(main)
-	if err != nil {
-		return Repository{}, err
-	}
-	commonRes, err := d.Git.Run(ctx, string(mainPath), "rev-parse", "--path-format=absolute", "--git-common-dir")
+	commonRes, err := d.Git.Run(ctx, root, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return Repository{}, err
 	}
@@ -116,15 +108,43 @@ func (d *Discoverer) inspectRepoForWorkspace(ctx context.Context, workspaceRoot,
 	if err != nil {
 		return Repository{}, err
 	}
-	override := d.Config.RepositoryFor(workspaceRoot, relative, string(mainPath))
-	branch := override.DefaultBranch
-	if branch == "" {
-		branch, err = d.resolveDefaultBranch(ctx, string(mainPath))
+	var repository Repository
+	err = d.Git.WithCommonDirLock(ctx, string(common), func(lockCtx context.Context) error {
+		res, err := d.Git.Run(lockCtx, root, "worktree", "list", "--porcelain", "-z")
 		if err != nil {
-			return Repository{}, fmt.Errorf("resolve default branch for %s: %w", mainPath, err)
+			return err
 		}
-	}
-	return Repository{ID: domain.RepositoryID(domain.StableID(string(common))), MainPath: mainPath, CommonDir: common, RelativePath: filepath.Clean(relative), RemoteName: d.remoteName(ctx, string(mainPath)), DefaultBranch: branch}, nil
+		main := FirstWorktreePath(res.Stdout)
+		if main == "" {
+			return errors.New("git did not report a main worktree")
+		}
+		mainPath, err := domain.Canonicalize(main)
+		if err != nil {
+			return err
+		}
+		commonRes, err := d.Git.Run(lockCtx, string(mainPath), "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if err != nil {
+			return err
+		}
+		registeredCommon, err := domain.Canonicalize(strings.TrimSpace(commonRes.Stdout))
+		if err != nil {
+			return err
+		}
+		if registeredCommon != common {
+			return errors.New("Git common directory identity changed during discovery")
+		}
+		override := d.Config.RepositoryFor(workspaceRoot, relative, string(mainPath))
+		branch := override.DefaultBranch
+		if branch == "" {
+			branch, err = d.resolveDefaultBranch(lockCtx, string(mainPath))
+			if err != nil {
+				return fmt.Errorf("resolve default branch for %s: %w", mainPath, err)
+			}
+		}
+		repository = Repository{ID: domain.RepositoryID(domain.StableID(string(common))), MainPath: mainPath, CommonDir: common, RelativePath: filepath.Clean(relative), RemoteName: d.remoteName(lockCtx, string(mainPath)), DefaultBranch: branch}
+		return nil
+	})
+	return repository, err
 }
 
 // remoteName は origin URL から repository 名を取り出す。
@@ -301,16 +321,32 @@ func (d *Discoverer) MainWorktree(ctx context.Context, cwd string) (string, erro
 		}
 		return "", fmt.Errorf("%s is %w", canonical, ErrNotRepository)
 	}
-	result, err := d.Git.Run(ctx, string(canonical), "worktree", "list", "--porcelain", "-z")
+	commonRes, err := d.Git.Run(ctx, string(canonical), "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
-	main := FirstWorktreePath(result.Stdout)
-	if main == "" {
-		return "", errors.New("git did not report a main worktree")
+	common, err := domain.Canonicalize(strings.TrimSpace(commonRes.Stdout))
+	if err != nil {
+		return "", err
 	}
-	root, err := domain.Canonicalize(main)
-	return string(root), err
+	var root string
+	err = d.Git.WithCommonDirLock(ctx, string(common), func(lockCtx context.Context) error {
+		result, err := d.Git.Run(lockCtx, string(canonical), "worktree", "list", "--porcelain", "-z")
+		if err != nil {
+			return err
+		}
+		main := FirstWorktreePath(result.Stdout)
+		if main == "" {
+			return errors.New("git did not report a main worktree")
+		}
+		canonicalMain, err := domain.Canonicalize(main)
+		if err != nil {
+			return err
+		}
+		root = string(canonicalMain)
+		return nil
+	})
+	return root, err
 }
 
 // PolicyRoot は探索や登録をせず、リポジトリなら main worktree、それ以外なら指定ディレクトリを返す。

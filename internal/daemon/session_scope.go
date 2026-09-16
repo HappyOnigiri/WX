@@ -137,14 +137,30 @@ func (m *Manager) scopeCommonDir(ctx context.Context, cwd string) (string, bool,
 
 // scopeMainWorktree は cwd が属する repository の現在の main worktree path を返す。
 func (m *Manager) scopeMainWorktree(ctx context.Context, cwd string) (string, error) {
-	res, err := m.git.Run(ctx, cwd, "worktree", "list", "--porcelain", "-z")
+	commonRes, err := m.git.Run(ctx, cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
-	main := discovery.FirstWorktreePath(res.Stdout)
-	if main == "" {
-		return "", fmt.Errorf("git did not report a main worktree for %s", cwd)
+	common, err := domain.Canonicalize(strings.TrimSpace(commonRes.Stdout))
+	if err != nil {
+		return "", err
 	}
-	canonical, err := domain.Canonicalize(main)
-	return string(canonical), err
+	var root string
+	err = m.git.WithCommonDirLock(ctx, string(common), func(lockCtx context.Context) error {
+		res, err := m.git.Run(lockCtx, cwd, "worktree", "list", "--porcelain", "-z")
+		if err != nil {
+			return err
+		}
+		main := discovery.FirstWorktreePath(res.Stdout)
+		if main == "" {
+			return fmt.Errorf("git did not report a main worktree for %s", cwd)
+		}
+		canonical, err := domain.Canonicalize(main)
+		if err != nil {
+			return err
+		}
+		root = string(canonical)
+		return nil
+	})
+	return root, err
 }
