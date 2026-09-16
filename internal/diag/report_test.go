@@ -105,3 +105,23 @@ func TestSeverityLabelsAndRanksCoverEveryValue(t *testing.T) {
 		t.Fatal("an unknown severity is not rendered as unknown")
 	}
 }
+
+func TestRenderKeepsEqualLengthLabelsAligned(t *testing.T) {
+	reply := Reply{Findings: []Finding{{Check: "check", Severity: SeverityProblem, Summary: "problem"}}}
+	var out strings.Builder
+	Render(&out, reply, false)
+	if got := out.String(); got != "error: problem\ncheck: check\n" {
+		t.Fatalf("render=%q, want equal-length labels to share the same width", got)
+	}
+}
+
+func TestVisiblePreservesInputOrderForEqualSeverity(t *testing.T) {
+	reply := Reply{Findings: []Finding{
+		{Check: "first", Severity: SeverityInfo, Summary: "first"},
+		{Check: "second", Severity: SeverityInfo, Summary: "second"},
+	}}
+	visibleFindings := visible(reply, true)
+	if len(visibleFindings) != 2 || visibleFindings[0].Check != "first" || visibleFindings[1].Check != "second" {
+		t.Fatalf("visible findings=%+v, want stable input order for equal severity", visibleFindings)
+	}
+}

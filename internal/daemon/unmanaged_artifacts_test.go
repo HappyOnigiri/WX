@@ -65,6 +65,25 @@ func unmanagedPathSet(artifacts []unmanagedArtifact) map[string]unmanagedKind {
 	return found
 }
 
+// archive path と相対 path が同じ長さなら root を空文字へ縮めない。
+func TestSnapshotRootOfKeepsTheEqualLengthBoundary(t *testing.T) {
+	t.Parallel()
+	snapshot := state.WorkspaceSnapshot{ArchivePath: "archive.tar", RelPath: "archive.tar"}
+	if got := snapshotRootOf(snapshot); got != "archive.tar" {
+		t.Fatalf("snapshot root=%q want %q", got, "archive.tar")
+	}
+}
+
+// 登録外実体は隣接する path も辞書順に並べ、表示と削除の順序を固定する。
+func TestSortUnmanagedArtifactsOrdersAdjacentPaths(t *testing.T) {
+	t.Parallel()
+	artifacts := []unmanagedArtifact{{Path: "/root/b"}, {Path: "/root/a"}}
+	sortUnmanagedArtifacts(artifacts)
+	if artifacts[0].Path != "/root/a" || artifacts[1].Path != "/root/b" {
+		t.Fatalf("artifacts=%+v, want ascending paths", artifacts)
+	}
+}
+
 // 列挙は予約 namespace 配下で DB が説明しない実体だけを返す。
 // 保存途中の一時ファイルも名前で除かず、残骸を回収する別経路を作らない。
 func TestScanUnmanagedArtifactsListsOnlyWhatTheDatabaseDoesNotExplain(t *testing.T) {

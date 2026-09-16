@@ -81,6 +81,16 @@ func (f *orphanRefFixture) orphanWarnings() int {
 	return count
 }
 
+func (f *orphanRefFixture) orphanWarningLine() string {
+	defer f.logs.Reset()
+	for _, line := range strings.Split(f.logs.String(), "\n") {
+		if strings.Contains(line, "level=WARN") && strings.Contains(line, "category=unknown_refs") {
+			return line
+		}
+	}
+	return ""
+}
+
 func (f *orphanRefFixture) quarantinePaths(t *testing.T) []string {
 	t.Helper()
 	diagnostics, err := f.store.StatusDiagnostics(context.Background())
@@ -104,8 +114,8 @@ func TestReconcileWarnsOncePerRepositoryForOrphanRecoveryRefs(t *testing.T) {
 	gitRun(t, f.repository, "update-ref", "refs/wx/recovery/orphan-b", head)
 
 	f.manager.reconcileArtifacts(ctx)
-	if got := f.orphanWarnings(); got != 1 {
-		t.Fatalf("first reconcile emitted %d aggregated warnings, want 1", got)
+	if line := f.orphanWarningLine(); !strings.Contains(line, "refs=2") {
+		t.Fatalf("first reconcile warning=%q, want one warning with refs=2", line)
 	}
 	if paths := f.quarantinePaths(t); len(paths) != 2 {
 		t.Fatalf("orphan refs were not recorded: %v", paths)
