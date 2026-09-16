@@ -53,6 +53,7 @@ type Config struct {
 	Repositories map[string]Repository `yaml:"repositories,omitempty"`
 	Logging      Logging               `yaml:"logging,omitempty"`
 	Update       Update                `yaml:"update,omitempty"`
+	Daemon       Daemon                `yaml:"daemon,omitempty"`
 	present      map[string]bool
 	// unknown は設定ファイルにあった wx が解釈しないキーで、doctor の報告と保存時の差し戻しに使う。
 	unknown []unknownEntry
@@ -118,6 +119,7 @@ type SystemConfig struct {
 	Sessions  sessionsconfig.Config `yaml:"sessions,omitempty"`
 	Logging   Logging               `yaml:"logging,omitempty"`
 	Update    SystemUpdate          `yaml:"update,omitempty"`
+	Daemon    SystemDaemon          `yaml:"daemon,omitempty"`
 }
 
 // SystemStorage は worktree root と state backup の設定である。
@@ -277,6 +279,20 @@ type Update struct {
 // 既定が有効なため、未記載と明示した false を区別できるようポインタで持つ。
 type SystemUpdate struct {
 	AutoCheck *bool `yaml:"auto_check,omitempty"`
+}
+
+// Daemon は daemon process 自体の起動方法で、legacy の flatten view である。
+type Daemon struct {
+	// LoginShell は LaunchAgent が daemon をログインシェル経由で起動するかを決める。
+	// 有効なとき、利用者のログインシェルの起動ファイルが組み立てた PATH が daemon と
+	// その子（準備の hook を含む）へそのまま渡る。
+	LoginShell bool `yaml:"login_shell,omitempty"`
+}
+
+// SystemDaemon は config v2 における Daemon の正本である。
+// 既定が有効なため、未記載と明示した false を区別できるようポインタで持つ。
+type SystemDaemon struct {
+	LoginShell *bool `yaml:"login_shell,omitempty"`
 }
 
 type Workspace struct {
@@ -471,6 +487,7 @@ func Defaults() Config {
 		Includes: Includes{DefaultAgentRules: true}, Agent: Agent{AddDir: AgentAddDirAlways}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
 		Update:     Update{AutoCheck: true},
+		Daemon:     Daemon{LoginShell: true},
 		Workspaces: map[string]Workspace{}, Repositories: map[string]Repository{},
 	}
 }
