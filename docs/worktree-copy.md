@@ -125,7 +125,8 @@ checkout 後は LFS path が pointer text のまま残っていないかを size
 不完全な path が一つでもあれば準備を失敗させ、書込み後の既存の隔離経路で slot を貸し出さない。
 early-ready は設計上の部分 worktree なので、この完全性検証は残りの checkout 後だけに行う。
 
-ignore判定は`git check-ignore`に委ねるので、ディレクトリを列挙するときは`/dir/*`ではなく`/dir`の形のruleが要る。
+ignore判定は`git check-ignore`に委ねるので、ディレクトリを列挙するときは`/dir/*`でも`/dir/`でもなく`/dir`の形のruleが要る。
+末尾の`/`はディレクトリ限定を意味し、wxが置くのはsymlinkなので、source側が実体のディレクトリでignoreと判定されても配置先では無視されず省略になる。
 また配下にtracked fileを1つでも持つディレクトリは、ignoreを通せても対象にならない。tracked fileのcheckoutが実体を作り、次の宛先衝突で準備が失敗するためである。
 
 workspace内の相対位置を保って再構成する処理は持たず、必要になったら`~/.config/git/hooks/worktreelink-post-checkout`に実装済みのアルゴリズムを移植する。

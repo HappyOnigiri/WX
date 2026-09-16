@@ -189,6 +189,20 @@ func TestOptionsForDerivesChoicesFromState(t *testing.T) {
 	}
 }
 
+// TestPendingRequiresAnAction は、未設定でも選択肢のない項目を pending と数えないことを確認する。
+// unknown の項目などは状態だけが absent でも、利用者へ提示できる操作が無ければ進められない。
+func TestPendingRequiresAnAction(t *testing.T) {
+	if Pending([]Step{{State: StateAbsent}}) {
+		t.Fatal("an absent step without options was reported pending")
+	}
+	if Pending([]Step{{State: StateDivergent}}) {
+		t.Fatal("a divergent step without options was reported pending")
+	}
+	if !Pending([]Step{{State: StateAbsent, Options: []Action{ActionInstall}}}) {
+		t.Fatal("an actionable absent step was not reported pending")
+	}
+}
+
 func TestApplyRejectsUnknownStepsAndSkipsNoOps(t *testing.T) {
 	ctx := context.Background()
 	if _, err := Apply(ctx, Options{}, Step{ID: "nonsense"}, ActionKeep, ""); err != nil {

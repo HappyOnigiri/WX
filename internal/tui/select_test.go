@@ -43,6 +43,41 @@ func TestSelectionNavigationAndConfirmation(t *testing.T) {
 	}
 }
 
+func TestSelectAcceptsTheFirstOptionAtTheLowerBoundary(t *testing.T) {
+	selection := testSelection()
+	selection.Initial = 0
+	got, err := Select(context.Background(), strings.NewReader("\r"), io.Discard, selection)
+	if err != nil || got != "hot" {
+		t.Fatalf("got=%q err=%v, want the first option", got, err)
+	}
+}
+
+func TestSelectRejectsAnInitialIndexAtTheOptionCount(t *testing.T) {
+	selection := testSelection()
+	selection.Initial = len(selection.Options)
+	_, err := Select(context.Background(), strings.NewReader("\x03"), io.Discard, selection)
+	if err == nil || err.Error() != "selection requires options and a valid initial index" {
+		t.Fatalf("error=%v, want invalid initial index", err)
+	}
+}
+
+func TestSelectionContentKeepsEqualWidthLabelsAligned(t *testing.T) {
+	selection := Selection{
+		Title: "Choose",
+		Options: []Option{
+			{Label: "One", Description: "first"},
+			{Label: "Two", Description: "second"},
+		},
+		Initial: 0,
+	}
+	view := (selectionModel{selection: selection, cursor: selection.Initial}).content()
+	for _, want := range []string{"\x1b[39m   first", "    Two   second"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("want=%q view=%s", want, view)
+		}
+	}
+}
+
 func TestSelectionCancellationAndUnsafeText(t *testing.T) {
 	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEsc}, {Code: 'c', Mod: tea.ModCtrl}} {
 		model := selectionModel{selection: testSelection()}

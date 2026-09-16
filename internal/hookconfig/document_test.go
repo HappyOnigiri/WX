@@ -57,6 +57,9 @@ func TestDocumentRoundTripPreservesTheOriginalIndent(t *testing.T) {
 	if got := documentIndentOf([]byte(`{"a":1}`)); got != "" {
 		t.Fatalf("single line indent=%q", got)
 	}
+	if got := documentIndentOf([]byte("{\n  \"a\": 1}")); got != "  " {
+		t.Fatalf("two-line document indent=%q, want two spaces", got)
+	}
 	if got := string(renderDocument(&jsonNode{kind: jsonObject}, documentIndentOf([]byte(`{}`)))); got != "{}\n" {
 		t.Fatalf("empty document=%q", got)
 	}

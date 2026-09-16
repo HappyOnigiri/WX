@@ -133,3 +133,103 @@ func TestCleanUnmanagedSkipsAPathThatBecameRegistered(t *testing.T) {
 		t.Fatalf("a registered slot directory was removed: %v", err)
 	}
 }
+
+// 実体を消していない dry-run は使用量の測り直しを要求しない。要求を畳んだ実行中の測定で確認する。
+func TestCleanUnmanagedDoesNotRequestUsageRefreshWithoutRemoval(t *testing.T) {
+	ctx, manager, _, _ := unmanagedFixture(t)
+	manager.usageMu.Lock()
+	manager.usageRunning, manager.usageDirty = true, false
+	manager.usageMu.Unlock()
+	t.Cleanup(func() {
+		manager.usageMu.Lock()
+		manager.usageRunning, manager.usageDirty = false, false
+		manager.usageMu.Unlock()
+	})
+
+	if _, err := manager.CleanUnmanaged(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	manager.usageMu.Lock()
+	dirty := manager.usageDirty
+	manager.usageMu.Unlock()
+	if dirty {
+		t.Fatal("dry-run requested a root usage refresh")
+	}
+}
+
+// 実体を 1 件でも消した clean は、実行中の測定へ次の巡回を要求する。
+func TestCleanUnmanagedRequestsUsageRefreshAfterRemoval(t *testing.T) {
+	ctx, manager, _, _ := unmanagedFixture(t)
+	manager.usageMu.Lock()
+	manager.usageRunning, manager.usageDirty = true, false
+	manager.usageMu.Unlock()
+	t.Cleanup(func() {
+		manager.usageMu.Lock()
+		manager.usageRunning, manager.usageDirty = false, false
+		manager.usageMu.Unlock()
+	})
+
+	reply, err := manager.CleanUnmanaged(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, ok := reply["summary"].(map[string]int)
+	if !ok || summary[cleanTargetDone] == 0 {
+		t.Fatalf("clean summary=%v, want a removed target", reply["summary"])
+	}
+	manager.usageMu.Lock()
+	dirty := manager.usageDirty
+	manager.usageMu.Unlock()
+	if !dirty {
+		t.Fatal("removing unmanaged artifacts did not request a root usage refresh")
+	}
+}
+
+// 要約は各状態を 1 件ずつ数え、表示件数と終了判定を負数にしない。
+func TestUnmanagedSummaryCountsEachTargetState(t *testing.T) {
+	targets := []unmanagedTarget{
+		{State: cleanTargetPending},
+		{State: cleanTargetPending},
+		{State: cleanTargetDone},
+		{State: cleanTargetFailed},
+		{State: cleanTargetSkipped},
+	}
+	summary := unmanagedSummary(targets)
+	want := map[string]int{
+		"total":            5,
+		cleanTargetPending: 2,
+		cleanTargetDone:    1,
+		cleanTargetFailed:  1,
+		cleanTargetSkipped: 1,
+	}
+	for key, count := range want {
+		if summary[key] != count {
+			t.Fatalf("summary[%q]=%d, want %d (all=%v)", key, summary[key], count, summary)
+		}
+	}
+}
+
+// 同じ path が重複しても比較関数を strict に保ち、入力順を崩さずに表示を決定的にする。
+func TestSortUnmanagedTargetsKeepsEqualPathOrder(t *testing.T) {
+	targets := []unmanagedTarget{
+		{Path: "/root/b", Kind: "b"},
+		{Path: "/root/same", Kind: "first"},
+		{Path: "/root/same", Kind: "second"},
+		{Path: "/root/a", Kind: "a"},
+	}
+	sortUnmanagedTargets(targets)
+	want := []struct {
+		path string
+		kind string
+	}{
+		{path: "/root/a", kind: "a"},
+		{path: "/root/b", kind: "b"},
+		{path: "/root/same", kind: "first"},
+		{path: "/root/same", kind: "second"},
+	}
+	for index, item := range want {
+		if targets[index].Path != item.path || targets[index].Kind != item.kind {
+			t.Fatalf("targets[%d]=%+v, want path=%q kind=%q (all=%+v)", index, targets[index], item.path, item.kind, targets)
+		}
+	}
+}

@@ -22,6 +22,22 @@ func TestMessageBuildsTemplateData(t *testing.T) {
 	}
 }
 
+// TestMessageKeepsOneCompletePair は、値が 1 組だけの呼び出しでも template data を作ることを確認する。
+// ここを空の引数と同じ扱いにすると、要約や理由の単一フィールドが表示できなくなる。
+func TestMessageKeepsOneCompletePair(t *testing.T) {
+	value := message("setup.summary.shell_path_block", "Directory", "/home/user/.local/bin")
+	if len(value.Data) != 1 || value.Data["Directory"] != "/home/user/.local/bin" {
+		t.Fatalf("one pair was not retained: %+v", value.Data)
+	}
+	if got := englishText(value); got != "adds /home/user/.local/bin to PATH for new terminals" {
+		t.Fatalf("resolved=%q", got)
+	}
+	odd := message("setup.summary.shell_path_block", "Directory", "/home/user/.local/bin", "orphan")
+	if len(odd.Data) != 1 || odd.Data["Directory"] != "/home/user/.local/bin" {
+		t.Fatalf("an unpaired trailing name changed the complete pair: %+v", odd.Data)
+	}
+}
+
 // TestMessageErrorKeepsItsIdentity は、適用の失敗が message ID を持つ error として返り、
 // 表示言語で解決できることを確認する。ID を失うと日本語設定でも英語のまま表示される。
 func TestMessageErrorKeepsItsIdentity(t *testing.T) {
