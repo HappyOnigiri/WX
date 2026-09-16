@@ -46,6 +46,8 @@ system:
     level: debug
   update:
     auto_check: false
+  daemon:
+    login_shell: false
 workspace_defaults:
   worktree: cold
   copy:

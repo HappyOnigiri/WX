@@ -235,7 +235,7 @@ func TestLaunchAgentFindingReportsStaleContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected, err := launchd.Render(binary, home, logPath)
+	expected, err := launchd.Render(binary, home, logPath, launchd.LoginShellEnabled())
 	if err != nil {
 		t.Fatal(err)
 	}

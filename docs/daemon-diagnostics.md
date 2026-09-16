@@ -95,6 +95,7 @@ CLIのstop/start待ちはsocketへのdialだけを使い、RPCでゲートを塞
 restartの完了は`Ping`が返すPIDの変化で判定し、PIDを返さない旧daemonのために`Status`へのフォールバックを残す。
 短いlistener断の観測は成功条件にしない。
 LaunchAgentの`ThrottleInterval`を短くし、連続再起動時のlaunchdの待機を詰める。
+ログインシェル経由で起動してもシェルは`exec`で置き換わるため、ppidと`XPC_SERVICE_NAME`から見る`underLaunchd`の判定はこのゲートでも変わらない（[バージョンとリリース](release.md)）。
 
 入口は[`internal/daemon/restart.go`](../internal/daemon/restart.go)である。
 ゲートがjobsとRPCの両方を待つことは[`TestPendingRestartWaitsForJobsAndRequests`](../internal/daemon/restart_test.go)が固定している。

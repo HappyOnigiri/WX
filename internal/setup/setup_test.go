@@ -55,7 +55,7 @@ func (f *setupFixture) options() Options {
 			if err != nil {
 				return err
 			}
-			data, err := launchd.Render(binary, f.home, logPath)
+			data, err := launchd.Render(binary, f.home, logPath, launchd.LoginShellEnabled())
 			if err != nil {
 				return err
 			}
