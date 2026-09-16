@@ -93,7 +93,7 @@ func (m *Manager) idleStandbyRefreshDue(workspaceID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	last, ok := m.idleStandbyRefreshes[workspaceID]
-	return !ok || time.Since(last) >= idleStandbyRefreshCooldown
+	return !ok || m.currentTime().Sub(last) >= idleStandbyRefreshCooldown
 }
 
 func (m *Manager) markIdleStandbyRefresh(workspaceID string) {
@@ -102,5 +102,5 @@ func (m *Manager) markIdleStandbyRefresh(workspaceID string) {
 	if m.idleStandbyRefreshes == nil {
 		m.idleStandbyRefreshes = map[string]time.Time{}
 	}
-	m.idleStandbyRefreshes[workspaceID] = time.Now()
+	m.idleStandbyRefreshes[workspaceID] = m.currentTime()
 }

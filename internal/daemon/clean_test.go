@@ -489,6 +489,28 @@ func TestCleanWaitsForABusySlotAndGivesUpAtTheBoundaryLimit(t *testing.T) {
 	}
 }
 
+// 待機時間が上限と一致した時点は期限切れとして扱い、無期限待機へ戻さない。
+func TestCleanWaitForBoundaryExpiresAtExactLimit(t *testing.T) {
+	manager, store, workspaceID := cleanFixture(t)
+	ctx := context.Background()
+	slot := testSlot(t, manager, workspaceID, "busy", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	fixedNow := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	manager.now = func() time.Time { return fixedNow }
+	runID := beginCleanWithoutDriver(t, manager, store, false, true)
+	waiting := map[string]time.Time{"busy": fixedNow.Add(-cleanBoundaryWait)}
+	done, err := manager.advanceClean(ctx, runID, waiting)
+	if err != nil || !done {
+		t.Fatalf("run at the boundary: done=%v err=%v", done, err)
+	}
+	targets, err := store.CleanTargets(ctx, runID)
+	if err != nil || targetByID(targets, "busy").State != cleanTargetFailed {
+		t.Fatalf("targets at the boundary=%+v err=%v", targets, err)
+	}
+}
+
 func TestCleanRunRefusesNewLeasesAndRejoinsInsteadOfDuplicating(t *testing.T) {
 	manager, store, workspaceID := cleanFixture(t)
 	ctx := context.Background()
