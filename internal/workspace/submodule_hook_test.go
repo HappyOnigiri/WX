@@ -5,7 +5,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
 // 適格外の子を含む一括準備でも、post-checkout hook がその子を再初期化しない。
@@ -50,5 +57,145 @@ func TestPrepareBulkSubmodulesKeepsIneligibleChildEmpty(t *testing.T) {
 	}
 	if !bytes.Equal(beforeConfig, afterConfig) {
 		t.Fatalf("source repository config changed:\nbefore:\n%s\nafter:\n%s", beforeConfig, afterConfig)
+	}
+}
+
+type postCheckoutHookFixture struct {
+	preparer      *Preparer
+	repo          discovery.Repository
+	target        string
+	commonModules string
+	runner        *gitx.Runner
+}
+
+func newPostCheckoutHookFixture(t *testing.T) *postCheckoutHookFixture {
+	t.Helper()
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, target, "init", "-b", "main")
+	common := filepath.Join(root, "source-common")
+	commonModules := filepath.Join(common, "modules")
+	if err := os.MkdirAll(commonModules, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	runner := &gitx.Runner{Timeout: 5 * time.Second}
+	return &postCheckoutHookFixture{
+		preparer: &Preparer{
+			Git: runner, Config: cfg, OwnedRoot: owner, RootPath: root,
+			Notices: &PrepareNotices{},
+		},
+		repo:          discovery.Repository{MainPath: domain.CanonicalPath(target), CommonDir: domain.CanonicalPath(common)},
+		target:        target,
+		commonModules: commonModules,
+		runner:        runner,
+	}
+}
+
+func (f *postCheckoutHookFixture) run(t *testing.T, result submodulePhaseResult) []string {
+	t.Helper()
+	var invoked [][]string
+	f.runner.SetBeforeRunAtHook(func(args []string) { invoked = append(invoked, append([]string(nil), args...)) })
+	if err := f.preparer.runPostCheckoutWithSubmodules(context.Background(), f.repo, f.target, "", "abc", result); err != nil {
+		t.Fatalf("runPostCheckoutWithSubmodules() error=%v", err)
+	}
+	if len(invoked) != 1 {
+		t.Fatalf("hook invocations=%d, want one: %v", len(invoked), invoked)
+	}
+	return invoked[0]
+}
+
+func hasHookArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+// eligible の件数は protocol と active path の選択を変えるため、増減を strict に検証する。
+func TestRunPostCheckoutWithSubmodulesCountsEligibleChildren(t *testing.T) {
+	t.Parallel()
+	f := newPostCheckoutHookFixture(t)
+	args := f.run(t, submodulePhaseResult{
+		enabled: true,
+		declared: []submodule{
+			{name: "first", path: "sub/first"},
+			{name: "second", path: "sub/second"},
+		},
+		decisions: []submoduleProbe{{eligible: true}, {eligible: false}},
+	})
+	for _, want := range []string{
+		"-c", "protocol.file.allow=always", "-c", "submodule.active=:(top,literal)sub/first",
+		"-c", "submodule.first.url=" + filepath.Join(f.commonModules, "first"),
+		"-c", "submodule.first.active=true", "-c", "submodule.second.active=false",
+	} {
+		if !hasHookArg(args, want) {
+			t.Fatalf("hook args=%v, missing %q", args, want)
+		}
+	}
+	if hasHookArg(args, "submodule.active=:(top,exclude)**") {
+		t.Fatalf("eligible child was replaced by the all-excluded active rule: %v", args)
+	}
+}
+
+// 宣言はあるが適格な子が 0 件なら、hook の無指定 update を全 path 除外へ固定する。
+func TestRunPostCheckoutWithSubmodulesExcludesAllWhenNoChildIsEligible(t *testing.T) {
+	t.Parallel()
+	f := newPostCheckoutHookFixture(t)
+	args := f.run(t, submodulePhaseResult{
+		enabled:   true,
+		declared:  []submodule{{name: "first", path: "sub/first"}},
+		decisions: []submoduleProbe{{eligible: false}},
+	})
+	if !hasHookArg(args, "submodule.active=:(top,exclude)**") {
+		t.Fatalf("hook args=%v, want all paths excluded", args)
+	}
+	if hasHookArg(args, "protocol.file.allow=always") {
+		t.Fatalf("hook args=%v, want no file protocol for zero eligible children", args)
+	}
+}
+
+// decisions が宣言より短い場合も、残りの子を安全に省略して hook を実行する。
+func TestRunPostCheckoutWithSubmodulesAllowsMissingDecisionAtExactBoundary(t *testing.T) {
+	t.Parallel()
+	f := newPostCheckoutHookFixture(t)
+	args := f.run(t, submodulePhaseResult{
+		enabled:   true,
+		declared:  []submodule{{name: "first", path: "sub/first"}},
+		decisions: nil,
+	})
+	if !hasHookArg(args, "submodule.active=:(top,exclude)**") {
+		t.Fatalf("hook args=%v, want all paths excluded when decision is missing", args)
+	}
+}
+
+// 宣言の末尾に判定が無い場合は、その子の URL を hook へ渡さず走査を止める。
+func TestRunPostCheckoutWithSubmodulesStopsAtMissingDecision(t *testing.T) {
+	t.Parallel()
+	f := newPostCheckoutHookFixture(t)
+	args := f.run(t, submodulePhaseResult{
+		enabled: true,
+		declared: []submodule{
+			{name: "first", path: "sub/first"},
+			{name: "missing", path: "sub/missing"},
+		},
+		decisions: []submoduleProbe{{eligible: true}},
+	})
+	if !hasHookArg(args, "submodule.first.url="+filepath.Join(f.commonModules, "first")) || hasHookArg(args, "submodule.missing.url="+filepath.Join(f.commonModules, "missing")) {
+		t.Fatalf("hook args=%v, want only the decided child", args)
+	}
+	if !strings.Contains(strings.Join(args, " "), "hook run --ignore-missing post-checkout") {
+		t.Fatalf("hook args=%v, missing post-checkout invocation", args)
 	}
 }
