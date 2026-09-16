@@ -1,10 +1,13 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,7 +68,9 @@ func TestWorktreeLinksRespectDestinationIgnoreRule(t *testing.T) {
 	defer func() { _ = owner.Close() }()
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
-	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: worktreeRoot}
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: worktreeRoot, Log: logger}
 	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
 	if err := os.Symlink(filepath.Join(repository, "shared"), filepath.Join(oldTarget, "shared")); err != nil {
 		t.Fatal(err)
@@ -75,6 +80,10 @@ func TestWorktreeLinksRespectDestinationIgnoreRule(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(oldTarget, "shared")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("directory-only ignore materialized a symlink: %v", err)
+	}
+	// 省略の理由が daemon log に残らないと、利用者は `dir/` 形の rule が原因だと辿れない。
+	if !strings.Contains(logged.String(), "not ignored by the destination worktree") || !strings.Contains(logged.String(), "shared") {
+		t.Fatalf("destination ignore skip was not logged: %q", logged.String())
 	}
 	if err := preparer.createLinksAt(context.Background(), repo, owner, "current", true); err != nil {
 		t.Fatalf("symlink destination ignore: %v", err)
