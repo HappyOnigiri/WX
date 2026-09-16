@@ -165,6 +165,73 @@ func TestValidateRejectsEachPolicyClass(t *testing.T) {
 	}
 }
 
+// Validate の各範囲条件は、仕様上の最小値・最大値を有効値として受け入れる。
+// 境界を一つ内側へずらす変異でも、この契約を検出できるようにする。
+func TestValidateAcceptsInclusiveBoundaryValues(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{
+			name: "repository cow minimum zero",
+			mutate: func(c *Config) {
+				value := 0
+				c.Repositories["/repository"] = Repository{COWMinSizeKiB: &value}
+			},
+		},
+		{
+			name: "repository cow minimum maximum",
+			mutate: func(c *Config) {
+				value := MaxCOWMinSizeKiB
+				c.Repositories["/repository"] = Repository{COWMinSizeKiB: &value}
+			},
+		},
+		{
+			name:   "preparation concurrency one",
+			mutate: func(c *Config) { c.Pool.PreparationConcurrency = 1 },
+		},
+		{
+			name:   "discovery max depth one",
+			mutate: func(c *Config) { c.Discovery.MaxDepth = 1 },
+		},
+		{
+			name:   "discovery max entries one",
+			mutate: func(c *Config) { c.Discovery.MaxEntries = 1 },
+		},
+		{
+			name:   "backup generations one",
+			mutate: func(c *Config) { c.Storage.BackupGenerations = 1 },
+		},
+		{
+			name:   "backup retention zero",
+			mutate: func(c *Config) { c.Storage.BackupRetention = Duration{} },
+		},
+		{
+			name: "workspace retention zero and depth one",
+			mutate: func(c *Config) {
+				depth := 1
+				c.Workspaces["/workspace"] = Workspace{
+					Retention: WorkspaceRetention{
+						HotStandby:    &Duration{},
+						EndedWorktree: &Duration{},
+					},
+					Discovery: WorkspaceDiscovery{MaxDepth: &depth},
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Defaults()
+			test.mutate(&cfg)
+			if err := Validate(&cfg); err != nil {
+				t.Fatalf("boundary value rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestSparseCollectionsAndConfigFilesystemFailures(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
