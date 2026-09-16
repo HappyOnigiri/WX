@@ -191,6 +191,24 @@ func resumeStoppedOperation(t *testing.T, ctx context.Context, m *Manager, sessi
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := m.Release(context.Background(), resumed.SessionID, resumed.Token, "test"); err != nil {
+			t.Errorf("release resumed worktree: %v", err)
+			return
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			session, err := m.store.SessionByID(context.Background(), resumed.SessionID)
+			if err == nil && session.State == "ARCHIVED" {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("resumed worktree was not archived: state=%q error=%v", session.State, err)
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 	if err := waitReady(ctx, m, 30*time.Second, resumed.SessionID, resumed.Token); err != nil {
 		t.Fatal(err)
 	}
