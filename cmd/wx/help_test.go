@@ -133,16 +133,7 @@ func serveUntilCanceled(t *testing.T, socket string, handler rpc.Handler) (conte
 	server := &rpc.Server{Socket: socket, Handler: handler}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(ctx) }()
-	for deadline := time.Now().Add(2 * time.Second); ; {
-		if daemonListening(context.Background(), socket) {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatal("RPC server did not start")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testsupport.WaitForSocket(t, socket, done)
 	return cancel, done
 }
 
