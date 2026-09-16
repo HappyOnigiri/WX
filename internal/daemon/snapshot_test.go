@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -202,8 +204,14 @@ func TestSnapshotSessionKeepsRootWorkAddedToLinkRuleWhileLeased(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var logs bytes.Buffer
+	manager.log = slog.New(slog.NewTextHandler(&logs, nil))
 	if err := manager.snapshotSession(ctx, released); err != nil {
 		t.Fatal(err)
+	}
+	// 保存できなかった submodule が0件の境界では警告しない。通常の返却を障害と誤認させないためである。
+	if strings.Contains(logs.String(), "submodule work could not be snapshotted") {
+		t.Fatalf("clean snapshot emitted an unsaved-submodule warning: %s", logs.String())
 	}
 	rootSnapshot, found, err := store.WorkspaceSnapshot(ctx, session.ID)
 	if err != nil || !found {

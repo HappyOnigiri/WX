@@ -479,7 +479,7 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 func (m *Manager) waitForBoundary(ctx context.Context, runID string, target state.CleanTarget, waiting map[string]time.Time, slotState string) {
 	since, seen := waiting[target.SlotID]
 	if !seen {
-		waiting[target.SlotID] = m.cleanNow()
+		waiting[target.SlotID] = m.currentTime()
 		return
 	}
 	if m.sinceNow(since) < cleanBoundaryWait {

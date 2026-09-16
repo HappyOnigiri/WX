@@ -17,6 +17,8 @@ internal/daemon/restart.go	6c70d4d5173ac0c30c14c7d7ef04bc63571167847c06ba8db3dc9
 internal/daemon/restart.go	3e12c1cc9b02dd66223e19a0e5c53ae527d23f5680b8164bab0c72dee6b7be55	再試行期限が現在の待機時間と等しいときは同じDurationを代入するため > と >= の変更に観測可能な差がない
 internal/daemon/roots.go	ee0ae19b181000b1564d6fa3470a8b0b18b0e0c3e36bed0fd169bce18d0fe34f	同じpathに含まれる同じ長さのrootは同一文字列だけで、再代入しても選択結果が変わらない
 internal/daemon/roots.go	10e95ac85428be576b7ed480d1638492503bbd7ed7502ae1aab43e554da4048f	activeと履歴に同じrootがある同長境界では同一文字列を再代入するだけで選択結果が変わらない
+internal/daemon/server.go	974ff48e2eb74d8b1f515ed1aaaff9ac3637b9c7f6734b190a0ba3270dbb8961	readinessと余裕の合計が既定上限と等しい場合は、どちらの分岐でも同じ既定上限を返すため観測可能な差がない
+internal/daemon/status.go	234cdc8e07f7722af35549057e37a83180e3ba9c4d02e4e8f985d3b464ea1cd0	root一覧はpathをkeyにしたmapから作るため同じpathの別要素は存在せず、同一要素の比較を < から <= に変えても並び順は変わらない
 internal/agent/worktree_rewrite.go	cda4e3e085855efe2d77f535d7f5c9f576cd0af56981c0d8812f415c179b7866	candidates は segment ごとに高々1回だけ増え、candidates > 1 は len(segments) > 1 と同時に必ず真になるため、++ を -- に変えても判定結果が変わらない。
 internal/agent/worktree_rewrite.go	23bfaa307b941e4757825f20730f686c5d826bac5fca1102960f562aa4cdd9ed	flags 分岐に入る value は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
 internal/agent/worktree_rewrite.go	d662e53c29b955f0cd0bc0e91030e654587b49fa70cda2f132ff94d590e9e0e7	flags 分岐に入る name は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
