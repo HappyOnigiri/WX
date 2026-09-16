@@ -186,6 +186,75 @@ func TestRunBenchRejectsAnEmptyRunCount(t *testing.T) {
 	}
 }
 
+// 複数設定の測定は最初の回を待たず、次の回だけ前の job が掃けるのを待つ。
+func TestRunBenchNumbersRunsAndWaitsBetweenMeasurements(t *testing.T) {
+	client, handler, _, ctx := leaseFixture(t)
+	minSize := 16
+	stdout := captureLeaseStdout(t, func() {
+		if exit := client.RunBench(ctx, BenchOptions{Runs: 1, Configs: []config.PrepareOverride{
+			{CopyMode: config.CopyModeCopy}, {COWMinSizeKiB: &minSize},
+		}}); exit != 0 {
+			t.Fatalf("RunBench exit=%d", exit)
+		}
+	})
+	for _, required := range []string{"run 1/2", "run 2/2"} {
+		if !strings.Contains(stdout, required) {
+			t.Fatalf("stdout=%q missing %s", stdout, required)
+		}
+	}
+	handler.mu.Lock()
+	statusCalls := 0
+	for _, method := range handler.methods {
+		if method == "Status" {
+			statusCalls++
+		}
+	}
+	handler.mu.Unlock()
+	if statusCalls != 1 {
+		t.Fatalf("Status calls=%d, want one idle check between runs", statusCalls)
+	}
+}
+
+// 成功が1回だけの測定は概要を出さず、従来どおり測定行だけを出す。
+func TestRunBenchDoesNotPrintASummaryForOneRun(t *testing.T) {
+	client, _, _, ctx := leaseFixture(t)
+	stdout := captureLeaseStdout(t, func() {
+		if exit := client.RunBench(ctx, BenchOptions{Runs: 1, Reuse: true}); exit != 0 {
+			t.Fatalf("RunBench exit=%d", exit)
+		}
+	})
+	if strings.Contains(stdout, "summary of") {
+		t.Fatalf("stdout=%q, want no summary for one run", stdout)
+	}
+}
+
+// cold start でも退役対象が無ければ retired 行を出さず、1件・0秒の区間は実測値で示す。
+func TestPrintBenchRunShowsZeroRetiredAndSingleCountTimingBoundaries(t *testing.T) {
+	stdout := captureLeaseStdout(t, func() {
+		printBenchRunLanguage(1, 1, BenchRun{
+			Source: "cold", Config: BenchConfig{},
+			Measurement: &daemon.PrepareMeasurement{
+				Phases: []daemon.PreparePhase{{Name: "checkout", Count: 1}},
+			},
+		}, i18n.English)
+	})
+	if strings.Contains(stdout, "retired") {
+		t.Fatalf("stdout=%q, want no retired row when no standby was retired", stdout)
+	}
+	foundPhase := false
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.Contains(line, "checkout") {
+			foundPhase = true
+			if !strings.Contains(line, "0.000s") {
+				t.Fatalf("phase line=%q, want the zero-second timing", line)
+			}
+		}
+	}
+	if !foundPhase {
+		t.Fatalf("stdout=%q, want the checkout phase", stdout)
+	}
+}
+
 // benchSlotUsageReply は測り終えた slot の使用量として daemon が返す行を組む。
 // 測定時刻は run の途中に置く。bench は貸出要求より前の測定を前の準備の値として採らないためである。
 func benchSlotUsageReply() []daemon.SlotView {
@@ -373,5 +442,30 @@ func TestBenchUsageMeasuredAfterRejectsTheMeasurementOfAnEarlierPreparation(t *t
 	// 測定がまだ無い行と読めない時刻は、待ち続けて次の測定を待つ。
 	if benchUsageMeasuredAfter("", leaseAt) || benchUsageMeasuredAfter("not a timestamp", leaseAt) {
 		t.Fatal("accepted a row without a usable measurement time")
+	}
+}
+
+// 表示幅と同じラベルは空白を追加せず、そのまま返す。
+func TestPadBenchLabelLeavesAnExactWidthLabelUnchanged(t *testing.T) {
+	label := "1234567890123"
+	if got := padBenchLabel(label); got != label {
+		t.Fatalf("padBenchLabel(%q)=%q, want no padding", label, got)
+	}
+}
+
+// 同値要素を含む並びも値を昇順にし、入力は変更しない。
+func TestSortedCopyOrdersEqualValuesWithoutMutatingInput(t *testing.T) {
+	input := []int64{2, 1, 2, 3, 1}
+	want := []int64{1, 1, 2, 2, 3}
+	got := sortedCopy(input)
+	for index, value := range want {
+		if got[index] != value {
+			t.Fatalf("sortedCopy(%v)=%v, want %v", input, got, want)
+		}
+	}
+	for index, value := range []int64{2, 1, 2, 3, 1} {
+		if input[index] != value {
+			t.Fatalf("sortedCopy changed input to %v", input)
+		}
 	}
 }
