@@ -140,23 +140,24 @@ func TestInterruptedStagedPreparationIsQuarantinedWithoutReplay(t *testing.T) {
 }
 
 // hook が exit 非0 で落ちた回は、Git が既に書いている stderr のログへ辿れる場所を slot に残す。
-// これが無いと隔離の理由が `git hook failed with exit N` だけになり、hook が何を言って落ちたかへ辿れない。
+// これが無いと失敗の理由が `git hook failed with exit N` だけになり、hook が何を言って落ちたかへ辿れない。
+// early ready を過ぎた貸出は隔離せず続けるので、記録先は LEASED の slot になる。
 func TestStagedPrepareKeepsTheDetailLogOfAFailingHook(t *testing.T) {
 	f, repository := hookPrepareFixture(t, "#!/bin/sh\nprintf 'submodule init failed\\n' >&2\nexit 3\n")
 	ctx := context.Background()
 	slotID, prepareErr := runHookPrepare(ctx, t, f, repository)
-	if prepareErr == nil {
-		t.Fatal("preparation succeeded with a post-checkout hook that exits non-zero")
+	if prepareErr != nil {
+		t.Fatalf("the lease was not continued after the hook failed: %v", prepareErr)
 	}
 	slot, err := f.Store.Slot(ctx, slotID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slot.State != "QUARANTINED" || slot.FailureCode != "PREPARE_FAILED" {
-		t.Fatalf("slot state=%s failure_code=%s", slot.State, slot.FailureCode)
+	if slot.State != "LEASED" || slot.FailureCode != "PREPARE_FAILED" || slot.FailurePhase != "post-checkout" {
+		t.Fatalf("slot state=%s failure_code=%s failure_phase=%s", slot.State, slot.FailureCode, slot.FailurePhase)
 	}
 	if slot.FailureDetailPath == "" {
-		t.Fatal("quarantined slot has no failure detail path")
+		t.Fatal("the continued slot has no failure detail path")
 	}
 	content, err := os.ReadFile(slot.FailureDetailPath)
 	if err != nil || !strings.Contains(string(content), "submodule init failed") {

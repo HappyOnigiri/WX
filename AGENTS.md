@@ -10,6 +10,9 @@ CIのランナーは全てlinuxなので、platform依存の実装を触った�
 - エージェントはwxが作ったworktreeで作業し、ソースリポジトリのHEAD・index・追跡ファイルを変更しない。
 - 正常に終了したslotについて、スナップショットしていない作業を自動で破棄しない。
   ユーザーが明示的に実行するコマンドでの削除経路は用意してよい。
+- Early Readyでエージェントが起動した後に準備が失敗した貸出は隔離せず、貸出を維持したまま`LEASED`へ進める。
+  隔離すると返却が`DRAINING`を通らず、エージェントの作業がsnapshotへ届かないためである。
+  失敗はslotの失敗記録として残し、エージェントへは最初の`user-prompt-submit`で1回だけ伝える。
 - Gitは必ず`internal/gitx`経由で起動する。
   継承した`GIT_DIR`・`GIT_WORK_TREE`・`GIT_INDEX_FILE`などが漏れると、別リポジトリへの操作が成功し、未捕捉のworktreeを削除し得る。
 - slotの削除権限は`slots`に登録されたroot世代とroot相対pathだけで決め、inode・marker・Git lock・HEAD・workspace紐付けの不一致を拒否の理由にしない。

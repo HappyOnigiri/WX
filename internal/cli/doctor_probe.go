@@ -162,6 +162,7 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 	findings = append(findings, c.probeWorktreeFindingsWithExclusions(ctx, root, lease.Path, excludedSubmodules)...)
 	slot := c.probeSlotView(ctx, lease.SessionID)
 	probe.Usage, probe.Repositories = probeUsage(slot)
+	findings = append(findings, prepareFailureFindings(root, slot)...)
 	return probe, append(findings, probeSharingFindings(root, lease.Path, slot)...)
 }
 

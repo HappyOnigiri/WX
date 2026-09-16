@@ -26,6 +26,9 @@ type PhaseTimings struct {
 	running []runningPhase
 	// nextRun は running の項目を識別する連番。同名の区間が入れ子になっても終了先を取り違えない。
 	nextRun uint64
+	// failed は最初に失敗した区間名。入れ子では最も内側が先に記録され、以後は上書きしない。
+	// 失敗を受け取る側は区間が既に終わった後に読むため、running からは辿れない。
+	failed string
 	// scope は以降に始まる区間が属する対象。区間名は repository をまたいで繰り返すため、
 	// 名前だけでは何周目かを読めない。集計側の名前は変えず、実行中の表示にだけ付ける。
 	scope PhaseScope
@@ -111,6 +114,28 @@ func (t *PhaseTimings) Active() (active ActivePhase, ok bool) {
 	return ActivePhase{Name: last.name, Scope: last.scope, Start: last.start}, true
 }
 
+// fail は name の区間の失敗を記録する。最初の 1 件だけを残す。
+func (t *PhaseTimings) fail(name string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.failed == "" {
+		t.failed = name
+	}
+}
+
+// Failed は最初に失敗した区間名を返す。失敗していなければ空である。
+func (t *PhaseTimings) Failed() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.failed
+}
+
 // Observe は start から現在までを name の区間へ1回分加える。
 func (t *PhaseTimings) Observe(name string, start time.Time) {
 	t.Add(name, 1, time.Since(start))
@@ -166,6 +191,9 @@ func (p *Preparer) timePhase(name string, run func() error) error {
 	start := time.Now()
 	running := p.Phases.begin(name, start)
 	err := run()
+	if err != nil {
+		p.Phases.fail(name)
+	}
 	p.Phases.end(running)
 	p.Phases.Observe(name, start)
 	return err

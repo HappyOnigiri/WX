@@ -108,10 +108,15 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	if !capacityReport.Sparse {
 		preparer.LFSObjects = lfsObjectsByRepository(capacityReport)
 	}
-	staged, err := m.prepareStagedSlot(ctx, slot, w, resolved, preparer)
+	staged, continueLease, err := m.prepareStagedSlot(ctx, slot, w, resolved, preparer)
 	if err != nil {
-		m.log.Error("slot preparation failed", "job_id", job.ID, "session_id", job.SessionID, "slot_id", id, "error", err)
-		return err
+		m.log.Error("slot preparation failed", "job_id", job.ID, "session_id", job.SessionID, "slot_id", id, "continue_lease", continueLease, "error", err)
+		if !continueLease {
+			return err
+		}
+		// 配置履歴は完成していないので記録しない。placement_history_complete が 0 のままなら
+		// standby の再利用・更新はこの slot を選ばない。
+		return m.leaseAfterPrepareFailure(ctx, id)
 	}
 	placements, err := m.capturePlacements(ctx, slot, w, resolved, preparer, staged)
 	if err != nil {
@@ -139,6 +144,43 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	}
 	if normalPreparation && m.standbyReplenishmentEnabled(w) {
 		m.handleNormalSessionSuccess(ctx, w, replenishJob, replenished)
+	}
+	return nil
+}
+
+// leaseAfterPrepareFailure は early ready の後に準備が失敗した slot を LEASED まで進める。
+// PREPARING のまま session を終えると返却が何もせずに返り、エージェントの作業が snapshot へ届かない。
+// 準備の失敗そのものは slot の failure_code / failure_detail_path に残っている。
+func (m *Manager) leaseAfterPrepareFailure(ctx context.Context, id string) error {
+	repositories, err := m.store.SlotRepositories(ctx, id)
+	if err != nil {
+		return err
+	}
+	// worktree directory の作成と identity の記録は early ready までに終わっており、所有権は証明できる。
+	// 未完了なのは中身だけなので、削除・返却が要求する repository 状態へ進め、
+	// 不完全であることの記録は slot 側の失敗記録に寄せる。
+	for _, repository := range repositories {
+		if repository.State != "PREPARE_RUNNING" {
+			continue
+		}
+		if err := m.store.SetSlotRepositoryState(ctx, id, repository.RepositoryID, []string{"PREPARE_RUNNING"}, "READY"); err != nil {
+			return err
+		}
+	}
+	releaseJob, released, replenishJob, replenished, err := m.store.FinishPreparationWithReplenishment(ctx, id)
+	if err != nil {
+		m.log.Error("finish preparation failed", "slot_id", id, "error", err)
+		_ = m.store.SetSlotState(context.Background(), id, []string{"PREPARING"}, "QUARANTINED", "PREPARE_AMBIGUOUS")
+		return err
+	}
+	m.scheduleSlotUsageMeasurement(id)
+	if released {
+		m.schedule(releaseJob)
+		return nil
+	}
+	// 補充の許可は上の transaction が既に確定させている。積まれた job を実行待ちのまま放置しない。
+	if replenished {
+		m.schedule(replenishJob)
 	}
 	return nil
 }

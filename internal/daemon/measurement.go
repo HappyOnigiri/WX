@@ -105,6 +105,14 @@ func (t *prepareTimer) markEarly() {
 	t.early = time.Now()
 }
 
+// failedPhase は準備が止まった区間名を返す。区間の外で落ちた失敗では空である。
+func (t *prepareTimer) failedPhase() string {
+	if t == nil {
+		return ""
+	}
+	return t.timings.Failed()
+}
+
 // finish は計測を確定して Manager の履歴へ積む。失敗した回も、どの区間で止まったかを残すため記録する。
 func (t *prepareTimer) finish(prepareErr error) {
 	if t == nil {

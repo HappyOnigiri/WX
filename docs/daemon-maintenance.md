@@ -210,3 +210,10 @@ WaitEarlyReadyは認証と終端状態を検査し、過去の完了時刻だけ
 COLD repositoryの再補充へ貸し出す際は古い先行完了・開始記録を消し、新しい二巡を始める。
 UPDATEも書込み開始時刻を永続化し、開始後の中断は隔離する。
 全更新と配置履歴の確定後にだけslotをLEASEDへ移し、DB確定後にjob完了だけが中断した場合は更新を再実行しない。
+
+中断ではなく準備そのものが失敗した場合も、Early Readyを過ぎた貸出は隔離しない。
+エージェントは既にそのworktreeで作業しており、隔離すると返却が`LEASED`を通らず`DRAINING`へ進めないため、作業がsnapshotに届かないからである。
+失敗は`slots`の失敗記録として残したまま`LEASED`へ進め、PREPARE jobは成功として終える。
+worktree directoryの作成とidentityの記録はEarly Readyまでに終わっているので、`slot_repositories`もREADYへ進め、削除・返却が要求する状態を満たす。
+配置履歴は完成していないので記録せず、`placement_history_complete`が0のまま待機枠の再利用・更新から外れる。
+owner sessionを持たない待機枠の補充・更新の失敗は、これまでどおり隔離する。

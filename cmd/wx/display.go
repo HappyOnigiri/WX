@@ -77,6 +77,19 @@ func slotField(row map[string]any, key string) string {
 	return "-"
 }
 
+// slotState は状態に、準備が失敗したまま稼働している行の失敗種別を添える。
+// この行は隔離されず状態だけでは通常の貸出と見分けられないため、列名と同じ機械的な語彙で出す。
+// failure ID を含む後半と詳細ログの path は --json 側に残し、列幅を種別に抑える。
+func slotState(row map[string]any) string {
+	state := slotField(row, "state")
+	code, ok := row["prepare_failure_code"].(string)
+	if !ok || code == "" {
+		return state
+	}
+	kind, _, _ := strings.Cut(code, ":")
+	return state + "(" + kind + ")"
+}
+
 // slotRepositories は行のリポジトリを basename のカンマ区切りで返す。
 // フルパスは --json 側に残し、表では列幅を basename に抑える。
 func slotRepositories(row map[string]any) string {

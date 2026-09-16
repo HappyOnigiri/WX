@@ -137,6 +137,9 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 			SessionID string `json:"session_id"`
 			Token     string `json:"token"`
 			TimeoutMS int    `json:"timeout_ms"`
+			// Notice は準備失敗の案内を受け取れる呼び出しだけが立てる。
+			// 案内は 1 回しか出ないので、stdout をエージェントの context へ渡せない呼び出しが消費してはならない。
+			Notice bool `json:"notice"`
 		}
 		if err := decode(raw, &p); err != nil {
 			return nil, err
@@ -150,7 +153,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		if method == "WaitEarlyReady" {
 			return map[string]bool{"ready": true}, h.Manager.WaitEarlyReady(ctx, p.SessionID, p.Token)
 		}
-		return h.waitReady(ctx, p.SessionID, p.Token)
+		return h.waitReady(ctx, p.SessionID, p.Token, p.Notice)
 	case "LeaseProgress":
 		// 待機中の表示のために短い間隔で呼ばれる。params は WaitReady と共有せず、timeout_ms を受け付けない。
 		var p struct {
@@ -282,7 +285,7 @@ func (h Handler) logReadinessWait(sessionID, method string) {
 // waitReady は READY を待ち、応答を受け取る client が先に消えた貸出を回収する。
 // 切断していれば待機は無意味なので打ち切り、まだ path を渡せていない path 貸出を返却する。
 // 切断通知の無い呼び出し（in-process の test など）は従来どおり timeout まで待つ。
-func (h Handler) waitReady(ctx context.Context, sessionID, token string) (any, error) {
+func (h Handler) waitReady(ctx context.Context, sessionID, token string, notice bool) (any, error) {
 	peerClosed := rpc.PeerClosed(ctx)
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -297,7 +300,17 @@ func (h Handler) waitReady(ctx context.Context, sessionID, token string) (any, e
 	}
 	err := h.Manager.WaitReady(waitCtx, sessionID, token)
 	if err == nil {
-		return map[string]bool{"ready": true}, nil
+		reply := map[string]any{"ready": true}
+		if notice {
+			// 案内の取得に失敗しても readiness は成立している。待機の結果を案内の都合で覆さない。
+			text, noticeErr := h.Manager.ClaimPrepareFailureNotice(ctx, sessionID, token)
+			if noticeErr != nil {
+				h.Manager.log.Error("prepare failure notice lookup failed", "session_id", sessionID, "error", noticeErr)
+			} else if text != "" {
+				reply["notice"] = text
+			}
+		}
+		return reply, nil
 	}
 	select {
 	case <-peerClosed:

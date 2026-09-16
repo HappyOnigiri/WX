@@ -338,9 +338,14 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 // 未配置の相対 hooksPath も全展開後なら解決できる。
 func (p *Preparer) runPostCheckout(ctx context.Context, target, identity, oid string) error {
 	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, "hook", "run", "--ignore-missing", "post-checkout", "--", strings.Repeat("0", len(oid)), oid, "1")
+	if err != nil {
+		// 失敗した hook の出力は gitx が failure ID 付きの detail log へ既に書いている。
+		// notice にも積むと同じ出力が 2 つの log に分かれ、失敗を「失敗せずに出力した」として報告することになる。
+		return err
+	}
 	// exit 0 の hook が出した出力も残す。hook が内部の失敗を飲み込むと、捨てた時点で wx からは正常と区別できなくなる。
 	p.Notices.Add(PrepareNotice{Target: target, Phase: "post-checkout", Stdout: result.Stdout, Stderr: result.Stderr})
-	return err
+	return nil
 }
 
 // beginPrepare は common-directory lock を保持する最初の区間である。

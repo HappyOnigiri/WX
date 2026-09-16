@@ -69,8 +69,8 @@ func TestHandlerLeavesZeroTimeoutReadyWaitUnbounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zero-timeout WaitReady err=%v", err)
 	}
-	reply, ok := result.(map[string]bool)
-	if !ok || !reply["ready"] {
+	reply, ok := result.(map[string]any)
+	if !ok || reply["ready"] != true {
 		t.Fatalf("zero-timeout WaitReady reply=%T %v, want ready=true", result, result)
 	}
 }

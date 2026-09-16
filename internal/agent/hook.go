@@ -93,8 +93,20 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		}
 		waitCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		if err := client.Call(waitCtx, "WaitReady", map[string]any{"session_id": wxID, "token": token, "timeout_ms": int(timeout.Milliseconds())}, nil); err != nil {
+		params := map[string]any{"session_id": wxID, "token": token, "timeout_ms": int(timeout.Milliseconds())}
+		// 準備失敗の案内は 1 回しか出ないため、stdout がそのままエージェントの context に入る
+		// user-prompt-submit だけが要求する。pre-tool-use の stdout は判定 JSON の場所である。
+		if event == "user-prompt-submit" {
+			params["notice"] = true
+		}
+		var response struct {
+			Notice string `json:"notice"`
+		}
+		if err := client.Call(waitCtx, "WaitReady", params, &response); err != nil {
 			return err
+		}
+		if response.Notice != "" {
+			_, _ = fmt.Fprintln(os.Stdout, response.Notice)
 		}
 		// 判定は readiness の後に出す。書き換え先の wx new は準備の終わった workspace からしか貸し出せない。
 		writePreToolUseDecision(toolPayload)
