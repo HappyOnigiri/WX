@@ -1,6 +1,9 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
 # IDはmanifestが出力する64桁のSHA-256。等価変異だけを具体的な理由付きで記録する。
+internal/tui/select.go	eec5b35985c640d7c6ae1c1b890f8271f80d8fcd8261eab558f118c81ac38431	width == column では同じ幅を再代入するだけで表示結果が変わらず、> と >= は同値
+internal/update/update.go	67a29d63746b9cfab3c4dc221abecb21c22090c6c8e73eb4433145c566eee8ce	next.Major != base.Major の分岐内では両者が等しくなる経路がなく、> と >= は同じ結果になる等価変異
+internal/update/update.go	e33fcb211a513eb40ccdf8ca7b8b91dd1bdf9d57d3e92a1d7e0b2445dcf37bfc	next.Minor != base.Minor の分岐内では両者が等しくなる経路がなく、> と >= は同じ結果になる等価変異
 internal/diag/localization.go	e3e7484d2d1897f1ce72d006bdd6a3a2004a0355b0b60c1c406e9f5eb6b0c900	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
 internal/diag/report.go	f68b4b16f0be0ace924d17540222855dff80ff996b6137917624dfaa1b3fd193	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
