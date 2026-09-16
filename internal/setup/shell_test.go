@@ -142,9 +142,9 @@ func TestShellBlockQuotesAnUnexpectedDirectory(t *testing.T) {
 	}
 }
 
-// TestShellManagedBlockRecognizesBoundaryMarkers は、開始 marker が先頭にあり、
-// 終了 marker が直後に続く最小の block も完全な block として扱うことを確認する。
-// どちらも marker の位置が 0 になるため、通常の本文を挟んだ例だけでは境界を検査できない。
+// TestShellManagedBlockRecognizesBoundaryMarkers は、開始 marker を先頭に置き、
+// 終了 marker を直後に続けた最小の block も完全な block として扱うことを確認する。
+// これにより begin == 0 と end == len(contents) の両方を検査できる。
 func TestShellManagedBlockRecognizesBoundaryMarkers(t *testing.T) {
 	contents := shellBlockBegin + shellBlockEnd
 	block, found, terminated := shellManagedBlock(contents)
