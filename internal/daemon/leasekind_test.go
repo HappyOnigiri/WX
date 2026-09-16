@@ -36,6 +36,20 @@ func setLeaseExpiry(t *testing.T, databasePath, sessionID, expiresAt string) {
 	}
 }
 
+// createReleaseLeaseSession は ReleaseLease の判定に必要な session と slot だけを登録する。
+// 解放受付の検査で worktree 準備まで実行すると、パッケージ全体の race 実行時に準備の待機期限へ依存する。
+func createReleaseLeaseSession(t *testing.T, f *managerFixture, id, kind string, clientPID int) {
+	t.Helper()
+	slot := testSlot(t, f.Manager, "", id, 1, "LEASED")
+	session := state.Session{
+		ID: id, SlotID: id, State: "ACTIVE", AgentKind: id,
+		LeaseKind: kind, ClientPID: clientPID, TokenHash: state.HashToken("token"),
+	}
+	if _, err := f.Store.CreateSlotSession(context.Background(), slot, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // wx new の貸出は client を持たないため 45 秒の orphan 回収では返却されず、
 // lease.ttl の期限が来たときだけ保存経路（SNAPSHOT ジョブ）を通って SNAPSHOTTED まで進む。
 func TestPathLeaseSurvivesOrphanReconcileAndExpiresThroughSnapshot(t *testing.T) {
@@ -207,54 +221,40 @@ func TestApplyLeaseAttrsSkipsExpiryWhenTTLIsZero(t *testing.T) {
 // 返却できる貸出だけを保存経路へ進める。
 func TestReleaseLeaseRefusesAgentSessionsAndLiveProcesses(t *testing.T) {
 	t.Parallel()
-	f, repo := leaseWorktreeFixture(t)
+	f := manualManagerFixture(t)
 	store, m := f.Store, f.Manager
 	ctx := context.Background()
-	agent, err := m.leaseWithPolicy(ctx, repo, nil, "codex", os.Getpid(), false, leaseAttrs{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := waitReady(ctx, m, 10*time.Second, agent.SessionID, agent.Token); err != nil {
-		t.Fatal(err)
-	}
-	_, err = m.ReleaseLease(ctx, agent.SessionID, "wx-release", false)
+	createReleaseLeaseSession(t, f, "agent", state.LeaseKindAgent, os.Getpid())
+	_, err := m.ReleaseLease(ctx, "agent", "wx-release", false)
 	if err == nil || !strings.Contains(err.Error(), "wx clear --all") {
 		t.Fatalf("agent session release error=%v, want the wx clear guidance", err)
 	}
 	// 生きた client を持つ shell 貸出も、その shell の終了に任せる。
-	shell, err := m.leaseWithPolicy(ctx, repo, nil, "wx-shell", os.Getpid(), false, leaseAttrs{Kind: state.LeaseKindShell})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := waitReady(ctx, m, 10*time.Second, shell.SessionID, shell.Token); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := m.ReleaseLease(ctx, shell.SessionID, "wx-release", false); err == nil {
+	createReleaseLeaseSession(t, f, "shell", state.LeaseKindShell, os.Getpid())
+	if _, err := m.ReleaseLease(ctx, "shell", "wx-release", false); err == nil {
 		t.Fatal("a lease with a live client was released")
 	}
 	if _, err := m.ReleaseLease(ctx, "missing", "wx-release", false); err == nil {
 		t.Fatal("an unknown session was released")
 	}
 	// client を持たない wx new の貸出は返却でき、二度目は使用中でないとして断られる。
-	detached, err := m.leaseWithPolicy(ctx, repo, nil, "wx-path", 0, false, leaseAttrs{Kind: state.LeaseKindPath})
+	createReleaseLeaseSession(t, f, "detached", state.LeaseKindPath, 0)
+	reply, err := m.ReleaseLease(ctx, "detached", "wx-release", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := waitReady(ctx, m, 10*time.Second, detached.SessionID, detached.Token); err != nil {
-		t.Fatal(err)
-	}
-	reply, err := m.ReleaseLease(ctx, detached.SessionID, "wx-release", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reply["released"] != true || reply["discarded"] != false {
+	if reply["released"] != true || reply["discarded"] != false || reply["job_kind"] != "SNAPSHOT" {
 		t.Fatalf("release reply=%+v", reply)
 	}
-	waitUntil(t, 20*time.Second, func() bool {
-		session, _ := store.SessionByID(ctx, detached.SessionID)
-		return session.State == "ARCHIVED"
-	})
-	if _, err := m.ReleaseLease(ctx, detached.SessionID, "wx-release", false); err == nil {
+	session, err := store.SessionByID(ctx, "detached")
+	if err != nil || session.State != "RELEASING" {
+		t.Fatalf("released session=%+v err=%v, want RELEASING until the snapshot job runs", session, err)
+	}
+	slot, err := store.Slot(ctx, "detached")
+	if err != nil || slot.State != "DRAINING" {
+		t.Fatalf("released slot=%+v err=%v, want DRAINING until the snapshot job runs", slot, err)
+	}
+	if _, err := m.ReleaseLease(ctx, "detached", "wx-release", false); err == nil {
 		t.Fatal("an already released lease was released again")
 	}
 }
