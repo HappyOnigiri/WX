@@ -238,6 +238,73 @@ func TestAllocationDoesNotAdoptExistingUnregisteredDirectory(t *testing.T) {
 	}
 }
 
+func TestAllocateRestoreUsesParentAgentSessionWhenPendingIDIsOmitted(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t, "multi_repository")
+	rootPath, rootID, err := manager.activeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentID := domain.StableID("allocate-restore", "parent")
+	parent := testSlot(t, manager, string(workspaceRecord.ID), parentID, 1, "ARCHIVED")
+	if _, err := store.CreateSlotSession(ctx, parent, nil, state.Session{
+		ID:             parentID,
+		WorkspaceID:    string(workspaceRecord.ID),
+		SlotID:         parentID,
+		State:          "ARCHIVED",
+		AgentKind:      "codex",
+		AgentSessionID: "parent-agent",
+		TokenHash:      state.HashToken(parentID),
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindAgentSession(ctx, parentID, "parent-agent"); err != nil {
+		t.Fatal(err)
+	}
+
+	childID := domain.StableID("allocate-restore", "child")
+	if _, retry, err := manager.allocateWithID(ctx, childID, rootPath, rootID, "child-token", workspaceRecord, nil, 1, "codex", 0, leaseAttrs{}, "RESTORING", "RESTORING", "RESTORE", parentID); err != nil || retry {
+		t.Fatalf("restore allocation err=%v retry=%v", err, retry)
+	}
+	child, err := store.SessionByID(ctx, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.PendingAgentSessionID != "parent-agent" {
+		t.Fatalf("pending agent session=%q, want parent-agent", child.PendingAgentSessionID)
+	}
+}
+
+func TestBeginWorkspaceLeaseRemovesTheLastInFlightMarker(t *testing.T) {
+	t.Parallel()
+	manager := &Manager{}
+	end := manager.beginWorkspaceLease("workspace")
+	if !manager.workspaceLeaseInFlight("workspace") {
+		t.Fatal("workspace lease was not marked in flight")
+	}
+	end()
+	if manager.workspaceLeaseInFlight("workspace") {
+		t.Fatal("workspace lease remained in flight after release")
+	}
+	manager.mu.RLock()
+	_, present := manager.leasingWorkspaces["workspace"]
+	manager.mu.RUnlock()
+	if present {
+		t.Fatal("last workspace lease marker remained in the map")
+	}
+
+	first := manager.beginWorkspaceLease("nested")
+	second := manager.beginWorkspaceLease("nested")
+	first()
+	if !manager.workspaceLeaseInFlight("nested") {
+		t.Fatal("nested workspace lease was cleared while another lease was active")
+	}
+	second()
+	if manager.workspaceLeaseInFlight("nested") {
+		t.Fatal("nested workspace lease remained in flight after the final release")
+	}
+}
+
 func TestLeaseRepositoryDirsUsesRecordedDirNames(t *testing.T) {
 	t.Parallel()
 	slotPath := filepath.Join(string(filepath.Separator)+"wx", "wsp001", "slt001")

@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,6 +23,10 @@ func TestParseLFSPointer(t *testing.T) {
 	if !ok || pointer.OID != "sha256:"+strings.Repeat("a", 64) || pointer.Size != 123 {
 		t.Fatalf("pointer=%+v ok=%v", pointer, ok)
 	}
+	zero := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("0", 64) + "\nsize 0\n"
+	if pointer, ok := ParseLFSPointer([]byte(zero)); !ok || pointer.Size != 0 {
+		t.Fatalf("zero-size pointer=%+v ok=%v", pointer, ok)
+	}
 	for _, invalid := range []string{
 		"version https://git-lfs.github.com/spec/v1\noid sha256:bad\nsize 1\n",
 		"version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize -1\n",
@@ -32,6 +38,78 @@ func TestParseLFSPointer(t *testing.T) {
 	}
 	if _, ok := parseLFSPointer([]byte(valid)); !ok {
 		t.Fatal("unexported pointer parser rejected a valid pointer")
+	}
+}
+
+// testlint:allow-serial -- t.SetenvでGit実行経路を一時差し替えるため
+func TestEstimateCapacitySkipsAttributeLookupForEmptyTree(t *testing.T) {
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.email", "wx@example.invalid")
+	gitCommand(t, repository, "config", "user.name", "wx")
+	gitCommand(t, repository, "commit", "--allow-empty", "-m", "empty")
+	oid := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+	common := capacityGitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common), RelativePath: "."}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	wrapper := filepath.Join(bin, "git")
+	script := "#!/bin/sh\n" +
+		"if [ \"${1:-}\" = \"--no-optional-locks\" ]; then shift; fi\n" +
+		"if [ \"${1:-}\" = \"check-attr\" ]; then exit 97; fi\n" +
+		"exec \"$WX_TEST_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_TEST_REAL_GIT", realGit)
+	t.Setenv("PATH", fmt.Sprintf("%s%c%s", bin, os.PathListSeparator, os.Getenv("PATH")))
+
+	p := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+	estimate, err := p.EstimateCapacity(context.Background(), repo, oid)
+	if err != nil {
+		t.Fatalf("empty tree estimate failed: %v", err)
+	}
+	if estimate.BlobBytes != 0 || estimate.WorktreeBytes != 0 || estimate.LFSObjects != 0 {
+		t.Fatalf("empty tree estimate=%+v", estimate)
+	}
+}
+
+func TestParseCapacityTreeAcceptsZeroSizedBlob(t *testing.T) {
+	t.Parallel()
+	entries, err := parseCapacityTree("100644 blob " + strings.Repeat("a", 40) + " 0\tzero\x00")
+	if err != nil || len(entries) != 1 || entries[0].Path != "zero" || entries[0].Size != 0 {
+		t.Fatalf("entries=%+v err=%v", entries, err)
+	}
+}
+
+func TestParseLFSFilterPathsIgnoresIncompleteRecord(t *testing.T) {
+	t.Parallel()
+	paths := parseLFSFilterPaths("weights.bin\x00filter")
+	if len(paths) != 0 {
+		t.Fatalf("incomplete attributes produced paths=%v", paths)
+	}
+}
+
+func TestParseLFSPointerBatchAcceptsZeroAndMaximumBlobSizes(t *testing.T) {
+	t.Parallel()
+	zeroOID := "zero"
+	maximumOID := "maximum"
+	pointerText := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("d", 64) + "\nsize 7\n"
+	maximum := pointerText + strings.Repeat("x", maxLFSPointerBytes-len(pointerText))
+	stdout := zeroOID + " blob 0\n\n" + maximumOID + " blob " + fmt.Sprint(maxLFSPointerBytes) + "\n" + maximum + "\n"
+	pointers, err := parseLFSPointerBatch(stdout, []string{zeroOID, maximumOID}, false)
+	if err != nil {
+		t.Fatalf("batch parse failed: %v", err)
+	}
+	if _, ok := pointers[zeroOID]; ok {
+		t.Fatalf("zero-sized non-pointer unexpectedly parsed: %v", pointers)
+	}
+	if pointer, ok := pointers[maximumOID]; !ok || pointer.OID != "sha256:"+strings.Repeat("d", 64) || pointer.Size != 7 {
+		t.Fatalf("maximum-sized pointer=%+v ok=%v", pointer, ok)
 	}
 }
 
@@ -130,6 +208,9 @@ func TestCapacityHelpersHandleCacheModesAndOverflow(t *testing.T) {
 	}
 	if got := addBytes(1, -1); got != int64(^uint64(0)>>1) {
 		t.Fatalf("negative add=%d", got)
+	}
+	if got := addBytes(1, 0); got != 1 {
+		t.Fatalf("zero add=%d", got)
 	}
 	if got := addBytes(int64(^uint64(0)>>1), 1); got != int64(^uint64(0)>>1) {
 		t.Fatalf("overflow add=%d", got)

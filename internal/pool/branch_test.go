@@ -23,6 +23,18 @@ func TestFetchWarningErrorIncludesOperationAndCause(t *testing.T) {
 	}
 }
 
+// TestMatchRepositoriesFallsBackToUniqueBaseName は相対 path の完全一致が無くても、
+// 一意な basename なら qualified selector として解決できることを確認する。
+func TestMatchRepositoriesFallsBackToUniqueBaseName(t *testing.T) {
+	repository := discovery.Repository{
+		ID: "api", RelativePath: "services/api", MainPath: domain.CanonicalPath("/repositories/services/api"),
+	}
+	matches := matchRepositories([]discovery.Repository{repository}, "api")
+	if len(matches) != 1 || matches[0].ID != repository.ID {
+		t.Fatalf("basename matches=%v, want %v", matches, []discovery.Repository{repository})
+	}
+}
+
 func TestResolveBranchesFallbackAndOverride(t *testing.T) {
 	root := t.TempDir()
 	a := initRepo(t, filepath.Join(root, "a"))

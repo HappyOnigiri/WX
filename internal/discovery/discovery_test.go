@@ -218,6 +218,19 @@ func TestResolveMultiRepositoryFailsClosedOnLimitsAndMissingRepositories(t *test
 	}
 }
 
+func TestMultiRepositoryDiscoveryAllowsExactlyTheConfiguredEntryLimit(t *testing.T) {
+	root := t.TempDir()
+	initDiscoveryRepository(t, filepath.Join(root, "repository"))
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(t.TempDir(), "worktrees")
+	cfg.Discovery.MaxEntries = 2 // workspace root と repository directory の二つ。
+	cfg.Discovery.Timeout.Duration = time.Second
+	discoverer := Discoverer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg}
+	if _, err := discoverer.multiWorkspace(context.Background(), root); err != nil {
+		t.Fatalf("exact entry limit rejected a valid workspace: %v", err)
+	}
+}
+
 func TestInspectRepositoryFailsClosedAtGitMetadataBoundaries(t *testing.T) {
 	root := t.TempDir()
 	main := filepath.Join(root, "main")
@@ -430,6 +443,7 @@ func TestRemoteBaseNameReducesRemoteURLForms(t *testing.T) {
 		{url: "ssh://git@example.invalid/deep/path/name.git", want: "name"},
 		{url: "/srv/git/bare-repo.git", want: "bare-repo"},
 		{url: `C:\repos\windows-style.git`, want: "windows-style"},
+		{url: "/repository", want: "repository"},
 		{url: "", want: ""},
 		{url: "   ", want: ""},
 		{url: "https://example.invalid/.git", want: ""},

@@ -43,7 +43,10 @@ func drainPendingJobs(t *testing.T, m *Manager, store *state.Store) {
 // 再試行を設定値で打ち切ると、GCや併走leaseに候補を削られただけでcold startへ落ちる。
 func TestLeaseTriesEveryReadyCandidateBeyondTheConfiguredWarmSize(t *testing.T) {
 	requireDaemonIntegration(t)
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	repo := filepath.Join(root, "repo")
 	initGitRepo(t, repo)
 	cfg := config.Defaults()

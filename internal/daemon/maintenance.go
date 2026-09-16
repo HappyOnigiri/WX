@@ -84,10 +84,7 @@ func (m *Manager) maintainLifecycle() {
 	m.runMaintenance()
 	m.measureRootUsage(m.ctx)
 	for {
-		interval := m.Config().Discovery.ReconcileInterval.Duration
-		if interval <= 0 {
-			interval = 10 * time.Minute
-		}
+		interval := maintenanceInterval(m.Config().Discovery.ReconcileInterval.Duration)
 		timer := time.NewTimer(interval)
 		select {
 		case <-m.ctx.Done():
@@ -108,6 +105,13 @@ func (m *Manager) maintainLifecycle() {
 			m.measureRootUsage(m.ctx)
 		}
 	}
+}
+
+func maintenanceInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return 10 * time.Minute
+	}
+	return interval
 }
 
 // runMaintenance は registry reconcile と GC の一巡を実行する、定期保守と明示 reload に共通の経路である。
@@ -252,7 +256,7 @@ func (m *Manager) maybeBackup(ctx context.Context) {
 	last := m.lastBackup
 	cfg := m.cfg
 	m.mu.RUnlock()
-	if !last.IsZero() && time.Since(last) < 24*time.Hour {
+	if !backupDue(last, time.Now()) {
 		return
 	}
 	// backup は writer を止めないため、並行書き込みで複製が繰り返し再走査されうる。
@@ -269,6 +273,10 @@ func (m *Manager) maybeBackup(ctx context.Context) {
 	}
 	m.lastBackup = time.Now()
 	m.backupError = ""
+}
+
+func backupDue(last, now time.Time) bool {
+	return last.IsZero() || now.Sub(last) >= 24*time.Hour
 }
 
 func (m *Manager) reconcileOrphans(ctx context.Context) {

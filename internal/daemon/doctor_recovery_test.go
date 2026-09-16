@@ -40,6 +40,20 @@ func TestMissingArtifactFindingsSeparateNeededSlotsFromReclaimable(t *testing.T)
 	}
 }
 
+// 同じ path の欠損記録も入力順を保ち、等値比較を反転させない。
+func TestMissingArtifactFindingsPreserveEqualPathOrder(t *testing.T) {
+	findings := missingArtifactFindings([]missingArtifact{
+		{SlotID: "first", Path: "/root/same", State: "LEASED"},
+		{SlotID: "second", Path: "/root/same", State: "READY"},
+	})
+	if len(findings) != 2 {
+		t.Fatalf("findings=%+v, want two findings", findings)
+	}
+	if !strings.Contains(findings[0].Cause, "slot first") || !strings.Contains(findings[1].Cause, "slot second") {
+		t.Fatalf("equal-path findings=%+v, want input order", findings)
+	}
+}
+
 // 期限切れの snapshot を支える ref は復元の材料ではないため、問題として扱わない。
 func TestRecoveryRefFindingsExcludeExpiredSnapshots(t *testing.T) {
 	past := state.FormatTime(time.Now().Add(-time.Hour))
@@ -70,6 +84,22 @@ func TestRecoveryRefFindingsExcludeExpiredSnapshots(t *testing.T) {
 	}
 }
 
+// 同じ recovery ref の記録は入力順を保ち、期限の違う記録を入れ替えない。
+func TestRecoveryRefFindingsPreserveEqualKeyOrder(t *testing.T) {
+	future := state.FormatTime(time.Now().Add(time.Hour))
+	past := state.FormatTime(time.Now().Add(-time.Hour))
+	findings := recoveryRefFindings([]recoveryRefIssue{
+		{RepositoryID: "repo", Ref: "refs/wx/recovery/same", ExpiresAt: future},
+		{RepositoryID: "repo", Ref: "refs/wx/recovery/same", ExpiresAt: past},
+	}, nil)
+	if len(findings) != 2 {
+		t.Fatalf("findings=%+v, want two findings", findings)
+	}
+	if findings[0].Severity != diag.SeverityProblem || findings[1].Severity != diag.SeverityInfo {
+		t.Fatalf("equal-key findings=%+v, want live record before expired record", findings)
+	}
+}
+
 // 照合すべき snapshot を持たない repository 記録は、refs を読めなくても doctor を失敗させない。
 // repositories の行を消す経路が無く、problem にすると forget 後に恒久的な失敗が残るためである。
 func TestUnreadableRepositoryFindingsStayInformational(t *testing.T) {
@@ -87,6 +117,51 @@ func TestUnreadableRepositoryFindingsStayInformational(t *testing.T) {
 		if !strings.Contains(finding.Cause, "git for-each-ref failed") || finding.Action == "" {
 			t.Fatalf("finding without a cause or an action: %+v", finding)
 		}
+	}
+}
+
+// repository ID が同じ記録も入力順を保ち、同値比較で path の表示順を不定にしない。
+func TestUnreadableRepositoryFindingsPreserveEqualIDOrder(t *testing.T) {
+	findings := unreadableRepositoryFindings([]unreadableRepository{
+		{RepositoryID: "same", Path: "/gone/first", Cause: "first"},
+		{RepositoryID: "same", Path: "/gone/second", Cause: "second"},
+	})
+	if len(findings) != 2 || findings[0].Target != "/gone/first" || findings[1].Target != "/gone/second" {
+		t.Fatalf("equal-ID findings=%+v, want input order", findings)
+	}
+}
+
+// 失敗記録が無いときは、空の失敗一覧ではなく正常確認を一件だけ返す。
+func TestRecoveryFailureFindingsReportHealthyWhenEmpty(t *testing.T) {
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
+	findings := manager.recoveryFailureFindings(ctx)
+	if len(findings) != 1 || findings[0].Severity != diag.SeverityOK {
+		t.Fatalf("recovery failure findings=%+v, want one OK finding", findings)
+	}
+}
+
+// 同じ module/ref の記録も入力順を保ち、孤児と欠損の重大さを入れ替えない。
+func TestSubmoduleRefFindingsPreserveEqualKeyOrder(t *testing.T) {
+	findings := submoduleRefFindings([]submoduleRefIssue{
+		{Kind: submoduleRefUnknown, ModuleDir: "/modules/same", Ref: "refs/wx/recovery/same", Path: "orphan"},
+		{Kind: submoduleRefMissing, ModuleDir: "/modules/same", Ref: "refs/wx/recovery/same", Path: "saved", ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))},
+	})
+	if len(findings) != 2 {
+		t.Fatalf("findings=%+v, want two findings", findings)
+	}
+	if findings[0].Severity != diag.SeverityInfo || findings[1].Severity != diag.SeverityProblem {
+		t.Fatalf("equal-key findings=%+v, want orphan before missing record", findings)
+	}
+}
+
+// unmanaged artifact の種別ごとの件数は各種別一件の境界で正しく数える。
+func TestUnmanagedArtifactCauseCountsEachKind(t *testing.T) {
+	cause, _ := unmanagedArtifactCause([]unmanagedArtifact{
+		{Kind: unmanagedSlotDirectory},
+		{Kind: unmanagedWorkspaceSnapshot},
+	})
+	if !strings.HasPrefix(cause, "1 slot directory/directories and 1 workspace snapshot archive(s)") {
+		t.Fatalf("cause=%q, want one directory and one snapshot", cause)
 	}
 }
 
