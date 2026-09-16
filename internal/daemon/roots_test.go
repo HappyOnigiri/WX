@@ -162,3 +162,17 @@ func TestRootForPathChoosesMostSpecificOverlappingRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestRootForPathKeepsEqualRegisteredRoot(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	path := filepath.Join(root, "workspace", "slot")
+	m := &Manager{
+		roots:          map[string]bool{root: true},
+		rootIdentities: map[string]string{root: "generation"},
+	}
+	got, ok := m.rootForPath(path)
+	if !ok || got != root {
+		t.Fatalf("rootForPath(%q)=%q,%v want %q", path, got, ok, root)
+	}
+}

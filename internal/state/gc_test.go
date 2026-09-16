@@ -490,3 +490,50 @@ func TestColdRepositoryCandidatesApplyPerWorkspaceCutoffs(t *testing.T) {
 		t.Fatalf("cold candidates=%+v, want only the shorter retention", candidates)
 	}
 }
+
+// TestColdRepositoryCandidatesIncludeExactWorkspaceCutoff は、last_leased_at が
+// workspace ごとの cutoff と一致した repository を COLD 化候補に含めることを固定する。
+func TestColdRepositoryCandidatesIncludeExactWorkspaceCutoff(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	cutoff := FormatTime(time.Now().Add(-time.Hour))
+	if _, err := store.db.ExecContext(ctx, `UPDATE repositories SET last_leased_at=? WHERE id='repository'`, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateStandby(ctx, Slot{ID: "exact-cutoff", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/exact-cutoff", State: "READY"}, []SlotRepository{{RepositoryID: "repository", DirName: "repository", State: "READY", BaseOID: "head"}}); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := store.ColdRepositoryCandidatesForWarm(ctx, FormatTime(time.Now()), constantWarm(1), constantBefore(cutoff))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].SlotID != "exact-cutoff" {
+		t.Fatalf("cold candidates=%+v, want repository at exact cutoff", candidates)
+	}
+}
+
+// TestGCCandidatesIncludeExactWorkspaceCutoff は、archived_at が workspace ごとの
+// cutoff と一致した終了 worktree を回収候補に含めることを固定する。
+func TestGCCandidatesIncludeExactWorkspaceCutoff(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	cutoff := FormatTime(time.Now().Add(-time.Hour))
+	session := Session{ID: "exact-cutoff-session", WorkspaceID: "workspace", SlotID: "exact-cutoff-slot", State: "ARCHIVED", AgentKind: "codex", TokenHash: HashToken("exact-cutoff")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: session.WorkspaceID, Generation: 1, RootID: testRootID, RelPath: "workspace/exact-cutoff-slot", State: "SNAPSHOTTED"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE sessions SET archived_at=? WHERE id=?`, cutoff, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := store.GCCandidates(ctx, FormatTime(time.Now()), constantBefore(cutoff))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].SlotID != session.SlotID || candidates[0].SessionID != session.ID {
+		t.Fatalf("GC candidates=%+v, want worktree at exact cutoff", candidates)
+	}
+}
