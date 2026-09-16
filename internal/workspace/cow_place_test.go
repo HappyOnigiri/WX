@@ -40,6 +40,26 @@ func TestCOWDirectoryStackReusesSharedPrefixes(t *testing.T) {
 	}
 }
 
+// 現在の path が次の path の親である境界でも、既存 descriptor を正しく切り詰める。
+func TestCOWDirectoryStackHandlesAPathShorterThanTheCurrentPrefix(t *testing.T) {
+	t.Parallel()
+	_, destination := cowRoots(t)
+	stack, err := newCOWDirectoryStack(destination, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stack.close()
+	if _, err := stack.at("a/b/c"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stack.at("a/b"); err != nil {
+		t.Fatalf("shorter path: %v", err)
+	}
+	if info, err := destination.Stat("a/b"); err != nil || !info.IsDir() {
+		t.Fatalf("parent directory was not retained: %v", err)
+	}
+}
+
 // 読み取り側の stack は directory を作らない。donor に無い path は run ごと skip する材料になる。
 func TestCOWDirectoryStackReportsMissingWithoutCreating(t *testing.T) {
 	t.Parallel()
@@ -122,6 +142,34 @@ func TestCOWPlacementStopsWhenOwnershipIsUnprovable(t *testing.T) {
 	}
 	if _, err := destination.Stat("top"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("destination err=%v", err)
+	}
+}
+
+// 1つの run が batch の境界に達した時点で、次の run の前に所有権を再確認する。
+func TestCOWPlacementGatesAtTheExactBatchBoundary(t *testing.T) {
+	t.Parallel()
+	source, destination := cowRoots(t)
+	placer := &cowPlacer{
+		source: source, destination: destination, proof: func() error { return nil },
+		minSize: 0, stats: &cowStats{}, placed: map[string]bool{},
+	}
+	first := make([]string, cowBatchSize)
+	for index := range first {
+		first[index] = "missing-" + strconv.Itoa(index)
+	}
+	chunk := []cowRun{
+		{directory: ".", leaves: first},
+		{directory: ".", leaves: []string{"missing-tail"}},
+	}
+	gates := 0
+	if err := placer.placeChunk(context.Background(), chunk, func() error {
+		gates++
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gates != 3 {
+		t.Fatalf("gate calls=%d, want initial, boundary, and final checks", gates)
 	}
 }
 
@@ -447,6 +495,26 @@ func TestTrackedChangedPathsReportsModifiedTrackedPathsOnly(t *testing.T) {
 	}
 }
 
+// 1文字の path は status の1 entryがちょうど4 bytesになるため、境界でも拾う。
+func TestTrackedChangedPathsKeepsAOneBytePath(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, _, preparer, item := stagedCOWFixture(t, map[string]string{"x": "base\n"})
+	if err := preparer.checkoutStage(ctx, item, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(item.Target, "x"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := preparer.trackedChangedPaths(ctx, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != "x" {
+		t.Fatalf("changed paths=%v", paths)
+	}
+}
+
 // copy 指定では共有経路へ入らない。方式の判断は従来どおり後段の compactWorktree に委ねる。
 func TestPlaceSharedFilesSkipsWhenCopyIsRequested(t *testing.T) {
 	t.Parallel()
@@ -521,6 +589,15 @@ func TestParseCOWAttributesRecognizesOnlyLFSFilterAsLFSPlacement(t *testing.T) {
 	}
 	if len(lfsOnly) != 1 || !lfsOnly["weights.bin"] {
 		t.Fatalf("lfsOnly=%v", lfsOnly)
+	}
+}
+
+// 末尾に path と属性だけが残る不完全な record は無視し、panic させない。
+func TestParseCOWAttributesIgnoresAnIncompleteRecord(t *testing.T) {
+	t.Parallel()
+	convertible, lfsOnly := parseCOWAttributes("truncated\x00filter")
+	if len(convertible) != 0 || len(lfsOnly) != 0 {
+		t.Fatalf("incomplete attributes were accepted: convertible=%v lfsOnly=%v", convertible, lfsOnly)
 	}
 }
 

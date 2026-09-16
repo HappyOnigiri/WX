@@ -27,6 +27,42 @@ func TestSubmoduleArgumentBatchesPreserveOrderAndSplitLargeInputs(t *testing.T) 
 	}
 }
 
+// 引数合計が上限にちょうど達した項目は同じ batch に残し、次の項目だけを分割する。
+func TestBatchSubmoduleArgsSplitsOnlyPastExactLimit(t *testing.T) {
+	t.Parallel()
+	base := []string{"base"}
+	baseSize := submoduleArgSize(base)
+	firstCost := 7
+	secondCost := submoduleArgMaxBytes - baseSize - firstCost
+	items := []int{firstCost, secondCost, 1}
+	itemArgs := func(cost int) []string { return []string{strings.Repeat("x", cost-1)} }
+	batches := batchSubmoduleArgs(items, base, itemArgs)
+	if len(batches) != 2 {
+		t.Fatalf("batches=%v, want the exact-limit item to remain in the first batch", batches)
+	}
+	if len(batches[0]) != 2 || batches[0][0] != firstCost || batches[0][1] != secondCost {
+		t.Fatalf("first batch=%v", batches[0])
+	}
+	if len(batches[1]) != 1 || batches[1][0] != 1 {
+		t.Fatalf("second batch=%v", batches[1])
+	}
+	if got := submoduleArgSize(append(append([]string{}, base...), itemArgs(firstCost)...)); got != baseSize+firstCost {
+		t.Fatalf("first item size=%d, want %d", got, baseSize+firstCost)
+	}
+	if got := submoduleArgSize(append(append(append([]string{}, base...), itemArgs(firstCost)...), itemArgs(secondCost)...)); got != submoduleArgMaxBytes {
+		t.Fatalf("exact-limit size=%d, want %d", got, submoduleArgMaxBytes)
+	}
+}
+
+// 末尾に対のない -c があっても、設定値の走査は argv の外へ進まない。
+func TestSubmoduleArgSizeIgnoresTrailingConfigFlag(t *testing.T) {
+	t.Parallel()
+	args := []string{"-c"}
+	if got, want := submoduleArgSize(args), argvSize(args); got != want {
+		t.Fatalf("trailing config flag size=%d, want argv size %d", got, want)
+	}
+}
+
 func TestSubmoduleWorkerCountStaysWithinBounds(t *testing.T) {
 	t.Parallel()
 	p := &Preparer{}
