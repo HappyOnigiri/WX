@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -94,5 +95,38 @@ func TestPrepareInputChangesReadsTrackedDiff(t *testing.T) {
 	}
 	if want := []string{"config/db.yml"}; !slices.Equal(got, want) {
 		t.Fatalf("changed inputs=%v, want %v", got, want)
+	}
+}
+
+// prepare.inputs に一致する変更が 0 件なら、更新は prepare command を再実行しない。
+// 空集合を実行条件に含めると、無関係な commit でも外部 command の副作用と待ち時間が発生する。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestUpdateSkipsPrepareCommandWhenNoDeclaredInputChanged(t *testing.T) {
+	ctx := context.Background()
+	p, repo, baseOID, target := cowFixture(t)
+	main := string(repo.MainPath)
+	counter := filepath.Join(t.TempDir(), "prepare-runs")
+	p.Config.Repositories = map[string]config.Repository{
+		main: {Prepare: config.Prepare{
+			Command: []string{"/bin/sh", "-c", `printf x >> "$1"`, "wx-test", counter},
+			Inputs:  []string{"config"},
+		}},
+	}
+	if err := p.Prepare(ctx, repo, target, baseOID, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(main, "unrelated"), "changed\n")
+	cowGit(t, main, "add", "unrelated")
+	cowGit(t, main, "commit", "-m", "change unrelated input")
+	newOID := cowGit(t, main, "rev-parse", "HEAD")
+	if _, err := p.UpdateLocked(ctx, repo, target, baseOID, newOID, testSlotID, nil, nil); err != nil {
+		t.Fatalf("update without a declared input change: %v", err)
+	}
+	data, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != "x" {
+		t.Fatalf("prepare command runs=%d, want only the initial prepare", len(got))
 	}
 }

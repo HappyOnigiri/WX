@@ -229,6 +229,10 @@ func (m *Manager) lifecyclePending() bool {
 // lifecycleCheckDelay は次のゲート検査までの待機時間を返す。
 // RPC 応答の保護猶予だけは期限まで待ち、ジョブや読み取り失敗を拾うための周期検査は残す。
 func (m *Manager) lifecycleCheckDelay() (time.Duration, bool) {
+	return m.lifecycleCheckDelayAt(time.Now())
+}
+
+func (m *Manager) lifecycleCheckDelayAt(now time.Time) (time.Duration, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if !(m.restartPending || m.stopPending) || m.lifecycleClaimed {
@@ -236,12 +240,12 @@ func (m *Manager) lifecycleCheckDelay() (time.Duration, bool) {
 	}
 	delay := lifecycleCheckInterval
 	if !m.lastLifecycleEnd.IsZero() {
-		grace := time.Until(m.lastLifecycleEnd.Add(lifecycleReplyGrace))
+		grace := m.lastLifecycleEnd.Add(lifecycleReplyGrace).Sub(now)
 		if grace > 0 && grace < delay {
 			delay = grace
 		}
 	}
-	if retry := time.Until(m.lifecycleRetryAt); retry > delay {
+	if retry := m.lifecycleRetryAt.Sub(now); retry > delay {
 		delay = retry
 	}
 	return delay, true
@@ -382,10 +386,14 @@ func (m *Manager) lifecycleIntentUnchangedLocked(stop, restart bool) bool {
 // 要求と要求の隙間を待たないのは、heartbeat のような周期的 RPC が固定間隔のアイドルを恒久的に塞ぎ得るためである。
 // 隙間で置換されたクライアントは rpc.Client の ConnectRetry と冪等キーで追従する。呼び出し時は m.mu を保持する。
 func (m *Manager) lifecycleGateOpenLocked() bool {
+	return m.lifecycleGateOpenAtLocked(time.Now())
+}
+
+func (m *Manager) lifecycleGateOpenAtLocked(now time.Time) bool {
 	if m.inflightRequests > 0 {
 		return false
 	}
-	return m.lastLifecycleEnd.IsZero() || time.Since(m.lastLifecycleEnd) >= lifecycleReplyGrace
+	return m.lastLifecycleEnd.IsZero() || now.Sub(m.lastLifecycleEnd) >= lifecycleReplyGrace
 }
 
 func (m *Manager) kickstartService(ctx context.Context) error {
