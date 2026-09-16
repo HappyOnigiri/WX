@@ -113,6 +113,11 @@ func TestErrorFormattingUsesFallbackAndFirstArgument(t *testing.T) {
 			err:  &Error{Args: []string{"status", "--short"}, Result: Result{ExitCode: 7}, FailureID: "status-id", cause: errors.New("exit status 7")},
 			want: "git status failed with exit 7 (failure status-id)",
 		},
+		{
+			name: "zero exit status",
+			err:  &Error{Args: []string{"status"}, Result: Result{ExitCode: 0}, FailureID: "zero-id"},
+			want: "git status failed with exit 0 (failure zero-id)",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

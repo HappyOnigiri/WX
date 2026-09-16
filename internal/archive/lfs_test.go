@@ -55,6 +55,15 @@ func TestParseSnapshotTreeDiffSelectsNewRegularBlobs(t *testing.T) {
 	}
 }
 
+func TestParseSnapshotTreeDiffRejectsHeaderWithoutPath(t *testing.T) {
+	old := strings.Repeat("1", 40)
+	newOID := strings.Repeat("2", 40)
+	output := ":100644 100644 " + old + " " + newOID + " M"
+	if _, err := parseSnapshotTreeDiff(output); err == nil || !strings.Contains(err.Error(), "invalid Git tree diff record") {
+		t.Fatalf("header without path error=%v", err)
+	}
+}
+
 func TestParseSnapshotLFSPointerBatch(t *testing.T) {
 	oid := strings.Repeat("a", 40)
 	pointerData := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("b", 64) + "\nsize 42\n"
@@ -63,6 +72,33 @@ func TestParseSnapshotLFSPointerBatch(t *testing.T) {
 	pointers, err := parseSnapshotLFSPointerBatch(output, []string{oid})
 	if err != nil {
 		t.Fatal(err)
+	}
+	got, ok := pointers[oid]
+	if !ok || got.OID != "sha256:"+strings.Repeat("b", 64) || got.Size != 42 {
+		t.Fatalf("pointer=%+v ok=%v", got, ok)
+	}
+}
+
+func TestParseSnapshotLFSPointerBatchAcceptsZeroByteBlob(t *testing.T) {
+	oid := strings.Repeat("a", 40)
+	output := oid + " blob 0\n\n"
+	pointers, err := parseSnapshotLFSPointerBatch(output, []string{oid})
+	if err != nil {
+		t.Fatalf("zero-byte blob returned an error: %v", err)
+	}
+	if len(pointers) != 0 {
+		t.Fatalf("zero-byte non-pointer blob produced pointers=%v", pointers)
+	}
+}
+
+func TestParseSnapshotLFSPointerBatchAcceptsMaximumSizedPointerBlob(t *testing.T) {
+	oid := strings.Repeat("a", 40)
+	pointerData := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("b", 64) + "\nsize 42\n"
+	pointerData += strings.Repeat("x", maxLFSPointerBlobBytes-len(pointerData))
+	output := oid + " blob " + strconv.Itoa(len(pointerData)) + "\n" + pointerData + "\n"
+	pointers, err := parseSnapshotLFSPointerBatch(output, []string{oid})
+	if err != nil {
+		t.Fatalf("maximum-sized pointer blob returned an error: %v", err)
 	}
 	got, ok := pointers[oid]
 	if !ok || got.OID != "sha256:"+strings.Repeat("b", 64) || got.Size != 42 {
