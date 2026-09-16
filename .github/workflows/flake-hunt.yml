@@ -26,6 +26,11 @@ on:
         description: How long each container keeps repeating rounds (1-240)
         required: false
         default: "90"
+      file-issues:
+        description: Create or update issues for flaky tests
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -67,6 +72,23 @@ jobs:
             echo "matrix=$matrix"
             echo "timeout=$((HUNT_MINUTES + 55))"
           } >> "$GITHUB_OUTPUT"
+      - if: ${{ !inputs.file-issues }}
+        name: Mark issue filing disabled
+        shell: bash
+        env:
+          HUNT_RUN_ID: ${{ github.run_id }}
+          HUNT_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          printf '{"run_id":"%s","run_attempt":"%s"}\n' "$HUNT_RUN_ID" "$HUNT_RUN_ATTEMPT" > flake-hunt-no-issues.json
+      - if: ${{ !inputs.file-issues }}
+        name: Upload issue filing marker
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: flake-hunt-no-issues-${{ github.run_id }}-${{ github.run_attempt }}
+          path: flake-hunt-no-issues.json
+          if-no-files-found: error
+          retention-days: 7
 
   hunt:
     name: ${{ matrix.id }}
