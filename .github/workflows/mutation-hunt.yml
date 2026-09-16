@@ -254,6 +254,13 @@ jobs:
               for shard_file in "${shard_file_names[@]}"; do shard_files+=("$profile/$shard_file"); done
               mapfile -t exclude_files < <(jq -r '.exclude_files[]?' <<<"$shard_json")
             fi
+            # dry-run と本番は同じ coverage コマンドを実行する。Go の test cache が
+            # 本番の計測を数百ミリ秒に短縮すると、Gremlins の変異ごとの timeout が過小評価される。
+            if ! go clean -testcache; then
+              echo "::error title=Mutation test cache reset failed::$package"
+              failures=$((failures + 1))
+              continue
+            fi
             args=(unleash "$package" -o "$result" --workers "$HUNT_WORKERS" --timeout-coefficient "$HUNT_TIMEOUT_COEFFICIENT")
             for exclude_file in "${exclude_files[@]}"; do args+=(--exclude-files "$exclude_file"); done
             if [ "$HUNT_MUTATORS" = boundary ]; then
