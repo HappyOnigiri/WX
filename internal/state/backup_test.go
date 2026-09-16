@@ -18,10 +18,9 @@ import (
 // 既定 page_size は 4096 byte なので、4MiB は backupStepPages(256) を大きく超える。
 const backupBulkBytes = 4 << 20
 
-// backupContendedSteps は並行書き込みと競合させる step 数である。
-// 別 connection の commit ごとに SQLite は backup を先頭から再走査するため、書き込みを止めない限り複製は完了しない。
-// この step 数を観測したら書き込みを止め、競合を経た複製が完成することを確認する。
-const backupContendedSteps = 8
+// backupContendedStep は最初の複製が終わった後に並行書き込みを差し込む step である。
+// step 数そのものを固定すると、SQLite の page 数や実行速度により backup が先に完了してしまう。
+const backupContendedStep = 2
 
 // backupTestDeadline は並行書き込み下の複製に与える上限である。超えたら飢餓として test を失敗させる。
 const backupTestDeadline = 60 * time.Second
@@ -153,43 +152,46 @@ func TestOnlineBackupWithConcurrentWritesStaysConsistent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 書き込みは step を跨いで競合させたいだけなので、観測した step 数で打ち切る。
-	// 時間で打ち切ると、step が遅い環境では書き込みが常に先に commit して複製が終わらない。
-	stop := make(chan struct{})
-	var stopOnce sync.Once
+	// 最初の step 完了後に一度だけ heartbeat を commit し、その完了を待って次の step へ進める。
+	// 書き込みの回数や間隔ではなく、backup と書き込みの順序を同期することで実行速度に依存しない。
+	writeRequest := make(chan bool, 1)
+	writeDone := make(chan error, 1)
 	var steps, committed atomic.Int64
+	requested := false
+	var heartbeatErr error
 	store.backupStepBarrier = func() {
-		if steps.Add(1) >= backupContendedSteps {
-			stopOnce.Do(func() { close(stop) })
+		if steps.Add(1) == backupContendedStep {
+			requested = true
+			writeRequest <- true
+			heartbeatErr = <-writeDone
 		}
 	}
-	writes := make(chan error, 1)
+
 	go func() {
-		for {
-			select {
-			case <-stop:
-				writes <- nil
-				return
-			default:
-			}
-			if err := store.Heartbeat(ctx, "standby", "token"); err != nil {
-				writes <- err
-				return
-			}
+		if !<-writeRequest {
+			writeDone <- nil
+			return
+		}
+		err := store.Heartbeat(ctx, "standby", "token")
+		if err == nil {
 			committed.Add(1)
 		}
+		writeDone <- err
 	}()
 	deadlined, cancel := context.WithTimeout(ctx, backupTestDeadline)
 	defer cancel()
 	path, backupErr := store.Backup(deadlined, 2, time.Hour)
-	stopOnce.Do(func() { close(stop) })
-	if err := <-writes; err != nil {
-		t.Fatalf("concurrent heartbeat failed: %v", err)
+	if !requested {
+		writeRequest <- false
+		heartbeatErr = <-writeDone
+	}
+	if heartbeatErr != nil {
+		t.Fatalf("concurrent heartbeat failed: %v", heartbeatErr)
 	}
 	if backupErr != nil {
 		t.Fatal(backupErr)
 	}
-	if steps.Load() < backupContendedSteps || committed.Load() == 0 {
+	if steps.Load() < backupContendedStep || committed.Load() == 0 {
 		t.Fatalf("backup steps=%d concurrent commits=%d; the contended window was not exercised", steps.Load(), committed.Load())
 	}
 
