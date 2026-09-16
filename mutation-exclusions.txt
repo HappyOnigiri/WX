@@ -1,5 +1,8 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<mutation-id>\t<reason>
+# IDはmanifestが出力する64桁のSHA-256。等価変異だけを具体的な理由付きで記録する。
+internal/diag/localization.go	e3e7484d2d1897f1ce72d006bdd6a3a2004a0355b0b60c1c406e9f5eb6b0c900	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
+internal/diag/report.go	f68b4b16f0be0ace924d17540222855dff80ff996b6137917624dfaa1b3fd193	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
 internal/agent/worktree_rewrite.go	cda4e3e085855efe2d77f535d7f5c9f576cd0af56981c0d8812f415c179b7866	candidates は segment ごとに高々1回だけ増え、candidates > 1 は len(segments) > 1 と同時に必ず真になるため、++ を -- に変えても判定結果が変わらない。
 internal/agent/worktree_rewrite.go	23bfaa307b941e4757825f20730f686c5d826bac5fca1102960f562aa4cdd9ed	flags 分岐に入る value は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
