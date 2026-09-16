@@ -31,11 +31,7 @@ func VolumeFreeBytes(file *os.File) (string, int64, error) {
 		if callErr = unix.Fstatfs(int(fd), &fs); callErr != nil {
 			return
 		}
-		if fs.Bsize <= 0 || fs.Bavail > uint64(math.MaxInt64)/uint64(fs.Bsize) {
-			callErr = errors.New("volume free space overflows int64")
-			return
-		}
-		free = int64(fs.Bavail * uint64(fs.Bsize))
+		free, callErr = checkedFreeBytes(fs)
 	}); err != nil {
 		return "", 0, err
 	}
@@ -43,6 +39,15 @@ func VolumeFreeBytes(file *os.File) (string, int64, error) {
 		return "", 0, callErr
 	}
 	return volume, free, nil
+}
+
+// checkedFreeBytes は statfs の値を int64 の空き容量へ安全に変換する。
+// OS から返る境界値を syscall と分離して検証できるよう、計算だけを受け持つ。
+func checkedFreeBytes(fs unix.Statfs_t) (int64, error) {
+	if fs.Bsize <= 0 || fs.Bavail > uint64(math.MaxInt64)/uint64(fs.Bsize) {
+		return 0, errors.New("volume free space overflows int64")
+	}
+	return int64(fs.Bavail * uint64(fs.Bsize)), nil
 }
 
 // FreeBytes は VolumeFreeBytes の volume 識別子を必要としない呼び出し向けの

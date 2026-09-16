@@ -42,6 +42,15 @@ func TestRenderLanguageEnglishMatchesRender(t *testing.T) {
 	}
 }
 
+func TestRenderLanguageKeepsEqualLengthLabelsAligned(t *testing.T) {
+	reply := Reply{Findings: []Finding{{Check: "check", Severity: SeverityProblem, Summary: "problem"}}}
+	var out strings.Builder
+	RenderLanguage(&out, reply, false, i18n.English)
+	if got := out.String(); got != "error: problem\ncheck: check\n" {
+		t.Fatalf("render=%q, want equal-length labels to share the same width", got)
+	}
+}
+
 // Resolve は message ID を持つ本文だけを訳し、payload の本文と原本は変えない。
 func TestResolveJapanesePreservesMachineValues(t *testing.T) {
 	reply := Reply{Findings: []Finding{{
