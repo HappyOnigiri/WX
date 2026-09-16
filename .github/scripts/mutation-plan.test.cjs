@@ -68,7 +68,13 @@ test('planner fails when a production archive source is added', () => {
 });
 
 test('planner creates a normal shard for remaining packages', () => {
-  const plan = planner.buildPlan({ packages: ['./internal/fdexec', './internal/config', './internal/state'], groups: 2, root });
+  // shard生成と除外だけを見る。配分順がコミット済みの重みで変わらないよう、空の重み表を渡す。
+  const plan = planner.buildPlan({
+    packages: ['./internal/fdexec', './internal/config', './internal/state'],
+    groups: 2,
+    root,
+    weights: { version: 1, run_id: '', packages: {} },
+  });
   assert.deepEqual(plan.matrix.map((item) => item.id), ['group-1', 'group-2']);
   assert.equal(plan.matrix[0].packages, './internal/config');
   assert.equal(plan.matrix[1].packages, './internal/state');
