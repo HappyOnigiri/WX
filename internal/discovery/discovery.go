@@ -73,11 +73,11 @@ func (d *Discoverer) ResolveFromCommonDir(ctx context.Context, commonDir string)
 	if err != nil {
 		return Workspace{}, err
 	}
-	res, err := d.Git.Run(ctx, string(common), "worktree", "list", "--porcelain", "-z")
+	output, err := d.listWorktrees(ctx, string(common), common)
 	if err != nil {
 		return Workspace{}, err
 	}
-	main := FirstWorktreePath(res.Stdout)
+	main := FirstWorktreePath(output)
 	if main == "" {
 		return Workspace{}, errors.New("git did not report a main worktree from its common directory")
 	}
@@ -96,23 +96,19 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 }
 
 func (d *Discoverer) inspectRepoForWorkspace(ctx context.Context, workspaceRoot, root, relative string) (Repository, error) {
-	res, err := d.Git.Run(ctx, root, "worktree", "list", "--porcelain", "-z")
+	common, err := d.resolveCommonDir(ctx, root)
 	if err != nil {
 		return Repository{}, err
 	}
-	main := FirstWorktreePath(res.Stdout)
+	output, err := d.listWorktrees(ctx, root, common)
+	if err != nil {
+		return Repository{}, err
+	}
+	main := FirstWorktreePath(output)
 	if main == "" {
 		return Repository{}, errors.New("git did not report a main worktree")
 	}
 	mainPath, err := domain.Canonicalize(main)
-	if err != nil {
-		return Repository{}, err
-	}
-	commonRes, err := d.Git.Run(ctx, string(mainPath), "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return Repository{}, err
-	}
-	common, err := domain.Canonicalize(strings.TrimSpace(commonRes.Stdout))
 	if err != nil {
 		return Repository{}, err
 	}
@@ -125,6 +121,35 @@ func (d *Discoverer) inspectRepoForWorkspace(ctx context.Context, workspaceRoot,
 		}
 	}
 	return Repository{ID: domain.RepositoryID(domain.StableID(string(common))), MainPath: mainPath, CommonDir: common, RelativePath: filepath.Clean(relative), RemoteName: d.remoteName(ctx, string(mainPath)), DefaultBranch: branch}, nil
+}
+
+// resolveCommonDir は worktree registry を読む前に Git common directory を確定する。
+// registry の更新と list を同じ lock で直列化するため、先に path だけを Git から読む。
+func (d *Discoverer) resolveCommonDir(ctx context.Context, root string) (domain.CanonicalPath, error) {
+	result, err := d.Git.Run(ctx, root, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	common, err := domain.Canonicalize(strings.TrimSpace(result.Stdout))
+	if err != nil {
+		return "", err
+	}
+	return common, nil
+}
+
+// listWorktrees は Git common directory の lock 中だけ worktree registry を読む。
+// worktree add/remove の途中は registry 内の locked ファイルが一時的に不完全になり得る。
+func (d *Discoverer) listWorktrees(ctx context.Context, root string, common domain.CanonicalPath) (string, error) {
+	var result gitx.Result
+	err := d.Git.WithCommonDirLock(ctx, string(common), func(lockCtx context.Context) error {
+		var err error
+		result, err = d.Git.Run(lockCtx, root, "worktree", "list", "--porcelain", "-z")
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return result.Stdout, nil
 }
 
 // remoteName は origin URL から repository 名を取り出す。
@@ -301,11 +326,15 @@ func (d *Discoverer) MainWorktree(ctx context.Context, cwd string) (string, erro
 		}
 		return "", fmt.Errorf("%s is %w", canonical, ErrNotRepository)
 	}
-	result, err := d.Git.Run(ctx, string(canonical), "worktree", "list", "--porcelain", "-z")
+	common, err := d.resolveCommonDir(ctx, string(canonical))
 	if err != nil {
 		return "", err
 	}
-	main := FirstWorktreePath(result.Stdout)
+	output, err := d.listWorktrees(ctx, string(canonical), common)
+	if err != nil {
+		return "", err
+	}
+	main := FirstWorktreePath(output)
 	if main == "" {
 		return "", errors.New("git did not report a main worktree")
 	}

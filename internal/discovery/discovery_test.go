@@ -42,6 +42,103 @@ func TestResolveRepositoryUsesMainWorktreeAndConfiguredBranch(t *testing.T) {
 	}
 }
 
+func TestResolveWaitsForCommonDirectoryLockBeforeReadingWorktrees(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "main")
+	common := filepath.Join(main, ".git")
+	if err := os.MkdirAll(common, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	started := filepath.Join(root, "started")
+	listed := filepath.Join(root, "listed")
+	releaseList := filepath.Join(root, "release-list")
+	script := `#!/bin/sh
+case "$1 $2" in
+  "rev-parse --show-toplevel")
+    : > "$WX_DISCOVERY_STARTED"
+    printf '%s\n' "$WX_DISCOVERY_MAIN"
+    ;;
+  "rev-parse --path-format=absolute")
+    printf '%s\n' "$WX_DISCOVERY_COMMON"
+    ;;
+  "worktree list")
+    : > "$WX_DISCOVERY_LISTED"
+    while [ ! -e "$WX_DISCOVERY_RELEASE_LIST" ]; do sleep 0.01; done
+    printf 'worktree %s\000' "$WX_DISCOVERY_MAIN"
+    ;;
+  "remote get-url")
+    exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`
+	fakeGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("WX_DISCOVERY_MAIN", main)
+	t.Setenv("WX_DISCOVERY_COMMON", common)
+	t.Setenv("WX_DISCOVERY_STARTED", started)
+	t.Setenv("WX_DISCOVERY_LISTED", listed)
+	t.Setenv("WX_DISCOVERY_RELEASE_LIST", releaseList)
+
+	runner := &gitx.Runner{Timeout: time.Second}
+	ctx := context.Background()
+	canonicalCommon, err := domain.Canonicalize(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, release, err := runner.AcquireCommonDirLock(ctx, string(canonicalCommon))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.WriteFile(releaseList, nil, 0o600)
+		release()
+	}()
+	cfg := config.Defaults()
+	mainPath, err := domain.Canonicalize(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Repositories[string(mainPath)] = config.Repository{DefaultBranch: "main"}
+	discoverer := Discoverer{Git: runner, Config: cfg}
+	done := make(chan error, 1)
+	go func() {
+		_, resolveErr := discoverer.Resolve(ctx, main)
+		done <- resolveErr
+	}()
+
+	startedDeadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(startedDeadline) {
+			t.Fatal("discovery did not reach common-directory resolution")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	listDeadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(listDeadline) {
+		if _, err := os.Stat(listed); err == nil {
+			t.Fatal("discovery read the worktree registry while its common-directory lock was held")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := os.WriteFile(releaseList, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatalf("discovery after common-directory lock: %v", err)
+	}
+}
+
 func TestResolveRepositoryAutoResolvesDefaultBranchFromGitEvidence(t *testing.T) {
 	tests := []struct {
 		name     string
