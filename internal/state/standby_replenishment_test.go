@@ -179,6 +179,40 @@ func TestCreateStandbyIfNeededRevalidatesCapacityAndGeneration(t *testing.T) {
 	}
 }
 
+// TestStandbyIfNeededTreatsNonPositiveLimitAsNoOp は、limit が 0 のときに
+// workspace の存在や clean の状態を調べず、物理作成前の予約・登録を行わないことを固定する。
+func TestStandbyIfNeededTreatsNonPositiveLimitAsNoOp(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	ctx := context.Background()
+	slot := Slot{ID: "non-positive", WorkspaceID: "missing-workspace", Generation: 1, RootID: testRootID, RelPath: "missing-workspace/non-positive", State: "PREPARING"}
+	if reserved, err := store.ReserveStandbyIfNeeded(ctx, slot, 0); err != nil || reserved {
+		t.Fatalf("reserve with zero limit reserved=%v err=%v", reserved, err)
+	}
+	if job, created, err := store.CreateStandbyIfNeeded(ctx, slot, nil, 0); err != nil || created || job.ID != "" {
+		t.Fatalf("create with zero limit job=%+v created=%v err=%v", job, created, err)
+	}
+}
+
+// TestReserveStandbyIfNeededStopsAtExactCapacity は、既存の待機枠数が limit と
+// 一致するとき、新しい予約を登録しないことを固定する。
+func TestReserveStandbyIfNeededStopsAtExactCapacity(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	if _, err := store.CreateStandby(ctx, Slot{ID: "existing", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/existing", State: "PREPARING"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := store.ReserveStandbyIfNeeded(ctx, Slot{ID: "at-capacity", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/at-capacity"}, 1)
+	if err != nil || reserved {
+		t.Fatalf("reserve at exact capacity reserved=%v err=%v", reserved, err)
+	}
+	if got := store.StandbyCount(ctx, "workspace"); got != 1 {
+		t.Fatalf("standby count after exact-capacity reserve=%d, want one", got)
+	}
+}
+
 func TestRegisterReservedStandbyRejectsChangedWorkspaceGeneration(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t)
