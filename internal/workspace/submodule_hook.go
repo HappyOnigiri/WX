@@ -57,9 +57,14 @@ func (p *Preparer) runPostCheckoutWithSubmodules(ctx context.Context, repo disco
 	}
 	args = append(args, "hook", "run", "--ignore-missing", "post-checkout", "--", strings.Repeat("0", len(oid)), oid, "1")
 	result, err := p.RunGitInWorktree(ctx, target, identity, nil, nil, args...)
+	if err != nil {
+		// 失敗した hook の出力は gitx が failure ID 付きの detail log へ既に書いている。
+		// notice にも積むと同じ出力が 2 つの log に分かれ、失敗を「失敗せずに出力した」として報告することになる。
+		return err
+	}
 	// exit 0 の hook が出した出力も残す。hook が内部の失敗を飲み込むと、捨てた時点で wx からは正常と区別できなくなる。
 	p.Notices.Add(PrepareNotice{
 		Target: target, Phase: "post-checkout", Stdout: result.Stdout, Stderr: result.Stderr,
 	})
-	return err
+	return nil
 }
