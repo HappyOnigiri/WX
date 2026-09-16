@@ -30,6 +30,36 @@ func TestSubmoduleOutcomesSnapshotSortsResults(t *testing.T) {
 	}
 }
 
+// 同じ repository の比較は depth、同じ depth の比較は path へ進み、全比較を strict order に保つ。
+func TestSubmoduleOutcomesSnapshotUsesStrictTieBreakers(t *testing.T) {
+	t.Parallel()
+	results := &SubmoduleOutcomes{}
+	results.Add(SubmoduleOutcome{Repository: "repo-depth", Path: "shallow", Depth: 1, Action: SubmoduleActionSkipped})
+	results.Add(SubmoduleOutcome{Repository: "repo-depth", Path: "deep", Depth: 2, Action: SubmoduleActionSkipped})
+	results.Add(SubmoduleOutcome{Repository: "repo-path", Path: "alpha", Depth: 1, Action: SubmoduleActionSkipped})
+	results.Add(SubmoduleOutcome{Repository: "repo-path", Path: "beta", Depth: 1, Action: SubmoduleActionSkipped})
+	_, items := results.Snapshot()
+	want := []struct {
+		repository string
+		path       string
+		depth      int
+	}{
+		{repository: "repo-depth", path: "shallow", depth: 1},
+		{repository: "repo-depth", path: "deep", depth: 2},
+		{repository: "repo-path", path: "alpha", depth: 1},
+		{repository: "repo-path", path: "beta", depth: 1},
+	}
+	if len(items) != len(want) {
+		t.Fatalf("items=%+v, want %d items", items, len(want))
+	}
+	for index, expected := range want {
+		got := items[index]
+		if got.Repository != expected.repository || got.Path != expected.path || got.Depth != expected.depth {
+			t.Fatalf("items[%d]=%+v, want repository=%q path=%q depth=%d", index, got, expected.repository, expected.path, expected.depth)
+		}
+	}
+}
+
 func TestSubmoduleOutcomesNilIsSafe(t *testing.T) {
 	t.Parallel()
 	var results *SubmoduleOutcomes
