@@ -106,6 +106,106 @@ func TestRootHandleForRootReportsNoDescriptorForUnknownRoot(t *testing.T) {
 	}
 }
 
+func TestAcquireRootLockedUsesOldestRetiredGenerationBoundary(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opened, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := &managedRoot{root: opened}
+	invalidNewest := &managedRoot{closed: true}
+	m := &Manager{retiredRefs: map[string][]*managedRoot{root: {valid, invalidNewest}}}
+	m.mu.Lock()
+	got, entry, found, err := m.acquireRootLocked(root, true)
+	m.mu.Unlock()
+	if err != nil || !found || got != opened || entry != valid {
+		t.Fatalf("retired root acquisition got=%v entry=%p found=%v err=%v", got, entry, found, err)
+	}
+	if valid.refs != 1 {
+		t.Fatalf("retired root refs=%d, want 1", valid.refs)
+	}
+	m.releaseRoot(root, valid)
+	if valid.refs != 0 {
+		t.Fatalf("retired root refs after release=%d, want 0", valid.refs)
+	}
+	if err := opened.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdoptRootExistingGenerationIncrementsReference(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	existing, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := &managedRoot{root: existing}
+	m := &Manager{rootRefs: map[string]*managedRoot{root: entry}}
+	duplicate, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, release, err := m.adoptRoot(root, duplicate, true)
+	if err != nil || got != existing {
+		t.Fatalf("existing root adoption got=%v err=%v", got, err)
+	}
+	if entry.refs != 1 {
+		t.Fatalf("existing root refs=%d, want 1", entry.refs)
+	}
+	release()
+	if entry.refs != 0 {
+		t.Fatalf("existing root refs after release=%d, want 0", entry.refs)
+	}
+	if err := existing.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCloseRootLockedHandlesEmptyRetiredBoundary(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	m := &Manager{
+		rootRefs:    map[string]*managedRoot{},
+		retiredRefs: map[string][]*managedRoot{root: {}},
+	}
+	entry := &managedRoot{}
+	m.closeRootLocked(root, entry)
+	if !entry.closed {
+		t.Fatal("root entry was not marked closed")
+	}
+	if retired, ok := m.retiredRefs[root]; !ok || len(retired) != 0 {
+		t.Fatalf("empty retired generation list changed at the strict boundary: present=%v entries=%v", ok, retired)
+	}
+}
+
+func TestReleaseRootDoesNotUnderflowReferenceCount(t *testing.T) {
+	t.Parallel()
+	entry := &managedRoot{}
+	m := &Manager{}
+	m.releaseRoot("root", entry)
+	if entry.refs != 0 {
+		t.Fatalf("root refs=%d, want zero-reference release to be ignored", entry.refs)
+	}
+}
+
+func TestRootHandleForRootSkipsInvalidNewestRetiredGeneration(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	opened, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	m := &Manager{retiredRefs: map[string][]*managedRoot{
+		root: {{root: opened}, {closed: true}},
+	}}
+	if got := m.rootHandleForRoot(root); got != opened {
+		t.Fatalf("retired root handle=%v, want the preceding live generation", got)
+	}
+}
+
 func TestRetainLeaseRejectsPathOutsideKnownRoots(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

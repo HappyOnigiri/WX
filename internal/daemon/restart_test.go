@@ -320,6 +320,34 @@ func TestLifecycleCheckDelayUsesTheReplyGraceDeadline(t *testing.T) {
 	}
 }
 
+func TestLifecycleCheckDelayAtReplyGraceBoundary(t *testing.T) {
+	manager, _, _ := restartFixture(t)
+	manager.RequestRestart(context.Background())
+	now := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+	manager.mu.Lock()
+	manager.lastLifecycleEnd = now.Add(-lifecycleReplyGrace)
+	manager.mu.Unlock()
+	delay, pending := manager.lifecycleCheckDelayAt(now)
+	if !pending {
+		t.Fatal("pending lifecycle action was not reported")
+	}
+	if delay != lifecycleCheckInterval {
+		t.Fatalf("lifecycle delay=%s, want periodic interval %s once reply grace is exactly elapsed", delay, lifecycleCheckInterval)
+	}
+}
+
+func TestLifecycleGateOpensAtReplyGraceBoundary(t *testing.T) {
+	manager, _, _ := restartFixture(t)
+	now := time.Date(2026, time.September, 16, 12, 0, 0, 0, time.UTC)
+	manager.mu.Lock()
+	manager.lastLifecycleEnd = now.Add(-lifecycleReplyGrace)
+	open := manager.lifecycleGateOpenAtLocked(now)
+	manager.mu.Unlock()
+	if !open {
+		t.Fatal("lifecycle gate stayed closed when reply grace was exactly elapsed")
+	}
+}
+
 func elapseLifecycleGate(m *Manager) {
 	m.mu.Lock()
 	m.lastLifecycleEnd = time.Now().Add(-lifecycleReplyGrace)

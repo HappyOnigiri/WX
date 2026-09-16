@@ -20,6 +20,7 @@ func TestHookConfigCommandParsingAndExecutableIdentity(t *testing.T) {
 		{name: "pipeline", cmd: "/bin/wx | hook SessionStart", want: false},
 		{name: "unterminated quote", cmd: `"/bin/wx hook SessionStart`, want: false},
 		{name: "dangling escape", cmd: `/bin/wx\`, want: false},
+		{name: "dangling escape in double quote", cmd: `"/bin/wx\`, want: false},
 		{name: "backtick substitution", cmd: "\"`uname`\" hook SessionStart", want: false},
 		{name: "invalid double quote escape", cmd: `"/bin/wx\q" hook SessionStart`, want: false},
 	} {

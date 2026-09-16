@@ -1,11 +1,27 @@
 package domain
 
 import (
+	"bytes"
+	cryptorand "crypto/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestNewShortIDRejectsTheModuloBiasBoundaryByte(t *testing.T) {
+	previous := cryptorand.Reader
+	t.Cleanup(func() { cryptorand.Reader = previous })
+	// 252 は 256 を 36 で割った余りを除く上限で、生成器はこの値を読み捨てる。
+	cryptorand.Reader = bytes.NewReader([]byte{252, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10})
+	id, err := NewShortID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "012345" {
+		t.Fatalf("NewShortID(%q) consumed the modulo-bias boundary byte", id)
+	}
+}
 
 func TestIDsAndContainment(t *testing.T) {
 	if _, err := NewID(); err != nil {

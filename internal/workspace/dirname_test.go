@@ -110,6 +110,18 @@ func TestSanitizeDirNameRejectsUnusableComponents(t *testing.T) {
 	}
 }
 
+func TestTruncateDirNameKeepsTheExactByteLimit(t *testing.T) {
+	t.Parallel()
+	exact := strings.Repeat("n", maxRepositoryDirNameLength)
+	if got := truncateDirName(exact); got != exact {
+		t.Fatalf("exact-length name=%q want unchanged %q", got, exact)
+	}
+	below := strings.Repeat("b", maxRepositoryDirNameLength-1)
+	if got := truncateDirName(below); got != below {
+		t.Fatalf("below-limit name=%q want unchanged %q", got, below)
+	}
+}
+
 // TestUniqueDirNameResolvesCaseInsensitiveCollisionsは、APFSの規則を固定する。
 // 大文字小文字だけが異なる名前はディスク上で同じディレクトリになるため、文字列が異なっても2つ目には接尾辞が必要である。
 func TestUniqueDirNameResolvesCaseInsensitiveCollisions(t *testing.T) {

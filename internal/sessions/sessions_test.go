@@ -82,6 +82,38 @@ func TestListKeepsOutOfScopeConversationsFlagged(t *testing.T) {
 	}
 }
 
+// TestListSortsEqualMtimeByStableID は、同時刻の会話を StableID の順で
+// 決定的に並べることを確かめる。
+func TestListSortsEqualMtimeByStableID(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	cfg := config.Config{Paths: config.PathsConfig{Claude: config.ToolPathsConfig{Sessions: []string{root}}}}
+	// filepath.WalkDir は native ID の辞書順で返すため、StableID が逆順になる
+	// 組み合わせを使い、入力順に依存した並びを見逃さないようにする。
+	first := "33333333-3333-4333-8333-333333333333"
+	second := "44444444-4444-4444-8444-444444444444"
+	at := time.Unix(100, 0)
+	writeHistory(t, root, first, "/workspace", at)
+	writeHistory(t, root, second, "/workspace", at)
+
+	items, err := list(context.Background(), cfg, PickOptions{Tool: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("list items=%d, want 2", len(items))
+	}
+	want := []string{
+		identity.ComputeSessionStableID("claude", second),
+		identity.ComputeSessionStableID("claude", first),
+	}
+	for i, wantID := range want {
+		if got := items[i].session.StableID; got != wantID {
+			t.Fatalf("items[%d].StableID=%q, want %q (items=%+v)", i, got, wantID, items)
+		}
+	}
+}
+
 func TestContinueReadsEachInvocationAndExcludesInUse(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
