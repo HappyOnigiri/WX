@@ -320,6 +320,14 @@ func TestFindPrefersLatestDuplicateAndUsesCachedCodexIDs(t *testing.T) {
 	if err != nil || !found || session.Title != "New" || session.RawPath != newer {
 		t.Fatalf("duplicate Find = %+v found=%v err=%v", session, found, err)
 	}
+	// mtime が同じ重複は、走査順の先頭を維持する（>= では後続へ置き換わる）。
+	if err := os.Chtimes(newer, time.Unix(100, 0), time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	session, found, err = Find(context.Background(), cfg, Options{}, "claude", id)
+	if err != nil || !found || session.Title != "Old" || session.RawPath != older {
+		t.Fatalf("equal-mtime duplicate Find = %+v found=%v err=%v, want first file", session, found, err)
+	}
 
 	// ファイル名に ID を含まない Codex 履歴は payload から ID を取るため、候補外と決められず解析される。
 	payloadID := "019e8bd5-4230-7403-b1aa-b48f42e564dc"
