@@ -479,10 +479,10 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 func (m *Manager) waitForBoundary(ctx context.Context, runID string, target state.CleanTarget, waiting map[string]time.Time, slotState string) {
 	since, seen := waiting[target.SlotID]
 	if !seen {
-		waiting[target.SlotID] = time.Now()
+		waiting[target.SlotID] = m.cleanNow()
 		return
 	}
-	if time.Since(since) < cleanBoundaryWait {
+	if m.sinceNow(since) < cleanBoundaryWait {
 		return
 	}
 	m.failCleanTarget(ctx, runID, target, fmt.Sprintf("slot stayed in %s for more than %s", slotState, cleanBoundaryWait))
