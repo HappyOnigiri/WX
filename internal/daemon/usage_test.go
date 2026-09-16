@@ -301,6 +301,14 @@ func TestForgetSlotUsageStopsTheSubtractionAtZero(t *testing.T) {
 	}
 }
 
+// 合計と削除量が一致する境界でも、残量は負にならず正確に 0 になる。
+func TestSubtractUsageReturnsZeroAtTheEqualBoundary(t *testing.T) {
+	t.Parallel()
+	if got := subtractUsage(200, 200); got != 0 {
+		t.Fatalf("remaining usage=%d want 0", got)
+	}
+}
+
 // 使用量の測り直しは1本に保ち、走っている間に届いた要求は畳んで追加の1巡にする。
 // 一巡ごとに root 全体を歩き直すため、削除や準備が連続した回に walk を要求数だけ重ねない。
 func TestRootUsageMeasurementRequestsCoalesceIntoOneSweep(t *testing.T) {

@@ -531,7 +531,7 @@ async function collectCI({ github, owner, repo, runId, attempt, source, options 
     const profile = profileFromArtifactName(report.artifactName) || report.manifest.profile;
     report.jobUrl = jobUrls.get(profile) || '';
   }
-  return { groups: aggregateManifests(reports, source), fatal: missing.length > 0 ? `missing report artifact for ${missing.join(', ')}` : '' };
+  return { groups: aggregateManifests(reports, source), fatal: missing.length > 0 ? `missing report artifact for ${missing.join(', ')}` : '', fileIssues: true };
 }
 
 // collectHunt は Flake Hunt のrunから manifest を集める。
@@ -547,6 +547,8 @@ async function collectHunt({ github, owner, repo, runId, attempt, source, option
     if (job.conclusion === 'success' || uploaded) expected.add(job.name);
   }
   const artifacts = await pages((page) => github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: Number(runId), per_page: 100, page }));
+  const issueFilingMarker = artifacts.some((artifact) =>
+    !artifact.expired && artifact.workflow_run?.id === Number(runId) && artifact.name === `flake-hunt-no-issues-${runId}-${attempt}`);
   const usable = artifacts.filter((artifact) => !artifact.expired && artifact.workflow_run?.id === Number(runId) && huntArtifactPattern(runId, attempt).test(artifact.name));
   const missing = [...expected].filter((id) => !usable.some((artifact) => huntIdFromArtifactName(artifact.name, runId, attempt) === id));
   for (const id of missing) source.summary(`missing flake hunt report for ${id}`);
@@ -561,7 +563,7 @@ async function collectHunt({ github, owner, repo, runId, attempt, source, option
     }
     reports.push(report);
   }
-  return { groups: aggregateHuntManifests(reports, source), fatal: '' };
+  return { groups: aggregateHuntManifests(reports, source), fatal: '', fileIssues: !issueFilingMarker };
 }
 
 async function run(options) {
@@ -584,11 +586,18 @@ async function run(options) {
     summary: (message) => options.core?.warning?.(message),
   };
   const collect = contract.kind === 'hunt' ? collectHunt : collectCI;
-  const { groups, fatal } = await collect({ github, owner, repo, runId, attempt, source, options });
-  const issues = await listIssues(github, owner, repo);
+  const { groups, fatal, fileIssues: collectedFileIssues } = await collect({ github, owner, repo, runId, attempt, source, options });
+  const fileIssues = options.fileIssues ?? collectedFileIssues ?? true;
+  const issues = fileIssues ? await listIssues(github, owner, repo) : null;
   const results = [];
   const skipped = [];
+  const notFiled = [];
   for (const group of groups) {
+    if (!fileIssues) {
+      results.push({ title: group.title, action: 'not-filed' });
+      notFiled.push(group.title);
+      continue;
+    }
     if (results.length >= MAX_ISSUES_PER_RUN) {
       skipped.push(group.title);
       continue;
@@ -598,11 +607,12 @@ async function run(options) {
   const summary = `flaky reports: ${results.length} issue(s); ${results.filter((item) => item.action === 'created').length} created, ${results.filter((item) => item.action === 'commented' || item.action === 'reopened-commented').length} commented`;
   if (options.core?.summary) {
     const writer = options.core.summary.addHeading('Flaky test reports').addRaw(`${summary}\n`);
+    if (!fileIssues) writer.addRaw(`Not filed (file-issues=false):\n${notFiled.map((title) => `- ${title}`).join('\n') || '- none'}\n`);
     if (skipped.length > 0) writer.addRaw(`Not filed (over the ${MAX_ISSUES_PER_RUN} issue limit for one run):\n${skipped.map((title) => `- ${title}`).join('\n')}\n`);
     await writer.write();
   }
   if (fatal) throw new Error(fatal);
-  return { source, results, groups, skipped };
+  return { source, results, groups, skipped, fileIssues, notFiled };
 }
 
 module.exports = {
