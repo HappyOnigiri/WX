@@ -203,34 +203,37 @@ func startDaemon(ctx context.Context) int {
 	}
 	waiting := tui.StartProgress(os.Stdout, tui.InteractiveOutput(os.Stdout), i18n.T(ctx, "progress.starting", nil))
 	defer waiting.Finish()
-	// 既に待受中なら目的の状態なので launchctl より先に報告する。
-	// ただし停止待ちが残る daemon は、最後のジョブ終了後に退出するため対象外とする。
-	if daemonListening(ctx, socket) {
-		switch reply, err := requestDaemonLifecycle(ctx, "RequestStart"); {
-		case err == nil:
-			if cancelled, _ := reply["stop_cancelled"].(bool); cancelled {
-				waiting.Line(i18n.T(ctx, "wx.daemon.stop_cancelled", map[string]any{"Label": launchd.Label}))
-			}
-			if stopping, _ := reply["stop_pending"].(bool); !stopping {
-				waiting.Finish()
-				fmt.Println(i18n.T(ctx, "common.already_running", nil), launchd.Label)
-				return 0
-			}
-			// 停止 signal 済みなので、目的の状態へは退出後に新しい daemon を起動するしかない。
-			if !waitForSocket(ctx, socket, false) {
-				waiting.Finish()
-				fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":",
-					i18n.T(ctx, "wx.daemon.stop_not_finished", map[string]any{"Label": launchd.Label, "Timeout": daemonWaitTimeout.String()}))
-				return 1
-			}
-		case rpc.IsConnectError(err):
-			// 調査と呼び出しの間に daemon が消えた。いずれにせよ launchd 経由で戻す。
-		default:
-			// socket に応答があり目的の状態である。低下状態や旧 daemon もここに入り、停止待ちは保持しない。
+	// RequestStart を先に送り、既に待受中の daemon から pending stop を取り消す。
+	// socket へ接続できないときだけ launchd に起動を依頼することで、待受確認と RPC の間の競合を避ける。
+	switch reply, err := requestDaemonLifecycle(ctx, "RequestStart"); {
+	case err == nil:
+		if cancelled, _ := reply["stop_cancelled"].(bool); cancelled {
+			waiting.Line(i18n.T(ctx, "wx.daemon.stop_cancelled", map[string]any{"Label": launchd.Label}))
+		}
+		if stopping, _ := reply["stop_pending"].(bool); !stopping {
 			waiting.Finish()
 			fmt.Println(i18n.T(ctx, "common.already_running", nil), launchd.Label)
 			return 0
 		}
+		// 停止 signal 済みなので、目的の状態へは退出後に新しい daemon を起動するしかない。
+		if !waitForSocket(ctx, socket, false) {
+			waiting.Finish()
+			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":",
+				i18n.T(ctx, "wx.daemon.stop_not_finished", map[string]any{"Label": launchd.Label, "Timeout": daemonWaitTimeout.String()}))
+			return 1
+		}
+	case rpc.IsConnectError(err):
+		// 調査と呼び出しの間に daemon が消えた。いずれにせよ launchd 経由で戻す。
+	case ctx.Err() != nil:
+		waiting.Finish()
+		localizer := i18n.New(string(i18n.LanguageFromContext(ctx)))
+		fmt.Fprintln(os.Stderr, localizer.Localize("common.error", nil)+":", localizer.Error(err))
+		return 1
+	default:
+		// socket に応答があり目的の状態である。低下状態や旧 daemon もここに入り、停止待ちは保持しない。
+		waiting.Finish()
+		fmt.Println(i18n.T(ctx, "common.already_running", nil), launchd.Label)
+		return 0
 	}
 	if err := startAndWaitForDaemon(ctx, socket); err != nil {
 		waiting.Finish()
