@@ -91,6 +91,32 @@ func TestIdleStandbyRefreshRespectsCooldown(t *testing.T) {
 	}
 }
 
+// cooldown ちょうどは更新可能にする。境界を超えるまで待たせると、次の保守一巡まで更新が遅れる。
+func TestIdleStandbyRefreshIsDueAtExactCooldown(t *testing.T) {
+	fixedNow := time.Unix(1_700_000_000, 0)
+	m := &Manager{
+		now: fixedNow.Local,
+		idleStandbyRefreshes: map[string]time.Time{
+			"workspace": fixedNow.Add(-idleStandbyRefreshCooldown),
+		},
+	}
+	if !m.idleStandbyRefreshDue("workspace") {
+		t.Fatal("idle standby refresh was not due at the exact cooldown boundary")
+	}
+}
+
+// 待機枠がちょうど満杯なら branch 解決へ進まない。main が一時的に読めなくても既存の待機枠を保てるためである。
+func TestEnsureStandbyDoesNotResolveBranchesAtWarmCount(t *testing.T) {
+	f := newReuseStandbyFixture(t)
+	offline := f.repository + ".offline"
+	if err := os.Rename(f.repository, offline); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.manager.ensureStandbyResolved(context.Background(), f.workspace, nil); err != nil {
+		t.Fatalf("full standby pool resolved an unavailable repository: %v", err)
+	}
+}
+
 // 貸出付きの UPDATE は利用者が待っているので利用者向け、idle 更新は保守用の枠で走らせる。
 func TestJobClassOfSeparatesIdleStandbyUpdate(t *testing.T) {
 	if got := jobClassOf(state.Job{Kind: "UPDATE", SessionID: "session"}); got != jobClassInteractive {

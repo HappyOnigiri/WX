@@ -24,6 +24,11 @@ on:
         description: Mutator set (boundary or default)
         required: false
         default: boundary
+      file-issues:
+        description: Create or update issues for surviving mutations
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -362,6 +367,8 @@ jobs:
               core,
               reportDir: 'mutation-artifacts',
               expectedShards,
+              fileIssues: process.env.FILE_ISSUES !== 'false',
             });
         env:
           EXPECTED_SHARDS: ${{ needs.plan.outputs.shards }}
+          FILE_ISSUES: ${{ inputs.file-issues }}

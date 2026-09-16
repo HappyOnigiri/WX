@@ -113,6 +113,10 @@ func (p *Preparer) createPlannedLinksAt(ctx context.Context, repo discovery.Repo
 				return nil, err
 			}
 			if skip {
+				// source 側が ignore でも配置先で未 ignore になる典型は `dir/` 形の rule である。
+				// wx が置くのは symlink で、Git は symlink を directory と見ないため、この形の rule では link を無視できない。
+				// source 側は実体の directory を見て ignore と答えるので、利用者からは理由が分からない。ここで名指しして残す。
+				p.logSkip(".worktreelink path is not ignored by the destination worktree in link form", "repository", mainPath, "path", link.relative)
 				continue
 			}
 		}

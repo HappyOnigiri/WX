@@ -57,6 +57,37 @@ func TestDoctorKeepsRootPathAndRegistrationApart(t *testing.T) {
 	}
 }
 
+// READY slot の件数は各 slot を一件ずつ検査した結果と一致する。
+func TestRegistrationFindingsCountEveryReadySlot(t *testing.T) {
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t, "repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "ready-count", 1, "READY")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	var checked diag.Finding
+	for _, finding := range manager.registrationFindings(ctx) {
+		if finding.Check == diag.CheckWorktreeRegistration && finding.Severity == diag.SeverityOK {
+			checked = finding
+			break
+		}
+	}
+	if len(checked.Details) != 1 || checked.Details[0] != "1 READY slot(s) checked" {
+		t.Fatalf("registration finding=%+v, want one checked READY slot", checked)
+	}
+}
+
+// 補充の停止記録が無いときは、空の finding ではなく正常確認を一件だけ返す。
+func TestStandbyFindingsReportHealthyWhenEmpty(t *testing.T) {
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t, "repository")
+	findings := manager.standbyFindings(ctx)
+	if len(findings) != 1 || findings[0].Severity != diag.SeverityOK {
+		t.Fatalf("standby findings=%+v, want one OK finding", findings)
+	}
+	if len(findings[0].Details) != 2 || findings[0].Details[0] != "0 suspended workspace(s)" || findings[0].Details[1] != "0 failed replenishment plan(s)" {
+		t.Fatalf("healthy standby finding=%+v, want empty counts", findings[0])
+	}
+}
+
 func TestDoctorReportsSQLiteBackupFailureWithItsCause(t *testing.T) {
 	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
 	manager.mu.Lock()

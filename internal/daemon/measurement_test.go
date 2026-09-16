@@ -2,9 +2,13 @@ package daemon
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
 // 履歴は上限件数だけを新しい順で残し、slot と貸出先 session のどちらからでも引ける。
@@ -30,6 +34,19 @@ func TestPrepareMeasurementsKeepRecentRunsAndFilterByTarget(t *testing.T) {
 	}
 	if got := m.PrepareMeasurements("", "session-0"); len(got) != 0 {
 		t.Fatalf("dropped run=%+v, want nothing beyond the history limit", got)
+	}
+}
+
+func TestPrepareNoticeDoesNotTruncateExactSummaryBoundary(t *testing.T) {
+	t.Parallel()
+	m := &Manager{prepareDetailDir: t.TempDir(), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	output := strings.Repeat("x", prepareNoticeSummary)
+	notices := m.recordPrepareNotices([]workspace.PrepareNotice{{Target: "repo", Phase: "hook", Stdout: output}})
+	if len(notices) != 1 {
+		t.Fatalf("notices=%+v, want one", notices)
+	}
+	if notices[0].Truncated || notices[0].Output != output {
+		t.Fatalf("notice at exact summary boundary truncated=%v output_len=%d", notices[0].Truncated, len(notices[0].Output))
 	}
 }
 

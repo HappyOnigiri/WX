@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "run_id": "35011729918",
+  "packages": {
+    "cmd/wx": 30,
+    "internal/agent": 88,
+    "internal/archive": 209,
+    "internal/cli": 165,
+    "internal/config": 25,
+    "internal/daemon": 3360,
+    "internal/dashboard": 11,
+    "internal/diag": 6,
+    "internal/discovery": 5,
+    "internal/domain": 1,
+    "internal/gitx": 2,
+    "internal/hookconfig": 8,
+    "internal/i18n": 7,
+    "internal/launchd": 1,
+    "internal/pool": 3,
+    "internal/rpc": 24,
+    "internal/sessions": 23,
+    "internal/sessions/metacache": 13,
+    "internal/sessions/scanner": 6,
+    "internal/sessions/termtext": 1,
+    "internal/sessions/tui": 12,
+    "internal/setup": 5,
+    "internal/state": 80,
+    "internal/textfmt": 1,
+    "internal/tui": 1,
+    "internal/update": 3,
+    "internal/workspace": 1049
+  }
+}

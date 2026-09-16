@@ -101,3 +101,12 @@ func TestParsePrepareOverrideAcceptsAndRejects(t *testing.T) {
 		t.Fatal("want a lower bound above the maximum rejected")
 	}
 }
+
+// COW の上限値は storage と同じく含まれる範囲として扱う。
+func TestPrepareOverrideAcceptsMaximumCOWMinSize(t *testing.T) {
+	maximum := MaxCOWMinSizeKiB
+	override := PrepareOverride{COWMinSizeKiB: &maximum}
+	if err := override.Validate(); err != nil {
+		t.Fatalf("maximum COW minimum rejected: %v", err)
+	}
+}
