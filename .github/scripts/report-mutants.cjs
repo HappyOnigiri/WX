@@ -498,18 +498,32 @@ async function run(options) {
   validateShardCompleteness(reports, options.expectedShards, source);
   for (const report of reports) report.jobUrl = report.jobUrl || jobUrls.get(artifactId(report.artifactName)) || source.runUrl;
   const groups = aggregateManifests(reports, source);
+  const fileIssues = options.fileIssues !== false;
   for (const report of reports) {
     const value = report.manifest;
     if (value.totals.timed_out > 0 && source.summary) source.summary(`${report.artifactName}: ${value.totals.timed_out} mutation(s) timed out`);
     if (value.totals.not_covered > 0 && source.summary) source.summary(`${report.artifactName}: ${value.totals.not_covered} mutation(s) not covered`);
   }
-  if (groups.length > 0) await ensureMutationLabel({ github, owner, repo });
   const results = [];
-  for (const group of groups) results.push({ title: group.title, action: await upsertGroup({ github, owner, repo, group, source, labelReady: groups.length > 0 }) });
+  const notFiled = [];
+  if (fileIssues) {
+    if (groups.length > 0) await ensureMutationLabel({ github, owner, repo });
+    for (const group of groups) results.push({ title: group.title, action: await upsertGroup({ github, owner, repo, group, source, labelReady: groups.length > 0 }) });
+  } else {
+    // 起票を抑止しても検証と集計は完了させ、候補のタイトルをsummaryへ残す。
+    for (const group of groups) {
+      results.push({ title: group.title, action: 'not-filed' });
+      notFiled.push(group.title);
+    }
+  }
   const survivorCount = groups.reduce((total, group) => total + group.items.length, 0);
   const summary = `mutation reports: ${reports.length} artifact(s), ${survivorCount} survivor(s), ${results.filter((item) => item.action === 'created').length} issue(s) created, ${results.filter((item) => item.action === 'commented' || item.action === 'reopened-commented').length} commented`;
-  if (options.core?.summary) await options.core.summary.addHeading('Mutation hunt reports').addRaw(`${summary}\n`).write();
-  return { source, reports, results, groups, survivorCount };
+  if (options.core?.summary) {
+    const writer = options.core.summary.addHeading('Mutation hunt reports').addRaw(`${summary}\n`);
+    if (!fileIssues) writer.addRaw(`Not filed (file-issues=false):\n${notFiled.map((title) => `- ${title}`).join('\n') || '- none'}\n`);
+    await writer.write();
+  }
+  return { source, reports, results, groups, survivorCount, fileIssues, notFiled };
 }
 
 module.exports = {
