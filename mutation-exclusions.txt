@@ -4,6 +4,7 @@
 internal/diag/localization.go	e3e7484d2d1897f1ce72d006bdd6a3a2004a0355b0b60c1c406e9f5eb6b0c900	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
 internal/diag/report.go	f68b4b16f0be0ace924d17540222855dff80ff996b6137917624dfaa1b3fd193	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
 # IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
+internal/setup/shell.go	7c59fd06656bd92da0e40cb45f3870fe3780e771c9e33db4bd8683012ed2fa7f	strings.Index(contents[begin:], shellBlockEnd) の begin 位置は必ず shellBlockBegin の先頭で、異なる marker の長さ以上になるため offset==0 は到達不能であり、<0 と <=0 は等価な変異
 internal/sessions/sessions.go	7d31964550c6814b8cfe4de5e6b00d727a0cfab9fd2e1a73bb995ca83a3eb889	StableID は native session ID から生成され、同一 native ID の重複は事前に deduplicate されるため、実行可能な要素では < と <= が同じ順序になる等価変異。
 internal/sessions/sessions.go	13bda29932bbdc27f85f90ed3e860d20e8d5561dfa39561431e961fa0c313317	直前の Mtime == 判定が真なら StableID 比較へ戻り、偽なら > と >= は同じ結果になるため等価。
 internal/sessions/tui/picker.go	f80eff3357a695a53b441204c67ce3d4dc1e754e9fb52a4c9a73e8aa2871eb04	selected == offset では offset = selected が同値代入になるため、< と <= は表示範囲を変えない等価変異。

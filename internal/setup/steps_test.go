@@ -298,6 +298,25 @@ func TestPrerequisitesWarnAboutDevelopmentBuilds(t *testing.T) {
 	}
 }
 
+// TestJoinCommaPlacesSeparatorsBetweenValues は、区切り文字を先頭へ置かず値の間だけへ置くことを確認する。
+func TestJoinCommaPlacesSeparatorsBetweenValues(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		values []string
+		want   string
+	}{
+		{name: "empty", want: ""},
+		{name: "one", values: []string{"SessionStart"}, want: "SessionStart"},
+		{name: "many", values: []string{"SessionStart", "Working", "Stop"}, want: "SessionStart, Working, Stop"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := joinComma(test.values); got != test.want {
+				t.Fatalf("joinComma(%v)=%q, want %q", test.values, got, test.want)
+			}
+		})
+	}
+}
+
 func writeSetupFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
