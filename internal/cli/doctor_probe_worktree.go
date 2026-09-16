@@ -23,6 +23,10 @@ func (c Client) probeWorktreeFindings(ctx context.Context, root, leasePath strin
 }
 
 func (c Client) probeWorktreeFindingsWithExclusions(ctx context.Context, root, leasePath string, excluded map[string]bool) []diag.Finding {
+	return c.probeWorktreeFindingsWithOptions(ctx, root, leasePath, excluded, true)
+}
+
+func (c Client) probeWorktreeFindingsWithOptions(ctx context.Context, root, leasePath string, excluded map[string]bool, checkSubmodules bool) []diag.Finding {
 	git := c.probeGit()
 	worktrees, err := probeWorktrees(ctx, git, leasePath)
 	if err != nil {
@@ -52,7 +56,9 @@ func (c Client) probeWorktreeFindingsWithExclusions(ctx context.Context, root, l
 	}
 	findings := []diag.Finding{}
 	for _, worktree := range worktrees {
-		findings = append(findings, probeSubmoduleFindings(ctx, git, root, worktree, excluded)...)
+		if checkSubmodules {
+			findings = append(findings, probeSubmoduleFindings(ctx, git, root, worktree, excluded)...)
+		}
 		findings = append(findings, probeTrackedFindings(ctx, git, worktree))
 	}
 	return findings

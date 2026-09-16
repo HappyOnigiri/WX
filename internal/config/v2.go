@@ -677,6 +677,12 @@ func mergeRepositoryValue(dst *Repository, src Repository) {
 	if src.Storage.CopyMode != "" {
 		dst.Storage.CopyMode = src.Storage.CopyMode
 	}
+	if src.Onboarding.CheckedAt != "" {
+		dst.Onboarding.CheckedAt = src.Onboarding.CheckedAt
+	}
+	if src.Onboarding.PromptedAt != "" {
+		dst.Onboarding.PromptedAt = src.Onboarding.PromptedAt
+	}
 }
 
 func cleanRepositoryRelative(path string) string {

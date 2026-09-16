@@ -5,11 +5,15 @@ package i18n
 // session ID・path・外部 error はテンプレートの引数として受け取る。
 
 var cliCatalog = map[string]Entry{
-	"cli.interrupted":           {EN: "interrupted before the workspace was leased", JA: "workspace の貸出前に中断されました"},
-	"cli.interrupted_preparing": {EN: "interrupted while the workspace was being prepared; releasing it", JA: "workspace の準備中に中断されました。貸出を返却します"},
-	"cli.workspace_preparation": {EN: "workspace preparation", JA: "workspace の準備"},
-	"cli.resume_cancelled":      {EN: "resume cancelled; no workspace was created", JA: "再開をキャンセルしました。workspace は作成されませんでした"},
-	"cli.clear_stop":            {EN: "wx clear asked this session to stop before the agent started", JA: "agent の起動前に wx clear から停止要求を受けました"},
+	"cli.setup_prompt.saved":         {EN: "Initial worktree setup needs attention. The setup prompt was copied to the clipboard and saved at {{.Path}}", JA: "初回 worktree セットアップに対応が必要です。セットアップ用プロンプトをクリップボードへコピーし、{{.Path}} に保存しました"},
+	"cli.setup_prompt.copy_failed":   {EN: "The setup prompt is saved at {{.Path}}, but it could not be copied to the clipboard: {{.Error}}", JA: "セットアップ用プロンプトは {{.Path}} に保存しましたが、クリップボードへコピーできませんでした: {{.Error}}"},
+	"cli.setup_prompt.failed":        {EN: "The initial setup check found a problem, but its setup prompt could not be saved: {{.Error}}", JA: "初回セットアップ検査で問題を検出しましたが、セットアップ用プロンプトを保存できませんでした: {{.Error}}"},
+	"cli.setup_prompt.record_failed": {EN: "The initial setup check record could not be saved: {{.Error}}", JA: "初回セットアップ検査の記録を保存できませんでした: {{.Error}}"},
+	"cli.interrupted":                {EN: "interrupted before the workspace was leased", JA: "workspace の貸出前に中断されました"},
+	"cli.interrupted_preparing":      {EN: "interrupted while the workspace was being prepared; releasing it", JA: "workspace の準備中に中断されました。貸出を返却します"},
+	"cli.workspace_preparation":      {EN: "workspace preparation", JA: "workspace の準備"},
+	"cli.resume_cancelled":           {EN: "resume cancelled; no workspace was created", JA: "再開をキャンセルしました。workspace は作成されませんでした"},
+	"cli.clear_stop":                 {EN: "wx clear asked this session to stop before the agent started", JA: "agent の起動前に wx clear から停止要求を受けました"},
 	// cli.* は internal/cli の CLI 表示に使う。path・session ID・外部コマンドの
 	// エラー本文はテンプレートのプレースホルダへ不透明値として渡す。
 	"cli.error_prefix":                        {EN: "error:", JA: "エラー:"},

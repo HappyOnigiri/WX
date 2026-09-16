@@ -55,9 +55,10 @@ type Lease struct {
 	// 空・0 のときは client の global 設定へ落ちる。ReadinessProgress は
 	// repository ごとの表示設定を slot 全体へ合成した値で、client はこれを待機表示に使う。
 	// commentlint:allow-long -- readiness の実効値と表示設定を一つの貸出応答へ保持するため
-	ReadinessMode      string `json:"readiness_mode,omitempty"`
-	ReadinessTimeoutMS int    `json:"readiness_timeout_ms,omitempty"`
-	ReadinessProgress  bool   `json:"readiness_progress"`
+	ReadinessMode          string                 `json:"readiness_mode,omitempty"`
+	ReadinessTimeoutMS     int                    `json:"readiness_timeout_ms,omitempty"`
+	ReadinessProgress      bool                   `json:"readiness_progress"`
+	FirstLeaseRepositories []FirstLeaseRepository `json:"first_lease_repositories,omitempty"`
 }
 
 // leaseReadiness は slot 内の repository の readiness 個別指定を1つの実効値へ合成する。
@@ -101,7 +102,7 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 	return m.leaseWorkspace(ctx, w, branches, agent, pid, false, attrs)
 }
 
-func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, branches []string, agent string, pid int, cold bool, attrs leaseAttrs) (Lease, error) {
+func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, branches []string, agent string, pid int, cold bool, attrs leaseAttrs) (result Lease, resultErr error) {
 	var err error
 	w, err = m.store.CanonicalWorkspace(ctx, w)
 	if err != nil {
@@ -111,6 +112,16 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	if err != nil {
 		return Lease{}, err
 	}
+	first, err := m.store.FirstLeaseRepositories(ctx, string(w.ID))
+	if err != nil {
+		return Lease{}, err
+	}
+	firstLease := firstLeaseRepositories(first, w, m.Config())
+	defer func() {
+		if resultErr == nil {
+			result.FirstLeaseRepositories = firstLease
+		}
+	}()
 	// 補充はこの貸出を根拠に hot / cold を決める。last_leased_at を書く前に並走されても cold と判定させない。
 	endLease := m.beginWorkspaceLease(string(w.ID))
 	defer endLease()

@@ -51,6 +51,10 @@ manifestの不正のようにslotを作る前で落ちる失敗は補充を止�
 benchと同じstandby退役を必ず伴うため、実行中と直後は対象workspaceの起動が遅くなる。
 準備範囲外として選択されなかったsubmoduleは、空のdirectoryでも`probe_submodule`の問題にしない。
 
+`wx setup-check [<workspace>]` は初回セットアップ検査と同じ読み取り検査を workspace 1 件へ再実行する。
+通常の貸出と返却を使い、`wx doctor --probe` のような standby の退役や discard 返却は行わない。
+初回プロンプトの収束条件に使うため、問題だけでなく準備計測や使用量を取得できなかった未検査も終了コード 1 にする。
+
 ## 準備時間の計測
 
 `wx bench`は貸出からEARLY READY・FULL READYまでをclient側で測り、daemonが記録した区間内訳を添えて出す。

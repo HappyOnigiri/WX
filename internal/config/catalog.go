@@ -107,6 +107,8 @@ var catalogTexts = map[string]catalogText{
 	"repository_defaults.readiness.timeout":            {"Workspace repository readiness timeout", "Readiness timeout inherited by repositories in this workspace.", "Values that are too short interrupt valid preparation.", nil},
 	"repository_defaults.readiness.progress":           {"Workspace repository readiness progress", "Whether preparation progress is shown while repositories in this workspace become ready.", "Only display changes; preparation behavior is unchanged.", nil},
 	"repository_defaults.storage.copy_mode":            {"Workspace repository copy mode", "Copy mode inherited by repositories in this workspace.", "Affected standby slots rebuild after this changes.", []string{"auto", "cow", "copy"}},
+	"onboarding.checked_at":                            {"Initial setup check time", "When wx last performed the initial worktree setup check for this repository. This is a record, not a policy.", "Does not change worktree behavior.", nil},
+	"onboarding.prompted_at":                           {"Initial setup prompt time", "When wx last produced a setup prompt for this repository. This is a record, not a policy.", "Does not change worktree behavior.", nil},
 }
 
 // Catalog は構造体から導出した全キーを、設定ファイルでの宣言順に返す。

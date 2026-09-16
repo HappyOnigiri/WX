@@ -370,8 +370,15 @@ type Repository struct {
 	// slot の中身を決める値は repository の prepare.command と checkout 規模で変わる。
 	Readiness RepositoryReadiness `yaml:"readiness,omitempty"`
 	Storage   RepositoryStorage   `yaml:"storage,omitempty"`
+	// Onboarding は初回 worktree 検査の実行記録であり、利用者の方針ではない。
+	Onboarding RepositoryOnboarding `yaml:"onboarding,omitempty"`
 	// Discovered は dashboard が daemon の membership 一覧を統合するときだけ使う表示用印で、保存対象ではない。
 	Discovered bool `yaml:"-"`
+}
+
+type RepositoryOnboarding struct {
+	CheckedAt  string `yaml:"checked_at,omitempty"`
+	PromptedAt string `yaml:"prompted_at,omitempty"`
 }
 
 // RepositoryReadiness は readiness 節の repository 個別指定である。

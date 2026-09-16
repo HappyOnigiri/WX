@@ -18,6 +18,7 @@ import (
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/fdexec"
 	"github.com/HappyOnigiri/WX/internal/hookconfig"
@@ -290,7 +291,10 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 		cliError(c, err)
 		return 1, nil
 	}
-	readiness := readinessForLease(c.Config, lease, plan.resuming, plan.leaseKind, plan.hooksReady)
+	firstLeaseRepositories := mergeFirstLeaseRepositories(plan.firstLeaseRepositories, lease.FirstLeaseRepositories)
+	plan.firstLeaseRepositories = firstLeaseRepositories
+	setupCheck := c.initialSetupRepositories(lease.SourceWorkspace, firstLeaseRepositories)
+	readiness := readinessForLease(c.Config, lease, plan.resuming, plan.leaseKind, plan.hooksReady, len(setupCheck) > 0)
 	waiting.setReadiness(readiness.Mode)
 	if readiness.Reason == readinessReasonHooksUnavailable {
 		waiting.line(cliLocalizer(c).Localize("cli.readiness.hooks_missing", nil))
@@ -355,6 +359,10 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 			if relaunch := c.relaunchPlan(ctx, plan, err); relaunch != nil {
 				return 1, relaunch
 			}
+			if len(setupCheck) > 0 {
+				stage := newProbeStage(probeStageFullReady, err)
+				c.finishInitialSetupCheck(lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)})
+			}
 			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
 			return 1, nil
 		}
@@ -364,6 +372,10 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 	if terminator.requested() {
 		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.clear_stop", nil))
 		return 1, nil
+	}
+	if len(setupCheck) > 0 {
+		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, initialSetupUsageTimeout, true)
+		c.finishInitialSetupCheck(lease, setupCheck, findings)
 	}
 	// ここから先の signal は agent へ中継するので、準備待ち用の捕捉は返す。
 	stopSetupSignals()

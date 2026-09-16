@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/i18n"
@@ -187,7 +188,8 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		}
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
-	readiness := readinessForLease(c.Config, lease, false, state.LeaseKindPath, false)
+	setupCheck := c.initialSetupRepositories(lease.SourceWorkspace, lease.FirstLeaseRepositories)
+	readiness := readinessForLease(c.Config, lease, false, state.LeaseKindPath, false, false)
 	waiting.setReadiness(readiness.Mode)
 	if readiness.Reason == readinessReasonHooksUnavailable {
 		waiting.line(cliLocalizer(c).Localize("cli.readiness.hooks_missing", nil))
@@ -218,11 +220,19 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 				fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.interrupted_preparing", nil))
 				return 1
 			}
+			if len(setupCheck) > 0 {
+				stage := newProbeStage(probeStageFullReady, err)
+				c.finishInitialSetupCheck(lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)})
+			}
 			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
 			return 1
 		}
 	}
 	waiting.finish()
+	if len(setupCheck) > 0 {
+		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, initialSetupUsageTimeout, true)
+		c.finishInitialSetupCheck(lease, setupCheck, findings)
+	}
 	if jsonOut {
 		data, err := json.Marshal(leaseNewReply{SessionID: lease.SessionID, Path: lease.Path})
 		if err != nil {

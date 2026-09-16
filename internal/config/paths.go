@@ -184,3 +184,35 @@ func SetWorkspaceWorktree(c *Config, root, mode string) error {
 	}
 	return SetScopeField(c, ScopeWorkspace, root, "worktree", mode)
 }
+
+// SetRepositoryOnboarding は既存の個別設定を保ち、初回検査の実行記録だけを更新する。
+func SetRepositoryOnboarding(c *Config, workspaceRoot, relativePath, mainPath, checkedAt, promptedAt string) error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	if c.V2() || c.Version == 2 {
+		entry, commit, err := v2ScopeEntry(c, V2ScopeRepository, workspaceRoot, relativePath)
+		if err != nil {
+			return err
+		}
+		repository := entry.Addr().Interface().(*Repository)
+		repository.Onboarding.CheckedAt = checkedAt
+		if promptedAt != "" {
+			repository.Onboarding.PromptedAt = promptedAt
+		}
+		return commit()
+	}
+	if mainPath == "" {
+		return errors.New("repository main path is required")
+	}
+	if c.Repositories == nil {
+		c.Repositories = map[string]Repository{}
+	}
+	repository := c.Repositories[mainPath]
+	repository.Onboarding.CheckedAt = checkedAt
+	if promptedAt != "" {
+		repository.Onboarding.PromptedAt = promptedAt
+	}
+	c.Repositories[mainPath] = repository
+	return nil
+}

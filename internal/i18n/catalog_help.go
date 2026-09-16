@@ -37,6 +37,7 @@ Commands:
   bench [--runs <n>] [--json]    measure how long a workspace takes to prepare
   config [<key> ...]             show or update configuration
   setup [--check] [--remove]     review and complete, or remove, the wx setup
+  setup-check [<workspace>]      validate one workspace without retiring standby slots
   resume <id> [agent] [args...]  restore a wx session
   discard-recovery <workspace>   discard recovery state that lost its refs
   forget <workspace-path>        stop managing a workspace
@@ -72,12 +73,23 @@ Commands:
   bench [--runs <n>] [--json]    workspace の準備にかかる時間を計測
   config [<key> ...]             設定を表示または更新
   setup [--check] [--remove]     wx setup を確認して完了、または削除
+  setup-check [<workspace>]      standby を退役させず workspace 1 件を検証
   resume <id> [agent] [args...]  wx session を復元
   discard-recovery <workspace>   ref を失った復旧状態を破棄
   forget <workspace-path>        workspace の管理を解除
   update [--apply]               新しい wx を確認して導入
   daemon start|stop|restart      daemon の稼働状態を変更
   daemon install|uninstall       LaunchAgent を登録または削除`,
+	},
+	"help.command.setup-check": {
+		EN: `Usage: wx setup-check [<workspace>]
+
+Lease one workspace normally and run the focused worktree setup checks against it.
+Unlike wx doctor --probe, this does not retire standby slots or discard the lease.`,
+		JA: `使い方: wx setup-check [<workspace>]
+
+workspace 1 件を通常どおり貸し出し、worktree のセットアップ検査を実行します。
+wx doctor --probe と異なり、standby slot の退役や貸出の破棄は行いません。`,
 	},
 	"help.command.resume": {
 		EN: `Usage: wx resume <wx-session-id> [claude|codex] [--fresh] [--branch <branch>] [agent-arguments...]

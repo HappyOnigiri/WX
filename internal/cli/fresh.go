@@ -29,6 +29,8 @@ type launchPlan struct {
 	resuming        bool
 	fresh           bool
 	hooksReady      bool
+	// firstLeaseRepositories は初回貸出後の作り直しでもセットアップ検査を落とさないため引き継ぐ。
+	firstLeaseRepositories []daemon.FirstLeaseRepository
 	// leaseKind 以下は agent 起動以外への貸出（wx shell / wx run）の属性である。
 	// leaseKind が空なら従来の agent 起動で、owner は wx new 由来の親 session を指す。
 	leaseKind      string
