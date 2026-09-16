@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,6 +132,128 @@ func TestPrepareCommandErrorUnwrapAndNilReceiver(t *testing.T) {
 	var nilFailure *PrepareCommandError
 	if nilFailure.Unwrap() != nil || nilFailure.Error() != "prepare command failed" || errors.Is(nilFailure, cause) {
 		t.Fatalf("nil prepare command error is not safe: unwrap=%v error=%q is=%v", nilFailure.Unwrap(), nilFailure.Error(), errors.Is(nilFailure, cause))
+	}
+}
+
+// readiness timeout が 0 のときは、prepare command を起動せず設定エラーにする。
+// 0 をそのまま context deadline に渡すと、設定エラーが command の timeout に変わる。
+func TestRunPrepareWithIdentityRejectsZeroReadinessTimeout(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	if err := os.Mkdir(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	cfg.Readiness.Timeout = config.Duration{}
+	cfg.Repositories = map[string]config.Repository{
+		repository: {Prepare: config.Prepare{
+			Command: []string{"/usr/bin/true"},
+		}},
+	}
+	owner, _, err := domain.OpenOwnedRoot(root, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	preparer := Preparer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg, OwnedRoot: owner, RootPath: root}
+	err = preparer.runPrepareWithIdentity(context.Background(), repo, target, "")
+	var failure *PrepareCommandError
+	if !errors.As(err, &failure) || failure.TimedOut || failure.ExitCode != -1 || !strings.Contains(err.Error(), "timeout must be positive") {
+		t.Fatalf("zero readiness timeout error=%v typed=%+v", err, failure)
+	}
+}
+
+// prepareDiagnosticWriter は出力上限の境界でも、prefix だけを空ファイルへ書き込まない。
+func TestPrepareDiagnosticWriterMarksExactPrefixRemainderAsTruncated(t *testing.T) {
+	t.Parallel()
+	file, err := os.CreateTemp(t.TempDir(), "prepare-detail-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := file.Name()
+	diagnostic := &prepareDiagnostic{
+		file:      file,
+		used:      maxPrepareDiagnosticOutput - len([]byte("[stdout] ")),
+		truncated: map[string]bool{},
+	}
+	if written, err := (prepareDiagnosticWriter{diagnostic: diagnostic, stream: "stdout"}).Write(nil); err != nil || written != 0 {
+		t.Fatalf("Write()=(%d,%v), want empty success", written, err)
+	}
+	if !diagnostic.truncated["stdout"] || diagnostic.used != maxPrepareDiagnosticOutput-len([]byte("[stdout] ")) {
+		t.Fatalf("diagnostic state used=%d truncated=%v", diagnostic.used, diagnostic.truncated)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(name); err != nil || len(data) != 0 {
+		t.Fatalf("exact prefix remainder wrote data=%d err=%v", len(data), err)
+	}
+}
+
+// 収容可能な出力がちょうど残る場合は、切り詰めフラグを立てず全 payload を保存する。
+func TestPrepareDiagnosticWriterKeepsPayloadAtExactRemainingLimit(t *testing.T) {
+	t.Parallel()
+	file, err := os.CreateTemp(t.TempDir(), "prepare-detail-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	payload := []byte("exact payload")
+	prefix := []byte("[stdout] ")
+	diagnostic := &prepareDiagnostic{
+		file:      file,
+		used:      maxPrepareDiagnosticOutput - len(prefix) - len(payload),
+		truncated: map[string]bool{},
+	}
+	if written, err := (prepareDiagnosticWriter{diagnostic: diagnostic, stream: "stdout"}).Write(payload); err != nil || written != len(payload) {
+		t.Fatalf("Write()=(%d,%v), want %d bytes", written, err, len(payload))
+	}
+	if diagnostic.used != maxPrepareDiagnosticOutput || diagnostic.truncated["stdout"] {
+		t.Fatalf("diagnostic state used=%d truncated=%v", diagnostic.used, diagnostic.truncated)
+	}
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil || string(data) != string(append(prefix, payload...)) {
+		t.Fatalf("exact payload data=%q err=%v", data, err)
+	}
+}
+
+// 空の入力では prefix 自体も書かず、使用量を増やさない。
+func TestPrepareDiagnosticWriterDoesNotWriteAnEmptyPayload(t *testing.T) {
+	t.Parallel()
+	file, err := os.CreateTemp(t.TempDir(), "prepare-detail-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	diagnostic := &prepareDiagnostic{file: file, truncated: map[string]bool{}}
+	if written, err := (prepareDiagnosticWriter{diagnostic: diagnostic, stream: "stdout"}).Write([]byte{}); err != nil || written != 0 {
+		t.Fatalf("Write()=(%d,%v), want empty success", written, err)
+	}
+	if diagnostic.used != 0 || diagnostic.truncated["stdout"] {
+		t.Fatalf("empty payload changed diagnostic state used=%d truncated=%v", diagnostic.used, diagnostic.truncated)
+	}
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil || len(data) != 0 {
+		t.Fatalf("empty payload wrote data=%q err=%v", data, err)
 	}
 }
 

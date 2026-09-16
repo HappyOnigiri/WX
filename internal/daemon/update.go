@@ -79,7 +79,7 @@ func (m *Manager) maybeCheckUpdate(ctx context.Context) {
 		m.log.Error("update check state is unreadable", "error", err)
 		return
 	}
-	if !record.CheckedAt.IsZero() && time.Since(record.CheckedAt) < updateCheckInterval {
+	if updateCheckIsFresh(record.CheckedAt, time.Now()) {
 		return
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, updateCheckDeadline)
@@ -97,6 +97,11 @@ func (m *Manager) maybeCheckUpdate(ctx context.Context) {
 	if recordErr := m.store.RecordUpdateCheck(ctx, release.Tag, release.URL, ""); recordErr != nil {
 		m.log.Error("update check result could not be recorded", "error", recordErr)
 	}
+}
+
+// updateCheckIsFresh はちょうど期限へ達した確認を古いものとして扱う。
+func updateCheckIsFresh(checkedAt, now time.Time) bool {
+	return !checkedAt.IsZero() && now.Sub(checkedAt) < updateCheckInterval
 }
 
 // UpdateState は記録済みの確認結果を返す。claim が true の呼び出しだけが案内権を要求し、

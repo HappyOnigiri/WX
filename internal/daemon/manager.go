@@ -119,6 +119,8 @@ type Manager struct {
 	// Git 読み出しを共有する。容量計測は診断専用で、Store へは保存しない。
 	capacityMu    sync.Mutex
 	capacityCache map[string]workspace.CapacityEstimate
+	// now は時間境界を決定的に検査するための時計差し替え点。本番では nil のまま time.Now を使う。
+	now func() time.Time
 }
 
 func New(cfg config.Config, store *state.Store, logger *slog.Logger, exclusiveStartup ...bool) *Manager {
@@ -221,3 +223,16 @@ func (m *Manager) startBackground(fn func()) bool {
 }
 
 func (m *Manager) Config() config.Config { m.mu.RLock(); defer m.mu.RUnlock(); return m.cfg }
+
+// currentTime は時間境界を測る時計を返す。通常は実時間を使い、境界テストだけ差し替える。
+func (m *Manager) currentTime() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
+// sinceNow は currentTime を基準に経過時間を返す。開始時刻と判定時刻を同じ時計で揃える。
+func (m *Manager) sinceNow(since time.Time) time.Duration {
+	return m.currentTime().Sub(since)
+}

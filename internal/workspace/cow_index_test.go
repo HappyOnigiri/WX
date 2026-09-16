@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,6 +88,57 @@ func TestCOWCandidatesKeepMatchingOIDs(t *testing.T) {
 	// 表が無い回は事前 skip を行わず、従来どおり全 entry を走査する。
 	if got := selectCOWCandidates(entries, nil); len(got) != len(entries) {
 		t.Fatalf("candidates without a source index=%v", got)
+	}
+}
+
+// 候補が空のときは、共有対象外の main index を読み直さずに処理を終える。
+// testlint:allow-serial -- Git の実行経路を PATH の wrapper で観測するため
+func TestCOWDoesNotReadSourceIndexWithoutCandidates(t *testing.T) {
+	p, repo, oid, target := cowFixture(t)
+	p.Config.Storage.CopyMode = config.CopyModeCopy
+	if err := p.Prepare(context.Background(), repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "git.log")
+	wrapper := filepath.Join(bin, "git")
+	script := "#!/bin/sh\n" +
+		"if [ \"${1:-}\" = \"--no-optional-locks\" ]; then shift; fi\n" +
+		"printf '%s\\t%s\\n' \"$PWD\" \"$*\" >> \"$WX_TEST_GIT_LOG\"\n" +
+		"exec \"$WX_TEST_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_TEST_REAL_GIT", realGit)
+	t.Setenv("WX_TEST_GIT_LOG", logPath)
+	t.Setenv("PATH", fmt.Sprintf("%s%c%s", bin, os.PathListSeparator, os.Getenv("PATH")))
+
+	scope := &cowScope{excluded: map[string]bool{"file": true}}
+	if err := p.compactOwnedWorktree(context.Background(), repo, target, oid, testSlotID, preparePhaseCreate, identity, scope); err != nil {
+		t.Fatal(err)
+	}
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceIndexReads := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(log)), "\n") {
+		fields := strings.SplitN(line, "\t", 2)
+		if len(fields) == 2 && fields[0] == string(repo.MainPath) && fields[1] == "ls-files --stage -z" {
+			sourceIndexReads++
+		}
+	}
+	if sourceIndexReads != 0 {
+		t.Fatalf("source index was read with no candidates: %d (%s)", sourceIndexReads, log)
 	}
 }
 

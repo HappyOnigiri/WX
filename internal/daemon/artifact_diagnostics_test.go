@@ -9,8 +9,18 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
+
+// 登録外の実体と孤児 ref が無いときは、空の分類を finding として報告しない。
+func TestArtifactFindingsOmitEmptyUnmanagedAndOrphanCategories(t *testing.T) {
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
+	findings := manager.artifactFindings(ctx)
+	if len(findings) != 1 || findings[0].Severity != diag.SeverityOK {
+		t.Fatalf("artifact findings=%+v, want one OK finding", findings)
+	}
+}
 
 // categories は reconcile と prune の境界なので、typed report から作る分類済み文字列の形を固定する。
 func TestArtifactReportCategoriesKeepTheSortedStringShape(t *testing.T) {

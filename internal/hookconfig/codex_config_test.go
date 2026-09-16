@@ -20,6 +20,7 @@ func TestCodexPolicyFindingsRecognizeConfigBoundaries(t *testing.T) {
 		{name: "features table", data: "[features]\nhooks = true\ncodex_hooks = true", want: true},
 		{name: "quoted keys", data: "[features]\n\"hooks\" = true\n'codex_hooks' = true", want: true},
 		{name: "inline features", data: `features = { hooks = true, codex_hooks = true, nested = { value = "#" } }`, want: true},
+		{name: "empty inline features", data: "features = {}", want: true},
 		{name: "array of tables", data: "[[features.hooks]]\nname = \"wx\"", want: true},
 		{name: "feature disabled", data: "[features]\nhooks = false", want: false},
 		{name: "inline feature disabled", data: "features = { hooks = false }", want: false},
@@ -53,6 +54,21 @@ func TestCodexPolicyFindingsRecognizeConfigBoundaries(t *testing.T) {
 				t.Fatalf("code=%s for %q", code, test.data)
 			}
 		})
+	}
+}
+
+// TestNormalizeTOMLKeyHandlesMinimalQuotedKeys は、引用符だけで構成された最小の key でも
+// 外側の引用符を取り除く境界を確認する。
+func TestNormalizeTOMLKeyHandlesMinimalQuotedKeys(t *testing.T) {
+	for _, test := range []struct {
+		raw, want string
+	}{
+		{raw: `""`, want: ""},
+		{raw: `''`, want: ""},
+	} {
+		if got := normalizeTOMLKey(test.raw); got != test.want {
+			t.Errorf("normalizeTOMLKey(%q)=%q, want %q", test.raw, got, test.want)
+		}
 	}
 }
 
@@ -107,7 +123,16 @@ func TestCodexPolicyFindingsEvaluateLocalAndManagedPolicyFiles(t *testing.T) {
 		}
 	})
 
-	t.Run("user config too large", func(t *testing.T) {
+	t.Run("user config at size limit", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		writeHookConfigFile(t, filepath.Join(home, ".codex", "config.toml"), strings.Repeat("#", maxHookConfigSize))
+		if findings := codexPolicyFindings(); len(findings) != 0 {
+			t.Fatalf("config at the size limit was rejected: %v", findings)
+		}
+	})
+
+	t.Run("user config over size limit", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		writeHookConfigFile(t, filepath.Join(home, ".codex", "config.toml"), strings.Repeat("#", (4<<20)+1))

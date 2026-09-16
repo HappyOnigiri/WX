@@ -37,6 +37,22 @@ func TestParseIndexFlagsIgnoresEmptyListing(t *testing.T) {
 	}
 }
 
+// 最短の有効 entry と assume-unchanged tag の上下端を受理し、範囲外の隣接 tag は通常 entry として扱う。
+// flaggedIndexPaths から共通 parser へ移した境界契約をここで固定する。
+func TestParseIndexFlagsAcceptsMinimumEntryAndLowercaseBoundaries(t *testing.T) {
+	t.Parallel()
+	flags := ParseIndexFlags("S x\x00a lower\x00z upper\x00` before\x00{ after\x00S \x00")
+	if want := []string{"x"}; !reflect.DeepEqual(flags.SkipWorktree, want) {
+		t.Fatalf("skip-worktree=%v, want %v", flags.SkipWorktree, want)
+	}
+	if want := []string{"lower", "upper"}; !reflect.DeepEqual(flags.AssumeUnchanged, want) {
+		t.Fatalf("assume-unchanged=%v, want %v", flags.AssumeUnchanged, want)
+	}
+	if flags.Has("before") || flags.Has("after") {
+		t.Fatalf("out-of-range tags were treated as flagged: %+v", flags.FlaggedPaths)
+	}
+}
+
 func TestNULPathListEncodesNULSeparatedEntries(t *testing.T) {
 	t.Parallel()
 	if got, want := string(NULPathList([]string{"a*.txt", "b"})), "a*.txt\x00b\x00"; got != want {
