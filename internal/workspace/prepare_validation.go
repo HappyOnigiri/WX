@@ -124,37 +124,42 @@ func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, r
 	if err != nil || actualCommon != expectedCommon {
 		return errors.New("common Git directory does not match")
 	}
-	head, err := p.runGitInDirectory(ctx, targetRoot, "rev-parse", "HEAD")
-	if interrupt := interrupted(err); interrupt != nil {
-		return interrupt
-	}
-	detached := false
-	if err == nil {
-		_, detachedErr := p.runGitInDirectory(ctx, targetRoot, "symbolic-ref", "-q", "HEAD")
-		if interrupt := interrupted(detachedErr); interrupt != nil {
+	// Git の worktree registry は add/lock/unlock/remove が同じ common directory の
+	// 管理情報を書き換える。検証だけを lock 外で行うと、list が worktrees/*/locked
+	// を読む途中で entry の更新を跨ぎ、存在しない locked を読んで所有権不明にする。
+	return p.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(lockCtx context.Context) error {
+		head, err := p.runGitInDirectory(lockCtx, targetRoot, "rev-parse", "HEAD")
+		if interrupt := interrupted(err); interrupt != nil {
 			return interrupt
 		}
-		detached = detachedErr != nil
-	}
-	if err != nil || strings.TrimSpace(head.Stdout) != oid || !detached {
-		return errors.New("HEAD is not the expected detached commit")
-	}
-	if err := ValidateRegisteredWorktreeAt(ctx, p.Git, string(repo.MainPath), owner, root, relativeTarget, targetIdentity, slotID, slotID != ""); err != nil {
-		return err
-	}
-	if slotID == "" {
+		detached := false
+		if err == nil {
+			_, detachedErr := p.runGitInDirectory(lockCtx, targetRoot, "symbolic-ref", "-q", "HEAD")
+			if interrupt := interrupted(detachedErr); interrupt != nil {
+				return interrupt
+			}
+			detached = detachedErr != nil
+		}
+		if err != nil || strings.TrimSpace(head.Stdout) != oid || !detached {
+			return errors.New("HEAD is not the expected detached commit")
+		}
+		if err := ValidateRegisteredWorktreeAt(lockCtx, p.Git, string(repo.MainPath), owner, root, relativeTarget, targetIdentity, slotID, slotID != ""); err != nil {
+			return err
+		}
+		if slotID == "" {
+			return nil
+		}
+		proof, err := p.stateOwnershipProof(lockCtx, repo, target, slotID, slotStates, repositoryStates)
+		if err != nil {
+			return err
+		}
+		// 記録済み identity は実際に open した directory と一致しなければならない。空 record は完了前に中断した run を示すため retry で収束できる。
+		// 異なる record は marker と Git metadata が再現されていても wx が prepare した directory ではないことを示す。
+		if proof.DirIdentity != "" && proof.DirIdentity != targetIdentity {
+			return fmt.Errorf("%w: worktree directory identity does not match the SQLite record", state.ErrOwnership)
+		}
 		return nil
-	}
-	proof, err := p.stateOwnershipProof(ctx, repo, target, slotID, slotStates, repositoryStates)
-	if err != nil {
-		return err
-	}
-	// 記録済み identity は実際に open した directory と一致しなければならない。空 record は完了前に中断した run を示すため retry で収束できる。
-	// 異なる record は marker と Git metadata が再現されていても wx が prepare した directory ではないことを示す。
-	if proof.DirIdentity != "" && proof.DirIdentity != targetIdentity {
-		return fmt.Errorf("%w: worktree directory identity does not match the SQLite record", state.ErrOwnership)
-	}
-	return nil
+	})
 }
 
 // ValidateReady は、保存済み READY worktree を安全に lease できる physical および Git-administrative invariant を検証する。
@@ -210,7 +215,12 @@ func (p *Preparer) ValidateOwnership(ctx context.Context, repo discovery.Reposit
 	if closeErr := directory.Close(); closeErr != nil {
 		return closeErr
 	}
-	if err := ValidateRegisteredWorktreeAt(ctx, p.Git, string(repo.MainPath), owner, root, relativeTarget, targetIdentity, slotID, true); err != nil {
+	// 所有権検査の worktree registry 読み取りも、prepare/remove の Git 更新と同じ
+	// common-directory lock 下で行う。検査中に lock ファイルが更新されると、Git の
+	// list が一時的な registry を読み、正しい worktree を所有権不明として扱う。
+	if err := p.Git.WithCommonDirLock(ctx, string(repo.CommonDir), func(lockCtx context.Context) error {
+		return ValidateRegisteredWorktreeAt(lockCtx, p.Git, string(repo.MainPath), owner, root, relativeTarget, targetIdentity, slotID, true)
+	}); err != nil {
 		return err
 	}
 	return p.validateStateOwnershipWithIdentity(ctx, repo, target, slotID, targetIdentity, allOwnershipSlotStates, allOwnershipRepositoryStates)
