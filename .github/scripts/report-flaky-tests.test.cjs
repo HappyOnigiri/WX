@@ -229,7 +229,11 @@ test('runs the report workflow with mocked Actions and issue APIs', async () => 
     actions: {
       getWorkflowRun: async ({ run_id: id }) => { currentRun = String(id); return { data: sourceRun(id) }; },
       listJobsForWorkflowRun: async () => ({ data: { jobs: [{ name: 'coverage-tests', run_attempt: 1, conclusion: 'failure', steps: [{ name: 'Upload CI test report', conclusion: 'success' }] }] } }),
-      listWorkflowRunArtifacts: async () => ({ data: { artifacts: [{ id: 1, name: `ci-tests-coverage-${currentRun}-1`, expired: false, workflow_run: { id: Number(currentRun) } }] } }),
+      listWorkflowRunArtifacts: async () => ({ data: { artifacts: [
+        { id: 1, name: `ci-tests-coverage-${currentRun}-1`, expired: false, workflow_run: { id: Number(currentRun) } },
+        // Flake Hunt用のマーカーが同じrunにあっても、CIの起票契約には影響しない。
+        { id: 2, name: `flake-hunt-no-issues-${currentRun}-1`, expired: false, workflow_run: { id: Number(currentRun) } },
+      ] } }),
     },
     issues: {
       listForRepo: async () => ({ data: issues }),
@@ -447,6 +451,22 @@ test('warns instead of failing when a hunt container reports nothing', async () 
   });
   assert.deepEqual(warnings, ['missing flake hunt report for hunt-2']);
   assert.deepEqual(result.results.map((item) => item.action), ['created']);
+});
+
+test('does not file hunt issues when the source run has a no-issues marker', async () => {
+  const calls = [];
+  const github = huntGithub({
+    artifacts: [{ id: 99, name: 'flake-hunt-no-issues-10-1', expired: false, workflow_run: { id: 10 } }],
+    calls,
+  });
+  const result = await reporter.run({
+    github, owner: source.owner, repo: source.repo, sourceRunId: '10', sourceAttempt: '1',
+    reports: [{ artifactName: 'flake-hunt-hunt-1-10-1', huntId: 'hunt-1', manifest: huntManifest('hunt-1') }],
+  });
+  assert.equal(result.fileIssues, false);
+  assert.deepEqual(result.results.map((item) => item.action), ['not-filed']);
+  assert.deepEqual(result.notFiled, ['[flaky] internal/example/flaky_test.go: TestFlaky']);
+  assert.deepEqual(calls, []);
 });
 
 test('skips a hunt manifest written by an unknown schema version', async () => {
