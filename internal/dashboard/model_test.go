@@ -300,3 +300,16 @@ func TestStatusTabStillRefreshesWithTheUpdateItemPresent(t *testing.T) {
 		t.Fatal("r did not start a status refresh while the update item is present")
 	}
 }
+
+// TestExecutionRefreshIgnoresOutOfRangeSettingsEnvironment は、設定画面の環境一覧が
+// 更新前後で変わっても、存在しない選択位置を参照しないことを守る。
+func TestExecutionRefreshIgnoresOutOfRangeSettingsEnvironment(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.settingsOpen = true
+	m.settingsEnv = len(m.configEnvironments())
+
+	updated, _ := m.Update(executionMsg{config: config.Defaults()})
+	if got := updated.(model).mode; got != modeResult {
+		t.Fatalf("mode=%v, want result after a refresh with an out-of-range environment", got)
+	}
+}
