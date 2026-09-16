@@ -38,7 +38,7 @@ func runSlots(ctx context.Context, args []string) int {
 	rows := make([][]string, 0, len(out))
 	for _, s := range out {
 		rows = append(rows, []string{
-			slotField(s, "slot_id"), slotField(s, "state"), slotRepositories(s), slotField(s, "session_id"), slotField(s, "agent"),
+			slotField(s, "slot_id"), slotState(s), slotRepositories(s), slotField(s, "session_id"), slotField(s, "agent"),
 			slotCopyMode(s), slotSizeMB(s), slotField(s, "path"),
 		})
 	}

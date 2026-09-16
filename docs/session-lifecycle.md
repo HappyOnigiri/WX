@@ -27,7 +27,13 @@
 
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
    `repository_defaults.readiness.mode: early`では、hookが使える通常起動はGit登録と起動用ファイルの配置までを待って起動する。
-   以降の`user-prompt-submit`・`pre-tool-use` hookが全準備の完了まで操作を止める。
+   以降の`user-prompt-submit`・`pre-tool-use` hookが全準備の完了まで待つ。
+   待った先で準備が失敗していても、エージェントは既にそのworktreeで作業しているため止めない。
+   slotは隔離せず貸出のまま`LEASED`へ進め、失敗は`slots.failure_code`・`failure_detail_path`・`failure_phase`に残す。
+   これは終了時の返却を`DRAINING`へ通し、作業をsnapshotへ届けるためである。
+   失敗した事実は最初の`user-prompt-submit`のstdoutで1回だけエージェントへ伝え、消費済みは`sessions.prepare_notice_delivered_at`に残して再起動後の再送を防ぐ。
+   稼働中の不完全さは`wx slots`のSTATE列と`--json`の`prepare_failure_*`、`wx doctor --probe`のfindingから読める。
+   readinessのtimeoutとdaemon応答不能はこの扱いに含めない。準備がまだ書き込みを続けている可能性があり、貸出中のworktreeを書き換えないという不変条件に触れるためである。
    `repository_defaults.readiness.mode: full`またはhookが無い起動（`internal/hookconfig`が判定する）は、clientが起動前に全準備を待つ。
    modeとtimeoutは `workspaces.<root>.repository_defaults.readiness.*` または `workspaces.<root>.repositories.<relative>.readiness.*` で上書きできる。
    clientはrepositoryのmain pathを知らないため、daemonが貸出応答へ合成済みの実効値を載せる。

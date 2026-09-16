@@ -9,6 +9,7 @@ const (
 	CheckProbeTracked   = "probe_tracked_changes"
 	CheckProbeSharing   = "probe_sharing"
 	CheckPrepareOutput  = "prepare_output"
+	CheckPrepareFailure = "prepare_failure"
 )
 
 // Probe.Usage の値。ディスク使用量が実測なのか、測定を待てなかったのかを区別する。

@@ -52,6 +52,28 @@ func (m *Manager) WaitReady(ctx context.Context, id, token string) error {
 	return m.waitReadiness(ctx, id, token, false)
 }
 
+// ClaimPrepareFailureNotice は、準備に失敗したまま貸出を続けている session へ渡す案内を 1 回だけ返す。
+// 案内が無い場合は空文字を返す。hook の stdout はエージェントの context に入るため、
+// 本文は原因へ自力で辿れる材料（止まった区間・失敗 code・詳細ログ）に絞り、1 行に収める。
+func (m *Manager) ClaimPrepareFailureNotice(ctx context.Context, id, token string) (string, error) {
+	if _, err := m.store.Session(ctx, id, token); err != nil {
+		return "", err
+	}
+	notice, ok, err := m.store.ClaimPrepareFailureNotice(ctx, id)
+	if err != nil || !ok {
+		return "", err
+	}
+	phase, detailPath := notice.Phase, notice.DetailPath
+	if phase == "" {
+		phase = "unknown"
+	}
+	if detailPath == "" {
+		detailPath = "unavailable"
+	}
+	oneLine := strings.NewReplacer("\n", " ", "\r", " ")
+	return oneLine.Replace(fmt.Sprintf("wx prepare notice: this workspace is incomplete because preparation failed after the agent had already started. phase=%s failure_code=%s detail_path=%s. Files may be missing and prepare commands may not have run; work saved here is still snapshotted when the session ends.", phase, notice.Code, detailPath)), nil
+}
+
 // WaitEarlyReady は起動用ファイルまでの準備を待ち、hook が使う WaitReady とは独立に判定する。
 func (m *Manager) WaitEarlyReady(ctx context.Context, id, token string) error {
 	return m.waitReadiness(ctx, id, token, true)

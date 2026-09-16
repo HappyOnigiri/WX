@@ -89,6 +89,34 @@ func prepareNoticeFindings(root string, notices []daemon.PrepareNotice) []diag.F
 	return findings
 }
 
+// prepareFailureFindings は early ready の後に準備が失敗し、それでも貸出が続いている slot を報告する。
+// この経路は slot を隔離せず readiness も成功で返すため、workspace が不完全なまま使われていることは
+// slot に残った失敗記録からしか分からない。
+func prepareFailureFindings(root string, slot daemon.SlotView) []diag.Finding {
+	if slot.PrepareFailureCode == "" {
+		return nil
+	}
+	detailPath := slot.PrepareFailureDetailPath
+	if detailPath == "" {
+		detailPath = "unavailable"
+	}
+	return []diag.Finding{{
+		Check: diag.CheckPrepareFailure, Severity: diag.SeverityProblem,
+		Summary: "the prepared workspace is incomplete", Target: slot.Path,
+		Cause: fmt.Sprintf("the preparation for %s failed with %s after the workspace had already been handed to the agent (details in %s)",
+			root, slot.PrepareFailureCode, detailPath),
+		Action: "read the detail log and fix the cause, then take a fresh workspace; files may be missing and prepare commands may not have run",
+		Messages: diag.FindingMessages{
+			Summary: i18n.Message{ID: "diag.probe.prepare_incomplete"},
+			Cause: i18n.Message{
+				ID:   "diag.probe.prepare_incomplete_cause",
+				Data: map[string]any{"Root": root, "Code": slot.PrepareFailureCode, "Path": detailPath},
+			},
+			Action: i18n.Message{ID: "diag.action.probe_prepare_incomplete"},
+		},
+	}}
+}
+
 func prepareSubmoduleProbeReport(report *daemon.PrepareSubmoduleReport) *diag.ProbeSubmoduleReport {
 	if report == nil {
 		return nil

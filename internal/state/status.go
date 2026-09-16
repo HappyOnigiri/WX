@@ -130,12 +130,19 @@ type SlotSummary struct {
 	// UnsavedSubmodules は snapshot に入らなかった submodule の path で、この slot が自動回収から外れていることを示す。
 	// 理由と対処は `wx doctor` が出すため、ここには path だけを載せる。
 	UnsavedSubmodules []string `json:"unsaved_submodules,omitempty"`
+	// PrepareFailure* は early ready の後に準備が失敗し、それでも貸出を続けている slot の失敗記録である。
+	// この経路は隔離しないので、不完全な workspace で稼働していることはここでしか読めない。
+	// 隔離・失敗状態の slot は quarantine の診断が扱うため、ここには載せない。
+	PrepareFailureCode       string `json:"prepare_failure_code,omitempty"`
+	PrepareFailureDetailPath string `json:"prepare_failure_detail_path,omitempty"`
 }
 
 // ListSlots は回収前（ARCHIVED 以外）の slot をすべて返し、SIZE 列の合計が `wx status` の Disk 行と同じ範囲を指すようにする。
 // all ではさらに、slot を手放した session も返し、`wx resume` に渡す ID をここから辿れるようにする。
 func (s *Store) ListSlots(ctx context.Context, all bool) ([]SlotSummary, error) {
-	q := `SELECT sl.id,sl.state,COALESCE(sl.workspace_id,''),rt.path,sl.rel_path,COALESCE(se.id,''),COALESCE(se.state,''),COALESCE(se.agent_kind,''),COALESCE(se.agent_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.last_used_at,''),COALESCE(se.lease_kind,''),COALESCE(se.lease_expires_at,''),COALESCE(se.lease_owner_session_id,'')
+	q := `SELECT sl.id,sl.state,COALESCE(sl.workspace_id,''),rt.path,sl.rel_path,COALESCE(se.id,''),COALESCE(se.state,''),COALESCE(se.agent_kind,''),COALESCE(se.agent_session_id,''),sl.created_at,COALESCE(sl.ready_at,''),COALESCE(sl.last_used_at,''),COALESCE(se.lease_kind,''),COALESCE(se.lease_expires_at,''),COALESCE(se.lease_owner_session_id,''),
+		CASE WHEN sl.state IN ('FAILED','QUARANTINED') THEN '' ELSE COALESCE(sl.failure_code,'') END,
+		CASE WHEN sl.state IN ('FAILED','QUARANTINED') THEN '' ELSE COALESCE(sl.failure_detail_path,'') END
 		FROM slots sl JOIN roots rt ON rt.id=sl.root_id LEFT JOIN sessions se ON se.id=sl.owner_session_id`
 	q += ` WHERE sl.state <> 'ARCHIVED' ORDER BY rt.path,sl.rel_path`
 	rows, err := s.db.QueryContext(ctx, q)
@@ -148,7 +155,7 @@ func (s *Store) ListSlots(ctx context.Context, all bool) ([]SlotSummary, error) 
 		var x SlotSummary
 		var root, relative string
 		if err := rows.Scan(&x.SlotID, &x.State, &x.WorkspaceID, &root, &relative, &x.SessionID, &x.SessionState, &x.AgentKind, &x.AgentSessionID, &x.CreatedAt, &x.ReadyAt, &x.LastUsedAt,
-			&x.LeaseKind, &x.LeaseExpiresAt, &x.LeaseOwnerSessionID); err != nil {
+			&x.LeaseKind, &x.LeaseExpiresAt, &x.LeaseOwnerSessionID, &x.PrepareFailureCode, &x.PrepareFailureDetailPath); err != nil {
 			return nil, err
 		}
 		x.Path = filepath.Join(root, relative)
