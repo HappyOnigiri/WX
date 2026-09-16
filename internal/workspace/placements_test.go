@@ -12,11 +12,25 @@ import (
 func TestSortedPlacementsUsesRepositoryThenPath(t *testing.T) {
 	t.Parallel()
 	placements := sortedPlacements(map[string]state.Placement{
-		"b": {RepositoryID: "b", RelativePath: "z"},
-		"a": {RepositoryID: "a", RelativePath: "y"},
+		"b":   {RepositoryID: "b", RelativePath: "z"},
+		"a-z": {RepositoryID: "a", RelativePath: "z"},
+		"a-y": {RepositoryID: "a", RelativePath: "y"},
 	})
-	if len(placements) != 2 || placements[0].RepositoryID != "a" || placements[1].RepositoryID != "b" {
+	if len(placements) != 3 {
 		t.Fatalf("placements=%+v", placements)
+	}
+	want := []struct {
+		repository string
+		path       string
+	}{
+		{repository: "a", path: "y"},
+		{repository: "a", path: "z"},
+		{repository: "b", path: "z"},
+	}
+	for index, expected := range want {
+		if placements[index].RepositoryID != expected.repository || placements[index].RelativePath != expected.path {
+			t.Fatalf("placements[%d]=%+v want repository=%q path=%q", index, placements[index], expected.repository, expected.path)
+		}
 	}
 }
 

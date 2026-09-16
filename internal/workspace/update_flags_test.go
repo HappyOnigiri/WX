@@ -1,7 +1,9 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -159,5 +161,71 @@ func TestUpdateWithoutFlaggedPathsSkipsPostCheckout(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(target, "file")); err != nil || !strings.HasSuffix(string(data), "after\n") {
 		t.Fatalf("update did not rewrite the changed path: err=%v", err)
+	}
+}
+
+// flag 付き path の件数と退避 byte 数は、上限ちょうどまで更新対象として受理する。
+// 境界値を拒否すると、安全に復元できる standby まで Cold Start へ落ちる。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestValidateUpdateCandidateAcceptsExactFlaggedPathLimits(t *testing.T) {
+	ctx := context.Background()
+	p, repo, _, target := cowFixture(t)
+	main := string(repo.MainPath)
+	directory := filepath.Join(main, "flagged")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 0, maxFlaggedUpdatePaths)
+	fileSize := maxFlaggedUpdateBytes / maxFlaggedUpdatePaths
+	base := bytes.Repeat([]byte{'a'}, fileSize)
+	for i := range maxFlaggedUpdatePaths {
+		path := filepath.Join("flagged", fmt.Sprintf("%02d", i))
+		paths = append(paths, path)
+		if err := os.WriteFile(filepath.Join(main, path), base, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cowGit(t, main, "add", "flagged")
+	cowGit(t, main, "commit", "-m", "add boundary-sized flagged files")
+	baseOID := cowGit(t, main, "rev-parse", "HEAD")
+	if err := p.Prepare(ctx, repo, target, baseOID, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	args := append([]string{"update-index", "--skip-worktree", "--"}, paths...)
+	cowGit(t, target, args...)
+
+	updated := bytes.Repeat([]byte{'b'}, fileSize)
+	for _, path := range paths {
+		if err := os.WriteFile(filepath.Join(main, path), updated, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cowGit(t, main, "add", "flagged")
+	cowGit(t, main, "commit", "-m", "update boundary-sized flagged files")
+	newOID := cowGit(t, main, "rev-parse", "HEAD")
+	if err := p.ValidateUpdateCandidate(ctx, repo, target, baseOID, newOID, nil, nil); err != nil {
+		t.Fatalf("exact flag limits must stay eligible: %v", err)
+	}
+}
+
+// stashFlaggedPaths も退避 byte 数の上限ちょうどを受理する。
+// 事前検査後に同じ境界を拒否すると、書込み開始前の適格判定と更新処理が食い違う。
+func TestStashFlaggedPathsAcceptsExactByteLimit(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "conf"), bytes.Repeat([]byte{'x'}, maxFlaggedUpdateBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	stashed, err := stashFlaggedPaths(root, []string{"conf"}, IndexFlags{SkipWorktree: []string{"conf"}})
+	if err != nil {
+		t.Fatalf("stash at the exact byte limit: %v", err)
+	}
+	if len(stashed) != 1 || len(stashed[0].data) != maxFlaggedUpdateBytes {
+		t.Fatalf("stashed=%d entries/%d bytes, want 1/%d", len(stashed), len(stashed[0].data), maxFlaggedUpdateBytes)
 	}
 }

@@ -306,6 +306,36 @@ func TestListSlotsReturnsLiveSlotsWithRepositories(t *testing.T) {
 	}
 }
 
+// TestFillSlotRepositoriesFallsBackWhenSlotMembershipIsEmpty は、slot に repository
+// が無い行でも session の履歴 membership があれば、その main worktree path を返すことを固定する。
+func TestFillSlotRepositoriesFallsBackWhenSlotMembershipIsEmpty(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "session-membership", WorkspaceID: "workspace", SlotID: "session-slot", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("session-membership")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: session.SlotID, WorkspaceID: session.WorkspaceID, Generation: 1, RootID: testRootID, RelPath: "workspace/session-slot", State: "LEASED"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal) VALUES(?,?,?,?)`, session.ID, "repository", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	rows := []SlotSummary{
+		{SlotID: session.SlotID, SessionID: session.ID},
+		// membership が無い行は既存の値を上書きせず、そのまま保持する。
+		{SessionID: "missing-session", Repositories: []string{"preserved"}},
+	}
+	if err := store.fillSlotRepositories(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rows[0].Repositories, []string{"/workspace"}) {
+		t.Fatalf("session fallback repositories=%v, want /workspace", rows[0].Repositories)
+	}
+	if !slices.Equal(rows[1].Repositories, []string{"preserved"}) {
+		t.Fatalf("empty session membership overwrote repositories=%v", rows[1].Repositories)
+	}
+}
+
 // 準備失敗で止まった補充は、停止行だけでは原因を説明できないため、失敗した job の理由を併せて返す。
 func TestStandbyReplenishmentDiagnosticsCarryTheFailedJobCause(t *testing.T) {
 	t.Parallel()
