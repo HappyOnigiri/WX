@@ -75,6 +75,9 @@ func TestRecordPrepareSubmodulesOrdersSummariesAndDetailsAtBoundaries(t *testing
 			t.Fatalf("summary[%d]=%+v, want repository=%q depth=%d", index, got, want.repository, want.depth)
 		}
 	}
+	if got := report.Summaries[2]; got.OutOfScope != 1 {
+		t.Fatalf("repo-b summary=%+v, want out-of-scope count=1", got)
+	}
 	if got := report.Details; got[0].Action != workspace.SubmoduleActionSkipped || got[1].Action != workspace.SubmoduleActionOutOfScope || got[2].Action != workspace.SubmoduleActionMaterialized {
 		t.Fatalf("detail order=%+v, want skipped, out-of-scope, materialized", got)
 	}
