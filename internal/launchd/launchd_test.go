@@ -29,7 +29,7 @@ func TestRenderInstallUninstallAndKickstart(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	logPath := filepath.Join(home, "Library", "Logs", "wx", "daemon.log")
-	data, err := Render("/usr/local/bin/wx", home, logPath)
+	data, err := Render("/usr/local/bin/wx", home, logPath, false)
 	if err != nil || !strings.Contains(string(data), Label) || !strings.Contains(string(data), "/usr/local/bin/wx") {
 		t.Fatalf("rendered plist=%q err=%v", data, err)
 	}
@@ -71,7 +71,7 @@ func TestRenderEscapesAndPreservesSpecialCharacterPaths(t *testing.T) {
 	binaryPath := `/tmp/wx & <binary> "quoted"`
 	home := `/tmp/home & <user> "quoted"`
 	logPath := `/tmp/logs & <wx> "daemon".log`
-	data, err := Render(binaryPath, home, logPath)
+	data, err := Render(binaryPath, home, logPath, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestCurrentPlistStatusDistinguishesCurrentStaleAndUnknown(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(plist), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	expected, err := Render(binary, home, logPath)
+	expected, err := Render(binary, home, logPath, LoginShellEnabled())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,5 +290,95 @@ func TestStartReportsAnUninstalledService(t *testing.T) {
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	if err := Start(context.Background()); !errors.Is(err, ErrServiceMissing) {
 		t.Fatalf("start error=%v, want ErrServiceMissing", err)
+	}
+}
+
+// TestRenderStartsTheDaemonThroughTheLoginShell は、plist が login shell 経由で wx を
+// exec し、同じ plist から起動した daemon も同じ byte を再生成できることを確認する。
+// SHELL を書き戻さないと daemon 側が別のシェルで生成し、doctor が恒久的に stale になる。
+func TestRenderStartsTheDaemonThroughTheLoginShell(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "/bin/zsh")
+	logPath := filepath.Join(home, "wxd.log")
+	data, err := Render("/usr/local/bin/wx", home, logPath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"<string>/bin/zsh</string><string>-lc</string>",
+		"<string>exec &#39;/usr/local/bin/wx&#39; daemon start --foreground</string>",
+		"<key>SHELL</key><string>/bin/zsh</string>",
+	} {
+		if !strings.Contains(string(data), expected) {
+			t.Fatalf("rendered plist does not contain %s: %s", expected, data)
+		}
+	}
+	// plist が SHELL を渡すので、この plist から起動した daemon の環境でも同じ出力になる。
+	t.Setenv("SHELL", "/bin/zsh")
+	again, err := Render("/usr/local/bin/wx", home, logPath, true)
+	if err != nil || !bytes.Equal(data, again) {
+		t.Fatalf("plist is not reproducible: err=%v\nfirst=%s\nsecond=%s", err, data, again)
+	}
+}
+
+// TestRenderWithoutLoginShellStartsTheBinaryDirectly は、設定を無効にした plist が
+// シェルを介さない従来の起動のままであることを確認する。
+func TestRenderWithoutLoginShellStartsTheBinaryDirectly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SHELL", "/bin/zsh")
+	data, err := Render("/usr/local/bin/wx", home, filepath.Join(home, "wxd.log"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "<array><string>/usr/local/bin/wx</string><string>daemon</string>") {
+		t.Fatalf("rendered plist does not start the binary directly: %s", data)
+	}
+	if strings.Contains(string(data), "SHELL") || strings.Contains(string(data), "-lc") {
+		t.Fatalf("rendered plist still mentions a shell: %s", data)
+	}
+}
+
+// TestShellForPlistFallsBackToAnAbsoluteShell は、SHELL が使えない環境でも
+// plist が絶対 path のシェルだけを書くことを確認する。
+func TestShellForPlistFallsBackToAnAbsoluteShell(t *testing.T) {
+	t.Setenv("SHELL", "")
+	if shell := shellForPlist(); shell != defaultLoginShell {
+		t.Fatalf("shell without SHELL=%q, want %q", shell, defaultLoginShell)
+	}
+	t.Setenv("SHELL", "zsh")
+	if shell := shellForPlist(); shell != defaultLoginShell {
+		t.Fatalf("shell with a relative SHELL=%q, want %q", shell, defaultLoginShell)
+	}
+}
+
+// TestLoginShellCommandQuotesTheBinaryPath は、空白や引用符を含む path でも
+// login shell が wx を 1 語として実行することを確認する。
+func TestLoginShellCommandQuotesTheBinaryPath(t *testing.T) {
+	if got := loginShellCommand(`/opt/my wx/it's/wx`); got != `exec '/opt/my wx/it'\''s/wx' daemon start --foreground` {
+		t.Fatalf("command=%q", got)
+	}
+}
+
+// TestLoginShellEnabledFollowsTheConfiguredValue は、plist を生成する側と比較する側が
+// 同じ設定ファイルだけを見ることを確認する。
+func TestLoginShellEnabledFollowsTheConfiguredValue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if !LoginShellEnabled() {
+		t.Fatal("login shell is not enabled by default")
+	}
+	path, err := config.Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("version: 2\nsystem:\n  daemon:\n    login_shell: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if LoginShellEnabled() {
+		t.Fatal("login shell stayed enabled after system.daemon.login_shell was disabled")
 	}
 }

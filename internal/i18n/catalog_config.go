@@ -146,6 +146,10 @@ var configCatalog = map[string]Entry{
 	"config.update.auto_check.description": {EN: "Whether the daemon occasionally asks GitHub whether a newer wx has been released, so that the status screen and an interactive launch can tell you about it.", JA: "新しい wx が公開されていないかを daemon が時々 GitHub に尋ねるかどうかです。状態画面と対話的な起動でお知らせするために使います。"},
 	"config.update.auto_check.impact":      {EN: "When disabled, wx never contacts GitHub on its own; wx update still checks when you run it yourself.", JA: "無効にすると、wx が自分から GitHub へ接続することはなくなります。自分で実行する wx update は無効でも確認します。"},
 
+	"config.daemon.login_shell.name":        {EN: "Start the daemon through a login shell", JA: "daemon をログインシェルから起動する"},
+	"config.daemon.login_shell.description": {EN: "Whether the LaunchAgent starts the daemon through your login shell, so that the PATH your shell startup files build reaches the daemon and the commands it runs for you, such as the Git hooks of a repository.", JA: "LaunchAgent が daemon をログインシェル経由で起動するかどうかです。シェルの起動ファイルが組み立てた PATH が daemon と、その daemon が実行するリポジトリの Git hook などへ届きます。"},
+	"config.daemon.login_shell.impact":      {EN: "Changing this rewrites the LaunchAgent, so run wx daemon install afterwards; when disabled, only the fixed PATH written into the LaunchAgent is available.", JA: "変更すると LaunchAgent の内容が変わるため、あとで wx daemon install を実行してください。無効にすると、LaunchAgent に書かれた固定の PATH だけが使われます。"},
+
 	"config.logging.level.name":        {EN: "Log detail", JA: "ログの詳しさ"},
 	"config.logging.level.description": {EN: "How much detail the daemon writes to its log file.", JA: "daemon がログファイルへどこまで詳しく書くかです。"},
 	"config.logging.level.impact":      {EN: "A more detailed level helps diagnosis and produces much more log.", JA: "詳しくすると調査はしやすくなりますが、ログの量は大きく増えます。"},

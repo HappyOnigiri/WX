@@ -55,6 +55,15 @@ LaunchAgentに登録されるのは`launchd.ResolveBinary`がPATHから解決し
 初回インストールで端末があるときだけ`wx setup`を対話で通し、利用者が「おすすめ設定」を選べばシェル起動ファイルへのPATH追記とエージェントのhook登録まで適用する。
 更新と非対話のインストールでは`wx setup --update`だけを呼び、シェル設定とhook設定は変更しない。
 
+LaunchAgentはそのバイナリを直接ではなく、利用者のログインシェルから`exec`して起動する。
+daemonが実行するpost-checkout hookなどは対話シェルと同じツールチェーンを要求するのに対し、plistに書ける固定のPATHでは版管理ツール（fnmなど）が起動ファイルで組み立てるPATHを再現できないためである。
+`exec`で置き換えるのでppidと`XPC_SERVICE_NAME`は変わらず、restartの`underLaunchd`判定と`KeepAlive`の条件は従来のままになる。
+起動ファイルを読ませたくない場合は`daemon.login_shell`を無効にすると、固定PATHだけを書いた従来のplistへ戻る。
+
+plistは`launchd.Render`の出力とbyte単位で比較するため、起動に使うシェルはplistの`EnvironmentVariables`へも書き戻す。
+daemon自身も比較側になるので、書き戻さないとdaemonの環境に`SHELL`が無く、生成し直したplistが常にstaleに見える。
+同じ理由で実効値は呼び出し側から持ち回らせず、`launchd.LoginShellEnabled`が設定ファイルだけを読む。
+
 表示言語を含め、利用者への質問はインストーラーではなく`wx setup`が持つ。
 選択肢の見え方を1箇所へ揃えるためで、インストーラーは初回に言語を書き込まない。
 書き込むと設定済みと判定され、setupの言語の質問が出なくなる。
