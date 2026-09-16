@@ -68,6 +68,9 @@ func TestProbeSubmoduleFindingsAcceptPopulatedSubmodule(t *testing.T) {
 	if len(findings) != 1 || findings[0].Severity != diag.SeverityOK {
 		t.Fatalf("findings = %+v", findings)
 	}
+	if strings.Contains(strings.Join(findings[0].Details, "\n"), "outside the preparation range") {
+		t.Fatalf("populated in-scope submodule was reported out of scope: details=%v", findings[0].Details)
+	}
 }
 
 func TestProbeSubmoduleFindingsIgnorePreparedOutOfScopePath(t *testing.T) {

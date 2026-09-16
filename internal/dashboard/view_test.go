@@ -253,3 +253,156 @@ func TestStatusViewKeepsTheUpdateItemVisibleOnALongStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestStatusViewMarksTheFourSecondBoundary は、4 秒ちょうどの応答を古い表示へ分類する
+// 境界を守る。丸め後の時刻を使うため、実時間の端数は 100ms だけ手前に置く。
+func TestStatusViewMarksTheFourSecondBoundary(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.loading, m.status = false, "DAEMON  running"
+	m.statusAt = time.Now().Add(-4*time.Second - 100*time.Millisecond)
+	plain := xansi.Strip(strings.Join(m.statusView(), "\n"))
+	if !strings.Contains(plain, "(4s ago)") {
+		t.Fatalf("four-second response is not marked old: %q", plain)
+	}
+}
+
+// TestOperationViewUsesTwoColumnsAtTheWidthBoundary は、幅 92 の画面を縦積みにせず
+// 2 カラムで描画する境界を守る。
+func TestOperationViewUsesTwoColumnsAtTheWidthBoundary(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.tab, m.width = 1, 92
+	if got := strings.Join(m.operationView(), "\n"); !strings.Contains(got, " │ ") {
+		t.Fatalf("width-boundary operation view is not two columns: %q", got)
+	}
+}
+
+// TestOperationViewDoesNotAppendAHeightBoundaryRow は、左右ペインの最大行数ちょうどで
+// 描画を止め、空の余分な区切り行を追加しないことを守る。
+func TestOperationViewDoesNotAppendAHeightBoundaryRow(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.tab, m.width = 1, 92
+	left := m.menuLines(m.width)
+	leftWidth := m.leftColumnWidth(left)
+	right := m.descriptionLines(m.width - leftWidth - columnGap)
+	want := max(len(left), len(right))
+	got := m.operationView()
+	if len(got) != want {
+		t.Fatalf("operation rows=%d, want %d (left=%d right=%d)", len(got), want, len(left), len(right))
+	}
+}
+
+// TestOperationViewHandlesATallerDescriptionPane は、説明側がメニュー側より長い場合も
+// 左ペインの末尾を越えて参照しないことを守る。
+func TestOperationViewHandlesATallerDescriptionPane(t *testing.T) {
+	cases := []struct {
+		language string
+		tab      int
+	}{
+		{language: config.LanguageEnglish, tab: 4},
+		{language: config.LanguageJapanese, tab: 4},
+		{language: config.LanguageEnglish, tab: 1},
+		{language: config.LanguageJapanese, tab: 1},
+	}
+	for _, test := range cases {
+		cfg := config.Defaults()
+		cfg.Language = test.language
+		m := newModel(context.Background(), Options{Config: cfg})
+		m.tab, m.width = test.tab, 92
+		left := m.menuLines(m.width)
+		leftWidth := m.leftColumnWidth(left)
+		rightWidth := m.width - leftWidth - columnGap
+		if rightWidth < minRightColumn {
+			continue
+		}
+		right := m.descriptionLines(rightWidth)
+		if len(right) <= len(left) {
+			continue
+		}
+		if got := m.operationView(); len(got) != len(right) {
+			t.Fatalf("tab=%d language=%s rows=%d, want %d", test.tab, test.language, len(got), len(right))
+		}
+		return
+	}
+	t.Fatal("no operation view case has a taller description pane")
+}
+
+// TestDescriptionLinesUsesTheMenuAfterTheLastSetupStep は、setup 項目の末尾から通常メニュー
+// へ切り替わる位置を、setup 配列の範囲外として扱わないことを守る。
+func TestDescriptionLinesUsesTheMenuAfterTheLastSetupStep(t *testing.T) {
+	m := newModel(context.Background(), Options{
+		Config: config.Defaults(),
+		Setup:  []setup.Step{hooksStep()},
+	})
+	m.tab, m.selected = 5, 1
+	plain := xansi.Strip(strings.Join(m.descriptionLines(80), "\n"))
+	if !strings.Contains(plain, m.t(tabMenus[5][0].labelID)) {
+		t.Fatalf("first system menu description is missing: %q", plain)
+	}
+}
+
+// TestDescriptionLinesOmitsAttentionWithoutReasons は、理由のない setup 項目に注意見出しを
+// 追加しないことを守る。
+func TestDescriptionLinesOmitsAttentionWithoutReasons(t *testing.T) {
+	step := hooksStep()
+	step.Reasons = nil
+	m := newModel(context.Background(), Options{Config: config.Defaults(), Setup: []setup.Step{step}})
+	m.tab = 5
+	plain := xansi.Strip(strings.Join(m.descriptionLines(80), "\n"))
+	if strings.Contains(plain, m.t("dashboard.attention")) {
+		t.Fatalf("attention heading appeared without reasons: %q", plain)
+	}
+}
+
+// TestEnvironmentFieldsReturnsNilAtTheEnd は、環境一覧の直後を選択したときに一覧外へ
+// アクセスせず、表示項目なしとして扱うことを守る。
+func TestEnvironmentFieldsReturnsNilAtTheEnd(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.settingsOpen = true
+	m.settingsEnv = len(m.configEnvironments())
+	if got := m.environmentFields(); got != nil {
+		t.Fatalf("out-of-range environment returned %d fields, want nil", len(got))
+	}
+}
+
+// TestWrapKeepsAValueWhenWidthIsOne は、幅 1 以下では折り返し不能として元の値を返す
+// 契約を守る。
+func TestWrapKeepsAValueWhenWidthIsOne(t *testing.T) {
+	got := wrap("abc", 1)
+	if len(got) != 1 || got[0] != "abc" {
+		t.Fatalf("wrap width=1 got %#v, want []string{\"abc\"}", got)
+	}
+}
+
+// TestWrapKeepsAnExactWidthValue は、表示幅がちょうど収まる値を複数行へ分割しない
+// 契約を記録する。同じ結果になる比較変異は exclusion で理由を明示する。
+func TestWrapKeepsAnExactWidthValue(t *testing.T) {
+	got := wrap("abc", 3)
+	if len(got) != 1 || got[0] != "abc" {
+		t.Fatalf("wrap exact width got %#v, want []string{\"abc\"}", got)
+	}
+}
+
+// TestTruncateKeepsAValueAtZeroWidth は、幅 0 を切り詰め不能として元の値を返す境界を
+// 守る。
+func TestTruncateKeepsAValueAtZeroWidth(t *testing.T) {
+	if got := truncate("abc", 0); got != "abc" {
+		t.Fatalf("truncate width=0 got %q, want original value", got)
+	}
+}
+
+// TestPadANSIKeepsAnExactWidthValue は、既に収まる行へ padding を追加しない契約を記録
+// する。比較変異自体は同じ文字列を返すため exclusion で理由を明示する。
+func TestPadANSIKeepsAnExactWidthValue(t *testing.T) {
+	if got := padANSI("abc", 3); got != "abc" {
+		t.Fatalf("padANSI exact width got %q, want original value", got)
+	}
+}
+
+// TestFitLinesKeepsExactlyHeightLines は、行数が高さと等しいときに行を削らない契約を
+// 記録する。比較変異自体は同じ slice を返すため exclusion で理由を明示する。
+func TestFitLinesKeepsExactlyHeightLines(t *testing.T) {
+	got := fitLines([]string{"one", "two"}, 2, 10)
+	if len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Fatalf("fitLines exact height got %#v, want both lines", got)
+	}
+}

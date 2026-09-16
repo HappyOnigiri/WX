@@ -172,6 +172,18 @@ func TestUpdateCheckIntervalStaysAboveTheRateLimitWindow(t *testing.T) {
 	}
 }
 
+// 直前までは新鮮だが、間隔ちょうどへ達した確認は次の問い合わせを許す。
+func TestUpdateCheckFreshnessExpiresAtTheExactInterval(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)
+	if !updateCheckIsFresh(now.Add(-updateCheckInterval+time.Nanosecond), now) {
+		t.Fatal("a check immediately before the deadline was treated as expired")
+	}
+	if updateCheckIsFresh(now.Add(-updateCheckInterval), now) {
+		t.Fatal("a check at the deadline was treated as fresh")
+	}
+}
+
 // TestUpdateStatusRPCPassesTheClaimFlagThrough は、RPC の decode と dispatch が案内権の要求を
 // そのまま Manager へ渡すことを守る。false で呼んだ読み取りが権利を消費すると案内が消える。
 func TestUpdateStatusRPCPassesTheClaimFlagThrough(t *testing.T) {

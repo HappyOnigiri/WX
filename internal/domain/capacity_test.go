@@ -1,9 +1,25 @@
 package domain
 
 import (
+	"math"
 	"os"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
+
+func TestCheckedFreeBytesRejectsInvalidBlockSizeAndAllowsExactInt64Limit(t *testing.T) {
+	t.Parallel()
+	zero := unix.Statfs_t{Bsize: 0, Bavail: 1}
+	if _, err := checkedFreeBytes(zero); err == nil {
+		t.Fatal("zero block size was accepted")
+	}
+	limit := unix.Statfs_t{Bsize: 1, Bavail: uint64(math.MaxInt64)}
+	free, err := checkedFreeBytes(limit)
+	if err != nil || free != math.MaxInt64 {
+		t.Fatalf("exact int64 boundary free=%d err=%v", free, err)
+	}
+}
 
 func TestVolumeFreeBytesUsesAnOpenDescriptor(t *testing.T) {
 	t.Parallel()
