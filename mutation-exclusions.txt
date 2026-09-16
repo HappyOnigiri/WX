@@ -6,3 +6,5 @@ internal/archive/archive.go	baed407ed40068db40d4d98b5127f46da2355b5de87f28be7448
 internal/archive/conflict.go	721b8035d636469630012eb6e1e137f5b777c863030c5aa586404d224e6341dd	path が異なる場合だけ比較する != ガードの内側なので、path の < と <= は同じ動作になる
 internal/archive/conflict.go	4f3cd7c30f7614859e3896858652716523b4079964c405374785646f37995f83	stage が異なる場合だけ比較する != ガードの内側なので、stage の < と <= は同じ動作になる
 internal/archive/conflict.go	f0ead1333c69e263182ecab7d17c1fa254b9e78cbae9ff98b3cad537d8625cfe	同一 path と stage の重複をソート前に拒否するため、stage の < と <= の同値差へ到達しない
+internal/config/resolve.go	df0500dc5444d7b32e6cd2f206ad1918c54245a78913b1466d56ca971a31be7b	同じtimeoutの代入では戻り値が変わらない等価変異
+internal/config/resolve.go	456d2e0cf300eaec9ebe52137fd2282ae88a18d00953168e23c3203e441985f9	同じretentionの代入では戻り値が変わらない等価変異
