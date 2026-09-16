@@ -304,6 +304,38 @@ test('uses job URLs and warnings in the run orchestration', async () => {
   assert.deepEqual(warnings, ['mutation-config-10-1: 2 mutation(s) not covered']);
 });
 
+test('validates and aggregates without writing issues when filing is disabled', async () => {
+  const calls = [];
+  const github = { rest: {
+    actions: { listJobsForWorkflowRun: async () => ({ data: { jobs: [] } }) },
+    issues: {
+      getLabel: async () => { calls.push('getLabel'); throw new Error('issue API must not be called'); },
+      listForRepo: async () => { calls.push('listForRepo'); throw new Error('issue API must not be called'); },
+      listComments: async () => { calls.push('listComments'); throw new Error('issue API must not be called'); },
+      create: async () => { calls.push('create'); throw new Error('issue API must not be called'); },
+      createComment: async () => { calls.push('createComment'); throw new Error('issue API must not be called'); },
+      addLabels: async () => { calls.push('addLabels'); throw new Error('issue API must not be called'); },
+    },
+  } };
+  const result = await reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    sourceRun: { event: source.event, head_branch: source.ref, head_sha: sha, html_url: source.runUrl },
+    reports: [{ artifactName: 'mutation-config-10-1', manifest: manifest() }],
+    expectedShards: [{ id: 'config', profiles: ['internal/config'] }],
+    fileIssues: false,
+  });
+  assert.equal(result.fileIssues, false);
+  assert.equal(result.groups.length, 1);
+  assert.equal(result.survivorCount, 1);
+  assert.deepEqual(result.results, [{ title: '[mutation] internal/config/duration.go: parseDuration', action: 'not-filed' }]);
+  assert.deepEqual(result.notFiled, ['[mutation] internal/config/duration.go: parseDuration']);
+  assert.deepEqual(calls, []);
+});
+
 test('rejects unsafe paths and mismatched run metadata', () => {
   const value = manifest();
   value.survivors[0].declaration.path = '../outside.go';
@@ -379,7 +411,7 @@ test('accepts multiple file shards that report the same package profile', () => 
   ], expected, source));
 });
 
-test('does not write issues when a planned shard is missing', async () => {
+test('still rejects a missing planned shard when filing is disabled', async () => {
   let writes = 0;
   const github = { rest: {
     actions: { listJobsForWorkflowRun: async () => ({ data: { jobs: [] } }) },
@@ -405,6 +437,7 @@ test('does not write issues when a planned shard is missing', async () => {
       { id: 'config', profiles: ['internal/config'] },
       { id: 'state', profiles: ['internal/state'] },
     ],
+    fileIssues: false,
   }), /expected mutation shard state is missing/);
   assert.equal(writes, 0);
 });
