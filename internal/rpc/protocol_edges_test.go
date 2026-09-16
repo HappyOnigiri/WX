@@ -2,10 +2,16 @@ package rpc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,6 +112,134 @@ func TestRequestDeadlineHonorsEarlierParentDeadline(t *testing.T) {
 	}
 	if parentDeadline, ok := parent.Deadline(); !ok || !deadline.Equal(parentDeadline) {
 		t.Fatalf("request deadline=%v parent deadline=%v", deadline, parentDeadline)
+	}
+}
+
+func TestHandlerTimeoutUsesDefaultAtZero(t *testing.T) {
+	if got := (&Server{}).handlerTimeout(); got != defaultServerHandlerTimeout {
+		t.Fatalf("zero HandlerTimeout=%s, want default %s", got, defaultServerHandlerTimeout)
+	}
+}
+
+func TestPruneIdempotencyRemovesEntryAtExactTTL(t *testing.T) {
+	now := time.Now()
+	server := &Server{idem: map[string]*idempotentEntry{
+		"exact": {done: closedChannel(), ended: now.Add(-idempotencyTTL)},
+	}}
+
+	server.pruneIdempotencyLocked(now)
+	if _, ok := server.idem["exact"]; ok {
+		t.Fatal("idempotency entry at the TTL was retained")
+	}
+}
+
+func TestZeroClientTimeoutUsesDefaultRequestDeadline(t *testing.T) {
+	socket := testsupport.SocketPath(t, "zero-timeout.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			serverErr <- acceptErr
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		var request Request
+		if err := readFrame(bufio.NewReader(conn), &request); err != nil {
+			serverErr <- err
+			return
+		}
+		if request.Deadline == "" {
+			serverErr <- errors.New("zero client timeout omitted the default request deadline")
+			return
+		}
+		serverErr <- writeFrame(conn, Response{Version: ProtocolVersion, ID: request.ID})
+	}()
+
+	callErr := (Client{Socket: socket}).Call(context.Background(), "echo", nil, nil)
+	_ = listener.Close()
+	if err := <-serverErr; err != nil {
+		t.Fatalf("server: %v", err)
+	}
+	if callErr != nil {
+		t.Fatalf("zero client timeout call failed: %v", callErr)
+	}
+}
+
+func TestIdempotentCallRetriesExactlyThreeTransientTransportFailures(t *testing.T) {
+	socket := testsupport.SocketPath(t, "transport-retries.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var accepted atomic.Int32
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			accepted.Add(1)
+			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+			var request Request
+			_ = readFrame(bufio.NewReader(conn), &request)
+			_ = conn.Close()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+	callErr := (Client{Socket: socket, Timeout: time.Second}).CallWithKey(ctx, "mutate", "retry-key", map[string]int{"value": 1}, nil)
+	cancel()
+	_ = listener.Close()
+	<-serverDone
+
+	if callErr == nil || (!errors.Is(callErr, io.EOF) && !errors.Is(callErr, io.ErrUnexpectedEOF)) {
+		t.Fatalf("retry result=%v, want the final transient transport error", callErr)
+	}
+	if got := accepted.Load(); got != 3 {
+		t.Fatalf("transient transport failures accepted %d requests, want 3", got)
+	}
+}
+
+func TestReadFrameAcceptsPayloadAtMaximumFrameSize(t *testing.T) {
+	payload := strings.Repeat("x", maxFrame-2)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != maxFrame {
+		t.Fatalf("encoded payload length=%d, want %d", len(data), maxFrame)
+	}
+	frame := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(data)))
+	copy(frame[4:], data)
+
+	var got string
+	if err := readFrame(bytes.NewReader(frame), &got); err != nil {
+		t.Fatalf("maximum-size frame was rejected: %v", err)
+	}
+	if got != payload {
+		t.Fatalf("decoded maximum-size payload length=%d, want %d", len(got), len(payload))
+	}
+}
+
+func TestWriteFrameAcceptsPayloadAtMaximumFrameSize(t *testing.T) {
+	payload := strings.Repeat("x", maxFrame-2)
+	var frame bytes.Buffer
+	if err := writeFrame(&frame, payload); err != nil {
+		t.Fatalf("maximum-size frame was rejected: %v", err)
+	}
+	if got := len(frame.Bytes()); got != 4+maxFrame {
+		t.Fatalf("written frame length=%d, want %d", got, 4+maxFrame)
+	}
+	if got := binary.BigEndian.Uint32(frame.Bytes()[:4]); got != maxFrame {
+		t.Fatalf("written payload length=%d, want %d", got, maxFrame)
 	}
 }
 

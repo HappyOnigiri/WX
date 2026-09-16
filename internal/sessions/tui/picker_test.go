@@ -106,6 +106,24 @@ func TestPickerNavigationUsesTwoLineRows(t *testing.T) {
 	}
 }
 
+// TestPickerEnsureVisibleRevealsBoundaryRow は、選択行が表示領域の直後へ
+// 移った時点で offset を 1 行進めることを確かめる。
+func TestPickerEnsureVisibleRevealsBoundaryRow(t *testing.T) {
+	items := make([]scanner.Session, 4)
+	for i := range items {
+		items[i] = scanner.Session{Tool: "claude", SessionID: string(rune('a' + i)), Title: "session"}
+	}
+	m := newPickerModel(items, PickOptions{Now: fixedNow})
+	m.height = 13 // visibleRows() が 3 になる高さ
+	for range 3 {
+		result, _ := m.Update(keyPress("down"))
+		m = result.(pickerModel)
+	}
+	if m.selected != 3 || m.offset != 1 {
+		t.Fatalf("after boundary move selected=%d offset=%d, want 3/1", m.selected, m.offset)
+	}
+}
+
 func TestPickerEnterRejectsInUseAndReturnsTarget(t *testing.T) {
 	items := []scanner.Session{
 		{Tool: "claude", SessionID: "busy-id", Title: "busy", StableID: "busy"},
@@ -444,6 +462,9 @@ func TestPickerViewSeparatesItemsAndDimsMeta(t *testing.T) {
 
 	first := indexOfLineContaining(t, lines, "first")
 	second := indexOfLineContaining(t, lines, "second")
+	if first == 0 || lines[first-1] == "" {
+		t.Fatalf("first item unexpectedly has a leading separator: %q", lines)
+	}
 	if second != first+3 || lines[first+2] != "" {
 		t.Fatalf("item rows are not separated by a blank line: %q", lines)
 	}
@@ -463,6 +484,26 @@ func TestPickerViewSeparatesItemsAndDimsMeta(t *testing.T) {
 	rule := lines[footer-1]
 	if strings.Count(rule, "─") != 120 || !strings.HasPrefix(rule, dimStart) {
 		t.Errorf("separator rule=%q, want a dimmed 120-cell line", rule)
+	}
+}
+
+// TestPickerBoundaryWidthsAndHeight は、幅・高さが境界値でも表示を失わないことを確かめる。
+func TestPickerBoundaryWidthsAndHeight(t *testing.T) {
+	item := pickerItem{age: "1h ago", cwd: "/workspace", size: "1 KiB"}
+	line := item.metaLine(80)
+	if got := item.metaLine(0); got != line {
+		t.Fatalf("meta width zero=%q, want the untruncated line %q", got, line)
+	}
+	if got := item.metaLine(xansi.StringWidth(line)); got != line {
+		t.Fatalf("meta exact width=%q, want %q", got, line)
+	}
+	if got := truncateLine("abc", 0); got != "abc" {
+		t.Fatalf("truncate width zero=%q, want original value", got)
+	}
+
+	m := pickerModel{height: 0}
+	if got := m.visibleRows(); got != 7 {
+		t.Fatalf("visible rows at zero height=%d, want default-height rows 7", got)
 	}
 }
 

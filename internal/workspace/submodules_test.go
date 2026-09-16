@@ -553,6 +553,9 @@ func TestParseSubmoduleConfigKeepsNestedNames(t *testing.T) {
 	if _, _, ok := splitSubmoduleKey("submodule.path"); ok {
 		t.Fatal("a key without a name was accepted")
 	}
+	if _, _, ok := splitSubmoduleKey("submodule..url"); ok {
+		t.Fatal("a key with an empty name was accepted")
+	}
 	if _, _, ok := splitSubmoduleKey("core.bare"); ok {
 		t.Fatal("a non-submodule key was accepted")
 	}

@@ -47,6 +47,26 @@ func TestCOWRunsGroupConsecutiveDirectories(t *testing.T) {
 	}
 }
 
+// run の entry 数が batch の上限にちょうど達した時点で flush し、次の run を次 batch へ送る。
+func TestBatchCOWRunsFlushesAtExactEntryBoundary(t *testing.T) {
+	t.Parallel()
+	runs := []cowRun{
+		{directory: "first", leaves: []string{"one"}},
+		{directory: "second", leaves: []string{"two", "three"}},
+		{directory: "tail", leaves: []string{"four"}},
+	}
+	batches := batchCOWRuns(runs, 3)
+	if len(batches) != 2 {
+		t.Fatalf("batches=%v", batches)
+	}
+	if len(batches[0]) != 2 || batches[0][0].directory != "first" || batches[0][1].directory != "second" {
+		t.Fatalf("first batch=%v", batches[0])
+	}
+	if len(batches[1]) != 1 || batches[1][0].directory != "tail" {
+		t.Fatalf("second batch=%v", batches[1])
+	}
+}
+
 func TestCOWShareSkipsFilesBelowMinimum(t *testing.T) {
 	t.Parallel()
 	a, b := cowRoots(t)

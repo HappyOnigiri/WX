@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
 // shallow module は clone を止めず、object 共有不可の事実だけを warn に残す。
@@ -77,5 +79,17 @@ func TestSubmodulesAtRevisionReadsGitlinkFromTree(t *testing.T) {
 	}
 	if len(modules) != 1 || modules[0].Name != submoduleName || modules[0].Path != submodulePath || modules[0].OID != submoduleGitlink(t, f.repository, f.head) {
 		t.Fatalf("modules=%+v, want the gitlink from %s", modules, f.head)
+	}
+}
+
+// exit status 0 の Git エラーは、要求 object が無いという観測結果として扱い、実行障害に昇格させない。
+func TestSubmoduleInspectionExecutionErrorAcceptsZeroExitStatus(t *testing.T) {
+	t.Parallel()
+	err := &gitx.Error{Result: gitx.Result{ExitCode: 0}}
+	if got := submoduleInspectionExecutionError(context.Background(), err); got != nil {
+		t.Fatalf("zero-exit inspection error=%v, want nil", got)
+	}
+	if got := submoduleInspectionExecutionError(context.Background(), &gitx.Error{Result: gitx.Result{ExitCode: -1}}); got == nil {
+		t.Fatal("missing exit status was treated as an object-missing result")
 	}
 }

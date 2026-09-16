@@ -177,6 +177,18 @@ func TestScanDeduplicatesNativeIDsByLatestMtime(t *testing.T) {
 	if got := sessions[0]; got.Title != "New title" || got.CWD != "/tmp/new" || got.RawPath != secondPath || got.Mtime != 200 {
 		t.Fatalf("deduplicated session = %+v, want latest duplicate", got)
 	}
+	// mtime が同じ重複は、走査順の先頭を維持する（>= では後続へ置き換わる）。
+	if err := os.Chtimes(secondPath, time.Unix(100, 0), time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Paths.Claude.Sessions = []string{firstRoot, secondRoot}
+	sessions, err = Scan(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Scan equal-mtime duplicates: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Title != "Old title" || sessions[0].RawPath != firstPath {
+		t.Fatalf("equal-mtime deduplicated session = %+v, want first duplicate", sessions)
+	}
 }
 
 func TestScanCancellation(t *testing.T) {
