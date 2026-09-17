@@ -291,9 +291,9 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 		cliError(c, err)
 		return 1, nil
 	}
-	firstLeaseRepositories := mergeFirstLeaseRepositories(plan.firstLeaseRepositories, lease.FirstLeaseRepositories)
-	plan.firstLeaseRepositories = firstLeaseRepositories
-	setupCheck := c.initialSetupRepositories(lease.SourceWorkspace, firstLeaseRepositories)
+	setupRepositories := mergeSetupCheckRepositories(plan.setupCheckRepositories, lease.SetupCheckRepositories)
+	plan.setupCheckRepositories = setupRepositories
+	setupCheck := c.initialSetupRepositories(lease.SourceWorkspace, setupRepositories)
 	readiness := readinessForLease(c.Config, lease, plan.resuming, plan.leaseKind, plan.hooksReady, len(setupCheck) > 0)
 	waiting.setReadiness(readiness.Mode)
 	if readiness.Reason == readinessReasonHooksUnavailable {

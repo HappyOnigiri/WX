@@ -188,7 +188,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		}
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
-	setupCheck := c.initialSetupRepositories(lease.SourceWorkspace, lease.FirstLeaseRepositories)
+	setupCheck := c.initialSetupRepositories(lease.SourceWorkspace, lease.SetupCheckRepositories)
 	readiness := readinessForLease(c.Config, lease, false, state.LeaseKindPath, false, false)
 	waiting.setReadiness(readiness.Mode)
 	if readiness.Reason == readinessReasonHooksUnavailable {

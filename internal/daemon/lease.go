@@ -58,7 +58,7 @@ type Lease struct {
 	ReadinessMode          string                 `json:"readiness_mode,omitempty"`
 	ReadinessTimeoutMS     int                    `json:"readiness_timeout_ms,omitempty"`
 	ReadinessProgress      bool                   `json:"readiness_progress"`
-	FirstLeaseRepositories []FirstLeaseRepository `json:"first_lease_repositories,omitempty"`
+	SetupCheckRepositories []SetupCheckRepository `json:"setup_check_repositories,omitempty"`
 }
 
 // leaseReadiness は slot 内の repository の readiness 個別指定を1つの実効値へ合成する。
@@ -112,14 +112,10 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	if err != nil {
 		return Lease{}, err
 	}
-	first, err := m.store.FirstLeaseRepositories(ctx, string(w.ID))
-	if err != nil {
-		return Lease{}, err
-	}
-	firstLease := firstLeaseRepositories(first, w, m.Config())
+	setupRepositories := setupCheckRepositories(w, m.Config())
 	defer func() {
 		if resultErr == nil {
-			result.FirstLeaseRepositories = firstLease
+			result.SetupCheckRepositories = setupRepositories
 		}
 	}()
 	// 補充はこの貸出を根拠に hot / cold を決める。last_leased_at を書く前に並走されても cold と判定させない。

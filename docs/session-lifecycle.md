@@ -41,7 +41,7 @@
    checkout hookやprepare commandが起動用の設定・指示を生成・更新する運用では、先行配置がその生成物を含められないため`full`を使う。
    完全一致したwarm slotは両方式とも即時起動する。
 
-   repository が初めて貸し出される回は、設定が early でも client が Full Ready まで待ち、貸出中の slot を読み取り検査する。
+   repository 個別設定に検査済みの記録がない回は、設定が early でも client が Full Ready まで待ち、貸出中の slot を読み取り検査する。
    準備出力・submodule・tracked 変更・CoW 測定に問題または未検査があれば、通常の agent session へ渡すセットアップ用プロンプトを一時ファイルへ保存し、macOS のクリップボードへコピーする。
    `.worktreeinclude` と `.worktreelink` は main checkout で編集する必要があるため、このプロンプトは起動した slot 内の session 自身では実行しない。
    検査済みとプロンプト提示済みの時刻は repository 個別設定へ実行記録として残し、方針値としては扱わない。

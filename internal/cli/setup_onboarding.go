@@ -20,9 +20,9 @@ const initialSetupUsageTimeout = 3 * time.Second
 
 var setupClipboardCommand = exec.CommandContext
 
-func mergeFirstLeaseRepositories(values ...[]daemon.FirstLeaseRepository) []daemon.FirstLeaseRepository {
+func mergeSetupCheckRepositories(values ...[]daemon.SetupCheckRepository) []daemon.SetupCheckRepository {
 	seen := map[string]bool{}
-	var out []daemon.FirstLeaseRepository
+	var out []daemon.SetupCheckRepository
 	for _, repositories := range values {
 		for _, repository := range repositories {
 			key := repository.RelativePath + "\x00" + repository.MainPath
@@ -36,8 +36,8 @@ func mergeFirstLeaseRepositories(values ...[]daemon.FirstLeaseRepository) []daem
 	return out
 }
 
-func (c Client) initialSetupRepositories(workspaceRoot string, repositories []daemon.FirstLeaseRepository) []daemon.FirstLeaseRepository {
-	var out []daemon.FirstLeaseRepository
+func (c Client) initialSetupRepositories(workspaceRoot string, repositories []daemon.SetupCheckRepository) []daemon.SetupCheckRepository {
+	var out []daemon.SetupCheckRepository
 	for _, repository := range repositories {
 		record := c.Config.RepositoryFor(workspaceRoot, repository.RelativePath, repository.MainPath).Onboarding
 		if record.CheckedAt == "" && record.PromptedAt == "" {
@@ -56,7 +56,7 @@ func setupFindingsNeedPrompt(findings []diag.Finding) bool {
 	return false
 }
 
-func (c Client) finishInitialSetupCheck(lease daemon.Lease, repositories []daemon.FirstLeaseRepository, findings []diag.Finding) {
+func (c Client) finishInitialSetupCheck(lease daemon.Lease, repositories []daemon.SetupCheckRepository, findings []diag.Finding) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	promptedAt := ""
 	if setupFindingsNeedPrompt(findings) {
@@ -82,7 +82,7 @@ func (c Client) finishInitialSetupCheck(lease daemon.Lease, repositories []daemo
 	}
 }
 
-func setupPromptRepositories(lease daemon.Lease, repositories []daemon.FirstLeaseRepository) []onboarding.Repository {
+func setupPromptRepositories(lease daemon.Lease, repositories []daemon.SetupCheckRepository) []onboarding.Repository {
 	out := make([]onboarding.Repository, 0, len(repositories))
 	for _, repository := range repositories {
 		slotPath := lease.Path
@@ -115,7 +115,7 @@ func copySetupPrompt(prompt string) error {
 	return cmd.Run()
 }
 
-func recordInitialSetup(repositories []daemon.FirstLeaseRepository, workspaceRoot, checkedAt, promptedAt string) error {
+func recordInitialSetup(repositories []daemon.SetupCheckRepository, workspaceRoot, checkedAt, promptedAt string) error {
 	raw, err := config.LoadRaw()
 	if err != nil {
 		return err

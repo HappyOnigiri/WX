@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestResolveAndLeaseReportsFirstRepositoryOnlyOnce(t *testing.T) {
+func TestResolveAndLeaseReportsSetupRepositoriesEveryTime(t *testing.T) {
 	t.Parallel()
 	requireDaemonIntegration(t)
 	f := manualManagerFixture(t, func(s *managerFixtureSetup) {
@@ -21,14 +21,14 @@ func TestResolveAndLeaseReportsFirstRepositoryOnlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.FirstLeaseRepositories) != 1 || first.FirstLeaseRepositories[0].MainPath != repository {
-		t.Fatalf("first lease repositories=%+v, want %s", first.FirstLeaseRepositories, repository)
+	if len(first.SetupCheckRepositories) != 1 || first.SetupCheckRepositories[0].MainPath != repository {
+		t.Fatalf("first lease repositories=%+v, want %s", first.SetupCheckRepositories, repository)
 	}
 	second, err := f.Manager.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid(), leaseAttrs{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second.FirstLeaseRepositories) != 0 {
-		t.Fatalf("second lease repositories=%+v, want none", second.FirstLeaseRepositories)
+	if len(second.SetupCheckRepositories) != 1 || second.SetupCheckRepositories[0].MainPath != repository {
+		t.Fatalf("second lease repositories=%+v, want %s", second.SetupCheckRepositories, repository)
 	}
 }

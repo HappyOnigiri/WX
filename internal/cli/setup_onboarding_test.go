@@ -12,16 +12,20 @@ import (
 
 func TestInitialSetupRepositoryGateAndRelaunchMerge(t *testing.T) {
 	t.Parallel()
-	repository := daemon.FirstLeaseRepository{RelativePath: ".", MainPath: "/repo", DirName: "repo"}
+	repository := daemon.SetupCheckRepository{RelativePath: ".", MainPath: "/repo", DirName: "repo"}
 	client := Client{}
-	if got := client.initialSetupRepositories("/repo", []daemon.FirstLeaseRepository{repository}); len(got) != 1 {
+	if got := client.initialSetupRepositories("/repo", []daemon.SetupCheckRepository{repository}); len(got) != 1 {
 		t.Fatalf("unrecorded repositories=%v", got)
 	}
 	client.Config.Repositories = map[string]config.Repository{"/repo": {Onboarding: config.RepositoryOnboarding{CheckedAt: "now"}}}
-	if got := client.initialSetupRepositories("/repo", []daemon.FirstLeaseRepository{repository}); len(got) != 0 {
+	if got := client.initialSetupRepositories("/repo", []daemon.SetupCheckRepository{repository}); len(got) != 0 {
 		t.Fatalf("recorded repositories=%v", got)
 	}
-	merged := mergeFirstLeaseRepositories([]daemon.FirstLeaseRepository{repository}, []daemon.FirstLeaseRepository{repository})
+	delete(client.Config.Repositories, "/repo")
+	if got := client.initialSetupRepositories("/repo", []daemon.SetupCheckRepository{repository}); len(got) != 1 {
+		t.Fatalf("repositories after deleting the record=%v", got)
+	}
+	merged := mergeSetupCheckRepositories([]daemon.SetupCheckRepository{repository}, []daemon.SetupCheckRepository{repository})
 	if len(merged) != 1 {
 		t.Fatalf("merged=%v", merged)
 	}
