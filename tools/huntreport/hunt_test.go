@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,6 +31,17 @@ func flakyModule(t *testing.T, body string) string {
 	write("flaky/flaky.go", "package flaky\n")
 	write("flaky/flaky_test.go", body)
 	return root
+}
+
+// warmGoTest はハントの期限を、fixture の初回コンパイル時間ではなくラウンドの実行に使う。
+// CI の race 実行中は別パッケージの負荷でコンパイルが数秒以上遅れ、2ラウンド目へ進めないことがある。
+func warmGoTest(t *testing.T, root string) {
+	t.Helper()
+	command := exec.Command("go", "test", "-run=^$", "-count=1", "./...")
+	command.Dir = root
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("warm fixture: %v\n%s", err, output)
+	}
 }
 
 const alternatingTest = `package flaky
@@ -87,7 +99,9 @@ func runHunt(t *testing.T, root string, deadline time.Duration) huntManifest {
 
 // ラウンドをまたいで成功と失敗の両方を観測したテストは、回数の内訳ごと残る必要がある。
 func TestHuntCountsPassAndFailAcrossRounds(t *testing.T) {
-	man := runHunt(t, flakyModule(t, alternatingTest), 3*time.Second)
+	root := flakyModule(t, alternatingTest)
+	warmGoTest(t, root)
+	man := runHunt(t, root, 3*time.Second)
 	if man.Rounds < 2 {
 		t.Fatalf("rounds=%d", man.Rounds)
 	}
