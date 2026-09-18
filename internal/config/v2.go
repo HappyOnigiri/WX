@@ -680,8 +680,8 @@ func mergeRepositoryValue(dst *Repository, src Repository) {
 	if src.Onboarding.CheckedAt != "" {
 		dst.Onboarding.CheckedAt = src.Onboarding.CheckedAt
 	}
-	if src.Onboarding.PromptedAt != "" {
-		dst.Onboarding.PromptedAt = src.Onboarding.PromptedAt
+	if src.Onboarding.DeclinedAt != "" {
+		dst.Onboarding.DeclinedAt = src.Onboarding.DeclinedAt
 	}
 }
 

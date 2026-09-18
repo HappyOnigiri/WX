@@ -18,9 +18,10 @@ import (
 )
 
 type WorktreeOptions struct {
-	Force   bool
-	Disable bool
-	Select  bool
+	Force          bool
+	Disable        bool
+	Select         bool
+	SkipOnboarding bool
 }
 
 // SelectWorktreePolicy は agent を起動せず、現在の workspace の policy を選択して保存する。
@@ -59,7 +60,7 @@ func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent str
 	// 会話 ID を指定した再開は、起動場所ではなく会話の側で worktree の可否を決める。
 	// 記録済み session の復元先は起動場所と無関係で、管理外の会話も当時の workspace の方針に従うのが利用者の期待に近い。
 	// worktree の指定を明示した起動はその指定を優先するため、この経路へ入れない。
-	if intent.Kind == resumeIntentLookup && options == (WorktreeOptions{}) {
+	if intent.Kind == resumeIntentLookup && !options.Force && !options.Disable && !options.Select {
 		return c.runResumeByID(ctx, sourceCWD, agent, args, branches, fresh, intent)
 	}
 	// workspace root は agent.add_dir の解決キーでもあるため、worktree を作らない経路より先に一度だけ解決する。
@@ -87,7 +88,7 @@ func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent str
 		reportStepError(cliLanguage(c), "cli.step.reload_policy", err)
 		return 1
 	}
-	return c.runAgentFrom(ctx, agent, args, branches, fresh, "", sourceCWD)
+	return c.runAgentResolved(ctx, agent, args, branches, fresh, "", sourceCWD, nil, options.SkipOnboarding)
 }
 
 // policyRoot は設定を引くための workspace root を返す。

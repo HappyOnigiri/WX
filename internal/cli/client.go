@@ -127,13 +127,13 @@ func (c Client) runAgent(ctx context.Context, agent string, args, branches []str
 }
 
 func (c Client) runAgentFrom(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume, sourceCWD string) int {
-	return c.runAgentResolved(ctx, agent, args, branches, fresh, explicitResume, sourceCWD, nil)
+	return c.runAgentResolved(ctx, agent, args, branches, fresh, explicitResume, sourceCWD, nil, false)
 }
 
 // runAgentResolved は再開先を解決済みで受け取れる起動経路である。
 // resolved が nil のときだけここで resolveResume を呼ぶ。起動場所の policy より先に会話を解決した経路は、
 // 同じ問い合わせを二度行わず、picker の再表示も起こさないよう解決済みの結果を渡す。
-func (c Client) runAgentResolved(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume, sourceCWD string, resolved *resumeTarget) int {
+func (c Client) runAgentResolved(ctx context.Context, agent string, args, branches []string, fresh bool, explicitResume, sourceCWD string, resolved *resumeTarget, skipOnboarding bool) int {
 	if err := c.ensureDaemon(ctx); err != nil {
 		cliError(c, err)
 		return 1
@@ -163,6 +163,7 @@ func (c Client) runAgentResolved(ctx context.Context, agent string, args, branch
 		return 1
 	}
 	plan := launchPlan{agent: agent, args: args, branches: branches, cwd: cwd, explicitResume: explicitResume, intentKind: intent.Kind, intentPrefix: intent.Prefix, intentRest: intent.Rest, intentCodexExec: intent.CodexExec, target: target, resuming: resuming, fresh: fresh}
+	plan.skipOnboarding = skipOnboarding
 	if resuming {
 		if target.WXSessionID != "" {
 			var status resumeStatus
@@ -238,11 +239,24 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.launch_cancelled", nil))
 		return 1, nil
 	}
+	if !plan.setupResolved && !plan.resuming {
+		decision, cancelled, setupErr := c.resolveInitialSetup(ctx, plan.cwd, !plan.skipOnboarding)
+		if setupErr != nil {
+			cliError(c, setupErr)
+			return 1, nil
+		}
+		if cancelled {
+			return 1, nil
+		}
+		plan.setupResolved = true
+		plan.setupCheckRepositories = decision.Repositories
+		plan.forceCold = decision.ForceCold
+	}
 	var lease daemon.Lease
 	method := "ResolveAndLease"
 	newLease := func(cwd string) rpc.ResolveAndLeaseParams {
 		return rpc.ResolveAndLeaseParams{
-			Agent: plan.rpcAgentKind(), Branches: plan.branches, ClientPID: os.Getpid(), CWD: cwd, ForceWorktree: c.forceWorktree,
+			Agent: plan.rpcAgentKind(), Branches: plan.branches, ClientPID: os.Getpid(), CWD: cwd, ForceCold: plan.forceCold, ForceWorktree: c.forceWorktree,
 			LeaseKind: plan.leaseKind, LeaseOwnerSessionID: plan.ownerSessionID, LeaseOwnerToken: plan.ownerToken,
 			Language: c.Config.LanguageForRPC(),
 		}
@@ -291,9 +305,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 		cliError(c, err)
 		return 1, nil
 	}
-	setupRepositories := mergeSetupCheckRepositories(plan.setupCheckRepositories, lease.SetupCheckRepositories)
-	plan.setupCheckRepositories = setupRepositories
-	setupCheck := c.initialSetupRepositories(lease.SourceWorkspace, setupRepositories)
+	setupCheck := plan.setupCheckRepositories
 	readiness := readinessForLease(c.Config, lease, plan.resuming, plan.leaseKind, plan.hooksReady, len(setupCheck) > 0)
 	waiting.setReadiness(readiness.Mode)
 	if readiness.Reason == readinessReasonHooksUnavailable {
@@ -361,7 +373,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 			}
 			if len(setupCheck) > 0 {
 				stage := newProbeStage(probeStageFullReady, err)
-				c.finishInitialSetupCheck(lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)})
+				c.finishInitialSetupCheck(setupCtx, lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)}, false)
 			}
 			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
 			return 1, nil
@@ -375,7 +387,9 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 	}
 	if len(setupCheck) > 0 {
 		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, initialSetupUsageTimeout, true)
-		c.finishInitialSetupCheck(lease, setupCheck, findings)
+		if !c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true) {
+			return 1, nil
+		}
 	}
 	// ここから先の signal は agent へ中継するので、準備待ち用の捕捉は返す。
 	stopSetupSignals()

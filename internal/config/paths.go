@@ -185,8 +185,8 @@ func SetWorkspaceWorktree(c *Config, root, mode string) error {
 	return SetScopeField(c, ScopeWorkspace, root, "worktree", mode)
 }
 
-// SetRepositoryOnboarding は既存の個別設定を保ち、初回検査の実行記録だけを更新する。
-func SetRepositoryOnboarding(c *Config, workspaceRoot, relativePath, mainPath, checkedAt, promptedAt string) error {
+// SetRepositoryOnboarding は既存の個別設定を保ち、初回検査の完了または辞退の記録だけを更新する。
+func SetRepositoryOnboarding(c *Config, workspaceRoot, relativePath, mainPath, checkedAt, declinedAt string) error {
 	if c == nil {
 		return errors.New("config is nil")
 	}
@@ -196,10 +196,7 @@ func SetRepositoryOnboarding(c *Config, workspaceRoot, relativePath, mainPath, c
 			return err
 		}
 		repository := entry.Addr().Interface().(*Repository)
-		repository.Onboarding.CheckedAt = checkedAt
-		if promptedAt != "" {
-			repository.Onboarding.PromptedAt = promptedAt
-		}
+		setRepositoryOnboardingRecord(&repository.Onboarding, checkedAt, declinedAt)
 		return commit()
 	}
 	if mainPath == "" {
@@ -209,10 +206,18 @@ func SetRepositoryOnboarding(c *Config, workspaceRoot, relativePath, mainPath, c
 		c.Repositories = map[string]Repository{}
 	}
 	repository := c.Repositories[mainPath]
-	repository.Onboarding.CheckedAt = checkedAt
-	if promptedAt != "" {
-		repository.Onboarding.PromptedAt = promptedAt
-	}
+	setRepositoryOnboardingRecord(&repository.Onboarding, checkedAt, declinedAt)
 	c.Repositories[mainPath] = repository
 	return nil
+}
+
+func setRepositoryOnboardingRecord(record *RepositoryOnboarding, checkedAt, declinedAt string) {
+	if checkedAt != "" {
+		record.CheckedAt = checkedAt
+		record.DeclinedAt = ""
+	}
+	if declinedAt != "" {
+		record.CheckedAt = ""
+		record.DeclinedAt = declinedAt
+	}
 }

@@ -272,7 +272,7 @@ func runDashboardAction(ctx context.Context, action dashboard.Action) int {
 			fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", err)
 			return 1
 		}
-		return client.RunAgentWithPolicyFrom(ctx, cwd, command, args, nil, false, cli.WorktreeOptions{})
+		return client.RunAgentWithPolicyFrom(ctx, cwd, command, args, nil, false, cli.WorktreeOptions{SkipOnboarding: true})
 	case "shell":
 		return runShellFrom(ctx, args, cwd)
 	case "run":

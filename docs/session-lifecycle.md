@@ -41,10 +41,12 @@
    checkout hookやprepare commandが起動用の設定・指示を生成・更新する運用では、先行配置がその生成物を含められないため`full`を使う。
    完全一致したwarm slotは両方式とも即時起動する。
 
-   repository 個別設定に検査済みの記録がない回は、設定が early でも client が Full Ready まで待ち、貸出中の slot を読み取り検査する。
-   準備出力・submodule・tracked 変更・CoW 測定に問題または未検査があれば、通常の agent session へ渡すセットアップ用プロンプトを一時ファイルへ保存し、macOS のクリップボードへコピーする。
+   repository 個別設定に検査済み・辞退済みの記録がない対話起動は、貸出前に初回検査を行うか確認する。
+   検査を選ぶと既存の READY standby を残したまま今回だけ cold start し、設定が early でも Full Ready まで待って貸出中の slot を読み取り検査する。
+   結果は agent・shell・command の起動や path の出力より先に表示し、問題の有無にかかわらず通常の agent session へ渡す確認用プロンプトを一時ファイルへ保存して macOS のクリップボードへコピーする。
+   利用者が結果を確認して続行を選ぶまで要求された処理を始めず、Full Ready 自体が失敗した場合は続行を選べない。
    `.worktreeinclude` と `.worktreelink` は main checkout で編集する必要があるため、このプロンプトは起動した slot 内の session 自身では実行しない。
-   検査済みとプロンプト提示済みの時刻は repository 個別設定へ実行記録として残し、方針値としては扱わない。
+   検査済みと今後の確認を辞退した時刻は repository 個別設定へ残す。一時スキップ、非対話起動、resume、`wx new --json` は無表示・無記録で従来の貸出へ進む。
 
    起動時に準備を待った場合、client は総括行へ実際に使った readiness（`ready` / `early` / `full`）を表示する。
    設定が`early`でも hook が未整備なら`full`へ後退するため、その理由と`wx setup`の案内を stderr へ表示する。

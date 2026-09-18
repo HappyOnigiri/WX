@@ -282,7 +282,7 @@ var configCatalog = map[string]Entry{
 	"config.onboarding.checked_at.description": {EN: "When wx last performed the initial worktree setup check for this repository. This is a record, not a policy.", JA: "wx がこのリポジトリの初回 worktree セットアップ検査を行った日時です。方針ではなく実行記録です。"},
 	"config.onboarding.checked_at.impact":      {EN: "Does not change worktree behavior.", JA: "worktree の動作は変わりません。"},
 
-	"config.onboarding.prompted_at.name":        {EN: "Initial setup prompt time", JA: "初回セットアッププロンプト提示日時"},
-	"config.onboarding.prompted_at.description": {EN: "When wx last produced a setup prompt for this repository. This is a record, not a policy.", JA: "wx がこのリポジトリ向けのセットアッププロンプトを生成した日時です。方針ではなく実行記録です。"},
-	"config.onboarding.prompted_at.impact":      {EN: "Does not change worktree behavior.", JA: "worktree の動作は変わりません。"},
+	"config.onboarding.declined_at.name":        {EN: "Initial setup check declined time", JA: "初回セットアップ検査の辞退日時"},
+	"config.onboarding.declined_at.description": {EN: "When the user chose not to be asked about the initial worktree setup check again.", JA: "初回 worktree セットアップ検査を今後確認しないと選択した日時です。"},
+	"config.onboarding.declined_at.impact":      {EN: "Suppresses the initial setup check prompt for this repository.", JA: "このリポジトリでは初回セットアップ検査の確認を表示しません。"},
 }

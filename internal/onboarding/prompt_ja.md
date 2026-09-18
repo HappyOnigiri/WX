@@ -1,6 +1,7 @@
-# このリポジトリの wx worktree セットアップを直す
+# このリポジトリの wx worktree セットアップを確認する
 
-wx が `{{.Workspace}}` の初回セットアップ検査を貸出 worktree `{{.SlotPath}}` で行い、以下の結果を検出しました。
+wx が `{{.Workspace}}` の初回セットアップ検査を貸出 worktree `{{.SlotPath}}` で行いました。
+自動検査で問題がない場合も、リポジトリ固有の build・test・lint と依存関係の準備が十分か確認してください。
 
 wx がこの貸出 worktree で既に起動したセッション内では、この依頼を実行しないでください。
 `.worktreeinclude`、`.worktreelink`、hook、wx 設定の編集は各ソースリポジトリの main checkout で行ってください。

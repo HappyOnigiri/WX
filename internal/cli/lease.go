@@ -160,13 +160,21 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.lease_cancelled", nil))
 		return 1
 	}
+	decision, cancelled, setupErr := c.resolveInitialSetup(ctx, cwd, !jsonOut)
+	if setupErr != nil {
+		cliError(c, setupErr)
+		return 1
+	}
+	if cancelled {
+		return 1
+	}
 	ownerID, ownerToken := leaseOwnerFromEnvironment()
 	language := ""
 	if !jsonOut {
 		language = c.Config.LanguageForRPC()
 	}
 	params := rpc.ResolveAndLeaseParams{
-		Agent: leaseAgentKindPath, Branches: branches, ClientPID: 0, CWD: cwd, ForceWorktree: c.forceWorktree,
+		Agent: leaseAgentKindPath, Branches: branches, ClientPID: 0, CWD: cwd, ForceCold: decision.ForceCold, ForceWorktree: c.forceWorktree,
 		LeaseKind: state.LeaseKindPath, LeaseOwnerSessionID: ownerID, LeaseOwnerToken: ownerToken,
 		Language: language,
 	}
@@ -188,7 +196,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		}
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
-	setupCheck := c.initialSetupRepositories(lease.SourceWorkspace, lease.SetupCheckRepositories)
+	setupCheck := decision.Repositories
 	readiness := readinessForLease(c.Config, lease, false, state.LeaseKindPath, false, false)
 	waiting.setReadiness(readiness.Mode)
 	if readiness.Reason == readinessReasonHooksUnavailable {
@@ -222,7 +230,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 			}
 			if len(setupCheck) > 0 {
 				stage := newProbeStage(probeStageFullReady, err)
-				c.finishInitialSetupCheck(lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)})
+				c.finishInitialSetupCheck(setupCtx, lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)}, false)
 			}
 			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
 			return 1
@@ -231,7 +239,9 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 	waiting.finish()
 	if len(setupCheck) > 0 {
 		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, initialSetupUsageTimeout, true)
-		c.finishInitialSetupCheck(lease, setupCheck, findings)
+		if !c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true) {
+			return 1
+		}
 	}
 	if jsonOut {
 		data, err := json.Marshal(leaseNewReply{SessionID: lease.SessionID, Path: lease.Path})

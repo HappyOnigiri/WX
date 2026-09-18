@@ -1,6 +1,7 @@
-# Fix this repository's wx worktree setup
+# Review this repository's wx worktree setup
 
-wx performed its first setup check for `{{.Workspace}}` in the leased worktree `{{.SlotPath}}` and found the results below.
+wx performed its first setup check for `{{.Workspace}}` in the leased worktree `{{.SlotPath}}`.
+Even when the automatic checks pass, verify the repository-specific build, test, lint, and dependency setup.
 
 Do not carry out this request inside a session that wx already started in that leased worktree.
 Work from each source repository's main checkout when editing `.worktreeinclude`, `.worktreelink`, hooks, or wx configuration.

@@ -331,7 +331,7 @@ const waitReadyReleaseTimeout = 10 * time.Second
 // handled が false のときは他の method として扱う。
 func (h Handler) dispatchWorkspaceQuery(ctx context.Context, method string, raw json.RawMessage) (any, bool, error) {
 	switch method {
-	case "WorkspaceScope", "WorktreePolicy":
+	case "WorkspaceScope", "WorktreePolicy", "ResolveSetupOnboarding":
 	default:
 		return nil, false, nil
 	}
@@ -343,6 +343,10 @@ func (h Handler) dispatchWorkspaceQuery(ctx context.Context, method string, raw 
 	}
 	if method == "WorktreePolicy" {
 		return h.Manager.WorktreePolicy(ctx, p.CWD), true, nil
+	}
+	if method == "ResolveSetupOnboarding" {
+		result, err := h.Manager.ResolveSetupOnboarding(ctx, p.CWD)
+		return result, true, err
 	}
 	scope, err := h.Manager.WorkspaceScope(ctx, p.CWD)
 	return scope, true, err
@@ -473,6 +477,7 @@ func (h Handler) dispatchLease(ctx context.Context, method string, raw json.RawM
 		if err != nil {
 			return nil, true, err
 		}
+		attrs.ForceCold = p.ForceCold
 		result, err := h.Manager.leaseWithPolicy(ctx, p.CWD, p.Branches, p.Agent, p.ClientPID, p.ForceWorktree, attrs)
 		return result, true, err
 	case "Resume":

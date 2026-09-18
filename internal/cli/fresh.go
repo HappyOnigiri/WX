@@ -29,6 +29,9 @@ type launchPlan struct {
 	resuming        bool
 	fresh           bool
 	hooksReady      bool
+	setupResolved   bool
+	forceCold       bool
+	skipOnboarding  bool
 	// setupCheckRepositories は貸出後の作り直しでもセットアップ検査を落とさないため引き継ぐ。
 	setupCheckRepositories []daemon.SetupCheckRepository
 	// leaseKind 以下は agent 起動以外への貸出（wx shell / wx run）の属性である。
