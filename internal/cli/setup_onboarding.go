@@ -122,7 +122,8 @@ func (c Client) resolveInitialSetup(ctx context.Context, cwd string, enabled boo
 func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease, repositories []daemon.SetupCheckRepository, findings []diag.Finding, complete, canStart bool) setupCompletion {
 	language := cliLanguage(c)
 	reply := diag.Resolve(diag.Reply{Findings: findings}, language)
-	diag.RenderLanguage(os.Stderr, reply, false, language)
+	var report bytes.Buffer
+	diag.RenderLanguage(&report, reply, false, language)
 	now := time.Now().UTC().Format(time.RFC3339)
 	prompt, err := onboarding.Render(c.Config.DisplayLanguage(), onboarding.Prompt{
 		Workspace: lease.SourceWorkspace, SlotPath: lease.Path,
@@ -130,38 +131,40 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 		Repositories:   setupPromptRepositories(lease, repositories), Findings: findings,
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.setup_prompt.failed", map[string]any{"Error": err.Error()}))
+		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.failed", map[string]any{"Error": err.Error()}))
 	} else if path, saveErr := setupPromptSaver(prompt); saveErr != nil {
-		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.setup_prompt.failed", map[string]any{"Error": saveErr.Error()}))
+		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.failed", map[string]any{"Error": saveErr.Error()}))
 	} else {
-		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.setup_prompt.saved", map[string]any{"Path": path}))
+		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.saved", map[string]any{"Path": path}))
 		if copyErr := copySetupPrompt(prompt); copyErr != nil {
-			fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.setup_prompt.copy_failed", map[string]any{"Path": path, "Error": copyErr.Error()}))
+			fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.copy_failed", map[string]any{"Path": path, "Error": copyErr.Error()}))
 		}
 	}
 	if !complete {
+		fmt.Fprint(os.Stderr, report.String())
 		return setupCompletion{}
 	}
 	if err := recordInitialSetup(repositories, lease.SourceWorkspace, now, ""); err != nil {
-		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.setup_prompt.record_failed", map[string]any{"Error": err.Error()}))
+		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.record_failed", map[string]any{"Error": err.Error()}))
 	}
 	attention := setupFindingsNeedAttention(findings)
 	initial := 0
 	localizer := cliLocalizer(c)
-	options := []tui.Option{
-		{Value: string(setupCompletionContinue), Label: localizer.Localize("cli.setup_continue.continue", nil), Description: localizer.Localize("cli.setup_continue.continue_description", nil)},
-	}
+	options := []tui.Option{}
 	if canStart && prompt != "" {
-		initial = len(options)
 		options = append(options, tui.Option{Value: string(setupCompletionStart), Label: localizer.Localize("cli.setup_continue.start", nil), Description: localizer.Localize("cli.setup_continue.start_description", nil)})
-	} else if attention {
+	}
+	options = append(options, tui.Option{Value: string(setupCompletionContinue), Label: localizer.Localize("cli.setup_continue.continue", nil), Description: localizer.Localize("cli.setup_continue.continue_description", nil)})
+	if (!canStart || prompt == "") && attention {
 		initial = len(options)
 	}
 	options = append(options, tui.Option{Value: "cancel", Label: localizer.Localize("cli.setup_continue.cancel", nil), Description: localizer.Localize("cli.setup_continue.cancel_description", nil)})
 	answer, err := setupSelect(ctx, os.Stdin, os.Stderr, tui.Selection{
 		Title:       localizer.Localize("cli.setup_continue.title", nil),
 		Description: localizer.Localize("cli.setup_continue.description", nil),
+		Preamble:    strings.TrimRight(report.String(), "\n"),
 		Initial:     initial,
+		ClearOnExit: true,
 		Language:    c.Config.DisplayLanguage(),
 		Options:     options,
 	})

@@ -105,11 +105,14 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 	if len(initials) != 2 || initials[0] != 0 || initials[1] != 1 {
 		t.Fatalf("selection initials=%v, want check then cancel for a problem", initials)
 	}
-	if len(clearOnExit) != 2 || !clearOnExit[0] || clearOnExit[1] {
-		t.Fatalf("selection clear_on_exit=%v, want only the completed setup question cleared", clearOnExit)
+	if len(clearOnExit) != 2 || !clearOnExit[0] || !clearOnExit[1] {
+		t.Fatalf("selection clear_on_exit=%v, want both setup questions in the alternate screen", clearOnExit)
 	}
 	if selections[0].Options[0].Value != "check" || selections[0].Initial != 0 || len(selections[1].Options) != 2 {
 		t.Fatalf("selections=%+v, want a recommended check and no agent-only setup action", selections)
+	}
+	if !strings.Contains(selections[1].Preamble, "worktree") || !strings.Contains(selections[1].Preamble, "prompt.md") {
+		t.Fatalf("final selection preamble=%q, want findings and saved prompt", selections[1].Preamble)
 	}
 	if params := leaseRequest(t, handler); !params.ForceCold {
 		t.Fatalf("lease params=%+v, want force_cold", params)
@@ -142,8 +145,11 @@ func TestInitialSetupCompletionStartsAgentWithRecommendedPrompt(t *testing.T) {
 	if completion.Action != setupCompletionStart || completion.Prompt == "" {
 		t.Fatalf("completion=%+v", completion)
 	}
-	if selection.Initial != 1 || len(selection.Options) != 3 || selection.Options[1].Value != string(setupCompletionStart) {
+	if selection.Initial != 0 || len(selection.Options) != 3 || selection.Options[0].Value != string(setupCompletionStart) {
 		t.Fatalf("selection=%+v, want recommended setup action", selection)
+	}
+	if !selection.ClearOnExit || !strings.Contains(selection.Preamble, "prompt.md") {
+		t.Fatalf("selection=%+v, want the report in the alternate screen", selection)
 	}
 }
 

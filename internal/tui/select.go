@@ -27,8 +27,10 @@ type Option struct {
 type Selection struct {
 	Title       string
 	Description string
-	Options     []Option
-	Initial     int
+	// Preamble は質問より前に表示する複数行の判断材料。ClearOnExit と組み合わせると結果表示も一時画面へ閉じ込められる。
+	Preamble string
+	Options  []Option
+	Initial  int
 	// ClearOnExit は確定・キャンセル後に選択画面を消し、後続の対話表示へ結果行を残さない。
 	ClearOnExit bool
 	// Language は固定ラベルの表示言語。空文字は英語で、既存 caller と互換である。
@@ -103,7 +105,16 @@ func (m selectionModel) content() string {
 		return i18n.New(m.selection.Language).Localize("tui.select.cancelled", nil) + "\n"
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "\n? %s\n", singleLine(m.selection.Title))
+	if preamble := multiLine(m.selection.Preamble); preamble != "" {
+		out.WriteString(preamble)
+		if !strings.HasSuffix(preamble, "\n") {
+			out.WriteByte('\n')
+		}
+		out.WriteByte('\n')
+	} else {
+		out.WriteByte('\n')
+	}
+	fmt.Fprintf(&out, "? %s\n", singleLine(m.selection.Title))
 	if m.selection.Description != "" {
 		fmt.Fprintf(&out, "  %s\n", singleLine(m.selection.Description))
 	}
@@ -140,6 +151,19 @@ func green(value string) string {
 // singleLine はパスや選択肢に含まれる制御文字を除き、画面の制御シーケンスとして扱わせない。
 func singleLine(value string) string {
 	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, value)
+}
+
+// multiLine は改行だけを維持し、それ以外の制御文字を端末操作として解釈させない。
+func multiLine(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' {
+			return r
+		}
 		if unicode.IsControl(r) {
 			return ' '
 		}
