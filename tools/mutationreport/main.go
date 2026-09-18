@@ -28,9 +28,10 @@ import (
 )
 
 const (
-	manifestSchemaVersion = 3
-	mutationIDVersion     = "wx-mutation-id-v1"
-	defaultExclusionsFile = "mutation-exclusions.txt"
+	manifestSchemaVersion   = 3
+	mutationIDVersion       = "wx-mutation-id-v1"
+	defaultExclusionsFile   = "mutation-exclusions.txt"
+	packageScopeDeclaration = "<package>"
 )
 
 var errSurvivors = errors.New("unexcluded mutation survivors found")
@@ -639,6 +640,11 @@ func sourceForPath(cache map[string]*sourceFile, root, path string) (*sourceFile
 		return nil, fmt.Errorf("parse %s: %w", repository, err)
 	}
 	source := &sourceFile{path: abs, repository: repository, fileSet: fileSet, file: file}
+	packagePosition := fileSet.Position(file.Pos())
+	source.declarations = append(source.declarations, declarationRange{
+		declaration: declaration{Path: repository, Function: packageScopeDeclaration, Line: packagePosition.Line},
+		start:       file.Pos(), end: file.End(),
+	})
 	for _, declarationNode := range file.Decls {
 		function, ok := declarationNode.(*ast.FuncDecl)
 		if !ok || function.Name == nil {

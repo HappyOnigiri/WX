@@ -54,6 +54,23 @@ test('uses the shared deterministic mutation ID vector', () => {
   assert.equal(manifest().survivors[0].id, '8f58df524fcb072e70af7462216f0880cf5bdde384c38b74bb7bbf2f4a2414d7');
 });
 
+test('accepts package-scope declarations in schema 3 manifests', () => {
+  const survivor = {
+    declaration: { path: 'cmd/wx/clean_unmanaged.go', function: '<package>', line: 1 },
+    mutator: 'ARITHMETIC_BASE',
+    line: 33,
+    column: 24,
+    original: '+',
+    mutated: '-',
+  };
+  survivor.id = reporter.mutationId(survivor);
+  const value = manifest();
+  value.survivors = [survivor];
+  assert.equal(reporter.validateManifest(value).survivors[0].declaration.function, '<package>');
+  const groups = reporter.aggregateManifests([{ artifactName: 'mutation-config-10-1', manifest: value }], source);
+  assert.equal(groups[0].title, '[mutation] cmd/wx/clean_unmanaged.go: <package>');
+});
+
 test('groups survivors and renders mutation evidence', () => {
   const groups = reporter.aggregateManifests([{ artifactName: 'mutation-config-10-1', manifest: manifest() }], source);
   assert.equal(groups.length, 1);

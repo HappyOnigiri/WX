@@ -8,7 +8,7 @@ mutation huntは、行を通過したことだけでは見つからない境界�
 - 重量級パッケージをファイル単位のshardへ分けるのは、変異1件ごとの実行時間がパッケージのテスト重量に比例し、単一パッケージの処理を並列化するためである。
 
 各manifestはschema 3で、変異のソース上の同一性を表す`id`を持ち、計測できた場合はGremlins実行の実測秒も記録する。
-IDは`wx-mutation-id-v1`、repository-relative path、関数名、mutator、行、列、
+IDは`wx-mutation-id-v1`、repository-relative path、関数名（関数外は予約名`<package>`）、mutator、行、列、
 元のtoken、変異後のtokenを順に改行で連結し、SHA-256を16進化した値である。
 run、attempt、profile、test commitはIDへ含めないため、同じ変異を複数profileが観測しても
 reporterは1件へ集約し、profileごとの観測情報を残す。

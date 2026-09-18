@@ -146,6 +146,53 @@ func (worker) Run(value int) int {
 	}
 }
 
+func TestBuildManifestResolvesPackageScopeMutations(t *testing.T) {
+	source := `package sample
+
+const packageLimit = 1 + 2
+
+var packageMessages = map[string]string{"key": "prefix" + "suffix"}
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`
+	result := gremlinsResult{
+		MutantsTotal: 3, MutantsLived: 3,
+		Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{
+			{Type: "ARITHMETIC_BASE", Status: "LIVED", Line: 3, Column: 24},
+			{Type: "ARITHMETIC_BASE", Status: "LIVED", Line: 5, Column: 57},
+			{Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 8, Column: 11},
+		}}},
+	}
+	packageID := mutationID("internal/sample/sample.go", packageScopeDeclaration, "ARITHMETIC_BASE", 3, 24, "+", "-")
+	value, err := mutationFixture(t, source, "internal/sample/sample.go\t"+packageID+"\tconstant is intentionally equivalent\n", result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(value.Survivors) != 2 || len(value.Excluded) != 1 {
+		t.Fatalf("manifest=%#v", value)
+	}
+	if value.Excluded[0].Function != packageScopeDeclaration || value.Excluded[0].ID != packageID {
+		t.Fatalf("package-scope exclusion=%#v", value.Excluded[0])
+	}
+	if got := value.Survivors[0].Declaration.Function; got != packageScopeDeclaration {
+		t.Fatalf("package-scope function=%q", got)
+	}
+	if got := value.Survivors[0].Original + " -> " + value.Survivors[0].Mutated; got != "+ -> -" {
+		t.Fatalf("package-scope mapping=%q", got)
+	}
+	if got := value.Survivors[1].Declaration.Function; got != "target" {
+		t.Fatalf("function declaration=%q", got)
+	}
+	if got := value.Survivors[0].Declaration.Line; got != 1 {
+		t.Fatalf("package declaration line=%d, want 1", got)
+	}
+}
+
 func TestBuildManifestAppliesExclusionAndRejectsStaleEntry(t *testing.T) {
 	source := `package sample
 
