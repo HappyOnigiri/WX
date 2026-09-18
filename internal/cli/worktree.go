@@ -137,7 +137,7 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions,
 	localizer := i18n.New(string(lang))
 	mode, err := tui.Select(ctx, os.Stdin, os.Stderr, tui.Selection{
 		Title: localizer.Localize("cli.policy.title", nil), Description: "workspace: " + root,
-		Initial: initial, Language: string(lang),
+		Initial: initial, ClearOnExit: true, Language: string(lang),
 		Options: []tui.Option{
 			{Value: "hot", Label: localizer.Localize("cli.policy.hot", nil), Description: localizer.Localize("cli.policy.hot_description", nil)},
 			{Value: "cold", Label: localizer.Localize("cli.policy.cold", nil), Description: localizer.Localize("cli.policy.cold_description", nil)},

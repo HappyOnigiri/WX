@@ -319,6 +319,9 @@ type Workspace struct {
 	// membership 設定である。旧 Config.Repositories とは異なり、同じ
 	// Repository を複数 Workspace で独立して設定できる。
 	Repositories map[string]Repository `yaml:"repositories,omitempty"`
+	// Onboarding は root 自身を含む repository 相対 path ごとの初回検査記録である。
+	// membership 設定と分け、単一 repository workspace の "." も保持する。
+	Onboarding map[string]RepositoryOnboarding `yaml:"onboarding,omitempty"`
 	// Discovered は dashboard が daemon status と config を統合するときだけ使う表示用印で、保存対象ではない。
 	Discovered bool `yaml:"-"`
 }

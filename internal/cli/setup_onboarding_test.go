@@ -79,8 +79,10 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 	setupIsTerminal = func(int) bool { return true }
 	answers := []string{"check", "continue"}
 	initials := []int{}
+	clearOnExit := []bool{}
 	setupSelect = func(_ context.Context, _ io.Reader, _ io.Writer, selection tui.Selection) (string, error) {
 		initials = append(initials, selection.Initial)
+		clearOnExit = append(clearOnExit, selection.ClearOnExit)
 		answer := answers[0]
 		answers = answers[1:]
 		return answer, nil
@@ -100,6 +102,9 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 	}
 	if len(initials) != 2 || initials[0] != 0 || initials[1] != 1 {
 		t.Fatalf("selection initials=%v, want check then cancel for a problem", initials)
+	}
+	if len(clearOnExit) != 2 || !clearOnExit[0] || clearOnExit[1] {
+		t.Fatalf("selection clear_on_exit=%v, want only the completed setup question cleared", clearOnExit)
 	}
 	if params := leaseRequest(t, handler); !params.ForceCold {
 		t.Fatalf("lease params=%+v, want force_cold", params)

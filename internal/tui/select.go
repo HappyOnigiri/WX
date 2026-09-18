@@ -29,6 +29,8 @@ type Selection struct {
 	Description string
 	Options     []Option
 	Initial     int
+	// ClearOnExit は確定・キャンセル後に選択画面を消し、後続の対話表示へ結果行を残さない。
+	ClearOnExit bool
 	// Language は固定ラベルの表示言語。空文字は英語で、既存 caller と互換である。
 	Language string
 }
@@ -88,6 +90,9 @@ func (m selectionModel) View() tea.View {
 
 func (m selectionModel) content() string {
 	if m.finished {
+		if m.selection.ClearOnExit {
+			return ""
+		}
 		if m.confirmed {
 			return fmt.Sprintf("✓ %s: %s\n", singleLine(m.selection.Title), singleLine(m.selection.Options[m.cursor].Label))
 		}

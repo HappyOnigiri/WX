@@ -99,9 +99,6 @@ func normalizeV2Paths(c *Config) error {
 }
 
 func normalizeWorkspaceMemberships(root string, workspace Workspace) (Workspace, error) {
-	if workspace.Repositories == nil {
-		return workspace, nil
-	}
 	members := make(map[string]Repository, len(workspace.Repositories))
 	for rel, override := range workspace.Repositories {
 		clean, err := NormalizeRepositoryRelative(rel)
@@ -113,7 +110,16 @@ func normalizeWorkspaceMemberships(root string, workspace Workspace) (Workspace,
 		}
 		members[clean] = override
 	}
-	workspace.Repositories = members
+	if workspace.Repositories != nil {
+		workspace.Repositories = members
+	}
+	if workspace.Onboarding != nil {
+		onboarding, err := normalizeRepositoryOnboarding(root, workspace.Onboarding)
+		if err != nil {
+			return Workspace{}, err
+		}
+		workspace.Onboarding = onboarding
+	}
 	return workspace, nil
 }
 
@@ -191,13 +197,27 @@ func SetRepositoryOnboarding(c *Config, workspaceRoot, relativePath, mainPath, c
 		return errors.New("config is nil")
 	}
 	if c.V2() || c.Version == 2 {
-		entry, commit, err := v2ScopeEntry(c, V2ScopeRepository, workspaceRoot, relativePath)
+		if workspaceRoot == "" {
+			return errors.New("workspace root is required")
+		}
+		relativePath, err := normalizeOnboardingRelative(relativePath)
 		if err != nil {
 			return err
 		}
-		repository := entry.Addr().Interface().(*Repository)
-		setRepositoryOnboardingRecord(&repository.Onboarding, checkedAt, declinedAt)
-		return commit()
+		if c.Workspaces == nil {
+			c.Workspaces = map[string]Workspace{}
+		}
+		workspaceKey := v2WorkspaceKey(c, workspaceRoot)
+		workspace := c.Workspaces[workspaceKey]
+		if workspace.Onboarding == nil {
+			workspace.Onboarding = map[string]RepositoryOnboarding{}
+		}
+		record := workspace.Onboarding[relativePath]
+		setRepositoryOnboardingRecord(&record, checkedAt, declinedAt)
+		workspace.Onboarding[relativePath] = record
+		c.Workspaces[workspaceKey] = workspace
+		setV2SectionPresent(c, "workspaces", true)
+		return nil
 	}
 	if mainPath == "" {
 		return errors.New("repository main path is required")

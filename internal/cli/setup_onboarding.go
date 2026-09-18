@@ -79,6 +79,7 @@ func (c Client) resolveInitialSetup(ctx context.Context, cwd string, enabled boo
 		Title:       localizer.Localize("cli.setup_check.title", nil),
 		Description: localizer.Localize("cli.setup_check.description", map[string]any{"Workspace": resolved.SourceWorkspace}),
 		Initial:     0,
+		ClearOnExit: true,
 		Language:    c.Config.DisplayLanguage(),
 		Options: []tui.Option{
 			{Value: "check", Label: localizer.Localize("cli.setup_check.check", nil), Description: localizer.Localize("cli.setup_check.check_description", nil)},

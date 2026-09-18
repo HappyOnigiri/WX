@@ -43,6 +43,20 @@ func TestSelectionNavigationAndConfirmation(t *testing.T) {
 	}
 }
 
+func TestSelectionClearOnExitRemovesCompletedView(t *testing.T) {
+	selection := testSelection()
+	selection.ClearOnExit = true
+	model := selectionModel{selection: selection, cursor: selection.Initial}
+	next, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := next.(selectionModel).content(); got != "" {
+		t.Fatalf("completed content=%q, want empty", got)
+	}
+	next, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if got := next.(selectionModel).content(); got != "" {
+		t.Fatalf("cancelled content=%q, want empty", got)
+	}
+}
+
 func TestSelectAcceptsTheFirstOptionAtTheLowerBoundary(t *testing.T) {
 	selection := testSelection()
 	selection.Initial = 0

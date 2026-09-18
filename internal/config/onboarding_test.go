@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,8 +25,36 @@ func TestSetRepositoryOnboardingRoundTripsThroughRepositoryFor(t *testing.T) {
 		t.Fatal(err)
 	}
 	workspace := raw.Workspaces[root]
-	record = workspace.Repositories["frontend"].Onboarding
+	record = workspace.Onboarding["frontend"]
 	if record.CheckedAt != "2026-09-17T00:02:00Z" || record.DeclinedAt != "" {
 		t.Fatalf("checked onboarding=%+v", record)
+	}
+}
+
+func TestSetRepositoryOnboardingAcceptsWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "workspace")
+	raw := Config{Version: 2}
+	if err := SetRepositoryOnboarding(&raw, root, ".", root, "2026-09-17T00:02:00Z", ""); err != nil {
+		t.Fatal(err)
+	}
+	effective := Merge(Defaults(), raw)
+	if err := NormalizePaths(&effective); err != nil {
+		t.Fatal(err)
+	}
+	record := effective.RepositoryFor(root, ".", root).Onboarding
+	if record.CheckedAt != "2026-09-17T00:02:00Z" || record.DeclinedAt != "" {
+		t.Fatalf("root onboarding=%+v", record)
+	}
+}
+
+func TestSetRepositoryOnboardingRejectsInvalidRelativePath(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "workspace")
+	for _, relativePath := range []string{"", "../outside", filepath.Join(root, "absolute")} {
+		raw := Config{Version: 2}
+		if err := SetRepositoryOnboarding(&raw, root, relativePath, root, "now", ""); err == nil || !strings.Contains(err.Error(), "relative") {
+			t.Fatalf("relativePath=%q error=%v", relativePath, err)
+		}
 	}
 }
