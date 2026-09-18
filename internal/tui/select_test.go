@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func testSelection() Selection {
@@ -54,6 +56,21 @@ func TestSelectionClearOnExitRemovesCompletedView(t *testing.T) {
 	next, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if got := next.(selectionModel).content(); got != "" {
 		t.Fatalf("cancelled content=%q, want empty", got)
+	}
+	if view := model.View(); !view.AltScreen {
+		t.Fatal("clear-on-exit selection did not use the alternate screen")
+	}
+}
+
+func TestSelectClearOnExitRestoresTheMainScreen(t *testing.T) {
+	selection := testSelection()
+	selection.ClearOnExit = true
+	var output bytes.Buffer
+	if _, err := Select(context.Background(), strings.NewReader("\r"), &output, selection); err != nil {
+		t.Fatal(err)
+	}
+	if rendered := output.String(); !strings.Contains(rendered, ansi.SetModeAltScreenSaveCursor) || !strings.Contains(rendered, ansi.ResetModeAltScreenSaveCursor) {
+		t.Fatalf("alternate screen was not entered and restored: %q", rendered)
 	}
 }
 

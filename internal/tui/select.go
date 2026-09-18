@@ -85,7 +85,11 @@ func (m selectionModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m selectionModel) View() tea.View {
-	return tea.NewView(m.content())
+	view := tea.NewView(m.content())
+	// 一時表示は alternate screen に閉じ込め、終了時に元の画面を復元する。
+	// 空の最終 View だけでは Bubble Tea の inline renderer が表示済みの行を消去しない。
+	view.AltScreen = m.selection.ClearOnExit
+	return view
 }
 
 func (m selectionModel) content() string {
