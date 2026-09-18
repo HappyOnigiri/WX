@@ -176,6 +176,8 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 		return setupCompletion{Action: setupCompletionContinue}
 	case setupCompletionStart:
 		return setupCompletion{Action: setupCompletionStart, Prompt: prompt}
+	case setupCompletionCancel:
+		return setupCompletion{}
 	default:
 		return setupCompletion{}
 	}
