@@ -373,7 +373,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 			}
 			if len(setupCheck) > 0 {
 				stage := newProbeStage(probeStageFullReady, err)
-				c.finishInitialSetupCheck(setupCtx, lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)}, false)
+				c.finishInitialSetupCheck(setupCtx, lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)}, false, false)
 			}
 			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
 			return 1, nil
@@ -387,8 +387,12 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 	}
 	if len(setupCheck) > 0 {
 		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, initialSetupUsageTimeout, true)
-		if !c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true) {
+		completion := c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true, plan.canStartInitialSetup())
+		if completion.Action == setupCompletionCancel {
 			return 1, nil
+		}
+		if completion.Action == setupCompletionStart {
+			args = append(args, initialSetupPromptArgs(completion.Prompt)...)
 		}
 	}
 	// ここから先の signal は agent へ中継するので、準備待ち用の捕捉は返す。

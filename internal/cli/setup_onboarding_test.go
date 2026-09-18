@@ -80,9 +80,11 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 	answers := []string{"check", "continue"}
 	initials := []int{}
 	clearOnExit := []bool{}
+	selections := []tui.Selection{}
 	setupSelect = func(_ context.Context, _ io.Reader, _ io.Writer, selection tui.Selection) (string, error) {
 		initials = append(initials, selection.Initial)
 		clearOnExit = append(clearOnExit, selection.ClearOnExit)
+		selections = append(selections, selection)
 		answer := answers[0]
 		answers = answers[1:]
 		return answer, nil
@@ -106,6 +108,9 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 	if len(clearOnExit) != 2 || !clearOnExit[0] || clearOnExit[1] {
 		t.Fatalf("selection clear_on_exit=%v, want only the completed setup question cleared", clearOnExit)
 	}
+	if selections[0].Options[0].Value != "check" || selections[0].Initial != 0 || len(selections[1].Options) != 2 {
+		t.Fatalf("selections=%+v, want a recommended check and no agent-only setup action", selections)
+	}
 	if params := leaseRequest(t, handler); !params.ForceCold {
 		t.Fatalf("lease params=%+v, want force_cold", params)
 	}
@@ -115,6 +120,51 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 	}
 	if record := recorded.RepositoryFor(base, ".", base).Onboarding; record.CheckedAt == "" || record.DeclinedAt != "" {
 		t.Fatalf("onboarding=%+v", record)
+	}
+}
+
+func TestInitialSetupCompletionStartsAgentWithRecommendedPrompt(t *testing.T) {
+	client, _, base, ctx := leaseFixture(t)
+	t.Setenv("HOME", filepath.Join(base, "home"))
+	repository := daemon.SetupCheckRepository{RelativePath: ".", MainPath: base, DirName: "repository"}
+	originalSelect, originalClipboard, originalSaver := setupSelect, setupClipboardCommand, setupPromptSaver
+	var selection tui.Selection
+	setupSelect = func(_ context.Context, _ io.Reader, _ io.Writer, value tui.Selection) (string, error) {
+		selection = value
+		return string(setupCompletionStart), nil
+	}
+	setupClipboardCommand = func(ctx context.Context, _ string, _ ...string) *exec.Cmd { return exec.CommandContext(ctx, "true") }
+	setupPromptSaver = func(string) (string, error) { return filepath.Join(base, "prompt.md"), nil }
+	t.Cleanup(func() {
+		setupSelect, setupClipboardCommand, setupPromptSaver = originalSelect, originalClipboard, originalSaver
+	})
+	completion := client.finishInitialSetupCheck(ctx, daemon.Lease{SourceWorkspace: base, Path: base}, []daemon.SetupCheckRepository{repository}, []diag.Finding{{Severity: diag.SeverityOK}}, true, true)
+	if completion.Action != setupCompletionStart || completion.Prompt == "" {
+		t.Fatalf("completion=%+v", completion)
+	}
+	if selection.Initial != 1 || len(selection.Options) != 3 || selection.Options[1].Value != string(setupCompletionStart) {
+		t.Fatalf("selection=%+v, want recommended setup action", selection)
+	}
+}
+
+func TestInitialSetupPromptIsOnlyAvailableForPromptlessAgents(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		plan launchPlan
+		want bool
+	}{
+		{plan: launchPlan{agent: "claude"}, want: true},
+		{plan: launchPlan{agent: "codex"}, want: true},
+		{plan: launchPlan{agent: "claude", args: []string{"existing prompt"}}},
+		{plan: launchPlan{agent: "codex", leaseKind: "command"}},
+		{plan: launchPlan{agent: "/bin/sh"}},
+	} {
+		if got := test.plan.canStartInitialSetup(); got != test.want {
+			t.Fatalf("plan=%+v canStartInitialSetup()=%t, want %t", test.plan, got, test.want)
+		}
+	}
+	if got := initialSetupPromptArgs("verify"); len(got) != 2 || got[0] != "--" || got[1] != "verify" {
+		t.Fatalf("initial setup prompt args=%v", got)
 	}
 }
 

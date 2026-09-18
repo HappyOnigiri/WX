@@ -3,9 +3,9 @@
 wx performed its first setup check for `{{.Workspace}}` in the leased worktree `{{.SlotPath}}`.
 Even when the automatic checks pass, verify the repository-specific build, test, lint, and dependency setup.
 
-Do not carry out this request inside a session that wx already started in that leased worktree.
-Work from each source repository's main checkout when editing `.worktreeinclude`, `.worktreelink`, hooks, or wx configuration.
-Run build and test commands in a fresh wx worktree with `wx run <command>`.
+This request can be carried out inside a session started in the leased worktree above.
+In that case, run build and test commands in the current worktree and treat each source repository's main checkout as read-only.
+If `.worktreeinclude`, `.worktreelink`, hooks, or wx configuration must change on the source side, present the proposed changes and ask the user first.
 
 ## Findings
 
@@ -32,4 +32,5 @@ Use `.worktreeinclude` for untracked files that each slot needs independently.
 A `.worktreelink` entry shares the same object across slots and the source repository, so writes from a slot reach the source checkout.
 Only propose link candidates and ask the user before adding them.
 
-Finish by running `{{.RecheckCommand}}`. The setup is complete only when it exits successfully without problem or unchecked findings.
+If source-side changes are needed, run `{{.RecheckCommand}}` after the user applies them.
+The setup is complete only when it exits successfully without problem or unchecked findings.

@@ -230,7 +230,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 			}
 			if len(setupCheck) > 0 {
 				stage := newProbeStage(probeStageFullReady, err)
-				c.finishInitialSetupCheck(setupCtx, lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)}, false)
+				c.finishInitialSetupCheck(setupCtx, lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)}, false, false)
 			}
 			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
 			return 1
@@ -239,7 +239,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 	waiting.finish()
 	if len(setupCheck) > 0 {
 		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, initialSetupUsageTimeout, true)
-		if !c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true) {
+		if completion := c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true, false); completion.Action == setupCompletionCancel {
 			return 1
 		}
 	}

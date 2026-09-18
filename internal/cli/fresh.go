@@ -61,6 +61,17 @@ func (p launchPlan) rpcAgentKind() string {
 	return p.agent
 }
 
+// canStartInitialSetup は保存したプロンプトを初回 user prompt として安全に追加できる起動かを返す。
+// 利用者指定の prompt と結合すると意味や引数位置を変えるため、agent 引数が空の新規起動だけを対象にする。
+func (p launchPlan) canStartInitialSetup() bool {
+	return p.leaseKind == "" && len(p.args) == 0 && (p.agent == "claude" || p.agent == "codex")
+}
+
+// initialSetupPromptArgs は prompt を option や --add-dir の可変長値と誤認させない引数形を返す。
+func initialSetupPromptArgs(prompt string) []string {
+	return []string{"--", prompt}
+}
+
 // acceptsFreshWorkspace は、起動の失敗が当時の worktree を復元できないことによるもので、
 // 新しい worktree での再開が選ばれたかを返す。すでに fresh な起動と、再開でない起動は対象にしない。
 func (c Client) acceptsFreshWorkspace(ctx context.Context, plan launchPlan, err error) bool {

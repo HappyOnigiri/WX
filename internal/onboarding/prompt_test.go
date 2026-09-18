@@ -18,7 +18,7 @@ func TestPromptContainsSetupBoundariesAndConvergenceCommand(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, required := range []string{"/source", "/slot", ".worktreeinclude", ".worktreelink", "wx run", "wx setup-check", "probe", "failure"} {
+		for _, required := range []string{"/source", "/slot", ".worktreeinclude", ".worktreelink", "wx setup-check", "probe", "failure"} {
 			if !strings.Contains(body, required) {
 				t.Errorf("language=%s prompt missing %q\n%s", language, required, body)
 			}

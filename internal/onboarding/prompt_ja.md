@@ -3,9 +3,9 @@
 wx が `{{.Workspace}}` の初回セットアップ検査を貸出 worktree `{{.SlotPath}}` で行いました。
 自動検査で問題がない場合も、リポジトリ固有の build・test・lint と依存関係の準備が十分か確認してください。
 
-wx がこの貸出 worktree で既に起動したセッション内では、この依頼を実行しないでください。
-`.worktreeinclude`、`.worktreelink`、hook、wx 設定の編集は各ソースリポジトリの main checkout で行ってください。
-build・test コマンドは新しい wx worktree に `wx run <コマンド>` で実行してください。
+この依頼は、上記の貸出 worktree で起動したセッション内でも実行できます。
+その場合は build・test を現在の worktree で実行し、各ソースリポジトリの main checkout は読み取り専用として扱ってください。
+`.worktreeinclude`、`.worktreelink`、hook、wx 設定をソース側で変更する必要があれば、変更案を示してユーザーへ確認してください。
 
 ## 検査結果
 
@@ -32,4 +32,5 @@ slot ごとに独立して必要な未追跡ファイルには `.worktreeinclude
 `.worktreelink` の項目は slot とソースリポジトリで同じ実体を共有し、slot からの書き込みがソース checkout に届きます。
 link 候補は提案に留め、追加前にユーザーへ確認してください。
 
-最後に `{{.RecheckCommand}}` を実行してください。problem または unchecked の finding がなく終了コード 0 になることが完了条件です。
+ソース側の変更が必要なら、ユーザーが反映した後に `{{.RecheckCommand}}` を実行してください。
+problem または unchecked の finding がなく終了コード 0 になることが完了条件です。

@@ -32,6 +32,19 @@ type setupOnboardingDecision struct {
 	ForceCold    bool
 }
 
+type setupCompletionAction string
+
+const (
+	setupCompletionCancel   setupCompletionAction = ""
+	setupCompletionContinue setupCompletionAction = "continue"
+	setupCompletionStart    setupCompletionAction = "start"
+)
+
+type setupCompletion struct {
+	Action setupCompletionAction
+	Prompt string
+}
+
 func initialSetupInteractive() bool {
 	return setupIsTerminal(int(os.Stdin.Fd())) && setupIsTerminal(int(os.Stderr.Fd()))
 }
@@ -108,7 +121,7 @@ func (c Client) resolveInitialSetup(ctx context.Context, cwd string, enabled boo
 
 // finishInitialSetupCheck は検査結果とプロンプトを agent 起動前に提示する。
 // complete が偽なら検査記録と続行確認を行わず、次の対話起動で再検査できるようにする。
-func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease, repositories []daemon.SetupCheckRepository, findings []diag.Finding, complete bool) bool {
+func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease, repositories []daemon.SetupCheckRepository, findings []diag.Finding, complete, canStart bool) setupCompletion {
 	language := cliLanguage(c)
 	reply := diag.Resolve(diag.Reply{Findings: findings}, language)
 	diag.RenderLanguage(os.Stderr, reply, false, language)
@@ -129,28 +142,42 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 		}
 	}
 	if !complete {
-		return false
+		return setupCompletion{}
 	}
 	if err := recordInitialSetup(repositories, lease.SourceWorkspace, now, ""); err != nil {
 		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.setup_prompt.record_failed", map[string]any{"Error": err.Error()}))
 	}
 	attention := setupFindingsNeedAttention(findings)
 	initial := 0
-	if attention {
-		initial = 1
-	}
 	localizer := cliLocalizer(c)
+	options := []tui.Option{
+		{Value: string(setupCompletionContinue), Label: localizer.Localize("cli.setup_continue.continue", nil), Description: localizer.Localize("cli.setup_continue.continue_description", nil)},
+	}
+	if canStart && prompt != "" {
+		initial = len(options)
+		options = append(options, tui.Option{Value: string(setupCompletionStart), Label: localizer.Localize("cli.setup_continue.start", nil), Description: localizer.Localize("cli.setup_continue.start_description", nil)})
+	} else if attention {
+		initial = len(options)
+	}
+	options = append(options, tui.Option{Value: "cancel", Label: localizer.Localize("cli.setup_continue.cancel", nil), Description: localizer.Localize("cli.setup_continue.cancel_description", nil)})
 	answer, err := setupSelect(ctx, os.Stdin, os.Stderr, tui.Selection{
 		Title:       localizer.Localize("cli.setup_continue.title", nil),
 		Description: localizer.Localize("cli.setup_continue.description", nil),
 		Initial:     initial,
 		Language:    c.Config.DisplayLanguage(),
-		Options: []tui.Option{
-			{Value: "continue", Label: localizer.Localize("cli.setup_continue.continue", nil), Description: localizer.Localize("cli.setup_continue.continue_description", nil)},
-			{Value: "cancel", Label: localizer.Localize("cli.setup_continue.cancel", nil), Description: localizer.Localize("cli.setup_continue.cancel_description", nil)},
-		},
+		Options:     options,
 	})
-	return err == nil && answer == "continue"
+	if err != nil {
+		return setupCompletion{}
+	}
+	switch setupCompletionAction(answer) {
+	case setupCompletionContinue:
+		return setupCompletion{Action: setupCompletionContinue}
+	case setupCompletionStart:
+		return setupCompletion{Action: setupCompletionStart, Prompt: prompt}
+	default:
+		return setupCompletion{}
+	}
 }
 
 func setupPromptRepositories(lease daemon.Lease, repositories []daemon.SetupCheckRepository) []onboarding.Repository {
