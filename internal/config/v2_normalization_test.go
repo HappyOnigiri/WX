@@ -13,7 +13,7 @@ func TestMarkLegacyPresentFromValueRecognizesEveryLegacySection(t *testing.T) {
 
 	for _, tag := range []string{
 		"worktree", "storage", "pool", "retention", "discovery", "readiness", "resume",
-		"lease", "includes", "agent", "sessions", "logging", "update", "repositories",
+		"lease", "includes", "agent", "sessions", "logging", "update", "daemon", "repositories",
 	} {
 		if !present[tag] {
 			t.Errorf("legacy section %q was not recorded: %v", tag, present)
