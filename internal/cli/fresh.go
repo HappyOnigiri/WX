@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/i18n"
@@ -62,9 +63,100 @@ func (p launchPlan) rpcAgentKind() string {
 }
 
 // canStartInitialSetup は保存したプロンプトを初回 user prompt として安全に追加できる起動かを返す。
-// 利用者指定の prompt と結合すると意味や引数位置を変えるため、agent 引数が空の新規起動だけを対象にする。
+// model や権限などの起動 option は許可し、利用者指定の prompt や subcommand がある起動には追加しない。
 func (p launchPlan) canStartInitialSetup() bool {
-	return p.leaseKind == "" && len(p.args) == 0 && (p.agent == "claude" || p.agent == "codex")
+	if p.leaseKind != "" || p.resuming {
+		return false
+	}
+	switch p.agent {
+	case "claude":
+		return !agentArgsContainPrompt(p.args, claudeOptionValues)
+	case "codex":
+		return !agentArgsContainPrompt(p.args, codexOptionValues)
+	default:
+		return false
+	}
+}
+
+type agentOptionValue uint8
+
+const (
+	agentOptionOne agentOptionValue = iota + 1
+	agentOptionOptional
+	agentOptionMany
+)
+
+// claudeOptionValues は位置引数の prompt と option の値を区別するための一覧である。
+// 可変長 option の後ろに prompt を置く場合は Claude 自身も `--` を必要とするので、次の option までを値として扱う。
+var claudeOptionValues = map[string]agentOptionValue{
+	"--add-dir": agentOptionMany, "--agent": agentOptionOne, "--agents": agentOptionOne,
+	"--allowedTools": agentOptionMany, "--allowed-tools": agentOptionMany,
+	"--append-system-prompt": agentOptionOne, "--autocompact": agentOptionOne,
+	"--betas": agentOptionMany, "--cloud": agentOptionOptional, "-d": agentOptionOptional,
+	"--debug": agentOptionOptional, "--debug-file": agentOptionOne,
+	"--disallowedTools": agentOptionMany, "--disallowed-tools": agentOptionMany,
+	"--effort": agentOptionOne, "--environment": agentOptionOne, "--fallback-model": agentOptionOne,
+	"--file": agentOptionMany, "--from-pr": agentOptionOptional, "--input-format": agentOptionOne,
+	"--json-schema": agentOptionOne, "--max-budget-usd": agentOptionOne,
+	"--mcp-config": agentOptionMany, "--model": agentOptionOne, "-n": agentOptionOne,
+	"--name": agentOptionOne, "--output-format": agentOptionOne, "--permission-mode": agentOptionOne,
+	"--permission-prompts": agentOptionOne, "--plugin-dir": agentOptionOne, "--plugin-url": agentOptionOne,
+	"--prompt-suggestions": agentOptionOptional, "--remote-control": agentOptionOptional,
+	"--remote-control-session-name-prefix": agentOptionOne, "-r": agentOptionOptional,
+	"--resume": agentOptionOptional, "--session-id": agentOptionOne, "--setting-sources": agentOptionOne,
+	"--settings": agentOptionOne, "--system-prompt": agentOptionOne,
+	"--system-prompt-snapshot": agentOptionOne, "--teleport": agentOptionOptional,
+	"--tools": agentOptionMany, "-w": agentOptionOptional, "--worktree": agentOptionOptional,
+}
+
+// codexOptionValues は対話起動の global option が取る値を表す。
+// --effort は対応版で直接指定する場合も、初回 prompt と取り違えないよう受け付ける。
+var codexOptionValues = map[string]agentOptionValue{
+	"-c": agentOptionOne, "--config": agentOptionOne, "--enable": agentOptionOne,
+	"--disable": agentOptionOne, "--remote": agentOptionOne, "--remote-auth-token-env": agentOptionOne,
+	"-i": agentOptionMany, "--image": agentOptionMany, "-m": agentOptionOne, "--model": agentOptionOne,
+	"--local-provider": agentOptionOne, "-p": agentOptionOne, "--profile": agentOptionOne,
+	"-s": agentOptionOne, "--sandbox": agentOptionOne, "-C": agentOptionOne, "--cd": agentOptionOne,
+	"--add-dir": agentOptionOne, "-a": agentOptionOne, "--ask-for-approval": agentOptionOne,
+	"--thread-source": agentOptionOne, "--output-schema": agentOptionOne,
+	"--color": agentOptionOne, "-o": agentOptionOne, "--output-last-message": agentOptionOne,
+	"--effort": agentOptionOne,
+}
+
+// agentArgsContainPrompt は既知 option の値を飛ばし、agent が prompt または subcommand と解釈する位置引数を探す。
+// 未知 option は値の個数を推測せず、その直後の非 option を prompt 扱いして安全側に倒す。
+func agentArgsContainPrompt(args []string, values map[string]agentOptionValue) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			return i+1 < len(args)
+		}
+		if arg == "-" || !strings.HasPrefix(arg, "-") {
+			return true
+		}
+		name := arg
+		if before, _, found := strings.Cut(arg, "="); found {
+			name = before
+			if values[name] != 0 {
+				continue
+			}
+		}
+		switch values[name] {
+		case agentOptionOne:
+			if i+1 < len(args) {
+				i++
+			}
+		case agentOptionOptional:
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+			}
+		case agentOptionMany:
+			for i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+			}
+		}
+	}
+	return false
 }
 
 // initialSetupPromptArgs は prompt を option や --add-dir の可変長値と誤認させない引数形を返す。

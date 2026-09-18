@@ -147,21 +147,33 @@ func TestInitialSetupCompletionStartsAgentWithRecommendedPrompt(t *testing.T) {
 	}
 }
 
-func TestInitialSetupPromptIsOnlyAvailableForPromptlessAgents(t *testing.T) {
+func TestInitialSetupPromptIsAvailableWithAgentOptions(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
+		name string
 		plan launchPlan
 		want bool
 	}{
-		{plan: launchPlan{agent: "claude"}, want: true},
-		{plan: launchPlan{agent: "codex"}, want: true},
-		{plan: launchPlan{agent: "claude", args: []string{"existing prompt"}}},
-		{plan: launchPlan{agent: "codex", leaseKind: "command"}},
-		{plan: launchPlan{agent: "/bin/sh"}},
+		{name: "claude without args", plan: launchPlan{agent: "claude"}, want: true},
+		{name: "claude flags and values", plan: launchPlan{agent: "claude", args: []string{"--dangerously-skip-permissions", "--effort", "medium", "--model", "opus"}}, want: true},
+		{name: "claude equals value", plan: launchPlan{agent: "claude", args: []string{"--permission-mode=bypassPermissions"}}, want: true},
+		{name: "claude prompt after options", plan: launchPlan{agent: "claude", args: []string{"--effort", "medium", "existing prompt"}}},
+		{name: "claude prompt after separator", plan: launchPlan{agent: "claude", args: []string{"--dangerously-skip-permissions", "--", "existing prompt"}}},
+		{name: "codex without args", plan: launchPlan{agent: "codex"}, want: true},
+		{name: "codex flags and values", plan: launchPlan{agent: "codex", args: []string{"--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5.6-sol", "--config", `model_reasoning_effort="high"`}}, want: true},
+		{name: "codex permission option", plan: launchPlan{agent: "codex", args: []string{"--ask-for-approval", "never", "--sandbox", "danger-full-access"}}, want: true},
+		{name: "codex prompt after options", plan: launchPlan{agent: "codex", args: []string{"--model", "gpt-5.6-sol", "existing prompt"}}},
+		{name: "existing prompt", plan: launchPlan{agent: "claude", args: []string{"existing prompt"}}},
+		{name: "resume", plan: launchPlan{agent: "claude", resuming: true}},
+		{name: "lease command", plan: launchPlan{agent: "codex", leaseKind: "command"}},
+		{name: "other agent", plan: launchPlan{agent: "/bin/sh"}},
 	} {
-		if got := test.plan.canStartInitialSetup(); got != test.want {
-			t.Fatalf("plan=%+v canStartInitialSetup()=%t, want %t", test.plan, got, test.want)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := test.plan.canStartInitialSetup(); got != test.want {
+				t.Fatalf("plan=%+v canStartInitialSetup()=%t, want %t", test.plan, got, test.want)
+			}
+		})
 	}
 	if got := initialSetupPromptArgs("verify"); len(got) != 2 || got[0] != "--" || got[1] != "verify" {
 		t.Fatalf("initial setup prompt args=%v", got)
