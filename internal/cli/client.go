@@ -386,7 +386,7 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 		return 1, nil
 	}
 	if len(setupCheck) > 0 {
-		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, initialSetupUsageTimeout, true)
+		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, true)
 		completion := c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true, plan.canStartInitialSetup())
 		if completion.Action == setupCompletionCancel {
 			return 1, nil

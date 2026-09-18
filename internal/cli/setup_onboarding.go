@@ -18,8 +18,6 @@ import (
 	"github.com/HappyOnigiri/WX/internal/tui"
 )
 
-const initialSetupUsageTimeout = 3 * time.Second
-
 var (
 	setupClipboardCommand = exec.CommandContext
 	setupPromptSaver      = saveSetupPrompt

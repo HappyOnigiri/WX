@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/diag"
@@ -11,7 +10,7 @@ import (
 
 // inspectLeasedWorkspace は貸出中の slot を変更せずに検査する。
 // doctor と初回セットアップ検査で共有し、貸出・返却の判断は呼び出し側へ残す。
-func (c Client) inspectLeasedWorkspace(ctx context.Context, root, sessionID, leasePath string, usageTimeout time.Duration, requireMeasurements bool) (diag.Probe, []diag.Finding) {
+func (c Client) inspectLeasedWorkspace(ctx context.Context, root, sessionID, leasePath string, requireMeasurements bool) (diag.Probe, []diag.Finding) {
 	probe := diag.Probe{Workspace: root, SlotID: sessionID, Path: leasePath, Usage: diag.ProbeUsageUnavailable}
 	findings := []diag.Finding{}
 	measurement := c.prepareMeasurement(ctx, sessionID)
@@ -33,7 +32,10 @@ func (c Client) inspectLeasedWorkspace(ctx context.Context, root, sessionID, lea
 		checkSubmodules = true
 	}
 	findings = append(findings, c.probeWorktreeFindingsWithOptions(ctx, root, leasePath, excludedSubmodules, checkSubmodules)...)
-	viewCtx, cancel := context.WithTimeout(ctx, usageTimeout)
+	viewCtx, cancel := ctx, func() {}
+	if !requireMeasurements {
+		viewCtx, cancel = context.WithTimeout(ctx, probeUsageTimeout)
+	}
 	slot := c.probeSlotView(viewCtx, sessionID)
 	cancel()
 	probe.Usage, probe.Repositories = probeUsage(slot)

@@ -39,7 +39,7 @@ func (c Client) RunSetupCheck(ctx context.Context, root string) []diag.Finding {
 			return []diag.Finding{probePrepareProblem(root, lease.Path, newProbeStage(probeStageFullReady, err))}
 		}
 	}
-	_, findings := c.inspectLeasedWorkspace(ctx, lease.SourceWorkspace, lease.SessionID, lease.Path, initialSetupUsageTimeout, true)
+	_, findings := c.inspectLeasedWorkspace(ctx, lease.SourceWorkspace, lease.SessionID, lease.Path, true)
 	if len(lease.SetupCheckRepositories) > 0 {
 		now := time.Now().UTC().Format(time.RFC3339)
 		_ = recordInitialSetup(lease.SetupCheckRepositories, lease.SourceWorkspace, now, "")

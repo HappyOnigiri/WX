@@ -238,7 +238,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 	}
 	waiting.finish()
 	if len(setupCheck) > 0 {
-		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, initialSetupUsageTimeout, true)
+		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, true)
 		if completion := c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true, false); completion.Action == setupCompletionCancel {
 			return 1
 		}
