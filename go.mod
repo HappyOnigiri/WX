@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	charm.land/bubbletea/v2 v2.0.9
+	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/spf13/pflag v1.0.10

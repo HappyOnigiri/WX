@@ -30,11 +30,13 @@ wx codex
 ```
 
 所选智能体会在 wx 管理的 worktree 中启动。
-`claude` 或 `codex` 后面的参数会原样传递给智能体。
-要指定起始分支，请将 wx 选项放在智能体名称之前：
+`claude` 或 `codex` 后面的参数会原样传递给智能体，但在 `--` 之前的
+`--branch <branch|repo=branch>` 或 `--branch=<branch|repo=branch>` 会由 wx 处理。
+要指定起始分支，可以将 wx 选项放在智能体名称之前或之后：
 
 ```sh
 wx --branch feature/api codex
+wx codex --branch feature/api
 ```
 
 Claude Code 和 Codex 按启动路径管理会话日志，因此 worktree 发生变化后，标准的 continue / resume 命令可能难以找到过去的会话。

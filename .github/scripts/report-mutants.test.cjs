@@ -79,6 +79,21 @@ test('accepts package-scope declarations in schema 3 manifests', () => {
   assert.equal(groups[0].title, '[mutation] cmd/wx/clean_unmanaged.go: <package>');
 });
 
+test('accepts a bounded file-shard command with many exclusions', () => {
+  const value = manifest();
+  value.command = ['gremlins', 'unleash', './internal/daemon'];
+  for (let index = 0; index < 120; index += 1) {
+    value.command.push('--exclude-files', `^source_${index}\\.go$`);
+  }
+  assert.equal(reporter.validateManifest(value).command.length, 243);
+});
+
+test('rejects an unbounded manifest command', () => {
+  const value = manifest();
+  value.command = Array.from({ length: 1001 }, () => 'argument');
+  assert.throws(() => reporter.validateManifest(value), /invalid command/u);
+});
+
 test('groups survivors and renders mutation evidence', () => {
   const groups = reporter.aggregateManifests([{ artifactName: 'mutation-config-10-1', manifest: manifest() }], source);
   assert.equal(groups.length, 1);

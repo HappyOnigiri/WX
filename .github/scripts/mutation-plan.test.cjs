@@ -146,10 +146,12 @@ test('heavy packages expand into deterministic file-shard matrix entries', () =>
     assert.equal(item.shard_count, 1);
     assert.match(item.id, /^package-internal-daemon-file-[a-z0-9-]+-[0-9a-f]{10}$/u);
     const selected = path.basename(item.shard_files);
+    const patterns = item.exclude_files.split(' ');
     for (const source of sources) {
-      const pattern = source.replace('.', '\\.') + '$';
-      assert.equal(item.exclude_files.split(' ').includes(pattern), source !== selected);
+      const pattern = `^${source.replace('.', '\\.')}\$`;
+      assert.equal(patterns.includes(pattern), source !== selected);
     }
+    assert.equal(patterns.some((pattern) => new RegExp(pattern, 'u').test(selected)), false);
   }
   assert.deepEqual(plan.matrix.filter((item) => item.profiles === 'internal/cli').map((item) => item.id), [
     'package-internal-cli-1', 'package-internal-cli-2',
@@ -178,6 +180,7 @@ test('workflow wires planned shards, independent deadlines, and diagnostics', ()
   assert.match(workflow, /\.unweighted\[\]/u);
   assert.match(runner, /execution\.json/u);
   assert.match(runner, /preflight\.json/u);
+  assert.ok(runner.includes(`printf '{"files":[]}\\n'`));
   assert.doesNotMatch(runner, /failures=\$\(\(failures \+ one_survivors\)\)/u);
   assert.match(makefile, /\.\/internal\/fdexec\|internal\/fdexec/u);
   assert.match(makefile, /mutation-weights/u);

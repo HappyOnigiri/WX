@@ -130,6 +130,7 @@ func addLinkedWorktree(t *testing.T, main, path, commit string) string {
 		path = filepath.Join(filepath.Dir(main), path)
 	}
 	probeGitCommand(t, main, "worktree", "add", "--detach", path)
+	t.Cleanup(func() { probeGitCommand(t, main, "worktree", "remove", "--force", path) })
 	if commit != "" {
 		if err := os.WriteFile(filepath.Join(path, "tracked"), []byte(commit+"\n"), 0o600); err != nil {
 			t.Fatal(err)
