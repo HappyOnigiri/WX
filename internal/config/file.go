@@ -477,14 +477,3 @@ func setNestedYAMLPath(root map[string]any, parts []string, value any) {
 	}
 	current[parts[len(parts)-1]] = value
 }
-
-func listPresent(c Config, key string) bool {
-	if strings.HasPrefix(key, "sessions.paths.") {
-		if !c.has("sessions.paths", false) {
-			return false
-		}
-		list := configListField(reflect.ValueOf(c), key)
-		return list.IsValid() && !list.IsNil()
-	}
-	return c.has(key, false)
-}

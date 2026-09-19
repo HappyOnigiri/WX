@@ -423,9 +423,6 @@ func globalFieldPresent(raw Config, key string) bool {
 		}
 		return v2RawFieldPresent(raw, scope, canonical)
 	}
-	if list := configListField(reflect.ValueOf(raw), key); list.IsValid() {
-		return listPresent(raw, key)
-	}
 	field := configField(reflect.ValueOf(raw), key)
 	return field.IsValid() && raw.has(key, !field.IsZero())
 }

@@ -275,7 +275,6 @@ func ResetList(c *Config, key string) error {
 		return err
 	}
 	list.Set(reflect.Zero(list.Type()))
-	clearListPresent(c, key)
 	return nil
 }
 
@@ -388,16 +387,6 @@ func mutableConfigList(c *Config, key string) (reflect.Value, error) {
 		return reflect.Value{}, fmt.Errorf("unknown list config key %q", key)
 	}
 	return list, nil
-}
-
-// clearListPresent は list の present を落とす。present が nil の Config は
-// 記録なしを意味するため作らない。sessions.paths は claude と codex で present を共有し、
-// 個別の list が nil かを listPresent が別に見るので触らない。
-func clearListPresent(c *Config, key string) {
-	if c.present == nil || strings.HasPrefix(key, "sessions.paths.") {
-		return
-	}
-	delete(c.present, key)
 }
 
 func normalizeListPath(path string) string {
