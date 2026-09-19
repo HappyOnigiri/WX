@@ -2,7 +2,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -30,6 +29,7 @@ import (
 const (
 	manifestSchemaVersion   = 3
 	mutationIDVersion       = "wx-mutation-id-v1"
+	exclusionKeyVersion     = "ast-v1"
 	defaultExclusionsFile   = "mutation-exclusions.txt"
 	packageScopeDeclaration = "<package>"
 )
@@ -109,12 +109,6 @@ type manifest struct {
 	Excluded        []excluded `json:"excluded"`
 }
 
-type exclusion struct {
-	Path   string
-	ID     string
-	Reason string
-}
-
 type convertOptions struct {
 	Root            string
 	PackageDir      string
@@ -129,6 +123,7 @@ type convertOptions struct {
 	Command         []string
 	TargetFile      string
 	MutationID      string
+	MutatorSet      string
 }
 
 type stringListFlag []string
@@ -143,19 +138,21 @@ func (value *stringListFlag) Set(item string) error {
 }
 
 type mutationRecord struct {
-	ID          string
-	Declaration declaration
-	Mutator     string
-	Line        int
-	Column      int
-	Original    string
-	Mutated     string
-	Status      string
+	ID           string
+	ExclusionKey string
+	Declaration  declaration
+	Mutator      string
+	Line         int
+	Column       int
+	Original     string
+	Mutated      string
+	Status       string
 }
 
 type sourceFile struct {
 	path         string
 	repository   string
+	data         []byte
 	fileSet      *token.FileSet
 	file         *ast.File
 	declarations []declarationRange
@@ -213,6 +210,7 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	emptyResult := flags.Bool("empty-result", false, "generate an empty manifest without a Gremlins result (mutually exclusive with -input)")
 	output := flags.String("output", "-", "manifest output path, or - for stdout")
 	exclusions := flags.String("exclusions", defaultExclusionsFile, "mutation exclusions file")
+	validateExclusions := flags.Bool("validate-exclusions", false, "validate all exclusion keys against source and exit")
 	var shardFiles stringListFlag
 	flags.Var(&shardFiles, "shard-files", "repository-relative files assigned to this shard (repeatable)")
 	flags.Var(&shardFiles, "files", "alias for -shard-files")
@@ -226,10 +224,33 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 	mutationID := flags.String("mutation-id", "", "mutation ID to validate")
 	mutationIDAlias := flags.String("id", "", "alias for -mutation-id")
 	failOnSurvivors := flags.Bool("fail-on-survivors", false, "return an error after writing a manifest with survivors")
+	mutatorSet := flags.String("mutators", "default", "selected mutator set: boundary or default")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
+		return err
+	}
+	if *validateExclusions {
+		if *input != "" || *emptyResult || *profile != "" {
+			return errors.New("mutationreport: -validate-exclusions cannot be combined with result conversion")
+		}
+		rootPath, err := filepath.Abs(*root)
+		if err != nil {
+			return fmt.Errorf("resolve repository root: %w", err)
+		}
+		exclusionsPath := *exclusions
+		if !filepath.IsAbs(exclusionsPath) {
+			exclusionsPath = filepath.Join(rootPath, exclusionsPath)
+		}
+		items, err := loadExclusions(exclusionsPath)
+		if err != nil {
+			return err
+		}
+		if _, err := resolveExclusions(rootPath, items); err != nil {
+			return fmt.Errorf("validate exclusions: %w", err)
+		}
+		_, err = fmt.Fprintf(out, "validated %d mutation exclusion(s)\n", len(items))
 		return err
 	}
 	if (*input == "") != *emptyResult {
@@ -271,6 +292,7 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 		Root: *root, PackageDir: *packageDir, Profile: *profile, Input: *input,
 		Exclusions: *exclusions, ShardFiles: shardFiles, RunID: *runID, RunAttempt: *runAttempt,
 		TestSHA: *testSHA, DurationSeconds: *durationSeconds, Command: commands, TargetFile: *targetFile, MutationID: *mutationID,
+		MutatorSet: *mutatorSet,
 	}, result)
 	if err != nil {
 		return err
@@ -301,6 +323,9 @@ func commandMain(_ context.Context, args []string, out, errOut io.Writer) error 
 func buildManifest(options convertOptions, result gremlinsResult) (manifest, error) {
 	if !validDurationSeconds(options.DurationSeconds) {
 		return manifest{}, fmt.Errorf("invalid duration_seconds %v", options.DurationSeconds)
+	}
+	if options.MutatorSet != "" && options.MutatorSet != "default" && options.MutatorSet != "boundary" {
+		return manifest{}, fmt.Errorf("invalid mutator set %q", options.MutatorSet)
 	}
 	root, err := filepath.Abs(options.Root)
 	if err != nil {
@@ -343,10 +368,15 @@ func buildManifest(options convertOptions, result gremlinsResult) (manifest, err
 	if err != nil {
 		return manifest{}, err
 	}
+	resolvedExclusions, err := resolveExclusions(root, exclusions)
+	if err != nil {
+		return manifest{}, fmt.Errorf("validate exclusions: %w", err)
+	}
 	activeExclusions := make(map[string]exclusion)
 	for _, item := range exclusions {
-		if exclusionApplies(item.Path, root, packageDir) && (len(shardFiles) == 0 || shardFiles[item.Path]) {
-			activeExclusions[item.ID] = item
+		resolved := resolvedExclusions[item.Key]
+		if exclusionApplies(item.Path, root, packageDir) && (len(shardFiles) == 0 || shardFiles[item.Path]) && mutatorSetIncludes(options.MutatorSet, resolved.Mutator) {
+			activeExclusions[resolved.ID] = item
 		}
 	}
 	collection, err := collectMutationRecords(root, packageDir, result)
@@ -517,9 +547,14 @@ func mutationRecordFor(source *sourceFile, mutation gremlinsMutation) (mutationR
 	if err != nil {
 		return mutationRecord{}, fmt.Errorf("%s:%d:%d: %w", source.repository, mutation.Line, mutation.Column, err)
 	}
+	exclusionKey, err := source.exclusionKey(mutation.Line, mutation.Column, mutation.Type, original, mutated)
+	if err != nil {
+		return mutationRecord{}, fmt.Errorf("%s:%d:%d: %w", source.repository, mutation.Line, mutation.Column, err)
+	}
 	return mutationRecord{
-		ID:          mutationID(declaration.Path, declaration.Function, mutation.Type, mutation.Line, mutation.Column, original, mutated),
-		Declaration: declaration, Mutator: mutation.Type, Line: mutation.Line, Column: mutation.Column,
+		ID:           mutationID(declaration.Path, declaration.Function, mutation.Type, mutation.Line, mutation.Column, original, mutated),
+		ExclusionKey: exclusionKey,
+		Declaration:  declaration, Mutator: mutation.Type, Line: mutation.Line, Column: mutation.Column,
 		Original: original, Mutated: mutated, Status: mutation.Status,
 	}, nil
 }
@@ -528,9 +563,9 @@ func validateActiveExclusions(path string, active map[string]exclusion, records 
 	for id, item := range active {
 		record, ok := records[id]
 		if !ok {
-			return fmt.Errorf("%s: stale exclusion for %s", path, id)
+			return fmt.Errorf("%s: exclusion %s resolved to mutation %s, which is absent from the selected result", path, item.Key, id)
 		}
-		if record.Declaration.Path != item.Path {
+		if record.Declaration.Path != item.Path || record.ExclusionKey != item.Key {
 			return fmt.Errorf("%s: exclusion %s does not match path %s", path, id, item.Path)
 		}
 	}
@@ -634,12 +669,16 @@ func sourceForPath(cache map[string]*sourceFile, root, path string) (*sourceFile
 	if source := cache[repository]; source != nil {
 		return source, nil
 	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", repository, err)
+	}
 	fileSet := token.NewFileSet()
-	file, err := parser.ParseFile(fileSet, abs, nil, parser.ParseComments)
+	file, err := parser.ParseFile(fileSet, abs, data, parser.ParseComments)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", repository, err)
 	}
-	source := &sourceFile{path: abs, repository: repository, fileSet: fileSet, file: file}
+	source := &sourceFile{path: abs, repository: repository, data: data, fileSet: fileSet, file: file}
 	packagePosition := fileSet.Position(file.Pos())
 	source.declarations = append(source.declarations, declarationRange{
 		declaration: declaration{Path: repository, Function: packageScopeDeclaration, Line: packagePosition.Line},
@@ -648,6 +687,11 @@ func sourceForPath(cache map[string]*sourceFile, root, path string) (*sourceFile
 	for _, declarationNode := range file.Decls {
 		function, ok := declarationNode.(*ast.FuncDecl)
 		if !ok || function.Name == nil {
+			position := fileSet.Position(declarationNode.Pos())
+			source.declarations = append(source.declarations, declarationRange{
+				declaration: declaration{Path: repository, Function: packageScopeDeclaration, Line: position.Line},
+				start:       declarationNode.Pos(), end: declarationNode.End(),
+			})
 			continue
 		}
 		name := function.Name.Name
@@ -715,6 +759,11 @@ func repositoryPath(value string) (string, error) {
 }
 
 func (source *sourceFile) declarationAtLine(line int) (declaration, bool) {
+	rangeValue, ok := source.declarationRangeAtLine(line)
+	return rangeValue.declaration, ok
+}
+
+func (source *sourceFile) declarationRangeAtLine(line int) (declarationRange, bool) {
 	var found declarationRange
 	foundRange := false
 	for _, candidate := range source.declarations {
@@ -728,9 +777,9 @@ func (source *sourceFile) declarationAtLine(line int) (declaration, bool) {
 		}
 	}
 	if !foundRange {
-		return declaration{}, false
+		return declarationRange{}, false
 	}
-	return found.declaration, true
+	return found, true
 }
 
 func mutationID(path, function, mutator string, line, column int, original, mutated string) string {
@@ -844,59 +893,6 @@ func formatExpression(fileSet *token.FileSet, expression ast.Expr) (string, erro
 		return "", err
 	}
 	return strings.Join(strings.Fields(buffer.String()), ""), nil
-}
-
-func loadExclusions(path string) ([]exclusion, error) {
-	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	var result []exclusion
-	seen := make(map[string]bool)
-	scanner := bufio.NewScanner(file)
-	for lineNumber := 1; scanner.Scan(); lineNumber++ {
-		line := strings.TrimSpace(strings.TrimSuffix(scanner.Text(), "\r"))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		fields := strings.Split(line, "\t")
-		if len(fields) != 3 || strings.TrimSpace(fields[0]) == "" || strings.TrimSpace(fields[1]) == "" || strings.TrimSpace(fields[2]) == "" {
-			return nil, fmt.Errorf("%s:%d: every entry needs path, mutation ID, and reason separated by tabs", path, lineNumber)
-		}
-		relative, err := repositoryPath(fields[0])
-		if err != nil {
-			return nil, fmt.Errorf("%s:%d: %w", path, lineNumber, err)
-		}
-		id := strings.TrimSpace(fields[1])
-		if !validMutationID(id) {
-			return nil, fmt.Errorf("%s:%d: mutation ID must be 64 lowercase hexadecimal characters", path, lineNumber)
-		}
-		reason := strings.TrimSpace(fields[2])
-		if strings.ContainsAny(reason, "\r\n") || len(reason) > 2000 {
-			return nil, fmt.Errorf("%s:%d: reason is invalid", path, lineNumber)
-		}
-		if seen[id] {
-			return nil, fmt.Errorf("%s:%d: duplicate exclusion %s", path, lineNumber, id)
-		}
-		seen[id] = true
-		result = append(result, exclusion{Path: relative, ID: id, Reason: reason})
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return result, nil
-}
-
-func exclusionApplies(path, root, packageDir string) bool {
-	relativePackage, err := repositoryRelative(root, packageDir)
-	if err != nil || relativePackage == "." {
-		return err == nil
-	}
-	return path == relativePackage || strings.HasPrefix(path, relativePackage+"/")
 }
 
 func sortSurvivors(value []survivor) []survivor {

@@ -8,6 +8,7 @@ const SHA = /^[0-9a-f]{40}$/iu;
 const MUTATION_ID = /^[0-9a-f]{64}$/u;
 const MUTATION_ID_VERSION = 'wx-mutation-id-v1';
 const MUTATION_MANIFEST_SCHEMA_VERSION = 3;
+const EXECUTION_RESULT_SCHEMA_VERSION = 1;
 const MAX_TEXT = 12000;
 const TOTAL_KEYS = Object.freeze(['mutants', 'killed', 'lived', 'not_covered', 'not_viable', 'timed_out']);
 const MUTATION_LABEL = 'mutation';
@@ -246,54 +247,120 @@ function normalizeExpectedShards(value) {
   });
 }
 
-function validateShardCompleteness(reports, expectedShards, source) {
+function validateExecution(value, artifactName) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${artifactName} execution result is missing or invalid`);
+  if (value.schema_version !== EXECUTION_RESULT_SCHEMA_VERSION) fail(`${artifactName} execution result has unsupported schema_version`);
+  for (const field of ['run_id', 'run_attempt', 'test_sha', 'shard', 'profile', 'stage', 'status']) text(value[field], `${artifactName} execution ${field}`, 1000);
+  if (!['completed', 'exclusion_mismatch', 'gremlins_failed', 'result_invalid', 'measurement_timed_out'].includes(value.status)) {
+    fail(`${artifactName} execution result has invalid status ${value.status}`);
+  }
+  if (typeof value.duration_seconds !== 'number' || !Number.isFinite(value.duration_seconds) || value.duration_seconds < 0) {
+    fail(`${artifactName} execution duration_seconds is invalid`);
+  }
+  return value;
+}
+
+function validateShardCompleteness(reports, expectedShards, source, options = {}) {
   const expected = normalizeExpectedShards(expectedShards);
+  const problems = [];
   const expectedById = new Map();
   for (const shard of expected) {
     if (expectedById.has(shard.id)) fail(`expected shard ${shard.id} is duplicated`);
     expectedById.set(shard.id, shard);
   }
-  if (!Array.isArray(reports) || reports.length === 0) fail('no mutation manifests were downloaded');
+  if (!Array.isArray(reports) || reports.length === 0) problems.push('no mutation artifacts were downloaded');
   const observed = new Map();
   const suffix = `-${source.runId}-${source.attempt}`;
   for (const report of reports) {
-    const artifactName = text(report?.artifactName, 'manifest artifact name', 1000);
+    let artifactName;
+    try {
+      artifactName = text(report?.artifactName, 'manifest artifact name', 1000);
+    } catch (error) {
+      problems.push(error.message);
+      continue;
+    }
     const prefix = 'mutation-';
     if (!artifactName.startsWith(prefix) || !artifactName.endsWith(suffix)) {
-      fail(`${artifactName} does not contain the expected run ID and attempt`);
+      problems.push(`${artifactName} does not contain the expected run ID and attempt`);
+      continue;
     }
     const id = artifactName.slice(prefix.length, artifactName.length - suffix.length);
-    if (!id || !expectedById.has(id)) fail(`${artifactName} is not an expected mutation shard`);
-    const manifest = validateManifest(report.manifest, artifactName);
+    if (!id || !expectedById.has(id)) {
+      problems.push(`${artifactName} is not an expected mutation shard`);
+      continue;
+    }
+    let execution;
+    if (options.requireExecutions || report.execution !== undefined) {
+      try {
+        execution = validateExecution(report.execution, artifactName);
+      } catch (error) {
+        problems.push(error.message);
+        continue;
+      }
+      if (String(execution.run_id) !== String(source.runId) || String(execution.run_attempt) !== String(source.attempt)) {
+        problems.push(`${artifactName} execution run metadata does not match source run`);
+      }
+      if (!SHA.test(execution.test_sha)) problems.push(`${artifactName} execution test_sha is invalid`);
+      if (execution.shard !== id) problems.push(`${artifactName} execution shard is ${execution.shard}, expected ${id}`);
+      const expectedShard = expectedById.get(id);
+      if (expectedShard.profiles && !expectedShard.profiles.includes(execution.profile)) {
+        problems.push(`${artifactName} execution contains unexpected profile ${execution.profile}`);
+      }
+      if (execution.status !== 'completed') {
+        problems.push(`${artifactName} measurement is unavailable: ${execution.status}${execution.detail ? ` (${execution.detail})` : ''}`);
+        continue;
+      }
+    }
+    let manifest;
+    try {
+      manifest = validateManifest(report.manifest, artifactName);
+    } catch (error) {
+      problems.push(error.message);
+      continue;
+    }
     if (manifest.run_id === undefined || String(manifest.run_id) !== String(source.runId)) {
-      fail(`${artifactName} run_id does not match source run`);
+      problems.push(`${artifactName} run_id does not match source run`);
     }
     if (manifest.run_attempt === undefined || String(manifest.run_attempt) !== String(source.attempt)) {
-      fail(`${artifactName} run_attempt does not match source attempt`);
+      problems.push(`${artifactName} run_attempt does not match source attempt`);
     }
     const shard = expectedById.get(id);
+    if (execution && execution.profile !== manifest.profile) {
+      problems.push(`${artifactName} execution profile ${execution.profile} does not match manifest ${manifest.profile}`);
+      continue;
+    }
     if (shard.profiles && !shard.profiles.includes(manifest.profile)) {
-      fail(`${artifactName} contains unexpected profile ${manifest.profile}`);
+      problems.push(`${artifactName} contains unexpected profile ${manifest.profile}`);
+      continue;
     }
     let profiles = observed.get(id);
     if (!profiles) {
       profiles = new Set();
       observed.set(id, profiles);
     }
-    if (profiles.has(manifest.profile)) fail(`${artifactName} contains a duplicate profile ${manifest.profile}`);
+    if (profiles.has(manifest.profile)) {
+      problems.push(`${artifactName} contains a duplicate profile ${manifest.profile}`);
+      continue;
+    }
     profiles.add(manifest.profile);
   }
   for (const shard of expected) {
     const profiles = observed.get(shard.id);
-    if (!profiles) fail(`expected mutation shard ${shard.id} is missing`);
+    if (!profiles) {
+      const jobState = options.jobStates?.get?.(shard.id);
+      const suffix = jobState ? ` (GitHub job: ${jobState})` : '';
+      problems.push(`expected mutation shard ${shard.id} is missing${suffix}`);
+      continue;
+    }
     if (shard.profiles) {
       const missing = shard.profiles.filter((profile) => !profiles.has(profile));
       const unexpected = [...profiles].filter((profile) => !shard.profiles.includes(profile));
       if (missing.length > 0 || unexpected.length > 0) {
-        fail(`mutation shard ${shard.id} profiles are incomplete (missing: ${missing.join(', ') || 'none'}; unexpected: ${unexpected.join(', ') || 'none'})`);
+        problems.push(`mutation shard ${shard.id} profiles are incomplete (missing: ${missing.join(', ') || 'none'}; unexpected: ${unexpected.join(', ') || 'none'})`);
       }
     }
   }
+  if (problems.length > 0) fail(`mutation measurements are incomplete:\n- ${problems.join('\n- ')}`);
   return { expected, observed };
 }
 
@@ -451,7 +518,11 @@ function collectManifests(reportDir) {
         visit(target, artifactName || entry.name);
       } else if (entry.name === 'manifest.json') {
         const data = JSON.parse(fs.readFileSync(target, 'utf8'));
-        reports.push({ artifactName: artifactName || path.basename(reportDir), manifest: data });
+        const executionPath = path.join(directory, 'execution.json');
+        const execution = fs.existsSync(executionPath) ? JSON.parse(fs.readFileSync(executionPath, 'utf8')) : undefined;
+        reports.push({ artifactName: artifactName || path.basename(reportDir), manifest: data, execution });
+      } else if (entry.name === 'execution.json' && !fs.existsSync(path.join(directory, 'manifest.json'))) {
+        reports.push({ artifactName: artifactName || path.basename(reportDir), execution: JSON.parse(fs.readFileSync(target, 'utf8')) });
       }
     }
   }
@@ -485,27 +556,54 @@ async function run(options) {
     summary: (message) => options.core?.warning?.(message),
   };
   const jobUrls = new Map();
+  const jobStates = new Map();
   if (github?.rest?.actions?.listJobsForWorkflowRun) {
     const jobs = await pages((page) => github.rest.actions.listJobsForWorkflowRun({ owner, repo, run_id: Number(runId), filter: 'all', per_page: 100, page }));
     for (const job of jobs) {
       if (job.run_attempt && String(job.run_attempt) !== attempt) continue;
       const name = String(job.name || '');
       const id = /^hunt \((.+)\)$/u.exec(name)?.[1] || name;
-      if (job.html_url && id) jobUrls.set(id, job.html_url);
+      if (id) {
+        if (job.html_url) jobUrls.set(id, job.html_url);
+        jobStates.set(id, String(job.conclusion || job.status || 'unknown'));
+      }
     }
   }
   const reports = options.reports || collectManifests(options.reportDir || 'artifacts/mutation');
-  validateShardCompleteness(reports, options.expectedShards, source);
+  let completenessError;
+  try {
+    validateShardCompleteness(reports, options.expectedShards, source, { requireExecutions: !options.reports, jobStates });
+  } catch (error) {
+    completenessError = error;
+  }
   for (const report of reports) report.jobUrl = report.jobUrl || jobUrls.get(artifactId(report.artifactName)) || source.runUrl;
-  const groups = aggregateManifests(reports, source);
+  const validReports = reports.filter((report) => {
+    if (!report.manifest || (report.execution && report.execution.status !== 'completed')) return false;
+    try {
+      validateManifest(report.manifest, report.artifactName || 'artifact');
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const groups = aggregateManifests(validReports, source);
   const fileIssues = options.fileIssues !== false;
-  for (const report of reports) {
+  for (const report of validReports) {
     const value = report.manifest;
     if (value.totals.timed_out > 0 && source.summary) source.summary(`${report.artifactName}: ${value.totals.timed_out} mutation(s) timed out`);
     if (value.totals.not_covered > 0 && source.summary) source.summary(`${report.artifactName}: ${value.totals.not_covered} mutation(s) not covered`);
   }
   const results = [];
   const notFiled = [];
+  if (completenessError) {
+    if (options.core?.summary) {
+      const survivorCount = groups.reduce((total, group) => total + group.items.length, 0);
+      const candidates = groups.map((group) => `- ${group.title}`).join('\n') || '- none';
+      const writer = options.core.summary.addHeading('Mutation hunt reports').addRaw(`${completenessError.message}\nReference survivors from completed shards: ${survivorCount}\n${candidates}\n`);
+      await writer.write();
+    }
+    throw completenessError;
+  }
   if (fileIssues) {
     if (groups.length > 0) await ensureMutationLabel({ github, owner, repo });
     for (const group of groups) results.push({ title: group.title, action: await upsertGroup({ github, owner, repo, group, source, labelReady: groups.length > 0 }) });
@@ -540,5 +638,6 @@ module.exports = {
   run,
   upsertGroup,
   validateShardCompleteness,
+  validateExecution,
   validateManifest,
 };

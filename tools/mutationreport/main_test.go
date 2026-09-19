@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"os"
@@ -66,6 +67,24 @@ func TestBuildManifestRejectsInvalidDuration(t *testing.T) {
 
 func mutationFixture(t *testing.T, source, exclusions string, result gremlinsResult) (manifest, error) {
 	return mutationFixtureFiles(t, map[string]string{"sample.go": source}, exclusions, result, "")
+}
+
+func testExclusionKey(t *testing.T, source string, line, column int, mutator, original, mutated string) string {
+	t.Helper()
+	root := t.TempDir()
+	path := filepath.Join(root, "sample.go")
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := sourceForPath(map[string]*sourceFile{}, root, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := parsed.exclusionKey(line, column, mutator, original, mutated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
 }
 
 func mutationFixtureFiles(t *testing.T, sources map[string]string, exclusions string, result gremlinsResult, targetFile string) (manifest, error) {
@@ -169,7 +188,8 @@ func target(value int) int {
 		}}},
 	}
 	packageID := mutationID("internal/sample/sample.go", packageScopeDeclaration, "ARITHMETIC_BASE", 3, 24, "+", "-")
-	value, err := mutationFixture(t, source, "internal/sample/sample.go\t"+packageID+"\tconstant is intentionally equivalent\n", result)
+	key := testExclusionKey(t, source, 3, 24, "ARITHMETIC_BASE", "+", "-")
+	value, err := mutationFixture(t, source, "internal/sample/sample.go\t"+key+"\tconstant is intentionally equivalent\n", result)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,8 +208,8 @@ func target(value int) int {
 	if got := value.Survivors[1].Declaration.Function; got != "target" {
 		t.Fatalf("function declaration=%q", got)
 	}
-	if got := value.Survivors[0].Declaration.Line; got != 1 {
-		t.Fatalf("package declaration line=%d, want 1", got)
+	if got := value.Survivors[0].Declaration.Line; got != 5 {
+		t.Fatalf("package declaration line=%d, want 5", got)
 	}
 }
 
@@ -210,19 +230,74 @@ func live(value int) int {
 		}}}},
 	}
 	id := mutationID("internal/sample/sample.go", "live", "CONDITIONALS_BOUNDARY", 4, 11, "<", "<=")
-	value, err := mutationFixture(t, source, "internal/sample/sample.go\t"+id+"\tcomparison is intentionally equivalent\n", result)
+	key := testExclusionKey(t, source, 4, 11, "CONDITIONALS_BOUNDARY", "<", "<=")
+	value, err := mutationFixture(t, source, "internal/sample/sample.go\t"+key+"\tcomparison is intentionally equivalent\n", result)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(value.Survivors) != 0 || len(value.Excluded) != 1 {
 		t.Fatalf("manifest=%#v", value)
 	}
-	if value.Excluded[0].Reason != "comparison is intentionally equivalent" {
+	if value.Excluded[0].ID != id || value.Excluded[0].Reason != "comparison is intentionally equivalent" {
 		t.Fatalf("excluded=%#v", value.Excluded)
 	}
-	_, err = mutationFixture(t, source, "internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\tstale\n", result)
-	if err == nil || !strings.Contains(err.Error(), "stale exclusion") {
+	_, err = mutationFixture(t, source, "internal/sample/sample.go\tast-v1:"+strings.Repeat("0", 64)+"\tstale\n", result)
+	if err == nil || !strings.Contains(err.Error(), "matched 0 source mutations") {
 		t.Fatalf("stale exclusion error=%v", err)
+	}
+}
+
+func TestExclusionKeyTracksStructureInsteadOfSourcePosition(t *testing.T) {
+	base := `package sample
+
+func target(value int) int {
+	if value > 0 {
+		return value
+	}
+	return value
+}
+`
+	moved := `package sample
+
+const unrelated = 1
+
+// unrelated comment
+func target(value int) int {
+	if value > 0 { // spacing and comments do not matter
+		return value
+	}
+	return value
+}
+`
+	baseKey := testExclusionKey(t, base, 4, 11, "CONDITIONALS_BOUNDARY", ">", ">=")
+	movedKey := testExclusionKey(t, moved, 7, 11, "CONDITIONALS_BOUNDARY", ">", ">=")
+	if baseKey != movedKey {
+		t.Fatalf("position-only edit changed key: %s != %s", baseKey, movedKey)
+	}
+	changed := strings.Replace(base, "return value\n\t}", "return value + 1\n\t}", 1)
+	changedKey := testExclusionKey(t, changed, 4, 11, "CONDITIONALS_BOUNDARY", ">", ">=")
+	if changedKey == baseKey {
+		t.Fatal("function body change did not invalidate key")
+	}
+	sibling := strings.Replace(base, "\treturn value\n}", "\tif value > 1 { return value }\n\treturn value\n}", 1)
+	siblingKey := testExclusionKey(t, sibling, 4, 11, "CONDITIONALS_BOUNDARY", ">", ">=")
+	secondKey := testExclusionKey(t, sibling, 7, 11, "CONDITIONALS_BOUNDARY", ">", ">=")
+	if siblingKey == secondKey {
+		t.Fatal("same operators in one function received the same key")
+	}
+}
+
+func TestCommandMainValidatesExclusionsWithoutGremlinsResult(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := commandMain(nil, []string{"-root", root, "-validate-exclusions"}, &output, os.Stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "validated 93 mutation exclusion(s)") {
+		t.Fatalf("output=%q", output.String())
 	}
 }
 
@@ -266,13 +341,13 @@ func target(value int) int {
 
 func TestLoadExclusionsRequiresPathIDAndReason(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mutation-exclusions.txt")
-	if err := os.WriteFile(path, []byte("internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("internal/sample/sample.go\tast-v1:"+strings.Repeat("0", 64)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadExclusions(path); err == nil {
 		t.Fatal("malformed exclusion accepted")
 	}
-	if err := os.WriteFile(path, []byte("internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\treason\ninternal/sample/other.go\t"+strings.Repeat("0", 64)+"\tagain\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("internal/sample/sample.go\tast-v1:"+strings.Repeat("0", 64)+"\treason\ninternal/sample/other.go\tast-v1:"+strings.Repeat("0", 64)+"\tagain\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadExclusions(path); err == nil || !strings.Contains(err.Error(), "duplicate") {
@@ -403,8 +478,8 @@ func target(value int) int {
 		t.Fatalf("shard boundary error=%v", err)
 	}
 	_, err = mutationFixtureFilesWithShard(t, map[string]string{"sample.go": source},
-		"internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\tstale assigned exclusion\n", gremlinsResult{}, "", []string{"internal/sample/sample.go"})
-	if err == nil || !strings.Contains(err.Error(), "stale exclusion") {
+		"internal/sample/sample.go\tast-v1:"+strings.Repeat("0", 64)+"\tstale assigned exclusion\n", gremlinsResult{}, "", []string{"internal/sample/sample.go"})
+	if err == nil || !strings.Contains(err.Error(), "matched 0 source mutations") {
 		t.Fatalf("empty stale exclusion error=%v", err)
 	}
 }
@@ -442,7 +517,8 @@ func live(value int) int {
 		}}},
 	}
 	firstID := mutationID("internal/sample/sample.go", "live", "CONDITIONALS_BOUNDARY", 4, 11, "<", "<=")
-	value, err := mutationFixture(t, source, "internal/sample/sample.go\t"+firstID+"\tknown equivalent\n", result)
+	key := testExclusionKey(t, source, 4, 11, "CONDITIONALS_BOUNDARY", "<", "<=")
+	value, err := mutationFixture(t, source, "internal/sample/sample.go\t"+key+"\tknown equivalent\n", result)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,8 +808,9 @@ func other(value int) int {
 	result := gremlinsResult{Files: []gremlinsFile{{Filename: "sample.go", Mutations: []gremlinsMutation{{
 		Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11,
 	}}}}}
+	otherKey := testExclusionKey(t, sources["other.go"], 4, 11, "CONDITIONALS_BOUNDARY", ">", ">=")
 	value, err := mutationFixtureFilesWithShard(t, sources,
-		"internal/sample/other.go\t"+strings.Repeat("0", 64)+"\texcluded in another shard\n", result, "", []string{"internal/sample/sample.go"})
+		"internal/sample/other.go\t"+otherKey+"\texcluded in another shard\n", result, "", []string{"internal/sample/sample.go"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -787,8 +864,8 @@ func target(value int) int {
 		Type: "CONDITIONALS_BOUNDARY", Status: "LIVED", Line: 4, Column: 11,
 	}}}}}
 	_, err := mutationFixtureFilesWithShard(t, map[string]string{"sample.go": source},
-		"internal/sample/sample.go\t"+strings.Repeat("0", 64)+"\tstale assigned exclusion\n", result, "", []string{"internal/sample/sample.go"})
-	if err == nil || !strings.Contains(err.Error(), "stale exclusion") {
+		"internal/sample/sample.go\tast-v1:"+strings.Repeat("0", 64)+"\tstale assigned exclusion\n", result, "", []string{"internal/sample/sample.go"})
+	if err == nil || !strings.Contains(err.Error(), "matched 0 source mutations") {
 		t.Fatalf("stale assigned exclusion error=%v", err)
 	}
 }

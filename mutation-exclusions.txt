@@ -1,97 +1,96 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
-# <repository-relative path>\t<mutation-id>\t<reason>
-# IDはmanifestが出力する64桁のSHA-256。等価変異だけを具体的な理由付きで記録する。
-internal/tui/select.go	eec5b35985c640d7c6ae1c1b890f8271f80d8fcd8261eab558f118c81ac38431	width == column では同じ幅を再代入するだけで表示結果が変わらず、> と >= は同値
-internal/update/update.go	67a29d63746b9cfab3c4dc221abecb21c22090c6c8e73eb4433145c566eee8ce	next.Major != base.Major の分岐内では両者が等しくなる経路がなく、> と >= は同じ結果になる等価変異
-internal/update/update.go	e33fcb211a513eb40ccdf8ca7b8b91dd1bdf9d57d3e92a1d7e0b2445dcf37bfc	next.Minor != base.Minor の分岐内では両者が等しくなる経路がなく、> と >= は同じ結果になる等価変異
-internal/diag/localization.go	e3e7484d2d1897f1ce72d006bdd6a3a2004a0355b0b60c1c406e9f5eb6b0c900	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
-internal/diag/report.go	f68b4b16f0be0ace924d17540222855dff80ff996b6137917624dfaa1b3fd193	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
-# IDはmanifestが出力する64桁のSHA-256。等価変異を確認するまで空のままにする。
-internal/sessions/scanner/parse.go	bad725cfe570ff4e5b531ee0ac92f7fd25035b87145a806edbc743ca1557c81e	空の ReadBytes 結果は parseLine が空行として無視するため、len(line) の > と >= は同じ動作になる
-internal/sessions/scanner/parse.go	5dd081195fffcee78e1f8cd74f09fa406c46d1298dc34bdad71a7508e90820b8	item.Item が空の場合は json.Unmarshal が必ず失敗して item を変更しないため、len(item.Item) の > と >= は同じ動作になる
-internal/sessions/scanner/parse.go	1206ca64ead7bae8e92cda8fffa45bf98a9573dfbb5a583d1276fef608fe82c3	strings.IndexByte は text[start:] の先頭の < より後で検索するため openEnd が 0 にならず、< と <= は同じ動作になる
-internal/sessions/scanner/parse.go	8e5fcd2641c0ad00c598134375643d4e1e114cd439ffe98c7172dba3a9dee48d	close が 0 の空ブロックではどちらの分岐も空文字列を返すため、< と <= は同じ動作になる
-internal/sessions/scanner/parse.go	e26b8179153a744a65fe3b48d617b5f5507a5911190fe961b9af04ad3bd5e99c	len(runes) が上限と同じ場合はスライス結果が元の文字列と同じため、<= と < は同じ動作になる
-internal/state/backup.go	5a7b938d73bf8a81c16a022cb311c8c98ae24f2696efe45ac3f4718fa14c1467	backups directory の entry 名は一意で、sort.Slice の比較で同名の異なる要素は現れないため > と >= は観測可能な結果を変えない
-internal/setup/shell.go	7c59fd06656bd92da0e40cb45f3870fe3780e771c9e33db4bd8683012ed2fa7f	strings.Index(contents[begin:], shellBlockEnd) の begin 位置は必ず shellBlockBegin の先頭で、異なる marker の長さ以上になるため offset==0 は到達不能であり、<0 と <=0 は等価な変異
-internal/sessions/sessions.go	7d31964550c6814b8cfe4de5e6b00d727a0cfab9fd2e1a73bb995ca83a3eb889	StableID は native session ID から生成され、同一 native ID の重複は事前に deduplicate されるため、実行可能な要素では < と <= が同じ順序になる等価変異。
-internal/sessions/sessions.go	13bda29932bbdc27f85f90ed3e860d20e8d5561dfa39561431e961fa0c313317	直前の Mtime == 判定が真なら StableID 比較へ戻り、偽なら > と >= は同じ結果になるため等価。
-internal/sessions/tui/picker.go	f80eff3357a695a53b441204c67ce3d4dc1e754e9fb52a4c9a73e8aa2871eb04	selected == offset では offset = selected が同値代入になるため、< と <= は表示範囲を変えない等価変異。
-internal/sessions/tui/picker.go	a4e7a29c2154afc416ab08b5151e51721353a5c1e19c4f3a3a9717255d43c4b9	len(lines) == height では lines[:height] が元の全行と同じため、> と >= は表示結果を変えない等価変異。
-internal/rpc/protocol.go	aee6956bc0a5f79179d90dca8952aa591581045f4d9ce93fc3942dd9d331e253	ConnectRetry==0ではretryUntilを呼び出し開始前に設定するため、<=を<へ変えても期限判定が必ず終了し、観測可能な挙動が変わらない等価変異。
-internal/i18n/message.go	b575b2fef8cc1bde10929d1c2b053e5c9273c3250b36f4b53f0c6cd24cb5bb46	len(data)==0ではentriesが無く、mapの空コピーによるallocation差だけでLocalizeの表示結果は変わらないため
-internal/pool/branch.go	32446b334d663626afc8cea54c5cea9a8280e7b24b6148cca5d8f2871bc78e39	matchedは0との比較にのみ使うため、正のcountを負へ変えても分岐結果は変わらず、repository数の整数overflowも不可能なため
-internal/pool/branch.go	39bd4ca7007fd7ef2ce7dfdf9750b31c8b20359021f3fd111b8be6baa5842c68	matched==0のlen(applicable)==1は直前の分岐で処理済みのため、後続の>1を>=1へ変えても到達結果は変わらないため
-internal/workspace/cow_index.go	7ff4a2fb2bf201baa1dc1670ce2b52c93a61cb8f97e659369603a0ee21122181	The capacity hint only changes the allocation size; len and the returned candidate sequence are unchanged when < is replaced with <=.
-internal/workspace/cow_place.go	08f4894e250fd94bfe4bdc8cf4c9e445cd4cfb385909983ae9a6b48789e2f6cb	An empty LFS OID set returns from readCOWLFSBlobPointers before any Git or filesystem operation, so > and >= are observationally equivalent.
-internal/workspace/cow_share.go	e50c3b0f85263826aee3536ff5a62e2ecf6184e9140af04455b20e730787c7b6	workers is clamped to 1 for all workers <= 1, so < and <= are observationally equivalent for every integer input.
-internal/workspace/capacity.go	5089858eb2542afec07b22d40f870f1610f991fda18b1d9c0df51a676bae6820	LFS entries are collected in a map keyed by normalized OID, so result.LFS contains no equal OIDs; < and <= are observationally equivalent to sort.Slice.
-internal/workspace/capacity.go	1977aed12887dfb00a3ac8c295facf6fd01c9cddd83ce1a4dd93e286bc403c28	The saturation branch returns MaxInt64 on and above the exact boundary, so > and >= produce the same result for every int64 input.
-internal/workspace/fingerprint.go	14e8c4e7a67e6a1d7142964a1ad84d5d82527a786611a8b9cba48f2b4295d497	The comparator only ties duplicate normalized link paths; inspectLinkSources gives those entries identical serialized values, so < and <= cannot change the fingerprint output.
-internal/workspace/lfs_cow.go	1d38e6daff0fb16e766b629e7dea2ee663cbff77f6d68a7f1f5b97308cc47c3d	os.File.Read guarantees a non-negative count and hashing a zero-length slice is a no-op, so >0 and >=0 are observationally equivalent.
-internal/workspace/placements.go	a86bc3c72342987cf7f93e82b330de559ce9f0cb31287d08539cd25087bcb898	同じRepositoryID内の異なるRelativePathだけを比較するため、< と <= は同じ順序になる
-internal/workspace/placements.go	71979b8030e7eab84347de6598509cc2c93866ece743ccf3afc69b4a6aff45be	The RepositoryID comparator is reached only when IDs differ because equal IDs take the earlier branch, so < and <= are equivalent.
-internal/workspace/prepare_command.go	47a824746598e559e44df1ee2c3d6097f866c1f74baa7d164ad520a4d4f101a3	When used has already reached the output limit, the following remaining<=prefix guard takes the same no-write and truncation path as the >= guard.
-internal/workspace/submodule_batch.go	8fe3cd0ac8b69e9a34973cf3346d01c1694e65373ee1b690be9e041dd387b307	For every non-empty items input, each loop iteration appends to current, so the final len(current)>0 guard is always true; > and >= are equivalent.
-internal/workspace/submodule_hook.go	82f500ee18911e2831c05b615980ce4e073d71883f9bf80d234a771469fead91	The function returns before this branch whenever declared is empty, so the else branch is reached only with len(declared)>0; > and >= are equivalent.
-internal/workspace/submodule_outcome.go	fc4e7649e361b41ca1849c84c1575e64ba2f25b2abc638e3a7b87671f3bddb94	The repository comparison is reached only when repository values differ, so < and <= produce the same ordering for every reachable comparison.
-internal/workspace/submodule_outcome.go	08cec61be2068738b19a665c1f8104318f6dbe6cca8d5e15b9d2b4727bc5672c	The depth comparison is reached only when depth values differ, so < and <= produce the same ordering for every reachable comparison.
-internal/workspace/submodule_outcome.go	bc8e8ffca046efa45638e0c66703445fcdad0b5776568df3eff86aff449079da	Path の比較は異なる値の場合だけ行うため、< と <= は同じ順序になる
-internal/workspace/timing.go	168719d818037fa2b872eba88869f29bae68482ac6dbee9109da73c531ce2a36	The run ID is private and compared only for equality; incrementing or decrementing from zero yields distinct nonzero IDs for every reachable execution, so direction is observationally irrelevant.
-internal/workspace/usage.go	98c1d171fd3bf4f9309cfc06c98ea4d0657ed8157726da6e8dd9bb0fbb4ea34b	At index len(components), the loop writes the full namespace path as a gate and the immediately following assignment overwrites that same key with its final scope, so < and <= return identical maps.
-internal/workspace/worktree_git.go	82646e2672923d7bbfb57964dc7aeac65ff0e46567f7a7df027896fb198143d8	gitx.RunAt returns nil error for exit code 0, so the error-only branch can observe either a positive Git exit status or a negative no-status result; <0 and <=0 are equivalent there.
-internal/workspace/update_flags.go	0e2f30fe7c3b0b74d339a00182fb329d9e8863a1d672809f724aa65ed46fbe6d	With an empty stash, indexFlagsOf returns no flagged paths and ClearIndexFlags returns immediately without invoking Git, so >0 and >=0 have identical behavior.
-internal/daemon/capacity.go	03a6f8f6ea47bd5f58d148339ef07e89cb5ae0d358cf58cf65aedac1292051ac	multiplier=1 はどちらの分岐でも 1 を代入するため < と <= の変更に観測可能な差がない
-internal/daemon/capacity.go	e61972ef60bf6a277f258600baed33462bd12817ef179b28a8a307ca1743f851	上限ちょうどでは厳密比較を包含比較へ変えても結果は MaxInt64 のまま変わらない
-internal/daemon/capacity.go	c30d5682a946dab55694d8163cbe32ad800bcd8a19dd5590c4854f078fb29017	積がちょうど MaxInt64 のとき両分岐は同じ飽和値を返す
-internal/daemon/capacity.go	6dde83c14d20a78fceff79105bdfb10296b36fd6fbc688d9005cce0cc109aff2	warm_count=0 では worktree 容量を 0 倍するためどちらの分岐でも結果が 0 になる
-internal/daemon/capacity.go	6071ef2508152b4308531fc26970f13fe828d2e2b1a566f5231938520d347cad	積がちょうど MaxInt64 の場合は、厳密比較に変えても乗算結果と飽和値が同じになるため
-internal/daemon/jobqueue.go	70670d52db8df1e03ff0210b86d4f66419c08b58dd7a4de29c9aa52aa266493d	実行枠の下限値1では < と <= のどちらでも同じ値を代入し、通知を含む後続処理も変わらないため観測可能な差がない
-internal/daemon/lease_mismatch.go	0730acaf52a5c4cf4b982e2ce0ba5dbb2a14725d69d81e7bc424e437c9fd04bc	OID の長さが12文字以下なら短縮結果と元の文字列が同じで、12文字境界の厳密比較変更に観測可能な差がない
-internal/daemon/lease.go	80c15737ed682922e9da22546b824293cb046c91897ae739051fbe8a448d1683	readiness timeout が現在の最大値と等しい場合は同じ Duration を代入するだけで、厳密比較と包含比較に観測可能な差がない
-internal/daemon/measurement.go	f7408407b20e3b4ede98877392a15fe26af0fc66a5ab4f3737f9a95a2c213549	履歴件数が上限ちょうどならslice開始位置は0で全要素を保持するため、> を >= に変えて分岐しても履歴は変わらない
-internal/daemon/prune.go	f551aff6ec9820b71b8acab685cb5eedd21eecb120d600096d13c09530ea00ad	診断エラーが0件のときは空sliceをappendするだけで、条件を > 0 から >= 0 に変えても結果の Errors は同じ空sliceになる
-internal/daemon/restart.go	6c70d4d5173ac0c30c14c7d7ef04bc63571167847c06ba8db3dc954c564c7360	猶予が周期間隔と等しいときは同じDurationを代入するため < と <= の変更に観測可能な差がない
-internal/daemon/restart.go	3e12c1cc9b02dd66223e19a0e5c53ae527d23f5680b8164bab0c72dee6b7be55	再試行期限が現在の待機時間と等しいときは同じDurationを代入するため > と >= の変更に観測可能な差がない
-internal/daemon/roots.go	ee0ae19b181000b1564d6fa3470a8b0b18b0e0c3e36bed0fd169bce18d0fe34f	同じpathに含まれる同じ長さのrootは同一文字列だけで、再代入しても選択結果が変わらない
-internal/daemon/roots.go	10e95ac85428be576b7ed480d1638492503bbd7ed7502ae1aab43e554da4048f	activeと履歴に同じrootがある同長境界では同一文字列を再代入するだけで選択結果が変わらない
-internal/daemon/server.go	974ff48e2eb74d8b1f515ed1aaaff9ac3637b9c7f6734b190a0ba3270dbb8961	readinessと余裕の合計が既定上限と等しい場合は、どちらの分岐でも同じ既定上限を返すため観測可能な差がない
-internal/daemon/status.go	234cdc8e07f7722af35549057e37a83180e3ba9c4d02e4e8f985d3b464ea1cd0	root一覧はpathをkeyにしたmapから作るため同じpathの別要素は存在せず、同一要素の比較を < から <= に変えても並び順は変わらない
-internal/daemon/submodule_measurement.go	949f6b4f02f7083f6b6565bbebee5ac51cdc3239ddbef4e98e140c15603c84d0	repositoryが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
-internal/daemon/submodule_measurement.go	6d70b9082d7689b4508dbfa4ec8d5508d08fe448328e16bd287025ca206e7b45	同じrepositoryでdepthが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
-internal/daemon/submodule_measurement.go	4d09e118ca742ad6fd102d8c8606fd9ad8574c6d1db4b66aaea0123a9558847d	priorityが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
-internal/daemon/submodule_measurement.go	ce765f88996227d1d998828e4ae2e7eb2e72efc7c679a5dd7bb4ea547fb3fd59	pathが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
-internal/daemon/unmanaged_artifacts.go	f9a8b5f26889ec3cf77ca80fa07192501957c594a246d4b8a9142e5ff4394d64	列挙対象は実体pathごとに一意であり同じpath同士の比較は発生しないため、< と <= の結果に観測可能な差がない
-internal/daemon/usage.go	7cc04b2d9fa953b39becb3a487d0f9bca064e244de0576f1c1ad67e7805b0eec	削除量と合計が等しい場合は分岐して0を返しても減算して0になっても結果が同じで、>= と > の変更に観測可能な差がない
-internal/agent/worktree_rewrite.go	cda4e3e085855efe2d77f535d7f5c9f576cd0af56981c0d8812f415c179b7866	candidates は segment ごとに高々1回だけ増え、candidates > 1 は len(segments) > 1 と同時に必ず真になるため、++ を -- に変えても判定結果が変わらない。
-internal/agent/worktree_rewrite.go	23bfaa307b941e4757825f20730f686c5d826bac5fca1102960f562aa4cdd9ed	flags 分岐に入る value は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
-internal/agent/worktree_rewrite.go	d662e53c29b955f0cd0bc0e91030e654587b49fa70cda2f132ff94d590e9e0e7	flags 分岐に入る name は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
-internal/dashboard/view.go	f7900377cbc6e864e471ddcd583361b108839e47af7bf5c1c5f8d8d8e1b54758	rightWidth は leftColumnWidth の上限により minRightColumn との等号へ到達しない
-internal/dashboard/view.go	1863979060f71c8458e9f606cde99978a396900f45c5632e24ec9ab30cb8292c	表示幅がちょうど収まる wrap は折り返しても同じ1行になり比較が同値
-internal/dashboard/view.go	e904469ec6dd2e22b2d56c6a34beb8888ab092747f2b4c3b7caa00db54427b0e	表示幅と等しい padANSI は padding 0 の分岐と同じ文字列を返す
-internal/dashboard/view.go	cf0533d65d115e9db620857f80f427360be8b29acdce405102a877e5093fdf86	行数と高さが等しい fitLines は切り出しても同じ全行を返す
-internal/config/file.go	cca08c6440625b5f477f041f708954a6165f1605f8966bad929aa59a9f7d9ced	YAML mapping の Content は key/value の偶数列なので、mappingValue の境界変異は有効なNodeで同値
-internal/config/file.go	e81d3230fdc4146a832167b735298423b211543e5d092789641f16c394772c6d	YAML mapping の Content は key/value の偶数列なので、removeMappingKey の境界変異は有効なNodeで同値
-internal/config/file.go	461947ec9aaafd64ef3fd1b963100530f3bcbc08c63cc2c90ef0c0c78b53c40b	YAML mapping の Content は key/value の偶数列なので、collectMappingKeys の境界変異は有効なNodeで同値
-internal/config/unknown.go	f146c8e5316bdf4157d7ae560881c84a2bbcf6e1bd6b5399ab38c66d5d1126c9	YAML mapping の Content は key/value の偶数列なので、findUnknownNode の境界変異は有効なNodeで同値
-internal/config/v2.go	afd476c60881551ddf66dec68f51f4623aa43baed08b7536df8abf22bff2b7d0	固定されたlegacy section tagはすべてConfig fieldに対応するため、markLegacyPresentFromValueの境界変異は現行schemaで同値
-internal/config/v2_edit.go	3abafda5f8c67ecb27f1bc78653e31c3e7eff68fa77bc6d3549422a6004691d8	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
-internal/config/v2_edit.go	728a1730eb0815d9b81b06d117168c668301f00f42d2b29f105a8c457afd48c1	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
-internal/cli/bench.go	e55e3f56e6d51e015ac6b94498ffbe5c2f42a0766d5ca03cbd6922bcda3104d4	表示幅とラベル幅が同じ場合は0個の空白を追加するだけで、>と>=の結果が同じため
-internal/cli/bench.go	4e555599ca50a2f1677d7b139a6538a17ef2b6e77b41fc9299e00a51952f89d0	sort.Sliceの比較子を<=にしてもint64の同値要素の値列は変わらず、sortedCopyの結果が同じため
-internal/cli/linked_worktree.go	7d0417166b80b7537d9de8995e1e970f87eebc2363bec3e536e792cb316a5a0e	12桁ちょうどのOIDは条件が>でも>=でも[:12]の結果が元の文字列と同じで、表示結果が変わらないため
-internal/cli/resume.go	0e447f6f3e230ddbfbe8a862d8fd42d5edc45192c5252347f93786d08222b5a7	末尾の値付きflagでは比較子を<から<=へ変えても次の反復がなく、codexExecIndexの結果が変わらないため
-internal/cli/resume.go	fdbab95e8f5bd6ae488d637fc11ccf86ba9fd01619b972592526a975e9ac33ef	codexResumeShapeがexecのresumeを返すときresumeIndexはexecの後ろで必ず1以上になり、>=0と>の分岐結果が同じため
-internal/cli/resume.go	a71d102ab31bee7b6840abaa31982b7615f6d85c9a4e3667fb360ec2dd823301	codexResumeShapeがexecのresumeを返すときresumeIndexはexecの後ろで必ず1以上になり、>=0と>の分岐結果が同じため
-internal/cli/resume_intent.go	150b562c5b33e6a14cb319c4dd16800969585b81bbd4af0e2cf8a6762d7f05ee	末尾の--cdで比較子を<から<=へ変えてもi++後に次の反復がなく、parseCodexResumeTailの結果が変わらないため
-internal/cli/resume_intent.go	43f15d26732ac0c8d7888339a26f51a07e4714cf78866b92caf77f28eb38cb21	末尾の--cdで比較子を<から<=へ変えてもi++後に次の反復がなく、stripCodexCDArgsの結果が変わらないため
-internal/cli/resume_intent.go	6208732afceee941557611445c30672af5eef089f8754ab78edc350558349127	exec後の値付きflagが末尾にある場合は、比較子を<=にしても次の反復がなくcodexResumeShapeの結果が変わらないため
-internal/cli/resume_intent.go	568c0250fe67198df3f3730b3fab98aad55b16c850d0ee1e6384c29ff0ec7dd0	末尾の値付きglobal flagで比較子を<から<=へ変えても次の反復がなく、codexResumeShapeの結果が変わらないため
-internal/archive/lfs.go	651d4c1309c8327a304977c270458bf48b1f4948abc9485c708a9a849a0df968	strings.Fields で len(fields) >= 5 を通る status は常に非空なので、len(status) の > と >= は同じ動作になる
-internal/archive/archive.go	baed407ed40068db40d4d98b5127f46da2355b5de87f28be74481c2ddfd254a8	空の候補は CompactLFSObjects が先頭で no-op を返すため、len の > と >= は同じ動作になる
-internal/archive/conflict.go	721b8035d636469630012eb6e1e137f5b777c863030c5aa586404d224e6341dd	path が異なる場合だけ比較する != ガードの内側なので、path の < と <= は同じ動作になる
-internal/archive/conflict.go	4f3cd7c30f7614859e3896858652716523b4079964c405374785646f37995f83	stage が異なる場合だけ比較する != ガードの内側なので、stage の < と <= は同じ動作になる
-internal/archive/conflict.go	f0ead1333c69e263182ecab7d17c1fa254b9e78cbae9ff98b3cad537d8625cfe	同一 path と stage の重複をソート前に拒否するため、stage の < と <= の同値差へ到達しない
-internal/archive/workspace.go	7911d2bf6de6e2b8384305ba06077d7f7112b6282b1dbdd533056d6bb571cacf	read は非負で、read == 0 のとき buffer[:0] をハッシュへ書いても結果は変わらないため、> と >= は同じ動作になる
-internal/config/resolve.go	df0500dc5444d7b32e6cd2f206ad1918c54245a78913b1466d56ca971a31be7b	同じtimeoutの代入では戻り値が変わらない等価変異
-internal/config/resolve.go	456d2e0cf300eaec9ebe52137fd2282ae88a18d00953168e23c3203e441985f9	同じretentionの代入では戻り値が変わらない等価変異
+# <repository-relative path>\t<ast-v1:SHA-256>\t<reason>
+# keyは宣言の正規化token列と対象token位置から生成する。等価変異だけを具体的な理由付きで記録する。
+internal/tui/select.go	ast-v1:34a0e026636b90307bf82e21730edd9cdb6ad8e2e5fc37a86bb580e8d2b0b806	width == column では同じ幅を再代入するだけで表示結果が変わらず、> と >= は同値
+internal/update/update.go	ast-v1:1905023a32cd7d345a85b9219d38ca5597faca756173f166ba9b1d2ced7f50af	next.Major != base.Major の分岐内では両者が等しくなる経路がなく、> と >= は同じ結果になる等価変異
+internal/update/update.go	ast-v1:a3d787c6081ef3e0573039ed26c40aca7622aac5dc57b3454754c1dc02e154fc	next.Minor != base.Minor の分岐内では両者が等しくなる経路がなく、> と >= は同じ結果になる等価変異
+internal/diag/localization.go	ast-v1:e8779dda4fab8df6b8e53581319216f1c48948b85d9957f739845bbde8328bd2	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
+internal/diag/report.go	ast-v1:4276398ba1ba1298daba4fee6330be13fa7f6f7f99cca96bea7a07b00cd7a055	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
+internal/sessions/scanner/parse.go	ast-v1:9ac5c46cee0d35b5f2ebc86fbb3adbd51c2dcebc6fdba5c2db7eb903e67e206b	空の ReadBytes 結果は parseLine が空行として無視するため、len(line) の > と >= は同じ動作になる
+internal/sessions/scanner/parse.go	ast-v1:39b17cda9d51cd40ee24739ee176b469c757032c196ce87b8a4db4e33f076d6c	item.Item が空の場合は json.Unmarshal が必ず失敗して item を変更しないため、len(item.Item) の > と >= は同じ動作になる
+internal/sessions/scanner/parse.go	ast-v1:6b3fa582e5f12989f9dd8538ff7ec48e93b3501a485b4def3ff24e0bcbeb8356	strings.IndexByte は text[start:] の先頭の < より後で検索するため openEnd が 0 にならず、< と <= は同じ動作になる
+internal/sessions/scanner/parse.go	ast-v1:a633220140b3f3db3b44a91cf497d61cd5009b39e89631f2bc5f4bb8980a4b71	close が 0 の空ブロックではどちらの分岐も空文字列を返すため、< と <= は同じ動作になる
+internal/sessions/scanner/parse.go	ast-v1:d52f14c30d62d75fbc6a439d88c7f4eba1cea44f99cf94c6ddd7745cd7f6c557	len(runes) が上限と同じ場合はスライス結果が元の文字列と同じため、<= と < は同じ動作になる
+internal/state/backup.go	ast-v1:dc884ee46ce5d6ff6dbb63aea9505b3b6e3fde62cd886c4f2dcf802464c989d4	backups directory の entry 名は一意で、sort.Slice の比較で同名の異なる要素は現れないため > と >= は観測可能な結果を変えない
+internal/setup/shell.go	ast-v1:b86ce3b8bde7a4c68ffa2ffe6cb34f968cf6977172fb1f638ce57ac39107fb7a	strings.Index(contents[begin:], shellBlockEnd) の begin 位置は必ず shellBlockBegin の先頭で、異なる marker の長さ以上になるため offset==0 は到達不能であり、<0 と <=0 は等価な変異
+internal/sessions/sessions.go	ast-v1:324c2e66773d971e550c79ece0d5c3ba01901cb03d170b760282b1875f214aef	StableID は native session ID から生成され、同一 native ID の重複は事前に deduplicate されるため、実行可能な要素では < と <= が同じ順序になる等価変異。
+internal/sessions/sessions.go	ast-v1:ae37b4e1c123f4f623f0ca973a22f1bf4a7cce1342f19933d77b6b50bfaafaa9	直前の Mtime == 判定が真なら StableID 比較へ戻り、偽なら > と >= は同じ結果になるため等価。
+internal/sessions/tui/picker.go	ast-v1:4d28c971c6b8b7fa43f899423beb1afb59420d068afd3cd389b0774aaee088f0	selected == offset では offset = selected が同値代入になるため、< と <= は表示範囲を変えない等価変異。
+internal/sessions/tui/picker.go	ast-v1:72a415dbae5fb1b1b4293f047700110beda59e7d569de3b746bed1d8c96eea73	len(lines) == height では lines[:height] が元の全行と同じため、> と >= は表示結果を変えない等価変異。
+internal/rpc/protocol.go	ast-v1:e68ff49e22bf414188e7376eef3a19c073559bba4abc4f348c724ef550cfc70b	ConnectRetry==0ではretryUntilを呼び出し開始前に設定するため、<=を<へ変えても期限判定が必ず終了し、観測可能な挙動が変わらない等価変異。
+internal/i18n/message.go	ast-v1:5c04663a702f249fb1630a9491845749061f26254f145c77943e2cb76ca9a7c8	len(data)==0ではentriesが無く、mapの空コピーによるallocation差だけでLocalizeの表示結果は変わらないため
+internal/pool/branch.go	ast-v1:b8ce96dd324350e66b1d8f47ac52fa0084c50d342352338de679c63b614496f6	matchedは0との比較にのみ使うため、正のcountを負へ変えても分岐結果は変わらず、repository数の整数overflowも不可能なため
+internal/pool/branch.go	ast-v1:5cf165baa8b7af88c4f94e55b6982bb07d510942e00d42e3527e583d15feaa09	matched==0のlen(applicable)==1は直前の分岐で処理済みのため、後続の>1を>=1へ変えても到達結果は変わらないため
+internal/workspace/cow_index.go	ast-v1:a126ed4dba09f5352c3dbfba2fe989cbda1822e10f2031d42995a558052c8810	The capacity hint only changes the allocation size; len and the returned candidate sequence are unchanged when < is replaced with <=.
+internal/workspace/cow_place.go	ast-v1:83de7f2fd36878bc475a55dc0c12a68602da0f262cb6f90de072f4b61d1c8db4	An empty LFS OID set returns from readCOWLFSBlobPointers before any Git or filesystem operation, so > and >= are observationally equivalent.
+internal/workspace/cow_share.go	ast-v1:d15863184b3bb50bac31b42568f1832ac39b0ce8154722760d4353d795fa4d5b	workers is clamped to 1 for all workers <= 1, so < and <= are observationally equivalent for every integer input.
+internal/workspace/capacity.go	ast-v1:35aa33e47e7c35b7e6ccd2ac26b300f58f0938e633ebaf2b627ce27604dbc9bc	LFS entries are collected in a map keyed by normalized OID, so result.LFS contains no equal OIDs; < and <= are observationally equivalent to sort.Slice.
+internal/workspace/capacity.go	ast-v1:bab7d79f6eb40108588ef39740e1507bbe656d4b176ff650058f6185c8861eb6	The saturation branch returns MaxInt64 on and above the exact boundary, so > and >= produce the same result for every int64 input.
+internal/workspace/fingerprint.go	ast-v1:9501c8a5c71fdeb488c2f8e1973e3d41bbdd07178475501cba42312aa31ceab0	The comparator only ties duplicate normalized link paths; inspectLinkSources gives those entries identical serialized values, so < and <= cannot change the fingerprint output.
+internal/workspace/lfs_cow.go	ast-v1:6f1a354131ba9d822eab90befecb6af6584d026c01b846e37fce14d71aad3e04	os.File.Read guarantees a non-negative count and hashing a zero-length slice is a no-op, so >0 and >=0 are observationally equivalent.
+internal/workspace/placements.go	ast-v1:cfb7cd23c10bbc612bdacc1483e1dd995a9a2dd84c8528daf477bd61d867abe9	同じRepositoryID内の異なるRelativePathだけを比較するため、< と <= は同じ順序になる
+internal/workspace/placements.go	ast-v1:6e6ab27f0f3cf97da488b07b9cc66bd46c1e0cc2083794e995e719df548f9f3a	The RepositoryID comparator is reached only when IDs differ because equal IDs take the earlier branch, so < and <= are equivalent.
+internal/workspace/prepare_command.go	ast-v1:447ac54f4e21f4e5a597d2359c5b818c9d808f694c96d8177718024426c96241	When used has already reached the output limit, the following remaining<=prefix guard takes the same no-write and truncation path as the >= guard.
+internal/workspace/submodule_batch.go	ast-v1:be0ba7870f8a73b8860e148fd562adb619a23d5507200a597d5f86c038f2f412	For every non-empty items input, each loop iteration appends to current, so the final len(current)>0 guard is always true; > and >= are equivalent.
+internal/workspace/submodule_hook.go	ast-v1:e3983af526d73378530ec91ec4832a8b0d11eca8f49deb17576ce505c3c26f63	The function returns before this branch whenever declared is empty, so the else branch is reached only with len(declared)>0; > and >= are equivalent.
+internal/workspace/submodule_outcome.go	ast-v1:0f2f451c89c462fd73e8010ef30e01ac92baf793bbb32cc8d60af04a8fb5f379	The repository comparison is reached only when repository values differ, so < and <= produce the same ordering for every reachable comparison.
+internal/workspace/submodule_outcome.go	ast-v1:861e7fd55dcba13d924b2271406a83a4bfee40d8a6ff8215fe4c9cdfd011a46a	The depth comparison is reached only when depth values differ, so < and <= produce the same ordering for every reachable comparison.
+internal/workspace/submodule_outcome.go	ast-v1:3776c3439cbd11a4aab0a7952f50f9447a5c52efae5660ea4d728789387f89a0	Path の比較は異なる値の場合だけ行うため、< と <= は同じ順序になる
+internal/workspace/timing.go	ast-v1:470c9985ce2a74231b0ce88a38678a2a9ef043ae73eff0fb5d510854b75ee448	The run ID is private and compared only for equality; incrementing or decrementing from zero yields distinct nonzero IDs for every reachable execution, so direction is observationally irrelevant.
+internal/workspace/usage.go	ast-v1:778b31b732dd71cb853c23f1b31feeffb5f9cecadee2b284fabec0582a0a99fb	At index len(components), the loop writes the full namespace path as a gate and the immediately following assignment overwrites that same key with its final scope, so < and <= return identical maps.
+internal/workspace/worktree_git.go	ast-v1:a4b43014cc46d10e54e822e1a8ac3c4f452d1004d579074a9426c4c7cb4ac3aa	gitx.RunAt returns nil error for exit code 0, so the error-only branch can observe either a positive Git exit status or a negative no-status result; <0 and <=0 are equivalent there.
+internal/workspace/update_flags.go	ast-v1:2a74af97dd17f53bd121072f8aff5636330796697e78ebc50355781d29103c99	With an empty stash, indexFlagsOf returns no flagged paths and ClearIndexFlags returns immediately without invoking Git, so >0 and >=0 have identical behavior.
+internal/daemon/capacity.go	ast-v1:b87fc91e564f5e0ab4e473f81aca827e4efe400ec400735c76f3c5b54b1563f4	multiplier=1 はどちらの分岐でも 1 を代入するため < と <= の変更に観測可能な差がない
+internal/daemon/capacity.go	ast-v1:faca21ea5ec7c38c49237c8b46d70b6f9fb6d24e848e67b064a5a3ac638d62c1	上限ちょうどでは厳密比較を包含比較へ変えても結果は MaxInt64 のまま変わらない
+internal/daemon/capacity.go	ast-v1:16474872a3b139fdfdcf9cc33f2934c2bcc55746e8d66cdac81b13370a914c71	積がちょうど MaxInt64 のとき両分岐は同じ飽和値を返す
+internal/daemon/capacity.go	ast-v1:59bc016abd95d87a8cfd5b7a020bddf9262e4015b4208aef6a3f647d4ff99fb4	warm_count=0 では worktree 容量を 0 倍するためどちらの分岐でも結果が 0 になる
+internal/daemon/capacity.go	ast-v1:17072fb8c27fbb15ba4ccbbf0d243381790b7d80ac12acedc1ef171fdd2518b7	積がちょうど MaxInt64 の場合は、厳密比較に変えても乗算結果と飽和値が同じになるため
+internal/daemon/jobqueue.go	ast-v1:5029b67e26ddf12ddda3cfa98db2491ea26a4566e8ea1067478542bdf81ccba4	実行枠の下限値1では < と <= のどちらでも同じ値を代入し、通知を含む後続処理も変わらないため観測可能な差がない
+internal/daemon/lease_mismatch.go	ast-v1:6847d2bd367a8efae34b6135991d553dc49f673da9f4aefd8deb5fb8579c81a8	OID の長さが12文字以下なら短縮結果と元の文字列が同じで、12文字境界の厳密比較変更に観測可能な差がない
+internal/daemon/lease.go	ast-v1:47563a1e94df2bfaf5ed40e88f81675d73226bced387af45d8e9783f89435218	readiness timeout が現在の最大値と等しい場合は同じ Duration を代入するだけで、厳密比較と包含比較に観測可能な差がない
+internal/daemon/measurement.go	ast-v1:063830cdf5853c21f8a068e7e3734a5fce8926d75b1027bfaa412f5aad168ea9	履歴件数が上限ちょうどならslice開始位置は0で全要素を保持するため、> を >= に変えて分岐しても履歴は変わらない
+internal/daemon/prune.go	ast-v1:923073a0c87502133c3e1067710418e81ed92486ec009b607059fcd8ed6e9cd6	診断エラーが0件のときは空sliceをappendするだけで、条件を > 0 から >= 0 に変えても結果の Errors は同じ空sliceになる
+internal/daemon/restart.go	ast-v1:1878aaa54a418c5b5d410022c6c34e84fb280c0b63e7e35178f45ea7b831fbb8	猶予が周期間隔と等しいときは同じDurationを代入するため < と <= の変更に観測可能な差がない
+internal/daemon/restart.go	ast-v1:5972134772f05f2c2e4c81fb288748c834bbc38d19eb029e4c52821084d7889c	再試行期限が現在の待機時間と等しいときは同じDurationを代入するため > と >= の変更に観測可能な差がない
+internal/daemon/roots.go	ast-v1:47acc2c8b48e57454835ff52742e2773326405e2ae508c982463d3cfb658e5a2	同じpathに含まれる同じ長さのrootは同一文字列だけで、再代入しても選択結果が変わらない
+internal/daemon/roots.go	ast-v1:8eb310093da516d02d5d580bc8f64ac7381fa32793570223552c19140a7f2f1b	activeと履歴に同じrootがある同長境界では同一文字列を再代入するだけで選択結果が変わらない
+internal/daemon/server.go	ast-v1:b7da50cfe01497a3924078e6f1cd2cc01c970daaadc8e1beec78fe0b6296a7c6	readinessと余裕の合計が既定上限と等しい場合は、どちらの分岐でも同じ既定上限を返すため観測可能な差がない
+internal/daemon/status.go	ast-v1:73489c0937a635f3c7556f2062a2478fa0e008c278b12d225e4f596014524abc	root一覧はpathをkeyにしたmapから作るため同じpathの別要素は存在せず、同一要素の比較を < から <= に変えても並び順は変わらない
+internal/daemon/submodule_measurement.go	ast-v1:2a542dcd55499e9ab0d241234b1f32fd4b12fd2b18231481bca4ce82f76361b2	repositoryが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
+internal/daemon/submodule_measurement.go	ast-v1:dd5f1b5a7441fc4d0bc0292520fb0203121675232aa4d9192cd096aa46007bc3	同じrepositoryでdepthが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
+internal/daemon/submodule_measurement.go	ast-v1:747dd2fec1fdbe7e12fb93fdf77515c5d90815b0367b40602994da5449d11eb9	priorityが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
+internal/daemon/submodule_measurement.go	ast-v1:a726806163d5c9f84b47d640d88105b1186d6fd7f63e766feeda90fbbb8c30ca	pathが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
+internal/daemon/unmanaged_artifacts.go	ast-v1:be48faf846105672185c66fa852a86bf6eba44bcd3e9430f75be52ecbffa58e9	列挙対象は実体pathごとに一意であり同じpath同士の比較は発生しないため、< と <= の結果に観測可能な差がない
+internal/daemon/usage.go	ast-v1:c59725973128eae5b9923c9230527cef3a71e7b57f481d76e5fdb5a4f10e3d5e	削除量と合計が等しい場合は分岐して0を返しても減算して0になっても結果が同じで、>= と > の変更に観測可能な差がない
+internal/agent/worktree_rewrite.go	ast-v1:fcea7b0df81519360267defb4603f807a4df85f9cac05fa91324ed55bf38dda3	candidates は segment ごとに高々1回だけ増え、candidates > 1 は len(segments) > 1 と同時に必ず真になるため、++ を -- に変えても判定結果が変わらない。
+internal/agent/worktree_rewrite.go	ast-v1:eba1e03f5b0bde81752749490943db5fda2a9ba45c939a657498a84c0535f9f7	flags 分岐に入る value は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
+internal/agent/worktree_rewrite.go	ast-v1:9ca60cbbfccab98cf51c03acae5928122a45aee69c59dff32c39cacbfe274365	flags 分岐に入る name は必ず '-' で始まるため、strings.Index(name, "=") が 0 になる経路がなく、> 0 と >= 0 は等価である。
+internal/dashboard/view.go	ast-v1:0da5ceffad511750a8ea2456dd2efa101dbda1f57eb03e9a141b96ea25a0d4d0	rightWidth は leftColumnWidth の上限により minRightColumn との等号へ到達しない
+internal/dashboard/view.go	ast-v1:11e735762a5746bb547b63240cb42eed52c7335394887f58a6ffca07aec1f156	表示幅がちょうど収まる wrap は折り返しても同じ1行になり比較が同値
+internal/dashboard/view.go	ast-v1:fac2ffee876d33541f57204195fa77d83234cb55679d294db36e4b1bcc2c15a4	表示幅と等しい padANSI は padding 0 の分岐と同じ文字列を返す
+internal/dashboard/view.go	ast-v1:d10ec7e5eac481a0d40cdd1d76f374edfaf1f4607dee3665e935f91d3153c1eb	行数と高さが等しい fitLines は切り出しても同じ全行を返す
+internal/config/file.go	ast-v1:89095143387e538aeaa65bb27dc4fda1b0d27846f60213ff522a7d9e2446f33c	YAML mapping の Content は key/value の偶数列なので、mappingValue の境界変異は有効なNodeで同値
+internal/config/file.go	ast-v1:abe40bdb1b136ea564c71acb14ee3e8d3685af10b47b4223138d1ab7fa05ea47	YAML mapping の Content は key/value の偶数列なので、removeMappingKey の境界変異は有効なNodeで同値
+internal/config/file.go	ast-v1:9b23cb01bda58e670954ab48aa5631a61a0b7f31ff42fbdaa01ff0ea159c0657	YAML mapping の Content は key/value の偶数列なので、collectMappingKeys の境界変異は有効なNodeで同値
+internal/config/unknown.go	ast-v1:58a7daaf37e2ff54ddc39f53de10663a7676c61ab2b974224a00ce739780497b	YAML mapping の Content は key/value の偶数列なので、findUnknownNode の境界変異は有効なNodeで同値
+internal/config/v2.go	ast-v1:9b3917fc8ec8bb31e620dc7a5cd27e7f30a2f27985f3054a3c758a31a1ec486f	固定されたlegacy section tagはすべてConfig fieldに対応するため、markLegacyPresentFromValueの境界変異は現行schemaで同値
+internal/config/v2_edit.go	ast-v1:bbd64f359e802e251e6c9960b2cb7c1489519fc83c12609e70b51d91d3ae4c79	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
+internal/config/v2_edit.go	ast-v1:16fd9e92800767c98cd01e2ec745697065324938cfcdc9bc02d0551858041635	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
+internal/cli/bench.go	ast-v1:76ada9b0eb2e9ee90a241dfae75b26d56f0dc46f6297c69480b178e53e64955b	表示幅とラベル幅が同じ場合は0個の空白を追加するだけで、>と>=の結果が同じため
+internal/cli/bench.go	ast-v1:1f94987a6bae0e5592feb370ef19b5ff27795561b8578703a63e4bb3fe59e7a0	sort.Sliceの比較子を<=にしてもint64の同値要素の値列は変わらず、sortedCopyの結果が同じため
+internal/cli/linked_worktree.go	ast-v1:9ed3d86d1e67d159d41050ce19f1925696dd5cbe0006da7fb873b18da7ab2dc7	12桁ちょうどのOIDは条件が>でも>=でも[:12]の結果が元の文字列と同じで、表示結果が変わらないため
+internal/cli/resume.go	ast-v1:b3f681312930e7664d512e30bd46d59bb5cbba77768660806364dc71a977b493	末尾の値付きflagでは比較子を<から<=へ変えても次の反復がなく、codexExecIndexの結果が変わらないため
+internal/cli/resume.go	ast-v1:cdc64275925e49cdb27de88f6d76b27f784bea8b536ba43c50f1e47760e113f1	codexResumeShapeがexecのresumeを返すときresumeIndexはexecの後ろで必ず1以上になり、>=0と>の分岐結果が同じため
+internal/cli/resume.go	ast-v1:b2be3e54c1189dc5e611ab5aedf033ec96e55305d19e4f29a22f74782183dab1	codexResumeShapeがexecのresumeを返すときresumeIndexはexecの後ろで必ず1以上になり、>=0と>の分岐結果が同じため
+internal/cli/resume_intent.go	ast-v1:4b0c5d3e46b5e1defb689897ea75b28b4502b8942fac06f3f4a0c87db192e50b	末尾の--cdで比較子を<から<=へ変えてもi++後に次の反復がなく、parseCodexResumeTailの結果が変わらないため
+internal/cli/resume_intent.go	ast-v1:c62304e1b6beb6fc096b71dd69817b927880c3bde3a5fc17b85894d939fa6ee4	末尾の--cdで比較子を<から<=へ変えてもi++後に次の反復がなく、stripCodexCDArgsの結果が変わらないため
+internal/cli/resume_intent.go	ast-v1:2000534d5fd4b459c11d6c532d2beeb84ae83a2d1ee3f0a9fabc4b238029208a	exec後の値付きflagが末尾にある場合は、比較子を<=にしても次の反復がなくcodexResumeShapeの結果が変わらないため
+internal/cli/resume_intent.go	ast-v1:5ac07e81a8a9e01c815a76b7e7d227bf5cc877f915c5d251424399e06d689567	末尾の値付きglobal flagで比較子を<から<=へ変えても次の反復がなく、codexResumeShapeの結果が変わらないため
+internal/archive/lfs.go	ast-v1:79b49d98d509e68063cd6923dbce81d5806b764abad5b48f0dec2c2395afb8a5	strings.Fields で len(fields) >= 5 を通る status は常に非空なので、len(status) の > と >= は同じ動作になる
+internal/archive/archive.go	ast-v1:e53f3668556fdfd383cc09ec6f28b4447afa6e61f4303c97582111b702b84bb7	空の候補は CompactLFSObjects が先頭で no-op を返すため、len の > と >= は同じ動作になる
+internal/archive/conflict.go	ast-v1:94843e96bca06c241f246c5b3b2f6a6c46202d97191394b91995d49f406328c3	path が異なる場合だけ比較する != ガードの内側なので、path の < と <= は同じ動作になる
+internal/archive/conflict.go	ast-v1:ccadb664ebd512dac5364942877e835fb2428b5a735d6eeb958b09073afd025d	stage が異なる場合だけ比較する != ガードの内側なので、stage の < と <= は同じ動作になる
+internal/archive/conflict.go	ast-v1:3295296019f46c569eda9f03bc34df4f17f0cddda73ce775fb21f2e9eaadbfdc	同一 path と stage の重複をソート前に拒否するため、stage の < と <= の同値差へ到達しない
+internal/archive/workspace.go	ast-v1:cb3f0724ef69b57c2b70b5b44b8c0d12e23d2608407729e321cf332039e9efb1	read は非負で、read == 0 のとき buffer[:0] をハッシュへ書いても結果は変わらないため、> と >= は同じ動作になる
+internal/config/resolve.go	ast-v1:9d6ef135080dd8386028ee416f639bc31566e6e78ec6871f8055cdf0fec52436	同じtimeoutの代入では戻り値が変わらない等価変異
+internal/config/resolve.go	ast-v1:f3661ff161061af6e1e4b51a5ed2e1fe932e83ac86c424f1afef97c4668784b8	同じretentionの代入では戻り値が変わらない等価変異
