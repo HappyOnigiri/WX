@@ -398,7 +398,8 @@ func TestSubmodulePolicyChangesBothFingerprints(t *testing.T) {
 	seenUpdate := map[string]bool{}
 	for _, enabled := range []bool{true, false} {
 		cfg := config.Defaults()
-		cfg.Worktree.Submodules = enabled
+		enabledValue := enabled
+		cfg.RepositoryDefaults.Submodules = &enabledValue
 		prepare, err := Fingerprint(1, "oid", repo, cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -413,8 +414,11 @@ func TestSubmodulePolicyChangesBothFingerprints(t *testing.T) {
 		seenPrepare[prepare] = true
 		seenUpdate[update] = true
 		// workspace 個別の上書きも同じ hash 入力として効く。
-		cfg.Worktree.Submodules = !enabled
-		cfg.Workspaces[source] = config.Workspace{Submodules: &enabled}
+		globalValue := !enabled
+		cfg.RepositoryDefaults.Submodules = &globalValue
+		cfg.Workspaces[source] = config.Workspace{
+			RepositoryDefaults: config.RepositoryDefaults{Submodules: &enabledValue},
+		}
 		overridden, err := Fingerprint(1, "oid", repo, cfg)
 		if err != nil {
 			t.Fatal(err)

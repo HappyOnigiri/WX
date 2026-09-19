@@ -75,7 +75,7 @@ func (m *Manager) startIdleStandbyUpdate(ctx context.Context, w discovery.Worksp
 	if err != nil {
 		return false, err
 	}
-	job, err := m.store.ReserveIdleStandbyUpdate(ctx, slot.ID, string(w.ID), plan.targets, plan.desired, m.Config().Storage.CopyMode)
+	job, err := m.store.ReserveIdleStandbyUpdate(ctx, slot.ID, string(w.ID), plan.targets, plan.desired, m.Config().RepositoryDefaults.Storage.CopyMode)
 	if err != nil {
 		if standbyStateRace(err) {
 			return false, nil

@@ -41,7 +41,7 @@ func TestLaunchReadinessModeAndFailureGate(t *testing.T) {
 				handler.leaseErrors = map[string][]error{tc.method: {errors.New("preparation failed")}}
 			}
 			cfg := config.Defaults()
-			cfg.Readiness.Mode = tc.mode
+			cfg.RepositoryDefaults.Readiness.Mode = tc.mode
 			client, stop := serveResumeLaunchRPCWithConfig(t, handler, cfg)
 			defer stop()
 			exit, relaunch := client.launch(context.Background(), launchPlan{agent: "claude", hooksReady: tc.hooks, cwd: root})

@@ -67,10 +67,10 @@ func developmentBuildReasons(binary string) []i18n.Message {
 	return []i18n.Message{message("setup.reason.development_build", "Running", running, "Binary", binary)}
 }
 
-// collectWorktreeRoot は storage.worktree_root の記載とディレクトリの実体を見る。
+// collectWorktreeRoot は system.storage.worktree_root の記載とディレクトリの実体を見る。
 // 実効値は展開・symlink 解決を経るため既定リテラルと一致しない。比較は raw 値と Defaults の生文字列で行う。
 func collectWorktreeRoot() Step {
-	step := Step{ID: stepWorktreeRoot, Title: message("wx.setup.item.worktree_root"), Desired: config.Defaults().Storage.WorktreeRoot}
+	step := Step{ID: stepWorktreeRoot, Title: message("wx.setup.item.worktree_root"), Desired: config.Defaults().System.Storage.WorktreeRoot}
 	path, err := config.Path()
 	if err != nil {
 		return unknownStep(step, message("setup.reason.config_unreadable", "Error", err.Error()))
@@ -80,7 +80,7 @@ func collectWorktreeRoot() Step {
 	if err != nil {
 		return unknownStep(step, message("setup.reason.config_unreadable", "Error", err.Error()))
 	}
-	step.Current = raw.Storage.WorktreeRoot
+	step.Current = raw.System.Storage.WorktreeRoot
 	if step.Current == "" {
 		step.Summary = message("setup.summary.worktree_root_unset", "Default", step.Desired)
 		step.Detail = message("setup.detail.worktree_root_unset", "Default", step.Desired)
@@ -121,7 +121,7 @@ func applyWorktreeRoot(ctx context.Context, options Options, step Step, _ Action
 	if err != nil {
 		return err
 	}
-	if err := config.SetField(&raw, "storage."+stepWorktreeRoot, value); err != nil {
+	if err := config.SetV2Field(&raw, config.V2ScopeSystem, "", "", "storage."+stepWorktreeRoot, value); err != nil {
 		return err
 	}
 	effective := config.Merge(config.Defaults(), raw)

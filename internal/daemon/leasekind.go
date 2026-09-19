@@ -69,7 +69,7 @@ func (m *Manager) applyLeaseAttrs(session *state.Session, attrs leaseAttrs) {
 	}
 	session.LeaseKind = attrs.Kind
 	session.LeaseOwnerSessionID = attrs.OwnerSessionID
-	if ttl := m.Config().Lease.TTL.Duration; ttl > 0 {
+	if ttl := m.Config().System.Lease.TTL.Duration; ttl > 0 {
 		session.LeaseExpiresAt = state.FormatTime(time.Now().Add(ttl))
 	}
 }

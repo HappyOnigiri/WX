@@ -28,23 +28,23 @@ func writeConfigFile(t *testing.T, document string) string {
 // 未知キーの検出は yaml.v3 のエラー文言に依存するため、取りこぼすと「報告されない」という無言の失敗になる。
 // トップレベル・既知節の下・動的キーの下の3形をここで押さえる。
 func TestLoadRawReportsUnknownKeysWithTheirLines(t *testing.T) {
-	document := "version: 1\nlanugage: ja\npool:\n  warm_per_workspace: 2\n  worm_per_workspace: 3\nworkspaces:\n  demo:\n    worktree: /tmp/demo\n    bogus: 1\n"
+	document := "version: 2\nsystem:\n  lanugage: ja\n  pool:\n    preparation_concurrency: 2\n    worm_per_workspace: 3\nworkspaces:\n  demo:\n    worktree: hot\n    bogus: 1\n"
 	writeConfigFile(t, document)
 	raw, err := LoadRaw()
 	if err != nil {
 		t.Fatalf("LoadRaw: %v", err)
 	}
 	// 未知キーの隣に書かれた既知キーの値は落とさない。
-	if raw.Pool.WarmPerWorkspace != 2 {
-		t.Fatalf("warm_per_workspace=%d, want 2", raw.Pool.WarmPerWorkspace)
+	if raw.System.Pool.PreparationConcurrency != 2 {
+		t.Fatalf("preparation_concurrency=%d, want 2", raw.System.Pool.PreparationConcurrency)
 	}
-	if got := raw.Workspaces["demo"].Worktree; got != "/tmp/demo" {
-		t.Fatalf("workspaces.demo.worktree=%q, want /tmp/demo", got)
+	if got := raw.Workspaces["demo"].Worktree; got != "hot" {
+		t.Fatalf("workspaces.demo.worktree=%q, want hot", got)
 	}
 	want := []UnknownKey{
-		{Key: "lanugage", Line: 2},
-		{Key: "pool.worm_per_workspace", Line: 5},
-		{Key: "workspaces.demo.bogus", Line: 9},
+		{Key: "system.lanugage", Line: 3},
+		{Key: "system.pool.worm_per_workspace", Line: 6},
+		{Key: "workspaces.demo.bogus", Line: 10},
 	}
 	got := raw.UnknownKeys()
 	if len(got) != len(want) {
@@ -77,7 +77,7 @@ func TestLoadKeepsUnknownKeysInTheEffectiveConfig(t *testing.T) {
 
 // 型の不一致や重複 document は値として解釈できないため、従来どおり load を失敗させる。
 func TestLoadRawStillRejectsUninterpretableValues(t *testing.T) {
-	writeConfigFile(t, "version: 1\npool:\n  warm_per_workspace: two\n")
+	writeConfigFile(t, "version: 2\nsystem:\n  pool:\n    preparation_concurrency: two\n")
 	if _, err := LoadRaw(); err == nil {
 		t.Fatal("a malformed value was accepted")
 	}

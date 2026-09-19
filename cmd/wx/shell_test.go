@@ -54,7 +54,7 @@ func TestLeaseClientReportsConfigurationFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 未知のキーは load を失敗させないため、値として解釈できない記述で失敗させる。
-	if err := os.WriteFile(path, []byte("version: 1\nretention:\n  hot_standby: nope\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nworkspace_defaults:\n  retention:\n    hot_standby: nope\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, code := leaseClient(); code != 1 {

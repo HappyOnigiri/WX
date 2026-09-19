@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/config"
 )
 
 // holdInterrupt は test process が SIGINT の既定動作で終了しないようにする。
@@ -52,13 +54,13 @@ func TestRunLeaseNewReleasesTheLeaseWhenInterruptedBeforeReady(t *testing.T) {
 	client, handler, _, ctx := leaseFixture(t)
 	holdInterrupt(t)
 	// 中断が効かなければ、この予算いっぱい待たされる。
-	client.Config.Readiness.Timeout.Duration = time.Minute
+	client.Config.RepositoryDefaults.Readiness.Timeout = &config.Duration{Duration: time.Minute}
 	blockWaitReadyUntilInterrupt(t, handler)
 	started := time.Now()
 	if exit := client.RunLeaseNew(ctx, nil, true); exit != 1 {
 		t.Fatalf("RunLeaseNew exit=%d, want 1 after an interrupt", exit)
 	}
-	if elapsed := time.Since(started); elapsed >= client.Config.Readiness.Timeout.Duration {
+	if elapsed := time.Since(started); elapsed >= client.Config.RepositoryDefaults.Readiness.Timeout.Duration {
 		t.Fatalf("RunLeaseNew waited %v; the interrupt did not stop the wait", elapsed)
 	}
 	if reasons := releaseReasons(handler); len(reasons) != 1 || reasons[0] != "lease-setup-failed" {
@@ -75,8 +77,8 @@ func TestRunLeaseShellReleasesTheLeaseWhenInterruptedBeforeReady(t *testing.T) {
 	if err := os.WriteFile(shell, []byte("#!/bin/sh\ntouch \""+started+"\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	client.Config.Lease.Shell = shell
-	client.Config.Readiness.Timeout.Duration = time.Minute
+	client.Config.System.Lease.Shell = shell
+	client.Config.RepositoryDefaults.Readiness.Timeout = &config.Duration{Duration: time.Minute}
 	blockWaitReadyUntilInterrupt(t, handler)
 	if exit := client.RunLeaseShell(ctx, nil, ""); exit != 1 {
 		t.Fatalf("RunLeaseShell exit=%d, want 1 after an interrupt", exit)

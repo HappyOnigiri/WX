@@ -157,9 +157,6 @@ func addDashboardEnvironments(ctx context.Context, cfg *config.Config) {
 // markDashboardRegistrations は Status 応答を設定済み workspace へ重ねる。
 // daemon への接続を伴わない純粋な合成として分け、表示対象の決め方をテストで固定する。
 func markDashboardRegistrations(cfg *config.Config, payload map[string]any) {
-	if !cfg.V2() {
-		return
-	}
 	workspaceDetails, _ := payload["workspace_details"].([]any)
 	for _, raw := range workspaceDetails {
 		item, ok := raw.(map[string]any)

@@ -379,7 +379,7 @@ func TestSetupRemoveKeepsTheDisplayLanguageItDeletes(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".config", "wx"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".config", "wx", "config.yaml"), []byte("language: ja\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".config", "wx", "config.yaml"), []byte("version: 2\nsystem:\n  language: ja\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// 言語は context に載せず、設定ファイルから読ませる。実際の CLI と同じ経路で、

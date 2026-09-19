@@ -90,7 +90,7 @@ func (c Client) lookupResume(ctx context.Context, agent, id string) (resumeTarge
 	if err != nil || found {
 		return managed, found, err
 	}
-	target, found, err := sessions.Lookup(ctx, c.Config.Sessions, agent, id)
+	target, found, err := sessions.Lookup(ctx, c.Config.System.Sessions, agent, id)
 	if err != nil || !found {
 		return resumeTarget{}, false, err
 	}
@@ -119,13 +119,13 @@ func (c Client) resolveResume(ctx context.Context, agent, cwd string, intent res
 				selectedScope = nil
 			}
 			var found bool
-			target, found, err = sessions.Continue(ctx, c.Config.Sessions, sessions.ContinueOptions{Tool: agent, Scope: selectedScope})
+			target, found, err = sessions.Continue(ctx, c.Config.System.Sessions, sessions.ContinueOptions{Tool: agent, Scope: selectedScope})
 			if err == nil && !found {
 				err = i18n.NewError("cli.resume.no_conversation", nil)
 			}
 		} else {
 			// picker には --all でも scope を渡し、初期表示だけ広げる。scope を捨てると Ctrl-A と注記が消える。
-			target, err = sessions.Pick(ctx, c.Config.Sessions, sessions.PickOptions{Tool: agent, Scope: &scope, StartWidened: intent.WidenScope, Language: c.Config.DisplayLanguage()})
+			target, err = sessions.Pick(ctx, c.Config.System.Sessions, sessions.PickOptions{Tool: agent, Scope: &scope, StartWidened: intent.WidenScope, Language: c.Config.DisplayLanguage()})
 		}
 		if err != nil {
 			return resumeTarget{}, false, err

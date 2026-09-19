@@ -164,7 +164,7 @@ func TestLocalFindingsReportUnknownConfigurationKeys(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte("version: 1\nunknown: true\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("version: 2\nunknown: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	findings := LocalFindings(context.Background(), nil)
@@ -176,7 +176,7 @@ func TestLocalFindingsReportUnknownConfigurationKeys(t *testing.T) {
 		t.Fatalf("config finding details=%+v", unknown.Details)
 	}
 	// 値として解釈できない設定は今までどおり読み込みを失敗させ、その原因を報告する。
-	if err := os.WriteFile(configPath, []byte("version: 1\nretention:\n  hot_standby: nope\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("version: 2\nworkspace_defaults:\n  retention:\n    hot_standby: nope\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	findings = LocalFindings(context.Background(), nil)

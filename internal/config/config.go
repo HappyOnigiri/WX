@@ -60,8 +60,7 @@ type Config struct {
 	// prepareOverride は貸出1回だけの準備設定の上書きで、設定ファイルにも workspaces/repositories にも現れない。
 	// 解決ヘルパーはこれを最上位に置き、repository 個別指定より優先する。
 	prepareOverride PrepareOverride
-	// v2Explicit は、すべて既定値で埋めた v2 実効値と、呼び出し側が Version
-	// だけを書き換えた legacy Config を区別する。
+	// v2Explicit は旧 adapter の互換情報としてだけ残る。schema の判定には使わない。
 	v2Explicit bool
 }
 
@@ -73,19 +72,35 @@ const (
 // DisplayLanguage は設定を直接組み立てた呼び出し側も安全に表示できるよう、
 // 未設定・未対応値を英語へ戻して返す。
 func (c Config) DisplayLanguage() string {
-	if c.Language == LanguageJapanese {
+	language := c.System.Language
+	if language == "" {
+		language = c.Language
+	}
+	if language == LanguageJapanese {
 		return LanguageJapanese
 	}
 	return LanguageEnglish
 }
 
+// WorktreeRoot は新しい system.storage と、v2 移行前に Config を直接組み立てていた
+// caller の view を同じ値へ解決する。ファイルから得た実効 Config は flatten により
+// 両方が一致するため、差分がある場合だけ直接 caller の変更を採用する。
+func (c Config) WorktreeRoot() string {
+	c = withLegacyAdapter(c)
+	return c.System.Storage.WorktreeRoot
+}
+
 // LanguageForRPC は要求へ載せる表示言語を返す。未記載の英語は旧クライアントと
 // 同じくフィールドを省略し、明示した英語と日本語だけを daemon へ伝える。
 func (c Config) LanguageForRPC() string {
-	if c.Language == LanguageJapanese {
+	language := c.System.Language
+	if language == "" {
+		language = c.Language
+	}
+	if language == LanguageJapanese {
 		return LanguageJapanese
 	}
-	if _, explicit := c.rawLanguage(); explicit && c.Language == LanguageEnglish {
+	if _, explicit := c.rawLanguage(); explicit && language == LanguageEnglish {
 		return LanguageEnglish
 	}
 	return ""
@@ -95,11 +110,11 @@ func (c Config) LanguageForRPC() string {
 // 設定ファイルで明示された表示言語を取り出す。値の妥当性は検証しない。
 // 設定ファイル由来でない Config は未記載として扱い、既定値を明示指定と誤認しない。
 func (c Config) rawLanguage() (string, bool) {
+	if c.present == nil {
+		return "", false
+	}
 	if c.has("system.language", false) {
 		return c.System.Language, true
-	}
-	if c.has("language", false) {
-		return c.Language, true
 	}
 	return "", false
 }
@@ -448,32 +463,14 @@ func (s Storage) COWMinShareSize() int64 { return int64(s.COWMinSizeKiB) << 10 }
 // 貸出1回の上書き、repository 個別指定、global 設定の順に優先する。
 // mainPath は NormalizePaths 済み canonical path であることを呼び出し側の契約とする。
 func (c Config) COWMinSizeKiB(mainPath string) int {
-	if c.V2() {
-		return c.COWMinSizeKiBForWorkspaceRepository("", ".", mainPath)
-	}
-	if c.prepareOverride.COWMinSizeKiB != nil {
-		return *c.prepareOverride.COWMinSizeKiB
-	}
-	if override, ok := c.Repositories[mainPath]; ok && override.COWMinSizeKiB != nil {
-		return *override.COWMinSizeKiB
-	}
-	return c.Storage.COWMinSizeKiB
+	return c.COWMinSizeKiBForWorkspaceRepository("", ".", mainPath)
 }
 
 // CopyMode は repository のコピー方式を解決する。
 // 貸出1回の上書き、repository 個別指定、global 設定の順に優先する。
 // mainPath は NormalizePaths 済み canonical path であることを呼び出し側の契約とする。
 func (c Config) CopyMode(mainPath string) string {
-	if c.V2() {
-		return c.CopyModeForWorkspaceRepository("", ".", mainPath)
-	}
-	if c.prepareOverride.CopyMode != "" {
-		return c.prepareOverride.CopyMode
-	}
-	if override, ok := c.Repositories[mainPath]; ok && override.Storage.CopyMode != "" {
-		return override.Storage.CopyMode
-	}
-	return c.Storage.CopyMode
+	return c.CopyModeForWorkspaceRepository("", ".", mainPath)
 }
 
 // COWMinShareSize は repository の CoW 共有下限を bytes で返す。0 は下限なしを表す。
@@ -481,11 +478,13 @@ func (c Config) COWMinShareSize(mainPath string) int64 {
 	return int64(c.COWMinSizeKiB(mainPath)) << 10
 }
 
-func Defaults() Config {
+// defaultsLegacy は既定値を旧 in-memory adapter の形へ組み立てる。
+// 保存・読み込みの正本は Defaults が返す v2 Config である。
+func defaultsLegacy() Config {
 	return Config{
 		Language: LanguageEnglish,
 		Worktree: WorktreePolicy{Undefined: "ask", ReuseStandby: true, FetchDefaultBranch: false, Submodules: true},
-		Version:  1, Storage: Storage{
+		Storage: Storage{
 			WorktreeRoot: "$HOME/wx", CopyMode: CopyModeAuto, COWMinSizeKiB: DefaultCOWMinSizeKiB,
 			RepoDirSource: RepoDirSourceRemote, BackupGenerations: 3, BackupRetention: Duration{168 * time.Hour},
 		},
@@ -502,16 +501,20 @@ func Defaults() Config {
 	}
 }
 
+// Defaults は組み込み既定値を config v2 の正本として返す。
+// 旧 field も adapter として同じ実効値を持つが、YAML へは出力されない。
+func Defaults() Config {
+	c := DefaultsV2()
+	// 既存 caller の移行期間は read-only adapter も埋めるが、保存と解決の正本は
+	// v2 section だけに保つ。
+	flattenV2(&c)
+	return c
+}
+
 // DefaultAgentRulesEnabled は repository へ既定の agent rule をコピーするか解決する。
 // 個別指定が global 設定より優先される。
 func (c Config) DefaultAgentRulesEnabled(mainPath string) bool {
-	if c.V2() {
-		return c.DefaultAgentRulesForWorkspaceRepository("", ".", mainPath)
-	}
-	if override, ok := c.Repositories[mainPath]; ok && override.Includes.DefaultAgentRules != nil {
-		return *override.Includes.DefaultAgentRules
-	}
-	return c.Includes.DefaultAgentRules
+	return c.DefaultAgentRulesForWorkspaceRepository("", ".", mainPath)
 }
 
 // EffectiveEqual は正規化・検証を終えた実効設定として2つのConfigが同じ値かを返す。
@@ -531,68 +534,42 @@ func (c Config) EffectiveEqual(other Config) bool {
 
 func Merge(d, raw Config) Config {
 	// 未知キーは実効設定にも引き継ぐ。daemon が持つのは Merge 後の Config であり、doctor はそこから報告する。
-	if raw.V2() {
-		v2 := effectiveV2Defaults(raw)
-		v2.unknown = raw.unknown
-		return v2
+	if raw.Version == 0 {
+		d.unknown = raw.unknown
+		return d
 	}
-	r := d
-	r.unknown = raw.unknown
-	if raw.has("version", raw.Version != 0) {
-		r.Version = raw.Version
+	if !raw.V2() {
+		// LoadRaw は Merge 前に拒否する。直接 caller でも v1 を黙って merge せず、
+		// version を残して同じ検証エラーへ到達させる。
+		d.Version = raw.Version
+		d.unknown = raw.unknown
+		return d
 	}
-	rawValue := reflect.ValueOf(raw)
-	resultValue := reflect.ValueOf(&r).Elem()
-	walkConfigLeaves(rawValue, "", func(key string, rawField reflect.Value) {
-		nonZero := !rawField.IsZero()
-		if !raw.has(key, nonZero) {
-			return
-		}
-		configField(resultValue, key).Set(rawField)
-	})
-	walkConfigLists(rawValue, "", func(key string, rawField reflect.Value) {
-		if rawField.IsNil() {
-			return
-		}
-		configListField(resultValue, key).Set(rawField)
-	})
-	if raw.has("workspaces", raw.Workspaces != nil) {
-		r.Workspaces = raw.Workspaces
-	}
-	if raw.has("repositories", raw.Repositories != nil) {
-		r.Repositories = raw.Repositories
-	}
-	if raw.has("language", raw.Language != "") {
-		if r.present == nil {
-			r.present = map[string]bool{}
-		}
-		r.present["language"] = true
-	}
-	return r
+	v2 := effectiveV2Defaults(raw)
+	v2.unknown = raw.unknown
+	return v2
 }
 
 // validateLanguage は表示言語を正規化し、対応しない値を拒否する。
 func validateLanguage(c *Config) error {
-	if c.Language == "" && !c.has("language", false) {
+	if c.System.Language == "" && !c.has("system.language", false) {
 		// 呼び出し側が zero Config を組み立てても未記載＝英語として扱う。
 		// YAML で明示された空文字は present に残るため、下の不正値検査を通る。
-		c.Language = LanguageEnglish
+		c.System.Language = LanguageEnglish
 	}
-	if c.Language != LanguageEnglish && c.Language != LanguageJapanese {
+	if c.System.Language != LanguageEnglish && c.System.Language != LanguageJapanese {
 		return i18n.NewError("config.language.invalid", nil)
 	}
+	c.Language = c.System.Language
 	return nil
 }
 
 func validateSchema(c *Config) error {
 	if c.V2() {
-		if c.Version == 2 && !c.v2Explicit {
-			return fmt.Errorf("unsupported config version %d", c.Version)
-		}
 		if err := ValidateV2Rules(c); err != nil {
 			return err
 		}
-	} else if c.Version != 1 {
+	} else {
 		return fmt.Errorf("unsupported config version %d", c.Version)
 	}
 	return nil
@@ -602,8 +579,17 @@ func Validate(c *Config) error {
 	if c == nil {
 		return errors.New("config is nil")
 	}
+	*c = withLegacyAdapter(*c)
 	if err := validateSchema(c); err != nil {
 		return err
+	}
+	// LoadWithRaw を通らず sparse な v2 Config を直接組み立てる caller もいるため、
+	// validator と consumer が同じ組み込み既定値を見るよう実効 view をここで埋める。
+	if c.V2() && (c.present != nil || (c.SystemIsZero() && c.WorkspaceDefaultsIsZero() && c.RepositoryDefaultsIsZero())) {
+		unknown, present := c.unknown, c.present
+		normalized := effectiveV2Defaults(*c)
+		normalized.unknown, normalized.present = unknown, present
+		*c = normalized
 	}
 	if err := validateLanguage(c); err != nil {
 		return err

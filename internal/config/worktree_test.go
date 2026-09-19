@@ -209,43 +209,9 @@ func TestWorkspaceReuseStandbyOverridePreservesExplicitFalse(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSubmodulesOverridePreservesExplicitFalse(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	repo := filepath.Join(home, "repo")
-	if err := os.Mkdir(repo, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	raw := Config{}
-	if err := SetScopeField(&raw, ScopeWorkspace, repo, "submodules", "false"); err != nil {
-		t.Fatal(err)
-	}
-	if err := Save(raw); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if enabled, overridden := loaded.SubmodulesForWorkspace(repo); enabled || !overridden {
-		t.Fatalf("submodules=%t overridden=%t, want explicit false", enabled, overridden)
-	}
-	raw, err = LoadRaw()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ResetScopeField(&raw, ScopeWorkspace, repo, "submodules"); err != nil {
-		t.Fatal(err)
-	}
-	if err := Save(raw); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err = Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if enabled, overridden := loaded.SubmodulesForWorkspace(repo); !enabled || overridden {
-		t.Fatalf("submodules=%t overridden=%t, want global default", enabled, overridden)
+func TestWorkspaceSubmodulesSettingIsRejected(t *testing.T) {
+	if err := SetScopeField(&Config{}, ScopeWorkspace, "/repo", "submodules", "false"); err == nil {
+		t.Fatal("workspace submodules was accepted; v2 keeps it under repository_defaults")
 	}
 }
 
@@ -259,25 +225,19 @@ func TestWorkspaceOverrideResetKeepsSiblingOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := Config{}
-	if err := SetScopeField(&raw, ScopeWorkspace, repo, "submodules", "false"); err != nil {
-		t.Fatal(err)
-	}
 	if err := SetScopeField(&raw, ScopeWorkspace, repo, "warm_count", "3"); err != nil {
 		t.Fatal(err)
 	}
 	if err := SetScopeField(&raw, ScopeWorkspace, repo, "reuse_standby", "false"); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"warm_count", "reuse_standby"} {
+	for index, key := range []string{"warm_count", "reuse_standby"} {
 		if err := ResetScopeField(&raw, ScopeWorkspace, repo, key); err != nil {
 			t.Fatal(err)
 		}
-		if enabled, overridden := Merge(Defaults(), raw).SubmodulesForWorkspace(repo); enabled || !overridden {
-			t.Fatalf("submodules=%t overridden=%t after a sibling reset, want the override kept", enabled, overridden)
+		if index == 0 && len(raw.Workspaces) == 0 {
+			t.Fatalf("workspace entry disappeared while resetting sibling %s", key)
 		}
-	}
-	if err := ResetScopeField(&raw, ScopeWorkspace, repo, "submodules"); err != nil {
-		t.Fatal(err)
 	}
 	if len(raw.Workspaces) != 0 {
 		t.Fatalf("workspaces=%+v, want the entry dropped once every override is reset", raw.Workspaces)

@@ -27,7 +27,7 @@ func TestMaintenanceLoopHandlesReloadAndTimer(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(home, "worktrees")
 	cfg.Pool.WarmPerWorkspace = 0
-	cfg.Discovery.ReconcileInterval.Duration = 10 * time.Millisecond
+	cfg.System.Discovery.ReconcileInterval.Duration = 10 * time.Millisecond
 	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}

@@ -52,7 +52,7 @@ func TestSetRepositoryOnboardingAcceptsWorkspaceRoot(t *testing.T) {
 	}
 }
 
-func TestLoadRawMigratesLegacyWorkspaceOnboardingAndSavesCurrentShape(t *testing.T) {
+func TestLoadRawReadsCurrentWorkspaceOnboardingShape(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	path, err := Path()
@@ -67,12 +67,11 @@ workspaces:
   /workspace:
     worktree: hot
     onboarding:
-      ".":
-        checked_at: "2026-09-17T00:02:00Z"
-      frontend:
-        declined_at: "2026-09-17T00:03:00Z"
+      checked_at: "2026-09-17T00:02:00Z"
     repositories:
       frontend:
+        onboarding:
+          declined_at: "2026-09-17T00:03:00Z"
         readiness:
           mode: full
 `
@@ -99,7 +98,7 @@ workspaces:
 	}
 	text := string(saved)
 	if strings.Contains(text, `".":`) || strings.Contains(text, "\n            .:") {
-		t.Fatalf("saved config did not use the current onboarding shape:\n%s", text)
+		t.Fatalf("saved config used the removed onboarding map shape:\n%s", text)
 	}
 	reloaded, err := LoadRaw()
 	if err != nil {
@@ -111,7 +110,7 @@ workspaces:
 	}
 }
 
-func TestLoadRawRejectsLegacyAndCurrentMemberOnboardingCollision(t *testing.T) {
+func TestLoadRawReportsRemovedWorkspaceOnboardingPlacement(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	path, err := Path()
@@ -135,8 +134,12 @@ workspaces:
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadRaw(); err == nil || !strings.Contains(err.Error(), "both legacy and current locations") {
+	raw, err := LoadRaw()
+	if err != nil {
 		t.Fatalf("LoadRaw error=%v", err)
+	}
+	if len(raw.UnknownKeys()) == 0 {
+		t.Fatal("removed onboarding placement was not reported as unknown")
 	}
 }
 

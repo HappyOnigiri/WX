@@ -16,10 +16,10 @@ func TestSavePreservesExistingPermissions(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("version: 1\n"), 0o400); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
-	if err := Save(Config{Version: 1}); err != nil {
+	if err := Save(Config{Version: 2}); err != nil {
 		t.Fatal(err)
 	}
 	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o400 {
@@ -40,7 +40,7 @@ func TestSavePropagatesAnUnsearchableConfigDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if err := Save(Config{Version: 1}); err == nil || os.IsNotExist(err) {
+	if err := Save(Config{Version: 2}); err == nil || os.IsNotExist(err) {
 		t.Fatalf("Save error=%v, want a non-ErrNotExist error", err)
 	}
 }
@@ -52,7 +52,7 @@ func TestSaveRejectsNonRegularConfigPath(t *testing.T) {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := Save(Config{Version: 1}); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+	if err := Save(Config{Version: 2}); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("Save error=%v", err)
 	}
 }
@@ -65,14 +65,14 @@ func TestDecodeAcceptsUnknownKeys(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("pool:\n  unknown: 2\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nsystem:\n  unknown: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := cfg.UnknownKeys(); len(got) != 1 || got[0].Key != "pool.unknown" {
+	if got := cfg.UnknownKeys(); len(got) != 1 || got[0].Key != "system.unknown" {
 		t.Fatalf("unknown keys=%+v, want pool.unknown", got)
 	}
 }
@@ -87,7 +87,7 @@ func TestLoadLanguageFallsBackWhileFullLoadRejectsUnsupportedValue(t *testing.T)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("version: 1\nlanguage: fr\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nsystem:\n  language: fr\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := LoadLanguage(); got != LanguageEnglish {
@@ -105,7 +105,7 @@ func TestLoadRawRejectsMultipleYAMLDocuments(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("version: 1\n---\nversion: 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\n---\nversion: 2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadRaw(); err == nil || !strings.Contains(err.Error(), "multiple YAML documents") {
@@ -113,8 +113,8 @@ func TestLoadRawRejectsMultipleYAMLDocuments(t *testing.T) {
 	}
 }
 
-// pool.git_concurrency_per_repository は削除済みキー。既存configに残っていても読み込みを失敗させず、無視する。
-func TestLoadIgnoresRemovedGitConcurrencyKey(t *testing.T) {
+// 未知キーは将来の schema 用に保持し、doctor へ報告する。
+func TestLoadReportsUnknownGitConcurrencyKey(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	path, err := Path()
@@ -124,7 +124,7 @@ func TestLoadIgnoresRemovedGitConcurrencyKey(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := "version: 1\npool:\n  warm_per_workspace: 2\n  git_concurrency_per_repository: 4\n"
+	document := "version: 2\nsystem:\n  pool:\n    preparation_concurrency: 2\n    git_concurrency_per_repository: 4\n"
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -132,8 +132,8 @@ func TestLoadIgnoresRemovedGitConcurrencyKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Pool.WarmPerWorkspace != 2 {
-		t.Fatalf("warm_per_workspace=%d, want 2 (siblings of the removed key must survive)", cfg.Pool.WarmPerWorkspace)
+	if cfg.System.Pool.PreparationConcurrency != 2 {
+		t.Fatalf("preparation_concurrency=%d, want 2", cfg.System.Pool.PreparationConcurrency)
 	}
 	for _, field := range Fields(cfg) {
 		if field.Key == "pool.git_concurrency_per_repository" {
@@ -144,21 +144,17 @@ func TestLoadIgnoresRemovedGitConcurrencyKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRaw: %v", err)
 	}
-	if raw.has("pool.git_concurrency_per_repository", false) {
-		t.Fatal("removed key is still recorded as present")
+	if got := raw.UnknownKeys(); len(got) != 1 || got[0].Key != "system.pool.git_concurrency_per_repository" {
+		t.Fatalf("unknown keys=%+v, want the unknown key to be reported", got)
 	}
-	// 削除済みキーは恒久的な problem にしないため、未知キーとして報告しない。
-	if got := raw.UnknownKeys(); len(got) != 0 {
-		t.Fatalf("unknown keys=%+v, want the removed key to be ignored", got)
-	}
-	if err := os.WriteFile(path, []byte("version: 1\ngit_concurrency_per_repository: 4\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\ngit_concurrency_per_repository: 4\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	top, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	// 同名でもトップレベルは削除済みキーではないため、未知キーとして報告する。
+	// 同名でもトップレベルは未知キーとして報告する。
 	if got := top.UnknownKeys(); len(got) != 1 || got[0].Key != "git_concurrency_per_repository" {
 		t.Fatalf("unknown keys=%+v, want the top-level key to be reported", got)
 	}
@@ -175,9 +171,9 @@ func TestLoadRawRejectsMalformedDurationAndMultipleDocuments(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, document := range []string{
-		"readiness:\n  timeout: [invalid]\n",
-		"readiness:\n  timeout: definitely-not-a-duration\n",
-		"version: 1\n---\nversion: 1\n",
+		"version: 2\nrepository_defaults:\n  readiness:\n    timeout: [invalid]\n",
+		"version: 2\nrepository_defaults:\n  readiness:\n    timeout: definitely-not-a-duration\n",
+		"version: 2\n---\nversion: 2\n",
 	} {
 		if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 			t.Fatal(err)
@@ -199,8 +195,7 @@ func TestLoadReportsNormalizationAndValidationErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, document := range []string{
-		"version: 1\nstorage:\n  worktree_root: relative\n",
-		"version: 2\n",
+		"version: 2\nsystem:\n  storage:\n    worktree_root: relative\n",
 	} {
 		if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 			t.Fatal(err)

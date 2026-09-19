@@ -73,8 +73,6 @@ func runConfig(ctx context.Context, args []string) int {
 		return code
 	}
 	rest := fs.Args()
-	raw, rawErr := config.LoadRaw()
-	v2 := rawErr == nil && raw.V2()
 	// 配布スクリプトと外部ツールが設定言語を取得する機械契約。現在の実効値だけを
 	// 1 行で返し、Config の人間向け一覧や reload の案内を混ぜない。
 	// scope を明示しない読み取りなので、v1 と v2 のどちらの設定でも同じ出力にする。
@@ -89,41 +87,9 @@ func runConfig(ctx context.Context, args []string) int {
 		_, _ = fmt.Fprintln(os.Stdout, effective.DisplayLanguage())
 		return 0
 	}
-	if v2 || *system || *workspaceDefaults || *repositoryDefaults {
-		return runV2Config(ctx, *system, *workspaceDefaults, *repositoryDefaults, *workspace, *repository, *describe, rest)
-	}
-	if *workspace != "" && *repository != "" {
-		fmt.Fprintln(os.Stderr, i18n.T(ctx, "common.error", nil)+":", i18n.T(ctx, "wx.config.scope_conflict", nil))
-		return 2
-	}
-	if *describe != "" {
-		if len(rest) != 0 {
-			commandUsageLanguage(os.Stderr, "config", i18n.LanguageFromContext(ctx))
-			return 2
-		}
-		scope := "global"
-		if *workspace != "" {
-			scope = config.ScopeWorkspace.String()
-		} else if *repository != "" {
-			scope = config.ScopeRepository.String()
-		}
-		return describeConfig(*describe, scope)
-	}
-	switch {
-	case *workspace != "":
-		return runScopeConfig(ctx, config.ScopeWorkspace, *workspace, rest)
-	case *repository != "":
-		return runScopeConfig(ctx, config.ScopeRepository, *repository, rest)
-	}
-	if len(rest) == 0 {
-		return showGlobalConfig()
-	}
-	edit, ok := parseConfigEdit(rest)
-	if !ok {
-		commandUsageLanguage(os.Stderr, "config", i18n.LanguageFromContext(ctx))
-		return 2
-	}
-	return executeConfigEdit(ctx, config.EditRequest{Scope: "global", Key: edit.key, Value: edit.value, Operation: config.EditOperation(edit.op)})
+	// config v2 は常に明示 scope で編集する。v1 の flat editor と絶対
+	// repository map は読み取り・書き込みのどちらにも残さない。
+	return runV2Config(ctx, *system, *workspaceDefaults, *repositoryDefaults, *workspace, *repository, *describe, rest)
 }
 
 // runV2Config は config v2 の明示的な scope 構文を処理する。
@@ -163,10 +129,6 @@ func runV2Config(ctx context.Context, system, workspaceDefaults, repositoryDefau
 			return 1
 		}
 	}
-	if !cfg.V2() {
-		cfg = config.DefaultsV2()
-	}
-
 	scope, target, rel, nestedRepositoryDefaults, code := resolveV2Scope(ctx, cfg, system, workspaceDefaults, repositoryDefaults, workspacePath, repositoryPath)
 	if code != 0 {
 		return code
@@ -257,7 +219,7 @@ func resolveV2Scope(ctx context.Context, cfg config.Config, system, workspaceDef
 		}
 		configuredMulti := len(cfg.Workspaces[root].Repositories) > 1
 		if !configuredMulti {
-			discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: cfg.Discovery.Timeout.Duration}, Config: cfg}
+			discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: cfg.System.Discovery.Timeout.Duration}, Config: cfg}
 			workspace, err := discoverer.Resolve(ctx, root)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
@@ -330,24 +292,7 @@ func showGlobalConfig() int {
 		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
 		return 1
 	}
-	if cfg.V2() {
-		return showV2GlobalConfig(cfg, raw)
-	}
-	path, _ := config.Path()
-	r := newTextRenderer(os.Stdout, localizedUsageLanguage())
-	r.line("config.show.path", map[string]any{"Path": path})
-	// language は未記載でも英語という実効値を返すため、Fields の疎な表示除外とは別に出す。
-	r.raw(fmt.Sprintf("  %-42s = %s", "language", cfg.DisplayLanguage()))
-	for _, f := range config.Fields(cfg) {
-		if f.Key == "language" {
-			continue
-		}
-		r.raw(fmt.Sprintf("  %-42s = %s", f.Key, f.Value))
-	}
-	for _, f := range config.Lists(cfg) {
-		r.raw(fmt.Sprintf("  %-42s = %s", f.Key, f.Value))
-	}
-	return 0
+	return showV2GlobalConfig(cfg, raw)
 }
 
 func showV2GlobalConfig(cfg, raw config.Config) int {
@@ -429,7 +374,7 @@ func scopeTitle(scope config.Scope) string {
 // resolveConfigScope は指定 path を設定キーと同じ表記の対象へ解決する。
 // workspace は repository なら main worktree、それ以外はそのディレクトリ。repository は repository 外を拒否する。
 func resolveConfigScope(ctx context.Context, cfg config.Config, scope config.Scope, path string) (string, error) {
-	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: cfg.Discovery.Timeout.Duration}, Config: cfg}
+	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: cfg.System.Discovery.Timeout.Duration}, Config: cfg}
 	if scope == config.ScopeRepository {
 		return discoverer.MainWorktree(ctx, path)
 	}

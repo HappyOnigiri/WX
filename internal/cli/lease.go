@@ -40,7 +40,7 @@ const defaultLeaseShell = "/bin/sh"
 
 // leaseShell は wx shell が起動するシェルを、lease.shell → $SHELL → /bin/sh の順で決める。
 func (c Client) leaseShell() string {
-	if configured := c.Config.Lease.Shell; configured != "" {
+	if configured := c.Config.System.Lease.Shell; configured != "" {
 		return configured
 	}
 	if fromEnv := os.Getenv("SHELL"); fromEnv != "" {
@@ -478,7 +478,7 @@ func (c Client) checkLeaseWorktreeModeFrom(ctx context.Context, cwd string) erro
 // leasePolicyRoot は方針を引く workspace root を返す。
 // 解決できない cwd はここでは判定せず、workspace の解決も含めて daemon 側の失敗に委ねる。
 func (c Client) leasePolicyRoot(ctx context.Context, cwd string) (string, bool) {
-	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: c.Config.Discovery.Timeout.Duration}, Config: c.Config}
+	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: c.Config.System.Discovery.Timeout.Duration}, Config: c.Config}
 	root, err := discoverer.PolicyRoot(ctx, cwd)
 	if err != nil {
 		return "", false

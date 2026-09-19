@@ -65,9 +65,9 @@ const defaultLoginShell = "/bin/sh"
 func LoginShellEnabled() bool {
 	cfg, err := config.Load()
 	if err != nil {
-		return config.Defaults().Daemon.LoginShell
+		return *config.Defaults().System.Daemon.LoginShell
 	}
-	return cfg.Daemon.LoginShell
+	return cfg.System.Daemon.LoginShell != nil && *cfg.System.Daemon.LoginShell
 }
 
 // shellForPlist は plist が起動するログインシェルを返す。

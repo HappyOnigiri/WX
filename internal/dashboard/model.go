@@ -253,7 +253,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.opts.Config.Workspaces[m.target] = config.Workspace{}
 					}
 				case config.V2ScopeRepository:
-					if m.opts.Config.V2() && m.settingsEnv < len(m.configEnvironments()) {
+					if m.settingsEnv < len(m.configEnvironments()) {
 						environment := m.configEnvironments()[m.settingsEnv]
 						if environment.repository != "" {
 							workspace := m.opts.Config.Workspaces[m.target]
@@ -264,14 +264,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								workspace.Repositories[environment.repository] = config.Repository{}
 							}
 							m.opts.Config.Workspaces[m.target] = workspace
-							break
 						}
-					}
-					if m.opts.Config.Repositories == nil {
-						m.opts.Config.Repositories = map[string]config.Repository{}
-					}
-					if _, ok := m.opts.Config.Repositories[m.target]; !ok {
-						m.opts.Config.Repositories[m.target] = config.Repository{}
 					}
 				}
 				for index, environment := range m.configEnvironments() {

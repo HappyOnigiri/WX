@@ -63,7 +63,7 @@ func (m *Manager) resolveUpdateProbe() updateProbe {
 // 開発ビルドでは確認も更新も行わない。埋め込み版が vX.Y.Z ではないため比較できず、
 // install.sh が置き換える先も開発用の配置とは限らないためである。
 func (m *Manager) updateCheckEnabled(probe updateProbe) bool {
-	return probe.releaseBuild() && m.Config().Update.AutoCheck
+	return probe.releaseBuild() && m.Config().System.Update.AutoCheck != nil && *m.Config().System.Update.AutoCheck
 }
 
 // maybeCheckUpdate は保守の一巡に相乗りして更新確認を行い、間引きと記録だけを担う。

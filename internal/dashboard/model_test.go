@@ -169,7 +169,7 @@ func TestSettingsNavigateFromEnvironmentToChoice(t *testing.T) {
 	cfg.Workspaces["/tmp/workspace-one"] = config.Workspace{}
 	m := newModel(context.Background(), Options{Config: cfg})
 	m.tab = 2
-	if got := m.currentLabels(); len(got) != 2 || got[0] != "Global" || got[1] != "Workspace  workspace-one" {
+	if got := m.currentLabels(); len(got) != 5 || got[0] != "System" || got[1] != "Workspace defaults" || got[2] != "Repository defaults" || got[3] != "Workspace  workspace-one (not discovered)" || got[4] != "  Repository defaults" {
 		t.Fatalf("environments=%v", got)
 	}
 	m.selected = 1

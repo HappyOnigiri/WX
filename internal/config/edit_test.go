@@ -24,8 +24,8 @@ func TestEditPreviewPreservesZeroValuesAndCommits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw.Pool.WarmPerWorkspace != 0 || !raw.has("pool.warm_per_workspace", false) {
-		t.Fatalf("explicit zero was not persisted: %+v", raw.Pool)
+	if raw.WorkspaceDefaults.WarmCount == nil || *raw.WorkspaceDefaults.WarmCount != 0 || !raw.has("workspace_defaults.warm_count", false) {
+		t.Fatalf("explicit zero was not persisted: %+v", raw.WorkspaceDefaults)
 	}
 }
 
@@ -42,7 +42,7 @@ func TestCommitEditRejectsExternalChanges(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("version: 1\nlogging:\n  level: warn\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nsystem:\n  logging:\n    level: warn\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := CommitEdit(preview); !errors.Is(err, ErrConfigChanged) {

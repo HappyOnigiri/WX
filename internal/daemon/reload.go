@@ -27,14 +27,14 @@ func (m *Manager) reloadConfig(runGC bool) error {
 		return err
 	}
 	m.mu.RLock()
-	configuredRoot := m.cfg.Storage.WorktreeRoot
+	configuredRoot := m.cfg.WorktreeRoot()
 	m.mu.RUnlock()
 	oldConfiguredRoot, oldRootErr := config.ExpandHome(configuredRoot)
 	if oldRootErr != nil {
 		oldConfiguredRoot = configuredRoot
 	}
 	oldConfiguredRoot = filepath.Clean(oldConfiguredRoot)
-	newRoot, newHandle, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot)
+	newRoot, newHandle, err := ensureWorktreeRootDescriptor(cfg.WorktreeRoot())
 	if err != nil {
 		m.mu.Lock()
 		m.lastReload = time.Now()
@@ -122,7 +122,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	m.cfg = cfg
 	m.git.SetTimeout(cfg.MaxReadinessTimeout())
 	if m.logLevel != nil {
-		m.logLevel.Set(slogLevel(cfg.Logging.Level))
+		m.logLevel.Set(slogLevel(cfg.System.Logging.Level))
 	}
 	m.lastReload = time.Now()
 	m.reloadError = ""
@@ -131,7 +131,7 @@ func (m *Manager) reloadConfig(runGC bool) error {
 	// EnsureActiveRootは旧rootをinactiveとして残し、そのslotを再発見可能にする。
 	m.registerRootGeneration(context.Background(), newRoot, newIdentity)
 	m.loadRootGenerations(context.Background())
-	m.jobQueue.setInteractiveLimit(cfg.Pool.PreparationConcurrency)
+	m.jobQueue.setInteractiveLimit(cfg.System.Pool.PreparationConcurrency)
 	select {
 	case m.reloads <- struct{}{}:
 	default:

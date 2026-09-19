@@ -208,7 +208,7 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		diagnostic.writeErrorMessage(err)
 		path := diagnostic.finish(false, -1, false, false)

@@ -31,7 +31,7 @@ func (c Client) detectLinkedWorktreeBase(ctx context.Context, cwd string) (linke
 	if cwd == "" {
 		return linkedWorktreeBase{}, false
 	}
-	git := &gitx.Runner{Timeout: c.Config.Discovery.Timeout.Duration}
+	git := &gitx.Runner{Timeout: c.Config.System.Discovery.Timeout.Duration}
 	top, err := git.Run(ctx, cwd, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return linkedWorktreeBase{}, false
@@ -53,7 +53,7 @@ func (c Client) detectLinkedWorktreeBase(ctx context.Context, cwd string) (linke
 		return linkedWorktreeBase{}, false
 	}
 	// wx の slot も linked worktree だが、貸出と snapshot で HEAD が動くのが前提なので確認の対象にしない。
-	if wtRoot, err := config.ExpandHome(c.Config.Storage.WorktreeRoot); err == nil && domain.IsWithin(wtRoot, string(root)) {
+	if wtRoot, err := config.ExpandHome(c.Config.WorktreeRoot()); err == nil && domain.IsWithin(wtRoot, string(root)) {
 		return linkedWorktreeBase{}, false
 	}
 	head, mainHead := gitHead(ctx, git, string(root)), gitHead(ctx, git, string(mainPath))

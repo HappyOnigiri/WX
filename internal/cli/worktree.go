@@ -103,7 +103,7 @@ func (c Client) policyRoot(ctx context.Context) (string, error) {
 }
 
 func (c Client) policyRootFrom(ctx context.Context, cwd string) (string, error) {
-	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: c.Config.Discovery.Timeout.Duration}, Config: c.Config}
+	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: c.Config.System.Discovery.Timeout.Duration}, Config: c.Config}
 	return discoverer.PolicyRoot(ctx, cwd)
 }
 

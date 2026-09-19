@@ -94,7 +94,7 @@ func (m *Manager) snapshotSession(ctx context.Context, s state.Session) error {
 	if err != nil {
 		return fmt.Errorf("session %s has invalid release time: %w", s.ID, err)
 	}
-	expiry := releasedAt.Add(m.Config().Retention.RecoverySnapshot.Duration)
+	expiry := releasedAt.Add(m.Config().System.Retention.RecoverySnapshot.Duration)
 	releaseRoot, err := m.holdRootForPath(slot.Path)
 	if err != nil {
 		m.quarantineOwnershipFailure(s.SlotID, []string{"SNAPSHOTTING"}, err)

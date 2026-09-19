@@ -55,7 +55,7 @@ func leaseFixture(t *testing.T) (Client, *launcherHandler, string, context.Conte
 	})
 	waitForSocket(t, socket, done)
 	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = root
+	cfg.System.Storage.WorktreeRoot = root
 	// PolicyRoot は base 配下を Git repository として解決できないため、貸出前の方針検査は判定を daemon へ委ねる。
 	return Client{RPC: rpc.Client{Socket: socket, Timeout: 5 * time.Second}, Config: cfg}, handler, base, ctx
 }
@@ -81,7 +81,7 @@ func TestRunLeaseShellSharesTheAgentLaunchPath(t *testing.T) {
 	if err := os.WriteFile(shell, []byte("#!/bin/sh\npwd -P > \""+result+"\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	client.Config.Lease.Shell = shell
+	client.Config.System.Lease.Shell = shell
 	if exit := client.RunLeaseShell(ctx, []string{"main"}, ""); exit != 0 {
 		t.Fatalf("RunLeaseShell exit=%d", exit)
 	}
@@ -394,11 +394,11 @@ func TestLeaseShellPrefersConfigurationThenEnvironment(t *testing.T) {
 	if got := client.leaseShell(); got != "/bin/bash" {
 		t.Fatalf("shell without configuration=%q, want $SHELL", got)
 	}
-	client.Config.Lease.Shell = "/bin/zsh"
+	client.Config.System.Lease.Shell = "/bin/zsh"
 	if got := client.leaseShell(); got != "/bin/zsh" {
 		t.Fatalf("configured shell=%q", got)
 	}
-	client.Config.Lease.Shell = ""
+	client.Config.System.Lease.Shell = ""
 	t.Setenv("SHELL", "")
 	if got := client.leaseShell(); got != defaultLeaseShell {
 		t.Fatalf("shell without $SHELL=%q, want %q", got, defaultLeaseShell)

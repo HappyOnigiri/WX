@@ -41,14 +41,14 @@ type Client struct {
 	beforeAgentStart func()
 }
 
-// defaultDiscoveryBudget は config.Defaults().Discovery.Timeout と同じ値。
+// defaultDiscoveryBudget は config.Defaults().System.Discovery.Timeout と同じ値。
 // config.Load を経ない呼び出しでも discovery RPC を固定の短い client timeout に落とさないための下限である。
 const defaultDiscoveryBudget = 30 * time.Second
 
 // discoveryTimeout は repository discovery を行う RPC の制限時間を返す。
 // daemon の discovery.timeout に余裕を足し、予定どおり進む大規模 root の探索を client 側で中断しない。
 func (c Client) discoveryTimeout() time.Duration {
-	budget := c.Config.Discovery.Timeout.Duration
+	budget := c.Config.System.Discovery.Timeout.Duration
 	if budget <= 0 {
 		budget = defaultDiscoveryBudget
 	}
@@ -498,7 +498,7 @@ func restoreForeground(ttyFD int) {
 }
 
 func openLeaseDirectory(cfg config.Config, lease daemon.Lease) (*os.File, error) {
-	root, err := config.ExpandHome(cfg.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(cfg.WorktreeRoot())
 	if err != nil {
 		return nil, err
 	}

@@ -510,7 +510,7 @@ func (m *Manager) Resume(ctx context.Context, oldID, agent string, pid int, fres
 // readiness timeout は状態の変化を待つ時間だけを区切り、状態の読み取りには掛けない。
 // 読み取りにも掛けると、隔離や期限切れという終端の理由が deadline exceeded に化ける。
 func (m *Manager) waitForSnapshot(ctx context.Context, sessionID string) (state.Session, []state.Snapshot, error) {
-	waitCtx, cancel := context.WithTimeout(ctx, m.Config().Readiness.Timeout.Duration)
+	waitCtx, cancel := context.WithTimeout(ctx, m.Config().MaxReadinessTimeout())
 	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()

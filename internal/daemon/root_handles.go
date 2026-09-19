@@ -339,7 +339,7 @@ func (m *Manager) holdRootForPath(path string) (func(), error) {
 	// 同期操作の全期間でrootを保持し、reload後もworkerがretired descriptorを使い切れるようにする。
 	root, ok := m.rootForPath(path)
 	if !ok {
-		configured, expandErr := config.ExpandHome(m.Config().Storage.WorktreeRoot)
+		configured, expandErr := config.ExpandHome(m.Config().WorktreeRoot())
 		if expandErr != nil {
 			return func() {}, fmt.Errorf("%w: resolve configured wx root: %w", state.ErrOwnership, expandErr)
 		}
@@ -397,7 +397,7 @@ func (m *Manager) retainLease(sessionID, path string) error {
 	// foreground leaseへroot参照を移し、retired rootもsessionのreleaseまで閉じない。
 	_, ok := m.rootForPath(path)
 	if !ok {
-		configured, err := config.ExpandHome(m.Config().Storage.WorktreeRoot)
+		configured, err := config.ExpandHome(m.Config().WorktreeRoot())
 		if err != nil || !domain.IsWithin(configured, path) {
 			if err == nil {
 				err = errors.New("lease path is outside known wx roots")

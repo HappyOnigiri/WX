@@ -26,15 +26,21 @@ func v2ScopeEntry(c *Config, scope, root, rel string) (reflect.Value, func() err
 	c.Version = 2
 	switch scope {
 	case V2ScopeSystem:
-		return reflect.ValueOf(&c.System).Elem(), func() error { setV2SectionPresent(c, "system", !reflect.ValueOf(c.System).IsZero()); return nil }, nil
+		return reflect.ValueOf(&c.System).Elem(), func() error {
+			setV2SectionPresent(c, "system", !reflect.ValueOf(c.System).IsZero())
+			flattenV2(c)
+			return nil
+		}, nil
 	case V2ScopeWorkspaceDefaults:
 		return reflect.ValueOf(&c.WorkspaceDefaults).Elem(), func() error {
 			setV2SectionPresent(c, "workspace_defaults", !reflect.ValueOf(c.WorkspaceDefaults).IsZero())
+			flattenV2(c)
 			return nil
 		}, nil
 	case V2ScopeRepositoryDefaults:
 		return reflect.ValueOf(&c.RepositoryDefaults).Elem(), func() error {
 			setV2SectionPresent(c, "repository_defaults", !reflect.ValueOf(c.RepositoryDefaults).IsZero())
+			flattenV2(c)
 			return nil
 		}, nil
 	case V2ScopeWorkspace:
@@ -56,6 +62,7 @@ func v2ScopeEntry(c *Config, scope, root, rel string) (reflect.Value, func() err
 				c.Workspaces[workspaceKey] = entry.Interface().(Workspace)
 			}
 			setV2SectionPresent(c, "workspaces", len(c.Workspaces) > 0)
+			flattenV2(c)
 			return nil
 		}, nil
 	case V2ScopeRepository:
@@ -94,6 +101,7 @@ func v2ScopeEntry(c *Config, scope, root, rel string) (reflect.Value, func() err
 				c.Workspaces[workspaceKey] = w
 			}
 			setV2SectionPresent(c, "workspaces", len(c.Workspaces) > 0)
+			flattenV2(c)
 			return nil
 		}, nil
 	default:
@@ -131,8 +139,8 @@ func setV2SectionPresent(c *Config, key string, present bool) {
 	}
 }
 
-func setV2FieldPresent(c *Config, scope, key string, present bool) {
-	if c == nil || scope == V2ScopeRepository || key == "" {
+func setV2FieldPresent(c *Config, scope, root, rel, key string, present bool) {
+	if c == nil || key == "" {
 		return
 	}
 	section := scope
@@ -141,6 +149,12 @@ func setV2FieldPresent(c *Config, scope, key string, present bool) {
 		section = "workspace_defaults"
 	case V2ScopeRepositoryDefaults:
 		section = "repository_defaults"
+	case V2ScopeWorkspace:
+		workspaceKey := v2WorkspaceKey(c, root)
+		section = "workspaces." + workspaceKey
+	case V2ScopeRepository:
+		workspaceKey := v2WorkspaceKey(c, root)
+		section = "workspaces." + workspaceKey + ".repositories." + rel
 	}
 	full := section + "." + key
 	if c.present == nil {
@@ -207,7 +221,7 @@ func SetV2Field(c *Config, scope, root, rel, key, value string) error {
 	if err := parseInto(field, value); err != nil {
 		return err
 	}
-	setV2FieldPresent(c, scope, key, true)
+	setV2FieldPresent(c, scope, root, rel, key, true)
 	if err := commit(); err != nil {
 		return err
 	}
@@ -229,7 +243,7 @@ func ResetV2Field(c *Config, scope, root, rel, key string) error {
 		return fmt.Errorf("unknown %s config key %q", scope, key)
 	}
 	field.Set(reflect.Zero(field.Type()))
-	setV2FieldPresent(c, scope, key, false)
+	setV2FieldPresent(c, scope, root, rel, key, false)
 	return commit()
 }
 
@@ -269,7 +283,7 @@ func AppendV2List(c *Config, scope, root, rel, key, value string) error {
 		}
 	}
 	field.Set(reflect.ValueOf(append(values, value)))
-	setV2FieldPresent(c, scope, key, true)
+	setV2FieldPresent(c, scope, root, rel, key, true)
 	return commit()
 }
 
@@ -322,7 +336,7 @@ func RemoveV2List(c *Config, scope, root, rel, key, value string) error {
 		return fmt.Errorf("%q not found in %s", value, key)
 	}
 	field.Set(reflect.ValueOf(append(values[:index], values[index+1:]...)))
-	setV2FieldPresent(c, scope, key, true)
+	setV2FieldPresent(c, scope, root, rel, key, true)
 	return commit()
 }
 
@@ -332,7 +346,7 @@ func ResetV2List(c *Config, scope, root, rel, key string) error {
 		return err
 	}
 	field.Set(reflect.Zero(field.Type()))
-	setV2FieldPresent(c, scope, key, false)
+	setV2FieldPresent(c, scope, root, rel, key, false)
 	return commit()
 }
 
@@ -386,6 +400,9 @@ func V2Fields(c, raw Config, scope, root, rel string) []ScopeField {
 					workspaceExplicit = true
 				}
 			}
+			if dynamicRawFieldPresent(raw, root, key) {
+				workspaceExplicit = true
+			}
 			if workspaceExplicit {
 				source = "workspace"
 			} else if v2RawFieldPresent(raw, "workspace_defaults", key) {
@@ -413,6 +430,9 @@ func V2Fields(c, raw Config, scope, root, rel string) []ScopeField {
 				if f := v2Field(reflect.ValueOf(w.RepositoryDefaults), relativeKey); f.IsValid() && !f.IsZero() {
 					source = "workspace"
 				}
+			}
+			if dynamicRawFieldPresent(raw, root, key) {
+				source = "workspace"
 			}
 			if source == "default" && v2RawFieldPresent(raw, "repository_defaults", relativeKey) {
 				source = "global"
@@ -443,6 +463,32 @@ func v2RawFieldPresent(raw Config, section, key string) bool {
 	}
 	field := v2Field(value, key)
 	return field.IsValid() && !field.IsZero()
+}
+
+func dynamicRawFieldPresent(raw Config, root, suffix string) bool {
+	if raw.present == nil {
+		workspace, ok := raw.Workspaces[root]
+		if !ok {
+			return false
+		}
+		field := v2Field(reflect.ValueOf(workspace), suffix)
+		return field.IsValid() && !field.IsZero()
+	}
+	path := "workspaces." + root + "." + suffix
+	if raw.present[path] {
+		return true
+	}
+	for present := range raw.present {
+		if !strings.HasPrefix(present, "workspaces.") || !strings.HasSuffix(present, "."+suffix) {
+			continue
+		}
+		candidate := strings.TrimSuffix(strings.TrimPrefix(present, "workspaces."), "."+suffix)
+		canonical, err := canonicalPath(candidate)
+		if err == nil && canonical == root {
+			return true
+		}
+	}
+	return false
 }
 
 func walkV2Fields(v reflect.Value, prefix string, visit func(string, reflect.Value)) {

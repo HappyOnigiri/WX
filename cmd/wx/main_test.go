@@ -28,7 +28,7 @@ func TestRunConfigRejectsUnnormalizablePathBeforeSave(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := runConfig(context.Background(), []string{"storage.worktree_root", loop}); code != 1 {
+	if code := runConfig(context.Background(), []string{"--system", "storage.worktree_root", loop}); code != 1 {
 		t.Fatalf("runConfig exit=%d want=1", code)
 	}
 	path, err := config.Path()

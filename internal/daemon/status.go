@@ -39,6 +39,8 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	}
 	m.mu.RUnlock()
 	roots := m.knownRoots(ctx)
+	hotStandby, _ := cfg.HotStandbyForWorkspace("")
+	endedWorktree, _ := cfg.EndedWorktreeForWorkspace("")
 	// policy は設定の worktree 方針であり、DB の登録状態からは決まらない。
 	// 表示側は worktree を使わない workspace を要約から外すため、hot・cold と off・ask を区別できる値を必要とする。
 	for index := range details.Workspaces {
@@ -49,7 +51,7 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 	for index := range details.Repositories {
 		details.Repositories[index].Hot = false
 		if leasedAt, parseErr := time.Parse(time.RFC3339Nano, details.Repositories[index].LastUsedAt); parseErr == nil {
-			expiresAt := leasedAt.Add(cfg.Retention.HotStandby.Duration)
+			expiresAt := leasedAt.Add(hotStandby)
 			details.Repositories[index].StandbyExpiresAt = state.FormatTime(expiresAt)
 			details.Repositories[index].Hot = time.Now().Before(expiresAt)
 		}
@@ -97,12 +99,12 @@ func (m *Manager) Status(ctx context.Context) (map[string]any, error) {
 		"job_details": details.Jobs, "snapshot_details": details.Snapshots, "quarantine": details.Quarantine,
 		"standby_replenishment": standby,
 		"retention_seconds": map[string]int64{
-			"hot_standby": cfg.Retention.HotStandby.Milliseconds() / 1000, "ended_worktree": cfg.Retention.EndedWorktree.Milliseconds() / 1000,
-			"quarantined":       cfg.Retention.Quarantined.Milliseconds() / 1000,
-			"recovery_snapshot": cfg.Retention.RecoverySnapshot.Milliseconds() / 1000, "expired_session_tombstone": cfg.Retention.ExpiredSessionTombstone.Milliseconds() / 1000,
-			"failed_job": cfg.Retention.FailedJob.Milliseconds() / 1000, "event_log": cfg.Retention.EventLog.Milliseconds() / 1000,
+			"hot_standby": hotStandby.Milliseconds() / 1000, "ended_worktree": endedWorktree.Milliseconds() / 1000,
+			"quarantined":       cfg.System.Retention.Quarantined.Milliseconds() / 1000,
+			"recovery_snapshot": cfg.System.Retention.RecoverySnapshot.Milliseconds() / 1000, "expired_session_tombstone": cfg.System.Retention.ExpiredSessionTombstone.Milliseconds() / 1000,
+			"failed_job": cfg.System.Retention.FailedJob.Milliseconds() / 1000, "event_log": cfg.System.Retention.EventLog.Milliseconds() / 1000,
 			// lease.ttl は retention ではないが、貸出が返却されるまでの上限として同じ場所に出す。
-			"lease_ttl": cfg.Lease.TTL.Milliseconds() / 1000,
+			"lease_ttl": cfg.System.Lease.TTL.Milliseconds() / 1000,
 		},
 	}, nil
 }

@@ -65,7 +65,7 @@ func leaseReadinessMode(cfg config.Config, lease daemon.Lease) string {
 	if lease.ReadinessMode != "" {
 		return lease.ReadinessMode
 	}
-	return cfg.Readiness.Mode
+	return cfg.RepositoryDefaults.Readiness.Mode
 }
 
 // leaseReadinessTimeout は貸出応答に載った readiness timeout を返す。

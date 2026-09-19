@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -79,7 +78,7 @@ func detectUnknownKeys(data []byte, doc *yaml.Node) ([]unknownEntry, error) {
 			continue
 		}
 		entry, ok := findUnknownNode(doc, "", line, field, claimed)
-		if !ok || slices.Contains(removedKeys, entry.Key) {
+		if !ok {
 			continue
 		}
 		out = append(out, entry)

@@ -25,7 +25,7 @@ func repositoryRootForConfig(repo discovery.Repository) string {
 }
 
 func (p *Preparer) copyIncludes(repo discovery.Repository, target string) error {
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return err
 	}

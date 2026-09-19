@@ -485,7 +485,7 @@ func TestRunAgentKeepsDescriptorBoundCWDAcrossRootReplacement(t *testing.T) {
 	}
 	oldRoot := root + "-old"
 	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = root
+	cfg.System.Storage.WorktreeRoot = root
 	client := Client{
 		RPC:    rpc.Client{Socket: socket, Timeout: time.Second},
 		Config: cfg,

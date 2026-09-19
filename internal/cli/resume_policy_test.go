@@ -25,8 +25,8 @@ func resumePolicyClient(t *testing.T, handler *resumeLaunchHandler, undefinedMod
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
-	cfg.Worktree.Undefined = undefinedMode
-	cfg.Sessions.Paths.Claude = sessionsconfig.ToolPathsConfig{Sessions: []string{history}}
+	cfg.WorkspaceDefaults.Worktree = undefinedMode
+	cfg.System.Sessions.Paths.Claude = sessionsconfig.ToolPathsConfig{Sessions: []string{history}}
 	client, _ := serveResumeLaunchRPCWithConfig(t, handler, cfg)
 	return client, history
 }

@@ -62,7 +62,7 @@ func (m *Manager) retryRootGeneration(ctx context.Context) {
 	if !failing {
 		return
 	}
-	configured := m.Config().Storage.WorktreeRoot
+	configured := m.Config().WorktreeRoot()
 	root, err := config.ExpandHome(configured)
 	if err != nil {
 		m.recordRootRetryFailure(rootFailurePath, configured, err)
@@ -174,7 +174,7 @@ func (m *Manager) loadRootGenerations(ctx context.Context) {
 }
 
 func (m *Manager) activeRoot() (string, string, error) {
-	root, err := config.ExpandHome(m.Config().Storage.WorktreeRoot)
+	root, err := config.ExpandHome(m.Config().WorktreeRoot())
 	if err != nil {
 		return "", "", err
 	}

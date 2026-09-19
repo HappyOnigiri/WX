@@ -478,7 +478,8 @@ func TestPrepareLeavesSourceRepositoryUnchanged(t *testing.T) {
 func TestPrepareSkipsSubmodulePhaseWhenDisabled(t *testing.T) {
 	t.Parallel()
 	f := newSubmoduleFixture(t)
-	f.preparer.Config.Worktree.Submodules = false
+	disabled := false
+	f.preparer.Config.RepositoryDefaults.Submodules = &disabled
 	var invoked []string
 	f.runner.SetBeforeRunAtHook(func(args []string) { invoked = append(invoked, strings.Join(args, " ")) })
 	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
@@ -504,7 +505,9 @@ func TestSubmodulesForWorkspaceOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	disabled := false
-	f.preparer.Config.Workspaces = map[string]config.Workspace{root: {Submodules: &disabled}}
+	f.preparer.Config.Workspaces = map[string]config.Workspace{root: {
+		RepositoryDefaults: config.RepositoryDefaults{Submodules: &disabled},
+	}}
 	enabled, err := f.preparer.submodulesEnabled(f.repo)
 	if err != nil {
 		t.Fatal(err)
@@ -512,7 +515,7 @@ func TestSubmodulesForWorkspaceOverride(t *testing.T) {
 	if enabled {
 		t.Fatal("workspace override did not disable submodule materialization")
 	}
-	f.preparer.Config.Worktree.Submodules = false
+	f.preparer.Config.RepositoryDefaults.Submodules = &disabled
 	f.preparer.Config.Workspaces = map[string]config.Workspace{}
 	if enabled, err := f.preparer.submodulesEnabled(f.repo); err != nil || enabled {
 		t.Fatalf("global policy enabled=%t err=%v, want false", enabled, err)

@@ -194,7 +194,7 @@ var errSlotPathExists = errors.New("unregistered slot path already exists")
 
 func (m *Manager) createSlotRoot(slotPath, leasePathValue string) (string, string, error) {
 	// allocationはmanagerがpinしたroot descriptorで行い、返すinode identityでclient側の置換検出を可能にする。
-	root, err := config.ExpandHome(m.Config().Storage.WorktreeRoot)
+	root, err := config.ExpandHome(m.Config().WorktreeRoot())
 	if err != nil {
 		return "", "", err
 	}
@@ -301,7 +301,7 @@ func (m *Manager) ownedDirectoryIdentity(path string) (string, error) {
 	root, ok := m.rootForPath(path)
 	if !ok {
 		var err error
-		root, err = config.ExpandHome(m.Config().Storage.WorktreeRoot)
+		root, err = config.ExpandHome(m.Config().WorktreeRoot())
 		if err != nil {
 			return "", err
 		}

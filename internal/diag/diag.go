@@ -353,11 +353,11 @@ func launchAgentFinding(restartPending bool) Finding {
 // worktreeRootFinding は設定された worktree root の path だけを検査する。
 // 登録の成否は daemon が別の finding で報告し、どちらの結果も互いに上書きしない。
 func worktreeRootFinding(cfg config.Config) Finding {
-	root, err := config.ExpandHome(cfg.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(cfg.WorktreeRoot())
 	if err != nil {
 		return Finding{
 			Check: CheckWorktreeRoot, Severity: SeverityProblem, Summary: "the configured worktree root could not be resolved",
-			Target: cfg.Storage.WorktreeRoot, Cause: err.Error(),
+			Target: cfg.WorktreeRoot(), Cause: err.Error(),
 			Action: "fix storage.worktree_root in the configuration file, then run wx config reload",
 			Messages: FindingMessages{
 				Summary: i18n.Message{ID: "diag.worktree_root.unresolved"},

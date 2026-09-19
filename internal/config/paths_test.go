@@ -44,7 +44,7 @@ func TestNormalizePathsResolvesSymlinksAndRejectsCanonicalCollisions(t *testing.
 	}
 	cfg := Defaults()
 	cfg.Storage.WorktreeRoot = filepath.Join(alias, "future")
-	cfg.Repositories = map[string]Repository{real: {}, alias: {}}
+	cfg.Workspaces = map[string]Workspace{real: {}, alias: {}}
 	if err := NormalizePaths(&cfg); err == nil || !strings.Contains(err.Error(), "collide") {
 		t.Fatalf("canonical collision error=%v", err)
 	}

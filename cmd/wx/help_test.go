@@ -559,7 +559,7 @@ func TestCommandDispatchAgainstRPCBoundary(t *testing.T) {
 		{"discard-recovery", home},
 		{"forget", home},
 		{"config"},
-		{"config", "logging.level", "warn"},
+		{"config", "--system", "logging.level", "warn"},
 		{"--worktree", "codex", "exec"},
 		{"resume", "session", "codex"},
 		{"daemon", "install"},
@@ -627,8 +627,8 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"config", "unknown.key", "value"},
-		{"config", "logging.level", "verbose"},
+		{"config", "--system", "unknown.key", "value"},
+		{"config", "--system", "logging.level", "verbose"},
 	} {
 		if exit := run(ctx, args); exit != 1 {
 			t.Fatalf("invalid config run(%v) exit=%d", args, exit)
@@ -642,7 +642,7 @@ func TestCommandBackendAndConfigurationFailuresReturnNonzero(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 未知のキーは load を失敗させないため、値として解釈できない記述で失敗させる。
-	if err := os.WriteFile(configPath, []byte("version: 1\nretention:\n  hot_standby: nope\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("version: 2\nworkspace_defaults:\n  retention:\n    hot_standby: nope\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{
