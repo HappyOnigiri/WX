@@ -391,6 +391,9 @@ func (c Client) launch(ctx context.Context, plan launchPlan) (int, *launchPlan) 
 		if completion.Action == setupCompletionCancel {
 			return 1, nil
 		}
+		if completion.Action == setupCompletionSave {
+			return 0, nil
+		}
 		if completion.Action == setupCompletionStart {
 			args = append(args, initialSetupPromptArgs(completion.Prompt)...)
 		}

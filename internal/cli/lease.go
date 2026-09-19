@@ -239,8 +239,14 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 	waiting.finish()
 	if len(setupCheck) > 0 {
 		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, true)
-		if completion := c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true, false); completion.Action == setupCompletionCancel {
+		completion := c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true, false)
+		switch completion.Action {
+		case setupCompletionCancel:
 			return 1
+		case setupCompletionSave:
+			c.releaseLeaseToken(lease, "setup-prompt-saved")
+			handedOff = true
+			return 0
 		}
 	}
 	if jsonOut {

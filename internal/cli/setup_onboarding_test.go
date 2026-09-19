@@ -88,7 +88,10 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 		answers = answers[1:]
 		return answer, nil
 	}
-	setupPromptSaver = func(string) (string, error) { return filepath.Join(base, "prompt.md"), nil }
+	setupPromptSaver = func(string) (string, error) {
+		t.Fatal("continuing saved the setup prompt")
+		return "", nil
+	}
 	t.Cleanup(func() {
 		setupIsTerminal, setupSelect, setupPromptSaver = originalTerminal, originalSelect, originalSaver
 	})
@@ -100,17 +103,17 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 	if len(answers) != 0 || strings.TrimSpace(stdout) != handler.lease.Path {
 		t.Fatalf("answers=%v stdout=%q", answers, stdout)
 	}
-	if len(initials) != 2 || initials[0] != 0 || initials[1] != 1 {
+	if len(initials) != 2 || initials[0] != 0 || initials[1] != 2 {
 		t.Fatalf("selection initials=%v, want check then cancel for a problem", initials)
 	}
 	if len(clearOnExit) != 2 || !clearOnExit[0] || !clearOnExit[1] {
 		t.Fatalf("selection clear_on_exit=%v, want both setup questions in the alternate screen", clearOnExit)
 	}
-	if selections[0].Options[0].Value != "check" || selections[0].Initial != 0 || len(selections[1].Options) != 2 {
+	if selections[0].Options[0].Value != "check" || selections[0].Initial != 0 || len(selections[1].Options) != 3 {
 		t.Fatalf("selections=%+v, want a recommended check and no agent-only setup action", selections)
 	}
-	if !strings.Contains(selections[1].Preamble, "worktree") || !strings.Contains(selections[1].Preamble, "prompt.md") {
-		t.Fatalf("final selection preamble=%q, want findings and saved prompt", selections[1].Preamble)
+	if !strings.Contains(selections[1].Preamble, "worktree") || strings.Contains(selections[1].Preamble, "prompt.md") {
+		t.Fatalf("final selection preamble=%q, want findings without a saved prompt", selections[1].Preamble)
 	}
 	if params := leaseRequest(t, handler); !params.ForceCold {
 		t.Fatalf("lease params=%+v, want force_cold", params)
@@ -124,6 +127,37 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 	}
 }
 
+func TestInteractiveInitialSetupSavesPromptAndReturnsLease(t *testing.T) {
+	client, handler, base, ctx := leaseFixture(t)
+	t.Setenv("HOME", filepath.Join(base, "home"))
+	repository := daemon.SetupCheckRepository{RelativePath: ".", MainPath: base, DirName: "repository"}
+	handler.setupOnboarding = daemon.SetupOnboarding{SourceWorkspace: base, Repositories: []daemon.SetupCheckRepository{repository}}
+	originalTerminal, originalSelect, originalSaver := setupIsTerminal, setupSelect, setupPromptSaver
+	setupIsTerminal = func(int) bool { return true }
+	answers := []string{"check", string(setupCompletionSave)}
+	setupSelect = func(_ context.Context, _ io.Reader, _ io.Writer, _ tui.Selection) (string, error) {
+		answer := answers[0]
+		answers = answers[1:]
+		return answer, nil
+	}
+	path := filepath.Join(base, "prompt.md")
+	setupPromptSaver = func(string) (string, error) { return path, nil }
+	t.Cleanup(func() {
+		setupIsTerminal, setupSelect, setupPromptSaver = originalTerminal, originalSelect, originalSaver
+	})
+	stdout := captureLeaseStdout(t, func() {
+		if exit := client.RunLeaseNew(ctx, nil, false); exit != 0 {
+			t.Fatalf("RunLeaseNew exit=%d", exit)
+		}
+	})
+	if len(answers) != 0 || !strings.Contains(stdout, path) || !strings.Contains(stdout, "run setup: "+path) {
+		t.Fatalf("answers=%v stdout=%q", answers, stdout)
+	}
+	if reasons := releaseReasons(handler); len(reasons) != 1 || reasons[0] != "setup-prompt-saved" {
+		t.Fatalf("release reasons=%v", reasons)
+	}
+}
+
 func TestInitialSetupCompletionStartsAgentWithRecommendedPrompt(t *testing.T) {
 	client, _, base, ctx := leaseFixture(t)
 	t.Setenv("HOME", filepath.Join(base, "home"))
@@ -134,7 +168,10 @@ func TestInitialSetupCompletionStartsAgentWithRecommendedPrompt(t *testing.T) {
 		selection = value
 		return string(setupCompletionStart), nil
 	}
-	setupPromptSaver = func(string) (string, error) { return filepath.Join(base, "prompt.md"), nil }
+	setupPromptSaver = func(string) (string, error) {
+		t.Fatal("starting setup saved the setup prompt")
+		return "", nil
+	}
 	t.Cleanup(func() {
 		setupSelect, setupPromptSaver = originalSelect, originalSaver
 	})
@@ -142,11 +179,42 @@ func TestInitialSetupCompletionStartsAgentWithRecommendedPrompt(t *testing.T) {
 	if completion.Action != setupCompletionStart || completion.Prompt == "" {
 		t.Fatalf("completion=%+v", completion)
 	}
-	if selection.Initial != 0 || len(selection.Options) != 3 || selection.Options[0].Value != string(setupCompletionStart) {
+	if selection.Initial != 0 || len(selection.Options) != 4 || selection.Options[0].Value != string(setupCompletionStart) {
 		t.Fatalf("selection=%+v, want recommended setup action", selection)
 	}
-	if !selection.ClearOnExit || !strings.Contains(selection.Preamble, "prompt.md") {
-		t.Fatalf("selection=%+v, want the report in the alternate screen", selection)
+	if !selection.ClearOnExit || strings.Contains(selection.Preamble, "prompt.md") {
+		t.Fatalf("selection=%+v, want the report without saving a prompt", selection)
+	}
+}
+
+func TestInitialSetupCompletionSavesPromptOnlyWhenSelected(t *testing.T) {
+	client, _, base, ctx := leaseFixture(t)
+	t.Setenv("HOME", filepath.Join(base, "home"))
+	repository := daemon.SetupCheckRepository{RelativePath: ".", MainPath: base, DirName: "repository"}
+	originalSelect, originalSaver := setupSelect, setupPromptSaver
+	var savedPrompt string
+	path := filepath.Join(base, "prompt.md")
+	setupSelect = func(_ context.Context, _ io.Reader, _ io.Writer, selection tui.Selection) (string, error) {
+		if len(selection.Options) != 4 || selection.Options[2].Value != string(setupCompletionSave) {
+			t.Fatalf("selection=%+v, want save after the recommended and continue actions", selection)
+		}
+		return string(setupCompletionSave), nil
+	}
+	setupPromptSaver = func(prompt string) (string, error) {
+		savedPrompt = prompt
+		return path, nil
+	}
+	t.Cleanup(func() {
+		setupSelect, setupPromptSaver = originalSelect, originalSaver
+	})
+	stdout := captureLeaseStdout(t, func() {
+		completion := client.finishInitialSetupCheck(ctx, daemon.Lease{SourceWorkspace: base, Path: base}, []daemon.SetupCheckRepository{repository}, []diag.Finding{{Severity: diag.SeverityOK}}, true, true)
+		if completion.Action != setupCompletionSave || completion.PromptPath != path || completion.Prompt != "" {
+			t.Fatalf("completion=%+v", completion)
+		}
+	})
+	if savedPrompt == "" || !strings.Contains(stdout, path) || !strings.Contains(stdout, "run setup: "+path) {
+		t.Fatalf("saved prompt=%q stdout=%q", savedPrompt, stdout)
 	}
 }
 

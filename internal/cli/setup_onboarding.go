@@ -34,11 +34,13 @@ const (
 	setupCompletionCancel   setupCompletionAction = ""
 	setupCompletionContinue setupCompletionAction = "continue"
 	setupCompletionStart    setupCompletionAction = "start"
+	setupCompletionSave     setupCompletionAction = "save"
 )
 
 type setupCompletion struct {
-	Action setupCompletionAction
-	Prompt string
+	Action     setupCompletionAction
+	Prompt     string
+	PromptPath string
 }
 
 func initialSetupInteractive() bool {
@@ -129,11 +131,7 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 		Repositories:   setupPromptRepositories(lease, repositories), Findings: findings,
 	})
 	if err != nil {
-		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.failed", map[string]any{"Error": err.Error()}))
-	} else if path, saveErr := setupPromptSaver(prompt); saveErr != nil {
-		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.failed", map[string]any{"Error": saveErr.Error()}))
-	} else {
-		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.saved", map[string]any{"Path": path}))
+		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.render_failed", map[string]any{"Error": err.Error()}))
 	}
 	if !complete {
 		fmt.Fprint(os.Stderr, report.String())
@@ -150,6 +148,9 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 		options = append(options, tui.Option{Value: string(setupCompletionStart), Label: localizer.Localize("cli.setup_continue.start", nil), Description: localizer.Localize("cli.setup_continue.start_description", nil)})
 	}
 	options = append(options, tui.Option{Value: string(setupCompletionContinue), Label: localizer.Localize("cli.setup_continue.continue", nil), Description: localizer.Localize("cli.setup_continue.continue_description", nil)})
+	if prompt != "" {
+		options = append(options, tui.Option{Value: string(setupCompletionSave), Label: localizer.Localize("cli.setup_continue.save", nil), Description: localizer.Localize("cli.setup_continue.save_description", nil)})
+	}
 	if (!canStart || prompt == "") && attention {
 		initial = len(options)
 	}
@@ -171,6 +172,15 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 		return setupCompletion{Action: setupCompletionContinue}
 	case setupCompletionStart:
 		return setupCompletion{Action: setupCompletionStart, Prompt: prompt}
+	case setupCompletionSave:
+		path, saveErr := setupPromptSaver(prompt)
+		if saveErr != nil {
+			fmt.Fprintln(os.Stderr, localizer.Localize("cli.setup_prompt.failed", map[string]any{"Error": saveErr.Error()}))
+			return setupCompletion{}
+		}
+		fmt.Fprintln(os.Stdout, localizer.Localize("cli.setup_prompt.saved", map[string]any{"Path": path}))
+		fmt.Fprintln(os.Stdout, localizer.Localize("cli.setup_prompt.run", map[string]any{"Path": path}))
+		return setupCompletion{Action: setupCompletionSave, PromptPath: path}
 	case setupCompletionCancel:
 		return setupCompletion{}
 	default:
