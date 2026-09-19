@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,10 @@ import (
 	"github.com/HappyOnigiri/WX/internal/textfmt"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
+
+// capacityProbeSlotID は doctor の容量診断が使う架空 slot の ID である。
+// worktree root 直下の名前として扱うだけで、実体は作らない。
+const capacityProbeSlotID = "doctor-capacity"
 
 // ErrInsufficientPrepareSpace は準備を開始する前に空き容量が下限を下回った
 // ことを表す。容量不足は再試行しても自然には解消しないため、job の retry
@@ -418,8 +423,14 @@ func (m *Manager) prepareCapacityFindings(ctx context.Context) []diag.Finding {
 			findings = append(findings, capacityUncheckedFinding(string(w.Root), rootErr))
 			continue
 		}
+		// slot pathはroot自身ではなくroot直下の架空slotにする。root自身は
+		// rootForPathが「rootの内側」と見なさず、容量検査が必ず未検査になる。
+		// 診断はsource repositoryの読取りとstatfsだけを行い、この実体は作らない。
 		report, reportErr := m.checkPrepareCapacity(ctx,
-			state.Slot{ID: "doctor-capacity", WorkspaceID: string(w.ID), RootID: rootID, RelPath: ".", Path: rootPath},
+			state.Slot{
+				ID: capacityProbeSlotID, WorkspaceID: string(w.ID), RootID: rootID,
+				RelPath: capacityProbeSlotID, Path: filepath.Join(rootPath, capacityProbeSlotID),
+			},
 			w, resolved, nil, m.Config(), 1)
 		if reportErr != nil {
 			findings = append(findings, capacityUncheckedFinding(string(w.Root), reportErr))

@@ -124,3 +124,22 @@ func TestCapacityReportFindingsDoesNotAddSharedBytesWithoutWarmSlots(t *testing.
 		t.Fatalf("warm detail=%q, want no standby capacity", findings[0].Details[1])
 	}
 }
+
+func TestPrepareCapacityFindingsEstimateRegisteredWorkspace(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, _, _, _ := managerCoverageFixture(t, "repository")
+	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
+
+	findings := manager.prepareCapacityFindings(ctx)
+	if len(findings) == 0 {
+		t.Fatal("prepareCapacityFindings returned no finding")
+	}
+	for _, finding := range findings {
+		if finding.Severity == diag.SeverityUnchecked {
+			t.Fatalf("registered workspace %s was left unchecked: %s", finding.Target, finding.Cause)
+		}
+	}
+	if findings[0].Severity != diag.SeverityInfo {
+		t.Fatalf("finding severity=%s, want info: %+v", findings[0].Severity, findings[0])
+	}
+}
