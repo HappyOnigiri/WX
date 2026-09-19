@@ -83,7 +83,7 @@ function validateManifest(value, artifactName = 'artifact') {
       (typeof value.duration_seconds !== 'number' || !Number.isFinite(value.duration_seconds) || value.duration_seconds < 0)) {
     fail(`${artifactName} has invalid duration_seconds`);
   }
-  if (!Array.isArray(value.command) || value.command.length === 0 || value.command.length > 100) fail(`${artifactName} has invalid command`);
+  if (!Array.isArray(value.command) || value.command.length === 0 || value.command.length > 1000) fail(`${artifactName} has invalid command`);
   value.command.forEach((item, index) => text(item, `${artifactName} command ${index}`, 2000));
   if (!value.totals || typeof value.totals !== 'object' || Array.isArray(value.totals)) fail(`${artifactName} has no totals`);
   for (const key of TOTAL_KEYS) nonNegativeInteger(value.totals[key], `${artifactName} totals.${key}`);

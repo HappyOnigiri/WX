@@ -184,7 +184,7 @@ function daemonShardEntries(root) {
     fileShardID(profile, file),
     [packagePath(profile)],
     [profile],
-    ['_test\\.go$', ...sources.filter((candidate) => candidate !== file).map((candidate) => `${regexpEscape(candidate)}$`)],
+    ['_test\\.go$', ...sources.filter((candidate) => candidate !== file).map(exactSourcePattern)],
     { shardFiles: [`${profile}/${file}`] },
   ));
 }
@@ -221,9 +221,13 @@ function regexpEscape(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
+function exactSourcePattern(file) {
+  return `^${regexpEscape(file)}$`;
+}
+
 function archiveExcludeFiles(allSources, selectedSources) {
   const selected = new Set(selectedSources);
-  return ['_test\\.go$'].concat(allSources.filter((file) => !selected.has(file)).map((file) => `${regexpEscape(file)}$`));
+  return ['_test\\.go$'].concat(allSources.filter((file) => !selected.has(file)).map(exactSourcePattern));
 }
 
 function shardEntry(id, packages, profiles, excludeFiles = [], options = {}) {
