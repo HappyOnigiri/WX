@@ -106,6 +106,10 @@ path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗さ�
 `.worktreeinclude`と`.worktreelink`が同じpathを指す設定も利用者が明示した矛盾なので、配置を始める前に、原因のrepositoryと両manifestを名指しして準備を失敗させる。
 新規準備・復元・standbyの更新と貸出の照合は同じrule解決を共有するので、判定は経路によらず一致する。
 
+初回セットアップでは未追跡pathを`.worktreelink`で共有するのを既定とし、共有によって競合・破損・意図しない状態伝播が起きる場合だけ`.worktreeinclude`でslotごとに複製する。
+agentはsourceのtracked file・HEAD・indexを変更しない一方、この判断に必要な両manifestとrepository local excludeは自動更新する。
+両manifest自体もrepository local excludeへroot相対で登録し、利用者の追跡候補へ混ざらないようにする。
+
 ## Git LFS cache の欠落と修復
 
 LFS pointer が示す object の cache は、Git common directory（source repository が共有する Git directory）の `lfs/objects/<先頭2桁>/<次の2桁>/<64桁OID>` に置かれる。

@@ -47,7 +47,9 @@
    利用者が結果を確認して続行を選ぶまで要求された処理を始めない。
    引数なしの agent 起動では、保存したプロンプトを初回入力としてセットアップを開始する選択肢も出す。
    Full Ready 自体が失敗した場合は続行を選べない。
-   起動した agent は貸出 worktree で build・test を行い、source main checkout に必要な設定変更は提案に留める。
+   起動した agent は貸出 worktree で build・test を行う。
+   source main checkoutのtracked file・HEAD・indexは変更しないが、初回セットアップに必要な`.worktreelink`・`.worktreeinclude`・repository local excludeは、質問せず自動設定して再検査する。
+   未追跡pathは共有を既定にして`.worktreelink`へ置き、main checkoutとの共有で競合・破損・意図しない状態伝播が起きるものだけ`.worktreeinclude`でslotごとに複製する。
    検査済みと今後の確認を辞退した時刻は repository 個別設定へ残す。一時スキップ、非対話起動、resume、`wx new --json` は無表示・無記録で従来の貸出へ進む。
 
    起動時に準備を待った場合、client は総括行へ実際に使った readiness（`ready` / `early` / `full`）を表示する。
