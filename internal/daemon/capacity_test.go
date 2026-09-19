@@ -135,7 +135,12 @@ func TestSparsePrepareStillVerifiesLFSPaths(t *testing.T) {
 	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
 
 	slotID := domain.StableID("capacity", "sparse-lfs")
-	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING")
+	slot := testSlotRow(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING")
+	slotIdentity, _, err := manager.createSlotRoot(slot.Path, slot.Path)
+	if err != nil {
+		t.Fatalf("create slot root: %v", err)
+	}
+	slot.DirIdentity = slotIdentity
 	metadata := state.SlotRepository{
 		RepositoryID: string(resolved[0].Repository.ID),
 		DirName:      testDirName(resolved[0].Repository, manager.Config()),
@@ -146,7 +151,7 @@ func TestSparsePrepareStillVerifiesLFSPaths(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, slot, []state.SlotRepository{metadata}); err != nil {
 		t.Fatal(err)
 	}
-	err := manager.prepareSlot(ctx, slotID, workspaceRecord, resolved, []state.SlotRepository{metadata})
+	err = manager.prepareSlot(ctx, slotID, workspaceRecord, resolved, []state.SlotRepository{metadata})
 	if err == nil || !strings.Contains(err.Error(), "LFS path asset.bin") {
 		t.Fatalf("sparse prepare error=%v, want LFS path verification failure", err)
 	}
@@ -173,7 +178,12 @@ func TestSparsePrepareStillPreflightsMissingLFSObjects(t *testing.T) {
 	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
 
 	slotID := domain.StableID("capacity", "sparse-lfs-missing")
-	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING")
+	slot := testSlotRow(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING")
+	slotIdentity, _, err := manager.createSlotRoot(slot.Path, slot.Path)
+	if err != nil {
+		t.Fatalf("create slot root: %v", err)
+	}
+	slot.DirIdentity = slotIdentity
 	metadata := state.SlotRepository{
 		RepositoryID: string(resolved[0].Repository.ID),
 		DirName:      testDirName(resolved[0].Repository, manager.Config()),
@@ -184,7 +194,7 @@ func TestSparsePrepareStillPreflightsMissingLFSObjects(t *testing.T) {
 	if _, err := store.CreateStandby(ctx, slot, []state.SlotRepository{metadata}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := manager.enforcePrepareCapacity(ctx, slot, workspaceRecord, resolved, []state.SlotRepository{metadata}, manager.Config())
+	_, err = manager.enforcePrepareCapacity(ctx, slot, workspaceRecord, resolved, []state.SlotRepository{metadata}, manager.Config())
 	var missing *MissingLFSObjectsError
 	if !errors.As(err, &missing) {
 		t.Fatalf("sparse capacity error=%v, want missing LFS object", err)
