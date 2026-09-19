@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/i18n"
 )
@@ -18,7 +19,7 @@ func probeLocalizationFindings(t *testing.T) []diag.Finding {
 	ctx := context.Background()
 	git := probeTestGit()
 	client := Client{}
-	client.Config.Readiness.Timeout.Duration = 30 * time.Second
+	client.Config.RepositoryDefaults.Readiness.Timeout = &config.Duration{Duration: 30 * time.Second}
 	notARepository := t.TempDir()
 	findings := []diag.Finding{}
 	// 読み取れない貸出 path は worktree の列挙そのものを失敗させる。

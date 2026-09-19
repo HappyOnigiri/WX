@@ -105,7 +105,7 @@ func removeLaunchAgent(ctx context.Context, options Options) RemoveResult {
 }
 
 // removeConfigFile は config.yaml を消す。key 単位ではなくファイルごと消すのは、
-// storage.worktree_root のように書き込んだ key を消す公開 API が config に無く、消し残しが divergent として残るためである。
+// system.storage.worktree_root のように書き込んだ key を消す公開 API が config に無く、消し残しが divergent として残るためである。
 func removeConfigFile() RemoveResult {
 	result := RemoveResult{ID: "config"}
 	path, err := config.Path()
@@ -165,5 +165,5 @@ func effectiveWorktreeRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return config.ExpandHome(config.Merge(config.Defaults(), raw).Storage.WorktreeRoot)
+	return config.ExpandHome(config.Merge(config.Defaults(), raw).System.Storage.WorktreeRoot)
 }

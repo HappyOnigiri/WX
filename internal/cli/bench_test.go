@@ -363,7 +363,7 @@ func TestRunBenchLeavesTheConfigurationFileUntouched(t *testing.T) {
 	handler.prepareTimings = benchMeasurement()
 	handler.slots = benchSlotUsageReply()
 	configPath := filepath.Join(base, "config.yaml")
-	original := []byte("version: 1\nstorage:\n  cow_min_size_kib: 16\n")
+	original := []byte("version: 2\nrepository_defaults:\n  cow_min_size_kib: 16\n")
 	if err := os.WriteFile(configPath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}

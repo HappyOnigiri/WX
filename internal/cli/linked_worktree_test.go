@@ -113,12 +113,12 @@ func TestLeaseBaseCWDSkipsRecordedResume(t *testing.T) {
 func linkedWorktreeClient(t *testing.T, worktreeRoot string) Client {
 	t.Helper()
 	client := Client{}
-	client.Config.Discovery.Timeout.Duration = 30 * time.Second
+	client.Config.System.Discovery.Timeout.Duration = 30 * time.Second
 	resolved, err := filepath.EvalSymlinks(worktreeRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.Config.Storage.WorktreeRoot = resolved
+	client.Config.System.Storage.WorktreeRoot = resolved
 	return client
 }
 

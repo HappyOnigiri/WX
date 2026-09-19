@@ -27,7 +27,7 @@ func TestOpenLeaseDirectoryPinsAndValidatesRootIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = root
+	cfg.System.Storage.WorktreeRoot = root
 	_, identity, err := domain.OpenOwnedDirectory(root, workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestOpenLeaseDirectoryPinsAndValidatesRootIdentity(t *testing.T) {
 		t.Fatal("symlink lease was accepted")
 	}
 	invalid := cfg
-	invalid.Storage.WorktreeRoot = "$UNSUPPORTED"
+	invalid.System.Storage.WorktreeRoot = "$UNSUPPORTED"
 	if opened, err := openLeaseDirectory(invalid, daemon.Lease{Path: workspace}); err == nil {
 		_ = opened.Close()
 		t.Fatal("unsupported root expansion was accepted")

@@ -38,7 +38,7 @@ func TestViewUsesStatusPaneAndResponsiveOperationLayout(t *testing.T) {
 // 後に翻訳して区切りがずれる退行を防ぐ。全角を含む行でも区切りは同じ列に並ぶ。
 func TestJapaneseOperationViewKeepsColumnsAligned(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Language = config.LanguageJapanese
+	cfg.System.Language = config.LanguageJapanese
 	m := newModel(context.Background(), Options{Config: cfg})
 	m.tab, m.width, m.height = 4, 145, 30
 	lines := m.operationView()
@@ -162,7 +162,7 @@ func hooksStep() setup.Step {
 // 解決を落とすと画面に ID がそのまま出る。
 func TestSetupItemsRenderInTheConfiguredLanguage(t *testing.T) {
 	japanese := config.Defaults()
-	japanese.Language = config.LanguageJapanese
+	japanese.System.Language = config.LanguageJapanese
 	m := newModel(context.Background(), Options{Config: japanese, Setup: []setup.Step{hooksStep()}})
 	m.tab = 5
 	menu := strings.Join(m.menuLines(80), "\n")
@@ -305,7 +305,7 @@ func TestOperationViewHandlesATallerDescriptionPane(t *testing.T) {
 	}
 	for _, test := range cases {
 		cfg := config.Defaults()
-		cfg.Language = test.language
+		cfg.System.Language = test.language
 		m := newModel(context.Background(), Options{Config: cfg})
 		m.tab, m.width = test.tab, 92
 		left := m.menuLines(m.width)

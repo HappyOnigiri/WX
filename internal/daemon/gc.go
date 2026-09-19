@@ -96,9 +96,9 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 	progress := newGCProgress()
 	cfg := m.Config()
 	nowTime := time.Now().UTC()
-	failedBefore := state.FormatTime(nowTime.Add(-cfg.Retention.FailedJob.Duration))
-	eventBefore := state.FormatTime(nowTime.Add(-cfg.Retention.EventLog.Duration))
-	tombstoneBefore := state.FormatTime(nowTime.Add(-cfg.Retention.ExpiredSessionTombstone.Duration))
+	failedBefore := state.FormatTime(nowTime.Add(-cfg.System.Retention.FailedJob.Duration))
+	eventBefore := state.FormatTime(nowTime.Add(-cfg.System.Retention.EventLog.Duration))
+	tombstoneBefore := state.FormatTime(nowTime.Add(-cfg.System.Retention.ExpiredSessionTombstone.Duration))
 	metadataCount, err := m.store.CountMetadataCandidates(ctx, failedBefore, eventBefore, tombstoneBefore)
 	if err != nil {
 		progress.addFailed("metadata", "metadata candidate query failed", err)
@@ -132,7 +132,7 @@ func (m *Manager) GC(ctx context.Context, dry bool) (GCResult, error) {
 		progress.addFailed("standby worktrees", "standby candidate query failed", err)
 		return progress.GCResult, progress.err()
 	}
-	quarantined, err := m.store.QuarantinedGCCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.Retention.Quarantined.Duration)))
+	quarantined, err := m.store.QuarantinedGCCandidates(ctx, state.FormatTime(nowTime.Add(-cfg.System.Retention.Quarantined.Duration)))
 	if err != nil {
 		progress.addFailed("quarantined worktrees", "quarantined candidate query failed", err)
 		return progress.GCResult, progress.err()

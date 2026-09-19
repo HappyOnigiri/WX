@@ -132,7 +132,7 @@ func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, targe
 }
 
 func (p *Preparer) prepareTarget(target string) (string, string, error) {
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return "", "", err
 	}
@@ -518,7 +518,7 @@ func (p *Preparer) FinishRestoreWithIdentity(ctx context.Context, repo discovery
 	if err := p.VerifyWorktreeIdentity(target, expectedIdentity); err != nil {
 		return err
 	}
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return err
 	}

@@ -44,7 +44,7 @@ func TestCommandDispatchRejectsMalformedAndUnavailableRequests(t *testing.T) {
 		{name: "retry standby all unavailable", args: []string{"retry-standby", "--all"}, want: 1},
 		{name: "renamed clean command", args: []string{"clean"}, want: 2},
 		{name: "config wrong arity", args: []string{"config", "a", "b", "c"}, want: 2},
-		{name: "config invalid field", args: []string{"config", "unknown.field", "value"}, want: 1},
+		{name: "config invalid field", args: []string{"config", "--system", "unknown.field", "value"}, want: 1},
 		{name: "resume missing id", args: []string{"resume"}, want: 2},
 		{name: "resume invalid agent", args: []string{"resume", "session", "editor"}, want: 2},
 		{name: "daemon wrong arity", args: []string{"daemon"}, want: 2},
@@ -118,44 +118,44 @@ func TestConfigCommandListOperations(t *testing.T) {
 	t.Setenv("HOME", home)
 	key := "sessions.paths.claude.sessions"
 
-	if got := runConfig(context.Background(), []string{key, "--add", "~/custom-sessions"}); got != 0 {
+	if got := runConfig(context.Background(), []string{"--system", key, "--add", "~/custom-sessions"}); got != 0 {
 		t.Fatalf("config --add exit=%d", got)
 	}
 	raw, err := config.LoadRaw()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := raw.Sessions.Paths.Claude.Sessions; len(got) != 2 || got[1] != "~/custom-sessions" {
+	if got := raw.System.Sessions.Paths.Claude.Sessions; len(got) != 2 || got[1] != "~/custom-sessions" {
 		t.Fatalf("added session paths=%v, want default and user notation", got)
 	}
 
-	if got := runConfig(context.Background(), []string{key, "--remove", filepath.Join(home, "custom-sessions")}); got != 0 {
+	if got := runConfig(context.Background(), []string{"--system", key, "--remove", filepath.Join(home, "custom-sessions")}); got != 0 {
 		t.Fatalf("config --remove exit=%d", got)
 	}
 	raw, err = config.LoadRaw()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := raw.Sessions.Paths.Claude.Sessions; len(got) != 1 || got[0] != "~/.claude/projects" {
+	if got := raw.System.Sessions.Paths.Claude.Sessions; len(got) != 1 || got[0] != "~/.claude/projects" {
 		t.Fatalf("removed session paths=%v, want default path", got)
 	}
 
-	if got := runConfig(context.Background(), []string{key, "--reset"}); got != 0 {
+	if got := runConfig(context.Background(), []string{"--system", key, "--reset"}); got != 0 {
 		t.Fatalf("config --reset exit=%d", got)
 	}
 	raw, err = config.LoadRaw()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw.Sessions.Paths.Claude.Sessions != nil {
-		t.Fatalf("reset session paths=%v, want unset", raw.Sessions.Paths.Claude.Sessions)
+	if raw.System.Sessions.Paths.Claude.Sessions != nil {
+		t.Fatalf("reset session paths=%v, want unset", raw.System.Sessions.Paths.Claude.Sessions)
 	}
 	effective := config.Merge(config.Defaults(), raw)
 	if got := effective.Sessions.SessionPaths("claude"); len(got) != 1 || got[0] != "~/.claude/projects" {
 		t.Fatalf("effective reset session paths=%v, want defaults", got)
 	}
 
-	if got := runConfig(context.Background(), []string{key, "--reset", "extra"}); got != 2 {
+	if got := runConfig(context.Background(), []string{"--system", key, "--reset", "extra"}); got != 2 {
 		t.Fatalf("config --reset with extra argument exit=%d, want 2", got)
 	}
 
@@ -221,8 +221,8 @@ func TestConfigCommandScopeOperations(t *testing.T) {
 	if got := runConfig(ctx, []string{"--workspace", target, "--repository", target}); got != 2 {
 		t.Fatalf("combined scopes exit=%d, want 2", got)
 	}
-	// repository scope は repository の外を拒否する。
-	if got := runConfig(ctx, []string{"--repository", target, "readiness.mode", "full"}); got != 1 {
-		t.Fatalf("repository scope outside a repository exit=%d, want 1", got)
+	// repository scope は workspace と相対 membership path の組を要求する。
+	if got := runConfig(ctx, []string{"--repository", target, "readiness.mode", "full"}); got != 2 {
+		t.Fatalf("repository scope without workspace exit=%d, want 2", got)
 	}
 }

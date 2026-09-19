@@ -148,7 +148,8 @@ func (c Client) startLeaseProgress() *leaseProgress {
 // leaseProgressEnabled は進捗を描くかを設定と出力先から決める。
 // 端末判定を引数で受けることで、端末を用意できない環境でも設定の効き方を試験できる。
 func (c Client) leaseProgressEnabled(terminal bool) bool {
-	return c.Config.Readiness.Progress && terminal
+	progress := c.Config.RepositoryDefaults.Readiness.Progress
+	return progress != nil && *progress && terminal
 }
 
 // newLeaseProgress は出力先と描画の有無を受け取る。出力先の判定を分けておくことで、

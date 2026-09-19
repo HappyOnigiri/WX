@@ -96,7 +96,7 @@ func writeWorktreeRootConfig(t *testing.T, home, root string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := fmt.Sprintf("version: 1\nstorage:\n  worktree_root: %s\npool:\n  warm_per_workspace: 0\ndiscovery:\n  reconcile_interval: 1h\n", root)
+	document := fmt.Sprintf("version: 2\nsystem:\n  storage:\n    worktree_root: %s\n  discovery:\n    reconcile_interval: 1h\nworkspace_defaults:\n  warm_count: 0\n", root)
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}

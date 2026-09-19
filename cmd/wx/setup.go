@@ -152,12 +152,9 @@ func selectSetupLanguage(ctx context.Context, session setupSession) (i18n.Langua
 	if err != nil {
 		return "", err
 	}
-	// v2 の表示言語は system 節が正本で、top-level への書き込みは検証で拒否される。
-	if raw.V2() {
-		err = config.SetV2Field(&raw, config.V2ScopeSystem, "", "", "language", string(lang))
-	} else {
-		err = config.SetField(&raw, "language", string(lang))
-	}
+	// 表示言語は system 節だけが持つ。空ファイルにも version: 2 と
+	// system.language を同時に書くため、旧 flat editor は通さない。
+	err = config.SetV2Field(&raw, config.V2ScopeSystem, "", "", "language", string(lang))
 	if err != nil {
 		return "", err
 	}

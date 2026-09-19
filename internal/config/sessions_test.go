@@ -19,9 +19,9 @@ func TestSessionsNestedPresenceAndListMerge(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := "sessions:\n" +
-		"  paths:\n    claude:\n      sessions: []\n    codex:\n      sessions:\n        - ~/custom-codex\n" +
-		"discovery:\n  exclude: []\n"
+	document := "version: 2\n" +
+		"system:\n  sessions:\n    paths:\n      claude:\n        sessions: []\n      codex:\n        sessions:\n          - ~/custom-codex\n" +
+		"workspace_defaults:\n  discovery:\n    exclude: []\n"
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -29,13 +29,13 @@ func TestSessionsNestedPresenceAndListMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"sessions.paths", "discovery.exclude"} {
+	for _, key := range []string{"system.sessions.paths", "workspace_defaults.discovery.exclude"} {
 		if !raw.present[key] {
 			t.Errorf("present[%q] = false", key)
 		}
 	}
-	if raw.present["sessions.paths.claude.sessions"] {
-		t.Fatal("sessions.paths descendants must be handled by list traversal")
+	if !raw.present["system.sessions.paths.claude.sessions"] {
+		t.Fatal("sessions.paths list presence was not recorded")
 	}
 	effective := Merge(Defaults(), raw)
 	if got := effective.Sessions.Paths.Claude.Sessions; got == nil || len(got) != 0 {
@@ -44,7 +44,7 @@ func TestSessionsNestedPresenceAndListMerge(t *testing.T) {
 	if got := effective.Sessions.Paths.Codex.Sessions; len(got) != 1 || got[0] != "~/custom-codex" {
 		t.Fatalf("custom Codex session paths = %v", got)
 	}
-	if len(effective.Discovery.Exclude) != 0 {
+	if len(effective.WorkspaceDefaults.Discovery.Exclude) != 0 {
 		t.Fatalf("empty discovery exclude = %v", effective.Discovery.Exclude)
 	}
 	data, err := yaml.Marshal(raw)
@@ -66,7 +66,7 @@ func TestSessionsListOperationsPreserveUserNotation(t *testing.T) {
 	if err := AppendList(&cfg, "sessions.paths.claude.sessions", "~/custom"); err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.present["sessions.paths"] {
+	if !cfg.present["system.sessions.paths.claude.sessions"] {
 		t.Fatal("AppendList did not mark sessions.paths present")
 	}
 	if got := cfg.Sessions.Paths.Claude.Sessions[len(cfg.Sessions.Paths.Claude.Sessions)-1]; got != "~/custom" {
@@ -108,15 +108,15 @@ func TestSessionsRemovedSettingsAreReportedAsUnknown(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("sessions:\n  index:\n    refresh_ttl_seconds: 0\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nsystem:\n  sessions:\n    index:\n      refresh_ttl_seconds: 0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := LoadRaw()
 	if err != nil {
 		t.Fatalf("LoadRaw: %v", err)
 	}
-	if got := raw.UnknownKeys(); len(got) != 1 || got[0].Key != "sessions.index" {
-		t.Fatalf("unknown keys=%+v, want sessions.index", got)
+	if got := raw.UnknownKeys(); len(got) != 1 || got[0].Key != "system.sessions.index" {
+		t.Fatalf("unknown keys=%+v, want system.sessions.index", got)
 	}
 }
 

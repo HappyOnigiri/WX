@@ -13,15 +13,17 @@ import (
 )
 
 func TestConfigEnvironmentsAreSortedAfterGlobal(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Workspaces["/tmp/zeta"] = config.Workspace{}
-	cfg.Workspaces["/tmp/alpha"] = config.Workspace{}
-	cfg.Repositories["/src/zeta"] = config.Repository{}
-	cfg.Repositories["/src/beta"] = config.Repository{}
+	cfg := config.DefaultsV2()
+	cfg.Workspaces["/tmp/zeta"] = config.Workspace{Repositories: map[string]config.Repository{"zeta": {}}}
+	cfg.Workspaces["/tmp/alpha"] = config.Workspace{Repositories: map[string]config.Repository{"beta": {}}}
 	m := newModel(context.Background(), Options{Config: cfg})
 	got := m.configEnvironments()
-	if len(got) != 5 || m.environmentMenuLabel(got[0]) != "Global" || m.environmentMenuLabel(got[1]) != "Workspace  alpha" ||
-		m.environmentMenuLabel(got[2]) != "Workspace  zeta" || m.environmentMenuLabel(got[3]) != "Repository  beta" || m.environmentMenuLabel(got[4]) != "Repository  zeta" {
+	labels := make([]string, 0, len(got))
+	for _, environment := range got {
+		labels = append(labels, m.environmentMenuLabel(environment))
+	}
+	want := []string{"System", "Workspace defaults", "Repository defaults", "Workspace  alpha (not discovered)", "  Repository defaults", "Workspace  zeta (not discovered)", "  Repository defaults"}
+	if !slices.Equal(labels, want) {
 		t.Fatalf("environments=%+v", got)
 	}
 }
@@ -64,7 +66,7 @@ func TestLaunchOffersRegisteredWorkspacesAndCustomInput(t *testing.T) {
 	m.tab = 1
 	updated, _ := m.Update(key(tea.KeyEnter))
 	m = updated.(model)
-	if m.mode != modeChoice || len(m.choices) != 2 || !strings.Contains(m.choices[0].label, "/tmp/workspace-one") || m.choices[1].value != "" {
+	if m.mode != modeChoice || len(m.choices) != 3 || !strings.Contains(m.choices[0].label, "/tmp/workspace-one") || m.choices[1].value != "/tmp/workspace-one" || m.choices[2].value != "" {
 		t.Fatalf("workspace choices=%+v mode=%v", m.choices, m.mode)
 	}
 	updated, _ = m.Update(key(tea.KeyEnter))
@@ -75,16 +77,16 @@ func TestLaunchOffersRegisteredWorkspacesAndCustomInput(t *testing.T) {
 }
 
 func TestRepositoryEnvironmentBuildsRepositoryConfigAction(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Repositories["/tmp/repository-one"] = config.Repository{}
+	cfg := config.DefaultsV2()
+	cfg.Workspaces["/tmp/workspace-one"] = config.Workspace{Repositories: map[string]config.Repository{"other": {}, "repository-one": {}}}
 	m := newModel(context.Background(), Options{Config: cfg})
-	m.tab, m.settingsOpen, m.settingsEnv, m.selected = 2, true, 1, 0
+	m.tab, m.settingsOpen, m.settingsEnv, m.selected = 2, true, 6, 0
 	m.configMeta = m.configItems()[0]
 	m.pending, m.pendingLabel = menuItem{command: "config"}, m.configMeta.DisplayName
-	m.target, m.editOp, m.input = "/tmp/repository-one", config.EditSet, "changed"
+	m.target, m.editOp, m.input = "/tmp/workspace-one", config.EditSet, "changed"
 	m.finishPending()
-	if len(m.result.Args) != 5 || m.result.Args[0] != "config" || m.result.Args[1] != "--repository" ||
-		m.result.Args[2] != "/tmp/repository-one" || m.result.Args[3] != m.configMeta.Key || m.result.Args[4] != "changed" {
+	if len(m.result.Args) != 7 || m.result.Args[0] != "config" || m.result.Args[1] != "--workspace" ||
+		m.result.Args[2] != "/tmp/workspace-one" || m.result.Args[3] != "--repository" || m.result.Args[4] != "repository-one" || m.result.Args[5] != m.configMeta.Key || m.result.Args[6] != "changed" {
 		t.Fatalf("repository action=%v", m.result.Args)
 	}
 }
@@ -115,16 +117,13 @@ func TestEnvironmentFieldsDistinguishExplicitAndInheritedSources(t *testing.T) {
 	}
 	effective := config.Merge(config.Defaults(), raw)
 	m := newModel(context.Background(), Options{Config: effective, RawConfig: raw})
-	m.tab = 2
+	m.tab, m.selected = 2, 1
 	global := scopeFieldMap(m.environmentFields())
-	if got := global["pool.warm_per_workspace"]; got.Value != "1" || got.Source != "explicit" {
+	if got := global["warm_count"]; got.Value != "1" || got.Source != "global" {
 		t.Fatalf("explicit global=%+v", got)
 	}
-	if got := global["storage.cow_min_size_kib"]; got.Value != "16" || got.Source != "default" {
-		t.Fatalf("default global=%+v", got)
-	}
 
-	m.selected = 1
+	m.selected = 3
 	workspace := scopeFieldMap(m.environmentFields())
 	if got := workspace["worktree"]; got.Value != "hot" || got.Source != "workspace" {
 		t.Fatalf("workspace override=%+v", got)

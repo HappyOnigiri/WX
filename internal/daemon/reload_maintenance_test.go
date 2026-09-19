@@ -43,7 +43,12 @@ func writeReloadConfig(t *testing.T, worktreeRoot, body string) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := "version: 1\nstorage:\n  worktree_root: " + worktreeRoot + "\n" + body
+	base := "version: 2\nsystem:\n  storage:\n    worktree_root: " + worktreeRoot + "\n"
+	if index := strings.Index(body, "\nsystem:\n"); index >= 0 {
+		base += body[index+len("\nsystem:\n"):]
+		body = body[:index]
+	}
+	document := base + body
 	if err := os.WriteFile(configPath, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +95,7 @@ func TestReloadConfigAppliesAndRequestsMaintenanceWhenConfigurationChanges(t *te
 	m, worktreeRoot := reloadFixture(t, "")
 	sweeps := countMaintenanceSweeps(m)
 	drainReloadNotice(m)
-	writeReloadConfig(t, worktreeRoot, "worktree:\n  undefined: hot\npool:\n  preparation_concurrency: 3\n")
+	writeReloadConfig(t, worktreeRoot, "workspace_defaults:\n  worktree: hot\nsystem:\n  pool:\n    preparation_concurrency: 3\n")
 	if err := m.ReloadConfig(); err != nil {
 		t.Fatalf("reload of a changed configuration: %v", err)
 	}

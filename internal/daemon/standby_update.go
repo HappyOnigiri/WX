@@ -177,7 +177,7 @@ func (m *Manager) leaseUpdatingStandby(ctx context.Context, w discovery.Workspac
 	if err := m.retainLease(session.ID, leasePathValue); err != nil {
 		return Lease{}, false, err
 	}
-	job, err := m.store.ReserveStandbyUpdate(ctx, slot.ID, session, targets, desired, m.Config().Storage.CopyMode)
+	job, err := m.store.ReserveStandbyUpdate(ctx, slot.ID, session, targets, desired, m.Config().RepositoryDefaults.Storage.CopyMode)
 	if err != nil {
 		m.releaseLease(session.ID)
 		if standbyStateRace(err) {
@@ -289,7 +289,7 @@ func (m *Manager) runStandbyUpdate(ctx context.Context, job state.Job) (updateEr
 	defer releaseRoot()
 	updateConfig := m.Config()
 	if slot.UpdateCopyMode != "" {
-		updateConfig.Storage.CopyMode = slot.UpdateCopyMode
+		updateConfig.RepositoryDefaults.Storage.CopyMode = slot.UpdateCopyMode
 	}
 	preparer := m.newPreparer(updateConfig, slot)
 	ctx, releaseSlot, err := preparer.LockSlot(ctx)

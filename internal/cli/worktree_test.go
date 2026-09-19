@@ -129,7 +129,7 @@ func TestUndefinedPolicyRefusesNoninteractiveInput(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	for _, mode := range []string{"cold", "off", "hot"} {
-		client.Config.Worktree.Undefined = mode
+		client.Config.WorkspaceDefaults.Worktree = mode
 		got, err := selectMode(client, WorktreeOptions{})
 		if got != mode || err != nil {
 			t.Fatalf("mode=%q err=%v", got, err)
@@ -154,7 +154,7 @@ func TestWorktreePolicyRejectsGitExecutionFailureBeforeDirectAgent(t *testing.T)
 	t.Chdir(nested)
 
 	cfg := config.Defaults()
-	cfg.Worktree.Undefined = "off"
+	cfg.WorkspaceDefaults.Worktree = "off"
 	cfg.Workspaces[root] = config.Workspace{Worktree: "hot"}
 	client := Client{Config: cfg}
 	mode, err := selectMode(client, WorktreeOptions{})

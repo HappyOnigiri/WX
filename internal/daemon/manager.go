@@ -147,10 +147,10 @@ func newManager(cfg config.Config, store *state.Store, logger *slog.Logger, excl
 			prepareDetailDir = filepath.Join(filepath.Dir(logPath), "details")
 		}
 	}
-	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, rootUsage: map[string]rootUsageSample{}, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}, capacityCache: map[string]workspace.CapacityEstimate{}, leases: map[string]func(){}, activePrepares: map[string]*prepareTimer{}, jobQueue: newJobQueue(cfg.Pool.PreparationConcurrency), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
+	m := &Manager{cfg: cfg, store: store, git: git, log: logger, started: started, prepareDetailDir: prepareDetailDir, lastReload: started, roots: map[string]bool{}, rootRefs: map[string]*managedRoot{}, retiredRefs: map[string][]*managedRoot{}, rootIdentities: map[string]string{}, rootIDs: map[string]string{}, rootUsage: map[string]rootUsageSample{}, slotUsage: map[string]slotUsageSample{}, sharedFiles: map[string]workspace.SharedFileCache{}, capacityCache: map[string]workspace.CapacityEstimate{}, leases: map[string]func(){}, activePrepares: map[string]*prepareTimer{}, jobQueue: newJobQueue(cfg.System.Pool.PreparationConcurrency), lifecycleChecks: make(chan struct{}, 1), reloads: make(chan struct{}, 1), ctx: managerCtx, cancel: managerCancel}
 	m.rootCond = sync.NewCond(&m.mu)
 	m.watchExecutable(executable, executableErr)
-	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot); err == nil {
+	if root, ownedRoot, err := ensureWorktreeRootDescriptor(cfg.WorktreeRoot()); err == nil {
 		m.roots[root] = true
 		identity, identityErr := descriptorIdentity(ownedRoot)
 		if identityErr != nil {
@@ -160,7 +160,7 @@ func newManager(cfg config.Config, store *state.Store, logger *slog.Logger, excl
 		m.rootRefs[root] = &managedRoot{root: ownedRoot, identity: identity}
 		m.registerRootGeneration(context.Background(), root, identity)
 	} else {
-		logger.Error("worktree root is unavailable", "path", cfg.Storage.WorktreeRoot, "error", err)
+		logger.Error("worktree root is unavailable", "path", cfg.WorktreeRoot(), "error", err)
 	}
 	m.loadRootGenerations(context.Background())
 	m.recoverJobs(reclaimAll)

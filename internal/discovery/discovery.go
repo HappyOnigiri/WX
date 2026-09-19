@@ -221,7 +221,7 @@ func repositoryIsMainWorktree(root string, repo Repository) bool {
 }
 
 func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace, error) {
-	ctx, cancel := context.WithTimeout(ctx, d.Config.Discovery.Timeout.Duration)
+	ctx, cancel := context.WithTimeout(ctx, d.Config.System.Discovery.Timeout.Duration)
 	defer cancel()
 	// 設定キーは canonical path なので、個別指定を引くためだけに先に解決する。
 	// walk 自体は非 canonical な root のまま行う。ここで差し替えると rel の計算と
@@ -237,7 +237,7 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 	for _, v := range excludeNames {
 		exclude[v] = true
 	}
-	wtRoot, _ := config.ExpandHome(d.Config.Storage.WorktreeRoot)
+	wtRoot, _ := config.ExpandHome(d.Config.WorktreeRoot())
 	entries := 0
 	var repos []Repository
 	err := filepath.WalkDir(root, func(path string, e fs.DirEntry, walkErr error) error {
@@ -248,8 +248,8 @@ func (d *Discoverer) multiWorkspace(ctx context.Context, root string) (Workspace
 			return err
 		}
 		entries++
-		if entries > d.Config.Discovery.MaxEntries {
-			return fmt.Errorf("discovery exceeded max_entries=%d", d.Config.Discovery.MaxEntries)
+		if entries > d.Config.System.Discovery.MaxEntries {
+			return fmt.Errorf("discovery exceeded max_entries=%d", d.Config.System.Discovery.MaxEntries)
 		}
 		rel, _ := filepath.Rel(root, path)
 		depth := 0

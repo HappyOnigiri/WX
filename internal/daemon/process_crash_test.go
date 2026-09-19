@@ -319,7 +319,7 @@ func writeCrashConfig(t *testing.T, home string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := fmt.Sprintf("version: 1\nstorage:\n  worktree_root: %s\npool:\n  warm_per_workspace: 0\n  preparation_concurrency: 1\nretention:\n  ended_worktree: 0s\n  recovery_snapshot: 1h\ndiscovery:\n  reconcile_interval: 1h\nreadiness:\n  timeout: 10s\n", filepath.Join(home, "worktrees"))
+	document := fmt.Sprintf("version: 2\nsystem:\n  storage:\n    worktree_root: %s\n  pool:\n    preparation_concurrency: 1\n  retention:\n    recovery_snapshot: 1h\n  discovery:\n    reconcile_interval: 1h\nworkspace_defaults:\n  warm_count: 0\n  retention:\n    ended_worktree: 0s\nrepository_defaults:\n  readiness:\n    timeout: 10s\n", filepath.Join(home, "worktrees"))
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}

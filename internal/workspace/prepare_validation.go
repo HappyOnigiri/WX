@@ -86,7 +86,7 @@ func (p *Preparer) validateSlotWorktreeOwnershipForPhase(ctx context.Context, re
 }
 
 func (p *Preparer) validateExistingWorktreeOwnedForStates(ctx context.Context, repo discovery.Repository, target, oid, slotID string, slotStates, repositoryStates []string) error {
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return err
 	}
@@ -167,7 +167,7 @@ func (p *Preparer) ValidateReady(ctx context.Context, repo discovery.Repository,
 	if err := p.ValidateOwnership(ctx, repo, target, oid); err != nil {
 		return err
 	}
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return err
 	}
@@ -191,7 +191,7 @@ func (p *Preparer) ValidateOwnership(ctx context.Context, repo discovery.Reposit
 	if err := p.validateExistingWorktree(ctx, repo, target, oid); err != nil {
 		return err
 	}
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return err
 	}
@@ -339,7 +339,7 @@ func (p *Preparer) validateTrackedCleanOwned(ctx context.Context, target string,
 var ErrTrackedChanges = errors.New("prepared worktree has tracked changes")
 
 func (p *Preparer) validateTrackedClean(ctx context.Context, target string) error {
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return err
 	}

@@ -35,8 +35,8 @@ used without --workspace.
 With --workspace, show every Workspace key that scope can override with its
 effective value and source. --workspace <root> --repository-defaults edits the
 shared repository defaults for that Workspace. A multi-repository Workspace can
-also edit one membership with --repository <relative-path>. The old flat syntax
-is accepted only for a legacy version-1 file.
+also edit one membership with --repository <relative-path>. Scope flags are
+required for all settings other than the read-only wx config language contract.
 
 A workspace overrides worktree, copy, link, reuse_standby, warm_count, agent.add_dir,
 retention.hot_standby, retention.ended_worktree, discovery.max_depth and
@@ -152,8 +152,8 @@ used without --workspace.
 With --workspace, show every Workspace key that scope can override with its
 effective value and source. --workspace <root> --repository-defaults edits the
 shared repository defaults for that Workspace. A multi-repository Workspace can
-also edit one membership with --repository <relative-path>. The old flat syntax
-is accepted only for a legacy version-1 file.
+also edit one membership with --repository <relative-path>. Scope flags are
+required for all settings other than the read-only wx config language contract.
 
 A workspace overrides worktree, copy, link, reuse_standby, warm_count, agent.add_dir,
 retention.hot_standby, retention.ended_worktree, discovery.max_depth and

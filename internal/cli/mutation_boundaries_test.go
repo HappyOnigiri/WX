@@ -13,7 +13,7 @@ import (
 // discovery timeout が未設定でも、repository discovery の既定予算を維持する。
 func TestDiscoveryTimeoutUsesDefaultAtZero(t *testing.T) {
 	client := Client{Config: config.Defaults()}
-	client.Config.Discovery.Timeout.Duration = 0
+	client.Config.System.Discovery.Timeout.Duration = 0
 
 	if got, want := client.discoveryTimeout(), defaultDiscoveryBudget+10*time.Second; got != want {
 		t.Fatalf("discovery timeout=%s, want %s for a zero configured timeout", got, want)
@@ -25,7 +25,7 @@ func TestDiscoveryTimeoutUsesDefaultAtZero(t *testing.T) {
 func TestLaunchResumeWithZeroReadinessTimeoutUsesDiscoveryBudget(t *testing.T) {
 	root := t.TempDir()
 	cfg := config.Defaults()
-	cfg.Readiness.Timeout.Duration = 0
+	cfg.RepositoryDefaults.Readiness.Timeout = &config.Duration{}
 	handler := &resumeLaunchHandler{lease: daemon.Lease{SessionID: "resume-session", Token: "resume-token", Path: root, Ready: true}}
 	client, stop := serveResumeLaunchRPCWithConfig(t, handler, cfg)
 	defer stop()

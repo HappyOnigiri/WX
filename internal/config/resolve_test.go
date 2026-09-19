@@ -65,6 +65,29 @@ func TestFetchDefaultBranchResolverPreservesExplicitFalse(t *testing.T) {
 	}
 }
 
+func TestSubmodulesResolverUsesWorkspaceRepositoryDefaults(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultsV2()
+	global := true
+	cfg.RepositoryDefaults.Submodules = &global
+	if enabled, overridden := cfg.SubmodulesForWorkspace("/plain"); !enabled || overridden {
+		t.Fatalf("global submodules=%v overridden=%v, want global true", enabled, overridden)
+	}
+
+	local := false
+	cfg.Workspaces["/tuned"] = Workspace{
+		RepositoryDefaults: RepositoryDefaults{Submodules: &local},
+	}
+	if enabled, overridden := cfg.SubmodulesForWorkspace("/tuned"); enabled || !overridden {
+		t.Fatalf("workspace submodules=%v overridden=%v, want explicit false", enabled, overridden)
+	}
+
+	cfg.RepositoryDefaults.Submodules = nil
+	if enabled, overridden := cfg.SubmodulesForWorkspace("/missing"); enabled || overridden {
+		t.Fatalf("unset submodules=%v overridden=%v, want disabled default", enabled, overridden)
+	}
+}
+
 // GC の SQL へ渡す floor は最短の保持期間から作る。最長で絞ると、短い個別指定の slot が問い合わせから落ちる。
 func TestRetentionFloorsUseTheShortestRetention(t *testing.T) {
 	t.Parallel()

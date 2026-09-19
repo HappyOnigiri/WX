@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/gitx"
 )
@@ -129,7 +130,7 @@ func TestProbeWorktreesFindBothLeaseLayouts(t *testing.T) {
 // Git worktree を1つも持たない貸出は、準備が成功したと報告されていても使えない。
 func TestProbeWorktreeFindingsReportLeaseWithoutWorktree(t *testing.T) {
 	client := Client{}
-	client.Config.Readiness.Timeout.Duration = 30 * time.Second
+	client.Config.RepositoryDefaults.Readiness.Timeout = &config.Duration{Duration: 30 * time.Second}
 	findings := client.probeWorktreeFindings(context.Background(), "/root", t.TempDir())
 	if len(findings) != 1 || findings[0].Severity != diag.SeverityProblem {
 		t.Fatalf("findings = %+v", findings)

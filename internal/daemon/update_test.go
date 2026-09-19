@@ -59,7 +59,8 @@ func TestUpdateCheckIsSkippedForDevelopmentBuildsAndWhenDisabled(t *testing.T) {
 			})
 			probe.releaseBuild = func() bool { return test.release }
 			manager, store := newUpdateManager(t, probe)
-			manager.cfg.Update.AutoCheck = test.enabled
+			enabled := test.enabled
+			manager.cfg.System.Update.AutoCheck = &enabled
 			manager.maybeCheckUpdate(context.Background())
 			if asked {
 				t.Fatal("the daemon asked GitHub although the check is disabled")

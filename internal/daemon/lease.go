@@ -72,7 +72,7 @@ func leaseReadiness(cfg config.Config, repositories []discovery.Repository) (str
 func leaseReadinessDetails(cfg config.Config, workspaceRoot string, repositories []discovery.Repository) (string, int, bool) {
 	mode := ""
 	var timeout time.Duration
-	progress := cfg.Readiness.Progress
+	progress := cfg.RepositoryDefaults.Readiness.Progress != nil && *cfg.RepositoryDefaults.Readiness.Progress
 	for _, repository := range repositories {
 		root := workspaceRoot
 		if root == "" {
@@ -314,7 +314,7 @@ func (m *Manager) leaseReusableStandby(ctx context.Context, w discovery.Workspac
 func (m *Manager) readyMatches(ctx context.Context, s state.Slot, resolved []pool.Resolved) (bool, error) {
 	root, ok := m.rootForPath(s.Path)
 	if !ok {
-		configured, configuredErr := config.ExpandHome(m.Config().Storage.WorktreeRoot)
+		configured, configuredErr := config.ExpandHome(m.Config().WorktreeRoot())
 		if configuredErr != nil || !domain.IsWithin(configured, s.Path) {
 			return false, nil
 		}
@@ -577,7 +577,7 @@ func (m *Manager) withReadiness(l Lease, w discovery.Workspace) Lease {
 	l = l.withReadiness(cfg, w)
 	mode := l.ReadinessMode
 	if mode == "" {
-		mode = cfg.Readiness.Mode
+		mode = cfg.RepositoryDefaults.Readiness.Mode
 	}
 	if m.log != nil {
 		m.log.Info("lease readiness resolved", "session_id", l.SessionID, "workspace_id", w.ID, "route", l.Route, "readiness_mode", mode, "readiness_timeout_ms", l.ReadinessTimeoutMS, "readiness_progress", l.ReadinessProgress)

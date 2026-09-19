@@ -29,7 +29,7 @@ func writeRootLifetimeConfig(t *testing.T, home, root string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := fmt.Sprintf("version: 1\nstorage:\n  worktree_root: %s\n", root)
+	document := fmt.Sprintf("version: 2\nsystem:\n  storage:\n    worktree_root: %s\n", root)
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func writeRootLifetimeGCConfig(t *testing.T, home, root string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := fmt.Sprintf("version: 1\nstorage:\n  worktree_root: %s\nretention:\n  ended_worktree: 0s\n", root)
+	document := fmt.Sprintf("version: 2\nsystem:\n  storage:\n    worktree_root: %s\nworkspace_defaults:\n  retention:\n    ended_worktree: 0s\n", root)
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
 	}

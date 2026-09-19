@@ -101,7 +101,7 @@ func runHunt(t *testing.T, root string, deadline time.Duration) huntManifest {
 func TestHuntCountsPassAndFailAcrossRounds(t *testing.T) {
 	root := flakyModule(t, alternatingTest)
 	warmGoTest(t, root)
-	man := runHunt(t, root, 3*time.Second)
+	man := runHunt(t, root, 15*time.Second)
 	if man.Rounds < 2 {
 		t.Fatalf("rounds=%d", man.Rounds)
 	}

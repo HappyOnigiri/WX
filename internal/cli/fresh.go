@@ -203,7 +203,7 @@ func (c Client) confirmFreshResume(ctx context.Context, sessionID, reason string
 	lang := cliLanguage(c)
 	localizer := i18n.New(string(lang))
 	fmt.Fprintln(os.Stderr, localizer.Localize("cli.fresh.unavailable", map[string]any{"SessionID": sessionID, "Reason": reason}))
-	if c.Config.Resume.AutoFresh {
+	if c.Config.System.Resume.AutoFresh {
 		fmt.Fprintln(os.Stderr, localizer.Localize("cli.fresh.auto", nil))
 		return true
 	}

@@ -176,7 +176,7 @@ func (p *Preparer) runGitInDirectory(ctx context.Context, directory *os.File, ar
 // WorktreeIdentity は configured ownership root 経由で target の volume/inode identity を返す。
 // 復元済みまたは lease 中 worktree に複数操作をする呼び出し元はこれを保持し、置換 target を元の slot と取り違えない。
 func (p *Preparer) WorktreeIdentity(target string) (string, error) {
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return "", err
 	}
@@ -221,7 +221,7 @@ func (p *Preparer) VerifyWorktreeIdentity(target, expectedIdentity string) error
 // pin した inode を見続ける。したがって実行後の再検証は行わない。
 // commentlint:allow-long -- fchdir 束縛により実行後再検証が不要になる根拠を保守時に確認できるようにする
 func (p *Preparer) RunGitInWorktree(ctx context.Context, target, expectedIdentity string, env []string, input []byte, args ...string) (gitx.Result, error) {
-	root, err := config.ExpandHome(p.Config.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(p.Config.WorktreeRoot())
 	if err != nil {
 		return gitx.Result{}, err
 	}

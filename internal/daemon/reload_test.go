@@ -35,7 +35,7 @@ func TestReloadConfigDetectsSwappedUnchangedWorktreeRoot(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	unchangedConfig := "version: 1\nstorage:\n  worktree_root: " + worktreeRoot + "\n"
+	unchangedConfig := "version: 2\nsystem:\n  storage:\n    worktree_root: " + worktreeRoot + "\n"
 	if err := os.WriteFile(configPath, []byte(unchangedConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestReloadConfigIsIdempotentForAnUnchangedWorktreeRoot(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	unchangedConfig := "version: 1\nstorage:\n  worktree_root: " + worktreeRoot + "\n"
+	unchangedConfig := "version: 2\nsystem:\n  storage:\n    worktree_root: " + worktreeRoot + "\n"
 	if err := os.WriteFile(configPath, []byte(unchangedConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestReloadConfigFailsClosedWhileShuttingDown(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	validConfig := "version: 1\nstorage:\n  worktree_root: " + cfg.Storage.WorktreeRoot + "\n"
+	validConfig := "version: 2\nsystem:\n  storage:\n    worktree_root: " + cfg.Storage.WorktreeRoot + "\n"
 	if err := os.WriteFile(configPath, []byte(validConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}

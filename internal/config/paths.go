@@ -34,45 +34,20 @@ func LogPath() (string, error) {
 }
 
 func NormalizePaths(c *Config) error {
-	if c != nil && c.V2() {
-		return normalizeV2Paths(c)
+	if c == nil {
+		return errors.New("config is nil")
 	}
-	root, err := canonicalPath(c.Storage.WorktreeRoot)
-	if err != nil {
-		return fmt.Errorf("storage.worktree_root: %w", err)
-	}
-	c.Storage.WorktreeRoot = root
-	workspaces := make(map[string]Workspace, len(c.Workspaces))
-	for path, override := range c.Workspaces {
-		canonical, err := canonicalPath(path)
-		if err != nil {
-			return fmt.Errorf("workspace override %q: %w", path, err)
-		}
-		if _, exists := workspaces[canonical]; exists {
-			return fmt.Errorf("workspace overrides collide at canonical path %s", canonical)
-		}
-		workspaces[canonical] = override
-	}
-	c.Workspaces = workspaces
-	repositories := make(map[string]Repository, len(c.Repositories))
-	for path, override := range c.Repositories {
-		canonical, err := canonicalPath(path)
-		if err != nil {
-			return fmt.Errorf("repository override %q: %w", path, err)
-		}
-		if _, exists := repositories[canonical]; exists {
-			return fmt.Errorf("repository overrides collide at canonical path %s", canonical)
-		}
-		repositories[canonical] = override
-	}
-	c.Repositories = repositories
-	return nil
+	// Config を直接組み立てる埋め込み caller は旧 adapter field を変更する
+	// ことがある。正規化を resolver 境界にすることで、v2 の canonical section
+	// を使う consumer へその変更を一度だけ反映する。
+	*c = withLegacyAdapter(*c)
+	return normalizeV2Paths(c)
 }
 
 // normalizeV2Paths は workspace root を正規化し、membership key を検証する。
 // 相対 repository key は絶対化せず workspace ごとに保持するため、同じ main repository を別設定で所属させられる。
 func normalizeV2Paths(c *Config) error {
-	root, err := canonicalPath(c.System.Storage.WorktreeRoot)
+	root, err := canonicalPath(c.WorktreeRoot())
 	if err != nil {
 		return fmt.Errorf("system.storage.worktree_root: %w", err)
 	}
@@ -181,7 +156,11 @@ func SetWorkspaceWorktree(c *Config, root, mode string) error {
 	if !validWorktreeMode(mode, false) {
 		return fmt.Errorf("invalid worktree mode %q", mode)
 	}
-	return SetScopeField(c, ScopeWorkspace, root, "worktree", mode)
+	canonical, err := canonicalPath(root)
+	if err != nil {
+		return err
+	}
+	return SetV2Field(c, V2ScopeWorkspace, canonical, "", "worktree", mode)
 }
 
 // SetRepositoryOnboarding は既存の個別設定を保ち、初回検査の完了または辞退の記録だけを更新する。
@@ -189,42 +168,34 @@ func SetRepositoryOnboarding(c *Config, workspaceRoot, relativePath, mainPath, c
 	if c == nil {
 		return errors.New("config is nil")
 	}
-	if c.V2() || c.Version == 2 {
-		if workspaceRoot == "" {
-			return errors.New("workspace root is required")
-		}
-		relativePath, err := normalizeOnboardingRelative(relativePath)
-		if err != nil {
-			return err
-		}
-		if c.Workspaces == nil {
-			c.Workspaces = map[string]Workspace{}
-		}
-		workspaceKey := v2WorkspaceKey(c, workspaceRoot)
-		workspace := c.Workspaces[workspaceKey]
-		if relativePath == "." {
-			setRepositoryOnboardingRecord(&workspace.Onboarding, checkedAt, declinedAt)
-		} else {
-			if workspace.Repositories == nil {
-				workspace.Repositories = map[string]Repository{}
-			}
-			repository := workspace.Repositories[relativePath]
-			setRepositoryOnboardingRecord(&repository.Onboarding, checkedAt, declinedAt)
-			workspace.Repositories[relativePath] = repository
-		}
-		c.Workspaces[workspaceKey] = workspace
-		setV2SectionPresent(c, "workspaces", true)
-		return nil
+	// onboarding は v2 workspace membership へ記録するため、空の raw Config も
+	// Save 可能な v2 document として確定させる。
+	c.Version = 2
+	if workspaceRoot == "" {
+		return errors.New("workspace root is required")
 	}
-	if mainPath == "" {
-		return errors.New("repository main path is required")
+	relativePath, err := normalizeOnboardingRelative(relativePath)
+	if err != nil {
+		return err
 	}
-	if c.Repositories == nil {
-		c.Repositories = map[string]Repository{}
+	if c.Workspaces == nil {
+		c.Workspaces = map[string]Workspace{}
 	}
-	repository := c.Repositories[mainPath]
-	setRepositoryOnboardingRecord(&repository.Onboarding, checkedAt, declinedAt)
-	c.Repositories[mainPath] = repository
+	workspaceKey := v2WorkspaceKey(c, workspaceRoot)
+	workspace := c.Workspaces[workspaceKey]
+	if relativePath == "." {
+		setRepositoryOnboardingRecord(&workspace.Onboarding, checkedAt, declinedAt)
+	} else {
+		if workspace.Repositories == nil {
+			workspace.Repositories = map[string]Repository{}
+		}
+		repository := workspace.Repositories[relativePath]
+		setRepositoryOnboardingRecord(&repository.Onboarding, checkedAt, declinedAt)
+		workspace.Repositories[relativePath] = repository
+	}
+	c.Workspaces[workspaceKey] = workspace
+	setV2SectionPresent(c, "workspaces", true)
+	_ = mainPath
 	return nil
 }
 

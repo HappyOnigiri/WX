@@ -42,8 +42,8 @@ func TestWorktreeRootComparesRawValuesAndFixesPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw.Storage.WorktreeRoot != "$HOME/wx" {
-		t.Fatalf("config.yaml holds %q", raw.Storage.WorktreeRoot)
+	if raw.System.Storage.WorktreeRoot != "$HOME/wx" {
+		t.Fatalf("config.yaml holds %q", raw.System.Storage.WorktreeRoot)
 	}
 	saved, err := os.ReadFile(filepath.Join(fixture.home, ".config", "wx", "config.yaml"))
 	if err != nil {

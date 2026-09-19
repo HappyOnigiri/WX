@@ -19,9 +19,12 @@ func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Pre
 	// worktreeを再利用・削除する操作には必ずStoreによる所有権証明を渡す。
 	slotPath := slot.Path
 	if root, ok := m.rootForPath(slotPath); ok {
+		cfg.System.Storage.WorktreeRoot = root
+		// 直接 caller 向けの read-only flatten view も揃えてから canonical section を
+		// WorktreeRoot で解決する。
 		cfg.Storage.WorktreeRoot = root
 	}
-	root, err := config.ExpandHome(cfg.Storage.WorktreeRoot)
+	root, err := config.ExpandHome(cfg.WorktreeRoot())
 	var ownedRoot *os.Root
 	if err == nil {
 		ownedRoot = m.rootHandleForPath(slotPath)

@@ -25,7 +25,7 @@ func Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, root, err := ensureWorktreeRootDescriptor(cfg.Storage.WorktreeRoot)
+	_, root, err := ensureWorktreeRootDescriptor(cfg.WorktreeRoot())
 	if err != nil {
 		return fmt.Errorf("prepare worktree root: %w", err)
 	}
@@ -49,7 +49,7 @@ func Serve(ctx context.Context) error {
 	}
 	defer func() { _ = file.Close() }()
 	var level slog.LevelVar
-	level.Set(slogLevel(cfg.Logging.Level))
+	level.Set(slogLevel(cfg.System.Logging.Level))
 	logger := slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{Level: &level}))
 	socket, err := config.SocketPath()
 	if err != nil {

@@ -67,7 +67,7 @@ func TestManagerHandlesUnavailableRootAndZeroLifecycleInterval(t *testing.T) {
 
 	// 周期処理だけを手で回す Manager は、この検査が自分で作って自分で閉じる。
 	lifecycle := testManager(t, f.Config, f.Store)
-	lifecycle.cfg.Discovery.ReconcileInterval.Duration = 0
+	lifecycle.cfg.System.Discovery.ReconcileInterval.Duration = 0
 	lifecycle.cancel()
 	lifecycle.maintainLifecycle()
 	lifecycle.Close()

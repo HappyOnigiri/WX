@@ -120,6 +120,78 @@ func TestV2ExplicitEmptyListsOverrideTheirParents(t *testing.T) {
 	}
 }
 
+func TestV2NestedExplicitEmptyListsSurviveSave(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := "version: 2\nworkspaces:\n  $HOME/project:\n    copy: []\n    repositories:\n      nested:\n        prepare:\n          inputs: []\n        readiness:\n          early_paths: []\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"copy: []", "inputs: []", "early_paths: []"} {
+		if !strings.Contains(string(saved), want) {
+			t.Fatalf("saved configuration does not contain %q:\n%s", want, saved)
+		}
+	}
+	reloaded, err := LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := reloaded.Workspaces["$HOME/project"]
+	if workspace.Copy == nil || workspace.Repositories["nested"].Prepare.Inputs == nil || workspace.Repositories["nested"].Readiness.EarlyPaths == nil {
+		t.Fatalf("nested explicit empty lists lost: %+v", workspace)
+	}
+}
+
+func TestV2ExplicitZeroValuesSurviveSave(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := "version: 2\nsystem:\n  pool:\n    preparation_concurrency: 0\n  resume:\n    auto_fresh: false\n  retention:\n    event_log: 0s\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := LoadRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"preparation_concurrency: 0", "auto_fresh: false", "event_log: 0s"} {
+		if !strings.Contains(string(saved), want) {
+			t.Fatalf("saved configuration does not contain %q:\n%s", want, saved)
+		}
+	}
+}
+
 // prepare.inputs は global・workspace・membership の各 list を追加合成せず、
 // 値が明示された階層で置き換える。明示 empty も親の値を消す指定として保つ。
 func TestV2PrepareInputsInheritByReplacement(t *testing.T) {

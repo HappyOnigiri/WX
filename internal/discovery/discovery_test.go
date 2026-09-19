@@ -86,7 +86,9 @@ esac
 	t.Setenv("WX_DISCOVERY_LISTED", listed)
 	t.Setenv("WX_DISCOVERY_RELEASE_LIST", releaseList)
 
-	runner := &gitx.Runner{Timeout: time.Second}
+	// 全パッケージ並列実行時のプロセス起動遅延で、fake git が起動する前に
+	// 1 秒の Git timeout を消費しないようにする。
+	runner := &gitx.Runner{Timeout: 30 * time.Second}
 	ctx := context.Background()
 	canonicalCommon, err := domain.Canonicalize(common)
 	if err != nil {
@@ -113,7 +115,8 @@ esac
 		done <- resolveErr
 	}()
 
-	startedDeadline := time.Now().Add(2 * time.Second)
+	// パッケージ並列実行時の git 起動待ちを含め、検査対象の待機を十分に取る。
+	startedDeadline := time.Now().Add(30 * time.Second)
 	for {
 		if _, err := os.Stat(started); err == nil {
 			break
@@ -273,11 +276,12 @@ func TestResolveMultiRepositoryHonorsExclusionsDepthAndWorktreeRoot(t *testing.T
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = worktreeRoot
-	cfg.Discovery.Exclude = []string{"excluded"}
-	cfg.Discovery.MaxDepth = 2
-	cfg.Discovery.MaxEntries = 100
-	cfg.Discovery.Timeout.Duration = time.Second
+	cfg.System.Storage.WorktreeRoot = worktreeRoot
+	cfg.WorkspaceDefaults.Discovery.Exclude = []string{"excluded"}
+	depth := 2
+	cfg.WorkspaceDefaults.Discovery.MaxDepth = &depth
+	cfg.System.Discovery.MaxEntries = 100
+	cfg.System.Discovery.Timeout.Duration = time.Second
 	discoverer := Discoverer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
 	workspace, err := discoverer.Resolve(context.Background(), root)
 	if err != nil {
@@ -297,15 +301,15 @@ func TestResolveMultiRepositoryFailsClosedOnLimitsAndMissingRepositories(t *test
 		t.Fatal(err)
 	}
 	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = filepath.Join(t.TempDir(), "worktrees")
-	cfg.Discovery.MaxEntries = 1
-	cfg.Discovery.Timeout.Duration = time.Second
+	cfg.System.Storage.WorktreeRoot = filepath.Join(t.TempDir(), "worktrees")
+	cfg.System.Discovery.MaxEntries = 1
+	cfg.System.Discovery.Timeout.Duration = time.Second
 	discoverer := Discoverer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg}
 	if _, err := discoverer.Resolve(context.Background(), root); err == nil || !strings.Contains(err.Error(), "max_entries") {
 		t.Fatalf("entry-limit error=%v", err)
 	}
 
-	cfg.Discovery.MaxEntries = 100
+	cfg.System.Discovery.MaxEntries = 100
 	discoverer.Config = cfg
 	if _, err := discoverer.Resolve(context.Background(), root); err == nil || !strings.Contains(err.Error(), "no Git repositories") {
 		t.Fatalf("empty discovery error=%v", err)
@@ -319,9 +323,9 @@ func TestMultiRepositoryDiscoveryAllowsExactlyTheConfiguredEntryLimit(t *testing
 	root := t.TempDir()
 	initDiscoveryRepository(t, filepath.Join(root, "repository"))
 	cfg := config.Defaults()
-	cfg.Storage.WorktreeRoot = filepath.Join(t.TempDir(), "worktrees")
-	cfg.Discovery.MaxEntries = 2 // workspace root と repository directory の二つ。
-	cfg.Discovery.Timeout.Duration = time.Second
+	cfg.System.Storage.WorktreeRoot = filepath.Join(t.TempDir(), "worktrees")
+	cfg.System.Discovery.MaxEntries = 2 // workspace root と repository directory の二つ。
+	cfg.System.Discovery.Timeout.Duration = time.Second
 	discoverer := Discoverer{Git: &gitx.Runner{Timeout: time.Second}, Config: cfg}
 	if _, err := discoverer.multiWorkspace(context.Background(), root); err != nil {
 		t.Fatalf("exact entry limit rejected a valid workspace: %v", err)

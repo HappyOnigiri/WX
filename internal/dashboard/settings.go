@@ -46,35 +46,7 @@ func (m model) configItems() []config.Metadata {
 }
 
 func (m model) configEnvironments() []environment {
-	if m.opts.Config.V2() {
-		return m.configV2Environments()
-	}
-	environments := []environment{{label: "Global", scope: "global"}}
-	paths := make([]string, 0, len(m.opts.Config.Workspaces))
-	for path := range m.opts.Config.Workspaces {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		label := filepath.Base(path)
-		if label == "." || label == string(filepath.Separator) || label == "" {
-			label = path
-		}
-		environments = append(environments, environment{label: label, target: path, scope: "workspace"})
-	}
-	paths = paths[:0]
-	for path := range m.opts.Config.Repositories {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		label := filepath.Base(path)
-		if label == "." || label == string(filepath.Separator) || label == "" {
-			label = path
-		}
-		environments = append(environments, environment{label: label, target: path, scope: "repository"})
-	}
-	return environments
+	return m.configV2Environments()
 }
 
 func (m model) configV2Environments() []environment {

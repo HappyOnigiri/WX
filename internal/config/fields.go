@@ -140,6 +140,9 @@ func Lists(c Config) []Field {
 // SetField は key の scalar field（duration、整数、真偽、文字列）として value を解析し代入する。
 // 範囲と enum の検証は後段の Validate が行う。
 func SetField(c *Config, key, value string) error {
+	if scope, canonical, ok := legacyV2Key(key); ok {
+		return SetV2Field(c, scope, "", "", canonical, value)
+	}
 	field := configField(reflect.ValueOf(c).Elem(), key)
 	if !field.IsValid() {
 		return fmt.Errorf("unknown config key %q; run wx config to list available keys", key)
@@ -200,6 +203,9 @@ func parseInto(field reflect.Value, value string) error {
 
 // AppendList は discovery.exclude または対応ツールの sessions.paths へ値を追加する。
 func AppendList(c *Config, key, value string) error {
+	if scope, canonical, ok := legacyV2Key(key); ok {
+		return AppendV2List(c, scope, "", "", canonical, value)
+	}
 	list, err := mutableConfigList(c, key)
 	if err != nil {
 		return err
@@ -217,12 +223,14 @@ func AppendList(c *Config, key, value string) error {
 		}
 	}
 	list.Set(reflect.ValueOf(append(values, value)))
-	markListPresent(c, key)
 	return nil
 }
 
 // RemoveList は discovery.exclude または対応ツールの sessions.paths から値を削除する。
 func RemoveList(c *Config, key, value string) error {
+	if scope, canonical, ok := legacyV2Key(key); ok {
+		return RemoveV2List(c, scope, "", "", canonical, value)
+	}
 	list, err := mutableConfigList(c, key)
 	if err != nil {
 		return err
@@ -252,7 +260,6 @@ func RemoveList(c *Config, key, value string) error {
 		return fmt.Errorf("%q not found in %s; current values: %s", value, key, strings.Join(values, ", "))
 	}
 	list.Set(reflect.ValueOf(append(values[:index], values[index+1:]...)))
-	markListPresent(c, key)
 	return nil
 }
 
@@ -260,12 +267,14 @@ func RemoveList(c *Config, key, value string) error {
 // present も落とすため設定ファイルからキーごと消える。
 // 空リストを書き残すと、Merge の list 分岐が nil でしか既定値を残さないので既定値が潰れる。
 func ResetList(c *Config, key string) error {
+	if scope, canonical, ok := legacyV2Key(key); ok {
+		return ResetV2List(c, scope, "", "", canonical)
+	}
 	list, err := mutableConfigList(c, key)
 	if err != nil {
 		return err
 	}
 	list.Set(reflect.Zero(list.Type()))
-	clearListPresent(c, key)
 	return nil
 }
 
@@ -275,6 +284,9 @@ func ResetField(c *Config, key string) error {
 	if c == nil {
 		return errors.New("config is nil")
 	}
+	if scope, canonical, ok := legacyV2Key(key); ok {
+		return ResetV2Field(c, scope, "", "", canonical)
+	}
 	field := configField(reflect.ValueOf(c).Elem(), key)
 	if !field.IsValid() {
 		return fmt.Errorf("unknown config key %q; run wx config to list available keys", key)
@@ -282,6 +294,80 @@ func ResetField(c *Config, key string) error {
 	field.Set(reflect.Zero(field.Type()))
 	delete(c.present, key)
 	return nil
+}
+
+// legacyV2Key は既存の in-process caller が使う flat key を canonical v2 scope へ
+// 写す。CLI はこの表を通らず、明示 scope の v2 editor だけを公開する。
+func legacyV2Key(key string) (scope, canonical string, ok bool) {
+	system := map[string]string{
+		"language":                            "language",
+		"storage.worktree_root":               "storage.worktree_root",
+		"storage.backup_generations":          "storage.backup_generations",
+		"storage.backup_retention":            "storage.backup_retention",
+		"pool.preparation_concurrency":        "pool.preparation_concurrency",
+		"retention.quarantined":               "retention.quarantined",
+		"retention.recovery_snapshot":         "retention.recovery_snapshot",
+		"retention.expired_session_tombstone": "retention.expired_session_tombstone",
+		"retention.failed_job":                "retention.failed_job",
+		"retention.event_log":                 "retention.event_log",
+		"discovery.max_entries":               "discovery.max_entries",
+		"discovery.timeout":                   "discovery.timeout",
+		"discovery.reconcile_interval":        "discovery.reconcile_interval",
+		"resume.auto_fresh":                   "resume.auto_fresh",
+		"lease.ttl":                           "lease.ttl",
+		"lease.shell":                         "lease.shell",
+		"sessions.paths.claude.sessions":      "sessions.paths.claude.sessions",
+		"sessions.paths.codex.sessions":       "sessions.paths.codex.sessions",
+		"logging.level":                       "logging.level",
+		"update.auto_check":                   "update.auto_check",
+		"daemon.login_shell":                  "daemon.login_shell",
+	}
+	if value, found := system[key]; found {
+		if key == "storage.worktree_root" || key == "storage.backup_generations" || key == "storage.backup_retention" {
+			return V2ScopeSystem, "storage." + strings.TrimPrefix(value, "storage."), true
+		}
+		if key == "pool.preparation_concurrency" {
+			return V2ScopeSystem, value, true
+		}
+		if strings.HasPrefix(key, "retention.") {
+			return V2ScopeSystem, value, true
+		}
+		if strings.HasPrefix(key, "discovery.") {
+			return V2ScopeSystem, value, true
+		}
+		return V2ScopeSystem, value, true
+	}
+	workspace := map[string]string{
+		"worktree.undefined":            "worktree",
+		"worktree.reuse_standby":        "reuse_standby",
+		"worktree.fetch_default_branch": "fetch_default_branch",
+		"pool.warm_per_workspace":       "warm_count",
+		"retention.hot_standby":         "retention.hot_standby",
+		"retention.ended_worktree":      "retention.ended_worktree",
+		"discovery.max_depth":           "discovery.max_depth",
+		"discovery.exclude":             "discovery.exclude",
+	}
+	if value, found := workspace[key]; found {
+		return V2ScopeWorkspaceDefaults, value, true
+	}
+	repository := map[string]string{
+		"worktree.submodules":          "submodules",
+		"storage.copy_mode":            "storage.copy_mode",
+		"storage.cow_min_size_kib":     "cow_min_size_kib",
+		"storage.repo_dir_source":      "dir_source",
+		"readiness.mode":               "readiness.mode",
+		"readiness.early_paths":        "readiness.early_paths",
+		"readiness.timeout":            "readiness.timeout",
+		"readiness.progress":           "readiness.progress",
+		"includes.default_agent_rules": "includes.default_agent_rules",
+	}
+	if value, found := repository[key]; found {
+		return V2ScopeRepositoryDefaults, value, true
+	}
+	if strings.HasPrefix(key, "agent.") {
+		return V2ScopeWorkspaceDefaults, key, true
+	}
+	return "", "", false
 }
 
 // IsListKey は key が --add・--remove・--reset で操作できる list key かを返す。
@@ -301,27 +387,6 @@ func mutableConfigList(c *Config, key string) (reflect.Value, error) {
 		return reflect.Value{}, fmt.Errorf("unknown list config key %q", key)
 	}
 	return list, nil
-}
-
-func markListPresent(c *Config, key string) {
-	if c.present == nil {
-		c.present = map[string]bool{}
-	}
-	if strings.HasPrefix(key, "sessions.paths.") {
-		c.present["sessions.paths"] = true
-		return
-	}
-	c.present[key] = true
-}
-
-// clearListPresent は list の present を落とす。present が nil の Config は
-// 記録なしを意味するため作らない。sessions.paths は claude と codex で present を共有し、
-// 個別の list が nil かを listPresent が別に見るので触らない。
-func clearListPresent(c *Config, key string) {
-	if c.present == nil || strings.HasPrefix(key, "sessions.paths.") {
-		return
-	}
-	delete(c.present, key)
 }
 
 func normalizeListPath(path string) string {

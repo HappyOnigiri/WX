@@ -207,7 +207,8 @@ func TestLeaseProgressFollowsTheReadinessProgressSetting(t *testing.T) {
 	if client.leaseProgressEnabled(false) {
 		t.Fatal("the progress display was enabled for a non-terminal output")
 	}
-	client.Config.Readiness.Progress = false
+	progress := false
+	client.Config.RepositoryDefaults.Readiness.Progress = &progress
 	if client.leaseProgressEnabled(true) {
 		t.Fatal("readiness.progress=false still enabled the progress display")
 	}

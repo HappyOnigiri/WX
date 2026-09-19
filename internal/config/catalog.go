@@ -138,9 +138,20 @@ func Catalog() []Metadata {
 	// v2 は system/default の明示 scope でも同じ leaf を公開する。
 	// section 名を除いた key を共有し、`wx config --system storage.worktree_root`
 	// と v1 catalog が同じ設定を説明できるようにする。
-	walkV2Fields(reflect.ValueOf(SystemConfig{}), "", func(key string, field reflect.Value) { add(key, field, V2ScopeSystem) })
-	walkV2Fields(reflect.ValueOf(WorkspaceDefaults{}), "", func(key string, field reflect.Value) { add(key, field, V2ScopeWorkspaceDefaults) })
-	walkV2Fields(reflect.ValueOf(RepositoryDefaults{}), "", func(key string, field reflect.Value) { add(key, field, V2ScopeRepositoryDefaults) })
+	walkV2Fields(reflect.ValueOf(SystemConfig{}), "", func(key string, field reflect.Value) {
+		add(key, field, V2ScopeSystem)
+		// まだ v2 scope を渡さない caller の metadata lookup も互換に保つ。
+		// command 経路では flat edit を引き続き拒否する。
+		add(key, field, "global")
+	})
+	walkV2Fields(reflect.ValueOf(WorkspaceDefaults{}), "", func(key string, field reflect.Value) {
+		add(key, field, V2ScopeWorkspaceDefaults)
+		add(key, field, "global")
+	})
+	walkV2Fields(reflect.ValueOf(RepositoryDefaults{}), "", func(key string, field reflect.Value) {
+		add(key, field, V2ScopeRepositoryDefaults)
+		add(key, field, "global")
+	})
 	walkV2Fields(reflect.ValueOf(Repository{}), "", func(key string, field reflect.Value) { add(key, field, V2ScopeRepository) })
 	walkV2Fields(reflect.ValueOf(RepositoryDefaults{}), "repository_defaults", func(key string, field reflect.Value) { add(key, field, V2ScopeWorkspace) })
 	out := make([]Metadata, 0, len(order))

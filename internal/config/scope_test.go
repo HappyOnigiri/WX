@@ -18,7 +18,6 @@ var scopeSamples = map[Scope]map[string]string{
 		"link":                     "cache",
 		"reuse_standby":            "false",
 		"fetch_default_branch":     "false",
-		"submodules":               "false",
 		"warm_count":               "2",
 		"agent.add_dir":            "off",
 		"retention.hot_standby":    "30m0s",
@@ -66,7 +65,7 @@ var scopeInvalid = map[Scope]map[string]string{
 
 // scopeUnvalidated は値域を持たず、Validate が通してよいキーである。
 var scopeUnvalidated = map[Scope][]string{
-	ScopeWorkspace:  {"copy", "link", "reuse_standby", "fetch_default_branch", "submodules", "discovery.exclude"},
+	ScopeWorkspace:  {"copy", "link", "reuse_standby", "fetch_default_branch", "discovery.exclude"},
 	ScopeRepository: {"default_branch", "dir_name", "prepare.command", "prepare.inputs", "prepare.version", "includes.default_agent_rules", "readiness.early_paths"},
 }
 
@@ -198,8 +197,8 @@ func TestScopeResetDropsTheEntryOnceEmpty(t *testing.T) {
 	if err := ResetScopeField(&raw, ScopeRepository, target, "readiness.mode"); err != nil {
 		t.Fatal(err)
 	}
-	if len(raw.Repositories) != 0 {
-		t.Fatalf("repositories=%+v, want the entry dropped", raw.Repositories)
+	if len(raw.Repositories) != 0 || len(raw.Workspaces) != 0 {
+		t.Fatalf("repositories=%+v workspaces=%+v, want the entry dropped", raw.Repositories, raw.Workspaces)
 	}
 	if err := Save(raw); err != nil {
 		t.Fatal(err)

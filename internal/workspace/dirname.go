@@ -30,10 +30,7 @@ func RepositoryDirName(repo discovery.Repository, cfg config.Config) string {
 	}
 	source := override.DirSource
 	if source == "" {
-		source = cfg.Storage.RepoDirSource
-		if cfg.V2() {
-			source = cfg.RepositoryDefaults.DirSource
-		}
+		source = cfg.RepositoryDefaults.DirSource
 	}
 	if source != config.RepoDirSourceDirectory {
 		if name, ok := sanitizeDirName(repo.RemoteName); ok {

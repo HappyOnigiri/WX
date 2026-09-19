@@ -13,7 +13,7 @@ import (
 func TestLeaseReadinessPrefersTheLeaseResponse(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	cfg.Readiness.Mode = "early"
+	cfg.RepositoryDefaults.Readiness.Mode = "early"
 	full := daemon.Lease{ReadinessMode: "full", ReadinessTimeoutMS: int((20 * time.Minute).Milliseconds())}
 	if got := leaseReadinessMode(cfg, full); got != "full" {
 		t.Fatalf("mode=%q, want the leased value", got)
@@ -25,7 +25,7 @@ func TestLeaseReadinessPrefersTheLeaseResponse(t *testing.T) {
 	if got := leaseReadinessMode(cfg, empty); got != "early" {
 		t.Fatalf("mode=%q, want the global fallback", got)
 	}
-	if got := leaseReadinessTimeout(cfg, empty); got != cfg.Readiness.Timeout.Duration {
+	if got := leaseReadinessTimeout(cfg, empty); got != cfg.RepositoryDefaults.Readiness.Timeout.Duration {
 		t.Fatalf("timeout=%s, want the global fallback", got)
 	}
 }

@@ -26,7 +26,7 @@ func TestDefaultsAndZeroDurationOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(data); !strings.Contains(got, "hot_standby: 0s") || strings.Contains(got, "worktree_root") {
+	if got := string(data); !strings.Contains(got, "hot_standby: 0s") || !strings.Contains(got, "workspace_defaults:") || strings.Contains(got, "worktree_root") {
 		t.Fatalf("unexpected sparse config:\n%s", got)
 	}
 	cfg, err := Load()
@@ -112,13 +112,16 @@ func TestDefaultAgentRulesOverridesLoadFromYAML(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := `version: 1
-includes:
-  default_agent_rules: false
-repositories:
-  $HOME/repository:
-    includes:
-      default_agent_rules: true
+	document := `version: 2
+repository_defaults:
+  includes:
+    default_agent_rules: false
+workspaces:
+  $HOME:
+    repositories:
+      repository:
+        includes:
+          default_agent_rules: true
 `
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
@@ -127,14 +130,14 @@ repositories:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Includes.DefaultAgentRules {
+	if cfg.RepositoryDefaults.Includes.DefaultAgentRules == nil || *cfg.RepositoryDefaults.Includes.DefaultAgentRules {
 		t.Fatal("global default agent rules override was not loaded")
 	}
-	override, ok := cfg.Repositories[repository]
+	override, ok := cfg.Workspaces[home].Repositories["repository"]
 	if !ok || override.Includes.DefaultAgentRules == nil || !*override.Includes.DefaultAgentRules {
 		t.Fatalf("repository override=%+v, want normalized explicit true", override)
 	}
-	if !cfg.DefaultAgentRulesEnabled(repository) {
+	if !cfg.DefaultAgentRulesForWorkspaceRepository(home, "repository", repository) {
 		t.Fatal("loaded repository override was not applied")
 	}
 }
@@ -143,7 +146,6 @@ func TestValidateRejectsEachPolicyClass(t *testing.T) {
 	valid := Defaults()
 	valid.Storage.WorktreeRoot = "/tmp/wx"
 	tests := []Config{
-		func() Config { c := valid; c.Version = 2; return c }(),
 		func() Config { c := valid; c.Storage.WorktreeRoot = "relative"; return c }(),
 		func() Config { c := valid; c.Storage.BackupGenerations = 0; return c }(),
 		func() Config { c := valid; c.Pool.WarmPerWorkspace = -1; return c }(),
@@ -242,15 +244,16 @@ func TestSparseCollectionsAndConfigFilesystemFailures(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	document := `version: 1
-discovery:
-  exclude: []
+	document := `version: 2
+workspace_defaults:
+  discovery:
+    exclude: []
 workspaces:
   $HOME/workspace:
     copy: [AGENTS.md]
-repositories:
-  $HOME/repository:
-    default_branch: trunk
+    repositories:
+      repository:
+        default_branch: trunk
 `
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatal(err)
@@ -260,7 +263,7 @@ repositories:
 		t.Fatal(err)
 	}
 	effective := Merge(Defaults(), raw)
-	if len(effective.Discovery.Exclude) != 0 || len(effective.Workspaces) != 1 || len(effective.Repositories) != 1 {
+	if len(effective.WorkspaceDefaults.Discovery.Exclude) != 0 || len(effective.Workspaces) != 1 || len(effective.Workspaces["$HOME/workspace"].Repositories) != 1 {
 		t.Fatalf("merged sparse collections=%+v", effective)
 	}
 	if err := NormalizePaths(&effective); err != nil {
@@ -270,7 +273,7 @@ repositories:
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"version: 1", "exclude: []", "workspaces:", "repositories:"} {
+	for _, expected := range []string{"version: 2", "exclude: []", "workspaces:", "repositories:"} {
 		if !strings.Contains(string(data), expected) {
 			t.Fatalf("sparse YAML missing %q:\n%s", expected, data)
 		}
@@ -293,8 +296,8 @@ repositories:
 	}
 	bad = Defaults()
 	bad.Storage.WorktreeRoot = home
-	bad.Repositories = map[string]Repository{"relative": {}}
-	if err := NormalizePaths(&bad); err == nil || !strings.Contains(err.Error(), "repository override") {
+	bad.Workspaces = map[string]Workspace{home: {Repositories: map[string]Repository{"../relative": {}}}}
+	if err := NormalizePaths(&bad); err == nil || !strings.Contains(err.Error(), "workspace-relative path") {
 		t.Fatalf("relative repository override error=%v", err)
 	}
 
@@ -453,11 +456,11 @@ func TestRepositoryCOWMinSizeRangeIsValidated(t *testing.T) {
 func TestEffectiveEqualIgnoresWhichKeysTheFileSpelledOut(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	defaults := Defaults()
-	spelledOut := Merge(Defaults(), mustParseRaw(t, "version: 1\nworktree:\n  undefined: ask\n"))
+	spelledOut := Merge(Defaults(), mustParseRaw(t, "version: 2\nworkspace_defaults:\n  worktree: ask\n"))
 	if !defaults.EffectiveEqual(spelledOut) {
 		t.Fatal("a configuration that restates a default was reported as different")
 	}
-	changed := Merge(Defaults(), mustParseRaw(t, "version: 1\nworktree:\n  undefined: hot\n"))
+	changed := Merge(Defaults(), mustParseRaw(t, "version: 2\nworkspace_defaults:\n  worktree: hot\n"))
 	if defaults.EffectiveEqual(changed) {
 		t.Fatal("a changed worktree policy was reported as equal")
 	}
@@ -526,7 +529,7 @@ func TestReadinessProgressDefaultsOnAndTurnsOffFromYAML(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("version: 1\nreadiness:\n  progress: false\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 2\nrepository_defaults:\n  readiness:\n    progress: false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load()
@@ -542,20 +545,17 @@ func TestReadinessProgressDefaultsOnAndTurnsOffFromYAML(t *testing.T) {
 	}
 }
 
-// TestUpdateAutoCheckDefaultsOnAndTurnsOffInBothVersions は、既定で有効な真偽値が
-// v1 と v2 のどちらの書き方でも false のまま残ることを確かめる。
+// TestUpdateAutoCheckDefaultsOnAndTurnsOff は、既定で有効な真偽値が
+// v2 の system 節で false のまま残ることを確かめる。
 // v2 側をポインタにし忘れると、明示した false が既定の true へ埋め戻される。
-func TestUpdateAutoCheckDefaultsOnAndTurnsOffInBothVersions(t *testing.T) {
+func TestUpdateAutoCheckDefaultsOnAndTurnsOff(t *testing.T) {
 	if !Defaults().Update.AutoCheck {
 		t.Fatal("update.auto_check default is off")
 	}
 	if v2 := DefaultsV2().System.Update.AutoCheck; v2 == nil || !*v2 {
 		t.Fatal("the v2 built-in value for system.update.auto_check is not on")
 	}
-	for _, test := range []struct{ name, document string }{
-		{name: "v1", document: "version: 1\nupdate:\n  auto_check: false\n"},
-		{name: "v2", document: "version: 2\nsystem:\n  update:\n    auto_check: false\n"},
-	} {
+	for _, test := range []struct{ name, document string }{{name: "v2", document: "version: 2\nsystem:\n  update:\n    auto_check: false\n"}} {
 		t.Run(test.name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)

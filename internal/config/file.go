@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -77,20 +78,8 @@ func LoadRaw() (Config, error) {
 	if err := scan.Decode(&extra); !errors.Is(err, io.EOF) {
 		return Config{}, errors.New("config contains multiple YAML documents")
 	}
-	migrated, err := migrateLegacyWorkspaceOnboarding(&doc)
-	if err != nil {
+	if err := requireV2Document(&doc); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", p, err)
-	}
-	if migrated {
-		data, err = yaml.Marshal(&doc)
-		if err != nil {
-			return Config{}, fmt.Errorf("decode %s: migrate onboarding: %w", p, err)
-		}
-		var normalized yaml.Node
-		if err := yaml.Unmarshal(data, &normalized); err != nil {
-			return Config{}, fmt.Errorf("decode %s: migrate onboarding: %w", p, err)
-		}
-		doc = normalized
 	}
 	var c Config
 	// 未知のキーは値の解釈から外すだけで読み込みを失敗させない。報告は doctor が行う。
@@ -102,32 +91,32 @@ func LoadRaw() (Config, error) {
 		return Config{}, fmt.Errorf("decode %s: %w", p, err)
 	}
 	c.unknown = unknown
-	// 削除済みキーは present と保存から落とし、書かれたままの既存configを次のSaveで整理する。
-	dropRemovedKeys(&doc)
 	c.present = collectKeys(&doc)
 	return c, nil
 }
 
-// removedKeys は過去に存在した設定キーで、書かれていても黙って無視する。
-// 値の解釈は行わないため、`wx config set` などによる次回のSaveで file からも消える。
-var removedKeys = []string{"pool.git_concurrency_per_repository"}
-
-// dropRemovedKeys は doc から removedKeys の項目を取り除く。
-func dropRemovedKeys(doc *yaml.Node) {
-	if len(doc.Content) == 0 {
-		return
+// requireV2Document は既存ファイルの schema 選択を version の値だけで決める。
+// version 省略を v1 と推測すると疎な v2 と旧 flat config を区別できないため、
+// version: 2 以外は読み込み前に拒否する。
+func requireV2Document(doc *yaml.Node) error {
+	if doc == nil || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return errors.New("config version is required; expected version: 2")
 	}
-	for _, key := range removedKeys {
-		section, leaf, nested := strings.Cut(key, ".")
-		if !nested {
-			section, leaf = "", key
-		}
-		mapping := doc.Content[0]
-		if section != "" {
-			mapping = mappingValue(mapping, section)
-		}
-		removeMappingKey(mapping, leaf)
+	version := mappingValue(doc.Content[0], "version")
+	if version == nil {
+		return errors.New("config version is required; expected version: 2")
 	}
+	if version.Kind != yaml.ScalarNode || version.Tag != "!!int" {
+		return fmt.Errorf("unsupported config version %q; expected integer 2", version.Value)
+	}
+	value, err := strconv.Atoi(version.Value)
+	if err != nil {
+		return fmt.Errorf("unsupported config version %q; expected integer 2", version.Value)
+	}
+	if value != 2 {
+		return fmt.Errorf("unsupported config version %d; expected 2", value)
+	}
+	return nil
 }
 
 // mappingValue は mapping node の key に対応する値を返す。mapping でなければ nil を返す。
@@ -141,20 +130,6 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
-}
-
-// removeMappingKey は mapping node から key と値の組を取り除き、取り除いたらtrueを返す。
-func removeMappingKey(node *yaml.Node, key string) bool {
-	if node == nil || node.Kind != yaml.MappingNode {
-		return false
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			node.Content = append(node.Content[:i], node.Content[i+2:]...)
-			return true
-		}
-	}
-	return false
 }
 
 func collectKeys(doc *yaml.Node) map[string]bool {
@@ -177,7 +152,18 @@ func collectMappingKeys(node *yaml.Node, prefix string, out map[string]bool) {
 			key = prefix + "." + key
 		}
 		out[key] = true
-		if value.Kind != yaml.MappingNode || key == "workspaces" || key == "repositories" || key == "sessions.paths" {
+		if value.Kind != yaml.MappingNode {
+			continue
+		}
+		if key == "workspaces" || key == "repositories" {
+			// map 配下は利用者が選ぶ workspace root と repository membership path なので、
+			// 子孫も presence map へ記録し、明示した空 list を往復で保つ。
+			for j := 0; j+1 < len(value.Content); j += 2 {
+				dynamicKey, dynamicValue := value.Content[j], value.Content[j+1]
+				dynamicPath := key + "." + dynamicKey.Value
+				out[dynamicPath] = true
+				collectMappingKeys(dynamicValue, dynamicPath, out)
+			}
 			continue
 		}
 		collectMappingKeys(value, key, out)
@@ -192,6 +178,13 @@ func (c Config) has(key string, fallback bool) bool {
 }
 
 func Save(c Config) error {
+	// 旧 in-memory caller が flatten field を変更していても、保存時には
+	// canonical v2 section へ一度だけ反映してから YAML を組み立てる。
+	c = withLegacyAdapter(c)
+	if c.Version == 0 {
+		// 新規の空 Config も保存時に v2 document として確定する。
+		c.Version = 2
+	}
 	p, err := Path()
 	if err != nil {
 		return err
@@ -244,11 +237,6 @@ func Save(c Config) error {
 	return err
 }
 
-// leafInterface は scalar config field の値を yaml.Marshal が扱う具象型で返す。Duration はそのまま渡せる。
-func leafInterface(fv reflect.Value) any {
-	return fv.Interface()
-}
-
 func (c Config) MarshalYAML() (any, error) {
 	known, err := c.marshalKnownYAML()
 	if err != nil {
@@ -259,56 +247,225 @@ func (c Config) MarshalYAML() (any, error) {
 
 // marshalKnownYAML は wx が解釈するキーだけで出力を組み立てる。
 func (c Config) marshalKnownYAML() (any, error) {
-	if c.V2() {
-		return c.marshalV2YAML()
-	}
-	out := map[string]any{}
-	if c.has("version", false) {
-		out["version"] = c.Version
-	}
-	walkConfigLeaves(reflect.ValueOf(c), "", func(key string, fv reflect.Value) {
-		if !c.has(key, false) {
-			return
-		}
-		setNestedYAMLValue(out, key, leafInterface(fv))
-	})
-	walkConfigLists(reflect.ValueOf(c), "", func(key string, fv reflect.Value) {
-		if !listPresent(c, key) {
-			return
-		}
-		setNestedYAMLValue(out, key, fv.Interface())
-	})
-	if c.has("workspaces", c.Workspaces != nil) {
-		out["workspaces"] = c.Workspaces
-	}
-	if c.has("repositories", c.Repositories != nil) {
-		out["repositories"] = c.Repositories
-	}
-	return out, nil
+	return c.marshalV2YAML()
 }
 
 // marshalV2YAML は v2 namespace だけを書き出す。legacy の flatten field は
 // memory 内の互換 projection であり、v2 file へ漏らしてはならない（次回の strict
 // load が二つの正本を検出するため）。
 func (c Config) marshalV2YAML() (any, error) {
+	if c.Version != 2 {
+		return nil, fmt.Errorf("unsupported config version %d; expected 2", c.Version)
+	}
 	out := map[string]any{"version": 2}
 	if c.has("system", !reflect.ValueOf(c.System).IsZero()) {
-		out["system"] = c.System
+		section, err := marshalSectionMap(c.System)
+		if err != nil {
+			return nil, err
+		}
+		preserveExplicitValues(section, c, "system")
+		out["system"] = section
 	}
 	if c.has("workspace_defaults", !reflect.ValueOf(c.WorkspaceDefaults).IsZero()) {
-		out["workspace_defaults"] = c.WorkspaceDefaults
+		section, err := marshalSectionMap(c.WorkspaceDefaults)
+		if err != nil {
+			return nil, err
+		}
+		preserveExplicitValues(section, c, "workspace_defaults")
+		out["workspace_defaults"] = section
 	}
 	if c.has("repository_defaults", !reflect.ValueOf(c.RepositoryDefaults).IsZero()) {
-		out["repository_defaults"] = c.RepositoryDefaults
+		section, err := marshalSectionMap(c.RepositoryDefaults)
+		if err != nil {
+			return nil, err
+		}
+		preserveExplicitValues(section, c, "repository_defaults")
+		out["repository_defaults"] = section
 	}
-	if c.has("workspaces", c.Workspaces != nil) {
-		out["workspaces"] = c.Workspaces
+	workspaces := c.Workspaces
+	legacyRepositoryView := len(workspaces) == 0 && len(c.Repositories) > 0
+	if len(workspaces) == 0 && len(c.Repositories) > 0 {
+		workspaces = legacyRepositoriesAsWorkspaces(c.Repositories)
+	}
+	if legacyRepositoryView || c.has("workspaces", workspaces != nil) {
+		section, err := marshalSectionMap(workspaces)
+		if err != nil {
+			return nil, err
+		}
+		preserveWorkspaceExplicitValues(section, c, workspaces)
+		out["workspaces"] = section
 	}
 	return out, nil
 }
 
-func setNestedYAMLValue(root map[string]any, key string, value any) {
+func marshalSectionMap(value any) (map[string]any, error) {
+	data, err := yaml.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var section map[string]any
+	if err := yaml.Unmarshal(data, &section); err != nil {
+		return nil, err
+	}
+	if section == nil {
+		section = map[string]any{}
+	}
+	return section, nil
+}
+
+// preserveExplicitValues は yaml の omitempty で消える明示値を sparse document
+// へ戻す。nil list は未指定のままなので、親の組み込み値を継承する契約を保てる。
+func preserveExplicitValues(section map[string]any, c Config, prefix string) {
+	for key := range c.present {
+		if !strings.HasPrefix(key, prefix+".") {
+			continue
+		}
+		relative := strings.TrimPrefix(key, prefix+".")
+		if _, exists := nestedYAMLValue(section, relative); exists {
+			continue
+		}
+		original := v2Field(reflect.ValueOf(canonicalSection(c, prefix)), relative)
+		if !shouldPreserveExplicitValue(original) {
+			continue
+		}
+		value := original.Interface()
+		if original.Kind() == reflect.Slice {
+			value = []string{}
+		}
+		setNestedYAMLValue(section, relative, value)
+	}
+}
+
+func shouldPreserveExplicitValue(field reflect.Value) bool {
+	if !field.IsValid() {
+		return false
+	}
+	if field.Kind() == reflect.Slice {
+		return !field.IsNil() && field.Len() == 0
+	}
+	if field.Kind() == reflect.Pointer || field.Kind() == reflect.Map || field.Kind() == reflect.Struct && field.Type() != durationType {
+		return false
+	}
+	return field.IsZero()
+}
+
+func nestedYAMLValue(root map[string]any, key string) (any, bool) {
 	parts := strings.Split(key, ".")
+	current := root
+	for index, part := range parts {
+		value, ok := current[part]
+		if !ok {
+			return nil, false
+		}
+		if index == len(parts)-1 {
+			return value, true
+		}
+		nested, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = nested
+	}
+	return nil, false
+}
+
+func preserveWorkspaceExplicitValues(section map[string]any, c Config, workspaces map[string]Workspace) {
+	for root, workspace := range workspaces {
+		workspaceSection, ok := section[root].(map[string]any)
+		if !ok {
+			continue
+		}
+		preserveDynamicValues(c, root, workspaceSection, workspace, []string{
+			"worktree", "copy", "link", "agent.add_dir", "discovery.max_depth", "discovery.exclude",
+			"repository_defaults.default_branch", "repository_defaults.dir_source", "repository_defaults.prepare.command",
+			"repository_defaults.prepare.inputs", "repository_defaults.prepare.timeout", "repository_defaults.prepare.version",
+			"repository_defaults.readiness.mode", "repository_defaults.readiness.early_paths", "repository_defaults.readiness.timeout",
+			"repository_defaults.storage.copy_mode",
+		})
+		repositories, ok := workspaceSection["repositories"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for relative, repository := range workspace.Repositories {
+			repositorySection, ok := repositories[relative].(map[string]any)
+			if !ok {
+				continue
+			}
+			preserveDynamicValues(c, root, repositorySection, repository, []string{
+				"default_branch", "dir_name", "dir_source", "prepare.command", "prepare.inputs", "prepare.timeout", "prepare.version",
+				"readiness.mode", "readiness.early_paths", "readiness.timeout", "storage.copy_mode",
+			}, "repositories."+relative)
+		}
+	}
+}
+
+func preserveDynamicValues(c Config, root string, section map[string]any, value any, keys []string, prefix ...string) {
+	fieldPrefix := ""
+	if len(prefix) > 0 {
+		fieldPrefix = prefix[0] + "."
+	}
+	for _, key := range keys {
+		suffix := fieldPrefix + key
+		if !dynamicV2FieldPresent(c, root, suffix) {
+			continue
+		}
+		if _, exists := nestedYAMLValue(section, key); exists {
+			continue
+		}
+		field := v2Field(reflect.ValueOf(value), key)
+		if !shouldPreserveExplicitValue(field) {
+			continue
+		}
+		fieldValue := field.Interface()
+		if field.Kind() == reflect.Slice {
+			fieldValue = []string{}
+		}
+		setNestedYAMLValue(section, key, fieldValue)
+	}
+}
+
+func dynamicV2FieldPresent(c Config, root, suffix string) bool {
+	if c.present == nil {
+		return false
+	}
+	path := "workspaces." + root + "." + suffix
+	if c.present[path] {
+		return true
+	}
+	for present := range c.present {
+		if !strings.HasPrefix(present, "workspaces.") || !strings.HasSuffix(present, "."+suffix) {
+			continue
+		}
+		candidate := strings.TrimSuffix(strings.TrimPrefix(present, "workspaces."), "."+suffix)
+		canonical, err := canonicalPath(candidate)
+		if err == nil && canonical == root {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalSection(c Config, prefix string) any {
+	switch prefix {
+	case "system":
+		return c.System
+	case "workspace_defaults":
+		return c.WorkspaceDefaults
+	case "repository_defaults":
+		return c.RepositoryDefaults
+	default:
+		return struct{}{}
+	}
+}
+
+func setNestedYAMLValue(root map[string]any, key string, value any) {
+	setNestedYAMLPath(root, strings.Split(key, "."), value)
+}
+
+func setNestedYAMLPath(root map[string]any, parts []string, value any) {
+	if len(parts) == 0 {
+		return
+	}
 	current := root
 	for _, part := range parts[:len(parts)-1] {
 		nested, _ := current[part].(map[string]any)
@@ -319,15 +476,4 @@ func setNestedYAMLValue(root map[string]any, key string, value any) {
 		current = nested
 	}
 	current[parts[len(parts)-1]] = value
-}
-
-func listPresent(c Config, key string) bool {
-	if strings.HasPrefix(key, "sessions.paths.") {
-		if !c.has("sessions.paths", false) {
-			return false
-		}
-		list := configListField(reflect.ValueOf(c), key)
-		return list.IsValid() && !list.IsNil()
-	}
-	return c.has(key, false)
 }

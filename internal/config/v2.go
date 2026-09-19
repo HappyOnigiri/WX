@@ -8,13 +8,10 @@ import (
 	"strings"
 )
 
-// V2 は config v2 の判定を一箇所へ閉じ込める。Version を省略した設定は
-// 旧形式との区別ができないため、従来どおり version 1 として扱う。
+// V2 は schema version の判定を一箇所へ閉じ込める。version を省略した
+// document は v1 と推測せず、LoadRaw が明示的に拒否する。
 func (c Config) V2() bool {
-	if c.Version == 2 || !c.SystemIsZero() || !c.WorkspaceDefaultsIsZero() || !c.RepositoryDefaultsIsZero() {
-		return true
-	}
-	return c.present != nil && (c.present["system"] || c.present["workspace_defaults"] || c.present["repository_defaults"])
+	return c.Version == 2
 }
 
 func (c Config) SystemIsZero() bool            { return reflect.ValueOf(c.System).IsZero() }
@@ -24,10 +21,10 @@ func (c Config) RepositoryDefaultsIsZero() bool {
 	return reflect.ValueOf(c.RepositoryDefaults).IsZero()
 }
 
-// DefaultsV2 は組み込み値を config v2 の節へ配置した Config を返す。既存の
-// Defaults は legacy caller 用に残し、ロード時にこの値へ正規化する。
+// DefaultsV2 は組み込み値を config v2 の節へ配置した Config を返す。
+// Defaults はこの関数を唯一の既定値経路として利用する。
 func DefaultsV2() Config {
-	legacy := Defaults()
+	legacy := defaultsLegacy()
 	trueValue, warm := legacy.Worktree.ReuseStandby, legacy.Pool.WarmPerWorkspace
 	fetchDefaultBranch := legacy.Worktree.FetchDefaultBranch
 	submodules := legacy.Worktree.Submodules
@@ -36,7 +33,7 @@ func DefaultsV2() Config {
 	progress := legacy.Readiness.Progress
 	autoCheck := legacy.Update.AutoCheck
 	loginShell := legacy.Daemon.LoginShell
-	return Config{
+	c := Config{
 		Version:    2,
 		v2Explicit: true,
 		System: SystemConfig{
@@ -59,8 +56,98 @@ func DefaultsV2() Config {
 			Includes: RepositoryIncludes{DefaultAgentRules: &include}, Readiness: RepositoryReadiness{Mode: legacy.Readiness.Mode, EarlyPaths: cloneStrings(legacy.Readiness.EarlyPaths), Timeout: &legacy.Readiness.Timeout, Progress: &progress},
 			Storage: RepositoryStorage{CopyMode: legacy.Storage.CopyMode},
 		},
-		Workspaces: map[string]Workspace{},
+		Workspaces:   map[string]Workspace{},
+		Repositories: map[string]Repository{},
 	}
+	// resolver 境界をまだ通らない caller 向けに adapter field も埋めるが、
+	// file encoding と解決が使う正本は上記の canonical v2 section に限る。
+	flattenV2(&c)
+	return c
+}
+
+// withLegacyAdapter は設定を直接組み立てる古い test/caller が adapter field を
+// 変更した場合だけ、その差分を canonical v2 section へ反映する。LoadRaw 由来の
+// Config は present を持ち、YAML の v2 section が常に正本になる。
+func withLegacyAdapter(c Config) Config {
+	if c.present != nil {
+		return c
+	}
+	old, builtin := c, DefaultsV2()
+	choose := func(canonical, builtIn, old reflect.Value) reflect.Value {
+		// Version 0 の直接生成 Config は canonical field だけを埋める caller
+		// がいる。legacy adapter の zero value でその値を上書きしない。
+		if c.Version == 0 && !canonical.IsZero() && old.IsZero() {
+			return canonical
+		}
+		if !reflect.DeepEqual(old.Interface(), builtIn.Interface()) && !reflect.DeepEqual(old.Interface(), canonical.Interface()) {
+			return old
+		}
+		return canonical
+	}
+	set := func(dst, builtIn, old reflect.Value) {
+		if value := choose(dst, builtIn, old); value.IsValid() && dst.CanSet() {
+			dst.Set(value)
+		}
+	}
+	// system 節
+	set(reflect.ValueOf(&c.System).Elem().FieldByName("Language"), reflect.ValueOf(builtin.System.Language), reflect.ValueOf(old.Language))
+	systemStorage := reflect.ValueOf(&c.System.Storage).Elem()
+	builtinStorage := reflect.ValueOf(builtin.System.Storage)
+	legacyStorage := reflect.ValueOf(old.Storage)
+	for _, name := range []string{"WorktreeRoot", "BackupGenerations", "BackupRetention"} {
+		set(systemStorage.FieldByName(name), builtinStorage.FieldByName(name), legacyStorage.FieldByName(name))
+	}
+	systemPool := reflect.ValueOf(&c.System.Pool).Elem()
+	set(systemPool.FieldByName("PreparationConcurrency"), reflect.ValueOf(builtin.System.Pool.PreparationConcurrency), reflect.ValueOf(old.Pool.PreparationConcurrency))
+	systemRetention := reflect.ValueOf(&c.System.Retention).Elem()
+	builtinRetention := reflect.ValueOf(builtin.System.Retention)
+	legacyRetention := reflect.ValueOf(old.Retention)
+	for _, name := range []string{"Quarantined", "RecoverySnapshot", "ExpiredSessionTombstone", "FailedJob", "EventLog"} {
+		set(systemRetention.FieldByName(name), builtinRetention.FieldByName(name), legacyRetention.FieldByName(name))
+	}
+	systemDiscovery := reflect.ValueOf(&c.System.Discovery).Elem()
+	builtinDiscovery := reflect.ValueOf(builtin.System.Discovery)
+	legacyDiscovery := reflect.ValueOf(old.Discovery)
+	for _, name := range []string{"MaxEntries", "Timeout", "ReconcileInterval"} {
+		set(systemDiscovery.FieldByName(name), builtinDiscovery.FieldByName(name), legacyDiscovery.FieldByName(name))
+	}
+	set(reflect.ValueOf(&c.System.Resume).Elem(), reflect.ValueOf(builtin.System.Resume), reflect.ValueOf(old.Resume))
+	set(reflect.ValueOf(&c.System.Lease).Elem(), reflect.ValueOf(builtin.System.Lease), reflect.ValueOf(old.Lease))
+	set(reflect.ValueOf(&c.System.Sessions).Elem(), reflect.ValueOf(builtin.System.Sessions), reflect.ValueOf(old.Sessions))
+	set(reflect.ValueOf(&c.System.Logging).Elem(), reflect.ValueOf(builtin.System.Logging), reflect.ValueOf(old.Logging))
+	if c.System.Update.AutoCheck == nil || (builtin.System.Update.AutoCheck != nil && *c.System.Update.AutoCheck == *builtin.System.Update.AutoCheck) {
+		if old.Update.AutoCheck != builtin.Update.AutoCheck {
+			value := old.Update.AutoCheck
+			c.System.Update.AutoCheck = &value
+		}
+	}
+	if c.System.Daemon.LoginShell == nil || (builtin.System.Daemon.LoginShell != nil && *c.System.Daemon.LoginShell == *builtin.System.Daemon.LoginShell) {
+		if old.Daemon.LoginShell != builtin.Daemon.LoginShell {
+			value := old.Daemon.LoginShell
+			c.System.Daemon.LoginShell = &value
+		}
+	}
+	// workspace defaults 節
+	workspace := reflect.ValueOf(&c.WorkspaceDefaults).Elem()
+	builtinWorkspace := reflect.ValueOf(builtin.WorkspaceDefaults)
+	legacyWorktree := reflect.ValueOf(old.Worktree)
+	set(workspace.FieldByName("Worktree"), builtinWorkspace.FieldByName("Worktree"), legacyWorktree.FieldByName("Undefined"))
+	set(workspace.FieldByName("ReuseStandby"), builtinWorkspace.FieldByName("ReuseStandby"), reflect.ValueOf(&old.Worktree.ReuseStandby))
+	set(workspace.FieldByName("FetchDefaultBranch"), builtinWorkspace.FieldByName("FetchDefaultBranch"), reflect.ValueOf(&old.Worktree.FetchDefaultBranch))
+	set(workspace.FieldByName("WarmCount"), builtinWorkspace.FieldByName("WarmCount"), reflect.ValueOf(&old.Pool.WarmPerWorkspace))
+	set(workspace.FieldByName("Agent"), builtinWorkspace.FieldByName("Agent"), reflect.ValueOf(WorkspaceAgent{AddDir: old.Agent.AddDir}))
+	set(workspace.FieldByName("Retention"), builtinWorkspace.FieldByName("Retention"), reflect.ValueOf(WorkspaceRetention{HotStandby: &old.Retention.HotStandby, EndedWorktree: &old.Retention.EndedWorktree}))
+	set(workspace.FieldByName("Discovery"), builtinWorkspace.FieldByName("Discovery"), reflect.ValueOf(WorkspaceDiscovery{MaxDepth: &old.Discovery.MaxDepth, Exclude: cloneStrings(old.Discovery.Exclude)}))
+	// repository defaults 節
+	repository := reflect.ValueOf(&c.RepositoryDefaults).Elem()
+	builtinRepository := reflect.ValueOf(builtin.RepositoryDefaults)
+	set(repository.FieldByName("DirSource"), builtinRepository.FieldByName("DirSource"), reflect.ValueOf(old.Storage.RepoDirSource))
+	set(repository.FieldByName("COWMinSizeKiB"), builtinRepository.FieldByName("COWMinSizeKiB"), reflect.ValueOf(&old.Storage.COWMinSizeKiB))
+	set(repository.FieldByName("Submodules"), builtinRepository.FieldByName("Submodules"), reflect.ValueOf(&old.Worktree.Submodules))
+	set(repository.FieldByName("Includes"), builtinRepository.FieldByName("Includes"), reflect.ValueOf(RepositoryIncludes{DefaultAgentRules: &old.Includes.DefaultAgentRules}))
+	set(repository.FieldByName("Readiness"), builtinRepository.FieldByName("Readiness"), reflect.ValueOf(RepositoryReadiness{Mode: old.Readiness.Mode, EarlyPaths: cloneStrings(old.Readiness.EarlyPaths), Timeout: &old.Readiness.Timeout, Progress: &old.Readiness.Progress}))
+	set(repository.FieldByName("Storage"), builtinRepository.FieldByName("Storage"), reflect.ValueOf(RepositoryStorage{CopyMode: old.Storage.CopyMode}))
+	return c
 }
 
 // effectiveV2Defaults は raw v2 を組み込み値へ重ね、legacy flatten view も
@@ -72,20 +159,51 @@ func effectiveV2Defaults(raw Config) Config {
 	overlayWorkspaceDefaults(&d.WorkspaceDefaults, raw.WorkspaceDefaults, raw)
 	overlayRepositoryDefaults(&d.RepositoryDefaults, raw.RepositoryDefaults, raw)
 	d.Workspaces = cloneWorkspaces(raw.Workspaces)
+	if len(d.Workspaces) == 0 && len(raw.Repositories) > 0 {
+		// 旧 in-process caller がまだ絶対 path map を組み立てる場合も、
+		// 保存・解決時には workspace membership へ一度だけ写す。
+		d.Workspaces = legacyRepositoriesAsWorkspaces(raw.Repositories)
+	}
+	if d.Workspaces == nil {
+		d.Workspaces = map[string]Workspace{}
+	}
 	// legacy field は既存 lifecycle code が読む互換 view である。
 	flattenV2(&d)
 	// file codec が raw v2 map と presence 情報を使えるように保持する。
 	d.Workspaces = cloneWorkspaces(raw.Workspaces)
+	if d.Workspaces == nil {
+		d.Workspaces = map[string]Workspace{}
+	}
 	d.Repositories = cloneRepositories(raw.Repositories)
+	if d.Repositories == nil {
+		d.Repositories = map[string]Repository{}
+	}
+	for root, workspace := range d.Workspaces {
+		if repository, ok := workspace.Repositories["."]; ok {
+			if _, exists := d.Repositories[root]; !exists {
+				d.Repositories[root] = repository
+			}
+		}
+	}
 	d.present = clonePresent(raw.present)
 	if d.present == nil {
 		d.present = inferV2Present(raw)
 	}
-	markLegacyPresentFromValue(raw, d.present)
 	// Defaults().Version だけを変更した legacy caller と区別するため、直接生成する caller は v2Explicit を設定する。
 	d.v2Explicit = raw.v2Explicit || (raw.Version == 2 && (raw.has("system", !raw.SystemIsZero()) || raw.has("workspace_defaults", !raw.WorkspaceDefaultsIsZero()) || raw.has("repository_defaults", !raw.RepositoryDefaultsIsZero()) || raw.has("workspaces", raw.Workspaces != nil)))
 	d.Version = 2
 	return d
+}
+
+// legacyRepositoriesAsWorkspaces はファイルへは出力しない互換 view を、v2 の
+// workspace root + "." membership へ写す。新しい canonical document には通常
+// 到達せず、旧 API を直接呼ぶテストや埋め込み caller の編集を失わないために残す。
+func legacyRepositoriesAsWorkspaces(repositories map[string]Repository) map[string]Workspace {
+	out := make(map[string]Workspace, len(repositories))
+	for root, repository := range repositories {
+		out[root] = Workspace{Repositories: map[string]Repository{".": repository}}
+	}
+	return out
 }
 
 func markLegacyPresentFromValue(raw Config, present map[string]bool) {
@@ -375,12 +493,12 @@ func derefDuration(v *Duration) Duration {
 }
 
 // RepositoryFor は workspace 文脈で membership の設定を解決する。
-// mainPath は任意で、指定時も legacy v1 の repository map にだけ使う。
+// repository の絶対 path は設定キーに使わず、mainPath は互換呼び出し側の
+// 引数として受け取るだけである。
 func (c Config) RepositoryFor(workspaceRoot, relativePath, mainPath string) Repository {
+	c = withLegacyAdapter(c)
+	_ = mainPath
 	base := repositoryDefaultsAsRepository(c.RepositoryDefaults)
-	if !c.V2() {
-		base = Repository{}
-	}
 	if workspaceRoot != "" {
 		if w, ok := c.Workspaces[workspaceRoot]; ok {
 			mergeRepository(&base, w.RepositoryDefaults)
@@ -393,7 +511,7 @@ func (c Config) RepositoryFor(workspaceRoot, relativePath, mainPath string) Repo
 			}
 		}
 	}
-	if mainPath != "" {
+	if c.present == nil && mainPath != "" {
 		if legacy, ok := c.Repositories[mainPath]; ok {
 			mergeRepositoryValue(&base, legacy)
 		}
@@ -404,6 +522,7 @@ func (c Config) RepositoryFor(workspaceRoot, relativePath, mainPath string) Repo
 // WorkspaceFor は root の Workspace 実効 profile を返す。
 // v2 workspace defaults と root entry を重ね、RepositoryFor 用の nested map を保つ。
 func (c Config) WorkspaceFor(root string) Workspace {
+	c = withLegacyAdapter(c)
 	base := Workspace{}
 	if c.V2() {
 		d := c.WorkspaceDefaults
@@ -530,6 +649,7 @@ type RepositoryResolution struct {
 }
 
 func (c Config) ResolveRepository(workspaceRoot, relativePath, mainPath string) RepositoryResolution {
+	c = withLegacyAdapter(c)
 	sources := map[string]string{}
 	for key := range repositoryKeys() {
 		sources[key] = "default"
@@ -582,8 +702,18 @@ func markRepositorySources(s map[string]string, c Config, root, rel string) {
 	}
 	if w, ok := c.Workspaces[root]; ok {
 		markRepositoryOverrideSources(s, w.RepositoryDefaults, "workspace")
+		for key := range repositoryKeys() {
+			if dynamicRawFieldPresent(c, root, "repository_defaults."+key) {
+				s[key] = "workspace"
+			}
+		}
 		if member, ok := w.Repositories[cleanRepositoryRelative(rel)]; ok {
 			markRepositoryValueSources(s, member, "repository")
+			for key := range repositoryKeys() {
+				if dynamicRawFieldPresent(c, root, "repositories."+cleanRepositoryRelative(rel)+"."+key) {
+					s[key] = "repository"
+				}
+			}
 		}
 	}
 }
@@ -706,7 +836,8 @@ func cleanRepositoryRelative(path string) string {
 }
 
 // NormalizeRepositoryRelative は v2 workspace membership key を検証・正規化する。
-// membership は常に workspace root 相対で、absolute path・root 自身・parent escape・NUL を拒否する。
+// membership は常に workspace root 相対で、absolute path・parent escape・NUL を拒否する。
+// `.` は workspace root 自身を repository とする membership に使う。
 func NormalizeRepositoryRelative(value string) (string, error) {
 	if value == "" {
 		return "", fmt.Errorf("repository relative path is required")
@@ -715,7 +846,7 @@ func NormalizeRepositoryRelative(value string) (string, error) {
 		return "", fmt.Errorf("repository relative path %q must be relative", value)
 	}
 	clean := filepath.Clean(value)
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || !filepath.IsLocal(clean) {
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || !filepath.IsLocal(clean) {
 		return "", fmt.Errorf("repository relative path %q escapes the workspace root", value)
 	}
 	return clean, nil

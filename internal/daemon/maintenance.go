@@ -84,7 +84,7 @@ func (m *Manager) maintainLifecycle() {
 	m.runMaintenance()
 	m.measureRootUsage(m.ctx)
 	for {
-		interval := maintenanceInterval(m.Config().Discovery.ReconcileInterval.Duration)
+		interval := maintenanceInterval(m.Config().System.Discovery.ReconcileInterval.Duration)
 		timer := time.NewTimer(interval)
 		select {
 		case <-m.ctx.Done():
@@ -263,7 +263,7 @@ func (m *Manager) maybeBackup(ctx context.Context) {
 	// 無期限に居座らせず、期限内に終わらなければ失敗として次の周期へ回す。
 	backupCtx, cancel := context.WithTimeout(ctx, backupDeadline)
 	defer cancel()
-	_, err := m.store.Backup(backupCtx, cfg.Storage.BackupGenerations, cfg.Storage.BackupRetention.Duration)
+	_, err := m.store.Backup(backupCtx, cfg.System.Storage.BackupGenerations, cfg.System.Storage.BackupRetention.Duration)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err != nil {

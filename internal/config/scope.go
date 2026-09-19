@@ -47,7 +47,6 @@ var scopeGlobalAliases = map[string]string{
 	"worktree":             "worktree.undefined",
 	"reuse_standby":        "worktree.reuse_standby",
 	"fetch_default_branch": "worktree.fetch_default_branch",
-	"submodules":           "worktree.submodules",
 	"warm_count":           "pool.warm_per_workspace",
 	"dir_source":           "storage.repo_dir_source",
 	"cow_min_size_kib":     "storage.cow_min_size_kib",
@@ -116,7 +115,7 @@ func walkScopeFields(v reflect.Value, prefix string, visit func(key string, fiel
 func ScopeKeys(s Scope) []string {
 	var keys []string
 	walkScopeFields(s.newEntry(), "", func(key string, _ reflect.Value) {
-		if s == ScopeRepository && key == "submodules" {
+		if key == "submodules" {
 			return
 		}
 		keys = append(keys, key)
@@ -148,7 +147,13 @@ func unknownScopeKey(s Scope, key string) error {
 // SetScopeField は scope の scalar key へ value を解析して保存する。
 // 範囲と enum の検証は後段の Validate が行う。
 func SetScopeField(c *Config, s Scope, target, key, value string) error {
+	if useCanonicalRepositoryScope(c, s) {
+		return SetV2Field(c, V2ScopeRepository, target, ".", key, value)
+	}
 	return mutateScope(c, s, target, func(entry reflect.Value) error {
+		if key == "submodules" {
+			return unknownScopeKey(s, key)
+		}
 		field := scopeFieldByKey(entry, key)
 		switch {
 		case !field.IsValid():
@@ -162,7 +167,13 @@ func SetScopeField(c *Config, s Scope, target, key, value string) error {
 
 // ResetScopeField は scope の scalar 個別指定を解除し、継承元の値へ戻す。
 func ResetScopeField(c *Config, s Scope, target, key string) error {
+	if useCanonicalRepositoryScope(c, s) {
+		return ResetV2Field(c, V2ScopeRepository, target, ".", key)
+	}
 	return mutateScope(c, s, target, func(entry reflect.Value) error {
+		if key == "submodules" {
+			return unknownScopeKey(s, key)
+		}
 		field := scopeFieldByKey(entry, key)
 		switch {
 		case !field.IsValid():
@@ -179,6 +190,12 @@ func ResetScopeField(c *Config, s Scope, target, key string) error {
 // 個別指定は global list の置き換えなので、未設定からの追加では global の現在の実効値を種にする。
 // 種にした時点の値が焼き付き、以後の global 側の変更はこの scope へ伝わらない。
 func AppendScopeList(c *Config, s Scope, target, key, value string) error {
+	if useCanonicalRepositoryScope(c, s) {
+		return AppendV2List(c, V2ScopeRepository, target, ".", key, value)
+	}
+	if key == "submodules" {
+		return unknownScopeKey(s, key)
+	}
 	seed, err := scopeListSeed(c, key)
 	if err != nil {
 		return err
@@ -206,6 +223,12 @@ func AppendScopeList(c *Config, s Scope, target, key, value string) error {
 // RemoveScopeList は scope の list key から値を削除する。
 // 未設定のままでは global の実効値がそのまま効いているため、先に --add で明示的な list を作らせる。
 func RemoveScopeList(c *Config, s Scope, target, key, value string) error {
+	if useCanonicalRepositoryScope(c, s) {
+		return RemoveV2List(c, V2ScopeRepository, target, ".", key, value)
+	}
+	if key == "submodules" {
+		return unknownScopeKey(s, key)
+	}
 	return mutateScope(c, s, target, func(entry reflect.Value) error {
 		list, err := scopeListField(s, entry, key)
 		if err != nil {
@@ -236,6 +259,12 @@ func RemoveScopeList(c *Config, s Scope, target, key, value string) error {
 
 // ResetScopeList は scope の list 個別指定を解除し、global list へ戻す。
 func ResetScopeList(c *Config, s Scope, target, key string) error {
+	if useCanonicalRepositoryScope(c, s) {
+		return ResetV2List(c, V2ScopeRepository, target, ".", key)
+	}
+	if key == "submodules" {
+		return unknownScopeKey(s, key)
+	}
 	return mutateScope(c, s, target, func(entry reflect.Value) error {
 		list, err := scopeListField(s, entry, key)
 		if err != nil {
@@ -244,6 +273,10 @@ func ResetScopeList(c *Config, s Scope, target, key string) error {
 		list.Set(reflect.Zero(list.Type()))
 		return nil
 	})
+}
+
+func useCanonicalRepositoryScope(c *Config, s Scope) bool {
+	return c != nil && s == ScopeRepository && c.V2() && (c.Workspaces != nil || c.Repositories == nil)
 }
 
 func scopeListField(s Scope, entry reflect.Value, key string) (reflect.Value, error) {
@@ -282,6 +315,9 @@ func mutateScope(c *Config, s Scope, target string, apply func(entry reflect.Val
 	if c == nil {
 		return errors.New("config is nil")
 	}
+	// Scope は旧 in-process caller 向けの互換入口だが、保存形式は常に v2
+	// とする。version を残さないと Merge が意図した編集を空文書として扱う。
+	c.Version = 2
 	key, err := scopeOverrideKey(c, s, target)
 	if err != nil {
 		return err
@@ -378,8 +414,14 @@ func GlobalFields(c, raw Config) []ScopeField {
 }
 
 func globalFieldPresent(raw Config, key string) bool {
-	if list := configListField(reflect.ValueOf(raw), key); list.IsValid() {
-		return listPresent(raw, key)
+	if scope, canonical, ok := legacyV2Key(key); ok {
+		switch scope {
+		case V2ScopeWorkspaceDefaults:
+			scope = "workspace_defaults"
+		case V2ScopeRepositoryDefaults:
+			scope = "repository_defaults"
+		}
+		return v2RawFieldPresent(raw, scope, canonical)
 	}
 	field := configField(reflect.ValueOf(raw), key)
 	return field.IsValid() && raw.has(key, !field.IsZero())

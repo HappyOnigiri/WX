@@ -72,7 +72,7 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	validConfig := "version: 1\nstorage:\n  worktree_root: " + newRoot + "\npool:\n  preparation_concurrency: 3\nreadiness:\n  timeout: 1s\nlogging:\n  level: debug\n"
+	validConfig := "version: 2\nsystem:\n  storage:\n    worktree_root: " + newRoot + "\n  pool:\n    preparation_concurrency: 3\n  logging:\n    level: debug\nrepository_defaults:\n  readiness:\n    timeout: 1s\n"
 	if err := os.WriteFile(configPath, []byte(validConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 	if err := os.WriteFile(blockedRoot, []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	invalidRootConfig := "version: 1\nstorage:\n  worktree_root: " + blockedRoot + "\n"
+	invalidRootConfig := "version: 2\nsystem:\n  storage:\n    worktree_root: " + blockedRoot + "\n"
 	if err := os.WriteFile(configPath, []byte(invalidRootConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestManagerReloadForgetAndDiagnosticErrors(t *testing.T) {
 		t.Fatalf("failed reload replaced active root with %q", got)
 	}
 	// 未知のキーは load を失敗させないため、値として解釈できない記述で reload を失敗させる。
-	if err := os.WriteFile(configPath, []byte("version: 1\nretention:\n  hot_standby: nope\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("version: 2\nworkspace_defaults:\n  retention:\n    hot_standby: nope\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.reloadConfig(false); err == nil {
