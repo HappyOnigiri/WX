@@ -47,7 +47,7 @@ internal/daemon/capacity.go	ast-v1:59bc016abd95d87a8cfd5b7a020bddf9262e4015b4208
 internal/daemon/capacity.go	ast-v1:17072fb8c27fbb15ba4ccbbf0d243381790b7d80ac12acedc1ef171fdd2518b7	積がちょうど MaxInt64 の場合は、厳密比較に変えても乗算結果と飽和値が同じになるため
 internal/daemon/jobqueue.go	ast-v1:5029b67e26ddf12ddda3cfa98db2491ea26a4566e8ea1067478542bdf81ccba4	実行枠の下限値1では < と <= のどちらでも同じ値を代入し、通知を含む後続処理も変わらないため観測可能な差がない
 internal/daemon/lease_mismatch.go	ast-v1:6847d2bd367a8efae34b6135991d553dc49f673da9f4aefd8deb5fb8579c81a8	OID の長さが12文字以下なら短縮結果と元の文字列が同じで、12文字境界の厳密比較変更に観測可能な差がない
-internal/daemon/lease.go	ast-v1:47563a1e94df2bfaf5ed40e88f81675d73226bced387af45d8e9783f89435218	readiness timeout が現在の最大値と等しい場合は同じ Duration を代入するだけで、厳密比較と包含比較に観測可能な差がない
+internal/daemon/lease.go	ast-v1:aab14d616c7cb04fd3cae3226e147cfc7d42d2adca4bcc877e0d4da934cf5da2	readiness timeout が現在の最大値と等しい場合は同じ Duration を代入するだけで、厳密比較と包含比較に観測可能な差がない
 internal/daemon/measurement.go	ast-v1:063830cdf5853c21f8a068e7e3734a5fce8926d75b1027bfaa412f5aad168ea9	履歴件数が上限ちょうどならslice開始位置は0で全要素を保持するため、> を >= に変えて分岐しても履歴は変わらない
 internal/daemon/prune.go	ast-v1:923073a0c87502133c3e1067710418e81ed92486ec009b607059fcd8ed6e9cd6	診断エラーが0件のときは空sliceをappendするだけで、条件を > 0 から >= 0 に変えても結果の Errors は同じ空sliceになる
 internal/daemon/restart.go	ast-v1:1878aaa54a418c5b5d410022c6c34e84fb280c0b63e7e35178f45ea7b831fbb8	猶予が周期間隔と等しいときは同じDurationを代入するため < と <= の変更に観測可能な差がない
@@ -55,7 +55,7 @@ internal/daemon/restart.go	ast-v1:5972134772f05f2c2e4c81fb288748c834bbc38d19eb02
 internal/daemon/roots.go	ast-v1:47acc2c8b48e57454835ff52742e2773326405e2ae508c982463d3cfb658e5a2	同じpathに含まれる同じ長さのrootは同一文字列だけで、再代入しても選択結果が変わらない
 internal/daemon/roots.go	ast-v1:8eb310093da516d02d5d580bc8f64ac7381fa32793570223552c19140a7f2f1b	activeと履歴に同じrootがある同長境界では同一文字列を再代入するだけで選択結果が変わらない
 internal/daemon/server.go	ast-v1:b7da50cfe01497a3924078e6f1cd2cc01c970daaadc8e1beec78fe0b6296a7c6	readinessと余裕の合計が既定上限と等しい場合は、どちらの分岐でも同じ既定上限を返すため観測可能な差がない
-internal/daemon/status.go	ast-v1:73489c0937a635f3c7556f2062a2478fa0e008c278b12d225e4f596014524abc	root一覧はpathをkeyにしたmapから作るため同じpathの別要素は存在せず、同一要素の比較を < から <= に変えても並び順は変わらない
+internal/daemon/status.go	ast-v1:37ca55ee6d0c689820ae9f59f493dc0a8523e430e97b0ee13b2ddc4314ce4274	root一覧はpathをkeyにしたmapから作るため同じpathの別要素は存在せず、同一要素の比較を < から <= に変えても並び順は変わらない
 internal/daemon/submodule_measurement.go	ast-v1:2a542dcd55499e9ab0d241234b1f32fd4b12fd2b18231481bca4ce82f76361b2	repositoryが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
 internal/daemon/submodule_measurement.go	ast-v1:dd5f1b5a7441fc4d0bc0292520fb0203121675232aa4d9192cd096aa46007bc3	同じrepositoryでdepthが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
 internal/daemon/submodule_measurement.go	ast-v1:747dd2fec1fdbe7e12fb93fdf77515c5d90815b0367b40602994da5449d11eb9	priorityが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
@@ -70,12 +70,12 @@ internal/dashboard/view.go	ast-v1:11e735762a5746bb547b63240cb42eed52c7335394887f
 internal/dashboard/view.go	ast-v1:fac2ffee876d33541f57204195fa77d83234cb55679d294db36e4b1bcc2c15a4	表示幅と等しい padANSI は padding 0 の分岐と同じ文字列を返す
 internal/dashboard/view.go	ast-v1:d10ec7e5eac481a0d40cdd1d76f374edfaf1f4607dee3665e935f91d3153c1eb	行数と高さが等しい fitLines は切り出しても同じ全行を返す
 internal/config/file.go	ast-v1:89095143387e538aeaa65bb27dc4fda1b0d27846f60213ff522a7d9e2446f33c	YAML mapping の Content は key/value の偶数列なので、mappingValue の境界変異は有効なNodeで同値
-internal/config/file.go	ast-v1:abe40bdb1b136ea564c71acb14ee3e8d3685af10b47b4223138d1ab7fa05ea47	YAML mapping の Content は key/value の偶数列なので、removeMappingKey の境界変異は有効なNodeで同値
-internal/config/file.go	ast-v1:9b23cb01bda58e670954ab48aa5631a61a0b7f31ff42fbdaa01ff0ea159c0657	YAML mapping の Content は key/value の偶数列なので、collectMappingKeys の境界変異は有効なNodeで同値
+internal/config/file.go	ast-v1:09d7c721da437db0d9f2e9e961a5bef9272084ece5da883084252d901d357b40	YAML mapping の Content は key/value の動的 map 子要素走査の境界変異は有効なNodeで同値
+internal/config/file.go	ast-v1:06daee017631e3dbf25a10ae254046f96018c3944c5ca75e7896804295282c13	YAML mapping の Content は key/value の偶数列なので、collectMappingKeys の境界変異は有効なNodeで同値
 internal/config/unknown.go	ast-v1:58a7daaf37e2ff54ddc39f53de10663a7676c61ab2b974224a00ce739780497b	YAML mapping の Content は key/value の偶数列なので、findUnknownNode の境界変異は有効なNodeで同値
 internal/config/v2.go	ast-v1:9b3917fc8ec8bb31e620dc7a5cd27e7f30a2f27985f3054a3c758a31a1ec486f	固定されたlegacy section tagはすべてConfig fieldに対応するため、markLegacyPresentFromValueの境界変異は現行schemaで同値
-internal/config/v2_edit.go	ast-v1:bbd64f359e802e251e6c9960b2cb7c1489519fc83c12609e70b51d91d3ae4c79	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
-internal/config/v2_edit.go	ast-v1:16fd9e92800767c98cd01e2ec745697065324938cfcdc9bc02d0551858041635	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
+internal/config/v2_edit.go	ast-v1:441d894fef2e9b88716db016d58a0ceef646cd8ff8ea2c79f1bf2fcf6de0dbbc	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
+internal/config/v2_edit.go	ast-v1:74d06e9593d333bf4384cbd6687c62c1e8d20bd6c5888c942790bb77eeee1fc2	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
 internal/cli/bench.go	ast-v1:76ada9b0eb2e9ee90a241dfae75b26d56f0dc46f6297c69480b178e53e64955b	表示幅とラベル幅が同じ場合は0個の空白を追加するだけで、>と>=の結果が同じため
 internal/cli/bench.go	ast-v1:1f94987a6bae0e5592feb370ef19b5ff27795561b8578703a63e4bb3fe59e7a0	sort.Sliceの比較子を<=にしてもint64の同値要素の値列は変わらず、sortedCopyの結果が同じため
 internal/cli/linked_worktree.go	ast-v1:9ed3d86d1e67d159d41050ce19f1925696dd5cbe0006da7fb873b18da7ab2dc7	12桁ちょうどのOIDは条件が>でも>=でも[:12]の結果が元の文字列と同じで、表示結果が変わらないため
@@ -92,5 +92,5 @@ internal/archive/conflict.go	ast-v1:94843e96bca06c241f246c5b3b2f6a6c46202d971913
 internal/archive/conflict.go	ast-v1:ccadb664ebd512dac5364942877e835fb2428b5a735d6eeb958b09073afd025d	stage が異なる場合だけ比較する != ガードの内側なので、stage の < と <= は同じ動作になる
 internal/archive/conflict.go	ast-v1:3295296019f46c569eda9f03bc34df4f17f0cddda73ce775fb21f2e9eaadbfdc	同一 path と stage の重複をソート前に拒否するため、stage の < と <= の同値差へ到達しない
 internal/archive/workspace.go	ast-v1:cb3f0724ef69b57c2b70b5b44b8c0d12e23d2608407729e321cf332039e9efb1	read は非負で、read == 0 のとき buffer[:0] をハッシュへ書いても結果は変わらないため、> と >= は同じ動作になる
-internal/config/resolve.go	ast-v1:9d6ef135080dd8386028ee416f639bc31566e6e78ec6871f8055cdf0fec52436	同じtimeoutの代入では戻り値が変わらない等価変異
+internal/config/resolve.go	ast-v1:ac42fd7450db6c6b00b966596fb4f44e7cd14ee2261d8dc1ec0da5c396136584	同じtimeoutの代入では戻り値が変わらない等価変異
 internal/config/resolve.go	ast-v1:f3661ff161061af6e1e4b51a5ed2e1fe932e83ac86c424f1afef97c4668784b8	同じretentionの代入では戻り値が変わらない等価変異
