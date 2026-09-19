@@ -30,11 +30,13 @@ wx codex
 ```
 
 選んだエージェントが、wx の管理する worktree で起動します。
-`claude` または `codex` より後ろの引数は、そのままエージェントへ渡されます。
-開始元のブランチを指定する場合は、エージェント名の前に wx のオプションを置きます。
+`claude` または `codex` より後ろの引数は、`--` より前に置いた
+`--branch <branch|repo=branch>` または `--branch=<branch|repo=branch>` を除き、そのままエージェントへ渡されます。
+開始元のブランチを指定する wx のオプションは、エージェント名の前後どちらにも置けます。
 
 ```sh
 wx --branch feature/api codex
+wx codex --branch feature/api
 ```
 
 Claude Code と Codex は起動パスごとにセッションログを管理するため、worktree が変わると標準の continue / resume では過去のセッションを見つけにくくなります。

@@ -30,11 +30,14 @@ wx codex
 ```
 
 Each command launches the chosen agent in a managed worktree.
-Arguments after `claude` or `codex` are passed through unchanged.
-To choose a starting branch, place the wx option before the agent name:
+Arguments after `claude` or `codex` are passed through unchanged, except that
+`--branch <branch|repo=branch>` and `--branch=<branch|repo=branch>` can also be
+placed after the agent name and before `--`.
+To choose a starting branch, place the wx option before or after the agent name:
 
 ```sh
 wx --branch feature/api codex
+wx codex --branch feature/api
 ```
 
 Claude Code and Codex associate session logs with the paths they run from, so their standard continue / resume commands can have trouble finding past sessions when the worktree changes.
