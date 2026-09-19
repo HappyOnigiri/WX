@@ -57,3 +57,29 @@ func TestPreviewEditRejectsUnknownOperation(t *testing.T) {
 		t.Fatalf("PreviewEdit error=%v", err)
 	}
 }
+
+func TestParseEditScope(t *testing.T) {
+	tests := []struct {
+		value string
+		want  Scope
+		ok    bool
+	}{
+		{value: "workspace", want: ScopeWorkspace, ok: true},
+		{value: "repository", want: ScopeRepository, ok: true},
+		{value: "system", want: ScopeWorkspace, ok: false},
+	}
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			got, err := parseEditScope(test.value)
+			if test.ok {
+				if err != nil || got != test.want {
+					t.Fatalf("parseEditScope(%q)=(%v, %v), want (%v, nil)", test.value, got, err, test.want)
+				}
+				return
+			}
+			if err == nil || got != test.want {
+				t.Fatalf("parseEditScope(%q)=(%v, %v), want (%v, error)", test.value, got, err, test.want)
+			}
+		})
+	}
+}
