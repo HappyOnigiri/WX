@@ -223,7 +223,6 @@ func AppendList(c *Config, key, value string) error {
 		}
 	}
 	list.Set(reflect.ValueOf(append(values, value)))
-	markListPresent(c, key)
 	return nil
 }
 
@@ -261,7 +260,6 @@ func RemoveList(c *Config, key, value string) error {
 		return fmt.Errorf("%q not found in %s; current values: %s", value, key, strings.Join(values, ", "))
 	}
 	list.Set(reflect.ValueOf(append(values[:index], values[index+1:]...)))
-	markListPresent(c, key)
 	return nil
 }
 
@@ -390,17 +388,6 @@ func mutableConfigList(c *Config, key string) (reflect.Value, error) {
 		return reflect.Value{}, fmt.Errorf("unknown list config key %q", key)
 	}
 	return list, nil
-}
-
-func markListPresent(c *Config, key string) {
-	if c.present == nil {
-		c.present = map[string]bool{}
-	}
-	if strings.HasPrefix(key, "sessions.paths.") {
-		c.present["sessions.paths"] = true
-		return
-	}
-	c.present[key] = true
 }
 
 // clearListPresent は list の present を落とす。present が nil の Config は
