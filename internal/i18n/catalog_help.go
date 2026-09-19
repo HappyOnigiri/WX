@@ -20,6 +20,8 @@ Global options:
   -h, --help                     show help
   -v, --version                  show version
 
+The --branch option may also appear after claude or codex; arguments after -- are passed unchanged.
+
 Commands:
   claude [arguments...]          launch Claude Code in a wx workspace
   codex [arguments...]           launch Codex in a wx workspace
@@ -55,6 +57,8 @@ Commands:
   -n, --no-worktree              方針を保存せずここで実行
   -h, --help                     ヘルプを表示
   -v, --version                  バージョンを表示
+
+--branch は claude または codex の後ろにも置けます。-- より後ろの引数はそのまま渡します。
 
 コマンド:
   claude [arguments...]          wx workspace で Claude Code を起動
