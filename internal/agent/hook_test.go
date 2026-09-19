@@ -20,6 +20,7 @@ type recordingHandler struct {
 	methods  []string
 	params   []json.RawMessage
 	response any
+	err      error
 }
 
 type failingHookReader struct{}
@@ -31,7 +32,11 @@ func (h *recordingHandler) Handle(_ context.Context, method string, params json.
 	h.methods = append(h.methods, method)
 	h.params = append(h.params, append(json.RawMessage(nil), params...))
 	response := h.response
+	err := h.err
 	h.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	if response != nil {
 		return response, nil
 	}
