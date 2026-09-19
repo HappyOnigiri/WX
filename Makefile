@@ -264,7 +264,7 @@ mutation-check:
 	command_string="gremlins $${args[*]}"; \
 	$(GO) run ./tools/mutationreport -root "$(CURDIR)" -profile "$$profile" -input "$$result" \
 		-output "$$manifest" -exclusions "$(CURDIR)/mutation-exclusions.txt" -command "$$command_string" \
-		$(if $(FILE),-file "$(FILE)",) $(if $(MUTATION_ID),-mutation-id "$(MUTATION_ID)",) -fail-on-survivors
+		-mutators boundary $(if $(FILE),-file "$(FILE)",) $(if $(MUTATION_ID),-mutation-id "$(MUTATION_ID)",) -fail-on-survivors
 
 # full runのartifactから実測時間を集計し、次回のplanへ手動で持ち込む重みを作る。
 mutation-weights:

@@ -13,10 +13,11 @@ IDは`wx-mutation-id-v1`、repository-relative path、関数名（関数外は�
 run、attempt、profile、test commitはIDへ含めないため、同じ変異を複数profileが観測しても
 reporterは1件へ集約し、profileごとの観測情報を残す。
 
-`mutation-exclusions.txt`は`<repository-relative path><TAB><mutation-id><TAB><reason>`の形式で記録する。
-除外は関数ではなくIDへ適用され、同じ関数の別変異は生存変異として残る。
-実行profileに適用される行のIDがGremlins結果に存在しない場合はstale exclusionとして
-manifest生成を失敗させる。除外IDが現在`KILLED`でも、同じソース変異である限り有効である。
+`mutation-exclusions.txt`は`<repository-relative path><TAB><ast-v1:SHA-256><TAB><reason>`の形式で記録する。
+除外keyはレシーバ付き関数名、宣言の正規化token列、対象tokenの宣言内位置、mutator、変異前後の
+tokenから作る。空白・コメント・宣言外の編集では変わらず、宣言内部の処理が変われば失効する。
+測定前に全keyをソース上で一意に解決し、測定後は選択対象に対応する観測用mutation IDだけを
+Gremlins結果と照合する。同じ関数の別演算子への自動付け替えは行わない。
 
 `make mutation-check PKG=./internal/config`はパッケージ全体をGremlinsへ渡し、生成した結果を
 mutationreportで判定する。`FILE=internal/config/duration.go`を追加するとそのファイルの
@@ -45,16 +46,17 @@ workflow_dispatchでは起動時にissue起票を抑止できる。抑止中もs
 `internal/archive`はsourceの追加・削除・重複割り当てをplan時に検証しつつ、ファイル分割せず
 パッケージ単位で実行する。mutation IDとmanifestの`profile`はshard分割前と同じ契約を保つ。
 
-daemon、cli、workspaceの重量級パッケージは、huntジョブ自身がGremlinsのdry-run結果から
-RUNNABLE変異数を数え、ファイル単位のLPTで担当範囲を決める。担当外のsourceは
-`--exclude-files`で除外し、manifest生成時にも担当ファイル集合を検証するため、除外漏れや
-shard間の結果混入を検出できる。
+daemonはplan時にproduction Go sourceを列挙し、1ファイルを1つのjobへ割り当てる。
+cliとworkspaceはGremlinsのdry-run結果からRUNNABLE変異数を数え、従来どおりファイル単位の
+LPTで担当範囲を決める。担当外のsourceは`--exclude-files`で除外し、manifest生成時にも担当
+ファイル集合を検証するため、除外漏れやshard間の結果混入を検出できる。
 
 lightweight packageのgroup配分は、manifestの実測秒をfull runのartifactから
 `make mutation-weights`で集計した重みを使う。重みファイルは人が確認してコミットし、
 未計測のprofileはplanで中央値へ退避してnoticeに記録する。partial dispatchのartifactから
 重みを更新しない。
 
-Gremlins実行中は、機密値や環境変数を出力しない軽量なresource heartbeatをログへ記録する。
-heartbeatは実行の正常終了・失敗・signalで必ず停止し、診断の失敗はmutation結果の判定を
-上書きしない。runner側のshutdown原因はこのログと実運用の再実行結果を合わせて判断する。
+jobの上限は変異ごとの`timeout-coefficient`と分離し、測定期限には専用process groupをTERM、
+猶予後にKILLする。実行結果JSONは正常完了、除外不整合、Gremlins失敗、結果不正、測定期限超過を
+区別する。stdout/stderr、dry-run、割り当て、PID・PPID・PGIDを含むheartbeatは診断artifactへ
+分離する。予定した実行結果が1件でも欠ける場合は全件をsummaryへ出し、issueを書き込まない。

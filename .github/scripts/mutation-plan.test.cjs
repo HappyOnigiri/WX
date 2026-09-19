@@ -137,41 +137,48 @@ test('heavy packages expand into deterministic file-shard matrix entries', () =>
     groups: 4,
     root,
   });
-  assert.deepEqual(plan.matrix.map((item) => item.id), [
-    'package-cmd-wx',
-    'package-internal-cli-1',
-    'package-internal-cli-2',
-    'package-internal-daemon-1',
-    'package-internal-daemon-2',
-    'package-internal-daemon-3',
-    'package-internal-daemon-4',
-    'package-internal-workspace-1',
-    'package-internal-workspace-2',
-  ]);
   const daemon = plan.matrix.filter((item) => item.profiles === 'internal/daemon');
-  assert.deepEqual(daemon.map((item) => [item.shard_count, item.shard_index]), [[4, 0], [4, 1], [4, 2], [4, 3]]);
-  assert.deepEqual(daemon.map((item) => [item.shard, item.shards]), [[1, 4], [2, 4], [3, 4], [4, 4]]);
+  const sources = planner.productionGoSources(root, 'internal/daemon');
+  assert.equal(daemon.length, sources.length);
+  assert.equal(new Set(daemon.map((item) => item.id)).size, sources.length);
+  assert.deepEqual(daemon.map((item) => item.shard_files).sort(), sources.map((file) => `internal/daemon/${file}`).sort());
+  for (const item of daemon) {
+    assert.equal(item.shard_count, 1);
+    assert.match(item.id, /^package-internal-daemon-file-[a-z0-9-]+-[0-9a-f]{10}$/u);
+    const selected = path.basename(item.shard_files);
+    for (const source of sources) {
+      const pattern = source.replace('.', '\\.') + '$';
+      assert.equal(item.exclude_files.split(' ').includes(pattern), source !== selected);
+    }
+  }
+  assert.deepEqual(plan.matrix.filter((item) => item.profiles === 'internal/cli').map((item) => item.id), [
+    'package-internal-cli-1', 'package-internal-cli-2',
+  ]);
   assert.equal(plan.matrix.find((item) => item.id === 'package-cmd-wx').shard_count, 1);
 });
 
-test('workflow wires planned shards, archive exclusions, and resource diagnostics', () => {
+test('workflow wires planned shards, independent deadlines, and diagnostics', () => {
   const workflow = fs.readFileSync(path.join(root, '.github', 'workflows', 'mutation-hunt.yml'), 'utf8');
+  const runner = fs.readFileSync(path.join(root, '.github', 'scripts', 'run-mutation-shard.sh'), 'utf8');
   const makefile = fs.readFileSync(path.join(root, 'Makefile'), 'utf8');
   assert.match(workflow, /shards: \$\{\{ steps\.plan\.outputs\.shards \}\}/u);
   assert.match(workflow, /EXPECTED_SHARDS: \$\{\{ needs\.plan\.outputs\.shards \}\}/u);
   assert.match(workflow, /expectedShards,/u);
-  assert.match(workflow, /--exclude-files/u);
-  assert.match(workflow, /mutationshard/u);
-  assert.match(workflow, /--dry-run/u);
-  assert.match(workflow, /-shard-files/u);
-  assert.match(workflow, /Mutation resource heartbeat/u);
-  assert.match(workflow, /duration-seconds/u);
-  assert.match(workflow, /SECONDS=0/u);
+  assert.match(workflow, /max-parallel: 8/u);
+  assert.match(workflow, /job-timeout/u);
+  assert.match(workflow, /validate-exclusions/u);
+  assert.match(workflow, /run-mutation-shard\.sh/u);
+  assert.match(runner, /--exclude-files/u);
+  assert.match(runner, /mutationshard/u);
+  assert.match(runner, /--dry-run/u);
+  assert.match(runner, /-shard-files/u);
+  assert.match(runner, /mutation-runner\.cjs/u);
+  assert.match(runner, /HUNT_JOB_TIMEOUT - 20/u);
+  assert.match(runner, /duration-seconds/u);
   assert.match(workflow, /\.unweighted\[\]/u);
-  assert.match(workflow, /if \[ "\$gremlins_status" -ne 0 \]; then/u);
-  assert.match(workflow, /if \[ -e "\$result" \]; then/u);
-  assert.match(workflow, /\[ ! -f "\$result" \] \|\| \[ ! -s "\$result" \]/u);
-  assert.match(workflow, /report_args\+=\(-empty-result\)/u);
+  assert.match(runner, /execution\.json/u);
+  assert.match(runner, /preflight\.json/u);
+  assert.doesNotMatch(runner, /failures=\$\(\(failures \+ one_survivors\)\)/u);
   assert.match(makefile, /\.\/internal\/fdexec\|internal\/fdexec/u);
   assert.match(makefile, /mutation-weights/u);
 });
