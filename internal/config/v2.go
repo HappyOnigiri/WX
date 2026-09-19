@@ -163,7 +163,6 @@ func cloneWorkspaces(in map[string]Workspace) map[string]Workspace {
 		v.RepositoryDefaults.Prepare.Inputs = cloneStrings(v.RepositoryDefaults.Prepare.Inputs)
 		v.RepositoryDefaults.Readiness.EarlyPaths = cloneStrings(v.RepositoryDefaults.Readiness.EarlyPaths)
 		v.Repositories = cloneRepositories(v.Repositories)
-		v.Onboarding = cloneRepositoryOnboarding(v.Onboarding)
 		out[k] = v
 	}
 	return out
@@ -389,8 +388,8 @@ func (c Config) RepositoryFor(workspaceRoot, relativePath, mainPath string) Repo
 			if member, ok := w.Repositories[rel]; ok {
 				mergeRepositoryValue(&base, member)
 			}
-			if record, ok := w.Onboarding[rel]; ok {
-				base.Onboarding = record
+			if rel == "." {
+				base.Onboarding = w.Onboarding
 			}
 		}
 	}
@@ -466,9 +465,7 @@ func mergeWorkspace(dst *Workspace, src Workspace) {
 	if src.Repositories != nil {
 		dst.Repositories = cloneRepositories(src.Repositories)
 	}
-	if src.Onboarding != nil {
-		dst.Onboarding = cloneRepositoryOnboarding(src.Onboarding)
-	}
+	mergeRepositoryOnboarding(&dst.Onboarding, src.Onboarding)
 }
 
 func mergeRepositoryDefaults(dst *RepositoryDefaults, src RepositoryDefaults) {
@@ -513,6 +510,15 @@ func mergeRepositoryDefaults(dst *RepositoryDefaults, src RepositoryDefaults) {
 	}
 	if src.Storage.CopyMode != "" {
 		dst.Storage.CopyMode = src.Storage.CopyMode
+	}
+}
+
+func mergeRepositoryOnboarding(dst *RepositoryOnboarding, src RepositoryOnboarding) {
+	if src.CheckedAt != "" {
+		dst.CheckedAt = src.CheckedAt
+	}
+	if src.DeclinedAt != "" {
+		dst.DeclinedAt = src.DeclinedAt
 	}
 }
 
@@ -764,13 +770,6 @@ func ValidateV2Rules(c *Config) error {
 		}
 		if w.Repositories != nil {
 			w.Repositories = normalizedMembers
-		}
-		if w.Onboarding != nil {
-			normalizedOnboarding, normalizeErr := normalizeRepositoryOnboarding(root, w.Onboarding)
-			if normalizeErr != nil {
-				return normalizeErr
-			}
-			w.Onboarding = normalizedOnboarding
 		}
 		c.Workspaces[root] = w
 	}

@@ -113,13 +113,6 @@ func normalizeWorkspaceMemberships(root string, workspace Workspace) (Workspace,
 	if workspace.Repositories != nil {
 		workspace.Repositories = members
 	}
-	if workspace.Onboarding != nil {
-		onboarding, err := normalizeRepositoryOnboarding(root, workspace.Onboarding)
-		if err != nil {
-			return Workspace{}, err
-		}
-		workspace.Onboarding = onboarding
-	}
 	return workspace, nil
 }
 
@@ -209,12 +202,16 @@ func SetRepositoryOnboarding(c *Config, workspaceRoot, relativePath, mainPath, c
 		}
 		workspaceKey := v2WorkspaceKey(c, workspaceRoot)
 		workspace := c.Workspaces[workspaceKey]
-		if workspace.Onboarding == nil {
-			workspace.Onboarding = map[string]RepositoryOnboarding{}
+		if relativePath == "." {
+			setRepositoryOnboardingRecord(&workspace.Onboarding, checkedAt, declinedAt)
+		} else {
+			if workspace.Repositories == nil {
+				workspace.Repositories = map[string]Repository{}
+			}
+			repository := workspace.Repositories[relativePath]
+			setRepositoryOnboardingRecord(&repository.Onboarding, checkedAt, declinedAt)
+			workspace.Repositories[relativePath] = repository
 		}
-		record := workspace.Onboarding[relativePath]
-		setRepositoryOnboardingRecord(&record, checkedAt, declinedAt)
-		workspace.Onboarding[relativePath] = record
 		c.Workspaces[workspaceKey] = workspace
 		setV2SectionPresent(c, "workspaces", true)
 		return nil
