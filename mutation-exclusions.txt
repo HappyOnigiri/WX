@@ -1,7 +1,7 @@
 # 除外は変異のソース上の同一性へ厳密に適用する。
 # <repository-relative path>\t<ast-v1:SHA-256>\t<reason>
 # keyは宣言の正規化token列と対象token位置から生成する。等価変異だけを具体的な理由付きで記録する。
-internal/tui/select.go	ast-v1:34a0e026636b90307bf82e21730edd9cdb6ad8e2e5fc37a86bb580e8d2b0b806	width == column では同じ幅を再代入するだけで表示結果が変わらず、> と >= は同値
+internal/tui/select.go	ast-v1:8b49192eb874d0ad73af65f8759975d31b354528f00c5fda16fd6182096c8222	width == column では同じ幅を再代入するだけで表示結果が変わらず、> と >= は同値
 internal/update/update.go	ast-v1:1905023a32cd7d345a85b9219d38ca5597faca756173f166ba9b1d2ced7f50af	next.Major != base.Major の分岐内では両者が等しくなる経路がなく、> と >= は同じ結果になる等価変異
 internal/update/update.go	ast-v1:a3d787c6081ef3e0573039ed26c40aca7622aac5dc57b3454754c1dc02e154fc	next.Minor != base.Minor の分岐内では両者が等しくなる経路がなく、> と >= は同じ結果になる等価変異
 internal/diag/localization.go	ast-v1:e8779dda4fab8df6b8e53581319216f1c48948b85d9957f739845bbde8328bd2	同じラベル長ではwidthへ同じ値を再代入するだけで、>と>=の差が出ない等価変異。
