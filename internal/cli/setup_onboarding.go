@@ -178,8 +178,14 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 			fmt.Fprintln(os.Stderr, localizer.Localize("cli.setup_prompt.failed", map[string]any{"Error": saveErr.Error()}))
 			return setupCompletion{}
 		}
-		fmt.Fprintln(os.Stdout, localizer.Localize("cli.setup_prompt.saved", map[string]any{"Path": path}))
-		fmt.Fprintln(os.Stdout, localizer.Localize("cli.setup_prompt.run", map[string]any{"Path": path}))
+		if _, writeErr := fmt.Fprintln(os.Stdout, localizer.Localize("cli.setup_prompt.saved", map[string]any{"Path": path})); writeErr != nil {
+			cliError(c, writeErr)
+			return setupCompletion{}
+		}
+		if _, writeErr := fmt.Fprintln(os.Stdout, localizer.Localize("cli.setup_prompt.run", map[string]any{"Path": path})); writeErr != nil {
+			cliError(c, writeErr)
+			return setupCompletion{}
+		}
 		return setupCompletion{Action: setupCompletionSave, PromptPath: path}
 	case setupCompletionCancel:
 		return setupCompletion{}

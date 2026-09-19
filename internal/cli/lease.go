@@ -247,6 +247,8 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 			c.releaseLeaseToken(lease, "setup-prompt-saved")
 			handedOff = true
 			return 0
+		case setupCompletionContinue, setupCompletionStart:
+			// path貸出ではsetup promptをagentへ渡さないため、通常のhand offへ進む。
 		}
 	}
 	if jsonOut {
