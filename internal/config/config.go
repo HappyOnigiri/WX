@@ -600,36 +600,14 @@ func Validate(c *Config) error {
 	if !validWorktreeMode(c.Worktree.Undefined, true) {
 		return errors.New("worktree.undefined must be ask, hot, cold, or off")
 	}
-	for path, workspace := range c.Workspaces {
-		if workspace.Worktree != "" && !validWorktreeMode(workspace.Worktree, false) {
-			return fmt.Errorf("workspaces.%s.worktree must be hot, cold, or off", path)
-		}
-		if workspace.WarmCount != nil && *workspace.WarmCount < 0 {
-			return fmt.Errorf("workspaces.%s.warm_count must not be negative", path)
-		}
-		if err := validateWorkspaceOverride(path, workspace); err != nil {
-			return err
-		}
+	if err := validateWorkspaces(c.Workspaces); err != nil {
+		return err
 	}
 	if err := validateStorage(&c.Storage); err != nil {
 		return err
 	}
-	for path, override := range c.Repositories {
-		if override.DirSource != "" && override.DirSource != RepoDirSourceRemote && override.DirSource != RepoDirSourceDirectory {
-			return fmt.Errorf("repositories.%s.dir_source must be %s or %s", path, RepoDirSourceRemote, RepoDirSourceDirectory)
-		}
-		if override.Prepare.Timeout.Duration < 0 {
-			return fmt.Errorf("repositories.%s.prepare.timeout must not be negative", path)
-		}
-		if override.COWMinSizeKiB != nil && (*override.COWMinSizeKiB < 0 || *override.COWMinSizeKiB > MaxCOWMinSizeKiB) {
-			return fmt.Errorf("repositories.%s.cow_min_size_kib must be between 0 and %d", path, MaxCOWMinSizeKiB)
-		}
-		normalized, err := validateRepositoryOverride(path, override)
-		if err != nil {
-			return err
-		}
-		// early_paths の正規化結果を書き戻し、Validate 後の値をそのまま消費側の実効値にする。
-		c.Repositories[path] = normalized
+	if err := validateRepositories(c.Repositories); err != nil {
+		return err
 	}
 	if c.Agent.AddDir != AgentAddDirAlways && c.Agent.AddDir != AgentAddDirWorktree && c.Agent.AddDir != AgentAddDirOff {
 		return fmt.Errorf("agent.add_dir must be %s, %s, or %s", AgentAddDirAlways, AgentAddDirWorktree, AgentAddDirOff)
@@ -655,6 +633,42 @@ func Validate(c *Config) error {
 	}
 	if err := c.Sessions.Validate(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateWorkspaces(workspaces map[string]Workspace) error {
+	for path, workspace := range workspaces {
+		if workspace.Worktree != "" && !validWorktreeMode(workspace.Worktree, false) {
+			return fmt.Errorf("workspaces.%s.worktree must be hot, cold, or off", path)
+		}
+		if workspace.WarmCount != nil && *workspace.WarmCount < 0 {
+			return fmt.Errorf("workspaces.%s.warm_count must not be negative", path)
+		}
+		if err := validateWorkspaceOverride(path, workspace); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRepositories(repositories map[string]Repository) error {
+	for path, override := range repositories {
+		if override.DirSource != "" && override.DirSource != RepoDirSourceRemote && override.DirSource != RepoDirSourceDirectory {
+			return fmt.Errorf("repositories.%s.dir_source must be %s or %s", path, RepoDirSourceRemote, RepoDirSourceDirectory)
+		}
+		if override.Prepare.Timeout.Duration < 0 {
+			return fmt.Errorf("repositories.%s.prepare.timeout must not be negative", path)
+		}
+		if override.COWMinSizeKiB != nil && (*override.COWMinSizeKiB < 0 || *override.COWMinSizeKiB > MaxCOWMinSizeKiB) {
+			return fmt.Errorf("repositories.%s.cow_min_size_kib must be between 0 and %d", path, MaxCOWMinSizeKiB)
+		}
+		normalized, err := validateRepositoryOverride(path, override)
+		if err != nil {
+			return err
+		}
+		// early_paths の正規化結果を書き戻し、Validate 後の値をそのまま消費側の実効値にする。
+		repositories[path] = normalized
 	}
 	return nil
 }
