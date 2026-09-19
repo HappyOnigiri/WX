@@ -99,9 +99,6 @@ func normalizeV2Paths(c *Config) error {
 }
 
 func normalizeWorkspaceMemberships(root string, workspace Workspace) (Workspace, error) {
-	if workspace.Repositories == nil {
-		return workspace, nil
-	}
 	members := make(map[string]Repository, len(workspace.Repositories))
 	for rel, override := range workspace.Repositories {
 		clean, err := NormalizeRepositoryRelative(rel)
@@ -113,7 +110,9 @@ func normalizeWorkspaceMemberships(root string, workspace Workspace) (Workspace,
 		}
 		members[clean] = override
 	}
-	workspace.Repositories = members
+	if workspace.Repositories != nil {
+		workspace.Repositories = members
+	}
 	return workspace, nil
 }
 
@@ -183,4 +182,59 @@ func SetWorkspaceWorktree(c *Config, root, mode string) error {
 		return fmt.Errorf("invalid worktree mode %q", mode)
 	}
 	return SetScopeField(c, ScopeWorkspace, root, "worktree", mode)
+}
+
+// SetRepositoryOnboarding は既存の個別設定を保ち、初回検査の完了または辞退の記録だけを更新する。
+func SetRepositoryOnboarding(c *Config, workspaceRoot, relativePath, mainPath, checkedAt, declinedAt string) error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	if c.V2() || c.Version == 2 {
+		if workspaceRoot == "" {
+			return errors.New("workspace root is required")
+		}
+		relativePath, err := normalizeOnboardingRelative(relativePath)
+		if err != nil {
+			return err
+		}
+		if c.Workspaces == nil {
+			c.Workspaces = map[string]Workspace{}
+		}
+		workspaceKey := v2WorkspaceKey(c, workspaceRoot)
+		workspace := c.Workspaces[workspaceKey]
+		if relativePath == "." {
+			setRepositoryOnboardingRecord(&workspace.Onboarding, checkedAt, declinedAt)
+		} else {
+			if workspace.Repositories == nil {
+				workspace.Repositories = map[string]Repository{}
+			}
+			repository := workspace.Repositories[relativePath]
+			setRepositoryOnboardingRecord(&repository.Onboarding, checkedAt, declinedAt)
+			workspace.Repositories[relativePath] = repository
+		}
+		c.Workspaces[workspaceKey] = workspace
+		setV2SectionPresent(c, "workspaces", true)
+		return nil
+	}
+	if mainPath == "" {
+		return errors.New("repository main path is required")
+	}
+	if c.Repositories == nil {
+		c.Repositories = map[string]Repository{}
+	}
+	repository := c.Repositories[mainPath]
+	setRepositoryOnboardingRecord(&repository.Onboarding, checkedAt, declinedAt)
+	c.Repositories[mainPath] = repository
+	return nil
+}
+
+func setRepositoryOnboardingRecord(record *RepositoryOnboarding, checkedAt, declinedAt string) {
+	if checkedAt != "" {
+		record.CheckedAt = checkedAt
+		record.DeclinedAt = ""
+	}
+	if declinedAt != "" {
+		record.CheckedAt = ""
+		record.DeclinedAt = declinedAt
+	}
 }

@@ -71,6 +71,8 @@ func run(ctx context.Context, args []string) int {
 		return runConfig(ctx, args[1:])
 	case "setup":
 		return runSetup(ctx, args[1:])
+	case "setup-check":
+		return runWorktreeSetupCheck(ctx, args[1:])
 	case "resume":
 		return runResume(ctx, args[1:])
 	case "shell":

@@ -51,6 +51,9 @@ type launcherHandler struct {
 	prepareTimings map[string]any
 	// leaseProgress は LeaseProgress の応答を差し替える点である。nil なら実行中の区間なしとして扱われる。
 	leaseProgress map[string]any
+	// setupOnboarding は貸出前の初回検査問い合わせへの応答である。zero value は記録済みとして扱う。
+	setupOnboarding    daemon.SetupOnboarding
+	setupOnboardingErr error
 }
 
 func (h *launcherHandler) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
@@ -87,6 +90,13 @@ func (h *launcherHandler) Handle(ctx context.Context, method string, raw json.Ra
 		return nil, errors.New("injected registration failure")
 	}
 	switch method {
+	case "ResolveSetupOnboarding":
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.setupOnboardingErr != nil {
+			return nil, h.setupOnboardingErr
+		}
+		return h.setupOnboarding, nil
 	case "ResolveAndLease", "Resume", "AllocateResumeSlot":
 		return h.lease, nil
 	case "WaitReady":

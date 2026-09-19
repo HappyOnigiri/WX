@@ -41,11 +41,15 @@ func TestReadinessForLeaseSelectsTheEffectiveGate(t *testing.T) {
 		resuming                 bool
 		leaseKind                string
 		hooksReady               bool
+		initialSetup             bool
 		mode, reason, waitMethod string
 	}{
 		{name: "ready standby", lease: daemon.Lease{Ready: true}, hooksReady: false, mode: readinessReady},
 		{name: "resume wins", resuming: true, leaseKind: "wx-shell", hooksReady: true, mode: readinessFull, reason: readinessReasonResume, waitMethod: "WaitReady"},
 		{name: "lease wins", leaseKind: "wx-run", hooksReady: false, mode: readinessFull, reason: readinessReasonLease, waitMethod: "WaitReady"},
+		{name: "initial setup wins over configured early", hooksReady: true, initialSetup: true, mode: readinessFull, reason: readinessReasonInitialSetup, waitMethod: "WaitReady"},
+		{name: "resume wins over initial setup", resuming: true, hooksReady: true, initialSetup: true, mode: readinessFull, reason: readinessReasonResume, waitMethod: "WaitReady"},
+		{name: "lease wins over initial setup", leaseKind: "wx-run", hooksReady: true, initialSetup: true, mode: readinessFull, reason: readinessReasonLease, waitMethod: "WaitReady"},
 		{name: "configured full", lease: daemon.Lease{ReadinessMode: readinessFull}, hooksReady: true, mode: readinessFull, reason: readinessReasonConfiguredFull, waitMethod: "WaitReady"},
 		{name: "missing hooks", lease: daemon.Lease{ReadinessMode: readinessEarly}, hooksReady: false, mode: readinessFull, reason: readinessReasonHooksUnavailable, waitMethod: "WaitReady"},
 		{name: "early hooks", lease: daemon.Lease{ReadinessMode: readinessEarly}, hooksReady: true, mode: readinessEarly, waitMethod: "WaitEarlyReady"},
@@ -53,7 +57,7 @@ func TestReadinessForLeaseSelectsTheEffectiveGate(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			decision := readinessForLease(cfg, test.lease, test.resuming, test.leaseKind, test.hooksReady)
+			decision := readinessForLease(cfg, test.lease, test.resuming, test.leaseKind, test.hooksReady, test.initialSetup)
 			if decision.Mode != test.mode || decision.Reason != test.reason || decision.WaitMethod != test.waitMethod {
 				t.Fatalf("decision=%+v, want mode=%q reason=%q method=%q", decision, test.mode, test.reason, test.waitMethod)
 			}

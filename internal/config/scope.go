@@ -88,6 +88,10 @@ func walkScopeFields(v reflect.Value, prefix string, visit func(key string, fiel
 		if tag == "repository_defaults" {
 			continue
 		}
+		// onboarding は wx が書く実行記録で、legacy scope editor から変更する方針値ではない。
+		if tag == "onboarding" {
+			continue
+		}
 		key := tag
 		if prefix != "" {
 			key = prefix + "." + tag

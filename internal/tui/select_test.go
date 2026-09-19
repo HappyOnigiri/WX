@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func testSelection() Selection {
@@ -16,13 +18,14 @@ func testSelection() Selection {
 
 func TestSelectionNavigationAndConfirmation(t *testing.T) {
 	initial := testSelection()
+	initial.Preamble = "Result line 1\nResult line 2"
 	model := selectionModel{selection: initial, cursor: initial.Initial}
 	if model.Init() != nil {
 		t.Fatal("unexpected initial command")
 	}
 	// 説明はラベルと同じ行の桁揃えした列に出て、選択中の行は緑になる。
 	view := model.content()
-	for _, want := range []string{"? Choose", "Hot    Ready", "\x1b[32m› Cold\x1b[39m", "↑/↓"} {
+	for _, want := range []string{"Result line 1\nResult line 2\n\n? Choose", "Hot    Ready", "\x1b[32m› Cold\x1b[39m", "↑/↓"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("want=%q view=%s", want, view)
 		}
@@ -40,6 +43,35 @@ func TestSelectionNavigationAndConfirmation(t *testing.T) {
 	next, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	if next.(selectionModel).cursor != model.cursor {
 		t.Fatal("changed after confirmation")
+	}
+}
+
+func TestSelectionClearOnExitRemovesCompletedView(t *testing.T) {
+	selection := testSelection()
+	selection.ClearOnExit = true
+	model := selectionModel{selection: selection, cursor: selection.Initial}
+	next, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := next.(selectionModel).content(); got != "" {
+		t.Fatalf("completed content=%q, want empty", got)
+	}
+	next, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if got := next.(selectionModel).content(); got != "" {
+		t.Fatalf("cancelled content=%q, want empty", got)
+	}
+	if view := model.View(); !view.AltScreen {
+		t.Fatal("clear-on-exit selection did not use the alternate screen")
+	}
+}
+
+func TestSelectClearOnExitRestoresTheMainScreen(t *testing.T) {
+	selection := testSelection()
+	selection.ClearOnExit = true
+	var output bytes.Buffer
+	if _, err := Select(context.Background(), strings.NewReader("\r"), &output, selection); err != nil {
+		t.Fatal(err)
+	}
+	if rendered := output.String(); !strings.Contains(rendered, ansi.SetModeAltScreenSaveCursor) || !strings.Contains(rendered, ansi.ResetModeAltScreenSaveCursor) {
+		t.Fatalf("alternate screen was not entered and restored: %q", rendered)
 	}
 }
 
@@ -88,6 +120,9 @@ func TestSelectionCancellationAndUnsafeText(t *testing.T) {
 		}
 	}
 	if got := singleLine("path\n\x1b[2J"); strings.ContainsAny(got, "\n\x1b") {
+		t.Fatal(got)
+	}
+	if got := multiLine("first\npath\x1b[2J"); got != "first\npath [2J" {
 		t.Fatal(got)
 	}
 }

@@ -16,6 +16,8 @@ import (
 type leaseAttrs struct {
 	Kind           string
 	OwnerSessionID string
+	// ForceCold はこの貸出だけ READY の再利用を止め、既存の待機枠を変更せず新しい slot を準備する。
+	ForceCold bool
 	// Prepare はこの貸出で準備する slot にだけ効く設定の上書きで、`wx bench` の設定比較が使う。
 	Prepare config.PrepareOverride
 }

@@ -126,6 +126,35 @@ func TestSlotPreparedWithPrepareOverrideIsNotAReuseCandidate(t *testing.T) {
 	}
 }
 
+func TestForceColdLeavesMatchingReadySlotUntouched(t *testing.T) {
+	t.Parallel()
+	requireDaemonIntegration(t)
+	f := runningManagerFixture(t, func(s *managerFixtureSetup) {
+		s.Config.Pool.WarmPerWorkspace = 0
+		s.Config.Discovery.ReconcileInterval.Duration = time.Hour
+	})
+	repo := filepath.Join(f.Root, "repo")
+	initGitRepo(t, repo)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	readyID := leaseAndWaitSlot(ctx, t, f, repo, leaseAttrs{})
+	reuseCandidateSlot(ctx, t, f, readyID)
+	lease, err := f.Manager.ResolveAndLease(ctx, repo, nil, "codex", os.Getpid(), leaseAttrs{ForceCold: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID == readyID || lease.Ready || lease.Route != RouteColdStart {
+		t.Fatalf("force-cold lease=%+v ready=%s", lease, readyID)
+	}
+	ready, err := f.Store.Slot(ctx, readyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.State != "READY" {
+		t.Fatalf("existing slot state=%s, want READY", ready.State)
+	}
+}
+
 // leaseAndWaitSlot は1回貸し出して FULL READY まで待ち、その slot の ID を返す。
 func leaseAndWaitSlot(ctx context.Context, t *testing.T, f *managerFixture, repo string, attrs leaseAttrs) string {
 	t.Helper()

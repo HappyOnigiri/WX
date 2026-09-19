@@ -146,24 +146,10 @@ func (c Client) probeWorkspace(ctx context.Context, root string) (diag.Probe, []
 		return probe, append(findings, probePrepareProblem(root, lease.Path, stage))
 	}
 	probe.FullReadyMS = time.Since(started).Milliseconds()
-	measurement := c.prepareMeasurement(ctx, lease.SessionID)
-	var excludedSubmodules map[string]bool
-	if measurement == nil {
-		probe.PhasesUnavailable = true
-	} else {
-		for _, phase := range measurement.Phases {
-			probe.Phases = append(probe.Phases, diag.ProbePhase{Name: phase.Name, Count: phase.Count, MS: phase.MS})
-		}
-		findings = append(findings, prepareNoticeFindings(root, measurement.Notices)...)
-		probe.Submodules = prepareSubmoduleProbeReport(measurement.Submodules)
-		findings = append(findings, prepareSubmoduleFindings(root, measurement.Submodules)...)
-		excludedSubmodules = excludedSubmodulePaths(measurement.Submodules)
-	}
-	findings = append(findings, c.probeWorktreeFindingsWithExclusions(ctx, root, lease.Path, excludedSubmodules)...)
-	slot := c.probeSlotView(ctx, lease.SessionID)
-	probe.Usage, probe.Repositories = probeUsage(slot)
-	findings = append(findings, prepareFailureFindings(root, slot)...)
-	return probe, append(findings, probeSharingFindings(root, lease.Path, slot)...)
+	inspected, inspectedFindings := c.inspectLeasedWorkspace(ctx, root, lease.SessionID, lease.Path, false)
+	probe.Usage, probe.Repositories = inspected.Usage, inspected.Repositories
+	probe.Phases, probe.PhasesUnavailable, probe.Submodules = inspected.Phases, inspected.PhasesUnavailable, inspected.Submodules
+	return probe, append(findings, inspectedFindings...)
 }
 
 // releaseProbeLease は検査し終えた貸出を保存せずに返す。検査用の worktree を retention 分残さないためである。
@@ -182,9 +168,9 @@ func (c Client) releaseProbeLease(lease daemon.Lease) {
 }
 
 // probeSlotView は準備した slot の使用量が測り終わるのを待って返す。
-// 測定は daemon が background で行うので、待ちきれない回と引けない回はどちらも測定なしの view を返す。
+// 測定は daemon が background で行うので、待機上限は用途ごとに呼び出し側の ctx で決める。
+// daemon から引けない回は測定なしの view を返す。
 func (c Client) probeSlotView(ctx context.Context, slotID string) daemon.SlotView {
-	deadline := time.Now().Add(probeUsageTimeout)
 	last := daemon.SlotView{}
 	for {
 		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -202,9 +188,6 @@ func (c Client) probeSlotView(ctx context.Context, slotID string) daemon.SlotVie
 			if slot.Measurement != "" && slot.Measurement != daemon.MeasurementPending {
 				return slot
 			}
-		}
-		if !time.Now().Before(deadline) {
-			return last
 		}
 		select {
 		case <-ctx.Done():

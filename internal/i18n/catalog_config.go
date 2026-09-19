@@ -277,4 +277,12 @@ var configCatalog = map[string]Entry{
 	"config.repository_defaults.storage.copy_mode.name":        {EN: "Default copy method for this workspace", JA: "この workspace の既定のコピー方式"},
 	"config.repository_defaults.storage.copy_mode.description": {EN: "How files are copied for the repositories of this workspace that do not set it themselves.", JA: "この workspace のリポジトリのうち、自分で指定していないもので、ファイルをどうコピーするかです。"},
 	"config.repository_defaults.storage.copy_mode.impact":      {EN: "The standby worktrees of the affected repositories are rebuilt.", JA: "影響を受けるリポジトリの standby worktree は作り直しになります。"},
+
+	"config.onboarding.checked_at.name":        {EN: "Initial setup check time", JA: "初回セットアップ検査日時"},
+	"config.onboarding.checked_at.description": {EN: "When wx last performed the initial worktree setup check for this repository. This is a record, not a policy.", JA: "wx がこのリポジトリの初回 worktree セットアップ検査を行った日時です。方針ではなく実行記録です。"},
+	"config.onboarding.checked_at.impact":      {EN: "Does not change worktree behavior.", JA: "worktree の動作は変わりません。"},
+
+	"config.onboarding.declined_at.name":        {EN: "Initial setup check declined time", JA: "初回セットアップ検査の辞退日時"},
+	"config.onboarding.declined_at.description": {EN: "When the user chose not to be asked about the initial worktree setup check again.", JA: "初回 worktree セットアップ検査を今後確認しないと選択した日時です。"},
+	"config.onboarding.declined_at.impact":      {EN: "Suppresses the initial setup check prompt for this repository.", JA: "このリポジトリでは初回セットアップ検査の確認を表示しません。"},
 }
