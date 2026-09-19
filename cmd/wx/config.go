@@ -285,16 +285,6 @@ func configKeyText(r *textRenderer, key, kind, fallback string) string {
 	return r.LocalizeOr("config."+key+"."+kind, fallback)
 }
 
-func showGlobalConfig() int {
-	cfg, raw, err := config.LoadWithRaw()
-	if err != nil {
-		lang := i18n.Normalize(config.LoadLanguage())
-		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
-		return 1
-	}
-	return showV2GlobalConfig(cfg, raw)
-}
-
 func showV2GlobalConfig(cfg, raw config.Config) int {
 	path, _ := config.Path()
 	fmt.Println("Config:", path)
@@ -308,35 +298,6 @@ func showV2GlobalConfig(cfg, raw config.Config) int {
 		fmt.Printf("  workspaces = %d\n", len(cfg.Workspaces))
 	}
 	return 0
-}
-
-func runScopeConfig(ctx context.Context, scope config.Scope, path string, args []string) int {
-	cfg, err := config.Load()
-	if err != nil {
-		lang := i18n.Normalize(config.LoadLanguage())
-		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
-		return 1
-	}
-	target, err := resolveConfigScope(ctx, cfg, scope, path)
-	if err != nil {
-		lang := i18n.Normalize(config.LoadLanguage())
-		fmt.Fprintln(os.Stderr, i18n.New(string(lang)).Localize("common.error", nil)+":", i18n.LocalizeError(err, lang))
-		return 1
-	}
-	if len(args) == 0 {
-		r := newTextRenderer(os.Stdout, localizedUsageLanguage())
-		r.line("config.show.scope", map[string]any{"Title": scopeTitle(scope), "Target": target})
-		for _, f := range config.ScopeFields(cfg, scope, target) {
-			r.raw(fmt.Sprintf("  %-42s = %s (%s)", f.Key, f.Value, r.Localize("config.show.source", map[string]any{"Value": f.Source})))
-		}
-		return 0
-	}
-	edit, ok := parseConfigEdit(args)
-	if !ok {
-		commandUsageLanguage(os.Stderr, "config", i18n.LanguageFromContext(ctx))
-		return 2
-	}
-	return executeConfigEdit(ctx, config.EditRequest{Scope: scope.String(), Target: target, Key: edit.key, Value: edit.value, Operation: config.EditOperation(edit.op)})
 }
 
 // executeConfigEdit は共通サービスで preview と保存を連続して行い、CLI の表示契約だけを担当する。
@@ -362,13 +323,6 @@ func executeConfigEdit(ctx context.Context, request config.EditRequest) int {
 		fmt.Println(i18n.New(config.LoadLanguage()).Localize("common.saved", nil))
 	}
 	return 0
-}
-
-func scopeTitle(scope config.Scope) string {
-	if scope == config.ScopeRepository {
-		return "Repository"
-	}
-	return "Workspace"
 }
 
 // resolveConfigScope は指定 path を設定キーと同じ表記の対象へ解決する。

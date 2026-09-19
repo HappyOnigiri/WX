@@ -237,11 +237,6 @@ func Save(c Config) error {
 	return err
 }
 
-// leafInterface は scalar config field の値を yaml.Marshal が扱う具象型で返す。Duration はそのまま渡せる。
-func leafInterface(fv reflect.Value) any {
-	return fv.Interface()
-}
-
 func (c Config) MarshalYAML() (any, error) {
 	known, err := c.marshalKnownYAML()
 	if err != nil {
