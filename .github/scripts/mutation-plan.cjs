@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const EXCLUDED_PACKAGES = Object.freeze({
   'internal/fdexec': 'process/OS adapter (unix.Close, unix.Exec, os.Exit) can terminate or disconnect the hosted runner',
@@ -16,7 +17,6 @@ const DEDICATED_PACKAGES = new Set([
 
 // 重量級パッケージはhunt側でdry-runの変異数を計測してファイル分割する。
 const DYNAMIC_SHARD_COUNTS = Object.freeze({
-  'internal/daemon': 4,
   'internal/cli': 2,
   'internal/workspace': 2,
 });
@@ -163,6 +163,32 @@ function productionArchiveSources(root) {
     .sort();
 }
 
+function productionGoSources(root, profile) {
+  const directory = path.join(root, ...profile.split('/'));
+  return fs.readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.go') && !entry.name.endsWith('_test.go'))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+function fileShardID(profile, file) {
+  const stem = file.replace(/\.go$/u, '').replace(/[^a-z0-9-]+/giu, '-').replace(/^-+|-+$/gu, '').toLowerCase() || 'source';
+  const digest = crypto.createHash('sha256').update(`${profile}\n${file}`).digest('hex').slice(0, 10);
+  return `package-${profile.replaceAll('/', '-')}-file-${stem}-${digest}`;
+}
+
+function daemonShardEntries(root) {
+  const profile = 'internal/daemon';
+  const sources = productionGoSources(root, profile);
+  return sources.map((file) => shardEntry(
+    fileShardID(profile, file),
+    [packagePath(profile)],
+    [profile],
+    ['_test\\.go$', ...sources.filter((candidate) => candidate !== file).map(exactSourcePattern)],
+    { shardFiles: [`${profile}/${file}`] },
+  ));
+}
+
 function validateArchiveSharding(root, definitions = ARCHIVE_SHARDS) {
   if (!Array.isArray(definitions) || definitions.length === 0) throw new Error('archive shard definitions must not be empty');
   const seenIDs = new Set();
@@ -195,9 +221,13 @@ function regexpEscape(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
+function exactSourcePattern(file) {
+  return `^${regexpEscape(file)}$`;
+}
+
 function archiveExcludeFiles(allSources, selectedSources) {
   const selected = new Set(selectedSources);
-  return ['_test\\.go$'].concat(allSources.filter((file) => !selected.has(file)).map((file) => `${regexpEscape(file)}$`));
+  return ['_test\\.go$'].concat(allSources.filter((file) => !selected.has(file)).map(exactSourcePattern));
 }
 
 function shardEntry(id, packages, profiles, excludeFiles = [], options = {}) {
@@ -247,6 +277,8 @@ function buildPlan({ packages, groups = 4, root = process.cwd(), weights, weight
           { shardFiles: shard.files.map((file) => `internal/archive/${file}`) },
         ));
       }
+    } else if (profile === 'internal/daemon') {
+      matrix.push(...daemonShardEntries(root));
     } else if (DEDICATED_PACKAGES.has(profile)) {
       matrix.push(...dedicatedShardEntries(profile));
     } else {
@@ -316,12 +348,15 @@ module.exports = {
   archiveExcludeFiles,
   buildPlan,
   filterPackages,
+  daemonShardEntries,
+  fileShardID,
   loadWeights: loadMutationWeights,
   loadMutationWeights,
   medianWeight,
   packagePath,
   packageProfile,
   productionArchiveSources,
+  productionGoSources,
   validateMutationWeights,
   validateArchiveSharding,
 };

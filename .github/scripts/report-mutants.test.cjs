@@ -50,6 +50,14 @@ function emptyManifest(runId = '10', attempt = '1', profile = 'internal/config')
   return value;
 }
 
+function execution(status = 'completed', shard = 'config', profile = 'internal/config') {
+  return {
+    schema_version: 1, run_id: '10', run_attempt: '1', test_sha: sha,
+    shard, profile, stage: 'measurement', status, exit_code: status === 'completed' ? 0 : 1,
+    signal: null, duration_seconds: 1.25, detail: status === 'completed' ? '' : 'fixture failure',
+  };
+}
+
 test('uses the shared deterministic mutation ID vector', () => {
   assert.equal(manifest().survivors[0].id, '8f58df524fcb072e70af7462216f0880cf5bdde384c38b74bb7bbf2f4a2414d7');
 });
@@ -69,6 +77,21 @@ test('accepts package-scope declarations in schema 3 manifests', () => {
   assert.equal(reporter.validateManifest(value).survivors[0].declaration.function, '<package>');
   const groups = reporter.aggregateManifests([{ artifactName: 'mutation-config-10-1', manifest: value }], source);
   assert.equal(groups[0].title, '[mutation] cmd/wx/clean_unmanaged.go: <package>');
+});
+
+test('accepts a bounded file-shard command with many exclusions', () => {
+  const value = manifest();
+  value.command = ['gremlins', 'unleash', './internal/daemon'];
+  for (let index = 0; index < 120; index += 1) {
+    value.command.push('--exclude-files', `^source_${index}\\.go$`);
+  }
+  assert.equal(reporter.validateManifest(value).command.length, 243);
+});
+
+test('rejects an unbounded manifest command', () => {
+  const value = manifest();
+  value.command = Array.from({ length: 1001 }, () => 'argument');
+  assert.throws(() => reporter.validateManifest(value), /invalid command/u);
 });
 
 test('groups survivors and renders mutation evidence', () => {
@@ -492,4 +515,52 @@ test('accepts all planned empty manifests without issue writes', async () => {
   assert.equal(result.survivorCount, 0);
   assert.deepEqual(result.results, []);
   assert.equal(writes, 0);
+});
+
+test('reports every unavailable shard and performs no issue writes', async () => {
+  let writes = 0;
+  const summaries = [];
+  const summary = { addHeading() { return this; }, addRaw(value) { summaries.push(value); return this; }, async write() {} };
+  const github = { rest: {
+    actions: { listJobsForWorkflowRun: async () => ({ data: { jobs: [] } }) },
+    issues: new Proxy({}, { get: () => async () => { writes += 1; } }),
+  } };
+  await assert.rejects(reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    sourceRun: { event: source.event, head_branch: source.ref, head_sha: sha, html_url: source.runUrl },
+    reports: [{
+      artifactName: 'mutation-config-10-1',
+      execution: execution('measurement_timed_out'),
+    }],
+    expectedShards: [
+      { id: 'config', profiles: ['internal/config'] },
+      { id: 'state', profiles: ['internal/state'] },
+    ],
+    core: { summary },
+  }), (error) => {
+    assert.match(error.message, /measurement_timed_out/u);
+    assert.match(error.message, /expected mutation shard state is missing/u);
+    return true;
+  });
+  assert.equal(writes, 0);
+  assert.match(summaries.join('\n'), /mutation measurements are incomplete/u);
+});
+
+test('collects an execution result even when no manifest was produced', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wx-mutation-execution-'));
+  try {
+    const directory = path.join(root, 'mutation-config-10-1', 'internal-config');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'execution.json'), JSON.stringify(execution('gremlins_failed')), { mode: 0o600 });
+    const reports = reporter.collectManifests(root);
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].execution.status, 'gremlins_failed');
+    assert.equal(reports[0].manifest, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

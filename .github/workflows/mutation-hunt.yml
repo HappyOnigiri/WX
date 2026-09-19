@@ -20,6 +20,10 @@ on:
         description: Gremlins timeout coefficient (1-100)
         required: false
         default: "12"
+      job-timeout:
+        description: Per-shard job timeout in minutes (30-360)
+        required: false
+        default: "180"
       mutators:
         description: Mutator set (boundary or default)
         required: false
@@ -42,7 +46,7 @@ jobs:
   plan:
     name: Plan the hunt
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       shards: ${{ steps.plan.outputs.shards }}
@@ -63,6 +67,7 @@ jobs:
           HUNT_GROUPS: ${{ inputs.groups }}
           HUNT_WORKERS: ${{ inputs.workers }}
           HUNT_TIMEOUT_COEFFICIENT: ${{ inputs.timeout-coefficient }}
+          HUNT_JOB_TIMEOUT: ${{ inputs.job-timeout }}
           HUNT_MUTATORS: ${{ inputs.mutators }}
         run: |
           set -euo pipefail
@@ -70,9 +75,11 @@ jobs:
           case "$HUNT_GROUPS" in ''|*[!0-9]*) fail "groups must be a number";; esac
           case "$HUNT_WORKERS" in ''|*[!0-9]*) fail "workers must be a number";; esac
           case "$HUNT_TIMEOUT_COEFFICIENT" in ''|*[!0-9]*) fail "timeout-coefficient must be a number";; esac
+          case "$HUNT_JOB_TIMEOUT" in ''|*[!0-9]*) fail "job-timeout must be a number";; esac
           [ "$HUNT_GROUPS" -ge 1 ] && [ "$HUNT_GROUPS" -le 20 ] || fail "groups must be 1-20"
           [ "$HUNT_WORKERS" -ge 1 ] && [ "$HUNT_WORKERS" -le 16 ] || fail "workers must be 1-16"
           [ "$HUNT_TIMEOUT_COEFFICIENT" -ge 1 ] && [ "$HUNT_TIMEOUT_COEFFICIENT" -le 100 ] || fail "timeout-coefficient must be 1-100"
+          [ "$HUNT_JOB_TIMEOUT" -ge 30 ] && [ "$HUNT_JOB_TIMEOUT" -le 360 ] || fail "job-timeout must be 30-360"
           case "$HUNT_MUTATORS" in boundary|default) ;; *) fail "mutators must be boundary or default";; esac
 
           module=$(go list -m)
@@ -114,13 +121,11 @@ jobs:
           done < <(jq -r '.unweighted[]? // empty' <<<"$plan")
           matrix=$(jq -c '.matrix' <<<"$plan")
           (($(jq 'length' <<<"$matrix") > 0)) || fail "no packages remain after exclusions (internal/fdexec is not a mutation target)"
-          # 係数はGremlinsのテストtimeoutへ渡す値であり、jobの後始末分を別に確保する。
-          ((timeout = HUNT_TIMEOUT_COEFFICIENT * 5 + 30))
-          [ "$timeout" -le 360 ] || timeout=360
+          go run ./tools/mutationreport -root "$GITHUB_WORKSPACE" -validate-exclusions || fail "mutation exclusions do not match source"
           {
             echo "matrix=$matrix"
             echo "shards=$matrix"
-            echo "timeout=$timeout"
+            echo "timeout=$HUNT_JOB_TIMEOUT"
           } >>"$GITHUB_OUTPUT"
 
   hunt:
@@ -130,6 +135,7 @@ jobs:
     timeout-minutes: ${{ fromJSON(needs.plan.outputs.timeout) }}
     strategy:
       fail-fast: false
+      max-parallel: 8
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
@@ -141,6 +147,7 @@ jobs:
         with:
           cache-name: mutation-hunt-${{ matrix.id }}
       - name: Install mutation tools
+        timeout-minutes: 10
         run: |
           make setup-mutation-tools
           mkdir -p .tools/bin
@@ -160,177 +167,10 @@ jobs:
           HUNT_SHARD_COUNT: ${{ matrix.shard_count }}
           HUNT_SHARD_INDEX: ${{ matrix.shard_index }}
           HUNT_SHARD_FILES: ${{ matrix.shard_files }}
+          HUNT_JOB_TIMEOUT: ${{ inputs.job-timeout }}
         run: |
-          set +e
-          set -uo pipefail
-          mkdir -p mutation-results mutation-artifacts
-          survivor_ids=$(mktemp)
-          heartbeat_pid=''
-          stop_resource_heartbeat() {
-            if [ -n "$heartbeat_pid" ]; then
-              kill "$heartbeat_pid" 2>/dev/null || true
-              wait "$heartbeat_pid" 2>/dev/null || true
-              heartbeat_pid=''
-            fi
-          }
-          resource_heartbeat() {
-            while :; do
-              available_memory=$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null || true)
-              process_count=$(ps -e -o pid= 2>/dev/null | wc -l | tr -d ' ' || true)
-              process_snapshot=$(ps -e -o rss=,pcpu= 2>/dev/null | awk '{rss += $1; cpu += $2} END {printf "rss_kib=%d cpu_percent=%.1f", rss, cpu}' || true)
-              echo "::notice title=Mutation resource heartbeat::$HUNT_ID ${process_snapshot:-rss_kib=unknown cpu_percent=unknown} processes=${process_count:-unknown} mem_available_kib=${available_memory:-unknown}"
-              sleep 30
-            done
-          }
-          start_resource_heartbeat() {
-            resource_heartbeat &
-            heartbeat_pid=$!
-          }
-          cleanup() {
-            stop_resource_heartbeat
-            rm -f "$survivor_ids"
-          }
-          on_signal() {
-            cleanup
-            exit 143
-          }
-          trap cleanup EXIT
-          trap on_signal INT TERM
-          read -r -a packages <<<"$HUNT_PACKAGES"
-          matrix_shard_files=()
-          if [ -n "$HUNT_SHARD_FILES" ]; then read -r -a matrix_shard_files <<<"$HUNT_SHARD_FILES"; fi
-          exclude_files=()
-          if [ -n "$HUNT_EXCLUDE_FILES" ]; then read -r -a exclude_files <<<"$HUNT_EXCLUDE_FILES"; fi
-          failures=0
-          mutants=0
-          killed=0
-          lived=0
-          not_covered=0
-          not_viable=0
-          timed_out=0
-          for package in "${packages[@]}"; do
-            profile="${package#./}"
-            safe_profile=${profile//\//-}
-            result="mutation-results/$safe_profile.json"
-            dry_result="mutation-results/$safe_profile-dry-run.json"
-            manifest="mutation-artifacts/$safe_profile/manifest.json"
-            mkdir -p "$(dirname "$manifest")"
-            SECONDS=0
-            shard_files=("${matrix_shard_files[@]}")
-            if [ "$HUNT_SHARD_COUNT" -gt 1 ]; then
-              dry_args=(unleash "$package" --dry-run -o "$dry_result" --workers "$HUNT_WORKERS" --timeout-coefficient "$HUNT_TIMEOUT_COEFFICIENT")
-              if [ "$HUNT_MUTATORS" = boundary ]; then
-                dry_args+=(--arithmetic-base=false --conditionals-boundary=true --conditionals-negation=false --increment-decrement=true --invert-negatives=false --invert-assignments=false --invert-bitwise=false --invert-bwassign=false --invert-logical=false --invert-loopctrl=false --remove-self-assignments=false)
-              fi
-              echo "profile: gremlins ${dry_args[*]}"
-              start_resource_heartbeat
-              .tools/bin/gremlins "${dry_args[@]}"
-              dry_status=$?
-              stop_resource_heartbeat
-              if [ "$dry_status" -ne 0 ] || [ ! -s "$dry_result" ]; then
-                echo "::error title=Gremlins dry-run failed::$package (exit $dry_status)"
-                failures=$((failures + 1))
-                continue
-              fi
-              shard_json=$(.tools/bin/mutationshard -input "$dry_result" -count "$HUNT_SHARD_COUNT" -index "$HUNT_SHARD_INDEX")
-              shard_status=$?
-              if [ "$shard_status" -ne 0 ] || [ -z "$shard_json" ]; then
-                echo "::error title=Mutation shard planning failed::$package (exit $shard_status)"
-                failures=$((failures + 1))
-                continue
-              fi
-              if ! jq -e '(.files | type == "array" and length > 0) and (.exclude_files | type == "array")' >/dev/null <<<"$shard_json"; then
-                echo "::error title=Mutation shard planning failed::$package returned an invalid file set"
-                failures=$((failures + 1))
-                continue
-              fi
-              mapfile -t shard_file_names < <(jq -r '.files[]' <<<"$shard_json")
-              if [ "${#shard_file_names[@]}" -eq 0 ]; then
-                echo "::error title=Mutation shard planning failed::$package returned an empty file set"
-                failures=$((failures + 1))
-                continue
-              fi
-              shard_files=()
-              for shard_file in "${shard_file_names[@]}"; do shard_files+=("$profile/$shard_file"); done
-              mapfile -t exclude_files < <(jq -r '.exclude_files[]?' <<<"$shard_json")
-            fi
-            # dry-run と本番は同じ coverage コマンドを実行する。Go の test cache が
-            # 本番の計測を数百ミリ秒に短縮すると、Gremlins の変異ごとの timeout が過小評価される。
-            if ! go clean -testcache; then
-              echo "::error title=Mutation test cache reset failed::$package"
-              failures=$((failures + 1))
-              continue
-            fi
-            args=(unleash "$package" -o "$result" --workers "$HUNT_WORKERS" --timeout-coefficient "$HUNT_TIMEOUT_COEFFICIENT")
-            for exclude_file in "${exclude_files[@]}"; do args+=(--exclude-files "$exclude_file"); done
-            if [ "$HUNT_MUTATORS" = boundary ]; then
-              args+=(--arithmetic-base=false --conditionals-boundary=true --conditionals-negation=false --increment-decrement=true --invert-negatives=false --invert-assignments=false --invert-bitwise=false --invert-bwassign=false --invert-logical=false --invert-loopctrl=false --remove-self-assignments=false)
-            fi
-            echo "profile: gremlins ${args[*]}"
-            start_resource_heartbeat
-            .tools/bin/gremlins "${args[@]}"
-            gremlins_status=$?
-            duration=$SECONDS
-            stop_resource_heartbeat
-            command_string="gremlins ${args[*]}"
-            report_args=(-root "$GITHUB_WORKSPACE" -profile "$profile" -output "$manifest" -run-id "$HUNT_RUN_ID" -run-attempt "$HUNT_RUN_ATTEMPT" -duration-seconds "$duration" -command "$command_string")
-            if [ "$gremlins_status" -ne 0 ]; then
-              echo "::error title=Gremlins failed::$package (exit $gremlins_status)"
-              failures=$((failures + 1))
-              continue
-            fi
-            if [ -e "$result" ]; then
-              if [ ! -f "$result" ] || [ ! -s "$result" ]; then
-                echo "::error title=Gremlins result is empty or not a regular file::$package"
-                failures=$((failures + 1))
-                continue
-              fi
-              report_args+=(-input "$result")
-            else
-              echo "::notice title=Gremlins returned no mutations::$package (exit 0; recording an empty manifest)"
-              report_args+=(-empty-result)
-            fi
-            if [ "${#shard_files[@]}" -gt 0 ]; then report_args+=(-shard-files "${shard_files[*]}"); fi
-            .tools/bin/mutationreport "${report_args[@]}"
-            report_status=$?
-            if [ "$report_status" -ne 0 ]; then
-              echo "::error title=Mutation report failed::$package (exit $report_status)"
-              failures=$((failures + 1))
-              continue
-            fi
-            values=$(jq -r '[.totals.mutants, .totals.killed, .totals.lived, .totals.not_covered, .totals.not_viable, .totals.timed_out, (.survivors | length)] | @tsv' "$manifest")
-            read -r one_mutants one_killed one_lived one_not_covered one_not_viable one_timed_out one_survivors <<<"$values"
-            mutants=$((mutants + one_mutants))
-            killed=$((killed + one_killed))
-            lived=$((lived + one_lived))
-            not_covered=$((not_covered + one_not_covered))
-            not_viable=$((not_viable + one_not_viable))
-            timed_out=$((timed_out + one_timed_out))
-            if [ "$one_survivors" -gt 0 ]; then
-              jq -r '.survivors[].id' "$manifest" >>"$survivor_ids"
-              failures=$((failures + one_survivors))
-            fi
-          done
-          unique_survivors=0
-          if [ -s "$survivor_ids" ]; then unique_survivors=$(sort -u "$survivor_ids" | wc -l | tr -d ' '); fi
-          {
-            echo "## Mutation hunt: \`$HUNT_ID\`"
-            echo
-            echo "- Packages: \`$HUNT_PACKAGES\`"
-            echo "- Mutants: $mutants (killed $killed, lived $lived, not covered $not_covered, timed out $timed_out, not viable $not_viable)"
-            echo "- Unexcluded survivors: $unique_survivors"
-            if [ "$timed_out" -gt 0 ]; then
-              echo
-              echo "Timed out mutations are not treated as survivors; inspect this run before trusting a clean result."
-            fi
-            if [ "$lived" -gt 0 ]; then
-              echo
-              echo "### Surviving mutations"
-              echo
-              jq -rs '[.[].survivors[]] | unique_by(.id)[] | "- `" + .declaration.path + ":" + .declaration.function + "` " + .original + " → " + .mutated' mutation-artifacts/*/manifest.json 2>/dev/null || true
-            fi
-          } >>"$GITHUB_STEP_SUMMARY"
-          test "$failures" -eq 0
+          bash .github/scripts/run-mutation-shard.sh
+
       - name: Verify read-only hunt
         if: always()
         run: git diff --exit-code
@@ -338,7 +178,16 @@ jobs:
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
           name: mutation-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: mutation-artifacts
+          path: |
+            mutation-artifacts/**/manifest.json
+            mutation-artifacts/**/execution.json
+          if-no-files-found: warn
+          retention-days: 14
+      - if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: mutation-diagnostics-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: mutation-artifacts/**/diagnostics
           if-no-files-found: warn
           retention-days: 14
 
