@@ -184,6 +184,9 @@ func TestAuditC1DoctorCacheRefreshAfterExternalLFSFetch(t *testing.T) {
 	if second.MissingLFSObjects != 0 || second.LFSCacheBytes != 0 || second.LFS[0].CacheState != workspace.LFSCacheHealthy {
 		t.Fatalf("refreshed estimate=%+v, want healthy cache after external fetch", second)
 	}
+	if first.MissingLFSObjects != 1 || first.LFSCacheBytes != 123 || first.LFS[0].Cached || first.LFS[0].CacheState != workspace.LFSCacheMissing {
+		t.Fatalf("first estimate was mutated by refresh=%+v, want its original missing state", first)
+	}
 	if err := os.Remove(cachePath); err != nil {
 		t.Fatal(err)
 	}
@@ -193,5 +196,8 @@ func TestAuditC1DoctorCacheRefreshAfterExternalLFSFetch(t *testing.T) {
 	}
 	if third.MissingLFSObjects != 1 || third.LFS[0].CacheState != workspace.LFSCacheMissing {
 		t.Fatalf("refreshed estimate=%+v, want missing cache after external removal", third)
+	}
+	if second.MissingLFSObjects != 0 || second.LFSCacheBytes != 0 || !second.LFS[0].Cached || second.LFS[0].CacheState != workspace.LFSCacheHealthy {
+		t.Fatalf("second estimate was mutated by later refresh=%+v, want its original healthy state", second)
 	}
 }

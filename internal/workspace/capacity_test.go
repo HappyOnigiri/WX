@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -290,6 +291,31 @@ func TestCapacityHelpersHandleCacheModesAndOverflow(t *testing.T) {
 	p.Config.Storage.CopyMode = config.CopyModeCopy
 	if p.capacityCOWEnabled(discovery.Repository{}, "false", nil, nil) {
 		t.Fatal("copy mode unexpectedly enabled CoW")
+	}
+}
+
+func TestRefreshLFSCacheStateKeepsEstimateUnchangedWhenInspectionFails(t *testing.T) {
+	t.Parallel()
+	healthyPath := filepath.Join(t.TempDir(), "healthy")
+	if err := os.WriteFile(healthyPath, []byte("123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	estimate := CapacityEstimate{
+		LFSObjects:        7,
+		MissingLFSObjects: 8,
+		LFSCacheBytes:     9,
+		LFS: []LFSObjectInfo{
+			{OID: "sha256:first", Size: 3, CachePath: healthyPath, CacheState: LFSCacheMissing},
+			{OID: "sha256:second", Size: 4, CachePath: "\x00", CacheState: LFSCacheMissing},
+		},
+	}
+	wantLFS := append([]LFSObjectInfo(nil), estimate.LFS...)
+	wantObjects, wantMissing, wantCacheBytes := estimate.LFSObjects, estimate.MissingLFSObjects, estimate.LFSCacheBytes
+	if err := RefreshLFSCacheState(&estimate); err == nil {
+		t.Fatal("refresh with an invalid cache path succeeded")
+	}
+	if !reflect.DeepEqual(estimate.LFS, wantLFS) || estimate.LFSObjects != wantObjects || estimate.MissingLFSObjects != wantMissing || estimate.LFSCacheBytes != wantCacheBytes {
+		t.Fatalf("failed refresh partially updated estimate=%+v, want LFS=%+v objects=%d missing=%d cache=%d", estimate, wantLFS, wantObjects, wantMissing, wantCacheBytes)
 	}
 }
 

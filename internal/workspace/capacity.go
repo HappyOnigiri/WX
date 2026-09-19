@@ -252,10 +252,12 @@ func RefreshLFSCacheState(estimate *CapacityEstimate) error {
 	if estimate == nil {
 		return nil
 	}
+	refreshed := make([]LFSObjectInfo, len(estimate.LFS))
+	copy(refreshed, estimate.LFS)
 	missing := 0
 	cacheBytes := int64(0)
-	for index := range estimate.LFS {
-		object := &estimate.LFS[index]
+	for index := range refreshed {
+		object := &refreshed[index]
 		if err := refreshLFSObjectCacheState(object); err != nil {
 			return err
 		}
@@ -264,7 +266,8 @@ func RefreshLFSCacheState(estimate *CapacityEstimate) error {
 			cacheBytes = addBytes(cacheBytes, object.Size)
 		}
 	}
-	estimate.LFSObjects = len(estimate.LFS)
+	estimate.LFS = refreshed
+	estimate.LFSObjects = len(refreshed)
 	estimate.MissingLFSObjects = missing
 	estimate.LFSCacheBytes = cacheBytes
 	return nil
