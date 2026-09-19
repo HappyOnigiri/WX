@@ -292,24 +292,24 @@ func (m *Manager) enforcePrepareCapacity(ctx context.Context, slot state.Slot, w
 		if m.log != nil {
 			m.log.Warn("sparse checkout makes the capacity estimate non-blocking", "slot_id", slot.ID)
 		}
-		return report, nil
-	}
-	for _, volume := range report.Volumes {
-		if volume.Required <= volume.Free {
-			continue
+	} else {
+		for _, volume := range report.Volumes {
+			if volume.Required <= volume.Free {
+				continue
+			}
+			code := "PREPARE_INSUFFICIENT_SPACE"
+			if slot.State == "RESTORING" {
+				code = "RESTORE_INSUFFICIENT_SPACE"
+			}
+			if err := m.store.SetSlotState(ctx, slot.ID, []string{slot.State}, "FAILED", code); err != nil {
+				return report, err
+			}
+			return report, &InsufficientPrepareSpaceError{Report: report}
 		}
-		code := "PREPARE_INSUFFICIENT_SPACE"
-		if slot.State == "RESTORING" {
-			code = "RESTORE_INSUFFICIENT_SPACE"
-		}
-		if err := m.store.SetSlotState(ctx, slot.ID, []string{slot.State}, "FAILED", code); err != nil {
-			return report, err
-		}
-		return report, &InsufficientPrepareSpaceError{Report: report}
 	}
 	// report.Repositories には、容量検査を通った repository の LFS 内訳が
-	// そのまま残る。容量が足りてから cache を修復することで、修復不能でも
-	// staged preparation の書込みと隔離を開始しない。
+	// そのまま残る。sparse checkout でも LFS path の完全性検証は必要なため、
+	// 容量不足を非ブロッキングにしたまま cache を修復する。
 	preparer := m.newPreparer(cfg, slot)
 	preparer.WorkspaceRoot = string(w.Root)
 	byID := make(map[string]discovery.Repository, len(resolved))

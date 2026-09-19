@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -101,6 +104,90 @@ func TestCapacityReportFindingsTreatSparseCheckoutAsNonBlocking(t *testing.T) {
 	}
 	if findings[0].Severity != diag.SeverityInfo {
 		t.Fatalf("sparse finding severity=%s, want info", findings[0].Severity)
+	}
+}
+
+func TestSparsePrepareStillVerifiesLFSPaths(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	repository := string(resolved[0].Repository.MainPath)
+	payload := []byte(strings.Repeat("payload", 18))
+	digest := sha256.Sum256(payload)
+	oid := hex.EncodeToString(digest[:])
+	pointer := fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, len(payload))
+	if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte("*.bin filter=lfs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "asset.bin"), []byte(pointer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repository, "add", ".")
+	gitRun(t, repository, "commit", "-m", "add sparse LFS pointer")
+	gitRun(t, repository, "config", "core.sparseCheckout", "true")
+	cachePath := filepath.Join(string(resolved[0].Repository.CommonDir), "lfs", "objects", oid[:2], oid[2:4], oid)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved[0].OID = gitOutput(t, repository, "rev-parse", "HEAD")
+	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
+
+	slotID := domain.StableID("capacity", "sparse-lfs")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING")
+	metadata := state.SlotRepository{
+		RepositoryID: string(resolved[0].Repository.ID),
+		DirName:      testDirName(resolved[0].Repository, manager.Config()),
+		State:        "PREPARING",
+		RequestedRef: resolved[0].RequestedRef,
+		BaseOID:      resolved[0].OID,
+	}
+	if _, err := store.CreateStandby(ctx, slot, []state.SlotRepository{metadata}); err != nil {
+		t.Fatal(err)
+	}
+	err := manager.prepareSlot(ctx, slotID, workspaceRecord, resolved, []state.SlotRepository{metadata})
+	if err == nil || !strings.Contains(err.Error(), "LFS path asset.bin") {
+		t.Fatalf("sparse prepare error=%v, want LFS path verification failure", err)
+	}
+}
+
+func TestSparsePrepareStillPreflightsMissingLFSObjects(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	repository := string(resolved[0].Repository.MainPath)
+	payload := []byte(strings.Repeat("payload", 18))
+	digest := sha256.Sum256(payload)
+	oid := hex.EncodeToString(digest[:])
+	pointer := fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", oid, len(payload))
+	if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte("*.bin filter=lfs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "asset.bin"), []byte(pointer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repository, "add", ".")
+	gitRun(t, repository, "commit", "-m", "add sparse LFS pointer")
+	gitRun(t, repository, "config", "core.sparseCheckout", "true")
+	resolved[0].OID = gitOutput(t, repository, "rev-parse", "HEAD")
+	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
+
+	slotID := domain.StableID("capacity", "sparse-lfs-missing")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING")
+	metadata := state.SlotRepository{
+		RepositoryID: string(resolved[0].Repository.ID),
+		DirName:      testDirName(resolved[0].Repository, manager.Config()),
+		State:        "PREPARING",
+		RequestedRef: resolved[0].RequestedRef,
+		BaseOID:      resolved[0].OID,
+	}
+	if _, err := store.CreateStandby(ctx, slot, []state.SlotRepository{metadata}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := manager.enforcePrepareCapacity(ctx, slot, workspaceRecord, resolved, []state.SlotRepository{metadata}, manager.Config())
+	var missing *MissingLFSObjectsError
+	if !errors.As(err, &missing) {
+		t.Fatalf("sparse capacity error=%v, want missing LFS object", err)
 	}
 }
 
