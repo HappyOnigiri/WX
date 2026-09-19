@@ -24,6 +24,9 @@
    子プロセスにはセッションID・token・daemon socketが渡り、以降のhookはこれらを持つ場合だけ動く。
    起動位置は`leasePath`が決めるslot側の起点（単一repositoryならslot内のworktree、それ以外はworkspace root）で、sourceのサブディレクトリから起動しても同じ位置になる。
    呼び出し時のcwdは`WX_SOURCE_CWD`にだけ入るので、同じ相対位置で実行したいコマンドは自分でcdする。
+   multi-repository workspace の Codex 起動だけは、source workspace の明示的な `trusted` 設定を確認できた場合に限り、source と ephemeral lease root の trust をプロセス限定の `-c` override で継承する。
+   設定を読めない、判定できない、または利用者が `--profile` / `-c` で trust を指定した場合は何も追加せず、Codex 本来の確認へ戻す。
+   slot の path は設定ファイルへ書き込まない。
 
 3. **準備完了のゲート** — 準備が終わっていないworktreeでエージェントが動き出さない仕組みは2通りある。
    `repository_defaults.readiness.mode: early`では、hookが使える通常起動はGit登録と起動用ファイルの配置までを待って起動する。
@@ -40,6 +43,18 @@
    合成はslot内のいずれかが`full`なら`full`、timeoutは最長を採る。`full`要求の早期起動は約束を破るが、`early`要求を待たせるのは遅いだけで、最短のtimeoutでは最も遅いrepositoryが必ず失敗するためである。
    checkout hookやprepare commandが起動用の設定・指示を生成・更新する運用では、先行配置がその生成物を含められないため`full`を使う。
    完全一致したwarm slotは両方式とも即時起動する。
+
+   repository 個別設定に検査済み・辞退済みの記録がない対話起動は、貸出前に初回検査を行うか確認する。
+   検査を選ぶと既存の READY standby を残したまま今回だけ cold start し、設定が early でも Full Ready まで待って貸出中の slot を読み取り検査する。
+   結果は agent・shell・command の起動や path の出力より先に表示し、問題の有無にかかわらず通常の agent session へ渡す確認用プロンプトをメモリ上で生成する。
+   利用者が結果を確認して続行を選ぶまで要求された処理を始めない。
+   引数なしの agent 起動では、生成したプロンプトを初回入力としてセットアップを開始する選択肢も出す。
+   プロンプトを一時ファイルへ保存して終了する選択肢は全経路で表示し、選ばれた場合だけ保存先と別sessionへの入力方法をstdoutへ出して貸出を返す。
+   Full Ready 自体が失敗した場合は続行を選べない。
+   起動した agent は貸出 worktree で build・test を行う。
+   source main checkoutのtracked file・HEAD・indexは変更しないが、初回セットアップに必要な`.worktreelink`・`.worktreeinclude`・repository local excludeは、質問せず自動設定して再検査する。
+   未追跡pathは共有を既定にして`.worktreelink`へ置き、main checkoutとの共有で競合・破損・意図しない状態伝播が起きるものだけ`.worktreeinclude`でslotごとに複製する。
+   検査済みと今後の確認を辞退した時刻は repository 個別設定へ残す。一時スキップ、非対話起動、resume、`wx new --json` は無表示・無記録で従来の貸出へ進む。
 
    起動時に準備を待った場合、client は総括行へ実際に使った readiness（`ready` / `early` / `full`）を表示する。
    設定が`early`でも hook が未整備なら`full`へ後退するため、その理由と`wx setup`の案内を stderr へ表示する。

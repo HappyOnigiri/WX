@@ -388,6 +388,9 @@ func (c Config) RepositoryFor(workspaceRoot, relativePath, mainPath string) Repo
 			if member, ok := w.Repositories[rel]; ok {
 				mergeRepositoryValue(&base, member)
 			}
+			if rel == "." {
+				base.Onboarding = w.Onboarding
+			}
 		}
 	}
 	if mainPath != "" {
@@ -462,6 +465,7 @@ func mergeWorkspace(dst *Workspace, src Workspace) {
 	if src.Repositories != nil {
 		dst.Repositories = cloneRepositories(src.Repositories)
 	}
+	mergeRepositoryOnboarding(&dst.Onboarding, src.Onboarding)
 }
 
 func mergeRepositoryDefaults(dst *RepositoryDefaults, src RepositoryDefaults) {
@@ -506,6 +510,15 @@ func mergeRepositoryDefaults(dst *RepositoryDefaults, src RepositoryDefaults) {
 	}
 	if src.Storage.CopyMode != "" {
 		dst.Storage.CopyMode = src.Storage.CopyMode
+	}
+}
+
+func mergeRepositoryOnboarding(dst *RepositoryOnboarding, src RepositoryOnboarding) {
+	if src.CheckedAt != "" {
+		dst.CheckedAt = src.CheckedAt
+	}
+	if src.DeclinedAt != "" {
+		dst.DeclinedAt = src.DeclinedAt
 	}
 }
 
@@ -676,6 +689,12 @@ func mergeRepositoryValue(dst *Repository, src Repository) {
 	}
 	if src.Storage.CopyMode != "" {
 		dst.Storage.CopyMode = src.Storage.CopyMode
+	}
+	if src.Onboarding.CheckedAt != "" {
+		dst.Onboarding.CheckedAt = src.Onboarding.CheckedAt
+	}
+	if src.Onboarding.DeclinedAt != "" {
+		dst.Onboarding.DeclinedAt = src.Onboarding.DeclinedAt
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
+	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/i18n"
@@ -159,13 +160,21 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.lease_cancelled", nil))
 		return 1
 	}
+	decision, cancelled, setupErr := c.resolveInitialSetup(ctx, cwd, !jsonOut)
+	if setupErr != nil {
+		cliError(c, setupErr)
+		return 1
+	}
+	if cancelled {
+		return 1
+	}
 	ownerID, ownerToken := leaseOwnerFromEnvironment()
 	language := ""
 	if !jsonOut {
 		language = c.Config.LanguageForRPC()
 	}
 	params := rpc.ResolveAndLeaseParams{
-		Agent: leaseAgentKindPath, Branches: branches, ClientPID: 0, CWD: cwd, ForceWorktree: c.forceWorktree,
+		Agent: leaseAgentKindPath, Branches: branches, ClientPID: 0, CWD: cwd, ForceCold: decision.ForceCold, ForceWorktree: c.forceWorktree,
 		LeaseKind: state.LeaseKindPath, LeaseOwnerSessionID: ownerID, LeaseOwnerToken: ownerToken,
 		Language: language,
 	}
@@ -187,7 +196,8 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 		}
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
-	readiness := readinessForLease(c.Config, lease, false, state.LeaseKindPath, false)
+	setupCheck := decision.Repositories
+	readiness := readinessForLease(c.Config, lease, false, state.LeaseKindPath, false, false)
 	waiting.setReadiness(readiness.Mode)
 	if readiness.Reason == readinessReasonHooksUnavailable {
 		waiting.line(cliLocalizer(c).Localize("cli.readiness.hooks_missing", nil))
@@ -218,11 +228,29 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 				fmt.Fprintln(os.Stderr, cliLocalizer(c).Localize("cli.interrupted_preparing", nil))
 				return 1
 			}
+			if len(setupCheck) > 0 {
+				stage := newProbeStage(probeStageFullReady, err)
+				c.finishInitialSetupCheck(setupCtx, lease, setupCheck, []diag.Finding{probePrepareProblem(lease.SourceWorkspace, lease.Path, stage)}, false, false)
+			}
 			reportStepError(cliLanguage(c), "cli.workspace_preparation", err)
 			return 1
 		}
 	}
 	waiting.finish()
+	if len(setupCheck) > 0 {
+		_, findings := c.inspectLeasedWorkspace(setupCtx, lease.SourceWorkspace, lease.SessionID, lease.Path, true)
+		completion := c.finishInitialSetupCheck(setupCtx, lease, setupCheck, findings, true, false)
+		switch completion.Action {
+		case setupCompletionCancel:
+			return 1
+		case setupCompletionSave:
+			c.releaseLeaseToken(lease, "setup-prompt-saved")
+			handedOff = true
+			return 0
+		case setupCompletionContinue, setupCompletionStart:
+			// path貸出ではsetup promptをagentへ渡さないため、通常のhand offへ進む。
+		}
+	}
 	if jsonOut {
 		data, err := json.Marshal(leaseNewReply{SessionID: lease.SessionID, Path: lease.Path})
 		if err != nil {

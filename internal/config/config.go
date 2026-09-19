@@ -319,6 +319,9 @@ type Workspace struct {
 	// membership 設定である。旧 Config.Repositories とは異なり、同じ
 	// Repository を複数 Workspace で独立して設定できる。
 	Repositories map[string]Repository `yaml:"repositories,omitempty"`
+	// Onboarding は workspace root 自身が repository の場合の初回検査記録である。
+	// 配下 repository の記録は Repositories の各 membership が持つ。
+	Onboarding RepositoryOnboarding `yaml:"onboarding,omitempty"`
 	// Discovered は dashboard が daemon status と config を統合するときだけ使う表示用印で、保存対象ではない。
 	Discovered bool `yaml:"-"`
 }
@@ -370,8 +373,15 @@ type Repository struct {
 	// slot の中身を決める値は repository の prepare.command と checkout 規模で変わる。
 	Readiness RepositoryReadiness `yaml:"readiness,omitempty"`
 	Storage   RepositoryStorage   `yaml:"storage,omitempty"`
+	// Onboarding は初回 worktree 検査の完了または今後の確認を辞退した記録である。
+	Onboarding RepositoryOnboarding `yaml:"onboarding,omitempty"`
 	// Discovered は dashboard が daemon の membership 一覧を統合するときだけ使う表示用印で、保存対象ではない。
 	Discovered bool `yaml:"-"`
+}
+
+type RepositoryOnboarding struct {
+	CheckedAt  string `yaml:"checked_at,omitempty"`
+	DeclinedAt string `yaml:"declined_at,omitempty"`
 }
 
 // RepositoryReadiness は readiness 節の repository 個別指定である。

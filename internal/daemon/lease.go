@@ -55,9 +55,10 @@ type Lease struct {
 	// 空・0 のときは client の global 設定へ落ちる。ReadinessProgress は
 	// repository ごとの表示設定を slot 全体へ合成した値で、client はこれを待機表示に使う。
 	// commentlint:allow-long -- readiness の実効値と表示設定を一つの貸出応答へ保持するため
-	ReadinessMode      string `json:"readiness_mode,omitempty"`
-	ReadinessTimeoutMS int    `json:"readiness_timeout_ms,omitempty"`
-	ReadinessProgress  bool   `json:"readiness_progress"`
+	ReadinessMode          string                 `json:"readiness_mode,omitempty"`
+	ReadinessTimeoutMS     int                    `json:"readiness_timeout_ms,omitempty"`
+	ReadinessProgress      bool                   `json:"readiness_progress"`
+	SetupCheckRepositories []SetupCheckRepository `json:"setup_check_repositories,omitempty"`
 }
 
 // leaseReadiness は slot 内の repository の readiness 個別指定を1つの実効値へ合成する。
@@ -101,7 +102,7 @@ func (m *Manager) ResolveAndLease(ctx context.Context, cwd string, branches []st
 	return m.leaseWorkspace(ctx, w, branches, agent, pid, false, attrs)
 }
 
-func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, branches []string, agent string, pid int, cold bool, attrs leaseAttrs) (Lease, error) {
+func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, branches []string, agent string, pid int, cold bool, attrs leaseAttrs) (result Lease, resultErr error) {
 	var err error
 	w, err = m.store.CanonicalWorkspace(ctx, w)
 	if err != nil {
@@ -111,6 +112,12 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	if err != nil {
 		return Lease{}, err
 	}
+	setupRepositories := setupCheckRepositories(w, m.Config())
+	defer func() {
+		if resultErr == nil {
+			result.SetupCheckRepositories = setupRepositories
+		}
+	}()
 	// 補充はこの貸出を根拠に hot / cold を決める。last_leased_at を書く前に並走されても cold と判定させない。
 	endLease := m.beginWorkspaceLease(string(w.ID))
 	defer endLease()
@@ -118,10 +125,10 @@ func (m *Manager) leaseWorkspace(ctx context.Context, w discovery.Workspace, bra
 	if err != nil {
 		return Lease{}, err
 	}
-	// 準備設定の上書きを伴う貸出は必ず cold start にする。既存 worktree の再利用や差分更新では
-	// 上書きが準備の一部にしか効かず、測る対象が上書きの効果にならない。
+	// 明示された ForceCold と準備設定の上書きを伴う貸出は必ず cold start にする。
+	// 既存 worktree の再利用や差分更新では上書きが準備の一部にしか効かず、測る対象が上書きの効果にならない。
 	// 上書きを混ぜた fingerprint を持つ slot も、この経路を通らないため通常の貸出へ紛れない。
-	cold = cold || !attrs.Prepare.IsZero()
+	cold = cold || attrs.ForceCold || !attrs.Prepare.IsZero()
 	reuseStandby, _ := m.Config().ReuseStandbyForWorkspace(string(w.Root))
 	if !cold && reuseStandby {
 		return m.leaseReusableStandby(ctx, w, resolved, generation, branches, agent, pid, attrs)

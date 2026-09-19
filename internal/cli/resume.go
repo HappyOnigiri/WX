@@ -183,7 +183,7 @@ func (c Client) runResumeByID(ctx context.Context, sourceCWD, agent string, args
 			return runDirectAgentFrom(ctx, direct.cwd, agent, addDirArgs(directAddDirsFrom(c.Config, direct.root, direct.cwd), args))
 		}
 	}
-	return c.runAgentResolved(ctx, agent, args, branches, fresh, "", sourceCWD, &target)
+	return c.runAgentResolved(ctx, agent, args, branches, fresh, "", sourceCWD, &target, true)
 }
 
 // directResume は worktree を作らない再開の起動先である。

@@ -77,6 +77,21 @@ func LoadRaw() (Config, error) {
 	if err := scan.Decode(&extra); !errors.Is(err, io.EOF) {
 		return Config{}, errors.New("config contains multiple YAML documents")
 	}
+	migrated, err := migrateLegacyWorkspaceOnboarding(&doc)
+	if err != nil {
+		return Config{}, fmt.Errorf("decode %s: %w", p, err)
+	}
+	if migrated {
+		data, err = yaml.Marshal(&doc)
+		if err != nil {
+			return Config{}, fmt.Errorf("decode %s: migrate onboarding: %w", p, err)
+		}
+		var normalized yaml.Node
+		if err := yaml.Unmarshal(data, &normalized); err != nil {
+			return Config{}, fmt.Errorf("decode %s: migrate onboarding: %w", p, err)
+		}
+		doc = normalized
+	}
 	var c Config
 	// 未知のキーは値の解釈から外すだけで読み込みを失敗させない。報告は doctor が行う。
 	if err := yaml.Unmarshal(data, &c); err != nil {

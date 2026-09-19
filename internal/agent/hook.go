@@ -73,6 +73,10 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		if err := client.CallWithKey(ctx, "BindAgentSession", idempotencyKey, params, &response); err != nil {
 			return err
 		}
+		if !isInitialSessionStart(payload.Source) {
+			return nil
+		}
+		writeWorkspaceNotice()
 		if response.PreviousWorktree != "" && payload.Source == "resume" {
 			previous := strings.NewReplacer("\n", " ", "\r", " ").Replace(response.PreviousWorktree)
 			cwd := strings.NewReplacer("\n", " ", "\r", " ").Replace(payload.CWD)
@@ -118,6 +122,18 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	default:
 		return fmt.Errorf("unknown hook event %q", event)
 	}
+}
+
+const workspaceNotice = "wx workspace notice:\n" +
+	"- This is a wx-managed detached worktree. Its HEAD, index, and tracked files are isolated from the source checkout. Keep HEAD detached; to publish, run `git branch <name> HEAD` and push.\n" +
+	"- Paths materialized by wx link rules are symlinks to the source workspace. Changes through them affect the source immediately and are not included in wx snapshots.\n"
+
+func isInitialSessionStart(source string) bool {
+	return source == "startup" || source == "resume"
+}
+
+func writeWorkspaceNotice() {
+	_, _ = fmt.Fprint(os.Stdout, workspaceNotice)
 }
 
 const maxCodexTranscriptRead = 1 << 20

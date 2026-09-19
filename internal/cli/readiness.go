@@ -20,6 +20,7 @@ const (
 const (
 	readinessReasonResume           = "resume"
 	readinessReasonLease            = "lease"
+	readinessReasonInitialSetup     = "initial-setup"
 	readinessReasonConfiguredFull   = "configured-full"
 	readinessReasonHooksUnavailable = "hooks-unavailable"
 )
@@ -35,7 +36,7 @@ type readinessDecision struct {
 // readinessForLease は貸出応答と起動条件から実効 readiness を決める純関数である。
 // 優先順位は再開、agent 以外の貸出、full 設定、hook 未整備、early の順に固定する。
 // lease.Ready のときは条件にかかわらず待機なし（ready）として扱う。
-func readinessForLease(cfg config.Config, lease daemon.Lease, resuming bool, leaseKind string, hooksReady bool) readinessDecision {
+func readinessForLease(cfg config.Config, lease daemon.Lease, resuming bool, leaseKind string, hooksReady, initialSetup bool) readinessDecision {
 	if lease.Ready {
 		return readinessDecision{Mode: readinessReady}
 	}
@@ -44,6 +45,9 @@ func readinessForLease(cfg config.Config, lease daemon.Lease, resuming bool, lea
 	}
 	if leaseKind != "" {
 		return readinessDecision{Mode: readinessFull, Reason: readinessReasonLease, WaitMethod: "WaitReady"}
+	}
+	if initialSetup {
+		return readinessDecision{Mode: readinessFull, Reason: readinessReasonInitialSetup, WaitMethod: "WaitReady"}
 	}
 	if leaseReadinessMode(cfg, lease) == readinessFull {
 		return readinessDecision{Mode: readinessFull, Reason: readinessReasonConfiguredFull, WaitMethod: "WaitReady"}

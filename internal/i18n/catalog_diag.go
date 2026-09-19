@@ -18,6 +18,8 @@ var diagCatalog = map[string]Entry{
 	"diag.severity.note":                            {EN: "note", JA: "注記"},
 	"diag.severity.ok":                              {EN: "ok", JA: "正常"},
 	"diag.severity.unknown":                         {EN: "unknown", JA: "不明"},
+	"diag.setup.measurement_unchecked":              {EN: "part of the initial worktree setup check could not be completed", JA: "初回 worktree セットアップ検査の一部を実施できませんでした"},
+	"diag.action.setup_check_again":                 {EN: "run wx setup-check again after the daemon has finished measuring the worktree", JA: "daemon が worktree の測定を終えてから wx setup-check をもう一度実行してください"},
 	"diag.daemon.unreachable":                       {EN: "the wx daemon could not be reached", JA: "wx daemon に接続できません"},
 	"diag.daemon.no_findings":                       {EN: "the daemon returned no diagnostics", JA: "daemon は診断結果を返しませんでした"},
 	"diag.daemon.empty_reply":                       {EN: "the daemon answers with JSON schema {{.Schema}}, which wx doctor can read, but its reply carried no check result at all", JA: "daemon は JSON schema {{.Schema}} で応答し、wx doctor が読める schema ですが、応答に検査結果がありません"},

@@ -101,6 +101,7 @@ func (c Client) confirmLinkedWorktreeBase(ctx context.Context, cwd string, inter
 		Title:       localizer.Localize("cli.linked.title", nil),
 		Description: base.Path + " -> " + base.MainPath,
 		Initial:     0,
+		ClearOnExit: true,
 		Language:    string(lang),
 		Options: []tui.Option{
 			{Value: "yes", Label: localizer.Localize("common.yes", nil), Description: localizer.Localize("cli.linked.yes_description", map[string]any{"Head": shortOID(base.MainHead)})},
