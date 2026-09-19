@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,7 +74,7 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(base, "home"))
 	repository := daemon.SetupCheckRepository{RelativePath: ".", MainPath: base, DirName: "repository"}
 	handler.setupOnboarding = daemon.SetupOnboarding{SourceWorkspace: base, Repositories: []daemon.SetupCheckRepository{repository}}
-	originalTerminal, originalSelect, originalClipboard, originalSaver := setupIsTerminal, setupSelect, setupClipboardCommand, setupPromptSaver
+	originalTerminal, originalSelect, originalSaver := setupIsTerminal, setupSelect, setupPromptSaver
 	setupIsTerminal = func(int) bool { return true }
 	answers := []string{"check", "continue"}
 	initials := []int{}
@@ -89,10 +88,9 @@ func TestInteractiveInitialSetupForcesColdAndContinuesLease(t *testing.T) {
 		answers = answers[1:]
 		return answer, nil
 	}
-	setupClipboardCommand = func(ctx context.Context, _ string, _ ...string) *exec.Cmd { return exec.CommandContext(ctx, "true") }
 	setupPromptSaver = func(string) (string, error) { return filepath.Join(base, "prompt.md"), nil }
 	t.Cleanup(func() {
-		setupIsTerminal, setupSelect, setupClipboardCommand, setupPromptSaver = originalTerminal, originalSelect, originalClipboard, originalSaver
+		setupIsTerminal, setupSelect, setupPromptSaver = originalTerminal, originalSelect, originalSaver
 	})
 	stdout := captureLeaseStdout(t, func() {
 		if exit := client.RunLeaseNew(ctx, nil, false); exit != 0 {
@@ -130,16 +128,15 @@ func TestInitialSetupCompletionStartsAgentWithRecommendedPrompt(t *testing.T) {
 	client, _, base, ctx := leaseFixture(t)
 	t.Setenv("HOME", filepath.Join(base, "home"))
 	repository := daemon.SetupCheckRepository{RelativePath: ".", MainPath: base, DirName: "repository"}
-	originalSelect, originalClipboard, originalSaver := setupSelect, setupClipboardCommand, setupPromptSaver
+	originalSelect, originalSaver := setupSelect, setupPromptSaver
 	var selection tui.Selection
 	setupSelect = func(_ context.Context, _ io.Reader, _ io.Writer, value tui.Selection) (string, error) {
 		selection = value
 		return string(setupCompletionStart), nil
 	}
-	setupClipboardCommand = func(ctx context.Context, _ string, _ ...string) *exec.Cmd { return exec.CommandContext(ctx, "true") }
 	setupPromptSaver = func(string) (string, error) { return filepath.Join(base, "prompt.md"), nil }
 	t.Cleanup(func() {
-		setupSelect, setupClipboardCommand, setupPromptSaver = originalSelect, originalClipboard, originalSaver
+		setupSelect, setupPromptSaver = originalSelect, originalSaver
 	})
 	completion := client.finishInitialSetupCheck(ctx, daemon.Lease{SourceWorkspace: base, Path: base}, []daemon.SetupCheckRepository{repository}, []diag.Finding{{Severity: diag.SeverityOK}}, true, true)
 	if completion.Action != setupCompletionStart || completion.Prompt == "" {

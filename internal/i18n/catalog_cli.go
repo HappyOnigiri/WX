@@ -5,8 +5,7 @@ package i18n
 // session ID・path・外部 error はテンプレートの引数として受け取る。
 
 var cliCatalog = map[string]Entry{
-	"cli.setup_prompt.saved":                  {EN: "The worktree setup review prompt was copied to the clipboard and saved at {{.Path}}", JA: "worktree セットアップ確認用プロンプトをクリップボードへコピーし、{{.Path}} に保存しました"},
-	"cli.setup_prompt.copy_failed":            {EN: "The setup prompt is saved at {{.Path}}, but it could not be copied to the clipboard: {{.Error}}", JA: "セットアップ用プロンプトは {{.Path}} に保存しましたが、クリップボードへコピーできませんでした: {{.Error}}"},
+	"cli.setup_prompt.saved":                  {EN: "The worktree setup review prompt was saved at {{.Path}}", JA: "worktree セットアップ確認用プロンプトを {{.Path}} に保存しました"},
 	"cli.setup_prompt.failed":                 {EN: "The worktree setup review prompt could not be saved: {{.Error}}", JA: "worktree セットアップ確認用プロンプトを保存できませんでした: {{.Error}}"},
 	"cli.setup_prompt.record_failed":          {EN: "The initial setup check record could not be saved: {{.Error}}", JA: "初回セットアップ検査の記録を保存できませんでした: {{.Error}}"},
 	"cli.setup_check.title":                   {EN: "Run the initial worktree setup check?", JA: "初回 worktree セットアップ検査を実行しますか？"},

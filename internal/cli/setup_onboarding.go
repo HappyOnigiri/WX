@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,10 +18,9 @@ import (
 )
 
 var (
-	setupClipboardCommand = exec.CommandContext
-	setupPromptSaver      = saveSetupPrompt
-	setupSelect           = tui.Select
-	setupIsTerminal       = tui.IsTerminal
+	setupPromptSaver = saveSetupPrompt
+	setupSelect      = tui.Select
+	setupIsTerminal  = tui.IsTerminal
 )
 
 type setupOnboardingDecision struct {
@@ -136,9 +134,6 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.failed", map[string]any{"Error": saveErr.Error()}))
 	} else {
 		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.saved", map[string]any{"Path": path}))
-		if copyErr := copySetupPrompt(prompt); copyErr != nil {
-			fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.copy_failed", map[string]any{"Path": path, "Error": copyErr.Error()}))
-		}
 	}
 	if !complete {
 		fmt.Fprint(os.Stderr, report.String())
@@ -206,14 +201,6 @@ func saveSetupPrompt(prompt string) (string, error) {
 		return "", err
 	}
 	return path, nil
-}
-
-func copySetupPrompt(prompt string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	cmd := setupClipboardCommand(ctx, "pbcopy")
-	cmd.Stdin = bytes.NewBufferString(prompt)
-	return cmd.Run()
 }
 
 func recordInitialSetup(repositories []daemon.SetupCheckRepository, workspaceRoot, checkedAt, declinedAt string) error {
