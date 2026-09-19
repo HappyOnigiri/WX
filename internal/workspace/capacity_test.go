@@ -153,6 +153,66 @@ func TestEstimateCapacityUsesLFSPointerSizeAndMissingCache(t *testing.T) {
 	}
 }
 
+func TestAuditC2CapacityUsesRequestedTreeAttributes(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		sourceAttr    string
+		requestedAttr string
+		wantLFS       int
+	}{
+		{name: "requested literal", sourceAttr: "*.bin filter=lfs\n", requestedAttr: "*.bin -filter\n", wantLFS: 0},
+		{name: "requested LFS", sourceAttr: "*.bin -filter\n", requestedAttr: "*.bin filter=lfs\n", wantLFS: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := t.TempDir()
+			gitCommand(t, repository, "init", "-b", "main")
+			gitCommand(t, repository, "config", "user.email", "wx@example.invalid")
+			gitCommand(t, repository, "config", "user.name", "wx")
+			if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte(test.sourceAttr), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 1048576\n"
+			if err := os.WriteFile(filepath.Join(repository, "asset.bin"), []byte(pointer), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitCommand(t, repository, "add", ".")
+			gitCommand(t, repository, "commit", "-m", "source attributes")
+			gitCommand(t, repository, "checkout", "-b", "requested")
+			if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte(test.requestedAttr), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitCommand(t, repository, "add", ".gitattributes")
+			gitCommand(t, repository, "commit", "-m", "requested attributes")
+			requestedOID := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+			gitCommand(t, repository, "checkout", "main")
+			sourceHEAD := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+			sourceIndex := capacityGitOutput(t, repository, "ls-files", "--stage")
+			common := capacityGitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+			repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common), RelativePath: "."}
+			cfg := config.Defaults()
+			cfg.Storage.CopyMode = config.CopyModeCopy
+			p := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+			estimate, err := p.EstimateCapacity(context.Background(), repo, requestedOID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if estimate.LFSObjects != test.wantLFS {
+				t.Fatalf("estimate=%+v, want %d LFS object(s) from requested tree", estimate, test.wantLFS)
+			}
+			if test.wantLFS == 0 && (estimate.MissingLFSObjects != 0 || estimate.LFSExpandedBytes != 0) {
+				t.Fatalf("literal requested tree unexpectedly expanded LFS=%+v", estimate)
+			}
+			if got := capacityGitOutput(t, repository, "rev-parse", "HEAD"); got != sourceHEAD {
+				t.Fatalf("source HEAD changed from %s to %s", sourceHEAD, got)
+			}
+			if got := capacityGitOutput(t, repository, "ls-files", "--stage"); got != sourceIndex {
+				t.Fatalf("source index changed from %q to %q", sourceIndex, got)
+			}
+		})
+	}
+}
+
 func TestEstimateRootCopyBytesFollowsMaterializeRules(t *testing.T) {
 	t.Parallel()
 	source := t.TempDir()

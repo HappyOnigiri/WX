@@ -4,11 +4,14 @@ import (
 	"errors"
 	"math"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
+	"github.com/HappyOnigiri/WX/internal/workspace"
 )
 
 func TestPrepareCapacityShortageFailsBeforeStagedPreparation(t *testing.T) {
@@ -141,5 +144,54 @@ func TestPrepareCapacityFindingsEstimateRegisteredWorkspace(t *testing.T) {
 	}
 	if findings[0].Severity != diag.SeverityInfo {
 		t.Fatalf("finding severity=%s, want info: %+v", findings[0].Severity, findings[0])
+	}
+}
+
+func TestAuditC1DoctorCacheRefreshAfterExternalLFSFetch(t *testing.T) {
+	t.Parallel()
+	ctx, manager, _, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	repo := resolved[0].Repository
+	pointerOID := strings.Repeat("a", 64)
+	pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + pointerOID + "\nsize 123\n"
+	if err := os.WriteFile(filepath.Join(string(repo.MainPath), ".gitattributes"), []byte("*.bin filter=lfs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(string(repo.MainPath), "asset.bin"), []byte(pointer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, string(repo.MainPath), "add", ".")
+	gitRun(t, string(repo.MainPath), "commit", "-m", "lfs pointer")
+	oid := gitOutput(t, string(repo.MainPath), "rev-parse", "HEAD")
+	preparer := &workspace.Preparer{Git: manager.git, Config: manager.Config(), WorkspaceRoot: string(workspaceRecord.Root)}
+	first, err := manager.estimateCapacity(ctx, preparer, manager.Config(), repo, oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.MissingLFSObjects != 1 || len(first.LFS) != 1 || first.LFS[0].CacheState != workspace.LFSCacheMissing {
+		t.Fatalf("first estimate=%+v, want one missing LFS object", first)
+	}
+	cachePath := filepath.Join(string(repo.CommonDir), "lfs", "objects", pointerOID[:2], pointerOID[2:4], pointerOID)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, make([]byte, 123), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.estimateCapacity(ctx, preparer, manager.Config(), repo, oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.MissingLFSObjects != 0 || second.LFSCacheBytes != 0 || second.LFS[0].CacheState != workspace.LFSCacheHealthy {
+		t.Fatalf("refreshed estimate=%+v, want healthy cache after external fetch", second)
+	}
+	if err := os.Remove(cachePath); err != nil {
+		t.Fatal(err)
+	}
+	third, err := manager.estimateCapacity(ctx, preparer, manager.Config(), repo, oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.MissingLFSObjects != 1 || third.LFS[0].CacheState != workspace.LFSCacheMissing {
+		t.Fatalf("refreshed estimate=%+v, want missing cache after external removal", third)
 	}
 }
