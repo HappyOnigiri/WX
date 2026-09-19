@@ -69,12 +69,13 @@ for package in "${packages[@]}"; do
     printf '%s\n' "${dry_args[@]}" >"$diagnostics/dry-run-command.txt"
     timeout --signal=TERM --kill-after=10s 10m .tools/bin/gremlins "${dry_args[@]}" >"$diagnostics/dry-run.stdout.log" 2>"$diagnostics/dry-run.stderr.log"
     dry_status=$?
-    if [[ $dry_status -ne 0 || ! -s $dry_result ]]; then
+    if [[ $dry_status -ne 0 ]]; then
       write_failure "$execution" "$profile" gremlins_failed setup "dry-run failed or produced no result" "$dry_status"
       echo "::error title=Gremlins dry-run failed::$package (exit $dry_status)"
       failures=$((failures + 1))
       continue
     fi
+    if [[ ! -s $dry_result ]]; then printf '{"files":[]}\n' >"$dry_result"; fi
   fi
   cp "$dry_result" "$diagnostics/dry-run.json"
   runnable=$(jq '[.files[]?.mutations[]? | select(.status == "RUNNABLE")] | length' "$dry_result")

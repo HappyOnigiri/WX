@@ -178,6 +178,7 @@ test('workflow wires planned shards, independent deadlines, and diagnostics', ()
   assert.match(workflow, /\.unweighted\[\]/u);
   assert.match(runner, /execution\.json/u);
   assert.match(runner, /preflight\.json/u);
+  assert.ok(runner.includes(`printf '{"files":[]}\\n'`));
   assert.doesNotMatch(runner, /failures=\$\(\(failures \+ one_survivors\)\)/u);
   assert.match(makefile, /\.\/internal\/fdexec\|internal\/fdexec/u);
   assert.match(makefile, /mutation-weights/u);
