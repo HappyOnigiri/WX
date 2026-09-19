@@ -157,6 +157,68 @@ func TestSparsePrepareStillVerifiesLFSPaths(t *testing.T) {
 	}
 }
 
+func TestSparsePrepareSkipsExcludedRequestedLFSPath(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	repository := string(resolved[0].Repository.MainPath)
+	if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte("*.bin filter=lfs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	insidePath := filepath.Join(repository, "inside", "kept.txt")
+	if err := os.MkdirAll(filepath.Dir(insidePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(insidePath, []byte("kept\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repository, "add", ".")
+	gitRun(t, repository, "commit", "-m", "add sparse source path")
+	gitRun(t, repository, "checkout", "-b", "requested")
+	outsidePath := filepath.Join(repository, "outside", "asset.bin")
+	if err := os.MkdirAll(filepath.Dir(outsidePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outsidePath, []byte("version https://git-lfs.github.com/spec/v1\noid sha256:"+strings.Repeat("a", 64)+"\nsize 123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repository, "add", ".")
+	gitRun(t, repository, "commit", "-m", "add requested sparse LFS path")
+	requestedOID := gitOutput(t, repository, "rev-parse", "HEAD")
+	gitRun(t, repository, "checkout", "main")
+	gitRun(t, repository, "config", "core.sparseCheckout", "true")
+	gitRun(t, repository, "sparse-checkout", "set", "--cone", "inside")
+	resolved[0].OID = requestedOID
+	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
+
+	slotID := domain.StableID("capacity", "sparse-lfs-excluded")
+	slot := testSlotRow(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING")
+	slotIdentity, _, err := manager.createSlotRoot(slot.Path, slot.Path)
+	if err != nil {
+		t.Fatalf("create slot root: %v", err)
+	}
+	slot.DirIdentity = slotIdentity
+	metadata := state.SlotRepository{
+		RepositoryID: string(resolved[0].Repository.ID),
+		DirName:      testDirName(resolved[0].Repository, manager.Config()),
+		State:        "PREPARING",
+		RequestedRef: resolved[0].RequestedRef,
+		BaseOID:      requestedOID,
+	}
+	if _, err := store.CreateStandby(ctx, slot, []state.SlotRepository{metadata}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.prepareSlot(ctx, slotID, workspaceRecord, resolved, []state.SlotRepository{metadata}); err != nil {
+		t.Fatalf("sparse prepare with excluded requested LFS path: %v", err)
+	}
+	prepared, err := store.Slot(ctx, slotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.State != "READY" {
+		t.Fatalf("prepared slot=%+v, want READY", prepared)
+	}
+}
+
 func TestSparsePrepareStillPreflightsMissingLFSObjects(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
@@ -296,5 +358,78 @@ func TestAuditC1DoctorCacheRefreshAfterExternalLFSFetch(t *testing.T) {
 	}
 	if second.MissingLFSObjects != 0 || second.LFSCacheBytes != 0 || !second.LFS[0].Cached || second.LFS[0].CacheState != workspace.LFSCacheHealthy {
 		t.Fatalf("second estimate was mutated by later refresh=%+v, want its original healthy state", second)
+	}
+}
+
+func TestCapacityCacheRecomputesSparseSelectionForNewSlots(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	repository := string(resolved[0].Repository.MainPath)
+	insideOID, outsideOID := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte("*.bin filter=lfs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	insidePath := filepath.Join(repository, "inside", "kept.bin")
+	if err := os.MkdirAll(filepath.Dir(insidePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(insidePath, []byte("version https://git-lfs.github.com/spec/v1\noid sha256:"+insideOID+"\nsize 123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repository, "add", ".")
+	gitRun(t, repository, "commit", "-m", "source LFS pointer")
+	gitRun(t, repository, "checkout", "-b", "requested")
+	outsidePath := filepath.Join(repository, "outside", "added.bin")
+	if err := os.MkdirAll(filepath.Dir(outsidePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outsidePath, []byte("version https://git-lfs.github.com/spec/v1\noid sha256:"+outsideOID+"\nsize 123\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repository, "add", ".")
+	gitRun(t, repository, "commit", "-m", "requested LFS pointer")
+	requestedOID := gitOutput(t, repository, "rev-parse", "HEAD")
+	gitRun(t, repository, "checkout", "main")
+	resolved[0].OID = requestedOID
+	for _, oid := range []string{insideOID, outsideOID} {
+		cachePath := filepath.Join(string(resolved[0].Repository.CommonDir), "lfs", "objects", oid[:2], oid[2:4], oid)
+		if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cachePath, make([]byte, 123), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
+	metadata := func() state.SlotRepository {
+		return state.SlotRepository{
+			RepositoryID: string(resolved[0].Repository.ID),
+			DirName:      testDirName(resolved[0].Repository, manager.Config()),
+			State:        "PREPARING",
+			RequestedRef: resolved[0].RequestedRef,
+			BaseOID:      requestedOID,
+		}
+	}
+	prepare := func(slotID string) CapacityReport {
+		slot := testSlot(t, manager, string(workspaceRecord.ID), slotID, 1, "PREPARING")
+		row := metadata()
+		if _, err := store.CreateStandby(ctx, slot, []state.SlotRepository{row}); err != nil {
+			t.Fatal(err)
+		}
+		report, err := manager.enforcePrepareCapacity(ctx, slot, workspaceRecord, resolved, []state.SlotRepository{row}, manager.Config())
+		if err != nil {
+			t.Fatalf("capacity preflight %s: %v", slotID, err)
+		}
+		return report
+	}
+	gitRun(t, repository, "sparse-checkout", "set", "--no-cone", "/inside/")
+	first := prepare(domain.StableID("capacity-cache", "inside"))
+	gitRun(t, repository, "sparse-checkout", "set", "--no-cone", "/outside/")
+	second := prepare(domain.StableID("capacity-cache", "outside"))
+	if len(first.Repositories) != 1 || len(first.Repositories[0].LFS) != 1 || first.Repositories[0].LFS[0].Paths[0] != "inside/kept.bin" {
+		t.Fatalf("inside sparse report=%+v, want inside LFS path", first)
+	}
+	if len(second.Repositories) != 1 || len(second.Repositories[0].LFS) != 1 || second.Repositories[0].LFS[0].Paths[0] != "outside/added.bin" {
+		t.Fatalf("outside sparse report=%+v, want outside LFS path", second)
 	}
 }

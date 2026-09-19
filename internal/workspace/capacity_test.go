@@ -163,10 +163,21 @@ func TestEstimateCapacityExcludesSkippedSparseLFSPaths(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte("*.bin filter=lfs\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for name, oid := range map[string]string{
-		"inside/kept.bin":     strings.Repeat("a", 64),
-		"outside/skipped.bin": strings.Repeat("b", 64),
-	} {
+	insideOID, outsideOID := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	for name := range map[string]bool{"inside/kept.bin": true} {
+		path := filepath.Join(repository, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + insideOID + "\nsize 123\n"
+		if err := os.WriteFile(path, []byte(pointer), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "source LFS pointer")
+	gitCommand(t, repository, "checkout", "-b", "requested")
+	for name, oid := range map[string]string{"outside/skipped.bin": outsideOID, "outside/shared.bin": insideOID} {
 		path := filepath.Join(repository, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
@@ -177,21 +188,30 @@ func TestEstimateCapacityExcludesSkippedSparseLFSPaths(t *testing.T) {
 		}
 	}
 	gitCommand(t, repository, "add", ".")
-	gitCommand(t, repository, "commit", "-m", "sparse LFS pointers")
+	gitCommand(t, repository, "commit", "-m", "requested LFS pointers")
+	requestedOID := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+	gitCommand(t, repository, "checkout", "main")
 	gitCommand(t, repository, "sparse-checkout", "set", "--no-cone", "/inside/")
-	head := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+	sourceHEAD := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+	sourceIndex := capacityGitOutput(t, repository, "ls-files", "--stage")
 	common := capacityGitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common), RelativePath: "."}
 	p := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
-	estimate, err := p.EstimateCapacity(context.Background(), repo, head)
+	estimate, err := p.EstimateCapacity(context.Background(), repo, requestedOID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !estimate.Sparse || estimate.LFSObjects != 1 || estimate.MissingLFSObjects != 1 || estimate.LFSCacheBytes != 123 {
-		t.Fatalf("sparse estimate=%+v, want only materialized LFS object", estimate)
+		t.Fatalf("sparse requested-tree estimate=%+v, want only materialized LFS object", estimate)
 	}
 	if len(estimate.LFS) != 1 || len(estimate.LFS[0].Paths) != 1 || estimate.LFS[0].Paths[0] != "inside/kept.bin" {
 		t.Fatalf("sparse LFS details=%+v", estimate.LFS)
+	}
+	if got := capacityGitOutput(t, repository, "rev-parse", "HEAD"); got != sourceHEAD {
+		t.Fatalf("source HEAD changed from %s to %s", sourceHEAD, got)
+	}
+	if got := capacityGitOutput(t, repository, "ls-files", "--stage"); got != sourceIndex {
+		t.Fatalf("source index changed from %q to %q", sourceIndex, got)
 	}
 }
 

@@ -161,7 +161,7 @@ func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Reposito
 	if err != nil {
 		return CapacityEstimate{}, fmt.Errorf("read sparse checkout setting for capacity estimate: %w", err)
 	}
-	sparseSkipped, err := p.capacitySparseSkippedPaths(ctx, repo, gitBoolTrue(sparse.Stdout))
+	sparseSkipped, err := p.capacitySparseSkippedPaths(ctx, repo, oid, gitBoolTrue(sparse.Stdout))
 	if err != nil {
 		return CapacityEstimate{}, err
 	}
@@ -309,19 +309,55 @@ func gitBoolTrue(value string) bool {
 	}
 }
 
-func (p *Preparer) capacitySparseSkippedPaths(ctx context.Context, repo discovery.Repository, sparse bool) (map[string]bool, error) {
+func (p *Preparer) capacitySparseSkippedPaths(ctx context.Context, repo discovery.Repository, oid string, sparse bool) (map[string]bool, error) {
 	if !sparse {
 		return nil, nil
 	}
-	listing, err := p.capacityGit(ctx, repo, nil, "ls-files", "-v", "-z")
+	index, err := os.CreateTemp("", ".wx-capacity-sparse-index-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temporary sparse capacity index: %w", err)
+	}
+	indexPath := index.Name()
+	if err := index.Close(); err != nil {
+		_ = os.Remove(indexPath)
+		return nil, fmt.Errorf("close temporary sparse capacity index: %w", err)
+	}
+	defer func() { _ = os.Remove(indexPath) }()
+	worktree, err := os.MkdirTemp("", ".wx-capacity-sparse-worktree-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temporary sparse capacity worktree: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(worktree) }()
+	env := []string{"GIT_INDEX_FILE=" + indexPath, "GIT_WORK_TREE=" + worktree}
+	if _, err := p.capacityGitEnv(ctx, repo, env, nil, "read-tree", "--empty"); err != nil {
+		return nil, fmt.Errorf("initialize temporary sparse capacity index: %w", err)
+	}
+	if _, err := p.capacityGitEnv(ctx, repo, env, nil, "read-tree", "--reset", "-i", oid); err != nil {
+		return nil, fmt.Errorf("read requested tree into temporary sparse capacity index: %w", err)
+	}
+	if _, err := p.capacityGitEnv(ctx, repo, env, nil, "sparse-checkout", "reapply"); err != nil {
+		return nil, fmt.Errorf("apply sparse checkout to requested tree for capacity estimate: %w", err)
+	}
+	listing, err := p.capacityGitEnv(ctx, repo, env, nil, "ls-files", "-v", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("read sparse checkout paths for capacity estimate: %w", err)
 	}
-	paths := make(map[string]bool)
+	paths := make(map[string]bool, len(ParseIndexFlags(listing.Stdout).SkipWorktree))
 	for _, path := range ParseIndexFlags(listing.Stdout).SkipWorktree {
 		paths[path] = true
 	}
 	return paths, nil
+}
+
+// SparseCheckoutEnabled は sparse 選択を再計算する必要があるか判定する。
+// 選択内容は sparse-checkout file にあり、bool だけでは inside/outside の変更を区別できない。
+// daemon は有効時の容量見積りを cache せず、要求 OID と現在の選択を毎回組み立てる。
+func (p *Preparer) SparseCheckoutEnabled(ctx context.Context, repo discovery.Repository) (bool, error) {
+	result, err := p.capacityGit(ctx, repo, nil, "config", "--default", "false", "--get", "core.sparseCheckout")
+	if err != nil {
+		return false, fmt.Errorf("read sparse checkout setting for capacity cache: %w", err)
+	}
+	return gitBoolTrue(result.Stdout), nil
 }
 
 // CapacityEstimate は呼び出し側が既存の名前で検索しやすいよう、短い別名も提供する。
