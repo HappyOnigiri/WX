@@ -67,7 +67,7 @@ func TestAlternating(t *testing.T) {
 }
 `
 
-func runHunt(t *testing.T, root string, deadline time.Duration) huntManifest {
+func runHunt(t *testing.T, root string, deadline time.Duration) (huntManifest, int) {
 	t.Helper()
 	reportDir := filepath.Join(t.TempDir(), "report")
 	logDir := filepath.Join(t.TempDir(), "logs")
@@ -94,14 +94,18 @@ func runHunt(t *testing.T, root string, deadline time.Duration) huntManifest {
 		t.Fatal(err)
 	}
 	t.Setenv("HUNT_LOG_DIR", logDir)
-	return man
+	return man, code
 }
 
 // ラウンドをまたいで成功と失敗の両方を観測したテストは、回数の内訳ごと残る必要がある。
 func TestHuntCountsPassAndFailAcrossRounds(t *testing.T) {
 	root := flakyModule(t, alternatingTest)
 	warmGoTest(t, root)
-	man := runHunt(t, root, 15*time.Second)
+	man, code := runHunt(t, root, 15*time.Second)
+	// flakeの検出はハントの成功であり、ジョブを赤くしない。
+	if code != 0 {
+		t.Fatalf("code=%d failed rounds=%d", code, man.FailedRounds)
+	}
 	if man.Rounds < 2 {
 		t.Fatalf("rounds=%d", man.Rounds)
 	}
@@ -134,9 +138,25 @@ func TestHuntCountsPassAndFailAcrossRounds(t *testing.T) {
 	}
 }
 
+// 全ラウンド失敗するテストはflakyとして起票されないため、ジョブの失敗だけが知らせになる。
+func TestHuntFailsWhenATestNeverPasses(t *testing.T) {
+	root := flakyModule(t, "package flaky\n\nimport \"testing\"\n\nfunc TestAlways(t *testing.T) {\n\tt.Fatal(\"boom\")\n}\n")
+	warmGoTest(t, root)
+	man, code := runHunt(t, root, 5*time.Second)
+	if code != 1 {
+		t.Fatalf("code=%d tests=%+v", code, man.Tests)
+	}
+	if len(man.Tests) != 1 || man.Tests[0].PassCount != 0 {
+		t.Fatalf("tests=%+v", man.Tests)
+	}
+}
+
 // ビルドできないパッケージで期限いっぱい空回りしないよう、テストイベントの無いラウンドで打ち切る。
 func TestHuntStopsWhenRoundsProduceNoTestEvent(t *testing.T) {
-	man := runHunt(t, flakyModule(t, "package flaky\n\nfunc broken() {"), time.Minute)
+	man, code := runHunt(t, flakyModule(t, "package flaky\n\nfunc broken() {"), time.Minute)
+	if code != 1 {
+		t.Fatalf("code=%d anomalies=%d", code, man.AnomalyRounds)
+	}
 	if man.Rounds != emptyRoundLimit {
 		t.Fatalf("rounds=%d", man.Rounds)
 	}
