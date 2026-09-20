@@ -104,14 +104,14 @@ func (m *Manager) planStandbyUpdate(ctx context.Context, w discovery.Workspace, 
 		if !ok {
 			return standbyUpdatePlan{}, fmt.Errorf("%w: workspace repository set changed", workspace.ErrUpdateIneligible)
 		}
-		compatibility, err := workspace.UpdateCompatibilityFingerprint(slot.Generation, requested.Repository, m.Config())
+		compatibility, err := workspace.UpdateCompatibilityFingerprintWithGit(ctx, m.git, slot.Generation, requested.Repository, m.Config())
 		if err != nil {
 			return standbyUpdatePlan{}, err
 		}
 		if compatibility != stored.CompatibilityFingerprint {
 			return standbyUpdatePlan{}, fmt.Errorf("%w: standby preparation conditions changed", workspace.ErrUpdateIneligible)
 		}
-		fingerprint, err := workspace.Fingerprint(slot.Generation, requested.OID, requested.Repository, m.Config())
+		fingerprint, err := workspace.FingerprintWithGit(ctx, m.git, slot.Generation, requested.OID, requested.Repository, m.Config())
 		if err != nil {
 			return standbyUpdatePlan{}, err
 		}
@@ -228,7 +228,7 @@ func (m *Manager) standbyStoredStateValid(ctx context.Context, slot state.Slot, 
 		if stored.CompatibilityFingerprint == "" {
 			return false, nil
 		}
-		compatibility, err := workspace.UpdateCompatibilityFingerprint(slot.Generation, repository, m.Config())
+		compatibility, err := workspace.UpdateCompatibilityFingerprintWithGit(ctx, m.git, slot.Generation, repository, m.Config())
 		if err != nil || compatibility != stored.CompatibilityFingerprint {
 			return false, err
 		}

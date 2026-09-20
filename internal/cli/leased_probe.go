@@ -41,10 +41,19 @@ func (c Client) inspectLeasedWorkspace(ctx context.Context, root, sessionID, lea
 	probe.Usage, probe.Repositories = probeUsage(slot)
 	findings = append(findings, prepareFailureFindings(root, slot)...)
 	findings = append(findings, probeSharingFindings(root, leasePath, slot)...)
-	if requireMeasurements && (slot.Measurement == "" || slot.Measurement == daemon.MeasurementPending || slot.Measurement == daemon.MeasurementUnsupported) {
+	if requireMeasurements && measurementUnavailableForSetup(slot.Measurement) {
 		findings = append(findings, setupMeasurementFinding(leasePath, fmt.Sprintf("the slot usage measurement is %q", slot.Measurement)))
 	}
 	return probe, findings
+}
+
+func measurementUnavailableForSetup(measurement string) bool {
+	switch measurement {
+	case "", daemon.MeasurementPending, daemon.MeasurementUnsupported:
+		return true
+	default:
+		return false
+	}
 }
 
 func setupMeasurementFinding(target, cause string) diag.Finding {

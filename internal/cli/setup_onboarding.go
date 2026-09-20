@@ -108,10 +108,7 @@ func (c Client) resolveInitialSetup(ctx context.Context, cwd string, enabled boo
 		return setupOnboardingDecision{}, false, nil
 	case "decline":
 		now := time.Now().UTC().Format(time.RFC3339)
-		if err := recordInitialSetup(repositories, resolved.SourceWorkspace, "", now); err != nil {
-			return setupOnboardingDecision{}, false, err
-		}
-		return setupOnboardingDecision{}, false, nil
+		return setupOnboardingDecision{}, false, recordInitialSetup(repositories, resolved.SourceWorkspace, "", now)
 	default:
 		return setupOnboardingDecision{}, true, nil
 	}
@@ -141,7 +138,6 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 		fmt.Fprintln(&report, cliLocalizer(c).Localize("cli.setup_prompt.record_failed", map[string]any{"Error": err.Error()}))
 	}
 	attention := setupFindingsNeedAttention(findings)
-	initial := 0
 	localizer := cliLocalizer(c)
 	options := []tui.Option{}
 	if canStart && prompt != "" {
@@ -151,9 +147,7 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 	if prompt != "" {
 		options = append(options, tui.Option{Value: string(setupCompletionSave), Label: localizer.Localize("cli.setup_continue.save", nil), Description: localizer.Localize("cli.setup_continue.save_description", nil)})
 	}
-	if (!canStart || prompt == "") && attention {
-		initial = len(options)
-	}
+	initial := setupInitialSelection(canStart, prompt, attention, len(options))
 	options = append(options, tui.Option{Value: "cancel", Label: localizer.Localize("cli.setup_continue.cancel", nil), Description: localizer.Localize("cli.setup_continue.cancel_description", nil)})
 	answer, err := setupSelect(ctx, os.Stdin, os.Stderr, tui.Selection{
 		Title:       localizer.Localize("cli.setup_continue.title", nil),
@@ -192,6 +186,13 @@ func (c Client) finishInitialSetupCheck(ctx context.Context, lease daemon.Lease,
 	default:
 		return setupCompletion{}
 	}
+}
+
+func setupInitialSelection(canStart bool, prompt string, attention bool, optionCount int) int {
+	if (!canStart || prompt == "") && attention {
+		return optionCount
+	}
+	return 0
 }
 
 func setupPromptRepositories(lease daemon.Lease, repositories []daemon.SetupCheckRepository) []onboarding.Repository {

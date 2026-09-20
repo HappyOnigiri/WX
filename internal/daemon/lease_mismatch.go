@@ -63,7 +63,7 @@ func (m *Manager) describeReadyMismatch(ctx context.Context, slot state.Slot, re
 		if row.BaseOID != requested.OID {
 			return readyMismatch{reason: "oid", detail: fmt.Sprintf("%s: %s -> %s", row.DirName, shortOID(row.BaseOID), shortOID(requested.OID))}
 		}
-		fingerprint, err := workspace.Fingerprint(slot.Generation, requested.OID, requested.Repository, m.Config())
+		fingerprint, err := workspace.FingerprintWithGit(ctx, m.git, slot.Generation, requested.OID, requested.Repository, m.Config())
 		if err != nil {
 			return readyMismatch{reason: "unknown", detail: err.Error()}
 		}

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -200,9 +199,8 @@ func runDirectAgentFrom(ctx context.Context, cwd, agent string, args []string) i
 	if err == nil {
 		return 0
 	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		return exit.ExitCode()
+	if code, ok := childExitCode(err); ok {
+		return code
 	}
 	reportErrorLanguage(i18n.LanguageFromContext(ctx), err)
 	return 1

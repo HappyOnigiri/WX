@@ -307,9 +307,38 @@ func TestExecutionRefreshIgnoresOutOfRangeSettingsEnvironment(t *testing.T) {
 	m := newModel(context.Background(), Options{Config: config.Defaults()})
 	m.settingsOpen = true
 	m.settingsEnv = len(m.configEnvironments())
+	m.target = "/tmp/target"
 
 	updated, _ := m.Update(executionMsg{config: config.Defaults()})
 	if got := updated.(model).mode; got != modeResult {
 		t.Fatalf("mode=%v, want result after a refresh with an out-of-range environment", got)
+	}
+}
+
+// TestExecutionRefreshSkipsAnOutOfRangeRepositoryEnvironment は、再読込後に環境数が
+// 減っても repository の選択位置を参照しないことを守る。
+func TestExecutionRefreshSkipsAnOutOfRangeRepositoryEnvironment(t *testing.T) {
+	cfg := config.DefaultsV2()
+	cfg.Workspaces["/tmp/project"] = config.Workspace{Repositories: map[string]config.Repository{
+		"backend":  {},
+		"frontend": {},
+	}}
+	m := newModel(context.Background(), Options{Config: cfg})
+	repositoryIndex := -1
+	for index, environment := range m.configEnvironments() {
+		if environment.scope == config.V2ScopeRepository && environment.repository == "backend" {
+			repositoryIndex = index
+			break
+		}
+	}
+	if repositoryIndex < 0 {
+		t.Fatal("backend repository environment is missing")
+	}
+	m.settingsOpen, m.settingsEnv, m.target = true, repositoryIndex, "/tmp/project"
+	refreshed := config.DefaultsV2()
+	refreshed.Workspaces["/tmp/project"] = config.Workspace{Repositories: map[string]config.Repository{"other": {}}}
+	updated, _ := m.Update(executionMsg{config: refreshed})
+	if got := updated.(model).mode; got != modeResult {
+		t.Fatalf("mode=%v, want result after the repository environment disappeared", got)
 	}
 }

@@ -375,8 +375,6 @@ func V2Fields(c, raw Config, scope, root, rel string) []ScopeField {
 		if scope == V2ScopeWorkspace && (key == "repositories" || key == "repository_defaults" || key == "submodules" || strings.HasPrefix(key, "repositories.") || strings.HasPrefix(key, "repository_defaults.")) {
 			return
 		}
-		if scope == V2ScopeRepository && key == "dir_name" { /* included below */
-		}
 		value := formatScopeValue(field)
 		source := "default"
 		switch scope {

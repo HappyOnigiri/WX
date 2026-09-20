@@ -79,7 +79,7 @@ func (m *Manager) resumeRestoreJob(ctx context.Context, sessionID string) error 
 		if err != nil {
 			return err
 		}
-		repos, err = m.slotRepos(slot.Path, w, resolved, slot.Generation, nil, config.PrepareOverride{})
+		repos, err = m.slotRepos(ctx, slot.Path, w, resolved, slot.Generation, nil, config.PrepareOverride{})
 		if err != nil {
 			return err
 		}
@@ -193,9 +193,7 @@ func (m *Manager) restoreSlot(ctx context.Context, id string, w discovery.Worksp
 	if err != nil {
 		return err
 	}
-	if !capacityReport.Sparse {
-		archiveManager.Preparer.LFSObjects = lfsObjectsByRepository(capacityReport)
-	}
+	archiveManager.Preparer.LFSObjects = lfsObjectsByRepository(capacityReport)
 	// multi-repository の workspace archive は、repository の復元で target を変え始めるより前に 1 度だけ検証する。
 	// 検証済み descriptor をそのまま展開へ渡すため、path からの再 open と再 hash は行わない。
 	var verifiedWorkspace *verifiedWorkspaceArchive

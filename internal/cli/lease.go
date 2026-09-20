@@ -88,8 +88,12 @@ func (c Client) runLease(ctx context.Context, kind, agentKind, program string, a
 }
 
 func (c Client) runLeaseFrom(ctx context.Context, cwd, kind, agentKind, program string, args, branches []string, resume string) int {
-	if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
-		return reportLeaseErrorLanguage(err, cliLanguage(c))
+	// 明示した session の復元先は daemon が保持するため、caller workspace の方針を
+	// 新規貸出の制約として適用しない。session の存在・種別・所有権は Resume で検証する。
+	if resume == "" {
+		if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
+			return reportLeaseErrorLanguage(err, cliLanguage(c))
+		}
 	}
 	if err := c.ensureDaemon(ctx); err != nil {
 		cliError(c, err)
@@ -313,9 +317,6 @@ func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard, 
 	if err := c.RPC.Call(callCtx, "ReleaseLease", map[string]any{"session_id": sessionID, "reason": "wx-release", "discard": discard}, &reply); err != nil {
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
-	if reply.SessionID == "" {
-		reply.SessionID = sessionID
-	}
 	if wait && reply.JobID != "" {
 		if !jsonOut {
 			localizer := cliLocalizer(c)
@@ -390,7 +391,7 @@ func (c Client) waitForRelease(ctx context.Context, reply *releaseReply, jsonOut
 	progress := tui.StartProgress(os.Stderr, tui.InteractiveOutput(os.Stderr) && !jsonOut, localizer.Localize("progress.releasing", nil))
 	defer progress.Finish()
 	for {
-		if reply.State == "SUCCEEDED" || reply.State == "FAILED" || (reply.State == "" && reply.SlotState != "") {
+		if reply.State == "SUCCEEDED" || reply.State == "FAILED" {
 			return nil
 		}
 		var next releaseReply

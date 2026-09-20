@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -404,6 +406,11 @@ func materializeChangedPlacements(root *os.Root, previous, desired []state.Place
 	}
 	for _, placement := range desired {
 		if prior, ok := old[placementKey(placement)]; ok && prior.SameSource(placement) {
+			if placement.Kind == "copy" {
+				if err := syncRootCopyMode(root, placement); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if err := ensureRootDirectory(root, filepath.Dir(placement.RelativePath)); err != nil {
@@ -438,6 +445,61 @@ func materializeChangedPlacements(root *os.Root, previous, desired []state.Place
 		}
 	}
 	return validateRecordedPlacements(root, desired)
+}
+
+// syncRootCopyMode は内容と source path が同じ copy でも、source の permission mode が
+// 変わっていれば既存 destination へ反映する。OpenFile の作成 mode は既存 file に効かない
+// ため、同一 placement を再利用する更新経路だけ明示的に同期する。
+func syncRootCopyMode(destination *os.Root, placement state.Placement) error {
+	sourceRoot, err := OpenPhysicalRoot(filepath.Dir(placement.SourcePath))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sourceRoot.Close() }()
+	sourceName := filepath.Base(placement.SourcePath)
+	sourceInfo, err := sourceRoot.Lstat(sourceName)
+	if err != nil {
+		return fmt.Errorf("inspect root copy source %s: %w", placement.SourcePath, err)
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.Mode().IsRegular() {
+		return fmt.Errorf("root copy source %s is not a regular file", placement.SourcePath)
+	}
+	sourceFile, err := sourceRoot.OpenFile(sourceName, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open root copy source %s: %w", placement.SourcePath, err)
+	}
+	openedInfo, statErr := sourceFile.Stat()
+	closeErr := sourceFile.Close()
+	if statErr != nil {
+		return fmt.Errorf("stat root copy source %s: %w", placement.SourcePath, statErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close root copy source %s: %w", placement.SourcePath, closeErr)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(sourceInfo, openedInfo) {
+		return fmt.Errorf("root copy source %s changed while opening", placement.SourcePath)
+	}
+
+	destinationInfo, err := destination.Lstat(placement.RelativePath)
+	if err != nil {
+		return fmt.Errorf("inspect materialized root copy %s: %w", placement.RelativePath, err)
+	}
+	if destinationInfo.Mode()&os.ModeSymlink != 0 || !destinationInfo.Mode().IsRegular() {
+		return fmt.Errorf("materialized root copy %s is not a regular file", placement.RelativePath)
+	}
+	wantMode := sourceInfo.Mode().Perm()
+	if destinationInfo.Mode().Perm() == wantMode {
+		return nil
+	}
+	destinationFile, err := destination.OpenFile(placement.RelativePath, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open materialized root copy %s: %w", placement.RelativePath, err)
+	}
+	defer func() { _ = destinationFile.Close() }()
+	if err := destinationFile.Chmod(wantMode); err != nil {
+		return fmt.Errorf("update mode of materialized root copy %s: %w", placement.RelativePath, err)
+	}
+	return nil
 }
 
 // ValidateAndSyncRootPlacements は記録済みのworkspace root配置だけを更新する。

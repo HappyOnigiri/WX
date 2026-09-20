@@ -24,9 +24,9 @@ internal/pool/branch.go	ast-v1:5cf165baa8b7af88c4f94e55b6982bb07d510942e00d42e35
 internal/workspace/cow_index.go	ast-v1:a126ed4dba09f5352c3dbfba2fe989cbda1822e10f2031d42995a558052c8810	The capacity hint only changes the allocation size; len and the returned candidate sequence are unchanged when < is replaced with <=.
 internal/workspace/cow_place.go	ast-v1:83de7f2fd36878bc475a55dc0c12a68602da0f262cb6f90de072f4b61d1c8db4	An empty LFS OID set returns from readCOWLFSBlobPointers before any Git or filesystem operation, so > and >= are observationally equivalent.
 internal/workspace/cow_share.go	ast-v1:d15863184b3bb50bac31b42568f1832ac39b0ce8154722760d4353d795fa4d5b	workers is clamped to 1 for all workers <= 1, so < and <= are observationally equivalent for every integer input.
-internal/workspace/capacity.go	ast-v1:35aa33e47e7c35b7e6ccd2ac26b300f58f0938e633ebaf2b627ce27604dbc9bc	LFS entries are collected in a map keyed by normalized OID, so result.LFS contains no equal OIDs; < and <= are observationally equivalent to sort.Slice.
+internal/workspace/capacity.go	ast-v1:aff37a46ad00faf5556bc90660744916728212ec1cc938ca371d971c48e7b292	LFS entries are collected in a map keyed by normalized OID, so result.LFS contains no equal OIDs; < and <= are observationally equivalent to sort.Slice.
 internal/workspace/capacity.go	ast-v1:bab7d79f6eb40108588ef39740e1507bbe656d4b176ff650058f6185c8861eb6	The saturation branch returns MaxInt64 on and above the exact boundary, so > and >= produce the same result for every int64 input.
-internal/workspace/fingerprint.go	ast-v1:9501c8a5c71fdeb488c2f8e1973e3d41bbdd07178475501cba42312aa31ceab0	The comparator only ties duplicate normalized link paths; inspectLinkSources gives those entries identical serialized values, so < and <= cannot change the fingerprint output.
+internal/workspace/fingerprint.go	ast-v1:e913bb34650a15414040f4e3f9f5f792d5e44d5c89d3eef14038c2d323698726	The comparator only ties duplicate normalized link paths; inspectLinkSources gives those entries identical serialized values, so < and <= cannot change the fingerprint output.
 internal/workspace/lfs_cow.go	ast-v1:6f1a354131ba9d822eab90befecb6af6584d026c01b846e37fce14d71aad3e04	os.File.Read guarantees a non-negative count and hashing a zero-length slice is a no-op, so >0 and >=0 are observationally equivalent.
 internal/workspace/placements.go	ast-v1:cfb7cd23c10bbc612bdacc1483e1dd995a9a2dd84c8528daf477bd61d867abe9	同じRepositoryID内の異なるRelativePathだけを比較するため、< と <= は同じ順序になる
 internal/workspace/placements.go	ast-v1:6e6ab27f0f3cf97da488b07b9cc66bd46c1e0cc2083794e995e719df548f9f3a	The RepositoryID comparator is reached only when IDs differ because equal IDs take the earlier branch, so < and <= are equivalent.
@@ -69,6 +69,8 @@ internal/dashboard/view.go	ast-v1:0da5ceffad511750a8ea2456dd2efa101dbda1f57eb03e
 internal/dashboard/view.go	ast-v1:11e735762a5746bb547b63240cb42eed52c7335394887f58a6ffca07aec1f156	表示幅がちょうど収まる wrap は折り返しても同じ1行になり比較が同値
 internal/dashboard/view.go	ast-v1:fac2ffee876d33541f57204195fa77d83234cb55679d294db36e4b1bcc2c15a4	表示幅と等しい padANSI は padding 0 の分岐と同じ文字列を返す
 internal/dashboard/view.go	ast-v1:d10ec7e5eac481a0d40cdd1d76f374edfaf1f4607dee3665e935f91d3153c1eb	行数と高さが等しい fitLines は切り出しても同じ全行を返す
+internal/dashboard/model.go	ast-v1:76200d7efe82bd24fd79392e18821efabd69860b22852a2b6e27e76bcd96eb0c	selected == offset では offset = selected が同値代入になるため、< と <= は表示範囲を変えない等価変異
+internal/dashboard/model.go	ast-v1:58d748163921aae72eb64b29a31dcf9a5bb560116d57a00cbe4fb201aa52be44	状態画面の項目数は0または1で選択値の上限が常に0のため、selected+delta と selected-delta は同じ結果になる等価変異
 internal/config/file.go	ast-v1:89095143387e538aeaa65bb27dc4fda1b0d27846f60213ff522a7d9e2446f33c	YAML mapping の Content は key/value の偶数列なので、mappingValue の境界変異は有効なNodeで同値
 internal/config/file.go	ast-v1:09d7c721da437db0d9f2e9e961a5bef9272084ece5da883084252d901d357b40	YAML mapping の Content は key/value の動的 map 子要素走査の境界変異は有効なNodeで同値
 internal/config/file.go	ast-v1:06daee017631e3dbf25a10ae254046f96018c3944c5ca75e7896804295282c13	YAML mapping の Content は key/value の偶数列なので、collectMappingKeys の境界変異は有効なNodeで同値
@@ -76,6 +78,13 @@ internal/config/unknown.go	ast-v1:58a7daaf37e2ff54ddc39f53de10663a7676c61ab2b974
 internal/config/v2.go	ast-v1:9b3917fc8ec8bb31e620dc7a5cd27e7f30a2f27985f3054a3c758a31a1ec486f	固定されたlegacy section tagはすべてConfig fieldに対応するため、markLegacyPresentFromValueの境界変異は現行schemaで同値
 internal/config/v2_edit.go	ast-v1:441d894fef2e9b88716db016d58a0ceef646cd8ff8ea2c79f1bf2fcf6de0dbbc	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
 internal/config/v2_edit.go	ast-v1:74d06e9593d333bf4384cbd6687c62c1e8d20bd6c5888c942790bb77eeee1fc2	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
+internal/config/v2_edit.go	ast-v1:09595b700384ca986dbe0f27c7eddfdc021e7580f5be73bf6d4c3f96075503a0	Workspace の repository_defaults は v2Field が同じ nested pathを直接解決するため、専用route条件を反転しても設定結果が変わらない等価変異
+internal/config/v2_edit.go	ast-v1:6cfdcc46304690a288a3838a7bb07074e94cb8243116b414b5b863c3b2929aa5	v2ScopeEntry の全 commit closure は現状nil errorだけを返すため、成功時の err != nil と err == nil の反転は戻り値を変えない等価変異
+internal/config/v2_edit.go	ast-v1:406ca0254ceb8adc389ebac584992a1f49ae00f3bddf6014095a7734fd643278	Workspace の repository_defaults は v2Field が同じ nested pathを直接解決するため、専用route条件を反転しても設定結果が変わらない等価変異
+internal/config/v2_edit.go	ast-v1:299f920ebe388b23a8dec9271a671ab163421ee839d5d97fd15f59196b626655	Workspace の repository_defaults は v2Field が同じ nested pathを直接解決するため、専用route条件を反転してもlist操作結果が変わらない等価変異
+internal/config/v2.go	ast-v1:9779e8d504a49515a6f4df7c54cd3b43ea20e00d1f92620b06208d3e1403a367	固定されたlegacy section tagの走査では最終要素の直後へ到達せず、!= と == の反転は presence map の結果を変えない等価変異
+internal/config/v2_edit.go	ast-v1:8257b017d81c6678094fc461b41ecd80cc7bcbc6bd7c8b18d116c4d138fb5b38	空の workspace map でも Version=2 と明示sectionを先に設定してから判定するため、> と <= の反転は保存結果を変えない等価変異
+internal/config/v2_edit.go	ast-v1:eece4c7f1d83b7ac1c71ef41a5bcc6117f0f249208546e011a7c41598644fef4	空の repository map でも Version=2 と明示sectionを先に設定してから判定するため、> と <= の反転は保存結果を変えない等価変異
 internal/cli/bench.go	ast-v1:76ada9b0eb2e9ee90a241dfae75b26d56f0dc46f6297c69480b178e53e64955b	表示幅とラベル幅が同じ場合は0個の空白を追加するだけで、>と>=の結果が同じため
 internal/cli/bench.go	ast-v1:1f94987a6bae0e5592feb370ef19b5ff27795561b8578703a63e4bb3fe59e7a0	sort.Sliceの比較子を<=にしてもint64の同値要素の値列は変わらず、sortedCopyの結果が同じため
 internal/cli/linked_worktree.go	ast-v1:9ed3d86d1e67d159d41050ce19f1925696dd5cbe0006da7fb873b18da7ab2dc7	12桁ちょうどのOIDは条件が>でも>=でも[:12]の結果が元の文字列と同じで、表示結果が変わらないため
@@ -97,3 +106,4 @@ internal/config/resolve.go	ast-v1:f3661ff161061af6e1e4b51a5ed2e1fe932e83ac86c424
 internal/domain/descriptor.go	ast-v1:c998d29e01c6a5a3a8d47650657ba62891deed029ceaaf7d7c7b53e7308d7563	Unix の os.Root.Close は syscall.Close の結果を返さず常に nil のため、closeErr 分岐の != と == は等価
 internal/discovery/discovery.go	ast-v1:68488007bc09068ae7c9f8ab1b2ca437ea50896dafdc3c925ef0428123b4b33d	canonicalize に失敗する root は後続の WalkDir と最終 Canonicalize で必ず失敗するため、設定 lookup の条件反転は結果を変えない
 internal/gitx/lock.go	ast-v1:e7607460dffafb75691012cb5c69670aa4d366f12e00c51543a05e9cdd90cc5a	map の初期 capacity は内容・len・戻り値を変えないため、内部 capacity を契約にしない
+internal/config/v2.go	ast-v1:5bc3f4a3e36d83a9f5991fc8074ce1a171ea97abae8b68dbbc3a54fef08299a1	raw.Repositories が空のときも後続の nil map 初期化で同じ空 map になり、実効設定や保存結果に差がない等価変異
