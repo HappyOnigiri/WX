@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/HappyOnigiri/WX/internal/daemon"
 )
 
 const resumeParserTestTimeout = time.Second
@@ -101,5 +105,71 @@ func TestCodexExecResumePartsSplitsExistingResume(t *testing.T) {
 	prefix, rest, ok := codexExecResumeParts([]string{"exec", "resume", "session-id", "prompt"})
 	if !ok || !reflect.DeepEqual(prefix, []string{"exec"}) || !reflect.DeepEqual(rest, []string{"prompt"}) {
 		t.Fatalf("codexExecResumeParts=%v, %v, %v, want [exec], [prompt], true", prefix, rest, ok)
+	}
+}
+
+func TestResolveDirectResumeMutationBoundariesReportTheRecordedCWD(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		conversationCWD string
+		wantNotice      string
+	}{
+		{name: "conversation cwd", conversationCWD: "/conversation", wantNotice: "/conversation"},
+		{name: "fallback source cwd", wantNotice: "/source"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := &resumeLaunchHandler{}
+			client, stop := serveResumeLaunchRPC(t, handler)
+			defer stop()
+			stderr := captureStderrForLease(t, func() {
+				got, ok := client.resolveDirectResume(context.Background(), "/source", tt.conversationCWD)
+				if !ok || got.cwd == "" {
+					t.Fatalf("direct resume=%+v ok=%t, want a worktree-free start", got, ok)
+				}
+			})
+			if !strings.Contains(stderr, tt.wantNotice) {
+				t.Fatalf("stderr=%q, want recorded path %q", stderr, tt.wantNotice)
+			}
+			if methods := handler.methodsSnapshot(); len(methods) == 0 || methods[len(methods)-1] != "WorktreePolicy" {
+				t.Fatalf("methods=%v, want a policy lookup", methods)
+			}
+		})
+	}
+}
+
+func TestResumeWorktreePolicyMutationBoundariesKeepDaemonReply(t *testing.T) {
+	handler := &resumeLaunchHandler{policy: daemon.WorktreePolicyReply{Root: "/workspace", Mode: "cold", Resolved: true}}
+	client, stop := serveResumeLaunchRPC(t, handler)
+	defer stop()
+	if got := client.resumeWorktreePolicy(context.Background(), "/conversation"); !reflect.DeepEqual(got, handler.policy) {
+		t.Fatalf("policy=%+v, want %+v", got, handler.policy)
+	}
+}
+
+func TestValidateResumeOptionsMutationBoundaries(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		intent   resumeIntent
+		explicit string
+		fresh    bool
+		branches []string
+		wantErr  string
+	}{
+		{name: "ordinary launch", intent: resumeIntent{Kind: resumeIntentNone}},
+		{name: "fresh requires resume", intent: resumeIntent{Kind: resumeIntentNone}, fresh: true, wantErr: "fresh"},
+		{name: "intent is a resume", intent: resumeIntent{Kind: resumeIntentLookup}, fresh: true},
+		{name: "explicit is a resume", explicit: "session", fresh: true},
+		{name: "branch needs fresh", intent: resumeIntent{Kind: resumeIntentLookup}, branches: []string{"main"}, wantErr: "fresh"},
+		{name: "fresh branch is valid", intent: resumeIntent{Kind: resumeIntentLookup}, branches: []string{"main"}, fresh: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateResumeOptions(tt.intent, tt.explicit, tt.fresh, tt.branches)
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("err=%v, want nil", err)
+			}
+			if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("err=%v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
