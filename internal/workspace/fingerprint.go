@@ -21,13 +21,15 @@ import (
 )
 
 const (
-	fingerprintSchemaVersion         = 8
-	updateCompatibilitySchemaVersion = 3
+	fingerprintSchemaVersion         = 9
+	updateCompatibilitySchemaVersion = 4
 )
 
 // UpdateCompatibilityFingerprint は既存 worktree の差分更新では変更できない準備条件だけを hash 化する。
 // OID、include/link の配置内容、readiness、reuse 方針は更新時に再計算できるため含めない。
 // schema=3 は submodule 方針を含める。更新経路は submodule を実体化せず、false で作った standby を true 相当へ変換できない。
+// schema=4 は source worktree の sparse checkout 方針を含める。更新経路は
+// 既存 worktree の skip-worktree 範囲を安全に組み替えないため、パターン変更後に更新しない。
 // commentlint:allow-long -- schema を上げた理由と、更新互換側にも要る条件を保守時に確認できるようにする
 func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c config.Config) (string, error) {
 	workspaceRoot, err := repositoryWorkspaceRoot(repo)
@@ -45,6 +47,9 @@ func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c
 	if err := writePrepareFingerprint(h, repo, c); err != nil {
 		return "", err
 	}
+	if err := writeSparseCheckoutFingerprint(h, repo); err != nil {
+		return "", err
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
@@ -57,6 +62,8 @@ func UpdateCompatibilityFingerprint(generation int, repo discovery.Repository, c
 // 下限とコピー方式は repository ごとに解決した実効値を入れる。schema は上げない。
 // 個別指定を足した repository は値そのものが変わって hash が変わり、他 repository の READY slot は生かしたままにできる。
 // schema=8 は submodule 実体化の方針も含め、方針変更後に以前の READY slot を再利用しない。
+// schema=9 は source worktree の sparse checkout 方針とパターンを含め、パターン変更後に
+// 以前の READY slot が古い path set のまま貸し出されないようにする。
 // commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	return fingerprintWithSchema(fingerprintSchemaVersion, generation, oid, repo, c)
@@ -154,10 +161,183 @@ func fingerprintWithSchema(schema, generation int, oid string, repo discovery.Re
 	if err := writePrepareFingerprint(h, repo, c); err != nil {
 		return "", err
 	}
+	if err := writeSparseCheckoutFingerprint(h, repo); err != nil {
+		return "", err
+	}
 	if err := verifyPinnedRepositoryPath(sourceRoot, mainPath); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// writeSparseCheckoutFingerprint は source worktree の sparse 選択を fingerprint へ含める。
+// sparse の実効値は Git の worktree-local config と worktree ごとの info/sparse-checkout にあり、
+// OID や wx の設定だけでは path set の変更を検出できない。disabled のときは残った古い pattern を無視する。
+func writeSparseCheckoutFingerprint(h hash.Hash, repo discovery.Repository) error {
+	enabled, cone, patterns, err := sparseCheckoutSettings(repo)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(h, "sparse-checkout-enabled=%t\n", enabled)
+	if !enabled {
+		return nil
+	}
+	_, _ = fmt.Fprintf(h, "sparse-checkout-cone=%t\n", cone)
+	_, _ = fmt.Fprintf(h, "sparse-checkout-patterns=%x\n", sha256.Sum256(patterns))
+	return nil
+}
+
+// sparseCheckoutSettings は Git が source worktree に適用する sparse の設定と pattern を読む。
+// Fingerprint は Git runner を持たないため、Git の local config のうち sparse に関係する値だけを読む。
+// `.git` が無いテスト用・未初期化ディレクトリは非 sparse として扱い、既存の fingerprint 契約を保つ。
+func sparseCheckoutSettings(repo discovery.Repository) (enabled, cone bool, patterns []byte, err error) {
+	gitDir, found, err := worktreeGitDir(string(repo.MainPath))
+	if err != nil {
+		return false, false, nil, err
+	}
+	if !found {
+		return false, false, nil, nil
+	}
+	commonDir := gitDir
+	if data, readErr := os.ReadFile(filepath.Join(gitDir, "commondir")); readErr == nil {
+		value := strings.TrimSpace(string(data))
+		if value != "" {
+			commonDir = value
+			if !filepath.IsAbs(commonDir) {
+				commonDir = filepath.Join(gitDir, commonDir)
+			}
+			commonDir, err = filepath.Abs(filepath.Clean(commonDir))
+			if err != nil {
+				return false, false, nil, err
+			}
+		}
+	}
+	values, err := readGitConfigValues(filepath.Join(commonDir, "config"))
+	if err != nil {
+		return false, false, nil, err
+	}
+	// config.worktree は extensions.worktreeConfig が有効なときだけ Git が読む。
+	worktreeConfig := gitBoolConfig(values["extensions.worktreeconfig"])
+	if worktreeConfig {
+		worktreeValues, readErr := readGitConfigValues(filepath.Join(gitDir, "config.worktree"))
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return false, false, nil, readErr
+		}
+		for key, value := range worktreeValues {
+			values[key] = value
+		}
+	}
+	enabled, err = parseGitBoolConfig(values["core.sparsecheckout"])
+	if err != nil {
+		return false, false, nil, err
+	}
+	if !enabled {
+		return false, false, nil, nil
+	}
+	cone, err = parseGitBoolConfig(values["core.sparsecheckoutcone"])
+	if err != nil {
+		return false, false, nil, err
+	}
+	patternDir := commonDir
+	if worktreeConfig {
+		patternDir = gitDir
+	}
+	patterns, err = os.ReadFile(filepath.Join(patternDir, "info", "sparse-checkout"))
+	if errors.Is(err, os.ErrNotExist) {
+		patterns = nil
+		err = nil
+	}
+	if err != nil {
+		return false, false, nil, fmt.Errorf("read sparse checkout patterns: %w", err)
+	}
+	return enabled, cone, patterns, nil
+}
+
+// worktreeGitDir は worktree の `.git` directory/file から、その worktree 専用 Git directory を解決する。
+func worktreeGitDir(worktree string) (string, bool, error) {
+	gitPath := filepath.Join(worktree, ".git")
+	info, err := os.Stat(gitPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if info.IsDir() {
+		absolute, absErr := filepath.Abs(filepath.Clean(gitPath))
+		return absolute, true, absErr
+	}
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return "", false, err
+	}
+	line := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(strings.ToLower(line), "gitdir:") {
+		return "", false, fmt.Errorf("invalid .git file in %s", worktree)
+	}
+	value := strings.TrimSpace(line[len("gitdir:"):])
+	if value == "" {
+		return "", false, fmt.Errorf("empty gitdir in %s", worktree)
+	}
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(worktree, value)
+	}
+	absolute, err := filepath.Abs(filepath.Clean(value))
+	return absolute, true, err
+}
+
+// readGitConfigValues は sparse 判定に必要な範囲の Git config を読む小さな parser である。
+// include は local config の sparse 値を上書きしないため展開せず、同じ key の後続値を採用する。
+func readGitConfigValues(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	values := map[string]string{}
+	section := ""
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(strings.TrimSuffix(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]")))
+			if index := strings.IndexByte(section, ' '); index >= 0 {
+				section = section[:index]
+			}
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			key, value = line, "true"
+		}
+		if section == "" {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		values[section+"."+key] = value
+	}
+	return values, nil
+}
+
+func gitBoolConfig(value string) bool {
+	parsed, err := parseGitBoolConfig(value)
+	return err == nil && parsed
+}
+
+func parseGitBoolConfig(value string) (bool, error) {
+	switch strings.ToLower(strings.Trim(strings.TrimSpace(value), "\"'")) {
+	case "true", "yes", "on", "1":
+		return true, nil
+	case "", "false", "no", "off", "0":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid Git boolean %q", value)
+	}
 }
 
 // fingerprintWorkspaceRoot は workspace root の rule と、その rule が配置する実体を hash 化する。

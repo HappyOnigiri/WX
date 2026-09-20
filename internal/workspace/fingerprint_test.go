@@ -429,6 +429,64 @@ func TestSubmodulePolicyChangesBothFingerprints(t *testing.T) {
 	}
 }
 
+// sparse の path set と cone 方針は、同じ OID でも worktree の実体を変えるため、
+// READY の再利用 fingerprint と既存 worktree の更新互換 fingerprint の両方を変える。
+func TestSparseSelectionChangesBothFingerprints(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	for _, path := range []string{"inside/kept.txt", "outside/dropped.txt"} {
+		full := filepath.Join(repository, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(path+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	cfg := config.Defaults()
+	prepare := func() string {
+		t.Helper()
+		value, err := Fingerprint(1, "oid", repo, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	update := func() string {
+		t.Helper()
+		value, err := UpdateCompatibilityFingerprint(1, repo, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	plainPrepare, plainUpdate := prepare(), update()
+
+	gitCommand(t, repository, "sparse-checkout", "set", "--cone", "inside")
+	insidePrepare, insideUpdate := prepare(), update()
+	if insidePrepare == plainPrepare || insideUpdate == plainUpdate {
+		t.Fatalf("enabling sparse checkout did not change fingerprints: prepare=%s update=%s", insidePrepare, insideUpdate)
+	}
+
+	gitCommand(t, repository, "sparse-checkout", "set", "--cone", "outside")
+	outsidePrepare, outsideUpdate := prepare(), update()
+	if outsidePrepare == insidePrepare || outsideUpdate == insideUpdate {
+		t.Fatalf("changing sparse cone path did not change fingerprints: prepare=%s update=%s", outsidePrepare, outsideUpdate)
+	}
+
+	gitCommand(t, repository, "sparse-checkout", "set", "--no-cone", "/outside/")
+	nonConePrepare, nonConeUpdate := prepare(), update()
+	if nonConePrepare == outsidePrepare || nonConeUpdate == outsideUpdate {
+		t.Fatalf("changing sparse cone mode did not change fingerprints: prepare=%s update=%s", nonConePrepare, nonConeUpdate)
+	}
+}
+
 // repository 個別の copy_mode は、その repository の fingerprint と更新互換 fingerprint だけを変える。
 // 個別指定が1つも無い設定では、以前と同じ値のままでなければ全 READY slot が無効になる。
 func TestFingerprintFollowsRepositoryCopyMode(t *testing.T) {
