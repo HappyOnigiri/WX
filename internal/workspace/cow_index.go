@@ -128,8 +128,8 @@ func (s *cowScope) narrow(entries []cowIndexEntry) []cowIndexEntry {
 		return entries
 	}
 	capacity := len(entries)
-	if s.rewritten != nil && len(s.rewritten) < capacity {
-		capacity = len(s.rewritten)
+	if s.rewritten != nil {
+		capacity = min(capacity, len(s.rewritten))
 	}
 	candidates := make([]cowIndexEntry, 0, capacity)
 	for _, entry := range entries {
