@@ -104,7 +104,8 @@ AGENTS.local.md, CLAUDE.md, CLAUDE.local.md, the agent asset directories
 .claude/skills, .claude/agents, .claude/commands, .claude/hooks and
 .codex/prompts, and whatever the rules below add. Missing paths are skipped.
 Add more with a .worktreeinclude (copied, glob patterns, no match is fine) and a
-.worktreelink (symlinked back to the root, literal paths that must exist) in the
+.worktreelink (symlinked back to the root; glob patterns may match nothing,
+literal paths must exist) in the
 root itself, or with wx config --workspace <root> copy --add and link --add. A
 copy path set in the config must exist or preparation fails. A path cannot be both copied and linked. The root manifests
 apply to multi-repository workspaces only; inside a repository the same file
@@ -221,7 +222,7 @@ AGENTS.local.md、CLAUDE.md、CLAUDE.local.md、agent asset directory
 .claude/skills、.claude/agents、.claude/commands、.claude/hooks と
 .codex/prompts と、下記の規則が追加する path です。存在しない path は省略します。
 .worktreeinclude（copy、glob は no match 可）と
-.worktreelink（root へ symlink、存在必須の literal path）を
+.worktreelink（root へ symlink、glob は no match 可、literal path は存在必須）を
 root itself, or with wx config --workspace <root> copy --add and link --add. A
 設定した copy path は存在しないと準備に失敗します。path は copy と link の両方にはできません。root manifest は
 multi-repository workspace にだけ適用し、repository 内では同じ file

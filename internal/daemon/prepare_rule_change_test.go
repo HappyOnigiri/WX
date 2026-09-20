@@ -149,3 +149,76 @@ func TestInterruptedStandbyPreparationIsRecycled(t *testing.T) {
 		t.Fatalf("replenishment suspended=%t err=%v", suspended, err)
 	}
 }
+
+// TestPreparationKeepsPlacementHistoryWhenGlobMatchesAppearMidJob は、glob の展開が配置と記録で
+// 別々に走らないことを確かめる。prepare command が新しい match を作る区間は配置の後・記録の前にあたるため、
+// 展開をやり直すと「記録にあるのに実体が無い」link が残る。
+// commentlint:allow-long -- 展開を 1 回に閉じる契約が破れたときの症状を残す
+func TestPreparationKeepsPlacementHistoryWhenGlobMatchesAppearMidJob(t *testing.T) {
+	requireDaemonIntegration(t)
+	root := t.TempDir()
+	repository := filepath.Join(root, "repo")
+	initGitRepo(t, repository)
+	for name, content := range map[string]string{
+		".gitignore":    "local-*\n.worktreeinclude\n.worktreelink\n",
+		".worktreelink": "local-*\n",
+	} {
+		if err := os.WriteFile(filepath.Join(repository, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, repository, "add", ".gitignore")
+	gitRun(t, repository, "commit", "-m", "ignore local rules")
+	if err := os.MkdirAll(filepath.Join(repository, "local-a"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	appear := "mkdir -p " + filepath.Join(repository, "local-b")
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = filepath.Join(root, "worktrees")
+	cfg.Worktree.Undefined = "hot"
+	cfg.Pool.WarmPerWorkspace = 1
+	cfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"sh", "-c", appear}}}}
+	store, m, w, job := standbyPrepareJobFixture(t, cfg, root, repository)
+	ctx := context.Background()
+	claimed, err := store.ClaimJob(ctx, job.ID, "prepare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.runRecoveredJob(ctx, claimed); err != nil {
+		t.Fatalf("prepare failed after a new glob match appeared mid job: %v", err)
+	}
+	if err := store.FinishJob(ctx, claimed.ID, "prepare", nil); err != nil {
+		t.Fatal(err)
+	}
+	repositories, err := store.SlotRepositories(ctx, job.SlotID)
+	if err != nil || len(repositories) != 1 {
+		t.Fatalf("slot repositories=%+v err=%v", repositories, err)
+	}
+	placements, err := store.Placements(ctx, job.SlotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := map[string]bool{}
+	for _, placement := range placements {
+		if placement.Kind != "link" {
+			continue
+		}
+		if recorded[placement.RelativePath] {
+			t.Fatalf("link %s was recorded twice: %+v", placement.RelativePath, placements)
+		}
+		recorded[placement.RelativePath] = true
+		if _, err := os.Readlink(filepath.Join(repositories[0].WorktreePath, placement.RelativePath)); err != nil {
+			t.Fatalf("recorded link %s has no symlink in the worktree: %v", placement.RelativePath, err)
+		}
+	}
+	if !recorded["local-a"] {
+		t.Fatalf("the match present at placement time was not recorded: %+v", placements)
+	}
+	if _, err := os.Lstat(filepath.Join(repositories[0].WorktreePath, "local-b")); err == nil && !recorded["local-b"] {
+		t.Fatalf("local-b was placed without a placement record: %+v", placements)
+	}
+	suspended, err := store.ReplenishSuspended(ctx, string(w.ID))
+	if err != nil || suspended {
+		t.Fatalf("replenishment suspended=%t err=%v", suspended, err)
+	}
+}
