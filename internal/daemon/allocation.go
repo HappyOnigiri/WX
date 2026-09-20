@@ -70,7 +70,7 @@ func (m *Manager) allocateWithID(ctx context.Context, id, rootPath, rootID, toke
 		return Lease{}, false, err
 	}
 	defer releaseRoot()
-	repos, err := m.slotRepos(slotPath, w, resolved, generation, nil, attrs.Prepare)
+	repos, err := m.slotRepos(ctx, slotPath, w, resolved, generation, nil, attrs.Prepare)
 	if err != nil {
 		return Lease{}, false, err
 	}
@@ -332,7 +332,7 @@ func (m *Manager) ownedDirectoryIdentity(path string) (string, error) {
 // slotRepos は slot の repository 行を組む。override は貸出要求が指定した準備設定の上書きで、
 // fingerprint と更新互換 fingerprint を上書き後の設定で計算させる。
 // 上書きを混ぜないと、既定設定の fingerprint を持つ slot が別設定で準備され、後の貸出で再利用される。
-func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []pool.Resolved, generation int, hot map[string]bool, override config.PrepareOverride) ([]state.SlotRepository, error) {
+func (m *Manager) slotRepos(ctx context.Context, slotPath string, w discovery.Workspace, resolved []pool.Resolved, generation int, hot map[string]bool, override config.PrepareOverride) ([]state.SlotRepository, error) {
 	// hotにないrepositoryはCOLDとして記録し、実際のlease時までcheckoutを遅らせる。
 	cfg := override.Apply(m.Config())
 	out := make([]state.SlotRepository, 0, len(resolved))
@@ -342,11 +342,11 @@ func (m *Manager) slotRepos(slotPath string, w discovery.Workspace, resolved []p
 		if err := validateLayoutComponent("repository directory", dirName); err != nil {
 			return nil, err
 		}
-		fp, err := workspace.Fingerprint(generation, r.OID, r.Repository, cfg)
+		fp, err := workspace.FingerprintWithGit(ctx, m.git, generation, r.OID, r.Repository, cfg)
 		if err != nil {
 			return nil, err
 		}
-		compatibility, err := workspace.UpdateCompatibilityFingerprint(generation, r.Repository, cfg)
+		compatibility, err := workspace.UpdateCompatibilityFingerprintWithGit(ctx, m.git, generation, r.Repository, cfg)
 		if err != nil {
 			return nil, err
 		}

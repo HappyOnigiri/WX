@@ -415,7 +415,7 @@ type readyRepositoryResult struct {
 // ファイル I/O と Git 起動を伴うため repository ごとに並列で呼ばれる。
 // owner と preparer は候補 slot 全体で共有し、この経路は読み取りだけで両者の状態を変えない。
 func (m *Manager) readyRepositoryMatches(ctx context.Context, s state.Slot, preparer *workspace.Preparer, r pool.Resolved, stored state.SlotRepository, root string, owner *os.Root) (bool, error) {
-	fp, err := workspace.Fingerprint(s.Generation, r.OID, r.Repository, m.Config())
+	fp, err := workspace.FingerprintWithGit(ctx, m.git, s.Generation, r.OID, r.Repository, m.Config())
 	if err != nil {
 		return false, err
 	}
