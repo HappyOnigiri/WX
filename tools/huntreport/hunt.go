@@ -220,6 +220,19 @@ func testExcerpt(result gotest.Result, root gotest.TestID) string {
 	return "... (truncated) ...\n" + text[len(text)-excerptLimit:]
 }
 
+// deterministicFailures は1度も成功しなかったテストを "package.Test" の形で並べる。
+// 宣言を解決できずmanifestから落ちたテストも拾えるよう、集計そのものから数える。
+func (s *huntState) deterministicFailures() []string {
+	var names []string
+	for id := range s.failingNames {
+		if tally := s.tallies[id]; tally.Fail > 0 && tally.Pass == 0 {
+			names = append(names, id.Package+"."+id.Test)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // resolveDeclarations は失敗したテストの宣言をまとめて引く。
 // 解決できないパッケージは診断へ落とし、他のテストの報告を止めない。
 func (s *huntState) resolveDeclarations(ctx context.Context) error {
