@@ -313,9 +313,6 @@ func (c Client) RunLeaseRelease(ctx context.Context, sessionID string, discard, 
 	if err := c.RPC.Call(callCtx, "ReleaseLease", map[string]any{"session_id": sessionID, "reason": "wx-release", "discard": discard}, &reply); err != nil {
 		return reportLeaseErrorLanguage(err, cliLanguage(c))
 	}
-	if reply.SessionID == "" {
-		reply.SessionID = sessionID
-	}
 	if wait && reply.JobID != "" {
 		if !jsonOut {
 			localizer := cliLocalizer(c)
@@ -390,7 +387,7 @@ func (c Client) waitForRelease(ctx context.Context, reply *releaseReply, jsonOut
 	progress := tui.StartProgress(os.Stderr, tui.InteractiveOutput(os.Stderr) && !jsonOut, localizer.Localize("progress.releasing", nil))
 	defer progress.Finish()
 	for {
-		if reply.State == "SUCCEEDED" || reply.State == "FAILED" || (reply.State == "" && reply.SlotState != "") {
+		if reply.State == "SUCCEEDED" || reply.State == "FAILED" {
 			return nil
 		}
 		var next releaseReply

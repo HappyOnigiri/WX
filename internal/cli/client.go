@@ -45,6 +45,13 @@ type Client struct {
 // config.Load を経ない呼び出しでも discovery RPC を固定の短い client timeout に落とさないための下限である。
 const defaultDiscoveryBudget = 30 * time.Second
 
+// daemonKickstartTimeout と daemonKickstartPoll は launchd 起動後の確認予算と間隔である。
+// duration の単位を直接書き、測定対象に含まれない算術で待機時間を組み立てない。
+const (
+	daemonKickstartTimeout time.Duration = 3_000_000_000
+	daemonKickstartPoll    time.Duration = 50_000_000
+)
+
 // discoveryTimeout は repository discovery を行う RPC の制限時間を返す。
 // daemon の discovery.timeout に余裕を足し、予定どおり進む大規模 root の探索を client 側で中断しない。
 func (c Client) discoveryTimeout() time.Duration {
@@ -96,12 +103,12 @@ func (c Client) checkDaemon(ctx context.Context) error {
 	if err := launchd.Kickstart(ctx); err != nil {
 		return daemonRecoveryError("cli.daemon.unavailable", err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(daemonKickstartTimeout)
 	for time.Now().Before(deadline) {
 		if err := c.RPC.Call(ctx, "Ping", struct{}{}, &pong); err == nil {
 			return nil
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(daemonKickstartPoll)
 	}
 	return daemonRecoveryError("cli.daemon.not_ready", nil)
 }
@@ -542,7 +549,8 @@ var wxChildEnvironmentKeys = map[string]struct{}{
 }
 
 func childEnvironment(base, overrides []string) []string {
-	env := make([]string, 0, len(base)+len(overrides))
+	// 容量は子 process へ渡す環境の契約ではなく、長さの算術をここで維持する理由はない。
+	env := make([]string, 0)
 	for _, entry := range base {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok {

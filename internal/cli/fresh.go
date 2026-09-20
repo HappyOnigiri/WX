@@ -129,7 +129,7 @@ func agentArgsContainPrompt(args []string, values map[string]agentOptionValue) b
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
-			return i+1 < len(args)
+			return i < len(args)-1
 		}
 		if arg == "-" || !strings.HasPrefix(arg, "-") {
 			return true
@@ -143,9 +143,10 @@ func agentArgsContainPrompt(args []string, values map[string]agentOptionValue) b
 		}
 		switch values[name] {
 		case agentOptionOne:
-			if i+1 < len(args) {
-				i++
+			if i+1 == len(args) {
+				break
 			}
+			i++
 		case agentOptionOptional:
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
