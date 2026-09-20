@@ -72,7 +72,8 @@ func commandMain(parent context.Context, args []string, output, errorOutput io.W
 }
 
 // run はラウンドを期限まで繰り返し、manifestとstep summaryを残す。
-// 失敗ラウンドが1つでもあればコード1を返し、ハントのジョブは従来どおり赤くなる。
+// flakeの検出はハントが目的どおり働いた結果なので、失敗ラウンドがあってもコード0を返す。
+// 報告は report-flaky-tests.cjs のissueが担い、赤いジョブはそれで気付けない事態のために取っておく。
 func run(ctx context.Context, cfg config, output io.Writer) (int, error) {
 	if err := validateConfig(cfg); err != nil {
 		return 1, err
@@ -95,10 +96,28 @@ func run(ctx context.Context, cfg config, output io.Writer) (int, error) {
 	}
 	_, _ = fmt.Fprintf(output, "huntreport: %s rounds=%d failures=%d anomalies=%d tests=%d\n",
 		cfg.HuntID, man.Rounds, man.FailedRounds, man.AnomalyRounds, len(man.Tests))
-	if man.FailedRounds > 0 || man.AnomalyRounds > 0 {
-		return 1, nil
+	return huntExit(man, hunt.deterministicFailures(), output), nil
+}
+
+// huntExit はハント自身の異常だけをジョブの失敗にする。
+// 異常ラウンドはテスト単位の集計を信じてよい実行ではなく、決定的な失敗は再実行で回復しないので
+// flakyとして起票されない。どちらも赤いジョブ以外に気付く手段がない。
+func huntExit(man huntManifest, deterministic []string, output io.Writer) int {
+	for _, name := range deterministic {
+		_, _ = fmt.Fprintf(output, "::error title=Deterministic test failure::%s failed in every round of %s\n", name, man.HuntID)
 	}
-	return 0, nil
+	if man.AnomalyRounds > 0 {
+		_, _ = fmt.Fprintf(output, "::error title=Flake hunt anomaly::%s had %d round(s) whose results cannot be trusted\n",
+			man.HuntID, man.AnomalyRounds)
+	}
+	if man.AnomalyRounds > 0 || len(deterministic) > 0 {
+		return 1
+	}
+	if man.FailedRounds > 0 {
+		_, _ = fmt.Fprintf(output, "::notice title=Flaky tests found::%s observed %d flaky test(s) in %d of %d rounds\n",
+			man.HuntID, len(man.Tests), man.FailedRounds, man.Rounds)
+	}
+	return 0
 }
 
 func validateConfig(cfg config) error {

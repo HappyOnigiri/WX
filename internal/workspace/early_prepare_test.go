@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -250,5 +251,42 @@ func TestPrepareStagedRecordsNoNoticeForSilentHook(t *testing.T) {
 	}
 	if recorded := notices.Notices(); len(recorded) != 0 {
 		t.Fatalf("notices = %+v, want none", recorded)
+	}
+}
+
+// TestPrepareStagedStagesExpandedLinkGlobMatches は、readiness.early_paths の照合が展開後の path で行われ、
+// 同じ glob から出た match でも早期・後期に分かれることを確かめる。
+// 展開しない実装では `local-*` という名前の path が無いため、どの match も早期に振られなかった。
+func TestPrepareStagedStagesExpandedLinkGlobMatches(t *testing.T) {
+	t.Parallel()
+	source, repo, preparer, _, target := prepareEdgesFixture(t)
+	preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	preparer.Config.Readiness.EarlyPaths = []string{"local-a"}
+	writeRepositoryFiles(t, source, map[string]string{
+		".gitignore":    "local-*\n",
+		".worktreelink": "local-*\n",
+	})
+	gitCommand(t, source, "add", ".")
+	gitCommand(t, source, "commit", "-m", "glob link rule")
+	oid := gitOutput(t, source, "rev-parse", "HEAD")
+	writeRepositoryFiles(t, source, map[string]string{"local-a/value": "a\n", "local-b/value": "b\n"})
+	var earlyLinks []string
+	if _, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error {
+		for _, name := range []string{"local-a", "local-b"} {
+			if _, err := os.Readlink(filepath.Join(target, name)); err == nil {
+				earlyLinks = append(earlyLinks, name)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("staged preparation failed: %v", err)
+	}
+	if !slices.Equal(earlyLinks, []string{"local-a"}) {
+		t.Fatalf("early links=%v, want only the match named in readiness.early_paths", earlyLinks)
+	}
+	for _, name := range []string{"local-a", "local-b"} {
+		if link, err := os.Readlink(filepath.Join(target, name)); err != nil || link != filepath.Join(source, name) {
+			t.Fatalf("final link %s=%q err=%v", name, link, err)
+		}
 	}
 }

@@ -32,6 +32,7 @@ Do not guess missing files from wx's findings alone; compare the main checkout w
 
 Prefer `.worktreelink` for required untracked paths.
 A `.worktreelink` entry shares the same object across the main checkout and every slot.
+Entries may be glob patterns such as `.claude/skills/local-*` (same rules as `.worktreeinclude`; matching nothing is fine).
 Use `.worktreeinclude` only when sharing one object would cause conflicts, corruption, or unintended state propagation and each slot therefore needs its own copy.
 Never put the same path in both manifests, and do not add tracked paths to either manifest.
 
