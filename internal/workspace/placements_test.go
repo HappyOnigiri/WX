@@ -1,11 +1,17 @@
 package workspace
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
+	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
@@ -64,5 +70,77 @@ func TestRootPlacementsListsCopiesAndLinks(t *testing.T) {
 	}
 	if _, ok := kinds["configs"]; ok {
 		t.Fatalf("copied directory recorded as a placement: %+v", placements)
+	}
+}
+
+// TestRepositoryPlacementsExpandLinkGlobs は、standby の UPDATE が比べる desired 側の link 計画が
+// 展開後の match で作られ、match の増減がそのまま計画の増減になることを確認する。
+// 展開順は safeGlob が各階層で整列するため決定的で、履歴との比較が回ごとに揺れない。
+func TestRepositoryPlacementsExpandLinkGlobs(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	repository := filepath.Join(base, "repository")
+	worktreeRoot := filepath.Join(base, "worktrees")
+	if err := os.MkdirAll(repository, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(worktreeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("local-*\n.worktreelink\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("local-*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".gitignore")
+	gitCommand(t, repository, "commit", "-m", "ignore local rules")
+	oid := gitOutput(t, repository, "rev-parse", "HEAD")
+	for _, name := range []string{"local-b", "local-a"} {
+		if err := os.Mkdir(filepath.Join(repository, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	owner, _, err := domain.OpenOwnedRoot(worktreeRoot, worktreeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = worktreeRoot
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 10 * time.Second}, Config: cfg, OwnedRoot: owner, RootPath: worktreeRoot}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+
+	linkPaths := func() []string {
+		t.Helper()
+		placements, err := preparer.RepositoryPlacements(context.Background(), repo, oid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, placement := range placements {
+			if placement.Kind == "link" {
+				out = append(out, placement.RelativePath)
+			}
+		}
+		return out
+	}
+	if got := linkPaths(); !slices.Equal(got, []string{"local-a", "local-b"}) {
+		t.Fatalf("link placements=%v want the expanded matches in order", got)
+	}
+	if err := os.Mkdir(filepath.Join(repository, "local-c"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := linkPaths(); !slices.Equal(got, []string{"local-a", "local-b", "local-c"}) {
+		t.Fatalf("link placements=%v want a new match added", got)
+	}
+	if err := os.RemoveAll(filepath.Join(repository, "local-b")); err != nil {
+		t.Fatal(err)
+	}
+	if got := linkPaths(); !slices.Equal(got, []string{"local-a", "local-c"}) {
+		t.Fatalf("link placements=%v want the removed match dropped", got)
 	}
 }

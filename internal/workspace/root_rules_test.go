@@ -264,3 +264,58 @@ func TestPlanRootStagesPlacesRootAgentAssetsEarly(t *testing.T) {
 		t.Fatalf("include was not placed in the late stage: %v", err)
 	}
 }
+
+// TestResolveRootRulesExpandsLinkGlobs は、非 Git workspace root の `.worktreelink` でも glob が展開され、
+// 展開後の path が既定 agent 資産の optional copy を落とすことを確かめる。
+// 既定を落とさないと同じ path を copy と link の両方が所有し、rule 衝突で準備が失敗する。
+func TestResolveRootRulesExpandsLinkGlobs(t *testing.T) {
+	t.Parallel()
+	source := t.TempDir()
+	writeRootFile(t, source, filepath.Join(".claude", "skills", "local-a", "SKILL.md"), "a\n")
+	writeRootFile(t, source, filepath.Join(".claude", "skills", "local-b", "SKILL.md"), "b\n")
+	writeRootFile(t, source, filepath.Join("bin", "one"), "#!/bin/sh\n")
+	writeRootFile(t, source, filepath.Join("bin", "two"), "#!/bin/sh\n")
+	writeRootFile(t, source, ".worktreelink", ".claude/skills/local-*/\nbin/*\nabsent-*\n")
+
+	rules, err := ResolveRootRules(source, config.Workspace{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(".claude", "skills", "local-a"), filepath.Join(".claude", "skills", "local-b"), filepath.Join("bin", "one"), filepath.Join("bin", "two")}
+	if !slices.Equal(rules.Link, want) {
+		t.Fatalf("links=%v want=%v", rules.Link, want)
+	}
+	if containsRule(rules.OptionalCopy, filepath.Join(".claude", "skills")) {
+		t.Fatalf("expanded links did not drop the default agent asset: %v", rules.OptionalCopy)
+	}
+
+	target := t.TempDir()
+	if err := MaterializeRoot(nil, source, target, rules); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range want {
+		info, err := os.Lstat(filepath.Join(target, relative))
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("expanded link %s was not a symlink: mode=%v err=%v", relative, info, err)
+		}
+	}
+}
+
+// TestResolveRootRulesKeepsLiteralLinkRequired は、メタ文字を含まない行が展開されずに残り、
+// 欠落が準備失敗として扱われる既存の契約を保つことを確かめる。glob 行の 0 件は従来どおり成功させる。
+func TestResolveRootRulesKeepsLiteralLinkRequired(t *testing.T) {
+	t.Parallel()
+	source := t.TempDir()
+	writeRootFile(t, source, ".worktreelink", "missing-literal\nabsent-*\n")
+
+	rules, err := ResolveRootRules(source, config.Workspace{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rules.Link, []string{"missing-literal"}) {
+		t.Fatalf("links=%v want the literal line only", rules.Link)
+	}
+	if err := MaterializeRoot(nil, source, t.TempDir(), rules); err == nil || !strings.Contains(err.Error(), "missing-literal") {
+		t.Fatalf("a missing literal link must fail the preparation: %v", err)
+	}
+}

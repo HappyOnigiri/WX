@@ -114,6 +114,27 @@ func safeGlob(root, pattern string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	owner, err := OpenPhysicalRoot(absoluteRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = owner.Close() }()
+	matches, err := safeGlobAt(owner, pattern)
+	if err != nil {
+		return nil, err
+	}
+	for index := range matches {
+		matches[index] = filepath.Join(absoluteRoot, matches[index])
+	}
+	return matches, nil
+}
+
+// safeGlobAt は呼び出し側が pin した root descriptor 上で pattern を走査し、root 相対の match を返す。
+// root path 文字列から開き直さないため、TOCTOU 対策で descriptor を保持する経路からも使える。
+func safeGlobAt(owner *os.Root, pattern string) ([]string, error) {
+	if owner == nil {
+		return nil, errors.New("glob root is nil")
+	}
 	pattern = filepath.Clean(pattern)
 	if pattern == "." || filepath.IsAbs(pattern) {
 		return nil, errors.New("unsafe glob pattern")
@@ -124,17 +145,9 @@ func safeGlob(root, pattern string) ([]string, error) {
 			return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
 		}
 	}
-	owner, err := OpenPhysicalRoot(absoluteRoot)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = owner.Close() }()
 	var matches []string
 	if err := walkSafeGlob(owner, ".", parts, 0, &matches); err != nil {
 		return nil, err
-	}
-	for index := range matches {
-		matches[index] = filepath.Join(absoluteRoot, matches[index])
 	}
 	return matches, nil
 }
