@@ -154,6 +154,28 @@ func TestSubmoduleRefFindingsPreserveEqualKeyOrder(t *testing.T) {
 	}
 }
 
+// module path は ref より先に並べ、異なる module を入力順のまま返さない。
+func TestSubmoduleRefFindingsSortDifferentModulePaths(t *testing.T) {
+	findings := submoduleRefFindings([]submoduleRefIssue{
+		{Kind: submoduleRefUnknown, ModuleDir: "/modules/z", Ref: "refs/wx/recovery/z", Path: "z"},
+		{Kind: submoduleRefUnknown, ModuleDir: "/modules/a", Ref: "refs/wx/recovery/a", Path: "a"},
+	})
+	if len(findings) != 2 || findings[0].Target != "/modules/a" || findings[1].Target != "/modules/z" {
+		t.Fatalf("module path order=%+v, want /modules/a before /modules/z", findings)
+	}
+}
+
+// mismatched は missing と同じ重大さでも、表示する原因と action は別の契約を持つ。
+func TestSubmoduleRefFindingsDescribeMismatchedRefs(t *testing.T) {
+	findings := submoduleRefFindings([]submoduleRefIssue{{
+		Kind: submoduleRefMismatched, ModuleDir: "/modules/child", Ref: "refs/wx/recovery/head", Path: "vendor/child",
+		ExpiresAt: state.FormatTime(time.Now().Add(time.Hour)),
+	}})
+	if len(findings) != 1 || !strings.Contains(findings[0].Summary, "does not point") || !strings.Contains(findings[0].Cause, "differs") {
+		t.Fatalf("mismatched finding=%+v, want mismatch-specific summary and cause", findings)
+	}
+}
+
 // unmanaged artifact の種別ごとの件数は各種別一件の境界で正しく数える。
 func TestUnmanagedArtifactCauseCountsEachKind(t *testing.T) {
 	cause, _ := unmanagedArtifactCause([]unmanagedArtifact{
@@ -162,6 +184,16 @@ func TestUnmanagedArtifactCauseCountsEachKind(t *testing.T) {
 	})
 	if !strings.HasPrefix(cause, "1 slot directory/directories and 1 workspace snapshot archive(s)") {
 		t.Fatalf("cause=%q, want one directory and one snapshot", cause)
+	}
+}
+
+// 種別の集計は一方だけ複数になっても、directory と snapshot を取り違えない。
+func TestUnmanagedArtifactCauseKeepsAsymmetricKindCounts(t *testing.T) {
+	cause, _ := unmanagedArtifactCause([]unmanagedArtifact{
+		{Kind: unmanagedSlotDirectory}, {Kind: unmanagedSlotDirectory}, {Kind: unmanagedWorkspaceSnapshot},
+	})
+	if !strings.HasPrefix(cause, "2 slot directory/directories and 1 workspace snapshot archive(s)") {
+		t.Fatalf("cause=%q, want two directories and one snapshot", cause)
 	}
 }
 

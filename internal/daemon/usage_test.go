@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +16,15 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
+
+// DB 読み出しは許可しつつ、測定処理だけへキャンセルを返す context で
+// measureSlotUsage のキャンセル時ログ契約を検証する。
+type canceledUsageContext struct{}
+
+func (canceledUsageContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (canceledUsageContext) Done() <-chan struct{}       { return nil }
+func (canceledUsageContext) Err() error                  { return context.Canceled }
+func (canceledUsageContext) Value(any) any               { return nil }
 
 type reportedRootUsage struct {
 	Path           string `json:"path"`
@@ -182,6 +193,12 @@ func TestMeasureSlotUsageRecordsThePreparedSlotAlone(t *testing.T) {
 	sample, measured := manager.slotUsage["slot"]
 	if !measured || sample.usage.Files != 1 || sample.measuredAt.IsZero() {
 		t.Fatalf("slot sample=%+v measured=%v", sample, measured)
+	}
+	var logs bytes.Buffer
+	manager.log = slog.New(slog.NewTextHandler(&logs, nil))
+	manager.measureSlotUsage(canceledUsageContext{}, "slot")
+	if logs.Len() != 0 {
+		t.Fatalf("canceled slot measurement logged a warning: %s", logs.String())
 	}
 	cacheName := filepath.ToSlash(filepath.Join(slot.RelPath, "repo", "file"))
 	// 共有判定の cache は root 単位で持ち、次の root 全体の測定が再判定を省けるようにする。

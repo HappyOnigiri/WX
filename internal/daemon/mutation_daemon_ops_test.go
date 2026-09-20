@@ -152,6 +152,29 @@ func TestMutationDaemonOpsDiagnosticGatesAndArtifactRefs(t *testing.T) {
 		if len(findings) != 1 || findings[0].Severity != diag.SeverityOK || !containsString(findings[0].Details, "1 LFS object(s) checked") {
 			t.Fatalf("healthy LFS findings=%+v", findings)
 		}
+
+		// Missing objects with a size-matching source candidate are repairable and
+		// must not be reported as a healthy cache merely because the estimate has
+		// an LFS entry.
+		if err := os.Remove(cachePath); err != nil {
+			t.Fatal(err)
+		}
+		manager.capacityMu.Lock()
+		manager.capacityCache[key] = workspace.CapacityEstimate{RepositoryID: string(repo.ID), LFS: []workspace.LFSObjectInfo{{
+			OID: "sha256:" + strings.Repeat("b", 64), Size: int64(len("base\n")), CachePath: cachePath,
+			Paths: []string{"tracked.txt"}, CacheState: workspace.LFSCacheMissing,
+		}}, MissingLFSObjects: 1}
+		manager.capacityMu.Unlock()
+		findings = manager.lfsObjectFindings(ctx)
+		repairableDetail := false
+		for _, detail := range findings[0].Details {
+			if strings.Contains(detail, "size-matching source candidate") {
+				repairableDetail = true
+			}
+		}
+		if len(findings) != 1 || findings[0].Severity != diag.SeverityInfo || !repairableDetail {
+			t.Fatalf("repairable LFS findings=%+v, want informational candidate finding", findings)
+		}
 	})
 
 	t.Run("submodule preparation honors a repository false override", func(t *testing.T) {

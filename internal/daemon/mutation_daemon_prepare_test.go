@@ -321,6 +321,99 @@ func TestMutationMaterializeStagedRootRequiresStableIdentity(t *testing.T) {
 	}
 }
 
+// slot.Path が空の caller でも、設定済み worktree root の descriptor を使って準備する。
+func TestMutationNewPreparerFallsBackToConfiguredRootForEmptySlotPath(t *testing.T) {
+	t.Parallel()
+	_, manager, _, _, _, _ := managerCoverageFixture(t, "repository")
+	cfg := manager.Config()
+	cfg.System.Storage.WorktreeRoot = cfg.Storage.WorktreeRoot
+	manager.cfg = cfg
+	root := cfg.Storage.WorktreeRoot
+	if _, release, err := manager.rootDescriptor(root); err != nil {
+		t.Fatal(err)
+	} else {
+		defer release()
+	}
+	manager.mu.Lock()
+	manager.roots[root] = true
+	manager.mu.Unlock()
+	if manager.rootHandleForRoot(root) == nil {
+		t.Fatalf("root descriptor was not retained for %q", root)
+	}
+	preparer := manager.newPreparer(cfg, state.Slot{})
+	if preparer.OwnedRoot == nil || preparer.RootPath != root {
+		t.Fatalf("empty-slot preparer=%+v, want configured root descriptor", preparer)
+	}
+}
+
+// RESTORING slot は通常の prepare job で再実行せず、restore job へ戻す。
+func TestMutationPrepareSlotWithJobRejectsRestoreWithoutRestoreJob(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t, "repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "restore-job-required", 1, "RESTORING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	err := manager.prepareSlotWithJob(ctx, slot.ID, workspaceRecord, nil, nil, state.Job{})
+	if err == nil || !strings.Contains(err.Error(), "restore preparation must use the restore job") {
+		t.Fatalf("restore preparation error=%v, want restore-job guard", err)
+	}
+}
+
+// staged root の materialize 後に slot directory が消えた場合は、ownership の推測へ進まず元の filesystem error を返す。
+func TestMutationMaterializeStagedRootReturnsIdentityLookupFailure(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, _ := managerCoverageFixture(t, "multi_repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "staged-root-removed", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	root, _, err := manager.activeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, release, err := manager.existingRootDescriptor(root); err != nil {
+		t.Fatal(err)
+	} else {
+		t.Cleanup(release)
+	}
+	err = manager.materializeStagedRoot(ctx, slot, func(destination *os.Root, early bool) error {
+		if !early {
+			t.Fatal("materialize callback was not marked early")
+		}
+		if err := os.RemoveAll(slot.Path); err != nil {
+			return err
+		}
+		return nil
+	}, true)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged root removal error=%v, want the identity lookup filesystem error", err)
+	}
+}
+
+// LFS preflight の state 書込み失敗は成功扱いにせず呼び出し側へ返す。
+func TestMutationMarkLFSPreflightFailedPropagatesStateWriteFailure(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, _, databasePath := managerCoverageFixture(t, "repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "lfs-preflight-state-error", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	database := openTestDatabase(t, databasePath)
+	if _, err := database.ExecContext(ctx, `CREATE TRIGGER fail_lfs_preflight BEFORE UPDATE OF state ON slots WHEN NEW.id='lfs-preflight-state-error' AND NEW.state='FAILED' BEGIN SELECT RAISE(ABORT,'injected LFS preflight failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.markLFSPreflightFailed(ctx, slot); err == nil || !strings.Contains(err.Error(), "injected LFS preflight failure") {
+		t.Fatalf("markLFSPreflightFailed error=%v, want state write failure", err)
+	}
+}
+
+func TestMutationInvalidateCapacityCacheAcceptsNilManager(t *testing.T) {
+	t.Parallel()
+	var manager *Manager
+	manager.invalidateCapacityCache(discovery.Repository{ID: "repo"})
+}
+
 func TestMutationResolveBranchesLogsFetchFallback(t *testing.T) {
 	t.Parallel()
 	repoPath := filepath.Join(t.TempDir(), "repo")

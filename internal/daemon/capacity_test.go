@@ -76,6 +76,32 @@ func TestEnforcePrepareCapacityAllowsExactCapacity(t *testing.T) {
 	}
 }
 
+// warm_count は既定値1以外の補充計画でも、そのまま容量見積りへ反映する。
+func TestCheckPrepareCapacityUsesTheRequestedWarmMultiplier(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "capacity-multiplier", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	report, err := manager.checkPrepareCapacity(ctx, slot, workspaceRecord, resolved, nil, manager.Config(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.WarmCount != 2 {
+		t.Fatalf("capacity report warm_count=%d, want requested multiplier 2", report.WarmCount)
+	}
+	if len(report.Repositories) != 1 || report.Repositories[0].WorktreeBytes <= 0 {
+		t.Fatalf("capacity report repositories=%+v, want a positive repository estimate", report.Repositories)
+	}
+	for _, volume := range report.Volumes {
+		if volume.WorktreeRequired <= 0 {
+			t.Fatalf("capacity volume=%+v, want worktree bytes", volume)
+		}
+	}
+}
+
 func TestCapacityMathHandlesZeroAndOverflowBoundaries(t *testing.T) {
 	t.Parallel()
 	if got := capacityMul(0, 1); got != 0 {
@@ -293,8 +319,8 @@ func TestPrepareCapacityFindingsEstimateRegisteredWorkspace(t *testing.T) {
 	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
 
 	findings := manager.prepareCapacityFindings(ctx)
-	if len(findings) == 0 {
-		t.Fatal("prepareCapacityFindings returned no finding")
+	if len(findings) != 1 {
+		t.Fatalf("prepareCapacityFindings returned %d findings=%+v, want exactly one registered workspace finding", len(findings), findings)
 	}
 	for _, finding := range findings {
 		if finding.Severity == diag.SeverityUnchecked {

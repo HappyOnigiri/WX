@@ -29,7 +29,9 @@ func (m *Manager) newPreparer(cfg config.Config, slot state.Slot) *workspace.Pre
 	if err == nil {
 		ownedRoot = m.rootHandleForPath(slotPath)
 		if ownedRoot == nil && slotPath == "" {
-			ownedRoot = m.rootHandleForPath(root)
+			// root 自身は slot path ではないため rootForPath の配下判定に
+			// 通らない。空の caller だけは登録済み root を直接借りる。
+			ownedRoot = m.rootHandleForRoot(root)
 		}
 	}
 	return &workspace.Preparer{

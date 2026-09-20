@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,10 @@ func TestPrepareFailureAfterEarlyReadyKeepsTheLeaseAndSnapshots(t *testing.T) {
 	slot, err := f.Store.Slot(ctx, lease.SessionID)
 	if err != nil || slot.State != "LEASED" || !strings.HasPrefix(slot.FailureCode, "PREPARE_FAILED") || slot.FailurePhase != "post-checkout" {
 		t.Fatalf("slot=%+v: %v", slot, err)
+	}
+	repositories, err := f.Store.SlotRepositories(ctx, lease.SessionID)
+	if err != nil || len(repositories) != 1 || repositories[0].State != "READY" {
+		t.Fatalf("continued lease repositories=%+v err=%v, want repository state READY", repositories, err)
 	}
 	notice, err := f.Manager.ClaimPrepareFailureNotice(ctx, lease.SessionID, lease.Token)
 	if err != nil || !strings.Contains(notice, "phase=post-checkout") || !strings.Contains(notice, slot.FailureCode) {
@@ -137,5 +142,59 @@ func TestStandbyPrepareFailureIsStillQuarantined(t *testing.T) {
 	slot, err := f.Store.Slot(ctx, jobs[0].SlotID)
 	if err != nil || slot.State != "QUARANTINED" {
 		t.Fatalf("slot=%+v: %v", slot, err)
+	}
+}
+
+// early ready の state 書込みに失敗した準備は、書込み成功とみなして先へ進めない。
+func TestPrepareStagedSlotPropagatesEarlyReadyStateFailure(t *testing.T) {
+	t.Parallel()
+	f, repository := hookPrepareFixture(t, "")
+	ctx := context.Background()
+	lease, err := f.Manager.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := openTestDatabase(t, f.DatabasePath)
+	trigger := fmt.Sprintf("CREATE TRIGGER fail_early_ready BEFORE UPDATE OF early_ready_at ON slots WHEN NEW.id='%s' BEGIN SELECT RAISE(ABORT,'injected early-ready failure'); END", lease.SessionID)
+	if _, err := database.ExecContext(ctx, trigger); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := f.Store.RecoverJobs(ctx, false)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("prepare jobs=%+v err=%v", jobs, err)
+	}
+	job, err := f.Store.ClaimJob(ctx, jobs[0].ID, "early-ready-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Manager.runRecoveredJob(ctx, job); err == nil || !strings.Contains(err.Error(), "injected early-ready failure") {
+		t.Fatalf("prepare error=%v, want early-ready state failure", err)
+	}
+	slot, err := f.Store.Slot(ctx, lease.SessionID)
+	if err != nil || slot.State != "QUARANTINED" {
+		t.Fatalf("slot=%+v err=%v, want quarantined state after early-ready failure", slot, err)
+	}
+}
+
+// early ready 後の lease 遷移で FinishPreparation が失敗した場合は、その失敗を
+// 成功扱いにして PREPARING の slot を残さない。
+func TestLeaseAfterPrepareFailurePropagatesFinishPreparationFailure(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t, "repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "lease-finish-failure", 1, "PREPARING")
+	repository := state.SlotRepository{RepositoryID: string(resolved[0].Repository.ID), State: "PREPARE_RUNNING"}
+	if _, err := store.CreateStandby(ctx, slot, []state.SlotRepository{repository}); err != nil {
+		t.Fatal(err)
+	}
+	database := openTestDatabase(t, databasePath)
+	if _, err := database.ExecContext(ctx, `CREATE TRIGGER fail_finish_preparation BEFORE UPDATE OF state ON slots WHEN NEW.id='lease-finish-failure' AND NEW.state='READY' BEGIN SELECT RAISE(ABORT,'injected finish preparation failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.leaseAfterPrepareFailure(ctx, slot.ID); err == nil || !strings.Contains(err.Error(), "injected finish preparation failure") {
+		t.Fatalf("leaseAfterPrepareFailure error=%v, want finish failure", err)
+	}
+	got, err := store.Slot(ctx, slot.ID)
+	if err != nil || got.State != "QUARANTINED" {
+		t.Fatalf("slot after failed finish=%+v err=%v, want quarantine after ambiguous finish", got, err)
 	}
 }

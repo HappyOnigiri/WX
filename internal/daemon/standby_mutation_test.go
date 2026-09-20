@@ -44,6 +44,9 @@ func TestReconcileStandbyReplenishmentsQueuesRecoveredEnsure(t *testing.T) {
 	if len(jobs) != 1 || jobs[0].Kind != "ENSURE_STANDBY" || jobs[0].WorkspaceID != string(workspaceRecord.ID) {
 		t.Fatalf("recovered jobs=%+v, want one ENSURE_STANDBY for %s", jobs, workspaceRecord.ID)
 	}
+	if pending, running := manager.jobQueue.counts(jobClassMaintenance); pending != 1 || running != 0 {
+		t.Fatalf("recovered job queue pending=%d running=%d, want one queued maintenance job", pending, running)
+	}
 }
 
 // idle 更新の予約が貸出に先を越されたときは、次の候補へ進めるため競合を成功扱いにする。
@@ -399,6 +402,9 @@ func TestRunIdleStandbyUpdateSyncsMultiRepositoryRoot(t *testing.T) {
 	slot, err := f.store.Slot(ctx, updates[0].SlotID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if slot.State != "READY" {
+		t.Fatalf("updated multi-repository standby=%+v, want READY after root sync", slot)
 	}
 	got, err := os.ReadFile(filepath.Join(slot.Path, "AGENTS.md"))
 	if err != nil || string(got) != "updated root asset\n" {
