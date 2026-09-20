@@ -193,7 +193,10 @@ func TestIdempotentCallRetriesExactlyThreeTransientTransportFailures(t *testing.
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+	// 短い期限では負荷で三回目の transport failure より先に caller の deadline
+	// が切れ、検査対象外の context deadline exceeded が返る。retry 回数だけを
+	// 検査するため、呼び出し側の期限は設けない。
+	ctx, cancel := context.WithCancel(context.Background())
 	callErr := (Client{Socket: socket, Timeout: time.Second}).CallWithKey(ctx, "mutate", "retry-key", map[string]int{"value": 1}, nil)
 	cancel()
 	_ = listener.Close()
