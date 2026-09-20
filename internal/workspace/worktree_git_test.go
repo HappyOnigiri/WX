@@ -290,6 +290,70 @@ func TestRunWorktreeAdminOwnedRejectsAMismatchedIdentityBeforeTheGitCommand(t *t
 	}
 }
 
+// testlint:allow-serial -- PATH の fault wrapper と Git 開始直前の target 消失を組み合わせるため
+func TestRunWorktreeAdminOwnedReportsIdentityUnavailableAfterGitFailure(t *testing.T) {
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := preparer.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(preparer.RootPath, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installGitFault(t, "worktree unlock", 1)
+	removed := false
+	preparer.Git.SetBeforeRunAtHook(func(args []string) {
+		if removed || !strings.Contains(strings.Join(args, " "), "worktree unlock") {
+			return
+		}
+		removed = true
+		if err := os.RemoveAll(target); err != nil {
+			t.Fatalf("remove target before Git failure: %v", err)
+		}
+	})
+	_, err = preparer.runWorktreeAdminOwned(context.Background(), repo, preparer.OwnedRoot, relative, target, identity, "unlock")
+	if err == nil || !errors.Is(err, state.ErrOwnership) || !strings.Contains(err.Error(), "became unavailable") {
+		t.Fatalf("runWorktreeAdminOwned() error=%v, want unavailable ownership error", err)
+	}
+}
+
+// testlint:allow-serial -- /dev/fd の差分で、descriptorを閉じ忘れる変異を検出するため
+func TestRunWorktreeAdminOwnedClosesIdentityProbeDescriptor(t *testing.T) {
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := preparer.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(preparer.RootPath, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	faultGit := filepath.Join(bin, "git")
+	if err := os.WriteFile(faultGit, []byte("#!/bin/sh\nexit 2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	before := openDescriptorCount(t)
+	for i := 0; i < 16; i++ {
+		if _, err := preparer.runWorktreeAdminOwned(context.Background(), repo, preparer.OwnedRoot, relative, target, identity, "unlock"); err == nil {
+			t.Fatal("failing Git command unexpectedly succeeded")
+		}
+	}
+	after := openDescriptorCount(t)
+	if after > before+2 {
+		t.Fatalf("identity probe leaked descriptors: before=%d after=%d", before, after)
+	}
+}
+
 // TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailabilityは、verifyPreparedTargetIdentityを直接呼び、target消失とidentity不一致の両失敗分岐を確認する。
 func TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability(t *testing.T) {
 	t.Parallel()
@@ -322,6 +386,37 @@ func TestVerifyPreparedTargetIdentityDetectsMismatchAndUnavailability(t *testing
 	if err := preparer.verifyPreparedTargetIdentity(owner, relative, "any-identity"); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("unavailable identity error=%v", err)
 	}
+}
+
+// testlint:allow-serial -- /dev/fd の差分で、descriptorを閉じ忘れる変異を検出するため
+func TestVerifyPreparedTargetIdentityClosesProbeDescriptor(t *testing.T) {
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(preparer.RootPath, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := openDescriptorCount(t)
+	for i := 0; i < 16; i++ {
+		if err := preparer.verifyPreparedTargetIdentity(preparer.OwnedRoot, relative, "not-the-real-identity"); !errors.Is(err, state.ErrOwnership) {
+			t.Fatalf("mismatched identity error=%v", err)
+		}
+	}
+	after := openDescriptorCount(t)
+	if after > before+2 {
+		t.Fatalf("identity probe leaked descriptors: before=%d after=%d", before, after)
+	}
+}
+
+func openDescriptorCount(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/dev/fd")
+	if err != nil {
+		t.Skipf("descriptor enumeration is unavailable: %v", err)
+	}
+	return len(entries)
 }
 
 // TestAddWorktreeWithIdentityRejectsAReservedLeafThatIsNotADirectoryは、mkdirat予約が既存leaf（os.ErrExist）を許容する分岐を確認する。
