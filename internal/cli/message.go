@@ -9,7 +9,8 @@ func message(id string, pairs ...any) i18n.Message {
 	if len(pairs) < 2 {
 		return i18n.Message{ID: id}
 	}
-	data := make(map[string]any, len(pairs)/2)
+	// map の初期容量は message の外部契約ではなく、入力長の算術を判定対象にしない。
+	data := make(map[string]any)
 	for index := 0; index+1 < len(pairs); index += 2 {
 		name, ok := pairs[index].(string)
 		if !ok {

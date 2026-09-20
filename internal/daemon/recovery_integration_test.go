@@ -49,7 +49,7 @@ func TestCrashRecoveryConvergesAfterReadyAndRefsExist(t *testing.T) {
 	if err := os.MkdirAll(slotRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	repos, err := m.slotRepos(slotRoot, w, resolved, 1, nil, config.PrepareOverride{})
+	repos, err := m.slotRepos(ctx, slotRoot, w, resolved, 1, nil, config.PrepareOverride{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -293,6 +293,12 @@ func copyRootEntry(sourceRoot *os.Root, source string, destinationRoot *os.Root,
 		return err
 	}
 	_, copyErr := io.Copy(out, in)
+	if copyErr == nil {
+		// OpenFile の perm は既存 file には適用されない。内容変更と同時に
+		// source の permission mode も反映し、既存 destination を新規 copy
+		// と同じ実体にする。
+		copyErr = out.Chmod(sourceInfo.Mode().Perm())
+	}
 	closeErr := out.Close()
 	if copyErr != nil {
 		return copyErr

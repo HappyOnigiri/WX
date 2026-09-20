@@ -173,7 +173,7 @@ func (c Client) releaseProbeLease(lease daemon.Lease) {
 func (c Client) probeSlotView(ctx context.Context, slotID string) daemon.SlotView {
 	last := daemon.SlotView{}
 	for {
-		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		callCtx, cancel := context.WithTimeout(ctx, probeUsageTimeout)
 		var slots []daemon.SlotView
 		err := c.RPC.Call(callCtx, "Slots", map[string]any{"all": false}, &slots)
 		cancel()

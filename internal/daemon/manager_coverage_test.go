@@ -858,7 +858,10 @@ func managerCoverageFixture(t *testing.T, kind ...string) (context.Context, *Man
 	if len(kind) > 0 {
 		workspaceKind = kind[0]
 	}
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	repository := filepath.Join(root, "repository")
 	initGitRepo(t, repository)
 	cfg := config.Defaults()
