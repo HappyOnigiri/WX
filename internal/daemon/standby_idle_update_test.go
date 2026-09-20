@@ -108,6 +108,9 @@ func TestIdleStandbyRefreshIsDueAtExactCooldown(t *testing.T) {
 // 待機枠がちょうど満杯なら branch 解決へ進まない。main が一時的に読めなくても既存の待機枠を保てるためである。
 func TestEnsureStandbyDoesNotResolveBranchesAtWarmCount(t *testing.T) {
 	f := newReuseStandbyFixture(t)
+	// 初期補充を完了させてから source を隠し、needed=0 の境界で早期 return
+	// しなければ branch 解決が失敗する状態を作る。
+	_ = f.readyStandby(t)
 	offline := f.repository + ".offline"
 	if err := os.Rename(f.repository, offline); err != nil {
 		t.Fatal(err)
