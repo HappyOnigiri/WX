@@ -32,6 +32,7 @@ wx の finding だけから不足ファイルを推測せず、main checkout と
 
 未追跡の必要な path は、原則として `.worktreelink` に追加してください。
 `.worktreelink` は main checkout とすべての slot で同じ実体を共有します。
+`.claude/skills/local-*` のような glob も書けます（`.worktreeinclude` と同じ規約で、マッチが 0 件でも構いません）。
 同じ実体を共有すると競合・破損・意図しない状態伝播が起きるものだけ `.worktreeinclude` に追加し、slot ごとにコピーしてください。
 同じ path を両方の manifest に書かず、tracked path はどちらにも追加しないでください。
 
