@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -467,9 +466,8 @@ func (c Client) startAgent(ctx context.Context, agent string, lease daemon.Lease
 	if runErr == nil {
 		return 0
 	}
-	var exit *exec.ExitError
-	if errors.As(runErr, &exit) {
-		return exit.ExitCode()
+	if code, ok := childExitCode(runErr); ok {
+		return code
 	}
 	cliError(c, runErr)
 	return 1
