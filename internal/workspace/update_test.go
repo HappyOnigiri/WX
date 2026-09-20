@@ -222,6 +222,74 @@ func TestValidateAndSyncRootPlacementsReplacesRecordedDirectoryWithFile(t *testi
 	}
 }
 
+// 同じ link は copy 用の mode 同期へ回さず、既存の symlink をそのまま再利用する。
+func TestValidateAndSyncRootPlacementsKeepsUnchangedLink(t *testing.T) {
+	t.Parallel()
+	source := filepath.Join(t.TempDir(), "source.txt")
+	if err := os.WriteFile(source, []byte("source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if err := os.Symlink(source, filepath.Join(target, "linked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	placement := state.Placement{RelativePath: "linked.txt", Kind: "link", SourcePath: source}
+	if err := ValidateAndSyncRootPlacements(root, []state.Placement{placement}, []state.Placement{placement}); err != nil {
+		t.Fatalf("unchanged link: %v", err)
+	}
+	got, err := root.Readlink("linked.txt")
+	if err != nil || got != source {
+		t.Fatalf("link target=%q err=%v, want %q", got, err, source)
+	}
+}
+
+// 既存配置の欠落は、要求された配置が空でも更新不適格として返す。
+func TestValidateRootPlacementsRejectsMissingRecordedPlacement(t *testing.T) {
+	t.Parallel()
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	previous := []state.Placement{{RelativePath: "missing", Kind: "copy", ContentSHA256: "hash"}}
+	if err := ValidateRootPlacements(root, previous, nil); err == nil {
+		t.Fatal("missing recorded placement was accepted")
+	}
+}
+
+// 配置済みディレクトリの中に未記録 file が残る場合は、再利用を拒否する。
+func TestDirectoryCoveredByPlacementsRejectsWalkError(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	if err := os.Mkdir(filepath.Join(target, "config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(target, "config", "blocked")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "value"), []byte("value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if _, err := directoryCoveredByPlacements(root, "config", nil); err == nil {
+		t.Fatal("walk permission error was ignored")
+	}
+}
+
 // gitlink が同一な更新は submodule の実体を残したまま通り、gitlink が変わる更新は不適格として弾かれる。
 // 更新経路は `checkout --detach --force` だけで submodule を触らないため、この2つが成り立つことが前提になる。
 func TestUpdateKeepsMaterializedSubmoduleAndRejectsChangedGitlinks(t *testing.T) {
@@ -259,6 +327,87 @@ func TestUpdateKeepsMaterializedSubmoduleAndRejectsChangedGitlinks(t *testing.T)
 	err := f.preparer.ValidateUpdateCandidate(ctx, f.repo, f.target, sameGitlink, changedGitlink, nil, nil)
 	if !errors.Is(err, ErrUpdateIneligible) {
 		t.Fatalf("changed gitlink update error=%v, want ErrUpdateIneligible", err)
+	}
+}
+
+// 更新候補の既存配置が壊れている場合は、Git差分の検査より前に不適格として返す。
+// testlint:allow-serial -- fixture preparation changes HOME through the shared setup
+func TestValidateUpdateCandidateRejectsInvalidRecordedPlacement(t *testing.T) {
+	ctx := context.Background()
+	f := newSubmoduleFixture(t)
+	if err := f.preparer.Prepare(ctx, f.repo, f.target, f.head, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	previous := []state.Placement{{RelativePath: "missing", Kind: "copy", ContentSHA256: "hash"}}
+	err := f.preparer.ValidateUpdateCandidate(ctx, f.repo, f.target, f.head, f.head, previous, nil)
+	if !errors.Is(err, ErrUpdateIneligible) {
+		t.Fatalf("invalid recorded placement error=%v, want ErrUpdateIneligible", err)
+	}
+}
+
+// 更新中の worktree が正常なら、既存検査を通過して detached HEAD の更新を許可する。
+// testlint:allow-serial -- fixture preparation changes HOME through the shared setup
+func TestValidateUpdatingAcceptsDetachedCleanWorktree(t *testing.T) {
+	ctx := context.Background()
+	f := newSubmoduleFixture(t)
+	if err := f.preparer.Prepare(ctx, f.repo, f.target, f.head, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := f.preparer.WorktreeIdentity(f.target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.preparer.validateUpdating(ctx, f.repo, f.target, f.head, testSlotID, identity); err != nil {
+		t.Fatalf("valid detached worktree: %v", err)
+	}
+}
+
+// Git tree の通常 file は mode 100644 と 100755 の両方を更新可能な path として扱う。
+// testlint:allow-serial -- fixture preparation changes HOME through the shared setup
+func TestRegularTreeFilesIncludesBothRegularModes(t *testing.T) {
+	ctx := context.Background()
+	f := newSubmoduleFixture(t)
+	main := f.repository
+	if err := os.WriteFile(filepath.Join(main, "regular"), []byte("regular\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(main, "executable"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("regular", filepath.Join(main, "symbolic")); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, main, "add", ".")
+	gitCommand(t, main, "commit", "-m", "add regular tree modes")
+	oid := gitOutput(t, main, "rev-parse", "HEAD")
+	files, err := f.preparer.regularTreeFiles(ctx, f.repo, oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"regular", "executable"} {
+		if !files[path] {
+			t.Fatalf("regularTreeFiles missing %q: %v", path, files)
+		}
+	}
+	if files["symbolic"] {
+		t.Fatalf("regularTreeFiles included symbolic link: %v", files)
+	}
+}
+
+// 正常な worktree では gitPaths が Git の NUL 区切り結果を path 集合へ変換する。
+// testlint:allow-serial -- fixture preparation changes HOME through the shared setup
+func TestGitPathsReturnsGitEntries(t *testing.T) {
+	ctx := context.Background()
+	f := newSubmoduleFixture(t)
+	if err := f.preparer.Prepare(ctx, f.repo, f.target, f.head, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := f.preparer.gitPaths(ctx, f.target, "ls-files", "-z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !paths["tracked"] {
+		t.Fatalf("gitPaths=%v, want tracked", paths)
 	}
 }
 
