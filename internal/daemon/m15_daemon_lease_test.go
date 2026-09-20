@@ -81,7 +81,7 @@ func TestLeaseFallbackLogCountsAnInvalidReadyCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := logs.tail()
-	if !strings.Contains(got, "warm lease fell back to a cold start") || !strings.Contains(got, "attempts=1") {
+	if !strings.Contains(got, "warm lease fell back to a cold start") || !strings.Contains(got, "ready_candidates=1") || !strings.Contains(got, "attempts=1") {
 		t.Fatalf("fallback log=%q, want one attempted READY candidate", got)
 	}
 }

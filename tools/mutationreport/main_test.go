@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -296,8 +297,13 @@ func TestCommandMainValidatesExclusionsWithoutGremlinsResult(t *testing.T) {
 	if err := commandMain(nil, []string{"-root", root, "-validate-exclusions"}, &output, os.Stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "validated 112 mutation exclusion(s)") {
-		t.Fatalf("output=%q", output.String())
+	items, err := loadExclusions(filepath.Join(root, defaultExclusionsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("validated %d mutation exclusion(s)\n", len(items))
+	if got := output.String(); got != want {
+		t.Fatalf("output=%q, want %q", got, want)
 	}
 }
 

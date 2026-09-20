@@ -12,6 +12,8 @@ internal/sessions/scanner/parse.go	ast-v1:6b3fa582e5f12989f9dd8538ff7ec48e93b350
 internal/sessions/scanner/parse.go	ast-v1:a633220140b3f3db3b44a91cf497d61cd5009b39e89631f2bc5f4bb8980a4b71	close が 0 の空ブロックではどちらの分岐も空文字列を返すため、< と <= は同じ動作になる
 internal/sessions/scanner/parse.go	ast-v1:d52f14c30d62d75fbc6a439d88c7f4eba1cea44f99cf94c6ddd7745cd7f6c557	len(runes) が上限と同じ場合はスライス結果が元の文字列と同じため、<= と < は同じ動作になる
 internal/state/backup.go	ast-v1:dc884ee46ce5d6ff6dbb63aea9505b3b6e3fde62cd886c4f2dcf802464c989d4	backups directory の entry 名は一意で、sort.Slice の比較で同名の異なる要素は現れないため > と >= は観測可能な結果を変えない
+internal/state/status.go	ast-v1:e7470d9d6fadfac80d916c39e5a2cbfc342ad55c45fa6861ffde63f792d2e4f4	canceledJobErrorCodes の引数配列はSQLの値を変えず、make の初期容量だけの差なので * と / は等価変異
+internal/state/status.go	ast-v1:6d9e68ec84425edbc5cbddaa6e0a657a9ae2b482fefbde93a7b968a767c59a1a	canceledJobErrorCodes の引数配列はSQLの値を変えず、make の初期容量だけの差なので * と / は等価変異
 internal/setup/shell.go	ast-v1:b86ce3b8bde7a4c68ffa2ffe6cb34f968cf6977172fb1f638ce57ac39107fb7a	strings.Index(contents[begin:], shellBlockEnd) の begin 位置は必ず shellBlockBegin の先頭で、異なる marker の長さ以上になるため offset==0 は到達不能であり、<0 と <=0 は等価な変異
 internal/sessions/sessions.go	ast-v1:324c2e66773d971e550c79ece0d5c3ba01901cb03d170b760282b1875f214aef	StableID は native session ID から生成され、同一 native ID の重複は事前に deduplicate されるため、実行可能な要素では < と <= が同じ順序になる等価変異。
 internal/sessions/sessions.go	ast-v1:ae37b4e1c123f4f623f0ca973a22f1bf4a7cce1342f19933d77b6b50bfaafaa9	直前の Mtime == 判定が真なら StableID 比較へ戻り、偽なら > と >= は同じ結果になるため等価。
@@ -113,3 +115,4 @@ internal/domain/descriptor.go	ast-v1:c998d29e01c6a5a3a8d47650657ba62891deed029ce
 internal/discovery/discovery.go	ast-v1:68488007bc09068ae7c9f8ab1b2ca437ea50896dafdc3c925ef0428123b4b33d	canonicalize に失敗する root は後続の WalkDir と最終 Canonicalize で必ず失敗するため、設定 lookup の条件反転は結果を変えない
 internal/gitx/lock.go	ast-v1:e7607460dffafb75691012cb5c69670aa4d366f12e00c51543a05e9cdd90cc5a	map の初期 capacity は内容・len・戻り値を変えないため、内部 capacity を契約にしない
 internal/config/v2.go	ast-v1:5bc3f4a3e36d83a9f5991fc8074ce1a171ea97abae8b68dbbc3a54fef08299a1	raw.Repositories が空のときも後続の nil map 初期化で同じ空 map になり、実効設定や保存結果に差がない等価変異
+internal/daemon/message.go	ast-v1:844895394cf1ada8841b555f4811bed9f078fbd4b1f2cd39023f8fbd14e588ee	map の初期容量に使う pairs の長さは結果の key/value と無関係で、除算を乗算へ変えても返す Data の内容と順序は変わらない等価変異
