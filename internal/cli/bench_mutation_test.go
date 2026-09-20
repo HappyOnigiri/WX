@@ -146,6 +146,29 @@ func TestBenchMutationBoundariesPreserveUsageAndRetirement(t *testing.T) {
 	_ = standby
 }
 
+// Slots の失敗は、次の測定を待たずにその回を使用量なしとして終える。
+func TestBenchSlotUsageMutationBoundariesStopAfterRPCFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	client, _ := newBenchMutationClient(t, func(method string) (any, error) {
+		if method != "Slots" {
+			return nil, errors.New("unexpected method " + method)
+		}
+		calls++
+		if calls == 2 {
+			cancel()
+		}
+		return nil, errors.New("slots unavailable")
+	})
+	if got := client.benchSlotUsage(ctx, "session", time.Now()); got != nil {
+		t.Fatalf("benchSlotUsage=%+v, want nil after an RPC failure", got)
+	}
+	if calls != 1 {
+		t.Fatalf("Slots calls=%d, want one call before returning the RPC failure", calls)
+	}
+}
+
 func TestWaitBenchIdleWaitsForBusyJobs(t *testing.T) {
 	var calls int
 	client, handler := newBenchMutationClient(t, func(method string) (any, error) {

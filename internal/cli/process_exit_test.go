@@ -8,6 +8,10 @@ import (
 )
 
 func TestChildExitCodePreservesExitStatusAndNormalizesSignal(t *testing.T) {
+	if got, ok := childExitCode(nil); !ok || got != 0 {
+		t.Fatalf("childExitCode(nil)=(%d, %t), want (0, true)", got, ok)
+	}
+
 	tests := []struct {
 		name string
 		cmd  *exec.Cmd
