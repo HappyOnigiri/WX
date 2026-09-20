@@ -290,6 +290,124 @@ func TestStandbyRetiredWhenAttributesChangeAndReplenishmentRestoresWarmLease(t *
 	}
 }
 
+// initSparseStandbyRepository は同じ commit の sparse path set だけを変更できる fixture を作る。
+func initSparseStandbyRepository(t *testing.T, path string, cone bool) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, path, "init", "-b", "main")
+	gitRun(t, path, "config", "user.name", "test")
+	gitRun(t, path, "config", "user.email", "test@example.com")
+	for _, name := range []string{"inside/kept.txt", "outside/dropped.txt"} {
+		file := filepath.Join(path, name)
+		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(name+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, path, "add", ".")
+	gitRun(t, path, "commit", "-m", "initial")
+	if cone {
+		gitRun(t, path, "sparse-checkout", "set", "--cone", "inside")
+		return
+	}
+	gitRun(t, path, "sparse-checkout", "set", "--no-cone", "/inside/")
+}
+
+// TestSparseSelectionChangeDoesNotReuseReadyStandby は cone/non-cone の両方で、
+// pattern を変えた後に古い READY の path set を貸し出さず、新規準備の結果だけを返すことを確認する。
+func TestSparseSelectionChangeDoesNotReuseReadyStandby(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		cone bool
+		set  []string
+	}{
+		{name: "cone", cone: true, set: []string{"--cone", "outside"}},
+		{name: "non-cone", set: []string{"--no-cone", "/outside/"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newReuseStandbyFixtureWith(t, func(t *testing.T, path string) {
+				initSparseStandbyRepository(t, path, test.cone)
+			})
+			ctx := context.Background()
+			stale := f.readyStandby(t)
+			oldRepository, err := f.store.SlotRepository(ctx, stale.ID, string(f.workspace.Repositories[0].ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(oldRepository.WorktreePath, "inside", "kept.txt")); err != nil {
+				t.Fatalf("initial sparse path is missing: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(oldRepository.WorktreePath, "outside", "dropped.txt")); !os.IsNotExist(err) {
+				t.Fatalf("initial sparse path unexpectedly contains outside file: %v", err)
+			}
+
+			gitRun(t, f.repository, append([]string{"sparse-checkout", "set"}, test.set...)...)
+			lease, err := f.manager.ResolveAndLease(ctx, f.repository, nil, "codex", os.Getpid(), leaseAttrs{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lease.SessionID == stale.ID || lease.Ready || lease.Route != RouteColdStart {
+				t.Fatalf("lease=%+v, want a new cold-start lease after sparse selection change", lease)
+			}
+			f.requireRetired(t, stale.ID)
+			f.runPendingJobs(t)
+			newRepository, err := f.store.SlotRepository(ctx, lease.SessionID, string(f.workspace.Repositories[0].ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(newRepository.WorktreePath, "outside", "dropped.txt")); err != nil {
+				t.Fatalf("new sparse path was not prepared: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(newRepository.WorktreePath, "inside", "kept.txt")); !os.IsNotExist(err) {
+				t.Fatalf("new sparse path retained old inside file: %v", err)
+			}
+		})
+	}
+}
+
+// TestSparseSelectionChangeRejectsReadyStandbyUpdate は OID も進んだ場合に、
+// 旧 path set のまま差分更新する経路へも入らないことを確認する。
+func TestSparseSelectionChangeRejectsReadyStandbyUpdate(t *testing.T) {
+	f := newReuseStandbyFixtureWith(t, func(t *testing.T, path string) {
+		initSparseStandbyRepository(t, path, true)
+	})
+	ctx := context.Background()
+	stale := f.readyStandby(t)
+	gitRun(t, f.repository, "sparse-checkout", "disable")
+	newFile := filepath.Join(f.repository, "outside", "new.txt")
+	if err := os.WriteFile(newFile, []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, f.repository, "add", ".")
+	gitRun(t, f.repository, "commit", "-m", "advance outside")
+	gitRun(t, f.repository, "sparse-checkout", "set", "--cone", "inside")
+	gitRun(t, f.repository, "sparse-checkout", "set", "--cone", "outside")
+
+	lease, err := f.manager.ResolveAndLease(ctx, f.repository, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.SessionID == stale.ID || lease.Ready || lease.Route != RouteColdStart {
+		t.Fatalf("lease=%+v, want a new cold-start lease after sparse selection changed with OID", lease)
+	}
+	f.requireRetired(t, stale.ID)
+	f.runPendingJobs(t)
+	repositoryState, err := f.store.SlotRepository(ctx, lease.SessionID, string(f.workspace.Repositories[0].ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(repositoryState.WorktreePath, "outside", "new.txt")); err != nil {
+		t.Fatalf("new sparse path was not prepared after OID update: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repositoryState.WorktreePath, "inside", "kept.txt")); !os.IsNotExist(err) {
+		t.Fatalf("updated cold-start path retained old inside file: %v", err)
+	}
+}
+
 func TestStandbyKeptReadyWhenBranchLeaseFindsItNotUpdateable(t *testing.T) {
 	f := newReuseStandbyFixture(t)
 	ctx := context.Background()
