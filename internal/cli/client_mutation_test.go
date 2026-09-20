@@ -75,7 +75,7 @@ func TestLaunchMutationBoundariesUseDiscoveryBudgetForUnboundedResumeReadiness(t
 func TestForwardAgentSignalMutationBoundariesReachesTheAgentProcessGroup(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "child-terminated")
 	pidPath := filepath.Join(t.TempDir(), "child-pid")
-	script := `(trap 'printf terminated > "$WX_TEST_CHILD_MARKER"; exit 0' TERM; while :; do sleep 1; done) & printf '%s' "$!" > "$WX_TEST_CHILD_PID"; wait`
+	script := `(trap 'printf terminated > "$WX_TEST_CHILD_MARKER"; exit 0' TERM; printf '%s' "$$" > "$WX_TEST_CHILD_PID"; while :; do sleep 1; done) & wait`
 	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Env = append(os.Environ(), "WX_TEST_CHILD_MARKER="+marker, "WX_TEST_CHILD_PID="+pidPath)
 	configureAgentProcess(cmd, -1)
