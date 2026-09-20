@@ -103,4 +103,7 @@ internal/archive/conflict.go	ast-v1:3295296019f46c569eda9f03bc34df4f17f0cddda73c
 internal/archive/workspace.go	ast-v1:cb3f0724ef69b57c2b70b5b44b8c0d12e23d2608407729e321cf332039e9efb1	read は非負で、read == 0 のとき buffer[:0] をハッシュへ書いても結果は変わらないため、> と >= は同じ動作になる
 internal/config/resolve.go	ast-v1:ac42fd7450db6c6b00b966596fb4f44e7cd14ee2261d8dc1ec0da5c396136584	同じtimeoutの代入では戻り値が変わらない等価変異
 internal/config/resolve.go	ast-v1:f3661ff161061af6e1e4b51a5ed2e1fe932e83ac86c424f1afef97c4668784b8	同じretentionの代入では戻り値が変わらない等価変異
+internal/domain/descriptor.go	ast-v1:c998d29e01c6a5a3a8d47650657ba62891deed029ceaaf7d7c7b53e7308d7563	Unix の os.Root.Close は syscall.Close の結果を返さず常に nil のため、closeErr 分岐の != と == は等価
+internal/discovery/discovery.go	ast-v1:68488007bc09068ae7c9f8ab1b2ca437ea50896dafdc3c925ef0428123b4b33d	canonicalize に失敗する root は後続の WalkDir と最終 Canonicalize で必ず失敗するため、設定 lookup の条件反転は結果を変えない
+internal/gitx/lock.go	ast-v1:e7607460dffafb75691012cb5c69670aa4d366f12e00c51543a05e9cdd90cc5a	map の初期 capacity は内容・len・戻り値を変えないため、内部 capacity を契約にしない
 internal/config/v2.go	ast-v1:5bc3f4a3e36d83a9f5991fc8074ce1a171ea97abae8b68dbbc3a54fef08299a1	raw.Repositories が空のときも後続の nil map 初期化で同じ空 map になり、実効設定や保存結果に差がない等価変異

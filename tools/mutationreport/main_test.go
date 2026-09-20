@@ -296,7 +296,7 @@ func TestCommandMainValidatesExclusionsWithoutGremlinsResult(t *testing.T) {
 	if err := commandMain(nil, []string{"-root", root, "-validate-exclusions"}, &output, os.Stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "validated 103 mutation exclusion(s)") {
+	if !strings.Contains(output.String(), "validated 106 mutation exclusion(s)") {
 		t.Fatalf("output=%q", output.String())
 	}
 }
