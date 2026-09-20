@@ -42,6 +42,18 @@ func TestMergeSlotSharedFileCacheReplacesOnlyMeasuredSlot(t *testing.T) {
 	}
 }
 
+func TestSlotUsageErrorLoggingSkipsCanceledContext(t *testing.T) {
+	t.Parallel()
+	if !slotUsageErrorShouldBeLogged(context.Background()) {
+		t.Fatal("an active measurement was treated as canceled")
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if slotUsageErrorShouldBeLogged(canceled) {
+		t.Fatal("a canceled measurement would be logged as a warning")
+	}
+}
+
 func statusRootUsage(t *testing.T, manager *Manager, root string) reportedRootUsage {
 	t.Helper()
 	status, err := manager.Status(t.Context())

@@ -113,3 +113,4 @@ internal/discovery/discovery.go	ast-v1:68488007bc09068ae7c9f8ab1b2ca437ea50896da
 internal/gitx/lock.go	ast-v1:e7607460dffafb75691012cb5c69670aa4d366f12e00c51543a05e9cdd90cc5a	map の初期 capacity は内容・len・戻り値を変えないため、内部 capacity を契約にしない
 internal/config/v2.go	ast-v1:5bc3f4a3e36d83a9f5991fc8074ce1a171ea97abae8b68dbbc3a54fef08299a1	raw.Repositories が空のときも後続の nil map 初期化で同じ空 map になり、実効設定や保存結果に差がない等価変異
 internal/daemon/message.go	ast-v1:844895394cf1ada8841b555f4811bed9f078fbd4b1f2cd39023f8fbd14e588ee	map の初期容量に使う pairs の長さは結果の key/value と無関係で、除算を乗算へ変えても返す Data の内容と順序は変わらない等価変異
+internal/daemon/usage.go	ast-v1:16c8791c91bfe238d55a24852342e93ddf39d8bb3d24a9ed843c08e5fd5cf083	map の初期容量は内容・len・戻り値を変えないため、previous と measured の長さの加算を減算へ変えても観測可能な差がない
