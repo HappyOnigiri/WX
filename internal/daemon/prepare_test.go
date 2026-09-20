@@ -163,6 +163,29 @@ func TestPrepareSlotFailureAndReplayBoundaries(t *testing.T) {
 	}
 }
 
+// RESTORING slot は通常の PREPARE job へ流用せず、restore 専用経路へ戻す。
+// 状態判定の片側だけを反転すると、容量検査や staged preparation まで進んでしまう。
+func TestPrepareSlotRejectsRestoringWithoutRestoreJob(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	dirName := testDirName(resolved[0].Repository, manager.Config())
+	fingerprint, err := workspace.Fingerprint(1, resolved[0].OID, resolved[0].Repository, manager.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "restoring-with-prepare", 1, "RESTORING")
+	if _, err := store.CreateStandby(ctx, slot, []state.SlotRepository{{
+		RepositoryID: string(resolved[0].Repository.ID), DirName: dirName, State: "PREPARING",
+		RequestedRef: "main", BaseOID: resolved[0].OID, Fingerprint: fingerprint,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	err = manager.prepareSlot(ctx, slot.ID, workspaceRecord, resolved, []state.SlotRepository{{RepositoryID: string(resolved[0].Repository.ID)}})
+	if err == nil || err.Error() != "restore preparation must use the restore job" {
+		t.Fatalf("restoring slot preparation error=%v, want restore-job gate", err)
+	}
+}
+
 func TestMaterializeWorkspaceRootFailsWhenSlotDirectoryIsUnreadable(t *testing.T) {
 	t.Parallel()
 	ctx, manager, _, _, _, _ := managerCoverageFixture(t)
