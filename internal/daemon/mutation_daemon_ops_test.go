@@ -120,6 +120,9 @@ func TestMutationDaemonOpsDiagnosticGatesAndArtifactRefs(t *testing.T) {
 			t.Fatalf("registered workspace=%+v err=%v", workspaceRecord, err)
 		}
 		repo := workspaceRecord.Repositories[0]
+		// sparse checkout は現在の選択から容量を再計算するため、cache の
+		// healthy 境界を検証するこの fixture では明示的に無効化する。
+		gitRun(t, string(repo.MainPath), "config", "core.sparseCheckout", "false")
 		resolved, err := pool.ResolveBranches(ctx, manager.git, workspaceRecord, nil)
 		if err != nil || len(resolved) != 1 {
 			t.Fatalf("resolved branches=%v err=%v", resolved, err)
@@ -134,7 +137,16 @@ func TestMutationDaemonOpsDiagnosticGatesAndArtifactRefs(t *testing.T) {
 		if manager.capacityCache == nil {
 			manager.capacityCache = map[string]workspace.CapacityEstimate{}
 		}
-		manager.capacityCache[key] = workspace.CapacityEstimate{RepositoryID: string(repo.ID), LFS: []workspace.LFSObjectInfo{{OID: "sha256:" + strings.Repeat("a", 64), Size: 12}}, MissingLFSObjects: 0}
+		oid := "sha256:" + strings.Repeat("a", 64)
+		cacheOID := strings.TrimPrefix(oid, "sha256:")
+		cachePath := filepath.Join(string(repo.CommonDir), "lfs", "objects", cacheOID[:2], cacheOID[2:4], cacheOID)
+		if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cachePath, make([]byte, 12), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		manager.capacityCache[key] = workspace.CapacityEstimate{RepositoryID: string(repo.ID), LFS: []workspace.LFSObjectInfo{{OID: oid, Size: 12, CachePath: cachePath}}, MissingLFSObjects: 0}
 		manager.capacityMu.Unlock()
 		findings = manager.lfsObjectFindings(ctx)
 		if len(findings) != 1 || findings[0].Severity != diag.SeverityOK || !containsString(findings[0].Details, "1 LFS object(s) checked") {

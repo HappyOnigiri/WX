@@ -11,23 +11,31 @@ import (
 )
 
 func TestMutationCheckedFreeBytesDistinguishesExactAndOverflowProducts(t *testing.T) {
+	var fs unix.Statfs_t
+	if err := unix.Statfs(t.TempDir(), &fs); err != nil {
+		t.Fatal(err)
+	}
+	if fs.Bsize <= 0 {
+		t.Fatalf("filesystem reported invalid block size %v", fs.Bsize)
+	}
+	bsize := uint64(fs.Bsize)
 	limit := uint64(math.MaxInt64)
 	for _, test := range []struct {
 		name    string
-		bsize   uint32
 		bavail  uint64
 		want    int64
 		wantErr bool
 	}{
-		{name: "one byte exact", bsize: 1, bavail: limit, want: math.MaxInt64},
-		{name: "two byte exact", bsize: 2, bavail: limit / 2, want: math.MaxInt64 - 1},
-		{name: "two byte overflow", bsize: 2, bavail: limit/2 + 1, wantErr: true},
+		{name: "exact product", bavail: limit / bsize, want: int64((limit / bsize) * bsize)},
+		{name: "overflow product", bavail: limit/bsize + 1, wantErr: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			free, err := checkedFreeBytes(unix.Statfs_t{Bsize: test.bsize, Bavail: test.bavail})
+			stat := fs
+			stat.Bavail = test.bavail
+			free, err := checkedFreeBytes(stat)
 			if test.wantErr {
 				if err == nil {
-					t.Fatalf("checkedFreeBytes accepted Bavail=%d Bsize=%d", test.bavail, test.bsize)
+					t.Fatalf("checkedFreeBytes accepted Bavail=%d Bsize=%d", test.bavail, bsize)
 				}
 				return
 			}
