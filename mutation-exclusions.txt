@@ -17,6 +17,12 @@ internal/sessions/sessions.go	ast-v1:324c2e66773d971e550c79ece0d5c3ba01901cb03d1
 internal/sessions/sessions.go	ast-v1:ae37b4e1c123f4f623f0ca973a22f1bf4a7cce1342f19933d77b6b50bfaafaa9	直前の Mtime == 判定が真なら StableID 比較へ戻り、偽なら > と >= は同じ結果になるため等価。
 internal/sessions/tui/picker.go	ast-v1:4d28c971c6b8b7fa43f899423beb1afb59420d068afd3cd389b0774aaee088f0	selected == offset では offset = selected が同値代入になるため、< と <= は表示範囲を変えない等価変異。
 internal/sessions/tui/picker.go	ast-v1:72a415dbae5fb1b1b4293f047700110beda59e7d569de3b746bed1d8c96eea73	len(lines) == height では lines[:height] が元の全行と同じため、> と >= は表示結果を変えない等価変異。
+internal/sessions/metacache/metacache.go	ast-v1:5ad923fe4ca8125779f6f42054a797b2acdb377dc70ea523010eaa8fe8e9fd24	os.Remove 成功時の nil error を errors.Join へ追加しても結果は nil のままで、!= と == は観測可能な動作を変えない等価変異。
+internal/sessions/sessions.go	ast-v1:7f256485ca90549c107146cc0dd4d0189a4bc60fbb97331eb1c75e065cd3adfa	metacache.Open は失敗時に必ず nil cache を返すため、エラー分岐を反転しても nil と no-op closer の戻り値は変わらない等価変異。
+internal/sessions/tui/picker.go	ast-v1:56e19fa3c8f7e21449ea49b263888f4ba9f1a6396ccc8d95d39e4afa9fec79fa	moveTo は直後の ensureVisible で選択値を表示範囲へ clamp するため、end 操作の - と + は同じ選択結果になる等価変異。
+internal/sessions/tui/picker.go	ast-v1:fed56d8434ad9a9728e481170192b9eaf1350cdd520780fda6e464f1e5fdca59	moveTo は直後の ensureVisible で選択値を表示範囲へ clamp するため、end 操作の - と + は同じ選択結果になる等価変異。
+internal/sessions/tui/picker.go	ast-v1:15c207a1918111fb3d1d24f0a4e0a39ab084daea8a16c244fb3990cb61efba96	moveTo は直後の ensureVisible で選択値を表示範囲へ clamp するため、上限値の - と + は同じ選択結果になる等価変異。
+internal/sessions/tui/picker.go	ast-v1:72b5bfaf30efa8e1ce92421238f0b9054bd58f3be000b4c9f23143de6b3c3a41	moveTo は直後の ensureVisible で選択値を表示範囲へ clamp するため、上限値の - と + は同じ選択結果になる等価変異。
 internal/rpc/protocol.go	ast-v1:e68ff49e22bf414188e7376eef3a19c073559bba4abc4f348c724ef550cfc70b	ConnectRetry==0ではretryUntilを呼び出し開始前に設定するため、<=を<へ変えても期限判定が必ず終了し、観測可能な挙動が変わらない等価変異。
 internal/i18n/message.go	ast-v1:5c04663a702f249fb1630a9491845749061f26254f145c77943e2cb76ca9a7c8	len(data)==0ではentriesが無く、mapの空コピーによるallocation差だけでLocalizeの表示結果は変わらないため
 internal/pool/branch.go	ast-v1:b8ce96dd324350e66b1d8f47ac52fa0084c50d342352338de679c63b614496f6	matchedは0との比較にのみ使うため、正のcountを負へ変えても分岐結果は変わらず、repository数の整数overflowも不可能なため
@@ -26,7 +32,7 @@ internal/workspace/cow_place.go	ast-v1:83de7f2fd36878bc475a55dc0c12a68602da0f262
 internal/workspace/cow_share.go	ast-v1:d15863184b3bb50bac31b42568f1832ac39b0ce8154722760d4353d795fa4d5b	workers is clamped to 1 for all workers <= 1, so < and <= are observationally equivalent for every integer input.
 internal/workspace/capacity.go	ast-v1:aff37a46ad00faf5556bc90660744916728212ec1cc938ca371d971c48e7b292	LFS entries are collected in a map keyed by normalized OID, so result.LFS contains no equal OIDs; < and <= are observationally equivalent to sort.Slice.
 internal/workspace/capacity.go	ast-v1:bab7d79f6eb40108588ef39740e1507bbe656d4b176ff650058f6185c8861eb6	The saturation branch returns MaxInt64 on and above the exact boundary, so > and >= produce the same result for every int64 input.
-internal/workspace/fingerprint.go	ast-v1:e913bb34650a15414040f4e3f9f5f792d5e44d5c89d3eef14038c2d323698726	The comparator only ties duplicate normalized link paths; inspectLinkSources gives those entries identical serialized values, so < and <= cannot change the fingerprint output.
+internal/workspace/fingerprint.go	ast-v1:7f4da28faee5596de43bd39af6fcb92be36843722ee2a8ff051916bc54834648	The comparator only ties duplicate normalized link paths; inspectLinkSources gives those entries identical serialized values, so < and <= cannot change the fingerprint output.
 internal/workspace/lfs_cow.go	ast-v1:6f1a354131ba9d822eab90befecb6af6584d026c01b846e37fce14d71aad3e04	os.File.Read guarantees a non-negative count and hashing a zero-length slice is a no-op, so >0 and >=0 are observationally equivalent.
 internal/workspace/placements.go	ast-v1:cfb7cd23c10bbc612bdacc1483e1dd995a9a2dd84c8528daf477bd61d867abe9	同じRepositoryID内の異なるRelativePathだけを比較するため、< と <= は同じ順序になる
 internal/workspace/placements.go	ast-v1:6e6ab27f0f3cf97da488b07b9cc66bd46c1e0cc2083794e995e719df548f9f3a	The RepositoryID comparator is reached only when IDs differ because equal IDs take the earlier branch, so < and <= are equivalent.

@@ -416,6 +416,17 @@ func TestMutationResultPageRowsHonorsNoticeAndMinimum(t *testing.T) {
 	}
 }
 
+// TestMutationResultViewClampsAnOutOfRangeOffset は、再表示前に offset が古い結果の
+// 行数を越えても、結果の最後の行だけを表示する契約を確認する。
+func TestMutationResultViewClampsAnOutOfRangeOffset(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.pendingLabel, m.resultText, m.height, m.offset = "result", "first\nsecond\nlast", 20, 99
+	lines := m.resultView()
+	if got := xansi.Strip(lines[len(lines)-1]); got != "last" {
+		t.Fatalf("clamped result last line=%q, want last; lines=%q", got, lines)
+	}
+}
+
 func TestMutationFooterDistinguishesScrollableResults(t *testing.T) {
 	m := newModel(context.Background(), Options{Config: config.Defaults()})
 	m.mode, m.height, m.resultText = modeResult, 10, strings.Repeat("line\n", 12)

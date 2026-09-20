@@ -90,6 +90,36 @@ func TestCachePruneRemovesOnlyUnseenEntriesUnderRoot(t *testing.T) {
 	}
 }
 
+func TestOpenInitializesSchemaMetadata(t *testing.T) {
+	cache, _ := testCache(t)
+	var version int
+	if err := cache.db.QueryRow(`SELECT value FROM cache_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
+		t.Fatalf("schema version query: %v", err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version=%d, want %d", version, schemaVersion)
+	}
+}
+
+func TestCachePruneRemovesEveryStaleEntry(t *testing.T) {
+	cache, _ := testCache(t)
+	ctx := context.Background()
+	base := validator()
+	for _, path := range []string{"/history/root/gone-a.jsonl", "/history/root/gone-b.jsonl", "/history/root/keep.jsonl"} {
+		save(t, cache, "claude", path, base, Record{NativeID: path})
+	}
+	cache.Prune(ctx, "claude", "/history/root", map[string]struct{}{"/history/root/keep.jsonl": {}})
+	entries := cache.Snapshot(ctx, "claude")
+	for _, path := range []string{"/history/root/gone-a.jsonl", "/history/root/gone-b.jsonl"} {
+		if _, ok := entries[path]; ok {
+			t.Errorf("stale entry %q survived prune", path)
+		}
+	}
+	if _, ok := entries["/history/root/keep.jsonl"]; !ok {
+		t.Fatal("seen entry was pruned")
+	}
+}
+
 func TestOpenRecreatesCorruptedDatabaseAndReportsUnusablePath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sessions.db")

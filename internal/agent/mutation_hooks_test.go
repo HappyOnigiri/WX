@@ -13,6 +13,16 @@ import (
 	"github.com/HappyOnigiri/WX/internal/testsupport"
 )
 
+func TestMutationHookClientKeepsIndependentTimeoutBudgets(t *testing.T) {
+	client := newHookClient("socket")
+	if client.Timeout != 3*time.Second {
+		t.Fatalf("hook client timeout=%s, want 3s", client.Timeout)
+	}
+	if client.ConnectRetry != 2*time.Second {
+		t.Fatalf("hook client connect retry=%s, want 2s", client.ConnectRetry)
+	}
+}
+
 // Codex が同じ session_id と source を再利用しても、fork 親が違えば
 // transcript metadata の矛盾として通常 bind へ戻す。
 func TestMutationCodexForkParentRejectsConflictingSessionMetadata(t *testing.T) {

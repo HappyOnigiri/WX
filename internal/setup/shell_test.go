@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,6 +177,43 @@ func TestShellPathRefusesAnUnterminatedBlock(t *testing.T) {
 	if got := readSetupFile(t, rc); got != contents {
 		t.Fatalf("the startup file was changed:\n%s", got)
 	}
+}
+
+// TestDirectoryOnPathRequiresAnExactEntry は PATH の要素全体が一致したときだけ
+// directoryOnPath が true を返すことを確認する。先頭以外の要素も含む PATH では、
+// 比較を反転しても偶然 true になるため、単一要素の fixture で境界を観測する。
+func TestDirectoryOnPathRequiresAnExactEntry(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "bin")
+	t.Setenv("PATH", directory)
+	if !directoryOnPath(directory) {
+		t.Fatal("an exact PATH entry was not found")
+	}
+	if directoryOnPath(filepath.Dir(directory)) {
+		t.Fatal("a path prefix was treated as an exact PATH entry")
+	}
+}
+
+// TestWriteStartupFileReportsFilesystemBoundaryErrors は atomic rename と親 directory の
+// sync が失敗したとき、見かけ上の成功を返さないことを確認する。rename と directory
+// open を一時 fixture の fake に差し替えるため、実際の dotfile や shell は変更しない。
+func TestWriteStartupFileReportsFilesystemBoundaryErrors(t *testing.T) {
+	t.Run("rename", func(t *testing.T) {
+		target := t.TempDir()
+		renameErr := errors.New("rename refused")
+		rename := func(string, string) error { return renameErr }
+		if err := writeStartupFileWithOps(filepath.Join(target, ".zshrc"), []byte("data"), 0o600, rename, os.Open); !errors.Is(err, renameErr) {
+			t.Fatal("renaming a temporary file over a directory was reported as success")
+		}
+	})
+	t.Run("directory sync", func(t *testing.T) {
+		directory := t.TempDir()
+		path := filepath.Join(directory, ".zshrc")
+		openErr := errors.New("directory open refused")
+		open := func(string) (*os.File, error) { return nil, openErr }
+		if err := writeStartupFileWithOps(path, []byte("data"), 0o600, os.Rename, open); !errors.Is(err, openErr) {
+			t.Fatal("syncing an unreadable parent directory was reported as success")
+		}
+	})
 }
 
 func readSetupFile(t *testing.T, path string) string {

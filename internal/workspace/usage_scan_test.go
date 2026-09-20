@@ -20,6 +20,80 @@ func TestUsageJoinKeepsRootRelativePaths(t *testing.T) {
 	}
 }
 
+func TestUsageRootTreatsShortIDDirectoryAsAReservedNamespace(t *testing.T) {
+	t.Parallel()
+	root, _, targets := usageRoots(t)
+	reserved := filepath.Join(root.Name(), "abc123", "slot")
+	if err := os.MkdirAll(reserved, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	usageWrite(t, reserved, "file", "reserved content")
+	usage, _, err := MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.UnmanagedBytes == 0 {
+		t.Fatalf("usage=%+v, want short-ID namespace contents to be traversed", usage)
+	}
+}
+
+func TestUsageChildOfRejectsARepositoryRegisteredForAnotherSlot(t *testing.T) {
+	t.Parallel()
+	root, mainPath, _ := usageRoots(t)
+	if err := os.MkdirAll(filepath.Join(root.Name(), "workspace", "foreign", "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scan := newUsageScan(context.Background(), nil, nil, nil)
+	scan.repos["workspace/foreign/repo"] = usageRepository{slotID: "other", dirName: "repo", mainPath: mainPath}
+	dir, err := openUsageDirectory(root, "workspace/foreign")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := usageDirectory{name: "workspace/foreign", slotID: "slot", scope: usageScopeTree, repo: true, dir: dir}
+	child, descend, err := scan.childOf(task, "workspace/foreign/repo", "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !descend || child.repo {
+		child.close()
+		t.Fatalf("child=%+v descend=%t, want non-repository child", child, descend)
+	}
+	child.close()
+}
+
+func TestUsageChildOfKeepsAnOpenSourceSubtree(t *testing.T) {
+	t.Parallel()
+	root, mainPath, _ := usageRoots(t)
+	scan, task := usageShareTask(t, root, mainPath, nil)
+	child, descend, err := scan.childOf(task, "workspace/slot/repo/nested", "nested")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !descend || child.main == nil {
+		child.close()
+		t.Fatalf("child=%+v descend=%t, want source descriptor", child, descend)
+	}
+	child.close()
+}
+
+func TestUsageDirectoryCloseClosesTheSourceDescriptor(t *testing.T) {
+	t.Parallel()
+	root, mainPath, _ := usageRoots(t)
+	dir, err := openUsageDirectory(root, "workspace/slot/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := openUsageRepository(mainPath)
+	task := usageDirectory{dir: dir, main: main}
+	task.close()
+	if _, err := dir.Readdirnames(1); err == nil {
+		t.Fatal("slot descriptor remained open")
+	}
+	if _, err := main.Readdirnames(1); err == nil {
+		t.Fatal("source descriptor remained open")
+	}
+}
+
 // symlink は指し先へ降りずに 1 件として数える。辿ると slot の外の実体を管理容量に混ぜてしまう。
 func TestMeasureRootUsageCountsSymlinksWithoutFollowingThem(t *testing.T) {
 	t.Parallel()

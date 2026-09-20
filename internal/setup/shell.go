@@ -216,6 +216,12 @@ func applyShellPath(step Step, action Action) error {
 // 素の上書きは先に truncate するため、中断・容量不足で利用者の起動ファイルが空のまま残る。
 // 控えも取らない書き込みなので、config.Save と同じ手順に揃える。
 func writeStartupFile(path string, data []byte, mode os.FileMode) error {
+	return writeStartupFileWithOps(path, data, mode, os.Rename, os.Open)
+}
+
+// writeStartupFileWithOps は rename と親 directory の open を受け取り、失敗をそのまま返す。
+// OS 境界の失敗を実ファイルへ依存せず検査できるよう、通常経路は os の関数を渡す。
+func writeStartupFileWithOps(path string, data []byte, mode os.FileMode, rename func(string, string) error, open func(string) (*os.File, error)) error {
 	// rename は symlink 自体を置き換え、dotfile リポジトリとの接続を黙って切る。収集時に unknown で弾く形だが、書く前にも確かめる。
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return messageError("setup.reason.startup_symlink", "Path", path)
@@ -244,10 +250,10 @@ func writeStartupFile(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := rename(name, path); err != nil {
 		return err
 	}
-	handle, err := os.Open(directory)
+	handle, err := open(directory)
 	if err != nil {
 		return err
 	}
