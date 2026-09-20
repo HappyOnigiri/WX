@@ -222,6 +222,12 @@ func Install(ctx context.Context, binary, logPath string) error {
 }
 
 func Uninstall(ctx context.Context) error {
+	return uninstallWithOpen(ctx, os.Open)
+}
+
+// uninstallWithOpen は LaunchAgent の削除後に行う directory sync の失敗を返す。
+// openDirectory を受け取ることで、launchd や実権限に依存せず OS 境界を検査できる。
+func uninstallWithOpen(ctx context.Context, openDirectory func(string) (*os.File, error)) error {
 	path, err := PlistPath()
 	if err != nil {
 		return err
@@ -233,7 +239,7 @@ func Uninstall(ctx context.Context) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove LaunchAgent plist: %w", err)
 	}
-	dir, err := os.Open(filepath.Dir(path))
+	dir, err := openDirectory(filepath.Dir(path))
 	if err != nil {
 		return err
 	}
