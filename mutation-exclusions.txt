@@ -115,3 +115,4 @@ internal/domain/descriptor.go	ast-v1:c998d29e01c6a5a3a8d47650657ba62891deed029ce
 internal/discovery/discovery.go	ast-v1:68488007bc09068ae7c9f8ab1b2ca437ea50896dafdc3c925ef0428123b4b33d	canonicalize に失敗する root は後続の WalkDir と最終 Canonicalize で必ず失敗するため、設定 lookup の条件反転は結果を変えない
 internal/gitx/lock.go	ast-v1:e7607460dffafb75691012cb5c69670aa4d366f12e00c51543a05e9cdd90cc5a	map の初期 capacity は内容・len・戻り値を変えないため、内部 capacity を契約にしない
 internal/config/v2.go	ast-v1:5bc3f4a3e36d83a9f5991fc8074ce1a171ea97abae8b68dbbc3a54fef08299a1	raw.Repositories が空のときも後続の nil map 初期化で同じ空 map になり、実効設定や保存結果に差がない等価変異
+internal/daemon/message.go	ast-v1:844895394cf1ada8841b555f4811bed9f078fbd4b1f2cd39023f8fbd14e588ee	map の初期容量に使う pairs の長さは結果の key/value と無関係で、除算を乗算へ変えても返す Data の内容と順序は変わらない等価変異
