@@ -75,7 +75,8 @@ func TestLaunchMutationBoundariesUseDiscoveryBudgetForUnboundedResumeReadiness(t
 func TestForwardAgentSignalMutationBoundariesReachesTheAgentProcessGroup(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "child-terminated")
 	pidPath := filepath.Join(t.TempDir(), "child-pid")
-	script := `(trap 'printf terminated > "$WX_TEST_CHILD_MARKER"; exit 0' TERM; printf '%s' "$$" > "$WX_TEST_CHILD_PID"; while :; do sleep 1; done) & wait`
+	// shell 実装が外部 sleep の終了を待ってから trap を処理しても、期限内に観測できる周期にする。
+	script := `(trap 'printf terminated > "$WX_TEST_CHILD_MARKER"; exit 0' TERM; printf '%s' "$$" > "$WX_TEST_CHILD_PID"; while :; do sleep 0.1; done) & wait`
 	cmd := exec.Command("/bin/sh", "-c", script)
 	cmd.Env = append(os.Environ(), "WX_TEST_CHILD_MARKER="+marker, "WX_TEST_CHILD_PID="+pidPath)
 	configureAgentProcess(cmd, -1)
@@ -112,6 +113,11 @@ func TestForwardAgentSignalMutationBoundariesReachesTheAgentProcessGroup(t *test
 			return
 		}
 		if time.Now().After(deadline) {
+			// 最初の stat と期限判定の間に marker が作られることがあるため、
+			// timeout を報告する前にもう一度確認する。
+			if _, err := os.Stat(marker); err == nil {
+				return
+			}
 			t.Fatal("SIGTERM did not reach the child process group")
 		}
 		time.Sleep(10 * time.Millisecond)
