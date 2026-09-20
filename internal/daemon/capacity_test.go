@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/discovery"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 	"github.com/HappyOnigiri/WX/internal/workspace"
@@ -293,8 +294,8 @@ func TestPrepareCapacityFindingsEstimateRegisteredWorkspace(t *testing.T) {
 	manager.freeSpace = func(*os.File) (string, int64, error) { return "test-volume", 1 << 40, nil }
 
 	findings := manager.prepareCapacityFindings(ctx)
-	if len(findings) == 0 {
-		t.Fatal("prepareCapacityFindings returned no finding")
+	if len(findings) != 1 {
+		t.Fatalf("prepareCapacityFindings=%+v, want one finding", findings)
 	}
 	for _, finding := range findings {
 		if finding.Severity == diag.SeverityUnchecked {
@@ -303,6 +304,45 @@ func TestPrepareCapacityFindingsEstimateRegisteredWorkspace(t *testing.T) {
 	}
 	if findings[0].Severity != diag.SeverityInfo {
 		t.Fatalf("finding severity=%s, want info: %+v", findings[0].Severity, findings[0])
+	}
+}
+
+func TestInvalidateCapacityCacheIsNilSafeAndRepositoryScoped(t *testing.T) {
+	t.Parallel()
+	var nilManager *Manager
+	nilManager.invalidateCapacityCache(discovery.Repository{ID: "repo"})
+
+	manager := &Manager{capacityCache: map[string]workspace.CapacityEstimate{
+		"repo\x00one":  {RepositoryID: "repo"},
+		"repo\x00two":  {RepositoryID: "repo"},
+		"other\x00one": {RepositoryID: "other"},
+		"repository-1": {RepositoryID: "repository-1"},
+	}}
+	manager.invalidateCapacityCache(discovery.Repository{ID: "repo"})
+	if _, ok := manager.capacityCache["repo\x00one"]; ok {
+		t.Fatal("repository cache entry was not invalidated")
+	}
+	if _, ok := manager.capacityCache["other\x00one"]; !ok {
+		t.Fatal("another repository cache entry was invalidated")
+	}
+}
+
+func TestLFSEstimateNeedsCheckRequiresMissingObjects(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		estimate workspace.CapacityEstimate
+		want     bool
+	}{
+		{name: "empty", estimate: workspace.CapacityEstimate{}, want: false},
+		{name: "healthy", estimate: workspace.CapacityEstimate{LFS: []workspace.LFSObjectInfo{{OID: "sha256:one"}}}, want: false},
+		{name: "missing", estimate: workspace.CapacityEstimate{LFS: []workspace.LFSObjectInfo{{OID: "sha256:one"}}, MissingLFSObjects: 1}, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := lfsEstimateNeedsCheck(test.estimate); got != test.want {
+				t.Fatalf("lfsEstimateNeedsCheck()=%t, want %t", got, test.want)
+			}
+		})
 	}
 }
 

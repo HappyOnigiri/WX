@@ -45,7 +45,7 @@ func (m *Manager) lfsObjectFindings(ctx context.Context) []diag.Finding {
 				findings = append(findings, lfsObjectUncheckedFinding(string(item.Repository.MainPath), estimateErr))
 				continue
 			}
-			if len(estimate.LFS) == 0 || estimate.MissingLFSObjects == 0 {
+			if !lfsEstimateNeedsCheck(estimate) {
 				findings = append(findings, lfsObjectOKFinding(item.Repository, len(estimate.LFS)))
 				continue
 			}
@@ -65,6 +65,10 @@ func (m *Manager) lfsObjectFindings(ctx context.Context) []diag.Finding {
 		})
 	}
 	return findings
+}
+
+func lfsEstimateNeedsCheck(estimate workspace.CapacityEstimate) bool {
+	return len(estimate.LFS) > 0 && estimate.MissingLFSObjects > 0
 }
 
 func lfsObjectFinding(repo discovery.Repository, diagnostics workspace.LFSObjectDiagnostics) diag.Finding {

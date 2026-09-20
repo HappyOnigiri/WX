@@ -109,9 +109,7 @@ func (e *MissingLFSObjectsError) Unwrap() error { return ErrMissingLFSObjects }
 // volume 別の容量を求める。Git/statfs が読めない回は report を返さず error と
 // し、呼び出し側が「測れなかったので準備は続行する」方針を選べるようにする。
 func (m *Manager) checkPrepareCapacity(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, cfg config.Config, multiplier int) (CapacityReport, error) {
-	if multiplier < 1 {
-		multiplier = 1
-	}
+	multiplier = max(multiplier, 1)
 	releaseRoot, err := m.holdRootForPath(slot.Path)
 	if err != nil {
 		return CapacityReport{}, fmt.Errorf("hold capacity root descriptor: %w", err)
@@ -374,10 +372,7 @@ func (m *Manager) markLFSPreflightFailed(ctx context.Context, slot state.Slot) e
 	if slot.State == "RESTORING" {
 		code = "RESTORE_LFS_MISSING"
 	}
-	if err := m.store.SetSlotState(ctx, slot.ID, []string{slot.State}, "FAILED", code); err != nil {
-		return err
-	}
-	return nil
+	return m.store.SetSlotState(ctx, slot.ID, []string{slot.State}, "FAILED", code)
 }
 
 func lfsObjectsByRepository(report CapacityReport) map[string][]workspace.LFSObjectInfo {
