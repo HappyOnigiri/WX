@@ -113,6 +113,20 @@ func TestInteractiveOutputRejectsARedirectedStdout(t *testing.T) {
 	}
 }
 
+// TestInteractiveOutputAcceptsACharacterDevice は、Stat 成功時の char device 判定を
+// regular file・pipe と分けて確認する。/dev/null は表示対象ではないが、端末と同じ
+// character device として扱う契約である。
+func TestInteractiveOutputAcceptsACharacterDevice(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if !InteractiveOutput(f) {
+		t.Fatal("a character device was not treated as interactive")
+	}
+}
+
 // TestProgressSetClearsTheWidestPreviousLine は label を短くしたとき前の行の末尾が残らない契約を確認する。
 // 待機中の phase 名は長さが揃わないため、消去幅は label の現在長ではなく最後に描いた幅で決める。
 func TestProgressSetClearsTheWidestPreviousLine(t *testing.T) {
@@ -130,6 +144,30 @@ func TestProgressSetClearsTheWidestPreviousLine(t *testing.T) {
 	// 最後の消去は trailer を含む幅まで届く。
 	if !strings.HasSuffix(drawn, "\r"+strings.Repeat(" ", len("Cold start: link")+progressMaxDots+len(" 3s"))+"\r") {
 		t.Fatalf("finish did not erase the label and its trailer: %q", drawn)
+	}
+}
+
+// TestProgressSetUpdatesWhenOnlyOneFieldChanges は、label と trailer のどちらか一方
+// だけが変わる差し替えも描画する。両方を同時に変えるだけでは各比較の変異を見逃す。
+func TestProgressSetUpdatesWhenOnlyOneFieldChanges(t *testing.T) {
+	for _, test := range []struct {
+		name, label, trailer, want string
+	}{
+		{name: "trailer", label: "starting", trailer: " 1s", want: "\rstarting."},
+		{name: "label", label: "updated", want: "\rupdated."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out := &syncBuffer{}
+			waiting := StartProgress(out, true, "starting")
+			waiting.Set(test.label, test.trailer)
+			waiting.Finish()
+			if !strings.Contains(out.String(), test.want) {
+				t.Fatalf("Set output=%q, want %q", out.String(), test.want)
+			}
+			if test.trailer != "" && !strings.Contains(out.String(), test.trailer) {
+				t.Fatalf("Set output=%q, want trailer %q", out.String(), test.trailer)
+			}
+		})
 	}
 }
 
