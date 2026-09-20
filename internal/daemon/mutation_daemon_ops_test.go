@@ -195,7 +195,7 @@ func TestMutationDaemonOpsDiagnosticGatesAndArtifactRefs(t *testing.T) {
 
 func TestMutationDaemonOpsMessageAndUsageBoundaries(t *testing.T) {
 	t.Run("message accepts alternating string pairs", func(t *testing.T) {
-		value := message("diag.test", "first", 1, "second", 2, "third", 3)
+		value := message("diag.ownership.unmanaged_cause", "first", 1, "second", 2, "third", 3)
 		if len(value.Data) != 3 || value.Data["first"] != 1 || value.Data["second"] != 2 || value.Data["third"] != 3 {
 			t.Fatalf("message=%+v", value)
 		}
