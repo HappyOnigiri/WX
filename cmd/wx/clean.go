@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
@@ -61,7 +62,6 @@ func runClean(ctx context.Context, args []string) int {
 	unmanaged := fs.Bool("unmanaged", false, "delete the entities under the wx namespaces that the database does not explain")
 	replenish := fs.Bool("replenish", false, "resume standby replenishment for the cleared workspaces once the clear finishes")
 	dry := fs.Bool("dry-run", false, "show what would be deleted without changing anything")
-	fs.SetInterspersed(false)
 	fs.Usage = func() { commandUsageLanguage(os.Stdout, "clear", i18n.LanguageFromContext(ctx)) }
 	if code, done := finishFlagParse(fs, "clear", args); done {
 		return code
@@ -88,7 +88,14 @@ func runClean(ctx context.Context, args []string) int {
 	// 省けば新しい CLI から旧 daemon へも従来どおりの `wx clear` を通せる。
 	params := map[string]any{"all": *all, "standby": *standby, "dry_run": *dry, "discard": *discard}
 	if fs.NArg() == 1 {
-		params["path"] = fs.Arg(0)
+		// daemon は LaunchAgent から別の cwd で動くため、相対 path をそのまま渡すと
+		// caller ではなく daemon の cwd から解決される。受付前に caller の絶対 path へ固定する。
+		path, err := filepath.Abs(fs.Arg(0))
+		if err != nil {
+			reportRPCErrorContext(ctx, fmt.Errorf("resolve clear workspace path: %w", err))
+			return 1
+		}
+		params["path"] = path
 	}
 	if *replenish {
 		params["replenish"] = true

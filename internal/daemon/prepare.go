@@ -108,9 +108,7 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 	if err != nil {
 		return err
 	}
-	if !capacityReport.Sparse {
-		preparer.LFSObjects = lfsObjectsByRepository(capacityReport)
-	}
+	preparer.LFSObjects = lfsObjectsByRepository(capacityReport)
 	staged, continueLease, err := m.prepareStagedSlot(ctx, slot, w, resolved, preparer)
 	if err != nil {
 		m.log.Error("slot preparation failed", "job_id", job.ID, "session_id", job.SessionID, "slot_id", id, "continue_lease", continueLease, "error", err)

@@ -154,6 +154,7 @@ func withLegacyAdapter(c Config) Config {
 // 同じ優先順位で生成する。v2 の raw section は sparse のまま別途保持する。
 func effectiveV2Defaults(raw Config) Config {
 	d := DefaultsV2()
+	legacyWorkspaces := false
 	// top-level section は疎なため、raw に存在する値だけを重ねる。
 	overlaySystem(&d.System, raw.System, raw)
 	overlayWorkspaceDefaults(&d.WorkspaceDefaults, raw.WorkspaceDefaults, raw)
@@ -163,6 +164,7 @@ func effectiveV2Defaults(raw Config) Config {
 		// 旧 in-process caller がまだ絶対 path map を組み立てる場合も、
 		// 保存・解決時には workspace membership へ一度だけ写す。
 		d.Workspaces = legacyRepositoriesAsWorkspaces(raw.Repositories)
+		legacyWorkspaces = true
 	}
 	if d.Workspaces == nil {
 		d.Workspaces = map[string]Workspace{}
@@ -170,7 +172,9 @@ func effectiveV2Defaults(raw Config) Config {
 	// legacy field は既存 lifecycle code が読む互換 view である。
 	flattenV2(&d)
 	// file codec が raw v2 map と presence 情報を使えるように保持する。
-	d.Workspaces = cloneWorkspaces(raw.Workspaces)
+	if !legacyWorkspaces {
+		d.Workspaces = cloneWorkspaces(raw.Workspaces)
+	}
 	if d.Workspaces == nil {
 		d.Workspaces = map[string]Workspace{}
 	}
@@ -891,8 +895,6 @@ func ValidateV2Rules(c *Config) error {
 			if _, exists := normalizedMembers[clean]; exists {
 				return fmt.Errorf("workspaces.%s.repositories collide at relative path %s", root, clean)
 			}
-			if r.DirName == "" { /* permitted */
-			}
 			normalized, err := validateRepositoryOverride("workspaces."+root+".repositories."+clean, r)
 			if err != nil {
 				return err
@@ -918,8 +920,6 @@ func validateRepositoryDefaults(key string, d RepositoryDefaults) (RepositoryDef
 	}
 	if d.COWMinSizeKiB != nil && (*d.COWMinSizeKiB < 0 || *d.COWMinSizeKiB > MaxCOWMinSizeKiB) {
 		return RepositoryDefaults{}, fmt.Errorf("%s.cow_min_size_kib must be between 0 and %d", key, MaxCOWMinSizeKiB)
-	}
-	if d.Submodules != nil { /* bool is already typed */
 	}
 	if d.Prepare.Timeout.Duration < 0 {
 		return RepositoryDefaults{}, fmt.Errorf("%s.prepare.timeout must not be negative", key)

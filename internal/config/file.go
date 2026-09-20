@@ -14,6 +14,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// 保存の最終 rename と親 directory の同期は、通常の filesystem では再現しにくい
+// エラーも呼び出し側へ返す契約なので、動作を変えない関数変数として分離する。
+var (
+	configRename = os.Rename
+	configOpen   = os.Open
+)
+
 func Load() (Config, error) {
 	effective, _, err := LoadWithRaw()
 	return effective, err
@@ -226,10 +233,10 @@ func Save(c Config) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(name, p); err != nil {
+	if err := configRename(name, p); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(p))
+	dir, err := configOpen(filepath.Dir(p))
 	if err == nil {
 		err = dir.Sync()
 		_ = dir.Close()

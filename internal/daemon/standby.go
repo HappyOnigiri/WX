@@ -336,7 +336,7 @@ func (m *Manager) createStandbySlot(ctx context.Context, rootPath, rootID string
 			return state.Job{}, err
 		}
 		slotPath := filepath.Join(rootPath, relPath)
-		repos, err := m.slotRepos(slotPath, w, resolved, generation, hot, config.PrepareOverride{})
+		repos, err := m.slotRepos(ctx, slotPath, w, resolved, generation, hot, config.PrepareOverride{})
 		if err != nil {
 			return state.Job{}, err
 		}

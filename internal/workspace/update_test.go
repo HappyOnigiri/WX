@@ -100,7 +100,10 @@ func TestValidateAndSyncRootPlacementsUpdatesRecordedCopyAndPreservesGeneratedFi
 	if err := os.MkdirAll(filepath.Join(target, "config"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(sourcePath, []byte("new\n"), 0o600); err != nil {
+	if err := os.WriteFile(sourcePath, []byte("new\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sourcePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(target, "config", "local.cfg"), []byte("old\n"), 0o600); err != nil {
@@ -127,8 +130,63 @@ func TestValidateAndSyncRootPlacementsUpdatesRecordedCopyAndPreservesGeneratedFi
 	if got, err := os.ReadFile(filepath.Join(target, "config", "local.cfg")); err != nil || string(got) != "new\n" {
 		t.Fatalf("updated copy=%q err=%v", got, err)
 	}
+	if info, err := os.Stat(filepath.Join(target, "config", "local.cfg")); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("updated copy mode=%o err=%v, want 700", info.Mode().Perm(), err)
+	}
 	if got, err := os.ReadFile(generated); err != nil || string(got) != "keep\n" {
 		t.Fatalf("generated file=%q err=%v", got, err)
+	}
+}
+
+// 内容が同じでも root copy の permission mode は新規準備と同じ状態へ同期する。
+func TestValidateAndSyncRootPlacementsUpdatesModeOnly(t *testing.T) {
+	t.Parallel()
+	source, target := t.TempDir(), t.TempDir()
+	sourcePath := filepath.Join(source, "scripts", "check.sh")
+	targetPath := filepath.Join(target, "scripts", "check.sh")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("#!/bin/sh\nexit 0\n")
+	if err := os.WriteFile(sourcePath, content, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sourcePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(targetPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(targetPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	placement := state.Placement{
+		RelativePath:  "scripts/check.sh",
+		Kind:          "copy",
+		SourcePath:    sourcePath,
+		ContentSHA256: hex.EncodeToString(sum[:]),
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := ValidateAndSyncRootPlacements(root, []state.Placement{placement}, []state.Placement{placement}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("mode=%o, want 700 after mode-only update", got)
+	}
+	if got, err := os.ReadFile(targetPath); err != nil || string(got) != string(content) {
+		t.Fatalf("content=%q err=%v, want unchanged content", got, err)
 	}
 }
 

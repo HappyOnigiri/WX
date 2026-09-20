@@ -206,11 +206,11 @@ func codexConfigValueControlsProjects(value string) bool {
 		quote := key[0]
 		quoted := key[1:]
 		end := strings.IndexByte(quoted, quote)
-		if end < 0 {
+		if end == -1 {
 			return false
 		}
 		key = quoted[:end]
-	} else if dot := strings.IndexByte(key, '.'); dot >= 0 {
+	} else if dot := strings.IndexByte(key, '.'); dot != -1 {
 		key = key[:dot]
 	}
 	return strings.TrimSpace(key) == "projects"

@@ -429,6 +429,171 @@ func TestSubmodulePolicyChangesBothFingerprints(t *testing.T) {
 	}
 }
 
+// sparse の path set と cone 方針は、同じ OID でも worktree の実体を変えるため、
+// READY の再利用 fingerprint と既存 worktree の更新互換 fingerprint の両方を変える。
+func TestSparseSelectionChangesBothFingerprints(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	for _, path := range []string{"inside/kept.txt", "outside/dropped.txt"} {
+		full := filepath.Join(repository, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(path+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	cfg := config.Defaults()
+	prepare := func() string {
+		t.Helper()
+		value, err := Fingerprint(1, "oid", repo, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	update := func() string {
+		t.Helper()
+		value, err := UpdateCompatibilityFingerprint(1, repo, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	plainPrepare, plainUpdate := prepare(), update()
+
+	gitCommand(t, repository, "sparse-checkout", "set", "--cone", "inside")
+	insidePrepare, insideUpdate := prepare(), update()
+	if insidePrepare == plainPrepare || insideUpdate == plainUpdate {
+		t.Fatalf("enabling sparse checkout did not change fingerprints: prepare=%s update=%s", insidePrepare, insideUpdate)
+	}
+
+	gitCommand(t, repository, "sparse-checkout", "set", "--cone", "outside")
+	outsidePrepare, outsideUpdate := prepare(), update()
+	if outsidePrepare == insidePrepare || outsideUpdate == insideUpdate {
+		t.Fatalf("changing sparse cone path did not change fingerprints: prepare=%s update=%s", outsidePrepare, outsideUpdate)
+	}
+
+	gitCommand(t, repository, "sparse-checkout", "set", "--no-cone", "/outside/")
+	nonConePrepare, nonConeUpdate := prepare(), update()
+	if nonConePrepare == outsidePrepare || nonConeUpdate == outsideUpdate {
+		t.Fatalf("changing sparse cone mode did not change fingerprints: prepare=%s update=%s", nonConePrepare, nonConeUpdate)
+	}
+}
+
+func TestSparseFingerprintUsesGitInlineComments(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.MkdirAll(filepath.Join(repository, "inside"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "inside", "kept.txt"), []byte("kept\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	cfg := config.Defaults()
+	plain, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "sparse-checkout", "set", "--cone", "inside")
+	configWorktree := filepath.Join(repository, ".git", "config.worktree")
+	if err := os.WriteFile(configWorktree, []byte("[core]\n\tsparseCheckout = true # enabled\n\tsparseCheckoutCone = true ; cone mode\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitOutput(t, repository, "config", "--includes", "--type=bool", "--default", "false", "--get", "core.sparseCheckout"); got != "true" {
+		t.Fatalf("Git did not accept inline sparse comment, got %q", got)
+	}
+	withComments, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatalf("fingerprint with inline Git comments: %v", err)
+	}
+	if withComments == plain {
+		t.Fatal("sparse setting with inline comments did not affect fingerprint")
+	}
+}
+
+func TestSparseFingerprintUsesIncludedWorktreeConfig(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.MkdirAll(filepath.Join(repository, "inside"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "inside", "kept.txt"), []byte("kept\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	cfg := config.Defaults()
+	plain, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "sparse-checkout", "set", "--cone", "inside")
+	configWorktree := filepath.Join(repository, ".git", "config.worktree")
+	includePath := filepath.Join(repository, ".git", "sparse-settings.inc")
+	if err := os.WriteFile(includePath, []byte("[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configWorktree, []byte("[include]\n\tpath = sparse-settings.inc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitOutput(t, repository, "config", "--includes", "--type=bool", "--default", "false", "--get", "core.sparseCheckout"); got != "true" {
+		t.Fatalf("Git did not resolve included sparse config, got %q", got)
+	}
+	contents, err := os.ReadFile(configWorktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contents), "sparseCheckout =") {
+		t.Fatal("worktree config unexpectedly contains sparse values instead of include-only config")
+	}
+	included, err := Fingerprint(1, "oid", repo, cfg)
+	if err != nil {
+		t.Fatalf("fingerprint with included sparse config: %v", err)
+	}
+	if included == plain {
+		t.Fatal("included sparse setting did not affect fingerprint")
+	}
+}
+
+func TestSparseFingerprintDoesNotTreatInvalidGitConfigAsDisabled(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("tracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "initial")
+	gitCommand(t, repository, "sparse-checkout", "set", "--cone", ".")
+	configWorktree := filepath.Join(repository, ".git", "config.worktree")
+	if err := os.WriteFile(configWorktree, []byte("[core]\n\tsparseCheckout = not-a-boolean\n\tsparseCheckoutCone = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	if _, err := Fingerprint(1, "oid", repo, config.Defaults()); err == nil {
+		t.Fatal("invalid sparse Git config was treated as disabled")
+	}
+}
+
 // repository 個別の copy_mode は、その repository の fingerprint と更新互換 fingerprint だけを変える。
 // 個別指定が1つも無い設定では、以前と同じ値のままでなければ全 READY slot が無効になる。
 func TestFingerprintFollowsRepositoryCopyMode(t *testing.T) {

@@ -74,9 +74,10 @@ func (m model) footer() string {
 		return hint("dashboard.footer.env_back", "dashboard.footer.tabs_right", "dashboard.footer.select", "dashboard.footer.enter_edit")
 	case m.tab == 2 && m.mode == modeList:
 		return hint("dashboard.footer.tabs", "dashboard.footer.select_env", "dashboard.footer.enter_open", "dashboard.footer.esc_exit")
-	case m.mode == modeResult && m.maxResultOffset() > 0:
-		return hint("dashboard.footer.scroll", "dashboard.footer.enter_esc_back")
 	case m.mode == modeResult:
+		if m.maxResultOffset() > 0 {
+			return hint("dashboard.footer.scroll", "dashboard.footer.enter_esc_back")
+		}
 		return hint("dashboard.footer.enter_esc_back")
 	}
 	return hint("dashboard.footer.tabs_full", "dashboard.footer.select", "dashboard.footer.enter_confirm", "dashboard.footer.esc_exit")

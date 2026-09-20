@@ -15,7 +15,9 @@ func addDirArgs(dirs, args []string) []string {
 	if len(dirs) == 0 {
 		return args
 	}
-	combined := make([]string, 0, len(args)+2*len(dirs))
+	// 容量は argv の契約に含まれず、dirs の件数と args の長さを予測するための
+	// 計算だけをここへ持ち込むと、加算・乗算の変異を意味のある差分と誤認する。
+	combined := make([]string, 0)
 	for _, dir := range dirs {
 		combined = append(combined, "--add-dir", dir)
 	}

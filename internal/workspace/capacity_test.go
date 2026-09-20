@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +154,127 @@ func TestEstimateCapacityUsesLFSPointerSizeAndMissingCache(t *testing.T) {
 	}
 }
 
+func TestAuditC2CapacityUsesRequestedTreeAttributes(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		sourceAttr    string
+		requestedAttr string
+		wantLFS       int
+	}{
+		{name: "requested literal", sourceAttr: "*.bin filter=lfs\n", requestedAttr: "*.bin -filter\n", wantLFS: 0},
+		{name: "requested LFS", sourceAttr: "*.bin -filter\n", requestedAttr: "*.bin filter=lfs\n", wantLFS: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := t.TempDir()
+			gitCommand(t, repository, "init", "-b", "main")
+			gitCommand(t, repository, "config", "user.email", "wx@example.invalid")
+			gitCommand(t, repository, "config", "user.name", "wx")
+			if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte(test.sourceAttr), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 1048576\n"
+			if err := os.WriteFile(filepath.Join(repository, "asset.bin"), []byte(pointer), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitCommand(t, repository, "add", ".")
+			gitCommand(t, repository, "commit", "-m", "source attributes")
+			gitCommand(t, repository, "checkout", "-b", "requested")
+			if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte(test.requestedAttr), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitCommand(t, repository, "add", ".gitattributes")
+			gitCommand(t, repository, "commit", "-m", "requested attributes")
+			requestedOID := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+			gitCommand(t, repository, "checkout", "main")
+			sourceHEAD := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+			sourceIndex := capacityGitOutput(t, repository, "ls-files", "--stage")
+			common := capacityGitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+			repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common), RelativePath: "."}
+			cfg := config.Defaults()
+			cfg.Storage.CopyMode = config.CopyModeCopy
+			p := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: cfg}
+			estimate, err := p.EstimateCapacity(context.Background(), repo, requestedOID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if estimate.LFSObjects != test.wantLFS {
+				t.Fatalf("estimate=%+v, want %d LFS object(s) from requested tree", estimate, test.wantLFS)
+			}
+			if test.wantLFS == 0 && (estimate.MissingLFSObjects != 0 || estimate.LFSExpandedBytes != 0) {
+				t.Fatalf("literal requested tree unexpectedly expanded LFS=%+v", estimate)
+			}
+			if got := capacityGitOutput(t, repository, "rev-parse", "HEAD"); got != sourceHEAD {
+				t.Fatalf("source HEAD changed from %s to %s", sourceHEAD, got)
+			}
+			if got := capacityGitOutput(t, repository, "ls-files", "--stage"); got != sourceIndex {
+				t.Fatalf("source index changed from %q to %q", sourceIndex, got)
+			}
+		})
+	}
+}
+
+func TestEstimateCapacityExcludesSkippedSparseLFSPaths(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.email", "wx@example.invalid")
+	gitCommand(t, repository, "config", "user.name", "wx")
+	if err := os.WriteFile(filepath.Join(repository, ".gitattributes"), []byte("*.bin filter=lfs\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	insideOID, outsideOID := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	for name := range map[string]bool{"inside/kept.bin": true} {
+		path := filepath.Join(repository, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + insideOID + "\nsize 123\n"
+		if err := os.WriteFile(path, []byte(pointer), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "source LFS pointer")
+	gitCommand(t, repository, "checkout", "-b", "requested")
+	for name, oid := range map[string]string{"outside/skipped.bin": outsideOID, "outside/shared.bin": insideOID} {
+		path := filepath.Join(repository, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		pointer := "version https://git-lfs.github.com/spec/v1\noid sha256:" + oid + "\nsize 123\n"
+		if err := os.WriteFile(path, []byte(pointer), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "requested LFS pointers")
+	requestedOID := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+	gitCommand(t, repository, "checkout", "main")
+	gitCommand(t, repository, "sparse-checkout", "set", "--no-cone", "/inside/")
+	sourceHEAD := capacityGitOutput(t, repository, "rev-parse", "HEAD")
+	sourceIndex := capacityGitOutput(t, repository, "ls-files", "--stage")
+	common := capacityGitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{ID: "repo", MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common), RelativePath: "."}
+	p := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+	estimate, err := p.EstimateCapacity(context.Background(), repo, requestedOID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !estimate.Sparse || estimate.LFSObjects != 1 || estimate.MissingLFSObjects != 1 || estimate.LFSCacheBytes != 123 {
+		t.Fatalf("sparse requested-tree estimate=%+v, want only materialized LFS object", estimate)
+	}
+	if len(estimate.LFS) != 1 || len(estimate.LFS[0].Paths) != 1 || estimate.LFS[0].Paths[0] != "inside/kept.bin" {
+		t.Fatalf("sparse LFS details=%+v", estimate.LFS)
+	}
+	if got := capacityGitOutput(t, repository, "rev-parse", "HEAD"); got != sourceHEAD {
+		t.Fatalf("source HEAD changed from %s to %s", sourceHEAD, got)
+	}
+	if got := capacityGitOutput(t, repository, "ls-files", "--stage"); got != sourceIndex {
+		t.Fatalf("source index changed from %q to %q", sourceIndex, got)
+	}
+}
+
 func TestEstimateRootCopyBytesFollowsMaterializeRules(t *testing.T) {
 	t.Parallel()
 	source := t.TempDir()
@@ -187,6 +309,28 @@ func TestEstimateRootCopyBytesFollowsMaterializeRules(t *testing.T) {
 	}
 	if _, err := EstimateRootCopyBytes(source, RootRules{Copy: []string{"../outside"}}); err == nil {
 		t.Fatal("unsafe root copy source was accepted")
+	}
+}
+
+func TestEstimateRootCopyBytesCountsOverlappingDestinationsOnce(t *testing.T) {
+	t.Parallel()
+	source := t.TempDir()
+	if err := os.Mkdir(filepath.Join(source, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "nested", "value"), []byte("nested"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := EstimateRootCopyBytes(source, RootRules{
+		Copy:         []string{"nested/value"},
+		OptionalCopy: []string{"nested"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(len("nested")); got != want {
+		t.Fatalf("overlapping root copy bytes=%d, want %d", got, want)
 	}
 }
 
@@ -230,6 +374,31 @@ func TestCapacityHelpersHandleCacheModesAndOverflow(t *testing.T) {
 	p.Config.Storage.CopyMode = config.CopyModeCopy
 	if p.capacityCOWEnabled(discovery.Repository{}, "false", nil, nil) {
 		t.Fatal("copy mode unexpectedly enabled CoW")
+	}
+}
+
+func TestRefreshLFSCacheStateKeepsEstimateUnchangedWhenInspectionFails(t *testing.T) {
+	t.Parallel()
+	healthyPath := filepath.Join(t.TempDir(), "healthy")
+	if err := os.WriteFile(healthyPath, []byte("123"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	estimate := CapacityEstimate{
+		LFSObjects:        7,
+		MissingLFSObjects: 8,
+		LFSCacheBytes:     9,
+		LFS: []LFSObjectInfo{
+			{OID: "sha256:first", Size: 3, CachePath: healthyPath, CacheState: LFSCacheMissing},
+			{OID: "sha256:second", Size: 4, CachePath: "\x00", CacheState: LFSCacheMissing},
+		},
+	}
+	wantLFS := append([]LFSObjectInfo(nil), estimate.LFS...)
+	wantObjects, wantMissing, wantCacheBytes := estimate.LFSObjects, estimate.MissingLFSObjects, estimate.LFSCacheBytes
+	if err := RefreshLFSCacheState(&estimate); err == nil {
+		t.Fatal("refresh with an invalid cache path succeeded")
+	}
+	if !reflect.DeepEqual(estimate.LFS, wantLFS) || estimate.LFSObjects != wantObjects || estimate.MissingLFSObjects != wantMissing || estimate.LFSCacheBytes != wantCacheBytes {
+		t.Fatalf("failed refresh partially updated estimate=%+v, want LFS=%+v objects=%d missing=%d cache=%d", estimate, wantLFS, wantObjects, wantMissing, wantCacheBytes)
 	}
 }
 
