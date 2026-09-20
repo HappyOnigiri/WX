@@ -160,6 +160,17 @@ func TestContinueReadsEachInvocationAndExcludesInUse(t *testing.T) {
 	}
 }
 
+func TestOpenCacheFallsBackWhenCachePathCannotBeDetermined(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	cache, closeCache := openCache()
+	if cache != nil {
+		t.Fatal("openCache returned a database without a user cache directory")
+	}
+	closeCache()
+}
+
 // TestPickerOptionsCarriesScopeFlags は、走査結果から picker へ渡す表示条件を確かめる。
 // scope があるときは scope 内の StableID だけがフィルタに入り、無いときはフィルタを作らない。
 func TestPickerOptionsCarriesScopeFlags(t *testing.T) {

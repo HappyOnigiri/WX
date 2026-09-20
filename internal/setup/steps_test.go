@@ -118,8 +118,12 @@ func TestLaunchAgentReportsPermissionsAndStaleContent(t *testing.T) {
 	fixture := newSetupFixture(t)
 	options := fixture.options()
 	ctx := context.Background()
-	if collectLaunchAgent().State != StateAbsent {
+	fresh := collectLaunchAgent()
+	if fresh.State != StateAbsent {
 		t.Fatal("a missing plist was not reported absent")
+	}
+	if fresh.Desired != fixture.binary {
+		t.Fatalf("launch agent desired binary=%q, want %q", fresh.Desired, fixture.binary)
 	}
 	if _, err := Apply(ctx, options, collectLaunchAgent(), ActionInstall, ""); err != nil {
 		t.Fatal(err)
@@ -210,14 +214,21 @@ func TestHooksStepsFollowTheHookConfigStatus(t *testing.T) {
 	if step.State != StateAbsent || step.Target == "" || step.Desired != fixture.binary {
 		t.Fatalf("fresh hooks step=%+v", step)
 	}
+	if !strings.Contains(englishText(step.Detail), fixture.binary+" hook session-start") {
+		t.Fatalf("fresh hooks detail omitted the command: %v", step.Detail)
+	}
 	if _, err := Apply(ctx, fixture.options(), step, ActionInstall, ""); err != nil {
 		t.Fatal(err)
 	}
 	if collectHooks("claude").State != StatePresent || !hookconfig.Available("claude") {
 		t.Fatal("installed hooks were not reported present")
 	}
-	if _, err := Apply(ctx, fixture.options(), collectHooks("claude"), ActionRemove, ""); err != nil {
+	note, err := Apply(ctx, fixture.options(), collectHooks("claude"), ActionRemove, "")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if note.ID == "" {
+		t.Fatal("removing hooks produced no note for the changed file")
 	}
 	if collectHooks("claude").State != StateAbsent {
 		t.Fatal("removed hooks were not reported absent")
@@ -276,6 +287,9 @@ func TestPrerequisitesWarnAboutDevelopmentBuilds(t *testing.T) {
 	step := collectPrerequisites(context.Background())
 	if step.State != StatePresent || step.Desired != fixture.binary {
 		t.Fatalf("prerequisites=%+v", step)
+	}
+	if !strings.Contains(englishText(step.Detail), fixture.binary) {
+		t.Fatalf("prerequisites detail omitted the resolved binary: %v", step.Detail)
 	}
 	if len(step.Options) != 0 {
 		t.Fatal("the prerequisites step must not ask anything")
