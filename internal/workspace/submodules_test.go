@@ -522,6 +522,44 @@ func TestSubmodulesForWorkspaceOverride(t *testing.T) {
 	}
 }
 
+func TestSubmodulesEnabledUsesRepositoryMemberOverride(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	root, err := repositoryWorkspaceRoot(f.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, enabled := false, true
+	relative := f.repo.RelativePath
+	if relative == "" {
+		relative = "."
+	}
+	cfg := f.preparer.Config
+	cfg.RepositoryDefaults.Submodules = &disabled
+	cfg.Workspaces = map[string]config.Workspace{root: {
+		RepositoryDefaults: config.RepositoryDefaults{Submodules: &disabled},
+		Repositories: map[string]config.Repository{
+			relative: {Submodules: &enabled},
+		},
+	}}
+	f.preparer.Config = cfg
+	if got, err := f.preparer.submodulesEnabled(f.repo); err != nil || !got {
+		t.Fatalf("submodulesEnabled()=%t err=%v, want repository member override true", got, err)
+	}
+}
+
+func TestRecordSubmoduleOutcomeAddsToConfiguredCollector(t *testing.T) {
+	t.Parallel()
+	collector := &SubmoduleOutcomes{}
+	p := &Preparer{SubmoduleOutcomes: collector}
+	repo := discovery.Repository{MainPath: "/repo"}
+	p.recordSubmoduleOutcome(repo, submodule{path: "sub/kid"}, SubmoduleActionSkipped, SubmoduleReasonObjectMissing)
+	_, items := collector.Snapshot()
+	if len(items) != 1 || items[0].Repository != "/repo" || items[0].Reason != SubmoduleReasonObjectMissing {
+		t.Fatalf("outcomes=%+v, want one recorded outcome", items)
+	}
+}
+
 // .gitmodules から取り出す name と path は、module directory と worktree の外を指す値を拒否する。
 func TestParseSubmoduleConfigRejectsUnsafeNamesAndPaths(t *testing.T) {
 	t.Parallel()

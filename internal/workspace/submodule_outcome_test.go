@@ -70,3 +70,24 @@ func TestSubmoduleOutcomesNilIsSafe(t *testing.T) {
 		t.Fatalf("nil snapshot=%v/%v, want nil", repositories, items)
 	}
 }
+
+func TestSubmoduleOutcomesRegisterRepositoriesFromAddedResults(t *testing.T) {
+	t.Parallel()
+	results := &SubmoduleOutcomes{}
+	results.Add(SubmoduleOutcome{Repository: "repo", Path: "child", Depth: 1, Action: SubmoduleActionSkipped})
+	repositories, items := results.Snapshot()
+	if len(repositories) != 1 || repositories[0] != "repo" || len(items) != 1 {
+		t.Fatalf("repositories=%v items=%+v, want repo and one item", repositories, items)
+	}
+}
+
+func TestSubmoduleOutcomesBeginRepositoryKeepsEmptyNamesOut(t *testing.T) {
+	t.Parallel()
+	results := &SubmoduleOutcomes{}
+	results.BeginRepository("")
+	results.BeginRepository("repo-only")
+	repositories, items := results.Snapshot()
+	if len(repositories) != 1 || repositories[0] != "repo-only" || len(items) != 0 {
+		t.Fatalf("repositories=%v items=%+v, want only repo-only", repositories, items)
+	}
+}

@@ -195,3 +195,21 @@ func TestPrepareResumePreservesDirtySubmoduleBytes(t *testing.T) {
 		t.Fatalf("restored child bytes=%q err=%v", data, err)
 	}
 }
+
+func TestSubmoduleCOWPathIncludedMatchesOnlyChildBoundaries(t *testing.T) {
+	t.Parallel()
+	children := []submoduleCOWChild{{path: "sub/kid"}}
+	for _, test := range []struct {
+		path string
+		want bool
+	}{
+		{path: "sub/kid", want: true},
+		{path: "sub/kid/file.txt", want: true},
+		{path: "sub/kid-old", want: false},
+		{path: "sub/other/file.txt", want: false},
+	} {
+		if got := submoduleCOWPathIncluded(test.path, children); got != test.want {
+			t.Errorf("submoduleCOWPathIncluded(%q)=%t, want %t", test.path, got, test.want)
+		}
+	}
+}

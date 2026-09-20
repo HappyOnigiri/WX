@@ -162,3 +162,21 @@ func TestSameUsageIdentitiesRejectsAnyMismatch(t *testing.T) {
 		t.Fatal("a closed descriptor was accepted")
 	}
 }
+
+func TestCompareUsageOffsetsTreatsMissingLeavesAsUndecidable(t *testing.T) {
+	t.Parallel()
+	root, mainPath, _ := usageRoots(t)
+	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "present", "content")
+	usageWrite(t, mainPath, "present", "content")
+	_, task := usageShareTask(t, root, mainPath, nil)
+	state := SharedFileState{}
+	if got, decided := compareUsageOffsets(task, "missing", state, 7); decided || got.Shared {
+		t.Fatalf("missing source state=%+v decided=%t, want undecidable", got, decided)
+	}
+	if err := os.Remove(filepath.Join(root.Name(), "workspace", "slot", "repo", "present")); err != nil {
+		t.Fatal(err)
+	}
+	if got, decided := compareUsageOffsets(task, "present", state, 7); decided || got.Shared {
+		t.Fatalf("missing target state=%+v decided=%t, want undecidable", got, decided)
+	}
+}
