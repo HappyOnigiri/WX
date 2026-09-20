@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/gitx"
 )
@@ -27,6 +29,23 @@ func TestPrepareMaterializesShallowSubmoduleWithWarning(t *testing.T) {
 	logged := f.logged.String()
 	if !strings.Contains(logged, "object sharing is unavailable") || !strings.Contains(logged, "shallow") {
 		t.Fatalf("logged=%q, want a shallow object-sharing warning", logged)
+	}
+}
+
+func TestPrepareReportsShallowSubmoduleWithoutOrigin(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	if err := os.WriteFile(filepath.Join(f.moduleDir(), "shallow"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, f.moduleDir(), "--git-dir=.", "config", "--unset-all", "remote.origin.url")
+	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	assertEmptyGitlinkDirectory(t, f.submoduleTarget())
+	logged := f.logged.String()
+	if !strings.Contains(logged, "no origin url") || !strings.Contains(logged, "shallow") {
+		t.Fatalf("logged=%q, want missing-origin and shallow diagnostics", logged)
 	}
 }
 
@@ -91,5 +110,35 @@ func TestSubmoduleInspectionExecutionErrorAcceptsZeroExitStatus(t *testing.T) {
 	}
 	if got := submoduleInspectionExecutionError(context.Background(), &gitx.Error{Result: gitx.Result{ExitCode: -1}}); got == nil {
 		t.Fatal("missing exit status was treated as an object-missing result")
+	}
+}
+
+// testlint:allow-serial -- PATH を一時 wrapper へ差し替え、InspectSubmodule の object 検査だけを期限切れにするため
+func TestInspectSubmodulePropagatesObjectInspectionCancellation(t *testing.T) {
+	root := t.TempDir()
+	initTestRepository(t, root)
+	if err := os.WriteFile(filepath.Join(root, "file"), []byte("content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, root, "add", "file")
+	gitCommand(t, root, "commit", "-m", "initial")
+	oid := gitOutput(t, root, "rev-parse", "HEAD")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	wrapper := filepath.Join(bin, "git")
+	script := "#!/bin/sh\n" +
+		"case \" $* \" in *\" cat-file -e \"*) sleep 2;; esac\n" +
+		"exec \"" + realGit + "\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := InspectSubmodule(ctx, &gitx.Runner{}, root, oid); err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("InspectSubmodule() error=%v, want context deadline", err)
 	}
 }

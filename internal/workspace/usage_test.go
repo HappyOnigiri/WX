@@ -64,6 +64,9 @@ func TestMeasureRootUsageAttributesFilesToSlots(t *testing.T) {
 	if usage.LogicalBytes != int64(len("slot content")) {
 		t.Fatalf("root logical bytes=%d", usage.LogicalBytes)
 	}
+	if repository := slot.Repositories["repo"]; repository.Files != 1 || repository.LogicalBytes != int64(len("slot content")) {
+		t.Fatalf("repository usage=%+v, want the repository file", slot.Repositories)
+	}
 	if usage.AllocatedBytes != slot.AllocatedBytes || slot.AllocatedBytes == 0 || usage.UnmanagedBytes == 0 {
 		t.Fatalf("allocated root=%d slot=%d", usage.AllocatedBytes, slot.AllocatedBytes)
 	}
@@ -79,6 +82,25 @@ func TestMeasureRootUsageAttributesFilesToSlots(t *testing.T) {
 	}
 	if len(cache) != 1 {
 		t.Fatalf("cache=%+v", cache)
+	}
+}
+
+func TestMeasureRootUsageDoesNotCompareEmptyRepositoryFiles(t *testing.T) {
+	t.Parallel()
+	root, mainPath, targets := usageRoots(t)
+	if err := os.WriteFile(filepath.Join(root.Name(), "workspace", "slot", "repo", "empty"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mainPath, "empty"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usage, cache, err := MeasureRootUsage(context.Background(), root, targets, testUsageNamespaces(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := usage.Slots["slot"]
+	if slot.Compared != 0 || slot.SharedFiles != 0 || len(cache) != 0 {
+		t.Fatalf("empty file comparison=%+v cache=%+v, want no comparison", slot, cache)
 	}
 }
 
