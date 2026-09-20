@@ -73,6 +73,38 @@ func TestReadMetadataUnwrapsCodexWrappersAndSubagents(t *testing.T) {
 	}
 }
 
+func TestMetadataCompleteRequiresToolSpecificIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+		path string
+		meta fileMeta
+		want bool
+	}{
+		{name: "missing title", tool: "claude", path: "/history/session.jsonl", meta: fileMeta{cwd: "/workspace"}},
+		{name: "missing cwd", tool: "claude", path: "/history/session.jsonl", meta: fileMeta{title: "title"}},
+		{name: "claude filename", tool: "claude", path: "/history/session.jsonl", meta: fileMeta{title: "title", cwd: "/workspace"}, want: true},
+		{name: "claude empty filename", tool: "claude", path: "/history/.jsonl", meta: fileMeta{title: "title", cwd: "/workspace"}},
+		{name: "codex native id", tool: "codex", path: "/history/session.jsonl", meta: fileMeta{title: "title", cwd: "/workspace", nativeID: "native"}, want: true},
+		{name: "codex filename id", tool: "codex", path: "/history/rollout-2026-09-06T00-00-00-019e8bd5-4230-7403-b1aa-b48f42e564dc.jsonl", meta: fileMeta{title: "title", cwd: "/workspace"}, want: true},
+		{name: "codex without id", tool: "codex", path: "/history/session.jsonl", meta: fileMeta{title: "title", cwd: "/workspace"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := metadataComplete(tt.tool, tt.path, tt.meta); got != tt.want {
+				t.Fatalf("metadataComplete(%q, %q, %+v) = %v, want %v", tt.tool, tt.path, tt.meta, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClaudeTextDropsEmptyAndNonTextParts(t *testing.T) {
+	raw := `[{"type":"text","text":"title"},{"type":"image","text":"ignored"},{"type":"text","text":""}]`
+	if got := claudeText([]byte(raw)); got != "title" {
+		t.Fatalf("claudeText(%s) = %q, want title", raw, got)
+	}
+}
+
 func TestCodexIDFromPathAcceptsOnlyUUIDSuffixes(t *testing.T) {
 	tests := []struct {
 		name string
