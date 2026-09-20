@@ -3,13 +3,125 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/i18n"
 )
+
+// clearRecordingHandler は clear の入力境界を検査するため、受付 payload を記録して即時完了を返す。
+type clearRecordingHandler struct {
+	mu      sync.Mutex
+	params  []json.RawMessage
+	methods []string
+}
+
+func (h *clearRecordingHandler) Handle(_ context.Context, method string, raw json.RawMessage) (any, error) {
+	h.mu.Lock()
+	h.methods = append(h.methods, method)
+	h.params = append(h.params, append(json.RawMessage(nil), raw...))
+	h.mu.Unlock()
+	if method != "Clean" {
+		return nil, errors.New("unexpected RPC method " + method)
+	}
+	return map[string]any{
+		"run_id": "clear-test-run", "state": "DONE", "dry_run": true,
+		"targets": []any{}, "summary": map[string]int{"total": 0},
+		"replenish_pending": false,
+	}, nil
+}
+
+func (h *clearRecordingHandler) lastParams(t *testing.T) map[string]any {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.params) == 0 {
+		t.Fatal("clear RPC was not called")
+	}
+	var params map[string]any
+	if err := json.Unmarshal(h.params[len(h.params)-1], &params); err != nil {
+		t.Fatalf("decode clear params: %v", err)
+	}
+	return params
+}
+
+func startClearTestServer(t *testing.T, handler *clearRecordingHandler) {
+	t.Helper()
+	socket, err := config.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel, done := serveUntilCanceled(t, socket, handler)
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("clear test server: %v", err)
+		}
+	})
+}
+
+func TestRunClearResolvesRelativeWorkspaceFromCallerDirectory(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wx-clear-caller-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	caller := filepath.Join(home, "caller")
+	workspace := filepath.Join(caller, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(caller)
+	handler := &clearRecordingHandler{}
+	startClearTestServer(t, handler)
+
+	if code := runClean(context.Background(), []string{"workspace"}); code != 0 {
+		t.Fatalf("runClean exit=%d, want 0", code)
+	}
+	params := handler.lastParams(t)
+	if got, want := params["path"], workspace; got != want {
+		t.Fatalf("clear path=%v, want caller absolute path %q", got, want)
+	}
+}
+
+func TestRunClearAcceptsWorkspacePathBeforeOptions(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "wx-clear-args-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Setenv("HOME", home)
+	caller := filepath.Join(home, "caller")
+	workspace := filepath.Join(caller, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(caller)
+	handler := &clearRecordingHandler{}
+	startClearTestServer(t, handler)
+
+	if code := runClean(context.Background(), []string{"workspace", "--standby", "--dry-run"}); code != 0 {
+		t.Fatalf("runClean exit=%d, want 0 for workspace-first options", code)
+	}
+	params := handler.lastParams(t)
+	if got, want := params["path"], workspace; got != want {
+		t.Fatalf("clear path=%v, want caller absolute path %q", got, want)
+	}
+	if got, ok := params["standby"].(bool); !ok || !got {
+		t.Fatalf("standby=%v, want true", params["standby"])
+	}
+	if got, ok := params["dry_run"].(bool); !ok || !got {
+		t.Fatalf("dry_run=%v, want true", params["dry_run"])
+	}
+}
 
 func TestCleanExitCodeSeparatesFailuresFromExcludedSessions(t *testing.T) {
 	for _, test := range []struct {
