@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -216,6 +218,113 @@ func TestCOWChunksStayContiguous(t *testing.T) {
 	}
 	if strings.Join(flattened, ",") != "a,b,c,d" {
 		t.Fatalf("chunk order=%v", flattened)
+	}
+}
+
+// 大きな候補集合でも、worker数に応じた上限を超える巨大 batch を作らない。
+func TestCOWChunksUseBoundedBatchSize(t *testing.T) {
+	t.Parallel()
+	runs := make([]cowRun, 1000)
+	for index := range runs {
+		runs[index] = cowRun{directory: fmt.Sprintf("dir/%04d", index), leaves: []string{"leaf"}}
+	}
+	chunks := chunkCOWRuns(runs, 2)
+	if len(chunks) != 6 {
+		t.Fatalf("chunks=%d, want 6", len(chunks))
+	}
+	for index, chunk := range chunks[:len(chunks)-1] {
+		if got := len(chunk); got > cowBatchSize {
+			t.Fatalf("chunk %d has %d runs, want at most %d", index, got, cowBatchSize)
+		}
+	}
+}
+
+func TestCOWPlacementHelpersRespectModeAndRemainingCandidates(t *testing.T) {
+	t.Parallel()
+	if cowPlacementEnabled(config.CopyModeCopy, true) {
+		t.Fatal("copy mode unexpectedly enabled CoW placement")
+	}
+	if !cowPlacementEnabled(config.CopyModeAuto, true) {
+		t.Fatal("available auto mode did not enable CoW placement")
+	}
+	if cowPlacementEnabled(config.CopyModeAuto, false) {
+		t.Fatal("unsupported platform enabled CoW placement")
+	}
+	if got := pendingCOWCandidates(2, 7, 3); got != 6 {
+		t.Fatalf("pending candidates=%d, want 6", got)
+	}
+}
+
+// checkout-index の失敗は握り潰さず、配置方式の更新失敗として返す。
+// testlint:allow-serial -- Git executable lookup is replaced for one test
+func TestSettleCOWPlacementPropagatesCheckoutError(t *testing.T) {
+	ctx := context.Background()
+	_, _, preparer, item := stagedCOWFixture(t, nil)
+	if err := preparer.checkoutStage(ctx, item, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(item.Target, "tracked"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	wrapper := filepath.Join(bin, "git")
+	script := "#!/bin/sh\n" +
+		"for arg in \"$@\"; do [ \"$arg\" = checkout-index ] && exit 0; done\n" +
+		"exec \"$WX_TEST_REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_TEST_REAL_GIT", realGit)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := preparer.settleCOWPlacement(ctx, item, map[string]bool{"tracked": true}); err == nil {
+		t.Fatal("checkout failure was ignored")
+	}
+}
+
+// CoW stage の時間は nanosecond ではなく millisecond 単位で診断へ出す。
+func TestCOWStageLogArgsConvertsDurationToMilliseconds(t *testing.T) {
+	t.Parallel()
+	stats := &cowStats{}
+	stats.stat.nanos.Store(int64(3 * time.Millisecond))
+	args := stats.logArgs()
+	for index := 0; index+1 < len(args); index += 2 {
+		if args[index] == "stat_ms" {
+			if got := args[index+1]; got != int64(3) {
+				t.Fatalf("stat_ms=%v, want 3", got)
+			}
+			return
+		}
+	}
+	t.Fatal("stat_ms was not logged")
+}
+
+func TestCOWShareableLeavesSkipsUnexpectedLFSSize(t *testing.T) {
+	t.Parallel()
+	source, destination := cowRoots(t)
+	data := strings.Repeat("weight", 128)
+	cowWrite(t, source, "weights.bin", data)
+	base, err := source.Open(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = base.Close() }()
+	stats := &cowStats{}
+	placer := &cowPlacer{
+		minSize: 0, stats: stats,
+		lfsPointers: map[string]LFSPointer{"weights.bin": {OID: "sha256:" + strings.Repeat("a", 64), Size: int64(len(data) + 1)}},
+	}
+	if got := placer.shareableLeaves(base, []string{"weights.bin"}); len(got) != 0 {
+		t.Fatalf("unexpected LFS donor candidates=%v", got)
+	}
+	if stats.skippedLFSSize.Load() != 1 {
+		t.Fatalf("skipped LFS size=%d", stats.skippedLFSSize.Load())
+	}
+	if _, err := destination.Stat("weights.bin"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination was modified: %v", err)
 	}
 }
 

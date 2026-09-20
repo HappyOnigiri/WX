@@ -15,6 +15,42 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
+func TestSubmoduleCOWEnabledRequiresEligibleConfiguration(t *testing.T) {
+	t.Parallel()
+	if submoduleCOWEnabled(config.CopyModeCopy, true) {
+		t.Fatal("copy mode unexpectedly enabled submodule CoW")
+	}
+	if !submoduleCOWEnabled(config.CopyModeAuto, true) {
+		t.Fatal("available auto mode did not enable submodule CoW")
+	}
+	if submoduleCOWEnabled(config.CopyModeAuto, false) {
+		t.Fatal("unsupported platform enabled submodule CoW")
+	}
+}
+
+// Git の検査失敗は、submodule の一時ファイルが無い成功へ読み替えない。
+// testlint:allow-serial -- submodule fixture initializes a shared Git setup
+func TestRejectSubmoduleCOWTemporariesPropagatesGitError(t *testing.T) {
+	f := newSubmoduleFixture(t)
+	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := f.preparer.WorktreeIdentity(f.target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(f.target, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(f.target, submodulePath, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	err = f.preparer.rejectSubmoduleCOWTemporaries(context.Background(), f.target, identity, []submoduleCOWChild{{path: submodulePath}})
+	if err == nil {
+		t.Fatal("Git failure was ignored")
+	}
+}
+
 // 実体化した子の checkout も、親と同じ下限・OID skip・置換方式で共有する。
 func TestPrepareSharesSubmoduleCheckout(t *testing.T) {
 	t.Parallel()

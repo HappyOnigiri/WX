@@ -492,7 +492,12 @@ func parseLFSPointerBatch(stdout string, oids []string, allowMissing bool) (map[
 }
 
 func (p *Preparer) capacityCOWEnabled(repo discovery.Repository, autocrlf string, convertible, lfs map[string]bool) bool {
-	if !cowAvailable() || p.Config.CopyModeForWorkspaceRepository(p.workspaceRootForRepository(repo), repo.RelativePath, string(repo.MainPath)) == config.CopyModeCopy {
+	mode := p.Config.CopyModeForWorkspaceRepository(p.workspaceRootForRepository(repo), repo.RelativePath, string(repo.MainPath))
+	return capacityCOWEnabledFor(cowAvailable(), mode, autocrlf, convertible, lfs)
+}
+
+func capacityCOWEnabledFor(available bool, mode, autocrlf string, convertible, lfs map[string]bool) bool {
+	if !available || mode == config.CopyModeCopy {
 		return false
 	}
 	if strings.TrimSpace(autocrlf) != "false" || len(convertible) != 0 || len(lfs) != 0 {
@@ -516,15 +521,15 @@ func (p *Preparer) capacityEarlyPaths(repo discovery.Repository, entries []capac
 }
 
 func (p *Preparer) addRepositoryCopyBytes(repo discovery.Repository, estimate *CapacityEstimate, targetTracked map[string]bool) error {
-	plan := &earlyPlan{}
-	if err := p.planIncludes(repo, plan); err != nil {
-		return err
-	}
 	source, err := openPinnedRepositoryRoot(string(repo.MainPath))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = source.Close() }()
+	plan := &earlyPlan{}
+	if err := p.planIncludesAt(repo, plan, source); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, entry := range plan.copies {
 		if entry.directory || seen[entry.path] || targetTracked[entry.path] {

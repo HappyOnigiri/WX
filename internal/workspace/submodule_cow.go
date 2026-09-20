@@ -26,7 +26,7 @@ type submoduleCOWChild struct {
 func (p *Preparer) compactSubmoduleWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string, known *submodulePhaseResult, checkLeftovers bool) error {
 	workspaceRoot := p.workspaceRootForRepository(repo)
 	mode := p.Config.CopyModeForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath))
-	if mode == config.CopyModeCopy {
+	if !submoduleCOWModeEnabled(mode) {
 		return nil
 	}
 	if known != nil && (!known.enabled || len(known.declared) == 0) {
@@ -41,11 +41,19 @@ func (p *Preparer) compactSubmoduleWorktree(ctx context.Context, repo discovery.
 			return nil
 		}
 	}
-	if !cowAvailable() {
+	if !submoduleCOWEnabled(mode, cowAvailable()) {
 		return p.cowFallback(ctx, mode, target, errors.New("CoW is unavailable on this platform"))
 	}
 	err := p.compactOwnedSubmoduleWorktree(ctx, repo, target, oid, slotID, phase, identity, checkLeftovers)
 	return p.cowFallback(ctx, mode, target, err)
+}
+
+func submoduleCOWEnabled(mode string, available bool) bool {
+	return available && submoduleCOWModeEnabled(mode)
+}
+
+func submoduleCOWModeEnabled(mode string) bool {
+	return mode != config.CopyModeCopy
 }
 
 func (p *Preparer) compactOwnedSubmoduleWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string, checkLeftovers bool) error {
@@ -222,7 +230,7 @@ func (p *Preparer) submoduleCOWIndex(ctx context.Context, directory *os.File, ch
 	for _, batch := range batchSubmoduleArgs(children, base, func(child submoduleCOWChild) []string {
 		return []string{"-c", "submodule.active=:(top,literal)" + child.path, child.path}
 	}) {
-		args := make([]string, 0, len(base)+len(batch)*3)
+		args := append([]string(nil), base...)
 		for _, child := range batch {
 			args = append(args, "-c", "submodule.active=:(top,literal)"+child.path)
 		}

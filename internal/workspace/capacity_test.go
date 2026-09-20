@@ -334,6 +334,62 @@ func TestEstimateRootCopyBytesCountsOverlappingDestinationsOnce(t *testing.T) {
 	}
 }
 
+// ディレクトリ配下の copy は全 entry を容量へ加算し、Readdirnames の境界で欠落させない。
+func TestEstimateRootCopyBytesCountsAllDirectoryEntries(t *testing.T) {
+	t.Parallel()
+	source := t.TempDir()
+	directory := filepath.Join(source, "nested")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"one": "one", "two": "two-two"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := EstimateRootCopyBytes(source, RootRules{Copy: []string{"nested"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(len("one") + len("two-two")); got != want {
+		t.Fatalf("directory copy bytes=%d, want %d", got, want)
+	}
+}
+
+// include rule の矛盾は容量加算へ進めず、準備と同じエラーとして返す。
+func TestAddRepositoryCopyBytesPropagatesIncludePlanError(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.email", "wx@example.invalid")
+	gitCommand(t, repository, "config", "user.name", "wx")
+	if err := os.WriteFile(filepath.Join(repository, "local"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreeinclude"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".worktreelink"), []byte("local\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	common := capacityGitOutput(t, repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository), CommonDir: domain.CanonicalPath(common)}
+	p := Preparer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+	err := p.addRepositoryCopyBytes(repo, &CapacityEstimate{}, nil)
+	if err == nil {
+		t.Fatal("conflicting include rules were accepted")
+	}
+}
+
+func TestAddRepositoryCopyBytesPropagatesSourceOpenError(t *testing.T) {
+	t.Parallel()
+	p := Preparer{Config: config.Defaults()}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(filepath.Join(t.TempDir(), "missing"))}
+	if err := p.addRepositoryCopyBytes(repo, &CapacityEstimate{}, nil); err == nil {
+		t.Fatal("missing repository source was accepted")
+	}
+}
+
 func TestCapacityHelpersHandleCacheModesAndOverflow(t *testing.T) {
 	t.Parallel()
 	if _, _, err := capacityCacheState(filepath.Join(t.TempDir(), "missing")); err != nil {
@@ -374,6 +430,32 @@ func TestCapacityHelpersHandleCacheModesAndOverflow(t *testing.T) {
 	p.Config.Storage.CopyMode = config.CopyModeCopy
 	if p.capacityCOWEnabled(discovery.Repository{}, "false", nil, nil) {
 		t.Fatal("copy mode unexpectedly enabled CoW")
+	}
+}
+
+func TestCapacityCOWEnabledRequiresEligibleConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		available   bool
+		mode        string
+		autocrlf    string
+		convertible map[string]bool
+		lfs         map[string]bool
+		want        bool
+	}{
+		{name: "eligible", available: true, mode: config.CopyModeAuto, autocrlf: "false", want: true},
+		{name: "unsupported", available: false, mode: config.CopyModeAuto, autocrlf: "false", want: false},
+		{name: "copy mode", available: true, mode: config.CopyModeCopy, autocrlf: "false", want: false},
+		{name: "autocrlf", available: true, mode: config.CopyModeAuto, autocrlf: "true", want: false},
+		{name: "attributes", available: true, mode: config.CopyModeAuto, autocrlf: "false", convertible: map[string]bool{"file": true}, want: false},
+		{name: "lfs", available: true, mode: config.CopyModeAuto, autocrlf: "false", lfs: map[string]bool{"file": true}, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := capacityCOWEnabledFor(test.available, test.mode, test.autocrlf, test.convertible, test.lfs); got != test.want {
+				t.Fatalf("capacityCOWEnabledFor()=%t, want %t", got, test.want)
+			}
+		})
 	}
 }
 

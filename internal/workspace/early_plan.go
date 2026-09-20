@@ -207,13 +207,17 @@ func (plan *earlyPlan) collectCopies(source *os.Root, path string, keep func(str
 
 func (p *Preparer) planIncludes(repo discovery.Repository, plan *earlyPlan) error {
 	mainPath := string(repo.MainPath)
-	plan.repositoryID = string(repo.ID)
-	plan.sourcePath = mainPath
 	source, err := OpenPhysicalRoot(mainPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = source.Close() }()
+	return p.planIncludesAt(repo, plan, source)
+}
+
+func (p *Preparer) planIncludesAt(repo discovery.Repository, plan *earlyPlan, source *os.Root) error {
+	plan.repositoryID = string(repo.ID)
+	plan.sourcePath = string(repo.MainPath)
 	// 矛盾したruleの回はここで失敗し、checkoutもfileの列挙も行わない。
 	rules, err := p.resolveRepositoryRules(repo, source)
 	if err != nil {
