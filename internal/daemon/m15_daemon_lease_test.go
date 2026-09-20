@@ -74,6 +74,8 @@ func TestLeaseFallbackLogCountsAnInvalidReadyCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.manager.cfg.Worktree.ReuseStandby = false
+	// 準備直後の使用量測定は background で走るため、logger の差し替え前に完了を待つ。
+	f.manager.backgroundWG.Wait()
 	logs := newDiagnosticLog(managerFixtureLogLimit)
 	f.manager.log = slog.New(slog.NewTextHandler(logs, nil))
 
