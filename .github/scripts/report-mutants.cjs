@@ -482,17 +482,22 @@ async function backfillMutationLabels({ github, owner, repo, issues }) {
   return updated;
 }
 
-async function upsertGroup({ github, owner, repo, group, source, labelReady = false }) {
+// issuesを渡すと全ページ取得を1回に巻き上げられる。huntは数百グループになり得るため、
+// グループごとに一覧を取り直すとreportジョブがtimeout-minutesを超える。
+// 作成したissueは同じ配列へ積み、同じrunの後続グループから見えるようにする。
+async function upsertGroup({ github, owner, repo, group, source, labelReady = false, issues }) {
   if (!labelReady) await ensureMutationLabel({ github, owner, repo });
-  const issues = await listIssues(github, owner, repo);
-  const matching = issues.filter((item) => item.title === group.title).sort((a, b) => a.number - b.number);
+  const known = issues || await listIssues(github, owner, repo);
+  const matching = known.filter((item) => item.title === group.title).sort((a, b) => a.number - b.number);
   const issue = matching[0];
   if (matching.length > 1 && source.summary) source.summary(`duplicate issue titles for ${group.title}: ${matching.slice(1).map((item) => item.number).join(', ')}`);
   if (!issue) {
-    const created = await github.rest.issues.create({ owner, repo, title: group.title, body: buildIssueBody(group, source), labels: [MUTATION_LABEL] });
+    const body = buildIssueBody(group, source);
+    const created = await github.rest.issues.create({ owner, repo, title: group.title, body, labels: [MUTATION_LABEL] });
     const createdIssue = created?.data;
     if (!createdIssue?.number) throw new Error('mutation issue creation returned no issue number');
     await addMutationLabel({ github, owner, repo, issue: createdIssue });
+    if (issues) issues.push({ number: createdIssue.number, title: group.title, body, state: 'open', labels: [MUTATION_LABEL] });
     return 'created';
   }
   await ensureIssueMutationLabel({ github, owner, repo, issue });
@@ -606,7 +611,8 @@ async function run(options) {
   }
   if (fileIssues) {
     if (groups.length > 0) await ensureMutationLabel({ github, owner, repo });
-    for (const group of groups) results.push({ title: group.title, action: await upsertGroup({ github, owner, repo, group, source, labelReady: groups.length > 0 }) });
+    const issues = groups.length > 0 ? await listIssues(github, owner, repo) : null;
+    for (const group of groups) results.push({ title: group.title, action: await upsertGroup({ github, owner, repo, group, source, labelReady: groups.length > 0, issues }) });
   } else {
     // 起票を抑止しても検証と集計は完了させ、候補のタイトルをsummaryへ残す。
     for (const group of groups) {

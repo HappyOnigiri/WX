@@ -344,6 +344,58 @@ test('uses job URLs and warnings in the run orchestration', async () => {
   assert.deepEqual(warnings, ['mutation-config-10-1: 2 mutation(s) not covered']);
 });
 
+test('lists issues once for every group and reuses created issues', async () => {
+  const value = manifest();
+  const second = { ...value.survivors[0], declaration: { path: 'internal/config/size.go', function: 'parseSize', line: 7 } };
+  second.id = reporter.mutationId(second);
+  value.survivors = [value.survivors[0], second];
+  const issues = [];
+  const listPages = [];
+  const github = { rest: { issues: {
+    getLabel: async () => ({ data: { name: 'mutation' } }),
+    addLabels: async () => ({ data: [{ name: 'mutation' }] }),
+    listForRepo: async (request) => { listPages.push(request.page); return { data: issues.slice() }; },
+    create: async (request) => { const issue = { number: issues.length + 1, title: request.title, body: request.body, state: 'open', labels: [{ name: 'mutation' }] }; issues.push(issue); return { data: issue }; },
+    listComments: async () => ({ data: [] }),
+    createComment: async () => ({ data: {} }),
+    update: async () => ({ data: {} }),
+  } } };
+  const result = await reporter.run({
+    github,
+    owner: source.owner,
+    repo: source.repo,
+    sourceRunId: source.runId,
+    sourceAttempt: source.attempt,
+    sourceRun: { event: source.event, head_branch: source.ref, head_sha: sha, html_url: source.runUrl },
+    reports: [{ artifactName: 'mutation-config-10-1', manifest: value }],
+    expectedShards: [{ id: 'config', profiles: ['internal/config'] }],
+  });
+  assert.deepEqual(listPages, [1]);
+  assert.deepEqual(result.results.map((item) => item.action), ['created', 'created']);
+  assert.deepEqual(issues.map((item) => item.title), ['[mutation] internal/config/duration.go: parseDuration', '[mutation] internal/config/size.go: parseSize']);
+});
+
+test('reuses an issue created earlier in the same run without listing again', async () => {
+  const group = reporter.aggregateManifests([{ artifactName: 'mutation-config-10-1', manifest: manifest() }], source)[0];
+  const issues = [];
+  const created = [];
+  const comments = [];
+  const github = { rest: { issues: {
+    getLabel: async () => ({ data: { name: 'mutation' } }),
+    addLabels: async () => ({ data: [{ name: 'mutation' }] }),
+    listForRepo: async () => { throw new Error('issue list must not be refetched'); },
+    create: async (request) => { created.push(request.title); const issue = { number: 3, title: request.title, body: request.body, state: 'open' }; return { data: issue }; },
+    listComments: async () => ({ data: [] }),
+    createComment: async (request) => { comments.push(request.issue_number); return { data: {} }; },
+    update: async () => ({ data: {} }),
+  } } };
+  const call = () => reporter.upsertGroup({ github, owner: source.owner, repo: source.repo, group, source, labelReady: true, issues });
+  assert.equal(await call(), 'created');
+  assert.equal(await call(), 'already-recorded');
+  assert.deepEqual(created, ['[mutation] internal/config/duration.go: parseDuration']);
+  assert.deepEqual(comments, []);
+});
+
 test('validates and aggregates without writing issues when filing is disabled', async () => {
   const calls = [];
   const github = { rest: {
