@@ -237,6 +237,22 @@ func TestMutationDaemonOpsMessageAndUsageBoundaries(t *testing.T) {
 			t.Fatalf("repository exclusive bytes=%+v", view.RepositoryUsage)
 		}
 	})
+
+	t.Run("repository views preserve empty and measured boundaries", func(t *testing.T) {
+		if got := slotRepositoryViews(nil); got != nil {
+			t.Fatalf("empty repository views=%+v, want nil", got)
+		}
+		got := slotRepositoryViews(map[string]workspace.RepositoryUsage{
+			"z-repo": {Files: 1, AllocatedBytes: 11, SharedBytes: 4},
+			"a-repo": {Files: 2, AllocatedBytes: 6, SharedBytes: 1},
+		})
+		if len(got) != 2 || got[0].Name != "a-repo" || got[1].Name != "z-repo" {
+			t.Fatalf("repository views=%+v, want name order", got)
+		}
+		if got[0].ExclusiveBytes != 5 || got[1].ExclusiveBytes != 7 {
+			t.Fatalf("repository view exclusive bytes=%+v, want 5 and 7", got)
+		}
+	})
 }
 
 func TestMutationDaemonOpsDegradedRPCAndHandlerBoundaries(t *testing.T) {
