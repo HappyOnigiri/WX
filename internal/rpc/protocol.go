@@ -31,6 +31,12 @@ const (
 	serverResponseGrace      = 100 * time.Millisecond
 )
 
+// dialUnixSocket は既存 socket の生存確認を OS 呼び出しから切り離し、probe の
+// timeout 契約をテストでも観測できるようにする。
+var dialUnixSocket = func(ctx context.Context, socket string, timeout time.Duration) (net.Conn, error) {
+	return (&net.Dialer{Timeout: timeout}).DialContext(ctx, "unix", socket)
+}
+
 type Request struct {
 	Version        int             `json:"version"`
 	ID             string          `json:"id"`
@@ -280,7 +286,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		if info.Mode()&os.ModeSocket == 0 {
 			return fmt.Errorf("refusing to replace non-socket path %s", s.Socket)
 		}
-		probe, dialErr := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "unix", s.Socket)
+		probe, dialErr := dialUnixSocket(ctx, s.Socket, 100*time.Millisecond)
 		if dialErr == nil {
 			_ = probe.Close()
 			return fmt.Errorf("RPC server is already listening on %s", s.Socket)
