@@ -173,6 +173,31 @@ func TestCOWPlacementGatesAtTheExactBatchBoundary(t *testing.T) {
 	}
 }
 
+// 配置の途中で所有権検査が失敗した回は、未着手の候補だけを pending として置換方式へ戻す。
+func TestPlaceOwnedSharedFilesCountsPendingCandidatesAfterBatchFailure(t *testing.T) {
+	t.Parallel()
+	contents := make(map[string]string, cowBatchSize+1)
+	for index := 0; index <= cowBatchSize; index++ {
+		contents[fmt.Sprintf("batch/%03d/leaf", index)] = "x"
+	}
+	_, repo, preparer, item := stagedCOWFixture(t, contents)
+	preparer.Config.Storage.COWMinSizeKiB = 0
+	preparer.cowWorkerCount = 1
+	preparer.Ownership = &edgeCountingOwnershipValidator{failAt: 2}
+
+	placement, err := preparer.placeOwnedSharedFiles(context.Background(), repo, item, testSlotID)
+	if err == nil || !strings.Contains(err.Error(), "ownership changed") {
+		t.Fatalf("placement err=%v, want ownership failure", err)
+	}
+	if len(placement.placed) != cowBatchSize {
+		t.Fatalf("placed=%d, want first batch of %d", len(placement.placed), cowBatchSize)
+	}
+	wantPending := len(contents) + 1 - cowBatchSize
+	if placement.pending != wantPending {
+		t.Fatalf("pending=%d, want the %d unstarted candidates", placement.pending, wantPending)
+	}
+}
+
 // 塊は path 順に連続したまま分ける。共通接頭辞を持ち越せるのは連続している間だけである。
 func TestCOWChunksStayContiguous(t *testing.T) {
 	t.Parallel()
