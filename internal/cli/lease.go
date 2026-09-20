@@ -88,8 +88,12 @@ func (c Client) runLease(ctx context.Context, kind, agentKind, program string, a
 }
 
 func (c Client) runLeaseFrom(ctx context.Context, cwd, kind, agentKind, program string, args, branches []string, resume string) int {
-	if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
-		return reportLeaseErrorLanguage(err, cliLanguage(c))
+	// 明示した session の復元先は daemon が保持するため、caller workspace の方針を
+	// 新規貸出の制約として適用しない。session の存在・種別・所有権は Resume で検証する。
+	if resume == "" {
+		if err := c.checkLeaseWorktreeModeFrom(ctx, cwd); err != nil {
+			return reportLeaseErrorLanguage(err, cliLanguage(c))
+		}
 	}
 	if err := c.ensureDaemon(ctx); err != nil {
 		cliError(c, err)
