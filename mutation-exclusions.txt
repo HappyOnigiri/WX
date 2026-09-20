@@ -46,7 +46,6 @@ internal/workspace/timing.go	ast-v1:470c9985ce2a74231b0ce88a38678a2a9ef043ae73ef
 internal/workspace/usage.go	ast-v1:778b31b732dd71cb853c23f1b31feeffb5f9cecadee2b284fabec0582a0a99fb	At index len(components), the loop writes the full namespace path as a gate and the immediately following assignment overwrites that same key with its final scope, so < and <= return identical maps.
 internal/workspace/worktree_git.go	ast-v1:a4b43014cc46d10e54e822e1a8ac3c4f452d1004d579074a9426c4c7cb4ac3aa	gitx.RunAt returns nil error for exit code 0, so the error-only branch can observe either a positive Git exit status or a negative no-status result; <0 and <=0 are equivalent there.
 internal/workspace/update_flags.go	ast-v1:2a74af97dd17f53bd121072f8aff5636330796697e78ebc50355781d29103c99	With an empty stash, indexFlagsOf returns no flagged paths and ClearIndexFlags returns immediately without invoking Git, so >0 and >=0 have identical behavior.
-internal/daemon/capacity.go	ast-v1:b87fc91e564f5e0ab4e473f81aca827e4efe400ec400735c76f3c5b54b1563f4	multiplier=1 はどちらの分岐でも 1 を代入するため < と <= の変更に観測可能な差がない
 internal/daemon/capacity.go	ast-v1:faca21ea5ec7c38c49237c8b46d70b6f9fb6d24e848e67b064a5a3ac638d62c1	上限ちょうどでは厳密比較を包含比較へ変えても結果は MaxInt64 のまま変わらない
 internal/daemon/capacity.go	ast-v1:16474872a3b139fdfdcf9cc33f2934c2bcc55746e8d66cdac81b13370a914c71	積がちょうど MaxInt64 のとき両分岐は同じ飽和値を返す
 internal/daemon/capacity.go	ast-v1:59bc016abd95d87a8cfd5b7a020bddf9262e4015b4208aef6a3f647d4ff99fb4	warm_count=0 では worktree 容量を 0 倍するためどちらの分岐でも結果が 0 になる
