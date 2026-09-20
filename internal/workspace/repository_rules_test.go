@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -133,4 +134,82 @@ func TestPrepareStagedKeepsDistinctIncludeAndLinkRules(t *testing.T) {
 			t.Fatalf("link %s was not placed as a symlink: %v", path, err)
 		}
 	}
+}
+
+// TestExpandLinkPatternsSeparatesLiteralAndGlob は、.worktreelink の行のうちメタ文字を含む行だけが
+// glob 展開され、メタ文字の無い行は不在でもそのまま残ることを固定する。
+// literal を glob 経由にすると「欠落なら skip / 準備失敗」という下流の契約が両方壊れる。
+func TestExpandLinkPatternsSeparatesLiteralAndGlob(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	for _, dir := range []string{"dir/one", "dir/two", "dir/sub/deep", "local-a", "local-b", "a/b/c", "a/z/c", ".claude/skills/local-x", ".claude/skills/local-y", "viasym-real"} {
+		if err := os.MkdirAll(filepath.Join(base, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"q1", "q2", "bar", "car"} {
+		if err := os.WriteFile(filepath.Join(base, name), []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(base, "viasym-real"), filepath.Join(base, "viasym")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := OpenPhysicalRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	for _, tc := range []struct {
+		name     string
+		patterns []string
+		want     []string
+	}{
+		{"glob under directory", []string{"dir/*"}, []string{"dir/one", "dir/sub", "dir/two"}},
+		{"top level glob", []string{"local-*"}, []string{"local-a", "local-b"}},
+		{"trailing slash is cleaned", []string{".claude/skills/local-*/"}, []string{".claude/skills/local-x", ".claude/skills/local-y"}},
+		{"single character glob", []string{"q?"}, []string{"q1", "q2"}},
+		{"character class", []string{"[cb]ar"}, []string{"bar", "car"}},
+		{"intermediate segment glob", []string{"a/*/c"}, []string{"a/b/c", "a/z/c"}},
+		{"double star is a single star", []string{"dir/**"}, []string{"dir/one", "dir/sub", "dir/two"}},
+		{"glob without matches is empty", []string{"nomatch-*"}, []string{}},
+		{"literal without matches survives", []string{"missing-literal"}, []string{"missing-literal"}},
+		{"literal trailing slash is cleaned", []string{"missing-literal/"}, []string{"missing-literal"}},
+		{"duplicate across glob and literal", []string{"local-*", "local-a"}, []string{"local-a", "local-b"}},
+		{"duplicate across two globs", []string{"local-*", "loc*-a"}, []string{"local-a", "local-b"}},
+	} {
+		if got, err := expandLinkPatternsAt(root, tc.patterns); err != nil || !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: got=%v want=%v err=%v", tc.name, got, tc.want, err)
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		pattern string
+	}{
+		{"escape outside the root", "../outside/*"},
+		{"absolute pattern", "/abs/*"},
+		{"invalid syntax", "["},
+		{"symlink ancestor", "viasym/*"},
+	} {
+		if got, err := expandLinkPatternsAt(root, []string{tc.pattern}); err == nil {
+			t.Fatalf("%s: expected an error, got=%v", tc.name, got)
+		}
+	}
+}
+
+// TestCopyIncludesRejectsOverlapFromExpandedLinkGlob は、衝突検査が pattern ではなく展開後の path を見ることを固定する。
+// pattern のまま渡すと `dir/*` は `dir/one` と一致せず、include/link が同じ path を所有する矛盾を素通りさせてしまう。
+func TestCopyIncludesRejectsOverlapFromExpandedLinkGlob(t *testing.T) {
+	t.Parallel()
+	source, repo, preparer, _, target := prepareEdgesFixture(t)
+	writeRepositoryFiles(t, source, map[string]string{
+		".worktreeinclude": "dir/one\n",
+		".worktreelink":    "dir/*\n",
+		"dir/one/value":    "one\n",
+		"dir/two/value":    "two\n",
+	})
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	assertRepositoryRuleConflict(t, preparer.copyIncludes(repo, target), source, "dir/one and dir/one")
 }

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/domain"
@@ -40,7 +39,8 @@ func RootRulesFromConfig(rules config.Workspace) RootRules {
 }
 
 // ResolveRootRules は非 Git workspace root の rule を、config と root 直下の manifest から合成する。
-// `.worktreeinclude` は copy、`.worktreelink` は link として加算する。include は glob を展開し、0 件マッチを許す。
+// `.worktreeinclude` は copy、`.worktreelink` は link として加算する。どちらも glob を展開し、メタ文字を含む行は 0 件マッチを許す。
+// link のメタ文字を含まない行は展開せず、欠落を準備失敗として扱う既存の契約を保つ。
 // 既定名（root 直下の copy 名と agent 資産）は link rule が所有する path を避ける。link した path を copy 予定に残すと rule 衝突で準備が失敗するためである。
 // root 自体が無い場合は config の rule だけを返し、ここでは失敗させない。
 // commentlint:allow-long -- 合成の入力と、既定を落とす条件を 1 箇所にまとめて説明する
@@ -60,13 +60,11 @@ func ResolveRootRules(root string, rules config.Workspace) (RootRules, error) {
 	if err != nil {
 		return RootRules{}, fmt.Errorf("read workspace root .worktreelink in %s: %w", root, err)
 	}
-	for _, pattern := range linkPatterns {
-		clean, err := safeRelative(pattern)
-		if err != nil {
-			return RootRules{}, fmt.Errorf("unsafe workspace root .worktreelink path %q in %s", pattern, root)
-		}
-		resolved.Link = append(resolved.Link, clean)
+	links, err := expandLinkPatternsAt(owner, linkPatterns)
+	if err != nil {
+		return RootRules{}, fmt.Errorf("workspace root .worktreelink in %s: %w", root, err)
 	}
+	resolved.Link = append(resolved.Link, links...)
 	// 既定名は利用者が書いていない暗黙の追加なので、`.worktreelink` の明示に譲って衝突させない。
 	// 以降の include の glob 由来は、利用者が copy 側も明示した矛盾なので落とさず衝突検査へ渡す。
 	optional := make([]string, 0, len(defaultWorkspaceRootCopyNames)+len(defaultRootAgentAssetNames))
@@ -80,27 +78,11 @@ func ResolveRootRules(root string, rules config.Workspace) (RootRules, error) {
 	if err != nil {
 		return RootRules{}, fmt.Errorf("read workspace root .worktreeinclude in %s: %w", root, err)
 	}
-	for _, pattern := range includePatterns {
-		clean := filepath.Clean(pattern)
-		if filepath.IsAbs(pattern) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return RootRules{}, fmt.Errorf("unsafe workspace root .worktreeinclude pattern %q in %s", pattern, root)
-		}
-		matches, err := safeGlob(root, pattern)
-		if err != nil {
-			return RootRules{}, err
-		}
-		for _, match := range matches {
-			relative, err := filepath.Rel(root, match)
-			if err != nil {
-				return RootRules{}, err
-			}
-			relative, err = safeRelative(relative)
-			if err != nil {
-				return RootRules{}, err
-			}
-			optional = append(optional, relative)
-		}
+	includes, err := expandPatternsAt(owner, ".worktreeinclude", includePatterns)
+	if err != nil {
+		return RootRules{}, fmt.Errorf("workspace root .worktreeinclude in %s: %w", root, err)
 	}
+	optional = append(optional, includes...)
 	resolved.OptionalCopy = optional
 	if err := validateRuleConflicts(append(append([]string{}, resolved.OptionalCopy...), resolved.Copy...), resolved.Link); err != nil {
 		return RootRules{}, fmt.Errorf("workspace root %s rules from config and .worktreeinclude/.worktreelink conflict: %w", root, err)
