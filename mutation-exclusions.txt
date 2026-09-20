@@ -76,6 +76,13 @@ internal/config/unknown.go	ast-v1:58a7daaf37e2ff54ddc39f53de10663a7676c61ab2b974
 internal/config/v2.go	ast-v1:9b3917fc8ec8bb31e620dc7a5cd27e7f30a2f27985f3054a3c758a31a1ec486f	固定されたlegacy section tagはすべてConfig fieldに対応するため、markLegacyPresentFromValueの境界変異は現行schemaで同値
 internal/config/v2_edit.go	ast-v1:441d894fef2e9b88716db016d58a0ceef646cd8ff8ea2c79f1bf2fcf6de0dbbc	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
 internal/config/v2_edit.go	ast-v1:74d06e9593d333bf4384cbd6687c62c1e8d20bd6c5888c942790bb77eeee1fc2	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
+internal/config/v2_edit.go	ast-v1:09595b700384ca986dbe0f27c7eddfdc021e7580f5be73bf6d4c3f96075503a0	Workspace の repository_defaults は v2Field が同じ nested pathを直接解決するため、専用route条件を反転しても設定結果が変わらない等価変異
+internal/config/v2_edit.go	ast-v1:6cfdcc46304690a288a3838a7bb07074e94cb8243116b414b5b863c3b2929aa5	v2ScopeEntry の全 commit closure は現状nil errorだけを返すため、成功時の err != nil と err == nil の反転は戻り値を変えない等価変異
+internal/config/v2_edit.go	ast-v1:406ca0254ceb8adc389ebac584992a1f49ae00f3bddf6014095a7734fd643278	Workspace の repository_defaults は v2Field が同じ nested pathを直接解決するため、専用route条件を反転しても設定結果が変わらない等価変異
+internal/config/v2_edit.go	ast-v1:299f920ebe388b23a8dec9271a671ab163421ee839d5d97fd15f59196b626655	Workspace の repository_defaults は v2Field が同じ nested pathを直接解決するため、専用route条件を反転してもlist操作結果が変わらない等価変異
+internal/config/v2.go	ast-v1:9779e8d504a49515a6f4df7c54cd3b43ea20e00d1f92620b06208d3e1403a367	固定されたlegacy section tagの走査では最終要素の直後へ到達せず、!= と == の反転は presence map の結果を変えない等価変異
+internal/config/v2_edit.go	ast-v1:8257b017d81c6678094fc461b41ecd80cc7bcbc6bd7c8b18d116c4d138fb5b38	空の workspace map でも Version=2 と明示sectionを先に設定してから判定するため、> と <= の反転は保存結果を変えない等価変異
+internal/config/v2_edit.go	ast-v1:eece4c7f1d83b7ac1c71ef41a5bcc6117f0f249208546e011a7c41598644fef4	空の repository map でも Version=2 と明示sectionを先に設定してから判定するため、> と <= の反転は保存結果を変えない等価変異
 internal/cli/bench.go	ast-v1:76ada9b0eb2e9ee90a241dfae75b26d56f0dc46f6297c69480b178e53e64955b	表示幅とラベル幅が同じ場合は0個の空白を追加するだけで、>と>=の結果が同じため
 internal/cli/bench.go	ast-v1:1f94987a6bae0e5592feb370ef19b5ff27795561b8578703a63e4bb3fe59e7a0	sort.Sliceの比較子を<=にしてもint64の同値要素の値列は変わらず、sortedCopyの結果が同じため
 internal/cli/linked_worktree.go	ast-v1:9ed3d86d1e67d159d41050ce19f1925696dd5cbe0006da7fb873b18da7ab2dc7	12桁ちょうどのOIDは条件が>でも>=でも[:12]の結果が元の文字列と同じで、表示結果が変わらないため
@@ -94,3 +101,4 @@ internal/archive/conflict.go	ast-v1:3295296019f46c569eda9f03bc34df4f17f0cddda73c
 internal/archive/workspace.go	ast-v1:cb3f0724ef69b57c2b70b5b44b8c0d12e23d2608407729e321cf332039e9efb1	read は非負で、read == 0 のとき buffer[:0] をハッシュへ書いても結果は変わらないため、> と >= は同じ動作になる
 internal/config/resolve.go	ast-v1:ac42fd7450db6c6b00b966596fb4f44e7cd14ee2261d8dc1ec0da5c396136584	同じtimeoutの代入では戻り値が変わらない等価変異
 internal/config/resolve.go	ast-v1:f3661ff161061af6e1e4b51a5ed2e1fe932e83ac86c424f1afef97c4668784b8	同じretentionの代入では戻り値が変わらない等価変異
+internal/config/v2.go	ast-v1:5bc3f4a3e36d83a9f5991fc8074ce1a171ea97abae8b68dbbc3a54fef08299a1	raw.Repositories が空のときも後続の nil map 初期化で同じ空 map になり、実効設定や保存結果に差がない等価変異
