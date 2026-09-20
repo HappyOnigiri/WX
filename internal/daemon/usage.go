@@ -213,7 +213,7 @@ func (m *Manager) measureSlotUsage(ctx context.Context, slotID string) {
 	defer release()
 	usage, cache, err := workspace.MeasureSlotUsage(ctx, owner, target, m.sharedFileCache(root))
 	if err != nil {
-		if ctx.Err() == nil {
+		if slotUsageErrorShouldBeLogged(ctx) {
 			m.log.Warn("measure slot usage", "slot_id", slotID, "error", err)
 		}
 		return
@@ -225,6 +225,12 @@ func (m *Manager) measureSlotUsage(ctx context.Context, slotID string) {
 	// 公開済みの cache は measureRootUsage が previous として読むため、書き換えずに差し替える。
 	// 部分走査した slot の prefix だけは結果で置き換え、検証できなかった古い entry を残さない。
 	m.sharedFiles[root] = mergeSlotSharedFileCache(m.sharedFiles[root], cache, target.RelPath)
+}
+
+// slotUsageErrorShouldBeLogged はキャンセルを通常の測定失敗として警告しない。
+// 周期測定の停止時に、意図したキャンセルを障害としてログへ残さないための判定である。
+func slotUsageErrorShouldBeLogged(ctx context.Context) bool {
+	return ctx.Err() == nil
 }
 
 // mergeSlotSharedFileCache は他 slot の cache を保ったまま、測定対象 slot の entry を今回の結果へ差し替える。
