@@ -161,6 +161,10 @@ func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Reposito
 	if err != nil {
 		return CapacityEstimate{}, fmt.Errorf("read sparse checkout setting for capacity estimate: %w", err)
 	}
+	sparseSkipped, err := p.capacitySparseSkippedPaths(ctx, repo, oid, gitBoolTrue(sparse.Stdout))
+	if err != nil {
+		return CapacityEstimate{}, err
+	}
 	targetTracked := make(map[string]bool, len(entries))
 	for _, entry := range entries {
 		targetTracked[entry.Path] = true
@@ -198,12 +202,14 @@ func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Reposito
 			if pointerOK {
 				written = pointer.Size
 				result.LFSExpandedBytes = addBytes(result.LFSExpandedBytes, written)
-				object := objects[pointer.OID]
-				if object == nil {
-					object = &LFSObjectInfo{OID: pointer.OID, Size: pointer.Size, CachePath: lfsCachePath(repo, pointer.OID)}
-					objects[pointer.OID] = object
+				if !sparseSkipped[entry.Path] {
+					object := objects[pointer.OID]
+					if object == nil {
+						object = &LFSObjectInfo{OID: pointer.OID, Size: pointer.Size, CachePath: lfsCachePath(repo, pointer.OID)}
+						objects[pointer.OID] = object
+					}
+					object.Paths = append(object.Paths, entry.Path)
 				}
-				object.Paths = append(object.Paths, entry.Path)
 			} else {
 				// pointer として読めない blob は smudge 済み等の可能性がある。
 				// 実際に tree にある blob サイズを下限に使い、cache の不足を推測しない。
@@ -301,6 +307,57 @@ func gitBoolTrue(value string) bool {
 	default:
 		return false
 	}
+}
+
+func (p *Preparer) capacitySparseSkippedPaths(ctx context.Context, repo discovery.Repository, oid string, sparse bool) (map[string]bool, error) {
+	if !sparse {
+		return nil, nil
+	}
+	index, err := os.CreateTemp("", ".wx-capacity-sparse-index-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temporary sparse capacity index: %w", err)
+	}
+	indexPath := index.Name()
+	if err := index.Close(); err != nil {
+		_ = os.Remove(indexPath)
+		return nil, fmt.Errorf("close temporary sparse capacity index: %w", err)
+	}
+	defer func() { _ = os.Remove(indexPath) }()
+	worktree, err := os.MkdirTemp("", ".wx-capacity-sparse-worktree-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temporary sparse capacity worktree: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(worktree) }()
+	env := []string{"GIT_INDEX_FILE=" + indexPath, "GIT_WORK_TREE=" + worktree}
+	if _, err := p.capacityGitEnv(ctx, repo, env, nil, "read-tree", "--empty"); err != nil {
+		return nil, fmt.Errorf("initialize temporary sparse capacity index: %w", err)
+	}
+	if _, err := p.capacityGitEnv(ctx, repo, env, nil, "read-tree", "--reset", "-i", oid); err != nil {
+		return nil, fmt.Errorf("read requested tree into temporary sparse capacity index: %w", err)
+	}
+	if _, err := p.capacityGitEnv(ctx, repo, env, nil, "sparse-checkout", "reapply"); err != nil {
+		return nil, fmt.Errorf("apply sparse checkout to requested tree for capacity estimate: %w", err)
+	}
+	listing, err := p.capacityGitEnv(ctx, repo, env, nil, "ls-files", "-v", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("read sparse checkout paths for capacity estimate: %w", err)
+	}
+	paths := make(map[string]bool, len(ParseIndexFlags(listing.Stdout).SkipWorktree))
+	for _, path := range ParseIndexFlags(listing.Stdout).SkipWorktree {
+		paths[path] = true
+	}
+	return paths, nil
+}
+
+// SparseCheckoutEnabled は sparse 選択を再計算する必要があるか判定する。
+// 選択内容は sparse-checkout file にあり、bool だけでは inside/outside の変更を区別できない。
+// daemon は有効時の容量見積りを cache せず、要求 OID と現在の選択を毎回組み立てる。
+func (p *Preparer) SparseCheckoutEnabled(ctx context.Context, repo discovery.Repository) (bool, error) {
+	result, err := p.capacityGit(ctx, repo, nil, "config", "--default", "false", "--get", "core.sparseCheckout")
+	if err != nil {
+		return false, fmt.Errorf("read sparse checkout setting for capacity cache: %w", err)
+	}
+	return gitBoolTrue(result.Stdout), nil
 }
 
 // CapacityEstimate は呼び出し側が既存の名前で検索しやすいよう、短い別名も提供する。
@@ -525,24 +582,25 @@ func EstimateRootCopyBytes(sourcePath string, rules RootRules) (int64, error) {
 	}
 	defer func() { _ = source.Close() }()
 	total := int64(0)
-	seen := map[string]bool{}
+	seenRules := map[string]bool{}
+	seenDestinations := map[string]bool{}
 	for _, item := range rules.Copy {
 		clean, err := safeRelative(item)
 		if err != nil {
 			return 0, err
 		}
 		item = clean
-		if seen[item] {
+		if seenRules[item] {
 			continue
 		}
-		seen[item] = true
+		seenRules[item] = true
 		if skip, err := skipRootCopySymlink(source, item, false); err != nil {
 			return 0, err
 		} else if skip {
 			continue
 		}
 		var itemErr error
-		total, itemErr = addRootCopyPath(source, item, total)
+		total, itemErr = addRootCopyPath(source, item, total, seenDestinations)
 		if itemErr != nil {
 			return 0, itemErr
 		}
@@ -553,17 +611,17 @@ func EstimateRootCopyBytes(sourcePath string, rules RootRules) (int64, error) {
 			return 0, err
 		}
 		item = clean
-		if seen[item] {
+		if seenRules[item] {
 			continue
 		}
-		seen[item] = true
+		seenRules[item] = true
 		if skip, err := skipRootCopySymlink(source, item, true); err != nil {
 			return 0, err
 		} else if skip {
 			continue
 		}
 		var itemErr error
-		total, itemErr = addRootCopyPath(source, item, total)
+		total, itemErr = addRootCopyPath(source, item, total, seenDestinations)
 		if itemErr != nil {
 			return 0, itemErr
 		}
@@ -582,7 +640,7 @@ func skipRootCopySymlink(source *os.Root, relative string, optional bool) (bool,
 	return info.Mode()&os.ModeSymlink != 0, nil
 }
 
-func addRootCopyPath(source *os.Root, relative string, total int64) (int64, error) {
+func addRootCopyPath(source *os.Root, relative string, total int64, seen map[string]bool) (int64, error) {
 	relative = filepath.Clean(relative)
 	if relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
 		return 0, fmt.Errorf("unsafe workspace root copy path %q", relative)
@@ -592,6 +650,10 @@ func addRootCopyPath(source *os.Root, relative string, total int64) (int64, erro
 		return 0, err
 	}
 	if info.Mode().IsRegular() {
+		if seen[relative] {
+			return total, nil
+		}
+		seen[relative] = true
 		return addBytes(total, info.Size()), nil
 	}
 	if !info.IsDir() {
@@ -608,7 +670,7 @@ func addRootCopyPath(source *os.Root, relative string, total int64) (int64, erro
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		total, err = addRootCopyPath(source, filepath.Join(relative, name), total)
+		total, err = addRootCopyPath(source, filepath.Join(relative, name), total, seen)
 		if err != nil {
 			return 0, err
 		}

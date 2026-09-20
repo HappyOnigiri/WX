@@ -235,9 +235,9 @@ func (m *Manager) checkPrepareCapacity(ctx context.Context, slot state.Slot, w d
 	return report, nil
 }
 
-// estimateCapacity は doctor と準備 preflight が同じ要求 OID を共有する daemon cache。
-// copy mode と CoW 下限を鍵へ含め、設定変更後の古い見積りを使わない。
-// cache miss の同時重複は許容し、準備経路を待たせない。
+// estimateCapacity は doctor と準備 preflight が共有する要求 OID 別の daemon cache。
+// copy mode と CoW 下限を鍵へ含め、sparse 選択が有効なときは毎回再計算して
+// 設定・選択変更後の古い見積りを使わない。cache miss の同時重複は許容する。
 func (m *Manager) estimateCapacity(ctx context.Context, preparer *workspace.Preparer, cfg config.Config, repo discovery.Repository, oid string) (workspace.CapacityEstimate, error) {
 	oid = strings.TrimSpace(oid)
 	key := strings.Join([]string{
@@ -245,29 +245,37 @@ func (m *Manager) estimateCapacity(ctx context.Context, preparer *workspace.Prep
 		cfg.CopyModeForWorkspaceRepository(preparer.WorkspaceRoot, repo.RelativePath, string(repo.MainPath)),
 		strconv.Itoa(cfg.COWMinSizeKiBForWorkspaceRepository(preparer.WorkspaceRoot, repo.RelativePath, string(repo.MainPath))),
 	}, "\x00")
-	m.capacityMu.Lock()
-	if m.capacityCache != nil {
-		if cached, ok := m.capacityCache[key]; ok {
-			if err := workspace.RefreshLFSCacheState(&cached); err != nil {
-				m.capacityMu.Unlock()
-				return workspace.CapacityEstimate{}, err
-			}
-			m.capacityCache[key] = cached
-			m.capacityMu.Unlock()
-			return cached, nil
-		}
+	sparse, err := preparer.SparseCheckoutEnabled(ctx, repo)
+	if err != nil {
+		return workspace.CapacityEstimate{}, err
 	}
-	m.capacityMu.Unlock()
+	if !sparse {
+		m.capacityMu.Lock()
+		if m.capacityCache != nil {
+			if cached, ok := m.capacityCache[key]; ok {
+				if err := workspace.RefreshLFSCacheState(&cached); err != nil {
+					m.capacityMu.Unlock()
+					return workspace.CapacityEstimate{}, err
+				}
+				m.capacityCache[key] = cached
+				m.capacityMu.Unlock()
+				return cached, nil
+			}
+		}
+		m.capacityMu.Unlock()
+	}
 	estimate, err := preparer.EstimateCapacity(ctx, repo, oid)
 	if err != nil {
 		return workspace.CapacityEstimate{}, err
 	}
-	m.capacityMu.Lock()
-	if m.capacityCache == nil {
-		m.capacityCache = map[string]workspace.CapacityEstimate{}
+	if !estimate.Sparse {
+		m.capacityMu.Lock()
+		if m.capacityCache == nil {
+			m.capacityCache = map[string]workspace.CapacityEstimate{}
+		}
+		m.capacityCache[key] = estimate
+		m.capacityMu.Unlock()
 	}
-	m.capacityCache[key] = estimate
-	m.capacityMu.Unlock()
 	return estimate, nil
 }
 
@@ -292,24 +300,24 @@ func (m *Manager) enforcePrepareCapacity(ctx context.Context, slot state.Slot, w
 		if m.log != nil {
 			m.log.Warn("sparse checkout makes the capacity estimate non-blocking", "slot_id", slot.ID)
 		}
-		return report, nil
-	}
-	for _, volume := range report.Volumes {
-		if volume.Required <= volume.Free {
-			continue
+	} else {
+		for _, volume := range report.Volumes {
+			if volume.Required <= volume.Free {
+				continue
+			}
+			code := "PREPARE_INSUFFICIENT_SPACE"
+			if slot.State == "RESTORING" {
+				code = "RESTORE_INSUFFICIENT_SPACE"
+			}
+			if err := m.store.SetSlotState(ctx, slot.ID, []string{slot.State}, "FAILED", code); err != nil {
+				return report, err
+			}
+			return report, &InsufficientPrepareSpaceError{Report: report}
 		}
-		code := "PREPARE_INSUFFICIENT_SPACE"
-		if slot.State == "RESTORING" {
-			code = "RESTORE_INSUFFICIENT_SPACE"
-		}
-		if err := m.store.SetSlotState(ctx, slot.ID, []string{slot.State}, "FAILED", code); err != nil {
-			return report, err
-		}
-		return report, &InsufficientPrepareSpaceError{Report: report}
 	}
 	// report.Repositories には、容量検査を通った repository の LFS 内訳が
-	// そのまま残る。容量が足りてから cache を修復することで、修復不能でも
-	// staged preparation の書込みと隔離を開始しない。
+	// そのまま残る。sparse checkout でも LFS path の完全性検証は必要なため、
+	// 容量不足を非ブロッキングにしたまま cache を修復する。
 	preparer := m.newPreparer(cfg, slot)
 	preparer.WorkspaceRoot = string(w.Root)
 	byID := make(map[string]discovery.Repository, len(resolved))
