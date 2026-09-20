@@ -99,6 +99,11 @@ editorが書き換えるような設定ファイルを更新の契機にした�
 ## include / link
 
 `.worktreelink`に列挙したpathは、main worktree側の実体へ直接symlinkする。
+`*?[`のいずれかを含む行は`.worktreeinclude`と同じ規約でglobとして展開し、展開後の各pathを1件のlinkとして扱う。
+メタ文字を含まない行はリテラルのpathとして扱い、展開しない。
+そのためglobの行は0件マッチでも準備を続けるが、リテラルの行は欠落時に従来どおり省略される（rootでは準備失敗）。
+`filepath.Match`のescapeを使った`a\*b`のような行もメタ文字を含む扱いになるので、名前に`*`を持つ実体を指していても欠落で失敗しなくなる。
+衝突検査・既定includeの譲り判定・fingerprint・配置履歴はすべて展開後のpathで行うので、globのマッチ集合が増減するとfingerprintが動きslotが作り直される。
 sourceが存在しない項目は、ファイル・ディレクトリを問わずその準備では省略し、sourceの出現・消失はfingerprintの存在状態変更としてslot再利用を止める。
 sourceがsymlinkの項目と、ソースリポジトリのignore対象でない項目も同じく省略し、省略した対象と理由をdaemon logにwarnで残す。
 path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
@@ -144,6 +149,8 @@ agentはslotのworkspace rootをCWDとして起動するので既定でagent資�
 既定名は`.worktreelink`が所有するpathを譲り、rule衝突にしない。利用者が書いていない暗黙の追加が、明示したlinkを止めてはならないためである。
 includeのglobと`.worktreelink`に同じpathを書いた場合は利用者が明示した矛盾なので、そのまま準備失敗にする。
 rootのlinkだけはignore判定を行わず（rootにGitが無い）、sourceの欠落も省略ではなく準備失敗として扱う。
+root直下の`.worktreelink`もrepositoryと同じくglobを展開し、globの行は0件を許す一方、リテラルの行は欠落が準備失敗になる。
+config の`workspaces.<root>.link`は展開せず、明示指定は存在必須というリテラルの契約のままにする。
 
 root直下のmanifestは、workspace rootがrepositoryのmain worktreeそのものである場合には読まない。
 そこはGitがcheckoutする領域で、配置しない実体をfingerprintへ混ぜると無関係なREADY slotを一斉に無効化する。
