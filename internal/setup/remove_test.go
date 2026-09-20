@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/hookconfig"
 )
 
 // TestRemoveUndoesSetup は setup が書いたものを Remove が消し、shell 起動ファイルだけを残すことを確認する。
@@ -171,5 +172,31 @@ func TestRemoveSkipsAnAbsentLaunchAgent(t *testing.T) {
 	}
 	if removal.Failed() {
 		t.Fatalf("removing a fresh environment failed: %+v", removal.Results)
+	}
+}
+
+// TestRemoveReportsHookRemovalFailure は hook 設定が壊れているときに、他の項目を
+// 続行しつつ hook の失敗を結果へ残すことを確認する。失敗を成功扱いにすると、利用者は
+// 設定が残った理由を知る手段を失う。
+func TestRemoveReportsHookRemovalFailure(t *testing.T) {
+	_ = newSetupFixture(t)
+	path, err := hookconfig.TargetPath("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSetupFile(t, path, "{")
+
+	result := removeHooks("claude")
+	if result.Err == nil {
+		t.Fatalf("malformed hook configuration was reported as removed: %+v", result)
+	}
+}
+
+// TestLogDirectoryReportsHomeResolutionFailure は HOME を解決できないときに、残置物の
+// 候補を成功した相対 path として返さないことを確認する。
+func TestLogDirectoryReportsHomeResolutionFailure(t *testing.T) {
+	t.Setenv("HOME", "")
+	if path, err := logDirectory(); err == nil {
+		t.Fatalf("logDirectory(%q) succeeded without HOME", path)
 	}
 }

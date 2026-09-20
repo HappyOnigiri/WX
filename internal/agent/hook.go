@@ -21,6 +21,12 @@ type HookInput struct {
 	TranscriptPath string `json:"transcript_path"`
 }
 
+// newHookClient は hook の接続待機と RPC 読み書きの予算を分けて設定する。
+// 固定値を呼び出し側から観測できる形にし、再起動中の retry 予算を誤って失わない。
+func newHookClient(socket string) rpc.Client {
+	return rpc.Client{Socket: socket, Timeout: 3 * time.Second, ConnectRetry: 2 * time.Second}
+}
+
 func RunHook(ctx context.Context, event string, input io.Reader) error {
 	wxID := os.Getenv("WX_SESSION_ID")
 	token := os.Getenv("WX_SESSION_TOKEN")
@@ -50,7 +56,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	}
 	// hook の失敗は agent 操作を止めるため、binary 置換後の再起動中も接続を再試行する。
 	// 空の DB では最短 22ms だが、launchd の遅延、migration、復旧 job、root descriptor を考慮して予算は 2 秒とする。
-	client := rpc.Client{Socket: socket, Timeout: 3 * time.Second, ConnectRetry: 2 * time.Second}
+	client := newHookClient(socket)
 	switch event {
 	case "session-start":
 		if payload.SessionID == "" {

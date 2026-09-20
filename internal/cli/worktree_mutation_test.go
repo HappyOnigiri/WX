@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,21 @@ func TestRunAgentWithPolicyFromMutationBoundariesKeepsOrdinaryLaunchOnPolicyPath
 		if method == "WorktreePolicy" {
 			t.Fatalf("methods=%v, ordinary launch with explicit disable queried resume policy", handler.methodsSnapshot())
 		}
+	}
+}
+
+// fresh は resume 指定なしでは worktree policy を選ばず、引数エラーとして拒否する。
+func TestRunAgentWithPolicyFromMutationBoundariesRejectsFreshWithoutResume(t *testing.T) {
+	client, handler, source := resumePolicyLaunchFixture(t)
+	var exit int
+	stderr := captureStderrForLease(t, func() {
+		exit = client.RunAgentWithPolicyFrom(context.Background(), source, "claude", nil, nil, true, WorktreeOptions{Disable: true})
+	})
+	if exit != 2 || !strings.Contains(stderr, "fresh") {
+		t.Fatalf("exit=%d stderr=%q, want fresh argument error", exit, stderr)
+	}
+	if methods := handler.methodsSnapshot(); len(methods) != 0 {
+		t.Fatalf("methods=%v, fresh without resume must stop before daemon access", methods)
 	}
 }
 

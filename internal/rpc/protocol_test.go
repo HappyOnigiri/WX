@@ -72,6 +72,13 @@ type interruptedDurableStore struct {
 	failComplete atomic.Bool
 }
 
+// delayedCompleteDurableStore は永続化完了の deadline を観測するため、短い待機を挟む。
+// server 側の待機予算が 0 へ変異すると、保存完了前に context が失効する。
+type delayedCompleteDurableStore struct {
+	memoryDurableStore
+	delay time.Duration
+}
+
 func (s failingDurableStore) BeginRPCRequest(context.Context, string, string, string, time.Time) ([]byte, string, string, bool, error) {
 	if s.failBegin {
 		return nil, "", "", false, errors.New("begin fault")
@@ -122,6 +129,17 @@ func (s *interruptedDurableStore) CompleteRPCRequest(ctx context.Context, key, m
 		return errors.New("simulated crash before durable response commit")
 	}
 	return s.memoryDurableStore.CompleteRPCRequest(ctx, key, method, params, result, code, message, expires)
+}
+
+func (s *delayedCompleteDurableStore) CompleteRPCRequest(ctx context.Context, key, method, params string, result []byte, code, message string, expires time.Time) error {
+	timer := time.NewTimer(s.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return s.memoryDurableStore.CompleteRPCRequest(ctx, key, method, params, result, code, message, expires)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 type errorHandler struct{ result any }
@@ -510,6 +528,48 @@ func TestDurableReservationPreventsMutationReplayAfterResponseCommitGap(t *testi
 	}
 }
 
+// TestDurableCompletionKeepsARealDeadline は、handler の結果を永続化する短い待機を
+// 2 秒の予算内で完了させる。予算が 0 へ変わると IDEMPOTENCY_STORE へ倒れる。
+func TestDurableCompletionKeepsARealDeadline(t *testing.T) {
+	durable := &delayedCompleteDurableStore{delay: 20 * time.Millisecond}
+	serverSide, clientSide := net.Pipe()
+	server := &Server{Handler: echoHandler{}, Durable: durable}
+	done := make(chan struct{})
+	go func() {
+		server.serveConn(context.Background(), serverSide)
+		close(done)
+	}()
+	request := Request{Version: ProtocolVersion, ID: "request", Method: "mutate", IdempotencyKey: "delayed-complete", Params: json.RawMessage(`{}`)}
+	if err := writeFrame(clientSide, request); err != nil {
+		t.Fatal(err)
+	}
+	var response Response
+	if err := readFrame(clientSide, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error != nil {
+		t.Fatalf("delayed durable response=%+v, want successful completion", response)
+	}
+	_ = clientSide.Close()
+	<-done
+}
+
+// TestFinishIdempotencyEntryRemovesAFailedReservation は、永続化の予約に失敗した
+// entry を map から消し、同じ key の再試行を妨げないことを確認する。
+func TestFinishIdempotencyEntryRemovesAFailedReservation(t *testing.T) {
+	entry := &idempotentEntry{done: make(chan struct{})}
+	server := &Server{idem: map[string]*idempotentEntry{"retry": entry}}
+	server.finishIdempotencyEntry("retry", entry, Response{Error: &RPCError{Code: "STORE"}}, false)
+	if _, ok := server.idem["retry"]; ok {
+		t.Fatal("failed idempotency reservation was retained")
+	}
+	select {
+	case <-entry.done:
+	default:
+		t.Fatal("failed idempotency reservation was not released")
+	}
+}
+
 func TestServerRefusesNonSocket(t *testing.T) {
 	path := testsupport.SocketPath(t, "wxd.sock")
 	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
@@ -559,6 +619,44 @@ func TestServerReplacesOnlyAStaleUnixSocket(t *testing.T) {
 			t.Fatal("server did not replace stale socket")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestServerUsesAProbeTimeoutForStaleSocket は、stale socket の probe が無期限待機に
+// 変わらないことを、実際の bind へ進める fake dialer の引数で確認する。
+func TestServerUsesAProbeTimeoutForStaleSocket(t *testing.T) {
+	socket := testsupport.SocketPath(t, "probe-timeout.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.SetUnlinkOnClose(false)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	originalDial := dialUnixSocket
+	t.Cleanup(func() { dialUnixSocket = originalDial })
+	called := make(chan time.Duration, 1)
+	dialUnixSocket = func(_ context.Context, _ string, timeout time.Duration) (net.Conn, error) {
+		called <- timeout
+		return nil, errors.New("stale socket")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := &Server{Socket: socket, Handler: echoHandler{}}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx) }()
+	select {
+	case timeout := <-called:
+		if timeout != 100*time.Millisecond {
+			t.Fatalf("probe timeout=%s, want 100ms", timeout)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not probe the stale socket")
 	}
 	cancel()
 	if err := <-done; err != nil {

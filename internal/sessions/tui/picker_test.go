@@ -507,6 +507,15 @@ func TestPickerBoundaryWidthsAndHeight(t *testing.T) {
 	}
 }
 
+func TestSessionAgePreservesFractionalSecondAtMinuteBoundary(t *testing.T) {
+	now := time.Unix(120, 0)
+	// 小数部を落とすとちょうど1分になり、表示が「1m ago」へ変わる境界を使う。
+	session := scanner.Session{Mtime: 60.0000001}
+	if got := sessionAge(session, now); got != "just now" {
+		t.Fatalf("sessionAge = %q, want just now", got)
+	}
+}
+
 func indexOfLineContaining(t *testing.T, lines []string, want string) int {
 	t.Helper()
 	for i, line := range lines {

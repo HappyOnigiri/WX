@@ -42,6 +42,25 @@ func TestLeaseCommandMutationBoundariesPreserveExplicitAndDefaultCWD(t *testing.
 	}
 }
 
+// 明示した session の再開は、呼び出し元 workspace の worktree policy を検査しない。
+func TestRunLeaseFromMutationBoundariesSkipsPolicyForResume(t *testing.T) {
+	client, handler, _, ctx := leaseFixture(t)
+	client.Config.WorkspaceDefaults.Worktree = "off"
+	source := probeWorktreeFixture(t)
+	if got := client.RunLeaseCommandFrom(ctx, source, []string{"true"}, nil, "wx-session"); got != 0 {
+		t.Fatalf("resume command exit=%d, want 0", got)
+	}
+	handler.mu.Lock()
+	methods := append([]string(nil), handler.methods...)
+	handler.mu.Unlock()
+	if !containsMethod(methods, "Resume") {
+		t.Fatalf("methods=%v, want Resume for an explicit session", methods)
+	}
+	if containsMethod(methods, "ResolveAndLease") {
+		t.Fatalf("methods=%v, explicit resume unexpectedly used a new lease", methods)
+	}
+}
+
 func TestLeaseNewMutationBoundariesKeepCWDAndReadinessNotice(t *testing.T) {
 	client, handler, base, ctx := leaseFixture(t)
 	stderr := captureStderrForLease(t, func() {
