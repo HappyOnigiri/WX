@@ -209,6 +209,23 @@ func TestMutationConfigGeneralYAMLBoundaries(t *testing.T) {
 	if got, ok := section["copy"]; !ok || !reflect.DeepEqual(got, []string{}) {
 		t.Fatalf("preserved dynamic empty list=%#v, want []string{}", got)
 	}
+	preserved := map[string]any{"copy": []any{"from-file"}}
+	preserveDynamicValues(present, "demo", preserved, Workspace{Copy: []string{}}, []string{"copy"})
+	if got := preserved["copy"]; !reflect.DeepEqual(got, []any{"from-file"}) {
+		t.Fatalf("existing dynamic value=%#v, want it unchanged", got)
+	}
+
+	for _, node := range []*yaml.Node{
+		{},
+		{Kind: yaml.ScalarNode, Value: "scalar"},
+		{Kind: yaml.MappingNode},
+	} {
+		keys := map[string]bool{}
+		collectMappingKeys(node, "", keys)
+		if len(keys) != 0 {
+			t.Fatalf("non-mapping or empty YAML node produced keys: node=%+v keys=%v", node, keys)
+		}
+	}
 
 	withoutWorkspaces, err := yaml.Marshal(Config{Version: 2})
 	if err != nil {
@@ -223,6 +240,76 @@ func TestMutationConfigGeneralYAMLBoundaries(t *testing.T) {
 	}
 	if !strings.Contains(string(withEmptyWorkspaces), "workspaces:") {
 		t.Fatalf("explicit empty workspaces section was omitted:\n%s", withEmptyWorkspaces)
+	}
+}
+
+// v1 adapter と v2 document は空入力・不正値を既定値へ黙って変換せず、契約どおり拒否する。
+func TestMutationConfigGeneralRejectsEmptyAndInvalidInputs(t *testing.T) {
+	if err := Validate(nil); err == nil {
+		t.Fatal("nil config was accepted")
+	}
+	for _, test := range []struct {
+		name string
+		cfg  Config
+	}{
+		{name: "missing version", cfg: Config{}},
+		{name: "legacy version", cfg: Config{Version: 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := Validate(&test.cfg); err == nil || !strings.Contains(err.Error(), "unsupported config version") {
+				t.Fatalf("Validate error=%v, want unsupported version", err)
+			}
+		})
+	}
+
+	emptyLanguage := DefaultsV2()
+	emptyLanguage.System.Language = ""
+	emptyLanguage.present = map[string]bool{"system.language": true}
+	if err := Validate(&emptyLanguage); err == nil || !strings.Contains(err.Error(), "language must be en or ja") {
+		t.Fatalf("explicit empty language error=%v, want invalid language", err)
+	}
+
+	invalid := Defaults()
+	invalid.Worktree.Undefined = "invalid"
+	if err := Validate(&invalid); err == nil || !strings.Contains(err.Error(), "worktree.undefined") {
+		t.Fatalf("invalid worktree mode error=%v, want worktree policy error", err)
+	}
+}
+
+func TestMutationConfigGeneralCatalogAndLegacyKeyBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name, key, scope string
+	}{
+		{name: "empty key", key: "", scope: ""},
+		{name: "empty key in scope", key: "", scope: V2ScopeRepository},
+		{name: "unknown key", key: "config.does_not_exist", scope: V2ScopeRepository},
+		{name: "wrong scope", key: "readiness.mode", scope: V2ScopeSystem},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := Describe(test.key, test.scope); err == nil {
+				t.Fatalf("Describe(%q, %q) unexpectedly succeeded", test.key, test.scope)
+			}
+		})
+	}
+
+	for _, key := range []string{"", "unknown.key"} {
+		if scope, canonical, ok := legacyV2Key(key); ok {
+			t.Fatalf("legacyV2Key(%q)=(%q, %q, true), want unknown", key, scope, canonical)
+		}
+	}
+	for _, test := range []struct {
+		scope, key string
+	}{
+		{scope: "", key: "repository_defaults.prepare.inputs"},
+		{scope: V2ScopeWorkspace, key: "repository_defaults.prepare.version"},
+		{scope: V2ScopeWorkspace, key: "repository_defaults.prepare.inputs"},
+		{scope: "unknown", key: "discovery.exclude"},
+	} {
+		got := isV2ListKey(test.scope, test.key)
+		want := test.scope == V2ScopeWorkspace && test.key == "repository_defaults.prepare.inputs"
+		if got != want {
+			t.Fatalf("isV2ListKey(%q, %q)=%v, want %v", test.scope, test.key, got, want)
+		}
 	}
 }
 
