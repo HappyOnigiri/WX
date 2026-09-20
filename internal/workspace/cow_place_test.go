@@ -176,6 +176,9 @@ func TestCOWPlacementGatesAtTheExactBatchBoundary(t *testing.T) {
 // 配置の途中で所有権検査が失敗した回は、未着手の候補だけを pending として置換方式へ戻す。
 func TestPlaceOwnedSharedFilesCountsPendingCandidatesAfterBatchFailure(t *testing.T) {
 	t.Parallel()
+	if !cowAvailable() {
+		t.Skip("APFS is required")
+	}
 	contents := make(map[string]string, cowBatchSize+1)
 	for index := 0; index <= cowBatchSize; index++ {
 		contents[fmt.Sprintf("batch/%03d/leaf", index)] = "x"
