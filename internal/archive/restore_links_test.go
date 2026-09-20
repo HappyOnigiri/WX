@@ -36,9 +36,7 @@ func TestRestoreUsesDestinationIgnoreRulesAndRetainsTreeValidation(t *testing.T)
 		t.Fatal(err)
 	}
 	source := filepath.Join(worktreeRoot, "source")
-	// 追加直後に別プロセスの prune が管理情報を回収すると、Git が準備中の lock を書けずに失敗する。
-	// 検証中の source は削除まで保持するため、作成時から lock を残す。
-	gitCommand(t, repository, "worktree", "add", "--detach", "--lock", source, oldHead)
+	gitCommand(t, repository, "worktree", "add", "--detach", source, oldHead)
 	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, source, "old-ignore", time.Now().Add(time.Hour), nil)
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
