@@ -174,11 +174,11 @@ func TestMutationLFSObjectsByRepositoryFiltersIncompleteEstimates(t *testing.T) 
 	}
 }
 
-func TestMutationEstimateCapacityUsesCachedEstimateBeforeGit(t *testing.T) {
+func TestMutationEstimateCapacityUsesCachedEstimateWithSparseDisabled(t *testing.T) {
 	t.Parallel()
 	ctx, manager, _, w, resolved, _ := managerCoverageFixture(t, "repository")
 	repo := resolved[0].Repository
-	preparer := &workspace.Preparer{WorkspaceRoot: string(w.Root)}
+	preparer := &workspace.Preparer{Git: manager.git, WorkspaceRoot: string(w.Root)}
 	cfg := manager.Config()
 	key := strings.Join([]string{
 		string(repo.ID),
