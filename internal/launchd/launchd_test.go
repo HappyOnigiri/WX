@@ -179,6 +179,38 @@ func TestUninstallRemovesPlistWhenServiceIsAlreadyMissing(t *testing.T) {
 	}
 }
 
+// TestUninstallReportsLaunchAgentDirectorySyncFailure は plist を消せても親 directory の
+// 同期に失敗した場合は成功扱いにしないことを確認する。launchctl と directory open を
+// fake に差し替え、実際の launchd や権限へ依存せず永続化境界だけを観測する。
+func TestUninstallReportsLaunchAgentDirectorySyncFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "launchctl"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	path, err := PlistPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("plist"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	openErr := errors.New("directory open refused")
+	open := func(string) (*os.File, error) { return nil, openErr }
+	if err := uninstallWithOpen(context.Background(), open); !errors.Is(err, openErr) {
+		t.Fatal("uninstall succeeded without syncing the LaunchAgent directory")
+	}
+}
+
 func TestKickstartReportsAnUninstalledService(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
