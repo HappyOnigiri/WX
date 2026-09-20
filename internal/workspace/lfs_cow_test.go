@@ -241,6 +241,19 @@ func TestCompactLFSObjectsSkipsInCopyModeWithLog(t *testing.T) {
 	}
 }
 
+func TestLFSCompactionEnabledRequiresEligibleConfiguration(t *testing.T) {
+	t.Parallel()
+	if lfsCompactionEnabled(config.CopyModeCopy, true) {
+		t.Fatal("copy mode unexpectedly enabled LFS CoW")
+	}
+	if !lfsCompactionEnabled(config.CopyModeAuto, true) {
+		t.Fatal("available auto mode did not enable LFS CoW")
+	}
+	if lfsCompactionEnabled(config.CopyModeAuto, false) {
+		t.Fatal("unsupported platform enabled LFS CoW")
+	}
+}
+
 func TestLFSCompactionBatchAggregatesResults(t *testing.T) {
 	t.Parallel()
 	var logged bytes.Buffer
@@ -290,6 +303,24 @@ func TestLFSCompactionBatchCountsCanceledCandidates(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) || result.Failed != 2 {
 		t.Fatalf("canceled result=%+v err=%v", result, err)
+	}
+}
+
+// 先頭候補の後で中断した場合は、未処理候補だけを Failed として数える。
+func TestLFSCompactionBatchCountsOnlyRemainingCanceledCandidates(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	preparer := &Preparer{}
+	result, err := preparer.compactLFSBatch(ctx, nil, nil, []LFSObjectCandidate{{Path: "one"}, {Path: "two"}}, func(_ context.Context, _, _ *os.Root, candidate LFSObjectCandidate) (bool, int64, error) {
+		if candidate.Path == "one" {
+			cancel()
+			return true, 0, nil
+		}
+		t.Fatal("canceled batch called compact function for remaining candidate")
+		return false, 0, nil
+	})
+	if !errors.Is(err, context.Canceled) || result.Replaced != 1 || result.Failed != 1 {
+		t.Fatalf("canceled result=%+v err=%v, want one replaced and one failed", result, err)
 	}
 }
 

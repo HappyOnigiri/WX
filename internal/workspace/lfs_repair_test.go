@@ -14,6 +14,20 @@ import (
 	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
+func TestLFSRepairLocksForSelectsConfiguredOrDefaultLock(t *testing.T) {
+	t.Parallel()
+	custom := &gitx.KeyedLocks{}
+	if got := lfsRepairLocksFor(&Preparer{LFSLocks: custom}); got != custom {
+		t.Fatal("configured LFS lock was not selected")
+	}
+	if got := lfsRepairLocksFor(&Preparer{}); got == nil {
+		t.Fatal("default LFS lock was nil")
+	}
+	if got := lfsRepairLocksFor(nil); got == nil {
+		t.Fatal("nil preparer default LFS lock was nil")
+	}
+}
+
 func TestLFSRepairUsesFullOIDPathAndVerifiesSource(t *testing.T) {
 	t.Parallel()
 	source, common := t.TempDir(), t.TempDir()
@@ -249,6 +263,27 @@ func TestPreparerVerifyPreparedLFSUsesRepositoryObjects(t *testing.T) {
 	var nilPreparer *Preparer
 	if err := nilPreparer.verifyPreparedLFS(root, ".", repo); err != nil {
 		t.Fatalf("verify with nil preparer: %v", err)
+	}
+}
+
+// repository に登録された LFS object のサイズ不一致は、準備完了後の検証で検出する。
+func TestPreparerVerifyPreparedLFSRejectsWrongSize(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "asset.bin"), []byte("bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	repo := discovery.Repository{ID: "repo"}
+	preparer := &Preparer{LFSObjects: map[string][]LFSObjectInfo{
+		string(repo.ID): {{OID: "sha256:" + strings.Repeat("a", 64), Size: 7, Paths: []string{"asset.bin"}}},
+	}}
+	if err := preparer.verifyPreparedLFS(root, ".", repo); err == nil {
+		t.Fatal("wrong-sized LFS object was accepted")
 	}
 }
 

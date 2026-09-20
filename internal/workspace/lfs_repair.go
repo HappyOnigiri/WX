@@ -72,6 +72,13 @@ type LFSRepairResult struct {
 // lfsRepairLocks は daemon 以外の caller が Preparer を組み立てた場合の既定 lock である。
 var lfsRepairLocks gitx.KeyedLocks
 
+func lfsRepairLocksFor(p *Preparer) *gitx.KeyedLocks {
+	if p != nil && p.LFSLocks != nil {
+		return p.LFSLocks
+	}
+	return &lfsRepairLocks
+}
+
 var lfsTemporarySequence atomic.Uint64
 
 // DiagnoseLFSObjects は cache 欠落・破損 object と source working tree の
@@ -148,10 +155,7 @@ func (p *Preparer) RepairLFSObjects(ctx context.Context, repo discovery.Reposito
 	if strings.TrimSpace(string(repo.MainPath)) == "" || strings.TrimSpace(string(repo.CommonDir)) == "" {
 		return LFSRepairResult{}, errors.New("LFS repair requires source and common directories")
 	}
-	locks := &lfsRepairLocks
-	if p != nil && p.LFSLocks != nil {
-		locks = p.LFSLocks
-	}
+	locks := lfsRepairLocksFor(p)
 	var result LFSRepairResult
 	err := locks.With(ctx, string(repo.CommonDir), func(lockCtx context.Context) error {
 		source, err := openPinnedRepositoryRoot(string(repo.MainPath))

@@ -79,6 +79,41 @@ func TestCOWSkipsDifferentAndMissingFiles(t *testing.T) {
 	}
 }
 
+// 宛先の親形状が壊れている場合は shareRun の所有権エラーを返す。
+func TestCompactFilePropagatesShareError(t *testing.T) {
+	t.Parallel()
+	source, destination := cowRoots(t)
+	if err := source.Mkdir("dir", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cowWrite(t, source, "dir/file", "source")
+	cowWrite(t, destination, "dir", "not a directory")
+	err := compactFile(context.Background(), source, destination, "dir/file", func() error { return nil })
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("share error=%v, want ownership error", err)
+	}
+}
+
+// 中断した CoW の一時ファイル検査で Git の失敗を成功へ読み替えない。
+// testlint:allow-serial -- fixture preparation changes HOME through the shared setup
+func TestRejectCOWTemporariesPropagatesGitError(t *testing.T) {
+	ctx := context.Background()
+	preparer, repo, oid, target := cowFixture(t)
+	if err := preparer.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := preparer.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(target, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.rejectCOWTemporaries(ctx, target, identity); err == nil {
+		t.Fatal("Git failure was ignored")
+	}
+}
+
 // 所有権を証明できない回は clone も swap もせず、宛先をそのまま残す。
 func TestCOWStopsBeforeReplacingWhenOwnershipIsUnprovable(t *testing.T) {
 	t.Parallel()

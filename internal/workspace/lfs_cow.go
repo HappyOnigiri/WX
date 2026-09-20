@@ -82,7 +82,7 @@ func (p *Preparer) CompactLFSObjects(ctx context.Context, repo discovery.Reposit
 		return result, errors.New("LFS CoW compaction requires a preparer")
 	}
 	mode := p.Config.CopyModeForWorkspaceRepository(p.workspaceRootForRepository(repo), repo.RelativePath, string(repo.MainPath))
-	if mode == config.CopyModeCopy || !cowAvailable() {
+	if !lfsCompactionEnabled(mode, cowAvailable()) {
 		result.Skipped = len(candidates)
 		if p.Log != nil {
 			p.Log.Warn("LFS cache CoW skipped", "reason", "copy mode or unsupported platform", "mode", mode, "candidates", len(candidates))
@@ -90,6 +90,10 @@ func (p *Preparer) CompactLFSObjects(ctx context.Context, repo discovery.Reposit
 		return result, nil
 	}
 	return p.compactLFSObjectsWithRoots(ctx, repo, worktree, candidates)
+}
+
+func lfsCompactionEnabled(mode string, available bool) bool {
+	return available && mode != config.CopyModeCopy
 }
 
 // compactLFSBatch は各 object の結果を集約し、1件の失敗で残りの候補を止めない。

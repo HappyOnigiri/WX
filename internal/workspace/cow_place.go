@@ -278,7 +278,7 @@ func (p *Preparer) placeSharedFiles(ctx context.Context, repo discovery.Reposito
 	// clone できない platform と copy 指定では1件も置かず、方式の判断は従来どおり compactWorktree に委ねる。
 	workspaceRoot := p.workspaceRootForRepository(repo)
 	mode := p.Config.CopyModeForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath))
-	if mode == config.CopyModeCopy || !cowAvailable() {
+	if !cowPlacementEnabled(mode, cowAvailable()) {
 		return cowPlacement{}, nil
 	}
 	// 先行配置した未追跡の .gitattributes は、要求 OID から読ませた checkout の属性と、配置後の tracked 検査が使う属性を食い違わせる。
@@ -289,6 +289,10 @@ func (p *Preparer) placeSharedFiles(ctx context.Context, repo discovery.Reposito
 	}
 	placement, err := p.placeOwnedSharedFiles(ctx, repo, item, slotID)
 	return placement, p.cowFallback(ctx, mode, item.Target, err)
+}
+
+func cowPlacementEnabled(mode string, available bool) bool {
+	return available && mode != config.CopyModeCopy
 }
 
 func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Repository, item *stagedRepository, slotID string) (cowPlacement, error) {
@@ -348,7 +352,7 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 	})
 	if placeErr != nil {
 		// 途中で止めた回は着手していない候補が残るため、置換方式へ回す件数を候補の残りで数える。
-		stats.pending.Store(int64(excluded + len(candidates) - len(placer.placed)))
+		stats.pending.Store(int64(pendingCOWCandidates(excluded, len(candidates), len(placer.placed))))
 	}
 	p.logCOWStats(item.Target, stats)
 	stats.recordCOWPhases(p.Phases, "cow-place")
@@ -357,6 +361,10 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 		return placement, placeErr
 	}
 	return placement, validate()
+}
+
+func pendingCOWCandidates(excluded, candidates, placed int) int {
+	return excluded + candidates - placed
 }
 
 // shareableCOWPlacements は変換の入り得る候補を落とし、落とした件数を返す。
