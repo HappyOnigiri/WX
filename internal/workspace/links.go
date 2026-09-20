@@ -40,10 +40,14 @@ func (p *Preparer) createLinksAt(ctx context.Context, repo discovery.Repository,
 	if err != nil {
 		return err
 	}
-	if err := validateRuleConflicts(nil, patterns); err != nil {
+	links, err := expandLinkPatternsAt(sourceRoot, patterns)
+	if err != nil {
 		return err
 	}
-	sources, err := inspectLinkSources(sourceRoot, patterns)
+	if err := validateRuleConflicts(nil, links); err != nil {
+		return err
+	}
+	sources, err := inspectLinkSources(sourceRoot, links)
 	if err != nil {
 		return err
 	}

@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	fingerprintSchemaVersion         = 9
+	fingerprintSchemaVersion         = 10
 	updateCompatibilitySchemaVersion = 4
 )
 
@@ -72,6 +72,8 @@ func UpdateCompatibilityFingerprintWithGit(ctx context.Context, git *gitx.Runner
 // schema=8 は submodule 実体化の方針も含め、方針変更後に以前の READY slot を再利用しない。
 // schema=9 は source worktree の sparse checkout 方針とパターンを含め、パターン変更後に
 // 以前の READY slot が古い path set のまま貸し出されないようにする。
+// schema=10 は .worktreelink の glob 展開を hash 対象に含める。展開前は pattern のまま source を検査していたため、
+// glob のマッチ集合が増減しても値が動かなかった。
 // commentlint:allow-long -- 契約と安全条件を保持する説明のため
 func Fingerprint(generation int, oid string, repo discovery.Repository, c config.Config) (string, error) {
 	return FingerprintWithGit(context.Background(), &gitx.Runner{}, generation, oid, repo, c)
@@ -115,10 +117,14 @@ func fingerprintWithSchemaAndGit(ctx context.Context, git *gitx.Runner, schema, 
 			}
 		}
 	}
-	if err := validateRuleConflicts(nil, linkPatterns); err != nil {
+	links, err := expandLinkPatternsAt(sourceRoot, linkPatterns)
+	if err != nil {
 		return "", err
 	}
-	linkSources, err := inspectLinkSources(sourceRoot, linkPatterns)
+	if err := validateRuleConflicts(nil, links); err != nil {
+		return "", err
+	}
+	linkSources, err := inspectLinkSources(sourceRoot, links)
 	if err != nil {
 		return "", err
 	}
@@ -136,7 +142,7 @@ func fingerprintWithSchemaAndGit(ctx context.Context, git *gitx.Runner, schema, 
 	// default include は copyIncludesAt の tracked 検査なしで hash 化する。
 	// tracked file も checkout に任せるため、main worktree の編集で再利用できた slot も cold start 時に再構築される。untracked file を除外すると古い local rule を持つ slot を渡してしまう。
 	// default file がない場合の切り替えで materialized worktree は変わらないため、設定自体は意図的に hash 化しない。
-	defaults, err := defaultIncludeCandidatesForRepository(repo, c, linkPatterns)
+	defaults, err := defaultIncludeCandidatesForRepository(repo, c, links)
 	if err != nil {
 		return "", err
 	}
