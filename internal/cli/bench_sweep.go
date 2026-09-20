@@ -22,7 +22,8 @@ var benchSweepCOWMinSizeKiB = []int{0, 4, 8, 16, 32, 64, 128}
 // 先頭の `copy_mode=copy` は CoW を使わない基準線で、続く行は下限だけを振る。
 // 下限の行で copy_mode を指定しないのは、実際に使う実効設定のまま下限の効き方を比べるためである。
 func BenchSweepConfigs() []config.PrepareOverride {
-	out := make([]config.PrepareOverride, 0, len(benchSweepCOWMinSizeKiB)+1)
+	// 事前容量は出力の契約ではないため、設定件数の算術を持たせない。
+	out := make([]config.PrepareOverride, 0)
 	out = append(out, config.PrepareOverride{CopyMode: config.CopyModeCopy})
 	for _, kib := range benchSweepCOWMinSizeKiB {
 		out = append(out, config.PrepareOverride{COWMinSizeKiB: &kib})
