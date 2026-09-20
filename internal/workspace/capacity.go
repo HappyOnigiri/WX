@@ -141,7 +141,7 @@ func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Reposito
 	convertible := map[string]bool{}
 	lfsPaths := map[string]bool{}
 	if len(paths) > 0 {
-		attrs, attrErr := p.capacityGit(ctx, repo, []byte(strings.Join(paths, "\x00")+"\x00"), "check-attr", "--cached", "--all", "--stdin", "-z")
+		attrs, attrErr := p.capacityAttributes(ctx, repo, oid, []byte(strings.Join(paths, "\x00")+"\x00"))
 		if attrErr != nil {
 			return CapacityEstimate{}, fmt.Errorf("read checkout attributes for capacity estimate: %w", attrErr)
 		}
@@ -231,19 +231,8 @@ func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Reposito
 		}
 	}
 	for _, object := range objects {
-		cached, size, err := capacityCacheState(object.CachePath)
-		if err != nil {
-			return CapacityEstimate{}, fmt.Errorf("inspect LFS cache object %s: %w", object.OID, err)
-		}
-		object.CacheSize = size
-		object.Cached = cached && size == object.Size
-		switch {
-		case !cached:
-			object.CacheState = LFSCacheMissing
-		case size != object.Size:
-			object.CacheState = LFSCacheCorrupt
-		default:
-			object.CacheState = LFSCacheHealthy
+		if err := refreshLFSObjectCacheState(object); err != nil {
+			return CapacityEstimate{}, err
 		}
 		if !object.Cached {
 			result.MissingLFSObjects++
@@ -254,6 +243,55 @@ func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Reposito
 	}
 	sort.Slice(result.LFS, func(i, j int) bool { return result.LFS[i].OID < result.LFS[j].OID })
 	return result, nil
+}
+
+// RefreshLFSCacheState は見積り済み LFS object の filesystem 依存状態だけを
+// 読み直す。Git tree や pointer の再解析は行わないため、doctor と準備が共有する
+// 見積りを保ったまま外部の git lfs fetch 後にも最新の cache 状態を返せる。
+func RefreshLFSCacheState(estimate *CapacityEstimate) error {
+	if estimate == nil {
+		return nil
+	}
+	refreshed := make([]LFSObjectInfo, len(estimate.LFS))
+	copy(refreshed, estimate.LFS)
+	missing := 0
+	cacheBytes := int64(0)
+	for index := range refreshed {
+		object := &refreshed[index]
+		if err := refreshLFSObjectCacheState(object); err != nil {
+			return err
+		}
+		if !object.Cached {
+			missing++
+			cacheBytes = addBytes(cacheBytes, object.Size)
+		}
+	}
+	estimate.LFS = refreshed
+	estimate.LFSObjects = len(refreshed)
+	estimate.MissingLFSObjects = missing
+	estimate.LFSCacheBytes = cacheBytes
+	return nil
+}
+
+func refreshLFSObjectCacheState(object *LFSObjectInfo) error {
+	if object == nil {
+		return nil
+	}
+	cached, size, err := capacityCacheState(object.CachePath)
+	if err != nil {
+		return fmt.Errorf("inspect LFS cache object %s: %w", object.OID, err)
+	}
+	object.CacheSize = size
+	object.Cached = cached && size == object.Size
+	switch {
+	case !cached:
+		object.CacheState = LFSCacheMissing
+	case size != object.Size:
+		object.CacheState = LFSCacheCorrupt
+	default:
+		object.CacheState = LFSCacheHealthy
+	}
+	return nil
 }
 
 func gitBoolTrue(value string) bool {
@@ -271,7 +309,35 @@ func (p *Preparer) CapacityEstimate(ctx context.Context, repo discovery.Reposito
 }
 
 func (p *Preparer) capacityGit(ctx context.Context, repo discovery.Repository, input []byte, args ...string) (gitx.Result, error) {
-	return p.Git.RunEnvInput(ctx, string(repo.MainPath), nil, input, append([]string{"--no-optional-locks"}, args...)...)
+	return p.capacityGitEnv(ctx, repo, nil, input, args...)
+}
+
+func (p *Preparer) capacityGitEnv(ctx context.Context, repo discovery.Repository, env []string, input []byte, args ...string) (gitx.Result, error) {
+	return p.Git.RunEnvInput(ctx, string(repo.MainPath), env, input, append([]string{"--no-optional-locks"}, args...)...)
+}
+
+// capacityAttributes は要求 OID の tree を一時 index へ読み、source index を
+// 書き換えずに checkout 属性を読む。CoW 判定だけは呼び出し側が別途 source index
+// から行うため、要求 tree と現在の作業状態の属性が混ざらない。
+func (p *Preparer) capacityAttributes(ctx context.Context, repo discovery.Repository, oid string, input []byte) (gitx.Result, error) {
+	file, err := os.CreateTemp("", ".wx-capacity-index-*")
+	if err != nil {
+		return gitx.Result{}, fmt.Errorf("create temporary capacity index: %w", err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return gitx.Result{}, fmt.Errorf("close temporary capacity index: %w", err)
+	}
+	defer func() { _ = os.Remove(path) }()
+	env := []string{"GIT_INDEX_FILE=" + path}
+	if _, err := p.capacityGitEnv(ctx, repo, env, nil, "read-tree", "--empty"); err != nil {
+		return gitx.Result{}, fmt.Errorf("initialize temporary capacity index: %w", err)
+	}
+	if _, err := p.capacityGitEnv(ctx, repo, env, nil, "read-tree", "--reset", "-i", "--no-sparse-checkout", oid); err != nil {
+		return gitx.Result{}, fmt.Errorf("read requested tree into temporary capacity index: %w", err)
+	}
+	return p.capacityGitEnv(ctx, repo, env, input, "check-attr", "--cached", "--all", "--stdin", "-z")
 }
 
 func parseCapacityTree(stdout string) ([]capacityTreeEntry, error) {

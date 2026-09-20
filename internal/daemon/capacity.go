@@ -248,6 +248,11 @@ func (m *Manager) estimateCapacity(ctx context.Context, preparer *workspace.Prep
 	m.capacityMu.Lock()
 	if m.capacityCache != nil {
 		if cached, ok := m.capacityCache[key]; ok {
+			if err := workspace.RefreshLFSCacheState(&cached); err != nil {
+				m.capacityMu.Unlock()
+				return workspace.CapacityEstimate{}, err
+			}
+			m.capacityCache[key] = cached
 			m.capacityMu.Unlock()
 			return cached, nil
 		}
