@@ -11,12 +11,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func mutationBool(value bool) *bool { return &value }
-
-func mutationInt(value int) *int { return &value }
-
-func mutationDuration(value time.Duration) *Duration { return &Duration{Duration: value} }
-
 func mutationPresence(keys ...string) map[string]bool {
 	present := make(map[string]bool, len(keys))
 	for _, key := range keys {
