@@ -62,6 +62,25 @@ func TestCOWDirectoryStackHandlesAPathShorterThanTheCurrentPrefix(t *testing.T) 
 	}
 }
 
+func TestCOWDirectoryStackHandlesAPathThatExtendsTheCurrentPrefix(t *testing.T) {
+	t.Parallel()
+	_, destination := cowRoots(t)
+	stack, err := newCOWDirectoryStack(destination, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stack.close()
+	if _, err := stack.at("a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stack.at("a/b"); err != nil {
+		t.Fatalf("extended path: %v", err)
+	}
+	if info, err := destination.Stat("a/b"); err != nil || !info.IsDir() {
+		t.Fatalf("extended directory was not created: %v", err)
+	}
+}
+
 // 読み取り側の stack は directory を作らない。donor に無い path は run ごと skip する材料になる。
 func TestCOWDirectoryStackReportsMissingWithoutCreating(t *testing.T) {
 	t.Parallel()

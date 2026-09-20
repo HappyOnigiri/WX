@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -247,7 +248,9 @@ func (p *Preparer) EstimateCapacity(ctx context.Context, repo discovery.Reposito
 		result.LFSObjects++
 		result.LFS = append(result.LFS, *object)
 	}
-	sort.Slice(result.LFS, func(i, j int) bool { return result.LFS[i].OID < result.LFS[j].OID })
+	slices.SortFunc(result.LFS, func(left, right LFSObjectInfo) int {
+		return strings.Compare(left.OID, right.OID)
+	})
 	return result, nil
 }
 
