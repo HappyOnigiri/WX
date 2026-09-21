@@ -21,7 +21,7 @@ test('excludes fdexec from default and explicit package selection with a reason'
 
 test('archive production sources are assigned exactly once', () => {
   const result = planner.validateArchiveSharding(root);
-  assert.equal(result.sources.length, 12);
+  assert.equal(result.sources.length, 13);
   assert.equal(new Set(result.shards.flatMap((shard) => shard.files)).size, result.sources.length);
   assert.deepEqual(result.shards.flatMap((shard) => shard.files).sort(), result.sources);
 });
