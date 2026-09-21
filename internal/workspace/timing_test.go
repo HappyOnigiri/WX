@@ -62,9 +62,31 @@ func TestTimePhaseRecordsFailedRuns(t *testing.T) {
 	if err := preparer.timePhase("prepare-command", func() error { return failure }); !errors.Is(err, failure) {
 		t.Fatalf("timePhase err=%v", err)
 	}
+	if failed := preparer.Phases.Failed(); failed != "prepare-command" {
+		t.Fatalf("failed phase=%q, want prepare-command", failed)
+	}
 	phases := preparer.Phases.Phases()
 	if len(phases) != 1 || phases[0].Name != "prepare-command" || phases[0].Count != 1 {
 		t.Fatalf("phases=%+v, want the failed phase recorded", phases)
+	}
+	secondFailure := errors.New("link failed")
+	if err := preparer.timePhase("link", func() error { return secondFailure }); !errors.Is(err, secondFailure) {
+		t.Fatalf("second timePhase err=%v", err)
+	}
+	if failed := preparer.Phases.Failed(); failed != "prepare-command" {
+		t.Fatalf("failed phase=%q, want the first failed phase", failed)
+	}
+}
+
+// 成功した区間は失敗として記録しない。後続の準備が継続していても、Failed は空のままになる。
+func TestTimePhaseDoesNotRecordSuccessfulRunsAsFailed(t *testing.T) {
+	t.Parallel()
+	preparer := &Preparer{Phases: &PhaseTimings{}}
+	if err := preparer.timePhase("checkout", func() error { return nil }); err != nil {
+		t.Fatalf("timePhase err=%v", err)
+	}
+	if failed := preparer.Phases.Failed(); failed != "" {
+		t.Fatalf("failed phase=%q, want no failed phase", failed)
 	}
 }
 
@@ -83,12 +105,18 @@ func TestPhaseTimingsActiveReportsTheInnermostRunningPhase(t *testing.T) {
 		if active.Start.IsZero() {
 			t.Fatal("the running phase has no start time")
 		}
-		return preparer.timePhase("cow", func() error {
+		if err := preparer.timePhase("cow", func() error {
 			if active, ok := preparer.Phases.Active(); !ok || active.Name != "cow" {
 				t.Fatalf("active=%q ok=%t, want the inner phase", active.Name, ok)
 			}
 			return nil
-		})
+		}); err != nil {
+			return err
+		}
+		if active, ok := preparer.Phases.Active(); !ok || active.Name != "checkout" {
+			t.Fatalf("active=%q ok=%t, want the outer phase after the inner phase finished", active.Name, ok)
+		}
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("timePhase err=%v", err)
