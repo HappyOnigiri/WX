@@ -81,6 +81,7 @@ internal/dashboard/model.go	ast-v1:58d748163921aae72eb64b29a31dcf9a5bb560116d57a
 internal/config/file.go	ast-v1:89095143387e538aeaa65bb27dc4fda1b0d27846f60213ff522a7d9e2446f33c	YAML mapping の Content は key/value の偶数列なので、mappingValue の境界変異は有効なNodeで同値
 internal/config/file.go	ast-v1:09d7c721da437db0d9f2e9e961a5bef9272084ece5da883084252d901d357b40	YAML mapping の Content は key/value の動的 map 子要素走査の境界変異は有効なNodeで同値
 internal/config/file.go	ast-v1:06daee017631e3dbf25a10ae254046f96018c3944c5ca75e7896804295282c13	YAML mapping の Content は key/value の偶数列なので、collectMappingKeys の境界変異は有効なNodeで同値
+internal/config/fields.go	ast-v1:b5473fc558b1e8d538ff116edd7f576d7ffdd275ddbc70523c162bee78184637	system map の全キーでこの分岐の前後が同じ V2ScopeSystem/value/true を返すため、== と != は観測可能な差がない
 internal/config/unknown.go	ast-v1:58a7daaf37e2ff54ddc39f53de10663a7676c61ab2b974224a00ce739780497b	YAML mapping の Content は key/value の偶数列なので、findUnknownNode の境界変異は有効なNodeで同値
 internal/config/v2.go	ast-v1:9b3917fc8ec8bb31e620dc7a5cd27e7f30a2f27985f3054a3c758a31a1ec486f	固定されたlegacy section tagはすべてConfig fieldに対応するため、markLegacyPresentFromValueの境界変異は現行schemaで同値
 internal/config/v2_edit.go	ast-v1:441d894fef2e9b88716db016d58a0ceef646cd8ff8ea2c79f1bf2fcf6de0dbbc	v2ScopeEntry は Version=2 を先に設定し、空の workspaces も明示sectionとして記録するため > と >= は同値
