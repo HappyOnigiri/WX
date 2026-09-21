@@ -84,7 +84,7 @@ func planCleanTargets(candidates []state.CleanCandidate, workspaceID string, all
 		}
 		switch {
 		case !discard && candidate.UnsavedSubmodules > 0:
-			target.State, target.Reason = cleanTargetSkipped, unsavedSubmoduleSkipReason(candidate)
+			target.State, target.Reason = cleanTargetSkipped, unsavedSubmoduleSkipReason(candidate.UnsavedSubmodules)
 		case standbySlot(candidate):
 			if !all && !standby {
 				target.State, target.Reason = cleanTargetSkipped, "standby worktree is not in use; rerun with --standby to delete it"
@@ -113,8 +113,8 @@ func skipReasonInUse(candidate state.CleanCandidate) string {
 }
 
 // unsavedSubmoduleSkipReason は、snapshot に入らなかった submodule 作業のために残す slot の理由を返す。
-func unsavedSubmoduleSkipReason(candidate state.CleanCandidate) string {
-	return fmt.Sprintf("%d submodule(s) hold work wx could not snapshot; run wx doctor for the details, or rerun with --discard to delete it anyway", candidate.UnsavedSubmodules)
+func unsavedSubmoduleSkipReason(unsaved int) string {
+	return fmt.Sprintf("%d submodule(s) hold work wx could not snapshot; run wx doctor for the details, or rerun with --discard to delete it anyway", unsaved)
 }
 
 // unsavedDataRisk は、使用中の slot を停止後に削除してよいと証明できない理由を返す。証明できる場合は空文字を返す。
@@ -386,6 +386,9 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 		m.failCleanTarget(ctx, run.ID, target, "slot record is unreadable: "+err.Error())
 		return
 	}
+	if m.skipNewlyProtectedTarget(ctx, run, target, slot.State) {
+		return
+	}
 	sessionState := m.sessionStateOf(ctx, target.SessionID)
 	switch {
 	case slot.State == "ARCHIVED":
@@ -473,6 +476,25 @@ func (m *Manager) advancePending(ctx context.Context, run state.CleanRun, target
 		}
 	}
 	m.waitForBoundary(ctx, run.ID, target, waiting, slot.State)
+}
+
+// skipNewlyProtectedTarget は、run の受付後に未保全 submodule 作業が判明した対象を残し、閉じたかを返す。
+// 受付時点の候補は終了確認前の件数なので、同じ run の snapshot が追加した保護はここで初めて見える。
+// --discard は利用者が破棄を明示した実行なので再判定しない。記録が読めないときも削除へ進めず失敗として閉じる。
+func (m *Manager) skipNewlyProtectedTarget(ctx context.Context, run state.CleanRun, target state.CleanTarget, slotState string) bool {
+	if strings.HasSuffix(run.Mode, "-discard") || slotState == "ARCHIVED" {
+		return false
+	}
+	unsaved, err := m.store.UnsavedSubmoduleCount(ctx, target.SlotID)
+	if err != nil {
+		m.failCleanTarget(ctx, run.ID, target, "unsaved submodule records are unreadable: "+err.Error())
+		return true
+	}
+	if unsaved == 0 {
+		return false
+	}
+	m.moveCleanTarget(ctx, run.ID, target, cleanTargetSkipped, unsavedSubmoduleSkipReason(unsaved))
+	return true
 }
 
 // waitForBoundary は進行中の対象を待ち、上限を超えたら失敗として閉じる。
