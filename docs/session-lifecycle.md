@@ -83,9 +83,11 @@
 
    `wx hook session-start`はエージェント側のネイティブなセッションIDをwxのセッションへ結び付ける。
    Codexのrewind / forkは、transcript metadataの`forked_from_id`とhook payloadの新IDを照合できた場合だけ旧IDから新IDへmappingを移管し、照合できなければ通常のbindとして扱う。
+   ACTIVEなroot sessionへCodexの別IDから`startup`が届いた場合は、`btw`などが作る補助threadとして成功扱いにし、主threadのmappingを変更しない。
    RESTORING中に届いたIDは`pending_agent_session_id`として保持し、復元成功後に親から新しいセッションへ移譲する。
 
 4. **返却** — `wx hook session-end`が`Release`を呼ぶ。
+   Codexではhook payloadのネイティブなセッションIDが現在の主threadと一致する場合だけ返却し、補助threadの終了は状態を変えない。
    ただしsession-end hookはエージェント本体より先に走ることがあるため、clientまたはエージェントのプロセスが生きている間は返却しない。
    前面clientの終了通知か、daemonのorphan reconcileが「もう書き手がいない」ことを確認してから先へ進む。
 

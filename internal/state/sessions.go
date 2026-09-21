@@ -212,8 +212,15 @@ func (s *Store) RegisterAgentProcess(ctx context.Context, id, token string, pid 
 }
 
 func (s *Store) BindAgentSession(ctx context.Context, id, agentID string, replaces ...string) error {
+	_, err := s.BindAgentSessionFromHook(ctx, id, agentID, "", replaces...)
+	return err
+}
+
+// BindAgentSessionFromHook は SessionStart の source を使い、主 Codex thread と同じ wx session で
+// 起動した補助 thread を mapping の競合ではなく no-op として扱う。primary=false は補助 thread を表す。
+func (s *Store) BindAgentSessionFromHook(ctx context.Context, id, agentID, source string, replaces ...string) (primary bool, err error) {
 	if len(replaces) > 1 {
-		return errors.New("at most one agent session replacement source is allowed")
+		return false, errors.New("at most one agent session replacement source is allowed")
 	}
 	replacesAgentID := ""
 	if len(replaces) == 1 {
@@ -223,65 +230,68 @@ func (s *Store) BindAgentSession(ctx context.Context, id, agentID string, replac
 	defer s.writer.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
 	var kind, parent, sessionState, pending, currentAgentID string
 	if err := tx.QueryRowContext(ctx, `SELECT agent_kind,COALESCE(parent_session_id,''),state,COALESCE(pending_agent_session_id,''),COALESCE(agent_session_id,'') FROM sessions WHERE id=?`, id).Scan(&kind, &parent, &sessionState, &pending, &currentAgentID); err != nil {
-		return err
+		return false, err
 	}
 	if replacesAgentID != "" {
 		// Rewind/fork は現在の native mapping を旧 ID と照合してから、同一 transaction で新 IDへ移す。
 		// 旧 ID が別の hook で変化済みなら、到着順が逆転した遅延 hook として拒否する。
 		if currentAgentID != replacesAgentID {
-			return errors.New("agent session mapping changed before replacement")
+			return false, errors.New("agent session mapping changed before replacement")
 		}
 		var ownerID string
 		err := tx.QueryRowContext(ctx, `SELECT id FROM sessions WHERE agent_kind=? AND agent_session_id=? AND id<>?`, kind, agentID, id).Scan(&ownerID)
 		switch {
 		case err == nil:
-			return errors.New("replacement agent session is already bound")
+			return false, errors.New("replacement agent session is already bound")
 		case !errors.Is(err, sql.ErrNoRows):
-			return err
+			return false, err
 		}
 		res, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=?,state=CASE WHEN state='STARTING' THEN 'ACTIVE' ELSE state END,started_at=COALESCE(started_at,?),last_heartbeat_at=? WHERE id=? AND agent_session_id=?`, agentID, now(), now(), id, replacesAgentID)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if n, _ := res.RowsAffected(); n != 1 {
-			return errors.New("agent session mapping changed during replacement")
+			return false, errors.New("agent session mapping changed during replacement")
 		}
-		return tx.Commit()
+		return true, tx.Commit()
 	}
 	if sessionState == "RESTORING" {
 		if pending == agentID {
 			res, err := tx.ExecContext(ctx, `UPDATE sessions SET started_at=COALESCE(started_at,?),last_heartbeat_at=? WHERE id=? AND state='RESTORING' AND pending_agent_session_id=?`, now(), now(), id, agentID)
 			if err != nil {
-				return err
+				return false, err
 			}
 			if n, _ := res.RowsAffected(); n != 1 {
-				return errors.New("restoring session changed during binding")
+				return false, errors.New("restoring session changed during binding")
 			}
-			return tx.Commit()
+			return true, tx.Commit()
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET pending_agent_session_id=NULL WHERE id=? AND state='RESTORING'`, id); err != nil {
-			return err
+			return false, err
 		}
+	}
+	if kind == "codex" && parent == "" && sessionState == "ACTIVE" && currentAgentID != "" && currentAgentID != agentID && source == "startup" {
+		return false, nil
 	}
 	if parent != "" {
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=NULL WHERE agent_kind=? AND agent_session_id=? AND id<>?`, kind, agentID, id); err != nil {
-			return err
+			return false, err
 		}
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE sessions SET agent_session_id=?,state=CASE WHEN state='STARTING' THEN 'ACTIVE' ELSE state END,started_at=COALESCE(started_at,?),last_heartbeat_at=? WHERE id=? AND (agent_session_id IS NULL OR agent_session_id=?)`, agentID, now(), now(), id, agentID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	n, _ := res.RowsAffected()
 	if n != 1 {
-		return errors.New("agent session is already bound or mapping is ambiguous")
+		return false, errors.New("agent session is already bound or mapping is ambiguous")
 	}
-	return tx.Commit()
+	return true, tx.Commit()
 }
 
 func (s *Store) FindByAgentSession(ctx context.Context, kind, agentID string) (Session, error) {
@@ -426,19 +436,31 @@ func (s *Store) Release(ctx context.Context, sessionID, workspaceID, slotID stri
 // ReleaseWithOutcome は Release の結果に加えて、隔離 slot のため snapshot を作らず session を終端したかを返す。
 // この終端では復旧 snapshot が残らないため、呼び出し側は成功として黙って閉じずに記録する。
 func (s *Store) ReleaseWithOutcome(ctx context.Context, sessionID, workspaceID, slotID string) (Job, bool, bool, error) {
-	return s.release(ctx, sessionID, workspaceID, slotID, false)
+	return s.release(ctx, sessionID, workspaceID, slotID, false, "")
+}
+
+var errAgentSessionMismatch = errors.New("agent session does not own wx session")
+
+// ReleaseWithAgentSessionOutcome は現在の native session が expectedAgentID と一致するときだけ返却する。
+// matched=false は補助 thread の SessionEnd であり、返却に伴う副作用を一切行っていないことを表す。
+func (s *Store) ReleaseWithAgentSessionOutcome(ctx context.Context, sessionID, workspaceID, slotID, expectedAgentID string) (job Job, changed, quarantineExpired, matched bool, err error) {
+	job, changed, quarantineExpired, err = s.release(ctx, sessionID, workspaceID, slotID, false, expectedAgentID)
+	if errors.Is(err, errAgentSessionMismatch) {
+		return Job{}, false, false, false, nil
+	}
+	return job, changed, quarantineExpired, true, err
 }
 
 // ReleaseDiscardingWithOutcome は保存を省略する返却で、SNAPSHOT ジョブの代わりに REMOVE ジョブを同じ transaction で積む。
 // 利用者が明示した `wx release --discard` / `wx clear --discard` 専用で、自動の返却経路からは呼ばない。
 // slot が PREPARING で削除を予約できないときは、通常の返却と同じく changed=false を返して呼び出し側の後続経路へ委ねる。
 func (s *Store) ReleaseDiscardingWithOutcome(ctx context.Context, sessionID, workspaceID, slotID string) (Job, bool, bool, error) {
-	return s.release(ctx, sessionID, workspaceID, slotID, true)
+	return s.release(ctx, sessionID, workspaceID, slotID, true, "")
 }
 
 // release は返却の本体で、discard が真なら保存を通さず削除を予約する。
 // 隔離 slot による終端・UNBOUND/RESTORING の終端・PREPARING の保留・二重返却の冪等は discard の指定に依らず同じに扱う。
-func (s *Store) release(ctx context.Context, sessionID, workspaceID, slotID string, discard bool) (Job, bool, bool, error) {
+func (s *Store) release(ctx context.Context, sessionID, workspaceID, slotID string, discard bool, expectedAgentID string) (Job, bool, bool, error) {
 	job, err := newJob("SNAPSHOT", workspaceID, slotID, sessionID)
 	if err != nil {
 		return Job{}, false, false, err
@@ -450,6 +472,15 @@ func (s *Store) release(ctx context.Context, sessionID, workspaceID, slotID stri
 		return Job{}, false, false, err
 	}
 	defer tx.Rollback()
+	if expectedAgentID != "" {
+		var currentAgentID string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(agent_session_id,'') FROM sessions WHERE id=?`, sessionID).Scan(&currentAgentID); err != nil {
+			return Job{}, false, false, err
+		}
+		if currentAgentID != expectedAgentID {
+			return Job{}, false, false, errAgentSessionMismatch
+		}
+	}
 	expired, err := expireQuarantinedOwnerTx(ctx, tx, sessionID, slotID)
 	if err != nil {
 		return Job{}, false, false, err
