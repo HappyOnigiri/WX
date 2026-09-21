@@ -2,79 +2,79 @@ package archive
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
-// forceAddWorktreeArgs は、一時 index へ取りこぼした path を明示指定で追加する add の引数を返す。
-// pathspec は `--pathspec-file-nul` で stdin から literal に渡す。path に magic と解釈され得る文字が
-// あっても、そのままの名前として扱わせるためである。
-func forceAddWorktreeArgs() []string {
-	return []string{"add", "--sparse", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"}
+// forceAddedEntries は、HEAD に無く現在の index に stage 0 で載る path の entry を
+// `git update-index -z --index-info` の入力形式で返す。対象が無ければ nil を返す。
+//
+// snapshot と復元検証は作業ツリーの tree を「HEAD で初期化した一時 index への add -A」で作る。
+// この一時 index から見ると、ignore 規則に一致する force-added path は未追跡の ignored file でしかなく
+// add が飛ばすため、先に entry を持ち込まないと未 staged の作業内容が tree から丸ごと落ちる。
+// 未解消 path は stage 1/2/3 しか持たず、conflict artifact 側が別に保存するのでここでは対象外である。
+// commentlint:allow-long -- 一時 index へ entry を持ち込まないと作業内容が失われる理由を説明する
+func forceAddedEntries(value gitValueFunc) ([]byte, error) {
+	listing, err := value(nil, "diff-index", "--cached", "--diff-filter=A", "--name-only", "-z", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("list paths added to the index since HEAD: %w", err)
+	}
+	added := map[string]struct{}{}
+	for _, path := range strings.Split(listing, "\x00") {
+		if path != "" {
+			added[path] = struct{}{}
+		}
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+	staged, err := value(nil, "ls-files", "--stage", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("read index entries added since HEAD: %w", err)
+	}
+	var input strings.Builder
+	for _, entry := range strings.Split(staged, "\x00") {
+		mode, oid, path, ok := parseStageZeroEntry(entry)
+		if !ok {
+			continue
+		}
+		if _, want := added[path]; !want {
+			continue
+		}
+		input.WriteString(mode + " " + oid + " 0\t" + path + "\x00")
+	}
+	if input.Len() == 0 {
+		return nil, nil
+	}
+	return []byte(input.String()), nil
 }
 
-// addWorktreeContents は env が指す一時 index へ worktree の現状を取り込む。
-// `git add -A` は ignore 規則に一致する path を飛ばすため、これだけでは利用者が `git add -f` で
-// 実 index へ入れた ignored file の worktree 内容が tree から丸ごと落ちる。
-// 実 index に載るのに取り込めなかった path を洗い出し、`-f` で追加し直してその穴を塞ぐ。
-// 対象を実 index の登録済み path に限るので、無視されたままの未追跡 file は従来どおり保存しない。
-// commentlint:allow-long -- ignored file を取りこぼす理由と、対象を実 index に限る理由を残す
-func addWorktreeContents(value gitValueFunc, run gitRunFunc, env []string) error {
-	if _, err := run(env, nil, addWorktreeArgs()...); err != nil {
-		return err
+// parseStageZeroEntry は `git ls-files --stage -z` の 1 項目 `<mode> <oid> <stage>\t<path>` を分解する。
+// stage 0 以外と読めない項目は ok=false を返す。path は -z のため quote されず、最初の TAB だけが区切りになる。
+func parseStageZeroEntry(entry string) (mode, oid, path string, ok bool) {
+	tab := strings.IndexByte(entry, '\t')
+	if tab < 0 {
+		return "", "", "", false
 	}
-	missing, err := missingIndexPaths(value, env)
+	fields := strings.Fields(entry[:tab])
+	if len(fields) != 3 || fields[2] != "0" {
+		return "", "", "", false
+	}
+	return fields[0], fields[1], entry[tab+1:], true
+}
+
+// seedForceAddedEntries は env が指す一時 index へ、HEAD に無い index entry を持ち込む。
+// add より前に呼ぶことで、その path は一時 index でも tracked になり ignore 判定を受けなくなる。
+// 作業ツリーから消えた path は続く add -A が削除として記録するため、ここでの持ち込みは状態を固定しない。
+func seedForceAddedEntries(run gitRunFunc, value gitValueFunc, env []string) error {
+	entries, err := forceAddedEntries(value)
 	if err != nil {
 		return err
 	}
-	if len(missing) == 0 {
+	if len(entries) == 0 {
 		return nil
 	}
-	if _, err := run(env, nulPathList(missing), forceAddWorktreeArgs()...); err != nil {
-		return fmt.Errorf("add force-added ignored paths: %w", err)
+	if _, err := run(env, entries, "update-index", "-z", "--index-info"); err != nil {
+		return fmt.Errorf("seed paths added to the index since HEAD: %w", err)
 	}
 	return nil
-}
-
-// missingIndexPaths は、実 index に載るのに env の一時 index へ取り込めなかった path を昇順で返す。
-// worktree から消えている path は tree に載せる内容が無いので除く。`add -A` は実体の無い path を
-// 追加できず、pathspec が一致しないとして add 全体を失敗させるためでもある。
-func missingIndexPaths(value gitValueFunc, env []string) ([]string, error) {
-	tracked, err := readIndexFlags(value, nil)
-	if err != nil {
-		return nil, err
-	}
-	staged, err := readIndexFlags(value, env)
-	if err != nil {
-		return nil, err
-	}
-	listing, err := value(nil, "ls-files", "-z", "--deleted")
-	if err != nil {
-		return nil, fmt.Errorf("list index paths missing from the working tree: %w", err)
-	}
-	deleted := nulPathSet(listing)
-	missing := make([]string, 0, len(tracked.Paths))
-	for path := range tracked.Paths {
-		if _, present := staged.Paths[path]; present {
-			continue
-		}
-		if _, gone := deleted[path]; gone {
-			continue
-		}
-		missing = append(missing, path)
-	}
-	sort.Strings(missing)
-	return missing, nil
-}
-
-// nulPathSet は NUL 区切りの path 一覧を集合にする。末尾の区切りが生む空要素は捨てる。
-func nulPathSet(listing string) map[string]struct{} {
-	paths := map[string]struct{}{}
-	for _, path := range strings.Split(listing, "\x00") {
-		if path == "" {
-			continue
-		}
-		paths[path] = struct{}{}
-	}
-	return paths
 }

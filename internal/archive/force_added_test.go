@@ -4,116 +4,127 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
-
-	"github.com/HappyOnigiri/WX/internal/gitx"
 )
 
-// directoryGit は指定 directory で動く value/run を作る。snapshot 経路と同じ形で一時 index を渡せる。
-func directoryGit(dir string) (gitValueFunc, gitRunFunc) {
-	runner := &gitx.Runner{Timeout: 30 * time.Second}
-	run := func(env []string, input []byte, args ...string) (gitx.Result, error) {
-		return runner.RunEnvInput(context.Background(), dir, env, input, args...)
-	}
-	value := func(env []string, args ...string) (string, error) {
-		result, err := run(env, nil, args...)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(result.Stdout), nil
-	}
-	return value, run
-}
-
-// worktreeTreeForTest は addWorktreeContents だけを通した worktree tree を作る。
-func worktreeTreeForTest(t *testing.T, repo string) (gitValueFunc, string) {
+// forceAddedIgnoredFixture は、`git add -f` で index に載せた ignored path を持つ worktree を作る。
+// staged 内容と作業ツリー内容を別にして、両方が snapshot と restore を通るかを見分けられるようにする。
+func forceAddedIgnoredFixture(t *testing.T, repository string) {
 	t.Helper()
-	value, run := directoryGit(repo)
-	head, err := value(nil, "rev-parse", "HEAD")
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("generated/\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tmp, cleanup, err := temporaryIndex("force added", ".wx-force-added-index-*")
-	if err != nil {
+	gitCommand(t, repository, "add", ".gitignore")
+	gitCommand(t, repository, "commit", "-m", "ignore generated")
+	mustMkdir(t, filepath.Join(repository, "generated"))
+	target := filepath.Join(repository, "generated", "keep.txt")
+	if err := os.WriteFile(target, []byte("staged\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(cleanup)
-	env := []string{"GIT_INDEX_FILE=" + tmp}
-	if _, err := run(env, nil, "read-tree", head); err != nil {
+	gitCommand(t, repository, "add", "-f", "generated/keep.txt")
+	if err := os.WriteFile(target, []byte("working\n"), 0o600); err != nil {
 		t.Fatal(err)
-	}
-	if err := addWorktreeContents(value, run, env); err != nil {
-		t.Fatalf("add worktree contents: %v", err)
-	}
-	tree, err := value(env, "write-tree")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return value, tree
-}
-
-// index に登録された ignored file は worktree の最新内容で tree に載り、
-// 登録されていない ignored file と worktree から消えた path は載らない。
-func TestAddWorktreeContentsKeepsForceAddedIgnoredFiles(t *testing.T) {
-	repo := t.TempDir()
-	initRepository(t, repo, "tracked.txt")
-	writeFile(t, filepath.Join(repo, ".gitignore"), "generated/\n")
-	gitCommand(t, repo, "add", ".gitignore")
-	gitCommand(t, repo, "commit", "-m", "ignore generated")
-	mustMkdir(t, filepath.Join(repo, "generated"))
-	writeFile(t, filepath.Join(repo, "generated", "keep.txt"), "staged\n")
-	gitCommand(t, repo, "add", "-f", "generated/keep.txt")
-	writeFile(t, filepath.Join(repo, "generated", "keep.txt"), "working\n")
-	writeFile(t, filepath.Join(repo, "generated", "scratch.txt"), "throwaway\n")
-	if err := os.Remove(filepath.Join(repo, "tracked.txt")); err != nil {
-		t.Fatal(err)
-	}
-
-	value, tree := worktreeTreeForTest(t, repo)
-	listing, err := value(nil, "ls-tree", "-r", "--name-only", tree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := strings.Split(listing, "\n")
-	want := []string{".gitignore", "generated/keep.txt"}
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("worktree tree paths=%v, want %v", got, want)
-	}
-	content, err := value(nil, "cat-file", "-p", tree+":generated/keep.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if content != "working" {
-		t.Fatalf("force-added ignored file content=%q, want the unstaged working copy", content)
 	}
 }
 
-// 取りこぼしが無い worktree では追加の add を走らせず、tree は従来と同じになる。
-func TestAddWorktreeContentsLeavesAnOrdinaryWorktreeUnchanged(t *testing.T) {
-	repo := t.TempDir()
-	initRepository(t, repo, "tracked.txt")
-	writeFile(t, filepath.Join(repo, "tracked.txt"), "edited\n")
-	writeFile(t, filepath.Join(repo, "scratch.txt"), "note\n")
-
-	value, tree := worktreeTreeForTest(t, repo)
-	listing, err := value(nil, "ls-tree", "-r", "--name-only", tree)
+// TestSnapshotAndRestoreKeepForceAddedIgnoredWork は、ignore 規則に一致する path を `git add -f` した後の
+// 未 staged 編集が release/resume を越えて残ることを確かめる。
+// 一時 index を HEAD だけで初期化していた頃は、この path が `add -A` の ignore 判定で落ちて作業内容が消えていた。
+func TestSnapshotAndRestoreKeepForceAddedIgnoredWork(t *testing.T) {
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
+	forceAddedIgnoredFixture(t, repository)
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "force-added", time.Now().Add(time.Hour), nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("snapshot a force-added ignored path: %v", err)
 	}
-	if got, want := strings.Split(listing, "\n"), []string{"scratch.txt", "tracked.txt"}; strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("worktree tree paths=%v, want %v", got, want)
+	if blob := gitCommand(t, repository, "show", snapshot.WorktreeOID+":generated/keep.txt"); blob != "working" {
+		t.Fatalf("snapshot did not record the unstaged work: %q", blob)
+	}
+	if blob := gitCommand(t, repository, "show", snapshot.IndexTreeOID+":generated/keep.txt"); blob != "staged" {
+		t.Fatalf("snapshot did not record the staged content: %q", blob)
+	}
+	target := filepath.Join(worktreeRoot, "restore", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot, nil); err != nil {
+		t.Fatalf("restore a snapshot holding a force-added ignored path: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "generated", "keep.txt")); err != nil || string(data) != "working\n" {
+		t.Fatalf("restored working tree content=%q err=%v", data, err)
+	}
+	if blob := gitCommand(t, target, "show", ":generated/keep.txt"); blob != "staged" {
+		t.Fatalf("restored index content=%q", blob)
 	}
 }
 
-// nulPathSet は末尾の区切りが生む空要素を落とし、改行を含む path をそのまま保つ。
-func TestNULPathSetIgnoresTheTrailingSeparator(t *testing.T) {
-	got := nulPathSet("a.txt\x00dir/with\nnewline.txt\x00")
-	if len(got) != 2 {
-		t.Fatalf("paths=%v, want two entries", got)
+// TestSnapshotKeepsForceAddedIgnoredWorkWithSparseIndex は、sparse index を有効にした worktree でも
+// HEAD に無い index entry の持ち込みが通ることを確かめる。
+// 一時 index は cone 設定を引き継ぐため、entry の持ち込みが sparse の逸脱として弾かれると保存全体が止まる。
+func TestSnapshotKeepsForceAddedIgnoredWorkWithSparseIndex(t *testing.T) {
+	repository, repo, manager, _ := archiveFixture(t)
+	mustMkdir(t, filepath.Join(repository, "inside"))
+	if err := os.WriteFile(filepath.Join(repository, "inside", "kept"), []byte("kept\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := got["dir/with\nnewline.txt"]; !ok {
-		t.Fatalf("paths=%v, want the newline path kept verbatim", got)
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("inside/generated/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "inside/kept", ".gitignore")
+	gitCommand(t, repository, "commit", "-m", "sparse fixture")
+	gitCommand(t, repository, "config", "index.sparse", "true")
+	gitCommand(t, repository, "sparse-checkout", "set", "--cone", "inside")
+	// ignored path は cone の内側に置く。cone の外は `git add -f` 自体が sparse の逸脱として拒まれる。
+	mustMkdir(t, filepath.Join(repository, "inside", "generated"))
+	ignored := filepath.Join(repository, "inside", "generated", "keep.txt")
+	if err := os.WriteFile(ignored, []byte("staged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "-f", "inside/generated/keep.txt")
+	if err := os.WriteFile(ignored, []byte("working\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// cone 内に新しく staged した path も持ち込みの対象になるので、同じ snapshot で一緒に確かめる。
+	if err := os.WriteFile(filepath.Join(repository, "inside", "added"), []byte("added\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", "inside/added")
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "force-added-sparse", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("snapshot a force-added ignored path with a sparse index: %v", err)
+	}
+	if blob := gitCommand(t, repository, "show", snapshot.WorktreeOID+":inside/generated/keep.txt"); blob != "working" {
+		t.Fatalf("snapshot did not record the unstaged work: %q", blob)
+	}
+	if blob := gitCommand(t, repository, "show", snapshot.WorktreeOID+":inside/added"); blob != "added" {
+		t.Fatalf("snapshot did not record the newly staged path: %q", blob)
+	}
+}
+
+// TestSnapshotRecordsRemovalOfForceAddedIgnoredPath は、staged 後に作業ツリーから消した ignored path が
+// 「index にはあるが作業ツリーには無い」状態のまま復元されることを確かめる。
+// 一時 index へ index の entry を持ち込む以上、作業ツリーの削除も同じ経路で記録されなければならない。
+func TestSnapshotRecordsRemovalOfForceAddedIgnoredPath(t *testing.T) {
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
+	forceAddedIgnoredFixture(t, repository)
+	if err := os.Remove(filepath.Join(repository, "generated", "keep.txt")); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "force-added-removed", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatalf("snapshot a removed force-added ignored path: %v", err)
+	}
+	if err := gitCommandExpectFailure(repository, "show", snapshot.WorktreeOID+":generated/keep.txt"); err == nil {
+		t.Fatal("snapshot recorded a path that no longer exists in the working tree")
+	}
+	target := filepath.Join(worktreeRoot, "restore", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
+	if err := manager.Restore(context.Background(), repo, target, "restore-slot", snapshot, nil); err != nil {
+		t.Fatalf("restore a snapshot holding a removed force-added ignored path: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "generated", "keep.txt")); !os.IsNotExist(err) {
+		t.Fatalf("restore materialized a path the snapshot recorded as deleted: %v", err)
+	}
+	if blob := gitCommand(t, target, "show", ":generated/keep.txt"); blob != "staged" {
+		t.Fatalf("restored index content=%q", blob)
 	}
 }
