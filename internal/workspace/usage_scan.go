@@ -212,7 +212,7 @@ func (s *usageScan) count(task usageDirectory, totals *usageDirectoryTotals, nam
 		totals.logical += stat.Size
 		totals.sample.LogicalBytes += stat.Size
 	}
-	if !task.repo || !regular || stat.Size == 0 || !cowAvailable() {
+	if !usageFileCanCompare(task, regular, stat.Size, cowAvailable()) {
 		return
 	}
 	totals.sample.Compared++
@@ -225,6 +225,10 @@ func (s *usageScan) count(task usageDirectory, totals *usageDirectoryTotals, nam
 		totals.sample.SharedBytes += allocated
 		totals.shared += allocated
 	}
+}
+
+func usageFileCanCompare(task usageDirectory, regular bool, size int64, available bool) bool {
+	return task.repo && regular && size != 0 && available
 }
 
 // countRegisteredFile はファイル 1 個で登録された対象を、その登録の slot と root 合計へ足す。

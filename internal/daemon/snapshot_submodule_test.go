@@ -127,7 +127,10 @@ func TestClearAllKeepsSubmoduleWorkFoundDuringItsOwnSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID, _ := reply["run_id"].(string)
-	if targetByID(replyTargets(t, reply), slotID).State != cleanTargetPending {
+	// Clean は受付直後に非同期 driver を起動するため、返却時点で終了要求が
+	// 観測済みなら PENDING から TERMINATING へ進んでいても正しい。
+	accepted := targetByID(replyTargets(t, reply), slotID)
+	if accepted.State != cleanTargetPending && accepted.State != cleanTargetTerminating {
 		t.Fatalf("targets at acceptance=%+v", replyTargets(t, reply))
 	}
 	// client の停止確認で通常の返却・snapshot 経路へ進める。daemon は signal を送らない。
