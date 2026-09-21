@@ -63,6 +63,15 @@ func TestSubmoduleArgSizeIgnoresTrailingConfigFlag(t *testing.T) {
 	}
 }
 
+func TestSubmoduleArgSizeCountsConfigValueAndSeparator(t *testing.T) {
+	t.Parallel()
+	args := []string{"-c", "submodule.active=true"}
+	want := argvSize(args) + len(args[1]) + 1
+	if got := submoduleArgSize(args); got != want {
+		t.Fatalf("config argument size=%d, want %d", got, want)
+	}
+}
+
 func TestSubmoduleWorkerCountStaysWithinBounds(t *testing.T) {
 	t.Parallel()
 	p := &Preparer{}

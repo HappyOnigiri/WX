@@ -166,6 +166,23 @@ func TestRunPostCheckoutWithSubmodulesExcludesAllWhenNoChildIsEligible(t *testin
 	}
 }
 
+func TestRunPostCheckoutWithSubmodulesPropagatesHookFailure(t *testing.T) {
+	t.Parallel()
+	f := newPostCheckoutHookFixture(t)
+	hook := filepath.Join(f.target, ".git", "hooks", "post-checkout")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 17\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := f.preparer.runPostCheckoutWithSubmodules(context.Background(), f.repo, f.target, "", "abc", submodulePhaseResult{
+		enabled:   true,
+		declared:  []submodule{{name: "first", path: "sub/first"}},
+		decisions: []submoduleProbe{{eligible: false}},
+	})
+	if err == nil {
+		t.Fatal("post-checkout hook failure was ignored")
+	}
+}
+
 // decisions が宣言より短い場合も、残りの子を安全に省略して hook を実行する。
 func TestRunPostCheckoutWithSubmodulesAllowsMissingDecisionAtExactBoundary(t *testing.T) {
 	t.Parallel()
