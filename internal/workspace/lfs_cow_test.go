@@ -350,6 +350,34 @@ func TestLFSCompactionBatchCountsOnlyRemainingCanceledCandidates(t *testing.T) {
 	}
 }
 
+// 置換・skip・失敗を積み上げた後の中断では、未処理候補だけを Failed として数える。
+func TestLFSCompactionBatchCountsCanceledCandidatesAfterEarlierResults(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	preparer := &Preparer{}
+	candidates := []LFSObjectCandidate{{Path: "replaced"}, {Path: "skipped"}, {Path: "failed"}, {Path: "pending"}}
+	result, err := preparer.compactLFSBatch(ctx, nil, nil, candidates, func(_ context.Context, _, _ *os.Root, candidate LFSObjectCandidate) (bool, int64, error) {
+		switch candidate.Path {
+		case "replaced":
+			return true, 0, nil
+		case "skipped":
+			return false, 0, errLFSVerification
+		case "failed":
+			cancel()
+			return false, 0, errors.New("compaction failed")
+		default:
+			t.Fatal("canceled batch called compact function for remaining candidate")
+			return false, 0, nil
+		}
+	})
+	if err == nil || (!errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "compaction failed")) {
+		t.Fatalf("canceled result error=%v", err)
+	}
+	if result.Replaced != 1 || result.Skipped != 1 || result.Failed != 2 {
+		t.Fatalf("canceled result=%+v, want one replaced, one skipped, and two failed", result)
+	}
+}
+
 func TestLFSCompactionLogsSkipAndFailure(t *testing.T) {
 	t.Parallel()
 	var logged bytes.Buffer
