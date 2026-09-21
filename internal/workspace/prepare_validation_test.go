@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/domain"
 	"github.com/HappyOnigiri/WX/internal/state"
 )
@@ -245,5 +246,35 @@ func TestValidateOwnershipReportsCancellationInsteadOfOwnershipFailure(t *testin
 	}
 	if !errors.Is(err, context.Canceled) || errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("canceled ownership validation returned %v, want a cancellation", err)
+	}
+}
+
+// 親の Git 設定が submodule の変更を隠しても、prepare command が汚した子は READY へ通さない。
+// `submodule.<name>.ignore=all` は通常の利用者設定なので、tracked-clean 検査を親 status の既定へ委ねられない。
+func TestValidateTrackedCleanRejectsDirtySubmoduleHiddenByIgnoreConfig(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	gitCommand(t, f.repository, "config", "submodule."+submoduleName+".ignore", "all")
+	f.preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	f.preparer.Config.Repositories = map[string]config.Repository{
+		string(f.repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf prepared > " + submodulePath + "/kid.txt"}}},
+	}
+	err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot")
+	if !errors.Is(err, ErrTrackedChanges) {
+		t.Fatalf("prepare error=%v, want %v", err, ErrTrackedChanges)
+	}
+}
+
+// 子の untracked file は親の `--untracked-files=no` と同じく準備を止めない。
+// prepare command が submodule 配下へ生成物を置く構成を tracked 変更と同じに扱わないためである。
+func TestValidateTrackedCleanAllowsUntrackedSubmoduleContent(t *testing.T) {
+	t.Parallel()
+	f := newSubmoduleFixture(t)
+	f.preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	f.preparer.Config.Repositories = map[string]config.Repository{
+		string(f.repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf generated > " + submodulePath + "/generated.txt"}}},
+	}
+	if err := f.preparer.Prepare(context.Background(), f.repo, f.target, f.head, "slot"); err != nil {
+		t.Fatalf("prepare with untracked submodule content: %v", err)
 	}
 }

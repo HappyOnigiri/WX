@@ -353,7 +353,11 @@ func (p *Preparer) validateTrackedClean(ctx context.Context, target string) erro
 		return err
 	}
 	defer func() { _ = directory.Close() }()
-	status, err := p.Git.RunAt(ctx, directory, nil, nil, "status", "--porcelain=v1", "--untracked-files=no")
+	// `--ignore-submodules=untracked` は親の `submodule.<name>.ignore` と `diff.ignoreSubmodules` を上書きし、
+	// 利用者が `all` や `dirty` を設定していても子の tracked 変更・gitlink のずれを報告させる。
+	// 値を `none` にしないのは、親側の `--untracked-files=no` と揃えて子の untracked file を許すためである。
+	// commentlint:allow-long -- ユーザー設定で dirty な子が READY へ抜ける経路を塞ぐ指定なので、値の選択理由を残す
+	status, err := p.Git.RunAt(ctx, directory, nil, nil, "status", "--porcelain=v1", "--untracked-files=no", "--ignore-submodules=untracked")
 	if err != nil {
 		return err
 	}
