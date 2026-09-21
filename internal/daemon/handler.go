@@ -182,20 +182,7 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 		previous, err := h.Manager.store.PreviousWorktree(ctx, p.SessionID)
 		return map[string]any{"previous_worktree": previous, "primary": primary}, err
 	case "Release":
-		var p struct {
-			SessionID      string `json:"session_id"`
-			Token          string `json:"token"`
-			Reason         string `json:"reason"`
-			AgentSessionID string `json:"agent_session_id"`
-		}
-		if err := decode(raw, &p); err != nil {
-			return nil, err
-		}
-		if p.Reason == "session-end-hook" && p.AgentSessionID != "" {
-			released, err := h.Manager.ReleaseAgentSession(ctx, p.SessionID, p.Token, p.Reason, p.AgentSessionID)
-			return map[string]bool{"released": released}, err
-		}
-		return map[string]bool{"released": true}, h.Manager.Release(ctx, p.SessionID, p.Token, p.Reason)
+		return h.releaseRPC(ctx, raw)
 	case "ResumeStatus":
 		return h.resumeStatusRPC(ctx, raw)
 	case "Status":
@@ -271,6 +258,23 @@ func (h Handler) dispatch(ctx context.Context, method string, raw json.RawMessag
 	default:
 		return nil, errors.New(rpc.UnknownMethodMessage)
 	}
+}
+
+func (h Handler) releaseRPC(ctx context.Context, raw json.RawMessage) (any, error) {
+	var p struct {
+		SessionID      string `json:"session_id"`
+		Token          string `json:"token"`
+		Reason         string `json:"reason"`
+		AgentSessionID string `json:"agent_session_id"`
+	}
+	if err := decode(raw, &p); err != nil {
+		return nil, err
+	}
+	if p.Reason == "session-end-hook" && p.AgentSessionID != "" {
+		released, err := h.Manager.ReleaseAgentSession(ctx, p.SessionID, p.Token, p.Reason, p.AgentSessionID)
+		return map[string]bool{"released": released}, err
+	}
+	return map[string]bool{"released": true}, h.Manager.Release(ctx, p.SessionID, p.Token, p.Reason)
 }
 
 // logReadinessWait は client が選んだ待機経路を、実際に呼ばれた RPC として記録する。
