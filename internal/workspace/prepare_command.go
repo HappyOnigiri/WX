@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/config"
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -189,7 +190,11 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 		return nil
 	}
 	diagnostic := p.startPrepareDiagnostic(override.Prepare.Command)
-	timeout := override.Prepare.Timeout.Duration
+	// 未指定（nil）と明示 `0s` はどちらも readiness timeout への fallback を意味する。
+	var timeout time.Duration
+	if override.Prepare.Timeout != nil {
+		timeout = override.Prepare.Timeout.Duration
+	}
 	if timeout < 0 {
 		err := errors.New("prepare timeout must not be negative")
 		diagnostic.writeErrorMessage(err)

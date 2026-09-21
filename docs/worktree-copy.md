@@ -193,6 +193,9 @@ post-checkout hookへは実体化できたpathだけをactiveとして渡し、�
 
 cloneの直後にsubmoduleの`origin`をローカルmoduleの`remote.origin.url`へ戻す。
 戻さないと`git push`がmainの`.git/modules`へ入る。`.gitmodules`のurlは`../child`のような相対表記の解決がsuperprojectのremote基準になるので、自前で解決するとGitと食い違う。
+origin復元は子が実体化できたことを確認してからにする。
+`submodule.<name>.update=none`のようなrepositoryのupdate policyは`submodule update`を成功のまま子を省略し、worktree上のpathを空で残す。
+そこへ`git -C <path>`を向けるとGitが親worktreeを解決し、復元先が親のremoteになる。省略された子はここで取り下げ、skipとして記録する。
 
 `.gitmodules`のurl欠落、ローカルmoduleの不在、ローカルmoduleにgitlink OIDが無いこと、ローカルmoduleのorigin欠落は、**書き込む前に**判定して省略し、warnを残して準備は成功させる。
 gitlink OIDを解決できないまま実体化を始めると親がdirtyな`M <path>`で残り、その`$GIT_DIR/modules/<name>`は次回以降も古いgitdirを掴む。

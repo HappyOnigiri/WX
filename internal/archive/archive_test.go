@@ -514,7 +514,7 @@ func TestRestoreRunsPrepareCommandAfterSnapshotTreeAndIndex(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Storage.WorktreeRoot = worktreeRoot
 	cfg.Repositories = map[string]config.Repository{
-		repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", `test "$(cat state.txt)" = "snapshot" && printf ran > "$WX_RESTORE_PREPARE_MARKER"`}, Timeout: config.Duration{Duration: time.Second}}},
+		repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", `test "$(cat state.txt)" = "snapshot" && printf ran > "$WX_RESTORE_PREPARE_MARKER"`}, Timeout: &config.Duration{Duration: time.Second}}},
 	}
 	runner := &gitx.Runner{Timeout: 5 * time.Second}
 	mustMkdir(t, worktreeRoot)

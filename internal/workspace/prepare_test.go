@@ -682,7 +682,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	failingCfg := cfg
-	failingCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/usr/bin/false"}, Timeout: config.Duration{Duration: time.Second}}}}
+	failingCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/usr/bin/false"}, Timeout: &config.Duration{Duration: time.Second}}}}
 	preparer.Config = failingCfg
 	commandTarget := filepath.Join(slotPath, "command-failure")
 	if err := preparer.Prepare(context.Background(), repo, commandTarget, head, "command-failure"); err == nil {
@@ -692,7 +692,7 @@ func TestPrepareFailureCleansPartialWorktreeAndCoversPolicyEdges(t *testing.T) {
 		t.Fatalf("command-failure partial worktree remains: %v", err)
 	}
 	dirtyCfg := cfg
-	dirtyCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf changed > tracked"}, Timeout: config.Duration{Duration: time.Second}}}}
+	dirtyCfg.Repositories = map[string]config.Repository{repository: {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf changed > tracked"}, Timeout: &config.Duration{Duration: time.Second}}}}
 	preparer.Config = dirtyCfg
 	dirtyTarget := filepath.Join(slotPath, "dirty-command")
 	if err := preparer.Prepare(context.Background(), repo, dirtyTarget, head, "dirty-command"); err == nil || !strings.Contains(err.Error(), "tracked changes") {
