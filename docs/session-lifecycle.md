@@ -75,6 +75,12 @@
    素のworktreeはslotの準備も保存も返却も受けられないためで、安全に写せない形は写し方を案内して拒否する。
    判定はコマンド文字列の静的な解析だけで行い、候補を同定できない入力は通す。
 
+   この書き換えは`wx -n`（`--no-worktree`）の直接起動でも効く。
+   直接起動にはsessionが無いので、wxは書き換えの境界（起動元worktreeのtoplevel）と所有プロセスを環境変数で子へ渡し、hookはdaemonへ接続せず判定だけをその場で出す。
+   有効にするのは`-n`を明示し、かつその workspace の保存済み方針が`hot`か`cold`のときに限る。`off` / `ask`では書き換え先の`wx new`自体がdaemonに拒否されるため、書き換えずに素通しする。
+   境界にpolicy root（main worktree）ではなくcwd側のtoplevelを使うのは、linked worktreeやwxのslotで`-n`起動したときに前方一致が外れ、書き換えが無言で止まるのを避けるためである。
+   保存済み方針が`off`で`-n`を付けていない起動は、従来どおり素通しする。
+
    `wx hook session-start`はエージェント側のネイティブなセッションIDをwxのセッションへ結び付ける。
    Codexのrewind / forkは、transcript metadataの`forked_from_id`とhook payloadの新IDを照合できた場合だけ旧IDから新IDへmappingを移管し、照合できなければ通常のbindとして扱う。
    RESTORING中に届いたIDは`pending_agent_session_id`として保持し、復元成功後に親から新しいセッションへ移譲する。
@@ -172,6 +178,8 @@
 `wx shell`と`wx run`はagent起動と同じ`internal/cli/client.go`の`launch`を共有するので、`defer Release`やheartbeatといった返却の仕掛けが分岐しない。
 実行するプログラムを`RegisterAgentProcess`で`agent_pid`に登録するので、snapshot前の生存確認も同じに効く。
 `wx new`だけはプロセスに随伴せず、`client_pid`を持たずheartbeatも張らない。
+`wx -n`の中から呼ばれたときだけ、起動元プロセスを`client_pid`ではなく`sessions.lease_owner_pid`へ記録する。
+`client_pid`は「終了要求に応答できる随伴client」を意味し、`wx clear --all`の即時返却・`wx release <id>`の拒否・`lease.ttl`掃引の見送りがそれに依存しているためである。
 そのため`Store.OrphanCandidates`は`lease_kind`が`path`の行を除外する。
 除外を忘れると`wx new`のworktreeはheartbeat切れとして保存・返却されGCの対象になるため、ここがこの経路で最も静かに壊れる箇所である。
 
@@ -183,7 +191,7 @@ client側の捕捉が効かない中断（`kill -9`・端末ごとの消滅）�
 `internal/rpc`は接続ごとに切断通知をhandler ctxへ載せ（`rpc.PeerClosed`）、`Handler.waitReady`はREADY前に接続が切れたら待機を打ち切って返却する。
 対象を`path`に絞るのは、他の貸出は`client_pid`とheartbeatで回収できるのに対し、`wx new`だけがpathを渡す前の未受領のまま誰にも返されずに残るためである。
 
-`wx new`の返却契機は3つで、`wx release --discard`を除きどれも既存の返却経路（session `RELEASING`→slot `DRAINING`→SNAPSHOTジョブ）へ載る。
+`wx new`の返却契機は4つで、`wx release --discard`を除きどれも既存の返却経路（session `RELEASING`→slot `DRAINING`→SNAPSHOTジョブ）へ載る。
 どれも利用者へpathを渡せた後の話で、渡す前に中断された貸出は上の2経路がその場で返す。
 
 1. 親sessionの終了。`WX_SESSION_ID` / `WX_SESSION_TOKEN`を持つ環境からの要求は`sessions.lease_owner_session_id`へ親を記録し、親が使用中でなくなると`Store.OrphanedChildLeases`が拾う。
@@ -192,7 +200,10 @@ client側の捕捉が効かない中断（`kill -9`・端末ごとの消滅）�
    `--discard`だけは例外で、`Store.ReleaseDiscardingWithOutcome`が返却と同じtransactionでSNAPSHOTを積まずREMOVEを積む（session `EXPIRED`→slot `REMOVING`）。
    保存を待たずに1回で削除が予約されるので、再実行の案内も workspace の `retention.ended_worktree` の猶予も無い。slotが`PREPARING`で予約できないときだけ、通常の返却と同じく保存経路へ載る。
    `wx release`は返却の受付と保存・削除の完了が別で、既定では受付だけを返す。`--wait`を指定すると、その返却で積まれた保存または削除の完了まで待てる。
-3. 設定`lease.ttl`の経過。`Store.ExpiredLeaseCandidates`が拾う。
+3. `-n`起動元プロセスの終了。`wx -n`が渡した`WX_DIRECT_OWNER_PID`を`sessions.lease_owner_pid`へ記録し、`Store.PIDBoundPathLeases`が拾う。
+   PIDの再利用は「早すぎる回収」ではなく「返らない貸出」へ倒れる（`processAlive`はEPERMも生存扱い）ので、上限は`lease.ttl`が受け持つ。
+   wxのPIDはagentの寿命そのものではない。`wx -n`がSIGKILLされるとagentは生き残るため、編集中のworktreeがsnapshotされて返却され得る。
+4. 設定`lease.ttl`の経過。`Store.ExpiredLeaseCandidates`が拾う。
 
 期限が来ても保存されてから返却され、返却後も workspace の `retention.ended_worktree` の間は実体が残り`wx shell --resume <id>`で復元できる。
 ただしsnapshot後の編集は保存されない。
