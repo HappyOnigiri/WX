@@ -44,6 +44,41 @@ func TestReconcileStandbyReplenishmentsQueuesRecoveredEnsure(t *testing.T) {
 	if len(jobs) != 1 || jobs[0].Kind != "ENSURE_STANDBY" || jobs[0].WorkspaceID != string(workspaceRecord.ID) {
 		t.Fatalf("recovered jobs=%+v, want one ENSURE_STANDBY for %s", jobs, workspaceRecord.ID)
 	}
+	work, execution, ok := manager.jobQueue.take()
+	if !ok || work.id != jobs[0].ID || work.class != jobClassMaintenance {
+		t.Fatalf("queued recovery work=%+v ok=%t, want ENSURE_STANDBY %s in maintenance queue", work, ok, jobs[0].ID)
+	}
+	manager.jobQueue.finish(work, execution)
+}
+
+func TestWorkspaceConfigurationChangedDetectsGenerationBoundary(t *testing.T) {
+	base := discovery.Workspace{
+		ID:   "workspace",
+		Root: "/workspaces/example",
+		Kind: "repository",
+		Repositories: []discovery.Repository{{
+			ID: "repository", RelativePath: ".",
+		}},
+	}
+	membershipChanged := base
+	membershipChanged.Repositories = []discovery.Repository{{ID: "other", RelativePath: "."}}
+	for _, test := range []struct {
+		name               string
+		latest             discovery.Workspace
+		previousGeneration int
+		latestGeneration   int
+		want               bool
+	}{
+		{name: "unchanged", latest: base, previousGeneration: 1, latestGeneration: 1, want: false},
+		{name: "generation advanced", latest: base, previousGeneration: 1, latestGeneration: 2, want: true},
+		{name: "membership changed", latest: membershipChanged, previousGeneration: 1, latestGeneration: 1, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := workspaceConfigurationChanged(base, test.latest, test.previousGeneration, test.latestGeneration); got != test.want {
+				t.Fatalf("workspaceConfigurationChanged()=%t, want %t", got, test.want)
+			}
+		})
+	}
 }
 
 // idle 更新の予約が貸出に先を越されたときは、次の候補へ進めるため競合を成功扱いにする。
@@ -159,6 +194,27 @@ func TestStandbyReadyUsableSkipsRepositoryRootValidation(t *testing.T) {
 	usable, err := manager.standbyReadyUsable(ctx, slot, storedWorkspace, resolved, true)
 	if err != nil || !usable {
 		t.Fatalf("standbyReadyUsable=%t err=%v, want true,nil", usable, err)
+	}
+}
+
+// 現在の main と完全一致する READY は、更新互換 fingerprint が欠けていてもそのまま使える。
+// 保存済み状態の再検査へ進むと、legacy metadata を理由に不要な退役へ進んでしまう。
+func TestStandbyReadyUsableKeepsExactMatchWithoutCompatibilityFingerprint(t *testing.T) {
+	f := newReuseStandbyFixture(t)
+	ctx := context.Background()
+	slot := f.readyStandby(t)
+	resolved, err := f.manager.resolveBranches(ctx, f.workspace, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := openTestDatabase(t, filepath.Join(f.root, "state.db"))
+	if _, err := database.ExecContext(ctx, `UPDATE slot_repositories SET compatibility_fingerprint='' WHERE slot_id=?`, slot.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	usable, err := f.manager.standbyReadyUsable(ctx, slot, f.workspace, resolved, true)
+	if err != nil || !usable {
+		t.Fatalf("standbyReadyUsable=%t err=%v, want true,nil for an exact READY match", usable, err)
 	}
 }
 
@@ -399,6 +455,9 @@ func TestRunIdleStandbyUpdateSyncsMultiRepositoryRoot(t *testing.T) {
 	slot, err := f.store.Slot(ctx, updates[0].SlotID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if slot.State != "READY" || slot.UpdateCompletedAt == "" {
+		t.Fatalf("updated standby=%+v, want READY with a completion timestamp", slot)
 	}
 	got, err := os.ReadFile(filepath.Join(slot.Path, "AGENTS.md"))
 	if err != nil || string(got) != "updated root asset\n" {

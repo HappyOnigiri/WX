@@ -66,7 +66,7 @@ func (m *Manager) ensureStandbyResolved(ctx context.Context, w discovery.Workspa
 	if err != nil {
 		return err
 	}
-	if latestGeneration != generation || !sameWorkspaceMembership(w, latest) {
+	if workspaceConfigurationChanged(w, latest, generation, latestGeneration) {
 		w = latest
 		generation = latestGeneration
 		needed = warmCount - m.store.StandbyCount(ctx, string(w.ID))
@@ -118,6 +118,12 @@ func (m *Manager) ensureStandbyResolved(ctx context.Context, w discovery.Workspa
 		}
 	}
 	return nil
+}
+
+// workspaceConfigurationChanged は補充計画の入力が再読込で変わったかを判定する。
+// generation だけが進む場合も、同じ membership のまま slot を古い世代へ登録しないため再解決する。
+func workspaceConfigurationChanged(previous, latest discovery.Workspace, previousGeneration, latestGeneration int) bool {
+	return latestGeneration != previousGeneration || !sameWorkspaceMembership(previous, latest)
 }
 
 // sameWorkspaceMembership は caller の一時的な branch 上書きを保ったまま、世代を進める構成変更だけを検出する。
