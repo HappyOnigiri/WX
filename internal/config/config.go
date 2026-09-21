@@ -418,8 +418,11 @@ type RepositoryIncludes struct {
 type Prepare struct {
 	Command []string `yaml:"command,omitempty"`
 	Inputs  []string `yaml:"inputs,omitempty"`
-	Timeout Duration `yaml:"timeout,omitempty"`
-	Version string   `yaml:"version,omitempty"`
+	// Timeout は nil が未指定で、上位 scope の値をそのまま継承する。
+	// 明示した `0s` は「repository 固有の timeout を使わず readiness timeout へ
+	// fallback する」指定なので、継承と区別して下位 scope へ残す。
+	Timeout *Duration `yaml:"timeout,omitempty"`
+	Version string    `yaml:"version,omitempty"`
 }
 type Logging struct {
 	Level string `yaml:"level,omitempty"`
@@ -657,7 +660,7 @@ func validateRepositories(repositories map[string]Repository) error {
 		if override.DirSource != "" && override.DirSource != RepoDirSourceRemote && override.DirSource != RepoDirSourceDirectory {
 			return fmt.Errorf("repositories.%s.dir_source must be %s or %s", path, RepoDirSourceRemote, RepoDirSourceDirectory)
 		}
-		if override.Prepare.Timeout.Duration < 0 {
+		if override.Prepare.Timeout != nil && override.Prepare.Timeout.Duration < 0 {
 			return fmt.Errorf("repositories.%s.prepare.timeout must not be negative", path)
 		}
 		if override.COWMinSizeKiB != nil && (*override.COWMinSizeKiB < 0 || *override.COWMinSizeKiB > MaxCOWMinSizeKiB) {
@@ -692,7 +695,7 @@ func validateWorkspaceOverride(path string, workspace Workspace) error {
 
 // validateRepositoryOverride は repository 個別指定を検査し、early_paths を正規化した個別指定を返す。
 func validateRepositoryOverride(path string, override Repository) (Repository, error) {
-	if override.Prepare.Timeout.Duration < 0 {
+	if override.Prepare.Timeout != nil && override.Prepare.Timeout.Duration < 0 {
 		return Repository{}, fmt.Errorf("repositories.%s.prepare.timeout must not be negative", path)
 	}
 	if override.Prepare.Inputs != nil {

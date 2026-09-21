@@ -101,7 +101,7 @@ func TestResumeAndFinishRestoreFailClosedAtBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 		cfg := preparer.Config
-		cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/false"}, Timeout: config.Duration{Duration: time.Second}}}
+		cfg.Repositories[string(repo.MainPath)] = config.Repository{Prepare: config.Prepare{Command: []string{"/bin/false"}, Timeout: &config.Duration{Duration: time.Second}}}
 		preparer.Config = cfg
 		if err := preparer.PrepareResumeWithIdentity(ctx, repo, target, head, "slot", ""); err == nil {
 			t.Fatal("failed resume command succeeded")
@@ -335,7 +335,7 @@ func TestPreparerDescriptorOperationsRejectInvalidRootsAndIdentities(t *testing.
 	}
 
 	badConfig := preparer.Config
-	badConfig.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/true"}, Timeout: config.Duration{Duration: time.Second}}}}
+	badConfig.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/true"}, Timeout: &config.Duration{Duration: time.Second}}}}
 	preparer.Config = badConfig
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
@@ -443,7 +443,7 @@ func TestPrepareRejectsWorktreeAlteredByThePrepareCommand(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := preparer.Config
-			cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", test.script}, Timeout: config.Duration{Duration: 5 * time.Second}}}}
+			cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", test.script}, Timeout: &config.Duration{Duration: 5 * time.Second}}}}
 			preparer.Config = cfg
 			err := preparer.Prepare(context.Background(), repo, target, head, "slot")
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
@@ -470,7 +470,7 @@ func TestPrepareLeavesWorktreeForQuarantineWhenCleanupGitFails(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := preparer.Config
-			cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "exit 1"}, Timeout: config.Duration{Duration: 5 * time.Second}}}}
+			cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "exit 1"}, Timeout: &config.Duration{Duration: 5 * time.Second}}}}
 			preparer.Config = cfg
 			// このシナリオで失敗させるのはprepare commandだけであり、cleanupを有効にするためworktree lockは成功させる（ownedAfterLock=true）。
 			// 続くcleanup自身のGit呼び出しを失敗させ、worktreeを黙って捨てず後のquarantine/reconcile用に登録したままにする。

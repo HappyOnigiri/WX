@@ -159,6 +159,11 @@ func (m *Manager) snapshotObjects(ctx context.Context, repo discovery.Repository
 	if _, err := worktreeRun(env, nil, "read-tree", head); err != nil {
 		return state.Snapshot{}, nil, nil, err
 	}
+	// HEAD に無い index entry を先に持ち込む。ignore 規則に一致する force-added path は、
+	// これが無いと一時 index から未追跡の ignored file に見え、add -A が作業内容ごと飛ばす。
+	if err := seedForceAddedEntries(worktreeRun, worktreeValue, env); err != nil {
+		return state.Snapshot{}, nil, nil, err
+	}
 	// 一時 index にも元 index と同じ flag を立ててから add するので、flag 付き path は HEAD の内容のまま記録される。
 	// add に pathspec を渡さないのは、pathspec が flag 付き path だけに一致すると git が sparse-checkout の逸脱として exit 1 にするためである。
 	if err := applyIndexFlags(worktreeRun, worktreeValue, env, flags); err != nil {

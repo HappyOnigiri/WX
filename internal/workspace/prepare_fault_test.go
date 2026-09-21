@@ -95,7 +95,7 @@ func TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarker(t *testing.T
 	preparer.RootPath = root
 
 	cfg := preparer.Config
-	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "exit 1"}, Timeout: config.Duration{Duration: 5 * time.Second}}}}
+	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "exit 1"}, Timeout: &config.Duration{Duration: 5 * time.Second}}}}
 	preparer.Config = cfg
 	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err == nil {
 		t.Fatal("prepare succeeded despite a failing prepare command")
@@ -202,7 +202,7 @@ func TestPrepareResumeWithIdentityDetectsTargetReplacementDuringResumeCommand(t 
 	}
 	script := "parent=$(dirname \"$PWD\"); name=$(basename \"$PWD\"); cd \"$parent\" && rm -rf \"$name\" && mkdir \"$name\""
 	cfg := preparer.Config
-	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", script}, Timeout: config.Duration{Duration: 5 * time.Second}}}}
+	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", script}, Timeout: &config.Duration{Duration: 5 * time.Second}}}}
 	preparer.Config = cfg
 	if err := preparer.PrepareResumeWithIdentity(ctx, repo, target, head, "slot", identity); !errors.Is(err, state.ErrOwnership) {
 		t.Fatalf("target replacement during the resume command was not detected: %v", err)

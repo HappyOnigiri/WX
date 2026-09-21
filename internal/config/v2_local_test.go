@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultsV2LeavesDefaultBranchForDiscovery(t *testing.T) {
@@ -298,5 +299,51 @@ func TestV2RejectsTopLevelLanguage(t *testing.T) {
 	}
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "top-level language") {
 		t.Fatalf("Load error=%v, want top-level language rejection", err)
+	}
+}
+
+// prepare.timeout の明示 `0s` は「上位の timeout を継承せず readiness timeout へ
+// fallback する」指定なので、workspace と membership の解決・source・保存で保つ。
+func TestV2ExplicitZeroPrepareTimeoutOverridesParent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "project")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := Path()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := "version: 2\nrepository_defaults:\n  prepare:\n    timeout: 5s\nworkspaces:\n  $HOME/project:\n    repository_defaults:\n      prepare:\n        timeout: 0s\n    repositories:\n      backend:\n        prepare:\n          timeout: 30s\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	effective, raw, err := LoadWithRaw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution := effective.ResolveRepository(root, ".", "")
+	timeout := resolution.Config.Prepare.Timeout
+	if timeout == nil || timeout.Duration != 0 {
+		t.Fatalf("workspace prepare timeout=%v, want the explicit zero instead of the global 5s", timeout)
+	}
+	if source := resolution.Sources["prepare.timeout"]; source != "workspace" {
+		t.Fatalf("prepare.timeout source=%q, want workspace", source)
+	}
+	// 明示 zero は下位 scope の明示値を隠さない。
+	if member := effective.RepositoryFor(root, "backend", "").Prepare.Timeout; member == nil || member.Duration != 30*time.Second {
+		t.Fatalf("membership prepare timeout=%v, want the membership value", member)
+	}
+	// workspace 指定の無い root では global 値を継承する。
+	if other := effective.RepositoryFor(filepath.Join(home, "other"), ".", "").Prepare.Timeout; other == nil || other.Duration != 5*time.Second {
+		t.Fatalf("unrelated workspace prepare timeout=%v, want the global 5s", other)
+	}
+	if err := Save(raw); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "timeout: 0s") {
+		t.Fatalf("saved configuration dropped the explicit zero:\n%s", data)
 	}
 }
