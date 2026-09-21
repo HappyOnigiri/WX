@@ -925,7 +925,7 @@ func seedWorkspaceRows(t *testing.T, store *Store, workspaceID, root, kind, repo
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO workspaces(id,root_path,kind,generation,discovery_state,first_seen_at,last_seen_at,last_reconciled_at) VALUES(?,?,?,1,'READY',?,?,?)`, workspaceID, root, kind, now(), now(), now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,'main','',?,?)`, repositoryID, mainPath, commonDir, now(), now()); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,'',?,?)`, repositoryID, mainPath, commonDir, now(), now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES(?,?,?,0)`, workspaceID, repositoryID, relative); err != nil {

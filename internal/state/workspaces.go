@@ -172,11 +172,15 @@ func (s *Store) UpsertWorkspaceGeneration(ctx context.Context, w discovery.Works
 		}
 	}
 	for i, r := range w.Repositories {
-		_, err = tx.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET main_worktree_path=excluded.main_worktree_path,common_git_dir=excluded.common_git_dir,default_branch=excluded.default_branch,remote_name=CASE WHEN excluded.remote_name<>'' THEN excluded.remote_name ELSE repositories.remote_name END,last_seen_at=excluded.last_seen_at`, r.ID, r.MainPath, r.CommonDir, r.DefaultBranch, r.RemoteName, t, t)
+		// repositories は複数 workspace が共有するため、書き戻すのは workspace に依存しない identity だけにする。
+		// 既定 branch のような workspace 設定をここへ書くと、同じ repository を含む別 workspace の登録が
+		// 先に登録した workspace の branch を上書きし、standby と貸出が別 workspace の branch を materialize する。
+		// commentlint:allow-long -- 共有 row に workspace 設定を戻してはいけない理由を残す
+		_, err = tx.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET main_worktree_path=excluded.main_worktree_path,common_git_dir=excluded.common_git_dir,remote_name=CASE WHEN excluded.remote_name<>'' THEN excluded.remote_name ELSE repositories.remote_name END,last_seen_at=excluded.last_seen_at`, r.ID, r.MainPath, r.CommonDir, r.RemoteName, t, t)
 		if err != nil {
 			return w, 0, err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES(?,?,?,?) ON CONFLICT(workspace_id,repository_id) DO UPDATE SET relative_path=excluded.relative_path,ordinal=excluded.ordinal`, w.ID, r.ID, r.RelativePath, i)
+		_, err = tx.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal,default_branch) VALUES(?,?,?,?,?) ON CONFLICT(workspace_id,repository_id) DO UPDATE SET relative_path=excluded.relative_path,ordinal=excluded.ordinal,default_branch=excluded.default_branch`, w.ID, r.ID, r.RelativePath, i, r.DefaultBranch)
 		if err != nil {
 			return w, 0, err
 		}
@@ -197,7 +201,7 @@ func (s *Store) WorkspaceGeneration(ctx context.Context, workspaceID string) (in
 
 func (s *Store) Repository(ctx context.Context, id string) (discovery.Repository, error) {
 	var r discovery.Repository
-	err := s.db.QueryRowContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch,remote_name FROM repositories WHERE id=?`, id).Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.DefaultBranch, &r.RemoteName)
+	err := s.db.QueryRowContext(ctx, `SELECT id,main_worktree_path,common_git_dir,remote_name FROM repositories WHERE id=?`, id).Scan(&r.ID, &r.MainPath, &r.CommonDir, &r.RemoteName)
 	return r, err
 }
 
@@ -207,7 +211,7 @@ func (s *Store) Workspace(ctx context.Context, id string) (discovery.Workspace, 
 	if err != nil {
 		return w, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,wr.relative_path,r.default_branch,r.remote_name FROM workspace_repositories wr JOIN repositories r ON r.id=wr.repository_id WHERE wr.workspace_id=? ORDER BY wr.ordinal`, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,wr.relative_path,wr.default_branch,r.remote_name FROM workspace_repositories wr JOIN repositories r ON r.id=wr.repository_id WHERE wr.workspace_id=? ORDER BY wr.ordinal`, id)
 	if err != nil {
 		return w, err
 	}
@@ -235,7 +239,7 @@ func (s *Store) WorkspaceWithGeneration(ctx context.Context, id string) (discove
 	if err := tx.QueryRowContext(ctx, `SELECT id,root_path,kind,generation FROM workspaces WHERE id=?`, id).Scan(&w.ID, &w.Root, &w.Kind, &generation); err != nil {
 		return discovery.Workspace{}, 0, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,wr.relative_path,r.default_branch,r.remote_name FROM workspace_repositories wr JOIN repositories r ON r.id=wr.repository_id WHERE wr.workspace_id=? ORDER BY wr.ordinal`, id)
+	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,wr.relative_path,wr.default_branch,r.remote_name FROM workspace_repositories wr JOIN repositories r ON r.id=wr.repository_id WHERE wr.workspace_id=? ORDER BY wr.ordinal`, id)
 	if err != nil {
 		return discovery.Workspace{}, 0, err
 	}
@@ -282,7 +286,7 @@ func (s *Store) SessionWorkspace(ctx context.Context, sessionID string) (discove
 	if err != nil {
 		return w, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,sr.relative_path,r.default_branch,r.remote_name FROM session_repositories sr JOIN repositories r ON r.id=sr.repository_id WHERE sr.session_id=? ORDER BY sr.ordinal`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.main_worktree_path,r.common_git_dir,sr.relative_path,sr.default_branch,r.remote_name FROM session_repositories sr JOIN repositories r ON r.id=sr.repository_id WHERE sr.session_id=? ORDER BY sr.ordinal`, sessionID)
 	if err != nil {
 		return w, err
 	}
@@ -410,7 +414,7 @@ func (s *Store) RegisteredRepositoryIDs(ctx context.Context) (map[string]bool, e
 }
 
 func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,main_worktree_path,common_git_dir,default_branch,remote_name FROM repositories ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,main_worktree_path,common_git_dir,remote_name FROM repositories ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +422,7 @@ func (s *Store) Repositories(ctx context.Context) ([]discovery.Repository, error
 	var repositories []discovery.Repository
 	for rows.Next() {
 		var repository discovery.Repository
-		if err := rows.Scan(&repository.ID, &repository.MainPath, &repository.CommonDir, &repository.DefaultBranch, &repository.RemoteName); err != nil {
+		if err := rows.Scan(&repository.ID, &repository.MainPath, &repository.CommonDir, &repository.RemoteName); err != nil {
 			return nil, err
 		}
 		repositories = append(repositories, repository)

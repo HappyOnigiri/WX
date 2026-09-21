@@ -20,6 +20,8 @@
    branchを指定しない貸出では、明示された設定を最優先し、未設定ならGitの既定branchの参照とローカルの候補を順に検証して起点を決める。
    根拠が一つも成立しない場合は自動で選ばず、remoteの既定参照を設定するかbranchを明示するよう診断して停止する。
    設定を引くscopeは常にrepositoryのmain worktree（単一repository workspaceのroot）で、cwdがlinked worktreeでも同じ設定が当たる。
+   解決した既定branchはworkspaceごとの所属（`workspace_repositories`・`session_repositories`）に保存する。
+   `repositories`は複数workspaceが共有するため、そこへ書くと同じrepositoryを含む別workspaceの登録が先のworkspaceの起点を奪う。
 
 2. **起動** — clientはleaseのpathをdescriptorとして開き、`internal/fdexec`経由でエージェントをそのdescriptorのディレクトリで起動する。
    子プロセスにはセッションID・token・daemon socketが渡り、以降のhookはこれらを持つ場合だけ動く。

@@ -111,7 +111,7 @@ func seedSessionScopeSession(t *testing.T, store *Store, id, workspaceID, slotID
 
 func seedSessionScopeRepository(t *testing.T, store *Store, id string) {
 	t.Helper()
-	if _, err := store.db.ExecContext(context.Background(), `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,'main','',?,?)`, id, "/"+id, "/"+id+"/.git", now(), now()); err != nil {
+	if _, err := store.db.ExecContext(context.Background(), `INSERT INTO repositories(id,main_worktree_path,common_git_dir,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,'',?,?)`, id, "/"+id, "/"+id+"/.git", now(), now()); err != nil {
 		t.Fatal(err)
 	}
 }

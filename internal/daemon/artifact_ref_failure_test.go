@@ -38,7 +38,7 @@ func TestRefListFailureStaysScopedToItsRepository(t *testing.T) {
 	raw := openTestDatabase(t, databasePath)
 	stamp := state.FormatTime(time.Now())
 	for id, path := range map[string]string{"registered": registered, "forgotten": forgotten} {
-		if _, err := raw.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,'main','',?,?)`,
+		if _, err := raw.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,'',?,?)`,
 			id, path, filepath.Join(path, ".git"), stamp, stamp); err != nil {
 			t.Fatal(err)
 		}
