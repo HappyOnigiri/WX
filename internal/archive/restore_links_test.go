@@ -51,7 +51,7 @@ func TestRestoreUsesDestinationIgnoreRulesAndRetainsTreeValidation(t *testing.T)
 	}
 
 	manager.Preparer.Config.Repositories = map[string]config.Repository{
-		string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf '%s\\n' unexpected > unexpected"}, Timeout: config.Duration{Duration: time.Second}}},
+		string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", "printf '%s\\n' unexpected > unexpected"}, Timeout: &config.Duration{Duration: time.Second}}},
 	}
 	mismatchTarget := filepath.Join(worktreeRoot, "slot-mismatch", "root")
 	pointAtSlot(t, manager, worktreeRoot, mismatchTarget)
