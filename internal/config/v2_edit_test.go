@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -141,5 +142,83 @@ func TestV2RepositorySourcesIncludeWorkspaceAndMembershipOverrides(t *testing.T)
 	}
 	if got := effective.RepositoryFor(root, "frontend", "").DefaultBranch; got != workspaceBranch {
 		t.Fatalf("workspace default branch=%q, want %q", got, workspaceBranch)
+	}
+}
+
+// YAML の membership key は正規化されていない。`./api` と書かれた entry を
+// 正規化名 `api` の target で編集しても、key を増やさず同じ entry を更新する。
+func TestV2RepositoryEditUsesTheExistingRawMembershipKey(t *testing.T) {
+	writeConfigFile(t, "version: 2\nworkspaces:\n  \"$HOME/ws\":\n    repositories:\n      \"./api\":\n        readiness:\n          mode: full\n")
+	root, err := canonicalPath("$HOME/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := EditRequest{Scope: V2ScopeRepository, V2: true, Target: root, Repository: "api", Key: "readiness.mode", Value: "early", Operation: EditSet}
+	commitConfigEdit(t, request)
+	_, document := readConfigDocument(t)
+	repositories := documentRepositories(t, document)
+	if len(repositories) != 1 {
+		t.Fatalf("repositories=%#v, want only the existing ./api key", repositories)
+	}
+	if _, ok := repositories["./api"]; !ok {
+		t.Fatalf("repositories=%#v, want key ./api", repositories)
+	}
+	effective, _, err := LoadWithRaw()
+	if err != nil {
+		t.Fatalf("LoadWithRaw after set: %v", err)
+	}
+	if got := effective.Workspaces[root].Repositories["api"].Readiness.Mode; got != "early" {
+		t.Fatalf("readiness.mode=%q, want early", got)
+	}
+	request.Operation = EditReset
+	request.Value = ""
+	commitConfigEdit(t, request)
+	raw, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw after reset: %v", err)
+	}
+	if got := raw.Workspaces["$HOME/ws"].Repositories; len(got) != 0 {
+		t.Fatalf("repositories after reset=%#v, want the override removed", got)
+	}
+}
+
+// documentRepositories は保存された document から唯一の workspace の membership map を取り出す。
+func documentRepositories(t *testing.T, document map[string]any) map[string]any {
+	t.Helper()
+	workspaces, ok := document["workspaces"].(map[string]any)
+	if !ok || len(workspaces) != 1 {
+		t.Fatalf("workspaces=%#v, want a single workspace", document["workspaces"])
+	}
+	for _, workspace := range workspaces {
+		section, ok := workspace.(map[string]any)
+		if !ok {
+			t.Fatalf("workspace=%#v", workspace)
+		}
+		repositories, ok := section["repositories"].(map[string]any)
+		if !ok {
+			t.Fatalf("workspace=%#v, want repositories", section)
+		}
+		return repositories
+	}
+	return nil
+}
+
+// 継承した list への append は、requested root の workspace override を seed にする。
+// workspace key が `$HOME/...` 表記だと exact lookup では override を見失う。
+func TestAppendV2ListSeedsFromTheWorkspaceOverride(t *testing.T) {
+	writeConfigFile(t, "version: 2\nrepository_defaults:\n  prepare:\n    command: [global-command]\nworkspaces:\n  \"$HOME/ws\":\n    repository_defaults:\n      prepare:\n        command: [workspace-command]\n    repositories:\n      api: {}\n")
+	root, err := canonicalPath("$HOME/ws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitConfigEdit(t, EditRequest{Scope: V2ScopeRepository, V2: true, Target: root, Repository: "api", Key: "prepare.command", Value: "extra", Operation: EditAdd})
+	effective, _, err := LoadWithRaw()
+	if err != nil {
+		t.Fatalf("LoadWithRaw after add: %v", err)
+	}
+	got := effective.RepositoryFor(root, "api", "").Prepare.Command
+	want := []string{"workspace-command", "extra"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("prepare.command=%q, want %q", got, want)
 	}
 }
