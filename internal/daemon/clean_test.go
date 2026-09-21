@@ -762,3 +762,51 @@ func TestDetachedLeaseIdentifiesLeasesWithoutALiveProcess(t *testing.T) {
 		t.Fatal("detachedLease accepted an empty or unknown session")
 	}
 }
+
+// 終了要求が期限切れで閉じた後に clear --all を再実行すると、新しい要求が session へ渡ることを確かめる。
+func TestCleanReissuesTerminationAfterTimedOutRun(t *testing.T) {
+	t.Parallel()
+	manager, store, workspaceID := cleanFixture(t)
+	ctx := context.Background()
+	slot := testSlot(t, manager, workspaceID, "termination-retry", 1, "LEASED")
+	session := state.Session{ID: "termination-retry-session", WorkspaceID: workspaceID, SlotID: slot.ID, State: "ACTIVE", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, slot, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	target := state.CleanTarget{SlotID: slot.ID, WorkspaceID: workspaceID, SessionID: session.ID, Path: slot.Path, State: cleanTargetPending}
+	runs := []string{"clean-run-a", "clean-run-b"}
+	requests := make([]string, 0, len(runs))
+	for _, runID := range runs {
+		if _, _, err := store.BeginCleanRun(ctx, state.CleanRun{ID: runID, Mode: "all"}, []state.CleanTarget{target}, []string{workspaceID}); err != nil {
+			t.Fatal(err)
+		}
+		targets, err := store.CleanTargets(ctx, runID)
+		if err != nil || len(targets) != 1 {
+			t.Fatalf("targets=%+v err=%v", targets, err)
+		}
+		manager.advancePending(ctx, state.CleanRun{ID: runID, Mode: "all"}, targets[0], map[string]time.Time{})
+		stored, err := store.CleanTargets(ctx, runID)
+		if err != nil || len(stored) != 1 || stored[0].State != cleanTargetTerminating {
+			t.Fatalf("targets=%+v err=%v", stored, err)
+		}
+		request, found, err := store.PendingTermination(ctx, session.ID)
+		if err != nil || !found {
+			t.Fatalf("run %s left no pending termination request: found=%v err=%v", runID, found, err)
+		}
+		if request.Deadline != stored[0].TerminateDeadline {
+			t.Fatalf("run %s deadline=%q target=%q", runID, request.Deadline, stored[0].TerminateDeadline)
+		}
+		requests = append(requests, request.RequestID)
+		// 応答が無いまま期限切れになった run を閉じ、session は ACTIVE のまま次の実行へ残す。
+		manager.closePendingTermination(ctx, session.ID, "TIMED_OUT")
+		if err := store.SetCleanTargetState(ctx, runID, slot.ID, []string{cleanTargetTerminating}, cleanTargetFailed, "timed out"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.FinishCleanRun(ctx, runID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if requests[0] == requests[1] {
+		t.Fatalf("the second run reused termination request %s instead of issuing a new one", requests[0])
+	}
+}
