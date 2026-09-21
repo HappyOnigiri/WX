@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
@@ -58,6 +59,17 @@ func leaseOwnerFromEnvironment() (id, token string) {
 		return "", ""
 	}
 	return id, token
+}
+
+// leaseOwnerPIDFromEnvironment は wx -n が渡した起動元プロセスを環境から読む。
+// この値はエージェントが書き換えられる環境変数なので、数値でない値と 0 以下は所有者なしへ落とす。
+// 誤りをエラーにすると、エージェントの tool call が理由の分からないまま失敗する。
+func leaseOwnerPIDFromEnvironment() int {
+	pid, err := strconv.Atoi(os.Getenv(envDirectOwnerPID))
+	if err != nil || pid <= 0 {
+		return 0
+	}
+	return pid
 }
 
 // leasePlan は貸出コマンド 1 回分の起動計画を組む。
@@ -179,7 +191,7 @@ func (c Client) RunLeaseNewFrom(ctx context.Context, cwd string, branches []stri
 	}
 	params := rpc.ResolveAndLeaseParams{
 		Agent: leaseAgentKindPath, Branches: branches, ClientPID: 0, CWD: cwd, ForceCold: decision.ForceCold, ForceWorktree: c.forceWorktree,
-		LeaseKind: state.LeaseKindPath, LeaseOwnerSessionID: ownerID, LeaseOwnerToken: ownerToken,
+		LeaseKind: state.LeaseKindPath, LeaseOwnerSessionID: ownerID, LeaseOwnerToken: ownerToken, LeaseOwnerPID: leaseOwnerPIDFromEnvironment(),
 		Language: language,
 	}
 	// 貸出から準備待ちまでは signal を捕まえる。既定の disposition のまま Ctrl-C で即死すると、

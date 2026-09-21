@@ -2,11 +2,13 @@ package rpc
 
 // 貸出と復元の要求型。CLI と daemon で共有し、片側だけの改名や型違いを防ぐ。
 // Params の JSON 文字列が冪等キーなので、宣言順と既存のゼロ値は従来の payload を保つ。
-// 新しい任意フィールドの ForceCold と Language だけは、旧クライアントと同じになるゼロ値を省略する。
+// 新しい任意フィールドの ForceCold・Language・LeaseOwnerPID だけは、旧クライアントと同じになるゼロ値を省略する。
 
-// LeaseKind 以下の3フィールドは agent 起動以外への貸出（wx shell / wx run / wx new）を表す。
+// LeaseKind 以下の4フィールドは agent 起動以外への貸出（wx shell / wx run / wx new）を表す。
 // LeaseKind が空なら従来の agent 起動である。LeaseOwner* は wx new を呼んだ親 session の
 // WX_SESSION_ID / WX_SESSION_TOKEN で、daemon は既存の session token 検証を通してから記録する。
+// LeaseOwnerPID は親 session を持たない wx -n の起動元プロセスで、その終了がこの貸出の返却契機になる。
+// commentlint:allow-long -- 4 フィールドの由来をまとめて示す
 
 // PrepareCopyMode と PrepareCOWMinSizeKiB は、この貸出で準備する slot にだけ適用する設定の上書きである。
 // 空文字と null は上書きなしを表し、daemon の実効設定と設定ファイルはどちらも変更しない。
@@ -23,6 +25,7 @@ type ResolveAndLeaseParams struct {
 	LeaseKind            string   `json:"lease_kind"`
 	LeaseOwnerSessionID  string   `json:"lease_owner_session_id"`
 	LeaseOwnerToken      string   `json:"lease_owner_token"`
+	LeaseOwnerPID        int      `json:"lease_owner_pid,omitempty"`
 	PrepareCopyMode      string   `json:"prepare_copy_mode"`
 	PrepareCOWMinSizeKiB *int     `json:"prepare_cow_min_size_kib"`
 	Language             string   `json:"language,omitempty"`

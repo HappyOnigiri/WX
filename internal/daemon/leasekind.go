@@ -16,6 +16,9 @@ import (
 type leaseAttrs struct {
 	Kind           string
 	OwnerSessionID string
+	// OwnerPID は wx -n の起動元プロセスで、その終了がこの貸出の返却契機になる。
+	// session を持たない直接起動から呼ばれた wx new だけが指定する。
+	OwnerPID int
 	// ForceCold はこの貸出だけ READY の再利用を止め、既存の待機枠を変更せず新しい slot を準備する。
 	ForceCold bool
 	// Prepare はこの貸出で準備する slot にだけ効く設定の上書きで、`wx bench` の設定比較が使う。
@@ -35,10 +38,10 @@ func (a leaseAttrs) withPrepareOverride(copyMode string, cowMinSizeKiB *int) (le
 
 // resolveLeaseAttrs は RPC 要求の貸出指定を検証し、親 session を既存の token 検証で確かめる。
 // 親の指定が誤っていても貸出を進めると、親の終了で返却されない worktree が残るため fail closed にする。
-func (m *Manager) resolveLeaseAttrs(ctx context.Context, kind, ownerSessionID, ownerToken string) (leaseAttrs, error) {
+func (m *Manager) resolveLeaseAttrs(ctx context.Context, kind, ownerSessionID, ownerToken string, ownerPID int) (leaseAttrs, error) {
 	switch kind {
 	case "", state.LeaseKindAgent:
-		if ownerSessionID != "" {
+		if ownerSessionID != "" || ownerPID > 0 {
 			return leaseAttrs{}, errors.New("lease owner is only accepted for a non-agent lease")
 		}
 		return leaseAttrs{}, nil
@@ -47,6 +50,9 @@ func (m *Manager) resolveLeaseAttrs(ctx context.Context, kind, ownerSessionID, o
 		return leaseAttrs{}, fmt.Errorf("unknown lease kind %q", kind)
 	}
 	attrs := leaseAttrs{Kind: kind}
+	if ownerPID > 0 {
+		attrs.OwnerPID = ownerPID
+	}
 	if ownerSessionID == "" {
 		return attrs, nil
 	}
@@ -69,6 +75,7 @@ func (m *Manager) applyLeaseAttrs(session *state.Session, attrs leaseAttrs) {
 	}
 	session.LeaseKind = attrs.Kind
 	session.LeaseOwnerSessionID = attrs.OwnerSessionID
+	session.LeaseOwnerPID = attrs.OwnerPID
 	if ttl := m.Config().System.Lease.TTL.Duration; ttl > 0 {
 		session.LeaseExpiresAt = state.FormatTime(time.Now().Add(ttl))
 	}
@@ -145,6 +152,27 @@ func (m *Manager) reconcileExpiredLeases(ctx context.Context) {
 		}
 	}
 	m.releaseOrphanedChildLeases(ctx)
+	m.releaseExitedDirectLeases(ctx)
+}
+
+// releaseExitedDirectLeases は wx -n の起動元プロセスが終了した path 貸出を返却する。
+// この貸出は heartbeat も随伴 client も持たないため、所有プロセスの生存だけが返却の根拠になる。
+// PID の再利用は早すぎる回収ではなく返らない貸出に倒れるので、上限は lease.ttl の掃引が受け持つ。
+func (m *Manager) releaseExitedDirectLeases(ctx context.Context) {
+	leases, err := m.store.PIDBoundPathLeases(ctx)
+	if err != nil {
+		m.log.Error("direct lease reconciliation failed", "error", err)
+		return
+	}
+	for _, lease := range leases {
+		if processAlive(lease.LeaseOwnerPID) || leaseCandidateRunning(lease.Candidate) {
+			continue
+		}
+		m.log.Info("releasing a lease whose launching process exited", "session_id", lease.Candidate.ID, "slot_id", lease.Candidate.SlotID)
+		if err := m.releaseLeaseWithoutToken(ctx, lease.Candidate, "direct-owner-exited"); err != nil {
+			m.log.Error("lease release failed", "session_id", lease.Candidate.ID, "error", err)
+		}
+	}
 }
 
 // releaseOrphanedChildLeases は親 session が使用中でなくなった子貸出を返却する。

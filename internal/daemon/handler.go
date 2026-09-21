@@ -469,7 +469,7 @@ func (h Handler) dispatchLease(ctx context.Context, method string, raw json.RawM
 			return nil, true, err
 		}
 		ctx = i18n.WithLanguage(ctx, p.Language)
-		attrs, err := h.Manager.resolveLeaseAttrs(ctx, p.LeaseKind, p.LeaseOwnerSessionID, p.LeaseOwnerToken)
+		attrs, err := h.Manager.resolveLeaseAttrs(ctx, p.LeaseKind, p.LeaseOwnerSessionID, p.LeaseOwnerToken, p.LeaseOwnerPID)
 		if err != nil {
 			return nil, true, err
 		}
@@ -486,7 +486,7 @@ func (h Handler) dispatchLease(ctx context.Context, method string, raw json.RawM
 			return nil, true, err
 		}
 		ctx = i18n.WithLanguage(ctx, p.Language)
-		attrs, err := h.Manager.resolveLeaseAttrs(ctx, p.LeaseKind, p.LeaseOwnerSessionID, p.LeaseOwnerToken)
+		attrs, err := h.Manager.resolveLeaseAttrs(ctx, p.LeaseKind, p.LeaseOwnerSessionID, p.LeaseOwnerToken, 0)
 		if err != nil {
 			return nil, true, err
 		}

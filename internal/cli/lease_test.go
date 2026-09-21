@@ -269,6 +269,29 @@ func TestLeaseOwnerFromEnvironmentNeedsBothIdentityAndToken(t *testing.T) {
 	}
 }
 
+// wx -n が渡す所有 PID は、数値として解釈できるときだけ要求へ載せる。
+// 不正な値でエラーにすると、エージェントの tool call が理由の分からないまま失敗する。
+func TestLeaseOwnerPIDFromEnvironmentIgnoresUnusableValues(t *testing.T) {
+	for name, test := range map[string]struct {
+		value string
+		want  int
+	}{
+		"unset":        {},
+		"pid":          {value: "4242", want: 4242},
+		"zero":         {value: "0"},
+		"negative":     {value: "-1"},
+		"not a number": {value: "parent"},
+		"with space":   {value: " 4242"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(envDirectOwnerPID, test.value)
+			if got := leaseOwnerPIDFromEnvironment(); got != test.want {
+				t.Fatalf("owner pid=%d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
 // wx release は ReleaseLease を呼び、応答の discarded で案内を分ける。
 func TestRunLeaseReleaseReportsWhatHappened(t *testing.T) {
 	client, handler, _, ctx := leaseFixture(t)

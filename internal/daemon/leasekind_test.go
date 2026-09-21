@@ -38,12 +38,15 @@ func setLeaseExpiry(t *testing.T, databasePath, sessionID, expiresAt string) {
 
 // createReleaseLeaseSession は ReleaseLease の判定に必要な session と slot だけを登録する。
 // 解放受付の検査で worktree 準備まで実行すると、パッケージ全体の race 実行時に準備の待機期限へ依存する。
-func createReleaseLeaseSession(t *testing.T, f *managerFixture, id, kind string, clientPID int) {
+func createReleaseLeaseSession(t *testing.T, f *managerFixture, id, kind string, clientPID int, ownerPID ...int) {
 	t.Helper()
 	slot := testSlot(t, f.Manager, "", id, 1, "LEASED")
 	session := state.Session{
 		ID: id, SlotID: id, State: "ACTIVE", AgentKind: id,
 		LeaseKind: kind, ClientPID: clientPID, TokenHash: state.HashToken("token"),
+	}
+	if len(ownerPID) == 1 {
+		session.LeaseOwnerPID = ownerPID[0]
 	}
 	if _, err := f.Store.CreateSlotSession(context.Background(), slot, nil, session, ""); err != nil {
 		t.Fatal(err)
@@ -109,7 +112,7 @@ func TestOwnerReleaseReturnsChildLeases(t *testing.T) {
 	if err := waitReady(ctx, m, 10*time.Second, owner.SessionID, owner.Token); err != nil {
 		t.Fatal(err)
 	}
-	attrs, err := m.resolveLeaseAttrs(ctx, state.LeaseKindPath, owner.SessionID, owner.Token)
+	attrs, err := m.resolveLeaseAttrs(ctx, state.LeaseKindPath, owner.SessionID, owner.Token, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,13 +156,13 @@ func TestResolveLeaseAttrsAuthenticatesTheOwnerSession(t *testing.T) {
 	if err := waitReady(ctx, m, 10*time.Second, owner.SessionID, owner.Token); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.resolveLeaseAttrs(ctx, state.LeaseKindPath, owner.SessionID, "wrong-token"); err == nil {
+	if _, err := m.resolveLeaseAttrs(ctx, state.LeaseKindPath, owner.SessionID, "wrong-token", 0); err == nil {
 		t.Fatal("a lease owner with the wrong token was accepted")
 	}
 	if err := m.Release(ctx, owner.SessionID, owner.Token, "test"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.resolveLeaseAttrs(ctx, state.LeaseKindPath, owner.SessionID, owner.Token); err == nil {
+	if _, err := m.resolveLeaseAttrs(ctx, state.LeaseKindPath, owner.SessionID, owner.Token, 0); err == nil {
 		t.Fatal("a released lease owner was accepted")
 	}
 }
@@ -170,21 +173,26 @@ func TestResolveLeaseAttrsValidatesKindAndOwner(t *testing.T) {
 	f := manualManagerFixture(t)
 	ctx := context.Background()
 	for name, test := range map[string]struct {
-		kind, owner string
-		wantKind    string
-		wantErr     bool
+		kind, owner  string
+		ownerPID     int
+		wantKind     string
+		wantOwnerPID int
+		wantErr      bool
 	}{
-		"agent by default":  {kind: "", wantKind: ""},
-		"agent explicitly":  {kind: state.LeaseKindAgent, wantKind: ""},
-		"agent with owner":  {kind: state.LeaseKindAgent, owner: "someone", wantErr: true},
-		"shell lease":       {kind: state.LeaseKindShell, wantKind: state.LeaseKindShell},
-		"command lease":     {kind: state.LeaseKindCommand, wantKind: state.LeaseKindCommand},
-		"path lease":        {kind: state.LeaseKindPath, wantKind: state.LeaseKindPath},
-		"unknown kind":      {kind: "worktree", wantErr: true},
-		"missing owner row": {kind: state.LeaseKindPath, owner: "missing", wantErr: true},
+		"agent by default":       {kind: "", wantKind: ""},
+		"agent explicitly":       {kind: state.LeaseKindAgent, wantKind: ""},
+		"agent with owner":       {kind: state.LeaseKindAgent, owner: "someone", wantErr: true},
+		"agent with owner pid":   {kind: state.LeaseKindAgent, ownerPID: 4242, wantErr: true},
+		"shell lease":            {kind: state.LeaseKindShell, wantKind: state.LeaseKindShell},
+		"command lease":          {kind: state.LeaseKindCommand, wantKind: state.LeaseKindCommand},
+		"path lease":             {kind: state.LeaseKindPath, wantKind: state.LeaseKindPath},
+		"path lease with pid":    {kind: state.LeaseKindPath, ownerPID: 4242, wantKind: state.LeaseKindPath, wantOwnerPID: 4242},
+		"path lease with no pid": {kind: state.LeaseKindPath, ownerPID: -1, wantKind: state.LeaseKindPath},
+		"unknown kind":           {kind: "worktree", wantErr: true},
+		"missing owner row":      {kind: state.LeaseKindPath, owner: "missing", wantErr: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			attrs, err := f.Manager.resolveLeaseAttrs(ctx, test.kind, test.owner, "token")
+			attrs, err := f.Manager.resolveLeaseAttrs(ctx, test.kind, test.owner, "token", test.ownerPID)
 			if test.wantErr {
 				if err == nil {
 					t.Fatalf("kind=%q owner=%q was accepted", test.kind, test.owner)
@@ -194,8 +202,8 @@ func TestResolveLeaseAttrsValidatesKindAndOwner(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if attrs.Kind != test.wantKind || attrs.OwnerSessionID != "" {
-				t.Fatalf("attrs=%+v, want kind %q", attrs, test.wantKind)
+			if attrs.Kind != test.wantKind || attrs.OwnerSessionID != "" || attrs.OwnerPID != test.wantOwnerPID {
+				t.Fatalf("attrs=%+v, want kind %q owner pid %d", attrs, test.wantKind, test.wantOwnerPID)
 			}
 		})
 	}
@@ -206,13 +214,13 @@ func TestApplyLeaseAttrsSkipsExpiryWhenTTLIsZero(t *testing.T) {
 	t.Parallel()
 	f := manualManagerFixture(t, func(s *managerFixtureSetup) { s.Config.Lease.TTL.Duration = 0 })
 	session := state.Session{ID: "session"}
-	f.Manager.applyLeaseAttrs(&session, leaseAttrs{Kind: state.LeaseKindPath, OwnerSessionID: "owner"})
-	if session.LeaseKind != state.LeaseKindPath || session.LeaseOwnerSessionID != "owner" || session.LeaseExpiresAt != "" {
+	f.Manager.applyLeaseAttrs(&session, leaseAttrs{Kind: state.LeaseKindPath, OwnerSessionID: "owner", OwnerPID: 4242})
+	if session.LeaseKind != state.LeaseKindPath || session.LeaseOwnerSessionID != "owner" || session.LeaseOwnerPID != 4242 || session.LeaseExpiresAt != "" {
 		t.Fatalf("session=%+v, want no deadline", session)
 	}
 	agent := state.Session{ID: "agent"}
 	f.Manager.applyLeaseAttrs(&agent, leaseAttrs{})
-	if agent.LeaseKind != "" || agent.LeaseExpiresAt != "" {
+	if agent.LeaseKind != "" || agent.LeaseExpiresAt != "" || agent.LeaseOwnerPID != 0 {
 		t.Fatalf("agent session=%+v, want untouched lease columns", agent)
 	}
 }
@@ -256,6 +264,15 @@ func TestReleaseLeaseRefusesAgentSessionsAndLiveProcesses(t *testing.T) {
 	}
 	if _, err := m.ReleaseLease(ctx, "detached", "wx-release", false); err == nil {
 		t.Fatal("an already released lease was released again")
+	}
+	// wx -n が渡した所有 PID は終了要求へ応答できる相手ではないため、生きていても拒否の理由にしない。
+	// wx clear --all も同じ判定で、この貸出をその場で返却できる。
+	createReleaseLeaseSession(t, f, "direct", state.LeaseKindPath, 0, os.Getpid())
+	if !m.detachedLease(ctx, "direct") {
+		t.Fatal("a lease whose owner pid is alive was treated as having a live client")
+	}
+	if _, err := m.ReleaseLease(ctx, "direct", "wx-release", false); err != nil {
+		t.Fatalf("a lease with a live owner pid was refused: %v", err)
 	}
 }
 
@@ -363,7 +380,7 @@ func TestExpiredAndOrphanedLeasesSkipRunningProcesses(t *testing.T) {
 	if err := waitReady(ctx, m, 10*time.Second, owner.SessionID, owner.Token); err != nil {
 		t.Fatal(err)
 	}
-	attrs, err := m.resolveLeaseAttrs(ctx, state.LeaseKindShell, owner.SessionID, owner.Token)
+	attrs, err := m.resolveLeaseAttrs(ctx, state.LeaseKindShell, owner.SessionID, owner.Token, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,5 +524,69 @@ func TestWithPrepareOverrideValidatesTheRequestedValues(t *testing.T) {
 		if _, err := (leaseAttrs{}).withPrepareOverride(test.copyMode, test.minSize); err == nil {
 			t.Fatalf("override copy_mode=%q min_size=%v, want it rejected", test.copyMode, test.minSize)
 		}
+	}
+}
+
+// setLeaseOwnerPID は貸出の所有 PID を直接書き換える。実際に wx -n を終了させずに回収を確認するためである。
+func setLeaseOwnerPID(t *testing.T, databasePath, sessionID string, pid int) {
+	t.Helper()
+	raw := openTestDatabase(t, databasePath)
+	if _, err := raw.ExecContext(context.Background(), `UPDATE sessions SET lease_owner_pid=? WHERE id=?`, pid, sessionID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// wx -n の中から取った wx new の貸出は、起動元プロセスが生きている間は返却されず、
+// 消えたときに保存経路（DRAINING → SNAPSHOT）を通って返却される。
+func TestDirectLeaseIsReturnedWhenItsLaunchingProcessExits(t *testing.T) {
+	t.Parallel()
+	f, repo := leaseWorktreeFixture(t)
+	store, m := f.Store, f.Manager
+	ctx := context.Background()
+	lease, err := m.leaseWithPolicy(ctx, repo, nil, "wx-path", 0, false, leaseAttrs{Kind: state.LeaseKindPath, OwnerPID: os.Getpid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(ctx, m, 10*time.Second, lease.SessionID, lease.Token); err != nil {
+		t.Fatal(err)
+	}
+	session, err := store.SessionByID(ctx, lease.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.LeaseOwnerPID != os.Getpid() || session.ClientPID != 0 {
+		t.Fatalf("direct lease session=%+v, want an owner pid without a client pid", session)
+	}
+	// 起動元が生きている間は、期限も来ていないので返却しない。
+	m.reconcileExpiredLeases(ctx)
+	if session, err := store.SessionByID(ctx, lease.SessionID); err != nil || session.State != "ACTIVE" {
+		t.Fatalf("a lease with a live owner was released: session=%+v err=%v", session, err)
+	}
+	// 存在しない PID へ差し替えると、次の一巡で保存してから返す。
+	setLeaseOwnerPID(t, f.DatabasePath, lease.SessionID, 99999999)
+	m.reconcileExpiredLeases(ctx)
+	waitUntil(t, 20*time.Second, func() bool {
+		session, _ := store.SessionByID(ctx, lease.SessionID)
+		return session.State == "ARCHIVED"
+	})
+	slot, err := store.Slot(ctx, lease.SessionID)
+	if err != nil || slot.State != "SNAPSHOTTED" {
+		t.Fatalf("released slot=%+v err=%v", slot, err)
+	}
+	if snapshots, err := store.Snapshots(ctx, lease.SessionID); err != nil || len(snapshots) != 1 {
+		t.Fatalf("direct lease snapshots=%+v err=%v, want the work saved before release", snapshots, err)
+	}
+}
+
+// 所有 PID を持たない素の wx new は、この一巡では回収しない。
+func TestDirectLeaseReconcileIgnoresLeasesWithoutAnOwnerPID(t *testing.T) {
+	t.Parallel()
+	f := manualManagerFixture(t)
+	store, m := f.Store, f.Manager
+	ctx := context.Background()
+	createReleaseLeaseSession(t, f, "detached", state.LeaseKindPath, 0)
+	m.releaseExitedDirectLeases(ctx)
+	if session, err := store.SessionByID(ctx, "detached"); err != nil || session.State != "ACTIVE" {
+		t.Fatalf("a lease without an owner pid was released: session=%+v err=%v", session, err)
 	}
 }
