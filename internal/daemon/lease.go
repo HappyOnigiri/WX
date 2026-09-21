@@ -38,10 +38,14 @@ const (
 )
 
 type Lease struct {
-	SessionID       string `json:"session_id"`
-	Token           string `json:"token"`
-	Path            string `json:"path"`
-	RootIdentity    string `json:"root_identity,omitempty"`
+	SessionID    string `json:"session_id"`
+	Token        string `json:"token"`
+	Path         string `json:"path"`
+	RootIdentity string `json:"root_identity,omitempty"`
+	// RootPath は Path を開ける root 世代の path である。既存 slot は storage.worktree_root を
+	// 変えても登録済みの root 世代で寿命を全うするため、client が現行設定の root を所有 root に
+	// 決め打つと旧 root の貸出を開けない。空のときだけ client は現行設定の root へ落ちる。
+	RootPath        string `json:"root_path,omitempty"`
 	SourceWorkspace string `json:"source_workspace,omitempty"`
 	Ready           bool   `json:"ready"`
 	// RepositoryDirs は Path 直下の repository directory 名で、client が agent の --add-dir へ渡す。
@@ -575,6 +579,13 @@ func (l Lease) withReadiness(cfg config.Config, w discovery.Workspace) Lease {
 func (m *Manager) withReadiness(l Lease, w discovery.Workspace) Lease {
 	cfg := m.Config()
 	l = l.withReadiness(cfg, w)
+	// 貸出に使った root 世代を応答へ載せる。全ての貸出経路がここを通るので、
+	// 経路ごとに root の解決を書き分けず、rootForPath の最長一致だけを唯一の根拠にする。
+	if l.RootPath == "" && l.Path != "" {
+		if root, ok := m.rootForPath(l.Path); ok {
+			l.RootPath = filepath.Clean(root)
+		}
+	}
 	mode := l.ReadinessMode
 	if mode == "" {
 		mode = cfg.RepositoryDefaults.Readiness.Mode

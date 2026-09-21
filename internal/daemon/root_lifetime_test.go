@@ -913,3 +913,43 @@ func TestReleaseRootAndCloseRootLockedGuardClauses(t *testing.T) {
 		t.Fatal("retired list was not removed once empty")
 	}
 }
+
+// 貸出応答は Path を開ける root 世代を載せる。reload で root を変えても既存 slot は
+// 旧世代で寿命を全うするので、現行設定の root しか知らない client はその slot を開けない。
+func TestLeaseResponseCarriesTheRetainedRootGeneration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	oldRoot := filepath.Join(home, "root-old")
+	newRoot := filepath.Join(home, "root-new")
+	leasePath := filepath.Join(oldRoot, "workspaces", "slot", "root")
+	if err := os.MkdirAll(leasePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(newRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = oldRoot
+	manager := rootLifetimeManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	writeRootLifetimeConfig(t, home, newRoot)
+	if err := manager.reloadConfig(false); err != nil {
+		t.Fatal(err)
+	}
+	if configured := manager.Config().WorktreeRoot(); configured != newRoot {
+		t.Fatalf("reload did not switch the configured root: %s", configured)
+	}
+	retained := manager.withReadiness(Lease{SessionID: "session", Path: leasePath}, discovery.Workspace{})
+	if retained.RootPath != oldRoot {
+		t.Fatalf("lease root generation=%q, want the retained %q", retained.RootPath, oldRoot)
+	}
+	fresh := manager.withReadiness(Lease{SessionID: "fresh", Path: filepath.Join(newRoot, "workspaces", "slot", "root")}, discovery.Workspace{})
+	if fresh.RootPath != newRoot {
+		t.Fatalf("lease root generation=%q, want the configured %q", fresh.RootPath, newRoot)
+	}
+}

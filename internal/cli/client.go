@@ -510,6 +510,13 @@ func openLeaseDirectory(cfg config.Config, lease daemon.Lease) (*os.File, error)
 	if err != nil {
 		return nil, err
 	}
+	if lease.RootPath != "" {
+		// daemon は root reload 後も旧 root の slot を寿命まで貸し出す。所有 root を現行設定で
+		// 決め打つと、その貸出は起動前に ownership root 外として拒否される。応答が root 世代を
+		// 示したときはそれを起点にし、実体の正しさは従来どおり RootIdentity の照合で確かめる。
+		// commentlint:allow-long -- 現行設定ではなく貸出応答の root を採る理由を保守時に確認できるようにする
+		root = filepath.Clean(lease.RootPath)
+	}
 	if !domain.IsWithin(root, lease.Path) && lease.RootIdentity == "" {
 		// 旧 test/in-process RPC handler は daemon の durable inode identity を持たない。
 		// この互換経路も symlink 成分を拒否し、Darwin の /tmp alias を canonicalize 後に root descriptor 経由で開く。
