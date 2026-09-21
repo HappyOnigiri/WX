@@ -261,9 +261,13 @@ type Server struct {
 	// MaxHandlerTimeout はクライアント指定の Request.Deadline を延長できる上限。
 	// 0 は既定値を使う。readiness の予算が大きい場合はそれ以上に設定し、server 側で短縮しない。
 	MaxHandlerTimeout time.Duration
-	listener          net.Listener
-	idemMu            sync.Mutex
-	idem              map[string]*idempotentEntry
+	// MaxHandlerTimeoutFunc は上限を要求ごとに解決する。設定の再読込で readiness の予算が
+	// 変わっても、起動時に固めた MaxHandlerTimeout が client の広告値を下回らないようにする。
+	// nil か 0 を返した場合は MaxHandlerTimeout へ落ちる。
+	MaxHandlerTimeoutFunc func() time.Duration
+	listener              net.Listener
+	idemMu                sync.Mutex
+	idem                  map[string]*idempotentEntry
 }
 
 type idempotentEntry struct {
@@ -427,6 +431,11 @@ func (s *Server) handlerTimeout() time.Duration {
 }
 
 func (s *Server) maxHandlerTimeout() time.Duration {
+	if s.MaxHandlerTimeoutFunc != nil {
+		if ceiling := s.MaxHandlerTimeoutFunc(); ceiling > 0 {
+			return ceiling
+		}
+	}
 	if s.MaxHandlerTimeout > 0 {
 		return s.MaxHandlerTimeout
 	}

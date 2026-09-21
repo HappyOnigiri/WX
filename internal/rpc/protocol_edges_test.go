@@ -304,3 +304,29 @@ func TestConnectRetryStopsWhenTheCallerGivesUp(t *testing.T) {
 		t.Fatalf("error=%v, want the caller deadline", err)
 	}
 }
+
+// MaxHandlerTimeoutFunc は要求ごとの上限を返し、起動時に固めた MaxHandlerTimeout より優先する。
+// 設定の再読込で readiness の予算が増えても、古い上限が handler を先に打ち切らないためである。
+func TestRequestDeadlinePrefersLiveMaxHandlerTimeout(t *testing.T) {
+	live := time.Minute
+	server := &Server{HandlerTimeout: time.Hour, MaxHandlerTimeout: time.Minute, MaxHandlerTimeoutFunc: func() time.Duration { return live }}
+	requested := time.Now().Add(72 * time.Hour).UTC().Format(time.RFC3339Nano)
+	live = 2 * time.Hour
+	before := time.Now()
+	deadline, err := server.requestDeadline(context.Background(), requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deadline.Before(before.Add(2*time.Hour - time.Minute)) {
+		t.Fatalf("the startup ceiling clamped the live ceiling: got %v, want at least %v", deadline, before.Add(2*time.Hour))
+	}
+	// 0 を返す関数は上限を持たない指定なので、静的な MaxHandlerTimeout へ落ちる。
+	server.MaxHandlerTimeoutFunc = func() time.Duration { return 0 }
+	deadline, err = server.requestDeadline(context.Background(), requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deadline.After(before.Add(time.Minute + time.Second)) {
+		t.Fatalf("a zero live ceiling did not fall back to MaxHandlerTimeout: got %v", deadline)
+	}
+}
