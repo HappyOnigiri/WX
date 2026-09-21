@@ -29,7 +29,7 @@ func mutationRepositoryDefaults() RepositoryDefaults {
 		COWMinSizeKiB: &zero,
 		Submodules:    &no,
 		Prepare: Prepare{
-			Command: []string{}, Inputs: []string{}, Timeout: tiny, Version: "v1",
+			Command: []string{}, Inputs: []string{}, Timeout: &tiny, Version: "v1",
 		},
 		Includes: RepositoryIncludes{DefaultAgentRules: &no},
 		Readiness: RepositoryReadiness{

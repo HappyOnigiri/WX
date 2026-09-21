@@ -24,7 +24,7 @@ const DYNAMIC_SHARD_COUNTS = Object.freeze({
 // archive の production source は固定の shard 定義で管理し、追加・削除を自動で吸収しない。
 const ARCHIVE_SHARDS = Object.freeze([
   Object.freeze({ id: 'package-internal-archive', files: Object.freeze([
-    'archive.go', 'conflict.go', 'gitstate.go', 'lfs.go', 'orphan_refs.go', 'remove.go',
+    'archive.go', 'conflict.go', 'force_added.go', 'gitstate.go', 'lfs.go', 'orphan_refs.go', 'remove.go',
     'restore.go', 'skip_worktree.go', 'submodule_capsule.go', 'submodules.go', 'workspace.go',
     'workspace_exclusions.go',
   ]) }),
