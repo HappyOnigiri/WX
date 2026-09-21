@@ -150,8 +150,8 @@ func (m *Manager) prepareSlotWithJob(ctx context.Context, id string, w discovery
 }
 
 // leaseAfterPrepareFailure は early ready の後に準備が失敗した slot を LEASED まで進める。
-// PREPARING のまま session を終えると返却が何もせずに返り、エージェントの作業が snapshot へ届かない。
-// 準備の失敗そのものは slot の failure_code / failure_detail_path に残っている。
+// PREPARING のまま終えると返却が何もせず返り、作業が snapshot へ届かない。失敗自体は failure_code に残る。
+// 返却が先着して owner session が RELEASING の場合は、同じ遷移が DRAINING と SNAPSHOT を選ぶ。
 func (m *Manager) leaseAfterPrepareFailure(ctx context.Context, id string) error {
 	repositories, err := m.store.SlotRepositories(ctx, id)
 	if err != nil {

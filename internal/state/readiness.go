@@ -56,12 +56,16 @@ type PrepareFailureNotice struct {
 // RecordEarlyReadyPrepareFailure は early ready 済みで owner session が生きている slot に、隔離せず失敗だけを記録する。
 // エージェントは既にこの worktree で作業しており、隔離すると返却が snapshot へ届かず作業が失われるためである。
 // slot は PREPARING のまま残し、呼び出し元が通常の完了遷移で LEASED まで進める。
+// RELEASING を受けるのは、early ready 後に返却が先着すると slot が PREPARING のまま session だけ
+// RELEASING になるためである。ここで弾くと隔離へ倒れ、返却済みの作業が snapshot へ届かない。
+// 完了遷移はこの session 状態を見て LEASED ではなく DRAINING を選び、SNAPSHOT ジョブへ繋ぐ。
+// commentlint:allow-long -- 受理する owner session 状態を広げた根拠を不変条件ごと保守時に確認できるようにする
 func (s *Store) RecordEarlyReadyPrepareFailure(ctx context.Context, id, code, detailPath, phase string) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
 	result, err := s.db.ExecContext(ctx, `UPDATE slots SET failure_code=?,failure_detail_path=?,failure_phase=?,updated_at=?
 		WHERE id=? AND state='PREPARING' AND early_ready_at IS NOT NULL
-		  AND EXISTS (SELECT 1 FROM sessions se WHERE se.id=slots.owner_session_id AND se.state IN ('STARTING','ACTIVE'))`,
+		  AND EXISTS (SELECT 1 FROM sessions se WHERE se.id=slots.owner_session_id AND se.state IN ('STARTING','ACTIVE','RELEASING'))`,
 		nullString(code), nullString(detailPath), nullString(phase), now(), id)
 	if err != nil {
 		return err
