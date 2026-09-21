@@ -29,12 +29,35 @@ func (m *Manager) Release(ctx context.Context, id, token, reason string) error {
 	if err != nil {
 		return err
 	}
+	return m.finishRelease(ctx, session, reason, job, changed, quarantineExpired)
+}
+
+// ReleaseAgentSession は SessionEnd を発行した native session が現在の主 thread のときだけ返却する。
+func (m *Manager) ReleaseAgentSession(ctx context.Context, id, token, reason, agentSessionID string) (bool, error) {
+	session, err := m.store.Session(ctx, id, token)
+	if err != nil {
+		return false, err
+	}
+	if session.AgentSessionID != agentSessionID {
+		return false, nil
+	}
+	if reason == "session-end-hook" && (processAlive(session.ClientPID) || processAlive(session.AgentPID)) {
+		return true, nil
+	}
+	job, changed, quarantineExpired, matched, err := m.store.ReleaseWithAgentSessionOutcome(ctx, id, session.WorkspaceID, session.SlotID, agentSessionID)
+	if err != nil || !matched {
+		return matched, err
+	}
+	return true, m.finishRelease(ctx, session, reason, job, changed, quarantineExpired)
+}
+
+func (m *Manager) finishRelease(ctx context.Context, session state.Session, reason string, job state.Job, changed, quarantineExpired bool) error {
 	if quarantineExpired {
 		// clientはReleaseの応答を読まないため、snapshotを作らずに終端したことはログだけが残す。
-		m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", id, "slot_id", session.SlotID, "reason", reason)
+		m.log.Warn("session expired without a recovery snapshot: slot is quarantined", "session_id", session.ID, "slot_id", session.SlotID, "reason", reason)
 	}
 	if !changed {
-		m.releaseLease(id)
+		m.releaseLease(session.ID)
 	} else {
 		m.schedule(job)
 	}

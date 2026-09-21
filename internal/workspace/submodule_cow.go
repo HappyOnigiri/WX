@@ -26,26 +26,39 @@ type submoduleCOWChild struct {
 func (p *Preparer) compactSubmoduleWorktree(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase, identity string, known *submodulePhaseResult, checkLeftovers bool) error {
 	workspaceRoot := p.workspaceRootForRepository(repo)
 	mode := p.Config.CopyModeForWorkspaceRepository(workspaceRoot, repo.RelativePath, string(repo.MainPath))
-	if !submoduleCOWModeEnabled(mode) {
-		return nil
+	ready, err := submoduleCOWPreparationReady(mode, known, func() (bool, error) {
+		return p.submodulesEnabled(repo)
+	})
+	if err != nil {
+		return err
 	}
-	if known != nil && (!known.enabled || len(known.declared) == 0) {
+	if !ready {
 		return nil
-	}
-	if known == nil {
-		enabled, err := p.submodulesEnabled(repo)
-		if err != nil {
-			return err
-		}
-		if !enabled {
-			return nil
-		}
 	}
 	if !submoduleCOWEnabled(mode, cowAvailable()) {
 		return p.cowFallback(ctx, mode, target, errors.New("CoW is unavailable on this platform"))
 	}
-	err := p.compactOwnedSubmoduleWorktree(ctx, repo, target, oid, slotID, phase, identity, checkLeftovers)
+	err = p.compactOwnedSubmoduleWorktree(ctx, repo, target, oid, slotID, phase, identity, checkLeftovers)
 	return p.cowFallback(ctx, mode, target, err)
+}
+
+func submoduleCOWPreparationReady(mode string, known *submodulePhaseResult, resolve func() (bool, error)) (bool, error) {
+	if !submoduleCOWModeEnabled(mode) {
+		return false, nil
+	}
+	if known != nil && (!known.enabled || len(known.declared) == 0) {
+		return false, nil
+	}
+	if known == nil {
+		enabled, err := resolve()
+		if err != nil {
+			return false, err
+		}
+		if !enabled {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func submoduleCOWEnabled(mode string, available bool) bool {
