@@ -66,7 +66,9 @@ type submodule struct {
 }
 
 // materializedSubmodule は実体化と origin 復元に必要な値を適格判定後に固定した1件である。
+// index は declared での宣言順の位置で、実体化後に適格判定を取り下げるとき decisions を指すために保つ。
 type materializedSubmodule struct {
+	index    int
 	module   submodule
 	source   string
 	upstream string
@@ -160,11 +162,11 @@ func (p *Preparer) materializeSubmodulesWithResult(ctx context.Context, repo dis
 			continue
 		}
 		decision.log(p, module)
-		eligible = append(eligible, materializedSubmodule{module: module, source: filepath.Join(commonModules, module.name), upstream: decision.upstream})
+		eligible = append(eligible, materializedSubmodule{index: index, module: module, source: filepath.Join(commonModules, module.name), upstream: decision.upstream})
 	}
-	stats.eligible.Store(int64(len(eligible)))
 	phaseResult.decisions = decisions
 	if len(eligible) == 0 {
+		stats.eligible.Store(0)
 		return phaseResult, nil
 	}
 
@@ -176,6 +178,11 @@ func (p *Preparer) materializeSubmodulesWithResult(ctx context.Context, repo dis
 		if updateErr != nil {
 			return submodulePhaseResult{}, fmt.Errorf("materialize submodules: %w", updateErr)
 		}
+	}
+	eligible = p.dropUnmaterializedSubmodules(repo, target, eligible, decisions, stats)
+	stats.eligible.Store(int64(len(eligible)))
+	if len(eligible) == 0 {
+		return phaseResult, nil
 	}
 
 	// 各子の config は独立しているので、clone 後の origin 復元だけを worker pool へ渡す。
