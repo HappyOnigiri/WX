@@ -181,9 +181,9 @@ func captureSubmodule(parentValue gitValueFunc, parentRun gitRunFunc, sessionID,
 	return capsule, nested, nil
 }
 
-// submoduleWorktreeTree は子の worktree の現状を tree にする。手順は親と同じで、
+// submoduleWorktreeTree は子の worktree の現状を tree にする。
 // 一時 index へ HEAD を読み、元 index の flag を引き写してから add する。
-// flag 付き path を HEAD の内容のまま記録する点も親と揃える。
+// flag 付き path を HEAD の内容のまま記録する点は親と揃える。取り込む範囲は addWorktreeContents を参照。
 func submoduleWorktreeTree(value gitValueFunc, run gitRunFunc, head string) (string, error) {
 	flags, err := readIndexFlags(value, nil)
 	if err != nil {
@@ -201,7 +201,7 @@ func submoduleWorktreeTree(value gitValueFunc, run gitRunFunc, head string) (str
 	if err := applyIndexFlags(run, value, env, flags); err != nil {
 		return "", err
 	}
-	if _, err := run(env, nil, addWorktreeArgs()...); err != nil {
+	if err := addWorktreeContents(value, run, env); err != nil {
 		return "", fmt.Errorf("add submodule worktree contents: %w", err)
 	}
 	tree, err := value(env, "write-tree")
@@ -366,6 +366,8 @@ func restoreSubmodule(parentValue gitValueFunc, parentRun gitRunFunc, sub state.
 }
 
 // verifyRestoredSubmodule は戻した子が保存時と同じ HEAD・index・worktree であることを確かめる。
+// 照合用の tree は保存時と同じ addWorktreeContents で作る。手順がずれると、
+// 取りこぼした内容どうしが一致して復元の欠落を見逃す。
 func verifyRestoredSubmodule(value gitValueFunc, run gitRunFunc, sub state.SubmoduleSnapshot) error {
 	head, err := value(nil, "rev-parse", "HEAD")
 	if err != nil || head != sub.HeadOID {
@@ -384,7 +386,7 @@ func verifyRestoredSubmodule(value gitValueFunc, run gitRunFunc, sub state.Submo
 	if _, err := run(env, nil, "read-tree", sub.HeadOID); err != nil {
 		return err
 	}
-	if _, err := run(env, nil, addWorktreeArgs()...); err != nil {
+	if err := addWorktreeContents(value, run, env); err != nil {
 		return err
 	}
 	worktreeTree, err := value(env, "write-tree")

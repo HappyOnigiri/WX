@@ -126,6 +126,19 @@ func TestSnapshotAndRestorePreservesSubmoduleWork(t *testing.T) {
 			},
 		},
 		{
+			// `git add -f` で index へ入れた ignored file は `add -A` が飛ばすため、
+			// 最後の未 stage 内容が worktree tree から落ちて復元で消えていた。
+			name: "force-added ignored file edited after staging",
+			arrange: func(t *testing.T, worktree string) {
+				submodule := filepath.Join(worktree, submodulePath)
+				writeFile(t, filepath.Join(submodule, ".gitignore"), "generated/\n")
+				mustMkdir(t, filepath.Join(submodule, "generated"))
+				writeFile(t, filepath.Join(submodule, "generated", "keep.txt"), "staged\n")
+				gitCommand(t, submodule, "add", "-f", "generated/keep.txt")
+				writeFile(t, filepath.Join(submodule, "generated", "keep.txt"), "working\n")
+			},
+		},
+		{
 			name: "commit that was never pushed",
 			arrange: func(t *testing.T, worktree string) {
 				commitInSubmodule(t, worktree)
@@ -162,6 +175,28 @@ func TestSnapshotAndRestorePreservesSubmoduleWork(t *testing.T) {
 				t.Fatalf("restored submodule state=%+v, want %+v", got, want)
 			}
 		})
+	}
+}
+
+// 無視されたままの未追跡 file は子の index に無いため、capsule の保存対象にしない。
+// force-added な ignored file の救済が、単に無視された生成物まで巻き込まないことを固定する。
+func TestSnapshotSkipsIgnoredFilesTheSubmoduleIndexDoesNotHold(t *testing.T) {
+	worktree, repo, manager, worktreeRoot := submoduleFixture(t)
+	submodule := filepath.Join(worktree, submodulePath)
+	writeFile(t, filepath.Join(submodule, ".gitignore"), "generated/\n")
+	mustMkdir(t, filepath.Join(submodule, "generated"))
+	writeFile(t, filepath.Join(submodule, "generated", "scratch.txt"), "throwaway\n")
+	snapshot, submodules, unsaved := snapshotWithSubmodules(t, manager, repo, worktree, "ignored-only")
+	if len(unsaved) != 0 {
+		t.Fatalf("unsaved submodules=%+v, want none", unsaved)
+	}
+	target := restoreIntoNewSlot(t, manager, repo, worktreeRoot, "restored", snapshot, submodules)
+	restored := readSubmoduleState(t, target)
+	if _, ok := restored.files["generated/scratch.txt"]; ok {
+		t.Fatalf("restored an ignored file the submodule index never held: %+v", restored.files)
+	}
+	if restored.files[".gitignore"] != "generated/\n" {
+		t.Fatalf("restored .gitignore=%q, want the saved content", restored.files[".gitignore"])
 	}
 }
 
