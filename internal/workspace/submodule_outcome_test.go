@@ -36,8 +36,8 @@ func TestSubmoduleOutcomesSnapshotUsesStrictTieBreakers(t *testing.T) {
 	results := &SubmoduleOutcomes{}
 	results.Add(SubmoduleOutcome{Repository: "repo-depth", Path: "shallow", Depth: 1, Action: SubmoduleActionSkipped})
 	results.Add(SubmoduleOutcome{Repository: "repo-depth", Path: "deep", Depth: 2, Action: SubmoduleActionSkipped})
-	results.Add(SubmoduleOutcome{Repository: "repo-path", Path: "alpha", Depth: 1, Action: SubmoduleActionSkipped})
 	results.Add(SubmoduleOutcome{Repository: "repo-path", Path: "beta", Depth: 1, Action: SubmoduleActionSkipped})
+	results.Add(SubmoduleOutcome{Repository: "repo-path", Path: "alpha", Depth: 1, Action: SubmoduleActionSkipped})
 	_, items := results.Snapshot()
 	want := []struct {
 		repository string

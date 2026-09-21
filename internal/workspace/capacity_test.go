@@ -114,6 +114,17 @@ func TestParseLFSPointerBatchAcceptsZeroAndMaximumBlobSizes(t *testing.T) {
 	}
 }
 
+func TestParseLFSPointerBatchAllowsMissingObjectsWhenRequested(t *testing.T) {
+	t.Parallel()
+	pointers, err := parseLFSPointerBatch("missing-id missing\n", []string{"missing-id"}, true)
+	if err != nil {
+		t.Fatalf("missing object failed: %v", err)
+	}
+	if len(pointers) != 0 {
+		t.Fatalf("missing object produced pointers=%v", pointers)
+	}
+}
+
 func TestEstimateCapacityUsesLFSPointerSizeAndMissingCache(t *testing.T) {
 	t.Parallel()
 	repository := t.TempDir()
