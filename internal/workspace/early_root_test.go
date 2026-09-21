@@ -1,11 +1,13 @@
 package workspace
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 func TestRootStagesSelectWithinCopyAndLinkPlan(t *testing.T) {
@@ -63,18 +65,62 @@ func TestRootStagesSelectWithinCopyAndLinkPlan(t *testing.T) {
 	}
 }
 
-func TestRootStagesRejectNestedSymlinksAndChangedCopyTypes(t *testing.T) {
+// TestRootStagesSkipNestedSymlinksLikeStandbyPlacementsは、copy配下のnested symlinkを
+// 段階準備とstandbyの配置計画が同じに扱うことを確認する。
+// 片方だけが失敗すると、同じsourceでも貸出経路で成否が分かれる。
+func TestRootStagesSkipNestedSymlinksLikeStandbyPlacements(t *testing.T) {
 	t.Parallel()
 	source, target := t.TempDir(), t.TempDir()
 	if err := os.Mkdir(filepath.Join(source, "configs"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(source, "configs", "value.txt"), []byte("value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink("/outside", filepath.Join(source, "configs", "link")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PlanRootStages(nil, source, RootRulesFromConfig(config.Workspace{Copy: []string{"configs"}}), nil); err == nil {
-		t.Fatal("nested copy symlink was accepted")
+	rules := RootRulesFromConfig(config.Workspace{Copy: []string{"configs"}})
+	stage, err := PlanRootStages(nil, source, rules, nil)
+	if err != nil {
+		t.Fatalf("nested copy symlink was rejected: %v", err)
 	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	for _, early := range []bool{true, false} {
+		if err := stage.Materialize(root, early); err != nil {
+			t.Fatalf("materialize early=%t: %v", early, err)
+		}
+	}
+	if _, err := root.Stat(filepath.Join("configs", "value.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := root.Lstat(filepath.Join("configs", "link")); !os.IsNotExist(err) {
+		t.Fatalf("nested symlink was materialized: %v", err)
+	}
+	standby, err := RootPlacements(source, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged, want := placementKinds(stage.Placements()), placementKinds(standby); !maps.Equal(staged, want) {
+		t.Fatalf("staged placements %v differ from standby placements %v", staged, want)
+	}
+}
+
+func placementKinds(placements []state.Placement) map[string]string {
+	kinds := map[string]string{}
+	for _, placement := range placements {
+		kinds[placement.RelativePath] = placement.Kind
+	}
+	return kinds
+}
+
+func TestRootStagesRejectChangedCopyTypes(t *testing.T) {
+	t.Parallel()
+	source, target := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(source, "leaf"), []byte("planned file"), 0o600); err != nil {
 		t.Fatal(err)
 	}

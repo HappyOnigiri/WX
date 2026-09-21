@@ -966,10 +966,10 @@ func TestFilesystemAndMarkerHelpersPropagateClosedDescriptorErrors(t *testing.T)
 	if err := destination.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyRootEntry(owner, "file", destination, "copy"); err == nil {
+	if err := copyRootEntry(owner, "file", destination, "copy", nil); err == nil {
 		t.Fatal("copy into a closed destination root succeeded")
 	}
-	if err := copyRootEntry(closedOwner, "file", owner, "copy"); err == nil {
+	if err := copyRootEntry(closedOwner, "file", owner, "copy", nil); err == nil {
 		t.Fatal("copy from a closed source root succeeded")
 	}
 	freshDestination, err := os.OpenRoot(destinationPath)

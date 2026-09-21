@@ -14,6 +14,10 @@ import (
 // tracked AGENTS.md は意図的に CLAUDE.md への symlink になり得る。Git が repository とともに checkout するため、workspace-root materializer は追従してはならない。
 var defaultWorkspaceRootCopyNames = []string{"AGENTS.md", "AGENTS.local.md", "CLAUDE.md", "CLAUDE.local.md"}
 
+// workspaceRootCopySymlinkSkip は workspace root の copy source を symlink のため使わなかった理由である。
+// 直下も配下も同じ理由で skip するため、計画・配置・fingerprint の全経路で共有する。
+const workspaceRootCopySymlinkSkip = "workspace copy source is a symlink"
+
 func workspaceRootCopyPlan(rules RootRules) ([]string, map[string]bool, error) {
 	copyNames := append([]string{}, rules.OptionalCopy...)
 	copyNames = append(copyNames, rules.Copy...)
@@ -58,7 +62,7 @@ func validateWorkspaceRootCopySources(log *slog.Logger, sourceRoot *os.Root, wor
 			return nil, fmt.Errorf("inspect workspace copy source %s in workspace root %s: %w", clean, workspaceRoot, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			logSkip(log, "workspace copy source is a symlink", "workspace_root", workspaceRoot, "path", clean)
+			logSkip(log, workspaceRootCopySymlinkSkip, "workspace_root", workspaceRoot, "path", clean)
 			continue
 		}
 		if _, err := domain.PhysicalPathInfo(sourceRoot, clean); err != nil {
@@ -131,7 +135,10 @@ func MaterializeRootAt(log *slog.Logger, source string, destinationRoot *os.Root
 		if !presentCopies[clean] {
 			continue
 		}
-		if err := copyPathFromOwnedRoot(sourceRoot, clean, destinationRoot, clean); err != nil {
+		skip := func(relative string) {
+			logSkip(log, workspaceRootCopySymlinkSkip, "workspace_root", source, "path", relative)
+		}
+		if err := copyPathFromOwnedRootSkippingSymlinks(sourceRoot, clean, destinationRoot, clean, skip); err != nil {
 			return fmt.Errorf("copy workspace root path %s: %w", clean, err)
 		}
 	}

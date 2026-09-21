@@ -108,6 +108,7 @@ sourceが存在しない項目は、ファイル・ディレクトリを問わ�
 sourceがsymlinkの項目と、ソースリポジトリのignore対象でない項目も同じく省略し、省略した対象と理由をdaemon logにwarnで残す。
 path逸脱・権限エラーや宛先衝突は省略せず、準備を失敗させる。
 同じ扱いはworkspace rootのcopy/link sourceと`.worktreeinclude`の一致にも適用し、既定名と明示名で挙動を分けない。
+copy対象のディレクトリ配下にあるsymlinkも同じく省略する。ここで失敗させると、省略して成功するstandbyの更新と、新規準備・復元とで同じsourceの成否が分かれる。
 `.worktreeinclude`と`.worktreelink`が同じpathを指す設定も利用者が明示した矛盾なので、配置を始める前に、原因のrepositoryと両manifestを名指しして準備を失敗させる。
 新規準備・復元・standbyの更新と貸出の照合は同じrule解決を共有するので、判定は経路によらず一致する。
 
