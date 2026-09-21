@@ -154,3 +154,34 @@ func TestMaterializeRootAtRejectsSymlinkAncestorInCopyRule(t *testing.T) {
 		t.Fatal("workspace copy rule through a symlink ancestor was accepted")
 	}
 }
+
+// TestMaterializeRootAtSkipsNestedCopySymlinkは、copy配下のnested symlinkでmaterialize全体を止めないことを確認する。
+// 直下のsymlinkと同じ扱いにして、1件のsymlink運用でslot準備を失敗させない。
+func TestMaterializeRootAtSkipsNestedCopySymlink(t *testing.T) {
+	t.Parallel()
+	source, target := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(source, "configs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "configs", "value.txt"), []byte("value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/outside", filepath.Join(source, "configs", "link")); err != nil {
+		t.Fatal(err)
+	}
+	destinationRoot, err := OpenPhysicalRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = destinationRoot.Close() }()
+	rules := RootRulesFromConfig(config.Workspace{Copy: []string{"configs"}})
+	if err := MaterializeRootAt(nil, source, destinationRoot, rules); err != nil {
+		t.Fatalf("nested copy symlink stopped materialization: %v", err)
+	}
+	if data, err := destinationRoot.ReadFile(filepath.Join("configs", "value.txt")); err != nil || string(data) != "value" {
+		t.Fatalf("nested copy=%q err=%v", data, err)
+	}
+	if _, err := destinationRoot.Lstat(filepath.Join("configs", "link")); !os.IsNotExist(err) {
+		t.Fatalf("nested symlink was materialized: %v", err)
+	}
+}

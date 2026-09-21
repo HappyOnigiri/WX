@@ -245,11 +245,34 @@ func copyPathFromOwnedRoot(sourceRoot *os.Root, sourceRelative string, destinati
 	if err != nil {
 		return err
 	}
-	return copyRootEntry(sourceRoot, source, destinationRoot, destination)
+	return copyRootEntry(sourceRoot, source, destinationRoot, destination, nil)
 }
 
-func copyRootEntry(sourceRoot *os.Root, source string, destinationRoot *os.Root, destination string) error {
+// copyPathFromOwnedRootSkippingSymlinks は copyPathFromOwnedRoot と同じ copy を行い、
+// source 配下で出会った symlink は onSymlink へ渡して配置せずに進む。
+// symlink を配置しない経路が、配下の 1 件で copy 全体を失敗させないために使う。
+func copyPathFromOwnedRootSkippingSymlinks(sourceRoot *os.Root, sourceRelative string, destinationRoot *os.Root, destinationRelative string, onSymlink func(relative string)) error {
+	if sourceRoot == nil || destinationRoot == nil {
+		return errors.New("copy roots must not be nil")
+	}
+	source, err := safeRelative(sourceRelative)
+	if err != nil {
+		return err
+	}
+	destination, err := safeRelative(destinationRelative)
+	if err != nil {
+		return err
+	}
+	return copyRootEntry(sourceRoot, source, destinationRoot, destination, onSymlink)
+}
+
+// copyRootEntry は onSymlink が nil の場合、symlink の source を domain.ErrSymlinkPath として拒否する。
+func copyRootEntry(sourceRoot *os.Root, source string, destinationRoot *os.Root, destination string, onSymlink func(relative string)) error {
 	sourceInfo, err := domain.PhysicalPathInfo(sourceRoot, source)
+	if errors.Is(err, domain.ErrSymlinkPath) && onSymlink != nil {
+		onSymlink(source)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -273,7 +296,7 @@ func copyRootEntry(sourceRoot *os.Root, source string, destinationRoot *os.Root,
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			if err := copyRootEntry(sourceRoot, filepath.Join(source, name), destinationRoot, filepath.Join(destination, name)); err != nil {
+			if err := copyRootEntry(sourceRoot, filepath.Join(source, name), destinationRoot, filepath.Join(destination, name), onSymlink); err != nil {
 				return err
 			}
 		}

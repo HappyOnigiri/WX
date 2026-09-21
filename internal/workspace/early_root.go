@@ -35,7 +35,7 @@ func PlanRootStages(log *slog.Logger, source string, rules RootRules, extra []st
 	if err != nil {
 		return nil, err
 	}
-	staged := &RootStagePlan{log: log, source: source, plan: earlyPlan{sourcePath: source}}
+	staged := &RootStagePlan{log: log, source: source, plan: earlyPlan{log: log, sourcePath: source}}
 	seen := map[string]bool{}
 	for _, name := range names {
 		clean := filepath.Clean(name)
@@ -43,7 +43,7 @@ func PlanRootStages(log *slog.Logger, source string, rules RootRules, extra []st
 			continue
 		}
 		seen[clean] = true
-		if err := staged.plan.collectCopies(sourceRoot, clean, nil); err != nil {
+		if err := staged.plan.collectCopies(sourceRoot, clean, nil, workspaceRootCopySymlinkSkip); err != nil {
 			return nil, err
 		}
 	}

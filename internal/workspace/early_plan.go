@@ -159,12 +159,13 @@ func (plan *earlyPlan) earlyAttributes() bool {
 	return false
 }
 
-// collectCopies は物理ディレクトリだけを辿り、配置予定を leaf 単位に固定する。
-// keep は repository の tracked 除外用で、workspace root では nil を渡す。
-func (plan *earlyPlan) collectCopies(source *os.Root, path string, keep func(string) (bool, error)) error {
+// collectCopies は物理ディレクトリだけを辿り、配置予定を leaf 単位に固定する。keep は repository の tracked 除外用で、workspace root では nil を渡す。
+// symlink の source は経路に依らず skip し、skipMessage を理由として残す。
+// workspace root で拒否すると、同じ source を省略して成功させる standby 側の計画と成否が分かれるためである。
+func (plan *earlyPlan) collectCopies(source *os.Root, path string, keep func(string) (bool, error), skipMessage string) error {
 	info, err := domain.PhysicalPathInfo(source, path)
-	if errors.Is(err, domain.ErrSymlinkPath) && keep != nil {
-		logSkip(plan.log, "include source is a symlink", "path", path)
+	if errors.Is(err, domain.ErrSymlinkPath) {
+		logSkip(plan.log, skipMessage, "path", path)
 		return nil
 	}
 	if err != nil {
@@ -186,7 +187,7 @@ func (plan *earlyPlan) collectCopies(source *os.Root, path string, keep func(str
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			if err := plan.collectCopies(source, filepath.Join(path, name), keep); err != nil {
+			if err := plan.collectCopies(source, filepath.Join(path, name), keep, skipMessage); err != nil {
 				return err
 			}
 		}
@@ -234,7 +235,7 @@ func (p *Preparer) planIncludesAt(repo discovery.Repository, plan *earlyPlan, so
 		return !tracked[filepath.Clean(path)], nil
 	}
 	for _, rel := range rules.includes {
-		if err := plan.collectCopies(source, rel, keep); err != nil {
+		if err := plan.collectCopies(source, rel, keep, "include source is a symlink"); err != nil {
 			return err
 		}
 	}
