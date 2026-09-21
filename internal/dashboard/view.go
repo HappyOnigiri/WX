@@ -298,6 +298,9 @@ func (m model) descriptionLines(width int) []string {
 	if m.tab == 2 {
 		if !m.settingsOpen {
 			environments := m.configEnvironments()
+			if m.selected >= len(environments) {
+				return nil
+			}
 			environment := environments[m.selected]
 			scope := m.tf("dashboard.scope", map[string]any{"Scope": m.environmentTitle(environment)})
 			lines := []string{soft + m.environmentMenuLabel(environment) + reset, dim + scope + reset}
@@ -310,7 +313,13 @@ func (m model) descriptionLines(width int) []string {
 			}
 			return lines
 		}
-		meta := m.configItems()[m.selected]
+		// 選択位置の範囲検査は environmentFields と同じく、説明欄を空にして描画を続ける。
+		// TUI の panic は端末ごと落とすため、状態の不整合を画面の空白へ縮める。
+		items := m.configItems()
+		if m.selected >= len(items) {
+			return nil
+		}
+		meta := items[m.selected]
 		lines := []string{soft + m.settingDisplayName(meta) + reset, dim + meta.Key + " · " + string(meta.Kind) + reset, ""}
 		lines = append(lines, wrap(m.settingDescription(meta), width)...)
 		lines = append(lines, "", warn+m.t("dashboard.impact")+reset)
