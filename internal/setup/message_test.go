@@ -29,6 +29,10 @@ func TestMessageKeepsOneCompletePair(t *testing.T) {
 	if len(value.Data) != 1 || value.Data["Directory"] != "/home/user/.local/bin" {
 		t.Fatalf("one pair was not retained: %+v", value.Data)
 	}
+	empty := message("setup.summary.shell_path_block", "Directory", "")
+	if len(empty.Data) != 1 || empty.Data["Directory"] != "" {
+		t.Fatalf("an empty value was not retained as a complete pair: %+v", empty.Data)
+	}
 	if got := englishText(value); got != "adds /home/user/.local/bin to PATH for new terminals" {
 		t.Fatalf("resolved=%q", got)
 	}

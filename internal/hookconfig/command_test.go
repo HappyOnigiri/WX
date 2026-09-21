@@ -62,10 +62,34 @@ func TestHookConfigCommandParsingAndExecutableIdentity(t *testing.T) {
 	}
 }
 
+// TestSplitHookCommandRejectsDanglingDoubleQuotedEscape は二重引用符内の末尾 escape を
+// command として受理しない。長さ境界を反転すると、終端の次の byte を読もうとして失敗する。
+func TestSplitHookCommandRejectsDanglingDoubleQuotedEscape(t *testing.T) {
+	fields, ok := splitHookCommand(`"/bin/wx\`)
+	if ok || fields != nil {
+		t.Fatalf("splitHookCommand returned fields=%v, ok=%v for a dangling escape", fields, ok)
+	}
+}
+
 func TestResolveHookExecutableRejectsBareWXWhenUnavailable(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if resolved, ok := resolveHookExecutable("wx"); ok || resolved != "" {
 		t.Fatalf("unavailable bare wx executable resolved to %q, ok=%v", resolved, ok)
+	}
+}
+
+// TestResolveHookExecutableAcceptsBareWXFromPath は PATH 上の wx を実体へ解決する。
+// LookPath 成功時の分岐を反転すると、正しい hook executable まで拒否される。
+func TestResolveHookExecutableAcceptsBareWXFromPath(t *testing.T) {
+	directory := t.TempDir()
+	binary := filepath.Join(directory, "wx")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+	resolved, ok := resolveHookExecutable("wx")
+	if !ok || resolved != binary {
+		t.Fatalf("resolveHookExecutable(%q)=%q,%v, want %q,true", "wx", resolved, ok, binary)
 	}
 }
 
