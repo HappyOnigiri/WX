@@ -36,3 +36,14 @@ func TestChildExitCodePreservesExitStatusAndNormalizesSignal(t *testing.T) {
 		t.Fatalf("childExitCode(non-exit)=(%d, %t), want (1, false)", got, ok)
 	}
 }
+
+func TestChildExitCodePreservesAZeroExitStatusWrappedAsAnError(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("zero command failed: %v", err)
+	}
+	wrapped := &exec.ExitError{ProcessState: cmd.ProcessState}
+	if got, ok := childExitCode(wrapped); !ok || got != 0 {
+		t.Fatalf("childExitCode(zero ExitError)=(%d, %t), want (0, true)", got, ok)
+	}
+}

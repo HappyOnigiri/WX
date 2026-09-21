@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/daemon"
 	"github.com/HappyOnigiri/WX/internal/diag"
@@ -19,6 +20,9 @@ func TestProbeSubmoduleMutationBoundariesKeepAnOKFindingForAnEmptyIndex(t *testi
 	}
 	if !strings.Contains(strings.Join(findings[0].Details, "\n"), "0 submodule(s) checked") {
 		t.Fatalf("details=%v, want the zero-count check", findings[0].Details)
+	}
+	if strings.Contains(strings.Join(findings[0].Details, "\n"), "outside the preparation range") {
+		t.Fatalf("details=%v, zero submodules must not be reported out of scope", findings[0].Details)
 	}
 }
 
@@ -57,5 +61,23 @@ func TestProbeSlotViewMutationBoundariesReturnMeasuredSlot(t *testing.T) {
 	got := client.probeSlotView(context.Background(), "session")
 	if got.Measurement != measured.Measurement || got.SessionID != measured.SessionID {
 		t.Fatalf("slot=%+v, want measured slot %+v", got, measured)
+	}
+}
+
+// Slots の応答が短時間で返る場合、probeUsageTimeout の単位を壊す変異は
+// context deadline を先に発生させ、測定済み slot を返せなくする。
+func TestProbeSlotViewMutationBoundariesKeepTheRPCTimeoutInSeconds(t *testing.T) {
+	measured := daemon.SlotView{SlotSummary: state.SlotSummary{SlotID: "slot", SessionID: "session"}, Measurement: "log2phys"}
+	client, _ := newBenchMutationClient(t, func(method string) (any, error) {
+		if method != "Slots" {
+			return nil, errors.New("unexpected method " + method)
+		}
+		time.Sleep(5 * time.Millisecond)
+		return []daemon.SlotView{measured}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if got := client.probeSlotView(ctx, "session"); got.Measurement != measured.Measurement {
+		t.Fatalf("slot=%+v, want the delayed measured slot %+v", got, measured)
 	}
 }
