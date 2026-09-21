@@ -10,6 +10,30 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestUsageFileCanCompareRequiresNonEmptyRegularRepositoryFile(t *testing.T) {
+	t.Parallel()
+	task := usageDirectory{repo: true}
+	if !usageFileCanCompare(task, true, 1, true) {
+		t.Fatal("non-empty regular repository file was not comparable")
+	}
+	for _, test := range []struct {
+		name      string
+		task      usageDirectory
+		regular   bool
+		size      int64
+		available bool
+	}{
+		{name: "empty", task: task, regular: true, size: 0, available: true},
+		{name: "not regular", task: task, regular: false, size: 1, available: true},
+		{name: "not repository", task: usageDirectory{}, regular: true, size: 1, available: true},
+		{name: "unsupported", task: task, regular: true, size: 1, available: false},
+	} {
+		if usageFileCanCompare(test.task, test.regular, test.size, test.available) {
+			t.Errorf("%s file was unexpectedly comparable", test.name)
+		}
+	}
+}
+
 func TestUsageJoinKeepsRootRelativePaths(t *testing.T) {
 	t.Parallel()
 	if got := usageJoin(".", "leaf"); got != "leaf" {

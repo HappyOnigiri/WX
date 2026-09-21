@@ -133,7 +133,7 @@ func (c *cowPlacer) placeChunk(ctx context.Context, chunk []cowRun, gate func() 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if since >= cowBatchSize {
+		if cowBatchBoundaryReached(since) {
 			if err := gate(); err != nil {
 				return err
 			}
@@ -173,6 +173,10 @@ func (c *cowPlacer) placeChunk(ctx context.Context, chunk []cowRun, gate func() 
 		}
 	}
 	return gate()
+}
+
+func cowBatchBoundaryReached(since int) bool {
+	return since >= cowBatchSize
 }
 
 // shareableLeaves は donor 側の fstatat だけで、下限を超える通常ファイルの leaf を選ぶ。
@@ -350,10 +354,8 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 	placeErr := runCOWBatches(ctx, workers, chunks, func(ctx context.Context, chunk []cowRun) error {
 		return placer.placeChunk(ctx, chunk, gate(ctx))
 	})
-	if placeErr != nil {
-		// 途中で止めた回は着手していない候補が残るため、置換方式へ回す件数を候補の残りで数える。
-		stats.pending.Store(int64(pendingCOWCandidates(excluded, len(candidates), len(placer.placed))))
-	}
+	// 途中で止めた回は着手していない候補が残るため、置換方式へ回す件数を候補の残りで数える。
+	stats.pending.Store(int64(cowPlacementPendingAfterBatch(excluded, len(candidates), len(placer.placed), placeErr)))
 	p.logCOWStats(item.Target, stats)
 	stats.recordCOWPhases(p.Phases, "cow-place")
 	placement := cowPlacement{placed: placer.placed, pending: int(stats.pending.Load())}
@@ -365,6 +367,13 @@ func (p *Preparer) placeOwnedSharedFiles(ctx context.Context, repo discovery.Rep
 
 func pendingCOWCandidates(excluded, candidates, placed int) int {
 	return excluded + candidates - placed
+}
+
+func cowPlacementPendingAfterBatch(excluded, candidates, placed int, placeErr error) int {
+	if placeErr != nil {
+		return pendingCOWCandidates(excluded, candidates, placed)
+	}
+	return excluded
 }
 
 // shareableCOWPlacements は変換の入り得る候補を落とし、落とした件数を返す。

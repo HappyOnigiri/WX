@@ -56,8 +56,14 @@ func TestRestorePreparationResumeAndFinishLifecycle(t *testing.T) {
 	t.Parallel()
 	repository, repo, preparer, head, target := prepareEdgesFixture(t)
 	ctx := context.Background()
+	preparer.Phases = &PhaseTimings{}
 	if err := preparer.PrepareForRestore(ctx, repo, target, head, "slot"); err != nil {
 		t.Fatalf("prepare for restore: %v", err)
+	}
+	for _, phase := range preparer.Phases.Phases() {
+		if phase.Name == "tracked-status" || phase.Name == "tracked-status-refresh" {
+			t.Fatalf("restore preparation recorded create-only phase %q", phase.Name)
+		}
 	}
 	if reason, locked, found, err := RegisteredWorktreeLockStatus(ctx, preparer.Git, string(repo.MainPath), target); err != nil || !found || !locked || reason != "wx:slot:RESTORING" {
 		t.Fatalf("restore lock reason=%q locked=%v found=%v err=%v", reason, locked, found, err)

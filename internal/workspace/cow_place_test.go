@@ -194,6 +194,22 @@ func TestCOWPlacementGatesAtTheExactBatchBoundary(t *testing.T) {
 	}
 }
 
+func TestCOWBatchBoundaryReachedAtAndAfterTheLimit(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		since int
+		want  bool
+	}{
+		{since: cowBatchSize - 1, want: false},
+		{since: cowBatchSize, want: true},
+		{since: cowBatchSize + 1, want: true},
+	} {
+		if got := cowBatchBoundaryReached(test.since); got != test.want {
+			t.Errorf("cowBatchBoundaryReached(%d)=%t, want %t", test.since, got, test.want)
+		}
+	}
+}
+
 // 配置の途中で所有権検査が失敗した回は、未着手の候補だけを pending として置換方式へ戻す。
 func TestPlaceOwnedSharedFilesCountsPendingCandidatesAfterBatchFailure(t *testing.T) {
 	t.Parallel()
@@ -219,6 +235,17 @@ func TestPlaceOwnedSharedFilesCountsPendingCandidatesAfterBatchFailure(t *testin
 	wantPending := len(contents) + 1 - cowBatchSize
 	if placement.pending != wantPending {
 		t.Fatalf("pending=%d, want the %d unstarted candidates", placement.pending, wantPending)
+	}
+}
+
+func TestCOWPlacementPendingAfterBatchFailureIncludesUnstartedCandidates(t *testing.T) {
+	t.Parallel()
+	failure := errors.New("ownership changed")
+	if got, want := cowPlacementPendingAfterBatch(2, 10, 4, failure), 8; got != want {
+		t.Fatalf("pending after failure=%d, want %d", got, want)
+	}
+	if got, want := cowPlacementPendingAfterBatch(2, 10, 4, nil), 2; got != want {
+		t.Fatalf("pending after success=%d, want %d", got, want)
 	}
 }
 

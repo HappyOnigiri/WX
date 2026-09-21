@@ -28,6 +28,44 @@ func TestSubmoduleCOWEnabledRequiresEligibleConfiguration(t *testing.T) {
 	}
 }
 
+func TestSubmoduleCOWPreparationReadyHonorsKnownPhaseAndErrors(t *testing.T) {
+	t.Parallel()
+	mode := config.CopyModeCOW
+	known := &submodulePhaseResult{enabled: true, declared: []submodule{{name: "kid"}}}
+	called := false
+	ready, err := submoduleCOWPreparationReady(mode, known, func() (bool, error) {
+		called = true
+		return false, nil
+	})
+	if err != nil || !ready || called {
+		t.Fatalf("known phase=(%t,%v), resolver called=%t; want ready without resolving", ready, err, called)
+	}
+	for _, test := range []struct {
+		name      string
+		known     *submodulePhaseResult
+		resolve   func() (bool, error)
+		wantReady bool
+		wantErr   string
+	}{
+		{name: "known disabled", known: &submodulePhaseResult{}, resolve: func() (bool, error) { return true, nil }},
+		{name: "known empty", known: &submodulePhaseResult{enabled: true}, resolve: func() (bool, error) { return true, nil }},
+		{name: "resolved disabled", resolve: func() (bool, error) { return false, nil }},
+		{name: "resolver error", resolve: func() (bool, error) { return false, errors.New("submodule setting failed") }, wantErr: "submodule setting failed"},
+	} {
+		ready, gotErr := submoduleCOWPreparationReady(mode, test.known, test.resolve)
+		if ready != test.wantReady {
+			t.Errorf("%s ready=%t, want %t", test.name, ready, test.wantReady)
+		}
+		if test.wantErr == "" {
+			if gotErr != nil {
+				t.Errorf("%s err=%v, want nil", test.name, gotErr)
+			}
+		} else if gotErr == nil || gotErr.Error() != test.wantErr {
+			t.Errorf("%s err=%v, want %q", test.name, gotErr, test.wantErr)
+		}
+	}
+}
+
 // Git の検査失敗は、submodule の一時ファイルが無い成功へ読み替えない。
 // testlint:allow-serial -- submodule fixture initializes a shared Git setup
 func TestRejectSubmoduleCOWTemporariesPropagatesGitError(t *testing.T) {

@@ -110,7 +110,7 @@ func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
 			t.Fatalf("%s: %v", event, err)
 		}
 	}
-	if err := RunHook(ctx, "session-end", strings.NewReader("")); err != nil {
+	if err := RunHook(ctx, "session-end", strings.NewReader(`{"session_id":"agent-normal"}`)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -124,7 +124,7 @@ func TestHookLifecyclePayloadsAndReadinessGates(t *testing.T) {
 	if params := handler.paramsFor("WaitReady"); !strings.Contains(string(params), `"timeout_ms":2000`) {
 		t.Fatalf("WaitReady params=%s", params)
 	}
-	if params := handler.paramsFor("Release"); !strings.Contains(string(params), `"reason":"session-end-hook"`) {
+	if params := handler.paramsFor("Release"); !strings.Contains(string(params), `"reason":"session-end-hook"`) || !strings.Contains(string(params), `"agent_session_id":"agent-normal"`) {
 		t.Fatalf("Release params=%s", params)
 	}
 }
@@ -144,6 +144,23 @@ func TestSessionStartHookAcceptsCompactionAfterStartup(t *testing.T) {
 	}
 	if methods := strings.Join(handler.methodsSnapshot(), ","); methods != "BindAgentSession,BindAgentSession" {
 		t.Fatalf("methods=%s, want BindAgentSession,BindAgentSession", methods)
+	}
+}
+
+func TestSessionEndHookUsesNativeSessionInIdempotencyKey(t *testing.T) {
+	clearHookEnvironment(t)
+	handler := &recordingHandler{}
+	ctx := startHookServer(t, handler)
+	t.Setenv("WX_SESSION_ID", "wx-shared")
+	t.Setenv("WX_SESSION_TOKEN", "token")
+
+	for _, agentID := range []string{"native-primary", "native-btw"} {
+		if err := RunHook(ctx, "session-end", strings.NewReader(`{"session_id":"`+agentID+`"}`)); err != nil {
+			t.Fatalf("session-end %s: %v", agentID, err)
+		}
+	}
+	if methods := strings.Join(handler.methodsSnapshot(), ","); methods != "Release,Release" {
+		t.Fatalf("methods=%s, want Release,Release", methods)
 	}
 }
 
@@ -225,6 +242,9 @@ func TestHookFailsClosedForMalformedEnvironmentAndPayload(t *testing.T) {
 	}
 	if err := RunHook(context.Background(), "session-start", strings.NewReader(`{}`)); err == nil || !strings.Contains(err.Error(), "does not contain session_id") {
 		t.Fatalf("missing session ID error=%v", err)
+	}
+	if err := RunHook(context.Background(), "session-end", strings.NewReader(`{}`)); err == nil || !strings.Contains(err.Error(), "does not contain session_id") {
+		t.Fatalf("missing SessionEnd ID error=%v", err)
 	}
 	if err := RunHook(context.Background(), "session-start", failingHookReader{}); err == nil || !strings.Contains(err.Error(), "read fault") {
 		t.Fatalf("input read error=%v", err)

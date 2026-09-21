@@ -40,6 +40,45 @@ func TestSortedPlacementsUsesRepositoryThenPath(t *testing.T) {
 	}
 }
 
+// TestTrackedPathsAtKeepsTreeBoundaries は ls-tree の末尾 NUL を空の path として登録せず、
+// Git の tree 読み取り失敗も空の tree へ読み替えないことを確認する。
+func TestTrackedPathsAtKeepsTreeBoundaries(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	gitCommand(t, repository, "init", "-b", "main")
+	gitCommand(t, repository, "config", "user.name", "test")
+	gitCommand(t, repository, "config", "user.email", "test@example.com")
+	if err := os.Mkdir(filepath.Join(repository, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("tracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "nested", "file.txt"), []byte("nested\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, repository, "add", ".")
+	gitCommand(t, repository, "commit", "-m", "tracked paths")
+	oid := gitOutput(t, repository, "rev-parse", "HEAD")
+
+	preparer := Preparer{Git: &gitx.Runner{Timeout: 10 * time.Second}}
+	repo := discovery.Repository{MainPath: domain.CanonicalPath(repository)}
+	tracked, err := preparer.trackedPathsAt(context.Background(), repo, oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tracked) != 2 || !tracked["tracked.txt"] || !tracked["nested/file.txt"] {
+		t.Fatalf("tracked paths=%v, want the two tree entries", tracked)
+	}
+	if tracked[""] || tracked["."] {
+		t.Fatalf("tracked paths=%v, trailing NUL must not create an empty path", tracked)
+	}
+
+	if _, err := preparer.trackedPathsAt(context.Background(), repo, "missing-revision"); err == nil {
+		t.Fatal("missing tree revision was accepted as an empty tree")
+	}
+}
+
 // TestRootPlacementsListsCopiesAndLinks は workspace root の配置計画が、copy を file 単位に開き
 // link を1件として返すことを確認する。standby の UPDATE はこの計画を旧配置履歴と比較する。
 func TestRootPlacementsListsCopiesAndLinks(t *testing.T) {
