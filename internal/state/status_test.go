@@ -62,7 +62,7 @@ func TestStatusDiagnosticsReportsWorkspaceLastUsedFromSessions(t *testing.T) {
 	seedWorkspaceRows(t, store, "multi", "/multi", "multi_repository", "multi-a", "/multi/a", "/multi/a/.git", "a")
 	seedWorkspaceRows(t, store, "single", "/single", "repository", "single-repo", "/single", "/single/.git", "")
 	seedWorkspaceRows(t, store, "unused", "/unused", "repository", "unused-repo", "/unused", "/unused/.git", "")
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES('multi-b','/multi/b','/multi/b/.git','main','',?,?)`, now(), now()); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,remote_name,first_seen_at,last_seen_at) VALUES('multi-b','/multi/b','/multi/b/.git','',?,?)`, now(), now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES('multi','multi-b','b',1)`); err != nil {
@@ -273,7 +273,7 @@ func TestListSlotsReturnsLiveSlotsWithRepositories(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 	seedWorkspaceRows(t, store, "multi", "/multi", "multi_repository", "multi-a", "/multi/a", "/multi/a/.git", "a")
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES('multi-b','/multi/b','/multi/b/.git','main','',?,?)`, now(), now()); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,remote_name,first_seen_at,last_seen_at) VALUES('multi-b','/multi/b','/multi/b/.git','',?,?)`, now(), now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO workspace_repositories(workspace_id,repository_id,relative_path,ordinal) VALUES('multi','multi-b','b',1)`); err != nil {

@@ -15,12 +15,12 @@ type SessionScope struct {
 }
 
 func insertCurrentSessionRepositories(ctx context.Context, tx *sql.Tx, sessionID, workspaceID, slotID string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal) SELECT ?,sr.repository_id,wr.relative_path,wr.ordinal FROM slot_repositories sr JOIN workspace_repositories wr ON wr.workspace_id=? AND wr.repository_id=sr.repository_id WHERE sr.slot_id=? ORDER BY wr.ordinal`, sessionID, workspaceID, slotID)
+	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal,default_branch) SELECT ?,sr.repository_id,wr.relative_path,wr.ordinal,wr.default_branch FROM slot_repositories sr JOIN workspace_repositories wr ON wr.workspace_id=? AND wr.repository_id=sr.repository_id WHERE sr.slot_id=? ORDER BY wr.ordinal`, sessionID, workspaceID, slotID)
 	return err
 }
 
 func copySessionRepositories(ctx context.Context, tx *sql.Tx, sessionID, parentSessionID string) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal) SELECT ?,repository_id,relative_path,ordinal FROM session_repositories WHERE session_id=? ORDER BY ordinal`, sessionID, parentSessionID)
+	_, err := tx.ExecContext(ctx, `INSERT INTO session_repositories(session_id,repository_id,relative_path,ordinal,default_branch) SELECT ?,repository_id,relative_path,ordinal,default_branch FROM session_repositories WHERE session_id=? ORDER BY ordinal`, sessionID, parentSessionID)
 	return err
 }
 

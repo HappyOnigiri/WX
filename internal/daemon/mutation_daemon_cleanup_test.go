@@ -566,7 +566,7 @@ func TestMutationRegisteredSlotProcessesAllRepositoriesAfterMissingCommonDir(t *
 		{firstID, filepath.Join(t.TempDir(), "first"), missingCommon},
 		{secondID, filepath.Join(t.TempDir(), "second"), validCommon},
 	} {
-		if _, err := db.Exec("INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?,?)", row.id, row.main, row.common, "main", "", now, now); err != nil {
+		if _, err := db.Exec("INSERT INTO repositories(id,main_worktree_path,common_git_dir,remote_name,first_seen_at,last_seen_at) VALUES(?,?,?,?,?,?)", row.id, row.main, row.common, "", now, now); err != nil {
 			t.Fatal(err)
 		}
 	}

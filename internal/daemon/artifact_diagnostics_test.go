@@ -85,7 +85,7 @@ func TestArtifactReportKeepsUnreferencedUnreadableRepositoriesOutOfErrors(t *tes
 		t.Fatal(err)
 	}
 	raw := openTestDatabase(t, filepath.Join(root, "state.db"))
-	if _, err := raw.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES('gone',?,?,'main','',?,?)`,
+	if _, err := raw.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,remote_name,first_seen_at,last_seen_at) VALUES('gone',?,?,'',?,?)`,
 		gone, filepath.Join(gone, ".git"), state.FormatTime(time.Now()), state.FormatTime(time.Now())); err != nil {
 		t.Fatal(err)
 	}

@@ -413,7 +413,7 @@ func TestSlotLayoutUniquenessIsPerRootGeneration(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES('slot01','repository','WX','READY','main','abc','fp')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,default_branch,remote_name,first_seen_at,last_seen_at) VALUES('repository-2','/other','/other/.git','main','',?,?)`, now(), now()); err != nil {
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO repositories(id,main_worktree_path,common_git_dir,remote_name,first_seen_at,last_seen_at) VALUES('repository-2','/other','/other/.git','',?,?)`, now(), now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO slot_repositories(slot_id,repository_id,dir_name,state,requested_ref,base_oid,prepare_fingerprint) VALUES('slot01','repository-2','WX','READY','main','abc','fp')`); err == nil {
