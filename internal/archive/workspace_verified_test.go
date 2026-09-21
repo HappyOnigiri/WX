@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -175,6 +176,154 @@ func TestVerifiedWorkspaceSnapshotRejectsPathReplacementAfterVerification(t *tes
 			assertWorkspaceTestFile(t, filepath.Join(bundleRoot, "current-only.txt"), "kept\n")
 		})
 	}
+}
+
+// TestMutationRestoreVerifiedWorkspaceRechecksArchiveAfterRestore は展開中に
+// 検証済み archive が in-place 変更された場合、展開後の再検証で拒否することを確認する。
+func TestMutationRestoreVerifiedWorkspaceRechecksArchiveAfterRestore(t *testing.T) {
+	archiveRoot := t.TempDir()
+	source := filepath.Join(archiveRoot, "source")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceTestFile(t, filepath.Join(source, "aaa-marker"), "marker\n", 0o600)
+	writeWorkspaceTestFile(t, filepath.Join(source, "zzz-large"), string(bytes.Repeat([]byte("payload\n"), 8*workspaceSnapshotHashChunk/8)), 0o600)
+	archiveOwner, _, err := domain.OpenOwnedRoot(archiveRoot, archiveRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = archiveOwner.Close() }()
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), source, archiveRoot, testRootID, archiveOwner, "post-restore-archive-change", nil, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := OpenVerifiedWorkspaceSnapshotAt(context.Background(), archiveRoot, archiveOwner, snapshot, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = verified.Close() }()
+
+	targetRoot := t.TempDir()
+	target := filepath.Join(targetRoot, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	targetOwner, _, err := domain.OpenOwnedRoot(targetRoot, targetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = targetOwner.Close() }()
+	changed := mutateWorkspaceArchiveAfterMarker(filepath.Join(target, "aaa-marker"), snapshot.ArchivePath)
+	err = RestoreVerifiedWorkspace(context.Background(), verified, target, targetRoot, targetOwner, nil)
+	if mutationErr := <-changed; mutationErr != nil {
+		t.Fatal(mutationErr)
+	}
+	if !errors.Is(err, ErrWorkspaceSnapshotIntegrity) {
+		t.Fatalf("restore accepted an archive changed after verification: %v", err)
+	}
+}
+
+// TestMutationRestoreVerifiedWorkspaceRechecksTargetRoot は展開後に target root
+// の path が別 inode へ置き換わった場合、復元を成功扱いにしないことを確認する。
+func TestMutationRestoreVerifiedWorkspaceRechecksTargetRoot(t *testing.T) {
+	archiveRoot := t.TempDir()
+	source := filepath.Join(archiveRoot, "source")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkspaceTestFile(t, filepath.Join(source, "aaa-marker"), "marker\n", 0o600)
+	writeWorkspaceTestFile(t, filepath.Join(source, "zzz-large"), string(bytes.Repeat([]byte("payload\n"), 8*workspaceSnapshotHashChunk/8)), 0o600)
+	archiveOwner, _, err := domain.OpenOwnedRoot(archiveRoot, archiveRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = archiveOwner.Close() }()
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), source, archiveRoot, testRootID, archiveOwner, "post-restore-target-change", nil, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := OpenVerifiedWorkspaceSnapshotAt(context.Background(), archiveRoot, archiveOwner, snapshot, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = verified.Close() }()
+
+	targetRoot := t.TempDir()
+	target := filepath.Join(targetRoot, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	targetOwner, _, err := domain.OpenOwnedRoot(targetRoot, targetRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = targetOwner.Close() }()
+	replaced := replaceWorkspaceRootAfterMarker(filepath.Join(target, "aaa-marker"), targetRoot)
+	err = RestoreVerifiedWorkspace(context.Background(), verified, target, targetRoot, targetOwner, nil)
+	if replacementErr := <-replaced; replacementErr != nil {
+		t.Fatal(replacementErr)
+	}
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("restore accepted a replaced target root: %v", err)
+	}
+}
+
+func mutateWorkspaceArchiveAfterMarker(marker, archivePath string) <-chan error {
+	result := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				file, openErr := os.OpenFile(archivePath, os.O_WRONLY, 0o600)
+				if openErr != nil {
+					result <- openErr
+					return
+				}
+				_, writeErr := file.WriteAt([]byte{0xff}, 0)
+				closeErr := file.Close()
+				if writeErr != nil {
+					result <- writeErr
+				} else {
+					result <- closeErr
+				}
+				return
+			}
+			if time.Now().After(deadline) {
+				result <- errors.New("timed out waiting for restored archive marker")
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+	return result
+}
+
+func replaceWorkspaceRootAfterMarker(marker, rootPath string) <-chan error {
+	result := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				oldPath := rootPath + "-old"
+				if err := os.Rename(rootPath, oldPath); err != nil {
+					result <- err
+					return
+				}
+				if err := os.Mkdir(rootPath, 0o700); err != nil {
+					result <- err
+					return
+				}
+				result <- nil
+				return
+			}
+			if time.Now().After(deadline) {
+				result <- errors.New("timed out waiting for restored target marker")
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+	return result
 }
 
 func TestVerifiedWorkspaceSnapshotCloseReleasesDescriptor(t *testing.T) {

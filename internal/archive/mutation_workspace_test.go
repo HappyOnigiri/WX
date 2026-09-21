@@ -200,6 +200,49 @@ func TestMutationWorkspaceArchiveRejectsReplacement(t *testing.T) {
 	}
 }
 
+// TestMutationWorkspaceArchivePropagatesCopyFailure は tar header の書込み後に
+// payload 書込みが失敗した場合、close 成功へすり替えないことを確認する。
+func TestMutationWorkspaceArchivePropagatesCopyFailure(t *testing.T) {
+	rootPath := t.TempDir()
+	filePath := filepath.Join(rootPath, "payload")
+	if err := os.WriteFile(filePath, []byte("payload\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	entries, err := os.ReadDir(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := tar.NewWriter(&mutationFailAfterHeaderWriter{remaining: 512, err: errors.New("payload write failed")})
+	err = writeWorkspaceArchiveEntry(root, writer, "payload", entries[0])
+	if err == nil || !strings.Contains(err.Error(), "payload write failed") {
+		t.Fatalf("payload write failure was swallowed: %v", err)
+	}
+}
+
+type mutationFailAfterHeaderWriter struct {
+	remaining int
+	err       error
+}
+
+func (w *mutationFailAfterHeaderWriter) Write(p []byte) (int, error) {
+	if w.remaining == 0 {
+		return 0, w.err
+	}
+	n := len(p)
+	if n > w.remaining {
+		n = w.remaining
+	}
+	w.remaining -= n
+	return n, nil
+}
+
+var _ io.Writer = (*mutationFailAfterHeaderWriter)(nil)
+
 type mutationStaticDirEntry struct{ info fs.FileInfo }
 
 func (entry mutationStaticDirEntry) Name() string      { return entry.info.Name() }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/HappyOnigiri/WX/internal/gitx"
 	"github.com/HappyOnigiri/WX/internal/state"
@@ -69,6 +70,28 @@ func TestMutationRestoreGitStatePropagatesEachPhaseError(t *testing.T) {
 				t.Fatalf("stale git state survived failed restore: %v", statErr)
 			}
 		})
+	}
+}
+
+// TestMutationRestorePropagatesOperationStateFailure は snapshot の conflict
+// state 復元が失敗したとき、後続の FinishRestore で成功へ変換しないことを確認する。
+func TestMutationRestorePropagatesOperationStateFailure(t *testing.T) {
+	repository, repo, manager, worktreeRoot := archiveFixture(t)
+	snapshot, _, err := manager.SnapshotWithPersistence(context.Background(), repo, repository, "operation-state", time.Now().Add(time.Hour), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// HEAD の通常 tree を conflict tree として参照させると、復元側の
+	// parseConflictTreeEntries が stage path の欠落を検出する。
+	snapshot.ConflictRef = "refs/wx/recovery/operation-state/repository/conflict"
+	snapshot.ConflictOID = snapshot.HeadOID
+	gitCommand(t, repository, "update-ref", snapshot.ConflictRef, snapshot.ConflictOID)
+	target := filepath.Join(worktreeRoot, "operation-state", "root")
+	pointAtSlot(t, manager, worktreeRoot, target)
+
+	err = manager.Restore(context.Background(), repo, target, "operation-state", snapshot, nil)
+	if err == nil || !strings.Contains(err.Error(), "restore unmerged index") {
+		t.Fatalf("restore operation-state failure was not propagated: %v", err)
 	}
 }
 

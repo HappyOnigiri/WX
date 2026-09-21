@@ -114,6 +114,58 @@ func TestMutationConflictTreeRejectsDeletedStages(t *testing.T) {
 	}
 }
 
+// TestMutationConflictTreeIncludesVerifiedAutoMerge は conflict stage と同じ
+// 一時 tree に、存在確認済みの AUTO_MERGE tree も保存する契約を固定する。
+func TestMutationConflictTreeIncludesVerifiedAutoMerge(t *testing.T) {
+	rootPath := t.TempDir()
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := os.WriteFile(filepath.Join(rootPath, "AUTO_MERGE"), []byte("tree\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []string
+	run := func(_ []string, _ []byte, args ...string) (gitx.Result, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if len(args) == 0 {
+			t.Fatal("empty Git command")
+		}
+		switch args[0] {
+		case "cat-file":
+			if len(args) != 3 || args[1] != "-e" || args[2] != "tree^{tree}" {
+				t.Fatalf("unexpected cat-file command %q", args)
+			}
+		case "write-tree":
+			return gitx.Result{Stdout: "conflict-tree\n"}, nil
+		case "read-tree":
+			if len(args) == 2 && args[1] == "--empty" {
+				return gitx.Result{}, nil
+			}
+			if len(args) != 3 || args[1] != "--prefix=auto-merge/" || args[2] != "tree" {
+				t.Fatalf("unexpected AUTO_MERGE read-tree command %q", args)
+			}
+		default:
+			if args[0] != "update-index" {
+				t.Fatalf("unexpected Git command %q", args)
+			}
+		}
+		return gitx.Result{}, nil
+	}
+
+	got, err := writeConflictTree(root, run, []conflictIndexEntry{{
+		mode: "100644", oid: strings.Repeat("a", 40), stage: 2, path: "tracked",
+	}})
+	if err != nil || got != "conflict-tree" {
+		t.Fatalf("writeConflictTree tree=%q err=%v", got, err)
+	}
+	if !containsMutationCommand(calls, "read-tree --prefix=auto-merge/ tree") {
+		t.Fatalf("verified AUTO_MERGE tree was not staged: %v", calls)
+	}
+}
+
 // TestMutationRestoreConflictIndexPreservesParseErrors は壊れた capsule listing を
 // 空 tree として扱わず、update-index を開始する前に失敗させることを確認する。
 func TestMutationRestoreConflictIndexPreservesParseErrors(t *testing.T) {

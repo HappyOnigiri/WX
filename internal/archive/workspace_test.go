@@ -332,6 +332,31 @@ func TestDeleteWorkspaceSnapshotRequiresMatchingArtifact(t *testing.T) {
 	}
 }
 
+func TestMutationDeleteWorkspaceSnapshotPropagatesRemovalFailure(t *testing.T) {
+	ownershipRoot := t.TempDir()
+	bundleRoot := filepath.Join(ownershipRoot, "bundle")
+	if err := os.Mkdir(bundleRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, _, err := domain.OpenOwnedRoot(ownershipRoot, ownershipRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	snapshot, err := SnapshotWorkspaceAt(context.Background(), bundleRoot, ownershipRoot, testRootID, owner, "remove-failure", nil, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Dir(snapshot.ArchivePath)
+	if err := os.Chmod(directory, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(directory, 0o700) })
+	if err := DeleteWorkspaceSnapshotAt(context.Background(), ownershipRoot, owner, snapshot); err == nil {
+		t.Fatal("snapshot deletion succeeded despite a read-only archive directory")
+	}
+}
+
 func TestWorkspaceSnapshotRejectsUnsafeInputsAndUnsupportedFiles(t *testing.T) {
 	// unix socket の path 長を抑えるため t.TempDir ではなく /tmp を使う。
 	// macOS の /tmp は symlink なので、pin 済み root descriptor が symlink ancestor を拒否しないよう、先に物理 path へ解決する。
