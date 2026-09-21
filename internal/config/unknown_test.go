@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // writeConfigFile は HOME 配下の設定ファイルへ document を書き、その path を返す。
@@ -137,5 +139,91 @@ func TestParseUnknownField(t *testing.T) {
 				t.Fatalf("parseUnknownField(%q)=(%d, %q, %v), want (%d, %q, %v)", test.message, line, field, ok, test.line, test.field, test.ok)
 			}
 		})
+	}
+}
+
+// commitConfigEdit は設定ファイルへ1件の編集を preview 経由で保存する。
+// 未知キーの差し戻しは Save の経路でしか起きないため、テストも同じ経路を通す。
+func commitConfigEdit(t *testing.T, request EditRequest) {
+	t.Helper()
+	preview, err := PreviewEdit(request)
+	if err != nil {
+		t.Fatalf("PreviewEdit(%+v): %v", request, err)
+	}
+	if err := CommitEdit(preview); err != nil {
+		t.Fatalf("CommitEdit(%+v): %v", request, err)
+	}
+}
+
+// readConfigDocument は保存された設定ファイルを、YAML の mapping 構造のまま読む。
+func readConfigDocument(t *testing.T) (string, map[string]any) {
+	t.Helper()
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatalf("saved config is not loadable YAML: %v\n%s", err, data)
+	}
+	return string(data), document
+}
+
+// ドットを含む workspace root の下の未知キーは、ドット連結したキーを分割し直すと
+// 別の mapping へ移る。無関係な編集を保存しても書かれた階層に留まることを固定する。
+func TestSaveKeepsUnknownKeysUnderDottedMappingKeys(t *testing.T) {
+	writeConfigFile(t, "version: 2\nsystem:\n  pool:\n    preparation_concurrency: 2\nworkspaces:\n  \"$HOME/project.v2\":\n    worktree: hot\n    future:\n      note: keep-me\n")
+	commitConfigEdit(t, EditRequest{Scope: V2ScopeSystem, V2: true, Key: "pool.preparation_concurrency", Value: "3", Operation: EditSet})
+	_, document := readConfigDocument(t)
+	workspaces, ok := document["workspaces"].(map[string]any)
+	if !ok || len(workspaces) != 1 {
+		t.Fatalf("workspaces=%#v, want the single dotted root", document["workspaces"])
+	}
+	workspace, ok := workspaces["$HOME/project.v2"].(map[string]any)
+	if !ok {
+		t.Fatalf("workspaces=%#v, want key $HOME/project.v2", workspaces)
+	}
+	future, ok := workspace["future"].(map[string]any)
+	if !ok || future["note"] != "keep-me" {
+		t.Fatalf("workspaces[$HOME/project.v2]=%#v, want future.note=keep-me", workspace)
+	}
+	reloaded, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw after Save: %v", err)
+	}
+	if got := reloaded.UnknownKeys(); len(got) != 1 || got[0].Key != "workspaces.$HOME/project.v2.future" {
+		t.Fatalf("unknown keys after Save=%+v", got)
+	}
+}
+
+// 既知キーは Go 値から組み直すため anchor 定義が出力に残らない。未知 alias を
+// そのまま書き戻すと保存した設定を次回読めなくなるので、展開して自己完結させる。
+func TestSaveMaterializesUnknownAliasValues(t *testing.T) {
+	writeConfigFile(t, "version: 2\nsystem:\n  language: &chosen_language en\n  future_note: *chosen_language\nworkspace_defaults:\n  copy: &shared_copy\n    - a.txt\n  future_copy: *shared_copy\n")
+	commitConfigEdit(t, EditRequest{Scope: V2ScopeSystem, V2: true, Key: "pool.preparation_concurrency", Value: "3", Operation: EditSet})
+	data, document := readConfigDocument(t)
+	if strings.Contains(data, "*chosen_language") || strings.Contains(data, "*shared_copy") {
+		t.Fatalf("saved config still references anchors:\n%s", data)
+	}
+	if system, ok := document["system"].(map[string]any); !ok || system["future_note"] != "en" {
+		t.Fatalf("system=%#v, want future_note=en", document["system"])
+	}
+	defaults, ok := document["workspace_defaults"].(map[string]any)
+	if !ok {
+		t.Fatalf("workspace_defaults=%#v", document["workspace_defaults"])
+	}
+	if copies, ok := defaults["future_copy"].([]any); !ok || len(copies) != 1 || copies[0] != "a.txt" {
+		t.Fatalf("workspace_defaults=%#v, want future_copy=[a.txt]", defaults)
+	}
+	reloaded, err := LoadRaw()
+	if err != nil {
+		t.Fatalf("LoadRaw after Save: %v", err)
+	}
+	if got := reloaded.UnknownKeys(); len(got) != 2 {
+		t.Fatalf("unknown keys after Save=%+v, want system.future_note and workspace_defaults.future_copy", got)
 	}
 }

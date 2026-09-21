@@ -22,6 +22,10 @@ type UnknownKey struct {
 // 値が mapping や sequence なら部分木ごと保持し、書かれたとおりに書き戻す。
 type unknownEntry struct {
 	UnknownKey
+	// path は親からの mapping key をノードごとに並べたものである。
+	// 表示用の Key はドット連結なので、ドットを含む workspace root を分割してしまう。
+	// 差し戻し先は必ずこちらで決める。
+	path  []string
 	value *yaml.Node
 }
 
@@ -77,7 +81,7 @@ func detectUnknownKeys(data []byte, doc *yaml.Node) ([]unknownEntry, error) {
 		if !ok {
 			continue
 		}
-		entry, ok := findUnknownNode(doc, "", line, field, claimed)
+		entry, ok := findUnknownNode(doc, nil, line, field, claimed)
 		if !ok {
 			continue
 		}
@@ -86,9 +90,9 @@ func detectUnknownKeys(data []byte, doc *yaml.Node) ([]unknownEntry, error) {
 	return out, nil
 }
 
-// findUnknownNode は node から line 行にある名前 field のキーを探し、ドット区切りのキーと値ノードを返す。
+// findUnknownNode は node から line 行にある名前 field のキーを探し、そこまでのキー列と値ノードを返す。
 // 同じ行に同名のキーが並ぶ inline mapping に備え、割り当て済みのキーノードは claimed で除く。
-func findUnknownNode(node *yaml.Node, prefix string, line int, field string, claimed map[*yaml.Node]bool) (unknownEntry, bool) {
+func findUnknownNode(node *yaml.Node, prefix []string, line int, field string, claimed map[*yaml.Node]bool) (unknownEntry, bool) {
 	switch node.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
@@ -99,15 +103,14 @@ func findUnknownNode(node *yaml.Node, prefix string, line int, field string, cla
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			keyNode, value := node.Content[i], node.Content[i+1]
-			key := keyNode.Value
-			if prefix != "" {
-				key = prefix + "." + key
-			}
+			// 兄弟のキー列を壊さないよう、prefix の backing array は共有せず毎回作る。
+			path := make([]string, 0, len(prefix)+1)
+			path = append(append(path, prefix...), keyNode.Value)
 			if keyNode.Line == line && keyNode.Value == field && !claimed[keyNode] {
 				claimed[keyNode] = true
-				return unknownEntry{UnknownKey{Key: key, Line: line}, value}, true
+				return unknownEntry{UnknownKey{Key: strings.Join(path, "."), Line: line}, path, value}, true
 			}
-			if entry, ok := findUnknownNode(value, key, line, field, claimed); ok {
+			if entry, ok := findUnknownNode(value, path, line, field, claimed); ok {
 				return entry, true
 			}
 		}
@@ -128,14 +131,45 @@ func (c Config) applyUnknownKeys(known any) (any, error) {
 		return nil, err
 	}
 	for _, entry := range c.unknown {
-		insertYAMLNode(&root, strings.Split(entry.Key, "."), entry.value)
+		insertYAMLNode(&root, entry.path, resolveUnknownAliases(entry.value, map[*yaml.Node]bool{}))
 	}
 	return &root, nil
+}
+
+// resolveUnknownAliases は未知ノードの alias を参照先の内容へ展開し、anchor 名を落とす。
+// 既知キーは Go の値から組み直すため anchor 定義が出力に残らず、alias をそのまま
+// 書き戻すと保存した設定を次回読み込めない。expanding は展開中の anchor である。
+func resolveUnknownAliases(node *yaml.Node, expanding map[*yaml.Node]bool) *yaml.Node {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode {
+		// 自分自身を含む anchor は展開できないため、書かれたまま残して値を失わない。
+		// この形は既知キーの decode が先に拒否するので、保存まで到達しない。
+		if node.Alias == nil || expanding[node.Alias] {
+			return node
+		}
+		expanding[node.Alias] = true
+		defer delete(expanding, node.Alias)
+		return resolveUnknownAliases(node.Alias, expanding)
+	}
+	clone := *node
+	clone.Anchor = ""
+	if len(node.Content) > 0 {
+		clone.Content = make([]*yaml.Node, len(node.Content))
+		for i, child := range node.Content {
+			clone.Content[i] = resolveUnknownAliases(child, expanding)
+		}
+	}
+	return &clone
 }
 
 // insertYAMLNode は mapping の path 位置へ value を置き、途中の mapping が無ければ作る。
 // 途中や置き先が mapping でない場合は表現できないため、その1件の差し戻しを諦める。
 func insertYAMLNode(node *yaml.Node, path []string, value *yaml.Node) {
+	if len(path) == 0 {
+		return
+	}
 	current := node
 	for _, part := range path[:len(path)-1] {
 		if current.Kind != yaml.MappingNode {
