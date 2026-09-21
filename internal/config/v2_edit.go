@@ -79,6 +79,10 @@ func v2ScopeEntry(c *Config, scope, root, rel string) (reflect.Value, func() err
 		}
 		workspaceKey := v2WorkspaceKey(c, root)
 		w := c.Workspaces[workspaceKey]
+		// YAML に書かれた membership key は正規化されていない。同じ membership を
+		// 指す既存 key を使わないと、`./api` の隣に `api` を増やして衝突させ、
+		// reset では既存 override を消し残す。
+		rel = v2RepositoryKey(w, rel)
 		if w.Repositories == nil {
 			w.Repositories = map[string]Repository{}
 		}
@@ -119,6 +123,30 @@ func v2WorkspaceKey(c *Config, root string) string {
 	return root
 }
 
+// v2RepositoryKey は rel と同じ membership を指す既存の raw key を返し、無ければ
+// 正規化した rel を返す。複数の raw key が同じ membership へ潰れる設定は
+// normalizeV2Paths が別に拒否するので、ここは結果を安定させるため最小の key を選ぶ。
+func v2RepositoryKey(w Workspace, rel string) string {
+	normalized, err := NormalizeRepositoryRelative(rel)
+	if err != nil {
+		return rel
+	}
+	match := ""
+	for key := range w.Repositories {
+		clean, keyErr := NormalizeRepositoryRelative(key)
+		if keyErr != nil || clean != normalized {
+			continue
+		}
+		if match == "" || key < match {
+			match = key
+		}
+	}
+	if match != "" {
+		return match
+	}
+	return normalized
+}
+
 func setV2SectionPresent(c *Config, key string, present bool) {
 	if c.present == nil {
 		if !present && c.Version != 2 {
@@ -154,7 +182,9 @@ func setV2FieldPresent(c *Config, scope, root, rel, key string, present bool) {
 		section = "workspaces." + workspaceKey
 	case V2ScopeRepository:
 		workspaceKey := v2WorkspaceKey(c, root)
-		section = "workspaces." + workspaceKey + ".repositories." + rel
+		// presence map は YAML のキーをそのまま辿るので、正規化名ではなく
+		// v2ScopeEntry が編集するのと同じ raw key で記録する。
+		section = "workspaces." + workspaceKey + ".repositories." + v2RepositoryKey(c.Workspaces[workspaceKey], rel)
 	}
 	full := section + "." + key
 	if c.present == nil {
@@ -289,6 +319,15 @@ func AppendV2List(c *Config, scope, root, rel, key, value string) error {
 
 func v2ListSeed(c *Config, scope, root, rel, key string) ([]string, error) {
 	effective := Merge(Defaults(), *c)
+	// workspace root は `$HOME/...` や symlink 付きで書かれている。正規化せずに
+	// 引くと override を見失い、継承元より上位の値を seed にして list を差し替える。
+	// 正規化できない設定は preview 側の検証が別に弾くため、ここでは元の値で続ける。
+	if normalized := effective; NormalizePaths(&normalized) == nil {
+		effective = normalized
+		if canonical, err := canonicalPath(root); err == nil {
+			root = canonical
+		}
+	}
 	path := key
 	if scope == V2ScopeWorkspace && strings.HasPrefix(path, "repository_defaults.") {
 		path = strings.TrimPrefix(path, "repository_defaults.")
