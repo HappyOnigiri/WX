@@ -30,6 +30,7 @@ const (
 	SubmoduleReasonObjectMissing    = "object_missing"
 	SubmoduleReasonOriginMissing    = "origin_missing"
 	SubmoduleReasonInspectionFailed = "inspection_failed"
+	SubmoduleReasonNotMaterialized  = "not_materialized"
 	SubmoduleReasonAncestorSkipped  = "ancestor_skipped"
 )
 
