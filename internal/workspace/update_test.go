@@ -20,6 +20,12 @@ import (
 	"github.com/HappyOnigiri/WX/internal/state"
 )
 
+type updateOwnershipValidatorFunc func(context.Context, state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error)
+
+func (f updateOwnershipValidatorFunc) ValidateWorktreeOwnership(ctx context.Context, request state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error) {
+	return f(ctx, request)
+}
+
 func TestRejectChangedAttributesDetectsRootAndNestedChanges(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -290,6 +296,136 @@ func TestDirectoryCoveredByPlacementsRejectsWalkError(t *testing.T) {
 	}
 }
 
+// 配置先ディレクトリに未記録 file があれば、そのディレクトリ全体を既存配置だけの実体とは扱わない。
+func TestDirectoryCoveredByPlacementsRejectsUnrecordedFile(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	if err := os.Mkdir(filepath.Join(target, "config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "config", "generated"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	covered, err := directoryCoveredByPlacements(root, "config", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if covered {
+		t.Fatal("directory with an unrecorded file was accepted as covered")
+	}
+}
+
+// 既存配置と同じ copy の mode 同期に失敗した場合は、後段の内容検査が通っても更新を成功させない。
+func TestMaterializeChangedPlacementsPropagatesCopyModeError(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	content := []byte("recorded\n")
+	if err := os.WriteFile(filepath.Join(target, "config"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	placement := state.Placement{
+		RelativePath: "config", SourcePath: filepath.Join(t.TempDir(), "missing"),
+		Kind: "copy", ContentSHA256: hex.EncodeToString(sum[:]),
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := materializeChangedPlacements(root, []state.Placement{placement}, []state.Placement{placement}); err == nil {
+		t.Fatal("copy mode synchronization error was ignored")
+	}
+}
+
+// copy が配置先の形状を拒否した場合は、後段の配置検査へ置き換えず元の失敗を返す。
+func TestMaterializeChangedPlacementsPropagatesCopyError(t *testing.T) {
+	t.Parallel()
+	source := filepath.Join(t.TempDir(), "source")
+	content := []byte("source\n")
+	if err := os.WriteFile(source, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := t.TempDir()
+	if err := os.Symlink(source, filepath.Join(target, "copy")); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	placement := state.Placement{
+		RelativePath: "copy", SourcePath: source, Kind: "copy",
+		ContentSHA256: hex.EncodeToString(sum[:]),
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	err = materializeChangedPlacements(root, nil, []state.Placement{placement})
+	if err == nil || !strings.Contains(err.Error(), "copy target copy is not a regular file") {
+		t.Fatalf("copy error=%v, want the materialization failure", err)
+	}
+}
+
+// 未記録の実体が要求配置先にあれば、既存 file でも上書き可能な配置とは扱わない。
+func TestValidateRootPlacementsRejectsUnrecordedCollision(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "occupied"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	desired := []state.Placement{{RelativePath: "occupied", Kind: "link", SourcePath: filepath.Join(t.TempDir(), "source")}}
+	err = ValidateRootPlacements(root, nil, desired)
+	if !errors.Is(err, ErrUpdateIneligible) {
+		t.Fatalf("unrecorded collision error=%v, want ErrUpdateIneligible", err)
+	}
+}
+
+// 既存配置の親ディレクトリを置き換える検査で走査に失敗した場合は、安全な衝突なしとは扱わない。
+func TestValidateRootPlacementsPropagatesDirectoryWalkError(t *testing.T) {
+	t.Parallel()
+	target := t.TempDir()
+	configDir := filepath.Join(target, "config")
+	if err := os.Mkdir(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("recorded\n")
+	if err := os.WriteFile(filepath.Join(configDir, "z-recorded"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join(configDir, "a-blocked")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "value"), []byte("value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
+	sum := sha256.Sum256(content)
+	previous := []state.Placement{{RelativePath: "config/z-recorded", Kind: "copy", ContentSHA256: hex.EncodeToString(sum[:])}}
+	desired := []state.Placement{{RelativePath: "config", Kind: "copy"}}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := ValidateRootPlacements(root, previous, desired); err == nil {
+		t.Fatal("directory walk error was ignored")
+	}
+}
+
 // gitlink が同一な更新は submodule の実体を残したまま通り、gitlink が変わる更新は不適格として弾かれる。
 // 更新経路は `checkout --detach --force` だけで submodule を触らないため、この2つが成り立つことが前提になる。
 func TestUpdateKeepsMaterializedSubmoduleAndRejectsChangedGitlinks(t *testing.T) {
@@ -345,6 +481,133 @@ func TestValidateUpdateCandidateRejectsInvalidRecordedPlacement(t *testing.T) {
 	}
 }
 
+// 更新候補の tracked path 列挙に失敗した場合は、空の tree として衝突検査を続けない。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestValidateUpdateCandidatePropagatesTrackedPathError(t *testing.T) {
+	ctx := context.Background()
+	p, repo, oid, target := cowFixture(t)
+	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	treeOID := cowGit(t, string(repo.MainPath), "rev-parse", oid+"^{tree}")
+	objectPath := filepath.Join(string(repo.CommonDir), "objects", treeOID[:2], treeOID[2:])
+	backupPath := objectPath + ".mutation-test"
+	moved := false
+	t.Cleanup(func() {
+		if moved {
+			_ = os.Rename(backupPath, objectPath)
+		}
+	})
+	triggered := false
+	p.Git.SetBeforeRunAtHook(func(args []string) {
+		command := strings.Join(args, "\x00")
+		if command == strings.Join([]string{"ls-tree", "-r", "--name-only", "-z", oid}, "\x00") {
+			if err := os.Rename(objectPath, backupPath); err != nil {
+				t.Fatal(err)
+			}
+			moved = true
+			triggered = true
+			return
+		}
+		if moved && strings.HasPrefix(command, "ls-files\x00") {
+			if err := os.Rename(backupPath, objectPath); err != nil {
+				t.Fatal(err)
+			}
+			moved = false
+		}
+	})
+	if err := p.ValidateUpdateCandidate(ctx, repo, target, oid, oid, nil, nil); err == nil {
+		t.Fatal("tracked path enumeration error was ignored")
+	}
+	if !triggered {
+		t.Fatal("tracked path enumeration was not exercised")
+	}
+}
+
+// 更新候補の untracked path 列挙に失敗した場合は、ignored path の結果で上書きしない。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestValidateUpdateCandidatePropagatesUntrackedPathError(t *testing.T) {
+	ctx := context.Background()
+	p, repo, oid, target := cowFixture(t)
+	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	indexPath := cowGit(t, target, "rev-parse", "--path-format=absolute", "--git-path", "index")
+	index, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupted := false
+	restore := func() {
+		if !corrupted {
+			return
+		}
+		if err := os.WriteFile(indexPath, index, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		corrupted = false
+	}
+	t.Cleanup(restore)
+	triggered := false
+	p.Git.SetBeforeRunAtHook(func(args []string) {
+		command := strings.Join(args, "\x00")
+		switch command {
+		case "ls-files\x00--others\x00--exclude-standard\x00-z":
+			if err := os.WriteFile(indexPath, []byte("invalid index"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			corrupted = true
+			triggered = true
+		case "ls-files\x00--others\x00--ignored\x00--exclude-standard\x00-z":
+			restore()
+		}
+	})
+	if err := p.ValidateUpdateCandidate(ctx, repo, target, oid, oid, nil, nil); err == nil {
+		t.Fatal("untracked path enumeration error was ignored")
+	}
+	if !triggered {
+		t.Fatal("untracked path enumeration was not exercised")
+	}
+}
+
+// 更新候補の ignored path 列挙に失敗した場合は、不完全な untracked 集合で適格と判定しない。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestValidateUpdateCandidatePropagatesIgnoredPathError(t *testing.T) {
+	ctx := context.Background()
+	p, repo, oid, target := cowFixture(t)
+	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	indexPath := cowGit(t, target, "rev-parse", "--path-format=absolute", "--git-path", "index")
+	index, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupted := false
+	t.Cleanup(func() {
+		if corrupted {
+			_ = os.WriteFile(indexPath, index, 0o600)
+		}
+	})
+	triggered := false
+	p.Git.SetBeforeRunAtHook(func(args []string) {
+		if strings.Join(args, "\x00") != "ls-files\x00--others\x00--ignored\x00--exclude-standard\x00-z" {
+			return
+		}
+		if err := os.WriteFile(indexPath, []byte("invalid index"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		corrupted = true
+		triggered = true
+	})
+	if err := p.ValidateUpdateCandidate(ctx, repo, target, oid, oid, nil, nil); err == nil {
+		t.Fatal("ignored path enumeration error was ignored")
+	}
+	if !triggered {
+		t.Fatal("ignored path enumeration was not exercised")
+	}
+}
+
 // 更新中の worktree が正常なら、既存検査を通過して detached HEAD の更新を許可する。
 // testlint:allow-serial -- fixture preparation changes HOME through the shared setup
 func TestValidateUpdatingAcceptsDetachedCleanWorktree(t *testing.T) {
@@ -359,6 +622,71 @@ func TestValidateUpdatingAcceptsDetachedCleanWorktree(t *testing.T) {
 	}
 	if err := f.preparer.validateUpdating(ctx, f.repo, f.target, f.head, testSlotID, identity); err != nil {
 		t.Fatalf("valid detached worktree: %v", err)
+	}
+}
+
+// 更新前提の worktree 検査に失敗した場合は、後続の状態検査が正常でも更新を許可しない。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestValidateUpdatingPropagatesWorktreeValidationError(t *testing.T) {
+	ctx := context.Background()
+	p, repo, oid, target := cowFixture(t)
+	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.validateUpdating(ctx, repo, target, strings.Repeat("0", 40), testSlotID, identity); err == nil {
+		t.Fatal("worktree validation error was ignored")
+	}
+}
+
+// 更新中の state 所有権を証明できない場合は、clean な detached worktree でも更新を許可しない。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestValidateUpdatingPropagatesStateOwnershipError(t *testing.T) {
+	ctx := context.Background()
+	p, repo, oid, target := cowFixture(t)
+	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	p.Ownership = nil
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.validateUpdating(ctx, repo, target, oid, testSlotID, identity)
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("state ownership error=%v, want state.ErrOwnership", err)
+	}
+}
+
+// 更新中に tracked file が変わった場合は、detached HEAD の確認が通っても dirty な worktree を許可しない。
+// testlint:allow-serial -- cowFixture が隔離 repository の構築中に HOME を変更する。
+func TestValidateUpdatingPropagatesTrackedCleanError(t *testing.T) {
+	ctx := context.Background()
+	p, repo, oid, target := cowFixture(t)
+	if err := p.Prepare(ctx, repo, target, oid, testSlotID); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := p.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownershipChecks := 0
+	p.Ownership = updateOwnershipValidatorFunc(func(context.Context, state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error) {
+		ownershipChecks++
+		if err := os.WriteFile(filepath.Join(target, "file"), []byte("dirty\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return state.WorktreeOwnership{}, nil
+	})
+	err = p.validateUpdating(ctx, repo, target, oid, testSlotID, identity)
+	if !errors.Is(err, ErrTrackedChanges) {
+		t.Fatalf("tracked clean error=%v, want ErrTrackedChanges", err)
+	}
+	if ownershipChecks != 1 {
+		t.Fatalf("ownership checks=%d, want one state validation", ownershipChecks)
 	}
 }
 
