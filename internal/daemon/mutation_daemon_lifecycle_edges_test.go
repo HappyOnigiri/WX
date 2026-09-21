@@ -140,11 +140,12 @@ func TestMutationLaunchdManagedProcessRequiresLaunchdEnvironment(t *testing.T) {
 		}
 		env = append(env, value)
 	}
-	cmd.Env = append(env,
+	env = append(env,
 		"WX_LAUNCHD_ORPHAN_HELPER=1",
 		"WX_LAUNCHD_RESULT="+resultPath,
 		"XPC_SERVICE_NAME="+launchd.Label,
 	)
+	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
