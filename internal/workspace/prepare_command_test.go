@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -266,6 +267,40 @@ func TestPrepareDiagnosticWriterKeepsPayloadAtExactRemainingLimit(t *testing.T) 
 	data, err := io.ReadAll(file)
 	if err != nil || string(data) != string(append(prefix, payload...)) {
 		t.Fatalf("exact payload data=%q err=%v", data, err)
+	}
+}
+
+// 上限を超える payload は prefix と収容可能な bytes だけを保存し、上限を越えて used を進めない。
+func TestPrepareDiagnosticWriterTruncatesPayloadAtRemainingLimit(t *testing.T) {
+	t.Parallel()
+	file, err := os.CreateTemp(t.TempDir(), "prepare-detail-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	prefix := []byte("[stderr] ")
+	remainingPayload := 7
+	diagnostic := &prepareDiagnostic{
+		file:      file,
+		used:      maxPrepareDiagnosticOutput - len(prefix) - remainingPayload,
+		truncated: map[string]bool{},
+	}
+	payload := bytes.Repeat([]byte{'x'}, remainingPayload+3)
+	if written, err := (prepareDiagnosticWriter{diagnostic: diagnostic, stream: "stderr"}).Write(payload); err != nil || written != len(payload) {
+		t.Fatalf("Write()=(%d,%v), want %d bytes consumed", written, err, len(payload))
+	}
+	if diagnostic.used != maxPrepareDiagnosticOutput || !diagnostic.truncated["stderr"] {
+		t.Fatalf("diagnostic state used=%d truncated=%v", diagnostic.used, diagnostic.truncated)
+	}
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil || !bytes.Equal(data, append(prefix, payload[:remainingPayload]...)) {
+		t.Fatalf("truncated payload data=%q err=%v", data, err)
 	}
 }
 

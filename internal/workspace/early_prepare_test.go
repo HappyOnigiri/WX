@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/config"
+	"github.com/HappyOnigiri/WX/internal/discovery"
+	"github.com/HappyOnigiri/WX/internal/domain"
 )
 
 func TestPrepareStagedPreservesRulesIndexFilterAndHookContract(t *testing.T) {
@@ -115,6 +117,13 @@ func TestPrepareStagedPreservesRulesIndexFilterAndHookContract(t *testing.T) {
 	if status := gitOutput(t, target, "status", "--porcelain", "--untracked-files=no"); status != "" {
 		t.Fatalf("dirty final tree/index: %s", status)
 	}
+	trackedInfo, err := os.Lstat(filepath.Join(target, "tracked"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trackedInfo.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("regular tracked file was classified as a symlink")
+	}
 }
 
 func TestPrepareStagedDefaultsDisabledIncludesAndGitlinks(t *testing.T) {
@@ -138,6 +147,9 @@ func TestPrepareStagedDefaultsDisabledIncludesAndGitlinks(t *testing.T) {
 			gitCommand(t, source, "commit", "-m", "gitlink")
 			oid = gitOutput(t, source, "rev-parse", "HEAD")
 			_, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error {
+				if _, statErr := os.Stat(filepath.Join(target, "module")); !os.IsNotExist(statErr) {
+					t.Errorf("gitlink directory appeared during early stage: %v", statErr)
+				}
 				for _, path := range defaultIncludeNames {
 					_, err := os.Stat(filepath.Join(target, path))
 					if enabled && err != nil {
@@ -160,6 +172,72 @@ func TestPrepareStagedDefaultsDisabledIncludesAndGitlinks(t *testing.T) {
 				t.Fatalf("gitlink status: %s", got)
 			}
 		})
+	}
+}
+
+// 複数 repository の early/remaining 区間は、開始順の 1 始まり scope を持つ。
+func TestPrepareStagedScopesEachRepositoryFromOne(t *testing.T) {
+	t.Parallel()
+	firstSource, firstRepo, preparer, firstOID, firstTarget := prepareEdgesFixture(t)
+	secondSource := filepath.Join(filepath.Dir(firstSource), "second")
+	if err := os.Mkdir(secondSource, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, secondSource, "init", "-b", "main")
+	gitCommand(t, secondSource, "config", "user.name", "test")
+	gitCommand(t, secondSource, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(secondSource, "tracked"), []byte("second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, secondSource, "add", ".")
+	gitCommand(t, secondSource, "commit", "-m", "initial")
+	secondOID := gitOutput(t, secondSource, "rev-parse", "HEAD")
+	secondCommon := gitOutput(t, secondSource, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	secondRepo := discovery.Repository{
+		ID:           "second",
+		MainPath:     domain.CanonicalPath(secondSource),
+		CommonDir:    domain.CanonicalPath(secondCommon),
+		RelativePath: "second",
+	}
+	firstRepo.RelativePath = "first"
+	preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	preparer.Phases = &PhaseTimings{}
+	secondTarget := filepath.Join(preparer.SlotPath, "second")
+	var registrationScopes, checkoutScopes []PhaseScope
+	preparer.Git.SetBeforeRunAtHook(func(args []string) {
+		active, ok := preparer.Phases.Active()
+		if !ok {
+			return
+		}
+		hasArg := func(want string) bool {
+			for _, arg := range args {
+				if arg == want {
+					return true
+				}
+			}
+			return false
+		}
+		if active.Name == "git-register" && hasArg("add") && hasArg("worktree") {
+			registrationScopes = append(registrationScopes, active.Scope)
+		}
+		if active.Name == "checkout" && hasArg("checkout-index") {
+			checkoutScopes = append(checkoutScopes, active.Scope)
+		}
+	})
+	_, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{
+		{Repository: firstRepo, Target: firstTarget, OID: firstOID},
+		{Repository: secondRepo, Target: secondTarget, OID: secondOID},
+	}, nil, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFirst := PhaseScope{Target: "first", Index: 1, Total: 2}
+	wantSecond := PhaseScope{Target: "second", Index: 2, Total: 2}
+	if len(registrationScopes) != 2 || registrationScopes[0] != wantFirst || registrationScopes[1] != wantSecond {
+		t.Fatalf("registration scopes=%+v, want first=%+v second=%+v", registrationScopes, wantFirst, wantSecond)
+	}
+	if len(checkoutScopes) != 2 || checkoutScopes[0] != wantFirst || checkoutScopes[1] != wantSecond {
+		t.Fatalf("checkout scopes=%+v, want first=%+v second=%+v", checkoutScopes, wantFirst, wantSecond)
 	}
 }
 

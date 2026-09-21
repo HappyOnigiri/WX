@@ -146,6 +146,24 @@ func TestValidateExistingWorktreeOwnedForStatesCoversPhysicalAndGitDivergence(t 
 	})
 }
 
+// slot ID を持たない広い ownership 検査は、READY lock の有無ではなく登録と物理所有だけを確認する。
+func TestValidateExistingWorktreeWithoutSlotDoesNotRequireGitLock(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, string(repo.MainPath), "worktree", "unlock", target)
+	if err := preparer.validateExistingWorktree(ctx, repo, target, head); err != nil {
+		t.Fatalf("unlocked worktree failed slot-independent ownership validation: %v", err)
+	}
+}
+
 func TestWorktreeOwnershipValidationCoversPhysicalAndGitBoundaries(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
