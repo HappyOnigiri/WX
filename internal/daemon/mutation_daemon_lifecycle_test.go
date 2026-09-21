@@ -524,6 +524,7 @@ func TestMutationDescribeReadyMismatchDistinguishesColdAndInvalidReadyWorktrees(
 func TestMutationSnapshotPropagatesMarkArchivedFailure(t *testing.T) {
 	t.Parallel()
 	ctx, manager, store, workspaceRecord, resolved, databasePath := managerCoverageFixture(t, "repository")
+	logs := mutationLog(t, manager)
 	slot := testSlot(t, manager, string(workspaceRecord.ID), "snapshot-mark-archived", 1, "LEASED")
 	worktreePath := filepath.Join(slot.Path, "repository")
 	gitRun(t, string(workspaceRecord.Repositories[0].MainPath), "worktree", "add", "--detach", worktreePath, resolved[0].OID)
@@ -546,6 +547,9 @@ func TestMutationSnapshotPropagatesMarkArchivedFailure(t *testing.T) {
 	t.Cleanup(func() { _, _ = db.Exec(`DROP TRIGGER IF EXISTS mutation_snapshot_mark_archived_failure`) })
 	if err := manager.snapshotSession(ctx, released); err == nil {
 		t.Fatal("snapshotSession ignored MarkArchived failure")
+	}
+	if strings.Contains(logs.tail(), "submodule work could not be snapshotted") {
+		t.Fatalf("empty submodule snapshot was reported as unsaved work: %s", logs.tail())
 	}
 	if slotAfter, err := store.Slot(ctx, slot.ID); err != nil || slotAfter.State != "SNAPSHOTTING" {
 		t.Fatalf("slot after MarkArchived failure=%+v err=%v, want SNAPSHOTTING", slotAfter, err)
