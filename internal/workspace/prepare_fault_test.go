@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -105,6 +106,104 @@ func TestPinnedPrepareFailureFullyCleansUpAndRemovesOwnershipMarker(t *testing.T
 	}
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("pinned cleanup left the target directory: %v", err)
+	}
+}
+
+// 既存 worktree の CoW 交換残骸は、通常の再準備として上書きせず所有権不確実として返す。
+func TestPrepareRejectsExistingCOWTemporary(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, ".wx-cow-leftover"), []byte("interrupted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := preparer.Prepare(ctx, repo, target, head, "slot")
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("existing CoW temporary was accepted: %v", err)
+	}
+}
+
+// completePrepare は link 配置後にも target identity を再検証し、検証後に置き換えられた directory を READY へ進めない。
+func TestCompletePrepareRejectsTargetReplacementBeforeFinalChecks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.PrepareForRestore(ctx, repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := preparer.WorktreeIdentity(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := &lockedTarget{root: preparer.OwnedRoot, relative: relative, identity: identity, existing: true, close: func() {}}
+	result := &submodulePhaseResult{}
+	err = preparer.completePrepare(ctx, repo, target, head, "slot", preparePhaseRestore, locked, cowPlacement{}, result,
+		func() error { return nil },
+		func() error { return nil },
+		func() error { return nil },
+		func() error {
+			backup := target + ".replaced"
+			if err := os.Rename(target, backup); err != nil {
+				return err
+			}
+			return os.Mkdir(target, 0o700)
+		})
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("target replacement after validation was accepted: %v", err)
+	}
+}
+
+type replaceTargetDuringOwnershipValidation struct {
+	target   string
+	replaced bool
+}
+
+func (v *replaceTargetDuringOwnershipValidation) ValidateWorktreeOwnership(context.Context, state.WorktreeOwnershipRequest) (state.WorktreeOwnership, error) {
+	if !v.replaced {
+		backup := v.target + ".old"
+		if err := os.Rename(v.target, backup); err != nil {
+			return state.WorktreeOwnership{}, err
+		}
+		if err := os.Mkdir(v.target, 0o000); err != nil {
+			return state.WorktreeOwnership{}, err
+		}
+		v.replaced = true
+	}
+	return state.WorktreeOwnership{}, nil
+}
+
+// prepareLockedTarget は既存 target の identity を取得できない場合に、空の identity のまま書込みへ進まない。
+func TestPrepareLockedTargetPropagatesExistingIdentityOpenFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.Prepare(ctx, repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	preparer.Ownership = &replaceTargetDuringOwnershipValidation{target: target}
+	if _, err := preparer.prepareLockedTarget(ctx, repo, target, head, "slot", preparePhaseCreate, root); err == nil {
+		t.Fatal("existing target identity open failure was ignored")
 	}
 }
 
@@ -258,6 +357,53 @@ func TestFinishRestoreWithIdentityPropagatesUnlockAndLockFailures(t *testing.T) 
 	}
 }
 
+// FinishRestoreWithIdentity が lock 後にも同じ physical directory を要求することを、成功した Git lock 後の path 置換で確認する。
+// testlint:allow-serial -- プロセス全体の PATH を変更するため
+func TestFinishRestoreWithIdentityRejectsReplacementAfterReadyLock(t *testing.T) {
+	ctx := context.Background()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := preparer.PrepareForRestore(ctx, repo, target, head, "slot"); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	wrapper := filepath.Join(bin, "git")
+	script := `#!/bin/sh
+case " $* " in
+  *" worktree lock "*)
+    "$WX_REPLACE_REAL_GIT" "$@"
+    status=$?
+    if [ "$status" -eq 0 ]; then
+      backup="$WX_REPLACE_TARGET.replaced"
+      rm -rf "$backup"
+      mv "$WX_REPLACE_TARGET" "$backup"
+      cp -Rp "$backup" "$WX_REPLACE_TARGET"
+      rm -rf "$backup"
+    fi
+    exit "$status"
+    ;;
+esac
+exec "$WX_REPLACE_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_REPLACE_REAL_GIT", realGit)
+	t.Setenv("WX_REPLACE_TARGET", target)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	err = preparer.FinishRestoreWithIdentity(ctx, repo, target, head, "slot", "")
+	if !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replacement after READY lock was accepted: %v", err)
+	}
+}
+
 // TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailuresは、existingTargetStateを直接呼び出してfilesystem error分岐を確認する。
 // 通常のPrepare flowではprepareLockedTargetが直前に同じLstatを行うため、独立して到達できない。
 func TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailures(t *testing.T) {
@@ -313,6 +459,27 @@ func TestExistingTargetStatePropagatesLstatAndDirectoryOpenFailures(t *testing.T
 			t.Fatal("existing target state opened an unsearchable directory")
 		}
 	})
+}
+
+// 空の allocation shell でも marker path を組めない repository ID は成功扱いにしない。
+func TestExistingTargetStatePropagatesInvalidMarkerPath(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owner, relative, err := domain.OpenOwnedRoot(root, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	badRepo := repo
+	badRepo.ID = domain.RepositoryID("../invalid")
+	if _, err := preparer.existingTargetState(ctx, badRepo, target, head, "slot", preparePhaseCreate, root, owner, relative); err == nil {
+		t.Fatal("invalid ownership marker path was accepted for an empty allocation")
+	}
 }
 
 // TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailuresは、CREATE phaseのPREPARINGからREADYへの終了遷移を確認する。
