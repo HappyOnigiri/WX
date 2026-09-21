@@ -32,6 +32,9 @@ internal/i18n/message.go	ast-v1:5c04663a702f249fb1630a9491845749061f26254f145c77
 internal/pool/branch.go	ast-v1:b8ce96dd324350e66b1d8f47ac52fa0084c50d342352338de679c63b614496f6	matchedは0との比較にのみ使うため、正のcountを負へ変えても分岐結果は変わらず、repository数の整数overflowも不可能なため
 internal/pool/branch.go	ast-v1:5cf165baa8b7af88c4f94e55b6982bb07d510942e00d42e3527e583d15feaa09	matched==0のlen(applicable)==1は直前の分岐で処理済みのため、後続の>1を>=1へ変えても到達結果は変わらないため
 internal/workspace/cow_place.go	ast-v1:83de7f2fd36878bc475a55dc0c12a68602da0f262cb6f90de072f4b61d1c8db4	An empty LFS OID set returns from readCOWLFSBlobPointers before any Git or filesystem operation, so > and >= are observationally equivalent.
+internal/workspace/cow_index.go	ast-v1:70e1ad721781f13a534762414a62571d7b4fdc2a76dbd45c33f19d043f766f31	rewritten map は結果の候補集合ではなく make の初期 capacity にだけ使うため、nil 判定を反転しても戻り値と内容は変わらない等価変異
+internal/workspace/cow_place.go	ast-v1:e7b37c196d341f4c3826576b897c3eea7f5b2a7434a23f550860cace76c91caf	共有接頭辞の再利用は open/close の回数だけを変え、各 path の descriptor と配置結果は変わらないため、比較子の反転は観測可能な差がない
+internal/workspace/cow_place.go	ast-v1:08fd1139072b004b8621aad83431a21adb82d3cc58ad5acb7ef168fae39b81e5	共有接頭辞の再利用は open/close の回数だけを変え、各 path の descriptor と配置結果は変わらないため、比較子の反転は観測可能な差がない
 internal/workspace/cow_share.go	ast-v1:d15863184b3bb50bac31b42568f1832ac39b0ce8154722760d4353d795fa4d5b	workers is clamped to 1 for all workers <= 1, so < and <= are observationally equivalent for every integer input.
 internal/workspace/capacity.go	ast-v1:bab7d79f6eb40108588ef39740e1507bbe656d4b176ff650058f6185c8861eb6	The saturation branch returns MaxInt64 on and above the exact boundary, so > and >= produce the same result for every int64 input.
 internal/workspace/fingerprint.go	ast-v1:7f4da28faee5596de43bd39af6fcb92be36843722ee2a8ff051916bc54834648	The comparator only ties duplicate normalized link paths; inspectLinkSources gives those entries identical serialized values, so < and <= cannot change the fingerprint output.

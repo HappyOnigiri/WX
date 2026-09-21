@@ -32,6 +32,31 @@ func testUsageNamespaces() []UsageNamespace {
 	return []UsageNamespace{{Path: "_unbound"}, {Path: "_recovery/workspace-snapshots", Files: true}}
 }
 
+func TestUsageEntryScopesRejectsUnsafeNamespacesAndKeepsValidBoundaries(t *testing.T) {
+	t.Parallel()
+	entries := usageEntryScopes(nil, []UsageNamespace{
+		{Path: "."},
+		{Path: "/"},
+		{Path: "../escape"},
+		{Path: "valid/ns"},
+		{Path: "snapshots", Files: true},
+	})
+	for _, invalid := range []string{".", "/", "../escape"} {
+		if _, ok := entries[invalid]; ok {
+			t.Fatalf("unsafe namespace %q was registered: %v", invalid, entries)
+		}
+	}
+	if got := entries["valid"]; got != usageScopeGate {
+		t.Fatalf("valid namespace gate=%v, want %v", got, usageScopeGate)
+	}
+	if got := entries["valid/ns"]; got != usageScopeNamespace {
+		t.Fatalf("valid namespace scope=%v, want %v", got, usageScopeNamespace)
+	}
+	if got := entries["snapshots"]; got != usageScopeSnapshots {
+		t.Fatalf("snapshot namespace scope=%v, want %v", got, usageScopeSnapshots)
+	}
+}
+
 func usageWrite(t *testing.T, dir, name, data string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
