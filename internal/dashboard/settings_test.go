@@ -91,6 +91,38 @@ func TestRepositoryEnvironmentBuildsRepositoryConfigAction(t *testing.T) {
 	}
 }
 
+// TestRepositoryDefaultsEnvironmentBuildsWorkspaceScopedConfigAction は、repository defaults
+// を workspace の子階層として編集するとき、対象 workspace と defaults の指定を両方残すことを確認する。
+func TestRepositoryDefaultsEnvironmentBuildsWorkspaceScopedConfigAction(t *testing.T) {
+	const workspace = "/tmp/workspace-one"
+	cfg := config.DefaultsV2()
+	cfg.Workspaces[workspace] = config.Workspace{}
+	m := newModel(context.Background(), Options{Config: cfg})
+	defaultsIndex := -1
+	for index, environment := range m.configEnvironments() {
+		if environment.scope == config.V2ScopeWorkspace && environment.repositoryDefaults {
+			defaultsIndex = index
+			break
+		}
+	}
+	if defaultsIndex < 0 {
+		t.Fatal("repository defaults environment is missing")
+	}
+	m.tab, m.settingsOpen, m.settingsEnv, m.selected = 2, true, defaultsIndex, 0
+	updated, _ := m.activate()
+	m = updated.(model)
+	if m.target != workspace || m.mode != modeChoice || m.configMeta.Key == "" {
+		t.Fatalf("repository defaults activation=%+v, want workspace target and choices", m)
+	}
+	m.editOp, m.input = config.EditSet, "hot"
+	m.finishPending()
+	key := strings.TrimPrefix(m.configMeta.Key, "repository_defaults.")
+	want := []string{"config", "--workspace", workspace, "--repository-defaults", key, "hot"}
+	if !slices.Equal(m.result.Args, want) {
+		t.Fatalf("repository defaults action=%v, want %v", m.result.Args, want)
+	}
+}
+
 func TestConfigChoicesLimitCustomInputToOpenEndedKinds(t *testing.T) {
 	m := newModel(context.Background(), Options{Config: config.Defaults()})
 	for _, meta := range m.catalog {
