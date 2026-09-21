@@ -245,9 +245,22 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 		path := diagnostic.finish(false, -1, false, false)
 		return &PrepareCommandError{FailureID: diagnostic.failureID, DetailPath: path, ExitCode: -1, Err: err}
 	}
-	cmd.Stdout = prepareDiagnosticWriter{diagnostic: diagnostic, stream: "stdout"}
-	cmd.Stderr = prepareDiagnosticWriter{diagnostic: diagnostic, stream: "stderr"}
-	runErr := cmd.Run()
+	configurePrepareProcessGroup(cmd)
+	capture, err := newPrepareOutputCapture(cmd, diagnostic)
+	if err != nil {
+		diagnostic.writeErrorMessage(err)
+		path := diagnostic.finish(false, -1, false, false)
+		return &PrepareCommandError{FailureID: diagnostic.failureID, DetailPath: path, ExitCode: -1, Err: err}
+	}
+	runErr := cmd.Start()
+	// 親の write 端は起動直後に閉じる。子へは複製済みで、保持し続けると回収が EOF に達しない。
+	capture.closeWriters()
+	if runErr == nil {
+		runErr = cmd.Wait()
+	}
+	if !capture.finish(prepareOutputDrainGrace) {
+		diagnostic.markCaptureIncomplete()
+	}
 	timedOut := errors.Is(cctx.Err(), context.DeadlineExceeded)
 	canceled := !timedOut && errors.Is(cctx.Err(), context.Canceled)
 	exitCode := -1
