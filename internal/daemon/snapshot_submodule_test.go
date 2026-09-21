@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/HappyOnigiri/WX/internal/diag"
+	"github.com/HappyOnigiri/WX/internal/state"
 )
 
 // 保存できない作業を子に残したまま返した slot は、保持期限を過ぎても GC が消さない。
@@ -86,6 +87,80 @@ func TestEndedWorktreeWithUnsavedSubmoduleWorkSurvivesGC(t *testing.T) {
 	remaining, err := store.ProtectedSlots(ctx)
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("protected slots after the explicit deletion=%+v err=%v", remaining, err)
+	}
+}
+
+// 使用中の session を止めた `clear --all` は、その停止の snapshot で初めて判明した未保全の子作業も残す。
+// 受付時点では保護が無いので、同じ run が snapshot 後に判定し直さないと利用者が破棄を選んでいない作業を消す。
+func TestClearAllKeepsSubmoduleWorkFoundDuringItsOwnSnapshot(t *testing.T) {
+	t.Parallel()
+	requireDaemonIntegration(t)
+	f := runningManagerFixture(t, func(s *managerFixtureSetup) {
+		s.Config.Pool.WarmPerWorkspace = 0
+		s.Config.Retention.EndedWorktree.Duration = 0
+		s.Config.Discovery.ReconcileInterval.Duration = time.Hour
+		s.Config.Readiness.Timeout.Duration = 60 * time.Second
+	})
+	store, m := f.Store, f.Manager
+	repository := filepath.Join(f.Root, "repo")
+	initGitRepoWithSubmodule(t, repository)
+	ctx := context.Background()
+	lease, err := m.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitReady(ctx, m, 60*time.Second, lease.SessionID, lease.Token); err != nil {
+		t.Fatalf("wait for the cold start: %v", err)
+	}
+	// 未解消 index の子は capsule へ入らない。session が生きているので保護記録はまだ無い。
+	conflictInSubmodule(t, lease.Path)
+	if protected, err := store.ProtectedSlots(ctx); err != nil || len(protected) != 0 {
+		t.Fatalf("protected slots before the clear=%+v err=%v", protected, err)
+	}
+	session, err := store.SessionByID(ctx, lease.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slotID := session.SlotID
+	reply, err := m.Clean(ctx, CleanRequest{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, _ := reply["run_id"].(string)
+	if targetByID(replyTargets(t, reply), slotID).State != cleanTargetPending {
+		t.Fatalf("targets at acceptance=%+v", replyTargets(t, reply))
+	}
+	// client の停止確認で通常の返却・snapshot 経路へ進める。daemon は signal を送らない。
+	var request state.TerminationRequest
+	waitUntil(t, 30*time.Second, func() bool {
+		stored, found, err := store.PendingTermination(ctx, lease.SessionID)
+		request = stored
+		return err == nil && found
+	})
+	if err := m.ConfirmTermination(ctx, lease.SessionID, lease.Token, request.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 60*time.Second, func() bool {
+		status, err := m.CleanStatus(ctx, runID)
+		return err == nil && status["state"] == state.CleanRunDone
+	})
+	status, err := m.CleanStatus(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := targetByID(replyTargets(t, status), slotID)
+	if target.State != cleanTargetSkipped || !strings.Contains(target.Reason, "--discard") {
+		t.Fatalf("clear --all target=%+v, want it kept with the --discard guidance", target)
+	}
+	if _, err := os.Stat(lease.Path); err != nil {
+		t.Fatalf("clear --all removed a worktree that holds unsaved submodule work: %v", err)
+	}
+	if slot, err := store.Slot(ctx, slotID); err != nil || slot.State != "SNAPSHOTTED" {
+		t.Fatalf("slot after the clear=%+v err=%v, want it left as SNAPSHOTTED", slot, err)
+	}
+	protected, err := store.ProtectedSlots(ctx)
+	if err != nil || len(protected) != 1 || protected[0].SlotID != slotID {
+		t.Fatalf("protected slots after the clear=%+v err=%v", protected, err)
 	}
 }
 

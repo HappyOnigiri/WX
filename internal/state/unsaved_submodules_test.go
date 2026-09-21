@@ -86,8 +86,19 @@ func TestReplaceUnsavedSubmodulesAndRemovalClearRecords(t *testing.T) {
 	if slots[0].Path == "" || slots[0].SlotID != "protected" {
 		t.Fatalf("protected slot identity=%+v", slots[0])
 	}
-	if _, changed, err := store.ScheduleRemoval(ctx, "protected", "session-protected"); err != nil || !changed {
-		t.Fatalf("schedule removal changed=%v err=%v", changed, err)
+	if count, err := store.UnsavedSubmoduleCount(ctx, "protected"); err != nil || count != 1 {
+		t.Fatalf("unsaved submodule count=%d err=%v, want the remaining record", count, err)
+	}
+	// 自動回収と同じ予約経路は、候補選定の後に記録が付いた slot も予約させない。
+	if _, changed, err := store.ScheduleRemoval(ctx, "protected", "session-protected"); err != nil || changed {
+		t.Fatalf("schedule removal changed=%v err=%v, want it refused while the work is unsaved", changed, err)
+	}
+	if slot, err := store.Slot(ctx, "protected"); err != nil || slot.State != "SNAPSHOTTED" {
+		t.Fatalf("slot after the refused reservation=%+v err=%v", slot, err)
+	}
+	// 利用者が明示した破棄だけが実体を消し、そこでは記録も一緒に片付く。
+	if _, changed, err := store.ScheduleDiscardRemoval(ctx, "protected"); err != nil || !changed {
+		t.Fatalf("schedule discard removal changed=%v err=%v", changed, err)
 	}
 	if _, err := store.FinishRemoval(ctx, "protected"); err != nil {
 		t.Fatal(err)

@@ -44,6 +44,15 @@ func (s *Store) ReplaceUnsavedSubmodules(ctx context.Context, slotID, repository
 	return tx.Commit()
 }
 
+// UnsavedSubmoduleCount は slot 1 件に残る未保全 submodule 作業の記録数を返す。
+// clean は受付時点の候補だけで削除対象を確定すると、同じ run の snapshot が後から追加した保護を見落とす。
+// 削除へ進む直前にこれを読み直し、保護が付いた slot を残す判断に使う。
+func (s *Store) UnsavedSubmoduleCount(ctx context.Context, slotID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM unsaved_submodules WHERE slot_id=?`, slotID).Scan(&count)
+	return count, err
+}
+
 // ProtectedSlots は保護中の slot を path 順に返す。`wx doctor` が回収されない理由を説明するために使う。
 func (s *Store) ProtectedSlots(ctx context.Context) ([]ProtectedSlot, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT us.slot_id,rt.path||'/'||sl.rel_path,us.repository_id,us.path,us.reasons,us.detected_at

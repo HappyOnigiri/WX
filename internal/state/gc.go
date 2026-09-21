@@ -155,6 +155,9 @@ func (s *Store) StandbyGCCandidates(ctx context.Context, warm func(root string) 
 	return out, rows.Err()
 }
 
+// ScheduleRemoval は保存済みとみなせる slot の削除を予約し、予約できなければ changed=false を返す。
+// 未保全の submodule 作業を持つ slot は同じ compare-and-swap で弾く。候補を読んでから予約するまでに
+// snapshot が保護を追加しても消さないためである。明示的な破棄は ScheduleDiscardRemoval が担う。
 func (s *Store) ScheduleRemoval(ctx context.Context, slotID, sessionID string) (Job, bool, error) {
 	job, err := newJob("REMOVE", "", slotID, sessionID)
 	if err != nil {
@@ -172,7 +175,8 @@ func (s *Store) ScheduleRemoval(ctx context.Context, slotID, sessionID string) (
 		return Job{}, false, err
 	}
 	job.WorkspaceID = workspaceID
-	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=? AND ((owner_session_id IS NULL AND state IN ('READY','STALE')) OR state='SNAPSHOTTED')`, now(), slotID)
+	res, err := tx.ExecContext(ctx, `UPDATE slots SET state='REMOVING',owner_session_id=NULL,updated_at=? WHERE id=? AND ((owner_session_id IS NULL AND state IN ('READY','STALE')) OR state='SNAPSHOTTED')
+ AND NOT EXISTS (SELECT 1 FROM unsaved_submodules us WHERE us.slot_id=slots.id)`, now(), slotID)
 	if err != nil {
 		return Job{}, false, err
 	}
