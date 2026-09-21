@@ -256,9 +256,11 @@ func TestLFSCacheRelativePartsMatchCapacityAndRepair(t *testing.T) {
 	if !ok || repaired != want {
 		t.Fatalf("repair relative=%q ok=%v, want %q", repaired, ok, want)
 	}
-	repo := discovery.Repository{CommonDir: "/tmp/common"}
-	if got := lfsCachePath(repo, "sha256:"+value); got != filepath.Join("/tmp/common", want) {
-		t.Fatalf("capacity path=%q, want %q", got, filepath.Join("/tmp/common", want))
+	common := t.TempDir()
+	repo := discovery.Repository{CommonDir: domain.CanonicalPath(common)}
+	wantCache := filepath.Join(common, want)
+	if got := lfsCachePath(repo, "sha256:"+value); got != wantCache {
+		t.Fatalf("capacity path=%q, want %q", got, wantCache)
 	}
 	if _, _, ok := lfsCacheRelativeParts("sha256:" + strings.Repeat("z", 64)); ok {
 		t.Fatal("non-hex object ID accepted")
