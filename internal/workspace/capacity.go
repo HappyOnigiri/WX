@@ -551,12 +551,11 @@ func (p *Preparer) addRepositoryCopyBytes(repo discovery.Repository, estimate *C
 }
 
 func lfsCachePath(repo discovery.Repository, oid string) string {
-	value := strings.TrimPrefix(strings.ToLower(oid), "sha256:")
-	if len(value) != 64 {
+	relative, ok := cacheLFSRelativePath(oid)
+	if !ok {
 		return filepath.Join(string(repo.CommonDir), "lfs", "objects")
 	}
-	// git-lfs は先頭 2 桁・次の 2 桁で directory を分け、leaf には OID 全体を使う。
-	return filepath.Join(string(repo.CommonDir), "lfs", "objects", value[:2], value[2:4], value)
+	return filepath.Join(string(repo.CommonDir), relative)
 }
 
 func capacityCacheState(path string) (bool, int64, error) {

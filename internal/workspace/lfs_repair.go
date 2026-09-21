@@ -196,15 +196,26 @@ func (p *Preparer) RepairLFSObjects(ctx context.Context, repo discovery.Reposito
 	return result, err
 }
 
-func cacheLFSRelativePath(oid string) (string, bool) {
+// lfsCacheRelativeParts は git-lfs の cache 配置を common directory からの相対で返す。
+// git-lfs は OID の先頭 2 桁・次の 2 桁で directory を分け、leaf には OID 全体を使う。
+// 容量推定・repair・CoW compaction が同じ object を指すよう、この組み立てだけを使う。
+func lfsCacheRelativeParts(oid string) (directory, leaf string, ok bool) {
 	value := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(oid)), "sha256:")
 	if len(value) != 64 {
-		return "", false
+		return "", "", false
 	}
 	if _, err := hex.DecodeString(value); err != nil {
+		return "", "", false
+	}
+	return filepath.Join("lfs", "objects", value[:2], value[2:4]), value, true
+}
+
+func cacheLFSRelativePath(oid string) (string, bool) {
+	directory, leaf, ok := lfsCacheRelativeParts(oid)
+	if !ok {
 		return "", false
 	}
-	return filepath.Join("lfs", "objects", value[:2], value[2:4], value), true
+	return filepath.Join(directory, leaf), true
 }
 
 func ensureLFSCacheDirectory(root *os.Root, relative string) error {
