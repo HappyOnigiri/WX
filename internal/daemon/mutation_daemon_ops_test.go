@@ -242,6 +242,9 @@ func TestMutationDaemonOpsMessageAndUsageBoundaries(t *testing.T) {
 		if got := slotRepositoryViews(nil); got != nil {
 			t.Fatalf("empty repository views=%+v, want nil", got)
 		}
+		if got := slotRepositoryViews(map[string]workspace.RepositoryUsage{}); got != nil {
+			t.Fatalf("initialized empty repository views=%+v, want nil", got)
+		}
 		got := slotRepositoryViews(map[string]workspace.RepositoryUsage{
 			"z-repo": {Files: 1, AllocatedBytes: 11, SharedBytes: 4},
 			"a-repo": {Files: 2, AllocatedBytes: 6, SharedBytes: 1},
