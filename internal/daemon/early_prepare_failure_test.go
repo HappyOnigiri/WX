@@ -139,3 +139,55 @@ func TestStandbyPrepareFailureIsStillQuarantined(t *testing.T) {
 		t.Fatalf("slot=%+v: %v", slot, err)
 	}
 }
+
+// 通常の返却が early ready 後の準備失敗より先に着いても、作業は snapshot を通る。
+// 失敗の記録を STARTING/ACTIVE に限ると RELEASING で隔離へ倒れ、返却済みの作業が snapshot に届かない。
+func TestPrepareFailureAfterReleaseStillSnapshots(t *testing.T) {
+	t.Parallel()
+	requireDaemonIntegration(t)
+	f := runningManagerFixture(t, func(s *managerFixtureSetup) {
+		s.Config.Worktree.Undefined = "hot"
+		s.Config.Pool.WarmPerWorkspace = 0
+		s.Config.Retention.EndedWorktree.Duration = 0
+		s.Config.Readiness.Timeout.Duration = 10 * time.Second
+	})
+	repository := filepath.Join(f.Root, "repo")
+	initGitRepo(t, repository)
+	// hook を barrier で止め、early ready と返却を済ませてから失敗させて順序を固定する。
+	barrier := filepath.Join(f.Root, "allow-failure")
+	installPostCheckoutHook(t, repository, "#!/bin/sh\nwhile [ ! -e '"+barrier+"' ]; do sleep 0.01; done\nprintf 'post-checkout refused after release\\n' >&2\nexit 3\n")
+	ctx := context.Background()
+	lease, err := f.Manager.ResolveAndLease(ctx, repository, nil, "codex", os.Getpid(), leaseAttrs{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 60*time.Second, func() bool {
+		slot, slotErr := f.Store.Slot(ctx, lease.SessionID)
+		return slotErr == nil && slot.EarlyReadyAt != "" && slot.State == "PREPARING"
+	})
+	if err := os.WriteFile(filepath.Join(lease.Path, "untracked.txt"), []byte("work\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Manager.Release(ctx, lease.SessionID, lease.Token, "test"); err != nil {
+		t.Fatal(err)
+	}
+	released, err := f.Store.SessionByID(ctx, lease.SessionID)
+	if err != nil || released.State != "RELEASING" {
+		t.Fatalf("session=%+v: %v", released, err)
+	}
+	if err := os.WriteFile(barrier, []byte("go\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, 60*time.Second, func() bool {
+		slot, slotErr := f.Store.Slot(ctx, lease.SessionID)
+		return slotErr == nil && slot.State == "SNAPSHOTTED"
+	})
+	slot, err := f.Store.Slot(ctx, lease.SessionID)
+	if err != nil || !strings.HasPrefix(slot.FailureCode, "PREPARE_FAILED") {
+		t.Fatalf("slot=%+v: %v", slot, err)
+	}
+	snapshots, err := f.Store.Snapshots(ctx, lease.SessionID)
+	if err != nil || len(snapshots) == 0 {
+		t.Fatalf("release before the failure produced no snapshot: %d: %v", len(snapshots), err)
+	}
+}

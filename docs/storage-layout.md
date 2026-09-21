@@ -29,6 +29,10 @@ slot内の配置名の衝突判定も小文字化して行い（APFSが既定で
 `system.storage.worktree_root`を変えても既存slotが登録済みのroot世代で動き続けることは、`internal/daemon`の
 [`TestWorktreeRootChangeKeepsExistingSessionsAndPlacesNewOnesInTheNewRoot`](../internal/daemon/roots_integration_test.go)が固定している。
 
+clientはどのroot世代の貸出かを自分では判定できないため、daemonが貸出応答の`Lease.RootPath`へ載せる。
+clientが現行設定のrootを所有rootに決め打つと、旧世代に残る貸出をownership root外として起動前に拒否してしまう。
+inode identityの照合は従来どおり行うので、root世代を選べることが所有権の検査を緩めることにはならない。
+
 multi_repositoryのworkspaceスナップショットは、slotディレクトリ自体をbundle rootとしてtarに詰める。
 そのためリポジトリのworktreeと`.wx-owner-*`はどちらも除外リストに載せる（`workspaceRecoveryExclusions`）。
 除外に使うのは`slot_repositories.dir_name`で、ソース側の`workspace_repositories.relative_path`ではない。

@@ -37,12 +37,16 @@
    待った先で準備が失敗していても、エージェントは既にそのworktreeで作業しているため止めない。
    slotは隔離せず貸出のまま`LEASED`へ進め、失敗は`slots.failure_code`・`failure_detail_path`・`failure_phase`に残す。
    これは終了時の返却を`DRAINING`へ通し、作業をsnapshotへ届けるためである。
+   返却が準備の失敗より先に着くとslotは`PREPARING`のままsessionだけ`RELEASING`になるので、失敗の記録はこの状態のownerも受ける。
+   弾くと隔離へ倒れて返却済みの作業がsnapshotに届かない。準備完了の遷移が同じsession状態を見て`LEASED`ではなく`DRAINING`を選ぶ。
    失敗した事実は最初の`user-prompt-submit`のstdoutで1回だけエージェントへ伝え、消費済みは`sessions.prepare_notice_delivered_at`に残して再起動後の再送を防ぐ。
    稼働中の不完全さは`wx slots`のSTATE列と`--json`の`prepare_failure_*`、`wx doctor --probe`のfindingから読める。
    readinessのtimeoutとdaemon応答不能はこの扱いに含めない。準備がまだ書き込みを続けている可能性があり、貸出中のworktreeを書き換えないという不変条件に触れるためである。
    `repository_defaults.readiness.mode: full`またはhookが無い起動（`internal/hookconfig`が判定する）は、clientが起動前に全準備を待つ。
    modeとtimeoutは `workspaces.<root>.repository_defaults.readiness.*` または `workspaces.<root>.repositories.<relative>.readiness.*` で上書きできる。
    clientはrepositoryのmain pathを知らないため、daemonが貸出応答へ合成済みの実効値を載せる。
+   RPC handlerの期限上限もこの実効値から要求ごとに解く。
+   起動時の値で固めると、timeoutを増やす設定の再読込の後も旧上限が残り、広告した予算より先にhandlerが打ち切られる。
    合成はslot内のいずれかが`full`なら`full`、timeoutは最長を採る。`full`要求の早期起動は約束を破るが、`early`要求を待たせるのは遅いだけで、最短のtimeoutでは最も遅いrepositoryが必ず失敗するためである。
    checkout hookやprepare commandが起動用の設定・指示を生成・更新する運用では、先行配置がその生成物を含められないため`full`を使う。
    完全一致したwarm slotは両方式とも即時起動する。

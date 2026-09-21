@@ -129,3 +129,50 @@ func TestRestoreForegroundIgnoresInvalidTerminalDescriptor(t *testing.T) {
 		}
 	}
 }
+
+// root reload 後も daemon は旧 root の slot を寿命まで貸し出す。応答が示した root 世代を
+// 起点にしないと、その貸出は現行設定の ownership root の外として起動前に拒否される。
+// identity の照合は root 世代を跨いでも効き続ける。
+func TestOpenLeaseDirectoryUsesTheLeaseRootGeneration(t *testing.T) {
+	rawRoot := t.TempDir()
+	base, err := domain.Canonicalize(rawRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := filepath.Join(string(base), "root-old")
+	newRoot := filepath.Join(string(base), "root-new")
+	retained := filepath.Join(oldRoot, "workspace")
+	if err := os.MkdirAll(retained, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(newRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	opened, identity, err := domain.OpenOwnedDirectory(oldRoot, retained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := opened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.System.Storage.WorktreeRoot = newRoot
+	lease := daemon.Lease{Path: retained, RootPath: oldRoot, RootIdentity: identity}
+	retainedOpen, err := openLeaseDirectory(cfg, lease)
+	if err != nil {
+		t.Fatalf("open a lease retained under the retired root: %v", err)
+	}
+	if err := retainedOpen.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lease.RootIdentity = "vol:0:forged"
+	if forged, err := openLeaseDirectory(cfg, lease); err == nil {
+		_ = forged.Close()
+		t.Fatal("the lease root generation skipped the identity check")
+	}
+	outside := daemon.Lease{Path: filepath.Join(string(base), "outside"), RootPath: oldRoot, RootIdentity: identity}
+	if escaped, err := openLeaseDirectory(cfg, outside); err == nil {
+		_ = escaped.Close()
+		t.Fatal("a path outside the lease root generation was accepted")
+	}
+}

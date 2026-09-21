@@ -63,6 +63,7 @@ func Serve(ctx context.Context) error {
 	store, openErr := state.Open(dbPath)
 	var rpcHandler rpc.Handler
 	var durable rpc.DurableIdempotency
+	var handlerCeilingFunc func() time.Duration
 	if openErr != nil {
 		rpcHandler = DegradedHandler{DatabasePath: dbPath, OpenError: openErr}
 		logger.Error("daemon entered read-only degraded mode", "database", dbPath, "error", openErr)
@@ -75,8 +76,9 @@ func Serve(ctx context.Context) error {
 		defer manager.Close()
 		rpcHandler = Handler{Manager: manager}
 		durable = store
+		handlerCeilingFunc = managerHandlerCeiling(manager)
 	}
-	server := &rpc.Server{Socket: socket, Handler: rpcHandler, Durable: durable, MaxHandlerTimeout: handlerCeiling(cfg.MaxReadinessTimeout())}
+	server := &rpc.Server{Socket: socket, Handler: rpcHandler, Durable: durable, MaxHandlerTimeout: handlerCeiling(cfg.MaxReadinessTimeout()), MaxHandlerTimeoutFunc: handlerCeilingFunc}
 	logger.Info("daemon started", "socket", socket, "protocol_version", rpc.ProtocolVersion, "degraded", openErr != nil)
 	if err := server.Serve(ctx); err != nil {
 		return fmt.Errorf("serve daemon: %w", err)
@@ -125,6 +127,13 @@ func releaseDaemonLock(file *os.File) {
 	}
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 	_ = file.Close()
+}
+
+// managerHandlerCeiling は handler の期限上限を、要求ごとに現在の設定から解く関数を返す。
+// 起動時の値で固めると、readiness の予算を増やす reload の後も古い上限が残り、
+// client が広告された予算まで待てないまま handler が打ち切られる。
+func managerHandlerCeiling(m *Manager) func() time.Duration {
+	return func() time.Duration { return handlerCeiling(m.Config().MaxReadinessTimeout()) }
 }
 
 // RPC handler の期限上限を readiness budget 以上にする。

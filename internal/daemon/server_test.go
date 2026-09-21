@@ -143,3 +143,44 @@ func TestServeStartsRPCAndStopsWithContext(t *testing.T) {
 		t.Fatal("daemon did not stop after context cancellation")
 	}
 }
+
+// RPC handler の期限上限は起動時ではなく要求ごとに現在の設定から解く。
+// 固めたままだと readiness の予算を増やす reload の後も旧上限が残り、
+// client が広告された予算まで待つ前に handler が打ち切られる。
+func TestManagerHandlerCeilingFollowsReloadedReadinessBudget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "worktrees")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openTestStoreAtPath(t, filepath.Join(home, "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	cfg := config.Defaults()
+	cfg.Storage.WorktreeRoot = root
+	cfg.Readiness.Timeout.Duration = 2 * time.Second
+	manager := rootLifetimeManager(t, cfg, store)
+	t.Cleanup(manager.Close)
+	ceiling := managerHandlerCeiling(manager)
+	if startup := ceiling(); startup != rpc.DefaultMaxHandlerTimeout {
+		t.Fatalf("startup ceiling=%s, want %s", startup, rpc.DefaultMaxHandlerTimeout)
+	}
+	document := "version: 2\nsystem:\n  storage:\n    worktree_root: " + root + "\nrepository_defaults:\n  readiness:\n    timeout: 1h\n"
+	path := filepath.Join(home, ".config", "wx", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.reloadConfig(false); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := manager.Config().MaxReadinessTimeout()
+	if want := handlerCeiling(reloaded); ceiling() != want || ceiling() <= reloaded {
+		t.Fatalf("reloaded ceiling=%s, want %s (readiness=%s)", ceiling(), want, reloaded)
+	}
+}
