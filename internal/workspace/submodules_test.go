@@ -488,7 +488,9 @@ func TestPrepareSkipsSubmodulePhaseWhenDisabled(t *testing.T) {
 	for _, command := range invoked {
 		// tracked file を展開する checkout の `--no-recurse-submodules` は submodule を触らないための抑止なので、
 		// 実体化に関わる起動かどうかの判定から外す。
+		// tracked status の `--ignore-submodules=untracked` も同じく、親の設定に依らせないための指定である。
 		probed := strings.ReplaceAll(command, "--no-recurse-submodules", "")
+		probed = strings.ReplaceAll(probed, "--ignore-submodules=untracked", "")
 		if strings.Contains(probed, "submodule") || strings.Contains(probed, ".gitmodules") {
 			t.Fatalf("git command %q ran while submodules were disabled", command)
 		}
