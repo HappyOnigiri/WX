@@ -50,8 +50,11 @@ func (d *Discoverer) Resolve(ctx context.Context, cwd string) (Workspace, error)
 	return d.multiWorkspace(ctx, string(canonical))
 }
 
+// repositoryWorkspace は単一 repository の workspace を作る。workspace root には空を渡し、
+// 設定 scope を root ではなく Git が報告する main worktree に合わせる。cwd が linked worktree のとき
+// root はその checkout を指し、main worktree に設定した既定 branch などの override を取り逃すためである。
 func (d *Discoverer) repositoryWorkspace(ctx context.Context, root string) (Workspace, error) {
-	repo, err := d.inspectRepoForWorkspace(ctx, root, root, ".")
+	repo, err := d.inspectRepoForWorkspace(ctx, "", root, ".")
 	if err != nil {
 		return Workspace{}, err
 	}
@@ -99,6 +102,9 @@ func (d *Discoverer) inspectRepo(ctx context.Context, root, relative string) (Re
 	return d.inspectRepoForWorkspace(ctx, root, root, relative)
 }
 
+// inspectRepoForWorkspace は root の repository を調べ、workspaceRoot を設定の scope として override を解決する。
+// workspaceRoot が空なら、Git が報告した main worktree を scope にする。単一 repository の workspace は
+// main worktree 自身を root とするため、linked worktree から解決しても同じ設定が当たる。
 func (d *Discoverer) inspectRepoForWorkspace(ctx context.Context, workspaceRoot, root, relative string) (Repository, error) {
 	commonRes, err := d.Git.Run(ctx, root, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
@@ -133,7 +139,11 @@ func (d *Discoverer) inspectRepoForWorkspace(ctx context.Context, workspaceRoot,
 		if registeredCommon != common {
 			return errors.New("Git common directory identity changed during discovery")
 		}
-		override := d.Config.RepositoryFor(workspaceRoot, relative, string(mainPath))
+		scope := workspaceRoot
+		if scope == "" {
+			scope = string(mainPath)
+		}
+		override := d.Config.RepositoryFor(scope, relative, string(mainPath))
 		branch := override.DefaultBranch
 		if branch == "" {
 			branch, err = d.resolveDefaultBranch(lockCtx, string(mainPath))
