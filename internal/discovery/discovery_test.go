@@ -618,6 +618,38 @@ func TestPolicyRootSharesRepositoryAndLinkedWorktreeSelection(t *testing.T) {
 	}
 }
 
+// Toplevel は cwd 側の worktree を返す。PolicyRoot と違い linked worktree を main へ寄せない。
+func TestToplevelReturnsTheContainingWorktree(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "main")
+	initDiscoveryRepository(t, main)
+	sub := filepath.Join(main, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(root, "linked")
+	runDiscoveryGit(t, main, "worktree", "add", "--detach", linked)
+	d := Discoverer{Git: &gitx.Runner{Timeout: 5 * time.Second}, Config: config.Defaults()}
+	for cwd, want := range map[string]string{main: main, sub: main, linked: linked} {
+		got, err := d.Toplevel(context.Background(), cwd)
+		if err != nil || got != want {
+			t.Fatalf("cwd=%s toplevel=%s want=%s err=%v", cwd, got, want, err)
+		}
+	}
+	// repository 外は ErrNotRepository で、PolicyRoot のように cwd へ読み替えない。
+	if _, err := d.Toplevel(context.Background(), root); !errors.Is(err, ErrNotRepository) {
+		t.Fatalf("outside a repository err=%v, want ErrNotRepository", err)
+	}
+	if _, err := d.Toplevel(context.Background(), filepath.Join(root, "missing")); err == nil {
+		t.Fatal("missing path accepted")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := d.Toplevel(ctx, main); err == nil {
+		t.Fatal("cancellation ignored")
+	}
+}
+
 func TestPolicyRootRejectsGitExecutionFailureInsteadOfUsingCWD(t *testing.T) {
 	root, bin := t.TempDir(), t.TempDir()
 	fakeGit := filepath.Join(bin, "git")

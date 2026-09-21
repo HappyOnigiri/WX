@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/HappyOnigiri/WX/internal/config"
@@ -75,7 +76,7 @@ func (c Client) RunAgentWithPolicyFrom(ctx context.Context, sourceCWD, agent str
 			fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.resume.branch_needs_worktree", nil))
 			return 2
 		}
-		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirs(c.Config, root), args))
+		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirs(c.Config, root), args), c.directHookEnvironment(ctx, sourceCWD, root, rootErr, options))
 	}
 	c.forceWorktree = options.Force
 	// 保存直後の選択を、既に動いている daemon にも lease より先に反映する。
@@ -171,10 +172,33 @@ func (c Client) selectWorktreeMode(ctx context.Context, options WorktreeOptions,
 	return mode, nil
 }
 
-func runDirectAgentFrom(ctx context.Context, cwd, agent string, args []string) int {
+// directHookEnvironment は wx -n で起動する agent へ、git worktree add を wx new へ書き換えるための
+// 境界と所有者を渡す。保存済み方針が off の起動（-n を付けていない）では何も渡さず、従来どおり素通しさせる。
+// 書き換え先の wx new は off / ask の workspace では daemon に拒否されるため、hot / cold でだけ有効にする。
+// 境界は policy root ではなく起動元 worktree の toplevel である。policy root は main worktree を指すので、
+// linked worktree や wx の slot 内で -n 起動すると cwd の前方一致が常に外れ、無言で素通しになる。
+// commentlint:allow-long -- 境界に toplevel を使う理由（policy root だと素通しになる）を残す
+func (c Client) directHookEnvironment(ctx context.Context, sourceCWD, root string, rootErr error, options WorktreeOptions) []string {
+	// root が解けていないと WorktreeMode はグローバル既定を返す。repository 外で書き換えを有効にすると、
+	// 書き換えた先の wx new が daemon 側の discovery で失敗するだけになる。
+	if !options.Disable || rootErr != nil {
+		return nil
+	}
+	if mode := c.Config.WorktreeMode(root); mode != "hot" && mode != "cold" {
+		return nil
+	}
+	discoverer := discovery.Discoverer{Git: &gitx.Runner{Timeout: c.Config.System.Discovery.Timeout.Duration}, Config: c.Config}
+	toplevel, err := discoverer.Toplevel(ctx, sourceCWD)
+	if err != nil || toplevel == "" {
+		return nil
+	}
+	return []string{envDirectRoot + "=" + toplevel, envDirectOwnerPID + "=" + strconv.Itoa(os.Getpid())}
+}
+
+func runDirectAgentFrom(ctx context.Context, cwd, agent string, args, env []string) int {
 	cmd := exec.CommandContext(ctx, agent, args...)
 	cmd.Dir = cwd
-	cmd.Env = childEnvironment(os.Environ(), nil)
+	cmd.Env = childEnvironment(os.Environ(), env)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	foreground := configureAgentProcess(cmd, int(os.Stdin.Fd()))
 	signals := make(chan os.Signal, 4)

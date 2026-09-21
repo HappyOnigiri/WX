@@ -138,11 +138,12 @@ func worktreeAddHookOutput(payload []byte, workspaceRoot string) (preToolUseHook
 
 // writePreToolUseDecision は判定を 1 つの JSON として stdout へ書く。
 // pre-tool-use の stdout は JSON として解釈されるため、判定が無いときは何も書かない。
-func writePreToolUseDecision(payload []byte) {
+// workspaceRoot は書き換え対象と判定する境界で、管理下 session と wx -n の直接起動で出所が違う。
+func writePreToolUseDecision(payload []byte, workspaceRoot string) {
 	if len(payload) == 0 {
 		return
 	}
-	output, ok := worktreeAddHookOutput(payload, os.Getenv("WX_WORKSPACE_ROOT"))
+	output, ok := worktreeAddHookOutput(payload, workspaceRoot)
 	if !ok {
 		return
 	}

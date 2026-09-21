@@ -88,6 +88,8 @@ func clearHookEnvironment(t *testing.T) {
 		"WX_READINESS_TIMEOUT",
 		"WX_RECOVERY_DISCARDED",
 		"WX_WORKSPACE_ROOT",
+		"WX_DIRECT_ROOT",
+		"WX_DIRECT_OWNER_PID",
 	} {
 		t.Setenv(key, "")
 	}
@@ -357,4 +359,101 @@ func TestReadinessHookSurvivesADaemonThatIsStillRestarting(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// wx -n の直接起動には session が無い。daemon へ一切接続せず、pre-tool-use の判定だけを出す。
+func TestDirectHookDecidesWithoutContactingTheDaemon(t *testing.T) {
+	clearHookEnvironment(t)
+	handler := &recordingHandler{}
+	ctx := startHookServer(t, handler)
+	t.Setenv("WX_DIRECT_ROOT", "/tmp/wx-direct/root")
+	for name, test := range map[string]struct {
+		cwd    string
+		decide bool
+	}{
+		"root":         {cwd: "/tmp/wx-direct/root", decide: true},
+		"subdirectory": {cwd: "/tmp/wx-direct/root/repo/pkg", decide: true},
+		"sibling":      {cwd: "/tmp/wx-direct/root-other", decide: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := `{"cwd":"` + test.cwd + `","tool_input":{"command":"git worktree add ../x"}}`
+			output := captureHookStdout(t, func() {
+				if err := RunHook(ctx, "pre-tool-use", strings.NewReader(payload)); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if methods := handler.methodsSnapshot(); len(methods) != 0 {
+				t.Fatalf("methods=%v, want no RPC at all", methods)
+			}
+			if !test.decide {
+				if output != "" {
+					t.Fatalf("a command outside the direct root emitted %q", output)
+				}
+				return
+			}
+			var decoded preToolUseHookOutput
+			if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+				t.Fatalf("stdout %q is not a single JSON object: %v", output, err)
+			}
+			if decoded.HookSpecificOutput.PermissionDecision != "allow" {
+				t.Fatalf("permissionDecision=%q, want allow", decoded.HookSpecificOutput.PermissionDecision)
+			}
+			if got := string(decoded.HookSpecificOutput.UpdatedInput["command"]); got != `"wx new"` {
+				t.Fatalf("rewritten command=%s, want wx new", got)
+			}
+		})
+	}
+}
+
+// 直接起動の判定は pre-tool-use だけで、他の event は出力もエラーも出さない。
+// 管理下 session の環境が揃っているときは従来の daemon 経路を優先する。
+func TestDirectHookIsLimitedToPreToolUseAndYieldsToManagedSessions(t *testing.T) {
+	for _, event := range []string{"session-start", "user-prompt-submit", "session-end"} {
+		t.Run("direct "+event, func(t *testing.T) {
+			clearHookEnvironment(t)
+			handler := &recordingHandler{}
+			ctx := startHookServer(t, handler)
+			t.Setenv("WX_DIRECT_ROOT", "/tmp/wx-direct/root")
+			output := captureHookStdout(t, func() {
+				if err := RunHook(ctx, event, strings.NewReader(`{"session_id":"agent","source":"startup"}`)); err != nil {
+					t.Fatalf("%s: %v", event, err)
+				}
+			})
+			if output != "" || len(handler.methodsSnapshot()) != 0 {
+				t.Fatalf("%s emitted %q and methods %v", event, output, handler.methodsSnapshot())
+			}
+		})
+	}
+	t.Run("managed session wins", func(t *testing.T) {
+		clearHookEnvironment(t)
+		handler := &recordingHandler{}
+		ctx := startHookServer(t, handler)
+		t.Setenv("WX_SESSION_ID", "wx-managed")
+		t.Setenv("WX_SESSION_TOKEN", "token")
+		t.Setenv("WX_READINESS_TIMEOUT", "2s")
+		t.Setenv("WX_WORKSPACE_ROOT", "/tmp/wx-session/root")
+		// direct の境界だけが一致しても、管理下 session の workspace 外なので書き換えない。
+		t.Setenv("WX_DIRECT_ROOT", "/tmp/wx-direct/root")
+		payload := `{"cwd":"/tmp/wx-direct/root","tool_input":{"command":"git worktree add ../x"}}`
+		output := captureHookStdout(t, func() {
+			if err := RunHook(ctx, "pre-tool-use", strings.NewReader(payload)); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if methods := handler.methodsSnapshot(); len(methods) != 1 || methods[0] != "WaitReady" {
+			t.Fatalf("methods=%v, want [WaitReady]", methods)
+		}
+		if output != "" {
+			t.Fatalf("direct root decided inside a managed session: %q", output)
+		}
+	})
+	// WX_SESSION_ID だけが残った壊れた環境は、direct の変数があっても fail-closed のままにする。
+	t.Run("incomplete managed environment", func(t *testing.T) {
+		clearHookEnvironment(t)
+		t.Setenv("WX_SESSION_ID", "wx-broken")
+		t.Setenv("WX_DIRECT_ROOT", "/tmp/wx-direct/root")
+		if err := RunHook(context.Background(), "pre-tool-use", strings.NewReader("")); err == nil {
+			t.Fatal("an incomplete wx hook environment was accepted")
+		}
+	})
 }

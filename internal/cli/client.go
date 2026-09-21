@@ -535,6 +535,14 @@ func openLeaseDirectory(cfg config.Config, lease daemon.Lease) (*os.File, error)
 	return directory, nil
 }
 
+// envDirectRoot と envDirectOwnerPID は wx -n が直接起動する agent にだけ渡す。
+// envDirectRoot は git worktree add を wx new へ書き換える境界（起動元 worktree の toplevel）で、
+// envDirectOwnerPID はその貸出の返却契機になる wx 自身の PID である。
+const (
+	envDirectRoot     = "WX_DIRECT_ROOT"
+	envDirectOwnerPID = "WX_DIRECT_OWNER_PID"
+)
+
 var wxChildEnvironmentKeys = map[string]struct{}{
 	"WX_SESSION_ID":         {},
 	"WX_SESSION_TOKEN":      {},
@@ -544,6 +552,8 @@ var wxChildEnvironmentKeys = map[string]struct{}{
 	"WX_READINESS_TIMEOUT":  {},
 	"WX_SOURCE_CWD":         {},
 	"WX_RECOVERY_DISCARDED": {},
+	envDirectRoot:           {},
+	envDirectOwnerPID:       {},
 }
 
 func childEnvironment(base, overrides []string) []string {

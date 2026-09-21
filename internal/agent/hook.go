@@ -32,6 +32,11 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	token := os.Getenv("WX_SESSION_TOKEN")
 	socket := os.Getenv("WX_DAEMON_SOCKET")
 	if wxID == "" && token == "" {
+		// wx -n の直接起動には session が無く、daemon へ接続する相手もいない。
+		// 書き換えの判定だけをその場で出し、判定できない入力は素通しさせる。
+		if root := os.Getenv("WX_DIRECT_ROOT"); root != "" && event == "pre-tool-use" {
+			writePreToolUseDecision(readHookPayload(input), root)
+		}
 		return nil
 	}
 	if wxID == "" || token == "" || socket == "" {
@@ -119,7 +124,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 			_, _ = fmt.Fprintln(os.Stdout, response.Notice)
 		}
 		// 判定は readiness の後に出す。書き換え先の wx new は準備の終わった workspace からしか貸し出せない。
-		writePreToolUseDecision(toolPayload)
+		writePreToolUseDecision(toolPayload, os.Getenv("WX_WORKSPACE_ROOT"))
 		return nil
 	case "session-end":
 		releaseCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
