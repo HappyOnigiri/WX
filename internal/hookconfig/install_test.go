@@ -283,6 +283,55 @@ func TestInstallRepairsWXEntriesTheReadSideRejects(t *testing.T) {
 	}
 }
 
+// TestInstallEntriesRejectsWrongHookContainer は既存の object を受理し、array の hooks は
+// 利用者の設定を置き換えずに拒否することを確認する。条件を反転すると両方の経路が逆になる。
+func TestInstallEntriesRejectsWrongHookContainer(t *testing.T) {
+	valid, err := decodeDocument([]byte(`{"hooks":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installEntries(valid, "/usr/local/bin/wx"); err != nil {
+		t.Fatalf("object hooks rejected: %v", err)
+	}
+	hooks, ok := valid.field("hooks")
+	if !ok || hooks == nil || hooks.kind != jsonObject {
+		t.Fatalf("installEntries changed the object hooks container: ok=%v hooks=%v", ok, hooks)
+	}
+
+	wrong, err := decodeDocument([]byte(`{"hooks":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installEntries(wrong, "/usr/local/bin/wx"); err == nil {
+		t.Fatal("array hooks container was accepted")
+	}
+}
+
+// TestNamesWXExecutableKeepsMissingWXRecords は実体が消えた wx の記録も basename で回収する。
+// 解決不能な path を先に false とすると、Remove が古い wx entry を残してしまう。
+func TestNamesWXExecutableKeepsMissingWXRecords(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "wx")
+	if !namesWXExecutable(missing + " hook session-start") {
+		t.Fatalf("missing wx record was not recognized: %q", missing)
+	}
+	if namesWXExecutable(filepath.Join(filepath.Dir(missing), "other") + " hook session-start") {
+		t.Fatal("a missing non-wx executable was recognized as wx")
+	}
+}
+
+// TestWriteHookConfigReturnsRenameFailure は rename 先が directory のときに失敗を返す。
+// rename の error 判定を反転すると、書き込み失敗が成功として隠れる。
+func TestWriteHookConfigReturnsRenameFailure(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "hooks.json")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeHookConfig(target, false, []byte("{}\n")); err == nil {
+		t.Fatal("rename onto a directory unexpectedly succeeded")
+	}
+}
+
 // TestInstallKeepsTheIndentOfTheExistingFile は、4 space の設定ファイルへ install しても
 // 無関係な行が 2 space へ整形されないことを確認する。
 func TestInstallKeepsTheIndentOfTheExistingFile(t *testing.T) {

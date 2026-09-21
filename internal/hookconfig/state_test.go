@@ -231,6 +231,40 @@ func TestInspectReportsDotfileManagedTargets(t *testing.T) {
 	}
 }
 
+// TestEnclosingRepositoryFindsOnlyAnActualAncestor は最寄りの .git を repository root として返し、
+// repository 外の path を誤って分類しないことを確認する。判定を反転すると両方が崩れる。
+func TestEnclosingRepositoryFindsOnlyAnActualAncestor(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "dotfiles", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := enclosingRepository(nested); got != root {
+		t.Fatalf("enclosingRepository(%q)=%q, want %q", nested, got, root)
+	}
+
+	outside := filepath.Join(t.TempDir(), "hooks.json")
+	if got := enclosingRepository(outside); got != "" {
+		t.Fatalf("path outside a repository returned %q", got)
+	}
+}
+
+// TestFindingStringIncludesOnlyPresentParts は finding の detail があるときだけ suffix を付ける。
+// 条件を反転すると detail が消えるか、空の suffix が記録へ混入する。
+func TestFindingStringIncludesOnlyPresentParts(t *testing.T) {
+	withDetail := (Finding{Code: FindingCommandMissing, Event: "SessionStart", Detail: "not found"}).String()
+	if withDetail != "command_missing: event=SessionStart: not found" {
+		t.Fatalf("finding with detail=%q", withDetail)
+	}
+	withoutDetail := (Finding{Code: FindingCommandMissing, Event: "SessionStart"}).String()
+	if withoutDetail != "command_missing: event=SessionStart" {
+		t.Fatalf("finding without detail=%q", withoutDetail)
+	}
+}
+
 func TestEventsCoverTheRequiredReadinessContract(t *testing.T) {
 	required := 0
 	for _, event := range Events() {

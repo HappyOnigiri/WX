@@ -14,6 +14,7 @@ func TestMutationCodexHooksConfigStateHonorsFeaturesTable(t *testing.T) {
 	}{
 		{name: "enabled", data: "[features]\nhooks = true", wantEnabled: true, wantParsable: true},
 		{name: "disabled", data: "[features]\nhooks = false", wantEnabled: false, wantParsable: true},
+		{name: "codex hooks disabled", data: "[features]\ncodex_hooks = false", wantEnabled: false, wantParsable: true},
 		{name: "other table", data: "[other]\nhooks = false", wantEnabled: true, wantParsable: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -22,6 +23,17 @@ func TestMutationCodexHooksConfigStateHonorsFeaturesTable(t *testing.T) {
 				t.Fatalf("codexHooksConfigState(%q)=(%v, %v), want (%v, %v)", test.data, enabled, parsable, test.wantEnabled, test.wantParsable)
 			}
 		})
+	}
+}
+
+// TestMutationStripTOMLCommentKeepsEscapedDoubleQuotes は、escaped quote の直後にある
+// # を文字列の一部として残すことを確認する。quote の終了判定を境界変異すると、ここで
+// 文字列を誤って閉じて # 以降をコメントとして捨てる。
+func TestMutationStripTOMLCommentKeepsEscapedDoubleQuotes(t *testing.T) {
+	input := `key = "escaped \" quote # stays" # comment`
+	want := `key = "escaped \" quote # stays" `
+	if got := stripTOMLComment(input); got != want {
+		t.Fatalf("stripTOMLComment(%q)=%q, want %q", input, got, want)
 	}
 }
 
