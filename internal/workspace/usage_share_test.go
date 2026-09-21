@@ -2,8 +2,10 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -178,5 +180,106 @@ func TestCompareUsageOffsetsTreatsMissingLeavesAsUndecidable(t *testing.T) {
 	}
 	if got, decided := compareUsageOffsets(task, "present", state, 7); decided || got.Shared {
 		t.Fatalf("missing target state=%+v decided=%t, want undecidable", got, decided)
+	}
+}
+
+func TestCompareUsageOffsetsAcceptsStableComparableLeaves(t *testing.T) {
+	t.Parallel()
+	root, mainPath, _ := usageRoots(t)
+	usageWrite(t, filepath.Join(root.Name(), "workspace", "slot", "repo"), "present", "content")
+	usageWrite(t, mainPath, "present", "content")
+	_, task := usageShareTask(t, root, mainPath, nil)
+	state := SharedFileState{
+		Slot:   fileIdentityOf(usageShareStat(t, task.dir, "present")),
+		Source: fileIdentityOf(usageShareStat(t, task.main, "present")),
+	}
+	called := false
+	got, decided := compareUsageOffsetsWith(task, "present", state, 7, func(source, target *os.File, size int64) (bool, bool) {
+		called = true
+		if source == nil || target == nil || size != 7 {
+			t.Fatalf("compare args source=%v target=%v size=%d", source, target, size)
+		}
+		return true, true
+	})
+	state.Shared = true
+	if !called || !decided || got != state {
+		t.Fatalf("called=%t state=%+v decided=%t, want %+v and decided", called, got, decided, state)
+	}
+}
+
+func TestCompareCOWOffsetsChecksBothBoundaries(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	source := usageShareOpen(t, dir, "source-offsets", "content")
+	target := usageShareOpen(t, dir, "target-offsets", "content")
+	const size = int64(8192)
+	type call struct {
+		file   *os.File
+		offset int64
+	}
+	var calls []call
+	lookup := func(file *os.File, offset int64) (int64, error) {
+		calls = append(calls, call{file: file, offset: offset})
+		if offset == 0 {
+			return 11, nil
+		}
+		return 22, nil
+	}
+
+	shared, comparable := compareCOWOffsetsWith(source, target, size, lookup)
+	wantCalls := []call{{source, 0}, {target, 0}, {source, size - 1}, {target, size - 1}}
+	if !shared || !comparable || !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("compare=(%t,%t) calls=%v, want shared comparable and %v", shared, comparable, calls, wantCalls)
+	}
+}
+
+func TestCompareCOWOffsetsDistinguishesMismatchFromLookupFailure(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	source := usageShareOpen(t, dir, "source-result", "content")
+	target := usageShareOpen(t, dir, "target-result", "content")
+	errLookup := errors.New("lookup failed")
+	tests := []struct {
+		name       string
+		lookup     func(*os.File, int64) (int64, error)
+		shared     bool
+		comparable bool
+	}{
+		{
+			name: "different physical offsets",
+			lookup: func(file *os.File, _ int64) (int64, error) {
+				if file == source {
+					return 1, nil
+				}
+				return 2, nil
+			},
+			comparable: true,
+		},
+		{
+			name: "source lookup failure",
+			lookup: func(file *os.File, _ int64) (int64, error) {
+				if file == source {
+					return 0, errLookup
+				}
+				return 0, nil
+			},
+		},
+		{
+			name: "target lookup failure",
+			lookup: func(file *os.File, _ int64) (int64, error) {
+				if file == target {
+					return 0, errLookup
+				}
+				return 0, nil
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			shared, comparable := compareCOWOffsetsWith(source, target, 8, test.lookup)
+			if shared != test.shared || comparable != test.comparable {
+				t.Fatalf("compare=(%t,%t), want (%t,%t)", shared, comparable, test.shared, test.comparable)
+			}
+		})
 	}
 }
