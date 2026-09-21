@@ -35,6 +35,16 @@ func (s *usageScan) sharedLeaf(task usageDirectory, leaf, name string, target *u
 // compareUsageOffsets は両側を読み取り専用で開き、物理 offset の一致を block 共有の証拠として使う。
 // 比較の前後で identity が変わった回は判定を cache へ残さず、次回の測定で現在の実体を見直す。
 func compareUsageOffsets(task usageDirectory, leaf string, state SharedFileState, size int64) (SharedFileState, bool) {
+	return compareUsageOffsetsWith(task, leaf, state, size, compareCOWOffsets)
+}
+
+func compareUsageOffsetsWith(
+	task usageDirectory,
+	leaf string,
+	state SharedFileState,
+	size int64,
+	compare func(*os.File, *os.File, int64) (bool, bool),
+) (SharedFileState, bool) {
 	source, err := openCOWLeaf(task.main, leaf)
 	if err != nil {
 		return SharedFileState{}, false
@@ -45,7 +55,7 @@ func compareUsageOffsets(task usageDirectory, leaf string, state SharedFileState
 		return SharedFileState{}, false
 	}
 	defer func() { _ = target.Close() }()
-	shared, comparable := compareCOWOffsets(source, target, size)
+	shared, comparable := compare(source, target, size)
 	if !comparable || !sameUsageIdentities(source, target, state) {
 		return SharedFileState{}, false
 	}
@@ -84,12 +94,20 @@ func usageFileIdentity(file *os.File) (fileIdentity, error) {
 // compareCOWOffsets は offset を比較し、共有判定を得られたかどうかも返す。
 // offset の取得に失敗した場合は、非共有という判定を cache に固定しない。
 func compareCOWOffsets(source, target *os.File, size int64) (shared, comparable bool) {
+	return compareCOWOffsetsWith(source, target, size, physicalOffset)
+}
+
+func compareCOWOffsetsWith(
+	source, target *os.File,
+	size int64,
+	lookup func(*os.File, int64) (int64, error),
+) (shared, comparable bool) {
 	for _, offset := range []int64{0, size - 1} {
-		left, err := physicalOffset(source, offset)
+		left, err := lookup(source, offset)
 		if err != nil {
 			return false, false
 		}
-		right, err := physicalOffset(target, offset)
+		right, err := lookup(target, offset)
 		if err != nil {
 			return false, false
 		}
