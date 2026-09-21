@@ -36,6 +36,39 @@ func TestReleaseCreatesExactlyOneSnapshotJob(t *testing.T) {
 	}
 }
 
+func TestReleaseWithAgentSessionIgnoresAuxiliarySessionEnd(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	session := Session{ID: "session", WorkspaceID: "workspace", SlotID: "slot", State: "ACTIVE", AgentKind: "codex", AgentSessionID: "native-primary", TokenHash: HashToken("token")}
+	if _, err := store.CreateSlotSession(ctx, Slot{ID: "slot", WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: "workspace/slot", State: "PREPARING"}, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BindAgentSession(ctx, session.ID, "native-primary"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSlotState(ctx, "slot", []string{"PREPARING"}, "QUARANTINED", "JOB_RETRY_EXHAUSTED"); err != nil {
+		t.Fatal(err)
+	}
+
+	job, changed, quarantineExpired, matched, err := store.ReleaseWithAgentSessionOutcome(ctx, session.ID, session.WorkspaceID, session.SlotID, "native-btw")
+	if err != nil || matched || changed || quarantineExpired || job.ID != "" {
+		t.Fatalf("auxiliary release: job=%+v changed=%v quarantineExpired=%v matched=%v err=%v", job, changed, quarantineExpired, matched, err)
+	}
+	stored, err := store.SessionByID(ctx, session.ID)
+	if err != nil || stored.State != "ACTIVE" || stored.AgentSessionID != "native-primary" {
+		t.Fatalf("auxiliary release changed session: %+v err=%v", stored, err)
+	}
+	slot, err := store.Slot(ctx, session.SlotID)
+	if err != nil || slot.State != "QUARANTINED" || slot.OwnerSessionID != session.ID {
+		t.Fatalf("auxiliary release changed slot: %+v err=%v", slot, err)
+	}
+	if _, _, quarantineExpired, matched, err := store.ReleaseWithAgentSessionOutcome(ctx, session.ID, session.WorkspaceID, session.SlotID, "native-primary"); err != nil || !matched || !quarantineExpired {
+		t.Fatalf("primary release: matched=%v quarantineExpired=%v err=%v", matched, quarantineExpired, err)
+	}
+}
+
 // --discard の返却は保存を積まず、同じ transaction で削除まで予約する。
 // SNAPSHOT を積んでから取り消す経路では、保存が先に走り出すと予約が通らず再実行が要る。
 func TestReleaseDiscardingSchedulesRemovalWithoutSnapshot(t *testing.T) {

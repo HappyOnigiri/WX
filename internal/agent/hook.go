@@ -49,7 +49,7 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 	var payload HookInput
 	var toolPayload []byte
 	switch event {
-	case "session-start":
+	case "session-start", "session-end":
 		payload, err = decodeHookPayload(input)
 		if err != nil {
 			return err
@@ -127,9 +127,14 @@ func RunHook(ctx context.Context, event string, input io.Reader) error {
 		writePreToolUseDecision(toolPayload, os.Getenv("WX_WORKSPACE_ROOT"))
 		return nil
 	case "session-end":
+		if payload.SessionID == "" {
+			return errors.New("hook payload does not contain session_id")
+		}
 		releaseCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 		defer cancel()
-		return client.CallWithKey(releaseCtx, "Release", "release:"+wxID+":session-end-hook", map[string]any{"session_id": wxID, "token": token, "reason": "session-end-hook"}, nil)
+		return client.CallWithKey(releaseCtx, "Release", "release:"+wxID+":session-end-hook:"+payload.SessionID, map[string]any{
+			"session_id": wxID, "token": token, "reason": "session-end-hook", "agent_session_id": payload.SessionID,
+		}, nil)
 	default:
 		return fmt.Errorf("unknown hook event %q", event)
 	}
@@ -195,7 +200,7 @@ func codexForkParent(transcriptPath, sessionID string) string {
 	return ""
 }
 
-// decodeHookPayload は session-start hook の標準入力を読む。
+// decodeHookPayload は lifecycle hook の標準入力を読む。
 // agent が渡す payload は信頼できない外部入力なので、読み取りを 1MiB で打ち切り、空白のみの入力は空の HookInput として扱う。
 func decodeHookPayload(input io.Reader) (HookInput, error) {
 	data, err := io.ReadAll(io.LimitReader(input, 1<<20))
