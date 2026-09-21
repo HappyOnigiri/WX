@@ -42,7 +42,7 @@ func TestCompactLFSObjectsReplacesVerifiedObject(t *testing.T) {
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cachePath := filepath.Join(cacheDir, value[4:])
+	cachePath := filepath.Join(cacheDir, value)
 	if err := os.WriteFile(cachePath, data, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestCompactLFSObjectsLeavesCacheOnVerificationFailure(t *testing.T) {
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cachePath := filepath.Join(cacheDir, value[4:])
+	cachePath := filepath.Join(cacheDir, value)
 	old := []byte(strings.Repeat("cache", 128))
 	if err := os.WriteFile(cachePath, old, 0o644); err != nil {
 		t.Fatal(err)
@@ -238,6 +238,32 @@ func TestCompactLFSObjectsSkipsInCopyModeWithLog(t *testing.T) {
 	}
 	if !strings.Contains(logged.String(), "reason=\"copy mode or unsupported platform\"") {
 		t.Fatalf("log output=%q", logged.String())
+	}
+}
+
+func TestLFSCacheRelativePartsMatchCapacityAndRepair(t *testing.T) {
+	t.Parallel()
+	value := strings.Repeat("ab", 32)
+	directory, leaf, ok := lfsCacheRelativeParts("sha256:" + strings.ToUpper(value))
+	if !ok {
+		t.Fatal("valid SHA-256 object ID rejected")
+	}
+	want := filepath.Join("lfs", "objects", value[:2], value[2:4], value)
+	if got := filepath.Join(directory, leaf); got != want {
+		t.Fatalf("relative=%q, want %q", got, want)
+	}
+	repaired, ok := cacheLFSRelativePath("sha256:" + value)
+	if !ok || repaired != want {
+		t.Fatalf("repair relative=%q ok=%v, want %q", repaired, ok, want)
+	}
+	common := t.TempDir()
+	repo := discovery.Repository{CommonDir: domain.CanonicalPath(common)}
+	wantCache := filepath.Join(common, want)
+	if got := lfsCachePath(repo, "sha256:"+value); got != wantCache {
+		t.Fatalf("capacity path=%q, want %q", got, wantCache)
+	}
+	if _, _, ok := lfsCacheRelativeParts("sha256:" + strings.Repeat("z", 64)); ok {
+		t.Fatal("non-hex object ID accepted")
 	}
 }
 

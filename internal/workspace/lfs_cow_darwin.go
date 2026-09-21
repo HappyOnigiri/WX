@@ -3,7 +3,6 @@ package workspace
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -37,7 +36,7 @@ func (p *Preparer) compactLFSObjectsWithRoots(ctx context.Context, repo discover
 }
 
 func compactLFSObject(ctx context.Context, donorRoot, commonRoot *os.Root, candidate LFSObjectCandidate) (replaced bool, reclaimed int64, resultErr error) {
-	directory, leaf, ok := lfsObjectRelative(candidate.Pointer)
+	directory, leaf, ok := lfsCacheRelativeParts(candidate.Pointer.OID)
 	if !ok || !validLFSWorktreePath(candidate.Path) {
 		return false, 0, nil
 	}
@@ -173,17 +172,6 @@ func removeLFSCoWTemporaries(parent *os.File) error {
 		}
 	}
 	return nil
-}
-
-func lfsObjectRelative(pointer LFSPointer) (directory, leaf string, ok bool) {
-	value := strings.TrimPrefix(strings.ToLower(pointer.OID), "sha256:")
-	if len(value) != 64 {
-		return "", "", false
-	}
-	if _, err := hex.DecodeString(value); err != nil {
-		return "", "", false
-	}
-	return filepath.Join("lfs", "objects", value[:2], value[2:4]), value[4:], true
 }
 
 func validLFSWorktreePath(path string) bool {
