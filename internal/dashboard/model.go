@@ -235,10 +235,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.resultText += m.tf("dashboard.refresh_failed", map[string]any{"Error": msg.err.Error()})
 		} else {
-			selectedScope, selectedRepository := "", ""
+			selectedScope, selectedRepository, selectedDefaults := "", "", false
 			if environments := m.configEnvironments(); m.settingsOpen && m.settingsEnv < len(environments) {
 				selectedScope = environments[m.settingsEnv].scope
 				selectedRepository = environments[m.settingsEnv].repository
+				selectedDefaults = environments[m.settingsEnv].repositoryDefaults
 			}
 			m.opts.Config, m.opts.RawConfig, m.opts.Setup = msg.config, msg.rawConfig, msg.setup
 			m.lang = i18n.Normalize(m.opts.Config.DisplayLanguage())
@@ -267,13 +268,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+				// repositoryDefaults まで一致させる。workspace 階層は同じ scope と target を持つ
+				// 親と「Repository defaults」の2件があり、これを見ないと nested から親へ滑り、
+				// 次の編集が意図と違う scope へ入る。
 				for index, environment := range m.configEnvironments() {
-					if environment.scope == selectedScope && environment.target == m.target && environment.repository == selectedRepository {
+					if environment.scope == selectedScope && environment.target == m.target &&
+						environment.repository == selectedRepository && environment.repositoryDefaults == selectedDefaults {
 						m.settingsEnv = index
 						break
 					}
 				}
 			}
+			m.clampSelection()
 		}
 		m.mode, m.offset = modeResult, 0
 	case tea.PasteMsg:
@@ -440,6 +446,13 @@ func (m *model) move(delta int) {
 	}
 	m.selected = min(max(0, m.selected+delta), count-1)
 	m.keepVisible()
+}
+
+// clampSelection は項目数が変わった後の選択位置を一覧の範囲へ戻す。
+// 再読込は選択を動かさずに環境・設定・setup の項目数を入れ替えるため、これを通さないと
+// 選択が末尾を越えたまま残り、描画と操作の両方が範囲外の項目を引く。
+func (m *model) clampSelection() {
+	m.selected = min(max(0, m.selected), max(0, m.itemCount()-1))
 }
 
 func (m *model) keepVisible() {

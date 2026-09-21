@@ -342,3 +342,63 @@ func TestExecutionRefreshSkipsAnOutOfRangeRepositoryEnvironment(t *testing.T) {
 		t.Fatalf("mode=%v, want result after the repository environment disappeared", got)
 	}
 }
+
+// TestExecutionRefreshKeepsRepositoryDefaultsEnvironment は、nested な「Repository defaults」で
+// 編集した後の再読込が、同じ scope と target を持つ親 workspace へ滑らないことを守る。
+// 滑ると項目一覧が短い親へ入れ替わり、末尾を選んでいた描画が範囲外を引いて panic する。
+func TestExecutionRefreshKeepsRepositoryDefaultsEnvironment(t *testing.T) {
+	const workspace = "/tmp/project"
+	cfg := config.DefaultsV2()
+	cfg.Workspaces[workspace] = config.Workspace{}
+	m := newModel(context.Background(), Options{Config: cfg})
+	defaultsIndex := -1
+	for index, environment := range m.configEnvironments() {
+		if environment.scope == config.V2ScopeWorkspace && environment.target == workspace && environment.repositoryDefaults {
+			defaultsIndex = index
+			break
+		}
+	}
+	if defaultsIndex < 0 {
+		t.Fatal("repository defaults environment is missing")
+	}
+	m.tab, m.settingsOpen, m.settingsEnv, m.target = 2, true, defaultsIndex, workspace
+	nested := len(m.configItems())
+	m.selected = nested - 1
+
+	refreshed := config.DefaultsV2()
+	refreshed.Workspaces[workspace] = config.Workspace{}
+	updated, _ := m.Update(executionMsg{config: refreshed, rawConfig: refreshed})
+	m = updated.(model)
+	if m.settingsEnv != defaultsIndex {
+		t.Fatalf("settingsEnv=%d, want the repository defaults environment %d", m.settingsEnv, defaultsIndex)
+	}
+	if got := len(m.configItems()); got != nested {
+		t.Fatalf("items=%d, want the nested list of %d", got, nested)
+	}
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	if m.mode != modeList {
+		t.Fatalf("mode=%v, want list after leaving the result screen", m.mode)
+	}
+	m.View()
+}
+
+// TestExecutionRefreshClampsSelectionToShorterList は、再読込で項目が減ったときに選択位置が
+// 一覧の範囲へ戻ることを守る。再読込は選択を動かさずに一覧だけを入れ替える。
+func TestExecutionRefreshClampsSelectionToShorterList(t *testing.T) {
+	cfg := config.DefaultsV2()
+	cfg.Workspaces["/tmp/project"] = config.Workspace{}
+	m := newModel(context.Background(), Options{Config: cfg})
+	m.tab = 2
+	m.selected = m.itemCount() - 1
+
+	refreshed := config.DefaultsV2()
+	updated, _ := m.Update(executionMsg{config: refreshed, rawConfig: refreshed})
+	m = updated.(model)
+	if want := m.itemCount() - 1; m.selected != want {
+		t.Fatalf("selected=%d, want %d after the workspace environments disappeared", m.selected, want)
+	}
+	updated, _ = m.Update(key(tea.KeyEnter))
+	m = updated.(model)
+	m.View()
+}
