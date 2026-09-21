@@ -75,6 +75,10 @@ func TestMutationConfigGeneralDefaultsKeepTheirDurations(t *testing.T) {
 		"expired_session_tombstone": 8760 * time.Hour,
 		"failed_job":                168 * time.Hour,
 		"event_log":                 168 * time.Hour,
+		"discovery_timeout":         30 * time.Second,
+		"discovery_reconcile":       10 * time.Minute,
+		"readiness_timeout":         10 * time.Minute,
+		"lease_ttl":                 72 * time.Hour,
 	}
 	got := map[string]time.Duration{
 		"backup_retention":          cfg.Storage.BackupRetention.Duration,
@@ -85,6 +89,10 @@ func TestMutationConfigGeneralDefaultsKeepTheirDurations(t *testing.T) {
 		"expired_session_tombstone": cfg.Retention.ExpiredSessionTombstone.Duration,
 		"failed_job":                cfg.Retention.FailedJob.Duration,
 		"event_log":                 cfg.Retention.EventLog.Duration,
+		"discovery_timeout":         cfg.Discovery.Timeout.Duration,
+		"discovery_reconcile":       cfg.Discovery.ReconcileInterval.Duration,
+		"readiness_timeout":         cfg.Readiness.Timeout.Duration,
+		"lease_ttl":                 cfg.Lease.TTL.Duration,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("default durations=%v, want %v", got, want)
@@ -142,13 +150,15 @@ func TestMutationConfigGeneralLanguageAndCatalog(t *testing.T) {
 		t.Fatalf("Describe metadata=%+v err=%v", meta, err)
 	}
 	for _, test := range []struct {
-		key, scope string
+		key, scope, wantError string
 	}{
-		{key: "readiness.mode", scope: "system"},
-		{key: "does.not.exist", scope: "repository"},
+		{key: "readiness.mode", scope: "system", wantError: "system config key"},
+		{key: "does.not.exist", scope: "repository", wantError: "repository config key"},
 	} {
 		if _, err := Describe(test.key, test.scope); err == nil {
 			t.Fatalf("Describe(%q, %q) unexpectedly succeeded", test.key, test.scope)
+		} else if !strings.Contains(err.Error(), test.wantError) {
+			t.Fatalf("Describe(%q, %q) error=%v, want %q", test.key, test.scope, err, test.wantError)
 		}
 	}
 }
@@ -214,6 +224,12 @@ func TestMutationConfigGeneralYAMLBoundaries(t *testing.T) {
 	if got := preserved["copy"]; !reflect.DeepEqual(got, []any{"from-file"}) {
 		t.Fatalf("existing dynamic value=%#v, want it unchanged", got)
 	}
+	scalarPresent := Config{present: map[string]bool{"workspaces.demo.worktree": true}}
+	scalar := map[string]any{"worktree": "from-file"}
+	preserveDynamicValues(scalarPresent, "demo", scalar, Workspace{}, []string{"worktree"})
+	if got := scalar["worktree"]; got != "from-file" {
+		t.Fatalf("existing scalar value=%#v, want it unchanged", got)
+	}
 
 	for _, node := range []*yaml.Node{
 		{},
@@ -225,6 +241,15 @@ func TestMutationConfigGeneralYAMLBoundaries(t *testing.T) {
 		if len(keys) != 0 {
 			t.Fatalf("non-mapping or empty YAML node produced keys: node=%+v keys=%v", node, keys)
 		}
+	}
+	validMapping := &yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
+		{Kind: yaml.ScalarNode, Value: "key"},
+		{Kind: yaml.ScalarNode, Value: "value"},
+	}}
+	keys := map[string]bool{}
+	collectMappingKeys(validMapping, "", keys)
+	if !keys["key"] {
+		t.Fatalf("valid mapping key was not collected: %v", keys)
 	}
 
 	withoutWorkspaces, err := yaml.Marshal(Config{Version: 2})
@@ -402,8 +427,19 @@ func TestMutationConfigGeneralEditorsAndListPaths(t *testing.T) {
 	if !isV2ListKey(V2ScopeWorkspace, "repository_defaults.prepare.inputs") {
 		t.Fatal("workspace repository_defaults.prepare.inputs was not classified as a list")
 	}
-	if scope, canonical, ok := legacyV2Key("pool.preparation_concurrency"); !ok || scope != V2ScopeSystem || canonical != "pool.preparation_concurrency" {
-		t.Fatalf("legacy pool key=(%q, %q, %v)", scope, canonical, ok)
+	for _, test := range []struct {
+		key, scope, canonical string
+	}{
+		{key: "language", scope: V2ScopeSystem, canonical: "language"},
+		{key: "storage.worktree_root", scope: V2ScopeSystem, canonical: "storage.worktree_root"},
+		{key: "pool.preparation_concurrency", scope: V2ScopeSystem, canonical: "pool.preparation_concurrency"},
+		{key: "retention.event_log", scope: V2ScopeSystem, canonical: "retention.event_log"},
+		{key: "discovery.timeout", scope: V2ScopeSystem, canonical: "discovery.timeout"},
+	} {
+		scope, canonical, ok := legacyV2Key(test.key)
+		if !ok || scope != test.scope || canonical != test.canonical {
+			t.Fatalf("legacy key %q=(%q, %q, %v), want (%q, %q, true)", test.key, scope, canonical, ok, test.scope, test.canonical)
+		}
 	}
 	if _, err := mutableConfigList(nil, "discovery.exclude"); err == nil {
 		t.Fatal("nil config was accepted by mutableConfigList")
