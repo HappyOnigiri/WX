@@ -511,3 +511,55 @@ func TestPrepareOnANewWorktreePropagatesFinalUnlockAndReadyLockFailures(t *testi
 		}
 	})
 }
+
+// finishPrepare は READY lock 成功後にも同じ physical directory を要求し、検証を飛ばして成功扱いにしない。
+// testlint:allow-serial -- プロセス全体の PATH と置換用 counter を変更するため
+func TestPrepareRejectsReplacementAfterReadyLock(t *testing.T) {
+	_, repo, preparer, head, target := prepareEdgesFixture(t)
+	root := preparer.Config.Storage.WorktreeRoot
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	counter := filepath.Join(bin, "lock-count")
+	wrapper := filepath.Join(bin, "git")
+	script := `#!/bin/sh
+case " $* " in
+  *" worktree lock "*)
+    "$WX_REPLACE_REAL_GIT" "$@"
+    status=$?
+    if [ "$status" -eq 0 ]; then
+      count=0
+      if [ -f "$WX_REPLACE_COUNTER" ]; then
+        count=$(cat "$WX_REPLACE_COUNTER")
+      fi
+      count=$((count + 1))
+      printf '%s\n' "$count" > "$WX_REPLACE_COUNTER"
+      if [ "$count" -eq 2 ]; then
+        backup="$WX_REPLACE_TARGET.replaced"
+        rm -rf "$backup"
+        mv "$WX_REPLACE_TARGET" "$backup"
+        cp -Rp "$backup" "$WX_REPLACE_TARGET"
+        rm -rf "$backup"
+      fi
+    fi
+    exit "$status"
+    ;;
+esac
+exec "$WX_REPLACE_REAL_GIT" "$@"
+`
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WX_REPLACE_REAL_GIT", realGit)
+	t.Setenv("WX_REPLACE_COUNTER", counter)
+	t.Setenv("WX_REPLACE_TARGET", target)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := preparer.Prepare(context.Background(), repo, target, head, "slot"); !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("replacement after READY lock was accepted: %v", err)
+	}
+}
