@@ -143,3 +143,27 @@ func TestRootStagesRejectChangedCopyTypes(t *testing.T) {
 		t.Fatal("changed source type was copied recursively")
 	}
 }
+
+// workspace root の link 先衝突は計画の実体化失敗として返し、成功した配置履歴へ進めない。
+func TestRootStagesPropagateLinkCollision(t *testing.T) {
+	t.Parallel()
+	source, target := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "linked"), []byte("source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := PlanRootStages(nil, source, RootRulesFromConfig(config.Workspace{Link: []string{"linked"}}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "linked"), []byte("occupied\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := stage.Materialize(root, false); err == nil {
+		t.Fatal("root link collision was ignored")
+	}
+}
