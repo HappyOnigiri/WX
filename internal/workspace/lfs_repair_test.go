@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/discovery"
@@ -495,6 +496,41 @@ func TestEnsureLFSCacheDirectoryRejectsUnsafeAndBlockedPaths(t *testing.T) {
 	}
 	if err := ensureLFSCacheDirectory(root, filepath.Join("lfs", "objects")); err == nil {
 		t.Fatal("cache directory inspection succeeded under an untraversable parent")
+	}
+}
+
+// 同じ common directory を並行して初期化しても、先に作られた directory は再利用する。
+func TestEnsureLFSCacheDirectoryAcceptsConcurrentCreation(t *testing.T) {
+	t.Parallel()
+	common := t.TempDir()
+	root, err := OpenPhysicalRoot(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	const workers = 128
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var group sync.WaitGroup
+	group.Add(workers)
+	for range workers {
+		go func() {
+			defer group.Done()
+			<-start
+			errs <- ensureLFSCacheDirectory(root, filepath.Join("lfs", "objects", "aa", "bb"))
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent cache directory creation failed: %v", err)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(common, "lfs", "objects", "aa", "bb")); err != nil || !info.IsDir() {
+		t.Fatalf("cache directory=%v err=%v", info, err)
 	}
 }
 

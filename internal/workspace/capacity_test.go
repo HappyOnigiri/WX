@@ -536,10 +536,15 @@ func TestEstimateCapacityClassifiesCachedLFSObjects(t *testing.T) {
 		t.Fatalf("estimate=%+v", estimate)
 	}
 	states := map[string]LFSCacheState{}
+	cached := map[string]bool{}
 	for _, object := range estimate.LFS {
 		states[object.OID] = object.CacheState
+		cached[object.OID] = object.Cached
 	}
 	if states["sha256:"+healthyOID] != LFSCacheHealthy || states["sha256:"+corruptOID] != LFSCacheCorrupt {
 		t.Fatalf("LFS cache states=%v", states)
+	}
+	if !cached["sha256:"+healthyOID] || cached["sha256:"+corruptOID] {
+		t.Fatalf("LFS cache flags=%v, want healthy cached and corrupt missing", cached)
 	}
 }
