@@ -335,6 +335,7 @@ func TestLFSEstimateNeedsCheckRequiresMissingObjects(t *testing.T) {
 		want     bool
 	}{
 		{name: "empty", estimate: workspace.CapacityEstimate{}, want: false},
+		{name: "missing count without objects", estimate: workspace.CapacityEstimate{MissingLFSObjects: 1}, want: false},
 		{name: "healthy", estimate: workspace.CapacityEstimate{LFS: []workspace.LFSObjectInfo{{OID: "sha256:one"}}}, want: false},
 		{name: "missing", estimate: workspace.CapacityEstimate{LFS: []workspace.LFSObjectInfo{{OID: "sha256:one"}}, MissingLFSObjects: 1}, want: true},
 	} {
