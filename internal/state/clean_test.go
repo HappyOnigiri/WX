@@ -212,6 +212,97 @@ func TestSessionTerminationRequestIsSingleAndDeadlineBound(t *testing.T) {
 	}
 }
 
+// 期限切れで閉じた要求が残っていても、次の clear --all が session へ届く新しい要求を出せることを確かめる。
+func TestSessionTerminationRequestIsReissuedAfterTimeout(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedCleanSlot(t, store, "leased", "LEASED", "session", "ACTIVE")
+	ctx := t.Context()
+	targets := []CleanTarget{{SlotID: "leased", WorkspaceID: "workspace", SessionID: "session", Path: "/wx/workspace/leased", State: "PENDING"}}
+	if _, _, err := store.BeginCleanRun(ctx, CleanRun{ID: "run-a", Mode: "all"}, targets, nil); err != nil {
+		t.Fatal(err)
+	}
+	staleDeadline := time.Now().Add(-30 * time.Second)
+	if err := store.RequestSessionTermination(ctx, "run-a", "leased", "session", "request-a", staleDeadline); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishTermination(ctx, "session", "request-a", "TIMED_OUT"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCleanTargetState(ctx, "run-a", "leased", []string{"TERMINATING"}, "FAILED", "timed out"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishCleanRun(ctx, "run-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := store.BeginCleanRun(ctx, CleanRun{ID: "run-b", Mode: "all"}, targets, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	if err := store.RequestSessionTermination(ctx, "run-b", "leased", "session", "request-b", deadline); err != nil {
+		t.Fatal(err)
+	}
+	request, found, err := store.PendingTermination(ctx, "session")
+	if err != nil || !found || request.RequestID != "request-b" {
+		t.Fatalf("pending request=%+v found=%v err=%v", request, found, err)
+	}
+	if request.Deadline != FormatTime(deadline) {
+		t.Fatalf("deadline=%q want %q; the reissued request must not inherit the expired deadline", request.Deadline, FormatTime(deadline))
+	}
+	stored, err := store.CleanTargets(ctx, "run-b")
+	if err != nil || len(stored) != 1 || stored[0].State != "TERMINATING" || stored[0].TerminateDeadline != FormatTime(deadline) {
+		t.Fatalf("targets=%+v err=%v", stored, err)
+	}
+	var requests int
+	if err := store.db.QueryRow(`SELECT count(*) FROM session_termination_requests WHERE session_id='session'`).Scan(&requests); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("termination requests=%d", requests)
+	}
+}
+
+// 未応答の要求がある間は再実行が要求を置き換えず、target も進まないことを確かめる。
+func TestSessionTerminationRequestIsNotReissuedWhilePending(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	seedCleanSlot(t, store, "leased", "LEASED", "session", "ACTIVE")
+	ctx := t.Context()
+	targets := []CleanTarget{{SlotID: "leased", WorkspaceID: "workspace", SessionID: "session", Path: "/wx/workspace/leased", State: "PENDING"}}
+	if _, _, err := store.BeginCleanRun(ctx, CleanRun{ID: "run-a", Mode: "all"}, targets, nil); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	if err := store.RequestSessionTermination(ctx, "run-a", "leased", "session", "request-a", deadline); err != nil {
+		t.Fatal(err)
+	}
+	// 要求を閉じないまま run が終わる（daemon の中断など）と、次の run は未応答の要求をそのまま引き継ぐ。
+	if err := store.SetCleanTargetState(ctx, "run-a", "leased", []string{"TERMINATING"}, "FAILED", "interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishCleanRun(ctx, "run-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.BeginCleanRun(ctx, CleanRun{ID: "run-b", Mode: "all"}, targets, nil); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(10 * time.Minute)
+	if err := store.RequestSessionTermination(ctx, "run-b", "leased", "session", "request-b", later); err != nil {
+		t.Fatal(err)
+	}
+	request, found, err := store.PendingTermination(ctx, "session")
+	if err != nil || !found || request.RequestID != "request-a" || request.Deadline != FormatTime(deadline) {
+		t.Fatalf("pending request=%+v found=%v err=%v", request, found, err)
+	}
+	stored, err := store.CleanTargets(ctx, "run-b")
+	if err != nil || len(stored) != 1 || stored[0].TerminateDeadline != FormatTime(deadline) {
+		t.Fatalf("targets=%+v err=%v", stored, err)
+	}
+}
+
 func TestDiscardRemovalPreservesActiveAndRunningWork(t *testing.T) {
 	t.Parallel()
 	store := openTestStore(t)
