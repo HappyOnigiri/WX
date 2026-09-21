@@ -77,6 +77,11 @@ clone元と宛先は同じ対応volumeにある必要があり、通常checkout1
 ただしsnapshot後に親repositoryのLFS cache objectをworktree実体から検証付きCoW cloneへ差し替える処理は、この共有方式に従う。
 `storage.copy_mode`が`copy`のrepositoryでは、この処理を行わない。
 
+`prepare.command`は専用のprocess groupで起動し、timeoutとcancelではgroupごと終了させる。
+診断出力の回収は親が持つpipeで行い、command processの終了を待つ経路から切り離す。
+os/execに出力用のWriterを渡すと、継承したpipeを保持する子孫が生きている限りWaitが戻らず、timeoutが返却時間の上限にならないためである。
+猶予内に回収し切れなかった出力は切り詰めとして記録し、返却を待たせない。
+
 Hot StandbyのUPDATEは旧HEAD・tracked clean・所有権を確認してから、要求時に固定したOIDへdetachedのまま切り替える。
 更新用Git操作だけは`core.hooksPath=/dev/null`をコマンド単位で指定し、checkout filterと属性処理は維持する。
 `.gitattributes`の差、submodule構成・gitlink変更、未登録のuntracked/ignored pathとの衝突、更新互換fingerprintの不一致は書込み前にCold Startへ戻す。
