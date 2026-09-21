@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -163,5 +164,112 @@ func TestWorktreePolicyRejectsGitExecutionFailureBeforeDirectAgent(t *testing.T)
 	}
 	if mode != "" || !strings.Contains(err.Error(), "discover Git repository root") {
 		t.Fatalf("mode=%q err=%v", mode, err)
+	}
+}
+
+// directEnvironmentFixture は env を書き出すだけの agent を用意し、その出力先を返す。
+func directEnvironmentFixture(t *testing.T) (binary, output string) {
+	t.Helper()
+	directory := t.TempDir()
+	binary, output = filepath.Join(directory, "fake-agent"), filepath.Join(directory, "env.txt")
+	script := "#!/bin/sh\nenv > " + output + "\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return binary, output
+}
+
+// directEnvironmentValue は agent が書き出した環境から 1 つの値を読む。未設定なら空を返す。
+func directEnvironmentValue(t *testing.T, output, key string) string {
+	t.Helper()
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if name, value, ok := strings.Cut(line, "="); ok && name == key {
+			return value
+		}
+	}
+	return ""
+}
+
+// wx -n は保存済み方針が hot / cold の repository でだけ、書き換えの境界と所有者を agent へ渡す。
+// 境界は起動元 worktree の toplevel で、所有者は wx 自身の PID である。
+func TestDirectAgentPassesRewriteBoundaryOnlyWhenWorktreesAreEnabled(t *testing.T) {
+	for name, test := range map[string]struct {
+		mode    string
+		disable bool
+		repo    bool
+		want    bool
+	}{
+		"hot repository":       {mode: "hot", disable: true, repo: true, want: true},
+		"cold repository":      {mode: "cold", disable: true, repo: true, want: true},
+		"ask repository":       {mode: "ask", disable: true, repo: true},
+		"off repository":       {mode: "off", disable: true, repo: true},
+		"saved off without -n": {mode: "off", repo: true},
+		"outside a repository": {mode: "hot", disable: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			source := filepath.Join(t.TempDir(), "source")
+			if test.repo {
+				source = probeWorktreeFixtureAt(t, source)
+			} else if err := os.MkdirAll(source, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Defaults()
+			cfg.WorkspaceDefaults.Worktree = test.mode
+			client, err := New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			binary, output := directEnvironmentFixture(t)
+			options := WorktreeOptions{Disable: test.disable}
+			if code := client.RunAgentWithPolicyFrom(context.Background(), source, binary, nil, nil, false, options); code != 0 {
+				t.Fatalf("exit=%d", code)
+			}
+			root := directEnvironmentValue(t, output, "WX_DIRECT_ROOT")
+			pid := directEnvironmentValue(t, output, "WX_DIRECT_OWNER_PID")
+			if !test.want {
+				if root != "" || pid != "" {
+					t.Fatalf("rewrite boundary leaked: root=%q pid=%q", root, pid)
+				}
+				return
+			}
+			if root != source {
+				t.Fatalf("WX_DIRECT_ROOT=%q, want the launching worktree toplevel %q", root, source)
+			}
+			if pid != strconv.Itoa(os.Getpid()) {
+				t.Fatalf("WX_DIRECT_OWNER_PID=%q, want this process %d", pid, os.Getpid())
+			}
+		})
+	}
+}
+
+// 境界は cwd 側の toplevel である。policy root（main worktree）を渡すと、
+// linked worktree や wx の slot で -n 起動したときに前方一致が外れ、書き換えが無言で止まる。
+func TestDirectAgentBoundaryFollowsTheLinkedWorktreeNotThePolicyRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	main := probeWorktreeFixtureAt(t, filepath.Join(t.TempDir(), "main"))
+	linked := filepath.Join(t.TempDir(), "linked")
+	probeGitCommand(t, main, "worktree", "add", "--detach", linked, "HEAD")
+	linked, err := filepath.EvalSymlinks(linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.WorkspaceDefaults.Worktree = "hot"
+	client, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, output := directEnvironmentFixture(t)
+	if code := client.RunAgentWithPolicyFrom(context.Background(), linked, binary, nil, nil, false, WorktreeOptions{Disable: true}); code != 0 {
+		t.Fatalf("exit=%d", code)
+	}
+	if root := directEnvironmentValue(t, output, "WX_DIRECT_ROOT"); root != linked {
+		t.Fatalf("WX_DIRECT_ROOT=%q, want the linked worktree %q (not the main worktree %q)", root, linked, main)
 	}
 }

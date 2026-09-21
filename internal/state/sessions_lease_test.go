@@ -145,3 +145,61 @@ func TestOrphanedChildLeasesFollowTheOwnerSession(t *testing.T) {
 		t.Fatalf("orphaned child leases=%+v", candidates)
 	}
 }
+
+// seedPIDBoundLease は起動元プロセスを記録した path 貸出を登録する。
+func seedPIDBoundLease(t *testing.T, store *Store, id string, ownerPID int) {
+	t.Helper()
+	session := Session{
+		ID: id, WorkspaceID: "workspace", SlotID: id, State: "ACTIVE", AgentKind: "wx-path",
+		LeaseKind: LeaseKindPath, LeaseOwnerPID: ownerPID, TokenHash: HashToken("token"),
+	}
+	slot := Slot{ID: id, WorkspaceID: "workspace", Generation: 1, RootID: testRootID, RelPath: filepath.Join("workspace", id), State: "LEASED"}
+	if _, err := store.CreateSlotSession(context.Background(), slot, nil, session, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 起動元プロセスの抽出は lease_owner_pid を持つ path 貸出だけを返す。
+// 素の端末からの wx new（PID なし）と、shell 貸出は対象外である。
+func TestPIDBoundPathLeasesSelectOnlyRecordedOwners(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	seedPIDBoundLease(t, store, "direct", 4242)
+	seedLease(t, store, "detached", LeaseKindPath, "", "", 0)
+	seedLease(t, store, "shell", LeaseKindShell, "", "", 4243)
+	leases, err := store.PIDBoundPathLeases(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leases) != 1 || leases[0].Candidate.ID != "direct" || leases[0].LeaseOwnerPID != 4242 {
+		t.Fatalf("pid bound leases=%+v", leases)
+	}
+	if leases[0].Candidate.SlotID != "direct" || leases[0].Candidate.WorkspaceID != "workspace" {
+		t.Fatalf("candidate is not addressable for release: %+v", leases[0].Candidate)
+	}
+	// 返却済みの貸出は二度拾わない。
+	if _, _, err := store.Release(ctx, "direct", "workspace", "direct"); err != nil {
+		t.Fatal(err)
+	}
+	if leases, err := store.PIDBoundPathLeases(ctx); err != nil || len(leases) != 0 {
+		t.Fatalf("released lease is still pid bound: %+v err=%v", leases, err)
+	}
+}
+
+// 所有 PID は貸出ごとに読み戻り、agent 起動には残らない。
+func TestSessionLeaseOwnerPIDRoundTrip(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	seedWorkspace(t, store)
+	ctx := context.Background()
+	seedPIDBoundLease(t, store, "direct", 4242)
+	stored, err := store.Session(ctx, "direct", "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.LeaseOwnerPID != 4242 || stored.ClientPID != 0 {
+		t.Fatalf("lease session=%+v, want an owner pid without a client pid", stored)
+	}
+}

@@ -349,6 +349,31 @@ func (d *Discoverer) MainWorktree(ctx context.Context, cwd string) (string, erro
 	return root, err
 }
 
+// Toplevel は cwd を含む worktree の toplevel を canonical path で返す。
+// main worktree へ寄せる MainWorktree と違い、linked worktree では自分自身を返す。
+// cwd 側の境界が要る判定はこちらを使う。repository 外は ErrNotRepository を返す。
+func (d *Discoverer) Toplevel(ctx context.Context, cwd string) (string, error) {
+	canonical, err := domain.Canonicalize(cwd)
+	if err != nil {
+		return "", err
+	}
+	result, err := d.Git.Run(ctx, string(canonical), "rev-parse", "--show-toplevel")
+	if err != nil {
+		if !gitx.IsNotRepository(err) {
+			return "", fmt.Errorf("discover Git worktree root for %s: %w", canonical, err)
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("%s is %w", canonical, ErrNotRepository)
+	}
+	toplevel, err := domain.Canonicalize(strings.TrimSpace(result.Stdout))
+	if err != nil {
+		return "", err
+	}
+	return string(toplevel), nil
+}
+
 // PolicyRoot は探索や登録をせず、リポジトリなら main worktree、それ以外なら指定ディレクトリを返す。
 func (d *Discoverer) PolicyRoot(ctx context.Context, cwd string) (string, error) {
 	root, err := d.MainWorktree(ctx, cwd)

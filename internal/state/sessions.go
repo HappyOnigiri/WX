@@ -16,6 +16,10 @@ type Session struct {
 	LeaseKind, LeaseExpiresAt, LeaseOwnerSessionID string
 	TokenHash                                      []byte
 	ClientPID, AgentPID                            int
+	// LeaseOwnerPID は wx -n の起動元プロセスで、その終了がこの貸出の返却契機になる。
+	// 随伴 client を表す ClientPID とは別に持つ。終了要求に応答できる相手ではないため、
+	// wx clear --all の即時返却・wx release の拒否・lease.ttl 掃引の判定には使わない。
+	LeaseOwnerPID int
 }
 
 // LeaseKind の値。agent は既存の agent 起動で、既定値でもある。
@@ -27,13 +31,13 @@ const (
 )
 
 // sessionColumns は full-row の session read 全てで共有する column list である。
-const sessionColumns = `id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(pending_agent_session_id,''),lease_kind,COALESCE(lease_expires_at,''),COALESCE(lease_owner_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'')`
+const sessionColumns = `id,COALESCE(workspace_id,''),slot_id,COALESCE(parent_session_id,''),state,agent_kind,COALESCE(agent_session_id,''),COALESCE(pending_agent_session_id,''),lease_kind,COALESCE(lease_expires_at,''),COALESCE(lease_owner_session_id,''),COALESCE(client_pid,0),COALESCE(agent_pid,0),COALESCE(lease_owner_pid,0),session_token_hash,created_at,COALESCE(released_at,''),COALESCE(archived_at,''),COALESCE(expires_at,'')`
 
 // sessionInsertColumns と sessionInsertPlaceholders は session の新規登録で共有する。
 // 貸出属性の列を足し忘れた登録経路が残らないよう、列名と placeholder を1か所で持つ。
 const (
-	sessionInsertColumns      = `id,workspace_id,slot_id,parent_session_id,state,agent_kind,lease_kind,lease_expires_at,lease_owner_session_id,client_pid,session_token_hash,requested_branch_spec,created_at,pending_agent_session_id`
-	sessionInsertPlaceholders = `?,?,?,?,?,?,?,?,?,?,?,?,?,?`
+	sessionInsertColumns      = `id,workspace_id,slot_id,parent_session_id,state,agent_kind,lease_kind,lease_expires_at,lease_owner_session_id,client_pid,lease_owner_pid,session_token_hash,requested_branch_spec,created_at,pending_agent_session_id`
+	sessionInsertPlaceholders = `?,?,?,?,?,?,?,?,?,?,?,?,?,?,?`
 )
 
 // sessionInsertArgs は sessionInsertColumns と同じ順で登録引数を組む。
@@ -46,7 +50,7 @@ func sessionInsertArgs(session Session, createdAt string) []any {
 	return []any{
 		session.ID, nullString(session.WorkspaceID), session.SlotID, nullString(session.ParentSessionID), session.State, session.AgentKind,
 		kind, nullString(session.LeaseExpiresAt), nullString(session.LeaseOwnerSessionID),
-		session.ClientPID, session.TokenHash, "", createdAt, nullString(session.PendingAgentSessionID),
+		session.ClientPID, session.LeaseOwnerPID, session.TokenHash, "", createdAt, nullString(session.PendingAgentSessionID),
 	}
 }
 
@@ -169,7 +173,7 @@ func scanSession(row *sql.Row) (Session, error) {
 	var x Session
 	err := row.Scan(&x.ID, &x.WorkspaceID, &x.SlotID, &x.ParentSessionID, &x.State, &x.AgentKind, &x.AgentSessionID, &x.PendingAgentSessionID,
 		&x.LeaseKind, &x.LeaseExpiresAt, &x.LeaseOwnerSessionID,
-		&x.ClientPID, &x.AgentPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
+		&x.ClientPID, &x.AgentPID, &x.LeaseOwnerPID, &x.TokenHash, &x.CreatedAt, &x.ReleasedAt, &x.ArchivedAt, &x.ExpiresAt)
 	return x, err
 }
 
@@ -339,6 +343,36 @@ func (s *Store) OrphanedChildLeases(ctx context.Context) ([]OrphanCandidate, err
 		return nil, err
 	}
 	return scanOrphanCandidates(rows)
+}
+
+// PIDBoundLease は起動元プロセスの生存で寿命が決まる貸出である。
+// LeaseOwnerPID は候補側には載せない。lease.ttl 掃引と親連動は client / agent の生存だけを見る契約で、
+// そこへ所有 PID を混ぜると、環境変数で渡ってくる PID が ttl の上限を無効化できてしまう。
+type PIDBoundLease struct {
+	Candidate     OrphanCandidate
+	LeaseOwnerPID int
+}
+
+// PIDBoundPathLeases は起動元プロセスを記録した path 貸出を返す。
+// wx -n の agent が呼んだ wx new だけが該当し、素の端末からの wx new は lease_owner_pid を持たない。
+// heartbeat は見ない。この貸出は heartbeat を張らず、返却契機は所有プロセスの終了だけである。
+func (s *Store) PIDBoundPathLeases(ctx context.Context) ([]PIDBoundLease, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(workspace_id,''),slot_id,COALESCE(client_pid,0),COALESCE(agent_pid,0),COALESCE(lease_owner_pid,0) FROM sessions
+		WHERE state IN ('STARTING','ACTIVE') AND lease_kind='path' AND COALESCE(lease_owner_pid,0)<>0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PIDBoundLease
+	for rows.Next() {
+		var lease PIDBoundLease
+		c := &lease.Candidate
+		if err := rows.Scan(&c.ID, &c.WorkspaceID, &c.SlotID, &c.ClientPID, &c.AgentPID, &lease.LeaseOwnerPID); err != nil {
+			return nil, err
+		}
+		out = append(out, lease)
+	}
+	return out, rows.Err()
 }
 
 func scanOrphanCandidates(rows *sql.Rows) ([]OrphanCandidate, error) {

@@ -301,6 +301,8 @@ func TestChildEnvironmentScrubsInheritedWXInvocationState(t *testing.T) {
 		"WX_SESSION_ID=parent",
 		"WX_SESSION_TOKEN=parent-token",
 		"WX_RECOVERY_DISCARDED=1",
+		"WX_DIRECT_ROOT=/parent/root",
+		"WX_DIRECT_OWNER_PID=4242",
 		"KEEP=present",
 	}
 	child := childEnvironment(base, []string{"WX_SESSION_ID=child", "WX_SESSION_TOKEN=child-token"})
@@ -317,7 +319,8 @@ func TestChildEnvironmentScrubsInheritedWXInvocationState(t *testing.T) {
 	if values["WX_SESSION_ID"] != "child" || values["WX_SESSION_TOKEN"] != "child-token" || values["KEEP"] != "present" {
 		t.Fatalf("current child environment was not applied: %v", values)
 	}
-	for _, key := range []string{"WX_RECOVERY_DISCARDED"} {
+	// wx -n の中から通常 session を起動したとき、direct 判定の変数を持ち込ませない。
+	for _, key := range []string{"WX_RECOVERY_DISCARDED", envDirectRoot, envDirectOwnerPID} {
 		if _, exists := values[key]; exists {
 			t.Fatalf("parent invocation mode %s leaked into child: %v", key, values)
 		}

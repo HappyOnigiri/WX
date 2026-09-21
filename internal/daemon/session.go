@@ -32,7 +32,9 @@ func processAlive(pid int) bool {
 
 // ReleaseUnreceivedPathLease は、まだ path を渡せていない path 貸出を返却する。
 // wx new の待機が中断されると client は token ごと消えるが、path 貸出は client_pid も heartbeat も持たず
-// OrphanCandidates から外れるため、ここで返さないと lease.ttl まで slot を占める。path 以外は対象にしない。
+// OrphanCandidates から外れるため、ここで返さないと次の契機まで slot を占める。path 以外は対象にしない。
+// wx -n の lease_owner_pid による回収も、その起動元は path を受け取る前から生きているので間に合わない。
+// commentlint:allow-long -- 他の回収経路では間に合わない理由を残す
 func (m *Manager) ReleaseUnreceivedPathLease(ctx context.Context, id, token string) {
 	session, err := m.store.Session(ctx, id, token)
 	if err != nil {

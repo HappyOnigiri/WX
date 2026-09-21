@@ -171,7 +171,7 @@ func (c Client) runResumeByID(ctx context.Context, sourceCWD, agent string, args
 		}
 		fmt.Fprintln(os.Stderr, localizer.Localize("cli.notice.resume_without_record", map[string]any{"SessionID": intent.AgentSessionID}))
 		root, _ := c.policyRootFrom(ctx, sourceCWD)
-		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirsFrom(c.Config, root, sourceCWD), args))
+		return runDirectAgentFrom(ctx, sourceCWD, agent, addDirArgs(directAddDirsFrom(c.Config, root, sourceCWD), args), nil)
 	}
 	if target.WXSessionID == "" {
 		if direct, ok := c.resolveDirectResume(ctx, sourceCWD, target.CWD); ok {
@@ -180,7 +180,7 @@ func (c Client) runResumeByID(ctx context.Context, sourceCWD, agent string, args
 				fmt.Fprintln(os.Stderr, localizer.Localize("cli.error_prefix", nil), localizer.Localize("cli.resume.branch_needs_worktree", nil))
 				return 2
 			}
-			return runDirectAgentFrom(ctx, direct.cwd, agent, addDirArgs(directAddDirsFrom(c.Config, direct.root, direct.cwd), args))
+			return runDirectAgentFrom(ctx, direct.cwd, agent, addDirArgs(directAddDirsFrom(c.Config, direct.root, direct.cwd), args), nil)
 		}
 	}
 	return c.runAgentResolved(ctx, agent, args, branches, fresh, "", sourceCWD, &target, true)
