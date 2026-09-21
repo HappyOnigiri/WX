@@ -39,7 +39,7 @@ func TestPrepareCommandDoesNotBlockAnotherSlotOfTheSameRepository(t *testing.T) 
 	proceed := filepath.Join(barriers, "proceed")
 	cfg := blocking.Config
 	script := "touch " + started + "; until [ -f " + proceed + " ]; do sleep 0.01; done"
-	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", script}, Timeout: config.Duration{Duration: 60 * time.Second}}}}
+	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", script}, Timeout: &config.Duration{Duration: 60 * time.Second}}}}
 	blocking.Config = cfg
 	blocking.SlotLocks = &gitx.KeyedLocks{}
 
@@ -81,7 +81,7 @@ func TestPrepareExcludesConcurrentPreparationsOfTheSameSlot(t *testing.T) {
 	proceed := filepath.Join(barriers, "proceed")
 	cfg := first.Config
 	script := "touch " + started + "; until [ -f " + proceed + " ]; do sleep 0.01; done"
-	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", script}, Timeout: config.Duration{Duration: 60 * time.Second}}}}
+	cfg.Repositories = map[string]config.Repository{string(repo.MainPath): {Prepare: config.Prepare{Command: []string{"/bin/sh", "-c", script}, Timeout: &config.Duration{Duration: 60 * time.Second}}}}
 	first.Config = cfg
 	first.SlotLocks = &gitx.KeyedLocks{}
 

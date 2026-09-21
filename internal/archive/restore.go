@@ -149,6 +149,11 @@ func (m *Manager) Restore(ctx context.Context, repo discovery.Repository, target
 		if _, err := targetRun(env, nil, "read-tree", s.HeadOID); err != nil {
 			return err
 		}
+		// snapshot と同じく、HEAD に無い index entry を add より前に持ち込む。
+		// 戻した force-added ignored path をここで落とすと、作業ツリーが一致していないと誤判定する。
+		if err := seedForceAddedEntries(targetRun, targetValue, env); err != nil {
+			return err
+		}
 		// 検証用の一時 index にも同じ flag を立て、snapshot と同じ基準（flag 付き path は HEAD の内容）で tree を作る。
 		// snapshot 側と同じく add に pathspec を渡さない（渡すと flag 付き path だけに一致したとき git が exit 1 にする）。
 		if err := applyIndexFlags(targetRun, targetValue, env, flags); err != nil {

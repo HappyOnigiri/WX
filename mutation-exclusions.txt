@@ -101,7 +101,7 @@ internal/cli/resume_intent.go	ast-v1:c62304e1b6beb6fc096b71dd69817b927880c3bde3a
 internal/cli/resume_intent.go	ast-v1:2000534d5fd4b459c11d6c532d2beeb84ae83a2d1ee3f0a9fabc4b238029208a	exec後の値付きflagが末尾にある場合は、比較子を<=にしても次の反復がなくcodexResumeShapeの結果が変わらないため
 internal/cli/resume_intent.go	ast-v1:5ac07e81a8a9e01c815a76b7e7d227bf5cc877f915c5d251424399e06d689567	末尾の値付きglobal flagで比較子を<から<=へ変えても次の反復がなく、codexResumeShapeの結果が変わらないため
 internal/archive/lfs.go	ast-v1:79b49d98d509e68063cd6923dbce81d5806b764abad5b48f0dec2c2395afb8a5	strings.Fields で len(fields) >= 5 を通る status は常に非空なので、len(status) の > と >= は同じ動作になる
-internal/archive/archive.go	ast-v1:e53f3668556fdfd383cc09ec6f28b4447afa6e61f4303c97582111b702b84bb7	空の候補は CompactLFSObjects が先頭で no-op を返すため、len の > と >= は同じ動作になる
+internal/archive/archive.go	ast-v1:34182c3d6f8fc7b8ba1ae795f540bb098eaa9176623191f4df9e24ed16ffb0fd	空の候補は CompactLFSObjects が先頭で no-op を返すため、len の > と >= は同じ動作になる
 internal/archive/conflict.go	ast-v1:94843e96bca06c241f246c5b3b2f6a6c46202d97191394b91995d49f406328c3	path が異なる場合だけ比較する != ガードの内側なので、path の < と <= は同じ動作になる
 internal/archive/conflict.go	ast-v1:ccadb664ebd512dac5364942877e835fb2428b5a735d6eeb958b09073afd025d	stage が異なる場合だけ比較する != ガードの内側なので、stage の < と <= は同じ動作になる
 internal/archive/conflict.go	ast-v1:3295296019f46c569eda9f03bc34df4f17f0cddda73ce775fb21f2e9eaadbfdc	同一 path と stage の重複をソート前に拒否するため、stage の < と <= の同値差へ到達しない

@@ -248,7 +248,8 @@ func (s *Store) SetCleanTargetState(ctx context.Context, runID, slotID string, f
 }
 
 // RequestSessionTermination は終了要求の記録と対象の TERMINATING 化を同時に行う。
-// 既に要求済みの session には新しい要求を作らず、CLI の再実行で終了要求が重複しない。
+// 未応答の要求がある session には新しい要求を作らず既存の deadline を引き継ぐので、CLI の再実行で終了要求が重複しない。
+// TIMED_OUT・CONFIRMED で閉じた終端行は置き換える。残すと再実行が過去の deadline を引き継ぎ、target だけが TERMINATING へ進んで停止要求が session へ届かない。
 func (s *Store) RequestSessionTermination(ctx context.Context, runID, slotID, sessionID, requestID string, deadline time.Time) error {
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -259,10 +260,13 @@ func (s *Store) RequestSessionTermination(ctx context.Context, runID, slotID, se
 	defer tx.Rollback()
 	t := now()
 	deadlineText := FormatTime(deadline)
-	res, err := tx.ExecContext(ctx, `INSERT INTO session_termination_requests(session_id,request_id,run_id,requested_at,deadline,state) VALUES(?,?,?,?,?,'PENDING') ON CONFLICT(session_id) DO NOTHING`, sessionID, requestID, runID, t, deadlineText)
+	res, err := tx.ExecContext(ctx, `INSERT INTO session_termination_requests(session_id,request_id,run_id,requested_at,deadline,state) VALUES(?,?,?,?,?,'PENDING')
+ ON CONFLICT(session_id) DO UPDATE SET request_id=excluded.request_id,run_id=excluded.run_id,requested_at=excluded.requested_at,deadline=excluded.deadline,state='PENDING'
+ WHERE session_termination_requests.state<>'PENDING'`, sessionID, requestID, runID, t, deadlineText)
 	if err != nil {
 		return err
 	}
+	// 更新されなかったのは既存行が PENDING のときだけなので、その要求の deadline を target へ引き継ぐ。
 	if n, _ := res.RowsAffected(); n == 0 {
 		if err := tx.QueryRowContext(ctx, `SELECT deadline FROM session_termination_requests WHERE session_id=?`, sessionID).Scan(&deadlineText); err != nil {
 			return err
