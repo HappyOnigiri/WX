@@ -5,6 +5,12 @@
 /artifacts/
 /tmp
 
+# agent CLIのローカル設定・ランタイム状態・ローカル専用スキル
+.claude/
+.agents/
+*.local.md
+.worktreelink
+
 # macOS
 .DS_Store
 ._*
