@@ -70,7 +70,11 @@ daemon自身も比較側になるので、書き戻さないとdaemonの環境�
 その代わり初回インストールではsetupが始まるまでの出力が英語になり、以降の案内はsetupが保存した値を読み戻して出す。
 更新では既存のbinaryか`config.yaml`から読んだ言語を最初から使う。
 
-開発用checkoutの`make install`はバイナリを置くだけなので、daemonの登録と更新反映は`wx daemon install`・`wx daemon restart`を自分で実行する。
+開発用checkoutの`make install`は、既定の配置先（`$HOME/.local/bin`）へ入れたときだけ、LaunchAgentの登録・daemonの入れ替え・agent hookの追従まで済ませる。
+判定とループは`scripts/install-local.sh`が持ち、状態ごとのinstall・update・startの選び分けは`wx setup --item <id> --action recommended`へ委ねて、同じ判定をshellへ書き写さない。
+`INSTALL_DIR`を変えた呼び出し（`make smoke`など）とmacOS以外では何もせず、バイナリを置くだけで終える。
+hookの陳腐化判定は`os.SameFile`なので、同じpathへの置き換えでは`make install`のたびに書き換わるわけではない。
+値が変わるのはhookのイベント集合が増えた版と、hookが未登録の環境だけである。
 
 ## 更新の確認と適用
 
@@ -85,6 +89,26 @@ daemonが持つキャッシュのタグではなく実行時に確認し直す�
 開発ビルドでは確認も更新も行わない。
 埋め込み版が`vX.Y.Z`ではなくリリースタグと比較できず、`install.sh`が固定している配置先が開発用の配置と一致するとも限らないためである。
 `BuildMeta`の既定値が`dev`であることにより、テストバイナリも必ずこちら側に落ちる。
+
+`system.update.auto_apply`（既定で有効）のとき、daemonは新版を見つけると自分で`wx update --apply`を起動する。
+起動するのは`setsid`でsessionを切り離した子で、結果は待たない。
+install.shが自分で`wx daemon restart`を呼んで親daemonを止めるため、待つと自分の停止を待つ循環になる。
+
+自動適用を始めるのは貸出0件のアイドル時に限る。
+利用者が指示していない置換なので、明示的なrestart/stopより強い条件を置く（[daemonの診断と再起動](daemon-diagnostics.md)）。
+条件が効くのは開始時点だけで、取得と置換、daemonの入れ替えは開始後に走る。
+その間に取られた貸出は、明示的な`wx daemon restart`と同じ扱いになる。
+同じ版を繰り返し適用しないためのclaimは案内のclaimとは別に持つ。
+案内権をdaemonが消費すると、対話起動での案内がその版について出なくなるためである。
+逆に`auto_apply`を無効にしても案内は出続け、利用者は`wx update --apply`を自分で実行できる。
+
+自動適用の子はhookを更新できない。
+install.shが呼ぶ`wx setup --update`は端末を持たない実行では項目名を出すだけで何も書かないためで、`make install`側とは対称の制約である。
+子の出力はdaemon logではなく`wxd.log`と同じディレクトリの`update-apply.log`へ試行ごとに上書きで残す。
+この中で`wx daemon restart`がconflictで失敗している場合、バイナリの置換検知が先にrestartを予約したという意味であり、入れ替え自体は行われる。
+
+開発ビルドでは自動適用も行わない。
+`make install`が入れるのは常に開発ビルドなので、この経路で自動適用が動くことはない。
 
 対話起動での案内はその版について1回だけ出す。
 案内済みの版をstate.dbに記録し、条件付きUPDATEが1行を変えられたプロセスだけが案内する。

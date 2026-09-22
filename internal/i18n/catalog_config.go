@@ -144,7 +144,11 @@ var configCatalog = map[string]Entry{
 
 	"config.update.auto_check.name":        {EN: "Check for new versions", JA: "新しいバージョンを確認する"},
 	"config.update.auto_check.description": {EN: "Whether the daemon occasionally asks GitHub whether a newer wx has been released, so that the status screen and an interactive launch can tell you about it.", JA: "新しい wx が公開されていないかを daemon が時々 GitHub に尋ねるかどうかです。状態画面と対話的な起動でお知らせするために使います。"},
-	"config.update.auto_check.impact":      {EN: "When disabled, wx never contacts GitHub on its own; wx update still checks when you run it yourself.", JA: "無効にすると、wx が自分から GitHub へ接続することはなくなります。自分で実行する wx update は無効でも確認します。"},
+	"config.update.auto_check.impact":      {EN: "When disabled, wx never contacts GitHub on its own; wx update still checks when you run it yourself, and nothing is installed automatically either.", JA: "無効にすると、wx が自分から GitHub へ接続することはなくなり、自動での導入も行われません。自分で実行する wx update は無効でも確認します。"},
+
+	"config.update.auto_apply.name":        {EN: "Install new versions automatically", JA: "新しいバージョンを自動で導入する"},
+	"config.update.auto_apply.description": {EN: "Whether the daemon installs a newer wx by itself. It begins only while nothing is leased; the download, the replacement and the daemon restart then run after that point.", JA: "新しい wx を daemon が自分で導入するかどうかです。開始するのは貸出が 1 件も無いときに限られ、取得と置換、daemon の入れ替えはその後に行われます。"},
+	"config.update.auto_apply.impact":      {EN: "When disabled, a new release is still announced and you install it yourself with wx update --apply; automatic installs also stop when the automatic check is disabled.", JA: "無効にしても新しいバージョンのお知らせは出続け、導入は自分で実行する wx update --apply で行います。自動確認を無効にした場合も自動の導入は行われません。"},
 
 	"config.daemon.login_shell.name":        {EN: "Start the daemon through a login shell", JA: "daemon をログインシェルから起動する"},
 	"config.daemon.login_shell.description": {EN: "Whether the LaunchAgent starts the daemon through your login shell, so that the PATH your shell startup files build reaches the daemon and the commands it runs for you, such as the Git hooks of a repository.", JA: "LaunchAgent が daemon をログインシェル経由で起動するかどうかです。シェルの起動ファイルが組み立てた PATH が daemon と、その daemon が実行するリポジトリの Git hook などへ届きます。"},

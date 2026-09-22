@@ -288,12 +288,16 @@ type Lease struct {
 // Update は新しいリリースを wx 自身が確認するかどうかの方針で、legacy の flatten view である。
 type Update struct {
 	AutoCheck bool `yaml:"auto_check,omitempty"`
+	AutoApply bool `yaml:"auto_apply,omitempty"`
 }
 
 // SystemUpdate は config v2 における Update の正本である。
 // 既定が有効なため、未記載と明示した false を区別できるようポインタで持つ。
 type SystemUpdate struct {
 	AutoCheck *bool `yaml:"auto_check,omitempty"`
+	// AutoApply は確認で見つかった新版を daemon が自動で適用するかを決める。
+	// 適用は AutoCheck が有効なときにだけ起き、無効にしても新版のお知らせは出続ける。
+	AutoApply *bool `yaml:"auto_apply,omitempty"`
 }
 
 // Daemon は daemon process 自体の起動方法で、legacy の flatten view である。
@@ -498,7 +502,7 @@ func defaultsLegacy() Config {
 		Lease:    Lease{TTL: Duration{72 * time.Hour}},
 		Includes: Includes{DefaultAgentRules: true}, Agent: Agent{AddDir: AgentAddDirAlways}, Logging: Logging{Level: "info"},
 		Sessions:   sessionsconfig.Defaults(),
-		Update:     Update{AutoCheck: true},
+		Update:     Update{AutoCheck: true, AutoApply: true},
 		Daemon:     Daemon{LoginShell: true},
 		Workspaces: map[string]Workspace{}, Repositories: map[string]Repository{},
 	}

@@ -111,7 +111,7 @@ func TestV2MutationOverlayKeepsExplicitZeroFalseAndEmptyValues(t *testing.T) {
 		"system.retention.recovery_snapshot", "system.retention.expired_session_tombstone", "system.retention.failed_job",
 		"system.retention.event_log", "system.discovery.max_entries", "system.discovery.timeout",
 		"system.discovery.reconcile_interval", "system.resume.auto_fresh", "system.lease.ttl", "system.lease.shell",
-		"system.logging.level", "system.update.auto_check", "system.daemon.login_shell",
+		"system.logging.level", "system.update.auto_check", "system.update.auto_apply", "system.daemon.login_shell",
 		"system.sessions.paths.claude.sessions", "system.sessions.paths.codex.sessions",
 		"workspace_defaults", "workspace_defaults.worktree", "workspace_defaults.copy", "workspace_defaults.link",
 		"workspace_defaults.reuse_standby", "workspace_defaults.fetch_default_branch", "workspace_defaults.warm_count",

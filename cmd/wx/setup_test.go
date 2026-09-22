@@ -445,6 +445,55 @@ func TestSetupItemAppliesOnlyTheRequestedItem(t *testing.T) {
 	}
 }
 
+// TestSetupItemRecommendedAppliesTheDefaultAndStaysQuietWhenNothingIsNeeded は、
+// 状態を先に問い合わせない自動化のための予約語を守る。install と update の選び分けを
+// 呼び出し側へ写さずに済むことと、変更が要らない項目を失敗にしないことが要件である。
+func TestSetupItemRecommendedAppliesTheDefaultAndStaysQuietWhenNothingIsNeeded(t *testing.T) {
+	home, options := setupCommandHome(t)
+	var out, errOut bytes.Buffer
+	if code := runSetupItem(context.Background(), options, "worktree_root", setupModeRecommended, "", &out, &errOut); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "worktree_root") {
+		t.Fatalf("output=%q", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "wx")); err != nil {
+		t.Fatalf("the recommended action was not applied: %v", err)
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := runSetupItem(context.Background(), options, "worktree_root", setupModeRecommended, "", &out, &errOut); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, errOut.String())
+	}
+	if out.String() != "" || errOut.String() != "" {
+		t.Fatalf("a settled item printed stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
+// TestSetupItemRecommendedFailsWhenTheStateCannotBeDetermined は、判定できなかった項目が
+// 変更不要と同じ無表示の成功にならないことを固定する。install-local.sh のように戻り値だけを
+// 見る呼び出し側は、これが 0 だと適用されていない項目に気づけない。
+func TestSetupItemRecommendedFailsWhenTheStateCannotBeDetermined(t *testing.T) {
+	home, options := setupCommandHome(t)
+	// hook 項目は agent が PATH に無いと非該当になるため、判定まで進む実体を置く。
+	agentDirectory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(agentDirectory, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", agentDirectory+":"+os.Getenv("PATH"))
+	// 設定ファイルの位置が通常ファイルでないと読み書きの可否を判定できず、選択肢なし・既定 keep で返る。
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "settings.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := runSetupItem(context.Background(), options, "hooks.claude", setupModeRecommended, "", &out, &errOut); code == 0 {
+		t.Fatalf("an undetermined item succeeded: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	if errOut.Len() == 0 {
+		t.Fatalf("an undetermined item printed no reason: stdout=%q", out.String())
+	}
+}
+
 // writeFakeLaunchAgent は plist を置く。--remove は plist が無い環境では launchctl を呼ばないため、
 // 解除の経路を通すテストは実体を用意する必要がある。
 func writeFakeLaunchAgent(t *testing.T, home string) {

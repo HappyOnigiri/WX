@@ -49,7 +49,11 @@ type Manager struct {
 	// updateProbe は更新確認の外部依存（配布用ビルド判定・手元の版・最新リリースの取得）の差し替え点。
 	// production では nil のままにする。テストバイナリは必ず開発ビルドになるため、
 	// この seam が無いと確認処理の分岐を一切通せず、通せる形にすると実ネットワークへ出てしまう。
-	updateProbe        *updateProbe
+	updateProbe *updateProbe
+	// updateApply は自動適用が起こす子 process の起動と、その出力先の差し替え点。
+	// production では nil のままにする。実装を通すと本当に自分を置き換えてしまうため、
+	// この seam が無いと開始条件と claim の分岐を一度も通せない。
+	updateApply        *updateApplyHooks
 	executablePath     string
 	executableBaseline executableSnapshot
 	executableWatch    bool

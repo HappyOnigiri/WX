@@ -46,6 +46,7 @@ system:
     level: debug
   update:
     auto_check: false
+    auto_apply: false
   daemon:
     login_shell: false
 workspace_defaults:
