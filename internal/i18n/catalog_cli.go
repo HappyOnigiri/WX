@@ -199,6 +199,7 @@ var cliCatalog = map[string]Entry{
 	"wx.setup.action_unavailable":   {EN: "setup item {{.Item}} does not offer action {{.Action}}", JA: "setup 項目 {{.Item}} は操作 {{.Action}} を提供しません"},
 	"wx.setup.available_actions":    {EN: "; available actions: {{.Actions}}", JA: "。利用可能な操作: {{.Actions}}"},
 	"wx.setup.manual_needs_value":   {EN: "setup item {{.Item}} action manual requires --value", JA: "setup 項目 {{.Item}} の manual 操作には --value が必要です"},
+	"wx.setup.state_unknown":        {EN: "setup item {{.Item}} could not be determined, so nothing was applied", JA: "setup 項目 {{.Item}} は状態を判定できないため、何も適用しませんでした"},
 	"wx.setup.worktree_root_prompt": {EN: "Enter the worktree root path [{{.Default}}]: ", JA: "Worktree root の path を入力してください [{{.Default}}]: "},
 	"wx.setup.language_detail":      {EN: "Choose English or 日本語 for wx messages.", JA: "wx の表示に English か 日本語 を選んでください。"},
 	"wx.setup.mode_detail": {

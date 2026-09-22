@@ -470,6 +470,30 @@ func TestSetupItemRecommendedAppliesTheDefaultAndStaysQuietWhenNothingIsNeeded(t
 	}
 }
 
+// TestSetupItemRecommendedFailsWhenTheStateCannotBeDetermined は、判定できなかった項目が
+// 変更不要と同じ無表示の成功にならないことを固定する。install-local.sh のように戻り値だけを
+// 見る呼び出し側は、これが 0 だと適用されていない項目に気づけない。
+func TestSetupItemRecommendedFailsWhenTheStateCannotBeDetermined(t *testing.T) {
+	home, options := setupCommandHome(t)
+	// hook 項目は agent が PATH に無いと非該当になるため、判定まで進む実体を置く。
+	agentDirectory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(agentDirectory, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", agentDirectory+":"+os.Getenv("PATH"))
+	// 設定ファイルの位置が通常ファイルでないと読み書きの可否を判定できず、選択肢なし・既定 keep で返る。
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "settings.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if code := runSetupItem(context.Background(), options, "hooks.claude", setupModeRecommended, "", &out, &errOut); code == 0 {
+		t.Fatalf("an undetermined item succeeded: stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+	if errOut.Len() == 0 {
+		t.Fatalf("an undetermined item printed no reason: stdout=%q", out.String())
+	}
+}
+
 // writeFakeLaunchAgent は plist を置く。--remove は plist が無い環境では launchctl を呼ばないため、
 // 解除の経路を通すテストは実体を用意する必要がある。
 func writeFakeLaunchAgent(t *testing.T, home string) {

@@ -186,6 +186,16 @@ func runSetupItem(ctx context.Context, options setup.Options, id string, action 
 	// recommended は項目の状態を呼び出し側が先に問い合わせなくても済むようにする予約語で、
 	// Collect が出した既定操作をそのまま当てる。変更が要らない項目は何も出さずに 0 で終える。
 	if action == setupModeRecommended {
+		// 判定できなかった項目も選択肢が空で既定が keep になるため、変更不要と同じ形になる。
+		// 非対話の呼び出し側は戻り値しか見ないので、理由を出して失敗として返す。
+		if step.State == setup.StateUnknown {
+			_, _ = fmt.Fprintf(errOut, "%s %s\n", errorPrefix,
+				localizer.Localize("wx.setup.state_unknown", map[string]any{"Item": id}))
+			for _, reason := range step.Reasons {
+				_, _ = fmt.Fprintln(errOut, localizer.Message(reason))
+			}
+			return 1
+		}
 		action = step.Default
 		if len(step.Options) == 0 || action == setup.ActionKeep {
 			return 0
