@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/HappyOnigiri/WX/internal/config"
@@ -21,6 +22,24 @@ import (
 	"github.com/HappyOnigiri/WX/internal/update"
 	"github.com/HappyOnigiri/WX/internal/workspace"
 )
+
+type mutationOnceLogHandler struct {
+	slog.Handler
+	once  sync.Once
+	match func(slog.Record) bool
+	fn    func(slog.Record)
+}
+
+func (h *mutationOnceLogHandler) Handle(ctx context.Context, record slog.Record) error {
+	if h.match == nil || h.match(record) {
+		h.once.Do(func() {
+			if h.fn != nil {
+				h.fn(record)
+			}
+		})
+	}
+	return h.Handler.Handle(ctx, record)
+}
 
 func TestMutationOutcomeLessOrdersEveryFieldStrictly(t *testing.T) {
 	t.Parallel()
@@ -318,6 +337,196 @@ func TestMutationMaterializeStagedRootRequiresStableIdentity(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(slot.Path, "early.txt")); err != nil || string(data) != "early" {
 		t.Fatalf("staged root file=%q err=%v", data, err)
+	}
+}
+
+func TestMutationMaterializeStagedRootReturnsIdentityReadError(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, w, _, _ := managerCoverageFixture(t, "multi_repository")
+	slot := testSlot(t, manager, string(w.ID), "staged-root-missing", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	root, _, err := manager.activeRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, release, err := manager.existingRootDescriptor(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	err = manager.materializeStagedRoot(ctx, slot, func(*os.Root, bool) error {
+		if err := os.RemoveAll(slot.Path); err != nil {
+			t.Fatalf("remove staged root: %v", err)
+		}
+		return nil
+	}, true)
+	if err == nil || errors.Is(err, state.ErrOwnership) || !strings.Contains(err.Error(), "open lease root") {
+		t.Fatalf("staged root identity read error=%v, want the direct identity read failure", err)
+	}
+}
+
+func TestMutationPrepareStagedSlotPropagatesEarlyReadyCASFailure(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, w, _, _ := managerCoverageFixture(t, "multi_repository")
+	repositoryPath := string(w.Repositories[0].MainPath)
+	w.Root = domain.CanonicalPath(filepath.Dir(repositoryPath))
+	w.Repositories[0].RelativePath = filepath.Base(repositoryPath)
+	w = registerTestWorkspace(t, store, w)
+	slot := testSlot(t, manager, string(w.ID), "early-ready-cas", 1, "PREPARING")
+	if _, err := store.CreateStandby(ctx, slot, nil); err != nil {
+		t.Fatal(err)
+	}
+	root := string(w.Root)
+	linkPath := filepath.Join(root, ".codex")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing"), linkPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".worktreelink"), []byte(".codex\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(filepath.Join(root, ".worktreelink"))
+		_ = os.Remove(linkPath)
+	})
+	manager.log = slog.New(&mutationOnceLogHandler{
+		Handler: slog.NewTextHandler(&bytes.Buffer{}, nil),
+		match: func(record slog.Record) bool {
+			return strings.Contains(record.Message, "workspace link source is a symlink")
+		},
+		fn: func(record slog.Record) {
+			if err := store.SetSlotState(context.Background(), slot.ID, []string{"PREPARING"}, "FAILED", "TEST_MARK_EARLY_READY"); err != nil {
+				t.Errorf("mark slot failed before early readiness: %v", err)
+			}
+		},
+	})
+	releaseRoot, err := manager.holdRootForPath(slot.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseRoot()
+	preparer := manager.newPreparer(manager.Config(), slot)
+	if preparer.OwnedRoot == nil {
+		t.Fatalf("fixture preparer root=%q slot=%q known root=%q", preparer.RootPath, slot.Path, func() string { root, _ := manager.rootForPath(slot.Path); return root }())
+	}
+	preparer.WorkspaceRoot = string(w.Root)
+	_, continueLease, err := manager.prepareStagedSlot(ctx, slot, w, nil, preparer)
+	if err == nil || continueLease || !strings.Contains(err.Error(), "early readiness compare-and-swap failed") {
+		t.Fatalf("early readiness CAS result err=%v continueLease=%v, want propagated CAS failure", err, continueLease)
+	}
+	got, err := store.Slot(ctx, slot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "QUARANTINED" {
+		t.Fatalf("slot after early readiness CAS failure=%+v, want QUARANTINED", got)
+	}
+}
+
+func TestMutationLeaseAfterPrepareFailurePromotesOnlyRunningRepositories(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	otherRoot := filepath.Dir(string(workspaceRecord.Root))
+	secondPath := filepath.Join(otherRoot, "second-repository")
+	initGitRepo(t, secondPath)
+	second := discovery.Repository{
+		ID:            "second-repository",
+		MainPath:      domain.CanonicalPath(secondPath),
+		CommonDir:     domain.CanonicalPath(filepath.Join(secondPath, ".git")),
+		RelativePath:  "second",
+		DefaultBranch: "main",
+	}
+	multi := workspaceRecord
+	multi.Kind = "multi_repository"
+	multi.Root = domain.CanonicalPath(otherRoot)
+	multi.Repositories = append([]discovery.Repository{resolved[0].Repository}, second)
+	multi.Repositories[0].RelativePath = "repository"
+	multi = registerTestWorkspace(t, store, multi)
+	slot := testSlot(t, manager, string(multi.ID), "lease-after-failure-mixed", 1, "PREPARING")
+	rows := []state.SlotRepository{
+		{RepositoryID: string(multi.Repositories[0].ID), DirName: "repository", State: "PREPARE_RUNNING", RequestedRef: "main", BaseOID: resolved[0].OID},
+		{RepositoryID: string(multi.Repositories[1].ID), DirName: "second", State: "READY", RequestedRef: "main", BaseOID: resolved[0].OID},
+	}
+	if _, err := store.CreateStandby(ctx, slot, rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.leaseAfterPrepareFailure(ctx, slot.ID); err != nil {
+		t.Fatalf("lease after mixed prepare failure: %v", err)
+	}
+	got, err := store.SlotRepositories(ctx, slot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repository := range got {
+		if repository.State != "READY" {
+			t.Fatalf("repository state=%+v, want all READY after handoff", got)
+		}
+	}
+}
+
+func TestMutationLeaseAfterPrepareFailureQuarantinesFinishError(t *testing.T) {
+	t.Parallel()
+	ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
+	slot := testSlot(t, manager, string(workspaceRecord.ID), "lease-after-failure-finish-error", 1, "PREPARING")
+	session := state.Session{ID: "unexpected-prepare-owner", WorkspaceID: string(workspaceRecord.ID), SlotID: slot.ID, State: "STARTING", AgentKind: "codex", TokenHash: state.HashToken("token")}
+	repository := state.SlotRepository{RepositoryID: string(resolved[0].Repository.ID), DirName: testDirName(resolved[0].Repository, manager.Config()), State: "PREPARE_RUNNING", RequestedRef: "main", BaseOID: resolved[0].OID}
+	if _, err := store.CreateSlotSession(ctx, slot, []state.SlotRepository{repository}, session, "PREPARE"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkSessionState(ctx, session.ID, []string{"STARTING"}, "UNEXPECTED"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.leaseAfterPrepareFailure(ctx, slot.ID); err == nil {
+		t.Fatal("lease after prepare failure succeeded with an unexpected owner state")
+	}
+	got, err := store.Slot(ctx, slot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "QUARANTINED" {
+		t.Fatalf("slot after finish error=%+v, want QUARANTINED", got)
+	}
+}
+
+func TestMutationMaterializeWorkspaceRootVerifiesPinnedRootAfterMaterialize(t *testing.T) {
+	t.Parallel()
+	_, manager, _, _, _, _ := managerCoverageFixture(t, "multi_repository")
+	root, err := config.ExpandHome(manager.Config().WorktreeRoot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	slotPath := filepath.Join(root, "workspace-root-verify", "slot")
+	if _, _, err := manager.createSlotRoot(slotPath, slotPath); err != nil {
+		t.Fatal(err)
+	}
+	source := t.TempDir()
+	linkTarget := filepath.Join(t.TempDir(), "missing")
+	if err := os.Symlink(linkTarget, filepath.Join(source, "root-link")); err != nil {
+		t.Fatal(err)
+	}
+	var replaced sync.Once
+	manager.log = slog.New(&mutationOnceLogHandler{
+		Handler: slog.NewTextHandler(&bytes.Buffer{}, nil),
+		match: func(record slog.Record) bool {
+			return strings.Contains(record.Message, "workspace link source is a symlink")
+		},
+		fn: func(slog.Record) {
+			replaced.Do(func() {
+				backup := root + ".replaced"
+				if err := os.Rename(root, backup); err != nil {
+					t.Errorf("rename pinned root: %v", err)
+					return
+				}
+				if err := os.Mkdir(root, 0o700); err != nil {
+					t.Errorf("recreate root path: %v", err)
+				}
+			})
+		},
+	})
+	err = manager.materializeWorkspaceRoot(source, slotPath, workspace.RootRules{Link: []string{"root-link"}})
+	if err == nil || !errors.Is(err, state.ErrOwnership) {
+		t.Fatalf("materialize after root replacement error=%v, want pinned-root ownership failure", err)
 	}
 }
 
