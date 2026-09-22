@@ -154,6 +154,17 @@ func TestSubmoduleRefFindingsPreserveEqualKeyOrder(t *testing.T) {
 	}
 }
 
+// module の順序を ref の順序より優先し、module 比較を反転しても通る入力にしない。
+func TestSubmoduleRefFindingsSortByModuleBeforeRef(t *testing.T) {
+	findings := submoduleRefFindings([]submoduleRefIssue{
+		{Kind: submoduleRefMissing, ModuleDir: "/modules/b", Ref: "refs/wx/recovery/a", Path: "b", ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))},
+		{Kind: submoduleRefMissing, ModuleDir: "/modules/a", Ref: "refs/wx/recovery/z", Path: "a", ExpiresAt: state.FormatTime(time.Now().Add(time.Hour))},
+	})
+	if len(findings) != 2 || findings[0].Target != "/modules/a" {
+		t.Fatalf("findings=%+v, want /modules/a first", findings)
+	}
+}
+
 // unmanaged artifact の種別ごとの件数は各種別一件の境界で正しく数える。
 func TestUnmanagedArtifactCauseCountsEachKind(t *testing.T) {
 	cause, _ := unmanagedArtifactCause([]unmanagedArtifact{
@@ -162,6 +173,21 @@ func TestUnmanagedArtifactCauseCountsEachKind(t *testing.T) {
 	})
 	if !strings.HasPrefix(cause, "1 slot directory/directories and 1 workspace snapshot archive(s)") {
 		t.Fatalf("cause=%q, want one directory and one snapshot", cause)
+	}
+}
+
+// 登録外の実体は種別ごとの件数を独立して表示し、対称な件数で誤判定しない。
+func TestUnmanagedArtifactCauseSeparatesDirectoryAndSnapshotCounts(t *testing.T) {
+	cause, details := unmanagedArtifactCause([]unmanagedArtifact{
+		{Kind: unmanagedSlotDirectory},
+		{Kind: unmanagedSlotDirectory},
+		{Kind: unmanagedWorkspaceSnapshot},
+	})
+	if !strings.HasPrefix(cause, "2 slot directory/directories and 1 workspace snapshot archive(s)") {
+		t.Fatalf("cause=%q, want two directories and one snapshot", cause)
+	}
+	if details.Data["Directories"] != 2 || details.Data["Snapshots"] != 1 {
+		t.Fatalf("message data=%v, want directory=2 snapshot=1", details.Data)
 	}
 }
 

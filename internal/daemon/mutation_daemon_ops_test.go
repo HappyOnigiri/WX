@@ -169,6 +169,26 @@ func TestMutationDaemonOpsDiagnosticGatesAndArtifactRefs(t *testing.T) {
 		}
 	})
 
+	t.Run("submodule preparation honors a repository true override", func(t *testing.T) {
+		disabled := false
+		enabled := true
+		cfg := config.Defaults()
+		cfg.RepositoryDefaults.Submodules = &disabled
+		cfg.Workspaces = map[string]config.Workspace{
+			"/workspace": {
+				RepositoryDefaults: config.RepositoryDefaults{Submodules: &disabled},
+				Repositories: map[string]config.Repository{
+					"repo": {Submodules: &enabled},
+				},
+			},
+		}
+		w := discovery.Workspace{Root: domain.CanonicalPath("/workspace")}
+		repo := discovery.Repository{MainPath: domain.CanonicalPath("/workspace/repo"), RelativePath: "repo"}
+		if !submodulePreparationEnabled(cfg, w, repo) {
+			t.Fatal("repository-level true override was ignored")
+		}
+	})
+
 	t.Run("submodule artifact refs are checked when expectations exist", func(t *testing.T) {
 		ctx, manager, store, workspaceRecord, resolved, _ := managerCoverageFixture(t, "repository")
 		repo := resolved[0].Repository
