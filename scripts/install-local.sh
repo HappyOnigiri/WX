@@ -42,6 +42,8 @@ done
 if ! "$binary" daemon restart; then
   # state.db を開けない daemon は RequestRestart を拒む。stop はその状態でも通るので、
   # 止めてから launchd に起動し直させる。
-  "$binary" daemon stop
+  # stop も待機期限で失敗し得る。set -e で打ち切ると停止予約だけが残り、KeepAlive が
+  # SuccessfulExit=false の launchd は起動し直さないため、start まで必ず進める。
+  "$binary" daemon stop || true
   "$binary" daemon start
 fi
