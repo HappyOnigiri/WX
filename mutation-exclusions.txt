@@ -66,10 +66,6 @@ internal/daemon/roots.go	ast-v1:47acc2c8b48e57454835ff52742e2773326405e2ae508c98
 internal/daemon/roots.go	ast-v1:8eb310093da516d02d5d580bc8f64ac7381fa32793570223552c19140a7f2f1b	activeと履歴に同じrootがある同長境界では同一文字列を再代入するだけで選択結果が変わらない
 internal/daemon/server.go	ast-v1:b7da50cfe01497a3924078e6f1cd2cc01c970daaadc8e1beec78fe0b6296a7c6	readinessと余裕の合計が既定上限と等しい場合は、どちらの分岐でも同じ既定上限を返すため観測可能な差がない
 internal/daemon/status.go	ast-v1:37ca55ee6d0c689820ae9f59f493dc0a8523e430e97b0ee13b2ddc4314ce4274	root一覧はpathをkeyにしたmapから作るため同じpathの別要素は存在せず、同一要素の比較を < から <= に変えても並び順は変わらない
-internal/daemon/submodule_measurement.go	ast-v1:2a542dcd55499e9ab0d241234b1f32fd4b12fd2b18231481bca4ce82f76361b2	repositoryが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
-internal/daemon/submodule_measurement.go	ast-v1:dd5f1b5a7441fc4d0bc0292520fb0203121675232aa4d9192cd096aa46007bc3	同じrepositoryでdepthが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
-internal/daemon/submodule_measurement.go	ast-v1:747dd2fec1fdbe7e12fb93fdf77515c5d90815b0367b40602994da5449d11eb9	priorityが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
-internal/daemon/submodule_measurement.go	ast-v1:a726806163d5c9f84b47d640d88105b1186d6fd7f63e766feeda90fbbb8c30ca	pathが異なる分岐内だけで比較するため等値は到達せず、< と <= の結果に観測可能な差がない
 internal/daemon/unmanaged_artifacts.go	ast-v1:be48faf846105672185c66fa852a86bf6eba44bcd3e9430f75be52ecbffa58e9	列挙対象は実体pathごとに一意であり同じpath同士の比較は発生しないため、< と <= の結果に観測可能な差がない
 internal/daemon/usage.go	ast-v1:c59725973128eae5b9923c9230527cef3a71e7b57f481d76e5fdb5a4f10e3d5e	削除量と合計が等しい場合は分岐して0を返しても減算して0になっても結果が同じで、>= と > の変更に観測可能な差がない
 internal/agent/worktree_rewrite.go	ast-v1:fcea7b0df81519360267defb4603f807a4df85f9cac05fa91324ed55bf38dda3	candidates は segment ごとに高々1回だけ増え、candidates > 1 は len(segments) > 1 と同時に必ず真になるため、++ を -- に変えても判定結果が変わらない。
