@@ -258,7 +258,7 @@ func (m *Manager) BindAgentSessionFromHook(ctx context.Context, id, token, agent
 	}
 	primary, err := m.store.BindAgentSessionFromHook(ctx, id, agentID, source, replaces...)
 	if err == nil && !primary {
-		m.log.Info("ignored an auxiliary Codex session start", "session_id", id, "agent_session_id", agentID)
+		m.log.Info("ignored an auxiliary Codex session start", "session_id", id, "agent_session_id", agentID, "source", source)
 	}
 	return primary, err
 }

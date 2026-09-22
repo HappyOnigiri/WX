@@ -32,8 +32,9 @@ func TestBindAgentSessionReplacesVerifiedForkMapping(t *testing.T) {
 	createAgentBindSession(t, store, "fork-root")
 	bindAgentSessionForTest(t, store, "fork-root", "native-parent")
 
-	if err := store.BindAgentSession(ctx, "fork-root", "native-child", "native-parent"); err != nil {
-		t.Fatalf("replace agent session mapping: %v", err)
+	primary, err := store.BindAgentSessionFromHook(ctx, "fork-root", "native-child", "fork", "native-parent")
+	if err != nil || !primary {
+		t.Fatalf("replace agent session mapping: primary=%v err=%v", primary, err)
 	}
 	got, err := store.FindByAgentSession(ctx, "codex", "native-child")
 	if err != nil || got.ID != "fork-root" {
@@ -55,20 +56,25 @@ func TestBindAgentSessionNormalBindIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestBindAgentSessionFromHookIgnoresAuxiliaryCodexStartup(t *testing.T) {
+func TestBindAgentSessionFromHookIgnoresAuxiliaryCodexStarts(t *testing.T) {
 	t.Parallel()
-	store := openTestStore(t)
 	ctx := context.Background()
-	createAgentBindSession(t, store, "auxiliary-root")
-	bindAgentSessionForTest(t, store, "auxiliary-root", "native-primary")
+	for _, source := range []string{"startup", "fork"} {
+		t.Run(source, func(t *testing.T) {
+			store := openTestStore(t)
+			id := "auxiliary-" + source
+			createAgentBindSession(t, store, id)
+			bindAgentSessionForTest(t, store, id, "native-primary")
 
-	primary, err := store.BindAgentSessionFromHook(ctx, "auxiliary-root", "native-btw", "startup")
-	if err != nil || primary {
-		t.Fatalf("auxiliary bind: primary=%v err=%v", primary, err)
-	}
-	got, err := store.SessionByID(ctx, "auxiliary-root")
-	if err != nil || got.AgentSessionID != "native-primary" || got.State != "ACTIVE" {
-		t.Fatalf("auxiliary bind changed session: %+v err=%v", got, err)
+			primary, err := store.BindAgentSessionFromHook(ctx, id, "native-btw", source)
+			if err != nil || primary {
+				t.Fatalf("auxiliary bind: primary=%v err=%v", primary, err)
+			}
+			got, err := store.SessionByID(ctx, id)
+			if err != nil || got.AgentSessionID != "native-primary" || got.State != "ACTIVE" {
+				t.Fatalf("auxiliary bind changed session: %+v err=%v", got, err)
+			}
+		})
 	}
 }
 
@@ -79,6 +85,7 @@ func TestBindAgentSessionFromHookKeepsStrictConflicts(t *testing.T) {
 		name, kind, source string
 	}{
 		{name: "Codex resume", kind: "codex", source: "resume"},
+		{name: "Codex unknown", kind: "codex", source: "future"},
 		{name: "Claude startup", kind: "claude", source: "startup"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -93,18 +100,22 @@ func TestBindAgentSessionFromHookKeepsStrictConflicts(t *testing.T) {
 			}
 		})
 	}
-	t.Run("child Codex startup", func(t *testing.T) {
-		store := openTestStore(t)
-		createAgentBindSession(t, store, "parent")
-		child := Session{ID: "child", SlotID: "child", ParentSessionID: "parent", State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken("child")}
-		if _, err := store.CreateSlotSession(ctx, Slot{ID: "child", State: "LEASED", RootID: testRootID, RelPath: "_unbound/child"}, nil, child, ""); err != nil {
-			t.Fatal(err)
-		}
-		bindAgentSessionForTest(t, store, "child", "native-primary")
-		if _, err := store.BindAgentSessionFromHook(ctx, "child", "native-other", "startup"); err == nil {
-			t.Fatal("child session accepted an auxiliary bind")
-		}
-	})
+	for _, source := range []string{"startup", "fork"} {
+		t.Run("child Codex "+source, func(t *testing.T) {
+			store := openTestStore(t)
+			parentID := "parent-" + source
+			childID := "child-" + source
+			createAgentBindSession(t, store, parentID)
+			child := Session{ID: childID, SlotID: childID, ParentSessionID: parentID, State: "ACTIVE", AgentKind: "codex", TokenHash: HashToken(childID)}
+			if _, err := store.CreateSlotSession(ctx, Slot{ID: childID, State: "LEASED", RootID: testRootID, RelPath: filepath.Join("_unbound", childID)}, nil, child, ""); err != nil {
+				t.Fatal(err)
+			}
+			bindAgentSessionForTest(t, store, childID, "native-primary")
+			if _, err := store.BindAgentSessionFromHook(ctx, childID, "native-other", source); err == nil {
+				t.Fatal("child session accepted an auxiliary bind")
+			}
+		})
+	}
 }
 
 func TestBindAgentSessionRejectsForkWhenSourceChanged(t *testing.T) {

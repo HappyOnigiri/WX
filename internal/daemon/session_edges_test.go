@@ -55,7 +55,7 @@ func TestAuxiliaryCodexLifecycleDoesNotReplaceOrReleasePrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	primary, err := manager.BindAgentSessionFromHook(ctx, session.ID, "token", "native-btw", "startup")
+	primary, err := manager.BindAgentSessionFromHook(ctx, session.ID, "token", "native-btw", "fork")
 	if err != nil || primary {
 		t.Fatalf("auxiliary start: primary=%v err=%v", primary, err)
 	}
