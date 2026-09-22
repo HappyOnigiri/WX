@@ -296,7 +296,7 @@ func TestMutationDaemonOpsDegradedRPCAndHandlerBoundaries(t *testing.T) {
 	t.Run("maintenance decoder rejects fields outside the method", func(t *testing.T) {
 		ctx, manager, _, _, _, _ := managerCoverageFixture(t, "repository")
 		_, handled, err := (Handler{Manager: manager}).dispatchWorkspaceMaintenance(ctx, "RetryStandby", json.RawMessage(`{"path":"/root","unexpected":true}`))
-		if !handled || err == nil {
+		if !handled || err == nil || !strings.Contains(err.Error(), "unknown field") {
 			t.Fatalf("maintenance decode handled=%v err=%v", handled, err)
 		}
 	})
