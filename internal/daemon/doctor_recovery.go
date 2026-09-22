@@ -351,8 +351,7 @@ func submoduleRefFindings(issues []submoduleRefIssue) []diag.Finding {
 		cause := "the state database records ref " + issue.Ref + " for submodule " + issue.Path + ", but its local module does not have it"
 		summaryMessage := message("diag.recovery.submodule_ref_missing")
 		causeMessage := message("diag.recovery.submodule_ref_missing_cause", "Ref", issue.Ref, "Path", issue.Path)
-		switch issue.Kind {
-		case submoduleRefMismatched:
+		if issue.Kind == submoduleRefMismatched {
 			summary = "a submodule recovery ref does not point at the snapshot object"
 			cause = "ref " + issue.Ref + " exists in the local module of submodule " + issue.Path + " but its object ID differs from the recorded one"
 			summaryMessage = message("diag.recovery.submodule_ref_mismatched")
