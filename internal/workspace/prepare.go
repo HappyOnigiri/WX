@@ -117,6 +117,24 @@ const (
 	preparePhaseUpdate  preparePhase = "update"
 )
 
+func phaseNeedsTrackedStatusRefresh(phase preparePhase) bool {
+	return phase == preparePhaseCreate
+}
+
+func closeIdentityDirectory(directory *os.File) {
+	if directory != nil {
+		_ = directory.Close()
+	}
+}
+
+func validateEmptyTargetMarker(owner *os.Root, relative string) error {
+	_, err := owner.Lstat(relative)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func (p *Preparer) prepare(ctx context.Context, repo discovery.Repository, target, oid, slotID string, phase preparePhase) error {
 	root, target, err := p.prepareTarget(target)
 	if err != nil {
@@ -316,7 +334,7 @@ func (p *Preparer) completePrepare(ctx context.Context, repo discovery.Repositor
 	// inode 交換で index の stat cache が陳腐化するため、貸出前に refresh して再ハッシュを PREPARING 側で払う。
 	// tracked 内容が変わっていないことの独立検証も兼ねる。先行配置した回も、配置した path 以外の検証はここだけが行う。
 	// 配置方式の照合が index を refresh 済みなので、その回のこの status は stat の確認だけで済む。
-	if phase == preparePhaseCreate {
+	if phaseNeedsTrackedStatusRefresh(phase) {
 		if err := p.timePhase("tracked-status-refresh", func() error {
 			return p.validateTrackedCleanOwned(ctx, target, lockedRoot, lockedRelativeTarget, targetIdentity, "tracked status refresh")
 		}); err != nil {
@@ -436,9 +454,7 @@ func (p *Preparer) prepareLockedTarget(ctx context.Context, repo discovery.Repos
 	targetIdentity := ""
 	if existingWorktree {
 		identityDirectory, identity, identityErr := domain.OpenDirectoryAt(lockedRoot, lockedRelativeTarget)
-		if identityDirectory != nil {
-			_ = identityDirectory.Close()
-		}
+		closeIdentityDirectory(identityDirectory)
 		if identityErr != nil {
 			return nil, fmt.Errorf("%w: capture existing worktree identity: %w", state.ErrOwnership, identityErr)
 		}
@@ -563,7 +579,7 @@ func (p *Preparer) existingTargetState(ctx context.Context, repo discovery.Repos
 		if markerErr != nil {
 			return false, markerErr
 		}
-		if _, markerErr := ownedRoot.Lstat(markerRelative); markerErr != nil && !errors.Is(markerErr, os.ErrNotExist) {
+		if markerErr := validateEmptyTargetMarker(ownedRoot, markerRelative); markerErr != nil {
 			return false, markerErr
 		}
 		return false, nil

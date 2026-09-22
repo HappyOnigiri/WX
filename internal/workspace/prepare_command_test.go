@@ -377,7 +377,7 @@ func TestRunPrepareWithIdentityPropagatesTargetOpenFailure(t *testing.T) {
 	preparer.Config = cfg
 	err := preparer.runPrepareWithIdentity(context.Background(), repo, target, "some-identity")
 	var failure *PrepareCommandError
-	if !errors.As(err, &failure) {
+	if !errors.As(err, &failure) || failure.ExitCode != -1 {
 		t.Fatal("descriptor-bound prepare command opened a missing target")
 	}
 	assertPrepareDetailExitCode(t, failure.DetailPath, -1)

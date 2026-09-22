@@ -58,7 +58,7 @@ func (e *PrepareCommandError) Is(target error) bool {
 const maxPrepareDiagnosticOutput = 128 << 10
 
 type prepareDiagnostic struct {
-	file       *os.File
+	file       prepareDiagnosticFile
 	temporary  string
 	final      string
 	failureID  string
@@ -66,6 +66,14 @@ type prepareDiagnostic struct {
 	used       int
 	truncated  map[string]bool
 	writeError error
+}
+
+// prepareDiagnosticFile は診断 writer が必要とするファイル操作だけを表す。
+// 実ファイル以外の write failure も capture_error へ記録できるようにする。
+type prepareDiagnosticFile interface {
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
 }
 
 type prepareDiagnosticWriter struct {
@@ -236,7 +244,8 @@ func (p *Preparer) runPrepareWithIdentity(ctx context.Context, repo discovery.Re
 	if expectedIdentity != "" && identity != expectedIdentity {
 		err := fmt.Errorf("%w: worktree target identity changed before prepare command (expected %s, got %s)", state.ErrOwnership, expectedIdentity, identity)
 		// ownership failure is not a command failure; preserve the existing quarantine path and do not retain a successful command artifact.
-		_ = diagnostic.finish(true, -1, false, false)
+		// success artifact は削除されるため exit code は観測されず、成功を表す 0 を渡す。
+		_ = diagnostic.finish(true, 0, false, false)
 		return err
 	}
 	cmd, err := fdexec.Start(cctx, p.Git.FDHelper, directory, os.Environ(), override.Prepare.Command...)

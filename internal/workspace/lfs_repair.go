@@ -237,7 +237,11 @@ func ensureLFSCacheDirectory(root *os.Root, relative string) error {
 			}
 		case errors.Is(statErr, os.ErrNotExist):
 			if mkdirErr := root.Mkdir(current, 0o755); mkdirErr != nil {
-				if existing, existingErr := root.Lstat(current); existingErr != nil || existing.Mode()&os.ModeSymlink != 0 || !existing.IsDir() {
+				existing, existingErr := root.Lstat(current)
+				if existingErr != nil {
+					return mkdirErr
+				}
+				if existing.Mode()&os.ModeSymlink != 0 || !existing.IsDir() {
 					return mkdirErr
 				}
 			}

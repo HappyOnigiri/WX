@@ -126,6 +126,35 @@ func TestPrepareStagedPreservesRulesIndexFilterAndHookContract(t *testing.T) {
 	}
 }
 
+// 通常 blob の内容は symlink の参照先ではなく、early path の閉包へ取り込まない。
+func TestPrepareStagedDoesNotTreatRegularBlobAsSymlink(t *testing.T) {
+	t.Parallel()
+	source, repo, preparer, _, target := prepareEdgesFixture(t)
+	preparer.Config.Storage.CopyMode = config.CopyModeCopy
+	if err := os.WriteFile(filepath.Join(source, "early-blob"), []byte("late-file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "late-file"), []byte("late\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitCommand(t, source, "add", "early-blob", "late-file")
+	gitCommand(t, source, "commit", "-m", "regular blob closure")
+	oid := gitOutput(t, source, "rev-parse", "HEAD")
+	preparer.Config.Readiness.EarlyPaths = []string{"early-blob"}
+	_, err := preparer.PrepareStaged(context.Background(), "slot", []Preparation{{Repository: repo, Target: target, OID: oid}}, nil, func() error {
+		if _, statErr := os.Stat(filepath.Join(target, "early-blob")); statErr != nil {
+			return statErr
+		}
+		if _, statErr := os.Lstat(filepath.Join(target, "late-file")); !os.IsNotExist(statErr) {
+			return fmt.Errorf("regular blob pulled late path into early stage: %v", statErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPrepareStagedDefaultsDisabledIncludesAndGitlinks(t *testing.T) {
 	t.Parallel()
 	for _, enabled := range []bool{true, false} {
