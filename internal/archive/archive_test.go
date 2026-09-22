@@ -658,6 +658,10 @@ func archiveFixture(t *testing.T) (string, discovery.Repository, *Manager, strin
 }
 
 func installGitFault(t *testing.T, pattern string, occurrence int) {
+	installGitFaultWithExitCode(t, pattern, occurrence, 2)
+}
+
+func installGitFaultWithExitCode(t *testing.T, pattern string, occurrence, exitCode int) {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
 	if err != nil {
@@ -672,9 +676,9 @@ if case " $* " in *"$WX_FAULT_PATTERN"*) true;; *) false;; esac; then
   if [ -f "$WX_FAULT_MARKER" ]; then read -r count < "$WX_FAULT_MARKER"; fi
   count=$((count + 1))
   printf '%s\n' "$count" > "$WX_FAULT_MARKER"
-  if [ "$count" -eq "$WX_FAULT_OCCURRENCE" ]; then
-    printf 'injected git failure\n' >&2
-    exit 2
+	if [ "$count" -eq "$WX_FAULT_OCCURRENCE" ]; then
+	  printf 'injected git failure\n' >&2
+	  exit "$WX_FAULT_EXIT_CODE"
   fi
 fi
 exec "$WX_REAL_GIT" "$@"
@@ -686,6 +690,7 @@ exec "$WX_REAL_GIT" "$@"
 	t.Setenv("WX_FAULT_PATTERN", pattern)
 	t.Setenv("WX_FAULT_MARKER", marker)
 	t.Setenv("WX_FAULT_OCCURRENCE", strconv.Itoa(occurrence))
+	t.Setenv("WX_FAULT_EXIT_CODE", strconv.Itoa(exitCode))
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

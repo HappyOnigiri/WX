@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -126,5 +127,11 @@ func TestSnapshotRecordsRemovalOfForceAddedIgnoredPath(t *testing.T) {
 	}
 	if blob := gitCommand(t, target, "show", ":generated/keep.txt"); blob != "staged" {
 		t.Fatalf("restored index content=%q", blob)
+	}
+}
+
+func TestParseStageZeroEntryRejectsRecordsWithoutTab(t *testing.T) {
+	if mode, oid, path, ok := parseStageZeroEntry("100644 " + strings.Repeat("a", 40) + " 0"); ok || mode != "" || oid != "" || path != "" {
+		t.Fatalf("malformed entry accepted: mode=%q oid=%q path=%q ok=%v", mode, oid, path, ok)
 	}
 }

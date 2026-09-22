@@ -110,6 +110,23 @@ func TestSelectionContentKeepsEqualWidthLabelsAligned(t *testing.T) {
 	}
 }
 
+func TestSelectionContentDoesNotPadAnOptionWithoutDescription(t *testing.T) {
+	selection := Selection{
+		Title: "Choose",
+		Options: []Option{
+			{Label: "One", Description: "first"},
+			{Label: "Two"},
+		},
+		Initial: 0,
+	}
+	view := (selectionModel{selection: selection, cursor: selection.Initial}).content()
+	for _, line := range strings.Split(view, "\n") {
+		if strings.HasPrefix(line, "    Two") && line != "    Two" {
+			t.Fatalf("empty description added padding: %q", line)
+		}
+	}
+}
+
 func TestSelectionCancellationAndUnsafeText(t *testing.T) {
 	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEsc}, {Code: 'c', Mod: tea.ModCtrl}} {
 		model := selectionModel{selection: testSelection()}

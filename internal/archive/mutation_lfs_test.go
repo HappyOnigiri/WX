@@ -102,6 +102,9 @@ func TestMutationParseSnapshotTreeDiffHandlesRenames(t *testing.T) {
 	if _, err := parseSnapshotTreeDiff(":100644 100644 " + old + " " + newOID + " R100\x00old.bin\x00"); err == nil || !strings.Contains(err.Error(), "invalid Git tree rename record") {
 		t.Fatalf("missing rename destination error=%v", err)
 	}
+	if _, err := parseSnapshotTreeDiff(":100644 100644 " + old + " " + newOID + " R100\x00old.bin"); err == nil || !strings.Contains(err.Error(), "invalid Git tree rename record") {
+		t.Fatalf("unterminated rename destination error=%v", err)
+	}
 }
 
 // TestMutationValidGitOIDRejectsMalformedHex は SHA-1/SHA-256 の長さだけでなく、

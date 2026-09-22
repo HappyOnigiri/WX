@@ -512,10 +512,22 @@ func restoreWorkspaceRegularFile(root *os.Root, reader *tar.Reader, osRel, rel s
 // DeleteWorkspaceSnapshotAt は checksum と決定的なパスを検証した後、pin 済み root descriptor 経由で
 // recovery archive を削除する。
 func DeleteWorkspaceSnapshotAt(ctx context.Context, ownershipRoot string, owner *os.Root, snapshot state.WorkspaceSnapshot) error {
+	return deleteWorkspaceSnapshotAt(ctx, ownershipRoot, owner, snapshot, verifyPinnedRootPath, openWorkspaceSnapshotDirectory, syncWorkspaceSnapshotDirectory)
+}
+
+func deleteWorkspaceSnapshotAt(
+	ctx context.Context,
+	ownershipRoot string,
+	owner *os.Root,
+	snapshot state.WorkspaceSnapshot,
+	verifyRoot func(string, *os.Root) error,
+	openDirectory func(*os.Root) (*os.File, error),
+	syncDirectory func(*os.File) error,
+) error {
 	if owner == nil {
 		return errors.New("workspace snapshot ownership root descriptor is nil")
 	}
-	if err := verifyPinnedRootPath(ownershipRoot, owner); err != nil {
+	if err := verifyRoot(ownershipRoot, owner); err != nil {
 		return err
 	}
 	rel := filepath.FromSlash(workspaceSnapshotRelativePath(snapshot.SessionID))
@@ -533,15 +545,23 @@ func DeleteWorkspaceSnapshotAt(ctx context.Context, ownershipRoot string, owner 
 	if err := owner.Remove(rel); err != nil {
 		return err
 	}
-	if err := verifyPinnedRootPath(ownershipRoot, owner); err != nil {
+	if err := verifyRoot(ownershipRoot, owner); err != nil {
 		return err
 	}
-	if directory, err := owner.Open(filepath.FromSlash(WorkspaceSnapshotDirectory)); err == nil {
-		syncErr := directory.Sync()
+	if directory, err := openDirectory(owner); err == nil {
+		syncErr := syncDirectory(directory)
 		_ = directory.Close()
 		return syncErr
 	}
 	return nil
+}
+
+func openWorkspaceSnapshotDirectory(owner *os.Root) (*os.File, error) {
+	return owner.Open(filepath.FromSlash(WorkspaceSnapshotDirectory))
+}
+
+func syncWorkspaceSnapshotDirectory(directory *os.File) error {
+	return directory.Sync()
 }
 
 // workspaceSnapshotMetadataAt は archive 本文を読まずに、状態・期限・決定的な path・実体の種別を確かめる。

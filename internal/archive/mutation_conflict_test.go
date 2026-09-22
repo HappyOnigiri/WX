@@ -246,6 +246,17 @@ func TestMutationConflictParsersKeepPathAndStageOrder(t *testing.T) {
 	if len(tree) != 3 || tree[0].path != "a" || tree[1].stage != 1 || tree[2].stage != 3 {
 		t.Fatalf("conflict tree order=%+v", tree)
 	}
+
+	for _, storedPath := range []string{"auto-merge", "auto-merge/tree"} {
+		entries, err := parseConflictTreeEntries("100644 blob " + oid + "\t" + storedPath + "\x00")
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("stored path %q was not ignored: entries=%+v err=%v", storedPath, entries, err)
+		}
+	}
+	duplicate := "100644 blob " + oid + "\tstages/1/tracked\x00" + "100755 blob " + oid + "\tstages/1/tracked\x00"
+	if _, err := parseConflictTreeEntries(duplicate); err == nil || !strings.Contains(err.Error(), "duplicate conflict state entry") {
+		t.Fatalf("duplicate conflict stage error=%v", err)
+	}
 }
 
 func stringPtr(value string) *string { return &value }

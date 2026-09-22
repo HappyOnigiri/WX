@@ -126,6 +126,10 @@ func readWritableTarget(path string) (data []byte, resolved string, existed bool
 // writeHookConfig は同じディレクトリの一時ファイルへ書いてから rename する。
 // 既存ファイルの permission を引き継ぎ、新規は 0o600 で作る。
 func writeHookConfig(resolved string, existed bool, data []byte) error {
+	return writeHookConfigWithOpen(resolved, existed, data, os.Open)
+}
+
+func writeHookConfigWithOpen(resolved string, existed bool, data []byte, openDirectory func(string) (*os.File, error)) error {
 	mode := os.FileMode(0o600)
 	if existed {
 		info, err := os.Stat(resolved)
@@ -161,7 +165,7 @@ func writeHookConfig(resolved string, existed bool, data []byte) error {
 	if err := os.Rename(name, resolved); err != nil {
 		return err
 	}
-	handle, err := os.Open(directory)
+	handle, err := openDirectory(directory)
 	if err != nil {
 		return err
 	}

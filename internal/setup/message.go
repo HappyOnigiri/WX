@@ -2,6 +2,8 @@ package setup
 
 import "github.com/HappyOnigiri/WX/internal/i18n"
 
+const messagePairWidth = 2
+
 // message は message ID と、その template が使うフィールドを 1 行で組み立てる。
 // 項目の収集は短い分岐の連続なので、map literal を毎回書くと判定そのものが読み取れなくなる。
 // pairs は名前と値を交互に並べ、奇数個なら最後の名前を捨てる。
@@ -9,7 +11,7 @@ func message(id string, pairs ...any) i18n.Message {
 	if len(pairs) < 2 {
 		return i18n.Message{ID: id}
 	}
-	data := make(map[string]any, len(pairs)/2)
+	data := make(map[string]any, len(pairs)/messagePairWidth)
 	for index := 0; index+1 < len(pairs); index += 2 {
 		name, ok := pairs[index].(string)
 		if !ok {

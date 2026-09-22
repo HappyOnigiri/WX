@@ -266,6 +266,39 @@ func TestStatusViewMarksTheFourSecondBoundary(t *testing.T) {
 	}
 }
 
+func TestStatusViewDistinguishesLoadingWithAndWithoutCachedStatus(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.loading, m.status = true, "cached status"
+	withStatus := xansi.Strip(strings.Join(m.statusView(), "\n"))
+	if strings.Contains(withStatus, m.t("dashboard.loading")) || !strings.Contains(withStatus, "cached status") {
+		t.Fatalf("loading view with cached status=%q, want cached status without loading placeholder", withStatus)
+	}
+	m.status = ""
+	withoutStatus := xansi.Strip(strings.Join(m.statusView(), "\n"))
+	if !strings.Contains(withoutStatus, m.t("dashboard.loading")) {
+		t.Fatalf("loading view without cached status=%q, want loading placeholder", withoutStatus)
+	}
+}
+
+func TestStatusViewUsesFreshLabelBeforeFourSeconds(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.loading, m.status = false, "DAEMON running"
+	m.statusAt = time.Now().Add(-time.Second)
+	plain := xansi.Strip(strings.Join(m.statusView(), "\n"))
+	if !strings.Contains(plain, "Updated ") || strings.Contains(plain, "ago)") {
+		t.Fatalf("fresh response label=%q, want an absolute updated-at label", plain)
+	}
+}
+
+func TestStatusViewShowsNoStatusForEmptyResponse(t *testing.T) {
+	m := newModel(context.Background(), Options{Config: config.Defaults()})
+	m.loading = false
+	plain := xansi.Strip(strings.Join(m.statusView(), "\n"))
+	if !strings.Contains(plain, m.t("dashboard.no_status")) {
+		t.Fatalf("empty response=%q, want no-status message", plain)
+	}
+}
+
 // TestOperationViewUsesTwoColumnsAtTheWidthBoundary は、幅 92 の画面を縦積みにせず
 // 2 カラムで描画する境界を守る。
 func TestOperationViewUsesTwoColumnsAtTheWidthBoundary(t *testing.T) {
@@ -350,6 +383,40 @@ func TestDescriptionLinesOmitsAttentionWithoutReasons(t *testing.T) {
 	plain := xansi.Strip(strings.Join(m.descriptionLines(80), "\n"))
 	if strings.Contains(plain, m.t("dashboard.attention")) {
 		t.Fatalf("attention heading appeared without reasons: %q", plain)
+	}
+}
+
+func TestDescriptionLinesHandlesExactSelectionBoundaries(t *testing.T) {
+	cfg := config.DefaultsV2()
+	const workspace = "/tmp/project"
+	cfg.Workspaces[workspace] = config.Workspace{}
+	m := newModel(context.Background(), Options{Config: cfg})
+	m.tab, m.settingsOpen = 2, false
+	m.selected = len(m.configEnvironments())
+	if got := m.descriptionLines(80); got != nil {
+		t.Fatalf("out-of-range environment description=%q, want nil", got)
+	}
+	workspaceIndex, defaultsIndex := -1, -1
+	for index, environment := range m.configEnvironments() {
+		if environment.target == workspace && environment.scope == config.V2ScopeWorkspace {
+			if environment.repositoryDefaults {
+				defaultsIndex = index
+			} else {
+				workspaceIndex = index
+			}
+		}
+	}
+	if workspaceIndex < 0 || defaultsIndex < 0 {
+		t.Fatalf("workspace environments missing: %d/%d", workspaceIndex, defaultsIndex)
+	}
+	m.selected = workspaceIndex
+	if got := strings.Join(m.descriptionLines(80), "\n"); !strings.Contains(got, workspace) {
+		t.Fatalf("workspace description=%q, want target path", got)
+	}
+
+	m.settingsOpen, m.settingsEnv, m.selected = true, 0, len(m.configItems())
+	if got := m.descriptionLines(80); got != nil {
+		t.Fatalf("out-of-range setting description=%q, want nil", got)
 	}
 }
 
