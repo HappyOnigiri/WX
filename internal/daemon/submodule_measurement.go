@@ -143,17 +143,30 @@ func (m *Manager) recordPrepareSubmodules(outcomes *workspace.SubmoduleOutcomes)
 }
 
 func outcomeLess(a, b workspace.SubmoduleOutcome) bool {
-	if a.Repository != b.Repository {
-		return a.Repository < b.Repository
+	// 上位キーが異なるときは順序を確定し、等値のときだけ次のキーへ進む。
+	if a.Repository < b.Repository {
+		return true
 	}
-	if a.Depth != b.Depth {
-		return a.Depth < b.Depth
+	if a.Repository > b.Repository {
+		return false
 	}
-	if a.Path != b.Path {
-		return a.Path < b.Path
+	if a.Depth < b.Depth {
+		return true
 	}
-	if a.Action != b.Action {
-		return a.Action < b.Action
+	if a.Depth > b.Depth {
+		return false
+	}
+	if a.Path < b.Path {
+		return true
+	}
+	if a.Path > b.Path {
+		return false
+	}
+	if a.Action < b.Action {
+		return true
+	}
+	if a.Action > b.Action {
+		return false
 	}
 	return a.Reason < b.Reason
 }

@@ -105,10 +105,19 @@ func (e *MissingLFSObjectsError) Error() string {
 
 func (e *MissingLFSObjectsError) Unwrap() error { return ErrMissingLFSObjects }
 
+type capacityEstimator func(context.Context, *workspace.Preparer, config.Config, discovery.Repository, string) (workspace.CapacityEstimate, error)
+
 // checkPrepareCapacity は target OID の準備が書込みを始める前に必要とする
 // volume 別の容量を求める。Git/statfs が読めない回は report を返さず error と
 // し、呼び出し側が「測れなかったので準備は続行する」方針を選べるようにする。
 func (m *Manager) checkPrepareCapacity(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, cfg config.Config, multiplier int) (CapacityReport, error) {
+	return m.checkPrepareCapacityWithEstimator(ctx, slot, w, resolved, repos, cfg, multiplier, m.estimateCapacity)
+}
+
+// checkPrepareCapacityWithEstimator は容量見積りの取得だけを差し替えられる検証境界である。
+// 通常の準備・doctor は estimateCapacity を使い、古い cache 形式や複数 volume の
+// 集計境界は filesystem と Git の状態を作らずに同じ集計を検証できるようにする。
+func (m *Manager) checkPrepareCapacityWithEstimator(ctx context.Context, slot state.Slot, w discovery.Workspace, resolved []pool.Resolved, repos []state.SlotRepository, cfg config.Config, multiplier int, estimateCapacity capacityEstimator) (CapacityReport, error) {
 	multiplier = max(multiplier, 1)
 	releaseRoot, err := m.holdRootForPath(slot.Path)
 	if err != nil {
@@ -140,9 +149,6 @@ func (m *Manager) checkPrepareCapacity(ctx context.Context, slot state.Slot, w d
 			entry = &CapacityVolume{Volume: volume, Target: target}
 			volumes[volume] = entry
 		}
-		if target != "" && entry.Target == "" {
-			entry.Target = target
-		}
 		entry.WorktreeRequired = capacityAdd(entry.WorktreeRequired, required)
 		entry.Required = capacityAdd(entry.Required, required)
 	}
@@ -151,9 +157,6 @@ func (m *Manager) checkPrepareCapacity(ctx context.Context, slot state.Slot, w d
 		if entry == nil {
 			entry = &CapacityVolume{Volume: volume, Target: target}
 			volumes[volume] = entry
-		}
-		if target != "" && entry.Target == "" {
-			entry.Target = target
 		}
 		entry.SharedRequired = capacityAdd(entry.SharedRequired, required)
 		entry.Required = capacityAdd(entry.Required, required)
@@ -181,7 +184,7 @@ func (m *Manager) checkPrepareCapacity(ctx context.Context, slot state.Slot, w d
 		if exists && (stored.State == "READY" || stored.State == "COLD") {
 			continue
 		}
-		estimate, estimateErr := m.estimateCapacity(ctx, preparer, cfg, item.Repository, item.OID)
+		estimate, estimateErr := estimateCapacity(ctx, preparer, cfg, item.Repository, item.OID)
 		if estimateErr != nil {
 			return CapacityReport{}, fmt.Errorf("estimate repository %s capacity: %w", item.Repository.MainPath, estimateErr)
 		}
@@ -204,10 +207,10 @@ func (m *Manager) checkPrepareCapacity(ctx context.Context, slot state.Slot, w d
 		}
 		if existing := volumes[volume]; existing == nil {
 			volumes[volume] = &CapacityVolume{Volume: volume, Target: common, Free: free}
-		} else if free < existing.Free {
+		} else {
 			// 同じ volume を複数 descriptor から測ったときは、診断中に空きが
 			// 減った可能性を取りこぼさないよう小さい値を使う。
-			existing.Free = free
+			existing.Free = min(existing.Free, free)
 		}
 		cacheBytes := int64(0)
 		for _, object := range estimate.LFS {
