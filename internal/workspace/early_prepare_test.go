@@ -146,7 +146,7 @@ func TestPrepareStagedDoesNotTreatRegularBlobAsSymlink(t *testing.T) {
 			return statErr
 		}
 		if _, statErr := os.Lstat(filepath.Join(target, "late-file")); !os.IsNotExist(statErr) {
-			return fmt.Errorf("regular blob pulled late path into early stage: %v", statErr)
+			return fmt.Errorf("regular blob pulled late path into early stage: %w", statErr)
 		}
 		return nil
 	})
