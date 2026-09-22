@@ -15,7 +15,11 @@ install_dir=${1:-}
 
 # 既定以外の配置先は make smoke のような検査用の呼び出しなので、副作用を一切起こさない。
 # 一致しない側へ倒すのが安全側である。
-[ "$install_dir" = "$HOME/.local/bin" ] || exit 0
+# HOME 未設定の環境では既定の配置先を決められないので、対象外として扱う（set -u で
+# 落とすと、副作用を起こさないはずの呼び出しが make install ごと失敗する）。
+default_home=${HOME:-}
+[ -n "$default_home" ] || exit 0
+[ "$install_dir" = "$default_home/.local/bin" ] || exit 0
 
 # LaunchAgent と launchctl は macOS にしかなく、CI の runner は全て linux である。
 [ "$(uname -s)" = Darwin ] || exit 0
